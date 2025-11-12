@@ -8,11 +8,37 @@
 
 /* Begin PBXBuildFile section */
 		84114ED02EC4613D00C5A38E /* Picocrypt-NG.icns in Resources */ = {isa = PBXBuildFile; fileRef = 84114ECF2EC4613D00C5A38E /* Picocrypt-NG.icns */; };
+		84C1661B2EC48EFF00819A56 /* SharingExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 84C1660F2EC48EFF00819A56 /* SharingExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		84C166192EC48EFF00819A56 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 84114EAF2EC456E300C5A38E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 84C1660E2EC48EFF00819A56;
+			remoteInfo = SharingExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		84C166202EC48EFF00819A56 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				84C1661B2EC48EFF00819A56 /* SharingExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		84114EB72EC456E300C5A38E /* Picocrypt-NG.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Picocrypt-NG.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		84114ECF2EC4613D00C5A38E /* Picocrypt-NG.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; name = "Picocrypt-NG.icns"; path = "../../../dist/macos/Picocrypt-NG.icns"; sourceTree = "<group>"; };
+		84C1660F2EC48EFF00819A56 /* SharingExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SharingExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -23,14 +49,29 @@
 			);
 			target = 84114EB62EC456E300C5A38E /* Picocrypt-NG */;
 		};
+		84C1661F2EC48EFF00819A56 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 84C1660E2EC48EFF00819A56 /* SharingExtension */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		84114EB92EC456E300C5A38E /* Picocrypt-NG */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (84114EC92EC4581100C5A38E /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = "Picocrypt-NG"; sourceTree = "<group>"; };
+		84C166102EC48EFF00819A56 /* SharingExtension */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (84C1661F2EC48EFF00819A56 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = SharingExtension; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		84114EB42EC456E300C5A38E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		84C1660C2EC48EFF00819A56 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -45,6 +86,7 @@
 			children = (
 				84114ECF2EC4613D00C5A38E /* Picocrypt-NG.icns */,
 				84114EB92EC456E300C5A38E /* Picocrypt-NG */,
+				84C166102EC48EFF00819A56 /* SharingExtension */,
 				84114EB82EC456E300C5A38E /* Products */,
 			);
 			sourceTree = "<group>";
@@ -53,6 +95,7 @@
 			isa = PBXGroup;
 			children = (
 				84114EB72EC456E300C5A38E /* Picocrypt-NG.app */,
+				84C1660F2EC48EFF00819A56 /* SharingExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -64,15 +107,17 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 84114EC52EC456E400C5A38E /* Build configuration list for PBXNativeTarget "Picocrypt-NG" */;
 			buildPhases = (
-				848635302EC47A0400805FC2 /* ShellScript */,
+				848635302EC47A0400805FC2 /* Set Version */,
 				84114EB32EC456E300C5A38E /* Sources */,
+				84114ECE2EC45D7500C5A38E /* Sign and Copy Go Binary Into App Bundle */,
 				84114EB52EC456E300C5A38E /* Resources */,
 				84114EB42EC456E300C5A38E /* Frameworks */,
-				84114ECE2EC45D7500C5A38E /* ShellScript */,
+				84C166202EC48EFF00819A56 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				84C1661A2EC48EFF00819A56 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				84114EB92EC456E300C5A38E /* Picocrypt-NG */,
@@ -83,6 +128,28 @@
 			productName = "Picocrypt-NG";
 			productReference = 84114EB72EC456E300C5A38E /* Picocrypt-NG.app */;
 			productType = "com.apple.product-type.application";
+		};
+		84C1660E2EC48EFF00819A56 /* SharingExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 84C1661C2EC48EFF00819A56 /* Build configuration list for PBXNativeTarget "SharingExtension" */;
+			buildPhases = (
+				84C1660B2EC48EFF00819A56 /* Sources */,
+				84C1660C2EC48EFF00819A56 /* Frameworks */,
+				84C1660D2EC48EFF00819A56 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				84C166102EC48EFF00819A56 /* SharingExtension */,
+			);
+			name = SharingExtension;
+			packageProductDependencies = (
+			);
+			productName = SharingExtension;
+			productReference = 84C1660F2EC48EFF00819A56 /* SharingExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -95,6 +162,9 @@
 				LastUpgradeCheck = 2610;
 				TargetAttributes = {
 					84114EB62EC456E300C5A38E = {
+						CreatedOnToolsVersion = 26.1;
+					};
+					84C1660E2EC48EFF00819A56 = {
 						CreatedOnToolsVersion = 26.1;
 					};
 				};
@@ -114,6 +184,7 @@
 			projectRoot = "";
 			targets = (
 				84114EB62EC456E300C5A38E /* Picocrypt-NG */,
+				84C1660E2EC48EFF00819A56 /* SharingExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -127,10 +198,17 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		84C1660D2EC48EFF00819A56 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		84114ECE2EC45D7500C5A38E /* ShellScript */ = {
+		84114ECE2EC45D7500C5A38E /* Sign and Copy Go Binary Into App Bundle */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -139,6 +217,7 @@
 			);
 			inputPaths = (
 			);
+			name = "Sign and Copy Go Binary Into App Bundle";
 			outputFileListPaths = (
 			);
 			outputPaths = (
@@ -146,9 +225,9 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "cp ../../${PRODUCT_NAME} ${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/\n";
+			shellScript = "codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ../../${PRODUCT_NAME}\ncp ../../${PRODUCT_NAME} ${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/\n";
 		};
-		848635302EC47A0400805FC2 /* ShellScript */ = {
+		848635302EC47A0400805FC2 /* Set Version */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -157,6 +236,7 @@
 			);
 			inputPaths = (
 			);
+			name = "Set Version";
 			outputFileListPaths = (
 			);
 			outputPaths = (
@@ -175,7 +255,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		84C1660B2EC48EFF00819A56 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		84C1661A2EC48EFF00819A56 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 84C1660E2EC48EFF00819A56 /* SharingExtension */;
+			targetProxy = 84C166192EC48EFF00819A56 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		84114EC32EC456E400C5A38E /* Debug */ = {
@@ -370,6 +465,94 @@
 			};
 			name = Release;
 		};
+		84C1661D2EC48EFF00819A56 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				INFOPLIST_FILE = SharingExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Picocrypt-NG";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_PREFIX_HEADER = "${PROJECT_NAME}/version-processed.h";
+				INFOPLIST_PREPROCESS = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.picocrypt-ng.SharingExtension";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		84C1661E2EC48EFF00819A56 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				INFOPLIST_FILE = SharingExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Picocrypt-NG";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_PREFIX_HEADER = "${PROJECT_NAME}/version-processed.h";
+				INFOPLIST_PREPROCESS = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.picocrypt-ng.SharingExtension";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -387,6 +570,15 @@
 			buildConfigurations = (
 				84114EC62EC456E400C5A38E /* Debug */,
 				84114EC72EC456E400C5A38E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		84C1661C2EC48EFF00819A56 /* Build configuration list for PBXNativeTarget "SharingExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				84C1661D2EC48EFF00819A56 /* Debug */,
+				84C1661E2EC48EFF00819A56 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
