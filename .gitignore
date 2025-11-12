@@ -22,3 +22,8 @@ go.work
 go.work.sum
 .idea/
 TODO
+DerivedData
+DerivedData/*
+version-processed.h
+xcuserdata
+xcuserdata/*

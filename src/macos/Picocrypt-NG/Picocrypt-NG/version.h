@@ -1,0 +1,1 @@
+#define GO_FILE_VERSION @@VERSION@@
