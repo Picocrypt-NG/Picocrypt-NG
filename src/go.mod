@@ -7,7 +7,9 @@ require (
 	github.com/Picocrypt/infectious v0.0.0-20250412183341-9f88c6307b39
 	github.com/Picocrypt/serpent v0.0.0-20240830233833-9ad6ab254fd7
 	github.com/Picocrypt/zxcvbn-go v0.0.0-20250412183938-d59695960527
+	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.46.0
+	golang.org/x/term v0.38.0
 )
 
 require (
@@ -35,7 +37,6 @@ require (
 	github.com/nicksnyder/go-i18n/v2 v2.5.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rymdport/portal v0.4.2 // indirect
-	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c // indirect
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect

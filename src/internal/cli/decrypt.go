@@ -20,7 +20,10 @@ var decryptCmd = &cobra.Command{
 	Long: `Decrypt a Picocrypt volume (.pcv) back to its original files.
 
 Examples:
-  # Decrypt a file with a password
+  # Decrypt a file (prompts for password interactively)
+  Picocrypt-NG decrypt -i secret.pcv
+
+  # Decrypt with password on command line (for scripts)
   Picocrypt-NG decrypt -i secret.pcv -o secret.txt -p "mypassword"
 
   # Decrypt with auto-detection of output name
@@ -37,7 +40,9 @@ Examples:
 
   # Read password from stdin (for scripts)
   echo "mypassword" | Picocrypt-NG decrypt -i secret.pcv -P`,
-	RunE: runDecrypt,
+	RunE:          runDecrypt,
+	SilenceErrors: true,
+	SilenceUsage:  true,
 }
 
 // Decrypt flags
@@ -166,7 +171,7 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("initializing Reed-Solomon codecs: %w", err)
 	}
 
-	// Try to read header to check if keyfiles are required and password is needed
+	// Try to read header to check if keyfiles are required
 	if !decQuiet && password == "" {
 		hdr, err := readHeaderInfo(decInput, rsCodecs)
 		if err == nil {
@@ -176,9 +181,25 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Interactive password prompt if needed (works with or without keyfiles)
+	if password == "" {
+		prompt := "Password: "
+		if len(decKeyfiles) > 0 {
+			prompt = "Password (empty for keyfile-only): "
+		}
+		pw, err := readPasswordInteractive(prompt)
+		if err != nil {
+			return err
+		}
+		if pw == "" && len(decKeyfiles) == 0 {
+			return fmt.Errorf("password or keyfile required\nSee 'Picocrypt-NG decrypt --help' for usage")
+		}
+		password = pw
+	}
+
 	// Validate credentials
 	if password == "" && len(decKeyfiles) == 0 {
-		return fmt.Errorf("password (-p) or keyfile (-k) is required")
+		return fmt.Errorf("password or keyfile required\nSee 'Picocrypt-NG decrypt --help' for usage")
 	}
 
 	// Create reporter

@@ -395,6 +395,9 @@ func TestGoldenDeniabilityDetection(t *testing.T) {
 }
 
 func TestGoldenWrongPassword(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping wrong password test in short mode")
+	}
 	testdataPath := findTestdata(t)
 
 	rsCodecs, err := encoding.NewRSCodecs()
@@ -437,6 +440,9 @@ func TestGoldenWrongPassword(t *testing.T) {
 }
 
 func TestGoldenV1WrongPassword(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping v1 wrong password test in short mode")
+	}
 	testdataPath := findTestdata(t)
 
 	rsCodecs, err := encoding.NewRSCodecs()

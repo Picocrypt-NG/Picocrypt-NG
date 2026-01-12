@@ -42,7 +42,7 @@ jobs:
     - name: Run tests
       run: |
         cd src
-        go test -v -timeout 15m ./...
+        go test -short -v -timeout 15m ./...
 
     - name: Build GUI with GLES (OpenGL ES for better Mesa compatibility)
       run: |

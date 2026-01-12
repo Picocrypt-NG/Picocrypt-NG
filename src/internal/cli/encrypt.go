@@ -21,7 +21,10 @@ var encryptCmd = &cobra.Command{
 	Long: `Encrypt one or more files into a Picocrypt volume (.pcv).
 
 Examples:
-  # Encrypt a single file with a password
+  # Encrypt a single file (prompts for password interactively)
+  Picocrypt-NG encrypt -i secret.txt -o secret.pcv
+
+  # Encrypt with password on command line (for scripts)
   Picocrypt-NG encrypt -i secret.txt -o secret.pcv -p "mypassword"
 
   # Encrypt multiple files (creates zip archive internally)
@@ -35,7 +38,9 @@ Examples:
 
   # Read password from stdin (for scripts)
   echo "mypassword" | Picocrypt-NG encrypt -i secret.txt -o secret.pcv -P`,
-	RunE: runEncrypt,
+	RunE:          runEncrypt,
+	SilenceErrors: true,
+	SilenceUsage:  true,
 }
 
 // Encrypt flags
@@ -181,11 +186,35 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		}
 		password = strings.TrimSuffix(pw, "\n")
 		password = strings.TrimSuffix(password, "\r")
+	} else if password == "" {
+		// Interactive password prompt (works with or without keyfiles)
+		prompt := "Password: "
+		if len(encKeyfiles) > 0 {
+			prompt = "Password (empty for keyfile-only): "
+		}
+		pw, err := readPasswordInteractive(prompt)
+		if err != nil {
+			return err
+		}
+		if pw == "" && len(encKeyfiles) == 0 {
+			return fmt.Errorf("password or keyfile required\nSee 'Picocrypt-NG encrypt --help' for usage")
+		}
+		if pw != "" {
+			// Confirm password for encryption
+			pw2, err := readPasswordInteractive("Confirm password: ")
+			if err != nil {
+				return err
+			}
+			if pw != pw2 {
+				return fmt.Errorf("passwords do not match")
+			}
+		}
+		password = pw
 	}
 
 	// Validate credentials
 	if password == "" && len(encKeyfiles) == 0 {
-		return fmt.Errorf("password (-p) or keyfile (-k) is required")
+		return fmt.Errorf("password or keyfile required\nSee 'Picocrypt-NG encrypt --help' for usage")
 	}
 
 	// Validate keyfiles exist

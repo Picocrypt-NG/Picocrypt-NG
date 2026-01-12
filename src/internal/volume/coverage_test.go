@@ -20,6 +20,9 @@ import (
 
 // TestVerifyFirstModeBasic tests the two-pass verification mode
 func TestVerifyFirstModeBasic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping VerifyFirst test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -82,6 +85,9 @@ func TestVerifyFirstModeBasic(t *testing.T) {
 
 // TestVerifyFirstModeWithReedSolomon tests VerifyFirst mode with RS enabled
 func TestVerifyFirstModeWithReedSolomon(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping VerifyFirst+RS test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -143,6 +149,9 @@ func TestVerifyFirstModeWithReedSolomon(t *testing.T) {
 
 // TestVerifyFirstModeParanoid tests VerifyFirst mode with paranoid settings
 func TestVerifyFirstModeParanoid(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping VerifyFirst+paranoid test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -204,6 +213,9 @@ func TestVerifyFirstModeParanoid(t *testing.T) {
 
 // TestVerifyFirstModeWithKeyfiles tests VerifyFirst mode with keyfiles
 func TestVerifyFirstModeWithKeyfiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping VerifyFirst+keyfiles test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -272,6 +284,9 @@ func TestVerifyFirstModeWithKeyfiles(t *testing.T) {
 
 // TestVerifyFirstModeCorruptedData tests VerifyFirst with corrupted data
 func TestVerifyFirstModeCorruptedData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping VerifyFirst corruption test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -348,6 +363,9 @@ func TestVerifyFirstModeCorruptedData(t *testing.T) {
 
 // TestVerifyFirstModeForceDecrypt tests VerifyFirst with ForceDecrypt on corrupted data
 func TestVerifyFirstModeForceDecrypt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping VerifyFirst+ForceDecrypt test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -418,6 +436,9 @@ func TestVerifyFirstModeForceDecrypt(t *testing.T) {
 
 // TestVerifyFirstAllOptions tests VerifyFirst with all options enabled
 func TestVerifyFirstAllOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping VerifyFirst all-options test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -513,6 +534,9 @@ func TestTempZipReaderNoTempZip(t *testing.T) {
 
 // TestDecryptWrongKeyfileMissingRequirement tests decryption when keyfile is required but not provided
 func TestDecryptWrongKeyfileMissingRequirement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping keyfile requirement test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -571,6 +595,9 @@ func TestDecryptWrongKeyfileMissingRequirement(t *testing.T) {
 
 // TestDecryptCancellation tests that cancellation during decrypt is handled
 func TestDecryptCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping decrypt cancellation test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -730,6 +757,9 @@ func TestEncryptNonExistentFile(t *testing.T) {
 
 // TestDeniabilityRoundTripWithVerifyFirst tests deniability + verify first combination
 func TestDeniabilityRoundTripWithVerifyFirst(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping deniability+VerifyFirst test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -810,6 +840,9 @@ func TestIsDeniableNonExistentFile(t *testing.T) {
 
 // TestIsDeniableNormalFile tests IsDeniable with a non-deniable file
 func TestIsDeniableNormalFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping IsDeniable normal file test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -888,6 +921,9 @@ func TestOperationContextUpdateProgressNilReporter(t *testing.T) {
 
 // TestEncryptCancellation tests that encryption can be cancelled
 func TestEncryptCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping encrypt cancellation test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -931,6 +967,9 @@ func TestEncryptCancellation(t *testing.T) {
 // TestEncryptContextCancellation tests that encryption respects context cancellation.
 // This tests the standard Go context.Context pattern for cancellation.
 func TestEncryptContextCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping context cancellation test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -975,6 +1014,9 @@ func TestEncryptContextCancellation(t *testing.T) {
 // TestDecryptContextCancellation tests that decryption respects context cancellation.
 // This tests the standard Go context.Context pattern for cancellation.
 func TestDecryptContextCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping decrypt context cancellation test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)

@@ -397,11 +397,7 @@ func decryptVerifyMACFirst(ctx *OperationContext, req *DecryptRequest) error {
 			// Update MAC with ciphertext (no decryption!)
 			mac.Write(data)
 
-			if reedsolo {
-				done += int64(util.MiB / encoding.RS128DataSize * encoding.RS128EncodedSize)
-			} else {
-				done += int64(n)
-			}
+			done += int64(n)
 			counter += int64(len(data))
 
 			progress, speed, eta := util.Statify(done, ctx.Total, startTime)
@@ -550,11 +546,7 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 				return fmt.Errorf("write plaintext: %w", err)
 			}
 
-			if reedsolo {
-				done += int64(util.MiB / encoding.RS128DataSize * encoding.RS128EncodedSize)
-			} else {
-				done += int64(n)
-			}
+			done += int64(n)
 			counter += int64(len(data))
 
 			progress, speed, eta := util.Statify(done, ctx.Total, startTime)

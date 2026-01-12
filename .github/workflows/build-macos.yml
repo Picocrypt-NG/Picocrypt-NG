@@ -37,10 +37,9 @@ jobs:
         go mod download
 
     - name: Run tests
-      # Skip internal/crypto and internal/volume - Argon2 is extremely slow on macOS ARM64 runners
       run: |
         cd src
-        go test -v -race -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
+        go test -short -v -race -timeout 15m ./...
 
     - name: Build GUI
       run: |

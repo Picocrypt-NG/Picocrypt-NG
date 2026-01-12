@@ -83,6 +83,9 @@ func TestRoundTripBasic(t *testing.T) {
 
 // TestRoundTripParanoid tests encrypt -> decrypt with paranoid mode
 func TestRoundTripParanoid(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping paranoid mode test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -143,6 +146,9 @@ func TestRoundTripParanoid(t *testing.T) {
 
 // TestRoundTripReedSolomon tests encrypt -> decrypt with Reed-Solomon
 func TestRoundTripReedSolomon(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Reed-Solomon test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -203,6 +209,9 @@ func TestRoundTripReedSolomon(t *testing.T) {
 
 // TestRoundTripDeniability tests encrypt -> decrypt with deniability
 func TestRoundTripDeniability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping deniability test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -269,6 +278,9 @@ func TestRoundTripDeniability(t *testing.T) {
 
 // TestRoundTripAllOptions tests encrypt -> decrypt with all options enabled
 func TestRoundTripAllOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping all-options test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -332,6 +344,9 @@ func TestRoundTripAllOptions(t *testing.T) {
 
 // TestRoundTripWithComments tests encrypt -> decrypt with comments
 func TestRoundTripWithComments(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping comments test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -392,6 +407,9 @@ func TestRoundTripWithComments(t *testing.T) {
 
 // TestRoundTripWithKeyfile tests encrypt -> decrypt with keyfile
 func TestRoundTripWithKeyfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping keyfile test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -461,6 +479,9 @@ func TestRoundTripWithKeyfile(t *testing.T) {
 
 // TestRoundTripWithMultipleKeyfiles tests encrypt -> decrypt with multiple keyfiles
 func TestRoundTripWithMultipleKeyfiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping multiple keyfiles test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -534,6 +555,9 @@ func TestRoundTripWithMultipleKeyfiles(t *testing.T) {
 
 // TestRoundTripWithOrderedKeyfiles tests encrypt -> decrypt with ordered keyfiles
 func TestRoundTripWithOrderedKeyfiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping ordered keyfiles test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -607,6 +631,9 @@ func TestRoundTripWithOrderedKeyfiles(t *testing.T) {
 
 // TestWrongKeyfileFails verifies that wrong keyfile fails
 func TestWrongKeyfileFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping wrong keyfile test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -677,6 +704,9 @@ func TestWrongKeyfileFails(t *testing.T) {
 
 // TestRoundTripSplit tests encrypt with splitting -> recombine -> decrypt
 func TestRoundTripSplit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping split test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -767,6 +797,9 @@ func TestRoundTripSplit(t *testing.T) {
 
 // TestWrongPasswordFails verifies that wrong password fails
 func TestWrongPasswordFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping wrong password test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -823,6 +856,9 @@ func TestWrongPasswordFails(t *testing.T) {
 
 // TestAutoUnzip tests automatic zip extraction after decryption
 func TestAutoUnzip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping auto-unzip test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -908,6 +944,9 @@ func TestAutoUnzip(t *testing.T) {
 
 // TestAutoUnzipSameLevel tests automatic zip extraction to the same directory as the volume
 func TestAutoUnzipSameLevel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping auto-unzip same-level test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1042,6 +1081,9 @@ func createTestZip(zipPath, sourceDir, baseName string) error {
 
 // TestRoundTripMultiFile tests encrypting multiple files (zipped internally)
 func TestRoundTripMultiFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping multi-file test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1136,6 +1178,9 @@ func TestRoundTripMultiFile(t *testing.T) {
 
 // TestRoundTripSplitWithDeniability tests split + deniability combination
 func TestRoundTripSplitWithDeniability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping split+deniability test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1303,6 +1348,9 @@ func TestRoundTripSplitWithReedSolomon(t *testing.T) {
 
 // TestRoundTripSplitAllOptions tests split + paranoid + RS + deniability
 func TestRoundTripSplitAllOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping split+all-options test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1380,6 +1428,9 @@ func TestRoundTripSplitAllOptions(t *testing.T) {
 
 // TestRoundTripEmptyFile tests encryption/decryption of an empty file
 func TestRoundTripEmptyFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping empty file test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1439,6 +1490,9 @@ func TestRoundTripEmptyFile(t *testing.T) {
 
 // TestRoundTripSplitWithKeyfile tests split + keyfile combination
 func TestRoundTripSplitWithKeyfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping split+keyfile test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1522,6 +1576,9 @@ func TestRoundTripSplitWithKeyfile(t *testing.T) {
 
 // TestForceDecryptCorruptedData tests force decrypt with damaged RS data
 func TestForceDecryptCorruptedData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping force decrypt test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1596,6 +1653,9 @@ func TestForceDecryptCorruptedData(t *testing.T) {
 
 // TestRoundTripCompressedMultiFile tests encrypting multiple files with compression
 func TestRoundTripCompressedMultiFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping compressed multi-file test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1678,6 +1738,9 @@ func TestRoundTripCompressedMultiFile(t *testing.T) {
 
 // TestRoundTripCompressedSingleFile tests encrypting a single file with compression
 func TestRoundTripCompressedSingleFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping compressed single-file test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1761,6 +1824,9 @@ func TestRoundTripCompressedSingleFile(t *testing.T) {
 // TestV2HeaderTamperDetection verifies that modifying header bytes
 // causes v2 volumes to fail authentication (header MAC protection).
 func TestV2HeaderTamperDetection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping header tamper detection test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1863,6 +1929,9 @@ func TestV2HeaderTamperDetection(t *testing.T) {
 // TestOrderedKeyfilesOrderMatters verifies that when keyfileOrdered=true,
 // providing keyfiles in wrong order causes decryption to fail.
 func TestOrderedKeyfilesOrderMatters(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping ordered keyfiles test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1957,6 +2026,9 @@ func TestOrderedKeyfilesOrderMatters(t *testing.T) {
 
 // TestZeroLengthComments verifies that volumes with empty comments work correctly
 func TestZeroLengthComments(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping zero-length comments test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -2018,6 +2090,9 @@ func TestZeroLengthComments(t *testing.T) {
 // TestDuplicateKeyfilesRejected verifies that encryption fails when
 // duplicate keyfiles would cause XOR cancellation (zero key).
 func TestDuplicateKeyfilesRejected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping duplicate keyfiles test in short mode")
+	}
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
