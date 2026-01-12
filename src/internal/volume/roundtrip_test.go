@@ -2140,3 +2140,158 @@ func TestDuplicateKeyfilesRejected(t *testing.T) {
 	t.Logf("Duplicate keyfiles correctly rejected: %v", err)
 	t.Log("Duplicate keyfiles rejection: SUCCESS")
 }
+
+// TestFindCommonParent tests the common parent directory calculation
+func TestFindCommonParent(t *testing.T) {
+	tests := []struct {
+		name     string
+		paths    []string
+		expected string
+	}{
+		{
+			name:     "single file",
+			paths:    []string{"/home/user/file.txt"},
+			expected: "/home/user",
+		},
+		{
+			name:     "single folder",
+			paths:    []string{"/home/user/folder"},
+			expected: "/home/user",
+		},
+		{
+			name:     "files in same directory",
+			paths:    []string{"/home/user/file1.txt", "/home/user/file2.txt"},
+			expected: "/home/user",
+		},
+		{
+			name:     "files in sibling directories",
+			paths:    []string{"/home/user/dir1/file1.txt", "/home/user/dir2/file2.txt"},
+			expected: "/home/user",
+		},
+		{
+			name:     "files in nested directories",
+			paths:    []string{"/home/user/a/b/file1.txt", "/home/user/a/c/file2.txt"},
+			expected: "/home/user/a",
+		},
+		{
+			name:     "mixed files and folders",
+			paths:    []string{"/home/user/folder", "/home/user/file.txt"},
+			expected: "/home/user",
+		},
+		{
+			name:     "deeply nested common parent",
+			paths:    []string{"/a/b/c/d/file1.txt", "/a/b/c/e/file2.txt"},
+			expected: "/a/b/c",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := findCommonParent(tt.paths)
+			if result != tt.expected {
+				t.Errorf("findCommonParent(%v) = %q, want %q", tt.paths, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestRoundTripMultiDirectoryFiles tests encryption of files from different directories
+func TestRoundTripMultiDirectoryFiles(t *testing.T) {
+	rsCodecs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("Failed to create RS codecs: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+
+	// Create two sibling directories with files
+	dir1 := filepath.Join(tmpDir, "dir1")
+	dir2 := filepath.Join(tmpDir, "dir2")
+	if err := os.MkdirAll(dir1, 0755); err != nil {
+		t.Fatalf("Create dir1: %v", err)
+	}
+	if err := os.MkdirAll(dir2, 0755); err != nil {
+		t.Fatalf("Create dir2: %v", err)
+	}
+
+	content1 := []byte("Content from directory 1")
+	content2 := []byte("Content from directory 2")
+	file1 := filepath.Join(dir1, "file1.txt")
+	file2 := filepath.Join(dir2, "file2.txt")
+
+	if err := os.WriteFile(file1, content1, 0644); err != nil {
+		t.Fatalf("Create file1: %v", err)
+	}
+	if err := os.WriteFile(file2, content2, 0644); err != nil {
+		t.Fatalf("Create file2: %v", err)
+	}
+
+	encryptedPath := filepath.Join(tmpDir, "multi.pcv")
+	decryptedZip := filepath.Join(tmpDir, "multi.zip")
+
+	reporter := &GoldenTestReporter{}
+
+	// Encrypt files from different directories
+	encReq := &EncryptRequest{
+		InputFiles:  []string{file1, file2},
+		OnlyFiles:   []string{file1, file2},
+		OnlyFolders: nil,
+		OutputFile:  encryptedPath,
+		Password:    "multidir_password",
+		Compress:    true,
+		Reporter:    reporter,
+		RSCodecs:    rsCodecs,
+	}
+
+	if err := Encrypt(context.Background(), encReq); err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+
+	// Decrypt
+	decReq := &DecryptRequest{
+		InputFile:    encryptedPath,
+		OutputFile:   decryptedZip,
+		Password:     "multidir_password",
+		AutoUnzip:    false, // Don't auto-unzip, we want to inspect the zip
+		ForceDecrypt: false,
+		Reporter:     reporter,
+		RSCodecs:     rsCodecs,
+	}
+
+	if err := Decrypt(context.Background(), decReq); err != nil {
+		t.Fatalf("Decrypt failed: %v", err)
+	}
+
+	// Open the decrypted zip and verify paths are relative
+	reader, err := zip.OpenReader(decryptedZip)
+	if err != nil {
+		t.Fatalf("Open decrypted zip: %v", err)
+	}
+	defer reader.Close()
+
+	foundPaths := make(map[string]bool)
+	for _, f := range reader.File {
+		foundPaths[f.Name] = true
+
+		// Verify no absolute paths
+		if filepath.IsAbs(f.Name) {
+			t.Errorf("Absolute path found in zip: %s", f.Name)
+		}
+		// Verify no Windows drive letters
+		if len(f.Name) >= 2 && f.Name[1] == ':' {
+			t.Errorf("Windows absolute path found in zip: %s", f.Name)
+		}
+
+		t.Logf("Path in zip: %s", f.Name)
+	}
+
+	// Both files should have relative paths preserving directory structure
+	if !foundPaths["dir1/file1.txt"] {
+		t.Errorf("dir1/file1.txt not found in zip, paths found: %v", foundPaths)
+	}
+	if !foundPaths["dir2/file2.txt"] {
+		t.Errorf("dir2/file2.txt not found in zip, paths found: %v", foundPaths)
+	}
+
+	t.Log("Multi-directory files round-trip: SUCCESS")
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"Picocrypt-NG/internal/crypto"
 	"golang.org/x/term"
 )
 
@@ -37,19 +38,26 @@ func readPasswordInteractive(prompt string) (string, error) {
 		n, err := os.Stdin.Read(b[:])
 		if err != nil || n == 0 {
 			fmt.Fprint(os.Stderr, "\r\n")
-			return string(password), nil
+			result := string(password)
+			crypto.SecureZero(password)
+			return result, nil
 		}
 
 		switch b[0] {
 		case '\r', '\n': // Enter
 			fmt.Fprint(os.Stderr, "\r\n")
-			return string(password), nil
+			result := string(password)
+			crypto.SecureZero(password)
+			return result, nil
 		case 3: // Ctrl+C
 			fmt.Fprint(os.Stderr, "\r\n")
+			crypto.SecureZero(password)
 			return "", fmt.Errorf("cancelled")
 		case 4: // Ctrl+D (EOF)
 			fmt.Fprint(os.Stderr, "\r\n")
-			return string(password), nil
+			result := string(password)
+			crypto.SecureZero(password)
+			return result, nil
 		case 127, 8: // Backspace (DEL or BS)
 			if len(password) > 0 {
 				password = password[:len(password)-1]

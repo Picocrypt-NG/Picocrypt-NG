@@ -92,14 +92,22 @@ func encryptPreprocess(ctx *OperationContext, req *EncryptRequest) error {
 			return err
 		}
 
-		// Determine root directory (matches original lines 1227-1233)
-		// If folders were dropped, use parent of folder to preserve folder name in zip
-		// If only files were dropped, use parent of first file
+		// Determine root directory - find common parent of all dropped items
+		// This ensures files from different directories get proper relative paths
 		var rootDir string
-		if len(req.OnlyFolders) > 0 {
-			rootDir = filepath.Dir(req.OnlyFolders[0])
-		} else if len(req.OnlyFiles) > 0 {
-			rootDir = filepath.Dir(req.OnlyFiles[0])
+		var allPaths []string
+
+		// Collect all top-level dropped items (folders as-is, files' parent dirs)
+		for _, f := range req.OnlyFolders {
+			allPaths = append(allPaths, f)
+		}
+		for _, f := range req.OnlyFiles {
+			allPaths = append(allPaths, f)
+		}
+
+		if len(allPaths) > 0 {
+			// Find common parent directory of all paths
+			rootDir = findCommonParent(allPaths)
 		} else if len(req.InputFiles) > 0 {
 			rootDir = filepath.Dir(req.InputFiles[0])
 		}
@@ -508,4 +516,81 @@ func encodeWithRS(data []byte, rs *encoding.RSCodecs) []byte {
 	result = append(result, encoding.Encode(rs.RS128, encoding.Pad(remaining))...)
 
 	return result
+}
+
+// findCommonParent finds the deepest common parent directory of all paths.
+// For folders, uses the folder itself; for files, uses the parent directory.
+// Example: ["/a/b/c/file.txt", "/a/b/d/file2.txt"] → "/a/b"
+func findCommonParent(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	if len(paths) == 1 {
+		// For single item, use its parent to preserve the item name in zip
+		return filepath.Dir(paths[0])
+	}
+
+	// Clean and split all paths into components
+	var pathParts [][]string
+	for _, p := range paths {
+		cleaned := filepath.Clean(p)
+		// Get the parent for each path (so folder names and file names are preserved)
+		parent := filepath.Dir(cleaned)
+		parts := splitPath(parent)
+		pathParts = append(pathParts, parts)
+	}
+
+	// Find common prefix of all path parts
+	if len(pathParts) == 0 {
+		return ""
+	}
+
+	// Start with first path's parts as reference
+	commonParts := pathParts[0]
+
+	for _, parts := range pathParts[1:] {
+		// Truncate commonParts to the shorter length
+		minLen := len(commonParts)
+		if len(parts) < minLen {
+			minLen = len(parts)
+		}
+		commonParts = commonParts[:minLen]
+
+		// Find where paths diverge
+		for i := 0; i < len(commonParts); i++ {
+			if commonParts[i] != parts[i] {
+				commonParts = commonParts[:i]
+				break
+			}
+		}
+	}
+
+	if len(commonParts) == 0 {
+		// No common parent - use root or first path's drive
+		return filepath.Dir(paths[0])
+	}
+
+	return filepath.Join(commonParts...)
+}
+
+// splitPath splits a path into its components
+func splitPath(p string) []string {
+	var parts []string
+	for {
+		dir, file := filepath.Split(p)
+		if file != "" {
+			parts = append([]string{file}, parts...)
+		}
+		if dir == "" || dir == p {
+			// Handle root path
+			if dir != "" && dir != string(filepath.Separator) {
+				parts = append([]string{filepath.Clean(dir)}, parts...)
+			} else if dir == string(filepath.Separator) {
+				parts = append([]string{string(filepath.Separator)}, parts...)
+			}
+			break
+		}
+		p = filepath.Clean(dir)
+	}
+	return parts
 }

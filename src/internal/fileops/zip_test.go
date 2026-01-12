@@ -469,3 +469,114 @@ func TestCreateZipWithSubdirectory(t *testing.T) {
 
 	t.Log("Subdirectory structure preserved in zip")
 }
+
+func TestCreateZipWithSiblingDirectories(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create sibling directories (common parent scenario that was buggy)
+	dir1 := filepath.Join(tmpDir, "dir1")
+	dir2 := filepath.Join(tmpDir, "dir2")
+	if err := os.MkdirAll(dir1, 0755); err != nil {
+		t.Fatalf("Create dir1: %v", err)
+	}
+	if err := os.MkdirAll(dir2, 0755); err != nil {
+		t.Fatalf("Create dir2: %v", err)
+	}
+
+	file1 := filepath.Join(dir1, "file1.txt")
+	file2 := filepath.Join(dir2, "file2.txt")
+
+	if err := os.WriteFile(file1, []byte("content1"), 0644); err != nil {
+		t.Fatalf("Create file1: %v", err)
+	}
+	if err := os.WriteFile(file2, []byte("content2"), 0644); err != nil {
+		t.Fatalf("Create file2: %v", err)
+	}
+
+	// Create zip with tmpDir as root (common parent of both directories)
+	zipPath := filepath.Join(tmpDir, "test.zip")
+	err := CreateZip(ZipOptions{
+		Files:      []string{file1, file2},
+		RootDir:    tmpDir,
+		OutputPath: zipPath,
+	})
+	if err != nil {
+		t.Fatalf("CreateZip failed: %v", err)
+	}
+
+	// Verify paths in zip - should be relative, not absolute
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("Open zip: %v", err)
+	}
+	defer reader.Close()
+
+	foundPaths := make(map[string]bool)
+	for _, f := range reader.File {
+		foundPaths[f.Name] = true
+		// Ensure no absolute paths (bug was paths like /home/user/... or C:/Users/...)
+		if filepath.IsAbs(f.Name) {
+			t.Errorf("Absolute path found in zip: %s", f.Name)
+		}
+		// Ensure no Windows drive letters
+		if len(f.Name) >= 2 && f.Name[1] == ':' {
+			t.Errorf("Windows absolute path found in zip: %s", f.Name)
+		}
+	}
+
+	if !foundPaths["dir1/file1.txt"] {
+		t.Errorf("dir1/file1.txt not found in zip, paths found: %v", foundPaths)
+	}
+	if !foundPaths["dir2/file2.txt"] {
+		t.Errorf("dir2/file2.txt not found in zip, paths found: %v", foundPaths)
+	}
+
+	t.Log("Files from sibling directories have relative paths in zip")
+}
+
+func TestCreateZipWithWrongRootDir(t *testing.T) {
+	// Test that even with a mismatched rootDir, paths still work (fallback to basename)
+	tmpDir := t.TempDir()
+
+	dir1 := filepath.Join(tmpDir, "dir1")
+	if err := os.MkdirAll(dir1, 0755); err != nil {
+		t.Fatalf("Create dir1: %v", err)
+	}
+
+	file1 := filepath.Join(dir1, "file1.txt")
+	if err := os.WriteFile(file1, []byte("content1"), 0644); err != nil {
+		t.Fatalf("Create file1: %v", err)
+	}
+
+	// Use a different directory as rootDir (simulating the old bug)
+	wrongRoot := filepath.Join(tmpDir, "nonexistent")
+
+	zipPath := filepath.Join(tmpDir, "test.zip")
+	err := CreateZip(ZipOptions{
+		Files:      []string{file1},
+		RootDir:    wrongRoot,
+		OutputPath: zipPath,
+	})
+	if err != nil {
+		t.Fatalf("CreateZip failed: %v", err)
+	}
+
+	// Verify the path in zip is relative (filepath.Rel should handle this)
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("Open zip: %v", err)
+	}
+	defer reader.Close()
+
+	for _, f := range reader.File {
+		// Ensure no absolute paths (bug was paths like /home/user/... or C:/Users/...)
+		if filepath.IsAbs(f.Name) {
+			t.Errorf("Absolute path found in zip: %s", f.Name)
+		}
+		// Ensure no Windows drive letters
+		if len(f.Name) >= 2 && f.Name[1] == ':' {
+			t.Errorf("Windows absolute path found in zip: %s", f.Name)
+		}
+		t.Logf("Path in zip: %s", f.Name)
+	}
+}

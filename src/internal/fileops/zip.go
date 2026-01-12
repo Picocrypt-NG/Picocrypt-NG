@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"Picocrypt-NG/internal/util"
 
@@ -213,10 +212,14 @@ func CreateZip(opts ZipOptions) error {
 			return fmt.Errorf("create header for %s: %w", path, err)
 		}
 
-		// Set relative path
-		header.Name = strings.TrimPrefix(path, opts.RootDir)
-		header.Name = filepath.ToSlash(header.Name)
-		header.Name = strings.TrimPrefix(header.Name, "/")
+		// Set relative path using filepath.Rel for proper path normalization
+		// This handles cross-platform path separators and files from different directories
+		relPath, err := filepath.Rel(opts.RootDir, path)
+		if err != nil {
+			// Fallback to basename if Rel fails (e.g., different drives on Windows)
+			relPath = filepath.Base(path)
+		}
+		header.Name = filepath.ToSlash(relPath)
 
 		if opts.Compress {
 			header.Method = zip.Deflate
