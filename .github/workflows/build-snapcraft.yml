@@ -4,7 +4,16 @@ permissions:
   contents: write
 
 on:
+  push:
+    paths:
+      - "VERSION"
+    branches:
+      - main
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-snapcraft:
@@ -12,7 +21,7 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Copy Snapcraft files to source
       run: |
@@ -32,11 +41,41 @@ jobs:
       with:
         path: src
 
+    - name: Prepare artifacts
+      run: |
+        mkdir -p out
+        mv src/*.snap out/
+
     - name: Upload .snap artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: build-snapcraft
-        path: |
-          src/*.snap
+        path: out/*.snap
         if-no-files-found: error
         compression-level: 9
+
+    - name: Get version tag
+      run: |
+        VERSION=$(cat VERSION)
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+    - name: Generate checksums
+      run: |
+        cd out
+        for snap in *.snap; do
+          hash=$(sha256sum "$snap" | cut -d ' ' -f1)
+          name=$(basename "$snap")
+          echo "CHECKSUM_SNAP=$hash" >> $GITHUB_ENV
+          echo "SNAP_NAME=$name" >> $GITHUB_ENV
+        done
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: out/*.snap
+        tag_name: ${{ env.VERSION }}
+        make_latest: true
+        append_body: true
+        body: |
+          **Linux (Snap):**
+          `sha256(${{ env.SNAP_NAME }})  ${{ env.CHECKSUM_SNAP }}`

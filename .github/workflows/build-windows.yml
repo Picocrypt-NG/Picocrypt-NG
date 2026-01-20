@@ -11,28 +11,44 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-2025
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Setup Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
-        go-version: '>=1.24'
-        check-latest: true
-        cache: false
+        go-version: stable
+        cache-dependency-path: src/go.sum
 
     - name: Install dependencies
       run: |
         cd src
         go mod download
 
-    - name: Build
+    - name: Run tests
       run: |
         cd src
-        go build -v -ldflags="-s -w -H=windowsgui -extldflags=-static" -o 1.exe Picocrypt-NG.go
+        go test -v -timeout 15m ./...
+
+    - name: Build GUI
+      run: |
+        cd src
+        go build -v -ldflags="-s -w -H=windowsgui -extldflags=-static" -o 1.exe ./cmd/picocrypt
+      env:
+        CGO_ENABLED: 1
+        GOAMD64: v1
+
+    - name: Build CLI-only (no graphics dependencies)
+      run: |
+        cd src
+        go build -v -tags cli -ldflags="-s -w -extldflags=-static" -o Picocrypt-NG-cli.exe ./cmd/picocrypt
       env:
         CGO_ENABLED: 1
         GOAMD64: v1
@@ -46,7 +62,7 @@ jobs:
         Start-Sleep -Seconds 60
         Invoke-Expression "& `"$Env:P`" -open src/1.exe -save src/2.exe -action addoverwrite -res images/key.ico -mask `"ICONGROUP,MAINICON,`""
         Start-Sleep -Seconds 30
-        Invoke-Expression "& `"$Env:P`" -open src/2.exe -save src/3.exe -action addoverwrite -res images/key.ico -mask `"ICONGROUP,GLFW_ICON,`""
+        Invoke-Expression "& `"$Env:P`" -open src/2.exe -save src/3.exe -action addoverwrite -res images/key.ico -mask `"ICONGROUP,A,`""
         Start-Sleep -Seconds 30
         Invoke-Expression "& `"$Env:P`" -open src/3.exe -save src/4.exe -action addoverwrite -res dist/windows/manifest.xml -mask `"MANIFEST,1,`""
         Start-Sleep -Seconds 30
@@ -63,12 +79,15 @@ jobs:
         Invoke-WebRequest -OutFile upx.zip https://github.com/upx/upx/releases/download/v5.0.2/upx-5.0.2-win64.zip
         Expand-Archive -DestinationPath upx upx.zip
         upx/upx-5.0.2-win64/upx.exe --lzma -o src/Picocrypt-NG.exe src/5.exe
+        upx/upx-5.0.2-win64/upx.exe --lzma src/Picocrypt-NG-cli.exe
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: build-windows
-        path: src/*.exe
+        path: |
+          src/Picocrypt-NG.exe
+          src/Picocrypt-NG-cli.exe
         if-no-files-found: error
         compression-level: 9
 
@@ -83,15 +102,19 @@ jobs:
       run: |
         $hash = Get-FileHash "src/Picocrypt-NG.exe" -Algorithm SHA256
         echo "CHECKSUM_PICOCRYPT_NG=$($hash.Hash)" >> $env:GITHUB_ENV
+        $hashCli = Get-FileHash "src/Picocrypt-NG-cli.exe" -Algorithm SHA256
+        echo "CHECKSUM_PICOCRYPT_NG_CLI=$($hashCli.Hash)" >> $env:GITHUB_ENV
 
     - name: Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
           src/Picocrypt-NG.exe
+          src/Picocrypt-NG-cli.exe
         tag_name: ${{ env.VERSION }}
         make_latest: true
         append_body: true
         body: |
           **Windows:**
-          `sha256(Picocrypt-NG.exe)  ${{ env.CHECKSUM_PICOCRYPT_NG }}`
+          `sha256(Picocrypt-NG.exe)      ${{ env.CHECKSUM_PICOCRYPT_NG }}`
+          `sha256(Picocrypt-NG-cli.exe)  ${{ env.CHECKSUM_PICOCRYPT_NG_CLI }}`

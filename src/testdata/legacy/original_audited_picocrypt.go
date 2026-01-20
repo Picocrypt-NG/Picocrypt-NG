@@ -2,10 +2,10 @@ package main
 
 /*
 
-Picocrypt NG v2.00
-Copyright (c) Picocrypt NG developers
+Picocrypt v1.49
+Copyright (c) Evan Su
 Released under GPL-3.0-only
-https://github.com/Picocrypt-NG/Picocrypt-NG
+https://github.com/Picocrypt/Picocrypt
 
 ~ In cryptography we trust ~
 
@@ -61,7 +61,7 @@ var TRANSPARENT = color.RGBA{0x00, 0x00, 0x00, 0x00}
 
 // Generic variables
 var window *giu.MasterWindow
-var version = "v2.00"
+var version = "v1.49"
 var dpi float32
 var mode string
 var working bool
@@ -1186,24 +1186,16 @@ func work() {
 	var hkdfSalt []byte                // HKDF-SHA3 salt, 32 bytes
 	var serpentIV []byte               // Serpent IV, 16 bytes
 	var nonce []byte                   // 24-byte XChaCha20 nonce
-	var keyHash []byte                 // HMAC-SHA3-512 of header
+	var keyHash []byte                 // SHA3-512 hash of encryption key
 	var keyHashRef []byte              // Same as 'keyHash', but used for comparison
 	var keyfileKey []byte              // The SHA3-256 hashes of keyfiles
 	var keyfileHash = make([]byte, 32) // The SHA3-256 of 'keyfileKey'
 	var keyfileHashRef []byte          // Same as 'keyfileHash', but used for comparison
 	var authTag []byte                 // 64-byte authentication tag (BLAKE2b or HMAC-SHA3)
 
-	// Header fields decoded (used for MAC verification)
-	var headerVersion []byte
-	var headerComments []byte
-	var headerCommentsLen int
-	var headerFlags []byte
-
 	var tempZipCipherW *chacha20.Cipher
 	var tempZipCipherR *chacha20.Cipher
 	var tempZipInUse bool = false
-	// Whether keyfiles should be applied for this operation (based on header for decrypt)
-	var useKeyfiles bool
 	func() { // enclose to keep out of parent scope
 		key, nonce := make([]byte, 32), make([]byte, 12)
 		if n, err := rand.Read(key); err != nil || n != 32 {
@@ -1530,7 +1522,7 @@ func work() {
 			panic(err)
 		}
 		tmp, err = rsDecode(rs5, tmp)
-		if valid, _ := regexp.Match(`^v\d\.\d{2}`, tmp); err != nil || !valid {
+		if valid, _ := regexp.Match(`^v1\.\d{2}`, tmp); err != nil || !valid {
 			os.Remove(inputFile)
 			inputFile = strings.TrimSuffix(inputFile, ".tmp")
 			broken(nil, nil, "Password is incorrect or the file is not a volume", true)
@@ -1645,17 +1637,17 @@ func work() {
 		_, errs[3] = fout.Write(rsEncode(rs5, flags))
 
 		// Fill values with Go's CSPRNG
-		if n, err := rand.Read(salt); err != nil || n != 16 {
-			panic(errors.New("failed to read 16 bytes from crypto/rand"))
+		if _, err := rand.Read(salt); err != nil {
+			panic(err)
 		}
-		if n, err := rand.Read(hkdfSalt); err != nil || n != 32 {
-			panic(errors.New("failed to read 32 bytes from crypto/rand"))
+		if _, err := rand.Read(hkdfSalt); err != nil {
+			panic(err)
 		}
-		if n, err := rand.Read(serpentIV); err != nil || n != 16 {
-			panic(errors.New("failed to read 16 bytes from crypto/rand"))
+		if _, err := rand.Read(serpentIV); err != nil {
+			panic(err)
 		}
-		if n, err := rand.Read(nonce); err != nil || n != 24 {
-			panic(errors.New("failed to read 24 bytes from crypto/rand"))
+		if _, err := rand.Read(nonce); err != nil {
+			panic(err)
 		}
 		if bytes.Equal(salt, make([]byte, 16)) {
 			panic(errors.New("fatal crypto/rand error"))
@@ -1698,9 +1690,9 @@ func work() {
 		// Stores any Reed-Solomon decoding errors
 		errs := make([]error, 10)
 
-		versionEnc := make([]byte, 15)
-		fin.Read(versionEnc)
-		headerVersion, errs[0] = rsDecode(rs5, versionEnc)
+		version := make([]byte, 15)
+		fin.Read(version)
+		_, errs[0] = rsDecode(rs5, version)
 
 		tmp := make([]byte, 15)
 		fin.Read(tmp)
@@ -1712,23 +1704,12 @@ func work() {
 		}
 
 		commentsLength, _ := strconv.Atoi(string(tmp))
-		headerCommentsLen = commentsLength
-		headerComments = make([]byte, 0, commentsLength)
-		for i := 0; i < commentsLength; i++ {
-			cEnc := make([]byte, 3)
-			fin.Read(cEnc)
-			cDec, err := rsDecode(rs1, cEnc)
-			if err != nil {
-				errs[1] = err
-			}
-			headerComments = append(headerComments, cDec...)
-		}
+		fin.Read(make([]byte, commentsLength*3))
 		total -= int64(commentsLength) * 3
 
 		flags := make([]byte, 15)
 		fin.Read(flags)
 		flags, errs[2] = rsDecode(rs5, flags)
-		headerFlags = flags
 		paranoid = flags[0] == 1
 		reedsolo = flags[3] == 1
 		padded = flags[4] == 1
@@ -1736,8 +1717,6 @@ func work() {
 			keyfile = flags[1] == 1
 			keyfileOrdered = flags[2] == 1
 		}
-		// For decryption, only consider keyfiles if header requires them
-		useKeyfiles = len(headerFlags) > 1 && headerFlags[1] == 1
 
 		salt = make([]byte, 48)
 		fin.Read(salt)
@@ -1808,12 +1787,8 @@ func work() {
 		panic(errors.New("fatal crypto/argon2 error"))
 	}
 
-	// If keyfiles are being used. Decide whether to use keyfiles during this operation
-	if mode == "encrypt" {
-		useKeyfiles = len(keyfiles) > 0
-	}
-
-	if useKeyfiles {
+	// If keyfiles are being used
+	if len(keyfiles) > 0 || keyfile {
 		popupStatus = "Reading keyfiles..."
 		giu.Update()
 
@@ -1918,163 +1893,62 @@ func work() {
 	popupStatus = "Calculating values..."
 	giu.Update()
 
-	// Single HKDF stream: derive header subkey first (v2), then payload subkeys and rekeying
-	var unifiedKDF io.Reader
-	// Track legacy v1 volumes to delay HKDF init until after keyfile XOR
-	var isLegacyV1 bool
+	// Hash the encryption key for comparison when decrypting
+	tmp := sha3.New512()
+	if _, err := tmp.Write(key); err != nil {
+		panic(err)
+	}
+	keyHash = tmp.Sum(nil)
 
-	// Compute or verify header auth (v2: HMAC over header; v1: SHA3-512(key))
-	if mode == "encrypt" {
-		// v2 format for new volumes
-		unifiedKDF = hkdf.New(sha3.New256, key, hkdfSalt, nil)
-		subkeyHeader := make([]byte, 64)
-		if _, err := io.ReadFull(unifiedKDF, subkeyHeader); err != nil {
-			panic(errors.New("fatal hkdf.Read error"))
+	// Validate the password and/or keyfiles
+	if mode == "decrypt" {
+		keyCorrect := subtle.ConstantTimeCompare(keyHash, keyHashRef) == 1
+		keyfileCorrect := subtle.ConstantTimeCompare(keyfileHash, keyfileHashRef) == 1
+		incorrect := !keyCorrect
+		if keyfile || len(keyfiles) > 0 {
+			incorrect = !keyCorrect || !keyfileCorrect
 		}
-		macHeader := hmac.New(sha3.New512, subkeyHeader)
 
-		// Reconstruct flags
-		flagsHeader := make([]byte, 5)
-		if paranoid { flagsHeader[0] = 1 }
-		if len(keyfiles) > 0 { flagsHeader[1] = 1 }
-		if keyfileOrdered { flagsHeader[2] = 1 }
-		if reedsolo { flagsHeader[3] = 1 }
-		if total%int64(MiB) >= int64(MiB)-128 { flagsHeader[4] = 1 }
-
-		macHeader.Write([]byte(version))
-		macHeader.Write([]byte(fmt.Sprintf("%05d", len(comments))))
-		macHeader.Write([]byte(comments))
-		macHeader.Write(flagsHeader)
-		macHeader.Write(salt)
-		macHeader.Write(hkdfSalt)
-		macHeader.Write(serpentIV)
-		macHeader.Write(nonce)
-		macHeader.Write(keyfileHash)
-
-		keyHash = macHeader.Sum(nil)
-	} else {
-		// Decrypt path: check which version produced the volume
-		isLegacyV1 = bytes.HasPrefix(headerVersion, []byte("v1."))
-		if isLegacyV1 {
-			// v1 compatibility: header stores SHA3-512(key)
-			tmp := sha3.New512()
-			if _, err := tmp.Write(key); err != nil {
-				panic(err)
-			}
-			keyHash = tmp.Sum(nil)
-
-			keyCorrect := subtle.ConstantTimeCompare(keyHash, keyHashRef) == 1
-			keyfileCorrect := subtle.ConstantTimeCompare(keyfileHash, keyfileHashRef) == 1
-			incorrect := !keyCorrect
-			// For legacy v1 volumes, require keyfiles strictly based on header flag
-			// instead of UI state to avoid stale/mismatched UI variables.
-			if useKeyfiles {
-				incorrect = !keyCorrect || !keyfileCorrect
-			}
-			if incorrect {
-				if keep {
-					kept = true
+		// If something is incorrect
+		if incorrect {
+			if keep {
+				kept = true
+			} else {
+				if !keyCorrect {
+					mainStatus = "The provided password is incorrect"
 				} else {
-					if !keyCorrect {
-						mainStatus = "The provided password is incorrect"
+					if keyfileOrdered {
+						mainStatus = "Incorrect keyfiles or ordering"
 					} else {
-						if keyfileOrdered {
-							mainStatus = "Incorrect keyfiles or ordering"
-						} else {
-							mainStatus = "Incorrect keyfiles"
-						}
-						if deniability {
-							fin.Close()
-							os.Remove(inputFile)
-							inputFile = strings.TrimSuffix(inputFile, ".tmp")
-						}
+						mainStatus = "Incorrect keyfiles"
 					}
-					broken(fin, nil, mainStatus, true)
-					if recombine {
-						inputFile = inputFileOld
+					if deniability {
+						fin.Close()
+						os.Remove(inputFile)
+						inputFile = strings.TrimSuffix(inputFile, ".tmp")
 					}
-					return
 				}
-			}
-
-			// Create output file only after validation succeeds
-			fout, err = os.Create(outputFile + ".incomplete")
-			if err != nil {
-				fin.Close()
+				broken(fin, nil, mainStatus, true)
 				if recombine {
-					os.Remove(inputFile)
+					inputFile = inputFileOld
 				}
-				accessDenied("Write")
 				return
 			}
-		} else {
-			// v2 validation: HMAC-SHA3-256 over header using first 64 bytes of a single HKDF stream
-			unifiedKDF = hkdf.New(sha3.New256, key, hkdfSalt, nil)
-			subkeyHeader := make([]byte, 64)
-			if _, err := io.ReadFull(unifiedKDF, subkeyHeader); err != nil {
-				panic(errors.New("fatal hkdf.Read error"))
+		}
+
+		// Create the output file for decryption
+		fout, err = os.Create(outputFile + ".incomplete")
+		if err != nil {
+			fin.Close()
+			if recombine {
+				os.Remove(inputFile)
 			}
-			macHeader := hmac.New(sha3.New512, subkeyHeader)
-
-			macHeader.Write(headerVersion)
-			macHeader.Write([]byte(fmt.Sprintf("%05d", headerCommentsLen)))
-			macHeader.Write(headerComments)
-			macHeader.Write(headerFlags)
-			macHeader.Write(salt)
-			macHeader.Write(hkdfSalt)
-			macHeader.Write(serpentIV)
-			macHeader.Write(nonce)
-			macHeader.Write(keyfileHash)
-
-			keyHash = macHeader.Sum(nil)
-
-			headerValid := subtle.ConstantTimeCompare(keyHash, keyHashRef) == 1
-			keyfileCorrect := subtle.ConstantTimeCompare(keyfileHash, keyfileHashRef) == 1
-			incorrect := !headerValid
-			if useKeyfiles {
-				incorrect = !headerValid || !keyfileCorrect
-			}
-
-			if incorrect {
-				if keep {
-					kept = true
-				} else {
-					if !headerValid {
-						mainStatus = "The password is incorrect or header is tampered"
-					} else {
-						if keyfileOrdered {
-							mainStatus = "Incorrect keyfiles or ordering"
-						} else {
-							mainStatus = "Incorrect keyfiles"
-						}
-						if deniability {
-							fin.Close()
-							os.Remove(inputFile)
-							inputFile = strings.TrimSuffix(inputFile, ".tmp")
-						}
-					}
-					broken(fin, nil, mainStatus, true)
-					if recombine {
-						inputFile = inputFileOld
-					}
-					return
-				}
-			}
-
-			// Create the output file for decryption (after validation)
-			fout, err = os.Create(outputFile + ".incomplete")
-			if err != nil {
-				fin.Close()
-				if recombine {
-					os.Remove(inputFile)
-				}
-				accessDenied("Write")
-				return
-			}
+			accessDenied("Write")
+			return
 		}
 	}
 
-	if useKeyfiles && len(keyfiles) > 0 {
+	if len(keyfiles) > 0 || keyfile {
 		// Prevent an even number of duplicate keyfiles
 		if bytes.Equal(keyfileKey, make([]byte, 32)) {
 			mainStatus = "Duplicate keyfiles detected"
@@ -2102,14 +1976,11 @@ func work() {
 		panic(err)
 	}
 
-	// Use the single HKDF stream to derive payload MAC subkey and Serpent key
+	// Use HKDF-SHA3 to generate a subkey for the MAC
 	var mac hash.Hash
 	subkey := make([]byte, 32)
-	// Initialize HKDF for legacy v1 only after keyfiles have been XORed into key
-	if isLegacyV1 && unifiedKDF == nil {
-		unifiedKDF = hkdf.New(sha3.New256, key, hkdfSalt, nil)
-	}
-	if _, err := io.ReadFull(unifiedKDF, subkey); err != nil {
+	hkdf := hkdf.New(sha3.New256, key, hkdfSalt, nil)
+	if n, err := hkdf.Read(subkey); err != nil || n != 32 {
 		panic(errors.New("fatal hkdf.Read error"))
 	}
 	if paranoid {
@@ -2123,7 +1994,7 @@ func work() {
 
 	// Generate another subkey for use as Serpent's key
 	serpentKey := make([]byte, 32)
-	if _, err := io.ReadFull(unifiedKDF, serpentKey); err != nil {
+	if n, err := hkdf.Read(serpentKey); err != nil || n != 32 {
 		panic(errors.New("fatal hkdf.Read error"))
 	}
 	s, err := serpent.NewCipher(serpentKey)
@@ -2312,7 +2183,7 @@ func work() {
 		if counter >= 60*GiB {
 			// ChaCha20
 			nonce = make([]byte, 24)
-			if _, err := io.ReadFull(unifiedKDF, nonce); err != nil {
+			if n, err := hkdf.Read(nonce); err != nil || n != 24 {
 				panic(errors.New("fatal hkdf.Read error"))
 			}
 			chacha, err = chacha20.NewUnauthenticatedCipher(key, nonce)
@@ -2322,7 +2193,7 @@ func work() {
 
 			// Serpent
 			serpentIV = make([]byte, 16)
-			if _, err := io.ReadFull(unifiedKDF, serpentIV); err != nil {
+			if n, err := hkdf.Read(serpentIV); err != nil || n != 16 {
 				panic(errors.New("fatal hkdf.Read error"))
 			}
 			serpent = cipher.NewCTR(s, serpentIV)
@@ -3030,7 +2901,7 @@ func main() {
 		panic(errors.New("rs failed to init"))
 	}
 	// Create the main window
-	window = giu.NewMasterWindow("Picocrypt NG "+version[1:], 318, 507, giu.MasterWindowFlagsNotResizable)
+	window = giu.NewMasterWindow("Picocrypt "+version[1:], 318, 507, giu.MasterWindowFlagsNotResizable)
 
 	// Start the dialog module
 	dialog.Init()

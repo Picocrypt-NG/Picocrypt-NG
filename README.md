@@ -1,4 +1,5 @@
 <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/actions/workflows/build-windows.yml"><img src="https://github.com/Picocrypt-NG/Picocrypt-NG/actions/workflows/build-windows.yml/badge.svg"></a>
+<a href="https://github.com/Picocrypt-NG/Picocrypt-NG/actions/workflows/build-windows-legacy.yml"><img src="https://github.com/Picocrypt-NG/Picocrypt-NG/actions/workflows/build-windows-legacy.yml/badge.svg"></a>
 <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/actions/workflows/build-macos.yml"><img src="https://github.com/Picocrypt-NG/Picocrypt-NG/actions/workflows/build-macos.yml/badge.svg"></a>
 <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/actions/workflows/build-linux.yml"><img src="https://github.com/Picocrypt-NG/Picocrypt-NG/actions/workflows/build-linux.yml/badge.svg"></a>
 
@@ -26,7 +27,14 @@ When referencing Picocrypt NG, please always include the "NG" suffix to ensure d
 Make sure to only download Picocrypt NG from this repository to ensure that you get the authentic and backdoor-free Picocrypt NG. When sharing Picocrypt NG with others, be sure to link to this repository to prevent any confusion.
 
 ## Windows
-To download the latest, standalone, and portable executable for Windows, click <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG.exe">here</a>.
+**Windows 10/11:** Download the latest, standalone, and portable executable <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG.exe">here</a>.
+
+**Windows 7/8 (Legacy Systems):** If you're running Windows 7, Windows 8, or systems without OpenGL support, download the <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG-Legacy-Windows.zip">Legacy Build</a> instead. This version includes:
+- Compiled with [go-legacy-win7](https://github.com/thongtech/go-legacy-win7) for Windows 7/8 compatibility
+- Bundled Mesa3D software OpenGL renderer (no GPU or graphics drivers required)
+- Keep all files in the extracted folder together
+
+⚠️ **Note:** The legacy build uses CPU-based software rendering and may be slower than the standard build. Only use it if you're on Windows 7/8 or experiencing graphics-related issues on older systems.
 
 If your antivirus flags Picocrypt NG as a virus, please report it as a false positive to help everyone.
 

@@ -1,0 +1,19 @@
+[Details]
+  Icon = "../images/key.png"
+  Name = "Picocrypt NG"
+  ID = "io.github.picocryptng.PicocryptNG"
+  Version = "2.04"
+  Build = 1
+
+[Migrations]
+  fyneDo = true
+
+[Source]
+  Repo = "https://github.com/Picocrypt-NG/Picocrypt-NG"
+  Dir = "src"
+
+[LinuxAndBSD]
+  GenericName = "File Encryption"
+  Categories = ["Utility", "Security"]
+  Comment = "A very small, very simple, yet very secure encryption tool."
+  Keywords = ["encryption", "security", "privacy", "crypto"]

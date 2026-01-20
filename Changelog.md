@@ -1,3 +1,38 @@
+# v2.04
+<ul>
+	<li>✓ Added comprehensive CLI documentation (CLI.md)</li>
+	<li>✓ CLI-only build mode: compile with <code>-tags cli</code> for headless servers and containers</li>
+	<li>✓ Full CLI feature parity with GUI for all encryption operations</li>
+	<li>✓ Password stdin support (<code>-P</code>) for secure scripting and automation</li>
+	<li>✓ Glob pattern expansion for batch file encryption</li>
+	<li>✓ Smart split volume auto-detection during decryption</li>
+	<li>✓ Thread-safe progress reporting with ETA display</li>
+	<li>✓ Graceful signal handling (Ctrl+C) with proper cleanup</li>
+	<li>✓ Fixed warning text readability by changing yellow color to dark amber for better contrast</li>
+	<li>✓ Hide "Confirm password" field in decrypt mode (only needed for encryption)</li>
+</ul>
+
+# v2.03
+<ul>
+	<li>✓ Enhanced file extraction and compression handling with automatic directory creation</li>
+	<li>✓ Added auto-toggling of .zip suffix in output filenames based on compression state</li>
+	<li>✓ Improved single file compression support with proper file handling and naming conventions</li>
+	<li>✓ Enhanced UI with bold labels for better visual hierarchy</li>
+	<li>✓ Automatically clear input fields (password, confirm password, comments) upon operation completion</li>
+	<li>✓ Improved theme colors and sizes for better readability and contrast</li>
+	<li>✓ Added resource management documentation explaining manual file handle closing pattern</li>
+</ul>
+
+# v2.02
+<ul>
+	<li>✓ Refactored to modular package structure (crypto, header, volume, etc.)</li>
+	<li>✓ Switched from giu to Fyne UI toolkit</li>
+	<li>✓ Added mobile support (Android)</li>
+	<li>✓ v2 header format with HMAC-SHA3-512 authentication (audit recommendation PCC-001)</li>
+	<li>✓ Backward compatible with v1.x volumes</li>
+	<li>✓ Added project documentation (ARCHITECTURE.md, API.md, CONTRIBUTING.md)</li>
+</ul>
+
 # v2.00 (Released 08/07/2025)
 <ul>
 	<li>✓ First release in new Picocrypt-NG organization!</li>

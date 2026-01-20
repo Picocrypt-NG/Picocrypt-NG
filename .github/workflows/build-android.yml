@@ -1,0 +1,97 @@
+name: build-android
+
+permissions:
+  contents: write
+
+on:
+  push:
+    paths:
+      - "VERSION"
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Setup Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: stable
+        cache-dependency-path: src/go.sum
+
+    - name: Install fyne-cross
+      run: |
+        go install github.com/fyne-io/fyne-cross@latest
+
+    - name: Copy icon to src
+      run: |
+        cp images/key.png src/icon.png
+
+    - name: Build for Android (all architectures)
+      run: |
+        cd src
+        fyne-cross android -arch=* \
+          -app-id io.github.picocryptng.PicocryptNG \
+          -icon icon.png \
+          -name Picocrypt-NG \
+          -pull \
+          ./cmd/picocrypt
+      env:
+        CGO_ENABLED: 1
+
+    - name: Prepare artifacts
+      run: |
+        mkdir -p out
+        cp src/fyne-cross/dist/android-*/Picocrypt-NG.apk out/ 2>/dev/null || true
+        # If multiple APKs exist, rename them by architecture
+        for dir in src/fyne-cross/dist/android-*; do
+          if [ -d "$dir" ]; then
+            arch=$(basename "$dir" | sed 's/android-//')
+            if [ -f "$dir/Picocrypt-NG.apk" ]; then
+              cp "$dir/Picocrypt-NG.apk" "out/Picocrypt-NG-$arch.apk"
+            fi
+          fi
+        done
+        ls -la out/
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v6
+      with:
+        name: build-android
+        path: out/*.apk
+        if-no-files-found: error
+        compression-level: 9
+
+    - name: Get version tag
+      run: |
+        VERSION=$(cat VERSION)
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+    - name: Generate checksums
+      run: |
+        cd out
+        echo "ANDROID_CHECKSUMS<<EOF" >> $GITHUB_ENV
+        for apk in *.apk; do
+          hash=$(sha256sum "$apk" | cut -d ' ' -f1)
+          echo "\`sha256($apk)  $hash\`" >> $GITHUB_ENV
+        done
+        echo "EOF" >> $GITHUB_ENV
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: out/*.apk
+        tag_name: ${{ env.VERSION }}
+        make_latest: true
+        append_body: true
+        body: |
+          **Android:**
+          ${{ env.ANDROID_CHECKSUMS }}

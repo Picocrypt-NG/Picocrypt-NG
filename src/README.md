@@ -1,33 +1,44 @@
-# Running From Source
-If you would like to run Picocrypt NG from source, or an executable isn't available for your platform, you've come to the right place. Running from source is very simple, and I've made it even easier with these straightforward instructions. Unlike VeraCrypt, which requires complex build procedures, SDKs, and assemblers, Picocrypt NG can easily be compiled from source with only a Go and C compiler. All you need is ten minutes and an Internet connection.
+# Building from Source
 
-# 1. Prerequisites
+## Prerequisites
+
 **Linux:**
 ```bash
 apt install -y gcc xorg-dev libgtk-3-dev libgl1-mesa-dev libglu1-mesa
 ```
+
 **macOS:**
 ```bash
 xcode-select --install
 brew install glfw glew
 ```
-**Windows:** A C compiler, ideally TDM-GCC or MinGW-w64
 
-# 2. Install Go
-If you don't have Go installed, download it from <a href="https://go.dev/dl/">here</a> or install it from your package manager (`apt install golang-go`). The latest version of Go is recommended, although you may fall back to Go 1.24 should any issues arise in the future.
+**Windows:** TDM-GCC or MinGW-w64
 
-# 3. Get the Source Files
-Download the source files as a zip from the homepage or `git clone` this repository. Next, navigate to the `src/` directory, where you will find the source file (`Picocrypt-NG.go`). You will need this file, along with `go.mod` and `go.sum`, to compile Picocrypt NG.
+## Install Go
 
-# 4. Build From Source
-Finally, build Picocrypt NG from source:
-- Windows: <code>go build -ldflags="-s -w -H=windowsgui -extldflags=-static" Picocrypt-NG.go</code>
-- macOS: <code>go build -ldflags="-s -w" Picocrypt-NG.go</code>
-- Linux: <code>go build -ldflags="-s -w" Picocrypt-NG.go</code>
+Download from [go.dev/dl](https://go.dev/dl/) or use your package manager. Go 1.24+ recommended.
 
-Note: Make sure to set `CGO_ENABLED=1` if it isn't already.
+## Build
 
-# 5. Done!
-You should now see a compiled executable (`Picocrypt-NG.exe`/`Picocrypt-NG`) in your directory. You can run it by double-clicking or executing it in your terminal. That wasn't too hard, right? Enjoy!
+```bash
+git clone https://github.com/Picocrypt-NG/Picocrypt-NG.git
+cd Picocrypt-NG/src
 
-Note: On Linux, if hardware OpenGL isn't available, you can set `LIBGL_ALWAYS_SOFTWARE=1` to force Mesa to use software rendering. This way, Picocrypt NG will be able to run regardless of driver support and can even run without a GPU at all. You may also need to set `NO_AT_BRIDGE=1` to disable the accessibility bus which is known to cause potential issues.
+# Linux/macOS
+CGO_ENABLED=1 go build -ldflags="-s -w" -o Picocrypt-NG cmd/picocrypt/main.go
+
+# Windows
+CGO_ENABLED=1 go build -ldflags="-s -w -H=windowsgui -extldflags=-static" -o Picocrypt-NG.exe cmd/picocrypt/main.go
+```
+
+## Run
+
+```bash
+./Picocrypt-NG
+```
+
+## Notes
+
+- On Linux without hardware OpenGL: `LIBGL_ALWAYS_SOFTWARE=1 ./Picocrypt-NG`
+- If accessibility bus causes issues: `NO_AT_BRIDGE=1 ./Picocrypt-NG`

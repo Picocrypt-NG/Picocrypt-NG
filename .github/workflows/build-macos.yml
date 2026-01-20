@@ -11,18 +11,21 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-26
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Setup Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
-        go-version: '>=1.25'
-        check-latest: true
-        cache: false
+        go-version: stable
+        cache-dependency-path: src/go.sum
 
     - name: Install packages
       run: |
@@ -33,10 +36,23 @@ jobs:
         cd src
         go mod download
 
-    - name: Build
+    - name: Run tests
+      # Skip internal/crypto and internal/volume - Argon2 is extremely slow on macOS ARM64 runners
       run: |
         cd src
-        go build -v -ldflags="-s -w" -o Picocrypt-NG Picocrypt-NG.go
+        go test -v -race -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
+
+    - name: Build GUI
+      run: |
+        cd src
+        go build -v -ldflags="-s -w" -o Picocrypt-NG ./cmd/picocrypt
+      env:
+        CGO_ENABLED: 1
+
+    - name: Build CLI-only (no graphics dependencies)
+      run: |
+        cd src
+        go build -v -tags cli -ldflags="-s -w" -o Picocrypt-NG-cli ./cmd/picocrypt
       env:
         CGO_ENABLED: 1
 
@@ -53,11 +69,12 @@ jobs:
         hdiutil create Picocrypt-NG.dmg -volname Picocrypt-NG -fs APFS -format UDZO -srcfolder out
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: build-macos
         path: |
           Picocrypt-NG.dmg
+          src/Picocrypt-NG-cli
         if-no-files-found: error
         compression-level: 9
 
@@ -70,15 +87,19 @@ jobs:
       run: |
         HASH=$(shasum -a 256 Picocrypt-NG.dmg | cut -d ' ' -f1)
         echo "CHECKSUM_PICOCRYPT_NG=$HASH" >> $GITHUB_ENV
+        HASH_CLI=$(shasum -a 256 src/Picocrypt-NG-cli | cut -d ' ' -f1)
+        echo "CHECKSUM_PICOCRYPT_NG_CLI=$HASH_CLI" >> $GITHUB_ENV
 
     - name: Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
           Picocrypt-NG.dmg
+          src/Picocrypt-NG-cli
         tag_name: ${{ env.VERSION }}
         make_latest: true
         append_body: true
         body: |
           **macOS:**
           `sha256(Picocrypt-NG.dmg)  ${{ env.CHECKSUM_PICOCRYPT_NG }}`
+          `sha256(Picocrypt-NG-cli)  ${{ env.CHECKSUM_PICOCRYPT_NG_CLI }}`

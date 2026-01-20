@@ -1,7 +1,7 @@
 name: picocrypt-ng
 summary: A very small, very simple, yet very secure encryption tool.
 description: Picocrypt NG is a very small, very simple, yet very secure encryption tool that you can use to protect your files. It's designed to be the go-to tool for encryption, with a focus on security, simplicity, and reliability. Picocrypt NG uses the secure XChaCha20 cipher and the Argon2id key derivation function to provide a high level of security.
-version: "2.00"
+version: "2.04"
 confinement: strict
 base: core22
 grade: stable
@@ -22,10 +22,15 @@ parts:
     source: .
     build-packages:
       - gcc
+      - pkg-config
+      - libgl1-mesa-dev
       - xorg-dev
       - libgtk-3-dev
-      - libgl1-mesa-dev
-      - libglu1-mesa-dev
+      - libxcursor-dev
+      - libxrandr-dev
+      - libxinerama-dev
+      - libxi-dev
+      - libxxf86vm-dev
       - libffi-dev
     build-snaps:
       - go

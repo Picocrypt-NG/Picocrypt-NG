@@ -1,0 +1,58 @@
+name: pr-test-build-android
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-test-build-android:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Setup Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: stable
+        cache-dependency-path: src/go.sum
+
+    - name: Install fyne-cross
+      run: |
+        go install github.com/fyne-io/fyne-cross@latest
+
+    - name: Copy icon to src
+      run: |
+        cp images/key.png src/icon.png
+
+    - name: Build for Android (arm64 only for faster PR builds)
+      run: |
+        cd src
+        fyne-cross android -arch=arm64 \
+          -app-id io.github.picocryptng.PicocryptNG \
+          -icon icon.png \
+          -name Picocrypt-NG \
+          -pull \
+          ./cmd/picocrypt
+      env:
+        CGO_ENABLED: 1
+
+    - name: Prepare artifacts
+      run: |
+        mkdir -p out
+        cp src/fyne-cross/dist/android-arm64/Picocrypt-NG.apk out/Picocrypt-NG-arm64.apk
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v6
+      with:
+        name: pr-test-build-android-ONLY-FOR-TESTING
+        path: out/*.apk
+        if-no-files-found: error
+        compression-level: 9
