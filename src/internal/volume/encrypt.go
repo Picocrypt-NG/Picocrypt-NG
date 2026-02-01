@@ -341,7 +341,6 @@ func encryptPayload(ctx *OperationContext, req *EncryptRequest) error {
 		}
 
 		n, readErr := reader.Read(src)
-		
 		if n > 0 {
 			srcData := src[:n]
 			dstData := dst[:n]
