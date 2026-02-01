@@ -1,0 +1,36 @@
+#!/bin/bash
+# Build script for Picocrypt-NG Android app
+# This script cleans and rebuilds the debug APK for development
+
+set -e  # Exit on error
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+echo "Building Picocrypt-NG Android app..."
+echo "Working directory: $SCRIPT_DIR"
+
+# Ensure gradlew is executable
+chmod +x gradlew
+
+# Clean previous build
+echo "Cleaning previous build..."
+./gradlew clean
+
+# Build debug APK
+echo "Building debug APK..."
+./gradlew assembleDebug
+
+# Show output location
+APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+if [ -f "$APK_PATH" ]; then
+    echo ""
+    echo "✓ Build successful!"
+    echo "  APK location: $APK_PATH"
+    echo "  File size: $(du -h "$APK_PATH" | cut -f1)"
+else
+    echo "✗ Build failed - APK not found at $APK_PATH"
+    exit 1
+fi
+
