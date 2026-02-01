@@ -14,8 +14,7 @@ This directory contains the Android app that integrates with the Go encryption b
    ```
 
 2. **Android SDK**: Ensure Android SDK is installed and `ANDROID_HOME` is set.
-   - Requires Android Platform API 16 (for gomobile compatibility)
-   - Requires NDK 21.x (for gomobile compatibility with API 16)
+   - Requires NDK 29.0+ (minimum API level 24, matching app's minSdk)
 
 ### Build Steps
 

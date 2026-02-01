@@ -33,7 +33,7 @@ jobs:
       uses: android-actions/setup-android@v3
       with:
         api-level: 36
-        ndk-version: '21.4.7075529'
+        ndk-version: '29.0.14206865'
         build-tools: '36.0.0'
 
     - name: Set up JDK 11
