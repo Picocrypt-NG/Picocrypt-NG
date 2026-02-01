@@ -1,0 +1,91 @@
+<resources>
+    <string name="app_name">Picocrypt-NG</string>
+    
+    <!-- File Card -->
+    <string name="choose_file">Choose a file</string>
+    <string name="copying_file">Copying file…</string>
+    <string name="choose_file_description">Choose file</string>
+    
+    <!-- Password Card -->
+    <string name="password">Password</string>
+    <string name="confirm_password">Confirm Password</string>
+    <string name="enter_password">Enter a password</string>
+    <string name="passwords_must_match">Passwords must match</string>
+    <string name="hide_password">Hide password</string>
+    <string name="show_password">Show password</string>
+    
+    <!-- Comments Card -->
+    <string name="comments">Comments</string>
+    <string name="comments_not_readable">Comments not readable (deniability mode)</string>
+    <string name="comments_disabled_deniability">Disabled in deniability mode</string>
+    
+    <!-- Keyfile Card -->
+    <string name="keyfiles">Keyfiles</string>
+    <string name="keyfiles_required">Keyfiles (%1$d) - Required</string>
+    <string name="keyfiles_count">Keyfiles (%1$d)</string>
+    <string name="add">Add</string>
+    <string name="new_keyfile">New</string>
+    <string name="clear">Clear</string>
+    <string name="copying">Copying…</string>
+    <string name="creating">Creating…</string>
+    <string name="require_this_order">Require this order</string>
+    <string name="error_creating_keyfile">Error Creating Keyfile</string>
+    <string name="keyfiles_required_warning">⚠️ Keyfiles required for this file</string>
+    <string name="keyfile_order_matters">⚠️ Keyfile order matters</string>
+    
+    <!-- Advanced Card -->
+    <string name="advanced_settings">Advanced Settings (%1$d)</string>
+    <string name="reed_solomon">Reed-Solomon</string>
+    <string name="paranoid">Paranoid</string>
+    <string name="deniability">Deniability</string>
+    <string name="expand_or_collapse">Expand or collapse</string>
+    
+    <!-- Decryption Info Card -->
+    <string name="encryption_settings">Encryption Settings</string>
+    <string name="keyfiles_section">Keyfiles</string>
+    <string name="required">Required: %1$s</string>
+    <string name="yes">Yes</string>
+    <string name="no">No</string>
+    <string name="order_matters">Order matters: %1$s</string>
+    <string name="advanced_settings_section">Advanced Settings</string>
+    <string name="reed_solomon_status">Reed-Solomon: %1$s</string>
+    <string name="deniability_status">Deniability: %1$s</string>
+    <string name="paranoid_mode_status">Paranoid mode: %1$s</string>
+    <string name="enabled">Enabled</string>
+    <string name="disabled">Disabled</string>
+    <string name="unknown">Unknown</string>
+    <string name="deniability_note">Note: This file uses deniability mode. Metadata cannot be read without the password. Some information above may be incomplete.</string>
+    <string name="comments_section">Comments</string>
+    <string name="no_comments">No comments</string>
+    
+    <!-- Work Button -->
+    <string name="encrypt_file">Encrypt File</string>
+    <string name="decrypt_file">Decrypt File</string>
+    <string name="processing">Processing…</string>
+    
+    <!-- Progress Card -->
+    <string name="encrypting">Encrypting…</string>
+    <string name="decrypting">Decrypting…</string>
+    <string name="cancel">Cancel</string>
+    <string name="data_corruption_detected">Data Corruption Detected</string>
+    <string name="force_decrypt_warning">The encrypted file appears to be corrupted. Force decrypt will attempt to recover as much data as possible, but the output may be partially or completely corrupted.</string>
+    <string name="force_decrypt">Force Decrypt</string>
+    <string name="authentication_error">Authentication Error</string>
+    <string name="authentication_failed">Authentication failed</string>
+    <string name="retry">Retry</string>
+    <string name="error">Error</string>
+    <string name="unknown_error_occurred">An unknown error occurred</string>
+    <string name="close">Close</string>
+    <string name="encryption_complete">Encryption Complete</string>
+    <string name="decryption_complete">Decryption Complete</string>
+    <string name="operation_completed_successfully">Operation completed successfully.</string>
+    <string name="error_saving_file">Error saving file: %1$s</string>
+    <string name="save">Save</string>
+    
+    <!-- Error Dialog -->
+    <string name="ok">OK</string>
+    
+    <!-- Logo Bar -->
+    <string name="logo_icon">logo icon</string>
+    <string name="logo_text">logo text</string>
+</resources>

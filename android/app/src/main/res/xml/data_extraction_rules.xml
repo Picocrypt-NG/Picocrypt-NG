@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- Exclude all file storage -->
+        <exclude domain="file" path="."/>
+        
+        <!-- Exclude all SharedPreferences -->
+        <exclude domain="sharedpref" path="."/>
+        
+        <!-- Exclude all databases -->
+        <exclude domain="database" path="."/>
+        
+        <!-- Exclude root-level files -->
+        <exclude domain="root" path="."/>
+        
+        <!-- Explicitly exclude the picocrypt_files directory -->
+        <exclude domain="file" path="picocrypt_files/"/>
+    </cloud-backup>
+    
+    <device-transfer>
+        <!-- Exclude all file storage -->
+        <exclude domain="file" path="."/>
+        
+        <!-- Exclude all SharedPreferences -->
+        <exclude domain="sharedpref" path="."/>
+        
+        <!-- Exclude all databases -->
+        <exclude domain="database" path="."/>
+        
+        <!-- Exclude root-level files -->
+        <exclude domain="root" path="."/>
+        
+        <!-- Explicitly exclude the picocrypt_files directory -->
+        <exclude domain="file" path="picocrypt_files/"/>
+    </device-transfer>
+</data-extraction-rules>
