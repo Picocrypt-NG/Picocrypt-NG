@@ -30,7 +30,7 @@ jobs:
         gomobile init
 
     - name: Set up Android SDK
-      uses: android-actions/setup-android@v3
+      uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
       with:
         api-level: 36
         ndk-version: '29.0.14206865'
@@ -41,6 +41,14 @@ jobs:
       with:
         distribution: 'temurin'
         java-version: '11'
+
+    - name: Install NDK 29 using sdkmanager
+      run: |
+        yes | sdkmanager --licenses || true
+        sdkmanager "ndk;29.0.14206865"
+        export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
+        echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+        echo "Installed NDK 29 at: $ANDROID_NDK_HOME"
 
     - name: Cache Gradle dependencies
       uses: actions/cache@v4
