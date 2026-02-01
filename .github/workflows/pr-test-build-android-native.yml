@@ -1,0 +1,86 @@
+name: pr-test-build-android-native
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-test-build-android-native:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.24.2'
+        cache-dependency-path: src/go.sum
+
+    - name: Install gomobile
+      run: |
+        go install golang.org/x/mobile/cmd/gomobile@latest
+        gomobile init
+
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v3
+      with:
+        api-level: 36
+        ndk-version: '21.4.7075529'
+        build-tools: '36.0.0'
+
+    - name: Set up JDK 11
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '11'
+
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          android/.gradle
+        key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+
+    - name: Build Go Mobile AAR
+      working-directory: android
+      run: |
+        chmod +x build-gomobile.sh
+        ./build-gomobile.sh
+
+    - name: Make gradlew executable
+      working-directory: android
+      run: chmod +x gradlew
+
+    - name: Run Unit Tests
+      working-directory: android
+      run: ./gradlew test
+
+    - name: Build Debug APK (for faster PR builds)
+      working-directory: android
+      run: ./gradlew assembleDebug
+
+    - name: Prepare artifacts
+      run: |
+        mkdir -p out
+        cp android/app/build/outputs/apk/debug/app-debug.apk out/Picocrypt-NG-native-debug.apk
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v6
+      with:
+        name: pr-test-build-android-native-ONLY-FOR-TESTING
+        path: out/*.apk
+        if-no-files-found: error
+        compression-level: 9
+

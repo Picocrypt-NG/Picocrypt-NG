@@ -1,0 +1,128 @@
+name: build-android-native
+
+permissions:
+  contents: write
+
+on:
+  push:
+    paths:
+      - "VERSION"
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.24.2'
+        cache-dependency-path: src/go.sum
+
+    - name: Install gomobile
+      run: |
+        go install golang.org/x/mobile/cmd/gomobile@latest
+        gomobile init
+
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v3
+      with:
+        api-level: 36
+        ndk-version: '21.4.7075529'
+        build-tools: '36.0.0'
+
+    - name: Set up JDK 11
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '11'
+
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          android/.gradle
+        key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+
+    - name: Build Go Mobile AAR
+      working-directory: android
+      run: |
+        chmod +x build-gomobile.sh
+        ./build-gomobile.sh
+
+    - name: Make gradlew executable
+      working-directory: android
+      run: chmod +x gradlew
+
+    - name: Run Unit Tests
+      working-directory: android
+      run: ./gradlew test
+
+    - name: Run Instrumented Tests
+      uses: ReactiveCircus/android-emulator-runner@v2
+      with:
+        api-level: 24
+        script: |
+          cd android
+          ./gradlew connectedDebugAndroidTest
+
+    - name: Build Debug APK
+      working-directory: android
+      run: ./gradlew assembleDebug
+
+    - name: Build Release APK
+      working-directory: android
+      run: ./gradlew assembleRelease
+
+    - name: Prepare artifacts
+      run: |
+        mkdir -p out
+        cp android/app/build/outputs/apk/debug/app-debug.apk out/Picocrypt-NG-native-debug.apk
+        cp android/app/build/outputs/apk/release/app-release.apk out/Picocrypt-NG-native-release.apk
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v6
+      with:
+        name: build-android-native
+        path: out/*.apk
+        if-no-files-found: error
+        compression-level: 9
+
+    - name: Get version tag
+      run: |
+        VERSION=$(cat VERSION)
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+    - name: Generate checksums
+      run: |
+        cd out
+        echo "ANDROID_NATIVE_CHECKSUMS<<EOF" >> $GITHUB_ENV
+        for apk in *.apk; do
+          hash=$(sha256sum "$apk" | cut -d ' ' -f1)
+          echo "\`sha256($apk)  $hash\`" >> $GITHUB_ENV
+        done
+        echo "EOF" >> $GITHUB_ENV
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: out/*.apk
+        tag_name: ${{ env.VERSION }}
+        make_latest: true
+        append_body: true
+        body: |
+          **Android Native:**
+          ${{ env.ANDROID_NATIVE_CHECKSUMS }}
+
