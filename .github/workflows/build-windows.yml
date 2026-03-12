@@ -59,6 +59,11 @@ jobs:
       shell: pwsh
       run: |
         Invoke-WebRequest -OutFile reshacker_setup.zip https://github.com/user-attachments/files/18878075/reshacker_setup.zip
+        $expectedHash = "E5A5B6D6BE38AE3EB20E72B09F257F284BAB2DEB5F37164E9F2FAEFD23F27CF4"
+        $actualHash = (Get-FileHash reshacker_setup.zip -Algorithm SHA256).Hash
+        if ($actualHash -ne $expectedHash) {
+          throw "reshacker_setup.zip SHA256 mismatch. Expected $expectedHash but got $actualHash"
+        }
         Expand-Archive -DestinationPath reshacker_setup reshacker_setup.zip
         reshacker_setup/reshacker_setup.exe /SILENT
         Start-Sleep -Seconds 60
