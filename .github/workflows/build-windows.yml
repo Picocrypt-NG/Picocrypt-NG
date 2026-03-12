@@ -58,7 +58,12 @@ jobs:
     - name: Add icon, manifest, and version info
       shell: pwsh
       run: |
+        $reshackerSha256 = "E5A5B6D6BE38AE3EB20E72B09F257F284BAB2DEB5F37164E9F2FAEFD23F27CF4"
         Invoke-WebRequest -OutFile reshacker_setup.zip https://github.com/user-attachments/files/18878075/reshacker_setup.zip
+        $actualReshackerSha256 = (Get-FileHash reshacker_setup.zip -Algorithm SHA256).Hash
+        if ($actualReshackerSha256 -ne $reshackerSha256) {
+          throw "reshacker_setup.zip hash mismatch: expected $reshackerSha256, got $actualReshackerSha256"
+        }
         Expand-Archive -DestinationPath reshacker_setup reshacker_setup.zip
         reshacker_setup/reshacker_setup.exe /SILENT
         Start-Sleep -Seconds 60
@@ -78,7 +83,12 @@ jobs:
     - name: Compress with upx
       shell: pwsh
       run: |
+        $upxSha256 = "41C7492EDEED0F7E67D347CA9E8D2131E2AF7CA7A7695F92283A8E655C251C13"
         Invoke-WebRequest -OutFile upx.zip https://github.com/upx/upx/releases/download/v5.1.0/upx-5.1.0-win64.zip
+        $actualUpxSha256 = (Get-FileHash upx.zip -Algorithm SHA256).Hash
+        if ($actualUpxSha256 -ne $upxSha256) {
+          throw "upx.zip hash mismatch: expected $upxSha256, got $actualUpxSha256"
+        }
         Expand-Archive -DestinationPath upx upx.zip
         upx/upx-5.1.0-win64/upx.exe --lzma -o src/Picocrypt-NG.exe src/5.exe
         upx/upx-5.1.0-win64/upx.exe --lzma src/Picocrypt-NG-cli.exe
