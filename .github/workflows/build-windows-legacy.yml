@@ -18,6 +18,11 @@ concurrency:
 jobs:
   build:
     runs-on: windows-2022
+    env:
+      GO_LEGACY_SHA256: 82d44d1f777ae7c88aa52562979f1606f60bc5ad8df00c727a624c0ce4e5caf2
+      RESHACKER_SHA256: e5a5b6d6be38ae3eb20e72b09f257f284bab2deb5f37164e9f2faefd23f27cf4
+      UPX_SHA256: 41c7492edeed0f7e67d347ca9e8d2131e2af7ca7a7695f92283a8e655c251c13
+      MESA3D_SHA256: b19d0904183ca4a68a6a2e28d896fa3f1533cb4408f6ce499f52b25267fcc31f
     steps:
     - uses: actions/checkout@v6
 
@@ -26,6 +31,7 @@ jobs:
       run: |
         # Download go-legacy-win7 (Go 1.25.x with Windows 7 support)
         Invoke-WebRequest -OutFile go-legacy.zip https://github.com/thongtech/go-legacy-win7/releases/download/v1.25.5-1/go-legacy-win7-1.25.5-1.windows_amd64.zip
+        if ((Get-FileHash go-legacy.zip -Algorithm SHA256).Hash.ToLower() -ne $env:GO_LEGACY_SHA256) { throw "Checksum mismatch for go-legacy.zip" }
         Expand-Archive -DestinationPath C:\go-legacy go-legacy.zip
         echo "C:\go-legacy\go\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
@@ -66,6 +72,7 @@ jobs:
       shell: pwsh
       run: |
         Invoke-WebRequest -OutFile reshacker_setup.zip https://github.com/user-attachments/files/18878075/reshacker_setup.zip
+        if ((Get-FileHash reshacker_setup.zip -Algorithm SHA256).Hash.ToLower() -ne $env:RESHACKER_SHA256) { throw "Checksum mismatch for reshacker_setup.zip" }
         Expand-Archive -DestinationPath reshacker_setup reshacker_setup.zip
         reshacker_setup/reshacker_setup.exe /SILENT
         Start-Sleep -Seconds 60
@@ -86,6 +93,7 @@ jobs:
       shell: pwsh
       run: |
         Invoke-WebRequest -OutFile upx.zip https://github.com/upx/upx/releases/download/v5.1.0/upx-5.1.0-win64.zip
+        if ((Get-FileHash upx.zip -Algorithm SHA256).Hash.ToLower() -ne $env:UPX_SHA256) { throw "Checksum mismatch for upx.zip" }
         Expand-Archive -DestinationPath upx upx.zip
         upx/upx-5.1.0-win64/upx.exe --lzma -o src/Picocrypt-NG-Legacy.exe src/5.exe
         upx/upx-5.1.0-win64/upx.exe --lzma src/Picocrypt-NG-cli.exe
@@ -95,6 +103,7 @@ jobs:
       run: |
         # Download Mesa3D llvmpipe (software OpenGL renderer)
         Invoke-WebRequest -OutFile mesa3d.7z https://github.com/pal1000/mesa-dist-win/releases/download/25.0.1/mesa3d-25.0.1-release-msvc.7z
+        if ((Get-FileHash mesa3d.7z -Algorithm SHA256).Hash.ToLower() -ne $env:MESA3D_SHA256) { throw "Checksum mismatch for mesa3d.7z" }
 
         # Install 7zip to extract
         choco install 7zip -y
