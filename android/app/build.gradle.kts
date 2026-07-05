@@ -166,7 +166,7 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.androidx.arch.core.testing)
     // JSONObject for unit tests (Android's org.json is not available in unit tests)
-    testImplementation("org.json:json:20240303")
+    testImplementation("org.json:json:20260522")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
