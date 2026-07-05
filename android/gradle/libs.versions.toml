@@ -14,7 +14,7 @@ materialIconsExtended = "1.7.8"
 coroutines = "1.11.0"
 mockk = "1.14.7"
 archTesting = "2.2.0"
-documentfile = "1.0.1"
+documentfile = "1.1.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
