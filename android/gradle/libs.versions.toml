@@ -12,7 +12,7 @@ composeBom = "2026.05.00"
 animationLint = "1.8.3"
 materialIconsExtended = "1.7.8"
 coroutines = "1.11.0"
-mockk = "1.14.7"
+mockk = "1.14.11"
 archTesting = "2.2.0"
 documentfile = "1.0.1"
 
