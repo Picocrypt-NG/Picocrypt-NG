@@ -148,7 +148,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 	a.paranoidCheck = ttwidget.NewCheck(tr("advanced.paranoid.label", "Paranoid mode"), func(checked bool) {
 		a.State.Paranoid = checked
 	})
-	a.paranoidCheck.SetToolTip(tr("advanced.paranoid.tooltip", "Adds Serpent-CTR and stronger KDF/MAC settings for defense in depth"))
+	a.paranoidCheck.SetToolTip(tr("advanced.paranoid.tooltip", "Adds Serpent and stronger checks"))
 	a.paranoidCheck.SetChecked(a.State.Paranoid)
 
 	a.compressCheck = ttwidget.NewCheck(tr("advanced.compress.label", "Compress files"), func(checked bool) {
@@ -156,7 +156,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 		// Auto-toggle .zip suffix in output filename
 		a.updateOutputFileForCompress(checked)
 	})
-	a.compressCheck.SetToolTip(tr("advanced.compress.tooltip", "Compress files with Deflate before encrypting"))
+	a.compressCheck.SetToolTip(tr("advanced.compress.tooltip", "Compress before encrypting"))
 	a.compressCheck.SetChecked(a.State.Compress)
 
 	row1 := container.NewGridWithColumns(2, a.paranoidCheck, a.compressCheck)
@@ -164,13 +164,13 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 	a.reedSolomonCheck = ttwidget.NewCheck(tr("advanced.reed_solomon.label", "Reed-Solomon"), func(checked bool) {
 		a.State.ReedSolomon = checked
 	})
-	a.reedSolomonCheck.SetToolTip(tr("advanced.reed_solomon.tooltip", "Add redundancy to repair limited file corruption"))
+	a.reedSolomonCheck.SetToolTip(tr("advanced.reed_solomon.tooltip", "Add recovery data"))
 	a.reedSolomonCheck.SetChecked(a.State.ReedSolomon)
 
 	a.deleteCheck = ttwidget.NewCheck(tr("advanced.delete_files.label", "Delete files"), func(checked bool) {
 		a.State.Delete = checked
 	})
-	a.deleteCheck.SetToolTip(tr("advanced.delete_files.tooltip", "Deletes source files after successful encryption. This is not secure erase."))
+	a.deleteCheck.SetToolTip(tr("advanced.delete_files.tooltip", "Delete source files after encryption"))
 	a.deleteCheck.SetChecked(a.State.Delete)
 
 	row2 := container.NewGridWithColumns(2, a.reedSolomonCheck, a.deleteCheck)
@@ -179,7 +179,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 		a.State.Deniability = checked
 		a.updateUIState()
 	})
-	a.deniabilityCheck.SetToolTip(tr("advanced.deniability.tooltip", "Creates output without a readable Picocrypt header. Keep the password/keyfiles exactly; this is not filename hiding."))
+	a.deniabilityCheck.SetToolTip(tr("advanced.deniability.tooltip", "No readable Picocrypt header. Keep password/keyfiles."))
 	a.deniabilityCheck.SetChecked(a.State.Deniability)
 
 	a.recursivelyCheck = ttwidget.NewCheck(tr("advanced.recursively.label", "Recursively"), func(checked bool) {
@@ -192,7 +192,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 		}
 		a.updateUIState()
 	})
-	a.recursivelyCheck.SetToolTip(tr("advanced.recursively.tooltip", "Process each selected file separately and write separate output paths."))
+	a.recursivelyCheck.SetToolTip(tr("advanced.recursively.tooltip", "Process each file separately"))
 	a.recursivelyCheck.SetChecked(a.State.Recursively)
 
 	row3 := container.NewGridWithColumns(2, a.deniabilityCheck, a.recursivelyCheck)
@@ -201,7 +201,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 		a.State.Split = checked
 		a.updateUIState() // Update status to show increased disk space requirement
 	})
-	a.splitCheck.SetToolTip(tr("advanced.split.tooltip", "Split the output file into smaller chunks"))
+	a.splitCheck.SetToolTip(tr("advanced.split.tooltip", "Split output into parts"))
 	a.splitCheck.SetChecked(a.State.Split)
 
 	a.splitSizeEntry = widget.NewEntry()
@@ -216,7 +216,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 		a.updateUIState() // Update status to show increased disk space requirement
 	}
 
-	a.splitUnitSelect = ttwidget.NewSelect(localizedSplitUnits(a.State.SplitUnits), func(selected string) {
+	a.splitUnitSelect = widget.NewSelect(localizedSplitUnits(a.State.SplitUnits), func(selected string) {
 		for i, unit := range a.State.SplitUnits {
 			if localizedSplitUnit(unit) == selected {
 				// #nosec G115 -- i is bounded by SplitUnits length (5 items: KiB, MiB, GiB, TiB, Total)
@@ -225,7 +225,6 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 			}
 		}
 	})
-	a.splitUnitSelect.SetToolTip(tr("advanced.split.unit_tooltip", "Choose the chunk units"))
 	a.splitUnitSelect.SetSelectedIndex(int(a.State.SplitSelected))
 
 	splitRow := container.NewBorder(nil, nil,
@@ -268,13 +267,13 @@ func (a *App) buildDecryptOptionsInto(target *fyne.Container) {
 	a.forceDecryptCheck = ttwidget.NewCheck(tr("advanced.force_decrypt.label", "Force decrypt"), func(checked bool) {
 		a.State.Keep = checked
 	})
-	a.forceDecryptCheck.SetToolTip(tr("advanced.force_decrypt.tooltip", "Keep unverified output when integrity checks fail; output may be corrupted"))
+	a.forceDecryptCheck.SetToolTip(tr("advanced.force_decrypt.tooltip", "Keep damaged or unverified output"))
 	a.forceDecryptCheck.SetChecked(a.State.Keep)
 
 	a.verifyFirstCheck = ttwidget.NewCheck(tr("advanced.verify_first.label", "Verify first"), func(checked bool) {
 		a.State.VerifyFirst = checked
 	})
-	a.verifyFirstCheck.SetToolTip(tr("advanced.verify_first.tooltip", "Verify integrity before decryption (slower but more secure)"))
+	a.verifyFirstCheck.SetToolTip(tr("advanced.verify_first.tooltip", "Verify before decrypting"))
 	a.verifyFirstCheck.SetChecked(a.State.VerifyFirst)
 
 	row1 := container.NewGridWithColumns(2, a.forceDecryptCheck, a.verifyFirstCheck)
@@ -282,7 +281,7 @@ func (a *App) buildDecryptOptionsInto(target *fyne.Container) {
 	a.deleteVolumeCheck = ttwidget.NewCheck(tr("advanced.delete_volume.label", "Delete volume"), func(checked bool) {
 		a.State.Delete = checked
 	})
-	a.deleteVolumeCheck.SetToolTip(tr("advanced.delete_volume.tooltip", "Delete the volume after a successful decryption"))
+	a.deleteVolumeCheck.SetToolTip(tr("advanced.delete_volume.tooltip", "Delete volume after decryption"))
 	a.deleteVolumeCheck.SetChecked(a.State.Delete)
 
 	a.autoUnzipCheck = ttwidget.NewCheck(tr("advanced.auto_unzip.label", "Auto unzip"), func(checked bool) {
@@ -295,7 +294,7 @@ func (a *App) buildDecryptOptionsInto(target *fyne.Container) {
 		}
 		a.updateUIState()
 	})
-	a.autoUnzipCheck.SetToolTip(tr("advanced.auto_unzip.tooltip", "Extract {{.Extension}} upon decryption (may overwrite files)", map[string]any{
+	a.autoUnzipCheck.SetToolTip(tr("advanced.auto_unzip.tooltip", "Extract {{.Extension}} after decryption", map[string]any{
 		"Extension": ".zip",
 	}))
 	a.autoUnzipCheck.SetChecked(a.State.AutoUnzip)
@@ -303,7 +302,7 @@ func (a *App) buildDecryptOptionsInto(target *fyne.Container) {
 	a.sameLevelCheck = ttwidget.NewCheck(tr("advanced.same_level.label", "Same level"), func(checked bool) {
 		a.State.SameLevel = checked
 	})
-	a.sameLevelCheck.SetToolTip(tr("advanced.same_level.tooltip", "Extract {{.Extension}} contents to same folder as volume", map[string]any{
+	a.sameLevelCheck.SetToolTip(tr("advanced.same_level.tooltip", "Extract {{.Extension}} beside the volume", map[string]any{
 		"Extension": ".zip",
 	}))
 	a.sameLevelCheck.SetChecked(a.State.SameLevel)

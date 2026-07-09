@@ -9,7 +9,13 @@ import (
 )
 
 func newToolbarButton(label string, icon fyne.Resource, tapped func()) *ttwidget.Button {
-	button := ttwidget.NewButtonWithIcon("", icon, tapped)
+	button := ttwidget.NewButtonWithIcon("", icon, nil)
+	button.OnTapped = func() {
+		button.MouseOut()
+		if tapped != nil {
+			tapped()
+		}
+	}
 	configureToolbarButton(button, label, icon)
 	return button
 }

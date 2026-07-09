@@ -199,7 +199,7 @@ func TestApplyDropErrorPreservesStatusAfterReset(t *testing.T) {
 		closeKeyfileModal bool
 	}{
 		{name: "DecryptDrop", status: "Read access denied", closeKeyfileModal: false},
-		{name: "KeyfileDrop", status: "Keyfile read access denied", closeKeyfileModal: true},
+		{name: "KeyfileDrop", status: "Cannot read keyfile", closeKeyfileModal: true},
 	}
 
 	for _, tc := range testCases {
@@ -2067,7 +2067,7 @@ func TestKeyfileDropHandling(t *testing.T) {
 	if got[0] != key1 || got[1] != key2 {
 		t.Fatalf("Keyfiles = %#v; want [%q %q] in order", got, key1, key2)
 	}
-	wantLabel := trn("keyfiles.count", "Using {{.Count}} keyfiles", 2, map[string]any{"Count": 2})
+	wantLabel := trn("keyfiles.count", "{{.Count}} keyfiles", 2, map[string]any{"Count": 2})
 	if label != wantLabel {
 		t.Fatalf("rendered keyfile label = %q; want %q", label, wantLabel)
 	}

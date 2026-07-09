@@ -17,6 +17,13 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+const (
+	keyfileDialogWidth      = windowWidth - 8
+	keyfileDialogListWidth  = windowWidth - 40
+	keyfileDialogListHeight = 88
+	keyfileDialogHeight     = 260
+)
+
 func keyfileApplicable(mode string, required bool, deniable bool) bool {
 	return mode != "decrypt" || required || deniable
 }
@@ -30,11 +37,11 @@ func keyfileDisplayLabel(required bool, count int, applicable bool) string {
 	case count == 0:
 		return tr("keyfiles.none_selected", "None selected")
 	case count == 1:
-		return trn("keyfiles.count", "Using {{.Count}} keyfile", count, map[string]any{
+		return trn("keyfiles.count", "{{.Count}} keyfile", count, map[string]any{
 			"Count": count,
 		})
 	default:
-		return trn("keyfiles.count", "Using {{.Count}} keyfiles", count, map[string]any{
+		return trn("keyfiles.count", "{{.Count}} keyfiles", count, map[string]any{
 			"Count": count,
 		})
 	}
@@ -78,13 +85,13 @@ func (a *App) showKeyfileModal() {
 	// Create order checkbox/label based on mode
 	var orderWidget fyne.CanvasObject
 	if a.State.Mode != "decrypt" {
-		a.keyfileOrderCheck = widget.NewCheck(tr("keyfiles.require_order", "Require correct order"), func(checked bool) {
+		a.keyfileOrderCheck = widget.NewCheck(tr("keyfiles.require_order", "Use order"), func(checked bool) {
 			a.State.KeyfileOrdered = checked
 		})
 		a.keyfileOrderCheck.SetChecked(a.State.KeyfileOrdered)
 		orderWidget = a.keyfileOrderCheck
 	} else if a.State.KeyfileOrdered {
-		orderWidget = widget.NewLabel(tr("keyfiles.order_required", "Correct ordering is required"))
+		orderWidget = widget.NewLabel(tr("keyfiles.order_required", "Order matters"))
 	} else {
 		orderWidget = widget.NewLabel("") // Empty placeholder
 	}
@@ -94,6 +101,8 @@ func (a *App) showKeyfileModal() {
 
 	// Container for keyfile labels (dynamic)
 	a.keyfileListContainer = container.NewVBox()
+	a.keyfileListScroll = container.NewScroll(a.keyfileListContainer)
+	a.keyfileListScroll.SetMinSize(fyne.NewSize(keyfileDialogListWidth, keyfileDialogListHeight))
 	a.updateKeyfileList()
 
 	// Buttons
@@ -114,14 +123,15 @@ func (a *App) showKeyfileModal() {
 	buttonRow := container.NewGridWithColumns(2, clearBtn, doneBtn)
 
 	content := container.NewVBox(
-		widget.NewLabel(tr("keyfiles.drop_hint", "Drag and drop your keyfiles here")),
+		widget.NewLabel(tr("keyfiles.drop_hint", "Drop keyfiles here")),
 		orderWidget,
 		a.keyfileSeparator,
-		a.keyfileListContainer,
+		a.keyfileListScroll,
 		buttonRow,
 	)
 
-	a.keyfileModal = dialog.NewCustomWithoutButtons(tr("keyfiles.manage_title", "Manage keyfiles:"), content, a.Window)
+	a.keyfileModal = dialog.NewCustomWithoutButtons(tr("keyfiles.manage_title", "Keyfiles"), content, a.Window)
+	a.keyfileModal.Resize(fyne.NewSize(keyfileDialogWidth, keyfileDialogHeight))
 	a.State.ShowKeyfile = true
 	a.State.ModalID++
 	a.keyfileModal.Show()
@@ -144,14 +154,27 @@ func (a *App) updateKeyfileList() {
 			a.keyfileSeparator.Hide()
 		}
 	}
+	if a.keyfileListScroll != nil {
+		if len(a.State.Keyfiles) > 0 {
+			a.keyfileListScroll.Show()
+		} else {
+			a.keyfileListScroll.Hide()
+		}
+	}
 
 	// Add label for each keyfile
 	for _, kf := range a.State.Keyfiles {
-		label := widget.NewLabel(filepath.Base(kf))
+		label := newKeyfileNameLabel(filepath.Base(kf))
 		a.keyfileListContainer.Add(label)
 	}
 
 	a.keyfileListContainer.Refresh()
+}
+
+func newKeyfileNameLabel(name string) *widget.Label {
+	label := widget.NewLabel(name)
+	label.Truncation = fyne.TextTruncateEllipsis
+	return label
 }
 
 // createKeyfile creates a new random keyfile.

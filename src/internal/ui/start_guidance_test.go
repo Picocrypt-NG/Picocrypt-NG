@@ -46,7 +46,7 @@ func TestStartHintExplainsMissingCredentials(t *testing.T) {
 	a.State.OnlyFiles = []string{"input.txt"}
 
 	got := a.startReadinessHint(a.State.UISnapshot())
-	want := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles to enable Start.")
+	want := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
 	if got != want {
 		t.Fatalf("startReadinessHint() = %q; want %q", got, want)
 	}
@@ -160,7 +160,7 @@ func TestOutputChangeEnabledBeforeCredentialsAfterFileSelection(t *testing.T) {
 	if a.startHintLabel == nil {
 		t.Fatal("startHintLabel was not built")
 	}
-	wantHint := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles to enable Start.")
+	wantHint := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
 	if got := a.startHintLabel.Text; got != wantHint {
 		t.Fatalf("startHintLabel.Text = %q; want %q", got, wantHint)
 	}

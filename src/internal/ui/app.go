@@ -162,7 +162,7 @@ type App struct {
 	recursivelyCheck *ttwidget.Check
 	splitCheck       *ttwidget.Check
 	splitSizeEntry   *widget.Entry
-	splitUnitSelect  *ttwidget.Select
+	splitUnitSelect  *widget.Select
 
 	// Advanced options (decrypt mode)
 	forceDecryptCheck *ttwidget.Check
@@ -180,6 +180,7 @@ type App struct {
 
 	// Keyfile modal widgets (moved from package-level to avoid global state)
 	keyfileListContainer *fyne.Container
+	keyfileListScroll    *container.Scroll
 	keyfileSeparator     *widget.Separator
 	keyfileOrderCheck    *widget.Check
 
@@ -331,41 +332,40 @@ func setCheckTooltip(check *ttwidget.Check, text string) {
 
 func (a *App) refreshAdvancedLocalizedText() {
 	setCheckText(a.paranoidCheck, tr("advanced.paranoid.label", "Paranoid mode"))
-	setCheckTooltip(a.paranoidCheck, tr("advanced.paranoid.tooltip", "Adds Serpent-CTR and stronger KDF/MAC settings for defense in depth"))
+	setCheckTooltip(a.paranoidCheck, tr("advanced.paranoid.tooltip", "Adds Serpent and stronger checks"))
 	setCheckText(a.compressCheck, tr("advanced.compress.label", "Compress files"))
-	setCheckTooltip(a.compressCheck, tr("advanced.compress.tooltip", "Compress files with Deflate before encrypting"))
+	setCheckTooltip(a.compressCheck, tr("advanced.compress.tooltip", "Compress before encrypting"))
 	setCheckText(a.reedSolomonCheck, tr("advanced.reed_solomon.label", "Reed-Solomon"))
-	setCheckTooltip(a.reedSolomonCheck, tr("advanced.reed_solomon.tooltip", "Add redundancy to repair limited file corruption"))
+	setCheckTooltip(a.reedSolomonCheck, tr("advanced.reed_solomon.tooltip", "Add recovery data"))
 	if a.State != nil && a.State.Mode == "decrypt" {
 		setCheckText(a.deleteCheck, tr("advanced.delete_encrypted.label", "Delete encrypted"))
 	} else {
 		setCheckText(a.deleteCheck, tr("advanced.delete_files.label", "Delete files"))
-		setCheckTooltip(a.deleteCheck, tr("advanced.delete_files.tooltip", "Deletes source files after successful encryption. This is not secure erase."))
+		setCheckTooltip(a.deleteCheck, tr("advanced.delete_files.tooltip", "Delete source files after encryption"))
 	}
 	setCheckText(a.deniabilityCheck, tr("advanced.deniability.label", "Deniability"))
-	setCheckTooltip(a.deniabilityCheck, tr("advanced.deniability.tooltip", "Creates output without a readable Picocrypt header. Keep the password/keyfiles exactly; this is not filename hiding."))
+	setCheckTooltip(a.deniabilityCheck, tr("advanced.deniability.tooltip", "No readable Picocrypt header. Keep password/keyfiles."))
 	setCheckText(a.recursivelyCheck, tr("advanced.recursively.label", "Recursively"))
-	setCheckTooltip(a.recursivelyCheck, tr("advanced.recursively.tooltip", "Process each selected file separately and write separate output paths."))
+	setCheckTooltip(a.recursivelyCheck, tr("advanced.recursively.tooltip", "Process each file separately"))
 	setCheckText(a.splitCheck, tr("advanced.split.label", "Split:"))
-	setCheckTooltip(a.splitCheck, tr("advanced.split.tooltip", "Split the output file into smaller chunks"))
+	setCheckTooltip(a.splitCheck, tr("advanced.split.tooltip", "Split output into parts"))
 	setEntryPlaceholder(a.splitSizeEntry, tr("advanced.split.size_placeholder", "Size"))
 	if a.splitUnitSelect != nil {
 		a.splitUnitSelect.Options = localizedSplitUnits(a.State.SplitUnits)
 		a.splitUnitSelect.SetSelectedIndex(int(a.State.SplitSelected))
-		a.splitUnitSelect.SetToolTip(tr("advanced.split.unit_tooltip", "Choose the chunk units"))
 	}
 	setCheckText(a.forceDecryptCheck, tr("advanced.force_decrypt.label", "Force decrypt"))
-	setCheckTooltip(a.forceDecryptCheck, tr("advanced.force_decrypt.tooltip", "Keep unverified output when integrity checks fail; output may be corrupted"))
+	setCheckTooltip(a.forceDecryptCheck, tr("advanced.force_decrypt.tooltip", "Keep damaged or unverified output"))
 	setCheckText(a.verifyFirstCheck, tr("advanced.verify_first.label", "Verify first"))
-	setCheckTooltip(a.verifyFirstCheck, tr("advanced.verify_first.tooltip", "Verify integrity before decryption (slower but more secure)"))
+	setCheckTooltip(a.verifyFirstCheck, tr("advanced.verify_first.tooltip", "Verify before decrypting"))
 	setCheckText(a.deleteVolumeCheck, tr("advanced.delete_volume.label", "Delete volume"))
-	setCheckTooltip(a.deleteVolumeCheck, tr("advanced.delete_volume.tooltip", "Delete the volume after a successful decryption"))
+	setCheckTooltip(a.deleteVolumeCheck, tr("advanced.delete_volume.tooltip", "Delete volume after decryption"))
 	setCheckText(a.autoUnzipCheck, tr("advanced.auto_unzip.label", "Auto unzip"))
-	setCheckTooltip(a.autoUnzipCheck, tr("advanced.auto_unzip.tooltip", "Extract {{.Extension}} upon decryption (may overwrite files)", map[string]any{
+	setCheckTooltip(a.autoUnzipCheck, tr("advanced.auto_unzip.tooltip", "Extract {{.Extension}} after decryption", map[string]any{
 		"Extension": ".zip",
 	}))
 	setCheckText(a.sameLevelCheck, tr("advanced.same_level.label", "Same level"))
-	setCheckTooltip(a.sameLevelCheck, tr("advanced.same_level.tooltip", "Extract {{.Extension}} contents to same folder as volume", map[string]any{
+	setCheckTooltip(a.sameLevelCheck, tr("advanced.same_level.tooltip", "Extract {{.Extension}} beside the volume", map[string]any{
 		"Extension": ".zip",
 	}))
 }
@@ -731,7 +731,7 @@ func (a *App) startReadinessHint(snap app.UISnapshot) string {
 		return tr("start.hint.scanning", "Scanning files; wait before starting.")
 	}
 	if snap.KeyfileCount == 0 && snap.Password == "" {
-		return tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles to enable Start.")
+		return tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
 	}
 	if snap.Mode == "encrypt" {
 		if snap.Password != "" && snap.CPassword == "" {
@@ -805,11 +805,11 @@ func renderStatus(msg app.StatusMessage, snap app.UISnapshot) string {
 	case app.StatusDropFailedSplitPath:
 		return tr("drop.failed_split_path", "Failed to derive split volume path")
 	case app.StatusKeyfileReadAccessDenied:
-		return tr("keyfiles.read_access_denied", "Keyfile read access denied")
+		return tr("keyfiles.read_access_denied", "Cannot read keyfile")
 	case app.StatusKeyfileGenerateFailed:
-		return tr("keyfiles.generate_failed", "Failed to generate keyfile")
+		return tr("keyfiles.generate_failed", "Failed to create keyfile")
 	case app.StatusKeyfileWriteFailed:
-		return tr("keyfiles.write_failed", "Failed to write keyfile")
+		return tr("keyfiles.write_failed", "Failed to save keyfile")
 	case app.StatusMobileAppStorageCreateFailed:
 		return tr("mobile.app_storage.create_failed", "Failed to create app storage")
 	case app.StatusMobileAppStorageReadFailed:

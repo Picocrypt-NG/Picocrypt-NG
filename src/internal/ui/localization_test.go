@@ -31,8 +31,8 @@ func TestLoadTranslations(t *testing.T) {
 	}
 
 	got := trn("keyfiles.count", "{{.Count}} fallback", 2, map[string]any{"Count": 2})
-	if got != "Using 2 keyfiles" {
-		t.Fatalf("trn(keyfiles.count, 2) = %q; want Using 2 keyfiles", got)
+	if got != "2 keyfiles" {
+		t.Fatalf("trn(keyfiles.count, 2) = %q; want 2 keyfiles", got)
 	}
 }
 
@@ -74,8 +74,8 @@ func TestLocalizationCatalogEmbeddedByLoader(t *testing.T) {
 		t.Fatalf("tr(status.ready) after embedded load = %q; want Ready", got)
 	}
 	got := trn("keyfiles.count", "{{.Count}} fallback", 2, map[string]any{"Count": 2})
-	if got != "Using 2 keyfiles" {
-		t.Fatalf("trn(keyfiles.count, 2) after embedded load = %q; want Using 2 keyfiles", got)
+	if got != "2 keyfiles" {
+		t.Fatalf("trn(keyfiles.count, 2) after embedded load = %q; want 2 keyfiles", got)
 	}
 }
 
@@ -151,7 +151,7 @@ func TestRussianFyneCatalogPluralizesAtRuntime(t *testing.T) {
 		{
 			name: "few keyfiles",
 			got:  trn("keyfiles.count", "{{.Count}} keyfiles", 3, map[string]any{"Count": 3}),
-			want: "Используется 3 ключевых файла",
+			want: "3 ключ-файла",
 		},
 		{
 			name: "many completed",
@@ -174,10 +174,10 @@ func TestRussianFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 	assertCatalogStringContains(t, catalog, "status.kept_output_unverified", "не провер", "повреж")
 	assertCatalogStringContains(t, catalog, "comments.placeholder", "открыт", "не шифру")
 	assertCatalogStringEquals(t, catalog, "comments.placeholder", "Открытая заметка; не шифруется")
-	assertCatalogStringEquals(t, catalog, "keyfiles.label", "Файлы-ключи:")
+	assertCatalogStringEquals(t, catalog, "keyfiles.label", "Ключ-файлы:")
 	assertCatalogStringEquals(t, catalog, "advanced.split.unit.total", "Всего")
-	assertCatalogStringContains(t, catalog, "advanced.delete_files.tooltip", "после успеш", "не", "стира")
-	assertCatalogStringContains(t, catalog, "advanced.deniability.tooltip", "заголов", "парол", "ключ", "не скрывает")
+	assertCatalogStringEquals(t, catalog, "advanced.delete_files.tooltip", "Удаляет исходные файлы после шифрования")
+	assertCatalogStringContains(t, catalog, "advanced.deniability.tooltip", "заголов", "парол", "ключ-файлы")
 	assertCatalogStringContains(t, catalog, "advanced.recursively.tooltip", "кажд", "отдель")
 	assertCatalogStringContains(t, catalog, "drop.header_may_be_deniable", "может", "правдоподоб")
 	assertCatalogStringEquals(t, catalog, "advanced.delete_volume.label", "Удалить зашифрованный том")
@@ -188,6 +188,18 @@ func TestRussianFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 	for _, forbidden := range []string{"аноним", "невидим", "скрытый режим"} {
 		if strings.Contains(deniabilityCopy, forbidden) {
 			t.Fatalf("Russian deniability copy must not contain %q:\n%s", forbidden, deniabilityCopy)
+		}
+	}
+
+	keyfileCopy := strings.ToLower(catalogString(t, catalog, "keyfiles.label") + "\n" +
+		catalogString(t, catalog, "keyfiles.required") + "\n" +
+		catalogString(t, catalog, "keyfiles.drop_hint") + "\n" +
+		catalogString(t, catalog, "keyfiles.generate_failed") + "\n" +
+		catalogString(t, catalog, "keyfiles.write_failed") + "\n" +
+		catalogString(t, catalog, "keyfiles.read_access_denied"))
+	for _, forbidden := range []string{"ключевой файл", "ключевые файлы", "ключевых"} {
+		if strings.Contains(keyfileCopy, forbidden) {
+			t.Fatalf("Russian keyfile copy must use ключ-файл/ключ-файлы, not %q:\n%s", forbidden, keyfileCopy)
 		}
 	}
 }
@@ -445,8 +457,8 @@ func TestCountedHelperFallbacksWithoutLoadedTranslations(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"keyfile singular", keyfileDisplayLabel(false, 1, true), "Using 1 keyfile"},
-		{"keyfile plural", keyfileDisplayLabel(false, 2, true), "Using 2 keyfiles"},
+		{"keyfile singular", keyfileDisplayLabel(false, 1, true), "1 keyfile"},
+		{"keyfile plural", keyfileDisplayLabel(false, 2, true), "2 keyfiles"},
 		{"selection file singular", selectedFilesLabel(1), "1 file"},
 		{"selection file plural", selectedFilesLabel(2), "2 files"},
 		{"selection folder singular", selectedFoldersLabel(1), "1 folder"},

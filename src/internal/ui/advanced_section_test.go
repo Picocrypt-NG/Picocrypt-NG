@@ -301,13 +301,15 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 			{"Deniability", a.deniabilityCheck},
 			{"Recursively", a.recursivelyCheck},
 			{"Split:", a.splitCheck},
-			{"split units", a.splitUnitSelect},
 		})
 
-		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.tooltip", "Creates output without a readable Picocrypt header. Keep the password/keyfiles exactly; this is not filename hiding."); got != want {
+		if got, want := a.deleteCheck.ToolTip(), tr("advanced.delete_files.tooltip", "Delete source files after encryption"); got != want {
+			t.Errorf("Delete files tooltip = %q, want %q", got, want)
+		}
+		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.tooltip", "No readable Picocrypt header. Keep password/keyfiles."); got != want {
 			t.Errorf("Deniability tooltip = %q, want %q", got, want)
 		}
-		if got, want := a.recursivelyCheck.ToolTip(), tr("advanced.recursively.tooltip", "Process each selected file separately and write separate output paths."); got != want {
+		if got, want := a.recursivelyCheck.ToolTip(), tr("advanced.recursively.tooltip", "Process each file separately"); got != want {
 			t.Errorf("Recursively tooltip = %q, want %q", got, want)
 		}
 	})
@@ -328,11 +330,11 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 			{"Same level", a.sameLevelCheck},
 		})
 
-		if got := a.autoUnzipCheck.ToolTip(); got != "Extract .zip upon decryption (may overwrite files)" {
+		if got := a.autoUnzipCheck.ToolTip(); got != "Extract .zip after decryption" {
 			t.Errorf("Auto unzip tooltip = %q; want rendered .zip extension", got)
 		}
-		if got := a.sameLevelCheck.ToolTip(); got != "Extract .zip contents to same folder as volume" {
-			t.Errorf("Same level tooltip = %q; want rendered .zip extension", got)
+		if got := a.sameLevelCheck.ToolTip(); got != "Extract .zip beside the volume" {
+			t.Errorf("Same level tooltip = %q; want rendered .zip extraction hint", got)
 		}
 	})
 }
@@ -450,7 +452,7 @@ func TestAdvancedDisclosureKeepsOptionTooltipsLocalized(t *testing.T) {
 	if a.advancedToggleBtn.Text != tr("advanced.title", "Advanced") {
 		t.Fatalf("advanced disclosure title = %q; want localized title", a.advancedToggleBtn.Text)
 	}
-	if got := a.paranoidCheck.ToolTip(); got != tr("advanced.paranoid.tooltip", "Adds Serpent-CTR and stronger KDF/MAC settings for defense in depth") {
+	if got := a.paranoidCheck.ToolTip(); got != tr("advanced.paranoid.tooltip", "Adds Serpent and stronger checks") {
 		t.Fatalf("paranoid tooltip = %q; want localized tooltip", got)
 	}
 	if canvasTreeContainsLabelWithText(a.advancedDetail, tr("advanced.summary.defaults", "Optional settings. Defaults are recommended for most files.")) {
