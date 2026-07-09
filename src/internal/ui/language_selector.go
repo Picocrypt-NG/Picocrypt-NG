@@ -53,5 +53,5 @@ func (s *languageSelector) menu() *fyne.Menu {
 			_ = s.owner.SwitchLanguage(code)
 		}))
 	}
-	return fyne.NewMenu("Language", items...)
+	return fyne.NewMenu(tr("language.menu", "Language"), items...)
 }

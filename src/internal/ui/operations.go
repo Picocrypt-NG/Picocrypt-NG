@@ -53,8 +53,7 @@ func recursiveProcessingStatus(index, total int) string {
 	})
 }
 
-func (a *App) splitSizeReady() bool {
-	snap := a.State.Snapshot()
+func splitSizeReady(snap app.UISnapshot) bool {
 	if !snap.Split {
 		return true
 	}

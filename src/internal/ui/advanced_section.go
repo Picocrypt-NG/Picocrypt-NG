@@ -294,7 +294,7 @@ func (a *App) buildDecryptOptionsInto(target *fyne.Container) {
 		}
 		a.updateUIState()
 	})
-	a.autoUnzipCheck.SetToolTip(tr("advanced.auto_unzip.tooltip", "Extract {{.Extension}} after decryption", map[string]any{
+	a.autoUnzipCheck.SetToolTip(tr("advanced.auto_unzip.tooltip", "Extract {{.Extension}}; may overwrite files", map[string]any{
 		"Extension": ".zip",
 	}))
 	a.autoUnzipCheck.SetChecked(a.State.AutoUnzip)
@@ -362,9 +362,8 @@ func setWidgetDisabled(w fyne.Disableable, disabled bool) {
 
 // updateEncryptOptionsState updates encrypt mode option states.
 func (a *App) updateEncryptOptionsState(advancedDisabled bool, snap app.UISnapshot) {
-	// All advanced options are disabled until user enters credentials (password or keyfiles)
-	// AND passwords must match in encrypt mode
-	// Additional conditions apply to some options
+	// Advanced options stay configurable after input is selected; Start remains
+	// disabled separately until credentials and required values are ready.
 
 	notEnoughFiles := snap.AllFileCount <= 1 && snap.OnlyFolderCount == 0
 

@@ -177,6 +177,7 @@ func TestRussianFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 	assertCatalogStringEquals(t, catalog, "keyfiles.label", "Ключ-файлы:")
 	assertCatalogStringEquals(t, catalog, "advanced.split.unit.total", "Всего")
 	assertCatalogStringEquals(t, catalog, "advanced.delete_files.tooltip", "Удаляет исходные файлы после шифрования")
+	assertCatalogStringContains(t, catalog, "advanced.auto_unzip.tooltip", "извлеч", "перезапис")
 	assertCatalogStringContains(t, catalog, "advanced.deniability.tooltip", "заголов", "парол", "ключ-файлы")
 	assertCatalogStringContains(t, catalog, "advanced.recursively.tooltip", "кажд", "отдель")
 	assertCatalogStringContains(t, catalog, "drop.header_may_be_deniable", "может", "правдоподоб")
@@ -845,7 +846,11 @@ func isAllowedDisplayStringLiteral(value string) bool {
 func displayArgumentIndexes(call *ast.CallExpr) []int {
 	name := callName(call)
 	switch name {
+	case "configureToolbarButton":
+		return []int{1}
 	case "NewColoredLabel",
+		"newToolbarButton",
+		"fyne.NewMenu",
 		"widget.NewButton",
 		"widget.NewButtonWithIcon",
 		"widget.NewCheck",

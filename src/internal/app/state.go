@@ -685,6 +685,7 @@ type UISnapshot struct {
 	OutputFile           string
 	InputFile            string
 	Split                bool
+	SplitSize            string
 	MainStatus           string
 	MainStatusKind       MainStatusKind
 	MainStatusColor      color.RGBA
@@ -778,6 +779,7 @@ func (s *State) UISnapshot() UISnapshot {
 		OutputFile:           s.OutputFile,
 		InputFile:            s.InputFile,
 		Split:                s.Split,
+		SplitSize:            s.SplitSize,
 		MainStatus:           s.MainStatus,
 		MainStatusKind:       s.MainStatusKind,
 		MainStatusColor:      s.MainStatusColor,

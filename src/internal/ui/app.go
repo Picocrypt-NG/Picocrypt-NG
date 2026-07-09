@@ -361,7 +361,7 @@ func (a *App) refreshAdvancedLocalizedText() {
 	setCheckText(a.deleteVolumeCheck, tr("advanced.delete_volume.label", "Delete volume"))
 	setCheckTooltip(a.deleteVolumeCheck, tr("advanced.delete_volume.tooltip", "Delete volume after decryption"))
 	setCheckText(a.autoUnzipCheck, tr("advanced.auto_unzip.label", "Auto unzip"))
-	setCheckTooltip(a.autoUnzipCheck, tr("advanced.auto_unzip.tooltip", "Extract {{.Extension}} after decryption", map[string]any{
+	setCheckTooltip(a.autoUnzipCheck, tr("advanced.auto_unzip.tooltip", "Extract {{.Extension}}; may overwrite files", map[string]any{
 		"Extension": ".zip",
 	}))
 	setCheckText(a.sameLevelCheck, tr("advanced.same_level.label", "Same level"))
@@ -741,7 +741,7 @@ func (a *App) startReadinessHint(snap app.UISnapshot) string {
 			return tr("start.hint.passwordMismatch", "Passwords do not match.")
 		}
 	}
-	if !a.splitSizeReady() {
+	if !splitSizeReady(snap) {
 		return tr("start.hint.invalidSplitSize", "Choose a positive split size.")
 	}
 	return ""
@@ -749,7 +749,7 @@ func (a *App) startReadinessHint(snap app.UISnapshot) string {
 
 func (a *App) startDisabled(snap app.UISnapshot) bool {
 	configureDisabled := snap.Scanning || !hasSelectedInput(snap)
-	return configureDisabled || !snap.CanStart() || !a.splitSizeReady()
+	return configureDisabled || !snap.CanStart() || !splitSizeReady(snap)
 }
 
 func renderStatus(msg app.StatusMessage, snap app.UISnapshot) string {

@@ -120,7 +120,7 @@ func (r *passwordStrengthRenderer) updateArc() {
 	//
 	// Fyne Arc: 0° is top, positive is clockwise
 	// strength=0: 72° arc, strength=4: 360° (full circle)
-	endAngle := float32(72 * (r.indicator.strength + 1))
+	endAngle := float32(72 * (s + 1))
 
 	r.arc.StartAngle = 0
 	r.arc.EndAngle = endAngle

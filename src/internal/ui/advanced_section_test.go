@@ -330,8 +330,8 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 			{"Same level", a.sameLevelCheck},
 		})
 
-		if got := a.autoUnzipCheck.ToolTip(); got != "Extract .zip after decryption" {
-			t.Errorf("Auto unzip tooltip = %q; want rendered .zip extension", got)
+		if got := a.autoUnzipCheck.ToolTip(); got != "Extract .zip; may overwrite files" {
+			t.Errorf("Auto unzip tooltip = %q; want rendered .zip overwrite warning", got)
 		}
 		if got := a.sameLevelCheck.ToolTip(); got != "Extract .zip beside the volume" {
 			t.Errorf("Same level tooltip = %q; want rendered .zip extraction hint", got)
