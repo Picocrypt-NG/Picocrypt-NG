@@ -104,6 +104,7 @@ func TestDesktopUILayoutFitsWindowAfterBuild(t *testing.T) {
 				tc.configure(a)
 			}
 
+			var min, size fyne.Size
 			fyne.DoAndWait(func() {
 				a.Window = fyneApp.NewWindow("layout-test")
 				a.Window.SetFixedSize(true)
@@ -111,8 +112,161 @@ func TestDesktopUILayoutFitsWindowAfterBuild(t *testing.T) {
 				content := a.buildUI()
 				a.Window.SetContent(content)
 				a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+				min = content.MinSize()
+				size = a.Window.Canvas().Size()
 			})
 
+			if min.Width > windowWidth {
+				t.Fatalf("English %s layout MinSize width %.1f exceeds compact window width %.1f", tc.name, min.Width, float32(windowWidth))
+			}
+			if size.Width > windowWidth {
+				t.Fatalf("English %s layout grew desktop window width to %.1f; want <= %.1f", tc.name, size.Width, float32(windowWidth))
+			}
+			assertWindowFitsContent(t, a)
+		})
+	}
+}
+
+func TestDesktopRussianUILayoutKeepsCompactWidth(t *testing.T) {
+	if raceEnabled {
+		t.Skip("Fyne v2.7.4 internal cache races under -race; covered on non-race matrices")
+	}
+
+	resetLocalizationForTest(t)
+
+	cases := []struct {
+		name      string
+		configure func(*App)
+	}{
+		{
+			name: "initial",
+		},
+		{
+			name: "encrypt",
+			configure: func(a *App) {
+				a.State.Mode = "encrypt"
+				a.State.OnlyFiles = []string{"input.txt"}
+				a.State.SetInputSelection(1, 0, 0, false)
+				a.State.OutputFile = "input.txt.pcv"
+			},
+		},
+		{
+			name: "decrypt",
+			configure: func(a *App) {
+				a.State.Mode = "decrypt"
+				a.State.OnlyFiles = []string{"input.txt.pcv"}
+				a.State.SetInputDecryptVolume()
+				a.State.InputFile = "input.zip.pcv"
+				a.State.OutputFile = "input.zip"
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fyneApp := newTestFyneApp(t)
+			fyneApp.Settings().SetTheme(fixedVariantTheme{Theme: NewCompactTheme(), variant: theme.VariantLight})
+
+			a, err := NewApp("v2.test")
+			if err != nil {
+				t.Fatalf("NewApp returned error: %v", err)
+			}
+			if err := setActiveLanguage("ru"); err != nil {
+				t.Fatalf("setActiveLanguage(ru) returned error: %v", err)
+			}
+			a.fyneApp = fyneApp
+			if tc.configure != nil {
+				tc.configure(a)
+			}
+
+			var min, size fyne.Size
+			fyne.DoAndWait(func() {
+				a.Window = fyneApp.NewWindow("russian-layout-test")
+				a.Window.SetFixedSize(true)
+				a.Window.Resize(fyne.NewSize(windowWidth, windowHeightEncrypt))
+				content := a.buildUI()
+				a.Window.SetContent(content)
+				a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+				min = content.MinSize()
+				size = a.Window.Canvas().Size()
+			})
+
+			if min.Width > windowWidth {
+				t.Fatalf("Russian %s layout MinSize width %.1f exceeds compact window width %.1f", tc.name, min.Width, float32(windowWidth))
+			}
+			if size.Width > windowWidth {
+				t.Fatalf("Russian %s layout grew desktop window width to %.1f; want <= %.1f", tc.name, size.Width, float32(windowWidth))
+			}
+			assertWindowFitsContent(t, a)
+		})
+	}
+}
+
+func TestDesktopUILayoutKeepsCompactWidthAfterLanguageSwitch(t *testing.T) {
+	if raceEnabled {
+		t.Skip("Fyne v2.7.4 internal cache races under -race; covered on non-race matrices")
+	}
+
+	resetLocalizationForTest(t)
+
+	cases := []struct {
+		name      string
+		configure func(*App)
+	}{
+		{
+			name: "encrypt",
+			configure: func(a *App) {
+				a.State.Mode = "encrypt"
+				a.State.OnlyFiles = []string{"input.txt"}
+				a.State.SetInputSelection(1, 0, 0, false)
+				a.State.OutputFile = "input.txt.pcv"
+			},
+		},
+		{
+			name: "decrypt",
+			configure: func(a *App) {
+				a.State.Mode = "decrypt"
+				a.State.OnlyFiles = []string{"input.zip.pcv"}
+				a.State.SetInputDecryptVolume()
+				a.State.InputFile = "input.zip.pcv"
+				a.State.OutputFile = "input.zip"
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fyneApp := newTestFyneApp(t)
+			fyneApp.Settings().SetTheme(fixedVariantTheme{Theme: NewCompactTheme(), variant: theme.VariantLight})
+
+			a, err := NewApp("v2.test")
+			if err != nil {
+				t.Fatalf("NewApp returned error: %v", err)
+			}
+			a.fyneApp = fyneApp
+			tc.configure(a)
+
+			var min, size fyne.Size
+			fyne.DoAndWait(func() {
+				a.Window = fyneApp.NewWindow("language-switch-layout-test")
+				a.Window.SetFixedSize(true)
+				a.Window.Resize(fyne.NewSize(windowWidth, windowHeightEncrypt))
+				content := a.buildUI()
+				a.Window.SetContent(content)
+				a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+				if err := a.SwitchLanguage("ru"); err != nil {
+					t.Fatalf("SwitchLanguage(ru) returned error: %v", err)
+				}
+				min = content.MinSize()
+				size = a.Window.Canvas().Size()
+			})
+
+			if min.Width > windowWidth {
+				t.Fatalf("Russian %s layout after language switch MinSize width %.1f exceeds compact window width %.1f", tc.name, min.Width, float32(windowWidth))
+			}
+			if size.Width > windowWidth {
+				t.Fatalf("Russian %s layout after language switch grew desktop window width to %.1f; want <= %.1f", tc.name, size.Width, float32(windowWidth))
+			}
 			assertWindowFitsContent(t, a)
 		})
 	}

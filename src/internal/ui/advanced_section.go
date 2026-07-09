@@ -56,7 +56,6 @@ func (a *App) updateAdvancedSection() {
 
 // buildEncryptOptions creates encrypt mode options.
 func (a *App) buildEncryptOptions() {
-	// Row 1: Paranoid + Compress
 	a.paranoidCheck = ttwidget.NewCheck(tr("advanced.paranoid.label", "Paranoid mode"), func(checked bool) {
 		a.State.Paranoid = checked
 	})
@@ -73,7 +72,6 @@ func (a *App) buildEncryptOptions() {
 
 	row1 := container.NewGridWithColumns(2, a.paranoidCheck, a.compressCheck)
 
-	// Row 2: Reed-Solomon + Delete files
 	a.reedSolomonCheck = ttwidget.NewCheck(tr("advanced.reed_solomon.label", "Reed-Solomon"), func(checked bool) {
 		a.State.ReedSolomon = checked
 	})
@@ -88,7 +86,6 @@ func (a *App) buildEncryptOptions() {
 
 	row2 := container.NewGridWithColumns(2, a.reedSolomonCheck, a.deleteCheck)
 
-	// Row 3: Deniability + Recursively
 	a.deniabilityCheck = ttwidget.NewCheck(tr("advanced.deniability.label", "Deniability"), func(checked bool) {
 		a.State.Deniability = checked
 		a.updateUIState()
@@ -111,7 +108,6 @@ func (a *App) buildEncryptOptions() {
 
 	row3 := container.NewGridWithColumns(2, a.deniabilityCheck, a.recursivelyCheck)
 
-	// Row 4: Split into chunks
 	a.splitCheck = ttwidget.NewCheck(tr("advanced.split.label", "Split:"), func(checked bool) {
 		a.State.Split = checked
 		a.updateUIState() // Update status to show increased disk space requirement
@@ -157,7 +153,6 @@ func (a *App) buildEncryptOptions() {
 
 // buildDecryptOptions creates decrypt mode options.
 func (a *App) buildDecryptOptions() {
-	// Row 1: Force decrypt + Verify first
 	a.forceDecryptCheck = ttwidget.NewCheck(tr("advanced.force_decrypt.label", "Force decrypt"), func(checked bool) {
 		a.State.Keep = checked
 	})
@@ -172,7 +167,6 @@ func (a *App) buildDecryptOptions() {
 
 	row1 := container.NewGridWithColumns(2, a.forceDecryptCheck, a.verifyFirstCheck)
 
-	// Row 2: Delete volume + Auto unzip
 	a.deleteVolumeCheck = ttwidget.NewCheck(tr("advanced.delete_volume.label", "Delete volume"), func(checked bool) {
 		a.State.Delete = checked
 	})
@@ -194,9 +188,6 @@ func (a *App) buildDecryptOptions() {
 	}))
 	a.autoUnzipCheck.SetChecked(a.State.AutoUnzip)
 
-	row2 := container.NewGridWithColumns(2, a.deleteVolumeCheck, a.autoUnzipCheck)
-
-	// Row 3: Same level (only if auto unzip is relevant)
 	a.sameLevelCheck = ttwidget.NewCheck(tr("advanced.same_level.label", "Same level"), func(checked bool) {
 		a.State.SameLevel = checked
 	})
@@ -205,11 +196,11 @@ func (a *App) buildDecryptOptions() {
 	}))
 	a.sameLevelCheck.SetChecked(a.State.SameLevel)
 
-	row3 := container.NewGridWithColumns(2, a.sameLevelCheck, widget.NewLabel(""))
+	row2 := container.NewGridWithColumns(2, a.autoUnzipCheck, a.sameLevelCheck)
 
 	a.advancedContainer.Add(row1)
+	a.advancedContainer.Add(a.deleteVolumeCheck)
 	a.advancedContainer.Add(row2)
-	a.advancedContainer.Add(row3)
 
 	// Disable auto unzip if not a zip file
 	if !strings.HasSuffix(a.State.InputFile, ".zip.pcv") {
