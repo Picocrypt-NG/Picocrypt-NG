@@ -482,7 +482,7 @@ func (a *App) buildMobileKeyfilesSection() fyne.CanvasObject {
 func (a *App) buildMobileCommentsSection() fyne.CanvasObject {
 	a.commentsLabel = widget.NewLabel(commentsLabelText(a.State.Mode))
 	a.commentsEntry = widget.NewEntry()
-	a.commentsEntry.SetPlaceHolder(tr("comments.placeholder", "Comments are stored in the header and are not secret."))
+	a.commentsEntry.SetPlaceHolder(tr("comments.placeholder", "Header plaintext; not encrypted or secret."))
 	a.commentsEntry.MultiLine = true
 	a.commentsEntry.OnChanged = func(text string) {
 		if a.State.Mode == "decrypt" {
