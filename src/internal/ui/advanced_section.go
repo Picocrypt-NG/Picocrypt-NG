@@ -146,7 +146,7 @@ func (a *App) buildEncryptOptions() {
 	a.deleteCheck = ttwidget.NewCheck(tr("advanced.delete_files.label", "Delete files"), func(checked bool) {
 		a.State.Delete = checked
 	})
-	a.deleteCheck.SetToolTip(tr("advanced.delete_files.tooltip", "Delete the input files after encryption"))
+	a.deleteCheck.SetToolTip(tr("advanced.delete_files.tooltip", "Deletes source files after successful encryption. This is not secure erase."))
 	a.deleteCheck.SetChecked(a.State.Delete)
 
 	row2 := container.NewGridWithColumns(2, a.reedSolomonCheck, a.deleteCheck)

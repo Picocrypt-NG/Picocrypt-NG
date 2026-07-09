@@ -278,7 +278,7 @@ func (a *App) refreshLocalizedText() {
 			"device where you'll decrypt it."))
 	setLabelText(a.keyfilesTitleLabel, tr("keyfiles.label", "Keyfiles:"))
 	setLabelText(a.commentsLabel, tr("comments.label", "Comments:"))
-	setEntryPlaceholder(a.commentsEntry, tr("comments.placeholder", "Comments (not encrypted)"))
+	setEntryPlaceholder(a.commentsEntry, tr("comments.placeholder", "Comments are stored in the header and are not secret."))
 	setLabelText(a.advancedLabel, tr("advanced.label", "Advanced:"))
 	if a.advancedItem != nil {
 		a.advancedItem.Title = tr("advanced.title", "Advanced")
@@ -347,7 +347,7 @@ func (a *App) refreshAdvancedLocalizedText() {
 		setCheckText(a.deleteCheck, tr("advanced.delete_encrypted.label", "Delete encrypted"))
 	} else {
 		setCheckText(a.deleteCheck, tr("advanced.delete_files.label", "Delete files"))
-		setCheckTooltip(a.deleteCheck, tr("advanced.delete_files.tooltip", "Delete the input files after encryption"))
+		setCheckTooltip(a.deleteCheck, tr("advanced.delete_files.tooltip", "Deletes source files after successful encryption. This is not secure erase."))
 	}
 	setCheckText(a.deniabilityCheck, tr("advanced.deniability.label", "Deniability"))
 	setCheckTooltip(a.deniabilityCheck, tr("advanced.deniability.tooltip", "Creates output without a readable Picocrypt header. Keep the password/keyfiles exactly; this is not filename hiding."))
@@ -854,7 +854,7 @@ func (a *App) buildCommentsSection() fyne.CanvasObject {
 	a.commentsLabel.TextStyle = fyne.TextStyle{Bold: true}
 
 	a.commentsEntry = widget.NewEntry()
-	a.commentsEntry.SetPlaceHolder(tr("comments.placeholder", "Comments (not encrypted)"))
+	a.commentsEntry.SetPlaceHolder(tr("comments.placeholder", "Comments are stored in the header and are not secret."))
 	a.commentsEntry.OnChanged = func(text string) {
 		// In decrypt mode, comments are read-only - revert any changes
 		if a.State.Mode == "decrypt" {

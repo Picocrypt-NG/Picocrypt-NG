@@ -454,7 +454,7 @@ func TestOutputLongNameDoesNotWidenDesktopLayout(t *testing.T) {
 	a.State.SetInputSelection(1, 0, 0, false)
 	a.State.OutputFile = filepath.Join("/tmp", strings.Repeat("very-long-output-name-", 20)+".pcv")
 
-	var size fyne.Size
+	var min, size fyne.Size
 	fyne.DoAndWait(func() {
 		a.Window = fyneApp.NewWindow("layout-test")
 		a.Window.SetFixedSize(true)
@@ -462,12 +462,17 @@ func TestOutputLongNameDoesNotWidenDesktopLayout(t *testing.T) {
 		content := a.buildUI()
 		a.Window.SetContent(content)
 		a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+		min = content.MinSize()
 		size = a.Window.Canvas().Size()
 	})
 
+	if min.Width > windowWidth {
+		t.Fatalf("long output basename content MinSize width %.1f exceeds compact window width %.1f", min.Width, float32(windowWidth))
+	}
 	if size.Width > windowWidth {
 		t.Fatalf("long output basename grew desktop window width to %.1f; want <= %.1f", size.Width, float32(windowWidth))
 	}
+	assertWindowFitsContent(t, a)
 }
 
 func TestDesktopEncryptLayoutCollapsedAdvancedHeightBudgetEnglish(t *testing.T) {
