@@ -285,11 +285,12 @@ func (a *App) buildDecryptOptions() {
 
 // updateAdvancedDisableState updates the disable state of advanced options.
 func (a *App) updateAdvancedDisableState() {
-	a.updateAdvancedDisableStateFromSnapshot(a.State.UISnapshot())
+	snap := a.State.UISnapshot()
+	a.updateAdvancedDisableStateFromSnapshot(snap, snap.Scanning || !hasSelectedInput(snap))
 }
 
-func (a *App) updateAdvancedDisableStateFromSnapshot(snap app.UISnapshot) {
-	advancedDisabled := !snap.CanStart()
+func (a *App) updateAdvancedDisableStateFromSnapshot(snap app.UISnapshot, configureDisabled bool) {
+	advancedDisabled := configureDisabled
 
 	if snap.Mode != "decrypt" {
 		a.updateEncryptOptionsState(advancedDisabled, snap)

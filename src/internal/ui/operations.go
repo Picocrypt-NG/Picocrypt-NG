@@ -10,6 +10,7 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"strings"
 
 	"fyne.io/fyne/v2"
 )
@@ -52,6 +53,15 @@ func recursiveProcessingStatus(index, total int) string {
 	})
 }
 
+func (a *App) splitSizeReady() bool {
+	snap := a.State.Snapshot()
+	if !snap.Split {
+		return true
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(snap.SplitSize), 10, 64)
+	return err == nil && size > 0
+}
+
 // onClickStart handles the Start button click.
 func (a *App) onClickStart() {
 	a.cancelOpenedPathReadiness()
@@ -61,7 +71,7 @@ func (a *App) onClickStart() {
 		return
 	}
 
-	if !a.State.CanStart() {
+	if a.startDisabled(a.State.UISnapshot()) {
 		return
 	}
 

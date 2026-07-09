@@ -59,7 +59,7 @@ var appIconData []byte
 // UI dimensions matching original giu implementation
 const (
 	windowWidth         = 340
-	windowHeightEncrypt = 510 // Full height for encrypt mode (more options)
+	windowHeightEncrypt = 512 // Full height for encrypt mode (more options)
 	windowHeightDecrypt = 430 // Reduced height for decrypt mode (fewer options)
 	windowHeightInitial = 350 // Compact height for initial state (no advanced options)
 	buttonWidth         = 54
@@ -122,6 +122,7 @@ type App struct {
 	outputLabel        *widget.Label
 	outputEntry        interface{ SetText(string) }
 	startButton        *widget.Button
+	startHintLabel     *widget.Label
 	statusLabel        *ColoredLabel
 
 	// Confirm password section (hidden in decrypt mode)
@@ -595,6 +596,10 @@ func (a *App) buildUI() fyne.CanvasObject {
 	// Start button and status
 	a.startButton = widget.NewButton(renderStartAction(snap.StartAction, snap.Recursively), a.onClickStart)
 	a.startButton.Importance = widget.HighImportance
+	a.startHintLabel = widget.NewLabel("")
+	a.startHintLabel.Importance = widget.LowImportance
+	a.startHintLabel.Wrapping = fyne.TextWrapWord
+	a.startHintLabel.Hide()
 
 	a.statusLabel = NewColoredLabel(renderStatus(snap.Status, snap), snap.Status.Color)
 
@@ -607,7 +612,10 @@ func (a *App) buildUI() fyne.CanvasObject {
 		a.advancedContainer,
 		outputSection,
 		widget.NewSeparator(),
-		a.startButton,
+		container.NewVBox(
+			a.startButton,
+			a.startHintLabel,
+		),
 		a.statusLabel,
 	)
 
@@ -708,6 +716,39 @@ func renderStartAction(action app.StartAction, recursively bool) string {
 	default:
 		return tr("action.start", "Start")
 	}
+}
+
+func hasSelectedInput(snap app.UISnapshot) bool {
+	return snap.AllFileCount > 0 || snap.OnlyFileCount > 0 || snap.OnlyFolderCount > 0 || snap.InputFile != ""
+}
+
+func (a *App) startReadinessHint(snap app.UISnapshot) string {
+	if !hasSelectedInput(snap) {
+		return tr("start.hint.noFiles", "Add files or folders to continue.")
+	}
+	if snap.Scanning {
+		return tr("start.hint.scanning", "Scanning files; wait before starting.")
+	}
+	if snap.KeyfileCount == 0 && snap.Password == "" {
+		return tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles to enable Start.")
+	}
+	if snap.Mode == "encrypt" {
+		if snap.Password != "" && snap.CPassword == "" {
+			return tr("start.hint.repeatPassword", "Repeat the password to continue.")
+		}
+		if snap.Password != snap.CPassword {
+			return tr("start.hint.passwordMismatch", "Passwords do not match.")
+		}
+	}
+	if !a.splitSizeReady() {
+		return tr("start.hint.invalidSplitSize", "Choose a positive split size.")
+	}
+	return ""
+}
+
+func (a *App) startDisabled(snap app.UISnapshot) bool {
+	configureDisabled := snap.Scanning || !hasSelectedInput(snap)
+	return configureDisabled || !snap.CanStart() || !a.splitSizeReady()
 }
 
 func renderStatus(msg app.StatusMessage, snap app.UISnapshot) string {
@@ -869,16 +910,12 @@ func (a *App) refreshAdvanced() {
 // This mirrors the exact logic from the original giu implementation.
 func (a *App) updateUIState() {
 	snap := a.State.UISnapshot()
-	hasFiles := snap.AllFileCount > 0 || snap.OnlyFileCount > 0 || snap.OnlyFolderCount > 0
-	isScanning := snap.Scanning
-
-	// Main content disabled - matches giu: (len(allFiles) == 0 && len(onlyFiles) == 0) || scanning
-	// Note: we also check onlyFolders for consistency
-	mainDisabled := !hasFiles || isScanning
+	configureDisabled := snap.Scanning || !hasSelectedInput(snap)
+	startDisabled := a.startDisabled(snap)
 
 	// Clear button
 	if a.clearButton != nil {
-		if mainDisabled {
+		if configureDisabled {
 			a.clearButton.Disable()
 		} else {
 			a.clearButton.Enable()
@@ -886,10 +923,10 @@ func (a *App) updateUIState() {
 	}
 
 	// Password section state (from password_section.go)
-	a.updatePasswordUIState(mainDisabled, snap)
+	a.updatePasswordUIState(configureDisabled, snap)
 
 	// Keyfile section state (from keyfile_section.go)
-	a.updateKeyfileUIState(mainDisabled, snap)
+	a.updateKeyfileUIState(configureDisabled, snap)
 
 	// Comments section - complex nested logic
 	commentsOuterDisabled := (snap.Mode != "decrypt" &&
@@ -910,26 +947,31 @@ func (a *App) updateUIState() {
 		// (OnChanged will prevent actual changes). This keeps text visible, not pale.
 		if snap.Mode == "decrypt" && snap.CommentsPreviewState == app.CommentsPreviewNormal && snap.Comments != "" {
 			a.commentsEntry.Enable() // Keep text visible (not pale)
-		} else if mainDisabled || commentsOuterDisabled || commentsInnerDisabled {
+		} else if configureDisabled || commentsOuterDisabled || commentsInnerDisabled {
 			a.commentsEntry.Disable()
 		} else {
 			a.commentsEntry.Enable()
 		}
 	}
 
-	// Advanced section and Start button
-	advancedAndStartDisabled := !snap.CanStart()
-
 	// Update advanced section checkboxes/inputs (from advanced_section.go)
-	a.updateAdvancedDisableStateFromSnapshot(snap)
+	a.updateAdvancedDisableStateFromSnapshot(snap, configureDisabled)
 
-	// Start button - MUST be disabled when no credentials or passwords don't match
 	if a.startButton != nil {
 		a.startButton.SetText(renderStartAction(snap.StartAction, snap.Recursively))
-		if mainDisabled || advancedAndStartDisabled {
+		if startDisabled {
 			a.startButton.Disable()
 		} else {
 			a.startButton.Enable()
+		}
+	}
+	if a.startHintLabel != nil {
+		hint := a.startReadinessHint(snap)
+		a.startHintLabel.SetText(hint)
+		if hint == "" {
+			a.startHintLabel.Hide()
+		} else {
+			a.startHintLabel.Show()
 		}
 	}
 
@@ -950,7 +992,7 @@ func (a *App) updateUIState() {
 
 	// Change button - disabled when recursively
 	if a.changeBtn != nil {
-		if mainDisabled || advancedAndStartDisabled || snap.Recursively {
+		if configureDisabled || snap.Recursively {
 			a.changeBtn.Disable()
 		} else {
 			a.changeBtn.Enable()
@@ -979,6 +1021,8 @@ func (a *App) updateUIState() {
 	if a.commentsLabel != nil {
 		a.commentsLabel.SetText(commentsLabelText(snap.Mode))
 	}
+
+	a.resizeDesktopWindowForCurrentContent(preferredDesktopWindowHeight(snap.Mode))
 }
 
 // resetUI clears UI state but preserves progress flags.
