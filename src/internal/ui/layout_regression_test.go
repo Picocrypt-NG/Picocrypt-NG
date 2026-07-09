@@ -566,6 +566,35 @@ func TestDesktopEncryptLayoutExpandedAdvancedStillFitsWidth(t *testing.T) {
 	}
 }
 
+func TestDesktopPasswordEntriesUseFullFormWidth(t *testing.T) {
+	if raceEnabled {
+		t.Skip("Fyne v2.7.4 internal cache races under -race; covered on non-race matrices")
+	}
+
+	fyneApp := newTestFyneApp(t)
+	fyneApp.Settings().SetTheme(fixedVariantTheme{Theme: NewCompactTheme(), variant: theme.VariantLight})
+
+	a := newDesktopEncryptLayoutApp(t, fyneApp)
+
+	var passwordWidth, confirmWidth, commentsWidth float32
+	fyne.DoAndWait(func() {
+		a.passwordEntry.SetText("secret")
+		a.cPasswordEntry.SetText("secret")
+		a.Window.Content().Refresh()
+
+		passwordWidth = a.passwordEntry.Size().Width
+		confirmWidth = a.cPasswordEntry.Size().Width
+		commentsWidth = a.commentsEntry.Size().Width
+	})
+
+	if passwordWidth < commentsWidth-1 {
+		t.Fatalf("password entry width %.1f is shorter than full form width %.1f", passwordWidth, commentsWidth)
+	}
+	if confirmWidth < commentsWidth-1 {
+		t.Fatalf("confirm entry width %.1f is shorter than full form width %.1f", confirmWidth, commentsWidth)
+	}
+}
+
 func newDesktopEncryptLayoutApp(t *testing.T, fyneApp fyne.App) *App {
 	t.Helper()
 

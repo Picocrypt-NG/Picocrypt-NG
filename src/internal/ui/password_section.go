@@ -86,8 +86,6 @@ func (a *App) buildPasswordSection() fyne.CanvasObject {
 
 	a.strengthIndicator = NewPasswordStrengthIndicator()
 
-	passwordRow := container.NewBorder(nil, nil, nil, a.strengthIndicator, a.passwordEntry)
-
 	// Confirm password
 	a.cPasswordEntry = NewPasswordEntry()
 	a.cPasswordEntry.SetPlaceHolder(tr("password.confirm_placeholder", "Confirm password"))
@@ -99,15 +97,16 @@ func (a *App) buildPasswordSection() fyne.CanvasObject {
 
 	a.validIndicator = NewValidationIndicator()
 
-	a.confirmRow = container.NewBorder(nil, nil, nil, a.validIndicator, a.cPasswordEntry)
-
 	// Create bold labels for better visual hierarchy
 	a.passwordLabel = widget.NewLabel(tr("password.label", "Password:"))
 	a.passwordLabel.TextStyle = fyne.TextStyle{Bold: true}
-	passwordHeader := container.NewBorder(nil, nil, a.passwordLabel, buttonRow, nil)
+	passwordTitle := container.NewHBox(a.passwordLabel, a.strengthIndicator)
+	passwordHeader := container.NewBorder(nil, nil, passwordTitle, buttonRow, nil)
 
 	a.confirmLabel = widget.NewLabel(tr("password.confirm_label", "Confirm password:"))
 	a.confirmLabel.TextStyle = fyne.TextStyle{Bold: true}
+	confirmTitle := container.NewHBox(a.confirmLabel, a.validIndicator)
+	a.confirmRow = container.NewVBox(confirmTitle, a.cPasswordEntry)
 
 	// Subtle advisory shown only while encrypting with a non-ASCII password (#19).
 	a.nonASCIIHint = widget.NewLabel(tr("password.non_ascii_hint",
@@ -120,9 +119,8 @@ func (a *App) buildPasswordSection() fyne.CanvasObject {
 
 	return container.NewVBox(
 		passwordHeader,
-		passwordRow,
+		a.passwordEntry,
 		a.nonASCIIHint,
-		a.confirmLabel,
 		a.confirmRow,
 	)
 }

@@ -76,7 +76,7 @@
   "comments.label": "Comments:",
   "comments.read_only": "Comments (read-only):",
   "comments.corrupted": "Comments are corrupted",
-  "comments.placeholder": "Header plaintext; not encrypted or secret.",
+  "comments.placeholder": "Public note; not encrypted.",
   "output.label": "Save output as:",
   "output.multiple_values": "(multiple values)",
   "status.ready": "Ready",

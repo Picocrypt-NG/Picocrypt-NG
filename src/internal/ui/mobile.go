@@ -424,7 +424,6 @@ func (a *App) buildMobilePasswordSection() fyne.CanvasObject {
 	}
 
 	a.strengthIndicator = NewPasswordStrengthIndicator()
-	passwordRow := container.NewBorder(nil, nil, nil, a.strengthIndicator, a.passwordEntry)
 
 	// Confirm password
 	a.cPasswordEntry = NewPasswordEntry()
@@ -436,17 +435,18 @@ func (a *App) buildMobilePasswordSection() fyne.CanvasObject {
 	}
 
 	a.validIndicator = NewValidationIndicator()
-	a.confirmRow = container.NewBorder(nil, nil, nil, a.validIndicator, a.cPasswordEntry)
 
 	a.passwordLabel = widget.NewLabel(tr("password.label", "Password:"))
 	a.confirmLabel = widget.NewLabel(tr("password.confirm_label", "Confirm password:"))
+	passwordTitle := container.NewHBox(a.passwordLabel, a.strengthIndicator)
+	confirmTitle := container.NewHBox(a.confirmLabel, a.validIndicator)
+	a.confirmRow = container.NewVBox(confirmTitle, a.cPasswordEntry)
 
 	return container.NewVBox(
-		a.passwordLabel,
+		passwordTitle,
 		buttonRow1,
 		buttonRow2,
-		passwordRow,
-		a.confirmLabel,
+		a.passwordEntry,
 		a.confirmRow,
 	)
 }
@@ -482,7 +482,7 @@ func (a *App) buildMobileKeyfilesSection() fyne.CanvasObject {
 func (a *App) buildMobileCommentsSection() fyne.CanvasObject {
 	a.commentsLabel = widget.NewLabel(commentsLabelText(a.State.Mode))
 	a.commentsEntry = widget.NewEntry()
-	a.commentsEntry.SetPlaceHolder(tr("comments.placeholder", "Header plaintext; not encrypted or secret."))
+	a.commentsEntry.SetPlaceHolder(tr("comments.placeholder", "Public note; not encrypted."))
 	a.commentsEntry.MultiLine = true
 	a.commentsEntry.OnChanged = func(text string) {
 		if a.State.Mode == "decrypt" {

@@ -278,7 +278,7 @@ func (a *App) refreshLocalizedText() {
 			"device where you'll decrypt it."))
 	setLabelText(a.keyfilesTitleLabel, tr("keyfiles.label", "Keyfiles:"))
 	setLabelText(a.commentsLabel, tr("comments.label", "Comments:"))
-	setEntryPlaceholder(a.commentsEntry, tr("comments.placeholder", "Header plaintext; not encrypted or secret."))
+	setEntryPlaceholder(a.commentsEntry, tr("comments.placeholder", "Public note; not encrypted."))
 	setLabelText(a.advancedLabel, tr("advanced.label", "Advanced:"))
 	if a.advancedItem != nil {
 		a.advancedItem.Title = tr("advanced.title", "Advanced")
@@ -854,7 +854,7 @@ func (a *App) buildCommentsSection() fyne.CanvasObject {
 	a.commentsLabel.TextStyle = fyne.TextStyle{Bold: true}
 
 	a.commentsEntry = widget.NewEntry()
-	a.commentsEntry.SetPlaceHolder(tr("comments.placeholder", "Header plaintext; not encrypted or secret."))
+	a.commentsEntry.SetPlaceHolder(tr("comments.placeholder", "Public note; not encrypted."))
 	a.commentsEntry.OnChanged = func(text string) {
 		// In decrypt mode, comments are read-only - revert any changes
 		if a.State.Mode == "decrypt" {
