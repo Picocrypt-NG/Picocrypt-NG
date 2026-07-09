@@ -129,15 +129,15 @@ type App struct {
 	nonASCIIHint *widget.Label
 
 	// Password buttons
-	showHideBtn *widget.Button
-	clearPwdBtn *widget.Button
-	copyBtn     *widget.Button
-	pasteBtn    *widget.Button
-	createBtn   *widget.Button
+	showHideBtn *ttwidget.Button
+	clearPwdBtn *ttwidget.Button
+	copyBtn     *ttwidget.Button
+	pasteBtn    *ttwidget.Button
+	createBtn   *ttwidget.Button
 
 	// Keyfile buttons
-	keyfileEditBtn   *widget.Button
-	keyfileCreateBtn *widget.Button
+	keyfileEditBtn   *ttwidget.Button
+	keyfileCreateBtn *ttwidget.Button
 
 	// Output section
 	changeBtn *widget.Button
@@ -239,25 +239,25 @@ func (a *App) refreshLocalizedText() {
 		a.clearButton.SetText(tr("action.clear", "Clear"))
 	}
 	if a.State != nil && a.showHideBtn != nil {
-		a.showHideBtn.SetText(passwordVisibilityLabel(a.State.PasswordMode))
+		configureToolbarButton(a.showHideBtn, passwordVisibilityLabel(a.State.PasswordMode), passwordVisibilityIcon(a.State.PasswordMode))
 	}
 	if a.clearPwdBtn != nil {
-		a.clearPwdBtn.SetText(tr("action.clear", "Clear"))
+		configureToolbarButton(a.clearPwdBtn, tr("action.clear", "Clear"), theme.ContentClearIcon())
 	}
 	if a.copyBtn != nil {
-		a.copyBtn.SetText(tr("action.copy", "Copy"))
+		configureToolbarButton(a.copyBtn, tr("action.copy", "Copy"), theme.ContentCopyIcon())
 	}
 	if a.pasteBtn != nil {
-		a.pasteBtn.SetText(tr("action.paste", "Paste"))
+		configureToolbarButton(a.pasteBtn, tr("action.paste", "Paste"), theme.ContentPasteIcon())
 	}
 	if a.createBtn != nil {
-		a.createBtn.SetText(tr("action.create", "Create"))
+		configureToolbarButton(a.createBtn, tr("action.create", "Create"), theme.DocumentCreateIcon())
 	}
 	if a.keyfileEditBtn != nil {
-		a.keyfileEditBtn.SetText(tr("action.edit", "Edit"))
+		configureToolbarButton(a.keyfileEditBtn, tr("action.edit", "Edit"), theme.FolderOpenIcon())
 	}
 	if a.keyfileCreateBtn != nil {
-		a.keyfileCreateBtn.SetText(tr("action.create", "Create"))
+		configureToolbarButton(a.keyfileCreateBtn, tr("action.create", "Create"), theme.DocumentCreateIcon())
 	}
 	if a.changeBtn != nil {
 		a.changeBtn.SetText(tr("action.change", "Change"))

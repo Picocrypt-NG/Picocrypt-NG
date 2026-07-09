@@ -369,16 +369,16 @@ func (a *App) copyURIToTemp(reader io.Reader, filename string) (string, error) {
 // buildMobilePasswordSection creates the password section for mobile with larger buttons
 func (a *App) buildMobilePasswordSection() fyne.CanvasObject {
 	// Password buttons - 3 per row for better touch targets
-	a.showHideBtn = widget.NewButton(passwordVisibilityLabel(a.State.PasswordMode), func() {
+	a.showHideBtn = newToolbarButton(passwordVisibilityLabel(a.State.PasswordMode), passwordVisibilityIcon(a.State.PasswordMode), func() {
 		a.State.TogglePasswordVisibility()
 		snap := a.State.UISnapshot()
-		a.showHideBtn.SetText(passwordVisibilityLabel(snap.PasswordMode))
+		configureToolbarButton(a.showHideBtn, passwordVisibilityLabel(snap.PasswordMode), passwordVisibilityIcon(snap.PasswordMode))
 		hidden := snap.PasswordMode == app.PasswordModeHidden
 		a.passwordEntry.SetHidden(hidden)
 		a.cPasswordEntry.SetHidden(hidden)
 	})
 
-	a.clearPwdBtn = widget.NewButton(tr("action.clear", "Clear"), func() {
+	a.clearPwdBtn = newToolbarButton(tr("action.clear", "Clear"), theme.ContentClearIcon(), func() {
 		a.State.Password = ""
 		a.State.CPassword = ""
 		a.passwordEntry.SetText("")
@@ -388,11 +388,11 @@ func (a *App) buildMobilePasswordSection() fyne.CanvasObject {
 		a.updateUIState()
 	})
 
-	a.copyBtn = widget.NewButton(tr("action.copy", "Copy"), func() {
+	a.copyBtn = newToolbarButton(tr("action.copy", "Copy"), theme.ContentCopyIcon(), func() {
 		a.fyneApp.Clipboard().SetContent(a.State.Password)
 	})
 
-	a.pasteBtn = widget.NewButton(tr("action.paste", "Paste"), func() {
+	a.pasteBtn = newToolbarButton(tr("action.paste", "Paste"), theme.ContentPasteIcon(), func() {
 		text := a.fyneApp.Clipboard().Content()
 		a.State.Password = text
 		a.passwordEntry.SetText(text)
@@ -405,7 +405,7 @@ func (a *App) buildMobilePasswordSection() fyne.CanvasObject {
 		a.updateUIState()
 	})
 
-	a.createBtn = widget.NewButton(tr("action.create", "Create"), func() {
+	a.createBtn = newToolbarButton(tr("action.create", "Create"), theme.DocumentCreateIcon(), func() {
 		a.showPassgenModal()
 	})
 
@@ -453,11 +453,11 @@ func (a *App) buildMobilePasswordSection() fyne.CanvasObject {
 
 // buildMobileKeyfilesSection creates the keyfiles section for mobile
 func (a *App) buildMobileKeyfilesSection() fyne.CanvasObject {
-	a.keyfileEditBtn = widget.NewButton(tr("action.edit", "Edit"), func() {
+	a.keyfileEditBtn = newToolbarButton(tr("action.edit", "Edit"), theme.FolderOpenIcon(), func() {
 		a.showKeyfileModal()
 	})
 
-	a.keyfileCreateBtn = widget.NewButton(tr("action.create", "Create"), func() {
+	a.keyfileCreateBtn = newToolbarButton(tr("action.create", "Create"), theme.DocumentCreateIcon(), func() {
 		a.createKeyfile()
 	})
 

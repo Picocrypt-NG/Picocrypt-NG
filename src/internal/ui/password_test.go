@@ -83,12 +83,10 @@ func TestPasswordStrengthScoring(t *testing.T) {
 }
 
 // TestPasswordVisibilityToggle drives the real show/hide button built in
-// buildPasswordSection. The button text is rendered from PasswordMode, and
-// tapping flips both the label and the masking on BOTH entries. The test taps
-// the rendered button and asserts (a) the button's drawn .Text pivots
-// Show→Hide→Show, (b) IsPasswordHidden tracks it, and (c)
-// passwordEntry/cPasswordEntry masking follows. It fails if the toggle stops
-// re-labelling the button or stops un/re-masking the entries.
+// buildPasswordSection. Desktop renders the control as an icon button with a
+// localized tooltip, and tapping flips both that tooltip and the masking on
+// BOTH entries. It fails if the toggle stops re-labelling the action or stops
+// un/re-masking the entries.
 func TestPasswordVisibilityToggle(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 
@@ -98,36 +96,36 @@ func TestPasswordVisibilityToggle(t *testing.T) {
 		wantShow := tr("password.show", "Show")
 		wantHide := tr("password.hide", "Hide")
 
-		// Initially hidden: button reads "Show", both entries masked.
+		// Initially hidden: action tooltip says "Show", both entries masked.
 		if !a.State.IsPasswordHidden() {
 			t.Error("Password should be hidden initially")
 		}
-		if a.showHideBtn.Text != wantShow {
-			t.Errorf("button text should be %q, got %q", wantShow, a.showHideBtn.Text)
+		if a.showHideBtn.ToolTip() != wantShow {
+			t.Errorf("button tooltip should be %q, got %q", wantShow, a.showHideBtn.ToolTip())
 		}
 		if !a.passwordEntry.IsHidden() || !a.cPasswordEntry.IsHidden() {
 			t.Error("both entries should be masked initially")
 		}
 
-		// Tap to reveal: button reads "Hide", entries unmasked.
+		// Tap to reveal: action tooltip says "Hide", entries unmasked.
 		a.showHideBtn.OnTapped()
 		if a.State.IsPasswordHidden() {
 			t.Error("Password should be visible after toggle")
 		}
-		if a.showHideBtn.Text != wantHide {
-			t.Errorf("button text should be %q after toggle, got %q", wantHide, a.showHideBtn.Text)
+		if a.showHideBtn.ToolTip() != wantHide {
+			t.Errorf("button tooltip should be %q after toggle, got %q", wantHide, a.showHideBtn.ToolTip())
 		}
 		if a.passwordEntry.IsHidden() || a.cPasswordEntry.IsHidden() {
 			t.Error("both entries should be unmasked while shown")
 		}
 
-		// Tap again to hide: button reads "Show", entries re-masked.
+		// Tap again to hide: action tooltip returns to "Show", entries re-masked.
 		a.showHideBtn.OnTapped()
 		if !a.State.IsPasswordHidden() {
 			t.Error("Password should be hidden after second toggle")
 		}
-		if a.showHideBtn.Text != wantShow {
-			t.Errorf("button text should be %q after second toggle, got %q", wantShow, a.showHideBtn.Text)
+		if a.showHideBtn.ToolTip() != wantShow {
+			t.Errorf("button tooltip should be %q after second toggle, got %q", wantShow, a.showHideBtn.ToolTip())
 		}
 		if !a.passwordEntry.IsHidden() || !a.cPasswordEntry.IsHidden() {
 			t.Error("both entries should be re-masked after hiding")

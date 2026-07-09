@@ -9,6 +9,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -19,19 +20,26 @@ func passwordVisibilityLabel(mode app.PasswordInputMode) string {
 	return tr("password.show", "Show")
 }
 
+func passwordVisibilityIcon(mode app.PasswordInputMode) fyne.Resource {
+	if mode == app.PasswordModeVisible {
+		return theme.VisibilityOffIcon()
+	}
+	return theme.VisibilityIcon()
+}
+
 // buildPasswordSection creates the password input section.
 func (a *App) buildPasswordSection() fyne.CanvasObject {
 	// Password buttons row
-	a.showHideBtn = widget.NewButton(passwordVisibilityLabel(a.State.PasswordMode), func() {
+	a.showHideBtn = newToolbarButton(passwordVisibilityLabel(a.State.PasswordMode), passwordVisibilityIcon(a.State.PasswordMode), func() {
 		a.State.TogglePasswordVisibility()
 		snap := a.State.UISnapshot()
-		a.showHideBtn.SetText(passwordVisibilityLabel(snap.PasswordMode))
+		configureToolbarButton(a.showHideBtn, passwordVisibilityLabel(snap.PasswordMode), passwordVisibilityIcon(snap.PasswordMode))
 		hidden := snap.PasswordMode == app.PasswordModeHidden
 		a.passwordEntry.SetHidden(hidden)
 		a.cPasswordEntry.SetHidden(hidden)
 	})
 
-	a.clearPwdBtn = widget.NewButton(tr("action.clear", "Clear"), func() {
+	a.clearPwdBtn = newToolbarButton(tr("action.clear", "Clear"), theme.ContentClearIcon(), func() {
 		a.State.Password = ""
 		a.State.CPassword = ""
 		a.passwordEntry.SetText("")
@@ -41,11 +49,11 @@ func (a *App) buildPasswordSection() fyne.CanvasObject {
 		a.updateUIState()
 	})
 
-	a.copyBtn = widget.NewButton(tr("action.copy", "Copy"), func() {
+	a.copyBtn = newToolbarButton(tr("action.copy", "Copy"), theme.ContentCopyIcon(), func() {
 		a.fyneApp.Clipboard().SetContent(a.State.Password)
 	})
 
-	a.pasteBtn = widget.NewButton(tr("action.paste", "Paste"), func() {
+	a.pasteBtn = newToolbarButton(tr("action.paste", "Paste"), theme.ContentPasteIcon(), func() {
 		text := a.fyneApp.Clipboard().Content()
 		a.State.Password = text
 		a.passwordEntry.SetText(text)
@@ -58,11 +66,10 @@ func (a *App) buildPasswordSection() fyne.CanvasObject {
 		a.updateUIState()
 	})
 
-	a.createBtn = widget.NewButton(tr("action.create", "Create"), func() {
+	a.createBtn = newToolbarButton(tr("action.create", "Create"), theme.DocumentCreateIcon(), func() {
 		a.showPassgenModal()
 	})
 
-	// Use adaptive grid that fills available space evenly
 	buttonRow := container.NewGridWithColumns(5,
 		a.showHideBtn, a.clearPwdBtn, a.copyBtn, a.pasteBtn, a.createBtn,
 	)
@@ -167,7 +174,7 @@ func (a *App) updatePasswordUIState(mainDisabled bool, snap app.UISnapshot) {
 	}
 
 	if a.showHideBtn != nil {
-		a.showHideBtn.SetText(passwordVisibilityLabel(snap.PasswordMode))
+		configureToolbarButton(a.showHideBtn, passwordVisibilityLabel(snap.PasswordMode), passwordVisibilityIcon(snap.PasswordMode))
 		if mainDisabled {
 			a.showHideBtn.Disable()
 		} else {

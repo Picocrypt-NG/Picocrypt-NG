@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/storage"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -41,11 +42,11 @@ func keyfileDisplayLabel(required bool, count int, applicable bool) string {
 
 // buildKeyfilesSection creates the keyfiles input section.
 func (a *App) buildKeyfilesSection() fyne.CanvasObject {
-	a.keyfileEditBtn = widget.NewButton(tr("action.edit", "Edit"), func() {
+	a.keyfileEditBtn = newToolbarButton(tr("action.edit", "Edit"), theme.FolderOpenIcon(), func() {
 		a.showKeyfileModal()
 	})
 
-	a.keyfileCreateBtn = widget.NewButton(tr("action.create", "Create"), func() {
+	a.keyfileCreateBtn = newToolbarButton(tr("action.create", "Create"), theme.DocumentCreateIcon(), func() {
 		a.createKeyfile()
 	})
 
@@ -54,16 +55,20 @@ func (a *App) buildKeyfilesSection() fyne.CanvasObject {
 		len(a.State.Keyfiles),
 		keyfileApplicable(a.State.Mode, a.State.Keyfile, a.State.Deniability),
 	))
+	a.keyfileLabel.Wrapping = fyne.TextWrapWord
 
 	// Create bold label for better visual hierarchy
 	a.keyfilesTitleLabel = widget.NewLabel(tr("keyfiles.label", "Keyfiles:"))
 	a.keyfilesTitleLabel.TextStyle = fyne.TextStyle{Bold: true}
 
-	// Layout: "Keyfiles:" Edit Create [label fills rest]
-	return container.NewHBox(
-		a.keyfilesTitleLabel,
+	buttonRow := container.NewHBox(
 		a.keyfileEditBtn,
 		a.keyfileCreateBtn,
+	)
+	headerRow := container.NewBorder(nil, nil, nil, buttonRow, a.keyfilesTitleLabel)
+
+	return container.NewVBox(
+		headerRow,
 		a.keyfileLabel,
 	)
 }
