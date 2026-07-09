@@ -119,7 +119,7 @@ func TestOnClickStartDoesNotRunWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestSelectedFilesCanConfigureOutputAndAdvancedBeforeCredentials(t *testing.T) {
+func TestOutputChangeEnabledBeforeCredentialsAfterFileSelection(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 
 	a := createUIReadyDropTestApp(t, fyneApp)

@@ -350,9 +350,9 @@ func (a *App) refreshAdvancedLocalizedText() {
 		setCheckTooltip(a.deleteCheck, tr("advanced.delete_files.tooltip", "Delete the input files after encryption"))
 	}
 	setCheckText(a.deniabilityCheck, tr("advanced.deniability.label", "Deniability"))
-	setCheckTooltip(a.deniabilityCheck, tr("advanced.security_warning.tooltip", "Warning: only use this if you know what it does!"))
+	setCheckTooltip(a.deniabilityCheck, tr("advanced.deniability.tooltip", "Creates output without a readable Picocrypt header. Keep the password/keyfiles exactly; this is not filename hiding."))
 	setCheckText(a.recursivelyCheck, tr("advanced.recursively.label", "Recursively"))
-	setCheckTooltip(a.recursivelyCheck, tr("advanced.security_warning.tooltip", "Warning: only use this if you know what it does!"))
+	setCheckTooltip(a.recursivelyCheck, tr("advanced.recursively.tooltip", "Process each selected file separately and write separate output paths."))
 	setCheckText(a.splitCheck, tr("advanced.split.label", "Split:"))
 	setCheckTooltip(a.splitCheck, tr("advanced.split.tooltip", "Split the output file into smaller chunks"))
 	setEntryPlaceholder(a.splitSizeEntry, tr("advanced.split.size_placeholder", "Size"))

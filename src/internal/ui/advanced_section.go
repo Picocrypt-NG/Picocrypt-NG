@@ -51,8 +51,9 @@ func (a *App) updateAdvancedSection() {
 		a.resizeDesktopWindowForCurrentContent(windowHeightDecrypt)
 	}
 
-	// IMPORTANT: Update disable state for newly created checkboxes
-	// This ensures checkboxes are disabled until user enters credentials
+	// IMPORTANT: Newly rebuilt controls must immediately reflect the current
+	// snapshot-driven disable state so a section refresh cannot leave stale
+	// enabled/disabled widgets behind.
 	a.updateAdvancedDisableState()
 
 	a.advancedContainer.Refresh()
@@ -154,7 +155,7 @@ func (a *App) buildEncryptOptions() {
 		a.State.Deniability = checked
 		a.updateUIState()
 	})
-	a.deniabilityCheck.SetToolTip(tr("advanced.security_warning.tooltip", "Warning: only use this if you know what it does!"))
+	a.deniabilityCheck.SetToolTip(tr("advanced.deniability.tooltip", "Creates output without a readable Picocrypt header. Keep the password/keyfiles exactly; this is not filename hiding."))
 	a.deniabilityCheck.SetChecked(a.State.Deniability)
 
 	a.recursivelyCheck = ttwidget.NewCheck(tr("advanced.recursively.label", "Recursively"), func(checked bool) {
@@ -167,7 +168,7 @@ func (a *App) buildEncryptOptions() {
 		}
 		a.updateUIState()
 	})
-	a.recursivelyCheck.SetToolTip(tr("advanced.security_warning.tooltip", "Warning: only use this if you know what it does!"))
+	a.recursivelyCheck.SetToolTip(tr("advanced.recursively.tooltip", "Process each selected file separately and write separate output paths."))
 	a.recursivelyCheck.SetChecked(a.State.Recursively)
 
 	row3 := container.NewGridWithColumns(2, a.deniabilityCheck, a.recursivelyCheck)

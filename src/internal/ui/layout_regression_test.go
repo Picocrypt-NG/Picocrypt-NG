@@ -60,6 +60,59 @@ func TestOutputDisplayFollowsThemeChanges(t *testing.T) {
 	}
 }
 
+func TestOutputDisplayUsesBasenameOnly(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+
+	a := createUIReadyDropTestApp(t, fyneApp)
+	a.State.Mode = "encrypt"
+	a.State.InputFile = filepath.Join("/tmp", "nested", "input.txt")
+	a.State.OnlyFiles = []string{a.State.InputFile}
+	a.State.OutputFile = filepath.Join("/tmp", "nested", "deeper", "final-output.pcv")
+
+	fyne.DoAndWait(func() {
+		a.updateUIState()
+	})
+
+	entry, ok := a.outputEntry.(*DisabledEntry)
+	if !ok {
+		t.Fatalf("outputEntry type = %T; want *DisabledEntry", a.outputEntry)
+	}
+	if got, want := entry.Text, "final-output.pcv"; got != want {
+		t.Fatalf("output display = %q; want basename %q", got, want)
+	}
+
+	fyne.DoAndWait(func() {
+		a.State.Recursively = true
+		a.updateUIState()
+	})
+	if got, want := entry.Text, tr("output.multiple_values", "(multiple values)"); got != want {
+		t.Fatalf("recursive output display = %q; want %q", got, want)
+	}
+}
+
+func TestOutputDisplaySplitSuffixIsCompact(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+
+	a := createUIReadyDropTestApp(t, fyneApp)
+	a.State.Mode = "encrypt"
+	a.State.InputFile = "input.txt"
+	a.State.OnlyFiles = []string{"input.txt"}
+	a.State.OutputFile = filepath.Join("/tmp", "split-target.pcv")
+	a.State.Split = true
+
+	fyne.DoAndWait(func() {
+		a.updateUIState()
+	})
+
+	entry, ok := a.outputEntry.(*DisabledEntry)
+	if !ok {
+		t.Fatalf("outputEntry type = %T; want *DisabledEntry", a.outputEntry)
+	}
+	if got, want := entry.Text, "split-target.pcv.*"; got != want {
+		t.Fatalf("split output display = %q; want %q", got, want)
+	}
+}
+
 func TestDesktopUILayoutFitsWindowAfterBuild(t *testing.T) {
 	if raceEnabled {
 		t.Skip("Fyne v2.7.4 internal cache races under -race; covered on non-race matrices")
@@ -383,7 +436,7 @@ func TestDesktopUILayoutFitsWindowAfterModeChange(t *testing.T) {
 	assertWindowFitsContent(t, a)
 }
 
-func TestDesktopOutputDisplayLongNameDoesNotGrowWindow(t *testing.T) {
+func TestOutputLongNameDoesNotWidenDesktopLayout(t *testing.T) {
 	if raceEnabled {
 		t.Skip("Fyne v2.7.4 internal cache races under -race; covered on non-race matrices")
 	}

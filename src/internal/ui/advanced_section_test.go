@@ -258,20 +258,10 @@ func TestEncryptAdvancedOptionsNeverSoftLock(t *testing.T) {
 	})
 }
 
-// sharedSecurityWarning is the deliberately-shared tooltip on the two
-// "dangerous" encrypt options (Deniability and Recursively). It is asserted
-// verbatim below because the exact safety wording is intentional copy; the rest
-// of the suite only checks that tooltips are present and otherwise distinct.
-func sharedSecurityWarning() string {
-	return tr("advanced.security_warning.tooltip", "Warning: only use this if you know what it does!")
-}
-
 // assertTooltipsPresentAndDistinct asserts every control carries a non-empty
 // tooltip (an empty tooltip is a missing-tooltip bug, issue #79) and that the
-// tooltips are distinct across the *non-warning* controls — duplicate copy on
-// two unrelated controls almost always means a copy/paste wiring mistake. The
-// deliberately-shared security warning is excluded from the distinctness set and
-// pinned verbatim by the callers instead.
+// tooltips are distinct across controls, since duplicate copy on two unrelated
+// controls almost always means a copy/paste wiring mistake.
 func assertTooltipsPresentAndDistinct(t *testing.T, controls []struct {
 	name string
 	tt   interface{ ToolTip() string }
@@ -284,9 +274,6 @@ func assertTooltipsPresentAndDistinct(t *testing.T, controls []struct {
 		if got == "" {
 			t.Errorf("%s has an empty tooltip", c.name)
 			continue
-		}
-		if got == sharedSecurityWarning() {
-			continue // distinctness is not required for the shared warning
 		}
 		if prev, dup := seen[got]; dup {
 			t.Errorf("%s and %s share tooltip %q; tooltips must be distinct", prev, c.name, got)
@@ -317,13 +304,11 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 			{"split units", a.splitUnitSelect},
 		})
 
-		// The two dangerous options deliberately share the exact safety wording;
-		// pin it verbatim so the warning copy can't be silently softened.
-		if got := a.deniabilityCheck.ToolTip(); got != sharedSecurityWarning() {
-			t.Errorf("Deniability tooltip = %q, want %q", got, sharedSecurityWarning())
+		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.tooltip", "Creates output without a readable Picocrypt header. Keep the password/keyfiles exactly; this is not filename hiding."); got != want {
+			t.Errorf("Deniability tooltip = %q, want %q", got, want)
 		}
-		if got := a.recursivelyCheck.ToolTip(); got != sharedSecurityWarning() {
-			t.Errorf("Recursively tooltip = %q, want %q", got, sharedSecurityWarning())
+		if got, want := a.recursivelyCheck.ToolTip(), tr("advanced.recursively.tooltip", "Process each selected file separately and write separate output paths."); got != want {
+			t.Errorf("Recursively tooltip = %q, want %q", got, want)
 		}
 	})
 

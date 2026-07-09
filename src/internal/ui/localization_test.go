@@ -172,11 +172,15 @@ func TestRussianFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 
 	assertCatalogStringContains(t, catalog, "advanced.force_decrypt.tooltip", "непровер", "повреж")
 	assertCatalogStringContains(t, catalog, "status.kept_output_unverified", "не провер", "повреж")
-	assertCatalogStringContains(t, catalog, "comments.placeholder", "не шифру")
+	assertCatalogStringContains(t, catalog, "comments.placeholder", "заголов", "не шифру", "не секрет")
+	assertCatalogStringContains(t, catalog, "advanced.delete_files.tooltip", "после успеш", "не", "стира")
+	assertCatalogStringContains(t, catalog, "advanced.deniability.tooltip", "заголов", "парол", "ключ", "не скрывает")
+	assertCatalogStringContains(t, catalog, "advanced.recursively.tooltip", "кажд", "отдель")
 	assertCatalogStringContains(t, catalog, "drop.header_may_be_deniable", "может", "правдоподоб")
 	assertCatalogStringEquals(t, catalog, "advanced.delete_volume.label", "Удалить зашифрованный том")
 
 	deniabilityCopy := strings.ToLower(catalogString(t, catalog, "advanced.deniability.label") + "\n" +
+		catalogString(t, catalog, "advanced.deniability.tooltip") + "\n" +
 		catalogString(t, catalog, "drop.header_may_be_deniable"))
 	for _, forbidden := range []string{"аноним", "невидим", "скрытый режим"} {
 		if strings.Contains(deniabilityCopy, forbidden) {
