@@ -12,6 +12,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 )
 
+const maxDesktopPolishedEncryptHeight = float32(560)
+
 type fixedVariantTheme struct {
 	fyne.Theme
 	variant fyne.ThemeVariant
@@ -413,6 +415,125 @@ func TestDesktopOutputDisplayLongNameDoesNotGrowWindow(t *testing.T) {
 	if size.Width > windowWidth {
 		t.Fatalf("long output basename grew desktop window width to %.1f; want <= %.1f", size.Width, float32(windowWidth))
 	}
+}
+
+func TestDesktopEncryptLayoutCollapsedAdvancedHeightBudgetEnglish(t *testing.T) {
+	if raceEnabled {
+		t.Skip("Fyne v2.7.4 internal cache races under -race; covered on non-race matrices")
+	}
+
+	fyneApp := newTestFyneApp(t)
+	fyneApp.Settings().SetTheme(fixedVariantTheme{Theme: NewCompactTheme(), variant: theme.VariantLight})
+
+	a := newDesktopEncryptLayoutApp(t, fyneApp)
+
+	var min, size fyne.Size
+	fyne.DoAndWait(func() {
+		min = a.Window.Content().MinSize()
+		size = a.Window.Canvas().Size()
+	})
+
+	if min.Width > windowWidth {
+		t.Fatalf("English encrypt layout MinSize width %.1f exceeds compact window width %.1f", min.Width, float32(windowWidth))
+	}
+	if size.Width > windowWidth {
+		t.Fatalf("English encrypt layout window width %.1f exceeds compact window width %.1f", size.Width, float32(windowWidth))
+	}
+	if min.Height > maxDesktopPolishedEncryptHeight {
+		t.Fatalf("English collapsed encrypt layout MinSize height %.1f exceeds budget %.1f", min.Height, maxDesktopPolishedEncryptHeight)
+	}
+}
+
+func TestDesktopEncryptLayoutCollapsedAdvancedHeightBudgetRussian(t *testing.T) {
+	if raceEnabled {
+		t.Skip("Fyne v2.7.4 internal cache races under -race; covered on non-race matrices")
+	}
+
+	resetLocalizationForTest(t)
+
+	fyneApp := newTestFyneApp(t)
+	fyneApp.Settings().SetTheme(fixedVariantTheme{Theme: NewCompactTheme(), variant: theme.VariantLight})
+
+	a := newDesktopEncryptLayoutApp(t, fyneApp)
+	fyne.DoAndWait(func() {
+		if err := a.SwitchLanguage("ru"); err != nil {
+			t.Fatalf("SwitchLanguage(ru) returned error: %v", err)
+		}
+	})
+
+	var min, size fyne.Size
+	fyne.DoAndWait(func() {
+		min = a.Window.Content().MinSize()
+		size = a.Window.Canvas().Size()
+	})
+
+	if min.Width > windowWidth {
+		t.Fatalf("Russian encrypt layout MinSize width %.1f exceeds compact window width %.1f", min.Width, float32(windowWidth))
+	}
+	if size.Width > windowWidth {
+		t.Fatalf("Russian encrypt layout window width %.1f exceeds compact window width %.1f", size.Width, float32(windowWidth))
+	}
+	if min.Height > maxDesktopPolishedEncryptHeight {
+		t.Fatalf("Russian collapsed encrypt layout MinSize height %.1f exceeds budget %.1f", min.Height, maxDesktopPolishedEncryptHeight)
+	}
+}
+
+func TestDesktopEncryptLayoutExpandedAdvancedStillFitsWidth(t *testing.T) {
+	if raceEnabled {
+		t.Skip("Fyne v2.7.4 internal cache races under -race; covered on non-race matrices")
+	}
+
+	fyneApp := newTestFyneApp(t)
+	fyneApp.Settings().SetTheme(fixedVariantTheme{Theme: NewCompactTheme(), variant: theme.VariantLight})
+
+	a := newDesktopEncryptLayoutApp(t, fyneApp)
+
+	fyne.DoAndWait(func() {
+		a.State.Split = true
+		a.refreshAdvanced()
+		a.updateUIState()
+	})
+
+	var min, size fyne.Size
+	fyne.DoAndWait(func() {
+		min = a.Window.Content().MinSize()
+		size = a.Window.Canvas().Size()
+	})
+
+	if min.Width > windowWidth {
+		t.Fatalf("expanded encrypt layout MinSize width %.1f exceeds compact window width %.1f", min.Width, float32(windowWidth))
+	}
+	if size.Width > windowWidth {
+		t.Fatalf("expanded encrypt layout window width %.1f exceeds compact window width %.1f", size.Width, float32(windowWidth))
+	}
+}
+
+func newDesktopEncryptLayoutApp(t *testing.T, fyneApp fyne.App) *App {
+	t.Helper()
+
+	a, err := NewApp("v2.test")
+	if err != nil {
+		t.Fatalf("NewApp returned error: %v", err)
+	}
+	a.fyneApp = fyneApp
+	a.State.Mode = "encrypt"
+	a.State.OnlyFiles = []string{"input.txt"}
+	a.State.AllFiles = []string{"input.txt"}
+	a.State.SetInputSelection(1, 0, 0, false)
+	a.State.Password = "secret"
+	a.State.CPassword = "secret"
+	a.State.OutputFile = "input.txt.pcv"
+
+	fyne.DoAndWait(func() {
+		a.Window = fyneApp.NewWindow("encrypt-layout-test")
+		a.Window.SetFixedSize(true)
+		a.Window.Resize(fyne.NewSize(windowWidth, windowHeightEncrypt))
+		content := a.buildUI()
+		a.Window.SetContent(content)
+		a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+	})
+
+	return a
 }
 
 func assertWindowFitsContent(t *testing.T, a *App) {

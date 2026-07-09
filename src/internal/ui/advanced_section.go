@@ -21,7 +21,11 @@ func (a *App) updateAdvancedSection() {
 		return
 	}
 
+	a.rememberAdvancedDisclosureState()
 	a.advancedContainer.RemoveAll()
+	a.advancedAccordion = nil
+	a.advancedItem = nil
+	a.advancedSummary = nil
 
 	switch a.State.Mode {
 	case "":
@@ -35,14 +39,14 @@ func (a *App) updateAdvancedSection() {
 		if a.advancedLabel != nil {
 			a.advancedLabel.Show()
 		}
-		a.buildEncryptOptions()
+		a.buildDesktopAdvancedAccordion(a.buildAdvancedDetailContent("encrypt"), a.advancedShouldAutoOpen())
 		// Resize window for encrypt mode (more options)
 		a.resizeDesktopWindowForCurrentContent(windowHeightEncrypt)
 	case "decrypt":
 		if a.advancedLabel != nil {
 			a.advancedLabel.Show()
 		}
-		a.buildDecryptOptions()
+		a.buildDesktopAdvancedAccordion(a.buildAdvancedDetailContent("decrypt"), a.advancedShouldAutoOpen())
 		// Resize window for decrypt mode (fewer options)
 		a.resizeDesktopWindowForCurrentContent(windowHeightDecrypt)
 	}
@@ -52,6 +56,66 @@ func (a *App) updateAdvancedSection() {
 	a.updateAdvancedDisableState()
 
 	a.advancedContainer.Refresh()
+}
+
+func (a *App) rememberAdvancedDisclosureState() {
+	if a.advancedItem == nil {
+		return
+	}
+	if a.advancedItem.Open != a.advancedOpen {
+		a.advancedOverridden = true
+		a.advancedOpen = a.advancedItem.Open
+	}
+}
+
+func (a *App) advancedShouldAutoOpen() bool {
+	switch a.State.Mode {
+	case "encrypt":
+		return a.State.Paranoid || a.State.Compress || a.State.ReedSolomon ||
+			a.State.Delete || a.State.Deniability || a.State.Recursively ||
+			a.State.Split || a.State.SplitSize != ""
+	case "decrypt":
+		return a.State.Keep || a.State.VerifyFirst || a.State.Delete ||
+			a.State.AutoUnzip || a.State.SameLevel
+	default:
+		return false
+	}
+}
+
+func (a *App) buildAdvancedDetailContent(mode string) fyne.CanvasObject {
+	options := container.NewVBox()
+	placeholder := a.advancedContainer
+	a.advancedContainer = options
+	switch mode {
+	case "decrypt":
+		a.buildDecryptOptions()
+	default:
+		a.buildEncryptOptions()
+	}
+	a.advancedContainer = placeholder
+
+	a.advancedSummary = widget.NewLabel(tr("advanced.summary.defaults", "Optional settings. Defaults are recommended for most files."))
+	a.advancedSummary.Importance = widget.LowImportance
+	a.advancedSummary.Wrapping = fyne.TextWrapWord
+
+	return container.NewVBox(
+		a.advancedSummary,
+		options,
+	)
+}
+
+func (a *App) buildDesktopAdvancedAccordion(detail fyne.CanvasObject, autoOpen bool) {
+	open := autoOpen
+	if a.advancedOverridden {
+		open = a.advancedOpen
+	} else {
+		a.advancedOpen = autoOpen
+	}
+
+	a.advancedItem = widget.NewAccordionItem(tr("advanced.title", "Advanced"), detail)
+	a.advancedItem.Open = open
+	a.advancedAccordion = widget.NewAccordion(a.advancedItem)
+	a.advancedContainer.Add(a.advancedAccordion)
 }
 
 // buildEncryptOptions creates encrypt mode options.

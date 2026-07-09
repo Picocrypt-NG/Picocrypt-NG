@@ -114,6 +114,11 @@ type App struct {
 	commentsEntry      *widget.Entry
 	advancedLabel      *widget.Label
 	advancedContainer  *fyne.Container
+	advancedAccordion  *widget.Accordion
+	advancedItem       *widget.AccordionItem
+	advancedSummary    *widget.Label
+	advancedOpen       bool
+	advancedOverridden bool
 	outputLabel        *widget.Label
 	outputEntry        interface{ SetText(string) }
 	startButton        *widget.Button
@@ -274,6 +279,13 @@ func (a *App) refreshLocalizedText() {
 	setLabelText(a.commentsLabel, tr("comments.label", "Comments:"))
 	setEntryPlaceholder(a.commentsEntry, tr("comments.placeholder", "Comments (not encrypted)"))
 	setLabelText(a.advancedLabel, tr("advanced.label", "Advanced:"))
+	if a.advancedItem != nil {
+		a.advancedItem.Title = tr("advanced.title", "Advanced")
+	}
+	setLabelText(a.advancedSummary, tr("advanced.summary.defaults", "Optional settings. Defaults are recommended for most files."))
+	if a.advancedAccordion != nil {
+		a.advancedAccordion.Refresh()
+	}
 	setLabelText(a.outputLabel, tr("output.label", "Save output as:"))
 	setButtonText(a.mobileSelectFilesBtn, tr("mobile.select_files", "Select Files"))
 	setButtonText(a.mobileSelectFolderBtn, tr("mobile.select_folder", "Select Folder"))
@@ -574,6 +586,7 @@ func (a *App) buildUI() fyne.CanvasObject {
 
 	// Advanced section (from advanced_section.go)
 	a.advancedContainer = container.NewVBox()
+	a.advancedLabel = nil
 	a.updateAdvancedSection()
 
 	// Output section
@@ -585,18 +598,12 @@ func (a *App) buildUI() fyne.CanvasObject {
 
 	a.statusLabel = NewColoredLabel(renderStatus(snap.Status, snap), snap.Status.Color)
 
-	// Advanced section label (hidden when no mode selected)
-	a.advancedLabel = widget.NewLabel(tr("advanced.label", "Advanced:"))
-	a.advancedLabel.TextStyle = fyne.TextStyle{Bold: true}
-	a.advancedLabel.Hide() // Initially hidden until files are dropped
-
 	// Main content container
 	a.mainContent = container.NewVBox(
 		passwordSection,
 		keyfilesSection,
 		widget.NewSeparator(),
 		commentsSection,
-		a.advancedLabel,
 		a.advancedContainer,
 		outputSection,
 		widget.NewSeparator(),

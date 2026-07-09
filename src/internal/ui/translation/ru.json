@@ -39,6 +39,8 @@
   "keyfiles.write_failed": "Не удалось записать ключевой файл",
   "keyfiles.read_access_denied": "Нет доступа на чтение ключевого файла",
   "advanced.label": "Дополнительно:",
+  "advanced.title": "Дополнительно",
+  "advanced.summary.defaults": "Дополнительные настройки. Обычно лучше оставить значения по умолчанию.",
   "advanced.paranoid.label": "Параноидальный",
   "advanced.paranoid.tooltip": "Добавляет Serpent-CTR и более строгие параметры KDF/MAC для эшелонированной защиты",
   "advanced.compress.label": "Сжатие",

@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"fyne.io/fyne/v2"
+
+	ttwidget "github.com/dweymouth/fyne-tooltip/widget"
 )
 
 // TestPasswordStrengthScoring drives the real updatePasswordStrength and asserts
@@ -131,6 +133,127 @@ func TestPasswordVisibilityToggle(t *testing.T) {
 			t.Error("both entries should be re-masked after hiding")
 		}
 	})
+}
+
+func TestPasswordToolbarUsesLocalizedTooltips(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	fyne.DoAndWait(func() {
+		if a.showHideBtn.ToolTip() != tr("password.show", "Show") {
+			t.Fatalf("show/hide tooltip = %q; want localized Show label", a.showHideBtn.ToolTip())
+		}
+		if a.clearPwdBtn.ToolTip() != tr("action.clear", "Clear") {
+			t.Fatalf("clear tooltip = %q; want localized Clear label", a.clearPwdBtn.ToolTip())
+		}
+		if a.copyBtn.ToolTip() != tr("action.copy", "Copy") {
+			t.Fatalf("copy tooltip = %q; want localized Copy label", a.copyBtn.ToolTip())
+		}
+		if a.pasteBtn.ToolTip() != tr("action.paste", "Paste") {
+			t.Fatalf("paste tooltip = %q; want localized Paste label", a.pasteBtn.ToolTip())
+		}
+		if a.createBtn.ToolTip() != tr("action.create", "Create") {
+			t.Fatalf("create tooltip = %q; want localized Create label", a.createBtn.ToolTip())
+		}
+	})
+}
+
+func TestPasswordToolbarRelocalizesAfterSwitchLanguage(t *testing.T) {
+	resetLocalizationForTest(t)
+
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	fyne.DoAndWait(func() {
+		if err := a.SwitchLanguage("ru"); err != nil {
+			t.Fatalf("SwitchLanguage(ru) returned error: %v", err)
+		}
+	})
+
+	if got := a.showHideBtn.ToolTip(); got != tr("password.show", "Show") {
+		t.Fatalf("show/hide tooltip after language switch = %q; want localized string", got)
+	}
+	if got := a.clearPwdBtn.ToolTip(); got != tr("action.clear", "Clear") {
+		t.Fatalf("clear tooltip after language switch = %q; want localized string", got)
+	}
+	if got := a.copyBtn.ToolTip(); got != tr("action.copy", "Copy") {
+		t.Fatalf("copy tooltip after language switch = %q; want localized string", got)
+	}
+	if got := a.pasteBtn.ToolTip(); got != tr("action.paste", "Paste") {
+		t.Fatalf("paste tooltip after language switch = %q; want localized string", got)
+	}
+	if got := a.createBtn.ToolTip(); got != tr("action.create", "Create") {
+		t.Fatalf("create tooltip after language switch = %q; want localized string", got)
+	}
+}
+
+func TestPasswordToolbarDoesNotIncreaseDesktopWidth(t *testing.T) {
+	if raceEnabled {
+		t.Skip("Fyne v2.7.4 internal cache races under -race; covered on non-race matrices")
+	}
+
+	fyneApp := newTestFyneApp(t)
+	a := newDesktopEncryptLayoutApp(t, fyneApp)
+
+	var min, size fyne.Size
+	fyne.DoAndWait(func() {
+		min = a.Window.Content().MinSize()
+		size = a.Window.Canvas().Size()
+	})
+
+	if min.Width > windowWidth {
+		t.Fatalf("desktop password toolbar layout MinSize width %.1f exceeds compact window width %.1f", min.Width, float32(windowWidth))
+	}
+	if size.Width > windowWidth {
+		t.Fatalf("desktop password toolbar layout window width %.1f exceeds compact window width %.1f", size.Width, float32(windowWidth))
+	}
+}
+
+func TestPasswordVisibilityToggleStillUpdatesBothFields(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	fyne.DoAndWait(func() {
+		a.showHideBtn.OnTapped()
+		if a.passwordEntry.IsHidden() || a.cPasswordEntry.IsHidden() {
+			t.Fatal("both password fields should become visible together")
+		}
+		a.showHideBtn.OnTapped()
+		if !a.passwordEntry.IsHidden() || !a.cPasswordEntry.IsHidden() {
+			t.Fatal("both password fields should become hidden together")
+		}
+	})
+}
+
+func TestDesktopPasswordActionsSharePasswordHeaderRow(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	var section fyne.CanvasObject
+	fyne.DoAndWait(func() {
+		section = a.buildPasswordSection()
+	})
+
+	vbox, ok := section.(*fyne.Container)
+	if !ok {
+		t.Fatalf("password section type = %T; want *fyne.Container", section)
+	}
+	if len(vbox.Objects) < 1 {
+		t.Fatal("password section has no children")
+	}
+
+	headerRow, ok := vbox.Objects[0].(*fyne.Container)
+	if !ok {
+		t.Fatalf("password header row type = %T; want *fyne.Container", vbox.Objects[0])
+	}
+	if !canvasTreeContainsObject(headerRow, a.passwordLabel) {
+		t.Fatal("password header row does not contain password label")
+	}
+	for _, btn := range []*ttwidget.Button{a.showHideBtn, a.clearPwdBtn, a.copyBtn, a.pasteBtn, a.createBtn} {
+		if !canvasTreeContainsObject(headerRow, btn) {
+			t.Fatalf("password header row does not contain toolbar button %p", btn)
+		}
+	}
 }
 
 // TestPasswordPasteButton drives the real paste-button OnTapped handler built in

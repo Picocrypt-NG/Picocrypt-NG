@@ -5,6 +5,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
 
 	ttwidget "github.com/dweymouth/fyne-tooltip/widget"
 )
@@ -349,4 +350,139 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 			t.Errorf("Same level tooltip = %q; want rendered .zip extension", got)
 		}
 	})
+}
+
+func TestAdvancedAccordionCollapsedByDefault(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.State.AllFiles = []string{"input.txt"}
+		a.State.OnlyFiles = []string{"input.txt"}
+		a.State.SetInputSelection(1, 0, 0, false)
+		a.State.Password = "secret"
+		a.State.CPassword = "secret"
+		a.State.OutputFile = "input.txt.pcv"
+		a.refreshAdvanced()
+	})
+
+	if a.advancedLabel != nil && a.advancedLabel.Visible() {
+		t.Fatal("desktop advanced label should be replaced by accordion, not remain as a separate visible label")
+	}
+	if a.advancedAccordion == nil {
+		t.Fatal("advanced accordion was not built")
+	}
+	if a.advancedItem == nil {
+		t.Fatal("advanced accordion item was not built")
+	}
+	if a.advancedItem.Open {
+		t.Fatal("advanced accordion should be collapsed when all advanced options are at defaults")
+	}
+	if a.advancedItem.Title != tr("advanced.title", "Advanced") {
+		t.Fatalf("advanced accordion title = %q; want localized advanced title", a.advancedItem.Title)
+	}
+	if !canvasTreeContainsObject(a.advancedItem.Detail, a.paranoidCheck) {
+		t.Fatal("advanced accordion detail does not contain real advanced controls")
+	}
+}
+
+func TestAdvancedAccordionOpensWhenAdvancedOptionEnabled(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.State.AllFiles = []string{"input.txt"}
+		a.State.OnlyFiles = []string{"input.txt"}
+		a.State.SetInputSelection(1, 0, 0, false)
+		a.State.Password = "secret"
+		a.State.CPassword = "secret"
+		a.State.OutputFile = "input.txt.pcv"
+		a.State.Split = true
+		a.refreshAdvanced()
+	})
+
+	if a.advancedItem == nil {
+		t.Fatal("advanced accordion item was not built")
+	}
+	if !a.advancedItem.Open {
+		t.Fatal("advanced accordion should open when a non-default advanced option is enabled")
+	}
+}
+
+func TestAdvancedAccordionPreservesSessionOpenStateOnRefresh(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.State.AllFiles = []string{"input.txt"}
+		a.State.OnlyFiles = []string{"input.txt"}
+		a.State.SetInputSelection(1, 0, 0, false)
+		a.State.Password = "secret"
+		a.State.CPassword = "secret"
+		a.State.OutputFile = "input.txt.pcv"
+		a.refreshAdvanced()
+		a.advancedAccordion.Open(0)
+		a.refreshAdvanced()
+	})
+
+	if a.advancedItem == nil {
+		t.Fatal("advanced accordion item was not rebuilt")
+	}
+	if !a.advancedItem.Open {
+		t.Fatal("advanced accordion manual open state was not preserved across refresh")
+	}
+}
+
+func TestAdvancedAccordionKeepsOptionTooltipsLocalized(t *testing.T) {
+	resetLocalizationForTest(t)
+
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	fyne.DoAndWait(func() {
+		if err := a.SwitchLanguage("ru"); err != nil {
+			t.Fatalf("SwitchLanguage(ru) returned error: %v", err)
+		}
+		a.State.Mode = "encrypt"
+		a.State.AllFiles = []string{"input.txt"}
+		a.State.OnlyFiles = []string{"input.txt"}
+		a.State.SetInputSelection(1, 0, 0, false)
+		a.State.Password = "secret"
+		a.State.CPassword = "secret"
+		a.State.OutputFile = "input.txt.pcv"
+		a.refreshAdvanced()
+	})
+
+	if a.advancedItem == nil {
+		t.Fatal("advanced accordion item was not built")
+	}
+	if a.advancedItem.Title != tr("advanced.title", "Advanced") {
+		t.Fatalf("advanced accordion title = %q; want localized title", a.advancedItem.Title)
+	}
+	if got := a.paranoidCheck.ToolTip(); got != tr("advanced.paranoid.tooltip", "Adds Serpent-CTR and stronger KDF/MAC settings for defense in depth") {
+		t.Fatalf("paranoid tooltip = %q; want localized tooltip", got)
+	}
+	if !canvasTreeContainsLabelWithText(a.advancedItem.Detail, tr("advanced.summary.defaults", "Optional settings. Defaults are recommended for most files.")) {
+		t.Fatal("advanced accordion does not show the localized compact defaults summary")
+	}
+}
+
+func canvasTreeContainsLabelWithText(root fyne.CanvasObject, want string) bool {
+	if root == nil {
+		return false
+	}
+	if label, ok := root.(*widget.Label); ok && label.Text == want {
+		return true
+	}
+	if container, ok := root.(*fyne.Container); ok {
+		for _, child := range container.Objects {
+			if canvasTreeContainsLabelWithText(child, want) {
+				return true
+			}
+		}
+	}
+	return false
 }

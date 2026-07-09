@@ -37,6 +37,8 @@
   "keyfiles.write_failed": "Failed to write keyfile",
   "keyfiles.read_access_denied": "Keyfile read access denied",
   "advanced.label": "Advanced:",
+  "advanced.title": "Advanced",
+  "advanced.summary.defaults": "Optional settings. Defaults are recommended for most files.",
   "advanced.paranoid.label": "Paranoid mode",
   "advanced.paranoid.tooltip": "Adds Serpent-CTR and stronger KDF/MAC settings for defense in depth",
   "advanced.compress.label": "Compress files",
