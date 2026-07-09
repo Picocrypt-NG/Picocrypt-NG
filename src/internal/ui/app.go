@@ -114,9 +114,8 @@ type App struct {
 	commentsEntry      *widget.Entry
 	advancedLabel      *widget.Label
 	advancedContainer  *fyne.Container
-	advancedAccordion  *widget.Accordion
-	advancedItem       *widget.AccordionItem
-	advancedSummary    *widget.Label
+	advancedToggleBtn  *widget.Button
+	advancedDetail     fyne.CanvasObject
 	advancedOpen       bool
 	advancedOverridden bool
 	outputLabel        *widget.Label
@@ -280,13 +279,7 @@ func (a *App) refreshLocalizedText() {
 	setLabelText(a.commentsLabel, tr("comments.label", "Comments:"))
 	setEntryPlaceholder(a.commentsEntry, tr("comments.placeholder", "Public note; not encrypted."))
 	setLabelText(a.advancedLabel, tr("advanced.label", "Advanced:"))
-	if a.advancedItem != nil {
-		a.advancedItem.Title = tr("advanced.title", "Advanced")
-	}
-	setLabelText(a.advancedSummary, tr("advanced.summary.defaults", "Optional settings. Defaults are recommended for most files."))
-	if a.advancedAccordion != nil {
-		a.advancedAccordion.Refresh()
-	}
+	a.refreshAdvancedDisclosureButton()
 	setLabelText(a.outputLabel, tr("output.label", "Save output as:"))
 	setButtonText(a.mobileSelectFilesBtn, tr("mobile.select_files", "Select Files"))
 	setButtonText(a.mobileSelectFolderBtn, tr("mobile.select_folder", "Select Folder"))
@@ -357,6 +350,8 @@ func (a *App) refreshAdvancedLocalizedText() {
 	setCheckTooltip(a.splitCheck, tr("advanced.split.tooltip", "Split the output file into smaller chunks"))
 	setEntryPlaceholder(a.splitSizeEntry, tr("advanced.split.size_placeholder", "Size"))
 	if a.splitUnitSelect != nil {
+		a.splitUnitSelect.Options = localizedSplitUnits(a.State.SplitUnits)
+		a.splitUnitSelect.SetSelectedIndex(int(a.State.SplitSelected))
 		a.splitUnitSelect.SetToolTip(tr("advanced.split.unit_tooltip", "Choose the chunk units"))
 	}
 	setCheckText(a.forceDecryptCheck, tr("advanced.force_decrypt.label", "Force decrypt"))
@@ -657,9 +652,15 @@ func (a *App) resizeDesktopWindowForContent(content fyne.CanvasObject, preferred
 	if isMobile() || a.Window == nil {
 		return
 	}
+	if content == nil && preferredHeight <= 0 {
+		return
+	}
 	size := fyne.NewSize(windowWidth, preferredHeight)
 	if content != nil {
 		size = size.Max(content.MinSize())
+	}
+	if size.Height == 0 {
+		size.Height = preferredHeight
 	}
 	a.Window.Resize(size)
 }
@@ -876,7 +877,7 @@ func (a *App) buildCommentsSection() fyne.CanvasObject {
 
 // buildOutputSection creates the output file section.
 func (a *App) buildOutputSection() fyne.CanvasObject {
-	outputEntry := NewDisabledEntry()
+	outputEntry := NewOutputDisplay()
 	a.outputEntry = outputEntry
 
 	a.changeBtn = widget.NewButton(tr("action.change", "Change"), func() {
@@ -1022,7 +1023,7 @@ func (a *App) updateUIState() {
 		a.commentsLabel.SetText(commentsLabelText(snap.Mode))
 	}
 
-	a.resizeDesktopWindowForCurrentContent(preferredDesktopWindowHeight(snap.Mode))
+	a.resizeDesktopWindowForCurrentContent(0)
 }
 
 // resetUI clears UI state but preserves progress flags.

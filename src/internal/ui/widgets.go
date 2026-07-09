@@ -74,7 +74,7 @@ type passwordStrengthRenderer struct {
 
 func (r *passwordStrengthRenderer) Layout(size fyne.Size) {
 	// Center the arc in the widget area
-	arcSize := fyne.NewSize(20, 20)
+	arcSize := fyne.NewSize(18, 18)
 	offset := fyne.NewPos(
 		(size.Width-arcSize.Width)/2,
 		(size.Height-arcSize.Height)/2,
@@ -188,8 +188,8 @@ type validationRenderer struct {
 }
 
 func (r *validationRenderer) Layout(size fyne.Size) {
-	// Center the circle in the widget area - same size as password strength arc (20x20)
-	circleSize := fyne.NewSize(20, 20)
+	// Center the circle in the widget area - same optical size as password strength arc.
+	circleSize := fyne.NewSize(18, 18)
 	offset := fyne.NewPos(
 		(size.Width-circleSize.Width)/2,
 		(size.Height-circleSize.Height)/2,
@@ -226,23 +226,100 @@ func (r *validationRenderer) Objects() []fyne.CanvasObject {
 	return []fyne.CanvasObject{r.circle}
 }
 
-// DisabledEntry is an Entry widget that appears disabled but still shows content.
-type DisabledEntry struct {
-	widget.Entry
+// OutputDisplay is a read-only single-line text field used for generated output
+// names. Unlike Entry, it never shows an editing scrollbar for long filenames.
+type OutputDisplay struct {
+	widget.BaseWidget
+	Text string
 }
 
-// NewDisabledEntry creates a new disabled entry.
-func NewDisabledEntry() *DisabledEntry {
-	e := &DisabledEntry{}
-	e.Wrapping = fyne.TextWrap(fyne.TextTruncateClip)
-	e.ExtendBaseWidget(e)
-	e.Disable()
-	return e
+// NewOutputDisplay creates a read-only output text display.
+func NewOutputDisplay() *OutputDisplay {
+	o := &OutputDisplay{}
+	o.ExtendBaseWidget(o)
+	return o
 }
 
-// SetText sets the text of the disabled entry.
-func (e *DisabledEntry) SetText(text string) {
-	e.Entry.SetText(text)
+// SetText updates the displayed text.
+func (o *OutputDisplay) SetText(text string) {
+	o.Text = text
+	o.Refresh()
+}
+
+func (o *OutputDisplay) MinSize() fyne.Size {
+	height := fyne.MeasureText("M", theme.TextSize(), fyne.TextStyle{}).Height +
+		theme.Padding()*2 + theme.InputBorderSize()*2
+	return fyne.NewSize(80, height)
+}
+
+func (o *OutputDisplay) CreateRenderer() fyne.WidgetRenderer {
+	background := canvas.NewRectangle(theme.InputBackgroundColor())
+	background.StrokeColor = theme.InputBorderColor()
+	background.StrokeWidth = theme.InputBorderSize()
+	text := canvas.NewText(o.Text, theme.ForegroundColor())
+	text.TextSize = theme.TextSize()
+
+	r := &outputDisplayRenderer{
+		display:    o,
+		background: background,
+		text:       text,
+	}
+	r.update()
+	return r
+}
+
+type outputDisplayRenderer struct {
+	display    *OutputDisplay
+	background *canvas.Rectangle
+	text       *canvas.Text
+	size       fyne.Size
+}
+
+func (r *outputDisplayRenderer) Layout(size fyne.Size) {
+	r.size = size
+	r.background.Move(fyne.NewPos(0, 0))
+	r.background.Resize(size)
+
+	pad := theme.Padding()
+	textSize := fyne.MeasureText("M", theme.TextSize(), fyne.TextStyle{})
+	y := (size.Height - textSize.Height) / 2
+	if y < 0 {
+		y = 0
+	}
+	r.text.Move(fyne.NewPos(pad, y))
+	r.text.Resize(fyne.NewSize(size.Width-pad*2, textSize.Height))
+	r.update()
+}
+
+func (r *outputDisplayRenderer) MinSize() fyne.Size {
+	return r.display.MinSize()
+}
+
+func (r *outputDisplayRenderer) Refresh() {
+	r.update()
+}
+
+func (r *outputDisplayRenderer) Destroy() {}
+
+func (r *outputDisplayRenderer) Objects() []fyne.CanvasObject {
+	return []fyne.CanvasObject{r.background, r.text}
+}
+
+func (r *outputDisplayRenderer) update() {
+	r.background.FillColor = theme.InputBackgroundColor()
+	r.background.StrokeColor = theme.InputBorderColor()
+	r.background.StrokeWidth = theme.InputBorderSize()
+	r.text.Color = theme.ForegroundColor()
+	r.text.TextSize = theme.TextSize()
+
+	availableWidth := r.size.Width - theme.Padding()*2
+	if availableWidth > 0 {
+		r.text.Text = truncateTextToWidth(r.display.Text, availableWidth, theme.TextSize())
+	} else {
+		r.text.Text = r.display.Text
+	}
+	canvas.Refresh(r.background)
+	canvas.Refresh(r.text)
 }
 
 // PasswordEntry is an Entry widget that can toggle between password and text mode.
@@ -356,7 +433,7 @@ func (r *coloredLabelRenderer) updateText() {
 
 	// Apply truncation if needed and we have available size
 	if r.label.truncation != fyne.TextTruncateOff && r.availableSize.Width > 0 {
-		displayText = r.truncateText(displayText, r.availableSize.Width)
+		displayText = truncateTextToWidth(displayText, r.availableSize.Width, theme.TextSize())
 	}
 
 	r.text.Text = displayText
@@ -364,19 +441,19 @@ func (r *coloredLabelRenderer) updateText() {
 	canvas.Refresh(r.text)
 }
 
-// truncateText truncates text with ellipsis if it exceeds maxWidth
-func (r *coloredLabelRenderer) truncateText(text string, maxWidth float32) string {
+// truncateTextToWidth truncates text with ellipsis if it exceeds maxWidth.
+func truncateTextToWidth(text string, maxWidth float32, textSize float32) string {
 	if maxWidth <= 0 {
 		return text
 	}
 
-	textSize := fyne.MeasureText(text, theme.TextSize(), fyne.TextStyle{})
-	if textSize.Width <= maxWidth {
+	measured := fyne.MeasureText(text, textSize, fyne.TextStyle{})
+	if measured.Width <= maxWidth {
 		return text
 	}
 
 	ellipsis := "..."
-	ellipsisWidth := fyne.MeasureText(ellipsis, theme.TextSize(), fyne.TextStyle{}).Width
+	ellipsisWidth := fyne.MeasureText(ellipsis, textSize, fyne.TextStyle{}).Width
 	availableWidth := maxWidth - ellipsisWidth
 
 	if availableWidth <= 0 {
@@ -390,7 +467,7 @@ func (r *coloredLabelRenderer) truncateText(text string, maxWidth float32) strin
 	for low < high {
 		mid := (low + high + 1) / 2
 		candidate := string(runes[:mid]) + ellipsis
-		candidateWidth := fyne.MeasureText(candidate, theme.TextSize(), fyne.TextStyle{}).Width
+		candidateWidth := fyne.MeasureText(candidate, textSize, fyne.TextStyle{}).Width
 
 		if candidateWidth <= maxWidth {
 			low = mid // This length fits, try longer

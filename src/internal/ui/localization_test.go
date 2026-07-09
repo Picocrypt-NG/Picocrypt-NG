@@ -174,6 +174,8 @@ func TestRussianFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 	assertCatalogStringContains(t, catalog, "status.kept_output_unverified", "не провер", "повреж")
 	assertCatalogStringContains(t, catalog, "comments.placeholder", "открыт", "не шифру")
 	assertCatalogStringEquals(t, catalog, "comments.placeholder", "Открытая заметка; не шифруется")
+	assertCatalogStringEquals(t, catalog, "keyfiles.label", "Файлы-ключи:")
+	assertCatalogStringEquals(t, catalog, "advanced.split.unit.total", "Всего")
 	assertCatalogStringContains(t, catalog, "advanced.delete_files.tooltip", "после успеш", "не", "стира")
 	assertCatalogStringContains(t, catalog, "advanced.deniability.tooltip", "заголов", "парол", "ключ", "не скрывает")
 	assertCatalogStringContains(t, catalog, "advanced.recursively.tooltip", "кажд", "отдель")

@@ -8,6 +8,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	ttwidget "github.com/dweymouth/fyne-tooltip/widget"
@@ -21,11 +22,9 @@ func (a *App) updateAdvancedSection() {
 		return
 	}
 
-	a.rememberAdvancedDisclosureState()
 	a.advancedContainer.RemoveAll()
-	a.advancedAccordion = nil
-	a.advancedItem = nil
-	a.advancedSummary = nil
+	a.advancedToggleBtn = nil
+	a.advancedDetail = nil
 
 	switch a.State.Mode {
 	case "":
@@ -33,22 +32,19 @@ func (a *App) updateAdvancedSection() {
 		if a.advancedLabel != nil {
 			a.advancedLabel.Hide()
 		}
-		// Resize to compact initial height
-		a.resizeDesktopWindowForCurrentContent(windowHeightInitial)
+		a.resizeDesktopWindowForCurrentContent(0)
 	case "encrypt":
 		if a.advancedLabel != nil {
 			a.advancedLabel.Show()
 		}
-		a.buildDesktopAdvancedAccordion(a.buildAdvancedDetailContent("encrypt"), a.advancedShouldAutoOpen())
-		// Resize window for encrypt mode (more options)
-		a.resizeDesktopWindowForCurrentContent(windowHeightEncrypt)
+		a.buildDesktopAdvancedDisclosure(a.buildAdvancedDetailContent("encrypt"), a.advancedShouldAutoOpen())
+		a.resizeDesktopWindowForCurrentContent(0)
 	case "decrypt":
 		if a.advancedLabel != nil {
 			a.advancedLabel.Show()
 		}
-		a.buildDesktopAdvancedAccordion(a.buildAdvancedDetailContent("decrypt"), a.advancedShouldAutoOpen())
-		// Resize window for decrypt mode (fewer options)
-		a.resizeDesktopWindowForCurrentContent(windowHeightDecrypt)
+		a.buildDesktopAdvancedDisclosure(a.buildAdvancedDetailContent("decrypt"), a.advancedShouldAutoOpen())
+		a.resizeDesktopWindowForCurrentContent(0)
 	}
 
 	// IMPORTANT: Newly rebuilt controls must immediately reflect the current
@@ -57,16 +53,6 @@ func (a *App) updateAdvancedSection() {
 	a.updateAdvancedDisableState()
 
 	a.advancedContainer.Refresh()
-}
-
-func (a *App) rememberAdvancedDisclosureState() {
-	if a.advancedItem == nil {
-		return
-	}
-	if a.advancedItem.Open != a.advancedOpen {
-		a.advancedOverridden = true
-		a.advancedOpen = a.advancedItem.Open
-	}
 }
 
 func (a *App) advancedShouldAutoOpen() bool {
@@ -85,27 +71,17 @@ func (a *App) advancedShouldAutoOpen() bool {
 
 func (a *App) buildAdvancedDetailContent(mode string) fyne.CanvasObject {
 	options := container.NewVBox()
-	placeholder := a.advancedContainer
-	a.advancedContainer = options
 	switch mode {
 	case "decrypt":
-		a.buildDecryptOptions()
+		a.buildDecryptOptionsInto(options)
 	default:
-		a.buildEncryptOptions()
+		a.buildEncryptOptionsInto(options)
 	}
-	a.advancedContainer = placeholder
 
-	a.advancedSummary = widget.NewLabel(tr("advanced.summary.defaults", "Optional settings. Defaults are recommended for most files."))
-	a.advancedSummary.Importance = widget.LowImportance
-	a.advancedSummary.Wrapping = fyne.TextWrapWord
-
-	return container.NewVBox(
-		a.advancedSummary,
-		options,
-	)
+	return options
 }
 
-func (a *App) buildDesktopAdvancedAccordion(detail fyne.CanvasObject, autoOpen bool) {
+func (a *App) buildDesktopAdvancedDisclosure(detail fyne.CanvasObject, autoOpen bool) {
 	open := autoOpen
 	if a.advancedOverridden {
 		open = a.advancedOpen
@@ -113,14 +89,62 @@ func (a *App) buildDesktopAdvancedAccordion(detail fyne.CanvasObject, autoOpen b
 		a.advancedOpen = autoOpen
 	}
 
-	a.advancedItem = widget.NewAccordionItem(tr("advanced.title", "Advanced"), detail)
-	a.advancedItem.Open = open
-	a.advancedAccordion = widget.NewAccordion(a.advancedItem)
-	a.advancedContainer.Add(a.advancedAccordion)
+	a.advancedDetail = detail
+	a.advancedToggleBtn = widget.NewButtonWithIcon(tr("advanced.title", "Advanced"), advancedDisclosureIcon(open), func() {
+		a.advancedOverridden = true
+		a.setAdvancedDisclosureOpen(!a.advancedOpen)
+	})
+	a.advancedToggleBtn.Alignment = widget.ButtonAlignLeading
+	a.advancedToggleBtn.IconPlacement = widget.ButtonIconLeadingText
+	a.advancedToggleBtn.Importance = widget.LowImportance
+	if !open {
+		detail.Hide()
+	}
+	a.advancedContainer.Add(a.advancedToggleBtn)
+	a.advancedContainer.Add(detail)
+}
+
+func advancedDisclosureIcon(open bool) fyne.Resource {
+	if open {
+		return theme.MenuDropUpIcon()
+	}
+	return theme.MenuDropDownIcon()
+}
+
+func (a *App) refreshAdvancedDisclosureButton() {
+	if a.advancedToggleBtn == nil {
+		return
+	}
+	a.advancedToggleBtn.SetText(tr("advanced.title", "Advanced"))
+	a.advancedToggleBtn.SetIcon(advancedDisclosureIcon(a.advancedOpen))
+}
+
+func (a *App) setAdvancedDisclosureOpen(open bool) {
+	a.advancedOpen = open
+	if a.advancedDetail != nil {
+		if open {
+			a.advancedDetail.Show()
+		} else {
+			a.advancedDetail.Hide()
+		}
+	}
+	a.refreshAdvancedDisclosureButton()
+	if a.advancedContainer != nil {
+		a.advancedContainer.Refresh()
+	}
+	a.resizeDesktopWindowForCurrentContent(0)
 }
 
 // buildEncryptOptions creates encrypt mode options.
 func (a *App) buildEncryptOptions() {
+	a.buildEncryptOptionsInto(a.advancedContainer)
+}
+
+func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
+	if target == nil {
+		return
+	}
+
 	a.paranoidCheck = ttwidget.NewCheck(tr("advanced.paranoid.label", "Paranoid mode"), func(checked bool) {
 		a.State.Paranoid = checked
 	})
@@ -192,9 +216,9 @@ func (a *App) buildEncryptOptions() {
 		a.updateUIState() // Update status to show increased disk space requirement
 	}
 
-	a.splitUnitSelect = ttwidget.NewSelect(a.State.SplitUnits, func(selected string) {
+	a.splitUnitSelect = ttwidget.NewSelect(localizedSplitUnits(a.State.SplitUnits), func(selected string) {
 		for i, unit := range a.State.SplitUnits {
-			if unit == selected {
+			if localizedSplitUnit(unit) == selected {
 				// #nosec G115 -- i is bounded by SplitUnits length (5 items: KiB, MiB, GiB, TiB, Total)
 				a.State.SplitSelected = int32(i)
 				break
@@ -210,14 +234,37 @@ func (a *App) buildEncryptOptions() {
 		a.splitSizeEntry,
 	)
 
-	a.advancedContainer.Add(row1)
-	a.advancedContainer.Add(row2)
-	a.advancedContainer.Add(row3)
-	a.advancedContainer.Add(splitRow)
+	target.Add(row1)
+	target.Add(row2)
+	target.Add(row3)
+	target.Add(splitRow)
+}
+
+func localizedSplitUnits(units []string) []string {
+	localized := make([]string, len(units))
+	for i, unit := range units {
+		localized[i] = localizedSplitUnit(unit)
+	}
+	return localized
+}
+
+func localizedSplitUnit(unit string) string {
+	if unit == "Total" {
+		return tr("advanced.split.unit.total", "Total")
+	}
+	return unit
 }
 
 // buildDecryptOptions creates decrypt mode options.
 func (a *App) buildDecryptOptions() {
+	a.buildDecryptOptionsInto(a.advancedContainer)
+}
+
+func (a *App) buildDecryptOptionsInto(target *fyne.Container) {
+	if target == nil {
+		return
+	}
+
 	a.forceDecryptCheck = ttwidget.NewCheck(tr("advanced.force_decrypt.label", "Force decrypt"), func(checked bool) {
 		a.State.Keep = checked
 	})
@@ -263,9 +310,9 @@ func (a *App) buildDecryptOptions() {
 
 	row2 := container.NewGridWithColumns(2, a.autoUnzipCheck, a.sameLevelCheck)
 
-	a.advancedContainer.Add(row1)
-	a.advancedContainer.Add(a.deleteVolumeCheck)
-	a.advancedContainer.Add(row2)
+	target.Add(row1)
+	target.Add(a.deleteVolumeCheck)
+	target.Add(row2)
 
 	// Disable auto unzip if not a zip file
 	if !strings.HasSuffix(a.State.InputFile, ".zip.pcv") {

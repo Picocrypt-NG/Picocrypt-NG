@@ -73,9 +73,9 @@ func TestOutputDisplayUsesBasenameOnly(t *testing.T) {
 		a.updateUIState()
 	})
 
-	entry, ok := a.outputEntry.(*DisabledEntry)
+	entry, ok := a.outputEntry.(*OutputDisplay)
 	if !ok {
-		t.Fatalf("outputEntry type = %T; want *DisabledEntry", a.outputEntry)
+		t.Fatalf("outputEntry type = %T; want *OutputDisplay", a.outputEntry)
 	}
 	if got, want := entry.Text, "final-output.pcv"; got != want {
 		t.Fatalf("output display = %q; want basename %q", got, want)
@@ -104,9 +104,9 @@ func TestOutputDisplaySplitSuffixIsCompact(t *testing.T) {
 		a.updateUIState()
 	})
 
-	entry, ok := a.outputEntry.(*DisabledEntry)
+	entry, ok := a.outputEntry.(*OutputDisplay)
 	if !ok {
-		t.Fatalf("outputEntry type = %T; want *DisabledEntry", a.outputEntry)
+		t.Fatalf("outputEntry type = %T; want *OutputDisplay", a.outputEntry)
 	}
 	if got, want := entry.Text, "split-target.pcv.*"; got != want {
 		t.Fatalf("split output display = %q; want %q", got, want)
@@ -475,6 +475,15 @@ func TestOutputLongNameDoesNotWidenDesktopLayout(t *testing.T) {
 	assertWindowFitsContent(t, a)
 }
 
+func TestDesktopOutputDisplayIsPassiveText(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	if _, ok := a.outputEntry.(*OutputDisplay); !ok {
+		t.Fatalf("outputEntry type = %T; want passive *OutputDisplay instead of widget.Entry", a.outputEntry)
+	}
+}
+
 func TestDesktopEncryptLayoutCollapsedAdvancedHeightBudgetEnglish(t *testing.T) {
 	if raceEnabled {
 		t.Skip("Fyne v2.7.4 internal cache races under -race; covered on non-race matrices")
@@ -563,6 +572,36 @@ func TestDesktopEncryptLayoutExpandedAdvancedStillFitsWidth(t *testing.T) {
 	}
 	if size.Width > windowWidth {
 		t.Fatalf("expanded encrypt layout window width %.1f exceeds compact window width %.1f", size.Width, float32(windowWidth))
+	}
+}
+
+func TestDesktopAdvancedDisclosureShrinksWindowAfterClose(t *testing.T) {
+	if raceEnabled {
+		t.Skip("Fyne v2.7.4 internal cache races under -race; covered on non-race matrices")
+	}
+
+	fyneApp := newTestFyneApp(t)
+	fyneApp.Settings().SetTheme(fixedVariantTheme{Theme: NewCompactTheme(), variant: theme.VariantLight})
+
+	a := newDesktopEncryptLayoutApp(t, fyneApp)
+
+	var collapsed, expanded, recollapsed fyne.Size
+	fyne.DoAndWait(func() {
+		collapsed = a.Window.Canvas().Size()
+		if a.advancedToggleBtn == nil {
+			t.Fatal("advanced disclosure button was not built")
+		}
+		a.advancedToggleBtn.OnTapped()
+		expanded = a.Window.Canvas().Size()
+		a.advancedToggleBtn.OnTapped()
+		recollapsed = a.Window.Canvas().Size()
+	})
+
+	if expanded.Height <= collapsed.Height {
+		t.Fatalf("opening advanced did not grow the window: collapsed %.1f expanded %.1f", collapsed.Height, expanded.Height)
+	}
+	if recollapsed.Height > collapsed.Height+1 {
+		t.Fatalf("closing advanced left extra window height: collapsed %.1f recollapsed %.1f", collapsed.Height, recollapsed.Height)
 	}
 }
 

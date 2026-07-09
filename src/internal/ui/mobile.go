@@ -586,9 +586,9 @@ func (a *App) buildMobileEncryptOptions() {
 		a.updateUIState()
 	}
 
-	a.splitUnitSelect = ttwidget.NewSelect(a.State.SplitUnits, func(selected string) {
+	a.splitUnitSelect = ttwidget.NewSelect(localizedSplitUnits(a.State.SplitUnits), func(selected string) {
 		for i, unit := range a.State.SplitUnits {
-			if unit == selected {
+			if localizedSplitUnit(unit) == selected {
 				// #nosec G115 -- i is bounded by SplitUnits length (5 items: KiB, MiB, GiB, TiB, Total)
 				a.State.SplitSelected = int32(i)
 				break

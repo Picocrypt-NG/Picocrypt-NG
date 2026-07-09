@@ -304,32 +304,23 @@ func TestColoredLabel(t *testing.T) {
 	})
 }
 
-// TestDisabledEntry tests the disabled entry widget.
-func TestDisabledEntry(t *testing.T) {
+// TestOutputDisplay tests the passive output filename display.
+func TestOutputDisplay(t *testing.T) {
 	newTestFyneApp(t)
 
-	t.Run("NewDisabledEntry", func(t *testing.T) {
-		entry := NewDisabledEntry()
-
-		// NewDisabledEntry must call Disable(); guard that it actually did.
-		if !entry.Disabled() {
-			t.Error("Expected entry to be disabled")
-		}
-
-		// The output display uses DisabledEntry for long filenames; it must keep
-		// the same single-line clipping default as widget.NewEntry instead of
-		// relying on widget.Entry's zero-value wrapping.
-		if entry.Wrapping != fyne.TextWrap(fyne.TextTruncateClip) {
-			t.Errorf("Wrapping = %v; want TextTruncateClip", entry.Wrapping)
+	t.Run("NewOutputDisplay", func(t *testing.T) {
+		output := NewOutputDisplay()
+		if output.MinSize().Width <= 0 || output.MinSize().Height <= 0 {
+			t.Fatalf("MinSize = %v; want positive dimensions", output.MinSize())
 		}
 	})
 
 	t.Run("SetText", func(t *testing.T) {
-		entry := NewDisabledEntry()
-		entry.SetText("Test content")
+		output := NewOutputDisplay()
+		output.SetText("Test content")
 
-		if entry.Text != "Test content" {
-			t.Errorf("Expected text 'Test content', got '%s'", entry.Text)
+		if output.Text != "Test content" {
+			t.Errorf("Expected text 'Test content', got '%s'", output.Text)
 		}
 	})
 }
