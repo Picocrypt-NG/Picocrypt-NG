@@ -307,6 +307,21 @@ func TestLinuxUPXDownloadsRemainChecksumGated(t *testing.T) {
 	}
 }
 
+func TestLinuxPRAggregateGateIgnoresCancelledDuplicate(t *testing.T) {
+	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-linux.yml")
+	gate := mustJob(t, workflow, "pr-test-build-linux")
+	if gate.If != "${{ always() && !cancelled() }}" {
+		t.Fatalf("Linux aggregate if = %q, want cancellation-aware always gate", gate.If)
+	}
+
+	check := mustStepNamed(t, gate, "Require all Linux matrix jobs to pass")
+	mustContainInOrder(t, check.Run,
+		`if [ "${{ needs.build.result }}" != "success" ]; then`,
+		`echo "Linux matrix result: ${{ needs.build.result }}"`,
+		"exit 1",
+	)
+}
+
 func TestLinuxDebPackagingDoesNotUseExternalScaffold(t *testing.T) {
 	for _, path := range []string{
 		".github/workflows/build-linux.yml",

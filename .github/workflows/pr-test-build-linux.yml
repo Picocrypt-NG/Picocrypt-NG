@@ -232,7 +232,7 @@ jobs:
   pr-test-build-linux:
     needs: build
     runs-on: ubuntu-24.04
-    if: always()
+    if: ${{ always() && !cancelled() }}
     steps:
     - name: Require all Linux matrix jobs to pass
       run: |
