@@ -810,6 +810,7 @@ func TestWindowsLegacyWorkflowsUsePinnedLocalFork(t *testing.T) {
 		mustContain(t, content, `C:\go-legacy\go-legacy-win7\bin`)
 		mustNotContain(t, content, `C:\go-legacy\go\bin`)
 		mustContain(t, content, "Get-Command go")
+		mustContain(t, content, "Get-Command go -CommandType Application | Select-Object -First 1")
 		mustContain(t, content, "go env GOROOT")
 		mustContain(t, content, "go env GOVERSION")
 		mustContain(t, content, "go1.26.5")

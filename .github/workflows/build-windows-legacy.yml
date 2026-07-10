@@ -61,7 +61,7 @@ jobs:
     - name: Verify Go installation
       run: |
         $expectedGo = (Resolve-Path 'C:\go-legacy\go-legacy-win7\bin\go.exe').Path
-        $actualGo = (Get-Command go -CommandType Application).Source
+        $actualGo = (Get-Command go -CommandType Application | Select-Object -First 1).Source
         if ($actualGo -ne $expectedGo) { throw "Unexpected go.exe: $actualGo; want $expectedGo" }
         $expectedRoot = (Resolve-Path 'C:\go-legacy\go-legacy-win7').Path
         $actualRoot = (go env GOROOT).Trim()
