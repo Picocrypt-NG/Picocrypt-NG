@@ -253,10 +253,10 @@ func (o *OutputDisplay) MinSize() fyne.Size {
 }
 
 func (o *OutputDisplay) CreateRenderer() fyne.WidgetRenderer {
-	background := canvas.NewRectangle(theme.InputBackgroundColor())
-	background.StrokeColor = theme.InputBorderColor()
+	background := canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
+	background.StrokeColor = theme.Color(theme.ColorNameInputBorder)
 	background.StrokeWidth = theme.InputBorderSize()
-	text := canvas.NewText(o.Text, theme.ForegroundColor())
+	text := canvas.NewText(o.Text, theme.Color(theme.ColorNameForeground))
 	text.TextSize = theme.TextSize()
 
 	r := &outputDisplayRenderer{
@@ -306,10 +306,10 @@ func (r *outputDisplayRenderer) Objects() []fyne.CanvasObject {
 }
 
 func (r *outputDisplayRenderer) update() {
-	r.background.FillColor = theme.InputBackgroundColor()
-	r.background.StrokeColor = theme.InputBorderColor()
+	r.background.FillColor = theme.Color(theme.ColorNameInputBackground)
+	r.background.StrokeColor = theme.Color(theme.ColorNameInputBorder)
 	r.background.StrokeWidth = theme.InputBorderSize()
-	r.text.Color = theme.ForegroundColor()
+	r.text.Color = theme.Color(theme.ColorNameForeground)
 	r.text.TextSize = theme.TextSize()
 
 	availableWidth := r.size.Width - theme.Padding()*2
