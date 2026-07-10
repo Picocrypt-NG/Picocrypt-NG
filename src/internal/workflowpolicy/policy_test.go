@@ -783,6 +783,7 @@ func TestSnapcraftBuildUsesExactGoToolchain(t *testing.T) {
 	mustContain(t, content, `GOROOT: "${CRAFT_STAGE}/go"`)
 	mustContain(t, content, "GOTOOLCHAIN: local")
 	mustContain(t, content, `test "$(go env GOVERSION)" = "go1.26.5"`)
+	mustNotContain(t, content, "source-subdir: go")
 	mustNotContain(t, content, "build-snaps:\n      - go")
 }
 

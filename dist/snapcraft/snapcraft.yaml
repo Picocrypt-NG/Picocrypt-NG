@@ -23,7 +23,6 @@ parts:
     source: https://go.dev/dl/go1.26.5.linux-amd64.tar.gz
     source-type: tar
     source-checksum: sha256/5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
-    source-subdir: go
     organize:
       '*': go/
     prime:
