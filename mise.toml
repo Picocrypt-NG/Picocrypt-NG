@@ -2,12 +2,12 @@
 min_version = "2026.6.14"
 
 [tools]
-go = "1.26.4"
+go = "1.26.5"
 java = "temurin-21"
 golangci-lint = "2.12.2"
 "go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20260209203831-923679eb55af"
 "go:golang.org/x/mobile/cmd/gomobile" = "v0.0.0-20260209203831-923679eb55af"
-"go:golang.org/x/vuln/cmd/govulncheck" = "1.5.0"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.6.0"
 
 [env]
 # Preserve user/CI Android SDK settings; this default matches Android Studio on Linux.

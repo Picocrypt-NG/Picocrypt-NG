@@ -18,10 +18,28 @@ apps:
       - home
 
 parts:
+  go-deps:
+    plugin: dump
+    source: https://go.dev/dl/go1.26.5.linux-amd64.tar.gz
+    source-type: tar
+    source-checksum: sha256/5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
+    source-subdir: go
+    organize:
+      '*': go/
+    prime:
+      - -go/
+
   picocrypt-ng:
     plugin: go
     source: .
+    after: [go-deps]
+    build-environment:
+      - PATH: "${CRAFT_STAGE}/go/bin:${PATH}"
+      - GOROOT: "${CRAFT_STAGE}/go"
+      - GOTOOLCHAIN: local
     override-build: |
+      test "$(go env GOVERSION)" = "go1.26.5"
+      test "$(go env GOROOT)" = "$CRAFT_STAGE/go"
       craftctl default
       install -d "$CRAFT_PART_INSTALL/bin"
       if [ -x "$CRAFT_PART_INSTALL/bin/picocrypt" ]; then
@@ -56,5 +74,3 @@ parts:
       - libxi-dev
       - libxxf86vm-dev
       - libffi-dev
-    build-snaps:
-      - go

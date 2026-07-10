@@ -732,3 +732,87 @@ func TestWindowsLegacyWorkflowsCacheLegacyGo(t *testing.T) {
 		}
 	}
 }
+
+func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
+	workflowFiles, err := filepath.Glob(filepath.Join(repoRoot(t), ".github", "workflows", "*.yml"))
+	if err != nil {
+		t.Fatalf("glob workflows: %v", err)
+	}
+
+	setupGoSteps := 0
+	for _, absPath := range workflowFiles {
+		relPath, err := filepath.Rel(repoRoot(t), absPath)
+		if err != nil {
+			t.Fatalf("rel path for %s: %v", absPath, err)
+		}
+		workflow := mustReadWorkflowDoc(t, relPath)
+		for jobName, job := range workflow.Jobs {
+			for _, step := range job.Steps {
+				if !strings.HasPrefix(step.Uses, "actions/setup-go@") {
+					continue
+				}
+				setupGoSteps++
+				if got := step.With["go-version"]; got != "1.26.5" {
+					t.Fatalf("%s job %s go-version = %#v, want 1.26.5", relPath, jobName, got)
+				}
+			}
+		}
+	}
+	if setupGoSteps != 11 {
+		t.Fatalf("setup-go steps = %d, want 11", setupGoSteps)
+	}
+
+	mise := mustReadRepoFile(t, "mise.toml")
+	mustContain(t, mise, `go = "1.26.5"`)
+	mustContain(t, mise, `"go:golang.org/x/vuln/cmd/govulncheck" = "1.6.0"`)
+
+	goMod := mustReadRepoFile(t, "src/go.mod")
+	mustMatch(t, goMod, `(?m)^go 1\.26\.0$`)
+	mustNotContain(t, goMod, "\ntoolchain ")
+
+	staticChecks := mustReadWorkflow(t, ".github/workflows/pr-static-checks.yml")
+	mustContain(t, staticChecks, "golang.org/x/vuln/cmd/govulncheck@v1.6.0")
+	mustNotContain(t, staticChecks, "golang.org/x/vuln/cmd/govulncheck@latest")
+}
+
+func TestSnapcraftBuildUsesExactGoToolchain(t *testing.T) {
+	content := mustReadRepoFile(t, "dist/snapcraft/snapcraft.yaml")
+	mustContain(t, content, "https://go.dev/dl/go1.26.5.linux-amd64.tar.gz")
+	mustContain(t, content, "sha256/5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053")
+	mustContain(t, content, `PATH: "${CRAFT_STAGE}/go/bin:${PATH}"`)
+	mustContain(t, content, `GOROOT: "${CRAFT_STAGE}/go"`)
+	mustContain(t, content, "GOTOOLCHAIN: local")
+	mustContain(t, content, `test "$(go env GOVERSION)" = "go1.26.5"`)
+	mustNotContain(t, content, "build-snaps:\n      - go")
+}
+
+func TestWindowsLegacyWorkflowsUsePinnedLocalFork(t *testing.T) {
+	cases := []struct {
+		path string
+		job  string
+	}{
+		{path: ".github/workflows/build-windows-legacy.yml", job: "build"},
+		{path: ".github/workflows/pr-test-build-windows-legacy.yml", job: "pr-test-build-windows-legacy"},
+	}
+	for _, tc := range cases {
+		workflow := mustReadWorkflowDoc(t, tc.path)
+		job := mustJob(t, workflow, tc.job)
+		if job.Env["GOTOOLCHAIN"] != "local" {
+			t.Fatalf("%s GOTOOLCHAIN = %q, want local", tc.path, job.Env["GOTOOLCHAIN"])
+		}
+		cache := mustStepNamed(t, job, "Cache go-legacy-win7")
+		if _, ok := cache.With["restore-keys"]; ok {
+			t.Fatalf("%s legacy cache must not restore an older checksum", tc.path)
+		}
+		content := mustReadWorkflow(t, tc.path)
+		mustContain(t, content, "c9d0c79dc2b408a4ea580b62a3d093a4219f9ff95316ef891dc987827e6900e3")
+		mustContain(t, content, "v1.26.5-1/go-legacy-win7-1.26.5-1.windows_amd64.zip")
+		mustContain(t, content, `C:\go-legacy\go-legacy-win7\bin`)
+		mustNotContain(t, content, `C:\go-legacy\go\bin`)
+		mustContain(t, content, "Get-Command go")
+		mustContain(t, content, "go env GOROOT")
+		mustContain(t, content, "go env GOVERSION")
+		mustContain(t, content, "go1.26.5")
+		mustContain(t, content, "go version -m")
+	}
+}

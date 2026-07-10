@@ -20,6 +20,7 @@ type workflowJob struct {
 	ContinueOnError any               `yaml:"continue-on-error"`
 	Environment     any               `yaml:"environment"`
 	Permissions     map[string]string `yaml:"permissions"`
+	Env             map[string]string `yaml:"env"`
 	Steps           []workflowStep    `yaml:"steps"`
 }
 

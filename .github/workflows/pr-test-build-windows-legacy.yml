@@ -16,7 +16,8 @@ jobs:
   pr-test-build-windows-legacy:
     runs-on: windows-2022
     env:
-      GO_LEGACY_SHA256: 82d44d1f777ae7c88aa52562979f1606f60bc5ad8df00c727a624c0ce4e5caf2
+      GOTOOLCHAIN: local
+      GO_LEGACY_SHA256: c9d0c79dc2b408a4ea580b62a3d093a4219f9ff95316ef891dc987827e6900e3
       UPX_SHA256: 41c7492edeed0f7e67d347ca9e8d2131e2af7ca7a7695f92283a8e655c251c13
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -27,15 +28,13 @@ jobs:
       with:
         path: C:\go-legacy
         key: ${{ runner.os }}-go-legacy-${{ env.GO_LEGACY_SHA256 }}
-        restore-keys: |
-          ${{ runner.os }}-go-legacy-
 
     - name: Download go-legacy-win7
       if: steps.cache-go-legacy.outputs.cache-hit != 'true'
       shell: pwsh
       run: |
-        # Download go-legacy-win7 (Go 1.25.x with Windows 7 support)
-        Invoke-WebRequest -OutFile go-legacy.zip https://github.com/thongtech/go-legacy-win7/releases/download/v1.25.5-1/go-legacy-win7-1.25.5-1.windows_amd64.zip
+        # Download go-legacy-win7 (Go 1.26.5 with Windows 7 support)
+        Invoke-WebRequest -OutFile go-legacy.zip https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.5-1/go-legacy-win7-1.26.5-1.windows_amd64.zip
         $expectedHash = $env:GO_LEGACY_SHA256
         $actualHash = (Get-FileHash go-legacy.zip -Algorithm SHA256).Hash.ToLower()
         if ($actualHash -ne $expectedHash) {
@@ -46,12 +45,20 @@ jobs:
     - name: Add go-legacy-win7 to PATH
       shell: pwsh
       run: |
-        echo "C:\go-legacy\go\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        echo "C:\go-legacy\go-legacy-win7\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
     - name: Verify Go installation
       run: |
+        $expectedGo = (Resolve-Path 'C:\go-legacy\go-legacy-win7\bin\go.exe').Path
+        $actualGo = (Get-Command go -CommandType Application).Source
+        if ($actualGo -ne $expectedGo) { throw "Unexpected go.exe: $actualGo; want $expectedGo" }
+        $expectedRoot = (Resolve-Path 'C:\go-legacy\go-legacy-win7').Path
+        $actualRoot = (go env GOROOT).Trim()
+        if ($actualRoot -ne $expectedRoot) { throw "Unexpected GOROOT: $actualRoot; want $expectedRoot" }
+        $actualVersion = (go env GOVERSION).Trim()
+        if ($actualVersion -ne 'go1.26.5') { throw "Unexpected Go version: $actualVersion" }
+        if ((go env GOTOOLCHAIN).Trim() -ne 'local') { throw 'GOTOOLCHAIN must be local' }
         go version
-        go env
 
     - name: Install dependencies
       run: |
@@ -72,6 +79,13 @@ jobs:
       env:
         CGO_ENABLED: 1
         GOAMD64: v1
+
+    - name: Verify legacy binary toolchain
+      shell: pwsh
+      run: |
+        $buildInfo = go version -m src/Picocrypt-NG-cli-Legacy.exe | Out-String
+        if ($buildInfo -notmatch 'go1\.26\.5') { throw "Legacy binary was not built by Go 1.26.5: $buildInfo" }
+        $buildInfo
 
     - name: Compress with upx
       shell: pwsh
