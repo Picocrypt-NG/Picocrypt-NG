@@ -1,6 +1,6 @@
 # v2.19
 <ul>
-	<li>✓ <strong>Russian interface</strong>: added reviewed Russian translations for the desktop and native Android UIs; the desktop language selector switches between the bundled English and Russian catalogs, while the CLI remains English-only</li>
+	<li>✓ <strong>Interface languages</strong>: added reviewed Russian translations for the desktop and native Android UIs, plus desktop catalogs for German, French, Spanish, Simplified Chinese, and Hindi; the desktop language selector now exposes all bundled languages, while the CLI remains English-only</li>
 	<li>✓ <strong>Desktop GUI</strong>: polished the compact layout with icon toolbars, fixed-width controls, clearer readiness guidance, and contained long output/keyfile names; the non-ASCII password advisory now relayouts without clipping or cumulative window-size drift</li>
 	<li>✓ <strong>Compressed output names</strong>: automatically named compressed single-file outputs now use <code>.zip.pcv</code> in the CLI and Android app, including CLI standard input, so decrypted ZIP payloads retain a truthful <code>.zip</code> name; explicit CLI output paths remain unchanged</li>
 	<li>✓ <strong>Android reliability</strong>: stale internal temporary files are removed before the UI is shown, and cancelled operations no longer enter the successful save flow</li>
