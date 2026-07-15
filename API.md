@@ -299,7 +299,7 @@ func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool
 
 ```go
 const (
-    CurrentVersion = "v2.16"
+    CurrentVersion = "v2.19"
     MaxCommentLen  = 99999
 )
 ```
@@ -308,7 +308,7 @@ const (
 
 ```go
 type VolumeHeader struct {
-    Version  string // "v2.16" or "v1.xx"
+    Version  string // "v2.19" or "v1.xx"
     Comments string // plaintext; NOT encrypted
     Flags    Flags
 

@@ -1,3 +1,5 @@
-v2.18
-- Android release builds are prepared for F-Droid source and reproducible-build verification.
-- Updated Go image dependency with TIFF decoder security fixes.
+v2.19
+- Added a curated Russian UI translation.
+- Cancelled operations no longer enter the successful save flow, and stale temporary files are removed safely at startup.
+- Compressed single-file exports now use .zip.pcv names.
+- Android 7.0+ remains supported, but new APKs are 64-bit-only for ARM64 and x86-64; historical 32-bit APKs remain available with older releases.

@@ -1,3 +1,17 @@
+# v2.19
+<ul>
+	<li>✓ <strong>Russian interface</strong>: added reviewed Russian translations for the desktop and native Android UIs; the desktop language selector switches between the bundled English and Russian catalogs, while the CLI remains English-only</li>
+	<li>✓ <strong>Desktop GUI</strong>: polished the compact layout with icon toolbars, fixed-width controls, clearer readiness guidance, and contained long output/keyfile names; the non-ASCII password advisory now relayouts without clipping or cumulative window-size drift</li>
+	<li>✓ <strong>Compressed output names</strong>: automatically named compressed single-file outputs now use <code>.zip.pcv</code> in the CLI and Android app, including CLI standard input, so decrypted ZIP payloads retain a truthful <code>.zip</code> name; explicit CLI output paths remain unchanged</li>
+	<li>✓ <strong>Android reliability</strong>: stale internal temporary files are removed before the UI is shown, and cancelled operations no longer enter the successful save flow</li>
+	<li>✓ <strong>Android compatibility</strong>: Android 7.0+ remains supported, but v2.19 APKs are 64-bit-only for ARM64 and x86-64 devices; historical 32-bit APKs remain available with their original releases</li>
+	<li>✓ <strong>Desktop reliability</strong>: updated to Fyne 2.8 and made operation, folder-scan, opened-path, and mobile-import workers shut down cleanly instead of leaving background UI work behind</li>
+	<li>✓ <strong>Security guidance</strong>: aligned application and documentation wording with actual behavior, including plaintext-but-authenticated comments in v2 volumes, legacy v1 limitations, keyfiles, Paranoid mode, Reed-Solomon recovery limits, force-decrypt output, and browser constraints</li>
+	<li>✓ <strong>Security maintenance</strong>: updated the release toolchain to Go 1.26.5 with standard-library security fixes and refreshed pinned dependencies; volume layout and cryptographic algorithms remain unchanged</li>
+	<li>✓ <strong>Release integrity</strong>: release workflows now refuse to overwrite existing GitHub release assets, and Android publication verifies the expected signer, version metadata, API floor, native architectures, and APK contents before upload</li>
+	<li>✓ <strong>Windows signing pipeline</strong>: integrated SignPath Authenticode submission and fail-closed verification for the GUI, current and legacy CLIs, embedded NSIS uninstaller, and final installer while retaining the existing Sigstore bundles and GitHub build provenance</li>
+</ul>
+
 # v2.18
 <ul>
 	<li>✓ <strong>Desktop GUI</strong>: fixed the Linux desktop layout and output theming so the compact window keeps controls/results readable and visually consistent</li>

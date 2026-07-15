@@ -35,6 +35,21 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="2.19" date="2026-07-15">
+      <url type="details">https://github.com/Picocrypt-NG/Picocrypt-NG/blob/main/Changelog.md#v219</url>
+      <description>
+        <ul>
+          <li>Added reviewed Russian translations for the desktop and native Android interfaces</li>
+          <li>Polished the compact desktop layout and fixed non-ASCII password advisory clipping and window-size drift</li>
+          <li>Compressed CLI and Android outputs now use truthful .zip.pcv names</li>
+          <li>Android startup removes stale temporary files, and cancelled operations no longer enter the successful save flow</li>
+          <li>Android 7.0+ remains supported on 64-bit ARM and x86-64 devices; v2.19 APKs no longer include 32-bit ABIs</li>
+          <li>Updated the desktop to Fyne 2.8 with clean shutdown of background UI workers</li>
+          <li>Updated the release toolchain to Go 1.26.5 and refreshed pinned dependencies</li>
+          <li>Release workflows refuse to overwrite existing assets and integrate fail-closed SignPath Authenticode submission and verification for Windows artifacts</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.18" date="2026-06-28">
       <url type="details">https://github.com/Picocrypt-NG/Picocrypt-NG/blob/main/Changelog.md#v218</url>
       <description>
