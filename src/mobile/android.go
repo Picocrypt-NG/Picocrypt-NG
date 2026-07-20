@@ -324,11 +324,17 @@ func failOperation(id string, err error) string {
 // ProgressResult contains the progress information for an operation.
 // Go mobile bindings require struct returns instead of multiple values.
 type ProgressResult struct {
-	Status   string
-	Progress float32
-	Info     string
-	Done     bool
-	Error    string
+	Status                  string
+	StatusCode              string
+	StatusSpeedMiBPerSecond float64
+	StatusETA               string
+	Progress                float32
+	Info                    string
+	InfoCode                string
+	InfoCurrent             int64
+	InfoTotal               int64
+	Done                    bool
+	Error                   string
 	// Code is the stable, locale-independent error classification (see
 	// errorCode); empty unless the operation failed. The Kotlin layer switches
 	// on it instead of substring-matching Error.
@@ -342,12 +348,18 @@ func GetProgress(operationID string) (*ProgressResult, error) {
 		return nil, err
 	}
 	return &ProgressResult{
-		Status:   state.Status,
-		Progress: state.Progress,
-		Info:     state.Info,
-		Done:     state.Done,
-		Error:    state.Error,
-		Code:     state.Code,
+		Status:                  state.Status,
+		StatusCode:              state.StatusCode,
+		StatusSpeedMiBPerSecond: state.StatusSpeedMiBPerSecond,
+		StatusETA:               state.StatusETA,
+		Progress:                state.Progress,
+		Info:                    state.Info,
+		InfoCode:                state.InfoCode,
+		InfoCurrent:             state.InfoCurrent,
+		InfoTotal:               state.InfoTotal,
+		Done:                    state.Done,
+		Error:                   state.Error,
+		Code:                    state.Code,
 	}, nil
 }
 
@@ -439,25 +451,38 @@ type androidProgressReporter struct {
 }
 
 func (r *androidProgressReporter) SetStatus(text string) {
-	globalProgressMap.mu.RLock()
-	op, exists := globalProgressMap.ops[r.opID]
-	globalProgressMap.mu.RUnlock()
+	status := classifyStatus(text)
 
+	globalProgressMap.mu.Lock()
+	op, exists := globalProgressMap.ops[r.opID]
 	if exists {
-		updateProgress(r.opID, text, op.Progress, op.Info)
-	} else {
+		op.Status = text
+		op.StatusCode = status.Code
+		op.StatusSpeedMiBPerSecond = status.SpeedMiBPerSecond
+		op.StatusETA = status.ETA
+	}
+	globalProgressMap.mu.Unlock()
+
+	if !exists {
 		log.Printf("mobile progress status dropped for unknown operation %s", r.opID)
 	}
 }
 
 func (r *androidProgressReporter) SetProgress(fraction float32, info string) {
-	globalProgressMap.mu.RLock()
-	op, exists := globalProgressMap.ops[r.opID]
-	globalProgressMap.mu.RUnlock()
+	classified := classifyInfo(info)
 
+	globalProgressMap.mu.Lock()
+	op, exists := globalProgressMap.ops[r.opID]
 	if exists {
-		updateProgress(r.opID, op.Status, fraction, info)
-	} else {
+		op.Progress = fraction
+		op.Info = info
+		op.InfoCode = classified.Code
+		op.InfoCurrent = classified.Current
+		op.InfoTotal = classified.Total
+	}
+	globalProgressMap.mu.Unlock()
+
+	if !exists {
 		log.Printf("mobile progress update dropped for unknown operation %s", r.opID)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -127,8 +128,193 @@ func TestCompleteOperationDoesNotOverwriteCancelledState(t *testing.T) {
 	if state.Status != "Cancelled" {
 		t.Fatalf("state.Status = %q, want %q", state.Status, "Cancelled")
 	}
+	if state.StatusCode != "CANCELLED" {
+		t.Fatalf("state.StatusCode = %q, want %q", state.StatusCode, "CANCELLED")
+	}
 	if !state.Done {
 		t.Fatalf("cancelled operation should remain done")
+	}
+}
+
+func TestProgressTerminalStatusCodes(t *testing.T) {
+	tests := []struct {
+		name       string
+		finish     func(t *testing.T, id string)
+		status     string
+		statusCode string
+		errorText  string
+		errorCode  string
+		done       bool
+	}{
+		{
+			name:       "starting",
+			finish:     func(*testing.T, string) {},
+			status:     "Starting...",
+			statusCode: "STARTING",
+			done:       false,
+		},
+		{
+			name:       "success",
+			finish:     func(_ *testing.T, id string) { completeOperation(id, nil) },
+			status:     "Completed",
+			statusCode: "COMPLETED",
+			done:       true,
+		},
+		{
+			name: "cancellation",
+			finish: func(t *testing.T, id string) {
+				if err := cancelOperation(id); err != nil {
+					t.Fatal(err)
+				}
+			},
+			status:     "Cancelled",
+			statusCode: "CANCELLED",
+			done:       true,
+		},
+		{
+			name:       "failure",
+			finish:     func(_ *testing.T, id string) { completeOperation(id, errors.New("diagnostic failure")) },
+			status:     "Error",
+			statusCode: "ERROR",
+			errorText:  "diagnostic failure",
+			errorCode:  "GENERIC",
+			done:       true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resetProgressMap()
+			id := startOperation()
+			tc.finish(t, id)
+
+			state, err := getProgress(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Status != tc.status || state.StatusCode != tc.statusCode {
+				t.Fatalf("terminal status = (%q, %q), want (%q, %q)", state.Status, state.StatusCode, tc.status, tc.statusCode)
+			}
+			if state.Error != tc.errorText || state.Code != tc.errorCode {
+				t.Fatalf("diagnostic fields = (%q, %q), want (%q, %q)", state.Error, state.Code, tc.errorText, tc.errorCode)
+			}
+			if state.Done != tc.done {
+				t.Fatalf("state.Done = %v, want %v", state.Done, tc.done)
+			}
+			if state.Info != "" || state.InfoCode != "NONE" {
+				t.Fatalf("initial info fields = (%q, %q), want (%q, %q)", state.Info, state.InfoCode, "", "NONE")
+			}
+		})
+	}
+}
+
+func TestAndroidProgressReporterUpdatesFieldFamiliesAtomically(t *testing.T) {
+	resetProgressMap()
+
+	id := startOperation()
+	reporter := &androidProgressReporter{opID: id}
+	const attempts = 100
+
+	for attempt := 0; attempt < attempts; attempt++ {
+		// Hold the write lock until both reporter calls are queued. The old
+		// read-copy-write implementation then lets both calls snapshot the same
+		// stale state before either full-state write can proceed.
+		globalProgressMap.mu.Lock()
+		op := globalProgressMap.ops[id]
+		op.Status = "Deriving key..."
+		op.StatusCode = "DERIVING_KEY"
+		op.StatusSpeedMiBPerSecond = 0
+		op.StatusETA = ""
+		op.Progress = 0.25
+		op.Info = "1/10"
+		op.InfoCode = "ITEM_COUNT"
+		op.InfoCurrent = 1
+		op.InfoTotal = 10
+
+		start := make(chan struct{})
+		ready := make(chan struct{}, 2)
+		var calls sync.WaitGroup
+		calls.Add(2)
+		go func() {
+			defer calls.Done()
+			ready <- struct{}{}
+			<-start
+			reporter.SetStatus("Encrypting at 12.34 MiB/s (ETA: 01:02:03)")
+		}()
+		go func() {
+			defer calls.Done()
+			ready <- struct{}{}
+			<-start
+			reporter.SetProgress(0.75, "3/10")
+		}()
+		<-ready
+		<-ready
+		close(start)
+		// Allow both goroutines to block in their first map-lock acquisition.
+		time.Sleep(time.Millisecond)
+		globalProgressMap.mu.Unlock()
+		calls.Wait()
+
+		state, err := getProgress(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Status != "Encrypting at 12.34 MiB/s (ETA: 01:02:03)" ||
+			state.StatusCode != "ENCRYPTING_RATE" ||
+			state.StatusSpeedMiBPerSecond != 12.34 || state.StatusETA != "01:02:03" {
+			t.Fatalf("attempt %d reverted status family: %#v", attempt, state)
+		}
+		if state.Progress != 0.75 || state.Info != "3/10" || state.InfoCode != "ITEM_COUNT" ||
+			state.InfoCurrent != 3 || state.InfoTotal != 10 {
+			t.Fatalf("attempt %d reverted progress family: %#v", attempt, state)
+		}
+	}
+}
+
+func TestGetProgressCopiesStructuredFields(t *testing.T) {
+	resetProgressMap()
+
+	id := startOperation()
+	globalProgressMap.mu.Lock()
+	globalProgressMap.ops[id] = &ProgressState{
+		ID:                      id,
+		Status:                  "Encrypting at 12.34 MiB/s (ETA: 01:02:03)",
+		StatusCode:              "ENCRYPTING_RATE",
+		StatusSpeedMiBPerSecond: 12.34,
+		StatusETA:               "01:02:03",
+		Progress:                0.3,
+		Info:                    "3/10",
+		InfoCode:                "ITEM_COUNT",
+		InfoCurrent:             3,
+		InfoTotal:               10,
+		Error:                   "diagnostic",
+		Code:                    "GENERIC",
+	}
+	globalProgressMap.mu.Unlock()
+
+	state, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := GetProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.StatusCode != state.StatusCode ||
+		result.StatusSpeedMiBPerSecond != state.StatusSpeedMiBPerSecond ||
+		result.StatusETA != state.StatusETA || result.InfoCode != state.InfoCode ||
+		result.InfoCurrent != state.InfoCurrent || result.InfoTotal != state.InfoTotal {
+		t.Fatalf("GetProgress() dropped structured fields: result=%#v state=%#v", result, state)
+	}
+
+	state.StatusCode = "MUTATED_COPY"
+	fresh, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.StatusCode != "ENCRYPTING_RATE" {
+		t.Fatalf("getProgress returned shared state: StatusCode = %q", fresh.StatusCode)
 	}
 }
 

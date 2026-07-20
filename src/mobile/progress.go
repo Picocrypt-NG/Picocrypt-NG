@@ -9,11 +9,17 @@ import (
 
 // ProgressState represents the current state of an operation
 type ProgressState struct {
-	ID       string
-	Status   string
-	Progress float32
-	Info     string
-	Error    string
+	ID                      string
+	Status                  string
+	StatusCode              string
+	StatusSpeedMiBPerSecond float64
+	StatusETA               string
+	Progress                float32
+	Info                    string
+	InfoCode                string
+	InfoCurrent             int64
+	InfoTotal               int64
+	Error                   string
 	// Code is a stable, locale-independent classification of Error (see
 	// errorCode); empty on success/cancel-without-error. The Android layer maps
 	// it to a typed AppError to gate force-decrypt / password-retry.
@@ -44,34 +50,30 @@ func newOperationID() string {
 func startOperation() string {
 	id := newOperationID()
 	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: cancel is stored in globalProgressMap.cancels and called by cancelOperation
+	status := classifyStatus("Starting...")
+	info := classifyInfo("")
 
 	globalProgressMap.mu.Lock()
 	defer globalProgressMap.mu.Unlock()
 
 	globalProgressMap.ops[id] = &ProgressState{
-		ID:       id,
-		Status:   "Starting...",
-		Progress: 0.0,
-		Info:     "",
-		Error:    "",
-		Done:     false,
+		ID:                      id,
+		Status:                  "Starting...",
+		StatusCode:              status.Code,
+		StatusSpeedMiBPerSecond: status.SpeedMiBPerSecond,
+		StatusETA:               status.ETA,
+		Progress:                0.0,
+		Info:                    "",
+		InfoCode:                info.Code,
+		InfoCurrent:             info.Current,
+		InfoTotal:               info.Total,
+		Error:                   "",
+		Done:                    false,
 	}
 	globalProgressMap.ctxs[id] = ctx
 	globalProgressMap.cancels[id] = cancel
 
 	return id
-}
-
-// updateProgress updates the progress state for an operation
-func updateProgress(id string, status string, progress float32, info string) {
-	globalProgressMap.mu.Lock()
-	defer globalProgressMap.mu.Unlock()
-
-	if op, exists := globalProgressMap.ops[id]; exists {
-		op.Status = status
-		op.Progress = progress
-		op.Info = info
-	}
 }
 
 // completeOperation marks an operation as done
@@ -80,17 +82,25 @@ func completeOperation(id string, err error) {
 	defer globalProgressMap.mu.Unlock()
 
 	if op, exists := globalProgressMap.ops[id]; exists {
-		if op.Status == "Cancelled" {
+		if op.StatusCode == "CANCELLED" {
 			op.Done = true
 			return
 		}
 		op.Done = true
 		if err != nil {
+			status := classifyStatus("Error")
 			op.Error = err.Error()
 			op.Code = errorCode(err)
 			op.Status = "Error"
+			op.StatusCode = status.Code
+			op.StatusSpeedMiBPerSecond = status.SpeedMiBPerSecond
+			op.StatusETA = status.ETA
 		} else {
+			status := classifyStatus("Completed")
 			op.Status = "Completed"
+			op.StatusCode = status.Code
+			op.StatusSpeedMiBPerSecond = status.SpeedMiBPerSecond
+			op.StatusETA = status.ETA
 			op.Progress = 1.0
 		}
 	}
@@ -108,13 +118,19 @@ func getProgress(id string) (*ProgressState, error) {
 
 	// Return a copy to avoid race conditions
 	return &ProgressState{
-		ID:       op.ID,
-		Status:   op.Status,
-		Progress: op.Progress,
-		Info:     op.Info,
-		Error:    op.Error,
-		Code:     op.Code,
-		Done:     op.Done,
+		ID:                      op.ID,
+		Status:                  op.Status,
+		StatusCode:              op.StatusCode,
+		StatusSpeedMiBPerSecond: op.StatusSpeedMiBPerSecond,
+		StatusETA:               op.StatusETA,
+		Progress:                op.Progress,
+		Info:                    op.Info,
+		InfoCode:                op.InfoCode,
+		InfoCurrent:             op.InfoCurrent,
+		InfoTotal:               op.InfoTotal,
+		Error:                   op.Error,
+		Code:                    op.Code,
+		Done:                    op.Done,
 	}, nil
 }
 
@@ -130,7 +146,11 @@ func cancelOperation(id string) error {
 
 	cancel()
 	if op, exists := globalProgressMap.ops[id]; exists {
+		status := classifyStatus("Cancelled")
 		op.Status = "Cancelled"
+		op.StatusCode = status.Code
+		op.StatusSpeedMiBPerSecond = status.SpeedMiBPerSecond
+		op.StatusETA = status.ETA
 		op.Done = true
 	}
 
