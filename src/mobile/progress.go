@@ -143,8 +143,13 @@ func cancelOperation(id string) error {
 		return fmt.Errorf("operation %s not found", id)
 	}
 
+	op, opExists := globalProgressMap.ops[id]
+	if opExists && op.Done {
+		return nil
+	}
+
 	cancel()
-	if op, exists := globalProgressMap.ops[id]; exists {
+	if opExists {
 		status := classifyStatus("Cancelled")
 		op.Status = "Cancelled"
 		op.StatusCode = status.Code

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -165,6 +166,56 @@ func TestCancelledOperationIgnoresLateReporterCallbacksAndCompletion(t *testing.
 	}
 	if state.Error != "" || state.Code != "" {
 		t.Fatalf("late completion added cancellation diagnostics: Error=%q Code=%q", state.Error, state.Code)
+	}
+}
+
+func TestCancelOperationPreservesSuccessfulTerminalSnapshot(t *testing.T) {
+	resetProgressMap()
+
+	id := startOperation()
+	reporter := &androidProgressReporter{opID: id}
+	reporter.SetStatus("Deriving key...")
+	reporter.SetProgress(0.25, "1/10")
+	completeOperation(id, nil)
+
+	firstTerminal, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cancelOperation(id); err != nil {
+		t.Fatal(err)
+	}
+	afterCancel, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterCancel, firstTerminal) {
+		t.Fatalf("cancel changed successful terminal snapshot\n got: %#v\nwant: %#v", afterCancel, firstTerminal)
+	}
+}
+
+func TestCancelOperationPreservesFailedTerminalSnapshot(t *testing.T) {
+	resetProgressMap()
+
+	id := startOperation()
+	reporter := &androidProgressReporter{opID: id}
+	reporter.SetStatus("Decrypting at 12.34 MiB/s (ETA: 01:02:03)")
+	reporter.SetProgress(0.25, "1/10")
+	completeOperation(id, errors.New("diagnostic failure"))
+
+	firstTerminal, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cancelOperation(id); err != nil {
+		t.Fatal(err)
+	}
+	afterCancel, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterCancel, firstTerminal) {
+		t.Fatalf("cancel changed failed terminal snapshot\n got: %#v\nwant: %#v", afterCancel, firstTerminal)
 	}
 }
 
