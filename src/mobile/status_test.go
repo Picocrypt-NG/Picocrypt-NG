@@ -3,6 +3,7 @@ package mobile
 import (
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -194,6 +195,86 @@ func TestProductionStatusTemplatesAreClassified(t *testing.T) {
 	}
 }
 
+func TestStatusCallTemplateRejectsUnsupportedArgumentForms(t *testing.T) {
+	tests := []struct {
+		name       string
+		expression string
+	}{
+		{name: "constant", expression: "statusConstant"},
+		{name: "concatenation", expression: `"Encrypting at " + suffix`},
+		{name: "helper", expression: "buildStatus()"},
+		{name: "nonliteral Sprintf format", expression: "fmt.Sprintf(format, speed, eta)"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			call := parseFixtureStatusCall(t, tc.expression)
+			if _, _, err := statusCallTemplate("fixture.go", "fixture", call, nil); err == nil {
+				t.Fatalf("status argument %q was accepted without an explicit template or forwarding allowlist", tc.expression)
+			}
+		})
+	}
+}
+
+func TestStatusCallTemplateAllowsExplicitForwarding(t *testing.T) {
+	call := parseFixtureStatusCall(t, "status")
+	forwarding := statusForwarding{
+		File:     "fixture.go",
+		Function: "fixture",
+		Receiver: "ctx",
+		Method:   "SetStatus",
+		Argument: "status",
+	}
+
+	template, forwarded, err := statusCallTemplate(
+		"fixture.go",
+		"fixture",
+		call,
+		map[statusForwarding]struct{}{forwarding: {}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if template != "" || !forwarded {
+		t.Fatalf("explicit forwarding classified as template=%q forwarded=%v", template, forwarded)
+	}
+}
+
+func parseFixtureStatusCall(t *testing.T, expression string) *ast.CallExpr {
+	t.Helper()
+
+	source := fmt.Sprintf("package fixture\nfunc fixture(ctx *context) { ctx.SetStatus(%s) }\n", expression)
+	file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statusCall *ast.CallExpr
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if ok && selector.Sel.Name == "SetStatus" {
+			statusCall = call
+			return false
+		}
+		return true
+	})
+	if statusCall == nil {
+		t.Fatal("fixture SetStatus call not found")
+	}
+	return statusCall
+}
+
+type statusForwarding struct {
+	File     string
+	Function string
+	Receiver string
+	Method   string
+	Argument string
+}
+
 func productionStatusTemplates(t *testing.T) []string {
 	t.Helper()
 
@@ -208,6 +289,8 @@ func productionStatusTemplates(t *testing.T) []string {
 	}
 
 	templates := make(map[string]struct{})
+	allowedForwardings := productionStatusForwardings()
+	seenForwardings := make(map[statusForwarding]int)
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -219,25 +302,70 @@ func productionStatusTemplates(t *testing.T) []string {
 			}
 
 			path := filepath.Join(dir, entry.Name())
-			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			relativePath, err := filepath.Rel(srcRoot, path)
+			if err != nil {
+				t.Fatalf("resolve %s: %v", path, err)
+			}
+			relativePath = filepath.ToSlash(relativePath)
+			fileSet := token.NewFileSet()
+			file, err := parser.ParseFile(fileSet, path, nil, 0)
 			if err != nil {
 				t.Fatalf("parse %s: %v", path, err)
 			}
-			ast.Inspect(file, func(node ast.Node) bool {
-				call, ok := node.(*ast.CallExpr)
-				if !ok || len(call.Args) != 1 {
-					return true
-				}
-				selector, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || (selector.Sel.Name != "SetStatus" && selector.Sel.Name != "Status") {
-					return true
+			for _, declaration := range file.Decls {
+				function, ok := declaration.(*ast.FuncDecl)
+				if !ok || function.Body == nil {
+					continue
 				}
 
-				if template, ok := statusTemplate(call.Args[0]); ok {
+				var inspectErr error
+				ast.Inspect(function.Body, func(node ast.Node) bool {
+					if inspectErr != nil {
+						return false
+					}
+					call, ok := node.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					selector, ok := call.Fun.(*ast.SelectorExpr)
+					if !ok || (selector.Sel.Name != "SetStatus" && selector.Sel.Name != "Status") {
+						return true
+					}
+
+					template, forwarded, err := statusCallTemplate(
+						relativePath,
+						function.Name.Name,
+						call,
+						allowedForwardings,
+					)
+					if err != nil {
+						inspectErr = fmt.Errorf("%s: %w", fileSet.Position(call.Pos()), err)
+						return false
+					}
+					if forwarded {
+						forwarding, ok := statusForwardingFor(relativePath, function.Name.Name, call)
+						if !ok {
+							inspectErr = fmt.Errorf("%s: allowed forwarding could not be identified", fileSet.Position(call.Pos()))
+							return false
+						}
+						seenForwardings[forwarding]++
+						return true
+					}
 					templates[template] = struct{}{}
+					return true
+				})
+				if inspectErr != nil {
+					t.Fatal(inspectErr)
 				}
-				return true
-			})
+			}
+		}
+	}
+	if len(seenForwardings) != len(allowedForwardings) {
+		t.Fatalf("production status forwardings changed\n got: %#v\nwant: %#v", seenForwardings, allowedForwardings)
+	}
+	for forwarding := range allowedForwardings {
+		if seenForwardings[forwarding] != 1 {
+			t.Fatalf("production status forwarding %#v occurred %d times, want exactly once", forwarding, seenForwardings[forwarding])
 		}
 	}
 
@@ -247,6 +375,115 @@ func productionStatusTemplates(t *testing.T) []string {
 	}
 	sort.Strings(got)
 	return got
+}
+
+func productionStatusForwardings() map[statusForwarding]struct{} {
+	return map[statusForwarding]struct{}{
+		{
+			File:     "internal/volume/context.go",
+			Function: "SetStatus",
+			Receiver: "ctx.Reporter",
+			Method:   "SetStatus",
+			Argument: "status",
+		}: {},
+		{
+			File:     "internal/volume/encrypt.go",
+			Function: "encryptPreprocess",
+			Receiver: "ctx",
+			Method:   "SetStatus",
+			Argument: "s",
+		}: {},
+		{
+			File:     "internal/volume/encrypt.go",
+			Function: "encryptFinalize",
+			Receiver: "ctx",
+			Method:   "SetStatus",
+			Argument: "s",
+		}: {},
+		{
+			File:     "internal/volume/decrypt.go",
+			Function: "decryptPreprocess",
+			Receiver: "ctx",
+			Method:   "SetStatus",
+			Argument: "s",
+		}: {},
+		{
+			File:     "internal/volume/decrypt.go",
+			Function: "decryptFinalize",
+			Receiver: "ctx",
+			Method:   "SetStatus",
+			Argument: "s",
+		}: {},
+	}
+}
+
+func statusCallTemplate(
+	fileName string,
+	functionName string,
+	call *ast.CallExpr,
+	allowedForwardings map[statusForwarding]struct{},
+) (string, bool, error) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || (selector.Sel.Name != "SetStatus" && selector.Sel.Name != "Status") {
+		return "", false, fmt.Errorf("not a status call")
+	}
+	if len(call.Args) != 1 {
+		return "", false, fmt.Errorf("status call has %d arguments, want 1", len(call.Args))
+	}
+	if template, ok := statusTemplate(call.Args[0]); ok {
+		return template, false, nil
+	}
+	if forwarding, ok := statusForwardingFor(fileName, functionName, call); ok {
+		if _, allowed := allowedForwardings[forwarding]; allowed {
+			return "", true, nil
+		}
+	}
+
+	var expression strings.Builder
+	if err := format.Node(&expression, token.NewFileSet(), call.Args[0]); err != nil {
+		return "", false, fmt.Errorf("unsupported status argument of type %T", call.Args[0])
+	}
+	return "", false, fmt.Errorf("unsupported status argument %q", expression.String())
+}
+
+func statusForwardingFor(fileName string, functionName string, call *ast.CallExpr) (statusForwarding, bool) {
+	if len(call.Args) != 1 {
+		return statusForwarding{}, false
+	}
+	argument, ok := call.Args[0].(*ast.Ident)
+	if !ok {
+		return statusForwarding{}, false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return statusForwarding{}, false
+	}
+	receiver, ok := selectorName(selector.X)
+	if !ok {
+		return statusForwarding{}, false
+	}
+	return statusForwarding{
+		File:     fileName,
+		Function: functionName,
+		Receiver: receiver,
+		Method:   selector.Sel.Name,
+		Argument: argument.Name,
+	}, true
+}
+
+func selectorName(expression ast.Expr) (string, bool) {
+	switch expression := expression.(type) {
+	case *ast.Ident:
+		return expression.Name, true
+	case *ast.SelectorExpr:
+		prefix, ok := selectorName(expression.X)
+		if !ok {
+			return "", false
+		}
+		return prefix + "." + expression.Sel.Name, true
+	default:
+		return "", false
+	}
 }
 
 func statusTemplate(expr ast.Expr) (string, bool) {

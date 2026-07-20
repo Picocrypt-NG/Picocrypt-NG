@@ -455,7 +455,7 @@ func (r *androidProgressReporter) SetStatus(text string) {
 
 	globalProgressMap.mu.Lock()
 	op, exists := globalProgressMap.ops[r.opID]
-	if exists {
+	if exists && !op.Done {
 		op.Status = text
 		op.StatusCode = status.Code
 		op.StatusSpeedMiBPerSecond = status.SpeedMiBPerSecond
@@ -473,7 +473,7 @@ func (r *androidProgressReporter) SetProgress(fraction float32, info string) {
 
 	globalProgressMap.mu.Lock()
 	op, exists := globalProgressMap.ops[r.opID]
-	if exists {
+	if exists && !op.Done {
 		op.Progress = fraction
 		op.Info = info
 		op.InfoCode = classified.Code

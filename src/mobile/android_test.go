@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -136,6 +137,37 @@ func TestCompleteOperationDoesNotOverwriteCancelledState(t *testing.T) {
 	}
 }
 
+func TestCancelledOperationIgnoresLateReporterCallbacksAndCompletion(t *testing.T) {
+	resetProgressMap()
+
+	id := startOperation()
+	reporter := &androidProgressReporter{opID: id}
+	reporter.SetStatus("Deriving key...")
+	reporter.SetProgress(0.25, "1/10")
+	if err := cancelOperation(id); err != nil {
+		t.Fatal(err)
+	}
+
+	reporter.SetStatus("Encrypting at 12.34 MiB/s (ETA: 01:02:03)")
+	reporter.SetProgress(0.75, "3/10")
+	completeOperation(id, context.Canceled)
+
+	state, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != "Cancelled" || state.StatusCode != "CANCELLED" || !state.Done {
+		t.Fatalf("terminal cancellation was overwritten: %#v", state)
+	}
+	if state.Progress != 0.25 || state.Info != "1/10" || state.InfoCode != "ITEM_COUNT" ||
+		state.InfoCurrent != 1 || state.InfoTotal != 10 {
+		t.Fatalf("late progress callback changed cancelled state: %#v", state)
+	}
+	if state.Error != "" || state.Code != "" {
+		t.Fatalf("late completion added cancellation diagnostics: Error=%q Code=%q", state.Error, state.Code)
+	}
+}
+
 func TestProgressTerminalStatusCodes(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -213,62 +245,87 @@ func TestAndroidProgressReporterUpdatesFieldFamiliesAtomically(t *testing.T) {
 
 	id := startOperation()
 	reporter := &androidProgressReporter{opID: id}
-	const attempts = 100
 
-	for attempt := 0; attempt < attempts; attempt++ {
-		// Hold the write lock until both reporter calls are queued. The old
-		// read-copy-write implementation then lets both calls snapshot the same
-		// stale state before either full-state write can proceed.
-		globalProgressMap.mu.Lock()
-		op := globalProgressMap.ops[id]
-		op.Status = "Deriving key..."
-		op.StatusCode = "DERIVING_KEY"
-		op.StatusSpeedMiBPerSecond = 0
-		op.StatusETA = ""
-		op.Progress = 0.25
-		op.Info = "1/10"
-		op.InfoCode = "ITEM_COUNT"
-		op.InfoCurrent = 1
-		op.InfoTotal = 10
+	// Hold the write lock until both reporter calls have arrived at their first
+	// progress-map lock acquisition. A stale read-copy-write implementation then
+	// releases both readers together, forcing both to snapshot the old state
+	// before either full-state write can proceed.
+	globalProgressMap.mu.Lock()
+	op := globalProgressMap.ops[id]
+	op.Status = "Deriving key..."
+	op.StatusCode = "DERIVING_KEY"
+	op.StatusSpeedMiBPerSecond = 0
+	op.StatusETA = ""
+	op.Progress = 0.25
+	op.Info = "1/10"
+	op.InfoCode = "ITEM_COUNT"
+	op.InfoCurrent = 1
+	op.InfoTotal = 10
 
-		start := make(chan struct{})
-		ready := make(chan struct{}, 2)
-		var calls sync.WaitGroup
-		calls.Add(2)
-		go func() {
-			defer calls.Done()
-			ready <- struct{}{}
-			<-start
-			reporter.SetStatus("Encrypting at 12.34 MiB/s (ETA: 01:02:03)")
-		}()
-		go func() {
-			defer calls.Done()
-			ready <- struct{}{}
-			<-start
-			reporter.SetProgress(0.75, "3/10")
-		}()
-		<-ready
-		<-ready
-		close(start)
-		// Allow both goroutines to block in their first map-lock acquisition.
-		time.Sleep(time.Millisecond)
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	ready.Add(2)
+	var calls sync.WaitGroup
+	calls.Add(2)
+	go func() {
+		defer calls.Done()
+		ready.Done()
+		<-start
+		reporter.SetStatus("Encrypting at 12.34 MiB/s (ETA: 01:02:03)")
+	}()
+	go func() {
+		defer calls.Done()
+		ready.Done()
+		<-start
+		reporter.SetProgress(0.75, "3/10")
+	}()
+	ready.Wait()
+	close(start)
+	if !reporterCallsBlockedOnProgressMapLock(2 * time.Second) {
 		globalProgressMap.mu.Unlock()
 		calls.Wait()
-
-		state, err := getProgress(id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if state.Status != "Encrypting at 12.34 MiB/s (ETA: 01:02:03)" ||
-			state.StatusCode != "ENCRYPTING_RATE" ||
-			state.StatusSpeedMiBPerSecond != 12.34 || state.StatusETA != "01:02:03" {
-			t.Fatalf("attempt %d reverted status family: %#v", attempt, state)
-		}
-		if state.Progress != 0.75 || state.Info != "3/10" || state.InfoCode != "ITEM_COUNT" ||
-			state.InfoCurrent != 3 || state.InfoTotal != 10 {
-			t.Fatalf("attempt %d reverted progress family: %#v", attempt, state)
-		}
+		t.Fatal("reporter calls did not reach the progress-map lock")
 	}
+	globalProgressMap.mu.Unlock()
+	calls.Wait()
+
+	state, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != "Encrypting at 12.34 MiB/s (ETA: 01:02:03)" ||
+		state.StatusCode != "ENCRYPTING_RATE" ||
+		state.StatusSpeedMiBPerSecond != 12.34 || state.StatusETA != "01:02:03" {
+		t.Fatalf("concurrent update reverted status family: %#v", state)
+	}
+	if state.Progress != 0.75 || state.Info != "3/10" || state.InfoCode != "ITEM_COUNT" ||
+		state.InfoCurrent != 3 || state.InfoTotal != 10 {
+		t.Fatalf("concurrent update reverted progress family: %#v", state)
+	}
+}
+
+func reporterCallsBlockedOnProgressMapLock(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	stack := make([]byte, 1<<20)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(stack, true)
+		statusBlocked := false
+		progressBlocked := false
+		for _, goroutine := range strings.Split(string(stack[:n]), "\n\n") {
+			blockedOnRWMutex := strings.Contains(goroutine, "sync.(*RWMutex).Lock") ||
+				strings.Contains(goroutine, "sync.(*RWMutex).RLock")
+			if !blockedOnRWMutex {
+				continue
+			}
+			statusBlocked = statusBlocked || strings.Contains(goroutine, "(*androidProgressReporter).SetStatus")
+			progressBlocked = progressBlocked || strings.Contains(goroutine, "(*androidProgressReporter).SetProgress")
+		}
+		if statusBlocked && progressBlocked {
+			return true
+		}
+		runtime.Gosched()
+	}
+	return false
 }
 
 func TestGetProgressCopiesStructuredFields(t *testing.T) {

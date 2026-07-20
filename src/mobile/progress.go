@@ -82,8 +82,7 @@ func completeOperation(id string, err error) {
 	defer globalProgressMap.mu.Unlock()
 
 	if op, exists := globalProgressMap.ops[id]; exists {
-		if op.StatusCode == "CANCELLED" {
-			op.Done = true
+		if op.Done {
 			return
 		}
 		op.Done = true
