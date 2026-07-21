@@ -67,44 +67,48 @@ internal suspend fun <T> runNewKeyfileCreation(
     result.fold(onSuccess = onSuccess, onFailure = onFailure)
 }
 
+internal suspend fun <T> withZeroedKeyfileBuffer(
+    bytes: ByteArray,
+    operation: suspend (ByteArray) -> T,
+): T = try {
+    operation(bytes)
+} finally {
+    bytes.fill(0)
+}
+
 private suspend fun createAndCopyKeyfile(
     context: Context,
     resources: Resources,
     uri: Uri,
     keyfileIndex: Int,
 ): Result<String> {
-    val randomBytes = withContext(Dispatchers.IO) {
-        val bytes = ByteArray(32)
-        SecureRandom().nextBytes(bytes)
-        bytes
-    }
-
-    val writeSuccess = withContext(Dispatchers.IO) {
-        try {
-            context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                outputStream.write(randomBytes)
-                true
-            } ?: false
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            false
-        } finally {
-            randomBytes.fill(0)
+    return withZeroedKeyfileBuffer(ByteArray(32)) { randomBytes ->
+        val writeSuccess = withContext(Dispatchers.IO) {
+            SecureRandom().nextBytes(randomBytes)
+            try {
+                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                    outputStream.write(randomBytes)
+                    true
+                } ?: false
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                false
+            }
         }
-    }
 
-    if (!writeSuccess) {
-        return Result.failure(
-            AppError.FileError.SaveFailed(
-                userMessage = resources.getString(R.string.keyfile_write_failed),
-                messageResId = R.string.keyfile_write_failed,
-            ),
-        )
-    }
+        if (!writeSuccess) {
+            return@withZeroedKeyfileBuffer Result.failure(
+                AppError.FileError.SaveFailed(
+                    userMessage = resources.getString(R.string.keyfile_write_failed),
+                    messageResId = R.string.keyfile_write_failed,
+                ),
+            )
+        }
 
-    return withContext(Dispatchers.IO) {
-        FileCopyService.copyKeyfileToInternalStorage(context, uri, keyfileIndex)
+        withContext(Dispatchers.IO) {
+            FileCopyService.copyKeyfileToInternalStorage(context, uri, keyfileIndex)
+        }
     }
 }
 

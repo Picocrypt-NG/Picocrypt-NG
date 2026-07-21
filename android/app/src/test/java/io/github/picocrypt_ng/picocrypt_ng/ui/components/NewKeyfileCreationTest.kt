@@ -5,10 +5,28 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
 class NewKeyfileCreationTest {
+    @Test
+    fun `keyfile bytes are zeroed when creation is cancelled`() = runTest {
+        val bytes = ByteArray(32) { 0x5A.toByte() }
+        val cancellation = CancellationException("cancel after generation")
+
+        try {
+            withZeroedKeyfileBuffer(bytes) {
+                throw cancellation
+            }
+            fail("CancellationException must be rethrown")
+        } catch (actual: CancellationException) {
+            assertSame(cancellation, actual)
+        }
+
+        assertTrue("Every generated keyfile byte must be zeroed", bytes.all { it == 0.toByte() })
+    }
+
     @Test
     fun `configuration cancellation never reaches the error owner`() = runTest {
         val thrownCancellation = CancellationException("thrown cancellation")
