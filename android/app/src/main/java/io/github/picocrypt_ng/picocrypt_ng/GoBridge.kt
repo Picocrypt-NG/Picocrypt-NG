@@ -209,23 +209,8 @@ object GoBridge {
     fun getProgress(operationID: String): Result<ProgressState> {
         return try {
             val result: GoProgressResult = Mobile.getProgress(operationID)
-            
-            Result.success(ProgressState(
-                status = OperationStatusData(
-                    code = result.getStatusCode() ?: "",
-                    speedMiBPerSecond = result.getStatusSpeedMiBPerSecond(),
-                    eta = result.getStatusETA() ?: "",
-                ),
-                detail = OperationProgressDetail(
-                    code = result.getInfoCode() ?: "",
-                    current = result.getInfoCurrent(),
-                    total = result.getInfoTotal(),
-                ),
-                progress = result.getProgress(),
-                done = result.getDone(),
-                technicalError = result.getError() ?: "",
-                errorCode = result.getCode() ?: "",
-            ))
+
+            Result.success(result.toProgressState())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -237,18 +222,35 @@ object GoBridge {
      * Cancels a running operation.
      * 
      * @param operationID Operation ID to cancel
-     * @return Result indicating success or failure
+     * @return Result containing the canonical terminal state, or an error
      */
-    fun cancelOperation(operationID: String): Result<Unit> {
+    fun cancelOperation(operationID: String): Result<ProgressState> {
         return try {
-            Mobile.cancelOperation(operationID)
-            Result.success(Unit)
+            val result: GoProgressResult = Mobile.cancelOperation(operationID)
+            Result.success(result.toProgressState())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(AppError.fromException(e))
         }
     }
+
+    private fun GoProgressResult.toProgressState(): ProgressState = ProgressState(
+        status = OperationStatusData(
+            code = getStatusCode() ?: "",
+            speedMiBPerSecond = getStatusSpeedMiBPerSecond(),
+            eta = getStatusETA() ?: "",
+        ),
+        detail = OperationProgressDetail(
+            code = getInfoCode() ?: "",
+            current = getInfoCurrent(),
+            total = getInfoTotal(),
+        ),
+        progress = getProgress(),
+        done = getDone(),
+        technicalError = getError() ?: "",
+        errorCode = getCode() ?: "",
+    )
     
     /**
      * Gets decryption metadata from an encrypted file without decrypting it.

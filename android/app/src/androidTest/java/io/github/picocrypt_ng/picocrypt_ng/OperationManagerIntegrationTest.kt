@@ -103,12 +103,23 @@ class OperationManagerIntegrationTest {
         )
         val encState = waitForOperationToFinish()
         assertNull("encrypt must not finish with an error", encState.error)
+        assertEquals(OperationStatus.COMPLETED, encState.status.code)
         val encryptedFile = File(encState.outputFile)
         assertTrue("encrypted volume must exist", encryptedFile.exists())
         assertFalse(
             "ciphertext must differ from plaintext (data was actually encrypted)",
             encryptedFile.readBytes().contentEquals(original)
         )
+
+        // Exercise the real generated CancelOperation binding and ProgressResult
+        // getters. Completion already won, so a late cancel must return the canonical
+        // COMPLETED snapshot rather than fabricate CANCELLED in Kotlin.
+        val lateCancel = GoBridge.cancelOperation(encStart.getOrThrow()).getOrThrow()
+        assertEquals(OperationStatus.COMPLETED, lateCancel.status.code)
+        assertEquals(1f, lateCancel.progress, 0.001f)
+        assertTrue("late cancel must preserve the completed terminal snapshot", lateCancel.done)
+        assertEquals("", lateCancel.technicalError)
+        assertEquals("", lateCancel.errorCode)
         OperationManager.clearOperation(context, shouldCleanupFiles = false)
 
         // Re-stage the ciphertext as a decrypt INPUT, mirroring the real app: a picked

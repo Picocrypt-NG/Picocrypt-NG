@@ -1,6 +1,5 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
-import java.io.File
 import org.junit.Assert.*
 import org.junit.Test
 import org.json.JSONException
@@ -259,34 +258,6 @@ class GoBridgeTest {
         assertFalse(progressState.done)
         assertEquals("diagnostic only", progressState.technicalError)
         assertEquals("GENERIC", progressState.errorCode)
-    }
-
-    @Test
-    fun `getProgress consumes every structured getter without carrying raw status or info`() {
-        val source = File(
-            "src/main/java/io/github/picocrypt_ng/picocrypt_ng/GoBridge.kt"
-        ).readText()
-
-        listOf(
-            "result.getStatusCode()",
-            "result.getStatusSpeedMiBPerSecond()",
-            "result.getStatusETA()",
-            "result.getInfoCode()",
-            "result.getInfoCurrent()",
-            "result.getInfoTotal()",
-        ).forEach { getter ->
-            assertTrue("GoBridge.getProgress must consume $getter", source.contains(getter))
-        }
-        assertTrue(
-            "Raw Go errors must populate only the technicalError field",
-            Regex("technicalError\\s*=\\s*result\\.getError\\(\\)").containsMatchIn(source),
-        )
-        assertTrue(
-            "Stable Go error codes must populate the errorCode field",
-            Regex("errorCode\\s*=\\s*result\\.getCode\\(\\)").containsMatchIn(source),
-        )
-        assertFalse("Raw Go status must not enter durable Kotlin state", source.contains("result.getStatus()"))
-        assertFalse("Raw Go info must not enter durable Kotlin state", source.contains("result.getInfo()"))
     }
 
 }

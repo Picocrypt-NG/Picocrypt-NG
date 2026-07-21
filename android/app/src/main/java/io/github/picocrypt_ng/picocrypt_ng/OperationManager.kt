@@ -15,6 +15,17 @@ import io.github.picocrypt_ng.picocrypt_ng.FileCopyService
 object OperationManager {
     private val _currentOperation = MutableStateFlow<OperationState?>(null)
     val currentOperation: StateFlow<OperationState?> = _currentOperation.asStateFlow()
+
+    private fun progressError(progressState: ProgressState, type: OperationType): AppError? =
+        if (progressState.done && progressState.status.code == OperationStatus.ERROR) {
+            AppError.fromGoError(
+                progressState.technicalError,
+                type,
+                progressState.errorCode,
+            )
+        } else {
+            null
+        }
     
     /**
      * Starts an encryption operation.
@@ -212,18 +223,8 @@ object OperationManager {
 
         val result = GoBridge.getProgress(operation.id)
         result.getOrNull()?.let { progressState ->
-            val error = if (
-                progressState.done && progressState.status.code == OperationStatus.ERROR
-            ) {
-                // Classify by the stable Go error code (not fragile substring matching)
-                AppError.fromGoError(
-                    progressState.technicalError,
-                    operation.type,
-                    progressState.errorCode,
-                )
-            } else {
-                null
-            }
+            // Classify by the stable Go error code (not fragile substring matching).
+            val error = progressError(progressState, operation.type)
             
             // Atomic read-modify-write: between capturing `operation` above and the
             // suspending getProgress I/O, a concurrent coroutine (the FGS 1000ms poll
@@ -264,13 +265,23 @@ object OperationManager {
         )
         
         val result = GoBridge.cancelOperation(operation.id)
-        result.onSuccess {
-            _currentOperation.value = operation.copy(
-                status = OperationStatusData(OperationStatus.CANCELLED),
-                done = true
-            )
+        result.onSuccess { progressState ->
+            val error = progressError(progressState, operation.type)
+            _currentOperation.update { current ->
+                if (current == null || current.id != operation.id || current.done) {
+                    current
+                } else {
+                    current.copy(
+                        status = progressState.status,
+                        detail = progressState.detail,
+                        progress = progressState.progress,
+                        done = progressState.done,
+                        error = error,
+                    )
+                }
+            }
         }
-        result
+        result.map { Unit }
     }
     
     /**

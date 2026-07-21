@@ -658,6 +658,7 @@ type ProgressResult struct {
 }
 
 func GetProgress(operationID string) (*ProgressResult, error)
+func CancelOperation(operationID string) (*ProgressResult, error)
 ```
 
 `Status`, `Info`, and `Error` are compatibility/diagnostic fields. Android display boundaries use
@@ -689,8 +690,9 @@ to `UNKNOWN`; Android falls back to localized **Working** rather than exposing t
 errors. The recovery contract is fail-closed: only `AUTH_FAILED` permits password retry, only
 `DATA_CORRUPTED` permits force decrypt, and corrupt headers are never force-decryptable.
 
-The operation state preserves the first terminal result; later polling cannot replace an already
-recorded cancellation, success, or failure.
+The operation state preserves the first terminal result. `CancelOperation` atomically returns that
+canonical terminal snapshot, so cancellation cannot replace an already-recorded success or failure;
+later polling likewise cannot replace an already-recorded cancellation, success, or failure.
 
 ---
 

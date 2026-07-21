@@ -347,6 +347,10 @@ func GetProgress(operationID string) (*ProgressResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	return progressResultFromState(state), nil
+}
+
+func progressResultFromState(state *ProgressState) *ProgressResult {
 	return &ProgressResult{
 		Status:                  state.Status,
 		StatusCode:              state.StatusCode,
@@ -360,12 +364,17 @@ func GetProgress(operationID string) (*ProgressResult, error) {
 		Done:                    state.Done,
 		Error:                   state.Error,
 		Code:                    state.Code,
-	}, nil
+	}
 }
 
-// CancelOperation cancels a running operation.
-func CancelOperation(operationID string) error {
-	return cancelOperation(operationID)
+// CancelOperation cancels a running operation and returns the canonical
+// terminal snapshot. If the operation completed first, that result wins.
+func CancelOperation(operationID string) (*ProgressResult, error) {
+	state, err := cancelOperationAndGetProgress(operationID)
+	if err != nil {
+		return nil, err
+	}
+	return progressResultFromState(state), nil
 }
 
 // DecryptionInfoJSON represents the JSON structure for decryption metadata

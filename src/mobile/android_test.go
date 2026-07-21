@@ -219,6 +219,69 @@ func TestCancelOperationPreservesFailedTerminalSnapshot(t *testing.T) {
 	}
 }
 
+func TestCancelOperationReturnsCanonicalTerminalSnapshot(t *testing.T) {
+	tests := []struct {
+		name         string
+		finish       func(id string)
+		wantStatus   string
+		wantProgress float32
+		wantError    string
+		wantCode     string
+	}{
+		{
+			name:         "running operation becomes cancelled",
+			finish:       func(string) {},
+			wantStatus:   "CANCELLED",
+			wantProgress: 0.25,
+		},
+		{
+			name:         "completed operation stays completed",
+			finish:       func(id string) { completeOperation(id, nil) },
+			wantStatus:   "COMPLETED",
+			wantProgress: 1,
+		},
+		{
+			name:         "failed operation stays failed",
+			finish:       func(id string) { completeOperation(id, errors.New("diagnostic failure")) },
+			wantStatus:   "ERROR",
+			wantProgress: 0.25,
+			wantError:    "diagnostic failure",
+			wantCode:     "GENERIC",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resetProgressMap()
+			id := startOperation()
+			reporter := &androidProgressReporter{opID: id}
+			reporter.SetProgress(0.25, "1/10")
+			tc.finish(id)
+
+			state, err := CancelOperation(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.StatusCode != tc.wantStatus || !state.Done {
+				t.Fatalf("CancelOperation returned %#v, want terminal status %q", state, tc.wantStatus)
+			}
+			if state.Progress != tc.wantProgress || state.InfoCode != "ITEM_COUNT" ||
+				state.InfoCurrent != 1 || state.InfoTotal != 10 {
+				t.Fatalf("CancelOperation lost progress detail: %#v", state)
+			}
+			if state.Error != tc.wantError || state.Code != tc.wantCode {
+				t.Fatalf(
+					"CancelOperation error = (%q, %q), want (%q, %q)",
+					state.Error,
+					state.Code,
+					tc.wantError,
+					tc.wantCode,
+				)
+			}
+		})
+	}
+}
+
 func TestProgressTerminalStatusCodes(t *testing.T) {
 	tests := []struct {
 		name       string

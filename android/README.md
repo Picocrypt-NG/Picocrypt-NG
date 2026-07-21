@@ -62,7 +62,8 @@ The Go mobile package exports (see `src/mobile/android.go`):
   compatibility/diagnostic fields; Android display logic uses the stable codes and typed values.
 - `GetDecryptionInfo(filePath)` - Reads a volume's header to report whether a password/keyfiles are
   required before the user commits to decrypting
-- `CancelOperation(operationID)` - Cancels a running operation
+- `CancelOperation(operationID)` - Cancels a running operation and returns its canonical terminal
+  `ProgressResult`; an already-recorded success or failure wins over a late cancellation request
 
 Passwords cross the bridge as `[]byte` (not `String`) so the Kotlin side can zero its buffer after
 use. On the Go side the password becomes a normal `string` for the operation's duration (released

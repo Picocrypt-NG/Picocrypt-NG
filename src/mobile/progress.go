@@ -116,6 +116,10 @@ func getProgress(id string) (*ProgressState, error) {
 	}
 
 	// Return a copy to avoid race conditions
+	return copyProgressState(op), nil
+}
+
+func copyProgressState(op *ProgressState) *ProgressState {
 	return &ProgressState{
 		ID:                      op.ID,
 		Status:                  op.Status,
@@ -130,26 +134,28 @@ func getProgress(id string) (*ProgressState, error) {
 		Error:                   op.Error,
 		Code:                    op.Code,
 		Done:                    op.Done,
-	}, nil
+	}
 }
 
-// cancelOperation cancels an operation
-func cancelOperation(id string) error {
+// cancelOperationAndGetProgress cancels an operation and returns the canonical
+// terminal state selected while holding the same lock. If completion already
+// won the race, its terminal state is preserved and returned instead.
+func cancelOperationAndGetProgress(id string) (*ProgressState, error) {
 	globalProgressMap.mu.Lock()
 	defer globalProgressMap.mu.Unlock()
 
 	cancel, exists := globalProgressMap.cancels[id]
 	if !exists {
-		return fmt.Errorf("operation %s not found", id)
+		return nil, fmt.Errorf("operation %s not found", id)
 	}
 
 	op, opExists := globalProgressMap.ops[id]
-	if opExists && op.Done {
-		return nil
+	if !opExists {
+		return nil, fmt.Errorf("operation %s not found", id)
 	}
 
-	cancel()
-	if opExists {
+	if !op.Done {
+		cancel()
 		status := classifyStatus("Cancelled")
 		op.Status = "Cancelled"
 		op.StatusCode = status.Code
@@ -158,7 +164,13 @@ func cancelOperation(id string) error {
 		op.Done = true
 	}
 
-	return nil
+	return copyProgressState(op), nil
+}
+
+// cancelOperation cancels an operation.
+func cancelOperation(id string) error {
+	_, err := cancelOperationAndGetProgress(id)
+	return err
 }
 
 // getContext retrieves the context for an operation

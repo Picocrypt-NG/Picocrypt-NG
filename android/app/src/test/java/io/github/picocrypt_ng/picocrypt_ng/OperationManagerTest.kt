@@ -150,6 +150,113 @@ class OperationManagerTest {
             assertEquals(R.string.error_no_active_operation, (error as AppError).messageResId)
         }
     }
+
+    @Test
+    fun `cancelOperation preserves the terminal state returned by Go`() = runTest {
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(
+                id = "op_completed",
+                status = OperationStatusData(OperationStatus.ENCRYPTING_RATE),
+                progress = 0.9f,
+                done = false,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.cancelOperation("op_completed") } returns Result.success(
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.COMPLETED),
+                    detail = OperationProgressDetail(OperationProgress.NONE),
+                    progress = 1f,
+                    done = true,
+                )
+            )
+
+            val result = OperationManager.cancelOperation()
+            val state = OperationManager.currentOperation.value
+
+            assertTrue("Cancel request should succeed", result.isSuccess)
+            assertEquals(OperationStatus.COMPLETED, state?.status?.code)
+            assertEquals(1f, state?.progress ?: -1f, 0.001f)
+            assertTrue("Native terminal state must remain terminal", state?.done == true)
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `cancelOperation classifies a terminal error returned by Go`() = runTest {
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(
+                id = "op_failed",
+                type = OperationType.DECRYPT,
+                done = false,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.cancelOperation("op_failed") } returns Result.success(
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.ERROR),
+                    detail = OperationProgressDetail(OperationProgress.NONE),
+                    progress = 0.4f,
+                    done = true,
+                    technicalError = "diagnostic auth failure",
+                    errorCode = "AUTH_FAILED",
+                )
+            )
+
+            val result = OperationManager.cancelOperation()
+            val state = OperationManager.currentOperation.value
+
+            assertTrue("Cancel request should return the native terminal snapshot", result.isSuccess)
+            assertEquals(OperationStatus.ERROR, state?.status?.code)
+            assertTrue(state?.error is AppError.OperationError.PasswordAuth)
+            assertEquals("diagnostic auth failure", state?.error?.technicalMessage)
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `cancelOperation does not overwrite a concurrently replaced operation`() = runTest {
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(id = "op_old", done = false)
+        )
+        val replacement = TestDataBuilders.createOperationState(
+            id = "op_new",
+            status = OperationStatusData(OperationStatus.STARTING),
+            done = false,
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.cancelOperation("op_old") } answers {
+                setCurrentOperationForTest(replacement)
+                Result.success(
+                    ProgressState(
+                        status = OperationStatusData(OperationStatus.CANCELLED),
+                        detail = OperationProgressDetail(OperationProgress.NONE),
+                        progress = 0f,
+                        done = true,
+                    )
+                )
+            }
+
+            val result = OperationManager.cancelOperation()
+
+            assertTrue("Cancel request should succeed", result.isSuccess)
+            assertSame(
+                "A newer operation must not be clobbered by an older cancel response",
+                replacement,
+                OperationManager.currentOperation.value,
+            )
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
     
     @Test
     fun `pollProgress returns null when no active operation`() = runTest {
