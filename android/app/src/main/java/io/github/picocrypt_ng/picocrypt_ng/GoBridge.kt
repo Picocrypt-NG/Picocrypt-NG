@@ -235,7 +235,7 @@ object GoBridge {
         }
     }
 
-    private fun GoProgressResult.toProgressState(): ProgressState = ProgressState(
+    internal fun GoProgressResult.toProgressState(): ProgressState = ProgressState(
         status = OperationStatusData(
             code = getStatusCode() ?: "",
             speedMiBPerSecond = getStatusSpeedMiBPerSecond(),

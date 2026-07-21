@@ -1110,7 +1110,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "3583",
 			target:   "google_apis",
-			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest",
+			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest",
 		},
 		// Activity security and Compose state must work on the target-SDK runtime.
 		36: {
@@ -1118,7 +1118,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "6144",
 			target:   "default",
-			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.NewKeyfileLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
+			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.NewKeyfileLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
 		},
 	}
 	seen := make(map[int]struct{}, len(wantByAPI))
@@ -1608,6 +1608,11 @@ func TestAndroidGomobileBuildUsesReproducibleLinkerFlags(t *testing.T) {
 }
 
 func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
+	const (
+		focusedClasses = "io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.DecryptOptionsCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ErrorDialogTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.FileCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.NewKeyfileLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest"
+		extendedClass  = "io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest"
+	)
+
 	content := mustReadWorkflow(t, ".github/workflows/android-instrumented.yml")
 	mustContain(t, content, "workflow_dispatch:")
 	mustContain(t, content, "test_scope:")
@@ -1615,15 +1620,7 @@ func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	mustContain(t, content, "- focused")
 	mustContain(t, content, "- extended")
 	mustMatch(t, content, `ReactiveCircus/android-emulator-runner@[0-9a-f]{40}`)
-	mustContain(t, content, "connectedDebugAndroidTest")
-	mustContain(t, content, "PasswordCardTest")
-	mustContain(t, content, "ProgressCardTest")
-	mustContain(t, content, "OperationNotificationTest")
-	mustContain(t, content, "NewKeyfileLifecycleTest")
-	mustContain(t, content, "OperationManagerIntegrationTest")
 	mustNotContain(t, content, "connectedDebugAndroidTest \\")
-	mustContain(t, content, "TEST_CLASSES=")
-	mustContain(t, content, "./gradlew connectedDebugAndroidTest")
 
 	// Keep the manual instrumented workflow on the target-SDK runtime.
 	instrJob := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/android-instrumented.yml"), "android-instrumented")
@@ -1633,6 +1630,10 @@ func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	}
 	if got := instrEmulator.With["disk-size"]; got != "2048M" {
 		t.Fatalf("instrumented emulator disk-size = %v, want 2048M", got)
+	}
+	wantScript := `TEST_CLASSES="` + focusedClasses + `"; { [ "${{ inputs.test_scope }}" = "extended" ] && TEST_CLASSES="$TEST_CLASSES,` + extendedClass + `"; } || true; ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$TEST_CLASSES"`
+	if got := instrEmulator.With["script"]; got != wantScript {
+		t.Fatalf("instrumented script = %#v, want exact focused and extended selectors %q", got, wantScript)
 	}
 }
 

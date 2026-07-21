@@ -230,34 +230,4 @@ class GoBridgeTest {
         assertFalse(options.deniability)
     }
 
-    @Test
-    fun `ProgressState keeps semantic progress and technical errors distinct`() {
-        val progressState = ProgressState(
-            status = OperationStatusData(
-                code = "ENCRYPTING_RATE",
-                speedMiBPerSecond = 12.34,
-                eta = "01:02:03",
-            ),
-            detail = OperationProgressDetail(
-                code = "ITEM_COUNT",
-                current = 3,
-                total = 10,
-            ),
-            progress = 0.5f,
-            done = false,
-            technicalError = "diagnostic only",
-            errorCode = "GENERIC",
-        )
-        assertEquals("ENCRYPTING_RATE", progressState.status.code)
-        assertEquals(12.34, progressState.status.speedMiBPerSecond, 0.001)
-        assertEquals("01:02:03", progressState.status.eta)
-        assertEquals("ITEM_COUNT", progressState.detail.code)
-        assertEquals(3, progressState.detail.current)
-        assertEquals(10, progressState.detail.total)
-        assertEquals(0.5f, progressState.progress, 0.001f)
-        assertFalse(progressState.done)
-        assertEquals("diagnostic only", progressState.technicalError)
-        assertEquals("GENERIC", progressState.errorCode)
-    }
-
 }
