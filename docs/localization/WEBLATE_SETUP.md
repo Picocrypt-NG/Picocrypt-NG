@@ -79,12 +79,16 @@ Configuration:
 - File mask: `android/app/src/main/res/values-*/strings.xml`
 - Base file: `android/app/src/main/res/values/strings.xml`
 - Format: Android String Resource
-- Initial languages after Android gates: `ru`, `fr`, `de`, `es`, `it`
+- Base language: `en`
+- Translated languages after Android gates: `ru`, `de`, `fr`, `es`, `zh-Hans`, `hi`
+- Android directory mapping: `zh-Hans` uses `values-b+zh+Hans`; Italian is not packaged
 
 Android string resources are monolingual in Weblate. The base file is
 `res/values/strings.xml`, and the typical translated file mask is
 `res/values-*/strings.xml`. Weblate's Android String Resource format supports
-plurals and flags/read-only strings.
+plurals and flags/read-only strings. These are application UI resources;
+Fastlane currently has a separate English-only `en-US` store-listing/changelog
+surface and must not be inferred from the app-resource language list.
 
 ### Fyne Desktop
 
@@ -93,6 +97,8 @@ Do not enable yet.
 Fyne Weblate setup is blocked until Picocrypt-NG proves exact round-trip for
 the Fyne JSON catalog shape in `src/internal/ui/translation/en.json`.
 
+Seven complete desktop catalogs currently exist for `en`, `ru`, `de`, `fr`,
+`es`, `zh-Hans`, and `hi`, but no Fyne/Weblate JSON round-trip has been proved.
 The curated Russian Fyne catalog is a maintainer-reviewed in-repository
 translation exception. It is gated by
 `docs/localization/RUSSIAN_TRANSLATION_REVIEW.md` and structural catalog tests,

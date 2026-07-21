@@ -249,27 +249,13 @@ Real-device or emulator review covers:
 
 ### Per-app language discovery
 
-Enable AGP's generated locale configuration in the application module:
+Enable AGP's generated locale configuration and restrict packaged languages to
+the intended application set in the application module:
 
 ```kotlin
 androidResources {
     generateLocaleConfig = true
-}
-```
-
-Add `android/app/src/main/res/resources.properties` with:
-
-```properties
-unqualifiedResLocale=en
-```
-
-Restrict packaged language resources to the reviewed application set so
-translations contributed by Android library dependencies do not become
-advertised as Picocrypt-NG languages:
-
-```kotlin
-defaultConfig {
-    resourceConfigurations += listOf(
+    localeFilters += listOf(
         "en",
         "ru",
         "de",
@@ -281,12 +267,18 @@ defaultConfig {
 }
 ```
 
+Add `android/app/src/main/res/resources.properties` with:
+
+```properties
+unqualifiedResLocale=en
+```
+
 AGP derives the locale configuration from the resulting `values-*` resources
 and injects the generated manifest reference. No manual
 `res/xml/locale_config.xml` or `android:localeConfig` entry is added. A policy
 test verifies that the release variant contains exactly the seven intended
-locales and that no unreviewed library-only locale leaks into the user-visible
-list. Debug-only `en-XA` and `ar-XB` pseudolocales remain test resources and are
+locales and that no dependency-only locale leaks into the user-visible list.
+Debug-only `en-XA` and `ar-XB` pseudolocales remain test resources and are
 not release locales.
 
 This follows Android's current

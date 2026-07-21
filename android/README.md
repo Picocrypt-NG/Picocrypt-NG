@@ -56,7 +56,10 @@ The Go mobile package exports (see `src/mobile/android.go`):
   carries the staged selection (single file, multiple files, or a folder) so the Go side can
   encrypt a single output or a recursive archive
 - `StartDecrypt(requestJSON, password)` - Starts decryption in the background
-- `GetProgress(operationID)` - Returns the current `ProgressResult` (progress, status, done, error)
+- `GetProgress(operationID)` - Returns `ProgressResult` with `Status`, `StatusCode`,
+  `StatusSpeedMiBPerSecond`, `StatusETA`, `Progress`, `Info`, `InfoCode`, `InfoCurrent`,
+  `InfoTotal`, `Done`, `Error`, and `Code`. `Status`, `Info`, and `Error` are retained as
+  compatibility/diagnostic fields; Android display logic uses the stable codes and typed values.
 - `GetDecryptionInfo(filePath)` - Reads a volume's header to report whether a password/keyfiles are
   required before the user commits to decrypting
 - `CancelOperation(operationID)` - Cancels a running operation
@@ -74,6 +77,11 @@ Staging & bridge:
 - **FileCopyService**: Legacy single-file copy into internal storage (used for the simple file case)
 - **GoBridge**: Kotlin wrapper over the Go mobile bindings; serialises the selection to the request JSON
 - **OperationManager**: Owns operation lifecycle, progress polling, and staging cleanup
+- **OperationStatus**: Shared resource-backed renderer used by both Compose progress UI and the
+  foreground notification; unknown status falls back to localized **Working**, and unknown or
+  malformed detail is hidden
+- **AppError** / **AppErrorText**: Stable-code error model and configuration-aware localized display
+  boundary; raw Go/JVM details remain diagnostic rather than user-facing copy
 - **SecureBytes**: Holds the password as a zeroable byte buffer
 
 State & lifecycle:
@@ -100,8 +108,25 @@ UI (`ui/components/`):
 3. UI updates → Shows the appropriate fields (encrypt vs. decrypt) for the detected operation
 4. User fills the form and taps **WorkButton** → `OperationForegroundService` starts and the
    operation runs in the background (Go goroutine), with the password passed as zeroable `[]byte`
-5. Progress is polled → UI and the foreground notification update with status and progress
+5. Progress is polled → stable status/detail codes and typed arguments pass through `GoBridge` to
+   the shared `OperationStatus` renderer, so the UI and foreground notification show the same
+   localized status and progress
 6. Operation completes → Success/error is shown, staging is wiped, and the service self-stops
+
+## Localization
+
+Release builds package exactly seven application locales: base English (`values`), Russian
+(`values-ru`), German (`values-de`), French (`values-fr`), Spanish (`values-es`), Simplified Chinese
+(`values-b+zh+Hans`), and Hindi (`values-hi`). AGP generates the locale configuration from these
+resources with `androidResources.generateLocaleConfig = true` and
+`androidResources.localeFilters`; `resources.properties` declares `unqualifiedResLocale=en`.
+
+The generated release list is `en`, `ru`, `de`, `fr`, `es`, `zh-Hans`, and `hi`. Debug-only
+`en-XA`/`ar-XB` pseudolocales are excluded. There is no manual `locale_config.xml` and no in-app
+locale picker: Android 13 and newer expose the system per-app selector, while older Android versions
+follow the system locale. Packaging proves resource completeness, not linguistic or device review;
+the five new catalogs still require native or near-native review and real-device rendering checks
+before release admission.
 
 ## Notes
 
@@ -117,7 +142,9 @@ UI (`ui/components/`):
 - Progress is polled every 500ms by the UI ViewModel while visible, and every 1s by the foreground
   service when the app is backgrounded
 - Operations run in background threads (Go goroutines + Kotlin coroutines)
-- The Go mobile AAR must be rebuilt whenever Go code changes
+- The Go mobile AAR must be rebuilt whenever Go code changes, especially after an exported
+  `src/mobile` method, type, or field changes; stale gomobile bindings will not contain the generated
+  getters expected by Kotlin
 - `build-gomobile.sh` builds the AAR with `-trimpath` (via `GOFLAGS`) and `-buildid=` (via
   `GOMOBILE_LDFLAGS`) so the native `.so` files don't embed local build paths or unstable Go build
   IDs — needed for reproducible / source-built F-Droid verification

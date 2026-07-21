@@ -17,8 +17,8 @@ integrity, password, keyfile, corruption, and deletion concepts.
 
 | Surface | Current state | Translation path |
 |---|---|---|
-| Desktop Fyne UI | User-facing desktop UI strings are routed through `src/internal/ui/translation/en.json` via the project-local `go-i18n` runtime. | Keep using the project `tr`/`trn` wrappers. Russian is enabled as a curated in-repo translation with a review gate; future Weblate-imported Fyne locales still require a Fyne/Weblate JSON round-trip. |
-| Android app | Base English UI strings live in `android/app/src/main/res/values/strings.xml`; raw Go/runtime details are not translator source copy. | Continue with Android string resources and explicit display-boundary mappings. |
+| Desktop Fyne UI | Complete bundled catalogs exist for English, Russian, German, French, Spanish, Simplified Chinese, and Hindi under `src/internal/ui/translation`. | Keep using the project `tr`/`trn` wrappers. Russian has its curated review gate; Weblate-imported Fyne locales still require a Fyne/Weblate JSON round-trip. |
+| Android app | Release resources package the same seven languages: base English plus Russian, German, French, Spanish, Simplified Chinese, and Hindi. Raw Go/runtime details are not translator source copy. | Continue with Android string resources and explicit semantic display-boundary mappings. The five new catalogs still require human/device release admission. |
 | CLI | Cobra help, prompts, warnings, and errors are hard-coded Go strings. | Do not localize CLI output, command names, flags, or examples. Keep CLI English-only. |
 | Web/WASM | The Go WASM bridge exports functions and numeric error codes; it does not own the hosted web UI copy. | Localize the web frontend separately if/when that source is brought into scope. |
 
@@ -103,7 +103,9 @@ Picocrypt-NG keeps Fyne/Weblate-shaped flat JSON catalogs under
   menu label `简体中文`; `hi` uses the open-menu label `हिन्दी`. Only the closed
   selector abbreviates `zh-Hans` to `zh`. The open menu uses native names and no
   flags.
-  Registration without a catalog does not claim that a locale has shipped.
+  Registration without a catalog does not claim that a locale has shipped:
+  `it` remains registered for future work, but `it.json` is absent and Italian
+  is not in the bundled selector set.
 - Every embedded non-English catalog must exactly match `en.json` message IDs,
   singular/plural shapes, and template placeholders, while using the exact
   plural forms required by the pinned go-i18n version. The current contract is:
@@ -111,13 +113,14 @@ Picocrypt-NG keeps Fyne/Weblate-shaped flat JSON catalogs under
   | Locale | Required plural forms |
   |---|---|
   | `en`, `de`, `hi` | `one`, `other` |
-  | `fr`, `es`, `it` | `one`, `many`, `other` |
+  | `fr`, `es` | `one`, `many`, `other` |
   | `ru` | `one`, `few`, `many`, `other` |
   | `zh-Hans` | `other` |
 
   In go-i18n 2.6.1, French and Hindi use `one` for integer zero; French and
   Spanish use `many` for values such as one million. Runtime tests, not this
-  table alone, are the executable source of truth.
+  table alone, are the executable source of truth. A future Italian catalog
+  would require `one`, `many`, and `other`, but is not a shipped row.
 - UI state must store semantic display state for labels and UI-owned statuses.
   Do not store translated strings as durable state when the text must relocalize
   after a runtime language switch.
@@ -173,18 +176,31 @@ Android must use native string resources.
 
 - `android/app/src/main/res/values/strings.xml` is the base English file for
   resource-backed Android UI strings.
-- Translations live under locale resource directories such as `values-ru`,
-  `values-fr`, `values-de`, `values-es`, `values-it`, or Android BCP-47 style
-  qualifiers where needed.
+- The complete translated directories are `values-ru`, `values-de`, `values-fr`,
+  `values-es`, `values-b+zh+Hans`, and `values-hi`. Italian is not packaged.
+- AGP generates the per-app locale configuration with
+  `androidResources.generateLocaleConfig = true` and filters release resources
+  to `en`, `ru`, `de`, `fr`, `es`, `b+zh+Hans`, and `hi` through
+  `androidResources.localeFilters`. `resources.properties` declares base
+  `unqualifiedResLocale=en`; generated output exposes Chinese as `zh-Hans`.
+  Debug `en-XA`/`ar-XB` pseudolocales are not release locales.
 - Before enabling an Android locale, remove or map remaining hard-coded
   user-facing Kotlin messages for that localized surface. Do not translate raw
   Go error text as source copy.
+- Operation status, progress detail, and errors cross the display boundary as
+  stable codes plus typed arguments. Compose and the foreground notification
+  use the same resource-backed renderer; raw Go/JVM status and error text stays
+  diagnostic-only. Unknown status falls back to localized **Working**, and
+  malformed/unknown detail is hidden.
 - Use positional placeholders such as `%1$s` and `%1$d` so translators can
   reorder arguments.
 - Use `<plurals>` for counted strings. Do not write `file(s)`.
 - Mark non-translatable technical strings with `translatable="false"` when they
   are resource-backed.
 - Run Android pseudolocale checks before accepting broad UI localization.
+- The seven catalogs being structurally complete and packaged does not replace
+  native or near-native linguistic review or device rendering. German, French,
+  Spanish, Simplified Chinese, and Hindi still require those release gates.
 
 Weblate setup for Android should use:
 
@@ -479,3 +495,8 @@ Before enabling a native Android locale:
 - Android resources compile and the relevant UI passes pseudolocale checks.
 - Hard-coded Kotlin user messages for the localized surface have been
   externalized or explicitly mapped.
+- Status, detail, and error mappings use semantic resource-backed values; raw
+  diagnostic strings are not shown as translated UI.
+- Native or near-native linguistic review and real-device rendering cover text
+  expansion, notifications, font scale, Chinese line breaking, and Hindi
+  shaping. Packaging a locale does not waive this gate.

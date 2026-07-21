@@ -299,7 +299,7 @@ func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool
 
 ```go
 const (
-    CurrentVersion = "v2.16"
+    CurrentVersion = "v2.19"
     MaxCommentLen  = 99999
 )
 ```
@@ -308,7 +308,7 @@ const (
 
 ```go
 type VolumeHeader struct {
-    Version  string // "v2.16" or "v1.xx"
+    Version  string // "v2.19" or "v1.xx"
     Comments string // plaintext; NOT encrypted
     Flags    Flags
 
@@ -630,6 +630,67 @@ type ProgressFunc func(progress float32, info string)
 type StatusFunc   func(status string)
 type CancelFunc   func() bool
 ```
+
+---
+
+## mobile
+
+The `mobile` package is the gomobile bridge used by the native Android app. Any change to an
+exported method, type, or field requires rebuilding `android/app/libs/picocrypt-mobile.aar`; stale
+bindings do not contain the generated Kotlin/Java getters.
+
+### ProgressResult
+
+```go
+type ProgressResult struct {
+    Status                  string
+    StatusCode              string
+    StatusSpeedMiBPerSecond float64
+    StatusETA               string
+    Progress                float32
+    Info                    string
+    InfoCode                string
+    InfoCurrent             int64
+    InfoTotal               int64
+    Done                    bool
+    Error                   string
+    Code                    string
+}
+
+func GetProgress(operationID string) (*ProgressResult, error)
+```
+
+`Status`, `Info`, and `Error` are compatibility/diagnostic fields. Android display boundaries use
+the stable codes and typed arguments; they must not show raw backend text as localized UI copy.
+
+`StatusCode` is one of:
+
+```text
+NONE, UNKNOWN, STARTING, COMPLETED, CANCELLED, ERROR,
+COMPRESSING_FILES, GENERATING_VALUES, DERIVING_KEY, READING_KEYFILES,
+CALCULATING_VALUES, WRITING_VALUES, SPLITTING, RECOMBINING_CHUNKS,
+READING_VALUES, DUPLICATE_KEYFILES_WARNING, VERIFYING_INTEGRITY,
+MAC_VERIFICATION_FAILED_CONTINUING, REPAIRING_VERIFYING,
+INTEGRITY_VERIFIED_DECRYPTING, COMPARING_VALUES, UNZIPPING,
+ADDING_PLAUSIBLE_DENIABILITY, REMOVING_DENIABILITY_PROTECTION,
+COMPRESSING_RATE, ENCRYPTING_RATE, SPLITTING_RATE, RECOMBINING_RATE,
+VERIFYING_RATE, DECRYPTING_RATE, REPAIRING_RATE, UNPACKING_RATE,
+ADDING_DENIABILITY_RATE, REMOVING_DENIABILITY_RATE
+```
+
+Rate codes carry `StatusSpeedMiBPerSecond` and `StatusETA`. Unknown or malformed reporter text maps
+to `UNKNOWN`; Android falls back to localized **Working** rather than exposing the raw status.
+
+`InfoCode` is `NONE`, `PERCENT`, `ITEM_COUNT`, or `UNKNOWN`. `PERCENT` uses `Progress`;
+`ITEM_COUNT` uses `InfoCurrent` and `InfoTotal`. Malformed or unknown detail is hidden.
+
+`Code` is empty when there is no error, otherwise one of `AUTH_FAILED`, `DATA_CORRUPTED`,
+`CORRUPT_HEADER`, `FILE_NOT_FOUND`, `CANCELLED`, or `GENERIC`. Android maps these to resource-backed
+errors. The recovery contract is fail-closed: only `AUTH_FAILED` permits password retry, only
+`DATA_CORRUPTED` permits force decrypt, and corrupt headers are never force-decryptable.
+
+The operation state preserves the first terminal result; later polling cannot replace an already
+recorded cancellation, success, or failure.
 
 ---
 

@@ -1,3 +1,6 @@
-v2.18
-- Android release builds are prepared for F-Droid source and reproducible-build verification.
-- Updated Go image dependency with TIFF decoder security fixes.
+v2.19
+- Added German, French, Spanish, Simplified Chinese, and Hindi Android UI catalogs.
+- Localized Android operation status, progress, and errors without showing raw backend diagnostics.
+- Cancelled operations no longer enter the save flow; stale temporary files are removed at startup.
+- Compressed single-file exports use .zip.pcv names.
+- Android 7.0+ remains supported on 64-bit ARM and x86-64 devices.

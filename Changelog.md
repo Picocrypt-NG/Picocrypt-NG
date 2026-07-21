@@ -1,3 +1,20 @@
+# v2.19
+<ul>
+	<li>✓ <strong>Interface languages</strong>: desktop and Android now bundle English, Russian, German, French, Spanish, Simplified Chinese, and Hindi; the desktop has an in-app selector, Android follows the system or per-app language setting, and the CLI remains English-only</li>
+	<li>✓ <strong>Android status and errors</strong>: operation status is rendered from Android resources in both the app and foreground notification; progress details and typed error messages are also resource-backed, while raw Go and JVM details remain diagnostic-only</li>
+	<li>✓ <strong>Desktop GUI</strong>: polished the compact layout with icon toolbars, fixed-width controls, clearer readiness guidance, and contained long output/keyfile names; the non-ASCII password advisory now relayouts without clipping or cumulative window-size drift</li>
+	<li>✓ <strong>Compressed output names</strong>: automatically named compressed single-file outputs now use <code>.zip.pcv</code> in the CLI and Android app, including CLI standard input, so decrypted ZIP payloads retain a truthful <code>.zip</code> name; explicit CLI output paths remain unchanged</li>
+	<li>✓ <strong>Android reliability</strong>: stale internal temporary files are removed before the UI is shown, and cancelled operations no longer enter the successful save flow</li>
+	<li>✓ <strong>Android compatibility</strong>: Android 7.0+ remains supported, but v2.19 APKs are 64-bit-only for ARM64 and x86-64 devices; historical 32-bit APKs remain available with their original releases</li>
+	<li>✓ <strong>Desktop reliability</strong>: updated to Fyne 2.8 and made operation, folder-scan, opened-path, and mobile-import workers shut down cleanly instead of leaving background UI work behind</li>
+	<li>✓ <strong>Security guidance</strong>: aligned application and documentation wording with actual behavior, including plaintext-but-authenticated comments in v2 volumes, legacy v1 limitations, keyfiles, Paranoid mode, Reed-Solomon recovery limits, force-decrypt output, and browser constraints</li>
+	<li>✓ <strong>Security maintenance</strong>: updated the release toolchain to Go 1.26.5 with standard-library security fixes and refreshed pinned dependencies; volume layout and cryptographic algorithms remain unchanged</li>
+	<li>✓ <strong>Release tooling</strong>: updated Cosign to 3.1.2 and switched Windows Resource Hacker downloads to the official 5.2.8 installer with bounded retries and SHA-256 verification before use</li>
+	<li>✓ <strong>CI integrity</strong>: all active <code>actions/checkout</code> references are pinned to the exact v7.0.1 commit</li>
+	<li>✓ <strong>Release integrity</strong>: release workflows now refuse to overwrite existing GitHub release assets, and Android publication verifies the expected signer, version metadata, API floor, native architectures, expected APK set, and JNI contents before upload</li>
+	<li><strong>Windows signing pipeline</strong>: release workflows contain fail-closed SignPath Authenticode submission and verification for the GUI, current and legacy CLIs, embedded NSIS uninstaller, and final installer while retaining the existing Sigstore bundles and GitHub build provenance; production signing remains pending certificate issuance/import, a valid release-signing policy, and successful verification of a real signed artifact</li>
+</ul>
+
 # v2.18
 <ul>
 	<li>✓ <strong>Desktop GUI</strong>: fixed the Linux desktop layout and output theming so the compact window keeps controls/results readable and visually consistent</li>
