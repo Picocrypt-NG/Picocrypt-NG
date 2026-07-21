@@ -502,8 +502,9 @@ existing placeholder tests or leaking English diagnostics.
 
 ### Safe-stable version decision
 
-The dependency audit is evaluated as of 2026-07-20. Current executable pins
-already use the latest applicable stable releases for:
+The dependency audit is evaluated as of 2026-07-21. Considered individually,
+the current executable pins already use the latest applicable stable releases
+for:
 
 - Go 1.26.5;
 - Gradle 9.6.1;
@@ -518,12 +519,19 @@ already use the latest applicable stable releases for:
   setup-java 5.6.0 merged through PRs #236 and #237.
 
 AGP 9.4.0 alpha builds and Kotlin 2.4.20 Beta are prerelease and are excluded.
-Gradle 9.6.1 exceeds AGP 9.3.0's documented Gradle 9.5.0 minimum. No Android
-library version is changed merely to produce churn.
+These individual version results do not mean that the combined Android
+toolchain is inside Kotlin's fully supported matrix. JetBrains documents Kotlin
+2.4.0-2.4.10 as fully supported through Gradle 9.5.0 and AGP 9.1.0, while this
+repository uses Gradle 9.6.1 and AGP 9.3.0. JetBrains permits newer versions but
+warns that deprecations or unavailable new features may result. Complete Android
+build and test gates cover this compatibility caveat; it is not evidence for an
+unjustified downgrade of otherwise stable pins. No Android library version is
+changed merely to produce churn.
 
 Primary release evidence is the official
 [AGP 9.3.0 compatibility table](https://developer.android.com/build/releases/agp-9-3-0-release-notes),
 [Gradle 9.6.1 release notes](https://docs.gradle.org/9.6.1/release-notes.html),
+[Kotlin Gradle compatibility table](https://kotlinlang.org/docs/gradle-configure-project.html),
 and [Kotlin release history](https://kotlinlang.org/docs/releases.html).
 
 ### Go module decision
