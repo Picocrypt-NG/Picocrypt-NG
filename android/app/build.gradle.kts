@@ -36,6 +36,13 @@ android {
     namespace = "io.github.picocrypt_ng.picocrypt_ng"
     compileSdk = 37
 
+    androidResources {
+        generateLocaleConfig = true
+        localeFilters += listOf(
+            "en", "ru", "de", "fr", "es", "b+zh+Hans", "hi",
+        )
+    }
+
     defaultConfig {
         applicationId = "io.github.picocrypt_ng.picocrypt_ng"
         minSdk = 24
@@ -115,6 +122,10 @@ android {
             )
         }
     }
+}
+
+tasks.matching { it.name == "testDebugUnitTest" }.configureEach {
+    dependsOn("processReleaseResources")
 }
 
 kotlin {

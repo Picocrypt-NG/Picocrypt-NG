@@ -1,0 +1,185 @@
+<resources>
+    <!-- File Card -->
+    <string name="choose_file">Choisir un fichier</string>
+    <string name="copying_file">Copie du fichier…</string>
+    <string name="choose_file_description">Choisir un fichier</string>
+    <string name="choose_single_file">Fichier unique</string>
+    <string name="choose_multiple_files">Plusieurs fichiers</string>
+    <string name="choose_folder">Dossier</string>
+    <plurals name="selected_files_count">
+        <item quantity="one">%1$d fichier sélectionné</item>
+        <item quantity="many">%1$d fichiers sélectionnés</item>
+        <item quantity="other">%1$d fichiers sélectionnés</item>
+    </plurals>
+    <!-- Password Card -->
+    <string name="password">Mot de passe</string>
+    <string name="confirm_password">Confirmer le mot de passe</string>
+    <string name="enter_password">Saisir un mot de passe</string>
+    <string name="passwords_must_match">Les mots de passe doivent être identiques</string>
+    <string name="hide_password">Masquer le mot de passe</string>
+    <string name="show_password">Afficher le mot de passe</string>
+    <!-- Comments Card -->
+    <string name="comments">Commentaires</string>
+    <string name="comments_not_readable">Impossible de prévisualiser les commentaires en mode de déni plausible</string>
+    <string name="comments_disabled_deniability">Désactivé en mode de déni plausible</string>
+    <string name="comments_plaintext_warning">Les commentaires sont des métadonnées en clair. N’y placez aucun secret.</string>
+    <!-- Keyfile Card -->
+    <string name="keyfiles">Fichiers-clés</string>
+    <plurals name="keyfiles_count">
+        <item quantity="one">%1$d fichier-clé</item>
+        <item quantity="many">%1$d fichiers-clés</item>
+        <item quantity="other">%1$d fichiers-clés</item>
+    </plurals>
+    <plurals name="keyfiles_required_count">
+        <item quantity="one">%1$d fichier-clé requis</item>
+        <item quantity="many">%1$d fichiers-clés requis</item>
+        <item quantity="other">%1$d fichiers-clés requis</item>
+    </plurals>
+    <string name="add">Ajouter</string>
+    <string name="new_keyfile">Nouveau</string>
+    <string name="clear">Effacer</string>
+    <string name="copying">Copie…</string>
+    <string name="creating">Création…</string>
+    <string name="require_this_order">Respecter cet ordre</string>
+    <string name="error_creating_keyfile">Erreur lors de la création du fichier-clé</string>
+    <string name="keyfile_write_failed">Impossible d’écrire le fichier-clé à l’emplacement sélectionné</string>
+    <string name="keyfile_create_failed">Impossible de créer le fichier-clé : %1$s</string>
+    <string name="keyfiles_required_warning">Des fichiers-clés sont requis pour ce volume chiffré</string>
+    <string name="keyfile_order_matters">Utilisez les fichiers-clés dans l’ordre requis</string>
+    <!-- Advanced Card -->
+    <string name="advanced_settings">Paramètres avancés (%1$d)</string>
+    <string name="reed_solomon">Reed-Solomon</string>
+    <string name="paranoid">Mode paranoïaque</string>
+    <string name="deniability">Déni plausible</string>
+    <string name="compress">Compresser</string>
+    <string name="expand_or_collapse">Développer ou réduire</string>
+    <!-- Decrypt Options Card -->
+    <string name="decrypt_options">Options de déchiffrement (%1$d)</string>
+    <string name="verify_first">Vérifier d’abord l’intégrité</string>
+    <!-- Decryption Info Card -->
+    <string name="encryption_settings">Paramètres de chiffrement</string>
+    <string name="keyfiles_section">Fichiers-clés</string>
+    <string name="required">Requis : %1$s</string>
+    <string name="yes">Oui</string>
+    <string name="no">Non</string>
+    <string name="order_matters">Ordre important : %1$s</string>
+    <string name="advanced_settings_section">Paramètres avancés</string>
+    <string name="reed_solomon_status">Reed-Solomon : %1$s</string>
+    <string name="deniability_status">Déni plausible : %1$s</string>
+    <string name="paranoid_mode_status">Mode paranoïaque : %1$s</string>
+    <string name="enabled">Activé</string>
+    <string name="disabled">Désactivé</string>
+    <string name="unknown">Inconnu</string>
+    <string name="deniability_note">Ce volume chiffré utilise le mode de déni plausible. Les métadonnées de l’en-tête ne peuvent pas être prévisualisées avant le déchiffrement ; certains paramètres sont inconnus.</string>
+    <string name="comments_section">Commentaires</string>
+    <string name="no_comments">Aucun commentaire</string>
+    <!-- Work Button -->
+    <string name="encrypt_file">Chiffrer le fichier</string>
+    <string name="decrypt_file">Déchiffrer le fichier</string>
+    <string name="processing">Traitement…</string>
+    <!-- Progress Card -->
+    <string name="encrypting">Chiffrement…</string>
+    <string name="decrypting">Déchiffrement…</string>
+    <string name="cancel">Annuler</string>
+    <string name="data_corruption_detected">Corruption de données détectée</string>
+    <string name="force_decrypt_warning">Le contrôle d’intégrité du volume chiffré a échoué. Le déchiffrement forcé conserve une sortie non vérifiée, qui peut être partiellement ou entièrement corrompue.</string>
+    <string name="force_decrypt">Forcer le déchiffrement</string>
+    <string name="authentication_error">Erreur d’authentification</string>
+    <string name="retry">Réessayer</string>
+    <string name="error">Erreur</string>
+    <string name="unknown_error_occurred">Une erreur inconnue s’est produite</string>
+    <string name="close">Fermer</string>
+    <string name="operation_cancelled">Opération annulée</string>
+    <string name="operation_cancelled_message">Aucune sortie n’a été finalisée. Les fichiers temporaires seront nettoyés.</string>
+    <string name="encryption_complete">Chiffrement terminé</string>
+    <string name="decryption_complete">Déchiffrement terminé</string>
+    <string name="operation_completed_successfully">Opération terminée. Enregistrez la sortie pour la conserver.</string>
+    <string name="error_saving_file">Erreur lors de l’enregistrement du fichier : %1$s</string>
+    <string name="save">Enregistrer</string>
+    <string name="discard_output">Supprimer la sortie</string>
+    <!-- Error Dialog -->
+    <string name="ok">OK</string>
+    <!-- Logo Bar -->
+    <string name="logo_icon">icône du logo</string>
+    <string name="logo_text">texte du logo</string>
+    <!-- Privacy & Security -->
+    <string name="privacy_security">Confidentialité et sécurité</string>
+    <string name="prevent_screenshots">Empêcher les captures d’écran</string>
+    <string name="prevent_screenshots_description">Bloque les captures et les enregistrements d’écran, et masque le contenu de l’application dans l’aperçu des applications récentes.</string>
+    <!-- Foreground Service -->
+    <string name="fgs_channel_name">Progression de l’opération</string>
+    <string name="fgs_encrypting">Chiffrement</string>
+    <string name="fgs_decrypting">Déchiffrement</string>
+    <string name="fgs_working">Traitement…</string>
+    <!-- Operation status display text keyed by stable mobile status codes. -->
+    <string name="status_starting">Démarrage…</string>
+    <string name="status_completed">Terminé</string>
+    <string name="status_cancelled">Annulé</string>
+    <string name="status_error">Erreur</string>
+    <string name="status_compressing_files">Compression des fichiers…</string>
+    <string name="status_generating_values">Génération des valeurs…</string>
+    <string name="status_deriving_key">Dérivation de la clé…</string>
+    <string name="status_reading_keyfiles">Lecture des fichiers-clés…</string>
+    <string name="status_calculating_values">Calcul des valeurs…</string>
+    <string name="status_writing_values">Écriture des valeurs…</string>
+    <string name="status_splitting">Fractionnement…</string>
+    <string name="status_recombining_chunks">Recombinaison des parties…</string>
+    <string name="status_reading_values">Lecture des valeurs…</string>
+    <string name="status_duplicate_keyfiles_warning">Avertissement : fichiers-clés en double détectés (les clés s’annulent)…</string>
+    <string name="status_verifying_integrity">Vérification de l’intégrité (phase 1 sur 2)…</string>
+    <string name="status_mac_verification_failed_continuing">Échec de la vérification MAC, poursuite malgré tout…</string>
+    <string name="status_repairing_verifying">Réparation (vérification)…</string>
+    <string name="status_integrity_verified_decrypting">Intégrité vérifiée, déchiffrement…</string>
+    <string name="status_comparing_values">Comparaison des valeurs…</string>
+    <string name="status_unzipping">Décompression…</string>
+    <string name="status_adding_plausible_deniability">Ajout du déni plausible…</string>
+    <string name="status_removing_deniability_protection">Suppression de la protection de déni plausible…</string>
+    <string name="status_compressing_rate">Compression à %1$.2f MiB/s (ETA : %2$s)</string>
+    <string name="status_encrypting_rate">Chiffrement à %1$.2f MiB/s (ETA : %2$s)</string>
+    <string name="status_splitting_rate">Fractionnement à %1$.2f MiB/s (ETA : %2$s)</string>
+    <string name="status_recombining_rate">Recombinaison à %1$.2f MiB/s (ETA : %2$s)</string>
+    <string name="status_verifying_rate">Vérification à %1$.2f MiB/s (ETA : %2$s)</string>
+    <string name="status_decrypting_rate">Déchiffrement à %1$.2f MiB/s (ETA : %2$s)</string>
+    <string name="status_repairing_rate">Réparation à %1$.2f MiB/s (ETA : %2$s)</string>
+    <string name="status_unpacking_rate">Décompression à %1$.2f MiB/s (ETA : %2$s)</string>
+    <string name="status_adding_deniability_rate">Ajout du déni plausible à %1$.2f MiB/s (ETA : %2$s)</string>
+    <string name="status_removing_deniability_rate">Suppression du déni plausible à %1$.2f MiB/s (ETA : %2$s)</string>
+    <string name="progress_percent">%1$.2f%%</string>
+    <plurals name="progress_item_count">
+        <item quantity="one">%1$d élément sur %2$d</item>
+        <item quantity="many">%1$d éléments sur %2$d</item>
+        <item quantity="other">%1$d éléments sur %2$d</item>
+    </plurals>
+    <!-- Stable error display boundary -->
+    <string name="error_auth_failed">Échec de l’authentification. Vérifiez le mot de passe, les fichiers-clés et leur ordre.</string>
+    <string name="error_data_corrupted">Échec du contrôle d’intégrité. La sortie n’est pas vérifiée et peut être corrompue.</string>
+    <string name="error_corrupt_header">L’en-tête du volume chiffré est endommagé ou invalide.</string>
+    <string name="error_file_not_found">Fichier introuvable ou inaccessible.</string>
+    <string name="error_operation_failed">L’opération a échoué.</string>
+    <string name="error_unknown">Une erreur inconnue s’est produite.</string>
+    <string name="error_reason_permission_denied">Autorisation refusée.</string>
+    <string name="error_reason_file_not_found">Fichier introuvable.</string>
+    <string name="error_reason_insufficient_storage">Espace de stockage insuffisant.</string>
+    <string name="error_reason_io">Erreur d’entrée/sortie.</string>
+    <string name="error_reason_unknown">Cause inconnue.</string>
+    <string name="error_operation_start_failed">Impossible de démarrer l’opération.</string>
+    <string name="error_no_active_operation">Aucune opération active.</string>
+    <string name="error_no_operation_to_retry">Aucune opération active à réessayer.</string>
+    <string name="error_operation_data_unavailable">Les données de l’opération ne sont pas disponibles pour réessayer.</string>
+    <string name="error_decrypt_retry_only">Seules les opérations de déchiffrement peuvent être relancées avec le déchiffrement forcé.</string>
+    <string name="error_no_file_selected">Veuillez choisir un fichier.</string>
+    <string name="error_invalid_password">Veuillez saisir un mot de passe.</string>
+    <string name="error_passwords_mismatch">Les mots de passe ne correspondent pas.</string>
+    <string name="error_split_volume_not_supported">Les volumes fractionnés ne sont pas pris en charge sur Android. Recombinez d’abord les parties sur votre ordinateur, puis transférez l’unique fichier %1$s.</string>
+    <string name="error_copy_failed">Impossible de copier le fichier.</string>
+    <string name="error_save_failed">Impossible d’enregistrer le fichier.</string>
+    <string name="error_delete_failed">Impossible de supprimer le fichier.</string>
+    <string name="error_insufficient_storage">Espace libre insuffisant pour chiffrer cette sélection. Requis : %1$d octets ; disponible : %2$d octets.</string>
+    <string name="error_could_not_open_folder">Impossible d’ouvrir le dossier.</string>
+    <string name="error_selected_folder_empty">Le dossier sélectionné est vide.</string>
+    <string name="error_read_folder_failed">Impossible de lire le dossier : %1$s</string>
+    <string name="error_could_not_open_selected_file">Impossible d’ouvrir l’un des fichiers sélectionnés.</string>
+    <string name="error_no_files_selected">Aucun fichier sélectionné.</string>
+    <string name="error_copy_files_failed">Impossible de copier les fichiers : %1$s</string>
+    <string name="error_detect_operation_type_failed">Impossible de détecter le type d’opération.</string>
+</resources>

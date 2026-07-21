@@ -1,0 +1,177 @@
+<resources>
+    <!-- File Card -->
+    <string name="choose_file">选择文件</string>
+    <string name="copying_file">正在复制文件…</string>
+    <string name="choose_file_description">选择文件</string>
+    <string name="choose_single_file">单个文件</string>
+    <string name="choose_multiple_files">多个文件</string>
+    <string name="choose_folder">文件夹</string>
+    <plurals name="selected_files_count">
+        <item quantity="other">已选择 %1$d 个文件</item>
+    </plurals>
+    <!-- Password Card -->
+    <string name="password">密码</string>
+    <string name="confirm_password">确认密码</string>
+    <string name="enter_password">输入密码</string>
+    <string name="passwords_must_match">两次输入的密码必须一致</string>
+    <string name="hide_password">隐藏密码</string>
+    <string name="show_password">显示密码</string>
+    <!-- Comments Card -->
+    <string name="comments">备注</string>
+    <string name="comments_not_readable">可否认性模式下无法预览备注</string>
+    <string name="comments_disabled_deniability">可否认性模式下已禁用</string>
+    <string name="comments_plaintext_warning">备注是明文元数据。请勿在此填写秘密信息。</string>
+    <!-- Keyfile Card -->
+    <string name="keyfiles">密钥文件</string>
+    <plurals name="keyfiles_count">
+        <item quantity="other">%1$d 个密钥文件</item>
+    </plurals>
+    <plurals name="keyfiles_required_count">
+        <item quantity="other">需要 %1$d 个密钥文件</item>
+    </plurals>
+    <string name="add">添加</string>
+    <string name="new_keyfile">新建</string>
+    <string name="clear">清除</string>
+    <string name="copying">正在复制…</string>
+    <string name="creating">正在创建…</string>
+    <string name="require_this_order">要求按此顺序使用</string>
+    <string name="error_creating_keyfile">创建密钥文件时出错</string>
+    <string name="keyfile_write_failed">无法将密钥文件写入所选位置</string>
+    <string name="keyfile_create_failed">无法创建密钥文件：%1$s</string>
+    <string name="keyfiles_required_warning">此加密卷需要密钥文件</string>
+    <string name="keyfile_order_matters">请按要求的顺序使用密钥文件</string>
+    <!-- Advanced Card -->
+    <string name="advanced_settings">高级设置（%1$d）</string>
+    <string name="reed_solomon">Reed-Solomon</string>
+    <string name="paranoid">偏执模式</string>
+    <string name="deniability">可否认性</string>
+    <string name="compress">压缩</string>
+    <string name="expand_or_collapse">展开或折叠</string>
+    <!-- Decrypt Options Card -->
+    <string name="decrypt_options">解密选项（%1$d）</string>
+    <string name="verify_first">先验证完整性</string>
+    <!-- Decryption Info Card -->
+    <string name="encryption_settings">加密设置</string>
+    <string name="keyfiles_section">密钥文件</string>
+    <string name="required">需要：%1$s</string>
+    <string name="yes">是</string>
+    <string name="no">否</string>
+    <string name="order_matters">顺序很重要：%1$s</string>
+    <string name="advanced_settings_section">高级设置</string>
+    <string name="reed_solomon_status">Reed-Solomon：%1$s</string>
+    <string name="deniability_status">可否认性：%1$s</string>
+    <string name="paranoid_mode_status">偏执模式：%1$s</string>
+    <string name="enabled">已启用</string>
+    <string name="disabled">已禁用</string>
+    <string name="unknown">未知</string>
+    <string name="deniability_note">此加密卷使用可否认性模式。解密前无法预览标头元数据；部分设置未知。</string>
+    <string name="comments_section">备注</string>
+    <string name="no_comments">无备注</string>
+    <!-- Work Button -->
+    <string name="encrypt_file">加密文件</string>
+    <string name="decrypt_file">解密文件</string>
+    <string name="processing">正在处理…</string>
+    <!-- Progress Card -->
+    <string name="encrypting">正在加密…</string>
+    <string name="decrypting">正在解密…</string>
+    <string name="cancel">取消</string>
+    <string name="data_corruption_detected">检测到数据损坏</string>
+    <string name="force_decrypt_warning">加密卷未通过完整性检查。强制解密会保留未经验证的输出，该输出可能部分或完全损坏。</string>
+    <string name="force_decrypt">强制解密</string>
+    <string name="authentication_error">身份验证错误</string>
+    <string name="retry">重试</string>
+    <string name="error">错误</string>
+    <string name="unknown_error_occurred">发生未知错误</string>
+    <string name="close">关闭</string>
+    <string name="operation_cancelled">操作已取消</string>
+    <string name="operation_cancelled_message">没有完成任何输出。临时文件将被清理。</string>
+    <string name="encryption_complete">加密完成</string>
+    <string name="decryption_complete">解密完成</string>
+    <string name="operation_completed_successfully">操作已完成。请保存输出以便保留。</string>
+    <string name="error_saving_file">保存文件时出错：%1$s</string>
+    <string name="save">保存</string>
+    <string name="discard_output">丢弃输出</string>
+    <!-- Error Dialog -->
+    <string name="ok">确定</string>
+    <!-- Logo Bar -->
+    <string name="logo_icon">徽标图标</string>
+    <string name="logo_text">徽标文字</string>
+    <!-- Privacy & Security -->
+    <string name="privacy_security">隐私与安全</string>
+    <string name="prevent_screenshots">禁止截屏</string>
+    <string name="prevent_screenshots_description">阻止截屏和屏幕录制，并在最近使用的应用预览中隐藏应用内容。</string>
+    <!-- Foreground Service -->
+    <string name="fgs_channel_name">操作进度</string>
+    <string name="fgs_encrypting">正在加密</string>
+    <string name="fgs_decrypting">正在解密</string>
+    <string name="fgs_working">正在处理…</string>
+    <!-- Operation status display text keyed by stable mobile status codes. -->
+    <string name="status_starting">正在启动…</string>
+    <string name="status_completed">已完成</string>
+    <string name="status_cancelled">已取消</string>
+    <string name="status_error">错误</string>
+    <string name="status_compressing_files">正在压缩文件…</string>
+    <string name="status_generating_values">正在生成值…</string>
+    <string name="status_deriving_key">正在派生密钥…</string>
+    <string name="status_reading_keyfiles">正在读取密钥文件…</string>
+    <string name="status_calculating_values">正在计算值…</string>
+    <string name="status_writing_values">正在写入值…</string>
+    <string name="status_splitting">正在分卷…</string>
+    <string name="status_recombining_chunks">正在合并分卷…</string>
+    <string name="status_reading_values">正在读取值…</string>
+    <string name="status_duplicate_keyfiles_warning">警告：检测到重复的密钥文件（密钥会相互抵消）…</string>
+    <string name="status_verifying_integrity">正在验证完整性（第 1 遍，共 2 遍）…</string>
+    <string name="status_mac_verification_failed_continuing">MAC 验证失败，仍将继续…</string>
+    <string name="status_repairing_verifying">正在修复（验证）…</string>
+    <string name="status_integrity_verified_decrypting">完整性已验证，正在解密…</string>
+    <string name="status_comparing_values">正在比较值…</string>
+    <string name="status_unzipping">正在解压…</string>
+    <string name="status_adding_plausible_deniability">正在添加可否认性…</string>
+    <string name="status_removing_deniability_protection">正在移除可否认性保护…</string>
+    <string name="status_compressing_rate">正在以 %1$.2f MiB/s 压缩（ETA：%2$s）</string>
+    <string name="status_encrypting_rate">正在以 %1$.2f MiB/s 加密（ETA：%2$s）</string>
+    <string name="status_splitting_rate">正在以 %1$.2f MiB/s 分卷（ETA：%2$s）</string>
+    <string name="status_recombining_rate">正在以 %1$.2f MiB/s 合并分卷（ETA：%2$s）</string>
+    <string name="status_verifying_rate">正在以 %1$.2f MiB/s 验证（ETA：%2$s）</string>
+    <string name="status_decrypting_rate">正在以 %1$.2f MiB/s 解密（ETA：%2$s）</string>
+    <string name="status_repairing_rate">正在以 %1$.2f MiB/s 修复（ETA：%2$s）</string>
+    <string name="status_unpacking_rate">正在以 %1$.2f MiB/s 解压（ETA：%2$s）</string>
+    <string name="status_adding_deniability_rate">正在以 %1$.2f MiB/s 添加可否认性（ETA：%2$s）</string>
+    <string name="status_removing_deniability_rate">正在以 %1$.2f MiB/s 移除可否认性（ETA：%2$s）</string>
+    <string name="progress_percent">%1$.2f%%</string>
+    <plurals name="progress_item_count">
+        <item quantity="other">%1$d/%2$d 项</item>
+    </plurals>
+    <!-- Stable error display boundary -->
+    <string name="error_auth_failed">身份验证失败。请检查密码、密钥文件及其顺序。</string>
+    <string name="error_data_corrupted">完整性检查失败。输出未经验证，可能已损坏。</string>
+    <string name="error_corrupt_header">加密卷标头已损坏或无效。</string>
+    <string name="error_file_not_found">文件不存在或无法访问。</string>
+    <string name="error_operation_failed">操作失败。</string>
+    <string name="error_unknown">发生未知错误。</string>
+    <string name="error_reason_permission_denied">权限被拒绝。</string>
+    <string name="error_reason_file_not_found">文件不存在。</string>
+    <string name="error_reason_insufficient_storage">存储空间不足。</string>
+    <string name="error_reason_io">输入/输出错误。</string>
+    <string name="error_reason_unknown">未知原因。</string>
+    <string name="error_operation_start_failed">无法启动操作。</string>
+    <string name="error_no_active_operation">没有正在进行的操作。</string>
+    <string name="error_no_operation_to_retry">没有可重试的操作。</string>
+    <string name="error_operation_data_unavailable">无法获取用于重试的操作数据。</string>
+    <string name="error_decrypt_retry_only">只有解密操作可以使用强制解密重试。</string>
+    <string name="error_no_file_selected">请选择文件。</string>
+    <string name="error_invalid_password">请输入密码。</string>
+    <string name="error_passwords_mismatch">密码不一致。</string>
+    <string name="error_split_volume_not_supported">Android 不支持分卷。请先在计算机上合并分卷，然后传输单个 %1$s 文件。</string>
+    <string name="error_copy_failed">无法复制文件。</string>
+    <string name="error_save_failed">无法保存文件。</string>
+    <string name="error_delete_failed">无法删除文件。</string>
+    <string name="error_insufficient_storage">没有足够的可用空间来加密所选内容。需要 %1$d 字节；可用 %2$d 字节。</string>
+    <string name="error_could_not_open_folder">无法打开文件夹。</string>
+    <string name="error_selected_folder_empty">所选文件夹为空。</string>
+    <string name="error_read_folder_failed">无法读取文件夹：%1$s</string>
+    <string name="error_could_not_open_selected_file">无法打开所选文件。</string>
+    <string name="error_no_files_selected">未选择文件。</string>
+    <string name="error_copy_files_failed">无法复制文件：%1$s</string>
+    <string name="error_detect_operation_type_failed">无法检测操作类型。</string>
+</resources>
