@@ -64,6 +64,23 @@ func TestReleaseUploadsNeverOverwriteExistingAssets(t *testing.T) {
 
 func TestExternalGitHubActionsPinnedToFullSHAWithVersionComment(t *testing.T) {
 	actionRef := regexp.MustCompile(`uses:\s*([^@\s]+)@([0-9a-f]{40})(?:\s+#\s+v[0-9][^\s]*)?$`)
+	const checkoutUses = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+	const checkoutRef = checkoutUses + " # v7.0.1"
+	checkoutCount := 0
+	checkSteps := func(owner string, steps []workflowStep) int {
+		t.Helper()
+		count := 0
+		for _, step := range steps {
+			if !strings.HasPrefix(step.Uses, "actions/checkout@") {
+				continue
+			}
+			count++
+			if step.Uses != checkoutUses {
+				t.Fatalf("%s checkout uses = %q, want %q", owner, step.Uses, checkoutUses)
+			}
+		}
+		return count
+	}
 	workflowFiles, err := filepath.Glob(filepath.Join(repoRoot(t), ".github", "workflows", "*.yml"))
 	if err != nil {
 		t.Fatalf("glob workflows: %v", err)
@@ -81,18 +98,43 @@ func TestExternalGitHubActionsPinnedToFullSHAWithVersionComment(t *testing.T) {
 		if err != nil {
 			t.Fatalf("rel path for %s: %v", absPath, err)
 		}
+		activeCheckoutCount := 0
+		if strings.HasPrefix(relPath, filepath.Join(".github", "workflows")+string(filepath.Separator)) {
+			workflow := mustReadWorkflowDoc(t, relPath)
+			for jobName, job := range workflow.Jobs {
+				activeCheckoutCount += checkSteps(relPath+" job "+jobName, job.Steps)
+			}
+		} else {
+			action := mustReadCompositeActionDoc(t, relPath)
+			activeCheckoutCount += checkSteps(relPath, action.Runs.Steps)
+		}
+		checkoutCount += activeCheckoutCount
 		content := mustReadRepoFile(t, relPath)
+		checkoutLineCount := 0
 		for lineNo, line := range strings.Split(content, "\n") {
-			if !strings.Contains(line, "uses:") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.Contains(trimmed, "uses:") {
 				continue
 			}
-			if strings.Contains(line, "uses: ./") {
+			if strings.Contains(trimmed, "uses: ./") {
 				continue
 			}
-			if !actionRef.MatchString(strings.TrimSpace(line)) {
-				t.Fatalf("%s:%d external action must use a 40-hex SHA and same-line version comment, got %q", relPath, lineNo+1, strings.TrimSpace(line))
+			if strings.Contains(trimmed, "uses: actions/checkout@") {
+				if got := strings.TrimPrefix(trimmed, "- "); got != "uses: "+checkoutRef {
+					t.Fatalf("%s:%d checkout ref = %q, want %q", relPath, lineNo+1, got, "uses: "+checkoutRef)
+				}
+				checkoutLineCount++
+			}
+			if !actionRef.MatchString(trimmed) {
+				t.Fatalf("%s:%d external action must use a 40-hex SHA and same-line version comment, got %q", relPath, lineNo+1, trimmed)
 			}
 		}
+		if checkoutLineCount != activeCheckoutCount {
+			t.Fatalf("%s contains %d checkout uses lines but %d active checkout steps", relPath, checkoutLineCount, activeCheckoutCount)
+		}
+	}
+	if checkoutCount == 0 {
+		t.Fatal("no active actions/checkout references found")
 	}
 }
 
