@@ -1110,7 +1110,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "3583",
 			target:   "google_apis",
-			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest",
+			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest",
 		},
 		// Activity security and Compose state must work on the target-SDK runtime.
 		36: {
@@ -1118,7 +1118,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "6144",
 			target:   "default",
-			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.ui.components.NewKeyfileLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
+			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.NewKeyfileLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
 		},
 	}
 	seen := make(map[int]struct{}, len(wantByAPI))
@@ -1618,6 +1618,7 @@ func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	mustContain(t, content, "connectedDebugAndroidTest")
 	mustContain(t, content, "PasswordCardTest")
 	mustContain(t, content, "ProgressCardTest")
+	mustContain(t, content, "OperationNotificationTest")
 	mustContain(t, content, "NewKeyfileLifecycleTest")
 	mustContain(t, content, "OperationManagerIntegrationTest")
 	mustNotContain(t, content, "connectedDebugAndroidTest \\")

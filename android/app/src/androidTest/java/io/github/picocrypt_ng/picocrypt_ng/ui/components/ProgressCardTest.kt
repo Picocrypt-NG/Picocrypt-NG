@@ -49,6 +49,41 @@ class ProgressCardTest {
     }
 
     @Test
+    fun progressCard_rendersLocalizedStructuredStatusWithoutWireCode() {
+        val application = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val mainViewModel = MainViewModel(application, androidx.lifecycle.SavedStateHandle())
+        val operationViewModel = OperationViewModel()
+        val status = OperationStatusData(
+            code = OperationStatus.ENCRYPTING_RATE,
+            speedMiBPerSecond = 12.34,
+            eta = "01:02:03",
+        )
+        val originalState = swapOperationState(
+            TestDataBuilders.createOperationState(
+                type = OperationType.ENCRYPT,
+                status = status,
+                done = false,
+            )
+        )
+
+        try {
+            composeTestRule.setContent {
+                ProgressCard(
+                    mainViewModel = mainViewModel,
+                    operationViewModel = operationViewModel,
+                )
+            }
+
+            composeTestRule.onNodeWithText(
+                application.getString(R.string.status_encrypting_rate, 12.34, "01:02:03")
+            ).assertIsDisplayed()
+            composeTestRule.onNodeWithText(OperationStatus.ENCRYPTING_RATE).assertDoesNotExist()
+        } finally {
+            restoreOperationState(originalState)
+        }
+    }
+
+    @Test
     fun progressCard_shows_retry_dialog_for_password_errors() {
         val application = ApplicationProvider.getApplicationContext<android.app.Application>()
         val savedStateHandle = androidx.lifecycle.SavedStateHandle()
@@ -73,7 +108,10 @@ class ProgressCardTest {
 
             composeTestRule.onNodeWithText(application.getString(R.string.retry)).assertIsDisplayed()
             composeTestRule.onNodeWithText(application.getString(R.string.cancel)).assertIsDisplayed()
-            composeTestRule.onNodeWithText("Incorrect password").assertIsDisplayed()
+            composeTestRule.onNodeWithText(
+                application.getString(R.string.error_auth_failed)
+            ).assertIsDisplayed()
+            composeTestRule.onNodeWithText("Incorrect password").assertDoesNotExist()
         } finally {
             restoreOperationState(originalState)
         }
@@ -105,7 +143,10 @@ class ProgressCardTest {
             composeTestRule.onNodeWithText(application.getString(R.string.force_decrypt)).assertIsDisplayed()
             composeTestRule.onNodeWithText(application.getString(R.string.cancel)).assertIsDisplayed()
             composeTestRule.onNodeWithText(application.getString(R.string.data_corruption_detected)).assertIsDisplayed()
-            composeTestRule.onNodeWithText("Ciphertext corrupted").assertIsDisplayed()
+            composeTestRule.onNodeWithText(
+                application.getString(R.string.error_data_corrupted)
+            ).assertIsDisplayed()
+            composeTestRule.onNodeWithText("Ciphertext corrupted").assertDoesNotExist()
         } finally {
             restoreOperationState(originalState)
         }

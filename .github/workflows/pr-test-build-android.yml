@@ -134,7 +134,7 @@ jobs:
         # maximum headroom for the fixed 1 GiB Argon2id allocation.
         emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -memory 3583 -cores 4 -camera-back none -camera-front none
         working-directory: android
-        script: ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_then_decrypt_recovers_the_original_bytes,io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest
+        script: ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_then_decrypt_recovers_the_original_bytes,io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest
 
     - name: Run target SDK crypto and UI suites (API 36)
       uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
@@ -154,7 +154,7 @@ jobs:
         # (lowmemorykiller kills the test process) mid crypto roundtrip.
         emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -memory 6144 -cores 4 -camera-back none -camera-front none
         working-directory: android
-        script: ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_then_decrypt_recovers_the_original_bytes,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.ui.components.NewKeyfileLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest
+        script: ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_then_decrypt_recovers_the_original_bytes,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.NewKeyfileLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest
 
     - name: Upload instrumented test report
       if: always()

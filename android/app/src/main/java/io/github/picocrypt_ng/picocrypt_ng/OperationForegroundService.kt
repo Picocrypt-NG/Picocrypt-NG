@@ -25,6 +25,40 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+private const val OPERATION_NOTIFICATION_CHANNEL_ID = "operation_progress"
+
+internal fun buildOperationNotification(
+    context: Context,
+    type: OperationType?,
+    status: OperationStatusData,
+    detail: OperationProgressDetail,
+    progress: Float,
+): Notification {
+    val displayText = renderOperationStatus(context, status, detail, progress)
+    val title = when (type) {
+        OperationType.ENCRYPT -> context.getString(R.string.fgs_encrypting)
+        OperationType.DECRYPT -> context.getString(R.string.fgs_decrypting)
+        null -> context.getString(R.string.fgs_working)
+    }
+    val pendingIntent = PendingIntent.getActivity(
+        context,
+        0,
+        Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        },
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+    return NotificationCompat.Builder(context, OPERATION_NOTIFICATION_CHANNEL_ID)
+        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setContentTitle(title)
+        .setContentText(displayText.status)
+        .setProgress(100, (progress * 100).toInt(), false)
+        .setPriority(NotificationCompat.PRIORITY_LOW)
+        .setOngoing(true)
+        .setContentIntent(pendingIntent)
+        .build()
+}
+
 /**
  * Foreground service (type dataSync) that hosts an active encrypt/decrypt operation so it
  * survives the app being backgrounded.
@@ -51,7 +85,13 @@ class OperationForegroundService : Service() {
                 } else {
                     notificationManager().notify(
                         NOTIFICATION_ID,
-                        buildNotification(state.type, state.status, state.detail, state.progress)
+                        buildOperationNotification(
+                            this,
+                            state.type,
+                            state.status,
+                            state.detail,
+                            state.progress,
+                        )
                     )
                 }
             }
@@ -71,7 +111,8 @@ class OperationForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val op = OperationManager.currentOperation.value
         startForegroundCompat(
-            buildNotification(
+            buildOperationNotification(
+                this,
                 op?.type,
                 op?.status ?: OperationStatusData(OperationStatus.WORKING),
                 op?.detail ?: OperationProgressDetail(OperationProgress.NONE),
@@ -119,7 +160,7 @@ class OperationForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             notificationManager().createNotificationChannel(
                 NotificationChannel(
-                    CHANNEL_ID,
+                    OPERATION_NOTIFICATION_CHANNEL_ID,
                     getString(R.string.fgs_channel_name),
                     NotificationManager.IMPORTANCE_LOW
                 ).apply { setShowBadge(false) }
@@ -127,39 +168,7 @@ class OperationForegroundService : Service() {
         }
     }
 
-    private fun buildNotification(
-        type: OperationType?,
-        status: OperationStatusData,
-        detail: OperationProgressDetail,
-        progress: Float
-    ): Notification {
-        val displayText = renderOperationStatus(this, status, detail, progress)
-        val title = when (type) {
-            OperationType.ENCRYPT -> getString(R.string.fgs_encrypting)
-            OperationType.DECRYPT -> getString(R.string.fgs_decrypting)
-            null -> getString(R.string.fgs_working)
-        }
-        val pi = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-            },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
-            .setContentText(displayText.status)
-            .setProgress(100, (progress * 100).toInt(), false)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setOngoing(true)
-            .setContentIntent(pi)
-            .build()
-    }
-
     companion object {
-        private const val CHANNEL_ID = "operation_progress"
         private const val NOTIFICATION_ID = 1
         private const val POLL_INTERVAL_MS = 1000L
 

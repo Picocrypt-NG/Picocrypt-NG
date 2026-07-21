@@ -243,27 +243,6 @@ class OperationStatusTest {
         }
     }
 
-    @Test
-    fun `both status consumers call the shared renderer without raw notification status`() {
-        val service = File(
-            "src/main/java/io/github/picocrypt_ng/picocrypt_ng/OperationForegroundService.kt"
-        ).readText()
-        val progressCard = File(
-            "src/main/java/io/github/picocrypt_ng/picocrypt_ng/ui/components/ProgressCard.kt"
-        ).readText()
-
-        assertTrue(service.contains("renderOperationStatus("))
-        assertTrue(progressCard.contains("renderOperationStatus("))
-        assertTrue(
-            "Notification content must use the shared renderer output",
-            Regex("\\.setContentText\\(displayText\\.status\\)").containsMatchIn(service),
-        )
-        assertFalse(
-            "Notification content must never receive raw status",
-            Regex("\\.setContentText\\(status\\)").containsMatchIn(service),
-        )
-    }
-
     private fun parseResources(path: String): ResourceCatalog {
         val document = DocumentBuilderFactory.newInstance()
             .newDocumentBuilder()
