@@ -21,6 +21,8 @@ class LocalizationResourcesTest {
             .newDocumentBuilder()
             .parse(russianStringsFile)
     }
+    private val catalogs
+        get() = listOf("English" to document, "Russian" to russianDocument)
 
     @Test
     fun `app name stays non translatable`() {
@@ -40,34 +42,54 @@ class LocalizationResourcesTest {
     }
 
     @Test
-    fun `base catalog does not use file parenthetical shortcuts`() {
-        val offenders = textResources()
-            .filter { it.text.contains("file(s)", ignoreCase = true) }
-            .map { "${it.name}: ${it.text}" }
+    fun `catalogs do not use file parenthetical shortcuts`() {
+        val offenders = catalogs.flatMap { (catalog, catalogDocument) ->
+            textResources(catalogDocument)
+                .filter { it.text.contains("file(s)", ignoreCase = true) }
+                .map { "$catalog ${it.name}: ${it.text}" }
+        }
 
         assertTrue("Use real plural resources instead of file(s): $offenders", offenders.isEmpty())
     }
 
     @Test
     fun `formatted strings use positional placeholders`() {
-        val offenders = textResources().flatMap { resource ->
-            formatSpecifiers.findAll(resource.text)
-                .filter { it.groups[1] == null }
-                .map { "${resource.name}: ${resource.text}" }
+        val offenders = catalogs.flatMap { (catalog, catalogDocument) ->
+            textResources(catalogDocument).flatMap { resource ->
+                formatSpecifiers.findAll(resource.text)
+                    .filter { it.groups[1] == null }
+                    .map { "$catalog ${resource.name}: ${resource.text}" }
+            }
         }.distinct()
 
         assertTrue("Formatted resources must use positional placeholders: $offenders", offenders.isEmpty())
     }
 
     @Test
-    fun `folder and file copy failures preserve their reason placeholder`() {
-        listOf("error_read_folder_failed", "error_copy_files_failed").forEach { name ->
-            assertEquals(listOf("%1\$s"), formatSpecifiersIn(stringElement(name).textContent))
+    fun `typed status and error formats stay exact in both catalogs`() {
+        catalogs.forEach { (catalog, catalogDocument) ->
+            exactStringFormatContracts.forEach { (name, expected) ->
+                assertEquals(
+                    "$catalog string $name placeholder contract",
+                    expected,
+                    formatSpecifiersIn(stringElement(catalogDocument, name).textContent),
+                )
+            }
+
+            exactPluralFormatContracts.forEach { (name, expected) ->
+                pluralItems(pluralElement(catalogDocument, name)).forEach { (quantity, text) ->
+                    assertEquals(
+                        "$catalog plural $name[$quantity] placeholder contract",
+                        expected,
+                        formatSpecifiersIn(text),
+                    )
+                }
+            }
         }
     }
 
     @Test
-    fun `russian catalog mirrors base translatable resources`() {
+    fun `russian catalog mirrors the ordered base resource schema`() {
         assertTrue("Missing Russian resources at ${russianStringsFile.path}", russianStringsFile.isFile)
 
         val baseStringNames = stringElements(document)
@@ -81,23 +103,82 @@ class LocalizationResourcesTest {
     }
 
     @Test
+    fun `catalog resource names are unique and visible values are not blank`() {
+        catalogs.forEach { (catalog, catalogDocument) ->
+            val strings = stringElements(catalogDocument)
+            val plurals = pluralElements(catalogDocument)
+            val stringNames = strings.map { it.getAttribute("name") }
+            val pluralNames = plurals.map { it.getAttribute("name") }
+            val duplicateStrings = duplicateValues(stringNames)
+            val duplicatePlurals = duplicateValues(pluralNames)
+            val crossTypeDuplicates = stringNames.toSet().intersect(pluralNames.toSet())
+            val blankStrings = strings
+                .filter { it.getAttribute("name").isBlank() || it.textContent.isBlank() }
+                .map { it.getAttribute("name") }
+            val blankPlurals = plurals
+                .filter { it.getAttribute("name").isBlank() || pluralItems(it).isEmpty() }
+                .map { it.getAttribute("name") }
+            val invalidPluralItems = plurals.flatMap { plural ->
+                val name = plural.getAttribute("name")
+                val items = pluralItems(plural)
+                val duplicateQuantities = duplicateValues(items.map { it.first })
+                    .map { "$name[$it] duplicate" }
+                val blanks = items
+                    .filter { (quantity, text) -> quantity.isBlank() || text.isBlank() }
+                    .map { (quantity, _) -> "$name[$quantity] blank" }
+                duplicateQuantities + blanks
+            }
+
+            assertTrue("$catalog duplicate strings: $duplicateStrings", duplicateStrings.isEmpty())
+            assertTrue("$catalog duplicate plurals: $duplicatePlurals", duplicatePlurals.isEmpty())
+            assertTrue(
+                "$catalog names shared by string and plural resources: $crossTypeDuplicates",
+                crossTypeDuplicates.isEmpty(),
+            )
+            assertTrue("$catalog blank string resources: $blankStrings", blankStrings.isEmpty())
+            assertTrue("$catalog blank plural resources: $blankPlurals", blankPlurals.isEmpty())
+            assertTrue(
+                "$catalog blank or duplicate plural items: $invalidPluralItems",
+                invalidPluralItems.isEmpty(),
+            )
+        }
+    }
+
+    @Test
+    fun `renderer and localized error boundary resources exist in both catalogs`() {
+        catalogs.forEach { (catalog, catalogDocument) ->
+            val stringNames = stringElements(catalogDocument)
+                .map { it.getAttribute("name") }
+                .toSet()
+            val missingStrings = requiredRendererStrings
+                .plus(requiredErrorBoundaryStrings)
+                .filterNot(stringNames::contains)
+            val pluralNames = pluralNames(catalogDocument).toSet()
+            val missingPlurals = requiredRendererPlurals.filterNot(pluralNames::contains)
+
+            assertTrue("$catalog missing required strings: $missingStrings", missingStrings.isEmpty())
+            assertTrue("$catalog missing required plurals: $missingPlurals", missingPlurals.isEmpty())
+        }
+    }
+
+    @Test
     fun `russian plurals use Russian quantity categories`() {
         pluralNames(document).forEach { name ->
             val quantities = pluralItems(pluralElement(russianDocument, name))
                 .map { it.first }
-                .toSet()
 
             assertEquals(
                 "Russian plural $name should define one, few, many, and other",
-                setOf("one", "few", "many", "other"),
+                listOf("one", "few", "many", "other"),
                 quantities,
             )
         }
     }
 
     @Test
-    fun `russian formatted resources preserve base placeholders`() {
+    fun `every translated string and plural preserves the exact placeholder multiset`() {
         val baseStrings = stringElements(document)
+            .filterNot { it.getAttribute("translatable") == "false" }
             .associate { it.getAttribute("name") to formatSpecifiersIn(it.textContent) }
         val stringMismatches = stringElements(russianDocument)
             .filter { russian -> formatSpecifiersIn(russian.textContent) != baseStrings[russian.getAttribute("name")] }
@@ -120,10 +201,19 @@ class LocalizationResourcesTest {
                 .map { (quantity, text) -> "$name[$quantity]: ${formatSpecifiersIn(text)} != $expected" }
         }
 
-        val placeholderMismatches = stringMismatches + pluralMismatches
+        val basePluralMismatches = pluralElements(document).flatMap { plural ->
+            val name = plural.getAttribute("name")
+            val expected = basePluralOther.getValue(name)
+            pluralItems(plural)
+                .filter { (_, text) -> formatSpecifiersIn(text) != expected }
+                .map { (quantity, text) ->
+                    "base $name[$quantity]: ${formatSpecifiersIn(text)} != $expected"
+                }
+        }
+        val placeholderMismatches = stringMismatches + basePluralMismatches + pluralMismatches
 
         assertTrue(
-            "Russian resources must preserve positional format placeholders: $placeholderMismatches",
+            "Translated resources must preserve positional format placeholders: $placeholderMismatches",
             placeholderMismatches.isEmpty(),
         )
     }
@@ -132,9 +222,12 @@ class LocalizationResourcesTest {
     fun `russian high risk wording keeps security meaning`() {
         assertRussianContains("force_decrypt_warning", "непровер", "повреж")
         assertRussianContains("error_data_corrupted", "не провер", "повреж")
+        assertRussianContains("error_corrupt_header", "заголов", "повреж")
         assertRussianContains("error_decrypt_retry_only", "только", "расшифр", "принуд")
         assertRussianContains("comments_plaintext_warning", "открыт", "метадан")
-        assertRussianContains("error_auth_failed", "парол", "ключев")
+        assertRussianContains("error_auth_failed", "аутентиф", "парол", "ключев")
+        assertRussianContains("prevent_screenshots_description", "сним", "запис", "недавн")
+        assertRussianContains("deniability_note", "правдоподоб", "отриц", "метадан", "нельзя")
 
         val deniabilityCopy = textResources(russianDocument)
             .filter { it.name.contains("deniability") }
@@ -155,29 +248,17 @@ class LocalizationResourcesTest {
     fun `technical filename extensions stay format arguments`() {
         assertContainsWords("error_split_volume_not_supported", "not supported", "recombine")
         assertRussianContains("error_split_volume_not_supported", "не поддерж", "объедин")
-        assertEquals(
-            listOf("%1\$s"),
-            formatSpecifiersIn(stringElement("error_split_volume_not_supported").textContent),
-        )
 
-        val rawExtensionMentions = textResources()
-            .filter { it.name != "app_name" }
-            .filter { resource ->
-                rawFilenameExtension.containsMatchIn(resource.text)
-            }
-            .map { "${it.name}: ${it.text}" }
+        val rawExtensionMentions = catalogs.flatMap { (catalog, catalogDocument) ->
+            textResources(catalogDocument)
+                .filter { it.name != "app_name" }
+                .filter { resource -> rawFilenameExtension.containsMatchIn(resource.text) }
+                .map { "$catalog ${it.name}: ${it.text}" }
+        }
 
         assertTrue(
             "Translator-facing strings must pass technical filename extensions as arguments: $rawExtensionMentions",
             rawExtensionMentions.isEmpty(),
-        )
-    }
-
-    @Test
-    fun `insufficient storage message keeps required and available byte placeholders`() {
-        assertEquals(
-            listOf("%1\$d", "%2\$d"),
-            formatSpecifiersIn(stringElement("error_insufficient_storage").textContent),
         )
     }
 
@@ -192,8 +273,17 @@ class LocalizationResourcesTest {
     fun `high risk wording keeps security meaning`() {
         assertContainsWords("force_decrypt_warning", "unverified", "corrupted")
         assertContainsWords("error_data_corrupted", "unverified", "corrupted")
+        assertContainsWords("error_corrupt_header", "header", "damaged")
         assertContainsWords("error_decrypt_retry_only", "only", "decryption", "force decrypt")
         assertContainsWords("comments_plaintext_warning", "plaintext metadata")
+        assertContainsWords("error_auth_failed", "authentication", "password", "keyfile")
+        assertContainsWords("deniability_note", "deniability mode", "metadata", "cannot be previewed")
+        assertContainsWords(
+            "prevent_screenshots_description",
+            "screenshots",
+            "screen recording",
+            "recent apps",
+        )
 
         val deniabilityCopy = textResources()
             .filter { it.name.contains("deniability") }
@@ -207,6 +297,27 @@ class LocalizationResourcesTest {
             "Authentication copy must not imply Picocrypt-NG has accounts, logins, or authorization",
             disallowedAuthenticationWords.containsMatchIn(authenticationCopy),
         )
+    }
+
+    @Test
+    fun `status resources keep invariant units and phase digits in both catalogs`() {
+        catalogs.forEach { (catalog, catalogDocument) ->
+            rateStatusResourceNames.forEach { name ->
+                val text = stringElement(catalogDocument, name).textContent
+                assertTrue("$catalog $name must preserve MiB: $text", text.contains("MiB"))
+                assertTrue("$catalog $name must preserve ETA: $text", text.contains("ETA"))
+            }
+
+            val verificationDigits = Regex("""\d+""")
+                .findAll(stringElement(catalogDocument, "status_verifying_integrity").textContent)
+                .map { it.value }
+                .toList()
+            assertEquals(
+                "$catalog verify-first status must preserve phase digits",
+                listOf("1", "2"),
+                verificationDigits,
+            )
+        }
     }
 
     @Test
@@ -327,9 +438,83 @@ class LocalizationResourcesTest {
         return formatSpecifiers.findAll(text).map { match -> match.value }.toList().sorted()
     }
 
+    private fun duplicateValues(values: List<String>): List<String> {
+        return values.groupingBy { it }.eachCount()
+            .filterValues { it > 1 }
+            .keys
+            .toList()
+    }
+
     private data class TextResource(val name: String, val text: String)
 
     private companion object {
+        private val rateStatusResourceNames = listOf(
+            "status_compressing_rate",
+            "status_encrypting_rate",
+            "status_splitting_rate",
+            "status_recombining_rate",
+            "status_verifying_rate",
+            "status_decrypting_rate",
+            "status_repairing_rate",
+            "status_unpacking_rate",
+            "status_adding_deniability_rate",
+            "status_removing_deniability_rate",
+        )
+        private val requiredRendererStrings = listOf(
+            "fgs_working",
+            "status_starting",
+            "status_completed",
+            "status_cancelled",
+            "status_error",
+            "status_compressing_files",
+            "status_generating_values",
+            "status_deriving_key",
+            "status_reading_keyfiles",
+            "status_calculating_values",
+            "status_writing_values",
+            "status_splitting",
+            "status_recombining_chunks",
+            "status_reading_values",
+            "status_duplicate_keyfiles_warning",
+            "status_verifying_integrity",
+            "status_mac_verification_failed_continuing",
+            "status_repairing_verifying",
+            "status_integrity_verified_decrypting",
+            "status_comparing_values",
+            "status_unzipping",
+            "status_adding_plausible_deniability",
+            "status_removing_deniability_protection",
+            "progress_percent",
+        ) + rateStatusResourceNames
+        private val requiredRendererPlurals = listOf("progress_item_count")
+        private val requiredErrorBoundaryStrings = listOf(
+            "error_auth_failed",
+            "error_data_corrupted",
+            "error_corrupt_header",
+            "error_file_not_found",
+            "error_operation_failed",
+            "error_reason_permission_denied",
+            "error_reason_file_not_found",
+            "error_reason_insufficient_storage",
+            "error_reason_io",
+            "error_reason_unknown",
+            "operation_cancelled",
+            "error_read_folder_failed",
+            "error_copy_files_failed",
+            "keyfile_create_failed",
+        )
+        private val exactStringFormatContracts =
+            rateStatusResourceNames.associateWith { listOf("%1\$.2f", "%2\$s") } + mapOf(
+                "progress_percent" to listOf("%1\$.2f"),
+                "error_read_folder_failed" to listOf("%1\$s"),
+                "error_copy_files_failed" to listOf("%1\$s"),
+                "keyfile_create_failed" to listOf("%1\$s"),
+                "error_split_volume_not_supported" to listOf("%1\$s"),
+                "error_insufficient_storage" to listOf("%1\$d", "%2\$d"),
+            )
+        private val exactPluralFormatContracts = mapOf(
+            "progress_item_count" to listOf("%1\$d", "%2\$d"),
+        )
         private val formatSpecifiers =
             Regex("""%(?!%)(?!n)(\d+\$)?[-#+ 0,(<]*\d*(?:\.\d+)?[a-zA-Z]""")
         private val disallowedAuthenticationWords =
