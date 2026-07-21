@@ -4,14 +4,20 @@ import android.content.Context
 import android.net.Uri
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.InputStream
 
 object FileCopyService {
     private const val INTERNAL_FILES_DIR = "picocrypt_files"
+    private val keyfileCopyMutex = Mutex()
 
     /**
      * Copies a file from a URI to the internal app data directory.
@@ -69,44 +75,103 @@ object FileCopyService {
     /**
      * Copies a keyfile from a URI to the internal app data directory.
      * Uses fixed filename "keyfile_<index>" where index is the current keyfile count.
+     * A complete copy is published atomically and an existing slot is never overwritten.
      * @return Result with file path on success, AppError on failure
      */
     suspend fun copyKeyfileToInternalStorage(
         context: Context,
         uri: Uri,
         index: Int
-    ): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            // Get internal files directory
+    ): Result<String> = copyKeyfileToInternalStorage(
+        context = context,
+        uri = uri,
+        index = index,
+        afterAcquire = {},
+        afterPublish = {},
+    )
+
+    internal suspend fun copyKeyfileToInternalStorage(
+        context: Context,
+        uri: Uri,
+        index: Int,
+        afterAcquire: suspend () -> Unit,
+        afterPublish: suspend () -> Unit,
+    ): Result<String> {
+        keyfileCopyMutex.lock()
+        return try {
+            afterAcquire()
             val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-            if (!internalDir.exists()) {
-                internalDir.mkdirs()
-            }
+            val destFile = File(internalDir, "keyfile_$index")
+            var incompleteFile: File? = null
+            var published = false
+            var resultDelivered = false
 
-            // Use fixed filename "keyfile_<index>"
-            val fixedFileName = "keyfile_$index"
-            val destFile = File(internalDir, fixedFileName)
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val copyResult = try {
+                        if ((!internalDir.exists() && !internalDir.mkdirs()) || !internalDir.isDirectory) {
+                            throw IOException("Could not create internal keyfile directory")
+                        }
+                        if (destFile.exists()) {
+                            throw IOException("Keyfile target already exists")
+                        }
 
-            // Open input stream from URI
-            val inputStream: InputStream = context.contentResolver.openInputStream(uri)
-                ?: return@withContext Result.failure(
-                    copyFailed(context, "Could not open input stream for URI: $uri")
-                )
+                        val ownedIncompleteFile = File.createTempFile(
+                            "keyfile_${index}_",
+                            ".incomplete",
+                            internalDir,
+                        )
+                        incompleteFile = ownedIncompleteFile
+                        val inputStream: InputStream = context.contentResolver.openInputStream(uri)
+                            ?: throw IOException("Could not open input stream for URI: $uri")
 
-            // Copy file (overwrite if exists)
-            inputStream.use { input ->
-                FileOutputStream(destFile).use { output ->
-                    input.copyTo(output)
+                        inputStream.use { input ->
+                            FileOutputStream(ownedIncompleteFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        currentCoroutineContext().ensureActive()
+                        if (destFile.exists()) {
+                            throw IOException("Keyfile target was claimed during copy")
+                        }
+
+                        // Both paths share a directory, so the complete file becomes visible in one rename.
+                        if (!ownedIncompleteFile.renameTo(destFile)) {
+                            throw IOException("Could not publish copied keyfile")
+                        }
+                        published = true
+                        Result.success(destFile.absolutePath)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Result.failure(copyFailed(context, e.message))
+                    } finally {
+                        if (!published) {
+                            incompleteFile?.delete()
+                        }
+                    }
+
+                    if (copyResult.isSuccess) {
+                        afterPublish()
+                    }
+                    copyResult
+                }
+                resultDelivered = true
+                result
+            } finally {
+                if (!resultDelivered) {
+                    // Cancellation can arrive after rename while the IO result is dispatched
+                    // back to the caller. Clean up before releasing ownership of this slot.
+                    withContext(NonCancellable + Dispatchers.IO) {
+                        incompleteFile?.delete()
+                        if (published) {
+                            destFile.delete()
+                        }
+                    }
                 }
             }
-
-            Result.success(destFile.absolutePath)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(
-                copyFailed(context, e.message)
-            )
+        } finally {
+            keyfileCopyMutex.unlock()
         }
     }
 
@@ -342,27 +407,34 @@ object FileCopyService {
     /**
      * Cleans up all keyfile files (keyfile_0, keyfile_1, etc.) from internal storage.
      */
-    suspend fun cleanupKeyfiles(context: Context): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-            if (!internalDir.exists() || !internalDir.isDirectory) {
-                return@withContext true
-            }
-            
-            var allSuccess = true
-            internalDir.listFiles()?.forEach { file ->
-                if (file.isFile && file.name.startsWith("keyfile_")) {
-                    if (!file.delete()) {
-                        allSuccess = false
+    suspend fun cleanupKeyfiles(context: Context): Boolean {
+        keyfileCopyMutex.lock()
+        return try {
+            withContext(Dispatchers.IO) {
+                try {
+                    val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
+                    if (!internalDir.exists() || !internalDir.isDirectory) {
+                        return@withContext true
                     }
+
+                    var allSuccess = true
+                    internalDir.listFiles()?.forEach { file ->
+                        if (file.isFile && file.name.startsWith("keyfile_")) {
+                            if (!file.delete()) {
+                                allSuccess = false
+                            }
+                        }
+                    }
+
+                    allSuccess
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    false
                 }
             }
-            
-            allSuccess
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            false
+        } finally {
+            keyfileCopyMutex.unlock()
         }
     }
     

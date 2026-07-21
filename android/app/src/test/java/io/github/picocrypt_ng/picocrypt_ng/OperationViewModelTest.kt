@@ -119,12 +119,37 @@ class OperationViewModelTest {
     }
     
     @Test
-    fun `cancelOperation stops polling and cancels operation`() = runTest(mainDispatcherRule.testDispatcher) {
-        viewModel.cancelOperation()
-        
-        advanceUntilIdle()
-        
-        // Method should not throw
+    fun `cancelOperation delegates once and exposes the native terminal state`() = runTest(mainDispatcherRule.testDispatcher) {
+        setOperationState(
+            TestDataBuilders.createOperationState(
+                id = "op_cancel",
+                status = OperationStatusData(OperationStatus.ENCRYPTING_RATE),
+                done = false,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.cancelOperation("op_cancel") } returns Result.success(
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.CANCELLED),
+                    detail = OperationProgressDetail(OperationProgress.NONE),
+                    progress = 0.4f,
+                    done = true,
+                )
+            )
+
+            viewModel.cancelOperation()
+            advanceUntilIdle()
+
+            verify(exactly = 1) { GoBridge.cancelOperation("op_cancel") }
+            val state = viewModel.operationState.value
+            assertEquals(OperationStatus.CANCELLED, state?.status?.code)
+            assertEquals(0.4f, state?.progress ?: -1f, 0.001f)
+            assertTrue("The ViewModel must expose cancellation as terminal", state?.done == true)
+        } finally {
+            unmockkObject(GoBridge)
+        }
     }
     
     @Test
