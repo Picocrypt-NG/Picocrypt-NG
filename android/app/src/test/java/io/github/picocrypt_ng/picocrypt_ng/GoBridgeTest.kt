@@ -1,5 +1,6 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
+import java.io.File
 import org.junit.Assert.*
 import org.junit.Test
 import org.json.JSONException
@@ -231,18 +232,61 @@ class GoBridgeTest {
     }
 
     @Test
-    fun `ProgressState has correct defaults`() {
+    fun `ProgressState keeps semantic progress and technical errors distinct`() {
         val progressState = ProgressState(
-            status = "Processing",
+            status = OperationStatusData(
+                code = "ENCRYPTING_RATE",
+                speedMiBPerSecond = 12.34,
+                eta = "01:02:03",
+            ),
+            detail = OperationProgressDetail(
+                code = "ITEM_COUNT",
+                current = 3,
+                total = 10,
+            ),
             progress = 0.5f,
-            info = "Encrypting file...",
-            done = false
+            done = false,
+            technicalError = "diagnostic only",
+            errorCode = "GENERIC",
         )
-        assertEquals("Processing", progressState.status)
+        assertEquals("ENCRYPTING_RATE", progressState.status.code)
+        assertEquals(12.34, progressState.status.speedMiBPerSecond, 0.001)
+        assertEquals("01:02:03", progressState.status.eta)
+        assertEquals("ITEM_COUNT", progressState.detail.code)
+        assertEquals(3, progressState.detail.current)
+        assertEquals(10, progressState.detail.total)
         assertEquals(0.5f, progressState.progress, 0.001f)
-        assertEquals("Encrypting file...", progressState.info)
         assertFalse(progressState.done)
-        assertEquals("code defaults to empty until an error is classified", "", progressState.code)
+        assertEquals("diagnostic only", progressState.technicalError)
+        assertEquals("GENERIC", progressState.errorCode)
+    }
+
+    @Test
+    fun `getProgress consumes every structured getter without carrying raw status or info`() {
+        val source = File(
+            "src/main/java/io/github/picocrypt_ng/picocrypt_ng/GoBridge.kt"
+        ).readText()
+
+        listOf(
+            "result.getStatusCode()",
+            "result.getStatusSpeedMiBPerSecond()",
+            "result.getStatusETA()",
+            "result.getInfoCode()",
+            "result.getInfoCurrent()",
+            "result.getInfoTotal()",
+        ).forEach { getter ->
+            assertTrue("GoBridge.getProgress must consume $getter", source.contains(getter))
+        }
+        assertTrue(
+            "Raw Go errors must populate only the technicalError field",
+            Regex("technicalError\\s*=\\s*result\\.getError\\(\\)").containsMatchIn(source),
+        )
+        assertTrue(
+            "Stable Go error codes must populate the errorCode field",
+            Regex("errorCode\\s*=\\s*result\\.getCode\\(\\)").containsMatchIn(source),
+        )
+        assertFalse("Raw Go status must not enter durable Kotlin state", source.contains("result.getStatus()"))
+        assertFalse("Raw Go info must not enter durable Kotlin state", source.contains("result.getInfo()"))
     }
 
 }

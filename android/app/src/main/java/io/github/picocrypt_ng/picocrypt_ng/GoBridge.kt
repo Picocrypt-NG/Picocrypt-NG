@@ -57,16 +57,12 @@ data class DecryptionInfo(
  * This is the Kotlin representation of the Go ProgressResult struct.
  */
 data class ProgressState(
-    val status: String,
+    val status: OperationStatusData,
+    val detail: OperationProgressDetail,
     val progress: Float,
-    val info: String,
     val done: Boolean,
-    /**
-     * Stable, locale-independent error classification emitted by Go (see Go
-     * errorCode); empty unless the operation failed. Drives AppError.fromGoError
-     * instead of fragile substring matching on [info].
-     */
-    val code: String = ""
+    val technicalError: String = "",
+    val errorCode: String = "",
 )
 
 /**
@@ -214,21 +210,21 @@ object GoBridge {
         return try {
             val result: GoProgressResult = Mobile.getProgress(operationID)
             
-            // If there's an error, include it in the info field (OperationManager expects this)
-            val error = result.getError()
-            val info = if (error != null && error.isNotEmpty()) {
-                error
-            } else {
-                result.getInfo() ?: ""
-            }
-            
-            // Convert Go ProgressResult to Kotlin ProgressState
             Result.success(ProgressState(
-                status = result.getStatus() ?: "",
+                status = OperationStatusData(
+                    code = result.getStatusCode() ?: "",
+                    speedMiBPerSecond = result.getStatusSpeedMiBPerSecond(),
+                    eta = result.getStatusETA() ?: "",
+                ),
+                detail = OperationProgressDetail(
+                    code = result.getInfoCode() ?: "",
+                    current = result.getInfoCurrent(),
+                    total = result.getInfoTotal(),
+                ),
                 progress = result.getProgress(),
-                info = info,
                 done = result.getDone(),
-                code = result.getCode() ?: ""
+                technicalError = result.getError() ?: "",
+                errorCode = result.getCode() ?: "",
             ))
         } catch (e: CancellationException) {
             throw e

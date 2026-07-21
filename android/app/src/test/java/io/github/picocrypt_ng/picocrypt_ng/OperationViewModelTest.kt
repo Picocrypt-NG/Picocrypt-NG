@@ -135,9 +135,9 @@ class OperationViewModelTest {
                 type = OperationType.ENCRYPT,
                 inputFile = "/data/test/input_file.txt",
                 outputFile = "/data/test/output_file.pcv",
-                status = "Processing",
+                status = OperationStatusData(OperationStatus.UNKNOWN),
+                detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0.5f,
-                info = "Working..."
             )
         )
 

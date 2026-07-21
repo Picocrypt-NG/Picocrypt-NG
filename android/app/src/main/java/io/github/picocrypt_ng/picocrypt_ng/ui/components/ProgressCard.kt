@@ -32,7 +32,7 @@ import io.github.picocrypt_ng.picocrypt_ng.AppError
 import io.github.picocrypt_ng.picocrypt_ng.FileCopyService
 import io.github.picocrypt_ng.picocrypt_ng.R
 import io.github.picocrypt_ng.picocrypt_ng.localizedMessage
-import io.github.picocrypt_ng.picocrypt_ng.localizedOperationStatus
+import io.github.picocrypt_ng.picocrypt_ng.renderOperationStatus
 import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.launch
 import java.io.File
@@ -55,7 +55,10 @@ fun ProgressCard(
     ) { uri: Uri? ->
         uri?.let { destinationUri ->
             val op = operationState
-            if (op != null && op.done && op.error == null && op.status != OperationStatus.CANCELLED) {
+            if (
+                op != null && op.done && op.error == null &&
+                op.status.code != OperationStatus.CANCELLED
+            ) {
                 scope.launch {
                     val result = FileCopyService.saveFileToUri(context, op.outputFile, destinationUri)
                     result.onSuccess {
@@ -81,6 +84,7 @@ fun ProgressCard(
         }
 
         is OperationUiState.Running -> {
+            val displayText = renderOperationStatus(context, ui.status, ui.detail, ui.progress)
             AlertDialog(
                 modifier = modifier,
                 onDismissRequest = { /* Non-dismissible */ },
@@ -102,12 +106,12 @@ fun ProgressCard(
                             modifier = Modifier.fillMaxWidth()
                         )
                         Text(
-                            text = localizedOperationStatus(context, ui.status),
+                            text = displayText.status,
                             style = MaterialTheme.typography.bodyMedium
                         )
-                        if (ui.info.isNotEmpty()) {
+                        displayText.detail?.let { detail ->
                             Text(
-                                text = ui.info,
+                                text = detail,
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }

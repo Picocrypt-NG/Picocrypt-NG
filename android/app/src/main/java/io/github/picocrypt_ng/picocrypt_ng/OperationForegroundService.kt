@@ -51,7 +51,7 @@ class OperationForegroundService : Service() {
                 } else {
                     notificationManager().notify(
                         NOTIFICATION_ID,
-                        buildNotification(state.type, state.status, state.progress)
+                        buildNotification(state.type, state.status, state.detail, state.progress)
                     )
                 }
             }
@@ -73,7 +73,8 @@ class OperationForegroundService : Service() {
         startForegroundCompat(
             buildNotification(
                 op?.type,
-                op?.status ?: getString(R.string.fgs_working),
+                op?.status ?: OperationStatusData(OperationStatus.WORKING),
+                op?.detail ?: OperationProgressDetail(OperationProgress.NONE),
                 op?.progress ?: 0f
             )
         )
@@ -128,9 +129,11 @@ class OperationForegroundService : Service() {
 
     private fun buildNotification(
         type: OperationType?,
-        status: String,
+        status: OperationStatusData,
+        detail: OperationProgressDetail,
         progress: Float
     ): Notification {
+        val displayText = renderOperationStatus(this, status, detail, progress)
         val title = when (type) {
             OperationType.ENCRYPT -> getString(R.string.fgs_encrypting)
             OperationType.DECRYPT -> getString(R.string.fgs_decrypting)
@@ -147,7 +150,7 @@ class OperationForegroundService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
-            .setContentText(status)
+            .setContentText(displayText.status)
             .setProgress(100, (progress * 100).toInt(), false)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)

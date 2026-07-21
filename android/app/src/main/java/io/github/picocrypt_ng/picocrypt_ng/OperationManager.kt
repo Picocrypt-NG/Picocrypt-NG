@@ -91,9 +91,9 @@ object OperationManager {
                 type = OperationType.ENCRYPT,
                 inputFile = formData.copiedFilePath,
                 outputFile = outputFilePath,
-                status = OperationStatus.STARTING,
+                status = OperationStatusData(OperationStatus.STARTING),
+                detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0f,
-                info = "",
                 formData = formData
             )
         }
@@ -162,9 +162,9 @@ object OperationManager {
                 type = OperationType.DECRYPT,
                 inputFile = formData.copiedFilePath,
                 outputFile = outputFilePath,
-                status = OperationStatus.STARTING,
+                status = OperationStatusData(OperationStatus.STARTING),
+                detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0f,
-                info = "",
                 formData = formData
             )
         }
@@ -192,9 +192,9 @@ object OperationManager {
                 type = type,
                 inputFile = "",
                 outputFile = "",
-                status = OperationStatus.ERROR,
+                status = OperationStatusData(OperationStatus.ERROR),
+                detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0f,
-                info = appError.userMessage,
                 done = true,
                 error = appError
             )
@@ -212,9 +212,15 @@ object OperationManager {
 
         val result = GoBridge.getProgress(operation.id)
         result.getOrNull()?.let { progressState ->
-            val error = if (progressState.done && progressState.status == OperationStatus.ERROR) {
+            val error = if (
+                progressState.done && progressState.status.code == OperationStatus.ERROR
+            ) {
                 // Classify by the stable Go error code (not fragile substring matching)
-                AppError.fromGoError(progressState.info, operation.type, progressState.code)
+                AppError.fromGoError(
+                    progressState.technicalError,
+                    operation.type,
+                    progressState.errorCode,
+                )
             } else {
                 null
             }
@@ -234,8 +240,8 @@ object OperationManager {
                     // latest base.
                     current.copy(
                         status = progressState.status,
+                        detail = progressState.detail,
                         progress = progressState.progress,
-                        info = progressState.info,
                         done = progressState.done,
                         error = error
                     )
@@ -260,7 +266,7 @@ object OperationManager {
         val result = GoBridge.cancelOperation(operation.id)
         result.onSuccess {
             _currentOperation.value = operation.copy(
-                status = OperationStatus.CANCELLED,
+                status = OperationStatusData(OperationStatus.CANCELLED),
                 done = true
             )
         }
@@ -408,9 +414,9 @@ object OperationManager {
                 type = OperationType.DECRYPT,
                 inputFile = operation.inputFile,
                 outputFile = operation.outputFile,
-                status = OperationStatus.STARTING,
+                status = OperationStatusData(OperationStatus.STARTING),
+                detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0f,
-                info = "",
                 formData = formData
             )
         }
@@ -427,9 +433,9 @@ data class OperationState(
     val type: OperationType,
     val inputFile: String,
     val outputFile: String,
-    val status: String,
+    val status: OperationStatusData,
+    val detail: OperationProgressDetail,
     val progress: Float,
-    val info: String,
     val done: Boolean = false,
     val error: AppError? = null,
     val formData: FormData? = null

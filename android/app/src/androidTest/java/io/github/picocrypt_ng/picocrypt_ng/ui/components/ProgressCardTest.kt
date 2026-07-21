@@ -10,6 +10,8 @@ import io.github.picocrypt_ng.picocrypt_ng.MainViewModel
 import io.github.picocrypt_ng.picocrypt_ng.OperationViewModel
 import io.github.picocrypt_ng.picocrypt_ng.OperationManager
 import io.github.picocrypt_ng.picocrypt_ng.OperationState
+import io.github.picocrypt_ng.picocrypt_ng.OperationStatus
+import io.github.picocrypt_ng.picocrypt_ng.OperationStatusData
 import io.github.picocrypt_ng.picocrypt_ng.OperationType
 import io.github.picocrypt_ng.picocrypt_ng.R
 import io.github.picocrypt_ng.picocrypt_ng.testutils.TestDataBuilders
@@ -118,7 +120,7 @@ class ProgressCardTest {
         val originalState = swapOperationState(
             TestDataBuilders.createOperationState(
                 type = OperationType.ENCRYPT,
-                status = "Cancelled",
+                status = OperationStatusData(OperationStatus.CANCELLED),
                 done = true,
                 error = null,
                 formData = TestDataBuilders.createEncryptFormData()

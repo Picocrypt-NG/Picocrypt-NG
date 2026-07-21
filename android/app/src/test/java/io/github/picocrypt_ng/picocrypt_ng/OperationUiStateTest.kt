@@ -10,7 +10,7 @@ class OperationUiStateTest {
     fun `cancelled done operation maps to cancelled instead of success`() {
         val state = TestDataBuilders.createOperationState(
             type = OperationType.ENCRYPT,
-            status = "Cancelled",
+            status = OperationStatusData(OperationStatus.CANCELLED),
             done = true,
             error = null
         )
@@ -22,7 +22,7 @@ class OperationUiStateTest {
     fun `completed done operation still maps to success`() {
         val state = TestDataBuilders.createOperationState(
             type = OperationType.DECRYPT,
-            status = "Completed",
+            status = OperationStatusData(OperationStatus.COMPLETED),
             done = true,
             error = null
         )
@@ -35,11 +35,47 @@ class OperationUiStateTest {
         val error = AppError.OperationError.GenericOperation("cancel failed")
         val state = TestDataBuilders.createOperationState(
             type = OperationType.DECRYPT,
-            status = "Cancelled",
+            status = OperationStatusData(OperationStatus.CANCELLED),
             done = true,
             error = error
         )
 
         assertTrue(state.toUiState() is OperationUiState.Failed)
+    }
+
+    @Test
+    fun `raw cancelled diagnostic cannot create cancelled UI state without cancelled code`() {
+        val rawDiagnostic = "Cancelled"
+        val state = TestDataBuilders.createOperationState(
+            type = OperationType.DECRYPT,
+            status = OperationStatusData(OperationStatus.UNKNOWN),
+            done = true,
+            error = null,
+        )
+
+        assertEquals("Cancelled", rawDiagnostic)
+        assertEquals(OperationUiState.Success(OperationType.DECRYPT), state.toUiState())
+    }
+
+    @Test
+    fun `running UI state carries semantic status and detail`() {
+        val status = OperationStatusData(
+            code = OperationStatus.ENCRYPTING_RATE,
+            speedMiBPerSecond = 12.34,
+            eta = "01:02:03",
+        )
+        val detail = OperationProgressDetail(code = "ITEM_COUNT", current = 3, total = 10)
+        val state = TestDataBuilders.createOperationState(
+            type = OperationType.ENCRYPT,
+            status = status,
+            detail = detail,
+            progress = 0.3f,
+            done = false,
+        )
+
+        assertEquals(
+            OperationUiState.Running(OperationType.ENCRYPT, 0.3f, status, detail),
+            state.toUiState(),
+        )
     }
 }

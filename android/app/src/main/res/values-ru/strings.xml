@@ -127,11 +127,46 @@
     <string name="fgs_decrypting">Расшифровка</string>
     <string name="fgs_working">Выполняется…</string>
 
-    <!-- Operation status display text; OperationStatus.kt constants remain bridge strings. -->
+    <!-- Operation status display text keyed by stable mobile status codes. -->
     <string name="status_starting">Запуск…</string>
     <string name="status_completed">Готово</string>
     <string name="status_cancelled">Отменено</string>
     <string name="status_error">Ошибка</string>
+    <string name="status_compressing_files">Сжатие файлов…</string>
+    <string name="status_generating_values">Создание значений…</string>
+    <string name="status_deriving_key">Формирование ключа…</string>
+    <string name="status_reading_keyfiles">Чтение ключевых файлов…</string>
+    <string name="status_calculating_values">Вычисление значений…</string>
+    <string name="status_writing_values">Запись значений…</string>
+    <string name="status_splitting">Разделение…</string>
+    <string name="status_recombining_chunks">Объединение частей…</string>
+    <string name="status_reading_values">Чтение значений…</string>
+    <string name="status_duplicate_keyfiles_warning">Предупреждение: обнаружены повторяющиеся ключевые файлы (они взаимно исключаются)…</string>
+    <string name="status_verifying_integrity">Проверка целостности (этап 1 из 2)…</string>
+    <string name="status_mac_verification_failed_continuing">Проверка MAC не пройдена, операция всё равно продолжается…</string>
+    <string name="status_repairing_verifying">Восстановление (проверка)…</string>
+    <string name="status_integrity_verified_decrypting">Целостность подтверждена, идёт расшифровка…</string>
+    <string name="status_comparing_values">Сравнение значений…</string>
+    <string name="status_unzipping">Распаковка…</string>
+    <string name="status_adding_plausible_deniability">Добавление правдоподобного отрицания…</string>
+    <string name="status_removing_deniability_protection">Удаление защиты правдоподобного отрицания…</string>
+    <string name="status_compressing_rate">Сжатие: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_encrypting_rate">Шифрование: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_splitting_rate">Разделение: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_recombining_rate">Объединение: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_verifying_rate">Проверка: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_decrypting_rate">Расшифровка: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_repairing_rate">Восстановление: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_unpacking_rate">Распаковка: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_adding_deniability_rate">Добавление правдоподобного отрицания: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_removing_deniability_rate">Удаление правдоподобного отрицания: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="progress_percent">%1$.2f%%</string>
+    <plurals name="progress_item_count">
+        <item quantity="one">%1$d из %2$d элемента</item>
+        <item quantity="few">%1$d из %2$d элементов</item>
+        <item quantity="many">%1$d из %2$d элементов</item>
+        <item quantity="other">%1$d из %2$d элементов</item>
+    </plurals>
 
     <!-- Stable error display boundary -->
     <string name="error_auth_failed">Аутентификация не удалась. Проверьте пароль, ключевые файлы и их порядок.</string>

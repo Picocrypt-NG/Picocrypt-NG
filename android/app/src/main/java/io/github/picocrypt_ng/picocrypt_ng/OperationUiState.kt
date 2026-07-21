@@ -6,8 +6,8 @@ sealed interface OperationUiState {
     data class Running(
         val type: OperationType,
         val progress: Float,
-        val status: String,
-        val info: String,
+        val status: OperationStatusData,
+        val detail: OperationProgressDetail,
     ) : OperationUiState
     data class Cancelled(val type: OperationType) : OperationUiState
     data class Success(val type: OperationType) : OperationUiState
@@ -32,8 +32,8 @@ sealed interface OperationUiState {
  */
 fun OperationState?.toUiState(): OperationUiState = when {
     this == null -> OperationUiState.Idle
-    !done -> OperationUiState.Running(type, progress, status, info)
+    !done -> OperationUiState.Running(type, progress, status, detail)
     error != null -> OperationUiState.Failed(type, error)
-    status == OperationStatus.CANCELLED -> OperationUiState.Cancelled(type)
+    status.code == OperationStatus.CANCELLED -> OperationUiState.Cancelled(type)
     else -> OperationUiState.Success(type)
 }

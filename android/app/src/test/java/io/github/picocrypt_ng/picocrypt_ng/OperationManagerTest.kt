@@ -160,6 +160,104 @@ class OperationManagerTest {
         
         assertNull("Should return null when no operation", result)
     }
+
+    @Test
+    fun `pollProgress projects semantic status and detail into operation state`() = runTest {
+        val status = OperationStatusData(
+            OperationStatus.ENCRYPTING_RATE,
+            speedMiBPerSecond = 12.34,
+            eta = "01:02:03",
+        )
+        val detail = OperationProgressDetail("ITEM_COUNT", current = 3, total = 10)
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(
+                id = "op_semantic",
+                status = OperationStatusData(OperationStatus.STARTING),
+                detail = OperationProgressDetail("NONE"),
+                progress = 0f,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.getProgress("op_semantic") } returns Result.success(
+                ProgressState(status, detail, progress = 0.3f, done = false)
+            )
+
+            val result = OperationManager.pollProgress()
+
+            assertEquals(status, result?.status)
+            assertEquals(detail, result?.detail)
+            assertEquals(0.3f, result?.progress ?: -1f, 0.001f)
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `raw cancelled diagnostic cannot override a non-cancelled semantic status`() = runTest {
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(
+                id = "op_not_cancelled",
+                status = OperationStatusData(OperationStatus.STARTING),
+                done = false,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.getProgress("op_not_cancelled") } returns Result.success(
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.UNKNOWN),
+                    detail = OperationProgressDetail("NONE"),
+                    progress = 1f,
+                    done = true,
+                    technicalError = "Cancelled",
+                    errorCode = "CANCELLED",
+                )
+            )
+
+            val result = OperationManager.pollProgress()
+
+            assertNull("Non-ERROR semantic status must not create an AppError", result?.error)
+            assertEquals(OperationUiState.Success(OperationType.ENCRYPT), result.toUiState())
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `semantic error status classifies the distinct technical error and code`() = runTest {
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(
+                id = "op_error",
+                type = OperationType.DECRYPT,
+                status = OperationStatusData(OperationStatus.STARTING),
+                done = false,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.getProgress("op_error") } returns Result.success(
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.ERROR),
+                    detail = OperationProgressDetail("NONE"),
+                    progress = 0.4f,
+                    done = true,
+                    technicalError = "diagnostic auth failure",
+                    errorCode = "AUTH_FAILED",
+                )
+            )
+
+            val result = OperationManager.pollProgress()
+
+            assertTrue(result?.error is AppError.OperationError.PasswordAuth)
+            assertEquals("diagnostic auth failure", result?.error?.technicalMessage)
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
     
     @Test
     fun `pollProgress does not overwrite a terminal (done) state with a stale poll`() = runTest {
@@ -189,7 +287,12 @@ class OperationManagerTest {
 
             // First poll transitions the operation to a terminal done=true state.
             every { GoBridge.getProgress("op_test") } returns Result.success(
-                ProgressState(status = "Completed", progress = 1f, info = "", done = true)
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.COMPLETED),
+                    detail = OperationProgressDetail("NONE"),
+                    progress = 1f,
+                    done = true,
+                )
             )
             val terminal = OperationManager.pollProgress()
             assertNotNull("Poll should return the terminal state", terminal)
@@ -197,14 +300,23 @@ class OperationManagerTest {
 
             // A later (slow/concurrent) poll reports a stale, non-terminal progress.
             every { GoBridge.getProgress("op_test") } returns Result.success(
-                ProgressState(status = "Working...", progress = 0.42f, info = "stale", done = false)
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.UNKNOWN),
+                    detail = OperationProgressDetail("UNKNOWN"),
+                    progress = 0.42f,
+                    done = false,
+                )
             )
             val afterStale = OperationManager.pollProgress()
 
             // The done-guard must keep the terminal state intact, not regress it.
             assertNotNull(afterStale)
             assertTrue("Done flag must remain true", afterStale!!.done)
-            assertEquals("Status must not regress", "Completed", afterStale.status)
+            assertEquals(
+                "Status must not regress",
+                OperationStatusData(OperationStatus.COMPLETED),
+                afterStale.status,
+            )
             assertEquals("Progress must not regress", 1f, afterStale.progress, 0.001f)
             assertSame(
                 "Terminal state must be returned unchanged",
@@ -268,7 +380,12 @@ class OperationManagerTest {
             every { GoBridge.getProgress("op_clear") } answers {
                 flow.value = null
                 Result.success(
-                    ProgressState(status = "Encrypting", progress = 0.5f, info = "", done = false)
+                    ProgressState(
+                        status = OperationStatusData(OperationStatus.ENCRYPTING_RATE, 12.34, "01:02:03"),
+                        detail = OperationProgressDetail("NONE"),
+                        progress = 0.5f,
+                        done = false,
+                    )
                 )
             }
 
@@ -312,7 +429,7 @@ class OperationManagerTest {
             val replacement = TestDataBuilders.createOperationState(
                 id = "op_new",
                 type = OperationType.ENCRYPT,
-                status = "Starting...",
+                status = OperationStatusData(OperationStatus.STARTING),
                 progress = 0f,
                 done = false
             )
@@ -325,7 +442,12 @@ class OperationManagerTest {
             every { GoBridge.getProgress("op_old") } answers {
                 flow.value = replacement
                 Result.success(
-                    ProgressState(status = "Encrypting", progress = 0.5f, info = "", done = false)
+                    ProgressState(
+                        status = OperationStatusData(OperationStatus.ENCRYPTING_RATE, 12.34, "01:02:03"),
+                        detail = OperationProgressDetail("NONE"),
+                        progress = 0.5f,
+                        done = false,
+                    )
                 )
             }
 
@@ -537,14 +659,16 @@ class OperationManagerTest {
     @Test
     fun `OperationState has correct structure`() {
         val formData = TestDataBuilders.createEncryptFormData()
+        val status = OperationStatusData(OperationStatus.ENCRYPTING_RATE, 12.34, "01:02:03")
+        val detail = OperationProgressDetail("ITEM_COUNT", 3, 10)
         val operationState = TestDataBuilders.createOperationState(
             id = "op_123",
             type = OperationType.ENCRYPT,
             inputFile = "/input.txt",
             outputFile = "/output.pcv",
-            status = "Processing",
+            status = status,
+            detail = detail,
             progress = 0.5f,
-            info = "Encrypting...",
             done = false,
             formData = formData
         )
@@ -553,9 +677,9 @@ class OperationManagerTest {
         assertEquals(OperationType.ENCRYPT, operationState.type)
         assertEquals("/input.txt", operationState.inputFile)
         assertEquals("/output.pcv", operationState.outputFile)
-        assertEquals("Processing", operationState.status)
+        assertEquals(status, operationState.status)
         assertEquals(0.5f, operationState.progress, 0.001f)
-        assertEquals("Encrypting...", operationState.info)
+        assertEquals(detail, operationState.detail)
         assertEquals(false, operationState.done)
         assertEquals(formData, operationState.formData)
     }
@@ -809,5 +933,14 @@ class OperationManagerTest {
         } finally {
             unmockkObject(GoBridge)
         }
+    }
+
+    private fun setCurrentOperationForTest(state: OperationState?) {
+        val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
+        stateField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val flow = stateField.get(OperationManager)
+            as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
+        flow.value = state
     }
 }
