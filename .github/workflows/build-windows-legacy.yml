@@ -55,7 +55,23 @@ jobs:
       shell: pwsh
       run: |
         # Download go-legacy-win7 (Go 1.26.5 with Windows 7 support)
-        Invoke-WebRequest -OutFile go-legacy.zip https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.5-1/go-legacy-win7-1.26.5-1.windows_amd64.zip
+        curl.exe `
+          --fail `
+          --location `
+          --silent `
+          --show-error `
+          --retry 3 `
+          --retry-all-errors `
+          --retry-delay 2 `
+          --connect-timeout 30 `
+          --max-time 300 `
+          --retry-max-time 600 `
+          --remove-on-error `
+          --output go-legacy.zip `
+          https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.5-1/go-legacy-win7-1.26.5-1.windows_amd64.zip
+        if ($LASTEXITCODE -ne 0) {
+          throw "go-legacy-win7 download failed with exit code $LASTEXITCODE"
+        }
         $expectedHash = $env:GO_LEGACY_SHA256
         $actualHash = (Get-FileHash go-legacy.zip -Algorithm SHA256).Hash.ToLower()
         if ($actualHash -ne $expectedHash) {
@@ -111,7 +127,23 @@ jobs:
     - name: Compress with upx
       shell: pwsh
       run: |
-        Invoke-WebRequest -OutFile upx.zip https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-win64.zip
+        curl.exe `
+          --fail `
+          --location `
+          --silent `
+          --show-error `
+          --retry 3 `
+          --retry-all-errors `
+          --retry-delay 2 `
+          --connect-timeout 30 `
+          --max-time 300 `
+          --retry-max-time 600 `
+          --remove-on-error `
+          --output upx.zip `
+          https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-win64.zip
+        if ($LASTEXITCODE -ne 0) {
+          throw "UPX download failed with exit code $LASTEXITCODE"
+        }
         $expectedHash = $env:UPX_SHA256
         $actualHash = (Get-FileHash upx.zip -Algorithm SHA256).Hash.ToLower()
         if ($actualHash -ne $expectedHash) {

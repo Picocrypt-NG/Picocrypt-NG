@@ -96,6 +96,31 @@ func TestExternalGitHubActionsPinnedToFullSHAWithVersionComment(t *testing.T) {
 	}
 }
 
+func TestSignAndAttestUsesApprovedCosign(t *testing.T) {
+	const path = ".github/actions/sign-and-attest/action.yml"
+	action := mustReadCompositeActionDoc(t, path)
+	if action.Runs.Using != "composite" {
+		t.Fatalf("sign-and-attest runs.using = %q, want composite", action.Runs.Using)
+	}
+	installStep := mustCompositeStepNamed(t, action, "Install cosign")
+
+	const installerRef = "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6"
+	if installStep.Uses != installerRef {
+		t.Fatalf("Install cosign uses = %q, want %q", installStep.Uses, installerRef)
+	}
+	if got := installStep.With["cosign-release"]; got != "v3.1.2" {
+		t.Fatalf("Install cosign cosign-release = %#v, want v3.1.2", got)
+	}
+
+	content := mustReadRepoFile(t, path)
+	const installerLine = "uses: " + installerRef + " # v4.1.2"
+	mustMatch(t, content, `(?m)^\s*`+regexp.QuoteMeta(installerLine)+`\s*$`)
+	if got := strings.Count(content, installerLine); got != 1 {
+		t.Fatalf("cosign installer line count = %d, want exactly 1", got)
+	}
+	mustNotContain(t, content, "cosign-release: 'v3.1.1'")
+}
+
 func TestReleaseJobsRequireMainBranchAndReleaseEnvironment(t *testing.T) {
 	const releaseGuard = "${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release) }}"
 	const signPathReleaseGuard = "${{ github.ref == 'refs/heads/main' && !inputs.signpath_test && !inputs.signpath_release_dry_run && (github.event_name == 'push' || inputs.publish_release) }}"
@@ -823,6 +848,120 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 	}
 }
 
+func TestWindowsWorkflowsUseApprovedResourceHacker528(t *testing.T) {
+	const expectedHash = "b611be2f35cb44efd1c29df03e7ebe62bd556a500585680e1afa5e073eaf1756"
+	for _, tc := range []struct {
+		path string
+		job  string
+	}{
+		{path: ".github/workflows/build-windows.yml", job: "build"},
+		{path: ".github/workflows/pr-test-build-windows.yml", job: "pr-test-build-windows"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			workflow := mustReadWorkflowDoc(t, tc.path)
+			job := mustJob(t, workflow, tc.job)
+			if got := job.Env["RESHACKER_SHA256"]; got != expectedHash {
+				t.Fatalf("RESHACKER_SHA256 = %q, want %q", got, expectedHash)
+			}
+			resourceStep := mustStepNamed(t, job, "Add icon, manifest, and version info")
+			if resourceStep.Shell != "pwsh" {
+				t.Fatalf("Resource Hacker step shell = %q, want pwsh", resourceStep.Shell)
+			}
+			mustContain(t, resourceStep.Run, "https://www.angusj.com/resourcehacker/reshacker_setup.exe")
+			mustNotContain(t, resourceStep.Run, "github.com/user-attachments")
+			mustNotContain(t, resourceStep.Run, "reshacker_setup.zip")
+			mustNotContain(t, resourceStep.Run, "Expand-Archive")
+			mustContainActiveLines(t, resourceStep.Run,
+				"if ($installer.ExitCode -ne 0) {",
+				`throw "Resource Hacker installer failed with exit code $($installer.ExitCode)"`,
+				"}",
+				"if (-not (Test-Path -LiteralPath $env:P -PathType Leaf)) {",
+				`throw "Resource Hacker executable was not installed at $env:P"`,
+				"}",
+				"function Invoke-ResourceHacker {",
+			)
+		})
+	}
+}
+
+func TestWindowsDownloadsAreBoundedAndChecksumGated(t *testing.T) {
+	const (
+		resourceHackerURL = "https://www.angusj.com/resourcehacker/reshacker_setup.exe"
+		upxURL            = "https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-win64.zip"
+		legacyGoURL       = "https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.5-1/go-legacy-win7-1.26.5-1.windows_amd64.zip"
+	)
+	cases := []struct {
+		name     string
+		path     string
+		job      string
+		step     string
+		output   string
+		url      string
+		hashEnv  string
+		consumer string
+	}{
+		{
+			name: "release-resource-hacker", path: ".github/workflows/build-windows.yml",
+			job: "build", step: "Add icon, manifest, and version info",
+			output: "reshacker_setup.exe", url: resourceHackerURL,
+			hashEnv: "RESHACKER_SHA256", consumer: "$installer = Start-Process `",
+		},
+		{
+			name: "pr-resource-hacker", path: ".github/workflows/pr-test-build-windows.yml",
+			job: "pr-test-build-windows", step: "Add icon, manifest, and version info",
+			output: "reshacker_setup.exe", url: resourceHackerURL,
+			hashEnv: "RESHACKER_SHA256", consumer: "$installer = Start-Process `",
+		},
+		{
+			name: "release-upx", path: ".github/workflows/build-windows.yml",
+			job: "build", step: "Compress with upx",
+			output: "upx.zip", url: upxURL,
+			hashEnv: "UPX_SHA256", consumer: "Expand-Archive -DestinationPath upx upx.zip",
+		},
+		{
+			name: "pr-upx", path: ".github/workflows/pr-test-build-windows.yml",
+			job: "pr-test-build-windows", step: "Compress with upx",
+			output: "upx.zip", url: upxURL,
+			hashEnv: "UPX_SHA256", consumer: "Expand-Archive -DestinationPath upx upx.zip",
+		},
+		{
+			name: "legacy-release-go", path: ".github/workflows/build-windows-legacy.yml",
+			job: "build", step: "Download go-legacy-win7",
+			output: "go-legacy.zip", url: legacyGoURL,
+			hashEnv: "GO_LEGACY_SHA256", consumer: `Expand-Archive -DestinationPath C:\go-legacy go-legacy.zip`,
+		},
+		{
+			name: "legacy-pr-go", path: ".github/workflows/pr-test-build-windows-legacy.yml",
+			job: "pr-test-build-windows-legacy", step: "Download go-legacy-win7",
+			output: "go-legacy.zip", url: legacyGoURL,
+			hashEnv: "GO_LEGACY_SHA256", consumer: `Expand-Archive -DestinationPath C:\go-legacy go-legacy.zip`,
+		},
+		{
+			name: "legacy-release-upx", path: ".github/workflows/build-windows-legacy.yml",
+			job: "build", step: "Compress with upx",
+			output: "upx.zip", url: upxURL,
+			hashEnv: "UPX_SHA256", consumer: "Expand-Archive -DestinationPath upx upx.zip",
+		},
+		{
+			name: "legacy-pr-upx", path: ".github/workflows/pr-test-build-windows-legacy.yml",
+			job: "pr-test-build-windows-legacy", step: "Compress with upx",
+			output: "upx.zip", url: upxURL,
+			hashEnv: "UPX_SHA256", consumer: "Expand-Archive -DestinationPath upx upx.zip",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workflow := mustReadWorkflowDoc(t, tc.path)
+			step := mustStepNamed(t, mustJob(t, workflow, tc.job), tc.step)
+			if step.Shell != "pwsh" {
+				t.Fatalf("download step shell = %q, want pwsh", step.Shell)
+			}
+			mustUseBoundedCurlDownload(t, step.Run, tc.output, tc.url, tc.hashEnv, tc.consumer)
+		})
+	}
+}
+
 func TestWindowsResourceEditingWaitsAndFailsLoud(t *testing.T) {
 	for _, tc := range []struct {
 		path string
@@ -842,7 +981,7 @@ func TestWindowsResourceEditingWaitsAndFailsLoud(t *testing.T) {
 			}
 			mustContainInOrder(t, resourceStep.Run,
 				"$installer = Start-Process",
-				`-FilePath "reshacker_setup/reshacker_setup.exe"`,
+				`-FilePath "reshacker_setup.exe"`,
 				`-ArgumentList "/SILENT"`,
 				"-Wait -PassThru",
 				"if ($installer.ExitCode -ne 0)",
