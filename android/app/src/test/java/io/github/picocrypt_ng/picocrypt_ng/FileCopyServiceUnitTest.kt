@@ -8,6 +8,7 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.createTempDirectory
@@ -22,6 +23,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -367,6 +369,125 @@ class FileCopyServiceUnitTest {
         } finally {
             internalDir.setReadable(true, false)
             internalDir.setExecutable(true, false)
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cleanupKeyfiles_reportsFailureWhenInternalPathIsAFile() = runTest {
+        val filesDir = createTempDirectory("picocrypt-keyfile-cleanup-path").toFile()
+        val internalPath = File(filesDir, "picocrypt_files")
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+        internalPath.writeBytes(byteArrayOf(1))
+
+        try {
+            val result = FileCopyService.cleanupKeyfiles(context)
+
+            assertFalse("Cleanup must fail when its internal path is not a directory", result)
+            assertTrue("A non-directory internal path must not be reported as removed", internalPath.exists())
+        } finally {
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cleanupKeyfiles_reportsFailureWhenInternalDirectoryCannotBeListed() = runTest {
+        val filesDir = createTempDirectory("picocrypt-keyfile-cleanup-unlistable").toFile()
+        val internalDir = File(filesDir, "picocrypt_files")
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+        assertTrue("Internal directory should be created for test setup", internalDir.mkdirs())
+        File(internalDir, "keyfile_0").writeBytes(byteArrayOf(1))
+
+        try {
+            assertTrue(
+                "Test setup should remove read permission from the internal directory",
+                internalDir.setReadable(false, false),
+            )
+            assertTrue(
+                "Test setup should remove execute permission from the internal directory",
+                internalDir.setExecutable(false, false),
+            )
+            assertNull(
+                "Test setup must make the existing directory unlistable",
+                internalDir.listFiles(),
+            )
+
+            val result = FileCopyService.cleanupKeyfiles(context)
+
+            assertFalse("Cleanup must fail loud when keyfiles cannot be listed", result)
+        } finally {
+            internalDir.setReadable(true, false)
+            internalDir.setExecutable(true, false)
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cleanupKeyfiles_reportsFailureForMatchingDirectory() = runTest {
+        val filesDir = createTempDirectory("picocrypt-keyfile-cleanup-entry").toFile()
+        val internalDir = File(filesDir, "picocrypt_files")
+        val matchingDirectory = File(internalDir, "keyfile_0")
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+        assertTrue("Matching directory should be created for test setup", matchingDirectory.mkdirs())
+
+        try {
+            val result = FileCopyService.cleanupKeyfiles(context)
+
+            assertFalse("Cleanup must fail when a keyfile path is not a regular file", result)
+            assertTrue("Cleanup must not claim the matching directory was removed", matchingDirectory.exists())
+        } finally {
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cleanupKeyfiles_rejectsLiveInternalDirectorySymlinkWithoutDeletingTarget() = runTest {
+        val filesDir = createTempDirectory("picocrypt-keyfile-cleanup-root").toFile()
+        val outsideDir = createTempDirectory("picocrypt-keyfile-cleanup-outside").toFile()
+        val internalLink = File(filesDir, "picocrypt_files")
+        val outsideKeyfile = File(outsideDir, "keyfile_0").apply { writeBytes(byteArrayOf(1)) }
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+        Files.createSymbolicLink(internalLink.toPath(), outsideDir.toPath())
+
+        try {
+            val result = FileCopyService.cleanupKeyfiles(context)
+
+            assertFalse("Cleanup must reject a symlinked internal root", result)
+            assertTrue("Cleanup must not delete a keyfile outside app storage", outsideKeyfile.exists())
+            assertTrue(
+                "The rejected root symlink must remain visible",
+                Files.isSymbolicLink(internalLink.toPath()),
+            )
+        } finally {
+            Files.deleteIfExists(internalLink.toPath())
+            filesDir.deleteRecursively()
+            outsideDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cleanupKeyfiles_rejectsDanglingInternalDirectorySymlink() = runTest {
+        val filesDir = createTempDirectory("picocrypt-keyfile-cleanup-dangling").toFile()
+        val internalLink = File(filesDir, "picocrypt_files")
+        val missingTarget = File(filesDir, "missing-target")
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+        Files.createSymbolicLink(internalLink.toPath(), missingTarget.toPath())
+
+        try {
+            val result = FileCopyService.cleanupKeyfiles(context)
+
+            assertFalse("Cleanup must fail loud for a dangling internal root symlink", result)
+            assertTrue(
+                "The dangling root symlink must not be mistaken for an absent path",
+                Files.isSymbolicLink(internalLink.toPath()),
+            )
+        } finally {
+            Files.deleteIfExists(internalLink.toPath())
             filesDir.deleteRecursively()
         }
     }

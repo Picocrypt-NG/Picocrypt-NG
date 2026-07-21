@@ -412,15 +412,29 @@ object FileCopyService {
         return try {
             withContext(Dispatchers.IO) {
                 try {
-                    val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-                    if (!internalDir.exists() || !internalDir.isDirectory) {
+                    val filesDir = context.filesDir
+                    // File.exists() follows live links and treats dangling links as absent.
+                    // Inspect the parent entry first, then require the root to resolve in place.
+                    val entries = filesDir.list() ?: return@withContext false
+                    if (INTERNAL_FILES_DIR !in entries) {
                         return@withContext true
                     }
 
+                    val internalDir = File(filesDir, INTERNAL_FILES_DIR)
+                    val expectedInternalDir = File(filesDir.canonicalFile, INTERNAL_FILES_DIR)
+                    if (internalDir.canonicalFile != expectedInternalDir ||
+                        !internalDir.exists() ||
+                        !internalDir.isDirectory
+                    ) {
+                        return@withContext false
+                    }
+
+                    val files = internalDir.listFiles() ?: return@withContext false
+
                     var allSuccess = true
-                    internalDir.listFiles()?.forEach { file ->
-                        if (file.isFile && file.name.startsWith("keyfile_")) {
-                            if (!file.delete()) {
+                    files.forEach { file ->
+                        if (file.name.startsWith("keyfile_")) {
+                            if (!file.isFile || !file.delete() || file.exists()) {
                                 allSuccess = false
                             }
                         }

@@ -36,7 +36,7 @@ import io.github.picocrypt_ng.picocrypt_ng.KeyfileInfo
 import io.github.picocrypt_ng.picocrypt_ng.LocalizedMessageArg
 import io.github.picocrypt_ng.picocrypt_ng.MainViewModel
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.lifecycle.viewModelScope
 import androidx.compose.ui.res.stringResource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -342,22 +342,22 @@ internal fun ClearKeyfiles(
     viewModel: MainViewModel,
     cleanupKeyfiles: suspend (Context) -> Boolean,
 ) {
-    val context = LocalContext.current
-    val resources = LocalResources.current
-    val scope = rememberCoroutineScope()
+    val context = LocalContext.current.applicationContext
+    val deleteFailedMessage = stringResource(R.string.error_delete_failed)
+    val scope = viewModel.viewModelScope
     
     Button(
         onClick = { 
             scope.launch {
-                withKeyfileMutation {
-                    withContext(NonCancellable) {
+                withContext(NonCancellable) {
+                    withKeyfileMutation {
                         if (cleanupKeyfiles(context)) {
                             val updatedFormData = viewModel.formState.value
                             viewModel.updateFormData(updatedFormData.copy(keyfileFilenames = emptyList()))
                         } else {
                             viewModel.setError(
                                 AppError.FileError.DeleteFailed(
-                                    userMessage = resources.getString(R.string.error_delete_failed),
+                                    userMessage = deleteFailedMessage,
                                     technicalMessage = "Failed to remove all internal keyfiles",
                                     messageResId = R.string.error_delete_failed,
                                 )
