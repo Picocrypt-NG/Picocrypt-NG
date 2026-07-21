@@ -8,12 +8,27 @@ import java.io.IOException
 import java.util.Collections
 import java.util.IdentityHashMap
 
+data class LocalizedMessageArg(@StringRes val id: Int)
+
+private fun List<Any>.resolveLocalizedMessageArgs(
+    resolveString: (Int) -> String,
+): Array<Any> = map { argument ->
+    if (argument is LocalizedMessageArg) {
+        resolveString(argument.id)
+    } else {
+        argument
+    }
+}.toTypedArray()
+
 fun AppError.localizedMessage(context: Context): String {
     val id = messageResId ?: return userMessage
     return if (messageArgs.isEmpty()) {
         context.getString(id)
     } else {
-        context.getString(id, *messageArgs.toTypedArray())
+        context.getString(
+            id,
+            *messageArgs.resolveLocalizedMessageArgs { context.getString(it) },
+        )
     }
 }
 
@@ -22,7 +37,10 @@ fun AppError.localizedMessage(resources: Resources): String {
     return if (messageArgs.isEmpty()) {
         resources.getString(id)
     } else {
-        resources.getString(id, *messageArgs.toTypedArray())
+        resources.getString(
+            id,
+            *messageArgs.resolveLocalizedMessageArgs { resources.getString(it) },
+        )
     }
 }
 

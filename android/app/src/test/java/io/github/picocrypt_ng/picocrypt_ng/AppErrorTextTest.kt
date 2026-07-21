@@ -171,29 +171,74 @@ class AppErrorTextTest {
     }
 
     @Test
-    fun `Resources overloads localize the keyfile wrapper and confine raw detail`() {
-        val resources = mockk<Resources>()
+    fun `same semantic error relocalizes wrapper and reason for current Resources`() {
+        val englishResources = mockk<Resources>()
+        val germanResources = mockk<Resources>()
+        val germanContext = mockk<Context>()
         every {
-            resources.getString(R.string.error_reason_permission_denied)
-        } returns "Localized permission denial"
+            englishResources.getString(R.string.error_reason_permission_denied)
+        } returns "Permission denied"
         every {
-            resources.getString(R.string.keyfile_create_failed, "Localized permission denial")
-        } returns "Localized keyfile failure: Localized permission denial"
+            englishResources.getString(R.string.keyfile_create_failed, "Permission denied")
+        } returns "Failed to create keyfile: Permission denied"
+        every {
+            germanResources.getString(R.string.error_reason_permission_denied)
+        } returns "Zugriff verweigert"
+        every {
+            germanResources.getString(R.string.keyfile_create_failed, "Zugriff verweigert")
+        } returns "Schlüsseldatei konnte nicht erstellt werden: Zugriff verweigert"
+        every {
+            germanContext.getString(R.string.error_reason_permission_denied)
+        } returns "Zugriff verweigert"
+        every {
+            germanContext.getString(R.string.keyfile_create_failed, "Zugriff verweigert")
+        } returns "Schlüsseldatei konnte nicht erstellt werden: Zugriff verweigert"
 
         val raw = "raw keyfile failure /private/path"
-        val reason = localizedFailureReason(resources, SecurityException(raw))
         val error = AppError.FileError.SaveFailed(
             userMessage = "Localized fallback without raw detail",
             technicalMessage = raw,
             messageResId = R.string.keyfile_create_failed,
-            messageArgs = listOf(reason),
+            messageArgs = listOf(LocalizedMessageArg(R.string.error_reason_permission_denied)),
         )
-        val display = error.localizedMessage(resources)
 
-        assertEquals("Localized keyfile failure: Localized permission denial", display)
-        assertFalse(display.contains(raw))
+        assertEquals(
+            "Failed to create keyfile: Permission denied",
+            error.localizedMessage(englishResources),
+        )
+        assertEquals(
+            "Schlüsseldatei konnte nicht erstellt werden: Zugriff verweigert",
+            error.localizedMessage(germanResources),
+        )
+        assertEquals(
+            "Schlüsseldatei konnte nicht erstellt werden: Zugriff verweigert",
+            error.localizedMessage(germanContext),
+        )
+        assertFalse(error.localizedMessage(englishResources).contains("LocalizedMessageArg"))
+        assertFalse(error.localizedMessage(germanResources).contains(raw))
         assertEquals(raw, error.technicalMessage)
         assertFalse(error.userMessage.contains(raw))
+    }
+
+    @Test
+    fun `ordinary String Long and Double format arguments pass through unchanged`() {
+        val resources = mockk<Resources>()
+        val context = mockk<Context>()
+        every {
+            resources.getString(R.string.error_operation_failed, "name", 42L, 1.5)
+        } returns "resources ordinary args"
+        every {
+            context.getString(R.string.error_operation_failed, "name", 42L, 1.5)
+        } returns "context ordinary args"
+
+        val error = AppError.OperationError.GenericOperation(
+            userMessage = "Safe fallback",
+            messageResId = R.string.error_operation_failed,
+            messageArgs = listOf("name", 42L, 1.5),
+        )
+
+        assertEquals("resources ordinary args", error.localizedMessage(resources))
+        assertEquals("context ordinary args", error.localizedMessage(context))
     }
 
     private fun formatSpecifiers(path: String, resourceName: String): List<String> {

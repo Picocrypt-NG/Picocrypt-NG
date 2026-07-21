@@ -48,6 +48,7 @@ class StagingServiceTest {
     @Test
     fun `staging failure wrappers use localized reasons and keep raw detail diagnostic only`() {
         val context = mockk<Context>()
+        val alternateResources = mockk<android.content.res.Resources>()
         every {
             context.getString(R.string.error_reason_permission_denied)
         } returns "Localized permission denial"
@@ -57,14 +58,31 @@ class StagingServiceTest {
         every {
             context.getString(R.string.error_copy_files_failed, "Localized permission denial")
         } returns "Localized copy failure: Localized permission denial"
+        every {
+            alternateResources.getString(R.string.error_reason_permission_denied)
+        } returns "Alternate permission denial"
+        every {
+            alternateResources.getString(R.string.error_read_folder_failed, "Alternate permission denial")
+        } returns "Alternate folder failure: Alternate permission denial"
+        every {
+            alternateResources.getString(R.string.error_copy_files_failed, "Alternate permission denial")
+        } returns "Alternate copy failure: Alternate permission denial"
 
         val raw = "raw provider detail /private/path"
         val expected = listOf(
-            R.string.error_read_folder_failed to "Localized folder failure: Localized permission denial",
-            R.string.error_copy_files_failed to "Localized copy failure: Localized permission denial",
+            Triple(
+                R.string.error_read_folder_failed,
+                "Localized folder failure: Localized permission denial",
+                "Alternate folder failure: Alternate permission denial",
+            ),
+            Triple(
+                R.string.error_copy_files_failed,
+                "Localized copy failure: Localized permission denial",
+                "Alternate copy failure: Alternate permission denial",
+            ),
         )
 
-        expected.forEach { (wrapperResource, localizedDisplay) ->
+        expected.forEach { (wrapperResource, localizedFallback, alternateDisplay) ->
             val error = StagingService.localizedCopyError(
                 context,
                 wrapperResource,
@@ -72,11 +90,17 @@ class StagingServiceTest {
             )
 
             assertEquals(wrapperResource, error.messageResId)
-            assertEquals(listOf("Localized permission denial"), error.messageArgs)
+            assertEquals(
+                listOf(LocalizedMessageArg(R.string.error_reason_permission_denied)),
+                error.messageArgs,
+            )
             assertEquals(raw, error.technicalMessage)
-            assertEquals(localizedDisplay, error.localizedMessage(context))
+            assertEquals(localizedFallback, error.userMessage)
+            assertEquals(localizedFallback, error.localizedMessage(context))
+            assertEquals(alternateDisplay, error.localizedMessage(alternateResources))
             assertFalse(error.userMessage.contains(raw))
             assertFalse(error.messageArgs.any { it.toString().contains(raw) })
+            assertFalse(error.localizedMessage(alternateResources).contains("LocalizedMessageArg"))
         }
     }
 

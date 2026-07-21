@@ -225,12 +225,13 @@ object StagingService {
         @StringRes messageResId: Int,
         error: Throwable,
     ): AppError.FileError.CopyFailed {
-        val reason = localizedFailureReason(context, error)
-        return copyError(
-            context = context,
+        val reasonResId = failureReasonResId(error)
+        val fallbackReason = context.getString(reasonResId)
+        return AppError.FileError.CopyFailed(
+            userMessage = context.getString(messageResId, fallbackReason),
+            technicalMessage = error.message ?: error.toString(),
             messageResId = messageResId,
-            tech = error.message ?: error.toString(),
-            messageArgs = listOf(reason),
+            messageArgs = listOf(LocalizedMessageArg(reasonResId)),
         )
     }
 

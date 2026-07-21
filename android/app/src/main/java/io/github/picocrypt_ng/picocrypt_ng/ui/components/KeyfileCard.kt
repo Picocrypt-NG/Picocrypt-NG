@@ -23,7 +23,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,6 +33,7 @@ import io.github.picocrypt_ng.picocrypt_ng.AppError
 import io.github.picocrypt_ng.picocrypt_ng.FileCopyService
 import io.github.picocrypt_ng.picocrypt_ng.FormData
 import io.github.picocrypt_ng.picocrypt_ng.KeyfileInfo
+import io.github.picocrypt_ng.picocrypt_ng.LocalizedMessageArg
 import io.github.picocrypt_ng.picocrypt_ng.MainViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
@@ -43,7 +43,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.security.SecureRandom
 import io.github.picocrypt_ng.picocrypt_ng.R
-import io.github.picocrypt_ng.picocrypt_ng.localizedFailureReason
+import io.github.picocrypt_ng.picocrypt_ng.failureReasonResId
 import io.github.picocrypt_ng.picocrypt_ng.localizedMessage
 
 
@@ -133,10 +133,9 @@ fun NewKeyfile(viewModel: MainViewModel) {
     var isCreating by remember { mutableStateOf(false) }
     var createdUri by remember { mutableStateOf<Uri?>(null) }
     var createdFileName by remember { mutableStateOf("") }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var showErrorDialog by rememberSaveable { mutableStateOf(false) }
-    val keyfileWriteFailedMsg = stringResource(R.string.keyfile_write_failed)
+    var localError by remember { mutableStateOf<AppError?>(null) }
     val unknownErrorMsg = stringResource(R.string.error_unknown)
+    val unknownErrorDisplay = stringResource(R.string.unknown_error_occurred)
     
     // Generate default filename with timestamp
     val defaultFileName = remember {
@@ -148,7 +147,7 @@ fun NewKeyfile(viewModel: MainViewModel) {
     LaunchedEffect(createdUri) {
         val uri = createdUri ?: return@LaunchedEffect
         isCreating = true
-        errorMessage = null
+        localError = null
         
         try {
             // Step 1: Generate 32 random bytes
@@ -173,8 +172,10 @@ fun NewKeyfile(viewModel: MainViewModel) {
             }
 
             if (!writeSuccess) {
-                errorMessage = keyfileWriteFailedMsg
-                showErrorDialog = true
+                localError = AppError.FileError.SaveFailed(
+                    userMessage = resources.getString(R.string.keyfile_write_failed),
+                    messageResId = R.string.keyfile_write_failed,
+                )
                 isCreating = false
                 createdUri = null
                 return@LaunchedEffect
@@ -205,20 +206,22 @@ fun NewKeyfile(viewModel: MainViewModel) {
                     AppError.fromException(error as? Exception ?: Exception(error.message ?: unknownErrorMsg))
                 }
                 viewModel.setError(appError)
-                errorMessage = appError.localizedMessage(resources)
-                showErrorDialog = true
+                localError = appError
             }
         } catch (e: Exception) {
-            val reason = localizedFailureReason(resources, e)
+            val reasonResId = failureReasonResId(e)
+            val fallbackReason = resources.getString(reasonResId)
             val appError = AppError.FileError.SaveFailed(
-                userMessage = resources.getString(R.string.keyfile_create_failed, reason),
+                userMessage = resources.getString(
+                    R.string.keyfile_create_failed,
+                    fallbackReason,
+                ),
                 technicalMessage = e.message ?: e.toString(),
                 messageResId = R.string.keyfile_create_failed,
-                messageArgs = listOf(reason),
+                messageArgs = listOf(LocalizedMessageArg(reasonResId)),
             )
             viewModel.setError(appError)
-            errorMessage = appError.localizedMessage(resources)
-            showErrorDialog = true
+            localError = appError
         } finally {
             isCreating = false
             createdUri = null
@@ -263,18 +266,20 @@ fun NewKeyfile(viewModel: MainViewModel) {
     }
     
     // Error dialog
-    if (showErrorDialog) {
+    localError?.let { error ->
         AlertDialog(
             onDismissRequest = { 
-                showErrorDialog = false
-                errorMessage = null
+                localError = null
             },
             title = { Text(text = stringResource(R.string.error_creating_keyfile)) },
-            text = { Text(text = errorMessage ?: stringResource(R.string.unknown_error_occurred)) },
+            text = {
+                Text(
+                    text = error.localizedMessage(resources).ifBlank { unknownErrorDisplay },
+                )
+            },
             confirmButton = {
                 TextButton(onClick = { 
-                    showErrorDialog = false
-                    errorMessage = null
+                    localError = null
                 }) {
                     Text(stringResource(R.string.ok))
                 }
