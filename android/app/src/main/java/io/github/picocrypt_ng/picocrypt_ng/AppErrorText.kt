@@ -1,6 +1,7 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
 import android.content.Context
+import android.content.res.Resources
 import androidx.annotation.StringRes
 import java.io.FileNotFoundException
 import java.io.IOException
@@ -13,6 +14,15 @@ fun AppError.localizedMessage(context: Context): String {
         context.getString(id)
     } else {
         context.getString(id, *messageArgs.toTypedArray())
+    }
+}
+
+fun AppError.localizedMessage(resources: Resources): String {
+    val id = messageResId ?: return userMessage
+    return if (messageArgs.isEmpty()) {
+        resources.getString(id)
+    } else {
+        resources.getString(id, *messageArgs.toTypedArray())
     }
 }
 
@@ -36,3 +46,6 @@ fun failureReasonResId(error: Throwable): Int {
 
 fun localizedFailureReason(context: Context, error: Throwable): String =
     context.getString(failureReasonResId(error))
+
+fun localizedFailureReason(resources: Resources, error: Throwable): String =
+    resources.getString(failureReasonResId(error))

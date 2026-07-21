@@ -28,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.unit.dp
 import io.github.picocrypt_ng.picocrypt_ng.AppError
 import io.github.picocrypt_ng.picocrypt_ng.FileCopyService
@@ -127,6 +128,7 @@ fun AddKeyfile(viewModel: MainViewModel) {
 @Composable
 fun NewKeyfile(viewModel: MainViewModel) {
     val context = LocalContext.current
+    val resources = LocalResources.current
     val formData by viewModel.formState.collectAsState()
     var isCreating by remember { mutableStateOf(false) }
     var createdUri by remember { mutableStateOf<Uri?>(null) }
@@ -203,19 +205,19 @@ fun NewKeyfile(viewModel: MainViewModel) {
                     AppError.fromException(error as? Exception ?: Exception(error.message ?: unknownErrorMsg))
                 }
                 viewModel.setError(appError)
-                errorMessage = appError.localizedMessage(context)
+                errorMessage = appError.localizedMessage(resources)
                 showErrorDialog = true
             }
         } catch (e: Exception) {
-            val reason = localizedFailureReason(context, e)
+            val reason = localizedFailureReason(resources, e)
             val appError = AppError.FileError.SaveFailed(
-                userMessage = context.getString(R.string.keyfile_create_failed, reason),
+                userMessage = resources.getString(R.string.keyfile_create_failed, reason),
                 technicalMessage = e.message ?: e.toString(),
                 messageResId = R.string.keyfile_create_failed,
                 messageArgs = listOf(reason),
             )
             viewModel.setError(appError)
-            errorMessage = appError.localizedMessage(context)
+            errorMessage = appError.localizedMessage(resources)
             showErrorDialog = true
         } finally {
             isCreating = false
@@ -337,7 +339,7 @@ fun KeyfileNames(viewModel: MainViewModel) {
 
 @Composable
 fun KeyfileCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
+    val resources = LocalResources.current
     val formData by viewModel.formState.collectAsState()
     if (!(formData.isDecrypt || formData.isEncrypt)) {
         return
@@ -359,13 +361,13 @@ fun KeyfileCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     
     // Build title with "Required" indicator if needed
     val titleText = if (keyfilesRequired) {
-        context.resources.getQuantityString(
+        resources.getQuantityString(
             R.plurals.keyfiles_required_count,
             formData.keyfileFilenames.size,
             formData.keyfileFilenames.size,
         )
     } else {
-        context.resources.getQuantityString(
+        resources.getQuantityString(
             R.plurals.keyfiles_count,
             formData.keyfileFilenames.size,
             formData.keyfileFilenames.size,

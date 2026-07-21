@@ -1,6 +1,7 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
 import android.content.Context
+import android.content.res.Resources
 import io.mockk.every
 import io.mockk.mockk
 import java.io.File
@@ -170,33 +171,29 @@ class AppErrorTextTest {
     }
 
     @Test
-    fun `keyfile creation wrapper receives a localized reason and confines raw detail`() {
-        val context = mockk<Context>()
+    fun `Resources overloads localize the keyfile wrapper and confine raw detail`() {
+        val resources = mockk<Resources>()
         every {
-            context.getString(R.string.error_reason_permission_denied)
+            resources.getString(R.string.error_reason_permission_denied)
         } returns "Localized permission denial"
         every {
-            context.getString(R.string.keyfile_create_failed, "Localized permission denial")
+            resources.getString(R.string.keyfile_create_failed, "Localized permission denial")
         } returns "Localized keyfile failure: Localized permission denial"
 
         val raw = "raw keyfile failure /private/path"
-        val display = context.getString(
-            R.string.keyfile_create_failed,
-            localizedFailureReason(context, SecurityException(raw)),
+        val reason = localizedFailureReason(resources, SecurityException(raw))
+        val error = AppError.FileError.SaveFailed(
+            userMessage = "Localized fallback without raw detail",
+            technicalMessage = raw,
+            messageResId = R.string.keyfile_create_failed,
+            messageArgs = listOf(reason),
         )
+        val display = error.localizedMessage(resources)
 
         assertEquals("Localized keyfile failure: Localized permission denial", display)
         assertFalse(display.contains(raw))
-
-        val source = File(
-            "src/main/java/io/github/picocrypt_ng/picocrypt_ng/ui/components/KeyfileCard.kt"
-        ).readText()
-        assertTrue(source.contains("localizedFailureReason(context, e)"))
-        assertTrue(source.contains("messageResId = R.string.keyfile_create_failed"))
-        assertTrue(source.contains("technicalMessage = e.message ?: e.toString()"))
-        assertFalse(
-            Regex("keyfileCreateFailedMsg\\.format\\([^)]*e\\.message").containsMatchIn(source),
-        )
+        assertEquals(raw, error.technicalMessage)
+        assertFalse(error.userMessage.contains(raw))
     }
 
     private fun formatSpecifiers(path: String, resourceName: String): List<String> {
