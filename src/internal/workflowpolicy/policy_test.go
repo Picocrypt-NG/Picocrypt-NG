@@ -1118,7 +1118,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "6144",
 			target:   "default",
-			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
+			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.ui.components.NewKeyfileLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
 		},
 	}
 	seen := make(map[int]struct{}, len(wantByAPI))
@@ -1618,6 +1618,7 @@ func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	mustContain(t, content, "connectedDebugAndroidTest")
 	mustContain(t, content, "PasswordCardTest")
 	mustContain(t, content, "ProgressCardTest")
+	mustContain(t, content, "NewKeyfileLifecycleTest")
 	mustContain(t, content, "OperationManagerIntegrationTest")
 	mustNotContain(t, content, "connectedDebugAndroidTest \\")
 	mustContain(t, content, "TEST_CLASSES=")

@@ -1,6 +1,8 @@
 package io.github.picocrypt_ng.picocrypt_ng.ui.components
 
 
+import android.content.Context
+import android.content.res.Resources
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -12,12 +14,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -42,9 +42,71 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.security.SecureRandom
+import kotlin.coroutines.cancellation.CancellationException
 import io.github.picocrypt_ng.picocrypt_ng.R
 import io.github.picocrypt_ng.picocrypt_ng.failureReasonResId
-import io.github.picocrypt_ng.picocrypt_ng.localizedMessage
+
+
+internal suspend fun <T> runNewKeyfileCreation(
+    operation: suspend () -> Result<T>,
+    onSuccess: (T) -> Unit,
+    onFailure: (Throwable) -> Unit,
+) {
+    val result = try {
+        operation()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    val failure = result.exceptionOrNull()
+    if (failure is CancellationException) {
+        throw failure
+    }
+    result.fold(onSuccess = onSuccess, onFailure = onFailure)
+}
+
+private suspend fun createAndCopyKeyfile(
+    context: Context,
+    resources: Resources,
+    uri: Uri,
+    keyfileIndex: Int,
+): Result<String> {
+    val randomBytes = withContext(Dispatchers.IO) {
+        val bytes = ByteArray(32)
+        SecureRandom().nextBytes(bytes)
+        bytes
+    }
+
+    val writeSuccess = withContext(Dispatchers.IO) {
+        try {
+            context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                outputStream.write(randomBytes)
+                true
+            } ?: false
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false
+        } finally {
+            randomBytes.fill(0)
+        }
+    }
+
+    if (!writeSuccess) {
+        return Result.failure(
+            AppError.FileError.SaveFailed(
+                userMessage = resources.getString(R.string.keyfile_write_failed),
+                messageResId = R.string.keyfile_write_failed,
+            ),
+        )
+    }
+
+    return withContext(Dispatchers.IO) {
+        FileCopyService.copyKeyfileToInternalStorage(context, uri, keyfileIndex)
+    }
+}
 
 
 @Composable
@@ -129,13 +191,27 @@ fun AddKeyfile(viewModel: MainViewModel) {
 fun NewKeyfile(viewModel: MainViewModel) {
     val context = LocalContext.current
     val resources = LocalResources.current
+    NewKeyfile(
+        viewModel = viewModel,
+        initialCreatedUri = null,
+        createKeyfile = { uri, keyfileIndex ->
+            createAndCopyKeyfile(context, resources, uri, keyfileIndex)
+        },
+    )
+}
+
+@Composable
+internal fun NewKeyfile(
+    viewModel: MainViewModel,
+    initialCreatedUri: Uri?,
+    createKeyfile: suspend (Uri, Int) -> Result<String>,
+) {
+    val context = LocalContext.current
+    val resources = LocalResources.current
     val formData by viewModel.formState.collectAsState()
     var isCreating by remember { mutableStateOf(false) }
-    var createdUri by remember { mutableStateOf<Uri?>(null) }
+    var createdUri by remember { mutableStateOf(initialCreatedUri) }
     var createdFileName by remember { mutableStateOf("") }
-    var localError by remember { mutableStateOf<AppError?>(null) }
-    val unknownErrorMsg = stringResource(R.string.error_unknown)
-    val unknownErrorDisplay = stringResource(R.string.unknown_error_occurred)
     
     // Generate default filename with timestamp
     val defaultFileName = remember {
@@ -147,81 +223,49 @@ fun NewKeyfile(viewModel: MainViewModel) {
     LaunchedEffect(createdUri) {
         val uri = createdUri ?: return@LaunchedEffect
         isCreating = true
-        localError = null
         
         try {
-            // Step 1: Generate 32 random bytes
-            val randomBytes = withContext(Dispatchers.IO) {
-                val bytes = ByteArray(32)
-                SecureRandom().nextBytes(bytes)
-                bytes
-            }
-            
-            // Step 2: Write bytes to user's selected URI
-            val writeSuccess = withContext(Dispatchers.IO) {
-                try {
-                    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                        outputStream.write(randomBytes)
-                        true
-                    } ?: false
-                } catch (e: Exception) {
-                    false
-                } finally {
-                    randomBytes.fill(0) // zero key material after write
-                }
-            }
-
-            if (!writeSuccess) {
-                localError = AppError.FileError.SaveFailed(
-                    userMessage = resources.getString(R.string.keyfile_write_failed),
-                    messageResId = R.string.keyfile_write_failed,
-                )
-                isCreating = false
-                createdUri = null
-                return@LaunchedEffect
-            }
-            
-            // Step 3: Copy from URI to internal storage (for app operations)
-            // Use current list size as index for fixed filename
             val currentFormData = viewModel.formState.value
             val keyfileIndex = currentFormData.keyfileFilenames.size
-            
-            val copyResult = withContext(Dispatchers.IO) {
-                FileCopyService.copyKeyfileToInternalStorage(context, uri, keyfileIndex)
-            }
-            
-            copyResult.onSuccess { copiedPath ->
-                // Step 4: Add to keyfiles list automatically
-                // Get current form data again to avoid stale state
-                val updatedFormData = viewModel.formState.value
-                val displayName = if (createdFileName.isNotEmpty()) createdFileName else "keyfile_$keyfileIndex"
-                val keyfileInfo = KeyfileInfo(internalPath = copiedPath, displayName = displayName)
-                val keyfileInfos = updatedFormData.keyfileFilenames + keyfileInfo
-                viewModel.updateFormData(updatedFormData.copy(keyfileFilenames = keyfileInfos))
-            }.onFailure { error ->
-                // Keyfile copy failed - show error to user
-                val appError = if (error is AppError) {
-                    error
-                } else {
-                    AppError.fromException(error as? Exception ?: Exception(error.message ?: unknownErrorMsg))
+            runNewKeyfileCreation(
+                operation = {
+                    createKeyfile(uri, keyfileIndex).map { it to keyfileIndex }
+                },
+                onSuccess = { (copiedPath, keyfileIndex) ->
+                    // Step 4: Add to keyfiles list automatically
+                    // Get current form data again to avoid stale state
+                    val updatedFormData = viewModel.formState.value
+                    val displayName = if (createdFileName.isNotEmpty()) {
+                        createdFileName
+                    } else {
+                        "keyfile_$keyfileIndex"
+                    }
+                    val keyfileInfo = KeyfileInfo(
+                        internalPath = copiedPath,
+                        displayName = displayName,
+                    )
+                    val keyfileInfos = updatedFormData.keyfileFilenames + keyfileInfo
+                    viewModel.updateFormData(updatedFormData.copy(keyfileFilenames = keyfileInfos))
+                },
+                onFailure = { error ->
+                    val appError = if (error is AppError) {
+                        error
+                    } else {
+                        val reasonResId = failureReasonResId(error)
+                        val fallbackReason = resources.getString(reasonResId)
+                        AppError.FileError.SaveFailed(
+                            userMessage = resources.getString(
+                                R.string.keyfile_create_failed,
+                                fallbackReason,
+                            ),
+                            technicalMessage = error.message ?: error.toString(),
+                            messageResId = R.string.keyfile_create_failed,
+                            messageArgs = listOf(LocalizedMessageArg(reasonResId)),
+                        )
+                    }
+                    viewModel.setError(appError)
                 }
-                viewModel.setError(appError)
-                localError = appError
-            }
-        } catch (e: Exception) {
-            val reasonResId = failureReasonResId(e)
-            val fallbackReason = resources.getString(reasonResId)
-            val appError = AppError.FileError.SaveFailed(
-                userMessage = resources.getString(
-                    R.string.keyfile_create_failed,
-                    fallbackReason,
-                ),
-                technicalMessage = e.message ?: e.toString(),
-                messageResId = R.string.keyfile_create_failed,
-                messageArgs = listOf(LocalizedMessageArg(reasonResId)),
             )
-            viewModel.setError(appError)
-            localError = appError
         } finally {
             isCreating = false
             createdUri = null
@@ -263,28 +307,6 @@ fun NewKeyfile(viewModel: MainViewModel) {
         } else {
             Text(stringResource(R.string.new_keyfile))
         }
-    }
-    
-    // Error dialog
-    localError?.let { error ->
-        AlertDialog(
-            onDismissRequest = { 
-                localError = null
-            },
-            title = { Text(text = stringResource(R.string.error_creating_keyfile)) },
-            text = {
-                Text(
-                    text = error.localizedMessage(resources).ifBlank { unknownErrorDisplay },
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { 
-                    localError = null
-                }) {
-                    Text(stringResource(R.string.ok))
-                }
-            },
-        )
     }
 }
 
