@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -74,7 +75,7 @@ func TestClassifyStatusRates(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.code, func(t *testing.T) {
-			text := fmt.Sprintf("%s 12.34 MiB/s (ETA: 01:02:03)", tc.prefix)
+			text := tc.prefix + " 12.34 MiB/s (ETA: 01:02:03)"
 			want := classifiedStatus{
 				Code:              tc.code,
 				SpeedMiBPerSecond: 12.34,
@@ -425,7 +426,7 @@ func statusCallTemplate(
 ) (string, bool, error) {
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok || (selector.Sel.Name != "SetStatus" && selector.Sel.Name != "Status") {
-		return "", false, fmt.Errorf("not a status call")
+		return "", false, errors.New("not a status call")
 	}
 	if len(call.Args) != 1 {
 		return "", false, fmt.Errorf("status call has %d arguments, want 1", len(call.Args))

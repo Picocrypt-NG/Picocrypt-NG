@@ -18,7 +18,7 @@ type classifiedInfo struct {
 	Total   int64
 }
 
-var staticStatusCodes = map[string]string{
+var staticStatusCodes = map[string]string{ //nolint:gosec // G101: status phrases and stable UI codes are not credentials.
 	"Starting...":           "STARTING",
 	"Completed":             "COMPLETED",
 	"Cancelled":             "CANCELLED",
