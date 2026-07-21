@@ -116,6 +116,13 @@ class LocaleConfigurationPolicyTest {
         if (unqualifiedConfigs.size != 1) {
             issues += "unqualified generated LocaleConfig files=" + unqualifiedConfigs.map(File::getPath)
         }
+        if (unqualifiedConfigs.size == 1) {
+            val defaultLocale = defaultLocaleIn(unqualifiedConfigs.single())
+            if (defaultLocale != "en") {
+                issues += unqualifiedConfigs.single().path +
+                    " android:defaultLocale=" + defaultLocale + "; want en"
+            }
+        }
         val unexpectedQualifiers = generatedConfigs
             .map { it.parentFile?.name.orEmpty() }
             .filterNot { it == "xml" || versionedXmlDirectory.matches(it) }
@@ -136,24 +143,21 @@ class LocaleConfigurationPolicyTest {
             }
         }
 
-        val releaseManifests = mergedReleaseManifests()
-        val references = releaseManifests.flatMap { manifest ->
-            localeConfigReference.findAll(manifest.readText()).map { it.groupValues[1] }.toList()
-        }
-        val distinctReferences = references.distinct()
+        val releaseManifests = finalMergedReleaseManifests()
         if (releaseManifests.isEmpty()) {
-            issues += "no merged release manifests found below " + buildRoot.path
+            issues += "no final merged release manifests found below " + buildRoot.path
         }
-        if (references.isEmpty()) {
-            issues += "merged release manifests have no android:localeConfig reference"
-        }
-        if (distinctReferences.size > 1) {
-            issues += "merged release manifest localeConfig references=" + distinctReferences
-        }
-        if (logicalNames.size == 1 && distinctReferences.size == 1) {
-            val expectedReference = "@xml/" + logicalNames.single()
-            if (distinctReferences.single() != expectedReference) {
-                issues += "manifest localeConfig=" + distinctReferences.single() +
+        val expectedReference = logicalNames.singleOrNull()?.let { "@xml/" + it }
+        releaseManifests.forEach { manifest ->
+            val references = localeConfigReference
+                .findAll(manifest.readText())
+                .map { it.groupValues[1] }
+                .toList()
+            if (references.size != 1) {
+                issues += manifest.path + " localeConfig references=" + references +
+                    "; want exactly one"
+            } else if (expectedReference != null && references.single() != expectedReference) {
+                issues += manifest.path + " localeConfig=" + references.single() +
                     "; want " + expectedReference
             }
         }
@@ -203,17 +207,25 @@ class LocaleConfigurationPolicyTest {
             .toList()
     }
 
-    private fun mergedReleaseManifests(): List<File> {
-        if (!buildRoot.isDirectory) return emptyList()
-        return buildRoot
+    private fun finalMergedReleaseManifests(): List<File> {
+        val finalManifestRoot = File(
+            buildRoot,
+            "intermediates/merged_manifests/release/processReleaseManifest",
+        )
+        if (!finalManifestRoot.isDirectory) return emptyList()
+        return finalManifestRoot
             .walkTopDown()
             .filter(File::isFile)
             .filter { it.name == "AndroidManifest.xml" }
-            .filter { file ->
-                val segments = file.invariantSeparatorsPath.split("/")
-                segments.contains("release") && segments.any { it.startsWith("merged_manifest") }
-            }
             .toList()
+    }
+
+    private fun defaultLocaleIn(config: File): String {
+        val document = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+            .newDocumentBuilder()
+            .parse(config)
+        if (document.documentElement.tagName != "locale-config") return ""
+        return document.documentElement.getAttributeNS(androidNamespace, "defaultLocale")
     }
 
     private fun localesIn(config: File): List<String> {
