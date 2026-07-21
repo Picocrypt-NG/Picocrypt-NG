@@ -3,10 +3,15 @@ package io.github.picocrypt_ng.picocrypt_ng
 import android.content.Context
 import io.mockk.every
 import io.mockk.mockk
+import java.io.File
+import java.io.FileNotFoundException
+import java.io.IOException
+import javax.xml.parsers.DocumentBuilderFactory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.w3c.dom.Element
 
 class AppErrorTextTest {
     @Test
@@ -24,19 +29,24 @@ class AppErrorTextTest {
     }
 
     @Test
-    fun `localizedMessage falls back to userMessage when no resource is set`() {
-        val error = AppError.OperationError.GenericOperation(
-            userMessage = "technical fallback",
-            technicalMessage = "technical fallback",
+    fun `localizedMessage uses resource-backed fallback instead of raw exception text`() {
+        val context = mockk<Context>()
+        every { context.getString(R.string.error_operation_failed) } returns "Localized operation failure"
+
+        val error = AppError.fromException(
+            RuntimeException("raw JVM detail /private/path"),
         )
 
-        assertEquals("technical fallback", error.localizedMessage(mockk(relaxed = true)))
+        assertEquals("Localized operation failure", error.localizedMessage(context))
+        assertEquals("raw JVM detail /private/path", error.technicalMessage)
+        assertFalse(error.userMessage.contains("raw JVM detail /private/path"))
+        assertTrue(error.messageArgs.isEmpty())
     }
 
     @Test
-    fun `generic Go errors keep their raw display message`() {
+    fun `corrupt header uses dedicated localized display instead of raw Go text`() {
         val context = mockk<Context>()
-        every { context.getString(R.string.error_unknown) } returns "Unknown localized"
+        every { context.getString(R.string.error_corrupt_header) } returns "Localized corrupt-header failure"
 
         val error = AppError.fromGoError(
             errorString = "header damaged: volume header is damaged",
@@ -45,8 +55,10 @@ class AppErrorTextTest {
         )
 
         assertTrue(error is AppError.OperationError.GenericOperation)
-        assertEquals(null, error.messageResId)
-        assertEquals("header damaged: volume header is damaged", error.localizedMessage(context))
+        assertEquals(R.string.error_corrupt_header, error.messageResId)
+        assertEquals("Localized corrupt-header failure", error.localizedMessage(context))
+        assertEquals("header damaged: volume header is damaged", error.technicalMessage)
+        assertFalse(error.userMessage.contains("header damaged"))
     }
 
     @Test
@@ -90,5 +102,110 @@ class AppErrorTextTest {
         assertFalse(error.allowsPasswordRetry())
         assertEquals(R.string.error_data_corrupted, error.messageResId)
         assertEquals("raw integrity failure", error.technicalMessage)
+    }
+
+    @Test
+    fun `failureReasonResId walks typed causes in priority order`() {
+        val cases = listOf(
+            SecurityException("raw permission detail") to R.string.error_reason_permission_denied,
+            RuntimeException("wrapper", FileNotFoundException("raw missing detail")) to
+                R.string.error_reason_file_not_found,
+            RuntimeException("wrapper", AppError.FileError.InsufficientStorage()) to
+                R.string.error_reason_insufficient_storage,
+            RuntimeException("wrapper", IOException("raw I/O detail")) to R.string.error_reason_io,
+            IllegalArgumentException("raw unknown detail") to R.string.error_reason_unknown,
+        )
+
+        cases.forEach { (error, expectedResource) ->
+            assertEquals(expectedResource, failureReasonResId(error))
+        }
+    }
+
+    @Test(timeout = 1_000)
+    fun `failureReasonResId terminates on a malformed cyclic cause chain`() {
+        val cyclic = object : RuntimeException("raw cyclic detail") {
+            override val cause: Throwable
+                get() = this
+        }
+
+        assertEquals(R.string.error_reason_unknown, failureReasonResId(cyclic))
+    }
+
+    @Test
+    fun `localizedFailureReason resolves only the localized reason category`() {
+        val context = mockk<Context>()
+        every {
+            context.getString(R.string.error_reason_permission_denied)
+        } returns "Localized permission denial"
+
+        val reason = localizedFailureReason(
+            context,
+            RuntimeException("outer raw detail", SecurityException("inner raw detail")),
+        )
+
+        assertEquals("Localized permission denial", reason)
+        assertFalse(reason.contains("raw detail"))
+    }
+
+    @Test
+    fun `EN and RU reason wrappers retain exactly one positional string placeholder`() {
+        val wrappers = listOf(
+            "error_read_folder_failed",
+            "error_copy_files_failed",
+            "keyfile_create_failed",
+        )
+
+        listOf(
+            "src/main/res/values/strings.xml",
+            "src/main/res/values-ru/strings.xml",
+        ).forEach { catalog ->
+            wrappers.forEach { resourceName ->
+                assertEquals(
+                    "$catalog $resourceName placeholder contract",
+                    listOf("%1\$s"),
+                    formatSpecifiers(catalog, resourceName),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `keyfile creation wrapper receives a localized reason and confines raw detail`() {
+        val context = mockk<Context>()
+        every {
+            context.getString(R.string.error_reason_permission_denied)
+        } returns "Localized permission denial"
+        every {
+            context.getString(R.string.keyfile_create_failed, "Localized permission denial")
+        } returns "Localized keyfile failure: Localized permission denial"
+
+        val raw = "raw keyfile failure /private/path"
+        val display = context.getString(
+            R.string.keyfile_create_failed,
+            localizedFailureReason(context, SecurityException(raw)),
+        )
+
+        assertEquals("Localized keyfile failure: Localized permission denial", display)
+        assertFalse(display.contains(raw))
+
+        val source = File(
+            "src/main/java/io/github/picocrypt_ng/picocrypt_ng/ui/components/KeyfileCard.kt"
+        ).readText()
+        assertTrue(source.contains("localizedFailureReason(context, e)"))
+        assertTrue(source.contains("messageResId = R.string.keyfile_create_failed"))
+        assertTrue(source.contains("technicalMessage = e.message ?: e.toString()"))
+        assertFalse(
+            Regex("keyfileCreateFailedMsg\\.format\\([^)]*e\\.message").containsMatchIn(source),
+        )
+    }
+
+    private fun formatSpecifiers(path: String, resourceName: String): List<String> {
+        val document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(File(path))
+        val strings = document.getElementsByTagName("string")
+        val value = (0 until strings.length)
+            .map { strings.item(it) as Element }
+            .single { it.getAttribute("name") == resourceName }
+            .textContent
+        return Regex("""%\d+\${'$'}[a-zA-Z]""").findAll(value).map { it.value }.toList()
     }
 }

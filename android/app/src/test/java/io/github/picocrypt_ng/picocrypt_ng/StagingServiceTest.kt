@@ -4,6 +4,7 @@ import android.content.Context
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class StagingServiceTest {
@@ -42,6 +43,41 @@ class StagingServiceTest {
         assertEquals(R.string.error_insufficient_storage, error.messageResId)
         assertEquals(listOf(required, 3000L), error.messageArgs)
         assertEquals("Need $required bytes; available 3000 bytes.", error.localizedMessage(context))
+    }
+
+    @Test
+    fun `staging failure wrappers use localized reasons and keep raw detail diagnostic only`() {
+        val context = mockk<Context>()
+        every {
+            context.getString(R.string.error_reason_permission_denied)
+        } returns "Localized permission denial"
+        every {
+            context.getString(R.string.error_read_folder_failed, "Localized permission denial")
+        } returns "Localized folder failure: Localized permission denial"
+        every {
+            context.getString(R.string.error_copy_files_failed, "Localized permission denial")
+        } returns "Localized copy failure: Localized permission denial"
+
+        val raw = "raw provider detail /private/path"
+        val expected = listOf(
+            R.string.error_read_folder_failed to "Localized folder failure: Localized permission denial",
+            R.string.error_copy_files_failed to "Localized copy failure: Localized permission denial",
+        )
+
+        expected.forEach { (wrapperResource, localizedDisplay) ->
+            val error = StagingService.localizedCopyError(
+                context,
+                wrapperResource,
+                SecurityException(raw),
+            )
+
+            assertEquals(wrapperResource, error.messageResId)
+            assertEquals(listOf("Localized permission denial"), error.messageArgs)
+            assertEquals(raw, error.technicalMessage)
+            assertEquals(localizedDisplay, error.localizedMessage(context))
+            assertFalse(error.userMessage.contains(raw))
+            assertFalse(error.messageArgs.any { it.toString().contains(raw) })
+        }
     }
 
     // sanitizeName: core security control for SAF path-traversal prevention

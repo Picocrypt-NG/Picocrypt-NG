@@ -42,6 +42,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.security.SecureRandom
 import io.github.picocrypt_ng.picocrypt_ng.R
+import io.github.picocrypt_ng.picocrypt_ng.localizedFailureReason
 import io.github.picocrypt_ng.picocrypt_ng.localizedMessage
 
 
@@ -133,7 +134,6 @@ fun NewKeyfile(viewModel: MainViewModel) {
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showErrorDialog by rememberSaveable { mutableStateOf(false) }
     val keyfileWriteFailedMsg = stringResource(R.string.keyfile_write_failed)
-    val keyfileCreateFailedMsg = stringResource(R.string.keyfile_create_failed)
     val unknownErrorMsg = stringResource(R.string.error_unknown)
     
     // Generate default filename with timestamp
@@ -207,7 +207,15 @@ fun NewKeyfile(viewModel: MainViewModel) {
                 showErrorDialog = true
             }
         } catch (e: Exception) {
-            errorMessage = keyfileCreateFailedMsg.format(e.message ?: unknownErrorMsg)
+            val reason = localizedFailureReason(context, e)
+            val appError = AppError.FileError.SaveFailed(
+                userMessage = context.getString(R.string.keyfile_create_failed, reason),
+                technicalMessage = e.message ?: e.toString(),
+                messageResId = R.string.keyfile_create_failed,
+                messageArgs = listOf(reason),
+            )
+            viewModel.setError(appError)
+            errorMessage = appError.localizedMessage(context)
             showErrorDialog = true
         } finally {
             isCreating = false

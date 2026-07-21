@@ -208,9 +208,11 @@ sealed class AppError(
          *  - DATA_CORRUPTED-> DataCorruption : allowsForceDecrypt (force-decrypt BYPASSES
          *                    integrity/RS checks; only offered for recoverable payload
          *                    corruption).
-         *  - CORRUPT_HEADER/CANCELLED/unknown -> GenericOperation : header corruption is
+         *  - CORRUPT_HEADER -> GenericOperation with a dedicated localized resource;
          *                    deliberately NOT force-decryptable (the old logic excluded
          *                    header errors from DataCorruption).
+         *  - CANCELLED     -> localized GenericOperation with no recovery action.
+         *  - GENERIC/empty/unknown -> localized GenericOperation with no recovery action.
          *
          * [code] defaults to "" so the synchronous validation-error path
          * (GoBridge.startEncrypt/startDecrypt) keeps working -> GenericOperation.
@@ -219,33 +221,32 @@ sealed class AppError(
         fun fromGoError(errorString: String, operationType: OperationType, code: String = ""): AppError {
             return when (code) {
                 "AUTH_FAILED" -> OperationError.PasswordAuth(
-                    userMessage = errorString,
+                    userMessage = "",
                     technicalMessage = errorString,
                     messageResId = R.string.error_auth_failed,
                 )
                 "DATA_CORRUPTED" -> OperationError.DataCorruption(
-                    userMessage = errorString,
+                    userMessage = "",
                     technicalMessage = errorString,
                     messageResId = R.string.error_data_corrupted,
                 )
+                "CORRUPT_HEADER" -> OperationError.GenericOperation(
+                    userMessage = "",
+                    technicalMessage = errorString,
+                    messageResId = R.string.error_corrupt_header,
+                )
                 "FILE_NOT_FOUND" -> OperationError.FileNotFound(
+                    userMessage = "",
                     technicalMessage = errorString,
                     messageResId = R.string.error_file_not_found,
                 )
-                else -> {
-                    if (errorString.isBlank()) {
-                        OperationError.GenericOperation(
-                            userMessage = "Unknown error occurred",
-                            technicalMessage = errorString,
-                            messageResId = R.string.error_unknown,
-                        )
-                    } else {
-                        OperationError.GenericOperation(
-                            userMessage = errorString,
-                            technicalMessage = errorString,
-                        )
-                    }
-                }
+                "CANCELLED" -> OperationError.GenericOperation(
+                    userMessage = "",
+                    technicalMessage = errorString,
+                    messageResId = R.string.operation_cancelled,
+                )
+                "GENERIC", "" -> genericOperationError(errorString)
+                else -> genericOperationError(errorString)
             }
         }
         
@@ -253,20 +254,24 @@ sealed class AppError(
          * Converts an Exception to an AppError.
          */
         fun fromException(exception: Exception): AppError {
-            val message = exception.message ?: "Unknown error occurred"
-            val errorLower = message.lowercase()
-            
-            if (errorLower.contains("file not found") || 
-                errorLower.contains("no such file")) {
+            if (exception is AppError) return exception
+
+            val technicalDetail = exception.message ?: exception.toString()
+            if (failureReasonResId(exception) == R.string.error_reason_file_not_found) {
                 return OperationError.FileNotFound(
-                    technicalMessage = message
+                    userMessage = "",
+                    technicalMessage = technicalDetail,
                 )
             }
-            
-            return OperationError.GenericOperation(
-                userMessage = message,
-                technicalMessage = message
-            )
+
+            return genericOperationError(technicalDetail)
         }
+
+        private fun genericOperationError(technicalMessage: String) =
+            OperationError.GenericOperation(
+                userMessage = "",
+                technicalMessage = technicalMessage,
+                messageResId = R.string.error_operation_failed,
+            )
     }
 }

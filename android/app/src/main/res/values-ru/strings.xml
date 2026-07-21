@@ -171,8 +171,15 @@
     <!-- Stable error display boundary -->
     <string name="error_auth_failed">Аутентификация не удалась. Проверьте пароль, ключевые файлы и их порядок.</string>
     <string name="error_data_corrupted">Проверка целостности не пройдена. Результат не проверен и может быть повреждён.</string>
+    <string name="error_corrupt_header">Заголовок зашифрованного тома повреждён или недействителен.</string>
     <string name="error_file_not_found">Файл не найден или недоступен.</string>
+    <string name="error_operation_failed">Не удалось выполнить операцию.</string>
     <string name="error_unknown">Произошла неизвестная ошибка.</string>
+    <string name="error_reason_permission_denied">Нет разрешения.</string>
+    <string name="error_reason_file_not_found">Файл не найден.</string>
+    <string name="error_reason_insufficient_storage">Недостаточно места в хранилище.</string>
+    <string name="error_reason_io">Ошибка ввода-вывода.</string>
+    <string name="error_reason_unknown">Неизвестная причина.</string>
     <string name="error_operation_start_failed">Не удалось запустить операцию.</string>
     <string name="error_no_active_operation">Нет активной операции.</string>
     <string name="error_no_operation_to_retry">Нет активной операции для повтора.</string>

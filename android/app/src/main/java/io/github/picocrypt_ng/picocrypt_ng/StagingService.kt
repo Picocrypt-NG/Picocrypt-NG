@@ -102,13 +102,11 @@ object StagingService {
                 wipeStaging(context); throw e
             } catch (e: Exception) {
                 wipeStaging(context)
-                val reason = e.message ?: context.getString(R.string.error_unknown)
                 Result.failure(
-                    copyError(
+                    localizedCopyError(
                         context,
                         R.string.error_read_folder_failed,
-                        e.message,
-                        listOf(reason),
+                        e,
                     )
                 )
             }
@@ -192,13 +190,11 @@ object StagingService {
                 wipeStaging(context); throw e
             } catch (e: Exception) {
                 wipeStaging(context)
-                val reason = e.message ?: context.getString(R.string.error_unknown)
                 Result.failure(
-                    copyError(
+                    localizedCopyError(
                         context,
                         R.string.error_copy_files_failed,
-                        e.message,
-                        listOf(reason),
+                        e,
                     )
                 )
             }
@@ -221,6 +217,20 @@ object StagingService {
             technicalMessage = "required=$required usable=$usable",
             messageResId = R.string.error_insufficient_storage,
             messageArgs = listOf(required, usable),
+        )
+    }
+
+    internal fun localizedCopyError(
+        context: Context,
+        @StringRes messageResId: Int,
+        error: Throwable,
+    ): AppError.FileError.CopyFailed {
+        val reason = localizedFailureReason(context, error)
+        return copyError(
+            context = context,
+            messageResId = messageResId,
+            tech = error.message ?: error.toString(),
+            messageArgs = listOf(reason),
         )
     }
 
