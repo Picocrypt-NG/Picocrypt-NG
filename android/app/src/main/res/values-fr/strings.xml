@@ -146,9 +146,9 @@
     <string name="status_removing_deniability_rate">Suppression du déni plausible à %1$.2f MiB/s (ETA : %2$s)</string>
     <string name="progress_percent">%1$.2f%%</string>
     <plurals name="progress_item_count">
-        <item quantity="one">%1$d élément sur %2$d</item>
-        <item quantity="many">%1$d éléments sur %2$d</item>
-        <item quantity="other">%1$d éléments sur %2$d</item>
+        <item quantity="one">%1$d sur %2$d élément</item>
+        <item quantity="many">%1$d sur %2$d éléments</item>
+        <item quantity="other">%1$d sur %2$d éléments</item>
     </plurals>
     <!-- Stable error display boundary -->
     <string name="error_auth_failed">Échec de l’authentification. Vérifiez le mot de passe, les fichiers-clés et leur ordre.</string>

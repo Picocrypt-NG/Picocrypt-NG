@@ -1,6 +1,7 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
 import java.io.File
+import java.util.Locale
 import javax.xml.parsers.DocumentBuilderFactory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -184,6 +185,24 @@ class LocalizationResourcesTest {
                     quantities,
                 )
             }
+        }
+    }
+
+    @Test
+    fun `French progress item count agrees with the total quantity`() {
+        val french = translatedCatalogs.single { it.spec.tag == "fr" }
+        val forms = pluralItems(pluralElement(french.document, "progress_item_count")).toMap()
+        val cases = listOf(
+            Triple("other", 10L, "1 sur 10 éléments"),
+            Triple("one", 1L, "1 sur 1 élément"),
+        )
+
+        cases.forEach { (quantity, total, expected) ->
+            assertEquals(
+                "French progress count for 1/$total",
+                expected,
+                String.format(Locale.FRENCH, forms.getValue(quantity), 1L, total),
+            )
         }
     }
 
