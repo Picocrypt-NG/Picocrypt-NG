@@ -57,8 +57,8 @@ var rateStatusCodes = map[string]string{
 }
 
 var (
-	rateStatusPattern  = regexp.MustCompile(`^(Compressing at|Encrypting at|Splitting at|Recombining at|Verifying at|Decrypting at|Repairing at|Unpacking at|Adding deniability at|Removing deniability at) (-?[0-9]+\.[0-9]{2}|[+-]Inf|NaN) MiB/s \(ETA: ([0-9]{2}:[0-9]{2}:[0-9]{2})\)$`)
-	etaPattern         = regexp.MustCompile(`^([0-9]{2}):([0-9]{2}):([0-9]{2})$`)
+	rateStatusPattern  = regexp.MustCompile(`^(Compressing at|Encrypting at|Splitting at|Recombining at|Verifying at|Decrypting at|Repairing at|Unpacking at|Adding deniability at|Removing deniability at) (-?[0-9]+\.[0-9]{2}|[+-]Inf|NaN) MiB/s \(ETA: ([0-9]{2,}:[0-9]{2}:[0-9]{2})\)$`)
+	etaPattern         = regexp.MustCompile(`^([0-9]{2,}):([0-9]{2}):([0-9]{2})$`)
 	percentInfoPattern = regexp.MustCompile(`^[0-9]+\.[0-9]{2}%( \(verifying\))?$`)
 	itemInfoPattern    = regexp.MustCompile(`^([0-9]+)/([0-9]+)$`)
 )

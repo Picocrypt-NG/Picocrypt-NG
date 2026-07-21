@@ -19,7 +19,7 @@ class OperationNotificationTest {
         val status = OperationStatusData(
             code = OperationStatus.ENCRYPTING_RATE,
             speedMiBPerSecond = 12.34,
-            eta = "01:02:03",
+            eta = "100:59:59",
         )
 
         val notification = buildOperationNotification(
@@ -34,7 +34,7 @@ class OperationNotificationTest {
             ?.toString()
 
         assertEquals(
-            context.getString(R.string.status_encrypting_rate, 12.34, "01:02:03"),
+            context.getString(R.string.status_encrypting_rate, 12.34, "100:59:59"),
             finalText,
         )
         assertFalse(

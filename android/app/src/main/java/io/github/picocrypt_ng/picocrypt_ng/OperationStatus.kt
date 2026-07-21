@@ -158,4 +158,4 @@ private fun rateStatusResource(code: String): Int? = when (code) {
     else -> null
 }
 
-private val validEta = Regex("^[0-9]{2}:[0-5][0-9]:[0-5][0-9]$")
+private val validEta = Regex("^[0-9]{2,}:[0-5][0-9]:[0-5][0-9]$")

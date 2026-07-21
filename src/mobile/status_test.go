@@ -88,6 +88,19 @@ func TestClassifyStatusRates(t *testing.T) {
 	}
 }
 
+func TestClassifyStatusAcceptsLongETA(t *testing.T) {
+	text := "Encrypting at 12.34 MiB/s (ETA: 100:59:59)"
+	want := classifiedStatus{
+		Code:              "ENCRYPTING_RATE",
+		SpeedMiBPerSecond: 12.34,
+		ETA:               "100:59:59",
+	}
+
+	if got := classifyStatus(text); got != want {
+		t.Fatalf("classifyStatus(%q) = %#v, want %#v", text, got, want)
+	}
+}
+
 func TestClassifyStatusRejectsUnknownOrMalformedText(t *testing.T) {
 	tests := []struct {
 		name string

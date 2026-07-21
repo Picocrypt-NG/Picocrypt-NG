@@ -70,6 +70,29 @@ class OperationStatusTest {
     }
 
     @Test
+    fun `rate status accepts producer valid ETA above 99 hours`() {
+        val context = mockk<Context>()
+        every {
+            context.getString(R.string.status_encrypting_rate, 12.34, "100:59:59")
+        } returns "localized:long-running-encryption"
+        every { context.getString(R.string.fgs_working) } returns "localized:working"
+
+        assertEquals(
+            OperationDisplayText(status = "localized:long-running-encryption"),
+            renderOperationStatus(
+                context = context,
+                status = OperationStatusData(
+                    OperationStatus.ENCRYPTING_RATE,
+                    12.34,
+                    "100:59:59",
+                ),
+                detail = OperationProgressDetail(OperationProgress.NONE),
+                progress = 0f,
+            ),
+        )
+    }
+
+    @Test
     fun `percent detail delegates locale aware decimal formatting to Android resources`() {
         val context = mockk<Context>()
         every { context.getString(R.string.status_encrypting_rate, 1.25, "00:00:09") } returns "Шифрование"

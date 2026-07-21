@@ -56,7 +56,7 @@ class ProgressCardTest {
         val status = OperationStatusData(
             code = OperationStatus.ENCRYPTING_RATE,
             speedMiBPerSecond = 12.34,
-            eta = "01:02:03",
+            eta = "100:59:59",
         )
         val originalState = swapOperationState(
             TestDataBuilders.createOperationState(
@@ -75,7 +75,7 @@ class ProgressCardTest {
             }
 
             composeTestRule.onNodeWithText(
-                application.getString(R.string.status_encrypting_rate, 12.34, "01:02:03")
+                application.getString(R.string.status_encrypting_rate, 12.34, "100:59:59")
             ).assertIsDisplayed()
             composeTestRule.onNodeWithText(OperationStatus.ENCRYPTING_RATE).assertDoesNotExist()
         } finally {
