@@ -16,6 +16,23 @@ import org.w3c.dom.Element
 
 class OperationStatusTest {
     @Test
+    fun `structured codes match gomobile wire literals`() {
+        assertEquals(4, terminalStatusCodes.size)
+        assertEquals(18, staticStatusCodes.size)
+        assertEquals(10, rateStatusCodes.size)
+        assertEquals(4, detailCodes.size)
+        assertEquals("UNKNOWN", OperationStatus.UNKNOWN)
+        assertEquals("UNKNOWN", OperationStatus.WORKING)
+
+        (terminalStatusCodes + staticStatusCodes + rateStatusCodes).forEach { (wireCode, code) ->
+            assertEquals("Kotlin status code for $wireCode must match gomobile", wireCode, code)
+        }
+        detailCodes.forEach { (wireCode, code) ->
+            assertEquals("Kotlin detail code for $wireCode must match gomobile", wireCode, code)
+        }
+    }
+
+    @Test
     fun `every static status code resolves through its matching resource`() {
         val context = mockk<Context>()
         staticStatusResources.forEach { (code, resourceId) ->
@@ -26,7 +43,7 @@ class OperationStatusTest {
                 renderOperationStatus(
                     context = context,
                     status = OperationStatusData(code),
-                    detail = OperationProgressDetail(OperationProgress.NONE),
+                    detail = OperationProgressDetail("NONE"),
                     progress = 0f,
                 ),
             )
@@ -44,7 +61,7 @@ class OperationStatusTest {
                 renderOperationStatus(
                     context = context,
                     status = OperationStatusData(code, 12.34, "01:02:03"),
-                    detail = OperationProgressDetail(OperationProgress.NONE),
+                    detail = OperationProgressDetail("NONE"),
                     progress = 0f,
                 ),
             )
@@ -60,8 +77,8 @@ class OperationStatusTest {
 
         val result = renderOperationStatus(
             context = context,
-            status = OperationStatusData(OperationStatus.ENCRYPTING_RATE, 1.25, "00:00:09"),
-            detail = OperationProgressDetail(OperationProgress.PERCENT),
+            status = OperationStatusData("ENCRYPTING_RATE", 1.25, "00:00:09"),
+            detail = OperationProgressDetail("PERCENT"),
             progress = 0.375f,
         )
 
@@ -81,8 +98,8 @@ class OperationStatusTest {
 
         val result = renderOperationStatus(
             context = context,
-            status = OperationStatusData(OperationStatus.COMPRESSING_FILES),
-            detail = OperationProgressDetail(OperationProgress.ITEM_COUNT, current = 3, total = 10),
+            status = OperationStatusData("COMPRESSING_FILES"),
+            detail = OperationProgressDetail("ITEM_COUNT", current = 3, total = 10),
             progress = 0.3f,
         )
 
@@ -99,8 +116,8 @@ class OperationStatusTest {
 
         val result = renderOperationStatus(
             context = context,
-            status = OperationStatusData(OperationStatus.UNKNOWN),
-            detail = OperationProgressDetail(OperationProgress.UNKNOWN),
+            status = OperationStatusData("UNKNOWN"),
+            detail = OperationProgressDetail("UNKNOWN"),
             progress = 0.5f,
         )
 
@@ -114,8 +131,8 @@ class OperationStatusTest {
 
         val result = renderOperationStatus(
             context = context,
-            status = OperationStatusData(OperationStatus.STARTING),
-            detail = OperationProgressDetail(OperationProgress.NONE),
+            status = OperationStatusData("STARTING"),
+            detail = OperationProgressDetail("NONE"),
             progress = 0f,
         )
 
@@ -127,12 +144,12 @@ class OperationStatusTest {
         val context = mockk<Context>()
         every { context.getString(R.string.fgs_working) } returns "Working safely"
         val malformed = listOf(
-            OperationStatusData(OperationStatus.ENCRYPTING_RATE, Double.NaN, "01:02:03"),
-            OperationStatusData(OperationStatus.ENCRYPTING_RATE, Double.POSITIVE_INFINITY, "01:02:03"),
-            OperationStatusData(OperationStatus.ENCRYPTING_RATE, -0.01, "01:02:03"),
-            OperationStatusData(OperationStatus.ENCRYPTING_RATE, 1.0, "1:02:03"),
-            OperationStatusData(OperationStatus.ENCRYPTING_RATE, 1.0, "01:60:03"),
-            OperationStatusData(OperationStatus.ENCRYPTING_RATE, 1.0, "01:02:60"),
+            OperationStatusData("ENCRYPTING_RATE", Double.NaN, "01:02:03"),
+            OperationStatusData("ENCRYPTING_RATE", Double.POSITIVE_INFINITY, "01:02:03"),
+            OperationStatusData("ENCRYPTING_RATE", -0.01, "01:02:03"),
+            OperationStatusData("ENCRYPTING_RATE", 1.0, "1:02:03"),
+            OperationStatusData("ENCRYPTING_RATE", 1.0, "01:60:03"),
+            OperationStatusData("ENCRYPTING_RATE", 1.0, "01:02:60"),
         )
 
         malformed.forEach { status ->
@@ -141,7 +158,7 @@ class OperationStatusTest {
                 renderOperationStatus(
                     context,
                     status,
-                    OperationProgressDetail(OperationProgress.NONE),
+                    OperationProgressDetail("NONE"),
                     progress = 0f,
                 ).status,
             )
@@ -156,14 +173,14 @@ class OperationStatusTest {
         val context = mockk<Context>()
         every { context.getString(R.string.status_starting) } returns "Starting"
         val malformed = listOf(
-            OperationProgressDetail(OperationProgress.PERCENT) to Float.NaN,
-            OperationProgressDetail(OperationProgress.PERCENT) to -0.01f,
-            OperationProgressDetail(OperationProgress.PERCENT) to 1.01f,
-            OperationProgressDetail(OperationProgress.ITEM_COUNT, current = -1, total = 10) to 0f,
-            OperationProgressDetail(OperationProgress.ITEM_COUNT, current = 11, total = 10) to 0f,
-            OperationProgressDetail(OperationProgress.ITEM_COUNT, current = 0, total = 0) to 0f,
+            OperationProgressDetail("PERCENT") to Float.NaN,
+            OperationProgressDetail("PERCENT") to -0.01f,
+            OperationProgressDetail("PERCENT") to 1.01f,
+            OperationProgressDetail("ITEM_COUNT", current = -1, total = 10) to 0f,
+            OperationProgressDetail("ITEM_COUNT", current = 11, total = 10) to 0f,
+            OperationProgressDetail("ITEM_COUNT", current = 0, total = 0) to 0f,
             OperationProgressDetail(
-                OperationProgress.ITEM_COUNT,
+                "ITEM_COUNT",
                 current = 1,
                 total = Int.MAX_VALUE.toLong() + 1,
             ) to 0f,
@@ -173,7 +190,7 @@ class OperationStatusTest {
             assertNull(
                 renderOperationStatus(
                     context,
-                    OperationStatusData(OperationStatus.STARTING),
+                    OperationStatusData("STARTING"),
                     detail,
                     progress,
                 ).detail,
@@ -203,11 +220,27 @@ class OperationStatusTest {
         }
         assertEquals("%1$.2f%%", base.strings.getValue("progress_percent"))
         assertEquals("%1$.2f%%", russian.strings.getValue("progress_percent"))
-        assertEquals(setOf("one", "other"), base.plurals.getValue("progress_item_count"))
+        val baseItems = base.plurals.getValue("progress_item_count")
+        val russianItems = russian.plurals.getValue("progress_item_count")
+        assertEquals(setOf("one", "other"), baseItems.keys)
         assertEquals(
             setOf("one", "few", "many", "other"),
-            russian.plurals.getValue("progress_item_count"),
+            russianItems.keys,
         )
+        listOf("Base" to baseItems, "Russian" to russianItems).forEach { (catalog, items) ->
+            items.forEach { (quantity, text) ->
+                assertEquals(
+                    "$catalog $quantity item must contain %1\$d exactly once",
+                    1,
+                    Regex(Regex.escape("%1\$d")).findAll(text).count(),
+                )
+                assertEquals(
+                    "$catalog $quantity item must contain %2\$d exactly once",
+                    1,
+                    Regex(Regex.escape("%2\$d")).findAll(text).count(),
+                )
+            }
+        }
     }
 
     @Test
@@ -245,8 +278,10 @@ class OperationStatusTest {
             .associate { plural ->
                 val items = plural.getElementsByTagName("item")
                 plural.getAttribute("name") to (0 until items.length)
-                    .map { (items.item(it) as Element).getAttribute("quantity") }
-                    .toSet()
+                    .map { items.item(it) as Element }
+                    .associate { item ->
+                        item.getAttribute("quantity") to item.textContent
+                    }
             }
         return ResourceCatalog(stringValues, pluralValues)
     }
@@ -255,50 +290,100 @@ class OperationStatusTest {
 
     private data class ResourceCatalog(
         val strings: Map<String, String>,
-        val plurals: Map<String, Set<String>>,
+        val plurals: Map<String, Map<String, String>>,
     )
 
     private companion object {
+        private val terminalStatusCodes = linkedMapOf(
+            "STARTING" to OperationStatus.STARTING,
+            "COMPLETED" to OperationStatus.COMPLETED,
+            "CANCELLED" to OperationStatus.CANCELLED,
+            "ERROR" to OperationStatus.ERROR,
+        )
+
+        private val staticStatusCodes = linkedMapOf(
+            "COMPRESSING_FILES" to OperationStatus.COMPRESSING_FILES,
+            "GENERATING_VALUES" to OperationStatus.GENERATING_VALUES,
+            "DERIVING_KEY" to OperationStatus.DERIVING_KEY,
+            "READING_KEYFILES" to OperationStatus.READING_KEYFILES,
+            "CALCULATING_VALUES" to OperationStatus.CALCULATING_VALUES,
+            "WRITING_VALUES" to OperationStatus.WRITING_VALUES,
+            "SPLITTING" to OperationStatus.SPLITTING,
+            "RECOMBINING_CHUNKS" to OperationStatus.RECOMBINING_CHUNKS,
+            "READING_VALUES" to OperationStatus.READING_VALUES,
+            "DUPLICATE_KEYFILES_WARNING" to OperationStatus.DUPLICATE_KEYFILES_WARNING,
+            "VERIFYING_INTEGRITY" to OperationStatus.VERIFYING_INTEGRITY,
+            "MAC_VERIFICATION_FAILED_CONTINUING" to
+                OperationStatus.MAC_VERIFICATION_FAILED_CONTINUING,
+            "REPAIRING_VERIFYING" to OperationStatus.REPAIRING_VERIFYING,
+            "INTEGRITY_VERIFIED_DECRYPTING" to OperationStatus.INTEGRITY_VERIFIED_DECRYPTING,
+            "COMPARING_VALUES" to OperationStatus.COMPARING_VALUES,
+            "UNZIPPING" to OperationStatus.UNZIPPING,
+            "ADDING_PLAUSIBLE_DENIABILITY" to OperationStatus.ADDING_PLAUSIBLE_DENIABILITY,
+            "REMOVING_DENIABILITY_PROTECTION" to
+                OperationStatus.REMOVING_DENIABILITY_PROTECTION,
+        )
+
+        private val rateStatusCodes = linkedMapOf(
+            "COMPRESSING_RATE" to OperationStatus.COMPRESSING_RATE,
+            "ENCRYPTING_RATE" to OperationStatus.ENCRYPTING_RATE,
+            "SPLITTING_RATE" to OperationStatus.SPLITTING_RATE,
+            "RECOMBINING_RATE" to OperationStatus.RECOMBINING_RATE,
+            "VERIFYING_RATE" to OperationStatus.VERIFYING_RATE,
+            "DECRYPTING_RATE" to OperationStatus.DECRYPTING_RATE,
+            "REPAIRING_RATE" to OperationStatus.REPAIRING_RATE,
+            "UNPACKING_RATE" to OperationStatus.UNPACKING_RATE,
+            "ADDING_DENIABILITY_RATE" to OperationStatus.ADDING_DENIABILITY_RATE,
+            "REMOVING_DENIABILITY_RATE" to OperationStatus.REMOVING_DENIABILITY_RATE,
+        )
+
+        private val detailCodes = linkedMapOf(
+            "NONE" to OperationProgress.NONE,
+            "PERCENT" to OperationProgress.PERCENT,
+            "ITEM_COUNT" to OperationProgress.ITEM_COUNT,
+            "UNKNOWN" to OperationProgress.UNKNOWN,
+        )
+
         private val staticStatusResources = linkedMapOf(
-            OperationStatus.STARTING to R.string.status_starting,
-            OperationStatus.COMPLETED to R.string.status_completed,
-            OperationStatus.CANCELLED to R.string.status_cancelled,
-            OperationStatus.ERROR to R.string.status_error,
-            OperationStatus.COMPRESSING_FILES to R.string.status_compressing_files,
-            OperationStatus.GENERATING_VALUES to R.string.status_generating_values,
-            OperationStatus.DERIVING_KEY to R.string.status_deriving_key,
-            OperationStatus.READING_KEYFILES to R.string.status_reading_keyfiles,
-            OperationStatus.CALCULATING_VALUES to R.string.status_calculating_values,
-            OperationStatus.WRITING_VALUES to R.string.status_writing_values,
-            OperationStatus.SPLITTING to R.string.status_splitting,
-            OperationStatus.RECOMBINING_CHUNKS to R.string.status_recombining_chunks,
-            OperationStatus.READING_VALUES to R.string.status_reading_values,
-            OperationStatus.DUPLICATE_KEYFILES_WARNING to R.string.status_duplicate_keyfiles_warning,
-            OperationStatus.VERIFYING_INTEGRITY to R.string.status_verifying_integrity,
-            OperationStatus.MAC_VERIFICATION_FAILED_CONTINUING to
+            "STARTING" to R.string.status_starting,
+            "COMPLETED" to R.string.status_completed,
+            "CANCELLED" to R.string.status_cancelled,
+            "ERROR" to R.string.status_error,
+            "COMPRESSING_FILES" to R.string.status_compressing_files,
+            "GENERATING_VALUES" to R.string.status_generating_values,
+            "DERIVING_KEY" to R.string.status_deriving_key,
+            "READING_KEYFILES" to R.string.status_reading_keyfiles,
+            "CALCULATING_VALUES" to R.string.status_calculating_values,
+            "WRITING_VALUES" to R.string.status_writing_values,
+            "SPLITTING" to R.string.status_splitting,
+            "RECOMBINING_CHUNKS" to R.string.status_recombining_chunks,
+            "READING_VALUES" to R.string.status_reading_values,
+            "DUPLICATE_KEYFILES_WARNING" to R.string.status_duplicate_keyfiles_warning,
+            "VERIFYING_INTEGRITY" to R.string.status_verifying_integrity,
+            "MAC_VERIFICATION_FAILED_CONTINUING" to
                 R.string.status_mac_verification_failed_continuing,
-            OperationStatus.REPAIRING_VERIFYING to R.string.status_repairing_verifying,
-            OperationStatus.INTEGRITY_VERIFIED_DECRYPTING to
+            "REPAIRING_VERIFYING" to R.string.status_repairing_verifying,
+            "INTEGRITY_VERIFIED_DECRYPTING" to
                 R.string.status_integrity_verified_decrypting,
-            OperationStatus.COMPARING_VALUES to R.string.status_comparing_values,
-            OperationStatus.UNZIPPING to R.string.status_unzipping,
-            OperationStatus.ADDING_PLAUSIBLE_DENIABILITY to
+            "COMPARING_VALUES" to R.string.status_comparing_values,
+            "UNZIPPING" to R.string.status_unzipping,
+            "ADDING_PLAUSIBLE_DENIABILITY" to
                 R.string.status_adding_plausible_deniability,
-            OperationStatus.REMOVING_DENIABILITY_PROTECTION to
+            "REMOVING_DENIABILITY_PROTECTION" to
                 R.string.status_removing_deniability_protection,
         )
 
         private val rateStatusResources = linkedMapOf(
-            OperationStatus.COMPRESSING_RATE to R.string.status_compressing_rate,
-            OperationStatus.ENCRYPTING_RATE to R.string.status_encrypting_rate,
-            OperationStatus.SPLITTING_RATE to R.string.status_splitting_rate,
-            OperationStatus.RECOMBINING_RATE to R.string.status_recombining_rate,
-            OperationStatus.VERIFYING_RATE to R.string.status_verifying_rate,
-            OperationStatus.DECRYPTING_RATE to R.string.status_decrypting_rate,
-            OperationStatus.REPAIRING_RATE to R.string.status_repairing_rate,
-            OperationStatus.UNPACKING_RATE to R.string.status_unpacking_rate,
-            OperationStatus.ADDING_DENIABILITY_RATE to R.string.status_adding_deniability_rate,
-            OperationStatus.REMOVING_DENIABILITY_RATE to R.string.status_removing_deniability_rate,
+            "COMPRESSING_RATE" to R.string.status_compressing_rate,
+            "ENCRYPTING_RATE" to R.string.status_encrypting_rate,
+            "SPLITTING_RATE" to R.string.status_splitting_rate,
+            "RECOMBINING_RATE" to R.string.status_recombining_rate,
+            "VERIFYING_RATE" to R.string.status_verifying_rate,
+            "DECRYPTING_RATE" to R.string.status_decrypting_rate,
+            "REPAIRING_RATE" to R.string.status_repairing_rate,
+            "UNPACKING_RATE" to R.string.status_unpacking_rate,
+            "ADDING_DENIABILITY_RATE" to R.string.status_adding_deniability_rate,
+            "REMOVING_DENIABILITY_RATE" to R.string.status_removing_deniability_rate,
         )
 
         private val resourceNames = mapOf(

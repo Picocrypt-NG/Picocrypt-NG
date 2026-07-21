@@ -44,8 +44,7 @@ class OperationUiStateTest {
     }
 
     @Test
-    fun `raw cancelled diagnostic cannot create cancelled UI state without cancelled code`() {
-        val rawDiagnostic = "Cancelled"
+    fun `unknown terminal status maps to success`() {
         val state = TestDataBuilders.createOperationState(
             type = OperationType.DECRYPT,
             status = OperationStatusData(OperationStatus.UNKNOWN),
@@ -53,7 +52,6 @@ class OperationUiStateTest {
             error = null,
         )
 
-        assertEquals("Cancelled", rawDiagnostic)
         assertEquals(OperationUiState.Success(OperationType.DECRYPT), state.toUiState())
     }
 
