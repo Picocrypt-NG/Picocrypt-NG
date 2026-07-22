@@ -659,7 +659,6 @@ func TestGlobExpansion(t *testing.T) {
 			t.Fatalf("expected %q in error, got: %v", "matched no paths", err)
 		}
 	})
-
 }
 
 func TestReporterOutput(t *testing.T) {

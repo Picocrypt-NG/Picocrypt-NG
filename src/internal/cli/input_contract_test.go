@@ -192,7 +192,7 @@ func TestCLIInputContract(t *testing.T) {
 		}
 		assertCLIContractZip(t, recovered, map[string][]byte{
 			"documents/alpha.txt": []byte("alpha directory bytes"),
-			"documents/bravo.bin": []byte{0x00, 0x01, 0xfe, 0xff},
+			"documents/bravo.bin": {0x00, 0x01, 0xfe, 0xff},
 		})
 	})
 

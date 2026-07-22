@@ -125,7 +125,6 @@ func init() {
 	encryptCmd.Flags().BoolVarP(&encQuiet, "quiet", "q", false, "Suppress progress output")
 	encryptCmd.Flags().BoolVarP(&encYes, "yes", "y", false, "Overwrite output file without prompting")
 	encryptCmd.Flags().BoolVar(&encFollowSymlinks, "follow-symlinks", false, "Follow symlinks to regular files")
-
 }
 
 func defaultEncryptOutput(rawInput string, allFiles []string, onlyFolders []string, useStdin, payloadZip bool) string {

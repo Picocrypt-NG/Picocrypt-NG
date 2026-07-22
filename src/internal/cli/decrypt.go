@@ -112,7 +112,6 @@ func init() {
 	// Other
 	decryptCmd.Flags().BoolVarP(&decQuiet, "quiet", "q", false, "Suppress progress output")
 	decryptCmd.Flags().BoolVarP(&decYes, "yes", "y", false, "Overwrite output file without prompting")
-
 }
 
 func runDecrypt(cmd *cobra.Command, args []string) error {

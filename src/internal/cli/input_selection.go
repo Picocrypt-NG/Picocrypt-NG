@@ -41,8 +41,7 @@ func resolveEncryptInputs(literals, patterns []string, followSymlinks bool) (enc
 		return nil
 	}
 
-	var addSelection func(string) error
-	addSelection = func(path string) error {
+	addSelection := func(path string) error {
 		if path == "" {
 			return errors.New("input path must not be empty")
 		}
@@ -76,13 +75,11 @@ func resolveEncryptInputs(literals, patterns []string, followSymlinks bool) (enc
 					return addFile(walkPath)
 				}
 				if followSymlinks && walkInfo.Mode()&os.ModeSymlink != 0 {
-					target, err := filepath.EvalSymlinks(walkPath)
-					if err != nil {
-						return nil
-					}
-					targetInfo, err := os.Stat(target)
-					if err == nil && targetInfo.Mode().IsRegular() {
-						return addFile(walkPath)
+					if target, err := filepath.EvalSymlinks(walkPath); err == nil {
+						targetInfo, err := os.Stat(target)
+						if err == nil && targetInfo.Mode().IsRegular() {
+							return addFile(walkPath)
+						}
 					}
 				}
 				return nil
@@ -215,7 +212,7 @@ func splitOutputArtifact(path, output string) (string, bool) {
 	if suffix == "" {
 		return "", false
 	}
-	for i := 0; i < len(suffix); i++ {
+	for i := range suffix {
 		if suffix[i] < '0' || suffix[i] > '9' {
 			return "", false
 		}
