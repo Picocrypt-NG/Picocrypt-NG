@@ -27,12 +27,11 @@ func TestStdinOverwriteGuard(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		encInput = []string{"-"}
 		encOutput = out
 		encPassword = "test"
 		encYes = false
 
-		err := encryptCmd.RunE(encryptCmd, []string{})
+		err := encryptCmd.RunE(encryptCmd, []string{"-"})
 		if err == nil {
 			t.Fatal("expected overwrite error for stdin encrypt without -y")
 		}
@@ -66,7 +65,6 @@ func TestStdinOverwriteGuard(t *testing.T) {
 		_ = w.Close()
 		os.Stdin = r
 
-		encInput = []string{"-"}
 		encOutput = out
 		encPassword = "test"
 		encYes = true
@@ -76,7 +74,7 @@ func TestStdinOverwriteGuard(t *testing.T) {
 			resetEncryptFlagsForDirTest()
 		})
 
-		err = encryptCmd.RunE(encryptCmd, []string{})
+		err = encryptCmd.RunE(encryptCmd, []string{"-"})
 		if err != nil && strings.Contains(err.Error(), "use -y to overwrite") {
 			t.Fatalf("-y must bypass the overwrite guard, got: %v", err)
 		}
@@ -91,12 +89,11 @@ func TestStdinOverwriteGuard(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		decInput = "-"
 		decOutput = out
 		decPassword = "test"
 		decYes = false
 
-		err := decryptCmd.RunE(decryptCmd, []string{})
+		err := decryptCmd.RunE(decryptCmd, []string{"-"})
 		if err == nil {
 			t.Fatal("expected overwrite error for stdin decrypt without -y")
 		}

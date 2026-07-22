@@ -155,24 +155,22 @@ func TestCLIRoundTrip(t *testing.T) {
 			}
 
 			// --- ENCRYPT ---
-			encInput = []string{inputFile}
 			encOutput = encryptedFile
 			encQuiet = true
 			encYes = true
 			tc.setupEncrypt(t, inputFile, encryptedFile)
 
-			if err := encryptCmd.RunE(encryptCmd, []string{}); err != nil {
+			if err := encryptCmd.RunE(encryptCmd, []string{inputFile}); err != nil {
 				t.Fatalf("encrypt: %v", err)
 			}
 
 			// --- DECRYPT ---
-			decInput = encryptedFile
 			decOutput = decryptedFile
 			decQuiet = true
 			decYes = true
 			tc.setupDecrypt(t, encryptedFile, decryptedFile)
 
-			decErr := decryptCmd.RunE(decryptCmd, []string{})
+			decErr := decryptCmd.RunE(decryptCmd, []string{encryptedFile})
 			if tc.wantErr {
 				if decErr == nil {
 					t.Fatal("expected decrypt error (wrong password), got nil")

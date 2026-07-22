@@ -11,8 +11,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,7 +23,7 @@ func init() {
 }
 
 var encryptCmd = &cobra.Command{
-	Use:   "encrypt",
+	Use:   "encrypt [PATH...]",
 	Short: "Encrypt files into a .pcv volume",
 	Long: `Encrypt one or more files into a Picocrypt volume (.pcv).
 
@@ -34,37 +32,47 @@ If no password is provided, you will be prompted to enter one interactively
 
 Examples:
   # Encrypt interactively (prompts for password)
-  Picocrypt-NG encrypt -i secret.txt -o secret.pcv
+	  Picocrypt-NG encrypt secret.txt -o secret.pcv
 
   # Encrypt with password on command line (visible in shell history)
-  Picocrypt-NG encrypt -i secret.txt -o secret.pcv -p "mypassword"
+	  Picocrypt-NG encrypt secret.txt -o secret.pcv -p "mypassword"
 
   # Encrypt multiple files (creates zip archive internally)
-  Picocrypt-NG encrypt -i file1.txt -i file2.txt -o archive.pcv
+	  Picocrypt-NG encrypt file1.txt file2.txt -o archive.pcv
 
   # Encrypt with paranoid mode and Reed-Solomon error correction
-  Picocrypt-NG encrypt -i data.db -o data.pcv --paranoid --reed-solomon
+	  Picocrypt-NG encrypt data.db -o data.pcv --paranoid --reed-solomon
 
   # Encrypt with keyfile (prompts for password, can leave empty for keyfile-only)
-  Picocrypt-NG encrypt -i secret.txt -o secret.pcv -k keyfile.key
+	  Picocrypt-NG encrypt secret.txt -o secret.pcv -k keyfile.key
 
   # Encrypt with keyfile only (no password)
-  Picocrypt-NG encrypt -i secret.txt -o secret.pcv -k keyfile.key -p ""
+	  Picocrypt-NG encrypt secret.txt -o secret.pcv -k keyfile.key -p ""
 
   # Read password from stdin (for scripts)
-  echo "mypassword" | Picocrypt-NG encrypt -i secret.txt -o secret.pcv -P
+	  echo "mypassword" | Picocrypt-NG encrypt secret.txt -o secret.pcv -P
 
   # Encrypt from stdin to stdout (use -p since stdin is taken by data)
-  cat data.txt | Picocrypt-NG encrypt -i - -o - -p "pw" > data.pcv
+	  cat data.txt | Picocrypt-NG encrypt - -o - -p "pw" > data.pcv
 
   # Encrypt to stdout
-  Picocrypt-NG encrypt -i secret.txt -o - -p "pw" > secret.pcv`,
+	  Picocrypt-NG encrypt secret.txt -o - -p "pw" > secret.pcv`,
+	Args: func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("input") {
+			return errors.New("--input/-i was removed; pass literal paths as arguments or use --glob for patterns")
+		}
+		if len(args) == 0 && len(encGlob) == 0 {
+			return errors.New("at least one input path or --glob pattern is required")
+		}
+		return nil
+	},
 	RunE: runEncrypt,
 }
 
 // Encrypt flags
 var (
-	encInput          []string
+	encGlob           []string
+	encLegacyInputs   []string
 	encOutput         string
 	encPassword       string
 	encPasswordStdin  bool
@@ -87,7 +95,9 @@ func init() {
 	rootCmd.AddCommand(encryptCmd)
 
 	// Input/Output
-	encryptCmd.Flags().StringArrayVarP(&encInput, "input", "i", nil, "Input file(s) to encrypt (can be specified multiple times)")
+	encryptCmd.Flags().StringArrayVarP(&encGlob, "glob", "g", nil, "Add paths matching PATTERN (can be specified multiple times)")
+	encryptCmd.Flags().StringArrayVarP(&encLegacyInputs, "input", "i", nil, "")
+	_ = encryptCmd.Flags().MarkHidden("input")
 	encryptCmd.Flags().StringVarP(&encOutput, "output", "o", "", "Output .pcv file path")
 
 	// Credentials
@@ -113,8 +123,6 @@ func init() {
 	encryptCmd.Flags().BoolVarP(&encYes, "yes", "y", false, "Overwrite output file without prompting")
 	encryptCmd.Flags().BoolVar(&encFollowSymlinks, "follow-symlinks", false, "Follow symlinks to regular files")
 
-	// Mark required
-	_ = encryptCmd.MarkFlagRequired("input")
 }
 
 func defaultEncryptOutput(rawInput string, allFiles []string, onlyFolders []string, useStdin, payloadZip bool) string {
@@ -140,24 +148,32 @@ func defaultEncryptOutput(rawInput string, allFiles []string, onlyFolders []stri
 }
 
 func runEncrypt(cmd *cobra.Command, args []string) error {
-	// Validate inputs
-	if len(encInput) == 0 {
-		return errors.New("at least one input file is required (-i)")
+	if cmd.Flags().Changed("input") || len(encLegacyInputs) > 0 {
+		return errors.New("--input/-i was removed; pass literal paths as arguments or use --glob for patterns")
+	}
+	if len(args) == 0 && len(encGlob) == 0 {
+		return errors.New("at least one input path or --glob pattern is required")
 	}
 
 	// Check for stdin/stdout
 	useStdout := IsStdout(encOutput)
 
-	// Check if any input is stdin
-	hasStdinInput := slices.ContainsFunc(encInput, IsStdin)
-	useStdin := len(encInput) == 1 && hasStdinInput
+	// A stdin operand must be the sole literal input, without glob patterns.
+	hasStdinInput := false
+	for _, input := range args {
+		if IsStdin(input) {
+			hasStdinInput = true
+			break
+		}
+	}
+	useStdin := len(args) == 1 && hasStdinInput && len(encGlob) == 0
 
 	// Validate stdin/stdout constraints
-	if hasStdinInput && len(encInput) > 1 {
-		return errors.New("stdin (-i -) cannot be combined with other input files")
+	if hasStdinInput && !useStdin {
+		return errors.New("stdin (-) cannot be combined with other input paths or --glob")
 	}
 	if useStdin && encPasswordStdin {
-		return errors.New("cannot use -P (password from stdin) with -i - (input from stdin)")
+		return errors.New("cannot use -P (password from stdin) with - (input from stdin)")
 	}
 	if (useStdin || useStdout) && encSplit {
 		return errors.New("stdin/stdout not compatible with --split")
@@ -196,75 +212,27 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check input files exist
-	var allFiles []string
-	var onlyFiles []string
-	var onlyFolders []string
+	var inputs encryptInputs
+	var err error
 
 	// Handle stdin input
 	if useStdin {
-		var err error
 		stdinTempFile, err = BufferStdinToTemp(encOutput)
 		if err != nil {
 			return fmt.Errorf("buffering stdin: %w", err)
 		}
-		allFiles = []string{stdinTempFile}
-		onlyFiles = []string{stdinTempFile}
+		inputs.inputFiles = []string{stdinTempFile}
+		inputs.onlyFiles = []string{stdinTempFile}
 	} else {
-		for _, input := range encInput {
-			// Expand glob patterns
-			matches, err := filepath.Glob(input)
-			if err != nil {
-				return fmt.Errorf("invalid glob pattern %q: %w", input, err)
-			}
-			if len(matches) == 0 {
-				return fmt.Errorf("input file not found: %s", input)
-			}
-
-			for _, match := range matches {
-				info, err := os.Stat(match)
-				if err != nil {
-					return fmt.Errorf("cannot access %s: %w", match, err)
-				}
-
-				if info.IsDir() {
-					onlyFolders = append(onlyFolders, match)
-					// Walk directory to get all files
-					err := filepath.Walk(match, func(path string, info os.FileInfo, err error) error {
-						if err != nil {
-							return err
-						}
-						mode := info.Mode()
-						if mode.IsRegular() {
-							allFiles = append(allFiles, path)
-						} else if encFollowSymlinks && mode&os.ModeSymlink != 0 {
-							// Follow symlink if flag set
-							target, err := filepath.EvalSymlinks(path)
-							if err != nil {
-								return nil //nolint:nilerr // intentional: skip broken symlinks, continue walking
-							}
-							targetInfo, err := os.Stat(target)
-							if err != nil || !targetInfo.Mode().IsRegular() {
-								return nil //nolint:nilerr // intentional: skip symlinks to dirs/special files, continue walking
-							}
-							allFiles = append(allFiles, path)
-						}
-						return nil
-					})
-					if err != nil {
-						return fmt.Errorf("walking directory %s: %w", match, err)
-					}
-				} else {
-					onlyFiles = append(onlyFiles, match)
-					allFiles = append(allFiles, match)
-				}
-			}
+		inputs, err = resolveEncryptInputs(args, encGlob, encFollowSymlinks)
+		if err != nil {
+			return err
 		}
 	}
-
-	if len(allFiles) == 0 {
-		return errors.New("no files found to encrypt")
-	}
+	allFiles := inputs.inputFiles
+	onlyFiles := inputs.onlyFiles
+	onlyFolders := inputs.onlyFolders
+	payloadZip := len(allFiles) > 1 || len(onlyFolders) > 0 || encCompress
 
 	// Determine output file
 	outputPreExisted := false
@@ -277,18 +245,28 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		}
 		outputFile = stdoutTempFile
 	} else if outputFile == "" {
-		// Auto-generate output name
 		rawInput := ""
-		if len(encInput) > 0 {
-			rawInput = encInput[0]
+		if len(inputs.selections) == 1 {
+			rawInput = inputs.selections[0]
 		}
-		payloadZip := len(allFiles) > 1 || len(onlyFolders) > 0 || encCompress
 		outputFile = defaultEncryptOutput(rawInput, allFiles, onlyFolders, useStdin, payloadZip)
 	}
 
 	// Add .pcv extension if missing (not for stdout temp)
 	if !useStdout && !strings.HasSuffix(outputFile, ".pcv") {
 		outputFile += ".pcv"
+	}
+
+	// Validate keyfiles and output collisions before confirmation or password work.
+	for _, kf := range encKeyfiles {
+		if _, err := os.Stat(kf); err != nil {
+			return fmt.Errorf("keyfile not found: %s", kf)
+		}
+	}
+	if !useStdin && !useStdout {
+		if err := validateEncryptOutputPaths(inputs, encKeyfiles, outputFile, payloadZip, encDeniability, encSplit); err != nil {
+			return err
+		}
 	}
 
 	// Check if output exists (skip for stdout)
@@ -339,13 +317,6 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		password, err = ReadPasswordInteractive(true, hasKeyfiles) // confirm=true, allowEmpty=hasKeyfiles
 		if err != nil {
 			return fmt.Errorf("password input: %w", err)
-		}
-	}
-
-	// Validate keyfiles exist
-	for _, kf := range encKeyfiles {
-		if _, err := os.Stat(kf); err != nil {
-			return fmt.Errorf("keyfile not found: %s", kf)
 		}
 	}
 
