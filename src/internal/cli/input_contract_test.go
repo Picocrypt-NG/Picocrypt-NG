@@ -294,6 +294,48 @@ func TestCLIInputContract(t *testing.T) {
 		assertCLIContractAbsent(t, output, output+".incomplete")
 	})
 
+	t.Run("stdin keyfile output collisions are rejected before input read", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			outputName string
+			keyfile    func(string) string
+			compress   bool
+		}{
+			{name: "final output", outputName: "final", keyfile: func(output string) string { return output }},
+			{name: "incomplete output", outputName: "incomplete.pcv", keyfile: func(output string) string { return output + ".incomplete" }},
+			{name: "compression staging", outputName: "compressed.pcv", keyfile: func(output string) string { return strings.TrimSuffix(output, ".pcv") + ".tmp" }, compress: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				output := filepath.Join(dir, tc.outputName)
+				if !strings.HasSuffix(output, ".pcv") {
+					output += ".pcv"
+				}
+				keyfile := tc.keyfile(output)
+				keyfileBytes := []byte("stdin collision keyfile exact bytes")
+				mustWriteCLIContractFile(t, keyfile, keyfileBytes)
+
+				args := []string{"encrypt", "-", "-o", strings.TrimSuffix(output, ".pcv"), "-p", password, "-k", keyfile, "-q", "-y"}
+				if tc.compress {
+					args = append(args, "--compress")
+				}
+				result := runCLIInputContractCommandWithOpenStdin(t, binaryPath, "", args...)
+				if result.exitCode == 0 || !strings.Contains(result.stderr, "conflicts with output artifact") {
+					t.Fatalf("stdin collision result = exit %d stderr %q", result.exitCode, result.stderr)
+				}
+				got, err := os.ReadFile(keyfile)
+				if err != nil || !bytes.Equal(got, keyfileBytes) {
+					t.Fatalf("keyfile = %q, err = %v; want exact original bytes", got, err)
+				}
+				for _, artifact := range []string{output, output + ".incomplete", strings.TrimSuffix(output, ".pcv") + ".tmp", strings.TrimSuffix(output, ".pcv") + ".tmp.incomplete"} {
+					if artifact != keyfile {
+						assertCLIContractAbsent(t, artifact)
+					}
+				}
+			})
+		}
+	})
+
 	t.Run("dash-prefixed path after separator round trips", func(t *testing.T) {
 		dir := t.TempDir()
 		literal := "-report.txt"
@@ -458,6 +500,78 @@ func TestCLIInputContract(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("case variant numeric split artifacts follow filesystem semantics", func(t *testing.T) {
+		const longIndex = "18446744073709551616"
+		for _, tc := range []struct {
+			name       string
+			asKeyfile  bool
+			incomplete bool
+			exactBase  bool
+		}{
+			{name: "input final"},
+			{name: "input incomplete", incomplete: true},
+			{name: "input uppercase incomplete suffix", incomplete: true, exactBase: true},
+			{name: "keyfile final", asKeyfile: true},
+			{name: "keyfile incomplete", asKeyfile: true, incomplete: true},
+			{name: "keyfile uppercase incomplete suffix", asKeyfile: true, incomplete: true, exactBase: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				caseInsensitive := cliContractFilesystemCaseInsensitive(t, dir)
+				output := filepath.Join(dir, "out.pcv")
+				protectedBase := "OUT.PCV"
+				if tc.exactBase {
+					protectedBase = "out.pcv"
+				}
+				protected := filepath.Join(dir, protectedBase+"."+longIndex)
+				if tc.incomplete {
+					protected += ".INCOMPLETE"
+				}
+				protectedBytes := []byte("case variant protected exact bytes")
+				mustWriteCLIContractFile(t, protected, protectedBytes)
+
+				input := protected
+				args := []string{"encrypt"}
+				if tc.asKeyfile {
+					input = filepath.Join(dir, "input.txt")
+					mustWriteCLIContractFile(t, input, []byte("ordinary input"))
+				}
+				args = append(args, input, "-o", output, "-p", password, "--split", "--split-size", "2", "--split-unit", "Total", "-q", "-y")
+				if tc.asKeyfile {
+					args = append(args, "-k", protected)
+				}
+
+				result := runCLIInputContractCommand(t, binaryPath, "", args...)
+				if caseInsensitive {
+					if result.exitCode == 0 || !strings.Contains(result.stderr, "conflicts with output artifact") {
+						t.Errorf("case-insensitive collision result = exit %d stderr %q", result.exitCode, result.stderr)
+					}
+					assertCLIContractAbsent(t, output, output+".incomplete")
+				} else {
+					if result.exitCode != 0 {
+						t.Errorf("case-sensitive distinct path result = exit %d stderr %q", result.exitCode, result.stderr)
+					}
+					if _, err := os.Stat(output + ".0"); err != nil {
+						t.Errorf("case-sensitive split output missing: %v", err)
+					}
+				}
+				got, err := os.ReadFile(protected)
+				if err != nil || !bytes.Equal(got, protectedBytes) {
+					t.Errorf("protected file = %q, err = %v; want exact original bytes", got, err)
+				}
+			})
+		}
+	})
+}
+
+func TestSplitArtifactSuffixUsesCanonicalIncompleteSpelling(t *testing.T) {
+	const digits = "18446744073709551616"
+	suffix, ok := splitArtifactSuffix("out.pcv." + digits + ".INCOMPLETE")
+	want := "." + digits + ".incomplete"
+	if !ok || suffix != want {
+		t.Fatalf("splitArtifactSuffix() = %q, %v; want %q, true", suffix, ok, want)
+	}
 }
 
 func (result cliTestResult) stdoutString() string {
@@ -471,6 +585,20 @@ func assertCLIContractAbsent(t *testing.T, paths ...string) {
 			t.Fatalf("unexpected artifact %q: %v", path, err)
 		}
 	}
+}
+
+func cliContractFilesystemCaseInsensitive(t *testing.T, dir string) bool {
+	t.Helper()
+	lower := filepath.Join(dir, "case-probe")
+	upper := filepath.Join(dir, "CASE-PROBE")
+	mustWriteCLIContractFile(t, lower, []byte("probe"))
+	defer func() { _ = os.Remove(lower) }()
+	if _, err := os.Stat(upper); err == nil {
+		return true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("probe filesystem case sensitivity: %v", err)
+	}
+	return false
 }
 
 func assertCLIContractZip(t *testing.T, path string, want map[string][]byte) {

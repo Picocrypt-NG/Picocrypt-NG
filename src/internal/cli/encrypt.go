@@ -241,6 +241,11 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	if outputFile != "" && !useStdout && !strings.HasSuffix(outputFile, ".pcv") {
 		outputFile += ".pcv"
 	}
+	if useStdin && !useStdout {
+		if err := validateEncryptOutputPaths(encryptInputs{}, encKeyfiles, outputFile, encCompress, false, false); err != nil {
+			return err
+		}
+	}
 	if useStdin && !useStdout && !encYes {
 		if info, err := os.Stat(outputFile); err == nil {
 			if info.IsDir() {

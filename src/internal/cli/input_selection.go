@@ -56,8 +56,9 @@ func resolveEncryptInputs(literals, patterns []string, followSymlinks bool) (enc
 
 		info, err := os.Stat(path)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				if strings.ContainsAny(path, "*?[") {
+			looksLikeGlob := looksLikeGlobPath(path)
+			if errors.Is(err, os.ErrNotExist) || isInvalidWindowsWildcardPath(path, err) {
+				if looksLikeGlob {
 					return fmt.Errorf("input path %q does not exist; use --glob %q to select by pattern", path, path)
 				}
 				return fmt.Errorf("input path %q does not exist", path)
@@ -140,7 +141,11 @@ func validateEncryptOutputPaths(inputs encryptInputs, keyfiles []string, output 
 			}
 		}
 		if split {
-			if artifact, ok := splitOutputArtifact(path, output); ok {
+			artifact, ok, err := splitOutputArtifact(path, output)
+			if err != nil {
+				return err
+			}
+			if ok {
 				return fmt.Errorf("protected source %q conflicts with output artifact %q", path, artifact)
 			}
 		}
@@ -194,30 +199,71 @@ func samePathOrFile(first, second string) (bool, error) {
 	return os.SameFile(firstInfo, secondInfo), nil
 }
 
-func splitOutputArtifact(path, output string) (string, bool) {
+func splitOutputArtifact(path, output string) (string, bool, error) {
 	pathAbs, err := absoluteCleanPath(path)
 	if err != nil {
-		return "", false
+		return "", false, fmt.Errorf("resolve protected path %q: %w", path, err)
 	}
 	outputAbs, err := absoluteCleanPath(output)
 	if err != nil {
+		return "", false, fmt.Errorf("resolve output path %q: %w", output, err)
+	}
+	suffix, ok := splitArtifactSuffix(filepath.Base(pathAbs))
+	if !ok {
+		return "", false, nil
+	}
+	canonical := outputAbs + suffix
+	same, err := samePathOrFile(pathAbs, canonical)
+	if err != nil {
+		return "", false, err
+	}
+	if !same {
+		return "", false, nil
+	}
+	return path, true, nil
+}
+
+func splitArtifactSuffix(name string) (string, bool) {
+	numericEnd := len(name)
+	const incomplete = ".incomplete"
+	hasIncomplete := hasASCIIInsensitiveSuffix(name, incomplete)
+	if hasIncomplete {
+		numericEnd -= len(incomplete)
+	}
+	dot := strings.LastIndexByte(name[:numericEnd], '.')
+	if dot < 0 || dot == numericEnd-1 {
 		return "", false
 	}
-	prefix := outputAbs + "."
-	if !strings.HasPrefix(pathAbs, prefix) {
-		return "", false
-	}
-	suffix := strings.TrimPrefix(pathAbs, prefix)
-	suffix = strings.TrimSuffix(suffix, ".incomplete")
-	if suffix == "" {
-		return "", false
-	}
-	for i := range suffix {
-		if suffix[i] < '0' || suffix[i] > '9' {
+	for i := dot + 1; i < numericEnd; i++ {
+		if name[i] < '0' || name[i] > '9' {
 			return "", false
 		}
 	}
-	return path, true
+	if hasIncomplete {
+		return name[dot:numericEnd] + incomplete, true
+	}
+	return name[dot:], true
+}
+
+func hasASCIIInsensitiveSuffix(value, suffix string) bool {
+	if len(value) < len(suffix) {
+		return false
+	}
+	value = value[len(value)-len(suffix):]
+	for i := range suffix {
+		left := value[i]
+		right := suffix[i]
+		if left >= 'A' && left <= 'Z' {
+			left += 'a' - 'A'
+		}
+		if right >= 'A' && right <= 'Z' {
+			right += 'a' - 'A'
+		}
+		if left != right {
+			return false
+		}
+	}
+	return true
 }
 
 func existingSplitOutputArtifacts(output string) ([]string, error) {
@@ -234,7 +280,11 @@ func existingSplitOutputArtifacts(output string) ([]string, error) {
 	artifacts := make([]string, 0)
 	for _, entry := range entries {
 		candidate := filepath.Join(outputDir, entry.Name())
-		if _, ok := splitOutputArtifact(candidate, outputAbs); ok {
+		_, ok, err := splitOutputArtifact(candidate, outputAbs)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			artifacts = append(artifacts, candidate)
 		}
 	}
