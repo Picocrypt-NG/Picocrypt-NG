@@ -71,7 +71,7 @@ The native Android app requires Android 7.0 or newer on a 64-bit ARM (<code>arm6
 For local Android builds and architecture details, see <a href="android/README.md">android/README.md</a>.
 
 ## CLI
-Picocrypt NG includes a command-line interface in this repository; see <a href="CLI.md">CLI.md</a> for usage. It can encrypt and decrypt files, folders, and glob patterns, and supports paranoid mode and Reed-Solomon encoding. You can use it on systems that don't have a GUI or can't run the GUI app.
+Picocrypt NG includes a command-line interface in this repository; see <a href="CLI.md">CLI.md</a> for usage. It encrypts literal file and folder operands; use quoted explicit glob patterns when pattern matching is intended. It also supports paranoid mode and Reed-Solomon encoding. You can use it on systems that don't have a GUI or can't run the GUI app.
 
 ## Web
 Picocrypt NG provides a browser app <a href="https://picocrypt-ng.github.io/">here</a> for in-memory single-file encryption and decryption on modern browsers, including mobile devices. In this repository, the WASM bridge caps inputs at 1 GiB and supports comments, Paranoid mode, keyfiles, Reed-Solomon payload protection, force decrypt, and deniability. The browser workflow is still intentionally non-streaming and single-file oriented; folder workflows, split volumes, and large streaming jobs remain desktop/CLI/native-app features. Go-owned byte buffers are wiped best-effort after use, but JavaScript engine copies and garbage-collected runtime copies cannot be guaranteed wiped.

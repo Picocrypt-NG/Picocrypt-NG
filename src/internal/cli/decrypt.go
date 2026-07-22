@@ -30,9 +30,12 @@ var decryptCmd = &cobra.Command{
 If no password is provided, you will be prompted to enter one interactively.
 The password is hidden while typing.
 
+Pass the volume as a literal operand. Use -- before a volume filename that
+begins with -.
+
 Examples:
   # Decrypt interactively (prompts for password)
-	  Picocrypt-NG decrypt secret.pcv
+	  Picocrypt-NG decrypt secret.pcv -o secret.txt
 
   # Decrypt with password on command line (visible in shell history)
 	  Picocrypt-NG decrypt secret.pcv -o secret.txt -p "mypassword"

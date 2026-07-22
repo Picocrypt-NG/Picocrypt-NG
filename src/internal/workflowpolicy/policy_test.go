@@ -890,6 +890,52 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 	}
 }
 
+func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {
+	const raceCommand = "go test -v -race -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/..."
+	const contractCommand = "go test -v -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/..."
+
+	for _, tc := range []struct {
+		path string
+		job  string
+	}{
+		{path: ".github/workflows/build-macos.yml", job: "build"},
+		{path: ".github/workflows/pr-test-build-macos.yml", job: "pr-test-build-macos"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			testStep := mustStepNamed(t, mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job), "Run tests")
+
+			raceLineIndex := -1
+			contractLineIndex := -1
+			contractLineCount := 0
+			for lineIndex, line := range strings.Split(testStep.Run, "\n") {
+				line = strings.TrimSpace(line)
+				if line == raceCommand {
+					raceLineIndex = lineIndex
+				}
+				if line == contractCommand {
+					contractLineCount++
+					contractLineIndex = lineIndex
+					if strings.Contains(line, "-race") {
+						t.Fatalf("macOS CLI input contract line must not use -race: %q", line)
+					}
+					if strings.Contains(line, "PICOCRYPT_RUN_CLI_INTEGRATION") {
+						t.Fatalf("macOS CLI input contract line must not set the integration gate: %q", line)
+					}
+				}
+			}
+			if raceLineIndex < 0 {
+				t.Fatalf("macOS Run tests step is missing selected race command %q", raceCommand)
+			}
+			if contractLineCount != 1 {
+				t.Fatalf("macOS CLI input contract line count = %d, want exactly 1", contractLineCount)
+			}
+			if contractLineIndex <= raceLineIndex {
+				t.Fatal("macOS CLI input contract line must follow the selected race command")
+			}
+		})
+	}
+}
+
 func TestWindowsWorkflowsUseApprovedResourceHacker528(t *testing.T) {
 	const expectedHash = "b611be2f35cb44efd1c29df03e7ebe62bd556a500585680e1afa5e073eaf1756"
 	for _, tc := range []struct {

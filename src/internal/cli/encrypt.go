@@ -40,6 +40,9 @@ Examples:
   # Encrypt multiple files (creates zip archive internally)
 	  Picocrypt-NG encrypt file1.txt file2.txt -o archive.pcv
 
+  # Encrypt files selected by explicit, quoted glob patterns
+	  Picocrypt-NG encrypt --glob "*.jpg" --glob "*.png" -o images.pcv
+
   # Encrypt with paranoid mode and Reed-Solomon error correction
 	  Picocrypt-NG encrypt data.db -o data.pcv --paranoid --reed-solomon
 

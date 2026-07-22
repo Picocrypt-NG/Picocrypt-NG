@@ -68,15 +68,18 @@ The **CLI-only build** has zero graphics dependencies, making it suitable for:
 Encrypts one or more files into a Picocrypt volume (`.pcv`).
 
 ```
-picocrypt encrypt [flags]
+picocrypt encrypt [PATH...]
 ```
 
 #### Input/Output Flags
 
 | Flag | Short | Type | Required | Description |
 |------|-------|------|----------|-------------|
-| `--input` | `-i` | string | Yes | Input file or directory (can be specified multiple times) |
+| Positional `PATH...` | | path | Yes | Literal input files or directories |
+| `--glob` | `-g` | string | No | Add paths matching a quoted pattern (can be specified multiple times) |
 | `--output` | `-o` | string | No | Output `.pcv` file path (auto-generated if omitted) |
+
+`PATH` operands are literal: a name such as `report[1].txt` is not treated as a pattern. Use quoted `--glob`/`-g` only when pattern matching is intended, for example `--glob "*.jpg" --glob "*.png"`. The option is repeatable; malformed patterns and patterns with no matches fail rather than silently selecting nothing. Use `--` before a literal path that begins with `-`. The removed `-i`/`--input` flag now errors with migration guidance; pass paths as operands instead.
 
 #### Credential Flags
 
@@ -88,6 +91,8 @@ picocrypt encrypt [flags]
 | `--keyfile-ordered` | | bool | Keyfile order matters (sequential hashing) |
 
 At least one of `--password` or `--keyfile` must be provided.
+
+Do not pass real passwords with `-p` in routine use: the value can remain in shell history and process listings. Prefer an interactive prompt or `--password-stdin` when appropriate.
 
 #### Security Flags
 
@@ -128,15 +133,17 @@ When using `--split-unit=Total`, `--split-size` specifies the total number of ch
 Decrypts a Picocrypt volume back to its original files.
 
 ```
-picocrypt decrypt [flags]
+picocrypt decrypt VOLUME
 ```
 
 #### Input/Output Flags
 
 | Flag | Short | Type | Required | Description |
 |------|-------|------|----------|-------------|
-| `--input` | `-i` | string | Yes | Input `.pcv` file to decrypt |
+| Positional `VOLUME` | | path | Yes | Literal input `.pcv` file to decrypt |
 | `--output` | `-o` | string | No | Output file path (auto-detected if omitted) |
+
+`VOLUME` is a literal operand. Use `--` before a volume name that begins with `-`. The removed `-i`/`--input` flag now errors with migration guidance; pass the volume path as the operand.
 
 #### Credential Flags
 
@@ -175,43 +182,43 @@ picocrypt decrypt [flags]
 
 ```bash
 # Encrypt a single file
-picocrypt encrypt -i document.pdf -o document.pcv -p "MySecurePassword123"
+picocrypt encrypt document.pdf -o document.pcv -p "MySecurePassword123"
 
 # Encrypt with auto-generated output name (creates document.pdf.pcv)
-picocrypt encrypt -i document.pdf -p "MySecurePassword123"
+picocrypt encrypt document.pdf -p "MySecurePassword123"
 
 # Encrypt multiple files (creates a zip archive internally)
-picocrypt encrypt -i file1.txt -i file2.txt -i file3.txt -o archive.pcv -p "password"
+picocrypt encrypt file1.txt file2.txt file3.txt -o archive.pcv -p "password"
 
 # Encrypt an entire directory
-picocrypt encrypt -i ./my-folder -o backup.pcv -p "password"
+picocrypt encrypt ./my-folder -o backup.pcv -p "password"
 
 # Use glob patterns
-picocrypt encrypt -i "*.jpg" -i "*.png" -o images.pcv -p "password"
+picocrypt encrypt --glob "*.jpg" --glob "*.png" -o images.pcv -p "password"
 ```
 
 ### Security Options
 
 ```bash
 # Paranoid mode with Reed-Solomon error correction
-picocrypt encrypt -i sensitive.db -o sensitive.pcv -p "password" \
+picocrypt encrypt sensitive.db -o sensitive.pcv -p "password" \
     --paranoid --reed-solomon
 
 # Add keyfile as an additional decryption factor
-picocrypt encrypt -i data.zip -o data.pcv -p "password" -k keyfile.key
+picocrypt encrypt data.zip -o data.pcv -p "password" -k keyfile.key
 
 # Multiple keyfiles with ordered hashing
-picocrypt encrypt -i secret.txt -o secret.pcv -p "password" \
+picocrypt encrypt secret.txt -o secret.pcv -p "password" \
     -k key1.key -k key2.key --keyfile-ordered
 
 # Keyfile-only encryption (no password)
-picocrypt encrypt -i document.pdf -o document.pcv -k master.key
+picocrypt encrypt document.pdf -o document.pcv -k master.key
 
 # Deniability wrapper for plausible deniability
-picocrypt encrypt -i hidden.txt -o innocent.pcv -p "password" --deniability
+picocrypt encrypt hidden.txt -o innocent.pcv -p "password" --deniability
 
 # Add comments (visible in header, NOT encrypted)
-picocrypt encrypt -i report.docx -o report.pcv -p "password" \
+picocrypt encrypt report.docx -o report.pcv -p "password" \
     -c "Q4 Financial Report - Confidential"
 ```
 
@@ -219,15 +226,15 @@ picocrypt encrypt -i report.docx -o report.pcv -p "password" \
 
 ```bash
 # Split into 100 MiB chunks
-picocrypt encrypt -i large-file.iso -o backup.pcv -p "password" \
+picocrypt encrypt large-file.iso -o backup.pcv -p "password" \
     --split --split-size 100 --split-unit MiB
 
 # Split into 5 equal parts
-picocrypt encrypt -i archive.tar -o archive.pcv -p "password" \
+picocrypt encrypt archive.tar -o archive.pcv -p "password" \
     --split --split-size 5 --split-unit Total
 
 # Split into 4.7 GiB chunks (DVD-size)
-picocrypt encrypt -i video.mkv -o video.pcv -p "password" \
+picocrypt encrypt video.mkv -o video.pcv -p "password" \
     --split --split-size 4700 --split-unit MiB
 ```
 
@@ -235,35 +242,35 @@ picocrypt encrypt -i video.mkv -o video.pcv -p "password" \
 
 ```bash
 # Decrypt a file
-picocrypt decrypt -i document.pcv -o document.pdf -p "password"
+picocrypt decrypt document.pcv -o document.pdf -p "password"
 
 # Auto-detect output name (removes .pcv extension)
-picocrypt decrypt -i document.pcv -p "password"
+picocrypt decrypt document.pcv -p "password"
 
 # Decrypt with keyfile
-picocrypt decrypt -i secret.pcv -p "password" -k keyfile.key
+picocrypt decrypt secret.pcv -p "password" -k keyfile.key
 ```
 
 ### Advanced Decryption
 
 ```bash
 # Verify integrity before decryption (two-pass, recommended for critical data)
-picocrypt decrypt -i important.pcv -p "password" --verify-first
+picocrypt decrypt important.pcv -p "password" --verify-first
 
 # Auto-extract zip archives after decryption
-picocrypt decrypt -i archive.pcv -p "password" --auto-unzip
+picocrypt decrypt archive.pcv -p "password" --auto-unzip
 
 # Extract to same directory (not subdirectory)
-picocrypt decrypt -i files.pcv -p "password" --auto-unzip --same-level
+picocrypt decrypt files.pcv -p "password" --auto-unzip --same-level
 
 # Recombine split volume (usually auto-detected)
-picocrypt decrypt -i backup.pcv.0 -p "password" --recombine
+picocrypt decrypt backup.pcv.0 -p "password" --recombine
 
 # Force decryption despite corruption (may produce partial output)
-picocrypt decrypt -i damaged.pcv -p "password" --force
+picocrypt decrypt damaged.pcv -p "password" --force
 
 # Remove deniability wrapper
-picocrypt decrypt -i innocent.pcv -p "real-password" --deniability
+picocrypt decrypt innocent.pcv -p "real-password" --deniability
 ```
 
 If `--force` keeps output after MAC verification failed, Picocrypt NG writes `Warning: Force decrypt kept output...` to stderr and exits with exit code 2. The recovered file or stdout bytes are not fully verified; scripts must not treat exit code 2 as clean success.
@@ -276,40 +283,40 @@ Use `-` as the filename for stdin/stdout to enable full pipeline automation. Thi
 
 ```bash
 # Encrypt from stdin to file
-cat document.txt | picocrypt encrypt -i - -o document.pcv -p "password"
+cat document.txt | picocrypt encrypt - -o document.pcv -p "password"
 
 # Encrypt file to stdout
-picocrypt encrypt -i document.txt -o - -p "password" > document.pcv
+picocrypt encrypt document.txt -o - -p "password" > document.pcv
 
 # Full pipeline: stdin to stdout
-cat secret.txt | picocrypt encrypt -i - -o - -p "password" > secret.pcv
+cat secret.txt | picocrypt encrypt - -o - -p "password" > secret.pcv
 
 # Decrypt from stdin
-curl https://example.com/file.pcv | picocrypt decrypt -i - -o file.txt -p "password"
+curl https://example.com/file.pcv | picocrypt decrypt - -o file.txt -p "password"
 
 # Decrypt to stdout
-picocrypt decrypt -i secret.pcv -o - -p "password" | less
+picocrypt decrypt secret.pcv -o - -p "password" | less
 
 # Round-trip pipeline
-echo "secret data" | picocrypt encrypt -i - -o - -p "pw" | picocrypt decrypt -i - -o - -p "pw"
+echo "secret data" | picocrypt encrypt - -o - -p "pw" | picocrypt decrypt - -o - -p "pw"
 ```
 
 ### Pipeline Examples
 
 ```bash
 # Encrypt and upload in one pipeline
-tar czf - /home/user/documents | picocrypt encrypt -i - -o - -p "password" | \
+tar czf - /home/user/documents | picocrypt encrypt - -o - -p "password" | \
     curl -X PUT -T - https://storage.example.com/backup.pcv
 
 # Download, decrypt, and extract
 curl -s https://storage.example.com/backup.pcv | \
-    picocrypt decrypt -i - -o - -p "password" | tar xzf -
+    picocrypt decrypt - -o - -p "password" | tar xzf -
 
 # Encrypt database dump directly
-pg_dump mydb | picocrypt encrypt -i - -o - -p "password" > mydb.pcv
+pg_dump mydb | picocrypt encrypt - -o - -p "password" > mydb.pcv
 
 # Stream decrypt to database restore
-picocrypt decrypt -i mydb.pcv -o - -p "password" | psql mydb
+picocrypt decrypt mydb.pcv -o - -p "password" | psql mydb
 ```
 
 ### Constraints
@@ -318,10 +325,10 @@ Stdin/stdout streaming has the following limitations:
 
 | Constraint | Reason |
 |------------|--------|
-| `-i -` cannot combine with `-P` | Both use stdin |
-| `-i -` cannot combine with multiple `-i` flags | Stdin is single input |
+| `-` input operand cannot combine with `-P` | Both use stdin |
+| `-` input operand cannot combine with other operands or `--glob` | Stdin is single input |
 | `-o -` cannot combine with `--split` | Cannot split stdout |
-| `-i -` / `-o -` cannot combine with `--deniability` | Requires file manipulation |
+| `-` input operand / `-o -` cannot combine with `--deniability` | Requires file manipulation |
 | `-o -` cannot combine with `--auto-unzip` (decrypt) | Cannot extract to stdout |
 | `-o -` cannot combine with `--recombine` (decrypt) | Requires file access |
 
@@ -337,16 +344,16 @@ For automated scripts, use `--password-stdin` (`-P`) to read the password from s
 
 ```bash
 # From echo (less secure - password visible in process list)
-echo "password" | picocrypt encrypt -i file.txt -o file.pcv -P
+echo "password" | picocrypt encrypt file.txt -o file.pcv -P
 
 # From file (more secure)
-cat /path/to/password-file | picocrypt encrypt -i file.txt -o file.pcv -P
+cat /path/to/password-file | picocrypt encrypt file.txt -o file.pcv -P
 
 # From environment variable
-echo "$ENCRYPTION_PASSWORD" | picocrypt encrypt -i file.txt -o file.pcv -P
+echo "$ENCRYPTION_PASSWORD" | picocrypt encrypt file.txt -o file.pcv -P
 
 # From secret manager (example with HashiCorp Vault)
-vault kv get -field=password secret/encryption | picocrypt encrypt -i file.txt -o file.pcv -P
+vault kv get -field=password secret/encryption | picocrypt encrypt file.txt -o file.pcv -P
 ```
 
 ### Quiet Mode for Scripts
@@ -354,7 +361,7 @@ vault kv get -field=password secret/encryption | picocrypt encrypt -i file.txt -
 Use `--quiet` (`-q`) to suppress progress output:
 
 ```bash
-picocrypt encrypt -i data.db -o data.pcv -p "password" -q
+picocrypt encrypt data.db -o data.pcv -p "password" -q
 ```
 
 ### Non-interactive Mode
@@ -362,7 +369,7 @@ picocrypt encrypt -i data.db -o data.pcv -p "password" -q
 Use `--yes` (`-y`) to skip overwrite prompts:
 
 ```bash
-picocrypt encrypt -i file.txt -o file.pcv -p "password" -y
+picocrypt encrypt file.txt -o file.pcv -p "password" -y
 ```
 
 ### Batch Processing
@@ -370,16 +377,16 @@ picocrypt encrypt -i file.txt -o file.pcv -p "password" -y
 ```bash
 # Encrypt all PDFs in a directory
 for file in *.pdf; do
-    picocrypt encrypt -i "$file" -p "password" -q -y
+    picocrypt encrypt "$file" -p "password" -q -y
 done
 
 # Decrypt multiple volumes
 for pcv in *.pcv; do
-    picocrypt decrypt -i "$pcv" -p "password" -q -y
+    picocrypt decrypt "$pcv" -p "password" -q -y
 done
 
 # Parallel encryption with GNU Parallel
-find . -name "*.docx" | parallel picocrypt encrypt -i {} -p "password" -q -y
+find . -name "*.docx" | parallel picocrypt encrypt {} -p "password" -q -y
 ```
 
 ### Error Handling in Scripts
@@ -388,7 +395,7 @@ find . -name "*.docx" | parallel picocrypt encrypt -i {} -p "password" -q -y
 #!/bin/bash
 set -e
 
-if picocrypt encrypt -i secret.txt -o secret.pcv -p "$PASSWORD" -q; then
+if picocrypt encrypt secret.txt -o secret.pcv -p "$PASSWORD" -q; then
     echo "Encryption successful"
     rm secret.txt  # Remove original after successful encryption
 else
@@ -411,7 +418,7 @@ PASSWORD=$(cat "$PASSWORD_FILE")
 
 # Create encrypted backup with Reed-Solomon protection
 tar czf - /home/user/documents | \
-    picocrypt encrypt -i - -o "$BACKUP_DIR/backup-$DATE.pcv" \
+    picocrypt encrypt - -o "$BACKUP_DIR/backup-$DATE.pcv" \
     -p "$PASSWORD" --reed-solomon --paranoid -q
 
 echo "Backup completed: backup-$DATE.pcv"
@@ -428,7 +435,7 @@ DATE=$(date +%Y%m%d)
 
 # Backup to stdout, pipe to remote storage
 tar czf - /home/user/documents | \
-    picocrypt encrypt -i - -o - -p "$PASSWORD" --reed-solomon -q | \
+    picocrypt encrypt - -o - -p "$PASSWORD" --reed-solomon -q | \
     aws s3 cp - "s3://my-bucket/backups/backup-$DATE.pcv"
 ```
 
@@ -444,14 +451,14 @@ tar czf - /home/user/documents | \
 
 ### Common Issues
 
-**"input file is required (-i)"**
-Specify at least one input file with the `-i` flag.
+**"at least one input path or --glob pattern is required"**
+Pass one or more literal input operands, or add a quoted `--glob` pattern.
 
 **"password (-p) or keyfile (-k) is required"**
 Provide either a password, keyfile, or both.
 
 **"invalid glob pattern"**
-Ensure glob patterns are quoted to prevent shell expansion: `-i "*.txt"`
+Ensure explicit glob patterns are quoted to prevent shell expansion: `--glob "*.txt"`
 
 **"keyfile not found"**
 Verify the keyfile path exists and is accessible.

@@ -42,6 +42,7 @@ jobs:
       run: |
         cd src
         go test -v -race -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
+        go test -v -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...
 
     - name: Build GUI
       run: |
