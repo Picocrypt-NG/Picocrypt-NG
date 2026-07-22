@@ -626,10 +626,8 @@ func TestOutputAutoGeneration(t *testing.T) {
 	})
 }
 
-// TestGlobExpansion drives runEncrypt's real glob-expansion path (encrypt.go:203)
-// rather than re-testing filepath.Glob. A non-matching pattern must surface the
-// specific "input file not found" guard (encrypt.go:207-209); a matching pattern
-// must flow through the expansion loop and succeed.
+// TestGlobExpansion drives the no-match diagnostic through runEncrypt's real
+// glob-expansion path rather than re-testing filepath.Glob.
 func TestGlobExpansion(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -662,28 +660,6 @@ func TestGlobExpansion(t *testing.T) {
 		}
 	})
 
-	t.Run("matching pattern is expanded and encrypted", func(t *testing.T) {
-		resetEncryptFlagsForDirTest()
-		t.Cleanup(resetEncryptFlagsForDirTest)
-
-		outPath := filepath.Join(tmpDir, "matched.pcv")
-		encGlob = []string{filepath.Join(tmpDir, "*.txt")} // matches a.txt, b.txt
-		encOutput = outPath
-		encPassword = "pw"
-		encQuiet = true
-		encYes = true
-
-		if err := encryptCmd.RunE(encryptCmd, []string{}); err != nil {
-			t.Fatalf("runEncrypt with matching glob: %v", err)
-		}
-		info, err := os.Stat(outPath)
-		if err != nil {
-			t.Fatalf("expected encrypted output %q to exist: %v", outPath, err)
-		}
-		if info.Size() == 0 {
-			t.Fatalf("encrypted output %q is empty", outPath)
-		}
-	})
 }
 
 func TestReporterOutput(t *testing.T) {

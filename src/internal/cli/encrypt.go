@@ -135,7 +135,7 @@ func defaultEncryptOutput(rawInput string, allFiles []string, onlyFolders []stri
 		return "encrypted" + extension
 	}
 
-	if payloadZip && len(onlyFolders) == 1 && len(allFiles) <= 1 && rawInput != "" {
+	if payloadZip && len(onlyFolders) == 1 && rawInput != "" {
 		return rawInput + extension
 	}
 	if len(allFiles) == 1 && len(onlyFolders) == 0 {
@@ -180,6 +180,42 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	}
 	if (useStdin || useStdout) && encDeniability {
 		return errors.New("stdin/stdout not compatible with --deniability")
+	}
+
+	// Validate split options before any input buffering, temp creation,
+	// overwrite confirmation, or credential prompting.
+	var chunkSize int
+	var chunkUnit fileops.SplitUnit
+	if encSplit {
+		if encSplitSize <= 0 {
+			return errors.New("--split-size is required when --split is enabled")
+		}
+		chunkSize = encSplitSize
+
+		switch strings.ToLower(encSplitUnit) {
+		case "kib":
+			chunkUnit = fileops.SplitUnitKiB
+		case "mib":
+			chunkUnit = fileops.SplitUnitMiB
+		case "gib":
+			chunkUnit = fileops.SplitUnitGiB
+		case "tib":
+			chunkUnit = fileops.SplitUnitTiB
+		case "total":
+			chunkUnit = fileops.SplitUnitTotal
+		default:
+			return fmt.Errorf("invalid split unit: %s (must be KiB, MiB, GiB, TiB, or Total)", encSplitUnit)
+		}
+		if _, err := fileops.ChunkSizeToBytes(chunkSize, chunkUnit); err != nil {
+			return err
+		}
+	}
+
+	// Keyfiles must exist before stdin buffering or stdout temp creation.
+	for _, kf := range encKeyfiles {
+		if _, err := os.Stat(kf); err != nil {
+			return fmt.Errorf("keyfile not found: %s", kf)
+		}
 	}
 
 	// Auto-quiet when outputting to stdout (avoid mixing progress with data)
@@ -257,12 +293,7 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		outputFile += ".pcv"
 	}
 
-	// Validate keyfiles and output collisions before confirmation or password work.
-	for _, kf := range encKeyfiles {
-		if _, err := os.Stat(kf); err != nil {
-			return fmt.Errorf("keyfile not found: %s", kf)
-		}
-	}
+	// Validate output collisions before confirmation or password work.
 	if !useStdin && !useStdout {
 		if err := validateEncryptOutputPaths(inputs, encKeyfiles, outputFile, payloadZip, encDeniability, encSplit); err != nil {
 			return err
@@ -317,31 +348,6 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		password, err = ReadPasswordInteractive(true, hasKeyfiles) // confirm=true, allowEmpty=hasKeyfiles
 		if err != nil {
 			return fmt.Errorf("password input: %w", err)
-		}
-	}
-
-	// Validate split options
-	var chunkSize int
-	var chunkUnit fileops.SplitUnit
-	if encSplit {
-		if encSplitSize <= 0 {
-			return errors.New("--split-size is required when --split is enabled")
-		}
-		chunkSize = encSplitSize
-
-		switch strings.ToLower(encSplitUnit) {
-		case "kib":
-			chunkUnit = fileops.SplitUnitKiB
-		case "mib":
-			chunkUnit = fileops.SplitUnitMiB
-		case "gib":
-			chunkUnit = fileops.SplitUnitGiB
-		case "tib":
-			chunkUnit = fileops.SplitUnitTiB
-		case "total":
-			chunkUnit = fileops.SplitUnitTotal
-		default:
-			return fmt.Errorf("invalid split unit: %s (must be KiB, MiB, GiB, TiB, or Total)", encSplitUnit)
 		}
 	}
 
