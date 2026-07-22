@@ -75,11 +75,11 @@ picocrypt encrypt [PATH...]
 
 | Flag | Short | Type | Required | Description |
 |------|-------|------|----------|-------------|
-| Positional `PATH...` | | path | Yes | Literal input files or directories |
+| Positional `PATH...` | | path | Conditional | Literal input files or directories |
 | `--glob` | `-g` | string | No | Add paths matching a quoted pattern (can be specified multiple times) |
 | `--output` | `-o` | string | No | Output `.pcv` file path (auto-generated if omitted) |
 
-`PATH` operands are literal: a name such as `report[1].txt` is not treated as a pattern. Use quoted `--glob`/`-g` only when pattern matching is intended, for example `--glob "*.jpg" --glob "*.png"`. The option is repeatable; malformed patterns and patterns with no matches fail rather than silently selecting nothing. Use `--` before a literal path that begins with `-`. The removed `-i`/`--input` flag now errors with migration guidance; pass paths as operands instead.
+`PATH` operands are literal: a name such as `report[1].txt` is not treated as a pattern. At least one literal `PATH` operand or one `--glob` pattern is required. Use quoted `--glob`/`-g` only when pattern matching is intended, for example `--glob "*.jpg" --glob "*.png"`. The option is repeatable; malformed patterns and patterns with no matches fail rather than silently selecting nothing. Use `--` before a literal path that begins with `-`. The removed `-i`/`--input` flag now errors with migration guidance; pass paths as operands instead.
 
 #### Credential Flags
 
@@ -334,7 +334,7 @@ Stdin/stdout streaming has the following limitations:
 
 **Note:** When using `-o -`, progress output is automatically suppressed (quiet mode) to avoid mixing progress with encrypted data.
 
-If `picocrypt decrypt -o - --force` keeps recovered output after MAC verification failed, recovered bytes are written to stdout before the process returns exit code 2. The kept-output warning is written to stderr, so stdout remains parseable by scripts.
+If `picocrypt decrypt VOLUME -o - --force` keeps recovered output after MAC verification failed, recovered bytes are written to stdout before the process returns exit code 2. The kept-output warning is written to stderr, so stdout remains parseable by scripts.
 
 ## Scripting Guide
 
@@ -484,7 +484,7 @@ Ensure all chunk files are in the same directory before decryption.
 
 ## Version
 
-This documentation applies to Picocrypt NG v2.15 and later.
+This documentation applies to Picocrypt NG v2.19 and later.
 
 ## See Also
 

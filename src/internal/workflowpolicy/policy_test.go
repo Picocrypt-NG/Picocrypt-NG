@@ -907,24 +907,41 @@ func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {
 			raceLineIndex := -1
 			contractLineIndex := -1
 			contractLineCount := 0
+			cliTestLineCount := 0
 			for lineIndex, line := range strings.Split(testStep.Run, "\n") {
 				line = strings.TrimSpace(line)
 				if line == raceCommand {
 					raceLineIndex = lineIndex
 				}
-				if line == contractCommand {
+				isCLITestLine := false
+				if strings.Contains(line, "go test") {
+					for _, field := range strings.Fields(line) {
+						if field == "./internal/cli" || field == "./internal/cli/..." {
+							isCLITestLine = true
+							break
+						}
+					}
+				}
+				if isCLITestLine {
+					cliTestLineCount++
+					if strings.Contains(line, "PICOCRYPT_RUN_CLI_INTEGRATION") {
+						t.Fatalf("macOS CLI test line must not set the integration gate: %q", line)
+					}
+					if strings.Contains(line, "-race") {
+						t.Fatalf("macOS CLI test line must not use -race: %q", line)
+					}
+					if line != contractCommand {
+						t.Fatalf("macOS CLI test line = %q, want only %q", line, contractCommand)
+					}
 					contractLineCount++
 					contractLineIndex = lineIndex
-					if strings.Contains(line, "-race") {
-						t.Fatalf("macOS CLI input contract line must not use -race: %q", line)
-					}
-					if strings.Contains(line, "PICOCRYPT_RUN_CLI_INTEGRATION") {
-						t.Fatalf("macOS CLI input contract line must not set the integration gate: %q", line)
-					}
 				}
 			}
 			if raceLineIndex < 0 {
 				t.Fatalf("macOS Run tests step is missing selected race command %q", raceCommand)
+			}
+			if cliTestLineCount != 1 {
+				t.Fatalf("macOS CLI test line count = %d, want exactly 1", cliTestLineCount)
 			}
 			if contractLineCount != 1 {
 				t.Fatalf("macOS CLI input contract line count = %d, want exactly 1", contractLineCount)
