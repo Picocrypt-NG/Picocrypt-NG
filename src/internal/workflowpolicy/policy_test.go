@@ -382,8 +382,8 @@ func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testin
 	if signJob.If != "${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}" {
 		t.Fatalf("Windows SignPath job if = %q, want main release, test signing, or release-signing dry-run guard", signJob.If)
 	}
-	if signJob.TimeoutMinutes != 60 {
-		t.Fatalf("Windows SignPath job timeout = %d minutes, want 60 for three sequential requests", signJob.TimeoutMinutes)
+	if signJob.TimeoutMinutes != 210 {
+		t.Fatalf("Windows SignPath job timeout = %d minutes, want 210 for three one-hour approval windows plus packaging", signJob.TimeoutMinutes)
 	}
 	if got := releaseEnvironmentName(signJob.Environment); got != "release" {
 		t.Fatalf("Windows SignPath job environment = %#v, want release", signJob.Environment)
@@ -457,14 +457,15 @@ func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testin
 			t.Fatalf("%s action = %q, want reviewed SignPath v2.2 commit", tc.name, step.Uses)
 		}
 		for key, want := range map[string]any{
-			"api-token":                   "${{ secrets.SIGNPATH_API_TOKEN }}",
-			"organization-id":             "d6e78672-6bae-47d3-b2b8-fa464705b34e",
-			"project-slug":                "${{ vars.SIGNPATH_PROJECT_SLUG }}",
-			"signing-policy-slug":         "${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}",
-			"artifact-configuration-slug": tc.configurationSlug,
-			"github-artifact-id":          "${{ steps." + tc.uploadStepID + ".outputs.artifact-id }}",
-			"wait-for-completion":         true,
-			"output-artifact-directory":   tc.outputDirectory,
+			"api-token":                              "${{ secrets.SIGNPATH_API_TOKEN }}",
+			"organization-id":                        "d6e78672-6bae-47d3-b2b8-fa464705b34e",
+			"project-slug":                           "${{ vars.SIGNPATH_PROJECT_SLUG }}",
+			"signing-policy-slug":                    "${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}",
+			"artifact-configuration-slug":            tc.configurationSlug,
+			"github-artifact-id":                     "${{ steps." + tc.uploadStepID + ".outputs.artifact-id }}",
+			"wait-for-completion":                    true,
+			"wait-for-completion-timeout-in-seconds": 3600,
+			"output-artifact-directory":              tc.outputDirectory,
 		} {
 			if got := step.With[key]; got != want {
 				t.Fatalf("%s input %s = %#v, want %#v", tc.name, key, got, want)
@@ -544,6 +545,9 @@ func TestWindowsLegacyReleaseUsesSignPathBeforeSigstore(t *testing.T) {
 	if signJob.If != "${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}" {
 		t.Fatalf("legacy SignPath job if = %q, want main release, test signing, or release-signing dry-run guard", signJob.If)
 	}
+	if signJob.TimeoutMinutes != 75 {
+		t.Fatalf("legacy SignPath job timeout = %d minutes, want 75 for a one-hour approval window plus verification", signJob.TimeoutMinutes)
+	}
 	if got := releaseEnvironmentName(signJob.Environment); got != "release" {
 		t.Fatalf("legacy SignPath job environment = %#v, want release", signJob.Environment)
 	}
@@ -569,14 +573,15 @@ func TestWindowsLegacyReleaseUsesSignPathBeforeSigstore(t *testing.T) {
 		t.Fatalf("legacy SignPath action = %q, want reviewed SignPath v2.2 commit", signStep.Uses)
 	}
 	for key, want := range map[string]any{
-		"api-token":                   "${{ secrets.SIGNPATH_API_TOKEN }}",
-		"organization-id":             "d6e78672-6bae-47d3-b2b8-fa464705b34e",
-		"project-slug":                "${{ vars.SIGNPATH_PROJECT_SLUG }}",
-		"signing-policy-slug":         "${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}",
-		"artifact-configuration-slug": "windows-legacy-cli",
-		"github-artifact-id":          "${{ steps.upload-signpath-legacy.outputs.artifact-id }}",
-		"wait-for-completion":         true,
-		"output-artifact-directory":   "signpath-signed-legacy",
+		"api-token":                              "${{ secrets.SIGNPATH_API_TOKEN }}",
+		"organization-id":                        "d6e78672-6bae-47d3-b2b8-fa464705b34e",
+		"project-slug":                           "${{ vars.SIGNPATH_PROJECT_SLUG }}",
+		"signing-policy-slug":                    "${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}",
+		"artifact-configuration-slug":            "windows-legacy-cli",
+		"github-artifact-id":                     "${{ steps.upload-signpath-legacy.outputs.artifact-id }}",
+		"wait-for-completion":                    true,
+		"wait-for-completion-timeout-in-seconds": 3600,
+		"output-artifact-directory":              "signpath-signed-legacy",
 	} {
 		if got := signStep.With[key]; got != want {
 			t.Fatalf("legacy SignPath input %s = %#v, want %#v", key, got, want)
@@ -1470,12 +1475,13 @@ func TestAndroidReleaseSigningTrustAnchorAndPublicationOrder(t *testing.T) {
 	}
 }
 
-func TestReleaseBodyAdvertisesOnly64BitAndroid(t *testing.T) {
+func TestCurrentReleaseBodyContract(t *testing.T) {
 	root := repoRoot(t)
+	version := strings.TrimSpace(mustReadRepoFile(t, "VERSION"))
 	command := exec.Command(
 		"bash",
 		filepath.Join(root, ".github/actions/release-body/gen-release-body.sh"),
-		"2.18",
+		version,
 		filepath.Join(root, "Changelog.md"),
 		"-",
 	)
@@ -1485,6 +1491,12 @@ func TestReleaseBodyAdvertisesOnly64BitAndroid(t *testing.T) {
 	}
 
 	body := string(output)
+	mustContain(t, body, "## What's new in "+version)
+	for _, rawHTML := range []string{"<ul", "</ul>", "<li", "</li>", "<strong", "</strong>", "<code", "</code>"} {
+		mustNotContain(t, body, rawHTML)
+	}
+	mustNotContain(t, body, "production signing remains pending")
+
 	for _, removed := range []string{
 		"Picocrypt-NG-android-armeabi-v7a.apk",
 		"Picocrypt-NG-android-x86.apk",

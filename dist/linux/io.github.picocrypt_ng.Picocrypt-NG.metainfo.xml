@@ -49,7 +49,7 @@
           <li>Updated the release toolchain to Go 1.26.5 and refreshed pinned dependencies</li>
           <li>Updated Cosign to 3.1.2 and switched Resource Hacker downloads to the official 5.2.8 installer with bounded retries and SHA-256 verification</li>
           <li>Pinned all active actions/checkout references to the exact v7.0.1 commit</li>
-          <li>Release workflows refuse to overwrite existing assets and contain fail-closed SignPath Authenticode submission and verification; production signing remains pending the certificate, a valid policy, and real signed-artifact verification</li>
+          <li>Release workflows refuse to overwrite existing assets and fail closed unless SignPath Authenticode signatures are trusted, timestamped, and match the pinned production certificate</li>
         </ul>
       </description>
     </release>

@@ -13,7 +13,7 @@
 	<li>✓ <strong>Release tooling</strong>: updated Cosign to 3.1.2 and switched Windows Resource Hacker downloads to the official 5.2.8 installer with bounded retries and SHA-256 verification before use</li>
 	<li>✓ <strong>CI integrity</strong>: all active <code>actions/checkout</code> references are pinned to the exact v7.0.1 commit</li>
 	<li>✓ <strong>Release integrity</strong>: release workflows now refuse to overwrite existing GitHub release assets, and Android publication verifies the expected signer, version metadata, API floor, native architectures, expected APK set, and JNI contents before upload</li>
-	<li><strong>Windows signing pipeline</strong>: release workflows contain fail-closed SignPath Authenticode submission and verification for the GUI, current and legacy CLIs, embedded NSIS uninstaller, and final installer while retaining the existing Sigstore bundles and GitHub build provenance; production signing remains pending certificate issuance/import, a valid release-signing policy, and successful verification of a real signed artifact</li>
+	<li>✓ <strong>Windows signing pipeline</strong>: the production SignPath certificate and release-signing policy are active for the GUI, current and legacy CLIs, embedded NSIS uninstaller, and final installer; both Windows workflows passed production dry-runs that verified trusted, timestamped Authenticode signatures against the pinned certificate fingerprint without publishing release assets</li>
 </ul>
 
 # v2.18

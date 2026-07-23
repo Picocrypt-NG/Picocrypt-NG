@@ -165,7 +165,7 @@ jobs:
     needs: build
     if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 75
     environment: release
     permissions:
       actions: read
@@ -206,6 +206,7 @@ jobs:
         artifact-configuration-slug: windows-legacy-cli
         github-artifact-id: ${{ steps.upload-signpath-legacy.outputs.artifact-id }}
         wait-for-completion: true
+        wait-for-completion-timeout-in-seconds: 3600
         output-artifact-directory: signpath-signed-legacy
 
     - name: Verify legacy Authenticode signature

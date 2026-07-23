@@ -262,7 +262,7 @@ jobs:
     needs: build
     if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}
     runs-on: windows-2025
-    timeout-minutes: 60
+    timeout-minutes: 210
     environment: release
     permissions:
       actions: read
@@ -318,6 +318,7 @@ jobs:
         artifact-configuration-slug: windows-binaries
         github-artifact-id: ${{ steps.upload-signpath-binaries.outputs.artifact-id }}
         wait-for-completion: true
+        wait-for-completion-timeout-in-seconds: 3600
         output-artifact-directory: signpath-signed-binaries
 
     - name: Verify signed binaries before packaging
@@ -398,6 +399,7 @@ jobs:
         artifact-configuration-slug: windows-uninstaller
         github-artifact-id: ${{ steps.upload-signpath-uninstaller.outputs.artifact-id }}
         wait-for-completion: true
+        wait-for-completion-timeout-in-seconds: 3600
         output-artifact-directory: signpath-signed-uninstaller
 
     - name: Verify signed uninstaller
@@ -461,6 +463,7 @@ jobs:
         artifact-configuration-slug: windows-installer
         github-artifact-id: ${{ steps.upload-signpath-installer.outputs.artifact-id }}
         wait-for-completion: true
+        wait-for-completion-timeout-in-seconds: 3600
         output-artifact-directory: signpath-signed-installer
 
     - name: Verify final Authenticode artifacts
