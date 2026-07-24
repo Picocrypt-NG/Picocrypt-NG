@@ -1186,7 +1186,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "6144",
 			target:   "default",
-			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.NewKeyfileLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
+			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
 		},
 	}
 	seen := make(map[int]struct{}, len(wantByAPI))
@@ -1277,6 +1277,36 @@ func TestAndroidPRWorkflowBuildsReleaseWithR8(t *testing.T) {
 	appGradle := mustReadRepoFile(t, "android/app/build.gradle.kts")
 	mustContain(t, appGradle, "isMinifyEnabled = true")
 	mustContain(t, appGradle, "isShrinkResources = true")
+}
+
+func TestAndroidBuildWorkflowsRunFullLint(t *testing.T) {
+	testCases := []struct {
+		name string
+		path string
+		job  string
+	}{
+		{name: "pull request", path: ".github/workflows/pr-test-build-android.yml", job: "pr-test-build-android"},
+		{name: "release", path: ".github/workflows/build-android.yml", job: "build"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			job := mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job)
+			lintStep := mustStepNamed(t, job, "Run Android Lint")
+			if got := strings.TrimSpace(lintStep.Run); got != "./gradlew lint" {
+				t.Fatalf("Android lint step run = %q, want exact full lint command", got)
+			}
+			if lintStep.WorkingDirectory != "android" {
+				t.Fatalf("Android lint step working-directory = %q, want android", lintStep.WorkingDirectory)
+			}
+			if lintStep.If != "" {
+				t.Fatalf("Android lint step if = %q, want unconditional gate", lintStep.If)
+			}
+			if lintStep.ContinueOnError != nil && lintStep.ContinueOnError != false {
+				t.Fatalf("Android lint step continue-on-error = %#v, want absent or false", lintStep.ContinueOnError)
+			}
+		})
+	}
 }
 
 func TestAndroidReleaseWorkflowKeepsSigningSecretsOutOfBuildJob(t *testing.T) {
@@ -1684,7 +1714,7 @@ func TestAndroidGomobileBuildUsesReproducibleLinkerFlags(t *testing.T) {
 
 func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	const (
-		focusedClasses = "io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.DecryptOptionsCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ErrorDialogTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.FileCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.NewKeyfileLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest"
+		focusedClasses = "io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.DecryptOptionsCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ErrorDialogTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.FileCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest"
 		extendedClass  = "io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest"
 	)
 

@@ -72,6 +72,14 @@ jobs:
         cd src
         go mod download
 
+    - name: Test browser deniability boundary
+      if: matrix.arch == 'amd64'
+      run: |
+        cd src
+        GOMAXPROCS=1 GOOS=js GOARCH=wasm go test -count=1 \
+          -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
+          -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness)$' ./cmd/wasm
+
     - name: Run tests
       run: |
         cd src
