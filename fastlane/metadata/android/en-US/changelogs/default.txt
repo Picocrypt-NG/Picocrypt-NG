@@ -1,5 +1,5 @@
 v2.19
-- Added German, French, Spanish, Simplified Chinese, and Hindi Android UI catalogs.
+- Added German, French, Spanish, Simplified Chinese, Hindi, and Korean (ko) Android UI catalogs.
 - Localized Android operation status, progress, and errors without showing raw backend diagnostics.
 - Cancelled operations no longer enter the save flow; stale temporary files are removed at startup.
 - Compressed single-file exports use .zip.pcv names.

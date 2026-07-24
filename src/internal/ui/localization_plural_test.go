@@ -60,6 +60,15 @@ func TestTargetLocalePluralRulesAtRuntime(t *testing.T) {
 				2: "other",
 			},
 		},
+		{
+			code:  "ko",
+			forms: []string{"other"},
+			probes: map[int]string{
+				0: "other",
+				1: "other",
+				2: "other",
+			},
+		},
 	}
 
 	for _, tc := range tests {

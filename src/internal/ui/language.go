@@ -19,6 +19,7 @@ var knownLanguageOptions = []LanguageOption{
 	{Code: "es", Name: "Español"},
 	{Code: "zh-Hans", Name: "简体中文", ButtonLabel: "zh"},
 	{Code: "hi", Name: "हिन्दी"},
+	{Code: "ko", Name: "한국어"},
 }
 
 func languageButtonLabel(code LanguageCode) string {

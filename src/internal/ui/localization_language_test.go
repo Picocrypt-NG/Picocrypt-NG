@@ -90,6 +90,7 @@ func TestRequestedDesktopLocalesHaveStableMetadata(t *testing.T) {
 		"es":      {Code: "es", Name: "Español"},
 		"zh-Hans": {Code: "zh-Hans", Name: "简体中文", ButtonLabel: "zh"},
 		"hi":      {Code: "hi", Name: "हिन्दी"},
+		"ko":      {Code: "ko", Name: "한국어"},
 	}
 
 	for _, option := range knownLanguageOptions {

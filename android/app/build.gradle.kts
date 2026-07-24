@@ -39,7 +39,7 @@ android {
     androidResources {
         generateLocaleConfig = true
         localeFilters += listOf(
-            "en", "ru", "de", "fr", "es", "b+zh+Hans", "hi",
+            "en", "ru", "de", "fr", "es", "b+zh+Hans", "hi", "ko",
         )
     }
 

@@ -8,6 +8,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -15,7 +17,7 @@ import org.junit.runner.RunWith
 class OperationNotificationTest {
     @Test
     fun notificationUsesFinalLocalizedRateTextInsteadOfWireCode() {
-        val context = frenchContext()
+        val context = localeContext(Locale.FRENCH)
         val status = OperationStatusData(
             code = OperationStatus.ENCRYPTING_RATE,
             speedMiBPerSecond = 12.34,
@@ -44,8 +46,65 @@ class OperationNotificationTest {
     }
 
     @Test
+    fun notificationUsesKoreanResourcesForEncryptionTitleAndRateText() {
+        val koreanContext = localeContext(Locale.KOREAN)
+        val englishContext = localeContext(Locale.ENGLISH)
+        val speedMiBPerSecond = 12.34
+        val eta = "100:59:59"
+
+        val notification = buildOperationNotification(
+            context = koreanContext,
+            type = OperationType.ENCRYPT,
+            status = OperationStatusData(
+                code = OperationStatus.ENCRYPTING_RATE,
+                speedMiBPerSecond = speedMiBPerSecond,
+                eta = eta,
+            ),
+            detail = OperationProgressDetail(OperationProgress.NONE),
+            progress = 0.5f,
+        )
+        val finalTitle = notification.extras
+            .getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString()
+        val finalText = notification.extras
+            .getCharSequence(Notification.EXTRA_TEXT)
+            ?.toString()
+        val koreanTitle = koreanContext.getString(R.string.fgs_encrypting)
+        val koreanText = koreanContext.getString(
+            R.string.status_encrypting_rate,
+            speedMiBPerSecond,
+            eta,
+        )
+
+        assertEquals(koreanTitle, finalTitle)
+        assertEquals(koreanText, finalText)
+        assertNotEquals(
+            englishContext.getString(R.string.fgs_encrypting),
+            finalTitle,
+        )
+        assertNotEquals(
+            englishContext.getString(
+                R.string.status_encrypting_rate,
+                speedMiBPerSecond,
+                eta,
+            ),
+            finalText,
+        )
+        assertTrue(
+            "The Korean title must come from values-ko rather than English fallback",
+            finalTitle.orEmpty().contains("암호화"),
+        )
+        assertFalse(
+            "The notification must not expose the gomobile wire code",
+            listOf(finalTitle, finalText)
+                .filterNotNull()
+                .any { it.contains(OperationStatus.ENCRYPTING_RATE) },
+        )
+    }
+
+    @Test
     fun notificationHidesUnknownRawStatusBehindLocalizedWorkingText() {
-        val context = frenchContext()
+        val context = localeContext(Locale.FRENCH)
         val rawSentinel = "raw-backend-status-sentinel"
 
         val notification = buildOperationNotification(
@@ -66,10 +125,10 @@ class OperationNotificationTest {
         )
     }
 
-    private fun frenchContext(): Context {
+    private fun localeContext(locale: Locale): Context {
         val application = ApplicationProvider.getApplicationContext<Context>()
         val configuration = Configuration(application.resources.configuration).apply {
-            setLocale(Locale.FRENCH)
+            setLocale(locale)
         }
         return application.createConfigurationContext(configuration)
     }

@@ -659,6 +659,7 @@ class LocalizationResourcesTest {
             LocaleSpec("es", "Spanish", "values-es", listOf("one", "many", "other")),
             LocaleSpec("zh-Hans", "Simplified Chinese", "values-b+zh+Hans", listOf("other")),
             LocaleSpec("hi", "Hindi", "values-hi", listOf("one", "other")),
+            LocaleSpec("ko", "Korean", "values-ko", listOf("other")),
         )
         private val securityRequiredTerms = mapOf(
             "ru" to mapOf(
@@ -733,6 +734,18 @@ class LocalizationResourcesTest {
                 "error_keyfile_writes_disabled" to listOf("नए", "v2", "कुंजी फ़ाइल", "बंद", "v3", "मौजूदा", "डिक्रिप्ट"),
                 "prevent_screenshots_description" to listOf("स्क्रीनशॉट", "स्क्रीन रिकॉर्डिंग", "हाल के ऐप्स"),
             ),
+            "ko" to mapOf(
+                "comments_plaintext_warning" to listOf("평문 메타데이터", "비밀"),
+                "force_decrypt_warning" to listOf("무결성 검사", "강제 복호화", "검증되지 않은 출력", "손상"),
+                "error_auth_failed" to listOf("인증", "비밀번호", "키 파일", "순서"),
+                "error_data_corrupted" to listOf("무결성 검사", "검증되지", "손상"),
+                "error_corrupt_header" to listOf("헤더", "손상"),
+                "error_decrypt_retry_only" to listOf("복호화", "강제 복호화"),
+                "deniability_note" to listOf("부인 가능", "헤더 메타데이터", "복호화 전", "알 수"),
+                "deniability_password_required" to listOf("부인 가능", "빈 비밀번호", "사용할 수 없습니다"),
+                "error_keyfile_writes_disabled" to listOf("새", "v2", "키 파일", "만들 수 없습니다", "v3", "기존", "복호화"),
+                "prevent_screenshots_description" to listOf("스크린샷", "화면 녹화", "최근 앱"),
+            ),
         )
         private val deniabilityResourceNames = listOf(
             "comments_not_readable",
@@ -753,6 +766,7 @@ class LocalizationResourcesTest {
             "es" to listOf("anón", "invisible", "indetect", "ocult"),
             "zh-Hans" to listOf("匿名", "隐身", "不可检测", "隐藏模式"),
             "hi" to listOf("गुमनाम", "अदृश्य"),
+            "ko" to listOf("익명", "보이지 않", "탐지할 수 없", "숨김 모드", "부인 방지"),
         )
         private val securityForbiddenForceTerms = mapOf(
             "ru" to listOf("безопас", "исправлен", "восстановлен"),
@@ -761,6 +775,7 @@ class LocalizationResourcesTest {
             "es" to listOf("segura", "reparada", "recuperada"),
             "zh-Hans" to listOf("安全", "修复", "恢复"),
             "hi" to listOf("सुरक्षित", "मरम्मत", "रिकवर"),
+            "ko" to listOf("안전", "수리", "복구"),
         )
         private val catalogForbiddenTerms = mapOf(
             "zh-Hans" to listOf("密碼", "金鑰", "資料夾", "標頭", "覆蓋", "輸出", "檔案", "設定", "錯誤", "驗證"),
@@ -773,6 +788,7 @@ class LocalizationResourcesTest {
             "es" to listOf("Android", "no se admiten", "Recombine", "equipo"),
             "zh-Hans" to listOf("Android", "不支持", "合并"),
             "hi" to listOf("Android", "समर्थित नहीं", "फिर से जोड़ें"),
+            "ko" to listOf("Android", "지원하지", "다시 결합"),
         )
         private val modelReviewCorrectionGuards = mapOf(
             "de" to mapOf(
@@ -805,6 +821,16 @@ class LocalizationResourcesTest {
                 "status_removing_deniability_protection" to ReviewCorrectionGuard(
                     requiredFragments = listOf("इनकार की सुरक्षा"),
                     forbiddenFragments = listOf("इनकार सुरक्षा"),
+                ),
+            ),
+            "ko" to mapOf(
+                "status_adding_plausible_deniability" to ReviewCorrectionGuard(
+                    requiredFragments = listOf("그럴듯한 부인 가능성"),
+                    forbiddenFragments = listOf("합리적 부인 가능성"),
+                ),
+                "privacy_security" to ReviewCorrectionGuard(
+                    requiredFragments = listOf("개인정보 보호 및 보안"),
+                    forbiddenFragments = listOf("&"),
                 ),
             ),
         )

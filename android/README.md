@@ -116,17 +116,18 @@ UI (`ui/components/`):
 
 ## Localization
 
-Release builds package exactly seven application locales: base English (`values`), Russian
+Release builds package exactly eight application locales: base English (`values`), Russian
 (`values-ru`), German (`values-de`), French (`values-fr`), Spanish (`values-es`), Simplified Chinese
-(`values-b+zh+Hans`), and Hindi (`values-hi`). AGP generates the locale configuration from these
-resources with `androidResources.generateLocaleConfig = true` and
+(`values-b+zh+Hans`), Hindi (`values-hi`), and Korean (`values-ko`). Korean uses the generic `ko`
+language tag with contemporary neutral South Korean wording. AGP generates the locale configuration
+from these resources with `androidResources.generateLocaleConfig = true` and
 `androidResources.localeFilters`; `resources.properties` declares `unqualifiedResLocale=en`.
 
-The generated release list is `en`, `ru`, `de`, `fr`, `es`, `zh-Hans`, and `hi`. Debug-only
+The generated release list is `en`, `ru`, `de`, `fr`, `es`, `zh-Hans`, `hi`, and `ko`. Debug-only
 `en-XA`/`ar-XB` pseudolocales are excluded. There is no manual `locale_config.xml` and no in-app
 locale picker: Android 13 and newer expose the system per-app selector, while older Android versions
 follow the system locale. Packaging proves resource completeness, not linguistic or device review;
-the five new catalogs still require native or near-native review and real-device rendering checks
+the six new catalogs still require native or near-native review and real-device rendering checks
 before release admission.
 
 ## Notes

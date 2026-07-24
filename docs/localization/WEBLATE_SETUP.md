@@ -80,8 +80,8 @@ Configuration:
 - Base file: `android/app/src/main/res/values/strings.xml`
 - Format: Android String Resource
 - Base language: `en`
-- Translated languages after Android gates: `ru`, `de`, `fr`, `es`, `zh-Hans`, `hi`
-- Android directory mapping: `zh-Hans` uses `values-b+zh+Hans`; Italian is not packaged
+- Translated languages after Android gates: `ru`, `de`, `fr`, `es`, `zh-Hans`, `hi`, `ko`
+- Android directory mapping: `zh-Hans` uses `values-b+zh+Hans`; Korean uses generic `values-ko`; Italian is not packaged
 
 Android string resources are monolingual in Weblate. The base file is
 `res/values/strings.xml`, and the typical translated file mask is
@@ -97,13 +97,16 @@ Do not enable yet.
 Fyne Weblate setup is blocked until Picocrypt-NG proves exact round-trip for
 the Fyne JSON catalog shape in `src/internal/ui/translation/en.json`.
 
-Seven complete desktop catalogs currently exist for `en`, `ru`, `de`, `fr`,
-`es`, `zh-Hans`, and `hi`, but no Fyne/Weblate JSON round-trip has been proved.
+Eight complete desktop catalogs currently exist for `en`, `ru`, `de`, `fr`,
+`es`, `zh-Hans`, `hi`, and `ko`, but no Fyne/Weblate JSON round-trip has been proved.
 The curated Russian Fyne catalog is a maintainer-reviewed in-repository
 translation exception. It is gated by
 `docs/localization/RUSSIAN_TRANSLATION_REVIEW.md` and structural catalog tests,
-not by Weblate. This exception does not prove that Weblate can safely edit Fyne
-JSON catalogs.
+not by Weblate. The Korean catalog has a separate in-repository engineering
+review record in `docs/localization/KOREAN_TRANSLATION_REVIEW.md`; that record
+documents model-assisted independent review and keeps native-language and device
+review as open release gates. Neither record proves that Weblate can safely edit
+Fyne JSON catalogs.
 
 The desktop language selector does not by itself enable a Fyne Weblate
 component. Additional non-English Fyne production catalogs that are imported

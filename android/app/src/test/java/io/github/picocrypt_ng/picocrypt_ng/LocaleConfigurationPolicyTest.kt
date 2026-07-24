@@ -252,8 +252,9 @@ class LocaleConfigurationPolicyTest {
             "es",
             "b+zh+Hans",
             "hi",
+            "ko",
         )
-        private val expectedGeneratedLocales = setOf("en", "ru", "de", "fr", "es", "zh-Hans", "hi")
+        private val expectedGeneratedLocales = setOf("en", "ru", "de", "fr", "es", "zh-Hans", "hi", "ko")
         private val localeFilters = Regex(
             """\blocaleFilters\s*\+=\s*listOf\((.*?)\)""",
             RegexOption.DOT_MATCHES_ALL,

@@ -83,15 +83,18 @@ after the setup gates in
 Translation work is reviewed before merge, and security-sensitive wording must
 preserve the meaning documented in the
 [translation guide](docs/localization/TRANSLATION_GUIDE.md).
-Current desktop and native Android builds bundle English, Russian, German,
-French, Spanish, Simplified Chinese, and Hindi UI catalogs. The desktop app has
-an in-app language selector. Android 13 and newer expose the system per-app
-language selector; older Android versions follow the system locale. The CLI
-remains English-only.
+Current desktop and native Android builds bundle application UI catalogs for
+English, Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean
+(`ko`, with contemporary neutral South Korean wording). The desktop app has an
+in-app language selector for Picocrypt-NG-owned UI; Fyne-owned dialogs and raw
+backend status text may remain English. Android 13 and newer expose the system
+per-app language selector; older Android versions follow the system locale. The
+CLI remains English-only.
 
-The five new Android catalogs (`de`, `fr`, `es`, `zh-Hans`, and `hi`) are
-structurally complete and packaged, but still require native or near-native
-linguistic review and real-device rendering checks before release admission.
+The six new Android catalogs (`de`, `fr`, `es`, `zh-Hans`, `hi`, and `ko`) are
+structurally complete and packaged, but this does not establish native-language
+or device review. They still require native or near-native linguistic review
+and real-device rendering checks before release admission.
 
 ## File Associations
 Double-click `.pcv` files to open Picocrypt NG in decrypt mode on Windows, macOS, and Linux. Installer/`.deb`/`.app` packages register the association automatically.
