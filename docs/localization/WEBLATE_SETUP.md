@@ -100,12 +100,10 @@ the Fyne JSON catalog shape in `src/internal/ui/translation/en.json`.
 Eight complete desktop catalogs currently exist for `en`, `ru`, `de`, `fr`,
 `es`, `zh-Hans`, `hi`, and `ko`, but no Fyne/Weblate JSON round-trip has been proved.
 The curated Russian Fyne catalog is a maintainer-reviewed in-repository
-translation exception. It is gated by
-`docs/localization/RUSSIAN_TRANSLATION_REVIEW.md` and structural catalog tests,
-not by Weblate. The Korean catalog has a separate in-repository engineering
-review record in `docs/localization/KOREAN_TRANSLATION_REVIEW.md`; that record
-documents model-assisted independent review and keeps native-language and device
-review as open release gates. Neither record proves that Weblate can safely edit
+translation exception. The Korean catalog is an engineering-reviewed
+in-repository exception and still requires native-language and device review
+before release. Both catalogs are gated by structural and semantic regression
+tests, not by Weblate. Those tests do not prove that Weblate can safely edit
 Fyne JSON catalogs.
 
 The desktop language selector does not by itself enable a Fyne Weblate

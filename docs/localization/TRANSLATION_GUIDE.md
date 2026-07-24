@@ -316,8 +316,8 @@ Notes:
   a generic integrity check.
 - Russian may use "проверка подлинности" in broad user-facing text, but
   "аутентификация" is the preferred compact cryptographic UI term here.
-- Korean terminology and high-risk wording decisions are recorded in
-  `docs/localization/KOREAN_TRANSLATION_REVIEW.md`.
+- Korean security-sensitive terminology is protected by semantic localization
+  tests alongside the structural catalog checks.
 
 ## Forbidden Or Dangerous Translations
 
