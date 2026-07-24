@@ -1056,68 +1056,6 @@ func TestEncryptStdinValidation(t *testing.T) {
 	})
 }
 
-func TestCleanupEncryptError(t *testing.T) {
-	t.Run("preserves pre-existing output file", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		output := filepath.Join(tmpDir, "existing.pcv")
-		if err := os.WriteFile(output, []byte("original"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		incomplete := output + ".incomplete"
-		if err := os.WriteFile(incomplete, []byte("partial"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-
-		cleanupEncryptError(output, false, true)
-
-		data, err := os.ReadFile(output)
-		if err != nil {
-			t.Fatalf("expected pre-existing output file to remain: %v", err)
-		}
-		if string(data) != "original" {
-			t.Fatalf("expected original content preserved, got %q", string(data))
-		}
-		if _, err := os.Stat(incomplete); !os.IsNotExist(err) {
-			t.Fatalf("expected incomplete file removed, got: %v", err)
-		}
-	})
-
-	t.Run("removes new output file", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		output := filepath.Join(tmpDir, "new.pcv")
-		if err := os.WriteFile(output, []byte("new"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		incomplete := output + ".incomplete"
-		if err := os.WriteFile(incomplete, []byte("partial"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-
-		cleanupEncryptError(output, false, false)
-
-		if _, err := os.Stat(output); !os.IsNotExist(err) {
-			t.Fatalf("expected output file removed, got: %v", err)
-		}
-		if _, err := os.Stat(incomplete); !os.IsNotExist(err) {
-			t.Fatalf("expected incomplete file removed, got: %v", err)
-		}
-	})
-
-	t.Run("stdout mode does not remove output file", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		output := filepath.Join(tmpDir, "stdout-temp.pcv")
-		if err := os.WriteFile(output, []byte("temp"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-
-		cleanupEncryptError(output, true, false)
-
-		if _, err := os.Stat(output); err != nil {
-			t.Fatalf("expected stdout path untouched, got: %v", err)
-		}
-	})
-}
-
 func TestDecryptStdinValidation(t *testing.T) {
 	t.Run("stdin with password stdin conflict", func(t *testing.T) {
 		decOutput = "test.txt"

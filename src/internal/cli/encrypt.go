@@ -242,7 +242,7 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		outputFile += ".pcv"
 	}
 	if useStdin && !useStdout {
-		if err := validateEncryptOutputPaths(encryptInputs{}, encKeyfiles, outputFile, encCompress, false, false); err != nil {
+		if err := validateEncryptOutputPaths(encryptInputs{}, encKeyfiles, outputFile, false); err != nil {
 			return err
 		}
 	}
@@ -278,7 +278,6 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	payloadZip := len(allFiles) > 1 || len(onlyFolders) > 0 || encCompress
 
 	// Determine output file
-	outputPreExisted := false
 	if useStdout {
 		// Create temp file for stdout output
 		var err error
@@ -302,7 +301,7 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 
 	// Validate output collisions before confirmation or password work.
 	if !useStdin && !useStdout {
-		if err := validateEncryptOutputPaths(inputs, encKeyfiles, outputFile, payloadZip, encDeniability, encSplit); err != nil {
+		if err := validateEncryptOutputPaths(inputs, encKeyfiles, outputFile, encSplit); err != nil {
 			return err
 		}
 	}
@@ -313,7 +312,6 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 			if info.IsDir() {
 				return fmt.Errorf("output path is a directory: %s", outputFile)
 			}
-			outputPreExisted = true
 			if !encYes {
 				fmt.Fprintf(os.Stderr, "Output file %s already exists. Overwrite? [y/N]: ", outputFile)
 				reader := bufio.NewReader(os.Stdin)
@@ -418,7 +416,9 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 
 	if err != nil {
 		reporter.PrintError("%v", err)
-		cleanupEncryptError(outputFile, useStdout, outputPreExisted)
+		// Core owns and removes every unpublished stage. If a later deniability
+		// or split step fails after publication, retain the complete encrypted
+		// volume instead of unlinking a pathname the CLI no longer owns.
 		return err
 	}
 
@@ -432,16 +432,4 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 
 	reporter.PrintSuccess("Encryption completed successfully: %s", outputFile)
 	return nil
-}
-
-func cleanupEncryptError(outputFile string, useStdout, outputPreExisted bool) {
-	if useStdout {
-		return
-	}
-	// outputFile is the user's named .pcv output; a plain unlink is fine here.
-	if !outputPreExisted {
-		_ = os.Remove(outputFile)
-	}
-	// Remove the partially-written .incomplete staging file.
-	_ = os.Remove(outputFile + ".incomplete")
 }

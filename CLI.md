@@ -119,7 +119,7 @@ When using `--split-unit=Total`, `--split-size` specifies the total number of ch
 | Flag | Short | Type | Description |
 |------|-------|------|-------------|
 | `--quiet` | `-q` | bool | Suppress progress output |
-| `--yes` | `-y` | bool | Overwrite output file without prompting |
+| `--yes` | `-y` | bool | Skip the prompt before replacing an existing output |
 | `--follow-symlinks` | | bool | Follow symlinks to regular files |
 
 ### Global Flags (all commands)
@@ -174,7 +174,13 @@ picocrypt decrypt VOLUME
 | Flag | Short | Type | Description |
 |------|-------|------|-------------|
 | `--quiet` | `-q` | bool | Suppress progress output |
-| `--yes` | `-y` | bool | Overwrite output file without prompting |
+| `--yes` | `-y` | bool | Skip the prompt before replacing an existing output |
+
+`--yes` never authorizes an output path that is the same file as an input,
+encrypted volume, split chunk, or keyfile. Picocrypt NG rejects those conflicts
+even when `--yes` is present. For `--auto-unzip` without `--same-level`, the
+extraction root must not already exist: it is the requested output path for a
+suffixless output, or the output path with the final `.zip` removed.
 
 ## Usage Examples
 
@@ -371,6 +377,16 @@ Use `--yes` (`-y`) to skip overwrite prompts:
 ```bash
 picocrypt encrypt file.txt -o file.pcv -p "password" -y
 ```
+
+`--yes` authorizes replacement of the requested output file only. It never
+authorizes replacing an input, keyfile, split chunk, an auto-unzip extraction
+root, or an existing archive entry. Picocrypt NG rejects an occupied
+non-`--same-level` extraction root before requesting credentials. If extraction
+later collides with an existing entry, decryption fails without replacing it.
+Picocrypt NG publishes the decrypted ZIP when its operation-owned extraction
+root can be rolled back safely; if a suffixless root was replaced or made
+nonempty concurrently, the foreign data and original encrypted volume are
+preserved instead.
 
 ### Batch Processing
 

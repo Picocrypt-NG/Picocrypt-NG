@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -227,6 +228,40 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Reject protected aliases before an overwrite confirmation or password
+	// prompt. The core repeats this check immediately before publication.
+	if err := (&volume.DecryptRequest{
+		InputFile:  inputFile,
+		OutputFile: outputFile,
+		Keyfiles:   decKeyfiles,
+		Recombine:  decRecombine,
+	}).ValidateOutputSafety(); err != nil {
+		return err
+	}
+
+	// A non-same-level auto-unzip publishes into a directory that is not an
+	// overwriteable output file. Refuse an occupied extraction root before
+	// prompting for credentials or deriving keys; --yes only applies to the
+	// decrypted archive file itself.
+	if decAutoUnzip && !decSameLevel {
+		extractRoot := outputFile
+		if strings.HasSuffix(outputFile, ".zip") {
+			extractRoot = filepath.Join(
+				filepath.Dir(outputFile),
+				strings.TrimSuffix(filepath.Base(outputFile), ".zip"),
+			)
+		}
+		if _, err := os.Lstat(extractRoot); err == nil {
+			return fmt.Errorf(
+				"auto-unzip extraction root already exists and --yes does not authorize replacing it: %s: %w",
+				extractRoot,
+				os.ErrExist,
+			)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect auto-unzip extraction root %s: %w", extractRoot, err)
+		}
+	}
+
 	// Check if output exists (skip for stdout)
 	if !useStdout {
 		if info, err := os.Stat(outputFile); err == nil {
@@ -358,11 +393,6 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 
 	if err != nil {
 		reporter.PrintError("%v", err)
-		// Clean up partial output on error (temp files cleaned by defer).
-		// Remove the partially-written .incomplete output.
-		if !useStdout {
-			_ = os.Remove(outputFile + ".incomplete")
-		}
 		return err
 	}
 

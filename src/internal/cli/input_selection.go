@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"Picocrypt-NG/internal/fileops"
 	"errors"
 	"fmt"
 	"os"
@@ -118,14 +119,8 @@ func resolveEncryptInputs(literals, patterns []string, followSymlinks bool) (enc
 	return result, nil
 }
 
-func validateEncryptOutputPaths(inputs encryptInputs, keyfiles []string, output string, payloadZip, deniability, split bool) error {
-	reserved := []string{output, output + ".incomplete"}
-	if payloadZip {
-		reserved = append(reserved, strings.TrimSuffix(output, ".pcv")+".tmp")
-	}
-	if deniability {
-		reserved = append(reserved, output+".tmp")
-	}
+func validateEncryptOutputPaths(inputs encryptInputs, keyfiles []string, output string, split bool) error {
+	reserved := []string{output}
 	protected := make([]string, 0, len(inputs.selections)+len(inputs.inputFiles)+len(keyfiles))
 	protected = append(protected, inputs.selections...)
 	protected = append(protected, inputs.inputFiles...)
@@ -171,32 +166,11 @@ func validateEncryptOutputPaths(inputs encryptInputs, keyfiles []string, output 
 }
 
 func samePathOrFile(first, second string) (bool, error) {
-	firstAbs, err := absoluteCleanPath(first)
+	same, err := fileops.SamePathOrFile(first, second)
 	if err != nil {
-		return false, fmt.Errorf("resolve protected path %q: %w", first, err)
+		return false, fmt.Errorf("compare protected path %q with output artifact %q: %w", first, second, err)
 	}
-	secondAbs, err := absoluteCleanPath(second)
-	if err != nil {
-		return false, fmt.Errorf("resolve output artifact path %q: %w", second, err)
-	}
-	if firstAbs == secondAbs {
-		return true, nil
-	}
-	firstInfo, firstErr := os.Stat(first)
-	secondInfo, secondErr := os.Stat(second)
-	if firstErr != nil {
-		if errors.Is(firstErr, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("inspect protected path %q: %w", first, firstErr)
-	}
-	if secondErr != nil {
-		if errors.Is(secondErr, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("inspect output artifact %q: %w", second, secondErr)
-	}
-	return os.SameFile(firstInfo, secondInfo), nil
+	return same, nil
 }
 
 func splitOutputArtifact(path, output string) (string, bool, error) {
