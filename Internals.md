@@ -99,7 +99,23 @@ In v2.00+, the "key hash" field contains an HMAC-SHA3-512 computed over the foll
 8. XChaCha20 nonce
 9. Keyfile hash
 
-This provides integrity protection for the entire header, unlike v1.x which only stored SHA3-512(key). Picocrypt NG v2.00 maintains backward compatibility with v1.x volumes.
+The HMAC message covers the entire listed header, unlike v1.x which only stored
+`SHA3-512(key)`. In a password-only v2 volume the HMAC is keyed by a
+password-derived subkey. In a legacy v2 keyfile volume, however, that subkey is
+derived before keyfile XOR. Including the public keyfile hash in the message
+does not make the HMAC key depend on the keyfile. Picocrypt NG retains v1/v2
+read compatibility, but Picocrypt-NG 2.19 does not create new v2 keyfile
+volumes.
+
+## Version Routing
+
+`MatchVersion` recognizes the syntax `vN.NN`; syntax recognition is not
+cryptographic-version authorization. Picocrypt-NG 2.19 supports v1 and v2.
+Immediately after decoding the version field, the header reader rejects every
+other well-formed major with `ErrUnsupportedVersion`, before reading flags or
+KDF inputs. Force decrypt cannot bypass this gate. Deniability detection keeps
+a syntactically valid unknown-major header on the normal header path so it is
+rejected rather than accidentally treated as an outer wrapper.
 
 ## Verify First Mode (Two-Pass Decryption)
 
@@ -113,18 +129,30 @@ When "Verify first" is enabled, decryption proceeds in two passes:
 3. **Pass 2 (Decryption)**: Only if MAC is valid, perform actual decryption
 
 **Trade-offs:**
-- **Security**: Keys are never applied to unverified data
+- **Security**: Payload decryption is not performed before the stored MAC is checked
 - **Performance**: File is read twice, roughly doubling I/O time
 - **Recommended for**: High-security scenarios, untrusted file sources
 
 This feature is available in the decrypt advanced options as "Verify first" checkbox.
 
 # Keyfile Design
-Picocrypt NG allows the use of keyfiles as an additional decryption factor. Picocrypt NG's unique "Require correct order" feature enforces the user to drop keyfiles into the window in the same order as they did when encrypting in order to decrypt the volume successfully. Here's how it works:
+
+The following algorithm describes the legacy v1/v2 read format. Picocrypt-NG
+2.19 preserves decryption of supported keyfile volumes but rejects every new
+encryption request containing keyfiles, whether keyfile-only or
+password-plus-keyfile. New 2.19 volumes are password-only.
 
 If correct order is not required, Picocrypt NG will take the SHA3-256 of each keyfile individually and XOR the hashes together. Finally, the result is XORed with the master key. Because the XOR operation is both commutative and associative, the order in which the keyfile hashes are XORed with each other doesn't matter - the end result is the same.
 
 If correct order is required, Picocrypt NG will concatenate the keyfiles together in the order they were dropped into the window and take the SHA3-256 of the combined keyfiles. If the order is not correct, the keyfiles, when appended to each other, will result in a different file, and thus a different hash. So, the correct order of keyfiles is required to decrypt the volume successfully.
+
+For v1, keyfile XOR precedes HKDF and contributes to the derived operational
+keys. For legacy v2, HKDF is initialized first: the keyfile changes the
+XChaCha20 key and remains necessary for confidentiality, but it does not bind
+the header MAC, payload MAC, Serpent key, or the HKDF rekey nonce/IV schedule.
+After recovery, create a new password-only 2.19 volume. If a keyfile factor is
+mandatory, wait for a reviewed v3 format rather than treating another v2 volume
+as factor-bound; v3 is not implemented or scheduled here.
 
 # Reed-Solomon
 By default, all Picocrypt NG volume headers are encoded with Reed-Solomon to improve resiliency against bit rot. The header uses N+2N encoding, where N is the size of a particular header field such as the version number, and 2N is the number of parity bytes added. Using the Berlekamp-Welch algorithm, Picocrypt NG is able to automatically detect and correct up to 2N/2=N broken bytes.
@@ -134,7 +162,7 @@ If Reed-Solomon is to be used with the input data itself, the data will be encod
 To address the edge case where the final 128-byte block happens to be padded so that it completes a full 1 MiB chunk, a flag is used to distinguish whether the last 128-byte block was padded originally or if it is just a full 128-byte block of data.
 
 # Deniability
-Plausible deniability in Picocrypt NG is achieved by simply re-encrypting the volume but without storing any identifiable header data. A new Argon2 salt and XChaCha20 nonce will be generated and stored in the deniable volume, but since both values are random, they don't reveal anything. A deniable volume will look something like this:
+Picocrypt NG's deniability option re-encrypts the regular volume without retaining its recognizable Picocrypt NG header. The resulting salt, nonce, and ciphertext are intended to look random to an observer who does not know the password. This limited random-looking-container property is not anonymity and does not guarantee protection against forensic analysis, traffic or storage metadata, endpoint compromise, or coercion. A deniable volume has this layout:
 ```
 [argon2 salt][xchacha20 nonce][encrypted stream of bytes]
 ```
@@ -147,15 +175,19 @@ Plausible deniability in Picocrypt NG is achieved by simply re-encrypting the vo
 | 16 | 24 | XChaCha20 nonce (random) |
 | 40 | …  | XChaCha20-encrypted inner volume (the complete regular `.pcv`) |
 
-Neither field is Reed-Solomon encoded — they are written as raw bytes so the volume is indistinguishable from random data.
+Neither field is Reed-Solomon encoded. The raw random salt and nonce avoid adding a recognizable Picocrypt NG header, supporting the wrapper's limited random-looking-container goal.
 
 **Key derivation.** The deniability key is `Argon2id(NFC(password), salt)` using **normal-mode** parameters regardless of the inner volume's mode: 4 passes, 1 GiB memory, 4 threads, 32-byte output. (The inner volume keeps its own independent salt/key in its header.)
 
+**Credential boundary (Picocrypt-NG 2.19 writers).** Every new volume requires a non-empty password, and every encryption request containing keyfiles is rejected before encryption begins. This applies with or without deniability. Direct `AddDeniability` also rejects an empty password before deriving the outer key or replacing its input. Keyfile material is never an input to the outer Argon2id derivation.
+
+**Legacy read compatibility.** Readers continue to accept supported v1/v2 keyfile volumes, including keyfile-only deniable v2 volumes historically created with an empty outer password. Decrypt such a volume with its original credentials, then create a new password-only volume. Merely rewrapping the affected inner v2 volume with a non-empty outer password fixes the empty-wrapper problem but does not add keyfile binding to the inner header MAC, payload MAC, Serpent key, or rekey schedule.
+
 **Rekeying.** The deniability layer rekeys every 60 GiB, but unlike the inner volume it does **not** use an HKDF stream. The new nonce is `nonce = SHA3-256(old_nonce)[:24]` (`crypto.DeniabilityRekey`); the Argon2 key is unchanged.
 
-**Detection.** A regular volume begins with an RS5-encoded version field; a deniable wrapper begins with random salt/nonce bytes that fail to decode as a known version. To decrypt, read salt(16) + nonce(24), derive the key, and XChaCha20-decrypt the remainder; the result is a normal Picocrypt volume parsed as described above.
+**Detection.** A regular volume begins with an RS5-encoded, syntactically valid version field; a deniable wrapper normally begins with random salt/nonce bytes that do not decode to that syntax. A well-formed but unsupported major stays on the regular-header path and fails closed. To unwrap a deniable volume, read salt(16) + nonce(24), derive the key, and XChaCha20-decrypt the remainder; the result is a normal Picocrypt volume parsed as described above.
 
-**Security Note:** The deniability layer intentionally uses unauthenticated encryption (XChaCha20 without a MAC). Adding authentication would defeat the purpose of deniability, as the MAC would be identifiable metadata. The inner volume remains fully authenticated, so data integrity is still protected.
+**Security note.** The outer layer uses XChaCha20 without its own authentication tag. A wrong outer password or wrapper modification is recognized only when the recovered inner volume can be parsed and authenticated. The inner volume supplies its format-specific authentication, subject to the legacy limitations above; force decrypt can deliberately bypass the payload-MAC failure.
 
 # Security Considerations
 

@@ -169,4 +169,4 @@ before release admission.
   keeps `base`. The next fdroiddata release must mirror this as
   `VercodeOperation: [10*%c+2, 10*%c+4]`. Published v2.18 metadata remains a
   historical four-ABI release.
-- The release workflow publishes a signed release APK; PR workflow artifacts remain debug/testing-only
+- The release workflow publishes three signed release APKs; PR workflow artifacts remain debug/testing-only

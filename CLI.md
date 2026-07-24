@@ -87,10 +87,15 @@ picocrypt encrypt [PATH...]
 |------|-------|------|-------------|
 | `--password` | `-p` | string | Encryption password |
 | `--password-stdin` | `-P` | bool | Read password from stdin (for scripting) |
-| `--keyfile` | `-k` | string | Keyfile path (can be specified multiple times) |
-| `--keyfile-ordered` | | bool | Keyfile order matters (sequential hashing) |
+| `--keyfile` | `-k` | string | Unavailable for encryption in 2.19; retained to return migration guidance |
+| `--keyfile-ordered` | | bool | Unavailable while v2 keyfile writing is disabled |
 
-At least one of `--password` or `--keyfile` must be provided.
+New encryption requires a non-empty password, entered interactively or supplied with `--password`
+or `--password-stdin`. Any encryption request containing `--keyfile` is rejected before output is
+created with `validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a
+reviewed v3 format`. This applies to keyfile-only and password-plus-keyfile requests, with or
+without `--deniability`. The flags remain present so scripts fail loudly instead of silently
+ignoring a requested factor.
 
 Do not pass real passwords with `-p` in routine use: the value can remain in shell history and process listings. Prefer an interactive prompt or `--password-stdin` when appropriate.
 
@@ -101,7 +106,7 @@ Do not pass real passwords with `-p` in routine use: the value can remain in she
 | `--comments` | string | | Comments to store in header (NOT encrypted) |
 | `--paranoid` | bool | false | Enable Serpent-CTR + XChaCha20 cascade with HMAC-SHA3 |
 | `--reed-solomon` | bool | false | Enable Reed-Solomon error correction (6% size overhead) |
-| `--deniability` | bool | false | Add deniability wrapper for plausible deniability |
+| `--deniability` | bool | false | Add deniability wrapper (requires a non-empty password) |
 | `--compress` | bool | false | Compress files before encryption |
 
 #### Split Output Flags
@@ -169,6 +174,14 @@ picocrypt decrypt VOLUME
 | `--recombine` | bool | false | Recombine split chunks first (auto-detected) |
 | `--deniability` | bool | false | Remove deniability wrapper before decryption |
 
+Keyfiles remain available for decryption of supported legacy v1/v2 volumes. To decrypt a legacy
+keyfile-only deniable v2 volume made with an empty outer password, pass `--deniability` and the
+original `--keyfile` arguments, then press Enter at the password prompt (or provide an empty line
+through `--password-stdin`). After recovery, create a new password-only 2.19 volume without `-k`.
+Merely adding a new outer wrapper does not fix the inner v2 keyfile authentication schedule. If a
+keyfile factor is mandatory, retain the recoverable legacy volume and wait for a reviewed v3
+format; v3 is neither implemented nor scheduled by 2.19.
+
 #### General Flags
 
 | Flag | Short | Type | Description |
@@ -210,16 +223,6 @@ picocrypt encrypt --glob "*.jpg" --glob "*.png" -o images.pcv -p "password"
 picocrypt encrypt sensitive.db -o sensitive.pcv -p "password" \
     --paranoid --reed-solomon
 
-# Add keyfile as an additional decryption factor
-picocrypt encrypt data.zip -o data.pcv -p "password" -k keyfile.key
-
-# Multiple keyfiles with ordered hashing
-picocrypt encrypt secret.txt -o secret.pcv -p "password" \
-    -k key1.key -k key2.key --keyfile-ordered
-
-# Keyfile-only encryption (no password)
-picocrypt encrypt document.pdf -o document.pcv -k master.key
-
 # Deniability wrapper for plausible deniability
 picocrypt encrypt hidden.txt -o innocent.pcv -p "password" --deniability
 
@@ -260,7 +263,7 @@ picocrypt decrypt secret.pcv -p "password" -k keyfile.key
 ### Advanced Decryption
 
 ```bash
-# Verify integrity before decryption (two-pass, recommended for critical data)
+# Authenticate before writing plaintext (two-pass)
 picocrypt decrypt important.pcv -p "password" --verify-first
 
 # Auto-extract zip archives after decryption
@@ -470,8 +473,17 @@ tar czf - /home/user/documents | \
 **"at least one input path or --glob pattern is required"**
 Pass one or more literal input operands, or add a quoted `--glob` pattern.
 
-**"password (-p) or keyfile (-k) is required"**
-Provide either a password, keyfile, or both.
+**"password input: password cannot be empty"**
+New encryption requires a non-empty password.
+
+**"validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format"**
+Picocrypt-NG 2.19 does not write any new v2 keyfile volume. Remove encryption-side `-k` and create a
+password-only volume, or wait for a reviewed v3 format if the keyfile factor is mandatory. Legacy
+decryption-side `-k` remains supported.
+
+**"validation: Password: a non-empty password is required for deniability"**
+Direct creation of a deniability wrapper requires a non-empty outer password. This does not prevent
+the legacy decryption procedure described above.
 
 **"invalid glob pattern"**
 Ensure explicit glob patterns are quoted to prevent shell expansion: `--glob "*.txt"`
@@ -496,11 +508,12 @@ Ensure all chunk files are in the same directory before decryption.
 - Use `--quiet` mode for faster operation (no terminal output overhead)
 - For large files, Reed-Solomon adds 6% size overhead but enables error recovery
 - Paranoid mode doubles encryption time due to cascade cipher
-- `--verify-first` doubles decryption time but ensures integrity before writing output
+- `--verify-first` authenticates before writing output at roughly twice the I/O cost; it does not
+  repair corruption or add keyfile binding to a legacy v2 volume
 
 ## Version
 
-This documentation applies to Picocrypt NG v2.19 and later.
+This documentation applies to Picocrypt NG v2.19.
 
 ## See Also
 

@@ -25,7 +25,7 @@ go build -tags migrated_fynedo -o picocrypt ./cmd/picocrypt
 go test -tags migrated_fynedo ./...                  # All tests
 go test -tags migrated_fynedo -cover ./...           # With coverage
 go test -tags migrated_fynedo -race ./...            # Race detector
-go test -v ./internal/volume -run TestGoldenVectors  # Backward compatibility
+go test -count=1 -run '^TestGolden' ./internal/volume # Backward compatibility
 go test -tags migrated_fynedo -bench=. ./...         # Benchmarks
 ```
 

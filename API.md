@@ -158,16 +158,16 @@ type EncryptRequest struct {
     OnlyFiles   []string // files dropped directly (affects zip paths)
     OutputFile  string
 
-    // Credentials — at least one of Password/Keyfiles required
-    Password       string   // NOTE: Go strings are immutable; zeroing is out of scope
-    Keyfiles       []string
-    KeyfileOrdered bool
+    // Credentials — Picocrypt-NG 2.19 writers require a non-empty Password
+    Password       []byte   // Owned by caller; caller zeros it after the operation
+    Keyfiles       []string // Legacy API field; any non-empty value is rejected on encryption
+    KeyfileOrdered bool     // Legacy API field; no effect without Keyfiles
 
     // Options
     Comments    string // Plaintext header comment (max 99999 chars, NOT encrypted)
     Paranoid    bool   // 8 Argon2 passes, Serpent-CTR + XChaCha20, HMAC-SHA3
     ReedSolomon bool   // Reed-Solomon on payload (~6% size overhead)
-    Deniability bool   // Wrap volume in deniability layer
+    Deniability bool   // Wrap volume; requires a non-empty Password
     Compress    bool   // Deflate compression in temp zip
 
     // Splitting
@@ -192,7 +192,7 @@ type DecryptRequest struct {
     InputFile  string
     OutputFile string
 
-    Password string   // NOTE: immutable Go string; zeroing out of scope
+    Password []byte   // Owned by caller; caller zeros it after the operation
     Keyfiles []string
 
     ForceDecrypt bool // continue despite MAC failure (may produce corrupt output)
@@ -292,6 +292,23 @@ func RemoveDeniability(volumePath string, password []byte, reporter ProgressRepo
 func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool
 ```
 
+**Picocrypt-NG 2.19 writer contract.** Every new volume requires a non-empty password.
+`EncryptRequest.Validate` rejects any non-empty `Keyfiles` value with
+`validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3
+format`. This applies to keyfile-only and password-plus-keyfile requests, with or without
+deniability. The core pipeline, desktop, CLI, WASM, and mobile writer boundaries enforce the same
+policy before encryption begins. Direct `AddDeniability` additionally returns
+`validation: Password: a non-empty password is required for deniability` before deriving its outer
+key or replacing the input volume.
+
+This is a writer restriction, not a format rewrite. Existing v1/v2 keyfile volumes remain readable
+through their legacy branches, including keyfile-only deniable v2 volumes whose outer password was
+empty. In legacy v2, the keyfile is XORed into the XChaCha20 key after the HKDF stream has already
+been initialized: it remains necessary for XChaCha20 confidentiality, but it does not bind the
+header MAC, payload MAC, Serpent key, or HKDF rekey schedule. Recover plaintext and create a new
+password-only 2.19 volume, or wait for a reviewed v3 format if a keyfile factor is mandatory. This
+release neither implements nor schedules v3.
+
 ---
 
 ## header *(AUDIT-CRITICAL)*
@@ -382,7 +399,7 @@ func ComputeV2HeaderMAC(subkeyHeader []byte, h *VolumeHeader, keyfileHash []byte
 // ComputeV1KeyHash computes SHA3-512(key) for v1 volume key verification.
 func ComputeV1KeyHash(key []byte) []byte
 
-// VerifyV2Header validates key/keyfile credentials against a v2 header.
+// VerifyV2Header verifies the legacy v2 header HMAC, covering the supplied keyfileHash.
 func VerifyV2Header(subkeyHeader []byte, h *VolumeHeader, keyfileHash []byte) *AuthResult
 
 // VerifyV1Header validates key credentials against a v1 header.
@@ -416,6 +433,10 @@ func NewV2PasswordOrTamperError() *AuthError
 func (e *AuthError) Error() string
 ```
 
+For legacy v2 keyfile volumes, `subkeyHeader` is derived from the password before keyfile XOR.
+Including the public `keyfileHash` in the HMAC message therefore checks consistency but does not
+make the HMAC key depend on the keyfile.
+
 ### Utility
 
 ```go
@@ -429,13 +450,22 @@ var (
     ErrCorruptedHeader      = errors.New("volume header is damaged")
     ErrInvalidCommentLength = errors.New("unable to read comments length")
     ErrInvalidVersion       = errors.New("invalid version format")
+    ErrUnsupportedVersion   = errors.New("unsupported volume version")
 )
 
 func AuthValuesOffset(commentsLen int) int64
 func HeaderSize(commentsLen int) int
 func MatchVersion(b []byte) bool
+func IsSupportedVersion(b []byte) bool
 func PeekVersion(r io.Reader, rs *encoding.RSCodecs) (string, error)
 ```
+
+`MatchVersion` recognizes only the syntax `vN.NN`; it does not authorize a cryptographic
+generation. Picocrypt-NG 2.19 supports v1 and v2. `Reader.ReadHeader` returns
+`ErrUnsupportedVersion` for every other well-formed major immediately after decoding the version,
+before flags or KDF inputs are read. Force decrypt does not bypass this gate, and deniability
+detection keeps a well-formed unknown-major header on the header path so it fails closed rather
+than being treated as an outer wrapper.
 
 ---
 
