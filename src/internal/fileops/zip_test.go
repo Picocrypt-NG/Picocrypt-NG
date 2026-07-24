@@ -186,6 +186,148 @@ func TestCreateZip(t *testing.T) {
 	}
 }
 
+func TestCreateZipRejectsExistingOutputAliases(t *testing.T) {
+	tests := []struct {
+		name      string
+		makeAlias func(t *testing.T, victim, output string)
+	}{
+		{
+			name: "regular file",
+			makeAlias: func(t *testing.T, victim, output string) {
+				t.Helper()
+				if err := os.Rename(victim, output); err != nil {
+					t.Fatalf("move victim into output path: %v", err)
+				}
+			},
+		},
+		{
+			name: "hardlink",
+			makeAlias: func(t *testing.T, victim, output string) {
+				t.Helper()
+				if err := os.Link(victim, output); err != nil {
+					t.Fatalf("create hardlink: %v", err)
+				}
+			},
+		},
+		{
+			name: "symlink",
+			makeAlias: func(t *testing.T, victim, output string) {
+				t.Helper()
+				if err := os.Symlink(victim, output); err != nil {
+					t.Skipf("symlinks unavailable on this platform: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			input := filepath.Join(dir, "input.txt")
+			if err := os.WriteFile(input, []byte("payload for a real zip entry"), 0o600); err != nil {
+				t.Fatalf("write input: %v", err)
+			}
+
+			victim := filepath.Join(dir, "victim.bin")
+			victimBytes := []byte("existing output must never be truncated")
+			if err := os.WriteFile(victim, victimBytes, 0o640); err != nil {
+				t.Fatalf("write victim: %v", err)
+			}
+			output := filepath.Join(dir, "output.zip")
+			tc.makeAlias(t, victim, output)
+
+			// The regular-file case moved the victim to the output name.
+			protected := victim
+			if tc.name == "regular file" {
+				protected = output
+			}
+			beforeInfo, err := os.Stat(protected)
+			if err != nil {
+				t.Fatalf("stat protected file before CreateZip: %v", err)
+			}
+			beforeLeaf, err := os.Lstat(output)
+			if err != nil {
+				t.Fatalf("lstat output before CreateZip: %v", err)
+			}
+
+			err = CreateZip(ZipOptions{
+				Files:      []string{input},
+				RootDir:    dir,
+				OutputPath: output,
+			})
+			if !errors.Is(err, os.ErrExist) {
+				t.Fatalf("CreateZip error = %v, want an os.ErrExist-compatible error", err)
+			}
+
+			got, err := os.ReadFile(protected)
+			if err != nil {
+				t.Fatalf("read protected file after CreateZip: %v", err)
+			}
+			if !bytes.Equal(got, victimBytes) {
+				t.Fatalf("protected contents changed: got %q, want %q", got, victimBytes)
+			}
+			afterInfo, err := os.Stat(protected)
+			if err != nil {
+				t.Fatalf("stat protected file after CreateZip: %v", err)
+			}
+			if !os.SameFile(beforeInfo, afterInfo) {
+				t.Fatal("CreateZip replaced the protected filesystem object")
+			}
+			afterLeaf, err := os.Lstat(output)
+			if err != nil {
+				t.Fatalf("lstat output after CreateZip: %v", err)
+			}
+			if beforeLeaf.Mode() != afterLeaf.Mode() {
+				t.Fatalf("output leaf type or mode changed: before=%v after=%v", beforeLeaf.Mode(), afterLeaf.Mode())
+			}
+
+			if tc.name != "regular file" {
+				outputInfo, err := os.Stat(output)
+				if err != nil {
+					t.Fatalf("stat output alias after CreateZip: %v", err)
+				}
+				if !os.SameFile(afterInfo, outputInfo) {
+					t.Fatal("output no longer aliases the protected file")
+				}
+			}
+		})
+	}
+}
+
+func TestCreateZipRefusesReplacementAtCompletedOutputPath(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.bin")
+	if err := os.WriteFile(input, bytes.Repeat([]byte("zip-race-payload"), 128*1024), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	output := filepath.Join(dir, "output.zip")
+	replaced := false
+	var assertUnchanged func()
+	err := CreateZip(ZipOptions{
+		Files:      []string{input},
+		RootDir:    dir,
+		OutputPath: output,
+		Progress: func(float32, string) {
+			if replaced {
+				return
+			}
+			if err := os.Remove(output); err != nil {
+				t.Fatalf("remove operation-owned ZIP output: %v", err)
+			}
+			assertUnchanged = installOccupiedPath(t, output, "regular")
+			replaced = true
+		},
+	})
+	if err == nil || err.Error() != "zip output path changed during creation" {
+		t.Fatalf("CreateZip error = %v, want changed-output refusal", err)
+	}
+	if !replaced {
+		t.Fatal("test did not replace the operation-owned ZIP output")
+	}
+	assertUnchanged()
+}
+
 // TestCreateZipReportsSpeedAndETA verifies the compression pass reports a status
 // with throughput and ETA (like split/recombine/encrypt), not just a percentage.
 func TestCreateZipReportsSpeedAndETA(t *testing.T) {

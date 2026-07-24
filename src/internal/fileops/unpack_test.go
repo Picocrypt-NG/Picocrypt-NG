@@ -235,7 +235,7 @@ func TestUnpackSkipsDiskSpaceGuardWhenSpaceCheckUnavailable(t *testing.T) {
 	}
 }
 
-func TestUnpackAllowsOverwriteWhenNetNewUsageFits(t *testing.T) {
+func TestUnpackRejectsExistingDestinationBeforeDiskSpaceProbe(t *testing.T) {
 	tmpDir := t.TempDir()
 	zipPath := filepath.Join(tmpDir, "space-overwrite.zip")
 	data := []byte("replacement payload")
@@ -250,22 +250,29 @@ func TestUnpackAllowsOverwriteWhenNetNewUsageFits(t *testing.T) {
 		t.Fatalf("Create existing file: %v", err)
 	}
 
-	if err := Unpack(UnpackOptions{
+	probeCalled := false
+	err := Unpack(UnpackOptions{
 		ZipPath:    zipPath,
 		ExtractDir: extractDir,
 		AvailableSpace: func(path string) (int64, error) {
+			probeCalled = true
 			return 0, nil
 		},
-	}); err != nil {
-		t.Fatalf("Unpack should allow overwrite when net-new usage fits: %v", err)
+	})
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("Unpack collision error = %v, want os.ErrExist", err)
+	}
+	if probeCalled {
+		t.Fatal("disk-space probe ran after an existing-destination collision was already known")
 	}
 
 	content, err := os.ReadFile(existingPath)
 	if err != nil {
-		t.Fatalf("Read overwritten file: %v", err)
+		t.Fatalf("Read preserved file: %v", err)
 	}
-	if !bytes.Equal(content, data) {
-		t.Fatal("overwritten content mismatch")
+	want := bytes.Repeat([]byte("x"), len(data)+8)
+	if !bytes.Equal(content, want) {
+		t.Fatalf("existing destination changed: got %q, want %q", content, want)
 	}
 }
 

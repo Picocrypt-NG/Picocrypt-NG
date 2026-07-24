@@ -138,7 +138,8 @@ type ZipOptions struct {
 	Files      []string // Files to include
 	RootDir    string   // Root directory for relative paths
 	EntryNames map[string]string
-	OutputPath string          // Output .tmp file path
+	OutputPath string          // Output archive path
+	OutputFile *os.File        // Optional caller-owned, exclusively created output
 	Compress   bool            // Use Deflate compression
 	Cipher     *TempZipCiphers // Optional encryption for temp file
 	Progress   ProgressFunc
@@ -169,10 +170,22 @@ func entryNameForPath(opts ZipOptions, path string) (string, error) {
 // CreateZip creates a zip archive from the given files.
 // Returns the path to the created archive.
 // On error or cancellation, the partial output file is removed.
-func CreateZip(opts ZipOptions) error {
-	file, err := CreateSecureNoSymlink(opts.OutputPath)
-	if err != nil {
-		return fmt.Errorf("create zip file: %w", err)
+func CreateZip(opts ZipOptions) (retErr error) {
+	file := opts.OutputFile
+	ownsFile := false
+	var ownedOutput ownedFilePath
+	if file == nil {
+		var err error
+		file, err = CreateExclusiveNoSymlink(opts.OutputPath)
+		if err != nil {
+			return fmt.Errorf("create zip file: %w", err)
+		}
+		ownsFile = true
+		ownedOutput, err = newOwnedFilePath(opts.OutputPath, file)
+		if err != nil {
+			_ = file.Close()
+			return fmt.Errorf("inspect zip file: %w", err)
+		}
 	}
 
 	var w io.Writer = file
@@ -181,20 +194,30 @@ func CreateZip(opts ZipOptions) error {
 	}
 
 	writer := zip.NewWriter(w)
-
-	// Helper to cleanup on error
-	cleanup := func() {
-		_ = writer.Close()
-		_ = file.Close()
-		_ = os.Remove(opts.OutputPath)
-	}
+	writerClosed := false
+	fileClosed := false
+	keepOutput := false
+	defer func() {
+		if !writerClosed {
+			if err := writer.Close(); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close zip writer during cleanup: %w", err))
+			}
+		}
+		if ownsFile && !keepOutput {
+			if !fileClosed {
+				if err := file.Close(); err != nil {
+					retErr = errors.Join(retErr, fmt.Errorf("close zip file during cleanup: %w", err))
+				}
+			}
+			retErr = errors.Join(retErr, ownedOutput.remove())
+		}
+	}()
 
 	// Calculate total size for progress
 	var totalSize int64
 	for _, path := range opts.Files {
 		stat, err := os.Stat(path)
 		if err != nil {
-			cleanup()
 			return fmt.Errorf("stat %s: %w", path, err)
 		}
 		totalSize += stat.Size()
@@ -218,7 +241,6 @@ func CreateZip(opts ZipOptions) error {
 
 	for i, path := range opts.Files {
 		if opts.Cancel != nil && opts.Cancel() {
-			cleanup()
 			return errors.New("operation cancelled")
 		}
 
@@ -226,19 +248,16 @@ func CreateZip(opts ZipOptions) error {
 
 		stat, err := os.Stat(path)
 		if err != nil {
-			cleanup()
 			return fmt.Errorf("stat %s: %w", path, err)
 		}
 
 		header, err := zip.FileInfoHeader(stat)
 		if err != nil {
-			cleanup()
 			return fmt.Errorf("create header for %s: %w", path, err)
 		}
 
 		name, err := entryNameForPath(opts, path)
 		if err != nil {
-			cleanup()
 			return err
 		}
 		header.Name = name
@@ -251,14 +270,12 @@ func CreateZip(opts ZipOptions) error {
 
 		entry, err := writer.CreateHeader(header)
 		if err != nil {
-			cleanup()
 			return fmt.Errorf("create entry for %s: %w", path, err)
 		}
 
 		// #nosec G304 -- input paths from user-provided file list
 		fin, err := os.Open(path)
 		if err != nil {
-			cleanup()
 			return fmt.Errorf("open %s: %w", path, err)
 		}
 
@@ -266,7 +283,6 @@ func CreateZip(opts ZipOptions) error {
 		for {
 			if opts.Cancel != nil && opts.Cancel() {
 				_ = fin.Close()
-				cleanup()
 				return errors.New("operation cancelled")
 			}
 
@@ -274,7 +290,6 @@ func CreateZip(opts ZipOptions) error {
 			if n > 0 {
 				if _, err := entry.Write(buf[:n]); err != nil {
 					_ = fin.Close()
-					cleanup()
 					return fmt.Errorf("write to zip: %w", err)
 				}
 				done += int64(n)
@@ -286,7 +301,6 @@ func CreateZip(opts ZipOptions) error {
 			}
 			if readErr != nil {
 				_ = fin.Close()
-				cleanup()
 				return fmt.Errorf("read %s: %w", path, readErr)
 			}
 		}
@@ -294,14 +308,28 @@ func CreateZip(opts ZipOptions) error {
 	}
 
 	// Close writer and file on success
-	if err := writer.Close(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(opts.OutputPath)
+	err := writer.Close()
+	writerClosed = true
+	if err != nil {
 		return fmt.Errorf("close zip writer: %w", err)
 	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(opts.OutputPath)
-		return fmt.Errorf("close zip file: %w", err)
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync zip file: %w", err)
+	}
+	if ownsFile {
+		err := file.Close()
+		fileClosed = true
+		if err != nil {
+			return fmt.Errorf("close zip file: %w", err)
+		}
+		current, err := os.Lstat(opts.OutputPath)
+		if err != nil || !current.Mode().IsRegular() || !os.SameFile(ownedOutput.info, current) {
+			if err != nil {
+				return fmt.Errorf("inspect completed zip: %w", err)
+			}
+			return errors.New("zip output path changed during creation")
+		}
+		keepOutput = true
 	}
 
 	return nil

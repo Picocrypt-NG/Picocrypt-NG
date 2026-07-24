@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/diskspace"
 	"Picocrypt-NG/internal/util"
 	"archive/zip"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -17,13 +18,274 @@ import (
 
 // UnpackOptions configures archive extraction
 type UnpackOptions struct {
-	ZipPath        string // Path to .zip file
-	ExtractDir     string // Directory to extract to (empty = same as zip, minus .zip)
-	SameLevel      bool   // Extract to same directory as zip (not a subdirectory)
-	Progress       ProgressFunc
-	Status         StatusFunc
-	Cancel         CancelFunc                  // Cancellation check callback (optional)
-	AvailableSpace func(string) (int64, error) // Override free-space probe (optional, mainly for tests)
+	ZipPath             string // Path to .zip file
+	ZipFile             *os.File
+	ExtractDir          string // Directory to extract to (empty = same as zip, minus .zip)
+	ExtractRoot         *os.Root
+	ExpectedExtractRoot os.FileInfo
+	SameLevel           bool // Extract to same directory as zip (not a subdirectory)
+	Progress            ProgressFunc
+	Status              StatusFunc
+	Cancel              CancelFunc                  // Cancellation check callback (optional)
+	AvailableSpace      func(string) (int64, error) // Override free-space probe (optional, mainly for tests)
+}
+
+type stagedUnpackEntry struct {
+	file       *os.File
+	stageName  string
+	targetName string
+	outPath    string
+	info       os.FileInfo
+}
+
+func (entry *stagedUnpackEntry) cleanup(root *os.Root) error {
+	if entry == nil || root == nil || entry.stageName == "" {
+		return nil
+	}
+	var closeErr error
+	if entry.file != nil {
+		if err := entry.file.Close(); err != nil {
+			closeErr = fmt.Errorf("close staged extraction output %s: %w", entry.outPath, err)
+		}
+		entry.file = nil
+	}
+	current, err := root.Lstat(entry.stageName)
+	if errors.Is(err, os.ErrNotExist) {
+		entry.stageName = ""
+		return closeErr
+	}
+	if err != nil {
+		return errors.Join(closeErr, fmt.Errorf("inspect staged extraction output %s during cleanup: %w", entry.outPath, err))
+	}
+	if !current.Mode().IsRegular() || !os.SameFile(entry.info, current) {
+		entry.stageName = ""
+		return closeErr
+	}
+	if err := root.Remove(entry.stageName); err != nil {
+		return errors.Join(closeErr, fmt.Errorf("remove staged extraction output %s: %w", entry.outPath, err))
+	}
+	entry.stageName = ""
+	return closeErr
+}
+
+type ownedUnpackFile struct {
+	targetName string
+	outPath    string
+	info       os.FileInfo
+}
+
+func (owned ownedUnpackFile) remove(root *os.Root) error {
+	current, err := root.Lstat(owned.targetName)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect published extraction output %s during rollback: %w", owned.outPath, err)
+	}
+	if !current.Mode().IsRegular() || !os.SameFile(owned.info, current) {
+		return fmt.Errorf("published extraction output changed before rollback: %s", owned.outPath)
+	}
+	if err := root.Remove(owned.targetName); err != nil {
+		return fmt.Errorf("remove published extraction output %s during rollback: %w", owned.outPath, err)
+	}
+	return nil
+}
+
+type ownedUnpackDir struct {
+	targetName string
+	outPath    string
+	info       os.FileInfo
+}
+
+type ownedUnpackDirs struct {
+	entries []ownedUnpackDir
+	indexes map[string]int
+}
+
+func (dirs *ownedUnpackDirs) record(dir ownedUnpackDir) {
+	if dirs.indexes == nil {
+		dirs.indexes = make(map[string]int)
+	}
+	if index, ok := dirs.indexes[dir.targetName]; ok {
+		dirs.entries[index] = dir
+		return
+	}
+	dirs.indexes[dir.targetName] = len(dirs.entries)
+	dirs.entries = append(dirs.entries, dir)
+}
+
+func (dirs *ownedUnpackDirs) cleanup(root *os.Root) error {
+	var cleanupErrs []error
+	for i := len(dirs.entries) - 1; i >= 0; i-- {
+		dir := dirs.entries[i]
+		current, err := root.Lstat(dir.targetName)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			continue
+		case err != nil:
+			cleanupErrs = append(
+				cleanupErrs,
+				fmt.Errorf("inspect extraction directory %s during rollback: %w", dir.outPath, err),
+			)
+		case !current.IsDir() || !os.SameFile(dir.info, current):
+			cleanupErrs = append(
+				cleanupErrs,
+				fmt.Errorf("extraction directory changed before rollback: %s", dir.outPath),
+			)
+		default:
+			if err := root.Remove(dir.targetName); err != nil {
+				cleanupErrs = append(
+					cleanupErrs,
+					fmt.Errorf("remove extraction directory %s during rollback: %w", dir.outPath, err),
+				)
+			}
+		}
+	}
+	return errors.Join(cleanupErrs...)
+}
+
+var (
+	unpackLinkFn        = (*os.Root).Link
+	unpackCopyFn        = io.Copy
+	unpackStageSyncFn   = (*os.File).Sync
+	unpackRemoveOwnedFn = ownedUnpackFile.remove
+)
+
+func publishStagedUnpackEntry(root *os.Root, entry *stagedUnpackEntry) (published ownedUnpackFile, retErr error) {
+	currentStage, err := root.Lstat(entry.stageName)
+	if err != nil {
+		return ownedUnpackFile{}, fmt.Errorf("inspect stage for %s before publish: %w", entry.outPath, err)
+	}
+	if !currentStage.Mode().IsRegular() || !os.SameFile(entry.info, currentStage) {
+		return ownedUnpackFile{}, fmt.Errorf("stage path changed before publishing %s", entry.outPath)
+	}
+
+	// A hard link publishes the complete staged inode atomically and fails if
+	// the destination exists. Filesystems without hard-link support fall back
+	// to an exclusive copy, which retains the same no-clobber contract.
+	if err := unpackLinkFn(root, entry.stageName, entry.targetName); err == nil {
+		owned := ownedUnpackFile{targetName: entry.targetName, outPath: entry.outPath, info: entry.info}
+		targetInfo, statErr := root.Lstat(entry.targetName)
+		if statErr != nil {
+			return ownedUnpackFile{}, errors.Join(
+				fmt.Errorf("inspect published %s: %w", entry.outPath, statErr),
+				unpackRemoveOwnedFn(owned, root),
+			)
+		}
+		if !targetInfo.Mode().IsRegular() || !os.SameFile(entry.info, targetInfo) {
+			return ownedUnpackFile{}, errors.Join(
+				fmt.Errorf("published path changed for %s", entry.outPath),
+				unpackRemoveOwnedFn(owned, root),
+			)
+		}
+		owned.info = targetInfo
+		if err := root.Remove(entry.stageName); err != nil {
+			return ownedUnpackFile{}, errors.Join(
+				fmt.Errorf("remove stage for %s: %w", entry.outPath, err),
+				unpackRemoveOwnedFn(owned, root),
+			)
+		}
+		entry.stageName = ""
+		return owned, nil
+	}
+
+	if _, err := root.Lstat(entry.targetName); err == nil {
+		return ownedUnpackFile{}, fmt.Errorf("extraction destination already exists: %s: %w", entry.outPath, os.ErrExist)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ownedUnpackFile{}, fmt.Errorf("inspect extraction destination %s: %w", entry.outPath, err)
+	}
+
+	target, err := root.OpenFile(entry.targetName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return ownedUnpackFile{}, fmt.Errorf("create extraction destination %s: %w", entry.outPath, err)
+	}
+	targetOpen := true
+	keepTarget := false
+	owned := ownedUnpackFile{targetName: entry.targetName, outPath: entry.outPath}
+	defer func() {
+		if keepTarget {
+			return
+		}
+		if targetOpen {
+			if err := target.Close(); err != nil {
+				retErr = errors.Join(
+					retErr,
+					fmt.Errorf("close extraction destination %s during rollback: %w", entry.outPath, err),
+				)
+			}
+			targetOpen = false
+		}
+		if owned.info == nil {
+			retErr = errors.Join(
+				retErr,
+				fmt.Errorf("could not safely roll back extraction destination with unavailable identity: %s", entry.outPath),
+			)
+			return
+		}
+		retErr = errors.Join(retErr, unpackRemoveOwnedFn(owned, root))
+	}()
+
+	targetInfo, err := target.Stat()
+	if err != nil {
+		return ownedUnpackFile{}, fmt.Errorf("inspect extraction destination %s: %w", entry.outPath, err)
+	}
+	owned.info = targetInfo
+
+	stage, err := root.Open(entry.stageName)
+	if err != nil {
+		return ownedUnpackFile{}, fmt.Errorf("open stage for %s: %w", entry.outPath, err)
+	}
+	stageInfo, err := stage.Stat()
+	if err != nil || !os.SameFile(entry.info, stageInfo) {
+		var stageCloseErr error
+		if closeErr := stage.Close(); closeErr != nil {
+			stageCloseErr = fmt.Errorf("close stage for %s after inspect failure: %w", entry.outPath, closeErr)
+		}
+		if err != nil {
+			return ownedUnpackFile{}, errors.Join(
+				fmt.Errorf("inspect stage for %s: %w", entry.outPath, err),
+				stageCloseErr,
+			)
+		}
+		return ownedUnpackFile{}, errors.Join(
+			fmt.Errorf("stage path changed before publishing %s", entry.outPath),
+			stageCloseErr,
+		)
+	}
+	if _, err := unpackCopyFn(target, stage); err != nil {
+		var stageCloseErr error
+		if closeErr := stage.Close(); closeErr != nil {
+			stageCloseErr = fmt.Errorf("close stage for %s after copy failure: %w", entry.outPath, closeErr)
+		}
+		return ownedUnpackFile{}, errors.Join(
+			fmt.Errorf("copy staged output %s: %w", entry.outPath, err),
+			stageCloseErr,
+		)
+	}
+	if err := stage.Close(); err != nil {
+		return ownedUnpackFile{}, fmt.Errorf("close stage for %s: %w", entry.outPath, err)
+	}
+	if err := target.Sync(); err != nil {
+		return ownedUnpackFile{}, fmt.Errorf("sync extraction destination %s: %w", entry.outPath, err)
+	}
+	if err := target.Close(); err != nil {
+		targetOpen = false
+		return ownedUnpackFile{}, fmt.Errorf("close extraction destination %s: %w", entry.outPath, err)
+	}
+	targetOpen = false
+	currentTarget, err := root.Lstat(entry.targetName)
+	if err != nil || !currentTarget.Mode().IsRegular() || !os.SameFile(owned.info, currentTarget) {
+		if err != nil {
+			return ownedUnpackFile{}, fmt.Errorf("inspect completed extraction destination %s: %w", entry.outPath, err)
+		}
+		return ownedUnpackFile{}, fmt.Errorf("extraction destination changed for %s", entry.outPath)
+	}
+	if err := root.Remove(entry.stageName); err != nil {
+		return ownedUnpackFile{}, fmt.Errorf("remove stage for %s: %w", entry.outPath, err)
+	}
+	entry.stageName = ""
+	keepTarget = true
+	return owned, nil
 }
 
 // normalizeZipPath normalizes a path from a zip file by converting all separators
@@ -78,50 +340,74 @@ func isValidExtractionPath(outPath, extractDir string) bool {
 	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
 }
 
-func prepareExtractionPath(extractDir, normalizedName string, isDir bool) (string, error) {
+func prepareExtractionPath(
+	root *os.Root,
+	extractDir, normalizedName string,
+	isDir bool,
+	createdDirs *ownedUnpackDirs,
+) (string, string, error) {
 	relPath := filepath.Clean(normalizedName)
 	if !filepath.IsLocal(relPath) {
-		return "", errors.New("potentially malicious zip item path")
+		return "", "", errors.New("potentially malicious zip item path")
 	}
 
 	outPath := filepath.Join(extractDir, relPath)
 	if !isValidExtractionPath(outPath, extractDir) {
-		return "", errors.New("potentially malicious zip item path")
+		return "", "", errors.New("potentially malicious zip item path")
 	}
 
-	current := filepath.Clean(extractDir)
+	current := ""
 	parts := strings.Split(relPath, string(filepath.Separator))
 	for i, part := range parts {
 		next := filepath.Join(current, part)
 		isLast := i == len(parts)-1
 
-		info, err := os.Lstat(next)
+		info, err := root.Lstat(next)
 		switch {
-		case os.IsNotExist(err):
+		case errors.Is(err, os.ErrNotExist):
 			if !isLast || isDir {
-				if err := os.Mkdir(next, 0o700); err != nil {
-					return "", fmt.Errorf("create directory %s: %w", next, err)
+				if err := root.Mkdir(next, 0o700); err != nil {
+					return "", "", fmt.Errorf("create directory %s: %w", filepath.Join(extractDir, next), err)
 				}
+				info, err := root.Lstat(next)
+				if err != nil {
+					return "", "", fmt.Errorf(
+						"inspect created directory %s: %w",
+						filepath.Join(extractDir, next),
+						err,
+					)
+				}
+				if !info.IsDir() {
+					return "", "", fmt.Errorf(
+						"created extraction path is not a directory: %s",
+						filepath.Join(extractDir, next),
+					)
+				}
+				createdDirs.record(ownedUnpackDir{
+					targetName: next,
+					outPath:    filepath.Join(extractDir, next),
+					info:       info,
+				})
 			}
 		case err != nil:
-			return "", err
+			return "", "", err
 		case info.Mode()&os.ModeSymlink != 0:
 			// SEC-03 invariant (pinned by TestUnpackSymlinkEscape): every path
 			// component is Lstat'd and any symlink rejected before a write, so a
 			// symlinked intermediate dir cannot be followed out of the extraction
 			// root. In-archive symlink entries never reach here as symlinks — they
 			// are materialized as regular files (target string = body).
-			return "", fmt.Errorf("refusing to follow symlink during extraction: %s", next)
+			return "", "", fmt.Errorf("refusing to follow symlink during extraction: %s", filepath.Join(extractDir, next))
 		case !info.IsDir() && (!isLast || isDir):
-			return "", fmt.Errorf("path exists as file: %s", next)
+			return "", "", fmt.Errorf("path exists as file: %s", filepath.Join(extractDir, next))
 		case isLast && !isDir && info.IsDir():
-			return "", fmt.Errorf("path exists as directory: %s", next)
+			return "", "", fmt.Errorf("path exists as directory: %s", filepath.Join(extractDir, next))
 		}
 
 		current = next
 	}
 
-	return outPath, nil
+	return relPath, outPath, nil
 }
 
 func pathWalkStart(path string) (string, []string) {
@@ -219,15 +505,44 @@ func prepareExtractionRoot(extractDir string, create bool) (string, error) {
 	return resolved, nil
 }
 
+func verifyExtractionRootPath(extractDir string, expected os.FileInfo) error {
+	current, err := os.Stat(extractDir)
+	if err != nil {
+		return fmt.Errorf("inspect extraction directory before write: %w", err)
+	}
+	if !os.SameFile(expected, current) {
+		return errors.New("extraction directory changed before write")
+	}
+	return nil
+}
+
 // Unpack extracts a zip archive to the specified directory.
 func Unpack(opts UnpackOptions) (retErr error) {
-	reader, err := zip.OpenReader(opts.ZipPath)
-	if err != nil {
-		return fmt.Errorf("open zip: %w", err)
+	var reader *zip.Reader
+	var closeReader func() error
+	var err error
+	if opts.ZipFile != nil {
+		info, err := opts.ZipFile.Stat()
+		if err != nil {
+			return fmt.Errorf("inspect zip: %w", err)
+		}
+		reader, err = zip.NewReader(opts.ZipFile, info.Size())
+		if err != nil {
+			return fmt.Errorf("open zip: %w", err)
+		}
+	} else {
+		readCloser, err := zip.OpenReader(opts.ZipPath)
+		if err != nil {
+			return fmt.Errorf("open zip: %w", err)
+		}
+		reader = &readCloser.Reader
+		closeReader = readCloser.Close
 	}
 	defer func() {
-		if err := reader.Close(); err != nil && retErr == nil {
-			retErr = fmt.Errorf("close zip reader: %w", err)
+		if closeReader != nil {
+			if err := closeReader(); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close zip reader: %w", err))
+			}
 		}
 	}()
 
@@ -257,30 +572,67 @@ func Unpack(opts UnpackOptions) (retErr error) {
 		}
 	}
 
-	extractDir, err = prepareExtractionRoot(extractDir, !opts.SameLevel)
-	if err != nil {
-		return err
-	}
-	extractRoot, err := os.OpenRoot(extractDir)
-	if err != nil {
-		return fmt.Errorf("open extraction root %s: %w", extractDir, err)
+	var extractRoot *os.Root
+	closeExtractRoot := false
+	if opts.ExtractRoot != nil {
+		extractDir, err = filepath.Abs(filepath.Clean(extractDir))
+		if err != nil {
+			return fmt.Errorf("resolve extraction directory %s: %w", extractDir, err)
+		}
+		extractRoot = opts.ExtractRoot
+	} else {
+		createExtractRoot := !opts.SameLevel && opts.ExpectedExtractRoot == nil
+		extractDir, err = prepareExtractionRoot(extractDir, createExtractRoot)
+		if err != nil {
+			return err
+		}
+		extractRoot, err = os.OpenRoot(extractDir)
+		if err != nil {
+			return fmt.Errorf("open extraction root %s: %w", extractDir, err)
+		}
+		closeExtractRoot = true
 	}
 	defer func() {
-		if err := extractRoot.Close(); err != nil && retErr == nil {
-			retErr = fmt.Errorf("close extraction root: %w", err)
+		if closeExtractRoot {
+			if err := extractRoot.Close(); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close extraction root: %w", err))
+			}
+		}
+	}()
+	extractRootInfo, err := extractRoot.Stat(".")
+	if err != nil {
+		return fmt.Errorf("inspect extraction root %s: %w", extractDir, err)
+	}
+	if opts.ExpectedExtractRoot != nil && !os.SameFile(opts.ExpectedExtractRoot, extractRootInfo) {
+		return errors.New("extraction root does not match the reserved output directory")
+	}
+	if err := verifyExtractionRootPath(extractDir, extractRootInfo); err != nil {
+		return err
+	}
+	createdDirs := &ownedUnpackDirs{}
+	keepCreatedDirs := false
+	defer func() {
+		if !keepCreatedDirs {
+			retErr = errors.Join(retErr, createdDirs.cleanup(extractRoot))
 		}
 	}()
 
-	// First pass: create all directories and calculate the maximum write size
-	// per output path for the free-space preflight.
-	desiredSizes := make(map[string]int64)
+	// First pass: create all directories and reject duplicate or existing
+	// destinations before extracting any data.
+	seenTargets := make(map[string]struct{})
 	for _, f := range reader.File {
 		// Normalize and validate path to prevent zip slip attacks
 		if hasUnsafeWindowsTrimTraversalComponent(f.Name) {
 			return errors.New("potentially malicious zip item path")
 		}
 		normalizedName := normalizeZipPath(f.Name)
-		outPath, err := prepareExtractionPath(extractDir, normalizedName, f.FileInfo().IsDir())
+		targetName, outPath, err := prepareExtractionPath(
+			extractRoot,
+			extractDir,
+			normalizedName,
+			f.FileInfo().IsDir(),
+			createdDirs,
+		)
 		if err != nil {
 			return err
 		}
@@ -288,25 +640,26 @@ func Unpack(opts UnpackOptions) (retErr error) {
 		if f.FileInfo().IsDir() {
 			continue
 		}
-		size, ok := util.SafeUint64ToInt64(f.UncompressedSize64)
-		if !ok {
-			return fmt.Errorf("file %s: uncompressed size exceeds int64 max", f.Name)
+		if _, exists := seenTargets[targetName]; exists {
+			return fmt.Errorf("duplicate extraction destination in archive: %s", outPath)
 		}
-		if size > desiredSizes[outPath] {
-			desiredSizes[outPath] = size
+		seenTargets[targetName] = struct{}{}
+		if _, err := extractRoot.Lstat(targetName); err == nil {
+			return fmt.Errorf("extraction destination already exists: %s: %w", outPath, os.ErrExist)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect extraction destination %s: %w", outPath, err)
 		}
 	}
 
-	requiredAdditionalBytes, err := requiredAdditionalBytesForExtraction(desiredSizes)
-	if err != nil {
-		return err
-	}
 	probe := opts.AvailableSpace
 	if probe == nil {
 		probe = diskspace.Available
 	}
-	if available, err := probe(extractDir); err == nil && requiredAdditionalBytes > available {
-		return fmt.Errorf("insufficient disk space for extraction: need %d bytes, have %d", requiredAdditionalBytes, available)
+	if available, err := probe(extractDir); err == nil && totalSize > available {
+		return fmt.Errorf("insufficient disk space for extraction: need %d bytes, have %d", totalSize, available)
+	}
+	if err := verifyExtractionRootPath(extractDir, extractRootInfo); err != nil {
+		return err
 	}
 
 	// Second pass: extract files
@@ -315,6 +668,14 @@ func Unpack(opts UnpackOptions) (retErr error) {
 	// Using defer here would accumulate all file handles until function exit.
 	var done int64
 	startTime := time.Now()
+	stagedEntries := make([]stagedUnpackEntry, 0, len(reader.File))
+	defer func() {
+		for i := range stagedEntries {
+			if err := stagedEntries[i].cleanup(extractRoot); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
+		}
+	}()
 
 	for i, f := range reader.File {
 		// Check for cancellation between files
@@ -326,15 +687,24 @@ func Unpack(opts UnpackOptions) (retErr error) {
 			continue
 		}
 
-		// Revalidate immediately before writing. The first pass creates
-		// directories and sizes the extraction; this pass closes the parent-dir
-		// swap window and writes through os.Root so the open is root-confined.
+		// Revalidate before staging. The first pass creates directories and
+		// sizes the extraction; the stage and final rename both go through
+		// os.Root so their paths remain root-confined.
 		if hasUnsafeWindowsTrimTraversalComponent(f.Name) {
 			return errors.New("potentially malicious zip item path")
 		}
 		normalizedName := normalizeZipPath(f.Name)
-		outPath, err := prepareExtractionPath(extractDir, normalizedName, false)
+		targetName, outPath, err := prepareExtractionPath(
+			extractRoot,
+			extractDir,
+			normalizedName,
+			false,
+			createdDirs,
+		)
 		if err != nil {
+			return err
+		}
+		if err := verifyExtractionRootPath(extractDir, extractRootInfo); err != nil {
 			return err
 		}
 
@@ -343,19 +713,30 @@ func Unpack(opts UnpackOptions) (retErr error) {
 			return fmt.Errorf("open %s in archive: %w", f.Name, err)
 		}
 
-		dstFile, err := extractRoot.OpenFile(normalizedName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		stageName := ".picocrypt-unpack-" + rand.Text()
+		stageFile, err := extractRoot.OpenFile(stageName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
 			_ = fileInArchive.Close()
-			return fmt.Errorf("create %s: %w", outPath, err)
+			return fmt.Errorf("create stage for %s: %w", outPath, err)
 		}
-		removeExtractedFile := func() {
-			_ = extractRoot.Remove(normalizedName)
+		stageInfo, err := stageFile.Stat()
+		if err != nil {
+			_ = fileInArchive.Close()
+			_ = stageFile.Close()
+			return fmt.Errorf("inspect stage for %s: %w", outPath, err)
 		}
+		stagedEntries = append(stagedEntries, stagedUnpackEntry{
+			file:       stageFile,
+			stageName:  stageName,
+			targetName: targetName,
+			outPath:    outPath,
+			info:       stageInfo,
+		})
+		stagedEntry := &stagedEntries[len(stagedEntries)-1]
 
 		// Decompression bomb protection
 		compressedSize, ok := util.SafeUint64ToInt64(f.CompressedSize64)
 		if !ok {
-			_ = dstFile.Close()
 			_ = fileInArchive.Close()
 			return fmt.Errorf("file %s: compressed size exceeds int64 max", f.Name)
 		}
@@ -376,9 +757,7 @@ func Unpack(opts UnpackOptions) (retErr error) {
 		for {
 			// Check for cancellation during file extraction
 			if opts.Cancel != nil && opts.Cancel() {
-				_ = dstFile.Close()
 				_ = fileInArchive.Close()
-				removeExtractedFile()
 				return errors.New("operation cancelled")
 			}
 
@@ -386,17 +765,13 @@ func Unpack(opts UnpackOptions) (retErr error) {
 			if n > 0 {
 				written += int64(n)
 				if written > maxBytes {
-					_ = dstFile.Close()
 					_ = fileInArchive.Close()
-					removeExtractedFile()
 					return fmt.Errorf("decompression limit exceeded: %s (ratio >%d:1)",
 						f.Name, util.MaxDecompressRatio)
 				}
 
-				if _, err := dstFile.Write(buf[:n]); err != nil {
-					_ = dstFile.Close()
+				if _, err := stageFile.Write(buf[:n]); err != nil {
 					_ = fileInArchive.Close()
-					removeExtractedFile()
 					return fmt.Errorf("write %s: %w", outPath, err)
 				}
 
@@ -414,15 +789,69 @@ func Unpack(opts UnpackOptions) (retErr error) {
 				break
 			}
 			if readErr != nil {
-				_ = dstFile.Close()
 				_ = fileInArchive.Close()
 				return fmt.Errorf("read %s: %w", f.Name, readErr)
 			}
 		}
 
-		_ = dstFile.Close()
 		_ = fileInArchive.Close()
+		if err := unpackStageSyncFn(stageFile); err != nil {
+			return fmt.Errorf("sync %s: %w", outPath, err)
+		}
+		if err := stageFile.Close(); err != nil {
+			return fmt.Errorf("close %s: %w", outPath, err)
+		}
+		stagedEntry.file = nil
+		currentStage, err := extractRoot.Lstat(stageName)
+		if err != nil {
+			return fmt.Errorf("inspect stage for %s before publish: %w", outPath, err)
+		}
+		if !currentStage.Mode().IsRegular() || !os.SameFile(stageInfo, currentStage) {
+			return fmt.Errorf("stage path changed before publishing %s", outPath)
+		}
 	}
 
+	// Surface archive-close errors before publishing any staged entry.
+	if closeReader != nil {
+		if err := closeReader(); err != nil {
+			closeReader = nil
+			return fmt.Errorf("close zip reader: %w", err)
+		}
+		closeReader = nil
+	}
+
+	// Do not publish any destination until every archive entry has been fully
+	// decompressed and checksum-verified. Existing destinations are never
+	// replaced: a collision is an error, including a race after preflight.
+	if err := verifyExtractionRootPath(extractDir, extractRootInfo); err != nil {
+		return err
+	}
+	for i := range stagedEntries {
+		entry := &stagedEntries[i]
+		current, err := extractRoot.Lstat(entry.stageName)
+		if err != nil {
+			return fmt.Errorf("inspect stage for %s before publish: %w", entry.outPath, err)
+		}
+		if !current.Mode().IsRegular() || !os.SameFile(entry.info, current) {
+			return fmt.Errorf("stage path changed before publishing %s", entry.outPath)
+		}
+	}
+	published := make([]ownedUnpackFile, 0, len(stagedEntries))
+	for i := range stagedEntries {
+		entry := &stagedEntries[i]
+		owned, err := publishStagedUnpackEntry(extractRoot, entry)
+		if err != nil {
+			rollbackErrors := []error{err}
+			for _, output := range published {
+				if rollbackErr := output.remove(extractRoot); rollbackErr != nil {
+					rollbackErrors = append(rollbackErrors, rollbackErr)
+				}
+			}
+			return errors.Join(rollbackErrors...)
+		}
+		published = append(published, owned)
+	}
+
+	keepCreatedDirs = true
 	return nil
 }

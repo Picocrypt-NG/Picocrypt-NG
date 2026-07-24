@@ -39,8 +39,9 @@ func parseUnsignedChunkIndex(s string) (int, bool) {
 
 // RecombineOptions configures chunk recombination
 type RecombineOptions struct {
-	InputBase  string // Base path without .N suffix
-	OutputPath string // Output .pcv file path
+	InputBase  string       // Base path without .N suffix
+	OutputPath string       // Output .pcv file path
+	OutputInfo *os.FileInfo // Optional exact identity of the completed output
 	Progress   ProgressFunc
 	Status     StatusFunc
 	Cancel     CancelFunc
@@ -99,30 +100,40 @@ func CountChunks(basePath string) (int, int64, error) {
 
 // Recombine merges split chunks back into a single file.
 // Chunks are expected to be named: basePath.0, basePath.1, etc.
-func Recombine(opts RecombineOptions) error {
+func Recombine(opts RecombineOptions) (retErr error) {
 	numChunks, totalSize, err := CountChunks(opts.InputBase)
 	if err != nil {
 		return err
 	}
 
-	// Check if output already exists
-	if _, err := os.Stat(opts.OutputPath); err == nil {
-		return fmt.Errorf("output file already exists: %s", opts.OutputPath)
-	}
-
-	fout, err := CreateSecureNoSymlink(opts.OutputPath)
+	fout, err := CreateExclusiveNoSymlink(opts.OutputPath)
 	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("output file already exists: %s: %w", opts.OutputPath, err)
+		}
 		return fmt.Errorf("create output: %w", err)
 	}
-	defer func() { _ = fout.Close() }()
+	ownedOutput, err := newOwnedFilePath(opts.OutputPath, fout)
+	if err != nil {
+		_ = fout.Close()
+		return fmt.Errorf("inspect output: %w", err)
+	}
+	keepOutput := false
+	defer func() {
+		if err := fout.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close output: %w", err))
+			keepOutput = false
+		}
+		if !keepOutput {
+			retErr = errors.Join(retErr, ownedOutput.remove())
+		}
+	}()
 
 	var totalDone int64
 	startTime := time.Now()
 
 	for i := range numChunks {
 		if opts.Cancel != nil && opts.Cancel() {
-			_ = fout.Close()
-			_ = os.Remove(opts.OutputPath)
 			return errors.New("operation cancelled")
 		}
 
@@ -130,8 +141,6 @@ func Recombine(opts RecombineOptions) error {
 		// #nosec G304 -- chunk paths derived from user-provided base path
 		fin, err := os.Open(chunkPath)
 		if err != nil {
-			_ = fout.Close()
-			_ = os.Remove(opts.OutputPath)
 			return fmt.Errorf("open chunk %d: %w", i, err)
 		}
 
@@ -139,8 +148,6 @@ func Recombine(opts RecombineOptions) error {
 		for {
 			if opts.Cancel != nil && opts.Cancel() {
 				_ = fin.Close()
-				_ = fout.Close()
-				_ = os.Remove(opts.OutputPath)
 				return errors.New("operation cancelled")
 			}
 
@@ -148,8 +155,6 @@ func Recombine(opts RecombineOptions) error {
 			if n > 0 {
 				if _, err := fout.Write(buf[:n]); err != nil {
 					_ = fin.Close()
-					_ = fout.Close()
-					_ = os.Remove(opts.OutputPath)
 					return fmt.Errorf("write from chunk %d: %w", i, err)
 				}
 				totalDone += int64(n)
@@ -168,25 +173,30 @@ func Recombine(opts RecombineOptions) error {
 			}
 			if readErr != nil {
 				_ = fin.Close()
-				_ = fout.Close()
-				_ = os.Remove(opts.OutputPath)
 				return fmt.Errorf("read chunk %d: %w", i, readErr)
 			}
 		}
 
 		if err := recombineCloseFn(fin); err != nil {
-			_ = fout.Close()
-			_ = os.Remove(opts.OutputPath)
 			return fmt.Errorf("close chunk %d: %w", i, err)
 		}
 	}
 
 	// Sync to ensure all data is flushed to disk before caller reads the file
 	if err := recombineSyncFn(fout); err != nil {
-		_ = fout.Close()
-		_ = os.Remove(opts.OutputPath)
 		return fmt.Errorf("sync output file: %w", err)
 	}
+	current, err := os.Lstat(opts.OutputPath)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(ownedOutput.info, current) {
+		if err != nil {
+			return fmt.Errorf("inspect completed output: %w", err)
+		}
+		return errors.New("output path changed during recombination")
+	}
+	if opts.OutputInfo != nil {
+		*opts.OutputInfo = ownedOutput.info
+	}
+	keepOutput = true
 
 	return nil
 }

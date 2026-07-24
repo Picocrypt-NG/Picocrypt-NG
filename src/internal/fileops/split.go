@@ -17,24 +17,69 @@ import (
 	"time"
 )
 
-func shouldDeleteSplitArtifact(basePath, candidate string) bool {
-	prefix := basePath + "."
-	if !strings.HasPrefix(candidate, prefix) {
+func isSplitArtifact(baseName, candidateName string) bool {
+	prefix := baseName + "."
+	if !strings.HasPrefix(candidateName, prefix) {
 		return false
 	}
 
-	suffix := strings.TrimPrefix(candidate, prefix)
+	suffix := strings.TrimPrefix(candidateName, prefix)
 	suffix = strings.TrimSuffix(suffix, ".incomplete")
-	if suffix == "" {
-		return false
-	}
+	_, ok := parseUnsignedChunkIndex(suffix)
+	return ok
+}
 
-	for _, r := range suffix {
-		if r < '0' || r > '9' {
-			return false
+func existingSplitArtifact(basePath string) (string, error) {
+	dir := filepath.Dir(basePath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("read split output directory: %w", err)
+	}
+	baseName := filepath.Base(basePath)
+	for _, entry := range entries {
+		if isSplitArtifact(baseName, entry.Name()) {
+			return filepath.Join(dir, entry.Name()), nil
 		}
 	}
-	return true
+	return "", nil
+}
+
+type ownedFilePath struct {
+	path string
+	info os.FileInfo
+}
+
+func newOwnedFilePath(path string, file *os.File) (ownedFilePath, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return ownedFilePath{}, err
+	}
+	return ownedFilePath{path: path, info: info}, nil
+}
+
+func (owned ownedFilePath) remove() error {
+	current, err := os.Lstat(owned.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect owned output %s during cleanup: %w", owned.path, err)
+	}
+	if !current.Mode().IsRegular() || !os.SameFile(owned.info, current) {
+		return nil
+	}
+	if err := os.Remove(owned.path); err != nil {
+		return fmt.Errorf("remove owned output %s: %w", owned.path, err)
+	}
+	return nil
+}
+
+func (owned ownedFilePath) matches() (bool, error) {
+	current, err := os.Lstat(owned.path)
+	if err != nil {
+		return false, err
+	}
+	return current.Mode().IsRegular() && os.SameFile(owned.info, current), nil
 }
 
 // SplitUnit represents the unit of measurement for chunk sizes when splitting files.
@@ -50,12 +95,13 @@ const (
 
 // SplitOptions configures how a file should be split into chunks.
 type SplitOptions struct {
-	InputPath string       // Path to file to split
-	ChunkSize int          // Size of each chunk in Unit (or number of parts if Unit=Total)
-	Unit      SplitUnit    // Unit of ChunkSize
-	Progress  ProgressFunc // Progress callback (optional)
-	Status    StatusFunc   // Status message callback (optional)
-	Cancel    CancelFunc   // Cancellation check callback (optional)
+	InputPath     string       // Path to file to split
+	ExpectedInput os.FileInfo  // Optional identity that InputPath must still name
+	ChunkSize     int          // Size of each chunk in Unit (or number of parts if Unit=Total)
+	Unit          SplitUnit    // Unit of ChunkSize
+	Progress      ProgressFunc // Progress callback (optional)
+	Status        StatusFunc   // Status message callback (optional)
+	Cancel        CancelFunc   // Cancellation check callback (optional)
 }
 
 // ChunkSizeToBytes converts a chunk size expressed in unit to a byte count,
@@ -84,22 +130,27 @@ func ChunkSizeToBytes(chunkSize int, unit SplitUnit) (int64, error) {
 	return size * unitBytes, nil
 }
 
-// cleanupChunkOnError closes fout (if open), removes the in-progress chunk, and
-// removes every completed chunk produced so far. Used by all Split error paths.
-func cleanupChunkOnError(fout *os.File, chunkPath string, chunks []string) {
-	if fout != nil {
-		_ = fout.Close()
+// cleanupSplitOnError removes the random stage and every final chunk still
+// backed by a file this Split invocation created.
+func cleanupSplitOnError(stage *StagedFile, chunks []ownedFilePath) error {
+	var cleanupErrs []error
+	if stage != nil {
+		if err := stage.Cleanup(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
 	}
-	_ = os.Remove(chunkPath)
-	for _, c := range chunks {
-		_ = os.Remove(c)
+	for _, chunk := range chunks {
+		if err := chunk.remove(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
 	}
+	return errors.Join(cleanupErrs...)
 }
 
 // Split divides a file into multiple sequential chunks for easier storage/transfer.
 //
 // Output files are named with numeric suffixes: inputPath.0, inputPath.1, inputPath.2, etc.
-// Existing chunks with matching names are deleted before splitting begins.
+// Existing chunks cause Split to fail without changing them.
 //
 // Use cases:
 //   - Storing large encrypted volumes on FAT32 (4 GiB file size limit)
@@ -107,14 +158,23 @@ func cleanupChunkOnError(fout *os.File, chunkPath string, chunks []string) {
 //   - Splitting for distribution across multiple storage media
 //
 // To reassemble, use Recombine() or concatenate files in order: cat file.pcv.* > file.pcv
-func Split(opts SplitOptions) ([]string, error) {
+func Split(opts SplitOptions) (chunks []string, retErr error) {
 	if opts.ChunkSize <= 0 {
 		return nil, errors.New("chunk size must be greater than zero")
 	}
 
-	stat, err := os.Stat(opts.InputPath)
+	fin, err := os.Open(opts.InputPath)
+	if err != nil {
+		return nil, fmt.Errorf("open input: %w", err)
+	}
+	defer func() { _ = fin.Close() }()
+
+	stat, err := fin.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat input: %w", err)
+	}
+	if opts.ExpectedInput != nil && !os.SameFile(opts.ExpectedInput, stat) {
+		return nil, errors.New("input path changed before splitting")
 	}
 	totalSize := stat.Size()
 
@@ -132,43 +192,42 @@ func Split(opts SplitOptions) ([]string, error) {
 
 	numChunks := int(math.Ceil(float64(totalSize) / float64(chunkSize)))
 
-	fin, err := os.Open(opts.InputPath)
+	existing, err := existingSplitArtifact(opts.InputPath)
 	if err != nil {
-		return nil, fmt.Errorf("open input: %w", err)
+		return nil, err
 	}
-	defer func() { _ = fin.Close() }()
+	if existing != "" {
+		return nil, fmt.Errorf("split artifact already exists: %s: %w", existing, os.ErrExist)
+	}
 
-	// Delete existing chunks first
-	existingChunks, _ := filepath.Glob(opts.InputPath + ".*")
-	for _, chunk := range existingChunks {
-		if shouldDeleteSplitArtifact(opts.InputPath, chunk) {
-			_ = os.Remove(chunk)
+	var ownedChunks []ownedFilePath
+	var activeStage *StagedFile
+	defer func() {
+		if retErr != nil {
+			retErr = errors.Join(retErr, cleanupSplitOnError(activeStage, ownedChunks))
 		}
-	}
-
-	var chunks []string
+	}()
 	var totalDone int64
 	startTime := time.Now()
 
 	for i := range numChunks {
 		if opts.Cancel != nil && opts.Cancel() {
-			cleanupChunkOnError(nil, "", chunks)
 			return nil, errors.New("operation cancelled")
 		}
 
-		chunkPath := fmt.Sprintf("%s.%d.incomplete", opts.InputPath, i)
-		fout, err := CreateSecureNoSymlink(chunkPath)
+		finalPath := fmt.Sprintf("%s.%d", opts.InputPath, i)
+		stage, err := CreateSiblingTemp(finalPath)
 		if err != nil {
-			cleanupChunkOnError(nil, "", chunks)
-			return nil, fmt.Errorf("create chunk %d: %w", i, err)
+			return nil, fmt.Errorf("create chunk stage %d: %w", i, err)
 		}
+		activeStage = stage
+		fout := stage.File()
 
 		var chunkDone int64
 		buf := make([]byte, util.MiB)
 
 		for chunkDone < chunkSize {
 			if opts.Cancel != nil && opts.Cancel() {
-				cleanupChunkOnError(fout, chunkPath, chunks)
 				return nil, errors.New("operation cancelled")
 			}
 
@@ -181,7 +240,6 @@ func Split(opts SplitOptions) ([]string, error) {
 			n, readErr := fin.Read(buf)
 			if n > 0 {
 				if _, err := fout.Write(buf[:n]); err != nil {
-					cleanupChunkOnError(fout, chunkPath, chunks)
 					return nil, fmt.Errorf("write chunk %d: %w", i, err)
 				}
 				chunkDone += int64(n)
@@ -200,30 +258,66 @@ func Split(opts SplitOptions) ([]string, error) {
 				break
 			}
 			if readErr != nil {
-				cleanupChunkOnError(fout, chunkPath, chunks)
 				return nil, fmt.Errorf("read for chunk %d: %w", i, readErr)
 			}
 		}
 
-		// Sync to ensure data is flushed before renaming
 		if err := fout.Sync(); err != nil {
-			cleanupChunkOnError(fout, chunkPath, chunks)
+			return nil, fmt.Errorf("sync chunk stage %d: %w", i, err)
+		}
+		if _, err := fout.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("rewind chunk stage %d: %w", i, err)
+		}
+
+		finalFile, err := CreateExclusiveNoSymlink(finalPath)
+		if err != nil {
+			return nil, fmt.Errorf("create chunk %d: %w", i, err)
+		}
+		ownedChunk, err := newOwnedFilePath(finalPath, finalFile)
+		if err != nil {
+			_ = finalFile.Close()
+			return nil, fmt.Errorf("inspect chunk %d: %w", i, err)
+		}
+		ownedChunks = append(ownedChunks, ownedChunk)
+		copied, err := io.Copy(finalFile, fout)
+		if err != nil {
+			_ = finalFile.Close()
+			return nil, fmt.Errorf("publish chunk %d: %w", i, err)
+		}
+		if copied != chunkDone {
+			_ = finalFile.Close()
+			return nil, fmt.Errorf("publish chunk %d: copied %d bytes, want %d", i, copied, chunkDone)
+		}
+		if err := finalFile.Sync(); err != nil {
+			_ = finalFile.Close()
 			return nil, fmt.Errorf("sync chunk %d: %w", i, err)
 		}
-
-		if err := fout.Close(); err != nil {
-			cleanupChunkOnError(nil, chunkPath, chunks) // fout already closed by failed Close
+		if err := finalFile.Close(); err != nil {
 			return nil, fmt.Errorf("close chunk %d: %w", i, err)
 		}
-
-		// Rename to final name
-		finalPath := fmt.Sprintf("%s.%d", opts.InputPath, i)
-		if err := os.Rename(chunkPath, finalPath); err != nil {
-			cleanupChunkOnError(nil, chunkPath, chunks) // fout already closed above
-			return nil, fmt.Errorf("rename chunk %d: %w", i, err)
+		matches, err := ownedChunk.matches()
+		if err != nil || !matches {
+			if err != nil {
+				return nil, fmt.Errorf("inspect completed chunk %d: %w", i, err)
+			}
+			return nil, fmt.Errorf("chunk %d path changed during splitting", i)
 		}
 
+		if err := stage.Cleanup(); err != nil {
+			return nil, err
+		}
+		activeStage = nil
 		chunks = append(chunks, finalPath)
+	}
+
+	for i, chunk := range ownedChunks {
+		matches, err := chunk.matches()
+		if err != nil || !matches {
+			if err != nil {
+				return nil, fmt.Errorf("inspect completed chunk %d: %w", i, err)
+			}
+			return nil, fmt.Errorf("chunk %d path changed during splitting", i)
+		}
 	}
 
 	return chunks, nil
