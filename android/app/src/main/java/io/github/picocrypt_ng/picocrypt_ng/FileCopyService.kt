@@ -203,11 +203,18 @@ object FileCopyService {
      */
     suspend fun cleanupAllFiles(context: Context): Boolean = withContext(Dispatchers.IO) {
         try {
-            val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-            if (!internalDir.exists()) {
+            val filesDir = context.filesDir
+            val entries = filesDir.list() ?: return@withContext false
+            if (INTERNAL_FILES_DIR !in entries) {
                 return@withContext true
             }
-            if (!internalDir.isDirectory) {
+
+            val internalDir = File(filesDir, INTERNAL_FILES_DIR)
+            val expectedInternalDir = File(filesDir.canonicalFile, INTERNAL_FILES_DIR)
+            if (internalDir.canonicalFile != expectedInternalDir ||
+                !internalDir.exists() ||
+                !internalDir.isDirectory
+            ) {
                 return@withContext false
             }
 
@@ -215,12 +222,7 @@ object FileCopyService {
 
             var allDeleted = true
             files.forEach { file ->
-                val deleted = if (file.isDirectory) {
-                    file.deleteRecursively()
-                } else {
-                    file.delete()
-                }
-                if (!deleted || file.exists()) {
+                if (!NoFollowFileTree.delete(filesDir, file)) {
                     allDeleted = false
                 }
             }
@@ -382,15 +384,29 @@ object FileCopyService {
      */
     suspend fun cleanupIncompleteFiles(context: Context): Boolean = withContext(Dispatchers.IO) {
         try {
-            val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-            if (!internalDir.exists() || !internalDir.isDirectory) {
+            val filesDir = context.filesDir
+            val entries = filesDir.list() ?: return@withContext false
+            if (INTERNAL_FILES_DIR !in entries) {
                 return@withContext true
             }
-            
+
+            val internalDir = File(filesDir, INTERNAL_FILES_DIR)
+            val expectedInternalDir = File(filesDir.canonicalFile, INTERNAL_FILES_DIR)
+            if (internalDir.canonicalFile != expectedInternalDir ||
+                !internalDir.exists() ||
+                !internalDir.isDirectory
+            ) {
+                return@withContext false
+            }
+
+            val files = internalDir.listFiles() ?: return@withContext false
             var allSuccess = true
-            internalDir.listFiles()?.forEach { file ->
-                if (file.isFile && file.name.endsWith(".incomplete")) {
-                    if (!file.delete()) {
+            files.forEach { file ->
+                if (file.name.endsWith(".incomplete")) {
+                    if (!isRegularFileInDirectory(internalDir, file) ||
+                        !file.delete() ||
+                        file.exists()
+                    ) {
                         allSuccess = false
                     }
                 }
@@ -458,11 +474,22 @@ object FileCopyService {
      */
     suspend fun cleanupOperationFilesBeforeStart(context: Context): Boolean = withContext(Dispatchers.IO) {
         try {
-            val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-            if (!internalDir.exists() || !internalDir.isDirectory) {
+            val filesDir = context.filesDir
+            val entries = filesDir.list() ?: return@withContext false
+            if (INTERNAL_FILES_DIR !in entries) {
                 return@withContext true
             }
-            
+
+            val internalDir = File(filesDir, INTERNAL_FILES_DIR)
+            val expectedInternalDir = File(filesDir.canonicalFile, INTERNAL_FILES_DIR)
+            if (internalDir.canonicalFile != expectedInternalDir ||
+                !internalDir.exists() ||
+                !internalDir.isDirectory
+            ) {
+                return@withContext false
+            }
+
+            val files = internalDir.listFiles() ?: return@withContext false
             var allSuccess = true
             
             // NOTE: Do NOT delete input file here - it's needed for the operation!
@@ -477,17 +504,34 @@ object FileCopyService {
                 "output_file",
                 "output_file.incomplete"
             )
-            outputFiles.forEach { fileName ->
-                val file = File(internalDir, fileName)
-                if (file.exists()) {
-                    if (!file.delete()) {
+            files.forEach { file ->
+                if (file.name in outputFiles) {
+                    if (!isRegularFileInDirectory(internalDir, file) ||
+                        !file.delete() ||
+                        file.exists()
+                    ) {
                         allSuccess = false
                     }
                 }
             }
-            
+
+            // Go publishes through random sibling stages. A process crash can leave
+            // one behind, including plaintext from decryption. Only remove direct
+            // regular files with Go's exact private stage prefix; never follow links
+            // or recursively delete a matching directory.
+            files.forEach { file ->
+                if (file.name.startsWith(".picocrypt-") &&
+                    isRegularFileInDirectory(internalDir, file) &&
+                    (!file.delete() || file.exists())
+                ) {
+                    allSuccess = false
+                }
+            }
+
             // Clean up any remaining incomplete files (but not input/keyfiles)
-            cleanupIncompleteFiles(context)
+            if (!cleanupIncompleteFiles(context)) {
+                allSuccess = false
+            }
 
             allSuccess
         } catch (e: CancellationException) {
@@ -495,6 +539,10 @@ object FileCopyService {
         } catch (e: Exception) {
             false
         }
+    }
+
+    private fun isRegularFileInDirectory(directory: File, file: File): Boolean {
+        return file.isFile && file.canonicalFile == File(directory.canonicalFile, file.name)
     }
 
     private fun copyFailed(context: Context, technicalMessage: String?) =

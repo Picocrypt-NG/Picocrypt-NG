@@ -62,7 +62,9 @@ object OperationManager {
         }
 
         // Clean up old files before starting new operation to prevent contamination
-        FileCopyService.cleanupOperationFilesBeforeStart(context)
+        if (!FileCopyService.cleanupOperationFilesBeforeStart(context)) {
+            return@withContext Result.failure(AppError.FileError.DeleteFailed())
+        }
 
         // Generate output file path using FileCopyService. For encrypt this is a fixed
         // output_file.pcv regardless of the input path, so an empty copiedFilePath (multi
@@ -135,7 +137,9 @@ object OperationManager {
         }
 
         // Clean up old files before starting new operation to prevent contamination
-        FileCopyService.cleanupOperationFilesBeforeStart(context)
+        if (!FileCopyService.cleanupOperationFilesBeforeStart(context)) {
+            return@withContext Result.failure(AppError.FileError.DeleteFailed())
+        }
 
         // Generate output file path using FileCopyService
         val outputFilePath = FileCopyService.getOutputFilePath(context, formData.copiedFilePath, isEncrypt = false)
@@ -288,31 +292,78 @@ object OperationManager {
      * Clears the current operation.
      * @param shouldCleanupFiles If true, deletes input, output, and keyfiles from internal storage.
      */
-    suspend fun clearOperation(context: Context? = null, shouldCleanupFiles: Boolean = true) {
+    suspend fun clearOperation(
+        context: Context? = null,
+        shouldCleanupFiles: Boolean = true,
+    ): Result<Unit> {
         val operation = _currentOperation.value
+            ?: return Result.success(Unit)
         
         // Clear passwords from form data before clearing operation
-        operation?.formData?.clearPasswords()
-        
-        // Cleanup files if requested and context is provided
-        if (shouldCleanupFiles && context != null && operation != null) {
-            val formData = operation.formData
-            val keyfilePaths = formData?.keyfileFilenames?.map { it.internalPath } ?: emptyList()
-            
-            FileCopyService.cleanupOperationFiles(
+        operation.formData?.clearPasswords()
+
+        if (!shouldCleanupFiles) {
+            _currentOperation.compareAndSet(operation, null)
+            return Result.success(Unit)
+        }
+
+        if (context == null) {
+            val error = AppError.FileError.DeleteFailed(
+                technicalMessage = "Android context is required to clean operation files",
+            )
+            retainCleanupFailure(operation, error)
+            return Result.failure(error)
+        }
+
+        val formData = operation.formData
+        val keyfilePaths = formData?.keyfileFilenames?.map { it.internalPath } ?: emptyList()
+
+        val filesCleaned = FileCopyService.cleanupOperationFiles(
                 context = context,
                 inputFilePath = operation.inputFile,
                 outputFilePath = operation.outputFile,
-                keyfilePaths = keyfilePaths
+                keyfilePaths = keyfilePaths,
             )
 
-            // A folder/multi selection stages plaintext copies under STAGING_DIR that the
-            // per-file cleanup above does not cover (it only knows the single input path).
-            // Wipe the staging tree so plaintext does not linger after the operation.
+        // A folder/multi selection stages plaintext copies under STAGING_DIR that the
+        // per-file cleanup above does not cover (it only knows the single input path).
+        // Always attempt this cleanup even if one of the paths above could not be removed.
+        val stagingCleaned = withContext(Dispatchers.IO) {
             StagingService.wipeStaging(context)
         }
 
-        _currentOperation.value = null
+        if (!filesCleaned || !stagingCleaned) {
+            val error = AppError.FileError.DeleteFailed(
+                technicalMessage = buildString {
+                    append("Operation cleanup incomplete:")
+                    if (!filesCleaned) append(" operation files")
+                    if (!stagingCleaned) append(" staging")
+                },
+            )
+            retainCleanupFailure(operation, error)
+            return Result.failure(error)
+        }
+
+        _currentOperation.compareAndSet(operation, null)
+        return Result.success(Unit)
+    }
+
+    private fun retainCleanupFailure(
+        operation: OperationState,
+        error: AppError.FileError.DeleteFailed,
+    ) {
+        _currentOperation.update { current ->
+            if (current == null || current.id != operation.id) {
+                current
+            } else {
+                current.copy(
+                    status = OperationStatusData(OperationStatus.ERROR),
+                    detail = OperationProgressDetail(OperationProgress.NONE),
+                    done = true,
+                    error = error,
+                )
+            }
+        }
     }
     
     /**
@@ -363,7 +414,7 @@ object OperationManager {
      * Retries decryption with force decrypt enabled.
      * This should only be called when a decryption operation has failed due to data corruption.
      */
-    suspend fun retryDecryptWithForce(): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun retryDecryptWithForce(context: Context): Result<String> = withContext(Dispatchers.IO) {
         val operation = _currentOperation.value ?: return@withContext Result.failure(
             AppError.OperationError.GenericOperation(
                 userMessage = "",
@@ -392,6 +443,10 @@ object OperationManager {
         // guard and fail loud before encoding the password or starting the op.
         if (!formData.isPasswordValid) {
             return@withContext Result.failure(AppError.ValidationError.InvalidPassword)
+        }
+
+        if (!FileCopyService.cleanupOperationFilesBeforeStart(context)) {
+            return@withContext Result.failure(AppError.FileError.DeleteFailed())
         }
 
         // Clear the current operation state

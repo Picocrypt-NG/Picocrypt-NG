@@ -3,11 +3,156 @@ package io.github.picocrypt_ng.picocrypt_ng
 import android.content.Context
 import io.mockk.every
 import io.mockk.mockk
+import java.nio.file.Files
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.io.path.createTempDirectory
 
 class StagingServiceTest {
+    @Test
+    fun `wipeStaging removes a real staged plaintext tree`() {
+        val filesDir = createTempDirectory(prefix = "staging_wipe_success").toFile()
+        val context = mockk<Context>()
+        val stagedFile = java.io.File(filesDir, "picocrypt_files/staging/folder/plaintext.txt")
+        every { context.filesDir } returns filesDir
+
+        try {
+            assertTrue(stagedFile.parentFile!!.mkdirs())
+            stagedFile.writeText("sensitive plaintext")
+
+            assertTrue("Cleanup must report successful deletion", StagingService.wipeStaging(context))
+            assertFalse(
+                "The actual staging tree must be absent after successful cleanup",
+                java.io.File(filesDir, "picocrypt_files/staging").exists(),
+            )
+        } finally {
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `wipeStaging reports a real filesystem deletion failure`() {
+        val filesDir = createTempDirectory(prefix = "staging_wipe_failure").toFile()
+        val context = mockk<Context>()
+        val internalDir = java.io.File(filesDir, "picocrypt_files")
+        val stagingDir = java.io.File(internalDir, "staging")
+        val stagedFile = java.io.File(stagingDir, "plaintext.txt")
+        every { context.filesDir } returns filesDir
+
+        try {
+            assertTrue(stagingDir.mkdirs())
+            stagedFile.writeText("sensitive plaintext")
+            assertTrue(stagingDir.setWritable(false, false))
+            assertTrue(internalDir.setWritable(false, false))
+
+            assertFalse(
+                "Cleanup must not claim success while the real staging tree remains",
+                StagingService.wipeStaging(context),
+            )
+            assertTrue("The undeletable plaintext proves cleanup failed", stagedFile.exists())
+        } finally {
+            stagingDir.setWritable(true, false)
+            internalDir.setWritable(true, false)
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `wipeStaging removes an internal symlink without following it`() {
+        val filesDir = createTempDirectory(prefix = "staging_wipe_link").toFile()
+        val outsideDir = createTempDirectory(prefix = "staging_wipe_outside").toFile()
+        val stagingDir = java.io.File(filesDir, "picocrypt_files/staging")
+        val stagedFile = java.io.File(stagingDir, "plaintext.txt")
+        val outsideFile = java.io.File(outsideDir, "foreign.txt")
+        val link = java.io.File(stagingDir, "outside-link")
+        val outsideBytes = "must survive cleanup".toByteArray()
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+
+        try {
+            assertTrue(stagingDir.mkdirs())
+            stagedFile.writeText("staged plaintext")
+            outsideFile.writeBytes(outsideBytes)
+            Files.createSymbolicLink(link.toPath(), outsideDir.toPath())
+
+            assertTrue(StagingService.wipeStaging(context))
+
+            assertFalse("The staging tree must be removed", stagingDir.exists())
+            assertTrue("Cleanup must not remove the symlink target", outsideDir.isDirectory)
+            assertArrayEquals(
+                "Cleanup must preserve bytes outside staging",
+                outsideBytes,
+                outsideFile.readBytes(),
+            )
+        } finally {
+            Files.deleteIfExists(link.toPath())
+            filesDir.deleteRecursively()
+            outsideDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `wipeStaging unlinks a symlinked staging root without touching its target`() {
+        val filesDir = createTempDirectory(prefix = "staging_wipe_root_link").toFile()
+        val outsideDir = createTempDirectory(prefix = "staging_wipe_root_outside").toFile()
+        val internalDir = java.io.File(filesDir, "picocrypt_files")
+        val stagingLink = java.io.File(internalDir, "staging")
+        val outsideFile = java.io.File(outsideDir, "foreign.txt")
+        val outsideBytes = "outside root target".toByteArray()
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+
+        try {
+            assertTrue(internalDir.mkdirs())
+            outsideFile.writeBytes(outsideBytes)
+            Files.createSymbolicLink(stagingLink.toPath(), outsideDir.toPath())
+
+            assertTrue(StagingService.wipeStaging(context))
+
+            assertFalse("The staging root symlink itself must be removed", Files.exists(stagingLink.toPath()))
+            assertTrue("The root symlink target must remain", outsideDir.isDirectory)
+            assertArrayEquals(outsideBytes, outsideFile.readBytes())
+        } finally {
+            Files.deleteIfExists(stagingLink.toPath())
+            filesDir.deleteRecursively()
+            outsideDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `wipeStaging rejects an intermediate symlink without touching its target`() {
+        val filesDir = createTempDirectory(prefix = "staging_wipe_intermediate_link").toFile()
+        val outsideDir = createTempDirectory(prefix = "staging_wipe_intermediate_outside").toFile()
+        val internalLink = java.io.File(filesDir, "picocrypt_files")
+        val outsideStaging = java.io.File(outsideDir, "staging")
+        val outsideFile = java.io.File(outsideStaging, "foreign.txt")
+        val outsideBytes = "outside intermediate target".toByteArray()
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+
+        try {
+            assertTrue(outsideStaging.mkdirs())
+            outsideFile.writeBytes(outsideBytes)
+            Files.createSymbolicLink(internalLink.toPath(), outsideDir.toPath())
+
+            assertFalse(StagingService.wipeStaging(context))
+
+            assertTrue("The intermediate symlink must remain visible", Files.isSymbolicLink(internalLink.toPath()))
+            assertArrayEquals(
+                "Cleanup must preserve bytes outside its trusted root",
+                outsideBytes,
+                outsideFile.readBytes(),
+            )
+        } finally {
+            Files.deleteIfExists(internalLink.toPath())
+            filesDir.deleteRecursively()
+            outsideDir.deleteRecursively()
+        }
+    }
+
     @Test fun resolveCollision_uniqueWhenFree() {
         assertEquals("a.txt", StagingService.resolveCollision(emptySet(), "a.txt"))
     }

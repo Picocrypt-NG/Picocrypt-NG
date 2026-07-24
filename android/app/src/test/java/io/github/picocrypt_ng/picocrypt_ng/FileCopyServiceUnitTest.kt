@@ -374,6 +374,42 @@ class FileCopyServiceUnitTest {
     }
 
     @Test
+    fun cleanupAllFiles_unlinksNestedSymlinkWithoutDeletingOutsideData() = runTest {
+        val filesDir = createTempDirectory("picocrypt-cleanup-all-link").toFile()
+        val outsideDir = createTempDirectory("picocrypt-cleanup-all-outside").toFile()
+        val internalDir = File(filesDir, "picocrypt_files")
+        val stagingDir = File(internalDir, "staging")
+        val outsideFile = File(outsideDir, "foreign.txt")
+        val outsideBytes = "must remain outside app storage".toByteArray()
+        val link = File(stagingDir, "outside-link")
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+
+        try {
+            assertTrue(stagingDir.mkdirs())
+            File(stagingDir, "plaintext.txt").writeText("stale plaintext")
+            outsideFile.writeBytes(outsideBytes)
+            Files.createSymbolicLink(link.toPath(), outsideDir.toPath())
+
+            val result = FileCopyService.cleanupAllFiles(context)
+
+            assertTrue("Startup cleanup must remove its real app-private tree", result)
+            assertTrue("The runtime directory itself remains available", internalDir.isDirectory)
+            assertTrue("All runtime entries must be gone", internalDir.listFiles().orEmpty().isEmpty())
+            assertTrue("Cleanup must not remove the symlink target", outsideDir.isDirectory)
+            assertArrayEquals(
+                "Cleanup must preserve outside bytes exactly",
+                outsideBytes,
+                outsideFile.readBytes(),
+            )
+        } finally {
+            Files.deleteIfExists(link.toPath())
+            filesDir.deleteRecursively()
+            outsideDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun cleanupKeyfiles_reportsFailureWhenInternalPathIsAFile() = runTest {
         val filesDir = createTempDirectory("picocrypt-keyfile-cleanup-path").toFile()
         val internalPath = File(filesDir, "picocrypt_files")
@@ -489,6 +525,129 @@ class FileCopyServiceUnitTest {
         } finally {
             Files.deleteIfExists(internalLink.toPath())
             filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cleanupOperationFilesBeforeStart_removesOnlyRegularGoStageResidues() = runTest {
+        val filesDir = createTempDirectory("picocrypt-operation-cleanup").toFile()
+        val outsideDir = createTempDirectory("picocrypt-operation-cleanup-outside").toFile()
+        val internalDir = File(filesDir, "picocrypt_files")
+        val stageResidue = File(internalDir, ".picocrypt-owned-stage")
+        val prefixLookalike = File(internalDir, ".picocrypt_stage")
+        val embeddedLookalike = File(internalDir, "backup.picocrypt-owned-stage")
+        val matchingDirectory = File(internalDir, ".picocrypt-directory")
+        val outsideTarget = File(outsideDir, "outside-target")
+        val matchingSymlink = File(internalDir, ".picocrypt-symlink")
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+        assertTrue("Internal runtime directory should be created", internalDir.mkdirs())
+        stageResidue.writeBytes(byteArrayOf(1, 2, 3))
+        prefixLookalike.writeBytes(byteArrayOf(4))
+        embeddedLookalike.writeBytes(byteArrayOf(5))
+        assertTrue("Matching directory should be created", matchingDirectory.mkdir())
+        outsideTarget.writeBytes(byteArrayOf(6, 7))
+        Files.createSymbolicLink(matchingSymlink.toPath(), outsideTarget.toPath())
+
+        try {
+            val result = FileCopyService.cleanupOperationFilesBeforeStart(context)
+
+            assertTrue("Cleanup of owned regular stage residue should succeed", result)
+            assertFalse("Owned Go stage residue must be removed before a new operation", stageResidue.exists())
+            assertTrue("A prefix lookalike must be preserved", prefixLookalike.exists())
+            assertTrue("An embedded prefix lookalike must be preserved", embeddedLookalike.exists())
+            assertTrue("A matching directory must not be treated as a Go stage file", matchingDirectory.isDirectory)
+            assertTrue("A matching symlink must remain untouched", Files.isSymbolicLink(matchingSymlink.toPath()))
+            assertArrayEquals(
+                "Cleanup must not follow a matching symlink outside app runtime storage",
+                byteArrayOf(6, 7),
+                outsideTarget.readBytes(),
+            )
+        } finally {
+            Files.deleteIfExists(matchingSymlink.toPath())
+            filesDir.deleteRecursively()
+            outsideDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cleanupOperationFilesBeforeStart_propagatesIncompleteCleanupFailure() = runTest {
+        val filesDir = createTempDirectory("picocrypt-incomplete-cleanup-failure").toFile()
+        val internalDir = File(filesDir, "picocrypt_files")
+        val staleIncomplete = File(internalDir, "foreign-output.incomplete")
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+        assertTrue("Internal runtime directory should be created", internalDir.mkdirs())
+        staleIncomplete.writeBytes(byteArrayOf(1))
+
+        try {
+            assertTrue(
+                "Test setup should make the runtime directory read-only",
+                internalDir.setWritable(false, false),
+            )
+
+            val result = FileCopyService.cleanupOperationFilesBeforeStart(context)
+
+            assertFalse("A failed incomplete-file deletion must fail the aggregate cleanup", result)
+            assertTrue("The undeletable incomplete file should demonstrate the real failure", staleIncomplete.exists())
+        } finally {
+            internalDir.setWritable(true, false)
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cleanupOperationFilesBeforeStart_propagatesGoStageCleanupFailure() = runTest {
+        val filesDir = createTempDirectory("picocrypt-stage-cleanup-failure").toFile()
+        val internalDir = File(filesDir, "picocrypt_files")
+        val staleStage = File(internalDir, ".picocrypt-undeletable-stage")
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+        assertTrue("Internal runtime directory should be created", internalDir.mkdirs())
+        staleStage.writeBytes(byteArrayOf(1))
+
+        try {
+            assertTrue(
+                "Test setup should make the runtime directory read-only",
+                internalDir.setWritable(false, false),
+            )
+
+            val result = FileCopyService.cleanupOperationFilesBeforeStart(context)
+
+            assertFalse("A failed Go stage deletion must fail pre-start cleanup", result)
+            assertTrue("The undeletable stage should demonstrate the real failure", staleStage.exists())
+        } finally {
+            internalDir.setWritable(true, false)
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cleanupOperationFilesBeforeStart_rejectsSymlinkedInternalDirectory() = runTest {
+        val filesDir = createTempDirectory("picocrypt-operation-cleanup-root").toFile()
+        val outsideDir = createTempDirectory("picocrypt-operation-cleanup-root-outside").toFile()
+        val internalLink = File(filesDir, "picocrypt_files")
+        val outsideResidue = File(outsideDir, ".picocrypt-outside-stage").apply {
+            writeBytes(byteArrayOf(9))
+        }
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+        Files.createSymbolicLink(internalLink.toPath(), outsideDir.toPath())
+
+        try {
+            val result = FileCopyService.cleanupOperationFilesBeforeStart(context)
+
+            assertFalse("Cleanup must reject a symlinked internal runtime root", result)
+            assertArrayEquals(
+                "A rejected runtime root must not remove data outside app storage",
+                byteArrayOf(9),
+                outsideResidue.readBytes(),
+            )
+            assertTrue("The rejected root symlink must remain", Files.isSymbolicLink(internalLink.toPath()))
+        } finally {
+            Files.deleteIfExists(internalLink.toPath())
+            filesDir.deleteRecursively()
+            outsideDir.deleteRecursively()
         }
     }
 

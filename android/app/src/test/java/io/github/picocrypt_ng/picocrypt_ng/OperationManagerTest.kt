@@ -8,6 +8,7 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import io.github.picocrypt_ng.picocrypt_ng.testutils.TestDataBuilders
+import io.mockk.coEvery
 import io.mockk.mockk
 import io.mockk.every
 import io.mockk.mockkObject
@@ -134,6 +135,78 @@ class OperationManagerTest {
         assertTrue("Should fail with InvalidPassword", result.isFailure)
         result.onFailure { error ->
             assertTrue("Error should be InvalidPassword", error is AppError.ValidationError.InvalidPassword)
+        }
+    }
+
+    @Test
+    fun `startEncrypt does not invoke Go when pre-start cleanup fails`() = runTest {
+        mockkObject(FileCopyService)
+        mockkObject(GoBridge)
+        try {
+            coEvery {
+                FileCopyService.cleanupOperationFilesBeforeStart(mockContext)
+            } returns false
+            every {
+                FileCopyService.getOutputFilePath(mockContext, any(), isEncrypt = true)
+            } returns "/output.pcv"
+            every { GoBridge.startOperation() } returns Result.success("must_not_start")
+            every {
+                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+            } returns Result.success(Unit)
+
+            val result = OperationManager.startEncrypt(
+                mockContext,
+                TestDataBuilders.createEncryptFormData(),
+            )
+
+            verify(exactly = 0) { GoBridge.startOperation() }
+            verify(exactly = 0) {
+                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+            }
+            assertTrue("Cleanup failure must fail the operation start", result.isFailure)
+            assertTrue(
+                "Cleanup failure must surface as a file deletion error",
+                result.exceptionOrNull() is AppError.FileError.DeleteFailed,
+            )
+        } finally {
+            unmockkObject(GoBridge)
+            unmockkObject(FileCopyService)
+        }
+    }
+
+    @Test
+    fun `startDecrypt does not invoke Go when pre-start cleanup fails`() = runTest {
+        mockkObject(FileCopyService)
+        mockkObject(GoBridge)
+        try {
+            coEvery {
+                FileCopyService.cleanupOperationFilesBeforeStart(mockContext)
+            } returns false
+            every {
+                FileCopyService.getOutputFilePath(mockContext, any(), isEncrypt = false)
+            } returns "/output"
+            every { GoBridge.startOperation() } returns Result.success("must_not_start")
+            every {
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
+            } returns Result.success(Unit)
+
+            val result = OperationManager.startDecrypt(
+                mockContext,
+                TestDataBuilders.createDecryptFormData(),
+            )
+
+            verify(exactly = 0) { GoBridge.startOperation() }
+            verify(exactly = 0) {
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
+            }
+            assertTrue("Cleanup failure must fail the operation start", result.isFailure)
+            assertTrue(
+                "Cleanup failure must surface as a file deletion error",
+                result.exceptionOrNull() is AppError.FileError.DeleteFailed,
+            )
+        } finally {
+            unmockkObject(GoBridge)
+            unmockkObject(FileCopyService)
         }
     }
     
@@ -598,6 +671,138 @@ class OperationManagerTest {
         assertTrue("Password should be cleared by OperationManager.clearOperation", formData.passwordInput.all { it == '\u0000' })
         assertTrue("Confirm password should be cleared by OperationManager.clearOperation", formData.confirmPasswordInput.all { it == '\u0000' })
     }
+
+    @Test
+    fun `clearOperation retains failed state and still wipes staging when an operation file cannot be deleted`() = runTest {
+        val filesDir = createTempDirectory(prefix = "opmgr_clear_file_failure").toFile()
+        val sourceDir = java.io.File(filesDir, "source")
+        val inputFile = java.io.File(sourceDir, "plaintext.txt")
+        val stagedFile = java.io.File(filesDir, "picocrypt_files/staging/copy.txt")
+        val formData = TestDataBuilders.createEncryptFormData(
+            copiedFilePath = inputFile.absolutePath,
+            password = "testpassword",
+            confirmPassword = "testpassword",
+        )
+        val operationState = TestDataBuilders.createOperationState(
+            inputFile = inputFile.absolutePath,
+            formData = formData,
+        )
+        every { mockContext.filesDir } returns filesDir
+
+        val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
+        stateField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val flow = stateField.get(OperationManager)
+            as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
+        flow.value = operationState
+
+        try {
+            assertTrue(sourceDir.mkdirs())
+            inputFile.writeText("original plaintext")
+            assertTrue(stagedFile.parentFile!!.mkdirs())
+            stagedFile.writeText("staged plaintext")
+            assertTrue(sourceDir.setWritable(false, false))
+
+            val failed = OperationManager.clearOperation(mockContext, shouldCleanupFiles = true)
+
+            assertTrue("A real deletion failure must be returned", failed.isFailure)
+            assertTrue(
+                "Cleanup failure must keep its typed error",
+                failed.exceptionOrNull() is AppError.FileError.DeleteFailed,
+            )
+            assertNotNull(
+                "Operation state must remain so cleanup can be retried",
+                OperationManager.currentOperation.value,
+            )
+            assertTrue(
+                "The retained state must visibly surface cleanup failure",
+                OperationManager.currentOperation.value?.error is AppError.FileError.DeleteFailed,
+            )
+            assertTrue("The undeletable operation input must remain", inputFile.exists())
+            assertFalse(
+                "Staging cleanup must still run even when operation-file cleanup fails",
+                java.io.File(filesDir, "picocrypt_files/staging").exists(),
+            )
+            assertTrue("Passwords must still be zeroed on cleanup failure", formData.passwordInput.all { it == '\u0000' })
+
+            assertTrue(sourceDir.setWritable(true, false))
+            val retried = OperationManager.clearOperation(mockContext, shouldCleanupFiles = true)
+            assertTrue("Cleanup must be retryable after the filesystem problem is fixed", retried.isSuccess)
+            assertFalse("The real input must be deleted by the successful retry", inputFile.exists())
+            assertNull("Successful retry must finally clear operation state", OperationManager.currentOperation.value)
+        } finally {
+            sourceDir.setWritable(true, false)
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `clearOperation retains failed state when real staging plaintext cannot be deleted`() = runTest {
+        val filesDir = createTempDirectory(prefix = "opmgr_clear_staging_failure").toFile()
+        val internalDir = java.io.File(filesDir, "picocrypt_files")
+        val stagingDir = java.io.File(internalDir, "staging")
+        val stagedFile = java.io.File(stagingDir, "plaintext.txt")
+        val formData = TestDataBuilders.createEncryptFormData(
+            password = "testpassword",
+            confirmPassword = "testpassword",
+        )
+        val operationState = TestDataBuilders.createOperationState(formData = formData)
+        every { mockContext.filesDir } returns filesDir
+
+        val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
+        stateField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val flow = stateField.get(OperationManager)
+            as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
+        flow.value = operationState
+
+        try {
+            assertTrue(stagingDir.mkdirs())
+            stagedFile.writeText("staged plaintext")
+            assertTrue(stagingDir.setWritable(false, false))
+            assertTrue(internalDir.setWritable(false, false))
+
+            val failed = OperationManager.clearOperation(mockContext, shouldCleanupFiles = true)
+
+            assertTrue("A real staging deletion failure must be returned", failed.isFailure)
+            assertTrue(failed.exceptionOrNull() is AppError.FileError.DeleteFailed)
+            assertTrue("The undeletable plaintext proves cleanup failed", stagedFile.exists())
+            assertTrue(
+                "The retained state must let the user retry cleanup",
+                OperationManager.currentOperation.value?.error is AppError.FileError.DeleteFailed,
+            )
+
+            stagingDir.setWritable(true, false)
+            internalDir.setWritable(true, false)
+            val retried = OperationManager.clearOperation(mockContext, shouldCleanupFiles = true)
+            assertTrue("Cleanup must succeed after permissions are restored", retried.isSuccess)
+            assertFalse("The staged plaintext must be gone after retry", stagedFile.exists())
+            assertNull(OperationManager.currentOperation.value)
+        } finally {
+            stagingDir.setWritable(true, false)
+            internalDir.setWritable(true, false)
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `clearOperation fails loud without context when cleanup was requested`() = runTest {
+        val operationState = TestDataBuilders.createOperationState(
+            formData = TestDataBuilders.createEncryptFormData(),
+        )
+        val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
+        stateField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val flow = stateField.get(OperationManager)
+            as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
+        flow.value = operationState
+
+        val result = OperationManager.clearOperation(context = null, shouldCleanupFiles = true)
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is AppError.FileError.DeleteFailed)
+        assertNotNull("State must remain when requested cleanup cannot run", OperationManager.currentOperation.value)
+    }
     
     @Test
     fun `retryOperation returns error when no active operation`() = runTest {
@@ -649,7 +854,7 @@ class OperationManagerTest {
     fun `retryDecryptWithForce returns error when no active operation`() = runTest {
         OperationManager.clearOperation(shouldCleanupFiles = false)
         
-        val result = OperationManager.retryDecryptWithForce()
+        val result = OperationManager.retryDecryptWithForce(mockContext)
         
         assertTrue("Should fail with no active operation", result.isFailure)
         result.onFailure { error ->
@@ -702,7 +907,7 @@ class OperationManagerTest {
                 as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
             flow.value = established.copy(formData = emptyPwForm)
 
-            val result = OperationManager.retryDecryptWithForce()
+            val result = OperationManager.retryDecryptWithForce(mockContext)
 
             assertTrue("Force-decrypt with an empty password must fail loud", result.isFailure)
             result.onFailure { error ->
@@ -717,6 +922,56 @@ class OperationManagerTest {
             verify(exactly = 1) { GoBridge.startOperation() }
             verify(exactly = 1) { GoBridge.startDecrypt(any(), any(), any(), any(), any()) }
         } finally {
+            unmockkObject(GoBridge)
+            tmpDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `retryDecryptWithForce does not invoke Go when real pre-start cleanup fails`() = runTest {
+        val tmpDir = createTempDirectory(prefix = "opmgr_force_cleanup_failure").toFile()
+        val internalDir = java.io.File(tmpDir, "picocrypt_files")
+        val staleIncomplete = java.io.File(internalDir, "stale-retry.incomplete")
+        every { mockContext.filesDir } returns tmpDir
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.startOperation() } returns Result.success("op_force_cleanup")
+            every {
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
+            } returns Result.success(Unit)
+
+            assertTrue(
+                "A valid decrypt must establish the failed operation being retried",
+                OperationManager.startDecrypt(
+                    mockContext,
+                    TestDataBuilders.createDecryptFormData(),
+                ).isSuccess,
+            )
+            assertTrue("Test setup should create the runtime directory", internalDir.mkdirs())
+            staleIncomplete.writeBytes(byteArrayOf(1))
+            assertTrue(
+                "Test setup should make the runtime directory read-only",
+                internalDir.setWritable(false, false),
+            )
+
+            val result = OperationManager.retryDecryptWithForce(mockContext)
+
+            assertTrue("A pre-start cleanup failure must stop force-decrypt retry", result.isFailure)
+            assertTrue(
+                "Force-retry cleanup failure must retain the typed deletion error",
+                result.exceptionOrNull() is AppError.FileError.DeleteFailed,
+            )
+            assertTrue(
+                "The undeletable file proves that production cleanup really failed",
+                staleIncomplete.exists(),
+            )
+            verify(exactly = 1) { GoBridge.startOperation() }
+            verify(exactly = 1) {
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
+            }
+        } finally {
+            internalDir.setWritable(true, false)
             unmockkObject(GoBridge)
             tmpDir.deleteRecursively()
         }
@@ -747,7 +1002,7 @@ class OperationManagerTest {
             assertTrue("startEncrypt should succeed", started.isSuccess)
             assertEquals(OperationType.ENCRYPT, OperationManager.currentOperation.value?.type)
 
-            val result = OperationManager.retryDecryptWithForce()
+            val result = OperationManager.retryDecryptWithForce(mockContext)
 
             assertTrue("Force-decrypt retry on an encrypt op must fail", result.isFailure)
             result.onFailure { error ->
@@ -893,7 +1148,7 @@ class OperationManagerTest {
                     TestDataBuilders.createDecryptFormData()
                 ).isSuccess
             )
-            val retry = OperationManager.retryDecryptWithForce()
+            val retry = OperationManager.retryDecryptWithForce(mockContext)
 
             assertTrue("retryDecryptWithForce should succeed", retry.isSuccess)
             assertTrue("DecryptOptions must be captured", optionsSlot.isCaptured)

@@ -115,7 +115,7 @@ class OperationViewModel : ViewModel() {
     fun retryDecryptWithForce(context: Context) {
         viewModelScope.launch {
             stopPolling()
-            val result = OperationManager.retryDecryptWithForce()
+            val result = OperationManager.retryDecryptWithForce(context)
             result.onSuccess {
                 startForegroundServiceSafely(context)
                 startPolling()
@@ -236,4 +236,3 @@ class OperationViewModel : ViewModel() {
         stopBackgroundPolling()
     }
 }
-
