@@ -158,16 +158,12 @@ func assertFileBytes(t *testing.T, path string, want []byte) {
 
 func TestEncryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 	tests := []struct {
-		name      string
-		protected string
-		alias     string
+		name  string
+		alias string
 	}{
-		{name: "input exact", protected: "input", alias: "exact"},
-		{name: "input hardlink", protected: "input", alias: "hardlink"},
-		{name: "input symlink", protected: "input", alias: "symlink"},
-		{name: "keyfile exact", protected: "keyfile", alias: "exact"},
-		{name: "keyfile hardlink", protected: "keyfile", alias: "hardlink"},
-		{name: "keyfile symlink", protected: "keyfile", alias: "symlink"},
+		{name: "input exact", alias: "exact"},
+		{name: "input hardlink", alias: "hardlink"},
+		{name: "input symlink", alias: "symlink"},
 	}
 
 	for _, tc := range tests {
@@ -178,20 +174,8 @@ func TestEncryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 			if err := os.WriteFile(inputPath, plaintext, 0o600); err != nil {
 				t.Fatalf("write plaintext: %v", err)
 			}
-			keyfilePath := filepath.Join(dir, "keyfile.bin")
-			keyfileBytes := []byte("encrypt alias rejection must preserve this keyfile")
-			if err := os.WriteFile(keyfilePath, keyfileBytes, 0o600); err != nil {
-				t.Fatalf("write keyfile: %v", err)
-			}
-
 			protectedPath := inputPath
 			protectedBytes := plaintext
-			keyfiles := []string(nil)
-			if tc.protected == "keyfile" {
-				protectedPath = keyfilePath
-				protectedBytes = keyfileBytes
-				keyfiles = []string{keyfilePath}
-			}
 
 			outputPath := protectedPath
 			switch tc.alias {
@@ -211,7 +195,6 @@ func TestEncryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 				InputFile:  inputPath,
 				OutputFile: outputPath,
 				Password:   []byte("protected-alias-password"),
-				Keyfiles:   keyfiles,
 				RSCodecs:   newRSCodecsT(t),
 			})
 			var validationErr *perrors.ValidationError
@@ -248,7 +231,6 @@ func TestEncryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 				InputFile:  inputPath,
 				OutputFile: safeVolume,
 				Password:   []byte("protected-alias-password"),
-				Keyfiles:   keyfiles,
 				RSCodecs:   newRSCodecsT(t),
 			}); err != nil {
 				t.Fatalf("safe Encrypt failed after alias rejection: %v", err)
@@ -258,7 +240,6 @@ func TestEncryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 				InputFile:  safeVolume,
 				OutputFile: safePlaintext,
 				Password:   []byte("protected-alias-password"),
-				Keyfiles:   keyfiles,
 				RSCodecs:   newRSCodecsT(t),
 			}); err != nil {
 				t.Fatalf("decrypt safe volume: %v", err)
@@ -302,29 +283,44 @@ func TestDecryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			plaintext := []byte("protected-alias round-trip payload")
-			inputPath := filepath.Join(dir, "plaintext.txt")
-			if err := os.WriteFile(inputPath, plaintext, 0o600); err != nil {
-				t.Fatalf("write plaintext: %v", err)
-			}
 			keyfilePath := filepath.Join(dir, "keyfile.bin")
-			keyfileBytes := []byte("keyfile bytes that must survive alias rejection")
-			if err := os.WriteFile(keyfilePath, keyfileBytes, 0o600); err != nil {
-				t.Fatalf("write keyfile: %v", err)
-			}
-
 			volumePath := filepath.Join(dir, "volume.pcv")
 			keyfiles := []string(nil)
+			password := []byte("protected-alias-password")
 			if tc.protected == "keyfile" {
+				restore := useProductionTestKDF()
+				defer restore()
+
+				volumeBytes, readErr := os.ReadFile(filepath.Join(findTestdata(t), "pico_test_v2_keyfile_single.txt.pcv"))
+				if readErr != nil {
+					t.Fatalf("read legacy volume fixture: %v", readErr)
+				}
+				if writeErr := os.WriteFile(volumePath, volumeBytes, 0o600); writeErr != nil {
+					t.Fatalf("copy legacy volume fixture: %v", writeErr)
+				}
+				keyfileBytes, readErr := os.ReadFile(filepath.Join(findTestdata(t), "keyfile_alpha.bin"))
+				if readErr != nil {
+					t.Fatalf("read legacy keyfile fixture: %v", readErr)
+				}
+				if writeErr := os.WriteFile(keyfilePath, keyfileBytes, 0o600); writeErr != nil {
+					t.Fatalf("copy legacy keyfile fixture: %v", writeErr)
+				}
 				keyfiles = []string{keyfilePath}
-			}
-			if err := Encrypt(context.Background(), &EncryptRequest{
-				InputFile:  inputPath,
-				OutputFile: volumePath,
-				Password:   []byte("protected-alias-password"),
-				Keyfiles:   keyfiles,
-				RSCodecs:   newRSCodecsT(t),
-			}); err != nil {
-				t.Fatalf("encrypt fixture: %v", err)
+				password = []byte(goldenPassword)
+				plaintext = []byte(expectedContent)
+			} else {
+				inputPath := filepath.Join(dir, "plaintext.txt")
+				if err := os.WriteFile(inputPath, plaintext, 0o600); err != nil {
+					t.Fatalf("write plaintext: %v", err)
+				}
+				if err := Encrypt(context.Background(), &EncryptRequest{
+					InputFile:  inputPath,
+					OutputFile: volumePath,
+					Password:   password,
+					RSCodecs:   newRSCodecsT(t),
+				}); err != nil {
+					t.Fatalf("encrypt fixture: %v", err)
+				}
 			}
 
 			protectedPath := volumePath
@@ -334,7 +330,10 @@ func TestDecryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 			}
 			if tc.protected == "keyfile" {
 				protectedPath = keyfilePath
-				protectedBytes = keyfileBytes
+				protectedBytes, err = os.ReadFile(keyfilePath)
+				if err != nil {
+					t.Fatalf("read protected keyfile: %v", err)
+				}
 			}
 
 			outputPath := protectedPath
@@ -354,7 +353,7 @@ func TestDecryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 			err = Decrypt(context.Background(), &DecryptRequest{
 				InputFile:  volumePath,
 				OutputFile: outputPath,
-				Password:   []byte("protected-alias-password"),
+				Password:   password,
 				Keyfiles:   keyfiles,
 				RSCodecs:   newRSCodecsT(t),
 			})
@@ -391,7 +390,7 @@ func TestDecryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 			if err := Decrypt(context.Background(), &DecryptRequest{
 				InputFile:  volumePath,
 				OutputFile: safeOutput,
-				Password:   []byte("protected-alias-password"),
+				Password:   password,
 				Keyfiles:   keyfiles,
 				RSCodecs:   newRSCodecsT(t),
 			}); err != nil {

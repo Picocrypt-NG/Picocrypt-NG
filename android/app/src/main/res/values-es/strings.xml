@@ -15,6 +15,7 @@
     <string name="password">Contraseña</string>
     <string name="confirm_password">Confirmar contraseña</string>
     <string name="enter_password">Introduzca una contraseña</string>
+    <string name="deniability_password_required">La negación plausible requiere una contraseña no vacía</string>
     <string name="passwords_must_match">Las contraseñas deben coincidir</string>
     <string name="hide_password">Ocultar contraseña</string>
     <string name="show_password">Mostrar contraseña</string>
@@ -36,14 +37,10 @@
         <item quantity="other">Se requieren %1$d archivos de clave</item>
     </plurals>
     <string name="add">Añadir</string>
-    <string name="new_keyfile">Nuevo</string>
     <string name="clear">Limpiar</string>
     <string name="copying">Copiando…</string>
-    <string name="creating">Creando…</string>
     <string name="require_this_order">Respetar este orden</string>
     <string name="error_creating_keyfile">Error al crear el archivo de clave</string>
-    <string name="keyfile_write_failed">No se pudo escribir el archivo de clave en la ubicación seleccionada</string>
-    <string name="keyfile_create_failed">No se pudo crear el archivo de clave: %1$s</string>
     <string name="keyfiles_required_warning">Se requieren archivos de clave para este volumen cifrado</string>
     <string name="keyfile_order_matters">Use los archivos de clave en el orden requerido</string>
     <!-- Advanced Card -->
@@ -164,11 +161,11 @@
     <string name="error_reason_unknown">Causa desconocida.</string>
     <string name="error_operation_start_failed">No se pudo iniciar la operación.</string>
     <string name="error_no_active_operation">No hay ninguna operación activa.</string>
-    <string name="error_no_operation_to_retry">No hay ninguna operación activa para reintentar.</string>
     <string name="error_operation_data_unavailable">Los datos de la operación no están disponibles para reintentarla.</string>
     <string name="error_decrypt_retry_only">Solo las operaciones de descifrado se pueden reintentar con descifrado forzado.</string>
     <string name="error_no_file_selected">Seleccione un archivo.</string>
     <string name="error_invalid_password">Introduzca una contraseña.</string>
+    <string name="error_keyfile_writes_disabled">La creación de nuevos volúmenes v2 con archivos de clave está deshabilitada hasta que se revise el formato v3. Los volúmenes existentes con archivos de clave aún se pueden descifrar.</string>
     <string name="error_passwords_mismatch">Las contraseñas no coinciden.</string>
     <string name="error_split_volume_not_supported">Los volúmenes divididos no se admiten en Android. Recombine primero las partes en su equipo y después transfiera el único archivo %1$s.</string>
     <string name="error_copy_failed">No se pudo copiar el archivo.</string>

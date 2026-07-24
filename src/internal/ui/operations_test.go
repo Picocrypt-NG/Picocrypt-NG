@@ -637,20 +637,23 @@ func TestOnClickStartValidation(t *testing.T) {
 
 func TestDeleteSafetyRejectsPathsInsideSourceFolderBeforeExecution(t *testing.T) {
 	tests := []struct {
-		name            string
-		outputInFolder  bool
-		keyfileInFolder bool
-		wantStatus      string
+		name                 string
+		mode                 string
+		outputInFolder       bool
+		keyfileAliasesSource bool
+		wantStatus           string
 	}{
 		{
 			name:           "output inside deleted folder",
+			mode:           "encrypt",
 			outputInFolder: true,
 			wantStatus:     "output",
 		},
 		{
-			name:            "keyfile inside deleted folder",
-			keyfileInFolder: true,
-			wantStatus:      "keyfile",
+			name:                 "legacy decrypt keyfile aliases deleted volume",
+			mode:                 "decrypt",
+			keyfileAliasesSource: true,
+			wantStatus:           "keyfile",
 		},
 	}
 
@@ -674,12 +677,14 @@ func TestDeleteSafetyRejectsPathsInsideSourceFolderBeforeExecution(t *testing.T)
 				output = filepath.Join(sourceFolder, "unsafe-output.pcv")
 			}
 			keyfile := filepath.Join(dir, "outside.key")
-			if tc.keyfileInFolder {
-				keyfile = filepath.Join(sourceFolder, "unsafe.key")
-			}
 			keyfileBytes := []byte("keyfile must survive rejected delete plan")
-			if err := os.WriteFile(keyfile, keyfileBytes, 0o600); err != nil {
-				t.Fatalf("write keyfile: %v", err)
+			if tc.keyfileAliasesSource {
+				keyfile = source
+				keyfileBytes = sourceBytes
+			} else {
+				if err := os.WriteFile(keyfile, keyfileBytes, 0o600); err != nil {
+					t.Fatalf("write keyfile: %v", err)
+				}
 			}
 
 			var executorCalls atomic.Int32
@@ -694,14 +699,17 @@ func TestDeleteSafetyRejectsPathsInsideSourceFolderBeforeExecution(t *testing.T)
 			}
 
 			fyne.DoAndWait(func() {
-				a.State.Mode = "encrypt"
+				a.State.Mode = tc.mode
 				a.State.InputFile = source
 				a.State.AllFiles = []string{source}
 				a.State.OnlyFolders = []string{sourceFolder}
 				a.State.OutputFile = output
 				a.State.Password = "delete-safety-password"
 				a.State.CPassword = "delete-safety-password"
-				a.State.Keyfiles = []string{keyfile}
+				if tc.keyfileAliasesSource {
+					a.State.Keyfile = true
+					a.State.Keyfiles = []string{keyfile}
+				}
 				a.State.Delete = true
 				a.onClickStart()
 			})

@@ -17,6 +17,7 @@
     <string name="password">Password</string>
     <string name="confirm_password">Confirm Password</string>
     <string name="enter_password">Enter a password</string>
+    <string name="deniability_password_required">Deniability requires a non-empty password</string>
     <string name="passwords_must_match">Passwords must match</string>
     <string name="hide_password">Hide password</string>
     <string name="show_password">Show password</string>
@@ -38,14 +39,10 @@
         <item quantity="other">%1$d keyfiles required</item>
     </plurals>
     <string name="add">Add</string>
-    <string name="new_keyfile">New</string>
     <string name="clear">Clear</string>
     <string name="copying">Copying…</string>
-    <string name="creating">Creating…</string>
     <string name="require_this_order">Require this order</string>
     <string name="error_creating_keyfile">Error Creating Keyfile</string>
-    <string name="keyfile_write_failed">Failed to write keyfile to selected location</string>
-    <string name="keyfile_create_failed">Failed to create keyfile: %1$s</string>
     <string name="keyfiles_required_warning">Keyfiles are required for this volume</string>
     <string name="keyfile_order_matters">Use the keyfiles in the required order</string>
     
@@ -176,11 +173,11 @@
     <string name="error_reason_unknown">Unknown cause.</string>
     <string name="error_operation_start_failed">Operation failed to start.</string>
     <string name="error_no_active_operation">No active operation.</string>
-    <string name="error_no_operation_to_retry">No active operation to retry.</string>
     <string name="error_operation_data_unavailable">Operation data is not available for retry.</string>
     <string name="error_decrypt_retry_only">Only decryption operations can be retried with force decrypt.</string>
     <string name="error_no_file_selected">Please select a file.</string>
     <string name="error_invalid_password">Please enter a password.</string>
+    <string name="error_keyfile_writes_disabled">New v2 volumes with keyfiles are disabled pending a reviewed v3 format. Existing keyfile volumes can still be decrypted.</string>
     <string name="error_passwords_mismatch">Passwords do not match.</string>
     <string name="error_split_volume_not_supported">Split volumes are not supported on Android. Recombine the chunks on your computer first, then transfer the single %1$s file.</string>
     <string name="error_copy_failed">Failed to copy file.</string>

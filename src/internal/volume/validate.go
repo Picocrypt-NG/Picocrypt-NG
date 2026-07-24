@@ -8,6 +8,13 @@ import (
 	"os"
 )
 
+func requireDeniabilityPassword(password []byte) error {
+	if len(password) == 0 {
+		return errors.NewDeniabilityPasswordRequiredError()
+	}
+	return nil
+}
+
 // Validate checks that the EncryptRequest has all required fields and valid configuration.
 // Returns nil if valid, or an error describing the validation failure.
 func (req *EncryptRequest) Validate() error {
@@ -16,9 +23,19 @@ func (req *EncryptRequest) Validate() error {
 		return errors.ErrNoInputFiles
 	}
 
-	// Check for credentials
-	if len(req.Password) == 0 && len(req.Keyfiles) == 0 {
-		return errors.ErrNoCredentials
+	// v2 derives authentication and Serpent subkeys before keyfile XOR, so a
+	// keyfile is not bound to every secret operational key. Keep the legacy v1/v2
+	// reader, but do not create more affected volumes until the reviewed v3
+	// schedule exists.
+	if len(req.Keyfiles) > 0 {
+		return errors.NewKeyfileWritesDisabledError()
+	}
+
+	if req.Deniability && len(req.Password) == 0 {
+		return requireDeniabilityPassword(req.Password)
+	}
+	if len(req.Password) == 0 {
+		return errors.NewEncryptionPasswordRequiredError()
 	}
 
 	// QUAL-05: reject an over-long comment here, before the expensive Argon2id

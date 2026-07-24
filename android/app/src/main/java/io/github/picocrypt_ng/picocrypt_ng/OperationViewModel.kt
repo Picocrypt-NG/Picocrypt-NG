@@ -89,27 +89,6 @@ class OperationViewModel : ViewModel() {
     }
     
     /**
-     * Retries an operation with the same files and options but allows password to be re-entered.
-     */
-    fun retryOperation(context: Context, formData: FormData) {
-        viewModelScope.launch {
-            stopPolling()
-            // Capture the original operation type before retryOperation nulls _currentOperation
-            // (OperationManager.retryOperation sets _currentOperation = null at line 326 before
-            // delegating to startEncrypt/startDecrypt, so reading it after the call always yields null).
-            val originalType = OperationManager.currentOperation.value?.type ?: OperationType.ENCRYPT
-            val result = OperationManager.retryOperation(context, formData)
-            result.onSuccess {
-                startForegroundServiceSafely(context)
-                startPolling()
-            }
-            result.onFailure { e ->
-                OperationManager.surfaceStartFailure(originalType, e)
-            }
-        }
-    }
-
-    /**
      * Retries decryption with force decrypt enabled.
      */
     fun retryDecryptWithForce(context: Context) {

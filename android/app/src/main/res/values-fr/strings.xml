@@ -15,6 +15,7 @@
     <string name="password">Mot de passe</string>
     <string name="confirm_password">Confirmer le mot de passe</string>
     <string name="enter_password">Saisir un mot de passe</string>
+    <string name="deniability_password_required">Le déni plausible exige un mot de passe non vide</string>
     <string name="passwords_must_match">Les mots de passe doivent être identiques</string>
     <string name="hide_password">Masquer le mot de passe</string>
     <string name="show_password">Afficher le mot de passe</string>
@@ -36,14 +37,10 @@
         <item quantity="other">%1$d fichiers-clés requis</item>
     </plurals>
     <string name="add">Ajouter</string>
-    <string name="new_keyfile">Nouveau</string>
     <string name="clear">Effacer</string>
     <string name="copying">Copie…</string>
-    <string name="creating">Création…</string>
     <string name="require_this_order">Respecter cet ordre</string>
     <string name="error_creating_keyfile">Erreur lors de la création du fichier-clé</string>
-    <string name="keyfile_write_failed">Impossible d’écrire le fichier-clé à l’emplacement sélectionné</string>
-    <string name="keyfile_create_failed">Impossible de créer le fichier-clé : %1$s</string>
     <string name="keyfiles_required_warning">Des fichiers-clés sont requis pour ce volume chiffré</string>
     <string name="keyfile_order_matters">Utilisez les fichiers-clés dans l’ordre requis</string>
     <!-- Advanced Card -->
@@ -164,11 +161,11 @@
     <string name="error_reason_unknown">Cause inconnue.</string>
     <string name="error_operation_start_failed">Impossible de démarrer l’opération.</string>
     <string name="error_no_active_operation">Aucune opération active.</string>
-    <string name="error_no_operation_to_retry">Aucune opération active à réessayer.</string>
     <string name="error_operation_data_unavailable">Les données de l’opération ne sont pas disponibles pour réessayer.</string>
     <string name="error_decrypt_retry_only">Seules les opérations de déchiffrement peuvent être relancées avec le déchiffrement forcé.</string>
     <string name="error_no_file_selected">Veuillez choisir un fichier.</string>
     <string name="error_invalid_password">Veuillez saisir un mot de passe.</string>
+    <string name="error_keyfile_writes_disabled">La création de nouveaux volumes v2 avec des fichiers-clés est désactivée en attendant la validation du format v3. Les volumes existants avec des fichiers-clés restent déchiffrables.</string>
     <string name="error_passwords_mismatch">Les mots de passe ne correspondent pas.</string>
     <string name="error_split_volume_not_supported">Les volumes fractionnés ne sont pas pris en charge sur Android. Recombinez d’abord les parties sur votre ordinateur, puis transférez l’unique fichier %1$s.</string>
     <string name="error_copy_failed">Impossible de copier le fichier.</string>

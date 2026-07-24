@@ -125,21 +125,27 @@ func TestForceDecryptRSOverBudgetKeeps(t *testing.T) {
 	}
 }
 
-// RS + keyfiles + force: the salvage cipher suite must be rebuilt with the
-// keyfile-XOR'd cipher key and v2 subkey ordering. Also proves force does NOT
-// bypass the keyfile requirement (invariant: force gates only the payload MAC).
-func TestForceDecryptRSKeyfilesKeeps(t *testing.T) {
-	plaintext := []byte(strings.Repeat("rs-kf-force-", 1500))
-	pw := []byte("pw-rs-kf-force")
-	kfs := [][]byte{
-		[]byte(strings.Repeat("keyfile-alpha-", 8)),
-		[]byte(strings.Repeat("keyfile-beta--", 8)),
+// RS + legacy keyfiles + force: the salvage cipher suite must be rebuilt with
+// the keyfile-XOR'd cipher key and v2 subkey ordering. The frozen fixture keeps
+// this reader path covered without reopening the disabled v2 writer. It also
+// proves force does NOT bypass the keyfile requirement (force gates only the
+// payload MAC).
+func TestForceDecryptLegacyRSKeyfileVolumeKeeps(t *testing.T) {
+	useProductionTestWASMKDF(t)
+
+	plaintext := legacyWASMKeyfileRSPlaintext()
+	pw := []byte("test")
+	kfs := [][]byte{readWASMGoldenFixture(t, "keyfile_alpha.bin")}
+	vol := readWASMLegacyKeyfileRSFixture(t)
+	hdr := readHeaderForTest(t, vol)
+	if !hdr.Flags.ReedSolomon || !hdr.Flags.UseKeyfiles {
+		t.Fatalf(
+			"legacy fixture flags: ReedSolomon=%v UseKeyfiles=%v; want both true",
+			hdr.Flags.ReedSolomon,
+			hdr.Flags.UseKeyfiles,
+		)
 	}
-	vol, code := EncryptVolume(plaintext, pw, EncryptOptions{ReedSolomon: true, Keyfiles: kfs})
-	if code != 0 {
-		t.Fatalf("encrypt code %d", code)
-	}
-	payloadStart := header.HeaderSize(0)
+	payloadStart := header.HeaderSize(len(hdr.Comments))
 	tampered := append([]byte(nil), vol...)
 	for i := range 9 { // > RS128 budget -> uncorrectable -> salvage path
 		tampered[payloadStart+i] ^= 0xFF

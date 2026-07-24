@@ -16,6 +16,9 @@ object OperationManager {
     private val _currentOperation = MutableStateFlow<OperationState?>(null)
     val currentOperation: StateFlow<OperationState?> = _currentOperation.asStateFlow()
 
+    private fun FormData.passwordBytesForGo(): ByteArray =
+        if (hasPassword) passwordInput.toUtf8BytesSecure() else ByteArray(0)
+
     private fun progressError(progressState: ProgressState, type: OperationType): AppError? =
         if (progressState.done && progressState.status.code == OperationStatus.ERROR) {
             AppError.fromGoError(
@@ -53,10 +56,12 @@ object OperationManager {
         }
 
         if (!formData.isPasswordValid) {
-            val error = if (formData.isEncrypt && !formData.isPasswordsMatch) {
-                AppError.ValidationError.PasswordsMismatch
-            } else {
-                AppError.ValidationError.InvalidPassword
+            val error = when {
+                formData.isKeyfileEncryptionUnsupported ->
+                    AppError.ValidationError.KeyfileWritesDisabled
+                formData.isEncrypt && !formData.isPasswordsMatch ->
+                    AppError.ValidationError.PasswordsMismatch
+                else -> AppError.ValidationError.InvalidPassword
             }
             return@withContext Result.failure(error)
         }
@@ -91,7 +96,7 @@ object OperationManager {
             operationID,
             if (isMulti) "" else formData.copiedFilePath,
             outputFilePath,
-            formData.passwordInput.toUtf8BytesSecure(),
+            formData.passwordBytesForGo(),
             options,
             inputFiles = formData.inputFiles,
             onlyFolders = formData.onlyFolders,
@@ -167,7 +172,7 @@ object OperationManager {
             operationID,
             formData.copiedFilePath,
             outputFilePath,
-            formData.passwordInput.toUtf8BytesSecure(),
+            formData.passwordBytesForGo(),
             options
         )
         
@@ -367,50 +372,6 @@ object OperationManager {
     }
     
     /**
-     * Retries an operation with the same files and options but allows password to be re-entered.
-     * This should be called when a password/auth error occurs.
-     * @param context Android context
-     * @param formData Updated form data (typically with new password, but same files/options)
-     * @return Result with operation ID on success
-     */
-    suspend fun retryOperation(
-        context: Context,
-        formData: FormData
-    ): Result<String> = withContext(Dispatchers.IO) {
-        val operation = _currentOperation.value ?: return@withContext Result.failure(
-            AppError.OperationError.GenericOperation(
-                userMessage = "",
-                messageResId = R.string.error_no_operation_to_retry,
-            )
-        )
-        
-        if (formData.copiedFilePath.isEmpty()) {
-            return@withContext Result.failure(AppError.ValidationError.NoFileSelected)
-        }
-        
-        if (!formData.isPasswordValid) {
-            val error = if (formData.isEncrypt && !formData.isPasswordsMatch) {
-                AppError.ValidationError.PasswordsMismatch
-            } else {
-                AppError.ValidationError.InvalidPassword
-            }
-            return@withContext Result.failure(error)
-        }
-        
-        // Clear the current operation state (but don't cleanup files)
-        _currentOperation.value = null
-        
-        // Start new operation with same files/options but new password
-        val result = if (operation.type == OperationType.ENCRYPT) {
-            startEncrypt(context, formData)
-        } else {
-            startDecrypt(context, formData)
-        }
-        
-        result
-    }
-    
-    /**
      * Retries decryption with force decrypt enabled.
      * This should only be called when a decryption operation has failed due to data corruption.
      */
@@ -438,9 +399,9 @@ object OperationManager {
             )
         )
 
-        // Force-decrypt BYPASSES integrity/RS checks, so an empty password (e.g. a
-        // CharArray zeroed by a prior clear) would silently run. Mirror startDecrypt's
-        // guard and fail loud before encoding the password or starting the op.
+        // Force-decrypt BYPASSES integrity/RS checks. Mirror startDecrypt's credential
+        // guard so a cleared password cannot run unless keyfiles still provide a
+        // credential.
         if (!formData.isPasswordValid) {
             return@withContext Result.failure(AppError.ValidationError.InvalidPassword)
         }
@@ -470,7 +431,7 @@ object OperationManager {
             operationID,
             operation.inputFile,
             operation.outputFile,
-            formData.passwordInput.toUtf8BytesSecure(),
+            formData.passwordBytesForGo(),
             options
         )
         

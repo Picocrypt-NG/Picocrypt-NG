@@ -1,6 +1,7 @@
 package cli
 
 import (
+	perrors "Picocrypt-NG/internal/errors"
 	"archive/zip"
 	"bytes"
 	"errors"
@@ -520,20 +521,20 @@ func TestCLIInputContract(t *testing.T) {
 		assertCLIContractAbsent(t, output, output+".incomplete", output+".0", output+".0.incomplete")
 	})
 
-	t.Run("missing keyfile is rejected before stdin buffering", func(t *testing.T) {
+	t.Run("keyfile writer is rejected before stdin buffering or keyfile lookup", func(t *testing.T) {
 		dir := t.TempDir()
 		output := filepath.Join(dir, "out.pcv")
 		missingKeyfile := filepath.Join(dir, "missing.key")
 
 		result := runCLIInputContractCommandWithOpenStdin(t, binaryPath, "", "encrypt", "-",
 			"-o", output, "-p", password, "-k", missingKeyfile, "-q", "-y")
-		if result.exitCode == 0 || !strings.Contains(result.stderr, "keyfile not found") {
-			t.Fatalf("missing keyfile result = exit %d stderr %q", result.exitCode, result.stderr)
+		if result.exitCode == 0 || !strings.Contains(result.stderr, perrors.KeyfileWritesDisabledMessage) {
+			t.Fatalf("keyfile policy result = exit %d stderr %q", result.exitCode, result.stderr)
 		}
 		assertCLIContractAbsent(t, output, output+".incomplete")
 	})
 
-	t.Run("stdin keyfile final-output collision is rejected before input read", func(t *testing.T) {
+	t.Run("stdin keyfile writer policy preserves the named file before input read", func(t *testing.T) {
 		dir := t.TempDir()
 		output := filepath.Join(dir, "final.pcv")
 		keyfileBytes := []byte("stdin collision keyfile exact bytes")
@@ -541,8 +542,8 @@ func TestCLIInputContract(t *testing.T) {
 
 		result := runCLIInputContractCommandWithOpenStdin(t, binaryPath, "", "encrypt", "-",
 			"-o", strings.TrimSuffix(output, ".pcv"), "-p", password, "-k", output, "-q", "-y")
-		if result.exitCode == 0 || !strings.Contains(result.stderr, "conflicts with output artifact") {
-			t.Fatalf("stdin collision result = exit %d stderr %q", result.exitCode, result.stderr)
+		if result.exitCode == 0 || !strings.Contains(result.stderr, perrors.KeyfileWritesDisabledMessage) {
+			t.Fatalf("stdin keyfile policy result = exit %d stderr %q", result.exitCode, result.stderr)
 		}
 		got, err := os.ReadFile(output)
 		if err != nil || !bytes.Equal(got, keyfileBytes) {
@@ -550,49 +551,41 @@ func TestCLIInputContract(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy staging-named keyfiles round trip", func(t *testing.T) {
+	t.Run("legacy staging-named keyfiles decrypt a frozen volume", func(t *testing.T) {
+		testdata, err := filepath.Abs(filepath.Join("..", "..", "testdata", "golden"))
+		if err != nil {
+			t.Fatalf("resolve golden testdata: %v", err)
+		}
+		volume := filepath.Join(testdata, "pico_test_v2_keyfile_single.txt.pcv")
+		keyfileSource := filepath.Join(testdata, "keyfile_alpha.bin")
+		keyfileBytes, err := os.ReadFile(keyfileSource)
+		if err != nil {
+			t.Fatalf("read frozen keyfile: %v", err)
+		}
+
 		for _, tc := range []struct {
-			name     string
-			keyfile  func(string) string
-			compress bool
+			name    string
+			keyfile func(string) string
 		}{
 			{name: "incomplete suffix", keyfile: func(output string) string { return output + ".incomplete" }},
-			{name: "tmp suffix", keyfile: func(output string) string { return strings.TrimSuffix(output, ".pcv") + ".tmp" }, compress: true},
+			{name: "tmp suffix", keyfile: func(output string) string { return strings.TrimSuffix(output, ".pcv") + ".tmp" }},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				dir := t.TempDir()
-				input := filepath.Join(dir, "input.txt")
-				inputBytes := []byte("legacy staging names are ordinary protected paths")
-				mustWriteCLIContractFile(t, input, inputBytes)
 				output := filepath.Join(dir, "output.pcv")
 				keyfile := tc.keyfile(output)
-				keyfileBytes := []byte("keyfile using a formerly reserved staging name")
 				mustWriteCLIContractFile(t, keyfile, keyfileBytes)
 
-				args := []string{"encrypt", input, "-o", output, "-p", password, "-k", keyfile, "-q", "-y"}
-				if tc.compress {
-					args = append(args, "--compress")
-				}
-				enc := runCLIInputContractCommand(t, binaryPath, "", args...)
-				if enc.exitCode != 0 {
-					t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
-				}
 				recovered := filepath.Join(dir, "recovered")
-				if tc.compress {
-					recovered += ".zip"
-				}
-				dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", output,
-					"-o", recovered, "-p", password, "-k", keyfile, "-q", "-y")
+				dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volume,
+					"-o", recovered, "-p", "test", "-k", keyfile, "-q", "-y")
 				if dec.exitCode != 0 {
 					t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
 				}
-				if tc.compress {
-					requireCLIContractZipEntry(t, recovered, filepath.Base(input), inputBytes)
-				} else {
-					got, err := os.ReadFile(recovered)
-					if err != nil || !bytes.Equal(got, inputBytes) {
-						t.Fatalf("recovered = %q, err = %v; want %q", got, err, inputBytes)
-					}
+				const expected = "There is a test file for Picocrypt validation.\n"
+				got, err := os.ReadFile(recovered)
+				if err != nil || string(got) != expected {
+					t.Fatalf("recovered = %q, err = %v; want golden plaintext", got, err)
 				}
 				gotKeyfile, err := os.ReadFile(keyfile)
 				if err != nil || !bytes.Equal(gotKeyfile, keyfileBytes) {
@@ -697,17 +690,14 @@ func TestCLIInputContract(t *testing.T) {
 		requireCLIContractZipEntry(t, recovered, filepath.Join(filepath.Base(selection), filepath.Base(leaf)), leafBytes)
 	})
 
-	t.Run("numeric split artifact collisions protect inputs and keyfiles", func(t *testing.T) {
+	t.Run("numeric split artifact collisions protect inputs", func(t *testing.T) {
 		const longIndex = "18446744073709551616"
 		for _, tc := range []struct {
 			name       string
-			asKeyfile  bool
 			incomplete bool
 		}{
 			{name: "input final"},
 			{name: "input incomplete", incomplete: true},
-			{name: "keyfile final", asKeyfile: true},
-			{name: "keyfile incomplete", asKeyfile: true, incomplete: true},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				dir := t.TempDir()
@@ -719,16 +709,7 @@ func TestCLIInputContract(t *testing.T) {
 				protectedBytes := []byte("protected exact bytes")
 				mustWriteCLIContractFile(t, protected, protectedBytes)
 
-				input := protected
-				args := []string{"encrypt"}
-				if tc.asKeyfile {
-					input = filepath.Join(dir, "input.txt")
-					mustWriteCLIContractFile(t, input, []byte("ordinary input"))
-				}
-				args = append(args, input, "-o", output, "-p", password, "--split", "--split-size", "2", "--split-unit", "Total", "-q", "-y")
-				if tc.asKeyfile {
-					args = append(args, "-k", protected)
-				}
+				args := []string{"encrypt", protected, "-o", output, "-p", password, "--split", "--split-size", "2", "--split-unit", "Total", "-q", "-y"}
 
 				result := runCLIInputContractCommand(t, binaryPath, "", args...)
 				if result.exitCode == 0 || !strings.Contains(result.stderr, "conflicts with output artifact") {
@@ -783,16 +764,12 @@ func TestCLIInputContract(t *testing.T) {
 		const longIndex = "18446744073709551616"
 		for _, tc := range []struct {
 			name       string
-			asKeyfile  bool
 			incomplete bool
 			exactBase  bool
 		}{
 			{name: "input final"},
 			{name: "input incomplete", incomplete: true},
 			{name: "input uppercase incomplete suffix", incomplete: true, exactBase: true},
-			{name: "keyfile final", asKeyfile: true},
-			{name: "keyfile incomplete", asKeyfile: true, incomplete: true},
-			{name: "keyfile uppercase incomplete suffix", asKeyfile: true, incomplete: true, exactBase: true},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				dir := t.TempDir()
@@ -809,16 +786,7 @@ func TestCLIInputContract(t *testing.T) {
 				protectedBytes := []byte("case variant protected exact bytes")
 				mustWriteCLIContractFile(t, protected, protectedBytes)
 
-				input := protected
-				args := []string{"encrypt"}
-				if tc.asKeyfile {
-					input = filepath.Join(dir, "input.txt")
-					mustWriteCLIContractFile(t, input, []byte("ordinary input"))
-				}
-				args = append(args, input, "-o", output, "-p", password, "--split", "--split-size", "2", "--split-unit", "Total", "-q", "-y")
-				if tc.asKeyfile {
-					args = append(args, "-k", protected)
-				}
+				args := []string{"encrypt", protected, "-o", output, "-p", password, "--split", "--split-size", "2", "--split-unit", "Total", "-q", "-y"}
 
 				result := runCLIInputContractCommand(t, binaryPath, "", args...)
 				if caseInsensitive {

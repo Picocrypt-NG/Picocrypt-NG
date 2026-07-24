@@ -15,6 +15,10 @@ var ErrCorruptedHeader = errors.New("volume header is damaged")
 // ErrInvalidVersion indicates the version string is not valid
 var ErrInvalidVersion = errors.New("invalid version format")
 
+// ErrUnsupportedVersion indicates a syntactically valid version whose
+// cryptographic generation this reader must not route through v1/v2 logic.
+var ErrUnsupportedVersion = errors.New("unsupported volume version")
+
 // ErrInvalidCommentLength indicates the comment length field is corrupted
 var ErrInvalidCommentLength = errors.New("unable to read comments length")
 
@@ -31,6 +35,13 @@ var (
 // shared by the header parser, the GUI preview, and deniability detection so
 // every site uses the exact same (anchored) match (UI-01/QUAL-01/D-03).
 func MatchVersion(b []byte) bool { return versionRE.Match(b) }
+
+// IsSupportedVersion separates syntax recognition from cryptographic routing.
+// Picocrypt-NG 2.19 reads v1 and v2; future majors must fail closed before flags
+// or KDF inputs are trusted.
+func IsSupportedVersion(b []byte) bool {
+	return MatchVersion(b) && (b[1] == '1' || b[1] == '2')
+}
 
 // Reader handles reading volume headers from an input stream
 type Reader struct {
@@ -80,6 +91,9 @@ func (r *Reader) ReadHeader() (*ReadResult, error) {
 	// Validate version format
 	if !versionRE.Match(versionDec) {
 		return result, ErrInvalidVersion
+	}
+	if !IsSupportedVersion(versionDec) {
+		return result, fmt.Errorf("%w %q", ErrUnsupportedVersion, string(versionDec))
 	}
 
 	// Read comment length (15 bytes -> 5 bytes)

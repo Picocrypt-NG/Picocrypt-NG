@@ -14,6 +14,7 @@
     <string name="password">Passwort</string>
     <string name="confirm_password">Passwort bestätigen</string>
     <string name="enter_password">Passwort eingeben</string>
+    <string name="deniability_password_required">Abstreitbarkeit erfordert ein nicht leeres Passwort</string>
     <string name="passwords_must_match">Passwörter müssen übereinstimmen</string>
     <string name="hide_password">Passwort ausblenden</string>
     <string name="show_password">Passwort anzeigen</string>
@@ -33,14 +34,10 @@
         <item quantity="other">%1$d Schlüsseldateien erforderlich</item>
     </plurals>
     <string name="add">Hinzufügen</string>
-    <string name="new_keyfile">Neu</string>
     <string name="clear">Leeren</string>
     <string name="copying">Wird kopiert…</string>
-    <string name="creating">Wird erstellt…</string>
     <string name="require_this_order">Diese Reihenfolge beachten</string>
     <string name="error_creating_keyfile">Fehler beim Erstellen der Schlüsseldatei</string>
-    <string name="keyfile_write_failed">Schlüsseldatei konnte nicht am ausgewählten Ort gespeichert werden</string>
-    <string name="keyfile_create_failed">Schlüsseldatei konnte nicht erstellt werden: %1$s</string>
     <string name="keyfiles_required_warning">Für dieses Volume sind Schlüsseldateien erforderlich</string>
     <string name="keyfile_order_matters">Verwenden Sie die Schlüsseldateien in der erforderlichen Reihenfolge</string>
     <!-- Advanced Card -->
@@ -160,11 +157,11 @@
     <string name="error_reason_unknown">Unbekannte Ursache.</string>
     <string name="error_operation_start_failed">Vorgang konnte nicht gestartet werden.</string>
     <string name="error_no_active_operation">Kein aktiver Vorgang.</string>
-    <string name="error_no_operation_to_retry">Kein aktiver Vorgang zum erneuten Versuch.</string>
     <string name="error_operation_data_unavailable">Vorgangsdaten sind für einen erneuten Versuch nicht verfügbar.</string>
     <string name="error_decrypt_retry_only">Nur Entschlüsselungsvorgänge können mit erzwungener Entschlüsselung erneut versucht werden.</string>
     <string name="error_no_file_selected">Wählen Sie eine Datei aus.</string>
     <string name="error_invalid_password">Geben Sie ein Passwort ein.</string>
+    <string name="error_keyfile_writes_disabled">Neue v2-Volumes mit Schlüsseldateien sind bis zur Prüfung des v3-Formats deaktiviert. Vorhandene Volumes mit Schlüsseldateien können weiterhin entschlüsselt werden.</string>
     <string name="error_passwords_mismatch">Passwörter stimmen nicht überein.</string>
     <string name="error_split_volume_not_supported">Aufgeteilte Volumes werden unter Android nicht unterstützt. Führen Sie die Teile zuerst auf Ihrem Computer zusammen und übertragen Sie dann die einzelne %1$s-Datei.</string>
     <string name="error_copy_failed">Datei konnte nicht kopiert werden.</string>

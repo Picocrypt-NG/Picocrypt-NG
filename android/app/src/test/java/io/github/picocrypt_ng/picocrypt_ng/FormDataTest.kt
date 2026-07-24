@@ -101,6 +101,72 @@ class FormDataTest {
         )
         assertFalse(formData.isPasswordValid)
     }
+
+    @Test
+    fun `new v2 keyfile-only encryption is invalid`() {
+        val formData = TestDataBuilders.createEncryptFormData(
+            password = "",
+            confirmPassword = "",
+            deniability = false,
+            keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
+        )
+
+        assertFalse(formData.isPasswordValid)
+        assertFalse(formData.isFormValid)
+    }
+
+    @Test
+    fun `new v2 password-and-keyfile encryption is invalid`() {
+        val formData = TestDataBuilders.createEncryptFormData(
+            password = "secret",
+            confirmPassword = "secret",
+            deniability = false,
+            keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
+        )
+
+        assertFalse(formData.isPasswordValid)
+        assertFalse(formData.isFormValid)
+    }
+
+    @Test
+    fun `keyfile-only encryption is invalid with deniability`() {
+        val formData = TestDataBuilders.createEncryptFormData(
+            password = "",
+            confirmPassword = "",
+            deniability = true,
+            keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
+        )
+
+        assertFalse(formData.isPasswordValid)
+        assertFalse(formData.isFormValid)
+    }
+
+    @Test
+    fun `ordinary keyfile-only decryption remains valid`() {
+        val formData = TestDataBuilders.createDecryptFormData(
+            password = "",
+            keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
+        )
+
+        assertTrue(formData.isPasswordValid)
+        assertTrue(formData.isFormValid)
+    }
+
+    @Test
+    fun `legacy deniable keyfile-only decryption accepts an empty password`() {
+        val formData = TestDataBuilders.createDecryptFormData(
+            password = "",
+            keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
+            decryptionInfo = TestDataBuilders.createDecryptionInfo(
+                keyfilesRequired = true,
+                deniability = true,
+                readable = false,
+            ),
+        )
+
+        assertTrue(formData.isPasswordValid)
+        assertTrue(formData.isFormValid)
+    }
     
     @Test
     fun `clearPasswords zeros password arrays`() {
@@ -116,6 +182,8 @@ class FormDataTest {
         assertTrue(passwordCopy.all { it != '\u0000' })
         assertTrue(formData.passwordInput.all { it == '\u0000' })
         assertTrue(formData.confirmPasswordInput.all { it == '\u0000' })
+        assertFalse("an all-NUL password buffer is not a credential", formData.hasPassword)
+        assertFalse("clearing the only credential must invalidate the form", formData.isPasswordValid)
     }
     
     @Test

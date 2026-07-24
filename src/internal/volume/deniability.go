@@ -31,6 +31,7 @@ var isDeniableReadVersion = io.ReadFull
 
 // AddDeniability wraps a volume with a deniability layer.
 // This encrypts the entire volume with XChaCha20 using a separate key derived from the password.
+// A non-empty password is required; legacy empty-password wrappers remain readable.
 //
 // CRITICAL: Deniability uses its own Argon2 derivation (4 passes, 1 GiB, 4 threads)
 // and stores salt(16) + nonce(24) at the beginning of the file.
@@ -48,6 +49,10 @@ func addDeniability(
 	expectedInput os.FileInfo,
 	outputInfo *os.FileInfo,
 ) (retErr error) {
+	if err := requireDeniabilityPassword(password); err != nil {
+		return err
+	}
+
 	if reporter != nil {
 		reporter.SetStatus("Adding plausible deniability...")
 		reporter.SetCanCancel(false)

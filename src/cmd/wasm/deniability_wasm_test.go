@@ -3,13 +3,23 @@
 package main
 
 import (
-	"bytes"
-	"syscall/js"
-	"testing"
-
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/header"
+	"bytes"
+	cryptorand "crypto/rand"
+	"syscall/js"
+	"testing"
 )
+
+type countingZeroBridgeReader struct {
+	reads int
+}
+
+func (r *countingZeroBridgeReader) Read(p []byte) (int, error) {
+	r.reads++
+	clear(p)
+	return len(p), nil
+}
 
 func mkU8Den(b []byte) js.Value {
 	u := js.Global().Get("Uint8Array").New(len(b))
@@ -24,6 +34,37 @@ func dataBytesDen(t *testing.T, res any) []byte {
 	out := make([]byte, d.Get("length").Int())
 	js.CopyBytesToGo(out, d)
 	return out
+}
+
+// The browser bridge must expose the same v2 keyfile-writer freeze as the
+// in-memory WASM API. A non-empty password deliberately proves this is the P-01
+// policy, not merely the empty-password deniability guard.
+func TestBridgeRejectsV2KeyfileWriteBeforeRandomness(t *testing.T) {
+	originalReader := cryptorand.Reader
+	reader := &countingZeroBridgeReader{}
+	cryptorand.Reader = reader
+	t.Cleanup(func() {
+		cryptorand.Reader = originalReader
+	})
+
+	keyfiles := js.Global().Get("Array").New()
+	keyfiles.Call("push", mkU8Den([]byte("keyfile material")))
+	opts := js.Global().Get("Object").New()
+	opts.Set("data", mkU8Den([]byte("plaintext must not be encrypted")))
+	opts.Set("password", "secret")
+	opts.Set("keyfiles", keyfiles)
+
+	result := encrypt(js.Undefined(), []js.Value{opts}).(js.Value)
+	const keyfileWritesDisabled = 12
+	if code := result.Get("code").Int(); code != keyfileWritesDisabled {
+		t.Errorf("encrypt code = %d; want keyfile-writes-disabled code %d", code, keyfileWritesDisabled)
+	}
+	if !result.Get("data").IsUndefined() {
+		t.Error("bridge returned ciphertext for rejected v2 keyfile write")
+	}
+	if reader.reads != 0 {
+		t.Errorf("crypto/rand reads = %d; keyfile writer policy must fail before generating volume material", reader.reads)
+	}
 }
 
 // The bridge must forward `deniability:true`: the produced volume must have NO

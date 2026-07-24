@@ -151,12 +151,11 @@ func TestDeniabilityIgnoresForce(t *testing.T) {
 	}
 }
 
-// Deniability composes with every inner option (the wrapper is outermost).
-// keyfiles case also asserts the inner keyfile requirement still applies.
+// Deniability composes with every currently writable inner option (the wrapper
+// is outermost). Legacy keyfile-wrapped volumes are covered by frozen fixtures.
 func TestDeniabilityCombos(t *testing.T) {
 	original := []byte(strings.Repeat("p4-combo-", 500))
 	pw := []byte("p4-combo-pw")
-	kfs := [][]byte{[]byte("kf-combo-alpha-content"), []byte("kf-combo-beta-content")}
 
 	cases := []struct {
 		name string
@@ -166,8 +165,6 @@ func TestDeniabilityCombos(t *testing.T) {
 		{"paranoid", EncryptOptions{Deniability: true, Paranoid: true}, DecryptOptions{}},
 		{"rs", EncryptOptions{Deniability: true, ReedSolomon: true}, DecryptOptions{}},
 		{"comments", EncryptOptions{Deniability: true, Comments: "hidden note"}, DecryptOptions{}},
-		{"keyfiles", EncryptOptions{Deniability: true, Keyfiles: kfs}, DecryptOptions{Keyfiles: kfs}},
-		{"kf_ordered", EncryptOptions{Deniability: true, Keyfiles: kfs, KeyfileOrdered: true}, DecryptOptions{Keyfiles: kfs}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -186,15 +183,6 @@ func TestDeniabilityCombos(t *testing.T) {
 				t.Fatalf("comments = %q; want %q", res.Comments, "hidden note")
 			}
 		})
-	}
-
-	// Deniable + keyfiles, keyfiles omitted on decrypt → inner ErrKeyfilesRequired.
-	vol, code := EncryptVolume(original, pw, EncryptOptions{Deniability: true, Keyfiles: kfs})
-	if code != 0 {
-		t.Fatalf("encrypt code %d", code)
-	}
-	if _, c := DecryptVolume(vol, pw, DecryptOptions{}); c != ErrKeyfilesRequired {
-		t.Fatalf("deniable+keyfiles, none provided: code %d; want ErrKeyfilesRequired(%d)", c, ErrKeyfilesRequired)
 	}
 }
 
@@ -267,7 +255,6 @@ func TestIsDeniableDetection(t *testing.T) {
 		"plain":    {},
 		"paranoid": {Paranoid: true},
 		"rs":       {ReedSolomon: true},
-		"keyfiles": {Keyfiles: [][]byte{[]byte("kf-one"), []byte("kf-two-longer")}},
 		"comments": {Comments: "a deniable-looking comment"},
 	}
 	for name, opts := range regulars {
@@ -280,6 +267,13 @@ func TestIsDeniableDetection(t *testing.T) {
 				t.Fatalf("regular %s volume misclassified as deniable", name)
 			}
 		})
+	}
+
+	// New keyfile writes are disabled in 2.19, so exercise the reader/detector
+	// against an actual pre-containment volume rather than bypassing the writer.
+	legacyKeyfileVolume := readWASMGoldenFixture(t, "pico_test_v2_keyfile_single.txt.pcv")
+	if isDeniable(legacyKeyfileVolume, rs) {
+		t.Fatal("legacy regular keyfile volume misclassified as deniable")
 	}
 
 	// Too-short input cannot be deniable.

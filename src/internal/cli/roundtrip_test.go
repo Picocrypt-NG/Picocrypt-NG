@@ -19,16 +19,6 @@ import (
 func TestCLIRoundTrip(t *testing.T) {
 	plaintext := []byte("testdata")
 
-	// writeKeyfile writes fixed bytes to a temp file and returns its path.
-	writeKeyfile := func(t *testing.T, content []byte) string {
-		t.Helper()
-		p := filepath.Join(t.TempDir(), "keyfile.key")
-		if err := os.WriteFile(p, content, 0o600); err != nil {
-			t.Fatalf("write keyfile: %v", err)
-		}
-		return p
-	}
-
 	tests := []struct {
 		name         string
 		setupEncrypt func(t *testing.T, in, out string)
@@ -42,34 +32,6 @@ func TestCLIRoundTrip(t *testing.T) {
 			},
 			setupDecrypt: func(t *testing.T, in, out string) {
 				decPassword = "pass1"
-			},
-		},
-		{
-			name: "single keyfile",
-			setupEncrypt: func(t *testing.T, in, out string) {
-				encPassword = "pass2"
-				encKeyfiles = []string{writeKeyfile(t, []byte("keyA"))}
-			},
-			setupDecrypt: func(t *testing.T, in, out string) {
-				decPassword = "pass2"
-				decKeyfiles = []string{writeKeyfile(t, []byte("keyA"))}
-			},
-		},
-		{
-			name: "multi keyfile ordered",
-			setupEncrypt: func(t *testing.T, in, out string) {
-				encPassword = "pass3"
-				kf1 := writeKeyfile(t, []byte("alpha"))
-				kf2 := writeKeyfile(t, []byte("beta"))
-				encKeyfiles = []string{kf1, kf2}
-				encKeyfileOrder = true
-			},
-			setupDecrypt: func(t *testing.T, in, out string) {
-				decPassword = "pass3"
-				// keyfile paths must be re-created in same order; we use the
-				// encKeyfiles that were set during encrypt (same temp files are
-				// still present because they share the same t.TempDir scope).
-				decKeyfiles = encKeyfiles
 			},
 		},
 		{

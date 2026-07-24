@@ -5,6 +5,7 @@ package mobile
 import (
 	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/encoding"
+	perrors "Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/volume"
@@ -114,8 +115,14 @@ func StartEncrypt(requestJSON string, password []byte) string {
 	if req.OutputFile == "" {
 		return failOperation(req.OperationID, errors.New("output file is required"))
 	}
-	if len(password) == 0 && len(req.Keyfiles) == 0 {
-		return failOperation(req.OperationID, errors.New("password or keyfiles required"))
+	if len(req.Keyfiles) > 0 {
+		return failOperation(req.OperationID, perrors.NewKeyfileWritesDisabledError())
+	}
+	if req.Deniability && len(password) == 0 {
+		return failOperation(req.OperationID, perrors.NewDeniabilityPasswordRequiredError())
+	}
+	if len(password) == 0 {
+		return failOperation(req.OperationID, perrors.NewEncryptionPasswordRequiredError())
 	}
 
 	// Own a goroutine-private []byte copy of the password BEFORE launching the

@@ -3,6 +3,7 @@ package cli
 import (
 	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/encoding"
+	perrors "Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/volume"
 	"bufio"
@@ -29,6 +30,7 @@ var encryptCmd = &cobra.Command{
 
 If no password is provided, you will be prompted to enter one interactively
 (with confirmation). The password is hidden while typing.
+Deniability always requires a non-empty password.
 
 Examples:
   # Encrypt interactively (prompts for password)
@@ -45,12 +47,6 @@ Examples:
 
   # Encrypt with paranoid mode and Reed-Solomon error correction
 	  Picocrypt-NG encrypt data.db -o data.pcv --paranoid --reed-solomon
-
-  # Encrypt with keyfile (prompts for password, can leave empty for keyfile-only)
-	  Picocrypt-NG encrypt secret.txt -o secret.pcv -k keyfile.key
-
-  # Encrypt with keyfile only (no password)
-	  Picocrypt-NG encrypt secret.txt -o secret.pcv -k keyfile.key -p ""
 
   # Read password from stdin (for scripts)
 	  echo "mypassword" | Picocrypt-NG encrypt secret.txt -o secret.pcv -P
@@ -106,14 +102,14 @@ func init() {
 	// Credentials
 	encryptCmd.Flags().StringVarP(&encPassword, "password", "p", "", "Encryption password")
 	encryptCmd.Flags().BoolVarP(&encPasswordStdin, "password-stdin", "P", false, "Read password from stdin")
-	encryptCmd.Flags().StringArrayVarP(&encKeyfiles, "keyfile", "k", nil, "Keyfile path(s) (can be specified multiple times)")
-	encryptCmd.Flags().BoolVar(&encKeyfileOrder, "keyfile-ordered", false, "Keyfile order matters (sequential hashing)")
+	encryptCmd.Flags().StringArrayVarP(&encKeyfiles, "keyfile", "k", nil, "Unavailable for encryption in 2.19; retained to return a migration error")
+	encryptCmd.Flags().BoolVar(&encKeyfileOrder, "keyfile-ordered", false, "Unavailable while v2 keyfile writing is disabled")
 
 	// Security options
 	encryptCmd.Flags().StringVarP(&encComments, "comments", "c", "", "Comments to store in header (NOT encrypted)")
 	encryptCmd.Flags().BoolVar(&encParanoid, "paranoid", false, "Enable paranoid mode (Serpent + XChaCha20, HMAC-SHA3)")
 	encryptCmd.Flags().BoolVar(&encReedSolomon, "reed-solomon", false, "Enable Reed-Solomon error correction (6% overhead)")
-	encryptCmd.Flags().BoolVar(&encDeniability, "deniability", false, "Add deniability wrapper")
+	encryptCmd.Flags().BoolVar(&encDeniability, "deniability", false, "Add deniability wrapper (requires a non-empty password)")
 	encryptCmd.Flags().BoolVar(&encCompress, "compress", false, "Compress files before encryption")
 
 	// Split options
@@ -182,6 +178,9 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	}
 	if (useStdin || useStdout) && encDeniability {
 		return errors.New("stdin/stdout not compatible with --deniability")
+	}
+	if len(encKeyfiles) > 0 {
+		return perrors.NewKeyfileWritesDisabledError()
 	}
 
 	// Validate split options before any input buffering, temp creation,
@@ -339,21 +338,22 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		if len(password) == 0 && len(encKeyfiles) == 0 {
+		if encDeniability && len(password) == 0 {
+			return perrors.NewDeniabilityPasswordRequiredError()
+		}
+		if len(password) == 0 {
 			return fmt.Errorf("password input: %w", ErrPasswordEmpty)
 		}
 	} else if len(password) == 0 {
 		// Prompt for password interactively
-		// Allow empty password only if keyfiles are provided
-		hasKeyfiles := len(encKeyfiles) > 0
-		if hasKeyfiles {
-			fmt.Fprintln(os.Stderr, "Keyfiles provided. Press Enter for keyfile-only encryption, or enter a password.")
-		}
 		var err error
-		password, err = ReadPasswordInteractive(true, hasKeyfiles) // confirm=true, allowEmpty=hasKeyfiles
+		password, err = ReadPasswordInteractive(true, encDeniability)
 		if err != nil {
 			return fmt.Errorf("password input: %w", err)
 		}
+	}
+	if encDeniability && len(password) == 0 {
+		return perrors.NewDeniabilityPasswordRequiredError()
 	}
 
 	// Initialize RS codecs

@@ -17,6 +17,7 @@
     <string name="password">Пароль</string>
     <string name="confirm_password">Повторите пароль</string>
     <string name="enter_password">Введите пароль</string>
+    <string name="deniability_password_required">Для правдоподобного отрицания нужен непустой пароль</string>
     <string name="passwords_must_match">Пароли не совпадают</string>
     <string name="hide_password">Скрыть пароль</string>
     <string name="show_password">Показать пароль</string>
@@ -42,14 +43,10 @@
         <item quantity="other">Требуется %1$d ключевых файлов</item>
     </plurals>
     <string name="add">Добавить</string>
-    <string name="new_keyfile">Новый</string>
     <string name="clear">Очистить</string>
     <string name="copying">Копирование…</string>
-    <string name="creating">Создание…</string>
     <string name="require_this_order">Требовать этот порядок</string>
     <string name="error_creating_keyfile">Ошибка создания ключевого файла</string>
-    <string name="keyfile_write_failed">Не удалось записать ключевой файл в выбранное место</string>
-    <string name="keyfile_create_failed">Не удалось создать ключевой файл: %1$s</string>
     <string name="keyfiles_required_warning">Для этого тома требуются ключевые файлы</string>
     <string name="keyfile_order_matters">Используйте ключевые файлы в требуемом порядке</string>
     
@@ -182,11 +179,11 @@
     <string name="error_reason_unknown">Неизвестная причина.</string>
     <string name="error_operation_start_failed">Не удалось запустить операцию.</string>
     <string name="error_no_active_operation">Нет активной операции.</string>
-    <string name="error_no_operation_to_retry">Нет активной операции для повтора.</string>
     <string name="error_operation_data_unavailable">Данные операции недоступны для повтора.</string>
     <string name="error_decrypt_retry_only">Только операции расшифровки можно повторить с принудительной расшифровкой.</string>
     <string name="error_no_file_selected">Выберите файл.</string>
     <string name="error_invalid_password">Введите пароль.</string>
+    <string name="error_keyfile_writes_disabled">Создание новых томов v2 с ключевыми файлами отключено до завершения проверки формата v3. Существующие тома с ключевыми файлами по-прежнему можно расшифровать.</string>
     <string name="error_passwords_mismatch">Пароли не совпадают.</string>
     <string name="error_split_volume_not_supported">Разделённые тома не поддерживаются на Android. Сначала объедините части на компьютере, затем перенесите один файл %1$s.</string>
     <string name="error_copy_failed">Не удалось скопировать файл.</string>

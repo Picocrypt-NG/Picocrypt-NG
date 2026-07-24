@@ -1,6 +1,7 @@
 package cli
 
 import (
+	perrors "Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/header"
 	"bytes"
 	"errors"
@@ -120,7 +121,7 @@ func TestEncryptValidation(t *testing.T) {
 		encSplitUnit = "MiB"
 	})
 
-	t.Run("nonexistent keyfile", func(t *testing.T) {
+	t.Run("keyfile writer policy is checked before lookup", func(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "test.txt")
 		if err := os.WriteFile(tmpFile, []byte("test"), 0o644); err != nil {
 			t.Fatal(err)
@@ -132,10 +133,14 @@ func TestEncryptValidation(t *testing.T) {
 		cmd := encryptCmd
 		err := cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
-			t.Error("expected error for nonexistent keyfile")
+			t.Fatal("expected keyfile writer policy error")
 		}
-		if !strings.Contains(err.Error(), "keyfile not found") {
-			t.Errorf("error should mention keyfile not found: %v", err)
+		var validationErr *perrors.ValidationError
+		if !errors.As(err, &validationErr) {
+			t.Fatalf("error = %v; want *errors.ValidationError", err)
+		}
+		if validationErr.Field != "Keyfiles" || validationErr.Message != perrors.KeyfileWritesDisabledMessage {
+			t.Fatalf("validation error = %#v; want exact keyfile writer policy", validationErr)
 		}
 
 		// Reset

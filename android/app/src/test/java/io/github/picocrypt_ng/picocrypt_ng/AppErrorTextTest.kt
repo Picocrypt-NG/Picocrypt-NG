@@ -153,7 +153,6 @@ class AppErrorTextTest {
         val wrappers = listOf(
             "error_read_folder_failed",
             "error_copy_files_failed",
-            "keyfile_create_failed",
         )
 
         listOf(
@@ -179,39 +178,39 @@ class AppErrorTextTest {
             englishResources.getString(R.string.error_reason_permission_denied)
         } returns "Permission denied"
         every {
-            englishResources.getString(R.string.keyfile_create_failed, "Permission denied")
-        } returns "Failed to create keyfile: Permission denied"
+            englishResources.getString(R.string.error_copy_files_failed, "Permission denied")
+        } returns "Failed to copy files: Permission denied"
         every {
             germanResources.getString(R.string.error_reason_permission_denied)
         } returns "Zugriff verweigert"
         every {
-            germanResources.getString(R.string.keyfile_create_failed, "Zugriff verweigert")
-        } returns "Schlüsseldatei konnte nicht erstellt werden: Zugriff verweigert"
+            germanResources.getString(R.string.error_copy_files_failed, "Zugriff verweigert")
+        } returns "Dateien konnten nicht kopiert werden: Zugriff verweigert"
         every {
             germanContext.getString(R.string.error_reason_permission_denied)
         } returns "Zugriff verweigert"
         every {
-            germanContext.getString(R.string.keyfile_create_failed, "Zugriff verweigert")
-        } returns "Schlüsseldatei konnte nicht erstellt werden: Zugriff verweigert"
+            germanContext.getString(R.string.error_copy_files_failed, "Zugriff verweigert")
+        } returns "Dateien konnten nicht kopiert werden: Zugriff verweigert"
 
-        val raw = "raw keyfile failure /private/path"
+        val raw = "raw copy failure /private/path"
         val error = AppError.FileError.SaveFailed(
             userMessage = "Localized fallback without raw detail",
             technicalMessage = raw,
-            messageResId = R.string.keyfile_create_failed,
+            messageResId = R.string.error_copy_files_failed,
             messageArgs = listOf(LocalizedMessageArg(R.string.error_reason_permission_denied)),
         )
 
         assertEquals(
-            "Failed to create keyfile: Permission denied",
+            "Failed to copy files: Permission denied",
             error.localizedMessage(englishResources),
         )
         assertEquals(
-            "Schlüsseldatei konnte nicht erstellt werden: Zugriff verweigert",
+            "Dateien konnten nicht kopiert werden: Zugriff verweigert",
             error.localizedMessage(germanResources),
         )
         assertEquals(
-            "Schlüsseldatei konnte nicht erstellt werden: Zugriff verweigert",
+            "Dateien konnten nicht kopiert werden: Zugriff verweigert",
             error.localizedMessage(germanContext),
         )
         assertFalse(error.localizedMessage(englishResources).contains("LocalizedMessageArg"))

@@ -139,6 +139,129 @@ class OperationManagerTest {
     }
 
     @Test
+    fun `startEncrypt rejects password-and-keyfile v2 writer before Go`() = runTest {
+        val tmpDir = createTempDirectory(prefix = "opmgr_keyfile_only_encrypt").toFile()
+        every { mockContext.filesDir } returns tmpDir
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.startOperation() } returns Result.success("op_keyfile_encrypt")
+            every {
+                GoBridge.startEncrypt(
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                )
+            } returns Result.success(Unit)
+
+            val keyfile = TestDataBuilders.createKeyfileInfo(
+                internalPath = "/data/test/keyfile_0",
+            )
+            val formData = TestDataBuilders.createEncryptFormData(
+                password = "temporary",
+                confirmPassword = "temporary",
+                deniability = false,
+                keyfiles = listOf(keyfile),
+            )
+
+            val result = OperationManager.startEncrypt(
+                mockContext,
+                formData,
+            )
+
+            assertTrue("new v2 keyfile encryption must fail", result.isFailure)
+            assertTrue(
+                result.exceptionOrNull() is AppError.ValidationError.KeyfileWritesDisabled,
+            )
+            verify(exactly = 0) { GoBridge.startOperation() }
+            verify(exactly = 0) {
+                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+            }
+        } finally {
+            unmockkObject(GoBridge)
+            tmpDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `startEncrypt rejects keyfile-only deniability before Go`() = runTest {
+        mockkObject(GoBridge)
+        try {
+            val result = OperationManager.startEncrypt(
+                mockContext,
+                TestDataBuilders.createEncryptFormData(
+                    password = "",
+                    confirmPassword = "",
+                    deniability = true,
+                    keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
+                ),
+            )
+
+            assertTrue("keyfile-only deniability must fail", result.isFailure)
+            assertTrue(
+                result.exceptionOrNull() is AppError.ValidationError.KeyfileWritesDisabled,
+            )
+            verify(exactly = 0) { GoBridge.startOperation() }
+            verify(exactly = 0) {
+                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+            }
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `startDecrypt passes legacy deniable keyfile-only credentials to Go`() = runTest {
+        val tmpDir = createTempDirectory(prefix = "opmgr_legacy_deniable_decrypt").toFile()
+        every { mockContext.filesDir } returns tmpDir
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.startOperation() } returns Result.success("op_legacy_decrypt")
+            val passwordSlot = slot<ByteArray>()
+            val optionsSlot = slot<DecryptOptions>()
+            every {
+                GoBridge.startDecrypt(
+                    any(),
+                    any(),
+                    any(),
+                    capture(passwordSlot),
+                    capture(optionsSlot),
+                )
+            } returns Result.success(Unit)
+
+            val keyfile = TestDataBuilders.createKeyfileInfo(
+                internalPath = "/data/test/keyfile_0",
+            )
+            val result = OperationManager.startDecrypt(
+                mockContext,
+                TestDataBuilders.createDecryptFormData(
+                    password = "",
+                    keyfiles = listOf(keyfile),
+                    decryptionInfo = TestDataBuilders.createDecryptionInfo(
+                        keyfilesRequired = true,
+                        deniability = true,
+                        readable = false,
+                    ),
+                ),
+            )
+
+            assertTrue("legacy keyfile-only deniable decryption should start", result.isSuccess)
+            assertTrue("legacy empty outer password must reach the reader", passwordSlot.captured.isEmpty())
+            assertEquals(listOf(keyfile.internalPath), optionsSlot.captured.keyfiles)
+            assertTrue(optionsSlot.captured.deniability)
+        } finally {
+            unmockkObject(GoBridge)
+            tmpDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `startEncrypt does not invoke Go when pre-start cleanup fails`() = runTest {
         mockkObject(FileCopyService)
         mockkObject(GoBridge)
@@ -805,52 +928,6 @@ class OperationManagerTest {
     }
     
     @Test
-    fun `retryOperation returns error when no active operation`() = runTest {
-        OperationManager.clearOperation(shouldCleanupFiles = false)
-        
-        val formData = TestDataBuilders.createEncryptFormData()
-        val result = OperationManager.retryOperation(mockContext, formData)
-        
-        assertTrue("Should fail with no active operation", result.isFailure)
-        result.onFailure { error ->
-            assertTrue("Error should be GenericOperation", error is AppError.OperationError.GenericOperation)
-            assertEquals(R.string.error_no_operation_to_retry, (error as AppError).messageResId)
-        }
-    }
-    
-    @Test
-    fun `retryOperation returns validation error when active operation has invalid form data`() = runTest {
-        val invalidFormData = TestDataBuilders.createEncryptFormData(
-            copiedFilePath = "" // Invalid - no file
-        )
-        val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
-        stateField.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        val flow = stateField.get(OperationManager)
-            as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
-        flow.value = TestDataBuilders.createOperationState(
-            type = OperationType.ENCRYPT,
-            formData = TestDataBuilders.createEncryptFormData(),
-        )
-
-        mockkObject(GoBridge)
-        try {
-            val result = OperationManager.retryOperation(mockContext, invalidFormData)
-
-            assertTrue("Should fail with NoFileSelected", result.isFailure)
-            result.onFailure { error ->
-                assertTrue(
-                    "Error should be NoFileSelected",
-                    error is AppError.ValidationError.NoFileSelected,
-                )
-            }
-            verify(exactly = 0) { GoBridge.startOperation() }
-        } finally {
-            unmockkObject(GoBridge)
-        }
-    }
-    
-    @Test
     fun `retryDecryptWithForce returns error when no active operation`() = runTest {
         OperationManager.clearOperation(shouldCleanupFiles = false)
         
@@ -865,17 +942,10 @@ class OperationManagerTest {
     
     @Test
     fun `retryDecryptWithForce fails loud when stored formData has an empty password`() = runTest {
-        // Force-decrypt BYPASSES integrity/RS checks, so running it with an empty
-        // password (a CharArray(0) the form layer installs on clear -- see
-        // MainViewModel.clearSensitiveData / resetFormToDefaults) would silently run
-        // and produce garbage. Reproduce that exact state: a DECRYPT operation whose
-        // stored formData carries CharArray(0). startDecrypt validates the password,
-        // so it can't seed an empty-password operation directly; establish it with a
-        // valid password through the public seam, then swap in the empty-password
-        // formData via the private _currentOperation MutableStateFlow (white-box;
-        // there is no public setter). GoBridge is the Go mobile AAR (absent on the JVM
-        // classpath), so mock it -- the guard must short-circuit BEFORE
-        // GoBridge.startOperation/startDecrypt are reached on the retry.
+        // Force-decrypt BYPASSES integrity/RS checks, so running without either
+        // credential after the stored password was cleared would silently produce
+        // garbage. GoBridge is the Go mobile AAR (absent on the JVM classpath), so
+        // mock it -- the guard must short-circuit before a retry reaches Go.
         val tmpDir = createTempDirectory(prefix = "opmgr_force_test").toFile()
         every { mockContext.filesDir } returns tmpDir
 
@@ -891,21 +961,19 @@ class OperationManagerTest {
             )
             assertTrue("startDecrypt should succeed", started.isSuccess)
 
-            // Swap the stored formData for one with an empty password (CharArray(0)),
-            // mirroring a post-clear form state, keeping the DECRYPT operation.
             val established = OperationManager.currentOperation.value
             assertNotNull("operation should be established", established)
-            val emptyPwForm = established!!.formData!!.copy(
-                passwordInput = CharArray(0),
-                confirmPasswordInput = CharArray(0)
+            val clearedForm = established!!.formData!!
+            clearedForm.clearPasswords()
+            assertTrue(
+                "real clearPasswords keeps allocated password storage",
+                clearedForm.passwordInput.isNotEmpty(),
             )
-            assertFalse("seeded formData must be invalid", emptyPwForm.isPasswordValid)
-            val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
-            stateField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val flow = stateField.get(OperationManager)
-                as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
-            flow.value = established.copy(formData = emptyPwForm)
+            assertTrue(
+                "real clearPasswords must overwrite every password character",
+                clearedForm.passwordInput.all { it == '\u0000' },
+            )
+            assertFalse("cleared formData without keyfiles must be invalid", clearedForm.isPasswordValid)
 
             val result = OperationManager.retryDecryptWithForce(mockContext)
 

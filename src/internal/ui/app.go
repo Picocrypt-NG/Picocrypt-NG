@@ -368,7 +368,7 @@ func (a *App) refreshAdvancedLocalizedText() {
 		setCheckTooltip(a.deleteCheck, tr("advanced.delete_files.tooltip", "Delete source files after encryption"))
 	}
 	setCheckText(a.deniabilityCheck, tr("advanced.deniability.label", "Deniability"))
-	setCheckTooltip(a.deniabilityCheck, tr("advanced.deniability.tooltip", "No readable Picocrypt header. Keep password/keyfiles."))
+	setCheckTooltip(a.deniabilityCheck, tr("advanced.deniability.tooltip", "No readable Picocrypt header. A non-empty password protects the outer wrapper; keyfiles protect only the inner volume."))
 	setCheckText(a.recursivelyCheck, tr("advanced.recursively.label", "Recursively"))
 	setCheckTooltip(a.recursivelyCheck, tr("advanced.recursively.tooltip", "Process each file separately"))
 	setCheckText(a.splitCheck, tr("advanced.split.label", "Split:"))
@@ -821,6 +821,21 @@ func (a *App) startReadinessHint(snap app.UISnapshot) string {
 	}
 	if snap.Scanning {
 		return tr("start.hint.scanning", "Scanning files; wait before starting.")
+	}
+	if snap.Mode == "encrypt" && snap.KeyfileCount > 0 {
+		return tr(
+			"start.hint.keyfileWritesDisabled",
+			"New v2 volumes with keyfiles are disabled pending a reviewed v3 format; existing keyfile volumes remain decryptable.",
+		)
+	}
+	if snap.Mode == "encrypt" && snap.Deniability && snap.Password == "" {
+		return tr(
+			"start.hint.deniabilityPasswordRequired",
+			"Deniability requires a non-empty password.",
+		)
+	}
+	if snap.Mode == "encrypt" && snap.Password == "" {
+		return tr("start.hint.enterPassword", "Enter a password to continue.")
 	}
 	if snap.KeyfileCount == 0 && snap.Password == "" {
 		return tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")

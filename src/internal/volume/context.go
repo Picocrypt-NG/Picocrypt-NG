@@ -50,7 +50,7 @@ type ProgressReporter interface {
 }
 
 // EncryptRequest contains all parameters needed to encrypt files into a .pcv volume.
-// At minimum, either Password or Keyfiles must be provided.
+// Picocrypt-NG 2.19 requires Password and rejects new v2 writes with Keyfiles.
 type EncryptRequest struct {
 	// Input files - use InputFile for single file, InputFiles for multiple (zipped automatically)
 	InputFile   string   // Single file path to encrypt
@@ -59,7 +59,7 @@ type EncryptRequest struct {
 	OnlyFiles   []string // Files that were dropped directly (not from folders)
 	OutputFile  string   // Output path for the .pcv volume
 
-	// Credentials - at least one required
+	// Credentials
 	//
 	// SECURITY (SEC-05): Password is an owned []byte, so the caller controls its
 	// lifetime and zeros it (crypto.SecureZero) after the operation. The KDF
@@ -70,8 +70,8 @@ type EncryptRequest struct {
 	// string still lingers until GC (intentionally out of scope — CONCERNS 3.1;
 	// ROADMAP "Out of Scope: Guaranteed password zeroing").
 	Password       []byte   // User password (processed through Argon2id) — see SECURITY note above
-	Keyfiles       []string // Paths to keyfile(s) for additional security
-	KeyfileOrdered bool     // If true, keyfile order matters (sequential hash vs XOR)
+	Keyfiles       []string // Legacy API field; non-empty is rejected by the v2 writer
+	KeyfileOrdered bool     // Legacy keyfile-order option; only relevant to legacy volume reads
 
 	// Security options
 	Comments    string // Plaintext comments stored in header (NOT encrypted!)

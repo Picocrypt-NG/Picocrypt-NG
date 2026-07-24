@@ -14,6 +14,7 @@
     <string name="password">पासवर्ड</string>
     <string name="confirm_password">पासवर्ड की पुष्टि करें</string>
     <string name="enter_password">पासवर्ड दर्ज करें</string>
+    <string name="deniability_password_required">विश्वसनीय इनकार के लिए खाली न होने वाला पासवर्ड आवश्यक है</string>
     <string name="passwords_must_match">दोनों पासवर्ड मेल खाने चाहिए</string>
     <string name="hide_password">पासवर्ड छिपाएँ</string>
     <string name="show_password">पासवर्ड दिखाएँ</string>
@@ -33,14 +34,10 @@
         <item quantity="other">%1$d कुंजी फ़ाइलें आवश्यक हैं</item>
     </plurals>
     <string name="add">जोड़ें</string>
-    <string name="new_keyfile">नई</string>
     <string name="clear">साफ़ करें</string>
     <string name="copying">कॉपी हो रही है…</string>
-    <string name="creating">बनाई जा रही है…</string>
     <string name="require_this_order">इसी क्रम को अनिवार्य करें</string>
     <string name="error_creating_keyfile">कुंजी फ़ाइल बनाने में त्रुटि</string>
-    <string name="keyfile_write_failed">चुने गए स्थान पर कुंजी फ़ाइल नहीं लिखी जा सकी</string>
-    <string name="keyfile_create_failed">कुंजी फ़ाइल नहीं बनाई जा सकी: %1$s</string>
     <string name="keyfiles_required_warning">इस वॉल्यूम के लिए कुंजी फ़ाइलें आवश्यक हैं</string>
     <string name="keyfile_order_matters">कुंजी फ़ाइलों का उपयोग आवश्यक क्रम में करें</string>
     <!-- Advanced Card -->
@@ -160,11 +157,11 @@
     <string name="error_reason_unknown">अज्ञात कारण।</string>
     <string name="error_operation_start_failed">कार्रवाई शुरू नहीं हो सकी।</string>
     <string name="error_no_active_operation">कोई सक्रिय कार्रवाई नहीं है।</string>
-    <string name="error_no_operation_to_retry">फिर प्रयास करने के लिए कोई सक्रिय कार्रवाई नहीं है।</string>
     <string name="error_operation_data_unavailable">फिर प्रयास करने के लिए कार्रवाई का डेटा उपलब्ध नहीं है।</string>
     <string name="error_decrypt_retry_only">केवल डिक्रिप्शन कार्रवाइयों को बलपूर्वक डिक्रिप्ट करके फिर से आज़माया जा सकता है।</string>
     <string name="error_no_file_selected">कृपया फ़ाइल चुनें।</string>
     <string name="error_invalid_password">कृपया पासवर्ड दर्ज करें।</string>
+    <string name="error_keyfile_writes_disabled">समीक्षित v3 प्रारूप उपलब्ध होने तक कुंजी फ़ाइलों वाले नए v2 वॉल्यूम बनाना बंद है। मौजूदा कुंजी फ़ाइल वॉल्यूम अभी भी डिक्रिप्ट किए जा सकते हैं।</string>
     <string name="error_passwords_mismatch">पासवर्ड मेल नहीं खाते।</string>
     <string name="error_split_volume_not_supported">Android पर विभाजित वॉल्यूम समर्थित नहीं हैं। पहले अपने कंप्यूटर पर भागों को फिर से जोड़ें, फिर एक %1$s फ़ाइल ट्रांसफ़र करें।</string>
     <string name="error_copy_failed">फ़ाइल कॉपी नहीं हो सकी।</string>

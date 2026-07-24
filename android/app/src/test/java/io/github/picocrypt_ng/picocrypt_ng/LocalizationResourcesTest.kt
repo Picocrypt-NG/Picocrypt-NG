@@ -344,6 +344,16 @@ class LocalizationResourcesTest {
         assertContainsWords("comments_plaintext_warning", "plaintext metadata")
         assertContainsWords("error_auth_failed", "authentication", "password", "keyfile")
         assertContainsWords("deniability_note", "deniability mode", "metadata", "cannot be previewed")
+        assertContainsWords("deniability_password_required", "deniability", "non-empty password")
+        assertContainsWords(
+            "error_keyfile_writes_disabled",
+            "new v2 volumes",
+            "keyfiles",
+            "disabled",
+            "reviewed v3 format",
+            "existing",
+            "decrypted",
+        )
         assertContainsWords(
             "prevent_screenshots_description",
             "screenshots",
@@ -659,6 +669,8 @@ class LocalizationResourcesTest {
                 "error_corrupt_header" to listOf("заголов", "повреж"),
                 "error_decrypt_retry_only" to listOf("только", "расшифр", "принуд"),
                 "deniability_note" to listOf("правдоподоб", "метадан", "до расшифров", "неизвест"),
+                "deniability_password_required" to listOf("правдоподоб", "непуст", "парол"),
+                "error_keyfile_writes_disabled" to listOf("нов", "v2", "ключев", "отключ", "v3", "существ", "расшифр"),
                 "prevent_screenshots_description" to listOf("сним", "запис", "недавн"),
             ),
             "de" to mapOf(
@@ -669,6 +681,8 @@ class LocalizationResourcesTest {
                 "error_corrupt_header" to listOf("Header", "beschädigt"),
                 "error_decrypt_retry_only" to listOf("Nur", "Entschlüsselung", "erzwungener"),
                 "deniability_note" to listOf("Abstreitbarkeitsmodus", "Header-Metadaten", "vor der Entschlüsselung", "unbekannt"),
+                "deniability_password_required" to listOf("Abstreitbarkeit", "nicht leeres Passwort"),
+                "error_keyfile_writes_disabled" to listOf("Neue", "v2", "Schlüsseldateien", "deaktiviert", "v3", "Vorhandene", "entschlüsselt"),
                 "prevent_screenshots_description" to listOf("Screenshots", "Bildschirmaufnahmen", "zuletzt verwendeten Apps"),
             ),
             "fr" to mapOf(
@@ -679,6 +693,8 @@ class LocalizationResourcesTest {
                 "error_corrupt_header" to listOf("en-tête", "endommagé"),
                 "error_decrypt_retry_only" to listOf("Seules", "déchiffrement", "forcé"),
                 "deniability_note" to listOf("déni plausible", "métadonnées de l’en-tête", "avant le déchiffrement", "inconnus"),
+                "deniability_password_required" to listOf("déni plausible", "mot de passe non vide"),
+                "error_keyfile_writes_disabled" to listOf("nouveaux volumes v2", "fichiers-clés", "désactivée", "format v3", "existants", "déchiffrables"),
                 "prevent_screenshots_description" to listOf("captures", "enregistrements", "applications récentes"),
             ),
             "es" to mapOf(
@@ -689,6 +705,8 @@ class LocalizationResourcesTest {
                 "error_corrupt_header" to listOf("encabezado", "dañado"),
                 "error_decrypt_retry_only" to listOf("Solo", "descifrado", "forzado"),
                 "deniability_note" to listOf("negación plausible", "metadatos del encabezado", "antes del descifrado", "desconocen"),
+                "deniability_password_required" to listOf("negación plausible", "contraseña no vacía"),
+                "error_keyfile_writes_disabled" to listOf("nuevos volúmenes v2", "archivos de clave", "deshabilitada", "formato v3", "existentes", "descifrar"),
                 "prevent_screenshots_description" to listOf("capturas", "grabación", "aplicaciones recientes"),
             ),
             "zh-Hans" to mapOf(
@@ -699,6 +717,8 @@ class LocalizationResourcesTest {
                 "error_corrupt_header" to listOf("标头", "损坏"),
                 "error_decrypt_retry_only" to listOf("只有", "解密", "强制"),
                 "deniability_note" to listOf("可否认性", "标头元数据", "解密前", "未知"),
+                "deniability_password_required" to listOf("可否认性", "非空密码"),
+                "error_keyfile_writes_disabled" to listOf("新", "v2", "密钥文件", "禁用", "v3", "现有", "解密"),
                 "prevent_screenshots_description" to listOf("截屏", "屏幕录制", "最近使用的应用"),
             ),
             "hi" to mapOf(
@@ -709,6 +729,8 @@ class LocalizationResourcesTest {
                 "error_corrupt_header" to listOf("हेडर", "क्षतिग्रस्त"),
                 "error_decrypt_retry_only" to listOf("केवल", "डिक्रिप्शन", "बलपूर्वक"),
                 "deniability_note" to listOf("विश्वसनीय इनकार", "हेडर मेटाडेटा", "डिक्रिप्ट करने से पहले", "अज्ञात"),
+                "deniability_password_required" to listOf("विश्वसनीय इनकार", "खाली न होने वाला पासवर्ड"),
+                "error_keyfile_writes_disabled" to listOf("नए", "v2", "कुंजी फ़ाइल", "बंद", "v3", "मौजूदा", "डिक्रिप्ट"),
                 "prevent_screenshots_description" to listOf("स्क्रीनशॉट", "स्क्रीन रिकॉर्डिंग", "हाल के ऐप्स"),
             ),
         )
@@ -718,6 +740,7 @@ class LocalizationResourcesTest {
             "deniability",
             "deniability_status",
             "deniability_note",
+            "deniability_password_required",
             "status_adding_plausible_deniability",
             "status_removing_deniability_protection",
             "status_adding_deniability_rate",
@@ -809,11 +832,12 @@ class LocalizationResourcesTest {
             "status_cancelled",
             "retry",
             "error_decrypt_retry_only",
-            "error_no_operation_to_retry",
             "error_operation_data_unavailable",
             "keyfiles_required_warning",
             "keyfile_order_matters",
             "require_this_order",
+            "deniability_password_required",
+            "error_keyfile_writes_disabled",
         )
         private val intentionallyInvariantHighRiskResources = emptySet<String>()
         private val invariantTechnicalTokens = listOf("MiB", "ETA", "MAC", "Android", "Reed-Solomon", "ZIP")
@@ -873,14 +897,12 @@ class LocalizationResourcesTest {
             "operation_cancelled",
             "error_read_folder_failed",
             "error_copy_files_failed",
-            "keyfile_create_failed",
         )
         private val exactStringFormatContracts =
             rateStatusResourceNames.associateWith { listOf("%1\$.2f", "%2\$s") } + mapOf(
                 "progress_percent" to listOf("%1\$.2f"),
                 "error_read_folder_failed" to listOf("%1\$s"),
                 "error_copy_files_failed" to listOf("%1\$s"),
-                "keyfile_create_failed" to listOf("%1\$s"),
                 "error_split_volume_not_supported" to listOf("%1\$s"),
                 "error_insufficient_storage" to listOf("%1\$d", "%2\$d"),
             )

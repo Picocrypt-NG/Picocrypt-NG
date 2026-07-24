@@ -17,8 +17,8 @@ func main() {
 
 const (
 	// errInvalidArg is the bridge-level failure code for a malformed options
-	// object. Non-zero and distinct from internal/wasm codes 1-5 so the site
-	// keeps treating it as failure.
+	// object. It is non-zero and distinct from internal/wasm result codes so the
+	// site keeps treating it as failure.
 	errInvalidArg = 6
 	// maxVolumeBytes caps the in-memory whole-file model at 1 GiB.
 	maxVolumeBytes = 1 << 30

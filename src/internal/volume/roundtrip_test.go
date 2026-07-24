@@ -634,298 +634,6 @@ func TestRoundTripWithComments(t *testing.T) {
 	t.Log("Round-trip with comments: SUCCESS")
 }
 
-// TestRoundTripWithKeyfile tests encrypt -> decrypt with keyfile
-func TestRoundTripWithKeyfile(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	// Create test file
-	plaintext := []byte("Keyfile protected data for testing.")
-	inputPath := filepath.Join(tmpDir, "keyfile_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create keyfile
-	keyfilePath := filepath.Join(tmpDir, "keyfile.bin")
-	keyfileData := []byte("This is my secret keyfile content!")
-	if err := os.WriteFile(keyfilePath, keyfileData, 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "keyfile_test.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "keyfile_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with keyfile
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("password_with_keyfile"),
-		Keyfiles:   []string{keyfilePath},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (with keyfile) failed: %v", err)
-	}
-
-	// The UseKeyfiles flag must be persisted for self-encrypted volumes, otherwise
-	// decryption could not know a keyfile is required.
-	h := readVolumeHeader(t, encryptedPath)
-	if !h.Flags.UseKeyfiles {
-		t.Error("header Flags.UseKeyfiles = false, want true for keyfile-protected volume")
-	}
-
-	// Decrypt with keyfile
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("password_with_keyfile"),
-		Keyfiles:     []string{keyfilePath},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (with keyfile) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (with keyfile).\nExpected: %q\nGot: %q", plaintext, decrypted)
-	}
-
-	t.Log("Round-trip with keyfile: SUCCESS")
-}
-
-// TestRoundTripWithMultipleKeyfiles tests encrypt -> decrypt with multiple keyfiles
-func TestRoundTripWithMultipleKeyfiles(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	// Create test file
-	plaintext := []byte("Multiple keyfiles protected data.")
-	inputPath := filepath.Join(tmpDir, "multi_keyfile_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create keyfiles
-	keyfile1 := filepath.Join(tmpDir, "keyfile1.bin")
-	keyfile2 := filepath.Join(tmpDir, "keyfile2.bin")
-	if err := os.WriteFile(keyfile1, []byte("First keyfile content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile1: %v", err)
-	}
-	if err := os.WriteFile(keyfile2, []byte("Second keyfile content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile2: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "multi_keyfile_test.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "multi_keyfile_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with multiple keyfiles (unordered - default)
-	encReq := &EncryptRequest{
-		InputFile:      inputPath,
-		OutputFile:     encryptedPath,
-		Password:       []byte("multi_keyfile_pass"),
-		Keyfiles:       []string{keyfile1, keyfile2},
-		KeyfileOrdered: false,
-		Reporter:       reporter,
-		RSCodecs:       rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (multiple keyfiles) failed: %v", err)
-	}
-
-	// Decrypt with keyfiles in different order (should work for unordered)
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("multi_keyfile_pass"),
-		Keyfiles:     []string{keyfile2, keyfile1}, // Reversed order
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (multiple keyfiles, reversed) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (multiple keyfiles).\nExpected: %q\nGot: %q", plaintext, decrypted)
-	}
-
-	t.Log("Round-trip with multiple keyfiles: SUCCESS")
-}
-
-// TestRoundTripWithOrderedKeyfiles tests encrypt -> decrypt with ordered keyfiles
-func TestRoundTripWithOrderedKeyfiles(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	// Create test file
-	plaintext := []byte("Ordered keyfiles protected data.")
-	inputPath := filepath.Join(tmpDir, "ordered_keyfile_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create keyfiles
-	keyfile1 := filepath.Join(tmpDir, "ordered1.bin")
-	keyfile2 := filepath.Join(tmpDir, "ordered2.bin")
-	if err := os.WriteFile(keyfile1, []byte("First ordered keyfile"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile1: %v", err)
-	}
-	if err := os.WriteFile(keyfile2, []byte("Second ordered keyfile"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile2: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "ordered_keyfile_test.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "ordered_keyfile_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with ordered keyfiles
-	encReq := &EncryptRequest{
-		InputFile:      inputPath,
-		OutputFile:     encryptedPath,
-		Password:       []byte("ordered_keyfile_pass"),
-		Keyfiles:       []string{keyfile1, keyfile2},
-		KeyfileOrdered: true,
-		Reporter:       reporter,
-		RSCodecs:       rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (ordered keyfiles) failed: %v", err)
-	}
-
-	// Decrypt with same order
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("ordered_keyfile_pass"),
-		Keyfiles:     []string{keyfile1, keyfile2},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (ordered keyfiles) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (ordered keyfiles).\nExpected: %q\nGot: %q", plaintext, decrypted)
-	}
-
-	t.Log("Round-trip with ordered keyfiles: SUCCESS")
-}
-
-// TestWrongKeyfileFails verifies that wrong keyfile fails
-func TestWrongKeyfileFails(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Secret data")
-	inputPath := filepath.Join(tmpDir, "secret.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create correct keyfile
-	correctKeyfile := filepath.Join(tmpDir, "correct_keyfile.bin")
-	if err := os.WriteFile(correctKeyfile, []byte("Correct keyfile"), 0o644); err != nil {
-		t.Fatalf("Failed to write correct keyfile: %v", err)
-	}
-
-	// Create wrong keyfile
-	wrongKeyfile := filepath.Join(tmpDir, "wrong_keyfile.bin")
-	if err := os.WriteFile(wrongKeyfile, []byte("Wrong keyfile"), 0o644); err != nil {
-		t.Fatalf("Failed to write wrong keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "secret.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "secret_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with correct keyfile
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("keyfile_password"),
-		Keyfiles:   []string{correctKeyfile},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt failed: %v", err)
-	}
-
-	// Try to decrypt with wrong keyfile
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("keyfile_password"),
-		Keyfiles:     []string{wrongKeyfile},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	err = Decrypt(context.Background(), decReq)
-	if err == nil {
-		t.Error("Decrypt should have failed with wrong keyfile")
-	} else {
-		t.Logf("Expected error: %v", err)
-	}
-
-	// Decrypted file should not exist
-	if _, err := os.Stat(decryptedPath); !os.IsNotExist(err) {
-		t.Error("Decrypted file should not exist after failed decryption")
-	}
-}
-
 // TestRoundTripSplit tests encrypt with splitting -> recombine -> decrypt
 func TestRoundTripSplit(t *testing.T) {
 	rsCodecs, err := encoding.NewRSCodecs()
@@ -1603,6 +1311,9 @@ func TestAutoUnzipSameLevel(t *testing.T) {
 }
 
 func TestAutoUnzipSameLevelPreservesKeyfileCollision(t *testing.T) {
+	restore := useProductionTestKDF()
+	defer restore()
+
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Create RS codecs: %v", err)
@@ -1613,8 +1324,14 @@ func TestAutoUnzipSameLevelPreservesKeyfileCollision(t *testing.T) {
 		t.Fatalf("Create volume directory: %v", err)
 	}
 
-	keyfilePath := filepath.Join(volumeDir, "keyfile.bin")
-	keyfileData := []byte("key material must never be replaced by archive contents")
+	// The frozen compressed keyfile volume contains pico_test.txt. Give the
+	// required keyfile that same destination name so extraction must refuse to
+	// replace the credential file.
+	keyfilePath := filepath.Join(volumeDir, "pico_test.txt")
+	keyfileData, err := os.ReadFile(filepath.Join(findTestdata(t), "keyfile_alpha.bin"))
+	if err != nil {
+		t.Fatalf("Read frozen keyfile: %v", err)
+	}
 	if err := os.WriteFile(keyfilePath, keyfileData, 0o600); err != nil {
 		t.Fatalf("Create keyfile: %v", err)
 	}
@@ -1623,27 +1340,20 @@ func TestAutoUnzipSameLevelPreservesKeyfileCollision(t *testing.T) {
 		t.Fatalf("Inspect keyfile: %v", err)
 	}
 
-	zipPath := filepath.Join(tmpDir, "source.zip")
-	archivePayload := []byte("untrusted archive entry named like the keyfile")
-	createStoredZipEntryForVolumeTest(t, zipPath, filepath.Base(keyfilePath), archivePayload)
 	encryptedPath := filepath.Join(volumeDir, "archive.pcv")
-	password := []byte("auto-unzip-keyfile-collision")
-	if err := Encrypt(context.Background(), &EncryptRequest{
-		InputFile:  zipPath,
-		OutputFile: encryptedPath,
-		Password:   password,
-		Keyfiles:   []string{keyfilePath},
-		Reporter:   &GoldenTestReporter{},
-		RSCodecs:   rsCodecs,
-	}); err != nil {
-		t.Fatalf("Encrypt keyfile-protected ZIP: %v", err)
+	volumeBytes, err := os.ReadFile(filepath.Join(findTestdata(t), "pico_test_v2_keyfile_compress.zip.pcv"))
+	if err != nil {
+		t.Fatalf("Read frozen compressed keyfile volume: %v", err)
+	}
+	if err := os.WriteFile(encryptedPath, volumeBytes, 0o600); err != nil {
+		t.Fatalf("Copy frozen compressed keyfile volume: %v", err)
 	}
 
 	decryptedPath := filepath.Join(volumeDir, "archive.zip")
 	err = Decrypt(context.Background(), &DecryptRequest{
 		InputFile:  encryptedPath,
 		OutputFile: decryptedPath,
-		Password:   password,
+		Password:   []byte(goldenPassword),
 		Keyfiles:   []string{keyfilePath},
 		AutoUnzip:  true,
 		SameLevel:  true,
@@ -1668,7 +1378,7 @@ func TestAutoUnzipSameLevelPreservesKeyfileCollision(t *testing.T) {
 	if !os.SameFile(keyfileInfo, currentKeyfileInfo) {
 		t.Fatal("Keyfile path was replaced")
 	}
-	requireStoredZipEntryForVolumeTest(t, decryptedPath, filepath.Base(keyfilePath), archivePayload)
+	requireStoredZipEntryForVolumeTest(t, decryptedPath, filepath.Base(keyfilePath), []byte(expectedContent))
 	if _, err := os.Stat(encryptedPath); err != nil {
 		t.Fatalf("Encrypted input was removed after extraction collision: %v", err)
 	}
@@ -2458,8 +2168,12 @@ func TestRoundTripEmptyFile(t *testing.T) {
 	t.Log("Round-trip empty file: SUCCESS")
 }
 
-// TestRoundTripSplitWithKeyfile tests split + keyfile combination
-func TestRoundTripSplitWithKeyfile(t *testing.T) {
+// TestLegacySplitKeyfileVolumeDecrypts proves that the writer freeze does not
+// strand a pre-2.19 keyfile volume after transport splitting/recombination.
+func TestLegacySplitKeyfileVolumeDecrypts(t *testing.T) {
+	restore := useProductionTestKDF()
+	defer restore()
+
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -2467,50 +2181,39 @@ func TestRoundTripSplitWithKeyfile(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	// Create test file
-	plaintext := make([]byte, 40*1024) // 40 KiB
-	for i := range plaintext {
-		plaintext[i] = byte((i * 17) % 256)
+	encryptedPath := filepath.Join(tmpDir, "legacy-keyfile.pcv")
+	fixture, err := os.ReadFile(filepath.Join(findTestdata(t), "pico_test_v2_keyfile_single.txt.pcv"))
+	if err != nil {
+		t.Fatalf("read legacy keyfile fixture: %v", err)
 	}
-	inputPath := filepath.Join(tmpDir, "split_keyfile_test.bin")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
+	if err := os.WriteFile(encryptedPath, fixture, 0o600); err != nil {
+		t.Fatalf("copy legacy keyfile fixture: %v", err)
+	}
+	chunks, err := fileops.Split(fileops.SplitOptions{
+		InputPath: encryptedPath,
+		ChunkSize: 2,
+		Unit:      fileops.SplitUnitTotal,
+	})
+	if err != nil {
+		t.Fatalf("split legacy keyfile fixture: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("split chunk count = %d, want 2", len(chunks))
+	}
+	if err := os.Remove(encryptedPath); err != nil {
+		t.Fatalf("remove unsplit fixture before recombination: %v", err)
 	}
 
-	// Create keyfile
-	keyfileContent := []byte("This is keyfile content for split test!")
-	keyfilePath := filepath.Join(tmpDir, "split.key")
-	if err := os.WriteFile(keyfilePath, keyfileContent, 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "split_keyfile_test.bin.pcv")
+	keyfilePath := filepath.Join(findTestdata(t), "keyfile_alpha.bin")
 	decryptedPath := filepath.Join(tmpDir, "split_keyfile_decrypted.bin")
 
 	reporter := &GoldenTestReporter{}
 
-	// Encrypt with split + keyfile
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("split_keyfile_password"),
-		Keyfiles:   []string{keyfilePath},
-		Split:      true,
-		ChunkSize:  10,
-		ChunkUnit:  0, // KiB
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (split+keyfile) failed: %v", err)
-	}
-
 	// Decrypt
 	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
+		InputFile:    chunks[0],
 		OutputFile:   decryptedPath,
-		Password:     []byte("split_keyfile_password"),
+		Password:     []byte(goldenPassword),
 		Keyfiles:     []string{keyfilePath},
 		Recombine:    true,
 		ForceDecrypt: false,
@@ -2527,18 +2230,9 @@ func TestRoundTripSplitWithKeyfile(t *testing.T) {
 		t.Fatalf("Failed to read decrypted file: %v", err)
 	}
 
-	if len(decrypted) != len(plaintext) {
-		t.Errorf("Length mismatch. Expected: %d, Got: %d", len(plaintext), len(decrypted))
+	if string(decrypted) != expectedContent {
+		t.Fatalf("legacy split+keyfile plaintext = %q, want golden content", decrypted)
 	}
-
-	for i := range plaintext {
-		if decrypted[i] != plaintext[i] {
-			t.Errorf("Content mismatch at byte %d", i)
-			break
-		}
-	}
-
-	t.Log("Round-trip split+keyfile: SUCCESS")
 }
 
 // TestForceDecryptCorruptedData proves the ForceDecrypt contract over a corrupted
@@ -2974,101 +2668,6 @@ func TestV2HeaderTamperDetection(t *testing.T) {
 	t.Log("V2 header tamper detection: SUCCESS")
 }
 
-// TestOrderedKeyfilesOrderMatters verifies that when keyfileOrdered=true,
-// providing keyfiles in wrong order causes decryption to fail.
-func TestOrderedKeyfilesOrderMatters(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	// Create test file
-	plaintext := []byte("Ordered keyfiles test - order must match!")
-	inputPath := filepath.Join(tmpDir, "ordered_kf_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create two keyfiles with different content
-	keyfile1Path := filepath.Join(tmpDir, "keyfile1.bin")
-	keyfile2Path := filepath.Join(tmpDir, "keyfile2.bin")
-
-	if err := os.WriteFile(keyfile1Path, []byte("keyfile1_unique_content_AAAA"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile1: %v", err)
-	}
-	if err := os.WriteFile(keyfile2Path, []byte("keyfile2_unique_content_BBBB"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile2: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "ordered_kf_test.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "ordered_kf_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with keyfiles in order [keyfile1, keyfile2], ordered=true
-	encReq := &EncryptRequest{
-		InputFile:      inputPath,
-		OutputFile:     encryptedPath,
-		Password:       []byte("ordered_keyfile_password"),
-		Keyfiles:       []string{keyfile1Path, keyfile2Path},
-		KeyfileOrdered: true,
-		Reporter:       reporter,
-		RSCodecs:       rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt failed: %v", err)
-	}
-
-	// Test 1: Correct order should succeed
-	decReqCorrect := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("ordered_keyfile_password"),
-		Keyfiles:     []string{keyfile1Path, keyfile2Path}, // Correct order
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReqCorrect); err != nil {
-		t.Fatalf("Decrypt with correct keyfile order failed: %v", err)
-	}
-
-	// Verify content
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Decrypted content mismatch with correct order")
-	}
-
-	// Clean up for next test
-	_ = os.Remove(decryptedPath)
-
-	// Test 2: Wrong order should fail
-	decReqWrong := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath + ".wrong",
-		Password:     []byte("ordered_keyfile_password"),
-		Keyfiles:     []string{keyfile2Path, keyfile1Path}, // WRONG order!
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	err = Decrypt(context.Background(), decReqWrong)
-	if err == nil {
-		t.Fatal("Expected decryption to fail with wrong keyfile order, but it succeeded")
-	}
-
-	t.Logf("Wrong keyfile order correctly rejected: %v", err)
-	t.Log("Ordered keyfiles order matters: SUCCESS")
-}
-
 // TestZeroLengthComments verifies that volumes with empty comments work correctly
 func TestZeroLengthComments(t *testing.T) {
 	rsCodecs, err := encoding.NewRSCodecs()
@@ -3136,456 +2735,6 @@ func TestZeroLengthComments(t *testing.T) {
 	t.Log("Zero-length comments: SUCCESS")
 }
 
-// TestRoundTripKeyfileOnly tests encryption with keyfile only (no password).
-// This is a security-critical test as keyfile-only mode uses empty password string.
-func TestRoundTripKeyfileOnly(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping keyfile-only test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	// Create test file
-	plaintext := []byte("Keyfile-only encryption test - no password used!")
-	inputPath := filepath.Join(tmpDir, "keyfile_only_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create keyfile
-	keyfilePath := filepath.Join(tmpDir, "keyfile_only.bin")
-	keyfileData := []byte("This keyfile is the ONLY credential needed!")
-	if err := os.WriteFile(keyfilePath, keyfileData, 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "keyfile_only_test.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "keyfile_only_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with keyfile only - empty password
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte(""), // Empty password - keyfile only!
-		Keyfiles:   []string{keyfilePath},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (keyfile-only) failed: %v", err)
-	}
-
-	// Decrypt with keyfile only - empty password
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte(""), // Empty password
-		Keyfiles:     []string{keyfilePath},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (keyfile-only) failed: %v", err)
-	}
-
-	// Verify content
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch.\nExpected: %q\nGot: %q", plaintext, decrypted)
-	}
-
-	t.Log("Keyfile-only roundtrip: SUCCESS")
-}
-
-// TestRoundTripKeyfileOnlyParanoid tests keyfile-only with paranoid mode.
-func TestRoundTripKeyfileOnlyParanoid(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping keyfile-only paranoid test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Paranoid keyfile-only test data.")
-	inputPath := filepath.Join(tmpDir, "kf_paranoid.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	keyfilePath := filepath.Join(tmpDir, "kf_paranoid.key")
-	if err := os.WriteFile(keyfilePath, []byte("paranoid_keyfile_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "kf_paranoid.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "kf_paranoid_dec.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt keyfile-only + paranoid
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte(""),
-		Keyfiles:   []string{keyfilePath},
-		Paranoid:   true,
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (keyfile-only paranoid) failed: %v", err)
-	}
-
-	// Decrypt
-	decReq := &DecryptRequest{
-		InputFile:  encryptedPath,
-		OutputFile: decryptedPath,
-		Password:   []byte(""),
-		Keyfiles:   []string{keyfilePath},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (keyfile-only paranoid) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (keyfile-only paranoid)")
-	}
-
-	t.Log("Keyfile-only paranoid: SUCCESS")
-}
-
-// TestDeniabilityKeyfileOnly tests deniability with keyfile-only encryption.
-// This verifies that deniability wrapper uses empty password correctly.
-func TestDeniabilityKeyfileOnly(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping deniability+keyfile test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Deniability with keyfile-only - wrapper uses empty password!")
-	inputPath := filepath.Join(tmpDir, "deny_kf_only.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	keyfilePath := filepath.Join(tmpDir, "deny_kf_only.key")
-	if err := os.WriteFile(keyfilePath, []byte("deniability_keyfile_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "deny_kf_only.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "deny_kf_only_dec.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with deniability + keyfile-only
-	encReq := &EncryptRequest{
-		InputFile:   inputPath,
-		OutputFile:  encryptedPath,
-		Password:    []byte(""), // Empty password
-		Keyfiles:    []string{keyfilePath},
-		Deniability: true,
-		Reporter:    reporter,
-		RSCodecs:    rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (deniability+keyfile-only) failed: %v", err)
-	}
-
-	// Verify deniability was applied
-	if !IsDeniable(encryptedPath, rsCodecs) {
-		t.Error("Volume should be detected as deniable")
-	}
-
-	// Decrypt with deniability + keyfile-only
-	decReq := &DecryptRequest{
-		InputFile:   encryptedPath,
-		OutputFile:  decryptedPath,
-		Password:    []byte(""), // Empty password for deniability wrapper
-		Keyfiles:    []string{keyfilePath},
-		Deniability: true,
-		Reporter:    reporter,
-		RSCodecs:    rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (deniability+keyfile-only) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (deniability+keyfile-only)")
-	}
-
-	t.Log("Deniability keyfile-only: SUCCESS")
-}
-
-// TestDeniabilityPasswordAndKeyfiles tests deniability with both password and keyfiles.
-func TestDeniabilityPasswordAndKeyfiles(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping deniability+password+keyfile test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Deniability with password + keyfiles - maximum security!")
-	inputPath := filepath.Join(tmpDir, "deny_pw_kf.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	keyfilePath := filepath.Join(tmpDir, "deny_pw_kf.key")
-	if err := os.WriteFile(keyfilePath, []byte("combined_keyfile_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "deny_pw_kf.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "deny_pw_kf_dec.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with deniability + password + keyfile
-	encReq := &EncryptRequest{
-		InputFile:   inputPath,
-		OutputFile:  encryptedPath,
-		Password:    []byte("deniability_password"),
-		Keyfiles:    []string{keyfilePath},
-		Deniability: true,
-		Reporter:    reporter,
-		RSCodecs:    rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (deniability+password+keyfile) failed: %v", err)
-	}
-
-	// Decrypt with all credentials
-	decReq := &DecryptRequest{
-		InputFile:   encryptedPath,
-		OutputFile:  decryptedPath,
-		Password:    []byte("deniability_password"),
-		Keyfiles:    []string{keyfilePath},
-		Deniability: true,
-		Reporter:    reporter,
-		RSCodecs:    rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (deniability+password+keyfile) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (deniability+password+keyfile)")
-	}
-
-	t.Log("Deniability password+keyfiles: SUCCESS")
-}
-
-// TestWrongPasswordWithKeyfilesFails verifies that providing the wrong password
-// fails decryption even when the correct keyfile is provided.
-// This is security-critical: keyfile alone shouldn't unlock password-protected volumes.
-func TestWrongPasswordWithKeyfilesFails(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping wrong password+keyfile test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Wrong password test - keyfile alone shouldn't work!")
-	inputPath := filepath.Join(tmpDir, "wrong_pw_kf.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	keyfilePath := filepath.Join(tmpDir, "wrong_pw_kf.key")
-	if err := os.WriteFile(keyfilePath, []byte("correct_keyfile_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "wrong_pw_kf.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "wrong_pw_kf_dec.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with password + keyfile
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("correct_password"),
-		Keyfiles:   []string{keyfilePath},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt failed: %v", err)
-	}
-
-	// Attempt decrypt with WRONG password but CORRECT keyfile
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("wrong_password"), // Wrong!
-		Keyfiles:     []string{keyfilePath},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	err = Decrypt(context.Background(), decReq)
-	if err == nil {
-		t.Fatal("Decrypt should have failed with wrong password (even with correct keyfile)")
-	}
-
-	t.Logf("Wrong password correctly rejected: %v", err)
-
-	// Verify decrypted file doesn't exist
-	if _, statErr := os.Stat(decryptedPath); !os.IsNotExist(statErr) {
-		t.Error("Decrypted file should not exist after failed decryption")
-	}
-
-	// Now verify correct password works
-	decReqCorrect := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("correct_password"),
-		Keyfiles:     []string{keyfilePath},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReqCorrect); err != nil {
-		t.Fatalf("Decrypt with correct credentials failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch with correct credentials")
-	}
-
-	t.Log("Wrong password with keyfiles correctly rejected: SUCCESS")
-}
-
-// TestKeyfileOnlyWrongKeyfileFails verifies that for keyfile-only volumes,
-// providing a wrong keyfile fails (with or without empty password).
-func TestKeyfileOnlyWrongKeyfileFails(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping keyfile-only wrong keyfile test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Keyfile-only wrong keyfile test")
-	inputPath := filepath.Join(tmpDir, "kf_only_wrong.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	correctKeyfile := filepath.Join(tmpDir, "correct.key")
-	wrongKeyfile := filepath.Join(tmpDir, "wrong.key")
-	if err := os.WriteFile(correctKeyfile, []byte("correct_key_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write correct keyfile: %v", err)
-	}
-	if err := os.WriteFile(wrongKeyfile, []byte("wrong_key_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write wrong keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "kf_only_wrong.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "kf_only_wrong_dec.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with keyfile only
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte(""),
-		Keyfiles:   []string{correctKeyfile},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt failed: %v", err)
-	}
-
-	// Attempt decrypt with wrong keyfile
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte(""),
-		Keyfiles:     []string{wrongKeyfile},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	err = Decrypt(context.Background(), decReq)
-	if err == nil {
-		t.Fatal("Decrypt should have failed with wrong keyfile")
-	}
-
-	t.Logf("Wrong keyfile correctly rejected: %v", err)
-	t.Log("Keyfile-only wrong keyfile: SUCCESS")
-}
-
 // TestDeniabilityWrongPasswordFails verifies that deniability wrapper correctly
 // rejects wrong password for the deniability layer.
 func TestDeniabilityWrongPasswordFails(t *testing.T) {
@@ -3643,55 +2792,4 @@ func TestDeniabilityWrongPasswordFails(t *testing.T) {
 	// Error should indicate password issue (version decode fails)
 	t.Logf("Deniability wrong password correctly rejected: %v", err)
 	t.Log("Deniability wrong password: SUCCESS")
-}
-
-// TestDuplicateKeyfilesRejected verifies that encryption fails when
-// duplicate keyfiles would cause XOR cancellation (zero key).
-func TestDuplicateKeyfilesRejected(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Duplicate keyfiles should be rejected.")
-	inputPath := filepath.Join(tmpDir, "dup_kf_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create one keyfile
-	keyfilePath := filepath.Join(tmpDir, "keyfile.bin")
-	if err := os.WriteFile(keyfilePath, []byte("keyfile_content_123456789"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "dup_kf_test.txt.pcv")
-
-	reporter := &GoldenTestReporter{}
-
-	// Attempt to encrypt with the same keyfile twice (unordered - will XOR to zero)
-	encReq := &EncryptRequest{
-		InputFile:      inputPath,
-		OutputFile:     encryptedPath,
-		Password:       []byte("duplicate_keyfile_password"),
-		Keyfiles:       []string{keyfilePath, keyfilePath}, // Same keyfile twice!
-		KeyfileOrdered: false,                              // Unordered = XOR cancellation
-		Reporter:       reporter,
-		RSCodecs:       rsCodecs,
-	}
-
-	err = Encrypt(context.Background(), encReq)
-	if err == nil {
-		t.Fatal("Expected encryption to fail with duplicate keyfiles, but it succeeded")
-	}
-
-	expectedErr := "duplicate keyfiles detected"
-	if err.Error() != expectedErr {
-		t.Errorf("Expected error %q, got %q", expectedErr, err.Error())
-	}
-
-	t.Logf("Duplicate keyfiles correctly rejected: %v", err)
-	t.Log("Duplicate keyfiles rejection: SUCCESS")
 }

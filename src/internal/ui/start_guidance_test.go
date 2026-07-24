@@ -46,7 +46,29 @@ func TestStartHintExplainsMissingCredentials(t *testing.T) {
 	a.State.OnlyFiles = []string{"input.txt"}
 
 	got := a.startReadinessHint(a.State.UISnapshot())
-	want := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
+	want := tr("start.hint.enterPassword", "Enter a password to continue.")
+	if got != want {
+		t.Fatalf("startReadinessHint() = %q; want %q", got, want)
+	}
+}
+
+func TestStartHintExplainsV2KeyfileWriterFreeze(t *testing.T) {
+	newTestFyneApp(t)
+
+	a := createTestApp(t)
+	a.State.Mode = "encrypt"
+	a.State.InputFile = "input.txt"
+	a.State.AllFiles = []string{"input.txt"}
+	a.State.OnlyFiles = []string{"input.txt"}
+	a.State.Keyfiles = []string{"keyfile.bin"}
+	a.State.Password = "secret"
+	a.State.CPassword = "secret"
+
+	got := a.startReadinessHint(a.State.UISnapshot())
+	want := tr(
+		"start.hint.keyfileWritesDisabled",
+		"New v2 volumes with keyfiles are disabled pending a reviewed v3 format; existing keyfile volumes remain decryptable.",
+	)
 	if got != want {
 		t.Fatalf("startReadinessHint() = %q; want %q", got, want)
 	}
@@ -160,7 +182,7 @@ func TestOutputChangeEnabledBeforeCredentialsAfterFileSelection(t *testing.T) {
 	if a.startHintLabel == nil {
 		t.Fatal("startHintLabel was not built")
 	}
-	wantHint := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
+	wantHint := tr("start.hint.enterPassword", "Enter a password to continue.")
 	if got := a.startHintLabel.Text; got != wantHint {
 		t.Fatalf("startHintLabel.Text = %q; want %q", got, wantHint)
 	}

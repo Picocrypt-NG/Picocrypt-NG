@@ -13,6 +13,7 @@
     <string name="password">密码</string>
     <string name="confirm_password">确认密码</string>
     <string name="enter_password">输入密码</string>
+    <string name="deniability_password_required">可否认性要求使用非空密码</string>
     <string name="passwords_must_match">两次输入的密码必须一致</string>
     <string name="hide_password">隐藏密码</string>
     <string name="show_password">显示密码</string>
@@ -30,14 +31,10 @@
         <item quantity="other">需要 %1$d 个密钥文件</item>
     </plurals>
     <string name="add">添加</string>
-    <string name="new_keyfile">新建</string>
     <string name="clear">清除</string>
     <string name="copying">正在复制…</string>
-    <string name="creating">正在创建…</string>
     <string name="require_this_order">要求按此顺序使用</string>
     <string name="error_creating_keyfile">创建密钥文件时出错</string>
-    <string name="keyfile_write_failed">无法将密钥文件写入所选位置</string>
-    <string name="keyfile_create_failed">无法创建密钥文件：%1$s</string>
     <string name="keyfiles_required_warning">此加密卷需要密钥文件</string>
     <string name="keyfile_order_matters">请按要求的顺序使用密钥文件</string>
     <!-- Advanced Card -->
@@ -156,11 +153,11 @@
     <string name="error_reason_unknown">未知原因。</string>
     <string name="error_operation_start_failed">无法启动操作。</string>
     <string name="error_no_active_operation">没有正在进行的操作。</string>
-    <string name="error_no_operation_to_retry">没有可重试的操作。</string>
     <string name="error_operation_data_unavailable">无法获取用于重试的操作数据。</string>
     <string name="error_decrypt_retry_only">只有解密操作可以使用强制解密重试。</string>
     <string name="error_no_file_selected">请选择文件。</string>
     <string name="error_invalid_password">请输入密码。</string>
+    <string name="error_keyfile_writes_disabled">在 v3 格式完成审核前，已禁用创建使用密钥文件的新 v2 卷。现有的密钥文件卷仍可解密。</string>
     <string name="error_passwords_mismatch">密码不一致。</string>
     <string name="error_split_volume_not_supported">Android 不支持分卷。请先在计算机上合并分卷，然后传输单个 %1$s 文件。</string>
     <string name="error_copy_failed">无法复制文件。</string>

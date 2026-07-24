@@ -205,30 +205,41 @@ func TestWASMReedSolomonParanoidRoundtrip(t *testing.T) {
 	}
 }
 
-func TestWASMReedSolomonWithKeyfiles(t *testing.T) {
-	password := "rs-keyfiles"
-	kf := [][]byte{[]byte("keyfile-alpha-contents"), []byte("keyfile-beta-contents")}
-	plaintext := make([]byte, 3000)
-	for i := range plaintext {
-		plaintext[i] = byte(i + 7)
+// Correctable payload damage must still take the full-RS retry for a legacy
+// keyfile volume. A frozen pre-containment fixture keeps this compatibility
+// path covered without a test-only bypass of the disabled v2 keyfile writer.
+func TestWASMReedSolomonRepairsLegacyKeyfileVolume(t *testing.T) {
+	useProductionTestWASMKDF(t)
+
+	plaintext := legacyWASMKeyfileRSPlaintext()
+	volumeData := readWASMLegacyKeyfileRSFixture(t)
+	hdr := readHeaderForTest(t, volumeData)
+	if !hdr.Flags.ReedSolomon || !hdr.Flags.UseKeyfiles {
+		t.Fatalf(
+			"legacy fixture flags: ReedSolomon=%v UseKeyfiles=%v; want both true",
+			hdr.Flags.ReedSolomon,
+			hdr.Flags.UseKeyfiles,
+		)
 	}
-	clone := func(in [][]byte) [][]byte {
-		out := make([][]byte, len(in))
-		for i, b := range in {
-			out[i] = append([]byte(nil), b...)
-		}
-		return out
+
+	// Four damaged bytes are correctable, but they make the fast-pass MAC fail,
+	// so success proves the authenticated full-RS retry ran with the keyfile key.
+	tampered := append([]byte(nil), volumeData...)
+	payloadStart := header.HeaderSize(len(hdr.Comments))
+	for i := range 4 {
+		tampered[payloadStart+i] ^= 0xFF
 	}
-	vol, code := EncryptVolume(plaintext, []byte(password), EncryptOptions{ReedSolomon: true, Keyfiles: clone(kf)})
+
+	res, code := DecryptVolume(
+		tampered,
+		[]byte("test"),
+		DecryptOptions{Keyfiles: [][]byte{readWASMGoldenFixture(t, "keyfile_alpha.bin")}},
+	)
 	if code != 0 {
-		t.Fatalf("encrypt code %d", code)
-	}
-	res, code := DecryptVolume(vol, []byte(password), DecryptOptions{Keyfiles: clone(kf)})
-	if code != 0 {
-		t.Fatalf("decrypt code %d", code)
+		t.Fatalf("decrypt correctly repairable legacy RS+keyfile fixture code %d", code)
 	}
 	if !bytes.Equal(res.Plaintext, plaintext) {
-		t.Fatal("RS+keyfiles roundtrip mismatch")
+		t.Fatal("repaired legacy RS+keyfile plaintext mismatch")
 	}
 }
 

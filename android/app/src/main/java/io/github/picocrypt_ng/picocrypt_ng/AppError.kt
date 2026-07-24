@@ -172,6 +172,11 @@ sealed class AppError(
             "Please enter a password",
             R.string.error_invalid_password,
         )
+
+        object KeyfileWritesDisabled : ValidationError(
+            "Creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format",
+            R.string.error_keyfile_writes_disabled,
+        )
         
         /**
          * Passwords don't match (for encryption).

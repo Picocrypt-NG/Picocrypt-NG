@@ -554,6 +554,210 @@ func TestStartEncryptValidationFailureCleansUpOperation(t *testing.T) {
 	}
 }
 
+func TestStartEncryptRejectsKeyfileOnlyV2WriteBeforeStartingWorker(t *testing.T) {
+	resetProgressMap()
+	t.Cleanup(resetProgressMap)
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "plain.txt")
+	keyfilePath := filepath.Join(dir, "keyfile.bin")
+	outputPath := filepath.Join(dir, "plain.txt.pcv")
+	if err := os.WriteFile(inputPath, []byte("plaintext must not be encrypted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyfilePath, []byte("keyfile material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workerCalled := make(chan struct{}, 1)
+	originalRunEncrypt := runEncrypt
+	runEncrypt = func(context.Context, *volume.EncryptRequest) error {
+		workerCalled <- struct{}{}
+		return nil
+	}
+	t.Cleanup(func() {
+		runEncrypt = originalRunEncrypt
+	})
+
+	id := StartOperation()
+	reqJSON, err := json.Marshal(EncryptRequestJSON{
+		OperationID: id,
+		InputFile:   inputPath,
+		OutputFile:  outputPath,
+		Keyfiles:    []string{keyfilePath},
+		Deniability: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := StartEncrypt(string(reqJSON), nil)
+	if got == "" {
+		_ = waitForDone(t, id)
+	}
+	want := "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format"
+	if got != want {
+		t.Errorf("StartEncrypt(...) = %q; want %q", got, want)
+	}
+
+	select {
+	case <-workerCalled:
+		t.Error("runEncrypt was called; unsafe request must fail synchronously before starting a worker")
+	default:
+	}
+
+	globalProgressMap.mu.RLock()
+	_, opExists := globalProgressMap.ops[id]
+	_, ctxExists := globalProgressMap.ctxs[id]
+	_, cancelExists := globalProgressMap.cancels[id]
+	globalProgressMap.mu.RUnlock()
+	if opExists || ctxExists || cancelExists {
+		t.Errorf("validation failure leaked operation state: op=%v ctx=%v cancel=%v", opExists, ctxExists, cancelExists)
+	}
+	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+		t.Errorf("output must not exist after rejected request; os.Stat error = %v", statErr)
+	}
+}
+
+func TestStartEncryptRejectsPasswordAndKeyfileV2WriteBeforeStartingWorker(t *testing.T) {
+	resetProgressMap()
+	t.Cleanup(resetProgressMap)
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "plain.txt")
+	keyfilePath := filepath.Join(dir, "keyfile.bin")
+	outputPath := filepath.Join(dir, "plain.txt.pcv")
+	if err := os.WriteFile(inputPath, []byte("plaintext"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyfilePath, []byte("keyfile material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workerCalled := make(chan struct{}, 1)
+	originalRunEncrypt := runEncrypt
+	runEncrypt = func(context.Context, *volume.EncryptRequest) error {
+		workerCalled <- struct{}{}
+		return nil
+	}
+	t.Cleanup(func() {
+		runEncrypt = originalRunEncrypt
+	})
+
+	id := StartOperation()
+	reqJSON, err := json.Marshal(EncryptRequestJSON{
+		OperationID: id,
+		InputFile:   inputPath,
+		OutputFile:  outputPath,
+		Keyfiles:    []string{keyfilePath},
+		Deniability: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := StartEncrypt(string(reqJSON), []byte("secret"))
+	const want = "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format"
+	if got != want {
+		t.Fatalf("StartEncrypt(...) = %q; want %q", got, want)
+	}
+
+	select {
+	case <-workerCalled:
+		t.Error("runEncrypt was called; v2 keyfile writer must fail synchronously")
+	default:
+	}
+
+	globalProgressMap.mu.RLock()
+	_, opExists := globalProgressMap.ops[id]
+	_, ctxExists := globalProgressMap.ctxs[id]
+	_, cancelExists := globalProgressMap.cancels[id]
+	globalProgressMap.mu.RUnlock()
+	if opExists || ctxExists || cancelExists {
+		t.Errorf("validation failure leaked operation state: op=%v ctx=%v cancel=%v", opExists, ctxExists, cancelExists)
+	}
+	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+		t.Errorf("output must not exist after rejected request; os.Stat error = %v", statErr)
+	}
+}
+
+func TestStartEncryptRejectsMissingRequiredPasswordBeforeStartingWorker(t *testing.T) {
+	originalRunEncrypt := runEncrypt
+	workerCalled := make(chan struct{}, 1)
+	runEncrypt = func(context.Context, *volume.EncryptRequest) error {
+		workerCalled <- struct{}{}
+		return nil
+	}
+	t.Cleanup(func() {
+		runEncrypt = originalRunEncrypt
+		resetProgressMap()
+	})
+
+	for _, tc := range []struct {
+		name        string
+		deniability bool
+		wantMessage string
+	}{
+		{
+			name:        "ordinary encryption",
+			wantMessage: perrors.EncryptionPasswordRequiredMessage,
+		},
+		{
+			name:        "deniability",
+			deniability: true,
+			wantMessage: perrors.DeniabilityPasswordRequiredMessage,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetProgressMap()
+			dir := t.TempDir()
+			inputPath := filepath.Join(dir, "plain.txt")
+			outputPath := filepath.Join(dir, "plain.txt.pcv")
+			if err := os.WriteFile(inputPath, []byte("plaintext must not be encrypted"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			id := StartOperation()
+			reqJSON, err := json.Marshal(EncryptRequestJSON{
+				OperationID: id,
+				InputFile:   inputPath,
+				OutputFile:  outputPath,
+				Deniability: tc.deniability,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got := StartEncrypt(string(reqJSON), nil)
+			want := "validation: Password: " + tc.wantMessage
+			if got != want {
+				t.Errorf("StartEncrypt(...) = %q; want %q", got, want)
+			}
+			select {
+			case <-workerCalled:
+				t.Error("runEncrypt was called; missing required password must fail synchronously")
+			default:
+			}
+			globalProgressMap.mu.RLock()
+			_, opExists := globalProgressMap.ops[id]
+			_, ctxExists := globalProgressMap.ctxs[id]
+			_, cancelExists := globalProgressMap.cancels[id]
+			globalProgressMap.mu.RUnlock()
+			if opExists || ctxExists || cancelExists {
+				t.Errorf(
+					"validation failure leaked operation state: op=%v ctx=%v cancel=%v",
+					opExists,
+					ctxExists,
+					cancelExists,
+				)
+			}
+			if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+				t.Errorf("missing-password request created output %q: %v", outputPath, statErr)
+			}
+		})
+	}
+}
+
 func TestStartDecryptValidationFailureCleansUpOperation(t *testing.T) {
 	resetProgressMap()
 
