@@ -265,7 +265,7 @@ type OperationContext struct {
 
 func NewEncryptContext(ctx context.Context, req *EncryptRequest) *OperationContext
 func NewDecryptContext(ctx context.Context, req *DecryptRequest) *OperationContext
-func (ctx *OperationContext) Close()
+func (ctx *OperationContext) Close() error
 func (ctx *OperationContext) IsCancelled() bool
 func (ctx *OperationContext) CancellationError() error
 func (ctx *OperationContext) SetCanCancel(can bool)
@@ -280,12 +280,13 @@ func (ctx *OperationContext) TempZipReader(r io.Reader) io.Reader
 // AddDeniability wraps a volume with an XChaCha20 deniability layer.
 // Uses its own Argon2 derivation (4 passes, 1 GiB, 4 threads).
 // Writes salt(16) + nonce(24) at the start of the file.
-func AddDeniability(volumePath, password string, reporter ProgressReporter) error
+func AddDeniability(volumePath string, password []byte, reporter ProgressReporter) error
 
 // RemoveDeniability decrypts a deniability-wrapped volume.
-// Returns the path to a .tmp file containing the inner volume.
-func RemoveDeniability(volumePath, password string, reporter ProgressReporter,
-    rs *encoding.RSCodecs) (string, error)
+// Returns an owned, random sibling stage containing the inner volume.
+// The caller must call Cleanup when the stage is no longer needed.
+func RemoveDeniability(volumePath string, password []byte, reporter ProgressReporter,
+    rs *encoding.RSCodecs) (*fileops.StagedFile, error)
 
 // IsDeniable reports whether a volume appears to have a deniability wrapper.
 func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool
@@ -522,6 +523,7 @@ type ZipOptions struct {
     RootDir    string
     EntryNames map[string]string
     OutputPath string
+    OutputFile *os.File // optional caller-owned, exclusively created output
     Compress   bool
     Cipher     *TempZipCiphers // optional encryption for temp file
     Progress   ProgressFunc
@@ -537,7 +539,10 @@ func CreateZip(opts ZipOptions) error
 ```go
 type UnpackOptions struct {
     ZipPath        string
+    ZipFile        *os.File     // optional already-open archive
     ExtractDir     string       // empty = same as zip minus .zip
+    ExtractRoot    *os.Root     // optional caller-owned already-open root
+    ExpectedExtractRoot os.FileInfo // optional exact identity of extraction root
     SameLevel      bool         // extract to same dir as zip (not a subdirectory)
     Progress       ProgressFunc
     Status         StatusFunc
@@ -562,12 +567,13 @@ const (
 )
 
 type SplitOptions struct {
-    InputPath string
-    ChunkSize int
-    Unit      SplitUnit
-    Progress  ProgressFunc
-    Status    StatusFunc
-    Cancel    CancelFunc
+    InputPath     string
+    ExpectedInput os.FileInfo // optional identity InputPath must still name
+    ChunkSize     int
+    Unit          SplitUnit
+    Progress      ProgressFunc
+    Status        StatusFunc
+    Cancel        CancelFunc
 }
 
 // Split splits a file into chunks.  Returns the list of chunk paths.
@@ -576,6 +582,7 @@ func Split(opts SplitOptions) ([]string, error)
 type RecombineOptions struct {
     InputBase  string // base path without the .N chunk suffix
     OutputPath string
+    OutputInfo *os.FileInfo // optional exact identity of completed output
     Progress   ProgressFunc
     Status     StatusFunc
     Cancel     CancelFunc
