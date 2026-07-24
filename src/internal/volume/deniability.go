@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	pwnorm "Picocrypt-NG/internal/password"
@@ -36,67 +35,65 @@ var isDeniableReadVersion = io.ReadFull
 // CRITICAL: Deniability uses its own Argon2 derivation (4 passes, 1 GiB, 4 threads)
 // and stores salt(16) + nonce(24) at the beginning of the file.
 func AddDeniability(volumePath string, password []byte, reporter ProgressReporter) error {
+	return addDeniability(volumePath, password, reporter, nil, nil)
+}
+
+// addDeniability optionally pins the input identity and returns the exact
+// identity of the published wrapper. Encrypt uses both identities so a path
+// replacement cannot be mistaken for operation-owned output.
+func addDeniability(
+	volumePath string,
+	password []byte,
+	reporter ProgressReporter,
+	expectedInput os.FileInfo,
+	outputInfo *os.FileInfo,
+) (retErr error) {
 	if reporter != nil {
 		reporter.SetStatus("Adding plausible deniability...")
 		reporter.SetCanCancel(false)
 		reporter.Update()
 	}
 
-	stat, err := os.Stat(volumePath)
+	// Read the original in place and build the wrapper beside it. The original
+	// path is not touched until the complete wrapper is published.
+	fin, err := os.Open(volumePath) // #nosec G304 -- user-selected volume path
+	if err != nil {
+		return fmt.Errorf("open volume: %w", err)
+	}
+	defer func() { _ = fin.Close() }()
+	originalInfo, err := fin.Stat()
 	if err != nil {
 		return fmt.Errorf("stat volume: %w", err)
 	}
-	total := stat.Size()
-
-	// Rename original to .tmp
-	tmpPath := volumePath + ".tmp"
-	incompletePath := volumePath + ".incomplete"
-
-	if err := os.Rename(volumePath, tmpPath); err != nil {
-		return fmt.Errorf("rename to tmp: %w", err)
+	if expectedInput != nil && !os.SameFile(expectedInput, originalInfo) {
+		return errors.New("volume path changed before adding deniability")
 	}
+	total := originalInfo.Size()
 
-	// Helper to restore original file on error
-	restoreOriginal := func() {
-		_ = os.Remove(incompletePath)
-		_ = os.Rename(tmpPath, volumePath)
-	}
-
-	// #nosec G304 -- tmpPath is temp file created by this function
-	fin, err := os.Open(tmpPath)
+	stage, err := fileops.CreateSiblingTemp(volumePath)
 	if err != nil {
-		restoreOriginal()
-		return fmt.Errorf("open tmp: %w", err)
-	}
-	defer func() { _ = fin.Close() }()
-
-	fout, err := fileops.CreateSecureNoSymlink(incompletePath)
-	if err != nil {
-		_ = fin.Close()
-		restoreOriginal()
 		return fmt.Errorf("create output: %w", err)
 	}
-	defer func() { _ = fout.Close() }()
+	defer func() {
+		retErr = errors.Join(retErr, stage.Cleanup())
+	}()
+	fout := stage.File()
 
 	// Generate random salt and nonce
 	salt, err := crypto.RandomBytes(16)
 	if err != nil {
-		restoreOriginal()
 		return err
 	}
 	nonce, err := crypto.RandomBytes(24)
 	if err != nil {
-		restoreOriginal()
 		return err
 	}
 
 	// Write salt and nonce to output
 	if _, err := fout.Write(salt); err != nil {
-		restoreOriginal()
 		return fmt.Errorf("write salt: %w", err)
 	}
 	if _, err := fout.Write(nonce); err != nil {
-		restoreOriginal()
 		return fmt.Errorf("write nonce: %w", err)
 	}
 
@@ -110,7 +107,6 @@ func AddDeniability(volumePath string, password []byte, reporter ProgressReporte
 
 	cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
 	if err != nil {
-		restoreOriginal()
 		return fmt.Errorf("create cipher: %w", err)
 	}
 
@@ -131,7 +127,6 @@ func AddDeniability(volumePath string, password []byte, reporter ProgressReporte
 			cipher.XORKeyStream(dst[:n], buf[:n])
 
 			if _, err := fout.Write(dst[:n]); err != nil {
-				restoreOriginal()
 				return fmt.Errorf("write encrypted: %w", err)
 			}
 
@@ -154,7 +149,6 @@ func AddDeniability(volumePath string, password []byte, reporter ProgressReporte
 			if counter >= crypto.RekeyThreshold {
 				cipher, nonce, err = crypto.DeniabilityRekey(key, nonce)
 				if err != nil {
-					restoreOriginal()
 					return fmt.Errorf("rekey: %w", err)
 				}
 				counter = 0
@@ -165,34 +159,29 @@ func AddDeniability(volumePath string, password []byte, reporter ProgressReporte
 			break
 		}
 		if readErr != nil {
-			restoreOriginal()
 			return fmt.Errorf("read: %w", readErr)
 		}
 	}
 
-	_ = fin.Close()
-
-	// Sync to ensure all data is written before renaming
-	if err := fout.Sync(); err != nil {
-		restoreOriginal()
-		return fmt.Errorf("sync output: %w", err)
+	if err := fin.Close(); err != nil {
+		return fmt.Errorf("close volume: %w", err)
 	}
-	_ = fout.Close()
-
-	// Clean up: remove the .tmp (holds inner .pcv ciphertext) and rename
-	// .incomplete to final name.
-	// NOTE: this site is intentionally error-checked (not `_ =`): a failed .tmp
-	// removal must abort before the rename so both files are left for manual
-	// recovery. Preserve that control flow.
-	if err := os.Remove(tmpPath); err != nil {
-		// .tmp removal failed, but we have the complete .incomplete
-		// Don't try to rename - leave both files for manual inspection
-		// User can manually: verify .incomplete is correct, remove .tmp, rename .incomplete
-		return fmt.Errorf("remove tmp failed (data saved in %s): %w", incompletePath, err)
+	currentInfo, err := os.Stat(volumePath)
+	if err != nil {
+		return fmt.Errorf("inspect volume before publish: %w", err)
 	}
-
-	if err := os.Rename(incompletePath, volumePath); err != nil {
-		return fmt.Errorf("rename output: %w", err)
+	if !os.SameFile(originalInfo, currentInfo) {
+		return errors.New("volume path changed while adding deniability")
+	}
+	publishedInfo, err := fout.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect deniability wrapper before publish: %w", err)
+	}
+	if err := stage.Commit(); err != nil {
+		return fmt.Errorf("publish deniability wrapper: %w", err)
+	}
+	if outputInfo != nil {
+		*outputInfo = publishedInfo
 	}
 
 	if reporter != nil {
@@ -204,11 +193,21 @@ func AddDeniability(volumePath string, password []byte, reporter ProgressReporte
 }
 
 // RemoveDeniability decrypts a deniability-wrapped volume.
-// Returns the path to the decrypted volume (a .tmp file).
+// Returns an owned random temporary file containing the decrypted inner volume.
 //
 // CRITICAL: Must read salt(16) + nonce(24) from the beginning,
 // then decrypt with XChaCha20 using Argon2-derived key.
-func RemoveDeniability(volumePath string, password []byte, reporter ProgressReporter, rs *encoding.RSCodecs) (string, error) {
+func RemoveDeniability(volumePath string, password []byte, reporter ProgressReporter, rs *encoding.RSCodecs) (*fileops.StagedFile, error) {
+	return removeDeniability(volumePath, password, reporter, rs, nil)
+}
+
+func removeDeniability(
+	volumePath string,
+	password []byte,
+	reporter ProgressReporter,
+	rs *encoding.RSCodecs,
+	expectedInput os.FileInfo,
+) (retStage *fileops.StagedFile, retErr error) {
 	if reporter != nil {
 		reporter.SetStatus("Removing deniability protection...")
 		reporter.SetProgress(0, "")
@@ -216,48 +215,42 @@ func RemoveDeniability(volumePath string, password []byte, reporter ProgressRepo
 		reporter.Update()
 	}
 
-	stat, err := os.Stat(volumePath)
-	if err != nil {
-		return "", fmt.Errorf("stat volume: %w", err)
-	}
-	total := stat.Size()
-
 	// #nosec G304 -- volumePath is user-provided .pcv file
 	fin, err := os.Open(volumePath)
 	if err != nil {
-		return "", fmt.Errorf("open volume: %w", err)
+		return nil, fmt.Errorf("open volume: %w", err)
 	}
 	defer func() { _ = fin.Close() }()
-
-	// Determine output path (strip .tmp suffixes, add .tmp)
-	outputPath := volumePath
-	for strings.HasSuffix(outputPath, ".tmp") {
-		outputPath = strings.TrimSuffix(outputPath, ".tmp")
-	}
-	outputPath += ".tmp"
-
-	fout, err := fileops.CreateSecureNoSymlink(outputPath)
+	stat, err := fin.Stat()
 	if err != nil {
-		return "", fmt.Errorf("create output: %w", err)
+		return nil, fmt.Errorf("stat volume: %w", err)
 	}
+	if expectedInput != nil && !os.SameFile(expectedInput, stat) {
+		return nil, errors.New("recombined input path changed before removing deniability")
+	}
+	total := stat.Size()
 
-	// Helper to cleanup on error
-	cleanup := func() {
-		_ = fout.Close()
-		_ = os.Remove(outputPath)
+	stage, err := fileops.CreateSiblingTemp(volumePath)
+	if err != nil {
+		return nil, fmt.Errorf("create output: %w", err)
 	}
+	keepStage := false
+	defer func() {
+		if !keepStage {
+			retErr = errors.Join(retErr, stage.Cleanup())
+		}
+	}()
+	fout := stage.File()
 
 	// Read salt and nonce
 	salt := make([]byte, 16)
 	nonce := make([]byte, 24)
 
 	if _, err := io.ReadFull(fin, salt); err != nil {
-		cleanup()
-		return "", fmt.Errorf("read salt: %w", err)
+		return nil, fmt.Errorf("read salt: %w", err)
 	}
 	if _, err := io.ReadFull(fin, nonce); err != nil {
-		cleanup()
-		return "", fmt.Errorf("read nonce: %w", err)
+		return nil, fmt.Errorf("read nonce: %w", err)
 	}
 
 	// The deniable wrapper carries no MAC; the correct key is the one whose
@@ -266,25 +259,21 @@ func RemoveDeniability(volumePath string, password []byte, reporter ProgressRepo
 	// the first that matches, then decrypt the whole volume with that key (#19).
 	probe := make([]byte, header.VersionEncSize)
 	if _, err := io.ReadFull(fin, probe); err != nil {
-		cleanup()
-		return "", fmt.Errorf("read version probe: %w", err)
+		return nil, fmt.Errorf("read version probe: %w", err)
 	}
 	if _, err := fin.Seek(int64(len(salt)+len(nonce)), io.SeekStart); err != nil {
-		cleanup()
-		return "", fmt.Errorf("seek after probe: %w", err)
+		return nil, fmt.Errorf("seek after probe: %w", err)
 	}
 
 	key, err := selectDeniabilityKey(password, salt, nonce, probe, rs)
 	if err != nil {
-		cleanup()
-		return "", err
+		return nil, err
 	}
 	defer crypto.SecureZero(key)
 
 	cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
 	if err != nil {
-		cleanup()
-		return "", fmt.Errorf("create cipher: %w", err)
+		return nil, fmt.Errorf("create cipher: %w", err)
 	}
 
 	// Decrypt the volume
@@ -304,8 +293,7 @@ func RemoveDeniability(volumePath string, password []byte, reporter ProgressRepo
 			cipher.XORKeyStream(dst[:n], buf[:n])
 
 			if _, err := fout.Write(dst[:n]); err != nil {
-				cleanup()
-				return "", fmt.Errorf("write decrypted: %w", err)
+				return nil, fmt.Errorf("write decrypted: %w", err)
 			}
 
 			done += int64(n)
@@ -325,8 +313,7 @@ func RemoveDeniability(volumePath string, password []byte, reporter ProgressRepo
 			if counter >= crypto.RekeyThreshold {
 				cipher, nonce, err = crypto.DeniabilityRekey(key, nonce)
 				if err != nil {
-					cleanup()
-					return "", fmt.Errorf("rekey: %w", err)
+					return nil, fmt.Errorf("rekey: %w", err)
 				}
 				counter = 0
 			}
@@ -336,48 +323,41 @@ func RemoveDeniability(volumePath string, password []byte, reporter ProgressRepo
 			break
 		}
 		if readErr != nil {
-			cleanup()
-			return "", fmt.Errorf("read: %w", readErr)
+			return nil, fmt.Errorf("read: %w", readErr)
 		}
 	}
 
-	_ = fin.Close()
+	if err := fin.Close(); err != nil {
+		return nil, fmt.Errorf("close volume: %w", err)
+	}
 
 	// Sync to ensure all data is written before verification
 	if err := fout.Sync(); err != nil {
-		cleanup()
-		return "", fmt.Errorf("sync output: %w", err)
+		return nil, fmt.Errorf("sync output: %w", err)
 	}
-	_ = fout.Close()
-
-	// Verify the decrypted file is a valid volume
-	// #nosec G304 -- outputPath is derived from user-provided volumePath
-	verifyFin, err := os.Open(outputPath)
-	if err != nil {
-		_ = os.Remove(outputPath)
-		return "", fmt.Errorf("open for verification: %w", err)
+	if _, err := fout.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind output for verification: %w", err)
 	}
 
-	versionEnc := make([]byte, 15)
-	if _, err := io.ReadFull(verifyFin, versionEnc); err != nil {
-		_ = verifyFin.Close()
-		_ = os.Remove(outputPath)
-		return "", fmt.Errorf("read version: %w", err)
+	versionEnc := make([]byte, header.VersionEncSize)
+	if _, err := io.ReadFull(fout, versionEnc); err != nil {
+		return nil, fmt.Errorf("read version: %w", err)
 	}
-	_ = verifyFin.Close()
 
 	versionDec, err := encoding.Decode(rs.RS5, versionEnc, false)
 	if err != nil {
-		_ = os.Remove(outputPath)
-		return "", errors.New("password is incorrect or the file is not a volume")
+		return nil, errors.New("password is incorrect or the file is not a volume")
 	}
 
 	if !header.MatchVersion(versionDec) {
-		_ = os.Remove(outputPath)
-		return "", errors.New("password is incorrect or the file is not a volume")
+		return nil, errors.New("password is incorrect or the file is not a volume")
 	}
 
-	return outputPath, nil
+	if _, err := fout.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind decrypted volume: %w", err)
+	}
+	keepStage = true
+	return stage, nil
 }
 
 // selectDeniabilityKey returns the deniability key for the first password

@@ -137,9 +137,11 @@ func TestDeniabilityReportsSpeedAndETA(t *testing.T) {
 	}
 
 	remRep := &etaStatusReporter{}
-	if _, err := RemoveDeniability(volPath, []byte("pw"), remRep, rs); err != nil {
+	stage, err := RemoveDeniability(volPath, []byte("pw"), remRep, rs)
+	if err != nil {
 		t.Fatalf("RemoveDeniability: %v", err)
 	}
+	defer stage.Cleanup()
 	assertStreamingSpeedAndETA(t, "RemoveDeniability", remRep.statuses)
 }
 

@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
+	"fmt"
 	"os"
 )
 
@@ -57,7 +58,21 @@ func (req *EncryptRequest) Validate() error {
 		}
 	}
 
-	return nil
+	return req.ValidateOutputSafety()
+}
+
+// ValidateOutputSafety rejects destinations that alias an input or keyfile.
+// Overwrite confirmation never authorizes replacing a protected source.
+func (req *EncryptRequest) ValidateOutputSafety() error {
+	protected := make([]string, 0, 1+len(req.InputFiles)+len(req.OnlyFiles)+len(req.OnlyFolders)+len(req.Keyfiles))
+	if req.InputFile != "" {
+		protected = append(protected, req.InputFile)
+	}
+	protected = append(protected, req.InputFiles...)
+	protected = append(protected, req.OnlyFiles...)
+	protected = append(protected, req.OnlyFolders...)
+	protected = append(protected, req.Keyfiles...)
+	return validateOutputSafety(req.OutputFile, protected)
 }
 
 // validateSplit checks the split configuration. It is shared by Validate and by
@@ -86,8 +101,14 @@ func (req *DecryptRequest) Validate() error {
 		return errors.NewValidationError("InputFile", "input file path is required")
 	}
 
-	// Check input file exists
-	if _, err := os.Stat(req.InputFile); err != nil {
+	// A recombine request may name the base path before that file exists. In
+	// that mode the numbered chunks are the real protected inputs.
+	if req.Recombine {
+		inputBase := recombineInputBase(req.InputFile)
+		if _, _, err := fileops.CountChunks(inputBase); err != nil {
+			return errors.NewFileError("stat chunks", inputBase, err)
+		}
+	} else if _, err := os.Stat(req.InputFile); err != nil {
 		return errors.NewFileError("stat", req.InputFile, err)
 	}
 
@@ -106,6 +127,60 @@ func (req *DecryptRequest) Validate() error {
 		}
 	}
 
+	return req.ValidateOutputSafety()
+}
+
+// ValidateOutputSafety rejects destinations that alias the encrypted volume or
+// a keyfile, regardless of any overwrite or force option.
+func (req *DecryptRequest) ValidateOutputSafety() error {
+	protected := make([]string, 0, 1+len(req.Keyfiles))
+	if req.InputFile != "" {
+		protected = append(protected, req.InputFile)
+	}
+	if req.Recombine {
+		inputBase := recombineInputBase(req.InputFile)
+		// Recombine creates a temporary encrypted volume at the base path.
+		// Treat it as a protected input even when it does not exist yet, so the
+		// plaintext destination cannot replace it before cleanup.
+		protected = append(protected, inputBase)
+		numChunks, _, err := fileops.CountChunks(inputBase)
+		if err != nil {
+			return errors.NewFileError("stat chunks", inputBase, err)
+		}
+		for i := range numChunks {
+			protected = append(protected, fmt.Sprintf("%s.%d", inputBase, i))
+		}
+	}
+	protected = append(protected, req.Keyfiles...)
+	return validateOutputSafety(req.OutputFile, protected)
+}
+
+func recombineInputBase(input string) string {
+	if base, ok := fileops.SplitChunkBase(input); ok {
+		return base
+	}
+	return input
+}
+
+func validateOutputSafety(output string, protected []string) error {
+	if output == "" {
+		return nil
+	}
+	for _, source := range protected {
+		if source == "" {
+			continue
+		}
+		same, err := fileops.SamePathOrFile(source, output)
+		if err != nil {
+			return err
+		}
+		if same {
+			return errors.NewValidationError(
+				"OutputFile",
+				fmt.Sprintf("output %q conflicts with protected source %q", output, source),
+			)
+		}
+	}
 	return nil
 }
 

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,8 +23,6 @@ import (
 	pwnorm "Picocrypt-NG/internal/password"
 )
 
-var unpackArchive = fileops.Unpack
-
 // newPayloadReader is identity in production; tests replace it to inject short
 // reads and check that the io.ReadFull loops reassemble full blocks.
 var newPayloadReader = func(r io.Reader) io.Reader { return r }
@@ -31,21 +30,28 @@ var newPayloadReader = func(r io.Reader) io.Reader { return r }
 // Decrypt performs a complete volume decryption operation.
 // This is the main entry point for decryption.
 // If ctx is nil, a background context is used.
-func Decrypt(ctx context.Context, req *DecryptRequest) error {
+func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
+	if err := req.Validate(); err != nil {
+		return err
+	}
+
 	opCtx := NewDecryptContext(ctx, req)
-	defer opCtx.Close() // Secure zeroing of key material
+	defer func() {
+		if err := opCtx.cleanupRecombinedFile(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("cleanup recombined input: %w", err))
+		}
+		retErr = errors.Join(retErr, opCtx.Close())
+	}() // Secure zeroing of key material and fail-loud temporary-file cleanup
 
 	log.Info("starting decryption", log.String("input", req.InputFile))
 
 	// Phase 1: Preprocess (recombine if split, remove deniability)
 	if err := decryptPreprocess(opCtx, req); err != nil {
-		cleanupDecrypt(opCtx, req) // Clean up any partial temp files
 		return err
 	}
 
 	// Phase 2: Read header
 	if err := decryptReadHeader(opCtx, req); err != nil {
-		cleanupDecrypt(opCtx, req)
 		return err
 	}
 
@@ -54,7 +60,6 @@ func Decrypt(ctx context.Context, req *DecryptRequest) error {
 	// authenticates (#19). On success the winning form is left on the context so
 	// the verify-first and RS-retry re-derivations reuse it.
 	if err := decryptDeriveProcessVerify(opCtx, req); err != nil {
-		cleanupDecrypt(opCtx, req)
 		return err
 	}
 
@@ -63,34 +68,28 @@ func Decrypt(ctx context.Context, req *DecryptRequest) error {
 	// before decrypting. Slower but ensures we never decrypt attacker-controlled data.
 	if req.VerifyFirst {
 		if err := decryptVerifyMACFirst(opCtx, req); err != nil {
-			cleanupDecrypt(opCtx, req)
 			return err
 		}
 
 		// Re-derive keys to reset HKDF stream for actual decryption
 		if err := decryptDeriveKeys(opCtx, req); err != nil {
-			cleanupDecrypt(opCtx, req)
 			return err
 		}
 		if err := decryptProcessKeyfiles(opCtx, req); err != nil {
-			cleanupDecrypt(opCtx, req)
 			return err
 		}
 		if err := decryptVerifyAuth(opCtx, req); err != nil {
-			cleanupDecrypt(opCtx, req)
 			return err
 		}
 	}
 
 	// Phase 6: Decrypt payload
 	if err := decryptPayload(opCtx, req); err != nil {
-		cleanupDecrypt(opCtx, req)
 		return err
 	}
 
 	// Phase 7: Finalize (verify MAC, cleanup, auto-unzip)
 	if err := decryptFinalize(opCtx, req); err != nil {
-		cleanupDecrypt(opCtx, req)
 		return err
 	}
 
@@ -111,9 +110,11 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 		}
 
 		outputPath := inputBase
+		var recombinedInfo os.FileInfo
 		err := fileops.Recombine(fileops.RecombineOptions{
 			InputBase:  inputBase,
 			OutputPath: outputPath,
+			OutputInfo: &recombinedInfo,
 			Progress: func(p float32, info string) {
 				ctx.UpdateProgress(p, info)
 			},
@@ -128,15 +129,28 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 			return err
 		}
 
-		// Store recombined file path for cleanup
-		ctx.RecombinedFile = outputPath
+		// Retain the recombined file identity so cleanup cannot unlink a
+		// replacement planted at the same pathname.
+		if err := ctx.rememberRecombinedFile(outputPath, recombinedInfo); err != nil {
+			return err
+		}
 		ctx.TempFile = outputPath
 		inputFile = outputPath
 	}
 
 	// Remove deniability wrapper if present
 	if req.Deniability {
-		decrypted, err := RemoveDeniability(inputFile, req.Password, ctx.Reporter, req.RSCodecs)
+		var expectedInput os.FileInfo
+		if ctx.RecombinedFile == inputFile {
+			expectedInput = ctx.recombinedInfo
+		}
+		decrypted, err := removeDeniability(
+			inputFile,
+			req.Password,
+			ctx.Reporter,
+			req.RSCodecs,
+			expectedInput,
+		)
 		if err != nil {
 			return err
 		}
@@ -144,8 +158,8 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 		// Note: if we recombined, the recombined file path is stored in ctx.RecombinedFile
 		// for cleanup after decryption completes (see decryptFinalize)
 
-		ctx.TempFile = decrypted
-		inputFile = decrypted
+		ctx.adoptTempInput(decrypted)
+		inputFile = decrypted.Path()
 	}
 
 	ctx.InputFile = inputFile
@@ -163,11 +177,13 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
 	ctx.SetStatus("Reading values...")
 
-	fin, err := os.Open(ctx.InputFile)
+	fin, closeInput, err := ctx.openInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
 	}
-	defer func() { _ = fin.Close() }()
+	if closeInput {
+		defer func() { _ = fin.Close() }()
+	}
 
 	reader := header.NewReader(fin, req.RSCodecs)
 	result, err := reader.ReadHeader()
@@ -465,11 +481,13 @@ func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest,
 	}
 
 	// Open input file
-	fin, err := os.Open(ctx.InputFile)
+	fin, closeInput, err := ctx.openInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
 	}
-	defer func() { _ = fin.Close() }()
+	if closeInput {
+		defer func() { _ = fin.Close() }()
+	}
 
 	// Skip past header
 	headerSize := header.HeaderSize(len(ctx.Header.Comments))
@@ -577,7 +595,7 @@ func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest,
 			// and SerpentKey() from ctx.SubkeyReader (one-shot reads), so re-derive
 			// keys + rebuild the HKDF stream first — otherwise the recursive read
 			// errors with "subkey already consumed". The verify pass writes no
-			// output, so there is no .incomplete file to remove.
+			// output, so there is no staged plaintext to reset.
 			ctx.SetStatus("Repairing (verifying)...")
 			if err := reDeriveForRetry(ctx, req); err != nil {
 				return err
@@ -643,11 +661,13 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 	ctx.CipherSuite = cipherSuite
 
 	// Open files
-	fin, err := os.Open(ctx.InputFile)
+	fin, closeInput, err := ctx.openInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
 	}
-	defer func() { _ = fin.Close() }()
+	if closeInput {
+		defer func() { _ = fin.Close() }()
+	}
 
 	// Skip past header
 	headerSize := header.HeaderSize(len(ctx.Header.Comments))
@@ -655,11 +675,17 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 		return fmt.Errorf("seek past header: %w", err)
 	}
 
-	fout, err := fileops.CreateSecureNoSymlink(req.OutputFile + ".incomplete")
-	if err != nil {
-		return fmt.Errorf("create output: %w", err)
+	if ctx.stagedOutput == nil {
+		if err := ctx.beginStagedOutput(); err != nil {
+			return fmt.Errorf("create output: %w", err)
+		}
+	} else if err := ctx.resetStagedOutput(); err != nil {
+		return fmt.Errorf("reset output: %w", err)
 	}
-	defer func() { _ = fout.Close() }()
+	fout, err := ctx.stagedOutputFile()
+	if err != nil {
+		return err
+	}
 
 	// Decrypt loop
 	ctx.SetCanCancel(true)
@@ -776,15 +802,12 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 			//                      the previous suite is now Close()'d (key zeroed)
 			//                      before reassignment (see that function).
 			//   - input offset:    fresh os.Open + Seek(headerSize) per call.
-			//   - output:          the old .incomplete is removed and recreated
-			//                      (truncated) per call.
+			//   - output:          the same operation-owned stage is truncated and
+			//                      rewound through its retained handle.
 			// The Argon2id re-derivation is intentionally KEPT (D-07); reducing
 			// Argon2 passes is Out of Scope — correctness over perf in a paranoid
 			// tool. Do NOT cache derived material or skip the re-derive.
 			ctx.TriedFullRSDecode = true
-
-			// Remove incomplete file (PLAINTEXT — plain unlink, SEC-04)
-			_ = os.Remove(req.OutputFile + ".incomplete")
 
 			// Re-derive keys (needed to reset HKDF stream); see reDeriveForRetry.
 			if err := reDeriveForRetry(ctx, req); err != nil {
@@ -807,79 +830,384 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 				*req.Kept = true
 			}
 		} else {
-			// Remove incomplete output (PLAINTEXT — plain unlink, SEC-04)
-			_ = os.Remove(req.OutputFile + ".incomplete")
 			return perrors.ErrCorruptData
 		}
 	}
 
-	// Rename to final output
-	if err := os.Rename(req.OutputFile+".incomplete", req.OutputFile); err != nil {
-		return fmt.Errorf("rename output: %w", err)
+	if err := req.ValidateOutputSafety(); err != nil {
+		return err
 	}
 
-	// Cleanup temp files (ciphertext .pcv temps — plain unlink, SEC-04)
-	if ctx.TempFile != "" {
-		_ = os.Remove(ctx.TempFile)
-	}
-	// Remove recombined file if different from temp file (deniability changes TempFile)
-	if ctx.RecombinedFile != "" && ctx.RecombinedFile != ctx.TempFile {
-		_ = os.Remove(ctx.RecombinedFile)
-	}
-
-	// Auto-unzip if requested and output looks like a zip archive.
-	// CLI auto-generated output names may omit .zip, so we also check file signature.
-	if req.AutoUnzip && (strings.HasSuffix(req.OutputFile, ".zip") || isZipArchive(req.OutputFile)) {
-		zipPath := req.OutputFile
-		renamedFrom := ""
-		if !strings.HasSuffix(req.OutputFile, ".zip") {
-			zipPath = req.OutputFile + ".zip"
-			if err := os.Rename(req.OutputFile, zipPath); err != nil {
-				return fmt.Errorf("prepare auto-unzip: %w", err)
-			}
-			renamedFrom = req.OutputFile
-		}
-
-		ctx.SetStatus("Unzipping...")
-		err := unpackArchive(fileops.UnpackOptions{
-			ZipPath:   zipPath,
-			SameLevel: req.SameLevel,
-			Progress: func(p float32, info string) {
-				ctx.UpdateProgress(p, info)
-			},
-			Status: func(s string) {
-				ctx.SetStatus(s)
-			},
-			Cancel: ctx.IsCancelled,
-		})
+	shouldUnzip := false
+	if req.AutoUnzip {
+		var err error
+		shouldUnzip, err = isStagedOutputZip(ctx)
 		if err != nil {
-			if renamedFrom != "" {
-				_ = os.Rename(zipPath, renamedFrom)
-			}
-			return fmt.Errorf("unzip: %w", err)
+			return err
 		}
+	}
 
-		// Remove the zip
-		_ = os.Remove(zipPath)
+	// A non-same-level extraction has a dedicated output directory. Build it
+	// directly from the still-owned plaintext stage so the directory can be
+	// reserved exclusively before any plaintext entry is written. The encrypted
+	// input remains untouched throughout extraction.
+	if shouldUnzip && !req.SameLevel {
+		if err := autoUnzipUnpublishedOutput(ctx, req); err != nil {
+			return err
+		}
+		if err := ctx.cleanupRecombinedFile(); err != nil {
+			return fmt.Errorf("cleanup recombined input: %w", err)
+		}
+		return nil
+	}
+
+	var (
+		autoUnzipRoot       *os.Root
+		autoUnzipParentPath string
+		autoUnzipTargetName string
+		autoUnzipRootInfo   os.FileInfo
+	)
+	if shouldUnzip {
+		var err error
+		autoUnzipRoot, autoUnzipParentPath, autoUnzipTargetName, autoUnzipRootInfo, err = openStagedOutputParent(ctx.stagedOutput, req.OutputFile)
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := ctx.publishStagedOutput(); err != nil {
+		return closePinnedAutoUnzipRoot(autoUnzipRoot, fmt.Errorf("publish output: %w", err))
+	}
+
+	if err := ctx.cleanupRecombinedFile(); err != nil {
+		return closePinnedAutoUnzipRoot(
+			autoUnzipRoot,
+			fmt.Errorf("cleanup recombined input: %w", err),
+		)
+	}
+
+	if shouldUnzip {
+		return autoUnzipDecryptedOutput(
+			ctx,
+			req,
+			autoUnzipRoot,
+			autoUnzipParentPath,
+			autoUnzipTargetName,
+			autoUnzipRootInfo,
+		)
 	}
 
 	return nil
 }
 
-func isZipArchive(path string) bool {
-	f, err := os.Open(path) // #nosec G304 -- path is derived from user-selected output file
+func autoUnzipUnpublishedOutput(ctx *OperationContext, req *DecryptRequest) error {
+	archive, err := ctx.stagedOutputFile()
 	if err != nil {
-		return false
+		return fmt.Errorf("open staged auto-unzip archive: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	extractDir, distinctArchivePath, err := autoUnzipExtractionRoot(req.OutputFile)
+	if err != nil {
+		return err
+	}
 
+	outputInfo, err := ctx.stagedOutput.ReserveSiblingDirectory(extractDir)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("auto-unzip extraction root already exists: %s: %w", extractDir, os.ErrExist)
+		}
+		return fmt.Errorf("reserve auto-unzip output directory: %w", err)
+	}
+
+	ctx.SetStatus("Unzipping...")
+	unpackErr := fileops.Unpack(fileops.UnpackOptions{
+		ZipPath:             req.OutputFile,
+		ZipFile:             archive,
+		ExtractDir:          extractDir,
+		ExpectedExtractRoot: outputInfo,
+		Progress: func(p float32, info string) {
+			ctx.UpdateProgress(p, info)
+		},
+		Status: func(s string) {
+			ctx.SetStatus(s)
+		},
+		Cancel: ctx.IsCancelled,
+	})
+	if unpackErr == nil {
+		unpackErr = verifyAutoUnzipExtractionRoot(extractDir, outputInfo)
+	}
+	if unpackErr == nil {
+		if !distinctArchivePath {
+			return nil
+		}
+		parentRoot, _, targetName, _, err := openStagedOutputParent(
+			ctx.stagedOutput,
+			req.OutputFile,
+		)
+		if err != nil {
+			return err
+		}
+		if err := ctx.publishStagedOutput(); err != nil {
+			return closePinnedAutoUnzipRoot(
+				parentRoot,
+				fmt.Errorf("publish decrypted archive before final auto-unzip cleanup: %w", err),
+			)
+		}
+		removeErr := removeOwnedAutoUnzipArchiveAt(
+			parentRoot,
+			targetName,
+			ctx.publishedOutputInfo,
+		)
+		closeErr := closePinnedAutoUnzipRoot(parentRoot, removeErr)
+		return errors.Join(
+			closeErr,
+			verifyAutoUnzipExtractionRoot(extractDir, outputInfo),
+		)
+	}
+
+	removeErr := ctx.stagedOutput.RemoveSiblingDirectory(extractDir, outputInfo)
+	if distinctArchivePath {
+		publishErr := ctx.publishStagedOutput()
+		var recoveryErr error
+		if removeErr != nil {
+			recoveryErr = fmt.Errorf(
+				"could not roll back the auto-unzip extraction root %s: %w",
+				extractDir,
+				removeErr,
+			)
+		}
+		if publishErr != nil {
+			recoveryErr = errors.Join(
+				recoveryErr,
+				fmt.Errorf("restore decrypted archive at %s: %w", req.OutputFile, publishErr),
+			)
+		}
+		return errors.Join(fmt.Errorf("unzip: %w", unpackErr), recoveryErr)
+	}
+
+	if removeErr == nil {
+		if err := ctx.publishStagedOutput(); err != nil {
+			return errors.Join(
+				fmt.Errorf("unzip: %w", unpackErr),
+				fmt.Errorf("restore decrypted archive at %s: %w", req.OutputFile, err),
+			)
+		}
+		return fmt.Errorf("unzip: %w", unpackErr)
+	}
+	return errors.Join(
+		fmt.Errorf("unzip: %w", unpackErr),
+		fmt.Errorf(
+			"could not restore the decrypted archive because the extraction directory was not safely removable: %w",
+			removeErr,
+		),
+	)
+}
+
+func verifyAutoUnzipExtractionRoot(path string, expected os.FileInfo) error {
+	current, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect completed auto-unzip output: %w", err)
+	}
+	if expected == nil || !current.IsDir() || !os.SameFile(expected, current) {
+		return errors.New("auto-unzip output directory changed during extraction")
+	}
+	return nil
+}
+
+func autoUnzipExtractionRoot(outputPath string) (string, bool, error) {
+	if !strings.HasSuffix(outputPath, ".zip") {
+		return outputPath, false, nil
+	}
+	base := strings.TrimSuffix(filepath.Base(outputPath), ".zip")
+	if base == "" || base == "." {
+		return "", false, errors.New("auto-unzip output must have a name before the .zip suffix")
+	}
+	return filepath.Join(filepath.Dir(outputPath), base), true, nil
+}
+
+func openStagedOutputParent(
+	stage *fileops.StagedFile,
+	outputPath string,
+) (*os.Root, string, string, os.FileInfo, error) {
+	if stage == nil || stage.TargetParentInfo() == nil {
+		return nil, "", "", nil, errors.New("staged output parent identity is unavailable")
+	}
+	absoluteOutput, err := filepath.Abs(filepath.Clean(outputPath))
+	if err != nil {
+		return nil, "", "", nil, fmt.Errorf("resolve staged output path: %w", err)
+	}
+	parentPath := filepath.Dir(absoluteOutput)
+	root, err := os.OpenRoot(parentPath)
+	if err != nil {
+		return nil, "", "", nil, fmt.Errorf("open staged output parent: %w", err)
+	}
+	rootInfo, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, "", "", nil, fmt.Errorf("inspect staged output parent: %w", err)
+	}
+	if !os.SameFile(stage.TargetParentInfo(), rootInfo) {
+		_ = root.Close()
+		return nil, "", "", nil, errors.New("output directory changed before auto-unzip")
+	}
+	return root, parentPath, filepath.Base(absoluteOutput), rootInfo, nil
+}
+
+func closePinnedAutoUnzipRoot(root *os.Root, primary error) error {
+	if root == nil {
+		return primary
+	}
+	if err := root.Close(); err != nil {
+		return errors.Join(primary, fmt.Errorf("close auto-unzip output directory: %w", err))
+	}
+	return primary
+}
+
+func autoUnzipDecryptedOutput(
+	ctx *OperationContext,
+	req *DecryptRequest,
+	parentRoot *os.Root,
+	parentPath, targetName string,
+	parentInfo os.FileInfo,
+) (retErr error) {
+	if parentRoot == nil || parentInfo == nil || targetName == "" {
+		return errors.New("pinned output parent is unavailable for same-level auto-unzip")
+	}
+	defer func() {
+		retErr = closePinnedAutoUnzipRoot(parentRoot, retErr)
+	}()
+	expected := ctx.publishedOutputInfo
+	if expected == nil {
+		return errors.New("published output identity is unavailable for auto-unzip")
+	}
+	if err := verifyAutoUnzipParentPath(parentPath, parentInfo); err != nil {
+		return err
+	}
+
+	archive, err := parentRoot.Open(targetName)
+	if err != nil {
+		return fmt.Errorf("open auto-unzip archive: %w", err)
+	}
+	defer func() {
+		if archive != nil {
+			if err := archive.Close(); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close auto-unzip archive: %w", err))
+			}
+		}
+	}()
+	archiveInfo, err := archive.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect auto-unzip archive: %w", err)
+	}
+	pathInfo, err := parentRoot.Lstat(targetName)
+	if err != nil {
+		return fmt.Errorf("inspect auto-unzip archive path: %w", err)
+	}
+	if !pathInfo.Mode().IsRegular() ||
+		!os.SameFile(expected, archiveInfo) ||
+		!os.SameFile(expected, pathInfo) {
+		return errors.New("auto-unzip output path changed before extraction")
+	}
+
+	ctx.SetStatus("Unzipping...")
+	unpackErr := fileops.Unpack(fileops.UnpackOptions{
+		ZipPath:             req.OutputFile,
+		ZipFile:             archive,
+		ExtractDir:          parentPath,
+		ExtractRoot:         parentRoot,
+		ExpectedExtractRoot: parentInfo,
+		SameLevel:           true,
+		Progress: func(p float32, info string) {
+			ctx.UpdateProgress(p, info)
+		},
+		Status: func(s string) {
+			ctx.SetStatus(s)
+		},
+		Cancel: ctx.IsCancelled,
+	})
+	closeErr := archive.Close()
+	archive = nil
+	if unpackErr != nil {
+		var closeContextErr error
+		if closeErr != nil {
+			closeContextErr = fmt.Errorf("close auto-unzip archive: %w", closeErr)
+		}
+		return errors.Join(
+			fmt.Errorf("unzip: %w", unpackErr),
+			closeContextErr,
+		)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close auto-unzip archive: %w", closeErr)
+	}
+	if err := verifyAutoUnzipParentPath(parentPath, parentInfo); err != nil {
+		return err
+	}
+	if err := removeOwnedAutoUnzipArchiveAt(parentRoot, targetName, expected); err != nil {
+		return fmt.Errorf("remove unpacked archive: %w", err)
+	}
+	if err := verifyAutoUnzipParentPath(parentPath, parentInfo); err != nil {
+		return err
+	}
+	return nil
+}
+
+func verifyAutoUnzipParentPath(parentPath string, expected os.FileInfo) error {
+	current, err := os.Stat(parentPath)
+	if err != nil {
+		return fmt.Errorf("inspect auto-unzip output parent: %w", err)
+	}
+	if expected == nil || !os.SameFile(expected, current) {
+		return errors.New("auto-unzip output parent changed during extraction")
+	}
+	return nil
+}
+
+func removeOwnedAutoUnzipArchiveAt(root *os.Root, name string, expected os.FileInfo) error {
+	if root == nil || name == "" || expected == nil {
+		return os.ErrInvalid
+	}
+	current, err := root.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return errors.New("auto-unzip archive disappeared before removal")
+	}
+	if err != nil {
+		return fmt.Errorf("inspect auto-unzip archive: %w", err)
+	}
+	if !current.Mode().IsRegular() || !os.SameFile(expected, current) {
+		return errors.New("auto-unzip archive path changed; refusing to remove it")
+	}
+	if err := root.Remove(name); err != nil {
+		return fmt.Errorf("remove auto-unzip archive: %w", err)
+	}
+	return nil
+}
+
+func isStagedOutputZip(ctx *OperationContext) (bool, error) {
+	file, err := ctx.stagedOutputFile()
+	if err != nil {
+		return false, fmt.Errorf("open staged output for ZIP detection: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false, fmt.Errorf("inspect staged output for ZIP detection: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, errors.New("staged output for ZIP detection is not a regular file")
+	}
+	return hasZipSignature(file)
+}
+
+func hasZipSignature(reader io.ReaderAt) (bool, error) {
 	sig := make([]byte, 4)
-	if _, err := io.ReadFull(f, sig); err != nil {
-		return false
+	if _, err := io.ReadFull(io.NewSectionReader(reader, 0, int64(len(sig))), sig); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read output for ZIP detection: %w", err)
 	}
 
 	if sig[0] != 'P' || sig[1] != 'K' {
-		return false
+		return false, nil
 	}
 
 	// ZIP signatures:
@@ -888,21 +1216,7 @@ func isZipArchive(path string) bool {
 	// 0x07 0x08 = spanned/split archive
 	return (sig[2] == 0x03 && sig[3] == 0x04) ||
 		(sig[2] == 0x05 && sig[3] == 0x06) ||
-		(sig[2] == 0x07 && sig[3] == 0x08)
-}
-
-func cleanupDecrypt(ctx *OperationContext, req *DecryptRequest) {
-	// Ciphertext .pcv temps — plain unlink (SEC-04).
-	if ctx.TempFile != "" {
-		_ = os.Remove(ctx.TempFile)
-	}
-	// Remove recombined file if different from temp file
-	if ctx.RecombinedFile != "" && ctx.RecombinedFile != ctx.TempFile {
-		_ = os.Remove(ctx.RecombinedFile)
-	}
-	// PLAINTEXT decrypt output — plain unlink (SEC-04, T-04-04).
-	_ = os.Remove(req.OutputFile + ".incomplete")
-	// Note: ctx.Close() is called via defer in Decrypt()
+		(sig[2] == 0x07 && sig[3] == 0x08), nil
 }
 
 // decodeWithRSFast delegates to the shared encoding codec, translating the

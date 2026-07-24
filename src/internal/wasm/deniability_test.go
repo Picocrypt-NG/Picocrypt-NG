@@ -44,11 +44,12 @@ func TestDeniabilityWrapDesktopUnwrap(t *testing.T) {
 	if !volume.IsDeniable(path, rs) {
 		t.Fatal("desktop did not recognize the WASM volume as deniable")
 	}
-	innerPath, err := volume.RemoveDeniability(path, password, nil, rs)
+	innerStage, err := volume.RemoveDeniability(path, password, nil, rs)
 	if err != nil {
 		t.Fatalf("desktop RemoveDeniability: %v", err)
 	}
-	innerBytes, err := os.ReadFile(innerPath)
+	defer innerStage.Cleanup()
+	innerBytes, err := os.ReadFile(innerStage.Path())
 	if err != nil {
 		t.Fatalf("read inner: %v", err)
 	}

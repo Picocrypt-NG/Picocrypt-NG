@@ -423,7 +423,14 @@ func productionStatusForwardings() map[statusForwarding]struct{} {
 		}: {},
 		{
 			File:     "internal/volume/decrypt.go",
-			Function: "decryptFinalize",
+			Function: "autoUnzipUnpublishedOutput",
+			Receiver: "ctx",
+			Method:   "SetStatus",
+			Argument: "s",
+		}: {},
+		{
+			File:     "internal/volume/decrypt.go",
+			Function: "autoUnzipDecryptedOutput",
 			Receiver: "ctx",
 			Method:   "SetStatus",
 			Argument: "s",
