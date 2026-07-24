@@ -11,7 +11,11 @@ import (
 	"Picocrypt-NG/internal/volume"
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,16 +72,187 @@ type operationExecutor func(
 	volume.ProgressReporter,
 ) operationResult
 
-type operationSourceRemover func(context.Context, string, bool) error
+type operationSourceRemover func(context.Context, string) error
 
-func removeOperationSource(ctx context.Context, path string, recursive bool) error {
+func removeOperationSource(ctx context.Context, path string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if recursive {
-		return os.RemoveAll(path)
-	}
 	return os.Remove(path)
+}
+
+type deletionSource struct {
+	path string
+	info os.FileInfo
+}
+
+type operationDeletionManifest struct {
+	files       []deletionSource
+	directories []deletionSource
+}
+
+func captureDeletionSource(path string, wantDirectory bool) (deletionSource, error) {
+	absolute, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return deletionSource{}, fmt.Errorf("resolve deletion source %q: %w", path, err)
+	}
+
+	var info os.FileInfo
+	if wantDirectory {
+		root, err := os.OpenRoot(absolute)
+		if err != nil {
+			return deletionSource{}, fmt.Errorf("open deletion source directory %q: %w", absolute, err)
+		}
+		info, err = root.Stat(".")
+		closeErr := root.Close()
+		if err != nil {
+			return deletionSource{}, errors.Join(
+				fmt.Errorf("inspect deletion source directory %q: %w", absolute, err),
+				closeErr,
+			)
+		}
+		if closeErr != nil {
+			return deletionSource{}, fmt.Errorf("close deletion source directory %q: %w", absolute, closeErr)
+		}
+		if !info.IsDir() {
+			return deletionSource{}, fmt.Errorf("deletion source is no longer a directory: %s", absolute)
+		}
+	} else {
+		file, err := fileops.OpenExistingNoSymlink(absolute, os.O_RDONLY)
+		if err != nil {
+			return deletionSource{}, fmt.Errorf("open deletion source file %q: %w", absolute, err)
+		}
+		info, err = file.Stat()
+		closeErr := file.Close()
+		if err != nil {
+			return deletionSource{}, errors.Join(
+				fmt.Errorf("inspect deletion source file %q: %w", absolute, err),
+				closeErr,
+			)
+		}
+		if closeErr != nil {
+			return deletionSource{}, fmt.Errorf("close deletion source file %q: %w", absolute, closeErr)
+		}
+		if !info.Mode().IsRegular() {
+			return deletionSource{}, fmt.Errorf("deletion source is no longer a regular file: %s", absolute)
+		}
+	}
+	return deletionSource{path: absolute, info: info}, nil
+}
+
+func captureOperationDeletionManifest(input operationInput) (*operationDeletionManifest, error) {
+	if !input.delete {
+		return nil, nil
+	}
+
+	var filePaths []string
+	var folderPaths []string
+	switch {
+	case input.mode == "encrypt" && len(input.inputFiles) > 0:
+		filePaths = append(filePaths, input.inputFiles...)
+		folderPaths = append(folderPaths, input.onlyFolders...)
+	case input.mode == "encrypt":
+		filePaths = append(filePaths, input.inputFile)
+	case input.recombine:
+		inputBase := input.inputFile
+		if base, ok := fileops.SplitChunkBase(inputBase); ok {
+			inputBase = base
+		}
+		numChunks, _, err := fileops.CountChunks(inputBase)
+		if err != nil {
+			return nil, fmt.Errorf("enumerate split sources: %w", err)
+		}
+		for i := range numChunks {
+			filePaths = append(filePaths, inputBase+"."+strconv.Itoa(i))
+		}
+	default:
+		filePaths = append(filePaths, input.inputFile)
+	}
+
+	manifest := &operationDeletionManifest{}
+	seenFiles := make(map[string]struct{}, len(filePaths))
+	for _, path := range filePaths {
+		source, err := captureDeletionSource(path, false)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := seenFiles[source.path]; exists {
+			continue
+		}
+		seenFiles[source.path] = struct{}{}
+		manifest.files = append(manifest.files, source)
+	}
+
+	seenDirectories := make(map[string]deletionSource)
+	for _, rootPath := range folderPaths {
+		root, err := filepath.Abs(filepath.Clean(rootPath))
+		if err != nil {
+			return nil, fmt.Errorf("resolve source folder %q: %w", rootPath, err)
+		}
+		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if !entry.IsDir() {
+				return nil
+			}
+			source, err := captureDeletionSource(path, true)
+			if err != nil {
+				return err
+			}
+			seenDirectories[source.path] = source
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("capture source folder %q: %w", root, err)
+		}
+	}
+	for _, source := range seenDirectories {
+		manifest.directories = append(manifest.directories, source)
+	}
+	sort.Slice(manifest.directories, func(i, j int) bool {
+		left := strings.Count(filepath.Clean(manifest.directories[i].path), string(filepath.Separator))
+		right := strings.Count(filepath.Clean(manifest.directories[j].path), string(filepath.Separator))
+		if left == right {
+			return manifest.directories[i].path > manifest.directories[j].path
+		}
+		return left > right
+	})
+	return manifest, nil
+}
+
+type deletionSourceState int
+
+const (
+	deletionSourceMissing deletionSourceState = iota
+	deletionSourceUnchanged
+	deletionSourceChanged
+)
+
+func inspectDeletionSource(source deletionSource, directory bool) (deletionSourceState, error) {
+	current, err := os.Lstat(source.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return deletionSourceMissing, nil
+	}
+	if err != nil {
+		return deletionSourceChanged, err
+	}
+	if !os.SameFile(source.info, current) || current.Mode().Type() != source.info.Mode().Type() {
+		return deletionSourceChanged, nil
+	}
+	if directory {
+		if !current.IsDir() || current.Mode().Perm() != source.info.Mode().Perm() {
+			return deletionSourceChanged, nil
+		}
+		return deletionSourceUnchanged, nil
+	}
+	if !current.Mode().IsRegular() ||
+		current.Mode() != source.info.Mode() ||
+		current.Size() != source.info.Size() ||
+		!current.ModTime().Equal(source.info.ModTime()) {
+		return deletionSourceChanged, nil
+	}
+	return deletionSourceUnchanged, nil
 }
 
 type operationReporterGate struct {
@@ -223,6 +398,21 @@ func (a *App) onClickStart() {
 		return
 	}
 
+	if !a.State.Recursively {
+		input, err := a.captureOperationInput(a.State.Snapshot())
+		if err != nil {
+			a.State.SetStatusMessage(app.StatusInvalidSplitSize, util.RED, app.StatusArgs{})
+			a.updateUIState()
+			return
+		}
+		defer crypto.SecureZero(input.password)
+		if err := validateOperationInputSafety(input); err != nil {
+			a.State.SetStatus(err.Error(), util.RED)
+			a.updateUIState()
+			return
+		}
+	}
+
 	_, outputExists := os.Stat(a.State.OutputFile)
 	if showOverwriteModalForOutput(outputExists == nil, a.State.Recursively, a.State.OutputChosenViaSaveDialog) {
 		a.showOverwriteModal()
@@ -242,6 +432,131 @@ func parseSplitSize(value string) (int, error) {
 		return 0, errors.New("invalid split size")
 	}
 	return n, nil
+}
+
+func validateOperationInputSafety(input operationInput) error {
+	var err error
+	if input.mode == "encrypt" {
+		err = (&volume.EncryptRequest{
+			InputFile:   input.inputFile,
+			InputFiles:  input.inputFiles,
+			OnlyFiles:   input.onlyFiles,
+			OnlyFolders: input.onlyFolders,
+			OutputFile:  input.outputFile,
+			Keyfiles:    input.keyfiles,
+		}).ValidateOutputSafety()
+	} else {
+		err = (&volume.DecryptRequest{
+			InputFile:  input.inputFile,
+			OutputFile: input.outputFile,
+			Keyfiles:   input.keyfiles,
+			Recombine:  input.recombine,
+		}).ValidateOutputSafety()
+	}
+	if err != nil {
+		return err
+	}
+	return validateDeletionSafety(input)
+}
+
+func validateDeletionSafety(input operationInput) error {
+	if !input.delete {
+		return nil
+	}
+
+	deleteFiles := make([]string, 0, len(input.inputFiles)+1)
+	deleteFolders := make([]string, 0, len(input.onlyFolders))
+	if input.mode == "encrypt" {
+		if len(input.inputFiles) > 0 {
+			deleteFiles = append(deleteFiles, input.inputFiles...)
+			deleteFolders = append(deleteFolders, input.onlyFolders...)
+		} else if input.inputFile != "" {
+			deleteFiles = append(deleteFiles, input.inputFile)
+		}
+
+		for _, folder := range deleteFolders {
+			inside, err := operationPathInside(folder, input.outputFile)
+			if err != nil {
+				return err
+			}
+			if inside {
+				return fmt.Errorf("output %q is inside source folder %q scheduled for deletion", input.outputFile, folder)
+			}
+		}
+	} else if input.recombine {
+		inputBase := input.inputFile
+		if base, ok := fileops.SplitChunkBase(inputBase); ok {
+			inputBase = base
+		}
+		numChunks, _, err := fileops.CountChunks(inputBase)
+		if err == nil {
+			for i := range numChunks {
+				deleteFiles = append(deleteFiles, fmt.Sprintf("%s.%d", inputBase, i))
+			}
+		}
+	} else if input.inputFile != "" {
+		deleteFiles = append(deleteFiles, input.inputFile)
+	}
+
+	for _, keyfile := range input.keyfiles {
+		for _, source := range deleteFiles {
+			same, err := fileops.SamePathOrFile(keyfile, source)
+			if err != nil {
+				return err
+			}
+			if same {
+				return fmt.Errorf("keyfile %q aliases source %q scheduled for deletion", keyfile, source)
+			}
+		}
+		for _, folder := range deleteFolders {
+			inside, err := operationPathInside(folder, keyfile)
+			if err != nil {
+				return err
+			}
+			if inside {
+				return fmt.Errorf("keyfile %q is inside source folder %q scheduled for deletion", keyfile, folder)
+			}
+		}
+	}
+
+	return nil
+}
+
+func operationPathInside(rootPath, candidatePath string) (bool, error) {
+	root, err := resolveOperationPath(rootPath)
+	if err != nil {
+		return false, err
+	}
+	candidate, err := resolveOperationPath(candidatePath)
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false, fmt.Errorf("compare %q with %q: %w", rootPath, candidatePath, err)
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))), nil
+}
+
+func resolveOperationPath(path string) (string, error) {
+	absolute, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", fmt.Errorf("resolve path %q: %w", path, err)
+	}
+	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+		return filepath.Clean(resolved), nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("resolve path %q: %w", path, err)
+	}
+
+	parent, err := filepath.EvalSymlinks(filepath.Dir(absolute))
+	if err == nil {
+		return filepath.Join(parent, filepath.Base(absolute)), nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return absolute, nil
+	}
+	return "", fmt.Errorf("resolve parent of %q: %w", path, err)
 }
 
 func (a *App) captureOperationInput(snap app.Snapshot) (operationInput, error) {
@@ -357,6 +672,12 @@ func (a *App) startWork() {
 			a.updateUIState()
 			return
 		}
+		if err := validateDeletionSafety(input); err != nil {
+			crypto.SecureZero(input.password)
+			a.State.SetStatus(err.Error(), util.RED)
+			a.updateUIState()
+			return
+		}
 	} else if len(snap.InputFiles) == 0 {
 		a.State.SetStatusMessage(app.StatusNoFilesToProcess, util.YELLOW, app.StatusArgs{})
 		a.State.SetWorking(false)
@@ -429,11 +750,24 @@ func (a *App) runCapturedOperation(
 ) operationResult {
 	defer crypto.SecureZero(input.password)
 
+	if err := validateDeletionSafety(input); err != nil {
+		return operationResult{
+			err:    fmt.Errorf("prepare source deletion: %w", err),
+			failed: 1,
+		}
+	}
+	deletionManifest, err := captureOperationDeletionManifest(input)
+	if err != nil {
+		return operationResult{
+			err:    fmt.Errorf("prepare source deletion: %w", err),
+			failed: 1,
+		}
+	}
 	result := executor(ctx, input, reporter)
 	if ctx.Err() != nil {
 		result.cancelled = true
 	}
-	result = a.cleanupOperationSources(ctx, input, result)
+	result = a.cleanupOperationSources(ctx, input, deletionManifest, result)
 	if ctx.Err() != nil {
 		result.cancelled = true
 	}
@@ -498,19 +832,43 @@ func executeVolumeOperation(
 	return operationResult{err: err, completed: err == nil, kept: kept, cancelled: errors.Is(err, context.Canceled)}
 }
 
-func (a *App) cleanupOperationSources(ctx context.Context, input operationInput, result operationResult) operationResult {
+func (a *App) cleanupOperationSources(
+	ctx context.Context,
+	input operationInput,
+	manifest *operationDeletionManifest,
+	result operationResult,
+) operationResult {
 	if result.err != nil || !result.completed || result.cancelled || !input.delete || (input.mode == "decrypt" && result.kept) {
 		return result
 	}
-	remove := func(path string, all bool) bool {
+	if manifest == nil {
+		result.deleteFailed = true
+		return result
+	}
+	remove := func(source deletionSource, directory bool) bool {
+		state, err := inspectDeletionSource(source, directory)
+		if err != nil {
+			result.deleteFailed = true
+			return true
+		}
+		if state == deletionSourceMissing {
+			return true
+		}
+		if state == deletionSourceChanged {
+			result.deleteFailed = true
+			return true
+		}
 		remover := a.operationSourceRemover
 		if remover == nil {
 			remover = removeOperationSource
 		}
-		err := remover(ctx, path, all)
+		err = remover(ctx, source.path)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			result.cancelled = true
 			return false
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return true
 		}
 		if err != nil {
 			result.deleteFailed = true
@@ -518,37 +876,16 @@ func (a *App) cleanupOperationSources(ctx context.Context, input operationInput,
 		return true
 	}
 
-	if input.mode == "encrypt" {
-		if len(input.inputFiles) > 0 {
-			for _, path := range input.inputFiles {
-				if !remove(path, false) {
-					return result
-				}
-			}
-			for _, path := range input.onlyFolders {
-				if !remove(path, true) {
-					return result
-				}
-			}
+	for _, source := range manifest.files {
+		if !remove(source, false) {
 			return result
 		}
-		remove(input.inputFile, false)
-		return result
 	}
-
-	if input.recombine {
-		for i := 0; ; i++ {
-			chunkPath := input.inputFile + "." + strconv.Itoa(i)
-			if _, err := os.Stat(chunkPath); os.IsNotExist(err) {
-				break
-			}
-			if !remove(chunkPath, false) {
-				return result
-			}
+	for _, source := range manifest.directories {
+		if !remove(source, true) {
+			return result
 		}
-		return result
 	}
-	remove(input.inputFile, false)
 	return result
 }
 
@@ -582,7 +919,7 @@ func (a *App) runRecursiveOperation(
 		aggregate.cancelled = result.cancelled
 		aggregate.completed = result.completed
 		aggregate.kept = result.kept
-		aggregate.deleteFailed = result.deleteFailed
+		aggregate.deleteFailed = aggregate.deleteFailed || result.deleteFailed
 		if result.completed && result.err == nil && !result.cancelled {
 			aggregate.succeeded++
 		} else if !result.cancelled {
@@ -702,6 +1039,12 @@ func (a *App) finalizeOperation(
 			clearCredentials = true
 		}
 		switch {
+		case result.failed == 0 && result.deleteFailed:
+			if lastInput.mode == "encrypt" {
+				a.State.SetStatusMessage(app.StatusCompletedSomeDeleteFailed, util.YELLOW, app.StatusArgs{})
+			} else {
+				a.State.SetStatusMessage(app.StatusCompletedVolumeDeleteFailed, util.YELLOW, app.StatusArgs{})
+			}
 		case result.failed == 0:
 			a.State.SetStatusMessage(app.StatusRecursiveCompleted, util.GREEN, app.StatusArgs{Count: result.succeeded})
 		case result.succeeded == 0:
