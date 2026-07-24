@@ -174,6 +174,9 @@ jobs:
     needs: build
     if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release) }}
     runs-on: ubuntu-24.04
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
     environment: release
     permissions:
       contents: write
@@ -209,16 +212,15 @@ jobs:
       with:
         version: ${{ env.VERSION }}
 
-    - name: Release
-      uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+    - name: Stage release assets
+      uses: ./.github/actions/stage-release
       with:
+        version: ${{ env.VERSION }}
         body_path: ${{ github.workspace }}/release-body.md
         # The .zsync must ship alongside the AppImage: AppImageUpdate fetches it from the
         # same release to compute deltas. Without it the embedded update info is a dead end.
         files: |
-          artifacts/${{ env.APPIMAGE_NAME }}
-          artifacts/${{ env.APPIMAGE_NAME }}.zsync
-          artifacts/${{ env.APPIMAGE_NAME }}.sigstore.json
-          artifacts/${{ env.APPIMAGE_NAME }}.zsync.sigstore.json
-        tag_name: ${{ env.VERSION }}
-        overwrite_files: false
+          artifacts/Picocrypt-NG-${{ env.VERSION }}-x86_64.AppImage
+          artifacts/Picocrypt-NG-${{ env.VERSION }}-x86_64.AppImage.sigstore.json
+          artifacts/Picocrypt-NG-${{ env.VERSION }}-x86_64.AppImage.zsync
+          artifacts/Picocrypt-NG-${{ env.VERSION }}-x86_64.AppImage.zsync.sigstore.json

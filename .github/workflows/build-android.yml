@@ -117,6 +117,9 @@ jobs:
     needs: build
     if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release) }}
     runs-on: ubuntu-24.04
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
     environment: release
     permissions:
       contents: write
@@ -171,34 +174,26 @@ jobs:
         echo "ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_NAME=$VERSION" >> "$GITHUB_ENV"
         echo "ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
 
-    - name: Decode Android signing keystore
-      id: android-keystore
-      env:
-        ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      run: |
-        : "${ANDROID_KEYSTORE_BASE64:?Missing ANDROID_KEYSTORE_BASE64 secret}"
-        KEYSTORE_PATH="$RUNNER_TEMP/picocrypt-release.keystore"
-        printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
-        chmod 600 "$KEYSTORE_PATH"
-        echo "path=$KEYSTORE_PATH" >> "$GITHUB_OUTPUT"
-
-    - name: Make gradlew executable
-      working-directory: android
-      run: chmod +x gradlew
-
     - name: Build Signed Release APK
       working-directory: android
       env:
-        ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH: ${{ steps.android-keystore.outputs.path }}
+        ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         ORG_GRADLE_PROJECT_PICOCRYPT_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         ORG_GRADLE_PROJECT_PICOCRYPT_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
       run: |
-        : "${ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH:?Missing keystore path}"
+        set -euo pipefail
+        : "${ANDROID_KEYSTORE_BASE64:?Missing ANDROID_KEYSTORE_BASE64 secret}"
         : "${ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PASSWORD:?Missing ANDROID_KEYSTORE_PASSWORD secret}"
         : "${ORG_GRADLE_PROJECT_PICOCRYPT_KEY_ALIAS:?Missing ANDROID_KEY_ALIAS secret}"
         : "${ORG_GRADLE_PROJECT_PICOCRYPT_KEY_PASSWORD:?Missing ANDROID_KEY_PASSWORD secret}"
-        ./gradlew :app:assembleRelease \
+        KEYSTORE_PATH=$(mktemp "$RUNNER_TEMP/picocrypt-release.XXXXXX.keystore")
+        trap 'rm -f -- "$KEYSTORE_PATH"' EXIT
+        printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+        chmod 600 "$KEYSTORE_PATH"
+        export ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH="$KEYSTORE_PATH"
+        chmod +x gradlew
+        ./gradlew --no-daemon :app:assembleRelease \
           -PPICOCRYPT_REQUIRE_RELEASE_SIGNING=true
 
     - name: Verify exact release APK contract
@@ -233,13 +228,15 @@ jobs:
       with:
         version: ${{ env.VERSION }}
 
-    - name: Release
-      uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+    - name: Stage release assets
+      uses: ./.github/actions/stage-release
       with:
+        version: ${{ env.VERSION }}
         body_path: ${{ github.workspace }}/release-body.md
         files: |
-          out/*.apk
-          out/*.sigstore.json
-        tag_name: ${{ env.VERSION }}
-        make_latest: true
-        overwrite_files: false
+          out/Picocrypt-NG-android-arm64-v8a.apk
+          out/Picocrypt-NG-android-arm64-v8a.apk.sigstore.json
+          out/Picocrypt-NG-android-x86_64.apk
+          out/Picocrypt-NG-android-x86_64.apk.sigstore.json
+          out/Picocrypt-NG-android-universal.apk
+          out/Picocrypt-NG-android-universal.apk.sigstore.json

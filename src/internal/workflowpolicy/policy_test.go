@@ -50,15 +50,49 @@ func TestStaticChecksWorkflowEnforcesFormatVetLintAndVuln(t *testing.T) {
 }
 
 func TestReleaseUploadsNeverOverwriteExistingAssets(t *testing.T) {
-	for _, tc := range releaseWorkflowCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			workflow := mustReadWorkflowDoc(t, tc.path)
-			releaseJob := mustJob(t, workflow, tc.job)
-			releaseStep := mustHaveStepUsingPrefix(t, releaseJob, "softprops/action-gh-release@")
-			if got := releaseStep.With["overwrite_files"]; got != false && got != "false" {
-				t.Fatalf("release overwrite_files = %#v, want false to preserve published binaries", got)
-			}
-		})
+	action := mustReadCompositeActionDoc(t, ".github/actions/stage-release/action.yml")
+	uploadStep := mustCompositeStepNamed(t, action, "Upload assets to draft release")
+	if got := uploadStep.With["overwrite_files"]; got != false && got != "false" {
+		t.Fatalf("release overwrite_files = %#v, want false to preserve staged binaries", got)
+	}
+}
+
+func TestWorkflowAndCompositeYAMLContainNoDirectReleaseMutation(t *testing.T) {
+	var paths []string
+	for _, pattern := range []string{
+		filepath.Join(repoRoot(t), ".github", "workflows", "*.yml"),
+		filepath.Join(repoRoot(t), ".github", "workflows", "*.yaml"),
+		filepath.Join(repoRoot(t), ".github", "actions", "*", "action.yml"),
+	} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("glob %s: %v", pattern, err)
+		}
+		paths = append(paths, matches...)
+	}
+	directCLI := regexp.MustCompile(`(?m)\bgh\s+release\s+(create|upload|edit)\b`)
+	directAPI := regexp.MustCompile(`(?m)\bgh\s+api\b[^\n]*(/releases|releases/)`)
+	for _, path := range paths {
+		if filepath.Clean(path) == filepath.Join(
+			repoRoot(t),
+			".github",
+			"actions",
+			"stage-release",
+			"action.yml",
+		) {
+			continue
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		source := strings.ReplaceAll(string(content), "\\\n", " ")
+		if strings.Contains(source, "softprops/action-gh-release@") {
+			t.Fatalf("%s directly invokes softprops instead of the shared release gate", path)
+		}
+		if directCLI.MatchString(source) || directAPI.MatchString(source) {
+			t.Fatalf("%s directly mutates GitHub releases instead of the shared release gate", path)
+		}
 	}
 }
 
@@ -346,7 +380,7 @@ func TestMacOSReleaseWorkflowPublishesCLIFromFlatArtifact(t *testing.T) {
 	mustContain(t, verifyStep.Run, "set -euo pipefail")
 	mustContain(t, verifyStep.Run, "test -s artifacts/build-macos/Picocrypt-NG-cli-macos")
 
-	releaseStep := mustHaveStepUsingPrefix(t, releaseJob, "softprops/action-gh-release@")
+	releaseStep := mustStepNamed(t, releaseJob, "Stage release assets")
 	files, ok := releaseStep.With["files"].(string)
 	if !ok {
 		t.Fatalf("macOS release files input = %#v, want string", releaseStep.With["files"])
@@ -513,7 +547,7 @@ func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testin
 	if got := downloadSigned.With["name"]; got != "signed-windows" {
 		t.Fatalf("Windows release artifact name = %#v, want signed-windows", got)
 	}
-	orderedReleaseSteps := []string{"Download signed artifact", "Sign and attest artifacts", "Release"}
+	orderedReleaseSteps := []string{"Download signed artifact", "Sign and attest artifacts", "Stage release assets"}
 	lastIndex = -1
 	for _, name := range orderedReleaseSteps {
 		index := -1
@@ -1319,43 +1353,48 @@ func TestAndroidReleaseWorkflowKeepsSigningSecretsOutOfBuildJob(t *testing.T) {
 	mustNotHaveStepNamed(t, buildJob, "Decode Android signing keystore")
 	mustNotHaveStepNamed(t, buildJob, "Build Signed Release APK")
 
-	decodeStep := mustStepNamed(t, releaseJob, "Decode Android signing keystore")
-	if decodeStep.ID != "android-keystore" {
-		t.Fatalf("release keystore decode step id = %q, want android-keystore", decodeStep.ID)
-	}
-	if _, ok := decodeStep.Env["ANDROID_KEYSTORE_BASE64"]; !ok {
-		t.Fatal("release keystore decode step should declare ANDROID_KEYSTORE_BASE64")
+	mustNotHaveStepNamed(t, releaseJob, "Decode Android signing keystore")
+	buildSignedStep := mustStepNamed(t, releaseJob, "Build Signed Release APK")
+	for _, key := range []string{
+		"ANDROID_KEYSTORE_BASE64",
+		"ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PASSWORD",
+		"ORG_GRADLE_PROJECT_PICOCRYPT_KEY_ALIAS",
+		"ORG_GRADLE_PROJECT_PICOCRYPT_KEY_PASSWORD",
+	} {
+		value, ok := buildSignedStep.Env[key]
+		if !ok {
+			t.Fatalf("signed build step missing scoped env %q", key)
+		}
+		if !strings.Contains(value, "secrets.ANDROID_") {
+			t.Fatalf("signed build env %q = %q, want an Android repository secret", key, value)
+		}
 	}
 	for _, key := range []string{
 		"ANDROID_KEYSTORE_PASSWORD",
 		"ANDROID_KEY_ALIAS",
 		"ANDROID_KEY_PASSWORD",
 	} {
-		if _, ok := decodeStep.Env[key]; ok {
-			t.Fatalf("release keystore decode step must not declare env %q", key)
-		}
-		mustNotContain(t, decodeStep.Run, key)
-	}
-	mustNotContain(t, decodeStep.Run, "PICOCRYPT_KEYSTORE_PASSWORD")
-	mustNotContain(t, decodeStep.Run, "PICOCRYPT_KEY_ALIAS")
-	mustNotContain(t, decodeStep.Run, "PICOCRYPT_KEY_PASSWORD")
-	mustNotContain(t, decodeStep.Run, "$GITHUB_ENV")
-	mustContain(t, decodeStep.Run, "path=$KEYSTORE_PATH")
-	mustMatch(t, decodeStep.Run, `(?m)>>\s*"\$GITHUB_OUTPUT"`)
-
-	buildSignedStep := mustStepNamed(t, releaseJob, "Build Signed Release APK")
-	for _, key := range []string{
-		"ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH",
-		"ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PASSWORD",
-		"ORG_GRADLE_PROJECT_PICOCRYPT_KEY_ALIAS",
-		"ORG_GRADLE_PROJECT_PICOCRYPT_KEY_PASSWORD",
-	} {
-		if _, ok := buildSignedStep.Env[key]; !ok {
-			t.Fatalf("signed build step missing scoped env %q", key)
+		if _, ok := buildSignedStep.Env[key]; ok {
+			t.Fatalf("signed build step must use Gradle-scoped env instead of %q", key)
 		}
 	}
-	if got := buildSignedStep.Env["ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH"]; got != "${{ steps.android-keystore.outputs.path }}" {
-		t.Fatalf("signed build keystore path env = %q, want android-keystore step output", got)
+	mustContainInOrder(
+		t,
+		buildSignedStep.Run,
+		`KEYSTORE_PATH=$(mktemp "$RUNNER_TEMP/picocrypt-release.XXXXXX.keystore")`,
+		`trap 'rm -f -- "$KEYSTORE_PATH"' EXIT`,
+		`printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"`,
+		`export ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH="$KEYSTORE_PATH"`,
+		"./gradlew --no-daemon :app:assembleRelease",
+	)
+	mustNotContain(t, buildSignedStep.Run, "$GITHUB_ENV")
+	mustNotContain(t, buildSignedStep.Run, "$GITHUB_OUTPUT")
+	for _, step := range releaseJob.Steps {
+		for _, value := range step.Env {
+			if step.Name != "Build Signed Release APK" && strings.Contains(value, "secrets.ANDROID_") {
+				t.Fatalf("Android signing secret is exposed to later step %q", step.Name)
+			}
+		}
 	}
 	downloadStep := mustHaveStepUsingPrefix(t, releaseJob, "actions/download-artifact@")
 	mustMatch(t, downloadStep.Uses, `actions/download-artifact@[0-9a-f]{40}`)
@@ -1484,7 +1523,7 @@ func TestAndroidReleaseSigningTrustAnchorAndPublicationOrder(t *testing.T) {
 		"Verify exact release APK contract",
 		"Prepare artifacts",
 		"Sign and attest artifacts",
-		"Release",
+		"Stage release assets",
 	}
 	lastIndex := -1
 	for _, name := range orderedSteps {

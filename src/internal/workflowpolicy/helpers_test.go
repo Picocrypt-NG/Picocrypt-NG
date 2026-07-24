@@ -42,14 +42,22 @@ type workflowDispatchInput struct {
 }
 
 type workflowJob struct {
-	If              string            `yaml:"if"`
-	Needs           any               `yaml:"needs"`
-	TimeoutMinutes  int               `yaml:"timeout-minutes"`
-	ContinueOnError any               `yaml:"continue-on-error"`
-	Environment     any               `yaml:"environment"`
-	Permissions     map[string]string `yaml:"permissions"`
-	Env             map[string]string `yaml:"env"`
-	Steps           []workflowStep    `yaml:"steps"`
+	If              string              `yaml:"if"`
+	Needs           any                 `yaml:"needs"`
+	RunsOn          string              `yaml:"runs-on"`
+	Concurrency     workflowConcurrency `yaml:"concurrency"`
+	TimeoutMinutes  int                 `yaml:"timeout-minutes"`
+	ContinueOnError any                 `yaml:"continue-on-error"`
+	Environment     any                 `yaml:"environment"`
+	Permissions     map[string]string   `yaml:"permissions"`
+	Env             map[string]string   `yaml:"env"`
+	Steps           []workflowStep      `yaml:"steps"`
+}
+
+type workflowConcurrency struct {
+	Group            string `yaml:"group"`
+	Queue            string `yaml:"queue"`
+	CancelInProgress any    `yaml:"cancel-in-progress"`
 }
 
 type workflowStep struct {

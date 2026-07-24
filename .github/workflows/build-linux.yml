@@ -257,6 +257,9 @@ jobs:
     needs: build
     if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release) }}
     runs-on: ubuntu-24.04
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
     environment: release
     permissions:
       contents: write
@@ -290,18 +293,19 @@ jobs:
       with:
         version: ${{ env.VERSION }}
 
-    - name: Release
-      uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+    - name: Stage release assets
+      uses: ./.github/actions/stage-release
       with:
+        version: ${{ env.VERSION }}
         body_path: ${{ github.workspace }}/release-body.md
         files: |
           artifacts/build-linux-amd64/Picocrypt-NG
+          artifacts/build-linux-amd64/Picocrypt-NG.sigstore.json
           artifacts/build-linux-amd64/Picocrypt-NG-cli
+          artifacts/build-linux-amd64/Picocrypt-NG-cli.sigstore.json
           artifacts/build-linux-amd64/Picocrypt-NG.deb
+          artifacts/build-linux-amd64/Picocrypt-NG.deb.sigstore.json
           artifacts/build-linux-arm64/Picocrypt-NG-arm64
+          artifacts/build-linux-arm64/Picocrypt-NG-arm64.sigstore.json
           artifacts/build-linux-arm64/Picocrypt-NG-cli-arm64
-          artifacts/build-linux-amd64/*.sigstore.json
-          artifacts/build-linux-arm64/*.sigstore.json
-        tag_name: ${{ env.VERSION }}
-        make_latest: true
-        overwrite_files: false
+          artifacts/build-linux-arm64/Picocrypt-NG-cli-arm64.sigstore.json

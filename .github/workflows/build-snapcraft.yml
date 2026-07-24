@@ -76,7 +76,10 @@ jobs:
   release:
     needs: build-snapcraft
     if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
     environment: release
     permissions:
       contents: write
@@ -107,13 +110,11 @@ jobs:
       with:
         version: ${{ env.VERSION }}
 
-    - name: Release
-      uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+    - name: Stage release assets
+      uses: ./.github/actions/stage-release
       with:
+        version: ${{ env.VERSION }}
         body_path: ${{ github.workspace }}/release-body.md
         files: |
-          out/*.snap
-          out/*.sigstore.json
-        tag_name: ${{ env.VERSION }}
-        make_latest: true
-        overwrite_files: false
+          out/picocrypt-ng_${{ env.VERSION }}_amd64.snap
+          out/picocrypt-ng_${{ env.VERSION }}_amd64.snap.sigstore.json
