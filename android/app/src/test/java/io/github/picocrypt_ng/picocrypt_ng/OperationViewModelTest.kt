@@ -140,10 +140,9 @@ class OperationViewModelTest {
             )
 
             viewModel.cancelOperation()
-            advanceUntilIdle()
+            val state = viewModel.operationState.first { it?.done == true }
 
             verify(exactly = 1) { GoBridge.cancelOperation("op_cancel") }
-            val state = viewModel.operationState.value
             assertEquals(OperationStatus.CANCELLED, state?.status?.code)
             assertEquals(0.4f, state?.progress ?: -1f, 0.001f)
             assertTrue("The ViewModel must expose cancellation as terminal", state?.done == true)
