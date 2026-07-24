@@ -115,7 +115,8 @@ Xvfb -displayfd 3 -screen 0 1024x768x24 -nolisten tcp -ac +extension GLX \
 xvfb_pid="$!"
 
 display_number=""
-deadline=$((SECONDS + 10))
+xvfb_probe_error=""
+deadline=$((SECONDS + 30))
 while :; do
   if ! process_running "$xvfb_pid"; then
     reap_child "$xvfb_pid"
@@ -126,13 +127,16 @@ while :; do
   if IFS= read -r display_number <"$display_file" &&
     [[ "$display_number" =~ ^[0-9]+$ ]]; then
     export DISPLAY=":$display_number"
-    if xdotool getdisplaygeometry >/dev/null 2>&1; then
+    if xvfb_probe_error="$(xdotool getdisplaygeometry 2>&1)"; then
       break
     fi
   fi
 
   if ((SECONDS >= deadline)); then
-    fail "Xvfb did not become ready within 10 seconds"
+    if [[ "$display_number" =~ ^[0-9]+$ ]]; then
+      fail "Xvfb published display $DISPLAY but xdotool could not connect within 30 seconds: ${xvfb_probe_error:-no diagnostic}"
+    fi
+    fail "Xvfb did not publish a display number within 30 seconds"
   fi
   sleep 0.1
 done
