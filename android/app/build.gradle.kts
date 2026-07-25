@@ -1,5 +1,6 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import com.android.build.api.variant.FilterConfiguration.FilterType.ABI
+import org.gradle.api.tasks.testing.Test
 
 plugins {
     alias(libs.plugins.android.application)
@@ -124,8 +125,12 @@ android {
     }
 }
 
-tasks.matching { it.name == "testDebugUnitTest" }.configureEach {
+tasks.withType<Test>().matching { it.name == "testDebugUnitTest" }.configureEach {
     dependsOn("processReleaseResources")
+    systemProperty(
+        "picocrypt.releaseLocaleFilters",
+        android.androidResources.localeFilters.joinToString(","),
+    )
 }
 
 kotlin {

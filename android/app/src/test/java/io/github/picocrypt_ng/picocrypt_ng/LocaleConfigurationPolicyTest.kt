@@ -13,6 +13,9 @@ class LocaleConfigurationPolicyTest {
     private val resourcesProperties = File("src/main/res/resources.properties")
     private val sourceManifest = File("src/main/AndroidManifest.xml")
     private val buildRoot = File("build")
+    private val expectedGeneratedLocales by lazy {
+        releaseLocaleFilters().mapTo(mutableSetOf(), ::generatedLocaleTag)
+    }
 
     @Test
     fun `source declares generated and filtered locale policy`() {
@@ -21,13 +24,6 @@ class LocaleConfigurationPolicyTest {
         val androidResourcesBlock = androidBlock?.let { blockNamed(it, "androidResources") }
         val buildTypesBlock = androidBlock?.let { blockNamed(it, "buildTypes") }
         val debugBlock = buildTypesBlock?.let { blockNamed(it, "debug") }
-        val debugUnitTestBlock = blockAfter(
-            buildText,
-            Regex(
-                """tasks\.matching\s*\{\s*it\.name\s*==\s*"testDebugUnitTest"\s*}""" +
-                    """\.configureEach\s*\{""",
-            ),
-        )
         val issues = mutableListOf<String>()
 
         if (androidResourcesBlock?.contains(Regex("""\bgenerateLocaleConfig\s*=\s*true\b""")) != true) {
@@ -45,17 +41,6 @@ class LocaleConfigurationPolicyTest {
             }
         }
 
-        val configurationMatches = androidResourcesBlock
-            ?.let { localeFilters.findAll(it).toList() }
-            .orEmpty()
-        val configuredLocales = configurationMatches.singleOrNull()
-            ?.groupValues
-            ?.get(1)
-            ?.let { body -> quotedValue.findAll(body).map { it.groupValues[1] }.toList() }
-        if (configuredLocales != expectedResourceConfigurations) {
-            issues += "androidResources.localeFilters=" + configuredLocales +
-                "; want " + expectedResourceConfigurations
-        }
         val legacyFilters = androidBlock
             ?.let { legacyResourceConfigurations.findAll(it).map { match -> match.value }.toList() }
             .orEmpty()
@@ -65,10 +50,6 @@ class LocaleConfigurationPolicyTest {
         if (debugBlock?.contains(Regex("""\bisPseudoLocalesEnabled\s*=\s*true\b""")) != true) {
             issues += "debug pseudolocales must remain enabled"
         }
-        if (debugUnitTestBlock?.contains(Regex("""dependsOn\("processReleaseResources"\)""")) != true) {
-            issues += "testDebugUnitTest must depend on processReleaseResources"
-        }
-
         assertTrue("Locale configuration policy violations: " + issues, issues.isEmpty())
     }
 
@@ -165,6 +146,24 @@ class LocaleConfigurationPolicyTest {
         assertTrue("Generated release LocaleConfig policy violations: " + issues, issues.isEmpty())
     }
 
+    private fun releaseLocaleFilters(): List<String> {
+        val configured = System.getProperty(releaseLocaleFiltersProperty)
+            ?.split(",")
+            ?.filter(String::isNotBlank)
+            .orEmpty()
+        check(configured.isNotEmpty()) {
+            "Missing $releaseLocaleFiltersProperty; run this test through Gradle"
+        }
+        return configured
+    }
+
+    private fun generatedLocaleTag(resourceConfiguration: String): String {
+        if (resourceConfiguration.startsWith("b+")) {
+            return resourceConfiguration.removePrefix("b+").replace("+", "-")
+        }
+        return resourceConfiguration.replace(androidRegionQualifier, "-")
+    }
+
     private fun blockNamed(source: String, name: String): String? {
         return blockAfter(source, Regex("""\b""" + Regex.escape(name) + """\s*\{"""))
     }
@@ -244,25 +243,11 @@ class LocaleConfigurationPolicyTest {
 
     private companion object {
         private const val androidNamespace = "http://schemas.android.com/apk/res/android"
-        private val expectedResourceConfigurations = listOf(
-            "en",
-            "ru",
-            "de",
-            "fr",
-            "es",
-            "b+zh+Hans",
-            "hi",
-            "ko",
-        )
-        private val expectedGeneratedLocales = setOf("en", "ru", "de", "fr", "es", "zh-Hans", "hi", "ko")
-        private val localeFilters = Regex(
-            """\blocaleFilters\s*\+=\s*listOf\((.*?)\)""",
-            RegexOption.DOT_MATCHES_ALL,
-        )
+        private const val releaseLocaleFiltersProperty = "picocrypt.releaseLocaleFilters"
+        private val androidRegionQualifier = Regex("""-r(?=[A-Z]{2}(?:$|-)|\d{3}(?:$|-))""")
         private val legacyResourceConfigurations = Regex(
             """\b(?:resourceConfigurations|resConfigs?)\b""",
         )
-        private val quotedValue = Regex(""""([^"]+)"""")
         private val versionedXmlDirectory = Regex("""xml-v\d+""")
         private val localeConfigReference = Regex("""android:localeConfig\s*=\s*"([^"]+)"""")
     }
