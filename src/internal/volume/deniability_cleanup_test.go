@@ -10,7 +10,7 @@ import (
 
 // TestRemoveDeniabilityRemovesTempOnVerificationFailure locks the cleanup
 // invariant: when RemoveDeniability decrypts a deniability wrapper whose inner
-// payload is not a valid volume, it must remove the decrypted .tmp staging file
+// payload is not a valid volume, it must remove its random staging file
 // rather than leaving the recovered inner plaintext on disk. Cleanup is plain
 // os.Remove (no shredding — overwrite-before-unlink was dropped as useless on
 // flash/CoW filesystems); the only invariant is that the temp is gone.
@@ -32,13 +32,21 @@ func TestRemoveDeniabilityRemovesTempOnVerificationFailure(t *testing.T) {
 		t.Fatalf("AddDeniability failed: %v", err)
 	}
 
-	tmpPath := wrappedPath + ".tmp"
-
-	decryptedPath, err := RemoveDeniability(wrappedPath, []byte(password), nil, rs)
-	if err == nil {
-		t.Fatalf("RemoveDeniability succeeded for invalid inner volume, returned %q", decryptedPath)
+	before, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("read directory before RemoveDeniability: %v", err)
 	}
-	if _, err := os.Lstat(tmpPath); !os.IsNotExist(err) {
-		t.Fatalf("temp path still exists after cleanup: %v", err)
+
+	decryptedStage, err := RemoveDeniability(wrappedPath, []byte(password), nil, rs)
+	if err == nil {
+		decryptedStage.Cleanup()
+		t.Fatalf("RemoveDeniability succeeded for invalid inner volume, returned %q", decryptedStage.Path())
+	}
+	after, readErr := os.ReadDir(tmpDir)
+	if readErr != nil {
+		t.Fatalf("read directory after RemoveDeniability: %v", readErr)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("RemoveDeniability leaked a staging file: before=%v after=%v", before, after)
 	}
 }

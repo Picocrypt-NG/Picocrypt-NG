@@ -1,0 +1,178 @@
+<resources>
+    <!-- File Card -->
+    <string name="choose_file">फ़ाइल चुनें</string>
+    <string name="copying_file">फ़ाइल कॉपी हो रही है…</string>
+    <string name="choose_file_description">फ़ाइल चुनें</string>
+    <string name="choose_single_file">एक फ़ाइल</string>
+    <string name="choose_multiple_files">कई फ़ाइलें</string>
+    <string name="choose_folder">फ़ोल्डर</string>
+    <plurals name="selected_files_count">
+        <item quantity="one">%1$d फ़ाइल चुनी गई</item>
+        <item quantity="other">%1$d फ़ाइलें चुनी गईं</item>
+    </plurals>
+    <!-- Password Card -->
+    <string name="password">पासवर्ड</string>
+    <string name="confirm_password">पासवर्ड की पुष्टि करें</string>
+    <string name="enter_password">पासवर्ड दर्ज करें</string>
+    <string name="deniability_password_required">विश्वसनीय इनकार के लिए खाली न होने वाला पासवर्ड आवश्यक है</string>
+    <string name="passwords_must_match">दोनों पासवर्ड मेल खाने चाहिए</string>
+    <string name="hide_password">पासवर्ड छिपाएँ</string>
+    <string name="show_password">पासवर्ड दिखाएँ</string>
+    <!-- Comments Card -->
+    <string name="comments">टिप्पणियाँ</string>
+    <string name="comments_not_readable">विश्वसनीय इनकार मोड में टिप्पणियों का पूर्वावलोकन नहीं किया जा सकता</string>
+    <string name="comments_disabled_deniability">विश्वसनीय इनकार मोड में अक्षम</string>
+    <string name="comments_plaintext_warning">टिप्पणियाँ सादा-पाठ मेटाडेटा हैं। यहाँ कोई गुप्त जानकारी न डालें।</string>
+    <!-- Keyfile Card -->
+    <string name="keyfiles">कुंजी फ़ाइलें</string>
+    <plurals name="keyfiles_count">
+        <item quantity="one">%1$d कुंजी फ़ाइल</item>
+        <item quantity="other">%1$d कुंजी फ़ाइलें</item>
+    </plurals>
+    <plurals name="keyfiles_required_count">
+        <item quantity="one">%1$d कुंजी फ़ाइल आवश्यक है</item>
+        <item quantity="other">%1$d कुंजी फ़ाइलें आवश्यक हैं</item>
+    </plurals>
+    <string name="add">जोड़ें</string>
+    <string name="clear">साफ़ करें</string>
+    <string name="copying">कॉपी हो रही है…</string>
+    <string name="require_this_order">इसी क्रम को अनिवार्य करें</string>
+    <string name="error_creating_keyfile">कुंजी फ़ाइल बनाने में त्रुटि</string>
+    <string name="keyfiles_required_warning">इस वॉल्यूम के लिए कुंजी फ़ाइलें आवश्यक हैं</string>
+    <string name="keyfile_order_matters">कुंजी फ़ाइलों का उपयोग आवश्यक क्रम में करें</string>
+    <!-- Advanced Card -->
+    <string name="advanced_settings">उन्नत सेटिंग्स (%1$d)</string>
+    <string name="reed_solomon">Reed-Solomon</string>
+    <string name="paranoid">पैरानॉइड मोड</string>
+    <string name="deniability">विश्वसनीय इनकार</string>
+    <string name="compress">कंप्रेस करें</string>
+    <string name="expand_or_collapse">फैलाएँ या समेटें</string>
+    <!-- Decrypt Options Card -->
+    <string name="decrypt_options">डिक्रिप्शन विकल्प (%1$d)</string>
+    <string name="verify_first">पहले अखंडता सत्यापित करें</string>
+    <!-- Decryption Info Card -->
+    <string name="encryption_settings">एन्क्रिप्शन सेटिंग्स</string>
+    <string name="keyfiles_section">कुंजी फ़ाइलें</string>
+    <string name="required">आवश्यक: %1$s</string>
+    <string name="yes">हाँ</string>
+    <string name="no">नहीं</string>
+    <string name="order_matters">क्रम महत्वपूर्ण है: %1$s</string>
+    <string name="advanced_settings_section">उन्नत सेटिंग्स</string>
+    <string name="reed_solomon_status">Reed-Solomon: %1$s</string>
+    <string name="deniability_status">विश्वसनीय इनकार: %1$s</string>
+    <string name="paranoid_mode_status">पैरानॉइड मोड: %1$s</string>
+    <string name="enabled">सक्षम</string>
+    <string name="disabled">अक्षम</string>
+    <string name="unknown">अज्ञात</string>
+    <string name="deniability_note">यह वॉल्यूम विश्वसनीय इनकार मोड का उपयोग करता है। डिक्रिप्ट करने से पहले हेडर मेटाडेटा का पूर्वावलोकन नहीं किया जा सकता; कुछ सेटिंग्स अज्ञात हैं।</string>
+    <string name="comments_section">टिप्पणियाँ</string>
+    <string name="no_comments">कोई टिप्पणी नहीं</string>
+    <!-- Work Button -->
+    <string name="encrypt_file">फ़ाइल एन्क्रिप्ट करें</string>
+    <string name="decrypt_file">फ़ाइल डिक्रिप्ट करें</string>
+    <string name="processing">प्रोसेस हो रहा है…</string>
+    <!-- Progress Card -->
+    <string name="encrypting">एन्क्रिप्ट हो रहा है…</string>
+    <string name="decrypting">डिक्रिप्ट हो रहा है…</string>
+    <string name="cancel">रद्द करें</string>
+    <string name="data_corruption_detected">डेटा क्षति का पता चला</string>
+    <string name="force_decrypt_warning">एन्क्रिप्टेड वॉल्यूम अखंडता जाँच में विफल रहा। बलपूर्वक डिक्रिप्ट करने पर असत्यापित आउटपुट रखा जाता है, जो आंशिक या पूरी तरह क्षतिग्रस्त हो सकता है।</string>
+    <string name="force_decrypt">बलपूर्वक डिक्रिप्ट करें</string>
+    <string name="authentication_error">प्रमाणीकरण त्रुटि</string>
+    <string name="retry">फिर प्रयास करें</string>
+    <string name="error">त्रुटि</string>
+    <string name="unknown_error_occurred">अज्ञात त्रुटि हुई</string>
+    <string name="close">बंद करें</string>
+    <string name="operation_cancelled">कार्रवाई रद्द की गई</string>
+    <string name="operation_cancelled_message">कोई आउटपुट पूरा नहीं हुआ। अस्थायी फ़ाइलें साफ़ कर दी जाएँगी।</string>
+    <string name="encryption_complete">एन्क्रिप्शन पूर्ण</string>
+    <string name="decryption_complete">डिक्रिप्शन पूर्ण</string>
+    <string name="operation_completed_successfully">कार्रवाई पूर्ण हुई। आउटपुट को रखने के लिए उसे सहेजें।</string>
+    <string name="error_saving_file">फ़ाइल सहेजने में त्रुटि: %1$s</string>
+    <string name="save">सहेजें</string>
+    <string name="discard_output">आउटपुट त्यागें</string>
+    <!-- Error Dialog -->
+    <string name="ok">ठीक है</string>
+    <!-- Logo Bar -->
+    <string name="logo_icon">लोगो आइकन</string>
+    <string name="logo_text">लोगो टेक्स्ट</string>
+    <!-- Privacy & Security -->
+    <string name="privacy_security">गोपनीयता और सुरक्षा</string>
+    <string name="prevent_screenshots">स्क्रीनशॉट रोकें</string>
+    <string name="prevent_screenshots_description">स्क्रीनशॉट और स्क्रीन रिकॉर्डिंग को रोकता है, और हाल के ऐप्स के पूर्वावलोकन में ऐप की सामग्री छिपाता है।</string>
+    <!-- Foreground Service -->
+    <string name="fgs_channel_name">कार्रवाई की प्रगति</string>
+    <string name="fgs_encrypting">एन्क्रिप्ट हो रहा है</string>
+    <string name="fgs_decrypting">डिक्रिप्ट हो रहा है</string>
+    <string name="fgs_working">प्रोसेस हो रहा है…</string>
+    <!-- Operation status display text keyed by stable mobile status codes. -->
+    <string name="status_starting">शुरू हो रहा है…</string>
+    <string name="status_completed">पूर्ण</string>
+    <string name="status_cancelled">रद्द</string>
+    <string name="status_error">त्रुटि</string>
+    <string name="status_compressing_files">फ़ाइलें कंप्रेस हो रही हैं…</string>
+    <string name="status_generating_values">मान बनाए जा रहे हैं…</string>
+    <string name="status_deriving_key">कुंजी व्युत्पन्न की जा रही है…</string>
+    <string name="status_reading_keyfiles">कुंजी फ़ाइलें पढ़ी जा रही हैं…</string>
+    <string name="status_calculating_values">मानों की गणना हो रही है…</string>
+    <string name="status_writing_values">मान लिखे जा रहे हैं…</string>
+    <string name="status_splitting">विभाजित किया जा रहा है…</string>
+    <string name="status_recombining_chunks">भागों को फिर जोड़ा जा रहा है…</string>
+    <string name="status_reading_values">मान पढ़े जा रहे हैं…</string>
+    <string name="status_duplicate_keyfiles_warning">चेतावनी: दोहराई गई कुंजी फ़ाइलें मिलीं (कुंजियाँ एक-दूसरे को निरस्त कर देती हैं)…</string>
+    <string name="status_verifying_integrity">अखंडता सत्यापित हो रही है (2 में से चरण 1)…</string>
+    <string name="status_mac_verification_failed_continuing">MAC सत्यापन विफल, फिर भी जारी है…</string>
+    <string name="status_repairing_verifying">मरम्मत हो रही है (सत्यापन)…</string>
+    <string name="status_integrity_verified_decrypting">अखंडता सत्यापित, डिक्रिप्शन जारी है…</string>
+    <string name="status_comparing_values">मानों की तुलना हो रही है…</string>
+    <string name="status_unzipping">फ़ाइलें निकाली जा रही हैं…</string>
+    <string name="status_adding_plausible_deniability">विश्वसनीय इनकार जोड़ा जा रहा है…</string>
+    <string name="status_removing_deniability_protection">विश्वसनीय इनकार की सुरक्षा हटाई जा रही है…</string>
+    <string name="status_compressing_rate">%1$.2f MiB/s की दर से कंप्रेस हो रहा है (ETA: %2$s)</string>
+    <string name="status_encrypting_rate">%1$.2f MiB/s की दर से एन्क्रिप्ट हो रहा है (ETA: %2$s)</string>
+    <string name="status_splitting_rate">%1$.2f MiB/s की दर से विभाजित हो रहा है (ETA: %2$s)</string>
+    <string name="status_recombining_rate">%1$.2f MiB/s की दर से भाग फिर जोड़े जा रहे हैं (ETA: %2$s)</string>
+    <string name="status_verifying_rate">%1$.2f MiB/s की दर से सत्यापन हो रहा है (ETA: %2$s)</string>
+    <string name="status_decrypting_rate">%1$.2f MiB/s की दर से डिक्रिप्ट हो रहा है (ETA: %2$s)</string>
+    <string name="status_repairing_rate">%1$.2f MiB/s की दर से मरम्मत हो रही है (ETA: %2$s)</string>
+    <string name="status_unpacking_rate">%1$.2f MiB/s की दर से फ़ाइलें निकाली जा रही हैं (ETA: %2$s)</string>
+    <string name="status_adding_deniability_rate">%1$.2f MiB/s की दर से विश्वसनीय इनकार जोड़ा जा रहा है (ETA: %2$s)</string>
+    <string name="status_removing_deniability_rate">%1$.2f MiB/s की दर से विश्वसनीय इनकार हटाया जा रहा है (ETA: %2$s)</string>
+    <string name="progress_percent">%1$.2f%%</string>
+    <plurals name="progress_item_count">
+        <item quantity="one">%2$d में से %1$d आइटम</item>
+        <item quantity="other">%2$d में से %1$d आइटम</item>
+    </plurals>
+    <!-- Stable error display boundary -->
+    <string name="error_auth_failed">प्रमाणीकरण विफल। पासवर्ड, कुंजी फ़ाइलें और उनका क्रम जाँचें।</string>
+    <string name="error_data_corrupted">अखंडता जाँच विफल। आउटपुट असत्यापित है और क्षतिग्रस्त हो सकता है।</string>
+    <string name="error_corrupt_header">एन्क्रिप्टेड वॉल्यूम का हेडर क्षतिग्रस्त या अमान्य है।</string>
+    <string name="error_file_not_found">फ़ाइल नहीं मिली या उस तक पहुँचा नहीं जा सका।</string>
+    <string name="error_operation_failed">कार्रवाई विफल हुई।</string>
+    <string name="error_unknown">अज्ञात त्रुटि हुई।</string>
+    <string name="error_reason_permission_denied">अनुमति नहीं मिली।</string>
+    <string name="error_reason_file_not_found">फ़ाइल नहीं मिली।</string>
+    <string name="error_reason_insufficient_storage">स्टोरेज में पर्याप्त स्थान नहीं है।</string>
+    <string name="error_reason_io">इनपुट/आउटपुट त्रुटि।</string>
+    <string name="error_reason_unknown">अज्ञात कारण।</string>
+    <string name="error_operation_start_failed">कार्रवाई शुरू नहीं हो सकी।</string>
+    <string name="error_no_active_operation">कोई सक्रिय कार्रवाई नहीं है।</string>
+    <string name="error_operation_data_unavailable">फिर प्रयास करने के लिए कार्रवाई का डेटा उपलब्ध नहीं है।</string>
+    <string name="error_decrypt_retry_only">केवल डिक्रिप्शन कार्रवाइयों को बलपूर्वक डिक्रिप्ट करके फिर से आज़माया जा सकता है।</string>
+    <string name="error_no_file_selected">कृपया फ़ाइल चुनें।</string>
+    <string name="error_invalid_password">कृपया पासवर्ड दर्ज करें।</string>
+    <string name="error_keyfile_writes_disabled">समीक्षित v3 प्रारूप उपलब्ध होने तक कुंजी फ़ाइलों वाले नए v2 वॉल्यूम बनाना बंद है। मौजूदा कुंजी फ़ाइल वॉल्यूम अभी भी डिक्रिप्ट किए जा सकते हैं।</string>
+    <string name="error_passwords_mismatch">पासवर्ड मेल नहीं खाते।</string>
+    <string name="error_split_volume_not_supported">Android पर विभाजित वॉल्यूम समर्थित नहीं हैं। पहले अपने कंप्यूटर पर भागों को फिर से जोड़ें, फिर एक %1$s फ़ाइल ट्रांसफ़र करें।</string>
+    <string name="error_copy_failed">फ़ाइल कॉपी नहीं हो सकी।</string>
+    <string name="error_save_failed">फ़ाइल सहेजी नहीं जा सकी।</string>
+    <string name="error_delete_failed">फ़ाइल हटाई नहीं जा सकी।</string>
+    <string name="error_insufficient_storage">इस चयन को एन्क्रिप्ट करने के लिए पर्याप्त खाली स्थान नहीं है। %1$d बाइट चाहिए; %2$d बाइट उपलब्ध हैं।</string>
+    <string name="error_could_not_open_folder">फ़ोल्डर नहीं खोला जा सका।</string>
+    <string name="error_selected_folder_empty">चुना गया फ़ोल्डर खाली है।</string>
+    <string name="error_read_folder_failed">फ़ोल्डर नहीं पढ़ा जा सका: %1$s</string>
+    <string name="error_could_not_open_selected_file">चुनी गई फ़ाइल नहीं खोली जा सकी।</string>
+    <string name="error_no_files_selected">कोई फ़ाइल नहीं चुनी गई।</string>
+    <string name="error_copy_files_failed">फ़ाइलें कॉपी नहीं हो सकीं: %1$s</string>
+    <string name="error_detect_operation_type_failed">कार्रवाई का प्रकार पता नहीं चल सका।</string>
+</resources>

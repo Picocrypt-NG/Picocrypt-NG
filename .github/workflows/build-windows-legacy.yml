@@ -41,7 +41,7 @@ jobs:
       GO_LEGACY_SHA256: c9d0c79dc2b408a4ea580b62a3d093a4219f9ff95316ef891dc987827e6900e3
       UPX_SHA256: b471ebf1b7f20f4a89150264ed9a008a2a5bfd247f3c6d1184a75bb59ca08f5d
     steps:
-    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Cache go-legacy-win7
       id: cache-go-legacy
@@ -55,7 +55,23 @@ jobs:
       shell: pwsh
       run: |
         # Download go-legacy-win7 (Go 1.26.5 with Windows 7 support)
-        Invoke-WebRequest -OutFile go-legacy.zip https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.5-1/go-legacy-win7-1.26.5-1.windows_amd64.zip
+        curl.exe `
+          --fail `
+          --location `
+          --silent `
+          --show-error `
+          --retry 3 `
+          --retry-all-errors `
+          --retry-delay 2 `
+          --connect-timeout 30 `
+          --max-time 300 `
+          --retry-max-time 600 `
+          --remove-on-error `
+          --output go-legacy.zip `
+          https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.5-1/go-legacy-win7-1.26.5-1.windows_amd64.zip
+        if ($LASTEXITCODE -ne 0) {
+          throw "go-legacy-win7 download failed with exit code $LASTEXITCODE"
+        }
         $expectedHash = $env:GO_LEGACY_SHA256
         $actualHash = (Get-FileHash go-legacy.zip -Algorithm SHA256).Hash.ToLower()
         if ($actualHash -ne $expectedHash) {
@@ -111,7 +127,23 @@ jobs:
     - name: Compress with upx
       shell: pwsh
       run: |
-        Invoke-WebRequest -OutFile upx.zip https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-win64.zip
+        curl.exe `
+          --fail `
+          --location `
+          --silent `
+          --show-error `
+          --retry 3 `
+          --retry-all-errors `
+          --retry-delay 2 `
+          --connect-timeout 30 `
+          --max-time 300 `
+          --retry-max-time 600 `
+          --remove-on-error `
+          --output upx.zip `
+          https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-win64.zip
+        if ($LASTEXITCODE -ne 0) {
+          throw "UPX download failed with exit code $LASTEXITCODE"
+        }
         $expectedHash = $env:UPX_SHA256
         $actualHash = (Get-FileHash upx.zip -Algorithm SHA256).Hash.ToLower()
         if ($actualHash -ne $expectedHash) {
@@ -133,7 +165,7 @@ jobs:
     needs: build
     if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 75
     environment: release
     permissions:
       actions: read
@@ -174,6 +206,7 @@ jobs:
         artifact-configuration-slug: windows-legacy-cli
         github-artifact-id: ${{ steps.upload-signpath-legacy.outputs.artifact-id }}
         wait-for-completion: true
+        wait-for-completion-timeout-in-seconds: 3600
         output-artifact-directory: signpath-signed-legacy
 
     - name: Verify legacy Authenticode signature
@@ -218,14 +251,17 @@ jobs:
   release:
     needs: [build, sign]
     if: ${{ github.ref == 'refs/heads/main' && !inputs.signpath_test && !inputs.signpath_release_dry_run && (github.event_name == 'push' || inputs.publish_release) }}
-    runs-on: windows-2022
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
     environment: release
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
-    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Download signed artifact
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -234,10 +270,9 @@ jobs:
         path: artifacts/build-windows-legacy
 
     - name: Get version tag
-      shell: pwsh
       run: |
-        $version = Get-Content -Path "VERSION"
-        echo "VERSION=$version" >> $env:GITHUB_ENV
+        VERSION=$(cat VERSION)
+        echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
     - name: Sign and attest artifacts
       uses: ./.github/actions/sign-and-attest
@@ -250,13 +285,11 @@ jobs:
       with:
         version: ${{ env.VERSION }}
 
-    - name: Release
-      uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+    - name: Stage release assets
+      uses: ./.github/actions/stage-release
       with:
+        version: ${{ env.VERSION }}
         body_path: ${{ github.workspace }}/release-body.md
         files: |
           artifacts/build-windows-legacy/Picocrypt-NG-cli-Legacy.exe
-          artifacts/build-windows-legacy/*.sigstore.json
-        tag_name: ${{ env.VERSION }}
-        make_latest: true
-        overwrite_files: false
+          artifacts/build-windows-legacy/Picocrypt-NG-cli-Legacy.exe.sigstore.json

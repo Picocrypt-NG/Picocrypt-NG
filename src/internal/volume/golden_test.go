@@ -4,7 +4,12 @@ import (
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/header"
 	"archive/zip"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -42,6 +47,23 @@ const (
 	goldenV209Fixture      = "pico_test_v209.txt.pcv"
 	goldenV209SourceTag    = "v2.09"
 	goldenV209SourceCommit = "1cb431d279e0ec4d712bfcaf2f55c1e951837785"
+
+	// Frozen before empty-password deniability writes were disabled:
+	// pico_test_v2_keyfile_only.txt.pcv (empty password + keyfile_alpha.bin)
+	// was wrapped once by the pre-guard AddDeniability implementation with an
+	// empty password. This pins legacy read compatibility without authorizing
+	// new insecure wrappers.
+	goldenLegacyKeyfileOnlyDeniableFixture = "pico_test_v2_keyfile_only_deniable.pcv"
+	goldenLegacyKeyfileOnlyDeniableSHA256  = "2f3e504096bdaf0c91d2bf2edc5b14691b97a70e5551bc86ca031804112ff354"
+
+	// Authored by the published pre-containment writer at the exact commit
+	// below, using password "test", keyfile_alpha.bin, Reed-Solomon, and the
+	// deterministic 512-byte legacyKeyfileRSPlaintext payload. The base64 text
+	// keeps the real binary corpus patch-reviewable while its decoded SHA-256
+	// pins the volume bytes.
+	goldenLegacyKeyfileRSFixture      = "pico_test_v2_keyfile_rs.pcv.b64"
+	goldenLegacyKeyfileRSSHA256       = "03dca9ea6793911282c780f3c734897a06cc794726fc398d5dee60cf3ea09e29"
+	goldenLegacyKeyfileRSSourceCommit = "d03345f6b4d73d9279c968845a5f91e0a1246977"
 )
 
 var goldenKeyfileFixtures = []string{
@@ -198,11 +220,49 @@ var goldenCompressedKeyfileTestCases = []struct {
 	},
 }
 
+func readGoldenBase64Fixture(t *testing.T, name, wantSHA256 string) []byte {
+	t.Helper()
+
+	encoded, err := os.ReadFile(filepath.Join(findTestdata(t), name))
+	if err != nil {
+		t.Fatalf("read base64 golden fixture %s: %v", name, err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil {
+		t.Fatalf("decode base64 golden fixture %s: %v", name, err)
+	}
+	sum := sha256.Sum256(decoded)
+	if got := hex.EncodeToString(sum[:]); got != wantSHA256 {
+		t.Fatalf("decoded %s SHA-256 = %s, want %s", name, got, wantSHA256)
+	}
+	return decoded
+}
+
+func materializeGoldenBase64Fixture(t *testing.T, name, wantSHA256 string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), strings.TrimSuffix(name, ".b64"))
+	if err := os.WriteFile(path, readGoldenBase64Fixture(t, name, wantSHA256), 0o600); err != nil {
+		t.Fatalf("materialize golden fixture %s: %v", name, err)
+	}
+	return path
+}
+
+func legacyKeyfileRSPlaintext() []byte {
+	plaintext := make([]byte, 4*encoding.RS128DataSize)
+	for i := range plaintext {
+		plaintext[i] = byte(i*13 + 7)
+	}
+	return plaintext
+}
+
 func TestGoldenKeyfileCorpusPresent(t *testing.T) {
 	testdataPath := findTestdata(t)
 
-	required := make([]string, 0, len(goldenKeyfileFixtures)+len(goldenKeyfileTestCases)+len(goldenCompressedKeyfileTestCases))
+	required := make([]string, 0, len(goldenKeyfileFixtures)+len(goldenKeyfileTestCases)+len(goldenCompressedKeyfileTestCases)+1)
 	required = append(required, goldenKeyfileFixtures...)
+	required = append(required, goldenLegacyKeyfileOnlyDeniableFixture)
+	required = append(required, goldenLegacyKeyfileRSFixture)
 	for _, tc := range goldenKeyfileTestCases {
 		required = append(required, tc.file)
 	}
@@ -215,6 +275,11 @@ func TestGoldenKeyfileCorpusPresent(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("required golden asset missing: %s (%v)", path, err)
 		}
+	}
+
+	decoded := readGoldenBase64Fixture(t, goldenLegacyKeyfileRSFixture, goldenLegacyKeyfileRSSHA256)
+	if len(decoded) != 1469 {
+		t.Fatalf("decoded %s length = %d, want 1469", goldenLegacyKeyfileRSFixture, len(decoded))
 	}
 }
 
@@ -460,6 +525,78 @@ func TestGoldenKeyfileDecryption(t *testing.T) {
 	}
 }
 
+func TestGoldenLegacyKeyfileRSDecryption(t *testing.T) {
+	restore := useProductionTestKDF()
+	defer restore()
+
+	outputPath := filepath.Join(t.TempDir(), "decrypted.bin")
+	err := Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  materializeGoldenBase64Fixture(t, goldenLegacyKeyfileRSFixture, goldenLegacyKeyfileRSSHA256),
+		OutputFile: outputPath,
+		Password:   []byte(goldenPassword),
+		Keyfiles:   []string{filepath.Join(findTestdata(t), "keyfile_alpha.bin")},
+		Reporter:   &GoldenTestReporter{},
+		RSCodecs:   newRSCodecsT(t),
+	})
+	if err != nil {
+		t.Fatalf("decrypt pre-containment keyfile+RS fixture from %s: %v", goldenLegacyKeyfileRSSourceCommit, err)
+	}
+
+	got, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read decrypted keyfile+RS fixture: %v", err)
+	}
+	if !bytes.Equal(got, legacyKeyfileRSPlaintext()) {
+		t.Fatal("pre-containment keyfile+RS fixture plaintext mismatch")
+	}
+}
+
+func TestGoldenLegacyKeyfileOnlyDeniableDecryption(t *testing.T) {
+	restore := useProductionTestKDF()
+	defer restore()
+
+	testdataPath := findTestdata(t)
+	inputPath := filepath.Join(testdataPath, goldenLegacyKeyfileOnlyDeniableFixture)
+	fixture, err := os.ReadFile(inputPath)
+	if err != nil {
+		t.Fatalf("read required legacy deniable fixture: %v", err)
+	}
+	sum := sha256.Sum256(fixture)
+	if got := hex.EncodeToString(sum[:]); got != goldenLegacyKeyfileOnlyDeniableSHA256 {
+		t.Fatalf("legacy deniable fixture SHA-256 = %s, want %s", got, goldenLegacyKeyfileOnlyDeniableSHA256)
+	}
+
+	rsCodecs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("Failed to create RS codecs: %v", err)
+	}
+	if !IsDeniable(inputPath, rsCodecs) {
+		t.Fatal("legacy keyfile-only fixture is not deniability-wrapped")
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "decrypted.txt")
+	err = Decrypt(context.Background(), &DecryptRequest{
+		InputFile:   inputPath,
+		OutputFile:  outputPath,
+		Password:    nil,
+		Keyfiles:    goldenFixturePaths(testdataPath, []string{"keyfile_alpha.bin"}),
+		Deniability: true,
+		Reporter:    &GoldenTestReporter{},
+		RSCodecs:    rsCodecs,
+	})
+	if err != nil {
+		t.Fatalf("Decrypt legacy keyfile-only deniable fixture: %v", err)
+	}
+
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read decrypted legacy fixture: %v", err)
+	}
+	if string(content) != expectedContent {
+		t.Fatalf("Content mismatch.\nExpected: %q\nGot: %q", expectedContent, string(content))
+	}
+}
+
 func TestGoldenCompressedKeyfileDecryption(t *testing.T) {
 	restore := useProductionTestKDF()
 	defer restore()
@@ -551,6 +688,18 @@ func TestGoldenKeyfileFailures(t *testing.T) {
 			keyfiles: []string{"keyfile_gamma.bin"},
 		},
 		{
+			name:     "wrong_keyfile_only_keyfile",
+			file:     "pico_test_v2_keyfile_only.txt.pcv",
+			password: "",
+			keyfiles: []string{"keyfile_beta.bin"},
+		},
+		{
+			name:     "wrong_password_with_correct_keyfile",
+			file:     "pico_test_v2_keyfile_single.txt.pcv",
+			password: "wrong",
+			keyfiles: []string{"keyfile_alpha.bin"},
+		},
+		{
 			name:     "wrong_ordered_keyfile_order",
 			file:     "pico_test_v2_keyfile_multi_ordered.txt.pcv",
 			password: goldenPassword,
@@ -560,9 +709,10 @@ func TestGoldenKeyfileFailures(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			outputPath := filepath.Join(t.TempDir(), "decrypted.txt")
 			req := &DecryptRequest{
 				InputFile:    filepath.Join(testdataPath, tc.file),
-				OutputFile:   filepath.Join(t.TempDir(), "decrypted.txt"),
+				OutputFile:   outputPath,
 				Password:     []byte(tc.password),
 				Keyfiles:     goldenFixturePaths(testdataPath, tc.keyfiles),
 				ForceDecrypt: false,
@@ -574,8 +724,13 @@ func TestGoldenKeyfileFailures(t *testing.T) {
 				RSCodecs:     rsCodecs,
 			}
 
-			if err := Decrypt(context.Background(), req); err == nil {
-				t.Fatal("Decrypt should have failed")
+			err := Decrypt(context.Background(), req)
+			var authErr *header.AuthError
+			if !errors.As(err, &authErr) {
+				t.Fatalf("Decrypt error = %v; want *header.AuthError", err)
+			}
+			if _, statErr := os.Stat(outputPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("failed legacy authentication published output: %v", statErr)
 			}
 		})
 	}

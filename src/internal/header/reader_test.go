@@ -41,6 +41,29 @@ func TestMatchVersionAnchored(t *testing.T) {
 	}
 }
 
+func TestReadHeaderRejectsUnsupportedMajorBeforeReadingTheRest(t *testing.T) {
+	rs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("NewRSCodecs failed: %v", err)
+	}
+
+	// MatchVersion deliberately accepts well-formed future versions so
+	// deniability detection does not mistake them for random-looking wrappers.
+	// The reader must make the separate support decision immediately after the
+	// encoded version field, before flags, credentials, or a KDF are considered.
+	version := encodeField(t, rs, []byte("v3.11"))
+	reader := NewReader(bytes.NewReader(version), rs)
+	result, err := reader.ReadHeader()
+
+	const want = `unsupported volume version "v3.11"`
+	if err == nil || err.Error() != want {
+		t.Fatalf("ReadHeader() error = %v; want %q", err, want)
+	}
+	if result.BytesRead != VersionEncSize {
+		t.Fatalf("ReadHeader() consumed %d bytes; want only encoded version field (%d)", result.BytesRead, VersionEncSize)
+	}
+}
+
 // encodeField RS5-encodes a 5-byte field for crafting header bytes inline.
 func encodeField(t *testing.T, rs *encoding.RSCodecs, field []byte) []byte {
 	t.Helper()

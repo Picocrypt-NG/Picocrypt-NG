@@ -160,6 +160,9 @@ func TestVerifyFirstModeParanoid(t *testing.T) {
 
 // TestVerifyFirstModeWithKeyfiles tests VerifyFirst mode with keyfiles
 func TestVerifyFirstModeWithKeyfiles(t *testing.T) {
+	restore := useProductionTestKDF()
+	defer restore()
+
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -167,42 +170,18 @@ func TestVerifyFirstModeWithKeyfiles(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	plaintext := []byte("VerifyFirst + Keyfiles test data.")
-	inputPath := filepath.Join(tmpDir, "verify_first_kf.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create keyfile
-	keyfilePath := filepath.Join(tmpDir, "verify_first.key")
-	if err := os.WriteFile(keyfilePath, []byte("verify first keyfile content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "verify_first_kf.txt.pcv")
+	testdata := findTestdata(t)
+	encryptedPath := filepath.Join(testdata, "pico_test_v2_keyfile_single.txt.pcv")
+	keyfilePath := filepath.Join(testdata, "keyfile_alpha.bin")
 	decryptedPath := filepath.Join(tmpDir, "verify_first_kf_dec.txt")
 
 	reporter := &GoldenTestReporter{}
 
-	// Encrypt with keyfile
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("verify_first_kf_password"),
-		Keyfiles:   []string{keyfilePath},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt failed: %v", err)
-	}
-
-	// Decrypt with VerifyFirst mode + keyfile
+	// Read a frozen pre-2.19 volume; the current writer must remain disabled.
 	decReq := &DecryptRequest{
 		InputFile:    encryptedPath,
 		OutputFile:   decryptedPath,
-		Password:     []byte("verify_first_kf_password"),
+		Password:     []byte(goldenPassword),
 		Keyfiles:     []string{keyfilePath},
 		VerifyFirst:  true,
 		ForceDecrypt: false,
@@ -219,7 +198,7 @@ func TestVerifyFirstModeWithKeyfiles(t *testing.T) {
 		t.Fatalf("Failed to read decrypted file: %v", err)
 	}
 
-	if string(decrypted) != string(plaintext) {
+	if string(decrypted) != expectedContent {
 		t.Errorf("Content mismatch (VerifyFirst + Keyfile)")
 	}
 
@@ -382,7 +361,7 @@ func TestVerifyFirstModeForceDecrypt(t *testing.T) {
 }
 
 // TestVerifyFirstAllOptions tests VerifyFirst with all options enabled
-func TestVerifyFirstAllOptions(t *testing.T) {
+func TestVerifyFirstParanoidReedSolomon(t *testing.T) {
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -390,15 +369,10 @@ func TestVerifyFirstAllOptions(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	plaintext := []byte("VerifyFirst with ALL options: paranoid + RS + keyfile.")
+	plaintext := []byte("VerifyFirst with Paranoid mode and Reed-Solomon.")
 	inputPath := filepath.Join(tmpDir, "verify_all.txt")
 	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
 		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	keyfilePath := filepath.Join(tmpDir, "verify_all.key")
-	if err := os.WriteFile(keyfilePath, []byte("all options keyfile"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
 	}
 
 	encryptedPath := filepath.Join(tmpDir, "verify_all.txt.pcv")
@@ -406,14 +380,13 @@ func TestVerifyFirstAllOptions(t *testing.T) {
 
 	reporter := &GoldenTestReporter{}
 
-	// Encrypt with all options
+	// Encrypt with every currently supported compatible option.
 	encReq := &EncryptRequest{
 		InputFile:   inputPath,
 		OutputFile:  encryptedPath,
 		Password:    []byte("verify_all_password"),
 		Paranoid:    true,
 		ReedSolomon: true,
-		Keyfiles:    []string{keyfilePath},
 		Reporter:    reporter,
 		RSCodecs:    rsCodecs,
 	}
@@ -427,7 +400,6 @@ func TestVerifyFirstAllOptions(t *testing.T) {
 		InputFile:    encryptedPath,
 		OutputFile:   decryptedPath,
 		Password:     []byte("verify_all_password"),
-		Keyfiles:     []string{keyfilePath},
 		VerifyFirst:  true,
 		ForceDecrypt: false,
 		Reporter:     reporter,
@@ -435,7 +407,7 @@ func TestVerifyFirstAllOptions(t *testing.T) {
 	}
 
 	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt with VerifyFirst + all options failed: %v", err)
+		t.Fatalf("Decrypt with VerifyFirst + Paranoid + Reed-Solomon failed: %v", err)
 	}
 
 	decrypted, err := os.ReadFile(decryptedPath)
@@ -444,10 +416,10 @@ func TestVerifyFirstAllOptions(t *testing.T) {
 	}
 
 	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (VerifyFirst + all options)")
+		t.Errorf("Content mismatch (VerifyFirst + Paranoid + Reed-Solomon)")
 	}
 
-	t.Log("VerifyFirst mode with all options: SUCCESS")
+	t.Log("VerifyFirst mode with Paranoid + Reed-Solomon: SUCCESS")
 }
 
 // =============================================================================
@@ -484,42 +456,16 @@ func TestDecryptWrongKeyfileMissingRequirement(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-
-	plaintext := []byte("Keyfile required test data")
-	inputPath := filepath.Join(tmpDir, "kf_required.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	keyfilePath := filepath.Join(tmpDir, "required.key")
-	if err := os.WriteFile(keyfilePath, []byte("keyfile content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "kf_required.txt.pcv")
+	encryptedPath := filepath.Join(findTestdata(t), "pico_test_v2_keyfile_single.txt.pcv")
 	decryptedPath := filepath.Join(tmpDir, "kf_required_dec.txt")
 
 	reporter := &GoldenTestReporter{}
 
-	// Encrypt with keyfile
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("kf_required_password"),
-		Keyfiles:   []string{keyfilePath},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt failed: %v", err)
-	}
-
-	// Try to decrypt WITHOUT keyfile (should fail)
+	// A frozen pre-2.19 volume must still demand its keyfile.
 	decReq := &DecryptRequest{
 		InputFile:    encryptedPath,
 		OutputFile:   decryptedPath,
-		Password:     []byte("kf_required_password"),
+		Password:     []byte(goldenPassword),
 		Keyfiles:     nil, // No keyfile provided!
 		ForceDecrypt: false,
 		Reporter:     reporter,

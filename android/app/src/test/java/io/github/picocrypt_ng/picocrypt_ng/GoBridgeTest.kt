@@ -230,19 +230,4 @@ class GoBridgeTest {
         assertFalse(options.deniability)
     }
 
-    @Test
-    fun `ProgressState has correct defaults`() {
-        val progressState = ProgressState(
-            status = "Processing",
-            progress = 0.5f,
-            info = "Encrypting file...",
-            done = false
-        )
-        assertEquals("Processing", progressState.status)
-        assertEquals(0.5f, progressState.progress, 0.001f)
-        assertEquals("Encrypting file...", progressState.info)
-        assertFalse(progressState.done)
-        assertEquals("code defaults to empty until an error is classified", "", progressState.code)
-    }
-
 }

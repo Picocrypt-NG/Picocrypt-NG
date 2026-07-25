@@ -78,7 +78,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 		outputFile := filepath.Join(tmpDir, "stdin-encrypt.pcv")
 
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", "-",
+			"-",
 			"-o", outputFile,
 			"-p", testPassword,
 			"-y",
@@ -105,7 +105,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 		// Decrypt and verify
 		decryptedFile := filepath.Join(tmpDir, "stdin-decrypted")
 		cmd = exec.Command(binaryPath, "decrypt",
-			"-i", outputFile,
+			outputFile,
 			"-o", decryptedFile,
 			"-p", testPassword,
 			"-y",
@@ -131,7 +131,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 		}
 
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", "-",
+			"-",
 			"-o", outputFile,
 			"-p", testPassword,
 		)
@@ -154,7 +154,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 		}
 
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", inputFile,
+			inputFile,
 			"-o", "-",
 			"-p", testPassword,
 		)
@@ -183,7 +183,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 
 		decryptedFile := filepath.Join(tmpDir, "stdout-decrypted")
 		cmd = exec.Command(binaryPath, "decrypt",
-			"-i", encryptedFile,
+			encryptedFile,
 			"-o", decryptedFile,
 			"-p", testPassword,
 			"-y",
@@ -205,7 +205,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 		inputData := []byte("full pipeline test data through stdin to stdout")
 
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", "-",
+			"-",
 			"-o", "-",
 			"-p", testPassword,
 		)
@@ -226,7 +226,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 
 		// Decrypt via stdin->stdout
 		cmd = exec.Command(binaryPath, "decrypt",
-			"-i", "-",
+			"-",
 			"-o", "-",
 			"-p", testPassword,
 		)
@@ -252,7 +252,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 
 		// Create encrypted file first
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", "-",
+			"-",
 			"-o", encryptedFile,
 			"-p", testPassword,
 			"-y",
@@ -270,7 +270,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 
 		decryptedFile := filepath.Join(tmpDir, "stdin-decrypt-output")
 		cmd = exec.Command(binaryPath, "decrypt",
-			"-i", "-",
+			"-",
 			"-o", decryptedFile,
 			"-p", testPassword,
 			"-y",
@@ -303,7 +303,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 		}
 
 		cmd := exec.Command(binaryPath, "decrypt",
-			"-i", "-",
+			"-",
 			"-o", existingOutput,
 			"-p", testPassword,
 		)
@@ -324,7 +324,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 
 		// Create encrypted file
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", "-",
+			"-",
 			"-o", encryptedFile,
 			"-p", testPassword,
 			"-y",
@@ -336,7 +336,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 
 		// Decrypt to stdout
 		cmd = exec.Command(binaryPath, "decrypt",
-			"-i", encryptedFile,
+			encryptedFile,
 			"-o", "-",
 			"-p", testPassword,
 		)
@@ -363,7 +363,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 		}
 
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", "-",
+			"-",
 			"-o", "-",
 			"-p", testPassword,
 		)
@@ -379,7 +379,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 		}
 
 		cmd = exec.Command(binaryPath, "decrypt",
-			"-i", "-",
+			"-",
 			"-o", "-",
 			"-p", testPassword,
 		)
@@ -411,8 +411,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 
 		volumePath := filepath.Join(tmpDir, "auto-unzip.pcv")
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", inputA,
-			"-i", inputB,
+			inputA, inputB,
 			"-o", volumePath,
 			"-p", testPassword,
 			"-y",
@@ -422,7 +421,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 		}
 
 		cmd = exec.Command(binaryPath, "decrypt",
-			"-i", volumePath,
+			volumePath,
 			"-p", testPassword,
 			"-y",
 			"--auto-unzip",
@@ -473,7 +472,7 @@ func testStdinStdoutErrorCases(t *testing.T) {
 
 	t.Run("stdin with -P conflicts", func(t *testing.T) {
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", "-",
+			"-",
 			"-o", filepath.Join(tmpDir, "out.pcv"),
 			"-P",
 		)
@@ -495,7 +494,7 @@ func testStdinStdoutErrorCases(t *testing.T) {
 		}
 
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", inputFile,
+			inputFile,
 			"-o", "-",
 			"-p", "test",
 			"--split",
@@ -520,7 +519,7 @@ func testStdinStdoutErrorCases(t *testing.T) {
 		}
 
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", inputFile,
+			inputFile,
 			"-o", encFile,
 			"-p", "test",
 			"-y",
@@ -530,7 +529,7 @@ func testStdinStdoutErrorCases(t *testing.T) {
 		}
 
 		cmd = exec.Command(binaryPath, "decrypt",
-			"-i", encFile,
+			encFile,
 			"-o", "-",
 			"-p", "test",
 			"--auto-unzip",
@@ -551,7 +550,7 @@ func testStdinStdoutErrorCases(t *testing.T) {
 
 		// Encrypt with correct password.
 		cmd := exec.Command(binaryPath, "encrypt",
-			"-i", "-",
+			"-",
 			"-o", encFile,
 			"-p", "correctpassword",
 			"-y",
@@ -569,7 +568,7 @@ func testStdinStdoutErrorCases(t *testing.T) {
 			t.Fatalf("reading encrypted file: %v", err)
 		}
 		cmd = exec.Command(binaryPath, "decrypt",
-			"-i", "-",
+			"-",
 			"-o", "-",
 			"-p", "wrongpassword",
 		)

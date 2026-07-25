@@ -11,7 +11,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -127,8 +130,362 @@ func TestCompleteOperationDoesNotOverwriteCancelledState(t *testing.T) {
 	if state.Status != "Cancelled" {
 		t.Fatalf("state.Status = %q, want %q", state.Status, "Cancelled")
 	}
+	if state.StatusCode != "CANCELLED" {
+		t.Fatalf("state.StatusCode = %q, want %q", state.StatusCode, "CANCELLED")
+	}
 	if !state.Done {
 		t.Fatalf("cancelled operation should remain done")
+	}
+}
+
+func TestCancelledOperationIgnoresLateReporterCallbacksAndCompletion(t *testing.T) {
+	resetProgressMap()
+
+	id := startOperation()
+	reporter := &androidProgressReporter{opID: id}
+	reporter.SetStatus("Deriving key...")
+	reporter.SetProgress(0.25, "1/10")
+	if err := cancelOperation(id); err != nil {
+		t.Fatal(err)
+	}
+
+	reporter.SetStatus("Encrypting at 12.34 MiB/s (ETA: 01:02:03)")
+	reporter.SetProgress(0.75, "3/10")
+	completeOperation(id, context.Canceled)
+
+	state, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != "Cancelled" || state.StatusCode != "CANCELLED" || !state.Done {
+		t.Fatalf("terminal cancellation was overwritten: %#v", state)
+	}
+	if state.Progress != 0.25 || state.Info != "1/10" || state.InfoCode != "ITEM_COUNT" ||
+		state.InfoCurrent != 1 || state.InfoTotal != 10 {
+		t.Fatalf("late progress callback changed cancelled state: %#v", state)
+	}
+	if state.Error != "" || state.Code != "" {
+		t.Fatalf("late completion added cancellation diagnostics: Error=%q Code=%q", state.Error, state.Code)
+	}
+}
+
+func TestCancelOperationPreservesSuccessfulTerminalSnapshot(t *testing.T) {
+	resetProgressMap()
+
+	id := startOperation()
+	reporter := &androidProgressReporter{opID: id}
+	reporter.SetStatus("Deriving key...")
+	reporter.SetProgress(0.25, "1/10")
+	completeOperation(id, nil)
+
+	firstTerminal, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cancelOperation(id); err != nil {
+		t.Fatal(err)
+	}
+	afterCancel, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterCancel, firstTerminal) {
+		t.Fatalf("cancel changed successful terminal snapshot\n got: %#v\nwant: %#v", afterCancel, firstTerminal)
+	}
+}
+
+func TestCancelOperationPreservesFailedTerminalSnapshot(t *testing.T) {
+	resetProgressMap()
+
+	id := startOperation()
+	reporter := &androidProgressReporter{opID: id}
+	reporter.SetStatus("Decrypting at 12.34 MiB/s (ETA: 01:02:03)")
+	reporter.SetProgress(0.25, "1/10")
+	completeOperation(id, errors.New("diagnostic failure"))
+
+	firstTerminal, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cancelOperation(id); err != nil {
+		t.Fatal(err)
+	}
+	afterCancel, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterCancel, firstTerminal) {
+		t.Fatalf("cancel changed failed terminal snapshot\n got: %#v\nwant: %#v", afterCancel, firstTerminal)
+	}
+}
+
+func TestCancelOperationReturnsCanonicalTerminalSnapshot(t *testing.T) {
+	tests := []struct {
+		name         string
+		finish       func(id string)
+		wantStatus   string
+		wantProgress float32
+		wantError    string
+		wantCode     string
+	}{
+		{
+			name:         "running operation becomes cancelled",
+			finish:       func(string) {},
+			wantStatus:   "CANCELLED",
+			wantProgress: 0.25,
+		},
+		{
+			name:         "completed operation stays completed",
+			finish:       func(id string) { completeOperation(id, nil) },
+			wantStatus:   "COMPLETED",
+			wantProgress: 1,
+		},
+		{
+			name:         "failed operation stays failed",
+			finish:       func(id string) { completeOperation(id, errors.New("diagnostic failure")) },
+			wantStatus:   "ERROR",
+			wantProgress: 0.25,
+			wantError:    "diagnostic failure",
+			wantCode:     "GENERIC",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resetProgressMap()
+			id := startOperation()
+			reporter := &androidProgressReporter{opID: id}
+			reporter.SetProgress(0.25, "1/10")
+			tc.finish(id)
+
+			state, err := CancelOperation(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.StatusCode != tc.wantStatus || !state.Done {
+				t.Fatalf("CancelOperation returned %#v, want terminal status %q", state, tc.wantStatus)
+			}
+			if state.Progress != tc.wantProgress || state.InfoCode != "ITEM_COUNT" ||
+				state.InfoCurrent != 1 || state.InfoTotal != 10 {
+				t.Fatalf("CancelOperation lost progress detail: %#v", state)
+			}
+			if state.Error != tc.wantError || state.Code != tc.wantCode {
+				t.Fatalf(
+					"CancelOperation error = (%q, %q), want (%q, %q)",
+					state.Error,
+					state.Code,
+					tc.wantError,
+					tc.wantCode,
+				)
+			}
+		})
+	}
+}
+
+func TestProgressTerminalStatusCodes(t *testing.T) {
+	tests := []struct {
+		name       string
+		finish     func(t *testing.T, id string)
+		status     string
+		statusCode string
+		errorText  string
+		errorCode  string
+		done       bool
+	}{
+		{
+			name:       "starting",
+			finish:     func(*testing.T, string) {},
+			status:     "Starting...",
+			statusCode: "STARTING",
+			done:       false,
+		},
+		{
+			name:       "success",
+			finish:     func(_ *testing.T, id string) { completeOperation(id, nil) },
+			status:     "Completed",
+			statusCode: "COMPLETED",
+			done:       true,
+		},
+		{
+			name: "cancellation",
+			finish: func(t *testing.T, id string) {
+				if err := cancelOperation(id); err != nil {
+					t.Fatal(err)
+				}
+			},
+			status:     "Cancelled",
+			statusCode: "CANCELLED",
+			done:       true,
+		},
+		{
+			name:       "failure",
+			finish:     func(_ *testing.T, id string) { completeOperation(id, errors.New("diagnostic failure")) },
+			status:     "Error",
+			statusCode: "ERROR",
+			errorText:  "diagnostic failure",
+			errorCode:  "GENERIC",
+			done:       true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resetProgressMap()
+			id := startOperation()
+			tc.finish(t, id)
+
+			state, err := getProgress(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Status != tc.status || state.StatusCode != tc.statusCode {
+				t.Fatalf("terminal status = (%q, %q), want (%q, %q)", state.Status, state.StatusCode, tc.status, tc.statusCode)
+			}
+			if state.Error != tc.errorText || state.Code != tc.errorCode {
+				t.Fatalf("diagnostic fields = (%q, %q), want (%q, %q)", state.Error, state.Code, tc.errorText, tc.errorCode)
+			}
+			if state.Done != tc.done {
+				t.Fatalf("state.Done = %v, want %v", state.Done, tc.done)
+			}
+			if state.Info != "" || state.InfoCode != "NONE" {
+				t.Fatalf("initial info fields = (%q, %q), want (%q, %q)", state.Info, state.InfoCode, "", "NONE")
+			}
+		})
+	}
+}
+
+func TestAndroidProgressReporterUpdatesFieldFamiliesAtomically(t *testing.T) {
+	resetProgressMap()
+
+	id := startOperation()
+	reporter := &androidProgressReporter{opID: id}
+
+	// Hold the write lock until both reporter calls have arrived at their first
+	// progress-map lock acquisition. A stale read-copy-write implementation then
+	// releases both readers together, forcing both to snapshot the old state
+	// before either full-state write can proceed.
+	globalProgressMap.mu.Lock()
+	op := globalProgressMap.ops[id]
+	op.Status = "Deriving key..."
+	op.StatusCode = "DERIVING_KEY"
+	op.StatusSpeedMiBPerSecond = 0
+	op.StatusETA = ""
+	op.Progress = 0.25
+	op.Info = "1/10"
+	op.InfoCode = "ITEM_COUNT"
+	op.InfoCurrent = 1
+	op.InfoTotal = 10
+
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	ready.Add(2)
+	var calls sync.WaitGroup
+	calls.Add(2)
+	go func() {
+		defer calls.Done()
+		ready.Done()
+		<-start
+		reporter.SetStatus("Encrypting at 12.34 MiB/s (ETA: 01:02:03)")
+	}()
+	go func() {
+		defer calls.Done()
+		ready.Done()
+		<-start
+		reporter.SetProgress(0.75, "3/10")
+	}()
+	ready.Wait()
+	close(start)
+	if !reporterCallsBlockedOnProgressMapLock(2 * time.Second) {
+		globalProgressMap.mu.Unlock()
+		calls.Wait()
+		t.Fatal("reporter calls did not reach the progress-map lock")
+	}
+	globalProgressMap.mu.Unlock()
+	calls.Wait()
+
+	state, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != "Encrypting at 12.34 MiB/s (ETA: 01:02:03)" ||
+		state.StatusCode != "ENCRYPTING_RATE" ||
+		state.StatusSpeedMiBPerSecond != 12.34 || state.StatusETA != "01:02:03" {
+		t.Fatalf("concurrent update reverted status family: %#v", state)
+	}
+	if state.Progress != 0.75 || state.Info != "3/10" || state.InfoCode != "ITEM_COUNT" ||
+		state.InfoCurrent != 3 || state.InfoTotal != 10 {
+		t.Fatalf("concurrent update reverted progress family: %#v", state)
+	}
+}
+
+func reporterCallsBlockedOnProgressMapLock(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	stack := make([]byte, 1<<20)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(stack, true)
+		statusBlocked := false
+		progressBlocked := false
+		for _, goroutine := range strings.Split(string(stack[:n]), "\n\n") {
+			blockedOnRWMutex := strings.Contains(goroutine, "sync.(*RWMutex).Lock") ||
+				strings.Contains(goroutine, "sync.(*RWMutex).RLock")
+			if !blockedOnRWMutex {
+				continue
+			}
+			statusBlocked = statusBlocked || strings.Contains(goroutine, "(*androidProgressReporter).SetStatus")
+			progressBlocked = progressBlocked || strings.Contains(goroutine, "(*androidProgressReporter).SetProgress")
+		}
+		if statusBlocked && progressBlocked {
+			return true
+		}
+		runtime.Gosched()
+	}
+	return false
+}
+
+func TestGetProgressCopiesStructuredFields(t *testing.T) {
+	resetProgressMap()
+
+	id := startOperation()
+	globalProgressMap.mu.Lock()
+	globalProgressMap.ops[id] = &ProgressState{
+		ID:                      id,
+		Status:                  "Encrypting at 12.34 MiB/s (ETA: 01:02:03)",
+		StatusCode:              "ENCRYPTING_RATE",
+		StatusSpeedMiBPerSecond: 12.34,
+		StatusETA:               "01:02:03",
+		Progress:                0.3,
+		Info:                    "3/10",
+		InfoCode:                "ITEM_COUNT",
+		InfoCurrent:             3,
+		InfoTotal:               10,
+		Error:                   "diagnostic",
+		Code:                    "GENERIC",
+	}
+	globalProgressMap.mu.Unlock()
+
+	state, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := GetProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.StatusCode != state.StatusCode ||
+		result.StatusSpeedMiBPerSecond != state.StatusSpeedMiBPerSecond ||
+		result.StatusETA != state.StatusETA || result.InfoCode != state.InfoCode ||
+		result.InfoCurrent != state.InfoCurrent || result.InfoTotal != state.InfoTotal {
+		t.Fatalf("GetProgress() dropped structured fields: result=%#v state=%#v", result, state)
+	}
+
+	state.StatusCode = "MUTATED_COPY"
+	fresh, err := getProgress(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.StatusCode != "ENCRYPTING_RATE" {
+		t.Fatalf("getProgress returned shared state: StatusCode = %q", fresh.StatusCode)
 	}
 }
 
@@ -194,6 +551,210 @@ func TestStartEncryptValidationFailureCleansUpOperation(t *testing.T) {
 
 	if opExists || ctxExists || cancelExists {
 		t.Fatalf("validation failure leaked operation state: op=%v ctx=%v cancel=%v", opExists, ctxExists, cancelExists)
+	}
+}
+
+func TestStartEncryptRejectsKeyfileOnlyV2WriteBeforeStartingWorker(t *testing.T) {
+	resetProgressMap()
+	t.Cleanup(resetProgressMap)
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "plain.txt")
+	keyfilePath := filepath.Join(dir, "keyfile.bin")
+	outputPath := filepath.Join(dir, "plain.txt.pcv")
+	if err := os.WriteFile(inputPath, []byte("plaintext must not be encrypted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyfilePath, []byte("keyfile material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workerCalled := make(chan struct{}, 1)
+	originalRunEncrypt := runEncrypt
+	runEncrypt = func(context.Context, *volume.EncryptRequest) error {
+		workerCalled <- struct{}{}
+		return nil
+	}
+	t.Cleanup(func() {
+		runEncrypt = originalRunEncrypt
+	})
+
+	id := StartOperation()
+	reqJSON, err := json.Marshal(EncryptRequestJSON{
+		OperationID: id,
+		InputFile:   inputPath,
+		OutputFile:  outputPath,
+		Keyfiles:    []string{keyfilePath},
+		Deniability: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := StartEncrypt(string(reqJSON), nil)
+	if got == "" {
+		_ = waitForDone(t, id)
+	}
+	want := "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format"
+	if got != want {
+		t.Errorf("StartEncrypt(...) = %q; want %q", got, want)
+	}
+
+	select {
+	case <-workerCalled:
+		t.Error("runEncrypt was called; unsafe request must fail synchronously before starting a worker")
+	default:
+	}
+
+	globalProgressMap.mu.RLock()
+	_, opExists := globalProgressMap.ops[id]
+	_, ctxExists := globalProgressMap.ctxs[id]
+	_, cancelExists := globalProgressMap.cancels[id]
+	globalProgressMap.mu.RUnlock()
+	if opExists || ctxExists || cancelExists {
+		t.Errorf("validation failure leaked operation state: op=%v ctx=%v cancel=%v", opExists, ctxExists, cancelExists)
+	}
+	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+		t.Errorf("output must not exist after rejected request; os.Stat error = %v", statErr)
+	}
+}
+
+func TestStartEncryptRejectsPasswordAndKeyfileV2WriteBeforeStartingWorker(t *testing.T) {
+	resetProgressMap()
+	t.Cleanup(resetProgressMap)
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "plain.txt")
+	keyfilePath := filepath.Join(dir, "keyfile.bin")
+	outputPath := filepath.Join(dir, "plain.txt.pcv")
+	if err := os.WriteFile(inputPath, []byte("plaintext"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyfilePath, []byte("keyfile material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workerCalled := make(chan struct{}, 1)
+	originalRunEncrypt := runEncrypt
+	runEncrypt = func(context.Context, *volume.EncryptRequest) error {
+		workerCalled <- struct{}{}
+		return nil
+	}
+	t.Cleanup(func() {
+		runEncrypt = originalRunEncrypt
+	})
+
+	id := StartOperation()
+	reqJSON, err := json.Marshal(EncryptRequestJSON{
+		OperationID: id,
+		InputFile:   inputPath,
+		OutputFile:  outputPath,
+		Keyfiles:    []string{keyfilePath},
+		Deniability: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := StartEncrypt(string(reqJSON), []byte("secret"))
+	const want = "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format"
+	if got != want {
+		t.Fatalf("StartEncrypt(...) = %q; want %q", got, want)
+	}
+
+	select {
+	case <-workerCalled:
+		t.Error("runEncrypt was called; v2 keyfile writer must fail synchronously")
+	default:
+	}
+
+	globalProgressMap.mu.RLock()
+	_, opExists := globalProgressMap.ops[id]
+	_, ctxExists := globalProgressMap.ctxs[id]
+	_, cancelExists := globalProgressMap.cancels[id]
+	globalProgressMap.mu.RUnlock()
+	if opExists || ctxExists || cancelExists {
+		t.Errorf("validation failure leaked operation state: op=%v ctx=%v cancel=%v", opExists, ctxExists, cancelExists)
+	}
+	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+		t.Errorf("output must not exist after rejected request; os.Stat error = %v", statErr)
+	}
+}
+
+func TestStartEncryptRejectsMissingRequiredPasswordBeforeStartingWorker(t *testing.T) {
+	originalRunEncrypt := runEncrypt
+	workerCalled := make(chan struct{}, 1)
+	runEncrypt = func(context.Context, *volume.EncryptRequest) error {
+		workerCalled <- struct{}{}
+		return nil
+	}
+	t.Cleanup(func() {
+		runEncrypt = originalRunEncrypt
+		resetProgressMap()
+	})
+
+	for _, tc := range []struct {
+		name        string
+		deniability bool
+		wantMessage string
+	}{
+		{
+			name:        "ordinary encryption",
+			wantMessage: perrors.EncryptionPasswordRequiredMessage,
+		},
+		{
+			name:        "deniability",
+			deniability: true,
+			wantMessage: perrors.DeniabilityPasswordRequiredMessage,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetProgressMap()
+			dir := t.TempDir()
+			inputPath := filepath.Join(dir, "plain.txt")
+			outputPath := filepath.Join(dir, "plain.txt.pcv")
+			if err := os.WriteFile(inputPath, []byte("plaintext must not be encrypted"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			id := StartOperation()
+			reqJSON, err := json.Marshal(EncryptRequestJSON{
+				OperationID: id,
+				InputFile:   inputPath,
+				OutputFile:  outputPath,
+				Deniability: tc.deniability,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got := StartEncrypt(string(reqJSON), nil)
+			want := "validation: Password: " + tc.wantMessage
+			if got != want {
+				t.Errorf("StartEncrypt(...) = %q; want %q", got, want)
+			}
+			select {
+			case <-workerCalled:
+				t.Error("runEncrypt was called; missing required password must fail synchronously")
+			default:
+			}
+			globalProgressMap.mu.RLock()
+			_, opExists := globalProgressMap.ops[id]
+			_, ctxExists := globalProgressMap.ctxs[id]
+			_, cancelExists := globalProgressMap.cancels[id]
+			globalProgressMap.mu.RUnlock()
+			if opExists || ctxExists || cancelExists {
+				t.Errorf(
+					"validation failure leaked operation state: op=%v ctx=%v cancel=%v",
+					opExists,
+					ctxExists,
+					cancelExists,
+				)
+			}
+			if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+				t.Errorf("missing-password request created output %q: %v", outputPath, statErr)
+			}
+		})
 	}
 }
 

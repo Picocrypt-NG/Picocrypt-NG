@@ -306,7 +306,7 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 		if got, want := a.deleteCheck.ToolTip(), tr("advanced.delete_files.tooltip", "Delete source files after encryption"); got != want {
 			t.Errorf("Delete files tooltip = %q, want %q", got, want)
 		}
-		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.tooltip", "No readable Picocrypt header. Keep password/keyfiles."); got != want {
+		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.tooltip", "No readable Picocrypt header. A non-empty password protects the outer wrapper; keyfiles protect only the inner volume."); got != want {
 			t.Errorf("Deniability tooltip = %q, want %q", got, want)
 		}
 		if got, want := a.recursivelyCheck.ToolTip(), tr("advanced.recursively.tooltip", "Process each file separately"); got != want {

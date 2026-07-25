@@ -4,14 +4,20 @@ import android.content.Context
 import android.net.Uri
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.InputStream
 
 object FileCopyService {
     private const val INTERNAL_FILES_DIR = "picocrypt_files"
+    private val keyfileCopyMutex = Mutex()
 
     /**
      * Copies a file from a URI to the internal app data directory.
@@ -69,44 +75,103 @@ object FileCopyService {
     /**
      * Copies a keyfile from a URI to the internal app data directory.
      * Uses fixed filename "keyfile_<index>" where index is the current keyfile count.
+     * A complete copy is published atomically and an existing slot is never overwritten.
      * @return Result with file path on success, AppError on failure
      */
     suspend fun copyKeyfileToInternalStorage(
         context: Context,
         uri: Uri,
         index: Int
-    ): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            // Get internal files directory
+    ): Result<String> = copyKeyfileToInternalStorage(
+        context = context,
+        uri = uri,
+        index = index,
+        afterAcquire = {},
+        afterPublish = {},
+    )
+
+    internal suspend fun copyKeyfileToInternalStorage(
+        context: Context,
+        uri: Uri,
+        index: Int,
+        afterAcquire: suspend () -> Unit,
+        afterPublish: suspend () -> Unit,
+    ): Result<String> {
+        keyfileCopyMutex.lock()
+        return try {
+            afterAcquire()
             val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-            if (!internalDir.exists()) {
-                internalDir.mkdirs()
-            }
+            val destFile = File(internalDir, "keyfile_$index")
+            var incompleteFile: File? = null
+            var published = false
+            var resultDelivered = false
 
-            // Use fixed filename "keyfile_<index>"
-            val fixedFileName = "keyfile_$index"
-            val destFile = File(internalDir, fixedFileName)
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val copyResult = try {
+                        if ((!internalDir.exists() && !internalDir.mkdirs()) || !internalDir.isDirectory) {
+                            throw IOException("Could not create internal keyfile directory")
+                        }
+                        if (destFile.exists()) {
+                            throw IOException("Keyfile target already exists")
+                        }
 
-            // Open input stream from URI
-            val inputStream: InputStream = context.contentResolver.openInputStream(uri)
-                ?: return@withContext Result.failure(
-                    copyFailed(context, "Could not open input stream for URI: $uri")
-                )
+                        val ownedIncompleteFile = File.createTempFile(
+                            "keyfile_${index}_",
+                            ".incomplete",
+                            internalDir,
+                        )
+                        incompleteFile = ownedIncompleteFile
+                        val inputStream: InputStream = context.contentResolver.openInputStream(uri)
+                            ?: throw IOException("Could not open input stream for URI: $uri")
 
-            // Copy file (overwrite if exists)
-            inputStream.use { input ->
-                FileOutputStream(destFile).use { output ->
-                    input.copyTo(output)
+                        inputStream.use { input ->
+                            FileOutputStream(ownedIncompleteFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        currentCoroutineContext().ensureActive()
+                        if (destFile.exists()) {
+                            throw IOException("Keyfile target was claimed during copy")
+                        }
+
+                        // Both paths share a directory, so the complete file becomes visible in one rename.
+                        if (!ownedIncompleteFile.renameTo(destFile)) {
+                            throw IOException("Could not publish copied keyfile")
+                        }
+                        published = true
+                        Result.success(destFile.absolutePath)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Result.failure(copyFailed(context, e.message))
+                    } finally {
+                        if (!published) {
+                            incompleteFile?.delete()
+                        }
+                    }
+
+                    if (copyResult.isSuccess) {
+                        afterPublish()
+                    }
+                    copyResult
+                }
+                resultDelivered = true
+                result
+            } finally {
+                if (!resultDelivered) {
+                    // Cancellation can arrive after rename while the IO result is dispatched
+                    // back to the caller. Clean up before releasing ownership of this slot.
+                    withContext(NonCancellable + Dispatchers.IO) {
+                        incompleteFile?.delete()
+                        if (published) {
+                            destFile.delete()
+                        }
+                    }
                 }
             }
-
-            Result.success(destFile.absolutePath)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(
-                copyFailed(context, e.message)
-            )
+        } finally {
+            keyfileCopyMutex.unlock()
         }
     }
 
@@ -138,11 +203,18 @@ object FileCopyService {
      */
     suspend fun cleanupAllFiles(context: Context): Boolean = withContext(Dispatchers.IO) {
         try {
-            val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-            if (!internalDir.exists()) {
+            val filesDir = context.filesDir
+            val entries = filesDir.list() ?: return@withContext false
+            if (INTERNAL_FILES_DIR !in entries) {
                 return@withContext true
             }
-            if (!internalDir.isDirectory) {
+
+            val internalDir = File(filesDir, INTERNAL_FILES_DIR)
+            val expectedInternalDir = File(filesDir.canonicalFile, INTERNAL_FILES_DIR)
+            if (internalDir.canonicalFile != expectedInternalDir ||
+                !internalDir.exists() ||
+                !internalDir.isDirectory
+            ) {
                 return@withContext false
             }
 
@@ -150,12 +222,7 @@ object FileCopyService {
 
             var allDeleted = true
             files.forEach { file ->
-                val deleted = if (file.isDirectory) {
-                    file.deleteRecursively()
-                } else {
-                    file.delete()
-                }
-                if (!deleted || file.exists()) {
+                if (!NoFollowFileTree.delete(filesDir, file)) {
                     allDeleted = false
                 }
             }
@@ -317,15 +384,29 @@ object FileCopyService {
      */
     suspend fun cleanupIncompleteFiles(context: Context): Boolean = withContext(Dispatchers.IO) {
         try {
-            val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-            if (!internalDir.exists() || !internalDir.isDirectory) {
+            val filesDir = context.filesDir
+            val entries = filesDir.list() ?: return@withContext false
+            if (INTERNAL_FILES_DIR !in entries) {
                 return@withContext true
             }
-            
+
+            val internalDir = File(filesDir, INTERNAL_FILES_DIR)
+            val expectedInternalDir = File(filesDir.canonicalFile, INTERNAL_FILES_DIR)
+            if (internalDir.canonicalFile != expectedInternalDir ||
+                !internalDir.exists() ||
+                !internalDir.isDirectory
+            ) {
+                return@withContext false
+            }
+
+            val files = internalDir.listFiles() ?: return@withContext false
             var allSuccess = true
-            internalDir.listFiles()?.forEach { file ->
-                if (file.isFile && file.name.endsWith(".incomplete")) {
-                    if (!file.delete()) {
+            files.forEach { file ->
+                if (file.name.endsWith(".incomplete")) {
+                    if (!isRegularFileInDirectory(internalDir, file) ||
+                        !file.delete() ||
+                        file.exists()
+                    ) {
                         allSuccess = false
                     }
                 }
@@ -342,27 +423,48 @@ object FileCopyService {
     /**
      * Cleans up all keyfile files (keyfile_0, keyfile_1, etc.) from internal storage.
      */
-    suspend fun cleanupKeyfiles(context: Context): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-            if (!internalDir.exists() || !internalDir.isDirectory) {
-                return@withContext true
-            }
-            
-            var allSuccess = true
-            internalDir.listFiles()?.forEach { file ->
-                if (file.isFile && file.name.startsWith("keyfile_")) {
-                    if (!file.delete()) {
-                        allSuccess = false
+    suspend fun cleanupKeyfiles(context: Context): Boolean {
+        keyfileCopyMutex.lock()
+        return try {
+            withContext(Dispatchers.IO) {
+                try {
+                    val filesDir = context.filesDir
+                    // File.exists() follows live links and treats dangling links as absent.
+                    // Inspect the parent entry first, then require the root to resolve in place.
+                    val entries = filesDir.list() ?: return@withContext false
+                    if (INTERNAL_FILES_DIR !in entries) {
+                        return@withContext true
                     }
+
+                    val internalDir = File(filesDir, INTERNAL_FILES_DIR)
+                    val expectedInternalDir = File(filesDir.canonicalFile, INTERNAL_FILES_DIR)
+                    if (internalDir.canonicalFile != expectedInternalDir ||
+                        !internalDir.exists() ||
+                        !internalDir.isDirectory
+                    ) {
+                        return@withContext false
+                    }
+
+                    val files = internalDir.listFiles() ?: return@withContext false
+
+                    var allSuccess = true
+                    files.forEach { file ->
+                        if (file.name.startsWith("keyfile_")) {
+                            if (!file.isFile || !file.delete() || file.exists()) {
+                                allSuccess = false
+                            }
+                        }
+                    }
+
+                    allSuccess
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    false
                 }
             }
-            
-            allSuccess
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            false
+        } finally {
+            keyfileCopyMutex.unlock()
         }
     }
     
@@ -372,11 +474,22 @@ object FileCopyService {
      */
     suspend fun cleanupOperationFilesBeforeStart(context: Context): Boolean = withContext(Dispatchers.IO) {
         try {
-            val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-            if (!internalDir.exists() || !internalDir.isDirectory) {
+            val filesDir = context.filesDir
+            val entries = filesDir.list() ?: return@withContext false
+            if (INTERNAL_FILES_DIR !in entries) {
                 return@withContext true
             }
-            
+
+            val internalDir = File(filesDir, INTERNAL_FILES_DIR)
+            val expectedInternalDir = File(filesDir.canonicalFile, INTERNAL_FILES_DIR)
+            if (internalDir.canonicalFile != expectedInternalDir ||
+                !internalDir.exists() ||
+                !internalDir.isDirectory
+            ) {
+                return@withContext false
+            }
+
+            val files = internalDir.listFiles() ?: return@withContext false
             var allSuccess = true
             
             // NOTE: Do NOT delete input file here - it's needed for the operation!
@@ -391,17 +504,34 @@ object FileCopyService {
                 "output_file",
                 "output_file.incomplete"
             )
-            outputFiles.forEach { fileName ->
-                val file = File(internalDir, fileName)
-                if (file.exists()) {
-                    if (!file.delete()) {
+            files.forEach { file ->
+                if (file.name in outputFiles) {
+                    if (!isRegularFileInDirectory(internalDir, file) ||
+                        !file.delete() ||
+                        file.exists()
+                    ) {
                         allSuccess = false
                     }
                 }
             }
-            
+
+            // Go publishes through random sibling stages. A process crash can leave
+            // one behind, including plaintext from decryption. Only remove direct
+            // regular files with Go's exact private stage prefix; never follow links
+            // or recursively delete a matching directory.
+            files.forEach { file ->
+                if (file.name.startsWith(".picocrypt-") &&
+                    isRegularFileInDirectory(internalDir, file) &&
+                    (!file.delete() || file.exists())
+                ) {
+                    allSuccess = false
+                }
+            }
+
             // Clean up any remaining incomplete files (but not input/keyfiles)
-            cleanupIncompleteFiles(context)
+            if (!cleanupIncompleteFiles(context)) {
+                allSuccess = false
+            }
 
             allSuccess
         } catch (e: CancellationException) {
@@ -409,6 +539,10 @@ object FileCopyService {
         } catch (e: Exception) {
             false
         }
+    }
+
+    private fun isRegularFileInDirectory(directory: File, file: File): Boolean {
+        return file.isFile && file.canonicalFile == File(directory.canonicalFile, file.name)
     }
 
     private fun copyFailed(context: Context, technicalMessage: String?) =

@@ -7,6 +7,15 @@ import (
 	"fmt"
 )
 
+const (
+	// KeyfileWritesDisabledMessage is the shared v2 writer-containment message.
+	KeyfileWritesDisabledMessage = "creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format"
+	// DeniabilityPasswordRequiredMessage explains the outer-wrapper credential requirement.
+	DeniabilityPasswordRequiredMessage = "a non-empty password is required for deniability"
+	// EncryptionPasswordRequiredMessage explains the password-only 2.19 writer requirement.
+	EncryptionPasswordRequiredMessage = "a non-empty password is required for encryption"
+)
+
 // Sentinel errors for common error conditions.
 // Use errors.Is(err, errors.ErrCancelled) to check for specific errors.
 var (
@@ -88,6 +97,22 @@ func (e *ValidationError) Error() string {
 // NewValidationError creates a new ValidationError.
 func NewValidationError(field, message string) *ValidationError {
 	return &ValidationError{Field: field, Message: message}
+}
+
+// NewKeyfileWritesDisabledError reports the v2 keyfile writer containment policy.
+func NewKeyfileWritesDisabledError() *ValidationError {
+	return NewValidationError("Keyfiles", KeyfileWritesDisabledMessage)
+}
+
+// NewDeniabilityPasswordRequiredError reports that a new deniability wrapper
+// cannot be protected by an empty password.
+func NewDeniabilityPasswordRequiredError() *ValidationError {
+	return NewValidationError("Password", DeniabilityPasswordRequiredMessage)
+}
+
+// NewEncryptionPasswordRequiredError reports that the 2.19 writer needs a password.
+func NewEncryptionPasswordRequiredError() *ValidationError {
+	return NewValidationError("Password", EncryptionPasswordRequiredMessage)
 }
 
 // HeaderError represents an error in volume header parsing or validation.

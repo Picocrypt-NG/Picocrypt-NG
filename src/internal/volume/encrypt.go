@@ -9,10 +9,10 @@ import (
 	"Picocrypt-NG/internal/log"
 	"Picocrypt-NG/internal/util"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	perrors "Picocrypt-NG/internal/errors"
@@ -23,64 +23,55 @@ import (
 // Encrypt performs a complete volume encryption operation.
 // This is the main entry point for encryption.
 // If ctx is nil, a background context is used.
-func Encrypt(ctx context.Context, req *EncryptRequest) error {
-	// Reject an unusable split chunk size before any preprocessing or key
-	// derivation, so an overflowing size fails fast here instead of at the final
-	// split step — where the silent no-op would delete the just-written volume.
-	if err := req.validateSplit(); err != nil {
+func Encrypt(ctx context.Context, req *EncryptRequest) (retErr error) {
+	if err := req.Validate(); err != nil {
 		return err
 	}
 
 	opCtx := NewEncryptContext(ctx, req)
-	defer opCtx.Close() // Secure zeroing of key material
+	defer func() {
+		retErr = errors.Join(retErr, opCtx.Close())
+	}() // Secure zeroing of key material and fail-loud stage cleanup
 
 	log.Info("starting encryption", log.String("output", req.OutputFile))
 
 	// Phase 1: Preprocess (zip if multiple files or compression requested)
 	if err := encryptPreprocess(opCtx, req); err != nil {
-		cleanupEncrypt(opCtx, req) // Clean up any partial temp files
 		return err
 	}
 
 	// Phase 2: Generate cryptographic values
 	if err := encryptGenerateValues(opCtx, req); err != nil {
-		cleanupEncrypt(opCtx, req)
 		return err
 	}
 
 	// Phase 3: Write header
 	if err := encryptWriteHeader(opCtx, req); err != nil {
-		cleanupEncrypt(opCtx, req)
 		return err
 	}
 
 	// Phase 4: Derive keys
 	if err := encryptDeriveKeys(opCtx, req); err != nil {
-		cleanupEncrypt(opCtx, req)
 		return err
 	}
 
 	// Phase 5: Process keyfiles
 	if err := encryptProcessKeyfiles(opCtx, req); err != nil {
-		cleanupEncrypt(opCtx, req)
 		return err
 	}
 
 	// Phase 6: Compute header auth
 	if err := encryptComputeAuth(opCtx, req); err != nil {
-		cleanupEncrypt(opCtx, req)
 		return err
 	}
 
 	// Phase 7: Encrypt payload
 	if err := encryptPayload(opCtx, req); err != nil {
-		cleanupEncrypt(opCtx, req)
 		return err
 	}
 
 	// Phase 8: Finalize (write auth values, add deniability, split)
 	if err := encryptFinalize(opCtx, req); err != nil {
-		cleanupEncrypt(opCtx, req)
 		return err
 	}
 
@@ -125,13 +116,19 @@ func encryptPreprocess(ctx *OperationContext, req *EncryptRequest) error {
 			return err
 		}
 
-		// Create the zip
-		ctx.TempFile = strings.TrimSuffix(req.OutputFile, ".pcv") + ".tmp"
+		tempZip, err := fileops.CreateSiblingTemp(req.OutputFile)
+		if err != nil {
+			return err
+		}
+		ctx.adoptTempInput(tempZip)
+
+		// Create the zip through the exclusively owned handle. The random path
+		// is never reopened for writing.
 		err = fileops.CreateZip(fileops.ZipOptions{
 			Files:      inputFiles,
 			RootDir:    commonRoot,
 			EntryNames: entryNames,
-			OutputPath: ctx.TempFile,
+			OutputFile: tempZip.File(),
 			Compress:   req.Compress,
 			Cipher:     ctx.TempCiphers,
 			Progress: func(p float32, info string) {
@@ -148,7 +145,7 @@ func encryptPreprocess(ctx *OperationContext, req *EncryptRequest) error {
 			return err
 		}
 
-		ctx.InputFile = ctx.TempFile
+		ctx.InputFile = tempZip.Path()
 		ctx.TempZipInUse = true
 	} else if len(inputFiles) == 1 {
 		ctx.InputFile = inputFiles[0]
@@ -210,21 +207,20 @@ func encryptGenerateValues(ctx *OperationContext, req *EncryptRequest) error {
 }
 
 func encryptWriteHeader(ctx *OperationContext, req *EncryptRequest) error {
-	// Create output file
-	fout, err := fileops.CreateSecureNoSymlink(req.OutputFile + ".incomplete")
-	if err != nil {
+	if err := ctx.beginStagedOutput(); err != nil {
 		return fmt.Errorf("create output: %w", err)
+	}
+	fout, err := ctx.stagedOutputFile()
+	if err != nil {
+		return err
 	}
 
 	// Write header
 	w := header.NewWriter(fout, req.RSCodecs)
 	if _, err := w.WriteHeader(ctx.Header); err != nil {
-		_ = fout.Close()
-		_ = os.Remove(fout.Name())
 		return fmt.Errorf("write header: %w", err)
 	}
 
-	_ = fout.Close()
 	return nil
 }
 
@@ -339,17 +335,21 @@ func encryptPayload(ctx *OperationContext, req *EncryptRequest) error {
 	ctx.CipherSuite = cipherSuite
 
 	// Open files
-	fin, err := os.Open(ctx.InputFile)
+	fin, closeInput, err := ctx.openInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
 	}
-	defer func() { _ = fin.Close() }()
+	if closeInput {
+		defer func() { _ = fin.Close() }()
+	}
 
-	fout, err := fileops.OpenExistingNoSymlink(req.OutputFile+".incomplete", os.O_WRONLY|os.O_APPEND)
+	fout, err := ctx.stagedOutputFile()
 	if err != nil {
 		return fmt.Errorf("open output: %w", err)
 	}
-	defer func() { _ = fout.Close() }()
+	if _, err := fout.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("seek output: %w", err)
+	}
 
 	// Wrap with temp zip cipher if needed
 	var reader io.Reader = fin
@@ -434,12 +434,10 @@ func encryptPayload(ctx *OperationContext, req *EncryptRequest) error {
 func encryptFinalize(ctx *OperationContext, req *EncryptRequest) error {
 	ctx.SetStatus("Writing values...")
 
-	// Open output file for seeking
-	fout, err := fileops.OpenExistingNoSymlink(req.OutputFile+".incomplete", os.O_RDWR)
+	fout, err := ctx.stagedOutputFile()
 	if err != nil {
 		return fmt.Errorf("open output for auth: %w", err)
 	}
-	defer func() { _ = fout.Close() }()
 
 	// Write auth values
 	offset := header.AuthValuesOffset(len(ctx.Header.Comments))
@@ -455,20 +453,23 @@ func encryptFinalize(ctx *OperationContext, req *EncryptRequest) error {
 		return err
 	}
 
-	// Sync to ensure all data is written before rename
-	if err := fout.Sync(); err != nil {
-		return fmt.Errorf("sync output: %w", err)
+	if err := req.ValidateOutputSafety(); err != nil {
+		return err
 	}
-	_ = fout.Close()
-
-	// Rename to final name
-	if err := os.Rename(req.OutputFile+".incomplete", req.OutputFile); err != nil {
-		return fmt.Errorf("rename output: %w", err)
+	if err := ctx.publishStagedOutput(); err != nil {
+		return fmt.Errorf("publish output: %w", err)
 	}
+	outputInfo := ctx.publishedOutputInfo
 
 	// Add deniability if requested
 	if req.Deniability {
-		if err := AddDeniability(req.OutputFile, req.Password, ctx.Reporter); err != nil {
+		if err := addDeniability(
+			req.OutputFile,
+			req.Password,
+			ctx.Reporter,
+			outputInfo,
+			&outputInfo,
+		); err != nil {
 			return err
 		}
 	}
@@ -476,10 +477,14 @@ func encryptFinalize(ctx *OperationContext, req *EncryptRequest) error {
 	// Split if requested
 	if req.Split {
 		ctx.SetStatus("Splitting...")
-		_, err := fileops.Split(fileops.SplitOptions{
-			InputPath: req.OutputFile,
-			ChunkSize: req.ChunkSize,
-			Unit:      req.ChunkUnit,
+		if outputInfo == nil {
+			return errors.New("published output identity is unavailable")
+		}
+		_, err = fileops.Split(fileops.SplitOptions{
+			InputPath:     req.OutputFile,
+			ExpectedInput: outputInfo,
+			ChunkSize:     req.ChunkSize,
+			Unit:          req.ChunkUnit,
 			Progress: func(p float32, info string) {
 				ctx.UpdateProgress(p, info)
 			},
@@ -494,22 +499,18 @@ func encryptFinalize(ctx *OperationContext, req *EncryptRequest) error {
 			return err
 		}
 
-		// Remove the unsplit file
-		_ = os.Remove(req.OutputFile)
-	}
-
-	// Clean up temp file
-	if ctx.TempFile != "" {
-		_ = os.Remove(ctx.TempFile)
+		removed, err := fileops.RemoveIfSameFile(req.OutputFile, outputInfo)
+		if err != nil {
+			return fmt.Errorf("remove unsplit output: %w", err)
+		}
+		if !removed {
+			if _, err := os.Lstat(req.OutputFile); err == nil {
+				return fmt.Errorf("unsplit output path %q changed during splitting; refusing to remove it", req.OutputFile)
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("inspect unsplit output after splitting: %w", err)
+			}
+		}
 	}
 
 	return nil
-}
-
-func cleanupEncrypt(ctx *OperationContext, req *EncryptRequest) {
-	if ctx.TempFile != "" {
-		_ = os.Remove(ctx.TempFile)
-	}
-	_ = os.Remove(req.OutputFile + ".incomplete")
-	// Note: ctx.Close() is called via defer in Encrypt()
 }

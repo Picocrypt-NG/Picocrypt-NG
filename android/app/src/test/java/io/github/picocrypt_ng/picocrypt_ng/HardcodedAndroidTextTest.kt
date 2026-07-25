@@ -200,7 +200,6 @@ class HardcodedAndroidTextTest {
 
         private val movedStringResourceNames = setOf(
             "error_no_active_operation",
-            "error_no_operation_to_retry",
             "error_operation_data_unavailable",
             "error_decrypt_retry_only",
             "error_could_not_open_folder",

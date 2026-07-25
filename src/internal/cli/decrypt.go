@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -23,46 +24,55 @@ func init() {
 }
 
 var decryptCmd = &cobra.Command{
-	Use:   "decrypt",
+	Use:   "decrypt VOLUME",
 	Short: "Decrypt a .pcv volume",
 	Long: `Decrypt a Picocrypt volume (.pcv) back to its original files.
 
 If no password is provided, you will be prompted to enter one interactively.
 The password is hidden while typing.
 
+Pass the volume as a literal operand. Use -- before a volume filename that
+begins with -.
+
 Examples:
   # Decrypt interactively (prompts for password)
-  Picocrypt-NG decrypt -i secret.pcv
+	  Picocrypt-NG decrypt secret.pcv -o secret.txt
 
   # Decrypt with password on command line (visible in shell history)
-  Picocrypt-NG decrypt -i secret.pcv -o secret.txt -p "mypassword"
+	  Picocrypt-NG decrypt secret.pcv -o secret.txt -p "mypassword"
 
   # Decrypt with keyfile (prompts for password, press Enter if keyfile-only)
-  Picocrypt-NG decrypt -i secret.pcv -k keyfile.key
+	  Picocrypt-NG decrypt secret.pcv -k keyfile.key
 
   # Decrypt with keyfile only, no password prompt
-  Picocrypt-NG decrypt -i secret.pcv -k keyfile.key -p ""
+	  Picocrypt-NG decrypt secret.pcv -k keyfile.key -p ""
 
   # Decrypt and auto-extract zip
-  Picocrypt-NG decrypt -i archive.pcv --auto-unzip
+	  Picocrypt-NG decrypt archive.pcv --auto-unzip
 
   # Force decryption despite errors (may produce corrupted output)
-  Picocrypt-NG decrypt -i damaged.pcv --force
+	  Picocrypt-NG decrypt damaged.pcv --force
 
   # Read password from stdin (for scripts)
-  echo "mypassword" | Picocrypt-NG decrypt -i secret.pcv -P
+	  echo "mypassword" | Picocrypt-NG decrypt secret.pcv -P
 
   # Decrypt from stdin (use -p since stdin is taken by data)
-  curl https://example.com/file.pcv | Picocrypt-NG decrypt -i - -o file.txt -p "pw"
+	  curl https://example.com/file.pcv | Picocrypt-NG decrypt - -o file.txt -p "pw"
 
   # Decrypt to stdout
-  Picocrypt-NG decrypt -i secret.pcv -o - -p "pw" | less`,
+	  Picocrypt-NG decrypt secret.pcv -o - -p "pw" | less`,
+	Args: func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("input") {
+			return errors.New("--input/-i was removed; pass the volume path as an argument")
+		}
+		return cobra.ExactArgs(1)(cmd, args)
+	},
 	RunE: runDecrypt,
 }
 
 // Decrypt flags
 var (
-	decInput         string
+	decLegacyInputs  []string
 	decOutput        string
 	decPassword      string
 	decPasswordStdin bool
@@ -81,7 +91,8 @@ func init() {
 	rootCmd.AddCommand(decryptCmd)
 
 	// Input/Output
-	decryptCmd.Flags().StringVarP(&decInput, "input", "i", "", "Input .pcv file to decrypt")
+	decryptCmd.Flags().StringArrayVarP(&decLegacyInputs, "input", "i", nil, "")
+	_ = decryptCmd.Flags().MarkHidden("input")
 	decryptCmd.Flags().StringVarP(&decOutput, "output", "o", "", "Output file path (auto-detected if not specified)")
 
 	// Credentials
@@ -102,24 +113,24 @@ func init() {
 	// Other
 	decryptCmd.Flags().BoolVarP(&decQuiet, "quiet", "q", false, "Suppress progress output")
 	decryptCmd.Flags().BoolVarP(&decYes, "yes", "y", false, "Overwrite output file without prompting")
-
-	// Mark required
-	_ = decryptCmd.MarkFlagRequired("input")
 }
 
 func runDecrypt(cmd *cobra.Command, args []string) error {
-	// Validate input exists
-	if decInput == "" {
-		return errors.New("input file is required (-i)")
+	if cmd.Flags().Changed("input") || len(decLegacyInputs) > 0 {
+		return errors.New("--input/-i was removed; pass the volume path as an argument")
 	}
+	if err := cobra.ExactArgs(1)(cmd, args); err != nil {
+		return err
+	}
+	inputPath := args[0]
 
 	// Check for stdin/stdout
-	useStdin := IsStdin(decInput)
+	useStdin := IsStdin(inputPath)
 	useStdout := IsStdout(decOutput)
 
 	// Validate stdin/stdout constraints
 	if useStdin && decPasswordStdin {
-		return errors.New("cannot use -P (password from stdin) with -i - (input from stdin)")
+		return errors.New("cannot use -P (password from stdin) with - (input from stdin)")
 	}
 	if useStdin && decRecombine {
 		return errors.New("stdin not compatible with --recombine")
@@ -159,7 +170,7 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 	}
 
 	// Handle stdin input
-	inputFile := decInput
+	inputFile := inputPath
 	if useStdin {
 		var err error
 		stdinTempFile, err = BufferStdinToTemp(decOutput)
@@ -168,19 +179,19 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 		}
 		inputFile = stdinTempFile
 	} else {
-		inputInfo, err := os.Stat(decInput)
+		inputInfo, err := os.Stat(inputPath)
 		if err != nil {
-			return fmt.Errorf("input file not found: %s", decInput)
+			return fmt.Errorf("input file not found: %s", inputPath)
 		}
 		if inputInfo.IsDir() {
-			return fmt.Errorf("input must be a file, not a directory: %s", decInput)
+			return fmt.Errorf("input must be a file, not a directory: %s", inputPath)
 		}
 	}
 
 	// Check if this looks like a split volume (skip for stdin)
-	if !useStdin && strings.Contains(decInput, ".pcv.") && !decRecombine {
+	if !useStdin && strings.Contains(inputPath, ".pcv.") && !decRecombine {
 		// Check if it's a chunk file like .pcv.0, .pcv.1, etc.
-		ext := decInput[strings.LastIndex(decInput, ".pcv.")+5:]
+		ext := inputPath[strings.LastIndex(inputPath, ".pcv.")+5:]
 		if _, err := fmt.Sscanf(ext, "%d", new(int)); err == nil {
 			if !decQuiet {
 				fmt.Fprintln(os.Stderr, "Detected split volume. Use --recombine to recombine chunks first.")
@@ -203,7 +214,7 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 		if useStdin {
 			outputFile = "decrypted"
 		} else {
-			outputFile = strings.TrimSuffix(decInput, ".pcv")
+			outputFile = strings.TrimSuffix(inputPath, ".pcv")
 			if decRecombine {
 				// For split files like file.pcv.0, need to strip more
 				if idx := strings.LastIndex(outputFile, ".pcv."); idx > 0 {
@@ -211,9 +222,43 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 				}
 			}
 			// If we're left with the same name, add .decrypted
-			if outputFile == decInput {
-				outputFile = decInput + ".decrypted"
+			if outputFile == inputPath {
+				outputFile = inputPath + ".decrypted"
 			}
+		}
+	}
+
+	// Reject protected aliases before an overwrite confirmation or password
+	// prompt. The core repeats this check immediately before publication.
+	if err := (&volume.DecryptRequest{
+		InputFile:  inputFile,
+		OutputFile: outputFile,
+		Keyfiles:   decKeyfiles,
+		Recombine:  decRecombine,
+	}).ValidateOutputSafety(); err != nil {
+		return err
+	}
+
+	// A non-same-level auto-unzip publishes into a directory that is not an
+	// overwriteable output file. Refuse an occupied extraction root before
+	// prompting for credentials or deriving keys; --yes only applies to the
+	// decrypted archive file itself.
+	if decAutoUnzip && !decSameLevel {
+		extractRoot := outputFile
+		if strings.HasSuffix(outputFile, ".zip") {
+			extractRoot = filepath.Join(
+				filepath.Dir(outputFile),
+				strings.TrimSuffix(filepath.Base(outputFile), ".zip"),
+			)
+		}
+		if _, err := os.Lstat(extractRoot); err == nil {
+			return fmt.Errorf(
+				"auto-unzip extraction root already exists and --yes does not authorize replacing it: %s: %w",
+				extractRoot,
+				os.ErrExist,
+			)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect auto-unzip extraction root %s: %w", extractRoot, err)
 		}
 	}
 
@@ -328,7 +373,7 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 
 	// Print info
 	if !decQuiet {
-		srcName := decInput
+		srcName := inputPath
 		if useStdin {
 			srcName = "stdin"
 		}
@@ -348,11 +393,6 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 
 	if err != nil {
 		reporter.PrintError("%v", err)
-		// Clean up partial output on error (temp files cleaned by defer).
-		// Remove the partially-written .incomplete output.
-		if !useStdout {
-			_ = os.Remove(outputFile + ".incomplete")
-		}
 		return err
 	}
 

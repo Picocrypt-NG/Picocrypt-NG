@@ -119,12 +119,36 @@ class OperationViewModelTest {
     }
     
     @Test
-    fun `cancelOperation stops polling and cancels operation`() = runTest(mainDispatcherRule.testDispatcher) {
-        viewModel.cancelOperation()
-        
-        advanceUntilIdle()
-        
-        // Method should not throw
+    fun `cancelOperation delegates once and exposes the native terminal state`() = runTest(mainDispatcherRule.testDispatcher) {
+        setOperationState(
+            TestDataBuilders.createOperationState(
+                id = "op_cancel",
+                status = OperationStatusData(OperationStatus.ENCRYPTING_RATE),
+                done = false,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.cancelOperation("op_cancel") } returns Result.success(
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.CANCELLED),
+                    detail = OperationProgressDetail(OperationProgress.NONE),
+                    progress = 0.4f,
+                    done = true,
+                )
+            )
+
+            viewModel.cancelOperation()
+            val state = viewModel.operationState.first { it?.done == true }
+
+            verify(exactly = 1) { GoBridge.cancelOperation("op_cancel") }
+            assertEquals(OperationStatus.CANCELLED, state?.status?.code)
+            assertEquals(0.4f, state?.progress ?: -1f, 0.001f)
+            assertTrue("The ViewModel must expose cancellation as terminal", state?.done == true)
+        } finally {
+            unmockkObject(GoBridge)
+        }
     }
     
     @Test
@@ -135,9 +159,9 @@ class OperationViewModelTest {
                 type = OperationType.ENCRYPT,
                 inputFile = "/data/test/input_file.txt",
                 outputFile = "/data/test/output_file.pcv",
-                status = "Processing",
+                status = OperationStatusData(OperationStatus.UNKNOWN),
+                detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0.5f,
-                info = "Working..."
             )
         )
 

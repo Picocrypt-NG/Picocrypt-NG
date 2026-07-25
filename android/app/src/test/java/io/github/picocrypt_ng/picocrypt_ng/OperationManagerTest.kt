@@ -8,6 +8,7 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import io.github.picocrypt_ng.picocrypt_ng.testutils.TestDataBuilders
+import io.mockk.coEvery
 import io.mockk.mockk
 import io.mockk.every
 import io.mockk.mockkObject
@@ -136,6 +137,201 @@ class OperationManagerTest {
             assertTrue("Error should be InvalidPassword", error is AppError.ValidationError.InvalidPassword)
         }
     }
+
+    @Test
+    fun `startEncrypt rejects password-and-keyfile v2 writer before Go`() = runTest {
+        val tmpDir = createTempDirectory(prefix = "opmgr_keyfile_only_encrypt").toFile()
+        every { mockContext.filesDir } returns tmpDir
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.startOperation() } returns Result.success("op_keyfile_encrypt")
+            every {
+                GoBridge.startEncrypt(
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                )
+            } returns Result.success(Unit)
+
+            val keyfile = TestDataBuilders.createKeyfileInfo(
+                internalPath = "/data/test/keyfile_0",
+            )
+            val formData = TestDataBuilders.createEncryptFormData(
+                password = "temporary",
+                confirmPassword = "temporary",
+                deniability = false,
+                keyfiles = listOf(keyfile),
+            )
+
+            val result = OperationManager.startEncrypt(
+                mockContext,
+                formData,
+            )
+
+            assertTrue("new v2 keyfile encryption must fail", result.isFailure)
+            assertTrue(
+                result.exceptionOrNull() is AppError.ValidationError.KeyfileWritesDisabled,
+            )
+            verify(exactly = 0) { GoBridge.startOperation() }
+            verify(exactly = 0) {
+                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+            }
+        } finally {
+            unmockkObject(GoBridge)
+            tmpDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `startEncrypt rejects keyfile-only deniability before Go`() = runTest {
+        mockkObject(GoBridge)
+        try {
+            val result = OperationManager.startEncrypt(
+                mockContext,
+                TestDataBuilders.createEncryptFormData(
+                    password = "",
+                    confirmPassword = "",
+                    deniability = true,
+                    keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
+                ),
+            )
+
+            assertTrue("keyfile-only deniability must fail", result.isFailure)
+            assertTrue(
+                result.exceptionOrNull() is AppError.ValidationError.KeyfileWritesDisabled,
+            )
+            verify(exactly = 0) { GoBridge.startOperation() }
+            verify(exactly = 0) {
+                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+            }
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `startDecrypt passes legacy deniable keyfile-only credentials to Go`() = runTest {
+        val tmpDir = createTempDirectory(prefix = "opmgr_legacy_deniable_decrypt").toFile()
+        every { mockContext.filesDir } returns tmpDir
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.startOperation() } returns Result.success("op_legacy_decrypt")
+            val passwordSlot = slot<ByteArray>()
+            val optionsSlot = slot<DecryptOptions>()
+            every {
+                GoBridge.startDecrypt(
+                    any(),
+                    any(),
+                    any(),
+                    capture(passwordSlot),
+                    capture(optionsSlot),
+                )
+            } returns Result.success(Unit)
+
+            val keyfile = TestDataBuilders.createKeyfileInfo(
+                internalPath = "/data/test/keyfile_0",
+            )
+            val result = OperationManager.startDecrypt(
+                mockContext,
+                TestDataBuilders.createDecryptFormData(
+                    password = "",
+                    keyfiles = listOf(keyfile),
+                    decryptionInfo = TestDataBuilders.createDecryptionInfo(
+                        keyfilesRequired = true,
+                        deniability = true,
+                        readable = false,
+                    ),
+                ),
+            )
+
+            assertTrue("legacy keyfile-only deniable decryption should start", result.isSuccess)
+            assertTrue("legacy empty outer password must reach the reader", passwordSlot.captured.isEmpty())
+            assertEquals(listOf(keyfile.internalPath), optionsSlot.captured.keyfiles)
+            assertTrue(optionsSlot.captured.deniability)
+        } finally {
+            unmockkObject(GoBridge)
+            tmpDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `startEncrypt does not invoke Go when pre-start cleanup fails`() = runTest {
+        mockkObject(FileCopyService)
+        mockkObject(GoBridge)
+        try {
+            coEvery {
+                FileCopyService.cleanupOperationFilesBeforeStart(mockContext)
+            } returns false
+            every {
+                FileCopyService.getOutputFilePath(mockContext, any(), isEncrypt = true)
+            } returns "/output.pcv"
+            every { GoBridge.startOperation() } returns Result.success("must_not_start")
+            every {
+                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+            } returns Result.success(Unit)
+
+            val result = OperationManager.startEncrypt(
+                mockContext,
+                TestDataBuilders.createEncryptFormData(),
+            )
+
+            verify(exactly = 0) { GoBridge.startOperation() }
+            verify(exactly = 0) {
+                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+            }
+            assertTrue("Cleanup failure must fail the operation start", result.isFailure)
+            assertTrue(
+                "Cleanup failure must surface as a file deletion error",
+                result.exceptionOrNull() is AppError.FileError.DeleteFailed,
+            )
+        } finally {
+            unmockkObject(GoBridge)
+            unmockkObject(FileCopyService)
+        }
+    }
+
+    @Test
+    fun `startDecrypt does not invoke Go when pre-start cleanup fails`() = runTest {
+        mockkObject(FileCopyService)
+        mockkObject(GoBridge)
+        try {
+            coEvery {
+                FileCopyService.cleanupOperationFilesBeforeStart(mockContext)
+            } returns false
+            every {
+                FileCopyService.getOutputFilePath(mockContext, any(), isEncrypt = false)
+            } returns "/output"
+            every { GoBridge.startOperation() } returns Result.success("must_not_start")
+            every {
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
+            } returns Result.success(Unit)
+
+            val result = OperationManager.startDecrypt(
+                mockContext,
+                TestDataBuilders.createDecryptFormData(),
+            )
+
+            verify(exactly = 0) { GoBridge.startOperation() }
+            verify(exactly = 0) {
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
+            }
+            assertTrue("Cleanup failure must fail the operation start", result.isFailure)
+            assertTrue(
+                "Cleanup failure must surface as a file deletion error",
+                result.exceptionOrNull() is AppError.FileError.DeleteFailed,
+            )
+        } finally {
+            unmockkObject(GoBridge)
+            unmockkObject(FileCopyService)
+        }
+    }
     
     @Test
     fun `cancelOperation returns error when no active operation`() = runTest {
@@ -150,6 +346,113 @@ class OperationManagerTest {
             assertEquals(R.string.error_no_active_operation, (error as AppError).messageResId)
         }
     }
+
+    @Test
+    fun `cancelOperation preserves the terminal state returned by Go`() = runTest {
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(
+                id = "op_completed",
+                status = OperationStatusData(OperationStatus.ENCRYPTING_RATE),
+                progress = 0.9f,
+                done = false,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.cancelOperation("op_completed") } returns Result.success(
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.COMPLETED),
+                    detail = OperationProgressDetail(OperationProgress.NONE),
+                    progress = 1f,
+                    done = true,
+                )
+            )
+
+            val result = OperationManager.cancelOperation()
+            val state = OperationManager.currentOperation.value
+
+            assertTrue("Cancel request should succeed", result.isSuccess)
+            assertEquals(OperationStatus.COMPLETED, state?.status?.code)
+            assertEquals(1f, state?.progress ?: -1f, 0.001f)
+            assertTrue("Native terminal state must remain terminal", state?.done == true)
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `cancelOperation classifies a terminal error returned by Go`() = runTest {
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(
+                id = "op_failed",
+                type = OperationType.DECRYPT,
+                done = false,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.cancelOperation("op_failed") } returns Result.success(
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.ERROR),
+                    detail = OperationProgressDetail(OperationProgress.NONE),
+                    progress = 0.4f,
+                    done = true,
+                    technicalError = "diagnostic auth failure",
+                    errorCode = "AUTH_FAILED",
+                )
+            )
+
+            val result = OperationManager.cancelOperation()
+            val state = OperationManager.currentOperation.value
+
+            assertTrue("Cancel request should return the native terminal snapshot", result.isSuccess)
+            assertEquals(OperationStatus.ERROR, state?.status?.code)
+            assertTrue(state?.error is AppError.OperationError.PasswordAuth)
+            assertEquals("diagnostic auth failure", state?.error?.technicalMessage)
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `cancelOperation does not overwrite a concurrently replaced operation`() = runTest {
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(id = "op_old", done = false)
+        )
+        val replacement = TestDataBuilders.createOperationState(
+            id = "op_new",
+            status = OperationStatusData(OperationStatus.STARTING),
+            done = false,
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.cancelOperation("op_old") } answers {
+                setCurrentOperationForTest(replacement)
+                Result.success(
+                    ProgressState(
+                        status = OperationStatusData(OperationStatus.CANCELLED),
+                        detail = OperationProgressDetail(OperationProgress.NONE),
+                        progress = 0f,
+                        done = true,
+                    )
+                )
+            }
+
+            val result = OperationManager.cancelOperation()
+
+            assertTrue("Cancel request should succeed", result.isSuccess)
+            assertSame(
+                "A newer operation must not be clobbered by an older cancel response",
+                replacement,
+                OperationManager.currentOperation.value,
+            )
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
     
     @Test
     fun `pollProgress returns null when no active operation`() = runTest {
@@ -159,6 +462,104 @@ class OperationManagerTest {
         val result = OperationManager.pollProgress()
         
         assertNull("Should return null when no operation", result)
+    }
+
+    @Test
+    fun `pollProgress projects semantic status and detail into operation state`() = runTest {
+        val status = OperationStatusData(
+            OperationStatus.ENCRYPTING_RATE,
+            speedMiBPerSecond = 12.34,
+            eta = "01:02:03",
+        )
+        val detail = OperationProgressDetail("ITEM_COUNT", current = 3, total = 10)
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(
+                id = "op_semantic",
+                status = OperationStatusData(OperationStatus.STARTING),
+                detail = OperationProgressDetail("NONE"),
+                progress = 0f,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.getProgress("op_semantic") } returns Result.success(
+                ProgressState(status, detail, progress = 0.3f, done = false)
+            )
+
+            val result = OperationManager.pollProgress()
+
+            assertEquals(status, result?.status)
+            assertEquals(detail, result?.detail)
+            assertEquals(0.3f, result?.progress ?: -1f, 0.001f)
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `raw cancelled diagnostic cannot override a non-cancelled semantic status`() = runTest {
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(
+                id = "op_not_cancelled",
+                status = OperationStatusData(OperationStatus.STARTING),
+                done = false,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.getProgress("op_not_cancelled") } returns Result.success(
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.UNKNOWN),
+                    detail = OperationProgressDetail("NONE"),
+                    progress = 1f,
+                    done = true,
+                    technicalError = "Cancelled",
+                    errorCode = "CANCELLED",
+                )
+            )
+
+            val result = OperationManager.pollProgress()
+
+            assertNull("Non-ERROR semantic status must not create an AppError", result?.error)
+            assertEquals(OperationUiState.Success(OperationType.ENCRYPT), result.toUiState())
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `semantic error status classifies the distinct technical error and code`() = runTest {
+        setCurrentOperationForTest(
+            TestDataBuilders.createOperationState(
+                id = "op_error",
+                type = OperationType.DECRYPT,
+                status = OperationStatusData(OperationStatus.STARTING),
+                done = false,
+            )
+        )
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.getProgress("op_error") } returns Result.success(
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.ERROR),
+                    detail = OperationProgressDetail("NONE"),
+                    progress = 0.4f,
+                    done = true,
+                    technicalError = "diagnostic auth failure",
+                    errorCode = "AUTH_FAILED",
+                )
+            )
+
+            val result = OperationManager.pollProgress()
+
+            assertTrue(result?.error is AppError.OperationError.PasswordAuth)
+            assertEquals("diagnostic auth failure", result?.error?.technicalMessage)
+        } finally {
+            unmockkObject(GoBridge)
+        }
     }
     
     @Test
@@ -189,7 +590,12 @@ class OperationManagerTest {
 
             // First poll transitions the operation to a terminal done=true state.
             every { GoBridge.getProgress("op_test") } returns Result.success(
-                ProgressState(status = "Completed", progress = 1f, info = "", done = true)
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.COMPLETED),
+                    detail = OperationProgressDetail("NONE"),
+                    progress = 1f,
+                    done = true,
+                )
             )
             val terminal = OperationManager.pollProgress()
             assertNotNull("Poll should return the terminal state", terminal)
@@ -197,14 +603,23 @@ class OperationManagerTest {
 
             // A later (slow/concurrent) poll reports a stale, non-terminal progress.
             every { GoBridge.getProgress("op_test") } returns Result.success(
-                ProgressState(status = "Working...", progress = 0.42f, info = "stale", done = false)
+                ProgressState(
+                    status = OperationStatusData(OperationStatus.UNKNOWN),
+                    detail = OperationProgressDetail("UNKNOWN"),
+                    progress = 0.42f,
+                    done = false,
+                )
             )
             val afterStale = OperationManager.pollProgress()
 
             // The done-guard must keep the terminal state intact, not regress it.
             assertNotNull(afterStale)
             assertTrue("Done flag must remain true", afterStale!!.done)
-            assertEquals("Status must not regress", "Completed", afterStale.status)
+            assertEquals(
+                "Status must not regress",
+                OperationStatusData(OperationStatus.COMPLETED),
+                afterStale.status,
+            )
             assertEquals("Progress must not regress", 1f, afterStale.progress, 0.001f)
             assertSame(
                 "Terminal state must be returned unchanged",
@@ -268,7 +683,12 @@ class OperationManagerTest {
             every { GoBridge.getProgress("op_clear") } answers {
                 flow.value = null
                 Result.success(
-                    ProgressState(status = "Encrypting", progress = 0.5f, info = "", done = false)
+                    ProgressState(
+                        status = OperationStatusData(OperationStatus.ENCRYPTING_RATE, 12.34, "01:02:03"),
+                        detail = OperationProgressDetail("NONE"),
+                        progress = 0.5f,
+                        done = false,
+                    )
                 )
             }
 
@@ -312,7 +732,7 @@ class OperationManagerTest {
             val replacement = TestDataBuilders.createOperationState(
                 id = "op_new",
                 type = OperationType.ENCRYPT,
-                status = "Starting...",
+                status = OperationStatusData(OperationStatus.STARTING),
                 progress = 0f,
                 done = false
             )
@@ -325,7 +745,12 @@ class OperationManagerTest {
             every { GoBridge.getProgress("op_old") } answers {
                 flow.value = replacement
                 Result.success(
-                    ProgressState(status = "Encrypting", progress = 0.5f, info = "", done = false)
+                    ProgressState(
+                        status = OperationStatusData(OperationStatus.ENCRYPTING_RATE, 12.34, "01:02:03"),
+                        detail = OperationProgressDetail("NONE"),
+                        progress = 0.5f,
+                        done = false,
+                    )
                 )
             }
 
@@ -369,58 +794,144 @@ class OperationManagerTest {
         assertTrue("Password should be cleared by OperationManager.clearOperation", formData.passwordInput.all { it == '\u0000' })
         assertTrue("Confirm password should be cleared by OperationManager.clearOperation", formData.confirmPasswordInput.all { it == '\u0000' })
     }
-    
+
     @Test
-    fun `retryOperation returns error when no active operation`() = runTest {
-        OperationManager.clearOperation(shouldCleanupFiles = false)
-        
-        val formData = TestDataBuilders.createEncryptFormData()
-        val result = OperationManager.retryOperation(mockContext, formData)
-        
-        assertTrue("Should fail with no active operation", result.isFailure)
-        result.onFailure { error ->
-            assertTrue("Error should be GenericOperation", error is AppError.OperationError.GenericOperation)
-            assertEquals(R.string.error_no_operation_to_retry, (error as AppError).messageResId)
+    fun `clearOperation retains failed state and still wipes staging when an operation file cannot be deleted`() = runTest {
+        val filesDir = createTempDirectory(prefix = "opmgr_clear_file_failure").toFile()
+        val sourceDir = java.io.File(filesDir, "source")
+        val inputFile = java.io.File(sourceDir, "plaintext.txt")
+        val stagedFile = java.io.File(filesDir, "picocrypt_files/staging/copy.txt")
+        val formData = TestDataBuilders.createEncryptFormData(
+            copiedFilePath = inputFile.absolutePath,
+            password = "testpassword",
+            confirmPassword = "testpassword",
+        )
+        val operationState = TestDataBuilders.createOperationState(
+            inputFile = inputFile.absolutePath,
+            formData = formData,
+        )
+        every { mockContext.filesDir } returns filesDir
+
+        val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
+        stateField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val flow = stateField.get(OperationManager)
+            as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
+        flow.value = operationState
+
+        try {
+            assertTrue(sourceDir.mkdirs())
+            inputFile.writeText("original plaintext")
+            assertTrue(stagedFile.parentFile!!.mkdirs())
+            stagedFile.writeText("staged plaintext")
+            assertTrue(sourceDir.setWritable(false, false))
+
+            val failed = OperationManager.clearOperation(mockContext, shouldCleanupFiles = true)
+
+            assertTrue("A real deletion failure must be returned", failed.isFailure)
+            assertTrue(
+                "Cleanup failure must keep its typed error",
+                failed.exceptionOrNull() is AppError.FileError.DeleteFailed,
+            )
+            assertNotNull(
+                "Operation state must remain so cleanup can be retried",
+                OperationManager.currentOperation.value,
+            )
+            assertTrue(
+                "The retained state must visibly surface cleanup failure",
+                OperationManager.currentOperation.value?.error is AppError.FileError.DeleteFailed,
+            )
+            assertTrue("The undeletable operation input must remain", inputFile.exists())
+            assertFalse(
+                "Staging cleanup must still run even when operation-file cleanup fails",
+                java.io.File(filesDir, "picocrypt_files/staging").exists(),
+            )
+            assertTrue("Passwords must still be zeroed on cleanup failure", formData.passwordInput.all { it == '\u0000' })
+
+            assertTrue(sourceDir.setWritable(true, false))
+            val retried = OperationManager.clearOperation(mockContext, shouldCleanupFiles = true)
+            assertTrue("Cleanup must be retryable after the filesystem problem is fixed", retried.isSuccess)
+            assertFalse("The real input must be deleted by the successful retry", inputFile.exists())
+            assertNull("Successful retry must finally clear operation state", OperationManager.currentOperation.value)
+        } finally {
+            sourceDir.setWritable(true, false)
+            filesDir.deleteRecursively()
         }
     }
-    
+
     @Test
-    fun `retryOperation returns validation error when active operation has invalid form data`() = runTest {
-        val invalidFormData = TestDataBuilders.createEncryptFormData(
-            copiedFilePath = "" // Invalid - no file
+    fun `clearOperation retains failed state when real staging plaintext cannot be deleted`() = runTest {
+        val filesDir = createTempDirectory(prefix = "opmgr_clear_staging_failure").toFile()
+        val internalDir = java.io.File(filesDir, "picocrypt_files")
+        val stagingDir = java.io.File(internalDir, "staging")
+        val stagedFile = java.io.File(stagingDir, "plaintext.txt")
+        val formData = TestDataBuilders.createEncryptFormData(
+            password = "testpassword",
+            confirmPassword = "testpassword",
+        )
+        val operationState = TestDataBuilders.createOperationState(formData = formData)
+        every { mockContext.filesDir } returns filesDir
+
+        val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
+        stateField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val flow = stateField.get(OperationManager)
+            as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
+        flow.value = operationState
+
+        try {
+            assertTrue(stagingDir.mkdirs())
+            stagedFile.writeText("staged plaintext")
+            assertTrue(stagingDir.setWritable(false, false))
+            assertTrue(internalDir.setWritable(false, false))
+
+            val failed = OperationManager.clearOperation(mockContext, shouldCleanupFiles = true)
+
+            assertTrue("A real staging deletion failure must be returned", failed.isFailure)
+            assertTrue(failed.exceptionOrNull() is AppError.FileError.DeleteFailed)
+            assertTrue("The undeletable plaintext proves cleanup failed", stagedFile.exists())
+            assertTrue(
+                "The retained state must let the user retry cleanup",
+                OperationManager.currentOperation.value?.error is AppError.FileError.DeleteFailed,
+            )
+
+            stagingDir.setWritable(true, false)
+            internalDir.setWritable(true, false)
+            val retried = OperationManager.clearOperation(mockContext, shouldCleanupFiles = true)
+            assertTrue("Cleanup must succeed after permissions are restored", retried.isSuccess)
+            assertFalse("The staged plaintext must be gone after retry", stagedFile.exists())
+            assertNull(OperationManager.currentOperation.value)
+        } finally {
+            stagingDir.setWritable(true, false)
+            internalDir.setWritable(true, false)
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `clearOperation fails loud without context when cleanup was requested`() = runTest {
+        val operationState = TestDataBuilders.createOperationState(
+            formData = TestDataBuilders.createEncryptFormData(),
         )
         val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
         stateField.isAccessible = true
         @Suppress("UNCHECKED_CAST")
         val flow = stateField.get(OperationManager)
             as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
-        flow.value = TestDataBuilders.createOperationState(
-            type = OperationType.ENCRYPT,
-            formData = TestDataBuilders.createEncryptFormData(),
-        )
+        flow.value = operationState
 
-        mockkObject(GoBridge)
-        try {
-            val result = OperationManager.retryOperation(mockContext, invalidFormData)
+        val result = OperationManager.clearOperation(context = null, shouldCleanupFiles = true)
 
-            assertTrue("Should fail with NoFileSelected", result.isFailure)
-            result.onFailure { error ->
-                assertTrue(
-                    "Error should be NoFileSelected",
-                    error is AppError.ValidationError.NoFileSelected,
-                )
-            }
-            verify(exactly = 0) { GoBridge.startOperation() }
-        } finally {
-            unmockkObject(GoBridge)
-        }
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is AppError.FileError.DeleteFailed)
+        assertNotNull("State must remain when requested cleanup cannot run", OperationManager.currentOperation.value)
     }
     
     @Test
     fun `retryDecryptWithForce returns error when no active operation`() = runTest {
         OperationManager.clearOperation(shouldCleanupFiles = false)
         
-        val result = OperationManager.retryDecryptWithForce()
+        val result = OperationManager.retryDecryptWithForce(mockContext)
         
         assertTrue("Should fail with no active operation", result.isFailure)
         result.onFailure { error ->
@@ -431,17 +942,10 @@ class OperationManagerTest {
     
     @Test
     fun `retryDecryptWithForce fails loud when stored formData has an empty password`() = runTest {
-        // Force-decrypt BYPASSES integrity/RS checks, so running it with an empty
-        // password (a CharArray(0) the form layer installs on clear -- see
-        // MainViewModel.clearSensitiveData / resetFormToDefaults) would silently run
-        // and produce garbage. Reproduce that exact state: a DECRYPT operation whose
-        // stored formData carries CharArray(0). startDecrypt validates the password,
-        // so it can't seed an empty-password operation directly; establish it with a
-        // valid password through the public seam, then swap in the empty-password
-        // formData via the private _currentOperation MutableStateFlow (white-box;
-        // there is no public setter). GoBridge is the Go mobile AAR (absent on the JVM
-        // classpath), so mock it -- the guard must short-circuit BEFORE
-        // GoBridge.startOperation/startDecrypt are reached on the retry.
+        // Force-decrypt BYPASSES integrity/RS checks, so running without either
+        // credential after the stored password was cleared would silently produce
+        // garbage. GoBridge is the Go mobile AAR (absent on the JVM classpath), so
+        // mock it -- the guard must short-circuit before a retry reaches Go.
         val tmpDir = createTempDirectory(prefix = "opmgr_force_test").toFile()
         every { mockContext.filesDir } returns tmpDir
 
@@ -457,23 +961,21 @@ class OperationManagerTest {
             )
             assertTrue("startDecrypt should succeed", started.isSuccess)
 
-            // Swap the stored formData for one with an empty password (CharArray(0)),
-            // mirroring a post-clear form state, keeping the DECRYPT operation.
             val established = OperationManager.currentOperation.value
             assertNotNull("operation should be established", established)
-            val emptyPwForm = established!!.formData!!.copy(
-                passwordInput = CharArray(0),
-                confirmPasswordInput = CharArray(0)
+            val clearedForm = established!!.formData!!
+            clearedForm.clearPasswords()
+            assertTrue(
+                "real clearPasswords keeps allocated password storage",
+                clearedForm.passwordInput.isNotEmpty(),
             )
-            assertFalse("seeded formData must be invalid", emptyPwForm.isPasswordValid)
-            val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
-            stateField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val flow = stateField.get(OperationManager)
-                as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
-            flow.value = established.copy(formData = emptyPwForm)
+            assertTrue(
+                "real clearPasswords must overwrite every password character",
+                clearedForm.passwordInput.all { it == '\u0000' },
+            )
+            assertFalse("cleared formData without keyfiles must be invalid", clearedForm.isPasswordValid)
 
-            val result = OperationManager.retryDecryptWithForce()
+            val result = OperationManager.retryDecryptWithForce(mockContext)
 
             assertTrue("Force-decrypt with an empty password must fail loud", result.isFailure)
             result.onFailure { error ->
@@ -488,6 +990,56 @@ class OperationManagerTest {
             verify(exactly = 1) { GoBridge.startOperation() }
             verify(exactly = 1) { GoBridge.startDecrypt(any(), any(), any(), any(), any()) }
         } finally {
+            unmockkObject(GoBridge)
+            tmpDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `retryDecryptWithForce does not invoke Go when real pre-start cleanup fails`() = runTest {
+        val tmpDir = createTempDirectory(prefix = "opmgr_force_cleanup_failure").toFile()
+        val internalDir = java.io.File(tmpDir, "picocrypt_files")
+        val staleIncomplete = java.io.File(internalDir, "stale-retry.incomplete")
+        every { mockContext.filesDir } returns tmpDir
+
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.startOperation() } returns Result.success("op_force_cleanup")
+            every {
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
+            } returns Result.success(Unit)
+
+            assertTrue(
+                "A valid decrypt must establish the failed operation being retried",
+                OperationManager.startDecrypt(
+                    mockContext,
+                    TestDataBuilders.createDecryptFormData(),
+                ).isSuccess,
+            )
+            assertTrue("Test setup should create the runtime directory", internalDir.mkdirs())
+            staleIncomplete.writeBytes(byteArrayOf(1))
+            assertTrue(
+                "Test setup should make the runtime directory read-only",
+                internalDir.setWritable(false, false),
+            )
+
+            val result = OperationManager.retryDecryptWithForce(mockContext)
+
+            assertTrue("A pre-start cleanup failure must stop force-decrypt retry", result.isFailure)
+            assertTrue(
+                "Force-retry cleanup failure must retain the typed deletion error",
+                result.exceptionOrNull() is AppError.FileError.DeleteFailed,
+            )
+            assertTrue(
+                "The undeletable file proves that production cleanup really failed",
+                staleIncomplete.exists(),
+            )
+            verify(exactly = 1) { GoBridge.startOperation() }
+            verify(exactly = 1) {
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
+            }
+        } finally {
+            internalDir.setWritable(true, false)
             unmockkObject(GoBridge)
             tmpDir.deleteRecursively()
         }
@@ -518,7 +1070,7 @@ class OperationManagerTest {
             assertTrue("startEncrypt should succeed", started.isSuccess)
             assertEquals(OperationType.ENCRYPT, OperationManager.currentOperation.value?.type)
 
-            val result = OperationManager.retryDecryptWithForce()
+            val result = OperationManager.retryDecryptWithForce(mockContext)
 
             assertTrue("Force-decrypt retry on an encrypt op must fail", result.isFailure)
             result.onFailure { error ->
@@ -537,14 +1089,16 @@ class OperationManagerTest {
     @Test
     fun `OperationState has correct structure`() {
         val formData = TestDataBuilders.createEncryptFormData()
+        val status = OperationStatusData(OperationStatus.ENCRYPTING_RATE, 12.34, "01:02:03")
+        val detail = OperationProgressDetail("ITEM_COUNT", 3, 10)
         val operationState = TestDataBuilders.createOperationState(
             id = "op_123",
             type = OperationType.ENCRYPT,
             inputFile = "/input.txt",
             outputFile = "/output.pcv",
-            status = "Processing",
+            status = status,
+            detail = detail,
             progress = 0.5f,
-            info = "Encrypting...",
             done = false,
             formData = formData
         )
@@ -553,9 +1107,9 @@ class OperationManagerTest {
         assertEquals(OperationType.ENCRYPT, operationState.type)
         assertEquals("/input.txt", operationState.inputFile)
         assertEquals("/output.pcv", operationState.outputFile)
-        assertEquals("Processing", operationState.status)
+        assertEquals(status, operationState.status)
         assertEquals(0.5f, operationState.progress, 0.001f)
-        assertEquals("Encrypting...", operationState.info)
+        assertEquals(detail, operationState.detail)
         assertEquals(false, operationState.done)
         assertEquals(formData, operationState.formData)
     }
@@ -662,7 +1216,7 @@ class OperationManagerTest {
                     TestDataBuilders.createDecryptFormData()
                 ).isSuccess
             )
-            val retry = OperationManager.retryDecryptWithForce()
+            val retry = OperationManager.retryDecryptWithForce(mockContext)
 
             assertTrue("retryDecryptWithForce should succeed", retry.isSuccess)
             assertTrue("DecryptOptions must be captured", optionsSlot.isCaptured)
@@ -809,5 +1363,14 @@ class OperationManagerTest {
         } finally {
             unmockkObject(GoBridge)
         }
+    }
+
+    private fun setCurrentOperationForTest(state: OperationState?) {
+        val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
+        stateField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val flow = stateField.get(OperationManager)
+            as kotlinx.coroutines.flow.MutableStateFlow<OperationState?>
+        flow.value = state
     }
 }

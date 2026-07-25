@@ -30,7 +30,7 @@ vpQBAN2uP29K6q9toerA6Oh2i0TOmDRZWJB1VONAbdKfiWUA
 
 ### How to verify a download
 
-1. **SHA-256 (always available).** Every release body lists the AppImage's SHA-256.
+1. **SHA-256.** GitHub displays a `sha256:` digest next to each release asset.
    Compare it against your download:
 
    ```
@@ -50,6 +50,39 @@ releases. To pull the latest signed build (delta download):
 ```
 appimageupdatetool ./Picocrypt-NG-<version>-x86_64.AppImage
 ```
+
+## Windows Authenticode
+
+Starting with Picocrypt-NG 2.19, the Windows GUI, current and legacy CLIs,
+installer, and embedded uninstaller are signed through SignPath with the
+SignPath Foundation production certificate. Its SHA-256 fingerprint is:
+
+```
+E4ED1CAE2D8E8F94C13BD7805E2F8BB54D690BEA7133CECC1979CC6A60207D5B
+```
+
+Verify a downloaded executable in PowerShell:
+
+```powershell
+$signature = Get-AuthenticodeSignature .\Picocrypt-NG-portable.exe
+$signature.Status
+$signature.SignerCertificate.GetCertHashString(
+  [System.Security.Cryptography.HashAlgorithmName]::SHA256
+)
+$signature.TimeStamperCertificate
+```
+
+`Status` must be `Valid`, the fingerprint must match the value above, and
+`TimeStamperCertificate` must not be empty.
+
+Production release workflows submit three sequential requests from
+`.github/workflows/build-windows.yml` and one from
+`.github/workflows/build-windows-legacy.yml`. Approve each request only when
+SignPath reports this repository, the `main` branch, the expected workflow, and
+the expected artifact configuration. Each request may wait up to one hour for
+approval and completion. The `signpath_release_dry_run` workflow input exercises
+the same production signing and verification path without uploading signed
+output or publishing a GitHub release.
 
 ## Sigstore verification (keyless)
 

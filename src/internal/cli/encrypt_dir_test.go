@@ -43,22 +43,20 @@ func TestEncryptDirectoryProducesZip(t *testing.T) {
 	decryptedPath := filepath.Join(tmpDir, "decrypted.zip")
 
 	// Encrypt the directory through the real CLI command.
-	encInput = []string{folder}
 	encOutput = encryptedPath
 	encPassword = "pw"
 	encQuiet = true
 	encYes = true
-	if err := encryptCmd.RunE(encryptCmd, []string{}); err != nil {
+	if err := encryptCmd.RunE(encryptCmd, []string{folder}); err != nil {
 		t.Fatalf("encrypt directory: %v", err)
 	}
 
 	// Decrypt WITHOUT auto-unzip: the on-disk output must itself be a valid zip.
-	decInput = encryptedPath
 	decOutput = decryptedPath
 	decPassword = "pw"
 	decQuiet = true
 	decYes = true
-	if err := decryptCmd.RunE(decryptCmd, []string{}); err != nil {
+	if err := decryptCmd.RunE(decryptCmd, []string{encryptedPath}); err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
 
@@ -94,7 +92,8 @@ func TestEncryptDirectoryProducesZip(t *testing.T) {
 // resetEncryptFlagsForDirTest clears the package-level encrypt flags this test
 // touches so leftover state from other tests (or this one) cannot bleed in.
 func resetEncryptFlagsForDirTest() {
-	encInput = nil
+	encGlob = nil
+	encLegacyInputs = nil
 	encOutput = ""
 	encPassword = ""
 	encKeyfiles = nil
@@ -114,7 +113,7 @@ func resetEncryptFlagsForDirTest() {
 // resetDecryptFlagsForDirTest clears the package-level decrypt flags this test
 // touches so leftover state cannot bleed in.
 func resetDecryptFlagsForDirTest() {
-	decInput = ""
+	decLegacyInputs = nil
 	decOutput = ""
 	decPassword = ""
 	decKeyfiles = nil

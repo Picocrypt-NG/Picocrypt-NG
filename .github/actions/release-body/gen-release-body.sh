@@ -4,8 +4,7 @@
 #   gen-release-body.sh <version> [changelog] [output]
 #
 # The body is fully deterministic from <version> and the changelog, so every
-# build workflow generates the identical text and can safely set it as the
-# release body_path regardless of which job creates the release first.
+# platform lane supplies identical text to the shared staged-publication gate.
 #
 #   - Downloads table: a static artifact matrix; only the URL base and the two
 #     version-bearing filenames (AppImage, snap) depend on <version>.

@@ -103,15 +103,25 @@ func (w byteSliceWriterAt) WriteAt(p []byte, off int64) (int, error) {
 type EncryptOptions struct {
 	Paranoid       bool     // 8 Argon2 passes, Serpent-CTR + XChaCha20, HMAC-SHA3
 	Comments       string   // plaintext header comments (NOT encrypted); len <= header.MaxCommentLen
-	Keyfiles       [][]byte // each element is one keyfile's full contents
+	Keyfiles       [][]byte // legacy read factor; non-empty is rejected by the v2 writer
 	KeyfileOrdered bool     // true = order matters (sequential hash); false = XOR
 	ReedSolomon    bool     // RS128 error-correction framing of the payload
-	Deniability    bool     // wrap the finished volume in an outer deniability layer
+	Deniability    bool     // wrap the finished volume; requires a non-empty password
 }
 
 // EncryptVolume encrypts plaintext data into a Picocrypt volume.
 // Returns (ciphertext, 0) on success, or (nil, errorCode) on failure.
 func EncryptVolume(plaintext, password []byte, opts EncryptOptions) ([]byte, int) {
+	if len(opts.Keyfiles) > 0 {
+		return nil, ErrKeyfileWritesDisabled
+	}
+	if opts.Deniability && len(password) == 0 {
+		return nil, ErrDeniabilityPasswordRequired
+	}
+	if len(password) == 0 {
+		return nil, ErrEncryptionPasswordRequired
+	}
+
 	// Initialize RS codecs
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {

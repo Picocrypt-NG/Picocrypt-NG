@@ -2,10 +2,9 @@ name: 'Generate release body'
 description: >-
   Generate the GitHub release notes (downloads table + "what's new" extracted
   from Changelog.md + Sigstore verification section) into a file for
-  softprops/action-gh-release `body_path`. The body is deterministic from the
-  version and changelog, so every build workflow produces the identical text and
-  can set it as the release body regardless of which job creates the release
-  first (race-safe). Replaces the old hand-written SHA-256 block.
+  the shared stage-release gate. The body is deterministic from the version and
+  changelog, so every platform lane supplies identical text and the final
+  publication gate can enforce it. Replaces the old hand-written SHA-256 block.
 
 inputs:
   version:

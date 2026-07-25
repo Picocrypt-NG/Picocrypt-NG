@@ -4,7 +4,11 @@ import io.github.picocrypt_ng.picocrypt_ng.AppError
 import io.github.picocrypt_ng.picocrypt_ng.DecryptionInfo
 import io.github.picocrypt_ng.picocrypt_ng.FormData
 import io.github.picocrypt_ng.picocrypt_ng.KeyfileInfo
+import io.github.picocrypt_ng.picocrypt_ng.OperationProgress
+import io.github.picocrypt_ng.picocrypt_ng.OperationProgressDetail
 import io.github.picocrypt_ng.picocrypt_ng.OperationState
+import io.github.picocrypt_ng.picocrypt_ng.OperationStatus
+import io.github.picocrypt_ng.picocrypt_ng.OperationStatusData
 import io.github.picocrypt_ng.picocrypt_ng.OperationType
 
 /**
@@ -98,9 +102,9 @@ object TestDataBuilders {
         type: OperationType = OperationType.ENCRYPT,
         inputFile: String = "/data/test/input_file.txt",
         outputFile: String = "/data/test/output_file.pcv",
-        status: String = "Processing",
+        status: OperationStatusData = OperationStatusData(OperationStatus.UNKNOWN),
+        detail: OperationProgressDetail = OperationProgressDetail(OperationProgress.NONE),
         progress: Float = 0.5f,
-        info: String = "Encrypting...",
         done: Boolean = false,
         error: AppError? = null,
         formData: FormData? = null
@@ -111,8 +115,8 @@ object TestDataBuilders {
             inputFile = inputFile,
             outputFile = outputFile,
             status = status,
+            detail = detail,
             progress = progress,
-            info = info,
             done = done,
             error = error,
             formData = formData

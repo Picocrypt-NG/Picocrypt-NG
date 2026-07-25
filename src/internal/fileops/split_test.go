@@ -159,12 +159,6 @@ func TestSplitDoesNotDeleteSidecarFiles(t *testing.T) {
 	if err := os.WriteFile(inputPath+".backup", []byte("backup"), 0o644); err != nil {
 		t.Fatalf("Create backup sidecar: %v", err)
 	}
-	if err := os.WriteFile(inputPath+".0", []byte("old chunk"), 0o644); err != nil {
-		t.Fatalf("Create stale chunk: %v", err)
-	}
-	if err := os.WriteFile(inputPath+".1.incomplete", []byte("stale"), 0o644); err != nil {
-		t.Fatalf("Create stale incomplete chunk: %v", err)
-	}
 	if err := os.WriteFile(inputPath+".-1", []byte("signed"), 0o644); err != nil {
 		t.Fatalf("Create signed sidecar: %v", err)
 	}
@@ -207,17 +201,29 @@ func TestSplitCancellation(t *testing.T) {
 	}
 
 	// Cancel mid-stream rather than before the first byte: return true only AFTER
-	// several invocations, by which point Split has created a ".incomplete" chunk
-	// and written into it. This exercises the partial-file cleanup path, not just
-	// the pre-loop guard.
+	// several invocations, by which point Split has created a random chunk stage.
+	// This exercises the owned-stage cleanup path, not just the pre-loop guard.
 	calls := 0
+	observedRandomStage := false
 	_, err := Split(SplitOptions{
 		InputPath: inputPath,
 		ChunkSize: 1,
 		Unit:      SplitUnitKiB,
 		Cancel: func() bool {
 			calls++
-			return calls > 3
+			if calls <= 3 {
+				return false
+			}
+			entries, readErr := os.ReadDir(tmpDir)
+			if readErr != nil {
+				t.Fatalf("read split directory during cancellation: %v", readErr)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".picocrypt-") {
+					observedRandomStage = true
+				}
+			}
+			return true
 		},
 	})
 
@@ -231,13 +237,24 @@ func TestSplitCancellation(t *testing.T) {
 	if calls <= 3 {
 		t.Fatalf("Cancel fired too early (%d calls); cancellation was not mid-stream", calls)
 	}
+	if !observedRandomStage {
+		t.Error("Split did not use a random sibling stage for the in-progress chunk")
+	}
 
-	// Security/data-integrity outcome: no chunk artifacts may leak — neither the
-	// in-progress ".incomplete" file nor any completed chunks. A mutation that
-	// skips cleanup on mid-stream cancel leaves these behind.
+	// Security/data-integrity outcome: no completed chunk or random stage may
+	// leak after cancellation.
 	chunks, _ := filepath.Glob(inputPath + ".*")
 	if len(chunks) > 0 {
 		t.Errorf("Expected no chunks after cancellation, found %v", chunks)
+	}
+	entries, readErr := os.ReadDir(tmpDir)
+	if readErr != nil {
+		t.Fatalf("read split directory after cancellation: %v", readErr)
+	}
+	for _, entry := range entries {
+		if entry.Name() != filepath.Base(inputPath) {
+			t.Errorf("unexpected split artifact after cancellation: %s", entry.Name())
+		}
 	}
 }
 
@@ -720,23 +737,20 @@ func TestChunkSizeToBytes(t *testing.T) {
 	}
 }
 
-// TestSplitTailErrorCleansUp asserts that when the Rename step fails (destination
-// is a directory), no .incomplete or chunk files are left behind.
-// Before the fix this fails because the tail error paths do not clean up.
-func TestSplitTailErrorCleansUp(t *testing.T) {
+// TestSplitRejectsOccupiedFinalDirectory asserts that a non-empty directory at
+// a final chunk path is treated as foreign state and left untouched.
+func TestSplitRejectsOccupiedFinalDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	inputPath := filepath.Join(tmpDir, "test.pcv")
 
-	// Small file → exactly 1 chunk so the Rename is the very next step after Sync/Close.
+	// Small file → exactly 1 final chunk path to check.
 	if err := os.WriteFile(inputPath, bytes.Repeat([]byte("A"), 1024), 0o644); err != nil {
 		t.Fatalf("create input: %v", err)
 	}
 
-	// Block the rename: pre-create the final name as a NON-EMPTY directory so that
-	// (a) os.Rename(file, dir) fails with EISDIR/EEXIST, and (b) the Split pre-cleanup
-	// os.Remove call fails (non-empty dir), so the blocker survives to the rename step.
 	finalPath := inputPath + ".0"
-	if err := os.MkdirAll(filepath.Join(finalPath, "sentinel"), 0o755); err != nil {
+	sentinelPath := filepath.Join(finalPath, "sentinel")
+	if err := os.MkdirAll(sentinelPath, 0o755); err != nil {
 		t.Fatalf("create blocking dir: %v", err)
 	}
 
@@ -746,15 +760,22 @@ func TestSplitTailErrorCleansUp(t *testing.T) {
 		Unit:      SplitUnitKiB,
 	})
 	if err == nil {
-		t.Fatal("expected rename error, got nil")
+		t.Fatal("expected occupied-output error, got nil")
 	}
 
-	// The .incomplete file must be cleaned up by Split on the rename error path.
-	// (The blocking dir itself is pre-created by this test and is not a Split artifact.)
-	incompleteGlob := inputPath + ".*.incomplete"
-	leftover, _ := filepath.Glob(incompleteGlob)
-	if len(leftover) > 0 {
-		t.Errorf("leftover .incomplete files after tail rename error: %v", leftover)
+	if info, statErr := os.Stat(sentinelPath); statErr != nil {
+		t.Errorf("foreign directory was changed: %v", statErr)
+	} else if !info.IsDir() {
+		t.Errorf("foreign sentinel mode = %v, want directory", info.Mode())
+	}
+	entries, readErr := os.ReadDir(tmpDir)
+	if readErr != nil {
+		t.Fatalf("read split directory: %v", readErr)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".picocrypt-") {
+			t.Errorf("leftover random stage after occupied-output rejection: %s", entry.Name())
+		}
 	}
 }
 

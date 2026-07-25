@@ -15,6 +15,20 @@ import io.github.picocrypt_ng.picocrypt_ng.FileCopyService
 object OperationManager {
     private val _currentOperation = MutableStateFlow<OperationState?>(null)
     val currentOperation: StateFlow<OperationState?> = _currentOperation.asStateFlow()
+
+    private fun FormData.passwordBytesForGo(): ByteArray =
+        if (hasPassword) passwordInput.toUtf8BytesSecure() else ByteArray(0)
+
+    private fun progressError(progressState: ProgressState, type: OperationType): AppError? =
+        if (progressState.done && progressState.status.code == OperationStatus.ERROR) {
+            AppError.fromGoError(
+                progressState.technicalError,
+                type,
+                progressState.errorCode,
+            )
+        } else {
+            null
+        }
     
     /**
      * Starts an encryption operation.
@@ -42,16 +56,20 @@ object OperationManager {
         }
 
         if (!formData.isPasswordValid) {
-            val error = if (formData.isEncrypt && !formData.isPasswordsMatch) {
-                AppError.ValidationError.PasswordsMismatch
-            } else {
-                AppError.ValidationError.InvalidPassword
+            val error = when {
+                formData.isKeyfileEncryptionUnsupported ->
+                    AppError.ValidationError.KeyfileWritesDisabled
+                formData.isEncrypt && !formData.isPasswordsMatch ->
+                    AppError.ValidationError.PasswordsMismatch
+                else -> AppError.ValidationError.InvalidPassword
             }
             return@withContext Result.failure(error)
         }
 
         // Clean up old files before starting new operation to prevent contamination
-        FileCopyService.cleanupOperationFilesBeforeStart(context)
+        if (!FileCopyService.cleanupOperationFilesBeforeStart(context)) {
+            return@withContext Result.failure(AppError.FileError.DeleteFailed())
+        }
 
         // Generate output file path using FileCopyService. For encrypt this is a fixed
         // output_file.pcv regardless of the input path, so an empty copiedFilePath (multi
@@ -78,7 +96,7 @@ object OperationManager {
             operationID,
             if (isMulti) "" else formData.copiedFilePath,
             outputFilePath,
-            formData.passwordInput.toUtf8BytesSecure(),
+            formData.passwordBytesForGo(),
             options,
             inputFiles = formData.inputFiles,
             onlyFolders = formData.onlyFolders,
@@ -91,9 +109,9 @@ object OperationManager {
                 type = OperationType.ENCRYPT,
                 inputFile = formData.copiedFilePath,
                 outputFile = outputFilePath,
-                status = OperationStatus.STARTING,
+                status = OperationStatusData(OperationStatus.STARTING),
+                detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0f,
-                info = "",
                 formData = formData
             )
         }
@@ -124,7 +142,9 @@ object OperationManager {
         }
 
         // Clean up old files before starting new operation to prevent contamination
-        FileCopyService.cleanupOperationFilesBeforeStart(context)
+        if (!FileCopyService.cleanupOperationFilesBeforeStart(context)) {
+            return@withContext Result.failure(AppError.FileError.DeleteFailed())
+        }
 
         // Generate output file path using FileCopyService
         val outputFilePath = FileCopyService.getOutputFilePath(context, formData.copiedFilePath, isEncrypt = false)
@@ -152,7 +172,7 @@ object OperationManager {
             operationID,
             formData.copiedFilePath,
             outputFilePath,
-            formData.passwordInput.toUtf8BytesSecure(),
+            formData.passwordBytesForGo(),
             options
         )
         
@@ -162,9 +182,9 @@ object OperationManager {
                 type = OperationType.DECRYPT,
                 inputFile = formData.copiedFilePath,
                 outputFile = outputFilePath,
-                status = OperationStatus.STARTING,
+                status = OperationStatusData(OperationStatus.STARTING),
+                detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0f,
-                info = "",
                 formData = formData
             )
         }
@@ -192,9 +212,9 @@ object OperationManager {
                 type = type,
                 inputFile = "",
                 outputFile = "",
-                status = OperationStatus.ERROR,
+                status = OperationStatusData(OperationStatus.ERROR),
+                detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0f,
-                info = appError.userMessage,
                 done = true,
                 error = appError
             )
@@ -212,12 +232,8 @@ object OperationManager {
 
         val result = GoBridge.getProgress(operation.id)
         result.getOrNull()?.let { progressState ->
-            val error = if (progressState.done && progressState.status == OperationStatus.ERROR) {
-                // Classify by the stable Go error code (not fragile substring matching)
-                AppError.fromGoError(progressState.info, operation.type, progressState.code)
-            } else {
-                null
-            }
+            // Classify by the stable Go error code (not fragile substring matching).
+            val error = progressError(progressState, operation.type)
             
             // Atomic read-modify-write: between capturing `operation` above and the
             // suspending getProgress I/O, a concurrent coroutine (the FGS 1000ms poll
@@ -234,8 +250,8 @@ object OperationManager {
                     // latest base.
                     current.copy(
                         status = progressState.status,
+                        detail = progressState.detail,
                         progress = progressState.progress,
-                        info = progressState.info,
                         done = progressState.done,
                         error = error
                     )
@@ -258,95 +274,108 @@ object OperationManager {
         )
         
         val result = GoBridge.cancelOperation(operation.id)
-        result.onSuccess {
-            _currentOperation.value = operation.copy(
-                status = OperationStatus.CANCELLED,
-                done = true
-            )
+        result.onSuccess { progressState ->
+            val error = progressError(progressState, operation.type)
+            _currentOperation.update { current ->
+                if (current == null || current.id != operation.id || current.done) {
+                    current
+                } else {
+                    current.copy(
+                        status = progressState.status,
+                        detail = progressState.detail,
+                        progress = progressState.progress,
+                        done = progressState.done,
+                        error = error,
+                    )
+                }
+            }
         }
-        result
+        result.map { Unit }
     }
     
     /**
      * Clears the current operation.
      * @param shouldCleanupFiles If true, deletes input, output, and keyfiles from internal storage.
      */
-    suspend fun clearOperation(context: Context? = null, shouldCleanupFiles: Boolean = true) {
+    suspend fun clearOperation(
+        context: Context? = null,
+        shouldCleanupFiles: Boolean = true,
+    ): Result<Unit> {
         val operation = _currentOperation.value
+            ?: return Result.success(Unit)
         
         // Clear passwords from form data before clearing operation
-        operation?.formData?.clearPasswords()
-        
-        // Cleanup files if requested and context is provided
-        if (shouldCleanupFiles && context != null && operation != null) {
-            val formData = operation.formData
-            val keyfilePaths = formData?.keyfileFilenames?.map { it.internalPath } ?: emptyList()
-            
-            FileCopyService.cleanupOperationFiles(
+        operation.formData?.clearPasswords()
+
+        if (!shouldCleanupFiles) {
+            _currentOperation.compareAndSet(operation, null)
+            return Result.success(Unit)
+        }
+
+        if (context == null) {
+            val error = AppError.FileError.DeleteFailed(
+                technicalMessage = "Android context is required to clean operation files",
+            )
+            retainCleanupFailure(operation, error)
+            return Result.failure(error)
+        }
+
+        val formData = operation.formData
+        val keyfilePaths = formData?.keyfileFilenames?.map { it.internalPath } ?: emptyList()
+
+        val filesCleaned = FileCopyService.cleanupOperationFiles(
                 context = context,
                 inputFilePath = operation.inputFile,
                 outputFilePath = operation.outputFile,
-                keyfilePaths = keyfilePaths
+                keyfilePaths = keyfilePaths,
             )
 
-            // A folder/multi selection stages plaintext copies under STAGING_DIR that the
-            // per-file cleanup above does not cover (it only knows the single input path).
-            // Wipe the staging tree so plaintext does not linger after the operation.
+        // A folder/multi selection stages plaintext copies under STAGING_DIR that the
+        // per-file cleanup above does not cover (it only knows the single input path).
+        // Always attempt this cleanup even if one of the paths above could not be removed.
+        val stagingCleaned = withContext(Dispatchers.IO) {
             StagingService.wipeStaging(context)
         }
 
-        _currentOperation.value = null
-    }
-    
-    /**
-     * Retries an operation with the same files and options but allows password to be re-entered.
-     * This should be called when a password/auth error occurs.
-     * @param context Android context
-     * @param formData Updated form data (typically with new password, but same files/options)
-     * @return Result with operation ID on success
-     */
-    suspend fun retryOperation(
-        context: Context,
-        formData: FormData
-    ): Result<String> = withContext(Dispatchers.IO) {
-        val operation = _currentOperation.value ?: return@withContext Result.failure(
-            AppError.OperationError.GenericOperation(
-                userMessage = "",
-                messageResId = R.string.error_no_operation_to_retry,
+        if (!filesCleaned || !stagingCleaned) {
+            val error = AppError.FileError.DeleteFailed(
+                technicalMessage = buildString {
+                    append("Operation cleanup incomplete:")
+                    if (!filesCleaned) append(" operation files")
+                    if (!stagingCleaned) append(" staging")
+                },
             )
-        )
-        
-        if (formData.copiedFilePath.isEmpty()) {
-            return@withContext Result.failure(AppError.ValidationError.NoFileSelected)
+            retainCleanupFailure(operation, error)
+            return Result.failure(error)
         }
-        
-        if (!formData.isPasswordValid) {
-            val error = if (formData.isEncrypt && !formData.isPasswordsMatch) {
-                AppError.ValidationError.PasswordsMismatch
+
+        _currentOperation.compareAndSet(operation, null)
+        return Result.success(Unit)
+    }
+
+    private fun retainCleanupFailure(
+        operation: OperationState,
+        error: AppError.FileError.DeleteFailed,
+    ) {
+        _currentOperation.update { current ->
+            if (current == null || current.id != operation.id) {
+                current
             } else {
-                AppError.ValidationError.InvalidPassword
+                current.copy(
+                    status = OperationStatusData(OperationStatus.ERROR),
+                    detail = OperationProgressDetail(OperationProgress.NONE),
+                    done = true,
+                    error = error,
+                )
             }
-            return@withContext Result.failure(error)
         }
-        
-        // Clear the current operation state (but don't cleanup files)
-        _currentOperation.value = null
-        
-        // Start new operation with same files/options but new password
-        val result = if (operation.type == OperationType.ENCRYPT) {
-            startEncrypt(context, formData)
-        } else {
-            startDecrypt(context, formData)
-        }
-        
-        result
     }
     
     /**
      * Retries decryption with force decrypt enabled.
      * This should only be called when a decryption operation has failed due to data corruption.
      */
-    suspend fun retryDecryptWithForce(): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun retryDecryptWithForce(context: Context): Result<String> = withContext(Dispatchers.IO) {
         val operation = _currentOperation.value ?: return@withContext Result.failure(
             AppError.OperationError.GenericOperation(
                 userMessage = "",
@@ -370,11 +399,15 @@ object OperationManager {
             )
         )
 
-        // Force-decrypt BYPASSES integrity/RS checks, so an empty password (e.g. a
-        // CharArray zeroed by a prior clear) would silently run. Mirror startDecrypt's
-        // guard and fail loud before encoding the password or starting the op.
+        // Force-decrypt BYPASSES integrity/RS checks. Mirror startDecrypt's credential
+        // guard so a cleared password cannot run unless keyfiles still provide a
+        // credential.
         if (!formData.isPasswordValid) {
             return@withContext Result.failure(AppError.ValidationError.InvalidPassword)
+        }
+
+        if (!FileCopyService.cleanupOperationFilesBeforeStart(context)) {
+            return@withContext Result.failure(AppError.FileError.DeleteFailed())
         }
 
         // Clear the current operation state
@@ -398,7 +431,7 @@ object OperationManager {
             operationID,
             operation.inputFile,
             operation.outputFile,
-            formData.passwordInput.toUtf8BytesSecure(),
+            formData.passwordBytesForGo(),
             options
         )
         
@@ -408,9 +441,9 @@ object OperationManager {
                 type = OperationType.DECRYPT,
                 inputFile = operation.inputFile,
                 outputFile = operation.outputFile,
-                status = OperationStatus.STARTING,
+                status = OperationStatusData(OperationStatus.STARTING),
+                detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0f,
-                info = "",
                 formData = formData
             )
         }
@@ -427,9 +460,9 @@ data class OperationState(
     val type: OperationType,
     val inputFile: String,
     val outputFile: String,
-    val status: String,
+    val status: OperationStatusData,
+    val detail: OperationProgressDetail,
     val progress: Float,
-    val info: String,
     val done: Boolean = false,
     val error: AppError? = null,
     val formData: FormData? = null

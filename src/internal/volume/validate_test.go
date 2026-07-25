@@ -16,6 +16,10 @@ func TestEncryptRequestValidate(t *testing.T) {
 	if err := os.WriteFile(testFile, []byte("test content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	keyfile := filepath.Join(tmpDir, "test.key")
+	if err := os.WriteFile(keyfile, []byte("keyfile content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name              string
@@ -31,12 +35,12 @@ func TestEncryptRequestValidate(t *testing.T) {
 			wantSentinel: errors.ErrNoInputFiles,
 		},
 		{
-			name: "no credentials",
+			name: "encryption requires a password",
 			req: &EncryptRequest{
 				InputFile:  testFile,
 				OutputFile: filepath.Join(tmpDir, "out.pcv"),
 			},
-			wantSentinel: errors.ErrNoCredentials,
+			wantValidationFld: "Password",
 		},
 		{
 			name: "no output file",
@@ -74,6 +78,15 @@ func TestEncryptRequestValidate(t *testing.T) {
 				Password:   []byte("test"),
 			},
 			wantNil: true,
+		},
+		{
+			name: "keyfile-only writer is disabled",
+			req: &EncryptRequest{
+				InputFile:  testFile,
+				OutputFile: filepath.Join(tmpDir, "keyfile-only.pcv"),
+				Keyfiles:   []string{keyfile},
+			},
+			wantValidationFld: "Keyfiles",
 		},
 	}
 

@@ -50,20 +50,71 @@ func TestStaticChecksWorkflowEnforcesFormatVetLintAndVuln(t *testing.T) {
 }
 
 func TestReleaseUploadsNeverOverwriteExistingAssets(t *testing.T) {
-	for _, tc := range releaseWorkflowCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			workflow := mustReadWorkflowDoc(t, tc.path)
-			releaseJob := mustJob(t, workflow, tc.job)
-			releaseStep := mustHaveStepUsingPrefix(t, releaseJob, "softprops/action-gh-release@")
-			if got := releaseStep.With["overwrite_files"]; got != false && got != "false" {
-				t.Fatalf("release overwrite_files = %#v, want false to preserve published binaries", got)
-			}
-		})
+	action := mustReadCompositeActionDoc(t, ".github/actions/stage-release/action.yml")
+	uploadStep := mustCompositeStepNamed(t, action, "Upload assets to draft release")
+	if got := uploadStep.With["overwrite_files"]; got != false && got != "false" {
+		t.Fatalf("release overwrite_files = %#v, want false to preserve staged binaries", got)
+	}
+}
+
+func TestWorkflowAndCompositeYAMLContainNoDirectReleaseMutation(t *testing.T) {
+	var paths []string
+	for _, pattern := range []string{
+		filepath.Join(repoRoot(t), ".github", "workflows", "*.yml"),
+		filepath.Join(repoRoot(t), ".github", "workflows", "*.yaml"),
+		filepath.Join(repoRoot(t), ".github", "actions", "*", "action.yml"),
+	} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("glob %s: %v", pattern, err)
+		}
+		paths = append(paths, matches...)
+	}
+	directCLI := regexp.MustCompile(`(?m)\bgh\s+release\s+(create|upload|edit)\b`)
+	directAPI := regexp.MustCompile(`(?m)\bgh\s+api\b[^\n]*(/releases|releases/)`)
+	for _, path := range paths {
+		if filepath.Clean(path) == filepath.Join(
+			repoRoot(t),
+			".github",
+			"actions",
+			"stage-release",
+			"action.yml",
+		) {
+			continue
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		source := strings.ReplaceAll(string(content), "\\\n", " ")
+		if strings.Contains(source, "softprops/action-gh-release@") {
+			t.Fatalf("%s directly invokes softprops instead of the shared release gate", path)
+		}
+		if directCLI.MatchString(source) || directAPI.MatchString(source) {
+			t.Fatalf("%s directly mutates GitHub releases instead of the shared release gate", path)
+		}
 	}
 }
 
 func TestExternalGitHubActionsPinnedToFullSHAWithVersionComment(t *testing.T) {
 	actionRef := regexp.MustCompile(`uses:\s*([^@\s]+)@([0-9a-f]{40})(?:\s+#\s+v[0-9][^\s]*)?$`)
+	const checkoutUses = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+	const checkoutRef = checkoutUses + " # v7.0.1"
+	checkoutCount := 0
+	checkSteps := func(owner string, steps []workflowStep) int {
+		t.Helper()
+		count := 0
+		for _, step := range steps {
+			if !strings.HasPrefix(step.Uses, "actions/checkout@") {
+				continue
+			}
+			count++
+			if step.Uses != checkoutUses {
+				t.Fatalf("%s checkout uses = %q, want %q", owner, step.Uses, checkoutUses)
+			}
+		}
+		return count
+	}
 	workflowFiles, err := filepath.Glob(filepath.Join(repoRoot(t), ".github", "workflows", "*.yml"))
 	if err != nil {
 		t.Fatalf("glob workflows: %v", err)
@@ -81,19 +132,69 @@ func TestExternalGitHubActionsPinnedToFullSHAWithVersionComment(t *testing.T) {
 		if err != nil {
 			t.Fatalf("rel path for %s: %v", absPath, err)
 		}
+		activeCheckoutCount := 0
+		if strings.HasPrefix(relPath, filepath.Join(".github", "workflows")+string(filepath.Separator)) {
+			workflow := mustReadWorkflowDoc(t, relPath)
+			for jobName, job := range workflow.Jobs {
+				activeCheckoutCount += checkSteps(relPath+" job "+jobName, job.Steps)
+			}
+		} else {
+			action := mustReadCompositeActionDoc(t, relPath)
+			activeCheckoutCount += checkSteps(relPath, action.Runs.Steps)
+		}
+		checkoutCount += activeCheckoutCount
 		content := mustReadRepoFile(t, relPath)
+		checkoutLineCount := 0
 		for lineNo, line := range strings.Split(content, "\n") {
-			if !strings.Contains(line, "uses:") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.Contains(trimmed, "uses:") {
 				continue
 			}
-			if strings.Contains(line, "uses: ./") {
+			if strings.Contains(trimmed, "uses: ./") {
 				continue
 			}
-			if !actionRef.MatchString(strings.TrimSpace(line)) {
-				t.Fatalf("%s:%d external action must use a 40-hex SHA and same-line version comment, got %q", relPath, lineNo+1, strings.TrimSpace(line))
+			if strings.Contains(trimmed, "uses: actions/checkout@") {
+				if got := strings.TrimPrefix(trimmed, "- "); got != "uses: "+checkoutRef {
+					t.Fatalf("%s:%d checkout ref = %q, want %q", relPath, lineNo+1, got, "uses: "+checkoutRef)
+				}
+				checkoutLineCount++
+			}
+			if !actionRef.MatchString(trimmed) {
+				t.Fatalf("%s:%d external action must use a 40-hex SHA and same-line version comment, got %q", relPath, lineNo+1, trimmed)
 			}
 		}
+		if checkoutLineCount != activeCheckoutCount {
+			t.Fatalf("%s contains %d checkout uses lines but %d active checkout steps", relPath, checkoutLineCount, activeCheckoutCount)
+		}
 	}
+	if checkoutCount == 0 {
+		t.Fatal("no active actions/checkout references found")
+	}
+}
+
+func TestSignAndAttestUsesApprovedCosign(t *testing.T) {
+	const path = ".github/actions/sign-and-attest/action.yml"
+	action := mustReadCompositeActionDoc(t, path)
+	if action.Runs.Using != "composite" {
+		t.Fatalf("sign-and-attest runs.using = %q, want composite", action.Runs.Using)
+	}
+	installStep := mustCompositeStepNamed(t, action, "Install cosign")
+
+	const installerRef = "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6"
+	if installStep.Uses != installerRef {
+		t.Fatalf("Install cosign uses = %q, want %q", installStep.Uses, installerRef)
+	}
+	if got := installStep.With["cosign-release"]; got != "v3.1.2" {
+		t.Fatalf("Install cosign cosign-release = %#v, want v3.1.2", got)
+	}
+
+	content := mustReadRepoFile(t, path)
+	const installerLine = "uses: " + installerRef + " # v4.1.2"
+	mustMatch(t, content, `(?m)^\s*`+regexp.QuoteMeta(installerLine)+`\s*$`)
+	if got := strings.Count(content, installerLine); got != 1 {
+		t.Fatalf("cosign installer line count = %d, want exactly 1", got)
+	}
+	mustNotContain(t, content, "cosign-release: 'v3.1.1'")
 }
 
 func TestReleaseJobsRequireMainBranchAndReleaseEnvironment(t *testing.T) {
@@ -279,7 +380,7 @@ func TestMacOSReleaseWorkflowPublishesCLIFromFlatArtifact(t *testing.T) {
 	mustContain(t, verifyStep.Run, "set -euo pipefail")
 	mustContain(t, verifyStep.Run, "test -s artifacts/build-macos/Picocrypt-NG-cli-macos")
 
-	releaseStep := mustHaveStepUsingPrefix(t, releaseJob, "softprops/action-gh-release@")
+	releaseStep := mustStepNamed(t, releaseJob, "Stage release assets")
 	files, ok := releaseStep.With["files"].(string)
 	if !ok {
 		t.Fatalf("macOS release files input = %#v, want string", releaseStep.With["files"])
@@ -315,8 +416,8 @@ func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testin
 	if signJob.If != "${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}" {
 		t.Fatalf("Windows SignPath job if = %q, want main release, test signing, or release-signing dry-run guard", signJob.If)
 	}
-	if signJob.TimeoutMinutes != 60 {
-		t.Fatalf("Windows SignPath job timeout = %d minutes, want 60 for three sequential requests", signJob.TimeoutMinutes)
+	if signJob.TimeoutMinutes != 210 {
+		t.Fatalf("Windows SignPath job timeout = %d minutes, want 210 for three one-hour approval windows plus packaging", signJob.TimeoutMinutes)
 	}
 	if got := releaseEnvironmentName(signJob.Environment); got != "release" {
 		t.Fatalf("Windows SignPath job environment = %#v, want release", signJob.Environment)
@@ -390,14 +491,15 @@ func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testin
 			t.Fatalf("%s action = %q, want reviewed SignPath v2.2 commit", tc.name, step.Uses)
 		}
 		for key, want := range map[string]any{
-			"api-token":                   "${{ secrets.SIGNPATH_API_TOKEN }}",
-			"organization-id":             "d6e78672-6bae-47d3-b2b8-fa464705b34e",
-			"project-slug":                "${{ vars.SIGNPATH_PROJECT_SLUG }}",
-			"signing-policy-slug":         "${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}",
-			"artifact-configuration-slug": tc.configurationSlug,
-			"github-artifact-id":          "${{ steps." + tc.uploadStepID + ".outputs.artifact-id }}",
-			"wait-for-completion":         true,
-			"output-artifact-directory":   tc.outputDirectory,
+			"api-token":                              "${{ secrets.SIGNPATH_API_TOKEN }}",
+			"organization-id":                        "d6e78672-6bae-47d3-b2b8-fa464705b34e",
+			"project-slug":                           "${{ vars.SIGNPATH_PROJECT_SLUG }}",
+			"signing-policy-slug":                    "${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}",
+			"artifact-configuration-slug":            tc.configurationSlug,
+			"github-artifact-id":                     "${{ steps." + tc.uploadStepID + ".outputs.artifact-id }}",
+			"wait-for-completion":                    true,
+			"wait-for-completion-timeout-in-seconds": 3600,
+			"output-artifact-directory":              tc.outputDirectory,
 		} {
 			if got := step.With[key]; got != want {
 				t.Fatalf("%s input %s = %#v, want %#v", tc.name, key, got, want)
@@ -445,7 +547,7 @@ func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testin
 	if got := downloadSigned.With["name"]; got != "signed-windows" {
 		t.Fatalf("Windows release artifact name = %#v, want signed-windows", got)
 	}
-	orderedReleaseSteps := []string{"Download signed artifact", "Sign and attest artifacts", "Release"}
+	orderedReleaseSteps := []string{"Download signed artifact", "Sign and attest artifacts", "Stage release assets"}
 	lastIndex = -1
 	for _, name := range orderedReleaseSteps {
 		index := -1
@@ -477,6 +579,9 @@ func TestWindowsLegacyReleaseUsesSignPathBeforeSigstore(t *testing.T) {
 	if signJob.If != "${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}" {
 		t.Fatalf("legacy SignPath job if = %q, want main release, test signing, or release-signing dry-run guard", signJob.If)
 	}
+	if signJob.TimeoutMinutes != 75 {
+		t.Fatalf("legacy SignPath job timeout = %d minutes, want 75 for a one-hour approval window plus verification", signJob.TimeoutMinutes)
+	}
 	if got := releaseEnvironmentName(signJob.Environment); got != "release" {
 		t.Fatalf("legacy SignPath job environment = %#v, want release", signJob.Environment)
 	}
@@ -502,14 +607,15 @@ func TestWindowsLegacyReleaseUsesSignPathBeforeSigstore(t *testing.T) {
 		t.Fatalf("legacy SignPath action = %q, want reviewed SignPath v2.2 commit", signStep.Uses)
 	}
 	for key, want := range map[string]any{
-		"api-token":                   "${{ secrets.SIGNPATH_API_TOKEN }}",
-		"organization-id":             "d6e78672-6bae-47d3-b2b8-fa464705b34e",
-		"project-slug":                "${{ vars.SIGNPATH_PROJECT_SLUG }}",
-		"signing-policy-slug":         "${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}",
-		"artifact-configuration-slug": "windows-legacy-cli",
-		"github-artifact-id":          "${{ steps.upload-signpath-legacy.outputs.artifact-id }}",
-		"wait-for-completion":         true,
-		"output-artifact-directory":   "signpath-signed-legacy",
+		"api-token":                              "${{ secrets.SIGNPATH_API_TOKEN }}",
+		"organization-id":                        "d6e78672-6bae-47d3-b2b8-fa464705b34e",
+		"project-slug":                           "${{ vars.SIGNPATH_PROJECT_SLUG }}",
+		"signing-policy-slug":                    "${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}",
+		"artifact-configuration-slug":            "windows-legacy-cli",
+		"github-artifact-id":                     "${{ steps.upload-signpath-legacy.outputs.artifact-id }}",
+		"wait-for-completion":                    true,
+		"wait-for-completion-timeout-in-seconds": 3600,
+		"output-artifact-directory":              "signpath-signed-legacy",
 	} {
 		if got := signStep.With[key]; got != want {
 			t.Fatalf("legacy SignPath input %s = %#v, want %#v", key, got, want)
@@ -823,6 +929,183 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 	}
 }
 
+func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {
+	const raceCommand = "go test -v -race -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/..."
+	const contractCommand = "go test -v -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/..."
+
+	for _, tc := range []struct {
+		path string
+		job  string
+	}{
+		{path: ".github/workflows/build-macos.yml", job: "build"},
+		{path: ".github/workflows/pr-test-build-macos.yml", job: "pr-test-build-macos"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			testStep := mustStepNamed(t, mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job), "Run tests")
+
+			raceLineIndex := -1
+			contractLineIndex := -1
+			contractLineCount := 0
+			cliTestLineCount := 0
+			for lineIndex, line := range strings.Split(testStep.Run, "\n") {
+				line = strings.TrimSpace(line)
+				if line == raceCommand {
+					raceLineIndex = lineIndex
+				}
+				isCLITestLine := false
+				if strings.Contains(line, "go test") {
+					for _, field := range strings.Fields(line) {
+						if field == "./internal/cli" || field == "./internal/cli/..." {
+							isCLITestLine = true
+							break
+						}
+					}
+				}
+				if isCLITestLine {
+					cliTestLineCount++
+					if strings.Contains(line, "PICOCRYPT_RUN_CLI_INTEGRATION") {
+						t.Fatalf("macOS CLI test line must not set the integration gate: %q", line)
+					}
+					if strings.Contains(line, "-race") {
+						t.Fatalf("macOS CLI test line must not use -race: %q", line)
+					}
+					if line != contractCommand {
+						t.Fatalf("macOS CLI test line = %q, want only %q", line, contractCommand)
+					}
+					contractLineCount++
+					contractLineIndex = lineIndex
+				}
+			}
+			if raceLineIndex < 0 {
+				t.Fatalf("macOS Run tests step is missing selected race command %q", raceCommand)
+			}
+			if cliTestLineCount != 1 {
+				t.Fatalf("macOS CLI test line count = %d, want exactly 1", cliTestLineCount)
+			}
+			if contractLineCount != 1 {
+				t.Fatalf("macOS CLI input contract line count = %d, want exactly 1", contractLineCount)
+			}
+			if contractLineIndex <= raceLineIndex {
+				t.Fatal("macOS CLI input contract line must follow the selected race command")
+			}
+		})
+	}
+}
+
+func TestWindowsWorkflowsUseApprovedResourceHacker528(t *testing.T) {
+	const expectedHash = "b611be2f35cb44efd1c29df03e7ebe62bd556a500585680e1afa5e073eaf1756"
+	for _, tc := range []struct {
+		path string
+		job  string
+	}{
+		{path: ".github/workflows/build-windows.yml", job: "build"},
+		{path: ".github/workflows/pr-test-build-windows.yml", job: "pr-test-build-windows"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			workflow := mustReadWorkflowDoc(t, tc.path)
+			job := mustJob(t, workflow, tc.job)
+			if got := job.Env["RESHACKER_SHA256"]; got != expectedHash {
+				t.Fatalf("RESHACKER_SHA256 = %q, want %q", got, expectedHash)
+			}
+			resourceStep := mustStepNamed(t, job, "Add icon, manifest, and version info")
+			if resourceStep.Shell != "pwsh" {
+				t.Fatalf("Resource Hacker step shell = %q, want pwsh", resourceStep.Shell)
+			}
+			mustContain(t, resourceStep.Run, "https://www.angusj.com/resourcehacker/reshacker_setup.exe")
+			mustNotContain(t, resourceStep.Run, "github.com/user-attachments")
+			mustNotContain(t, resourceStep.Run, "reshacker_setup.zip")
+			mustNotContain(t, resourceStep.Run, "Expand-Archive")
+			mustContainActiveLines(t, resourceStep.Run,
+				"if ($installer.ExitCode -ne 0) {",
+				`throw "Resource Hacker installer failed with exit code $($installer.ExitCode)"`,
+				"}",
+				"if (-not (Test-Path -LiteralPath $env:P -PathType Leaf)) {",
+				`throw "Resource Hacker executable was not installed at $env:P"`,
+				"}",
+				"function Invoke-ResourceHacker {",
+			)
+		})
+	}
+}
+
+func TestWindowsDownloadsAreBoundedAndChecksumGated(t *testing.T) {
+	const (
+		resourceHackerURL = "https://www.angusj.com/resourcehacker/reshacker_setup.exe"
+		upxURL            = "https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-win64.zip"
+		legacyGoURL       = "https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.5-1/go-legacy-win7-1.26.5-1.windows_amd64.zip"
+	)
+	cases := []struct {
+		name     string
+		path     string
+		job      string
+		step     string
+		output   string
+		url      string
+		hashEnv  string
+		consumer string
+	}{
+		{
+			name: "release-resource-hacker", path: ".github/workflows/build-windows.yml",
+			job: "build", step: "Add icon, manifest, and version info",
+			output: "reshacker_setup.exe", url: resourceHackerURL,
+			hashEnv: "RESHACKER_SHA256", consumer: "$installer = Start-Process `",
+		},
+		{
+			name: "pr-resource-hacker", path: ".github/workflows/pr-test-build-windows.yml",
+			job: "pr-test-build-windows", step: "Add icon, manifest, and version info",
+			output: "reshacker_setup.exe", url: resourceHackerURL,
+			hashEnv: "RESHACKER_SHA256", consumer: "$installer = Start-Process `",
+		},
+		{
+			name: "release-upx", path: ".github/workflows/build-windows.yml",
+			job: "build", step: "Compress with upx",
+			output: "upx.zip", url: upxURL,
+			hashEnv: "UPX_SHA256", consumer: "Expand-Archive -DestinationPath upx upx.zip",
+		},
+		{
+			name: "pr-upx", path: ".github/workflows/pr-test-build-windows.yml",
+			job: "pr-test-build-windows", step: "Compress with upx",
+			output: "upx.zip", url: upxURL,
+			hashEnv: "UPX_SHA256", consumer: "Expand-Archive -DestinationPath upx upx.zip",
+		},
+		{
+			name: "legacy-release-go", path: ".github/workflows/build-windows-legacy.yml",
+			job: "build", step: "Download go-legacy-win7",
+			output: "go-legacy.zip", url: legacyGoURL,
+			hashEnv: "GO_LEGACY_SHA256", consumer: `Expand-Archive -DestinationPath C:\go-legacy go-legacy.zip`,
+		},
+		{
+			name: "legacy-pr-go", path: ".github/workflows/pr-test-build-windows-legacy.yml",
+			job: "pr-test-build-windows-legacy", step: "Download go-legacy-win7",
+			output: "go-legacy.zip", url: legacyGoURL,
+			hashEnv: "GO_LEGACY_SHA256", consumer: `Expand-Archive -DestinationPath C:\go-legacy go-legacy.zip`,
+		},
+		{
+			name: "legacy-release-upx", path: ".github/workflows/build-windows-legacy.yml",
+			job: "build", step: "Compress with upx",
+			output: "upx.zip", url: upxURL,
+			hashEnv: "UPX_SHA256", consumer: "Expand-Archive -DestinationPath upx upx.zip",
+		},
+		{
+			name: "legacy-pr-upx", path: ".github/workflows/pr-test-build-windows-legacy.yml",
+			job: "pr-test-build-windows-legacy", step: "Compress with upx",
+			output: "upx.zip", url: upxURL,
+			hashEnv: "UPX_SHA256", consumer: "Expand-Archive -DestinationPath upx upx.zip",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workflow := mustReadWorkflowDoc(t, tc.path)
+			step := mustStepNamed(t, mustJob(t, workflow, tc.job), tc.step)
+			if step.Shell != "pwsh" {
+				t.Fatalf("download step shell = %q, want pwsh", step.Shell)
+			}
+			mustUseBoundedCurlDownload(t, step.Run, tc.output, tc.url, tc.hashEnv, tc.consumer)
+		})
+	}
+}
+
 func TestWindowsResourceEditingWaitsAndFailsLoud(t *testing.T) {
 	for _, tc := range []struct {
 		path string
@@ -842,7 +1125,7 @@ func TestWindowsResourceEditingWaitsAndFailsLoud(t *testing.T) {
 			}
 			mustContainInOrder(t, resourceStep.Run,
 				"$installer = Start-Process",
-				`-FilePath "reshacker_setup/reshacker_setup.exe"`,
+				`-FilePath "reshacker_setup.exe"`,
 				`-ArgumentList "/SILENT"`,
 				"-Wait -PassThru",
 				"if ($installer.ExitCode -ne 0)",
@@ -929,7 +1212,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "3583",
 			target:   "google_apis",
-			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest",
+			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest",
 		},
 		// Activity security and Compose state must work on the target-SDK runtime.
 		36: {
@@ -937,7 +1220,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "6144",
 			target:   "default",
-			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
+			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
 		},
 	}
 	seen := make(map[int]struct{}, len(wantByAPI))
@@ -1030,6 +1313,36 @@ func TestAndroidPRWorkflowBuildsReleaseWithR8(t *testing.T) {
 	mustContain(t, appGradle, "isShrinkResources = true")
 }
 
+func TestAndroidBuildWorkflowsRunFullLint(t *testing.T) {
+	testCases := []struct {
+		name string
+		path string
+		job  string
+	}{
+		{name: "pull request", path: ".github/workflows/pr-test-build-android.yml", job: "pr-test-build-android"},
+		{name: "release", path: ".github/workflows/build-android.yml", job: "build"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			job := mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job)
+			lintStep := mustStepNamed(t, job, "Run Android Lint")
+			if got := strings.TrimSpace(lintStep.Run); got != "./gradlew lint" {
+				t.Fatalf("Android lint step run = %q, want exact full lint command", got)
+			}
+			if lintStep.WorkingDirectory != "android" {
+				t.Fatalf("Android lint step working-directory = %q, want android", lintStep.WorkingDirectory)
+			}
+			if lintStep.If != "" {
+				t.Fatalf("Android lint step if = %q, want unconditional gate", lintStep.If)
+			}
+			if lintStep.ContinueOnError != nil && lintStep.ContinueOnError != false {
+				t.Fatalf("Android lint step continue-on-error = %#v, want absent or false", lintStep.ContinueOnError)
+			}
+		})
+	}
+}
+
 func TestAndroidReleaseWorkflowKeepsSigningSecretsOutOfBuildJob(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-android.yml")
 	buildJob := mustJob(t, workflow, "build")
@@ -1040,43 +1353,48 @@ func TestAndroidReleaseWorkflowKeepsSigningSecretsOutOfBuildJob(t *testing.T) {
 	mustNotHaveStepNamed(t, buildJob, "Decode Android signing keystore")
 	mustNotHaveStepNamed(t, buildJob, "Build Signed Release APK")
 
-	decodeStep := mustStepNamed(t, releaseJob, "Decode Android signing keystore")
-	if decodeStep.ID != "android-keystore" {
-		t.Fatalf("release keystore decode step id = %q, want android-keystore", decodeStep.ID)
-	}
-	if _, ok := decodeStep.Env["ANDROID_KEYSTORE_BASE64"]; !ok {
-		t.Fatal("release keystore decode step should declare ANDROID_KEYSTORE_BASE64")
+	mustNotHaveStepNamed(t, releaseJob, "Decode Android signing keystore")
+	buildSignedStep := mustStepNamed(t, releaseJob, "Build Signed Release APK")
+	for _, key := range []string{
+		"ANDROID_KEYSTORE_BASE64",
+		"ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PASSWORD",
+		"ORG_GRADLE_PROJECT_PICOCRYPT_KEY_ALIAS",
+		"ORG_GRADLE_PROJECT_PICOCRYPT_KEY_PASSWORD",
+	} {
+		value, ok := buildSignedStep.Env[key]
+		if !ok {
+			t.Fatalf("signed build step missing scoped env %q", key)
+		}
+		if !strings.Contains(value, "secrets.ANDROID_") {
+			t.Fatalf("signed build env %q = %q, want an Android repository secret", key, value)
+		}
 	}
 	for _, key := range []string{
 		"ANDROID_KEYSTORE_PASSWORD",
 		"ANDROID_KEY_ALIAS",
 		"ANDROID_KEY_PASSWORD",
 	} {
-		if _, ok := decodeStep.Env[key]; ok {
-			t.Fatalf("release keystore decode step must not declare env %q", key)
-		}
-		mustNotContain(t, decodeStep.Run, key)
-	}
-	mustNotContain(t, decodeStep.Run, "PICOCRYPT_KEYSTORE_PASSWORD")
-	mustNotContain(t, decodeStep.Run, "PICOCRYPT_KEY_ALIAS")
-	mustNotContain(t, decodeStep.Run, "PICOCRYPT_KEY_PASSWORD")
-	mustNotContain(t, decodeStep.Run, "$GITHUB_ENV")
-	mustContain(t, decodeStep.Run, "path=$KEYSTORE_PATH")
-	mustMatch(t, decodeStep.Run, `(?m)>>\s*"\$GITHUB_OUTPUT"`)
-
-	buildSignedStep := mustStepNamed(t, releaseJob, "Build Signed Release APK")
-	for _, key := range []string{
-		"ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH",
-		"ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PASSWORD",
-		"ORG_GRADLE_PROJECT_PICOCRYPT_KEY_ALIAS",
-		"ORG_GRADLE_PROJECT_PICOCRYPT_KEY_PASSWORD",
-	} {
-		if _, ok := buildSignedStep.Env[key]; !ok {
-			t.Fatalf("signed build step missing scoped env %q", key)
+		if _, ok := buildSignedStep.Env[key]; ok {
+			t.Fatalf("signed build step must use Gradle-scoped env instead of %q", key)
 		}
 	}
-	if got := buildSignedStep.Env["ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH"]; got != "${{ steps.android-keystore.outputs.path }}" {
-		t.Fatalf("signed build keystore path env = %q, want android-keystore step output", got)
+	mustContainInOrder(
+		t,
+		buildSignedStep.Run,
+		`KEYSTORE_PATH=$(mktemp "$RUNNER_TEMP/picocrypt-release.XXXXXX.keystore")`,
+		`trap 'rm -f -- "$KEYSTORE_PATH"' EXIT`,
+		`printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"`,
+		`export ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH="$KEYSTORE_PATH"`,
+		"./gradlew --no-daemon :app:assembleRelease",
+	)
+	mustNotContain(t, buildSignedStep.Run, "$GITHUB_ENV")
+	mustNotContain(t, buildSignedStep.Run, "$GITHUB_OUTPUT")
+	for _, step := range releaseJob.Steps {
+		for _, value := range step.Env {
+			if step.Name != "Build Signed Release APK" && strings.Contains(value, "secrets.ANDROID_") {
+				t.Fatalf("Android signing secret is exposed to later step %q", step.Name)
+			}
+		}
 	}
 	downloadStep := mustHaveStepUsingPrefix(t, releaseJob, "actions/download-artifact@")
 	mustMatch(t, downloadStep.Uses, `actions/download-artifact@[0-9a-f]{40}`)
@@ -1205,7 +1523,7 @@ func TestAndroidReleaseSigningTrustAnchorAndPublicationOrder(t *testing.T) {
 		"Verify exact release APK contract",
 		"Prepare artifacts",
 		"Sign and attest artifacts",
-		"Release",
+		"Stage release assets",
 	}
 	lastIndex := -1
 	for _, name := range orderedSteps {
@@ -1226,12 +1544,13 @@ func TestAndroidReleaseSigningTrustAnchorAndPublicationOrder(t *testing.T) {
 	}
 }
 
-func TestReleaseBodyAdvertisesOnly64BitAndroid(t *testing.T) {
+func TestCurrentReleaseBodyContract(t *testing.T) {
 	root := repoRoot(t)
+	version := strings.TrimSpace(mustReadRepoFile(t, "VERSION"))
 	command := exec.Command(
 		"bash",
 		filepath.Join(root, ".github/actions/release-body/gen-release-body.sh"),
-		"2.18",
+		version,
 		filepath.Join(root, "Changelog.md"),
 		"-",
 	)
@@ -1241,6 +1560,12 @@ func TestReleaseBodyAdvertisesOnly64BitAndroid(t *testing.T) {
 	}
 
 	body := string(output)
+	mustContain(t, body, "## What's new in "+version)
+	for _, rawHTML := range []string{"<ul", "</ul>", "<li", "</li>", "<strong", "</strong>", "<code", "</code>"} {
+		mustNotContain(t, body, rawHTML)
+	}
+	mustNotContain(t, body, "production signing remains pending")
+
 	for _, removed := range []string{
 		"Picocrypt-NG-android-armeabi-v7a.apk",
 		"Picocrypt-NG-android-x86.apk",
@@ -1427,6 +1752,11 @@ func TestAndroidGomobileBuildUsesReproducibleLinkerFlags(t *testing.T) {
 }
 
 func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
+	const (
+		focusedClasses = "io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.DecryptOptionsCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ErrorDialogTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.FileCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest"
+		extendedClass  = "io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest"
+	)
+
 	content := mustReadWorkflow(t, ".github/workflows/android-instrumented.yml")
 	mustContain(t, content, "workflow_dispatch:")
 	mustContain(t, content, "test_scope:")
@@ -1434,13 +1764,7 @@ func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	mustContain(t, content, "- focused")
 	mustContain(t, content, "- extended")
 	mustMatch(t, content, `ReactiveCircus/android-emulator-runner@[0-9a-f]{40}`)
-	mustContain(t, content, "connectedDebugAndroidTest")
-	mustContain(t, content, "PasswordCardTest")
-	mustContain(t, content, "ProgressCardTest")
-	mustContain(t, content, "OperationManagerIntegrationTest")
 	mustNotContain(t, content, "connectedDebugAndroidTest \\")
-	mustContain(t, content, "TEST_CLASSES=")
-	mustContain(t, content, "./gradlew connectedDebugAndroidTest")
 
 	// Keep the manual instrumented workflow on the target-SDK runtime.
 	instrJob := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/android-instrumented.yml"), "android-instrumented")
@@ -1450,6 +1774,10 @@ func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	}
 	if got := instrEmulator.With["disk-size"]; got != "2048M" {
 		t.Fatalf("instrumented emulator disk-size = %v, want 2048M", got)
+	}
+	wantScript := `TEST_CLASSES="` + focusedClasses + `"; { [ "${{ inputs.test_scope }}" = "extended" ] && TEST_CLASSES="$TEST_CLASSES,` + extendedClass + `"; } || true; ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$TEST_CLASSES"`
+	if got := instrEmulator.With["script"]; got != wantScript {
+		t.Fatalf("instrumented script = %#v, want exact focused and extended selectors %q", got, wantScript)
 	}
 }
 

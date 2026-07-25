@@ -79,12 +79,16 @@ Configuration:
 - File mask: `android/app/src/main/res/values-*/strings.xml`
 - Base file: `android/app/src/main/res/values/strings.xml`
 - Format: Android String Resource
-- Initial languages after Android gates: `ru`, `fr`, `de`, `es`, `it`
+- Base language: `en`
+- Translated languages after Android gates: `ru`, `de`, `fr`, `es`, `zh-Hans`, `hi`, `ko`
+- Android directory mapping: `zh-Hans` uses `values-b+zh+Hans`; Korean uses generic `values-ko`; Italian is not packaged
 
 Android string resources are monolingual in Weblate. The base file is
 `res/values/strings.xml`, and the typical translated file mask is
 `res/values-*/strings.xml`. Weblate's Android String Resource format supports
-plurals and flags/read-only strings.
+plurals and flags/read-only strings. These are application UI resources;
+Fastlane currently has a separate English-only `en-US` store-listing/changelog
+surface and must not be inferred from the app-resource language list.
 
 ### Fyne Desktop
 
@@ -93,11 +97,14 @@ Do not enable yet.
 Fyne Weblate setup is blocked until Picocrypt-NG proves exact round-trip for
 the Fyne JSON catalog shape in `src/internal/ui/translation/en.json`.
 
+Eight complete desktop catalogs currently exist for `en`, `ru`, `de`, `fr`,
+`es`, `zh-Hans`, `hi`, and `ko`, but no Fyne/Weblate JSON round-trip has been proved.
 The curated Russian Fyne catalog is a maintainer-reviewed in-repository
-translation exception. It is gated by
-`docs/localization/RUSSIAN_TRANSLATION_REVIEW.md` and structural catalog tests,
-not by Weblate. This exception does not prove that Weblate can safely edit Fyne
-JSON catalogs.
+translation exception. The Korean catalog is an engineering-reviewed
+in-repository exception and still requires native-language and device review
+before release. Both catalogs are gated by structural and semantic regression
+tests, not by Weblate. Those tests do not prove that Weblate can safely edit
+Fyne JSON catalogs.
 
 The desktop language selector does not by itself enable a Fyne Weblate
 component. Additional non-English Fyne production catalogs that are imported

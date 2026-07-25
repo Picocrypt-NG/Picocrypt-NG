@@ -118,7 +118,8 @@ fun Password(
     state: TextFieldState,
     visible: Boolean,
     icon: @Composable (() -> Unit)?,
-    isError: Boolean
+    isError: Boolean,
+    errorMessage: String,
 ) {
     SecureTextField(
         state = state,
@@ -128,7 +129,7 @@ fun Password(
         textObfuscationMode = if (visible) TextObfuscationMode.Visible else TextObfuscationMode.Hidden,
         trailingIcon = icon,
         modifier = Modifier.fillMaxWidth(),
-        supportingText = { if (isError) Text(stringResource(R.string.enter_password)) })
+        supportingText = { if (isError) Text(errorMessage) })
 }
 
 
@@ -201,11 +202,19 @@ fun PasswordCard(
                     .collect { viewModel.updatePasswords(confirmPassword = it.toCharArray()) }
             }
 
+            val passwordErrorMessage = if (formData.isDeniabilityPasswordMissing) {
+                stringResource(R.string.deniability_password_required)
+            } else {
+                stringResource(R.string.enter_password)
+            }
+            val showPasswordError =
+                formData.isPasswordInputRequired && !formData.isKeyfileEncryptionUnsupported
             Password(
                 state = passwordState,
                 visible = visible,
                 icon = { PasswordIcon(visible) { visible = !visible } },
-                isError = formData.passwordInput.isEmpty()
+                isError = showPasswordError,
+                errorMessage = passwordErrorMessage,
             )
             if (formData.isEncrypt) {
                 ConfirmPassword(

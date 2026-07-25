@@ -25,6 +25,17 @@ func CreateSecureNoSymlink(path string) (*os.File, error) {
 	return nil, err
 }
 
+// CreateExclusiveNoSymlink creates a new file only if no leaf entry already
+// exists. A successful return gives the caller exclusive ownership of the path,
+// so cleanup may safely remove it.
+func CreateExclusiveNoSymlink(path string) (*os.File, error) {
+	f, err := openFileNoFollow(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err == nil {
+		return f, nil
+	}
+	return nil, err
+}
+
 // OpenExistingNoSymlink opens an existing file for writes without following a
 // symlink planted at the leaf path. Callers must pass only non-creating flags.
 func OpenExistingNoSymlink(path string, flag int) (*os.File, error) {

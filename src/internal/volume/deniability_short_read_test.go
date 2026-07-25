@@ -125,12 +125,13 @@ func TestDeniabilityRemoveShortReadsRoundTrip(t *testing.T) {
 	// Remove deniability under a short-read seam.
 	restore := deniabilityShortReadSeam(shortReadMax)
 	defer restore()
-	outPath, err := RemoveDeniability(volPath, []byte("deniability-roundtrip"), nil, rs)
+	outStage, err := RemoveDeniability(volPath, []byte("deniability-roundtrip"), nil, rs)
 	if err != nil {
 		t.Fatalf("RemoveDeniability under short-read seam: %v", err)
 	}
+	defer outStage.Cleanup()
 
-	recovered, err := os.ReadFile(outPath)
+	recovered, err := os.ReadFile(outStage.Path())
 	if err != nil {
 		t.Fatalf("read recovered volume: %v", err)
 	}

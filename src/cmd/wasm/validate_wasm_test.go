@@ -5,20 +5,45 @@ package main
 import (
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/header"
+	internalwasm "Picocrypt-NG/internal/wasm"
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall/js"
 	"testing"
 )
 
-// Pins the bridge error code: non-zero and distinct from internal/wasm 1-5.
+// Pins the bridge error code: non-zero and distinct from every internal/wasm
+// result code exposed through this public bridge.
 func TestInvalidArgErrorCodeContract(t *testing.T) {
 	if errInvalidArg == 0 {
 		t.Fatal("errInvalidArg must be non-zero")
 	}
-	for _, c := range []int{1, 2, 3, 4, 5} {
-		if errInvalidArg == c {
-			t.Fatalf("errInvalidArg=%d collides with internal/wasm code %d", errInvalidArg, c)
+	internalCodes := []struct {
+		name string
+		code int
+	}{
+		{name: "unsupported", code: internalwasm.ErrUnsupported},
+		{name: "corrupted header", code: internalwasm.ErrCorruptedHeader},
+		{name: "wrong password", code: internalwasm.ErrWrongPassword},
+		{name: "modified data", code: internalwasm.ErrModifiedData},
+		{name: "random failure", code: internalwasm.ErrRandomFailure},
+		{name: "keyfiles required", code: internalwasm.ErrKeyfilesRequired},
+		{name: "keyfiles incorrect", code: internalwasm.ErrKeyfilesIncorrect},
+		{name: "duplicate keyfiles", code: internalwasm.ErrKeyfilesDuplicate},
+		{name: "modified but kept", code: internalwasm.ErrModifiedButKept},
+		{name: "deniability password required", code: internalwasm.ErrDeniabilityPasswordRequired},
+		{name: "keyfile writes disabled", code: internalwasm.ErrKeyfileWritesDisabled},
+		{name: "encryption password required", code: internalwasm.ErrEncryptionPasswordRequired},
+	}
+	for _, internal := range internalCodes {
+		if errInvalidArg == internal.code {
+			t.Fatalf(
+				"errInvalidArg=%d collides with internal/wasm %s code",
+				errInvalidArg,
+				internal.name,
+			)
 		}
 	}
 }
@@ -104,36 +129,48 @@ func TestReadKeyfilesNilIsOK(t *testing.T) {
 	}
 }
 
-func TestBridgeKeyfileRoundTrip(t *testing.T) {
+func TestBridgeDecryptsLegacyOrderedKeyfileVolume(t *testing.T) {
 	mkU8 := func(b []byte) js.Value {
 		u := js.Global().Get("Uint8Array").New(len(b))
 		js.CopyBytesToJS(u, b)
 		return u
 	}
-	plain := mkU8([]byte("keyfile bridge round trip"))
-	kf := js.Global().Get("Array").New()
-	kf.Call("push", mkU8([]byte("kf-1")))
-	kf.Call("push", mkU8([]byte("kf-2")))
 
-	enc := encrypt(js.Undefined(), []js.Value{newOpts(map[string]any{
-		"data": plain, "password": "pw", "keyfiles": kf, "keyfileOrdered": true,
-	})}).(js.Value)
-	if enc.Get("code").Int() != 0 {
-		t.Fatalf("encrypt code=%d", enc.Get("code").Int())
+	testdata := filepath.Join("..", "..", "testdata", "golden")
+	volumeData, err := os.ReadFile(filepath.Join(testdata, "pico_test_v2_keyfile_multi_ordered.txt.pcv"))
+	if err != nil {
+		t.Fatalf("read legacy volume fixture: %v", err)
 	}
+	keyfileAlpha, err := os.ReadFile(filepath.Join(testdata, "keyfile_alpha.bin"))
+	if err != nil {
+		t.Fatalf("read first legacy keyfile: %v", err)
+	}
+	keyfileBeta, err := os.ReadFile(filepath.Join(testdata, "keyfile_beta.bin"))
+	if err != nil {
+		t.Fatalf("read second legacy keyfile: %v", err)
+	}
+
+	kf := js.Global().Get("Array").New()
+	kf.Call("push", mkU8(keyfileAlpha))
+	kf.Call("push", mkU8(keyfileBeta))
+	volume := mkU8(volumeData)
+
 	// Missing keyfiles on decrypt → code 7.
 	miss := decrypt(js.Undefined(), []js.Value{newOpts(map[string]any{
-		"data": enc.Get("data"), "password": "pw",
+		"data": volume, "password": "test",
 	})}).(js.Value)
 	if miss.Get("code").Int() != 7 {
 		t.Fatalf("missing-keyfiles code=%d; want 7", miss.Get("code").Int())
 	}
-	// Correct keyfiles → success.
+	// Correct ordered keyfiles must preserve pre-2.19 read compatibility.
 	dec := decrypt(js.Undefined(), []js.Value{newOpts(map[string]any{
-		"data": enc.Get("data"), "password": "pw", "keyfiles": kf,
+		"data": volume, "password": "test", "keyfiles": kf,
 	})}).(js.Value)
 	if dec.Get("code").Int() != 0 {
 		t.Fatalf("decrypt code=%d; want 0", dec.Get("code").Int())
+	}
+	if got := dataBytesDen(t, dec); !bytes.Equal(got, []byte("There is a test file for Picocrypt validation.\n")) {
+		t.Fatalf("legacy decrypt plaintext = %q; want golden content", got)
 	}
 }
 

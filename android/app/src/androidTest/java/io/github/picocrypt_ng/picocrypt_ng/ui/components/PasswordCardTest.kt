@@ -2,6 +2,7 @@ package io.github.picocrypt_ng.picocrypt_ng.ui.components
 
 import android.app.Application
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -73,5 +74,50 @@ class PasswordCardTest {
         composeTestRule.waitForIdle()
 
         assertEquals("hunter2", String(viewModel.formState.value.passwordInput))
+    }
+
+    @Test
+    fun keyfileEncryption_doesNotSuggestThatAddingAPasswordCanEnableTheWriter() {
+        val application = ApplicationProvider.getApplicationContext<Application>()
+        val viewModel = MainViewModel(application, SavedStateHandle())
+
+        viewModel.updateFormData(
+            TestDataBuilders.createEncryptFormData(
+                password = "",
+                confirmPassword = "",
+                deniability = false,
+                keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
+            ),
+        )
+
+        composeTestRule.setContent {
+            PasswordCard(viewModel = viewModel)
+        }
+
+        composeTestRule
+            .onAllNodesWithText(application.getString(R.string.enter_password))
+            .assertCountEquals(0)
+    }
+
+    @Test
+    fun keyfileOnlyDeniability_doesNotHideTheWriterPolicyBehindAPasswordHint() {
+        val application = ApplicationProvider.getApplicationContext<Application>()
+        val viewModel = MainViewModel(application, SavedStateHandle())
+
+        viewModel.updateFormData(
+            TestDataBuilders.createEncryptFormData(
+                password = "",
+                confirmPassword = "",
+                deniability = true,
+                keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
+            ),
+        )
+
+        composeTestRule.setContent {
+            PasswordCard(viewModel = viewModel)
+        }
+
+        val expectedMessage = application.getString(R.string.deniability_password_required)
+        composeTestRule.onAllNodesWithText(expectedMessage).assertCountEquals(0)
     }
 }

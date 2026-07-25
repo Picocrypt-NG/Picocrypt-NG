@@ -17,6 +17,7 @@ func TestTimeify(t *testing.T) {
 		{3600, "01:00:00"},
 		{3661, "01:01:01"},
 		{86399, "23:59:59"},
+		{363599, "100:59:59"},
 		{-10, "00:00:00"}, // negative values should clamp to 0
 	}
 

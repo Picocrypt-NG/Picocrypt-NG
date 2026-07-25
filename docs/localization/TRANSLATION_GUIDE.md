@@ -17,8 +17,8 @@ integrity, password, keyfile, corruption, and deletion concepts.
 
 | Surface | Current state | Translation path |
 |---|---|---|
-| Desktop Fyne UI | User-facing desktop UI strings are routed through `src/internal/ui/translation/en.json` via the project-local `go-i18n` runtime. | Keep using the project `tr`/`trn` wrappers. Russian is enabled as a curated in-repo translation with a review gate; future Weblate-imported Fyne locales still require a Fyne/Weblate JSON round-trip. |
-| Android app | Base English UI strings live in `android/app/src/main/res/values/strings.xml`; raw Go/runtime details are not translator source copy. | Continue with Android string resources and explicit display-boundary mappings. |
+| Desktop Fyne UI | Complete bundled application catalogs exist for English, Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean under `src/internal/ui/translation`. Fyne-owned dialogs and raw backend status text may remain English. | Keep using the project `tr`/`trn` wrappers. Russian has its curated review gate; the Korean review record documents model-assisted review and still-open native/device gates; Weblate-imported Fyne locales still require a Fyne/Weblate JSON round-trip. |
+| Android app | Release resources package the same eight languages: base English plus Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean. Raw Go/runtime details are not translator source copy. | Continue with Android string resources and explicit semantic display-boundary mappings. The six new catalogs still require human/device release admission. |
 | CLI | Cobra help, prompts, warnings, and errors are hard-coded Go strings. | Do not localize CLI output, command names, flags, or examples. Keep CLI English-only. |
 | Web/WASM | The Go WASM bridge exports functions and numeric error codes; it does not own the hosted web UI copy. | Localize the web frontend separately if/when that source is brought into scope. |
 
@@ -72,6 +72,7 @@ Use these sources before adding or changing localization mechanics:
 - HarfBuzz shaping scope: <https://harfbuzz.github.io/what-harfbuzz-doesnt-do.html>
 - Noto font-selection guidance: <https://notofonts.github.io/noto-docs/website/use/>
 - Microsoft Localization Style Guides: <https://learn.microsoft.com/en-us/globalization/reference/microsoft-style-guides>
+- Microsoft Korean Localization Style Guide: <https://aka.ms/korean-styleguide>
 - Microsoft Terminology: <https://learn.microsoft.com/en-us/globalization/reference/microsoft-terminology>
 - Microsoft Writing Style Guide: <https://learn.microsoft.com/en-us/style-guide/welcome/>
 - Google developer translation guidance: <https://developers.google.com/style/translation>
@@ -98,12 +99,15 @@ Picocrypt-NG keeps Fyne/Weblate-shaped flat JSON catalogs under
 - The selected desktop UI language is stored in Fyne preferences under
   `ui.language`.
 - Only complete embedded Fyne catalogs appear in the selector. Registered
-  desktop codes are `en`, `ru`, `de`, `fr`, `it`, `es`, `zh-Hans`, and `hi`.
+  desktop codes are `en`, `ru`, `de`, `fr`, `it`, `es`, `zh-Hans`, `hi`, and
+  `ko`.
   `zh-Hans` is the catalog filename stem and stored preference, with the open
-  menu label `简体中文`; `hi` uses the open-menu label `हिन्दी`. Only the closed
-  selector abbreviates `zh-Hans` to `zh`. The open menu uses native names and no
-  flags.
-  Registration without a catalog does not claim that a locale has shipped.
+  menu label `简体中文`; `hi` uses the open-menu label `हिन्दी`; `ko` uses
+  `한국어`. Only the closed selector abbreviates `zh-Hans` to `zh`. The open menu
+  uses native names and no flags.
+  Registration without a catalog does not claim that a locale has shipped:
+  `it` remains registered for future work, but `it.json` is absent and Italian
+  is not in the bundled selector set.
 - Every embedded non-English catalog must exactly match `en.json` message IDs,
   singular/plural shapes, and template placeholders, while using the exact
   plural forms required by the pinned go-i18n version. The current contract is:
@@ -111,13 +115,14 @@ Picocrypt-NG keeps Fyne/Weblate-shaped flat JSON catalogs under
   | Locale | Required plural forms |
   |---|---|
   | `en`, `de`, `hi` | `one`, `other` |
-  | `fr`, `es`, `it` | `one`, `many`, `other` |
+  | `fr`, `es` | `one`, `many`, `other` |
   | `ru` | `one`, `few`, `many`, `other` |
-  | `zh-Hans` | `other` |
+  | `zh-Hans`, `ko` | `other` |
 
   In go-i18n 2.6.1, French and Hindi use `one` for integer zero; French and
   Spanish use `many` for values such as one million. Runtime tests, not this
-  table alone, are the executable source of truth.
+  table alone, are the executable source of truth. A future Italian catalog
+  would require `one`, `many`, and `other`, but is not a shipped row.
 - UI state must store semantic display state for labels and UI-owned statuses.
   Do not store translated strings as durable state when the text must relocalize
   after a runtime language switch.
@@ -149,18 +154,19 @@ bundle or download fonts, install operating-system packages, hard-code font
 paths, or set `FYNE_FONT`. Nerd Fonts are not a CJK or Devanagari solution.
 
 Fyne's embedded Latin font covers the catalog text required by German, French,
-and Spanish. Simplified Chinese and Hindi depend on suitable fonts already
-available to the operating system. Fyne shapes text with HarfBuzz, but its
-preferred system face follows the operating-system locale rather than the
-language selected inside Picocrypt-NG. Therefore `zh-Hans` and `hi` require
-real packaged-build review both with matching and non-matching OS locales.
+and Spanish. Simplified Chinese, Korean, and Hindi depend on suitable fonts
+already available to the operating system. Fyne shapes text with HarfBuzz, but
+its preferred system face follows the operating-system locale rather than the
+language selected inside Picocrypt-NG. Therefore `zh-Hans`, `ko`, and `hi`
+require real packaged-build review both with matching and non-matching OS
+locales.
 
-Before either locale becomes selectable, reject screenshots containing tofu,
-replacement glyphs, wrong Simplified-Chinese regional forms, detached Hindi
-matras, dotted circles, exposed halants, broken conjuncts, clipped vertical
-metrics, hidden controls, or window growth beyond the normal 340 px desktop
-width. Missing system coverage blocks that locale on the affected target; it
-does not authorize adding an unreviewed font asset.
+Before release admission for any of these locales, reject screenshots
+containing tofu, replacement glyphs, wrong Simplified-Chinese regional forms,
+detached Hindi matras, dotted circles, exposed halants, broken conjuncts,
+clipped vertical metrics, hidden controls, or window growth beyond the normal
+340 px desktop width. Missing system coverage blocks that locale on the
+affected target; it does not authorize adding an unreviewed font asset.
 
 Emoji and arbitrary mixed-script filenames/comments are platform best-effort.
 Font fallback must not change the underlying application string or selected
@@ -173,18 +179,34 @@ Android must use native string resources.
 
 - `android/app/src/main/res/values/strings.xml` is the base English file for
   resource-backed Android UI strings.
-- Translations live under locale resource directories such as `values-ru`,
-  `values-fr`, `values-de`, `values-es`, `values-it`, or Android BCP-47 style
-  qualifiers where needed.
+- The complete translated directories are `values-ru`, `values-de`, `values-fr`,
+  `values-es`, `values-b+zh+Hans`, `values-hi`, and `values-ko`. Korean uses the
+  generic `ko` language tag with contemporary neutral South Korean wording.
+  Italian is not packaged.
+- AGP generates the per-app locale configuration with
+  `androidResources.generateLocaleConfig = true` and filters release resources
+  to `en`, `ru`, `de`, `fr`, `es`, `b+zh+Hans`, `hi`, and `ko` through
+  `androidResources.localeFilters`. `resources.properties` declares base
+  `unqualifiedResLocale=en`; generated output exposes Chinese as `zh-Hans`.
+  Debug `en-XA`/`ar-XB` pseudolocales are not release locales.
 - Before enabling an Android locale, remove or map remaining hard-coded
   user-facing Kotlin messages for that localized surface. Do not translate raw
   Go error text as source copy.
+- Operation status, progress detail, and errors cross the display boundary as
+  stable codes plus typed arguments. Compose and the foreground notification
+  use the same resource-backed renderer; raw Go/JVM status and error text stays
+  diagnostic-only. Unknown status falls back to localized **Working**, and
+  malformed/unknown detail is hidden.
 - Use positional placeholders such as `%1$s` and `%1$d` so translators can
   reorder arguments.
 - Use `<plurals>` for counted strings. Do not write `file(s)`.
 - Mark non-translatable technical strings with `translatable="false"` when they
   are resource-backed.
 - Run Android pseudolocale checks before accepting broad UI localization.
+- The eight catalogs being structurally complete and packaged does not replace
+  native or near-native linguistic review or device rendering. German, French,
+  Spanish, Simplified Chinese, Hindi, and Korean still require those release
+  gates.
 
 Weblate setup for Android should use:
 
@@ -253,6 +275,7 @@ Language-specific voice:
 | Italian | Use concise UI actions and impersonal wording. Prefer short labels; use longer technical forms in explanatory text when needed. |
 | Simplified Chinese | Use concise Simplified Chinese and review regional glyph forms. Security terms such as deniability need an explanatory tooltip, not only a short label. |
 | Hindi | Use concise contemporary technical Hindi. Review conjuncts and matras visually; do not accept code-point presence as shaping proof. |
+| Korean | Use concise, professional, contemporary neutral South Korean wording. Avoid unnecessary English when an established Korean technical term exists; keep security limitations explicit. |
 
 ## Product Glossary
 
@@ -293,6 +316,8 @@ Notes:
   a generic integrity check.
 - Russian may use "проверка подлинности" in broad user-facing text, but
   "аутентификация" is the preferred compact cryptographic UI term here.
+- Korean security-sensitive terminology is protected by semantic localization
+  tests alongside the structural catalog checks.
 
 ## Forbidden Or Dangerous Translations
 
@@ -433,22 +458,22 @@ Every localization PR or Weblate merge must answer these checks:
 7. Are all placeholders preserved and ordered correctly?
 8. Are counted strings implemented through plural resources?
 9. Are Weblate checks clean, or is every accepted warning documented?
-10. Has the relevant UI been checked for clipped text, especially German and
-    Russian strings?
+10. Has the relevant UI been checked for clipped text, especially German,
+    Russian, and Korean strings?
 11. Has Android been checked with pseudolocales after large resource changes?
 12. Are non-translatable identifiers marked or excluded from translation?
 13. Does the change leave CLI output untouched?
 14. For a Fyne desktop locale, does the complete catalog pass exact key,
     placeholder, message-shape, and locale-plural validation?
 15. Has the real packaged desktop UI been checked at 340 px in light and dark
-    mode? For `zh-Hans` and `hi`, was shaping checked with both matching and
-    non-matching operating-system locales?
+    mode? For `zh-Hans`, `ko`, and `hi`, was shaping checked with both matching
+    and non-matching operating-system locales?
 16. Are Android build and pseudolocale checks requested only when Android
     resources are actually part of the localization change?
 
 ## Implementation Readiness Gates
 
-Before enabling any locale:
+Before admitting any locale to a release:
 
 - The locale has a native or near-native linguistic review and a maintainer
   security-meaning review against this guide.
@@ -457,7 +482,7 @@ Before enabling any locale:
 - All placeholder, plural, syntax, and glossary checks are clean.
 - Release notes describe localization as UI work, not a cryptographic change.
 
-Before enabling a Fyne desktop locale:
+Before admitting a Fyne desktop locale to a release:
 
 - The catalog is complete against `src/internal/ui/translation/en.json` and
   passes the generic embedded-catalog contract.
@@ -470,12 +495,18 @@ Before enabling a Fyne desktop locale:
   Linux raw, `.deb`, and AppImage builds have no clipped controls or unexpected
   width growth. Flatpak and Snap are checked when that catalog ships through
   those channels.
-- Simplified Chinese and Hindi additionally pass the system-font and shaping
-  checks in this guide. Hindi also requires grapheme-safe application-owned
-  truncation before `hi.json` is admitted.
+- Simplified Chinese, Korean, and Hindi additionally pass the system-font and
+  shaping checks in this guide. Hindi also requires grapheme-safe
+  application-owned truncation before `hi.json` is admitted.
 
-Before enabling a native Android locale:
+Before admitting a native Android locale to a release:
 
 - Android resources compile and the relevant UI passes pseudolocale checks.
 - Hard-coded Kotlin user messages for the localized surface have been
   externalized or explicitly mapped.
+- Status, detail, and error mappings use semantic resource-backed values; raw
+  diagnostic strings are not shown as translated UI.
+- Native or near-native linguistic review and real-device rendering cover text
+  expansion, notifications, font scale, Chinese line breaking, Korean
+  typography and line breaking, and Hindi shaping. Packaging a locale does not
+  waive this gate.

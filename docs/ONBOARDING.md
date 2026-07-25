@@ -35,7 +35,12 @@ The codebase follows a strict one-directional layer hierarchy (`cmd → ui/cli/w
 - **Golden vectors gate compatibility.** Any change to crypto/header/volume must keep `golden_test.go` green — it decrypts reference 2.08/2.09 volumes from `src/testdata/golden/` and guards byte-level format stability.
 - **Secrets are zeroed.** `crypto.SecureZero` + RAII-style `Close()` on `CipherSuite`/`OperationContext`; all key material is wiped on every exit path (verified by `zeroing_exit_test.go`).
 - **Resilience extras.** Reed-Solomon header (and optional payload) encoding, plausible deniability (an extra headerless XChaCha20 wrap), keyfiles (ordered = sequential hash, unordered = XOR), and volume splitting.
-- **Atomic output.** Pipelines write `<out>.incomplete`, `Sync()`, then rename — no partial outputs survive a crash.
+- **Owned output.** Volume writes use exclusively created random sibling stages
+  with retained handles, then sync and publish to the requested path. ZIP, split,
+  recombine, and extraction paths use exclusive creation or operation-owned
+  intermediates and remove only identities created by that operation. Publication
+  differs by pipeline and platform, so do not claim universal rename or crash
+  atomicity.
 
 ## Guided Tour (13 steps)
 

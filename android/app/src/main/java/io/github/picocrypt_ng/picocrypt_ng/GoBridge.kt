@@ -57,16 +57,12 @@ data class DecryptionInfo(
  * This is the Kotlin representation of the Go ProgressResult struct.
  */
 data class ProgressState(
-    val status: String,
+    val status: OperationStatusData,
+    val detail: OperationProgressDetail,
     val progress: Float,
-    val info: String,
     val done: Boolean,
-    /**
-     * Stable, locale-independent error classification emitted by Go (see Go
-     * errorCode); empty unless the operation failed. Drives AppError.fromGoError
-     * instead of fragile substring matching on [info].
-     */
-    val code: String = ""
+    val technicalError: String = "",
+    val errorCode: String = "",
 )
 
 /**
@@ -213,23 +209,8 @@ object GoBridge {
     fun getProgress(operationID: String): Result<ProgressState> {
         return try {
             val result: GoProgressResult = Mobile.getProgress(operationID)
-            
-            // If there's an error, include it in the info field (OperationManager expects this)
-            val error = result.getError()
-            val info = if (error != null && error.isNotEmpty()) {
-                error
-            } else {
-                result.getInfo() ?: ""
-            }
-            
-            // Convert Go ProgressResult to Kotlin ProgressState
-            Result.success(ProgressState(
-                status = result.getStatus() ?: "",
-                progress = result.getProgress(),
-                info = info,
-                done = result.getDone(),
-                code = result.getCode() ?: ""
-            ))
+
+            Result.success(result.toProgressState())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -241,18 +222,35 @@ object GoBridge {
      * Cancels a running operation.
      * 
      * @param operationID Operation ID to cancel
-     * @return Result indicating success or failure
+     * @return Result containing the canonical terminal state, or an error
      */
-    fun cancelOperation(operationID: String): Result<Unit> {
+    fun cancelOperation(operationID: String): Result<ProgressState> {
         return try {
-            Mobile.cancelOperation(operationID)
-            Result.success(Unit)
+            val result: GoProgressResult = Mobile.cancelOperation(operationID)
+            Result.success(result.toProgressState())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(AppError.fromException(e))
         }
     }
+
+    internal fun GoProgressResult.toProgressState(): ProgressState = ProgressState(
+        status = OperationStatusData(
+            code = getStatusCode() ?: "",
+            speedMiBPerSecond = getStatusSpeedMiBPerSecond(),
+            eta = getStatusETA() ?: "",
+        ),
+        detail = OperationProgressDetail(
+            code = getInfoCode() ?: "",
+            current = getInfoCurrent(),
+            total = getInfoTotal(),
+        ),
+        progress = getProgress(),
+        done = getDone(),
+        technicalError = getError() ?: "",
+        errorCode = getCode() ?: "",
+    )
     
     /**
      * Gets decryption metadata from an encrypted file without decrypting it.

@@ -158,16 +158,16 @@ type EncryptRequest struct {
     OnlyFiles   []string // files dropped directly (affects zip paths)
     OutputFile  string
 
-    // Credentials — at least one of Password/Keyfiles required
-    Password       string   // NOTE: Go strings are immutable; zeroing is out of scope
-    Keyfiles       []string
-    KeyfileOrdered bool
+    // Credentials — Picocrypt-NG 2.19 writers require a non-empty Password
+    Password       []byte   // Owned by caller; caller zeros it after the operation
+    Keyfiles       []string // Legacy API field; any non-empty value is rejected on encryption
+    KeyfileOrdered bool     // Legacy API field; no effect without Keyfiles
 
     // Options
     Comments    string // Plaintext header comment (max 99999 chars, NOT encrypted)
     Paranoid    bool   // 8 Argon2 passes, Serpent-CTR + XChaCha20, HMAC-SHA3
     ReedSolomon bool   // Reed-Solomon on payload (~6% size overhead)
-    Deniability bool   // Wrap volume in deniability layer
+    Deniability bool   // Wrap volume; requires a non-empty Password
     Compress    bool   // Deflate compression in temp zip
 
     // Splitting
@@ -192,7 +192,7 @@ type DecryptRequest struct {
     InputFile  string
     OutputFile string
 
-    Password string   // NOTE: immutable Go string; zeroing out of scope
+    Password []byte   // Owned by caller; caller zeros it after the operation
     Keyfiles []string
 
     ForceDecrypt bool // continue despite MAC failure (may produce corrupt output)
@@ -265,7 +265,7 @@ type OperationContext struct {
 
 func NewEncryptContext(ctx context.Context, req *EncryptRequest) *OperationContext
 func NewDecryptContext(ctx context.Context, req *DecryptRequest) *OperationContext
-func (ctx *OperationContext) Close()
+func (ctx *OperationContext) Close() error
 func (ctx *OperationContext) IsCancelled() bool
 func (ctx *OperationContext) CancellationError() error
 func (ctx *OperationContext) SetCanCancel(can bool)
@@ -280,16 +280,34 @@ func (ctx *OperationContext) TempZipReader(r io.Reader) io.Reader
 // AddDeniability wraps a volume with an XChaCha20 deniability layer.
 // Uses its own Argon2 derivation (4 passes, 1 GiB, 4 threads).
 // Writes salt(16) + nonce(24) at the start of the file.
-func AddDeniability(volumePath, password string, reporter ProgressReporter) error
+func AddDeniability(volumePath string, password []byte, reporter ProgressReporter) error
 
 // RemoveDeniability decrypts a deniability-wrapped volume.
-// Returns the path to a .tmp file containing the inner volume.
-func RemoveDeniability(volumePath, password string, reporter ProgressReporter,
-    rs *encoding.RSCodecs) (string, error)
+// Returns an owned, random sibling stage containing the inner volume.
+// The caller must call Cleanup when the stage is no longer needed.
+func RemoveDeniability(volumePath string, password []byte, reporter ProgressReporter,
+    rs *encoding.RSCodecs) (*fileops.StagedFile, error)
 
 // IsDeniable reports whether a volume appears to have a deniability wrapper.
 func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool
 ```
+
+**Picocrypt-NG 2.19 writer contract.** Every new volume requires a non-empty password.
+`EncryptRequest.Validate` rejects any non-empty `Keyfiles` value with
+`validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3
+format`. This applies to keyfile-only and password-plus-keyfile requests, with or without
+deniability. The core pipeline, desktop, CLI, WASM, and mobile writer boundaries enforce the same
+policy before encryption begins. Direct `AddDeniability` additionally returns
+`validation: Password: a non-empty password is required for deniability` before deriving its outer
+key or replacing the input volume.
+
+This is a writer restriction, not a format rewrite. Existing v1/v2 keyfile volumes remain readable
+through their legacy branches, including keyfile-only deniable v2 volumes whose outer password was
+empty. In legacy v2, the keyfile is XORed into the XChaCha20 key after the HKDF stream has already
+been initialized: it remains necessary for XChaCha20 confidentiality, but it does not bind the
+header MAC, payload MAC, Serpent key, or HKDF rekey schedule. Recover plaintext and create a new
+password-only 2.19 volume, or wait for a reviewed v3 format if a keyfile factor is mandatory. This
+release neither implements nor schedules v3.
 
 ---
 
@@ -299,7 +317,7 @@ func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool
 
 ```go
 const (
-    CurrentVersion = "v2.16"
+    CurrentVersion = "v2.19"
     MaxCommentLen  = 99999
 )
 ```
@@ -308,7 +326,7 @@ const (
 
 ```go
 type VolumeHeader struct {
-    Version  string // "v2.16" or "v1.xx"
+    Version  string // "v2.19" or "v1.xx"
     Comments string // plaintext; NOT encrypted
     Flags    Flags
 
@@ -381,7 +399,7 @@ func ComputeV2HeaderMAC(subkeyHeader []byte, h *VolumeHeader, keyfileHash []byte
 // ComputeV1KeyHash computes SHA3-512(key) for v1 volume key verification.
 func ComputeV1KeyHash(key []byte) []byte
 
-// VerifyV2Header validates key/keyfile credentials against a v2 header.
+// VerifyV2Header verifies the legacy v2 header HMAC, covering the supplied keyfileHash.
 func VerifyV2Header(subkeyHeader []byte, h *VolumeHeader, keyfileHash []byte) *AuthResult
 
 // VerifyV1Header validates key credentials against a v1 header.
@@ -415,6 +433,10 @@ func NewV2PasswordOrTamperError() *AuthError
 func (e *AuthError) Error() string
 ```
 
+For legacy v2 keyfile volumes, `subkeyHeader` is derived from the password before keyfile XOR.
+Including the public `keyfileHash` in the HMAC message therefore checks consistency but does not
+make the HMAC key depend on the keyfile.
+
 ### Utility
 
 ```go
@@ -428,13 +450,22 @@ var (
     ErrCorruptedHeader      = errors.New("volume header is damaged")
     ErrInvalidCommentLength = errors.New("unable to read comments length")
     ErrInvalidVersion       = errors.New("invalid version format")
+    ErrUnsupportedVersion   = errors.New("unsupported volume version")
 )
 
 func AuthValuesOffset(commentsLen int) int64
 func HeaderSize(commentsLen int) int
 func MatchVersion(b []byte) bool
+func IsSupportedVersion(b []byte) bool
 func PeekVersion(r io.Reader, rs *encoding.RSCodecs) (string, error)
 ```
+
+`MatchVersion` recognizes only the syntax `vN.NN`; it does not authorize a cryptographic
+generation. Picocrypt-NG 2.19 supports v1 and v2. `Reader.ReadHeader` returns
+`ErrUnsupportedVersion` for every other well-formed major immediately after decoding the version,
+before flags or KDF inputs are read. Force decrypt does not bypass this gate, and deniability
+detection keeps a well-formed unknown-major header on the header path so it fails closed rather
+than being treated as an outer wrapper.
 
 ---
 
@@ -522,6 +553,7 @@ type ZipOptions struct {
     RootDir    string
     EntryNames map[string]string
     OutputPath string
+    OutputFile *os.File // optional caller-owned, exclusively created output
     Compress   bool
     Cipher     *TempZipCiphers // optional encryption for temp file
     Progress   ProgressFunc
@@ -537,7 +569,10 @@ func CreateZip(opts ZipOptions) error
 ```go
 type UnpackOptions struct {
     ZipPath        string
+    ZipFile        *os.File     // optional already-open archive
     ExtractDir     string       // empty = same as zip minus .zip
+    ExtractRoot    *os.Root     // optional caller-owned already-open root
+    ExpectedExtractRoot os.FileInfo // optional exact identity of extraction root
     SameLevel      bool         // extract to same dir as zip (not a subdirectory)
     Progress       ProgressFunc
     Status         StatusFunc
@@ -562,12 +597,13 @@ const (
 )
 
 type SplitOptions struct {
-    InputPath string
-    ChunkSize int
-    Unit      SplitUnit
-    Progress  ProgressFunc
-    Status    StatusFunc
-    Cancel    CancelFunc
+    InputPath     string
+    ExpectedInput os.FileInfo // optional identity InputPath must still name
+    ChunkSize     int
+    Unit          SplitUnit
+    Progress      ProgressFunc
+    Status        StatusFunc
+    Cancel        CancelFunc
 }
 
 // Split splits a file into chunks.  Returns the list of chunk paths.
@@ -576,6 +612,7 @@ func Split(opts SplitOptions) ([]string, error)
 type RecombineOptions struct {
     InputBase  string // base path without the .N chunk suffix
     OutputPath string
+    OutputInfo *os.FileInfo // optional exact identity of completed output
     Progress   ProgressFunc
     Status     StatusFunc
     Cancel     CancelFunc
@@ -630,6 +667,69 @@ type ProgressFunc func(progress float32, info string)
 type StatusFunc   func(status string)
 type CancelFunc   func() bool
 ```
+
+---
+
+## mobile
+
+The `mobile` package is the gomobile bridge used by the native Android app. Any change to an
+exported method, type, or field requires rebuilding `android/app/libs/picocrypt-mobile.aar`; stale
+bindings do not contain the generated Kotlin/Java getters.
+
+### ProgressResult
+
+```go
+type ProgressResult struct {
+    Status                  string
+    StatusCode              string
+    StatusSpeedMiBPerSecond float64
+    StatusETA               string
+    Progress                float32
+    Info                    string
+    InfoCode                string
+    InfoCurrent             int64
+    InfoTotal               int64
+    Done                    bool
+    Error                   string
+    Code                    string
+}
+
+func GetProgress(operationID string) (*ProgressResult, error)
+func CancelOperation(operationID string) (*ProgressResult, error)
+```
+
+`Status`, `Info`, and `Error` are compatibility/diagnostic fields. Android display boundaries use
+the stable codes and typed arguments; they must not show raw backend text as localized UI copy.
+
+`StatusCode` is one of:
+
+```text
+NONE, UNKNOWN, STARTING, COMPLETED, CANCELLED, ERROR,
+COMPRESSING_FILES, GENERATING_VALUES, DERIVING_KEY, READING_KEYFILES,
+CALCULATING_VALUES, WRITING_VALUES, SPLITTING, RECOMBINING_CHUNKS,
+READING_VALUES, DUPLICATE_KEYFILES_WARNING, VERIFYING_INTEGRITY,
+MAC_VERIFICATION_FAILED_CONTINUING, REPAIRING_VERIFYING,
+INTEGRITY_VERIFIED_DECRYPTING, COMPARING_VALUES, UNZIPPING,
+ADDING_PLAUSIBLE_DENIABILITY, REMOVING_DENIABILITY_PROTECTION,
+COMPRESSING_RATE, ENCRYPTING_RATE, SPLITTING_RATE, RECOMBINING_RATE,
+VERIFYING_RATE, DECRYPTING_RATE, REPAIRING_RATE, UNPACKING_RATE,
+ADDING_DENIABILITY_RATE, REMOVING_DENIABILITY_RATE
+```
+
+Rate codes carry `StatusSpeedMiBPerSecond` and `StatusETA`. Unknown or malformed reporter text maps
+to `UNKNOWN`; Android falls back to localized **Working** rather than exposing the raw status.
+
+`InfoCode` is `NONE`, `PERCENT`, `ITEM_COUNT`, or `UNKNOWN`. `PERCENT` uses `Progress`;
+`ITEM_COUNT` uses `InfoCurrent` and `InfoTotal`. Malformed or unknown detail is hidden.
+
+`Code` is empty when there is no error, otherwise one of `AUTH_FAILED`, `DATA_CORRUPTED`,
+`CORRUPT_HEADER`, `FILE_NOT_FOUND`, `CANCELLED`, or `GENERIC`. Android maps these to resource-backed
+errors. The recovery contract is fail-closed: only `AUTH_FAILED` permits password retry, only
+`DATA_CORRUPTED` permits force decrypt, and corrupt headers are never force-decryptable.
+
+The operation state preserves the first terminal result. `CancelOperation` atomically returns that
+canonical terminal snapshot, so cancellation cannot replace an already-recorded success or failure;
+later polling likewise cannot replace an already-recorded cancellation, success, or failure.
 
 ---
 

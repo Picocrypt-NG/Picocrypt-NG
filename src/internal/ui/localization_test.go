@@ -25,6 +25,7 @@ var requiredCatalogPluralForms = map[LanguageCode][]string{
 	"es":      {"many", "one", "other"},
 	"zh-Hans": {"other"},
 	"hi":      {"one", "other"},
+	"ko":      {"other"},
 }
 
 func requiredPluralFormsForLanguage(code LanguageCode) ([]string, error) {
@@ -196,7 +197,9 @@ func TestRussianFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 	assertCatalogStringContains(t, catalog, "comments.placeholder", "открыт", "не шифру")
 	assertCatalogStringContains(t, catalog, "advanced.delete_files.tooltip", "удал", "исходн", "после шифр")
 	assertCatalogStringContains(t, catalog, "advanced.auto_unzip.tooltip", "извлеч", "перезапис")
-	assertCatalogStringContains(t, catalog, "advanced.deniability.tooltip", "заголов", "парол", "ключ-файлы")
+	assertCatalogStringContains(t, catalog, "advanced.deniability.tooltip", "заголов", "непуст", "парол", "оболоч")
+	assertCatalogStringContains(t, catalog, "start.hint.deniabilityPasswordRequired", "правдоподоб", "непуст", "парол")
+	assertCatalogStringContains(t, catalog, "start.hint.keyfileWritesDisabled", "нов", "v2", "ключ", "отключ", "расшифр")
 	assertCatalogStringContains(t, catalog, "advanced.recursively.tooltip", "кажд", "отдель")
 	assertCatalogStringContains(t, catalog, "drop.header_may_be_deniable", "может", "правдоподоб")
 	assertCatalogStringContains(t, catalog, "advanced.delete_volume.label", "удал", "зашифрован", "том")
@@ -219,6 +222,31 @@ func TestRussianFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 	for _, forbidden := range []string{"ключевой файл", "ключевые файлы", "ключевых"} {
 		if strings.Contains(keyfileCopy, forbidden) {
 			t.Fatalf("Russian keyfile copy must use ключ-файл/ключ-файлы, not %q:\n%s", forbidden, keyfileCopy)
+		}
+	}
+}
+
+func TestKoreanFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
+	catalog := loadEmbeddedCatalog(t, "translation/ko.json")
+
+	assertCatalogStringContains(t, catalog, "advanced.force_decrypt.tooltip", "검증되지 않은", "손상")
+	assertCatalogStringContains(t, catalog, "status.kept_output_unverified", "무결성 검사", "검증되지", "손상")
+	assertCatalogStringContains(t, catalog, "comments.placeholder", "평문", "암호화되지")
+	assertCatalogStringContains(t, catalog, "advanced.delete_files.tooltip", "암호화 후", "원본", "삭제")
+	assertCatalogStringContains(t, catalog, "advanced.auto_unzip.tooltip", "압축", "덮어")
+	assertCatalogStringContains(t, catalog, "advanced.deniability.tooltip", "판독 가능한", "빈 비밀번호", "외부 래퍼")
+	assertCatalogStringContains(t, catalog, "start.hint.deniabilityPasswordRequired", "부인 가능", "빈 비밀번호", "사용할 수 없습니다")
+	assertCatalogStringContains(t, catalog, "start.hint.keyfileWritesDisabled", "새", "v2", "키 파일", "만들 수 없습니다", "v3", "기존", "복호화")
+	assertCatalogStringContains(t, catalog, "advanced.recursively.tooltip", "각 파일", "개별")
+	assertCatalogStringContains(t, catalog, "drop.header_may_be_deniable", "헤더", "읽을 수 없습니다", "부인 가능")
+	assertCatalogStringContains(t, catalog, "advanced.delete_volume.label", "암호화된", "볼륨", "삭제")
+
+	deniabilityCopy := strings.ToLower(catalogString(t, catalog, "advanced.deniability.label") + "\n" +
+		catalogString(t, catalog, "advanced.deniability.tooltip") + "\n" +
+		catalogString(t, catalog, "drop.header_may_be_deniable"))
+	for _, forbidden := range []string{"익명", "탐지할 수 없", "숨김 모드", "부인 방지"} {
+		if strings.Contains(deniabilityCopy, forbidden) {
+			t.Fatalf("Korean deniability copy must not contain %q:\n%s", forbidden, deniabilityCopy)
 		}
 	}
 }
@@ -345,6 +373,22 @@ func TestCatalogValueValidationRequiresExactLocalePluralForms(t *testing.T) {
 			value: map[string]any{
 				"other": "{{.Count}} 个文件",
 			},
+		},
+		{
+			name: "Korean other only",
+			code: "ko",
+			value: map[string]any{
+				"other": "파일 {{.Count}}개",
+			},
+		},
+		{
+			name: "Korean rejects extra one",
+			code: "ko",
+			value: map[string]any{
+				"one":   "파일 {{.Count}}개",
+				"other": "파일 {{.Count}}개",
+			},
+			wantErr: true,
 		},
 		{
 			name: "Chinese rejects extra one",

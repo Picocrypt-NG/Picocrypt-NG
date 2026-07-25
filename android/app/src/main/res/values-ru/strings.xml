@@ -17,6 +17,7 @@
     <string name="password">Пароль</string>
     <string name="confirm_password">Повторите пароль</string>
     <string name="enter_password">Введите пароль</string>
+    <string name="deniability_password_required">Для правдоподобного отрицания нужен непустой пароль</string>
     <string name="passwords_must_match">Пароли не совпадают</string>
     <string name="hide_password">Скрыть пароль</string>
     <string name="show_password">Показать пароль</string>
@@ -42,14 +43,10 @@
         <item quantity="other">Требуется %1$d ключевых файлов</item>
     </plurals>
     <string name="add">Добавить</string>
-    <string name="new_keyfile">Новый</string>
     <string name="clear">Очистить</string>
     <string name="copying">Копирование…</string>
-    <string name="creating">Создание…</string>
     <string name="require_this_order">Требовать этот порядок</string>
     <string name="error_creating_keyfile">Ошибка создания ключевого файла</string>
-    <string name="keyfile_write_failed">Не удалось записать ключевой файл в выбранное место</string>
-    <string name="keyfile_create_failed">Не удалось создать ключевой файл: %1$s</string>
     <string name="keyfiles_required_warning">Для этого тома требуются ключевые файлы</string>
     <string name="keyfile_order_matters">Используйте ключевые файлы в требуемом порядке</string>
     
@@ -127,24 +124,66 @@
     <string name="fgs_decrypting">Расшифровка</string>
     <string name="fgs_working">Выполняется…</string>
 
-    <!-- Operation status display text; OperationStatus.kt constants remain bridge strings. -->
+    <!-- Operation status display text keyed by stable mobile status codes. -->
     <string name="status_starting">Запуск…</string>
     <string name="status_completed">Готово</string>
     <string name="status_cancelled">Отменено</string>
     <string name="status_error">Ошибка</string>
+    <string name="status_compressing_files">Сжатие файлов…</string>
+    <string name="status_generating_values">Создание значений…</string>
+    <string name="status_deriving_key">Формирование ключа…</string>
+    <string name="status_reading_keyfiles">Чтение ключевых файлов…</string>
+    <string name="status_calculating_values">Вычисление значений…</string>
+    <string name="status_writing_values">Запись значений…</string>
+    <string name="status_splitting">Разделение…</string>
+    <string name="status_recombining_chunks">Объединение частей…</string>
+    <string name="status_reading_values">Чтение значений…</string>
+    <string name="status_duplicate_keyfiles_warning">Предупреждение: обнаружены повторяющиеся ключевые файлы (они взаимно исключаются)…</string>
+    <string name="status_verifying_integrity">Проверка целостности (этап 1 из 2)…</string>
+    <string name="status_mac_verification_failed_continuing">Проверка MAC не пройдена, операция всё равно продолжается…</string>
+    <string name="status_repairing_verifying">Восстановление (проверка)…</string>
+    <string name="status_integrity_verified_decrypting">Целостность подтверждена, идёт расшифровка…</string>
+    <string name="status_comparing_values">Сравнение значений…</string>
+    <string name="status_unzipping">Распаковка…</string>
+    <string name="status_adding_plausible_deniability">Добавление правдоподобного отрицания…</string>
+    <string name="status_removing_deniability_protection">Удаление защиты правдоподобного отрицания…</string>
+    <string name="status_compressing_rate">Сжатие: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_encrypting_rate">Шифрование: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_splitting_rate">Разделение: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_recombining_rate">Объединение: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_verifying_rate">Проверка: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_decrypting_rate">Расшифровка: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_repairing_rate">Восстановление: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_unpacking_rate">Распаковка: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_adding_deniability_rate">Добавление правдоподобного отрицания: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_removing_deniability_rate">Удаление правдоподобного отрицания: %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="progress_percent">%1$.2f%%</string>
+    <plurals name="progress_item_count">
+        <item quantity="one">%1$d из %2$d элемента</item>
+        <item quantity="few">%1$d из %2$d элементов</item>
+        <item quantity="many">%1$d из %2$d элементов</item>
+        <item quantity="other">%1$d из %2$d элементов</item>
+    </plurals>
 
     <!-- Stable error display boundary -->
     <string name="error_auth_failed">Аутентификация не удалась. Проверьте пароль, ключевые файлы и их порядок.</string>
     <string name="error_data_corrupted">Проверка целостности не пройдена. Результат не проверен и может быть повреждён.</string>
+    <string name="error_corrupt_header">Заголовок зашифрованного тома повреждён или недействителен.</string>
     <string name="error_file_not_found">Файл не найден или недоступен.</string>
+    <string name="error_operation_failed">Не удалось выполнить операцию.</string>
     <string name="error_unknown">Произошла неизвестная ошибка.</string>
+    <string name="error_reason_permission_denied">Нет разрешения.</string>
+    <string name="error_reason_file_not_found">Файл не найден.</string>
+    <string name="error_reason_insufficient_storage">Недостаточно места в хранилище.</string>
+    <string name="error_reason_io">Ошибка ввода-вывода.</string>
+    <string name="error_reason_unknown">Неизвестная причина.</string>
     <string name="error_operation_start_failed">Не удалось запустить операцию.</string>
     <string name="error_no_active_operation">Нет активной операции.</string>
-    <string name="error_no_operation_to_retry">Нет активной операции для повтора.</string>
     <string name="error_operation_data_unavailable">Данные операции недоступны для повтора.</string>
     <string name="error_decrypt_retry_only">Только операции расшифровки можно повторить с принудительной расшифровкой.</string>
     <string name="error_no_file_selected">Выберите файл.</string>
     <string name="error_invalid_password">Введите пароль.</string>
+    <string name="error_keyfile_writes_disabled">Создание новых томов v2 с ключевыми файлами отключено до завершения проверки формата v3. Существующие тома с ключевыми файлами по-прежнему можно расшифровать.</string>
     <string name="error_passwords_mismatch">Пароли не совпадают.</string>
     <string name="error_split_volume_not_supported">Разделённые тома не поддерживаются на Android. Сначала объедините части на компьютере, затем перенесите один файл %1$s.</string>
     <string name="error_copy_failed">Не удалось скопировать файл.</string>

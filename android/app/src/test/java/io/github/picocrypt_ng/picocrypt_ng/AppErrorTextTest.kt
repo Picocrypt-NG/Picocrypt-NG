@@ -1,12 +1,18 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
 import android.content.Context
+import android.content.res.Resources
 import io.mockk.every
 import io.mockk.mockk
+import java.io.File
+import java.io.FileNotFoundException
+import java.io.IOException
+import javax.xml.parsers.DocumentBuilderFactory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.w3c.dom.Element
 
 class AppErrorTextTest {
     @Test
@@ -24,19 +30,24 @@ class AppErrorTextTest {
     }
 
     @Test
-    fun `localizedMessage falls back to userMessage when no resource is set`() {
-        val error = AppError.OperationError.GenericOperation(
-            userMessage = "technical fallback",
-            technicalMessage = "technical fallback",
+    fun `localizedMessage uses resource-backed fallback instead of raw exception text`() {
+        val context = mockk<Context>()
+        every { context.getString(R.string.error_operation_failed) } returns "Localized operation failure"
+
+        val error = AppError.fromException(
+            RuntimeException("raw JVM detail /private/path"),
         )
 
-        assertEquals("technical fallback", error.localizedMessage(mockk(relaxed = true)))
+        assertEquals("Localized operation failure", error.localizedMessage(context))
+        assertEquals("raw JVM detail /private/path", error.technicalMessage)
+        assertFalse(error.userMessage.contains("raw JVM detail /private/path"))
+        assertTrue(error.messageArgs.isEmpty())
     }
 
     @Test
-    fun `generic Go errors keep their raw display message`() {
+    fun `corrupt header uses dedicated localized display instead of raw Go text`() {
         val context = mockk<Context>()
-        every { context.getString(R.string.error_unknown) } returns "Unknown localized"
+        every { context.getString(R.string.error_corrupt_header) } returns "Localized corrupt-header failure"
 
         val error = AppError.fromGoError(
             errorString = "header damaged: volume header is damaged",
@@ -45,8 +56,10 @@ class AppErrorTextTest {
         )
 
         assertTrue(error is AppError.OperationError.GenericOperation)
-        assertEquals(null, error.messageResId)
-        assertEquals("header damaged: volume header is damaged", error.localizedMessage(context))
+        assertEquals(R.string.error_corrupt_header, error.messageResId)
+        assertEquals("Localized corrupt-header failure", error.localizedMessage(context))
+        assertEquals("header damaged: volume header is damaged", error.technicalMessage)
+        assertFalse(error.userMessage.contains("header damaged"))
     }
 
     @Test
@@ -90,5 +103,150 @@ class AppErrorTextTest {
         assertFalse(error.allowsPasswordRetry())
         assertEquals(R.string.error_data_corrupted, error.messageResId)
         assertEquals("raw integrity failure", error.technicalMessage)
+    }
+
+    @Test
+    fun `failureReasonResId walks typed causes in priority order`() {
+        val cases = listOf(
+            SecurityException("raw permission detail") to R.string.error_reason_permission_denied,
+            RuntimeException("wrapper", FileNotFoundException("raw missing detail")) to
+                R.string.error_reason_file_not_found,
+            RuntimeException("wrapper", AppError.FileError.InsufficientStorage()) to
+                R.string.error_reason_insufficient_storage,
+            RuntimeException("wrapper", IOException("raw I/O detail")) to R.string.error_reason_io,
+            IllegalArgumentException("raw unknown detail") to R.string.error_reason_unknown,
+        )
+
+        cases.forEach { (error, expectedResource) ->
+            assertEquals(expectedResource, failureReasonResId(error))
+        }
+    }
+
+    @Test(timeout = 1_000)
+    fun `failureReasonResId terminates on a malformed cyclic cause chain`() {
+        val cyclic = object : RuntimeException("raw cyclic detail") {
+            override val cause: Throwable
+                get() = this
+        }
+
+        assertEquals(R.string.error_reason_unknown, failureReasonResId(cyclic))
+    }
+
+    @Test
+    fun `localizedFailureReason resolves only the localized reason category`() {
+        val context = mockk<Context>()
+        every {
+            context.getString(R.string.error_reason_permission_denied)
+        } returns "Localized permission denial"
+
+        val reason = localizedFailureReason(
+            context,
+            RuntimeException("outer raw detail", SecurityException("inner raw detail")),
+        )
+
+        assertEquals("Localized permission denial", reason)
+        assertFalse(reason.contains("raw detail"))
+    }
+
+    @Test
+    fun `EN and RU reason wrappers retain exactly one positional string placeholder`() {
+        val wrappers = listOf(
+            "error_read_folder_failed",
+            "error_copy_files_failed",
+        )
+
+        listOf(
+            "src/main/res/values/strings.xml",
+            "src/main/res/values-ru/strings.xml",
+        ).forEach { catalog ->
+            wrappers.forEach { resourceName ->
+                assertEquals(
+                    "$catalog $resourceName placeholder contract",
+                    listOf("%1\$s"),
+                    formatSpecifiers(catalog, resourceName),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `same semantic error relocalizes wrapper and reason for current Resources`() {
+        val englishResources = mockk<Resources>()
+        val germanResources = mockk<Resources>()
+        val germanContext = mockk<Context>()
+        every {
+            englishResources.getString(R.string.error_reason_permission_denied)
+        } returns "Permission denied"
+        every {
+            englishResources.getString(R.string.error_copy_files_failed, "Permission denied")
+        } returns "Failed to copy files: Permission denied"
+        every {
+            germanResources.getString(R.string.error_reason_permission_denied)
+        } returns "Zugriff verweigert"
+        every {
+            germanResources.getString(R.string.error_copy_files_failed, "Zugriff verweigert")
+        } returns "Dateien konnten nicht kopiert werden: Zugriff verweigert"
+        every {
+            germanContext.getString(R.string.error_reason_permission_denied)
+        } returns "Zugriff verweigert"
+        every {
+            germanContext.getString(R.string.error_copy_files_failed, "Zugriff verweigert")
+        } returns "Dateien konnten nicht kopiert werden: Zugriff verweigert"
+
+        val raw = "raw copy failure /private/path"
+        val error = AppError.FileError.SaveFailed(
+            userMessage = "Localized fallback without raw detail",
+            technicalMessage = raw,
+            messageResId = R.string.error_copy_files_failed,
+            messageArgs = listOf(LocalizedMessageArg(R.string.error_reason_permission_denied)),
+        )
+
+        assertEquals(
+            "Failed to copy files: Permission denied",
+            error.localizedMessage(englishResources),
+        )
+        assertEquals(
+            "Dateien konnten nicht kopiert werden: Zugriff verweigert",
+            error.localizedMessage(germanResources),
+        )
+        assertEquals(
+            "Dateien konnten nicht kopiert werden: Zugriff verweigert",
+            error.localizedMessage(germanContext),
+        )
+        assertFalse(error.localizedMessage(englishResources).contains("LocalizedMessageArg"))
+        assertFalse(error.localizedMessage(germanResources).contains(raw))
+        assertEquals(raw, error.technicalMessage)
+        assertFalse(error.userMessage.contains(raw))
+    }
+
+    @Test
+    fun `ordinary String Long and Double format arguments pass through unchanged`() {
+        val resources = mockk<Resources>()
+        val context = mockk<Context>()
+        every {
+            resources.getString(R.string.error_operation_failed, "name", 42L, 1.5)
+        } returns "resources ordinary args"
+        every {
+            context.getString(R.string.error_operation_failed, "name", 42L, 1.5)
+        } returns "context ordinary args"
+
+        val error = AppError.OperationError.GenericOperation(
+            userMessage = "Safe fallback",
+            messageResId = R.string.error_operation_failed,
+            messageArgs = listOf("name", 42L, 1.5),
+        )
+
+        assertEquals("resources ordinary args", error.localizedMessage(resources))
+        assertEquals("context ordinary args", error.localizedMessage(context))
+    }
+
+    private fun formatSpecifiers(path: String, resourceName: String): List<String> {
+        val document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(File(path))
+        val strings = document.getElementsByTagName("string")
+        val value = (0 until strings.length)
+            .map { strings.item(it) as Element }
+            .single { it.getAttribute("name") == resourceName }
+            .textContent
+        return Regex("""%\d+\${'$'}[a-zA-Z]""").findAll(value).map { it.value }.toList()
     }
 }

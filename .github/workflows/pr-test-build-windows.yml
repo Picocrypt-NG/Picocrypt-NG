@@ -16,10 +16,10 @@ jobs:
   pr-test-build-windows:
     runs-on: windows-2025
     env:
-      RESHACKER_SHA256: e5a5b6d6be38ae3eb20e72b09f257f284bab2deb5f37164e9f2faefd23f27cf4
+      RESHACKER_SHA256: b611be2f35cb44efd1c29df03e7ebe62bd556a500585680e1afa5e073eaf1756
       UPX_SHA256: b471ebf1b7f20f4a89150264ed9a008a2a5bfd247f3c6d1184a75bb59ca08f5d
     steps:
-    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -58,15 +58,30 @@ jobs:
     - name: Add icon, manifest, and version info
       shell: pwsh
       run: |
-        Invoke-WebRequest -OutFile reshacker_setup.zip https://github.com/user-attachments/files/18878075/reshacker_setup.zip
-        $expectedHash = $env:RESHACKER_SHA256
-        $actualHash = (Get-FileHash reshacker_setup.zip -Algorithm SHA256).Hash.ToLower()
-        if ($actualHash -ne $expectedHash) {
-          throw "Checksum mismatch for reshacker_setup.zip: expected $expectedHash, got $actualHash"
+        curl.exe `
+          --fail `
+          --location `
+          --silent `
+          --show-error `
+          --retry 3 `
+          --retry-all-errors `
+          --retry-delay 2 `
+          --connect-timeout 30 `
+          --max-time 300 `
+          --retry-max-time 600 `
+          --remove-on-error `
+          --output reshacker_setup.exe `
+          https://www.angusj.com/resourcehacker/reshacker_setup.exe
+        if ($LASTEXITCODE -ne 0) {
+          throw "Resource Hacker download failed with exit code $LASTEXITCODE"
         }
-        Expand-Archive -DestinationPath reshacker_setup reshacker_setup.zip
+        $expectedHash = $env:RESHACKER_SHA256
+        $actualHash = (Get-FileHash reshacker_setup.exe -Algorithm SHA256).Hash.ToLower()
+        if ($actualHash -ne $expectedHash) {
+          throw "Checksum mismatch for reshacker_setup.exe: expected $expectedHash, got $actualHash"
+        }
         $installer = Start-Process `
-          -FilePath "reshacker_setup/reshacker_setup.exe" `
+          -FilePath "reshacker_setup.exe" `
           -ArgumentList "/SILENT" `
           -Wait -PassThru
         if ($installer.ExitCode -ne 0) {
@@ -121,7 +136,23 @@ jobs:
     - name: Compress with upx
       shell: pwsh
       run: |
-        Invoke-WebRequest -OutFile upx.zip https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-win64.zip
+        curl.exe `
+          --fail `
+          --location `
+          --silent `
+          --show-error `
+          --retry 3 `
+          --retry-all-errors `
+          --retry-delay 2 `
+          --connect-timeout 30 `
+          --max-time 300 `
+          --retry-max-time 600 `
+          --remove-on-error `
+          --output upx.zip `
+          https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-win64.zip
+        if ($LASTEXITCODE -ne 0) {
+          throw "UPX download failed with exit code $LASTEXITCODE"
+        }
         $expectedHash = $env:UPX_SHA256
         $actualHash = (Get-FileHash upx.zip -Algorithm SHA256).Hash.ToLower()
         if ($actualHash -ne $expectedHash) {

@@ -83,6 +83,59 @@ func TestChineseLanguagePreferenceKeepsFullCodeWhileSelectorShowsZh(t *testing.T
 	}
 }
 
+func TestKoreanEmbeddedCatalogDrivesLanguageSelectionAndRendering(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	resetLocalizationForTest(t)
+	if err := loadTranslations(); err != nil {
+		t.Fatalf("loadTranslations returned error: %v", err)
+	}
+
+	a := &App{fyneApp: fyneApp}
+	selector := newLanguageSelector(a)
+	a.languageSelector = selector
+
+	var koreanItem *fyne.MenuItem
+	for _, item := range selector.menu().Items {
+		if item.Label == "한국어" {
+			koreanItem = item
+			break
+		}
+	}
+	if koreanItem == nil {
+		t.Fatal("language selector menu is missing 한국어 from the embedded Korean catalog")
+	}
+	if koreanItem.Action == nil {
+		t.Fatal("한국어 language selector item has no action")
+	}
+	koreanItem.Action()
+
+	if got := activeLanguage(); got != "ko" {
+		t.Errorf("activeLanguage after Korean menu action = %q; want ko", got)
+	}
+	if got := fyneApp.Preferences().StringWithFallback(languagePreferenceKey, ""); got != "ko" {
+		t.Errorf("stored language preference after Korean menu action = %q; want ko", got)
+	}
+	if got := selector.button.Text; got != "ko" {
+		t.Errorf("selector closed text after Korean menu action = %q; want ko", got)
+	}
+	if got := renderStartAction(app.StartActionStart, false); got != "시작" {
+		t.Errorf("renderStartAction(Korean) = %q; want 시작", got)
+	}
+	if got := tr("status.ready", "Ready"); got != "준비됨" {
+		t.Errorf("tr(status.ready, Korean) = %q; want 준비됨", got)
+	}
+	if got := trn("selection.files", "{{.Count}} files", 2, map[string]any{"Count": 2}); got != "파일 2개" {
+		t.Errorf("trn(selection.files, 2, Korean) = %q; want 파일 2개", got)
+	}
+	if got := tr(
+		"advanced.auto_unzip.tooltip",
+		"Extract {{.Extension}}; may overwrite files",
+		map[string]any{"Extension": ".zip"},
+	); got != ".zip 파일의 압축을 풉니다. 기존 파일을 덮어쓸 수 있습니다" {
+		t.Errorf("tr(advanced.auto_unzip.tooltip, Korean) = %q; want rendered Korean template", got)
+	}
+}
+
 func TestLanguageSelectorClosedTextUsesLanguageCode(t *testing.T) {
 	resetLocalizationForTest(t)
 	testFS := fstest.MapFS{

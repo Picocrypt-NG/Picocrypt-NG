@@ -37,7 +37,7 @@ Make sure to only download Picocrypt NG from this repository to ensure that you 
 
 If your antivirus flags Picocrypt NG as a virus, please report it as a false positive to help everyone.
 
-**Code signing:** Free Windows code signing for Picocrypt NG is provided by the [SignPath Foundation](https://signpath.org/) open-source program (integration in progress).
+**Code signing:** Starting with Picocrypt-NG 2.19, Windows releases are Authenticode-signed through the [SignPath Foundation](https://signpath.org/) open-source program and checked against the pinned production certificate. See the [verification guide](SIGNING.md#windows-authenticode).
 
 ## macOS
 Download Picocrypt NG <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG.dmg">here</a>, open the container, and drag Picocrypt NG to your Applications.
@@ -71,10 +71,10 @@ The native Android app requires Android 7.0 or newer on a 64-bit ARM (<code>arm6
 For local Android builds and architecture details, see <a href="android/README.md">android/README.md</a>.
 
 ## CLI
-Picocrypt NG includes a command-line interface in this repository; see <a href="CLI.md">CLI.md</a> for usage. It can encrypt and decrypt files, folders, and glob patterns, and supports paranoid mode and Reed-Solomon encoding. You can use it on systems that don't have a GUI or can't run the GUI app.
+Picocrypt NG includes a command-line interface in this repository; see <a href="CLI.md">CLI.md</a> for usage. It encrypts literal file and folder operands; use quoted explicit glob patterns when pattern matching is intended. It also supports paranoid mode and Reed-Solomon encoding. You can use it on systems that don't have a GUI or can't run the GUI app.
 
 ## Web
-Picocrypt NG provides a browser app <a href="https://picocrypt-ng.github.io/">here</a> for in-memory single-file encryption and decryption on modern browsers, including mobile devices. In this repository, the WASM bridge caps inputs at 1 GiB and supports comments, Paranoid mode, keyfiles, Reed-Solomon payload protection, force decrypt, and deniability. The browser workflow is still intentionally non-streaming and single-file oriented; folder workflows, split volumes, and large streaming jobs remain desktop/CLI/native-app features. Go-owned byte buffers are wiped best-effort after use, but JavaScript engine copies and garbage-collected runtime copies cannot be guaranteed wiped.
+Picocrypt NG provides a browser app <a href="https://picocrypt-ng.github.io/">here</a> for in-memory single-file encryption and decryption on modern browsers, including mobile devices. In this repository, the WASM bridge caps inputs at 1 GiB and supports comments, Paranoid mode, Reed-Solomon payload protection, force decrypt, deniability, and decryption of supported legacy keyfile volumes. Picocrypt-NG 2.19 encryption is password-only: the bridge rejects every request containing keyfiles instead of creating another v2 keyfile volume. The browser workflow is still intentionally non-streaming and single-file oriented; folder workflows, split volumes, and large streaming jobs remain desktop/CLI/native-app features. Go-owned byte buffers are wiped best-effort after use, but JavaScript engine copies and garbage-collected runtime copies cannot be guaranteed wiped. The hosted page is deployed separately and must use a consumer matching the 2.19 bridge error contract.
 
 ## Translations
 Picocrypt NG is prepared to use Hosted Weblate for community UI translations
@@ -83,8 +83,18 @@ after the setup gates in
 Translation work is reviewed before merge, and security-sensitive wording must
 preserve the meaning documented in the
 [translation guide](docs/localization/TRANSLATION_GUIDE.md).
-The desktop UI can select among bundled UI languages when reviewed catalogs are
-present. The CLI remains English-only.
+Current desktop and native Android builds bundle application UI catalogs for
+English, Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean
+(`ko`, with contemporary neutral South Korean wording). The desktop app has an
+in-app language selector for Picocrypt-NG-owned UI; Fyne-owned dialogs and raw
+backend status text may remain English. Android 13 and newer expose the system
+per-app language selector; older Android versions follow the system locale. The
+CLI remains English-only.
+
+The six new Android catalogs (`de`, `fr`, `es`, `zh-Hans`, `hi`, and `ko`) are
+structurally complete and packaged, but this does not establish native-language
+or device review. They still require native or near-native linguistic review
+and real-device rendering checks before release admission.
 
 ## File Associations
 Double-click `.pcv` files to open Picocrypt NG in decrypt mode on Windows, macOS, and Linux. Installer/`.deb`/`.app` packages register the association automatically.
@@ -103,12 +113,14 @@ Here's how Picocrypt NG compares to other popular encryption tools.
 | Ease-Of-Use    |✅ Easy        |❌ Hard         |✅ Easy        |✅ Easy         |🟧 Medium      |
 | Cipher         |✅ XChaCha20   |✅ AES-256      |✅ AES-256     |🟧 AES-128      |✅ AES-256     |
 | Key Derivation |✅ Argon2      |🟧 PBKDF2       |❌ SHA-256     |❓ Unknown      |✅ Scrypt      |
-| Data Integrity |✅ Always      |❌ No           |❌ No          |❓ Unknown      |✅ Always      |
+| Data Integrity |🟧 Authenticated* |❌ No        |❌ No          |❓ Unknown      |✅ Always      |
 | Deniability    |✅ Supported   |✅ Supported    |❌ No          |❌ No           |❌ No          |
 | Reed-Solomon   |✅ Yes         |❌ No           |❌ No          |❌ No           |❌ No          |
 | Compression    |✅ Yes         |❌ No           |✅ Yes         |✅ Yes          |❌ No          |
 | Telemetry      |✅ None        |✅ None         |✅ None        |❓ Unknown      |✅ None        |
 | Audited        |✅ [Historically](https://github.com/Picocrypt/storage/blob/main/Picocrypt.Audit.Report.pdf)       |✅ Yes          |❌ No          |❓ Unknown      |✅ Yes         |
+
+\* Picocrypt NG normally authenticates the payload and, for v2, the header. This is not an "always" guarantee: force-decrypt may explicitly keep unverified output, v1 lacks the v2 full-header HMAC, and the authentication, Serpent, and rekey subkeys of legacy v2 keyfile volumes are derived from the password without the keyfile.
 
 Keep in mind that while Picocrypt NG does most things better than other tools, it's not a one-size-fits-all and doesn't try to be. There are use cases such as full-disk encryption where VeraCrypt and BitLocker would be a better (and the only) choice. So while Picocrypt NG is a great choice for the majority of people doing file encryption, you should still do your own research and use what's best for you.
 
@@ -118,14 +130,14 @@ Picocrypt NG is a very simple tool and most users will intuitively understand ho
 While being simple, Picocrypt NG also strives to be powerful in the hands of knowledgeable and advanced users. Thus, there are some additional options that you may use to suit your needs. Read through their descriptions carefully as some of them can be complex to use correctly.
 <ul>
 	<li><strong>Password generator</strong>: Picocrypt NG provides a secure password generator that you can use to create cryptographically secure passwords. You can customize the password length, as well as the types of characters to include.</li>
-	<li><strong>Comments</strong>: Comments are plaintext header metadata: they are not encrypted and must never contain secrets. In v2 volumes, comments are authenticated as part of header integrity, so tampering is detected during normal decryption. Legacy v1 volumes do not have v2 header authentication. <strong>Use comments only for non-sensitive, informational text.</strong></li>
-	<li><strong>Keyfiles</strong>: Picocrypt NG supports the use of keyfiles as an additional decryption factor (or the only decryption factor). Any file can be used as a keyfile, and a secure keyfile generator is provided for convenience. Not only can you use multiple keyfiles, but you can also require the correct order of keyfiles to be present for a successful decryption to occur. A particularly good use case of multiple keyfiles is creating a shared volume, where each person holds a keyfile, and all of them (and their keyfiles) must be present to decrypt the shared volume. By checking the "Require correct order" box and dropping your keyfile in last, you can also ensure that you'll always be the one clicking the Decrypt button. <strong>Use the keyfile generator whenever possible for the best security.</strong></li>
+	<li><strong>Comments</strong>: Comments are plaintext header metadata: they are not encrypted and must never contain secrets. The v2 header HMAC covers comments, so ordinary tampering is detected during normal authenticated decryption. In a legacy v2 keyfile volume that HMAC is password-derived but not keyfile-bound, and legacy v1 volumes do not have the v2 full-header HMAC. <strong>Use comments only for non-sensitive, informational text.</strong></li>
+	<li><strong>Keyfiles</strong>: Picocrypt-NG 2.19 preserves decryption of supported legacy v1/v2 keyfile volumes but refuses to create any new v2 volume containing keyfiles, whether the request is keyfile-only or password-plus-keyfile. In legacy v2, the keyfile changes the XChaCha20 key and therefore remains necessary for confidentiality, but it does not bind the header MAC, payload MAC, Serpent key, or HKDF rekey schedule. After decrypting a legacy keyfile volume, either re-encrypt it as a new password-only 2.19 volume or, if a keyfile factor is mandatory, wait for a reviewed v3 format; v3 is not implemented or scheduled by this release.</li>
 	<li><strong>Paranoid mode</strong>: Paranoid mode increases the work factor and adds a Serpent-CTR layer plus HMAC-SHA3 authentication. It is useful for conservative defense in depth when performance cost is acceptable, assuming a strong password and a trusted endpoint. It does not make weak passwords safe and should not be described as beyond attack.</li>
 	<li><strong>Reed-Solomon</strong>: Reed-Solomon adds error-correction redundancy so Picocrypt NG can detect and repair limited corruption. It cannot prevent corruption and cannot recover data after corruption exceeds the redundancy budget.</li>
-	<li><strong>Force decrypt</strong>: Picocrypt NG automatically checks for file integrity upon decryption. If the file has been modified or is corrupted, Picocrypt NG will automatically delete the output for the user's safety. If you would like to override these safeguards, check this option. Also, if this option is checked and the Reed-Solomon feature was used on the encrypted volume, Picocrypt NG will attempt to recover as much of the file as possible during decryption.</li>
+	<li><strong>Force decrypt</strong>: Normal decryption verifies the volume MAC and removes output when verification fails. Force decrypt deliberately overrides that safeguard and may keep corrupt, attacker-controlled, or otherwise unverified plaintext; such output must not be treated as authentic. If Reed-Solomon was used, force decrypt also attempts best-effort recovery.</li>
 	<li><strong>Split into chunks</strong>: Don't feel like dealing with gargantuan files? No worries! With Picocrypt NG, you can choose to split your output file into custom-sized chunks, so large files can become more manageable and easier to upload to cloud providers. Simply choose a unit (KiB, MiB, GiB, or TiB) and enter your desired chunk size for that unit. To decrypt the chunks, simply drag one of them into Picocrypt NG and the chunks will be automatically recombined during decryption.</li>
 	<li><strong>Compress files</strong>: By default, Picocrypt NG uses a zip file with no compression to quickly merge files together when encrypting multiple files. If you would like to compress these files, however, simply check this box and the standard Deflate compression algorithm will be applied during encryption.</li>
-	<li><strong>Deniability</strong>: Picocrypt NG volumes typically follow an easily recognizable header format. However, if you want to hide the fact that you are encrypting your files, enabling this option will provide you with plausible deniability. The output volume will indistinguishable from a stream of random bytes, and no one can prove it is a volume without the correct password. This can be useful in an authoritarian country where the only way to transport your files safely is if they don't "exist" in the first place. Keep in mind that this mode slows down encryption and decryption speeds, requires you to manually rename the volume afterward, renders comments useless, and also voids the extra security precautions of the paranoid mode, so you should only use it if absolutely necessary. <strong>If you've never heard of plausible deniability, this feature is not for you.</strong></li>
+	<li><strong>Deniability</strong>: Enabling this option wraps the regular inner volume in a headerless XChaCha20 layer whose salt, nonce, and ciphertext are intended to look random to an observer who does not know the password. It hides the recognizable Picocrypt NG header, but it is not anonymity and does not guarantee protection against forensic analysis, traffic or storage metadata, endpoint compromise, or coercion. The outer wrapper always uses the normal Argon2id parameters; if Paranoid mode is selected, its additional work factor, Serpent layer, and authentication remain part of the inner volume but do not strengthen the outer wrapper. Deniability slows encryption and decryption, requires manual output naming, and prevents the wrapped volume's comment from being read before the wrapper is removed. Picocrypt-NG 2.19 requires a non-empty password for every new volume and rejects keyfiles at every writer boundary, including when deniability is selected. Existing v1/v2 keyfile volumes, including legacy keyfile-only deniable v2 volumes made with an empty outer password, remain readable for recovery and migration. Re-encrypt recovered plaintext as password-only; do not merely rewrap the affected inner v2 volume and claim keyfile-bound integrity. Use deniability only when this limited random-looking-container property matches your threat model.</li>
 	<li><strong>Recursively</strong>: If you want to encrypt and/or decrypt a large set of files individually, this option will tell Picocrypt NG to go through every recursive file that you drop in and encrypt/decrypt it separately. This is useful, for example, if you are encrypting thousands of large documents and want to be able to decrypt any one of them in particular without having to download and decrypt the entire set of documents. <strong>Keep in mind that this is a very complex feature that should only be used if you know what you are doing.</strong></li>
 	<li><strong>File associations</strong>: Double-click <code>.pcv</code> files to open Picocrypt NG in decrypt mode. Setup.exe (Windows), <code>.deb</code> (Linux), and <code>.app</code> (macOS) register the association automatically.</li>
 </ul>

@@ -1,0 +1,178 @@
+<resources>
+    <!-- File Card -->
+    <string name="choose_file">Datei auswählen</string>
+    <string name="copying_file">Datei wird kopiert…</string>
+    <string name="choose_file_description">Datei auswählen</string>
+    <string name="choose_single_file">Einzelne Datei</string>
+    <string name="choose_multiple_files">Mehrere Dateien</string>
+    <string name="choose_folder">Ordner</string>
+    <plurals name="selected_files_count">
+        <item quantity="one">%1$d Datei ausgewählt</item>
+        <item quantity="other">%1$d Dateien ausgewählt</item>
+    </plurals>
+    <!-- Password Card -->
+    <string name="password">Passwort</string>
+    <string name="confirm_password">Passwort bestätigen</string>
+    <string name="enter_password">Passwort eingeben</string>
+    <string name="deniability_password_required">Abstreitbarkeit erfordert ein nicht leeres Passwort</string>
+    <string name="passwords_must_match">Passwörter müssen übereinstimmen</string>
+    <string name="hide_password">Passwort ausblenden</string>
+    <string name="show_password">Passwort anzeigen</string>
+    <!-- Comments Card -->
+    <string name="comments">Kommentare</string>
+    <string name="comments_not_readable">Kommentare können im Abstreitbarkeitsmodus nicht angezeigt werden</string>
+    <string name="comments_disabled_deniability">Im Abstreitbarkeitsmodus deaktiviert</string>
+    <string name="comments_plaintext_warning">Kommentare sind Klartext-Metadaten. Geben Sie hier keine Geheimnisse ein.</string>
+    <!-- Keyfile Card -->
+    <string name="keyfiles">Schlüsseldateien</string>
+    <plurals name="keyfiles_count">
+        <item quantity="one">%1$d Schlüsseldatei</item>
+        <item quantity="other">%1$d Schlüsseldateien</item>
+    </plurals>
+    <plurals name="keyfiles_required_count">
+        <item quantity="one">%1$d Schlüsseldatei erforderlich</item>
+        <item quantity="other">%1$d Schlüsseldateien erforderlich</item>
+    </plurals>
+    <string name="add">Hinzufügen</string>
+    <string name="clear">Leeren</string>
+    <string name="copying">Wird kopiert…</string>
+    <string name="require_this_order">Diese Reihenfolge beachten</string>
+    <string name="error_creating_keyfile">Fehler beim Erstellen der Schlüsseldatei</string>
+    <string name="keyfiles_required_warning">Für dieses Volume sind Schlüsseldateien erforderlich</string>
+    <string name="keyfile_order_matters">Verwenden Sie die Schlüsseldateien in der erforderlichen Reihenfolge</string>
+    <!-- Advanced Card -->
+    <string name="advanced_settings">Erweiterte Einstellungen (%1$d)</string>
+    <string name="reed_solomon">Reed-Solomon</string>
+    <string name="paranoid">Paranoid-Modus</string>
+    <string name="deniability">Abstreitbarkeit</string>
+    <string name="compress">Komprimieren</string>
+    <string name="expand_or_collapse">Erweitern oder reduzieren</string>
+    <!-- Decrypt Options Card -->
+    <string name="decrypt_options">Entschlüsselungsoptionen (%1$d)</string>
+    <string name="verify_first">Integrität zuerst prüfen</string>
+    <!-- Decryption Info Card -->
+    <string name="encryption_settings">Verschlüsselungseinstellungen</string>
+    <string name="keyfiles_section">Schlüsseldateien</string>
+    <string name="required">Erforderlich: %1$s</string>
+    <string name="yes">Ja</string>
+    <string name="no">Nein</string>
+    <string name="order_matters">Reihenfolge wichtig: %1$s</string>
+    <string name="advanced_settings_section">Erweiterte Einstellungen</string>
+    <string name="reed_solomon_status">Reed-Solomon: %1$s</string>
+    <string name="deniability_status">Abstreitbarkeit: %1$s</string>
+    <string name="paranoid_mode_status">Paranoid-Modus: %1$s</string>
+    <string name="enabled">Aktiviert</string>
+    <string name="disabled">Deaktiviert</string>
+    <string name="unknown">Unbekannt</string>
+    <string name="deniability_note">Dieses Volume verwendet den Abstreitbarkeitsmodus. Header-Metadaten können vor der Entschlüsselung nicht angezeigt werden; einige Einstellungen sind unbekannt.</string>
+    <string name="comments_section">Kommentare</string>
+    <string name="no_comments">Keine Kommentare</string>
+    <!-- Work Button -->
+    <string name="encrypt_file">Datei verschlüsseln</string>
+    <string name="decrypt_file">Datei entschlüsseln</string>
+    <string name="processing">Verarbeitung…</string>
+    <!-- Progress Card -->
+    <string name="encrypting">Verschlüsselung…</string>
+    <string name="decrypting">Entschlüsselung…</string>
+    <string name="cancel">Abbrechen</string>
+    <string name="data_corruption_detected">Datenbeschädigung erkannt</string>
+    <string name="force_decrypt_warning">Die Integritätsprüfung des verschlüsselten Volumes ist fehlgeschlagen. Bei erzwungener Entschlüsselung bleibt eine nicht verifizierte Ausgabe erhalten, die teilweise oder vollständig beschädigt sein kann.</string>
+    <string name="force_decrypt">Entschlüsseln erzwingen</string>
+    <string name="authentication_error">Authentifizierungsfehler</string>
+    <string name="retry">Erneut versuchen</string>
+    <string name="error">Fehler</string>
+    <string name="unknown_error_occurred">Ein unbekannter Fehler ist aufgetreten</string>
+    <string name="close">Schließen</string>
+    <string name="operation_cancelled">Vorgang abgebrochen</string>
+    <string name="operation_cancelled_message">Es wurde keine Ausgabe fertiggestellt. Temporäre Dateien werden bereinigt.</string>
+    <string name="encryption_complete">Verschlüsselung abgeschlossen</string>
+    <string name="decryption_complete">Entschlüsselung abgeschlossen</string>
+    <string name="operation_completed_successfully">Vorgang abgeschlossen. Speichern Sie die Ausgabe, um sie zu behalten.</string>
+    <string name="error_saving_file">Fehler beim Speichern der Datei: %1$s</string>
+    <string name="save">Speichern</string>
+    <string name="discard_output">Ausgabe verwerfen</string>
+    <!-- Error Dialog -->
+    <string name="ok">OK</string>
+    <!-- Logo Bar -->
+    <string name="logo_icon">Logo-Symbol</string>
+    <string name="logo_text">Logo-Text</string>
+    <!-- Privacy & Security -->
+    <string name="privacy_security">Datenschutz und Sicherheit</string>
+    <string name="prevent_screenshots">Screenshots verhindern</string>
+    <string name="prevent_screenshots_description">Blockiert Screenshots und Bildschirmaufnahmen und blendet App-Inhalte in der Vorschau der zuletzt verwendeten Apps aus.</string>
+    <!-- Foreground Service -->
+    <string name="fgs_channel_name">Vorgangsfortschritt</string>
+    <string name="fgs_encrypting">Verschlüsselung</string>
+    <string name="fgs_decrypting">Entschlüsselung</string>
+    <string name="fgs_working">Verarbeitung…</string>
+    <!-- Operation status display text keyed by stable mobile status codes. -->
+    <string name="status_starting">Wird gestartet…</string>
+    <string name="status_completed">Abgeschlossen</string>
+    <string name="status_cancelled">Abgebrochen</string>
+    <string name="status_error">Fehler</string>
+    <string name="status_compressing_files">Dateien werden komprimiert…</string>
+    <string name="status_generating_values">Werte werden erzeugt…</string>
+    <string name="status_deriving_key">Schlüssel wird abgeleitet…</string>
+    <string name="status_reading_keyfiles">Schlüsseldateien werden gelesen…</string>
+    <string name="status_calculating_values">Werte werden berechnet…</string>
+    <string name="status_writing_values">Werte werden geschrieben…</string>
+    <string name="status_splitting">Wird aufgeteilt…</string>
+    <string name="status_recombining_chunks">Teile werden zusammengeführt…</string>
+    <string name="status_reading_values">Werte werden gelesen…</string>
+    <string name="status_duplicate_keyfiles_warning">Warnung: doppelte Schlüsseldateien erkannt (Schlüssel heben sich gegenseitig auf)…</string>
+    <string name="status_verifying_integrity">Integrität wird geprüft (Durchgang 1 von 2)…</string>
+    <string name="status_mac_verification_failed_continuing">MAC-Prüfung fehlgeschlagen, Vorgang wird trotzdem fortgesetzt…</string>
+    <string name="status_repairing_verifying">Reparieren (Prüfung)…</string>
+    <string name="status_integrity_verified_decrypting">Integrität bestätigt, Entschlüsselung läuft…</string>
+    <string name="status_comparing_values">Werte werden verglichen…</string>
+    <string name="status_unzipping">Wird entpackt…</string>
+    <string name="status_adding_plausible_deniability">Abstreitbarkeit wird hinzugefügt…</string>
+    <string name="status_removing_deniability_protection">Abstreitbarkeitsschutz wird entfernt…</string>
+    <string name="status_compressing_rate">Komprimieren mit %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_encrypting_rate">Verschlüsseln mit %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_splitting_rate">Aufteilen mit %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_recombining_rate">Zusammenführen mit %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_verifying_rate">Prüfen mit %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_decrypting_rate">Entschlüsseln mit %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_repairing_rate">Reparieren mit %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_unpacking_rate">Entpacken mit %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_adding_deniability_rate">Abstreitbarkeit wird mit %1$.2f MiB/s hinzugefügt (ETA: %2$s)</string>
+    <string name="status_removing_deniability_rate">Abstreitbarkeit wird mit %1$.2f MiB/s entfernt (ETA: %2$s)</string>
+    <string name="progress_percent">%1$.2f%%</string>
+    <plurals name="progress_item_count">
+        <item quantity="one">%1$d von %2$d Element</item>
+        <item quantity="other">%1$d von %2$d Elementen</item>
+    </plurals>
+    <!-- Stable error display boundary -->
+    <string name="error_auth_failed">Authentifizierung fehlgeschlagen. Prüfen Sie das Passwort, die Schlüsseldateien und deren Reihenfolge.</string>
+    <string name="error_data_corrupted">Integritätsprüfung fehlgeschlagen. Die Ausgabe ist nicht verifiziert und kann beschädigt sein.</string>
+    <string name="error_corrupt_header">Der Header des verschlüsselten Volumes ist beschädigt oder ungültig.</string>
+    <string name="error_file_not_found">Datei nicht gefunden oder nicht zugänglich.</string>
+    <string name="error_operation_failed">Der Vorgang ist fehlgeschlagen.</string>
+    <string name="error_unknown">Ein unbekannter Fehler ist aufgetreten.</string>
+    <string name="error_reason_permission_denied">Berechtigung verweigert.</string>
+    <string name="error_reason_file_not_found">Datei nicht gefunden.</string>
+    <string name="error_reason_insufficient_storage">Nicht genügend Speicherplatz.</string>
+    <string name="error_reason_io">Ein-/Ausgabefehler.</string>
+    <string name="error_reason_unknown">Unbekannte Ursache.</string>
+    <string name="error_operation_start_failed">Vorgang konnte nicht gestartet werden.</string>
+    <string name="error_no_active_operation">Kein aktiver Vorgang.</string>
+    <string name="error_operation_data_unavailable">Vorgangsdaten sind für einen erneuten Versuch nicht verfügbar.</string>
+    <string name="error_decrypt_retry_only">Nur Entschlüsselungsvorgänge können mit erzwungener Entschlüsselung erneut versucht werden.</string>
+    <string name="error_no_file_selected">Wählen Sie eine Datei aus.</string>
+    <string name="error_invalid_password">Geben Sie ein Passwort ein.</string>
+    <string name="error_keyfile_writes_disabled">Neue v2-Volumes mit Schlüsseldateien sind bis zur Prüfung des v3-Formats deaktiviert. Vorhandene Volumes mit Schlüsseldateien können weiterhin entschlüsselt werden.</string>
+    <string name="error_passwords_mismatch">Passwörter stimmen nicht überein.</string>
+    <string name="error_split_volume_not_supported">Aufgeteilte Volumes werden unter Android nicht unterstützt. Führen Sie die Teile zuerst auf Ihrem Computer zusammen und übertragen Sie dann die einzelne %1$s-Datei.</string>
+    <string name="error_copy_failed">Datei konnte nicht kopiert werden.</string>
+    <string name="error_save_failed">Datei konnte nicht gespeichert werden.</string>
+    <string name="error_delete_failed">Datei konnte nicht gelöscht werden.</string>
+    <string name="error_insufficient_storage">Nicht genügend freier Speicherplatz, um die Auswahl zu verschlüsseln. Erforderlich: %1$d Byte; verfügbar: %2$d Byte.</string>
+    <string name="error_could_not_open_folder">Ordner konnte nicht geöffnet werden.</string>
+    <string name="error_selected_folder_empty">Der ausgewählte Ordner ist leer.</string>
+    <string name="error_read_folder_failed">Ordner konnte nicht gelesen werden: %1$s</string>
+    <string name="error_could_not_open_selected_file">Eine ausgewählte Datei konnte nicht geöffnet werden.</string>
+    <string name="error_no_files_selected">Keine Dateien ausgewählt.</string>
+    <string name="error_copy_files_failed">Dateien konnten nicht kopiert werden: %1$s</string>
+    <string name="error_detect_operation_type_failed">Vorgangstyp konnte nicht erkannt werden.</string>
+</resources>

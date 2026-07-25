@@ -31,7 +31,10 @@ import (
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"os"
 
 	perrors "Picocrypt-NG/internal/errors"
 )
@@ -47,7 +50,7 @@ type ProgressReporter interface {
 }
 
 // EncryptRequest contains all parameters needed to encrypt files into a .pcv volume.
-// At minimum, either Password or Keyfiles must be provided.
+// Picocrypt-NG 2.19 requires Password and rejects new v2 writes with Keyfiles.
 type EncryptRequest struct {
 	// Input files - use InputFile for single file, InputFiles for multiple (zipped automatically)
 	InputFile   string   // Single file path to encrypt
@@ -56,7 +59,7 @@ type EncryptRequest struct {
 	OnlyFiles   []string // Files that were dropped directly (not from folders)
 	OutputFile  string   // Output path for the .pcv volume
 
-	// Credentials - at least one required
+	// Credentials
 	//
 	// SECURITY (SEC-05): Password is an owned []byte, so the caller controls its
 	// lifetime and zeros it (crypto.SecureZero) after the operation. The KDF
@@ -67,8 +70,8 @@ type EncryptRequest struct {
 	// string still lingers until GC (intentionally out of scope — CONCERNS 3.1;
 	// ROADMAP "Out of Scope: Guaranteed password zeroing").
 	Password       []byte   // User password (processed through Argon2id) — see SECURITY note above
-	Keyfiles       []string // Paths to keyfile(s) for additional security
-	KeyfileOrdered bool     // If true, keyfile order matters (sequential hash vs XOR)
+	Keyfiles       []string // Legacy API field; non-empty is rejected by the v2 writer
+	KeyfileOrdered bool     // Legacy keyfile-order option; only relevant to legacy volume reads
 
 	// Security options
 	Comments    string // Plaintext comments stored in header (NOT encrypted!)
@@ -160,6 +163,13 @@ type OperationContext struct {
 
 	// Recombine state - for proper cleanup
 	RecombinedFile string // Path to recombined file (separate from TempFile for when deniability changes it)
+	recombinedInfo os.FileInfo
+
+	stagedOutput *fileops.StagedFile
+	ownedTemps   []*fileops.StagedFile
+	tempInput    *fileops.StagedFile
+
+	publishedOutputInfo os.FileInfo
 
 	// Progress tracking
 	Total    int64            // Total bytes to process
@@ -258,6 +268,117 @@ func (ctx *OperationContext) TempZipReader(r io.Reader) io.Reader {
 	return r
 }
 
+func (ctx *OperationContext) beginStagedOutput() error {
+	if ctx.stagedOutput != nil {
+		return errors.New("staged output already exists")
+	}
+	stage, err := fileops.CreateSiblingTemp(ctx.OutputFile)
+	if err != nil {
+		return err
+	}
+	ctx.stagedOutput = stage
+	return nil
+}
+
+func (ctx *OperationContext) stagedOutputFile() (*os.File, error) {
+	if ctx.stagedOutput == nil || ctx.stagedOutput.File() == nil {
+		return nil, errors.New("staged output is not open")
+	}
+	return ctx.stagedOutput.File(), nil
+}
+
+func (ctx *OperationContext) resetStagedOutput() error {
+	if ctx.stagedOutput == nil {
+		return errors.New("staged output does not exist")
+	}
+	return ctx.stagedOutput.Reset()
+}
+
+func (ctx *OperationContext) publishStagedOutput() error {
+	if ctx.stagedOutput == nil {
+		return errors.New("staged output does not exist")
+	}
+	file, err := ctx.stagedOutputFile()
+	if err != nil {
+		return err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect staged output before publish: %w", err)
+	}
+	if err := ctx.stagedOutput.Commit(); err != nil {
+		return err
+	}
+	ctx.publishedOutputInfo = info
+	ctx.stagedOutput = nil
+	return nil
+}
+
+func (ctx *OperationContext) adoptTempInput(stage *fileops.StagedFile) {
+	ctx.ownedTemps = append(ctx.ownedTemps, stage)
+	ctx.tempInput = stage
+	ctx.TempFile = stage.Path()
+}
+
+func (ctx *OperationContext) rememberRecombinedFile(path string, info os.FileInfo) error {
+	if info == nil {
+		return errors.New("recombined file identity is unavailable")
+	}
+	ctx.RecombinedFile = path
+	ctx.recombinedInfo = info
+	return nil
+}
+
+func (ctx *OperationContext) cleanupRecombinedFile() error {
+	if ctx.RecombinedFile == "" || ctx.recombinedInfo == nil {
+		return nil
+	}
+	removed, err := fileops.RemoveIfSameFile(ctx.RecombinedFile, ctx.recombinedInfo)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		if _, err := os.Lstat(ctx.RecombinedFile); err == nil {
+			return fmt.Errorf("recombined temporary path %q changed; refusing to remove it", ctx.RecombinedFile)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect recombined temporary path %q: %w", ctx.RecombinedFile, err)
+		}
+	}
+	ctx.RecombinedFile = ""
+	ctx.recombinedInfo = nil
+	return nil
+}
+
+func (ctx *OperationContext) openInput() (*os.File, bool, error) {
+	if ctx.tempInput != nil && ctx.InputFile == ctx.tempInput.Path() {
+		file := ctx.tempInput.File()
+		if file == nil {
+			return nil, false, errors.New("temporary input is not open")
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return nil, false, fmt.Errorf("rewind temporary input: %w", err)
+		}
+		return file, false, nil
+	}
+
+	file, err := os.Open(ctx.InputFile)
+	if err != nil {
+		return nil, false, err
+	}
+	if ctx.RecombinedFile == ctx.InputFile && ctx.recombinedInfo != nil {
+		info, statErr := file.Stat()
+		if statErr != nil {
+			_ = file.Close()
+			return nil, false, fmt.Errorf("inspect recombined input: %w", statErr)
+		}
+		if !os.SameFile(ctx.recombinedInfo, info) {
+			_ = file.Close()
+			return nil, false, errors.New("recombined input path changed before use")
+		}
+	}
+	return file, true, nil
+}
+
 // adopt registers s so Close() will zero it, and returns s.
 func (ctx *OperationContext) adopt(s *crypto.Secret) *crypto.Secret {
 	ctx.secrets = append(ctx.secrets, s)
@@ -324,10 +445,26 @@ func (ctx *OperationContext) setPasswordBytes(b []byte) {
 // request and zeros that, but the string lingers until GC. This is intentionally
 // out of scope (CONCERNS 3.1; ROADMAP "Out of Scope: Guaranteed password
 // zeroing"), mirroring crypto.SecureZero's own GC/optimization caveat.
-func (ctx *OperationContext) Close() {
+func (ctx *OperationContext) Close() error {
 	if ctx == nil {
-		return
+		return nil
 	}
+
+	var cleanupErrs []error
+	if ctx.stagedOutput != nil {
+		if err := ctx.stagedOutput.Cleanup(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
+		ctx.stagedOutput = nil
+	}
+	for _, stage := range ctx.ownedTemps {
+		if err := stage.Cleanup(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
+	}
+	ctx.ownedTemps = nil
+	ctx.tempInput = nil
+	ctx.publishedOutputInfo = nil
 
 	// Zero every owned secret via the registry (Key/KeyfileKey/passwordBytes).
 	for _, s := range ctx.secrets {
@@ -363,4 +500,5 @@ func (ctx *OperationContext) Close() {
 		ctx.TempCiphers.Close()
 		ctx.TempCiphers = nil
 	}
+	return errors.Join(cleanupErrs...)
 }

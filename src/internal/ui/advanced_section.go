@@ -187,7 +187,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 		a.State.Deniability = checked
 		a.updateUIState()
 	})
-	a.deniabilityCheck.SetToolTip(tr("advanced.deniability.tooltip", "No readable Picocrypt header. Keep password/keyfiles."))
+	a.deniabilityCheck.SetToolTip(tr("advanced.deniability.tooltip", "No readable Picocrypt header. A non-empty password protects the outer wrapper; keyfiles protect only the inner volume."))
 	a.deniabilityCheck.SetChecked(a.State.Deniability)
 
 	a.recursivelyCheck = ttwidget.NewCheck(tr("advanced.recursively.label", "Recursively"), func(checked bool) {

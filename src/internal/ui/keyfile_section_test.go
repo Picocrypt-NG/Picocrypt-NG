@@ -73,3 +73,31 @@ func TestKeyfileDialogKeepsLongNamesWithinFixedWindowWidth(t *testing.T) {
 		t.Fatalf("keyfile dialog MinSize width %.1f exceeds fixed window width %.1f", got, float32(windowWidth))
 	}
 }
+
+func TestKeyfileControlsFreezeNewWritesButRemainAvailableForLegacyDecrypt(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.updateKeyfileUIState(false, a.State.UISnapshot())
+	})
+	if a.keyfileEditBtn == nil || !a.keyfileEditBtn.Disabled() {
+		t.Fatal("keyfile selection must be disabled while creating a new v2 volume")
+	}
+	if a.keyfileCreateBtn == nil || !a.keyfileCreateBtn.Disabled() {
+		t.Fatal("keyfile generation must be disabled while creating a new v2 volume")
+	}
+
+	fyne.DoAndWait(func() {
+		a.State.Mode = "decrypt"
+		a.State.Keyfile = true
+		a.updateKeyfileUIState(false, a.State.UISnapshot())
+	})
+	if a.keyfileEditBtn.Disabled() {
+		t.Fatal("keyfile selection must remain available for legacy v1/v2 decryption")
+	}
+	if !a.keyfileCreateBtn.Disabled() {
+		t.Fatal("keyfile generation must stay disabled during decryption")
+	}
+}

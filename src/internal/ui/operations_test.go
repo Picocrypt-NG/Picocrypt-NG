@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -179,20 +181,36 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 		executor := newControlledOperationExecutor()
 		a.operationExecutor = executor.execute
 
-		files := []string{"first.txt", "second.txt"}
-		onlyFiles := []string{"first.txt"}
-		folders := []string{"folder"}
-		keyfiles := []string{"key-b", "key-a"}
+		dir := t.TempDir()
+		files := []string{filepath.Join(dir, "first.txt"), filepath.Join(dir, "second.txt")}
+		for _, path := range files {
+			if err := os.WriteFile(path, []byte(filepath.Base(path)), 0o600); err != nil {
+				t.Fatalf("write source %q: %v", path, err)
+			}
+		}
+		onlyFiles := []string{files[0]}
+		folders := []string{filepath.Join(dir, "folder")}
+		if err := os.Mkdir(folders[0], 0o700); err != nil {
+			t.Fatalf("create source folder: %v", err)
+		}
+		keyfiles := []string{filepath.Join(dir, "key-b"), filepath.Join(dir, "key-a")}
+		for _, path := range keyfiles {
+			if err := os.WriteFile(path, []byte(filepath.Base(path)), 0o600); err != nil {
+				t.Fatalf("write keyfile %q: %v", path, err)
+			}
+		}
+		inputFile := filepath.Join(dir, "input.zip")
+		outputFile := filepath.Join(dir, "output.pcv")
 		fyne.DoAndWait(func() {
 			a.State.Mode = "encrypt"
-			a.State.InputFile = "input.zip"
-			a.State.OutputFile = "output.pcv"
-			a.State.AllFiles = files
-			a.State.OnlyFiles = onlyFiles
-			a.State.OnlyFolders = folders
+			a.State.InputFile = inputFile
+			a.State.OutputFile = outputFile
+			a.State.AllFiles = append([]string(nil), files...)
+			a.State.OnlyFiles = append([]string(nil), onlyFiles...)
+			a.State.OnlyFolders = append([]string(nil), folders...)
 			a.State.Password = "owned password"
 			a.State.CPassword = "owned password"
-			a.State.Keyfiles = keyfiles
+			a.State.Keyfiles = append([]string(nil), keyfiles...)
 			a.State.KeyfileOrdered = true
 			a.State.Comments = "public comment"
 			a.State.Paranoid = true
@@ -207,6 +225,15 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 		})
 
 		call := waitForControlledOperation(t, executor.calls)
+		released := false
+		t.Cleanup(func() {
+			if !released {
+				select {
+				case executor.results <- operationResult{err: errors.New("test cleanup release")}:
+				default:
+				}
+			}
+		})
 		fyne.DoAndWait(func() {
 			a.State.Password = "changed"
 			a.State.AllFiles[0] = "changed-file"
@@ -216,15 +243,15 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 		})
 
 		got := call.input
-		if got.mode != "encrypt" || got.inputFile != "input.zip" || got.outputFile != "output.pcv" {
+		if got.mode != "encrypt" || got.inputFile != inputFile || got.outputFile != outputFile {
 			t.Fatalf("encrypt paths/mode = (%q, %q, %q)", got.mode, got.inputFile, got.outputFile)
 		}
-		if !reflect.DeepEqual(got.inputFiles, []string{"first.txt", "second.txt"}) ||
-			!reflect.DeepEqual(got.onlyFiles, []string{"first.txt"}) ||
-			!reflect.DeepEqual(got.onlyFolders, []string{"folder"}) {
+		if !reflect.DeepEqual(got.inputFiles, files) ||
+			!reflect.DeepEqual(got.onlyFiles, onlyFiles) ||
+			!reflect.DeepEqual(got.onlyFolders, folders) {
 			t.Fatalf("owned selections changed: all=%v files=%v folders=%v", got.inputFiles, got.onlyFiles, got.onlyFolders)
 		}
-		if string(got.password) != "owned password" || !reflect.DeepEqual(got.keyfiles, []string{"key-b", "key-a"}) || !got.keyfileOrdered {
+		if string(got.password) != "owned password" || !reflect.DeepEqual(got.keyfiles, keyfiles) || !got.keyfileOrdered {
 			t.Fatalf("owned credentials changed: password=%q keyfiles=%v ordered=%v", got.password, got.keyfiles, got.keyfileOrdered)
 		}
 		if got.comments != "public comment" || !got.paranoid || !got.reedSolomon || !got.deniability || !got.compress {
@@ -238,6 +265,7 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 		}
 
 		executor.results <- operationResult{err: errors.New("controlled stop")}
+		released = true
 		drainOperationFinalizer(t, a)
 		requireZeroedPassword(t, got.password)
 	})
@@ -248,15 +276,29 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 		executor := newControlledOperationExecutor()
 		a.operationExecutor = executor.execute
 
-		keyfiles := []string{"key-2", "key-1"}
+		dir := t.TempDir()
+		inputBase := filepath.Join(dir, "volume.pcv")
+		inputFile := inputBase + ".0"
+		for i := range 2 {
+			if err := os.WriteFile(inputBase+"."+strconv.Itoa(i), []byte{byte(i + 1)}, 0o600); err != nil {
+				t.Fatalf("write split source %d: %v", i, err)
+			}
+		}
+		outputFile := filepath.Join(dir, "plain.txt")
+		keyfiles := []string{filepath.Join(dir, "key-2"), filepath.Join(dir, "key-1")}
+		for _, path := range keyfiles {
+			if err := os.WriteFile(path, []byte(filepath.Base(path)), 0o600); err != nil {
+				t.Fatalf("write keyfile %q: %v", path, err)
+			}
+		}
 		fyne.DoAndWait(func() {
 			a.State.Mode = "decrypt"
-			a.State.InputFile = "volume.pcv"
-			a.State.OutputFile = "plain.txt"
-			a.State.OnlyFiles = []string{"volume.pcv"}
-			a.State.AllFiles = []string{"volume.pcv"}
+			a.State.InputFile = inputFile
+			a.State.OutputFile = outputFile
+			a.State.OnlyFiles = []string{inputFile}
+			a.State.AllFiles = []string{inputFile}
 			a.State.Password = "decrypt password"
-			a.State.Keyfiles = keyfiles
+			a.State.Keyfiles = append([]string(nil), keyfiles...)
 			a.State.Keep = true
 			a.State.VerifyFirst = true
 			a.State.AutoUnzip = true
@@ -272,6 +314,15 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 		})
 
 		call := waitForControlledOperation(t, executor.calls)
+		released := false
+		t.Cleanup(func() {
+			if !released {
+				select {
+				case executor.results <- operationResult{err: errors.New("test cleanup release")}:
+				default:
+				}
+			}
+		})
 		fyne.DoAndWait(func() {
 			a.State.Password = "changed"
 			a.State.Keyfiles[0] = "changed-key"
@@ -279,10 +330,10 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 		})
 
 		got := call.input
-		if got.mode != "decrypt" || got.inputFile != "volume.pcv" || got.outputFile != "plain.txt" {
+		if got.mode != "decrypt" || got.inputFile != inputFile || got.outputFile != outputFile {
 			t.Fatalf("decrypt paths/mode = (%q, %q, %q)", got.mode, got.inputFile, got.outputFile)
 		}
-		if string(got.password) != "decrypt password" || !reflect.DeepEqual(got.keyfiles, []string{"key-2", "key-1"}) {
+		if string(got.password) != "decrypt password" || !reflect.DeepEqual(got.keyfiles, keyfiles) {
 			t.Fatalf("decrypt credentials changed: password=%q keyfiles=%v", got.password, got.keyfiles)
 		}
 		if !got.forceDecrypt || !got.verifyFirst || !got.autoUnzip || !got.sameLevel || !got.recombine || !got.deniability || !got.delete {
@@ -293,6 +344,7 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 		}
 
 		executor.results <- operationResult{err: errors.New("controlled stop")}
+		released = true
 		drainOperationFinalizer(t, a)
 		requireZeroedPassword(t, got.password)
 	})
@@ -312,14 +364,13 @@ func TestCancelAfterSuccessfulOperationPreservesSource(t *testing.T) {
 	type cleanupObservation struct {
 		ctx       context.Context
 		inputFile string
-		recursive bool
 	}
 	cleanupEntered := make(chan cleanupObservation, 1)
 	releaseCleanup := make(chan struct{})
-	a.operationSourceRemover = func(ctx context.Context, path string, recursive bool) error {
-		cleanupEntered <- cleanupObservation{ctx: ctx, inputFile: path, recursive: recursive}
+	a.operationSourceRemover = func(ctx context.Context, path string) error {
+		cleanupEntered <- cleanupObservation{ctx: ctx, inputFile: path}
 		<-releaseCleanup
-		return removeOperationSource(ctx, path, recursive)
+		return removeOperationSource(ctx, path)
 	}
 
 	fyne.DoAndWait(func() {
@@ -340,8 +391,8 @@ func TestCancelAfterSuccessfulOperationPreservesSource(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("successful executor did not reach the production cleanup boundary")
 	}
-	if observed.inputFile != source || observed.recursive {
-		t.Fatalf("cleanup boundary = path %q recursive %v; want single-file removal for %q", observed.inputFile, observed.recursive, source)
+	if observed.inputFile != source {
+		t.Fatalf("cleanup boundary path = %q, want single-file removal for %q", observed.inputFile, source)
 	}
 	if observed.ctx.Err() != nil {
 		t.Fatalf("operation was already cancelled on entry to cleanup boundary: %v", observed.ctx.Err())
@@ -582,6 +633,407 @@ func TestOnClickStartValidation(t *testing.T) {
 		a.State.CPassword = "different"
 		assertRejected(t, a)
 	})
+}
+
+func TestDeleteSafetyRejectsPathsInsideSourceFolderBeforeExecution(t *testing.T) {
+	tests := []struct {
+		name                 string
+		mode                 string
+		outputInFolder       bool
+		keyfileAliasesSource bool
+		wantStatus           string
+	}{
+		{
+			name:           "output inside deleted folder",
+			mode:           "encrypt",
+			outputInFolder: true,
+			wantStatus:     "output",
+		},
+		{
+			name:                 "legacy decrypt keyfile aliases deleted volume",
+			mode:                 "decrypt",
+			keyfileAliasesSource: true,
+			wantStatus:           "keyfile",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fyneApp := newTestFyneApp(t)
+			a := createUIReadyDropTestApp(t, fyneApp)
+			dir := t.TempDir()
+			sourceFolder := filepath.Join(dir, "source")
+			if err := os.Mkdir(sourceFolder, 0o700); err != nil {
+				t.Fatalf("create source folder: %v", err)
+			}
+			source := filepath.Join(sourceFolder, "payload.txt")
+			sourceBytes := []byte("source must survive rejected delete plan")
+			if err := os.WriteFile(source, sourceBytes, 0o600); err != nil {
+				t.Fatalf("write source: %v", err)
+			}
+
+			output := filepath.Join(dir, "outside.pcv")
+			if tc.outputInFolder {
+				output = filepath.Join(sourceFolder, "unsafe-output.pcv")
+			}
+			keyfile := filepath.Join(dir, "outside.key")
+			keyfileBytes := []byte("keyfile must survive rejected delete plan")
+			if tc.keyfileAliasesSource {
+				keyfile = source
+				keyfileBytes = sourceBytes
+			} else {
+				if err := os.WriteFile(keyfile, keyfileBytes, 0o600); err != nil {
+					t.Fatalf("write keyfile: %v", err)
+				}
+			}
+
+			var executorCalls atomic.Int32
+			var removerCalls atomic.Int32
+			a.operationExecutor = func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+				executorCalls.Add(1)
+				return operationResult{completed: true}
+			}
+			a.operationSourceRemover = func(context.Context, string) error {
+				removerCalls.Add(1)
+				return nil
+			}
+
+			fyne.DoAndWait(func() {
+				a.State.Mode = tc.mode
+				a.State.InputFile = source
+				a.State.AllFiles = []string{source}
+				a.State.OnlyFolders = []string{sourceFolder}
+				a.State.OutputFile = output
+				a.State.Password = "delete-safety-password"
+				a.State.CPassword = "delete-safety-password"
+				if tc.keyfileAliasesSource {
+					a.State.Keyfile = true
+					a.State.Keyfiles = []string{keyfile}
+				}
+				a.State.Delete = true
+				a.onClickStart()
+			})
+			a.workers.wait()
+			fyne.DoAndWait(func() {})
+
+			if got := executorCalls.Load(); got != 0 {
+				t.Fatalf("unsafe delete plan reached executor %d time(s); want zero", got)
+			}
+			if got := removerCalls.Load(); got != 0 {
+				t.Fatalf("unsafe delete plan reached source remover %d time(s); want zero", got)
+			}
+			if a.State.IsWorking() {
+				t.Fatal("unsafe delete plan entered working state")
+			}
+			if status := a.State.UISnapshot().Status.Text; !strings.Contains(status, tc.wantStatus) ||
+				!strings.Contains(status, "scheduled for deletion") {
+				t.Fatalf("rejection status = %q, want explicit %s deletion conflict", status, tc.wantStatus)
+			}
+
+			gotSource, err := os.ReadFile(source)
+			if err != nil {
+				t.Fatalf("read preserved source: %v", err)
+			}
+			if !reflect.DeepEqual(gotSource, sourceBytes) {
+				t.Fatalf("source changed: got %q, want %q", gotSource, sourceBytes)
+			}
+			gotKeyfile, err := os.ReadFile(keyfile)
+			if err != nil {
+				t.Fatalf("read preserved keyfile: %v", err)
+			}
+			if !reflect.DeepEqual(gotKeyfile, keyfileBytes) {
+				t.Fatalf("keyfile changed: got %q, want %q", gotKeyfile, keyfileBytes)
+			}
+			if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unsafe output was created: %v", err)
+			}
+			if overlays := a.Window.Canvas().Overlays().List(); len(overlays) != 0 {
+				t.Fatalf("unsafe delete plan opened %d modal overlay(s); want none", len(overlays))
+			}
+		})
+	}
+}
+
+// When the selected split input is "volume.pcv.0", delete-after-success must
+// derive "volume.pcv" before counting chunks. Counting from the selected chunk
+// would leave every encrypted source behind while reporting a delete failure.
+func TestSuccessfulRecombineDeletesActualChunkSet(t *testing.T) {
+	a := createTestApp(t)
+	dir := t.TempDir()
+	inputBase := filepath.Join(dir, "volume.pcv")
+	chunks := []string{inputBase + ".0", inputBase + ".1"}
+	for i, chunk := range chunks {
+		if err := os.WriteFile(chunk, []byte{byte(i + 1)}, 0o600); err != nil {
+			t.Fatalf("write chunk %q: %v", chunk, err)
+		}
+	}
+	unrelated := inputBase + ".notes"
+	if err := os.WriteFile(unrelated, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write unrelated file: %v", err)
+	}
+
+	input := operationInput{
+		mode:      "decrypt",
+		inputFile: chunks[0],
+		recombine: true,
+		delete:    true,
+	}
+	manifest, err := captureOperationDeletionManifest(input)
+	if err != nil {
+		t.Fatalf("capture deletion manifest: %v", err)
+	}
+	result := a.cleanupOperationSources(context.Background(), input, manifest, operationResult{completed: true})
+	if result.err != nil || result.cancelled || result.deleteFailed {
+		t.Fatalf("cleanup result = %+v, want successful source deletion", result)
+	}
+	for _, chunk := range chunks {
+		if _, err := os.Lstat(chunk); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("encrypted chunk %q remains after successful delete: %v", chunk, err)
+		}
+	}
+	if got, err := os.ReadFile(unrelated); err != nil || string(got) != "keep" {
+		t.Fatalf("unrelated file changed: data=%q err=%v", got, err)
+	}
+}
+
+func TestDeleteAfterSuccessPreservesReplacedSource(t *testing.T) {
+	a := createTestApp(t)
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	original := []byte("original source used by the operation")
+	if err := os.WriteFile(source, original, 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	originalInfo, err := os.Stat(source)
+	if err != nil {
+		t.Fatalf("inspect source: %v", err)
+	}
+	backup := filepath.Join(dir, "source-used-by-operation.txt")
+	foreign := []byte(strings.Repeat("x", len(original)))
+	input := operationInput{
+		mode:       "encrypt",
+		inputFile:  source,
+		outputFile: filepath.Join(dir, "output.pcv"),
+		delete:     true,
+	}
+	result := a.runCapturedOperation(
+		context.Background(),
+		func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+			if err := os.Rename(source, backup); err != nil {
+				t.Fatalf("move captured source during executor: %v", err)
+			}
+			if err := os.WriteFile(source, foreign, 0o600); err != nil {
+				t.Fatalf("write replacement source during executor: %v", err)
+			}
+			if err := os.Chtimes(source, originalInfo.ModTime(), originalInfo.ModTime()); err != nil {
+				t.Fatalf("match replacement source timestamp: %v", err)
+			}
+			return operationResult{completed: true}
+		},
+		nil,
+		input,
+	)
+	if !result.completed || result.err != nil || result.cancelled || !result.deleteFailed {
+		t.Fatalf("operation result = %+v, want completed with explicit delete failure", result)
+	}
+	if got, err := os.ReadFile(source); err != nil || !reflect.DeepEqual(got, foreign) {
+		t.Fatalf("replacement source changed: data=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(backup); err != nil || !reflect.DeepEqual(got, original) {
+		t.Fatalf("captured source backup changed: data=%q err=%v", got, err)
+	}
+}
+
+func TestDeleteAfterFolderEncryptionPreservesReplacedEmptyRoot(t *testing.T) {
+	a := createTestApp(t)
+	dir := t.TempDir()
+	sourceFolder := filepath.Join(dir, "source")
+	if err := os.Mkdir(sourceFolder, 0o700); err != nil {
+		t.Fatalf("create source folder: %v", err)
+	}
+	source := filepath.Join(sourceFolder, "captured.txt")
+	sourceBytes := []byte("captured source")
+	if err := os.WriteFile(source, sourceBytes, 0o600); err != nil {
+		t.Fatalf("write captured source: %v", err)
+	}
+	backup := filepath.Join(dir, "source-used-by-operation")
+	input := operationInput{
+		mode:        "encrypt",
+		inputFile:   source,
+		inputFiles:  []string{source},
+		onlyFolders: []string{sourceFolder},
+		outputFile:  filepath.Join(dir, "output.pcv"),
+		delete:      true,
+	}
+	result := a.runCapturedOperation(
+		context.Background(),
+		func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+			if err := os.Rename(sourceFolder, backup); err != nil {
+				t.Fatalf("move captured source folder during executor: %v", err)
+			}
+			if err := os.Mkdir(sourceFolder, 0o700); err != nil {
+				t.Fatalf("create replacement source folder: %v", err)
+			}
+			return operationResult{completed: true}
+		},
+		nil,
+		input,
+	)
+	if !result.completed || result.err != nil || result.cancelled || !result.deleteFailed {
+		t.Fatalf("operation result = %+v, want completed with explicit delete failure", result)
+	}
+	entries, err := os.ReadDir(sourceFolder)
+	if err != nil {
+		t.Fatalf("read replacement source folder: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("replacement source folder contains unexpected entries: %v", entries)
+	}
+	if got, err := os.ReadFile(filepath.Join(backup, "captured.txt")); err != nil ||
+		!reflect.DeepEqual(got, sourceBytes) {
+		t.Fatalf("captured source changed: data=%q err=%v", got, err)
+	}
+}
+
+func TestDeleteAfterFolderEncryptionPreservesNewEntries(t *testing.T) {
+	a := createTestApp(t)
+	dir := t.TempDir()
+	sourceFolder := filepath.Join(dir, "source")
+	if err := os.Mkdir(sourceFolder, 0o700); err != nil {
+		t.Fatalf("create source folder: %v", err)
+	}
+	source := filepath.Join(sourceFolder, "captured.txt")
+	if err := os.WriteFile(source, []byte("captured source"), 0o600); err != nil {
+		t.Fatalf("write captured source: %v", err)
+	}
+	latePath := filepath.Join(sourceFolder, "created-during-encryption.txt")
+	lateBytes := []byte("this file was never part of the encrypted input")
+	input := operationInput{
+		mode:        "encrypt",
+		inputFile:   source,
+		inputFiles:  []string{source},
+		onlyFolders: []string{sourceFolder},
+		outputFile:  filepath.Join(dir, "output.pcv"),
+		delete:      true,
+	}
+	result := a.runCapturedOperation(
+		context.Background(),
+		func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+			if err := os.WriteFile(latePath, lateBytes, 0o600); err != nil {
+				t.Fatalf("write late folder entry: %v", err)
+			}
+			return operationResult{completed: true}
+		},
+		nil,
+		input,
+	)
+	if !result.completed || result.err != nil || result.cancelled || !result.deleteFailed {
+		t.Fatalf("operation result = %+v, want completed with explicit delete failure", result)
+	}
+	if _, err := os.Lstat(source); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unchanged captured source remains: %v", err)
+	}
+	if got, err := os.ReadFile(latePath); err != nil || !reflect.DeepEqual(got, lateBytes) {
+		t.Fatalf("late folder entry changed: data=%q err=%v", got, err)
+	}
+	if info, err := os.Stat(sourceFolder); err != nil || !info.IsDir() {
+		t.Fatalf("source folder containing a new entry was removed: info=%v err=%v", info, err)
+	}
+}
+
+func TestDeleteAfterRecombineNeverDeletesLateChunk(t *testing.T) {
+	a := createTestApp(t)
+	dir := t.TempDir()
+	inputBase := filepath.Join(dir, "volume.pcv")
+	for i := range 2 {
+		if err := os.WriteFile(inputBase+"."+strconv.Itoa(i), []byte{byte(i + 1)}, 0o600); err != nil {
+			t.Fatalf("write initial chunk %d: %v", i, err)
+		}
+	}
+	lateChunk := inputBase + ".2"
+	lateBytes := []byte("chunk created after the exact input manifest")
+	input := operationInput{
+		mode:       "decrypt",
+		inputFile:  inputBase + ".0",
+		outputFile: filepath.Join(dir, "plaintext.bin"),
+		recombine:  true,
+		delete:     true,
+	}
+	result := a.runCapturedOperation(
+		context.Background(),
+		func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+			if err := os.WriteFile(lateChunk, lateBytes, 0o600); err != nil {
+				t.Fatalf("write late split chunk: %v", err)
+			}
+			return operationResult{completed: true}
+		},
+		nil,
+		input,
+	)
+	if !result.completed || result.err != nil || result.cancelled || result.deleteFailed {
+		t.Fatalf("operation result = %+v, want successful deletion of only the captured chunk set", result)
+	}
+	for i := range 2 {
+		if _, err := os.Lstat(inputBase + "." + strconv.Itoa(i)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("captured chunk %d remains: %v", i, err)
+		}
+	}
+	if got, err := os.ReadFile(lateChunk); err != nil || !reflect.DeepEqual(got, lateBytes) {
+		t.Fatalf("late chunk changed: data=%q err=%v", got, err)
+	}
+}
+
+func TestRecursiveDeleteFailureIsNotOverwrittenByLaterSuccess(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	dir := t.TempDir()
+	files := []string{filepath.Join(dir, "first.txt"), filepath.Join(dir, "second.txt")}
+	for _, path := range files {
+		if err := os.WriteFile(path, []byte(filepath.Base(path)), 0o600); err != nil {
+			t.Fatalf("write recursive source %q: %v", path, err)
+		}
+	}
+	firstBackup := files[0] + ".used"
+	firstReplacement := []byte("replacement created during first operation")
+	var call atomic.Int32
+	a.operationExecutor = func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+		if call.Add(1) == 1 {
+			if err := os.Rename(files[0], firstBackup); err != nil {
+				t.Fatalf("move first recursive source: %v", err)
+			}
+			if err := os.WriteFile(files[0], firstReplacement, 0o600); err != nil {
+				t.Fatalf("replace first recursive source: %v", err)
+			}
+		}
+		return operationResult{completed: true}
+	}
+
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.State.InputFile = files[0]
+		a.State.OutputFile = files[0] + ".pcv"
+		a.State.OnlyFiles = append([]string(nil), files...)
+		a.State.AllFiles = append([]string(nil), files...)
+		a.State.Password = "recursive-delete-password"
+		a.State.CPassword = "recursive-delete-password"
+		a.State.Delete = true
+		a.State.Recursively = true
+		a.startWork()
+	})
+	drainOperationFinalizer(t, a)
+
+	if got := call.Load(); got != 2 {
+		t.Fatalf("recursive executor calls = %d, want 2", got)
+	}
+	if got, err := os.ReadFile(files[0]); err != nil || !reflect.DeepEqual(got, firstReplacement) {
+		t.Fatalf("first replacement changed: data=%q err=%v", got, err)
+	}
+	if _, err := os.Lstat(files[1]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unchanged second source remains: %v", err)
+	}
+	if status := a.State.UISnapshot().Status.Kind; status != app.StatusCompletedSomeDeleteFailed {
+		t.Fatalf("recursive final status = %v, want delete-failure warning", status)
+	}
 }
 
 func TestUpdateOutputFileForCompressClearsDialogConfirmation(t *testing.T) {

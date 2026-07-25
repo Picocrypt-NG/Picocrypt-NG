@@ -314,15 +314,30 @@ func TestCanStart(t *testing.T) {
 		t.Error("Should be able to start with password")
 	}
 
-	// With keyfiles only
+	// New v2 encryption with keyfiles is frozen until the reviewed v3 writer.
+	state.Mode = "encrypt"
 	state.Password = ""
+	state.CPassword = ""
 	state.Keyfiles = []string{"keyfile.bin"}
+	if state.CanStart() {
+		t.Error("Should not be able to start new encryption with keyfiles only")
+	}
+	state.Password = "secret"
+	state.CPassword = "secret"
+	if state.CanStart() {
+		t.Error("Should not be able to start new encryption with password and keyfiles")
+	}
+
+	// Legacy v1/v2 keyfile volumes remain decryptable.
+	state.Mode = "decrypt"
+	state.Password = ""
 	if !state.CanStart() {
-		t.Error("Should be able to start with keyfiles")
+		t.Error("Decrypt mode should accept legacy keyfile-only credentials")
 	}
 
 	// Encrypt mode with mismatched passwords
 	state.Mode = "encrypt"
+	state.Keyfiles = nil
 	state.Password = "secret"
 	state.CPassword = "different"
 	if state.CanStart() {
@@ -340,6 +355,41 @@ func TestCanStart(t *testing.T) {
 	state.CPassword = "different"
 	if !state.CanStart() {
 		t.Error("Decrypt mode should not check password confirmation")
+	}
+}
+
+func TestCanStartPreservesLegacyKeyfileDecryptionButFreezesV2Writer(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{
+			name: "new encryption is rejected",
+			mode: "encrypt",
+			want: false,
+		},
+		{
+			name: "legacy decryption remains available",
+			mode: "decrypt",
+			want: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := mustNewState(t)
+			state.Mode = tc.mode
+			state.Deniability = true
+			state.Password = ""
+			state.CPassword = ""
+			state.Keyfiles = []string{"keyfile.bin"}
+
+			if got := state.CanStart(); got != tc.want {
+				t.Fatalf("State.CanStart() = %v; want %v for %s with a legacy keyfile credential", got, tc.want, tc.mode)
+			}
+			if got := state.UISnapshot().CanStart(); got != tc.want {
+				t.Fatalf("UISnapshot.CanStart() = %v; want %v for %s with a legacy keyfile credential", got, tc.want, tc.mode)
+			}
+		})
 	}
 }
 

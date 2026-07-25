@@ -35,7 +35,7 @@ import (
 var newRSCodecs = encoding.NewRSCodecs
 
 // Version is the application version string.
-const Version = "v2.18"
+const Version = "v2.19"
 
 // PasswordInputMode represents the visibility state of password inputs.
 type PasswordInputMode int
@@ -467,10 +467,23 @@ func (s *State) SetScanning(scanning bool) {
 
 // canStart is the single source of truth for the start-gate condition, shared by
 // the live State.CanStart() and the render-path UISnapshot.CanStart() (DRY).
-func canStart(mode, password, cpassword string, keyfileCount int) bool {
+func canStart(mode, password, cpassword string, keyfileCount int, deniability bool) bool {
+	// New v2 writes with keyfiles are frozen until the reviewed v3 format binds
+	// keyfiles to every secret operational key. Legacy v1/v2 decryption remains
+	// available below.
+	if mode == "encrypt" && keyfileCount > 0 {
+		return false
+	}
+
 	// Need either password or keyfiles
 	hasCredentials := keyfileCount > 0 || password != ""
 	if !hasCredentials {
+		return false
+	}
+
+	// Keyfiles protect the inner volume, not the password-derived deniability
+	// wrapper. Legacy keyfile-only deniable volumes remain decryptable.
+	if mode == "encrypt" && deniability && password == "" {
 		return false
 	}
 
@@ -486,14 +499,14 @@ func canStart(mode, password, cpassword string, keyfileCount int) bool {
 func (s *State) CanStart() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return canStart(s.Mode, s.Password, s.CPassword, len(s.Keyfiles))
+	return canStart(s.Mode, s.Password, s.CPassword, len(s.Keyfiles), s.Deniability)
 }
 
 // CanStart returns true if the operation can be started, evaluated against this
 // render-path snapshot. UI code uses this so the start-gate boolean lives in
 // exactly one place (canStart) shared with State.CanStart.
 func (snap UISnapshot) CanStart() bool {
-	return canStart(snap.Mode, snap.Password, snap.CPassword, snap.KeyfileCount)
+	return canStart(snap.Mode, snap.Password, snap.CPassword, snap.KeyfileCount, snap.Deniability)
 }
 
 // TogglePasswordVisibility toggles password show/hide.

@@ -58,7 +58,10 @@ object StagingService {
 
     // ---- IO ----
     private fun stagingDir(context: Context): File = File(context.filesDir, STAGING_DIR).also { it.mkdirs() }
-    fun wipeStaging(context: Context) { File(context.filesDir, STAGING_DIR).deleteRecursively() }
+    fun wipeStaging(context: Context): Boolean {
+        val dir = File(context.filesDir, STAGING_DIR)
+        return NoFollowFileTree.delete(context.filesDir, dir)
+    }
 
     suspend fun copyTreeToStaging(context: Context, treeUri: Uri): Result<StagedSelection> =
         withContext(Dispatchers.IO) {
@@ -72,7 +75,13 @@ object StagingService {
     internal suspend fun stageTree(context: Context, tree: DocumentFile): Result<StagedSelection> =
         withContext(Dispatchers.IO) {
             try {
-                wipeStaging(context)
+                if (!wipeStaging(context)) {
+                    return@withContext Result.failure(
+                        AppError.FileError.DeleteFailed(
+                            technicalMessage = "Could not clear staging before copying a folder",
+                        )
+                    )
+                }
                 val total = treeSize(tree)
                 val usable = usableSpace(context)
                 if (!hasSpaceFor(total, usable)) {
@@ -99,18 +108,31 @@ object StagingService {
                     )
                 )
             } catch (e: CancellationException) {
-                wipeStaging(context); throw e
-            } catch (e: Exception) {
-                wipeStaging(context)
-                val reason = e.message ?: context.getString(R.string.error_unknown)
-                Result.failure(
-                    copyError(
-                        context,
-                        R.string.error_read_folder_failed,
-                        e.message,
-                        listOf(reason),
+                if (!wipeStaging(context)) {
+                    e.addSuppressed(
+                        AppError.FileError.DeleteFailed(
+                            technicalMessage = "Could not clear staging after folder copy cancellation",
+                        )
                     )
-                )
+                }
+                throw e
+            } catch (e: Exception) {
+                if (!wipeStaging(context)) {
+                    Result.failure(
+                        AppError.FileError.DeleteFailed(
+                            technicalMessage =
+                                "Could not clear staging after folder copy failure: ${e.message}",
+                        )
+                    )
+                } else {
+                    Result.failure(
+                        localizedCopyError(
+                            context,
+                            R.string.error_read_folder_failed,
+                            e,
+                        )
+                    )
+                }
             }
         }
 
@@ -147,7 +169,13 @@ object StagingService {
     suspend fun copyFilesToStaging(context: Context, uris: List<Uri>, nowUnixSeconds: Long): Result<StagedSelection> =
         withContext(Dispatchers.IO) {
             try {
-                wipeStaging(context)
+                if (!wipeStaging(context)) {
+                    return@withContext Result.failure(
+                        AppError.FileError.DeleteFailed(
+                            technicalMessage = "Could not clear staging before copying files",
+                        )
+                    )
+                }
                 val total = uris.sumOf { DocumentFile.fromSingleUri(context, it)?.length() ?: 0L }
                 val usable = usableSpace(context)
                 if (!hasSpaceFor(total, usable)) {
@@ -163,9 +191,7 @@ object StagingService {
                     val target = File(dir, name)
                     context.contentResolver.openInputStream(uri)?.use { input ->
                         FileOutputStream(target).use { output -> input.copyTo(output) }
-                    } ?: return@withContext Result.failure(
-                        copyError(context, R.string.error_could_not_open_selected_file, "$uri")
-                    )
+                    } ?: throw IllegalStateException("could not open $uri")
                     files.add(target.absolutePath)
                 }
                 if (files.isEmpty()) {
@@ -189,18 +215,31 @@ object StagingService {
                     )
                 )
             } catch (e: CancellationException) {
-                wipeStaging(context); throw e
-            } catch (e: Exception) {
-                wipeStaging(context)
-                val reason = e.message ?: context.getString(R.string.error_unknown)
-                Result.failure(
-                    copyError(
-                        context,
-                        R.string.error_copy_files_failed,
-                        e.message,
-                        listOf(reason),
+                if (!wipeStaging(context)) {
+                    e.addSuppressed(
+                        AppError.FileError.DeleteFailed(
+                            technicalMessage = "Could not clear staging after file copy cancellation",
+                        )
                     )
-                )
+                }
+                throw e
+            } catch (e: Exception) {
+                if (!wipeStaging(context)) {
+                    Result.failure(
+                        AppError.FileError.DeleteFailed(
+                            technicalMessage =
+                                "Could not clear staging after file copy failure: ${e.message}",
+                        )
+                    )
+                } else {
+                    Result.failure(
+                        localizedCopyError(
+                            context,
+                            R.string.error_copy_files_failed,
+                            e,
+                        )
+                    )
+                }
             }
         }
 
@@ -221,6 +260,21 @@ object StagingService {
             technicalMessage = "required=$required usable=$usable",
             messageResId = R.string.error_insufficient_storage,
             messageArgs = listOf(required, usable),
+        )
+    }
+
+    internal fun localizedCopyError(
+        context: Context,
+        @StringRes messageResId: Int,
+        error: Throwable,
+    ): AppError.FileError.CopyFailed {
+        val reasonResId = failureReasonResId(error)
+        val fallbackReason = context.getString(reasonResId)
+        return AppError.FileError.CopyFailed(
+            userMessage = context.getString(messageResId, fallbackReason),
+            technicalMessage = error.message ?: error.toString(),
+            messageResId = messageResId,
+            messageArgs = listOf(LocalizedMessageArg(reasonResId)),
         )
     }
 

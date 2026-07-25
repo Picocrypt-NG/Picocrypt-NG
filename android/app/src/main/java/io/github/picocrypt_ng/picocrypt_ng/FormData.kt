@@ -47,10 +47,28 @@ data class FormData(
     val isEncrypt: Boolean
         get() = selectionKind != SelectionKind.SINGLE_FILE ||
             (selectedFilename.isNotEmpty() && !selectedFilename.endsWith(".pcv"))
+    // clearPasswords overwrites buffers in place, so allocated length does not imply a credential.
+    val hasPassword: Boolean
+        get() = passwordInput.any { it != '\u0000' }
+    private val hasConfirmPassword: Boolean
+        get() = confirmPasswordInput.any { it != '\u0000' }
     val isPasswordsMatch: Boolean
-        get() = passwordInput.contentEquals(confirmPasswordInput)
+        get() = (!hasPassword && !hasConfirmPassword) ||
+            passwordInput.contentEquals(confirmPasswordInput)
+    val hasKeyfiles: Boolean
+        get() = keyfileFilenames.isNotEmpty()
+    val isKeyfileEncryptionUnsupported: Boolean
+        get() = isEncrypt && hasKeyfiles
+    val isDeniabilityPasswordMissing: Boolean
+        get() = isEncrypt && deniability && !hasPassword
+    val isPasswordInputRequired: Boolean
+        get() = !hasPassword && (isEncrypt || !hasKeyfiles)
     val isPasswordValid: Boolean
-        get() = passwordInput.isNotEmpty() && ((isEncrypt && isPasswordsMatch) || isDecrypt)
+        get() = when {
+            isEncrypt -> hasPassword && !hasKeyfiles && isPasswordsMatch
+            isDecrypt -> hasPassword || hasKeyfiles
+            else -> false
+        }
 
     /**
      * True when a concrete input is selected: a single copied file, or a staged

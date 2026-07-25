@@ -5,7 +5,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import io.github.picocrypt_ng.picocrypt_ng.AppError
 import io.github.picocrypt_ng.picocrypt_ng.R
@@ -21,13 +21,13 @@ fun ErrorDialog(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
+    val resources = LocalResources.current
     error?.let {
         AlertDialog(
             modifier = modifier,
             onDismissRequest = onDismiss,
             title = { Text(stringResource(R.string.error)) },
-            text = { Text(it.localizedMessage(context)) },
+            text = { Text(it.localizedMessage(resources)) },
             confirmButton = {
                 TextButton(onClick = onDismiss) {
                     Text(stringResource(R.string.ok))

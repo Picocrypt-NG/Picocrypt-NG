@@ -1,6 +1,7 @@
 package cli
 
 import (
+	perrors "Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/header"
 	"bytes"
 	"errors"
@@ -19,7 +20,8 @@ func TestEncryptValidation(t *testing.T) {
 
 	t.Run("missing input", func(t *testing.T) {
 		// Reset flags for each test
-		encInput = nil
+		encGlob = nil
+		encLegacyInputs = nil
 		encOutput = ""
 		encPassword = ""
 		encKeyfiles = nil
@@ -29,23 +31,22 @@ func TestEncryptValidation(t *testing.T) {
 		if err == nil {
 			t.Error("expected error for missing input")
 		}
-		if !strings.Contains(err.Error(), "input") {
-			t.Errorf("error should mention input: %v", err)
+		if !strings.Contains(err.Error(), "at least one input path") {
+			t.Errorf("error should mention required operand: %v", err)
 		}
 	})
 
 	t.Run("nonexistent input file", func(t *testing.T) {
-		encInput = []string{"/nonexistent/file/path.txt"}
 		encOutput = ""
 		encPassword = "test"
 
 		cmd := encryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{"/nonexistent/file/path.txt"})
 		if err == nil {
 			t.Error("expected error for nonexistent file")
 		}
-		if !strings.Contains(err.Error(), "not found") {
-			t.Errorf("error should mention not found: %v", err)
+		if !strings.Contains(err.Error(), "does not exist") {
+			t.Errorf("error should mention missing path: %v", err)
 		}
 	})
 
@@ -56,13 +57,12 @@ func TestEncryptValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		encInput = []string{tmpFile}
 		encOutput = ""
 		encPassword = ""
 		encKeyfiles = nil
 
 		cmd := encryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
 			t.Error("expected error for missing credentials")
 		}
@@ -77,13 +77,12 @@ func TestEncryptValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		encInput = []string{tmpFile}
 		encPassword = "test"
 		encSplit = true
 		encSplitSize = 0 // Invalid
 
 		cmd := encryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
 			t.Error("expected error for invalid split options")
 		}
@@ -102,14 +101,13 @@ func TestEncryptValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		encInput = []string{tmpFile}
 		encPassword = "test"
 		encSplit = true
 		encSplitSize = 10
 		encSplitUnit = "invalid"
 
 		cmd := encryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
 			t.Error("expected error for invalid split unit")
 		}
@@ -123,23 +121,26 @@ func TestEncryptValidation(t *testing.T) {
 		encSplitUnit = "MiB"
 	})
 
-	t.Run("nonexistent keyfile", func(t *testing.T) {
+	t.Run("keyfile writer policy is checked before lookup", func(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "test.txt")
 		if err := os.WriteFile(tmpFile, []byte("test"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 
-		encInput = []string{tmpFile}
 		encPassword = "test"
 		encKeyfiles = []string{"/nonexistent/keyfile.key"}
 
 		cmd := encryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
-			t.Error("expected error for nonexistent keyfile")
+			t.Fatal("expected keyfile writer policy error")
 		}
-		if !strings.Contains(err.Error(), "keyfile not found") {
-			t.Errorf("error should mention keyfile not found: %v", err)
+		var validationErr *perrors.ValidationError
+		if !errors.As(err, &validationErr) {
+			t.Fatalf("error = %v; want *errors.ValidationError", err)
+		}
+		if validationErr.Field != "Keyfiles" || validationErr.Message != perrors.KeyfileWritesDisabledMessage {
+			t.Fatalf("validation error = %#v; want exact keyfile writer policy", validationErr)
 		}
 
 		// Reset
@@ -149,7 +150,7 @@ func TestEncryptValidation(t *testing.T) {
 
 func TestDecryptValidation(t *testing.T) {
 	t.Run("missing input", func(t *testing.T) {
-		decInput = ""
+		decLegacyInputs = nil
 		decPassword = "test"
 
 		cmd := decryptCmd
@@ -157,17 +158,16 @@ func TestDecryptValidation(t *testing.T) {
 		if err == nil {
 			t.Error("expected error for missing input")
 		}
-		if !strings.Contains(err.Error(), "input") {
-			t.Errorf("error should mention input: %v", err)
+		if !strings.Contains(err.Error(), "accepts 1 arg") {
+			t.Errorf("error should mention required operand: %v", err)
 		}
 	})
 
 	t.Run("nonexistent input file", func(t *testing.T) {
-		decInput = "/nonexistent/file.pcv"
 		decPassword = "test"
 
 		cmd := decryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{"/nonexistent/file.pcv"})
 		if err == nil {
 			t.Error("expected error for nonexistent file")
 		}
@@ -178,11 +178,10 @@ func TestDecryptValidation(t *testing.T) {
 
 	t.Run("input is directory", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		decInput = tmpDir
 		decPassword = "test"
 
 		cmd := decryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{tmpDir})
 		if err == nil {
 			t.Error("expected error for directory input")
 		}
@@ -197,13 +196,12 @@ func TestDecryptValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		decInput = tmpFile
 		decPassword = ""
 		decKeyfiles = nil
 		decQuiet = true // Suppress header read warning
 
 		cmd := decryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
 			t.Error("expected error for missing credentials")
 		}
@@ -221,12 +219,11 @@ func TestDecryptValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		decInput = tmpFile
 		decPassword = "test"
 		decKeyfiles = []string{"/nonexistent/keyfile.key"}
 
 		cmd := decryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
 			t.Error("expected error for nonexistent keyfile")
 		}
@@ -249,7 +246,7 @@ func TestForceDecryptKeptExitCode(t *testing.T) {
 	t.Run("clean decrypt exits zero without kept warning", func(t *testing.T) {
 		outputPath := filepath.Join(t.TempDir(), "clean.txt")
 		result := runCLITestCommand(t, binaryPath, "decrypt",
-			"-i", goldenPath,
+			goldenPath,
 			"-o", outputPath,
 			"-p", "test",
 			"-q",
@@ -275,7 +272,7 @@ func TestForceDecryptKeptExitCode(t *testing.T) {
 
 		outputPath := filepath.Join(tmpDir, "recovered.txt")
 		result := runCLITestCommand(t, binaryPath, "decrypt",
-			"-i", corruptPath,
+			corruptPath,
 			"-o", outputPath,
 			"-p", "test",
 			"--force",
@@ -303,7 +300,7 @@ func TestForceDecryptKeptExitCode(t *testing.T) {
 		outputPath := filepath.Join(tmpDir, "unsafe.txt")
 
 		result := runCLITestCommand(t, binaryPath, "decrypt",
-			"-i", junkPath,
+			junkPath,
 			"-o", outputPath,
 			"-p", "test",
 			"--force",
@@ -332,7 +329,7 @@ func TestForceDecryptKeptStdoutOrdering(t *testing.T) {
 
 	t.Run("clean stdout decrypt exits zero without warning", func(t *testing.T) {
 		result := runCLITestCommand(t, binaryPath, "decrypt",
-			"-i", goldenPath,
+			goldenPath,
 			"-o", "-",
 			"-p", "test",
 			"-q",
@@ -356,7 +353,7 @@ func TestForceDecryptKeptStdoutOrdering(t *testing.T) {
 		corruptCLITestPayload(t, corruptPath)
 
 		result := runCLITestCommand(t, binaryPath, "decrypt",
-			"-i", corruptPath,
+			corruptPath,
 			"-o", "-",
 			"-p", "test",
 			"--force",
@@ -472,10 +469,9 @@ func corruptCLITestPayload(t *testing.T, path string) {
 // "test.pcv.notanumber"; dropping the guidance fmt.Fprintln would drop the
 // "Detected split volume" message on the positive case.
 func TestSplitVolumeDetection(t *testing.T) {
-	origInput, origPassword := decInput, decPassword
+	origPassword := decPassword
 	origRecombine, origQuiet := decRecombine, decQuiet
 	t.Cleanup(func() {
-		decInput = origInput
 		decPassword = origPassword
 		decRecombine = origRecombine
 		decQuiet = origQuiet
@@ -486,7 +482,6 @@ func TestSplitVolumeDetection(t *testing.T) {
 	// only after the detection branch runs), and returns the captured stderr.
 	runDecryptCapturingStderr := func(t *testing.T, input string) string {
 		t.Helper()
-		decInput = input
 		decPassword = "test"
 		decRecombine = false
 		decQuiet = false // guidance message only prints when not quiet
@@ -498,7 +493,7 @@ func TestSplitVolumeDetection(t *testing.T) {
 		}
 		os.Stderr = w
 
-		_ = decryptCmd.RunE(decryptCmd, []string{})
+		_ = decryptCmd.RunE(decryptCmd, []string{input})
 
 		_ = w.Close()
 		os.Stderr = old
@@ -575,13 +570,12 @@ func TestOutputAutoGeneration(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		encInput = []string{inputFile}
 		encOutput = "" // force auto-generation through runEncrypt
 		encPassword = "pw"
 		encQuiet = true
 		encYes = true
 
-		if err := encryptCmd.RunE(encryptCmd, []string{}); err != nil {
+		if err := encryptCmd.RunE(encryptCmd, []string{inputFile}); err != nil {
 			t.Fatalf("runEncrypt: %v", err)
 		}
 
@@ -608,13 +602,12 @@ func TestOutputAutoGeneration(t *testing.T) {
 		volPath := filepath.Join(tmpDir, "vol.txt.pcv")
 		copyCLITestFile(t, goldenPath, volPath)
 
-		decInput = volPath
 		decOutput = "" // force auto-generation through runDecrypt
 		decPassword = "test"
 		decQuiet = true
 		decYes = true
 
-		if err := decryptCmd.RunE(decryptCmd, []string{}); err != nil {
+		if err := decryptCmd.RunE(decryptCmd, []string{volPath}); err != nil {
 			t.Fatalf("runDecrypt: %v", err)
 		}
 
@@ -630,7 +623,7 @@ func TestOutputAutoGeneration(t *testing.T) {
 		if string(got) != wantPlaintext {
 			t.Fatalf("decrypted %q = %q, want %q", wantOut, got, wantPlaintext)
 		}
-		// Under the mutation (outputFile = decInput, no .pcv stripping) the
+		// Under the mutation (outputFile = inputPath, no .pcv stripping) the
 		// plaintext would be written over the .pcv path, not vol.txt.
 		if _, err := os.Stat(volPath); err != nil {
 			t.Fatalf("input volume %q unexpectedly gone: %v", volPath, err)
@@ -638,10 +631,8 @@ func TestOutputAutoGeneration(t *testing.T) {
 	})
 }
 
-// TestGlobExpansion drives runEncrypt's real glob-expansion path (encrypt.go:203)
-// rather than re-testing filepath.Glob. A non-matching pattern must surface the
-// specific "input file not found" guard (encrypt.go:207-209); a matching pattern
-// must flow through the expansion loop and succeed.
+// TestGlobExpansion drives the no-match diagnostic through runEncrypt's real
+// glob-expansion path rather than re-testing filepath.Glob.
 func TestGlobExpansion(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -656,7 +647,7 @@ func TestGlobExpansion(t *testing.T) {
 		resetEncryptFlagsForDirTest()
 		t.Cleanup(resetEncryptFlagsForDirTest)
 
-		encInput = []string{filepath.Join(tmpDir, "*.xyz")}
+		encGlob = []string{filepath.Join(tmpDir, "*.xyz")}
 		encOutput = filepath.Join(tmpDir, "out.pcv")
 		encPassword = "pw"
 		encQuiet = true
@@ -669,31 +660,8 @@ func TestGlobExpansion(t *testing.T) {
 		// The specific guard message is load-bearing: deleting the len==0 guard
 		// lets execution fall through to "no files found to encrypt", so a bare
 		// err!=nil check would not catch the mutation.
-		if !strings.Contains(err.Error(), "input file not found") {
-			t.Fatalf("expected %q in error, got: %v", "input file not found", err)
-		}
-	})
-
-	t.Run("matching pattern is expanded and encrypted", func(t *testing.T) {
-		resetEncryptFlagsForDirTest()
-		t.Cleanup(resetEncryptFlagsForDirTest)
-
-		outPath := filepath.Join(tmpDir, "matched.pcv")
-		encInput = []string{filepath.Join(tmpDir, "*.txt")} // matches a.txt, b.txt
-		encOutput = outPath
-		encPassword = "pw"
-		encQuiet = true
-		encYes = true
-
-		if err := encryptCmd.RunE(encryptCmd, []string{}); err != nil {
-			t.Fatalf("runEncrypt with matching glob: %v", err)
-		}
-		info, err := os.Stat(outPath)
-		if err != nil {
-			t.Fatalf("expected encrypted output %q to exist: %v", outPath, err)
-		}
-		if info.Size() == 0 {
-			t.Fatalf("encrypted output %q is empty", outPath)
+		if !strings.Contains(err.Error(), "matched no paths") {
+			t.Fatalf("expected %q in error, got: %v", "matched no paths", err)
 		}
 	})
 }
@@ -782,17 +750,17 @@ func TestDetectCLIMode(t *testing.T) {
 	}{
 		{
 			name: "encrypt subcommand",
-			args: []string{"encrypt", "-i", "a", "-o", "a.pcv"},
+			args: []string{"encrypt", "a", "-o", "a.pcv"},
 			want: true,
 		},
 		{
 			name: "persistent flag before subcommand",
-			args: []string{"--temp-dir", "/tmp", "encrypt", "-i", "a", "-o", "a.pcv"},
+			args: []string{"--temp-dir", "/tmp", "encrypt", "a", "-o", "a.pcv"},
 			want: true,
 		},
 		{
 			name: "persistent flag equals form before subcommand",
-			args: []string{"--temp-dir=/tmp", "decrypt", "-i", "a.pcv"},
+			args: []string{"--temp-dir=/tmp", "decrypt", "a.pcv"},
 			want: true,
 		},
 		{
@@ -807,12 +775,12 @@ func TestDetectCLIMode(t *testing.T) {
 		},
 		{
 			name: "invalid root flag before subcommand",
-			args: []string{"--bogus", "encrypt", "-i", "a", "-o", "a.pcv"},
+			args: []string{"--bogus", "encrypt", "a", "-o", "a.pcv"},
 			want: true,
 		},
 		{
 			name: "missing value root flag before subcommand",
-			args: []string{"--temp-dir", "encrypt", "-i", "a", "-o", "a.pcv", "-p", "pw"},
+			args: []string{"--temp-dir", "encrypt", "a", "-o", "a.pcv", "-p", "pw"},
 			want: true,
 		},
 		{
@@ -876,13 +844,12 @@ func TestDefaultCompressOutputNameUsesZipSuffix(t *testing.T) {
 		t.Fatalf("write input: %v", err)
 	}
 
-	encInput = []string{inputFile}
 	encPassword = "pw"
 	encCompress = true
 	encQuiet = true
 	encYes = true
 
-	if err := encryptCmd.RunE(encryptCmd, []string{}); err != nil {
+	if err := encryptCmd.RunE(encryptCmd, []string{inputFile}); err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 
@@ -895,12 +862,11 @@ func TestDefaultCompressOutputNameUsesZipSuffix(t *testing.T) {
 	}
 
 	resetDecryptFlagsForDirTest()
-	decInput = want
 	decPassword = "pw"
 	decQuiet = true
 	decYes = true
 
-	if err := decryptCmd.RunE(decryptCmd, []string{}); err != nil {
+	if err := decryptCmd.RunE(decryptCmd, []string{want}); err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
 	assertZipContainsPlaintext(t, inputFile+".zip", plaintext)
@@ -930,13 +896,12 @@ func TestDefaultCompressStdinOutputNameUsesZipSuffix(t *testing.T) {
 		t.Fatalf("close stdin pipe: %v", err)
 	}
 
-	encInput = []string{"-"}
 	encPassword = "pw"
 	encCompress = true
 	encQuiet = true
 	encYes = true
 
-	if err := encryptCmd.RunE(encryptCmd, []string{}); err != nil {
+	if err := encryptCmd.RunE(encryptCmd, []string{"-"}); err != nil {
 		t.Fatalf("encrypt stdin: %v", err)
 	}
 
@@ -950,7 +915,6 @@ func TestDefaultCompressStdinOutputNameUsesZipSuffix(t *testing.T) {
 
 func TestEncryptStdinValidation(t *testing.T) {
 	t.Run("stdin with password stdin conflict", func(t *testing.T) {
-		encInput = []string{"-"}
 		encOutput = "test.pcv"
 		encPassword = ""
 		encPasswordStdin = true
@@ -959,7 +923,7 @@ func TestEncryptStdinValidation(t *testing.T) {
 		encDeniability = false
 
 		cmd := encryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{"-"})
 		if err == nil {
 			t.Error("expected error for stdin with -P conflict")
 		}
@@ -992,7 +956,6 @@ func TestEncryptStdinValidation(t *testing.T) {
 			_ = r.Close()
 		})
 
-		encInput = []string{tmpFile}
 		encOutput = filepath.Join(t.TempDir(), "test.pcv")
 		encPassword = ""
 		encPasswordStdin = true
@@ -1001,7 +964,7 @@ func TestEncryptStdinValidation(t *testing.T) {
 		encDeniability = false
 
 		cmd := encryptCmd
-		err = cmd.RunE(cmd, []string{})
+		err = cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
 			t.Fatal("expected error for empty password from stdin")
 		}
@@ -1018,12 +981,11 @@ func TestEncryptStdinValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		encInput = []string{"-", tmpFile}
 		encOutput = "test.pcv"
 		encPassword = "test"
 
 		cmd := encryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{"-", tmpFile})
 		if err == nil {
 			t.Error("expected error for stdin with multiple inputs")
 		}
@@ -1033,7 +995,6 @@ func TestEncryptStdinValidation(t *testing.T) {
 	})
 
 	t.Run("stdin/stdout with split conflict", func(t *testing.T) {
-		encInput = []string{"-"}
 		encOutput = "test.pcv"
 		encPassword = "test"
 		encPasswordStdin = false
@@ -1042,7 +1003,7 @@ func TestEncryptStdinValidation(t *testing.T) {
 		encSplitUnit = "MiB"
 
 		cmd := encryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{"-"})
 		if err == nil {
 			t.Error("expected error for stdin with --split")
 		}
@@ -1061,7 +1022,6 @@ func TestEncryptStdinValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		encInput = []string{tmpFile}
 		encOutput = "-"
 		encPassword = "test"
 		encSplit = true
@@ -1069,7 +1029,7 @@ func TestEncryptStdinValidation(t *testing.T) {
 		encSplitUnit = "MiB"
 
 		cmd := encryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
 			t.Error("expected error for stdout with --split")
 		}
@@ -1083,13 +1043,12 @@ func TestEncryptStdinValidation(t *testing.T) {
 	})
 
 	t.Run("stdin with deniability conflict", func(t *testing.T) {
-		encInput = []string{"-"}
 		encOutput = "test.pcv"
 		encPassword = "test"
 		encDeniability = true
 
 		cmd := encryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{"-"})
 		if err == nil {
 			t.Error("expected error for stdin with --deniability")
 		}
@@ -1102,71 +1061,8 @@ func TestEncryptStdinValidation(t *testing.T) {
 	})
 }
 
-func TestCleanupEncryptError(t *testing.T) {
-	t.Run("preserves pre-existing output file", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		output := filepath.Join(tmpDir, "existing.pcv")
-		if err := os.WriteFile(output, []byte("original"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		incomplete := output + ".incomplete"
-		if err := os.WriteFile(incomplete, []byte("partial"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-
-		cleanupEncryptError(output, false, true)
-
-		data, err := os.ReadFile(output)
-		if err != nil {
-			t.Fatalf("expected pre-existing output file to remain: %v", err)
-		}
-		if string(data) != "original" {
-			t.Fatalf("expected original content preserved, got %q", string(data))
-		}
-		if _, err := os.Stat(incomplete); !os.IsNotExist(err) {
-			t.Fatalf("expected incomplete file removed, got: %v", err)
-		}
-	})
-
-	t.Run("removes new output file", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		output := filepath.Join(tmpDir, "new.pcv")
-		if err := os.WriteFile(output, []byte("new"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		incomplete := output + ".incomplete"
-		if err := os.WriteFile(incomplete, []byte("partial"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-
-		cleanupEncryptError(output, false, false)
-
-		if _, err := os.Stat(output); !os.IsNotExist(err) {
-			t.Fatalf("expected output file removed, got: %v", err)
-		}
-		if _, err := os.Stat(incomplete); !os.IsNotExist(err) {
-			t.Fatalf("expected incomplete file removed, got: %v", err)
-		}
-	})
-
-	t.Run("stdout mode does not remove output file", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		output := filepath.Join(tmpDir, "stdout-temp.pcv")
-		if err := os.WriteFile(output, []byte("temp"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-
-		cleanupEncryptError(output, true, false)
-
-		if _, err := os.Stat(output); err != nil {
-			t.Fatalf("expected stdout path untouched, got: %v", err)
-		}
-	})
-}
-
 func TestDecryptStdinValidation(t *testing.T) {
 	t.Run("stdin with password stdin conflict", func(t *testing.T) {
-		decInput = "-"
 		decOutput = "test.txt"
 		decPassword = ""
 		decPasswordStdin = true
@@ -1176,7 +1072,7 @@ func TestDecryptStdinValidation(t *testing.T) {
 		decAutoUnzip = false
 
 		cmd := decryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{"-"})
 		if err == nil {
 			t.Error("expected error for stdin with -P conflict")
 		}
@@ -1189,13 +1085,12 @@ func TestDecryptStdinValidation(t *testing.T) {
 	})
 
 	t.Run("stdin with recombine conflict", func(t *testing.T) {
-		decInput = "-"
 		decOutput = "test.txt"
 		decPassword = "test"
 		decRecombine = true
 
 		cmd := decryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{"-"})
 		if err == nil {
 			t.Error("expected error for stdin with --recombine")
 		}
@@ -1208,13 +1103,12 @@ func TestDecryptStdinValidation(t *testing.T) {
 	})
 
 	t.Run("stdin with deniability conflict", func(t *testing.T) {
-		decInput = "-"
 		decOutput = "test.txt"
 		decPassword = "test"
 		decDeniability = true
 
 		cmd := decryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{"-"})
 		if err == nil {
 			t.Error("expected error for stdin with --deniability")
 		}
@@ -1232,13 +1126,12 @@ func TestDecryptStdinValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		decInput = tmpFile
 		decOutput = "-"
 		decPassword = "test"
 		decAutoUnzip = true
 
 		cmd := decryptCmd
-		err := cmd.RunE(cmd, []string{})
+		err := cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
 			t.Error("expected error for stdout with --auto-unzip")
 		}

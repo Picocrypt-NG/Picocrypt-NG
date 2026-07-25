@@ -1,6 +1,7 @@
 package io.github.picocrypt_ng.picocrypt_ng.ui.components
 
 
+import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -12,44 +13,51 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.unit.dp
 import io.github.picocrypt_ng.picocrypt_ng.AppError
 import io.github.picocrypt_ng.picocrypt_ng.FileCopyService
-import io.github.picocrypt_ng.picocrypt_ng.FormData
 import io.github.picocrypt_ng.picocrypt_ng.KeyfileInfo
 import io.github.picocrypt_ng.picocrypt_ng.MainViewModel
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.lifecycle.viewModelScope
 import androidx.compose.ui.res.stringResource
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
-import java.security.SecureRandom
 import io.github.picocrypt_ng.picocrypt_ng.R
-import io.github.picocrypt_ng.picocrypt_ng.localizedMessage
+
+
+private val keyfileMutationMutex = Mutex()
+
+internal suspend fun <T> withKeyfileMutation(block: suspend () -> T): T {
+    keyfileMutationMutex.lock()
+    return try {
+        block()
+    } finally {
+        keyfileMutationMutex.unlock()
+    }
+}
 
 
 @Composable
 fun AddKeyfile(viewModel: MainViewModel) {
     val context = LocalContext.current
     val unknownErrorMsg = stringResource(R.string.error_unknown)
-    val formData by viewModel.formState.collectAsState()
     var isCopying by remember { mutableStateOf(false) }
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
     var selectedFileName by remember { mutableStateOf("") }
@@ -58,34 +66,36 @@ fun AddKeyfile(viewModel: MainViewModel) {
     LaunchedEffect(selectedUri) {
         val uri = selectedUri ?: return@LaunchedEffect
         isCopying = true
-        
-        // Use current list size as index for fixed filename
-        val currentFormData = viewModel.formState.value
-        val keyfileIndex = currentFormData.keyfileFilenames.size
-        
-        val copyResult = withContext(Dispatchers.IO) {
-            FileCopyService.copyKeyfileToInternalStorage(context, uri, keyfileIndex)
-        }
-        
-        copyResult.onSuccess { copiedPath ->
-            // Add KeyfileInfo with internal path and display name
-            val updatedFormData = viewModel.formState.value
-            val displayName = if (selectedFileName.isNotEmpty()) selectedFileName else "keyfile_$keyfileIndex"
-            val keyfileInfo = KeyfileInfo(internalPath = copiedPath, displayName = displayName)
-            val keyfileInfos = updatedFormData.keyfileFilenames + keyfileInfo
-            viewModel.updateFormData(updatedFormData.copy(keyfileFilenames = keyfileInfos))
-        }.onFailure { error ->
-            // Keyfile copy failed - show error to user
-            val appError = if (error is AppError) {
-                error
-            } else {
-                AppError.fromException(error as? Exception ?: Exception(error.message ?: unknownErrorMsg))
+
+        try {
+            withKeyfileMutation {
+                // Use current list size as index for fixed filename
+                val currentFormData = viewModel.formState.value
+                val keyfileIndex = currentFormData.keyfileFilenames.size
+
+                val copyResult = FileCopyService.copyKeyfileToInternalStorage(context, uri, keyfileIndex)
+
+                copyResult.onSuccess { copiedPath ->
+                    // Add KeyfileInfo with internal path and display name
+                    val updatedFormData = viewModel.formState.value
+                    val displayName = if (selectedFileName.isNotEmpty()) selectedFileName else "keyfile_$keyfileIndex"
+                    val keyfileInfo = KeyfileInfo(internalPath = copiedPath, displayName = displayName)
+                    val keyfileInfos = updatedFormData.keyfileFilenames + keyfileInfo
+                    viewModel.updateFormData(updatedFormData.copy(keyfileFilenames = keyfileInfos))
+                }.onFailure { error ->
+                    // Keyfile copy failed - show error to user
+                    val appError = if (error is AppError) {
+                        error
+                    } else {
+                        AppError.fromException(error as? Exception ?: Exception(error.message ?: unknownErrorMsg))
+                    }
+                    viewModel.setError(appError)
+                }
             }
-            viewModel.setError(appError)
+        } finally {
+            isCopying = false
+            selectedUri = null // Reset after processing
         }
-        
-        isCopying = false
-        selectedUri = null // Reset after processing
     }
     
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -124,169 +134,38 @@ fun AddKeyfile(viewModel: MainViewModel) {
 
 
 @Composable
-fun NewKeyfile(viewModel: MainViewModel) {
-    val context = LocalContext.current
-    val formData by viewModel.formState.collectAsState()
-    var isCreating by remember { mutableStateOf(false) }
-    var createdUri by remember { mutableStateOf<Uri?>(null) }
-    var createdFileName by remember { mutableStateOf("") }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var showErrorDialog by rememberSaveable { mutableStateOf(false) }
-    val keyfileWriteFailedMsg = stringResource(R.string.keyfile_write_failed)
-    val keyfileCreateFailedMsg = stringResource(R.string.keyfile_create_failed)
-    val unknownErrorMsg = stringResource(R.string.error_unknown)
-    
-    // Generate default filename with timestamp
-    val defaultFileName = remember {
-        val timestamp = System.currentTimeMillis() / 1000 // Unix timestamp in seconds
-        "keyfile-$timestamp.bin"
-    }
-    
-    // Handle file creation and copying after URI is selected
-    LaunchedEffect(createdUri) {
-        val uri = createdUri ?: return@LaunchedEffect
-        isCreating = true
-        errorMessage = null
-        
-        try {
-            // Step 1: Generate 32 random bytes
-            val randomBytes = withContext(Dispatchers.IO) {
-                val bytes = ByteArray(32)
-                SecureRandom().nextBytes(bytes)
-                bytes
-            }
-            
-            // Step 2: Write bytes to user's selected URI
-            val writeSuccess = withContext(Dispatchers.IO) {
-                try {
-                    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                        outputStream.write(randomBytes)
-                        true
-                    } ?: false
-                } catch (e: Exception) {
-                    false
-                } finally {
-                    randomBytes.fill(0) // zero key material after write
-                }
-            }
-
-            if (!writeSuccess) {
-                errorMessage = keyfileWriteFailedMsg
-                showErrorDialog = true
-                isCreating = false
-                createdUri = null
-                return@LaunchedEffect
-            }
-            
-            // Step 3: Copy from URI to internal storage (for app operations)
-            // Use current list size as index for fixed filename
-            val currentFormData = viewModel.formState.value
-            val keyfileIndex = currentFormData.keyfileFilenames.size
-            
-            val copyResult = withContext(Dispatchers.IO) {
-                FileCopyService.copyKeyfileToInternalStorage(context, uri, keyfileIndex)
-            }
-            
-            copyResult.onSuccess { copiedPath ->
-                // Step 4: Add to keyfiles list automatically
-                // Get current form data again to avoid stale state
-                val updatedFormData = viewModel.formState.value
-                val displayName = if (createdFileName.isNotEmpty()) createdFileName else "keyfile_$keyfileIndex"
-                val keyfileInfo = KeyfileInfo(internalPath = copiedPath, displayName = displayName)
-                val keyfileInfos = updatedFormData.keyfileFilenames + keyfileInfo
-                viewModel.updateFormData(updatedFormData.copy(keyfileFilenames = keyfileInfos))
-            }.onFailure { error ->
-                // Keyfile copy failed - show error to user
-                val appError = if (error is AppError) {
-                    error
-                } else {
-                    AppError.fromException(error as? Exception ?: Exception(error.message ?: unknownErrorMsg))
-                }
-                viewModel.setError(appError)
-                errorMessage = appError.localizedMessage(context)
-                showErrorDialog = true
-            }
-        } catch (e: Exception) {
-            errorMessage = keyfileCreateFailedMsg.format(e.message ?: unknownErrorMsg)
-            showErrorDialog = true
-        } finally {
-            isCreating = false
-            createdUri = null
-        }
-    }
-    
-    // File creation launcher
-    val createFileLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/octet-stream")
-    ) { uri: Uri? ->
-        uri?.let {
-            // Get filename from URI if available, otherwise use default
-            val contentResolver = context.contentResolver
-            val cursor = contentResolver.query(it, null, null, null, null)
-            var fileName = defaultFileName
-            cursor?.use { c ->
-                if (c.moveToFirst()) {
-                    val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (nameIndex != -1) {
-                        val uriFileName = c.getString(nameIndex)
-                        if (!uriFileName.isNullOrEmpty()) {
-                            fileName = uriFileName
-                        }
-                    }
-                }
-            }
-            createdFileName = fileName
-            createdUri = it // Trigger LaunchedEffect
-        }
-    }
-    
-    Button(
-        onClick = { createFileLauncher.launch(defaultFileName) },
-        modifier = Modifier.fillMaxWidth(),
-        enabled = !isCreating
-    ) {
-        if (isCreating) {
-            Text(stringResource(R.string.creating))
-        } else {
-            Text(stringResource(R.string.new_keyfile))
-        }
-    }
-    
-    // Error dialog
-    if (showErrorDialog) {
-        AlertDialog(
-            onDismissRequest = { 
-                showErrorDialog = false
-                errorMessage = null
-            },
-            title = { Text(text = stringResource(R.string.error_creating_keyfile)) },
-            text = { Text(text = errorMessage ?: stringResource(R.string.unknown_error_occurred)) },
-            confirmButton = {
-                TextButton(onClick = { 
-                    showErrorDialog = false
-                    errorMessage = null
-                }) {
-                    Text(stringResource(R.string.ok))
-                }
-            },
-        )
-    }
+fun ClearKeyfiles(viewModel: MainViewModel) {
+    ClearKeyfiles(viewModel, FileCopyService::cleanupKeyfiles)
 }
 
-
 @Composable
-fun ClearKeyfiles(viewModel: MainViewModel) {
-    val context = LocalContext.current
-    val formData by viewModel.formState.collectAsState()
-    val scope = rememberCoroutineScope()
+internal fun ClearKeyfiles(
+    viewModel: MainViewModel,
+    cleanupKeyfiles: suspend (Context) -> Boolean,
+) {
+    val context = LocalContext.current.applicationContext
+    val deleteFailedMessage = stringResource(R.string.error_delete_failed)
+    val scope = viewModel.viewModelScope
     
     Button(
         onClick = { 
-            // Clear the list
-            viewModel.updateFormData(formData.copy(keyfileFilenames = listOf()))
-            // Also cleanup keyfile files from internal storage
             scope.launch {
-                FileCopyService.cleanupKeyfiles(context)
+                withContext(NonCancellable) {
+                    withKeyfileMutation {
+                        if (cleanupKeyfiles(context)) {
+                            val updatedFormData = viewModel.formState.value
+                            viewModel.updateFormData(updatedFormData.copy(keyfileFilenames = emptyList()))
+                        } else {
+                            viewModel.setError(
+                                AppError.FileError.DeleteFailed(
+                                    userMessage = deleteFailedMessage,
+                                    technicalMessage = "Failed to remove all internal keyfiles",
+                                    messageResId = R.string.error_delete_failed,
+                                )
+                            )
+                        }
+                    }
+                }
             }
         },
         modifier = Modifier.fillMaxWidth()
@@ -329,7 +208,7 @@ fun KeyfileNames(viewModel: MainViewModel) {
 
 @Composable
 fun KeyfileCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
+    val resources = LocalResources.current
     val formData by viewModel.formState.collectAsState()
     if (!(formData.isDecrypt || formData.isEncrypt)) {
         return
@@ -351,13 +230,13 @@ fun KeyfileCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     
     // Build title with "Required" indicator if needed
     val titleText = if (keyfilesRequired) {
-        context.resources.getQuantityString(
+        resources.getQuantityString(
             R.plurals.keyfiles_required_count,
             formData.keyfileFilenames.size,
             formData.keyfileFilenames.size,
         )
     } else {
-        context.resources.getQuantityString(
+        resources.getQuantityString(
             R.plurals.keyfiles_count,
             formData.keyfileFilenames.size,
             formData.keyfileFilenames.size,
@@ -372,28 +251,40 @@ fun KeyfileCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     }
     
     ExpandableCard(title = titleText, modifier = modifier, titleColor = titleColor) {
-        Row {
+        if (formData.isEncrypt) {
             Column(
                 modifier = Modifier
                     .padding(8.dp)
-                    .weight(0.4F)
             ) {
-                AddKeyfile(viewModel)
-                if (formData.isEncrypt) {
-                    NewKeyfile(viewModel)
-                }
+                Text(
+                    text = stringResource(R.string.error_keyfile_writes_disabled),
+                    style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.primary,
+                )
                 if (formData.keyfileFilenames.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
                     ClearKeyfiles(viewModel)
+                    KeyfileNames(viewModel)
                 }
             }
-            Column(
-                modifier = Modifier
-                    .padding(8.dp)
-                    .weight(0.6F)
-            ) {
-                // Show keyfile requirements from decryption info
-                if (formData.isDecrypt && decryptionInfo != null) {
-                    if (decryptionInfo.keyfilesRequired) {
+        } else {
+            Row {
+                Column(
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .weight(0.4F)
+                ) {
+                    AddKeyfile(viewModel)
+                    if (formData.keyfileFilenames.isNotEmpty()) {
+                        ClearKeyfiles(viewModel)
+                    }
+                }
+                Column(
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .weight(0.6F)
+                ) {
+                    if (decryptionInfo != null && decryptionInfo.keyfilesRequired) {
                         Text(
                             text = stringResource(R.string.keyfiles_required_warning),
                             style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
@@ -410,13 +301,8 @@ fun KeyfileCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                         HorizontalDivider()
                         Spacer(modifier = Modifier.height(8.dp))
                     }
+                    KeyfileNames(viewModel)
                 }
-                if (formData.isEncrypt) {
-                    RequireOrder(viewModel)
-                    HorizontalDivider()
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-                KeyfileNames(viewModel)
             }
         }
     }

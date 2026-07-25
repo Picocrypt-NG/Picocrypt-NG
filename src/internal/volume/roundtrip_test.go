@@ -5,16 +5,153 @@ import (
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
 	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	perrors "Picocrypt-NG/internal/errors"
 )
+
+type autoUnzipOrderingReporter struct {
+	mu            sync.Mutex
+	outputPath    string
+	encryptedPath string
+	unzipping     bool
+	observed      bool
+	err           error
+}
+
+func (r *autoUnzipOrderingReporter) SetStatus(text string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if text == "Unzipping..." {
+		r.unzipping = true
+	}
+}
+
+func (r *autoUnzipOrderingReporter) SetProgress(float32, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.unzipping || r.observed {
+		return
+	}
+	r.observed = true
+	outputInfo, err := os.Lstat(r.outputPath)
+	if err != nil {
+		r.err = fmt.Errorf("requested output is absent during extraction: %w", err)
+		return
+	}
+	if !outputInfo.IsDir() {
+		r.err = fmt.Errorf("requested output is %s during extraction, want owned directory", outputInfo.Mode())
+		return
+	}
+	if _, err := os.Lstat(r.encryptedPath); err != nil {
+		r.err = fmt.Errorf("encrypted input is unavailable during extraction: %w", err)
+	}
+}
+
+func (*autoUnzipOrderingReporter) SetCanCancel(bool) {}
+func (*autoUnzipOrderingReporter) Update()           {}
+func (*autoUnzipOrderingReporter) IsCancelled() bool { return false }
+
+func (r *autoUnzipOrderingReporter) result() (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.observed, r.err
+}
+
+type autoUnzipParentSwapReporter struct {
+	linkPath       string
+	replacementDir string
+	swapped        bool
+	err            error
+}
+
+func (r *autoUnzipParentSwapReporter) SetStatus(text string) {
+	if text != "Unzipping..." || r.swapped || r.err != nil {
+		return
+	}
+	if err := os.Remove(r.linkPath); err != nil {
+		r.err = fmt.Errorf("remove original output-parent link: %w", err)
+		return
+	}
+	if err := os.Symlink(r.replacementDir, r.linkPath); err != nil {
+		r.err = fmt.Errorf("replace output-parent link: %w", err)
+		return
+	}
+	r.swapped = true
+}
+
+func (*autoUnzipParentSwapReporter) SetProgress(float32, string) {}
+func (*autoUnzipParentSwapReporter) SetCanCancel(bool)           {}
+func (*autoUnzipParentSwapReporter) Update()                     {}
+func (*autoUnzipParentSwapReporter) IsCancelled() bool           { return false }
+
+type autoUnzipParentReplaceReporter struct {
+	parentPath string
+	movedPath  string
+	replaced   bool
+	err        error
+}
+
+func (r *autoUnzipParentReplaceReporter) SetStatus(text string) {
+	if text != "Unzipping..." || r.replaced || r.err != nil {
+		return
+	}
+	if err := os.Rename(r.parentPath, r.movedPath); err != nil {
+		r.err = fmt.Errorf("move original output parent: %w", err)
+		return
+	}
+	if err := os.Mkdir(r.parentPath, 0o700); err != nil {
+		r.err = fmt.Errorf("create replacement output parent: %w", err)
+		return
+	}
+	r.replaced = true
+}
+
+func (*autoUnzipParentReplaceReporter) SetProgress(float32, string) {}
+func (*autoUnzipParentReplaceReporter) SetCanCancel(bool)           {}
+func (*autoUnzipParentReplaceReporter) Update()                     {}
+func (*autoUnzipParentReplaceReporter) IsCancelled() bool           { return false }
+
+type autoUnzipExtractRootReplaceReporter struct {
+	extractPath string
+	movedPath   string
+	foreign     []byte
+	replaced    bool
+	err         error
+}
+
+func (r *autoUnzipExtractRootReplaceReporter) SetStatus(text string) {
+	if text != "Unzipping..." || r.replaced || r.err != nil {
+		return
+	}
+	if err := os.Rename(r.extractPath, r.movedPath); err != nil {
+		r.err = fmt.Errorf("move reserved extraction root: %w", err)
+		return
+	}
+	if err := os.Mkdir(r.extractPath, 0o700); err != nil {
+		r.err = fmt.Errorf("create replacement extraction root: %w", err)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(r.extractPath, "foreign.txt"), r.foreign, 0o600); err != nil {
+		r.err = fmt.Errorf("write foreign extraction-root entry: %w", err)
+		return
+	}
+	r.replaced = true
+}
+
+func (*autoUnzipExtractRootReplaceReporter) SetProgress(float32, string) {}
+func (*autoUnzipExtractRootReplaceReporter) SetCanCancel(bool)           {}
+func (*autoUnzipExtractRootReplaceReporter) Update()                     {}
+func (*autoUnzipExtractRootReplaceReporter) IsCancelled() bool           { return false }
 
 // readVolumeHeader opens an encrypted .pcv volume and decodes its header using the
 // production header reader. It is the read-back seam for flag/comment assertions:
@@ -497,298 +634,6 @@ func TestRoundTripWithComments(t *testing.T) {
 	t.Log("Round-trip with comments: SUCCESS")
 }
 
-// TestRoundTripWithKeyfile tests encrypt -> decrypt with keyfile
-func TestRoundTripWithKeyfile(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	// Create test file
-	plaintext := []byte("Keyfile protected data for testing.")
-	inputPath := filepath.Join(tmpDir, "keyfile_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create keyfile
-	keyfilePath := filepath.Join(tmpDir, "keyfile.bin")
-	keyfileData := []byte("This is my secret keyfile content!")
-	if err := os.WriteFile(keyfilePath, keyfileData, 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "keyfile_test.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "keyfile_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with keyfile
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("password_with_keyfile"),
-		Keyfiles:   []string{keyfilePath},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (with keyfile) failed: %v", err)
-	}
-
-	// The UseKeyfiles flag must be persisted for self-encrypted volumes, otherwise
-	// decryption could not know a keyfile is required.
-	h := readVolumeHeader(t, encryptedPath)
-	if !h.Flags.UseKeyfiles {
-		t.Error("header Flags.UseKeyfiles = false, want true for keyfile-protected volume")
-	}
-
-	// Decrypt with keyfile
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("password_with_keyfile"),
-		Keyfiles:     []string{keyfilePath},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (with keyfile) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (with keyfile).\nExpected: %q\nGot: %q", plaintext, decrypted)
-	}
-
-	t.Log("Round-trip with keyfile: SUCCESS")
-}
-
-// TestRoundTripWithMultipleKeyfiles tests encrypt -> decrypt with multiple keyfiles
-func TestRoundTripWithMultipleKeyfiles(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	// Create test file
-	plaintext := []byte("Multiple keyfiles protected data.")
-	inputPath := filepath.Join(tmpDir, "multi_keyfile_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create keyfiles
-	keyfile1 := filepath.Join(tmpDir, "keyfile1.bin")
-	keyfile2 := filepath.Join(tmpDir, "keyfile2.bin")
-	if err := os.WriteFile(keyfile1, []byte("First keyfile content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile1: %v", err)
-	}
-	if err := os.WriteFile(keyfile2, []byte("Second keyfile content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile2: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "multi_keyfile_test.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "multi_keyfile_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with multiple keyfiles (unordered - default)
-	encReq := &EncryptRequest{
-		InputFile:      inputPath,
-		OutputFile:     encryptedPath,
-		Password:       []byte("multi_keyfile_pass"),
-		Keyfiles:       []string{keyfile1, keyfile2},
-		KeyfileOrdered: false,
-		Reporter:       reporter,
-		RSCodecs:       rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (multiple keyfiles) failed: %v", err)
-	}
-
-	// Decrypt with keyfiles in different order (should work for unordered)
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("multi_keyfile_pass"),
-		Keyfiles:     []string{keyfile2, keyfile1}, // Reversed order
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (multiple keyfiles, reversed) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (multiple keyfiles).\nExpected: %q\nGot: %q", plaintext, decrypted)
-	}
-
-	t.Log("Round-trip with multiple keyfiles: SUCCESS")
-}
-
-// TestRoundTripWithOrderedKeyfiles tests encrypt -> decrypt with ordered keyfiles
-func TestRoundTripWithOrderedKeyfiles(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	// Create test file
-	plaintext := []byte("Ordered keyfiles protected data.")
-	inputPath := filepath.Join(tmpDir, "ordered_keyfile_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create keyfiles
-	keyfile1 := filepath.Join(tmpDir, "ordered1.bin")
-	keyfile2 := filepath.Join(tmpDir, "ordered2.bin")
-	if err := os.WriteFile(keyfile1, []byte("First ordered keyfile"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile1: %v", err)
-	}
-	if err := os.WriteFile(keyfile2, []byte("Second ordered keyfile"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile2: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "ordered_keyfile_test.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "ordered_keyfile_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with ordered keyfiles
-	encReq := &EncryptRequest{
-		InputFile:      inputPath,
-		OutputFile:     encryptedPath,
-		Password:       []byte("ordered_keyfile_pass"),
-		Keyfiles:       []string{keyfile1, keyfile2},
-		KeyfileOrdered: true,
-		Reporter:       reporter,
-		RSCodecs:       rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (ordered keyfiles) failed: %v", err)
-	}
-
-	// Decrypt with same order
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("ordered_keyfile_pass"),
-		Keyfiles:     []string{keyfile1, keyfile2},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (ordered keyfiles) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (ordered keyfiles).\nExpected: %q\nGot: %q", plaintext, decrypted)
-	}
-
-	t.Log("Round-trip with ordered keyfiles: SUCCESS")
-}
-
-// TestWrongKeyfileFails verifies that wrong keyfile fails
-func TestWrongKeyfileFails(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Secret data")
-	inputPath := filepath.Join(tmpDir, "secret.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create correct keyfile
-	correctKeyfile := filepath.Join(tmpDir, "correct_keyfile.bin")
-	if err := os.WriteFile(correctKeyfile, []byte("Correct keyfile"), 0o644); err != nil {
-		t.Fatalf("Failed to write correct keyfile: %v", err)
-	}
-
-	// Create wrong keyfile
-	wrongKeyfile := filepath.Join(tmpDir, "wrong_keyfile.bin")
-	if err := os.WriteFile(wrongKeyfile, []byte("Wrong keyfile"), 0o644); err != nil {
-		t.Fatalf("Failed to write wrong keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "secret.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "secret_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with correct keyfile
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("keyfile_password"),
-		Keyfiles:   []string{correctKeyfile},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt failed: %v", err)
-	}
-
-	// Try to decrypt with wrong keyfile
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("keyfile_password"),
-		Keyfiles:     []string{wrongKeyfile},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	err = Decrypt(context.Background(), decReq)
-	if err == nil {
-		t.Error("Decrypt should have failed with wrong keyfile")
-	} else {
-		t.Logf("Expected error: %v", err)
-	}
-
-	// Decrypted file should not exist
-	if _, err := os.Stat(decryptedPath); !os.IsNotExist(err) {
-		t.Error("Decrypted file should not exist after failed decryption")
-	}
-}
-
 // TestRoundTripSplit tests encrypt with splitting -> recombine -> decrypt
 func TestRoundTripSplit(t *testing.T) {
 	rsCodecs, err := encoding.NewRSCodecs()
@@ -1092,6 +937,290 @@ func TestAutoUnzip(t *testing.T) {
 	t.Log("Auto-unzip: SUCCESS")
 }
 
+func TestAutoUnzipWithoutZipSuffixKeepsRecoverableStateVisibleDuringExtraction(t *testing.T) {
+	tmpDir := t.TempDir()
+	sourceDir := filepath.Join(tmpDir, "source")
+	if err := os.Mkdir(sourceDir, 0o700); err != nil {
+		t.Fatalf("create source directory: %v", err)
+	}
+	payload := bytes.Repeat([]byte("real auto-unzip ordering payload"), 4096)
+	if err := os.WriteFile(filepath.Join(sourceDir, "payload.txt"), payload, 0o600); err != nil {
+		t.Fatalf("write source payload: %v", err)
+	}
+	plainZip := filepath.Join(tmpDir, "source.zip")
+	if err := createTestZip(plainZip, sourceDir); err != nil {
+		t.Fatalf("create source ZIP: %v", err)
+	}
+
+	encryptedPath := filepath.Join(tmpDir, "source.zip.pcv")
+	password := []byte("auto-unzip-ordering-password")
+	if err := Encrypt(context.Background(), &EncryptRequest{
+		InputFile:  plainZip,
+		OutputFile: encryptedPath,
+		Password:   append([]byte(nil), password...),
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("encrypt source ZIP: %v", err)
+	}
+	if err := os.Remove(plainZip); err != nil {
+		t.Fatalf("remove plaintext ZIP fixture: %v", err)
+	}
+	if err := os.RemoveAll(sourceDir); err != nil {
+		t.Fatalf("remove source fixture: %v", err)
+	}
+
+	outputPath := filepath.Join(tmpDir, "recovered")
+	reporter := &autoUnzipOrderingReporter{
+		outputPath:    outputPath,
+		encryptedPath: encryptedPath,
+	}
+	if err := Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  encryptedPath,
+		OutputFile: outputPath,
+		Password:   append([]byte(nil), password...),
+		AutoUnzip:  true,
+		Reporter:   reporter,
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("decrypt and auto-unzip: %v", err)
+	}
+
+	observed, orderingErr := reporter.result()
+	if !observed {
+		t.Fatal("real extraction produced no progress observation")
+	}
+	if orderingErr != nil {
+		t.Fatalf("unsafe auto-unzip publication order: %v", orderingErr)
+	}
+	assertFileBytes(t, filepath.Join(outputPath, "source", "payload.txt"), payload)
+	if _, err := os.Lstat(encryptedPath); err != nil {
+		t.Fatalf("encrypted input must remain recoverable: %v", err)
+	}
+}
+
+func TestAutoUnzipWithoutZipSuffixRejectsOutputParentSwap(t *testing.T) {
+	tmpDir := t.TempDir()
+	plainZip := filepath.Join(tmpDir, "payload.zip")
+	payload := bytes.Repeat([]byte("pinned auto-unzip parent payload"), 512)
+	createStoredZipEntryForVolumeTest(t, plainZip, "payload.txt", payload)
+
+	encryptedPath := filepath.Join(tmpDir, "payload.pcv")
+	password := "auto-unzip-parent-swap-password"
+	if err := Encrypt(context.Background(), &EncryptRequest{
+		InputFile:  plainZip,
+		OutputFile: encryptedPath,
+		Password:   []byte(password),
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("encrypt ZIP fixture: %v", err)
+	}
+	if err := os.Remove(plainZip); err != nil {
+		t.Fatalf("remove plaintext ZIP fixture: %v", err)
+	}
+	encryptedInfo, err := os.Lstat(encryptedPath)
+	if err != nil {
+		t.Fatalf("inspect encrypted input: %v", err)
+	}
+	encryptedBytes, err := os.ReadFile(encryptedPath)
+	if err != nil {
+		t.Fatalf("read encrypted input: %v", err)
+	}
+
+	originalDir := filepath.Join(tmpDir, "original")
+	replacementDir := filepath.Join(tmpDir, "replacement")
+	for _, path := range []string{originalDir, replacementDir} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatalf("create output parent %s: %v", path, err)
+		}
+	}
+	outputLink := filepath.Join(tmpDir, "output-link")
+	if err := os.Symlink(originalDir, outputLink); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	outputPath := filepath.Join(outputLink, "recovered")
+	reporter := &autoUnzipParentSwapReporter{
+		linkPath:       outputLink,
+		replacementDir: replacementDir,
+	}
+
+	err = Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  encryptedPath,
+		OutputFile: outputPath,
+		Password:   []byte(password),
+		AutoUnzip:  true,
+		Reporter:   reporter,
+		RSCodecs:   newRSCodecsT(t),
+	})
+	if err == nil {
+		t.Fatal("Decrypt succeeded after the output parent changed")
+	}
+	if reporter.err != nil {
+		t.Fatalf("swap output parent: %v", reporter.err)
+	}
+	if !reporter.swapped {
+		t.Fatal("real decrypt pipeline never reached the auto-unzip parent swap")
+	}
+	for _, parent := range []string{originalDir, replacementDir} {
+		entries, readErr := os.ReadDir(parent)
+		if readErr != nil {
+			t.Fatalf("read output parent %s: %v", parent, readErr)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("output parent %s contains residue after rejected swap: %v", parent, entries)
+		}
+	}
+	currentEncryptedInfo, err := os.Lstat(encryptedPath)
+	if err != nil {
+		t.Fatalf("encrypted input disappeared after rejected swap: %v", err)
+	}
+	if !os.SameFile(encryptedInfo, currentEncryptedInfo) {
+		t.Fatal("encrypted input path was replaced after rejected swap")
+	}
+	assertFileBytes(t, encryptedPath, encryptedBytes)
+
+	safeOutput := filepath.Join(tmpDir, "safe-recovered")
+	if err := Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  encryptedPath,
+		OutputFile: safeOutput,
+		Password:   []byte(password),
+		AutoUnzip:  true,
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("decrypt unchanged volume to a stable output: %v", err)
+	}
+	assertFileBytes(t, filepath.Join(safeOutput, "payload.txt"), payload)
+}
+
+func TestAutoUnzipSameLevelRejectsOutputParentSwap(t *testing.T) {
+	tmpDir := t.TempDir()
+	plainZip := filepath.Join(tmpDir, "same-level.zip")
+	payload := bytes.Repeat([]byte("same-level pinned parent payload"), 512)
+	createStoredZipEntryForVolumeTest(t, plainZip, "payload.txt", payload)
+	plainZipBytes, err := os.ReadFile(plainZip)
+	if err != nil {
+		t.Fatalf("read plaintext ZIP fixture: %v", err)
+	}
+
+	encryptedPath := filepath.Join(tmpDir, "same-level.pcv")
+	password := "same-level-parent-swap-password"
+	if err := Encrypt(context.Background(), &EncryptRequest{
+		InputFile:  plainZip,
+		OutputFile: encryptedPath,
+		Password:   []byte(password),
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("encrypt ZIP fixture: %v", err)
+	}
+	if err := os.Remove(plainZip); err != nil {
+		t.Fatalf("remove plaintext ZIP fixture: %v", err)
+	}
+	encryptedInfo, err := os.Lstat(encryptedPath)
+	if err != nil {
+		t.Fatalf("inspect encrypted input: %v", err)
+	}
+	encryptedBytes, err := os.ReadFile(encryptedPath)
+	if err != nil {
+		t.Fatalf("read encrypted input: %v", err)
+	}
+
+	outputDir := filepath.Join(tmpDir, "output")
+	movedOriginalDir := filepath.Join(tmpDir, "moved-original")
+	if err := os.Mkdir(outputDir, 0o700); err != nil {
+		t.Fatalf("create output parent: %v", err)
+	}
+	outputPath := filepath.Join(outputDir, "recovered.zip")
+	reporter := &autoUnzipParentReplaceReporter{
+		parentPath: outputDir,
+		movedPath:  movedOriginalDir,
+	}
+
+	err = Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  encryptedPath,
+		OutputFile: outputPath,
+		Password:   []byte(password),
+		AutoUnzip:  true,
+		SameLevel:  true,
+		Reporter:   reporter,
+		RSCodecs:   newRSCodecsT(t),
+	})
+	if reporter.err != nil {
+		if !windowsPreventedOpenHandleRename(reporter.err) {
+			t.Fatalf("replace output parent: %v", reporter.err)
+		}
+		if err != nil {
+			t.Fatalf("same-level Decrypt after the OS prevented parent replacement: %v", err)
+		}
+		if reporter.replaced {
+			t.Fatal("reporter marked a blocked output-parent replacement as completed")
+		}
+		assertFileBytes(t, filepath.Join(outputDir, "payload.txt"), payload)
+		if _, statErr := os.Lstat(outputPath); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("successful same-level auto-unzip retained its archive: %v", statErr)
+		}
+		currentEncryptedInfo, statErr := os.Lstat(encryptedPath)
+		if statErr != nil {
+			t.Fatalf("encrypted input disappeared after prevented parent replacement: %v", statErr)
+		}
+		if !os.SameFile(encryptedInfo, currentEncryptedInfo) {
+			t.Fatal("encrypted input path changed after prevented parent replacement")
+		}
+		assertFileBytes(t, encryptedPath, encryptedBytes)
+		return
+	}
+	if err == nil {
+		t.Fatal("same-level Decrypt succeeded after the output parent changed")
+	}
+	if !reporter.replaced {
+		t.Fatal("real decrypt pipeline never reached the same-level parent replacement")
+	}
+	replacementEntries, err := os.ReadDir(outputDir)
+	if err != nil {
+		t.Fatalf("read replacement output parent: %v", err)
+	}
+	if len(replacementEntries) != 0 {
+		t.Fatalf("same-level extraction wrote into replacement parent: %v", replacementEntries)
+	}
+	recoverableArchive := filepath.Join(movedOriginalDir, "recovered.zip")
+	assertFileBytes(t, recoverableArchive, plainZipBytes)
+	requireStoredZipEntryForVolumeTest(t, recoverableArchive, "payload.txt", payload)
+	originalEntries, err := os.ReadDir(movedOriginalDir)
+	if err != nil {
+		t.Fatalf("read original output parent: %v", err)
+	}
+	if len(originalEntries) != 1 || originalEntries[0].Name() != "recovered.zip" {
+		t.Fatalf("original output parent contains unexpected residue: %v", originalEntries)
+	}
+
+	currentEncryptedInfo, err := os.Lstat(encryptedPath)
+	if err != nil {
+		t.Fatalf("encrypted input disappeared after rejected swap: %v", err)
+	}
+	if !os.SameFile(encryptedInfo, currentEncryptedInfo) {
+		t.Fatal("encrypted input path was replaced after rejected same-level swap")
+	}
+	assertFileBytes(t, encryptedPath, encryptedBytes)
+
+	retryDir := filepath.Join(tmpDir, "retry")
+	if err := os.Mkdir(retryDir, 0o700); err != nil {
+		t.Fatalf("create stable retry parent: %v", err)
+	}
+	retryArchive := filepath.Join(retryDir, "recovered.zip")
+	if err := Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  encryptedPath,
+		OutputFile: retryArchive,
+		Password:   []byte(password),
+		AutoUnzip:  true,
+		SameLevel:  true,
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("decrypt unchanged volume into stable same-level parent: %v", err)
+	}
+	assertFileBytes(t, filepath.Join(retryDir, "payload.txt"), payload)
+	if _, err := os.Lstat(retryArchive); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stable same-level retry left its decrypted archive: %v", err)
+	}
+}
+
 // TestAutoUnzipSameLevel tests automatic zip extraction to the same directory as the volume
 func TestAutoUnzipSameLevel(t *testing.T) {
 	rsCodecs, err := encoding.NewRSCodecs()
@@ -1181,78 +1310,374 @@ func TestAutoUnzipSameLevel(t *testing.T) {
 	t.Log("Auto-unzip same-level: SUCCESS")
 }
 
-func TestAutoUnzipRestoresRenamedOutputOnUnpackFailure(t *testing.T) {
+func TestAutoUnzipSameLevelPreservesKeyfileCollision(t *testing.T) {
+	restore := useProductionTestKDF()
+	defer restore()
+
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
+		t.Fatalf("Create RS codecs: %v", err)
 	}
-
 	tmpDir := t.TempDir()
-	testContent := []byte("Auto-unzip rollback test content!")
-	testDir := filepath.Join(tmpDir, "rollback_folder")
-	if err := os.MkdirAll(testDir, 0o755); err != nil {
-		t.Fatalf("Failed to create test directory: %v", err)
-	}
-	testFile := filepath.Join(testDir, "rollback.txt")
-	if err := os.WriteFile(testFile, testContent, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
+	volumeDir := filepath.Join(tmpDir, "volume")
+	if err := os.Mkdir(volumeDir, 0o700); err != nil {
+		t.Fatalf("Create volume directory: %v", err)
 	}
 
-	zipPath := filepath.Join(tmpDir, "rollback.zip")
-	if err := createTestZip(zipPath, testDir); err != nil {
-		t.Fatalf("Failed to create test zip: %v", err)
+	// The frozen compressed keyfile volume contains pico_test.txt. Give the
+	// required keyfile that same destination name so extraction must refuse to
+	// replace the credential file.
+	keyfilePath := filepath.Join(volumeDir, "pico_test.txt")
+	keyfileData, err := os.ReadFile(filepath.Join(findTestdata(t), "keyfile_alpha.bin"))
+	if err != nil {
+		t.Fatalf("Read frozen keyfile: %v", err)
+	}
+	if err := os.WriteFile(keyfilePath, keyfileData, 0o600); err != nil {
+		t.Fatalf("Create keyfile: %v", err)
+	}
+	keyfileInfo, err := os.Lstat(keyfilePath)
+	if err != nil {
+		t.Fatalf("Inspect keyfile: %v", err)
 	}
 
-	encryptedPath := filepath.Join(tmpDir, "rollback.zip.pcv")
-	decryptedPath := filepath.Join(tmpDir, "rollback")
-	reporter := &GoldenTestReporter{}
+	encryptedPath := filepath.Join(volumeDir, "archive.pcv")
+	volumeBytes, err := os.ReadFile(filepath.Join(findTestdata(t), "pico_test_v2_keyfile_compress.zip.pcv"))
+	if err != nil {
+		t.Fatalf("Read frozen compressed keyfile volume: %v", err)
+	}
+	if err := os.WriteFile(encryptedPath, volumeBytes, 0o600); err != nil {
+		t.Fatalf("Copy frozen compressed keyfile volume: %v", err)
+	}
 
-	encReq := &EncryptRequest{
-		InputFile:  zipPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("rollback_password"),
-		Reporter:   reporter,
+	decryptedPath := filepath.Join(volumeDir, "archive.zip")
+	err = Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  encryptedPath,
+		OutputFile: decryptedPath,
+		Password:   []byte(goldenPassword),
+		Keyfiles:   []string{keyfilePath},
+		AutoUnzip:  true,
+		SameLevel:  true,
+		Reporter:   &GoldenTestReporter{},
 		RSCodecs:   rsCodecs,
-	}
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt failed: %v", err)
-	}
-
-	_ = os.Remove(zipPath)
-	_ = os.RemoveAll(testDir)
-
-	originalUnpackArchive := unpackArchive
-	unpackArchive = func(opts fileops.UnpackOptions) error {
-		return errors.New("insufficient disk space for extraction")
-	}
-	defer func() {
-		unpackArchive = originalUnpackArchive
-	}()
-
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("rollback_password"),
-		AutoUnzip:    true,
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
+	})
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("Decrypt auto-unzip collision error = %v, want os.ErrExist", err)
 	}
 
-	err = Decrypt(context.Background(), decReq)
+	gotKeyfile, err := os.ReadFile(keyfilePath)
+	if err != nil {
+		t.Fatalf("Read keyfile after collision: %v", err)
+	}
+	if string(gotKeyfile) != string(keyfileData) {
+		t.Fatalf("Keyfile changed: got %q, want %q", gotKeyfile, keyfileData)
+	}
+	currentKeyfileInfo, err := os.Lstat(keyfilePath)
+	if err != nil {
+		t.Fatalf("Inspect keyfile after collision: %v", err)
+	}
+	if !os.SameFile(keyfileInfo, currentKeyfileInfo) {
+		t.Fatal("Keyfile path was replaced")
+	}
+	requireStoredZipEntryForVolumeTest(t, decryptedPath, filepath.Base(keyfilePath), []byte(expectedContent))
+	if _, err := os.Stat(encryptedPath); err != nil {
+		t.Fatalf("Encrypted input was removed after extraction collision: %v", err)
+	}
+}
+
+func TestAutoUnzipSameLevelPreservesArchiveOnSelfCollision(t *testing.T) {
+	rsCodecs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("Create RS codecs: %v", err)
+	}
+	tmpDir := t.TempDir()
+	sourceZip := filepath.Join(tmpDir, "source.zip")
+	outputPath := filepath.Join(tmpDir, "archive.zip")
+	payload := []byte("entry intentionally collides with the decrypted archive")
+	createStoredZipEntryForVolumeTest(t, sourceZip, filepath.Base(outputPath), payload)
+
+	encryptedPath := filepath.Join(tmpDir, "archive.pcv")
+	password := []byte("auto-unzip-self-collision")
+	if err := Encrypt(context.Background(), &EncryptRequest{
+		InputFile:  sourceZip,
+		OutputFile: encryptedPath,
+		Password:   password,
+		Reporter:   &GoldenTestReporter{},
+		RSCodecs:   rsCodecs,
+	}); err != nil {
+		t.Fatalf("Encrypt self-colliding ZIP: %v", err)
+	}
+
+	err = Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  encryptedPath,
+		OutputFile: outputPath,
+		Password:   password,
+		AutoUnzip:  true,
+		SameLevel:  true,
+		Reporter:   &GoldenTestReporter{},
+		RSCodecs:   rsCodecs,
+	})
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("Decrypt auto-unzip self-collision error = %v, want os.ErrExist", err)
+	}
+	requireStoredZipEntryForVolumeTest(t, outputPath, filepath.Base(outputPath), payload)
+}
+
+func TestAutoUnzipPreservesPreexistingLegacyZipSibling(t *testing.T) {
+	tmpDir := t.TempDir()
+	sourceDir := filepath.Join(tmpDir, "source")
+	if err := os.Mkdir(sourceDir, 0o700); err != nil {
+		t.Fatalf("create source directory: %v", err)
+	}
+	payload := []byte("real auto-unzip payload")
+	if err := os.WriteFile(filepath.Join(sourceDir, "payload.txt"), payload, 0o600); err != nil {
+		t.Fatalf("write source payload: %v", err)
+	}
+
+	plainZip := filepath.Join(tmpDir, "source.zip")
+	if err := createTestZip(plainZip, sourceDir); err != nil {
+		t.Fatalf("create source ZIP: %v", err)
+	}
+	volumePath := filepath.Join(tmpDir, "source.zip.pcv")
+	if err := Encrypt(context.Background(), &EncryptRequest{
+		InputFile:  plainZip,
+		OutputFile: volumePath,
+		Password:   []byte("legacy-zip-sibling-password"),
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("encrypt source ZIP: %v", err)
+	}
+	if err := os.Remove(plainZip); err != nil {
+		t.Fatalf("remove plaintext ZIP fixture: %v", err)
+	}
+	if err := os.RemoveAll(sourceDir); err != nil {
+		t.Fatalf("remove plaintext source fixture: %v", err)
+	}
+
+	outputPath := filepath.Join(tmpDir, "recovered")
+	legacyZip := outputPath + ".zip"
+	foreignBytes := []byte("foreign file at the old predictable auto-unzip path")
+	if err := os.WriteFile(legacyZip, foreignBytes, 0o640); err != nil {
+		t.Fatalf("write protected legacy ZIP sibling: %v", err)
+	}
+
+	if err := Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  volumePath,
+		OutputFile: outputPath,
+		Password:   []byte("legacy-zip-sibling-password"),
+		AutoUnzip:  true,
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("decrypt and auto-unzip: %v", err)
+	}
+
+	assertFileBytes(t, legacyZip, foreignBytes)
+	assertFileBytes(t, filepath.Join(outputPath, "source", "payload.txt"), payload)
+	matches, err := filepath.Glob(filepath.Join(tmpDir, ".picocrypt-unpack-*"))
+	if err != nil {
+		t.Fatalf("glob auto-unzip work directories: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("auto-unzip leaked private work paths: %v", matches)
+	}
+}
+
+func TestAutoUnzipMalformedZipPublishesRecoverablePlaintextArchive(t *testing.T) {
+	tmpDir := t.TempDir()
+	malformedZip := []byte("PK\x03\x04not-a-valid-zip-central-directory")
+	plaintextPath := filepath.Join(tmpDir, "malformed.zip")
+	if err := os.WriteFile(plaintextPath, malformedZip, 0o600); err != nil {
+		t.Fatalf("write malformed ZIP fixture: %v", err)
+	}
+	encryptedPath := filepath.Join(tmpDir, "malformed.zip.pcv")
+	password := "malformed-auto-unzip-password"
+	if err := Encrypt(context.Background(), &EncryptRequest{
+		InputFile:  plaintextPath,
+		OutputFile: encryptedPath,
+		Password:   []byte(password),
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("encrypt malformed ZIP fixture: %v", err)
+	}
+	if err := os.Remove(plaintextPath); err != nil {
+		t.Fatalf("remove plaintext fixture: %v", err)
+	}
+	encryptedInfo, err := os.Lstat(encryptedPath)
+	if err != nil {
+		t.Fatalf("inspect encrypted input: %v", err)
+	}
+	encryptedBytes, err := os.ReadFile(encryptedPath)
+	if err != nil {
+		t.Fatalf("read encrypted input: %v", err)
+	}
+
+	outputPath := filepath.Join(tmpDir, "recovered")
+	err = Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  encryptedPath,
+		OutputFile: outputPath,
+		Password:   []byte(password),
+		AutoUnzip:  true,
+		RSCodecs:   newRSCodecsT(t),
+	})
 	if err == nil {
-		t.Fatal("expected decrypt to fail when unpack step fails")
+		t.Fatal("Decrypt succeeded while auto-unpacking a malformed ZIP")
 	}
 	if !strings.Contains(err.Error(), "unzip") {
-		t.Fatalf("expected unzip error, got %v", err)
+		t.Fatalf("Decrypt error = %v, want an unzip error", err)
+	}
+	outputInfo, err := os.Lstat(outputPath)
+	if err != nil {
+		t.Fatalf("recoverable plaintext archive was not published: %v", err)
+	}
+	if !outputInfo.Mode().IsRegular() {
+		t.Fatalf("recoverable output mode = %s, want regular archive file", outputInfo.Mode())
+	}
+	assertFileBytes(t, outputPath, malformedZip)
+
+	currentEncryptedInfo, err := os.Lstat(encryptedPath)
+	if err != nil {
+		t.Fatalf("encrypted input disappeared after malformed ZIP failure: %v", err)
+	}
+	if !os.SameFile(encryptedInfo, currentEncryptedInfo) {
+		t.Fatal("encrypted input path was replaced after malformed ZIP failure")
+	}
+	assertFileBytes(t, encryptedPath, encryptedBytes)
+
+	secondOutput := filepath.Join(tmpDir, "recovered-again")
+	if err := Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  encryptedPath,
+		OutputFile: secondOutput,
+		Password:   []byte(password),
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("decrypt unchanged volume without auto-unzip: %v", err)
+	}
+	assertFileBytes(t, secondOutput, malformedZip)
+}
+
+func TestAutoUnzipZipOutputDoesNotLeaveStaleExistingArchive(t *testing.T) {
+	tmpDir := t.TempDir()
+	plainZip := filepath.Join(tmpDir, "source.zip")
+	payload := []byte("real payload replacing a stale decrypted archive")
+	createStoredZipEntryForVolumeTest(t, plainZip, "payload.txt", payload)
+
+	encryptedPath := filepath.Join(tmpDir, "source.pcv")
+	password := "auto-unzip-existing-zip-output-password"
+	if err := Encrypt(context.Background(), &EncryptRequest{
+		InputFile:  plainZip,
+		OutputFile: encryptedPath,
+		Password:   []byte(password),
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("encrypt ZIP fixture: %v", err)
+	}
+	if err := os.Remove(plainZip); err != nil {
+		t.Fatalf("remove plaintext ZIP fixture: %v", err)
 	}
 
-	if _, statErr := os.Stat(decryptedPath); statErr != nil {
-		t.Fatalf("expected original decrypted output path to be restored, stat err: %v", statErr)
+	outputArchive := filepath.Join(tmpDir, "recovered.zip")
+	staleBytes := []byte("stale existing output must not survive successful auto-unzip")
+	if err := os.WriteFile(outputArchive, staleBytes, 0o600); err != nil {
+		t.Fatalf("write stale output archive: %v", err)
 	}
-	if _, statErr := os.Stat(decryptedPath + ".zip"); !os.IsNotExist(statErr) {
-		t.Fatalf("temporary renamed zip should not remain after unpack failure")
+	if err := Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  encryptedPath,
+		OutputFile: outputArchive,
+		Password:   []byte(password),
+		AutoUnzip:  true,
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("decrypt over stale archive and auto-unzip: %v", err)
 	}
+
+	if _, err := os.Lstat(outputArchive); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful auto-unzip left a stale or decrypted archive: %v", err)
+	}
+	assertFileBytes(t, filepath.Join(tmpDir, "recovered", "payload.txt"), payload)
+	if _, err := os.Lstat(encryptedPath); err != nil {
+		t.Fatalf("encrypted input disappeared after successful auto-unzip: %v", err)
+	}
+}
+
+func TestAutoUnzipZipOutputRejectsLateExtractionRootReplacement(t *testing.T) {
+	tmpDir := t.TempDir()
+	plainZip := filepath.Join(tmpDir, "source.zip")
+	payload := []byte("plaintext must not enter a late replacement root")
+	createStoredZipEntryForVolumeTest(t, plainZip, "payload.txt", payload)
+	plainZipBytes, err := os.ReadFile(plainZip)
+	if err != nil {
+		t.Fatalf("read plaintext ZIP fixture: %v", err)
+	}
+
+	encryptedPath := filepath.Join(tmpDir, "source.pcv")
+	password := "auto-unzip-late-root-password"
+	if err := Encrypt(context.Background(), &EncryptRequest{
+		InputFile:  plainZip,
+		OutputFile: encryptedPath,
+		Password:   []byte(password),
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("encrypt ZIP fixture: %v", err)
+	}
+	if err := os.Remove(plainZip); err != nil {
+		t.Fatalf("remove plaintext ZIP fixture: %v", err)
+	}
+	encryptedInfo, err := os.Lstat(encryptedPath)
+	if err != nil {
+		t.Fatalf("inspect encrypted input: %v", err)
+	}
+	encryptedBytes, err := os.ReadFile(encryptedPath)
+	if err != nil {
+		t.Fatalf("read encrypted input: %v", err)
+	}
+
+	outputArchive := filepath.Join(tmpDir, "recovered.zip")
+	extractDir := filepath.Join(tmpDir, "recovered")
+	movedReservedDir := filepath.Join(tmpDir, "moved-reserved")
+	foreignBytes := []byte("foreign replacement root must remain exact")
+	reporter := &autoUnzipExtractRootReplaceReporter{
+		extractPath: extractDir,
+		movedPath:   movedReservedDir,
+		foreign:     foreignBytes,
+	}
+	err = Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  encryptedPath,
+		OutputFile: outputArchive,
+		Password:   []byte(password),
+		AutoUnzip:  true,
+		Reporter:   reporter,
+		RSCodecs:   newRSCodecsT(t),
+	})
+	if err == nil {
+		t.Fatal("Decrypt succeeded after the reserved extraction root was replaced")
+	}
+	if reporter.err != nil {
+		t.Fatalf("replace reserved extraction root: %v", reporter.err)
+	}
+	if !reporter.replaced {
+		t.Fatal("real extraction never reached the late root replacement")
+	}
+	assertFileBytes(t, filepath.Join(extractDir, "foreign.txt"), foreignBytes)
+	if _, err := os.Lstat(filepath.Join(extractDir, "payload.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("plaintext entered the foreign replacement root: %v", err)
+	}
+	movedEntries, err := os.ReadDir(movedReservedDir)
+	if err != nil {
+		t.Fatalf("read moved reserved extraction root: %v", err)
+	}
+	if len(movedEntries) != 0 {
+		t.Fatalf("moved reserved extraction root contains plaintext or residue: %v", movedEntries)
+	}
+	assertFileBytes(t, outputArchive, plainZipBytes)
+	requireStoredZipEntryForVolumeTest(t, outputArchive, "payload.txt", payload)
+
+	currentEncryptedInfo, err := os.Lstat(encryptedPath)
+	if err != nil {
+		t.Fatalf("encrypted input disappeared after rejected root replacement: %v", err)
+	}
+	if !os.SameFile(encryptedInfo, currentEncryptedInfo) {
+		t.Fatal("encrypted input path was replaced after rejected root replacement")
+	}
+	assertFileBytes(t, encryptedPath, encryptedBytes)
 }
 
 // createTestZip creates a zip file from a directory
@@ -1298,6 +1723,66 @@ func createTestZip(zipPath, sourceDir string) error {
 		_, err = io.Copy(writer, file)
 		return err
 	})
+}
+
+func createStoredZipEntryForVolumeTest(t *testing.T, zipPath, name string, data []byte) {
+	t.Helper()
+
+	file, err := os.OpenFile(zipPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("Create stored ZIP: %v", err)
+	}
+	writer := zip.NewWriter(file)
+	entry, err := writer.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+	if err != nil {
+		_ = writer.Close()
+		_ = file.Close()
+		t.Fatalf("Create stored ZIP entry: %v", err)
+	}
+	if _, err := entry.Write(data); err != nil {
+		_ = writer.Close()
+		_ = file.Close()
+		t.Fatalf("Write stored ZIP entry: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		_ = file.Close()
+		t.Fatalf("Close stored ZIP writer: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close stored ZIP: %v", err)
+	}
+}
+
+func requireStoredZipEntryForVolumeTest(t *testing.T, zipPath, name string, want []byte) {
+	t.Helper()
+
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("Open preserved ZIP %s: %v", zipPath, err)
+	}
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("Close preserved ZIP %s: %v", zipPath, err)
+		}
+	}()
+	if len(reader.File) != 1 || reader.File[0].Name != name {
+		t.Fatalf("Preserved ZIP entries = %v, want only %q", reader.File, name)
+	}
+	entry, err := reader.File[0].Open()
+	if err != nil {
+		t.Fatalf("Open preserved ZIP entry: %v", err)
+	}
+	got, readErr := io.ReadAll(entry)
+	closeErr := entry.Close()
+	if readErr != nil {
+		t.Fatalf("Read preserved ZIP entry: %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("Close preserved ZIP entry: %v", closeErr)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("Preserved ZIP entry = %q, want %q", got, want)
+	}
 }
 
 func TestRoundTripAutoUnzipMultipleFilesFromDifferentDirs(t *testing.T) {
@@ -1683,8 +2168,12 @@ func TestRoundTripEmptyFile(t *testing.T) {
 	t.Log("Round-trip empty file: SUCCESS")
 }
 
-// TestRoundTripSplitWithKeyfile tests split + keyfile combination
-func TestRoundTripSplitWithKeyfile(t *testing.T) {
+// TestLegacySplitKeyfileVolumeDecrypts proves that the writer freeze does not
+// strand a pre-2.19 keyfile volume after transport splitting/recombination.
+func TestLegacySplitKeyfileVolumeDecrypts(t *testing.T) {
+	restore := useProductionTestKDF()
+	defer restore()
+
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
 		t.Fatalf("Failed to create RS codecs: %v", err)
@@ -1692,50 +2181,39 @@ func TestRoundTripSplitWithKeyfile(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	// Create test file
-	plaintext := make([]byte, 40*1024) // 40 KiB
-	for i := range plaintext {
-		plaintext[i] = byte((i * 17) % 256)
+	encryptedPath := filepath.Join(tmpDir, "legacy-keyfile.pcv")
+	fixture, err := os.ReadFile(filepath.Join(findTestdata(t), "pico_test_v2_keyfile_single.txt.pcv"))
+	if err != nil {
+		t.Fatalf("read legacy keyfile fixture: %v", err)
 	}
-	inputPath := filepath.Join(tmpDir, "split_keyfile_test.bin")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
+	if err := os.WriteFile(encryptedPath, fixture, 0o600); err != nil {
+		t.Fatalf("copy legacy keyfile fixture: %v", err)
+	}
+	chunks, err := fileops.Split(fileops.SplitOptions{
+		InputPath: encryptedPath,
+		ChunkSize: 2,
+		Unit:      fileops.SplitUnitTotal,
+	})
+	if err != nil {
+		t.Fatalf("split legacy keyfile fixture: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("split chunk count = %d, want 2", len(chunks))
+	}
+	if err := os.Remove(encryptedPath); err != nil {
+		t.Fatalf("remove unsplit fixture before recombination: %v", err)
 	}
 
-	// Create keyfile
-	keyfileContent := []byte("This is keyfile content for split test!")
-	keyfilePath := filepath.Join(tmpDir, "split.key")
-	if err := os.WriteFile(keyfilePath, keyfileContent, 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "split_keyfile_test.bin.pcv")
+	keyfilePath := filepath.Join(findTestdata(t), "keyfile_alpha.bin")
 	decryptedPath := filepath.Join(tmpDir, "split_keyfile_decrypted.bin")
 
 	reporter := &GoldenTestReporter{}
 
-	// Encrypt with split + keyfile
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("split_keyfile_password"),
-		Keyfiles:   []string{keyfilePath},
-		Split:      true,
-		ChunkSize:  10,
-		ChunkUnit:  0, // KiB
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (split+keyfile) failed: %v", err)
-	}
-
 	// Decrypt
 	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
+		InputFile:    chunks[0],
 		OutputFile:   decryptedPath,
-		Password:     []byte("split_keyfile_password"),
+		Password:     []byte(goldenPassword),
 		Keyfiles:     []string{keyfilePath},
 		Recombine:    true,
 		ForceDecrypt: false,
@@ -1752,18 +2230,9 @@ func TestRoundTripSplitWithKeyfile(t *testing.T) {
 		t.Fatalf("Failed to read decrypted file: %v", err)
 	}
 
-	if len(decrypted) != len(plaintext) {
-		t.Errorf("Length mismatch. Expected: %d, Got: %d", len(plaintext), len(decrypted))
+	if string(decrypted) != expectedContent {
+		t.Fatalf("legacy split+keyfile plaintext = %q, want golden content", decrypted)
 	}
-
-	for i := range plaintext {
-		if decrypted[i] != plaintext[i] {
-			t.Errorf("Content mismatch at byte %d", i)
-			break
-		}
-	}
-
-	t.Log("Round-trip split+keyfile: SUCCESS")
 }
 
 // TestForceDecryptCorruptedData proves the ForceDecrypt contract over a corrupted
@@ -2199,101 +2668,6 @@ func TestV2HeaderTamperDetection(t *testing.T) {
 	t.Log("V2 header tamper detection: SUCCESS")
 }
 
-// TestOrderedKeyfilesOrderMatters verifies that when keyfileOrdered=true,
-// providing keyfiles in wrong order causes decryption to fail.
-func TestOrderedKeyfilesOrderMatters(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	// Create test file
-	plaintext := []byte("Ordered keyfiles test - order must match!")
-	inputPath := filepath.Join(tmpDir, "ordered_kf_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create two keyfiles with different content
-	keyfile1Path := filepath.Join(tmpDir, "keyfile1.bin")
-	keyfile2Path := filepath.Join(tmpDir, "keyfile2.bin")
-
-	if err := os.WriteFile(keyfile1Path, []byte("keyfile1_unique_content_AAAA"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile1: %v", err)
-	}
-	if err := os.WriteFile(keyfile2Path, []byte("keyfile2_unique_content_BBBB"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile2: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "ordered_kf_test.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "ordered_kf_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with keyfiles in order [keyfile1, keyfile2], ordered=true
-	encReq := &EncryptRequest{
-		InputFile:      inputPath,
-		OutputFile:     encryptedPath,
-		Password:       []byte("ordered_keyfile_password"),
-		Keyfiles:       []string{keyfile1Path, keyfile2Path},
-		KeyfileOrdered: true,
-		Reporter:       reporter,
-		RSCodecs:       rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt failed: %v", err)
-	}
-
-	// Test 1: Correct order should succeed
-	decReqCorrect := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("ordered_keyfile_password"),
-		Keyfiles:     []string{keyfile1Path, keyfile2Path}, // Correct order
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReqCorrect); err != nil {
-		t.Fatalf("Decrypt with correct keyfile order failed: %v", err)
-	}
-
-	// Verify content
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Decrypted content mismatch with correct order")
-	}
-
-	// Clean up for next test
-	_ = os.Remove(decryptedPath)
-
-	// Test 2: Wrong order should fail
-	decReqWrong := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath + ".wrong",
-		Password:     []byte("ordered_keyfile_password"),
-		Keyfiles:     []string{keyfile2Path, keyfile1Path}, // WRONG order!
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	err = Decrypt(context.Background(), decReqWrong)
-	if err == nil {
-		t.Fatal("Expected decryption to fail with wrong keyfile order, but it succeeded")
-	}
-
-	t.Logf("Wrong keyfile order correctly rejected: %v", err)
-	t.Log("Ordered keyfiles order matters: SUCCESS")
-}
-
 // TestZeroLengthComments verifies that volumes with empty comments work correctly
 func TestZeroLengthComments(t *testing.T) {
 	rsCodecs, err := encoding.NewRSCodecs()
@@ -2361,456 +2735,6 @@ func TestZeroLengthComments(t *testing.T) {
 	t.Log("Zero-length comments: SUCCESS")
 }
 
-// TestRoundTripKeyfileOnly tests encryption with keyfile only (no password).
-// This is a security-critical test as keyfile-only mode uses empty password string.
-func TestRoundTripKeyfileOnly(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping keyfile-only test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	// Create test file
-	plaintext := []byte("Keyfile-only encryption test - no password used!")
-	inputPath := filepath.Join(tmpDir, "keyfile_only_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create keyfile
-	keyfilePath := filepath.Join(tmpDir, "keyfile_only.bin")
-	keyfileData := []byte("This keyfile is the ONLY credential needed!")
-	if err := os.WriteFile(keyfilePath, keyfileData, 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "keyfile_only_test.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "keyfile_only_decrypted.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with keyfile only - empty password
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte(""), // Empty password - keyfile only!
-		Keyfiles:   []string{keyfilePath},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (keyfile-only) failed: %v", err)
-	}
-
-	// Decrypt with keyfile only - empty password
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte(""), // Empty password
-		Keyfiles:     []string{keyfilePath},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (keyfile-only) failed: %v", err)
-	}
-
-	// Verify content
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch.\nExpected: %q\nGot: %q", plaintext, decrypted)
-	}
-
-	t.Log("Keyfile-only roundtrip: SUCCESS")
-}
-
-// TestRoundTripKeyfileOnlyParanoid tests keyfile-only with paranoid mode.
-func TestRoundTripKeyfileOnlyParanoid(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping keyfile-only paranoid test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Paranoid keyfile-only test data.")
-	inputPath := filepath.Join(tmpDir, "kf_paranoid.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	keyfilePath := filepath.Join(tmpDir, "kf_paranoid.key")
-	if err := os.WriteFile(keyfilePath, []byte("paranoid_keyfile_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "kf_paranoid.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "kf_paranoid_dec.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt keyfile-only + paranoid
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte(""),
-		Keyfiles:   []string{keyfilePath},
-		Paranoid:   true,
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (keyfile-only paranoid) failed: %v", err)
-	}
-
-	// Decrypt
-	decReq := &DecryptRequest{
-		InputFile:  encryptedPath,
-		OutputFile: decryptedPath,
-		Password:   []byte(""),
-		Keyfiles:   []string{keyfilePath},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (keyfile-only paranoid) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (keyfile-only paranoid)")
-	}
-
-	t.Log("Keyfile-only paranoid: SUCCESS")
-}
-
-// TestDeniabilityKeyfileOnly tests deniability with keyfile-only encryption.
-// This verifies that deniability wrapper uses empty password correctly.
-func TestDeniabilityKeyfileOnly(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping deniability+keyfile test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Deniability with keyfile-only - wrapper uses empty password!")
-	inputPath := filepath.Join(tmpDir, "deny_kf_only.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	keyfilePath := filepath.Join(tmpDir, "deny_kf_only.key")
-	if err := os.WriteFile(keyfilePath, []byte("deniability_keyfile_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "deny_kf_only.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "deny_kf_only_dec.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with deniability + keyfile-only
-	encReq := &EncryptRequest{
-		InputFile:   inputPath,
-		OutputFile:  encryptedPath,
-		Password:    []byte(""), // Empty password
-		Keyfiles:    []string{keyfilePath},
-		Deniability: true,
-		Reporter:    reporter,
-		RSCodecs:    rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (deniability+keyfile-only) failed: %v", err)
-	}
-
-	// Verify deniability was applied
-	if !IsDeniable(encryptedPath, rsCodecs) {
-		t.Error("Volume should be detected as deniable")
-	}
-
-	// Decrypt with deniability + keyfile-only
-	decReq := &DecryptRequest{
-		InputFile:   encryptedPath,
-		OutputFile:  decryptedPath,
-		Password:    []byte(""), // Empty password for deniability wrapper
-		Keyfiles:    []string{keyfilePath},
-		Deniability: true,
-		Reporter:    reporter,
-		RSCodecs:    rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (deniability+keyfile-only) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (deniability+keyfile-only)")
-	}
-
-	t.Log("Deniability keyfile-only: SUCCESS")
-}
-
-// TestDeniabilityPasswordAndKeyfiles tests deniability with both password and keyfiles.
-func TestDeniabilityPasswordAndKeyfiles(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping deniability+password+keyfile test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Deniability with password + keyfiles - maximum security!")
-	inputPath := filepath.Join(tmpDir, "deny_pw_kf.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	keyfilePath := filepath.Join(tmpDir, "deny_pw_kf.key")
-	if err := os.WriteFile(keyfilePath, []byte("combined_keyfile_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "deny_pw_kf.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "deny_pw_kf_dec.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with deniability + password + keyfile
-	encReq := &EncryptRequest{
-		InputFile:   inputPath,
-		OutputFile:  encryptedPath,
-		Password:    []byte("deniability_password"),
-		Keyfiles:    []string{keyfilePath},
-		Deniability: true,
-		Reporter:    reporter,
-		RSCodecs:    rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt (deniability+password+keyfile) failed: %v", err)
-	}
-
-	// Decrypt with all credentials
-	decReq := &DecryptRequest{
-		InputFile:   encryptedPath,
-		OutputFile:  decryptedPath,
-		Password:    []byte("deniability_password"),
-		Keyfiles:    []string{keyfilePath},
-		Deniability: true,
-		Reporter:    reporter,
-		RSCodecs:    rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReq); err != nil {
-		t.Fatalf("Decrypt (deniability+password+keyfile) failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch (deniability+password+keyfile)")
-	}
-
-	t.Log("Deniability password+keyfiles: SUCCESS")
-}
-
-// TestWrongPasswordWithKeyfilesFails verifies that providing the wrong password
-// fails decryption even when the correct keyfile is provided.
-// This is security-critical: keyfile alone shouldn't unlock password-protected volumes.
-func TestWrongPasswordWithKeyfilesFails(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping wrong password+keyfile test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Wrong password test - keyfile alone shouldn't work!")
-	inputPath := filepath.Join(tmpDir, "wrong_pw_kf.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	keyfilePath := filepath.Join(tmpDir, "wrong_pw_kf.key")
-	if err := os.WriteFile(keyfilePath, []byte("correct_keyfile_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "wrong_pw_kf.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "wrong_pw_kf_dec.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with password + keyfile
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("correct_password"),
-		Keyfiles:   []string{keyfilePath},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt failed: %v", err)
-	}
-
-	// Attempt decrypt with WRONG password but CORRECT keyfile
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("wrong_password"), // Wrong!
-		Keyfiles:     []string{keyfilePath},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	err = Decrypt(context.Background(), decReq)
-	if err == nil {
-		t.Fatal("Decrypt should have failed with wrong password (even with correct keyfile)")
-	}
-
-	t.Logf("Wrong password correctly rejected: %v", err)
-
-	// Verify decrypted file doesn't exist
-	if _, statErr := os.Stat(decryptedPath); !os.IsNotExist(statErr) {
-		t.Error("Decrypted file should not exist after failed decryption")
-	}
-
-	// Now verify correct password works
-	decReqCorrect := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte("correct_password"),
-		Keyfiles:     []string{keyfilePath},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	if err := Decrypt(context.Background(), decReqCorrect); err != nil {
-		t.Fatalf("Decrypt with correct credentials failed: %v", err)
-	}
-
-	decrypted, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("Failed to read decrypted file: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("Content mismatch with correct credentials")
-	}
-
-	t.Log("Wrong password with keyfiles correctly rejected: SUCCESS")
-}
-
-// TestKeyfileOnlyWrongKeyfileFails verifies that for keyfile-only volumes,
-// providing a wrong keyfile fails (with or without empty password).
-func TestKeyfileOnlyWrongKeyfileFails(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping keyfile-only wrong keyfile test in short mode")
-	}
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Keyfile-only wrong keyfile test")
-	inputPath := filepath.Join(tmpDir, "kf_only_wrong.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	correctKeyfile := filepath.Join(tmpDir, "correct.key")
-	wrongKeyfile := filepath.Join(tmpDir, "wrong.key")
-	if err := os.WriteFile(correctKeyfile, []byte("correct_key_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write correct keyfile: %v", err)
-	}
-	if err := os.WriteFile(wrongKeyfile, []byte("wrong_key_content"), 0o644); err != nil {
-		t.Fatalf("Failed to write wrong keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "kf_only_wrong.txt.pcv")
-	decryptedPath := filepath.Join(tmpDir, "kf_only_wrong_dec.txt")
-
-	reporter := &GoldenTestReporter{}
-
-	// Encrypt with keyfile only
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte(""),
-		Keyfiles:   []string{correctKeyfile},
-		Reporter:   reporter,
-		RSCodecs:   rsCodecs,
-	}
-
-	if err := Encrypt(context.Background(), encReq); err != nil {
-		t.Fatalf("Encrypt failed: %v", err)
-	}
-
-	// Attempt decrypt with wrong keyfile
-	decReq := &DecryptRequest{
-		InputFile:    encryptedPath,
-		OutputFile:   decryptedPath,
-		Password:     []byte(""),
-		Keyfiles:     []string{wrongKeyfile},
-		ForceDecrypt: false,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-	}
-
-	err = Decrypt(context.Background(), decReq)
-	if err == nil {
-		t.Fatal("Decrypt should have failed with wrong keyfile")
-	}
-
-	t.Logf("Wrong keyfile correctly rejected: %v", err)
-	t.Log("Keyfile-only wrong keyfile: SUCCESS")
-}
-
 // TestDeniabilityWrongPasswordFails verifies that deniability wrapper correctly
 // rejects wrong password for the deniability layer.
 func TestDeniabilityWrongPasswordFails(t *testing.T) {
@@ -2868,55 +2792,4 @@ func TestDeniabilityWrongPasswordFails(t *testing.T) {
 	// Error should indicate password issue (version decode fails)
 	t.Logf("Deniability wrong password correctly rejected: %v", err)
 	t.Log("Deniability wrong password: SUCCESS")
-}
-
-// TestDuplicateKeyfilesRejected verifies that encryption fails when
-// duplicate keyfiles would cause XOR cancellation (zero key).
-func TestDuplicateKeyfilesRejected(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	plaintext := []byte("Duplicate keyfiles should be rejected.")
-	inputPath := filepath.Join(tmpDir, "dup_kf_test.txt")
-	if err := os.WriteFile(inputPath, plaintext, 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Create one keyfile
-	keyfilePath := filepath.Join(tmpDir, "keyfile.bin")
-	if err := os.WriteFile(keyfilePath, []byte("keyfile_content_123456789"), 0o644); err != nil {
-		t.Fatalf("Failed to write keyfile: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "dup_kf_test.txt.pcv")
-
-	reporter := &GoldenTestReporter{}
-
-	// Attempt to encrypt with the same keyfile twice (unordered - will XOR to zero)
-	encReq := &EncryptRequest{
-		InputFile:      inputPath,
-		OutputFile:     encryptedPath,
-		Password:       []byte("duplicate_keyfile_password"),
-		Keyfiles:       []string{keyfilePath, keyfilePath}, // Same keyfile twice!
-		KeyfileOrdered: false,                              // Unordered = XOR cancellation
-		Reporter:       reporter,
-		RSCodecs:       rsCodecs,
-	}
-
-	err = Encrypt(context.Background(), encReq)
-	if err == nil {
-		t.Fatal("Expected encryption to fail with duplicate keyfiles, but it succeeded")
-	}
-
-	expectedErr := "duplicate keyfiles detected"
-	if err.Error() != expectedErr {
-		t.Errorf("Expected error %q, got %q", expectedErr, err.Error())
-	}
-
-	t.Logf("Duplicate keyfiles correctly rejected: %v", err)
-	t.Log("Duplicate keyfiles rejection: SUCCESS")
 }

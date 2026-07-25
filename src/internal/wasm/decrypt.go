@@ -9,6 +9,7 @@ import (
 	"Picocrypt-NG/internal/util"
 	"bytes"
 	"crypto/subtle"
+	"errors"
 
 	pwnorm "Picocrypt-NG/internal/password"
 )
@@ -24,6 +25,14 @@ const (
 	ErrKeyfilesIncorrect = 8  // provided keyfiles don't match the stored hash
 	ErrKeyfilesDuplicate = 9  // keyfiles XOR to an all-zero key
 	ErrModifiedButKept   = 10 // payload MAC failed; output kept on user-forced decrypt (untrusted)
+	// Encrypt-only: the password-derived outer deniability wrapper cannot be
+	// protected by inner-volume keyfiles.
+	ErrDeniabilityPasswordRequired = 11
+	// Encrypt-only: v2 keyfile writers are frozen until every secret
+	// operational key is bound to the keyfile in the reviewed v3 format.
+	ErrKeyfileWritesDisabled = 12
+	// Encrypt-only: a new password-only volume needs a non-empty password.
+	ErrEncryptionPasswordRequired = 13
 )
 
 // DecryptResult is the successful output of DecryptVolume. On error the int
@@ -71,6 +80,9 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 	headerReader := header.NewReader(reader, rsCodecs)
 	result, err := headerReader.ReadHeader()
 	if err != nil {
+		if errors.Is(err, header.ErrUnsupportedVersion) {
+			return DecryptResult{}, ErrUnsupported
+		}
 		return DecryptResult{}, ErrCorruptedHeader
 	}
 	hdr := result.Header

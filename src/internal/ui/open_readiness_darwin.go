@@ -14,7 +14,6 @@ import "C"
 import (
 	"context"
 	"errors"
-	"unsafe"
 )
 
 const (
@@ -50,7 +49,7 @@ func defaultOpenedPathReadiness(ctx context.Context, paths []string) openedPathR
 		var cdir C.int
 		var cerr *C.char
 		code := int(C.pcngCheckOpenedPathReadiness(cpath, &cubiquitous, &cdir, &cerr))
-		C.free(unsafe.Pointer(cpath))
+		C.pcngFreeCString(cpath)
 		item := openedPathReadiness{
 			Path:         path,
 			State:        openedPathStateFromDarwinCode(code),

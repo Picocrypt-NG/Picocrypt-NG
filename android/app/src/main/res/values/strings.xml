@@ -17,6 +17,7 @@
     <string name="password">Password</string>
     <string name="confirm_password">Confirm Password</string>
     <string name="enter_password">Enter a password</string>
+    <string name="deniability_password_required">Deniability requires a non-empty password</string>
     <string name="passwords_must_match">Passwords must match</string>
     <string name="hide_password">Hide password</string>
     <string name="show_password">Show password</string>
@@ -38,14 +39,10 @@
         <item quantity="other">%1$d keyfiles required</item>
     </plurals>
     <string name="add">Add</string>
-    <string name="new_keyfile">New</string>
     <string name="clear">Clear</string>
     <string name="copying">Copying…</string>
-    <string name="creating">Creating…</string>
     <string name="require_this_order">Require this order</string>
     <string name="error_creating_keyfile">Error Creating Keyfile</string>
-    <string name="keyfile_write_failed">Failed to write keyfile to selected location</string>
-    <string name="keyfile_create_failed">Failed to create keyfile: %1$s</string>
     <string name="keyfiles_required_warning">Keyfiles are required for this volume</string>
     <string name="keyfile_order_matters">Use the keyfiles in the required order</string>
     
@@ -123,24 +120,64 @@
     <string name="fgs_decrypting">Decrypting</string>
     <string name="fgs_working">Working…</string>
 
-    <!-- Operation status display text; OperationStatus.kt constants remain bridge strings. -->
+    <!-- Operation status display text keyed by stable mobile status codes. -->
     <string name="status_starting">Starting…</string>
     <string name="status_completed">Completed</string>
     <string name="status_cancelled">Cancelled</string>
     <string name="status_error">Error</string>
+    <string name="status_compressing_files">Compressing files…</string>
+    <string name="status_generating_values">Generating values…</string>
+    <string name="status_deriving_key">Deriving key…</string>
+    <string name="status_reading_keyfiles">Reading keyfiles…</string>
+    <string name="status_calculating_values">Calculating values…</string>
+    <string name="status_writing_values">Writing values…</string>
+    <string name="status_splitting">Splitting…</string>
+    <string name="status_recombining_chunks">Recombining chunks…</string>
+    <string name="status_reading_values">Reading values…</string>
+    <string name="status_duplicate_keyfiles_warning">Warning: duplicate keyfiles detected (keys cancel out)…</string>
+    <string name="status_verifying_integrity">Verifying integrity (pass 1 of 2)…</string>
+    <string name="status_mac_verification_failed_continuing">MAC verification failed, continuing anyway…</string>
+    <string name="status_repairing_verifying">Repairing (verifying)…</string>
+    <string name="status_integrity_verified_decrypting">Integrity verified, decrypting…</string>
+    <string name="status_comparing_values">Comparing values…</string>
+    <string name="status_unzipping">Unzipping…</string>
+    <string name="status_adding_plausible_deniability">Adding plausible deniability…</string>
+    <string name="status_removing_deniability_protection">Removing deniability protection…</string>
+    <string name="status_compressing_rate">Compressing at %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_encrypting_rate">Encrypting at %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_splitting_rate">Splitting at %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_recombining_rate">Recombining at %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_verifying_rate">Verifying at %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_decrypting_rate">Decrypting at %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_repairing_rate">Repairing at %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_unpacking_rate">Unpacking at %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_adding_deniability_rate">Adding deniability at %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_removing_deniability_rate">Removing deniability at %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="progress_percent">%1$.2f%%</string>
+    <plurals name="progress_item_count">
+        <item quantity="one">%1$d of %2$d item</item>
+        <item quantity="other">%1$d of %2$d items</item>
+    </plurals>
 
     <!-- Stable error display boundary -->
     <string name="error_auth_failed">Authentication failed. Check the password, keyfiles, and keyfile order.</string>
     <string name="error_data_corrupted">Integrity check failed. The output is unverified and may be corrupted.</string>
+    <string name="error_corrupt_header">The encrypted volume header is damaged or invalid.</string>
     <string name="error_file_not_found">File not found or inaccessible.</string>
+    <string name="error_operation_failed">The operation failed.</string>
     <string name="error_unknown">Unknown error occurred.</string>
+    <string name="error_reason_permission_denied">Permission denied.</string>
+    <string name="error_reason_file_not_found">File not found.</string>
+    <string name="error_reason_insufficient_storage">Not enough storage space.</string>
+    <string name="error_reason_io">Input/output error.</string>
+    <string name="error_reason_unknown">Unknown cause.</string>
     <string name="error_operation_start_failed">Operation failed to start.</string>
     <string name="error_no_active_operation">No active operation.</string>
-    <string name="error_no_operation_to_retry">No active operation to retry.</string>
     <string name="error_operation_data_unavailable">Operation data is not available for retry.</string>
     <string name="error_decrypt_retry_only">Only decryption operations can be retried with force decrypt.</string>
     <string name="error_no_file_selected">Please select a file.</string>
     <string name="error_invalid_password">Please enter a password.</string>
+    <string name="error_keyfile_writes_disabled">New v2 volumes with keyfiles are disabled pending a reviewed v3 format. Existing keyfile volumes can still be decrypted.</string>
     <string name="error_passwords_mismatch">Passwords do not match.</string>
     <string name="error_split_volume_not_supported">Split volumes are not supported on Android. Recombine the chunks on your computer first, then transfer the single %1$s file.</string>
     <string name="error_copy_failed">Failed to copy file.</string>

@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-22.04
     environment: release
     steps:
-    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -174,13 +174,16 @@ jobs:
     needs: build
     if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release) }}
     runs-on: ubuntu-24.04
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
     environment: release
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
-    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Download build artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -209,16 +212,15 @@ jobs:
       with:
         version: ${{ env.VERSION }}
 
-    - name: Release
-      uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+    - name: Stage release assets
+      uses: ./.github/actions/stage-release
       with:
+        version: ${{ env.VERSION }}
         body_path: ${{ github.workspace }}/release-body.md
         # The .zsync must ship alongside the AppImage: AppImageUpdate fetches it from the
         # same release to compute deltas. Without it the embedded update info is a dead end.
         files: |
-          artifacts/${{ env.APPIMAGE_NAME }}
-          artifacts/${{ env.APPIMAGE_NAME }}.zsync
-          artifacts/${{ env.APPIMAGE_NAME }}.sigstore.json
-          artifacts/${{ env.APPIMAGE_NAME }}.zsync.sigstore.json
-        tag_name: ${{ env.VERSION }}
-        overwrite_files: false
+          artifacts/Picocrypt-NG-${{ env.VERSION }}-x86_64.AppImage
+          artifacts/Picocrypt-NG-${{ env.VERSION }}-x86_64.AppImage.sigstore.json
+          artifacts/Picocrypt-NG-${{ env.VERSION }}-x86_64.AppImage.zsync
+          artifacts/Picocrypt-NG-${{ env.VERSION }}-x86_64.AppImage.zsync.sigstore.json

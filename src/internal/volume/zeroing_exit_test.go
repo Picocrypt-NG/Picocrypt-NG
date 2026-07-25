@@ -24,10 +24,11 @@ import (
 // exactly that capture: the SEC-05 fix must zero each orphaned predecessor.
 type recordingKDF struct {
 	captured [][]byte
+	base     func(password, salt []byte, paranoid bool) ([]byte, error)
 }
 
 func (r *recordingKDF) derive(password, salt []byte, paranoid bool) ([]byte, error) {
-	key, err := fastTestVolumeKey(password, salt, paranoid)
+	key, err := r.base(password, salt, paranoid)
 	if err != nil {
 		return nil, err
 	}
@@ -38,9 +39,12 @@ func (r *recordingKDF) derive(password, salt []byte, paranoid bool) ([]byte, err
 // useRecordingKDF swaps deriveVolumeKey for a recording wrapper (reusing the
 // fast_kdf_test.go:45 save/swap/restore idiom) and returns the recorder plus a
 // restore func to defer. deriveDeniabilityKey is left at its fast-test value.
-func useRecordingKDF(t *testing.T) (*recordingKDF, func()) {
+func useRecordingKDF(
+	t *testing.T,
+	base func(password, salt []byte, paranoid bool) ([]byte, error),
+) (*recordingKDF, func()) {
 	t.Helper()
-	rec := &recordingKDF{}
+	rec := &recordingKDF{base: base}
 	restore := useTestKDF(rec.derive, fastTestDeniabilityKey)
 	return rec, restore
 }
@@ -81,42 +85,19 @@ func TestKeyMaterialZeroed(t *testing.T) {
 		}
 
 		tmpDir := t.TempDir()
-		const password = "key-material-zeroed-close-pw"
+		keyfilePath := filepath.Join(findTestdata(t), "keyfile_alpha.bin")
+		encryptedPath := filepath.Join(findTestdata(t), "pico_test_v2_keyfile_single.txt.pcv")
 
-		plaintext := []byte("close-path key-zeroing fixture: keyfile XOR orphans the Argon2 key.")
-		inputPath := filepath.Join(tmpDir, "close_in.txt")
-		if err := os.WriteFile(inputPath, plaintext, 0o600); err != nil {
-			t.Fatalf("write input: %v", err)
-		}
-
-		// Keyfile presence is what makes XORWithKey allocate a NEW slice, so the
-		// Argon2 backing array is genuinely orphaned at ctx.Key reassignment (v2 :343).
-		keyfilePath := filepath.Join(tmpDir, "close.key")
-		if err := os.WriteFile(keyfilePath, []byte("close-path keyfile content"), 0o600); err != nil {
-			t.Fatalf("write keyfile: %v", err)
-		}
-
-		encryptedPath := filepath.Join(tmpDir, "close_in.txt.pcv")
-		encReq := &EncryptRequest{
-			InputFile:  inputPath,
-			OutputFile: encryptedPath,
-			Password:   []byte(password),
-			Keyfiles:   []string{keyfilePath},
-			Reporter:   &GoldenTestReporter{},
-			RSCodecs:   rsCodecs,
-		}
-		if err := Encrypt(context.Background(), encReq); err != nil {
-			t.Fatalf("Encrypt (keyfile): %v", err)
-		}
-
-		rec, restore := useRecordingKDF(t)
+		// The frozen pre-2.19 fixture exercises the still-supported reader without
+		// reopening the disabled v2 keyfile writer.
+		rec, restore := useRecordingKDF(t, productionTestVolumeKey)
 		defer restore()
 
 		decryptedPath := filepath.Join(tmpDir, "close_out.txt")
 		decReq := &DecryptRequest{
 			InputFile:  encryptedPath,
 			OutputFile: decryptedPath,
-			Password:   []byte(password),
+			Password:   []byte(goldenPassword),
 			Keyfiles:   []string{keyfilePath},
 			Reporter:   &GoldenTestReporter{},
 			RSCodecs:   rsCodecs,
@@ -131,7 +112,7 @@ func TestKeyMaterialZeroed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read decrypted output: %v", err)
 		}
-		if string(got) != string(plaintext) {
+		if string(got) != expectedContent {
 			t.Fatalf("decrypted content mismatch (keyfile live key wiped?)")
 		}
 
@@ -150,48 +131,22 @@ func TestKeyMaterialZeroed(t *testing.T) {
 		}
 
 		tmpDir := t.TempDir()
-		const password = "key-material-zeroed-retry-pw"
-		// Multi-block plaintext so block 0 is a full, non-trailing data block
-		// (mirrors TestFullRSDecodeRetryStateReset).
-		plaintext := make([]byte, 4*encoding.RS128DataSize)
-		for i := range plaintext {
-			plaintext[i] = byte(i*13 + 7)
-		}
-		inputPath := filepath.Join(tmpDir, "retry_in.bin")
-		if err := os.WriteFile(inputPath, plaintext, 0o600); err != nil {
-			t.Fatalf("write input: %v", err)
-		}
+		plaintext := legacyKeyfileRSPlaintext()
 
-		// A KEYFILE is essential here: without it the no-keyfile retry path
+		// A keyfile is essential here: without it the no-keyfile retry path
 		// self-assigns ctx.Key (same backing array the first cipher suite holds and
 		// RS-03's CipherSuite.Close() incidentally zeros), so that path would NOT
 		// isolate the WR-01 leak. WITH a keyfile, ctx.Key becomes the XOR result and
 		// the Argon2 backing array is genuinely orphaned at the v2 XOR (:343) on each
 		// pass — unreachable by the cipher suite (which holds the XOR result) or by
 		// Close(). The retry re-derive (:223) and keyfile re-process (:247) also run.
-		keyfilePath := filepath.Join(tmpDir, "retry.key")
-		if err := os.WriteFile(keyfilePath, []byte("retry-path keyfile content"), 0o600); err != nil {
-			t.Fatalf("write keyfile: %v", err)
-		}
-
-		pcvPath := filepath.Join(tmpDir, "retry_in.bin.pcv")
-		encReq := &EncryptRequest{
-			InputFile:   inputPath,
-			OutputFile:  pcvPath,
-			Password:    []byte(password),
-			Keyfiles:    []string{keyfilePath},
-			ReedSolomon: true,
-			Reporter:    &GoldenTestReporter{},
-			RSCodecs:    rsCodecs,
-		}
-		if err := Encrypt(context.Background(), encReq); err != nil {
-			t.Fatalf("Encrypt (keyfile + RS): %v", err)
-		}
+		keyfilePath := filepath.Join(findTestdata(t), "keyfile_alpha.bin")
+		pcvPath := materializeGoldenBase64Fixture(t, goldenLegacyKeyfileRSFixture, goldenLegacyKeyfileRSSHA256)
 		// 4 byte errors in block 0's data region: repairable by the full RS pass,
 		// wrong under the fast pass -> MAC mismatch -> full-RS retry re-derive.
 		corruptOneRSBlock(t, pcvPath, 0, 4)
 
-		rec, restore := useRecordingKDF(t)
+		rec, restore := useRecordingKDF(t, productionTestVolumeKey)
 		defer restore()
 
 		reporter := &repairingReporter{}
@@ -199,7 +154,7 @@ func TestKeyMaterialZeroed(t *testing.T) {
 		decReq := &DecryptRequest{
 			InputFile:    pcvPath,
 			OutputFile:   outputPath,
-			Password:     []byte(password),
+			Password:     []byte(goldenPassword),
 			Keyfiles:     []string{keyfilePath},
 			ForceDecrypt: false,
 			Reporter:     reporter,
@@ -274,7 +229,7 @@ func TestKeyMaterialZeroed(t *testing.T) {
 			t.Fatalf("Encrypt: %v", err)
 		}
 
-		rec, restore := useRecordingKDF(t)
+		rec, restore := useRecordingKDF(t, fastTestVolumeKey)
 		defer restore()
 
 		decryptedPath := filepath.Join(tmpDir, "live_out.txt")
