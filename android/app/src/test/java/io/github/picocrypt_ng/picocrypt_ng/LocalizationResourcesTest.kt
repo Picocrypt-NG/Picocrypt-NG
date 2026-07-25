@@ -27,12 +27,48 @@ class LocalizationResourcesTest {
     }
 
     @Test
-    fun `all release locale catalogs exist`() {
-        val missingCatalogs = localeSpecs
-            .filterNot { it.file.isFile }
-            .map { it.file.path }
+    fun `release locale filters catalogs and semantic checks stay in lockstep`() {
+        val configuredLocales = System.getProperty(releaseLocaleFiltersProperty)
+            ?.split(",")
+            ?.filter(String::isNotBlank)
+            .orEmpty()
+        check(configuredLocales.isNotEmpty()) {
+            "Missing $releaseLocaleFiltersProperty; run this test through Gradle"
+        }
+        val configuredCatalogDirectories = configuredLocales
+            .map { locale ->
+                if (locale == baseLocaleSpec.tag) {
+                    baseLocaleSpec.resourceDirectory
+                } else {
+                    "values-$locale"
+                }
+            }
+            .toSortedSet()
+        val repositoryCatalogDirectories = stringsFile.parentFile
+            ?.parentFile
+            ?.listFiles()
+            .orEmpty()
+            .filter { directory ->
+                directory.isDirectory &&
+                    (directory.name == "values" || directory.name.startsWith("values-")) &&
+                    File(directory, "strings.xml").isFile
+            }
+            .map(File::getName)
+            .toSortedSet()
+        val semanticallyCheckedDirectories = (listOf(baseLocaleSpec) + localeSpecs)
+            .map(LocaleSpec::resourceDirectory)
+            .toSortedSet()
 
-        assertTrue("Missing translation catalogs: $missingCatalogs", missingCatalogs.isEmpty())
+        assertEquals(
+            "Repo-owned strings.xml catalogs must exactly match androidResources.localeFilters",
+            configuredCatalogDirectories,
+            repositoryCatalogDirectories,
+        )
+        assertEquals(
+            "Every release catalog must participate in localization semantic checks",
+            configuredCatalogDirectories,
+            semanticallyCheckedDirectories,
+        )
     }
 
     @Test
@@ -646,6 +682,7 @@ class LocalizationResourcesTest {
     private data class TextResource(val name: String, val text: String)
 
     private companion object {
+        private const val releaseLocaleFiltersProperty = "picocrypt.releaseLocaleFilters"
         private val baseLocaleSpec = LocaleSpec(
             tag = "en",
             displayName = "English",

@@ -77,24 +77,30 @@ Picocrypt NG includes a command-line interface in this repository; see <a href="
 Picocrypt NG provides a browser app <a href="https://picocrypt-ng.github.io/">here</a> for in-memory single-file encryption and decryption on modern browsers, including mobile devices. In this repository, the WASM bridge caps inputs at 1 GiB and supports comments, Paranoid mode, Reed-Solomon payload protection, force decrypt, deniability, and decryption of supported legacy keyfile volumes. Picocrypt-NG 2.19 encryption is password-only: the bridge rejects every request containing keyfiles instead of creating another v2 keyfile volume. The browser workflow is still intentionally non-streaming and single-file oriented; folder workflows, split volumes, and large streaming jobs remain desktop/CLI/native-app features. Go-owned byte buffers are wiped best-effort after use, but JavaScript engine copies and garbage-collected runtime copies cannot be guaranteed wiped. The hosted page is deployed separately and must use a consumer matching the 2.19 bridge error contract.
 
 ## Translations
-Picocrypt NG is prepared to use Hosted Weblate for community UI translations
-after the setup gates in
-[WEBLATE_SETUP.md](docs/localization/WEBLATE_SETUP.md) are complete.
-Translation work is reviewed before merge, and security-sensitive wording must
-preserve the meaning documented in the
-[translation guide](docs/localization/TRANSLATION_GUIDE.md).
+Community translations for Picocrypt NG are hosted in the
+[Picocrypt-NG Weblate project](https://hosted.weblate.org/projects/picocrypt-ng/).
+When the project is operationally unlocked, the desktop and native Android
+components accept target-language corrections and proposals for new languages.
+Component configuration disables editing the base English catalogs and
+managing source string IDs. Every Weblate repository change is proposed from a
+fork through a GitHub pull request; human approval and the required CI checks
+remain mandatory before merge. The complete operational contract is recorded in
+[WEBLATE_SETUP.md](docs/localization/WEBLATE_SETUP.md).
+
+Security-sensitive wording must preserve the meaning documented in the
+[translation guide](docs/localization/TRANSLATION_GUIDE.md). Community
+linguistic review is continuous, so the bundled catalogs are not presented as
+certified native-language reviews.
+
 Current desktop and native Android builds bundle application UI catalogs for
 English, Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean
 (`ko`, with contemporary neutral South Korean wording). The desktop app has an
 in-app language selector for Picocrypt-NG-owned UI; Fyne-owned dialogs and raw
 backend status text may remain English. Android 13 and newer expose the system
 per-app language selector; older Android versions follow the system locale. The
-CLI remains English-only.
-
-The six new Android catalogs (`de`, `fr`, `es`, `zh-Hans`, `hi`, and `ko`) are
-structurally complete and packaged, but this does not establish native-language
-or device review. They still require native or near-native linguistic review
-and real-device rendering checks before release admission.
+CLI remains English-only. Catalog structure, placeholders, plurals, and locale
+registration are enforced in repository tests; translation and rendering
+corrections continue through the same reviewed pull-request workflow.
 
 ## File Associations
 Double-click `.pcv` files to open Picocrypt NG in decrypt mode on Windows, macOS, and Linux. Installer/`.deb`/`.app` packages register the association automatically.
