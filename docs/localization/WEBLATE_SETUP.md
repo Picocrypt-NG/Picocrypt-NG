@@ -44,8 +44,9 @@ The required controls are:
   requests.
 - Project review is enabled and the commit policy writes only approved
   translations.
-- The review team enforces two-factor authentication and has an active
-  maintainer member.
+- The review team enforces two-factor authentication. Weblate activates review
+  privileges only after the maintainer member completes its separate 2FA
+  enrollment.
 - Automatic suggestion acceptance is disabled.
 - Editing base English files and managing source strings are disabled in both
   application components.
@@ -189,9 +190,11 @@ Before opening components after setup or an incident:
    branch, and the desktop component is still linked to it.
 4. Confirm base editing, source-string management, propagation, project
    translation memory, and suggestion auto-accept remain disabled.
-5. Confirm approved-only commits and the GitHub approval/CI rules are active.
-6. Confirm a real upstream merge reaches Weblate through the GitHub App hook.
-7. Use the first genuine approved translation correction as the outbound
+5. Confirm at least one maintainer has active Review-team privileges after 2FA
+   enrollment.
+6. Confirm approved-only commits and the GitHub approval/CI rules are active.
+7. Confirm a real upstream merge reaches Weblate through the GitHub App hook.
+8. Use the first genuine approved translation correction as the outbound
    canary; do not fabricate a translation solely to create a test pull request.
 
 If any invariant fails, keep the project locked and repair the configuration

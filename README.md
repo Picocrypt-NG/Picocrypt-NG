@@ -79,12 +79,12 @@ Picocrypt NG provides a browser app <a href="https://picocrypt-ng.github.io/">he
 ## Translations
 Community translations for Picocrypt NG are hosted in the
 [Picocrypt-NG Weblate project](https://hosted.weblate.org/projects/picocrypt-ng/).
-The desktop and native Android components accept target-language corrections
-and proposals for new languages. Component configuration disables editing the
-base English catalogs and managing source string IDs. Every Weblate repository
-change is proposed from a fork through a GitHub pull request; human approval and
-the required CI checks remain mandatory before merge. The complete operational
-contract is recorded in
+When the project is operationally unlocked, the desktop and native Android
+components accept target-language corrections and proposals for new languages.
+Component configuration disables editing the base English catalogs and
+managing source string IDs. Every Weblate repository change is proposed from a
+fork through a GitHub pull request; human approval and the required CI checks
+remain mandatory before merge. The complete operational contract is recorded in
 [WEBLATE_SETUP.md](docs/localization/WEBLATE_SETUP.md).
 
 Security-sensitive wording must preserve the meaning documented in the
