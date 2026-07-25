@@ -1,178 +1,223 @@
 # Picocrypt-NG Weblate Setup
 
-This document is the setup gate for Weblate localization in Picocrypt-NG. It is
-operational policy, not a marketing page. Do not open Weblate components until
-the gates below are satisfied.
+This document records the operational and security contract for Picocrypt-NG
+localization on Hosted Weblate.
 
-## Eligibility
+Last verified: 2026-07-25.
 
-Eligibility verification date: 2026-07-08.
+## Live Project
 
-Current result: Picocrypt-NG is likely eligible for hosted Weblate Libre while
-it remains a public libre project. Reverify this before actual setup; this is a
-dated finding, not a permanent entitlement.
+- Project: <https://hosted.weblate.org/projects/picocrypt-ng/>
+- Android app:
+  <https://hosted.weblate.org/projects/picocrypt-ng/android-app/>
+- Desktop app:
+  <https://hosted.weblate.org/projects/picocrypt-ng/desktop-app/>
+- Terminology:
+  <https://hosted.weblate.org/projects/picocrypt-ng/terminology/>
+- License: `GPL-3.0-only`
 
-Weblate's hosted pricing page says the hosted Libre plan is gratis for libre
-public projects and has the same limits as the 160k hosted plan. It also says
-the hosted Libre plan is only for public projects.
+The Hosted Weblate GitHub App is installed only for
+`Picocrypt-NG/Picocrypt-NG`. Do not add a personal access token, deploy key,
+legacy Weblate collaborator, or second Weblate-controlled GitHub identity.
 
-If hosted terms change, Picocrypt-NG no longer qualifies, or release-control
-requirements exceed hosted Libre controls, self-host Weblate instead.
+## Security Boundary
 
-## Hosted Libre Risk
+Hosted Weblate Libre projects are public. Treat every translation as an
+untrusted proposal until both Weblate review and GitHub repository controls
+accept it.
 
-Hosted Weblate gratis Libre projects are always Public. In Weblate access
-control, Public means visible to everybody, and any authenticated user can
-contribute.
+The required controls are:
 
-Mitigation:
+- The repository owner is the only component connected directly to GitHub.
+  It uses `github-app`, targets `main`, and has empty push URL and push branch.
+  In this configuration Hosted Weblate proposes changes from its fork through
+  a pull request instead of pushing to `main`.
+- The desktop component links to the Android component with
+  `weblate://picocrypt-ng/android-app`, so both surfaces share one repository
+  and one pull-request integration.
+- GitHub protection for `main` combines an active ruleset requiring a pull
+  request, at least one human approval, and dismissal of stale approvals after
+  a new push with strict required CI checks in classic branch protection.
+- The Weblate GitHub App is not a ruleset bypass actor.
+- The repository owner retains an emergency ruleset bypass for recovery. It is
+  not assigned to the Weblate App and must not be used for localization pull
+  requests.
+- Project review is enabled and the commit policy writes only approved
+  translations.
+- The review team enforces two-factor authentication and has an active
+  maintainer member.
+- Automatic suggestion acceptance is disabled.
+- Editing base English files and managing source strings are disabled in both
+  application components.
+- Cross-component translation propagation and contribution to project
+  translation memory are disabled. Shared terminology belongs in the glossary.
+- Components automatically lock on repository errors.
 
-- Treat Weblate contributions as proposed translations only.
-- Require Weblate pull requests for repository changes.
-- Require maintainer review, security review where applicable, and CI before
-  merge.
-- Never allow Weblate to push directly to protected release branches.
-- Use Weblate locking and review features during pull request review so
-  translation changes do not move under review.
+These controls are layered deliberately. Weblate approval protects the normal
+translation workflow; the GitHub ruleset and CI remain the security boundary
+if the Weblate account or App is compromised.
 
-## Setup Gates
+## Review Workflow
 
-Before opening any component:
+1. A contributor edits an existing target language or requests a new language
+   in Weblate.
+2. A Weblate reviewer approves the proposed units. Imported repository content
+   must not be bulk-approved merely to make statistics green.
+3. Weblate creates or updates a pull request from its fork.
+4. GitHub CI validates catalog structure, placeholders, plurals, locale
+   registration, and the affected application build.
+5. A human repository reviewer inspects the exact diff and approves it.
+6. A maintainer merges the pull request.
 
-1. Reverify hosted Libre eligibility and access-control behavior.
-2. Import the Picocrypt-NG glossary and security terms into Weblate.
-3. Configure Weblate to create pull requests, not direct protected-branch
-   pushes.
-4. Confirm required review and CI branch protection on the target branch.
-5. Confirm reviewers understand the P0/P1 rules in
-   [TRANSLATION_GUIDE.md](TRANSLATION_GUIDE.md).
-
-Glossaries can be imported with CSV or TBX. Use glossary entry types to mark
-brand names, acronyms, features, and security terms by meaning and audience:
-regular, Terminology, Untranslatable, or Forbidden.
-
-Weblate checks for placeholders, XML validity, tags, whitespace, newlines,
-plurals, and glossary issues are technical gates. They do not replace
-native-language review or maintainer/security review.
-
-## Review Rules
-
-- Machine translation may be suggestions only for P0/P1 strings.
-- P0/P1 strings require native-language review plus maintainer/security review.
-- Placeholder and format checks must be clean before merge, or a maintainer
-  must record why a warning is accepted.
-- Maintainers must reject translations that overpromise confidentiality,
-  recovery, deniability, or security.
-- Comments must remain described as plaintext metadata.
-- Authentication, password, keyfile, corruption, and integrity terms must stay
-  distinct.
+Community linguistic review is continuous. Existing bundled translations are
+not presented as certified native-language reviews; corrections follow the
+same reviewed pull-request path.
 
 ## Components
 
 ### Android App
 
-Enable Android first, after Android localization gates pass.
-
-Configuration:
-
-- Component: Android app
+- VCS owner: yes
+- VCS: GitHub via Hosted Weblate GitHub App
+- Branch: `main`
+- Push URL: empty
+- Push branch: empty
 - File mask: `android/app/src/main/res/values-*/strings.xml`
 - Base file: `android/app/src/main/res/values/strings.xml`
 - Format: Android String Resource
-- Base language: `en`
-- Translated languages after Android gates: `ru`, `de`, `fr`, `es`, `zh-Hans`, `hi`, `ko`
-- Android directory mapping: `zh-Hans` uses `values-b+zh+Hans`; Korean uses generic `values-ko`; Italian is not packaged
+- Base language: English
+- Edit base file: disabled
+- Manage strings: disabled
+- Adding a translation: create a new language file
+- Language-code style: Android
 
-Android string resources are monolingual in Weblate. The base file is
-`res/values/strings.xml`, and the typical translated file mask is
-`res/values-*/strings.xml`. Weblate's Android String Resource format supports
-plurals and flags/read-only strings. These are application UI resources;
-Fastlane currently has a separate English-only `en-US` store-listing/changelog
-surface and must not be inferred from the app-resource language list.
+The imported languages are `en`, `ru`, `de`, `fr`, `es`, `zh-Hans`, `hi`, and
+`ko`. Weblate maps Simplified Chinese to `values-b+zh+Hans`; Korean uses
+`values-ko`.
 
-### Fyne Desktop
+Android release admission is intentionally separate from file creation. The
+repository test suite requires the actual `strings.xml` directories,
+`androidResources.localeFilters`, generated release LocaleConfig, and semantic
+catalog registry to stay in lockstep. A pull request adding a language cannot
+merge until all of those contracts and the relevant plural rules are updated.
 
-Do not enable yet.
+### Desktop App
 
-Fyne Weblate setup is blocked until Picocrypt-NG proves exact round-trip for
-the Fyne JSON catalog shape in `src/internal/ui/translation/en.json`.
-
-Eight complete desktop catalogs currently exist for `en`, `ru`, `de`, `fr`,
-`es`, `zh-Hans`, `hi`, and `ko`, but no Fyne/Weblate JSON round-trip has been proved.
-The curated Russian Fyne catalog is a maintainer-reviewed in-repository
-translation exception. The Korean catalog is an engineering-reviewed
-in-repository exception and still requires native-language and device review
-before release. Both catalogs are gated by structural and semantic regression
-tests, not by Weblate. Those tests do not prove that Weblate can safely edit
-Fyne JSON catalogs.
-
-The desktop language selector does not by itself enable a Fyne Weblate
-component. Additional non-English Fyne production catalogs that are imported
-from Weblate remain blocked until a real Weblate JSON round-trip proves that
-Picocrypt-NG's flat keys, plural objects, UTF-8 content, and placeholder syntax
-survive export and import unchanged.
-
-Blocked configuration, for later validation only:
-
-- Component: Fyne desktop
+- VCS owner: no; linked to `Android app`
+- Repository link: `weblate://picocrypt-ng/android-app`
 - File mask: `src/internal/ui/translation/*.json`
 - Base file: `src/internal/ui/translation/en.json`
-- Format: JSON or JSON nested structure file, only after round-trip validation
+- Format: go-i18n v2 JSON
+- Base language: English
+- Edit base file: disabled
+- Manage strings: disabled
+- Adding a translation: create a new language file
+- Language-code style: BCP 47 with hyphens
 
-Required proof before opening the component:
+Do not switch this component to generic JSON or i18next. Picocrypt-NG catalogs
+use go-i18n v2 plural objects such as:
 
-- Weblate export/import preserves existing keys and object shape.
-- Fyne plural objects survive unchanged, for example:
-
-  ```json
-  {
-    "keyfiles.count": {
-      "one": "Using {{.Count}} keyfile",
-      "other": "Using {{.Count}} keyfiles"
-    }
+```json
+{
+  "keyfiles.count": {
+    "one": "{{.Count}} keyfile",
+    "other": "{{.Count}} keyfiles"
   }
-  ```
+}
+```
 
-- Placeholder markers such as `{{.Count}}` survive unchanged.
-- Fyne tests still pass after Weblate round-trip.
-
-Weblate's JSON docs say simple and nested JSON are supported and monolingual
-JSON with an English base is recommended, but generic JSON has no native plural
-support. Do not enable Fyne until that limitation is proven safe for the exact
-Fyne catalog objects Picocrypt-NG uses.
+On 2026-07-25 Hosted Weblate imported all eight desktop catalogs as 141 strings
+each. Downloads of every imported catalog were byte-identical to the
+corresponding repository file. Repository tests independently require exact
+keys, message shapes, placeholders, locale plural forms, and language
+registration.
 
 ### CLI
 
-No component.
+No component. Command names, flags, help, diagnostics, stdout/stderr, and shell
+examples remain an English scripting contract.
 
-CLI output, command names, flags, examples, stdout/stderr contracts, and
-diagnostics remain English-only.
+## New Languages
 
-## GitHub Integration
+Weblate may create a target-language file, but the file alone does not make the
+language shippable.
 
-Hosted Weblate can use the Hosted Weblate GitHub app to grant repository
-access, receive notifications, push translation branches, and create pull
-requests.
+An Android language pull request must also:
 
-Picocrypt-NG must configure that integration for pull requests only. Protected
-branches must require actual review and CI. Do not waive protected-branch
-review for a Weblate push user.
+- add the Android resource qualifier to `androidResources.localeFilters`;
+- register its catalog and CLDR plural quantities in the localization tests;
+- pass the generated release LocaleConfig and Android localization tests.
+
+A desktop language pull request must also:
+
+- register the locale and its native display name in the desktop language list;
+- define and test the go-i18n plural contract for the locale;
+- pass the embedded-catalog, placeholder, and runtime localization tests.
+
+This permits contributors to propose new languages while ensuring that an
+unregistered or untested catalog cannot silently enter a release.
+
+## Glossary
+
+The project glossary owns shared security terminology and explanations. It
+currently contains 19 source terms covering:
+
+- Picocrypt NG and Picocrypt-NG;
+- Reed-Solomon;
+- encryption and decryption;
+- password and keyfile;
+- comments as plaintext metadata;
+- authentication, integrity, and corruption;
+- deniability and Paranoid mode;
+- force decrypt and verify first;
+- destructive delete actions.
+
+`Picocrypt NG`, `Picocrypt-NG`, and `Reed-Solomon` are both terminology and
+untranslatable entries, so Weblate keeps their spelling in every glossary
+language. The remaining terminology entries deliberately await human
+target-language translations. Glossary guidance does not replace the
+repository's semantic regression tests or human review.
+
+## Operational Checks
+
+Before opening components after setup or an incident:
+
+1. Confirm the project and every component are locked while configuration is
+   changing.
+2. Confirm the GitHub App is still limited to this repository.
+3. Confirm the VCS owner still uses `github-app`, with empty push URL and push
+   branch, and the desktop component is still linked to it.
+4. Confirm base editing, source-string management, propagation, project
+   translation memory, and suggestion auto-accept remain disabled.
+5. Confirm approved-only commits and the GitHub approval/CI rules are active.
+6. Confirm a real upstream merge reaches Weblate through the GitHub App hook.
+7. Use the first genuine approved translation correction as the outbound
+   canary; do not fabricate a translation solely to create a test pull request.
+
+If any invariant fails, keep the project locked and repair the configuration
+before accepting contributions.
+
+## Hosted Libre
+
+Eligibility was rechecked on 2026-07-25. Hosted Weblate describes Libre hosting
+as gratis for eligible public libre projects. Picocrypt-NG must keep the live
+Weblate link visible in its README and recheck the current terms if the hosting
+plan or project visibility changes. Self-hosting remains the fallback if
+Hosted Libre terms or required controls no longer fit this project.
 
 ## Sources
 
-- Hosted Weblate pricing and Libre plan:
-  <https://weblate.org/en/hosting/>
-- Weblate access control:
-  <https://docs.weblate.org/en/latest/admin/access.html>
-- Hosted Weblate GitHub integration:
-  <https://docs.weblate.org/en/latest/vcs.html>
-- Weblate protected branches and continuous localization:
-  <https://docs.weblate.org/en/latest/admin/continuous.html>
-- Weblate Android format:
+- Hosted Weblate plans: <https://weblate.org/en/hosting/>
+- Code-hosting integration:
+  <https://docs.weblate.org/en/latest/admin/code-hosting.html>
+- Component configuration:
+  <https://docs.weblate.org/en/latest/admin/projects.html>
+- Access control: <https://docs.weblate.org/en/latest/admin/access.html>
+- Version-control links: <https://docs.weblate.org/en/latest/vcs.html>
+- Android resources:
   <https://docs.weblate.org/en/latest/formats/android.html>
-- Weblate JSON format:
-  <https://docs.weblate.org/en/latest/formats/json.html>
-- Weblate glossary:
-  <https://docs.weblate.org/en/latest/user/glossary.html>
-- Weblate checks:
-  <https://docs.weblate.org/en/latest/user/checks.html>
+- go-i18n JSON:
+  <https://docs.weblate.org/en/latest/formats/go-i18n.html>
+- Glossaries: <https://docs.weblate.org/en/latest/user/glossary.html>
+- GitHub rulesets:
+  <https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets>

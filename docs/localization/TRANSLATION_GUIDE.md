@@ -6,7 +6,7 @@
 This guide defines the translation foundation for Picocrypt-NG. It is not a
 string catalog and does not enable localization by itself. It defines the voice,
 terminology, review rules, and tooling constraints that every future translation
-or Weblate import must follow.
+or Weblate pull request must follow.
 
 Picocrypt-NG is a security-sensitive encryption app. Translation quality is a
 security UX concern: translated strings must not promise stronger protection
@@ -17,8 +17,8 @@ integrity, password, keyfile, corruption, and deletion concepts.
 
 | Surface | Current state | Translation path |
 |---|---|---|
-| Desktop Fyne UI | Complete bundled application catalogs exist for English, Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean under `src/internal/ui/translation`. Fyne-owned dialogs and raw backend status text may remain English. | Keep using the project `tr`/`trn` wrappers. Russian has its curated review gate; the Korean review record documents model-assisted review and still-open native/device gates; Weblate-imported Fyne locales still require a Fyne/Weblate JSON round-trip. |
-| Android app | Release resources package the same eight languages: base English plus Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean. Raw Go/runtime details are not translator source copy. | Continue with Android string resources and explicit semantic display-boundary mappings. The six new catalogs still require human/device release admission. |
+| Desktop Fyne UI | Complete bundled application catalogs exist for English, Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean under `src/internal/ui/translation`. Fyne-owned dialogs and raw backend status text may remain English. | Use the live Weblate Desktop app component and keep the project `tr`/`trn` wrappers. Weblate uses the native go-i18n v2 JSON format; repository tests remain authoritative for keys, placeholders, plural shapes, and runtime registration. |
+| Android app | Release resources package the same eight languages: base English plus Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean. Raw Go/runtime details are not translator source copy. | Use the live Weblate Android app component, Android string resources, and explicit semantic display-boundary mappings. Repository tests keep resource files, release filters, generated LocaleConfig, and semantic checks in lockstep. |
 | CLI | Cobra help, prompts, warnings, and errors are hard-coded Go strings. | Do not localize CLI output, command names, flags, or examples. Keep CLI English-only. |
 | Web/WASM | The Go WASM bridge exports functions and numeric error codes; it does not own the hosted web UI copy. | Localize the web frontend separately if/when that source is brought into scope. |
 
@@ -30,7 +30,8 @@ Non-goals for the first localization phase:
 - Do not localize the CLI. CLI help, prompts, errors, stdout/stderr, command
   names, flags, and examples are an English scripting contract.
 - Do not translate comments stored inside user volumes. Those are user data.
-- Do not add Weblate before stable string IDs, a glossary, and review rules exist.
+- Do not let Weblate edit base English catalogs, manage source string IDs, or
+  push directly to `main`.
 
 ## String Source Of Truth
 
@@ -42,7 +43,7 @@ The source of truth is platform-native:
 | Surface | Source of truth | Rule |
 |---|---|---|
 | Android app | `android/app/src/main/res/values/strings.xml` | The base English file owns Android UI strings that are resource-backed. Hard-coded Kotlin user messages must be externalized or explicitly mapped before a locale can be released for Android. |
-| Desktop Fyne UI | `src/internal/ui/translation/en.json` | Keep the embedded catalog wired through `loadTranslations` and the project `tr`/`trn` wrappers. Do not add locale files without guard tests and either a language-specific review gate or a round-trip check. |
+| Desktop Fyne UI | `src/internal/ui/translation/en.json` | Keep the embedded catalog wired through `loadTranslations` and the project `tr`/`trn` wrappers. Do not add locale files without complete-catalog, plural, placeholder, and runtime-registration tests. |
 | CLI | none | CLI is not localized. |
 | Web/WASM | external web frontend source, if brought into scope | Do not add web UI strings to the Go WASM bridge. |
 
@@ -61,9 +62,7 @@ Use these sources before adding or changing localization mechanics:
 - Android language and layout support: <https://developer.android.com/training/basics/supporting-devices/languages>
 - Android pseudolocales: <https://developer.android.com/guide/topics/resources/pseudolocales>
 - Weblate Android resources: <https://docs.weblate.org/en/latest/formats/android.html>
-- Weblate JSON formats: <https://docs.weblate.org/en/latest/formats/json.html>
-- Weblate i18next formats: <https://docs.weblate.org/en/latest/formats/i18next.html>
-- Weblate gettext formats: <https://docs.weblate.org/en/latest/formats/gettext.html>
+- Weblate go-i18n JSON: <https://docs.weblate.org/en/latest/formats/go-i18n.html>
 - Weblate quality checks: <https://docs.weblate.org/en/latest/user/checks.html>
 - Weblate hosted pricing and Libre plan: <https://weblate.org/en/hosting/>
 - Unicode CLDR plural rules: <https://cldr.unicode.org/index/cldr-spec/plural-rules>
@@ -139,13 +138,14 @@ Picocrypt-NG keeps Fyne/Weblate-shaped flat JSON catalogs under
   `status.kept_output_unverified`, `comments.placeholder`,
   `advanced.delete_volume.label`, and `drop.header_may_be_deniable`.
 - Do not put translator comments in Fyne JSON. Keep context in this guide,
-  Weblate component metadata, or a review-only companion file.
+  Weblate component metadata, or another maintained project document.
 
-Before connecting Fyne JSON to Weblate, run a round-trip test on the exact Fyne
-JSON shape Picocrypt-NG uses. Generic Weblate JSON is useful for simple key/value
-files, but its plain JSON format does not carry all plural/context metadata.
-The curated Russian catalog is a native-review exception, not evidence that the
-Fyne Weblate component is ready.
+The live Weblate Desktop app component uses **go-i18n v2 JSON**, not generic
+JSON or i18next. This format preserves Picocrypt-NG's plural objects and
+`{{.Name}}` template markers. On 2026-07-25 Weblate imported all eight desktop
+catalogs as 141 strings each, and downloads of every imported catalog were
+byte-identical to the repository files. Keep the base English file read-only
+and keep source-string management disabled.
 
 ### Fyne fonts and packaged rendering
 
@@ -158,15 +158,14 @@ and Spanish. Simplified Chinese, Korean, and Hindi depend on suitable fonts
 already available to the operating system. Fyne shapes text with HarfBuzz, but
 its preferred system face follows the operating-system locale rather than the
 language selected inside Picocrypt-NG. Therefore `zh-Hans`, `ko`, and `hi`
-require real packaged-build review both with matching and non-matching OS
-locales.
+benefit from packaged-build review with matching and non-matching OS locales.
 
-Before release admission for any of these locales, reject screenshots
-containing tofu, replacement glyphs, wrong Simplified-Chinese regional forms,
+Treat screenshots containing any of the following as rendering defects: tofu,
+replacement glyphs, wrong Simplified-Chinese regional forms,
 detached Hindi matras, dotted circles, exposed halants, broken conjuncts,
 clipped vertical metrics, hidden controls, or window growth beyond the normal
-340 px desktop width. Missing system coverage blocks that locale on the
-affected target; it does not authorize adding an unreviewed font asset.
+340 px desktop width. Missing system coverage does not authorize adding an
+unreviewed font asset.
 
 Emoji and arbitrary mixed-script filenames/comments are platform best-effort.
 Font fallback must not change the underlying application string or selected
@@ -203,16 +202,17 @@ Android must use native string resources.
 - Mark non-translatable technical strings with `translatable="false"` when they
   are resource-backed.
 - Run Android pseudolocale checks before accepting broad UI localization.
-- The eight catalogs being structurally complete and packaged does not replace
-  native or near-native linguistic review or device rendering. German, French,
-  Spanish, Simplified Chinese, Hindi, and Korean still require those release
-  gates.
+- Structural completeness and packaging do not certify linguistic quality or
+  rendering. Community corrections remain welcome through reviewed Weblate
+  pull requests.
 
-Weblate setup for Android should use:
+The live Weblate Android app component uses:
 
 - File mask: `android/app/src/main/res/values-*/strings.xml`
 - Base language file: `android/app/src/main/res/values/strings.xml`
 - Format: Android String Resource
+- Base editing and source-string management: disabled
+- Repository delivery: fork-based GitHub pull requests
 
 ### CLI
 
@@ -227,11 +227,13 @@ the bridge API stable and localize the hosted web frontend where the UI lives.
 
 ### Hosted Weblate
 
-As of 2026-07-08, Weblate's official pricing page says libre public projects can
-use a hosted Libre plan gratis, with the same limits as the 160k hosted plan.
-Verify the current terms before setup. Self-hosting remains the fallback if the
-hosted eligibility rules change or if Picocrypt-NG needs stricter operational
-control.
+The live public project is
+<https://hosted.weblate.org/projects/picocrypt-ng/>. The Android and desktop
+components share one GitHub App repository integration and can only propose
+repository changes through pull requests. See
+[WEBLATE_SETUP.md](WEBLATE_SETUP.md) for the exact security and operational
+contract. Self-hosting remains the fallback if Hosted Libre terms or required
+controls change.
 
 Failing Weblate checks for placeholders, XML validity, tags, whitespace,
 newlines, plurals, or glossary rules are release blockers unless a maintainer
@@ -279,7 +281,11 @@ Language-specific voice:
 
 ## Product Glossary
 
-Use these translations unless a maintainer deliberately changes the glossary.
+This table records terminology already present in current or planned catalogs;
+it is a review aid, not automatic approval of a translation. Human-reviewed
+target entries in the live Weblate glossary and the exact pull-request diff are
+authoritative for new changes. If this table disagrees with an approved
+Weblate entry, update the table instead of blending the two wordings.
 
 | English concept | Russian | French | German | Spanish | Italian |
 |---|---|---|---|---|---|
@@ -445,7 +451,8 @@ Initial high-risk entries:
 
 ## Reviewer Checklist
 
-Every localization PR or Weblate merge must answer these checks:
+Every localization pull request, including one generated by Weblate, must
+answer these checks:
 
 1. Does the translation preserve Picocrypt-NG's security meaning?
 2. Are password, keyfile, authentication, integrity, and corruption terms
@@ -471,42 +478,40 @@ Every localization PR or Weblate merge must answer these checks:
 16. Are Android build and pseudolocale checks requested only when Android
     resources are actually part of the localization change?
 
-## Implementation Readiness Gates
+## Pull Request And Release Gates
 
-Before admitting any locale to a release:
+Before merging a localization pull request:
 
-- The locale has a native or near-native linguistic review and a maintainer
-  security-meaning review against this guide.
+- Weblate has written only approved units, and a human repository reviewer has
+  reviewed the exact pull-request diff.
+- A maintainer has checked security-sensitive meaning against this guide.
 - No enabled surface depends on untranslated user-facing source text that
   bypasses its platform catalog.
 - All placeholder, plural, syntax, and glossary checks are clean.
-- Release notes describe localization as UI work, not a cryptographic change.
+- Required repository CI is green.
 
-Before admitting a Fyne desktop locale to a release:
+Before merging a new Fyne desktop locale:
 
 - The catalog is complete against `src/internal/ui/translation/en.json` and
-  passes the generic embedded-catalog contract.
+  passes the embedded-catalog contract.
+- The locale, native display name, and plural forms are registered in the
+  runtime and its tests.
 - Runtime language switching and preference restoration preserve the full
   locale code.
-- Core workflows have been checked in a real packaged application: initial,
-  encrypt, decrypt, keyfiles, comments, force decrypt, verify-first, deletion
-  options, progress, and dialogs.
-- Windows 10/11 installer and portable builds, the supported macOS `.app`, and
-  Linux raw, `.deb`, and AppImage builds have no clipped controls or unexpected
-  width growth. Flatpak and Snap are checked when that catalog ships through
-  those channels.
-- Simplified Chinese, Korean, and Hindi additionally pass the system-font and
-  shaping checks in this guide. Hindi also requires grapheme-safe
-  application-owned truncation before `hi.json` is admitted.
+- Known rendering defects are documented and must not hide or reverse
+  security-sensitive meaning or destructive actions.
 
-Before admitting a native Android locale to a release:
+Before merging a new native Android locale:
 
 - Android resources compile and the relevant UI passes pseudolocale checks.
+- The resource directory, `androidResources.localeFilters`, generated release
+  LocaleConfig, and semantic catalog registry are in exact lockstep.
 - Hard-coded Kotlin user messages for the localized surface have been
   externalized or explicitly mapped.
 - Status, detail, and error mappings use semantic resource-backed values; raw
   diagnostic strings are not shown as translated UI.
-- Native or near-native linguistic review and real-device rendering cover text
-  expansion, notifications, font scale, Chinese line breaking, Korean
-  typography and line breaking, and Hindi shaping. Packaging a locale does not
-  waive this gate.
+
+Community linguistic and real-device review continues after merge as well as
+before it. Do not describe a catalog as native-reviewed unless that review is
+actually documented, and describe localization in release notes as UI work,
+not a cryptographic change.
