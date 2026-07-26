@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 const testCustodyID = "synthetic-test-custody"
@@ -56,22 +58,54 @@ const testSchema = `{
   }
 }`
 
+const permissiveManifestSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pcv3.invalid/phase1/manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "format": {},
+    "schema_revision": {},
+    "spec_revision": {},
+    "test_only": {},
+    "custody_id": {},
+    "fixtures": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+    "deferred_vector_classes": {}
+  }
+}`
+
 const (
-	positiveFixture       = `{"test_only":true,"case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9"}`
-	negativeFixture       = `{"test_only":true,"case":"unicode17-unassigned","input_hex":"cdb8","expected":"reject"}`
-	independentProvenance = `{"test_only":true,"author":"independent-fixture-author","generator":"literal-fixture","independent_of_production":true,"production_code":false}`
-	productionProvenance  = `{"test_only":true,"author":"independent-fixture-author","generator":"literal-fixture","independent_of_production":true,"production_code":true}`
-	dependentProvenance   = `{"test_only":true,"author":"independent-fixture-author","generator":"literal-fixture","independent_of_production":false,"production_code":false}`
-	notTestOnlyFixture    = `{"test_only":false,"case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9"}`
+	positiveFixture           = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	negativeFixture           = `{"test_only":true,"id":"unicode17-unassigned","category":"unicode17","case":"unicode17-unassigned","input_hex":"cdb8","expected":"reject","status":"required","generated_at_test_time":false}`
+	independentProvenance     = `{"test_only":true,"author":"independent-fixture-author","generator":"literal-fixture","independent_of_production":true,"production_code":false}`
+	productionProvenance      = `{"test_only":true,"author":"independent-fixture-author","generator":"literal-fixture","independent_of_production":true,"production_code":true}`
+	dependentProvenance       = `{"test_only":true,"author":"independent-fixture-author","generator":"literal-fixture","independent_of_production":false,"production_code":false}`
+	notTestOnlyFixture        = `{"test_only":false,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	generatedFixture          = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":true}`
+	skippedFixture            = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"skipped","generated_at_test_time":false}`
+	vacuousFixture            = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	unknownFixtureField       = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false,"unexpected":true}`
+	mismatchedIDFixture       = `{"test_only":true,"id":"other","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	mismatchedCaseFixture     = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"other","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	mismatchedCategoryFixture = `{"test_only":true,"id":"unicode17-nfc","category":"governance","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	contradictoryFixture      = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected":"reject","status":"required","generated_at_test_time":false}`
 )
 
 const (
-	positiveFixtureSHA       = "c74829a1638ebce9c677adc8330ce04c3cc054c4bd64ba0f0bf888ffbafaa536"
-	negativeFixtureSHA       = "300745b4aa750e1d8fdf2312637030f3643c7ce9a7eb2fc7b0e405ac101e54a8"
-	independentProvenanceSHA = "e16942735c8971b8ec510d2fe9a14daf8527314d8649aacbdabd1c496cf07931"
-	productionProvenanceSHA  = "16578c50368861b4cacaf4e9d9aec5e04fd5d61b6193298e7d83f9293aef68ac"
-	dependentProvenanceSHA   = "2d33b86c00cf27727a1f27da38cc72ca43c84f1c6c469790f57678372f3f9c09"
-	notTestOnlyFixtureSHA    = "a79f3fb7462911a84e2e18eca6591839be73d902dbe58de6a92b21065cb7fa6a"
+	positiveFixtureSHA           = "3ed44cdcbf811e609454358071913c0219d2d32f14fb2a7278654ab04d66a432"
+	negativeFixtureSHA           = "ac06da8ecaa484eccac56fe29e6c899450b1f7911b7806230189963ce8d5aaa3"
+	independentProvenanceSHA     = "e16942735c8971b8ec510d2fe9a14daf8527314d8649aacbdabd1c496cf07931"
+	productionProvenanceSHA      = "16578c50368861b4cacaf4e9d9aec5e04fd5d61b6193298e7d83f9293aef68ac"
+	dependentProvenanceSHA       = "2d33b86c00cf27727a1f27da38cc72ca43c84f1c6c469790f57678372f3f9c09"
+	notTestOnlyFixtureSHA        = "1dc1422c2ea10c8253cb6e395f3fff720ce550e3dfe3cc5c4b5f5acda2f4e78e"
+	generatedFixtureSHA          = "45d8777389db5e6a33dbff74becd876f361fb910174d7c495ca4247744b6ef08"
+	skippedFixtureSHA            = "9b6eb8713d4adda9da93527268d0ed786093c26d4de1b8b92d91e141fb6b1c5c"
+	vacuousFixtureSHA            = "3547bd18423af0a2f4ba374edc11848edf8d0cc7748ff6f6a00ea7d8338fb6f6"
+	unknownFixtureFieldSHA       = "6eeb55c600123c67a6391b9fd4df048a120ec210322f3f2886b82caa34e47899"
+	mismatchedIDFixtureSHA       = "c67fdfff8d88b4006a2175ebd8b4621b27479e0d6e6f8e3e67d45b78ef0607aa"
+	mismatchedCaseFixtureSHA     = "ba9a192f3bc5857b14b067f06b8cb8f8f2f194c5829ea9b28b76c48b878a2c82"
+	mismatchedCategoryFixtureSHA = "3cdb8770651f1a4edaf15fe4c9bf3d5e27a4d3ddd760541d837ecfa702e767b1"
+	contradictoryFixtureSHA      = "0df95fdd222fd8d56112c2b2377f093f8a31cd20b686f204ea541aa0192aaadd"
 )
 
 const testManifest = `{
@@ -84,7 +118,7 @@ const testManifest = `{
     {
       "id": "unicode17-nfc",
       "path": "positive/nfc.json",
-      "sha256": "c74829a1638ebce9c677adc8330ce04c3cc054c4bd64ba0f0bf888ffbafaa536",
+      "sha256": "3ed44cdcbf811e609454358071913c0219d2d32f14fb2a7278654ab04d66a432",
       "provenance_path": "provenance/nfc.json",
       "provenance_sha256": "e16942735c8971b8ec510d2fe9a14daf8527314d8649aacbdabd1c496cf07931",
       "category": "unicode17",
@@ -99,7 +133,7 @@ const testManifest = `{
     {
       "id": "unicode17-unassigned",
       "path": "negative/reject-unassigned.json",
-      "sha256": "300745b4aa750e1d8fdf2312637030f3643c7ce9a7eb2fc7b0e405ac101e54a8",
+      "sha256": "ac06da8ecaa484eccac56fe29e6c899450b1f7911b7806230189963ce8d5aaa3",
       "provenance_path": "provenance/reject-unassigned.json",
       "provenance_sha256": "e16942735c8971b8ec510d2fe9a14daf8527314d8649aacbdabd1c496cf07931",
       "category": "unicode17",
@@ -301,6 +335,135 @@ func TestLoadRequiresTestOnlyFixtureContents(t *testing.T) {
 	assertRefusal(t, err, RefusalMalformed)
 }
 
+func TestLoadRequiresNonVacuousFixtureEnvelope(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		hash    string
+		want    RefusalKind
+	}{
+		{
+			name:    "fixture generated at test time",
+			content: generatedFixture,
+			hash:    generatedFixtureSHA,
+			want:    RefusalGenerated,
+		},
+		{
+			name:    "fixture skipped",
+			content: skippedFixture,
+			hash:    skippedFixtureSHA,
+			want:    RefusalSkipped,
+		},
+		{
+			name:    "fixture missing input",
+			content: vacuousFixture,
+			hash:    vacuousFixtureSHA,
+			want:    RefusalMalformed,
+		},
+		{
+			name:    "fixture unknown field",
+			content: unknownFixtureField,
+			hash:    unknownFixtureFieldSHA,
+			want:    RefusalUnknown,
+		},
+		{
+			name:    "fixture ID differs from manifest",
+			content: mismatchedIDFixture,
+			hash:    mismatchedIDFixtureSHA,
+			want:    RefusalMalformed,
+		},
+		{
+			name:    "fixture case differs from manifest ID",
+			content: mismatchedCaseFixture,
+			hash:    mismatchedCaseFixtureSHA,
+			want:    RefusalMalformed,
+		},
+		{
+			name:    "fixture category differs from manifest",
+			content: mismatchedCategoryFixture,
+			hash:    mismatchedCategoryFixtureSHA,
+			want:    RefusalMalformed,
+		},
+		{
+			name:    "fixture contradicts accepting manifest outcome",
+			content: contradictoryFixture,
+			hash:    contradictoryFixtureSHA,
+			want:    RefusalMalformed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := writeTestCorpus(t)
+			replacePositiveFixture(t, root, tt.content, tt.hash)
+			_, err := Load(root, testCustodyID)
+			assertRefusal(t, err, tt.want)
+		})
+	}
+}
+
+func TestLoadRefusesSchemaPermittedUnknownFixtureSemantics(t *testing.T) {
+	tests := []struct {
+		name        string
+		old         string
+		replacement string
+		want        RefusalKind
+	}{
+		{
+			name:        "unknown outcome",
+			old:         `"outcome": "accept"`,
+			replacement: `"outcome": "future-outcome"`,
+			want:        RefusalUnknown,
+		},
+		{
+			name:        "unknown failure stage",
+			old:         `"failure_stage": "none"`,
+			replacement: `"failure_stage": "future-stage"`,
+			want:        RefusalUnknown,
+		},
+		{
+			name:        "wrong unicode rejection failure stage",
+			old:         `"failure_stage": "canonicalization"`,
+			replacement: `"failure_stage": "governance"`,
+			want:        RefusalMalformed,
+		},
+		{
+			name:        "unknown publication state",
+			old:         `"publication_state": "not-published"`,
+			replacement: `"publication_state": "future-publication"`,
+			want:        RefusalUnknown,
+		},
+		{
+			name:        "unknown force state",
+			old:         `"force_state": "not-applicable"`,
+			replacement: `"force_state": "future-force"`,
+			want:        RefusalUnknown,
+		},
+		{
+			name:        "unknown fixture status",
+			old:         `"status": "required"`,
+			replacement: `"status": "future-status"`,
+			want:        RefusalUnknown,
+		},
+		{
+			name:        "nonzero KDF calls",
+			old:         `"kdf_calls": 0`,
+			replacement: `"kdf_calls": 1`,
+			want:        RefusalMalformed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := writeTestCorpus(t)
+			writeTestFile(t, root, "manifest.schema.json", permissiveManifestSchema)
+			replaceManifest(t, root, tt.old, tt.replacement)
+			_, err := Load(root, testCustodyID)
+			assertRefusal(t, err, tt.want)
+		})
+	}
+}
+
 func TestLoadRefusesMalformedSchemaOrManifest(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -374,11 +537,51 @@ func TestLoadRejectsExternalSchemaReferencesWithoutFallback(t *testing.T) {
 	} {
 		t.Run(reference, func(t *testing.T) {
 			caseRoot := copyTestCorpus(t, root)
-			writeTestFile(t, caseRoot, "manifest.schema.json", `{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"$ref":"`+reference+`"}`)
+			writeTestFile(t, caseRoot, "manifest.schema.json", schemaWithExternalReference(t, reference))
 			_, err := Load(caseRoot, testCustodyID)
 			assertRefusal(t, err, RefusalSchema)
 		})
 	}
+}
+
+func TestExternalSchemaSentinelWouldAcceptLiteralManifestWithFileFallback(t *testing.T) {
+	externalRoot := t.TempDir()
+	externalSchema := filepath.Join(externalRoot, "permissive.json")
+	if err := os.WriteFile(externalSchema, []byte(`{"type":"object"}`), 0o600); err != nil {
+		t.Fatalf("write external schema sentinel: %v", err)
+	}
+
+	schemaDocument, err := decodeStrictJSON([]byte(schemaWithExternalReference(t, (&url.URL{Scheme: "file", Path: externalSchema}).String())))
+	if err != nil {
+		t.Fatalf("decode hostile schema: %v", err)
+	}
+	manifestDocument, err := decodeStrictJSON([]byte(testManifest))
+	if err != nil {
+		t.Fatalf("decode literal manifest: %v", err)
+	}
+
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	compiler.UseLoader(jsonschema.FileLoader{})
+	if err := compiler.AddResource(manifestSchemaResourceURL, schemaDocument); err != nil {
+		t.Fatalf("add hostile schema resource: %v", err)
+	}
+	schema, err := compiler.Compile(manifestSchemaResourceURL)
+	if err != nil {
+		t.Fatalf("compile hostile schema with file fallback: %v", err)
+	}
+	if err := schema.Validate(manifestDocument); err != nil {
+		t.Fatalf("hostile schema must otherwise accept the literal manifest: %v", err)
+	}
+}
+
+func schemaWithExternalReference(t *testing.T, reference string) string {
+	t.Helper()
+	schema, found := strings.CutSuffix(strings.TrimSpace(testSchema), "}")
+	if !found {
+		t.Fatal("literal manifest schema must end with an object delimiter")
+	}
+	return schema + `,"allOf":[{"$ref":` + strconv.Quote(reference) + `}]}`
 }
 
 func TestLoadDoesNotExposeSuppliedRoot(t *testing.T) {
@@ -449,6 +652,12 @@ func replaceManifest(t *testing.T, root, old, replacement string) {
 		t.Fatal("test mutation did not alter the literal manifest")
 	}
 	writeTestFile(t, root, "manifest.json", updated)
+}
+
+func replacePositiveFixture(t *testing.T, root, contents, hash string) {
+	t.Helper()
+	writeTestFile(t, root, "positive/nfc.json", contents)
+	replaceManifest(t, root, positiveFixtureSHA, hash)
 }
 
 func replaceSchema(t *testing.T, root, old, replacement string) {

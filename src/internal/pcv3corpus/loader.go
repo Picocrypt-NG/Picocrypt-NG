@@ -263,7 +263,7 @@ func validateFixture(root *os.Root, fixture fixtureManifest) error {
 	if !matchesSHA256(fixtureData, fixture.sha256) {
 		return refusal(RefusalHash)
 	}
-	if err := validateFixtureDocument(fixtureData); err != nil {
+	if err := validateFixtureDocument(fixtureData, fixture); err != nil {
 		return err
 	}
 
@@ -282,7 +282,7 @@ func matchesSHA256(data []byte, expected string) bool {
 	return hex.EncodeToString(digest[:]) == expected
 }
 
-func validateFixtureDocument(data []byte) error {
+func validateFixtureDocument(data []byte, fixture fixtureManifest) error {
 	document, err := decodeStrictJSON(data)
 	if err != nil {
 		return refusalForManifestJSON(err)
@@ -291,24 +291,85 @@ func validateFixtureDocument(data []byte) error {
 	if !ok {
 		return refusal(RefusalMalformed)
 	}
+	if err := rejectUnknownFields(object, fixtureDocumentFields); err != nil {
+		return err
+	}
 	testOnly, ok := object["test_only"].(bool)
 	if !ok || !testOnly {
 		return refusal(RefusalMalformed)
 	}
-	if generated, ok := object["generated_at_test_time"].(bool); ok && generated {
-		return refusal(RefusalGenerated)
+	fixtureID, err := requiredString(object, "id")
+	if err != nil {
+		return err
 	}
-	caseID, ok := object["case"].(string)
-	if !ok || caseID == "" {
+	category, err := requiredString(object, "category")
+	if err != nil {
+		return err
+	}
+	caseID, err := requiredString(object, "case")
+	if err != nil {
+		return err
+	}
+	inputHex, err := requiredHex(object, "input_hex")
+	if err != nil || !validLowerHex(inputHex) {
 		return refusal(RefusalMalformed)
 	}
-	if expected, ok := object["expected"].(string); ok && expected != "" {
-		return nil
+	status, err := requiredString(object, "status")
+	if err != nil {
+		return err
 	}
-	if expectedHex, ok := object["expected_hex"].(string); ok && expectedHex != "" {
-		return nil
+	generated, err := requiredBool(object, "generated_at_test_time")
+	if err != nil {
+		return err
 	}
-	return refusal(RefusalMalformed)
+	if fixtureID != fixture.id || category != fixture.category || caseID != fixture.id {
+		return refusal(RefusalMalformed)
+	}
+	if status == "skipped" {
+		return refusal(RefusalSkipped)
+	}
+	if status != "required" {
+		return refusal(RefusalUnknown)
+	}
+	if generated {
+		return refusal(RefusalGenerated)
+	}
+
+	switch fixture.outcome {
+	case "accept":
+		if _, exists := object["expected"]; exists {
+			return refusal(RefusalMalformed)
+		}
+		expectedHex, err := requiredHex(object, "expected_hex")
+		if err != nil || !validLowerHex(expectedHex) {
+			return refusal(RefusalMalformed)
+		}
+		return nil
+	case "reject":
+		if _, exists := object["expected_hex"]; exists {
+			return refusal(RefusalMalformed)
+		}
+		expected, err := requiredString(object, "expected")
+		if err != nil || expected != "reject" {
+			return refusal(RefusalMalformed)
+		}
+		return nil
+	default:
+		return refusal(RefusalUnknown)
+	}
+}
+
+var fixtureDocumentFields = map[string]struct{}{
+	"test_only": {}, "id": {}, "category": {}, "case": {}, "input_hex": {},
+	"expected": {}, "expected_hex": {}, "status": {}, "generated_at_test_time": {},
+}
+
+func requiredHex(object map[string]any, field string) (string, error) {
+	value, ok := object[field].(string)
+	if !ok {
+		return "", refusal(RefusalMalformed)
+	}
+	return value, nil
 }
 
 func validateProvenanceDocument(data []byte) error {

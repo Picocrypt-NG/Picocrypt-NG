@@ -403,13 +403,34 @@ func decodeFixture(document any) (fixtureManifest, error) {
 	if fixture.category != "unicode17" && fixture.category != "governance" {
 		return fixtureManifest{}, refusal(RefusalUnknown)
 	}
+	if fixture.outcome != "accept" && fixture.outcome != "reject" {
+		return fixtureManifest{}, refusal(RefusalUnknown)
+	}
+	if fixture.failureStage != "none" && fixture.failureStage != "canonicalization" && fixture.failureStage != "governance" {
+		return fixtureManifest{}, refusal(RefusalUnknown)
+	}
+	if fixture.publicationState != "not-published" && fixture.publicationState != "not-applicable" {
+		return fixtureManifest{}, refusal(RefusalUnknown)
+	}
+	if fixture.forceState != "not-applicable" {
+		return fixtureManifest{}, refusal(RefusalUnknown)
+	}
 	if fixture.status == "skipped" {
 		return fixtureManifest{}, refusal(RefusalSkipped)
 	}
-	if fixture.status != "required" || fixture.generatedAtTestTime {
+	if fixture.status != "required" {
+		return fixtureManifest{}, refusal(RefusalUnknown)
+	}
+	if fixture.generatedAtTestTime {
 		return fixtureManifest{}, refusal(RefusalGenerated)
 	}
-	if fixture.kdfCalls.String() != "0" || fixture.forceState != "not-applicable" || (fixture.outcome == "accept" && fixture.failureStage != "none") || (fixture.outcome == "reject" && fixture.failureStage == "none") {
+	if fixture.kdfCalls.String() != "0" {
+		return fixtureManifest{}, refusal(RefusalMalformed)
+	}
+	if fixture.outcome == "accept" && fixture.failureStage != "none" {
+		return fixtureManifest{}, refusal(RefusalMalformed)
+	}
+	if fixture.outcome == "reject" && ((fixture.category == "unicode17" && fixture.failureStage != "canonicalization") || (fixture.category == "governance" && fixture.failureStage != "governance")) {
 		return fixtureManifest{}, refusal(RefusalMalformed)
 	}
 	return fixture, nil
@@ -448,7 +469,11 @@ func requiredStrings(object map[string]any, field string) ([]string, error) {
 }
 
 func validSHA256(value string) bool {
-	if len(value) != 64 {
+	return len(value) == 64 && validLowerHex(value)
+}
+
+func validLowerHex(value string) bool {
+	if len(value)%2 != 0 {
 		return false
 	}
 	for _, character := range value {
