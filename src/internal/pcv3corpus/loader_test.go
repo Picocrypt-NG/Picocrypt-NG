@@ -75,37 +75,43 @@ const permissiveManifestSchema = `{
 }`
 
 const (
-	positiveFixture           = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
-	negativeFixture           = `{"test_only":true,"id":"unicode17-unassigned","category":"unicode17","case":"unicode17-unassigned","input_hex":"cdb8","expected":"reject","status":"required","generated_at_test_time":false}`
-	independentProvenance     = `{"test_only":true,"author":"independent-fixture-author","generator":"literal-fixture","independent_of_production":true,"production_code":false}`
-	productionProvenance      = `{"test_only":true,"author":"independent-fixture-author","generator":"literal-fixture","independent_of_production":true,"production_code":true}`
-	dependentProvenance       = `{"test_only":true,"author":"independent-fixture-author","generator":"literal-fixture","independent_of_production":false,"production_code":false}`
-	notTestOnlyFixture        = `{"test_only":false,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
-	generatedFixture          = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":true}`
-	skippedFixture            = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"skipped","generated_at_test_time":false}`
-	vacuousFixture            = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
-	unknownFixtureField       = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false,"unexpected":true}`
-	mismatchedIDFixture       = `{"test_only":true,"id":"other","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
-	mismatchedCaseFixture     = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"other","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
-	mismatchedCategoryFixture = `{"test_only":true,"id":"unicode17-nfc","category":"governance","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
-	contradictoryFixture      = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected":"reject","status":"required","generated_at_test_time":false}`
+	positiveFixture               = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	negativeFixture               = `{"test_only":true,"id":"unicode17-unassigned","category":"unicode17","case":"unicode17-unassigned","input_hex":"cdb8","expected":"reject","status":"required","generated_at_test_time":false}`
+	independentProvenance         = `{"test_only":true,"author":"independent-fixture-author","generator":"unicode-ucd-transcription","generator_version":"1","source_revision":"Unicode 17.0.0 NormalizationTest.txt line 141","source_sha256":"5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db","dependency_lock":"curl=8.21.0;awk=POSIX.1-2017","dependency_lock_sha256":"e2436c779e713dbe3c07487b87783edd55bad383139a9f21a7293c812d6794f6","reproduction_command":"curl --fail --proto '=https' --tlsv1.2 --silent --show-error https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt | awk 'NR==141 {print}'","independent_of_production":true,"production_code":false}`
+	productionProvenance          = `{"test_only":true,"author":"independent-fixture-author","generator":"unicode-ucd-transcription","generator_version":"1","source_revision":"Unicode 17.0.0 NormalizationTest.txt line 141","source_sha256":"5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db","dependency_lock":"curl=8.21.0;awk=POSIX.1-2017","dependency_lock_sha256":"e2436c779e713dbe3c07487b87783edd55bad383139a9f21a7293c812d6794f6","reproduction_command":"curl --fail --proto '=https' --tlsv1.2 --silent --show-error https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt | awk 'NR==141 {print}'","independent_of_production":true,"production_code":true}`
+	dependentProvenance           = `{"test_only":true,"author":"independent-fixture-author","generator":"unicode-ucd-transcription","generator_version":"1","source_revision":"Unicode 17.0.0 NormalizationTest.txt line 141","source_sha256":"5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db","dependency_lock":"curl=8.21.0;awk=POSIX.1-2017","dependency_lock_sha256":"e2436c779e713dbe3c07487b87783edd55bad383139a9f21a7293c812d6794f6","reproduction_command":"curl --fail --proto '=https' --tlsv1.2 --silent --show-error https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt | awk 'NR==141 {print}'","independent_of_production":false,"production_code":false}`
+	missingSourceProvenance       = `{"test_only":true,"author":"independent-fixture-author","generator":"unicode-ucd-transcription","generator_version":"1","source_sha256":"5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db","dependency_lock":"curl=8.21.0;awk=POSIX.1-2017","dependency_lock_sha256":"e2436c779e713dbe3c07487b87783edd55bad383139a9f21a7293c812d6794f6","reproduction_command":"curl --fail --proto '=https' --tlsv1.2 --silent --show-error https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt | awk 'NR==141 {print}'","independent_of_production":true,"production_code":false}`
+	missingReproductionProvenance = `{"test_only":true,"author":"independent-fixture-author","generator":"unicode-ucd-transcription","generator_version":"1","source_revision":"Unicode 17.0.0 NormalizationTest.txt line 141","source_sha256":"5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db","dependency_lock":"curl=8.21.0;awk=POSIX.1-2017","dependency_lock_sha256":"e2436c779e713dbe3c07487b87783edd55bad383139a9f21a7293c812d6794f6","independent_of_production":true,"production_code":false}`
+	invalidLockProvenance         = `{"test_only":true,"author":"independent-fixture-author","generator":"unicode-ucd-transcription","generator_version":"1","source_revision":"Unicode 17.0.0 NormalizationTest.txt line 141","source_sha256":"5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db","dependency_lock":"curl=8.21.0;awk=POSIX.1-2017","dependency_lock_sha256":"0000000000000000000000000000000000000000000000000000000000000000","reproduction_command":"curl --fail --proto '=https' --tlsv1.2 --silent --show-error https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt | awk 'NR==141 {print}'","independent_of_production":true,"production_code":false}`
+	notTestOnlyFixture            = `{"test_only":false,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	generatedFixture              = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":true}`
+	skippedFixture                = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"skipped","generated_at_test_time":false}`
+	vacuousFixture                = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	unknownFixtureField           = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false,"unexpected":true}`
+	mismatchedIDFixture           = `{"test_only":true,"id":"other","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	mismatchedCaseFixture         = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"other","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	mismatchedCategoryFixture     = `{"test_only":true,"id":"unicode17-nfc","category":"governance","case":"unicode17-nfc","input_hex":"65cc81","expected_hex":"c3a9","status":"required","generated_at_test_time":false}`
+	contradictoryFixture          = `{"test_only":true,"id":"unicode17-nfc","category":"unicode17","case":"unicode17-nfc","input_hex":"65cc81","expected":"reject","status":"required","generated_at_test_time":false}`
 )
 
 const (
-	positiveFixtureSHA           = "3ed44cdcbf811e609454358071913c0219d2d32f14fb2a7278654ab04d66a432"
-	negativeFixtureSHA           = "ac06da8ecaa484eccac56fe29e6c899450b1f7911b7806230189963ce8d5aaa3"
-	independentProvenanceSHA     = "e16942735c8971b8ec510d2fe9a14daf8527314d8649aacbdabd1c496cf07931"
-	productionProvenanceSHA      = "16578c50368861b4cacaf4e9d9aec5e04fd5d61b6193298e7d83f9293aef68ac"
-	dependentProvenanceSHA       = "2d33b86c00cf27727a1f27da38cc72ca43c84f1c6c469790f57678372f3f9c09"
-	notTestOnlyFixtureSHA        = "1dc1422c2ea10c8253cb6e395f3fff720ce550e3dfe3cc5c4b5f5acda2f4e78e"
-	generatedFixtureSHA          = "45d8777389db5e6a33dbff74becd876f361fb910174d7c495ca4247744b6ef08"
-	skippedFixtureSHA            = "9b6eb8713d4adda9da93527268d0ed786093c26d4de1b8b92d91e141fb6b1c5c"
-	vacuousFixtureSHA            = "3547bd18423af0a2f4ba374edc11848edf8d0cc7748ff6f6a00ea7d8338fb6f6"
-	unknownFixtureFieldSHA       = "6eeb55c600123c67a6391b9fd4df048a120ec210322f3f2886b82caa34e47899"
-	mismatchedIDFixtureSHA       = "c67fdfff8d88b4006a2175ebd8b4621b27479e0d6e6f8e3e67d45b78ef0607aa"
-	mismatchedCaseFixtureSHA     = "ba9a192f3bc5857b14b067f06b8cb8f8f2f194c5829ea9b28b76c48b878a2c82"
-	mismatchedCategoryFixtureSHA = "3cdb8770651f1a4edaf15fe4c9bf3d5e27a4d3ddd760541d837ecfa702e767b1"
-	contradictoryFixtureSHA      = "0df95fdd222fd8d56112c2b2377f093f8a31cd20b686f204ea541aa0192aaadd"
+	positiveFixtureSHA               = "3ed44cdcbf811e609454358071913c0219d2d32f14fb2a7278654ab04d66a432"
+	negativeFixtureSHA               = "ac06da8ecaa484eccac56fe29e6c899450b1f7911b7806230189963ce8d5aaa3"
+	independentProvenanceSHA         = "80c540bb6a29561b7f12393afdafe7fd8b8f2d1e21f14e80b5df81ff82ddff17"
+	productionProvenanceSHA          = "10aa84fc0458668748f147c2de38713f217aa2ee1d05fcd14a444bbd8d27818f"
+	dependentProvenanceSHA           = "877ff5f5524a62f9694ff3964e29964a7a73dcab4cfa996774d643d59f7e6809"
+	missingSourceProvenanceSHA       = "32f7dfc8dc17ebef5dd6d2eff4c5e0e5be84cda7bcc83b0cd9ff642467256a10"
+	missingReproductionProvenanceSHA = "ec5baad18aacb9a33e8e21a7235a3bceb739e5c514653dbf240c87c3a38af8e9"
+	invalidLockProvenanceSHA         = "fe60c58939fa451716b2b3a61fb84bd96e4a8354ea2f215e3aa34ebd7ffcdd32"
+	notTestOnlyFixtureSHA            = "1dc1422c2ea10c8253cb6e395f3fff720ce550e3dfe3cc5c4b5f5acda2f4e78e"
+	generatedFixtureSHA              = "45d8777389db5e6a33dbff74becd876f361fb910174d7c495ca4247744b6ef08"
+	skippedFixtureSHA                = "9b6eb8713d4adda9da93527268d0ed786093c26d4de1b8b92d91e141fb6b1c5c"
+	vacuousFixtureSHA                = "3547bd18423af0a2f4ba374edc11848edf8d0cc7748ff6f6a00ea7d8338fb6f6"
+	unknownFixtureFieldSHA           = "6eeb55c600123c67a6391b9fd4df048a120ec210322f3f2886b82caa34e47899"
+	mismatchedIDFixtureSHA           = "c67fdfff8d88b4006a2175ebd8b4621b27479e0d6e6f8e3e67d45b78ef0607aa"
+	mismatchedCaseFixtureSHA         = "ba9a192f3bc5857b14b067f06b8cb8f8f2f194c5829ea9b28b76c48b878a2c82"
+	mismatchedCategoryFixtureSHA     = "3cdb8770651f1a4edaf15fe4c9bf3d5e27a4d3ddd760541d837ecfa702e767b1"
+	contradictoryFixtureSHA          = "0df95fdd222fd8d56112c2b2377f093f8a31cd20b686f204ea541aa0192aaadd"
 )
 
 const testManifest = `{
@@ -120,7 +126,7 @@ const testManifest = `{
       "path": "positive/nfc.json",
       "sha256": "3ed44cdcbf811e609454358071913c0219d2d32f14fb2a7278654ab04d66a432",
       "provenance_path": "provenance/nfc.json",
-      "provenance_sha256": "e16942735c8971b8ec510d2fe9a14daf8527314d8649aacbdabd1c496cf07931",
+      "provenance_sha256": "80c540bb6a29561b7f12393afdafe7fd8b8f2d1e21f14e80b5df81ff82ddff17",
       "category": "unicode17",
       "outcome": "accept",
       "failure_stage": "none",
@@ -135,7 +141,7 @@ const testManifest = `{
       "path": "negative/reject-unassigned.json",
       "sha256": "ac06da8ecaa484eccac56fe29e6c899450b1f7911b7806230189963ce8d5aaa3",
       "provenance_path": "provenance/reject-unassigned.json",
-      "provenance_sha256": "e16942735c8971b8ec510d2fe9a14daf8527314d8649aacbdabd1c496cf07931",
+      "provenance_sha256": "80c540bb6a29561b7f12393afdafe7fd8b8f2d1e21f14e80b5df81ff82ddff17",
       "category": "unicode17",
       "outcome": "reject",
       "failure_stage": "canonicalization",
@@ -294,6 +300,54 @@ func TestLoadRefusesFixturePathsOutsidePhaseOneDirectories(t *testing.T) {
 	assertRefusal(t, err, RefusalPath)
 }
 
+func TestLoadRequiresBothFixtureDirectionsAndMatchingPaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, root string)
+	}{
+		{
+			name: "all accepting fixtures",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				manifest := strings.Replace(testManifest, `"outcome": "reject"`, `"outcome": "accept"`, 1)
+				manifest = strings.Replace(manifest, `"failure_stage": "canonicalization"`, `"failure_stage": "none"`, 1)
+				writeTestFile(t, root, "manifest.json", manifest)
+			},
+		},
+		{
+			name: "all rejecting fixtures",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				manifest := strings.Replace(testManifest, `"outcome": "accept"`, `"outcome": "reject"`, 1)
+				manifest = strings.Replace(manifest, `"failure_stage": "none"`, `"failure_stage": "canonicalization"`, 1)
+				writeTestFile(t, root, "manifest.json", manifest)
+			},
+		},
+		{
+			name: "accepting fixture stored in negative directory",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				if err := os.Rename(filepath.Join(root, "positive", "nfc.json"), filepath.Join(root, "negative", "nfc.json")); err != nil {
+					t.Fatalf("move accepting fixture to negative directory: %v", err)
+				}
+				if err := os.Remove(filepath.Join(root, "positive")); err != nil {
+					t.Fatalf("remove now-empty positive directory: %v", err)
+				}
+				replaceManifest(t, root, `"path": "positive/nfc.json"`, `"path": "negative/nfc.json"`)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := writeTestCorpus(t)
+			tt.mutate(t, root)
+			_, err := Load(root, testCustodyID)
+			assertRefusal(t, err, RefusalMalformed)
+		})
+	}
+}
+
 func TestLoadRefusesUnsafeOrUnpinnedProvenance(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -311,6 +365,24 @@ func TestLoadRefusesUnsafeOrUnpinnedProvenance(t *testing.T) {
 			name:    "dependent provenance",
 			content: dependentProvenance,
 			hash:    dependentProvenanceSHA,
+			want:    RefusalProvenance,
+		},
+		{
+			name:    "missing source revision",
+			content: missingSourceProvenance,
+			hash:    missingSourceProvenanceSHA,
+			want:    RefusalProvenance,
+		},
+		{
+			name:    "missing reproduction command",
+			content: missingReproductionProvenance,
+			hash:    missingReproductionProvenanceSHA,
+			want:    RefusalProvenance,
+		},
+		{
+			name:    "dependency lock does not match its pin",
+			content: invalidLockProvenance,
+			hash:    invalidLockProvenanceSHA,
 			want:    RefusalProvenance,
 		},
 	}

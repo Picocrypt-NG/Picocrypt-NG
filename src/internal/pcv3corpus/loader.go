@@ -66,6 +66,9 @@ func Load(rootPath, custodyID string) (*Corpus, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateFixtureSet(manifest.fixtures); err != nil {
+		return nil, err
+	}
 	actualFiles, actualDirectories, err := enumerateRoot(root)
 	if err != nil {
 		return nil, err
@@ -390,14 +393,24 @@ func validateProvenanceDocument(data []byte) error {
 	testOnly, testOnlyOK := object["test_only"].(bool)
 	author, authorOK := object["author"].(string)
 	generator, generatorOK := object["generator"].(string)
+	generatorVersion, generatorVersionOK := object["generator_version"].(string)
+	sourceRevision, sourceRevisionOK := object["source_revision"].(string)
+	sourceSHA256, sourceSHA256OK := object["source_sha256"].(string)
+	dependencyLock, dependencyLockOK := object["dependency_lock"].(string)
+	dependencyLockSHA256, dependencyLockSHA256OK := object["dependency_lock_sha256"].(string)
+	reproductionCommand, reproductionCommandOK := object["reproduction_command"].(string)
 	independent, independentOK := object["independent_of_production"].(bool)
 	production, productionOK := object["production_code"].(bool)
-	if !testOnlyOK || !authorOK || author == "" || !generatorOK || generator == "" || !independentOK || !productionOK || !testOnly || !independent || production {
+	if !testOnlyOK || !authorOK || author == "" || !generatorOK || generator == "" || !generatorVersionOK || generatorVersion == "" || !sourceRevisionOK || sourceRevision == "" || !sourceSHA256OK || !validSHA256(sourceSHA256) || !dependencyLockOK || dependencyLock == "" || !dependencyLockSHA256OK || !validSHA256(dependencyLockSHA256) || !reproductionCommandOK || reproductionCommand == "" || !independentOK || !productionOK || !testOnly || !independent || production {
+		return refusal(RefusalProvenance)
+	}
+	digest := sha256.Sum256([]byte(dependencyLock))
+	if hex.EncodeToString(digest[:]) != dependencyLockSHA256 {
 		return refusal(RefusalProvenance)
 	}
 	return nil
 }
 
 var provenanceFields = map[string]struct{}{
-	"test_only": {}, "author": {}, "generator": {}, "independent_of_production": {}, "production_code": {},
+	"test_only": {}, "author": {}, "generator": {}, "generator_version": {}, "source_revision": {}, "source_sha256": {}, "dependency_lock": {}, "dependency_lock_sha256": {}, "reproduction_command": {}, "independent_of_production": {}, "production_code": {},
 }

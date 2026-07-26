@@ -339,7 +339,6 @@ func decodeManifest(document any) (corpusManifest, error) {
 		}
 		manifest.fixtures = append(manifest.fixtures, fixture)
 	}
-
 	if manifest.format != corpusFormat || manifest.schemaRevision != phaseOneSchemaRevision || manifest.specRevision != phaseOneSpecRevision || !manifest.testOnly || !contains(manifest.deferredVectorClasses, "full-pcv3-volume") {
 		return corpusManifest{}, refusal(RefusalMalformed)
 	}
@@ -434,6 +433,31 @@ func decodeFixture(document any) (fixtureManifest, error) {
 		return fixtureManifest{}, refusal(RefusalMalformed)
 	}
 	return fixture, nil
+}
+
+func validateFixtureSet(fixtures []fixtureManifest) error {
+	var accepting, rejecting bool
+	for _, fixture := range fixtures {
+		directory, _, _ := strings.Cut(fixture.path, "/")
+		switch fixture.outcome {
+		case "accept":
+			if directory != "positive" {
+				return refusal(RefusalMalformed)
+			}
+			accepting = true
+		case "reject":
+			if directory != "negative" {
+				return refusal(RefusalMalformed)
+			}
+			rejecting = true
+		default:
+			return refusal(RefusalUnknown)
+		}
+	}
+	if !accepting || !rejecting {
+		return refusal(RefusalMalformed)
+	}
+	return nil
 }
 
 func requiredString(object map[string]any, field string) (string, error) {
