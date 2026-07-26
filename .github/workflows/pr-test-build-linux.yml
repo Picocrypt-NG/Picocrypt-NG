@@ -80,6 +80,14 @@ jobs:
           -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
           -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness)$' ./cmd/wasm
 
+    - name: Test PCV3 pure packages in browser/WASM
+      if: matrix.arch == 'amd64'
+      run: |
+        cd src
+        GOMAXPROCS=1 CGO_ENABLED=0 GOOS=js GOARCH=wasm go test -count=1 \
+          -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
+          ./internal/pcv3unicode ./internal/pcv3governance
+
     - name: Run tests
       run: |
         cd src
