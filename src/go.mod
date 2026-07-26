@@ -11,6 +11,7 @@ require (
 	github.com/dweymouth/fyne-tooltip v0.4.0
 	github.com/go-gl/glfw/v3.4/glfw v0.1.0-pre.1.0.20260707082822-2a407d02d01a
 	github.com/nicksnyder/go-i18n/v2 v2.6.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/crypto v0.54.0
