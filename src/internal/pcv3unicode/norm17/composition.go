@@ -279,7 +279,10 @@ func (rb *reorderBuffer) appendRune(r rune) {
 	bn := rb.nbyte
 	sz := utf8.EncodeRune(rb.byte[bn:], rune(r))
 	rb.nbyte += utf8.UTFMax
-	rb.rune[rb.nrune] = Properties{pos: bn, size: uint8(sz)}
+	rb.rune[rb.nrune] = Properties{
+		pos:  bn,
+		size: uint8(sz), //nolint:gosec // G115: utf8.EncodeRune returns a width from 1 through utf8.UTFMax.
+	}
 	rb.nrune++
 }
 
@@ -287,7 +290,10 @@ func (rb *reorderBuffer) appendRune(r rune) {
 func (rb *reorderBuffer) assignRune(pos int, r rune) {
 	bn := rb.rune[pos].pos
 	sz := utf8.EncodeRune(rb.byte[bn:], rune(r))
-	rb.rune[pos] = Properties{pos: bn, size: uint8(sz)}
+	rb.rune[pos] = Properties{
+		pos:  bn,
+		size: uint8(sz), //nolint:gosec // G115: utf8.EncodeRune returns a width from 1 through utf8.UTFMax.
+	}
 }
 
 // runeAt returns the rune at position n. It is used for Hangul and recomposition.

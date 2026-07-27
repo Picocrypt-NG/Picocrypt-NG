@@ -198,26 +198,41 @@ func buildRecompMap() {
 		copy(buf[:], recompMapPacked[i:i+8])
 		key := binary.BigEndian.Uint32(buf[:4])
 		val := binary.BigEndian.Uint32(buf[4:])
+		// Every Unicode 17 composition producing a supplementary scalar has
+		// at least one supplementary operand and is represented, without
+		// truncation, by supplementaryRecompositions. Keeping those entries
+		// out of the packed map also prevents BMP inputs from aliasing their
+		// truncated operand keys.
+		if val > '\uFFFF' {
+			continue
+		}
 		recompMap[key] = rune(val)
 	}
 }
 
 // Recomposition
-// We use 32-bit keys instead of 64-bit for the two codepoint keys.
-// This clips off the bits of three entries, but we know this will not
-// result in a collision. In the unlikely event that changes to
-// UnicodeData.txt introduce collisions, the compiler will catch it.
-// Note that the recomposition map for NFC and NFKC are identical.
+// The upstream packed table uses 32-bit keys for two 16-bit operands. Unicode
+// 17 has supplementary-plane composition operands, so combine consults the
+// full-width frozen table for any such pair. Unmatched supplementary pairs
+// must not fall through to the packed lookup: doing so would alias unrelated
+// scalars with identical low 16 bits.
+// The recomposition map for NFC and NFKC is identical.
 
 // combine returns the combined rune or 0 if it doesn't exist.
 //
 // The caller is responsible for calling
 // recompMapOnce.Do(buildRecompMap) sometime before this is called.
 func combine(a, b rune) rune {
-	key := uint32(uint16(a))<<16 + uint32(uint16(b))
 	if recompMap == nil {
 		panic("caller error") // see func comment
 	}
+	if a > '\uFFFF' || b > '\uFFFF' {
+		return supplementaryRecompositions[[2]rune{a, b}]
+	}
+	if a < 0 || b < 0 {
+		return 0
+	}
+	key := uint32(a)<<16 | uint32(b)
 	return recompMap[key]
 }
 
@@ -255,12 +270,14 @@ func compInfo(v uint16, sz int) Properties {
 		return Properties{flags: 0x80, size: 1}
 	}
 	if v == 0 {
-		return Properties{size: uint8(sz)}
+		return Properties{
+			size: uint8(sz), //nolint:gosec // G115: trie lookup widths are 1 through utf8.UTFMax after the sz == 0 case.
+		}
 	} else if v >= 0x8000 {
 		p := Properties{
-			size:  uint8(sz),
-			ccc:   uint8(v),
-			tccc:  uint8(v),
+			size:  uint8(sz), //nolint:gosec // G115: trie lookup widths are 1 through utf8.UTFMax after the sz == 0 case.
+			ccc:   uint8(v),  //nolint:gosec // G115: the generated property format stores the compressed CCC index in v's low byte.
+			tccc:  uint8(v),  //nolint:gosec // G115: the same generated low byte is the trailing CCC index when there is no decomposition.
 			flags: qcInfo(v>>8) & 0x3f,
 		}
 		if p.ccc > 0 || p.combinesBackward() {
@@ -271,7 +288,11 @@ func compInfo(v uint16, sz int) Properties {
 	// has decomposition
 	h := decomps[v]
 	f := (qcInfo(h&headerFlagsMask) >> 2) | 0x4
-	p := Properties{size: uint8(sz), flags: f, index: v}
+	p := Properties{
+		size:  uint8(sz), //nolint:gosec // G115: trie lookup widths are 1 through utf8.UTFMax after the sz == 0 case.
+		flags: f,
+		index: v,
+	}
 	if v >= firstCCC {
 		n := uint16(h & headerLenMask)
 		if n == 31 {
