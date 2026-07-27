@@ -1,0 +1,63 @@
+{
+  "schema": "pcv3unicode-literal-vectors-v1",
+  "notice": "TEST ONLY. Public Unicode conformance literals; no user credentials, paths, keys, tokens, or generated production values.",
+  "unicode_version": "17.0.0",
+  "uax15_revision": "57",
+  "max_utf8_bytes": 1048576,
+  "sources": {
+    "normalization_test_sha256": "5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db",
+    "derived_age_sha256": "f8ecdf768bdc210f201abd271d9bc587825618a86a7046a8146cc816393f1998",
+    "uax15_revision_57_sha256": "c0c05f91e1c4f9be3d987e27d76cf254b30003b6be41eb94977cc3fe148d4c4e"
+  },
+  "positive": [
+    {
+      "id": "unicode17-todhri-differential-nfc",
+      "input_hex": "f0909792cc87",
+      "unicode17_nfc_hex": "f0909789",
+      "unicode15_nfc_hex": "f0909792cc87",
+      "source": "NormalizationTest-17.0.0.txt line 15154, c3 (U+105D2 U+0307 -> U+105C9)"
+    },
+    {
+      "id": "unicode17-assigned-only-combining-double-caron",
+      "input_hex": "e1ab8f",
+      "unicode17_nfc_hex": "e1ab8f",
+      "unicode15_assignment": "unassigned",
+      "source": "DerivedAge-17.0.0.txt line 2072 (U+1ACF, age 17.0)"
+    },
+    {
+      "id": "ordinary-composition-e-acute",
+      "input_hex": "65cc81",
+      "unicode17_nfc_hex": "c3a9",
+      "source": "NormalizationTest-17.0.0.txt line 141 (U+0065 U+0301 -> U+00E9)"
+    },
+    {
+      "id": "canonical-combining-mark-order",
+      "input_hex": "cc81cca3",
+      "unicode17_nfc_hex": "cca3cc81",
+      "source": "UAX #15 revision 57 canonical ordering; UnicodeData-17.0.0 combining classes U+0301=230 and U+0323=220"
+    },
+    {
+      "id": "embedded-nul-is-data",
+      "input_hex": "00",
+      "unicode17_nfc_hex": "00",
+      "source": "PCV3_FORMAT_SPEC.md section 7.2"
+    }
+  ],
+  "negative": [
+    {
+      "id": "malformed-utf8",
+      "input_hex": "c328",
+      "rejection": "invalid-utf8"
+    },
+    {
+      "id": "unicode17-unassigned-u0378",
+      "input_hex": "cdb8",
+      "rejection": "unassigned"
+    }
+  ],
+  "post_normalization_limit": {
+    "input_unit_hex": "cd84",
+    "repeat": 524288,
+    "source": "NormalizationTest-17.0.0.txt line 400: U+0344 NFC decomposes to U+0308 U+0301"
+  }
+}
