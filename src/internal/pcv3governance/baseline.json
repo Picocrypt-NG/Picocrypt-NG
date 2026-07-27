@@ -3,7 +3,7 @@
   "status": "review-candidate",
   "spec_revision": "0.3",
   "spec_sha256": "9b0c7cac133e1e349ed58bd2232ebff860d1e567348611d09c79d295bd81ad73",
-  "implementation_commit": "95d53df58490c3dd81221457bad87488b7846a24",
+  "implementation_commit": "1afdef825df4ca10d1b11326e82e1b3563f5df0e",
   "owner_approval_ref": "",
   "constraints": {
     "d04_fixed_kdf_profile": "no-adaptive-downgrade",

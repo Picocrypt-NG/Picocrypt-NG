@@ -9,7 +9,7 @@ import (
 const (
 	literalCandidateRevision = "0.3"
 	literalCandidateSHA256   = "9b0c7cac133e1e349ed58bd2232ebff860d1e567348611d09c79d295bd81ad73"
-	literalImplementation    = "95d53df58490c3dd81221457bad87488b7846a24"
+	literalImplementation    = "1afdef825df4ca10d1b11326e82e1b3563f5df0e"
 )
 
 func readBaseline(t *testing.T) []byte {
@@ -276,7 +276,7 @@ func TestStrictDecoderRejectsNonAuthoritativeAndAmbiguousFields(t *testing.T) {
 	duplicate := replaceOnce(t, baseline, []byte(`"status": "review-candidate"`), []byte(`"status": "review-candidate", "status": "review-candidate"`))
 	requireDecodeRefusal(t, duplicate, ReasonDuplicateField, "status")
 
-	missing := replaceOnce(t, baseline, []byte("\n  \"implementation_commit\": \"95d53df58490c3dd81221457bad87488b7846a24\","), nil)
+	missing := replaceOnce(t, baseline, []byte("\n  \"implementation_commit\": \"1afdef825df4ca10d1b11326e82e1b3563f5df0e\","), nil)
 	requireDecodeRefusal(t, missing, ReasonMissingField, "implementation_commit")
 
 	duplicateGradle := replaceOnce(t, baseline, []byte(`"gradle_version": "9.6.1"`), []byte(`"gradle_version": "9.6.1", "gradle_version": "9.6.1"`))
