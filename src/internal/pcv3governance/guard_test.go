@@ -3,6 +3,7 @@ package pcv3governance
 import (
 	"bytes"
 	"errors"
+	"strconv"
 	"testing"
 )
 
@@ -81,6 +82,242 @@ func requireDecodeRefusal(t *testing.T, input []byte, want Reason, wantField str
 	}
 	if refusal.Reason != want || refusal.Field != wantField {
 		t.Fatalf("DecodePromotionRecord refusal = %s/%s, want %s/%s", refusal.Reason, refusal.Field, want, wantField)
+	}
+}
+
+type literalNormativeField struct {
+	name      string
+	value     string
+	wrongType string
+	children  []literalNormativeField
+}
+
+var literalNormativePromotionFields = []literalNormativeField{
+	{name: "schema", value: `"pcv3-governance-baseline-v1"`, wrongType: "false"},
+	{name: "status", value: `"review-candidate"`, wrongType: "false"},
+	{name: "spec_revision", value: `"0.3"`, wrongType: "false"},
+	{name: "spec_sha256", value: `"9b0c7cac133e1e349ed58bd2232ebff860d1e567348611d09c79d295bd81ad73"`, wrongType: "false"},
+	{name: "implementation_commit", value: `"1afdef825df4ca10d1b11326e82e1b3563f5df0e"`, wrongType: "false"},
+	{name: "owner_approval_ref", value: `""`, wrongType: "false"},
+	{
+		name:      "constraints",
+		wrongType: "[]",
+		children: []literalNormativeField{
+			{name: "d04_fixed_kdf_profile", value: `"no-adaptive-downgrade"`, wrongType: "false"},
+			{name: "d05_android_evidence", value: `"future-representative-device-evidence-required"`, wrongType: "false"},
+		},
+	},
+	{
+		name:      "toolchain",
+		wrongType: "[]",
+		children: []literalNormativeField{
+			{name: "go_version", value: `"go1.26.5"`, wrongType: "false"},
+			{name: "x_mobile_version", value: `"v0.0.0-20260709172247-6129f5bee9d5"`, wrongType: "false"},
+			{name: "android_ndk_version", value: `"29.0.14206865"`, wrongType: "false"},
+			{name: "jdk", value: `"temurin-21"`, wrongType: "false"},
+			{name: "gradle_version", value: `"9.6.1"`, wrongType: "false"},
+			{name: "aar_identity", value: `"picocrypt-mobile.aar;android/arm64,android/amd64;api=24"`, wrongType: "false"},
+		},
+	},
+	{
+		name:      "gates",
+		wrongType: "[]",
+		children: []literalNormativeField{
+			{name: "final_specification", value: "false", wrongType: `"false"`},
+			{name: "immutable_registry", value: "false", wrongType: `"false"`},
+			{name: "pinned_normative_vectors", value: "false", wrongType: `"false"`},
+			{name: "independent_interoperability", value: "false", wrongType: `"false"`},
+			{name: "required_tests_without_skip", value: "false", wrongType: `"false"`},
+			{name: "sequential_production_argon", value: "false", wrongType: `"false"`},
+			{name: "non_vacuous_mutation_testing", value: "false", wrongType: `"false"`},
+			{name: "v1_v2_golden_reader_compatibility", value: "false", wrongType: `"false"`},
+			{name: "force_rs_d1_matrices", value: "false", wrongType: `"false"`},
+			{name: "zeroing_cancellation_staging_race_fuzz_confidentiality", value: "false", wrongType: `"false"`},
+			{name: "shared_core_codec_or_wasm_fail_loud", value: "false", wrongType: `"false"`},
+			{name: "transitional_future_pcv_routing", value: "false", wrongType: `"false"`},
+			{name: "independent_cryptographic_review", value: "false", wrongType: `"false"`},
+			{name: "critical_high_findings_rechecked", value: "false", wrongType: `"false"`},
+		},
+	},
+}
+
+type literalJSONMutationKind uint8
+
+const (
+	literalOmitField literalJSONMutationKind = iota + 1
+	literalDuplicateField
+	literalReplaceValue
+)
+
+type literalJSONMutation struct {
+	path        string
+	kind        literalJSONMutationKind
+	replacement string
+}
+
+type literalNormativeFieldPath struct {
+	path      string
+	wrongType string
+	isObject  bool
+}
+
+func renderLiteralNormativeRecord(t *testing.T, mutation *literalJSONMutation) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	matched := mutation == nil
+	writeLiteralNormativeObject(&output, literalNormativePromotionFields, "", mutation, &matched)
+	if !matched {
+		t.Fatalf("literal schema mutation did not match %q", mutation.path)
+	}
+	return output.Bytes()
+}
+
+func writeLiteralNormativeObject(
+	output *bytes.Buffer,
+	fields []literalNormativeField,
+	scope string,
+	mutation *literalJSONMutation,
+	matched *bool,
+) {
+	output.WriteByte('{')
+	written := 0
+	for _, field := range fields {
+		path := field.name
+		if scope != "" {
+			path = scope + "." + field.name
+		}
+		if mutation != nil && mutation.path == path && mutation.kind == literalOmitField {
+			*matched = true
+			continue
+		}
+
+		copies := 1
+		if mutation != nil && mutation.path == path && mutation.kind == literalDuplicateField {
+			*matched = true
+			copies = 2
+		}
+		for range copies {
+			if written > 0 {
+				output.WriteByte(',')
+			}
+			written++
+			output.WriteString(strconv.Quote(field.name))
+			output.WriteByte(':')
+			if mutation != nil && mutation.path == path && mutation.kind == literalReplaceValue {
+				*matched = true
+				output.WriteString(mutation.replacement)
+			} else if field.children != nil {
+				writeLiteralNormativeObject(output, field.children, path, mutation, matched)
+			} else {
+				output.WriteString(field.value)
+			}
+		}
+	}
+	output.WriteByte('}')
+}
+
+func flattenLiteralNormativeFields(fields []literalNormativeField, scope string) []literalNormativeFieldPath {
+	var paths []literalNormativeFieldPath
+	for _, field := range fields {
+		path := field.name
+		if scope != "" {
+			path = scope + "." + field.name
+		}
+		paths = append(paths, literalNormativeFieldPath{
+			path:      path,
+			wrongType: field.wrongType,
+			isObject:  field.children != nil,
+		})
+		if field.children != nil {
+			paths = append(paths, flattenLiteralNormativeFields(field.children, path)...)
+		}
+	}
+	return paths
+}
+
+func requireLiteralObject(t *testing.T, name string, wantFields int) []literalNormativeField {
+	t.Helper()
+	for _, field := range literalNormativePromotionFields {
+		if field.name == name {
+			if len(field.children) != wantFields {
+				t.Fatalf("literal %s field count = %d, want %d", name, len(field.children), wantFields)
+			}
+			return field.children
+		}
+	}
+	t.Fatalf("literal root schema has no %q object", name)
+	return nil
+}
+
+func TestDecodePromotionRecordEnforcesLiteralNormativeSchema(t *testing.T) {
+	if len(literalNormativePromotionFields) != 9 {
+		t.Fatalf("literal root field count = %d, want 9", len(literalNormativePromotionFields))
+	}
+	requireLiteralObject(t, "constraints", 2)
+	requireLiteralObject(t, "toolchain", 6)
+	literalGates := requireLiteralObject(t, "gates", 14)
+
+	t.Run("accepts exact field set", func(t *testing.T) {
+		record, err := DecodePromotionRecord(renderLiteralNormativeRecord(t, nil))
+		if err != nil {
+			t.Fatalf("DecodePromotionRecord rejected the literal normative schema: %v", err)
+		}
+		if len(record.gates) != 14 {
+			t.Fatalf("decoded gate count = %d, want 14", len(record.gates))
+		}
+		for _, field := range literalGates {
+			if _, present := record.gates[gate(field.name)]; !present {
+				t.Errorf("decoded record omitted normative gate %q", field.name)
+			}
+		}
+	})
+
+	for _, field := range flattenLiteralNormativeFields(literalNormativePromotionFields, "") {
+		invalidReason := ReasonInvalidField
+		if field.isObject {
+			invalidReason = ReasonInvalidJSON
+		}
+		tests := []struct {
+			name        string
+			mutation    literalJSONMutation
+			reason      Reason
+			refusalPath string
+		}{
+			{
+				name:        "missing",
+				mutation:    literalJSONMutation{path: field.path, kind: literalOmitField},
+				reason:      ReasonMissingField,
+				refusalPath: field.path,
+			},
+			{
+				name:        "duplicate",
+				mutation:    literalJSONMutation{path: field.path, kind: literalDuplicateField},
+				reason:      ReasonDuplicateField,
+				refusalPath: field.path,
+			},
+			{
+				name:        "null",
+				mutation:    literalJSONMutation{path: field.path, kind: literalReplaceValue, replacement: "null"},
+				reason:      invalidReason,
+				refusalPath: field.path,
+			},
+			{
+				name:        "wrong type",
+				mutation:    literalJSONMutation{path: field.path, kind: literalReplaceValue, replacement: field.wrongType},
+				reason:      invalidReason,
+				refusalPath: field.path,
+			},
+		}
+		for _, test := range tests {
+			t.Run(field.path+"/"+test.name, func(t *testing.T) {
+				requireDecodeRefusal(
+					t,
+					renderLiteralNormativeRecord(t, &test.mutation),
+					test.reason,
+					test.refusalPath,
+				)
+			})
+		}
 	}
 }
 

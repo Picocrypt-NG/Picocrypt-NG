@@ -7,14 +7,32 @@ import (
 )
 
 func TestEmissionAuthorizationRequiresFinalPromotionPredicate(t *testing.T) {
-	zero := &EmissionAuthorization{}
-	if err := RequireEmissionAuthorization(zero); err == nil {
-		t.Fatal("zero-value EmissionAuthorization was accepted")
-	} else {
-		var refusal *RefusalError
-		if !errors.As(err, &refusal) || refusal.Reason != ReasonAuthorizationMissing {
-			t.Fatalf("zero-value authorization error = %v, want typed missing-authorization refusal", err)
-		}
+	for _, test := range []struct {
+		name          string
+		authorization *EmissionAuthorization
+	}{
+		{name: "nil", authorization: nil},
+		{name: "zero value", authorization: &EmissionAuthorization{}},
+		{
+			name:          "counterfeit marker with matching contents",
+			authorization: &EmissionAuthorization{marker: &emissionMarker{nonzero: 1}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := RequireEmissionAuthorization(test.authorization)
+			var refusal *RefusalError
+			if !errors.As(err, &refusal) {
+				t.Fatalf("RequireEmissionAuthorization error = %v, want typed missing-authorization refusal", err)
+			}
+			if refusal.Reason != ReasonAuthorizationMissing || refusal.Field != "" {
+				t.Fatalf(
+					"RequireEmissionAuthorization refusal = %s/%s, want %s with no field",
+					refusal.Reason,
+					refusal.Field,
+					ReasonAuthorizationMissing,
+				)
+			}
+		})
 	}
 
 	authorization, err := validatePromotionAgainst(finalBaseline(t), completePromotion(t))

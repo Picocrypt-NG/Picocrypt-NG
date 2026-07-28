@@ -22,19 +22,20 @@ const (
 type gate string
 
 const (
-	gateFinalSpecification             gate = "final_specification"
-	gateImmutableRegistry              gate = "immutable_registry"
-	gatePinnedNormativeVectors         gate = "pinned_normative_vectors"
-	gateIndependentInteroperability    gate = "independent_interoperability"
-	gateRequiredTestsWithoutSkip       gate = "required_tests_without_skip"
-	gateSequentialProductionArgon      gate = "sequential_production_argon"
-	gateNonVacuousMutationTesting      gate = "non_vacuous_mutation_testing"
-	gateV1V2GoldenReaderCompatibility  gate = "v1_v2_golden_reader_compatibility"
-	gateForceRSD1Matrices              gate = "force_rs_d1_matrices"
-	gateSharedCoreCodecOrWASMFailLoud  gate = "shared_core_codec_or_wasm_fail_loud"
-	gateTransitionalFuturePCVRouting   gate = "transitional_future_pcv_routing"
-	gateIndependentCryptographicReview gate = "independent_cryptographic_review"
-	gateCriticalHighFindingsRechecked  gate = "critical_high_findings_rechecked"
+	gateFinalSpecification                                gate = "final_specification"
+	gateImmutableRegistry                                 gate = "immutable_registry"
+	gatePinnedNormativeVectors                            gate = "pinned_normative_vectors"
+	gateIndependentInteroperability                       gate = "independent_interoperability"
+	gateRequiredTestsWithoutSkip                          gate = "required_tests_without_skip"
+	gateSequentialProductionArgon                         gate = "sequential_production_argon"
+	gateNonVacuousMutationTesting                         gate = "non_vacuous_mutation_testing"
+	gateV1V2GoldenReaderCompatibility                     gate = "v1_v2_golden_reader_compatibility"
+	gateForceRSD1Matrices                                 gate = "force_rs_d1_matrices"
+	gateZeroingCancellationStagingRaceFuzzConfidentiality gate = "zeroing_cancellation_staging_race_fuzz_confidentiality"
+	gateSharedCoreCodecOrWASMFailLoud                     gate = "shared_core_codec_or_wasm_fail_loud"
+	gateTransitionalFuturePCVRouting                      gate = "transitional_future_pcv_routing"
+	gateIndependentCryptographicReview                    gate = "independent_cryptographic_review"
+	gateCriticalHighFindingsRechecked                     gate = "critical_high_findings_rechecked"
 )
 
 var requiredGates = [...]gate{
@@ -47,6 +48,7 @@ var requiredGates = [...]gate{
 	gateNonVacuousMutationTesting,
 	gateV1V2GoldenReaderCompatibility,
 	gateForceRSD1Matrices,
+	gateZeroingCancellationStagingRaceFuzzConfidentiality,
 	gateSharedCoreCodecOrWASMFailLoud,
 	gateTransitionalFuturePCVRouting,
 	gateIndependentCryptographicReview,

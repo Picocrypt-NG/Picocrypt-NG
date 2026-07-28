@@ -27,6 +27,7 @@
     "non_vacuous_mutation_testing": false,
     "v1_v2_golden_reader_compatibility": false,
     "force_rs_d1_matrices": false,
+    "zeroing_cancellation_staging_race_fuzz_confidentiality": false,
     "shared_core_codec_or_wasm_fail_loud": false,
     "transitional_future_pcv_routing": false,
     "independent_cryptographic_review": false,
