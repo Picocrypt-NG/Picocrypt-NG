@@ -1,0 +1,97 @@
+version: "2"
+
+run:
+  timeout: 10m
+  modules-download-mode: readonly
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errcheck
+    - errorlint
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - intrange
+    - makezero
+    - misspell
+    - nilerr
+    - perfsprint
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - whitespace
+  disable:
+    - depguard
+  exclusions:
+    paths:
+      - vendor
+      - fyne
+    presets:
+      - std-error-handling
+    rules:
+      - path: internal/ui/
+        linters:
+          - typecheck
+      - path: internal/fileops/
+        linters:
+          - gosec
+        text: G115
+      - path: internal/cli/
+        linters:
+          - gosec
+        text: G115
+      - path: internal/header/
+        linters:
+          - gosec
+        text: G115
+      - path: internal/ui/macos_open\.go
+        linters:
+          - unused
+      - path: internal/pcv3unicode/norm17/
+        linters:
+          - gocritic
+          - intrange
+          - perfsprint
+          - unconvert
+          - unparam
+          - unused
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+    gosec:
+      config:
+        global:
+          nosec: true
+          show-ignored: false
+    staticcheck:
+      checks:
+        - "all"
+        - "-QF1003"
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+  exclusions:
+    paths:
+      - vendor
+      - fyne
