@@ -1,0 +1,263 @@
+{
+  "schema_version": 1,
+  "public_test_data_notice": "PUBLIC DETERMINISTIC PCV3 TEST DATA; NOT SECRET OR OPERATIONAL CREDENTIALS OR KEYS",
+  "provenance": {
+    "input_sha256": "a1891d0b780d94213e4b2af38635d1d2fefec1aaa68200714246062b39db94de",
+    "generator_sha256": "01db87744df251c298bccc2e1a87af754fdd21494d3ffa355f098d459bf04d6f",
+    "go_version": "go1.26.5",
+    "x_crypto_version": "v0.54.0",
+    "x_crypto_checksum": "h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw="
+  },
+  "profiles": [
+    {
+      "id": "normal-1",
+      "argon_call_index": 1,
+      "profile_id": 1,
+      "suite_id": 1,
+      "argon2_version": 19,
+      "time": 4,
+      "memory_kib": 1048576,
+      "parallelism": 4,
+      "output_bytes": 32,
+      "credential_case_id": "combined-ordered",
+      "normal_input_hex": "d4ac95f6c2f0d7ddfe7eadd0a7a01d527acc8c302876884f9c5fb240446f0655d5e0201aecfb73af77e07ac7e18692271a6bec281bc8fc7b270aec30d99f1b02",
+      "argon_salt_hex": "000102030405060708090a0b0c0d0e0f",
+      "argon2id_output_hex": "76cd5e06b6f74645829cf5859cdbfdbd801b00edfe6769660ea542d88a789bca",
+      "volume_id_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "wrap_prk_hex": "b40946823771dbfc32d09fa70866853863e658c0619434cfaf5ec4f39435c4bd",
+      "volume_prk_hex": "d34fbf6e862d0a318df91827d3538b767846bfcdf3964c4faac44ead0d760968",
+      "rows": [
+        {
+          "id": "credential-wrap-xchacha20-primary",
+          "root": "credential-prk",
+          "suite_id": 1,
+          "role": 0,
+          "label": "credential/wrap/xchacha20",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b44460000030001000100001963726564656e7469616c2f777261702f786368616368613230",
+          "expand_output_hex": "debe76311736189448d027cf1c8fdbc7df2ffcf2c5fbd5522af602d62f25e044"
+        },
+        {
+          "id": "credential-wrap-xchacha20-backup",
+          "root": "credential-prk",
+          "suite_id": 1,
+          "role": 1,
+          "label": "credential/wrap/xchacha20",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b44460000030001000101001963726564656e7469616c2f777261702f786368616368613230",
+          "expand_output_hex": "6d85c6f18d6e3becb982b57b1e8f0ae66b3c58d42974bfb4c3865bea7b80623e"
+        },
+        {
+          "id": "credential-wrap-mac-primary",
+          "root": "credential-prk",
+          "suite_id": 1,
+          "role": 0,
+          "label": "credential/wrap/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b44460000030001000100001363726564656e7469616c2f777261702f6d6163",
+          "expand_output_hex": "3591394a457bf96b40291667a1b8c831ec0f87b52c62263c26a65dcde2f0efe7"
+        },
+        {
+          "id": "credential-wrap-mac-backup",
+          "root": "credential-prk",
+          "suite_id": 1,
+          "role": 1,
+          "label": "credential/wrap/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b44460000030001000101001363726564656e7469616c2f777261702f6d6163",
+          "expand_output_hex": "8e7c18071998844f7c13314966bc575f7f4f634a4328fec696875131b558bd09"
+        },
+        {
+          "id": "volume-replica-mac-primary",
+          "root": "volume-prk",
+          "suite_id": 1,
+          "role": 0,
+          "label": "volume/replica/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b444600000300010001000012766f6c756d652f7265706c6963612f6d6163",
+          "expand_output_hex": "9c5d853c2ab54088c4018fdf09d827ffad4af0464b175ab97d028b7a4b2adfd2"
+        },
+        {
+          "id": "volume-replica-mac-backup",
+          "root": "volume-prk",
+          "suite_id": 1,
+          "role": 1,
+          "label": "volume/replica/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b444600000300010001010012766f6c756d652f7265706c6963612f6d6163",
+          "expand_output_hex": "7b1d3ddd3ab29919ae7787ce9ad2295c216b433dcc3937c5c327b1d043a0868e"
+        },
+        {
+          "id": "volume-metadata-mac",
+          "root": "volume-prk",
+          "suite_id": 1,
+          "role": 255,
+          "label": "volume/metadata/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b444600000300010001ff0013766f6c756d652f6d657461646174612f6d6163",
+          "expand_output_hex": "738d730ff0d3ff99b402067cdf2f86f1f763d19ae8b7be4fd394414dcce6ebb3"
+        },
+        {
+          "id": "volume-payload-xchacha20",
+          "root": "volume-prk",
+          "suite_id": 1,
+          "role": 255,
+          "label": "volume/payload/xchacha20",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b444600000300010001ff0018766f6c756d652f7061796c6f61642f786368616368613230",
+          "expand_output_hex": "29dfaa6c47cc839113d03ca3abcd84c2f10d872bbab00954ac17a7f662f26f4e"
+        },
+        {
+          "id": "volume-payload-mac",
+          "root": "volume-prk",
+          "suite_id": 1,
+          "role": 255,
+          "label": "volume/payload/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b444600000300010001ff0012766f6c756d652f7061796c6f61642f6d6163",
+          "expand_output_hex": "16e8791b412b7ff6c9b0548b8465d019a7b2450ac872c584b19dd4157eb90d70"
+        }
+      ]
+    },
+    {
+      "id": "paranoid-1",
+      "argon_call_index": 2,
+      "profile_id": 2,
+      "suite_id": 2,
+      "argon2_version": 19,
+      "time": 8,
+      "memory_kib": 1048576,
+      "parallelism": 8,
+      "output_bytes": 32,
+      "credential_case_id": "combined-unordered",
+      "normal_input_hex": "5089ee8f6c1fcce5338e0fb2054b8ec9d461d5d5987627d866329e8bc6eb07965af1a1fdd1c3f89c92838ac6e0080629eacf5935decdaff29301678550085544",
+      "argon_salt_hex": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "argon2id_output_hex": "48291b2a31fa6d499ffd407ec1315489cea548ef4b262c6497663213de32ffd4",
+      "volume_id_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "wrap_prk_hex": "40cb316202bb0679b96ceebb1fb7f9a7eecd55c1f253df669fd69dfb86691f41",
+      "volume_prk_hex": "025b2652414fe34e4c4b9d7fd35ac8d83bfb6f631d66d9a0e9c1ca5be1aa3cd1",
+      "rows": [
+        {
+          "id": "credential-wrap-xchacha20-primary",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 0,
+          "label": "credential/wrap/xchacha20",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b44460000030001000200001963726564656e7469616c2f777261702f786368616368613230",
+          "expand_output_hex": "d9f81cd98695fb286f5f4d2107594494f671fac307ba9d62d8826018430c0ed4"
+        },
+        {
+          "id": "credential-wrap-xchacha20-backup",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 1,
+          "label": "credential/wrap/xchacha20",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b44460000030001000201001963726564656e7469616c2f777261702f786368616368613230",
+          "expand_output_hex": "2450d6df10247c1db33ca7a4b1e64108bb0395396ca4039367cfb82b05e59a23"
+        },
+        {
+          "id": "credential-wrap-serpent-primary",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 0,
+          "label": "credential/wrap/serpent",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b44460000030001000200001763726564656e7469616c2f777261702f73657270656e74",
+          "expand_output_hex": "913f5c83c07bec0b42cff244586f56b83807b08566bf5d0866703c4a78ac7e64"
+        },
+        {
+          "id": "credential-wrap-serpent-backup",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 1,
+          "label": "credential/wrap/serpent",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b44460000030001000201001763726564656e7469616c2f777261702f73657270656e74",
+          "expand_output_hex": "4bc928ee3da42a4787faad7c305e04fc8a1b97bef4ffece7d1b5b3ef77b25c67"
+        },
+        {
+          "id": "credential-wrap-mac-primary",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 0,
+          "label": "credential/wrap/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b44460000030001000200001363726564656e7469616c2f777261702f6d6163",
+          "expand_output_hex": "77e9ec6c730e812b892328dd6952fb50cfc8ecc715b85af02a064ce1a8fc71c3"
+        },
+        {
+          "id": "credential-wrap-mac-backup",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 1,
+          "label": "credential/wrap/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b44460000030001000201001363726564656e7469616c2f777261702f6d6163",
+          "expand_output_hex": "bf6f6e99773a6f9dd6d6bf97f39140b7413153f56fc1a918f231a97a85da70f4"
+        },
+        {
+          "id": "volume-replica-mac-primary",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 0,
+          "label": "volume/replica/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b444600000300010002000012766f6c756d652f7265706c6963612f6d6163",
+          "expand_output_hex": "afb34880f896bd0ac01020c0bd9810d948461f30ca3bc40292cad8f219efa62d"
+        },
+        {
+          "id": "volume-replica-mac-backup",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 1,
+          "label": "volume/replica/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b444600000300010002010012766f6c756d652f7265706c6963612f6d6163",
+          "expand_output_hex": "e9ee17e25a15d0760c86af0aa31a57fa2d8a43417bd6e2696fa8279a84a6cf30"
+        },
+        {
+          "id": "volume-metadata-mac",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 255,
+          "label": "volume/metadata/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b444600000300010002ff0013766f6c756d652f6d657461646174612f6d6163",
+          "expand_output_hex": "aaf3596f40a1052df8033536a7a02e865028739730ad3b2e9c1b736cc60ad3de"
+        },
+        {
+          "id": "volume-payload-xchacha20",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 255,
+          "label": "volume/payload/xchacha20",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b444600000300010002ff0018766f6c756d652f7061796c6f61642f786368616368613230",
+          "expand_output_hex": "02747ea56c208cd4cc4ba95d92f67ba800e1370d4d838c6f857a591025937d9f"
+        },
+        {
+          "id": "volume-payload-serpent",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 255,
+          "label": "volume/payload/serpent",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b444600000300010002ff0016766f6c756d652f7061796c6f61642f73657270656e74",
+          "expand_output_hex": "47c10785ac13e7299eaecdb08c26ef626a102b94ffdebf5396ebfaf1c4a77fa3"
+        },
+        {
+          "id": "volume-payload-mac",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 255,
+          "label": "volume/payload/mac",
+          "output_bytes": 32,
+          "info_hex": "5069636f63727970742d4e472f504356332f484b444600000300010002ff0012766f6c756d652f7061796c6f61642f6d6163",
+          "expand_output_hex": "7817f214bc7e7b8ef57180c42f6ad1eb7e6786baba955bb4add955c19257fff9"
+        }
+      ]
+    }
+  ]
+}

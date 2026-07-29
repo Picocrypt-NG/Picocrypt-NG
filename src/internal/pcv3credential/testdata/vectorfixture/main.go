@@ -93,23 +93,23 @@ type derivedRow struct {
 }
 
 type profileFixture struct {
-	ID                 string       `json:"id"`
-	ArgonCallIndex     int          `json:"argon_call_index"`
-	ProfileID          uint8        `json:"profile_id"`
-	SuiteID            uint16       `json:"suite_id"`
-	Argon2Version      uint8        `json:"argon2_version"`
-	Time               uint32       `json:"time"`
-	MemoryKiB          uint32       `json:"memory_kib"`
-	Parallelism        uint8        `json:"parallelism"`
-	OutputBytes        uint32       `json:"output_bytes"`
-	CredentialCaseID   string       `json:"credential_case_id"`
-	CredentialInputHex string       `json:"credential_input_hex"`
-	ArgonSaltHex       string       `json:"argon_salt_hex"`
-	CredentialRootHex  string       `json:"argon2id_output_hex"`
-	VolumeIDHex        string       `json:"volume_id_hex"`
-	CredentialPRKHex   string       `json:"wrap_prk_hex"`
-	VolumePRKHex       string       `json:"volume_prk_hex"`
-	Rows               []derivedRow `json:"rows"`
+	ID                string       `json:"id"`
+	ArgonCallIndex    int          `json:"argon_call_index"`
+	ProfileID         uint8        `json:"profile_id"`
+	SuiteID           uint16       `json:"suite_id"`
+	Argon2Version     uint8        `json:"argon2_version"`
+	Time              uint32       `json:"time"`
+	MemoryKiB         uint32       `json:"memory_kib"`
+	Parallelism       uint8        `json:"parallelism"`
+	OutputBytes       uint32       `json:"output_bytes"`
+	CredentialCaseID  string       `json:"credential_case_id"`
+	NormalInputHex    string       `json:"normal_input_hex"`
+	ArgonSaltHex      string       `json:"argon_salt_hex"`
+	CredentialRootHex string       `json:"argon2id_output_hex"`
+	VolumeIDHex       string       `json:"volume_id_hex"`
+	CredentialPRKHex  string       `json:"wrap_prk_hex"`
+	VolumePRKHex      string       `json:"volume_prk_hex"`
+	Rows              []derivedRow `json:"rows"`
 }
 
 type fixture struct {
@@ -650,23 +650,23 @@ func deriveProfile(
 		return profileFixture{}, err
 	}
 	return profileFixture{
-		ID:                 profile.ID,
-		ArgonCallIndex:     callIndex,
-		ProfileID:          profile.ProfileID,
-		SuiteID:            profile.SuiteID,
-		Argon2Version:      profile.Argon2Version,
-		Time:               profile.Time,
-		MemoryKiB:          profile.MemoryKiB,
-		Parallelism:        profile.Parallelism,
-		OutputBytes:        profile.OutputBytes,
-		CredentialCaseID:   profile.CredentialCaseID,
-		CredentialInputHex: credentialInputHex,
-		ArgonSaltHex:       profile.ArgonSaltHex,
-		CredentialRootHex:  hex.EncodeToString(credentialRoot),
-		VolumeIDHex:        profile.VolumeIDHex,
-		CredentialPRKHex:   hex.EncodeToString(credentialPRK),
-		VolumePRKHex:       hex.EncodeToString(volumePRK),
-		Rows:               rows,
+		ID:                profile.ID,
+		ArgonCallIndex:    callIndex,
+		ProfileID:         profile.ProfileID,
+		SuiteID:           profile.SuiteID,
+		Argon2Version:     profile.Argon2Version,
+		Time:              profile.Time,
+		MemoryKiB:         profile.MemoryKiB,
+		Parallelism:       profile.Parallelism,
+		OutputBytes:       profile.OutputBytes,
+		CredentialCaseID:  profile.CredentialCaseID,
+		NormalInputHex:    credentialInputHex,
+		ArgonSaltHex:      profile.ArgonSaltHex,
+		CredentialRootHex: hex.EncodeToString(credentialRoot),
+		VolumeIDHex:       profile.VolumeIDHex,
+		CredentialPRKHex:  hex.EncodeToString(credentialPRK),
+		VolumePRKHex:      hex.EncodeToString(volumePRK),
+		Rows:              rows,
 	}, nil
 }
 
@@ -772,7 +772,7 @@ func validateFixture(
 			actual.Parallelism != profile.Parallelism ||
 			actual.OutputBytes != profile.OutputBytes ||
 			actual.CredentialCaseID != profile.CredentialCaseID ||
-			actual.CredentialInputHex != credentialCase.NormalInputHex ||
+			actual.NormalInputHex != credentialCase.NormalInputHex ||
 			actual.ArgonSaltHex != profile.ArgonSaltHex ||
 			actual.VolumeIDHex != profile.VolumeIDHex {
 			return fmt.Errorf(
