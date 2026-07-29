@@ -225,6 +225,43 @@ func requirePhase2PipelineFailure(
 	requirePipelineCode(t, err, code, stage)
 }
 
+func requirePipelinePreExpandScheduleValidation(t *testing.T) {
+	t.Helper()
+	request := pipelineRequest(t, SuiteStandard1)
+	allRequests := request.KeyRequests
+	request.KeyRequests = []KeyRequest{
+		allRequests[0],
+		allRequests[1],
+		allRequests[0],
+	}
+	passwordAlias := request.Factors.Password
+	probe := newPhase2LifecycleProbe()
+	owner, err := newCredential(
+		context.Background(),
+		request,
+		probe.admit,
+		probe.seams(),
+	)
+	if owner != nil {
+		owner.Close()
+		t.Fatal("schedule rejection published an owner")
+	}
+	requirePhase2PipelineFailure(
+		t,
+		err,
+		PipelineErrorSchedule,
+		PipelineStageSchedule,
+	)
+	if !allZero(passwordAlias) {
+		t.Fatal("schedule rejection retained the password")
+	}
+	requirePhase2LifecycleCounts(
+		t,
+		probe.counts(0),
+		phase2LifecycleCounts{},
+	)
+}
+
 func TestPhase2LifecycleExitMatrix(t *testing.T) {
 	const standardExpands = 9
 	required := map[string]bool{
@@ -404,39 +441,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 		{
 			name: "schedule-validation",
 			run: func(t *testing.T) {
-				request := pipelineRequest(t, SuiteStandard1)
-				allRequests := request.KeyRequests
-				request.KeyRequests = []KeyRequest{
-					allRequests[0],
-					allRequests[1],
-					allRequests[0],
-				}
-				passwordAlias := request.Factors.Password
-				probe := newPhase2LifecycleProbe()
-				owner, err := newCredential(
-					context.Background(),
-					request,
-					probe.admit,
-					probe.seams(),
-				)
-				if owner != nil {
-					owner.Close()
-					t.Fatal("schedule rejection published an owner")
-				}
-				requirePhase2PipelineFailure(
-					t,
-					err,
-					PipelineErrorSchedule,
-					PipelineStageSchedule,
-				)
-				if !allZero(passwordAlias) {
-					t.Fatal("schedule rejection retained the password")
-				}
-				requirePhase2LifecycleCounts(
-					t,
-					probe.counts(0),
-					phase2LifecycleCounts{},
-				)
+				requirePipelinePreExpandScheduleValidation(t)
 			},
 		},
 		{
@@ -836,6 +841,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 			t.Errorf("missing deterministic lifecycle proof for %q", name)
 		}
 	}
+}
+
+func TestPipelinePreExpandScheduleValidationMutation(t *testing.T) {
+	requirePipelinePreExpandScheduleValidation(t)
 }
 
 func requireNoPhase2ProcessOutput(

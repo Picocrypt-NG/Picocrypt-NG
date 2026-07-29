@@ -833,6 +833,20 @@ func runIndependentSchedule(
 	return outputs, calls
 }
 
+func requireIndependentScheduleInfo(
+	t *testing.T,
+	calls []recordedExpand,
+) {
+	t.Helper()
+	seenInfo := make(map[string]struct{}, len(calls))
+	for i, call := range calls {
+		if _, duplicate := seenInfo[call.info]; duplicate {
+			t.Fatalf("Expand %d reused Info %x", i, call.info)
+		}
+		seenInfo[call.info] = struct{}{}
+	}
+}
+
 func TestScheduleIndependentExpand(t *testing.T) {
 	for _, suite := range []Suite{0x0001, 0x0002} {
 		t.Run(fmt.Sprintf("suite-%04x", suite), func(t *testing.T) {
@@ -884,15 +898,11 @@ func TestScheduleIndependentExpand(t *testing.T) {
 			}
 
 			rows := literalRowsForSuite(t, suite)
-			seenInfo := make(map[string]struct{}, len(rows))
+			requireIndependentScheduleInfo(t, forwardCalls)
 			for i, call := range forwardCalls {
 				if call.length != 32 {
 					t.Fatalf("Expand %d length = %d; want 32", i, call.length)
 				}
-				if _, duplicate := seenInfo[call.info]; duplicate {
-					t.Fatalf("Expand %d reused Info %x", i, call.info)
-				}
-				seenInfo[call.info] = struct{}{}
 				wantPRK := byte(0xc1)
 				if rows[i].root == scheduleRoot(2) {
 					wantPRK = 0xc2
@@ -918,6 +928,25 @@ func TestScheduleIndependentExpand(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestScheduleIndependentExpandMutation(t *testing.T) {
+	requests := literalRequestsForSuite(t, SuiteStandard1)
+	outputs, calls := runIndependentSchedule(t, SuiteStandard1, requests)
+	defer func() {
+		for request := range outputs {
+			crypto.SecureZero(outputs[request])
+		}
+		for i := range calls {
+			crypto.SecureZero(calls[i].prk)
+		}
+	}()
+	requireIndependentScheduleInfo(t, calls)
+	for i, call := range calls {
+		if call.length != 32 {
+			t.Fatalf("Expand %d length = %d; want 32", i, call.length)
+		}
 	}
 }
 

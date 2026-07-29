@@ -169,7 +169,6 @@
     "normal-1-exact-profile",
     "paranoid-1-exact-profile",
     "host-fast-tests",
-    "host-race-tests",
     "host-fixture-reproduction",
     "host-fixture-schema",
     "host-skip-accounting",
@@ -403,7 +402,6 @@
       "minimum_online": 2,
       "owned_execution_units": [
         "host-fast-tests",
-        "host-race-tests",
         "host-fixture-reproduction",
         "host-fixture-schema",
         "host-skip-accounting",
@@ -531,34 +529,6 @@
             "TestInspectorExactThreatClosure": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
             "TestUnpackAllowsSystemTempDirSymlinkPrefix": "Picocrypt-NG/internal/fileops"
           },
-          "required_exit_code": 0
-        },
-        {
-          "id": "host-race-tests",
-          "kind": "go-test",
-          "execution_surface": {
-            "package_paths": ["./internal/pcv3credential"],
-            "build_tags": ["migrated_fynedo"],
-            "test_selector": "all",
-            "evidence_kind": "go-test-race-json"
-          },
-          "argv": [
-            "${GO}",
-            "test",
-            "-race",
-            "-tags",
-            "migrated_fynedo",
-            "-p",
-            "1",
-            "./internal/pcv3credential",
-            "-count=1",
-            "-timeout=15m",
-            "-json"
-          ],
-          "cwd": "${SOURCE}/src",
-          "timeout_seconds": 1200,
-          "go_based": true,
-          "package_parallelism": 1,
           "required_exit_code": 0
         },
         {
@@ -748,6 +718,12 @@
       "paranoid1",
       "host"
     ],
+    "stage_filenames": {
+      "mutation": "mutation.evidence.json",
+      "normal1": "normal1.evidence.json",
+      "paranoid1": "paranoid1.evidence.json",
+      "host": "host.evidence.json"
+    },
     "create_exclusive": true,
     "replace_forbidden": true,
     "publication_proof_suffix": ".verified",

@@ -57,15 +57,62 @@ func TestMutatorAppliesExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestMutationCampaignRuntimeBaseline(t *testing.T) {
+	fixture := newMutatorFixture(t)
+	runtimeBaseline := strings.Repeat("3", 40)
+	args := fixture.args()
+	replaceArgValue(t, args, "--baseline", runtimeBaseline)
+	if err := run(args); err != nil {
+		t.Fatalf("apply mutation with runtime baseline: %v", err)
+	}
+	resultData, err := os.ReadFile(fixture.resultPath)
+	if err != nil {
+		t.Fatalf("read mutation result: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resultData, &result); err != nil {
+		t.Fatalf("decode mutation result: %v", err)
+	}
+	if result["baseline_commit"] != runtimeBaseline {
+		t.Fatalf(
+			"mutation result baseline = %v; want runtime baseline %s",
+			result["baseline_commit"],
+			runtimeBaseline,
+		)
+	}
+}
+
+func TestMutationSourceSetCommitment(t *testing.T) {
+	fixture := newMutatorFixture(t)
+	args := fixture.args()
+	if err := run(args); err != nil {
+		t.Fatalf("apply mutation with source-set commitment: %v", err)
+	}
+	resultData, err := os.ReadFile(fixture.resultPath)
+	if err != nil {
+		t.Fatalf("read mutation result: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resultData, &result); err != nil {
+		t.Fatalf("decode mutation result: %v", err)
+	}
+	if _, exists := result["source_manifest_sha256"]; exists {
+		t.Fatal("mutation result retained the misleading source-manifest field")
+	}
+	if result["source_set_sha256"] == "" {
+		t.Fatal("mutation result omitted the source-set commitment")
+	}
+}
+
 func TestMutatorRejectsBaselineOrSpecDrift(t *testing.T) {
 	tests := []struct {
 		name string
 		edit func([]string)
 	}{
 		{
-			name: "baseline",
+			name: "invalid baseline",
 			edit: func(args []string) {
-				replaceArgValue(t, args, "--baseline", strings.Repeat("3", 40))
+				replaceArgValue(t, args, "--baseline", strings.Repeat("A", 40))
 			},
 		},
 		{
@@ -93,13 +140,13 @@ func TestMutatorRejectsBaselineOrSpecDrift(t *testing.T) {
 }
 
 func TestMutatorRejectsHashDrift(t *testing.T) {
-	t.Run("source manifest identity", func(t *testing.T) {
+	t.Run("source set identity", func(t *testing.T) {
 		fixture := newMutatorFixture(t)
 		args := fixture.args()
 		replaceArgValue(
 			t,
 			args,
-			"--source-manifest-sha256",
+			"--source-set-sha256",
 			strings.Repeat("5", 64),
 		)
 		fixture.requireRejectedUnchanged(t, args)
@@ -369,9 +416,6 @@ func TestMutationExactCommandAndKillingTest(t *testing.T) {
 		t.Fatal("manifest argv template is not exact")
 	}
 	for _, mutation := range manifest.Mutations {
-		if !equalStrings(mutation.Argv, exactArgvTemplate) {
-			t.Fatalf("%s argv is not exact", mutation.ID)
-		}
 		for _, outcome := range []mutationOutcome{mutation.Pristine, mutation.Mutant} {
 			if !semanticCommandKills(outcome.SemanticCommand, mutation.KillingTestID) {
 				t.Fatalf("%s outcome does not execute its exact killing test", mutation.ID)
@@ -488,21 +532,17 @@ func newMutatorFixture(t *testing.T) *mutatorFixture {
 		"-run", "^TestFixtureSemantic$", "-count=1",
 	}
 	manifest := &mutationManifest{
-		SchemaVersion:  manifestSchemaVersion,
-		BaselineCommit: fixtureBaseline,
-		SpecSHA256:     fixtureSpecHash,
-		ArgvTemplate:   append([]string(nil), exactArgvTemplate...),
+		SchemaVersion: manifestSchemaVersion,
+		SpecSHA256:    fixtureSpecHash,
+		ArgvTemplate:  append([]string(nil), exactArgvTemplate...),
 		Mutations: []mutationSpec{{
 			ID:              "M-CRD07-FIXTURE",
 			Requirement:     "CRD-07",
 			Invariant:       "fixture deterministic replacement",
-			BaselineCommit:  fixtureBaseline,
-			SpecSHA256:      fixtureSpecHash,
 			SourcePath:      "source.go",
 			SourceSHA256:    sha256Hex(sourceData),
 			Anchor:          "\"before\"",
 			Replacement:     "\"after\"",
-			Argv:            append([]string(nil), exactArgvTemplate...),
 			KillingTestID:   "TestFixtureSemantic",
 			ViolationMarker: "fixture_violation",
 			Pristine: mutationOutcome{
@@ -536,11 +576,7 @@ func (fixture *mutatorFixture) rebindSourceManifest() {
 	for _, mutation := range fixture.manifest.Mutations {
 		sources[mutation.SourcePath] = mutation.SourceSHA256
 	}
-	hash := sourceManifestHash(sources)
-	fixture.manifest.SourceManifestSHA256 = hash
-	for i := range fixture.manifest.Mutations {
-		fixture.manifest.Mutations[i].SourceManifestSHA256 = hash
-	}
+	fixture.manifest.SourceSetSHA256 = sourceSetHash(sources)
 }
 
 func (fixture *mutatorFixture) rewriteSourceAndManifest(t *testing.T, data []byte) {
@@ -569,8 +605,8 @@ func (fixture *mutatorFixture) args() []string {
 		"--source-copy", fixture.sourceCopy,
 		"--manifest", fixture.manifestPath,
 		"--mutation-id", fixture.manifest.Mutations[0].ID,
-		"--source-manifest-sha256", fixture.manifest.SourceManifestSHA256,
-		"--baseline", fixture.manifest.BaselineCommit,
+		"--source-set-sha256", fixture.manifest.SourceSetSHA256,
+		"--baseline", fixtureBaseline,
 		"--spec-sha256", fixture.manifest.SpecSHA256,
 		"--result", fixture.resultPath,
 	}

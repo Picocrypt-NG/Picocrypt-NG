@@ -834,59 +834,69 @@ func TestCanonicalTranscriptUnicodeOnce(t *testing.T) {
 	})
 }
 
+func requireCanonicalTranscriptRawNFDFallbackRejected(t *testing.T) {
+	t.Helper()
+	const (
+		wantHex      = "0101000000000005436166c3a90000"
+		forbiddenHex = "010100000000000643616665cc810000"
+	)
+	request, passwordAlias, readers := newRealTranscriptRequest(
+		CredentialModePasswordOnly,
+		KeyfileModeNone,
+		FactorPolicyPasswordOnly,
+		[]byte("Cafe\u0301"),
+	)
+	transcript, err := canonicalTranscriptFromRequest(request)
+	if err != nil {
+		t.Fatalf("canonical password transcript failed: %v", err)
+	}
+	requireRealInputsReleased(t, request, passwordAlias, readers)
+	got := transcript.secret.Bytes()
+	want := decodeTranscriptLiteral(t, wantHex)
+	forbidden := decodeTranscriptLiteral(t, forbiddenHex)
+	if bytes.Equal(got, forbidden) || !bytes.Equal(got, want) {
+		transcript.Close()
+		t.Fatalf("raw/decomposed legacy transcript became reachable: %x", got)
+	}
+	transcript.Close()
+}
+
+func requireCanonicalTranscriptXORFallbackRejected(t *testing.T) {
+	t.Helper()
+	const (
+		wantHex      = "0102010000000000000208fdf76ad6cbc6d144ac0c77f6a6d9a2e2c0af9b372b1af799540cb8e677e78655037c27d86a76c7d61cce3aa2dc97a778dbefb63cecc9be20adda385935e0d5"
+		forbiddenHex = "010201000000000000015dfe8b4d0ea1b01692b0c24d547a4e059a1b402d0bc7d349b9f9d680bf420753"
+	)
+	request, passwordAlias, readers := newRealTranscriptRequest(
+		CredentialModeKeyfilesOnly,
+		KeyfileModeOrdered,
+		FactorPolicyKeyfilesOnly,
+		nil,
+		[]byte("alpha"),
+		[]byte("beta"),
+	)
+	transcript, err := canonicalTranscriptFromRequest(request)
+	if err != nil {
+		t.Fatalf("canonical keyfile transcript failed: %v", err)
+	}
+	requireRealInputsReleased(t, request, passwordAlias, readers)
+	got := transcript.secret.Bytes()
+	want := decodeTranscriptLiteral(t, wantHex)
+	forbidden := decodeTranscriptLiteral(t, forbiddenHex)
+	if bytes.Equal(got, forbidden) || !bytes.Equal(got, want) {
+		transcript.Close()
+		t.Fatalf("legacy XOR transcript became reachable: %x", got)
+	}
+	transcript.Close()
+}
+
 func TestCanonicalTranscriptRejectsLegacyAlternatives(t *testing.T) {
 	t.Run("decomposed raw password transcript is unreachable", func(t *testing.T) {
-		const (
-			wantHex      = "0101000000000005436166c3a90000"
-			forbiddenHex = "010100000000000643616665cc810000"
-		)
-		request, passwordAlias, readers := newRealTranscriptRequest(
-			CredentialModePasswordOnly,
-			KeyfileModeNone,
-			FactorPolicyPasswordOnly,
-			[]byte("Cafe\u0301"),
-		)
-		transcript, err := canonicalTranscriptFromRequest(request)
-		if err != nil {
-			t.Fatalf("canonical password transcript failed: %v", err)
-		}
-		requireRealInputsReleased(t, request, passwordAlias, readers)
-		got := transcript.secret.Bytes()
-		want := decodeTranscriptLiteral(t, wantHex)
-		forbidden := decodeTranscriptLiteral(t, forbiddenHex)
-		if bytes.Equal(got, forbidden) || !bytes.Equal(got, want) {
-			transcript.Close()
-			t.Fatalf("raw/decomposed legacy transcript became reachable: %x", got)
-		}
-		transcript.Close()
+		requireCanonicalTranscriptRawNFDFallbackRejected(t)
 	})
 
 	t.Run("legacy XOR keyfile transcript is unreachable", func(t *testing.T) {
-		const (
-			wantHex      = "0102010000000000000208fdf76ad6cbc6d144ac0c77f6a6d9a2e2c0af9b372b1af799540cb8e677e78655037c27d86a76c7d61cce3aa2dc97a778dbefb63cecc9be20adda385935e0d5"
-			forbiddenHex = "010201000000000000015dfe8b4d0ea1b01692b0c24d547a4e059a1b402d0bc7d349b9f9d680bf420753"
-		)
-		request, passwordAlias, readers := newRealTranscriptRequest(
-			CredentialModeKeyfilesOnly,
-			KeyfileModeOrdered,
-			FactorPolicyKeyfilesOnly,
-			nil,
-			[]byte("alpha"),
-			[]byte("beta"),
-		)
-		transcript, err := canonicalTranscriptFromRequest(request)
-		if err != nil {
-			t.Fatalf("canonical keyfile transcript failed: %v", err)
-		}
-		requireRealInputsReleased(t, request, passwordAlias, readers)
-		got := transcript.secret.Bytes()
-		want := decodeTranscriptLiteral(t, wantHex)
-		forbidden := decodeTranscriptLiteral(t, forbiddenHex)
-		if bytes.Equal(got, forbidden) || !bytes.Equal(got, want) {
-			transcript.Close()
-			t.Fatalf("legacy XOR transcript became reachable: %x", got)
-		}
-		transcript.Close()
+		requireCanonicalTranscriptXORFallbackRejected(t)
 	})
 
 	t.Run("invalid UTF-8 has no raw fallback", func(t *testing.T) {
@@ -914,6 +924,14 @@ func TestCanonicalTranscriptRejectsLegacyAlternatives(t *testing.T) {
 		}
 		requireRealInputsReleased(t, request, passwordAlias, readers)
 	})
+}
+
+func TestCanonicalTranscriptRawNFDFallbackMutation(t *testing.T) {
+	requireCanonicalTranscriptRawNFDFallbackRejected(t)
+}
+
+func TestCanonicalTranscriptXORFallbackMutation(t *testing.T) {
+	requireCanonicalTranscriptXORFallbackRejected(t)
 }
 
 func TestCanonicalTranscriptBounds(t *testing.T) {

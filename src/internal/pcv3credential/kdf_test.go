@@ -565,11 +565,13 @@ func TestKDFCallsOnce(t *testing.T) {
 	}
 }
 
-func TestKDFNeverWeakens(t *testing.T) {
-	tests := []struct {
-		suite Suite
-		want  KDFProfile
-	}{
+type kdfFixedProfileCase struct {
+	suite Suite
+	want  KDFProfile
+}
+
+func kdfFixedProfileCases() []kdfFixedProfileCase {
+	return []kdfFixedProfileCase{
 		{
 			suite: SuiteStandard1,
 			want: KDFProfile{
@@ -595,54 +597,67 @@ func TestKDFNeverWeakens(t *testing.T) {
 			},
 		},
 	}
+}
 
-	for _, test := range tests {
+func requireKDFFixedProfile(t *testing.T, test kdfFixedProfileCase) {
+	t.Helper()
+	input := newPasswordNormalInput(t)
+	admissionCalls := 0
+	kdfCalls := 0
+	var admitted KDFProfile
+	var derived KDFProfile
+	root, err := runCredentialKDF(
+		context.Background(),
+		input,
+		make([]byte, literalKDFSaltBytes),
+		test.suite,
+		testAdmitter(func(
+			_ context.Context,
+			profile KDFProfile,
+		) (KDFAdmission, error) {
+			admissionCalls++
+			admitted = profile
+			return KDFAdmissionGranted, nil
+		}),
+		func(
+			_ []byte,
+			_ []byte,
+			profile KDFProfile,
+		) ([]byte, error) {
+			kdfCalls++
+			derived = profile
+			return nil, errors.New("stop after recording exact tuple")
+		},
+	)
+	requireKDFCode(t, err, KDFErrorDerivation)
+	if root != nil {
+		root.close()
+		t.Fatal("recording failure published a credential root")
+	}
+	if admissionCalls != 1 || kdfCalls != 1 ||
+		admitted != test.want || derived != test.want {
+		t.Fatalf(
+			"admission/KDF calls/profiles = %d/%d %+v/%+v; want 1/1 %+v",
+			admissionCalls,
+			kdfCalls,
+			admitted,
+			derived,
+			test.want,
+		)
+	}
+}
+
+func TestKDFNeverWeakens(t *testing.T) {
+	for _, test := range kdfFixedProfileCases() {
 		t.Run(fmt.Sprintf("suite-%04x", test.suite), func(t *testing.T) {
-			input := newPasswordNormalInput(t)
-			admissionCalls := 0
-			kdfCalls := 0
-			var admitted KDFProfile
-			var derived KDFProfile
-			root, err := runCredentialKDF(
-				context.Background(),
-				input,
-				make([]byte, literalKDFSaltBytes),
-				test.suite,
-				testAdmitter(func(
-					_ context.Context,
-					profile KDFProfile,
-				) (KDFAdmission, error) {
-					admissionCalls++
-					admitted = profile
-					return KDFAdmissionGranted, nil
-				}),
-				func(
-					_ []byte,
-					_ []byte,
-					profile KDFProfile,
-				) ([]byte, error) {
-					kdfCalls++
-					derived = profile
-					return nil, errors.New("stop after recording exact tuple")
-				},
-			)
-			requireKDFCode(t, err, KDFErrorDerivation)
-			if root != nil {
-				root.close()
-				t.Fatal("recording failure published a credential root")
-			}
-			if admissionCalls != 1 || kdfCalls != 1 ||
-				admitted != test.want || derived != test.want {
-				t.Fatalf(
-					"admission/KDF calls/profiles = %d/%d %+v/%+v; want 1/1 %+v",
-					admissionCalls,
-					kdfCalls,
-					admitted,
-					derived,
-					test.want,
-				)
-			}
+			requireKDFFixedProfile(t, test)
 		})
+	}
+}
+
+func TestKDFFixedProfileWeakeningMutation(t *testing.T) {
+	for _, test := range kdfFixedProfileCases() {
+		requireKDFFixedProfile(t, test)
 	}
 }
 
@@ -706,13 +721,15 @@ func TestKDFSequential(t *testing.T) {
 	}
 }
 
-func TestKDFReturnedSliceCleanup(t *testing.T) {
-	tests := []struct {
-		name      string
-		size      int
-		deriveErr error
-		wantCode  KDFErrorCode
-	}{
+type kdfReturnedSliceCleanupCase struct {
+	name      string
+	size      int
+	deriveErr error
+	wantCode  KDFErrorCode
+}
+
+func kdfReturnedSliceCleanupCases() []kdfReturnedSliceCleanupCase {
+	return []kdfReturnedSliceCleanupCase{
 		{
 			name: "success",
 			size: literalCredentialRootBytes,
@@ -734,51 +751,108 @@ func TestKDFReturnedSliceCleanup(t *testing.T) {
 			wantCode: KDFErrorOutput,
 		},
 	}
+}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			input := newPasswordNormalInput(t)
-			returned := fakeKDFResult(0x84, test.size)
-			wantRoot := append([]byte(nil), returned...)
-			defer crypto.SecureZero(wantRoot)
-			root, err := runCredentialKDF(
-				context.Background(),
-				input,
-				make([]byte, literalKDFSaltBytes),
-				SuiteStandard1,
-				grantKDFAdmission(),
-				func(
-					_ []byte,
-					_ []byte,
-					_ KDFProfile,
-				) ([]byte, error) {
-					return returned, test.deriveErr
-				},
+func requireKDFReturnedSliceCleanup(
+	t *testing.T,
+	test kdfReturnedSliceCleanupCase,
+) {
+	t.Helper()
+	input := newPasswordNormalInput(t)
+	returned := fakeKDFResult(0x84, test.size)
+	wantRoot := append([]byte(nil), returned...)
+	defer crypto.SecureZero(wantRoot)
+	root, err := runCredentialKDF(
+		context.Background(),
+		input,
+		make([]byte, literalKDFSaltBytes),
+		SuiteStandard1,
+		grantKDFAdmission(),
+		func(
+			_ []byte,
+			_ []byte,
+			_ KDFProfile,
+		) ([]byte, error) {
+			return returned, test.deriveErr
+		},
+	)
+	if !allZero(returned) {
+		t.Fatal("KDF runner did not clear the exact returned slice")
+	}
+	if test.wantCode == 0 {
+		if err != nil || root == nil {
+			t.Fatalf("KDF success = root %v, error %v; want root", root, err)
+		}
+		if root.secret == nil ||
+			!bytes.Equal(root.secret.Bytes(), wantRoot) {
+			t.Fatalf(
+				"credential root = %x; want seam bytes %x",
+				root.secret.Bytes(),
+				wantRoot,
 			)
-			if !allZero(returned) {
-				t.Fatal("KDF runner did not clear the exact returned slice")
-			}
-			if test.wantCode == 0 {
-				if err != nil || root == nil {
-					t.Fatalf("KDF success = root %v, error %v; want root", root, err)
-				}
-				if root.secret == nil ||
-					!bytes.Equal(root.secret.Bytes(), wantRoot) {
-					t.Fatalf(
-						"credential root = %x; want seam bytes %x",
-						root.secret.Bytes(),
-						wantRoot,
-					)
-				}
-				root.close()
-				return
-			}
-			requireKDFCode(t, err, test.wantCode)
-			if root != nil {
-				root.close()
-				t.Fatal("invalid returned slice published a credential root")
-			}
+		}
+		root.close()
+		return
+	}
+	requireKDFCode(t, err, test.wantCode)
+	if root != nil {
+		root.close()
+		t.Fatal("invalid returned slice published a credential root")
+	}
+}
+
+func TestKDFReturnedSliceCleanup(t *testing.T) {
+	for _, test := range kdfReturnedSliceCleanupCases() {
+		t.Run(test.name, func(t *testing.T) {
+			requireKDFReturnedSliceCleanup(t, test)
 		})
+	}
+}
+
+func TestKDFReturnedSliceCleanupMutation(t *testing.T) {
+	for _, test := range kdfReturnedSliceCleanupCases() {
+		requireKDFReturnedSliceCleanup(t, test)
+	}
+}
+
+func requireKDFPostCallCancellation(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	input, owner, inputAlias := testNormalInput(t)
+	returned := fakeKDFResult(0x94, literalCredentialRootBytes)
+	admissionCalls := 0
+	kdfCalls := 0
+	root, err := runCredentialKDF(
+		ctx,
+		input,
+		make([]byte, literalKDFSaltBytes),
+		SuiteParanoid1,
+		testAdmitter(func(
+			context.Context,
+			KDFProfile,
+		) (KDFAdmission, error) {
+			admissionCalls++
+			return KDFAdmissionGranted, nil
+		}),
+		func(
+			_ []byte,
+			_ []byte,
+			_ KDFProfile,
+		) ([]byte, error) {
+			kdfCalls++
+			cancel(errors.New("private-post-cancel-sentinel"))
+			return returned, nil
+		},
+	)
+	if root != nil {
+		root.close()
+		t.Fatal("post-call cancellation published a credential root")
+	}
+	requireKDFCode(t, err, KDFErrorCancelled)
+	if admissionCalls != 1 || kdfCalls != 1 ||
+		input.secret != nil || owner.Len() != 0 ||
+		!allZero(inputAlias) || !allZero(returned) {
+		t.Fatal("post-call cancellation did not clear one-call material")
 	}
 }
 
@@ -934,44 +1008,12 @@ func TestKDFCancellationBoundary(t *testing.T) {
 	})
 
 	t.Run("post-call cancellation clears result and publishes nothing", func(t *testing.T) {
-		ctx, cancel := context.WithCancelCause(context.Background())
-		input, owner, inputAlias := testNormalInput(t)
-		returned := fakeKDFResult(0x94, literalCredentialRootBytes)
-		admissionCalls := 0
-		kdfCalls := 0
-		root, err := runCredentialKDF(
-			ctx,
-			input,
-			make([]byte, literalKDFSaltBytes),
-			SuiteParanoid1,
-			testAdmitter(func(
-				context.Context,
-				KDFProfile,
-			) (KDFAdmission, error) {
-				admissionCalls++
-				return KDFAdmissionGranted, nil
-			}),
-			func(
-				_ []byte,
-				_ []byte,
-				_ KDFProfile,
-			) ([]byte, error) {
-				kdfCalls++
-				cancel(errors.New("private-post-cancel-sentinel"))
-				return returned, nil
-			},
-		)
-		requireKDFCode(t, err, KDFErrorCancelled)
-		if root != nil {
-			root.close()
-			t.Fatal("post-call cancellation published a credential root")
-		}
-		if admissionCalls != 1 || kdfCalls != 1 ||
-			input.secret != nil || owner.Len() != 0 ||
-			!allZero(inputAlias) || !allZero(returned) {
-			t.Fatal("post-call cancellation did not clear one-call material")
-		}
+		requireKDFPostCallCancellation(t)
 	})
+}
+
+func TestKDFPostCallCancellationMutation(t *testing.T) {
+	requireKDFPostCallCancellation(t)
 }
 
 func TestKDFPanicCleanup(t *testing.T) {

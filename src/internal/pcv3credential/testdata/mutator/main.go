@@ -23,37 +23,32 @@ var exactArgvTemplate = []string{
 	"--source-copy", "${SOURCE_COPY}",
 	"--manifest", "${MUTATION_MANIFEST}",
 	"--mutation-id", "${MUTATION_ID}",
-	"--source-manifest-sha256", "${SOURCE_MANIFEST_SHA256}",
+	"--source-set-sha256", "${SOURCE_SET_SHA256}",
 	"--baseline", "${BASELINE}",
 	"--spec-sha256", "${SPEC_SHA256}",
 	"--result", "${RESULT}",
 }
 
 type mutationManifest struct {
-	SchemaVersion        int            `json:"schema_version"`
-	BaselineCommit       string         `json:"baseline_commit"`
-	SpecSHA256           string         `json:"spec_sha256"`
-	SourceManifestSHA256 string         `json:"source_manifest_sha256"`
-	ArgvTemplate         []string       `json:"argv_template"`
-	Mutations            []mutationSpec `json:"mutations"`
+	SchemaVersion   int            `json:"schema_version"`
+	SpecSHA256      string         `json:"spec_sha256"`
+	SourceSetSHA256 string         `json:"source_set_sha256"`
+	ArgvTemplate    []string       `json:"argv_template"`
+	Mutations       []mutationSpec `json:"mutations"`
 }
 
 type mutationSpec struct {
-	ID                   string          `json:"id"`
-	Requirement          string          `json:"requirement"`
-	Invariant            string          `json:"invariant"`
-	BaselineCommit       string          `json:"baseline_commit"`
-	SpecSHA256           string          `json:"spec_sha256"`
-	SourceManifestSHA256 string          `json:"source_manifest_sha256"`
-	SourcePath           string          `json:"source_path"`
-	SourceSHA256         string          `json:"source_sha256"`
-	Anchor               string          `json:"anchor"`
-	Replacement          string          `json:"replacement"`
-	Argv                 []string        `json:"argv"`
-	KillingTestID        string          `json:"killing_test_id"`
-	ViolationMarker      string          `json:"expected_violation_marker"`
-	Pristine             mutationOutcome `json:"pristine"`
-	Mutant               mutationOutcome `json:"mutant"`
+	ID              string          `json:"id"`
+	Requirement     string          `json:"requirement"`
+	Invariant       string          `json:"invariant"`
+	SourcePath      string          `json:"source_path"`
+	SourceSHA256    string          `json:"source_sha256"`
+	Anchor          string          `json:"anchor"`
+	Replacement     string          `json:"replacement"`
+	KillingTestID   string          `json:"killing_test_id"`
+	ViolationMarker string          `json:"expected_violation_marker"`
+	Pristine        mutationOutcome `json:"pristine"`
+	Mutant          mutationOutcome `json:"mutant"`
 }
 
 type mutationOutcome struct {
@@ -79,30 +74,30 @@ type mutationCounts struct {
 }
 
 type mutationResult struct {
-	SchemaVersion        int             `json:"schema_version"`
-	MutationID           string          `json:"mutation_id"`
-	BaselineCommit       string          `json:"baseline_commit"`
-	SpecSHA256           string          `json:"spec_sha256"`
-	SourceManifestSHA256 string          `json:"source_manifest_sha256"`
-	SourcePath           string          `json:"source_path"`
-	SourceBeforeSHA256   string          `json:"source_before_sha256"`
-	SourceAfterSHA256    string          `json:"source_after_sha256"`
-	AnchorMatches        int             `json:"anchor_matches"`
-	ApplicationCount     int             `json:"application_count"`
-	KillingTestID        string          `json:"killing_test_id"`
-	ViolationMarker      string          `json:"expected_violation_marker"`
-	ExpectedPristine     mutationOutcome `json:"expected_pristine"`
-	ExpectedMutant       mutationOutcome `json:"expected_mutant"`
+	SchemaVersion      int             `json:"schema_version"`
+	MutationID         string          `json:"mutation_id"`
+	BaselineCommit     string          `json:"baseline_commit"`
+	SpecSHA256         string          `json:"spec_sha256"`
+	SourceSetSHA256    string          `json:"source_set_sha256"`
+	SourcePath         string          `json:"source_path"`
+	SourceBeforeSHA256 string          `json:"source_before_sha256"`
+	SourceAfterSHA256  string          `json:"source_after_sha256"`
+	AnchorMatches      int             `json:"anchor_matches"`
+	ApplicationCount   int             `json:"application_count"`
+	KillingTestID      string          `json:"killing_test_id"`
+	ViolationMarker    string          `json:"expected_violation_marker"`
+	ExpectedPristine   mutationOutcome `json:"expected_pristine"`
+	ExpectedMutant     mutationOutcome `json:"expected_mutant"`
 }
 
 type commandOptions struct {
-	sourceCopy        string
-	manifest          string
-	mutationID        string
-	sourceManifestSHA string
-	baseline          string
-	specSHA           string
-	result            string
+	sourceCopy   string
+	manifest     string
+	mutationID   string
+	sourceSetSHA string
+	baseline     string
+	specSHA      string
+	result       string
 }
 
 type sourceIdentity struct {
@@ -132,14 +127,14 @@ func run(args []string) error {
 	if err := validateManifest(manifest); err != nil {
 		return err
 	}
-	if manifest.BaselineCommit != options.baseline {
-		return errors.New("baseline identity mismatch")
+	if !validCommitID(options.baseline) {
+		return errors.New("runtime baseline must be a lowercase full object ID")
 	}
 	if manifest.SpecSHA256 != options.specSHA {
 		return errors.New("specification identity mismatch")
 	}
-	if manifest.SourceManifestSHA256 != options.sourceManifestSHA {
-		return errors.New("source-manifest identity mismatch")
+	if manifest.SourceSetSHA256 != options.sourceSetSHA {
+		return errors.New("source-set identity mismatch")
 	}
 
 	mutation, err := selectMutation(manifest, options.mutationID)
@@ -195,22 +190,27 @@ func run(args []string) error {
 	}
 
 	result := mutationResult{
-		SchemaVersion:        manifestSchemaVersion,
-		MutationID:           mutation.ID,
-		BaselineCommit:       manifest.BaselineCommit,
-		SpecSHA256:           manifest.SpecSHA256,
-		SourceManifestSHA256: manifest.SourceManifestSHA256,
-		SourcePath:           mutation.SourcePath,
-		SourceBeforeSHA256:   beforeHash,
-		SourceAfterSHA256:    sha256Hex(mutated),
-		AnchorMatches:        matches,
-		ApplicationCount:     1,
-		KillingTestID:        mutation.KillingTestID,
-		ViolationMarker:      mutation.ViolationMarker,
-		ExpectedPristine:     mutation.Pristine,
-		ExpectedMutant:       mutation.Mutant,
+		SchemaVersion:      manifestSchemaVersion,
+		MutationID:         mutation.ID,
+		BaselineCommit:     options.baseline,
+		SpecSHA256:         manifest.SpecSHA256,
+		SourceSetSHA256:    manifest.SourceSetSHA256,
+		SourcePath:         mutation.SourcePath,
+		SourceBeforeSHA256: beforeHash,
+		SourceAfterSHA256:  sha256Hex(mutated),
+		AnchorMatches:      matches,
+		ApplicationCount:   1,
+		KillingTestID:      mutation.KillingTestID,
+		ViolationMarker:    mutation.ViolationMarker,
+		ExpectedPristine:   mutation.Pristine,
+		ExpectedMutant:     mutation.Mutant,
 	}
-	if err := validateMutationResult(manifest, mutation, &result); err != nil {
+	if err := validateMutationResult(
+		manifest,
+		mutation,
+		options.baseline,
+		&result,
+	); err != nil {
 		return err
 	}
 	if err := writeCanonicalResult(options.result, result); err != nil {
@@ -229,14 +229,15 @@ func run(args []string) error {
 func validateMutationResult(
 	manifest *mutationManifest,
 	mutation *mutationSpec,
+	baseline string,
 	result *mutationResult,
 ) error {
 	if manifest == nil || mutation == nil || result == nil ||
 		result.SchemaVersion != manifestSchemaVersion ||
 		result.MutationID != mutation.ID ||
-		result.BaselineCommit != manifest.BaselineCommit ||
+		result.BaselineCommit != baseline ||
 		result.SpecSHA256 != manifest.SpecSHA256 ||
-		result.SourceManifestSHA256 != manifest.SourceManifestSHA256 ||
+		result.SourceSetSHA256 != manifest.SourceSetSHA256 ||
 		result.SourcePath != mutation.SourcePath ||
 		!validSHA256(result.SourceBeforeSHA256) ||
 		!validSHA256(result.SourceAfterSHA256) ||
@@ -255,13 +256,13 @@ func validateMutationResult(
 func parseOptions(args []string) (commandOptions, error) {
 	var options commandOptions
 	allowed := map[string]bool{
-		"--source-copy":            true,
-		"--manifest":               true,
-		"--mutation-id":            true,
-		"--source-manifest-sha256": true,
-		"--baseline":               true,
-		"--spec-sha256":            true,
-		"--result":                 true,
+		"--source-copy":       true,
+		"--manifest":          true,
+		"--mutation-id":       true,
+		"--source-set-sha256": true,
+		"--baseline":          true,
+		"--spec-sha256":       true,
+		"--result":            true,
 	}
 	seen := make(map[string]bool, len(allowed))
 	if len(args) != len(allowed)*2 {
@@ -296,8 +297,8 @@ func parseOptions(args []string) (commandOptions, error) {
 	flags.StringVar(&options.manifest, "manifest", "", "")
 	flags.StringVar(&options.mutationID, "mutation-id", "", "")
 	flags.StringVar(
-		&options.sourceManifestSHA,
-		"source-manifest-sha256",
+		&options.sourceSetSHA,
+		"source-set-sha256",
 		"",
 		"",
 	)
@@ -346,9 +347,8 @@ func loadManifest(path string) (*mutationManifest, error) {
 func validateManifest(manifest *mutationManifest) error {
 	if manifest == nil ||
 		manifest.SchemaVersion != manifestSchemaVersion ||
-		!validCommitID(manifest.BaselineCommit) ||
 		!validSHA256(manifest.SpecSHA256) ||
-		!validSHA256(manifest.SourceManifestSHA256) ||
+		!validSHA256(manifest.SourceSetSHA256) ||
 		!equalStrings(manifest.ArgvTemplate, exactArgvTemplate) ||
 		len(manifest.Mutations) == 0 {
 		return errors.New("invalid mutation manifest header")
@@ -362,7 +362,7 @@ func validateManifest(manifest *mutationManifest) error {
 			return fmt.Errorf("duplicate mutation ID %q", mutation.ID)
 		}
 		ids[mutation.ID] = true
-		if err := validateMutation(manifest, mutation); err != nil {
+		if err := validateMutation(mutation); err != nil {
 			return fmt.Errorf("mutation %q: %w", mutation.ID, err)
 		}
 		if hash, exists := sources[mutation.SourcePath]; exists &&
@@ -374,28 +374,21 @@ func validateManifest(manifest *mutationManifest) error {
 		}
 		sources[mutation.SourcePath] = mutation.SourceSHA256
 	}
-	if sourceManifestHash(sources) != manifest.SourceManifestSHA256 {
-		return errors.New("source-manifest hash does not match mutation sources")
+	if sourceSetHash(sources) != manifest.SourceSetSHA256 {
+		return errors.New("source-set hash does not match mutation sources")
 	}
 	return nil
 }
 
-func validateMutation(
-	manifest *mutationManifest,
-	mutation *mutationSpec,
-) error {
+func validateMutation(mutation *mutationSpec) error {
 	if !validMutationID(mutation.ID) ||
 		!validRequirement(mutation.Requirement) ||
 		mutation.Invariant == "" ||
-		mutation.BaselineCommit != manifest.BaselineCommit ||
-		mutation.SpecSHA256 != manifest.SpecSHA256 ||
-		mutation.SourceManifestSHA256 != manifest.SourceManifestSHA256 ||
 		!validRelativePath(mutation.SourcePath) ||
 		!validSHA256(mutation.SourceSHA256) ||
 		mutation.Anchor == "" ||
 		mutation.Replacement == "" ||
 		mutation.Anchor == mutation.Replacement ||
-		!equalStrings(mutation.Argv, exactArgvTemplate) ||
 		!strings.HasPrefix(mutation.KillingTestID, "Test") ||
 		mutation.ViolationMarker == "" {
 		return errors.New("missing or invalid required mutation field")
@@ -677,7 +670,7 @@ func openParentRoot(path string) (*os.Root, string, error) {
 	return root, filepath.Base(absolute), nil
 }
 
-func sourceManifestHash(sources map[string]string) string {
+func sourceSetHash(sources map[string]string) string {
 	identities := make([]sourceIdentity, 0, len(sources))
 	for path, hash := range sources {
 		identities = append(identities, sourceIdentity{path: path, hash: hash})

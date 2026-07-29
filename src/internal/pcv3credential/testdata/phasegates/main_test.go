@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,11 +27,91 @@ const (
 	testBase     = "2222222222222222222222222222222222222222"
 )
 
+type testFileSnapshot struct {
+	SHA256          string
+	Mode            os.FileMode
+	Size            int64
+	ModTimeUnixNano int64
+}
+
+func snapshotTestFile(t *testing.T, path string) testFileSnapshot {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read snapshotted file: %v", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("stat snapshotted file: %v", err)
+	}
+	return testFileSnapshot{
+		SHA256:          sha256Hex(data),
+		Mode:            info.Mode(),
+		Size:            info.Size(),
+		ModTimeUnixNano: info.ModTime().UnixNano(),
+	}
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func requireCanonicalJSONFile(t *testing.T, path string, value any) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read canonical JSON fixture %s: %v", path, err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		t.Fatalf("decode canonical JSON fixture %s: %v", path, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		t.Fatalf("canonical JSON fixture %s has trailing values", path)
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("re-encode canonical JSON fixture %s: %v", path, err)
+	}
+	canonical = append(canonical, '\n')
+	if !bytes.Equal(data, canonical) {
+		t.Fatalf("JSON fixture %s is not canonical", path)
+	}
+	return data
+}
+
+// Kills production mutation: accepting uppercase or non-40-byte object IDs.
+func TestValidOIDAcceptsExactly40LowercaseHex(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "lowercase hex", value: strings.Repeat("a", 40), want: true},
+		{name: "uppercase hex", value: strings.Repeat("A", 40), want: false},
+		{name: "64 lowercase hex", value: strings.Repeat("a", 64), want: false},
+		{name: "non-hex", value: strings.Repeat("g", 40), want: false},
+		{name: "short", value: strings.Repeat("a", 39), want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := validOID(test.value); got != test.want {
+				t.Fatalf("validOID(%q) = %t; want %t", test.value, got, test.want)
+			}
+		})
+	}
+}
+
 func TestFreezeIdentityCanonicalAndReadOnly(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "execution-identity.json")
 	hash, err := writeExclusiveCanonical(output, struct {
 		SchemaVersion int `json:"schema_version"`
-	}{SchemaVersion: 1})
+	}{SchemaVersion: 1}, defaultDeps().syncDirectory)
 	if err != nil {
 		t.Fatalf("freeze canonical identity: %v", err)
 	}
@@ -51,14 +133,165 @@ func TestFreezeIdentityCanonicalAndReadOnly(t *testing.T) {
 	if info.Mode().Perm() != 0o444 {
 		t.Fatalf("identity mode = %04o; want 0444", info.Mode().Perm())
 	}
-	if _, err := writeExclusiveCanonical(output, map[string]int{"replacement": 1}); err == nil {
+	if _, err := writeExclusiveCanonical(
+		output,
+		map[string]int{"replacement": 1},
+		defaultDeps().syncDirectory,
+	); err == nil {
 		t.Fatal("second identity publication unexpectedly replaced the first")
+	}
+}
+
+// Kills omitting the authenticated parent-directory sync after exclusive
+// identity creation.
+func TestFreezeIdentityDirectorySyncFailureIsTerminal(t *testing.T) {
+	fixture := newGateFixture(t)
+	fixture.writeConfig(t)
+	fixture.writeSourceManifest(t)
+	parentInfo, err := os.Lstat(fixture.root)
+	if err != nil {
+		t.Fatalf("stat identity parent fixture: %v", err)
+	}
+	sentinel := errors.New("sentinel identity directory sync failure")
+	syncCalls := 0
+	deps := fixture.deps()
+	deps.syncDirectory = func(directory *os.File) error {
+		syncCalls++
+		directoryInfo, err := directory.Stat()
+		if err != nil {
+			t.Fatalf("stat authenticated identity directory handle: %v", err)
+		}
+		if !directoryInfo.IsDir() || !os.SameFile(directoryInfo, parentInfo) {
+			t.Fatal("identity sync callback did not receive the authenticated parent")
+		}
+		var identity executionIdentity
+		requireCanonicalJSONFile(t, fixture.identityPath, &identity)
+		identityInfo, err := os.Lstat(fixture.identityPath)
+		if err != nil {
+			t.Fatalf("stat identity at directory-sync boundary: %v", err)
+		}
+		if identityInfo.Mode().Perm() != executionIdentityMode {
+			t.Fatalf(
+				"identity mode at directory-sync boundary = %04o; want %04o",
+				identityInfo.Mode().Perm(),
+				executionIdentityMode,
+			)
+		}
+		return sentinel
+	}
+
+	hash, freezeErr := freezeIdentity(fixture.freezeOptions, deps)
+	if hash != "" {
+		t.Fatalf("directory-sync failure returned identity hash %q; want empty", hash)
+	}
+	if !errors.Is(freezeErr, sentinel) {
+		t.Fatalf("identity directory-sync error = %v; want sentinel in chain", freezeErr)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("identity directory sync calls = %d; want exactly 1", syncCalls)
+	}
+	if _, err := os.Lstat(fixture.identityPath); err != nil {
+		t.Fatalf("terminal identity directory-sync failure removed identity: %v", err)
+	}
+}
+
+func TestFreezeIdentityRequiresPrivateEvidenceRoot(t *testing.T) {
+	fixture := newGateFixture(t)
+	fixture.writeConfig(t)
+	fixture.writeSourceManifest(t)
+	if err := os.Chmod(fixture.root, 0o755); err != nil {
+		t.Fatalf("make evidence root public: %v", err)
+	}
+	if _, err := freezeIdentity(
+		fixture.freezeOptions,
+		fixture.deps(),
+	); err == nil || err.Error() != "evidence root must have mode 0700" {
+		t.Fatalf("public evidence root error = %v; want exact rejection", err)
+	}
+	if _, err := os.Lstat(fixture.identityPath); !os.IsNotExist(err) {
+		t.Fatalf("public evidence root created identity output: %v", err)
+	}
+}
+
+// Kills production mutation: allowing non-canonical OIDs past freeze validation.
+func TestFreezeIdentityRejectsNonCanonicalOIDBeforePublication(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		baseline string
+	}{
+		{name: "uppercase", baseline: strings.Repeat("A", 40)},
+		{name: "64 characters", baseline: strings.Repeat("a", 64)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGateFixture(t)
+			fixture.freezeOptions.Baseline = test.baseline
+			fixture.writeConfig(t)
+			fixture.writeSourceManifest(t)
+
+			var manifest sourceManifest
+			readJSON(t, fixture.sourceManifest, &manifest)
+			manifest.Baseline = strings.ToLower(test.baseline)
+			data, err := canonicalJSON(manifest)
+			if err != nil {
+				t.Fatalf("encode matching source manifest: %v", err)
+			}
+			if err := os.WriteFile(fixture.sourceManifest, data, 0o600); err != nil {
+				t.Fatalf("write matching source manifest: %v", err)
+			}
+			manifestIdentity, err := regularFileIdentity(fixture.sourceManifest)
+			if err != nil {
+				t.Fatalf("bind matching source manifest: %v", err)
+			}
+
+			deps := fixture.deps()
+			deps.compiledAttestation = func() buildAttestation {
+				return buildAttestation{
+					Baseline:             strings.ToLower(test.baseline),
+					Base:                 testBase,
+					SourceManifestSHA256: manifestIdentity.SHA256,
+				}
+			}
+			_, freezeErr := freezeIdentity(fixture.freezeOptions, deps)
+			if freezeErr == nil ||
+				freezeErr.Error() !=
+					"baseline and base must be full hexadecimal object IDs" {
+				t.Errorf("non-canonical OID freeze error = %v; want early rejection",
+					freezeErr)
+			}
+			if _, err := os.Lstat(fixture.identityPath); !os.IsNotExist(err) {
+				t.Errorf("non-canonical OID created identity: %v", err)
+			}
+		})
 	}
 }
 
 func TestFreezeIdentityBindsRunnerAndInspector(t *testing.T) {
 	fixture := newGateFixture(t)
-	identity, hash := fixture.freeze(t)
+	fixture.writeConfig(t)
+	fixture.writeSourceManifest(t)
+	manifest, err := regularFileIdentity(fixture.sourceManifest)
+	if err != nil {
+		t.Fatalf("bind source manifest: %v", err)
+	}
+	savedBaseline := phase2Baseline
+	savedBase := phase2Base
+	savedSourceManifest := phase2SourceManifestSHA256
+	phase2Baseline = testBaseline
+	phase2Base = testBase
+	phase2SourceManifestSHA256 = manifest.SHA256
+	t.Cleanup(func() {
+		phase2Baseline = savedBaseline
+		phase2Base = savedBase
+		phase2SourceManifestSHA256 = savedSourceManifest
+	})
+	deps := fixture.deps()
+	deps.compiledAttestation = defaultDeps().compiledAttestation
+	hash, err := freezeIdentity(fixture.freezeOptions, deps)
+	if err != nil {
+		t.Fatalf("freeze with matching runtime globals: %v", err)
+	}
+	var identity executionIdentity
+	readJSON(t, fixture.identityPath, &identity)
 	if identity.Runner.File.Path == identity.Inspector.File.Path ||
 		identity.Runner.File.SHA256 == "" ||
 		identity.Inspector.File.SHA256 == "" ||
@@ -75,6 +308,285 @@ func TestFreezeIdentityBindsRunnerAndInspector(t *testing.T) {
 	if hash != sha256Hex(data) {
 		t.Fatal("returned identity hash does not bind the snapshot bytes")
 	}
+	if bytes.Contains(data, []byte(`"build_attestation"`)) {
+		t.Fatal("executable identity duplicates the top-level runtime binding")
+	}
+
+	t.Run("Go executable role binding", func(t *testing.T) {
+		config := fixture.config
+		config.Stages = map[string]stageConfig{
+			"host": {
+				Commands: []commandConfig{{Argv: []string{"${GO}"}}},
+			},
+		}
+		config.LintRuns = nil
+		_, err := frozenExecutables(
+			&config,
+			identity.Runner,
+			func(string) (string, error) {
+				return fixture.runnerPath, nil
+			},
+		)
+		if err == nil ||
+			err.Error() != "go executable main package is not cmd/go" {
+			t.Fatalf("wrong-role Go executable error = %v", err)
+		}
+	})
+
+	t.Run("real trimpath binary checks all runtime globals", func(t *testing.T) {
+		if runtime.NumCPU() < 2 {
+			t.Fatalf(
+				"real phasegates self-binding test requires at least two online CPUs; got %d",
+				runtime.NumCPU(),
+			)
+		}
+		moduleRoot := phasegatesTestModuleRoot(t)
+		goExecutable := testGoExecutable(t)
+		inputRoot := t.TempDir()
+		if err := os.Chmod(inputRoot, 0o700); err != nil {
+			t.Fatalf("make real-binary evidence root private: %v", err)
+		}
+		buildEnvironmentRoot := t.TempDir()
+		sourceDirectory := filepath.Join(inputRoot, "src")
+		if err := os.MkdirAll(sourceDirectory, 0o700); err != nil {
+			t.Fatalf("create real-binary source fixture: %v", err)
+		}
+		configData, err := os.ReadFile(filepath.Join(
+			moduleRoot,
+			"internal",
+			"pcv3credential",
+			"testdata",
+			"gates.json",
+		))
+		if err != nil {
+			t.Fatalf("read reviewed gate config: %v", err)
+		}
+		inputs := map[string][]byte{
+			"gates.json":     configData,
+			"manifest.json":  []byte("{}\n"),
+			"diff.patch":     []byte("diff\n"),
+			"spec.md":        []byte("spec\n"),
+			"vectors.json":   []byte("{}\n"),
+			"vector.in":      []byte("vector\n"),
+			"mutations.json": []byte("{}\n"),
+		}
+		for name, data := range inputs {
+			if err := os.WriteFile(
+				filepath.Join(sourceDirectory, name),
+				data,
+				0o400,
+			); err != nil {
+				t.Fatalf("write real-binary input %s: %v", name, err)
+			}
+		}
+		manifestSHA256 := sha256Hex(inputs["manifest.json"])
+		for index, test := range []struct {
+			name                 string
+			baseline             string
+			base                 string
+			sourceManifestSHA256 string
+			wantError            string
+		}{
+			{
+				name:                 "matching",
+				baseline:             testBaseline,
+				base:                 testBase,
+				sourceManifestSHA256: manifestSHA256,
+				wantError:            "vendored source is absent from the complete source manifest",
+			},
+			{
+				name:                 "wrong baseline",
+				baseline:             strings.Repeat("3", 40),
+				base:                 testBase,
+				sourceManifestSHA256: manifestSHA256,
+				wantError:            "running phasegates build attestation mismatch",
+			},
+			{
+				name:                 "wrong base",
+				baseline:             testBaseline,
+				base:                 strings.Repeat("3", 40),
+				sourceManifestSHA256: manifestSHA256,
+				wantError:            "running phasegates build attestation mismatch",
+			},
+			{
+				name:                 "wrong source manifest",
+				baseline:             testBaseline,
+				base:                 testBase,
+				sourceManifestSHA256: strings.Repeat("3", 64),
+				wantError:            "running phasegates build attestation mismatch",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				binary := buildRealPhasegatesBinary(
+					t,
+					moduleRoot,
+					buildEnvironmentRoot,
+					goExecutable,
+					filepath.Join(inputRoot, fmt.Sprintf("phasegates-%d", index)),
+					test.baseline,
+					test.base,
+					test.sourceManifestSHA256,
+				)
+				output := filepath.Join(inputRoot, fmt.Sprintf("identity-%d.json", index))
+				command := exec.Command(
+					binary,
+					"freeze-identity",
+					"--config", filepath.Join(sourceDirectory, "gates.json"),
+					"--baseline", testBaseline,
+					"--base", testBase,
+					"--source-manifest", filepath.Join(sourceDirectory, "manifest.json"),
+					"--diff", filepath.Join(sourceDirectory, "diff.patch"),
+					"--spec", filepath.Join(sourceDirectory, "spec.md"),
+					"--vectors", filepath.Join(sourceDirectory, "vectors.json"),
+					"--vector-input", filepath.Join(sourceDirectory, "vector.in"),
+					"--mutations", filepath.Join(sourceDirectory, "mutations.json"),
+					"--runner", binary,
+					"--inspector", binary,
+					"--output", output,
+				)
+				phaseJobs := derivedPhaseJobs(runtime.NumCPU())
+				command.Env = []string{
+					"GOMAXPROCS=" + strconv.Itoa(phaseJobs),
+					"HOME=" + inputRoot,
+					"PATH=" + filepath.Dir(goExecutable),
+					"TMPDIR=" + inputRoot,
+				}
+				var stdout bytes.Buffer
+				var stderr bytes.Buffer
+				command.Stdout = &stdout
+				command.Stderr = &stderr
+				runErr := command.Run()
+				var exitError *exec.ExitError
+				if !errors.As(runErr, &exitError) || exitError.ExitCode() != 1 {
+					t.Fatalf("real phasegates exit = %v; want 1", runErr)
+				}
+				if stdout.Len() != 0 {
+					t.Fatalf("rejected real phasegates stdout = %q", stdout.String())
+				}
+				if stderr.String() != test.wantError+"\n" {
+					t.Fatalf(
+						"real phasegates stderr = %q; want %q",
+						stderr.String(),
+						test.wantError+"\n",
+					)
+				}
+				if _, statErr := os.Lstat(output); !os.IsNotExist(statErr) {
+					t.Fatalf("rejected real phasegates created identity: %v", statErr)
+				}
+			})
+		}
+	})
+}
+
+func phasegatesTestModuleRoot(t *testing.T) string {
+	t.Helper()
+	current, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("resolve phasegates test directory: %v", err)
+	}
+	for {
+		if info, statErr := os.Lstat(filepath.Join(current, "go.mod")); statErr == nil && info.Mode().IsRegular() {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			t.Fatal("cannot locate phasegates test module root")
+		}
+		current = parent
+	}
+}
+
+func testGoExecutable(t *testing.T) string {
+	t.Helper()
+	path, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("resolve go executable: %v", err)
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		t.Fatalf("make go executable path absolute: %v", err)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("resolve go executable symlinks: %v", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("stat go executable: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("go executable is not a regular file: %s", path)
+	}
+	return path
+}
+
+func buildRealPhasegatesBinary(
+	t *testing.T,
+	moduleRoot string,
+	buildEnvironmentRoot string,
+	goExecutable string,
+	output string,
+	baseline string,
+	base string,
+	sourceManifestSHA256 string,
+) string {
+	t.Helper()
+	if runtime.Version() != "go1.26.5" {
+		t.Fatalf("real phasegates test uses %s; want go1.26.5", runtime.Version())
+	}
+	moduleMode := "vendor"
+	moduleCache := filepath.Join(buildEnvironmentRoot, "go-mod-cache")
+	vendorModules := filepath.Join(moduleRoot, "vendor", "modules.txt")
+	if info, err := os.Lstat(vendorModules); err != nil {
+		if !os.IsNotExist(err) {
+			t.Fatalf("stat vendored module inventory: %v", err)
+		}
+		moduleMode = "readonly"
+		userHome, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			t.Fatalf("resolve Go module cache: %v", homeErr)
+		}
+		moduleCache = filepath.Join(userHome, "go", "pkg", "mod")
+	} else if !info.Mode().IsRegular() {
+		t.Fatalf("vendored module inventory is not a regular file: %s", vendorModules)
+	}
+	ldflags := strings.Join([]string{
+		"-X=main.phase2Baseline=" + baseline,
+		"-X=main.phase2Base=" + base,
+		"-X=main.phase2SourceManifestSHA256=" + sourceManifestSHA256,
+	}, " ")
+	command := exec.Command(
+		goExecutable,
+		"build",
+		"-mod="+moduleMode,
+		"-trimpath",
+		"-p", "1",
+		"-ldflags", ldflags,
+		"-o", output,
+		"./internal/pcv3credential/testdata/phasegates",
+	)
+	command.Dir = moduleRoot
+	command.Env = []string{
+		"CGO_ENABLED=0",
+		"GOCACHE=" + filepath.Join(buildEnvironmentRoot, "go-build"),
+		"GOENV=off",
+		"GOFLAGS=",
+		"GOMAXPROCS=1",
+		"GOMODCACHE=" + moduleCache,
+		"GOPATH=" + filepath.Join(buildEnvironmentRoot, "gopath"),
+		"GOPROXY=off",
+		"GOSUMDB=off",
+		"GOTOOLCHAIN=local",
+		"GOWORK=off",
+		"HOME=" + buildEnvironmentRoot,
+		"PATH=" + filepath.Dir(goExecutable),
+		"TMPDIR=" + buildEnvironmentRoot,
+	}
+	combined, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build real phasegates binary: %v\n%s", err, combined)
+	}
+	return output
 }
 
 func TestFreezeIdentityRejectsMissingOrAliasedInspector(t *testing.T) {
@@ -130,6 +642,110 @@ func TestStageRejectsIdentityBeforeReservation(t *testing.T) {
 	}
 	if _, err := os.Lstat(options.Evidence); !os.IsNotExist(err) {
 		t.Fatalf("identity mismatch created evidence: %v", err)
+	}
+
+	t.Run("runtime build attestation drift", func(t *testing.T) {
+		fixture := newGateFixture(t)
+		fixture.addHostThreatClosure()
+		_, hash := fixture.freeze(t)
+		options := fixture.stageOptions("host", hash)
+		deps := fixture.deps()
+		deps.compiledAttestation = func() buildAttestation {
+			return buildAttestation{
+				Baseline:             strings.Repeat("3", 40),
+				Base:                 testBase,
+				SourceManifestSHA256: strings.Repeat("3", 64),
+			}
+		}
+		if err := os.WriteFile(
+			fixture.specPath,
+			[]byte("later input drift"),
+			0o600,
+		); err != nil {
+			t.Fatalf("create later input mismatch: %v", err)
+		}
+		err := runStage(context.Background(), options, deps)
+		if err == nil || err.Error() != "running phasegates build attestation mismatch" {
+			t.Fatalf(
+				"stage build-attestation error = %v; want exact mismatch",
+				err,
+			)
+		}
+		if _, statErr := os.Lstat(options.Evidence); !os.IsNotExist(statErr) {
+			t.Fatalf("build-attestation mismatch created evidence: %v", statErr)
+		}
+	})
+}
+
+func TestExactStageEvidenceFilename(t *testing.T) {
+	fixture := newGateFixture(t)
+	fixture.addHostThreatClosure()
+	_, hash := fixture.freeze(t)
+	options := fixture.stageOptions("host", hash)
+	options.Evidence = filepath.Join(fixture.root, "wrong-name.json")
+	if err := runStage(context.Background(), options, fixture.deps()); err == nil {
+		t.Fatal("stage accepted an evidence basename outside the reviewed contract")
+	}
+	if _, err := os.Lstat(options.Evidence); !os.IsNotExist(err) {
+		t.Fatalf("wrong evidence basename was reserved: %v", err)
+	}
+	if _, err := os.Lstat(options.Evidence + ".verified"); !os.IsNotExist(err) {
+		t.Fatalf("wrong evidence proof basename was reserved: %v", err)
+	}
+}
+
+func TestCPUFacts(t *testing.T) {
+	if _, err := cpuFactsForOnline(1); err == nil {
+		t.Fatal("CPU facts accepted fewer than two online CPUs")
+	}
+	root := t.TempDir()
+	t.Chdir(root)
+	sentinel := filepath.Join(root, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("unchanged"), 0o400); err != nil {
+		t.Fatalf("write CPU-facts sentinel: %v", err)
+	}
+	before := snapshotTestFile(t, sentinel)
+	var stdout bytes.Buffer
+	if err := run([]string{"cpu-facts"}, &stdout); err != nil {
+		t.Fatalf("report CPU facts: %v", err)
+	}
+	after := snapshotTestFile(t, sentinel)
+	if before != after {
+		t.Fatalf("cpu-facts changed controlled filesystem state: before=%+v after=%+v",
+			before, after)
+	}
+	var rejectedStdout bytes.Buffer
+	if err := run([]string{"cpu-facts", "unexpected"}, &rejectedStdout); err == nil {
+		t.Fatal("cpu-facts accepted an extra argument")
+	}
+	if rejectedStdout.Len() != 0 {
+		t.Fatalf("rejected cpu-facts invocation wrote stdout: %q", rejectedStdout.String())
+	}
+	var facts struct {
+		Online       int    `json:"online"`
+		PhaseJobs    int    `json:"phase_jobs"`
+		OnlineSource string `json:"online_source"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &facts); err != nil {
+		t.Fatalf("decode CPU facts: %v", err)
+	}
+	wantJobs := runtime.NumCPU() / 2
+	if wantJobs > 10 {
+		wantJobs = 10
+	}
+	wantJSON := fmt.Sprintf(
+		"{\"online\":%d,\"phase_jobs\":%d,\"online_source\":\"runtime.NumCPU\"}\n",
+		runtime.NumCPU(),
+		wantJobs,
+	)
+	if stdout.String() != wantJSON {
+		t.Fatalf("CPU facts bytes = %q; want canonical %q", stdout.String(), wantJSON)
+	}
+	if facts.Online != runtime.NumCPU() ||
+		facts.PhaseJobs != wantJobs ||
+		facts.OnlineSource != "runtime.NumCPU" {
+		t.Fatalf("CPU facts = %+v; want online=%d phase_jobs=%d runtime.NumCPU",
+			facts, runtime.NumCPU(), wantJobs)
 	}
 }
 
@@ -209,6 +825,306 @@ func TestStageCreateExclusive(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Kills omitting the evidence-directory sync or omitting/misordering the
+// proof-directory sync before publication success.
+func TestStagePublicationDirectorySyncOrderingAndFailure(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		failCall int
+	}{
+		{name: "evidence directory", failCall: 1},
+		{name: "proof directory", failCall: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGateFixture(t)
+			stageTemp := stageTempDirectory(fixture.root, "normal1")
+			fixture.setCommand(
+				"normal1",
+				fixture.helperCommand(
+					t,
+					"record",
+					filepath.Join(stageTemp, "command-output.json"),
+				),
+			)
+			_, hash := fixture.freeze(t)
+			options := fixture.stageOptions("normal1", hash)
+			finalProof := options.Evidence +
+				fixture.config.EvidenceContract.PublicationProofSuffix
+			pendingProof := filepath.Join(
+				fixture.root,
+				"."+filepath.Base(finalProof)+".pending",
+			)
+			lease := filepath.Join(fixture.root, ".phasegates-execution-lease")
+			rootInfo, err := os.Lstat(fixture.root)
+			if err != nil {
+				t.Fatalf("stat stage evidence root fixture: %v", err)
+			}
+			sentinel := errors.New("sentinel stage directory sync failure")
+			syncCalls := 0
+			deps := fixture.deps()
+			deps.syncDirectory = func(directory *os.File) error {
+				syncCalls++
+				directoryInfo, err := directory.Stat()
+				if err != nil {
+					t.Fatalf("stat authenticated evidence directory handle: %v", err)
+				}
+				if !directoryInfo.IsDir() || !os.SameFile(directoryInfo, rootInfo) {
+					t.Fatal("stage sync callback did not receive the authenticated evidence root")
+				}
+				var evidence stageEvidence
+				evidenceBytes := requireCanonicalJSONFile(
+					t,
+					options.Evidence,
+					&evidence,
+				)
+				if evidence.Status != "PASS" {
+					t.Fatalf(
+						"evidence status at directory-sync boundary = %q; want PASS",
+						evidence.Status,
+					)
+				}
+				evidenceInfo, err := os.Lstat(options.Evidence)
+				if err != nil {
+					t.Fatalf("stat evidence at directory-sync boundary: %v", err)
+				}
+				if evidenceInfo.Mode().Perm() != evidenceMode {
+					t.Fatalf(
+						"evidence mode at directory-sync boundary = %04o; want %04o",
+						evidenceInfo.Mode().Perm(),
+						evidenceMode,
+					)
+				}
+				if _, err := os.Lstat(stageTemp); !os.IsNotExist(err) {
+					t.Fatalf("stage temp exists at directory-sync call %d: %v", syncCalls, err)
+				}
+
+				switch syncCalls {
+				case 1:
+					for _, path := range []string{finalProof, pendingProof} {
+						if _, err := os.Lstat(path); !os.IsNotExist(err) {
+							t.Fatalf(
+								"proof path %s exists at evidence sync boundary: %v",
+								path,
+								err,
+							)
+						}
+					}
+				case 2:
+					var proof evidencePublicationProof
+					requireCanonicalJSONFile(t, finalProof, &proof)
+					if proof.EvidenceSHA256 !=
+						fmt.Sprintf("%x", sha256.Sum256(evidenceBytes)) {
+						t.Fatal("published proof does not bind canonical evidence bytes")
+					}
+					proofInfo, err := os.Lstat(finalProof)
+					if err != nil {
+						t.Fatalf("stat final proof at directory-sync boundary: %v", err)
+					}
+					if proofInfo.Mode().Perm() != evidenceMode {
+						t.Fatalf(
+							"proof mode at directory-sync boundary = %04o; want %04o",
+							proofInfo.Mode().Perm(),
+							evidenceMode,
+						)
+					}
+					for _, path := range []string{pendingProof, stageTemp, lease} {
+						if _, err := os.Lstat(path); !os.IsNotExist(err) {
+							t.Fatalf(
+								"transient path %s exists at proof sync boundary: %v",
+								path,
+								err,
+							)
+						}
+					}
+				default:
+					t.Fatalf("unexpected directory sync call %d", syncCalls)
+				}
+				if syncCalls == test.failCall {
+					return sentinel
+				}
+				return nil
+			}
+
+			stageErr := runStage(context.Background(), options, deps)
+			if !errors.Is(stageErr, sentinel) {
+				t.Fatalf("stage directory-sync error = %v; want sentinel in chain", stageErr)
+			}
+			if syncCalls != test.failCall {
+				t.Fatalf(
+					"stage directory sync calls = %d; want exactly %d",
+					syncCalls,
+					test.failCall,
+				)
+			}
+			if test.failCall == 1 {
+				if _, err := os.Lstat(finalProof); !os.IsNotExist(err) {
+					t.Fatalf("evidence sync failure published proof: %v", err)
+				}
+			} else {
+				if _, err := os.Lstat(finalProof); err != nil {
+					t.Fatalf("proof sync failure removed final proof: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// Kills publishing successful PASS evidence before its terminal timestamp is
+// assigned.
+func TestStagePassEvidenceHasFinalTimestamp(t *testing.T) {
+	const wantTimestamp = "2026-07-30T12:34:56.123456789Z"
+	instant, err := time.Parse(time.RFC3339Nano, wantTimestamp)
+	if err != nil {
+		t.Fatalf("parse independently specified test instant: %v", err)
+	}
+	fixture := newGateFixture(t)
+	fixture.setCommand(
+		"normal1",
+		fixture.helperCommand(
+			t,
+			"record",
+			filepath.Join(fixture.root, "timestamp-command.json"),
+		),
+	)
+	_, hash := fixture.freeze(t)
+	deps := fixture.deps()
+	deps.now = func() time.Time {
+		return instant
+	}
+	options := fixture.stageOptions("normal1", hash)
+	if err := runStage(context.Background(), options, deps); err != nil {
+		t.Fatalf("run successful timestamp stage: %v", err)
+	}
+	evidence := readEvidence(t, options.Evidence)
+	if evidence.StartedAt != wantTimestamp {
+		t.Fatalf(
+			"published PASS started_at = %q; want %q",
+			evidence.StartedAt,
+			wantTimestamp,
+		)
+	}
+	started, err := time.Parse(time.RFC3339Nano, evidence.StartedAt)
+	if err != nil {
+		t.Fatalf("parse published PASS started_at: %v", err)
+	}
+	if evidence.FinishedAt != wantTimestamp {
+		t.Fatalf(
+			"published PASS finished_at = %q; want %q",
+			evidence.FinishedAt,
+			wantTimestamp,
+		)
+	}
+	finished, err := time.Parse(time.RFC3339Nano, evidence.FinishedAt)
+	if err != nil {
+		t.Fatalf("parse published PASS finished_at: %v", err)
+	}
+	if finished.Before(started) {
+		t.Fatalf(
+			"published PASS finished_at %q precedes started_at %q",
+			evidence.FinishedAt,
+			evidence.StartedAt,
+		)
+	}
+}
+
+func TestStageRemovesTemporaryWorkspace(t *testing.T) {
+	t.Run("after pass", func(t *testing.T) {
+		fixture := newGateFixture(t)
+		stageTemp := stageTempDirectory(fixture.root, "normal1")
+		fixture.setCommand(
+			"normal1",
+			fixture.helperCommand(
+				t,
+				"record",
+				filepath.Join(stageTemp, "command-output.json"),
+			),
+		)
+		_, hash := fixture.freeze(t)
+		options := fixture.stageOptions("normal1", hash)
+		deps := fixture.deps()
+		deps.beforePublish = func(string, string) {
+			if _, err := os.Lstat(stageTemp); !os.IsNotExist(err) {
+				t.Fatalf("stage temp still existed before publication: %v", err)
+			}
+		}
+		if err := runStage(
+			context.Background(),
+			options,
+			deps,
+		); err != nil {
+			t.Fatalf("run successful stage: %v", err)
+		}
+		if _, err := os.Lstat(stageTemp); !os.IsNotExist(err) {
+			t.Fatalf("successful stage left temporary workspace: %v", err)
+		}
+		if evidence := readEvidence(t, options.Evidence); evidence.Status != "PASS" {
+			t.Fatalf("successful stage evidence status = %q; want PASS", evidence.Status)
+		}
+	})
+
+	t.Run("after terminal failure", func(t *testing.T) {
+		fixture := newGateFixture(t)
+		stageTemp := stageTempDirectory(fixture.root, "normal1")
+		fixture.setCommand(
+			"normal1",
+			fixture.helperCommand(
+				t,
+				"record",
+				filepath.Join(stageTemp, "command-output.json"),
+			),
+		)
+		_, hash := fixture.freeze(t)
+		deps := fixture.deps()
+		deps.beforePostCheck = func() {
+			_ = os.WriteFile(fixture.specPath, []byte("post-run drift"), 0o600)
+		}
+		options := fixture.stageOptions("normal1", hash)
+		if err := runStage(context.Background(), options, deps); err == nil {
+			t.Fatal("stage accepted post-run identity drift")
+		}
+		if _, err := os.Lstat(stageTemp); !os.IsNotExist(err) {
+			t.Fatalf("failed stage left temporary workspace: %v", err)
+		}
+		if evidence := readEvidence(t, options.Evidence); evidence.Status != "FAIL" {
+			t.Fatalf("failed stage evidence status = %q; want FAIL", evidence.Status)
+		}
+	})
+
+	t.Run("cleanup failure cannot authenticate pass", func(t *testing.T) {
+		fixture := newGateFixture(t)
+		stageTemp := stageTempDirectory(fixture.root, "normal1")
+		fixture.setCommand(
+			"normal1",
+			fixture.helperCommand(
+				t,
+				"record",
+				filepath.Join(stageTemp, "command-output.json"),
+			),
+		)
+		_, hash := fixture.freeze(t)
+		deps := fixture.deps()
+		deps.removeStageTemp = func(*os.Root, string) error {
+			return errors.New("simulated rooted cleanup failure")
+		}
+		options := fixture.stageOptions("normal1", hash)
+		err := runStage(context.Background(), options, deps)
+		if err == nil || !strings.Contains(err.Error(), "remove stage temp directory") {
+			t.Fatalf("cleanup failure error = %v; want exact operation context", err)
+		}
+		if evidence := readEvidence(t, options.Evidence); evidence.Status != "FAIL" {
+			t.Fatalf("cleanup failure evidence status = %q; want FAIL", evidence.Status)
+		}
+		proof := options.Evidence +
+			fixture.config.EvidenceContract.PublicationProofSuffix
+		if _, err := os.Lstat(proof); !os.IsNotExist(err) {
+			t.Fatalf("cleanup failure published an authentication proof: %v", err)
+		}
+		if _, err := os.Lstat(stageTemp); err != nil {
+			t.Fatalf("simulated cleanup failure did not preserve its fixture: %v", err)
+		}
+	})
 }
 
 func TestStageRejectsSymlink(t *testing.T) {
@@ -304,6 +1220,68 @@ func TestStageEnforcesHalfCoreEveryGoChild(t *testing.T) {
 	}
 }
 
+// Kills production mutations: accepting race aliases or an unmarked go-test command.
+func TestValidateGateConfigRejectsRaceWhenCGODisabled(t *testing.T) {
+	fixture := newGateFixture(t)
+	config := fixture.config
+	config.ChildEnvironment = fixture.config.ChildEnvironment
+	config.ChildEnvironment.Required = cloneStringMap(
+		fixture.config.ChildEnvironment.Required,
+	)
+	config.ChildEnvironment.Allowlist = append(
+		append([]string(nil), fixture.config.ChildEnvironment.Allowlist...),
+		"CGO_ENABLED",
+	)
+	config.ChildEnvironment.Required["CGO_ENABLED"] = "0"
+	stage := config.Stages["normal1"]
+	stage.Commands = []commandConfig{{
+		ID:                 "controlled-go-command",
+		Kind:               "structured",
+		Argv:               []string{"${GO}", "test"},
+		GoBased:            true,
+		PackageParallelism: float64(1),
+	}}
+	config.Stages["normal1"] = stage
+	if err := validateGateConfig(&config); err != nil {
+		t.Fatalf("valid non-race Go command rejected: %v", err)
+	}
+
+	stage.Commands[0].Argv = append(stage.Commands[0].Argv, "-race")
+	config.Stages["normal1"] = stage
+	err := validateGateConfig(&config)
+	if err == nil || err.Error() != "go -race command requires CGO_ENABLED=1" {
+		t.Fatalf("CGO-disabled race command error = %v; want impossibility rejection", err)
+	}
+
+	config.ChildEnvironment.Required["CGO_ENABLED"] = "1"
+	if err := validateGateConfig(&config); err != nil {
+		t.Fatalf("CGO-enabled exact -race command rejected: %v", err)
+	}
+
+	for _, alias := range []string{"--race", "-race=true", "--race=true"} {
+		t.Run("noncanonical "+alias, func(t *testing.T) {
+			stage.Commands[0].Argv = []string{"${GO}", "test", alias}
+			config.Stages["normal1"] = stage
+			err := validateGateConfig(&config)
+			if err == nil || err.Error() != "go race flag must use exact -race form" {
+				t.Fatalf("race alias %q error = %v; want exact-form rejection",
+					alias, err)
+			}
+		})
+	}
+
+	stage.Commands[0].Kind = "go-test"
+	stage.Commands[0].GoBased = false
+	stage.Commands[0].Argv = []string{"${GO}", "test", "--race"}
+	config.Stages["normal1"] = stage
+	config.ChildEnvironment.Required["CGO_ENABLED"] = "0"
+	err = validateGateConfig(&config)
+	if err == nil || err.Error() != "go-test command must be Go-based" {
+		t.Fatalf("unmarked go-test error = %v; want metadata rejection before race parsing",
+			err)
+	}
+}
+
 func TestReviewedGateAndMutationContracts(t *testing.T) {
 	config, configIdentity, err := loadGateConfig(
 		filepath.Join("..", "gates.json"),
@@ -396,16 +1374,412 @@ func TestReviewedGateAndMutationContracts(t *testing.T) {
 		t.Fatalf("strict-decode tracked mutation manifest: %v", err)
 	}
 	identity := executionIdentity{
-		Baseline: manifest.BaselineCommit,
+		Baseline: strings.Repeat("3", 40),
+		Source: directoryIdentity{
+			Path: "/frozen/source",
+		},
 		Spec: fileIdentity{
 			SHA256: manifest.SpecSHA256,
 		},
 		SourceManifest: fileIdentity{
-			SHA256: manifest.SourceManifestSHA256,
+			SHA256: strings.Repeat("4", 64),
+		},
+		Mutations: fileIdentity{
+			Path: "/frozen/source/src/internal/pcv3credential/testdata/mutations.json",
 		},
 	}
 	if err := validateCampaignManifest(&manifest, config, identity); err != nil {
 		t.Fatalf("validate tracked mutation campaign: %v", err)
+	}
+
+	t.Run("runner rejects application receipt drift", func(t *testing.T) {
+		mutation := &manifest.Mutations[0]
+		application := mutationApplicationCommand(
+			"/tool/go",
+			identity,
+			&manifest,
+			mutation,
+			"/private/M-CRD/source",
+			"/private/M-CRD/application.json",
+		)
+		wantArgv := []string{
+			"/tool/go",
+			"run",
+			"-tags",
+			"migrated_fynedo",
+			"./internal/pcv3credential/testdata/mutator",
+			"--source-copy", "/private/M-CRD/source/src",
+			"--manifest", identity.Mutations.Path,
+			"--mutation-id", mutation.ID,
+			"--source-set-sha256", manifest.SourceSetSHA256,
+			"--baseline", identity.Baseline,
+			"--spec-sha256", manifest.SpecSHA256,
+			"--result", "/private/M-CRD/application.json",
+		}
+		if !equalStrings(application.Argv, wantArgv) ||
+			application.CWD != "/frozen/source/src" {
+			t.Fatalf("runner application command = %#v in %q; want %#v in %q",
+				application.Argv, application.CWD, wantArgv, "/frozen/source/src")
+		}
+		record := campaignApplicationRecord{
+			SchemaVersion:      gateSchemaVersion,
+			MutationID:         mutation.ID,
+			BaselineCommit:     identity.Baseline,
+			SpecSHA256:         manifest.SpecSHA256,
+			SourceSetSHA256:    manifest.SourceSetSHA256,
+			SourcePath:         mutation.SourcePath,
+			SourceBeforeSHA256: mutation.SourceSHA256,
+			SourceAfterSHA256:  strings.Repeat("5", 64),
+			AnchorMatches:      1,
+			ApplicationCount:   1,
+			KillingTestID:      mutation.KillingTestID,
+			ViolationMarker:    mutation.ViolationMarker,
+			ExpectedPristine:   mutation.Pristine,
+			ExpectedMutant:     mutation.Mutant,
+		}
+		if !validCampaignApplication(
+			&record,
+			&manifest,
+			mutation,
+			identity.Baseline,
+		) {
+			t.Fatal("runner rejected the exact identity-bound application receipt")
+		}
+		for name, corrupt := range map[string]func(*campaignApplicationRecord){
+			"baseline": func(value *campaignApplicationRecord) {
+				value.BaselineCommit = strings.Repeat("6", 40)
+			},
+			"spec": func(value *campaignApplicationRecord) {
+				value.SpecSHA256 = strings.Repeat("7", 64)
+			},
+			"source set": func(value *campaignApplicationRecord) {
+				value.SourceSetSHA256 = strings.Repeat("8", 64)
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				invalid := record
+				corrupt(&invalid)
+				if validCampaignApplication(
+					&invalid,
+					&manifest,
+					mutation,
+					identity.Baseline,
+				) {
+					t.Fatal("runner accepted a drifted application receipt")
+				}
+			})
+		}
+		path := filepath.Join(t.TempDir(), "application.json")
+		data, err := canonicalJSON(record)
+		if err != nil {
+			t.Fatalf("encode application receipt: %v", err)
+		}
+		data = append(
+			append([]byte(nil), data[:len(data)-2]...),
+			[]byte(",\"unknown\":true}\n")...,
+		)
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatalf("write unknown-field application receipt: %v", err)
+		}
+		var decoded campaignApplicationRecord
+		if err := decodeStrictFile(path, &decoded); err == nil {
+			t.Fatal("runner accepted an unknown application receipt field")
+		}
+	})
+
+	t.Run("configured artifact namespace is the only authority", func(t *testing.T) {
+		candidate := *config
+		candidate.EvidenceContract = config.EvidenceContract
+		candidate.EvidenceContract.StageFilenames = map[string]string{
+			"mutation":  "campaign.result",
+			"normal1":   "normal.result",
+			"paranoid1": "paranoid.result",
+			"host":      "host.result",
+		}
+		candidate.EvidenceContract.PublicationProofSuffix = ".proof"
+		if err := validateGateConfig(&candidate); err != nil {
+			t.Fatalf("safe configured artifact namespace rejected: %v", err)
+		}
+		for name, mutate := range map[string]func(*gateConfig){
+			"missing stage": func(value *gateConfig) {
+				delete(value.EvidenceContract.StageFilenames, "host")
+			},
+			"extra stage": func(value *gateConfig) {
+				value.EvidenceContract.StageFilenames["extra"] = "extra.result"
+			},
+			"duplicate filename": func(value *gateConfig) {
+				value.EvidenceContract.StageFilenames["host"] = value.EvidenceContract.StageFilenames["normal1"]
+			},
+			"unsafe filename": func(value *gateConfig) {
+				value.EvidenceContract.StageFilenames["host"] = "../host.result"
+			},
+			"unsafe suffix": func(value *gateConfig) {
+				value.EvidenceContract.PublicationProofSuffix = "/proof"
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				invalid := candidate
+				invalid.EvidenceContract = candidate.EvidenceContract
+				invalid.EvidenceContract.StageFilenames = cloneStringMap(
+					candidate.EvidenceContract.StageFilenames,
+				)
+				mutate(&invalid)
+				if err := validateGateConfig(&invalid); err == nil {
+					t.Fatal("invalid configured artifact namespace accepted")
+				}
+			})
+		}
+	})
+
+	t.Run("producer evidence records complete authenticated observations", func(t *testing.T) {
+		for name, fixtureJSON := range map[string]string{
+			"command": `{"id":"normal-1-exact-profile","argv":["go","test"],"cwd":"/source/src","exit_code":0,"timed_out":false,"contract":{"kind":"go-test","execution_surface":{"package_paths":["./internal/pcv3credential"],"build_tags":["migrated_fynedo","pcv3_production_kdf"],"test_selector":"^TestProductionKDFExactProfiles$/^normal-1$","evidence_kind":"go-test-json"},"timeout_seconds":3900,"go_based":true,"memory_hard":true,"package_parallelism":1,"required_exit_code":0,"required_test_ids":["TestProductionKDFExactProfiles/normal-1"],"required_test_packages":{"TestProductionKDFExactProfiles/normal-1":"Picocrypt-NG/internal/pcv3credential"}}}`,
+			"lint":    `{"id":"host-lint-normal","argv":["golangci-lint","run"],"cwd":"/source/src","exit_code":0,"timed_out":false,"contract":{"kind":"golangci-lint","execution_surface":{"package_paths":["./internal/pcv3credential"],"build_tags":["migrated_fynedo"],"test_selector":"all","evidence_kind":"lint-json"},"timeout_seconds":600,"go_based":true,"memory_hard":false,"package_parallelism":1,"required_exit_code":0,"required_test_ids":[],"required_test_packages":{}},"lint_result":{"run_id":"lint-normal","json_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","issues":[],"enabled_linters":["gosec"]}}`,
+			"scan":    `{"id":"host-gitleaks","argv":["gitleaks","detect"],"cwd":"/source/src","exit_code":0,"timed_out":false,"contract":{"kind":"gitleaks","execution_surface":{"package_paths":["./internal/pcv3credential"],"build_tags":[],"test_selector":"all","evidence_kind":"gitleaks"},"timeout_seconds":300,"go_based":true,"memory_hard":false,"package_parallelism":1,"required_exit_code":0,"required_test_ids":[],"required_test_packages":{}},"scan_result":{"scanner":"gitleaks","target":"/source/src/internal/pcv3credential","findings":0}}`,
+		} {
+			t.Run(name, func(t *testing.T) {
+				var result commandResult
+				if err := json.Unmarshal([]byte(fixtureJSON), &result); err != nil {
+					t.Fatalf("decode producer evidence fixture: %v", err)
+				}
+				data, err := canonicalJSON(result)
+				if err != nil {
+					t.Fatalf("encode producer evidence fixture: %v", err)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(data, &fields); err != nil {
+					t.Fatalf("decode encoded producer evidence: %v", err)
+				}
+				if len(fields["contract"]) == 0 {
+					t.Fatal("producer evidence omitted the command contract")
+				}
+				if len(fields["go_test_event"]) != 0 {
+					t.Fatal("top-level producer evidence contains a nested Go test event")
+				}
+				if name == "lint" && len(fields["lint_result"]) == 0 {
+					t.Fatal("producer evidence omitted the lint JSON result")
+				}
+				if name == "scan" && len(fields["scan_result"]) == 0 {
+					t.Fatal("producer evidence omitted the scan result")
+				}
+			})
+		}
+		var mutation mutationExecution
+		if err := json.Unmarshal([]byte(
+			`{"id":"M-CRD06-01","killing_test_id":"TestFactorModeMatrix","violation_marker":"marker","pristine":{"id":"M-CRD06-01/pristine","exit_code":0,"go_test_event":{"package":"Picocrypt-NG/internal/pcv3credential","test_id":"TestFactorModeMatrix","terminal_action":"pass"},"timed_out":false},"application":{"id":"M-CRD06-01/application","exit_code":0,"timed_out":false},"mutant":{"id":"M-CRD06-01/mutant","exit_code":1,"go_test_event":{"package":"Picocrypt-NG/internal/pcv3credential","test_id":"TestFactorModeMatrix","terminal_action":"fail"},"timed_out":false},"application_receipt":{"schema_version":1,"mutation_id":"M-CRD06-01","baseline_commit":"1111111111111111111111111111111111111111","spec_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","source_set_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","source_path":"internal/pcv3credential/example.go","source_before_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_after_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","anchor_matches":1,"application_count":1,"killing_test_id":"TestFactorModeMatrix","expected_violation_marker":"marker","expected_pristine":{},"expected_mutant":{}}}`,
+		), &mutation); err != nil {
+			t.Fatalf("decode mutation producer fixture: %v", err)
+		}
+		data, err := canonicalJSON(mutation)
+		if err != nil {
+			t.Fatalf("encode mutation producer fixture: %v", err)
+		}
+		var mutationFields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &mutationFields); err != nil {
+			t.Fatalf("decode encoded mutation producer evidence: %v", err)
+		}
+		if len(mutationFields["application_receipt"]) == 0 {
+			t.Fatal("producer evidence omitted the validated mutation application receipt")
+		}
+		if mutation.Pristine.GoTestEvent == nil ||
+			mutation.Pristine.GoTestEvent.TerminalAction != "pass" ||
+			mutation.Mutant.GoTestEvent == nil ||
+			mutation.Mutant.GoTestEvent.TerminalAction != "fail" ||
+			mutation.Application.GoTestEvent != nil {
+			t.Fatal("producer evidence misplaced a nested Go test event")
+		}
+
+		command := commandConfig{
+			ID:   "normal-1-exact-profile",
+			Kind: "go-test",
+			ExecutionSurface: executionSurface{
+				PackagePaths: []string{"./internal/pcv3credential"},
+				BuildTags: []string{
+					"migrated_fynedo",
+					"pcv3_production_kdf",
+				},
+				TestSelector: "^TestProductionKDFExactProfiles$/^normal-1$",
+				EvidenceKind: "go-test-json",
+			},
+			Argv: []string{
+				"${GO}", "test",
+				"-tags", "migrated_fynedo,pcv3_production_kdf",
+				"-p", "1",
+				"./internal/pcv3credential",
+				"-run", "^TestProductionKDFExactProfiles$/^normal-1$",
+				"-json",
+			},
+			CWD:                "${SOURCE}/src",
+			TimeoutSeconds:     3900,
+			GoBased:            true,
+			MemoryHard:         true,
+			PackageParallelism: float64(1),
+			RequiredExitCode:   0,
+			RequiredTestIDs: []string{
+				"TestProductionKDFExactProfiles/normal-1",
+			},
+			RequiredTestPackages: map[string]string{
+				"TestProductionKDFExactProfiles/normal-1": "Picocrypt-NG/internal/pcv3credential",
+			},
+		}
+		replacements := map[string]string{
+			"${GO}":     "/tool/go",
+			"${SOURCE}": "/frozen/source",
+		}
+		validResult := func() commandResult {
+			return commandResult{
+				ID:       command.ID,
+				Argv:     replaceSlice(command.Argv, replacements),
+				CWD:      "/frozen/source/src",
+				Contract: commandEvidenceFor(command),
+				ExitCode: 0,
+				TimedOut: false,
+			}
+		}
+		if err := validateProducedCommandResult(
+			command,
+			validResult(),
+			replacements,
+		); err != nil {
+			t.Fatalf("exact producer command record rejected: %v", err)
+		}
+		for name, corrupt := range map[string]func(*commandResult){
+			"argv": func(value *commandResult) {
+				value.Argv[0] = "/wrong/go"
+			},
+			"cwd": func(value *commandResult) {
+				value.CWD = "/wrong/source"
+			},
+			"timeout": func(value *commandResult) {
+				value.Contract.TimeoutSeconds++
+			},
+			"package": func(value *commandResult) {
+				value.Contract.ExecutionSurface.PackagePaths[0] = "./wrong"
+			},
+			"tag": func(value *commandResult) {
+				value.Contract.ExecutionSurface.BuildTags[0] = "wrong"
+			},
+			"selector": func(value *commandResult) {
+				value.Contract.ExecutionSurface.TestSelector = "^wrong$"
+			},
+			"required package binding": func(value *commandResult) {
+				value.Contract.RequiredTestPackages["TestProductionKDFExactProfiles/normal-1"] = "Picocrypt-NG/wrong"
+			},
+		} {
+			t.Run("corrupt "+name, func(t *testing.T) {
+				invalid := validResult()
+				invalid.Argv = append([]string(nil), invalid.Argv...)
+				invalid.Contract.ExecutionSurface.PackagePaths = append(
+					[]string(nil),
+					invalid.Contract.ExecutionSurface.PackagePaths...,
+				)
+				invalid.Contract.ExecutionSurface.BuildTags = append(
+					[]string(nil),
+					invalid.Contract.ExecutionSurface.BuildTags...,
+				)
+				invalid.Contract.RequiredTestPackages = cloneStringMap(
+					invalid.Contract.RequiredTestPackages,
+				)
+				corrupt(&invalid)
+				if err := validateProducedCommandResult(
+					command,
+					invalid,
+					replacements,
+				); err == nil {
+					t.Fatal("corrupt producer command record accepted")
+				}
+			})
+		}
+
+		lintCommand := command
+		lintCommand.ID = "host-lint-normal"
+		lintCommand.Kind = "golangci-lint"
+		lintCommand.LintRun = "lint-normal"
+		lintResult := commandResult{
+			ID:       lintCommand.ID,
+			Argv:     replaceSlice(lintCommand.Argv, replacements),
+			CWD:      "/frozen/source/src",
+			Contract: commandEvidenceFor(lintCommand),
+			ExitCode: 0,
+			LintResult: &lintEvidenceResult{
+				RunID:          "lint-normal",
+				JSONSHA256:     strings.Repeat("a", 64),
+				Issues:         []struct{}{},
+				EnabledLinters: []string{"gosec"},
+			},
+		}
+		if err := validateProducedCommandResult(
+			lintCommand,
+			lintResult,
+			replacements,
+		); err != nil {
+			t.Fatalf("exact lint producer record rejected: %v", err)
+		}
+		lintResult.LintResult.Issues = []struct{}{{}}
+		if err := validateProducedCommandResult(
+			lintCommand,
+			lintResult,
+			replacements,
+		); err == nil {
+			t.Fatal("lint producer accepted a nonempty Issues array")
+		}
+
+		scanCommand := command
+		scanCommand.ID = "host-gitleaks"
+		scanCommand.Kind = "gitleaks"
+		scanCommand.Argv = []string{
+			"/tool/gitleaks",
+			"detect",
+			"--no-git",
+			"--source",
+			"${SOURCE}/src/internal/pcv3credential",
+		}
+		scanResult := commandResult{
+			ID:       scanCommand.ID,
+			Argv:     replaceSlice(scanCommand.Argv, replacements),
+			CWD:      "/frozen/source/src",
+			Contract: commandEvidenceFor(scanCommand),
+			ExitCode: 0,
+			ScanResult: &scanEvidenceResult{
+				Scanner: "gitleaks",
+				Target:  "/frozen/source/src/internal/pcv3credential",
+			},
+		}
+		if err := validateProducedCommandResult(
+			scanCommand,
+			scanResult,
+			replacements,
+		); err != nil {
+			t.Fatalf("exact scan producer record rejected: %v", err)
+		}
+		scanResult.ScanResult.Findings = 1
+		if err := validateProducedCommandResult(
+			scanCommand,
+			scanResult,
+			replacements,
+		); err == nil {
+			t.Fatal("scan producer accepted a nonzero finding count")
+		}
+	})
+}
+
+func TestExecutionSurfacesOverlapHierarchicalSelectors(t *testing.T) {
+	parent := executionSurface{
+		PackagePaths: []string{"./internal/pcv3credential"},
+		BuildTags:    []string{"migrated_fynedo"},
+		TestSelector: "^TestFoo$",
+		EvidenceKind: "go-test-json",
+	}
+	child := parent
+	child.TestSelector = "^TestFoo$/^bar$"
+	if !executionSurfacesOverlap(parent, child) {
+		t.Fatal("exact parent selector did not overlap its child selector")
+	}
+
+	sibling := parent
+	sibling.TestSelector = "^TestFoo$/^baz$"
+	if executionSurfacesOverlap(child, sibling) {
+		t.Fatal("equal-depth sibling selectors were treated as overlapping")
 	}
 }
 
@@ -427,6 +1801,677 @@ func TestLintJSONRequiresCurrentReportSchema(t *testing.T) {
 			}
 			if name != "valid" && err == nil {
 				t.Fatal("malformed lint JSON accepted")
+			}
+		})
+	}
+}
+
+// Kills production mutation: iterating manifest rows instead of RequiredMutationIDs.
+func TestMutationCampaignAttemptsConfiguredOrderBeforeManifestOrder(t *testing.T) {
+	const (
+		configuredFirst = "M-CRD07-KEYFILE-MODE-OFFSET-2"
+		manifestFirst   = "M-CRD07-SELECTED-FACTOR-REMOVAL"
+	)
+	var tracked campaignManifest
+	if err := decodeStrictFile(filepath.Join("..", "mutations.json"), &tracked); err != nil {
+		t.Fatalf("decode tracked mutation manifest: %v", err)
+	}
+	byID := make(map[string]campaignMutation, len(tracked.Mutations))
+	for _, mutation := range tracked.Mutations {
+		byID[mutation.ID] = mutation
+	}
+	firstManifestMutation, ok := byID[manifestFirst]
+	if !ok {
+		t.Fatalf("tracked manifest lacks controlled mutation %s", manifestFirst)
+	}
+	firstConfiguredMutation, ok := byID[configuredFirst]
+	if !ok {
+		t.Fatalf("tracked manifest lacks controlled mutation %s", configuredFirst)
+	}
+	manifest := tracked
+	manifest.Mutations = []campaignMutation{
+		firstManifestMutation,
+		firstConfiguredMutation,
+	}
+	manifest.SourceSetSHA256 = campaignSourceSetHash(manifest.Mutations)
+
+	root := t.TempDir()
+	source := filepath.Join(root, "archive")
+	moduleRoot := phasegatesTestModuleRoot(t)
+	writtenSources := map[string]bool{}
+	for _, mutation := range manifest.Mutations {
+		if writtenSources[mutation.SourcePath] {
+			continue
+		}
+		sourceBytes, err := os.ReadFile(filepath.Join(moduleRoot, mutation.SourcePath))
+		if err != nil {
+			t.Fatalf("read controlled mutation source %s: %v", mutation.SourcePath, err)
+		}
+		if sha256Hex(sourceBytes) != mutation.SourceSHA256 {
+			t.Fatalf("tracked source identity drifted for %s", mutation.SourcePath)
+		}
+		target := filepath.Join(source, "src", mutation.SourcePath)
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			t.Fatalf("create controlled mutation source parent: %v", err)
+		}
+		if err := os.WriteFile(target, sourceBytes, 0o600); err != nil {
+			t.Fatalf("write controlled mutation source: %v", err)
+		}
+		writtenSources[mutation.SourcePath] = true
+	}
+
+	manifestPath := filepath.Join(root, "mutations.json")
+	manifestData, err := canonicalJSON(manifest)
+	if err != nil {
+		t.Fatalf("encode controlled mutation manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, manifestData, 0o600); err != nil {
+		t.Fatalf("write controlled mutation manifest: %v", err)
+	}
+	stageTemp := filepath.Join(root, "stage")
+	if err := os.Mkdir(stageTemp, 0o700); err != nil {
+		t.Fatalf("create controlled stage temp: %v", err)
+	}
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve controlled child executable: %v", err)
+	}
+	var starts atomic.Int32
+	deps := defaultDeps()
+	deps.commandContext = func(
+		ctx context.Context,
+		_ string,
+		_ ...string,
+	) *exec.Cmd {
+		starts.Add(1)
+		return exec.CommandContext(
+			ctx,
+			testExecutable,
+			"-test.run=^TestPhasegatesHelperProcess$",
+			"--",
+			"fail",
+			"controlled pristine failure",
+		)
+	}
+	result, err := runMutationCampaign(
+		context.Background(),
+		commandConfig{ID: "mutation-campaign"},
+		&gateConfig{
+			RequiredMutationIDs: []string{configuredFirst, manifestFirst},
+		},
+		executionIdentity{
+			Baseline: testBaseline,
+			Source: directoryIdentity{
+				Path: source,
+			},
+			Spec: fileIdentity{
+				SHA256: manifest.SpecSHA256,
+			},
+			Mutations: fileIdentity{
+				Path: manifestPath,
+			},
+			Executables: map[string]executableIdentity{
+				"${GO}": {
+					File: fileIdentity{Path: "/frozen/go"},
+				},
+			},
+			Environment: map[string][]string{
+				"mutation": {"GOMAXPROCS=1"},
+			},
+		},
+		map[string]string{
+			"${STAGE}":        "mutation",
+			"${STAGE_TMPDIR}": stageTemp,
+		},
+		deps,
+	)
+	if err == nil ||
+		!strings.Contains(
+			err.Error(),
+			"mutation "+configuredFirst+" pristine test",
+		) {
+		t.Errorf("first controlled mutation error = %v; want configured-first failure", err)
+	}
+	if starts.Load() != 1 {
+		t.Errorf("controlled mutation child starts = %d; want exactly 1", starts.Load())
+	}
+	if len(result.Mutations) != 1 ||
+		result.Mutations[0].ID != configuredFirst {
+		t.Errorf("first mutation result = %+v; want only %s",
+			result.Mutations, configuredFirst)
+	}
+}
+
+// Kills binding a tracked mutation to a parent test instead of the exact
+// marker-owning top-level test event.
+func TestTrackedMutationKillingTestsProduceExactEvents(t *testing.T) {
+	type trackedMutation struct {
+		id     string
+		testID string
+		marker string
+	}
+	required := []trackedMutation{
+		{
+			id:     "M-CRD08-KDF-RETURN-CLEANUP-REMOVAL",
+			testID: "TestKDFReturnedSliceCleanupMutation",
+			marker: "KDF runner did not clear the exact returned slice",
+		},
+		{
+			id:     "M-CRD09-INDEPENDENT-INFO-REMOVAL",
+			testID: "TestScheduleIndependentExpandMutation",
+			marker: "reused Info",
+		},
+		{
+			id:     "M-CRD07-RAW-NFD-FALLBACK",
+			testID: "TestCanonicalTranscriptRawNFDFallbackMutation",
+			marker: "raw/decomposed legacy transcript became reachable",
+		},
+		{
+			id:     "M-CRD07-XOR-FALLBACK",
+			testID: "TestCanonicalTranscriptXORFallbackMutation",
+			marker: "legacy XOR transcript became reachable",
+		},
+		{
+			id:     "M-CRD09-PREEXPAND-VALIDATION-REMOVAL",
+			testID: "TestPipelinePreExpandScheduleValidationMutation",
+			marker: "schedule rejection published an owner",
+		},
+		{
+			id:     "M-CRD06-FIXED-PROFILE-WEAKENING",
+			testID: "TestKDFFixedProfileWeakeningMutation",
+			marker: "admission/KDF calls/profiles",
+		},
+		{
+			id:     "M-CRD08-POSTKDF-CANCEL-CHECK-REMOVAL",
+			testID: "TestKDFPostCallCancellationMutation",
+			marker: "post-call cancellation published a credential root",
+		},
+	}
+
+	var tracked campaignManifest
+	if err := decodeStrictFile(filepath.Join("..", "mutations.json"), &tracked); err != nil {
+		t.Fatalf("strict-decode tracked mutation manifest: %v", err)
+	}
+	byID := make(map[string]campaignMutation, len(tracked.Mutations))
+	for _, mutation := range tracked.Mutations {
+		byID[mutation.ID] = mutation
+	}
+	manifest := tracked
+	manifest.Mutations = make([]campaignMutation, 0, len(required))
+	requiredIDs := make([]string, 0, len(required))
+	for _, want := range required {
+		mutation, ok := byID[want.id]
+		if !ok {
+			t.Fatalf("tracked manifest lacks required mutation %s", want.id)
+		}
+		manifest.Mutations = append(manifest.Mutations, mutation)
+		requiredIDs = append(requiredIDs, want.id)
+	}
+	manifest.SourceSetSHA256 = campaignSourceSetHash(manifest.Mutations)
+
+	root := t.TempDir()
+	source := filepath.Join(root, "archive")
+	moduleRoot := phasegatesTestModuleRoot(t)
+	if err := os.CopyFS(filepath.Join(source, "src"), os.DirFS(moduleRoot)); err != nil {
+		t.Fatalf("copy actual src module into frozen-source fixture: %v", err)
+	}
+	manifestPath := filepath.Join(root, "mutations.json")
+	manifestData, err := canonicalJSON(manifest)
+	if err != nil {
+		t.Fatalf("encode controlled mutation manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, manifestData, 0o600); err != nil {
+		t.Fatalf("write controlled mutation manifest: %v", err)
+	}
+	stageTemp := filepath.Join(root, "stage")
+	tmpDirectory := filepath.Join(root, "tmp")
+	for _, directory := range []string{stageTemp, tmpDirectory} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatalf("create controlled mutation workspace: %v", err)
+		}
+	}
+
+	if runtime.Version() != "go1.26.5" {
+		t.Fatalf("tracked mutation campaign uses %s; want go1.26.5", runtime.Version())
+	}
+	goExecutable := testGoExecutable(t)
+	moduleCache := os.Getenv("GOMODCACHE")
+	if moduleCache == "" {
+		userHome, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			t.Fatalf("resolve populated Go module cache: %v", homeErr)
+		}
+		moduleCache = filepath.Join(userHome, "go", "pkg", "mod")
+	}
+	if info, statErr := os.Lstat(moduleCache); statErr != nil || !info.IsDir() {
+		t.Fatalf("populated Go module cache is unavailable: %v", statErr)
+	}
+	environment := []string{
+		"CGO_ENABLED=0",
+		"GOCACHE=" + filepath.Join(root, "go-cache"),
+		"GOENV=off",
+		"GOFLAGS=-mod=readonly",
+		"GOMAXPROCS=1",
+		"GOMODCACHE=" + moduleCache,
+		"GOPATH=" + filepath.Join(root, "go-path"),
+		"GOPROXY=off",
+		"GOSUMDB=off",
+		"GOTOOLCHAIN=local",
+		"GOWORK=off",
+		"HOME=" + root,
+		"PATH=" + filepath.Dir(goExecutable),
+		"TMPDIR=" + tmpDirectory,
+	}
+	campaignContext, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	result, err := runMutationCampaign(
+		campaignContext,
+		commandConfig{ID: "mutation-campaign"},
+		&gateConfig{RequiredMutationIDs: requiredIDs},
+		executionIdentity{
+			Baseline: testBaseline,
+			Source:   directoryIdentity{Path: source},
+			Spec:     fileIdentity{SHA256: manifest.SpecSHA256},
+			Mutations: fileIdentity{
+				Path: manifestPath,
+			},
+			Executables: map[string]executableIdentity{
+				"${GO}": {File: fileIdentity{Path: goExecutable}},
+			},
+			Environment: map[string][]string{"mutation": environment},
+		},
+		map[string]string{
+			"${STAGE}":        "mutation",
+			"${STAGE_TMPDIR}": stageTemp,
+		},
+		defaultDeps(),
+	)
+	if err != nil {
+		t.Fatalf("run tracked mutation campaign: %v", err)
+	}
+	if result.ExitCode != 0 || !equalStrings(result.ObservedIDs, requiredIDs) {
+		t.Fatalf(
+			"tracked campaign result = exit %d, observed %v; want exit 0, observed %v",
+			result.ExitCode,
+			result.ObservedIDs,
+			requiredIDs,
+		)
+	}
+	if len(result.Mutations) != len(required) {
+		t.Fatalf("tracked campaign mutation count = %d; want %d",
+			len(result.Mutations), len(required))
+	}
+	for index, want := range required {
+		got := result.Mutations[index]
+		pristineEvent := goTestEventAttestation{
+			Package:        pcv3PackagePath,
+			TestID:         want.testID,
+			TerminalAction: "pass",
+		}
+		mutantEvent := pristineEvent
+		mutantEvent.TerminalAction = "fail"
+		if got.ID != want.id ||
+			got.KillingTestID != want.testID ||
+			got.ViolationMarker != want.marker ||
+			got.Pristine.ExitCode != 0 ||
+			got.Pristine.TimedOut ||
+			got.Pristine.GoTestEvent == nil ||
+			*got.Pristine.GoTestEvent != pristineEvent ||
+			got.Application.ExitCode != 0 ||
+			got.Application.TimedOut ||
+			got.Mutant.ExitCode != 1 ||
+			got.Mutant.TimedOut ||
+			got.Mutant.GoTestEvent == nil ||
+			*got.Mutant.GoTestEvent != mutantEvent ||
+			got.ApplicationReceipt.MutationID != want.id ||
+			got.ApplicationReceipt.KillingTestID != want.testID ||
+			got.ApplicationReceipt.ViolationMarker != want.marker {
+			t.Fatalf("tracked mutation %s lacks exact event attestations: %+v", want.id, got)
+		}
+	}
+}
+
+// Kills production mutation: accepting an exit-zero pristine skip as execution.
+func TestMutationCampaignRejectsSkippedPristineBeforeApplication(t *testing.T) {
+	const (
+		mutationID = "M-CRD01-PRISTINE-SKIP"
+		testID     = "TestPristineSkip"
+		sourcePath = "internal/pcv3credential/value.go"
+		marker     = "controlled mutation violation"
+	)
+	root := t.TempDir()
+	source := filepath.Join(root, "archive")
+	moduleRoot := filepath.Join(source, "src")
+	packageRoot := filepath.Join(moduleRoot, "internal", "pcv3credential")
+	for _, directory := range []string{
+		packageRoot,
+		filepath.Join(root, "stage"),
+		filepath.Join(root, "tmp"),
+	} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatalf("create pristine-skip fixture directory: %v", err)
+		}
+	}
+	sourceData := []byte("package pcv3credential\n\nconst mutationValue = 1\n")
+	for path, data := range map[string][]byte{
+		filepath.Join(moduleRoot, "go.mod"): []byte(
+			"module Picocrypt-NG\n\ngo 1.26.5\n",
+		),
+		filepath.Join(packageRoot, "value.go"): sourceData,
+		filepath.Join(packageRoot, "value_test.go"): []byte(
+			"package pcv3credential\n\n" +
+				"import \"testing\"\n\n" +
+				"func TestPristineSkip(t *testing.T) {\n" +
+				"\tt.Skip(\"controlled pristine skip\")\n" +
+				"}\n",
+		),
+	} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatalf("write pristine-skip fixture: %v", err)
+		}
+	}
+	zero := 0
+	outcome := func(status, violationMarker string) campaignOutcome {
+		return campaignOutcome{
+			Status:          status,
+			Execution:       "semantic",
+			SemanticCommand: []string{"go", "test", "./internal/pcv3credential", "-run", "^" + testID + "$", "-count=1"},
+			TestID:          testID,
+			ViolationMarker: violationMarker,
+			Stage:           "fixture",
+			Reason:          "controlled fixture",
+			Counts: campaignCounts{
+				EntropyCalls:          &zero,
+				KDFCalls:              &zero,
+				ExpandCalls:           &zero,
+				OwnerPublications:     &zero,
+				ActiveBorrows:         &zero,
+				UnclearedOwnedBuffers: &zero,
+			},
+		}
+	}
+	manifest := campaignManifest{
+		SchemaVersion: gateSchemaVersion,
+		SpecSHA256:    strings.Repeat("a", 64),
+		ArgvTemplate:  append([]string(nil), campaignArgvTemplate...),
+		Mutations: []campaignMutation{{
+			ID:              mutationID,
+			Requirement:     "CRD-01",
+			Invariant:       "the pristine killing test executes",
+			SourcePath:      sourcePath,
+			SourceSHA256:    sha256Hex(sourceData),
+			Anchor:          "const mutationValue = 1",
+			Replacement:     "const mutationValue = 2",
+			KillingTestID:   testID,
+			ViolationMarker: marker,
+			Pristine:        outcome("PASS", ""),
+			Mutant:          outcome("FAIL", marker),
+		}},
+	}
+	manifest.SourceSetSHA256 = campaignSourceSetHash(manifest.Mutations)
+	manifestPath := filepath.Join(root, "mutations.json")
+	manifestData, err := canonicalJSON(manifest)
+	if err != nil {
+		t.Fatalf("encode pristine-skip mutation manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, manifestData, 0o600); err != nil {
+		t.Fatalf("write pristine-skip mutation manifest: %v", err)
+	}
+	goExecutable := testGoExecutable(t)
+	environment := []string{
+		"CGO_ENABLED=0",
+		"GOCACHE=" + filepath.Join(root, "go-cache"),
+		"GOENV=off",
+		"GOMAXPROCS=1",
+		"GOMODCACHE=" + filepath.Join(root, "go-mod-cache"),
+		"GOPATH=" + filepath.Join(root, "go-path"),
+		"GOPROXY=off",
+		"GOSUMDB=off",
+		"GOTOOLCHAIN=local",
+		"GOWORK=off",
+		"HOME=" + root,
+		"PATH=" + filepath.Dir(goExecutable),
+		"TMPDIR=" + filepath.Join(root, "tmp"),
+	}
+	result, err := runMutationCampaign(
+		context.Background(),
+		commandConfig{ID: "mutation-campaign"},
+		&gateConfig{RequiredMutationIDs: []string{mutationID}},
+		executionIdentity{
+			Baseline: testBaseline,
+			Source:   directoryIdentity{Path: source},
+			Spec:     fileIdentity{SHA256: manifest.SpecSHA256},
+			Mutations: fileIdentity{
+				Path: manifestPath,
+			},
+			Executables: map[string]executableIdentity{
+				"${GO}": {File: fileIdentity{Path: goExecutable}},
+			},
+			Environment: map[string][]string{"mutation": environment},
+		},
+		map[string]string{
+			"${STAGE}":        "mutation",
+			"${STAGE_TMPDIR}": filepath.Join(root, "stage"),
+		},
+		defaultDeps(),
+	)
+	if err == nil {
+		t.Fatal("pristine skip advanced through the mutation campaign")
+	}
+	if strings.Contains(err.Error(), "apply mutation "+mutationID) {
+		t.Fatalf(
+			"pristine skip advanced to mutation application: %v; want mutation %s pristine test rejection",
+			err,
+			mutationID,
+		)
+	}
+	if !strings.Contains(err.Error(), "mutation "+mutationID+" pristine test") {
+		t.Fatalf("pristine skip error = %v; want pristine-owned rejection", err)
+	}
+	if len(result.Mutations) != 1 ||
+		result.Mutations[0].Application.ID != "" {
+		t.Fatalf("pristine skip recorded mutation application: %+v", result.Mutations)
+	}
+}
+
+// Kills production mutations: collapsing or accepting invalid exact events.
+func TestNestedGoTestJSONRejectsInvalidExactEvents(t *testing.T) {
+	const (
+		packagePath = "Picocrypt-NG/internal/pcv3credential"
+		testID      = "TestKilling"
+		marker      = "controlled violation"
+	)
+	event := func(action, output string) string {
+		data, err := json.Marshal(map[string]string{
+			"Action":  action,
+			"Package": packagePath,
+			"Test":    testID,
+			"Output":  output,
+		})
+		if err != nil {
+			t.Fatalf("encode duplicate-event fixture: %v", err)
+		}
+		return string(data)
+	}
+	for _, test := range []struct {
+		name           string
+		terminalAction string
+		requiredMarker string
+		events         []string
+	}{
+		{
+			name:           "duplicate run",
+			terminalAction: "fail",
+			requiredMarker: marker,
+			events: []string{
+				event("run", ""),
+				event("run", ""),
+				event("output", marker),
+				event("fail", ""),
+			},
+		},
+		{
+			name:           "duplicate fail",
+			terminalAction: "fail",
+			requiredMarker: marker,
+			events: []string{
+				event("run", ""),
+				event("output", marker),
+				event("fail", ""),
+				event("fail", ""),
+			},
+		},
+		{
+			name:           "duplicate pass",
+			terminalAction: "pass",
+			events: []string{
+				event("run", ""),
+				event("pass", ""),
+				event("pass", ""),
+			},
+		},
+		{
+			name:           "pristine fail",
+			terminalAction: "pass",
+			events: []string{
+				event("run", ""),
+				event("fail", ""),
+			},
+		},
+		{
+			name:           "pristine skip",
+			terminalAction: "pass",
+			events: []string{
+				event("run", ""),
+				event("skip", ""),
+			},
+		},
+		{
+			name:           "mutant pass",
+			terminalAction: "fail",
+			requiredMarker: marker,
+			events: []string{
+				event("run", ""),
+				event("output", marker),
+				event("pass", ""),
+			},
+		},
+		{
+			name:           "mutant skip",
+			terminalAction: "fail",
+			requiredMarker: marker,
+			events: []string{
+				event("run", ""),
+				event("output", marker),
+				event("skip", ""),
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := parseNestedGoTestJSON(
+				[]byte(strings.Join(test.events, "\n")+"\n"),
+				goTestEventAttestation{
+					Package:        packagePath,
+					TestID:         testID,
+					TerminalAction: test.terminalAction,
+				},
+				test.requiredMarker,
+			)
+			if err == nil {
+				t.Fatalf("%s events were accepted", test.name)
+			}
+		})
+	}
+}
+
+// Kills allowing an exact parent event to borrow a violation marker emitted by
+// a child or unrelated sibling test event.
+func TestNestedGoTestJSONDoesNotBorrowChildOrSiblingMarker(t *testing.T) {
+	const (
+		packagePath = "Picocrypt-NG/internal/pcv3credential"
+		parentID    = "TestKilling"
+		childID     = "TestKilling/child"
+		siblingID   = "TestSibling"
+		marker      = "controlled violation"
+	)
+	event := func(action, testID, output string) string {
+		data, err := json.Marshal(map[string]string{
+			"Action":  action,
+			"Package": packagePath,
+			"Test":    testID,
+			"Output":  output,
+		})
+		if err != nil {
+			t.Fatalf("encode nested-event fixture: %v", err)
+		}
+		return string(data)
+	}
+	events := []string{
+		event("run", parentID, ""),
+		event("run", childID, ""),
+		event("output", childID, marker),
+		event("run", siblingID, ""),
+		event("output", siblingID, marker),
+		event("fail", siblingID, ""),
+		event("fail", childID, ""),
+		event("fail", parentID, ""),
+	}
+	_, err := parseNestedGoTestJSON(
+		[]byte(strings.Join(events, "\n")+"\n"),
+		goTestEventAttestation{
+			Package:        packagePath,
+			TestID:         parentID,
+			TerminalAction: "fail",
+		},
+		marker,
+	)
+	if err == nil ||
+		err.Error() != "mutant output lacks the exact failing test and violation marker" {
+		t.Fatalf("parent marker borrowing error = %v; want exact rejection", err)
+	}
+}
+
+func TestNestedGoTestJSONAttestsExactTerminalEvent(t *testing.T) {
+	const (
+		packagePath = "Picocrypt-NG/internal/pcv3credential"
+		testID      = "TestKilling"
+		marker      = "controlled violation"
+	)
+	for _, terminalAction := range []string{"pass", "fail"} {
+		t.Run(terminalAction, func(t *testing.T) {
+			expected := goTestEventAttestation{
+				Package:        packagePath,
+				TestID:         testID,
+				TerminalAction: terminalAction,
+			}
+			events := fmt.Sprintf(
+				"{\"Action\":\"run\",\"Package\":%q,\"Test\":%q}\n"+
+					"{\"Action\":\"output\",\"Package\":%q,\"Test\":%q,\"Output\":%q}\n"+
+					"{\"Action\":%q,\"Package\":%q,\"Test\":%q}\n",
+				packagePath,
+				testID,
+				packagePath,
+				testID,
+				marker,
+				terminalAction,
+				packagePath,
+				testID,
+			)
+			requiredMarker := ""
+			if terminalAction == "fail" {
+				requiredMarker = marker
+			}
+			got, err := parseNestedGoTestJSON(
+				[]byte(events),
+				expected,
+				requiredMarker,
+			)
+			if err != nil {
+				t.Fatalf("parse exact %s events: %v", terminalAction, err)
+			}
+			if got != expected {
+				t.Fatalf("exact %s attestation = %+v; want %+v",
+					terminalAction, got, expected)
 			}
 		})
 	}
@@ -780,6 +2825,7 @@ func TestEvidenceReplacementIsDetected(t *testing.T) {
 		rootHandle,
 		filepath.Base(path),
 		stageEvidence{Status: "FAIL"},
+		defaultDeps().syncDirectory,
 	); err == nil {
 		t.Fatal("evidence replacement was not detected")
 	}
@@ -953,7 +2999,8 @@ func TestStageHasNoResetRetryOverwrite(t *testing.T) {
 	if err := run([]string{"--help"}, &rootHelp); err != nil {
 		t.Fatalf("render root help: %v", err)
 	}
-	if rootHelp.String() != "phasegates freeze-identity\nphasegates stage\n" {
+	if rootHelp.String() !=
+		"phasegates cpu-facts\nphasegates freeze-identity\nphasegates stage\n" {
 		t.Fatalf("unexpected public commands:\n%s", rootHelp.String())
 	}
 	var stageHelp bytes.Buffer
@@ -1045,6 +3092,9 @@ func newGateFixture(t *testing.T) *gateFixture {
 	t.Helper()
 	t.Setenv("GOMAXPROCS", "10")
 	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatalf("make gate fixture root private: %v", err)
+	}
 	source := filepath.Join(root, "archive")
 	sourceDir := filepath.Join(source, "src")
 	if err := os.MkdirAll(
@@ -1164,9 +3214,15 @@ func newGateFixture(t *testing.T) *gateFixture {
 			"host":      {MinimumOnline: 2, OwnedExecutionUnits: []string{"host-unit"}},
 		},
 		EvidenceContract: evidenceContract{
-			SchemaVersion:          1,
-			TerminalStatuses:       []string{"PASS", "FAIL"},
-			RequiredStageNames:     []string{"mutation", "normal1", "paranoid1", "host"},
+			SchemaVersion:      1,
+			TerminalStatuses:   []string{"PASS", "FAIL"},
+			RequiredStageNames: []string{"mutation", "normal1", "paranoid1", "host"},
+			StageFilenames: map[string]string{
+				"mutation":  "mutation.evidence.json",
+				"normal1":   "normal1.evidence.json",
+				"paranoid1": "paranoid1.evidence.json",
+				"host":      "host.evidence.json",
+			},
 			CreateExclusive:        true,
 			ReplaceForbidden:       true,
 			PublicationProofSuffix: ".verified",
@@ -1213,15 +3269,6 @@ func (fixture *gateFixture) deps() runtimeDeps {
 	deps.executableID = func(path string) (executableIdentity, error) {
 		identity, err := executableFileIdentity(path)
 		if err == nil {
-			manifest, manifestErr := regularFileIdentity(fixture.sourceManifest)
-			if manifestErr != nil {
-				return executableIdentity{}, manifestErr
-			}
-			identity.Attestation = buildAttestation{
-				Baseline:             testBaseline,
-				Base:                 testBase,
-				SourceManifestSHA256: manifest.SHA256,
-			}
 			if filepath.Clean(path) == filepath.Clean(fixture.inspectorPath) {
 				identity.MainPackagePath = "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect"
 			}
@@ -1356,7 +3403,10 @@ func (fixture *gateFixture) stageOptions(stage, identityHash string) stageOption
 		Diff:                    fixture.diffPath,
 		ExecutionIdentity:       fixture.identityPath,
 		ExecutionIdentitySHA256: identityHash,
-		Evidence:                filepath.Join(fixture.root, stage+"-evidence.json"),
+		Evidence: filepath.Join(
+			fixture.root,
+			fixture.config.EvidenceContract.StageFilenames[stage],
+		),
 	}
 }
 

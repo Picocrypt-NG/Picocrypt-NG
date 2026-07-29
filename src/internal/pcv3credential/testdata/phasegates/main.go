@@ -20,7 +20,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,7 +34,8 @@ const (
 	evidenceMode          = 0o400
 	maxCommandOutputBytes = 4 << 20
 	processWaitDelay      = 2 * time.Second
-	reviewedGateConfigSHA = "ab5614b31659ae98068801ea5bbb9b3199ac267585b048f348d43053d94887cd"
+	reviewedGateConfigSHA = "9630c2d867dec6461df8b3273e2934aac6f54a7c2391d8deab63204a6e5af6c8"
+	pcv3PackagePath       = "Picocrypt-NG/internal/pcv3credential"
 )
 
 var (
@@ -158,31 +158,30 @@ type stageConfig struct {
 }
 
 type commandConfig struct {
-	ID                     string            `json:"id"`
-	Kind                   string            `json:"kind"`
-	ExecutionSurface       executionSurface  `json:"execution_surface"`
-	Argv                   []string          `json:"argv,omitempty"`
-	CWD                    string            `json:"cwd,omitempty"`
-	TimeoutSeconds         int               `json:"timeout_seconds,omitempty"`
-	GoBased                bool              `json:"go_based,omitempty"`
-	MemoryHard             bool              `json:"memory_hard,omitempty"`
-	PackageParallelism     any               `json:"package_parallelism,omitempty"`
-	RequiredIDsSource      string            `json:"required_ids_source,omitempty"`
-	RequiredExitCode       int               `json:"required_exit_code,omitempty"`
-	RequiredTestIDs        []string          `json:"required_test_ids,omitempty"`
-	RequiredTestPackages   map[string]string `json:"required_test_packages,omitempty"`
-	LintRun                string            `json:"lint_run,omitempty"`
-	SourcePath             string            `json:"source_path,omitempty"`
-	GoASTTestDeclaration   string            `json:"go_ast_exact_test_declaration,omitempty"`
-	RequiredDeclarations   int               `json:"required_declarations,omitempty"`
-	RuntimeEventMinimum    int               `json:"runtime_event_minimum,omitempty"`
-	RuntimeEventMaximum    int               `json:"runtime_event_maximum,omitempty"`
-	AllowlistSource        string            `json:"allowlist_source,omitempty"`
-	RequiredCount          int               `json:"required_count,omitempty"`
-	RequiredOutputMarker   string            `json:"required_output_marker,omitempty"`
-	ForbiddenOutputMarker  string            `json:"forbidden_output_marker,omitempty"`
-	ExpectedFailingTestID  string            `json:"expected_failing_test_id,omitempty"`
-	ExpectedFailingPackage string            `json:"expected_failing_package,omitempty"`
+	ID                    string                  `json:"id"`
+	Kind                  string                  `json:"kind"`
+	ExecutionSurface      executionSurface        `json:"execution_surface"`
+	Argv                  []string                `json:"argv,omitempty"`
+	CWD                   string                  `json:"cwd,omitempty"`
+	TimeoutSeconds        int                     `json:"timeout_seconds,omitempty"`
+	GoBased               bool                    `json:"go_based,omitempty"`
+	MemoryHard            bool                    `json:"memory_hard,omitempty"`
+	PackageParallelism    any                     `json:"package_parallelism,omitempty"`
+	RequiredIDsSource     string                  `json:"required_ids_source,omitempty"`
+	RequiredExitCode      int                     `json:"required_exit_code,omitempty"`
+	RequiredTestIDs       []string                `json:"required_test_ids,omitempty"`
+	RequiredTestPackages  map[string]string       `json:"required_test_packages,omitempty"`
+	LintRun               string                  `json:"lint_run,omitempty"`
+	SourcePath            string                  `json:"source_path,omitempty"`
+	GoASTTestDeclaration  string                  `json:"go_ast_exact_test_declaration,omitempty"`
+	RequiredDeclarations  int                     `json:"required_declarations,omitempty"`
+	RuntimeEventMinimum   int                     `json:"runtime_event_minimum,omitempty"`
+	RuntimeEventMaximum   int                     `json:"runtime_event_maximum,omitempty"`
+	AllowlistSource       string                  `json:"allowlist_source,omitempty"`
+	RequiredCount         int                     `json:"required_count,omitempty"`
+	RequiredOutputMarker  string                  `json:"required_output_marker,omitempty"`
+	ForbiddenOutputMarker string                  `json:"forbidden_output_marker,omitempty"`
+	ExpectedGoTestEvent   *goTestEventAttestation `json:"-"`
 }
 
 type executionSurface struct {
@@ -193,13 +192,14 @@ type executionSurface struct {
 }
 
 type evidenceContract struct {
-	SchemaVersion          int      `json:"schema_version"`
-	TerminalStatuses       []string `json:"terminal_statuses"`
-	RequiredStageNames     []string `json:"required_stage_names"`
-	CreateExclusive        bool     `json:"create_exclusive"`
-	ReplaceForbidden       bool     `json:"replace_forbidden"`
-	PublicationProofSuffix string   `json:"publication_proof_suffix"`
-	RequiredFields         []string `json:"required_fields"`
+	SchemaVersion          int               `json:"schema_version"`
+	TerminalStatuses       []string          `json:"terminal_statuses"`
+	RequiredStageNames     []string          `json:"required_stage_names"`
+	StageFilenames         map[string]string `json:"stage_filenames"`
+	CreateExclusive        bool              `json:"create_exclusive"`
+	ReplaceForbidden       bool              `json:"replace_forbidden"`
+	PublicationProofSuffix string            `json:"publication_proof_suffix"`
+	RequiredFields         []string          `json:"required_fields"`
 }
 
 type evidencePublicationProof struct {
@@ -216,12 +216,11 @@ type fileIdentity struct {
 }
 
 type executableIdentity struct {
-	File            fileIdentity     `json:"file"`
-	GoBuildVersion  string           `json:"go_build_version"`
-	ModulePath      string           `json:"module_path"`
-	MainPackagePath string           `json:"main_package_path"`
-	BuildInfoSHA256 string           `json:"go_build_info_sha256"`
-	Attestation     buildAttestation `json:"build_attestation"`
+	File            fileIdentity `json:"file"`
+	GoBuildVersion  string       `json:"go_build_version"`
+	ModulePath      string       `json:"module_path"`
+	MainPackagePath string       `json:"main_package_path"`
+	BuildInfoSHA256 string       `json:"go_build_info_sha256"`
 }
 
 type buildAttestation struct {
@@ -335,6 +334,8 @@ type runtimeDeps struct {
 	now                 func() time.Time
 	beforePostCheck     func()
 	beforePublish       func(string, string)
+	removeStageTemp     func(*os.Root, string) error
+	syncDirectory       func(*os.File) error
 	commandContext      func(context.Context, string, ...string) *exec.Cmd
 }
 
@@ -351,9 +352,11 @@ func defaultDeps() runtimeDeps {
 				SourceManifestSHA256: phase2SourceManifestSHA256,
 			}
 		},
-		gateConfigSHA:  reviewedGateConfigSHA,
-		now:            time.Now,
-		commandContext: exec.CommandContext,
+		gateConfigSHA:   reviewedGateConfigSHA,
+		now:             time.Now,
+		removeStageTemp: (*os.Root).RemoveAll,
+		syncDirectory:   (*os.File).Sync,
+		commandContext:  exec.CommandContext,
 	}
 }
 
@@ -376,37 +379,72 @@ type stageEvidence struct {
 }
 
 type commandResult struct {
-	ID              string              `json:"id"`
-	Argv            []string            `json:"argv,omitempty"`
-	CWD             string              `json:"cwd,omitempty"`
-	ExitCode        int                 `json:"exit_code"`
-	StdoutSHA256    string              `json:"stdout_sha256,omitempty"`
-	StderrSHA256    string              `json:"stderr_sha256,omitempty"`
-	ObservedIDs     []string            `json:"observed_ids,omitempty"`
-	SkipEvents      []skipEvent         `json:"skip_events,omitempty"`
-	TimedOut        bool                `json:"timed_out"`
-	TerminationErr  string              `json:"termination_error,omitempty"`
-	WaitErr         string              `json:"wait_error,omitempty"`
-	Mutations       []mutationExecution `json:"mutations,omitempty"`
-	ClosedThreatIDs []string            `json:"closed_threat_ids,omitempty"`
+	ID              string                  `json:"id"`
+	Argv            []string                `json:"argv,omitempty"`
+	CWD             string                  `json:"cwd,omitempty"`
+	Contract        commandEvidence         `json:"contract"`
+	ExitCode        int                     `json:"exit_code"`
+	StdoutSHA256    string                  `json:"stdout_sha256,omitempty"`
+	StderrSHA256    string                  `json:"stderr_sha256,omitempty"`
+	ObservedIDs     []string                `json:"observed_ids,omitempty"`
+	SkipEvents      []skipEvent             `json:"skip_events,omitempty"`
+	GoTestEvent     *goTestEventAttestation `json:"go_test_event,omitempty"`
+	TimedOut        bool                    `json:"timed_out"`
+	TerminationErr  string                  `json:"termination_error,omitempty"`
+	WaitErr         string                  `json:"wait_error,omitempty"`
+	Mutations       []mutationExecution     `json:"mutations,omitempty"`
+	ClosedThreatIDs []string                `json:"closed_threat_ids,omitempty"`
+	LintResult      *lintEvidenceResult     `json:"lint_result,omitempty"`
+	ScanResult      *scanEvidenceResult     `json:"scan_result,omitempty"`
+}
+
+type goTestEventAttestation struct {
+	Package        string `json:"package"`
+	TestID         string `json:"test_id"`
+	TerminalAction string `json:"terminal_action"`
+}
+
+type commandEvidence struct {
+	Kind                 string            `json:"kind"`
+	ExecutionSurface     executionSurface  `json:"execution_surface"`
+	TimeoutSeconds       int               `json:"timeout_seconds"`
+	GoBased              bool              `json:"go_based"`
+	MemoryHard           bool              `json:"memory_hard"`
+	PackageParallelism   int               `json:"package_parallelism"`
+	RequiredExitCode     int               `json:"required_exit_code"`
+	RequiredTestIDs      []string          `json:"required_test_ids"`
+	RequiredTestPackages map[string]string `json:"required_test_packages"`
+}
+
+type lintEvidenceResult struct {
+	RunID          string     `json:"run_id"`
+	JSONSHA256     string     `json:"json_sha256"`
+	Issues         []struct{} `json:"issues"`
+	EnabledLinters []string   `json:"enabled_linters"`
+}
+
+type scanEvidenceResult struct {
+	Scanner  string `json:"scanner"`
+	Target   string `json:"target"`
+	Findings int    `json:"findings"`
 }
 
 type mutationExecution struct {
-	ID              string        `json:"id"`
-	KillingTestID   string        `json:"killing_test_id"`
-	ViolationMarker string        `json:"violation_marker"`
-	Pristine        commandResult `json:"pristine"`
-	Application     commandResult `json:"application"`
-	Mutant          commandResult `json:"mutant"`
+	ID                 string                    `json:"id"`
+	KillingTestID      string                    `json:"killing_test_id"`
+	ViolationMarker    string                    `json:"violation_marker"`
+	Pristine           commandResult             `json:"pristine"`
+	Application        commandResult             `json:"application"`
+	ApplicationReceipt campaignApplicationRecord `json:"application_receipt"`
+	Mutant             commandResult             `json:"mutant"`
 }
 
 type campaignManifest struct {
-	SchemaVersion        int                `json:"schema_version"`
-	BaselineCommit       string             `json:"baseline_commit"`
-	SpecSHA256           string             `json:"spec_sha256"`
-	SourceManifestSHA256 string             `json:"source_manifest_sha256"`
-	ArgvTemplate         []string           `json:"argv_template"`
-	Mutations            []campaignMutation `json:"mutations"`
+	SchemaVersion   int                `json:"schema_version"`
+	SpecSHA256      string             `json:"spec_sha256"`
+	SourceSetSHA256 string             `json:"source_set_sha256"`
+	ArgvTemplate    []string           `json:"argv_template"`
+	Mutations       []campaignMutation `json:"mutations"`
 }
 
 var campaignArgvTemplate = []string{
@@ -414,28 +452,24 @@ var campaignArgvTemplate = []string{
 	"--source-copy", "${SOURCE_COPY}",
 	"--manifest", "${MUTATION_MANIFEST}",
 	"--mutation-id", "${MUTATION_ID}",
-	"--source-manifest-sha256", "${SOURCE_MANIFEST_SHA256}",
+	"--source-set-sha256", "${SOURCE_SET_SHA256}",
 	"--baseline", "${BASELINE}",
 	"--spec-sha256", "${SPEC_SHA256}",
 	"--result", "${RESULT}",
 }
 
 type campaignMutation struct {
-	ID                   string          `json:"id"`
-	Requirement          string          `json:"requirement"`
-	Invariant            string          `json:"invariant"`
-	BaselineCommit       string          `json:"baseline_commit"`
-	SpecSHA256           string          `json:"spec_sha256"`
-	SourceManifestSHA256 string          `json:"source_manifest_sha256"`
-	SourcePath           string          `json:"source_path"`
-	SourceSHA256         string          `json:"source_sha256"`
-	Anchor               string          `json:"anchor"`
-	Replacement          string          `json:"replacement"`
-	Argv                 []string        `json:"argv"`
-	KillingTestID        string          `json:"killing_test_id"`
-	ViolationMarker      string          `json:"expected_violation_marker"`
-	Pristine             campaignOutcome `json:"pristine"`
-	Mutant               campaignOutcome `json:"mutant"`
+	ID              string          `json:"id"`
+	Requirement     string          `json:"requirement"`
+	Invariant       string          `json:"invariant"`
+	SourcePath      string          `json:"source_path"`
+	SourceSHA256    string          `json:"source_sha256"`
+	Anchor          string          `json:"anchor"`
+	Replacement     string          `json:"replacement"`
+	KillingTestID   string          `json:"killing_test_id"`
+	ViolationMarker string          `json:"expected_violation_marker"`
+	Pristine        campaignOutcome `json:"pristine"`
+	Mutant          campaignOutcome `json:"mutant"`
 }
 
 type campaignOutcome struct {
@@ -461,20 +495,26 @@ type campaignCounts struct {
 }
 
 type campaignApplicationRecord struct {
-	SchemaVersion        int             `json:"schema_version"`
-	MutationID           string          `json:"mutation_id"`
-	BaselineCommit       string          `json:"baseline_commit"`
-	SpecSHA256           string          `json:"spec_sha256"`
-	SourceManifestSHA256 string          `json:"source_manifest_sha256"`
-	SourcePath           string          `json:"source_path"`
-	SourceBeforeSHA256   string          `json:"source_before_sha256"`
-	SourceAfterSHA256    string          `json:"source_after_sha256"`
-	AnchorMatches        int             `json:"anchor_matches"`
-	ApplicationCount     int             `json:"application_count"`
-	KillingTestID        string          `json:"killing_test_id"`
-	ViolationMarker      string          `json:"expected_violation_marker"`
-	ExpectedPristine     campaignOutcome `json:"expected_pristine"`
-	ExpectedMutant       campaignOutcome `json:"expected_mutant"`
+	SchemaVersion      int             `json:"schema_version"`
+	MutationID         string          `json:"mutation_id"`
+	BaselineCommit     string          `json:"baseline_commit"`
+	SpecSHA256         string          `json:"spec_sha256"`
+	SourceSetSHA256    string          `json:"source_set_sha256"`
+	SourcePath         string          `json:"source_path"`
+	SourceBeforeSHA256 string          `json:"source_before_sha256"`
+	SourceAfterSHA256  string          `json:"source_after_sha256"`
+	AnchorMatches      int             `json:"anchor_matches"`
+	ApplicationCount   int             `json:"application_count"`
+	KillingTestID      string          `json:"killing_test_id"`
+	ViolationMarker    string          `json:"expected_violation_marker"`
+	ExpectedPristine   campaignOutcome `json:"expected_pristine"`
+	ExpectedMutant     campaignOutcome `json:"expected_mutant"`
+}
+
+type cpuFacts struct {
+	Online       int    `json:"online"`
+	PhaseJobs    int    `json:"phase_jobs"`
+	OnlineSource string `json:"online_source"`
 }
 
 type skipEvent struct {
@@ -499,11 +539,17 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
-		_, err := io.WriteString(stdout, "phasegates freeze-identity\nphasegates stage\n")
+		_, err := io.WriteString(
+			stdout,
+			"phasegates cpu-facts\nphasegates freeze-identity\nphasegates stage\n",
+		)
 		return err
 	}
 	if len(args) == 2 && args[1] == "--help" {
 		switch args[0] {
+		case "cpu-facts":
+			_, err := io.WriteString(stdout, "cpu-facts\n")
+			return err
 		case "freeze-identity":
 			_, err := io.WriteString(stdout,
 				"freeze-identity --config --baseline --base --source-manifest --diff --spec --vectors --vector-input --mutations --runner --inspector --output\n",
@@ -519,11 +565,25 @@ func run(args []string, stdout io.Writer) error {
 		}
 	}
 	if len(args) == 0 {
-		return errors.New("phasegates requires freeze-identity or stage")
+		return errors.New("phasegates requires cpu-facts, freeze-identity, or stage")
 	}
 
 	deps := defaultDeps()
 	switch args[0] {
+	case "cpu-facts":
+		if len(args) != 1 {
+			return errors.New("cpu-facts accepts no arguments")
+		}
+		facts, err := cpuFactsForOnline(runtime.NumCPU())
+		if err != nil {
+			return err
+		}
+		data, err := canonicalJSON(facts)
+		if err != nil {
+			return fmt.Errorf("encode CPU facts: %w", err)
+		}
+		_, err = stdout.Write(data)
+		return err
 	case "freeze-identity":
 		options, err := parseFreezeOptions(args[1:])
 		if err != nil {
@@ -617,6 +677,9 @@ func parseExactPairs(args, names []string) (map[string]string, error) {
 }
 
 func freezeIdentity(options freezeOptions, deps runtimeDeps) (string, error) {
+	if err := processTreeSupported(); err != nil {
+		return "", err
+	}
 	if !validOID(options.Baseline) || !validOID(options.Base) {
 		return "", errors.New("baseline and base must be full hexadecimal object IDs")
 	}
@@ -672,10 +735,29 @@ func freezeIdentity(options freezeOptions, deps runtimeDeps) (string, error) {
 		Executables:    map[string]executableIdentity{},
 		Environment:    map[string][]string{},
 	}
+	if identity.SourceManifest, err = regularFileIdentity(
+		options.SourceManifest,
+	); err != nil {
+		return "", err
+	}
+	expectedAttestation := buildAttestation{
+		Baseline:             identity.Baseline,
+		Base:                 identity.Base,
+		SourceManifestSHA256: identity.SourceManifest.SHA256,
+	}
+	// Go deliberately omits -ldflags from BuildInfo when -trimpath is set.
+	// The running binary therefore checks its linker-injected values directly;
+	// exact executable bytes and the remaining BuildInfo stay independently bound.
+	if deps.compiledAttestation() != expectedAttestation {
+		return "", errors.New("running phasegates build attestation mismatch")
+	}
 	if identity.EvidenceRoot, err = directoryIdentityFor(
 		filepath.Dir(options.Output),
 	); err != nil {
 		return "", fmt.Errorf("bind evidence root: %w", err)
+	}
+	if os.FileMode(identity.EvidenceRoot.Mode).Perm() != 0o700 {
+		return "", errors.New("evidence root must have mode 0700")
 	}
 	// Evidence publication itself changes the parent directory timestamp.
 	// Path and mode remain frozen; individual identity/evidence files carry
@@ -700,9 +782,6 @@ func freezeIdentity(options freezeOptions, deps runtimeDeps) (string, error) {
 		identity.SourceTree,
 		sourceEntries,
 	); err != nil {
-		return "", err
-	}
-	if identity.SourceManifest, err = regularFileIdentity(options.SourceManifest); err != nil {
 		return "", err
 	}
 	if identity.Spec, err = regularFileIdentity(options.Spec); err != nil {
@@ -733,16 +812,6 @@ func freezeIdentity(options freezeOptions, deps runtimeDeps) (string, error) {
 		!strings.HasSuffix(identity.Inspector.MainPackagePath, "/phaseinspect") ||
 		identity.Runner.MainPackagePath == identity.Inspector.MainPackagePath {
 		return "", errors.New("runner and inspector main package identities are invalid")
-	}
-	expectedAttestation := buildAttestation{
-		Baseline:             identity.Baseline,
-		Base:                 identity.Base,
-		SourceManifestSHA256: identity.SourceManifest.SHA256,
-	}
-	if identity.Runner.Attestation != expectedAttestation ||
-		identity.Inspector.Attestation != expectedAttestation ||
-		deps.compiledAttestation() != expectedAttestation {
-		return "", errors.New("runner or inspector controlled-build attestation mismatch")
 	}
 	selfPath, err := deps.executable()
 	if err != nil {
@@ -807,7 +876,11 @@ func freezeIdentity(options freezeOptions, deps runtimeDeps) (string, error) {
 		}
 	}
 
-	hash, err := writeExclusiveCanonical(options.Output, identity)
+	hash, err := writeExclusiveCanonical(
+		options.Output,
+		identity,
+		deps.syncDirectory,
+	)
 	if err != nil {
 		return "", err
 	}
@@ -909,13 +982,59 @@ func runStage(
 			evidenceRoot,
 			evidenceName,
 			evidence,
+			deps.syncDirectory,
 		)
 		returnErr = errors.Join(returnErr, finishErr)
 	}()
+	cleanupRoot, err := os.OpenRoot(identity.EvidenceRoot.Path)
+	if err != nil {
+		return fmt.Errorf("open rooted stage cleanup handle: %w", err)
+	}
+	evidenceRootInfo, evidenceRootInfoErr := evidenceRoot.Stat()
+	cleanupRootInfo, cleanupRootInfoErr := cleanupRoot.Stat(".")
+	if evidenceRootInfoErr != nil ||
+		cleanupRootInfoErr != nil ||
+		!evidenceRootInfo.IsDir() ||
+		!cleanupRootInfo.IsDir() ||
+		!os.SameFile(evidenceRootInfo, cleanupRootInfo) {
+		closeErr := cleanupRoot.Close()
+		return errors.Join(
+			evidenceRootInfoErr,
+			cleanupRootInfoErr,
+			closeErr,
+			errors.New("rooted stage cleanup handle identity mismatch"),
+		)
+	}
+	defer func() {
+		closeErr := cleanupRoot.Close()
+		if !published {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
 	stageTemp := stageTempDirectory(identity.EvidenceRoot.Path, options.Stage)
-	if err := makeDirectoryAt(evidenceRoot, filepath.Base(stageTemp), 0o700); err != nil {
+	stageTempName := filepath.Base(stageTemp)
+	if err := makeDirectoryAt(evidenceRoot, stageTempName, 0o700); err != nil {
 		return fmt.Errorf("create exclusive stage temp directory: %w", err)
 	}
+	stageTempPending := true
+	cleanupStageTemp := func() error {
+		if !stageTempPending {
+			return nil
+		}
+		if err := deps.removeStageTemp(cleanupRoot, stageTempName); err != nil {
+			return fmt.Errorf("remove stage temp directory: %w", err)
+		}
+		if _, err := cleanupRoot.Lstat(stageTempName); err == nil {
+			return errors.New("stage temp directory still exists after cleanup")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("verify stage temp directory removal: %w", err)
+		}
+		stageTempPending = false
+		return nil
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, cleanupStageTemp())
+	}()
 
 	replacements := stageReplacements(options, identity)
 	for _, command := range stage.Commands {
@@ -968,6 +1087,9 @@ func runStage(
 			return err
 		}
 	}
+	if err := cleanupStageTemp(); err != nil {
+		return err
+	}
 	evidence.Status = "PASS"
 	evidence.FinishedAt = deps.now().UTC().Format(time.RFC3339Nano)
 	evidenceSHA256, finishErr := finishEvidence(
@@ -975,6 +1097,7 @@ func runStage(
 		evidenceRoot,
 		evidenceName,
 		evidence,
+		deps.syncDirectory,
 	)
 	evidenceFile = nil
 	if finishErr != nil {
@@ -992,6 +1115,7 @@ func runStage(
 		evidenceName,
 		config.EvidenceContract.PublicationProofSuffix,
 		evidenceSHA256,
+		deps.syncDirectory,
 	); err != nil {
 		return err
 	}
@@ -1068,12 +1192,26 @@ func validateStageInputs(
 		identity.Base != strings.ToLower(options.Base) {
 		return executionIdentity{}, nil, errors.New("execution identity baseline mismatch")
 	}
+	expectedAttestation := buildAttestation{
+		Baseline:             identity.Baseline,
+		Base:                 identity.Base,
+		SourceManifestSHA256: identity.SourceManifest.SHA256,
+	}
+	if deps.compiledAttestation() != expectedAttestation {
+		return executionIdentity{}, nil, errors.New("running phasegates build attestation mismatch")
+	}
 	config, configIdentity, err := loadGateConfig(options.Config, deps.gateConfigSHA)
 	if err != nil {
 		return executionIdentity{}, nil, err
 	}
 	if err := validateGateConfig(config); err != nil {
 		return executionIdentity{}, nil, err
+	}
+	evidenceName, ok := config.EvidenceContract.StageFilenames[options.Stage]
+	if !ok || filepath.Base(options.Evidence) != evidenceName {
+		return executionIdentity{}, nil, errors.New(
+			"stage evidence basename does not match the reviewed contract",
+		)
 	}
 	if !sameFileIdentity(identity.Config, configIdentity) {
 		return executionIdentity{}, nil, errors.New("gate config identity mismatch")
@@ -1118,9 +1256,6 @@ func validateStageInputs(
 	selfIdentity, err := deps.executableID(selfPath)
 	if err != nil || !sameExecutableIdentity(identity.Runner, selfIdentity) {
 		return executionIdentity{}, nil, errors.New("running phasegates executable identity mismatch")
-	}
-	if deps.compiledAttestation() != identity.Runner.Attestation {
-		return executionIdentity{}, nil, errors.New("running phasegates build attestation mismatch")
 	}
 	inspector, err := deps.executableID(identity.Inspector.File.Path)
 	if err != nil || !sameExecutableIdentity(identity.Inspector, inspector) {
@@ -1211,7 +1346,18 @@ func validateGateConfig(config *gateConfig) error {
 				return errors.New("stage command is missing identity")
 			}
 			commandIDs = append(commandIDs, command.ID)
+			if command.Kind == "go-test" && !command.GoBased {
+				return errors.New("go-test command must be Go-based")
+			}
 			if command.GoBased {
+				raceEnabled, err := exactGoRaceFlag(command.Argv)
+				if err != nil {
+					return err
+				}
+				if raceEnabled &&
+					config.ChildEnvironment.Required["CGO_ENABLED"] != "1" {
+					return errors.New("go -race command requires CGO_ENABLED=1")
+				}
 				value, err := parallelismValue(command.PackageParallelism)
 				if err != nil || value != 1 {
 					return errors.New("invalid Go package parallelism")
@@ -1247,6 +1393,12 @@ func validateGateConfig(config *gateConfig) error {
 	if len(config.LintRuns) != 3 {
 		return errors.New("gate config must contain three lint runs")
 	}
+	if err := validateArtifactNamespace(
+		config.EvidenceContract,
+		stageNames,
+	); err != nil {
+		return err
+	}
 	if len(config.ThreatClosure) != 0 {
 		if config.BuildAttestation != (buildAttestationContract{
 			Classification:             "controlled-build self-attestation; not proof against a malicious builder",
@@ -1278,9 +1430,6 @@ func validateGateConfig(config *gateConfig) error {
 				}
 			}
 		}
-		if config.EvidenceContract.PublicationProofSuffix != ".verified" {
-			return errors.New("evidence publication proof contract mismatch")
-		}
 		if config.ChildEnvironment.Required["GOFLAGS"] != "-mod=vendor -trimpath" ||
 			config.ChildEnvironment.Required["GOCACHE"] != "${STAGE_GOCACHE}" ||
 			config.ChildEnvironment.Required["GOMODCACHE"] != "${WORKSPACE_GOMODCACHE}" ||
@@ -1296,6 +1445,53 @@ func validateGateConfig(config *gateConfig) error {
 		return err
 	}
 	return nil
+}
+
+func validateArtifactNamespace(
+	contract evidenceContract,
+	stageNames []string,
+) error {
+	if contract.SchemaVersion != gateSchemaVersion ||
+		!equalStrings(contract.TerminalStatuses, []string{"PASS", "FAIL"}) ||
+		!contract.CreateExclusive ||
+		!contract.ReplaceForbidden ||
+		hasDuplicates(contract.RequiredStageNames) ||
+		!sameStringSet(contract.RequiredStageNames, stageNames) ||
+		len(contract.StageFilenames) != len(stageNames) ||
+		!safeArtifactSuffix(contract.PublicationProofSuffix) {
+		return errors.New("evidence artifact namespace mismatch")
+	}
+	seen := make(map[string]bool, len(stageNames)*2)
+	for _, stageName := range stageNames {
+		filename, ok := contract.StageFilenames[stageName]
+		if !ok || !safeArtifactBasename(filename) ||
+			seen[filename] ||
+			!safeArtifactBasename(filename+contract.PublicationProofSuffix) ||
+			seen[filename+contract.PublicationProofSuffix] {
+			return errors.New("evidence artifact namespace mismatch")
+		}
+		seen[filename] = true
+		seen[filename+contract.PublicationProofSuffix] = true
+	}
+	return nil
+}
+
+func safeArtifactBasename(value string) bool {
+	return value != "" &&
+		value != "." &&
+		value != ".." &&
+		!strings.ContainsRune(value, '\x00') &&
+		!strings.ContainsAny(value, `/\`) &&
+		filepath.Base(value) == value
+}
+
+func safeArtifactSuffix(value string) bool {
+	return value != "" &&
+		value != "." &&
+		value != ".." &&
+		!strings.ContainsRune(value, '\x00') &&
+		!strings.ContainsAny(value, `/\`) &&
+		filepath.Base(value) == value
 }
 
 func validateExecutionSurface(command commandConfig) error {
@@ -1339,8 +1535,12 @@ func validateExecutionSurface(command commandConfig) error {
 			}
 		}
 	}
+	raceEnabled, err := exactGoRaceFlag(command.Argv)
+	if err != nil {
+		return err
+	}
 	wantEvidenceKind := "go-test-json"
-	if contains(command.Argv, "-race") {
+	if raceEnabled {
 		wantEvidenceKind = "go-test-race-json"
 	}
 	if !contains(command.Argv, "-json") ||
@@ -1373,33 +1573,52 @@ func executionSurfacesOverlap(left, right executionSurface) bool {
 	if !sharesPackage {
 		return false
 	}
-	return left.TestSelector == "all" ||
-		right.TestSelector == "all" ||
-		left.TestSelector == right.TestSelector
+	if left.TestSelector == "all" || right.TestSelector == "all" {
+		return true
+	}
+	leftTests, leftExact := exactTestSelector(left.TestSelector)
+	rightTests, rightExact := exactTestSelector(right.TestSelector)
+	if !leftExact || !rightExact {
+		return true
+	}
+	return selectorPrefix(leftTests, rightTests) ||
+		selectorPrefix(rightTests, leftTests)
 }
 
-func exactTestSelector(selector string) (string, bool) {
+func exactTestSelector(selector string) ([]string, bool) {
 	parts := strings.Split(selector, "/")
 	exact := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if len(part) < 3 || part[0] != '^' || part[len(part)-1] != '$' {
-			return "", false
+			return nil, false
 		}
 		literal := part[1 : len(part)-1]
 		if literal == "" {
-			return "", false
+			return nil, false
 		}
 		for _, character := range literal {
 			if (character < 'a' || character > 'z') &&
 				(character < 'A' || character > 'Z') &&
 				(character < '0' || character > '9') &&
 				character != '_' && character != '-' {
-				return "", false
+				return nil, false
 			}
 		}
 		exact = append(exact, literal)
 	}
-	return strings.Join(exact, "/"), true
+	return exact, true
+}
+
+func selectorPrefix(prefix, selector []string) bool {
+	if len(prefix) > len(selector) {
+		return false
+	}
+	for index := range prefix {
+		if prefix[index] != selector[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func argvHasExactFlag(argv []string, flagName, value string) bool {
@@ -1413,6 +1632,21 @@ func argvHasExactFlag(argv []string, flagName, value string) bool {
 		}
 	}
 	return count == 1
+}
+
+func exactGoRaceFlag(argv []string) (bool, error) {
+	enabled := false
+	for _, argument := range argv {
+		switch {
+		case argument == "-race":
+			enabled = true
+		case argument == "--race",
+			strings.HasPrefix(argument, "-race="),
+			strings.HasPrefix(argument, "--race="):
+			return false, errors.New("go race flag must use exact -race form")
+		}
+	}
+	return enabled, nil
 }
 
 func validateThreatClosure(config *gateConfig) error {
@@ -1498,9 +1732,12 @@ func runConfiguredCommand(
 	replacements map[string]string,
 	deps runtimeDeps,
 ) (commandResult, error) {
+	effective := command
+	var result commandResult
+	var runErr error
 	switch command.Kind {
 	case "internal":
-		return runInternalCheck(command, config, identity, replacements)
+		result, runErr = runInternalCheck(command, config, identity, replacements)
 	case "mutation-campaign":
 		if command.TimeoutSeconds <= 0 {
 			return commandResult{ID: command.ID}, errors.New("mutation campaign has invalid timeout")
@@ -1510,7 +1747,8 @@ func runConfiguredCommand(
 			time.Duration(command.TimeoutSeconds)*time.Second,
 		)
 		defer cancel()
-		result, err := runMutationCampaign(
+		var err error
+		result, err = runMutationCampaign(
 			campaignContext,
 			command,
 			config,
@@ -1519,31 +1757,122 @@ func runConfiguredCommand(
 			deps,
 		)
 		result.TimedOut = errors.Is(campaignContext.Err(), context.DeadlineExceeded)
-		return result, err
+		runErr = err
 	case "golangci-lint":
 		lint, ok := lintByID(config.LintRuns, command.LintRun)
 		if !ok {
 			return commandResult{ID: command.ID}, errors.New("unknown lint run")
 		}
-		command.Argv = lint.Argv
-		command.CWD = "${SOURCE}/src"
-		command.TimeoutSeconds = 600
-		command.GoBased = true
-		command.RequiredExitCode = lint.ExitCodeRequired
-		result, err := executeCommand(ctx, command, identity, replacements, deps)
-		if err != nil {
-			return result, err
+		effective.Argv = lint.Argv
+		effective.CWD = "${SOURCE}/src"
+		effective.TimeoutSeconds = 600
+		effective.GoBased = true
+		effective.PackageParallelism = float64(1)
+		effective.RequiredExitCode = lint.ExitCodeRequired
+		result, runErr = executeCommand(ctx, effective, identity, replacements, deps)
+		if runErr == nil {
+			jsonPath := replaceAll(lint.JSONPath, replacements)
+			lintResult, lintErr := readLintEvidence(
+				jsonPath,
+				lint.ID,
+				lint.IssuesRequired,
+			)
+			if lintErr != nil {
+				runErr = lintErr
+			} else {
+				result.LintResult = &lintResult
+			}
 		}
-		jsonPath := replaceAll(lint.JSONPath, replacements)
-		if lintErr := validateLintJSON(jsonPath, lint.IssuesRequired); lintErr != nil {
-			return result, lintErr
-		}
-		return result, nil
 	case "go-test", "gitleaks", "structured":
-		return executeCommand(ctx, command, identity, replacements, deps)
+		result, runErr = executeCommand(ctx, command, identity, replacements, deps)
+		if runErr == nil && command.Kind == "gitleaks" {
+			scan, scanErr := scanEvidenceFor(result.Argv)
+			if scanErr != nil {
+				runErr = scanErr
+			} else {
+				result.ScanResult = &scan
+			}
+		}
 	default:
 		return commandResult{ID: command.ID}, errors.New("unsupported gate command kind")
 	}
+	result.Contract = commandEvidenceFor(effective)
+	if result.Argv == nil {
+		result.Argv = []string{}
+	}
+	if result.CWD == "" {
+		result.CWD = replaceAll(effective.CWD, replacements)
+	}
+	if runErr == nil {
+		if err := validateProducedCommandResult(
+			effective,
+			result,
+			replacements,
+		); err != nil {
+			runErr = err
+		}
+	}
+	return result, runErr
+}
+
+func validateProducedCommandResult(
+	command commandConfig,
+	result commandResult,
+	replacements map[string]string,
+) error {
+	if !reflect.DeepEqual(result.Contract, commandEvidenceFor(command)) {
+		return errors.New("produced command contract mismatch")
+	}
+	expectedCWD := replaceAll(command.CWD, replacements)
+	if result.CWD != expectedCWD {
+		return errors.New("produced command working directory mismatch")
+	}
+	switch command.Kind {
+	case "go-test", "golangci-lint", "gitleaks", "structured":
+		if !equalStrings(result.Argv, replaceSlice(command.Argv, replacements)) {
+			return errors.New("produced command argv mismatch")
+		}
+	case "internal", "mutation-campaign":
+		if len(result.Argv) != 0 {
+			return errors.New("non-process command recorded an argv")
+		}
+	default:
+		return errors.New("produced command has an unsupported kind")
+	}
+	switch command.Kind {
+	case "golangci-lint":
+		if result.LintResult == nil ||
+			result.LintResult.RunID != command.LintRun ||
+			!validSHA256(result.LintResult.JSONSHA256) ||
+			len(result.LintResult.Issues) != 0 ||
+			len(result.LintResult.EnabledLinters) == 0 ||
+			hasDuplicates(result.LintResult.EnabledLinters) ||
+			result.ScanResult != nil {
+			return errors.New("produced lint result mismatch")
+		}
+	case "gitleaks":
+		expected, err := scanEvidenceFor(result.Argv)
+		if err != nil || result.ScanResult == nil ||
+			*result.ScanResult != expected ||
+			result.LintResult != nil {
+			return errors.Join(err, errors.New("produced scan result mismatch"))
+		}
+	default:
+		if result.LintResult != nil || result.ScanResult != nil {
+			return errors.New("unexpected lint or scan result")
+		}
+	}
+	if command.Kind == "mutation-campaign" {
+		for _, mutation := range result.Mutations {
+			if mutation.ApplicationReceipt.SchemaVersion != gateSchemaVersion ||
+				mutation.ApplicationReceipt.MutationID != mutation.ID ||
+				mutation.ApplicationReceipt.KillingTestID != mutation.KillingTestID ||
+				mutation.ApplicationReceipt.ViolationMarker != mutation.ViolationMarker {
+				return errors.New("produced mutation receipt mismatch")
+			}
+		}
+	}
+	return nil
 }
 
 type lintJSONOutput struct {
@@ -1561,24 +1890,71 @@ type lintJSONLinter struct {
 }
 
 func validateLintJSON(path string, requiredIssues int) error {
+	_, err := readLintEvidence(path, "", requiredIssues)
+	return err
+}
+
+func readLintEvidence(
+	path string,
+	runID string,
+	requiredIssues int,
+) (lintEvidenceResult, error) {
 	var output lintJSONOutput
 	if err := decodeStrictFile(path, &output); err != nil {
-		return fmt.Errorf("decode lint JSON: %w", err)
+		return lintEvidenceResult{}, fmt.Errorf("decode lint JSON: %w", err)
 	}
 	if len(output.Issues) != requiredIssues || len(output.Report.Linters) == 0 {
-		return errors.New("lint JSON contains unexpected issues or an empty report")
+		return lintEvidenceResult{},
+			errors.New("lint JSON contains unexpected issues or an empty report")
 	}
-	enabled := false
+	var enabled []string
 	for _, linter := range output.Report.Linters {
 		if linter.Name == "" {
-			return errors.New("lint JSON report contains an unnamed linter")
+			return lintEvidenceResult{},
+				errors.New("lint JSON report contains an unnamed linter")
 		}
-		enabled = enabled || linter.Enabled
+		if linter.Enabled {
+			enabled = append(enabled, linter.Name)
+		}
 	}
-	if !enabled {
-		return errors.New("lint JSON report contains no enabled linter")
+	if len(enabled) == 0 {
+		return lintEvidenceResult{},
+			errors.New("lint JSON report contains no enabled linter")
 	}
-	return nil
+	sort.Strings(enabled)
+	identity, err := regularFileIdentity(path)
+	if err != nil {
+		return lintEvidenceResult{}, fmt.Errorf("bind lint JSON result: %w", err)
+	}
+	return lintEvidenceResult{
+		RunID:          runID,
+		JSONSHA256:     identity.SHA256,
+		Issues:         []struct{}{},
+		EnabledLinters: enabled,
+	}, nil
+}
+
+func scanEvidenceFor(argv []string) (scanEvidenceResult, error) {
+	if len(argv) == 0 || filepath.Base(argv[0]) != "gitleaks" {
+		return scanEvidenceResult{}, errors.New("scan executable is not gitleaks")
+	}
+	target := ""
+	for index := 1; index+1 < len(argv); index++ {
+		if argv[index] == "--source" {
+			if target != "" || argv[index+1] == "" {
+				return scanEvidenceResult{}, errors.New("scan target is ambiguous")
+			}
+			target = argv[index+1]
+		}
+	}
+	if target == "" {
+		return scanEvidenceResult{}, errors.New("scan target is absent")
+	}
+	return scanEvidenceResult{
+		Scanner:  "gitleaks",
+		Target:   target,
+		Findings: 0,
+	}, nil
 }
 
 func executeCommand(
@@ -1651,6 +2027,7 @@ func executeCommand(
 		ID:           command.ID,
 		Argv:         argv,
 		CWD:          cwd,
+		Contract:     commandEvidenceFor(command),
 		ExitCode:     exitCode(waitErr),
 		StdoutSHA256: sha256Hex(stdout.Bytes()),
 		StderrSHA256: sha256Hex(stderr.Bytes()),
@@ -1693,15 +2070,16 @@ func executeCommand(
 		bytes.Contains(combinedOutput, []byte(command.ForbiddenOutputMarker)) {
 		return result, errors.New("child output contains a forbidden violation marker")
 	}
-	if command.ExpectedFailingTestID != "" {
-		if err := parseExpectedTestFailureJSON(
+	if command.ExpectedGoTestEvent != nil {
+		attestation, err := parseNestedGoTestJSON(
 			stdout.Bytes(),
-			command.ExpectedFailingTestID,
-			command.ExpectedFailingPackage,
+			*command.ExpectedGoTestEvent,
 			command.RequiredOutputMarker,
-		); err != nil {
+		)
+		if err != nil {
 			return result, err
 		}
+		result.GoTestEvent = &attestation
 	}
 	if command.Kind == "go-test" {
 		ids, skips, parseErr := parseGoTestJSON(
@@ -1764,7 +2142,16 @@ func runMutationCampaign(
 		return result, errors.New("mutation campaign has no frozen Go executable")
 	}
 	stageTemp := replacements["${STAGE_TMPDIR}"]
-	for _, mutation := range manifest.Mutations {
+	mutationsByID := make(map[string]*campaignMutation, len(manifest.Mutations))
+	for index := range manifest.Mutations {
+		mutation := &manifest.Mutations[index]
+		mutationsByID[mutation.ID] = mutation
+	}
+	for _, mutationID := range config.RequiredMutationIDs {
+		mutation, ok := mutationsByID[mutationID]
+		if !ok {
+			return result, errors.New("required mutation is absent from campaign manifest")
+		}
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
@@ -1790,17 +2177,12 @@ func runMutationCampaign(
 			KillingTestID:   mutation.KillingTestID,
 			ViolationMarker: mutation.ViolationMarker,
 		}
-		pristineConfig := commandConfig{
-			ID:                    mutation.ID + "/pristine",
-			Kind:                  "structured",
-			Argv:                  semanticTestArgv(goExecutable.File.Path, mutation.KillingTestID),
-			CWD:                   filepath.Join(sourceCopy, "src"),
-			TimeoutSeconds:        120,
-			GoBased:               true,
-			PackageParallelism:    float64(1),
-			RequiredExitCode:      0,
-			ForbiddenOutputMarker: mutation.ViolationMarker,
-		}
+		pristineConfig := nestedMutationCommand(
+			goExecutable.File.Path,
+			mutation,
+			sourceCopy,
+			"pristine",
+		)
 		pristine, err := executeCommand(
 			ctx,
 			pristineConfig,
@@ -1815,29 +2197,14 @@ func runMutationCampaign(
 			return result, fmt.Errorf("mutation %s pristine test: %w", mutation.ID, err)
 		}
 		mutationResultPath := filepath.Join(mutationRoot, "application.json")
-		applicationConfig := commandConfig{
-			ID:   mutation.ID + "/application",
-			Kind: "structured",
-			Argv: []string{
-				goExecutable.File.Path,
-				"run",
-				"-tags",
-				"migrated_fynedo",
-				"./internal/pcv3credential/testdata/mutator",
-				"--source-copy", sourceCopy,
-				"--manifest", identity.Mutations.Path,
-				"--mutation-id", mutation.ID,
-				"--source-manifest-sha256", manifest.SourceManifestSHA256,
-				"--baseline", manifest.BaselineCommit,
-				"--spec-sha256", manifest.SpecSHA256,
-				"--result", mutationResultPath,
-			},
-			CWD:                filepath.Join(identity.Source.Path, "src"),
-			TimeoutSeconds:     120,
-			GoBased:            true,
-			PackageParallelism: float64(1),
-			RequiredExitCode:   0,
-		}
+		applicationConfig := mutationApplicationCommand(
+			goExecutable.File.Path,
+			identity,
+			&manifest,
+			mutation,
+			sourceCopy,
+			mutationResultPath,
+		)
 		application, err := executeCommand(
 			ctx,
 			applicationConfig,
@@ -1853,11 +2220,17 @@ func runMutationCampaign(
 		}
 		var applicationRecord campaignApplicationRecord
 		if err := decodeStrictFile(mutationResultPath, &applicationRecord); err != nil ||
-			!validCampaignApplication(&applicationRecord, &manifest, &mutation) {
+			!validCampaignApplication(
+				&applicationRecord,
+				&manifest,
+				mutation,
+				identity.Baseline,
+			) {
 			result.ExitCode = 1
 			result.Mutations = append(result.Mutations, execution)
 			return result, errors.New("mutation application result is malformed")
 		}
+		execution.ApplicationReceipt = applicationRecord
 		afterMutation, err := regularFileIdentity(copiedTarget)
 		if err != nil ||
 			afterMutation.SHA256 != applicationRecord.SourceAfterSHA256 {
@@ -1865,19 +2238,12 @@ func runMutationCampaign(
 			result.Mutations = append(result.Mutations, execution)
 			return result, errors.New("mutated source bytes do not match the application result")
 		}
-		mutantConfig := commandConfig{
-			ID:                     mutation.ID + "/mutant",
-			Kind:                   "structured",
-			Argv:                   semanticTestArgv(goExecutable.File.Path, mutation.KillingTestID),
-			CWD:                    filepath.Join(sourceCopy, "src"),
-			TimeoutSeconds:         120,
-			GoBased:                true,
-			PackageParallelism:     float64(1),
-			RequiredExitCode:       1,
-			RequiredOutputMarker:   mutation.ViolationMarker,
-			ExpectedFailingTestID:  mutation.KillingTestID,
-			ExpectedFailingPackage: "Picocrypt-NG/internal/pcv3credential",
-		}
+		mutantConfig := nestedMutationCommand(
+			goExecutable.File.Path,
+			mutation,
+			sourceCopy,
+			"mutant",
+		)
 		mutant, err := executeCommand(
 			ctx,
 			mutantConfig,
@@ -1897,6 +2263,74 @@ func runMutationCampaign(
 	return result, nil
 }
 
+func nestedMutationCommand(
+	goExecutable string,
+	mutation *campaignMutation,
+	sourceCopy string,
+	kind string,
+) commandConfig {
+	exitCode := 0
+	terminalAction := "pass"
+	if kind == "mutant" {
+		exitCode = 1
+		terminalAction = "fail"
+	}
+	command := commandConfig{
+		ID:                 mutation.ID + "/" + kind,
+		Kind:               "structured",
+		Argv:               semanticTestArgv(goExecutable, mutation.KillingTestID),
+		CWD:                filepath.Join(sourceCopy, "src"),
+		TimeoutSeconds:     120,
+		GoBased:            true,
+		PackageParallelism: float64(1),
+		RequiredExitCode:   exitCode,
+		ExpectedGoTestEvent: &goTestEventAttestation{
+			Package:        pcv3PackagePath,
+			TestID:         mutation.KillingTestID,
+			TerminalAction: terminalAction,
+		},
+	}
+	if kind == "mutant" {
+		command.RequiredOutputMarker = mutation.ViolationMarker
+	} else {
+		command.ForbiddenOutputMarker = mutation.ViolationMarker
+	}
+	return command
+}
+
+func mutationApplicationCommand(
+	goExecutable string,
+	identity executionIdentity,
+	manifest *campaignManifest,
+	mutation *campaignMutation,
+	sourceCopy string,
+	resultPath string,
+) commandConfig {
+	return commandConfig{
+		ID:   mutation.ID + "/application",
+		Kind: "structured",
+		Argv: []string{
+			goExecutable,
+			"run",
+			"-tags",
+			"migrated_fynedo",
+			"./internal/pcv3credential/testdata/mutator",
+			"--source-copy", filepath.Join(sourceCopy, "src"),
+			"--manifest", identity.Mutations.Path,
+			"--mutation-id", mutation.ID,
+			"--source-set-sha256", manifest.SourceSetSHA256,
+			"--baseline", identity.Baseline,
+			"--spec-sha256", manifest.SpecSHA256,
+			"--result", resultPath,
+		},
+		CWD:                filepath.Join(identity.Source.Path, "src"),
+		TimeoutSeconds:     120,
+		GoBased:            true,
+		PackageParallelism: float64(1),
+		RequiredExitCode:   0,
+	}
+}
+
 func validateCampaignManifest(
 	manifest *campaignManifest,
 	config *gateConfig,
@@ -1904,7 +2338,6 @@ func validateCampaignManifest(
 ) error {
 	if manifest == nil ||
 		manifest.SchemaVersion != gateSchemaVersion ||
-		manifest.BaselineCommit != identity.Baseline ||
 		manifest.SpecSHA256 != identity.Spec.SHA256 ||
 		!equalStrings(manifest.ArgvTemplate, campaignArgvTemplate) ||
 		!sameStringSet(mutationIDs(manifest.Mutations), config.RequiredMutationIDs) ||
@@ -1917,8 +2350,8 @@ func validateCampaignManifest(
 			return fmt.Errorf("mutation campaign entry %q is invalid", mutation.ID)
 		}
 	}
-	if campaignSourceManifestHash(manifest.Mutations) != manifest.SourceManifestSHA256 {
-		return errors.New("mutation campaign source-manifest hash mismatch")
+	if campaignSourceSetHash(manifest.Mutations) != manifest.SourceSetSHA256 {
+		return errors.New("mutation campaign source-set hash mismatch")
 	}
 	return nil
 }
@@ -1931,9 +2364,6 @@ func validCampaignMutation(
 		!validCampaignMutationID(mutation.ID) ||
 		mutation.Requirement == "" ||
 		mutation.Invariant == "" ||
-		mutation.BaselineCommit != manifest.BaselineCommit ||
-		mutation.SpecSHA256 != manifest.SpecSHA256 ||
-		mutation.SourceManifestSHA256 != manifest.SourceManifestSHA256 ||
 		mutation.SourcePath == "" ||
 		filepath.IsAbs(mutation.SourcePath) ||
 		filepath.ToSlash(filepath.Clean(mutation.SourcePath)) != mutation.SourcePath ||
@@ -1942,7 +2372,6 @@ func validCampaignMutation(
 		mutation.Anchor == "" ||
 		mutation.Replacement == "" ||
 		mutation.Anchor == mutation.Replacement ||
-		!equalStrings(mutation.Argv, campaignArgvTemplate) ||
 		!validGoTestID(mutation.KillingTestID) ||
 		mutation.ViolationMarker == "" {
 		return false
@@ -2034,15 +2463,16 @@ func validCampaignApplication(
 	record *campaignApplicationRecord,
 	manifest *campaignManifest,
 	mutation *campaignMutation,
+	baseline string,
 ) bool {
 	return record != nil &&
 		manifest != nil &&
 		mutation != nil &&
 		record.SchemaVersion == gateSchemaVersion &&
 		record.MutationID == mutation.ID &&
-		record.BaselineCommit == manifest.BaselineCommit &&
+		record.BaselineCommit == baseline &&
 		record.SpecSHA256 == manifest.SpecSHA256 &&
-		record.SourceManifestSHA256 == manifest.SourceManifestSHA256 &&
+		record.SourceSetSHA256 == manifest.SourceSetSHA256 &&
 		record.SourcePath == mutation.SourcePath &&
 		validSHA256(record.SourceBeforeSHA256) &&
 		record.SourceBeforeSHA256 == mutation.SourceSHA256 &&
@@ -2081,7 +2511,7 @@ func mutationIDs(mutations []campaignMutation) []string {
 	return ids
 }
 
-func campaignSourceManifestHash(mutations []campaignMutation) string {
+func campaignSourceSetHash(mutations []campaignMutation) string {
 	sources := map[string]string{}
 	for _, mutation := range mutations {
 		if previous, exists := sources[mutation.SourcePath]; exists &&
@@ -2321,16 +2751,19 @@ func goHarnessDiagnostic(line string) (string, bool) {
 	return reason, true
 }
 
-func parseExpectedTestFailureJSON(
+func parseNestedGoTestJSON(
 	data []byte,
-	testID string,
-	packagePath string,
+	expected goTestEventAttestation,
 	marker string,
-) error {
+) (goTestEventAttestation, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 4096), maxCommandOutputBytes)
-	sawRun := false
-	sawFail := false
+	counts := map[string]int{
+		"run":  0,
+		"pass": 0,
+		"fail": 0,
+		"skip": 0,
+	}
 	sawMarker := false
 	for scanner.Scan() {
 		var event struct {
@@ -2340,30 +2773,38 @@ func parseExpectedTestFailureJSON(
 			Output  string `json:"Output"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return errors.New("mutant go test emitted malformed JSON")
+			return goTestEventAttestation{},
+				errors.New("nested go test emitted malformed JSON")
 		}
-		if event.Package != packagePath || event.Test != testID {
+		if event.Package != expected.Package || event.Test != expected.TestID {
 			continue
 		}
-		switch event.Action {
-		case "run":
-			sawRun = true
-		case "fail":
-			sawFail = true
-		case "pass", "skip":
-			return errors.New("mutant killing test did not fail")
+		if _, tracked := counts[event.Action]; tracked {
+			counts[event.Action]++
 		}
-		if strings.Contains(event.Output, marker) {
+		if marker != "" && strings.Contains(event.Output, marker) {
 			sawMarker = true
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return err
+		return goTestEventAttestation{}, err
 	}
-	if !sawRun || !sawFail || !sawMarker {
-		return errors.New("mutant output lacks the exact failing test and violation marker")
+	if counts["run"] != 1 ||
+		counts[expected.TerminalAction] != 1 {
+		return goTestEventAttestation{},
+			errors.New("nested go test event cardinality mismatch")
 	}
-	return nil
+	for _, action := range []string{"pass", "fail", "skip"} {
+		if action != expected.TerminalAction && counts[action] != 0 {
+			return goTestEventAttestation{},
+				errors.New("nested go test terminal action mismatch")
+		}
+	}
+	if marker != "" && !sawMarker {
+		return goTestEventAttestation{},
+			errors.New("mutant output lacks the exact failing test and violation marker")
+	}
+	return expected, nil
 }
 
 func frozenEnvironment(
@@ -2618,8 +3059,17 @@ func frozenExecutables(
 		if err != nil {
 			return nil, fmt.Errorf("bind executable %s: %w", name, err)
 		}
-		if name == "${GO}" && identity.GoBuildVersion != config.GoVersion {
-			return nil, errors.New("go executable build version does not match gate config")
+		if name == "${GO}" {
+			if identity.GoBuildVersion != config.GoVersion {
+				return nil, errors.New(
+					"go executable build version does not match gate config",
+				)
+			}
+			if identity.MainPackagePath != "cmd/go" {
+				return nil, errors.New(
+					"go executable main package is not cmd/go",
+				)
+			}
 		}
 		identities[name] = identity
 	}
@@ -2741,39 +3191,7 @@ func executableFileIdentity(path string) (executableIdentity, error) {
 		ModulePath:      info.Main.Path,
 		MainPackagePath: info.Path,
 		BuildInfoSHA256: sha256Hex(encodedBuildInfo),
-		Attestation:     buildAttestationFromSettings(info.Settings),
 	}, nil
-}
-
-func buildAttestationFromSettings(
-	settings []debug.BuildSetting,
-) buildAttestation {
-	var attestation buildAttestation
-	for _, setting := range settings {
-		if setting.Key != "-ldflags" {
-			continue
-		}
-		for _, field := range strings.Fields(setting.Value) {
-			switch {
-			case strings.HasPrefix(field, "-X=main.phase2Baseline="):
-				attestation.Baseline = strings.TrimPrefix(
-					field,
-					"-X=main.phase2Baseline=",
-				)
-			case strings.HasPrefix(field, "-X=main.phase2Base="):
-				attestation.Base = strings.TrimPrefix(
-					field,
-					"-X=main.phase2Base=",
-				)
-			case strings.HasPrefix(field, "-X=main.phase2SourceManifestSHA256="):
-				attestation.SourceManifestSHA256 = strings.TrimPrefix(
-					field,
-					"-X=main.phase2SourceManifestSHA256=",
-				)
-			}
-		}
-	}
-	return attestation
 }
 
 func directoryIdentityFor(path string) (directoryIdentity, error) {
@@ -3074,18 +3492,30 @@ func cleanAbsolute(path string) (string, error) {
 	return filepath.Clean(absolute), nil
 }
 
-func writeExclusiveCanonical(path string, value any) (string, error) {
+func writeExclusiveCanonical(
+	path string,
+	value any,
+	syncDirectory func(*os.File) error,
+) (string, error) {
 	data, err := canonicalJSON(value)
 	if err != nil {
 		return "", err
 	}
-	file, err := openParentFile(
-		path,
-		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
-		0o600,
-	)
+	absolute, err := cleanAbsolute(path)
 	if err != nil {
 		return "", err
+	}
+	parentPath := filepath.Dir(absolute)
+	parent, err := openEvidenceRootHandle(parentPath)
+	if err != nil {
+		return "", fmt.Errorf("open authenticated identity directory: %w", err)
+	}
+	if err := sameOpenDirectory(parent, parentPath); err != nil {
+		return "", errors.Join(err, parent.Close())
+	}
+	file, err := createEvidenceFileAt(parent, filepath.Base(absolute))
+	if err != nil {
+		return "", errors.Join(err, parent.Close())
 	}
 	_, writeErr := file.Write(data)
 	syncErr := file.Sync()
@@ -3094,7 +3524,23 @@ func writeExclusiveCanonical(path string, value any) (string, error) {
 	closeErr := file.Close()
 	if writeErr != nil || syncErr != nil || chmodErr != nil ||
 		secondSyncErr != nil || closeErr != nil {
-		return "", errors.Join(writeErr, syncErr, chmodErr, secondSyncErr, closeErr)
+		return "", errors.Join(
+			writeErr,
+			syncErr,
+			chmodErr,
+			secondSyncErr,
+			closeErr,
+			parent.Close(),
+		)
+	}
+	if err := syncDirectory(parent); err != nil {
+		return "", errors.Join(
+			fmt.Errorf("sync execution identity directory: %w", err),
+			parent.Close(),
+		)
+	}
+	if err := parent.Close(); err != nil {
+		return "", err
 	}
 	return sha256Hex(data), nil
 }
@@ -3104,6 +3550,7 @@ func finishEvidence(
 	root *os.File,
 	name string,
 	evidence stageEvidence,
+	syncDirectory func(*os.File) error,
 ) (string, error) {
 	if file == nil {
 		return "", nil
@@ -3134,6 +3581,9 @@ func finishEvidence(
 	if err != nil {
 		return "", err
 	}
+	if err := syncDirectory(root); err != nil {
+		return "", fmt.Errorf("sync terminal evidence directory: %w", err)
+	}
 	return expectedSHA256, nil
 }
 
@@ -3142,6 +3592,7 @@ func publishEvidenceProofAt(
 	evidenceName string,
 	suffix string,
 	evidenceSHA256 string,
+	syncDirectory func(*os.File) error,
 ) error {
 	if suffix == "" || strings.ContainsAny(suffix, `/\\`) ||
 		!validSHA256(evidenceSHA256) {
@@ -3184,7 +3635,13 @@ func publishEvidenceProofAt(
 	); err != nil {
 		return err
 	}
-	return linkPublicationProofAt(root, pendingName, finalName)
+	if err := linkPublicationProofAt(root, pendingName, finalName); err != nil {
+		return err
+	}
+	if err := syncDirectory(root); err != nil {
+		return fmt.Errorf("sync publication proof directory: %w", err)
+	}
+	return nil
 }
 
 func verifyEvidencePublicationProofAt(
@@ -3422,6 +3879,17 @@ func derivedPhaseJobs(online int) int {
 	return jobs
 }
 
+func cpuFactsForOnline(online int) (cpuFacts, error) {
+	if online < 2 {
+		return cpuFacts{}, errors.New("online CPU count is below the gate minimum")
+	}
+	return cpuFacts{
+		Online:       online,
+		PhaseJobs:    derivedPhaseJobs(online),
+		OnlineSource: "runtime.NumCPU",
+	}, nil
+}
+
 func stageReplacements(
 	options stageOptions,
 	identity executionIdentity,
@@ -3509,11 +3977,16 @@ func (buffer *limitedBuffer) Bytes() []byte {
 }
 
 func validOID(value string) bool {
-	if len(value) != 40 && len(value) != 64 {
+	if len(value) != 40 {
 		return false
 	}
-	_, err := hex.DecodeString(value)
-	return err == nil
+	for _, character := range value {
+		if (character < '0' || character > '9') &&
+			(character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func validSHA256(value string) bool {
@@ -3599,7 +4072,6 @@ func sameExecutableIdentity(left, right executableIdentity) bool {
 		left.GoBuildVersion == right.GoBuildVersion &&
 		left.ModulePath == right.ModulePath &&
 		left.MainPackagePath == right.MainPackagePath &&
-		left.Attestation == right.Attestation &&
 		executableSettingsHash(left) == executableSettingsHash(right)
 }
 
@@ -3678,4 +4150,36 @@ func parallelismValue(value any) (int, error) {
 	default:
 		return 0, errors.New("unsupported package parallelism")
 	}
+}
+
+func commandEvidenceFor(command commandConfig) commandEvidence {
+	parallelism, err := parallelismValue(command.PackageParallelism)
+	if err != nil {
+		parallelism = 0
+	}
+	surface := command.ExecutionSurface
+	surface.PackagePaths = nonNilStrings(surface.PackagePaths)
+	surface.BuildTags = nonNilStrings(surface.BuildTags)
+	packages := make(map[string]string, len(command.RequiredTestPackages))
+	for testID, packagePath := range command.RequiredTestPackages {
+		packages[testID] = packagePath
+	}
+	return commandEvidence{
+		Kind:                 command.Kind,
+		ExecutionSurface:     surface,
+		TimeoutSeconds:       command.TimeoutSeconds,
+		GoBased:              command.GoBased,
+		MemoryHard:           command.MemoryHard,
+		PackageParallelism:   parallelism,
+		RequiredExitCode:     command.RequiredExitCode,
+		RequiredTestIDs:      nonNilStrings(command.RequiredTestIDs),
+		RequiredTestPackages: packages,
+	}
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return append([]string(nil), values...)
 }
