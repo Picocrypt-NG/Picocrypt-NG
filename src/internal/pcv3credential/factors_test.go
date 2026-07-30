@@ -956,10 +956,10 @@ func TestFactorNonAdjacentDuplicateABA(t *testing.T) {
 		callbackCalls++
 		return nil
 	})
-	requireFactorCode(t, err, FactorErrorDuplicate)
 	if callbackCalls != 0 {
 		t.Fatalf("callback calls = %d; duplicate A,B,A must not publish", callbackCalls)
 	}
+	requireFactorCode(t, err, FactorErrorDuplicate)
 }
 
 func TestFactorSortedDuplicateCopyCleared(t *testing.T) {
