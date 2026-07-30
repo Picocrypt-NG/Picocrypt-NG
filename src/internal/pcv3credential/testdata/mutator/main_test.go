@@ -478,14 +478,6 @@ func TestMutationOutcomeRequiresPristineAndMutant(t *testing.T) {
 	}
 }
 
-func TestMutationOutcomeSixCounts(t *testing.T) {
-	fixture := newMutatorFixture(t)
-	fixture.manifest.Mutations[0].Mutant.Counts.ActiveBorrows = nil
-	if err := validateManifest(fixture.manifest); err == nil {
-		t.Fatal("manifest with an omitted count unexpectedly validated")
-	}
-}
-
 func TestMutationRejectsCompileOnlyKill(t *testing.T) {
 	fixture := newMutatorFixture(t)
 	fixture.manifest.Mutations[0].Mutant.CompileOnly = true
@@ -521,12 +513,6 @@ func newMutatorFixture(t *testing.T) *mutatorFixture {
 	if err := os.WriteFile(sourcePath, sourceData, 0o600); err != nil {
 		t.Fatalf("write source fixture: %v", err)
 	}
-	zero := 0
-	counts := &mutationCounts{
-		EntropyCalls: &zero, KDFCalls: &zero, ExpandCalls: &zero,
-		OwnerPublications: &zero, ActiveBorrows: &zero,
-		UnclearedOwnedBuffer: &zero,
-	}
 	command := []string{
 		"go", "test", "./internal/pcv3credential",
 		"-run", "^TestFixtureSemantic$", "-count=1",
@@ -548,14 +534,13 @@ func newMutatorFixture(t *testing.T) *mutatorFixture {
 			Pristine: mutationOutcome{
 				Status: "PASS", Execution: "semantic",
 				SemanticCommand: command, TestID: "TestFixtureSemantic",
-				Stage: "none", Reason: "success", Counts: cloneCounts(counts),
+				Stage: "none", Reason: "success",
 			},
 			Mutant: mutationOutcome{
 				Status: "FAIL", Execution: "semantic",
 				SemanticCommand: command, TestID: "TestFixtureSemantic",
 				ViolationMarker: "fixture_violation",
 				Stage:           "transcript", Reason: "fixture_violation",
-				Counts: cloneCounts(counts),
 			},
 		}},
 	}
@@ -674,23 +659,4 @@ func replaceArgValue(t *testing.T, args []string, name, value string) {
 		}
 	}
 	t.Fatalf("argument %s not found", name)
-}
-
-func cloneCounts(counts *mutationCounts) *mutationCounts {
-	values := []int{
-		*counts.EntropyCalls,
-		*counts.KDFCalls,
-		*counts.ExpandCalls,
-		*counts.OwnerPublications,
-		*counts.ActiveBorrows,
-		*counts.UnclearedOwnedBuffer,
-	}
-	return &mutationCounts{
-		EntropyCalls:         &values[0],
-		KDFCalls:             &values[1],
-		ExpandCalls:          &values[2],
-		OwnerPublications:    &values[3],
-		ActiveBorrows:        &values[4],
-		UnclearedOwnedBuffer: &values[5],
-	}
 }

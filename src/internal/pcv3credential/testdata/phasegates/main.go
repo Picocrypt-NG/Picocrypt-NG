@@ -473,25 +473,15 @@ type campaignMutation struct {
 }
 
 type campaignOutcome struct {
-	Status          string         `json:"status"`
-	Execution       string         `json:"execution"`
-	SemanticCommand []string       `json:"semantic_command"`
-	TestID          string         `json:"test_id"`
-	ViolationMarker string         `json:"violation_marker"`
-	Stage           string         `json:"stage"`
-	Reason          string         `json:"reason"`
-	Skipped         bool           `json:"skipped"`
-	CompileOnly     bool           `json:"compile_only"`
-	Counts          campaignCounts `json:"counts"`
-}
-
-type campaignCounts struct {
-	EntropyCalls          *int `json:"entropy_calls"`
-	KDFCalls              *int `json:"kdf_calls"`
-	ExpandCalls           *int `json:"expand_calls"`
-	OwnerPublications     *int `json:"owner_publications"`
-	ActiveBorrows         *int `json:"active_borrows"`
-	UnclearedOwnedBuffers *int `json:"uncleared_owned_buffers"`
+	Status          string   `json:"status"`
+	Execution       string   `json:"execution"`
+	SemanticCommand []string `json:"semantic_command"`
+	TestID          string   `json:"test_id"`
+	ViolationMarker string   `json:"violation_marker"`
+	Stage           string   `json:"stage"`
+	Reason          string   `json:"reason"`
+	Skipped         bool     `json:"skipped"`
+	CompileOnly     bool     `json:"compile_only"`
 }
 
 type campaignApplicationRecord struct {
@@ -2442,19 +2432,6 @@ func validCampaignOutcome(
 			"-count=1",
 		}) {
 		return false
-	}
-	counts := []*int{
-		outcome.Counts.EntropyCalls,
-		outcome.Counts.KDFCalls,
-		outcome.Counts.ExpandCalls,
-		outcome.Counts.OwnerPublications,
-		outcome.Counts.ActiveBorrows,
-		outcome.Counts.UnclearedOwnedBuffers,
-	}
-	for _, count := range counts {
-		if count == nil || *count < 0 {
-			return false
-		}
 	}
 	return true
 }

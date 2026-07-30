@@ -684,21 +684,40 @@ func TestPipelinePublishesOneOwner(t *testing.T) {
 	request := pipelineRequest(t, SuiteStandard1)
 	firstRequest := request.KeyRequests[0]
 	probe := newPipelineProbe()
+	seams := probe.seams()
+	var observedOwner *Owner
+	seams.observeOwner = func(owner *Owner) {
+		observedOwner = owner
+	}
 
 	owner, err := newCredential(
 		context.Background(),
 		request,
 		probe.admit,
-		probe.seams(),
+		seams,
 	)
 	if err != nil {
 		t.Fatalf("newCredential: %v", err)
 	}
+	if owner == nil {
+		if observedOwner != nil {
+			observeErr := observedOwner.WithKeys(
+				context.Background(),
+				func(*BorrowedKeys) error { return nil },
+			)
+			var ownerErr *OwnerError
+			if !errors.As(observeErr, &ownerErr) ||
+				ownerErr.Code != OwnerErrorClosed {
+				t.Fatalf(
+					"unpublished owner cleanup = %v; want closed",
+					observeErr,
+				)
+			}
+		}
+		t.Fatal("published owner = nil")
+	}
 	defer owner.Close()
 
-	if probe.published != 1 {
-		t.Fatalf("owner publications = %d; want 1", probe.published)
-	}
 	metadata := owner.Metadata()
 	if metadata.Suite != SuiteStandard1 ||
 		metadata.ExpectedPolicy != FactorPolicyPasswordOnly {

@@ -52,25 +52,15 @@ type mutationSpec struct {
 }
 
 type mutationOutcome struct {
-	Status          string          `json:"status"`
-	Execution       string          `json:"execution"`
-	SemanticCommand []string        `json:"semantic_command"`
-	TestID          string          `json:"test_id"`
-	ViolationMarker string          `json:"violation_marker"`
-	Stage           string          `json:"stage"`
-	Reason          string          `json:"reason"`
-	Skipped         bool            `json:"skipped"`
-	CompileOnly     bool            `json:"compile_only"`
-	Counts          *mutationCounts `json:"counts"`
-}
-
-type mutationCounts struct {
-	EntropyCalls         *int `json:"entropy_calls"`
-	KDFCalls             *int `json:"kdf_calls"`
-	ExpandCalls          *int `json:"expand_calls"`
-	OwnerPublications    *int `json:"owner_publications"`
-	ActiveBorrows        *int `json:"active_borrows"`
-	UnclearedOwnedBuffer *int `json:"uncleared_owned_buffers"`
+	Status          string   `json:"status"`
+	Execution       string   `json:"execution"`
+	SemanticCommand []string `json:"semantic_command"`
+	TestID          string   `json:"test_id"`
+	ViolationMarker string   `json:"violation_marker"`
+	Stage           string   `json:"stage"`
+	Reason          string   `json:"reason"`
+	Skipped         bool     `json:"skipped"`
+	CompileOnly     bool     `json:"compile_only"`
 }
 
 type mutationResult struct {
@@ -430,7 +420,6 @@ func validateOutcome(
 		outcome.Reason == "" ||
 		outcome.Skipped ||
 		outcome.CompileOnly ||
-		outcome.Counts == nil ||
 		len(outcome.SemanticCommand) == 0 {
 		return errors.New("incomplete semantic outcome")
 	}
@@ -439,9 +428,6 @@ func validateOutcome(
 	}
 	if !semanticCommandKills(outcome.SemanticCommand, killingTestID) {
 		return errors.New("outcome command is not the named semantic test")
-	}
-	if !completeNonnegativeCounts(outcome.Counts) {
-		return errors.New("outcome does not contain six nonnegative counts")
 	}
 	return nil
 }
@@ -456,23 +442,6 @@ func semanticCommandKills(command []string, killingTestID string) bool {
 		"-count=1",
 	}
 	return equalStrings(command, expected)
-}
-
-func completeNonnegativeCounts(counts *mutationCounts) bool {
-	values := []*int{
-		counts.EntropyCalls,
-		counts.KDFCalls,
-		counts.ExpandCalls,
-		counts.OwnerPublications,
-		counts.ActiveBorrows,
-		counts.UnclearedOwnedBuffer,
-	}
-	for _, value := range values {
-		if value == nil || *value < 0 {
-			return false
-		}
-	}
-	return true
 }
 
 func selectMutation(

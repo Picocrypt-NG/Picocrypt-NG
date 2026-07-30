@@ -2170,7 +2170,6 @@ func TestMutationCampaignRejectsSkippedPristineBeforeApplication(t *testing.T) {
 			t.Fatalf("write pristine-skip fixture: %v", err)
 		}
 	}
-	zero := 0
 	outcome := func(status, violationMarker string) campaignOutcome {
 		return campaignOutcome{
 			Status:          status,
@@ -2180,14 +2179,6 @@ func TestMutationCampaignRejectsSkippedPristineBeforeApplication(t *testing.T) {
 			ViolationMarker: violationMarker,
 			Stage:           "fixture",
 			Reason:          "controlled fixture",
-			Counts: campaignCounts{
-				EntropyCalls:          &zero,
-				KDFCalls:              &zero,
-				ExpandCalls:           &zero,
-				OwnerPublications:     &zero,
-				ActiveBorrows:         &zero,
-				UnclearedOwnedBuffers: &zero,
-			},
 		}
 	}
 	manifest := campaignManifest{
