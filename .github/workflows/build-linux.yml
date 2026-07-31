@@ -86,7 +86,7 @@ jobs:
         cd src
         GOMAXPROCS=1 GOOS=js GOARCH=wasm go test -count=1 \
           -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-          -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness)$' ./cmd/wasm
+          -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness|TestBridgePCV3UnsupportedBeforeKDF)$' ./cmd/wasm
 
     - name: Run tests
       run: |
