@@ -1753,6 +1753,49 @@ func TestReviewedGateAndMutationContracts(t *testing.T) {
 		); err != nil {
 			t.Fatalf("exact scan producer record rejected: %v", err)
 		}
+		t.Run("empty execution surfaces publish canonical arrays", func(t *testing.T) {
+			emptyCommand := commandConfig{
+				Kind: "structured",
+				ExecutionSurface: executionSurface{
+					PackagePaths: []string{},
+					BuildTags:    []string{},
+					TestSelector: "all",
+					EvidenceKind: "structured",
+				},
+				RequiredTestIDs:      []string{},
+				RequiredTestPackages: map[string]string{},
+			}
+			data, err := canonicalJSON(commandEvidenceFor(emptyCommand))
+			if err != nil {
+				t.Fatalf("encode empty execution surface: %v", err)
+			}
+			var published struct {
+				ExecutionSurface struct {
+					PackagePaths json.RawMessage `json:"package_paths"`
+					BuildTags    json.RawMessage `json:"build_tags"`
+				} `json:"execution_surface"`
+				RequiredTestIDs json.RawMessage `json:"required_test_ids"`
+			}
+			if err := json.Unmarshal(data, &published); err != nil {
+				t.Fatalf("decode empty execution surface: %v", err)
+			}
+			for _, field := range []struct {
+				name  string
+				value json.RawMessage
+			}{
+				{name: "package paths", value: published.ExecutionSurface.PackagePaths},
+				{name: "build tags", value: published.ExecutionSurface.BuildTags},
+				{name: "required test IDs", value: published.RequiredTestIDs},
+			} {
+				if !bytes.Equal(field.value, []byte("[]")) {
+					t.Fatalf(
+						"producer encoded empty %s as %s, want []",
+						field.name,
+						field.value,
+					)
+				}
+			}
+		})
 		scanResult.ScanResult.Findings = 1
 		if err := validateProducedCommandResult(
 			scanCommand,
