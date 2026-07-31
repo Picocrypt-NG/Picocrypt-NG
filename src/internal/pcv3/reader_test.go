@@ -27,8 +27,8 @@ type recordingReaderAt struct {
 }
 
 func (reader *recordingReaderAt) ReadAt(dst []byte, offset int64) (int, error) {
-	reader.requests = append(reader.requests, readRequest{offset: offset, length: len(dst)})
 	if offset < 0 || offset >= int64(len(reader.data)) {
+		reader.requests = append(reader.requests, readRequest{offset: offset})
 		return 0, io.EOF
 	}
 
@@ -41,6 +41,7 @@ func (reader *recordingReaderAt) ReadAt(dst []byte, offset int64) (int, error) {
 		count = available
 	}
 	copy(dst[:count], reader.data[offset:int(offset)+count])
+	reader.requests = append(reader.requests, readRequest{offset: offset, length: count})
 	if count < len(dst) && count == available {
 		return count, io.EOF
 	}
