@@ -34,7 +34,7 @@ const (
 	maxGoTestFailureIDs     = 32
 	maxGoTestFailureIDBytes = 256
 	processWaitDelay        = 2 * time.Second
-	reviewedGateConfigSHA   = "61a963b469f84a07bd4ce15be47f66576bfac44cba84d776cf6d187ffa859003"
+	reviewedGateConfigSHA   = "e9186d3ff2546a62c2badd8117b0fffda3ab91cbc1005ad818bd940e1eff6809"
 	picocryptModulePath     = "Picocrypt-NG"
 	pcv3PackagePath         = "Picocrypt-NG/internal/pcv3credential"
 )

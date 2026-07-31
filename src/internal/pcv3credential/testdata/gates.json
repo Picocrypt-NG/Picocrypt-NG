@@ -277,7 +277,8 @@
         "./internal/pcv3credential",
         "./internal/pcv3credential/testdata/mutator",
         "./internal/pcv3credential/testdata/phasegates",
-        "./internal/pcv3credential/testdata/phaseinspect"
+        "./internal/pcv3credential/testdata/phaseinspect",
+        "./internal/pcv3credential/testdata/vectorfixture"
       ],
       "json_path": "${STAGE_TMPDIR}/lint-normal.json",
       "json_required": true,
@@ -709,7 +710,8 @@
               "./internal/pcv3credential",
               "./internal/pcv3credential/testdata/mutator",
               "./internal/pcv3credential/testdata/phasegates",
-              "./internal/pcv3credential/testdata/phaseinspect"
+              "./internal/pcv3credential/testdata/phaseinspect",
+              "./internal/pcv3credential/testdata/vectorfixture"
             ],
             "build_tags": ["migrated_fynedo"],
             "test_selector": "all",

@@ -2,7 +2,6 @@ version: "2"
 
 run:
   timeout: 10m
-  modules-download-mode: readonly
   tests: true
 
 linters:
@@ -62,6 +61,31 @@ linters:
           - unconvert
           - unparam
           - unused
+      - path: internal/pcv3credential/testdata/vectorfixture/main\.go
+        linters:
+          - gosec
+        text: G115
+        source: 'passwordLength > uint64\(len\(transcript\)-10\)'
+      - path: internal/pcv3credential/testdata/vectorfixture/main\.go
+        linters:
+          - gosec
+        text: G115
+        source: 'uint16\(len\(row\.Label\)\)'
+      - path: internal/pcv3credential/testdata/vectorfixture/main\.go
+        linters:
+          - gosec
+        text: G304
+        source: 'os\.Open\(modulesPath\)'
+      - path: internal/pcv3credential/testdata/vectorfixture/main\.go
+        linters:
+          - gosec
+        text: 'G30[24]'
+        source: 'os\.OpenFile\(path, os\.O_WRONLY\|os\.O_CREATE\|os\.O_EXCL, 0o644\)'
+      - path: internal/pcv3credential/testdata/vectorfixture/main\.go
+        linters:
+          - gosec
+        text: G304
+        source: 'os\.Open\(path\)'
       - path: _test\.go
         linters:
           - errcheck
