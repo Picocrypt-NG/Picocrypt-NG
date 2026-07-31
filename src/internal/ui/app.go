@@ -816,6 +816,9 @@ func hasSelectedInput(snap app.UISnapshot) bool {
 }
 
 func (a *App) startReadinessHint(snap app.UISnapshot) string {
+	if snap.PCVUnavailable {
+		return ""
+	}
 	if !hasSelectedInput(snap) {
 		return tr("start.hint.noFiles", "Add files or folders to continue.")
 	}
@@ -856,7 +859,7 @@ func (a *App) startReadinessHint(snap app.UISnapshot) string {
 
 func (a *App) startDisabled(snap app.UISnapshot) bool {
 	configureDisabled := snap.Scanning || !hasSelectedInput(snap)
-	return configureDisabled || !snap.CanStart() || !splitSizeReady(snap)
+	return snap.PCVUnavailable || configureDisabled || !snap.CanStart() || !splitSizeReady(snap)
 }
 
 func renderStatus(msg app.StatusMessage, snap app.UISnapshot) string {
@@ -889,6 +892,8 @@ func renderStatus(msg app.StatusMessage, snap app.UISnapshot) string {
 		return tr("status.kept_output_unverified", "Integrity check failed; kept output is unverified and may be corrupted")
 	case app.StatusCompletedVolumeDeleteFailed:
 		return tr("status.completed_volume_delete_failed", "Completed (volume couldn't be deleted)")
+	case app.StatusPCVUnavailable:
+		return tr("status.pcv_unavailable", "This PCV volume is not supported by this version. Keep the original file; no output was created.")
 	case app.StatusStartupPathAccessFailed:
 		return startupPathAccessStatus()
 	case app.StatusStartupPathPartialAccessFailed:
@@ -1018,7 +1023,8 @@ func (a *App) refreshAdvanced() {
 // This mirrors the exact logic from the original giu implementation.
 func (a *App) updateUIState() {
 	snap := a.State.UISnapshot()
-	configureDisabled := a.mobileImportActive || snap.Scanning || !hasSelectedInput(snap)
+	baseConfigureDisabled := a.mobileImportActive || snap.Scanning || !hasSelectedInput(snap)
+	configureDisabled := baseConfigureDisabled || snap.PCVUnavailable
 	startDisabled := a.mobileImportActive || a.startDisabled(snap)
 
 	for _, button := range []*widget.Button{a.mobileSelectFilesBtn, a.mobileSelectFolderBtn, a.mobileAppStorageBtn} {
@@ -1034,7 +1040,7 @@ func (a *App) updateUIState() {
 
 	// Clear button
 	if a.clearButton != nil {
-		if configureDisabled {
+		if baseConfigureDisabled {
 			a.clearButton.Disable()
 		} else {
 			a.clearButton.Enable()

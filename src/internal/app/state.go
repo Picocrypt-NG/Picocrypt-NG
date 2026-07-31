@@ -116,6 +116,7 @@ const (
 	StatusMobileAppStorageNoFiles
 	StatusMobileFileAccessFailed
 	StatusMobileFileAccessUnsafeName
+	StatusPCVUnavailable
 )
 
 type StatusArgs struct {
@@ -154,9 +155,10 @@ type State struct {
 	DPI float32
 
 	// Operation mode
-	Mode     string // "encrypt" or "decrypt"
-	Working  bool   // Operation in progress
-	Scanning bool   // Scanning files
+	Mode           string // "encrypt" or "decrypt"
+	PCVUnavailable bool   // Selected PCV content is terminal until clear/replacement
+	Working        bool   // Operation in progress
+	Scanning       bool   // Scanning files
 
 	// Modal state
 	ModalID       int
@@ -347,6 +349,7 @@ func (s *State) ResetUI() {
 // Matches original resetUI() - does NOT reset progress-related fields.
 func (s *State) resetUILocked() {
 	s.Mode = ""
+	s.PCVUnavailable = false
 
 	s.ShowPassgen = false
 	s.ShowKeyfile = false
@@ -499,14 +502,14 @@ func canStart(mode, password, cpassword string, keyfileCount int, deniability bo
 func (s *State) CanStart() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return canStart(s.Mode, s.Password, s.CPassword, len(s.Keyfiles), s.Deniability)
+	return !s.PCVUnavailable && canStart(s.Mode, s.Password, s.CPassword, len(s.Keyfiles), s.Deniability)
 }
 
 // CanStart returns true if the operation can be started, evaluated against this
 // render-path snapshot. UI code uses this so the start-gate boolean lives in
 // exactly one place (canStart) shared with State.CanStart.
 func (snap UISnapshot) CanStart() bool {
-	return canStart(snap.Mode, snap.Password, snap.CPassword, snap.KeyfileCount, snap.Deniability)
+	return !snap.PCVUnavailable && canStart(snap.Mode, snap.Password, snap.CPassword, snap.KeyfileCount, snap.Deniability)
 }
 
 // TogglePasswordVisibility toggles password show/hide.
@@ -570,6 +573,30 @@ func (s *State) SetInputDecryptVolume() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.InputSummary = InputSummary{Kind: InputSummaryDecryptVolume}
+}
+
+// SetPCVUnavailable atomically replaces the current selection with a terminal,
+// non-startable PCV selection while retaining only its path and input summary.
+func (s *State) SetPCVUnavailable(path string, sizeBytes int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.resetUILocked()
+	s.Working = false
+	s.Scanning = false
+	s.ShowProgress = false
+	s.CanCancel = false
+	s.PCVUnavailable = true
+	s.InputFile = path
+	s.InputSummary = InputSummary{
+		Kind:      InputSummarySelection,
+		Files:     1,
+		SizeBytes: sizeBytes,
+		ShowSize:  true,
+	}
+	s.Status = StatusMessage{Kind: StatusPCVUnavailable, Color: util.RED}
+	s.MainStatusKind = MainStatusCustom
+	s.MainStatusColor = util.RED
 }
 
 func (s *State) SetStartAction(action StartAction) {
@@ -677,9 +704,10 @@ type Snapshot struct {
 // enabling/disabling widgets and refreshing labels. It deliberately contains no
 // widget references, so callers can release State.mu before touching Fyne.
 type UISnapshot struct {
-	Mode     string
-	Scanning bool
-	Working  bool
+	Mode           string
+	PCVUnavailable bool
+	Scanning       bool
+	Working        bool
 
 	AllFileCount    int
 	OnlyFileCount   int
@@ -774,6 +802,7 @@ func (s *State) UISnapshot() UISnapshot {
 	defer s.mu.RUnlock()
 	return UISnapshot{
 		Mode:                 s.Mode,
+		PCVUnavailable:       s.PCVUnavailable,
 		Scanning:             s.Scanning,
 		Working:              s.Working,
 		AllFileCount:         len(s.AllFiles),

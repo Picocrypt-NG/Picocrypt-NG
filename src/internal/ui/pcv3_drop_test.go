@@ -129,6 +129,9 @@ func assertPCV3UnavailableDrop(t *testing.T, a *App, input string, size int64) {
 }
 
 func TestPCV3DropRoutesBeforeFilenameClassification(t *testing.T) {
+	if err := loadTranslations(); err != nil {
+		t.Fatalf("load translations: %v", err)
+	}
 	previousLanguage := activeLanguage()
 	if err := setActiveLanguage("en"); err != nil {
 		t.Fatalf("set English language: %v", err)

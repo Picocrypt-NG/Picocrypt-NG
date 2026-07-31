@@ -341,11 +341,16 @@ func (a *App) buildDecryptOptionsInto(target *fyne.Container) {
 // updateAdvancedDisableState updates the disable state of advanced options.
 func (a *App) updateAdvancedDisableState() {
 	snap := a.State.UISnapshot()
-	a.updateAdvancedDisableStateFromSnapshot(snap, snap.Scanning || !hasSelectedInput(snap))
+	a.updateAdvancedDisableStateFromSnapshot(snap, snap.PCVUnavailable || snap.Scanning || !hasSelectedInput(snap))
 }
 
 func (a *App) updateAdvancedDisableStateFromSnapshot(snap app.UISnapshot, configureDisabled bool) {
 	advancedDisabled := configureDisabled
+	if snap.PCVUnavailable {
+		a.updateEncryptOptionsState(true, snap)
+		a.updateDecryptOptionsState(true, snap)
+		return
+	}
 
 	if snap.Mode != "decrypt" {
 		a.updateEncryptOptionsState(advancedDisabled, snap)

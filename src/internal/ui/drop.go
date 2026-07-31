@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/app"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
+	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/util"
 	"Picocrypt-NG/internal/volume"
 	"context"
@@ -41,6 +42,19 @@ type folderScanJob struct {
 var errFolderScanSuperseded = errors.New("folder scan superseded")
 
 var startupPathStat = os.Stat
+
+var (
+	previewDroppedHeader    = previewHeader
+	isDroppedVolumeDeniable = volume.IsDeniable
+)
+
+func isPCV3UnavailableError(err error) bool {
+	if errors.Is(err, pcv3.ErrReaderUnavailable) {
+		return true
+	}
+	var failure pcv3.Failure
+	return errors.As(err, &failure) && failure.Outcome() != pcv3.OutcomeOperationFailed
+}
 
 func dropPromptLabel() string {
 	return tr("drop.prompt", "Drop files and folders into this window")
@@ -356,6 +370,20 @@ func (a *App) applyDropSelection(names []string) bool {
 
 			// Is the file a part of a split volume?
 			isSplit := fileops.IsSplitChunkPath(names[0])
+			if stat.Mode().IsRegular() {
+				if err := volume.PreflightPCV3(names[0], isSplit); err != nil {
+					if isPCV3UnavailableError(err) {
+						a.State.SetPCVUnavailable(names[0], stat.Size())
+						a.refreshAdvanced()
+						a.refreshUI()
+						return true
+					}
+					a.State.SetScanning(false)
+					a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
+					a.refreshAdvanced()
+					return false
+				}
+			}
 
 			// Decide if encrypting or decrypting
 			if isDecryptVolumePath(names[0]) {
@@ -485,7 +513,7 @@ func (a *App) handleDecryptDrop(name string, isSplit bool) {
 	// previewHeader is pure + UI-free; it shares the ^\d{5}$ comment-length
 	// guard (+ D-02 bound) and the anchored version regex used at decrypt time,
 	// so a crafted comment-length field can never drive an over-allocation here.
-	res, err := previewHeader(fin, a.rsCodecs)
+	res, err := previewDroppedHeader(fin, a.rsCodecs)
 	if err != nil {
 		switch {
 		case errors.Is(err, header.ErrInvalidVersion):
@@ -541,7 +569,7 @@ func (a *App) handleDecryptDrop(name string, isSplit bool) {
 	}
 
 	// Check for deniability
-	if volume.IsDeniable(a.State.InputFile, a.rsCodecs) {
+	if isDroppedVolumeDeniable(a.State.InputFile, a.rsCodecs) {
 		a.State.Deniability = true
 	}
 }

@@ -100,6 +100,7 @@
   "status.completed_some_delete_failed": "Completed (some files couldn't be deleted)",
   "status.kept_output_unverified": "Integrity check failed; kept output is unverified and may be corrupted",
   "status.completed_volume_delete_failed": "Completed (volume couldn't be deleted)",
+  "status.pcv_unavailable": "This PCV volume is not supported by this version. Keep the original file; no output was created.",
   "drop.prompt": "Drop files and folders into this window",
   "drop.failed_walk": "Failed to walk through dropped items",
   "drop.failed_stat_item": "Failed to stat dropped item",
