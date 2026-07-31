@@ -320,7 +320,7 @@ func TestInspectDiscardsPartialRS(t *testing.T) {
 	if decodeErr == nil {
 		t.Fatal("test mutation did not make the first RS64 lane uncorrectable")
 	}
-	if len(partial) != 64 || string(partial[:4]) != "PCVC" {
+	if len(partial) != 64 || !bytes.Equal(partial[:4], []byte{'P', 'C', 'V', 0}) {
 		t.Fatalf("Decode() partial output does not preserve a plausible capsule prefix: len=%d prefix=%q", len(partial), partial[:min(4, len(partial))])
 	}
 	clear(partial)
@@ -428,7 +428,7 @@ func TestInspectHostileLengthBound(t *testing.T) {
 	if route != RouteNormalPCV {
 		t.Fatalf("Probe() route = %v; want normal PCV", route)
 	}
-	assertStructuralFailure(t, err, StageTailGeometry)
+	assertStructuralFailure(t, err, StageCapsuleRS)
 	if structure.CandidateCount() != 0 {
 		t.Fatalf("CandidateCount() = %d; want 0 for impossible whole-file geometry", structure.CandidateCount())
 	}
@@ -452,14 +452,19 @@ func TestInspectHostileLengthBound(t *testing.T) {
 		return count, nil
 	})
 	admitted := [4]byte{'P', 'C', 'V', 0}
-	baselineAllocs := testing.AllocsPerRun(20, func() {
-		_, _ = Inspect(frontOnly, int64(len(fixture)), admitted)
-	})
-	hostileAllocs := testing.AllocsPerRun(20, func() {
-		_, _ = Inspect(frontOnly, maxInt64, admitted)
-	})
-	if hostileAllocs > baselineAllocs+2 {
-		t.Fatalf("hostile source size allocations = %.0f; fixed-size baseline = %.0f", hostileAllocs, baselineAllocs)
+	hostileSizes := []int64{int64(minimumFixedReaderSize), 1 << 20, 1 << 40, maxInt64}
+	var fixedAllocs float64
+	for index, hostileSize := range hostileSizes {
+		allocations := testing.AllocsPerRun(20, func() {
+			_, _ = Inspect(frontOnly, hostileSize, admitted)
+		})
+		if index == 0 {
+			fixedAllocs = allocations
+			continue
+		}
+		if allocations != fixedAllocs {
+			t.Fatalf("source size %d allocations = %.0f; fixed structural path = %.0f", hostileSize, allocations, fixedAllocs)
+		}
 	}
 }
 

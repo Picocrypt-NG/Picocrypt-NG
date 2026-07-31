@@ -1,6 +1,8 @@
 package pcv3
 
 import (
+	pcencoding "Picocrypt-NG/internal/encoding"
+	"encoding/binary"
 	"errors"
 	"io"
 )
@@ -9,6 +11,7 @@ const (
 	discriminatorLength          = 4
 	primaryCapsuleOffset   int64 = 16
 	minimumFixedReaderSize       = uint64(primaryCapsuleOffset) + backupCapsuleLength + fixedSuffixLength
+	trailerDecodedLength         = 16
 )
 
 var (
@@ -19,14 +22,57 @@ var (
 	errReaderOffsetOverflow = errors.New("pcv3: ReaderAt offset overflow")
 )
 
+// Component identifies one independently inspected fixed structural region.
+type Component uint8
+
+const (
+	ComponentPrimary Component = iota
+	ComponentTrailer
+	ComponentBackup
+	componentCount
+)
+
 // Structure is the bounded pre-KDF view of a claimed PCV3 source.
 type Structure struct {
-	preamble Preamble
+	preamble       Preamble
+	candidates     [2]Candidate
+	geometries     [2]Geometry
+	candidateCount uint8
+	issueStages    [componentCount]Stage
 }
 
 // Preamble returns the validated PCV3 preamble.
 func (structure Structure) Preamble() Preamble {
 	return structure.preamble
+}
+
+// CandidateCount returns the number of independently viable capsule slots.
+func (structure Structure) CandidateCount() int {
+	return int(structure.candidateCount)
+}
+
+// CandidateAt returns one viable candidate in physical slot order.
+func (structure Structure) CandidateAt(index int) (Candidate, bool) {
+	if index < 0 || index >= int(structure.candidateCount) {
+		return Candidate{}, false
+	}
+	return structure.candidates[index], true
+}
+
+// GeometryAt returns the checked geometry paired with CandidateAt(index).
+func (structure Structure) GeometryAt(index int) (Geometry, bool) {
+	if index < 0 || index >= int(structure.candidateCount) {
+		return Geometry{}, false
+	}
+	return structure.geometries[index], true
+}
+
+// Issue reports the structural failure stage retained for one fixed component.
+func (structure Structure) Issue(component Component) (Stage, bool) {
+	if component >= componentCount || structure.issueStages[component] == 0 {
+		return 0, false
+	}
+	return structure.issueStages[component], true
 }
 
 // Probe owns the discriminator read and delegates claimed PCV3 sources to
@@ -53,36 +99,176 @@ func Probe(source io.ReaderAt, sourceSize int64) (Route, Structure, error) {
 // Inspect reads only the fixed PCV3 structural regions after Probe has
 // admitted and supplied the discriminator.
 func Inspect(source io.ReaderAt, sourceSize int64, admitted [discriminatorLength]byte) (Structure, error) {
+	structure := Structure{}
 	var remainder [preambleRemainderLength]byte
 	if _, err := readExactAt(source, discriminatorLength, remainder[:], StagePreamble); err != nil {
-		return Structure{}, err
+		return structure, err
 	}
 	preamble, err := ParsePreamble(admitted, remainder[:])
 	if err != nil {
-		return Structure{}, err
+		return structure, err
 	}
+	structure.preamble = preamble
 	if sourceSize < 0 || uint64(sourceSize) < minimumFixedReaderSize {
-		return Structure{}, NewInvalidStructureError(StageTailGeometry)
+		return structure, NewInvalidStructureError(StageTailGeometry)
+	}
+	codecs, err := pcencoding.NewRSCodecs()
+	if err != nil {
+		return structure, NewInputError(err)
 	}
 
 	var primary [backupCapsuleLength]byte
 	if _, err := readExactAt(source, primaryCapsuleOffset, primary[:], StageCapsuleRS); err != nil {
-		return Structure{}, err
+		clear(primary[:])
+		if terminal := structure.retainIssue(ComponentPrimary, err); terminal != nil {
+			return structure, terminal
+		}
+	} else {
+		candidate, geometry, inspectErr := inspectCapsule(codecs, primary[:], CapsuleRolePrimary, uint64(sourceSize))
+		if inspectErr != nil {
+			if terminal := structure.retainIssue(ComponentPrimary, inspectErr); terminal != nil {
+				return structure, terminal
+			}
+		} else {
+			structure.addCandidate(candidate, geometry)
+		}
 	}
 
 	trailerOffset := sourceSize - int64(trailerLength)
 	var trailer [trailerLength]byte
 	if _, err := readExactAt(source, trailerOffset, trailer[:], StageTailGeometry); err != nil {
-		return Structure{}, err
+		clear(trailer[:])
+		if terminal := structure.retainIssue(ComponentTrailer, err); terminal != nil {
+			return structure, terminal
+		}
+	} else if inspectErr := inspectTrailer(codecs, trailer[:]); inspectErr != nil {
+		if terminal := structure.retainIssue(ComponentTrailer, inspectErr); terminal != nil {
+			return structure, terminal
+		}
 	}
 
 	backupOffset := sourceSize - int64(fixedSuffixLength)
 	var backup [backupCapsuleLength]byte
 	if _, err := readExactAt(source, backupOffset, backup[:], StageCapsuleRS); err != nil {
-		return Structure{}, err
+		clear(backup[:])
+		if terminal := structure.retainIssue(ComponentBackup, err); terminal != nil {
+			return structure, terminal
+		}
+	} else {
+		candidate, geometry, inspectErr := inspectCapsule(codecs, backup[:], CapsuleRoleBackup, uint64(sourceSize))
+		if inspectErr != nil {
+			if terminal := structure.retainIssue(ComponentBackup, inspectErr); terminal != nil {
+				return structure, terminal
+			}
+		} else {
+			structure.addCandidate(candidate, geometry)
+		}
 	}
 
-	return Structure{preamble: preamble}, nil
+	if structure.candidateCount != 0 {
+		return structure, nil
+	}
+	stage := structure.earliestIssue()
+	if stage == 0 {
+		stage = StageTailGeometry
+	}
+	return structure, NewInvalidStructureError(stage)
+}
+
+func (structure *Structure) addCandidate(candidate Candidate, geometry Geometry) {
+	index := structure.candidateCount
+	structure.candidates[index] = candidate
+	structure.geometries[index] = geometry
+	structure.candidateCount++
+}
+
+func (structure *Structure) retainIssue(component Component, err error) error {
+	var failure Failure
+	if !errors.As(err, &failure) || failure.Outcome() != OutcomeInvalidStructurePreKDF {
+		return err
+	}
+	structure.issueStages[component] = failure.Stage()
+	return nil
+}
+
+func (structure Structure) earliestIssue() Stage {
+	var earliest Stage
+	for _, stage := range structure.issueStages {
+		if stage != 0 && (earliest == 0 || stage < earliest) {
+			earliest = stage
+		}
+	}
+	return earliest
+}
+
+func inspectCapsule(codecs *pcencoding.RSCodecs, encoded []byte, role CapsuleRole, sourceSize uint64) (Candidate, Geometry, error) {
+	decoded, err := decodeCapsule(codecs, encoded)
+	if err != nil {
+		return Candidate{}, Geometry{}, err
+	}
+	defer clear(decoded[:])
+	candidate, err := ValidateDecodedCapsule(decoded[:], role)
+	if err != nil {
+		return Candidate{}, Geometry{}, err
+	}
+	geometry, err := DeriveGeometry(candidate, sourceSize)
+	if err != nil {
+		return Candidate{}, Geometry{}, err
+	}
+	return candidate, geometry, nil
+}
+
+func decodeCapsule(codecs *pcencoding.RSCodecs, encoded []byte) ([decodedCapsuleLength]byte, error) {
+	defer clear(encoded)
+	var decoded [decodedCapsuleLength]byte
+	if len(encoded) != int(backupCapsuleLength) {
+		return decoded, NewInvalidStructureError(StageCapsuleRS)
+	}
+	for lane := range 5 {
+		start := lane * codecs.RS64.Total()
+		laneDecoded, err := pcencoding.Decode(codecs.RS64, encoded[start:start+codecs.RS64.Total()], false)
+		if err != nil {
+			clear(laneDecoded)
+			clear(decoded[:])
+			return decoded, NewInvalidStructureError(StageCapsuleRS)
+		}
+		copy(decoded[lane*codecs.RS64.Required():(lane+1)*codecs.RS64.Required()], laneDecoded)
+		clear(laneDecoded)
+	}
+	return decoded, nil
+}
+
+func inspectTrailer(codecs *pcencoding.RSCodecs, encoded []byte) error {
+	decoded, err := decodeTrailer(codecs, encoded)
+	if err != nil {
+		return err
+	}
+	defer clear(decoded[:])
+	if string(decoded[:4]) != "PCVT" ||
+		binary.BigEndian.Uint16(decoded[4:6]) != 3 ||
+		binary.BigEndian.Uint16(decoded[6:8]) != 1 ||
+		binary.BigEndian.Uint32(decoded[8:12]) != uint32(backupCapsuleLength) ||
+		binary.BigEndian.Uint16(decoded[12:14]) != 1 ||
+		binary.BigEndian.Uint16(decoded[14:16]) != 0 {
+		return NewInvalidStructureError(StageTailGeometry)
+	}
+	return nil
+}
+
+func decodeTrailer(codecs *pcencoding.RSCodecs, encoded []byte) ([trailerDecodedLength]byte, error) {
+	defer clear(encoded)
+	var decoded [trailerDecodedLength]byte
+	if len(encoded) != codecs.RS16.Total() {
+		return decoded, NewInvalidStructureError(StageTailGeometry)
+	}
+	result, err := pcencoding.Decode(codecs.RS16, encoded, false)
+	if err != nil {
+		clear(result)
+		return decoded, NewInvalidStructureError(StageTailGeometry)
+	}
+	copy(decoded[:], result)
+	clear(result)
+	return decoded, nil
 }
 
 func readExactAt(source io.ReaderAt, offset int64, dst []byte, structuralStage Stage) (int, error) {
