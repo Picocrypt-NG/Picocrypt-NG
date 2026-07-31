@@ -1,0 +1,70 @@
+{
+  "spec_revision": "0.3",
+  "spec_sha256": "9b0c7cac133e1e349ed58bd2232ebff860d1e567348611d09c79d295bd81ad73",
+  "generator_source_sha256": "3a6086261108c86375d97afaf130f902d723b40aae37041a9943060e5c44c778",
+  "reproduction_command": "mise exec go@1.26.5 -- go run ./internal/pcv3/testdata/generate",
+  "fixture": "schema1-minimal.pcv",
+  "fixture_length": 2232,
+  "fixture_sha256": "3866a4543150211bece6e50d45d3dc5b909fd33c5ace65c1c2fb7e6c05b7fbd7",
+  "payload_body_rs": false,
+  "regions": [
+    {
+      "name": "preamble",
+      "offset": 0,
+      "length": 16
+    },
+    {
+      "name": "primary_capsule",
+      "offset": 16,
+      "length": 960
+    },
+    {
+      "name": "metadata",
+      "offset": 976,
+      "length": 136
+    },
+    {
+      "name": "payload",
+      "offset": 1112,
+      "length": 112
+    },
+    {
+      "name": "final_descriptor",
+      "offset": 1112,
+      "length": 48
+    },
+    {
+      "name": "final_body",
+      "offset": 1160,
+      "length": 64
+    },
+    {
+      "name": "backup_capsule",
+      "offset": 1224,
+      "length": 960
+    },
+    {
+      "name": "trailer",
+      "offset": 2184,
+      "length": 48
+    }
+  ],
+  "semantics": {
+    "major": 3,
+    "schema": 1,
+    "suite": 1,
+    "feature_flags": 0,
+    "front_header_length": 1112,
+    "payload_kind": 1,
+    "plaintext_length": 0,
+    "record_count": 0,
+    "comment_length": 0,
+    "metadata_blocks": 1,
+    "primary_role": 0,
+    "backup_role": 1,
+    "credential_mode": 1,
+    "keyfile_mode": 0,
+    "kdf_profile": 1,
+    "keyfile_count": 0
+  }
+}
