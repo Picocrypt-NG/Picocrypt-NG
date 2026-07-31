@@ -111,17 +111,20 @@ func TestReadExactAtMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("full buffer with EOF succeeds", func(t *testing.T) {
-		source := readerAtFunc(func(dst []byte, _ int64) (int, error) {
-			copy(dst, "done")
-			return len(dst), io.EOF
+	for _, endError := range []error{io.EOF, io.ErrUnexpectedEOF} {
+		name := strings.ReplaceAll(endError.Error(), " ", "_")
+		t.Run("full_buffer_with_"+name+"_succeeds", func(t *testing.T) {
+			source := readerAtFunc(func(dst []byte, _ int64) (int, error) {
+				copy(dst, "done")
+				return len(dst), endError
+			})
+			dst := make([]byte, 4)
+			count, err := readExactAt(source, 0, dst, StagePreamble)
+			if err != nil || count != 4 || string(dst) != "done" {
+				t.Fatalf("readExactAt() = (%d, %q, %v); want (4, done, nil)", count, dst, err)
+			}
 		})
-		dst := make([]byte, 4)
-		count, err := readExactAt(source, 0, dst, StagePreamble)
-		if err != nil || count != 4 || string(dst) != "done" {
-			t.Fatalf("readExactAt() = (%d, %q, %v); want (4, done, nil)", count, dst, err)
-		}
-	})
+	}
 
 	for _, endError := range []error{io.EOF, io.ErrUnexpectedEOF} {
 		name := strings.ReplaceAll(endError.Error(), " ", "_")
@@ -170,6 +173,23 @@ func TestReadExactAtMatrix(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("isolated no-progress reads cannot exceed total call cap", func(t *testing.T) {
+		calls := 0
+		source := readerAtFunc(func(dst []byte, _ int64) (int, error) {
+			calls++
+			if calls%2 == 1 {
+				return 0, nil
+			}
+			dst[0] = byte(calls)
+			return 1, nil
+		})
+		count, err := readExactAt(source, 0, make([]byte, 4), StagePreamble)
+		assertInputFailure(t, err)
+		if calls != 6 || count != 3 {
+			t.Fatalf("readExactAt() calls/count = %d/%d; want len(dst)+2 calls and 3 delivered bytes", calls, count)
+		}
+	})
 }
 
 func TestProbeOwnsPrefixOnce(t *testing.T) {
@@ -267,6 +287,20 @@ func TestProbeFixedRegionBudget(t *testing.T) {
 			t.Fatalf("coordinate %d requested %d times; want once", offset, count)
 		}
 	}
+
+	t.Run("tail underflow is rejected before any tail request", func(t *testing.T) {
+		source := &recordingReaderAt{data: fixture}
+		route, _, err := Probe(source, int64(fixedSuffixLength)-1)
+		if route != RouteNormalPCV {
+			t.Fatalf("Probe() route = %v; want normal PCV", route)
+		}
+		assertStructuralFailure(t, err, StageTailGeometry)
+		for _, request := range source.requests {
+			if request.offset != 0 && request.offset != discriminatorLength {
+				t.Fatalf("underflowing source size reached a fixed component request: %+v", request)
+			}
+		}
+	})
 }
 
 func TestInspectLiteralFixture(t *testing.T) {

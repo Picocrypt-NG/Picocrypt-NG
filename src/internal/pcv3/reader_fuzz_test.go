@@ -3,7 +3,6 @@ package pcv3
 import (
 	"bytes"
 	"errors"
-	"io"
 	"os"
 	"testing"
 )
@@ -72,9 +71,5 @@ type fuzzReaderAt struct {
 func (reader *fuzzReaderAt) ReadAt(dst []byte, offset int64) (int, error) {
 	reader.calls++
 	reader.maxRequest = max(reader.maxRequest, len(dst))
-	count, err := reader.reader.ReadAt(dst, offset)
-	if err == nil || errors.Is(err, io.EOF) {
-		return count, err
-	}
-	return count, err
+	return reader.reader.ReadAt(dst, offset)
 }
