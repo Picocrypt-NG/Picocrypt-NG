@@ -1,6 +1,8 @@
 package pcv3
 
 import (
+	pcencoding "Picocrypt-NG/internal/encoding"
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -18,6 +20,7 @@ func (read readerAtFunc) ReadAt(dst []byte, offset int64) (int, error) {
 type readRequest struct {
 	offset int64
 	length int
+	limit  int
 }
 
 type recordingReaderAt struct {
@@ -28,7 +31,7 @@ type recordingReaderAt struct {
 
 func (reader *recordingReaderAt) ReadAt(dst []byte, offset int64) (int, error) {
 	if offset < 0 || offset >= int64(len(reader.data)) {
-		reader.requests = append(reader.requests, readRequest{offset: offset})
+		reader.requests = append(reader.requests, readRequest{offset: offset, limit: len(dst)})
 		return 0, io.EOF
 	}
 
@@ -41,7 +44,7 @@ func (reader *recordingReaderAt) ReadAt(dst []byte, offset int64) (int, error) {
 		count = available
 	}
 	copy(dst[:count], reader.data[offset:int(offset)+count])
-	reader.requests = append(reader.requests, readRequest{offset: offset, length: count})
+	reader.requests = append(reader.requests, readRequest{offset: offset, length: count, limit: len(dst)})
 	if count < len(dst) && count == available {
 		return count, io.EOF
 	}
@@ -264,6 +267,288 @@ func TestProbeFixedRegionBudget(t *testing.T) {
 			t.Fatalf("coordinate %d requested %d times; want once", offset, count)
 		}
 	}
+}
+
+func TestInspectLiteralFixture(t *testing.T) {
+	fixture := readReaderFixture(t)
+	corrected := append([]byte(nil), fixture...)
+	backupOffset := len(corrected) - int(fixedSuffixLength)
+	for lane := range 5 {
+		corrected[int(primaryCapsuleOffset)+lane*192+7] ^= byte(lane + 1)
+		corrected[backupOffset+lane*192+7] ^= byte(lane + 11)
+	}
+	corrected[len(corrected)-int(trailerLength)+7] ^= 0x5a
+
+	for _, test := range []struct {
+		name string
+		data []byte
+	}{
+		{name: "literal", data: fixture},
+		{name: "one corrected error in every RS lane", data: corrected},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			route, structure, err := Probe(bytes.NewReader(test.data), int64(len(test.data)))
+			if err != nil {
+				t.Fatalf("Probe() error = %v", err)
+			}
+			if route != RouteNormalPCV {
+				t.Fatalf("Probe() route = %v; want normal PCV", route)
+			}
+			assertCandidateRoles(t, structure, CapsuleRolePrimary, CapsuleRoleBackup)
+			for _, component := range []Component{ComponentPrimary, ComponentTrailer, ComponentBackup} {
+				if stage, ok := structure.Issue(component); ok {
+					t.Fatalf("Issue(%v) = %v; want none", component, stage)
+				}
+			}
+			for index := 0; index < structure.CandidateCount(); index++ {
+				geometry, ok := structure.GeometryAt(index)
+				if !ok || geometry.FileSize() != int64(len(test.data)) {
+					t.Fatalf("GeometryAt(%d) = (%+v, %v); want canonical file size %d", index, geometry, ok, len(test.data))
+				}
+			}
+		})
+	}
+}
+
+func TestInspectDiscardsPartialRS(t *testing.T) {
+	fixture := readReaderFixture(t)
+	corruptedCapsule := append([]byte(nil), fixture[primaryCapsuleOffset:primaryCapsuleOffset+int64(backupCapsuleLength)]...)
+	corruptFirstLaneParity(corruptedCapsule)
+
+	codecs := mustReaderCodecs(t)
+	partial, decodeErr := pcencoding.Decode(codecs.RS64, corruptedCapsule[:192], false)
+	if decodeErr == nil {
+		t.Fatal("test mutation did not make the first RS64 lane uncorrectable")
+	}
+	if len(partial) != 64 || string(partial[:4]) != "PCVC" {
+		t.Fatalf("Decode() partial output does not preserve a plausible capsule prefix: len=%d prefix=%q", len(partial), partial[:min(4, len(partial))])
+	}
+	clear(partial)
+
+	corruptedCapsule = append([]byte(nil), fixture[primaryCapsuleOffset:primaryCapsuleOffset+int64(backupCapsuleLength)]...)
+	corruptFirstLaneParity(corruptedCapsule)
+	decoded, err := decodeCapsule(codecs, corruptedCapsule)
+	assertStructuralFailure(t, err, StageCapsuleRS)
+	if decoded != [decodedCapsuleLength]byte{} {
+		t.Fatal("decodeCapsule() retained partial decoded bytes after an RS error")
+	}
+	if !allZero(corruptedCapsule) {
+		t.Fatal("decodeCapsule() retained encoded component bytes after an RS error")
+	}
+
+	mutated := append([]byte(nil), fixture...)
+	corruptFirstLaneParity(mutated[primaryCapsuleOffset : primaryCapsuleOffset+int64(backupCapsuleLength)])
+	_, structure, err := Probe(bytes.NewReader(mutated), int64(len(mutated)))
+	if err != nil {
+		t.Fatalf("Probe() discarded the independent backup candidate: %v", err)
+	}
+	assertCandidateRoles(t, structure, CapsuleRoleBackup)
+	assertComponentIssue(t, structure, ComponentPrimary, StageCapsuleRS)
+}
+
+func TestInspectRetainsIndependentCandidates(t *testing.T) {
+	fixture := readReaderFixture(t)
+
+	t.Run("invalid primary keeps backup and its primary issue", func(t *testing.T) {
+		mutated := append([]byte(nil), fixture...)
+		rewriteCapsule(t, mutated, int(primaryCapsuleOffset), func(decoded []byte) {
+			copy(decoded[:4], "BAD!")
+		})
+
+		_, structure, err := Probe(bytes.NewReader(mutated), int64(len(mutated)))
+		if err != nil {
+			t.Fatalf("Probe() error = %v", err)
+		}
+		assertCandidateRoles(t, structure, CapsuleRoleBackup)
+		assertComponentIssue(t, structure, ComponentPrimary, StageCapsuleStructure)
+	})
+
+	t.Run("invalid backup keeps primary", func(t *testing.T) {
+		mutated := append([]byte(nil), fixture...)
+		rewriteCapsule(t, mutated, len(mutated)-int(fixedSuffixLength), func(decoded []byte) {
+			copy(decoded[:4], "BAD!")
+		})
+
+		_, structure, err := Probe(bytes.NewReader(mutated), int64(len(mutated)))
+		if err != nil {
+			t.Fatalf("Probe() error = %v", err)
+		}
+		assertCandidateRoles(t, structure, CapsuleRolePrimary)
+		assertComponentIssue(t, structure, ComponentBackup, StageCapsuleStructure)
+	})
+
+	t.Run("invalid trailer neither erases nor relocates candidates", func(t *testing.T) {
+		mutated := append([]byte(nil), fixture...)
+		rewriteTrailer(t, mutated, func(decoded []byte) {
+			copy(decoded[:4], "BAD!")
+		})
+		source := &recordingReaderAt{data: mutated}
+
+		_, structure, err := Probe(source, int64(len(mutated)))
+		if err != nil {
+			t.Fatalf("Probe() error = %v", err)
+		}
+		assertCandidateRoles(t, structure, CapsuleRolePrimary, CapsuleRoleBackup)
+		assertComponentIssue(t, structure, ComponentTrailer, StageTailGeometry)
+		wantBackupOffset := int64(len(mutated)) - int64(fixedSuffixLength)
+		seenCanonicalBackup := false
+		for _, request := range source.requests {
+			if request.offset == wantBackupOffset && request.limit == int(backupCapsuleLength) {
+				seenCanonicalBackup = true
+			}
+		}
+		if !seenCanonicalBackup {
+			t.Fatalf("backup was not read at canonical offset %d after trailer damage", wantBackupOffset)
+		}
+	})
+
+	t.Run("no viable capsule reports earliest structural stage", func(t *testing.T) {
+		mutated := append([]byte(nil), fixture...)
+		corruptFirstLaneParity(mutated[primaryCapsuleOffset : primaryCapsuleOffset+int64(backupCapsuleLength)])
+		rewriteCapsule(t, mutated, len(mutated)-int(fixedSuffixLength), func(decoded []byte) {
+			copy(decoded[:4], "BAD!")
+		})
+
+		_, structure, err := Probe(bytes.NewReader(mutated), int64(len(mutated)))
+		assertStructuralFailure(t, err, StageCapsuleRS)
+		if structure.CandidateCount() != 0 {
+			t.Fatalf("CandidateCount() = %d; want 0", structure.CandidateCount())
+		}
+		assertComponentIssue(t, structure, ComponentPrimary, StageCapsuleRS)
+		assertComponentIssue(t, structure, ComponentBackup, StageCapsuleStructure)
+	})
+}
+
+func TestInspectHostileLengthBound(t *testing.T) {
+	fixture := readReaderFixture(t)
+	source := &recordingReaderAt{data: fixture}
+	maxInt64 := int64(^uint64(0) >> 1)
+
+	route, structure, err := Probe(source, maxInt64)
+	if route != RouteNormalPCV {
+		t.Fatalf("Probe() route = %v; want normal PCV", route)
+	}
+	assertStructuralFailure(t, err, StageTailGeometry)
+	if structure.CandidateCount() != 0 {
+		t.Fatalf("CandidateCount() = %d; want 0 for impossible whole-file geometry", structure.CandidateCount())
+	}
+	if len(source.requests) > 5 {
+		t.Fatalf("ReadAt calls = %d; want at most the five fixed logical regions", len(source.requests))
+	}
+	for _, request := range source.requests {
+		if request.offset < 0 || request.limit > int(backupCapsuleLength) {
+			t.Fatalf("hostile-size request = %+v; want non-negative fixed-size request", request)
+		}
+	}
+
+	frontOnly := readerAtFunc(func(dst []byte, offset int64) (int, error) {
+		if offset < 0 || offset >= 976 {
+			return 0, io.EOF
+		}
+		count := copy(dst, fixture[offset:min(int64(len(fixture)), offset+int64(len(dst)))])
+		if count < len(dst) {
+			return count, io.EOF
+		}
+		return count, nil
+	})
+	admitted := [4]byte{'P', 'C', 'V', 0}
+	baselineAllocs := testing.AllocsPerRun(20, func() {
+		_, _ = Inspect(frontOnly, int64(len(fixture)), admitted)
+	})
+	hostileAllocs := testing.AllocsPerRun(20, func() {
+		_, _ = Inspect(frontOnly, maxInt64, admitted)
+	})
+	if hostileAllocs > baselineAllocs+2 {
+		t.Fatalf("hostile source size allocations = %.0f; fixed-size baseline = %.0f", hostileAllocs, baselineAllocs)
+	}
+}
+
+func corruptFirstLaneParity(capsule []byte) {
+	for index := 64; index < 192; index++ {
+		capsule[index] ^= byte(index*17 + 3)
+	}
+}
+
+func rewriteCapsule(t *testing.T, fixture []byte, offset int, mutate func([]byte)) {
+	t.Helper()
+	codecs := mustReaderCodecs(t)
+	decoded := make([]byte, 0, decodedCapsuleLength)
+	for lane := range 5 {
+		laneStart := offset + lane*192
+		laneDecoded, err := pcencoding.Decode(codecs.RS64, fixture[laneStart:laneStart+192], false)
+		if err != nil {
+			t.Fatalf("decode capsule lane %d: %v", lane, err)
+		}
+		decoded = append(decoded, laneDecoded...)
+		clear(laneDecoded)
+	}
+	mutate(decoded)
+	for lane := range 5 {
+		encoded, err := pcencoding.Encode(codecs.RS64, decoded[lane*64:(lane+1)*64])
+		if err != nil {
+			t.Fatalf("encode capsule lane %d: %v", lane, err)
+		}
+		copy(fixture[offset+lane*192:offset+(lane+1)*192], encoded)
+		clear(encoded)
+	}
+	clear(decoded)
+}
+
+func rewriteTrailer(t *testing.T, fixture []byte, mutate func([]byte)) {
+	t.Helper()
+	codecs := mustReaderCodecs(t)
+	offset := len(fixture) - int(trailerLength)
+	decoded, err := pcencoding.Decode(codecs.RS16, fixture[offset:], false)
+	if err != nil {
+		t.Fatalf("decode trailer: %v", err)
+	}
+	mutate(decoded)
+	encoded, err := pcencoding.Encode(codecs.RS16, decoded)
+	if err != nil {
+		t.Fatalf("encode trailer: %v", err)
+	}
+	copy(fixture[offset:], encoded)
+	clear(decoded)
+	clear(encoded)
+}
+
+func mustReaderCodecs(t *testing.T) *pcencoding.RSCodecs {
+	t.Helper()
+	codecs, err := pcencoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("initialize RS codecs: %v", err)
+	}
+	return codecs
+}
+
+func assertCandidateRoles(t *testing.T, structure Structure, want ...CapsuleRole) {
+	t.Helper()
+	if structure.CandidateCount() != len(want) {
+		t.Fatalf("CandidateCount() = %d; want %d", structure.CandidateCount(), len(want))
+	}
+	for index, role := range want {
+		candidate, ok := structure.CandidateAt(index)
+		if !ok || candidate.Role() != role {
+			t.Fatalf("CandidateAt(%d) = (%v, %v); want role %v", index, candidate.Role(), ok, role)
+		}
+	}
+}
+
+func assertComponentIssue(t *testing.T, structure Structure, component Component, want Stage) {
+	t.Helper()
+	stage, ok := structure.Issue(component)
+	if !ok || stage != want {
+		t.Fatalf("Issue(%v) = (%v, %v); want (%v, true)", component, stage, ok, want)
+	}
+}
+
+func allZero(data []byte) bool {
+	for _, value := range data {
+		if value != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func readReaderFixture(t *testing.T) []byte {
