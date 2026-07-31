@@ -1380,6 +1380,19 @@ func TestInspectorRejectsEveryRuntimeSkip(t *testing.T) {
 	withSkip.requireRejected(t, "runtime skip events are forbidden")
 }
 
+func TestInspectorRejectsPassWithFailureSummary(t *testing.T) {
+	fixture := newInspectorFixture(t)
+	fixture.rewriteEvidence(t, "host", func(evidence map[string]any) {
+		command := evidence["commands"].([]any)[0].(map[string]any)
+		command["go_test_failure_summary"] = map[string]any{
+			"top_level_test_ids": []any{"TestInjectedFailure"},
+			"classification":     "test",
+			"truncated":          false,
+		}
+	})
+	fixture.requireRejected(t, "command result is not terminal PASS evidence")
+}
+
 func TestInspectorRejectsSkipOrNoOp(t *testing.T) {
 	t.Run("no commands", func(t *testing.T) {
 		fixture := newInspectorFixture(t)
@@ -3673,6 +3686,7 @@ type fixtureCommandResult struct {
 	ObservedIDs     []string                       `json:"observed_ids,omitempty"`
 	SkipEvents      []fixtureSkipEvent             `json:"skip_events,omitempty"`
 	GoTestEvent     *fixtureGoTestEventAttestation `json:"go_test_event,omitempty"`
+	GoTestFailure   *fixtureGoTestFailureSummary   `json:"go_test_failure_summary,omitempty"`
 	TimedOut        bool                           `json:"timed_out"`
 	TerminationErr  string                         `json:"termination_error,omitempty"`
 	WaitErr         string                         `json:"wait_error,omitempty"`
@@ -3686,6 +3700,12 @@ type fixtureGoTestEventAttestation struct {
 	Package        string `json:"package"`
 	TestID         string `json:"test_id"`
 	TerminalAction string `json:"terminal_action"`
+}
+
+type fixtureGoTestFailureSummary struct {
+	TopLevelTestIDs []string `json:"top_level_test_ids"`
+	Classification  string   `json:"classification"`
+	Truncated       bool     `json:"truncated"`
 }
 
 type fixtureCommandEvidence struct {

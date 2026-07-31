@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -23,9 +24,15 @@ import (
 )
 
 const (
-	testBaseline = "1111111111111111111111111111111111111111"
-	testBase     = "2222222222222222222222222222222222222222"
+	testBaseline              = "1111111111111111111111111111111111111111"
+	testBase                  = "2222222222222222222222222222222222222222"
+	expectedGoTestFailureIDs  = 32
+	goTestFailureOutputSecret = "failure-output-secret-must-not-enter-evidence"
 )
+
+func oversizedGoTestFailureID() string {
+	return "TestOversizedFailureID" + strings.Repeat("Z", 512)
+}
 
 type testFileSnapshot struct {
 	SHA256          string
@@ -3188,6 +3195,112 @@ func TestStageRejectsEveryRuntimeSkip(t *testing.T) {
 	}
 }
 
+func TestStageRecordsBoundedGoTestFailureSummary(t *testing.T) {
+	const (
+		testID      = "TestManifestRootResolution"
+		packagePath = "Picocrypt-NG/internal/pcv3credential/testdata/mutator"
+	)
+	testCases := []struct {
+		name               string
+		helperMode         string
+		classification     string
+		truncated          bool
+		failureIDCount     int
+		requireExpectedID  bool
+		forbiddenFailureID string
+	}{
+		{
+			name:              "bounded sorted top-level IDs",
+			helperMode:        "go-json-fail",
+			classification:    "test",
+			truncated:         true,
+			failureIDCount:    expectedGoTestFailureIDs,
+			requireExpectedID: true,
+		},
+		{
+			name:               "oversized ID is redacted",
+			helperMode:         "go-json-fail-oversized",
+			classification:     "unclassified",
+			failureIDCount:     0,
+			forbiddenFailureID: oversizedGoTestFailureID(),
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := newGateFixture(t)
+			command := fixture.helperCommand(
+				t,
+				testCase.helperMode,
+				packagePath,
+				testID,
+				"-p",
+				"1",
+			)
+			command.Kind = "go-test"
+			command.GoBased = true
+			command.PackageParallelism = 1
+			command.ExecutionSurface = executionSurface{
+				PackagePaths: []string{"./internal/pcv3credential/testdata/mutator"},
+				TestSelector: "^" + testID + "$",
+				EvidenceKind: "go-test-json",
+			}
+			command.RequiredTestIDs = []string{testID}
+			command.RequiredTestPackages = map[string]string{testID: packagePath}
+			fixture.setCommand("normal1", command)
+			_, hash := fixture.freeze(t)
+			options := fixture.stageOptions("normal1", hash)
+
+			if err := runStage(context.Background(), options, fixture.deps()); err == nil {
+				t.Fatal("failing Go test stage unexpectedly passed")
+			}
+			evidenceBytes, err := os.ReadFile(options.Evidence)
+			if err != nil {
+				t.Fatalf("read terminal Go test failure evidence: %v", err)
+			}
+			if bytes.Contains(evidenceBytes, []byte(goTestFailureOutputSecret)) {
+				t.Fatal("raw Go test failure output leaked into terminal evidence")
+			}
+			if testCase.forbiddenFailureID != "" &&
+				bytes.Contains(evidenceBytes, []byte(testCase.forbiddenFailureID)) {
+				t.Fatal("oversized Go test failure ID leaked into terminal evidence")
+			}
+			var evidence stageEvidence
+			if err := json.Unmarshal(evidenceBytes, &evidence); err != nil {
+				t.Fatalf("decode terminal Go test failure evidence: %v", err)
+			}
+			if evidence.Status != "FAIL" || len(evidence.Commands) != 1 ||
+				evidence.Commands[0].GoTestFailure == nil {
+				t.Fatalf("Go test failure summary is absent from terminal evidence: %+v", evidence)
+			}
+			summary := evidence.Commands[0].GoTestFailure
+			if summary.Classification != testCase.classification ||
+				summary.Truncated != testCase.truncated ||
+				len(summary.TopLevelTestIDs) != testCase.failureIDCount ||
+				len(evidence.Commands[0].ObservedIDs) != 0 ||
+				len(evidence.Commands[0].ClosedThreatIDs) != 0 {
+				t.Fatalf("Go test failure summary is not safe terminal evidence: %+v", evidence)
+			}
+			if testCase.requireExpectedID &&
+				!contains(summary.TopLevelTestIDs, testID) {
+				t.Fatalf("expected failing test ID is absent from summary: %+v", summary)
+			}
+			if !sort.StringsAreSorted(summary.TopLevelTestIDs) {
+				t.Fatalf("Go test failure IDs are not sorted: %v", summary.TopLevelTestIDs)
+			}
+			for _, id := range summary.TopLevelTestIDs {
+				if strings.Contains(id, "/") {
+					t.Fatalf("subtest ID entered bounded failure summary: %q", id)
+				}
+			}
+			proof := options.Evidence +
+				fixture.config.EvidenceContract.PublicationProofSuffix
+			if _, err := os.Lstat(proof); !os.IsNotExist(err) {
+				t.Fatalf("failed Go test stage published a PASS proof: %v", err)
+			}
+		})
+	}
+}
+
 func TestStageBoundsChildOutput(t *testing.T) {
 	fixture := newGateFixture(t)
 	fixture.setCommand("normal1", fixture.helperCommand(t, "flood"))
@@ -3442,6 +3555,46 @@ func TestPhasegatesHelperProcess(t *testing.T) {
 			}
 		}
 		os.Exit(0)
+	case "go-json-fail", "go-json-fail-oversized":
+		if len(args) != 5 || args[3] != "-p" || args[4] != "1" {
+			t.Fatal("Go JSON failure helper requires package, test ID, and serial marker")
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		type goTestEvent struct {
+			Action  string `json:"Action"`
+			Package string `json:"Package"`
+			Test    string `json:"Test,omitempty"`
+			Output  string `json:"Output,omitempty"`
+		}
+		events := []goTestEvent{
+			{Action: "run", Package: args[1], Test: args[2]},
+			{Action: "fail", Package: args[1], Test: args[2] + "/case", Output: goTestFailureOutputSecret},
+			{Action: "fail", Package: args[1], Test: args[2], Output: goTestFailureOutputSecret},
+			{Action: "fail", Package: args[1], Output: goTestFailureOutputSecret},
+		}
+		if args[0] == "go-json-fail" {
+			for index := range expectedGoTestFailureIDs {
+				events = append(events, goTestEvent{
+					Action:  "fail",
+					Package: args[1],
+					Test:    fmt.Sprintf("TestZDiagnosticFailure%02d", index),
+					Output:  goTestFailureOutputSecret,
+				})
+			}
+		} else {
+			events = append(events, goTestEvent{
+				Action:  "fail",
+				Package: args[1],
+				Test:    oversizedGoTestFailureID(),
+				Output:  goTestFailureOutputSecret,
+			})
+		}
+		for _, event := range events {
+			if err := encoder.Encode(event); err != nil {
+				t.Fatalf("encode go-json-fail event: %v", err)
+			}
+		}
+		os.Exit(1)
 	default:
 		t.Fatalf("unknown helper mode %q", args[0])
 	}

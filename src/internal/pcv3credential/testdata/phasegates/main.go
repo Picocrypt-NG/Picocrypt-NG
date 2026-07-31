@@ -26,14 +26,16 @@ import (
 )
 
 const (
-	gateSchemaVersion     = 1
-	executionIdentityMode = 0o444
-	evidenceMode          = 0o400
-	maxCommandOutputBytes = 4 << 20
-	processWaitDelay      = 2 * time.Second
-	reviewedGateConfigSHA = "6a9fe3d08464f7630a7d767e424af38edf0e751cbfb50bf10c014b1da7006187"
-	picocryptModulePath   = "Picocrypt-NG"
-	pcv3PackagePath       = "Picocrypt-NG/internal/pcv3credential"
+	gateSchemaVersion       = 1
+	executionIdentityMode   = 0o444
+	evidenceMode            = 0o400
+	maxCommandOutputBytes   = 4 << 20
+	maxGoTestFailureIDs     = 32
+	maxGoTestFailureIDBytes = 256
+	processWaitDelay        = 2 * time.Second
+	reviewedGateConfigSHA   = "61a963b469f84a07bd4ce15be47f66576bfac44cba84d776cf6d187ffa859003"
+	picocryptModulePath     = "Picocrypt-NG"
+	pcv3PackagePath         = "Picocrypt-NG/internal/pcv3credential"
 )
 
 var (
@@ -382,6 +384,7 @@ type commandResult struct {
 	ObservedIDs     []string                `json:"observed_ids,omitempty"`
 	SkipEvents      []skipEvent             `json:"skip_events,omitempty"`
 	GoTestEvent     *goTestEventAttestation `json:"go_test_event,omitempty"`
+	GoTestFailure   *goTestFailureSummary   `json:"go_test_failure_summary,omitempty"`
 	TimedOut        bool                    `json:"timed_out"`
 	TerminationErr  string                  `json:"termination_error,omitempty"`
 	WaitErr         string                  `json:"wait_error,omitempty"`
@@ -395,6 +398,12 @@ type goTestEventAttestation struct {
 	Package        string `json:"package"`
 	TestID         string `json:"test_id"`
 	TerminalAction string `json:"terminal_action"`
+}
+
+type goTestFailureSummary struct {
+	TopLevelTestIDs []string `json:"top_level_test_ids"`
+	Classification  string   `json:"classification"`
+	Truncated       bool     `json:"truncated"`
 }
 
 type commandEvidence struct {
@@ -2181,6 +2190,9 @@ func validateProducedCommandResult(
 			}
 		}
 	}
+	if result.GoTestFailure != nil {
+		return errors.New("successful command retained Go test failure diagnostics")
+	}
 	return nil
 }
 
@@ -2365,6 +2377,10 @@ func executeCommand(
 		return result, errors.Join(ctx.Err(), capturedTerminationErr, waitErr)
 	}
 	if result.ExitCode != command.RequiredExitCode {
+		if command.Kind == "go-test" {
+			summary := summarizeGoTestFailure(stdout.Bytes())
+			result.GoTestFailure = &summary
+		}
 		return result, errors.Join(waitErr, errors.New("child process exit code mismatch"))
 	}
 	if waitErr != nil && !expectedExitError {
@@ -2974,6 +2990,66 @@ func parseGoTestJSON(
 		return observed, skips, errors.New("go test reported forbidden skip events")
 	}
 	return observed, skips, nil
+}
+
+func summarizeGoTestFailure(data []byte) goTestFailureSummary {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 4096), maxCommandOutputBytes)
+	testIDs := map[string]struct{}{}
+	packageFailed := false
+	valid := true
+	for scanner.Scan() {
+		var event struct {
+			Action string `json:"Action"`
+			Test   string `json:"Test"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			valid = false
+			continue
+		}
+		if event.Action != "fail" {
+			continue
+		}
+		if event.Test == "" {
+			packageFailed = true
+			continue
+		}
+		if strings.Contains(event.Test, "/") {
+			continue
+		}
+		if len(event.Test) > maxGoTestFailureIDBytes || !validGoTestID(event.Test) {
+			valid = false
+			continue
+		}
+		testIDs[event.Test] = struct{}{}
+	}
+	if scanner.Err() != nil {
+		valid = false
+	}
+
+	ids := make([]string, 0, len(testIDs))
+	for id := range testIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	truncated := len(ids) > maxGoTestFailureIDs
+	if truncated {
+		ids = ids[:maxGoTestFailureIDs]
+	}
+	classification := "unclassified"
+	if valid && len(ids) != 0 {
+		classification = "test"
+	} else if valid && packageFailed {
+		classification = "package"
+	}
+	if !valid {
+		ids = []string{}
+	}
+	return goTestFailureSummary{
+		TopLevelTestIDs: ids,
+		Classification:  classification,
+		Truncated:       truncated,
+	}
 }
 
 func parseNestedGoTestJSON(

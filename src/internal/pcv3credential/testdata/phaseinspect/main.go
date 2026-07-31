@@ -301,6 +301,7 @@ type commandResult struct {
 	ObservedIDs     []string                `json:"observed_ids,omitempty"`
 	SkipEvents      []skipEvent             `json:"skip_events,omitempty"`
 	GoTestEvent     *goTestEventAttestation `json:"go_test_event,omitempty"`
+	GoTestFailure   *goTestFailureSummary   `json:"go_test_failure_summary,omitempty"`
 	TimedOut        bool                    `json:"timed_out"`
 	TerminationErr  string                  `json:"termination_error,omitempty"`
 	WaitErr         string                  `json:"wait_error,omitempty"`
@@ -314,6 +315,12 @@ type goTestEventAttestation struct {
 	Package        string `json:"package"`
 	TestID         string `json:"test_id"`
 	TerminalAction string `json:"terminal_action"`
+}
+
+type goTestFailureSummary struct {
+	TopLevelTestIDs []string `json:"top_level_test_ids"`
+	Classification  string   `json:"classification"`
+	Truncated       bool     `json:"truncated"`
 }
 
 type commandEvidence struct {
@@ -2672,6 +2679,7 @@ func validateCommandResult(
 		result.TerminationErr != "" ||
 		result.WaitErr != "" ||
 		result.GoTestEvent != nil ||
+		result.GoTestFailure != nil ||
 		(result.StdoutSHA256 != "" && !validSHA256(result.StdoutSHA256)) ||
 		(result.StderrSHA256 != "" && !validSHA256(result.StderrSHA256)) {
 		return errors.New("command result is not terminal PASS evidence")
@@ -3109,6 +3117,7 @@ func successfulNestedResult(
 		result.TerminationErr == "" &&
 		result.WaitErr == "" &&
 		reflect.DeepEqual(result.GoTestEvent, expectedEvent) &&
+		result.GoTestFailure == nil &&
 		len(result.ObservedIDs) == 0 &&
 		len(result.SkipEvents) == 0 &&
 		len(result.Mutations) == 0 &&

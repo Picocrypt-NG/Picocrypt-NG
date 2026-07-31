@@ -171,6 +171,7 @@
         "TestStageUsesExactArgvAndEnv",
         "TestStageBoundsChildOutput",
         "TestStageRejectsEveryRuntimeSkip",
+        "TestStageRecordsBoundedGoTestFailureSummary",
         "TestReviewedGateRejectsExecutableGoTestArguments",
         "TestGoTestJSONRejectsEverySkipAndRequiresPass"
       ]
@@ -186,6 +187,7 @@
         "TestInspectorRejectsIdentityMismatch",
         "TestInspectorRejectsSelfPathHashOrVersionMismatch",
         "TestInspectorRejectsEveryRuntimeSkip",
+        "TestInspectorRejectsPassWithFailureSummary",
         "TestInspectorRejectsSkipOrNoOp",
         "TestInspectorRejectsInventedObservedIDs",
         "TestInspectorRequiresExactNestedGoTestEvents",
@@ -533,7 +535,7 @@
               "./internal/pcv3credential/testdata/phaseinspect"
             ],
             "build_tags": ["migrated_fynedo"],
-            "test_selector": "^(TestFreezeIdentityBindsRunnerAndInspector|TestStageRejectsIdentityBeforeReservation|TestStageZeroSubprocessOnMismatch|TestStageRevalidatesAfterRun|TestStageCreateExclusive|TestStageRejectsSymlink|TestStagePublicationDirectorySyncOrderingAndFailure|TestStageUsesExactArgvAndEnv|TestEvidenceReplacementIsDetected|TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects|TestReviewedGateRejectsBroadenedHostEvidence|TestFreezeIdentityRejectsSecrets|TestFreezeIdentityRequiresPrivateEvidenceRoot|TestStageBoundsChildOutput|TestStageRejectsEveryRuntimeSkip|TestReviewedGateRejectsExecutableGoTestArguments|TestGoTestJSONRejectsEverySkipAndRequiresPass|TestInspectorValidClosure|TestInspectorRejectsStageSet|TestInspectorRejectsEvidenceProofBinding|TestInspectorRejectsIdentityMismatch|TestInspectorRejectsSelfPathHashOrVersionMismatch|TestInspectorRejectsEveryRuntimeSkip|TestInspectorRejectsSkipOrNoOp|TestInspectorRejectsInventedObservedIDs|TestInspectorRequiresExactNestedGoTestEvents|TestInspectorRejectsBroadenedHostEvidence|TestInspectorReadOnlyCopiesUnchanged|TestInspectorStrictVerdictSchema|TestInspectorExactThreatClosure)$",
+            "test_selector": "^(TestFreezeIdentityBindsRunnerAndInspector|TestStageRejectsIdentityBeforeReservation|TestStageZeroSubprocessOnMismatch|TestStageRevalidatesAfterRun|TestStageCreateExclusive|TestStageRejectsSymlink|TestStagePublicationDirectorySyncOrderingAndFailure|TestStageUsesExactArgvAndEnv|TestEvidenceReplacementIsDetected|TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects|TestReviewedGateRejectsBroadenedHostEvidence|TestFreezeIdentityRejectsSecrets|TestFreezeIdentityRequiresPrivateEvidenceRoot|TestStageBoundsChildOutput|TestStageRejectsEveryRuntimeSkip|TestStageRecordsBoundedGoTestFailureSummary|TestReviewedGateRejectsExecutableGoTestArguments|TestGoTestJSONRejectsEverySkipAndRequiresPass|TestInspectorValidClosure|TestInspectorRejectsStageSet|TestInspectorRejectsEvidenceProofBinding|TestInspectorRejectsIdentityMismatch|TestInspectorRejectsSelfPathHashOrVersionMismatch|TestInspectorRejectsEveryRuntimeSkip|TestInspectorRejectsPassWithFailureSummary|TestInspectorRejectsSkipOrNoOp|TestInspectorRejectsInventedObservedIDs|TestInspectorRequiresExactNestedGoTestEvents|TestInspectorRejectsBroadenedHostEvidence|TestInspectorReadOnlyCopiesUnchanged|TestInspectorStrictVerdictSchema|TestInspectorExactThreatClosure)$",
             "evidence_kind": "go-test-json"
           },
           "argv": [
@@ -546,7 +548,7 @@
             "./internal/pcv3credential/testdata/phasegates",
             "./internal/pcv3credential/testdata/phaseinspect",
             "-run",
-            "^(TestFreezeIdentityBindsRunnerAndInspector|TestStageRejectsIdentityBeforeReservation|TestStageZeroSubprocessOnMismatch|TestStageRevalidatesAfterRun|TestStageCreateExclusive|TestStageRejectsSymlink|TestStagePublicationDirectorySyncOrderingAndFailure|TestStageUsesExactArgvAndEnv|TestEvidenceReplacementIsDetected|TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects|TestReviewedGateRejectsBroadenedHostEvidence|TestFreezeIdentityRejectsSecrets|TestFreezeIdentityRequiresPrivateEvidenceRoot|TestStageBoundsChildOutput|TestStageRejectsEveryRuntimeSkip|TestReviewedGateRejectsExecutableGoTestArguments|TestGoTestJSONRejectsEverySkipAndRequiresPass|TestInspectorValidClosure|TestInspectorRejectsStageSet|TestInspectorRejectsEvidenceProofBinding|TestInspectorRejectsIdentityMismatch|TestInspectorRejectsSelfPathHashOrVersionMismatch|TestInspectorRejectsEveryRuntimeSkip|TestInspectorRejectsSkipOrNoOp|TestInspectorRejectsInventedObservedIDs|TestInspectorRequiresExactNestedGoTestEvents|TestInspectorRejectsBroadenedHostEvidence|TestInspectorReadOnlyCopiesUnchanged|TestInspectorStrictVerdictSchema|TestInspectorExactThreatClosure)$",
+            "^(TestFreezeIdentityBindsRunnerAndInspector|TestStageRejectsIdentityBeforeReservation|TestStageZeroSubprocessOnMismatch|TestStageRevalidatesAfterRun|TestStageCreateExclusive|TestStageRejectsSymlink|TestStagePublicationDirectorySyncOrderingAndFailure|TestStageUsesExactArgvAndEnv|TestEvidenceReplacementIsDetected|TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects|TestReviewedGateRejectsBroadenedHostEvidence|TestFreezeIdentityRejectsSecrets|TestFreezeIdentityRequiresPrivateEvidenceRoot|TestStageBoundsChildOutput|TestStageRejectsEveryRuntimeSkip|TestStageRecordsBoundedGoTestFailureSummary|TestReviewedGateRejectsExecutableGoTestArguments|TestGoTestJSONRejectsEverySkipAndRequiresPass|TestInspectorValidClosure|TestInspectorRejectsStageSet|TestInspectorRejectsEvidenceProofBinding|TestInspectorRejectsIdentityMismatch|TestInspectorRejectsSelfPathHashOrVersionMismatch|TestInspectorRejectsEveryRuntimeSkip|TestInspectorRejectsPassWithFailureSummary|TestInspectorRejectsSkipOrNoOp|TestInspectorRejectsInventedObservedIDs|TestInspectorRequiresExactNestedGoTestEvents|TestInspectorRejectsBroadenedHostEvidence|TestInspectorReadOnlyCopiesUnchanged|TestInspectorStrictVerdictSchema|TestInspectorExactThreatClosure)$",
             "-count=1",
             "-timeout=30m",
             "-json"
@@ -571,6 +573,7 @@
             "TestFreezeIdentityRequiresPrivateEvidenceRoot",
             "TestStageBoundsChildOutput",
             "TestStageRejectsEveryRuntimeSkip",
+            "TestStageRecordsBoundedGoTestFailureSummary",
             "TestReviewedGateRejectsExecutableGoTestArguments",
             "TestGoTestJSONRejectsEverySkipAndRequiresPass",
             "TestInspectorValidClosure",
@@ -579,6 +582,7 @@
             "TestInspectorRejectsIdentityMismatch",
             "TestInspectorRejectsSelfPathHashOrVersionMismatch",
             "TestInspectorRejectsEveryRuntimeSkip",
+            "TestInspectorRejectsPassWithFailureSummary",
             "TestInspectorRejectsSkipOrNoOp",
             "TestInspectorRejectsInventedObservedIDs",
             "TestInspectorRequiresExactNestedGoTestEvents",
@@ -603,6 +607,7 @@
             "TestFreezeIdentityRequiresPrivateEvidenceRoot": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
             "TestStageBoundsChildOutput": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
             "TestStageRejectsEveryRuntimeSkip": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageRecordsBoundedGoTestFailureSummary": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
             "TestReviewedGateRejectsExecutableGoTestArguments": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
             "TestGoTestJSONRejectsEverySkipAndRequiresPass": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
             "TestInspectorValidClosure": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
@@ -611,6 +616,7 @@
             "TestInspectorRejectsIdentityMismatch": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
             "TestInspectorRejectsSelfPathHashOrVersionMismatch": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
             "TestInspectorRejectsEveryRuntimeSkip": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsPassWithFailureSummary": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
             "TestInspectorRejectsSkipOrNoOp": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
             "TestInspectorRejectsInventedObservedIDs": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
             "TestInspectorRequiresExactNestedGoTestEvents": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
