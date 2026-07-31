@@ -4,7 +4,6 @@ import (
 	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/util"
 	"archive/zip"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -80,30 +79,25 @@ type TempZipCiphers struct {
 //
 // Returns error if crypto/rand fails (indicates serious system problem).
 func NewTempZipCiphers() (*TempZipCiphers, error) {
-	key := make([]byte, 32)
-	nonce := make([]byte, 12)
-
-	if n, err := rand.Read(key); err != nil || n != 32 {
-		return nil, errors.New("fatal crypto/rand error")
+	key, err := crypto.RandomBytes(chacha20.KeySize)
+	if err != nil {
+		return nil, fmt.Errorf("generate temporary zip key: %w", err)
 	}
-	if n, err := rand.Read(nonce); err != nil || n != 12 {
-		return nil, errors.New("fatal crypto/rand error")
-	}
-
-	// Sanity check
-	zeroKey := make([]byte, 32)
-	zeroNonce := make([]byte, 12)
-	if string(key) == string(zeroKey) || string(nonce) == string(zeroNonce) {
-		return nil, errors.New("fatal crypto/rand error: produced zero values")
+	nonce, err := crypto.RandomBytes(chacha20.NonceSize)
+	if err != nil {
+		crypto.SecureZero(key)
+		return nil, fmt.Errorf("generate temporary zip nonce: %w", err)
 	}
 
 	writer, err := chacha20.NewUnauthenticatedCipher(key, nonce)
 	if err != nil {
+		crypto.SecureZeroMultiple(key, nonce)
 		return nil, err
 	}
 
 	reader, err := chacha20.NewUnauthenticatedCipher(key, nonce)
 	if err != nil {
+		crypto.SecureZeroMultiple(key, nonce)
 		return nil, err
 	}
 

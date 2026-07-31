@@ -3,12 +3,15 @@ package fileops
 import (
 	"archive/zip"
 	"bytes"
+	cryptorand "crypto/rand"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/chacha20"
 )
 
 func TestTempZipCiphersClose(t *testing.T) {
@@ -58,7 +61,16 @@ func TestTempZipCiphersCloseNil(t *testing.T) {
 	ciphers.Close()
 }
 
-func TestTempZipCiphersEncryptDecrypt(t *testing.T) {
+func TestTempZipCiphersEncryptDecryptsWithSuccessfulCryptoRandOutput(t *testing.T) {
+	// Do not parallelize this test: crypto/rand.Reader is process-global.
+	originalReader := cryptorand.Reader
+	cryptorand.Reader = bytes.NewReader(
+		make([]byte, chacha20.KeySize+chacha20.NonceSize),
+	)
+	t.Cleanup(func() {
+		cryptorand.Reader = originalReader
+	})
+
 	ciphers, err := NewTempZipCiphers()
 	if err != nil {
 		t.Fatalf("NewTempZipCiphers() failed: %v", err)
