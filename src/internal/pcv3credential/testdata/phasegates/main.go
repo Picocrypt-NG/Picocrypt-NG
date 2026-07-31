@@ -23,6 +23,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 const (
@@ -1382,6 +1383,15 @@ func validateGateConfigStructure(config *gateConfig) error {
 				); err != nil {
 					return fmt.Errorf("command %s execution surface: %w", command.ID, err)
 				}
+				if command.Kind == "golangci-lint" {
+					lint, ok := lintByID(config.LintRuns, command.LintRun)
+					if !ok {
+						return fmt.Errorf("command %s references an unknown lint run", command.ID)
+					}
+					if err := validateLintExecutionSurface(command, lint); err != nil {
+						return fmt.Errorf("command %s execution surface: %w", command.ID, err)
+					}
+				}
 				surfaces = append(surfaces, command.ExecutionSurface)
 			}
 		}
@@ -1428,11 +1438,6 @@ func validateGateConfigStructure(config *gateConfig) error {
 			StageBuildCache:        "distinct-empty-per-stage",
 		}) {
 			return errors.New("vendored dependency contract mismatch")
-		}
-		for _, lint := range config.LintRuns {
-			if !argvHasExactFlag(lint.Argv, "--concurrency", "1") {
-				return errors.New("lint invocation does not enforce serial aggregate concurrency")
-			}
 		}
 		for left := range surfaces {
 			for right := left + 1; right < len(surfaces); right++ {
@@ -1769,6 +1774,64 @@ func validateExecutionSurface(
 		}
 	}
 	return validateRequiredTestPackages(command)
+}
+
+func validateLintExecutionSurface(command commandConfig, lint lintRun) error {
+	const packageStart = 12
+	buildTagFlags := 0
+	for _, argument := range lint.Argv {
+		if argument == "--build-tags" {
+			buildTagFlags++
+		}
+	}
+	if buildTagFlags != 1 {
+		return errors.New("lint argv requires exactly one canonical --build-tags")
+	}
+	if len(lint.Argv) <= packageStart || lint.JSONPath == "" ||
+		lint.Argv[0] != "${GOLANGCI_LINT}" ||
+		lint.Argv[1] != "run" ||
+		lint.Argv[2] != "-c" ||
+		lint.Argv[3] != ".golangci.phase2.yml" ||
+		lint.Argv[4] != "--build-tags" ||
+		lint.Argv[6] != "--concurrency" ||
+		lint.Argv[7] != "1" ||
+		lint.Argv[8] != "--output.text.path" ||
+		lint.Argv[9] != "/dev/null" ||
+		lint.Argv[10] != "--output.json.path" ||
+		lint.Argv[11] != lint.JSONPath {
+		return errors.New("lint argv is not canonical")
+	}
+	tags := strings.Split(lint.Argv[5], ",")
+	if contains(tags, "") || hasDuplicates(tags) {
+		return errors.New("lint argv contains empty or duplicate build tags")
+	}
+	for _, tag := range tags {
+		for _, character := range tag {
+			if !unicode.IsLetter(character) && !unicode.IsDigit(character) &&
+				character != '_' && character != '.' {
+				return errors.New("lint argv contains a noncanonical build tag")
+			}
+		}
+	}
+	packages := append([]string(nil), lint.Argv[packageStart:]...)
+	for _, packagePath := range packages {
+		if !exactGoPackagePath(packagePath) {
+			return errors.New("lint argv package is not exact")
+		}
+	}
+	if hasDuplicates(packages) {
+		return errors.New("lint argv contains duplicate packages")
+	}
+	if !equalStrings(command.ExecutionSurface.PackagePaths, packages) ||
+		!equalStrings(command.ExecutionSurface.BuildTags, tags) ||
+		command.ExecutionSurface.TestSelector != "all" ||
+		command.ExecutionSurface.EvidenceKind != "lint-json" {
+		return errors.New("lint execution surface does not match argv")
+	}
+	if !equalStrings(lint.Tags, tags) {
+		return errors.New("lint run tags do not match argv")
+	}
+	return nil
 }
 
 func exactGoPackagePath(path string) bool {

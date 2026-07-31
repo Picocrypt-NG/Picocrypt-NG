@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -1465,15 +1466,16 @@ func validateGateConfig(config *gateConfig) ([]executionSurface, error) {
 	if len(config.LintRuns) != 3 {
 		return nil, errors.New("lint closure must contain three runs")
 	}
-	lintIDs := map[string]bool{}
+	lintRuns := map[string]lintRun{}
 	for _, lint := range config.LintRuns {
-		if lint.ID == "" || lintIDs[lint.ID] || !lint.JSONRequired ||
+		_, duplicate := lintRuns[lint.ID]
+		if lint.ID == "" || duplicate || !lint.JSONRequired ||
 			lint.IssuesRequired != 0 || lint.ExitCodeRequired != 0 ||
 			len(lint.Tags) == 0 || len(lint.Argv) == 0 ||
 			lint.TextOutput != "discard" {
 			return nil, errors.New("lint run contract mismatch")
 		}
-		lintIDs[lint.ID] = true
+		lintRuns[lint.ID] = lint
 	}
 
 	var surfaces []executionSurface
@@ -1530,8 +1532,16 @@ func validateGateConfig(config *gateConfig) ([]executionSurface, error) {
 					return nil, errors.New("mutation command contract mismatch")
 				}
 			case "golangci-lint":
-				if !lintIDs[command.LintRun] {
+				lint, ok := lintRuns[command.LintRun]
+				if !ok {
 					return nil, errors.New("lint command references an unknown run")
+				}
+				if err := validateLintExecutionSurface(command, lint); err != nil {
+					return nil, fmt.Errorf(
+						"lint command %s execution surface: %w",
+						command.ID,
+						err,
+					)
 				}
 				lintCommands[command.LintRun] = true
 			case "gitleaks":
@@ -1839,6 +1849,67 @@ func validateGoTestExecutionSurface(
 		}
 	}
 	return validateRequiredTestPackages(command)
+}
+
+func validateLintExecutionSurface(command commandConfig, lint lintRun) error {
+	const packageStart = 12
+	buildTagFlags := 0
+	for _, argument := range lint.Argv {
+		if argument == "--build-tags" {
+			buildTagFlags++
+		}
+	}
+	if buildTagFlags != 1 {
+		return errors.New("lint argv requires exactly one canonical --build-tags")
+	}
+	if len(lint.Argv) <= packageStart || lint.JSONPath == "" ||
+		lint.Argv[0] != "${GOLANGCI_LINT}" ||
+		lint.Argv[1] != "run" ||
+		lint.Argv[2] != "-c" ||
+		lint.Argv[3] != ".golangci.phase2.yml" ||
+		lint.Argv[4] != "--build-tags" ||
+		lint.Argv[6] != "--concurrency" ||
+		lint.Argv[7] != "1" ||
+		lint.Argv[8] != "--output.text.path" ||
+		lint.Argv[9] != "/dev/null" ||
+		lint.Argv[10] != "--output.json.path" ||
+		lint.Argv[11] != lint.JSONPath {
+		return errors.New("lint argv is not canonical")
+	}
+	tags := strings.Split(lint.Argv[5], ",")
+	if slices.Contains(tags, "") || hasDuplicates(tags) {
+		return errors.New("lint argv contains empty or duplicate build tags")
+	}
+	for _, tag := range tags {
+		for _, character := range tag {
+			if !unicode.IsLetter(character) && !unicode.IsDigit(character) &&
+				character != '_' && character != '.' {
+				return errors.New("lint argv contains a noncanonical build tag")
+			}
+		}
+	}
+	packages := append([]string(nil), lint.Argv[packageStart:]...)
+	for _, packagePath := range packages {
+		if !exactGoPackagePath(packagePath) {
+			return errors.New("lint argv package is not exact")
+		}
+	}
+	if hasDuplicates(packages) {
+		return errors.New("lint argv contains duplicate packages")
+	}
+	derived := executionSurface{
+		PackagePaths: packages,
+		BuildTags:    tags,
+		TestSelector: "all",
+		EvidenceKind: "lint-json",
+	}
+	if !reflect.DeepEqual(command.ExecutionSurface, derived) {
+		return errors.New("lint execution surface does not match argv")
+	}
+	if !slices.Equal(lint.Tags, tags) {
+		return errors.New("lint run tags do not match argv")
+	}
+	return nil
 }
 
 func validateRequiredTestPackages(command commandConfig) error {

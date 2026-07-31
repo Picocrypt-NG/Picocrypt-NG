@@ -1079,6 +1079,149 @@ func TestInspectorBindsGoTestExecutionSurfaceToArgv(t *testing.T) {
 	})
 }
 
+// Kills accepting a lint closure whose claimed surface differs from the
+// packages and build tags that golangci-lint will actually select.
+func inspectorLintExecutionSurfaceCases(t *testing.T) {
+	const (
+		normalRun           = "lint-normal"
+		reproductionRun     = "lint-fixture-reproduction"
+		vectorPackage       = "./internal/pcv3credential/testdata/vectorfixture"
+		noncanonicalTagList = "migrated_fynedo pcv3_fixture_reproduction"
+	)
+	for _, test := range []struct {
+		name         string
+		runID        string
+		declaredTags []string
+		wantError    string
+		mutate       func(*lintRun)
+	}{
+		{
+			name:      "argv omits a declared package",
+			runID:     normalRun,
+			wantError: "lint execution surface does not match argv",
+			mutate: func(run *lintRun) {
+				for index, argument := range run.Argv {
+					if argument == vectorPackage {
+						run.Argv = append(run.Argv[:index], run.Argv[index+1:]...)
+						return
+					}
+				}
+			},
+		},
+		{
+			name:      "argv adds an undeclared package",
+			runID:     reproductionRun,
+			wantError: "lint execution surface does not match argv",
+			mutate: func(run *lintRun) {
+				run.Argv = append(run.Argv, vectorPackage)
+			},
+		},
+		{
+			name:      "argv contains a wildcard package",
+			runID:     normalRun,
+			wantError: "lint argv package is not exact",
+			mutate: func(run *lintRun) {
+				run.Argv = append(run.Argv, "./internal/...")
+			},
+		},
+		{
+			name:      "argv omits a declared build tag",
+			runID:     reproductionRun,
+			wantError: "lint execution surface does not match argv",
+			mutate: func(run *lintRun) {
+				for index, argument := range run.Argv {
+					if argument == "--build-tags" {
+						run.Argv[index+1] = "migrated_fynedo"
+						return
+					}
+				}
+			},
+		},
+		{
+			name:      "argv adds an undeclared build tag",
+			runID:     normalRun,
+			wantError: "lint execution surface does not match argv",
+			mutate: func(run *lintRun) {
+				for index, argument := range run.Argv {
+					if argument == "--build-tags" {
+						run.Argv[index+1] = "migrated_fynedo,pcv3_fixture_reproduction"
+						return
+					}
+				}
+			},
+		},
+		{
+			name:         "argv uses a noncanonical build tag separator",
+			runID:        normalRun,
+			declaredTags: []string{noncanonicalTagList},
+			wantError:    "lint argv contains a noncanonical build tag",
+			mutate: func(run *lintRun) {
+				for index, argument := range run.Argv {
+					if argument == "--build-tags" {
+						run.Argv[index+1] = noncanonicalTagList
+						run.Tags = []string{noncanonicalTagList}
+						return
+					}
+				}
+			},
+		},
+		{
+			name:      "metadata tags diverge from argv",
+			runID:     normalRun,
+			wantError: "lint run tags do not match argv",
+			mutate: func(run *lintRun) {
+				run.Tags = []string{"migrated_fynedo", "pcv3_fixture_reproduction"}
+			},
+		},
+		{
+			name:      "argv contains ambiguous build tag flags",
+			runID:     normalRun,
+			wantError: "lint argv requires exactly one canonical --build-tags",
+			mutate: func(run *lintRun) {
+				run.Argv = append(run.Argv, "--build-tags", "migrated_fynedo")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := reviewedInspectorConfig(t)
+			found := false
+			for index := range config.LintRuns {
+				if config.LintRuns[index].ID == test.runID {
+					test.mutate(&config.LintRuns[index])
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("reviewed lint run %q is missing", test.runID)
+			}
+			if test.declaredTags != nil {
+				host := config.Stages["host"]
+				found = false
+				for index := range host.Commands {
+					if host.Commands[index].LintRun == test.runID {
+						host.Commands[index].ExecutionSurface.BuildTags = test.declaredTags
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("reviewed lint command for %q is missing", test.runID)
+				}
+				config.Stages["host"] = host
+			}
+			_, err := validateGateConfig(&config)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf(
+					"drifted lint execution error = %v; want substring %q",
+					err,
+					test.wantError,
+				)
+			}
+		})
+	}
+}
+
 // Kills accepting a go-test argv without the exact reproducibility count and
 // an inner Go timeout bounded by the outer command timeout.
 func TestInspectorRequiresCanonicalGoTestCountAndTimeout(t *testing.T) {
@@ -1366,6 +1509,7 @@ func TestInspectorRejectsBroadenedHostEvidence(t *testing.T) {
 			}
 		})
 	}
+	t.Run("lint execution surface matches argv", inspectorLintExecutionSurfaceCases)
 }
 
 func TestInspectorRejectsEveryRuntimeSkip(t *testing.T) {
