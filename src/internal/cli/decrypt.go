@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/header"
+	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/volume"
 	"bufio"
 	"context"
@@ -68,6 +69,34 @@ Examples:
 		return cobra.ExactArgs(1)(cmd, args)
 	},
 	RunE: runDecrypt,
+}
+
+const pcv3UnavailableMessage = "this PCV volume is not supported by this version; no output was created"
+
+type pcv3UnavailableError struct {
+	cause error
+}
+
+func (err pcv3UnavailableError) Error() string {
+	return pcv3UnavailableMessage
+}
+
+func (err pcv3UnavailableError) Unwrap() error {
+	return err.cause
+}
+
+func translatePCV3PreflightError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, pcv3.ErrReaderUnavailable) {
+		return pcv3UnavailableError{cause: err}
+	}
+	var failure pcv3.Failure
+	if errors.As(err, &failure) && failure.Outcome() != pcv3.OutcomeOperationFailed {
+		return pcv3UnavailableError{cause: err}
+	}
+	return err
 }
 
 // Decrypt flags
@@ -160,14 +189,6 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 	if outputFile == "" && useStdin {
 		outputFile = "decrypted"
 	}
-	if useStdin && !useStdout && !decYes {
-		if info, err := os.Stat(outputFile); err == nil {
-			if info.IsDir() {
-				return fmt.Errorf("output path is a directory: %s", outputFile)
-			}
-			return fmt.Errorf("output file %s already exists; when reading input from stdin use -y to overwrite", outputFile)
-		}
-	}
 
 	// Handle stdin input
 	inputFile := inputPath
@@ -188,15 +209,32 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check if this looks like a split volume (skip for stdin)
+	// Check if this looks like a split volume (skip for stdin). Defer the
+	// informational message until after content routing so claimed PCV input has
+	// one stable terminal diagnostic.
+	autoDetectedSplit := false
 	if !useStdin && strings.Contains(inputPath, ".pcv.") && !decRecombine {
 		// Check if it's a chunk file like .pcv.0, .pcv.1, etc.
 		ext := inputPath[strings.LastIndex(inputPath, ".pcv.")+5:]
 		if _, err := fmt.Sscanf(ext, "%d", new(int)); err == nil {
-			if !decQuiet {
-				fmt.Fprintln(os.Stderr, "Detected split volume. Use --recombine to recombine chunks first.")
-			}
 			decRecombine = true
+			autoDetectedSplit = true
+		}
+	}
+
+	if err := translatePCV3PreflightError(volume.PreflightPCV3(inputFile, decRecombine)); err != nil {
+		return err
+	}
+	if autoDetectedSplit && !decQuiet {
+		fmt.Fprintln(os.Stderr, "Detected split volume. Use --recombine to recombine chunks first.")
+	}
+
+	if useStdin && !useStdout && !decYes {
+		if info, err := os.Stat(outputFile); err == nil {
+			if info.IsDir() {
+				return fmt.Errorf("output path is a directory: %s", outputFile)
+			}
+			return fmt.Errorf("output file %s already exists; when reading input from stdin use -y to overwrite", outputFile)
 		}
 	}
 
