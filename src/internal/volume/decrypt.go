@@ -34,6 +34,9 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 	if err := req.Validate(); err != nil {
 		return err
 	}
+	if err := PreflightPCV3(req.InputFile, req.Recombine); err != nil {
+		return err
+	}
 
 	opCtx := NewDecryptContext(ctx, req)
 	defer func() {
