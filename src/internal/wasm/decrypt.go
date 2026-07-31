@@ -6,6 +6,7 @@ import (
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/keyfile"
+	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/util"
 	"bytes"
 	"crypto/subtle"
@@ -52,6 +53,10 @@ type DecryptOptions struct {
 // DecryptVolume decrypts a Picocrypt volume from memory.
 // Returns (DecryptResult, 0) on success, or (zero, errorCode) on failure.
 func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptResult, int) {
+	if pcv3.DetectPrefix(volumeData) == pcv3.RouteNormalPCV {
+		return DecryptResult{}, ErrUnsupported
+	}
+
 	// Initialize RS codecs
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {
