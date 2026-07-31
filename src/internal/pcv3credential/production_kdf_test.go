@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	productionKDFFixtureSHA256  = "223dc690e17f2313c0dd819af9c115ba24d4f001284b01cb76bf7aae02f2dd88"
+	productionKDFFixtureSHA256  = "17e39ae0474b4351e1e9978b4fc8f98e640f700a34e4af110d6b728e95235b83"
 	productionKDFInputBytes     = 64
 	productionKDFSaltBytes      = 16
 	productionKDFRootBytes      = 32

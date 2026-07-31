@@ -5,6 +5,7 @@ import (
 	"crypto/hkdf"
 	"crypto/sha256"
 	"crypto/sha3"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -863,29 +864,21 @@ func buildProvenance(
 			err,
 		)
 	}
-	version, buildChecksum, err := xCryptoBuildIdentity()
-	if err != nil {
-		return fixtureProvenance{}, err
-	}
-	if version != exactXCryptoVersion {
-		return fixtureProvenance{}, fmt.Errorf(
-			"vectorfixture: x/crypto version %s; require %s",
-			version,
-			exactXCryptoVersion,
-		)
-	}
 	goSumBytes, err := readBoundedFile(goSumPath)
 	if err != nil {
 		return fixtureProvenance{}, fmt.Errorf("vectorfixture: read go.sum: %w", err)
 	}
-	goSumChecksum, err := xCryptoGoSumChecksum(goSumBytes, version)
+	buildInfo, ok := debug.ReadBuildInfo()
+	if !ok {
+		return fixtureProvenance{}, errors.New("vectorfixture: Go build info unavailable")
+	}
+	version, goSumChecksum, err := xCryptoProvenance(
+		buildInfo,
+		goSumPath,
+		goSumBytes,
+	)
 	if err != nil {
 		return fixtureProvenance{}, err
-	}
-	if buildChecksum != goSumChecksum {
-		return fixtureProvenance{}, errors.New(
-			"vectorfixture: x/crypto build and go.sum checksums differ",
-		)
 	}
 	inputHash := sha256.Sum256(inputBytes)
 	sourceHash := sha256.Sum256(sourceBytes)
@@ -938,39 +931,90 @@ func validateGeneratorSourceSet(sourcePath string) error {
 	return nil
 }
 
-func xCryptoBuildIdentity() (string, string, error) {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
+func xCryptoProvenance(
+	info *debug.BuildInfo,
+	goSumPath string,
+	goSum []byte,
+) (string, string, error) {
+	goSumChecksum, err := xCryptoGoSumChecksum(goSum, exactXCryptoVersion)
+	if err != nil {
+		return "", "", err
+	}
+	version, buildChecksum, err := xCryptoBuildIdentity(info)
+	if err != nil {
+		return "", "", err
+	}
+	if version != exactXCryptoVersion {
+		return "", "", fmt.Errorf(
+			"vectorfixture: x/crypto version %s; require %s",
+			version,
+			exactXCryptoVersion,
+		)
+	}
+	if buildChecksum != "" {
+		if buildChecksum != goSumChecksum {
+			return "", "", errors.New(
+				"vectorfixture: x/crypto build and go.sum checksums differ",
+			)
+		}
+		return version, goSumChecksum, nil
+	}
+	// Go omits dependency sums from vendored BuildInfo. This inventory check
+	// proves selection only; the outer immutable source manifest binds bytes.
+	if err := validateVendoredXCrypto(goSumPath); err != nil {
+		return "", "", err
+	}
+	return version, goSumChecksum, nil
+}
+
+func xCryptoBuildIdentity(info *debug.BuildInfo) (string, string, error) {
+	if info == nil {
 		return "", "", errors.New("vectorfixture: Go build info unavailable")
 	}
+	var found *debug.Module
 	for _, dependency := range info.Deps {
-		if dependency.Path != "golang.org/x/crypto" {
+		if dependency == nil || dependency.Path != "golang.org/x/crypto" {
 			continue
 		}
-		if dependency.Replace != nil {
-			return "", "", errors.New("vectorfixture: x/crypto replacement rejected")
+		if found != nil {
+			return "", "", errors.New("vectorfixture: duplicate x/crypto build dependency")
 		}
-		if dependency.Version == "" || dependency.Sum == "" {
-			return "", "", errors.New("vectorfixture: incomplete x/crypto build identity")
-		}
-		return dependency.Version, dependency.Sum, nil
+		found = dependency
 	}
-	return "", "", errors.New("vectorfixture: x/crypto build dependency missing")
+	if found == nil {
+		return "", "", errors.New("vectorfixture: x/crypto build dependency missing")
+	}
+	if found.Replace != nil {
+		return "", "", errors.New("vectorfixture: x/crypto replacement rejected")
+	}
+	if found.Version == "" {
+		return "", "", errors.New("vectorfixture: incomplete x/crypto build identity")
+	}
+	return found.Version, found.Sum, nil
 }
 
 func xCryptoGoSumChecksum(goSum []byte, version string) (string, error) {
 	var checksum string
 	for _, line := range strings.Split(string(goSum), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) != 3 ||
+		if len(fields) < 2 ||
 			fields[0] != "golang.org/x/crypto" ||
 			fields[1] != version {
 			continue
+		}
+		if len(fields) != 3 {
+			return "", errors.New("vectorfixture: invalid x/crypto go.sum entry")
 		}
 		if checksum != "" {
 			return "", errors.New("vectorfixture: duplicate x/crypto go.sum entry")
 		}
 		if !strings.HasPrefix(fields[2], "h1:") {
+			return "", errors.New("vectorfixture: invalid x/crypto go.sum checksum")
+		}
+		encoded := strings.TrimPrefix(fields[2], "h1:")
+		decoded, err := base64.StdEncoding.Strict().DecodeString(encoded)
+		if err != nil || len(decoded) != sha256.Size ||
+			base64.StdEncoding.EncodeToString(decoded) != encoded {
 			return "", errors.New("vectorfixture: invalid x/crypto go.sum checksum")
 		}
 		checksum = fields[2]
@@ -979,6 +1023,134 @@ func xCryptoGoSumChecksum(goSum []byte, version string) (string, error) {
 		return "", errors.New("vectorfixture: x/crypto go.sum entry missing")
 	}
 	return checksum, nil
+}
+
+func validateVendoredXCrypto(goSumPath string) error {
+	modulesPath := filepath.Join(filepath.Dir(goSumPath), "vendor", "modules.txt")
+	before, err := os.Lstat(modulesPath)
+	if err != nil {
+		return fmt.Errorf("vectorfixture: inspect vendor/modules.txt: %w", err)
+	}
+	if !before.Mode().IsRegular() || before.Size() < 0 ||
+		before.Size() > maxToolFileBytes {
+		return errors.New("vectorfixture: vendor/modules.txt is not a bounded regular file")
+	}
+	file, err := os.Open(modulesPath)
+	if err != nil {
+		return fmt.Errorf("vectorfixture: open vendor/modules.txt: %w", err)
+	}
+	defer file.Close()
+	openedBefore, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("vectorfixture: inspect opened vendor/modules.txt: %w", err)
+	}
+	stable := func(left, right os.FileInfo) bool {
+		return left.Mode() == right.Mode() &&
+			left.Size() == right.Size() &&
+			left.ModTime().Equal(right.ModTime()) &&
+			os.SameFile(left, right)
+	}
+	if !openedBefore.Mode().IsRegular() || !stable(before, openedBefore) {
+		return errors.New("vectorfixture: vendor/modules.txt identity changed")
+	}
+	modules, err := io.ReadAll(io.LimitReader(file, maxToolFileBytes+1))
+	if err != nil {
+		return fmt.Errorf("vectorfixture: read vendor/modules.txt: %w", err)
+	}
+	if len(modules) > maxToolFileBytes {
+		return errors.New("vectorfixture: vendor/modules.txt exceeds size limit")
+	}
+	openedAfter, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("vectorfixture: re-inspect opened vendor/modules.txt: %w", err)
+	}
+	after, err := os.Lstat(modulesPath)
+	if err != nil {
+		return fmt.Errorf("vectorfixture: re-inspect vendor/modules.txt: %w", err)
+	}
+	if !after.Mode().IsRegular() || !stable(openedBefore, openedAfter) ||
+		!stable(openedAfter, after) || openedAfter.Size() != int64(len(modules)) {
+		return errors.New("vectorfixture: vendor/modules.txt changed while reading")
+	}
+
+	const target = "golang.org/x/crypto"
+	targetHeaders := 0
+	explicitMarkers := 0
+	argonPackages := 0
+	insideTarget := false
+	for _, line := range strings.Split(string(modules), "\n") {
+		if strings.HasPrefix(line, "##") {
+			if insideTarget {
+				if !strings.HasPrefix(line, "## ") {
+					return errors.New("vectorfixture: malformed x/crypto vendor metadata")
+				}
+				if strings.Contains(line, "=>") {
+					return errors.New("vectorfixture: x/crypto vendor replacement rejected")
+				}
+				for _, attribute := range strings.Split(
+					strings.TrimPrefix(line, "## "),
+					";",
+				) {
+					if strings.TrimSpace(attribute) == "explicit" {
+						explicitMarkers++
+					}
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "# ") {
+			insideTarget = false
+			fields := strings.Fields(line)
+			if len(fields) < 2 || fields[0] != "#" || fields[1] != target {
+				continue
+			}
+			for _, field := range fields[2:] {
+				if field == "=>" {
+					return errors.New("vectorfixture: x/crypto vendor replacement rejected")
+				}
+			}
+			if len(fields) != 3 {
+				return errors.New("vectorfixture: malformed x/crypto vendor header")
+			}
+			if fields[2] != exactXCryptoVersion {
+				return fmt.Errorf(
+					"vectorfixture: vendored x/crypto version %s; require %s",
+					fields[2],
+					exactXCryptoVersion,
+				)
+			}
+			targetHeaders++
+			if targetHeaders != 1 {
+				return errors.New("vectorfixture: duplicate x/crypto vendor block")
+			}
+			insideTarget = true
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			insideTarget = false
+			continue
+		}
+		packageFields := strings.Fields(line)
+		if len(packageFields) > 0 && packageFields[0] == target+"/argon2" {
+			if len(packageFields) != 1 {
+				return errors.New("vectorfixture: malformed x/crypto/argon2 vendor package")
+			}
+			if !insideTarget {
+				return errors.New("vectorfixture: x/crypto/argon2 outside target vendor block")
+			}
+			argonPackages++
+		}
+	}
+	if targetHeaders != 1 {
+		return errors.New("vectorfixture: x/crypto vendor block missing")
+	}
+	if explicitMarkers != 1 {
+		return errors.New("vectorfixture: x/crypto vendor explicit marker mismatch")
+	}
+	if argonPackages != 1 {
+		return errors.New("vectorfixture: x/crypto/argon2 vendor package count mismatch")
+	}
+	return nil
 }
 
 func run(args []string, stdout io.Writer, deriveArgon argonDeriver) error {

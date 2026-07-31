@@ -10,15 +10,17 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
 
 // Every literal byte string in this file is public deterministic test data.
 const (
-	testInputPath  = "../vector_fixture_input.json"
-	testSourcePath = "main.go"
-	testGoSumPath  = "../../../../go.sum"
+	testInputPath       = "../vector_fixture_input.json"
+	testSourcePath      = "main.go"
+	testGoSumPath       = "../../../../go.sum"
+	testXCryptoChecksum = "h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw="
 )
 
 func mustDecodeHex(t *testing.T, value string) []byte {
@@ -74,6 +76,464 @@ func flipFirstHexNibble(value string) string {
 		return "1" + value[1:]
 	}
 	return "0" + value[1:]
+}
+
+func testXCryptoBuildInfo(checksum string) *debug.BuildInfo {
+	return &debug.BuildInfo{Deps: []*debug.Module{{
+		Path:    "golang.org/x/crypto",
+		Version: exactXCryptoVersion,
+		Sum:     checksum,
+	}}}
+}
+
+func testModuleRoot(t *testing.T) (string, string, []byte) {
+	t.Helper()
+	root := t.TempDir()
+	goSumPath := filepath.Join(root, "go.sum")
+	goSum := []byte(
+		"golang.org/x/crypto " + exactXCryptoVersion + " " +
+			testXCryptoChecksum + "\n",
+	)
+	if err := os.WriteFile(goSumPath, goSum, 0o600); err != nil {
+		t.Fatalf("write test go.sum: %v", err)
+	}
+	return root, goSumPath, goSum
+}
+
+func writeTestVendorModules(t *testing.T, root string, contents string) string {
+	t.Helper()
+	vendorDir := filepath.Join(root, "vendor")
+	if err := os.Mkdir(vendorDir, 0o700); err != nil {
+		t.Fatalf("create test vendor directory: %v", err)
+	}
+	modulesPath := filepath.Join(vendorDir, "modules.txt")
+	if err := os.WriteFile(modulesPath, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write test vendor inventory: %v", err)
+	}
+	return modulesPath
+}
+
+func canonicalXCryptoVendorModules() string {
+	return "# golang.org/x/crypto " + exactXCryptoVersion + "\n" +
+		"## explicit; go 1.24.0\n" +
+		"golang.org/x/crypto/argon2\n" +
+		"golang.org/x/crypto/blake2b\n" +
+		"# golang.org/x/sys v0.41.0\n" +
+		"## explicit; go 1.24.0\n" +
+		"golang.org/x/sys/cpu\n"
+}
+
+func TestXCryptoProvenanceRouting(t *testing.T) {
+	t.Run("nonempty match does not require vendor inventory", func(t *testing.T) {
+		_, goSumPath, goSum := testModuleRoot(t)
+		version, checksum, err := xCryptoProvenance(
+			testXCryptoBuildInfo(testXCryptoChecksum),
+			goSumPath,
+			goSum,
+		)
+		if err != nil {
+			t.Fatalf("matching build provenance rejected: %v", err)
+		}
+		if version != exactXCryptoVersion || checksum != testXCryptoChecksum {
+			t.Fatalf(
+				"matching build provenance = %q/%q; want %q/%q",
+				version,
+				checksum,
+				exactXCryptoVersion,
+				testXCryptoChecksum,
+			)
+		}
+	})
+
+	t.Run("nonempty mismatch cannot fall back to valid vendor inventory", func(t *testing.T) {
+		root, goSumPath, goSum := testModuleRoot(t)
+		writeTestVendorModules(t, root, canonicalXCryptoVendorModules())
+		_, _, err := xCryptoProvenance(
+			testXCryptoBuildInfo(
+				"h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			),
+			goSumPath,
+			goSum,
+		)
+		if err == nil || !strings.Contains(err.Error(), "checksums differ") {
+			t.Fatalf("mismatched build provenance error = %v; want mismatch", err)
+		}
+	})
+
+	t.Run("empty checksum requires valid vendor inventory", func(t *testing.T) {
+		root, goSumPath, goSum := testModuleRoot(t)
+		writeTestVendorModules(t, root, canonicalXCryptoVendorModules())
+		version, checksum, err := xCryptoProvenance(
+			testXCryptoBuildInfo(""),
+			goSumPath,
+			goSum,
+		)
+		if err != nil {
+			t.Fatalf("valid vendored provenance rejected: %v", err)
+		}
+		if version != exactXCryptoVersion || checksum != testXCryptoChecksum {
+			t.Fatalf(
+				"vendored provenance = %q/%q; want %q/%q",
+				version,
+				checksum,
+				exactXCryptoVersion,
+				testXCryptoChecksum,
+			)
+		}
+	})
+
+	tests := []struct {
+		name    string
+		prepare func(*testing.T, string)
+		wantErr string
+	}{
+		{
+			name:    "missing inventory",
+			prepare: func(*testing.T, string) {},
+			wantErr: "inspect vendor/modules.txt",
+		},
+		{
+			name: "symlink inventory",
+			prepare: func(t *testing.T, root string) {
+				vendorDir := filepath.Join(root, "vendor")
+				if err := os.Mkdir(vendorDir, 0o700); err != nil {
+					t.Fatalf("create symlink vendor directory: %v", err)
+				}
+				realPath := filepath.Join(vendorDir, "real-modules.txt")
+				if err := os.WriteFile(
+					realPath,
+					[]byte(canonicalXCryptoVendorModules()),
+					0o600,
+				); err != nil {
+					t.Fatalf("write symlink target: %v", err)
+				}
+				if err := os.Symlink(
+					filepath.Base(realPath),
+					filepath.Join(vendorDir, "modules.txt"),
+				); err != nil {
+					t.Fatalf("create vendor inventory symlink: %v", err)
+				}
+			},
+			wantErr: "not a bounded regular file",
+		},
+		{
+			name: "oversized inventory",
+			prepare: func(t *testing.T, root string) {
+				modulesPath := writeTestVendorModules(t, root, "")
+				file, err := os.OpenFile(modulesPath, os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatalf("open oversized vendor inventory: %v", err)
+				}
+				if err := file.Truncate(maxToolFileBytes + 1); err != nil {
+					_ = file.Close()
+					t.Fatalf("grow oversized vendor inventory: %v", err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatalf("close oversized vendor inventory: %v", err)
+				}
+			},
+			wantErr: "not a bounded regular file",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root, goSumPath, goSum := testModuleRoot(t)
+			test.prepare(t, root)
+			_, _, err := xCryptoProvenance(
+				testXCryptoBuildInfo(""),
+				goSumPath,
+				goSum,
+			)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf(
+					"invalid vendor inventory error = %v; want containing %q",
+					err,
+					test.wantErr,
+				)
+			}
+		})
+	}
+}
+
+func TestXCryptoBuildIdentityRejectsAmbiguity(t *testing.T) {
+	tests := []struct {
+		name    string
+		info    *debug.BuildInfo
+		wantErr string
+	}{
+		{
+			name: "duplicate target dependency",
+			info: &debug.BuildInfo{Deps: []*debug.Module{
+				{Path: "golang.org/x/crypto", Version: exactXCryptoVersion},
+				{Path: "golang.org/x/crypto", Version: exactXCryptoVersion},
+			}},
+			wantErr: "duplicate",
+		},
+		{
+			name: "replacement",
+			info: &debug.BuildInfo{Deps: []*debug.Module{{
+				Path:    "golang.org/x/crypto",
+				Version: exactXCryptoVersion,
+				Replace: &debug.Module{Path: "example.invalid/x/crypto"},
+			}}},
+			wantErr: "replacement",
+		},
+		{
+			name: "missing version",
+			info: &debug.BuildInfo{Deps: []*debug.Module{{
+				Path: "golang.org/x/crypto",
+			}}},
+			wantErr: "incomplete",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := xCryptoBuildIdentity(test.info)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf(
+					"build identity error = %v; want containing %q",
+					err,
+					test.wantErr,
+				)
+			}
+		})
+	}
+}
+
+func TestXCryptoGoSumChecksumPolicy(t *testing.T) {
+	canonical := "golang.org/x/crypto " + exactXCryptoVersion + " " +
+		testXCryptoChecksum + "\n"
+	tests := []struct {
+		name    string
+		goSum   string
+		wantErr string
+	}{
+		{
+			name:    "extra field",
+			goSum:   strings.TrimSuffix(canonical, "\n") + " extra\n",
+			wantErr: "invalid x/crypto go.sum entry",
+		},
+		{
+			name: "duplicate exact entry",
+			goSum: canonical + strings.TrimSuffix(canonical, "\n") +
+				"\n",
+			wantErr: "duplicate",
+		},
+		{
+			name:    "missing exact entry",
+			goSum:   "golang.org/x/sys v0.41.0 h1:AA==\n",
+			wantErr: "entry missing",
+		},
+		{
+			name: "non-h1 checksum",
+			goSum: "golang.org/x/crypto " + exactXCryptoVersion +
+				" z1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=\n",
+			wantErr: "invalid x/crypto go.sum checksum",
+		},
+		{
+			name: "invalid h1 base64",
+			goSum: "golang.org/x/crypto " + exactXCryptoVersion +
+				" h1:!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",
+			wantErr: "invalid x/crypto go.sum checksum",
+		},
+		{
+			name: "noncanonical h1 width",
+			goSum: "golang.org/x/crypto " + exactXCryptoVersion +
+				" h1:AA==\n",
+			wantErr: "invalid x/crypto go.sum checksum",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := xCryptoGoSumChecksum([]byte(test.goSum), exactXCryptoVersion)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf(
+					"go.sum policy error = %v; want containing %q",
+					err,
+					test.wantErr,
+				)
+			}
+		})
+	}
+}
+
+func TestXCryptoGoSumChecksumAcceptsGoCompatibleWhitespace(t *testing.T) {
+	goSum := []byte(
+		"golang.org/x/crypto   " + exactXCryptoVersion + "\t" +
+			testXCryptoChecksum + "  \r\n",
+	)
+	checksum, err := xCryptoGoSumChecksum(goSum, exactXCryptoVersion)
+	if err != nil {
+		t.Fatalf("Go-compatible x/crypto go.sum entry rejected: %v", err)
+	}
+	if checksum != testXCryptoChecksum {
+		t.Fatalf("x/crypto checksum = %q; want %q", checksum, testXCryptoChecksum)
+	}
+}
+
+func TestVendoredXCryptoInventoryAcceptsGoCompatibleSyntax(t *testing.T) {
+	t.Run("unrelated similar module header", func(t *testing.T) {
+		root, goSumPath, _ := testModuleRoot(t)
+		modules := "# example.com/golang.org/x/crypto-wrapper v1.0.0\n" +
+			"## explicit; go 1.24.0\n" +
+			"example.com/golang.org/x/crypto-wrapper/pkg\n" +
+			canonicalXCryptoVendorModules()
+		writeTestVendorModules(t, root, modules)
+		if err := validateVendoredXCrypto(goSumPath); err != nil {
+			t.Fatalf("unrelated similar module rejected: %v", err)
+		}
+	})
+
+	t.Run("target fields use whitespace", func(t *testing.T) {
+		root, goSumPath, _ := testModuleRoot(t)
+		modules := "#   golang.org/x/crypto   " + exactXCryptoVersion + "\r\n" +
+			"## explicit; go 1.24.0\r\n" +
+			"  golang.org/x/crypto/argon2\t\r\n" +
+			"golang.org/x/crypto/blake2b\r\n" +
+			"# golang.org/x/sys v0.41.0\r\n" +
+			"## explicit; go 1.24.0\r\n" +
+			"golang.org/x/sys/cpu\r\n"
+		writeTestVendorModules(t, root, modules)
+		if err := validateVendoredXCrypto(goSumPath); err != nil {
+			t.Fatalf("Go-compatible vendor inventory rejected: %v", err)
+		}
+	})
+}
+
+func TestVendoredXCryptoInventoryPolicy(t *testing.T) {
+	t.Run("canonical inventory", func(t *testing.T) {
+		root, goSumPath, _ := testModuleRoot(t)
+		writeTestVendorModules(t, root, canonicalXCryptoVendorModules())
+		if err := validateVendoredXCrypto(goSumPath); err != nil {
+			t.Fatalf("canonical vendor inventory rejected: %v", err)
+		}
+	})
+
+	canonical := canonicalXCryptoVendorModules()
+	tests := []struct {
+		name    string
+		modules string
+		wantErr string
+	}{
+		{
+			name: "inline replacement",
+			modules: strings.Replace(
+				canonical,
+				"# golang.org/x/crypto "+exactXCryptoVersion,
+				"# golang.org/x/crypto "+exactXCryptoVersion+" => ./crypto",
+				1,
+			),
+			wantErr: "replacement",
+		},
+		{
+			name:    "trailing replacement",
+			modules: canonical + "# golang.org/x/crypto => ./crypto\n",
+			wantErr: "replacement",
+		},
+		{
+			name:    "duplicate target block",
+			modules: canonical + canonical,
+			wantErr: "duplicate",
+		},
+		{
+			name: "wrong version",
+			modules: strings.Replace(
+				canonical,
+				exactXCryptoVersion,
+				"v0.53.0",
+				1,
+			),
+			wantErr: "version",
+		},
+		{
+			name: "missing explicit marker",
+			modules: strings.Replace(
+				canonical,
+				"## explicit; go 1.24.0\n",
+				"",
+				1,
+			),
+			wantErr: "explicit marker",
+		},
+		{
+			name: "duplicate explicit marker",
+			modules: strings.Replace(
+				canonical,
+				"## explicit; go 1.24.0\n",
+				"## explicit; explicit; go 1.24.0\n",
+				1,
+			),
+			wantErr: "explicit marker",
+		},
+		{
+			name: "malformed explicit metadata",
+			modules: strings.Replace(
+				canonical,
+				"## explicit; go 1.24.0\n",
+				"##garbage; explicit\n",
+				1,
+			),
+			wantErr: "malformed",
+		},
+		{
+			name: "missing argon2 package",
+			modules: strings.Replace(
+				canonical,
+				"golang.org/x/crypto/argon2\n",
+				"",
+				1,
+			),
+			wantErr: "package count",
+		},
+		{
+			name: "argon2 package owned by another module",
+			modules: "# example.com/other v1.0.0\n" +
+				"## explicit; go 1.24.0\n" +
+				"golang.org/x/crypto/argon2\n" +
+				strings.Replace(
+					canonical,
+					"golang.org/x/crypto/argon2\n",
+					"",
+					1,
+				),
+			wantErr: "outside target vendor block",
+		},
+		{
+			name: "duplicate argon2 package",
+			modules: strings.Replace(
+				canonical,
+				"golang.org/x/crypto/argon2\n",
+				"golang.org/x/crypto/argon2\n"+
+					"golang.org/x/crypto/argon2\n",
+				1,
+			),
+			wantErr: "package count",
+		},
+		{
+			name: "malformed target header",
+			modules: strings.Replace(
+				canonical,
+				"# golang.org/x/crypto "+exactXCryptoVersion,
+				"# golang.org/x/crypto "+exactXCryptoVersion+" unexpected",
+				1,
+			),
+			wantErr: "malformed",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root, goSumPath, _ := testModuleRoot(t)
+			writeTestVendorModules(t, root, test.modules)
+			err := validateVendoredXCrypto(goSumPath)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf(
+					"vendor policy error = %v; want containing %q",
+					err,
+					test.wantErr,
+				)
+			}
+		})
+	}
 }
 
 func TestLiteralCredentialInputKAT(t *testing.T) {
@@ -786,31 +1246,16 @@ func TestGenerateHarness(t *testing.T) {
 }
 
 func TestCheckFixture(t *testing.T) {
-	input, inputBytes := mustLoadTestInput(t)
-	provenance := mustTestProvenance(t, inputBytes)
-	call := byte(0)
-	value, err := generateFixture(
-		input,
-		provenance,
-		func(profileInput, []byte, []byte) ([]byte, error) {
-			call++
-			return fakeArgonRoot(call), nil
-		},
-	)
+	const fixturePath = "../kdf_vectors.json"
+	value, before, err := readCanonicalJSON[fixture](fixturePath)
 	if err != nil {
-		t.Fatalf("build cheap fixture: %v", err)
+		t.Fatalf("read committed fixture: %v", err)
 	}
 	dir := t.TempDir()
-	fixturePath := filepath.Join(dir, "vectors.json")
-	encoded, err := canonicalJSON(value)
-	if err != nil {
-		t.Fatalf("encode cheap fixture: %v", err)
-	}
-	if err := os.WriteFile(fixturePath, encoded, 0o600); err != nil {
-		t.Fatalf("write cheap fixture: %v", err)
-	}
-	before := append([]byte(nil), encoded...)
-	argonCalls := 0
+	// This callback guards dispatcher separation: check mode must not use the
+	// supplied generation deriver. The terminal record below is a schema
+	// assertion, not an independent call-graph proof about runCheck.
+	generationDeriverCalls := 0
 	var stdout bytes.Buffer
 	err = run([]string{
 		"check",
@@ -819,24 +1264,27 @@ func TestCheckFixture(t *testing.T) {
 		"--go-sum", testGoSumPath,
 		"--fixture", fixturePath,
 	}, &stdout, func(profileInput, []byte, []byte) ([]byte, error) {
-		argonCalls++
-		return nil, errors.New("check must not invoke Argon")
+		generationDeriverCalls++
+		return nil, errors.New("check must not use the generation deriver")
 	})
 	if err != nil {
-		t.Fatalf("check cheap fixture: %v", err)
+		t.Fatalf("check committed fixture: %v", err)
 	}
-	if argonCalls != 0 {
-		t.Fatalf("check caused %d Argon calls; want 0", argonCalls)
+	if generationDeriverCalls != 0 {
+		t.Fatalf(
+			"check used the generation deriver %d times; want 0",
+			generationDeriverCalls,
+		)
 	}
 	if !strings.Contains(stdout.String(), "\"argon_calls\": 0") {
-		t.Fatalf("check terminal record = %q; want zero Argon calls", stdout.String())
+		t.Fatalf("check terminal record = %q; want frozen-root schema", stdout.String())
 	}
 	after, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatalf("read checked fixture: %v", err)
 	}
 	if !bytes.Equal(after, before) {
-		t.Fatal("check modified fixture bytes")
+		t.Fatal("check modified committed fixture bytes")
 	}
 
 	tests := []struct {
@@ -894,7 +1342,7 @@ func TestCheckFixture(t *testing.T) {
 			if writeErr := os.WriteFile(mutantPath, mutantEncoded, 0o600); writeErr != nil {
 				t.Fatalf("write mutant: %v", writeErr)
 			}
-			argonCalls = 0
+			generationDeriverCalls = 0
 			checkErr := run([]string{
 				"check",
 				"--input", testInputPath,
@@ -902,14 +1350,17 @@ func TestCheckFixture(t *testing.T) {
 				"--go-sum", testGoSumPath,
 				"--fixture", mutantPath,
 			}, &bytes.Buffer{}, func(profileInput, []byte, []byte) ([]byte, error) {
-				argonCalls++
-				return nil, errors.New("check must not invoke Argon")
+				generationDeriverCalls++
+				return nil, errors.New("check must not use the generation deriver")
 			})
 			if checkErr == nil || !strings.Contains(checkErr.Error(), test.wantErr) {
 				t.Fatalf("mutant error = %v; want containing %q", checkErr, test.wantErr)
 			}
-			if argonCalls != 0 {
-				t.Fatalf("mutant check caused %d Argon calls; want 0", argonCalls)
+			if generationDeriverCalls != 0 {
+				t.Fatalf(
+					"mutant check used the generation deriver %d times; want 0",
+					generationDeriverCalls,
+				)
 			}
 		})
 	}
@@ -917,12 +1368,12 @@ func TestCheckFixture(t *testing.T) {
 	noncanonicalPath := filepath.Join(dir, "noncanonical.json")
 	if err := os.WriteFile(
 		noncanonicalPath,
-		append([]byte(" "), encoded...),
+		append([]byte(" "), before...),
 		0o600,
 	); err != nil {
 		t.Fatalf("write noncanonical fixture: %v", err)
 	}
-	argonCalls = 0
+	generationDeriverCalls = 0
 	err = run([]string{
 		"check",
 		"--input", testInputPath,
@@ -930,13 +1381,23 @@ func TestCheckFixture(t *testing.T) {
 		"--go-sum", testGoSumPath,
 		"--fixture", noncanonicalPath,
 	}, &bytes.Buffer{}, func(profileInput, []byte, []byte) ([]byte, error) {
-		argonCalls++
-		return nil, errors.New("check must not invoke Argon")
+		generationDeriverCalls++
+		return nil, errors.New("check must not use the generation deriver")
 	})
 	if err == nil || !strings.Contains(err.Error(), "noncanonical JSON") {
 		t.Fatalf("noncanonical fixture error = %v; want canonical rejection", err)
 	}
-	if argonCalls != 0 {
-		t.Fatalf("noncanonical check caused %d Argon calls; want 0", argonCalls)
+	if generationDeriverCalls != 0 {
+		t.Fatalf(
+			"noncanonical check used the generation deriver %d times; want 0",
+			generationDeriverCalls,
+		)
+	}
+	final, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("re-read committed fixture: %v", err)
+	}
+	if !bytes.Equal(final, before) {
+		t.Fatal("fixture checks modified committed fixture bytes")
 	}
 }

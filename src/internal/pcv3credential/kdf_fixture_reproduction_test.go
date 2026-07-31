@@ -15,8 +15,8 @@ import (
 
 const (
 	reproductionInputSHA  = "a1891d0b780d94213e4b2af38635d1d2fefec1aaa68200714246062b39db94de"
-	reproductionOutputSHA = "223dc690e17f2313c0dd819af9c115ba24d4f001284b01cb76bf7aae02f2dd88"
-	reproductionSourceSHA = "01db87744df251c298bccc2e1a87af754fdd21494d3ffa355f098d459bf04d6f"
+	reproductionOutputSHA = "17e39ae0474b4351e1e9978b4fc8f98e640f700a34e4af110d6b728e95235b83"
+	reproductionSourceSHA = "04ab368f13b36a46ef4d52be616c292068afdfbae69a3f9c191bf0ed85fc2d1f"
 	reproductionNotice    = "PUBLIC DETERMINISTIC PCV3 TEST DATA; NOT SECRET OR OPERATIONAL CREDENTIALS OR KEYS"
 )
 

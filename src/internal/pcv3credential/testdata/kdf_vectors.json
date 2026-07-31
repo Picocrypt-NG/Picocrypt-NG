@@ -3,7 +3,7 @@
   "public_test_data_notice": "PUBLIC DETERMINISTIC PCV3 TEST DATA; NOT SECRET OR OPERATIONAL CREDENTIALS OR KEYS",
   "provenance": {
     "input_sha256": "a1891d0b780d94213e4b2af38635d1d2fefec1aaa68200714246062b39db94de",
-    "generator_sha256": "01db87744df251c298bccc2e1a87af754fdd21494d3ffa355f098d459bf04d6f",
+    "generator_sha256": "04ab368f13b36a46ef4d52be616c292068afdfbae69a3f9c191bf0ed85fc2d1f",
     "go_version": "go1.26.5",
     "x_crypto_version": "v0.54.0",
     "x_crypto_checksum": "h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw="
