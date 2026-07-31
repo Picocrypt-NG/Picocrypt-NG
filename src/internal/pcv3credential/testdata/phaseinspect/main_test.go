@@ -890,49 +890,29 @@ func TestInspectorRejectsExecutionSurfaceOverlap(t *testing.T) {
 		fixture.requireRejected(t)
 	})
 	t.Run("hierarchical parent and child overlap", func(t *testing.T) {
-		config := reviewedInspectorConfig(t)
-		normal := config.Stages["normal1"]
-		paranoid := config.Stages["paranoid1"]
-		normal.Commands[0].Argv = []string{
-			"${GO}", "test", "-tags", "migrated_fynedo,pcv3_production_kdf",
-			"-p", "1", "./internal/pcv3credential", "-run", "^TestFoo$",
-			"-count=1", "-timeout=60m", "-json",
+		parent := executionSurface{
+			PackagePaths: []string{"./internal/pcv3credential"},
+			BuildTags:    []string{"migrated_fynedo"},
+			TestSelector: "^TestFoo$",
+			EvidenceKind: "go-test-json",
 		}
-		normal.Commands[0].ExecutionSurface.TestSelector = "^TestFoo$"
-		paranoid.Commands[0].Argv = []string{
-			"${GO}", "test", "-tags", "migrated_fynedo,pcv3_production_kdf",
-			"-p", "1", "./internal/pcv3credential", "-run", "^TestFoo$/^bar$",
-			"-count=1", "-timeout=120m", "-json",
-		}
-		paranoid.Commands[0].ExecutionSurface.TestSelector = "^TestFoo$/^bar$"
-		config.Stages["normal1"] = normal
-		config.Stages["paranoid1"] = paranoid
-		_, err := validateGateConfig(&config)
-		if err == nil || err.Error() != "execution surfaces overlap" {
-			t.Fatalf("parent/child overlap error = %v; want overlap rejection", err)
+		child := parent
+		child.TestSelector = "^TestFoo$/^bar$"
+		if !executionSurfacesOverlap(parent, child) {
+			t.Fatal("exact parent selector did not overlap its child selector")
 		}
 	})
 	t.Run("regex metacharacter selector overlaps literal match", func(t *testing.T) {
-		config := reviewedInspectorConfig(t)
-		normal := config.Stages["normal1"]
-		paranoid := config.Stages["paranoid1"]
-		normal.Commands[0].Argv = []string{
-			"${GO}", "test", "-tags", "migrated_fynedo,pcv3_production_kdf",
-			"-p", "1", "./internal/pcv3credential", "-run", "^TestFoo.$",
-			"-count=1", "-timeout=60m", "-json",
+		regex := executionSurface{
+			PackagePaths: []string{"./internal/pcv3credential"},
+			BuildTags:    []string{"migrated_fynedo"},
+			TestSelector: "^TestFoo.$",
+			EvidenceKind: "go-test-json",
 		}
-		normal.Commands[0].ExecutionSurface.TestSelector = "^TestFoo.$"
-		paranoid.Commands[0].Argv = []string{
-			"${GO}", "test", "-tags", "migrated_fynedo,pcv3_production_kdf",
-			"-p", "1", "./internal/pcv3credential", "-run", "^TestFooA$",
-			"-count=1", "-timeout=120m", "-json",
-		}
-		paranoid.Commands[0].ExecutionSurface.TestSelector = "^TestFooA$"
-		config.Stages["normal1"] = normal
-		config.Stages["paranoid1"] = paranoid
-		_, err := validateGateConfig(&config)
-		if err == nil || err.Error() != "execution surfaces overlap" {
-			t.Fatalf("regex/literal overlap error = %v; want overlap rejection", err)
+		literal := regex
+		literal.TestSelector = "^TestFooA$"
+		if !executionSurfacesOverlap(regex, literal) {
+			t.Fatal("ambiguous regex selector was not treated as overlapping")
 		}
 	})
 }
@@ -1213,64 +1193,194 @@ func TestInspectorRequiresCanonicalGoTestCountAndTimeout(t *testing.T) {
 	}
 }
 
-func TestInspectorExactSkipAllowlist(t *testing.T) {
-	t.Run("exactly one reviewed skip", func(t *testing.T) {
-		fixture := newInspectorFixture(t)
-		fixture.setHostSkips(t, []fixtureSkipEvent{{
-			Test:   "TestUnpackAllowsSystemTempDirSymlinkPrefix",
-			Reason: "temp dir path has no symlinked prefix on this platform",
-		}})
-		_ = fixture.inspect(t)
-	})
-	for _, field := range []string{
-		"test",
-		"reason",
-		"match",
-		"source_path",
-		"required_go_test_declarations",
-	} {
-		t.Run(field, func(t *testing.T) {
-			fixture := newInspectorFixture(t)
-			fixture.rewriteConfig(t, func(config map[string]any) {
-				rule := config["skip_allowlist"].([]any)[0].(map[string]any)
-				if field == "required_go_test_declarations" {
-					rule[field] = float64(2)
-				} else {
-					rule[field] = "not-reviewed"
+func TestInspectorFiniteSelectorBindsRequiredInventory(t *testing.T) {
+	const selector = "^(TestInspectorValidClosure|TestInspectorReadOnlyCopiesUnchanged)$"
+	command := commandConfig{
+		ID:   "host-controller-tests",
+		Kind: "go-test",
+		ExecutionSurface: executionSurface{
+			PackagePaths: []string{
+				"./internal/pcv3credential/testdata/phaseinspect",
+			},
+			BuildTags:    []string{"migrated_fynedo"},
+			TestSelector: selector,
+			EvidenceKind: "go-test-json",
+		},
+		Argv: []string{
+			"${GO}", "test",
+			"-tags", "migrated_fynedo",
+			"-p", "1",
+			"./internal/pcv3credential/testdata/phaseinspect",
+			"-run", selector,
+			"-count=1",
+			"-timeout=5m",
+			"-json",
+		},
+		TimeoutSeconds: 360,
+		GoBased:        true,
+		RequiredTestIDs: []string{
+			"TestInspectorValidClosure",
+			"TestInspectorReadOnlyCopiesUnchanged",
+		},
+		RequiredTestPackages: map[string]string{
+			"TestInspectorValidClosure": pcv3PackagePath +
+				"/testdata/phaseinspect",
+			"TestInspectorReadOnlyCopiesUnchanged": pcv3PackagePath +
+				"/testdata/phaseinspect",
+		},
+	}
+	if err := validateGoTestExecutionSurface(command, "0"); err != nil {
+		t.Fatalf("exact finite inspector selector rejected: %v", err)
+	}
+
+	command.RequiredTestIDs = command.RequiredTestIDs[:1]
+	if err := validateGoTestExecutionSurface(command, "0"); err == nil {
+		t.Fatal("finite selector selected a test outside the required evidence inventory")
+	}
+}
+
+func TestInspectorRejectsBroadenedHostEvidence(t *testing.T) {
+	const unexpectedTest = "TestUnexpectedControllerWork"
+	extendControllerSelector := func(t *testing.T, command *commandConfig) {
+		t.Helper()
+		selector := command.ExecutionSurface.TestSelector
+		if !strings.HasSuffix(selector, ")$") {
+			t.Fatalf("reviewed controller selector is not a finite union: %q", selector)
+		}
+		selector = strings.TrimSuffix(selector, ")$") +
+			"|" + unexpectedTest + ")$"
+		command.ExecutionSurface.TestSelector = selector
+		for index := range command.Argv {
+			if command.Argv[index] == "-run" && index+1 < len(command.Argv) {
+				command.Argv[index+1] = selector
+				return
+			}
+		}
+		t.Fatal("reviewed controller command has no selector argument")
+	}
+	for _, test := range []struct {
+		name      string
+		commandID string
+		wantError string
+		mutate    func(*testing.T, *commandConfig)
+	}{
+		{
+			name:      "additional Phase-2 package",
+			commandID: "host-phase2-tests",
+			wantError: "host Phase-2 or controller test scope is not exact",
+			mutate: func(t *testing.T, command *commandConfig) {
+				t.Helper()
+				command.ExecutionSurface.PackagePaths = append(
+					command.ExecutionSurface.PackagePaths,
+					"./internal/fileops",
+				)
+				for index, argument := range command.Argv {
+					if argument != "./internal/pcv3credential" {
+						continue
+					}
+					command.Argv = append(
+						append([]string(nil), command.Argv[:index+1]...),
+						append(
+							[]string{"./internal/fileops"},
+							command.Argv[index+1:]...,
+						)...,
+					)
+					return
 				}
-			})
-			fixture.requireRejected(t)
+				t.Fatal("reviewed Phase-2 command has no credential package argument")
+			},
+		},
+		{
+			name:      "additional auxiliary package",
+			commandID: "host-fixture-schema",
+			wantError: "host Phase-2 or controller test scope is not exact",
+			mutate: func(t *testing.T, command *commandConfig) {
+				t.Helper()
+				command.ExecutionSurface.PackagePaths = append(
+					command.ExecutionSurface.PackagePaths,
+					"./internal/fileops",
+				)
+				for index, argument := range command.Argv {
+					if argument !=
+						"./internal/pcv3credential/testdata/mutator" {
+						continue
+					}
+					command.Argv = append(
+						append([]string(nil), command.Argv[:index+1]...),
+						append(
+							[]string{"./internal/fileops"},
+							command.Argv[index+1:]...,
+						)...,
+					)
+					return
+				}
+				t.Fatal("reviewed fixture command has no mutator package argument")
+			},
+		},
+		{
+			name:      "selector outside required inventory",
+			commandID: "host-controller-tests",
+			wantError: "go-test selector does not match the required evidence inventory",
+			mutate:    extendControllerSelector,
+		},
+		{
+			name:      "controller test outside threat closure",
+			commandID: "host-controller-tests",
+			wantError: "test command evidence inventory exceeds its threat closure",
+			mutate: func(t *testing.T, command *commandConfig) {
+				t.Helper()
+				extendControllerSelector(t, command)
+				command.RequiredTestIDs = append(
+					command.RequiredTestIDs,
+					unexpectedTest,
+				)
+				command.RequiredTestPackages[unexpectedTest] = pcv3PackagePath +
+					"/testdata/phaseinspect"
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := reviewedInspectorConfig(t)
+			host := config.Stages["host"]
+			commandFound := false
+			for index := range host.Commands {
+				if host.Commands[index].ID != test.commandID {
+					continue
+				}
+				test.mutate(t, &host.Commands[index])
+				commandFound = true
+				break
+			}
+			if !commandFound {
+				t.Fatalf("reviewed host command %q is missing", test.commandID)
+			}
+			config.Stages["host"] = host
+
+			_, err := validateGateConfig(&config)
+			if err == nil || err.Error() != test.wantError {
+				t.Fatalf(
+					"broadened host evidence error = %v; want %q",
+					err,
+					test.wantError,
+				)
+			}
 		})
 	}
 }
 
-func TestInspectorRejectsEvalSymlinksSkip(t *testing.T) {
+func TestInspectorRejectsEveryRuntimeSkip(t *testing.T) {
 	fixture := newInspectorFixture(t)
-	fixture.setHostSkips(t, []fixtureSkipEvent{{
-		Test:   "TestUnpackAllowsSystemTempDirSymlinkPrefix",
-		Reason: "Cannot resolve temp dir symlinks on this platform: simulated failure",
+	_ = fixture.inspect(t)
+
+	withSkip := newInspectorFixture(t)
+	withSkip.setHostSkips(t, []fixtureSkipEvent{{
+		Test:   "TestFactorModeMatrix",
+		Reason: "simulated forbidden skip",
 	}})
-	fixture.requireRejected(t)
+	withSkip.requireRejected(t, "runtime skip events are forbidden")
 }
 
 func TestInspectorRejectsSkipOrNoOp(t *testing.T) {
-	t.Run("unauthorized skip", func(t *testing.T) {
-		fixture := newInspectorFixture(t)
-		fixture.setHostSkips(t, []fixtureSkipEvent{{
-			Test:   "OtherTest",
-			Reason: "temp dir path has no symlinked prefix on this platform",
-		}})
-		fixture.requireRejected(t)
-	})
-	t.Run("multiple skips", func(t *testing.T) {
-		fixture := newInspectorFixture(t)
-		skip := fixtureSkipEvent{
-			Test:   "TestUnpackAllowsSystemTempDirSymlinkPrefix",
-			Reason: "temp dir path has no symlinked prefix on this platform",
-		}
-		fixture.setHostSkips(t, []fixtureSkipEvent{skip, skip})
-		fixture.requireRejected(t)
-	})
 	t.Run("no commands", func(t *testing.T) {
 		fixture := newInspectorFixture(t)
 		fixture.rewriteEvidence(t, "host", func(evidence map[string]any) {
@@ -3190,87 +3300,26 @@ func TestInspectorReadOnlyCopiesUnchanged(t *testing.T) {
 		}
 	})
 	t.Run("retained immediate root metadata is bound", func(t *testing.T) {
-		for _, test := range []struct {
-			name   string
-			mutate func(*testing.T, string, os.FileInfo)
-		}{
-			{
-				name: "mode",
-				mutate: func(
-					t *testing.T,
-					directory string,
-					info os.FileInfo,
-				) {
-					t.Helper()
-					if err := os.Chmod(
-						directory,
-						info.Mode().Perm()^0o040,
-					); err != nil {
-						t.Fatalf("change retained root mode: %v", err)
-					}
-				},
-			},
-			{
-				name: "link count",
-				mutate: func(
-					t *testing.T,
-					directory string,
-					info os.FileInfo,
-				) {
-					t.Helper()
-					beforeLinks, ok := stableLinkCount(info)
-					if !ok {
-						t.Fatal("initial retained root link count unavailable")
-					}
-					if err := os.Mkdir(
-						filepath.Join(directory, "child"),
-						0o700,
-					); err != nil {
-						t.Fatalf("increase retained root link count: %v", err)
-					}
-					if err := os.Chtimes(
-						directory,
-						info.ModTime(),
-						info.ModTime(),
-					); err != nil {
-						t.Fatalf("restore retained root timestamp: %v", err)
-					}
-					after, err := os.Lstat(directory)
-					if err != nil {
-						t.Fatalf("stat changed retained root: %v", err)
-					}
-					afterLinks, ok := stableLinkCount(after)
-					if !ok || afterLinks == beforeLinks {
-						t.Fatalf(
-							"retained root link count = %d; want change from %d",
-							afterLinks,
-							beforeLinks,
-						)
-					}
-				},
-			},
-		} {
-			t.Run(test.name, func(t *testing.T) {
-				directory := t.TempDir()
-				path := filepath.Join(directory, "input")
-				if err := os.WriteFile(path, []byte("bound"), 0o400); err != nil {
-					t.Fatalf("write retained-root input: %v", err)
-				}
-				session := newInspectionSession()
-				defer session.close()
-				if _, _, err := session.readBoundedFile(path, 1024); err != nil {
-					t.Fatalf("bind retained-root input: %v", err)
-				}
-				info, err := os.Lstat(directory)
-				if err != nil {
-					t.Fatalf("stat retained root: %v", err)
-				}
-				test.mutate(t, directory, info)
-				if err := session.verify(); err == nil ||
-					!strings.Contains(err.Error(), "inspection root changed") {
-					t.Fatalf("retained root verification error = %v", err)
-				}
-			})
+		directory := t.TempDir()
+		path := filepath.Join(directory, "input")
+		if err := os.WriteFile(path, []byte("bound"), 0o400); err != nil {
+			t.Fatalf("write retained-root input: %v", err)
+		}
+		session := newInspectionSession()
+		defer session.close()
+		if _, _, err := session.readBoundedFile(path, 1024); err != nil {
+			t.Fatalf("bind retained-root input: %v", err)
+		}
+		info, err := os.Lstat(directory)
+		if err != nil {
+			t.Fatalf("stat retained root: %v", err)
+		}
+		if err := os.Chmod(directory, info.Mode().Perm()^0o040); err != nil {
+			t.Fatalf("change retained root mode: %v", err)
+		}
+		if err := session.verify(); err == nil ||
+			!strings.Contains(err.Error(), "inspection root changed") {
+			t.Fatalf("retained root verification error = %v", err)
 		}
 	})
 	t.Run("external ancestor metadata churn is not rebound", func(t *testing.T) {
@@ -3448,7 +3497,6 @@ type fixtureGateConfig struct {
 	RequiredExecutionUnits []string                      `json:"required_execution_units"`
 	SkipAllowlist          []fixtureSkipRule             `json:"skip_allowlist"`
 	SkipRuntime            fixtureSkipCardinality        `json:"skip_runtime_cardinality"`
-	SkipRejectedReasons    []string                      `json:"skip_rejected_reasons"`
 	LintRuns               []fixtureLintRun              `json:"lint_runs"`
 	Stages                 map[string]fixtureStageConfig `json:"stages"`
 	EvidenceContract       fixtureEvidenceContract       `json:"evidence_contract"`
@@ -3504,12 +3552,6 @@ type fixtureCommandConfig struct {
 	RequiredTestIDs       []string                `json:"required_test_ids,omitempty"`
 	RequiredTestPackages  map[string]string       `json:"required_test_packages,omitempty"`
 	LintRun               string                  `json:"lint_run,omitempty"`
-	SourcePath            string                  `json:"source_path,omitempty"`
-	GoASTTestDeclaration  string                  `json:"go_ast_exact_test_declaration,omitempty"`
-	RequiredDeclarations  int                     `json:"required_declarations,omitempty"`
-	RuntimeEventMinimum   int                     `json:"runtime_event_minimum,omitempty"`
-	RuntimeEventMaximum   int                     `json:"runtime_event_maximum,omitempty"`
-	AllowlistSource       string                  `json:"allowlist_source,omitempty"`
 	RequiredCount         int                     `json:"required_count,omitempty"`
 	RequiredOutputMarker  string                  `json:"required_output_marker,omitempty"`
 	ForbiddenOutputMarker string                  `json:"forbidden_output_marker,omitempty"`
@@ -3775,9 +3817,7 @@ type inspectorStageLiteral struct {
 }
 
 type inspectorSkipLiteral struct {
-	Test                string `json:"test"`
-	Reason              string `json:"reason"`
-	ObservedCardinality int    `json:"observed_cardinality"`
+	ObservedCardinality int `json:"observed_cardinality"`
 }
 
 type inspectorFixture struct {
@@ -3900,13 +3940,10 @@ func newInspectorFixture(t *testing.T) *inspectorFixture {
 	}
 	fixture.writeReadOnly(t, fixture.configPath, configData)
 	fixture.createRealCeremonyWorkspaceLayout(t)
-	var unpackSource strings.Builder
-	unpackSource.WriteString(
-		"package fileops\n\nimport \"testing\"\n\n" +
-			"func TestUnpackAllowsSystemTempDirSymlinkPrefix(t *testing.T) {}\n",
-	)
+	var mutationSource strings.Builder
+	mutationSource.WriteString("package fileops\n")
 	for index := range 20 {
-		_, _ = fmt.Fprintf(&unpackSource, "// mutation-anchor-%02d\n", index)
+		_, _ = fmt.Fprintf(&mutationSource, "// mutation-anchor-%02d\n", index)
 	}
 	for path, data := range map[string][]byte{
 		fixture.specPath:        []byte("specification\n"),
@@ -3914,7 +3951,7 @@ func newInspectorFixture(t *testing.T) *inspectorFixture {
 		fixture.vectorsPath:     []byte("{\"vectors\":[]}\n"),
 		fixture.vectorInputPath: []byte("{\"inputs\":[]}\n"),
 		fixture.mutationsPath:   []byte("{\"schema_version\":1,\"mutations\":[]}\n"),
-		filepath.Join(source, "src", "internal", "fileops", "unpack_test.go"): []byte(unpackSource.String()),
+		filepath.Join(source, "src", "internal", "fileops", "unpack_test.go"): []byte(mutationSource.String()),
 	} {
 		fixture.writeReadOnly(t, path, data)
 	}
@@ -4294,8 +4331,6 @@ func (fixture *inspectorFixture) writeStageEvidence(
 			}
 		case len(command.RequiredTestIDs) != 0:
 			result.ObservedIDs = append([]string(nil), command.RequiredTestIDs...)
-		case command.GoASTTestDeclaration != "":
-			result.ObservedIDs = []string{command.GoASTTestDeclaration}
 		}
 		switch command.Kind {
 		case "go-test", "golangci-lint", "gitleaks":
@@ -4672,8 +4707,6 @@ func (fixture *inspectorFixture) wantVerdict(t *testing.T) inspectorVerdictLiter
 		RequiredExecutionSurfaces: surfaces,
 		ObservedExecutionSurfaces: append([]fixtureExecutionSurface(nil), surfaces...),
 		Skip: inspectorSkipLiteral{
-			Test:                config.SkipAllowlist[0].Test,
-			Reason:              config.SkipAllowlist[0].Reason,
 			ObservedCardinality: fixture.observedSkipCount(t),
 		},
 		ThreatClosure: append([]string(nil), config.RequiredThreatIDs...),
@@ -4850,11 +4883,16 @@ func (fixture *inspectorFixture) setHostSkips(
 	fixture.rewriteEvidence(t, "host", func(evidence map[string]any) {
 		evidence["skip_events"] = toJSONValue(t, skips)
 		commands := evidence["commands"].([]any)
+		found := false
 		for _, commandValue := range commands {
 			command := commandValue.(map[string]any)
-			if command["id"] == "host-fast-tests" {
+			if command["id"] == "host-phase2-tests" {
 				command["skip_events"] = toJSONValue(t, skips)
+				found = true
 			}
+		}
+		if !found {
+			t.Fatal("host Phase-2 command is missing from the evidence fixture")
 		}
 	})
 }

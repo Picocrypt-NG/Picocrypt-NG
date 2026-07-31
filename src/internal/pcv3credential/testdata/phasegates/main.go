@@ -10,9 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"os"
 	"os/exec"
@@ -34,7 +31,8 @@ const (
 	evidenceMode          = 0o400
 	maxCommandOutputBytes = 4 << 20
 	processWaitDelay      = 2 * time.Second
-	reviewedGateConfigSHA = "9630c2d867dec6461df8b3273e2934aac6f54a7c2391d8deab63204a6e5af6c8"
+	reviewedGateConfigSHA = "6a9fe3d08464f7630a7d767e424af38edf0e751cbfb50bf10c014b1da7006187"
+	picocryptModulePath   = "Picocrypt-NG"
 	pcv3PackagePath       = "Picocrypt-NG/internal/pcv3credential"
 )
 
@@ -60,7 +58,6 @@ type gateConfig struct {
 	RequiredExecutionUnits []string                 `json:"required_execution_units"`
 	SkipAllowlist          []skipRule               `json:"skip_allowlist"`
 	SkipRuntimeCardinality skipCardinality          `json:"skip_runtime_cardinality"`
-	SkipRejectedReasons    []string                 `json:"skip_rejected_reasons"`
 	LintRuns               []lintRun                `json:"lint_runs"`
 	Stages                 map[string]stageConfig   `json:"stages"`
 	EvidenceContract       evidenceContract         `json:"evidence_contract"`
@@ -172,12 +169,6 @@ type commandConfig struct {
 	RequiredTestIDs       []string                `json:"required_test_ids,omitempty"`
 	RequiredTestPackages  map[string]string       `json:"required_test_packages,omitempty"`
 	LintRun               string                  `json:"lint_run,omitempty"`
-	SourcePath            string                  `json:"source_path,omitempty"`
-	GoASTTestDeclaration  string                  `json:"go_ast_exact_test_declaration,omitempty"`
-	RequiredDeclarations  int                     `json:"required_declarations,omitempty"`
-	RuntimeEventMinimum   int                     `json:"runtime_event_minimum,omitempty"`
-	RuntimeEventMaximum   int                     `json:"runtime_event_maximum,omitempty"`
-	AllowlistSource       string                  `json:"allowlist_source,omitempty"`
 	RequiredCount         int                     `json:"required_count,omitempty"`
 	RequiredOutputMarker  string                  `json:"required_output_marker,omitempty"`
 	ForbiddenOutputMarker string                  `json:"forbidden_output_marker,omitempty"`
@@ -330,6 +321,7 @@ type runtimeDeps struct {
 	executable          func() (string, error)
 	executableID        func(string) (executableIdentity, error)
 	compiledAttestation func() buildAttestation
+	validateConfig      func(*gateConfig) error
 	gateConfigSHA       string
 	now                 func() time.Time
 	beforePostCheck     func()
@@ -352,6 +344,7 @@ func defaultDeps() runtimeDeps {
 				SourceManifestSHA256: phase2SourceManifestSHA256,
 			}
 		},
+		validateConfig:  validateGateConfig,
 		gateConfigSHA:   reviewedGateConfigSHA,
 		now:             time.Now,
 		removeStageTemp: (*os.Root).RemoveAll,
@@ -541,12 +534,14 @@ func run(args []string, stdout io.Writer) error {
 			_, err := io.WriteString(stdout, "cpu-facts\n")
 			return err
 		case "freeze-identity":
-			_, err := io.WriteString(stdout,
+			_, err := io.WriteString(
+				stdout,
 				"freeze-identity --config --baseline --base --source-manifest --diff --spec --vectors --vector-input --mutations --runner --inspector --output\n",
 			)
 			return err
 		case "stage":
-			_, err := io.WriteString(stdout,
+			_, err := io.WriteString(
+				stdout,
 				"stage --stage --config --baseline --base --source --source-manifest --diff --execution-identity --execution-identity-sha256 --evidence\n",
 			)
 			return err
@@ -677,7 +672,7 @@ func freezeIdentity(options freezeOptions, deps runtimeDeps) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := validateGateConfig(config); err != nil {
+	if err := validateRuntimeGateConfig(deps, config); err != nil {
 		return "", err
 	}
 	facts, err := deps.hostFacts()
@@ -1194,7 +1189,7 @@ func validateStageInputs(
 	if err != nil {
 		return executionIdentity{}, nil, err
 	}
-	if err := validateGateConfig(config); err != nil {
+	if err := validateRuntimeGateConfig(deps, config); err != nil {
 		return executionIdentity{}, nil, err
 	}
 	evidenceName, ok := config.EvidenceContract.StageFilenames[options.Stage]
@@ -1319,7 +1314,21 @@ func loadGateConfig(
 	return &config, identity, nil
 }
 
+func validateRuntimeGateConfig(deps runtimeDeps, config *gateConfig) error {
+	if deps.validateConfig == nil {
+		return errors.New("gate config validator is unavailable")
+	}
+	return deps.validateConfig(config)
+}
+
 func validateGateConfig(config *gateConfig) error {
+	if config == nil || len(config.ThreatClosure) == 0 {
+		return errors.New("reviewed gate config requires a complete threat closure")
+	}
+	return validateGateConfigStructure(config)
+}
+
+func validateGateConfigStructure(config *gateConfig) error {
 	if config == nil || config.SchemaVersion != gateSchemaVersion ||
 		config.GoVersion != "go1.26.5" || config.Module == "" {
 		return errors.New("invalid gate config header")
@@ -1358,7 +1367,10 @@ func validateGateConfig(config *gateConfig) error {
 				}
 			}
 			if len(config.ThreatClosure) != 0 {
-				if err := validateExecutionSurface(command); err != nil {
+				if err := validateExecutionSurface(
+					command,
+					config.ChildEnvironment.Required["CGO_ENABLED"],
+				); err != nil {
 					return fmt.Errorf("command %s execution surface: %w", command.ID, err)
 				}
 				surfaces = append(surfaces, command.ExecutionSurface)
@@ -1427,12 +1439,88 @@ func validateGateConfig(config *gateConfig) error {
 			config.ChildEnvironment.Required["GOTOOLCHAIN"] != "local" {
 			return errors.New("vendored child environment contract mismatch")
 		}
+		if err := validateHostTestScopes(config); err != nil {
+			return err
+		}
 	}
 	if err := validateSkipContract(config); err != nil {
 		return err
 	}
 	if err := validateThreatClosure(config); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateHostTestScopes(config *gateConfig) error {
+	host, ok := config.Stages["host"]
+	if !ok {
+		return errors.New("host stage is missing")
+	}
+	phase2, phase2OK := commandByID(host.Commands, "host-phase2-tests")
+	controller, controllerOK := commandByID(host.Commands, "host-controller-tests")
+	reproduction, reproductionOK := commandByID(
+		host.Commands,
+		"host-fixture-reproduction",
+	)
+	schema, schemaOK := commandByID(host.Commands, "host-fixture-schema")
+	var goTestIDs []string
+	for _, command := range host.Commands {
+		if command.Kind == "go-test" {
+			goTestIDs = append(goTestIDs, command.ID)
+		}
+	}
+	if !phase2OK || !controllerOK || !reproductionOK || !schemaOK ||
+		!sameStringSet(goTestIDs, []string{
+			"host-phase2-tests",
+			"host-controller-tests",
+			"host-fixture-reproduction",
+			"host-fixture-schema",
+		}) ||
+		!equalStrings(
+			phase2.ExecutionSurface.PackagePaths,
+			[]string{"./internal/pcv3credential"},
+		) ||
+		!equalStrings(
+			phase2.ExecutionSurface.BuildTags,
+			[]string{"migrated_fynedo"},
+		) ||
+		phase2.ExecutionSurface.TestSelector != "all" ||
+		!equalStrings(
+			controller.ExecutionSurface.PackagePaths,
+			[]string{
+				"./internal/pcv3credential/testdata/phasegates",
+				"./internal/pcv3credential/testdata/phaseinspect",
+			},
+		) ||
+		!equalStrings(
+			controller.ExecutionSurface.BuildTags,
+			[]string{"migrated_fynedo"},
+		) ||
+		controller.ExecutionSurface.TestSelector == "all" ||
+		!equalStrings(
+			reproduction.ExecutionSurface.PackagePaths,
+			[]string{"./internal/pcv3credential"},
+		) ||
+		!equalStrings(
+			reproduction.ExecutionSurface.BuildTags,
+			[]string{"migrated_fynedo", "pcv3_fixture_reproduction"},
+		) ||
+		reproduction.ExecutionSurface.TestSelector !=
+			"^TestKDFLiteralFixtureReproduction$" ||
+		!equalStrings(
+			schema.ExecutionSurface.PackagePaths,
+			[]string{
+				"./internal/pcv3credential/testdata/vectorfixture",
+				"./internal/pcv3credential/testdata/mutator",
+			},
+		) ||
+		!equalStrings(
+			schema.ExecutionSurface.BuildTags,
+			[]string{"migrated_fynedo"},
+		) ||
+		schema.ExecutionSurface.TestSelector != "all" {
+		return errors.New("host Phase-2 or controller test scope is not exact")
 	}
 	return nil
 }
@@ -1484,7 +1572,10 @@ func safeArtifactSuffix(value string) bool {
 		filepath.Base(value) == value
 }
 
-func validateExecutionSurface(command commandConfig) error {
+func validateExecutionSurface(
+	command commandConfig,
+	cgoEnabled string,
+) error {
 	surface := command.ExecutionSurface
 	if surface.EvidenceKind == "" || surface.TestSelector == "" ||
 		hasDuplicates(surface.PackagePaths) || hasDuplicates(surface.BuildTags) {
@@ -1499,50 +1590,207 @@ func validateExecutionSurface(command commandConfig) error {
 	if command.Kind != "go-test" {
 		return nil
 	}
+	if !command.GoBased {
+		return errors.New("go-test command must be Go-based")
+	}
+	if len(command.Argv) < 2 ||
+		command.Argv[0] != "${GO}" ||
+		command.Argv[1] != "test" {
+		return errors.New("go-test argv must start with exact ${GO} test")
+	}
 	var packages []string
 	var tags []string
 	selector := "all"
-	for index := 0; index < len(command.Argv); index++ {
-		switch command.Argv[index] {
-		case "-tags":
-			if index+1 >= len(command.Argv) {
-				return errors.New("missing build-tag value")
+	tagCount := 0
+	selectorCount := 0
+	parallelismCount := 0
+	jsonCount := 0
+	raceCount := 0
+	countCount := 0
+	timeoutCount := 0
+	for index := 2; index < len(command.Argv); index++ {
+		argument := command.Argv[index]
+		switch {
+		case argument == "-tags":
+			tagCount++
+			if tagCount != 1 || index+1 >= len(command.Argv) {
+				return errors.New(
+					"go-test argv contains duplicate or incomplete -tags",
+				)
 			}
-			tags = strings.Split(command.Argv[index+1], ",")
 			index++
-		case "-run":
-			if index+1 >= len(command.Argv) {
-				return errors.New("missing test selector value")
+			if command.Argv[index] == "" {
+				return errors.New("go-test argv contains empty build tags")
 			}
-			selector = command.Argv[index+1]
+			tags = strings.Split(command.Argv[index], ",")
+			if hasDuplicates(tags) || contains(tags, "") {
+				return errors.New(
+					"go-test argv contains empty or duplicate build tags",
+				)
+			}
+		case argument == "-run":
+			selectorCount++
+			if selectorCount != 1 || index+1 >= len(command.Argv) {
+				return errors.New(
+					"go-test argv contains duplicate or incomplete -run",
+				)
+			}
 			index++
+			selector = command.Argv[index]
+			if selector == "" {
+				return errors.New("go-test argv contains an empty selector")
+			}
+		case argument == "-p":
+			parallelismCount++
+			if index+1 >= len(command.Argv) ||
+				command.Argv[index+1] != "1" {
+				return errors.New(
+					"go-test argv requires exactly one canonical -p 1",
+				)
+			}
+			index++
+		case argument == "-json":
+			jsonCount++
+		case argument == "-race":
+			raceCount++
+			if raceCount > 1 {
+				return errors.New("go-test argv contains duplicate -race")
+			}
+		case argument == "-count=1":
+			countCount++
+			if countCount > 1 {
+				return errors.New(
+					"go-test argv requires exactly one canonical -count=1",
+				)
+			}
+		case strings.HasPrefix(argument, "-timeout="):
+			timeoutCount++
+			duration, err := time.ParseDuration(
+				strings.TrimPrefix(argument, "-timeout="),
+			)
+			if err != nil ||
+				timeoutCount > 1 ||
+				duration <= 0 ||
+				duration >= time.Duration(command.TimeoutSeconds)*time.Second {
+				return errors.New(
+					"go-test argv requires exactly one canonical positive -timeout shorter than outer timeout",
+				)
+			}
+		case strings.HasPrefix(argument, "-count"),
+			strings.HasPrefix(argument, "--count"):
+			return errors.New(
+				"go-test argv requires exactly one canonical -count=1",
+			)
+		case strings.HasPrefix(argument, "-timeout"),
+			strings.HasPrefix(argument, "--timeout"):
+			return errors.New(
+				"go-test argv requires exactly one canonical positive -timeout shorter than outer timeout",
+			)
+		case argument == "--race",
+			strings.HasPrefix(argument, "-race="),
+			strings.HasPrefix(argument, "--race="):
+			return errors.New("go race flag must use exact -race form")
+		case strings.HasPrefix(argument, "-p="),
+			strings.HasPrefix(argument, "--p"),
+			strings.HasPrefix(argument, "-json="),
+			strings.HasPrefix(argument, "--json"),
+			strings.HasPrefix(argument, "-tags="),
+			strings.HasPrefix(argument, "--tags"),
+			strings.HasPrefix(argument, "-run="),
+			strings.HasPrefix(argument, "--run"):
+			return errors.New(
+				"go-test argv contains a noncanonical execution flag",
+			)
+		case strings.HasPrefix(argument, "./"):
+			if !exactGoPackagePath(argument) {
+				return errors.New("go-test argv package is not exact")
+			}
+			packages = append(packages, argument)
 		default:
-			if strings.HasPrefix(command.Argv[index], "./") {
-				if strings.Contains(command.Argv[index], "...") {
-					return errors.New("go-test argv contains a package wildcard")
-				}
-				packages = append(packages, command.Argv[index])
-			}
+			return errors.New(
+				"go-test argv contains an unsupported or ambiguous argument",
+			)
 		}
 	}
-	raceEnabled, err := exactGoRaceFlag(command.Argv)
-	if err != nil {
-		return err
+	if parallelismCount != 1 {
+		return errors.New("go-test argv requires exactly one canonical -p 1")
+	}
+	if jsonCount != 1 {
+		return errors.New("go-test argv requires exactly one canonical -json")
+	}
+	if countCount != 1 {
+		return errors.New(
+			"go-test argv requires exactly one canonical -count=1",
+		)
+	}
+	if timeoutCount != 1 {
+		return errors.New(
+			"go-test argv requires exactly one canonical positive -timeout shorter than outer timeout",
+		)
+	}
+	if len(packages) == 0 || hasDuplicates(packages) {
+		return errors.New(
+			"go-test argv requires unique explicit package paths",
+		)
 	}
 	wantEvidenceKind := "go-test-json"
-	if raceEnabled {
+	if raceCount == 1 {
+		if cgoEnabled != "1" {
+			return errors.New("go -race command requires CGO_ENABLED=1")
+		}
 		wantEvidenceKind = "go-test-race-json"
 	}
-	if !contains(command.Argv, "-json") ||
-		!equalStrings(surface.PackagePaths, packages) ||
+	if !equalStrings(surface.PackagePaths, packages) ||
 		!equalStrings(surface.BuildTags, tags) ||
 		surface.TestSelector != selector ||
 		surface.EvidenceKind != wantEvidenceKind {
 		return errors.New("surface does not match exact go-test argv")
 	}
 	if selector != "all" {
-		if _, ok := exactTestSelector(selector); !ok {
+		paths, ok := exactTestSelector(selector)
+		if !ok {
 			return errors.New("go-test surface selector is not an exact test path")
+		}
+		selected := selectorTestIDs(paths)
+		if hasDuplicates(command.RequiredTestIDs) ||
+			!sameStringSet(selected, command.RequiredTestIDs) {
+			return errors.New(
+				"go-test selector does not match the required evidence inventory",
+			)
+		}
+	}
+	return validateRequiredTestPackages(command)
+}
+
+func exactGoPackagePath(path string) bool {
+	if !strings.HasPrefix(path, "./") ||
+		len(path) == 2 ||
+		strings.Contains(path, "...") ||
+		strings.ContainsAny(path, `\*?[]`) {
+		return false
+	}
+	for _, component := range strings.Split(strings.TrimPrefix(path, "./"), "/") {
+		if component == "" || component == "." || component == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func validateRequiredTestPackages(command commandConfig) error {
+	if len(command.RequiredTestIDs) == 0 ||
+		hasDuplicates(command.RequiredTestIDs) ||
+		len(command.RequiredTestPackages) != len(command.RequiredTestIDs) {
+		return errors.New("go-test required evidence inventory is incomplete")
+	}
+	allowedPackages := make(map[string]bool, len(command.ExecutionSurface.PackagePaths))
+	for _, packagePath := range command.ExecutionSurface.PackagePaths {
+		allowedPackages[picocryptModulePath+"/"+strings.TrimPrefix(packagePath, "./")] = true
+	}
+	for _, testID := range command.RequiredTestIDs {
+		packagePath, ok := command.RequiredTestPackages[testID]
+		if !ok || !allowedPackages[packagePath] {
+			return errors.New("go-test required package binding is outside its surface")
 		}
 	}
 	return nil
@@ -1571,32 +1819,88 @@ func executionSurfacesOverlap(left, right executionSurface) bool {
 	if !leftExact || !rightExact {
 		return true
 	}
-	return selectorPrefix(leftTests, rightTests) ||
-		selectorPrefix(rightTests, leftTests)
+	for _, leftPath := range leftTests {
+		for _, rightPath := range rightTests {
+			if selectorPrefix(leftPath, rightPath) ||
+				selectorPrefix(rightPath, leftPath) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-func exactTestSelector(selector string) ([]string, bool) {
+func exactTestSelector(selector string) ([][]string, bool) {
 	parts := strings.Split(selector, "/")
-	exact := make([]string, 0, len(parts))
+	if len(parts) == 1 {
+		tests, ok := exactSelectorPart(parts[0], true)
+		if !ok {
+			return nil, false
+		}
+		paths := make([][]string, len(tests))
+		for index, test := range tests {
+			paths[index] = []string{test}
+		}
+		return paths, true
+	}
+
+	path := make([]string, 0, len(parts))
 	for _, part := range parts {
-		if len(part) < 3 || part[0] != '^' || part[len(part)-1] != '$' {
+		tests, ok := exactSelectorPart(part, false)
+		if !ok || len(tests) != 1 {
 			return nil, false
 		}
-		literal := part[1 : len(part)-1]
-		if literal == "" {
+		path = append(path, tests[0])
+	}
+	return [][]string{path}, true
+}
+
+func exactSelectorPart(part string, allowAlternatives bool) ([]string, bool) {
+	if len(part) < 3 || part[0] != '^' || part[len(part)-1] != '$' {
+		return nil, false
+	}
+	body := part[1 : len(part)-1]
+	if allowAlternatives &&
+		strings.HasPrefix(body, "(") &&
+		strings.HasSuffix(body, ")") {
+		tests := strings.Split(body[1:len(body)-1], "|")
+		if len(tests) < 2 || hasDuplicates(tests) {
 			return nil, false
 		}
-		for _, character := range literal {
-			if (character < 'a' || character > 'z') &&
-				(character < 'A' || character > 'Z') &&
-				(character < '0' || character > '9') &&
-				character != '_' && character != '-' {
+		for _, test := range tests {
+			if !exactSelectorLiteral(test) {
 				return nil, false
 			}
 		}
-		exact = append(exact, literal)
+		return tests, true
 	}
-	return exact, true
+	if !exactSelectorLiteral(body) {
+		return nil, false
+	}
+	return []string{body}, true
+}
+
+func exactSelectorLiteral(literal string) bool {
+	if literal == "" {
+		return false
+	}
+	for _, character := range literal {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') &&
+			character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func selectorTestIDs(paths [][]string) []string {
+	tests := make([]string, len(paths))
+	for index, path := range paths {
+		tests[index] = strings.Join(path, "/")
+	}
+	return tests
 }
 
 func selectorPrefix(prefix, selector []string) bool {
@@ -1647,6 +1951,7 @@ func validateThreatClosure(config *gateConfig) error {
 		return errors.New("threat closure must map every required threat exactly once")
 	}
 	var mapped []string
+	observedByCommand := map[string]map[string]bool{}
 	for _, closure := range config.ThreatClosure {
 		mapped = append(mapped, closure.ID)
 		stage, ok := config.Stages[closure.Stage]
@@ -1667,12 +1972,37 @@ func validateThreatClosure(config *gateConfig) error {
 			if !subsetOf(closure.RequiredObservedIDs, command.RequiredTestIDs) {
 				return errors.New("test threat closure is outside the command inventory")
 			}
+			if observedByCommand[command.ID] == nil {
+				observedByCommand[command.ID] = map[string]bool{}
+			}
+			for _, observedID := range closure.RequiredObservedIDs {
+				observedByCommand[command.ID][observedID] = true
+			}
 		default:
 			return errors.New("threat closure must be backed by mutation or structured test evidence")
 		}
 	}
 	if hasDuplicates(mapped) || !sameStringSet(mapped, config.RequiredThreatIDs) {
 		return errors.New("threat closure IDs do not match the required threat set")
+	}
+	host, ok := config.Stages["host"]
+	if !ok {
+		return errors.New("threat closure names an unknown command")
+	}
+	for commandID, observedIDs := range observedByCommand {
+		command, ok := commandByID(host.Commands, commandID)
+		if !ok || command.Kind != "go-test" {
+			return errors.New("threat closure names an unknown command")
+		}
+		var observed []string
+		for testID := range observedIDs {
+			observed = append(observed, testID)
+		}
+		if !sameStringSet(observed, command.RequiredTestIDs) {
+			return errors.New(
+				"test command evidence inventory exceeds its threat closure",
+			)
+		}
 	}
 	return nil
 }
@@ -1696,20 +2026,9 @@ func subsetOf(values, allowed []string) bool {
 }
 
 func validateSkipContract(config *gateConfig) error {
-	if len(config.SkipAllowlist) != 1 {
-		return errors.New("skip allowlist must contain exactly one tuple")
-	}
-	rule := config.SkipAllowlist[0]
-	if rule != (skipRule{
-		Test:                       "TestUnpackAllowsSystemTempDirSymlinkPrefix",
-		Reason:                     "temp dir path has no symlinked prefix on this platform",
-		Match:                      "exact",
-		SourcePath:                 "internal/fileops/unpack_test.go",
-		RequiredGoTestDeclarations: 1,
-	}) || config.SkipRuntimeCardinality.Minimum != 0 ||
-		config.SkipRuntimeCardinality.Maximum != 1 ||
-		!contains(config.SkipRejectedReasons, "Cannot resolve temp dir symlinks on this platform:") {
-		return errors.New("skip contract does not match the reviewed exact tuple")
+	if len(config.SkipAllowlist) != 0 ||
+		config.SkipRuntimeCardinality != (skipCardinality{}) {
+		return errors.New("controlled Phase-2 gates must forbid every runtime skip")
 	}
 	return nil
 }
@@ -1727,7 +2046,7 @@ func runConfiguredCommand(
 	var runErr error
 	switch command.Kind {
 	case "internal":
-		result, runErr = runInternalCheck(command, config, identity, replacements)
+		result, runErr = runInternalCheck(command, config, replacements)
 	case "mutation-campaign":
 		if command.TimeoutSeconds <= 0 {
 			return commandResult{ID: command.ID}, errors.New("mutation campaign has invalid timeout")
@@ -2515,21 +2834,10 @@ func campaignSourceSetHash(mutations []campaignMutation) string {
 func runInternalCheck(
 	command commandConfig,
 	config *gateConfig,
-	identity executionIdentity,
 	replacements map[string]string,
 ) (commandResult, error) {
 	result := commandResult{ID: command.ID, ExitCode: 0}
 	switch command.ID {
-	case "host-skip-accounting":
-		path := filepath.Join(identity.Source.Path, "src", command.SourcePath)
-		count, err := exactGoTestDeclarationCount(
-			path,
-			command.GoASTTestDeclaration,
-		)
-		if err != nil || count != command.RequiredDeclarations {
-			return result, errors.Join(err, errors.New("skip test declaration count mismatch"))
-		}
-		result.ObservedIDs = []string{command.GoASTTestDeclaration}
 	case "host-threat-closure":
 		if command.RequiredIDsSource != "required_threat_ids" ||
 			command.RequiredCount != len(config.RequiredThreatIDs) ||
@@ -2597,20 +2905,8 @@ func expectedThreatsForStage(config *gateConfig, stage string) []string {
 }
 
 func validateRuntimeSkips(config *gateConfig, events []skipEvent) error {
-	if len(events) < config.SkipRuntimeCardinality.Minimum ||
-		len(events) > config.SkipRuntimeCardinality.Maximum {
-		return errors.New("runtime skip cardinality mismatch")
-	}
-	for _, event := range events {
-		for _, rejected := range config.SkipRejectedReasons {
-			if strings.HasPrefix(event.Reason, rejected) {
-				return errors.New("runtime skip used rejected EvalSymlinks error path")
-			}
-		}
-		rule := config.SkipAllowlist[0]
-		if event.Test != rule.Test || event.Reason != rule.Reason {
-			return errors.New("runtime skip does not match exact allowlist tuple")
-		}
+	if validateSkipContract(config) != nil || len(events) != 0 {
+		return errors.New("runtime skip events are forbidden")
 	}
 	return nil
 }
@@ -2622,10 +2918,8 @@ func parseGoTestJSON(
 ) ([]string, []skipEvent, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 4096), maxCommandOutputBytes)
-	passed := map[string]bool{}
-	skipped := map[string]bool{}
+	passed := map[string]int{}
 	var skips []skipEvent
-	outputByTest := map[string][]string{}
 	for scanner.Scan() {
 		var event struct {
 			Action  string `json:"Action"`
@@ -2636,33 +2930,20 @@ func parseGoTestJSON(
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			return nil, nil, errors.New("go test emitted malformed JSON")
 		}
-		if event.Test != "" && event.Output != "" {
-			key := event.Package + "\x00" + event.Test
-			outputByTest[key] = append(
-				outputByTest[key],
-				strings.TrimSpace(event.Output),
-			)
-		}
 		if event.Action == "pass" && event.Test != "" {
-			passed[event.Package+"\x00"+event.Test] = true
+			if requiredPackage, required := requiredPackages[event.Test]; required && requiredPackage != "" &&
+				event.Package != requiredPackage {
+				return nil, nil, errors.New(
+					"selected test passed in an unexpected package",
+				)
+			}
+			passed[event.Package+"\x00"+event.Test]++
 		}
-		if event.Action == "skip" && event.Test != "" {
-			key := event.Package + "\x00" + event.Test
-			skipped[key] = true
-			var diagnostics []string
-			for _, line := range outputByTest[key] {
-				if _, ok := goHarnessDiagnostic(line); ok {
-					diagnostics = append(diagnostics, line)
-				}
-			}
-			if len(diagnostics) != 1 {
-				return nil, nil, errors.New("skip event lacks one exact Go harness reason line")
-			}
-			reason, ok := exactGoHarnessSkipReason(diagnostics[0])
-			if !ok {
-				return nil, nil, errors.New("skip event diagnostic is not the exact reviewed reason")
-			}
-			skips = append(skips, skipEvent{Test: event.Test, Reason: reason})
+		if event.Action == "skip" {
+			skips = append(skips, skipEvent{
+				Test:   event.Test,
+				Reason: strings.TrimSpace(event.Output),
+			})
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -2682,50 +2963,17 @@ func parseGoTestJSON(
 					break
 				}
 			}
-			for observedKey := range skipped {
-				if strings.HasSuffix(observedKey, "\x00"+id) {
-					key = observedKey
-					break
-				}
-			}
 		}
-		if !passed[key] && !skipped[key] {
-			return nil, nil, fmt.Errorf("required test produced no PASS or SKIP event: %s", id)
+		if passed[key] != 1 {
+			return observed, skips,
+				fmt.Errorf("required test did not produce exactly one PASS event: %s", id)
 		}
 		observed = append(observed, id)
 	}
+	if len(skips) != 0 {
+		return observed, skips, errors.New("go test reported forbidden skip events")
+	}
 	return observed, skips, nil
-}
-
-func exactGoHarnessSkipReason(line string) (string, bool) {
-	const approved = "temp dir path has no symlinked prefix on this platform"
-	reason, ok := goHarnessDiagnostic(line)
-	if !ok || reason != approved {
-		return "", false
-	}
-	return approved, true
-}
-
-func goHarnessDiagnostic(line string) (string, bool) {
-	trimmed := strings.TrimSpace(line)
-	location, reason, ok := strings.Cut(trimmed, ": ")
-	if !ok {
-		return "", false
-	}
-	colon := strings.LastIndexByte(location, ':')
-	if colon < 0 || !strings.HasSuffix(location[:colon], ".go") {
-		return "", false
-	}
-	lineNumber := location[colon+1:]
-	if lineNumber == "" {
-		return "", false
-	}
-	for _, character := range lineNumber {
-		if character < '0' || character > '9' {
-			return "", false
-		}
-	}
-	return reason, true
 }
 
 func parseNestedGoTestJSON(
@@ -3898,34 +4146,6 @@ func requiredIDsForStage(stage string, config *gateConfig) []string {
 	default:
 		return nil
 	}
-}
-
-func exactGoTestDeclarationCount(path, name string) (int, error) {
-	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-	if err != nil {
-		return 0, err
-	}
-	count := 0
-	for _, declaration := range file.Decls {
-		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Recv != nil || function.Name.Name != name ||
-			function.Type.Params == nil || len(function.Type.Params.List) != 1 {
-			continue
-		}
-		star, ok := function.Type.Params.List[0].Type.(*ast.StarExpr)
-		if !ok {
-			continue
-		}
-		selector, ok := star.X.(*ast.SelectorExpr)
-		if !ok || selector.Sel.Name != "T" {
-			continue
-		}
-		packageName, ok := selector.X.(*ast.Ident)
-		if ok && packageName.Name == "testing" {
-			count++
-		}
-	}
-	return count, nil
 }
 
 type limitedBuffer struct {

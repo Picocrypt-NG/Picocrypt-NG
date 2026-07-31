@@ -8,9 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -29,6 +26,7 @@ const (
 	maxExecutableBytes     = 256 << 20
 	executionIdentityMode  = 0o444
 	evidenceMode           = 0o400
+	picocryptModulePath    = "Picocrypt-NG"
 	pcv3PackagePath        = "Picocrypt-NG/internal/pcv3credential"
 )
 
@@ -65,7 +63,6 @@ type gateConfig struct {
 	RequiredExecutionUnits []string                 `json:"required_execution_units"`
 	SkipAllowlist          []skipRule               `json:"skip_allowlist"`
 	SkipRuntimeCardinality skipCardinality          `json:"skip_runtime_cardinality"`
-	SkipRejectedReasons    []string                 `json:"skip_rejected_reasons"`
 	LintRuns               []lintRun                `json:"lint_runs"`
 	Stages                 map[string]stageConfig   `json:"stages"`
 	EvidenceContract       evidenceContract         `json:"evidence_contract"`
@@ -177,12 +174,6 @@ type commandConfig struct {
 	RequiredTestIDs       []string          `json:"required_test_ids,omitempty"`
 	RequiredTestPackages  map[string]string `json:"required_test_packages,omitempty"`
 	LintRun               string            `json:"lint_run,omitempty"`
-	SourcePath            string            `json:"source_path,omitempty"`
-	GoASTTestDeclaration  string            `json:"go_ast_exact_test_declaration,omitempty"`
-	RequiredDeclarations  int               `json:"required_declarations,omitempty"`
-	RuntimeEventMinimum   int               `json:"runtime_event_minimum,omitempty"`
-	RuntimeEventMaximum   int               `json:"runtime_event_maximum,omitempty"`
-	AllowlistSource       string            `json:"allowlist_source,omitempty"`
 	RequiredCount         int               `json:"required_count,omitempty"`
 	RequiredOutputMarker  string            `json:"required_output_marker,omitempty"`
 	ForbiddenOutputMarker string            `json:"forbidden_output_marker,omitempty"`
@@ -454,9 +445,7 @@ type verdictStage struct {
 }
 
 type verdictSkip struct {
-	Test                string `json:"test"`
-	Reason              string `json:"reason"`
-	ObservedCardinality int    `json:"observed_cardinality"`
+	ObservedCardinality int `json:"observed_cardinality"`
 }
 
 type inspectedStage struct {
@@ -1272,14 +1261,6 @@ func inspectWithSession(
 			"complete source manifest does not match the live source tree",
 		)
 	}
-	if err := validateExactSkipDeclaration(
-		session,
-		&config,
-		&identity,
-	); err != nil {
-		return inspectorVerdict{}, err
-	}
-
 	inspected, observedSkipCount, err := inspectEvidence(
 		session,
 		options.evidenceDir,
@@ -1301,7 +1282,6 @@ func inspectWithSession(
 	for index := range inspected {
 		stages[index] = inspected[index].verdict
 	}
-	skip := config.SkipAllowlist[0]
 	return inspectorVerdict{
 		SchemaVersion:           inspectorSchemaVersion,
 		Status:                  "PASS",
@@ -1321,8 +1301,6 @@ func inspectWithSession(
 		RequiredExecutionSurfaces: append([]executionSurface(nil), surfaces...),
 		ObservedExecutionSurfaces: observedSurfaces,
 		Skip: verdictSkip{
-			Test:                skip.Test,
-			Reason:              skip.Reason,
 			ObservedCardinality: observedSkipCount,
 		},
 		ThreatClosure: append([]string(nil), config.RequiredThreatIDs...),
@@ -1497,7 +1475,6 @@ func validateGateConfig(config *gateConfig) ([]executionSurface, error) {
 	exactProfiles := map[string]bool{}
 	lintCommands := map[string]bool{}
 	gitleaks := 0
-	skipCheck := 0
 	threatCheck := 0
 	for _, stageName := range stageNames {
 		stage, exists := config.Stages[stageName]
@@ -1557,14 +1534,6 @@ func validateGateConfig(config *gateConfig) ([]executionSurface, error) {
 				gitleaks++
 			case "internal":
 				switch command.ID {
-				case "host-skip-accounting":
-					if command.GoASTTestDeclaration != config.SkipAllowlist[0].Test ||
-						command.SourcePath != config.SkipAllowlist[0].SourcePath ||
-						command.RequiredDeclarations != 1 ||
-						command.AllowlistSource != "skip_allowlist" {
-						return nil, errors.New("skip accounting command mismatch")
-					}
-					skipCheck++
 				case "host-threat-closure":
 					if command.RequiredIDsSource != "required_threat_ids" ||
 						command.RequiredCount != len(config.RequiredThreatIDs) {
@@ -1588,11 +1557,14 @@ func validateGateConfig(config *gateConfig) ([]executionSurface, error) {
 	}
 	if hasDuplicates(owned) || hasDuplicates(commandIDs) ||
 		!sameStringSet(owned, config.RequiredExecutionUnits) ||
-		len(lintCommands) != 3 || gitleaks != 1 || skipCheck != 1 ||
+		len(lintCommands) != 3 || gitleaks != 1 ||
 		threatCheck != 1 ||
 		!exactProfiles["TestProductionKDFExactProfiles/normal-1"] ||
 		!exactProfiles["TestProductionKDFExactProfiles/paranoid-1"] {
 		return nil, errors.New("gate execution-unit closure mismatch")
+	}
+	if err := validateHostTestScopes(config); err != nil {
+		return nil, err
 	}
 	for left := range surfaces {
 		for right := left + 1; right < len(surfaces); right++ {
@@ -1605,6 +1577,82 @@ func validateGateConfig(config *gateConfig) ([]executionSurface, error) {
 		return nil, err
 	}
 	return surfaces, nil
+}
+
+func validateHostTestScopes(config *gateConfig) error {
+	host, ok := config.Stages["host"]
+	if !ok {
+		return errors.New("host stage is missing")
+	}
+	phase2, phase2OK := commandByID(host.Commands, "host-phase2-tests")
+	controller, controllerOK := commandByID(
+		host.Commands,
+		"host-controller-tests",
+	)
+	reproduction, reproductionOK := commandByID(
+		host.Commands,
+		"host-fixture-reproduction",
+	)
+	schema, schemaOK := commandByID(host.Commands, "host-fixture-schema")
+	var goTestIDs []string
+	for _, command := range host.Commands {
+		if command.Kind == "go-test" {
+			goTestIDs = append(goTestIDs, command.ID)
+		}
+	}
+	if !phase2OK || !controllerOK || !reproductionOK || !schemaOK ||
+		!sameStringSet(goTestIDs, []string{
+			"host-phase2-tests",
+			"host-controller-tests",
+			"host-fixture-reproduction",
+			"host-fixture-schema",
+		}) ||
+		!equalStrings(
+			phase2.ExecutionSurface.PackagePaths,
+			[]string{"./internal/pcv3credential"},
+		) ||
+		!equalStrings(
+			phase2.ExecutionSurface.BuildTags,
+			[]string{"migrated_fynedo"},
+		) ||
+		phase2.ExecutionSurface.TestSelector != "all" ||
+		!equalStrings(
+			controller.ExecutionSurface.PackagePaths,
+			[]string{
+				"./internal/pcv3credential/testdata/phasegates",
+				"./internal/pcv3credential/testdata/phaseinspect",
+			},
+		) ||
+		!equalStrings(
+			controller.ExecutionSurface.BuildTags,
+			[]string{"migrated_fynedo"},
+		) ||
+		controller.ExecutionSurface.TestSelector == "all" ||
+		!equalStrings(
+			reproduction.ExecutionSurface.PackagePaths,
+			[]string{"./internal/pcv3credential"},
+		) ||
+		!equalStrings(
+			reproduction.ExecutionSurface.BuildTags,
+			[]string{"migrated_fynedo", "pcv3_fixture_reproduction"},
+		) ||
+		reproduction.ExecutionSurface.TestSelector !=
+			"^TestKDFLiteralFixtureReproduction$" ||
+		!equalStrings(
+			schema.ExecutionSurface.PackagePaths,
+			[]string{
+				"./internal/pcv3credential/testdata/vectorfixture",
+				"./internal/pcv3credential/testdata/mutator",
+			},
+		) ||
+		!equalStrings(
+			schema.ExecutionSurface.BuildTags,
+			[]string{"migrated_fynedo"},
+		) ||
+		schema.ExecutionSurface.TestSelector != "all" {
+		return errors.New("host Phase-2 or controller test scope is not exact")
+	}
+	return nil
 }
 
 func validateGoTestExecutionSurface(
@@ -1770,6 +1818,38 @@ func validateGoTestExecutionSurface(
 	if !reflect.DeepEqual(command.ExecutionSurface, derived) {
 		return errors.New("go-test execution surface does not match argv")
 	}
+	if selector != "all" {
+		paths, ok := exactSelectorTests(selector)
+		if !ok {
+			return errors.New("go-test selector is not an exact test path")
+		}
+		selected := selectorTestIDs(paths)
+		if hasDuplicates(command.RequiredTestIDs) ||
+			!sameStringSet(selected, command.RequiredTestIDs) {
+			return errors.New(
+				"go-test selector does not match the required evidence inventory",
+			)
+		}
+	}
+	return validateRequiredTestPackages(command)
+}
+
+func validateRequiredTestPackages(command commandConfig) error {
+	if len(command.RequiredTestIDs) == 0 ||
+		hasDuplicates(command.RequiredTestIDs) ||
+		len(command.RequiredTestPackages) != len(command.RequiredTestIDs) {
+		return errors.New("go-test required evidence inventory is incomplete")
+	}
+	allowedPackages := make(map[string]bool, len(command.ExecutionSurface.PackagePaths))
+	for _, packagePath := range command.ExecutionSurface.PackagePaths {
+		allowedPackages[picocryptModulePath+"/"+strings.TrimPrefix(packagePath, "./")] = true
+	}
+	for _, testID := range command.RequiredTestIDs {
+		packagePath, ok := command.RequiredTestPackages[testID]
+		if !ok || !allowedPackages[packagePath] {
+			return errors.New("go-test required package binding is outside its surface")
+		}
+	}
 	return nil
 }
 
@@ -1790,20 +1870,9 @@ func exactGoPackagePath(path string) bool {
 
 func validateSkipContract(config *gateConfig) error {
 	if config == nil ||
-		len(config.SkipAllowlist) != 1 ||
-		config.SkipAllowlist[0] != (skipRule{
-			Test:                       "TestUnpackAllowsSystemTempDirSymlinkPrefix",
-			Reason:                     "temp dir path has no symlinked prefix on this platform",
-			Match:                      "exact",
-			SourcePath:                 "internal/fileops/unpack_test.go",
-			RequiredGoTestDeclarations: 1,
-		}) ||
-		config.SkipRuntimeCardinality != (skipCardinality{Minimum: 0, Maximum: 1}) ||
-		!equalStrings(
-			config.SkipRejectedReasons,
-			[]string{"Cannot resolve temp dir symlinks on this platform:"},
-		) {
-		return errors.New("skip allowlist does not match the exact reviewed tuple")
+		len(config.SkipAllowlist) != 0 ||
+		config.SkipRuntimeCardinality != (skipCardinality{}) {
+		return errors.New("controlled Phase-2 gates must forbid every runtime skip")
 	}
 	return nil
 }
@@ -1954,16 +2023,63 @@ func validateThreatConfig(config *gateConfig) error {
 		return errors.New("threat closure count mismatch")
 	}
 	seen := map[string]bool{}
+	observedByCommand := map[string]map[string]bool{}
 	for _, closure := range config.ThreatClosure {
 		stage, exists := config.Stages[closure.Stage]
+		command, commandExists := commandByID(stage.Commands, closure.CommandID)
 		if !exists || seen[closure.ID] ||
 			!contains(config.RequiredThreatIDs, closure.ID) ||
-			!contains(commandConfigIDs(stage.Commands), closure.CommandID) ||
+			!commandExists ||
 			len(closure.RequiredObservedIDs) == 0 ||
 			hasDuplicates(closure.RequiredObservedIDs) {
 			return errors.New("threat closure mapping mismatch")
 		}
+		switch command.Kind {
+		case "go-test":
+			if !subsetOf(
+				closure.RequiredObservedIDs,
+				command.RequiredTestIDs,
+			) {
+				return errors.New("test threat closure is outside the command inventory")
+			}
+			if observedByCommand[command.ID] == nil {
+				observedByCommand[command.ID] = map[string]bool{}
+			}
+			for _, observedID := range closure.RequiredObservedIDs {
+				observedByCommand[command.ID][observedID] = true
+			}
+		case "mutation-campaign":
+			if !subsetOf(
+				closure.RequiredObservedIDs,
+				config.RequiredMutationIDs,
+			) {
+				return errors.New("mutation threat closure is outside the campaign")
+			}
+		default:
+			return errors.New(
+				"threat closure must use structured test or mutation evidence",
+			)
+		}
 		seen[closure.ID] = true
+	}
+	host, exists := config.Stages["host"]
+	if !exists {
+		return errors.New("threat closure mapping mismatch")
+	}
+	for commandID, observedIDs := range observedByCommand {
+		command, exists := commandByID(host.Commands, commandID)
+		if !exists || command.Kind != "go-test" {
+			return errors.New("threat closure mapping mismatch")
+		}
+		var observed []string
+		for testID := range observedIDs {
+			observed = append(observed, testID)
+		}
+		if !sameStringSet(observed, command.RequiredTestIDs) {
+			return errors.New(
+				"test command evidence inventory exceeds its threat closure",
+			)
+		}
 	}
 	return nil
 }
@@ -2330,56 +2446,6 @@ func validatePrivateWorkspace(
 	return nil
 }
 
-func validateExactSkipDeclaration(
-	session *inspectionSession,
-	config *gateConfig,
-	identity *executionIdentity,
-) error {
-	rule := config.SkipAllowlist[0]
-	path := filepath.Join(identity.Source.Path, "src", rule.SourcePath)
-	data, _, err := session.readBoundedFile(path, maxInspectorInputBytes)
-	if err != nil {
-		return fmt.Errorf("read skip declaration source: %w", err)
-	}
-	file, err := parser.ParseFile(token.NewFileSet(), path, data, 0)
-	if err != nil {
-		return fmt.Errorf("parse skip declaration source: %w", err)
-	}
-	count := 0
-	for _, declaration := range file.Decls {
-		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Recv != nil ||
-			function.Name.Name != rule.Test ||
-			function.Type.Params == nil ||
-			len(function.Type.Params.List) != 1 ||
-			function.Type.Results != nil {
-			continue
-		}
-		parameter := function.Type.Params.List[0]
-		if len(parameter.Names) != 1 ||
-			parameter.Names[0].Name != "t" {
-			continue
-		}
-		star, ok := parameter.Type.(*ast.StarExpr)
-		if !ok {
-			continue
-		}
-		selector, ok := star.X.(*ast.SelectorExpr)
-		if !ok || selector.Sel.Name != "T" {
-			continue
-		}
-		packageName, ok := selector.X.(*ast.Ident)
-		if !ok || packageName.Name != "testing" {
-			continue
-		}
-		count++
-	}
-	if count != rule.RequiredGoTestDeclarations {
-		return errors.New("skip test declaration count mismatch")
-	}
-	return nil
-}
-
 func inspectEvidence(
 	session *inspectionSession,
 	evidenceDir string,
@@ -2577,7 +2643,7 @@ func validateStageEvidence(
 	if !equalStrings(evidence.RequiredIDs, expectedRequired) {
 		return errors.New("stage required ID set mismatch")
 	}
-	if err := validateSkipEvents(config, evidence.SkipEvents); err != nil {
+	if err := validateSkipEvents(evidence.SkipEvents); err != nil {
 		return err
 	}
 	return nil
@@ -2645,10 +2711,6 @@ func validateCommandResult(
 		expectedObservedIDs = command.RequiredTestIDs
 	case "mutation-campaign":
 		expectedObservedIDs = config.RequiredMutationIDs
-	case "internal":
-		if command.ID == "host-skip-accounting" {
-			expectedObservedIDs = []string{command.GoASTTestDeclaration}
-		}
 	}
 	if !equalStrings(result.ObservedIDs, expectedObservedIDs) {
 		return errors.New("command observed IDs mismatch")
@@ -2731,7 +2793,7 @@ func validateCommandResult(
 	} else if len(result.Mutations) != 0 {
 		return errors.New("non-mutation command contains mutation outcomes")
 	}
-	return validateSkipEvents(config, result.SkipEvents)
+	return validateSkipEvents(result.SkipEvents)
 }
 
 func effectiveCommandForEvidence(
@@ -3055,20 +3117,9 @@ func successfulNestedResult(
 		result.ScanResult == nil
 }
 
-func validateSkipEvents(config *gateConfig, skips []skipEvent) error {
-	if len(skips) > 1 {
-		return errors.New("multiple runtime skip events are forbidden")
-	}
-	for _, skip := range skips {
-		for _, rejected := range config.SkipRejectedReasons {
-			if strings.HasPrefix(skip.Reason, rejected) {
-				return errors.New("EvalSymlinks error skip is forbidden")
-			}
-		}
-		rule := config.SkipAllowlist[0]
-		if skip.Test != rule.Test || skip.Reason != rule.Reason {
-			return errors.New("runtime skip does not match the exact allowlist")
-		}
+func validateSkipEvents(skips []skipEvent) error {
+	if len(skips) != 0 {
+		return errors.New("runtime skip events are forbidden")
 	}
 	return nil
 }
@@ -3355,35 +3406,88 @@ func selectorsOverlap(left string, right string) bool {
 	if !leftExact || !rightExact {
 		return true
 	}
-	return selectorPrefix(leftTests, rightTests) ||
-		selectorPrefix(rightTests, leftTests)
+	for _, leftPath := range leftTests {
+		for _, rightPath := range rightTests {
+			if selectorPrefix(leftPath, rightPath) ||
+				selectorPrefix(rightPath, leftPath) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-func exactSelectorTests(selector string) ([]string, bool) {
+func exactSelectorTests(selector string) ([][]string, bool) {
 	parts := strings.Split(selector, "/")
-	if len(parts) == 0 {
+	if len(parts) == 1 {
+		tests, ok := exactSelectorPart(parts[0], true)
+		if !ok {
+			return nil, false
+		}
+		paths := make([][]string, len(tests))
+		for index, test := range tests {
+			paths[index] = []string{test}
+		}
+		return paths, true
+	}
+
+	path := make([]string, 0, len(parts))
+	for _, part := range parts {
+		tests, ok := exactSelectorPart(part, false)
+		if !ok || len(tests) != 1 {
+			return nil, false
+		}
+		path = append(path, tests[0])
+	}
+	return [][]string{path}, true
+}
+
+func exactSelectorPart(part string, allowAlternatives bool) ([]string, bool) {
+	if len(part) < 3 || part[0] != '^' || part[len(part)-1] != '$' {
 		return nil, false
 	}
-	tests := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if len(part) < 3 || part[0] != '^' || part[len(part)-1] != '$' {
+	body := part[1 : len(part)-1]
+	if allowAlternatives &&
+		strings.HasPrefix(body, "(") &&
+		strings.HasSuffix(body, ")") {
+		tests := strings.Split(body[1:len(body)-1], "|")
+		if len(tests) < 2 || hasDuplicates(tests) {
 			return nil, false
 		}
-		literal := part[1 : len(part)-1]
-		if literal == "" {
-			return nil, false
-		}
-		for _, character := range literal {
-			if (character < 'a' || character > 'z') &&
-				(character < 'A' || character > 'Z') &&
-				(character < '0' || character > '9') &&
-				character != '_' && character != '-' {
+		for _, test := range tests {
+			if !exactSelectorLiteral(test) {
 				return nil, false
 			}
 		}
-		tests = append(tests, literal)
+		return tests, true
 	}
-	return tests, true
+	if !exactSelectorLiteral(body) {
+		return nil, false
+	}
+	return []string{body}, true
+}
+
+func exactSelectorLiteral(literal string) bool {
+	if literal == "" {
+		return false
+	}
+	for _, character := range literal {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') &&
+			character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func selectorTestIDs(paths [][]string) []string {
+	tests := make([]string, len(paths))
+	for index, path := range paths {
+		tests[index] = strings.Join(path, "/")
+	}
+	return tests
 }
 
 func selectorPrefix(prefix, selector []string) bool {
@@ -3430,6 +3534,15 @@ func commandConfigIDs(commands []commandConfig) []string {
 		ids[index] = commands[index].ID
 	}
 	return ids
+}
+
+func commandByID(commands []commandConfig, id string) (commandConfig, bool) {
+	for _, command := range commands {
+		if command.ID == id {
+			return command, true
+		}
+	}
+	return commandConfig{}, false
 }
 
 func derivedPhaseJobs(online int) int {

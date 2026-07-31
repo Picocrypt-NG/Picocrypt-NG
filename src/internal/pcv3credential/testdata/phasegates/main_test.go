@@ -1221,7 +1221,7 @@ func TestStageEnforcesHalfCoreEveryGoChild(t *testing.T) {
 }
 
 // Kills production mutations: accepting race aliases or an unmarked go-test command.
-func TestValidateGateConfigRejectsRaceWhenCGODisabled(t *testing.T) {
+func TestGateConfigStructureRejectsRaceWhenCGODisabled(t *testing.T) {
 	fixture := newGateFixture(t)
 	config := fixture.config
 	config.ChildEnvironment = fixture.config.ChildEnvironment
@@ -1242,19 +1242,19 @@ func TestValidateGateConfigRejectsRaceWhenCGODisabled(t *testing.T) {
 		PackageParallelism: float64(1),
 	}}
 	config.Stages["normal1"] = stage
-	if err := validateGateConfig(&config); err != nil {
+	if err := validateGateConfigStructure(&config); err != nil {
 		t.Fatalf("valid non-race Go command rejected: %v", err)
 	}
 
 	stage.Commands[0].Argv = append(stage.Commands[0].Argv, "-race")
 	config.Stages["normal1"] = stage
-	err := validateGateConfig(&config)
+	err := validateGateConfigStructure(&config)
 	if err == nil || err.Error() != "go -race command requires CGO_ENABLED=1" {
 		t.Fatalf("CGO-disabled race command error = %v; want impossibility rejection", err)
 	}
 
 	config.ChildEnvironment.Required["CGO_ENABLED"] = "1"
-	if err := validateGateConfig(&config); err != nil {
+	if err := validateGateConfigStructure(&config); err != nil {
 		t.Fatalf("CGO-enabled exact -race command rejected: %v", err)
 	}
 
@@ -1262,7 +1262,7 @@ func TestValidateGateConfigRejectsRaceWhenCGODisabled(t *testing.T) {
 		t.Run("noncanonical "+alias, func(t *testing.T) {
 			stage.Commands[0].Argv = []string{"${GO}", "test", alias}
 			config.Stages["normal1"] = stage
-			err := validateGateConfig(&config)
+			err := validateGateConfigStructure(&config)
 			if err == nil || err.Error() != "go race flag must use exact -race form" {
 				t.Fatalf("race alias %q error = %v; want exact-form rejection",
 					alias, err)
@@ -1275,7 +1275,7 @@ func TestValidateGateConfigRejectsRaceWhenCGODisabled(t *testing.T) {
 	stage.Commands[0].Argv = []string{"${GO}", "test", "--race"}
 	config.Stages["normal1"] = stage
 	config.ChildEnvironment.Required["CGO_ENABLED"] = "0"
-	err = validateGateConfig(&config)
+	err = validateGateConfigStructure(&config)
 	if err == nil || err.Error() != "go-test command must be Go-based" {
 		t.Fatalf("unmarked go-test error = %v; want metadata rejection before race parsing",
 			err)
@@ -1304,12 +1304,6 @@ func TestReviewedGateAndMutationContracts(t *testing.T) {
 	}
 	if len(config.ThreatClosure) != 21 {
 		t.Fatalf("reviewed threat closure count = %d; want 21", len(config.ThreatClosure))
-	}
-	if !contains(
-		config.Stages["host"].Commands[0].RequiredTestIDs,
-		"TestUnpackAllowsSystemTempDirSymlinkPrefix",
-	) {
-		t.Fatal("host runtime inventory does not require the reviewed skip test")
 	}
 	for _, stage := range config.Stages {
 		for _, command := range stage.Commands {
@@ -1365,7 +1359,7 @@ func TestReviewedGateAndMutationContracts(t *testing.T) {
 			"./internal/pcv3credential", "-run", "^Test(Foo|Bar)$", "-json",
 		},
 	}
-	if err := validateExecutionSurface(regexCommand); err == nil {
+	if err := validateExecutionSurface(regexCommand, "0"); err == nil {
 		t.Fatal("intersecting regular-expression selector was accepted as exact")
 	}
 
@@ -1780,6 +1774,313 @@ func TestExecutionSurfacesOverlapHierarchicalSelectors(t *testing.T) {
 	sibling.TestSelector = "^TestFoo$/^baz$"
 	if executionSurfacesOverlap(child, sibling) {
 		t.Fatal("equal-depth sibling selectors were treated as overlapping")
+	}
+}
+
+func TestFiniteGoTestSelectorBindsRequiredInventory(t *testing.T) {
+	const selector = "^(TestFreezeIdentityBindsRunnerAndInspector|TestEvidenceReplacementIsDetected)$"
+	command := commandConfig{
+		ID:   "host-controller-tests",
+		Kind: "go-test",
+		ExecutionSurface: executionSurface{
+			PackagePaths: []string{
+				"./internal/pcv3credential/testdata/phasegates",
+			},
+			BuildTags:    []string{"migrated_fynedo"},
+			TestSelector: selector,
+			EvidenceKind: "go-test-json",
+		},
+		Argv: []string{
+			"${GO}", "test",
+			"-tags", "migrated_fynedo",
+			"-p", "1",
+			"./internal/pcv3credential/testdata/phasegates",
+			"-run", selector,
+			"-count=1",
+			"-timeout=5m",
+			"-json",
+		},
+		TimeoutSeconds: 360,
+		GoBased:        true,
+		RequiredTestIDs: []string{
+			"TestFreezeIdentityBindsRunnerAndInspector",
+			"TestEvidenceReplacementIsDetected",
+		},
+		RequiredTestPackages: map[string]string{
+			"TestFreezeIdentityBindsRunnerAndInspector": pcv3PackagePath +
+				"/testdata/phasegates",
+			"TestEvidenceReplacementIsDetected": pcv3PackagePath +
+				"/testdata/phasegates",
+		},
+	}
+	if err := validateExecutionSurface(command, "0"); err != nil {
+		t.Fatalf("exact finite controller selector rejected: %v", err)
+	}
+
+	command.RequiredTestIDs = command.RequiredTestIDs[:1]
+	if err := validateExecutionSurface(command, "0"); err == nil {
+		t.Fatal("finite selector selected a test outside the required evidence inventory")
+	}
+}
+
+func TestReviewedGateRejectsExecutableGoTestArguments(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*commandConfig)
+	}{
+		{
+			name: "wrong executable",
+			mutate: func(command *commandConfig) {
+				command.Argv[0] = "/bin/sh"
+			},
+		},
+		{
+			name: "go test exec hook",
+			mutate: func(command *commandConfig) {
+				command.Argv = append(
+					append([]string(nil), command.Argv[:2]...),
+					append(
+						[]string{"-exec=/tmp/phase2-escape"},
+						command.Argv[2:]...,
+					)...,
+				)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config, _, err := loadGateConfig(
+				filepath.Join("..", "gates.json"),
+				reviewedGateConfigSHA,
+			)
+			if err != nil {
+				t.Fatalf("load reviewed gate config: %v", err)
+			}
+			host := config.Stages["host"]
+			commandFound := false
+			for index := range host.Commands {
+				if host.Commands[index].ID != "host-phase2-tests" {
+					continue
+				}
+				test.mutate(&host.Commands[index])
+				commandFound = true
+				break
+			}
+			if !commandFound {
+				t.Fatal("reviewed Phase-2 command is missing")
+			}
+			config.Stages["host"] = host
+
+			if err := validateGateConfig(config); err == nil {
+				t.Fatal("executable go-test argument passed producer validation")
+			}
+		})
+	}
+}
+
+func TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects(t *testing.T) {
+	const wantError = "reviewed gate config requires a complete threat closure"
+
+	t.Run("freeze identity", func(t *testing.T) {
+		fixture := newGateFixture(t)
+		fixture.writeSourceManifest(t)
+		deps := fixture.deps()
+		deps.validateConfig = defaultDeps().validateConfig
+
+		_, err := freezeIdentity(fixture.freezeOptions, deps)
+		if err == nil || err.Error() != wantError {
+			t.Fatalf("empty-closure freeze error = %v; want %q", err, wantError)
+		}
+		if _, err := os.Lstat(fixture.identityPath); !os.IsNotExist(err) {
+			t.Fatalf("rejected empty-closure freeze created identity: %v", err)
+		}
+		for _, name := range []string{
+			".phasegates-home",
+			".phasegates-go-mod-cache",
+			".phasegates-go-path",
+			".phasegates-xdg-cache",
+			".phasegates-xdg-config",
+			".phasegates-host-go-cache",
+			".phasegates-mutation-go-cache",
+			".phasegates-normal1-go-cache",
+			".phasegates-paranoid1-go-cache",
+		} {
+			if _, err := os.Lstat(filepath.Join(fixture.root, name)); !os.IsNotExist(err) {
+				t.Fatalf("rejected empty-closure freeze created private root %s: %v", name, err)
+			}
+		}
+	})
+
+	t.Run("run stage", func(t *testing.T) {
+		fixture := newGateFixture(t)
+		_, hash := fixture.freeze(t)
+		options := fixture.stageOptions("normal1", hash)
+		deps := fixture.deps()
+		deps.validateConfig = defaultDeps().validateConfig
+		var subprocesses atomic.Int32
+		deps.commandContext = func(
+			ctx context.Context,
+			name string,
+			args ...string,
+		) *exec.Cmd {
+			subprocesses.Add(1)
+			return exec.CommandContext(ctx, name, args...)
+		}
+
+		err := runStage(context.Background(), options, deps)
+		if err == nil || err.Error() != wantError {
+			t.Fatalf("empty-closure stage error = %v; want %q", err, wantError)
+		}
+		if subprocesses.Load() != 0 {
+			t.Fatalf(
+				"rejected empty-closure stage constructed %d subprocesses; want 0",
+				subprocesses.Load(),
+			)
+		}
+		for _, path := range []string{
+			options.Evidence,
+			options.Evidence + fixture.config.EvidenceContract.PublicationProofSuffix,
+			stageTempDirectory(fixture.root, "normal1"),
+		} {
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("rejected empty-closure stage created %s: %v", path, err)
+			}
+		}
+	})
+}
+
+func TestReviewedGateRejectsBroadenedHostEvidence(t *testing.T) {
+	const unexpectedTest = "TestUnexpectedControllerWork"
+	extendControllerSelector := func(t *testing.T, command *commandConfig) {
+		t.Helper()
+		selector := command.ExecutionSurface.TestSelector
+		if !strings.HasSuffix(selector, ")$") {
+			t.Fatalf("reviewed controller selector is not a finite union: %q", selector)
+		}
+		selector = strings.TrimSuffix(selector, ")$") +
+			"|" + unexpectedTest + ")$"
+		command.ExecutionSurface.TestSelector = selector
+		for index := range command.Argv {
+			if command.Argv[index] == "-run" && index+1 < len(command.Argv) {
+				command.Argv[index+1] = selector
+				return
+			}
+		}
+		t.Fatal("reviewed controller command has no selector argument")
+	}
+	for _, test := range []struct {
+		name      string
+		commandID string
+		wantError string
+		mutate    func(*testing.T, *commandConfig)
+	}{
+		{
+			name:      "additional Phase-2 package",
+			commandID: "host-phase2-tests",
+			wantError: "host Phase-2 or controller test scope is not exact",
+			mutate: func(t *testing.T, command *commandConfig) {
+				t.Helper()
+				command.ExecutionSurface.PackagePaths = append(
+					command.ExecutionSurface.PackagePaths,
+					"./internal/fileops",
+				)
+				for index, argument := range command.Argv {
+					if argument != "./internal/pcv3credential" {
+						continue
+					}
+					command.Argv = append(
+						append([]string(nil), command.Argv[:index+1]...),
+						append(
+							[]string{"./internal/fileops"},
+							command.Argv[index+1:]...,
+						)...,
+					)
+					return
+				}
+				t.Fatal("reviewed Phase-2 command has no credential package argument")
+			},
+		},
+		{
+			name:      "additional auxiliary package",
+			commandID: "host-fixture-schema",
+			wantError: "host Phase-2 or controller test scope is not exact",
+			mutate: func(t *testing.T, command *commandConfig) {
+				t.Helper()
+				command.ExecutionSurface.PackagePaths = append(
+					command.ExecutionSurface.PackagePaths,
+					"./internal/fileops",
+				)
+				for index, argument := range command.Argv {
+					if argument !=
+						"./internal/pcv3credential/testdata/mutator" {
+						continue
+					}
+					command.Argv = append(
+						append([]string(nil), command.Argv[:index+1]...),
+						append(
+							[]string{"./internal/fileops"},
+							command.Argv[index+1:]...,
+						)...,
+					)
+					return
+				}
+				t.Fatal("reviewed fixture command has no mutator package argument")
+			},
+		},
+		{
+			name:      "selector outside required inventory",
+			commandID: "host-controller-tests",
+			wantError: "command host-controller-tests execution surface: " +
+				"go-test selector does not match the required evidence inventory",
+			mutate: extendControllerSelector,
+		},
+		{
+			name:      "controller test outside threat closure",
+			commandID: "host-controller-tests",
+			wantError: "test command evidence inventory exceeds its threat closure",
+			mutate: func(t *testing.T, command *commandConfig) {
+				t.Helper()
+				extendControllerSelector(t, command)
+				command.RequiredTestIDs = append(
+					command.RequiredTestIDs,
+					unexpectedTest,
+				)
+				command.RequiredTestPackages[unexpectedTest] = picocryptModulePath +
+					"/internal/pcv3credential/testdata/phasegates"
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config, _, err := loadGateConfig(
+				filepath.Join("..", "gates.json"),
+				reviewedGateConfigSHA,
+			)
+			if err != nil {
+				t.Fatalf("load reviewed gate config: %v", err)
+			}
+			host := config.Stages["host"]
+			commandFound := false
+			for index := range host.Commands {
+				if host.Commands[index].ID != test.commandID {
+					continue
+				}
+				test.mutate(t, &host.Commands[index])
+				commandFound = true
+				break
+			}
+			if !commandFound {
+				t.Fatalf("reviewed host command %q is missing", test.commandID)
+			}
+			config.Stages["host"] = host
+
+			err = validateGateConfig(config)
+			if err == nil || err.Error() != test.wantError {
+				t.Fatalf(
+					"broadened host evidence error = %v; want %q",
+					err,
+					test.wantError,
+				)
+			}
+		})
 	}
 }
 
@@ -2822,82 +3123,147 @@ func TestEvidenceReplacementIsDetected(t *testing.T) {
 	}
 }
 
-func TestStageExactSkipAllowlist(t *testing.T) {
-	fixture := newGateFixture(t)
-	if err := validateRuntimeSkips(&fixture.config, nil); err != nil {
-		t.Fatalf("zero runtime skips must be valid: %v", err)
-	}
-	exact := []skipEvent{{
-		Test:   "TestUnpackAllowsSystemTempDirSymlinkPrefix",
-		Reason: "temp dir path has no symlinked prefix on this platform",
-	}}
-	if err := validateRuntimeSkips(&fixture.config, exact); err != nil {
-		t.Fatalf("exact reviewed skip must be valid: %v", err)
-	}
-	if err := validateRuntimeSkips(
-		&fixture.config,
-		append(append([]skipEvent(nil), exact...), exact...),
-	); err == nil {
-		t.Fatal("duplicate runtime skip unexpectedly validated")
-	}
-	if err := validateRuntimeSkips(
-		&fixture.config,
-		[]skipEvent{{Test: exact[0].Test, Reason: exact[0].Reason + " extra"}},
-	); err == nil {
-		t.Fatal("prefix-matching skip unexpectedly validated")
-	}
-	source := filepath.Join(t.TempDir(), "unpack_test.go")
-	if err := os.WriteFile(source, []byte(
-		"package fileops\n"+
-			"import \"testing\"\n"+
-			"func TestUnpackAllowsSystemTempDirSymlinkPrefix(t *testing.T) {}\n",
-	), 0o600); err != nil {
-		t.Fatalf("write skip source fixture: %v", err)
-	}
-	count, err := exactGoTestDeclarationCount(
-		source,
-		"TestUnpackAllowsSystemTempDirSymlinkPrefix",
+func TestStageRejectsEveryRuntimeSkip(t *testing.T) {
+	const (
+		testID      = "TestFactorModeMatrix"
+		packagePath = "Picocrypt-NG/internal/pcv3credential"
 	)
-	if err != nil || count != 1 {
-		t.Fatalf("exact Go test declaration count = %d, %v; want 1", count, err)
+	fixture := newGateFixture(t)
+	command := fixture.helperCommand(
+		t,
+		"go-json-skip",
+		packagePath,
+		testID,
+		"-p",
+		"1",
+	)
+	command.Kind = "go-test"
+	command.GoBased = true
+	command.PackageParallelism = 1
+	command.ExecutionSurface = executionSurface{
+		PackagePaths: []string{"./internal/pcv3credential"},
+		TestSelector: "^" + testID + "$",
+		EvidenceKind: "go-test-json",
+	}
+	command.RequiredTestIDs = []string{testID}
+	command.RequiredTestPackages = map[string]string{testID: packagePath}
+	fixture.setCommand("normal1", command)
+	_, hash := fixture.freeze(t)
+	options := fixture.stageOptions("normal1", hash)
+	deps := fixture.deps()
+	var subprocesses atomic.Int32
+	deps.commandContext = func(
+		ctx context.Context,
+		name string,
+		args ...string,
+	) *exec.Cmd {
+		subprocesses.Add(1)
+		return exec.CommandContext(ctx, name, args...)
+	}
+
+	err := runStage(context.Background(), options, deps)
+	const wantError = "go test reported forbidden skip events"
+	if err == nil || err.Error() != wantError {
+		t.Fatalf("runtime skip error = %v; want %q", err, wantError)
+	}
+	if subprocesses.Load() != 1 {
+		t.Fatalf(
+			"runtime skip stage constructed %d subprocesses; want exactly 1",
+			subprocesses.Load(),
+		)
+	}
+	evidence := readEvidence(t, options.Evidence)
+	if evidence.Status != "FAIL" ||
+		evidence.Failure != wantError ||
+		len(evidence.Commands) != 1 ||
+		len(evidence.Commands[0].SkipEvents) != 1 ||
+		len(evidence.SkipEvents) != 1 ||
+		evidence.SkipEvents[0].Test != "TestUnexpectedRuntimeSkip" {
+		t.Fatalf("runtime skip did not produce bound terminal failure: %+v", evidence)
+	}
+	proof := options.Evidence +
+		fixture.config.EvidenceContract.PublicationProofSuffix
+	if _, err := os.Lstat(proof); !os.IsNotExist(err) {
+		t.Fatalf("runtime skip failure published a PASS proof: %v", err)
 	}
 }
 
-func TestGoTestJSONRequiresExactPackageTestAndSkipReason(t *testing.T) {
+func TestStageBoundsChildOutput(t *testing.T) {
+	fixture := newGateFixture(t)
+	fixture.setCommand("normal1", fixture.helperCommand(t, "flood"))
+	_, hash := fixture.freeze(t)
+	options := fixture.stageOptions("normal1", hash)
+
+	err := runStage(context.Background(), options, fixture.deps())
+	if !errors.Is(err, errOutputLimit) {
+		t.Fatalf("oversize child output error = %v; want output-limit failure", err)
+	}
+	evidenceBytes, readErr := os.ReadFile(options.Evidence)
+	if readErr != nil {
+		t.Fatalf("read terminal overflow evidence: %v", readErr)
+	}
+	var evidence stageEvidence
+	if err := json.Unmarshal(evidenceBytes, &evidence); err != nil {
+		t.Fatalf("decode terminal overflow evidence: %v", err)
+	}
+	if evidence.Status != "FAIL" ||
+		evidence.Failure != errOutputLimit.Error() ||
+		len(evidence.Commands) != 1 {
+		t.Fatalf("overflow did not produce bounded terminal failure: %+v", evidence)
+	}
+	if bytes.Contains(evidenceBytes, []byte("forbidden-child-payload")) {
+		t.Fatal("raw child output leaked into terminal evidence")
+	}
+	proof := options.Evidence +
+		fixture.config.EvidenceContract.PublicationProofSuffix
+	if _, err := os.Lstat(proof); !os.IsNotExist(err) {
+		t.Fatalf("overflow failure published a PASS proof: %v", err)
+	}
+}
+
+func TestGoTestJSONRejectsEverySkipAndRequiresPass(t *testing.T) {
 	const (
-		testID      = "TestUnpackAllowsSystemTempDirSymlinkPrefix"
-		packagePath = "Picocrypt-NG/internal/fileops"
-		reason      = "temp dir path has no symlinked prefix on this platform"
+		testID      = "TestFactorModeMatrix"
+		packagePath = "Picocrypt-NG/internal/pcv3credential"
 	)
 	requiredPackages := map[string]string{testID: packagePath}
-	valid := strings.Join([]string{
+	passing := strings.Join([]string{
 		`{"Action":"run","Package":"` + packagePath + `","Test":"` + testID + `"}`,
-		`{"Action":"output","Package":"` + packagePath + `","Test":"` + testID +
-			`","Output":"    unpack_test.go:123: ` + reason + `\n"}`,
-		`{"Action":"skip","Package":"` + packagePath + `","Test":"` + testID + `"}`,
+		`{"Action":"pass","Package":"` + packagePath + `","Test":"` + testID + `"}`,
 	}, "\n")
 	observed, skips, err := parseGoTestJSON(
-		[]byte(valid),
+		[]byte(passing),
 		[]string{testID},
 		requiredPackages,
 	)
 	if err != nil || !equalStrings(observed, []string{testID}) ||
-		len(skips) != 1 || skips[0].Reason != reason {
-		t.Fatalf("exact skip JSON rejected: observed=%v skips=%v err=%v", observed, skips, err)
+		len(skips) != 0 {
+		t.Fatalf("required PASS rejected: observed=%v skips=%v err=%v", observed, skips, err)
 	}
 
 	for name, changed := range map[string]string{
-		"wrong package":     strings.Replace(valid, packagePath, "other/package", 3),
-		"substring reason":  strings.Replace(valid, reason, "prefix "+reason, 1),
-		"package pass only": `{"Action":"pass","Package":"` + packagePath + `"}`,
-		"competing diagnostic": strings.Replace(
-			valid,
-			`{"Action":"skip"`,
-			`{"Action":"output","Package":"`+packagePath+`","Test":"`+testID+
-				`","Output":"    unpack_test.go:122: other reason\n"}`+"\n"+
-				`{"Action":"skip"`,
+		"required test skipped": strings.Replace(
+			passing,
+			`"Action":"pass"`,
+			`"Action":"skip"`,
 			1,
 		),
+		"unrelated test skipped": passing + "\n" +
+			`{"Action":"skip","Package":"` + packagePath +
+			`","Test":"TestUnrelated"}`,
+		"package skipped": passing + "\n" +
+			`{"Action":"skip","Package":"` + packagePath + `"}`,
+		"wrong package": strings.ReplaceAll(
+			passing,
+			packagePath,
+			"other/package",
+		),
+		"selected test also passes in wrong package": passing + "\n" +
+			`{"Action":"pass","Package":"other/package","Test":"` + testID + `"}`,
+		"duplicate selected test pass": passing + "\n" +
+			`{"Action":"pass","Package":"` + packagePath +
+			`","Test":"` + testID + `"}`,
+		"package pass only": `{"Action":"pass","Package":"` + packagePath + `"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, _, err := parseGoTestJSON(
@@ -2952,18 +3318,6 @@ func TestPrivateEnvironmentRootsRollback(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(root, name)); !os.IsNotExist(err) {
 			t.Fatalf("rollback left private root %s: %v", name, err)
 		}
-	}
-}
-
-func TestStageRejectsEvalSymlinksSkip(t *testing.T) {
-	fixture := newGateFixture(t)
-	event := skipEvent{
-		Test: "TestUnpackAllowsSystemTempDirSymlinkPrefix",
-		Reason: "Cannot resolve temp dir symlinks on this platform: " +
-			"simulated filesystem failure",
-	}
-	if err := validateRuntimeSkips(&fixture.config, []skipEvent{event}); err == nil {
-		t.Fatal("EvalSymlinks error-path skip unexpectedly validated")
 	}
 }
 
@@ -3052,6 +3406,42 @@ func TestPhasegatesHelperProcess(t *testing.T) {
 		}
 		_, _ = fmt.Fprintln(os.Stderr, args[1])
 		os.Exit(1)
+	case "flood":
+		if len(args) != 1 {
+			t.Fatal("flood helper does not accept arguments")
+		}
+		payload := append(
+			[]byte("forbidden-child-payload:"),
+			bytes.Repeat([]byte{'x'}, maxCommandOutputBytes+1)...,
+		)
+		if _, err := os.Stdout.Write(payload); err != nil {
+			t.Fatalf("write oversize child output: %v", err)
+		}
+	case "go-json-skip":
+		if len(args) != 5 || args[3] != "-p" || args[4] != "1" {
+			t.Fatal("go-json-skip helper requires package, test ID, and serial marker")
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		for _, event := range []struct {
+			Action  string `json:"Action"`
+			Package string `json:"Package"`
+			Test    string `json:"Test"`
+			Output  string `json:"Output,omitempty"`
+		}{
+			{Action: "run", Package: args[1], Test: args[2]},
+			{Action: "pass", Package: args[1], Test: args[2]},
+			{
+				Action:  "skip",
+				Package: args[1],
+				Test:    "TestUnexpectedRuntimeSkip",
+				Output:  "simulated forbidden runtime skip\n",
+			},
+		} {
+			if err := encoder.Encode(event); err != nil {
+				t.Fatalf("encode go-json-skip event: %v", err)
+			}
+		}
+		os.Exit(0)
 	default:
 		t.Fatalf("unknown helper mode %q", args[0])
 	}
@@ -3182,17 +3572,8 @@ func newGateFixture(t *testing.T) *gateFixture {
 		RequiredExecutionUnits: []string{
 			"mutation-unit", "normal-unit", "paranoid-unit", "host-unit",
 		},
-		SkipAllowlist: []skipRule{{
-			Test:                       "TestUnpackAllowsSystemTempDirSymlinkPrefix",
-			Reason:                     "temp dir path has no symlinked prefix on this platform",
-			Match:                      "exact",
-			SourcePath:                 "internal/fileops/unpack_test.go",
-			RequiredGoTestDeclarations: 1,
-		}},
-		SkipRuntimeCardinality: skipCardinality{Minimum: 0, Maximum: 1},
-		SkipRejectedReasons: []string{
-			"Cannot resolve temp dir symlinks on this platform:",
-		},
+		SkipAllowlist:          []skipRule{},
+		SkipRuntimeCardinality: skipCardinality{},
 		LintRuns: []lintRun{
 			{ID: "lint-normal"},
 			{ID: "lint-reproduction"},
@@ -3239,6 +3620,7 @@ func newGateFixture(t *testing.T) *gateFixture {
 
 func (fixture *gateFixture) deps() runtimeDeps {
 	deps := defaultDeps()
+	deps.validateConfig = validateGateConfigStructure
 	configIdentity, err := regularFileIdentity(fixture.configPath)
 	if err != nil {
 		panic("read gate fixture config identity: " + err.Error())

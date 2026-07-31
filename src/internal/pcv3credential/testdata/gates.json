@@ -120,27 +120,97 @@
     "T-02-21"
   ],
   "threat_closure": [
-    {"id":"T-02-01","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestFactorModeMatrix"]},
-    {"id":"T-02-02","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestCanonicalTranscriptLiteralKAT"]},
-    {"id":"T-02-03","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestFactorReaderContract"]},
+    {"id":"T-02-01","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestFactorModeMatrix"]},
+    {"id":"T-02-02","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestCanonicalTranscriptLiteralKAT"]},
+    {"id":"T-02-03","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestFactorReaderContract"]},
     {"id":"T-02-04","stage":"host","command_id":"host-fixture-schema","required_observed_ids":["TestLiteralInputValidation"]},
     {"id":"T-02-05","stage":"host","command_id":"host-fixture-schema","required_observed_ids":["TestCheckFixture"]},
-    {"id":"T-02-06","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestKDFSequential"]},
-    {"id":"T-02-07","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestFixedProfileTable"]},
-    {"id":"T-02-08","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestScheduleExactRows"]},
-    {"id":"T-02-09","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestKDFCallsOnce"]},
-    {"id":"T-02-10","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestPipelinePublishesOneOwner"]},
-    {"id":"T-02-11","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestPipelinePostKDFCancellation"]},
-    {"id":"T-02-12","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestOwnerClearsEveryAlias"]},
+    {"id":"T-02-06","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestKDFSequential"]},
+    {"id":"T-02-07","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestFixedProfileTable"]},
+    {"id":"T-02-08","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestScheduleExactRows"]},
+    {"id":"T-02-09","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestKDFCallsOnce"]},
+    {"id":"T-02-10","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestPipelinePublishesOneOwner"]},
+    {"id":"T-02-11","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestPipelinePostKDFCancellation"]},
+    {"id":"T-02-12","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestOwnerClearsEveryAlias"]},
     {"id":"T-02-13","stage":"mutation","command_id":"mutation-campaign","required_observed_ids":["M-CRD08-KDF-RETURN-CLEANUP-REMOVAL"]},
     {"id":"T-02-14","stage":"mutation","command_id":"mutation-campaign","required_observed_ids":["M-CRD07-SELECTED-FACTOR-REMOVAL"]},
-    {"id":"T-02-15","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestPhase2DisclosureSentinelMatrix"]},
-    {"id":"T-02-16","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestFreezeIdentityBindsRunnerAndInspector"]},
-    {"id":"T-02-17","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestEvidenceReplacementIsDetected"]},
-    {"id":"T-02-18","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestStageUsesExactArgvAndEnv"]},
-    {"id":"T-02-19","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestInspectorValidClosure"]},
-    {"id":"T-02-20","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestInspectorReadOnlyCopiesUnchanged"]},
-    {"id":"T-02-21","stage":"host","command_id":"host-fast-tests","required_observed_ids":["TestInspectorExactThreatClosure"]}
+    {"id":"T-02-15","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestPhase2DisclosureSentinelMatrix"]},
+    {
+      "id": "T-02-16",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestFreezeIdentityBindsRunnerAndInspector",
+        "TestStageRejectsIdentityBeforeReservation",
+        "TestStageZeroSubprocessOnMismatch",
+        "TestStageRevalidatesAfterRun"
+      ]
+    },
+    {
+      "id": "T-02-17",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestStageRejectsIdentityBeforeReservation",
+        "TestStageCreateExclusive",
+        "TestStageRejectsSymlink",
+        "TestStagePublicationDirectorySyncOrderingAndFailure",
+        "TestStageUsesExactArgvAndEnv",
+        "TestEvidenceReplacementIsDetected",
+        "TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects",
+        "TestReviewedGateRejectsBroadenedHostEvidence"
+      ]
+    },
+    {
+      "id": "T-02-18",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestFreezeIdentityRejectsSecrets",
+        "TestFreezeIdentityRequiresPrivateEvidenceRoot",
+        "TestStageUsesExactArgvAndEnv",
+        "TestStageBoundsChildOutput",
+        "TestStageRejectsEveryRuntimeSkip",
+        "TestReviewedGateRejectsExecutableGoTestArguments",
+        "TestGoTestJSONRejectsEverySkipAndRequiresPass"
+      ]
+    },
+    {
+      "id": "T-02-19",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestInspectorValidClosure",
+        "TestInspectorRejectsStageSet",
+        "TestInspectorRejectsEvidenceProofBinding",
+        "TestInspectorRejectsIdentityMismatch",
+        "TestInspectorRejectsSelfPathHashOrVersionMismatch",
+        "TestInspectorRejectsEveryRuntimeSkip",
+        "TestInspectorRejectsSkipOrNoOp",
+        "TestInspectorRejectsInventedObservedIDs",
+        "TestInspectorRequiresExactNestedGoTestEvents",
+        "TestInspectorRejectsBroadenedHostEvidence"
+      ]
+    },
+    {
+      "id": "T-02-20",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestInspectorReadOnlyCopiesUnchanged"
+      ]
+    },
+    {
+      "id": "T-02-21",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestInspectorStrictVerdictSchema",
+        "TestInspectorExactThreatClosure",
+        "TestInspectorRejectsStageSet",
+        "TestInspectorRejectsSkipOrNoOp"
+      ]
+    }
   ],
   "required_mutation_ids": [
     "M-CRD06-ADMISSION-ONE-SHOT-REMOVAL",
@@ -168,32 +238,21 @@
     "mutation-campaign",
     "normal-1-exact-profile",
     "paranoid-1-exact-profile",
-    "host-fast-tests",
+    "host-phase2-tests",
+    "host-controller-tests",
     "host-fixture-reproduction",
     "host-fixture-schema",
-    "host-skip-accounting",
     "host-lint-normal",
     "host-lint-reproduction",
     "host-lint-production",
     "host-gitleaks",
     "host-threat-closure"
   ],
-  "skip_allowlist": [
-    {
-      "test": "TestUnpackAllowsSystemTempDirSymlinkPrefix",
-      "reason": "temp dir path has no symlinked prefix on this platform",
-      "match": "exact",
-      "source_path": "internal/fileops/unpack_test.go",
-      "required_go_test_declarations": 1
-    }
-  ],
+  "skip_allowlist": [],
   "skip_runtime_cardinality": {
     "minimum": 0,
-    "maximum": 1
+    "maximum": 0
   },
-  "skip_rejected_reasons": [
-    "Cannot resolve temp dir symlinks on this platform:"
-  ],
   "lint_runs": [
     {
       "id": "lint-normal",
@@ -401,10 +460,10 @@
     "host": {
       "minimum_online": 2,
       "owned_execution_units": [
-        "host-fast-tests",
+        "host-phase2-tests",
+        "host-controller-tests",
         "host-fixture-reproduction",
         "host-fixture-schema",
-        "host-skip-accounting",
         "host-lint-normal",
         "host-lint-reproduction",
         "host-lint-production",
@@ -413,37 +472,10 @@
       ],
       "commands": [
         {
-          "id": "host-fast-tests",
+          "id": "host-phase2-tests",
           "kind": "go-test",
           "execution_surface": {
-            "package_paths": [
-              "./cmd/picocrypt",
-              "./internal/app",
-              "./internal/cli",
-              "./internal/crypto",
-              "./internal/diskspace",
-              "./internal/distmeta",
-              "./internal/encoding",
-              "./internal/errors",
-              "./internal/fileops",
-              "./internal/header",
-              "./internal/keyfile",
-              "./internal/log",
-              "./internal/password",
-              "./internal/pcv3corpus",
-              "./internal/pcv3credential",
-              "./internal/pcv3governance",
-              "./internal/pcv3unicode",
-              "./internal/pcv3unicode/norm17",
-              "./internal/ui",
-              "./internal/util",
-              "./internal/volume",
-              "./internal/wasm",
-              "./internal/workflowpolicy",
-              "./mobile",
-              "./internal/pcv3credential/testdata/phasegates",
-              "./internal/pcv3credential/testdata/phaseinspect"
-            ],
+            "package_paths": ["./internal/pcv3credential"],
             "build_tags": ["migrated_fynedo"],
             "test_selector": "all",
             "evidence_kind": "go-test-json"
@@ -455,32 +487,7 @@
             "migrated_fynedo",
             "-p",
             "1",
-            "./cmd/picocrypt",
-            "./internal/app",
-            "./internal/cli",
-            "./internal/crypto",
-            "./internal/diskspace",
-            "./internal/distmeta",
-            "./internal/encoding",
-            "./internal/errors",
-            "./internal/fileops",
-            "./internal/header",
-            "./internal/keyfile",
-            "./internal/log",
-            "./internal/password",
-            "./internal/pcv3corpus",
             "./internal/pcv3credential",
-            "./internal/pcv3governance",
-            "./internal/pcv3unicode",
-            "./internal/pcv3unicode/norm17",
-            "./internal/ui",
-            "./internal/util",
-            "./internal/volume",
-            "./internal/wasm",
-            "./internal/workflowpolicy",
-            "./mobile",
-            "./internal/pcv3credential/testdata/phasegates",
-            "./internal/pcv3credential/testdata/phaseinspect",
             "-count=1",
             "-timeout=30m",
             "-json"
@@ -500,14 +507,7 @@
             "TestPipelinePublishesOneOwner",
             "TestPipelinePostKDFCancellation",
             "TestOwnerClearsEveryAlias",
-            "TestPhase2DisclosureSentinelMatrix",
-            "TestFreezeIdentityBindsRunnerAndInspector",
-            "TestEvidenceReplacementIsDetected",
-            "TestStageUsesExactArgvAndEnv",
-            "TestInspectorValidClosure",
-            "TestInspectorReadOnlyCopiesUnchanged",
-            "TestInspectorExactThreatClosure",
-            "TestUnpackAllowsSystemTempDirSymlinkPrefix"
+            "TestPhase2DisclosureSentinelMatrix"
           ],
           "required_test_packages": {
             "TestFactorModeMatrix": "Picocrypt-NG/internal/pcv3credential",
@@ -520,14 +520,104 @@
             "TestPipelinePublishesOneOwner": "Picocrypt-NG/internal/pcv3credential",
             "TestPipelinePostKDFCancellation": "Picocrypt-NG/internal/pcv3credential",
             "TestOwnerClearsEveryAlias": "Picocrypt-NG/internal/pcv3credential",
-            "TestPhase2DisclosureSentinelMatrix": "Picocrypt-NG/internal/pcv3credential",
+            "TestPhase2DisclosureSentinelMatrix": "Picocrypt-NG/internal/pcv3credential"
+          },
+          "required_exit_code": 0
+        },
+        {
+          "id": "host-controller-tests",
+          "kind": "go-test",
+          "execution_surface": {
+            "package_paths": [
+              "./internal/pcv3credential/testdata/phasegates",
+              "./internal/pcv3credential/testdata/phaseinspect"
+            ],
+            "build_tags": ["migrated_fynedo"],
+            "test_selector": "^(TestFreezeIdentityBindsRunnerAndInspector|TestStageRejectsIdentityBeforeReservation|TestStageZeroSubprocessOnMismatch|TestStageRevalidatesAfterRun|TestStageCreateExclusive|TestStageRejectsSymlink|TestStagePublicationDirectorySyncOrderingAndFailure|TestStageUsesExactArgvAndEnv|TestEvidenceReplacementIsDetected|TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects|TestReviewedGateRejectsBroadenedHostEvidence|TestFreezeIdentityRejectsSecrets|TestFreezeIdentityRequiresPrivateEvidenceRoot|TestStageBoundsChildOutput|TestStageRejectsEveryRuntimeSkip|TestReviewedGateRejectsExecutableGoTestArguments|TestGoTestJSONRejectsEverySkipAndRequiresPass|TestInspectorValidClosure|TestInspectorRejectsStageSet|TestInspectorRejectsEvidenceProofBinding|TestInspectorRejectsIdentityMismatch|TestInspectorRejectsSelfPathHashOrVersionMismatch|TestInspectorRejectsEveryRuntimeSkip|TestInspectorRejectsSkipOrNoOp|TestInspectorRejectsInventedObservedIDs|TestInspectorRequiresExactNestedGoTestEvents|TestInspectorRejectsBroadenedHostEvidence|TestInspectorReadOnlyCopiesUnchanged|TestInspectorStrictVerdictSchema|TestInspectorExactThreatClosure)$",
+            "evidence_kind": "go-test-json"
+          },
+          "argv": [
+            "${GO}",
+            "test",
+            "-tags",
+            "migrated_fynedo",
+            "-p",
+            "1",
+            "./internal/pcv3credential/testdata/phasegates",
+            "./internal/pcv3credential/testdata/phaseinspect",
+            "-run",
+            "^(TestFreezeIdentityBindsRunnerAndInspector|TestStageRejectsIdentityBeforeReservation|TestStageZeroSubprocessOnMismatch|TestStageRevalidatesAfterRun|TestStageCreateExclusive|TestStageRejectsSymlink|TestStagePublicationDirectorySyncOrderingAndFailure|TestStageUsesExactArgvAndEnv|TestEvidenceReplacementIsDetected|TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects|TestReviewedGateRejectsBroadenedHostEvidence|TestFreezeIdentityRejectsSecrets|TestFreezeIdentityRequiresPrivateEvidenceRoot|TestStageBoundsChildOutput|TestStageRejectsEveryRuntimeSkip|TestReviewedGateRejectsExecutableGoTestArguments|TestGoTestJSONRejectsEverySkipAndRequiresPass|TestInspectorValidClosure|TestInspectorRejectsStageSet|TestInspectorRejectsEvidenceProofBinding|TestInspectorRejectsIdentityMismatch|TestInspectorRejectsSelfPathHashOrVersionMismatch|TestInspectorRejectsEveryRuntimeSkip|TestInspectorRejectsSkipOrNoOp|TestInspectorRejectsInventedObservedIDs|TestInspectorRequiresExactNestedGoTestEvents|TestInspectorRejectsBroadenedHostEvidence|TestInspectorReadOnlyCopiesUnchanged|TestInspectorStrictVerdictSchema|TestInspectorExactThreatClosure)$",
+            "-count=1",
+            "-timeout=30m",
+            "-json"
+          ],
+          "cwd": "${SOURCE}/src",
+          "timeout_seconds": 2100,
+          "go_based": true,
+          "package_parallelism": 1,
+          "required_test_ids": [
+            "TestFreezeIdentityBindsRunnerAndInspector",
+            "TestStageRejectsIdentityBeforeReservation",
+            "TestStageZeroSubprocessOnMismatch",
+            "TestStageRevalidatesAfterRun",
+            "TestStageCreateExclusive",
+            "TestStageRejectsSymlink",
+            "TestStagePublicationDirectorySyncOrderingAndFailure",
+            "TestStageUsesExactArgvAndEnv",
+            "TestEvidenceReplacementIsDetected",
+            "TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects",
+            "TestReviewedGateRejectsBroadenedHostEvidence",
+            "TestFreezeIdentityRejectsSecrets",
+            "TestFreezeIdentityRequiresPrivateEvidenceRoot",
+            "TestStageBoundsChildOutput",
+            "TestStageRejectsEveryRuntimeSkip",
+            "TestReviewedGateRejectsExecutableGoTestArguments",
+            "TestGoTestJSONRejectsEverySkipAndRequiresPass",
+            "TestInspectorValidClosure",
+            "TestInspectorRejectsStageSet",
+            "TestInspectorRejectsEvidenceProofBinding",
+            "TestInspectorRejectsIdentityMismatch",
+            "TestInspectorRejectsSelfPathHashOrVersionMismatch",
+            "TestInspectorRejectsEveryRuntimeSkip",
+            "TestInspectorRejectsSkipOrNoOp",
+            "TestInspectorRejectsInventedObservedIDs",
+            "TestInspectorRequiresExactNestedGoTestEvents",
+            "TestInspectorRejectsBroadenedHostEvidence",
+            "TestInspectorReadOnlyCopiesUnchanged",
+            "TestInspectorStrictVerdictSchema",
+            "TestInspectorExactThreatClosure"
+          ],
+          "required_test_packages": {
             "TestFreezeIdentityBindsRunnerAndInspector": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
-            "TestEvidenceReplacementIsDetected": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageRejectsIdentityBeforeReservation": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageZeroSubprocessOnMismatch": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageRevalidatesAfterRun": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageCreateExclusive": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageRejectsSymlink": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStagePublicationDirectorySyncOrderingAndFailure": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
             "TestStageUsesExactArgvAndEnv": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestEvidenceReplacementIsDetected": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestReviewedGateRejectsBroadenedHostEvidence": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestFreezeIdentityRejectsSecrets": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestFreezeIdentityRequiresPrivateEvidenceRoot": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageBoundsChildOutput": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageRejectsEveryRuntimeSkip": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestReviewedGateRejectsExecutableGoTestArguments": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestGoTestJSONRejectsEverySkipAndRequiresPass": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
             "TestInspectorValidClosure": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsStageSet": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsEvidenceProofBinding": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsIdentityMismatch": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsSelfPathHashOrVersionMismatch": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsEveryRuntimeSkip": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsSkipOrNoOp": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsInventedObservedIDs": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRequiresExactNestedGoTestEvents": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsBroadenedHostEvidence": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
             "TestInspectorReadOnlyCopiesUnchanged": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
-            "TestInspectorExactThreatClosure": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
-            "TestUnpackAllowsSystemTempDirSymlinkPrefix": "Picocrypt-NG/internal/fileops"
+            "TestInspectorStrictVerdictSchema": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorExactThreatClosure": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect"
           },
           "required_exit_code": 0
         },
@@ -674,22 +764,6 @@
           "go_based": true,
           "package_parallelism": 1,
           "required_exit_code": 0
-        },
-        {
-          "id": "host-skip-accounting",
-          "kind": "internal",
-          "execution_surface": {
-            "package_paths": ["./internal/fileops"],
-            "build_tags": ["migrated_fynedo"],
-            "test_selector": "TestUnpackAllowsSystemTempDirSymlinkPrefix",
-            "evidence_kind": "go-ast-declaration"
-          },
-          "source_path": "internal/fileops/unpack_test.go",
-          "go_ast_exact_test_declaration": "TestUnpackAllowsSystemTempDirSymlinkPrefix",
-          "required_declarations": 1,
-          "runtime_event_minimum": 0,
-          "runtime_event_maximum": 1,
-          "allowlist_source": "skip_allowlist"
         },
         {
           "id": "host-threat-closure",
