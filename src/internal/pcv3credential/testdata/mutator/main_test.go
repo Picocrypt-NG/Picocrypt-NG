@@ -630,11 +630,21 @@ func loadRepositoryManifest(t *testing.T) *mutationManifest {
 
 func repositorySourceRoot(t *testing.T) string {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve mutator test source path")
+	current, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("resolve mutator test directory: %v", err)
 	}
-	return filepath.Clean(filepath.Join(filepath.Dir(file), "../../../.."))
+	for {
+		if info, statErr := os.Lstat(filepath.Join(current, "go.mod")); statErr == nil &&
+			info.Mode().IsRegular() {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			t.Fatal("cannot locate mutator test module root")
+		}
+		current = parent
+	}
 }
 
 func mutationByID(
