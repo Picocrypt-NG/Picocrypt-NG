@@ -147,6 +147,7 @@
     <string name="error_auth_failed">प्रमाणीकरण विफल। पासवर्ड, कुंजी फ़ाइलें और उनका क्रम जाँचें।</string>
     <string name="error_data_corrupted">अखंडता जाँच विफल। आउटपुट असत्यापित है और क्षतिग्रस्त हो सकता है।</string>
     <string name="error_corrupt_header">एन्क्रिप्टेड वॉल्यूम का हेडर क्षतिग्रस्त या अमान्य है।</string>
+    <string name="error_pcv_unavailable">यह PCV वॉल्यूम इस संस्करण द्वारा समर्थित नहीं है। मूल फ़ाइल रखें; कोई आउटपुट फ़ाइल नहीं बनाई गई।</string>
     <string name="error_file_not_found">फ़ाइल नहीं मिली या उस तक पहुँचा नहीं जा सका।</string>
     <string name="error_operation_failed">कार्रवाई विफल हुई।</string>
     <string name="error_unknown">अज्ञात त्रुटि हुई।</string>

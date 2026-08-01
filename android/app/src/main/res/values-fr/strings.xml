@@ -151,6 +151,7 @@
     <string name="error_auth_failed">Échec de l’authentification. Vérifiez le mot de passe, les fichiers-clés et leur ordre.</string>
     <string name="error_data_corrupted">Échec du contrôle d’intégrité. La sortie n’est pas vérifiée et peut être corrompue.</string>
     <string name="error_corrupt_header">L’en-tête du volume chiffré est endommagé ou invalide.</string>
+    <string name="error_pcv_unavailable">Ce volume PCV n’est pas pris en charge par cette version. Conservez le fichier d’origine ; aucun fichier de sortie n’a été créé.</string>
     <string name="error_file_not_found">Fichier introuvable ou inaccessible.</string>
     <string name="error_operation_failed">L’opération a échoué.</string>
     <string name="error_unknown">Une erreur inconnue s’est produite.</string>

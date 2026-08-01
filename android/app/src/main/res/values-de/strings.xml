@@ -147,6 +147,7 @@
     <string name="error_auth_failed">Authentifizierung fehlgeschlagen. Prüfen Sie das Passwort, die Schlüsseldateien und deren Reihenfolge.</string>
     <string name="error_data_corrupted">Integritätsprüfung fehlgeschlagen. Die Ausgabe ist nicht verifiziert und kann beschädigt sein.</string>
     <string name="error_corrupt_header">Der Header des verschlüsselten Volumes ist beschädigt oder ungültig.</string>
+    <string name="error_pcv_unavailable">Dieses PCV-Volume wird von dieser Version nicht unterstützt. Behalten Sie die Originaldatei; es wurde keine Ausgabedatei erstellt.</string>
     <string name="error_file_not_found">Datei nicht gefunden oder nicht zugänglich.</string>
     <string name="error_operation_failed">Der Vorgang ist fehlgeschlagen.</string>
     <string name="error_unknown">Ein unbekannter Fehler ist aufgetreten.</string>

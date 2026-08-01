@@ -169,6 +169,7 @@
     <string name="error_auth_failed">Аутентификация не удалась. Проверьте пароль, ключевые файлы и их порядок.</string>
     <string name="error_data_corrupted">Проверка целостности не пройдена. Результат не проверен и может быть повреждён.</string>
     <string name="error_corrupt_header">Заголовок зашифрованного тома повреждён или недействителен.</string>
+    <string name="error_pcv_unavailable">Этот том PCV не поддерживается данной версией. Сохраните исходный файл; выходной файл не был создан.</string>
     <string name="error_file_not_found">Файл не найден или недоступен.</string>
     <string name="error_operation_failed">Не удалось выполнить операцию.</string>
     <string name="error_unknown">Произошла неизвестная ошибка.</string>

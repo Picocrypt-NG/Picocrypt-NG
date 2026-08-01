@@ -157,6 +157,7 @@
     <string name="error_auth_failed">볼륨 인증에 실패했습니다. 비밀번호, 키 파일 및 키 파일 순서를 확인하세요.</string>
     <string name="error_data_corrupted">무결성 검사에 실패했습니다. 출력은 검증되지 않았으며 손상되었을 수 있습니다.</string>
     <string name="error_corrupt_header">암호화된 볼륨의 헤더가 손상되었거나 유효하지 않습니다.</string>
+    <string name="error_pcv_unavailable">이 PCV 볼륨은 이 버전에서 지원되지 않습니다. 원본 파일을 보관하세요. 출력 파일은 생성되지 않았습니다.</string>
     <string name="error_file_not_found">파일을 찾을 수 없거나 접근할 수 없습니다.</string>
     <string name="error_operation_failed">작업에 실패했습니다.</string>
     <string name="error_unknown">알 수 없는 오류가 발생했습니다.</string>

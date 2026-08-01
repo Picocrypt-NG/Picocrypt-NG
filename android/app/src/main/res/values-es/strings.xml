@@ -151,6 +151,7 @@
     <string name="error_auth_failed">Falló la autenticación. Compruebe la contraseña, los archivos de clave y su orden.</string>
     <string name="error_data_corrupted">Falló la verificación de integridad. La salida no está verificada y puede estar dañada.</string>
     <string name="error_corrupt_header">El encabezado del volumen cifrado está dañado o no es válido.</string>
+    <string name="error_pcv_unavailable">Esta versión no admite este volumen PCV. Conserva el archivo original; no se creó ningún archivo de salida.</string>
     <string name="error_file_not_found">Archivo no encontrado o inaccesible.</string>
     <string name="error_operation_failed">La operación falló.</string>
     <string name="error_unknown">Se produjo un error desconocido.</string>

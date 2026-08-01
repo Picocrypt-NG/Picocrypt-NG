@@ -143,6 +143,7 @@
     <string name="error_auth_failed">身份验证失败。请检查密码、密钥文件及其顺序。</string>
     <string name="error_data_corrupted">完整性检查失败。输出未经验证，可能已损坏。</string>
     <string name="error_corrupt_header">加密卷标头已损坏或无效。</string>
+    <string name="error_pcv_unavailable">此版本不支持该 PCV 卷。请保留原始文件；未创建任何输出文件。</string>
     <string name="error_file_not_found">文件不存在或无法访问。</string>
     <string name="error_operation_failed">操作失败。</string>
     <string name="error_unknown">发生未知错误。</string>

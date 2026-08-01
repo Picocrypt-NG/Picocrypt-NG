@@ -41,6 +41,7 @@ import androidx.compose.runtime.collectAsState
 import io.github.picocrypt_ng.picocrypt_ng.StagedSelection
 import io.github.picocrypt_ng.picocrypt_ng.StagingService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -102,39 +103,57 @@ fun ChooseFile(viewModel: MainViewModel) {
                             )
                         )
                     }.onFailure { error ->
-                        // On error, still update filename but without decryption info
-                        // Set error to show user that decryption info couldn't be read
                         val appError = if (error is AppError) {
                             error
                         } else {
                             AppError.fromException(error as? Exception ?: Exception(error.message ?: unknownErrorMsg))
                         }
-                        viewModel.setError(appError)
-                        viewModel.updateFormData(
-                            currentFormData.copy(
+                        if (appError is AppError.OperationError.PCVUnavailable) {
+                            rejectPCVAndDeleteOwnedCopy(
+                                viewModel = viewModel,
                                 selectedFilename = selectedFileName,
-                                copiedFilePath = copiedPath,
-                                comments = "",
-                                decryptionInfo = null
+                                ownedCopyPath = copiedPath,
+                                error = appError,
+                            ) { path -> FileCopyService.deleteFile(context, path) }
+                        } else {
+                            // On an ordinary metadata error, retain the copied input so
+                            // existing legacy recovery behavior remains available.
+                            viewModel.setError(appError)
+                            viewModel.updateFormData(
+                                currentFormData.copy(
+                                    selectedFilename = selectedFileName,
+                                    copiedFilePath = copiedPath,
+                                    comments = "",
+                                    decryptionInfo = null
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }.onFailure { error ->
-                // On error detecting operation, still update filename but show error
                 val appError = if (error is AppError) {
                     error
                 } else {
                     AppError.fromException(error as? Exception ?: Exception(error.message ?: unknownErrorMsg))
                 }
-                viewModel.setError(appError)
-                viewModel.updateFormData(
-                    currentFormData.copy(
+                if (appError is AppError.OperationError.PCVUnavailable) {
+                    rejectPCVAndDeleteOwnedCopy(
+                        viewModel = viewModel,
                         selectedFilename = selectedFileName,
-                        copiedFilePath = copiedPath,
-                        decryptionInfo = null
+                        ownedCopyPath = copiedPath,
+                        error = appError,
+                    ) { path -> FileCopyService.deleteFile(context, path) }
+                } else {
+                    // An ordinary detection failure retains the existing diagnostic state.
+                    viewModel.setError(appError)
+                    viewModel.updateFormData(
+                        currentFormData.copy(
+                            selectedFilename = selectedFileName,
+                            copiedFilePath = copiedPath,
+                            decryptionInfo = null
+                        )
                     )
-                )
+                }
             }
         }.onFailure { error ->
             // File copy failed - show error to user
@@ -242,6 +261,19 @@ fun ChooseFile(viewModel: MainViewModel) {
                 }
             }
         }
+    }
+}
+
+internal suspend fun rejectPCVAndDeleteOwnedCopy(
+    viewModel: MainViewModel,
+    selectedFilename: String,
+    ownedCopyPath: String,
+    error: AppError.OperationError.PCVUnavailable,
+    deleteOwnedCopy: suspend (String) -> Boolean,
+): Boolean {
+    val cleanupPath = viewModel.rejectPCV(selectedFilename, ownedCopyPath, error)
+    return withContext(NonCancellable) {
+        deleteOwnedCopy(cleanupPath)
     }
 }
 

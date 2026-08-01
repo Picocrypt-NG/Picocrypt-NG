@@ -3,6 +3,7 @@ package io.github.picocrypt_ng.picocrypt_ng
 import android.app.Application
 import androidx.arch.core.executor.testing.InstantTaskExecutorRule
 import androidx.lifecycle.SavedStateHandle
+import io.github.picocrypt_ng.picocrypt_ng.ui.components.rejectPCVAndDeleteOwnedCopy
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -178,5 +179,60 @@ class PCVUnavailableStateTest {
         )
         assertTrue(viewModel.formState.value.isEncrypt)
         assertTrue(viewModel.formState.value.isFormValid)
+    }
+
+    @Test
+    fun `cleanup targets only the just-created owned copy after unavailable state is committed`() = runTest {
+        val viewModel = MainViewModel(mockk<Application>(relaxed = true), SavedStateHandle())
+        val priorOwnedPath = "/app/files/prior-owned-copy.pcv"
+        val currentOwnedPath = "/app/files/current-owned-copy.pcv"
+        val providerPath = "content://provider/original-volume"
+        viewModel.updateFormData(
+            FormData(
+                selectedFilename = "prior.pcv",
+                copiedFilePath = priorOwnedPath,
+                comments = "prior metadata",
+                passwordInput = "prior-password".toCharArray(),
+                confirmPasswordInput = "prior-password".toCharArray(),
+                reedSolomon = true,
+                paranoid = true,
+                deniability = false,
+                keyfileFilenames = emptyList(),
+                keyfileOrdered = false,
+            )
+        )
+        val error = AppError.fromGoError(
+            errorString = "PCV3_INVALID_STRUCTURE",
+            operationType = OperationType.DECRYPT,
+            code = "PCV3_INVALID_STRUCTURE",
+        ) as AppError.OperationError.PCVUnavailable
+        val cleanupTargets = mutableListOf<String>()
+
+        val deleted = rejectPCVAndDeleteOwnedCopy(
+            viewModel = viewModel,
+            selectedFilename = "misleading.txt",
+            ownedCopyPath = currentOwnedPath,
+            error = error,
+        ) { path ->
+            assertTrue("unavailable state must precede cleanup", viewModel.formState.value.pcvUnavailable)
+            assertEquals("", viewModel.formState.value.copiedFilePath)
+            assertSame(error, viewModel.errorMessage.value)
+            cleanupTargets += path
+            false
+        }
+
+        assertFalse("cleanup failure is reported without rolling state back", deleted)
+        assertEquals(listOf(currentOwnedPath), cleanupTargets)
+        assertFalse(cleanupTargets.contains(priorOwnedPath))
+        assertFalse(cleanupTargets.contains(providerPath))
+        assertTrue(viewModel.formState.value.pcvUnavailable)
+        assertFalse(viewModel.formState.value.isEncrypt)
+        assertFalse(viewModel.formState.value.isDecrypt)
+        assertFalse(viewModel.formState.value.isFormValid)
+
+        viewModel.clearError()
+        assertNull(viewModel.errorMessage.value)
+        assertTrue(viewModel.formState.value.pcvUnavailable)
+        assertEquals("", viewModel.formState.value.copiedFilePath)
     }
 }
