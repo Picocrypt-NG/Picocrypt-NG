@@ -180,7 +180,7 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
 	ctx.SetStatus("Reading values...")
 
-	fin, closeInput, err := ctx.openInput()
+	fin, closeInput, err := ctx.openLegacyDecryptInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
 	}
@@ -484,7 +484,7 @@ func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest,
 	}
 
 	// Open input file
-	fin, closeInput, err := ctx.openInput()
+	fin, closeInput, err := ctx.openLegacyDecryptInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
 	}
@@ -664,7 +664,7 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 	ctx.CipherSuite = cipherSuite
 
 	// Open files
-	fin, closeInput, err := ctx.openInput()
+	fin, closeInput, err := ctx.openLegacyDecryptInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
 	}

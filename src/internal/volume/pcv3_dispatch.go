@@ -23,9 +23,13 @@ func PreflightPCV3(inputPath string, recombine bool) (retErr error) {
 		retErr = errors.Join(retErr, source.Close())
 	}()
 
+	return rejectClaimedPCV3(source)
+}
+
+func rejectClaimedPCV3(source *os.File) error {
 	info, err := source.Stat()
 	if err != nil {
-		return fmt.Errorf("stat input for PCV3 preflight: %w", err)
+		return fmt.Errorf("stat input for PCV3 routing: %w", err)
 	}
 	route, _, err := pcv3.Probe(source, info.Size())
 	if err != nil {
@@ -35,4 +39,18 @@ func PreflightPCV3(inputPath string, recombine bool) (retErr error) {
 		return pcv3.ErrReaderUnavailable
 	}
 	return nil
+}
+
+func (ctx *OperationContext) openLegacyDecryptInput() (*os.File, bool, error) {
+	source, closeInput, err := ctx.openInput()
+	if err != nil {
+		return nil, false, err
+	}
+	if err := rejectClaimedPCV3(source); err != nil {
+		if closeInput {
+			err = errors.Join(err, source.Close())
+		}
+		return nil, false, err
+	}
+	return source, closeInput, nil
 }

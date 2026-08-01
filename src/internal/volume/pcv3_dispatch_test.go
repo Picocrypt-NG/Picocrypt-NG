@@ -96,6 +96,41 @@ func TestPreflightPCV3(t *testing.T) {
 	}
 }
 
+func TestEncryptTreatsPCV3BytesAsPlaintext(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "pcv3-as-plaintext.bin")
+	volumePath := filepath.Join(dir, "encrypted.pcv")
+	output := filepath.Join(dir, "decrypted.bin")
+	plaintext := loadPCV3DispatchFixture(t)
+	writePCV3DispatchInput(t, input, plaintext)
+	password := []byte("nested-volume-password")
+	codecs := newRSCodecsT(t)
+
+	if err := Encrypt(t.Context(), &EncryptRequest{
+		InputFile:  input,
+		OutputFile: volumePath,
+		Password:   password,
+		RSCodecs:   codecs,
+	}); err != nil {
+		t.Fatalf("Encrypt(PCV3 plaintext) = %v; want arbitrary input bytes accepted", err)
+	}
+	if err := Decrypt(t.Context(), &DecryptRequest{
+		InputFile:  volumePath,
+		OutputFile: output,
+		Password:   password,
+		RSCodecs:   codecs,
+	}); err != nil {
+		t.Fatalf("Decrypt(nested PCV3 plaintext) = %v", err)
+	}
+	decrypted, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read decrypted plaintext: %v", err)
+	}
+	if !bytes.Equal(decrypted, plaintext) {
+		t.Fatal("nested PCV3 plaintext changed during encryption round trip")
+	}
+}
+
 func TestDecryptPCV3RoutesBeforeLegacy(t *testing.T) {
 	fixture := loadPCV3DispatchFixture(t)
 	dir := t.TempDir()
@@ -165,6 +200,52 @@ func TestDecryptPCV3RoutesBeforeLegacy(t *testing.T) {
 	sort.Strings(names)
 	if len(names) != 1 || names[0] != filepath.Base(input) {
 		t.Fatalf("filesystem artifacts after rejection = %v; want only original input", names)
+	}
+}
+
+func TestDecryptRejectsPCV3PathSwapBeforeLegacyOpen(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.pcv")
+	backup := filepath.Join(dir, "original-input.pcv")
+	replacement := filepath.Join(dir, "replacement.pcv")
+	output := filepath.Join(dir, "plaintext")
+	writePCV3DispatchInput(t, input, []byte("legacy input"))
+	writePCV3DispatchInput(t, replacement, loadPCV3DispatchFixture(t))
+
+	previousVolumeKey := deriveVolumeKey
+	volumeKDFCalls := 0
+	deriveVolumeKey = func([]byte, []byte, bool) ([]byte, error) {
+		volumeKDFCalls++
+		return nil, errors.New("unexpected volume KDF call")
+	}
+	t.Cleanup(func() {
+		deriveVolumeKey = previousVolumeKey
+	})
+
+	reporter := &pathMoveReporter{
+		trigger:     "Reading values...",
+		path:        input,
+		backup:      backup,
+		replacement: replacement,
+	}
+	err := Decrypt(t.Context(), &DecryptRequest{
+		InputFile:  input,
+		OutputFile: output,
+		Password:   []byte("must-not-be-used"),
+		Reporter:   reporter,
+		RSCodecs:   newRSCodecsT(t),
+	})
+	if reporter.err != nil {
+		t.Fatalf("replace input before legacy open: %v", reporter.err)
+	}
+	if !errors.Is(err, pcv3.ErrReaderUnavailable) {
+		t.Fatalf("Decrypt(input swapped to PCV3) = %v; want ErrReaderUnavailable", err)
+	}
+	if volumeKDFCalls != 0 {
+		t.Fatalf("volume KDF calls = %d; swapped PCV3 must stop before credential work", volumeKDFCalls)
+	}
+	if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("swapped PCV3 created output %q: %v", output, err)
 	}
 }
 
