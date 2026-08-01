@@ -172,6 +172,10 @@ func TestPCV3TerminalNoFallback(t *testing.T) {
 	fixture := loadPCV3DispatchFixture(t)
 	unsupported := append([]byte(nil), fixture...)
 	unsupported[5] = 4
+	codecs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("NewRSCodecs: %v", err)
+	}
 
 	for _, test := range []struct {
 		name string
@@ -195,6 +199,7 @@ func TestPCV3TerminalNoFallback(t *testing.T) {
 				ForceDecrypt: true,
 				Deniability:  true,
 				Reporter:     reporter,
+				RSCodecs:     codecs,
 			})
 			var failure pcv3.Failure
 			if !errors.Is(err, pcv3.ErrReaderUnavailable) && !errors.As(err, &failure) {
