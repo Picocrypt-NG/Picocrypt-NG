@@ -2,6 +2,7 @@ package mobile
 
 import (
 	"Picocrypt-NG/internal/header"
+	"Picocrypt-NG/internal/pcv3"
 	"errors"
 
 	perrors "Picocrypt-NG/internal/errors"
@@ -41,6 +42,9 @@ func errorCode(err error) string {
 	if err == nil {
 		return ""
 	}
+	if code, ok := pcv3ErrorCode(err); ok {
+		return code
+	}
 
 	// Auth failure: bare sentinel (verify-first path) OR the typed
 	// *header.AuthError returned on the normal decrypt path.
@@ -63,5 +67,24 @@ func errorCode(err error) string {
 		return "CANCELLED"
 	default:
 		return "GENERIC"
+	}
+}
+
+func pcv3ErrorCode(err error) (string, bool) {
+	if errors.Is(err, pcv3.ErrReaderUnavailable) {
+		return pcv3.CodeUnsupported.String(), true
+	}
+
+	var failure pcv3.Failure
+	if !errors.As(err, &failure) {
+		return "", false
+	}
+	switch failure.Code() {
+	case pcv3.CodeUnsupported:
+		return pcv3.CodeUnsupported.String(), true
+	case pcv3.CodeInvalidStructure:
+		return pcv3.CodeInvalidStructure.String(), true
+	default:
+		return "", false
 	}
 }

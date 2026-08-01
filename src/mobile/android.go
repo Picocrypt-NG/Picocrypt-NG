@@ -38,6 +38,12 @@ func DetectOperation(filePath string) (isEncrypt bool, err error) {
 	if _, err := os.Stat(filePath); err != nil {
 		return false, fmt.Errorf("file not found: %w", err)
 	}
+	if err := volume.PreflightPCV3(filePath, false); err != nil {
+		if code, ok := pcv3ErrorCode(err); ok {
+			return false, errors.New(code)
+		}
+		return false, err
+	}
 
 	// Check if it's a .pcv file (decrypt) or split volume chunk
 	if fileops.IsSplitChunkPath(filePath) {
@@ -236,6 +242,13 @@ func StartDecrypt(requestJSON string, password []byte) string {
 	if req.InputFile == "" {
 		return failOperation(req.OperationID, errors.New("input file is required"))
 	}
+	if err := volume.PreflightPCV3(req.InputFile, req.Recombine); err != nil {
+		if code, ok := pcv3ErrorCode(err); ok {
+			cleanupOperation(req.OperationID)
+			return code
+		}
+		return failOperation(req.OperationID, err)
+	}
 	if req.OutputFile == "" {
 		return failOperation(req.OperationID, errors.New("output file is required"))
 	}
@@ -395,6 +408,10 @@ type DecryptionInfoJSON struct {
 	Readable         bool   `json:"readable"` // false if deniable (can't read other fields without password)
 }
 
+type decryptionInfoErrorJSON struct {
+	ErrorCode string `json:"errorCode"`
+}
+
 // GetDecryptionInfo reads metadata from an encrypted file without decrypting it.
 // Returns a JSON string containing encryption settings and requirements.
 // For deniable files, only the deniability flag will be set (readable=false).
@@ -402,6 +419,16 @@ func GetDecryptionInfo(filePath string) (string, error) {
 	// Check if file exists
 	if _, err := os.Stat(filePath); err != nil {
 		return "", fmt.Errorf("file not found: %w", err)
+	}
+	if err := volume.PreflightPCV3(filePath, false); err != nil {
+		if code, ok := pcv3ErrorCode(err); ok {
+			jsonData, marshalErr := json.Marshal(decryptionInfoErrorJSON{ErrorCode: code})
+			if marshalErr != nil {
+				return "", fmt.Errorf("failed to marshal JSON: %w", marshalErr)
+			}
+			return string(jsonData), nil
+		}
+		return "", err
 	}
 
 	// Initialize Reed-Solomon codecs (needed for header reading)
