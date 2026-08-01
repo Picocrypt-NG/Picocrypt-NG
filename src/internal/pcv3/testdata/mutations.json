@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "spec_revision": "0.3",
+  "spec_sha256": "9b0c7cac133e1e349ed58bd2232ebff860d1e567348611d09c79d295bd81ad73",
+  "mutations": [
+    {
+      "id": "P3-LENGTH-GUARD-001",
+      "spec_revision": "0.3",
+      "spec_sha256": "9b0c7cac133e1e349ed58bd2232ebff860d1e567348611d09c79d295bd81ad73",
+      "source_path": "internal/pcv3/preamble.go",
+      "source_sha256": "b152a21a35bbf969b2ec56866d06097bdc011d5f586bea06190c012f6ec573bd",
+      "anchor": "func metadataBlocksFromFrontHeader(length uint64) (uint64, bool) {\n\tif length < minimumFrontHeader || length > maximumFrontHeader {\n\t\treturn 0, false\n\t}\n\tencodedLength := length - frontHeaderBase\n\tif encodedLength%rs128CodewordLength != 0 {\n\t\treturn 0, false\n\t}\n\tblocks := encodedLength / rs128CodewordLength\n\treturn blocks, blocks >= minimumMetadataBlocks && blocks <= maximumMetadataBlocks\n}\n",
+      "anchor_sha256": "d428f978d7db5e1d99004af32077d80f6d842193475c39ff52ec3a9468c031d9",
+      "replacement": "func metadataBlocksFromFrontHeader(length uint64) (uint64, bool) {\n\tif length < minimumFrontHeader {\n\t\treturn 0, false\n\t}\n\tencodedLength := length - frontHeaderBase\n\tblocks := encodedLength / rs128CodewordLength\n\treturn blocks, blocks >= minimumMetadataBlocks\n}\n",
+      "package": "./internal/pcv3",
+      "test": "TestParsePreamble",
+      "expected_assertion_marker": "want pcv3.Failure"
+    },
+    {
+      "id": "P3-NO-FALLBACK-001",
+      "spec_revision": "0.3",
+      "spec_sha256": "9b0c7cac133e1e349ed58bd2232ebff860d1e567348611d09c79d295bd81ad73",
+      "source_path": "internal/volume/decrypt.go",
+      "source_sha256": "0930a6d4dc696d028ea543a09696046f6fbc5381284fc40e0d4dfe9938d82626",
+      "anchor": "\tif err := PreflightPCV3(req.InputFile, req.Recombine); err != nil {\n\t\treturn err\n\t}\n",
+      "anchor_sha256": "6980648d8bd543c9347fd3c49f1251385df378ee3717c5394a7c47afaf6723fa",
+      "replacement": "\tif err := PreflightPCV3(req.InputFile, req.Recombine); err != nil {\n\t\t_ = err\n\t}\n",
+      "package": "./internal/volume",
+      "test": "TestPCV3TerminalNoFallback",
+      "expected_assertion_marker": "want terminal typed PCV3 result"
+    },
+    {
+      "id": "P3-ROUTE-ORDER-001",
+      "spec_revision": "0.3",
+      "spec_sha256": "9b0c7cac133e1e349ed58bd2232ebff860d1e567348611d09c79d295bd81ad73",
+      "source_path": "internal/volume/decrypt.go",
+      "source_sha256": "0930a6d4dc696d028ea543a09696046f6fbc5381284fc40e0d4dfe9938d82626",
+      "anchor": "\tif err := PreflightPCV3(req.InputFile, req.Recombine); err != nil {\n\t\treturn err\n\t}\n",
+      "anchor_sha256": "6980648d8bd543c9347fd3c49f1251385df378ee3717c5394a7c47afaf6723fa",
+      "replacement": "\tif false {\n\t\tif err := PreflightPCV3(req.InputFile, req.Recombine); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n",
+      "package": "./internal/volume",
+      "test": "TestDecryptPCV3RoutesBeforeLegacy",
+      "expected_assertion_marker": "want ErrReaderUnavailable"
+    }
+  ]
+}
