@@ -104,13 +104,23 @@ object GoBridge {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            val technicalMessage = e.message ?: e.toString()
+            val mapped = AppError.fromGoError(
+                errorString = technicalMessage,
+                operationType = OperationType.DECRYPT,
+                code = e.message.orEmpty(),
+            )
             // Return error instead of fallback - Go binding failure is a critical error
             Result.failure(
-                AppError.OperationError.GenericOperation(
-                    userMessage = "",
-                    technicalMessage = "Go binding error: ${e.message ?: e.toString()}",
-                    messageResId = R.string.error_detect_operation_type_failed,
-                )
+                if (mapped is AppError.OperationError.PCVUnavailable) {
+                    mapped
+                } else {
+                    AppError.OperationError.GenericOperation(
+                        userMessage = "",
+                        technicalMessage = "Go binding error: $technicalMessage",
+                        messageResId = R.string.error_detect_operation_type_failed,
+                    )
+                }
             )
         }
     }
@@ -186,7 +196,7 @@ object GoBridge {
 
             if (errorMsg.isNotEmpty()) {
                 // Convert Go error to AppError
-                val appError = AppError.fromGoError(errorMsg, OperationType.DECRYPT)
+                val appError = AppError.fromGoError(errorMsg, OperationType.DECRYPT, code = errorMsg)
                 Result.failure(appError)
             } else {
                 Result.success(Unit)
@@ -332,6 +342,10 @@ object GoBridge {
      */
     internal fun parseDecryptionInfo(jsonString: String): DecryptionInfo {
         val json = JSONObject(jsonString)
+        if (json.has("errorCode")) {
+            val errorCode = json.getString("errorCode")
+            throw AppError.fromGoError(errorCode, OperationType.DECRYPT, code = errorCode)
+        }
         return DecryptionInfo(
             keyfilesRequired = json.getBoolean("keyfilesRequired"),
             keyfileOrdered = json.getBoolean("keyfileOrdered"),

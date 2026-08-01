@@ -37,16 +37,19 @@ data class FormData(
     val onlyFiles: List<String> = emptyList(),
     val selectionKind: SelectionKind = SelectionKind.SINGLE_FILE,
     val suggestedOutputName: String = "",
-    val decryptionInfo: DecryptionInfo? = null
+    val decryptionInfo: DecryptionInfo? = null,
+    val pcvUnavailable: Boolean = false,
 ) {
     // A folder/multi selection always encrypts (Go zips it) and is never a decrypt or a
     // split-volume chunk -- those are single-file concepts keyed off the filename.
     val isDecrypt: Boolean
-        get() = selectionKind == SelectionKind.SINGLE_FILE &&
+        get() = !pcvUnavailable && selectionKind == SelectionKind.SINGLE_FILE &&
             selectedFilename.isNotEmpty() && selectedFilename.endsWith(".pcv")
     val isEncrypt: Boolean
-        get() = selectionKind != SelectionKind.SINGLE_FILE ||
-            (selectedFilename.isNotEmpty() && !selectedFilename.endsWith(".pcv"))
+        get() = !pcvUnavailable && (
+            selectionKind != SelectionKind.SINGLE_FILE ||
+                (selectedFilename.isNotEmpty() && !selectedFilename.endsWith(".pcv"))
+            )
     // clearPasswords overwrites buffers in place, so allocated length does not imply a credential.
     val hasPassword: Boolean
         get() = passwordInput.any { it != '\u0000' }
@@ -134,6 +137,7 @@ data class FormData(
         if (selectionKind != other.selectionKind) return false
         if (suggestedOutputName != other.suggestedOutputName) return false
         if (decryptionInfo != other.decryptionInfo) return false
+        if (pcvUnavailable != other.pcvUnavailable) return false
 
         return true
     }
@@ -157,6 +161,7 @@ data class FormData(
         result = 31 * result + selectionKind.hashCode()
         result = 31 * result + suggestedOutputName.hashCode()
         result = 31 * result + (decryptionInfo?.hashCode() ?: 0)
+        result = 31 * result + pcvUnavailable.hashCode()
         return result
     }
     

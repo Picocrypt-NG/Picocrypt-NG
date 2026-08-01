@@ -163,6 +163,7 @@
     <string name="error_auth_failed">Authentication failed. Check the password, keyfiles, and keyfile order.</string>
     <string name="error_data_corrupted">Integrity check failed. The output is unverified and may be corrupted.</string>
     <string name="error_corrupt_header">The encrypted volume header is damaged or invalid.</string>
+    <string name="error_pcv_unavailable">This PCV volume is not supported by this version. Keep the original file; no output was created.</string>
     <string name="error_file_not_found">File not found or inaccessible.</string>
     <string name="error_operation_failed">The operation failed.</string>
     <string name="error_unknown">Unknown error occurred.</string>

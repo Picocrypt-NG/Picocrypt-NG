@@ -58,6 +58,48 @@ class MainViewModel(
     fun clearError() {
         _errorMessage.value = null
     }
+
+    /**
+     * Commits a terminal claimed-PCV selection before its error is displayed.
+     * The caller-provided owned copy path is returned unchanged for exact cleanup.
+     */
+    fun rejectPCV(
+        selectedFilename: String,
+        ownedCopyPath: String,
+        error: AppError.OperationError.PCVUnavailable,
+    ): String {
+        val current = _formState.value
+        current.clearPasswords()
+
+        val unavailable = current.copy(
+            selectedFilename = selectedFilename,
+            copiedFilePath = "",
+            comments = "",
+            passwordInput = CharArray(0),
+            confirmPasswordInput = CharArray(0),
+            reedSolomon = false,
+            paranoid = false,
+            deniability = false,
+            verifyFirst = false,
+            keyfileFilenames = emptyList(),
+            keyfileOrdered = false,
+            compress = false,
+            inputFiles = emptyList(),
+            onlyFolders = emptyList(),
+            onlyFiles = emptyList(),
+            selectionKind = SelectionKind.SINGLE_FILE,
+            suggestedOutputName = "",
+            decryptionInfo = null,
+            pcvUnavailable = true,
+        )
+
+        savedStateHandle.remove<String>(KEY_SELECTED_FILENAME)
+        savedStateHandle.remove<String>(KEY_COPIED_FILE_PATH)
+        savedStateHandle.remove<String>(KEY_COMMENTS)
+        _formState.value = unavailable
+        _errorMessage.value = error
+        return ownedCopyPath
+    }
     
     /**
      * Updates the form data with new values.
@@ -143,7 +185,8 @@ class MainViewModel(
                 onlyFiles = emptyList(),
                 selectionKind = SelectionKind.SINGLE_FILE,
                 suggestedOutputName = "",
-                decryptionInfo = null
+                decryptionInfo = null,
+                pcvUnavailable = false,
             )
             
             // Also clear from SavedStateHandle
@@ -169,6 +212,8 @@ class MainViewModel(
         current.clearPasswords()
         
         val reset = current.copy(
+            selectedFilename = "",
+            copiedFilePath = "",
             comments = "",
             passwordInput = CharArray(0),
             confirmPasswordInput = CharArray(0),
@@ -183,11 +228,11 @@ class MainViewModel(
             onlyFiles = emptyList(),
             selectionKind = SelectionKind.SINGLE_FILE,
             suggestedOutputName = "",
-            decryptionInfo = null
+            decryptionInfo = null,
+            pcvUnavailable = false,
         )
         _formState.value = reset
         // Update SavedStateHandle
         updateFormData(reset)
     }
 }
-
