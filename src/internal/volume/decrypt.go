@@ -105,8 +105,6 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 
 	// Recombine split chunks if needed
 	if req.Recombine {
-		ctx.SetStatus("Recombining chunks...")
-
 		inputBase := inputFile
 		if base, ok := fileops.SplitChunkBase(inputFile); ok {
 			inputBase = base
@@ -118,6 +116,13 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 			InputBase:  inputBase,
 			OutputPath: outputPath,
 			OutputInfo: &recombinedInfo,
+			ValidateFirstChunk: func(source *os.File) error {
+				if err := rejectClaimedPCV3(source); err != nil {
+					return err
+				}
+				ctx.SetStatus("Recombining chunks...")
+				return nil
+			},
 			Progress: func(p float32, info string) {
 				ctx.UpdateProgress(p, info)
 			},

@@ -249,6 +249,104 @@ func TestDecryptRejectsPCV3PathSwapBeforeLegacyOpen(t *testing.T) {
 	}
 }
 
+func TestDecryptPreprocessRejectsPCV3SwapBeforeDeniabilityEffects(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.pcv")
+	backup := filepath.Join(dir, "legacy-input.pcv")
+	replacement := filepath.Join(dir, "replacement.pcv")
+	writePCV3DispatchInput(t, input, []byte("legacy-eligible input"))
+	writePCV3DispatchInput(t, replacement, loadPCV3DispatchFixture(t))
+	if err := PreflightPCV3(input, false); err != nil {
+		t.Fatalf("initial legacy preflight: %v", err)
+	}
+	if err := os.Rename(input, backup); err != nil {
+		t.Fatalf("retain initial input: %v", err)
+	}
+	if err := os.Rename(replacement, input); err != nil {
+		t.Fatalf("replace input with PCV3: %v", err)
+	}
+
+	previousDeniabilityKey := deriveDeniabilityKey
+	deniabilityKDFCalls := 0
+	deriveDeniabilityKey = func([]byte, []byte) []byte {
+		deniabilityKDFCalls++
+		return make([]byte, 32)
+	}
+	t.Cleanup(func() { deriveDeniabilityKey = previousDeniabilityKey })
+
+	reporter := &pcv3DispatchReporter{}
+	req := &DecryptRequest{
+		InputFile:   input,
+		Password:    []byte("must-not-be-used"),
+		Deniability: true,
+		Reporter:    reporter,
+		RSCodecs:    newRSCodecsT(t),
+	}
+	ctx := NewDecryptContext(t.Context(), req)
+	t.Cleanup(func() { _ = ctx.Close() })
+
+	err := decryptPreprocess(ctx, req)
+	if !errors.Is(err, pcv3.ErrReaderUnavailable) {
+		t.Fatalf("decryptPreprocess(input swapped to PCV3) = %v; want ErrReaderUnavailable", err)
+	}
+	if deniabilityKDFCalls != 0 {
+		t.Fatalf("deniability KDF calls = %d; swapped PCV3 must stop before credential work", deniabilityKDFCalls)
+	}
+	if reporter.calls() != 0 {
+		t.Fatalf("reporter calls = %d; swapped PCV3 must stop before deniability progress", reporter.calls())
+	}
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatalf("read input directory: %v", readErr)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("filesystem entries after rejection = %d; want only current and retained input", len(entries))
+	}
+}
+
+func TestDecryptPreprocessRejectsPCV3SwapBeforeRecombineOutput(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "split.pcv")
+	firstChunk := base + ".0"
+	backup := filepath.Join(dir, "legacy-chunk-zero")
+	replacement := filepath.Join(dir, "replacement.pcv")
+	writePCV3DispatchInput(t, firstChunk, []byte("legacy-eligible chunk zero"))
+	writePCV3DispatchInput(t, base+".1", []byte("legacy tail"))
+	writePCV3DispatchInput(t, replacement, loadPCV3DispatchFixture(t))
+	if err := PreflightPCV3(firstChunk, true); err != nil {
+		t.Fatalf("initial split legacy preflight: %v", err)
+	}
+	if err := os.Rename(firstChunk, backup); err != nil {
+		t.Fatalf("retain initial chunk zero: %v", err)
+	}
+	if err := os.Rename(replacement, firstChunk); err != nil {
+		t.Fatalf("replace chunk zero with PCV3: %v", err)
+	}
+
+	reporter := &pcv3DispatchReporter{}
+	req := &DecryptRequest{
+		InputFile: firstChunk,
+		Recombine: true,
+		Reporter:  reporter,
+	}
+	ctx := NewDecryptContext(t.Context(), req)
+	t.Cleanup(func() {
+		_ = ctx.cleanupRecombinedFile()
+		_ = ctx.Close()
+	})
+
+	err := decryptPreprocess(ctx, req)
+	if !errors.Is(err, pcv3.ErrReaderUnavailable) {
+		t.Fatalf("decryptPreprocess(chunk zero swapped to PCV3) = %v; want ErrReaderUnavailable", err)
+	}
+	if reporter.calls() != 0 {
+		t.Fatalf("reporter calls = %d; swapped PCV3 must stop before recombine progress", reporter.calls())
+	}
+	if _, statErr := os.Stat(base); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("swapped PCV3 created recombined output %q: %v", base, statErr)
+	}
+}
+
 func TestPCV3TerminalNoFallback(t *testing.T) {
 	fixture := loadPCV3DispatchFixture(t)
 	unsupported := append([]byte(nil), fixture...)

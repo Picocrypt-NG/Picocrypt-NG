@@ -31,7 +31,11 @@ func rejectClaimedPCV3(source *os.File) error {
 	if err != nil {
 		return fmt.Errorf("stat input for PCV3 routing: %w", err)
 	}
-	route, _, err := pcv3.Probe(source, info.Size())
+	return rejectClaimedPCV3Size(source, info.Size())
+}
+
+func rejectClaimedPCV3Size(source *os.File, sourceSize int64) error {
+	route, _, err := pcv3.Probe(source, sourceSize)
 	if err != nil {
 		return err
 	}

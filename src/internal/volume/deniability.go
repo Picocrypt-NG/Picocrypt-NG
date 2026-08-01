@@ -213,13 +213,6 @@ func removeDeniability(
 	rs *encoding.RSCodecs,
 	expectedInput os.FileInfo,
 ) (retStage *fileops.StagedFile, retErr error) {
-	if reporter != nil {
-		reporter.SetStatus("Removing deniability protection...")
-		reporter.SetProgress(0, "")
-		reporter.SetCanCancel(false)
-		reporter.Update()
-	}
-
 	// #nosec G304 -- volumePath is user-provided .pcv file
 	fin, err := os.Open(volumePath)
 	if err != nil {
@@ -230,10 +223,20 @@ func removeDeniability(
 	if err != nil {
 		return nil, fmt.Errorf("stat volume: %w", err)
 	}
+	if err := rejectClaimedPCV3Size(fin, stat.Size()); err != nil {
+		return nil, err
+	}
 	if expectedInput != nil && !os.SameFile(expectedInput, stat) {
 		return nil, errors.New("recombined input path changed before removing deniability")
 	}
 	total := stat.Size()
+
+	if reporter != nil {
+		reporter.SetStatus("Removing deniability protection...")
+		reporter.SetProgress(0, "")
+		reporter.SetCanCancel(false)
+		reporter.Update()
+	}
 
 	stage, err := fileops.CreateSiblingTemp(volumePath)
 	if err != nil {

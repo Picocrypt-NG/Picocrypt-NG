@@ -39,12 +39,13 @@ func parseUnsignedChunkIndex(s string) (int, bool) {
 
 // RecombineOptions configures chunk recombination
 type RecombineOptions struct {
-	InputBase  string       // Base path without .N suffix
-	OutputPath string       // Output .pcv file path
-	OutputInfo *os.FileInfo // Optional exact identity of the completed output
-	Progress   ProgressFunc
-	Status     StatusFunc
-	Cancel     CancelFunc
+	InputBase          string               // Base path without .N suffix
+	OutputPath         string               // Output .pcv file path
+	OutputInfo         *os.FileInfo         // Optional exact identity of the completed output
+	ValidateFirstChunk func(*os.File) error // Optional validation before output creation
+	Progress           ProgressFunc
+	Status             StatusFunc
+	Cancel             CancelFunc
 }
 
 // CountChunks returns the number of split chunks for a given base path
@@ -101,6 +102,27 @@ func CountChunks(basePath string) (int, int64, error) {
 // Recombine merges split chunks back into a single file.
 // Chunks are expected to be named: basePath.0, basePath.1, etc.
 func Recombine(opts RecombineOptions) (retErr error) {
+	var firstChunk *os.File
+	if opts.ValidateFirstChunk != nil {
+		firstChunkPath := fmt.Sprintf("%s.0", opts.InputBase)
+		// #nosec G304 -- chunk path derived from user-provided base path
+		firstChunk, retErr = os.Open(firstChunkPath)
+		if retErr != nil {
+			return fmt.Errorf("open chunk 0: %w", retErr)
+		}
+		defer func() {
+			if firstChunk != nil {
+				retErr = errors.Join(retErr, firstChunk.Close())
+			}
+		}()
+		if err := opts.ValidateFirstChunk(firstChunk); err != nil {
+			return err
+		}
+		if _, err := firstChunk.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind chunk 0 after validation: %w", err)
+		}
+	}
+
 	numChunks, totalSize, err := CountChunks(opts.InputBase)
 	if err != nil {
 		return err
@@ -137,11 +159,17 @@ func Recombine(opts RecombineOptions) (retErr error) {
 			return errors.New("operation cancelled")
 		}
 
-		chunkPath := fmt.Sprintf("%s.%d", opts.InputBase, i)
-		// #nosec G304 -- chunk paths derived from user-provided base path
-		fin, err := os.Open(chunkPath)
-		if err != nil {
-			return fmt.Errorf("open chunk %d: %w", i, err)
+		var fin *os.File
+		if i == 0 && firstChunk != nil {
+			fin = firstChunk
+			firstChunk = nil
+		} else {
+			chunkPath := fmt.Sprintf("%s.%d", opts.InputBase, i)
+			// #nosec G304 -- chunk paths derived from user-provided base path
+			fin, err = os.Open(chunkPath)
+			if err != nil {
+				return fmt.Errorf("open chunk %d: %w", i, err)
+			}
 		}
 
 		buf := make([]byte, util.MiB)
