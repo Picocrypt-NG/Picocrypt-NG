@@ -5,6 +5,7 @@ package main
 import (
 	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/header"
+	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/wasm"
 	"syscall/js"
 )
@@ -24,6 +25,11 @@ const (
 	maxVolumeBytes = 1 << 30
 )
 
+// copyBytesFromJS is the syscall boundary used by bridge input copies. Tests
+// observe destination sizes to prove claimed PCV3 input is rejected before a
+// whole-volume Go allocation/copy.
+var copyBytesFromJS = js.CopyBytesToGo
+
 // errorResult builds {code: N}.
 func errorResult(code int) any {
 	o := js.Global().Get("Object").New()
@@ -34,13 +40,25 @@ func errorResult(code int) any {
 // readUint8Array copies a real Uint8Array to a Go slice. ok=false for any other
 // shape (undefined, null, wrong typed array, plain object) — checked before any
 // length/byte access so a bad value cannot panic.
-func readUint8Array(v js.Value) ([]byte, bool) {
+func uint8ArrayLength(v js.Value) (int, bool) {
 	if !v.InstanceOf(js.Global().Get("Uint8Array")) {
+		return 0, false
+	}
+	return v.Get("length").Int(), true
+}
+
+func copyUint8Array(v js.Value, n int) []byte {
+	b := make([]byte, n)
+	copyBytesFromJS(b, v)
+	return b
+}
+
+func readUint8Array(v js.Value) ([]byte, bool) {
+	n, ok := uint8ArrayLength(v)
+	if !ok {
 		return nil, false
 	}
-	n := v.Get("length").Int()
-	b := make([]byte, n)
-	js.CopyBytesToGo(b, v)
+	b := copyUint8Array(v, n)
 	return b, true
 }
 
@@ -105,10 +123,12 @@ func encrypt(this js.Value, args []js.Value) (result any) {
 	}
 	opts := args[0]
 
-	data, ok := readUint8Array(opts.Get("data"))
-	if !ok || len(data) == 0 || len(data) > maxVolumeBytes {
+	dataValue := opts.Get("data")
+	dataLength, ok := uint8ArrayLength(dataValue)
+	if !ok || dataLength == 0 || dataLength > maxVolumeBytes {
 		return errorResult(errInvalidArg)
 	}
+	data := copyUint8Array(dataValue, dataLength)
 	pw := opts.Get("password")
 	if pw.Type() != js.TypeString {
 		return errorResult(errInvalidArg)
@@ -160,10 +180,21 @@ func decrypt(this js.Value, args []js.Value) (result any) {
 	}
 	opts := args[0]
 
-	data, ok := readUint8Array(opts.Get("data"))
-	if !ok || len(data) == 0 || len(data) > maxVolumeBytes {
+	dataValue := opts.Get("data")
+	dataLength, ok := uint8ArrayLength(dataValue)
+	if !ok || dataLength == 0 || dataLength > maxVolumeBytes {
 		return errorResult(errInvalidArg)
 	}
+	if dataLength >= 4 {
+		var prefix [4]byte
+		if copyBytesFromJS(prefix[:], dataValue) != len(prefix) {
+			return errorResult(errInvalidArg)
+		}
+		if pcv3.DetectPrefix(prefix[:]) == pcv3.RouteNormalPCV {
+			return errorResult(wasm.ErrUnsupported)
+		}
+	}
+	data := copyUint8Array(dataValue, dataLength)
 	pw := opts.Get("password")
 	if pw.Type() != js.TypeString {
 		return errorResult(errInvalidArg)

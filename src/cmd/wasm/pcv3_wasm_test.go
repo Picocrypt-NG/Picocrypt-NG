@@ -16,12 +16,20 @@ func TestBridgePCV3UnsupportedBeforeKDF(t *testing.T) {
 		{name: "with force", force: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			volume := js.Global().Get("Uint8Array").New(4)
-			js.CopyBytesToJS(volume, []byte{'P', 'C', 'V', 0})
+			volume := js.Global().Get("Uint8Array").New(64 * 1024)
+			js.CopyBytesToJS(volume.Call("subarray", 0, 4), []byte{'P', 'C', 'V', 0})
 			keyfiles := js.Global().Get("Array").New()
 			keyfile := js.Global().Get("Uint8Array").New(18)
 			js.CopyBytesToJS(keyfile, []byte("misleading keyfile"))
 			keyfiles.Call("push", keyfile)
+
+			previousCopy := copyBytesFromJS
+			var copySizes []int
+			copyBytesFromJS = func(dst []byte, src js.Value) int {
+				copySizes = append(copySizes, len(dst))
+				return previousCopy(dst, src)
+			}
+			defer func() { copyBytesFromJS = previousCopy }()
 
 			got := decrypt(js.Undefined(), []js.Value{newOpts(map[string]any{
 				"data":         volume,
@@ -53,6 +61,9 @@ func TestBridgePCV3UnsupportedBeforeKDF(t *testing.T) {
 				if result.Get(property).Type() != js.TypeUndefined {
 					t.Fatalf("decrypt() unexpectedly exposed %q", property)
 				}
+			}
+			if len(copySizes) != 1 || copySizes[0] != 4 {
+				t.Fatalf("decrypt() JS-to-Go copy sizes = %v; want only the fixed 4-byte routing prefix", copySizes)
 			}
 		})
 	}
