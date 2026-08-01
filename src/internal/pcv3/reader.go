@@ -4,6 +4,7 @@ import (
 	pcencoding "Picocrypt-NG/internal/encoding"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -39,6 +40,21 @@ type Structure struct {
 	geometries     [2]Geometry
 	candidateCount uint8
 	issueStages    [componentCount]Stage
+}
+
+// String deliberately does not disclose unauthenticated structural fields.
+func (Structure) String() string {
+	return "pcv3: unauthenticated structural view"
+}
+
+// GoString deliberately does not disclose unauthenticated structural fields.
+func (structure Structure) GoString() string {
+	return structure.String()
+}
+
+// Format keeps every fmt verb on the fixed, redacted representation.
+func (structure Structure) Format(state fmt.State, verb rune) {
+	writeFixedFormat(state, verb, structure.String())
 }
 
 // Preamble returns the validated PCV3 preamble.

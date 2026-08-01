@@ -4,6 +4,7 @@ import (
 	pcencoding "Picocrypt-NG/internal/encoding"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"reflect"
@@ -49,6 +50,34 @@ func (reader *recordingReaderAt) ReadAt(dst []byte, offset int64) (int, error) {
 		return count, io.EOF
 	}
 	return count, nil
+}
+
+func TestStructureFormattingRedactsDecodedCapsules(t *testing.T) {
+	var candidate Candidate
+	copy(candidate.argonSalt[:], "argon-salt-canary")
+	copy(candidate.wrapNonce[:], "wrap-nonce-canary")
+	copy(candidate.wrappedVolumeKey[:], "wrapped-volume-key-canary")
+	copy(candidate.replicaTag[:], "replica-tag-canary")
+	copy(candidate.wrapTag[:], "wrap-tag-canary")
+	structure := Structure{
+		candidates:     [2]Candidate{candidate},
+		candidateCount: 1,
+	}
+
+	for _, test := range []struct {
+		format string
+		want   string
+	}{
+		{format: "%v", want: "pcv3: unauthenticated structural view"},
+		{format: "%+v", want: "pcv3: unauthenticated structural view"},
+		{format: "%#v", want: "pcv3: unauthenticated structural view"},
+		{format: "%q", want: `"pcv3: unauthenticated structural view"`},
+		{format: "%x", want: "pcv3: unauthenticated structural view"},
+	} {
+		if got := fmt.Sprintf(test.format, structure); got != test.want {
+			t.Errorf("fmt.Sprintf(%q, Structure) = %q; want fixed redaction %q", test.format, got, test.want)
+		}
+	}
 }
 
 func TestReadExactAtMatrix(t *testing.T) {
