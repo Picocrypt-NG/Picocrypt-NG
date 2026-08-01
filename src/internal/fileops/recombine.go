@@ -104,7 +104,7 @@ func CountChunks(basePath string) (int, int64, error) {
 func Recombine(opts RecombineOptions) (retErr error) {
 	var firstChunk *os.File
 	if opts.ValidateFirstChunk != nil {
-		firstChunkPath := fmt.Sprintf("%s.0", opts.InputBase)
+		firstChunkPath := opts.InputBase + ".0"
 		// #nosec G304 -- chunk path derived from user-provided base path
 		firstChunk, retErr = os.Open(firstChunkPath)
 		if retErr != nil {
