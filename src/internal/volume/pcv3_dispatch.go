@@ -9,7 +9,17 @@ import (
 
 // PreflightPCV3 routes a native input before legacy operation state or side
 // effects exist. A recombine request is inspected through chunk zero only.
-func PreflightPCV3(inputPath string, recombine bool) (retErr error) {
+func PreflightPCV3(inputPath string, recombine bool) error {
+	source, err := OpenLegacyPCVInput(inputPath, recombine)
+	if err != nil {
+		return err
+	}
+	return source.Close()
+}
+
+// OpenLegacyPCVInput opens and routes the exact descriptor a caller will use
+// for legacy metadata inspection. The caller owns the returned file.
+func OpenLegacyPCVInput(inputPath string, recombine bool) (*os.File, error) {
 	sourcePath := inputPath
 	if recombine {
 		sourcePath = recombineInputBase(inputPath) + ".0"
@@ -17,13 +27,12 @@ func PreflightPCV3(inputPath string, recombine bool) (retErr error) {
 
 	source, err := os.Open(sourcePath) // #nosec G304 -- caller-provided input path
 	if err != nil {
-		return fmt.Errorf("open input for PCV3 preflight: %w", err)
+		return nil, fmt.Errorf("open input for PCV3 preflight: %w", err)
 	}
-	defer func() {
-		retErr = errors.Join(retErr, source.Close())
-	}()
-
-	return rejectClaimedPCV3(source)
+	if err := rejectClaimedPCV3(source); err != nil {
+		return nil, errors.Join(err, source.Close())
+	}
+	return source, nil
 }
 
 func rejectClaimedPCV3(source *os.File) error {

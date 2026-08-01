@@ -5,8 +5,10 @@ import (
 	"Picocrypt-NG/internal/pcv3"
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 )
@@ -93,6 +95,42 @@ func TestPreflightPCV3(t *testing.T) {
 	}
 	if _, err := os.Stat(base); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("preflight created recombined input %q: %v", base, err)
+	}
+}
+
+func TestOpenLegacyPCVInputPinsClassifiedDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.pcv")
+	backup := filepath.Join(dir, "legacy-input.pcv")
+	replacement := filepath.Join(dir, "replacement.pcv")
+	legacy := []byte("legacy bytes read from the routed descriptor")
+	writePCV3DispatchInput(t, input, legacy)
+	writePCV3DispatchInput(t, replacement, loadPCV3DispatchFixture(t))
+
+	fin, err := OpenLegacyPCVInput(input, false)
+	if err != nil {
+		t.Fatalf("OpenLegacyPCVInput(legacy) = %v", err)
+	}
+	t.Cleanup(func() { _ = fin.Close() })
+	if err := os.Rename(input, backup); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("Windows denied atomic replacement of an open descriptor: %v", err)
+		}
+		t.Fatalf("preserve routed input: %v", err)
+	}
+	if err := os.Rename(replacement, input); err != nil {
+		t.Fatalf("replace pathname with claimed PCV3: %v", err)
+	}
+
+	got, err := io.ReadAll(fin)
+	if err != nil {
+		t.Fatalf("read routed descriptor: %v", err)
+	}
+	if !bytes.Equal(got, legacy) {
+		t.Fatalf("routed descriptor followed pathname replacement: got %q, want original legacy bytes", got)
+	}
+	if err := PreflightPCV3(input, false); !errors.Is(err, pcv3.ErrReaderUnavailable) {
+		t.Fatalf("replacement pathname route = %v; want ErrReaderUnavailable", err)
 	}
 }
 
@@ -203,49 +241,39 @@ func TestDecryptPCV3RoutesBeforeLegacy(t *testing.T) {
 	}
 }
 
-func TestDecryptRejectsPCV3PathSwapBeforeLegacyOpen(t *testing.T) {
+func TestDecryptReadHeaderRejectsPCV3ReplacementBeforeStatus(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "input.pcv")
 	backup := filepath.Join(dir, "original-input.pcv")
 	replacement := filepath.Join(dir, "replacement.pcv")
-	output := filepath.Join(dir, "plaintext")
 	writePCV3DispatchInput(t, input, []byte("legacy input"))
 	writePCV3DispatchInput(t, replacement, loadPCV3DispatchFixture(t))
+	if err := PreflightPCV3(input, false); err != nil {
+		t.Fatalf("initial legacy preflight: %v", err)
+	}
+	if err := os.Rename(input, backup); err != nil {
+		t.Fatalf("preserve initial legacy input: %v", err)
+	}
+	if err := os.Rename(replacement, input); err != nil {
+		t.Fatalf("replace input with claimed PCV3: %v", err)
+	}
 
-	previousVolumeKey := deriveVolumeKey
-	volumeKDFCalls := 0
-	deriveVolumeKey = func([]byte, []byte, bool) ([]byte, error) {
-		volumeKDFCalls++
-		return nil, errors.New("unexpected volume KDF call")
+	reporter := &pcv3DispatchReporter{}
+	req := &DecryptRequest{
+		InputFile: input,
+		Password:  []byte("must-not-be-used"),
+		Reporter:  reporter,
+		RSCodecs:  newRSCodecsT(t),
 	}
-	t.Cleanup(func() {
-		deriveVolumeKey = previousVolumeKey
-	})
+	ctx := NewDecryptContext(t.Context(), req)
+	t.Cleanup(func() { _ = ctx.Close() })
 
-	reporter := &pathMoveReporter{
-		trigger:     "Reading values...",
-		path:        input,
-		backup:      backup,
-		replacement: replacement,
-	}
-	err := Decrypt(t.Context(), &DecryptRequest{
-		InputFile:  input,
-		OutputFile: output,
-		Password:   []byte("must-not-be-used"),
-		Reporter:   reporter,
-		RSCodecs:   newRSCodecsT(t),
-	})
-	if reporter.err != nil {
-		t.Fatalf("replace input before legacy open: %v", reporter.err)
-	}
+	err := decryptReadHeader(ctx, req)
 	if !errors.Is(err, pcv3.ErrReaderUnavailable) {
-		t.Fatalf("Decrypt(input swapped to PCV3) = %v; want ErrReaderUnavailable", err)
+		t.Fatalf("decryptReadHeader(input replaced by PCV3) = %v; want ErrReaderUnavailable", err)
 	}
-	if volumeKDFCalls != 0 {
-		t.Fatalf("volume KDF calls = %d; swapped PCV3 must stop before credential work", volumeKDFCalls)
-	}
-	if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("swapped PCV3 created output %q: %v", output, err)
+	if reporter.calls() != 0 {
+		t.Fatalf("reporter calls = %d; replacement must be routed before status/progress", reporter.calls())
 	}
 }
 

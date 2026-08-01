@@ -352,8 +352,14 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 	// Note: with deniability, we can't read the header until wrapper is removed
 	var volumeUsesKeyfiles bool
 	if len(password) == 0 && !decDeniability {
-		hdr, err := readHeaderInfo(inputFile, rsCodecs)
-		if err == nil {
+		hdr, headerErr := readHeaderInfo(inputFile, decRecombine, rsCodecs)
+		if headerErr != nil {
+			translated := translatePCV3PreflightError(headerErr)
+			var unavailable pcv3UnavailableError
+			if errors.As(translated, &unavailable) {
+				return translated
+			}
+		} else {
 			volumeUsesKeyfiles = hdr.Flags.UseKeyfiles
 			if !decQuiet && volumeUsesKeyfiles && len(decKeyfiles) == 0 {
 				fmt.Fprintln(os.Stderr, "Warning: This volume requires keyfiles")
@@ -458,9 +464,8 @@ func forceDecryptKeptResult(destination string) error {
 }
 
 // readHeaderInfo reads just the header to get volume information
-func readHeaderInfo(inputFile string, rsCodecs *encoding.RSCodecs) (*header.VolumeHeader, error) {
-	// #nosec G304 -- inputFile is user-provided .pcv file
-	f, err := os.Open(inputFile)
+func readHeaderInfo(inputFile string, recombine bool, rsCodecs *encoding.RSCodecs) (*header.VolumeHeader, error) {
+	f, err := volume.OpenLegacyPCVInput(inputFile, recombine)
 	if err != nil {
 		return nil, err
 	}

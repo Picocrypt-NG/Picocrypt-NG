@@ -1,12 +1,16 @@
 package mobile
 
 import (
+	"Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/volume"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -111,6 +115,85 @@ func TestMobilePCV3GetDecryptionInfoReturnsOnlyRedactedCode(t *testing.T) {
 	got, err := GetDecryptionInfo(legacy)
 	if err == nil || got != "" {
 		t.Fatalf("legacy-eligible metadata result = (%q, %v); want existing reader error", got, err)
+	}
+}
+
+func TestMobileGetDecryptionInfoUsesRoutedDescriptorAfterPathReplacement(t *testing.T) {
+	rsCodecs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("initialize Reed-Solomon: %v", err)
+	}
+	headerValue := header.NewVolumeHeader(
+		bytes.Repeat([]byte{0x11}, header.SaltSize),
+		bytes.Repeat([]byte{0x22}, header.HKDFSaltSize),
+		bytes.Repeat([]byte{0x33}, header.SerpentIVSize),
+		bytes.Repeat([]byte{0x44}, header.NonceSize),
+	)
+	headerValue.Comments = "metadata from routed descriptor"
+	headerValue.Flags = header.Flags{
+		UseKeyfiles:    true,
+		KeyfileOrdered: true,
+		ReedSolomon:    true,
+		Paranoid:       true,
+	}
+	var encoded bytes.Buffer
+	if _, err := header.NewWriter(&encoded, rsCodecs).WriteHeader(headerValue); err != nil {
+		t.Fatalf("write legacy header: %v", err)
+	}
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "metadata.pcv")
+	backup := filepath.Join(dir, "legacy-metadata.pcv")
+	if err := os.WriteFile(input, encoded.Bytes(), 0o600); err != nil {
+		t.Fatalf("write legacy metadata input: %v", err)
+	}
+	replacement := filepath.Join(dir, "replacement.pcv")
+	claimedPCV3 := loadMobilePCV3Fixture(t)
+	if err := os.WriteFile(replacement, claimedPCV3, 0o600); err != nil {
+		t.Fatalf("write PCV3 replacement: %v", err)
+	}
+
+	originalOpen := openDecryptionInfoPCVInput
+	openCalls := 0
+	var swapErr error
+	openDecryptionInfoPCVInput = func(path string, recombine bool) (*os.File, error) {
+		openCalls++
+		opened, openErr := originalOpen(path, recombine)
+		if openErr != nil {
+			return nil, openErr
+		}
+		if swapErr = os.Rename(path, backup); swapErr != nil {
+			_ = opened.Close()
+			return nil, swapErr
+		}
+		if swapErr = os.Rename(replacement, path); swapErr != nil {
+			_ = opened.Close()
+			return nil, swapErr
+		}
+		return opened, nil
+	}
+	t.Cleanup(func() { openDecryptionInfoPCVInput = originalOpen })
+
+	got, err := GetDecryptionInfo(input)
+	if swapErr != nil && runtime.GOOS == "windows" {
+		t.Skipf("Windows denied atomic replacement of an open descriptor: %v", swapErr)
+	}
+	if err != nil {
+		t.Fatalf("GetDecryptionInfo after pathname replacement: %v", err)
+	}
+	if openCalls != 1 {
+		t.Fatalf("routed input opens = %d; want exactly one descriptor", openCalls)
+	}
+	var info DecryptionInfoJSON
+	if err := json.Unmarshal([]byte(got), &info); err != nil {
+		t.Fatalf("parse decryption metadata: %v", err)
+	}
+	if !info.Readable || info.Deniability || !info.KeyfilesRequired || !info.KeyfileOrdered ||
+		!info.ReedSolomon || !info.Paranoid || info.Comments != headerValue.Comments {
+		t.Fatalf("metadata came from replacement path instead of routed descriptor: %#v", info)
+	}
+	if current, err := os.ReadFile(input); err != nil || !bytes.Equal(current, claimedPCV3) {
+		t.Fatalf("pathname replacement changed unexpectedly: len=%d err=%v", len(current), err)
 	}
 }
 

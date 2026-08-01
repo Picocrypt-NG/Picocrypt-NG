@@ -20,8 +20,9 @@ import (
 )
 
 var (
-	runEncrypt = volume.Encrypt
-	runDecrypt = volume.Decrypt
+	runEncrypt                 = volume.Encrypt
+	runDecrypt                 = volume.Decrypt
+	openDecryptionInfoPCVInput = volume.OpenLegacyPCVInput
 )
 
 // StartOperation creates a new operation and returns its ID.
@@ -420,7 +421,8 @@ func GetDecryptionInfo(filePath string) (string, error) {
 	if _, err := os.Stat(filePath); err != nil {
 		return "", fmt.Errorf("file not found: %w", err)
 	}
-	if err := volume.PreflightPCV3(filePath, false); err != nil {
+	fin, err := openDecryptionInfoPCVInput(filePath, false)
+	if err != nil {
 		if code, ok := pcv3ErrorCode(err); ok {
 			jsonData, marshalErr := json.Marshal(decryptionInfoErrorJSON{ErrorCode: code})
 			if marshalErr != nil {
@@ -430,6 +432,7 @@ func GetDecryptionInfo(filePath string) (string, error) {
 		}
 		return "", err
 	}
+	defer func() { _ = fin.Close() }()
 
 	// Initialize Reed-Solomon codecs (needed for header reading)
 	rsCodecs, err := encoding.NewRSCodecs()
@@ -438,7 +441,7 @@ func GetDecryptionInfo(filePath string) (string, error) {
 	}
 
 	// Check if file is deniable
-	isDeniable := volume.IsDeniable(filePath, rsCodecs)
+	isDeniable := volume.IsDeniableFile(fin, rsCodecs)
 
 	info := DecryptionInfoJSON{
 		Deniability: isDeniable,
@@ -454,14 +457,6 @@ func GetDecryptionInfo(filePath string) (string, error) {
 		}
 		return string(jsonData), nil
 	}
-
-	// Open file and read header
-	// #nosec G304 -- filePath is the user-selected encrypted volume to inspect.
-	fin, err := os.Open(filePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to open file: %w", err)
-	}
-	defer func() { _ = fin.Close() }()
 
 	// Read header
 	reader := header.NewReader(fin, rsCodecs)

@@ -400,13 +400,17 @@ func selectDeniabilityKey(password []byte, salt, nonce, probe []byte, rs *encodi
 // that ambiguity by checking whether the following comment-length and flags
 // fields still look like a regular Picocrypt header.
 func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool {
-	// #nosec G304 -- volumePath is user-provided .pcv file
-	fin, err := os.Open(volumePath)
+	fin, err := OpenLegacyPCVInput(volumePath, false)
 	if err != nil {
 		return false
 	}
 	defer func() { _ = fin.Close() }()
+	return IsDeniableFile(fin, rs)
+}
 
+// IsDeniableFile checks deniability on an already opened descriptor without
+// changing its current offset, so a routed descriptor can be reused safely.
+func IsDeniableFile(fin *os.File, rs *encoding.RSCodecs) bool {
 	// QUAL-02 negative pre-guard: a deniability-wrapped volume always wraps a COMPLETE
 	// inner regular volume, so its on-disk size is at least salt(16) + nonce(24) +
 	// header.BaseHeaderSize. A file shorter than that cannot be deniable — it is a
@@ -420,7 +424,7 @@ func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool {
 	}
 
 	versionEnc := make([]byte, 15)
-	if _, err := isDeniableReadVersion(fin, versionEnc); err != nil {
+	if _, err := isDeniableReadVersion(io.NewSectionReader(fin, 0, int64(len(versionEnc))), versionEnc); err != nil {
 		// Size already cleared the minimum above, so a short read here means an I/O
 		// error rather than truncation — treat as non-deniable (cannot confirm).
 		return false

@@ -43,3 +43,34 @@ func TestIsDeniableReturnsFalseOnVersionReadError(t *testing.T) {
 		t.Error("version read error must classify as non-deniable, not deniable")
 	}
 }
+
+func TestIsDeniableFilePreservesDescriptorOffset(t *testing.T) {
+	rsCodecs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("NewRSCodecs: %v", err)
+	}
+
+	contents := make([]byte, 16+24+header.BaseHeaderSize)
+	path := filepath.Join(t.TempDir(), "routed-input.pcv")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatalf("write routed input: %v", err)
+	}
+	fin, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open routed input: %v", err)
+	}
+	t.Cleanup(func() { _ = fin.Close() })
+	const offset = int64(7)
+	if _, err := fin.Seek(offset, io.SeekStart); err != nil {
+		t.Fatalf("seek routed input: %v", err)
+	}
+
+	_ = IsDeniableFile(fin, rsCodecs)
+	got, err := fin.Seek(0, io.SeekCurrent)
+	if err != nil {
+		t.Fatalf("read descriptor offset: %v", err)
+	}
+	if got != offset {
+		t.Fatalf("descriptor offset after IsDeniableFile = %d; want unchanged %d", got, offset)
+	}
+}

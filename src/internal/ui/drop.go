@@ -45,7 +45,8 @@ var startupPathStat = os.Stat
 
 var (
 	previewDroppedHeader    = previewHeader
-	isDroppedVolumeDeniable = volume.IsDeniable
+	openDroppedPCVInput     = volume.OpenLegacyPCVInput
+	isDroppedVolumeDeniable = volume.IsDeniableFile
 )
 
 func isPCV3UnavailableError(err error) bool {
@@ -367,27 +368,33 @@ func (a *App) applyDropSelection(names []string) bool {
 		} else {
 			// A file was dropped
 			a.State.RequiredFreeSpace = stat.Size()
+			if !stat.Mode().IsRegular() {
+				a.State.SetScanning(false)
+				a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
+				a.refreshAdvanced()
+				return false
+			}
 
 			// Is the file a part of a split volume?
 			isSplit := fileops.IsSplitChunkPath(names[0])
-			if stat.Mode().IsRegular() {
-				if err := volume.PreflightPCV3(names[0], isSplit); err != nil {
-					if isPCV3UnavailableError(err) {
-						a.State.SetPCVUnavailable(names[0], stat.Size())
-						a.refreshAdvanced()
-						a.refreshUI()
-						return true
-					}
-					a.State.SetScanning(false)
-					a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
+			routedInput, err := openDroppedPCVInput(names[0], isSplit)
+			if err != nil {
+				if isPCV3UnavailableError(err) {
+					a.State.SetPCVUnavailable(names[0], stat.Size())
 					a.refreshAdvanced()
-					return false
+					a.refreshUI()
+					return true
 				}
+				a.State.SetScanning(false)
+				a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
+				a.refreshAdvanced()
+				return false
 			}
+			defer func() { _ = routedInput.Close() }()
 
 			// Decide if encrypting or decrypting
 			if isDecryptVolumePath(names[0]) {
-				a.handleDecryptDrop(names[0], isSplit)
+				a.handleDecryptDrop(names[0], isSplit, routedInput)
 				// For decrypt, no folder scanning needed
 				a.State.SetScanning(false)
 				a.refreshUI()
@@ -456,7 +463,7 @@ func (a *App) applyDropStatusMessage(kind app.StatusKind, closeKeyfileModal bool
 }
 
 // handleDecryptDrop handles a .pcv file being dropped for decryption.
-func (a *App) handleDecryptDrop(name string, isSplit bool) {
+func (a *App) handleDecryptDrop(name string, isSplit bool, fin *os.File) {
 	a.State.Mode = "decrypt"
 	a.State.SetInputDecryptVolume()
 	a.State.SetStartAction(app.StartActionDecrypt)
@@ -493,21 +500,10 @@ func (a *App) handleDecryptDrop(name string, isSplit bool) {
 		a.State.OutputFile = trimPCVSuffix(name)
 	}
 
-	// Open the input file in read-only mode
-	var fin *os.File
-	var err error
-	if isSplit {
-		// #nosec G304 -- user-dropped file path
-		fin, err = os.Open(name + ".0")
-	} else {
-		// #nosec G304 -- user-dropped file path
-		fin, err = os.Open(name)
-	}
-	if err != nil {
+	if fin == nil {
 		a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
 		return
 	}
-	defer func() { _ = fin.Close() }()
 
 	// Parse the header through the single validated parser (SEC-01/UI-01/D-01).
 	// previewHeader is pure + UI-free; it shares the ^\d{5}$ comment-length
@@ -569,7 +565,7 @@ func (a *App) handleDecryptDrop(name string, isSplit bool) {
 	}
 
 	// Check for deniability
-	if isDroppedVolumeDeniable(a.State.InputFile, a.rsCodecs) {
+	if isDroppedVolumeDeniable(fin, a.rsCodecs) {
 		a.State.Deniability = true
 	}
 }

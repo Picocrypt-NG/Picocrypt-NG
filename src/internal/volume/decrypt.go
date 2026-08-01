@@ -183,8 +183,6 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 }
 
 func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
-	ctx.SetStatus("Reading values...")
-
 	fin, closeInput, err := ctx.openLegacyDecryptInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
@@ -192,6 +190,7 @@ func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
 	if closeInput {
 		defer func() { _ = fin.Close() }()
 	}
+	ctx.SetStatus("Reading values...")
 
 	reader := header.NewReader(fin, req.RSCodecs)
 	result, err := reader.ReadHeader()

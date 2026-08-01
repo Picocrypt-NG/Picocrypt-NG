@@ -4,11 +4,17 @@ import (
 	"Picocrypt-NG/internal/app"
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/header"
+	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/volume"
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -146,9 +152,9 @@ func TestPCV3DropRoutesBeforeFilenameClassification(t *testing.T) {
 		previewCalls++
 		return previousPreview(reader, codecs)
 	}
-	isDroppedVolumeDeniable = func(path string, codecs *encoding.RSCodecs) bool {
+	isDroppedVolumeDeniable = func(source *os.File, codecs *encoding.RSCodecs) bool {
 		deniabilityCalls++
-		return previousDeniability(path, codecs)
+		return previousDeniability(source, codecs)
 	}
 	t.Cleanup(func() {
 		previewDroppedHeader = previousPreview
@@ -309,4 +315,155 @@ func TestPCV3DropRoutesBeforeFilenameClassification(t *testing.T) {
 				previewCalls, deniabilityCalls, beforePreview+1, beforeDeniability+1)
 		}
 	})
+}
+
+func TestPCV3DropKeepsRoutedDescriptorAcrossPathReplacement(t *testing.T) {
+	if err := loadTranslations(); err != nil {
+		t.Fatalf("load translations: %v", err)
+	}
+	previousLanguage := activeLanguage()
+	if err := setActiveLanguage("en"); err != nil {
+		t.Fatalf("set English language: %v", err)
+	}
+	t.Cleanup(func() { _ = setActiveLanguage(previousLanguage) })
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.pcv")
+	backup := filepath.Join(dir, "legacy-input.pcv")
+	replacement := filepath.Join(dir, "replacement.pcv")
+	legacy, err := os.ReadFile(filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"))
+	if err != nil {
+		t.Fatalf("read legacy golden volume: %v", err)
+	}
+	if err := os.WriteFile(input, legacy, 0o600); err != nil {
+		t.Fatalf("write legacy input: %v", err)
+	}
+	if err := os.WriteFile(replacement, loadPCV3DropFixture(t), 0o600); err != nil {
+		t.Fatalf("write PCV3 replacement: %v", err)
+	}
+
+	type descriptorObservation struct {
+		prefix [4]byte
+		err    error
+	}
+	previewObserved := make(chan descriptorObservation, 1)
+	deniabilityObserved := make(chan descriptorObservation, 1)
+	swapResult := make(chan error, 1)
+	var openCalls atomic.Int32
+	var previewCalls atomic.Int32
+	var deniabilityCalls atomic.Int32
+	var swapOnce sync.Once
+	var swapErr error
+	observeDescriptor := func(source *os.File) descriptorObservation {
+		var observation descriptorObservation
+		_, observation.err = source.ReadAt(observation.prefix[:], 0)
+		return observation
+	}
+
+	previousOpen := openDroppedPCVInput
+	previousPreview := previewDroppedHeader
+	previousDeniability := isDroppedVolumeDeniable
+	openDroppedPCVInput = func(path string, recombine bool) (*os.File, error) {
+		fin, openErr := previousOpen(path, recombine)
+		if openErr != nil {
+			return nil, openErr
+		}
+		openCalls.Add(1)
+		swapOnce.Do(func() {
+			if swapErr = os.Rename(path, backup); swapErr == nil {
+				swapErr = os.Rename(replacement, path)
+			}
+			swapResult <- swapErr
+		})
+		if swapErr != nil {
+			_ = fin.Close()
+			return nil, swapErr
+		}
+		return fin, nil
+	}
+	previewDroppedHeader = func(reader io.Reader, codecs *encoding.RSCodecs) (*header.ReadResult, error) {
+		previewCalls.Add(1)
+		fin, ok := reader.(*os.File)
+		if !ok {
+			select {
+			case previewObserved <- descriptorObservation{err: errors.New("legacy preview did not receive the routed file descriptor")}:
+			default:
+			}
+		} else {
+			select {
+			case previewObserved <- observeDescriptor(fin):
+			default:
+			}
+		}
+		return previousPreview(reader, codecs)
+	}
+	isDroppedVolumeDeniable = func(source *os.File, codecs *encoding.RSCodecs) bool {
+		deniabilityCalls.Add(1)
+		select {
+		case deniabilityObserved <- observeDescriptor(source):
+		default:
+		}
+		return previousDeniability(source, codecs)
+	}
+	t.Cleanup(func() {
+		openDroppedPCVInput = previousOpen
+		previewDroppedHeader = previousPreview
+		isDroppedVolumeDeniable = previousDeniability
+	})
+
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	fyne.DoAndWait(func() { a.onDrop([]string{input}) })
+	waitForDropProcessing(t, a)
+	select {
+	case swapErr = <-swapResult:
+	default:
+		t.Fatal("drop path did not open the routed descriptor")
+	}
+	if swapErr != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("Windows denied atomic replacement of an open descriptor: %v", swapErr)
+		}
+		t.Fatalf("replace routed pathname: %v", swapErr)
+	}
+	if got := openCalls.Load(); got != 1 {
+		t.Fatalf("routed input opens = %d; want one exact descriptor", got)
+	}
+	if got := previewCalls.Load(); got != 1 {
+		t.Fatalf("legacy header previews = %d; want one read from the routed descriptor", got)
+	}
+	if got := deniabilityCalls.Load(); got != 1 {
+		t.Fatalf("deniability probes = %d; want one read from the routed descriptor", got)
+	}
+	for name, observed := range map[string]<-chan descriptorObservation{
+		"header preview":    previewObserved,
+		"deniability probe": deniabilityObserved,
+	} {
+		var observation descriptorObservation
+		select {
+		case observation = <-observed:
+		default:
+			t.Fatalf("%s did not consume the routed descriptor", name)
+		}
+		if observation.err != nil {
+			t.Fatalf("%s descriptor observation: %v", name, observation.err)
+		}
+		if !bytes.Equal(observation.prefix[:], legacy[:4]) {
+			t.Fatalf("%s consumed replacement prefix %q; want routed legacy prefix %q", name, observation.prefix, legacy[:4])
+		}
+	}
+	fyne.DoAndWait(func() {
+		snap := a.State.UISnapshot()
+		if snap.PCVUnavailable || snap.Mode != "decrypt" || snap.InputFile != input {
+			t.Fatalf("routed legacy state = unavailable %v mode %q input %q; want false/decrypt/%q",
+				snap.PCVUnavailable, snap.Mode, snap.InputFile, input)
+		}
+	})
+	if err := volume.PreflightPCV3(input, false); !errors.Is(err, pcv3.ErrReaderUnavailable) {
+		t.Fatalf("replacement pathname route = %v; want ErrReaderUnavailable", err)
+	}
+	gotBackup, err := os.ReadFile(backup)
+	if err != nil || !bytes.Equal(gotBackup, legacy) {
+		t.Fatalf("routed legacy input changed: len=%d err=%v", len(gotBackup), err)
+	}
 }
