@@ -3,10 +3,9 @@
 package main
 
 import (
+	"Picocrypt-NG/internal/header"
 	"syscall/js"
 	"testing"
-
-	"Picocrypt-NG/internal/header"
 )
 
 func mkU8FD(b []byte) js.Value {
