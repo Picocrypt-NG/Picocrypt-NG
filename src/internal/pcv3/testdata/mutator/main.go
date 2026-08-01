@@ -101,13 +101,13 @@ type expectedMutation struct {
 
 var expectedMutations = map[string]expectedMutation{
 	"P3-ROUTE-ORDER-001": {
-		sourcePath: "internal/volume/decrypt.go",
+		sourcePath: "internal/volume/deniability.go",
 		pkg:        "./internal/volume",
-		test:       "TestDecryptPCV3RoutesBeforeLegacy",
+		test:       "TestDecryptPreprocessRejectsPCV3SwapBeforeDeniabilityEffects",
 		marker:     "want ErrReaderUnavailable",
 	},
 	"P3-NO-FALLBACK-001": {
-		sourcePath: "internal/volume/decrypt.go",
+		sourcePath: "internal/volume/pcv3_dispatch.go",
 		pkg:        "./internal/volume",
 		test:       "TestPCV3TerminalNoFallback",
 		marker:     "want terminal typed PCV3 result",

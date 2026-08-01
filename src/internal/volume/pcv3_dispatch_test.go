@@ -355,6 +355,22 @@ func TestPCV3TerminalNoFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRSCodecs: %v", err)
 	}
+	previousVolumeKey := deriveVolumeKey
+	previousDeniabilityKey := deriveDeniabilityKey
+	volumeKDFCalls := 0
+	deniabilityKDFCalls := 0
+	deriveVolumeKey = func([]byte, []byte, bool) ([]byte, error) {
+		volumeKDFCalls++
+		return make([]byte, 32), nil
+	}
+	deriveDeniabilityKey = func([]byte, []byte) []byte {
+		deniabilityKDFCalls++
+		return make([]byte, 32)
+	}
+	t.Cleanup(func() {
+		deriveVolumeKey = previousVolumeKey
+		deriveDeniabilityKey = previousDeniabilityKey
+	})
 
 	for _, test := range []struct {
 		name string
@@ -386,6 +402,9 @@ func TestPCV3TerminalNoFallback(t *testing.T) {
 			}
 			if reporter.calls() != 0 {
 				t.Fatalf("reporter calls = %d; claimed PCV3 reached legacy operation", reporter.calls())
+			}
+			if volumeKDFCalls != 0 || deniabilityKDFCalls != 0 {
+				t.Fatalf("KDF calls = volume %d, deniability %d; claimed PCV3 reached legacy credentials", volumeKDFCalls, deniabilityKDFCalls)
 			}
 			if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("claimed PCV3 created output %q: %v", output, err)
