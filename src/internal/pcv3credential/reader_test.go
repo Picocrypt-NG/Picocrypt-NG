@@ -107,12 +107,11 @@ func readerCredentialRequest(t *testing.T, suite Suite) *ReaderCredentialRequest
 		t.Fatalf("fixedProfileForSuite(%#04x): %v", suite, err)
 	}
 	return &ReaderCredentialRequest{
-		Suite:       suite,
-		ProfileID:   profile.ID,
-		Factors:     writerRequest.Factors,
-		ArgonSalt:   bytes.Repeat([]byte{0x31}, kdfSaltBytes),
-		VolumeID:    bytes.Repeat([]byte{0x42}, scheduleVolumeIDBytes),
-		KeyRequests: writerRequest.KeyRequests,
+		Suite:     suite,
+		ProfileID: profile.ID,
+		Factors:   writerRequest.Factors,
+		ArgonSalt: bytes.Repeat([]byte{0x31}, kdfSaltBytes),
+		VolumeID:  bytes.Repeat([]byte{0x42}, scheduleVolumeIDBytes),
 	}
 }
 
@@ -150,15 +149,6 @@ func TestReaderCredentialRejectsBeforeKDF(t *testing.T) {
 			name: "short volume ID",
 			edit: func(request *ReaderCredentialRequest) {
 				request.VolumeID = request.VolumeID[:scheduleVolumeIDBytes-1]
-			},
-		},
-		{
-			name: "duplicate key request",
-			edit: func(request *ReaderCredentialRequest) {
-				request.KeyRequests = append(
-					request.KeyRequests,
-					request.KeyRequests[0],
-				)
 			},
 		},
 		{

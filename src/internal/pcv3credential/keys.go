@@ -142,6 +142,7 @@ type keyMaterial struct {
 	credentialPRK  *credentialPRK
 	volumePRK      *volumePRK
 	keys           []derivedKey
+	volumeID       [scheduleVolumeIDBytes]byte
 }
 
 func (keyMaterial) String() string {
@@ -450,21 +451,25 @@ func deriveKeyMaterial(
 		root,
 		key,
 		volumeID,
-		func(secret, salt []byte) ([]byte, error) {
-			return hkdf.Extract(sha3.New256, secret, salt)
-		},
-		func(
-			pseudorandomKey []byte,
-			info string,
-			keyLength int,
-		) ([]byte, error) {
-			return hkdf.Expand(
-				sha3.New256,
-				pseudorandomKey,
-				info,
-				keyLength,
-			)
-		},
+		defaultHKDFExtract,
+		defaultHKDFExpand,
+	)
+}
+
+func defaultHKDFExtract(secret, salt []byte) ([]byte, error) {
+	return hkdf.Extract(sha3.New256, secret, salt)
+}
+
+func defaultHKDFExpand(
+	pseudorandomKey []byte,
+	info string,
+	keyLength int,
+) ([]byte, error) {
+	return hkdf.Expand(
+		sha3.New256,
+		pseudorandomKey,
+		info,
+		keyLength,
 	)
 }
 
@@ -482,9 +487,14 @@ func deriveKeyMaterialWith(
 	if schedule != nil {
 		suite = schedule.suite
 	}
-	material := &keyMaterial{
-		credentialRoot: takeCredentialRoot(root),
-		volumeKey:      takeVolumeKey(key),
+	ownedRoot := takeCredentialRoot(root)
+	ownedKey := takeVolumeKey(key)
+	defer ownedRoot.close()
+	defer ownedKey.close()
+
+	material, err := newKeyMaterial(schedule, volumeID)
+	if err != nil {
+		return nil, err
 	}
 	success := false
 	defer func() {
@@ -493,28 +503,62 @@ func deriveKeyMaterialWith(
 		}
 	}()
 
-	if schedule == nil || len(schedule.rows) == 0 ||
-		extract == nil || expand == nil {
+	if extract == nil || expand == nil {
 		return nil, newScheduleError(
 			ScheduleErrorInvalidRequest,
 			suite,
 			-1,
 		)
 	}
-	if material.credentialRoot == nil ||
-		material.credentialRoot.secret == nil ||
-		material.credentialRoot.secret.Len() != credentialRootBytes {
+	if ownedRoot == nil || ownedRoot.secret == nil ||
+		ownedRoot.secret.Len() != credentialRootBytes {
 		return nil, newScheduleError(
 			ScheduleErrorCredentialRoot,
 			suite,
 			-1,
 		)
 	}
-	if material.volumeKey == nil ||
-		material.volumeKey.secret == nil ||
-		material.volumeKey.secret.Len() != derivedKeyBytes {
+	if ownedKey == nil || ownedKey.secret == nil ||
+		ownedKey.secret.Len() != derivedKeyBytes {
 		return nil, newScheduleError(
 			ScheduleErrorVolumeKey,
+			suite,
+			-1,
+		)
+	}
+	if err := deriveCredentialRootStageWith(
+		material,
+		ownedRoot,
+		extract,
+	); err != nil {
+		return nil, err
+	}
+	if err := deriveVolumeKeyStageWith(
+		material,
+		ownedKey,
+		extract,
+	); err != nil {
+		return nil, err
+	}
+	if err := expandKeyMaterialWith(material, 0, expand); err != nil {
+		return nil, err
+	}
+
+	success = true
+	return material, nil
+}
+
+func newKeyMaterial(
+	schedule *validatedSchedule,
+	volumeID []byte,
+) (*keyMaterial, error) {
+	suite := Suite(0)
+	if schedule != nil {
+		suite = schedule.suite
+	}
+	if schedule == nil || len(schedule.rows) == 0 {
+		return nil, newScheduleError(
+			ScheduleErrorInvalidRequest,
 			suite,
 			-1,
 		)
@@ -527,23 +571,57 @@ func deriveKeyMaterialWith(
 		)
 	}
 
-	var volumeIDSnapshot [scheduleVolumeIDBytes]byte
-	copy(volumeIDSnapshot[:], volumeID)
-	credentialSalt := volumeIDSnapshot
-	volumeSalt := volumeIDSnapshot
-
-	material.credentialPRK = &credentialPRK{}
-	material.volumePRK = &volumePRK{}
-	material.keys = make([]derivedKey, len(schedule.rows))
+	material := &keyMaterial{
+		keys: make([]derivedKey, len(schedule.rows)),
+	}
+	copy(material.volumeID[:], volumeID)
 	for i, row := range schedule.rows {
 		material.keys[i].row = row
 	}
+	return material, nil
+}
 
+// deriveCredentialRootStageWith consumes root on every exit and derives only
+// the credential-side PRK. Key expansion remains a separate operation so the
+// writer can preserve canonical request order after both roots are present,
+// while the reader can lend wrap keys before it accepts a VolumeKey.
+func deriveCredentialRootStageWith(
+	material *keyMaterial,
+	root *credentialRoot,
+	extract hkdfExtractor,
+) error {
+	owned := takeCredentialRoot(root)
+	if material == nil || len(material.keys) == 0 {
+		owned.close()
+		return newScheduleError(ScheduleErrorInvalidRequest, 0, -1)
+	}
+	suite := material.keys[0].row.suite
+	if extract == nil || material.credentialRoot != nil ||
+		material.credentialPRK != nil {
+		owned.close()
+		return newScheduleError(
+			ScheduleErrorInvalidRequest,
+			suite,
+			-1,
+		)
+	}
+	material.credentialRoot = owned
+	if material.credentialRoot == nil ||
+		material.credentialRoot.secret == nil ||
+		material.credentialRoot.secret.Len() != credentialRootBytes {
+		return newScheduleError(
+			ScheduleErrorCredentialRoot,
+			suite,
+			-1,
+		)
+	}
+
+	salt := material.volumeID
 	returned, err := extract(
 		material.credentialRoot.secret.Bytes(),
-		credentialSalt[:],
+		salt[:],
 	)
-	credentialExtract, err := ownProviderResult(
+	secret, err := ownProviderResult(
 		returned,
 		err,
 		suite,
@@ -551,15 +629,50 @@ func deriveKeyMaterialWith(
 		ScheduleErrorExtract,
 	)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	material.credentialPRK.secret = credentialExtract
+	material.credentialPRK = &credentialPRK{secret: secret}
+	return nil
+}
 
-	returned, err = extract(
+// deriveVolumeKeyStageWith consumes key on every exit and derives only the
+// volume-side PRK. A second call fails closed and clears the new transfer.
+func deriveVolumeKeyStageWith(
+	material *keyMaterial,
+	key *volumeKey,
+	extract hkdfExtractor,
+) error {
+	owned := takeVolumeKey(key)
+	if material == nil || len(material.keys) == 0 {
+		owned.close()
+		return newScheduleError(ScheduleErrorInvalidRequest, 0, -1)
+	}
+	suite := material.keys[0].row.suite
+	if extract == nil || material.volumeKey != nil || material.volumePRK != nil {
+		owned.close()
+		return newScheduleError(
+			ScheduleErrorInvalidRequest,
+			suite,
+			-1,
+		)
+	}
+	material.volumeKey = owned
+	if material.volumeKey == nil ||
+		material.volumeKey.secret == nil ||
+		material.volumeKey.secret.Len() != derivedKeyBytes {
+		return newScheduleError(
+			ScheduleErrorVolumeKey,
+			suite,
+			-1,
+		)
+	}
+
+	salt := material.volumeID
+	returned, err := extract(
 		material.volumeKey.secret.Bytes(),
-		volumeSalt[:],
+		salt[:],
 	)
-	volumeExtract, err := ownProviderResult(
+	secret, err := ownProviderResult(
 		returned,
 		err,
 		suite,
@@ -567,44 +680,79 @@ func deriveKeyMaterialWith(
 		ScheduleErrorExtract,
 	)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	material.volumePRK.secret = volumeExtract
+	material.volumePRK = &volumePRK{secret: secret}
+	return nil
+}
 
-	for i, row := range schedule.rows {
-		var prk []byte
-		switch row.root {
-		case scheduleRootCredential:
-			prk = material.credentialPRK.secret.Bytes()
-		case scheduleRootVolume:
-			prk = material.volumePRK.secret.Bytes()
-		default:
-			return nil, newScheduleError(
+// expandKeyMaterialWith derives rows for one root, or all rows when root is
+// zero. It rejects repeat expansion rather than overwriting a live key.
+func expandKeyMaterialWith(
+	material *keyMaterial,
+	root scheduleRoot,
+	expand hkdfExpander,
+) error {
+	if material == nil || len(material.keys) == 0 || expand == nil {
+		return newScheduleError(ScheduleErrorInvalidRequest, 0, -1)
+	}
+	suite := material.keys[0].row.suite
+	for i := range material.keys {
+		row := material.keys[i].row
+		if root != 0 && row.root != root {
+			continue
+		}
+		if material.keys[i].secret != nil {
+			return newScheduleError(
 				ScheduleErrorInvalidRequest,
 				suite,
 				i,
 			)
 		}
-		returned, err = expand(
-			prk,
+
+		var prk *crypto.Secret
+		switch row.root {
+		case scheduleRootCredential:
+			if material.credentialPRK != nil {
+				prk = material.credentialPRK.secret
+			}
+		case scheduleRootVolume:
+			if material.volumePRK != nil {
+				prk = material.volumePRK.secret
+			}
+		default:
+			return newScheduleError(
+				ScheduleErrorInvalidRequest,
+				suite,
+				i,
+			)
+		}
+		if prk == nil || prk.Len() != derivedKeyBytes {
+			return newScheduleError(
+				ScheduleErrorInvalidRequest,
+				suite,
+				i,
+			)
+		}
+
+		returned, err := expand(
+			prk.Bytes(),
 			scheduleInfo(row),
 			int(row.request.OutputBytes),
 		)
-		owned, ownErr := ownProviderResult(
+		owned, err := ownProviderResult(
 			returned,
 			err,
 			suite,
 			i,
 			ScheduleErrorExpand,
 		)
-		if ownErr != nil {
-			return nil, ownErr
+		if err != nil {
+			return err
 		}
 		material.keys[i].secret = owned
 	}
-
-	success = true
-	return material, nil
+	return nil
 }
 
 func scheduleInfo(row scheduleRow) string {

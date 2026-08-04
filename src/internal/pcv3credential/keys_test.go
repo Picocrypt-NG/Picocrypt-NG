@@ -334,6 +334,91 @@ func TestKeyExtractRootsSeparated(t *testing.T) {
 	})
 }
 
+func TestReaderCredentialStagesMatchWriterSchedule(t *testing.T) {
+	requests := literalRequestsForSuite(t, SuiteStandard1)
+	schedule, err := validateKeySchedule(SuiteStandard1, requests)
+	if err != nil {
+		t.Fatalf("validate Standard-1 schedule: %v", err)
+	}
+	volumeID := testVolumeID()
+
+	writerRoot, writerKey, _, _, _, _ := testRootOwners(
+		0x51,
+		credentialRootBytes,
+		0x61,
+		derivedKeyBytes,
+	)
+	writer, err := deriveKeyMaterialWith(
+		schedule,
+		writerRoot,
+		writerKey,
+		volumeID,
+		defaultHKDFExtract,
+		defaultHKDFExpand,
+	)
+	if err != nil {
+		t.Fatalf("derive writer material: %v", err)
+	}
+	defer writer.close()
+
+	readerRoot, readerKey, _, _, _, _ := testRootOwners(
+		0x51,
+		credentialRootBytes,
+		0x61,
+		derivedKeyBytes,
+	)
+	reader, err := newKeyMaterial(schedule, volumeID)
+	if err != nil {
+		t.Fatalf("create staged reader material: %v", err)
+	}
+	defer reader.close()
+	if err := deriveCredentialRootStageWith(
+		reader,
+		readerRoot,
+		defaultHKDFExtract,
+	); err != nil {
+		t.Fatalf("derive reader credential stage: %v", err)
+	}
+	if err := expandKeyMaterialWith(
+		reader,
+		scheduleRootCredential,
+		defaultHKDFExpand,
+	); err != nil {
+		t.Fatalf("expand reader credential stage: %v", err)
+	}
+	if err := deriveVolumeKeyStageWith(
+		reader,
+		readerKey,
+		defaultHKDFExtract,
+	); err != nil {
+		t.Fatalf("derive reader volume stage: %v", err)
+	}
+	if err := expandKeyMaterialWith(
+		reader,
+		scheduleRootVolume,
+		defaultHKDFExpand,
+	); err != nil {
+		t.Fatalf("expand reader volume stage: %v", err)
+	}
+
+	if len(reader.keys) != len(writer.keys) {
+		t.Fatalf(
+			"reader/writer key counts = %d/%d; want equal",
+			len(reader.keys),
+			len(writer.keys),
+		)
+	}
+	for i := range writer.keys {
+		if writer.keys[i].row != reader.keys[i].row ||
+			!bytes.Equal(
+				writer.keys[i].secret.Bytes(),
+				reader.keys[i].secret.Bytes(),
+			) {
+			t.Fatalf("reader key %d drifted from the writer schedule", i)
+		}
+	}
+}
+
 func TestScheduleExactRows(t *testing.T) {
 	total := 0
 	for _, suite := range []Suite{Suite(0x0001), Suite(0x0002)} {

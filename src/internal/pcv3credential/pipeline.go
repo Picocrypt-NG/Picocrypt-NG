@@ -38,6 +38,7 @@ const (
 	PipelineErrorKDF
 	PipelineErrorKeyDerivation
 	PipelineErrorOwner
+	PipelineErrorCallback
 )
 
 // PipelineStage identifies the public pipeline boundary that failed.
@@ -55,6 +56,7 @@ const (
 	PipelineStageKDF
 	PipelineStageKeyDerivation
 	PipelineStageOwner
+	PipelineStageCallback
 )
 
 // PipelineError contains public identifiers only.
@@ -89,6 +91,8 @@ func (err *PipelineError) Error() string {
 		return "pcv3credential: credential key derivation failed"
 	case PipelineErrorOwner:
 		return "pcv3credential: credential owner publication failed"
+	case PipelineErrorCallback:
+		return "pcv3credential: credential callback failed"
 	default:
 		return "pcv3credential: credential pipeline failure"
 	}
