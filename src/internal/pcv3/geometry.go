@@ -74,6 +74,21 @@ func (geometry Geometry) FileSize() int64 {
 // arithmetic overflow, and converts to signed host offsets only after checking
 // representability. It does not read or authenticate the source.
 func DeriveGeometry(candidate Candidate, sourceSize uint64) (Geometry, error) {
+	geometry, err := deriveCanonicalGeometry(candidate)
+	if err != nil {
+		return Geometry{}, err
+	}
+	fileSize, ok := util.SafeUint64ToInt64(sourceSize)
+	if !ok || fileSize != geometry.fileSize {
+		return Geometry{}, NewInvalidStructureError(StageTailGeometry)
+	}
+	return geometry, nil
+}
+
+// deriveCanonicalGeometry computes the expected layout carried by one
+// structurally valid capsule without treating an observed EOF as authority.
+// Callers that require an exact whole-file match must use DeriveGeometry.
+func deriveCanonicalGeometry(candidate Candidate) (Geometry, error) {
 	if !validLogicalCore(candidate.core) {
 		return Geometry{}, NewInvalidStructureError(StageCapsuleStructure)
 	}
@@ -103,8 +118,8 @@ func DeriveGeometry(candidate Candidate, sourceSize uint64) (Geometry, error) {
 	if !ok {
 		return Geometry{}, NewInvalidStructureError(StageTailGeometry)
 	}
-	fileSize, ok := util.SafeUint64ToInt64(sourceSize)
-	if !ok || sourceSize != expectedFileSize {
+	fileSize, ok := util.SafeUint64ToInt64(expectedFileSize)
+	if !ok {
 		return Geometry{}, NewInvalidStructureError(StageTailGeometry)
 	}
 	frontHeaderOffset, ok := util.SafeUint64ToInt64(frontHeaderLength)

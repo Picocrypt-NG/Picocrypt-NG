@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	discriminatorLength          = 4
-	primaryCapsuleOffset   int64 = 16
-	minimumFixedReaderSize       = uint64(primaryCapsuleOffset) + backupCapsuleLength + fixedSuffixLength
-	trailerDecodedLength         = 16
+	discriminatorLength            = 4
+	primaryCapsuleOffset     int64 = 16
+	minimumPrimaryReaderSize       = uint64(primaryCapsuleOffset) + backupCapsuleLength
+	minimumFixedReaderSize         = uint64(primaryCapsuleOffset) + backupCapsuleLength + fixedSuffixLength
+	trailerDecodedLength           = 16
 )
 
 var (
@@ -40,6 +41,7 @@ type Structure struct {
 	geometries     [2]Geometry
 	candidateCount uint8
 	issueStages    [componentCount]Stage
+	observedSize   int64
 }
 
 // String deliberately does not disclose unauthenticated structural fields.
@@ -115,7 +117,7 @@ func Probe(source io.ReaderAt, sourceSize int64) (Route, Structure, error) {
 // Inspect reads only the fixed PCV3 structural regions after Probe has
 // admitted and supplied the discriminator.
 func Inspect(source io.ReaderAt, sourceSize int64, admitted [discriminatorLength]byte) (Structure, error) {
-	structure := Structure{}
+	structure := Structure{observedSize: sourceSize}
 	var remainder [preambleRemainderLength]byte
 	if _, err := readExactAt(source, discriminatorLength, remainder[:], StagePreamble); err != nil {
 		return structure, err
@@ -125,7 +127,7 @@ func Inspect(source io.ReaderAt, sourceSize int64, admitted [discriminatorLength
 		return structure, err
 	}
 	structure.preamble = preamble
-	if sourceSize < 0 || uint64(sourceSize) < minimumFixedReaderSize {
+	if sourceSize < 0 || uint64(sourceSize) < minimumPrimaryReaderSize {
 		return structure, NewInvalidStructureError(StageTailGeometry)
 	}
 	codecs, err := pcencoding.NewRSCodecs()
@@ -140,7 +142,7 @@ func Inspect(source io.ReaderAt, sourceSize int64, admitted [discriminatorLength
 			return structure, terminal
 		}
 	} else {
-		candidate, geometry, inspectErr := inspectCapsule(codecs, primary[:], CapsuleRolePrimary, uint64(sourceSize))
+		candidate, geometry, inspectErr := inspectPrimaryCapsule(codecs, primary[:])
 		if inspectErr != nil {
 			if terminal := structure.retainIssue(ComponentPrimary, inspectErr); terminal != nil {
 				return structure, terminal
@@ -148,6 +150,15 @@ func Inspect(source io.ReaderAt, sourceSize int64, admitted [discriminatorLength
 		} else {
 			structure.addCandidate(candidate, geometry)
 		}
+	}
+
+	if uint64(sourceSize) < minimumFixedReaderSize {
+		structure.issueStages[ComponentTrailer] = StageTailGeometry
+		structure.issueStages[ComponentBackup] = StageTailGeometry
+		if structure.candidateCount != 0 {
+			return structure, nil
+		}
+		return structure, NewInvalidStructureError(structure.earliestIssue())
 	}
 
 	trailerOffset := sourceSize - int64(trailerLength)
@@ -218,12 +229,7 @@ func (structure Structure) earliestIssue() Stage {
 }
 
 func inspectCapsule(codecs *pcencoding.RSCodecs, encoded []byte, role CapsuleRole, sourceSize uint64) (Candidate, Geometry, error) {
-	decoded, err := decodeCapsule(codecs, encoded)
-	if err != nil {
-		return Candidate{}, Geometry{}, err
-	}
-	defer clear(decoded[:])
-	candidate, err := ValidateDecodedCapsule(decoded[:], role)
+	candidate, err := inspectCapsuleCandidate(codecs, encoded, role)
 	if err != nil {
 		return Candidate{}, Geometry{}, err
 	}
@@ -232,6 +238,31 @@ func inspectCapsule(codecs *pcencoding.RSCodecs, encoded []byte, role CapsuleRol
 		return Candidate{}, Geometry{}, err
 	}
 	return candidate, geometry, nil
+}
+
+func inspectPrimaryCapsule(codecs *pcencoding.RSCodecs, encoded []byte) (Candidate, Geometry, error) {
+	candidate, err := inspectCapsuleCandidate(codecs, encoded, CapsuleRolePrimary)
+	if err != nil {
+		return Candidate{}, Geometry{}, err
+	}
+	geometry, err := deriveCanonicalGeometry(candidate)
+	if err != nil {
+		return Candidate{}, Geometry{}, err
+	}
+	return candidate, geometry, nil
+}
+
+func inspectCapsuleCandidate(codecs *pcencoding.RSCodecs, encoded []byte, role CapsuleRole) (Candidate, error) {
+	decoded, err := decodeCapsule(codecs, encoded)
+	if err != nil {
+		return Candidate{}, err
+	}
+	defer clear(decoded[:])
+	candidate, err := ValidateDecodedCapsule(decoded[:], role)
+	if err != nil {
+		return Candidate{}, err
+	}
+	return candidate, nil
 }
 
 func decodeCapsule(codecs *pcencoding.RSCodecs, encoded []byte) ([decodedCapsuleLength]byte, error) {
