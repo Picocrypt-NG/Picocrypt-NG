@@ -317,19 +317,122 @@ func TestProbeFixedRegionBudget(t *testing.T) {
 		}
 	}
 
-	t.Run("tail underflow is rejected before any tail request", func(t *testing.T) {
+	t.Run("primary remains available without overlapping tail requests", func(t *testing.T) {
 		source := &recordingReaderAt{data: fixture}
-		route, _, err := Probe(source, int64(fixedSuffixLength)-1)
+		observedSize := int64(fixedSuffixLength) - 1
+		route, structure, err := Probe(source, observedSize)
+		if route != RouteNormalPCV {
+			t.Fatalf("Probe() route = %v; want normal PCV", route)
+		}
+		if err != nil {
+			t.Fatalf("Probe() error = %v; fixed primary is fully available", err)
+		}
+		if structure.observedSize != observedSize {
+			t.Fatalf("Structure observed size = %d; want exact claimed size %d", structure.observedSize, observedSize)
+		}
+		assertCandidateRoles(t, structure, CapsuleRolePrimary)
+		geometry, ok := structure.GeometryAt(0)
+		if !ok || geometry.FileSize() != int64(len(fixture)) || geometry.FileSize() == observedSize {
+			t.Fatalf("primary geometry = (%+v, %v); want canonical size %d distinct from observed %d", geometry, ok, len(fixture), observedSize)
+		}
+		assertComponentIssue(t, structure, ComponentTrailer, StageTailGeometry)
+		assertComponentIssue(t, structure, ComponentBackup, StageTailGeometry)
+		for _, request := range source.requests {
+			if request.offset != 0 && request.offset != discriminatorLength && request.offset != primaryCapsuleOffset {
+				t.Fatalf("short observed tail reached an overlapping EOF-tail request: %+v", request)
+			}
+		}
+	})
+
+	t.Run("truncated primary is rejected before any fixed component request", func(t *testing.T) {
+		source := &recordingReaderAt{data: fixture}
+		observedSize := primaryCapsuleOffset + int64(backupCapsuleLength) - 1
+		route, _, err := Probe(source, observedSize)
 		if route != RouteNormalPCV {
 			t.Fatalf("Probe() route = %v; want normal PCV", route)
 		}
 		assertStructuralFailure(t, err, StageTailGeometry)
 		for _, request := range source.requests {
 			if request.offset != 0 && request.offset != discriminatorLength {
-				t.Fatalf("underflowing source size reached a fixed component request: %+v", request)
+				t.Fatalf("truncated primary reached a fixed component request: %+v", request)
 			}
 		}
 	})
+}
+
+func TestInspectSeparatesCanonicalGeometryFromObservedTail(t *testing.T) {
+	fixture := readReaderFixture(t)
+	canonicalSize := int64(len(fixture))
+	suffix := fixture[len(fixture)-int(fixedSuffixLength):]
+
+	tests := []struct {
+		name             string
+		data             []byte
+		wantTailReads    bool
+		wantTrailerIssue bool
+	}{
+		{
+			name:             "static bytes appended after the canonical trailer",
+			data:             append(append([]byte(nil), fixture...), suffix...),
+			wantTailReads:    true,
+			wantTrailerIssue: false,
+		},
+		{
+			name:             "static canonical suffix truncation",
+			wantTrailerIssue: true,
+			data: append(
+				[]byte(nil),
+				fixture[:len(fixture)-int(fixedSuffixLength)]...,
+			),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observedSize := int64(len(test.data))
+			source := &recordingReaderAt{data: test.data}
+			route, structure, err := Probe(source, observedSize)
+			if route != RouteNormalPCV {
+				t.Fatalf("Probe() route = %v; want normal PCV", route)
+			}
+			if err != nil {
+				t.Fatalf("Probe() error = %v; fixed primary is fully available", err)
+			}
+			if structure.observedSize != observedSize {
+				t.Fatalf("Structure observed size = %d; want exact claimed size %d", structure.observedSize, observedSize)
+			}
+			assertCandidateRoles(t, structure, CapsuleRolePrimary)
+			geometry, ok := structure.GeometryAt(0)
+			if !ok || geometry.FileSize() != canonicalSize || geometry.FileSize() == observedSize {
+				t.Fatalf("primary geometry = (%+v, %v); want canonical size %d distinct from observed %d", geometry, ok, canonicalSize, observedSize)
+			}
+			assertComponentIssue(t, structure, ComponentBackup, StageTailGeometry)
+			trailerStage, trailerIssue := structure.Issue(ComponentTrailer)
+			if trailerIssue != test.wantTrailerIssue {
+				t.Fatalf("Trailer issue = (%v, %t); want presence %t", trailerStage, trailerIssue, test.wantTrailerIssue)
+			}
+			if trailerIssue && trailerStage != StageTailGeometry {
+				t.Fatalf("Trailer issue stage = %v; want tail-geometry", trailerStage)
+			}
+
+			assertReadRequestsDoNotOverlap(t, source.requests)
+			seenBackup := false
+			seenTrailer := false
+			wantBackupOffset := observedSize - int64(fixedSuffixLength)
+			wantTrailerOffset := observedSize - int64(trailerLength)
+			for _, request := range source.requests {
+				if request.offset == wantBackupOffset && request.limit == int(backupCapsuleLength) {
+					seenBackup = true
+				}
+				if request.offset == wantTrailerOffset && request.limit == int(trailerLength) {
+					seenTrailer = true
+				}
+			}
+			if seenBackup != test.wantTailReads || seenTrailer != test.wantTailReads {
+				t.Fatalf("EOF-tail reads backup/trailer = %t/%t; want both %t", seenBackup, seenTrailer, test.wantTailReads)
+			}
+		})
+	}
 }
 
 func TestInspectLiteralFixture(t *testing.T) {
@@ -491,10 +594,18 @@ func TestInspectHostileLengthBound(t *testing.T) {
 	if route != RouteNormalPCV {
 		t.Fatalf("Probe() route = %v; want normal PCV", route)
 	}
-	assertStructuralFailure(t, err, StageCapsuleRS)
-	if structure.CandidateCount() != 0 {
-		t.Fatalf("CandidateCount() = %d; want 0 for impossible whole-file geometry", structure.CandidateCount())
+	if err != nil {
+		t.Fatalf("Probe() error = %v; fixed primary geometry is bounded independently", err)
 	}
+	if structure.observedSize != maxInt64 {
+		t.Fatalf("Structure observed size = %d; want exact hostile claim %d", structure.observedSize, maxInt64)
+	}
+	assertCandidateRoles(t, structure, CapsuleRolePrimary)
+	geometry, ok := structure.GeometryAt(0)
+	if !ok || geometry.FileSize() != int64(len(fixture)) || geometry.FileSize() == maxInt64 {
+		t.Fatalf("primary geometry = (%+v, %v); want canonical size %d distinct from hostile observation", geometry, ok, len(fixture))
+	}
+	assertComponentIssue(t, structure, ComponentTrailer, StageTailGeometry)
 	if len(source.requests) > 5 {
 		t.Fatalf("ReadAt calls = %d; want at most the five fixed logical regions", len(source.requests))
 	}
@@ -503,6 +614,7 @@ func TestInspectHostileLengthBound(t *testing.T) {
 			t.Fatalf("hostile-size request = %+v; want non-negative fixed-size request", request)
 		}
 	}
+	assertReadRequestsDoNotOverlap(t, source.requests)
 
 	frontOnly := readerAtFunc(func(dst []byte, offset int64) (int, error) {
 		if offset < 0 || offset >= 976 {
@@ -527,6 +639,28 @@ func TestInspectHostileLengthBound(t *testing.T) {
 		}
 		if allocations != fixedAllocs {
 			t.Fatalf("source size %d allocations = %.0f; fixed structural path = %.0f", hostileSize, allocations, fixedAllocs)
+		}
+	}
+}
+
+func assertReadRequestsDoNotOverlap(t *testing.T, requests []readRequest) {
+	t.Helper()
+	for left := range requests {
+		if requests[left].offset < 0 || requests[left].limit < 0 {
+			t.Fatalf("invalid ReaderAt request: %+v", requests[left])
+		}
+		leftEnd := requests[left].offset + int64(requests[left].limit)
+		if leftEnd < requests[left].offset {
+			t.Fatalf("ReaderAt request overflow: %+v", requests[left])
+		}
+		for right := left + 1; right < len(requests); right++ {
+			rightEnd := requests[right].offset + int64(requests[right].limit)
+			if rightEnd < requests[right].offset {
+				t.Fatalf("ReaderAt request overflow: %+v", requests[right])
+			}
+			if requests[left].offset < rightEnd && requests[right].offset < leftEnd {
+				t.Fatalf("ReaderAt requests overlap: %+v and %+v", requests[left], requests[right])
+			}
 		}
 	}
 }
