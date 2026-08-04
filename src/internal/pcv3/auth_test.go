@@ -175,6 +175,181 @@ func (provider *literalCredentialProvider) withCredential(
 	return callback(provider.access)
 }
 
+type literalKDFAdmitter struct{}
+
+func (literalKDFAdmitter) AdmitKDF(
+	context.Context,
+	pcv3credential.KDFProfile,
+) (pcv3credential.KDFAdmission, error) {
+	return pcv3credential.KDFAdmissionGranted, nil
+}
+
+func TestAuthenticateCapsulesReaderAdapterOwnershipCancellationAndZeroing(
+	t *testing.T,
+) {
+	primary := literalCandidate(t, literalStandardPrimary, CapsuleRolePrimary)
+	backup := literalCandidate(t, literalStandardBackup, CapsuleRoleBackup)
+	structure := literalStructure(primary, backup)
+	tuple, ok := credentialTupleForStructure(structure)
+	if !ok {
+		t.Fatal("TEST ONLY Standard-1 structure did not produce a credential tuple")
+	}
+
+	tests := []struct {
+		name         string
+		publishOwner bool
+		runnerErr    error
+		unwrapErr    bool
+		wantOutcome  Outcome
+		wantStage    Stage
+		wantAuth     int
+		wantReplica  int
+		wantAdopt    int
+		wantOwner    bool
+	}{
+		{
+			name:         "transfers the only published Owner",
+			publishOwner: true,
+			wantOutcome:  OutcomeSuccess,
+			wantStage:    StageNone,
+			wantAuth:     2,
+			wantReplica:  2,
+			wantAdopt:    1,
+			wantOwner:    true,
+		},
+		{
+			name: "post-adoption cancellation remains terminal",
+			runnerErr: &pcv3credential.PipelineError{
+				Code:  pcv3credential.PipelineErrorCancelled,
+				Stage: pcv3credential.PipelineStageCallback,
+			},
+			wantOutcome: OutcomeOperationFailed,
+			wantStage:   StageCancellation,
+			wantReplica: 2,
+			wantAdopt:   1,
+		},
+		{
+			name: "authenticated result without Owner fails closed",
+			runnerErr: &pcv3credential.PipelineError{
+				Code:  pcv3credential.PipelineErrorOwner,
+				Stage: pcv3credential.PipelineStageOwner,
+			},
+			wantOutcome: OutcomeOperationFailed,
+			wantStage:   StageUnwrap,
+			wantReplica: 2,
+			wantAdopt:   1,
+		},
+		{
+			name:        "unwrap error clears the exact destination",
+			unwrapErr:   true,
+			wantOutcome: OutcomeOperationFailed,
+			wantStage:   StageUnwrap,
+			wantReplica: 0,
+			wantAdopt:   0,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			access := standardLiteralAccess(t)
+			defer access.close()
+			var publishedOwner *pcv3credential.Owner
+			if test.publishOwner {
+				publishedOwner = &pcv3credential.Owner{}
+			}
+			runnerCalls := 0
+			provider := &readerCredentialProvider{
+				request: &pcv3credential.ReaderCredentialRequest{
+					Suite:     credentialSuite(tuple.suite),
+					ProfileID: uint8(tuple.kdfProfile),
+					ArgonSalt: append([]byte(nil), tuple.argonSalt[:]...),
+					VolumeID:  append([]byte(nil), tuple.volumeID[:]...),
+				},
+				admitter: literalKDFAdmitter{},
+				run: func(
+					_ context.Context,
+					_ *pcv3credential.ReaderCredentialRequest,
+					_ pcv3credential.Admitter,
+					_ Suite,
+					callback func(capsuleCredentialAccess) error,
+				) (*pcv3credential.Owner, error) {
+					runnerCalls++
+					if err := callback(access); err != nil {
+						return nil, err
+					}
+					return publishedOwner, test.runnerErr
+				},
+			}
+
+			var unwrapAliases [][]byte
+			seams := defaultCapsuleAuthSeams()
+			standard := seams.unwrapStandard
+			seams.unwrapStandard = func(
+				destination, source, key, nonce []byte,
+			) error {
+				unwrapAliases = append(unwrapAliases, destination)
+				if err := standard(destination, source, key, nonce); err != nil {
+					return err
+				}
+				if test.unwrapErr {
+					return errors.New("TEST ONLY injected unwrap failure")
+				}
+				return nil
+			}
+
+			result := authenticateCapsulesWithProvider(
+				context.Background(),
+				structure,
+				provider,
+				seams,
+			)
+			if result.Outcome() != test.wantOutcome ||
+				result.Stage() != test.wantStage ||
+				result.AuthenticatedCapsules() != test.wantAuth {
+				t.Fatalf(
+					"result = %v/%v/%d; want %v/%v/%d",
+					result.Outcome(),
+					result.Stage(),
+					result.AuthenticatedCapsules(),
+					test.wantOutcome,
+					test.wantStage,
+					test.wantAuth,
+				)
+			}
+			if runnerCalls != 1 || access.replicaCalls != test.wantReplica ||
+				access.adoptCalls != test.wantAdopt {
+				t.Fatalf(
+					"runner/replica/adopt calls = %d/%d/%d; want 1/%d/%d",
+					runnerCalls,
+					access.replicaCalls,
+					access.adoptCalls,
+					test.wantReplica,
+					test.wantAdopt,
+				)
+			}
+			if provider.owner != nil {
+				t.Fatal("adapter retained the transferred Owner")
+			}
+			if test.wantOwner {
+				if result.owner != publishedOwner {
+					t.Fatal("authenticated result did not receive the exact Owner")
+				}
+			} else if result.owner != nil {
+				t.Fatal("failed authentication published an Owner")
+			}
+			for i, alias := range unwrapAliases {
+				if !allZero(alias) {
+					t.Fatalf("unwrapped VolumeKey alias %d survived adapter exit", i)
+				}
+			}
+			result.Close()
+			if result.owner != nil {
+				t.Fatal("result Close retained the published Owner")
+			}
+		})
+	}
+}
+
 func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 	standardPrimary := literalCandidate(t, literalStandardPrimary, CapsuleRolePrimary)
 	standardBackup := literalCandidate(t, literalStandardBackup, CapsuleRoleBackup)

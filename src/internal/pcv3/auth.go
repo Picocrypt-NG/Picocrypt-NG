@@ -551,6 +551,36 @@ type readerCredentialProvider struct {
 	request  *pcv3credential.ReaderCredentialRequest
 	admitter pcv3credential.Admitter
 	owner    *pcv3credential.Owner
+	run      readerCredentialRunner
+}
+
+type readerCredentialRunner func(
+	context.Context,
+	*pcv3credential.ReaderCredentialRequest,
+	pcv3credential.Admitter,
+	Suite,
+	func(capsuleCredentialAccess) error,
+) (*pcv3credential.Owner, error)
+
+func runReaderCredential(
+	ctx context.Context,
+	request *pcv3credential.ReaderCredentialRequest,
+	admitter pcv3credential.Admitter,
+	suite Suite,
+	callback func(capsuleCredentialAccess) error,
+) (*pcv3credential.Owner, error) {
+	return pcv3credential.WithReaderCredential(
+		ctx,
+		request,
+		admitter,
+		func(reader *pcv3credential.ReaderCredential) error {
+			return callback(&readerCredentialAccess{
+				ctx:    ctx,
+				suite:  suite,
+				reader: reader,
+			})
+		},
+	)
 }
 
 func (provider *readerCredentialProvider) withCredential(
@@ -576,16 +606,17 @@ func (provider *readerCredentialProvider) withCredential(
 	}
 	callbackSucceeded := false
 	var callbackErr error
-	owner, err := pcv3credential.WithReaderCredential(
+	run := provider.run
+	if run == nil {
+		run = runReaderCredential
+	}
+	owner, err := run(
 		ctx,
 		provider.request,
 		provider.admitter,
-		func(reader *pcv3credential.ReaderCredential) error {
-			callbackErr = callback(&readerCredentialAccess{
-				ctx:    ctx,
-				suite:  tuple.suite,
-				reader: reader,
-			})
+		tuple.suite,
+		func(access capsuleCredentialAccess) error {
+			callbackErr = callback(access)
 			callbackSucceeded = callbackErr == nil
 			return callbackErr
 		},
