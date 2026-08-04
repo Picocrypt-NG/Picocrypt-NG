@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -846,4 +847,227 @@ func assertRefusal(t *testing.T, err error, want RefusalKind) {
 	if refusal.Kind != want {
 		t.Fatalf("Load() refusal = %q, want %q", refusal.Kind, want)
 	}
+}
+
+const testSchemaV2 = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pcv3.invalid/cumulative/manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "schema_revision", "spec_revision", "test_only", "custody_id", "fixtures", "deferred_vector_classes"],
+  "properties": {
+    "format": {"const": "pcv3-corpus-v2"},
+    "schema_revision": {"const": "2"},
+    "spec_revision": {"const": "0.3"},
+    "test_only": {"const": true},
+    "custody_id": {"type": "string", "minLength": 1},
+    "fixtures": {"type": "array", "minItems": 4, "items": {"$ref": "#/$defs/fixture"}},
+    "deferred_vector_classes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string"},
+      "contains": {"const": "full-pcv3-volume"}
+    }
+  },
+  "$defs": {
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "sha256", "provenance_path", "provenance_sha256", "category", "outcome", "failure_stage", "kdf_calls", "publication_state", "force_state", "status", "generated_at_test_time"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "provenance_path": {"type": "string", "minLength": 1},
+        "provenance_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "generator_source_path": {"type": "string", "minLength": 1},
+        "generator_source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "category": {"enum": ["unicode17", "governance", "stream", "capsule"]},
+        "outcome": {"enum": ["accept", "reject", "success", "authenticated-degraded", "credentials-or-damage", "invalid-structure-pre-kdf", "ambiguous-volume"]},
+        "failure_stage": {"enum": ["none", "canonicalization", "governance", "wrap-auth", "replica-auth", "capsule-structure"]},
+        "kdf_calls": {"type": "integer", "minimum": 0, "maximum": 1},
+        "publication_state": {"enum": ["not-published", "not-applicable"]},
+        "force_state": {"const": "not-applicable"},
+        "status": {"const": "required"},
+        "generated_at_test_time": {"const": false}
+      }
+    }
+  }
+}`
+
+const (
+	testV2GeneratorSource = "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"TEST ONLY\") }\n"
+	testV2Hex32           = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+	testV2Hex24           = "202122232425262728292a2b2c2d2e2f3031323334353637"
+	testV2Hex16           = "404142434445464748494a4b4c4d4e4f"
+)
+
+type testV2Fixture struct {
+	id, category, caseName, suite string
+	outcome, stage                string
+	kdfCalls, authenticated       int
+}
+
+var testV2Phase4Fixtures = []testV2Fixture{
+	{id: "stream-standard1-wrap", category: "stream", caseName: "standard1-wrap", suite: "standard1", outcome: "accept", stage: "none"},
+	{id: "stream-paranoid1-wrap", category: "stream", caseName: "paranoid1-wrap", suite: "paranoid1", outcome: "accept", stage: "none"},
+	{id: "capsule-standard1-healthy", category: "capsule", caseName: "healthy-standard1", suite: "standard1", outcome: "success", stage: "none", kdfCalls: 1, authenticated: 2},
+	{id: "capsule-paranoid1-healthy", category: "capsule", caseName: "healthy-paranoid1", suite: "paranoid1", outcome: "success", stage: "none", kdfCalls: 1, authenticated: 2},
+	{id: "capsule-damaged-wrap-tag", category: "capsule", caseName: "damaged-wrap-tag", suite: "standard1", outcome: "authenticated-degraded", stage: "wrap-auth", kdfCalls: 1, authenticated: 1},
+	{id: "capsule-damaged-replica-tag", category: "capsule", caseName: "damaged-replica-tag", suite: "standard1", outcome: "authenticated-degraded", stage: "replica-auth", kdfCalls: 1, authenticated: 1},
+	{id: "capsule-wrong-credential", category: "capsule", caseName: "wrong-credential", suite: "standard1", outcome: "credentials-or-damage", stage: "wrap-auth", kdfCalls: 1},
+	{id: "capsule-divergent-public-tuple", category: "capsule", caseName: "divergent-public-tuple", suite: "standard1", outcome: "invalid-structure-pre-kdf", stage: "capsule-structure"},
+	{id: "capsule-authenticated-cross-volume-splice", category: "capsule", caseName: "authenticated-cross-volume-splice", suite: "standard1", outcome: "ambiguous-volume", stage: "capsule-structure", kdfCalls: 1, authenticated: 2},
+}
+
+func TestLoadAcceptsLiteralCumulativeV2Corpus(t *testing.T) {
+	root := writeTestCumulativeV2Corpus(t)
+
+	corpus, err := Load(root, testCustodyID)
+	if err != nil {
+		t.Fatalf("Load(v2) error = %v", err)
+	}
+	if !corpus.isCurrentPhase4() {
+		t.Fatal("Load(v2) did not retain the closed Phase-4 evidence inventory")
+	}
+}
+
+func TestLoadCumulativeV2RefusesClosedVariantMutations(t *testing.T) {
+	tests := []struct {
+		name, old, replacement string
+		want                   RefusalKind
+	}{
+		{name: "unknown category", old: `"category":"stream"`, replacement: `"category":"future"`, want: RefusalUnknown},
+		{name: "unknown stream field", old: `"status":"required"`, replacement: `"unexpected":true,"status":"required"`, want: RefusalUnknown},
+		{name: "unknown suite", old: `"suite":"standard1"`, replacement: `"suite":"future"`, want: RefusalUnknown},
+		{name: "stream key width", old: `"xchacha_key_hex":"` + testV2Hex32 + `"`, replacement: `"xchacha_key_hex":"00"`, want: RefusalMalformed},
+		{name: "capsule wire width", old: `"primary_decoded_hex":"` + strings.Repeat("00", 320) + `"`, replacement: `"primary_decoded_hex":"00"`, want: RefusalMalformed},
+		{name: "capsule outcome", old: `"expected_outcome":"success"`, replacement: `"expected_outcome":"ambiguous-volume"`, want: RefusalMalformed},
+		{name: "capsule stage", old: `"expected_stage":"none"`, replacement: `"expected_stage":"wrap-auth"`, want: RefusalMalformed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := writeTestCumulativeV2Corpus(t)
+			mutateFirstV2Fixture(t, root, tt.old, tt.replacement)
+			_, err := Load(root, testCustodyID)
+			assertRefusal(t, err, tt.want)
+		})
+	}
+}
+
+func TestLoadCumulativeV2BindsGeneratorSource(t *testing.T) {
+	root := writeTestCumulativeV2Corpus(t)
+	writeTestFile(t, root, "generator/phase4.go", testV2GeneratorSource+"// changed\n")
+
+	_, err := Load(root, testCustodyID)
+	assertRefusal(t, err, RefusalHash)
+}
+
+func writeTestCumulativeV2Corpus(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	writeTestFile(t, root, "manifest.schema.json", testSchemaV2)
+	writeTestFile(t, root, "positive/nfc.json", positiveFixture)
+	writeTestFile(t, root, "negative/reject-unassigned.json", negativeFixture)
+	writeTestFile(t, root, "provenance/nfc.json", independentProvenance)
+	writeTestFile(t, root, "provenance/reject-unassigned.json", independentProvenance)
+	writeTestFile(t, root, "generator/phase4.go", testV2GeneratorSource)
+
+	generatorSHA := testSHA256(testV2GeneratorSource)
+	fixtures := []string{
+		testV2ManifestEntry("unicode17-nfc", "positive/nfc.json", positiveFixture, "provenance/nfc.json", independentProvenance, "unicode17", "accept", "none", 0, "", ""),
+		testV2ManifestEntry("unicode17-unassigned", "negative/reject-unassigned.json", negativeFixture, "provenance/reject-unassigned.json", independentProvenance, "unicode17", "reject", "canonicalization", 0, "", ""),
+	}
+	for _, fixture := range testV2Phase4Fixtures {
+		document := testV2FixtureDocument(fixture)
+		direction := "positive"
+		if fixture.outcome != "accept" && fixture.outcome != "success" && fixture.outcome != "authenticated-degraded" {
+			direction = "negative"
+		}
+		fixturePath := direction + "/" + fixture.id + ".json"
+		provenancePath := "provenance/" + fixture.id + ".json"
+		provenance := testV2Provenance(generatorSHA)
+		writeTestFile(t, root, fixturePath, document)
+		writeTestFile(t, root, provenancePath, provenance)
+		fixtures = append(fixtures, testV2ManifestEntry(fixture.id, fixturePath, document, provenancePath, provenance, fixture.category, fixture.outcome, fixture.stage, fixture.kdfCalls, "generator/phase4.go", generatorSHA))
+	}
+	manifest := fmt.Sprintf(`{"format":"pcv3-corpus-v2","schema_revision":"2","spec_revision":"0.3","test_only":true,"custody_id":%q,"fixtures":[%s],"deferred_vector_classes":["full-pcv3-volume"]}`, testCustodyID, strings.Join(fixtures, ","))
+	writeTestFile(t, root, "manifest.json", manifest)
+	return root
+}
+
+func testV2ManifestEntry(id, fixturePath, document, provenancePath, provenance, category, outcome, stage string, kdfCalls int, generatorPath, generatorSHA string) string {
+	generatorFields := ""
+	if generatorPath != "" {
+		generatorFields = fmt.Sprintf(`,"generator_source_path":%q,"generator_source_sha256":%q`, generatorPath, generatorSHA)
+	}
+	return fmt.Sprintf(`{"id":%q,"path":%q,"sha256":%q,"provenance_path":%q,"provenance_sha256":%q%s,"category":%q,"outcome":%q,"failure_stage":%q,"kdf_calls":%d,"publication_state":"not-applicable","force_state":"not-applicable","status":"required","generated_at_test_time":false}`, id, fixturePath, testSHA256(document), provenancePath, testSHA256(provenance), generatorFields, category, outcome, stage, kdfCalls)
+}
+
+func testV2FixtureDocument(fixture testV2Fixture) string {
+	if fixture.category == "stream" {
+		serpentFields := ""
+		if fixture.suite == "paranoid1" {
+			serpentFields = fmt.Sprintf(`,"serpent_key_hex":%q,"serpent_iv_hex":%q`, testV2Hex32, testV2Hex16)
+		}
+		return fmt.Sprintf(`{"test_only":true,"id":%q,"category":"stream","case":%q,"suite":%q,"xchacha_key_hex":%q,"xchacha_nonce_hex":%q%s,"volume_key_hex":%q,"wrapped_volume_key_hex":%q,"status":"required","generated_at_test_time":false}`, fixture.id, fixture.caseName, fixture.suite, testV2Hex32, testV2Hex24, serpentFields, testV2Hex32, testV2Hex32)
+	}
+	wire := strings.Repeat("00", 320)
+	return fmt.Sprintf(`{"test_only":true,"id":%q,"category":"capsule","case":%q,"suite":%q,"password_utf8_hex":"54455354204f4e4c59","credential_root_hex":%q,"primary_decoded_hex":%q,"backup_decoded_hex":%q,"expected_volume_key_hex":%q,"expected_outcome":%q,"expected_stage":%q,"expected_kdf_calls":%d,"expected_authenticated_capsules":%d,"status":"required","generated_at_test_time":false}`, fixture.id, fixture.caseName, fixture.suite, testV2Hex32, wire, wire, testV2Hex32, fixture.outcome, fixture.stage, fixture.kdfCalls, fixture.authenticated)
+}
+
+func testV2Provenance(generatorSHA string) string {
+	lock := "go=1.26.5;golang.org/x/crypto=v0.54.0;github.com/Picocrypt-NG/serpent=v0.1.0"
+	return fmt.Sprintf(`{"test_only":true,"author":"independent-phase4-fixture-generator","generator":"pcv3-phase4-independent-go","generator_version":"1","source_revision":"PCV3 revision 0.3 sections 6 and 13","source_sha256":%q,"dependency_lock":%q,"dependency_lock_sha256":%q,"reproduction_command":"go run ./generator/phase4.go","independent_of_production":true,"production_code":false}`, generatorSHA, lock, testSHA256(lock))
+}
+
+func mutateFirstV2Fixture(t *testing.T, root, old, replacement string) {
+	t.Helper()
+	for _, fixture := range testV2Phase4Fixtures {
+		path := filepath.Join(root, "positive", fixture.id+".json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		updated := strings.Replace(string(data), old, replacement, 1)
+		if updated == string(data) {
+			continue
+		}
+		writeTestFile(t, root, "positive/"+fixture.id+".json", updated)
+		repinV2Fixture(t, root, fixture.id, testSHA256(updated))
+		return
+	}
+	t.Fatal("test mutation did not match a cumulative v2 fixture")
+}
+
+func repinV2Fixture(t *testing.T, root, id, hash string) {
+	t.Helper()
+	path := filepath.Join(root, "manifest.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read cumulative manifest: %v", err)
+	}
+	needle := `"id":"` + id + `"`
+	start := strings.Index(string(data), needle)
+	if start < 0 {
+		t.Fatal("cumulative manifest fixture missing")
+	}
+	const prefix = `"sha256":"`
+	hashStart := strings.Index(string(data[start:]), prefix)
+	if hashStart < 0 {
+		t.Fatal("cumulative manifest fixture hash missing")
+	}
+	hashStart += start + len(prefix)
+	hashEnd := hashStart + 64
+	if hashEnd > len(data) {
+		t.Fatal("cumulative manifest fixture hash is truncated")
+	}
+	updated := string(data[:hashStart]) + hash + string(data[hashEnd:])
+	writeTestFile(t, root, "manifest.json", updated)
+}
+
+func testSHA256(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(digest[:])
 }

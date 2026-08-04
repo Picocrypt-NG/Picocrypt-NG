@@ -27,4 +27,7 @@ func TestPrivateCorpusContract(t *testing.T) {
 	if corpus == nil {
 		t.Fatal("PCV3 private corpus contract returned no verified corpus")
 	}
+	if !corpus.isCurrentPhase4() {
+		t.Fatal("PCV3 private corpus is not the required cumulative Phase-4 contract")
+	}
 }
