@@ -31,6 +31,7 @@ type normalFixture struct {
 	CommentHex  string                    `json:"comment_hex"`
 	PayloadRS   bool                      `json:"payload_rs"`
 	SessionView *normalFixtureSessionView `json:"session_view"`
+	Mutations   []normalFixtureMutation   `json:"mutations"`
 	Expected    normalFixtureExpected     `json:"expected"`
 	Keys        normalFixtureKeys         `json:"keys"`
 }
@@ -204,11 +205,13 @@ func (provider *normalFixtureCredentialProvider) close() {
 }
 
 type normalFixtureSink struct {
-	records              [][]byte
-	recordAliases        [][]byte
-	preAbortRecordCount  int
-	preAbortPlaintextLen int
-	aborted              bool
+	records                    [][]byte
+	recordAliases              [][]byte
+	preAbortRecordCount        int
+	preAbortPlaintextLen       int
+	preAbortPlaintextSHA256    [sha256.Size]byte
+	preAbortPlaintextSHA256Set bool
+	aborted                    bool
 }
 
 func (sink *normalFixtureSink) writeVerifiedRecord(
@@ -228,9 +231,15 @@ func (sink *normalFixtureSink) abortUncommitted() {
 		return
 	}
 	sink.preAbortRecordCount = len(sink.records)
+	digest := sha256.New()
 	for _, record := range sink.records {
 		sink.preAbortPlaintextLen += len(record)
+		_, _ = digest.Write(record)
 	}
+	sum := digest.Sum(nil)
+	copy(sink.preAbortPlaintextSHA256[:], sum)
+	pcv3crypto.SecureZero(sum)
+	sink.preAbortPlaintextSHA256Set = true
 	for _, record := range sink.records {
 		pcv3crypto.SecureZero(record)
 	}

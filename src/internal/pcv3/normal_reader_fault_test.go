@@ -26,6 +26,12 @@ type normalFaultReaderAt struct {
 	length     int
 	occurrence int
 	calls      int
+	closeCalls int
+}
+
+func (reader *normalFaultReaderAt) Close() error {
+	reader.closeCalls++
+	return nil
 }
 
 func (reader *normalFaultReaderAt) ReadAt(destination []byte, offset int64) (int, error) {
@@ -136,8 +142,8 @@ func TestReadNormalVolumeFaultCleanupAndInputClassification(t *testing.T) {
 				t.Fatal("non-EOF ReaderAt fault delivered a completion")
 			}
 			assertNormalFaultSinkDiscarded(t, sink, test.staged)
-			if source.closeCalls != 0 {
-				t.Fatalf("borrowed source close calls = %d; want zero", source.closeCalls)
+			if faulted.closeCalls != 0 {
+				t.Fatalf("borrowed fault-injecting source close calls = %d; want zero", faulted.closeCalls)
 			}
 		})
 	}
