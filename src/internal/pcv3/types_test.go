@@ -14,12 +14,19 @@ func TestPhase3Registry(t *testing.T) {
 		stage pcv3.Stage
 		want  string
 	}{
+		{pcv3.StageNone, "none"},
 		{pcv3.StageRouting, "routing"},
 		{pcv3.StagePreamble, "preamble"},
 		{pcv3.StageCapsuleRS, "capsule-rs"},
 		{pcv3.StageCapsuleStructure, "capsule-structure"},
 		{pcv3.StageTailGeometry, "tail-geometry"},
 		{pcv3.StageInputIO, "input-io"},
+		{pcv3.StageCredentialPolicy, "credential-policy"},
+		{pcv3.StageWrapAuth, "wrap-auth"},
+		{pcv3.StageUnwrap, "unwrap"},
+		{pcv3.StageReplicaAuth, "replica-auth"},
+		{pcv3.StageKDFRuntime, "kdf-runtime"},
+		{pcv3.StageCancellation, "cancellation"},
 	}
 	for _, test := range stages {
 		if got := test.stage.String(); got != test.want {
@@ -122,6 +129,18 @@ func TestPhase3Registry(t *testing.T) {
 	if got := pcv3.OutcomeOperationFailed.String(); got != "operation-failed" {
 		t.Errorf("operation-failed outcome string = %q", got)
 	}
+	if got := pcv3.OutcomeCredentialsOrDamage.String(); got != "credentials-or-damage" {
+		t.Errorf("credentials-or-damage outcome string = %q", got)
+	}
+	if got := pcv3.OutcomeAuthenticatedDegraded.String(); got != "authenticated-degraded" {
+		t.Errorf("authenticated-degraded outcome string = %q", got)
+	}
+	if got := pcv3.OutcomeAmbiguousVolume.String(); got != "ambiguous-volume" {
+		t.Errorf("ambiguous-volume outcome string = %q", got)
+	}
+	if got := pcv3.OutcomeSuccess.String(); got != "success" {
+		t.Errorf("success outcome string = %q", got)
+	}
 	if got := pcv3.CodeUnsupported.String(); got != "PCV3_UNSUPPORTED" {
 		t.Errorf("unsupported code string = %q", got)
 	}
@@ -130,6 +149,18 @@ func TestPhase3Registry(t *testing.T) {
 	}
 	if got := pcv3.CodeOperationFailed.String(); got != "PCV3_OPERATION_FAILED" {
 		t.Errorf("operation-failed code string = %q", got)
+	}
+	if got := pcv3.CodeCredentialsOrDamage.String(); got != "PCV3_CREDENTIALS_OR_DAMAGE" {
+		t.Errorf("credentials-or-damage code string = %q", got)
+	}
+	if got := pcv3.CodeAuthenticatedDegraded.String(); got != "PCV3_AUTHENTICATED_DEGRADED" {
+		t.Errorf("authenticated-degraded code string = %q", got)
+	}
+	if got := pcv3.CodeAmbiguousVolume.String(); got != "PCV3_AMBIGUOUS_VOLUME" {
+		t.Errorf("ambiguous-volume code string = %q", got)
+	}
+	if got := pcv3.CodeSuccess.String(); got != "PCV3_SUCCESS" {
+		t.Errorf("success code string = %q", got)
 	}
 }
 

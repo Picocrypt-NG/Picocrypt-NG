@@ -2,11 +2,80 @@ package pcv3
 
 import (
 	"Picocrypt-NG/internal/crypto"
+	"Picocrypt-NG/internal/pcv3credential"
 	"context"
 	"encoding/hex"
 	"errors"
 	"testing"
 )
+
+func TestAuthenticateCapsulesCredentialPipelineClassification(t *testing.T) {
+	if callerPolicyMatches(
+		CredentialModePassword,
+		&pcv3credential.FactorRequest{
+			ExpectedPolicy: pcv3credential.FactorPolicyKeyfilesOnly,
+		},
+	) {
+		t.Fatal("explicit keyfile policy accepted a password-only capsule claim")
+	}
+	if !callerPolicyMatches(
+		CredentialModeCombined,
+		&pcv3credential.FactorRequest{
+			ExpectedPolicy: pcv3credential.FactorPolicyPasswordAndKeyfiles,
+		},
+	) {
+		t.Fatal("matching caller-pinned combined policy was rejected")
+	}
+
+	missingOwner := &pcv3credential.PipelineError{
+		Code:  pcv3credential.PipelineErrorOwner,
+		Stage: pcv3credential.PipelineStageOwner,
+	}
+	if !expectedMissingOwner(missingOwner) {
+		t.Fatal("expected no-adoption Owner result was not recognized")
+	}
+
+	tests := []struct {
+		name string
+		err  error
+		want Stage
+	}{
+		{
+			name: "post-callback cancellation remains terminal",
+			err: &pcv3credential.PipelineError{
+				Code:  pcv3credential.PipelineErrorCancelled,
+				Stage: pcv3credential.PipelineStageCallback,
+			},
+			want: StageCancellation,
+		},
+		{
+			name: "factor rejection is credential policy",
+			err: &pcv3credential.PipelineError{
+				Code:  pcv3credential.PipelineErrorFactors,
+				Stage: pcv3credential.PipelineStageFactors,
+			},
+			want: StageCredentialPolicy,
+		},
+		{
+			name: "KDF failure is runtime",
+			err: &pcv3credential.PipelineError{
+				Code:  pcv3credential.PipelineErrorKDF,
+				Stage: pcv3credential.PipelineStageKDF,
+			},
+			want: StageKDFRuntime,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if expectedMissingOwner(test.err) {
+				t.Fatal("operational error was mistaken for expected no-adoption")
+			}
+			if got := credentialPipelineStage(test.err); got != test.want {
+				t.Fatalf("stage = %v; want %v", got, test.want)
+			}
+		})
+	}
+}
 
 // TEST ONLY: independently generated decoded capsule and derived-key literals.
 // Expectations below never call the production serializer or MAC builder.
@@ -36,12 +105,14 @@ type literalCredentialAccess struct {
 
 func (access *literalCredentialAccess) withWrapKeys(
 	role CapsuleRole,
-	callback func(capsuleWrapKeys) error,
+	callback func(*capsuleWrapKeys) error,
 ) error {
 	if !isSupportedCapsuleRole(role) || callback == nil {
 		return errors.New("invalid literal wrap-key request")
 	}
-	return callback(access.wrap[role])
+	keys := access.wrap[role]
+	defer keys.close()
+	return callback(&keys)
 }
 
 func (access *literalCredentialAccess) withReplicaKey(
@@ -116,10 +187,10 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		candidates   []Candidate
+		structure    Structure
 		access       func(*testing.T) *literalCredentialAccess
-		wantOutcome  normalAuthOutcome
-		wantStage    normalAuthStage
+		wantOutcome  Outcome
+		wantStage    Stage
 		wantAuth     int
 		wantProvider int
 		wantUnwrap   int
@@ -128,10 +199,10 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 	}{
 		{
 			name:         "healthy Standard-1",
-			candidates:   []Candidate{standardPrimary, standardBackup},
+			structure:    literalStructure(standardPrimary, standardBackup),
 			access:       standardLiteralAccess,
-			wantOutcome:  normalOutcomeSuccess,
-			wantStage:    normalStageNone,
+			wantOutcome:  OutcomeSuccess,
+			wantStage:    StageNone,
 			wantAuth:     2,
 			wantProvider: 1,
 			wantUnwrap:   2,
@@ -140,10 +211,10 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 		},
 		{
 			name:         "healthy Paranoid-1",
-			candidates:   []Candidate{paranoidPrimary, paranoidBackup},
+			structure:    literalStructure(paranoidPrimary, paranoidBackup),
 			access:       paranoidLiteralAccess,
-			wantOutcome:  normalOutcomeSuccess,
-			wantStage:    normalStageNone,
+			wantOutcome:  OutcomeSuccess,
+			wantStage:    StageNone,
 			wantAuth:     2,
 			wantProvider: 1,
 			wantUnwrap:   2,
@@ -152,10 +223,10 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 		},
 		{
 			name:         "wrap failure never unwraps",
-			candidates:   []Candidate{damagedWrap, standardBackup},
+			structure:    literalStructure(damagedWrap, standardBackup),
 			access:       standardLiteralAccess,
-			wantOutcome:  normalOutcomeAuthenticatedDegraded,
-			wantStage:    normalStageWrapAuth,
+			wantOutcome:  OutcomeAuthenticatedDegraded,
+			wantStage:    StageWrapAuth,
 			wantAuth:     1,
 			wantProvider: 1,
 			wantUnwrap:   1,
@@ -164,10 +235,10 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 		},
 		{
 			name:         "replica failure after valid wrap",
-			candidates:   []Candidate{damagedReplica, standardBackup},
+			structure:    literalStructure(damagedReplica, standardBackup),
 			access:       standardLiteralAccess,
-			wantOutcome:  normalOutcomeAuthenticatedDegraded,
-			wantStage:    normalStageReplicaAuth,
+			wantOutcome:  OutcomeAuthenticatedDegraded,
+			wantStage:    StageReplicaAuth,
 			wantAuth:     1,
 			wantProvider: 1,
 			wantUnwrap:   2,
@@ -175,11 +246,39 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 			wantAdopt:    1,
 		},
 		{
+			name:         "backup role survives compressed index zero",
+			structure:    literalStructure(standardBackup),
+			access:       standardLiteralAccess,
+			wantOutcome:  OutcomeAuthenticatedDegraded,
+			wantStage:    StageCapsuleStructure,
+			wantAuth:     1,
+			wantProvider: 1,
+			wantUnwrap:   1,
+			wantReplica:  1,
+			wantAdopt:    1,
+		},
+		{
+			name: "authenticated semantics reject stale tags",
+			structure: func() Structure {
+				mutated := standardPrimary
+				mutated.core.payloadKind = PayloadKindArchive
+				return literalStructure(mutated, standardBackup)
+			}(),
+			access:       standardLiteralAccess,
+			wantOutcome:  OutcomeAuthenticatedDegraded,
+			wantStage:    StageWrapAuth,
+			wantAuth:     1,
+			wantProvider: 1,
+			wantUnwrap:   1,
+			wantReplica:  1,
+			wantAdopt:    1,
+		},
+		{
 			name:         "wrong credential is generic",
-			candidates:   []Candidate{standardPrimary, standardBackup},
+			structure:    literalStructure(standardPrimary, standardBackup),
 			access:       wrongCredentialLiteralAccess,
-			wantOutcome:  normalOutcomeCredentialsOrDamage,
-			wantStage:    normalStageWrapAuth,
+			wantOutcome:  OutcomeCredentialsOrDamage,
+			wantStage:    StageWrapAuth,
 			wantAuth:     0,
 			wantProvider: 1,
 			wantUnwrap:   0,
@@ -188,10 +287,10 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 		},
 		{
 			name:         "divergent tuple stops before KDF",
-			candidates:   []Candidate{standardPrimary, divergentBackup},
+			structure:    literalStructure(standardPrimary, divergentBackup),
 			access:       standardLiteralAccess,
-			wantOutcome:  normalOutcomeInvalidStructurePreKDF,
-			wantStage:    normalStageCapsuleStructure,
+			wantOutcome:  OutcomeInvalidStructurePreKDF,
+			wantStage:    StageCapsuleStructure,
 			wantAuth:     0,
 			wantProvider: 0,
 			wantUnwrap:   0,
@@ -200,15 +299,31 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 		},
 		{
 			name:         "authenticated splice is ambiguous",
-			candidates:   []Candidate{standardPrimary, spliceBackup},
+			structure:    literalStructure(standardPrimary, spliceBackup),
 			access:       spliceLiteralAccess,
-			wantOutcome:  normalOutcomeAmbiguousVolume,
-			wantStage:    normalStageCapsuleStructure,
+			wantOutcome:  OutcomeAmbiguousVolume,
+			wantStage:    StageCapsuleStructure,
 			wantAuth:     2,
 			wantProvider: 1,
 			wantUnwrap:   2,
 			wantReplica:  2,
 			wantAdopt:    0,
+		},
+		{
+			name: "authenticated core mismatch degrades at preamble",
+			structure: func() Structure {
+				structure := literalStructure(standardPrimary, standardBackup)
+				structure.preamble.featureFlags ^= payloadBodyRSFeatureMask
+				return structure
+			}(),
+			access:       standardLiteralAccess,
+			wantOutcome:  OutcomeAuthenticatedDegraded,
+			wantStage:    StagePreamble,
+			wantAuth:     2,
+			wantProvider: 1,
+			wantUnwrap:   2,
+			wantReplica:  2,
+			wantAdopt:    1,
 		},
 	}
 
@@ -235,7 +350,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 
 			result := authenticateCapsulesWithProvider(
 				context.Background(),
-				test.candidates,
+				test.structure,
 				provider,
 				seams,
 			)
@@ -290,6 +405,22 @@ func literalCandidate(t *testing.T, encoded string, role CapsuleRole) Candidate 
 		t.Fatalf("validate TEST ONLY capsule: %v", err)
 	}
 	return candidate
+}
+
+func literalStructure(candidates ...Candidate) Structure {
+	structure := Structure{candidateCount: uint8(len(candidates))}
+	for i := range candidates {
+		structure.candidates[i] = candidates[i]
+	}
+	if len(candidates) != 0 {
+		core := candidates[0].core
+		structure.preamble = Preamble{
+			suite:             core.suite,
+			featureFlags:      core.featureFlags,
+			frontHeaderLength: core.frontHeaderLength,
+		}
+	}
+	return structure
 }
 
 func literalKey(t *testing.T, encoded string) [32]byte {

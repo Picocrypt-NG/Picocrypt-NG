@@ -8,16 +8,17 @@ import (
 
 func TestNormalAuthResultRegistryAndRedaction(t *testing.T) {
 	tests := []struct {
-		outcome normalAuthOutcome
-		stage   normalAuthStage
+		outcome Outcome
+		stage   Stage
+		code    Code
 		wantOut string
 		wantStg string
 	}{
-		{normalOutcomeSuccess, normalStageNone, "success", "none"},
-		{normalOutcomeInvalidStructurePreKDF, normalStageCapsuleStructure, "invalid-structure-pre-kdf", "capsule-structure"},
-		{normalOutcomeCredentialsOrDamage, normalStageWrapAuth, "credentials-or-damage", "wrap-auth"},
-		{normalOutcomeAuthenticatedDegraded, normalStageReplicaAuth, "authenticated-degraded", "replica-auth"},
-		{normalOutcomeAmbiguousVolume, normalStageCapsuleStructure, "ambiguous-volume", "capsule-structure"},
+		{OutcomeSuccess, StageNone, CodeSuccess, "success", "none"},
+		{OutcomeInvalidStructurePreKDF, StageCapsuleStructure, CodeInvalidStructure, "invalid-structure-pre-kdf", "capsule-structure"},
+		{OutcomeCredentialsOrDamage, StageWrapAuth, CodeCredentialsOrDamage, "credentials-or-damage", "wrap-auth"},
+		{OutcomeAuthenticatedDegraded, StageReplicaAuth, CodeAuthenticatedDegraded, "authenticated-degraded", "replica-auth"},
+		{OutcomeAmbiguousVolume, StageCapsuleStructure, CodeAmbiguousVolume, "ambiguous-volume", "capsule-structure"},
 	}
 	for _, test := range tests {
 		if got := test.outcome.String(); got != test.wantOut {
@@ -26,11 +27,14 @@ func TestNormalAuthResultRegistryAndRedaction(t *testing.T) {
 		if got := test.stage.String(); got != test.wantStg {
 			t.Errorf("stage string = %q; want %q", got, test.wantStg)
 		}
+		if got := newNormalAuthResult(test.outcome, test.stage, 0).Code(); got != test.code {
+			t.Errorf("code = %v; want %v", got, test.code)
+		}
 	}
 
 	result := newNormalAuthResult(
-		normalOutcomeCredentialsOrDamage,
-		normalStageWrapAuth,
+		OutcomeCredentialsOrDamage,
+		StageWrapAuth,
 		0,
 	)
 	canary := "credential-root=00112233445566778899aabbccddeeff"

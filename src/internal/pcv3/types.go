@@ -7,7 +7,7 @@ import (
 	"strconv"
 )
 
-// Outcome identifies a Phase-3 pre-KDF result class.
+// Outcome identifies a closed PCV3 capsule-authentication result class.
 type Outcome uint8
 
 const (
@@ -17,10 +17,20 @@ const (
 	OutcomeInvalidStructurePreKDF
 	// OutcomeOperationFailed reports a non-structural input operation failure.
 	OutcomeOperationFailed
+	// OutcomeCredentialsOrDamage collapses wrong credentials and capsule damage.
+	OutcomeCredentialsOrDamage
+	// OutcomeAuthenticatedDegraded retains one authenticated recovery path.
+	OutcomeAuthenticatedDegraded
+	// OutcomeAmbiguousVolume rejects conflicting authenticated replicas.
+	OutcomeAmbiguousVolume
+	// OutcomeSuccess reports a fully authenticated, non-degraded result.
+	OutcomeSuccess
 )
 
-// Stage identifies the earliest Phase-3 failure boundary.
+// Stage identifies the earliest applicable PCV3 reader boundary.
 type Stage uint8
+
+const StageNone Stage = 0
 
 const (
 	StageRouting Stage = iota + 1
@@ -29,6 +39,12 @@ const (
 	StageCapsuleStructure
 	StageTailGeometry
 	StageInputIO
+	StageCredentialPolicy
+	StageWrapAuth
+	StageUnwrap
+	StageReplicaAuth
+	StageKDFRuntime
+	StageCancellation
 )
 
 // Code is the stable coarse code exposed by platform adapters.
@@ -38,6 +54,10 @@ const (
 	CodeUnsupported Code = iota + 1
 	CodeInvalidStructure
 	CodeOperationFailed
+	CodeCredentialsOrDamage
+	CodeAuthenticatedDegraded
+	CodeAmbiguousVolume
+	CodeSuccess
 )
 
 // ErrInvalidFailureMapping reports a caller attempt to create a non-normative
@@ -99,6 +119,14 @@ func (failure *failureError) Error() string {
 		return "pcv3: invalid structure before KDF"
 	case OutcomeOperationFailed:
 		return "pcv3: input operation failed"
+	case OutcomeCredentialsOrDamage:
+		return "pcv3: credentials incorrect or volume damaged"
+	case OutcomeAuthenticatedDegraded:
+		return "pcv3: authenticated with degraded recovery redundancy"
+	case OutcomeAmbiguousVolume:
+		return "pcv3: ambiguous authenticated volume"
+	case OutcomeSuccess:
+		return "pcv3: authentication succeeded"
 	default:
 		return "pcv3: failure"
 	}
@@ -169,7 +197,27 @@ func codeFor(outcome Outcome, stage Stage) (Code, bool) {
 			return 0, false
 		}
 	case OutcomeOperationFailed:
-		return CodeOperationFailed, stage == StageInputIO
+		switch stage {
+		case StageInputIO, StageCredentialPolicy, StageUnwrap,
+			StageKDFRuntime, StageCancellation:
+			return CodeOperationFailed, true
+		default:
+			return 0, false
+		}
+	case OutcomeCredentialsOrDamage:
+		return CodeCredentialsOrDamage, stage == StageWrapAuth
+	case OutcomeAuthenticatedDegraded:
+		switch stage {
+		case StagePreamble, StageCapsuleRS, StageCapsuleStructure,
+			StageTailGeometry, StageWrapAuth, StageReplicaAuth:
+			return CodeAuthenticatedDegraded, true
+		default:
+			return 0, false
+		}
+	case OutcomeAmbiguousVolume:
+		return CodeAmbiguousVolume, stage == StageCapsuleStructure
+	case OutcomeSuccess:
+		return CodeSuccess, stage == StageNone
 	default:
 		return 0, false
 	}
@@ -184,6 +232,14 @@ func (outcome Outcome) String() string {
 		return "invalid-structure-pre-kdf"
 	case OutcomeOperationFailed:
 		return "operation-failed"
+	case OutcomeCredentialsOrDamage:
+		return "credentials-or-damage"
+	case OutcomeAuthenticatedDegraded:
+		return "authenticated-degraded"
+	case OutcomeAmbiguousVolume:
+		return "ambiguous-volume"
+	case OutcomeSuccess:
+		return "success"
 	default:
 		return "unknown-outcome"
 	}
@@ -202,6 +258,8 @@ func (outcome Outcome) Format(state fmt.State, verb rune) {
 // String returns the exact conformance stage name.
 func (stage Stage) String() string {
 	switch stage {
+	case StageNone:
+		return "none"
 	case StageRouting:
 		return "routing"
 	case StagePreamble:
@@ -214,6 +272,18 @@ func (stage Stage) String() string {
 		return "tail-geometry"
 	case StageInputIO:
 		return "input-io"
+	case StageCredentialPolicy:
+		return "credential-policy"
+	case StageWrapAuth:
+		return "wrap-auth"
+	case StageUnwrap:
+		return "unwrap"
+	case StageReplicaAuth:
+		return "replica-auth"
+	case StageKDFRuntime:
+		return "kdf-runtime"
+	case StageCancellation:
+		return "cancellation"
 	default:
 		return "unknown-stage"
 	}
@@ -238,6 +308,14 @@ func (code Code) String() string {
 		return "PCV3_INVALID_STRUCTURE"
 	case CodeOperationFailed:
 		return "PCV3_OPERATION_FAILED"
+	case CodeCredentialsOrDamage:
+		return "PCV3_CREDENTIALS_OR_DAMAGE"
+	case CodeAuthenticatedDegraded:
+		return "PCV3_AUTHENTICATED_DEGRADED"
+	case CodeAmbiguousVolume:
+		return "PCV3_AMBIGUOUS_VOLUME"
+	case CodeSuccess:
+		return "PCV3_SUCCESS"
 	default:
 		return "PCV3_UNKNOWN"
 	}
