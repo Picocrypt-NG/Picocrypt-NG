@@ -26,6 +26,11 @@ type normalReadResult struct {
 }
 
 func newNormalReadResult(outcome Outcome, stage Stage, authenticated int, comment []byte) *normalReadResult {
+	// The closed capsule engine can authenticate only the primary and backup
+	// slots. Guard the uint8 conversion against accidental future widening.
+	if authenticated < 0 || authenticated > 2 {
+		authenticated = 0
+	}
 	result := &normalReadResult{outcome: outcome, stage: stage, authenticated: uint8(authenticated)}
 	if comment != nil {
 		result.comment = append([]byte(nil), comment...)

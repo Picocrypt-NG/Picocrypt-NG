@@ -20,15 +20,23 @@ func readNormalVolumeWithProvider(
 	provider capsuleCredentialProvider,
 	sink normalVolumeSink,
 ) (*normalReadResult, *normalCompletion) {
-	if closer, ok := provider.(capsuleCredentialProviderCloser); ok {
-		defer closer.close()
-	}
 	completed := false
+	// This defer is registered before every later cleanup defer so it observes
+	// their panics, discards uncommitted plaintext, and preserves the panic.
 	defer func() {
+		if recovered := recover(); recovered != nil {
+			if sink != nil {
+				sink.abortUncommitted()
+			}
+			panic(recovered)
+		}
 		if !completed && sink != nil {
 			sink.abortUncommitted()
 		}
 	}()
+	if closer, ok := provider.(capsuleCredentialProviderCloser); ok {
+		defer closer.close()
+	}
 	if ctx == nil || sink == nil {
 		return newNormalReadResult(OutcomeOperationFailed, StageCredentialPolicy, 0, nil), nil
 	}
@@ -58,7 +66,7 @@ func readNormalVolumeWithProvider(
 	var suffix [fixedSuffixLength]byte
 	defer pcv3crypto.SecureZero(suffix[:])
 	if _, err := readExactAt(source, auth.geometry.backupCapsuleOffset, suffix[:], StageTailGeometry); err != nil {
-		return newNormalReadResult(OutcomeAuthenticationFailed, StageTailGeometry, auth.AuthenticatedCapsules(), nil), nil
+		return normalTailReadResult(err, auth.AuthenticatedCapsules()), nil
 	}
 
 	codecs, err := pcencoding.NewRSCodecs()
@@ -83,11 +91,15 @@ func readNormalVolumeWithProvider(
 
 	var finalSuffix [fixedSuffixLength]byte
 	defer pcv3crypto.SecureZero(finalSuffix[:])
-	if _, err := readExactAt(source, auth.geometry.backupCapsuleOffset, finalSuffix[:], StageTailGeometry); err != nil ||
-		!bytes.Equal(suffix[:], finalSuffix[:]) ||
-		sourceSize != auth.geometry.fileSize ||
-		!normalPhysicalEOF(source, sourceSize) {
+	if _, err := readExactAt(source, auth.geometry.backupCapsuleOffset, finalSuffix[:], StageTailGeometry); err != nil {
+		return normalTailReadResult(err, auth.AuthenticatedCapsules()), nil
+	}
+	eofState := normalPhysicalEOF(source, sourceSize)
+	if !bytes.Equal(suffix[:], finalSuffix[:]) || sourceSize != auth.geometry.fileSize || eofState == normalEOFFailure {
 		return newNormalReadResult(OutcomeAuthenticationFailed, StageTailGeometry, auth.AuthenticatedCapsules(), nil), nil
+	}
+	if eofState == normalEOFOperation {
+		return newNormalReadResult(OutcomeOperationFailed, StageInputIO, auth.AuthenticatedCapsules(), nil), nil
 	}
 
 	comment := metadata.commentBytes()
@@ -98,8 +110,18 @@ func readNormalVolumeWithProvider(
 		outcome = OutcomeAuthenticatedDegraded
 		stage = degradedStage
 	}
+	result := newNormalReadResult(outcome, stage, auth.AuthenticatedCapsules(), comment)
+	completion := &normalCompletion{}
 	completed = true
-	return newNormalReadResult(outcome, stage, auth.AuthenticatedCapsules(), comment), &normalCompletion{}
+	return result, completion
+}
+
+func normalTailReadResult(err error, authenticated int) *normalReadResult {
+	var failure Failure
+	if errors.As(err, &failure) && failure.Outcome() == OutcomeOperationFailed {
+		return newNormalReadResult(OutcomeOperationFailed, failure.Stage(), authenticated, nil)
+	}
+	return newNormalReadResult(OutcomeAuthenticationFailed, StageTailGeometry, authenticated, nil)
 }
 
 func normalResultForAuthenticatedError(err error, authenticated int) *normalReadResult {
@@ -121,12 +143,34 @@ func normalResultForAuthenticatedError(err error, authenticated int) *normalRead
 	return newNormalReadResult(OutcomeOperationFailed, StageCredentialPolicy, authenticated, nil)
 }
 
-func normalPhysicalEOF(source io.ReaderAt, offset int64) bool {
+type normalEOFState uint8
+
+const (
+	normalEOFExact normalEOFState = iota + 1
+	normalEOFFailure
+	normalEOFOperation
+)
+
+func normalPhysicalEOF(source io.ReaderAt, offset int64) normalEOFState {
 	if source == nil || offset < 0 {
-		return false
+		return normalEOFOperation
 	}
 	var byteAtEOF [1]byte
-	count, err := source.ReadAt(byteAtEOF[:], offset)
-	pcv3crypto.SecureZero(byteAtEOF[:])
-	return count == 0 && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF))
+	defer pcv3crypto.SecureZero(byteAtEOF[:])
+	for range 2 {
+		count, err := source.ReadAt(byteAtEOF[:], offset)
+		if count < 0 || count > len(byteAtEOF) {
+			return normalEOFOperation
+		}
+		if count != 0 {
+			return normalEOFFailure
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return normalEOFExact
+		}
+		if err != nil {
+			return normalEOFOperation
+		}
+	}
+	return normalEOFOperation
 }
