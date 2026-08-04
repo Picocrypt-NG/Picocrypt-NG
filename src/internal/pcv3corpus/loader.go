@@ -17,79 +17,111 @@ import (
 	"unicode/utf8"
 )
 
-const maxPhaseOneFileBytes = 1 << 20
+const (
+	maxManifestFileBytes       = 1 << 20
+	maxLegacyFixtureFileBytes  = 1 << 20
+	maxStreamFixtureFileBytes  = 64 << 10
+	maxCapsuleFixtureFileBytes = 64 << 10
+	maxNormalFixtureFileBytes  = 16 << 20
+	maxProvenanceFileBytes     = 256 << 10
+	maxGeneratorFileBytes      = 1 << 20
+	maxDependencyLockBytes     = 1 << 20
+	maxSourceVectorBytes       = 4 << 20
+)
 
 // Load validates a caller-selected private corpus root and opaque custody ID.
 // The root is opened once through os.Root, is never retained, and is never
 // included in returned errors.
 func Load(rootPath, custodyID string) (*Corpus, error) {
+	corpus, _, err := loadCorpus(rootPath, custodyID, nil)
+	return corpus, err
+}
+
+func loadCorpus(rootPath, custodyID string, selected map[string]struct{}) (*Corpus, map[string][]byte, error) {
 	if rootPath == "" {
-		return nil, refusal(RefusalRoot)
+		return nil, nil, refusal(RefusalRoot)
 	}
 	if custodyID == "" {
-		return nil, refusal(RefusalCustody)
+		return nil, nil, refusal(RefusalCustody)
 	}
 
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
-		return nil, refusal(RefusalRoot)
+		return nil, nil, refusal(RefusalRoot)
 	}
 	defer root.Close()
 
-	schemaBytes, err := readRegular(root, manifestSchemaName)
+	schemaBytes, err := readRegular(root, manifestSchemaName, maxManifestFileBytes)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	manifestBytes, err := readRegular(root, manifestName)
+	manifestBytes, err := readRegular(root, manifestName, maxManifestFileBytes)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	schemaDocument, err := decodeStrictJSON(schemaBytes)
 	if err != nil {
-		return nil, refusalForSchemaJSON(err)
+		return nil, nil, refusalForSchemaJSON(err)
 	}
 	manifestDocument, err := decodeStrictJSON(manifestBytes)
 	if err != nil {
-		return nil, refusalForManifestJSON(err)
+		return nil, nil, refusalForManifestJSON(err)
 	}
 	if err := validateManifestPreconditions(manifestDocument); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := validateManifestSchema(schemaDocument, manifestDocument); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	manifest, err := decodeManifest(manifestDocument)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if manifest.custodyID != custodyID {
-		return nil, refusal(RefusalCustody)
+		return nil, nil, refusal(RefusalCustody)
 	}
 
 	expectedFiles, expectedDirectories, err := expectedInventory(manifest)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := validateFixtureSet(manifest.fixtures); err != nil {
-		return nil, err
+	if err := validateFixtureSet(manifest); err != nil {
+		return nil, nil, err
 	}
 	actualFiles, actualDirectories, err := enumerateRoot(root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := compareInventory(expectedFiles, expectedDirectories, actualFiles, actualDirectories); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
+	if err := validateSourceArtifacts(root, manifest.sourceArtifacts); err != nil {
+		return nil, nil, err
+	}
+	selectedDocuments := make(map[string][]byte, len(selected))
 	for _, fixture := range manifest.fixtures {
-		if err := validateFixture(root, fixture); err != nil {
-			return nil, err
+		_, keep := selected[fixture.id]
+		document, err := validateFixture(root, fixture, keep)
+		if err != nil {
+			zeroDocumentMap(selectedDocuments)
+			return nil, nil, err
+		}
+		if keep {
+			selectedDocuments[fixture.id] = document
 		}
 	}
-	var phase4Evidence uint16
+	if selected != nil && manifest.format != currentCorpusFormat {
+		zeroDocumentMap(selectedDocuments)
+		return nil, nil, refusal(RefusalUnknown)
+	}
+	var phase4Evidence uint64
 	for _, fixture := range manifest.fixtures {
 		if _, evidence, found := phase4Contract(fixture.id); found {
+			phase4Evidence |= evidence
+		}
+		if _, evidence, found := findNormalFixtureContract(fixture.id); found {
 			phase4Evidence |= evidence
 		}
 	}
@@ -98,7 +130,7 @@ func Load(rootPath, custodyID string) (*Corpus, error) {
 		specRevision:   manifest.specRevision,
 		format:         manifest.format,
 		phase4Evidence: phase4Evidence,
-	}, nil
+	}, selectedDocuments, nil
 }
 
 func refusalForSchemaJSON(err error) error {
@@ -115,7 +147,7 @@ func refusalForManifestJSON(err error) error {
 	return refusal(RefusalMalformed)
 }
 
-func readRegular(root *os.Root, logicalName string) ([]byte, error) {
+func readRegular(root *os.Root, logicalName string, maxBytes int64) ([]byte, error) {
 	if !validLogicalPath(logicalName) {
 		return nil, refusal(RefusalPath)
 	}
@@ -130,7 +162,7 @@ func readRegular(root *os.Root, logicalName string) ([]byte, error) {
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, refusal(RefusalSymlink)
 	}
-	if !info.Mode().IsRegular() || info.Size() > maxPhaseOneFileBytes {
+	if !info.Mode().IsRegular() || info.Size() > maxBytes {
 		return nil, refusal(RefusalMalformed)
 	}
 
@@ -143,8 +175,8 @@ func readRegular(root *os.Root, logicalName string) ([]byte, error) {
 	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
 		return nil, refusal(RefusalMalformed)
 	}
-	data, err := io.ReadAll(io.LimitReader(file, maxPhaseOneFileBytes+1))
-	if err != nil || len(data) > maxPhaseOneFileBytes {
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil || int64(len(data)) > maxBytes {
 		return nil, refusal(RefusalMalformed)
 	}
 	return data, nil
@@ -175,6 +207,8 @@ func validCorpusEntryPath(field, value string) bool {
 		return component == "provenance"
 	case "generator_source_path":
 		return component == "generator" && strings.HasSuffix(remainder, ".go")
+	case "source_artifact_path":
+		return component == "generator"
 	default:
 		return false
 	}
@@ -200,6 +234,19 @@ func expectedInventory(manifest corpusManifest) (map[string]struct{}, map[string
 		if fixture.generatorSourcePath != "" {
 			files[fixture.generatorSourcePath] = struct{}{}
 		}
+	}
+	artifactIDs := make(map[string]struct{}, len(manifest.sourceArtifacts))
+	artifactPaths := make(map[string]struct{}, len(manifest.sourceArtifacts))
+	for _, artifact := range manifest.sourceArtifacts {
+		if _, exists := artifactIDs[artifact.id]; exists {
+			return nil, nil, refusal(RefusalDuplicate)
+		}
+		artifactIDs[artifact.id] = struct{}{}
+		if _, exists := artifactPaths[artifact.path]; exists {
+			return nil, nil, refusal(RefusalDuplicate)
+		}
+		artifactPaths[artifact.path] = struct{}{}
+		files[artifact.path] = struct{}{}
 	}
 
 	directories := make(map[string]struct{})
@@ -279,39 +326,67 @@ func compareInventory(expectedFiles, expectedDirectories, actualFiles, actualDir
 	return nil
 }
 
-func validateFixture(root *os.Root, fixture fixtureManifest) error {
-	fixtureData, err := readRegular(root, fixture.path)
+func validateFixture(root *os.Root, fixture fixtureManifest, keep bool) ([]byte, error) {
+	fixtureData, err := readRegular(root, fixture.path, fixtureFileLimit(fixture.category))
 	if err != nil {
-		return err
+		return nil, err
 	}
+	retainFixtureData := false
+	defer func() {
+		if !retainFixtureData {
+			zeroBytes(fixtureData)
+		}
+	}()
 	if !matchesSHA256(fixtureData, fixture.sha256) {
-		return refusal(RefusalHash)
+		return nil, refusal(RefusalHash)
 	}
 	if err := validateFixtureDocument(fixtureData, fixture); err != nil {
-		return err
+		return nil, err
 	}
 
 	if fixture.generatorSourcePath != "" {
-		generatorData, err := readRegular(root, fixture.generatorSourcePath)
+		generatorData, err := readRegular(root, fixture.generatorSourcePath, maxGeneratorFileBytes)
 		if err != nil {
-			return err
+			return nil, err
 		}
+		defer zeroBytes(generatorData)
 		if !matchesSHA256(generatorData, fixture.generatorSourceSHA) {
-			return refusal(RefusalHash)
+			return nil, refusal(RefusalHash)
 		}
 		if err := validateGeneratorSource(generatorData); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	provenanceData, err := readRegular(root, fixture.provenancePath)
+	provenanceData, err := readRegular(root, fixture.provenancePath, maxProvenanceFileBytes)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	defer zeroBytes(provenanceData)
 	if !matchesSHA256(provenanceData, fixture.provenanceSHA256) {
-		return refusal(RefusalHash)
+		return nil, refusal(RefusalHash)
 	}
-	return validateProvenanceDocument(provenanceData, fixture.generatorSourceSHA)
+	if err := validateProvenanceDocument(provenanceData, fixture.generatorSourceSHA); err != nil {
+		return nil, err
+	}
+	if keep {
+		retainFixtureData = true
+		return fixtureData, nil
+	}
+	return nil, nil
+}
+
+func fixtureFileLimit(category string) int64 {
+	switch category {
+	case "stream":
+		return maxStreamFixtureFileBytes
+	case "capsule":
+		return maxCapsuleFixtureFileBytes
+	case "normal-volume":
+		return maxNormalFixtureFileBytes
+	default:
+		return maxLegacyFixtureFileBytes
+	}
 }
 
 func matchesSHA256(data []byte, expected string) bool {
@@ -339,6 +414,8 @@ func validateFixtureDocument(data []byte, fixture fixtureManifest) error {
 		allowedFields = streamFixtureDocumentFields
 	case "capsule":
 		allowedFields = capsuleFixtureDocumentFields
+	case "normal-volume":
+		allowedFields = normalFixtureDocumentFields
 	default:
 		return refusal(RefusalUnknown)
 	}
@@ -390,6 +467,16 @@ func validateFixtureDocument(data []byte, fixture fixtureManifest) error {
 			return validateStreamFixtureDocument(object, fixture, contract)
 		}
 		return validateCapsuleFixtureDocument(object, fixture, contract)
+	}
+	if category == "normal-volume" {
+		contract, _, found := findNormalFixtureContract(fixture.id)
+		if !found {
+			return refusal(RefusalUnknown)
+		}
+		if caseID != contract.caseName {
+			return refusal(RefusalMalformed)
+		}
+		return validateNormalFixtureDocument(object, fixture, contract)
 	}
 	if caseID != fixture.id {
 		return refusal(RefusalMalformed)

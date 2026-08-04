@@ -15,16 +15,19 @@ import (
 const (
 	corpusFormat                       = "pcv3-phase1-corpus-v1"
 	cumulativeCorpusFormat             = "pcv3-corpus-v2"
+	currentCorpusFormat                = "pcv3-corpus-v3"
 	phaseOneSchemaRevision             = "1"
 	cumulativeSchemaRevision           = "2"
+	currentSchemaRevision              = "3"
 	phaseOneSpecRevision               = "0.3"
 	maxJSONNesting                     = 64
 	manifestSchemaName                 = "manifest.schema.json"
 	manifestName                       = "manifest.json"
 	manifestSchemaResourceURL          = "https://pcv3.invalid/phase1/manifest.schema.json"
 	cumulativeSchemaResourceURL        = "https://pcv3.invalid/cumulative/manifest.schema.json"
+	currentSchemaResourceURL           = "https://pcv3.invalid/cumulative-v3/manifest.schema.json"
 	draft2020URL                       = "https://json-schema.org/draft/2020-12/schema"
-	phase4RequiredEvidence      uint16 = (1 << len(phase4FixtureContracts)) - 1
+	phase4RequiredEvidence      uint64 = (1 << (len(phase4FixtureContracts) + len(normalFixtureContracts))) - 1
 )
 
 // RefusalKind identifies a fixed, non-secret reason for rejecting a corpus.
@@ -103,11 +106,11 @@ type Corpus struct {
 	fixtureCount   int
 	specRevision   string
 	format         string
-	phase4Evidence uint16
+	phase4Evidence uint64
 }
 
 func (c *Corpus) isCurrentPhase4() bool {
-	return c != nil && c.format == cumulativeCorpusFormat && c.phase4Evidence == phase4RequiredEvidence
+	return c != nil && c.format == currentCorpusFormat && c.phase4Evidence == phase4RequiredEvidence
 }
 
 type corpusManifest struct {
@@ -118,6 +121,14 @@ type corpusManifest struct {
 	custodyID             string
 	fixtures              []fixtureManifest
 	deferredVectorClasses []string
+	sourceArtifacts       []sourceArtifactManifest
+}
+
+type sourceArtifactManifest struct {
+	id     string
+	path   string
+	sha256 string
+	kind   string
 }
 
 type fixtureManifest struct {
@@ -161,10 +172,10 @@ var phase4FixtureContracts = [...]phase4FixtureContract{
 	{id: "capsule-authenticated-cross-volume-splice", category: "capsule", caseName: "authenticated-cross-volume-splice", suite: "standard1", outcome: "ambiguous-volume", failureStage: "capsule-structure", kdfCalls: "1", authenticatedCapsules: "2"},
 }
 
-func phase4Contract(id string) (phase4FixtureContract, uint16, bool) {
+func phase4Contract(id string) (phase4FixtureContract, uint64, bool) {
 	for index, contract := range phase4FixtureContracts {
 		if contract.id == id {
-			return contract, 1 << index, true
+			return contract, uint64(1) << index, true
 		}
 	}
 	return phase4FixtureContract{}, 0, false
@@ -304,6 +315,8 @@ func schemaResourceURL(manifestDocument any) (string, error) {
 		return manifestSchemaResourceURL, nil
 	case cumulativeCorpusFormat:
 		return cumulativeSchemaResourceURL, nil
+	case currentCorpusFormat:
+		return currentSchemaResourceURL, nil
 	default:
 		return "", refusal(RefusalUnknown)
 	}
@@ -314,27 +327,32 @@ func validateManifestPreconditions(document any) error {
 	if !ok {
 		return nil
 	}
-	if err := rejectUnknownFields(object, manifestFields); err != nil {
-		return err
-	}
 	format, ok := object["format"].(string)
 	if !ok {
 		return nil
 	}
-	if format != corpusFormat && format != cumulativeCorpusFormat {
+	if format != corpusFormat && format != cumulativeCorpusFormat && format != currentCorpusFormat {
 		return refusal(RefusalUnknown)
+	}
+	allowedManifestFields := legacyManifestFields
+	if format == currentCorpusFormat {
+		allowedManifestFields = currentManifestFields
+	}
+	if err := rejectUnknownFields(object, allowedManifestFields); err != nil {
+		return err
 	}
 	fixtures, ok := object["fixtures"].([]any)
 	if !ok {
 		return nil
 	}
+	var normalEvidence uint64
 	for _, rawFixture := range fixtures {
 		fixture, ok := rawFixture.(map[string]any)
 		if !ok {
 			continue
 		}
 		allowedFields := fixtureFields
-		if format == cumulativeCorpusFormat {
+		if format == cumulativeCorpusFormat || format == currentCorpusFormat {
 			allowedFields = cumulativeFixtureFields
 		}
 		if err := rejectUnknownFields(fixture, allowedFields); err != nil {
@@ -354,13 +372,40 @@ func validateManifestPreconditions(document any) error {
 				return refusal(RefusalPath)
 			}
 		}
+		if format == currentCorpusFormat {
+			id, idOK := fixture["id"].(string)
+			category, categoryOK := fixture["category"].(string)
+			if idOK && categoryOK && category == "normal-volume" {
+				_, evidence, found := findNormalFixtureContract(id)
+				if !found {
+					return refusal(RefusalUnknown)
+				}
+				if normalEvidence&evidence != 0 {
+					return refusal(RefusalDuplicate)
+				}
+				normalEvidence |= evidence
+			}
+		}
+	}
+	if format == currentCorpusFormat {
+		if normalEvidence != normalRequiredEvidence {
+			return refusal(RefusalMissing)
+		}
+		if err := validateSourceArtifactPreconditions(object["source_artifacts"]); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-var manifestFields = map[string]struct{}{
+var legacyManifestFields = map[string]struct{}{
 	"format": {}, "schema_revision": {}, "spec_revision": {}, "test_only": {},
 	"custody_id": {}, "fixtures": {}, "deferred_vector_classes": {},
+}
+
+var currentManifestFields = map[string]struct{}{
+	"format": {}, "schema_revision": {}, "spec_revision": {}, "test_only": {},
+	"custody_id": {}, "fixtures": {}, "deferred_vector_classes": {}, "source_artifacts": {},
 }
 
 var fixtureFields = map[string]struct{}{
@@ -380,7 +425,10 @@ func validCategory(format, category string) bool {
 	if category == "unicode17" || category == "governance" {
 		return true
 	}
-	return format == cumulativeCorpusFormat && (category == "stream" || category == "capsule")
+	if category == "stream" || category == "capsule" {
+		return format == cumulativeCorpusFormat || format == currentCorpusFormat
+	}
+	return format == currentCorpusFormat && category == "normal-volume"
 }
 
 func rejectUnknownFields(object map[string]any, allowed map[string]struct{}) error {
@@ -418,6 +466,13 @@ func decodeManifest(document any) (corpusManifest, error) {
 	if manifest.deferredVectorClasses, err = requiredStrings(object, "deferred_vector_classes"); err != nil {
 		return corpusManifest{}, err
 	}
+	if manifest.format == currentCorpusFormat {
+		if manifest.sourceArtifacts, err = decodeSourceArtifacts(object["source_artifacts"]); err != nil {
+			return corpusManifest{}, err
+		}
+	} else if _, exists := object["source_artifacts"]; exists {
+		return corpusManifest{}, refusal(RefusalUnknown)
+	}
 
 	fixtures, ok := object["fixtures"].([]any)
 	if !ok || len(fixtures) == 0 {
@@ -432,8 +487,13 @@ func decodeManifest(document any) (corpusManifest, error) {
 		manifest.fixtures = append(manifest.fixtures, fixture)
 	}
 	validVersion := (manifest.format == corpusFormat && manifest.schemaRevision == phaseOneSchemaRevision) ||
-		(manifest.format == cumulativeCorpusFormat && manifest.schemaRevision == cumulativeSchemaRevision)
-	if !validVersion || manifest.specRevision != phaseOneSpecRevision || !manifest.testOnly || !contains(manifest.deferredVectorClasses, "full-pcv3-volume") {
+		(manifest.format == cumulativeCorpusFormat && manifest.schemaRevision == cumulativeSchemaRevision) ||
+		(manifest.format == currentCorpusFormat && manifest.schemaRevision == currentSchemaRevision)
+	validDeferrals := contains(manifest.deferredVectorClasses, "full-pcv3-volume")
+	if manifest.format == currentCorpusFormat {
+		validDeferrals = sameStringSet(manifest.deferredVectorClasses, []string{"pcv3-writer", "d1-volumes", "force-recovery"})
+	}
+	if !validVersion || manifest.specRevision != phaseOneSpecRevision || !manifest.testOnly || !validDeferrals {
 		return corpusManifest{}, refusal(RefusalMalformed)
 	}
 	return manifest, nil
@@ -534,6 +594,19 @@ func decodeFixture(document any, format string) (fixtureManifest, error) {
 		}
 		return fixture, nil
 	}
+	if fixture.category == "normal-volume" {
+		contract, _, found := findNormalFixtureContract(fixture.id)
+		if !found {
+			return fixtureManifest{}, refusal(RefusalUnknown)
+		}
+		if fixture.generatorSourcePath == "" || !validCorpusEntryPath("generator_source_path", fixture.generatorSourcePath) || !validSHA256(fixture.generatorSourceSHA) {
+			return fixtureManifest{}, refusal(RefusalMalformed)
+		}
+		if fixture.outcome != contract.outcome || fixture.failureStage != contract.failureStage || fixture.kdfCalls.String() != contract.kdfCalls || fixture.publicationState != "not-applicable" {
+			return fixtureManifest{}, refusal(RefusalMalformed)
+		}
+		return fixture, nil
+	}
 	if fixture.generatorSourcePath != "" || fixture.generatorSourceSHA != "" {
 		return fixtureManifest{}, refusal(RefusalMalformed)
 	}
@@ -552,9 +625,10 @@ func decodeFixture(document any, format string) (fixtureManifest, error) {
 	return fixture, nil
 }
 
-func validateFixtureSet(fixtures []fixtureManifest) error {
+func validateFixtureSet(manifest corpusManifest) error {
 	var accepting, rejecting bool
-	for _, fixture := range fixtures {
+	var evidence uint64
+	for _, fixture := range manifest.fixtures {
 		directory, _, _ := strings.Cut(fixture.path, "/")
 		switch fixture.outcome {
 		case "accept", "success", "authenticated-degraded":
@@ -564,7 +638,7 @@ func validateFixtureSet(fixtures []fixtureManifest) error {
 			if fixture.outcome == "accept" && (fixture.category == "unicode17" || fixture.category == "governance") {
 				accepting = true
 			}
-		case "reject", "credentials-or-damage", "invalid-structure-pre-kdf", "ambiguous-volume":
+		case "reject", "credentials-or-damage", "invalid-structure-pre-kdf", "ambiguous-volume", "authentication-failed":
 			if directory != "negative" {
 				return refusal(RefusalMalformed)
 			}
@@ -574,9 +648,18 @@ func validateFixtureSet(fixtures []fixtureManifest) error {
 		default:
 			return refusal(RefusalUnknown)
 		}
+		if _, fixtureEvidence, found := phase4Contract(fixture.id); found {
+			evidence |= fixtureEvidence
+		}
+		if _, fixtureEvidence, found := findNormalFixtureContract(fixture.id); found {
+			evidence |= fixtureEvidence
+		}
 	}
 	if !accepting || !rejecting {
 		return refusal(RefusalMalformed)
+	}
+	if manifest.format == currentCorpusFormat && evidence != phase4RequiredEvidence {
+		return refusal(RefusalMissing)
 	}
 	return nil
 }
@@ -636,4 +719,23 @@ func contains(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func sameStringSet(values, wanted []string) bool {
+	if len(values) != len(wanted) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if _, duplicate := seen[value]; duplicate {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	for _, value := range wanted {
+		if _, found := seen[value]; !found {
+			return false
+		}
+	}
+	return true
 }
