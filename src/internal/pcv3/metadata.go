@@ -3,7 +3,9 @@ package pcv3
 import (
 	pcv3crypto "Picocrypt-NG/internal/crypto"
 	pcencoding "Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/pcv3credential"
 	"context"
+	"crypto/sha3"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -14,6 +16,8 @@ const (
 	metadataMagic        = "PCVM"
 	metadataSchema       = uint16(1)
 	metadataUTF8Encoding = uint16(1)
+	coreCommitmentDomain = "Picocrypt-NG/PCV3/core\x00"
+	metadataMACDomain    = "Picocrypt-NG/PCV3/metadata\x00"
 )
 
 var errInvalidMetadataRequest = errors.New("pcv3: invalid metadata request")
@@ -44,6 +48,111 @@ func (recovery *metadataRecovery) close() {
 	pcv3crypto.SecureZero(recovery.tag[:])
 	recovery.comment = nil
 	recovery.state = 0
+}
+
+// authenticateMetadata releases a public comment only after canonical
+// recovery and the suite MAC both succeed. Metadata-only damage is nonterminal
+// and never consumes or replaces the authenticated session.
+func authenticateMetadata(
+	ctx context.Context,
+	source io.ReaderAt,
+	auth *normalAuthResult,
+	codecs *pcencoding.RSCodecs,
+) (*metadataResult, error) {
+	recovery, err := readMetadata(ctx, source, auth, codecs)
+	if err != nil {
+		return nil, err
+	}
+	if recovery == nil {
+		return nil, errInvalidMetadataRequest
+	}
+	defer recovery.close()
+	switch recovery.state {
+	case metadataRecoveryDamaged:
+		return &metadataResult{state: metadataDamaged}, nil
+	case metadataRecoveryCanonical:
+	default:
+		return nil, errInvalidMetadataRequest
+	}
+
+	core, _, _, ok := authenticatedMetadataAuthority(auth)
+	if !ok {
+		return nil, errInvalidMetadataRequest
+	}
+	message := metadataAuthMessage(core, recovery)
+	defer pcv3crypto.SecureZero(message)
+	authenticated := false
+	err = auth.withKey(
+		ctx,
+		pcv3credential.KeyRequest{
+			Label:       pcv3credential.KeyLabelVolumeMetadataMAC,
+			Role:        pcv3credential.KeyRoleNotReplica,
+			OutputBytes: 32,
+		},
+		func(key []byte) error {
+			valid, err := verifySuiteMAC(
+				core.suite,
+				key,
+				message,
+				recovery.tag[:],
+			)
+			authenticated = valid
+			return err
+		},
+	)
+	if err != nil {
+		return nil, classifyMetadataKeyFailure(ctx, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, metadataOperationFailure(StageCancellation, err)
+	}
+	if !authenticated {
+		return &metadataResult{state: metadataDamaged}, nil
+	}
+
+	comment := make([]byte, len(recovery.comment))
+	copy(comment, recovery.comment)
+	return &metadataResult{
+		state:   metadataAuthenticatedPublic,
+		comment: comment,
+	}, nil
+}
+
+func metadataAuthMessage(
+	core logicalCore,
+	recovery *metadataRecovery,
+) []byte {
+	logicalCore := logicalCoreBytes(core)
+	defer pcv3crypto.SecureZero(logicalCore[:])
+	hasher := sha3.New256()
+	_, _ = hasher.Write([]byte(coreCommitmentDomain))
+	_, _ = hasher.Write(logicalCore[:])
+	commitment := hasher.Sum(nil)
+	defer pcv3crypto.SecureZero(commitment)
+
+	message := make(
+		[]byte,
+		0,
+		len(metadataMACDomain)+len(commitment)+len(recovery.header)+len(recovery.comment),
+	)
+	message = append(message, metadataMACDomain...)
+	message = append(message, commitment...)
+	message = append(message, recovery.header[:]...)
+	message = append(message, recovery.comment...)
+	return message
+}
+
+func classifyMetadataKeyFailure(ctx context.Context, cause error) error {
+	if ctx != nil && ctx.Err() != nil {
+		return metadataOperationFailure(StageCancellation, ctx.Err())
+	}
+	var ownerError *pcv3credential.OwnerError
+	if errors.Is(cause, context.Canceled) ||
+		errors.Is(cause, context.DeadlineExceeded) ||
+		(errors.As(cause, &ownerError) && ownerError.Code == pcv3credential.OwnerErrorCancelled) {
+		return metadataOperationFailure(StageCancellation, cause)
+	}
+	return errInvalidMetadataRequest
 }
 
 // readMetadata recovers and validates only the authenticated metadata extent.

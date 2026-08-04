@@ -1,9 +1,77 @@
 package pcv3
 
 import (
+	pcv3crypto "Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/pcv3credential"
+	"context"
 	"fmt"
 )
+
+type normalKeyBorrower interface {
+	withKey(
+		context.Context,
+		pcv3credential.KeyRequest,
+		func([]byte) error,
+	) error
+}
+
+type metadataResultState uint8
+
+const (
+	metadataDamaged metadataResultState = iota + 1
+	metadataAuthenticatedPublic
+)
+
+// metadataResult owns only an authenticated copy of the public comment.
+// Damage remains a package-private, nonterminal warning for the final reader.
+type metadataResult struct {
+	state   metadataResultState
+	comment []byte
+}
+
+func (result *metadataResult) Error() string {
+	if result == nil {
+		return "pcv3: metadata result unavailable"
+	}
+	switch result.state {
+	case metadataAuthenticatedPublic:
+		return "pcv3: authenticated public metadata"
+	case metadataDamaged:
+		return "pcv3: metadata damaged"
+	default:
+		return "pcv3: metadata result unavailable"
+	}
+}
+
+func (result *metadataResult) String() string {
+	return result.Error()
+}
+
+func (result *metadataResult) GoString() string {
+	return result.Error()
+}
+
+func (result *metadataResult) Format(state fmt.State, verb rune) {
+	writeFixedFormat(state, verb, result.Error())
+}
+
+func (result *metadataResult) commentBytes() []byte {
+	if result == nil || result.state != metadataAuthenticatedPublic {
+		return nil
+	}
+	comment := make([]byte, len(result.comment))
+	copy(comment, result.comment)
+	return comment
+}
+
+func (result *metadataResult) close() {
+	if result == nil {
+		return
+	}
+	pcv3crypto.SecureZero(result.comment)
+	result.comment = nil
+	result.state = 0
+}
 
 // normalAuthResult owns the authenticated capsule selection and, on the real
 // credential path, the only published key owner. It exposes no unauthenticated
@@ -15,6 +83,7 @@ type normalAuthResult struct {
 	candidate     Candidate
 	geometry      Geometry
 	owner         *pcv3credential.Owner
+	keyBorrower   normalKeyBorrower
 }
 
 func newNormalAuthResult(
@@ -92,6 +161,38 @@ func (result *normalAuthResult) Format(state fmt.State, verb rune) {
 	writeFixedFormat(state, verb, result.Error())
 }
 
+func (result *normalAuthResult) withKey(
+	ctx context.Context,
+	request pcv3credential.KeyRequest,
+	callback func([]byte) error,
+) error {
+	if result == nil || ctx == nil || callback == nil {
+		return errInvalidMetadataRequest
+	}
+	if result.keyBorrower != nil {
+		return result.keyBorrower.withKey(ctx, request, callback)
+	}
+	if result.owner == nil {
+		return errInvalidMetadataRequest
+	}
+
+	var key [32]byte
+	defer pcv3crypto.SecureZero(key[:])
+	var callbackErr error
+	err := result.owner.WithKeys(ctx, func(keys *pcv3credential.BorrowedKeys) error {
+		if err := keys.CopyKey(request, key[:]); err != nil {
+			callbackErr = err
+			return err
+		}
+		callbackErr = callback(key[:])
+		return callbackErr
+	})
+	if callbackErr != nil {
+		return callbackErr
+	}
+	return err
+}
+
 func (result *normalAuthResult) Close() {
 	if result == nil {
 		return
@@ -100,6 +201,7 @@ func (result *normalAuthResult) Close() {
 		result.owner.Close()
 		result.owner = nil
 	}
+	result.keyBorrower = nil
 	result.candidate = Candidate{}
 	result.geometry = Geometry{}
 }
