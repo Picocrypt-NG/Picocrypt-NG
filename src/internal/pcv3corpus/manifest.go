@@ -1,4 +1,4 @@
-// Package pcv3corpus validates the private, Phase-1 PCV3 conformance corpus.
+// Package pcv3corpus validates the private PCV3 conformance corpus.
 // It deliberately does not implement or generate PCV3 volume vectors.
 package pcv3corpus
 
@@ -13,14 +13,18 @@ import (
 )
 
 const (
-	corpusFormat              = "pcv3-phase1-corpus-v1"
-	phaseOneSchemaRevision    = "1"
-	phaseOneSpecRevision      = "0.3"
-	maxJSONNesting            = 64
-	manifestSchemaName        = "manifest.schema.json"
-	manifestName              = "manifest.json"
-	manifestSchemaResourceURL = "https://pcv3.invalid/phase1/manifest.schema.json"
-	draft2020URL              = "https://json-schema.org/draft/2020-12/schema"
+	corpusFormat                       = "pcv3-phase1-corpus-v1"
+	cumulativeCorpusFormat             = "pcv3-corpus-v2"
+	phaseOneSchemaRevision             = "1"
+	cumulativeSchemaRevision           = "2"
+	phaseOneSpecRevision               = "0.3"
+	maxJSONNesting                     = 64
+	manifestSchemaName                 = "manifest.schema.json"
+	manifestName                       = "manifest.json"
+	manifestSchemaResourceURL          = "https://pcv3.invalid/phase1/manifest.schema.json"
+	cumulativeSchemaResourceURL        = "https://pcv3.invalid/cumulative/manifest.schema.json"
+	draft2020URL                       = "https://json-schema.org/draft/2020-12/schema"
+	phase4RequiredEvidence      uint16 = (1 << len(phase4FixtureContracts)) - 1
 )
 
 // RefusalKind identifies a fixed, non-secret reason for rejecting a corpus.
@@ -93,11 +97,17 @@ func refusal(kind RefusalKind) error {
 	return &RefusalError{Kind: kind}
 }
 
-// Corpus is a verified Phase-1 corpus handle. It deliberately retains no
+// Corpus is a verified corpus handle. It deliberately retains no
 // filesystem root or fixture bytes after Load returns.
 type Corpus struct {
-	fixtureCount int
-	specRevision string
+	fixtureCount   int
+	specRevision   string
+	format         string
+	phase4Evidence uint16
+}
+
+func (c *Corpus) isCurrentPhase4() bool {
+	return c != nil && c.format == cumulativeCorpusFormat && c.phase4Evidence == phase4RequiredEvidence
 }
 
 type corpusManifest struct {
@@ -116,6 +126,8 @@ type fixtureManifest struct {
 	sha256              string
 	provenancePath      string
 	provenanceSHA256    string
+	generatorSourcePath string
+	generatorSourceSHA  string
 	category            string
 	outcome             string
 	failureStage        string
@@ -124,6 +136,38 @@ type fixtureManifest struct {
 	forceState          string
 	status              string
 	generatedAtTestTime bool
+}
+
+type phase4FixtureContract struct {
+	id                    string
+	category              string
+	caseName              string
+	suite                 string
+	outcome               string
+	failureStage          string
+	kdfCalls              string
+	authenticatedCapsules string
+}
+
+var phase4FixtureContracts = [...]phase4FixtureContract{
+	{id: "stream-standard1-wrap", category: "stream", caseName: "standard1-wrap", suite: "standard1", outcome: "accept", failureStage: "none", kdfCalls: "0", authenticatedCapsules: "0"},
+	{id: "stream-paranoid1-wrap", category: "stream", caseName: "paranoid1-wrap", suite: "paranoid1", outcome: "accept", failureStage: "none", kdfCalls: "0", authenticatedCapsules: "0"},
+	{id: "capsule-standard1-healthy", category: "capsule", caseName: "healthy-standard1", suite: "standard1", outcome: "success", failureStage: "none", kdfCalls: "1", authenticatedCapsules: "2"},
+	{id: "capsule-paranoid1-healthy", category: "capsule", caseName: "healthy-paranoid1", suite: "paranoid1", outcome: "success", failureStage: "none", kdfCalls: "1", authenticatedCapsules: "2"},
+	{id: "capsule-damaged-wrap-tag", category: "capsule", caseName: "damaged-wrap-tag", suite: "standard1", outcome: "authenticated-degraded", failureStage: "wrap-auth", kdfCalls: "1", authenticatedCapsules: "1"},
+	{id: "capsule-damaged-replica-tag", category: "capsule", caseName: "damaged-replica-tag", suite: "standard1", outcome: "authenticated-degraded", failureStage: "replica-auth", kdfCalls: "1", authenticatedCapsules: "1"},
+	{id: "capsule-wrong-credential", category: "capsule", caseName: "wrong-credential", suite: "standard1", outcome: "credentials-or-damage", failureStage: "wrap-auth", kdfCalls: "1", authenticatedCapsules: "0"},
+	{id: "capsule-divergent-public-tuple", category: "capsule", caseName: "divergent-public-tuple", suite: "standard1", outcome: "invalid-structure-pre-kdf", failureStage: "capsule-structure", kdfCalls: "0", authenticatedCapsules: "0"},
+	{id: "capsule-authenticated-cross-volume-splice", category: "capsule", caseName: "authenticated-cross-volume-splice", suite: "standard1", outcome: "ambiguous-volume", failureStage: "capsule-structure", kdfCalls: "1", authenticatedCapsules: "2"},
+}
+
+func phase4Contract(id string) (phase4FixtureContract, uint16, bool) {
+	for index, contract := range phase4FixtureContracts {
+		if contract.id == id {
+			return contract, 1 << index, true
+		}
+	}
+	return phase4FixtureContract{}, 0, false
 }
 
 var (
@@ -211,6 +255,10 @@ func (denyURLLoader) Load(string) (any, error) {
 }
 
 func validateManifestSchema(schemaDocument, manifestDocument any) error {
+	resourceURL, err := schemaResourceURL(manifestDocument)
+	if err != nil {
+		return err
+	}
 	schemaObject, ok := schemaDocument.(map[string]any)
 	if !ok {
 		return refusal(RefusalSchema)
@@ -218,7 +266,7 @@ func validateManifestSchema(schemaDocument, manifestDocument any) error {
 	if schemaObject["$schema"] != draft2020URL {
 		return refusal(RefusalSchema)
 	}
-	if schemaObject["$id"] != manifestSchemaResourceURL {
+	if schemaObject["$id"] != resourceURL {
 		return refusal(RefusalSchema)
 	}
 	closed, ok := schemaObject["additionalProperties"].(bool)
@@ -229,10 +277,10 @@ func validateManifestSchema(schemaDocument, manifestDocument any) error {
 	compiler := jsonschema.NewCompiler()
 	compiler.DefaultDraft(jsonschema.Draft2020)
 	compiler.UseLoader(denyURLLoader{})
-	if err := compiler.AddResource(manifestSchemaResourceURL, schemaDocument); err != nil {
+	if err := compiler.AddResource(resourceURL, schemaDocument); err != nil {
 		return refusal(RefusalSchema)
 	}
-	schema, err := compiler.Compile(manifestSchemaResourceURL)
+	schema, err := compiler.Compile(resourceURL)
 	if err != nil {
 		return refusal(RefusalSchema)
 	}
@@ -240,6 +288,25 @@ func validateManifestSchema(schemaDocument, manifestDocument any) error {
 		return refusal(RefusalSchema)
 	}
 	return nil
+}
+
+func schemaResourceURL(manifestDocument any) (string, error) {
+	object, ok := manifestDocument.(map[string]any)
+	if !ok {
+		return "", refusal(RefusalMalformed)
+	}
+	format, ok := object["format"].(string)
+	if !ok {
+		return "", refusal(RefusalMalformed)
+	}
+	switch format {
+	case corpusFormat:
+		return manifestSchemaResourceURL, nil
+	case cumulativeCorpusFormat:
+		return cumulativeSchemaResourceURL, nil
+	default:
+		return "", refusal(RefusalUnknown)
+	}
 }
 
 func validateManifestPreconditions(document any) error {
@@ -250,6 +317,13 @@ func validateManifestPreconditions(document any) error {
 	if err := rejectUnknownFields(object, manifestFields); err != nil {
 		return err
 	}
+	format, ok := object["format"].(string)
+	if !ok {
+		return nil
+	}
+	if format != corpusFormat && format != cumulativeCorpusFormat {
+		return refusal(RefusalUnknown)
+	}
 	fixtures, ok := object["fixtures"].([]any)
 	if !ok {
 		return nil
@@ -259,10 +333,14 @@ func validateManifestPreconditions(document any) error {
 		if !ok {
 			continue
 		}
-		if err := rejectUnknownFields(fixture, fixtureFields); err != nil {
+		allowedFields := fixtureFields
+		if format == cumulativeCorpusFormat {
+			allowedFields = cumulativeFixtureFields
+		}
+		if err := rejectUnknownFields(fixture, allowedFields); err != nil {
 			return err
 		}
-		if category, ok := fixture["category"].(string); ok && category != "unicode17" && category != "governance" {
+		if category, ok := fixture["category"].(string); ok && !validCategory(format, category) {
 			return refusal(RefusalUnknown)
 		}
 		if status, ok := fixture["status"].(string); ok && status == "skipped" {
@@ -271,8 +349,8 @@ func validateManifestPreconditions(document any) error {
 		if generated, ok := fixture["generated_at_test_time"].(bool); ok && generated {
 			return refusal(RefusalGenerated)
 		}
-		for _, field := range []string{"path", "provenance_path"} {
-			if logicalPath, ok := fixture[field].(string); ok && !validPhaseOneFixturePath(field, logicalPath) {
+		for _, field := range []string{"path", "provenance_path", "generator_source_path"} {
+			if logicalPath, ok := fixture[field].(string); ok && !validCorpusEntryPath(field, logicalPath) {
 				return refusal(RefusalPath)
 			}
 		}
@@ -289,6 +367,20 @@ var fixtureFields = map[string]struct{}{
 	"id": {}, "path": {}, "sha256": {}, "provenance_path": {}, "provenance_sha256": {},
 	"category": {}, "outcome": {}, "failure_stage": {}, "kdf_calls": {}, "publication_state": {},
 	"force_state": {}, "status": {}, "generated_at_test_time": {},
+}
+
+var cumulativeFixtureFields = map[string]struct{}{
+	"id": {}, "path": {}, "sha256": {}, "provenance_path": {}, "provenance_sha256": {},
+	"generator_source_path": {}, "generator_source_sha256": {}, "category": {}, "outcome": {},
+	"failure_stage": {}, "kdf_calls": {}, "publication_state": {}, "force_state": {}, "status": {},
+	"generated_at_test_time": {},
+}
+
+func validCategory(format, category string) bool {
+	if category == "unicode17" || category == "governance" {
+		return true
+	}
+	return format == cumulativeCorpusFormat && (category == "stream" || category == "capsule")
 }
 
 func rejectUnknownFields(object map[string]any, allowed map[string]struct{}) error {
@@ -333,19 +425,21 @@ func decodeManifest(document any) (corpusManifest, error) {
 	}
 	manifest.fixtures = make([]fixtureManifest, 0, len(fixtures))
 	for _, rawFixture := range fixtures {
-		fixture, err := decodeFixture(rawFixture)
+		fixture, err := decodeFixture(rawFixture, manifest.format)
 		if err != nil {
 			return corpusManifest{}, err
 		}
 		manifest.fixtures = append(manifest.fixtures, fixture)
 	}
-	if manifest.format != corpusFormat || manifest.schemaRevision != phaseOneSchemaRevision || manifest.specRevision != phaseOneSpecRevision || !manifest.testOnly || !contains(manifest.deferredVectorClasses, "full-pcv3-volume") {
+	validVersion := (manifest.format == corpusFormat && manifest.schemaRevision == phaseOneSchemaRevision) ||
+		(manifest.format == cumulativeCorpusFormat && manifest.schemaRevision == cumulativeSchemaRevision)
+	if !validVersion || manifest.specRevision != phaseOneSpecRevision || !manifest.testOnly || !contains(manifest.deferredVectorClasses, "full-pcv3-volume") {
 		return corpusManifest{}, refusal(RefusalMalformed)
 	}
 	return manifest, nil
 }
 
-func decodeFixture(document any) (fixtureManifest, error) {
+func decodeFixture(document any, format string) (fixtureManifest, error) {
 	object, ok := document.(map[string]any)
 	if !ok {
 		return fixtureManifest{}, refusal(RefusalMalformed)
@@ -366,6 +460,16 @@ func decodeFixture(document any) (fixtureManifest, error) {
 	}
 	if fixture.provenanceSHA256, err = requiredString(object, "provenance_sha256"); err != nil {
 		return fixtureManifest{}, err
+	}
+	if _, exists := object["generator_source_path"]; exists {
+		if fixture.generatorSourcePath, err = requiredString(object, "generator_source_path"); err != nil {
+			return fixtureManifest{}, err
+		}
+	}
+	if _, exists := object["generator_source_sha256"]; exists {
+		if fixture.generatorSourceSHA, err = requiredString(object, "generator_source_sha256"); err != nil {
+			return fixtureManifest{}, err
+		}
 	}
 	if fixture.category, err = requiredString(object, "category"); err != nil {
 		return fixtureManifest{}, err
@@ -396,16 +500,10 @@ func decodeFixture(document any) (fixtureManifest, error) {
 	if fixture.id == "" || !validSHA256(fixture.sha256) || !validSHA256(fixture.provenanceSHA256) {
 		return fixtureManifest{}, refusal(RefusalMalformed)
 	}
-	if !validPhaseOneFixturePath("path", fixture.path) || !validPhaseOneFixturePath("provenance_path", fixture.provenancePath) {
+	if !validCorpusEntryPath("path", fixture.path) || !validCorpusEntryPath("provenance_path", fixture.provenancePath) {
 		return fixtureManifest{}, refusal(RefusalPath)
 	}
-	if fixture.category != "unicode17" && fixture.category != "governance" {
-		return fixtureManifest{}, refusal(RefusalUnknown)
-	}
-	if fixture.outcome != "accept" && fixture.outcome != "reject" {
-		return fixtureManifest{}, refusal(RefusalUnknown)
-	}
-	if fixture.failureStage != "none" && fixture.failureStage != "canonicalization" && fixture.failureStage != "governance" {
+	if !validCategory(format, fixture.category) {
 		return fixtureManifest{}, refusal(RefusalUnknown)
 	}
 	if fixture.publicationState != "not-published" && fixture.publicationState != "not-applicable" {
@@ -423,10 +521,29 @@ func decodeFixture(document any) (fixtureManifest, error) {
 	if fixture.generatedAtTestTime {
 		return fixtureManifest{}, refusal(RefusalGenerated)
 	}
-	if fixture.kdfCalls.String() != "0" {
+	if fixture.category == "stream" || fixture.category == "capsule" {
+		contract, _, found := phase4Contract(fixture.id)
+		if !found {
+			return fixtureManifest{}, refusal(RefusalUnknown)
+		}
+		if fixture.generatorSourcePath == "" || !validCorpusEntryPath("generator_source_path", fixture.generatorSourcePath) || !validSHA256(fixture.generatorSourceSHA) {
+			return fixtureManifest{}, refusal(RefusalMalformed)
+		}
+		if fixture.category != contract.category || fixture.outcome != contract.outcome || fixture.failureStage != contract.failureStage || fixture.kdfCalls.String() != contract.kdfCalls {
+			return fixtureManifest{}, refusal(RefusalMalformed)
+		}
+		return fixture, nil
+	}
+	if fixture.generatorSourcePath != "" || fixture.generatorSourceSHA != "" {
 		return fixtureManifest{}, refusal(RefusalMalformed)
 	}
-	if fixture.outcome == "accept" && fixture.failureStage != "none" {
+	if fixture.outcome != "accept" && fixture.outcome != "reject" {
+		return fixtureManifest{}, refusal(RefusalUnknown)
+	}
+	if fixture.failureStage != "none" && fixture.failureStage != "canonicalization" && fixture.failureStage != "governance" {
+		return fixtureManifest{}, refusal(RefusalUnknown)
+	}
+	if fixture.kdfCalls.String() != "0" || fixture.outcome == "accept" && fixture.failureStage != "none" {
 		return fixtureManifest{}, refusal(RefusalMalformed)
 	}
 	if fixture.outcome == "reject" && ((fixture.category == "unicode17" && fixture.failureStage != "canonicalization") || (fixture.category == "governance" && fixture.failureStage != "governance")) {
@@ -440,16 +557,20 @@ func validateFixtureSet(fixtures []fixtureManifest) error {
 	for _, fixture := range fixtures {
 		directory, _, _ := strings.Cut(fixture.path, "/")
 		switch fixture.outcome {
-		case "accept":
+		case "accept", "success", "authenticated-degraded":
 			if directory != "positive" {
 				return refusal(RefusalMalformed)
 			}
-			accepting = true
-		case "reject":
+			if fixture.outcome == "accept" && (fixture.category == "unicode17" || fixture.category == "governance") {
+				accepting = true
+			}
+		case "reject", "credentials-or-damage", "invalid-structure-pre-kdf", "ambiguous-volume":
 			if directory != "negative" {
 				return refusal(RefusalMalformed)
 			}
-			rejecting = true
+			if fixture.outcome == "reject" {
+				rejecting = true
+			}
 		default:
 			return refusal(RefusalUnknown)
 		}
