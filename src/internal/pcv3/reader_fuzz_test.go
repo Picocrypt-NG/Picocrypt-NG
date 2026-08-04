@@ -40,7 +40,7 @@ func FuzzReadStructure(f *testing.F) {
 			t.Fatalf("CandidateCount() = %d; fixed bound is 2", structure.CandidateCount())
 		}
 		seen := [2]bool{}
-		for index := 0; index < structure.CandidateCount(); index++ {
+		for index := range structure.CandidateCount() {
 			candidate, ok := structure.CandidateAt(index)
 			if !ok || candidate.Role() > CapsuleRoleBackup || seen[candidate.Role()] {
 				t.Fatalf("CandidateAt(%d) has invalid or repeated role %v", index, candidate.Role())

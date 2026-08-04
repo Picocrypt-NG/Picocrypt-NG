@@ -363,7 +363,7 @@ func TestInspectLiteralFixture(t *testing.T) {
 					t.Fatalf("Issue(%v) = %v; want none", component, stage)
 				}
 			}
-			for index := 0; index < structure.CandidateCount(); index++ {
+			for index := range structure.CandidateCount() {
 				geometry, ok := structure.GeometryAt(index)
 				if !ok || geometry.FileSize() != int64(len(test.data)) {
 					t.Fatalf("GeometryAt(%d) = (%+v, %v); want canonical file size %d", index, geometry, ok, len(test.data))

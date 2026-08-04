@@ -301,7 +301,7 @@ func readExactAt(source io.ReaderAt, offset int64, dst []byte, structuralStage S
 	read := 0
 	consecutiveNoProgress := 0
 	callLimit := len(dst) + 2
-	for calls := 0; calls < callLimit; calls++ {
+	for range callLimit {
 		count, err := source.ReadAt(dst[read:], offset+int64(read))
 		if count < 0 || count > len(dst)-read {
 			return read, NewInputError(errInvalidReadProgress)
