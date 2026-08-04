@@ -1291,6 +1291,33 @@ func TestLoadCumulativeV3BindsSourceArtifactInventoryAndHashes(t *testing.T) {
 	}
 }
 
+func TestLoadCumulativeV3AllowsOnlyExtraByteEndMutationOffset(t *testing.T) {
+	t.Run("extra byte uses the declared end sentinel", func(t *testing.T) {
+		root := writeTestCumulativeV3Corpus(t)
+		setV3MutationOffsetFromEnd(t, root, "normal-negative-extra-byte", 0)
+
+		if _, err := Load(root, testCustodyID); err != nil {
+			t.Fatalf("Load() rejected exact extra-byte end sentinel: %v", err)
+		}
+	})
+
+	t.Run("another fixture cannot use the declared end", func(t *testing.T) {
+		root := writeTestCumulativeV3Corpus(t)
+		setV3MutationOffsetFromEnd(t, root, "normal-negative-suffix", 0)
+
+		_, err := Load(root, testCustodyID)
+		assertRefusal(t, err, RefusalMalformed)
+	})
+
+	t.Run("extra byte cannot name an offset after the declared end", func(t *testing.T) {
+		root := writeTestCumulativeV3Corpus(t)
+		setV3MutationOffsetFromEnd(t, root, "normal-negative-extra-byte", 1)
+
+		_, err := Load(root, testCustodyID)
+		assertRefusal(t, err, RefusalMalformed)
+	})
+}
+
 func TestWithNormalVolumeFixturesLendsSelectedAliasesAndZeroesThem(t *testing.T) {
 	root := writeTestCumulativeV3Corpus(t)
 	ids := []string{
@@ -1523,6 +1550,9 @@ func testV3NormalFixtureDocument(fixture testV3NormalFixture, fill byte) string 
 	if fixture.outcome != "success" {
 		mutationOffsets = []int{16}
 	}
+	if fixture.id == "normal-negative-extra-byte" {
+		mutationOffsets = []int{len(volume)}
+	}
 	document := map[string]any{
 		"test_only": true, "public_test_data_notice": testOnlyNotice,
 		"id": fixture.id, "category": "normal-volume", "case": fixture.caseName,
@@ -1633,6 +1663,47 @@ func repinV3Fixture(t *testing.T, root, id, hash string) {
 		}
 		t.Fatal("cumulative v3 manifest fixture missing")
 	})
+}
+
+func setV3MutationOffsetFromEnd(t *testing.T, root, id string, delta int) {
+	t.Helper()
+	manifestPath := filepath.Join(root, "manifest.json")
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read cumulative v3 manifest: %v", err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatalf("decode cumulative v3 manifest: %v", err)
+	}
+	for _, raw := range manifest["fixtures"].([]any) {
+		entry := raw.(map[string]any)
+		if entry["id"] != id {
+			continue
+		}
+		logicalPath := entry["path"].(string)
+		fixturePath := filepath.Join(root, filepath.FromSlash(logicalPath))
+		fixtureData, err := os.ReadFile(fixturePath)
+		if err != nil {
+			t.Fatalf("read normal-volume fixture: %v", err)
+		}
+		var fixture map[string]any
+		if err := json.Unmarshal(fixtureData, &fixture); err != nil {
+			t.Fatalf("decode normal-volume fixture: %v", err)
+		}
+		volumeBytes := len(fixture["volume_hex"].(string)) / 2
+		fixture["mutation_offsets"] = []any{volumeBytes + delta}
+		updated, err := json.Marshal(fixture)
+		if err != nil {
+			t.Fatalf("encode normal-volume fixture: %v", err)
+		}
+		if err := os.WriteFile(fixturePath, updated, 0o600); err != nil {
+			t.Fatalf("write normal-volume fixture: %v", err)
+		}
+		repinV3Fixture(t, root, id, testBytesSHA256(updated))
+		return
+	}
+	t.Fatalf("cumulative v3 fixture %q missing", id)
 }
 
 func testBytesSHA256(value []byte) string {

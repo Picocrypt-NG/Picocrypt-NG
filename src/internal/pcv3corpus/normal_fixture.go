@@ -300,8 +300,12 @@ func validateNormalFixtureDocument(object map[string]any, fixture fixtureManifes
 	}
 	zeroBytes(comment)
 
-	mutationOffsets, err := requiredOffsets(object, "mutation_offsets", volumeBytes)
+	allowEndOffset := contract.id == "normal-negative-extra-byte"
+	mutationOffsets, err := requiredOffsets(object, "mutation_offsets", volumeBytes, allowEndOffset)
 	if err != nil || (contract.outcome == "success" && len(mutationOffsets) != 0) || (contract.outcome != "success" && len(mutationOffsets) == 0) {
+		return refusal(RefusalMalformed)
+	}
+	if allowEndOffset && (len(mutationOffsets) != 1 || mutationOffsets[0] != volumeBytes) {
 		return refusal(RefusalMalformed)
 	}
 	keys, ok := object["keys"].(map[string]any)
@@ -392,7 +396,7 @@ func requiredU64Hex(object map[string]any, field string) (uint64, error) {
 	return parsed, nil
 }
 
-func requiredOffsets(object map[string]any, field string, volumeBytes uint64) ([]uint64, error) {
+func requiredOffsets(object map[string]any, field string, volumeBytes uint64, allowEnd bool) ([]uint64, error) {
 	raw, ok := object[field].([]any)
 	if !ok || len(raw) > 32 {
 		return nil, refusal(RefusalMalformed)
@@ -404,7 +408,7 @@ func requiredOffsets(object map[string]any, field string, volumeBytes uint64) ([
 			return nil, refusal(RefusalMalformed)
 		}
 		offset, err := strconv.ParseUint(number.String(), 10, 64)
-		if err != nil || offset >= volumeBytes {
+		if err != nil || offset > volumeBytes || offset == volumeBytes && !allowEnd {
 			return nil, refusal(RefusalMalformed)
 		}
 		offsets = append(offsets, offset)
@@ -550,7 +554,12 @@ func decodeNormalVolumeFixture(data []byte) (*NormalVolumeFixture, error) {
 		decoded, _ := hex.DecodeString(value)
 		fixture.keyfiles = append(fixture.keyfiles, decoded)
 	}
-	fixture.mutationOffsets, _ = requiredOffsets(object, "mutation_offsets", uint64(len(fixture.volume)))
+	fixture.mutationOffsets, _ = requiredOffsets(
+		object,
+		"mutation_offsets",
+		uint64(len(fixture.volume)),
+		fixture.id == "normal-negative-extra-byte",
+	)
 	keysObject := object["keys"].(map[string]any)
 	fixture.keys, err = decodeNormalVolumeKeys(keysObject)
 	if err != nil {
