@@ -1,7 +1,9 @@
 package pcv3
 
 import (
+	pcv3crypto "Picocrypt-NG/internal/crypto"
 	pcencoding "Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/pcv3credential"
 	"bytes"
 	"context"
 	"encoding/hex"
@@ -26,6 +28,12 @@ const (
 	metadataTestInvalidCore = "50435600000300010001000000000458606162636465666768696a6b6c6d6e6f" +
 		"707172737475767778797a7b7c7d7e7f01010100000000000000000000000000" +
 		"00000000909192939495969798999a9b9c9d9e9f00000000000000000000001b"
+	metadataTestStandardKey = "000102030405060708090a0b0c0d0e0f" +
+		"101112131415161718191a1b1c1d1e1f"
+	metadataTestParanoidKey = "202122232425262728292a2b2c2d2e2f" +
+		"303132333435363738393a3b3c3d3e3f"
+	metadataTestPayloadKey = "404142434445464748494a4b4c4d4e4f" +
+		"505152535455565758595a5b5c5d5e5f"
 )
 
 type metadataReadSpan struct {
@@ -41,6 +49,62 @@ type metadataTrackingReader struct {
 	failOffset int64
 	failErr    error
 	spans      []metadataReadSpan
+}
+
+type metadataGapReader struct {
+	metadata *metadataTrackingReader
+	front    int64
+	sentinel byte
+}
+
+func (reader *metadataGapReader) ReadAt(destination []byte, offset int64) (int, error) {
+	if offset == reader.front && len(destination) != 0 {
+		destination[0] = reader.sentinel
+		if len(destination) == 1 {
+			return 1, nil
+		}
+		return 1, io.EOF
+	}
+	return reader.metadata.ReadAt(destination, offset)
+}
+
+type metadataLiteralKeyBorrower struct {
+	keys        map[pcv3credential.KeyRequest][32]byte
+	afterBorrow func()
+}
+
+func (borrower *metadataLiteralKeyBorrower) withKey(
+	ctx context.Context,
+	request pcv3credential.KeyRequest,
+	callback func([]byte) error,
+) error {
+	if borrower == nil || ctx == nil || callback == nil || ctx.Err() != nil {
+		return context.Canceled
+	}
+	key, ok := borrower.keys[request]
+	if !ok {
+		return errors.New("TEST ONLY unknown key request")
+	}
+	defer pcv3crypto.SecureZero(key[:])
+	err := callback(key[:])
+	if borrower.afterBorrow != nil {
+		borrower.afterBorrow()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+func (borrower *metadataLiteralKeyBorrower) close() {
+	if borrower == nil {
+		return
+	}
+	for request, key := range borrower.keys {
+		pcv3crypto.SecureZero(key[:])
+		delete(borrower.keys, request)
+	}
+	borrower.afterBorrow = nil
 }
 
 func (reader *metadataTrackingReader) ReadAt(destination []byte, offset int64) (int, error) {
@@ -273,6 +337,289 @@ func TestReadMetadataClassifiesTruncationSourceFailureAndCancellation(t *testing
 	})
 }
 
+func TestAuthenticateMetadata(t *testing.T) {
+	codecs := metadataTestCodecs(t)
+
+	t.Run("binds both suites and releases only an owned public copy", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			fixture string
+			core    string
+			blocks  uint64
+			front   int64
+			key     string
+			want    []byte
+			empty   bool
+		}{
+			{
+				name:    "Standard-1 Unicode",
+				fixture: "standard_unicode.bin",
+				core:    metadataTestStandardCore,
+				blocks:  2,
+				front:   1248,
+				key:     metadataTestStandardKey,
+				want:    []byte(metadataTestUnicodeComment),
+			},
+			{
+				name:    "Paranoid-1 empty",
+				fixture: "paranoid_empty.bin",
+				core:    metadataTestParanoidEmptyCore,
+				blocks:  1,
+				front:   1112,
+				key:     metadataTestParanoidKey,
+				want:    []byte{},
+				empty:   true,
+			},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				auth := metadataTestAuthority(t, test.core, test.blocks, test.front)
+				borrower := metadataTestBorrower(t, auth, test.key)
+				defer borrower.close()
+				encoded := metadataFixture(t, test.fixture)
+				source := &metadataTrackingReader{
+					base: int64(frontHeaderBase),
+					data: encoded,
+				}
+				result, err := authenticateMetadata(context.Background(), source, auth, codecs)
+				if err != nil {
+					t.Fatalf("authenticate TEST ONLY metadata: %v", err)
+				}
+				defer result.close()
+				if result.state != metadataAuthenticatedPublic {
+					t.Fatalf("metadata result state = %v; want authenticated-public", result.state)
+				}
+				comment := result.commentBytes()
+				if !bytes.Equal(comment, test.want) {
+					t.Fatalf("authenticated comment mismatch: got %d bytes, want %d", len(comment), len(test.want))
+				}
+				if test.empty && comment == nil {
+					t.Fatal("authenticated empty comment collapsed into damaged nil")
+				}
+				if len(comment) != 0 {
+					comment[0] ^= 0xff
+					if bytes.Equal(comment, result.commentBytes()) {
+						t.Fatal("returned comment aliases the result owner")
+					}
+					encoded[0] ^= 0xff
+					if !bytes.Equal(result.commentBytes(), test.want) {
+						t.Fatal("authenticated comment aliases source or decode scratch")
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("valid RS re-encoding cannot replace authentication", func(t *testing.T) {
+		for _, fixture := range []string{"bad_tag.bin", "stale_comment.bin"} {
+			t.Run(fixture, func(t *testing.T) {
+				auth := metadataTestAuthority(t, metadataTestInvalidCore, 1, 1112)
+				borrower := metadataTestBorrower(t, auth, metadataTestStandardKey)
+				defer borrower.close()
+				result, err := authenticateMetadata(
+					context.Background(),
+					&metadataTrackingReader{base: int64(frontHeaderBase), data: metadataFixture(t, fixture)},
+					auth,
+					codecs,
+				)
+				if err != nil {
+					t.Fatalf("authenticate re-encoded metadata: %v", err)
+				}
+				defer result.close()
+				assertMetadataResultDamaged(t, result)
+			})
+		}
+	})
+
+	t.Run("tag binds the complete authenticated core", func(t *testing.T) {
+		auth := metadataTestAuthority(t, metadataTestStandardCore, 2, 1248)
+		auth.candidate.core.volumeID[0] ^= 0x01
+		borrower := metadataTestBorrower(t, auth, metadataTestStandardKey)
+		defer borrower.close()
+		result, err := authenticateMetadata(
+			context.Background(),
+			&metadataTrackingReader{base: int64(frontHeaderBase), data: metadataFixture(t, "standard_unicode.bin")},
+			auth,
+			codecs,
+		)
+		if err != nil {
+			t.Fatalf("authenticate core-bound metadata: %v", err)
+		}
+		defer result.close()
+		assertMetadataResultDamaged(t, result)
+	})
+
+	t.Run("missing authenticated key owner is an internal request failure", func(t *testing.T) {
+		auth := metadataTestAuthority(t, metadataTestStandardCore, 2, 1248)
+		result, err := authenticateMetadata(
+			context.Background(),
+			&metadataTrackingReader{base: int64(frontHeaderBase), data: metadataFixture(t, "standard_unicode.bin")},
+			auth,
+			codecs,
+		)
+		if result != nil {
+			result.close()
+			t.Fatal("missing key owner produced metadata state")
+		}
+		if !errors.Is(err, errInvalidMetadataRequest) {
+			t.Fatalf("missing key owner error = %v; want fixed internal request sentinel", err)
+		}
+		var failure Failure
+		if errors.As(err, &failure) {
+			t.Fatalf("missing key owner became public outcome %v/%v", failure.Outcome(), failure.Stage())
+		}
+	})
+
+	t.Run("post-borrow cancellation cannot release comment", func(t *testing.T) {
+		auth := metadataTestAuthority(t, metadataTestStandardCore, 2, 1248)
+		borrower := metadataTestBorrower(t, auth, metadataTestStandardKey)
+		defer borrower.close()
+		ctx, cancel := context.WithCancel(context.Background())
+		borrower.afterBorrow = cancel
+		result, err := authenticateMetadata(
+			ctx,
+			&metadataTrackingReader{base: int64(frontHeaderBase), data: metadataFixture(t, "standard_unicode.bin")},
+			auth,
+			codecs,
+		)
+		if result != nil {
+			result.close()
+			t.Fatal("post-borrow cancellation released metadata state")
+		}
+		assertMetadataOperationFailure(t, err, StageCancellation)
+	})
+}
+
+func TestMetadataDamagePreservesAuthenticatedSession(t *testing.T) {
+	codecs := metadataTestCodecs(t)
+	tests := []struct {
+		name        string
+		fixture     string
+		core        string
+		blocks      uint64
+		front       int64
+		truncate    bool
+		metadataKey string
+	}{
+		{
+			name:        "canonical schema damage",
+			fixture:     "invalid_schema.bin",
+			core:        metadataTestInvalidCore,
+			blocks:      1,
+			front:       1112,
+			metadataKey: metadataTestStandardKey,
+		},
+		{
+			name:        "invalid UTF-8",
+			fixture:     "invalid_utf8.bin",
+			core:        metadataTestInvalidCore,
+			blocks:      1,
+			front:       1112,
+			metadataKey: metadataTestStandardKey,
+		},
+		{
+			name:        "hostile raw comment length",
+			fixture:     "invalid_length.bin",
+			core:        metadataTestInvalidCore,
+			blocks:      1,
+			front:       1112,
+			metadataKey: metadataTestStandardKey,
+		},
+		{
+			name:        "RS damage beyond correction budget",
+			fixture:     "damage5.bin",
+			core:        metadataTestStandardCore,
+			blocks:      2,
+			front:       1248,
+			metadataKey: metadataTestStandardKey,
+		},
+		{
+			name:        "metadata tag damage",
+			fixture:     "bad_tag.bin",
+			core:        metadataTestInvalidCore,
+			blocks:      1,
+			front:       1112,
+			metadataKey: metadataTestStandardKey,
+		},
+		{
+			name:        "metadata truncation",
+			fixture:     "standard_unicode.bin",
+			core:        metadataTestStandardCore,
+			blocks:      2,
+			front:       1248,
+			truncate:    true,
+			metadataKey: metadataTestStandardKey,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			auth := metadataTestAuthority(t, test.core, test.blocks, test.front)
+			borrower := metadataTestBorrower(t, auth, test.metadataKey)
+			defer borrower.close()
+			beforeCandidate := auth.candidate
+			beforeGeometry := auth.geometry
+			encoded := metadataFixture(t, test.fixture)
+			const sentinel = byte(0xa7)
+			var source io.ReaderAt
+			if test.truncate {
+				source = &metadataGapReader{
+					metadata: &metadataTrackingReader{
+						base: int64(frontHeaderBase),
+						data: encoded[:len(encoded)-1],
+					},
+					front:    test.front,
+					sentinel: sentinel,
+				}
+			} else {
+				data := append(append([]byte(nil), encoded...), sentinel)
+				source = &metadataTrackingReader{base: int64(frontHeaderBase), data: data}
+			}
+
+			result, err := authenticateMetadata(context.Background(), source, auth, codecs)
+			if err != nil {
+				t.Fatalf("metadata damage became operational: %v", err)
+			}
+			defer result.close()
+			assertMetadataResultDamaged(t, result)
+			if auth.candidate != beforeCandidate || auth.geometry != beforeGeometry {
+				t.Fatal("metadata damage changed authenticated core or geometry")
+			}
+
+			var next [1]byte
+			if _, err := readExactAt(source, auth.geometry.FrontHeaderLength(), next[:], StageDescriptor); err != nil {
+				t.Fatalf("continue at authenticated payload boundary: %v", err)
+			}
+			if next[0] != sentinel {
+				t.Fatalf("next-region byte = 0x%02x; want 0x%02x", next[0], sentinel)
+			}
+
+			var payloadKey [32]byte
+			err = auth.withKey(
+				context.Background(),
+				pcv3credential.KeyRequest{
+					Label:       pcv3credential.KeyLabelVolumePayloadMAC,
+					Role:        pcv3credential.KeyRoleNotReplica,
+					OutputBytes: 32,
+				},
+				func(key []byte) error {
+					copy(payloadKey[:], key)
+					return nil
+				},
+			)
+			if err != nil {
+				t.Fatalf("borrow existing payload key after metadata damage: %v", err)
+			}
+			wantPayloadKey := metadataTestKey(t, metadataTestPayloadKey)
+			if payloadKey != wantPayloadKey {
+				t.Fatal("metadata damage changed existing payload key access")
+			}
+			pcv3crypto.SecureZero(payloadKey[:])
+			pcv3crypto.SecureZero(wantPayloadKey[:])
+		})
+	}
+}
+
 func metadataFixture(t *testing.T, name string) []byte {
 	t.Helper()
 	encoded, err := os.ReadFile(filepath.Join("testdata", "metadata", name))
@@ -319,6 +666,42 @@ func metadataTestAuthority(
 	}
 }
 
+func metadataTestBorrower(
+	t *testing.T,
+	auth *normalAuthResult,
+	metadataKeyHex string,
+) *metadataLiteralKeyBorrower {
+	t.Helper()
+	borrower := &metadataLiteralKeyBorrower{
+		keys: map[pcv3credential.KeyRequest][32]byte{
+			{
+				Label:       pcv3credential.KeyLabelVolumeMetadataMAC,
+				Role:        pcv3credential.KeyRoleNotReplica,
+				OutputBytes: 32,
+			}: metadataTestKey(t, metadataKeyHex),
+			{
+				Label:       pcv3credential.KeyLabelVolumePayloadMAC,
+				Role:        pcv3credential.KeyRoleNotReplica,
+				OutputBytes: 32,
+			}: metadataTestKey(t, metadataTestPayloadKey),
+		},
+	}
+	auth.keyBorrower = borrower
+	return borrower
+}
+
+func metadataTestKey(t *testing.T, encoded string) [32]byte {
+	t.Helper()
+	decoded, err := hex.DecodeString(encoded)
+	if err != nil || len(decoded) != 32 {
+		t.Fatalf("decode TEST ONLY key: length %d, error %v", len(decoded), err)
+	}
+	var key [32]byte
+	copy(key[:], decoded)
+	pcv3crypto.SecureZero(decoded)
+	return key
+}
+
 func metadataMaximumComment() []byte {
 	const pattern = "TEST ONLY PUBLIC COMMENT|"
 	comment := make([]byte, maximumCommentLength)
@@ -335,6 +718,16 @@ func assertMetadataRecoveryDamaged(t *testing.T, recovered *metadataRecovery) {
 	}
 	if recovered.comment != nil {
 		t.Fatalf("damaged metadata released %d comment bytes", len(recovered.comment))
+	}
+}
+
+func assertMetadataResultDamaged(t *testing.T, result *metadataResult) {
+	t.Helper()
+	if result == nil || result.state != metadataDamaged {
+		t.Fatalf("metadata result = %v; want metadata-damaged", result)
+	}
+	if result.commentBytes() != nil {
+		t.Fatal("metadata-damaged result released comment bytes")
 	}
 }
 
