@@ -106,8 +106,33 @@ func authenticateCapsulesWithProvider(
 	provider capsuleCredentialProvider,
 	seams capsuleAuthSeams,
 ) *normalAuthResult {
-	if closer, ok := provider.(capsuleCredentialProviderCloser); ok {
-		defer closer.close()
+	return authenticateCapsulesWithProviderMode(ctx, structure, provider, seams, true, false)
+}
+
+// authenticateCapsulesBorrowingProvider keeps a caller-owned provider alive
+// through the post-capsule authenticated reader stages.
+func authenticateCapsulesBorrowingProvider(
+	ctx context.Context,
+	structure Structure,
+	provider capsuleCredentialProvider,
+	seams capsuleAuthSeams,
+) *normalAuthResult {
+	return authenticateCapsulesWithProviderMode(ctx, structure, provider, seams, false, true)
+}
+
+func authenticateCapsulesWithProviderMode(
+	ctx context.Context,
+	structure Structure,
+	provider capsuleCredentialProvider,
+	seams capsuleAuthSeams,
+	closeProvider bool,
+	retainBorrower bool,
+) *normalAuthResult {
+	if closeProvider {
+		closer, ok := provider.(capsuleCredentialProviderCloser)
+		if ok {
+			defer closer.close()
+		}
 	}
 	tuple, ok := credentialTupleForStructure(structure)
 	if !ok {
@@ -258,6 +283,11 @@ func authenticateCapsulesWithProvider(
 		}
 	}
 	result.owner = owner
+	if retainBorrower && (result.outcome == OutcomeSuccess || result.outcome == OutcomeAuthenticatedDegraded) {
+		if borrower, ok := provider.(normalKeyBorrower); ok {
+			result.keyBorrower = borrower
+		}
+	}
 	return result
 }
 
@@ -468,10 +498,33 @@ func earlierAuthStage(left, right Stage) Stage {
 	if left == StageNone {
 		return right
 	}
-	if right == StageNone || left < right {
+	if right == StageNone || authStageRank(left) <= authStageRank(right) {
 		return left
 	}
 	return right
+}
+
+// authStageRank is the protocol order for nonterminal authenticated warnings.
+// Stage declaration order is deliberately unrelated to this order.
+func authStageRank(stage Stage) uint8 {
+	switch stage {
+	case StagePreamble:
+		return 1
+	case StageCapsuleRS:
+		return 2
+	case StageCapsuleStructure:
+		return 3
+	case StageWrapAuth:
+		return 4
+	case StageReplicaAuth:
+		return 5
+	case StageMetadata:
+		return 6
+	case StageTailGeometry:
+		return 7
+	default:
+		return 255
+	}
 }
 
 func logicalCoreBytes(core logicalCore) [96]byte {

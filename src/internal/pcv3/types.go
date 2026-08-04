@@ -78,6 +78,7 @@ const (
 	CodeAuthenticatedDegraded
 	CodeAmbiguousVolume
 	CodeSuccess
+	CodeAuthenticationFailed
 )
 
 // ErrInvalidFailureMapping reports a caller attempt to create a non-normative
@@ -219,7 +220,7 @@ func codeFor(outcome Outcome, stage Stage) (Code, bool) {
 	case OutcomeOperationFailed:
 		switch stage {
 		case StageInputIO, StageCredentialPolicy, StageUnwrap,
-			StageKDFRuntime, StageCancellation:
+			StageKDFRuntime, StageCancellation, StageOutputWrite:
 			return CodeOperationFailed, true
 		default:
 			return 0, false
@@ -229,7 +230,7 @@ func codeFor(outcome Outcome, stage Stage) (Code, bool) {
 	case OutcomeAuthenticatedDegraded:
 		switch stage {
 		case StagePreamble, StageCapsuleRS, StageCapsuleStructure,
-			StageTailGeometry, StageWrapAuth, StageReplicaAuth:
+			StageTailGeometry, StageWrapAuth, StageReplicaAuth, StageMetadata:
 			return CodeAuthenticatedDegraded, true
 		default:
 			return 0, false
@@ -238,6 +239,13 @@ func codeFor(outcome Outcome, stage Stage) (Code, bool) {
 		return CodeAmbiguousVolume, stage == StageCapsuleStructure
 	case OutcomeSuccess:
 		return CodeSuccess, stage == StageNone
+	case OutcomeAuthenticationFailed:
+		switch stage {
+		case StageDescriptor, StageRecordBodyRS, StageRecordAuth, StageFinalRecord, StageTailGeometry:
+			return CodeAuthenticationFailed, true
+		default:
+			return 0, false
+		}
 	default:
 		return 0, false
 	}
@@ -368,6 +376,8 @@ func (code Code) String() string {
 		return "PCV3_AMBIGUOUS_VOLUME"
 	case CodeSuccess:
 		return "PCV3_SUCCESS"
+	case CodeAuthenticationFailed:
+		return "PCV3_AUTHENTICATION_FAILED"
 	default:
 		return "PCV3_UNKNOWN"
 	}

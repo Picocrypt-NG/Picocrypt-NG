@@ -7,6 +7,94 @@ import (
 	"fmt"
 )
 
+// normalVolumeSink is operation-owned staging. The reader can only complete
+// after the sink has retained every verified record and final closure succeeds.
+type normalVolumeSink interface {
+	normalRecordSink
+	abortUncommitted()
+}
+
+type normalCompletion struct{ sealed struct{} }
+
+// normalReadResult exposes only coarse conformance state and an authenticated
+// public comment copy. It intentionally contains no source or key material.
+type normalReadResult struct {
+	outcome       Outcome
+	stage         Stage
+	authenticated uint8
+	comment       []byte
+}
+
+func newNormalReadResult(outcome Outcome, stage Stage, authenticated int, comment []byte) *normalReadResult {
+	result := &normalReadResult{outcome: outcome, stage: stage, authenticated: uint8(authenticated)}
+	if comment != nil {
+		result.comment = append([]byte(nil), comment...)
+	}
+	return result
+}
+
+func (result *normalReadResult) Outcome() Outcome {
+	if result == nil {
+		return 0
+	}
+	return result.outcome
+}
+func (result *normalReadResult) Stage() Stage {
+	if result == nil {
+		return 0
+	}
+	return result.stage
+}
+func (result *normalReadResult) AuthenticatedCapsules() int {
+	if result == nil {
+		return 0
+	}
+	return int(result.authenticated)
+}
+func (result *normalReadResult) Code() Code {
+	if result == nil {
+		return 0
+	}
+	code, _ := codeFor(result.outcome, result.stage)
+	return code
+}
+
+func (result *normalReadResult) Error() string {
+	if result == nil {
+		return "pcv3: normal volume operation failed"
+	}
+	switch result.outcome {
+	case OutcomeSuccess:
+		return "pcv3: normal volume authenticated"
+	case OutcomeAuthenticatedDegraded:
+		return "pcv3: normal volume authenticated with degraded recovery"
+	case OutcomeCredentialsOrDamage, OutcomeAuthenticationFailed:
+		return "pcv3: credentials incorrect or volume damaged"
+	default:
+		return "pcv3: normal volume operation failed"
+	}
+}
+func (result *normalReadResult) String() string   { return result.Error() }
+func (result *normalReadResult) GoString() string { return result.Error() }
+func (result *normalReadResult) Format(state fmt.State, verb rune) {
+	writeFixedFormat(state, verb, result.Error())
+}
+func (result *normalReadResult) commentBytes() []byte {
+	if result == nil || result.comment == nil {
+		return nil
+	}
+	return append([]byte(nil), result.comment...)
+}
+func (result *normalReadResult) Close() {
+	if result != nil {
+		pcv3crypto.SecureZero(result.comment)
+		result.comment = nil
+		result.outcome = 0
+		result.stage = 0
+		result.authenticated = 0
+	}
+}
+
 type normalKeyBorrower interface {
 	withKey(
 		context.Context,
