@@ -922,15 +922,15 @@ var testV2Phase4Fixtures = []testV2Fixture{
 	{id: "capsule-authenticated-cross-volume-splice", category: "capsule", caseName: "authenticated-cross-volume-splice", suite: "standard1", outcome: "ambiguous-volume", stage: "capsule-structure", kdfCalls: 1, authenticated: 2},
 }
 
-func TestLoadAcceptsLiteralCumulativeV2Corpus(t *testing.T) {
+func TestLoadAcceptsLiteralCumulativeV2CorpusAsLegacy(t *testing.T) {
 	root := writeTestCumulativeV2Corpus(t)
 
 	corpus, err := Load(root, testCustodyID)
 	if err != nil {
 		t.Fatalf("Load(v2) error = %v", err)
 	}
-	if !corpus.isCurrentPhase4() {
-		t.Fatal("Load(v2) did not retain the closed Phase-4 evidence inventory")
+	if corpus.isCurrentPhase4() {
+		t.Fatal("Load(v2) reported current after the v3 normal-volume contract became mandatory")
 	}
 }
 
