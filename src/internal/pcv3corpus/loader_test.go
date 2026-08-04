@@ -1,8 +1,10 @@
 package pcv3corpus
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -1070,4 +1072,612 @@ func repinV2Fixture(t *testing.T, root, id, hash string) {
 func testSHA256(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
+}
+
+const testSchemaV3 = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pcv3.invalid/cumulative-v3/manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "schema_revision", "spec_revision", "test_only", "custody_id", "fixtures", "deferred_vector_classes", "source_artifacts"],
+  "properties": {
+    "format": {"const": "pcv3-corpus-v3"},
+    "schema_revision": {"const": "3"},
+    "spec_revision": {"const": "0.3"},
+    "test_only": {"const": true},
+    "custody_id": {"type": "string", "minLength": 1},
+    "fixtures": {"type": "array", "minItems": 28, "items": {"$ref": "#/$defs/fixture"}},
+    "deferred_vector_classes": {
+      "type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true,
+      "items": {"enum": ["pcv3-writer", "d1-volumes", "force-recovery"]}
+    },
+    "source_artifacts": {
+      "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/source_artifact"}
+    }
+  },
+  "$defs": {
+    "source_artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "path", "sha256", "kind"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "kind": {"enum": ["generator-source", "dependency-lock", "source-vector"]}
+      }
+    },
+    "fixture": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "path", "sha256", "provenance_path", "provenance_sha256", "category", "outcome", "failure_stage", "kdf_calls", "publication_state", "force_state", "status", "generated_at_test_time"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "provenance_path": {"type": "string", "minLength": 1},
+        "provenance_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "generator_source_path": {"type": "string", "minLength": 1},
+        "generator_source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "category": {"enum": ["unicode17", "governance", "stream", "capsule", "normal-volume"]},
+        "outcome": {"enum": ["accept", "reject", "success", "authenticated-degraded", "credentials-or-damage", "invalid-structure-pre-kdf", "ambiguous-volume", "authentication-failed"]},
+        "failure_stage": {"enum": ["none", "canonicalization", "governance", "wrap-auth", "replica-auth", "capsule-rs", "capsule-structure", "metadata", "descriptor", "record-auth", "final-record", "tail-geometry"]},
+        "kdf_calls": {"type": "integer", "minimum": 0, "maximum": 1},
+        "publication_state": {"enum": ["not-published", "not-applicable"]},
+        "force_state": {"const": "not-applicable"},
+        "status": {"const": "required"},
+        "generated_at_test_time": {"const": false}
+      }
+    }
+  }
+}`
+
+const (
+	testOnlyNotice = "TEST ONLY PCV3 CONFORMANCE DATA; NOT SECRET OR OPERATIONAL"
+)
+
+var testV3KeyLiterals = struct {
+	credentialRoot, volumeKey                         string
+	primaryWrapX, backupWrapX                         string
+	primaryWrapSerpent, backupWrapSerpent             string
+	primaryWrapMAC, backupWrapMAC                     string
+	primaryReplicaMAC, backupReplicaMAC               string
+	metadataMAC, payloadX, payloadSerpent, payloadMAC string
+}{
+	credentialRoot:     strings.Repeat("e0", 32),
+	volumeKey:          strings.Repeat("01", 32),
+	primaryWrapX:       strings.Repeat("11", 32),
+	backupWrapX:        strings.Repeat("21", 32),
+	primaryWrapSerpent: strings.Repeat("31", 32),
+	backupWrapSerpent:  strings.Repeat("41", 32),
+	primaryWrapMAC:     strings.Repeat("51", 32),
+	backupWrapMAC:      strings.Repeat("61", 32),
+	primaryReplicaMAC:  strings.Repeat("71", 32),
+	backupReplicaMAC:   strings.Repeat("81", 32),
+	metadataMAC:        strings.Repeat("91", 32),
+	payloadX:           strings.Repeat("a1", 32),
+	payloadSerpent:     strings.Repeat("b1", 32),
+	payloadMAC:         strings.Repeat("c1", 32),
+}
+
+type testV3NormalFixture struct {
+	id, caseName, suite, credentialMode, keyfileMode, kdfEvidence string
+	outcome, stage                                                string
+	payloadLength                                                 int
+	payloadRS, completion                                         bool
+	kdfCalls, authenticatedCapsules                               int
+}
+
+var testV3NormalFixtures = []testV3NormalFixture{
+	{id: "normal-standard-combined-ordered-empty", caseName: "empty", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "success", stage: "none", completion: true, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-standard-combined-ordered-one", caseName: "one-byte", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "success", stage: "none", payloadLength: 1, completion: true, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-standard-combined-ordered-before-mib", caseName: "one-mib-minus-one", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "success", stage: "none", payloadLength: (1 << 20) - 1, completion: true, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-standard-combined-ordered-exact-mib", caseName: "exact-one-mib", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "success", stage: "none", payloadLength: 1 << 20, completion: true, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-standard-combined-ordered-after-mib", caseName: "one-mib-plus-one", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "success", stage: "none", payloadLength: (1 << 20) + 1, completion: true, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-standard-combined-ordered-two-mib", caseName: "exact-two-mib", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "success", stage: "none", payloadLength: 2 << 20, completion: true, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-standard-keyfiles-only-small", caseName: "keyfiles-only-small", suite: "standard1", credentialMode: "keyfiles-only", keyfileMode: "ordered", kdfEvidence: "fast-seam", outcome: "success", stage: "none", payloadLength: 17, completion: true, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-standard-combined-unordered-rs-small", caseName: "combined-unordered-rs-small", suite: "standard1", credentialMode: "combined", keyfileMode: "unordered", kdfEvidence: "fast-seam", outcome: "success", stage: "none", payloadLength: 33, payloadRS: true, completion: true, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-paranoid-combined-unordered-rs-small", caseName: "paranoid-combined-rs-small", suite: "paranoid1", credentialMode: "combined", keyfileMode: "unordered", kdfEvidence: "production-vector", outcome: "success", stage: "none", payloadLength: 65, payloadRS: true, completion: true, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-degraded-capsule", caseName: "degraded-capsule", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "authenticated-degraded", stage: "capsule-rs", payloadLength: 17, completion: true, kdfCalls: 1, authenticatedCapsules: 1},
+	{id: "normal-degraded-metadata", caseName: "degraded-metadata", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "authenticated-degraded", stage: "metadata", payloadLength: 17, completion: true, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-degraded-trailer", caseName: "degraded-trailer", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "authenticated-degraded", stage: "tail-geometry", payloadLength: 17, completion: true, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-negative-descriptor", caseName: "negative-descriptor", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "authentication-failed", stage: "descriptor", payloadLength: 17, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-negative-record", caseName: "negative-record", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "authentication-failed", stage: "record-auth", payloadLength: 17, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-negative-final", caseName: "negative-final", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "authentication-failed", stage: "final-record", payloadLength: 17, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-negative-suffix", caseName: "negative-suffix", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "authentication-failed", stage: "tail-geometry", payloadLength: 17, kdfCalls: 1, authenticatedCapsules: 2},
+	{id: "normal-negative-extra-byte", caseName: "negative-extra-byte", suite: "standard1", credentialMode: "combined", keyfileMode: "ordered", kdfEvidence: "production-vector", outcome: "authentication-failed", stage: "tail-geometry", payloadLength: 17, kdfCalls: 1, authenticatedCapsules: 2},
+}
+
+func TestLoadAcceptsCumulativeV3OnlyAsCurrentPhase4(t *testing.T) {
+	v1, err := Load(writeTestCorpus(t), testCustodyID)
+	if err != nil {
+		t.Fatalf("Load(v1) error = %v", err)
+	}
+	if v1.isCurrentPhase4() {
+		t.Fatal("v1 corpus reported current for Phase 4")
+	}
+
+	v2, err := Load(writeTestCumulativeV2Corpus(t), testCustodyID)
+	if err != nil {
+		t.Fatalf("Load(v2) error = %v", err)
+	}
+	if v2.isCurrentPhase4() {
+		t.Fatal("v2 corpus reported current after the v3 contract became mandatory")
+	}
+
+	v3, err := Load(writeTestCumulativeV3Corpus(t), testCustodyID)
+	if err != nil {
+		t.Fatalf("Load(v3) error = %v", err)
+	}
+	if !v3.isCurrentPhase4() {
+		t.Fatal("v3 corpus did not retain the closed normal-volume evidence inventory")
+	}
+}
+
+func TestLoadCumulativeV3RefusesBroadDeferralAndIncompleteNormalInventory(t *testing.T) {
+	t.Run("broad full-volume deferral", func(t *testing.T) {
+		root := writeTestCumulativeV3Corpus(t)
+		mutateV3Manifest(t, root, func(manifest map[string]any) {
+			manifest["deferred_vector_classes"] = []any{"full-pcv3-volume", "d1-volumes", "force-recovery"}
+		})
+		_, err := Load(root, testCustodyID)
+		assertRefusal(t, err, RefusalSchema)
+	})
+
+	t.Run("missing required normal fixture", func(t *testing.T) {
+		root := writeTestCumulativeV3Corpus(t)
+		removeV3Fixture(t, root, testV3NormalFixtures[0].id)
+		_, err := Load(root, testCustodyID)
+		assertRefusal(t, err, RefusalMissing)
+	})
+}
+
+func TestLoadCumulativeV3EnforcesFixtureCategorySizeBounds(t *testing.T) {
+	t.Run("normal volume over sixteen MiB", func(t *testing.T) {
+		root := writeTestCumulativeV3Corpus(t)
+		fixture := testV3NormalFixtures[0]
+		fixturePath := filepath.Join(root, "positive", fixture.id+".json")
+		oversized := strings.Repeat("x", (16<<20)+1)
+		if err := os.WriteFile(fixturePath, []byte(oversized), 0o600); err != nil {
+			t.Fatalf("write oversized normal-volume fixture: %v", err)
+		}
+		repinV3Fixture(t, root, fixture.id, testSHA256(oversized))
+
+		_, err := Load(root, testCustodyID)
+		assertRefusal(t, err, RefusalMalformed)
+	})
+
+	t.Run("legacy fixture over one MiB", func(t *testing.T) {
+		root := writeTestCumulativeV3Corpus(t)
+		oversized := strings.Repeat("x", (1<<20)+1)
+		if err := os.WriteFile(filepath.Join(root, "positive", "nfc.json"), []byte(oversized), 0o600); err != nil {
+			t.Fatalf("write oversized legacy fixture: %v", err)
+		}
+		repinV3Fixture(t, root, "unicode17-nfc", testSHA256(oversized))
+
+		_, err := Load(root, testCustodyID)
+		assertRefusal(t, err, RefusalMalformed)
+	})
+}
+
+func TestLoadCumulativeV3BindsSourceArtifactInventoryAndHashes(t *testing.T) {
+	t.Run("pinned content corruption", func(t *testing.T) {
+		root := writeTestCumulativeV3Corpus(t)
+		writeTestFile(t, root, "generator/input/kdf-vectors.json", `{"test_only":true,"id":"tampered"}`)
+		_, err := Load(root, testCustodyID)
+		assertRefusal(t, err, RefusalHash)
+	})
+
+	t.Run("missing bound artifact", func(t *testing.T) {
+		root := writeTestCumulativeV3Corpus(t)
+		if err := os.Remove(filepath.Join(root, "generator", "upstream-record", "go.sum")); err != nil {
+			t.Fatalf("remove bound source artifact: %v", err)
+		}
+		_, err := Load(root, testCustodyID)
+		assertRefusal(t, err, RefusalMissing)
+	})
+
+	for _, field := range []string{"id", "path"} {
+		t.Run("duplicate "+field, func(t *testing.T) {
+			root := writeTestCumulativeV3Corpus(t)
+			mutateV3Manifest(t, root, func(manifest map[string]any) {
+				artifacts := manifest["source_artifacts"].([]any)
+				first := artifacts[0].(map[string]any)
+				second := artifacts[1].(map[string]any)
+				second[field] = first[field]
+			})
+			_, err := Load(root, testCustodyID)
+			assertRefusal(t, err, RefusalDuplicate)
+		})
+	}
+}
+
+func TestWithNormalVolumeFixturesLendsSelectedAliasesAndZeroesThem(t *testing.T) {
+	root := writeTestCumulativeV3Corpus(t)
+	ids := []string{
+		"normal-standard-combined-ordered-empty",
+		"normal-paranoid-combined-unordered-rs-small",
+	}
+	var aliases [][]byte
+	err := WithNormalVolumeFixtures(root, testCustodyID, ids, func(fixtures []*NormalVolumeFixture) error {
+		if len(fixtures) != len(ids) {
+			t.Fatalf("borrowed fixture count = %d, want %d", len(fixtures), len(ids))
+		}
+		for index, fixture := range fixtures {
+			if fixture.ID() != ids[index] {
+				t.Fatalf("borrowed fixture %d ID = %q, want %q", index, fixture.ID(), ids[index])
+			}
+			contract, fill := testV3FixtureContract(t, fixture.ID())
+			if fixture.Case() != contract.caseName || fixture.Suite() != contract.suite ||
+				fixture.CredentialMode() != contract.credentialMode || fixture.KeyfileMode() != contract.keyfileMode ||
+				fixture.KDFEvidence() != contract.kdfEvidence || fixture.PayloadRS() != contract.payloadRS ||
+				fixture.Outcome() != contract.outcome || fixture.FailureStage() != contract.stage ||
+				fixture.KDFCalls() != contract.kdfCalls || fixture.AuthenticatedCapsules() != contract.authenticatedCapsules ||
+				fixture.Completion() != contract.completion {
+				t.Fatal("borrowed fixture metadata did not match its closed contract")
+			}
+			wantVolume, wantPlaintext := testV3SyntheticMaterial(contract, fill)
+			assertBorrowedBytes(t, "volume", fixture.Volume(), wantVolume)
+			assertBorrowedBytes(t, "plaintext", fixture.Plaintext(), wantPlaintext)
+			assertBorrowedBytes(t, "comment", fixture.Comment(), []byte("TEST ONLY comment"))
+			assertBorrowedBytes(t, "password", fixture.Password(), []byte("TEST ONLY mix"))
+			wantKeyfiles := [][]byte{[]byte("TEST ONLY red"), []byte("TEST ONLY blue")}
+			if contract.keyfileMode == "unordered" {
+				wantKeyfiles = [][]byte{[]byte("TEST ONLY blue"), []byte("TEST ONLY red")}
+			}
+			if len(fixture.Keyfiles()) != len(wantKeyfiles) {
+				t.Fatalf("borrowed keyfile count = %d, want %d", len(fixture.Keyfiles()), len(wantKeyfiles))
+			}
+			for keyfileIndex := range wantKeyfiles {
+				assertBorrowedBytes(t, "keyfile", fixture.Keyfiles()[keyfileIndex], wantKeyfiles[keyfileIndex])
+			}
+			assertBorrowedHex(t, "credential root", fixture.CredentialRoot(), testV3KeyLiterals.credentialRoot)
+
+			keys := fixture.Keys()
+			assertBorrowedHex(t, "VolumeKey", keys.VolumeKey(), testV3KeyLiterals.volumeKey)
+			assertBorrowedHex(t, "primary wrap XChaCha20", keys.PrimaryWrapXChaCha20(), testV3KeyLiterals.primaryWrapX)
+			assertBorrowedHex(t, "backup wrap XChaCha20", keys.BackupWrapXChaCha20(), testV3KeyLiterals.backupWrapX)
+			if contract.suite == "standard1" {
+				assertBorrowedBytes(t, "primary absent Serpent wrap key", keys.PrimaryWrapSerpent(), nil)
+				assertBorrowedBytes(t, "backup absent Serpent wrap key", keys.BackupWrapSerpent(), nil)
+				assertBorrowedBytes(t, "absent Serpent payload key", keys.PayloadSerpent(), nil)
+			} else {
+				assertBorrowedHex(t, "primary wrap Serpent", keys.PrimaryWrapSerpent(), testV3KeyLiterals.primaryWrapSerpent)
+				assertBorrowedHex(t, "backup wrap Serpent", keys.BackupWrapSerpent(), testV3KeyLiterals.backupWrapSerpent)
+				assertBorrowedHex(t, "payload Serpent", keys.PayloadSerpent(), testV3KeyLiterals.payloadSerpent)
+			}
+			assertBorrowedHex(t, "primary wrap MAC", keys.PrimaryWrapMAC(), testV3KeyLiterals.primaryWrapMAC)
+			assertBorrowedHex(t, "backup wrap MAC", keys.BackupWrapMAC(), testV3KeyLiterals.backupWrapMAC)
+			assertBorrowedHex(t, "primary replica MAC", keys.PrimaryReplicaMAC(), testV3KeyLiterals.primaryReplicaMAC)
+			assertBorrowedHex(t, "backup replica MAC", keys.BackupReplicaMAC(), testV3KeyLiterals.backupReplicaMAC)
+			assertBorrowedHex(t, "metadata MAC", keys.MetadataMAC(), testV3KeyLiterals.metadataMAC)
+			assertBorrowedHex(t, "payload XChaCha20", keys.PayloadXChaCha20(), testV3KeyLiterals.payloadX)
+			assertBorrowedHex(t, "payload MAC", keys.PayloadMAC(), testV3KeyLiterals.payloadMAC)
+
+			aliases = append(aliases, fixture.Volume(), fixture.Plaintext(), fixture.Comment(), fixture.Password(), fixture.CredentialRoot())
+			aliases = append(aliases, fixture.Keyfiles()...)
+			aliases = append(aliases,
+				keys.VolumeKey(), keys.PrimaryWrapXChaCha20(), keys.BackupWrapXChaCha20(),
+				keys.PrimaryWrapSerpent(), keys.BackupWrapSerpent(), keys.PrimaryWrapMAC(),
+				keys.BackupWrapMAC(), keys.PrimaryReplicaMAC(), keys.BackupReplicaMAC(),
+				keys.MetadataMAC(), keys.PayloadXChaCha20(), keys.PayloadSerpent(), keys.PayloadMAC(),
+			)
+			formatted := fmt.Sprintf("%s|%q|%v|%+v|%#v|%s|%q|%+v|%#v", fixture, fixture, fixture, fixture, fixture, keys, keys, keys, keys)
+			if strings.Contains(formatted, root) || strings.Contains(formatted, "mix") || strings.Contains(formatted, "TEST ONLY") || strings.Contains(formatted, testV3KeyLiterals.volumeKey) {
+				t.Fatal("borrowed fixture formatting disclosed private or test-secret material")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithNormalVolumeFixtures() error = %v", err)
+	}
+	if len(aliases) == 0 {
+		t.Fatal("borrow callback captured no aliases")
+	}
+	for _, alias := range aliases {
+		if !allZero(alias) {
+			t.Fatal("borrowed fixture alias retained bytes after callback")
+		}
+	}
+}
+
+func TestWithNormalVolumeFixturesZeroesAliasesWhenCallbackFails(t *testing.T) {
+	root := writeTestCumulativeV3Corpus(t)
+	sentinel := errors.New("TEST ONLY callback sentinel")
+	var aliases [][]byte
+	err := WithNormalVolumeFixtures(root, testCustodyID, []string{"normal-standard-keyfiles-only-small"}, func(fixtures []*NormalVolumeFixture) error {
+		fixture := fixtures[0]
+		aliases = append(aliases, fixture.Volume(), fixture.Plaintext(), fixture.CredentialRoot())
+		aliases = append(aliases, fixture.Keyfiles()...)
+		aliases = append(aliases, fixture.Keys().VolumeKey(), fixture.Keys().PayloadMAC())
+		for _, alias := range aliases {
+			if len(alias) == 0 || allZero(alias) {
+				t.Fatal("callback-error oracle captured an empty or already-zero alias")
+			}
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("WithNormalVolumeFixtures() error = %v, want callback sentinel", err)
+	}
+	for _, alias := range aliases {
+		if !allZero(alias) {
+			t.Fatal("callback-error alias retained bytes after callback")
+		}
+	}
+}
+
+func TestWithNormalVolumeFixturesRejectsDuplicateUnknownAndLegacySelections(t *testing.T) {
+	v3 := writeTestCumulativeV3Corpus(t)
+	for _, test := range []struct {
+		name string
+		root string
+		ids  []string
+		want RefusalKind
+	}{
+		{name: "duplicate", root: v3, ids: []string{testV3NormalFixtures[0].id, testV3NormalFixtures[0].id}, want: RefusalDuplicate},
+		{name: "unknown", root: v3, ids: []string{"normal-future-unknown"}, want: RefusalUnknown},
+		{name: "legacy corpus", root: writeTestCumulativeV2Corpus(t), ids: []string{testV3NormalFixtures[0].id}, want: RefusalUnknown},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			called := false
+			err := WithNormalVolumeFixtures(test.root, testCustodyID, test.ids, func([]*NormalVolumeFixture) error {
+				called = true
+				return nil
+			})
+			assertRefusal(t, err, test.want)
+			if called {
+				t.Fatal("rejected selection invoked the borrow callback")
+			}
+		})
+	}
+}
+
+func writeTestCumulativeV3Corpus(t *testing.T) string {
+	t.Helper()
+	root := writeTestCumulativeV2Corpus(t)
+	writeTestFile(t, root, "manifest.schema.json", testSchemaV3)
+
+	manifestBytes, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read cumulative v2 manifest: %v", err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("decode cumulative v2 manifest: %v", err)
+	}
+	manifest["format"] = "pcv3-corpus-v3"
+	manifest["schema_revision"] = "3"
+	manifest["deferred_vector_classes"] = []any{"pcv3-writer", "d1-volumes", "force-recovery"}
+
+	sourceArtifacts := []any{}
+	for _, artifact := range []struct {
+		id, path, kind, contents string
+	}{
+		{id: "phase4-generator-source", path: "generator/phase4-v3.go", kind: "generator-source", contents: testV2GeneratorSource},
+		{id: "phase4-generator-lock", path: "generator/phase4-v3.lock", kind: "dependency-lock", contents: "go=1.26.5;x-crypto=v0.54.0;serpent=v0.1.0"},
+		{id: "record-generator-source", path: "generator/upstream-record/main.go", kind: "generator-source", contents: testV2GeneratorSource},
+		{id: "record-generator-go-mod", path: "generator/upstream-record/go.mod", kind: "dependency-lock", contents: "module test-only-record-generator\n"},
+		{id: "record-generator-go-sum", path: "generator/upstream-record/go.sum", kind: "dependency-lock", contents: "TEST ONLY dependency checksum\n"},
+		{id: "phase2-kdf-vectors", path: "generator/input/kdf-vectors.json", kind: "source-vector", contents: `{"test_only":true,"id":"kdf-vectors"}`},
+		{id: "phase2-vector-input", path: "generator/input/vector-input.json", kind: "source-vector", contents: `{"test_only":true,"id":"vector-input"}`},
+	} {
+		writeTestFile(t, root, artifact.path, artifact.contents)
+		sourceArtifacts = append(sourceArtifacts, map[string]any{
+			"id": artifact.id, "path": artifact.path, "sha256": testSHA256(artifact.contents), "kind": artifact.kind,
+		})
+	}
+	manifest["source_artifacts"] = sourceArtifacts
+
+	fixtures, ok := manifest["fixtures"].([]any)
+	if !ok {
+		t.Fatal("cumulative v2 manifest fixtures have unexpected type")
+	}
+	generatorSHA := testSHA256(testV2GeneratorSource)
+	provenance := testV3Provenance(generatorSHA)
+	for index, fixture := range testV3NormalFixtures {
+		document := testV3NormalFixtureDocument(fixture, byte(index+1))
+		direction := "positive"
+		if fixture.outcome == "authentication-failed" {
+			direction = "negative"
+		}
+		fixturePath := direction + "/" + fixture.id + ".json"
+		provenancePath := "provenance/" + fixture.id + ".json"
+		writeTestFile(t, root, fixturePath, document)
+		writeTestFile(t, root, provenancePath, provenance)
+		var entry map[string]any
+		entryJSON := testV2ManifestEntry(fixture.id, fixturePath, document, provenancePath, provenance, "normal-volume", fixture.outcome, fixture.stage, fixture.kdfCalls, "generator/phase4-v3.go", generatorSHA)
+		if err := json.Unmarshal([]byte(entryJSON), &entry); err != nil {
+			t.Fatalf("decode test v3 fixture entry: %v", err)
+		}
+		fixtures = append(fixtures, entry)
+	}
+	manifest["fixtures"] = fixtures
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("encode cumulative v3 manifest: %v", err)
+	}
+	writeTestFile(t, root, "manifest.json", string(encoded))
+	return root
+}
+
+func testV3NormalFixtureDocument(fixture testV3NormalFixture, fill byte) string {
+	volume, plaintext := testV3SyntheticMaterial(fixture, fill)
+	password := []byte("TEST ONLY mix")
+	keyfiles := []string{hex.EncodeToString([]byte("TEST ONLY red")), hex.EncodeToString([]byte("TEST ONLY blue"))}
+	if fixture.credentialMode == "keyfiles-only" {
+		password = nil
+	}
+	if fixture.keyfileMode == "unordered" {
+		keyfiles[0], keyfiles[1] = keyfiles[1], keyfiles[0]
+	}
+	comment := []byte("TEST ONLY comment")
+	if fixture.stage == "metadata" {
+		comment = nil
+	}
+	mutationOffsets := []int{}
+	if fixture.outcome != "success" {
+		mutationOffsets = []int{16}
+	}
+	document := map[string]any{
+		"test_only": true, "public_test_data_notice": testOnlyNotice,
+		"id": fixture.id, "category": "normal-volume", "case": fixture.caseName,
+		"suite": fixture.suite, "payload_rs": fixture.payloadRS,
+		"credential_mode": fixture.credentialMode, "keyfile_mode": fixture.keyfileMode,
+		"kdf_evidence": fixture.kdfEvidence, "password_utf8_hex": hex.EncodeToString(password),
+		"keyfiles_hex": keyfiles, "credential_root_hex": testV3KeyLiterals.credentialRoot,
+		"volume_hex": hex.EncodeToString(volume), "volume_sha256": testBytesSHA256(volume),
+		"plaintext_hex": hex.EncodeToString(plaintext), "plaintext_sha256": testBytesSHA256(plaintext),
+		"comment_utf8_hex":      hex.EncodeToString(comment),
+		"payload_length_hex":    fmt.Sprintf("%016x", fixture.payloadLength),
+		"data_record_count_hex": fmt.Sprintf("%016x", testRecordCount(fixture.payloadLength)),
+		"expected_outcome":      fixture.outcome, "expected_stage": fixture.stage,
+		"expected_kdf_calls":              fixture.kdfCalls,
+		"expected_authenticated_capsules": fixture.authenticatedCapsules,
+		"expected_completion":             fixture.completion, "mutation_offsets": mutationOffsets,
+		"keys":   testV3NormalKeys(fixture.suite),
+		"status": "required", "generated_at_test_time": false,
+	}
+	encoded, _ := json.Marshal(document)
+	return string(encoded)
+}
+
+func testV3NormalKeys(suite string) map[string]any {
+	primarySerpent, backupSerpent, payloadSerpent := "", "", ""
+	if suite == "paranoid1" {
+		primarySerpent = testV3KeyLiterals.primaryWrapSerpent
+		backupSerpent = testV3KeyLiterals.backupWrapSerpent
+		payloadSerpent = testV3KeyLiterals.payloadSerpent
+	}
+	return map[string]any{
+		"volume_key_hex":             testV3KeyLiterals.volumeKey,
+		"primary_wrap_xchacha20_hex": testV3KeyLiterals.primaryWrapX, "backup_wrap_xchacha20_hex": testV3KeyLiterals.backupWrapX,
+		"primary_wrap_serpent_hex": primarySerpent, "backup_wrap_serpent_hex": backupSerpent,
+		"primary_wrap_mac_hex": testV3KeyLiterals.primaryWrapMAC, "backup_wrap_mac_hex": testV3KeyLiterals.backupWrapMAC,
+		"primary_replica_mac_hex": testV3KeyLiterals.primaryReplicaMAC, "backup_replica_mac_hex": testV3KeyLiterals.backupReplicaMAC,
+		"metadata_mac_hex": testV3KeyLiterals.metadataMAC, "payload_xchacha20_hex": testV3KeyLiterals.payloadX,
+		"payload_serpent_hex": payloadSerpent, "payload_mac_hex": testV3KeyLiterals.payloadMAC,
+	}
+}
+
+func testV3SyntheticMaterial(fixture testV3NormalFixture, fill byte) ([]byte, []byte) {
+	plaintext := bytes.Repeat([]byte{fill}, fixture.payloadLength)
+	overhead := 2232
+	if fixture.payloadRS {
+		overhead = 2304
+	}
+	volume := bytes.Repeat([]byte{fill ^ 0xff}, fixture.payloadLength+overhead)
+	copy(volume, []byte("PCV\x00TEST ONLY SYNTHETIC LOADER CONTRACT"))
+	return volume, plaintext
+}
+
+func testV3Provenance(generatorSHA string) string {
+	lock := "go=1.26.5;golang.org/x/crypto=v0.54.0;github.com/Picocrypt-NG/serpent=v0.1.0;record-generator=hash-pinned"
+	return fmt.Sprintf(`{"test_only":true,"author":"independent-phase4-normal-generator","generator":"pcv3-phase4-independent-go","generator_version":"3","source_revision":"PCV3 revision 0.3 sections 4-17 and 25-28","source_sha256":%q,"dependency_lock":%q,"dependency_lock_sha256":%q,"reproduction_command":"go run ./generator/phase4-v3.go ROOT","independent_of_production":true,"production_code":false}`, generatorSHA, lock, testSHA256(lock))
+}
+
+func mutateV3Manifest(t *testing.T, root string, mutate func(map[string]any)) {
+	t.Helper()
+	manifestPath := filepath.Join(root, "manifest.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read cumulative v3 manifest: %v", err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode cumulative v3 manifest: %v", err)
+	}
+	mutate(manifest)
+	updated, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("encode mutated cumulative v3 manifest: %v", err)
+	}
+	writeTestFile(t, root, "manifest.json", string(updated))
+}
+
+func removeV3Fixture(t *testing.T, root, id string) {
+	t.Helper()
+	mutateV3Manifest(t, root, func(manifest map[string]any) {
+		fixtures := manifest["fixtures"].([]any)
+		kept := make([]any, 0, len(fixtures)-1)
+		for _, raw := range fixtures {
+			fixture := raw.(map[string]any)
+			if fixture["id"] == id {
+				for _, field := range []string{"path", "provenance_path"} {
+					name := fixture[field].(string)
+					if err := os.Remove(filepath.Join(root, filepath.FromSlash(name))); err != nil {
+						t.Fatalf("remove test v3 fixture artifact: %v", err)
+					}
+				}
+				continue
+			}
+			kept = append(kept, fixture)
+		}
+		manifest["fixtures"] = kept
+	})
+}
+
+func repinV3Fixture(t *testing.T, root, id, hash string) {
+	t.Helper()
+	mutateV3Manifest(t, root, func(manifest map[string]any) {
+		for _, raw := range manifest["fixtures"].([]any) {
+			fixture := raw.(map[string]any)
+			if fixture["id"] == id {
+				fixture["sha256"] = hash
+				return
+			}
+		}
+		t.Fatal("cumulative v3 manifest fixture missing")
+	})
+}
+
+func testBytesSHA256(value []byte) string {
+	digest := sha256.Sum256(value)
+	return hex.EncodeToString(digest[:])
+}
+
+func testRecordCount(length int) int {
+	if length == 0 {
+		return 0
+	}
+	return (length + (1 << 20) - 1) / (1 << 20)
+}
+
+func testV3FixtureContract(t *testing.T, id string) (testV3NormalFixture, byte) {
+	t.Helper()
+	for index, fixture := range testV3NormalFixtures {
+		if fixture.id == id {
+			return fixture, byte(index + 1)
+		}
+	}
+	t.Fatalf("test v3 fixture contract %q is missing", id)
+	return testV3NormalFixture{}, 0
+}
+
+func assertBorrowedHex(t *testing.T, name string, got []byte, wantHex string) {
+	t.Helper()
+	want, err := hex.DecodeString(wantHex)
+	if err != nil {
+		t.Fatalf("decode literal %s: %v", name, err)
+	}
+	assertBorrowedBytes(t, name, got, want)
+}
+
+func assertBorrowedBytes(t *testing.T, name string, got, want []byte) {
+	t.Helper()
+	if !bytes.Equal(got, want) {
+		t.Fatalf("borrowed %s did not match its literal fixture value", name)
+	}
+	if len(got) != 0 && allZero(got) {
+		t.Fatalf("borrowed %s was already zero inside the callback", name)
+	}
+}
+
+func allZero(value []byte) bool {
+	for _, octet := range value {
+		if octet != 0 {
+			return false
+		}
+	}
+	return true
 }
