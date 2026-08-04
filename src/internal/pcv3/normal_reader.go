@@ -91,10 +91,17 @@ func readNormalVolumeWithProvider(
 
 	var finalSuffix [fixedSuffixLength]byte
 	defer pcv3crypto.SecureZero(finalSuffix[:])
-	if _, err := readExactAt(source, auth.geometry.backupCapsuleOffset, finalSuffix[:], StageTailGeometry); err != nil {
-		return normalTailReadResult(err, auth.AuthenticatedCapsules()), nil
+	_, tailErr := readExactAt(source, auth.geometry.backupCapsuleOffset, finalSuffix[:], StageTailGeometry)
+	if err := ctx.Err(); err != nil {
+		return newNormalReadResult(OutcomeOperationFailed, StageCancellation, auth.AuthenticatedCapsules(), nil), nil
+	}
+	if tailErr != nil {
+		return normalTailReadResult(tailErr, auth.AuthenticatedCapsules()), nil
 	}
 	eofState := normalPhysicalEOF(source, sourceSize)
+	if err := ctx.Err(); err != nil {
+		return newNormalReadResult(OutcomeOperationFailed, StageCancellation, auth.AuthenticatedCapsules(), nil), nil
+	}
 	if !bytes.Equal(suffix[:], finalSuffix[:]) || sourceSize != auth.geometry.fileSize || eofState == normalEOFFailure {
 		return newNormalReadResult(OutcomeAuthenticationFailed, StageTailGeometry, auth.AuthenticatedCapsules(), nil), nil
 	}
