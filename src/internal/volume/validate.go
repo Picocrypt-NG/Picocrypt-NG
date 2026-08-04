@@ -113,6 +113,10 @@ func (req *EncryptRequest) validateSplit() error {
 // Validate checks that the DecryptRequest has all required fields and valid configuration.
 // Returns nil if valid, or an error describing the validation failure.
 func (req *DecryptRequest) Validate() error {
+	return req.validate(false)
+}
+
+func (req *DecryptRequest) validate(preparedInput bool) error {
 	// Check for input file
 	if req.InputFile == "" {
 		return errors.NewValidationError("InputFile", "input file path is required")
@@ -125,8 +129,10 @@ func (req *DecryptRequest) Validate() error {
 		if _, _, err := fileops.CountChunks(inputBase); err != nil {
 			return errors.NewFileError("stat chunks", inputBase, err)
 		}
-	} else if _, err := os.Stat(req.InputFile); err != nil {
-		return errors.NewFileError("stat", req.InputFile, err)
+	} else if !preparedInput {
+		if _, err := os.Stat(req.InputFile); err != nil {
+			return errors.NewFileError("stat", req.InputFile, err)
+		}
 	}
 
 	// Note: We don't require password/keyfiles here because they may be
@@ -145,6 +151,54 @@ func (req *DecryptRequest) Validate() error {
 	}
 
 	return req.ValidateOutputSafety()
+}
+
+func (req *DecryptRequest) validatePrepared(input *PreparedDecryptInput) error {
+	if input == nil || !input.matches(req.InputFile, req.Recombine) {
+		return errors.NewValidationError("InputFile", "prepared input does not match the decrypt request")
+	}
+	if err := req.validate(true); err != nil {
+		return err
+	}
+	return input.ValidateOutputAlias(req.OutputFile)
+}
+
+// ValidateOutputAlias rejects an output path that currently names the exact
+// descriptor prepared for decryption, even if its original pathname was moved
+// or replaced after routing.
+func (input *PreparedDecryptInput) ValidateOutputAlias(output string) error {
+	if input == nil || input.info == nil {
+		return errors.NewValidationError("InputFile", "prepared input identity is unavailable")
+	}
+	return validatePreparedOutputAliases(output, input.inputInfos)
+}
+
+func validatePreparedOutputAliases(output string, inputInfos []os.FileInfo) error {
+	if len(inputInfos) == 0 {
+		return errors.NewValidationError("InputFile", "prepared input identity is unavailable")
+	}
+	if output == "" {
+		return nil
+	}
+	outputInfo, err := os.Stat(output)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return errors.NewFileError("stat", output, err)
+	}
+	for _, inputInfo := range inputInfos {
+		if inputInfo == nil {
+			return errors.NewValidationError("InputFile", "prepared input identity is unavailable")
+		}
+		if os.SameFile(inputInfo, outputInfo) {
+			return errors.NewValidationError(
+				"OutputFile",
+				fmt.Sprintf("output %q conflicts with a routed encrypted input", output),
+			)
+		}
+	}
+	return nil
 }
 
 // ValidateOutputSafety rejects destinations that alias the encrypted volume or

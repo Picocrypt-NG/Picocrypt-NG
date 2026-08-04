@@ -169,6 +169,13 @@ type OperationContext struct {
 	ownedTemps   []*fileops.StagedFile
 	tempInput    *fileops.StagedFile
 
+	// pinnedLegacyInput is the descriptor classified after preprocessing and
+	// reused by every legacy decrypt phase. It is either borrowed from a
+	// PreparedDecryptInput/staged file or owned by this context.
+	pinnedLegacyInput     *os.File
+	ownsPinnedLegacyInput bool
+	protectedInputInfos   []os.FileInfo
+
 	publishedOutputInfo os.FileInfo
 
 	// Progress tracking
@@ -451,6 +458,9 @@ func (ctx *OperationContext) Close() error {
 	}
 
 	var cleanupErrs []error
+	if err := ctx.releasePinnedLegacyInput(); err != nil {
+		cleanupErrs = append(cleanupErrs, err)
+	}
 	if ctx.stagedOutput != nil {
 		if err := ctx.stagedOutput.Cleanup(); err != nil {
 			cleanupErrs = append(cleanupErrs, err)

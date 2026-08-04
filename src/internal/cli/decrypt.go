@@ -3,7 +3,6 @@ package cli
 import (
 	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/encoding"
-	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/volume"
 	"bufio"
@@ -144,7 +143,7 @@ func init() {
 	decryptCmd.Flags().BoolVarP(&decYes, "yes", "y", false, "Overwrite output file without prompting")
 }
 
-func runDecrypt(cmd *cobra.Command, args []string) error {
+func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	if cmd.Flags().Changed("input") || len(decLegacyInputs) > 0 {
 		return errors.New("--input/-i was removed; pass the volume path as an argument")
 	}
@@ -222,9 +221,11 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := translatePCV3PreflightError(volume.PreflightPCV3(inputFile, decRecombine)); err != nil {
+	preparedInput, err := volume.PrepareDecryptInput(inputFile, decRecombine)
+	if err := translatePCV3PreflightError(err); err != nil {
 		return err
 	}
+	defer func() { retErr = errors.Join(retErr, preparedInput.Close()) }()
 	if autoDetectedSplit && !decQuiet {
 		fmt.Fprintln(os.Stderr, "Detected split volume. Use --recombine to recombine chunks first.")
 	}
@@ -274,6 +275,9 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 		Keyfiles:   decKeyfiles,
 		Recombine:  decRecombine,
 	}).ValidateOutputSafety(); err != nil {
+		return err
+	}
+	if err := preparedInput.ValidateOutputAlias(outputFile); err != nil {
 		return err
 	}
 
@@ -352,7 +356,7 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 	// Note: with deniability, we can't read the header until wrapper is removed
 	var volumeUsesKeyfiles bool
 	if len(password) == 0 && !decDeniability {
-		hdr, headerErr := readHeaderInfo(inputFile, decRecombine, rsCodecs)
+		hdr, headerErr := preparedInput.ReadLegacyHeader(rsCodecs)
 		if headerErr != nil {
 			translated := translatePCV3PreflightError(headerErr)
 			var unavailable pcv3UnavailableError
@@ -432,7 +436,8 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 	}
 
 	// Run decryption
-	err = volume.Decrypt(context.Background(), req)
+	err = volume.DecryptPrepared(context.Background(), req, preparedInput)
+	err = errors.Join(err, preparedInput.Close())
 	reporter.Finish()
 
 	if err != nil {
@@ -461,20 +466,4 @@ func runDecrypt(cmd *cobra.Command, args []string) error {
 func forceDecryptKeptResult(destination string) error {
 	fmt.Fprintf(os.Stderr, "Warning: Force decrypt kept output after MAC verification failed; recovered data is untrusted: %s\n", destination)
 	return newExitCodeError(ExitForceDecryptKept, "force decrypt kept output after MAC verification failed")
-}
-
-// readHeaderInfo reads just the header to get volume information
-func readHeaderInfo(inputFile string, recombine bool, rsCodecs *encoding.RSCodecs) (*header.VolumeHeader, error) {
-	f, err := volume.OpenLegacyPCVInput(inputFile, recombine)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-
-	reader := header.NewReader(f, rsCodecs)
-	result, err := reader.ReadHeader()
-	if err != nil {
-		return nil, err
-	}
-	return result.Header, nil
 }

@@ -203,7 +203,7 @@ func addDeniability(
 // CRITICAL: Must read salt(16) + nonce(24) from the beginning,
 // then decrypt with XChaCha20 using Argon2-derived key.
 func RemoveDeniability(volumePath string, password []byte, reporter ProgressReporter, rs *encoding.RSCodecs) (*fileops.StagedFile, error) {
-	return removeDeniability(volumePath, password, reporter, rs, nil)
+	return removeDeniability(volumePath, password, reporter, rs, nil, nil)
 }
 
 func removeDeniability(
@@ -212,13 +212,24 @@ func removeDeniability(
 	reporter ProgressReporter,
 	rs *encoding.RSCodecs,
 	expectedInput os.FileInfo,
+	preparedInput *os.File,
 ) (retStage *fileops.StagedFile, retErr error) {
-	// #nosec G304 -- volumePath is user-provided .pcv file
-	fin, err := os.Open(volumePath)
-	if err != nil {
-		return nil, fmt.Errorf("open volume: %w", err)
+	fin := preparedInput
+	closeInput := false
+	if fin == nil {
+		// #nosec G304 -- volumePath is user-provided .pcv file
+		var err error
+		fin, err = os.Open(volumePath)
+		if err != nil {
+			return nil, fmt.Errorf("open volume: %w", err)
+		}
+		closeInput = true
+	} else if _, err := fin.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind prepared deniability input: %w", err)
 	}
-	defer func() { _ = fin.Close() }()
+	if closeInput {
+		defer func() { _ = fin.Close() }()
+	}
 	stat, err := fin.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat volume: %w", err)
@@ -335,8 +346,10 @@ func removeDeniability(
 		}
 	}
 
-	if err := fin.Close(); err != nil {
-		return nil, fmt.Errorf("close volume: %w", err)
+	if closeInput {
+		if err := fin.Close(); err != nil {
+			return nil, fmt.Errorf("close volume: %w", err)
+		}
 	}
 
 	// Sync to ensure all data is written before verification

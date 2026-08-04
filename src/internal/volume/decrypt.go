@@ -34,22 +34,41 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 	if err := req.Validate(); err != nil {
 		return err
 	}
-	if err := PreflightPCV3(req.InputFile, req.Recombine); err != nil {
+	preparedInput, err := PrepareDecryptInput(req.InputFile, req.Recombine)
+	if err != nil {
 		return err
 	}
+	defer func() { retErr = errors.Join(retErr, preparedInput.Close()) }()
+	if err := preparedInput.ValidateOutputAlias(req.OutputFile); err != nil {
+		return err
+	}
+	return decryptPrepared(ctx, req, preparedInput)
+}
 
+// DecryptPrepared decrypts using the exact descriptor routed before a caller
+// collected credentials. The input is borrowed and must remain open until this
+// function returns.
+func DecryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *PreparedDecryptInput) error {
+	if err := req.validatePrepared(preparedInput); err != nil {
+		return err
+	}
+	return decryptPrepared(ctx, req, preparedInput)
+}
+
+func decryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *PreparedDecryptInput) (retErr error) {
 	opCtx := NewDecryptContext(ctx, req)
+	opCtx.protectedInputInfos = append([]os.FileInfo(nil), preparedInput.inputInfos...)
 	defer func() {
+		retErr = errors.Join(retErr, opCtx.Close())
 		if err := opCtx.cleanupRecombinedFile(); err != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("cleanup recombined input: %w", err))
 		}
-		retErr = errors.Join(retErr, opCtx.Close())
 	}() // Secure zeroing of key material and fail-loud temporary-file cleanup
 
 	log.Info("starting decryption", log.String("input", req.InputFile))
 
 	// Phase 1: Preprocess (recombine if split, remove deniability)
-	if err := decryptPreprocess(opCtx, req); err != nil {
+	if err := decryptPreprocess(opCtx, req, preparedInput); err != nil {
 		return err
 	}
 
@@ -100,26 +119,36 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 	return nil
 }
 
-func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
+func decryptPreprocess(ctx *OperationContext, req *DecryptRequest, preparedInput *PreparedDecryptInput) error {
 	inputFile := req.InputFile
+	var (
+		input      *os.File
+		inputOwned bool
+	)
 
 	// Recombine split chunks if needed
 	if req.Recombine {
+		firstChunk, err := preparedInput.rewindRouted()
+		if err != nil {
+			return fmt.Errorf("open prepared chunk zero: %w", err)
+		}
 		inputBase := inputFile
 		if base, ok := fileops.SplitChunkBase(inputFile); ok {
 			inputBase = base
 		}
 
 		outputPath := inputBase
-		var recombinedInfo os.FileInfo
-		err := fileops.Recombine(fileops.RecombineOptions{
+		var (
+			recombinedInfo os.FileInfo
+			chunkInfos     []os.FileInfo
+		)
+		err = fileops.Recombine(fileops.RecombineOptions{
 			InputBase:  inputBase,
 			OutputPath: outputPath,
 			OutputInfo: &recombinedInfo,
-			ValidateFirstChunk: func(source *os.File) error {
-				if err := rejectClaimedPCV3(source); err != nil {
-					return err
-				}
+			InputInfos: &chunkInfos,
+			FirstChunk: firstChunk,
+			ValidateFirstChunk: func(*os.File) error {
 				ctx.SetStatus("Recombining chunks...")
 				return nil
 			},
@@ -136,14 +165,40 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 		if err != nil {
 			return err
 		}
-
 		// Retain the recombined file identity so cleanup cannot unlink a
 		// replacement planted at the same pathname.
 		if err := ctx.rememberRecombinedFile(outputPath, recombinedInfo); err != nil {
 			return err
 		}
+		if len(chunkInfos) == 0 || !os.SameFile(preparedInput.info, chunkInfos[0]) {
+			return errors.New("recombined input identities do not include prepared chunk zero")
+		}
+		ctx.protectedInputInfos = append(ctx.protectedInputInfos, chunkInfos...)
 		ctx.TempFile = outputPath
 		inputFile = outputPath
+
+		// Open the completed operation-owned volume once and retain this exact
+		// descriptor through deniability removal or legacy payload processing.
+		input, err = os.Open(outputPath) // #nosec G304 -- operation-owned path
+		if err != nil {
+			return fmt.Errorf("open recombined input: %w", err)
+		}
+		inputOwned = true
+		currentInfo, err := input.Stat()
+		if err != nil {
+			_ = input.Close()
+			return fmt.Errorf("inspect recombined input: %w", err)
+		}
+		if !os.SameFile(recombinedInfo, currentInfo) {
+			_ = input.Close()
+			return errors.New("recombined input path changed before use")
+		}
+	} else {
+		var err error
+		input, err = preparedInput.rewindRouted()
+		if err != nil {
+			return fmt.Errorf("open prepared input: %w", err)
+		}
 	}
 
 	// Remove deniability wrapper if present
@@ -158,7 +213,22 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 			ctx.Reporter,
 			req.RSCodecs,
 			expectedInput,
+			input,
 		)
+		if inputOwned {
+			closeErr := input.Close()
+			input = nil
+			inputOwned = false
+			if err == nil && closeErr != nil {
+				return errors.Join(
+					fmt.Errorf("close recombined deniability input: %w", closeErr),
+					decrypted.Cleanup(),
+				)
+			}
+			if err != nil {
+				err = errors.Join(err, closeErr)
+			}
+		}
 		if err != nil {
 			return err
 		}
@@ -168,12 +238,21 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 
 		ctx.adoptTempInput(decrypted)
 		inputFile = decrypted.Path()
+		input = decrypted.File()
 	}
 
 	ctx.InputFile = inputFile
 
-	// Get file size
-	stat, err := os.Stat(inputFile)
+	// Pin and classify the final post-processed descriptor before header parsing,
+	// KDF work, or any output allocation. Every later decrypt phase reuses it.
+	if err := ctx.pinLegacyDecryptInput(input, inputOwned); err != nil {
+		if inputOwned {
+			err = errors.Join(err, input.Close())
+		}
+		return fmt.Errorf("open final input: %w", err)
+	}
+	fin := input
+	stat, err := fin.Stat()
 	if err != nil {
 		return fmt.Errorf("stat input: %w", err)
 	}
@@ -183,12 +262,9 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 }
 
 func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
-	fin, closeInput, err := ctx.openLegacyDecryptInput()
+	fin, err := ctx.openLegacyDecryptInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
-	}
-	if closeInput {
-		defer func() { _ = fin.Close() }()
 	}
 	ctx.SetStatus("Reading values...")
 
@@ -488,12 +564,9 @@ func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest,
 	}
 
 	// Open input file
-	fin, closeInput, err := ctx.openLegacyDecryptInput()
+	fin, err := ctx.openLegacyDecryptInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
-	}
-	if closeInput {
-		defer func() { _ = fin.Close() }()
 	}
 
 	// Skip past header
@@ -668,12 +741,9 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 	ctx.CipherSuite = cipherSuite
 
 	// Open files
-	fin, closeInput, err := ctx.openLegacyDecryptInput()
+	fin, err := ctx.openLegacyDecryptInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
-	}
-	if closeInput {
-		defer func() { _ = fin.Close() }()
 	}
 
 	// Skip past header
@@ -808,7 +878,8 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 			//   - ctx.CipherSuite: freshly built in decryptPayloadWithFastDecode;
 			//                      the previous suite is now Close()'d (key zeroed)
 			//                      before reassignment (see that function).
-			//   - input offset:    fresh os.Open + Seek(headerSize) per call.
+			//   - input offset:    the pinned descriptor is rewound and then seeks
+			//                      to the payload for each pass.
 			//   - output:          the same operation-owned stage is truncated and
 			//                      rewound through its retained handle.
 			// The Argon2id re-derivation is intentionally KEPT (D-07); reducing
@@ -844,6 +915,20 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 	if err := req.ValidateOutputSafety(); err != nil {
 		return err
 	}
+	if err := validatePreparedOutputAliases(req.OutputFile, ctx.protectedInputInfos); err != nil {
+		return err
+	}
+
+	// No plaintext may be published until the operation-owned recombined
+	// ciphertext has been closed, its path ownership revalidated, and the file
+	// removed. This ordering is also required on Windows, where an open handle
+	// prevents deletion.
+	if err := ctx.releasePinnedLegacyInput(); err != nil {
+		return err
+	}
+	if err := ctx.cleanupRecombinedFile(); err != nil {
+		return fmt.Errorf("cleanup recombined input: %w", err)
+	}
 
 	shouldUnzip := false
 	if req.AutoUnzip {
@@ -861,9 +946,6 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 	if shouldUnzip && !req.SameLevel {
 		if err := autoUnzipUnpublishedOutput(ctx, req); err != nil {
 			return err
-		}
-		if err := ctx.cleanupRecombinedFile(); err != nil {
-			return fmt.Errorf("cleanup recombined input: %w", err)
 		}
 		return nil
 	}
@@ -884,13 +966,6 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 
 	if err := ctx.publishStagedOutput(); err != nil {
 		return closePinnedAutoUnzipRoot(autoUnzipRoot, fmt.Errorf("publish output: %w", err))
-	}
-
-	if err := ctx.cleanupRecombinedFile(); err != nil {
-		return closePinnedAutoUnzipRoot(
-			autoUnzipRoot,
-			fmt.Errorf("cleanup recombined input: %w", err),
-		)
 	}
 
 	if shouldUnzip {

@@ -215,6 +215,20 @@ func (req *DecryptRequest) ValidateCredentials(keyfilesRequired bool) error
 
 // Decrypt decrypts a .pcv volume.  ctx may be nil (uses Background).
 func Decrypt(ctx context.Context, req *DecryptRequest) error
+
+// PreparedDecryptInput owns the exact descriptor routed before credential
+// collection and records the selected split-chunk identities. Close is
+// idempotent; ReadLegacyHeader does not transfer ownership.
+type PreparedDecryptInput struct { /* unexported */ }
+
+func PrepareDecryptInput(path string, recombine bool) (*PreparedDecryptInput, error)
+func (input *PreparedDecryptInput) ReadLegacyHeader(rs *encoding.RSCodecs) (*header.VolumeHeader, error)
+func (input *PreparedDecryptInput) ValidateOutputAlias(output string) error
+func (input *PreparedDecryptInput) Close() error
+
+// DecryptPrepared borrows input; the caller keeps it open through the call and
+// remains responsible for closing it afterward.
+func DecryptPrepared(ctx context.Context, req *DecryptRequest, input *PreparedDecryptInput) error
 ```
 
 ### Progress
@@ -610,12 +624,15 @@ type SplitOptions struct {
 func Split(opts SplitOptions) ([]string, error)
 
 type RecombineOptions struct {
-    InputBase  string // base path without the .N chunk suffix
-    OutputPath string
-    OutputInfo *os.FileInfo // optional exact identity of completed output
-    Progress   ProgressFunc
-    Status     StatusFunc
-    Cancel     CancelFunc
+    InputBase          string // base path without the .N chunk suffix
+    OutputPath         string
+    OutputInfo         *os.FileInfo // optional exact identity of completed output
+    InputInfos         *[]os.FileInfo // optional identities of consumed chunks
+    FirstChunk         *os.File     // optional borrowed chunk-zero descriptor
+    ValidateFirstChunk func(*os.File) error
+    Progress           ProgressFunc
+    Status             StatusFunc
+    Cancel             CancelFunc
 }
 
 func Recombine(opts RecombineOptions) error

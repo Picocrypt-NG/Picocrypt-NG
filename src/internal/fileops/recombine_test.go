@@ -28,13 +28,22 @@ func TestRecombineValidatesAndConsumesSameFirstChunkBeforeOutput(t *testing.T) {
 	if err := os.WriteFile(replacement, replacementFirst, 0o600); err != nil {
 		t.Fatalf("write replacement chunk: %v", err)
 	}
+	firstChunk, err := os.Open(base + ".0")
+	if err != nil {
+		t.Fatalf("open routed chunk zero: %v", err)
+	}
+	t.Cleanup(func() { _ = firstChunk.Close() })
 
 	validationCalls := 0
-	err := Recombine(RecombineOptions{
+	err = Recombine(RecombineOptions{
 		InputBase:  base,
 		OutputPath: output,
+		FirstChunk: firstChunk,
 		ValidateFirstChunk: func(source *os.File) error {
 			validationCalls++
+			if source != firstChunk {
+				return errors.New("recombine did not validate the borrowed chunk-zero descriptor")
+			}
 			if _, err := os.Lstat(output); err == nil {
 				return errors.New("recombine output exists before first-chunk validation")
 			} else if !errors.Is(err, os.ErrNotExist) {
@@ -64,6 +73,9 @@ func TestRecombineValidatesAndConsumesSameFirstChunkBeforeOutput(t *testing.T) {
 	}
 	if validationCalls != 1 {
 		t.Fatalf("validation calls = %d; want one exact first-chunk validation", validationCalls)
+	}
+	if _, err := firstChunk.Stat(); err != nil {
+		t.Fatalf("Recombine closed the borrowed chunk-zero descriptor: %v", err)
 	}
 	got, err := os.ReadFile(output)
 	if err != nil {

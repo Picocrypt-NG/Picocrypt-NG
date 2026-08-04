@@ -3,6 +3,9 @@ package volume
 import (
 	"Picocrypt-NG/internal/crypto"
 	"bytes"
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -43,5 +46,41 @@ func TestOperationContextCloseZerosAllSecrets(t *testing.T) {
 				t.Fatalf("%s byte %d not zeroed after Close: %d", name, i, x)
 			}
 		}
+	}
+}
+
+func TestOperationContextClosesPinnedDecryptInput(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "legacy.pcv")
+	if err := os.WriteFile(input, []byte("legacy-eligible input"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	ctx := NewDecryptContext(t.Context(), &DecryptRequest{InputFile: input})
+	fin, err := os.Open(input)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	if err := ctx.pinLegacyDecryptInput(fin, true); err != nil {
+		_ = fin.Close()
+		t.Fatalf("pinLegacyDecryptInput() = %v", err)
+	}
+	routed, err := ctx.openLegacyDecryptInput()
+	if err != nil {
+		t.Fatalf("openLegacyDecryptInput() = %v", err)
+	}
+	if routed != fin {
+		t.Fatal("classified input ownership was left with a phase-local caller")
+	}
+	again, err := ctx.openLegacyDecryptInput()
+	if err != nil {
+		t.Fatalf("second openLegacyDecryptInput() = %v", err)
+	}
+	if again != fin {
+		t.Fatal("later decrypt phase did not reuse the context-owned descriptor")
+	}
+	if err := ctx.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	if _, err := fin.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("pinned descriptor after Close() = %v; want os.ErrClosed", err)
 	}
 }

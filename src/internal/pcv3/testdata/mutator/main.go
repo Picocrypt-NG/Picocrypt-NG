@@ -103,7 +103,7 @@ var expectedMutations = map[string]expectedMutation{
 	"P3-ROUTE-ORDER-001": {
 		sourcePath: "internal/volume/deniability.go",
 		pkg:        "./internal/volume",
-		test:       "TestDecryptPreprocessRejectsPCV3SwapBeforeDeniabilityEffects",
+		test:       "TestRemoveDeniabilityRejectsBorrowedPCV3BeforeEffects",
 		marker:     "want ErrReaderUnavailable",
 	},
 	"P3-NO-FALLBACK-001": {
