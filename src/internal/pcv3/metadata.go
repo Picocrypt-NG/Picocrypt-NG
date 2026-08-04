@@ -5,7 +5,6 @@ import (
 	pcencoding "Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/pcv3credential"
 	"context"
-	"crypto/sha3"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -122,13 +121,8 @@ func metadataAuthMessage(
 	core logicalCore,
 	recovery *metadataRecovery,
 ) []byte {
-	logicalCore := logicalCoreBytes(core)
-	defer pcv3crypto.SecureZero(logicalCore[:])
-	hasher := sha3.New256()
-	_, _ = hasher.Write([]byte(coreCommitmentDomain))
-	_, _ = hasher.Write(logicalCore[:])
-	commitment := hasher.Sum(nil)
-	defer pcv3crypto.SecureZero(commitment)
+	commitment := coreCommitment(core)
+	defer pcv3crypto.SecureZero(commitment[:])
 
 	message := make(
 		[]byte,
@@ -136,7 +130,7 @@ func metadataAuthMessage(
 		len(metadataMACDomain)+len(commitment)+len(recovery.header)+len(recovery.comment),
 	)
 	message = append(message, metadataMACDomain...)
-	message = append(message, commitment...)
+	message = append(message, commitment[:]...)
 	message = append(message, recovery.header[:]...)
 	message = append(message, recovery.comment...)
 	return message
