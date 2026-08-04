@@ -1,0 +1,788 @@
+package pcv3
+
+import (
+	pcv3crypto "Picocrypt-NG/internal/crypto"
+	pcencoding "Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/pcv3credential"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"math"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+const (
+	recordFixtureRoot        = "testdata/records"
+	literalMaximumRecordBody = 1_114_248
+)
+
+type requiredRecordFixture struct {
+	name            string
+	suite           uint16
+	payloadBodyRS   bool
+	plaintextLength uint64
+	recordCount     uint64
+}
+
+var requiredBoundaryRecordFixtures = [...]requiredRecordFixture{
+	{name: "empty_standard_no_rs", suite: 1, plaintextLength: 0, recordCount: 0},
+	{name: "one_paranoid_no_rs", suite: 2, plaintextLength: 1, recordCount: 1},
+	{name: "minus_one_standard_rs", suite: 1, payloadBodyRS: true, plaintextLength: 1_048_575, recordCount: 1},
+	{name: "exact_one_paranoid_rs", suite: 2, payloadBodyRS: true, plaintextLength: 1_048_576, recordCount: 1},
+	{name: "plus_one_standard_no_rs", suite: 1, plaintextLength: 1_048_577, recordCount: 2},
+	{name: "exact_two_paranoid_rs", suite: 2, payloadBodyRS: true, plaintextLength: 2_097_152, recordCount: 2},
+}
+
+type recordFixtureRecord struct {
+	Index                uint64 `json:"index"`
+	Final                bool   `json:"final"`
+	PlaintextLength      int    `json:"plaintext_length"`
+	DescriptorOffset     uint64 `json:"descriptor_offset"`
+	BodyOffset           uint64 `json:"body_offset"`
+	EncodedBodyLength    uint64 `json:"encoded_body_length"`
+	DescriptorDecodedHex string `json:"descriptor_decoded_hex"`
+	DescriptorEncodedHex string `json:"descriptor_encoded_hex"`
+	NonceHex             string `json:"nonce_hex"`
+	SerpentIVHex         string `json:"serpent_iv_hex"`
+	CiphertextFile       string `json:"ciphertext_file"`
+	TagFile              string `json:"tag_file"`
+	BodyFile             string `json:"body_file"`
+	CiphertextSHA256     string `json:"ciphertext_sha256"`
+	TagHex               string `json:"tag_hex"`
+}
+
+type recordFixtureCase struct {
+	Name              string                `json:"name"`
+	Suite             uint16                `json:"suite"`
+	PayloadBodyRS     bool                  `json:"payload_body_rs"`
+	PatternMul        byte                  `json:"pattern_mul"`
+	PatternAdd        byte                  `json:"pattern_add"`
+	PlaintextLength   uint64                `json:"plaintext_length"`
+	RecordCount       uint64                `json:"record_count"`
+	FrontHeaderLength uint64                `json:"front_header_length"`
+	PayloadLength     uint64                `json:"payload_length"`
+	CanonicalFileSize uint64                `json:"canonical_file_size"`
+	CoreFile          string                `json:"core_file"`
+	KeysFile          string                `json:"keys_file"`
+	PlaintextFile     string                `json:"plaintext_file"`
+	PlaintextSHA256   string                `json:"plaintext_sha256"`
+	Records           []recordFixtureRecord `json:"records"`
+}
+
+type recordFixtureManifest struct {
+	Format string              `json:"format"`
+	Cases  []recordFixtureCase `json:"cases"`
+}
+
+type recordReadSpan struct {
+	offset    int64
+	requested int
+	delivered int
+}
+
+type recordTrackingReader struct {
+	base       int64
+	data       []byte
+	maxChunk   int
+	failOffset int64
+	failErr    error
+	spans      []recordReadSpan
+}
+
+func (reader *recordTrackingReader) ReadAt(destination []byte, offset int64) (int, error) {
+	requested := len(destination)
+	if reader.failErr != nil && offset >= reader.failOffset {
+		reader.spans = append(reader.spans, recordReadSpan{offset: offset, requested: requested})
+		return 0, reader.failErr
+	}
+	if offset < reader.base {
+		reader.spans = append(reader.spans, recordReadSpan{offset: offset, requested: requested})
+		return 0, io.EOF
+	}
+	relative := offset - reader.base
+	if relative >= int64(len(reader.data)) {
+		reader.spans = append(reader.spans, recordReadSpan{offset: offset, requested: requested})
+		return 0, io.EOF
+	}
+	limit := requested
+	if reader.maxChunk > 0 && limit > reader.maxChunk {
+		limit = reader.maxChunk
+	}
+	remaining := len(reader.data) - int(relative)
+	if limit > remaining {
+		limit = remaining
+	}
+	count := copy(destination[:limit], reader.data[relative:int(relative)+limit])
+	reader.spans = append(reader.spans, recordReadSpan{
+		offset:    offset,
+		requested: requested,
+		delivered: count,
+	})
+	if count < requested && int(relative)+count == len(reader.data) {
+		return count, io.EOF
+	}
+	return count, nil
+}
+
+type recordCollectingSink struct {
+	indexes  []uint64
+	copied   []byte
+	borrowed [][]byte
+	failAt   int
+	failErr  error
+}
+
+func (sink *recordCollectingSink) writeVerifiedRecord(
+	ctx context.Context,
+	index uint64,
+	plaintext []byte,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	sink.borrowed = append(sink.borrowed, plaintext)
+	if sink.failErr != nil && len(sink.indexes) == sink.failAt {
+		return sink.failErr
+	}
+	sink.indexes = append(sink.indexes, index)
+	sink.copied = append(sink.copied, plaintext...)
+	return nil
+}
+
+func (sink *recordCollectingSink) assertBorrowsCleared(t *testing.T) {
+	t.Helper()
+	for index, borrowed := range sink.borrowed {
+		if !allRecordBytesZero(borrowed) {
+			t.Fatalf("sink plaintext borrow %d retained nonzero bytes after record engine return", index)
+		}
+	}
+}
+
+type recordLiteralKeyBorrower struct {
+	keys map[pcv3credential.KeyRequest][32]byte
+}
+
+func (borrower *recordLiteralKeyBorrower) withKey(
+	ctx context.Context,
+	request pcv3credential.KeyRequest,
+	callback func([]byte) error,
+) error {
+	if borrower == nil || ctx == nil || callback == nil {
+		return errors.New("TEST ONLY invalid record key borrow")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	key, ok := borrower.keys[request]
+	if !ok {
+		return errors.New("TEST ONLY unknown record key request")
+	}
+	defer pcv3crypto.SecureZero(key[:])
+	return callback(key[:])
+}
+
+func (borrower *recordLiteralKeyBorrower) close() {
+	if borrower == nil {
+		return
+	}
+	for request, key := range borrower.keys {
+		pcv3crypto.SecureZero(key[:])
+		delete(borrower.keys, request)
+	}
+}
+
+func TestExpectedRecord(t *testing.T) {
+	manifest := loadRecordFixtureManifest(t)
+	for _, required := range requiredBoundaryRecordFixtures {
+		fixture := requiredBoundaryRecordFixture(t, manifest, required)
+		t.Run(fixture.Name, func(t *testing.T) {
+			core := loadRecordFixtureCore(t, fixture)
+			geometry := recordFixtureGeometry(t, fixture, core)
+			plaintextOffset := uint64(0)
+			for _, literal := range fixture.Records {
+				got, err := expectedRecord(core, geometry, literal.Index)
+				if err != nil {
+					t.Fatalf("expectedRecord(%d): %v", literal.Index, err)
+				}
+				wantDescriptor := recordFixtureHex(t, literal.DescriptorDecodedHex)
+				wantNonce := recordFixtureHex(t, literal.NonceHex)
+				wantIV := recordFixtureHex(t, literal.SerpentIVHex)
+				if got.index != literal.Index || got.final != literal.Final ||
+					got.plaintextOffset != plaintextOffset ||
+					got.ciphertextLength != uint64(literal.PlaintextLength) ||
+					!bytes.Equal(got.descriptor[:], wantDescriptor) ||
+					got.descriptorOffset != int64(fixture.FrontHeaderLength+literal.DescriptorOffset) ||
+					got.bodyOffset != int64(fixture.FrontHeaderLength+literal.BodyOffset) ||
+					got.encodedBodyLength != int(literal.EncodedBodyLength) ||
+					!bytes.Equal(got.nonce[:], wantNonce) ||
+					!bytes.Equal(got.serpentIV[:], wantIV) {
+					t.Fatalf("expectedRecord(%d) = %+v; want literal descriptor/geometry/nonce/IV from fixture", literal.Index, got)
+				}
+				plaintextOffset += uint64(literal.PlaintextLength)
+			}
+			if _, err := expectedRecord(core, geometry, fixture.RecordCount+1); err == nil {
+				t.Fatal("expectedRecord accepted an index after the mandatory final record")
+			}
+		})
+	}
+
+	fixture := recordFixtureByName(t, manifest, "one_paranoid_no_rs")
+	core := loadRecordFixtureCore(t, fixture)
+	overflowGeometry := Geometry{
+		payloadBodyRS:       false,
+		recordCount:         1,
+		frontHeaderLength:   math.MaxInt64,
+		payloadLength:       225,
+		backupCapsuleOffset: math.MaxInt64,
+	}
+	if _, err := expectedRecord(core, overflowGeometry, 0); err == nil {
+		t.Fatal("expectedRecord accepted a body offset beyond signed host representation")
+	}
+	core.recordCount = maximumRecordCount
+	if _, err := expectedRecord(core, Geometry{}, maximumRecordCount); err == nil {
+		t.Fatal("expectedRecord accepted the forbidden 2^48 record index")
+	}
+}
+
+func TestReadNormalRecords(t *testing.T) {
+	manifest := loadRecordFixtureManifest(t)
+	codecs := recordTestCodecs(t)
+	for _, required := range requiredBoundaryRecordFixtures {
+		fixture := requiredBoundaryRecordFixture(t, manifest, required)
+		t.Run(fixture.Name, func(t *testing.T) {
+			payload := assembleRecordFixturePayload(t, fixture)
+			plaintext := recordFixturePlaintext(t, fixture)
+			auth, borrower := recordFixtureAuthority(t, fixture)
+			defer borrower.close()
+			defer auth.Close()
+			reader := &recordTrackingReader{
+				base:     int64(fixture.FrontHeaderLength),
+				data:     payload,
+				maxChunk: 32_749,
+			}
+			sink := &recordCollectingSink{}
+			verified, err := readNormalRecords(context.Background(), reader, auth, codecs, sink)
+			if err != nil {
+				t.Fatalf("readNormalRecords: %v", err)
+			}
+			if verified.dataRecords != fixture.RecordCount ||
+				verified.plaintextBytes != fixture.PlaintextLength {
+				t.Fatalf("record verification = %+v; want %d records/%d bytes", verified, fixture.RecordCount, fixture.PlaintextLength)
+			}
+			if !bytes.Equal(sink.copied, plaintext) {
+				t.Fatalf("verified plaintext differs from independent literal: got %d bytes, want %d", len(sink.copied), len(plaintext))
+			}
+			if len(sink.indexes) != int(fixture.RecordCount) {
+				t.Fatalf("sink writes = %d; want one per %d data records", len(sink.indexes), fixture.RecordCount)
+			}
+			for index, got := range sink.indexes {
+				if got != uint64(index) {
+					t.Fatalf("sink index %d = %d; want %d", index, got, index)
+				}
+			}
+			assertRecordReadBounds(t, reader, fixture)
+			sink.assertBorrowsCleared(t)
+		})
+	}
+
+	retry := recordFixtureByName(t, manifest, "retry_standard_rs")
+	plaintext := recordFixturePlaintext(t, retry)
+	t.Run("descriptor RS16 repairs at budget", func(t *testing.T) {
+		auth, borrower := recordFixtureAuthority(t, retry)
+		defer borrower.close()
+		defer auth.Close()
+		sink := &recordCollectingSink{}
+		verified, err := readNormalRecords(
+			context.Background(),
+			&recordTrackingReader{base: int64(retry.FrontHeaderLength), data: recordMutationFile(t, "descriptor_repair_16.bin")},
+			auth,
+			codecs,
+			sink,
+		)
+		if err != nil || verified.dataRecords != 1 || !bytes.Equal(sink.copied, plaintext) {
+			t.Fatalf("correctable descriptor result = %+v, err %v, plaintext %x", verified, err, sink.copied)
+		}
+		sink.assertBorrowsCleared(t)
+	})
+
+	t.Run("descriptor beyond RS16 budget fails before body read", func(t *testing.T) {
+		auth, borrower := recordFixtureAuthority(t, retry)
+		defer borrower.close()
+		defer auth.Close()
+		reader := &recordTrackingReader{base: int64(retry.FrontHeaderLength), data: recordMutationFile(t, "descriptor_damage_33.bin")}
+		sink := &recordCollectingSink{}
+		verified, err := readNormalRecords(context.Background(), reader, auth, codecs, sink)
+		requireRecordFailureStage(t, err, StageDescriptor)
+		if verified != (recordVerification{}) || len(sink.indexes) != 0 || len(reader.spans) == 0 {
+			t.Fatalf("uncorrectable descriptor produced verification/sink or no real read: %+v/%v/%v", verified, sink.indexes, reader.spans)
+		}
+		for _, span := range reader.spans {
+			if span.offset+int64(span.delivered) > int64(retry.FrontHeaderLength)+48 {
+				t.Fatalf("descriptor failure reached body at span %+v", span)
+			}
+		}
+	})
+
+	t.Run("re-encoded attacker length cannot control body geometry", func(t *testing.T) {
+		auth, borrower := recordFixtureAuthority(t, retry)
+		defer borrower.close()
+		defer auth.Close()
+		reader := &recordTrackingReader{base: int64(retry.FrontHeaderLength), data: recordMutationFile(t, "descriptor_wrong_length.bin")}
+		verified, err := readNormalRecords(context.Background(), reader, auth, codecs, &recordCollectingSink{})
+		requireRecordFailureStage(t, err, StageDescriptor)
+		if verified != (recordVerification{}) {
+			t.Fatalf("attacker descriptor produced verification %+v", verified)
+		}
+		for _, span := range reader.spans {
+			if span.offset+int64(span.delivered) > int64(retry.FrontHeaderLength)+48 {
+				t.Fatalf("attacker descriptor selected a body read: %+v", span)
+			}
+		}
+	})
+
+	t.Run("source error has no completion or plaintext", func(t *testing.T) {
+		auth, borrower := recordFixtureAuthority(t, retry)
+		defer borrower.close()
+		defer auth.Close()
+		payload := recordMutationFile(t, "retry_base.bin")
+		sourceFailure := errors.New("TEST ONLY record source failure")
+		reader := &recordTrackingReader{
+			base:       int64(retry.FrontHeaderLength),
+			data:       payload,
+			failOffset: int64(retry.FrontHeaderLength) + 48,
+			failErr:    sourceFailure,
+		}
+		sink := &recordCollectingSink{}
+		verified, err := readNormalRecords(context.Background(), reader, auth, codecs, sink)
+		requireRecordFailureStage(t, err, StageInputIO)
+		if !errors.Is(err, sourceFailure) || verified != (recordVerification{}) || len(sink.indexes) != 0 {
+			t.Fatalf("source failure result = %+v/%v/%v", verified, err, sink.indexes)
+		}
+	})
+
+	t.Run("cancellation before read has no completion", func(t *testing.T) {
+		auth, borrower := recordFixtureAuthority(t, retry)
+		defer borrower.close()
+		defer auth.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		reader := &recordTrackingReader{base: int64(retry.FrontHeaderLength), data: recordMutationFile(t, "retry_base.bin")}
+		verified, err := readNormalRecords(ctx, reader, auth, codecs, &recordCollectingSink{})
+		requireRecordFailureStage(t, err, StageCancellation)
+		if verified != (recordVerification{}) || len(reader.spans) != 0 {
+			t.Fatalf("pre-cancel result = %+v with %d reads", verified, len(reader.spans))
+		}
+	})
+
+	t.Run("sink failure clears plaintext and withholds completion", func(t *testing.T) {
+		auth, borrower := recordFixtureAuthority(t, retry)
+		defer borrower.close()
+		defer auth.Close()
+		sinkFailure := errors.New("TEST ONLY sink failure")
+		sink := &recordCollectingSink{failAt: 0, failErr: sinkFailure}
+		verified, err := readNormalRecords(
+			context.Background(),
+			&recordTrackingReader{base: int64(retry.FrontHeaderLength), data: recordMutationFile(t, "retry_base.bin")},
+			auth,
+			codecs,
+			sink,
+		)
+		requireRecordFailureStage(t, err, StageOutputWrite)
+		if !errors.Is(err, sinkFailure) || verified != (recordVerification{}) || len(sink.indexes) != 0 {
+			t.Fatalf("sink failure result = %+v/%v/%v", verified, err, sink.indexes)
+		}
+		sink.assertBorrowsCleared(t)
+	})
+}
+
+func TestRecordAuthBeforeDecrypt(t *testing.T) {
+	manifest := loadRecordFixtureManifest(t)
+	fixture := recordFixtureByName(t, manifest, "retry_standard_rs")
+	auth, borrower := recordFixtureAuthority(t, fixture)
+	defer borrower.close()
+	defer auth.Close()
+	codecs := recordTestCodecs(t)
+	seams := defaultRecordEngineSeams()
+	decryptCalls := 0
+	realDecrypt := seams.decryptStandard
+	seams.decryptStandard = func(destination, source, key, nonce []byte) error {
+		decryptCalls++
+		return realDecrypt(destination, source, key, nonce)
+	}
+	sink := &recordCollectingSink{}
+	verified, err := readNormalRecordsWithSeams(
+		context.Background(),
+		&recordTrackingReader{base: int64(fixture.FrontHeaderLength), data: recordMutationFile(t, "body_bad_tag_reencoded.bin")},
+		auth,
+		codecs,
+		sink,
+		seams,
+	)
+	requireRecordFailureStage(t, err, StageRecordAuth)
+	if decryptCalls != 0 || len(sink.indexes) != 0 || verified != (recordVerification{}) {
+		t.Fatalf("bad tag reached decrypt/sink/completion: decrypt=%d sink=%v verified=%+v", decryptCalls, sink.indexes, verified)
+	}
+}
+
+func TestRecordRSRetryBound(t *testing.T) {
+	manifest := loadRecordFixtureManifest(t)
+	fixture := recordFixtureByName(t, manifest, "retry_standard_rs")
+	codecs := recordTestCodecs(t)
+	tests := []struct {
+		name           string
+		mutation       string
+		wantStage      Stage
+		wantFullPasses int
+		wantPlaintext  bool
+	}{
+		{name: "four data errors repair once", mutation: "body_repair_4.bin", wantFullPasses: 1, wantPlaintext: true},
+		{name: "nine data errors fail after one full pass", mutation: "body_damage_9.bin", wantStage: StageRecordBodyRS, wantFullPasses: 1},
+		{name: "valid malicious tag gets no second full pass", mutation: "body_bad_tag_reencoded.bin", wantStage: StageRecordAuth, wantFullPasses: 1},
+		{name: "nonzero padding fails before tag retry", mutation: "body_bad_padding_reencoded.bin", wantStage: StageRecordBodyRS, wantFullPasses: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			auth, borrower := recordFixtureAuthority(t, fixture)
+			defer borrower.close()
+			defer auth.Close()
+			seams := defaultRecordEngineSeams()
+			fullPasses := 0
+			realDecode := seams.decodeBody
+			seams.decodeBody = func(codecs *pcencoding.RSCodecs, encoded, decoded []byte, fullCorrection bool) error {
+				if fullCorrection {
+					fullPasses++
+				}
+				return realDecode(codecs, encoded, decoded, fullCorrection)
+			}
+			sink := &recordCollectingSink{}
+			verified, err := readNormalRecordsWithSeams(
+				context.Background(),
+				&recordTrackingReader{base: int64(fixture.FrontHeaderLength), data: recordMutationFile(t, test.mutation)},
+				auth,
+				codecs,
+				sink,
+				seams,
+			)
+			if fullPasses != test.wantFullPasses {
+				t.Fatalf("full RS correction passes = %d; want %d", fullPasses, test.wantFullPasses)
+			}
+			if test.wantStage != StageNone {
+				requireRecordFailureStage(t, err, test.wantStage)
+				if verified != (recordVerification{}) || len(sink.indexes) != 0 {
+					t.Fatalf("damaged body produced completion/sink: %+v/%v", verified, sink.indexes)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("correctable body: %v", err)
+			}
+			want := recordFixturePlaintext(t, fixture)
+			if !test.wantPlaintext || verified.dataRecords != 1 || !bytes.Equal(sink.copied, want) {
+				t.Fatalf("correctable body result = %+v/plaintext %x", verified, sink.copied)
+			}
+			sink.assertBorrowsCleared(t)
+		})
+	}
+}
+
+func TestFinalRecordRequired(t *testing.T) {
+	manifest := loadRecordFixtureManifest(t)
+	codecs := recordTestCodecs(t)
+	tests := []struct {
+		name     string
+		fixture  string
+		payload  func(*testing.T, recordFixtureCase) []byte
+		wantData bool
+	}{
+		{
+			name:    "empty payload still needs final",
+			fixture: "empty_standard_no_rs",
+			payload: func(*testing.T, recordFixtureCase) []byte { return nil },
+		},
+		{
+			name:    "exact multiple cannot end after data record",
+			fixture: "exact_one_paranoid_rs",
+			payload: func(t *testing.T, fixture recordFixtureCase) []byte {
+				payload := assembleRecordFixturePayload(t, fixture)
+				return payload[:fixture.Records[len(fixture.Records)-1].DescriptorOffset]
+			},
+			wantData: true,
+		},
+		{
+			name:    "damaged final tag is not completion",
+			fixture: "retry_standard_rs",
+			payload: func(t *testing.T, _ recordFixtureCase) []byte {
+				return recordMutationFile(t, "bad_final_tag_reencoded.bin")
+			},
+			wantData: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := recordFixtureByName(t, manifest, test.fixture)
+			auth, borrower := recordFixtureAuthority(t, fixture)
+			defer borrower.close()
+			defer auth.Close()
+			sink := &recordCollectingSink{}
+			verified, err := readNormalRecords(
+				context.Background(),
+				&recordTrackingReader{base: int64(fixture.FrontHeaderLength), data: test.payload(t, fixture)},
+				auth,
+				codecs,
+				sink,
+			)
+			requireRecordFailureStage(t, err, StageFinalRecord)
+			if verified != (recordVerification{}) {
+				t.Fatalf("missing/damaged final produced record verification %+v", verified)
+			}
+			if test.wantData != (len(sink.indexes) != 0) {
+				t.Fatalf("verified data staging presence = %t; want %t", len(sink.indexes) != 0, test.wantData)
+			}
+			sink.assertBorrowsCleared(t)
+		})
+	}
+
+	empty := recordFixtureByName(t, manifest, "empty_standard_no_rs")
+	auth, borrower := recordFixtureAuthority(t, empty)
+	defer borrower.close()
+	defer auth.Close()
+	sink := &recordCollectingSink{}
+	verified, err := readNormalRecords(
+		context.Background(),
+		&recordTrackingReader{base: int64(empty.FrontHeaderLength), data: assembleRecordFixturePayload(t, empty)},
+		auth,
+		codecs,
+		sink,
+	)
+	if err != nil || verified != (recordVerification{dataRecords: 0, plaintextBytes: 0}) || len(sink.indexes) != 0 {
+		t.Fatalf("authenticated empty final result = %+v/%v/%v", verified, err, sink.indexes)
+	}
+}
+
+func loadRecordFixtureManifest(t *testing.T) recordFixtureManifest {
+	t.Helper()
+	contents := recordFixtureFile(t, "manifest.json")
+	var manifest recordFixtureManifest
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		t.Fatalf("decode independent record manifest: %v", err)
+	}
+	if manifest.Format != "PCV3 record fixtures v1" {
+		t.Fatalf("independent record manifest identity = %q", manifest.Format)
+	}
+	return manifest
+}
+
+func recordFixtureByName(t *testing.T, manifest recordFixtureManifest, name string) recordFixtureCase {
+	t.Helper()
+	for _, fixture := range manifest.Cases {
+		if fixture.Name == name {
+			return fixture
+		}
+	}
+	t.Fatalf("required independent record fixture %q is absent", name)
+	return recordFixtureCase{}
+}
+
+func requiredBoundaryRecordFixture(
+	t *testing.T,
+	manifest recordFixtureManifest,
+	required requiredRecordFixture,
+) recordFixtureCase {
+	t.Helper()
+	fixture := recordFixtureByName(t, manifest, required.name)
+	if fixture.Suite != required.suite ||
+		fixture.PayloadBodyRS != required.payloadBodyRS ||
+		fixture.PlaintextLength != required.plaintextLength ||
+		fixture.RecordCount != required.recordCount {
+		t.Fatalf(
+			"required boundary fixture %q semantics = suite %d, RS %t, length %d, records %d; want %d/%t/%d/%d",
+			fixture.Name,
+			fixture.Suite,
+			fixture.PayloadBodyRS,
+			fixture.PlaintextLength,
+			fixture.RecordCount,
+			required.suite,
+			required.payloadBodyRS,
+			required.plaintextLength,
+			required.recordCount,
+		)
+	}
+	return fixture
+}
+
+func recordFixtureFile(t *testing.T, relative string) []byte {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.Join(recordFixtureRoot, filepath.FromSlash(relative)))
+	if err != nil {
+		t.Fatalf("read independent record fixture %q: %v", relative, err)
+	}
+	return contents
+}
+
+func recordFixturePlaintext(t *testing.T, fixture recordFixtureCase) []byte {
+	t.Helper()
+	var plaintext []byte
+	if fixture.PlaintextFile != "" {
+		plaintext = recordFixtureFile(t, fixture.PlaintextFile)
+	} else {
+		if fixture.PlaintextLength > uint64(math.MaxInt) {
+			t.Fatalf("fixture plaintext %q exceeds host representation", fixture.Name)
+		}
+		plaintext = make([]byte, int(fixture.PlaintextLength))
+		for index := range plaintext {
+			plaintext[index] = byte(index)*fixture.PatternMul + fixture.PatternAdd
+		}
+	}
+	if uint64(len(plaintext)) != fixture.PlaintextLength {
+		t.Fatalf("fixture plaintext %q length = %d; want %d", fixture.Name, len(plaintext), fixture.PlaintextLength)
+	}
+	digest := sha256.Sum256(plaintext)
+	if got := hex.EncodeToString(digest[:]); got != fixture.PlaintextSHA256 {
+		t.Fatalf("fixture plaintext %q SHA-256 = %s; want frozen %s", fixture.Name, got, fixture.PlaintextSHA256)
+	}
+	return plaintext
+}
+
+func recordMutationFile(t *testing.T, name string) []byte {
+	t.Helper()
+	return recordFixtureFile(t, filepath.ToSlash(filepath.Join("mutations", name)))
+}
+
+func recordFixtureHex(t *testing.T, literal string) []byte {
+	t.Helper()
+	decoded, err := hex.DecodeString(literal)
+	if err != nil {
+		t.Fatalf("decode independent fixture hex: %v", err)
+	}
+	return decoded
+}
+
+func loadRecordFixtureCore(t *testing.T, fixture recordFixtureCase) logicalCore {
+	t.Helper()
+	encoded := recordFixtureFile(t, fixture.CoreFile)
+	if len(encoded) != 96 {
+		t.Fatalf("fixture core length = %d; want 96", len(encoded))
+	}
+	decodedCandidate := make([]byte, decodedCapsuleLength)
+	copy(decodedCandidate, encoded)
+	return decodeCandidate(decodedCandidate).core
+}
+
+func recordFixtureGeometry(t *testing.T, fixture recordFixtureCase, core logicalCore) Geometry {
+	t.Helper()
+	geometry, err := DeriveGeometry(Candidate{core: core}, fixture.CanonicalFileSize)
+	if err != nil {
+		t.Fatalf("derive geometry for independent fixture %q: %v", fixture.Name, err)
+	}
+	return geometry
+}
+
+func recordFixtureAuthority(t *testing.T, fixture recordFixtureCase) (*normalAuthResult, *recordLiteralKeyBorrower) {
+	t.Helper()
+	core := loadRecordFixtureCore(t, fixture)
+	geometry := recordFixtureGeometry(t, fixture, core)
+	keyBytes := recordFixtureFile(t, fixture.KeysFile)
+	if len(keyBytes) != 96 {
+		t.Fatalf("fixture key file length = %d; want 96", len(keyBytes))
+	}
+	borrower := &recordLiteralKeyBorrower{keys: make(map[pcv3credential.KeyRequest][32]byte)}
+	add := func(label pcv3credential.KeyLabel, source []byte) {
+		var key [32]byte
+		copy(key[:], source)
+		borrower.keys[pcv3credential.KeyRequest{
+			Label:       label,
+			Role:        pcv3credential.KeyRoleNotReplica,
+			OutputBytes: 32,
+		}] = key
+	}
+	add(pcv3credential.KeyLabelVolumePayloadXChaCha20, keyBytes[:32])
+	if core.suite == SuiteParanoid {
+		add(pcv3credential.KeyLabelVolumePayloadSerpent, keyBytes[32:64])
+	}
+	add(pcv3credential.KeyLabelVolumePayloadMAC, keyBytes[64:96])
+	pcv3crypto.SecureZero(keyBytes)
+	auth := newNormalAuthResult(OutcomeSuccess, StageNone, 1)
+	auth.candidate = Candidate{core: core}
+	auth.geometry = geometry
+	auth.keyBorrower = borrower
+	return auth, borrower
+}
+
+func assembleRecordFixturePayload(t *testing.T, fixture recordFixtureCase) []byte {
+	t.Helper()
+	payload := make([]byte, 0, fixture.PayloadLength)
+	for _, record := range fixture.Records {
+		descriptor := recordFixtureHex(t, record.DescriptorEncodedHex)
+		if uint64(len(payload)) != record.DescriptorOffset || len(descriptor) != 48 {
+			t.Fatalf("fixture %q record %d descriptor placement drift", fixture.Name, record.Index)
+		}
+		payload = append(payload, descriptor...)
+		if uint64(len(payload)) != record.BodyOffset {
+			t.Fatalf("fixture %q record %d body placement drift", fixture.Name, record.Index)
+		}
+		if fixture.PayloadBodyRS {
+			payload = append(payload, recordFixtureFile(t, record.BodyFile)...)
+		} else {
+			payload = append(payload, recordFixtureFile(t, record.CiphertextFile)...)
+			payload = append(payload, recordFixtureFile(t, record.TagFile)...)
+		}
+		if uint64(len(payload)) != record.BodyOffset+record.EncodedBodyLength {
+			t.Fatalf("fixture %q record %d body length drift", fixture.Name, record.Index)
+		}
+	}
+	if uint64(len(payload)) != fixture.PayloadLength {
+		t.Fatalf("fixture %q payload length = %d; want %d", fixture.Name, len(payload), fixture.PayloadLength)
+	}
+	return payload
+}
+
+func recordTestCodecs(t *testing.T) *pcencoding.RSCodecs {
+	t.Helper()
+	codecs, err := pcencoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("NewRSCodecs: %v", err)
+	}
+	return codecs
+}
+
+func assertRecordReadBounds(t *testing.T, reader *recordTrackingReader, fixture recordFixtureCase) {
+	t.Helper()
+	if len(reader.spans) == 0 {
+		t.Fatal("record engine made no source reads")
+	}
+	payloadEnd := int64(fixture.FrontHeaderLength + fixture.PayloadLength)
+	for _, span := range reader.spans {
+		if span.requested <= 0 || span.requested > literalMaximumRecordBody {
+			t.Fatalf("ReaderAt requested unbounded length %d", span.requested)
+		}
+		if span.offset < int64(fixture.FrontHeaderLength) || span.offset+int64(span.delivered) > payloadEnd {
+			t.Fatalf("ReaderAt escaped authenticated payload geometry: %+v", span)
+		}
+	}
+}
+
+func requireRecordFailureStage(t *testing.T, err error, want Stage) {
+	t.Helper()
+	var failure *recordFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("error type = %T, want *recordFailure (err %v)", err, err)
+	}
+	if failure.stage != want {
+		t.Fatalf("record failure stage = %v; want %v", failure.stage, want)
+	}
+}
+
+func allRecordBytesZero(data []byte) bool {
+	for _, value := range data {
+		if value != 0 {
+			return false
+		}
+	}
+	return true
+}
