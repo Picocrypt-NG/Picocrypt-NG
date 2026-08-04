@@ -1388,13 +1388,17 @@ func TestWithNormalVolumeFixturesZeroesAliasesWhenCallbackFails(t *testing.T) {
 	err := WithNormalVolumeFixtures(root, testCustodyID, []string{"normal-standard-keyfiles-only-small"}, func(fixtures []*NormalVolumeFixture) error {
 		fixture := fixtures[0]
 		aliases = append(aliases, fixture.Volume(), fixture.Plaintext(), fixture.CredentialRoot())
-		aliases = append(aliases, fixture.Keyfiles()...)
+		keyfiles := fixture.Keyfiles()
+		aliases = append(aliases, keyfiles...)
 		aliases = append(aliases, fixture.Keys().VolumeKey(), fixture.Keys().PayloadMAC())
 		for _, alias := range aliases {
 			if len(alias) == 0 || allZero(alias) {
 				t.Fatal("callback-error oracle captured an empty or already-zero alias")
 			}
 		}
+		// The callback may reorder or clear its outer view, but must not be
+		// able to remove the owner's references needed for secure cleanup.
+		keyfiles[0] = nil
 		return sentinel
 	})
 	if !errors.Is(err, sentinel) {
