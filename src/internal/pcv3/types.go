@@ -7,7 +7,7 @@ import (
 	"strconv"
 )
 
-// Outcome identifies a closed PCV3 capsule-authentication result class.
+// Outcome identifies one name in the closed PCV3 conformance registry.
 type Outcome uint8
 
 const (
@@ -25,9 +25,17 @@ const (
 	OutcomeAmbiguousVolume
 	// OutcomeSuccess reports a fully authenticated, non-degraded result.
 	OutcomeSuccess
+	// OutcomeAuthenticationFailed rejects a confirmed volume with failed payload authentication.
+	OutcomeAuthenticationFailed
+	// OutcomeForcePartial reports verified anchors with missing or damaged payload records.
+	OutcomeForcePartial
+	// OutcomeForceUnverified reports explicit unverified recovery without a payload anchor.
+	OutcomeForceUnverified
+	// OutcomeCommittedDurabilityUncertain reports publication without confirmed directory durability.
+	OutcomeCommittedDurabilityUncertain
 )
 
-// Stage identifies the earliest applicable PCV3 reader boundary.
+// Stage identifies one boundary in the closed PCV3 conformance registry.
 type Stage uint8
 
 const StageNone Stage = 0
@@ -45,6 +53,18 @@ const (
 	StageReplicaAuth
 	StageKDFRuntime
 	StageCancellation
+	StageMetadata
+	StageDescriptor
+	StageRecordBodyRS
+	StageRecordAuth
+	StageFinalRecord
+	StageOutputPublication
+	StageD1Bootstrap
+	StageD1Body
+	StageInnerVolume
+	StageRNG
+	StageOutputWrite
+	StageDirectorySync
 )
 
 // Code is the stable coarse code exposed by platform adapters.
@@ -240,6 +260,14 @@ func (outcome Outcome) String() string {
 		return "ambiguous-volume"
 	case OutcomeSuccess:
 		return "success"
+	case OutcomeAuthenticationFailed:
+		return "authentication-failed"
+	case OutcomeForcePartial:
+		return "force-partial"
+	case OutcomeForceUnverified:
+		return "force-unverified"
+	case OutcomeCommittedDurabilityUncertain:
+		return "committed-durability-uncertain"
 	default:
 		return "unknown-outcome"
 	}
@@ -284,6 +312,30 @@ func (stage Stage) String() string {
 		return "kdf-runtime"
 	case StageCancellation:
 		return "cancellation"
+	case StageMetadata:
+		return "metadata"
+	case StageDescriptor:
+		return "descriptor"
+	case StageRecordBodyRS:
+		return "record-body-rs"
+	case StageRecordAuth:
+		return "record-auth"
+	case StageFinalRecord:
+		return "final-record"
+	case StageOutputPublication:
+		return "output-publication"
+	case StageD1Bootstrap:
+		return "d1-bootstrap"
+	case StageD1Body:
+		return "d1-body"
+	case StageInnerVolume:
+		return "inner-volume"
+	case StageRNG:
+		return "rng"
+	case StageOutputWrite:
+		return "output-write"
+	case StageDirectorySync:
+		return "directory-sync"
 	default:
 		return "unknown-stage"
 	}

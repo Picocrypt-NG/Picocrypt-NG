@@ -473,8 +473,7 @@ func releaseFactorRequest(factors *FactorRequest) {
 	if factors == nil {
 		return
 	}
-	owned := takeFactorRequest(factors)
-	_ = owned.close()
+	_ = factors.Close()
 }
 
 func newPipelineError(

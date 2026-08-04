@@ -53,6 +53,10 @@ type capsuleCredentialProvider interface {
 	) error
 }
 
+type capsuleCredentialProviderCloser interface {
+	close()
+}
+
 type capsuleOwnerProvider interface {
 	takeOwner() *pcv3credential.Owner
 }
@@ -102,6 +106,9 @@ func authenticateCapsulesWithProvider(
 	provider capsuleCredentialProvider,
 	seams capsuleAuthSeams,
 ) *normalAuthResult {
+	if closer, ok := provider.(capsuleCredentialProviderCloser); ok {
+		defer closer.close()
+	}
 	tuple, ok := credentialTupleForStructure(structure)
 	if !ok {
 		return newNormalAuthResult(
@@ -548,7 +555,7 @@ func verifySuiteMAC(
 // readerCredentialProvider is the production adapter. It has no injected KDF
 // or root: all credential work remains in WithReaderCredential.
 type readerCredentialProvider struct {
-	request  *pcv3credential.ReaderCredentialRequest
+	factors  *pcv3credential.FactorRequest
 	admitter pcv3credential.Admitter
 	owner    *pcv3credential.Owner
 	run      readerCredentialRunner
@@ -587,23 +594,30 @@ func (provider *readerCredentialProvider) withCredential(
 	ctx context.Context,
 	tuple credentialTuple,
 	callback func(capsuleCredentialAccess) error,
-) error {
-	if provider == nil || provider.request == nil || provider.admitter == nil ||
-		callback == nil ||
-		!callerPolicyMatches(tuple.credentialMode, provider.request.Factors) ||
-		provider.request.Suite != credentialSuite(tuple.suite) ||
-		provider.request.ProfileID != uint8(tuple.kdfProfile) ||
-		len(provider.request.ArgonSalt) != len(tuple.argonSalt) ||
-		len(provider.request.VolumeID) != len(tuple.volumeID) ||
-		subtle.ConstantTimeCompare(
-			provider.request.ArgonSalt,
-			tuple.argonSalt[:],
-		) != 1 || subtle.ConstantTimeCompare(
-		provider.request.VolumeID,
-		tuple.volumeID[:],
-	) != 1 {
+) (returnErr error) {
+	if provider == nil || callback == nil {
 		return &capsuleAuthError{stage: StageCredentialPolicy}
 	}
+	claimedPolicy, _ := credentialFactorPolicy(tuple.credentialMode)
+	request := &pcv3credential.ReaderCredentialRequest{
+		Suite:         credentialSuite(tuple.suite),
+		ProfileID:     uint8(tuple.kdfProfile),
+		Factors:       provider.factors,
+		ClaimedPolicy: claimedPolicy,
+		ArgonSalt:     append([]byte(nil), tuple.argonSalt[:]...),
+		VolumeID:      append([]byte(nil), tuple.volumeID[:]...),
+	}
+	provider.factors = nil
+	defer func() {
+		if request.Factors == nil {
+			return
+		}
+		if err := request.Factors.Close(); err != nil && returnErr == nil {
+			returnErr = &capsuleAuthError{stage: StageCredentialPolicy}
+		}
+		request.Factors = nil
+	}()
+
 	callbackSucceeded := false
 	var callbackErr error
 	run := provider.run
@@ -612,7 +626,7 @@ func (provider *readerCredentialProvider) withCredential(
 	}
 	owner, err := run(
 		ctx,
-		provider.request,
+		request,
 		provider.admitter,
 		tuple.suite,
 		func(access capsuleCredentialAccess) error {
@@ -637,34 +651,18 @@ func (provider *readerCredentialProvider) withCredential(
 	return &capsuleAuthError{stage: credentialPipelineStage(err)}
 }
 
-func callerPolicyMatches(
+func credentialFactorPolicy(
 	mode CredentialMode,
-	factors *pcv3credential.FactorRequest,
-) bool {
-	if factors == nil {
-		return true
-	}
-	var claimed pcv3credential.FactorPolicy
+) (pcv3credential.FactorPolicy, bool) {
 	switch mode {
 	case CredentialModePassword:
-		claimed = pcv3credential.FactorPolicyPasswordOnly
+		return pcv3credential.FactorPolicyPasswordOnly, true
 	case CredentialModeKeyfiles:
-		claimed = pcv3credential.FactorPolicyKeyfilesOnly
+		return pcv3credential.FactorPolicyKeyfilesOnly, true
 	case CredentialModeCombined:
-		claimed = pcv3credential.FactorPolicyPasswordAndKeyfiles
+		return pcv3credential.FactorPolicyPasswordAndKeyfiles, true
 	default:
-		return false
-	}
-	switch factors.ExpectedPolicy {
-	case pcv3credential.FactorPolicyPasswordOnly,
-		pcv3credential.FactorPolicyKeyfilesOnly,
-		pcv3credential.FactorPolicyPasswordAndKeyfiles:
-		return factors.ExpectedPolicy == claimed
-	default:
-		// The factor pipeline owns validation and cleanup for malformed local
-		// policies; this gate only prevents a valid caller pin from being
-		// silently contradicted by an untrusted capsule claim.
-		return true
+		return 0, false
 	}
 }
 
@@ -691,6 +689,20 @@ func credentialPipelineStage(err error) Stage {
 		return StageCredentialPolicy
 	default:
 		return StageKDFRuntime
+	}
+}
+
+func (provider *readerCredentialProvider) close() {
+	if provider == nil {
+		return
+	}
+	if provider.factors != nil {
+		_ = provider.factors.Close()
+		provider.factors = nil
+	}
+	if provider.owner != nil {
+		provider.owner.Close()
+		provider.owner = nil
 	}
 }
 

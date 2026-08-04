@@ -8,14 +8,16 @@ import (
 )
 
 // ReaderCredentialRequest transfers ownership of Factors to
-// WithReaderCredential. Salt, volume ID, and key requests are public input and
-// are snapshotted before factor processing.
+// WithReaderCredential. Suite, profile, claimed policy, salt, and volume ID
+// are public capsule input and are snapshotted before factor processing. The
+// independent caller pin remains Factors.ExpectedPolicy.
 type ReaderCredentialRequest struct {
-	Suite     Suite
-	ProfileID uint8
-	Factors   *FactorRequest
-	ArgonSalt []byte
-	VolumeID  []byte
+	Suite         Suite
+	ProfileID     uint8
+	Factors       *FactorRequest
+	ClaimedPolicy FactorPolicy
+	ArgonSalt     []byte
+	VolumeID      []byte
 }
 
 func (ReaderCredentialRequest) String() string {
@@ -133,6 +135,7 @@ func newReaderCredential(
 	request.Factors = nil
 	argonSalt := append([]byte(nil), request.ArgonSalt...)
 	volumeID := append([]byte(nil), request.VolumeID...)
+	claimedPolicy := request.ClaimedPolicy
 	expectedPolicy := FactorPolicy(0)
 	if factors != nil {
 		expectedPolicy = factors.ExpectedPolicy
@@ -152,6 +155,14 @@ func newReaderCredential(
 		return nil, newPipelineError(
 			PipelineErrorCancelled,
 			PipelineStageRequest,
+			suite,
+		)
+	}
+	if !validFactorPolicy(claimedPolicy) || expectedPolicy != claimedPolicy {
+		releaseFactorRequest(factors)
+		return nil, newPipelineError(
+			PipelineErrorFactors,
+			PipelineStageFactors,
 			suite,
 		)
 	}

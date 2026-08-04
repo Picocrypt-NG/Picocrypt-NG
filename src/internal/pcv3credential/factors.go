@@ -105,6 +105,15 @@ func (FactorRequest) GoString() string {
 	return "pcv3credential.FactorRequest([REDACTED])"
 }
 
+// Close releases a factor request that will not be transferred to
+// WithValidatedFactors. It is idempotent and redacts keyfile close failures.
+func (request *FactorRequest) Close() error {
+	if request == nil {
+		return nil
+	}
+	return takeFactorRequest(request).close()
+}
+
 // FactorErrorCode identifies a public, non-secret failure reason.
 type FactorErrorCode uint8
 
@@ -351,11 +360,7 @@ func validateFactorShape(
 	default:
 		return newFactorError(FactorErrorInvalidMode, -1, uint64(keyfileMode))
 	}
-	switch policy {
-	case FactorPolicyPasswordOnly,
-		FactorPolicyKeyfilesOnly,
-		FactorPolicyPasswordAndKeyfiles:
-	default:
+	if !validFactorPolicy(policy) {
 		return newFactorError(FactorErrorInvalidPolicy, -1, uint64(policy))
 	}
 	if !policyMatchesMode(policy, mode) {
@@ -408,6 +413,17 @@ func validateFactorShape(
 		seenReaders[reader.state] = struct{}{}
 	}
 	return nil
+}
+
+func validFactorPolicy(policy FactorPolicy) bool {
+	switch policy {
+	case FactorPolicyPasswordOnly,
+		FactorPolicyKeyfilesOnly,
+		FactorPolicyPasswordAndKeyfiles:
+		return true
+	default:
+		return false
+	}
 }
 
 func policyMatchesMode(policy FactorPolicy, mode CredentialMode) bool {
