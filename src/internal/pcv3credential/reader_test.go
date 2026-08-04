@@ -107,11 +107,12 @@ func readerCredentialRequest(t *testing.T, suite Suite) *ReaderCredentialRequest
 		t.Fatalf("fixedProfileForSuite(%#04x): %v", suite, err)
 	}
 	return &ReaderCredentialRequest{
-		Suite:     suite,
-		ProfileID: profile.ID,
-		Factors:   writerRequest.Factors,
-		ArgonSalt: bytes.Repeat([]byte{0x31}, kdfSaltBytes),
-		VolumeID:  bytes.Repeat([]byte{0x42}, scheduleVolumeIDBytes),
+		Suite:         suite,
+		ProfileID:     profile.ID,
+		Factors:       writerRequest.Factors,
+		ClaimedPolicy: writerRequest.Factors.ExpectedPolicy,
+		ArgonSalt:     bytes.Repeat([]byte{0x31}, kdfSaltBytes),
+		VolumeID:      bytes.Repeat([]byte{0x42}, scheduleVolumeIDBytes),
 	}
 }
 
@@ -125,6 +126,18 @@ func TestReaderCredentialRejectsBeforeKDF(t *testing.T) {
 			name: "invalid factor shape",
 			edit: func(request *ReaderCredentialRequest) {
 				request.Factors.Mode = CredentialModeKeyfilesOnly
+			},
+		},
+		{
+			name: "invalid claimed policy",
+			edit: func(request *ReaderCredentialRequest) {
+				request.ClaimedPolicy = FactorPolicy(0xff)
+			},
+		},
+		{
+			name: "caller policy contradicts capsule claim",
+			edit: func(request *ReaderCredentialRequest) {
+				request.ClaimedPolicy = FactorPolicyKeyfilesOnly
 			},
 		},
 		{
@@ -203,6 +216,9 @@ func TestReaderCredentialRejectsBeforeKDF(t *testing.T) {
 			}
 			if !allZero(passwordAlias) {
 				t.Fatal("rejected reader request retained transferred password")
+			}
+			if request.Factors != nil {
+				t.Fatal("rejected reader request retained transferred factors")
 			}
 		})
 	}

@@ -10,6 +10,28 @@ import (
 )
 
 func TestPhase3Registry(t *testing.T) {
+	outcomes := []struct {
+		outcome pcv3.Outcome
+		want    string
+	}{
+		{pcv3.OutcomeUnsupportedRoutingPreKDF, "unsupported-routing-pre-kdf"},
+		{pcv3.OutcomeInvalidStructurePreKDF, "invalid-structure-pre-kdf"},
+		{pcv3.OutcomeCredentialsOrDamage, "credentials-or-damage"},
+		{pcv3.OutcomeAuthenticationFailed, "authentication-failed"},
+		{pcv3.OutcomeAmbiguousVolume, "ambiguous-volume"},
+		{pcv3.OutcomeAuthenticatedDegraded, "authenticated-degraded"},
+		{pcv3.OutcomeForcePartial, "force-partial"},
+		{pcv3.OutcomeForceUnverified, "force-unverified"},
+		{pcv3.OutcomeOperationFailed, "operation-failed"},
+		{pcv3.OutcomeCommittedDurabilityUncertain, "committed-durability-uncertain"},
+		{pcv3.OutcomeSuccess, "success"},
+	}
+	for _, test := range outcomes {
+		if got := test.outcome.String(); got != test.want {
+			t.Errorf("outcome string = %q; want %q", got, test.want)
+		}
+	}
+
 	stages := []struct {
 		stage pcv3.Stage
 		want  string
@@ -25,8 +47,20 @@ func TestPhase3Registry(t *testing.T) {
 		{pcv3.StageWrapAuth, "wrap-auth"},
 		{pcv3.StageUnwrap, "unwrap"},
 		{pcv3.StageReplicaAuth, "replica-auth"},
+		{pcv3.StageMetadata, "metadata"},
+		{pcv3.StageDescriptor, "descriptor"},
+		{pcv3.StageRecordBodyRS, "record-body-rs"},
+		{pcv3.StageRecordAuth, "record-auth"},
+		{pcv3.StageFinalRecord, "final-record"},
+		{pcv3.StageOutputPublication, "output-publication"},
+		{pcv3.StageD1Bootstrap, "d1-bootstrap"},
+		{pcv3.StageD1Body, "d1-body"},
+		{pcv3.StageInnerVolume, "inner-volume"},
 		{pcv3.StageKDFRuntime, "kdf-runtime"},
+		{pcv3.StageRNG, "rng"},
+		{pcv3.StageOutputWrite, "output-write"},
 		{pcv3.StageCancellation, "cancellation"},
+		{pcv3.StageDirectorySync, "directory-sync"},
 	}
 	for _, test := range stages {
 		if got := test.stage.String(); got != test.want {
@@ -120,27 +154,6 @@ func TestPhase3Registry(t *testing.T) {
 		}
 	}
 
-	if got := pcv3.OutcomeUnsupportedRoutingPreKDF.String(); got != "unsupported-routing-pre-kdf" {
-		t.Errorf("unsupported outcome string = %q", got)
-	}
-	if got := pcv3.OutcomeInvalidStructurePreKDF.String(); got != "invalid-structure-pre-kdf" {
-		t.Errorf("invalid-structure outcome string = %q", got)
-	}
-	if got := pcv3.OutcomeOperationFailed.String(); got != "operation-failed" {
-		t.Errorf("operation-failed outcome string = %q", got)
-	}
-	if got := pcv3.OutcomeCredentialsOrDamage.String(); got != "credentials-or-damage" {
-		t.Errorf("credentials-or-damage outcome string = %q", got)
-	}
-	if got := pcv3.OutcomeAuthenticatedDegraded.String(); got != "authenticated-degraded" {
-		t.Errorf("authenticated-degraded outcome string = %q", got)
-	}
-	if got := pcv3.OutcomeAmbiguousVolume.String(); got != "ambiguous-volume" {
-		t.Errorf("ambiguous-volume outcome string = %q", got)
-	}
-	if got := pcv3.OutcomeSuccess.String(); got != "success" {
-		t.Errorf("success outcome string = %q", got)
-	}
 	if got := pcv3.CodeUnsupported.String(); got != "PCV3_UNSUPPORTED" {
 		t.Errorf("unsupported code string = %q", got)
 	}

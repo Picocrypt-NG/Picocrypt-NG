@@ -3,6 +3,7 @@ package pcv3
 import (
 	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/pcv3credential"
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -10,21 +11,12 @@ import (
 )
 
 func TestAuthenticateCapsulesCredentialPipelineClassification(t *testing.T) {
-	if callerPolicyMatches(
-		CredentialModePassword,
-		&pcv3credential.FactorRequest{
-			ExpectedPolicy: pcv3credential.FactorPolicyKeyfilesOnly,
-		},
-	) {
-		t.Fatal("explicit keyfile policy accepted a password-only capsule claim")
+	claimed, ok := credentialFactorPolicy(CredentialModeCombined)
+	if !ok || claimed != pcv3credential.FactorPolicyPasswordAndKeyfiles {
+		t.Fatal("combined capsule mode did not map to its complete factor policy")
 	}
-	if !callerPolicyMatches(
-		CredentialModeCombined,
-		&pcv3credential.FactorRequest{
-			ExpectedPolicy: pcv3credential.FactorPolicyPasswordAndKeyfiles,
-		},
-	) {
-		t.Fatal("matching caller-pinned combined policy was rejected")
+	if _, ok := credentialFactorPolicy(CredentialMode(0xff)); ok {
+		t.Fatal("unknown capsule credential mode mapped to a factor policy")
 	}
 
 	missingOwner := &pcv3credential.PipelineError{
@@ -175,12 +167,15 @@ func (provider *literalCredentialProvider) withCredential(
 	return callback(provider.access)
 }
 
-type literalKDFAdmitter struct{}
+type literalKDFAdmitter struct {
+	calls int
+}
 
-func (literalKDFAdmitter) AdmitKDF(
+func (admitter *literalKDFAdmitter) AdmitKDF(
 	context.Context,
 	pcv3credential.KDFProfile,
 ) (pcv3credential.KDFAdmission, error) {
+	admitter.calls++
 	return pcv3credential.KDFAdmissionGranted, nil
 }
 
@@ -258,22 +253,25 @@ func TestAuthenticateCapsulesReaderAdapterOwnershipCancellationAndZeroing(
 				publishedOwner = &pcv3credential.Owner{}
 			}
 			runnerCalls := 0
+			admitter := &literalKDFAdmitter{}
 			provider := &readerCredentialProvider{
-				request: &pcv3credential.ReaderCredentialRequest{
-					Suite:     credentialSuite(tuple.suite),
-					ProfileID: uint8(tuple.kdfProfile),
-					ArgonSalt: append([]byte(nil), tuple.argonSalt[:]...),
-					VolumeID:  append([]byte(nil), tuple.volumeID[:]...),
-				},
-				admitter: literalKDFAdmitter{},
+				admitter: admitter,
 				run: func(
 					_ context.Context,
-					_ *pcv3credential.ReaderCredentialRequest,
+					request *pcv3credential.ReaderCredentialRequest,
 					_ pcv3credential.Admitter,
 					_ Suite,
 					callback func(capsuleCredentialAccess) error,
 				) (*pcv3credential.Owner, error) {
 					runnerCalls++
+					if request == nil ||
+						request.Suite != credentialSuite(tuple.suite) ||
+						request.ProfileID != uint8(tuple.kdfProfile) ||
+						request.ClaimedPolicy != pcv3credential.FactorPolicyPasswordOnly ||
+						!bytes.Equal(request.ArgonSalt, tuple.argonSalt[:]) ||
+						!bytes.Equal(request.VolumeID, tuple.volumeID[:]) {
+						t.Fatal("adapter did not build the credential request from the capsule tuple")
+					}
 					if err := callback(access); err != nil {
 						return nil, err
 					}
@@ -345,6 +343,122 @@ func TestAuthenticateCapsulesReaderAdapterOwnershipCancellationAndZeroing(
 			result.Close()
 			if result.owner != nil {
 				t.Fatal("result Close retained the published Owner")
+			}
+		})
+	}
+}
+
+type literalKeyfileReadCloser struct {
+	reader *bytes.Reader
+	reads  int
+	closes int
+}
+
+func (reader *literalKeyfileReadCloser) Read(destination []byte) (int, error) {
+	reader.reads++
+	return reader.reader.Read(destination)
+}
+
+func (reader *literalKeyfileReadCloser) Close() error {
+	reader.closes++
+	return nil
+}
+
+func TestAuthenticateCapsulesReaderAdapterClosesFactorsOnPreKDFExit(
+	t *testing.T,
+) {
+	primary := literalCandidate(t, literalStandardPrimary, CapsuleRolePrimary)
+	backup := literalCandidate(t, literalStandardBackup, CapsuleRoleBackup)
+	healthy := literalStructure(primary, backup)
+	tests := []struct {
+		name        string
+		ctx         func() context.Context
+		structure   Structure
+		wantOutcome Outcome
+		wantStage   Stage
+	}{
+		{
+			name:        "invalid structure",
+			ctx:         context.Background,
+			structure:   Structure{},
+			wantOutcome: OutcomeInvalidStructurePreKDF,
+			wantStage:   StageCapsuleStructure,
+		},
+		{
+			name: "pre-cancelled context",
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			structure:   healthy,
+			wantOutcome: OutcomeOperationFailed,
+			wantStage:   StageCancellation,
+		},
+		{
+			name:        "caller policy contradicts capsule claim",
+			ctx:         context.Background,
+			structure:   healthy,
+			wantOutcome: OutcomeOperationFailed,
+			wantStage:   StageCredentialPolicy,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			passwordAlias := []byte("TEST ONLY transferred password")
+			keyfile := &literalKeyfileReadCloser{
+				reader: bytes.NewReader([]byte("TEST ONLY keyfile")),
+			}
+			factors := &pcv3credential.FactorRequest{
+				Mode:           pcv3credential.CredentialModePasswordAndKeyfiles,
+				KeyfileMode:    pcv3credential.KeyfileModeOrdered,
+				ExpectedPolicy: pcv3credential.FactorPolicyPasswordAndKeyfiles,
+				Password:       passwordAlias,
+				Keyfiles: []*pcv3credential.KeyfileReader{
+					pcv3credential.OwnKeyfileReader(keyfile),
+				},
+			}
+			admitter := &literalKDFAdmitter{}
+			provider := &readerCredentialProvider{
+				factors:  factors,
+				admitter: admitter,
+			}
+
+			result := authenticateCapsulesWithProvider(
+				test.ctx(),
+				test.structure,
+				provider,
+				defaultCapsuleAuthSeams(),
+			)
+			defer result.Close()
+			if result.Outcome() != test.wantOutcome ||
+				result.Stage() != test.wantStage ||
+				result.AuthenticatedCapsules() != 0 {
+				t.Fatalf(
+					"pre-KDF exit = %v/%v/%d; want %v/%v/0",
+					result.Outcome(),
+					result.Stage(),
+					result.AuthenticatedCapsules(),
+					test.wantOutcome,
+					test.wantStage,
+				)
+			}
+			if provider.factors != nil || factors.Password != nil || factors.Keyfiles != nil {
+				t.Fatal("adapter retained transferred factors after pre-KDF exit")
+			}
+			if !allZero(passwordAlias) {
+				t.Fatal("pre-KDF exit retained the transferred password alias")
+			}
+			if keyfile.reads != 0 || keyfile.closes != 1 {
+				t.Fatalf(
+					"pre-KDF exit keyfile reads/closes = %d/%d; want 0/1",
+					keyfile.reads,
+					keyfile.closes,
+				)
+			}
+			if admitter.calls != 0 {
+				t.Fatalf("pre-KDF exit reached KDF admission %d times", admitter.calls)
 			}
 		})
 	}

@@ -155,6 +155,42 @@ func digestCopyZero(digests [][32]byte) bool {
 	return true
 }
 
+func TestFactorRequestCloseReleasesUnconsumedOwnership(t *testing.T) {
+	passwordAlias := []byte("TEST ONLY unconsumed password")
+	closeCanary := "TEST ONLY private close failure"
+	reader := newChunkedReadCloser([]byte("TEST ONLY unread keyfile"), 4)
+	reader.closeErr = errors.New(closeCanary)
+	request := &FactorRequest{
+		Mode:           CredentialModePasswordAndKeyfiles,
+		KeyfileMode:    KeyfileModeOrdered,
+		ExpectedPolicy: FactorPolicyPasswordAndKeyfiles,
+		Password:       passwordAlias,
+		Keyfiles:       ownKeyfileReaders(reader),
+	}
+
+	err := request.Close()
+	var factorErr *FactorError
+	if !errors.As(err, &factorErr) || factorErr.Code != FactorErrorClose {
+		t.Fatalf("FactorRequest.Close error = %v; want close classification", err)
+	}
+	if strings.Contains(fmt.Sprintf("%v", err), closeCanary) {
+		t.Fatal("FactorRequest.Close disclosed the underlying close failure")
+	}
+	if err := request.Close(); err != nil {
+		t.Fatalf("second FactorRequest.Close = %v; want nil", err)
+	}
+	if request.Password != nil || request.Keyfiles != nil || !allZero(passwordAlias) {
+		t.Fatal("FactorRequest.Close retained transferred factor ownership")
+	}
+	if reader.readCalls != 0 || reader.closeCalls != 1 {
+		t.Fatalf(
+			"FactorRequest.Close keyfile reads/closes = %d/%d; want 0/1",
+			reader.readCalls,
+			reader.closeCalls,
+		)
+	}
+}
+
 func TestFactorModeMatrix(t *testing.T) {
 	if CredentialModePasswordOnly != 0x01 ||
 		CredentialModeKeyfilesOnly != 0x02 ||
