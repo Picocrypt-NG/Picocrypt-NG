@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"sort"
+	"sync"
 )
 
 const (
@@ -260,6 +261,82 @@ func (input *CredentialInputNormal) consume(
 		return newTranscriptError(TranscriptErrorClosed, 0, 0)
 	}
 	return callback(owned.Bytes())
+}
+
+// credentialInputBorrow lends one callback-scoped normal input to at most one
+// synchronous borrower at a time. Copies share the same expiry state.
+type credentialInputBorrow struct {
+	state *credentialInputBorrowState
+}
+
+type credentialInputBorrowState struct {
+	mu     sync.Mutex
+	idle   *sync.Cond
+	input  []byte
+	active bool
+	inUse  bool
+}
+
+func withCredentialInputBorrow(
+	transcript *CanonicalTranscript,
+	callback func(*credentialInputBorrow) error,
+) error {
+	if callback == nil {
+		return newTranscriptError(TranscriptErrorClosed, 0, 0)
+	}
+	input, err := NewCredentialInputNormal(transcript)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+
+	return input.consume(func(normalInput []byte) error {
+		state := &credentialInputBorrowState{
+			input:  normalInput,
+			active: true,
+		}
+		state.idle = sync.NewCond(&state.mu)
+		defer state.expire()
+		return callback(&credentialInputBorrow{state: state})
+	})
+}
+
+func (borrow *credentialInputBorrow) withInput(
+	callback func([]byte) error,
+) error {
+	if borrow == nil || borrow.state == nil || callback == nil {
+		return newTranscriptError(TranscriptErrorClosed, 0, 0)
+	}
+	state := borrow.state
+	state.mu.Lock()
+	if !state.active || state.inUse ||
+		len(state.input) != credentialInputNormalBytes {
+		state.mu.Unlock()
+		return newTranscriptError(TranscriptErrorClosed, 0, 0)
+	}
+	state.inUse = true
+	input := state.input
+	state.mu.Unlock()
+	defer func() {
+		state.mu.Lock()
+		state.inUse = false
+		state.idle.Broadcast()
+		state.mu.Unlock()
+	}()
+	return callback(input)
+}
+
+func (state *credentialInputBorrowState) expire() {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.active = false
+	for state.inUse {
+		state.idle.Wait()
+	}
+	state.input = nil
+	state.mu.Unlock()
 }
 
 func canonicalTranscriptDigests(

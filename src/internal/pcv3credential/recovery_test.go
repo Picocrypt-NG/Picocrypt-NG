@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -137,7 +138,7 @@ func TestRecoveryCredentialConsumesFactorsOnceAcrossTwoTuples(t *testing.T) {
 			if probe.reader.admit.calls != 2 ||
 				probe.reader.kdfCalls != 2 ||
 				probe.maxActiveKDF != 1 ||
-				!slicesEqual(probe.callbackOrder, []int{0, 1}) {
+				!slices.Equal(probe.callbackOrder, []int{0, 1}) {
 				owner.Close()
 				t.Fatalf(
 					"admission/KDF/max-active/order = %d/%d/%d/%v; want 2/2/1/[0 1]",
@@ -196,7 +197,11 @@ func TestRecoveryCredentialRejectsTupleSetBeforeKDF(t *testing.T) {
 	}{
 		{name: "zero tuples", edit: func(request *RecoveryCredentialRequest) { request.Tuples = nil }},
 		{name: "third tuple", edit: func(request *RecoveryCredentialRequest) {
-			request.Tuples = append(request.Tuples, recoveryCredentialTuple(t, SuiteStandard1, request.Factors, 0x53))
+			request.Tuples = append(
+				request.Tuples,
+				recoveryCredentialTuple(t, SuiteStandard1, request.Factors, 0x42),
+				recoveryCredentialTuple(t, SuiteStandard1, request.Factors, 0x53),
+			)
 		}},
 		{name: "duplicate tuple", edit: func(request *RecoveryCredentialRequest) {
 			duplicate := request.Tuples[0]
@@ -403,16 +408,4 @@ func TestRecoveryCredentialCallbackExitClearsCandidateState(t *testing.T) {
 			}
 		})
 	}
-}
-
-func slicesEqual(left, right []int) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
 }

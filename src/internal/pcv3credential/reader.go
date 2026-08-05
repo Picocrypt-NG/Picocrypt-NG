@@ -178,20 +178,7 @@ func newReaderCredential(
 			suite,
 		)
 	}
-	rows, err := fixedScheduleForSuite(suite)
-	if err != nil {
-		releaseFactorRequest(factors)
-		return nil, newPipelineError(
-			PipelineErrorSchedule,
-			PipelineStageSchedule,
-			suite,
-		)
-	}
-	keyRequests := make([]KeyRequest, len(rows))
-	for i := range rows {
-		keyRequests[i] = rows[i].request
-	}
-	schedule, err := validateKeySchedule(suite, keyRequests)
+	schedule, err := fullReaderSchedule(suite)
 	if err != nil {
 		releaseFactorRequest(factors)
 		return nil, newPipelineError(
@@ -267,45 +254,6 @@ func newReaderCredential(
 			}
 			defer root.close()
 
-			material, err := newKeyMaterial(schedule, volumeID)
-			if err != nil {
-				return newPipelineError(
-					PipelineErrorKeyDerivation,
-					PipelineStageKeyDerivation,
-					suite,
-				)
-			}
-			defer func() {
-				if material != nil {
-					material.close()
-				}
-			}()
-			if err := deriveCredentialRootStageWith(
-				material,
-				root,
-				seams.extract,
-			); err != nil {
-				return newPipelineError(
-					PipelineErrorKeyDerivation,
-					PipelineStageKeyDerivation,
-					suite,
-				)
-			}
-			if err := expandKeyMaterialWith(
-				material,
-				scheduleRootCredential,
-				seams.expand,
-			); err != nil {
-				return newPipelineError(
-					PipelineErrorKeyDerivation,
-					PipelineStageKeyDerivation,
-					suite,
-				)
-			}
-			if seams.observeCredentialMaterial != nil {
-				seams.observeCredentialMaterial(material)
-			}
-
 			metadata := OwnerMetadata{
 				Suite:          suite,
 				ExpectedPolicy: validated.expectedPolicy,
@@ -315,35 +263,17 @@ func newReaderCredential(
 			}
 			copy(metadata.ArgonSalt[:], argonSalt)
 			copy(metadata.VolumeID[:], volumeID)
-			reader := &ReaderCredential{
-				state: &readerCredentialState{
-					active:                 true,
-					metadata:               metadata,
-					material:               material,
-					extract:                seams.extract,
-					expand:                 seams.expand,
-					observeReplicaMaterial: seams.observeReplicaMaterial,
-					observeOwnerMaterial:   seams.observeOwnerMaterial,
-				},
+			published, err = withReaderCredentialRoot(
+				ctx,
+				root,
+				schedule,
+				metadata,
+				callback,
+				seams,
+			)
+			if err != nil {
+				return err
 			}
-			material = nil
-			defer reader.close()
-
-			if err := callback(reader); err != nil {
-				return newPipelineError(
-					PipelineErrorCallback,
-					PipelineStageCallback,
-					suite,
-				)
-			}
-			if ctx.Err() != nil {
-				return newPipelineError(
-					PipelineErrorCancelled,
-					PipelineStageCallback,
-					suite,
-				)
-			}
-			published = reader.takeOwner()
 			if published == nil {
 				return newPipelineError(
 					PipelineErrorOwner,
@@ -381,6 +311,108 @@ func newReaderCredential(
 		PipelineStageFactors,
 		suite,
 	)
+}
+
+func fullReaderSchedule(suite Suite) (*validatedSchedule, error) {
+	rows, err := fixedScheduleForSuite(suite)
+	if err != nil {
+		return nil, err
+	}
+	keyRequests := make([]KeyRequest, len(rows))
+	for i := range rows {
+		keyRequests[i] = rows[i].request
+	}
+	return validateKeySchedule(suite, keyRequests)
+}
+
+// withReaderCredentialRoot consumes one derived root and lends the same
+// candidate material/adoption state used by normal and recovery readers.
+func withReaderCredentialRoot(
+	ctx context.Context,
+	root *credentialRoot,
+	schedule *validatedSchedule,
+	metadata OwnerMetadata,
+	callback func(*ReaderCredential) error,
+	seams readerCredentialSeams,
+) (*Owner, error) {
+	defer root.close()
+	suite := metadata.Suite
+	if ctx == nil || callback == nil || seams.extract == nil || seams.expand == nil {
+		return nil, newPipelineError(
+			PipelineErrorInvalidRequest,
+			PipelineStageRequest,
+			suite,
+		)
+	}
+
+	material, err := newKeyMaterial(schedule, metadata.VolumeID[:])
+	if err != nil {
+		return nil, newPipelineError(
+			PipelineErrorKeyDerivation,
+			PipelineStageKeyDerivation,
+			suite,
+		)
+	}
+	defer func() {
+		if material != nil {
+			material.close()
+		}
+	}()
+	if err := deriveCredentialRootStageWith(
+		material,
+		root,
+		seams.extract,
+	); err != nil {
+		return nil, newPipelineError(
+			PipelineErrorKeyDerivation,
+			PipelineStageKeyDerivation,
+			suite,
+		)
+	}
+	if err := expandKeyMaterialWith(
+		material,
+		scheduleRootCredential,
+		seams.expand,
+	); err != nil {
+		return nil, newPipelineError(
+			PipelineErrorKeyDerivation,
+			PipelineStageKeyDerivation,
+			suite,
+		)
+	}
+	if seams.observeCredentialMaterial != nil {
+		seams.observeCredentialMaterial(material)
+	}
+
+	reader := &ReaderCredential{
+		state: &readerCredentialState{
+			active:                 true,
+			metadata:               metadata,
+			material:               material,
+			extract:                seams.extract,
+			expand:                 seams.expand,
+			observeReplicaMaterial: seams.observeReplicaMaterial,
+			observeOwnerMaterial:   seams.observeOwnerMaterial,
+		},
+	}
+	material = nil
+	defer reader.close()
+
+	if err := callback(reader); err != nil {
+		return nil, newPipelineError(
+			PipelineErrorCallback,
+			PipelineStageCallback,
+			suite,
+		)
+	}
+	if ctx.Err() != nil {
+		return nil, newPipelineError(
+			PipelineErrorCancelled,
+			PipelineStageCallback,
+			suite,
+		)
+	}
+	return reader.takeOwner(), nil
 }
 
 // WithKeys lends only credential-root keys for role during callback.

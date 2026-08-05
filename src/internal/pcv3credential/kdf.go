@@ -180,47 +180,16 @@ func runCredentialKDF(
 ) (*credentialRoot, error) {
 	var root *credentialRoot
 	consumeErr := input.consume(func(normalInput []byte) error {
-		if ctx == nil || admitter == nil || derive == nil {
-			return newKDFError(KDFErrorInvalidRequest, suite)
-		}
-
-		profile, err := fixedProfileForSuite(suite)
-		if err != nil {
-			return err
-		}
-		if uint64(len(salt)) != uint64(profile.SaltBytes) {
-			return newKDFError(KDFErrorInvalidSalt, suite)
-		}
-		var fixedSalt [kdfSaltBytes]byte
-		copy(fixedSalt[:], salt)
-
-		if ctx.Err() != nil {
-			return newKDFError(KDFErrorCancelled, suite)
-		}
-		admission, admissionErr := admitter.AdmitKDF(ctx, profile)
-		if ctx.Err() != nil {
-			return newKDFError(KDFErrorCancelled, suite)
-		}
-		if admissionErr != nil || admission != KDFAdmissionGranted {
-			return newKDFError(KDFErrorAdmission, suite)
-		}
-
-		returned, deriveErr := derive(normalInput, fixedSalt[:], profile)
-		defer crypto.SecureZero(returned)
-		if ctx.Err() != nil {
-			return newKDFError(KDFErrorCancelled, suite)
-		}
-		if deriveErr != nil {
-			return newKDFError(KDFErrorDerivation, suite)
-		}
-		if uint64(len(returned)) != uint64(profile.OutputBytes) {
-			return newKDFError(KDFErrorOutput, suite)
-		}
-
-		owned := make([]byte, credentialRootBytes)
-		copy(owned, returned)
-		root = &credentialRoot{secret: crypto.SecretFrom(owned)}
-		return nil
+		var err error
+		root, err = runCredentialKDFBorrowed(
+			ctx,
+			normalInput,
+			salt,
+			suite,
+			admitter,
+			derive,
+		)
+		return err
 	})
 	if consumeErr == nil {
 		return root, nil
@@ -233,6 +202,59 @@ func runCredentialKDF(
 		return nil, kdfErr
 	}
 	return nil, newKDFError(KDFErrorInvalidInput, suite)
+}
+
+func runCredentialKDFBorrowed(
+	ctx context.Context,
+	normalInput []byte,
+	salt []byte,
+	suite Suite,
+	admitter Admitter,
+	derive kdfDeriver,
+) (*credentialRoot, error) {
+	if ctx == nil || admitter == nil || derive == nil {
+		return nil, newKDFError(KDFErrorInvalidRequest, suite)
+	}
+	if len(normalInput) != credentialInputNormalBytes {
+		return nil, newKDFError(KDFErrorInvalidInput, suite)
+	}
+
+	profile, err := fixedProfileForSuite(suite)
+	if err != nil {
+		return nil, err
+	}
+	if uint64(len(salt)) != uint64(profile.SaltBytes) {
+		return nil, newKDFError(KDFErrorInvalidSalt, suite)
+	}
+	var fixedSalt [kdfSaltBytes]byte
+	copy(fixedSalt[:], salt)
+
+	if ctx.Err() != nil {
+		return nil, newKDFError(KDFErrorCancelled, suite)
+	}
+	admission, admissionErr := admitter.AdmitKDF(ctx, profile)
+	if ctx.Err() != nil {
+		return nil, newKDFError(KDFErrorCancelled, suite)
+	}
+	if admissionErr != nil || admission != KDFAdmissionGranted {
+		return nil, newKDFError(KDFErrorAdmission, suite)
+	}
+
+	returned, deriveErr := derive(normalInput, fixedSalt[:], profile)
+	defer crypto.SecureZero(returned)
+	if ctx.Err() != nil {
+		return nil, newKDFError(KDFErrorCancelled, suite)
+	}
+	if deriveErr != nil {
+		return nil, newKDFError(KDFErrorDerivation, suite)
+	}
+	if uint64(len(returned)) != uint64(profile.OutputBytes) {
+		return nil, newKDFError(KDFErrorOutput, suite)
+	}
+
+	owned := make([]byte, credentialRootBytes)
+	copy(owned, returned)
+	return &credentialRoot{secret: crypto.SecretFrom(owned)}, nil
 }
 
 func deriveArgon2ID(
