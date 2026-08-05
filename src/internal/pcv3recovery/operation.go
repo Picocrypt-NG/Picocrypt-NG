@@ -17,6 +17,8 @@ import (
 
 const recoveryRecordPlaintextMax = uint64(1 << 20)
 
+var errInvalidRecoveryWriteProgress = errors.New("pcv3 recovery operation: invalid write progress")
+
 // Request contains the operation-owned publication inputs. Credential and
 // source fields are added by the production core adapter; tests exercise the
 // exact filesystem composition through runWithCore.
@@ -214,6 +216,7 @@ func runWithCore(
 				return errors.New("pcv3 recovery operation: stage writer unavailable")
 			}
 		}
+		destination = recoveryOutputWriter{destination: destination}
 		if semantic.outcome == pcv3.OutcomeForcePartial ||
 			semantic.outcome == pcv3.OutcomeForceUnverified {
 			descriptor, descriptorErr := artifactDescriptor(semantic, role)
@@ -478,11 +481,29 @@ func artifactFinalState(state pcv3.RecoveryFinalState) pcv3artifact.FinalStatus 
 	}
 }
 
+type recoveryOutputWriter struct {
+	destination io.Writer
+}
+
+func (writer recoveryOutputWriter) Write(data []byte) (int, error) {
+	written, err := writer.destination.Write(data)
+	if written < 0 || written > len(data) {
+		return 0, pcv3.NewOutputWriteError(errInvalidRecoveryWriteProgress)
+	}
+	if err != nil {
+		return written, pcv3.NewOutputWriteError(err)
+	}
+	if written == 0 && len(data) != 0 {
+		return 0, pcv3.NewOutputWriteError(io.ErrNoProgress)
+	}
+	return written, nil
+}
+
 func writeAll(destination io.Writer, data []byte) error {
 	for len(data) != 0 {
 		written, err := destination.Write(data)
 		if written < 0 || written > len(data) {
-			return errors.New("pcv3 recovery operation: invalid write progress")
+			return errInvalidRecoveryWriteProgress
 		}
 		data = data[written:]
 		if err != nil {

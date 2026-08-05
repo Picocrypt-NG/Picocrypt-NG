@@ -209,6 +209,12 @@ func NewInputError(cause error) error {
 	return newError(OutcomeOperationFailed, StageInputIO, cause)
 }
 
+// NewOutputWriteError returns an output-write operation failure while
+// preserving the underlying destination error for programmatic inspection.
+func NewOutputWriteError(cause error) error {
+	return newError(OutcomeOperationFailed, StageOutputWrite, cause)
+}
+
 func newError(outcome Outcome, stage Stage, cause error) error {
 	if _, ok := codeFor(outcome, stage); !ok {
 		return ErrInvalidFailureMapping

@@ -29,10 +29,16 @@ const (
 var errSecondPassInput = errors.New("TEST ONLY second-pass input fault")
 
 type failingStageWriter struct {
-	cause error
+	cause            error
+	calls            int
+	firstRequestSize int
 }
 
-func (writer *failingStageWriter) Write([]byte) (int, error) {
+func (writer *failingStageWriter) Write(data []byte) (int, error) {
+	writer.calls++
+	if writer.calls == 1 {
+		writer.firstRequestSize = len(data)
+	}
 	return 0, writer.cause
 }
 
@@ -330,6 +336,63 @@ func TestRunDestinationWriteFailureRetainsOutputWriteClassificationAndCleansStag
 	}
 	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("destination-write failure left durable target: %v", err)
+	}
+	assertFileBytesAndMode(t, sourcePath, fixture, 0o600)
+	assertNoRecoveryStageResidue(t, directory)
+}
+
+func TestRunForceArtifactHeaderWriteFailureRetainsOutputWriteClassificationAndCleansStage(t *testing.T) {
+	fixture, err := os.ReadFile("../pcv3/testdata/normal/volumes/normal-negative-record.pcv")
+	if err != nil {
+		t.Fatalf("read frozen Force fixture: %v", err)
+	}
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "source.pcv")
+	target := filepath.Join(directory, "evidence.pcv3-recovery")
+	if err := os.WriteFile(sourcePath, fixture, 0o600); err != nil {
+		t.Fatalf("seed frozen Force source: %v", err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatalf("open frozen Force source: %v", err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	writeFailure := errors.New("TEST ONLY artifact header write fault")
+	writer := &failingStageWriter{cause: writeFailure}
+	factors := &pcv3credential.FactorRequest{
+		Mode:           pcv3credential.CredentialModePasswordAndKeyfiles,
+		KeyfileMode:    pcv3credential.KeyfileModeOrdered,
+		ExpectedPolicy: pcv3credential.FactorPolicyPasswordAndKeyfiles,
+		Password:       []byte("mix"),
+		Keyfiles: []*pcv3credential.KeyfileReader{
+			pcv3credential.OwnKeyfileReader(io.NopCloser(bytes.NewReader([]byte("red")))),
+			pcv3credential.OwnKeyfileReader(io.NopCloser(bytes.NewReader([]byte("blue")))),
+		},
+	}
+	request := &Request{
+		Source: source, SourceSize: int64(len(fixture)), Factors: factors,
+		Admitter: recoveryOperationAdmitter{}, Mode: pcv3.RecoveryModeForce,
+		Target: target, Protected: []string{sourcePath},
+		stageWriter: func(io.Writer) io.Writer {
+			return writer
+		},
+	}
+
+	result := Run(context.Background(), request)
+	if writer.calls != 1 || writer.firstRequestSize != 80 {
+		t.Fatalf("Force artifact writes = %d calls, first request %d bytes; want failure on the single 80-byte fixed header write", writer.calls, writer.firstRequestSize)
+	}
+	if result.Outcome() != pcv3.OutcomeOperationFailed || result.Stage() != pcv3.StageOutputWrite ||
+		result.Code() != pcv3.CodeOperationFailed {
+		t.Fatalf("artifact-header semantic = %v/%v/%v; want operation-failed/output-write/operation-failed", result.Outcome(), result.Stage(), result.Code())
+	}
+	if !result.PublicationAttempted() || result.PublicationState() != pcv3publication.StateNotPublished ||
+		result.PublicationStage() != pcv3.StageOutputWrite ||
+		result.PublicationCode() != pcv3publication.CodeStageFailure {
+		t.Fatalf("artifact-header publication = %v/%v/%v/%v; want attempted/not-published/output-write/stage-failure", result.PublicationAttempted(), result.PublicationState(), result.PublicationStage(), result.PublicationCode())
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("artifact-header failure left durable target: %v", err)
 	}
 	assertFileBytesAndMode(t, sourcePath, fixture, 0o600)
 	assertNoRecoveryStageResidue(t, directory)

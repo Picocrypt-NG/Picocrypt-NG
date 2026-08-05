@@ -320,6 +320,14 @@ func recoverWithRequest(
 		if emitterErr != nil {
 			return recoveryResultForError(emitterErr)
 		}
+		var failure Failure
+		if errors.As(outputErr, &failure) &&
+			failure.Outcome() == OutcomeOperationFailed && failure.Stage() == StageOutputWrite {
+			if cancellation := recordCancellationCause(ctx, outputErr); cancellation != nil {
+				return recoveryOperationFailure(StageCancellation), &recoveryEngineError{stage: StageCancellation}
+			}
+			return recoveryResultForError(outputErr)
+		}
 		return resolution.result, &recoveryEngineError{stage: StageOutputWrite}
 	}
 	if emitterErr != nil {
