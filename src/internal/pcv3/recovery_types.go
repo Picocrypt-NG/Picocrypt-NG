@@ -256,6 +256,10 @@ func (result *RecoveryResult) Error() string {
 	if result == nil {
 		return "pcv3: recovery result unavailable"
 	}
+	return result.fixedMessage()
+}
+
+func (result RecoveryResult) fixedMessage() string {
 	switch result.outcome {
 	case OutcomeSuccess:
 		return "pcv3: recovery authenticated"
@@ -270,12 +274,12 @@ func (result *RecoveryResult) Error() string {
 	}
 }
 
-func (result *RecoveryResult) String() string { return result.Error() }
+func (result RecoveryResult) String() string { return result.fixedMessage() }
 
-func (result *RecoveryResult) GoString() string { return result.Error() }
+func (result RecoveryResult) GoString() string { return result.fixedMessage() }
 
-func (result *RecoveryResult) Format(state fmt.State, verb rune) {
-	writeFixedFormat(state, verb, result.Error())
+func (result RecoveryResult) Format(state fmt.State, verb rune) {
+	writeFixedFormat(state, verb, result.fixedMessage())
 }
 
 func (result *RecoveryResult) Close() {
