@@ -524,7 +524,7 @@ func validateStreamFixtureDocument(object map[string]any, fixture fixtureManifes
 		"xchacha_key_hex": 32, "xchacha_nonce_hex": 24,
 		"volume_key_hex": 32, "wrapped_volume_key_hex": 32,
 	} {
-		if _, err := requiredSizedHex(object, field, size); err != nil {
+		if err := requiredSizedHex(object, field, size); err != nil {
 			return err
 		}
 	}
@@ -537,10 +537,10 @@ func validateStreamFixtureDocument(object map[string]any, fixture fixtureManifes
 		}
 		return nil
 	}
-	if _, err := requiredSizedHex(object, "serpent_key_hex", 32); err != nil {
+	if err := requiredSizedHex(object, "serpent_key_hex", 32); err != nil {
 		return err
 	}
-	if _, err := requiredSizedHex(object, "serpent_iv_hex", 16); err != nil {
+	if err := requiredSizedHex(object, "serpent_iv_hex", 16); err != nil {
 		return err
 	}
 	return nil
@@ -569,7 +569,7 @@ func validateCapsuleFixtureDocument(object map[string]any, fixture fixtureManife
 		"credential_root_hex": 32, "primary_decoded_hex": 320,
 		"backup_decoded_hex": 320, "expected_volume_key_hex": 32,
 	} {
-		if _, err := requiredSizedHex(object, field, size); err != nil {
+		if err := requiredSizedHex(object, field, size); err != nil {
 			return err
 		}
 	}
@@ -624,12 +624,12 @@ func requiredHex(object map[string]any, field string) (string, error) {
 	return value, nil
 }
 
-func requiredSizedHex(object map[string]any, field string, size int) (string, error) {
+func requiredSizedHex(object map[string]any, field string, size int) error {
 	value, err := requiredHex(object, field)
 	if err != nil || len(value) != size*2 || !validLowerHex(value) {
-		return "", refusal(RefusalMalformed)
+		return refusal(RefusalMalformed)
 	}
-	return value, nil
+	return nil
 }
 
 func requiredNumberString(object map[string]any, field string) (string, error) {

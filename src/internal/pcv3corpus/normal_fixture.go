@@ -13,13 +13,13 @@ import (
 )
 
 const (
-	normalRequiredEvidence   uint64 = ((1 << len(normalFixtureContracts)) - 1) << len(phase4FixtureContracts)
-	maxFixturePayloadBytes          = 2 << 20
-	maxFixtureVolumeOverhead        = 1 << 20
-	maxFixtureKeyfileBytes          = 4 << 10
-	maxFixtureKeyfiles              = 64
-	maxNormalFixtureMutationOffsets = 65
-	testOnlyFixtureNotice           = "TEST ONLY PCV3 CONFORMANCE DATA; NOT SECRET OR OPERATIONAL"
+	normalRequiredEvidence          uint64 = ((1 << len(normalFixtureContracts)) - 1) << len(phase4FixtureContracts)
+	maxFixturePayloadBytes                 = 2 << 20
+	maxFixtureVolumeOverhead               = 1 << 20
+	maxFixtureKeyfileBytes                 = 4 << 10
+	maxFixtureKeyfiles                     = 64
+	maxNormalFixtureMutationOffsets        = 65
+	testOnlyFixtureNotice                  = "TEST ONLY PCV3 CONFORMANCE DATA; NOT SECRET OR OPERATIONAL"
 )
 
 type normalFixtureContract struct {
@@ -263,7 +263,7 @@ func validateNormalFixtureDocument(object map[string]any, fixture fixtureManifes
 	if err != nil || !validFixtureFactors(contract.credentialMode, contract.keyfileMode, password, keyfileHex) {
 		return refusal(RefusalMalformed)
 	}
-	if _, err := requiredSizedHex(object, "credential_root_hex", 32); err != nil {
+	if err := requiredSizedHex(object, "credential_root_hex", 32); err != nil {
 		return err
 	}
 
@@ -325,7 +325,7 @@ func validateNormalKeys(object map[string]any, suite string) error {
 		"primary_wrap_mac_hex", "backup_wrap_mac_hex", "primary_replica_mac_hex",
 		"backup_replica_mac_hex", "metadata_mac_hex", "payload_xchacha20_hex", "payload_mac_hex",
 	} {
-		if _, err := requiredSizedHex(object, field, 32); err != nil {
+		if err := requiredSizedHex(object, field, 32); err != nil {
 			return err
 		}
 	}
@@ -588,12 +588,18 @@ func decodeNormalVolumeKeys(object map[string]any) (*NormalVolumeKeys, error) {
 		name string
 		dst  *[]byte
 	}{
-		{"volume_key_hex", &keys.volumeKey}, {"primary_wrap_xchacha20_hex", &keys.primaryWrapX},
-		{"backup_wrap_xchacha20_hex", &keys.backupWrapX}, {"primary_wrap_serpent_hex", &keys.primaryWrapSerpent},
-		{"backup_wrap_serpent_hex", &keys.backupWrapSerpent}, {"primary_wrap_mac_hex", &keys.primaryWrapMAC},
-		{"backup_wrap_mac_hex", &keys.backupWrapMAC}, {"primary_replica_mac_hex", &keys.primaryReplicaMAC},
-		{"backup_replica_mac_hex", &keys.backupReplicaMAC}, {"metadata_mac_hex", &keys.metadataMAC},
-		{"payload_xchacha20_hex", &keys.payloadX}, {"payload_serpent_hex", &keys.payloadSerpent},
+		{"volume_key_hex", &keys.volumeKey},
+		{"primary_wrap_xchacha20_hex", &keys.primaryWrapX},
+		{"backup_wrap_xchacha20_hex", &keys.backupWrapX},
+		{"primary_wrap_serpent_hex", &keys.primaryWrapSerpent},
+		{"backup_wrap_serpent_hex", &keys.backupWrapSerpent},
+		{"primary_wrap_mac_hex", &keys.primaryWrapMAC},
+		{"backup_wrap_mac_hex", &keys.backupWrapMAC},
+		{"primary_replica_mac_hex", &keys.primaryReplicaMAC},
+		{"backup_replica_mac_hex", &keys.backupReplicaMAC},
+		{"metadata_mac_hex", &keys.metadataMAC},
+		{"payload_xchacha20_hex", &keys.payloadX},
+		{"payload_serpent_hex", &keys.payloadSerpent},
 		{"payload_mac_hex", &keys.payloadMAC},
 	}
 	for _, field := range fields {
