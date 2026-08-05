@@ -63,8 +63,9 @@ type recoveryCoreRunner func(context.Context, *Request, operationOutput) (operat
 // capability with one no-replace stage. No public app surface calls Run in
 // Phase 6.
 func Run(ctx context.Context, request *Request) *Result {
-	if request == nil {
-		return runWithCore(ctx, request, runProductionCore)
+	if ctx == nil && request != nil && request.Factors != nil {
+		_ = request.Factors.Close()
+		request.Factors = nil
 	}
 	return runWithCore(ctx, request, runProductionCore)
 }
@@ -224,7 +225,14 @@ func runWithCore(
 
 	semantic, _ := run(ctx, request, output)
 	if result.semantic.outcome == 0 {
-		result.semantic = cloneOperationSemantic(semantic)
+		if semantic.outcome == 0 {
+			result.semantic = operationSemantic{
+				outcome: pcv3.OutcomeOperationFailed,
+				stage:   pcv3.StageCredentialPolicy,
+			}
+		} else {
+			result.semantic = cloneOperationSemantic(semantic)
+		}
 	}
 	return result
 }

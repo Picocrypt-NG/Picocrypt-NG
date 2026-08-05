@@ -208,13 +208,7 @@ func recoverableRecordFailure(err error) (Stage, bool) {
 }
 
 func earlierRecoveryDamageStage(left, right Stage) Stage {
-	if left == StageNone {
-		return right
-	}
-	if right == StageNone {
-		return left
-	}
-	return left
+	return earlierAuthStage(left, right)
 }
 
 func recoveryStateForAuthentication(authentication recordAuthenticationState) RecoveryRangeState {

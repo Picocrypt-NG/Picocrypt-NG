@@ -19,6 +19,7 @@ const (
 
 	productionKDFOrderedFixture   = "normal-standard-combined-ordered-one"
 	productionKDFUnorderedFixture = "normal-paranoid-combined-unordered-rs-small"
+	productionKDFForceFixture     = "normal-negative-record"
 )
 
 type productionKDFKeyfileReadCloser struct {
@@ -113,6 +114,100 @@ func TestReadNormalVolumeProductionKDF(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("load private production-KDF normal fixtures: %v", err)
+	}
+}
+
+func TestForceRecoveryProductionKDF(t *testing.T) {
+	root, hasRoot := os.LookupEnv(productionKDFPrivateRootEnv)
+	if !hasRoot || root == "" {
+		t.Fatalf("%s must be set for the private production-KDF Force test", productionKDFPrivateRootEnv)
+	}
+	custodyID, hasCustodyID := os.LookupEnv(productionKDFPrivateCustodyEnv)
+	if !hasCustodyID || custodyID == "" {
+		t.Fatalf("%s must be set for the private production-KDF Force test", productionKDFPrivateCustodyEnv)
+	}
+
+	err := pcv3corpus.WithNormalVolumeFixtures(
+		root,
+		custodyID,
+		[]string{productionKDFForceFixture},
+		func(fixtures []*pcv3corpus.NormalVolumeFixture) error {
+			if len(fixtures) != 1 {
+				t.Fatalf("private production-KDF Force fixture count = %d; want one", len(fixtures))
+			}
+			if fixtures[0] == nil {
+				t.Fatal("private production-KDF Force fixture is nil")
+			}
+			fixture := fixtures[0]
+			volume := fixture.Volume()
+			factors, passwordAlias, keyfiles := newProductionKDFFactors(
+				t,
+				fixture,
+				false,
+				pcv3credential.KeyfileModeOrdered,
+			)
+			admitter := &literalKDFAdmitter{}
+			emitterCalls := 0
+			segmentCalls := 0
+			result, recoverErr := Recover(
+				context.Background(),
+				bytes.NewReader(volume),
+				int64(len(volume)),
+				factors,
+				admitter,
+				RecoveryModeForce,
+				func(got *RecoveryResult, role CapsuleRole, emit RecoveryEmitter) error {
+					if got == nil {
+						t.Fatal("production-KDF Force callback received no typed result")
+					}
+					if got.Outcome() != OutcomeForcePartial ||
+						got.ForceProvenance() != ForceProvenancePartial ||
+						got.Stage() != StageRecordAuth || role != CapsuleRolePrimary {
+						t.Fatalf("production-KDF Force callback = %v/%v/%v/%v; want primary Force-partial at record-auth", got.Outcome(), got.ForceProvenance(), got.Stage(), role)
+					}
+					emitterCalls++
+					return emit(func(RecoveryRange, []byte) error {
+						segmentCalls++
+						return nil
+					})
+				},
+			)
+			if recoverErr != nil {
+				t.Fatalf("production-KDF Force recovery: %v", recoverErr)
+			}
+			if result == nil {
+				t.Fatal("production-KDF Force recovery returned no typed result")
+			}
+			if result.Outcome() != OutcomeForcePartial ||
+				result.ForceProvenance() != ForceProvenancePartial ||
+				result.Stage() != StageRecordAuth || result.FinalRecordState() != RecoveryFinalVerified {
+				t.Fatalf("production-KDF Force result = %v/%v/%v/%v; want Force-partial, record-auth, verified final", result.Outcome(), result.ForceProvenance(), result.Stage(), result.FinalRecordState())
+			}
+			ranges := result.Ranges()
+			if len(ranges) != 1 || ranges[0].State() != RecoveryRangeMissing ||
+				ranges[0].Start() != 0 || ranges[0].End() != 17 {
+				t.Fatalf("production-KDF Force ranges = %#v; want one literal missing [0,17) range", ranges)
+			}
+			if emitterCalls != 1 || segmentCalls != 0 {
+				t.Fatalf("production-KDF Force callbacks = emitter %d, segments %d; want 1/0", emitterCalls, segmentCalls)
+			}
+			if admitter.calls != 1 {
+				t.Fatalf("production-KDF Force admissions = %d; want one deduplicated tuple", admitter.calls)
+			}
+			if factors.Password != nil || factors.Keyfiles != nil || !allZero(passwordAlias) {
+				t.Fatal("production-KDF Force factors were not consumed and zeroed")
+			}
+			for index, keyfile := range keyfiles {
+				if keyfile.closeCalls != 1 || !allZero(keyfile.ownedBytes) {
+					t.Fatalf("production-KDF Force keyfile %d cleanup = closes %d, zeroed %v; want one/true", index, keyfile.closeCalls, allZero(keyfile.ownedBytes))
+				}
+			}
+			result.Close()
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("load private production-KDF Force fixture: %v", err)
 	}
 }
 

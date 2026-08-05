@@ -83,6 +83,31 @@ func TestResolveForceCandidatesRejectsOrdinaryNoAnchorAndRoleMismatch(t *testing
 	}
 }
 
+func TestResolveForceCandidatesDoesNotTreatReplicaAuthenticationAsAnchor(t *testing.T) {
+	fixture := loadNormalFixtureManifest(t).FixturesByID()["normal-standard-password-only-small"]
+	structure := inspectNormalFixture(t, fixture)
+	candidate, _ := structure.CandidateAt(0)
+	geometry, _ := structure.GeometryAt(0)
+	analysis := forceCandidateAnalysis{
+		identity:      &forceTestIdentity{value: 1},
+		candidate:     candidate,
+		geometry:      geometry,
+		damageStage:   StageRecordAuth,
+		replicaValid:  true,
+		metadataValid: true,
+		ranges:        []RecoveryRange{{recordIndex: 0, start: 0, end: 9, state: RecoveryRangeMissing}},
+		final:         RecoveryFinalMissing,
+	}
+	request, _ := newRecoveryRequest(RecoveryModeForce)
+	resolution, err := resolveForceCandidates(request, []forceCandidateAnalysis{analysis})
+	if err != nil {
+		t.Fatalf("resolve replica-authenticated no-anchor Force: %v", err)
+	}
+	if resolution.selected != -1 || resolution.result.Outcome() != OutcomeCredentialsOrDamage {
+		t.Fatalf("replica-authenticated no-anchor resolution = %d/%v; want no selection/credentials-or-damage", resolution.selected, resolution.result.Outcome())
+	}
+}
+
 func TestResolveForceCandidatesRequiresLiveRoleBoundConsentForUnverifiedBytes(t *testing.T) {
 	fixture := loadNormalFixtureManifest(t).FixturesByID()["normal-standard-password-only-small"]
 	structure := inspectNormalFixture(t, fixture)
@@ -168,6 +193,25 @@ func TestResolveForceCandidatesPreservesLiteralRecordRangesWithoutCoalescing(t *
 	}
 	if got := resolution.result.Ranges(); !bytes.Equal(recoveryRangeBytes(got), recoveryRangeBytes(want)) {
 		t.Fatalf("recovery ranges = %#v; want exact per-record map %#v", got, want)
+	}
+}
+
+func TestRecoveryDamageStagePreservesProtocolOrder(t *testing.T) {
+	tests := []struct {
+		name        string
+		left, right Stage
+		want        Stage
+	}{
+		{name: "metadata precedes tail geometry", left: StageTailGeometry, right: StageMetadata, want: StageMetadata},
+		{name: "tail geometry precedes record authentication", left: StageTailGeometry, right: StageRecordAuth, want: StageTailGeometry},
+		{name: "record body precedes final record", left: StageRecordBodyRS, right: StageFinalRecord, want: StageRecordBodyRS},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := earlierRecoveryDamageStage(test.left, test.right); got != test.want {
+				t.Fatalf("earlier recovery damage stage = %v; want %v", got, test.want)
+			}
+		})
 	}
 }
 

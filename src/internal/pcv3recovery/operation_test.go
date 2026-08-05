@@ -3,6 +3,7 @@ package pcv3recovery
 import (
 	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3artifact"
+	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3publication"
 	"bytes"
 	"context"
@@ -12,6 +13,10 @@ import (
 	"path/filepath"
 	"testing"
 )
+
+type archiveHandoffAuthority interface {
+	ArchiveHandoffAllowed() bool
+}
 
 func TestRunPublishesCompleteRecoveredPlaintextWithoutSemanticRelabelling(t *testing.T) {
 	directory := t.TempDir()
@@ -35,6 +40,46 @@ func TestRunPublishesCompleteRecoveredPlaintextWithoutSemanticRelabelling(t *tes
 	}
 	assertFileBytesAndMode(t, target, []byte("hello"), 0o600)
 	assertNoRecoveryStageResidue(t, directory)
+	if authority, ok := any(result).(archiveHandoffAuthority); ok && authority.ArchiveHandoffAllowed() {
+		t.Fatal("recovery result granted archive handoff authority")
+	}
+}
+
+func TestRunNilContextConsumesTransferredFactorsWithoutOutput(t *testing.T) {
+	password := []byte("TEST ONLY recovery password")
+	request := &Request{
+		Factors: &pcv3credential.FactorRequest{
+			Mode:           pcv3credential.CredentialModePasswordOnly,
+			ExpectedPolicy: pcv3credential.FactorPolicyPasswordOnly,
+			Password:       password,
+		},
+		Target: filepath.Join(t.TempDir(), "must-not-exist"),
+	}
+	result := Run(nil, request)
+	if result.Outcome() != pcv3.OutcomeOperationFailed || result.PublicationAttempted() {
+		t.Fatalf("nil-context result = %v/%v; want operation-failed without publication", result.Outcome(), result.PublicationAttempted())
+	}
+	if request.Factors != nil {
+		t.Fatal("nil-context recovery retained transferred factors")
+	}
+	for _, value := range password {
+		if value != 0 {
+			t.Fatal("nil-context recovery did not zero the transferred password")
+		}
+	}
+}
+
+func TestRunRejectsZeroCoreSemantic(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "must-not-exist")
+	result := runWithCore(
+		context.Background(),
+		&Request{Target: target},
+		fixedCoreRunner(operationSemantic{}, nil, nil),
+	)
+	if result.Outcome() != pcv3.OutcomeOperationFailed || result.Stage() != pcv3.StageCredentialPolicy ||
+		result.PublicationAttempted() {
+		t.Fatalf("zero core semantic = %v/%v/%v; want fail-closed operation result", result.Outcome(), result.Stage(), result.PublicationAttempted())
+	}
 }
 
 func TestRunPublishesOneCanonicalArtifactForPartialEvidence(t *testing.T) {
