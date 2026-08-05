@@ -97,13 +97,50 @@ func FuzzReadNormalVolume(f *testing.F) {
 	if !ok {
 		f.Fatal("derive TEST ONLY RS record-body fuzz bound")
 	}
+	volumes := make([][]byte, len(manifest.Fixtures))
 	for index, fixture := range manifest.Fixtures {
-		volume := readNormalFixtureArtifact(f, fixture.Volume)
-		f.Add(uint32(index), volume)
+		volumes[index] = readNormalFixtureArtifact(f, fixture.Volume)
+		f.Add(
+			uint32(index), uint32(index), uint8(0), uint64(0), uint16(0),
+			uint64(0), uint64(0), uint64(0), uint64(0),
+		)
 	}
 
-	f.Fuzz(func(t *testing.T, selector uint32, volume []byte) {
-		fixture := manifest.Fixtures[int(uint64(selector)%uint64(len(manifest.Fixtures)))]
+	// Keep the multi-megabyte frozen artifacts outside the fuzz arguments. The
+	// mutator supplies only compact selectors and a change descriptor; matching
+	// selectors with zero changes still execute every frozen volume exactly.
+	f.Fuzz(func(
+		t *testing.T,
+		volumeSelector uint32,
+		credentialSelector uint32,
+		shapeMode uint8,
+		truncateAt uint64,
+		appendLength uint16,
+		firstOffset uint64,
+		firstXOR uint64,
+		secondOffset uint64,
+		secondXOR uint64,
+	) {
+		fixtureCount := uint64(len(manifest.Fixtures))
+		volumeIndex := uint64(volumeSelector) % fixtureCount
+		credentialIndex := uint64(credentialSelector) % fixtureCount
+		fixture := manifest.Fixtures[credentialIndex]
+		baseVolume := volumes[volumeIndex]
+		var volume []byte
+		switch shapeMode % 3 {
+		case 1:
+			length := truncateAt % (uint64(len(baseVolume)) + 1)
+			volume = bytes.Clone(baseVolume[:length])
+		case 2:
+			length := uint64(len(baseVolume)) + uint64(appendLength)
+			volume = make([]byte, length)
+			copy(volume, baseVolume)
+		default:
+			volume = bytes.Clone(baseVolume)
+		}
+		xorNormalFuzzWord(volume, firstOffset, firstXOR)
+		xorNormalFuzzWord(volume, secondOffset, secondXOR)
+
 		source := &normalFuzzSource{
 			reader:     bytes.NewReader(volume),
 			callLimit:  normalFuzzProbeReadLimit,
@@ -151,6 +188,18 @@ func FuzzReadNormalVolume(f *testing.F) {
 			}
 		}
 	})
+}
+
+func xorNormalFuzzWord(volume []byte, offset uint64, word uint64) {
+	if len(volume) == 0 || word == 0 {
+		return
+	}
+	length := uint64(len(volume))
+	start := offset % length
+	for byteIndex := range min(uint64(8), length-start) {
+		position := start + byteIndex
+		volume[position] ^= byte(word >> (byteIndex * 8))
+	}
 }
 
 func normalFuzzSinkMatchesCandidate(structure Structure, sink *normalFuzzSink) bool {
