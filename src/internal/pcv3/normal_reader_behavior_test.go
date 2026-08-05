@@ -360,6 +360,72 @@ func TestReadNormalVolumeBehavioralClosure(t *testing.T) {
 	})
 }
 
+func TestNormalReaderSemanticAuthorityFromFrozenFixtures(t *testing.T) {
+	fixtures := loadNormalFixtureManifest(t).FixturesByID()
+	tests := []struct {
+		fixtureID   string
+		outcome     Outcome
+		stage       Stage
+		archiveSeal bool
+	}{
+		{
+			fixtureID: normalArchiveFixtureID,
+			outcome: OutcomeSuccess, stage: StageNone, archiveSeal: true,
+		},
+		{
+			fixtureID: "normal-degraded-capsule",
+			outcome: OutcomeAuthenticatedDegraded, stage: StageCapsuleRS,
+		},
+		{
+			fixtureID: "normal-degraded-metadata",
+			outcome: OutcomeAuthenticatedDegraded, stage: StageMetadata,
+		},
+		{
+			fixtureID: "normal-degraded-trailer",
+			outcome: OutcomeAuthenticatedDegraded, stage: StageTailGeometry,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.fixtureID, func(t *testing.T) {
+			fixture := requireNormalFixture(t, fixtures, test.fixtureID)
+			volume := readNormalFixtureArtifact(t, fixture.Volume)
+			source := newNormalFixtureSource(t, fixture, volume)
+			sink := &normalFixtureSink{}
+			result, completion, _ := runNormalBehaviorRead(
+				t, context.Background(), fixture, source, int64(len(volume)), sink,
+			)
+			if result == nil || completion == nil {
+				t.Fatalf("reader result/completion = %v/%v; want authenticated semantic state", result, completion)
+			}
+			t.Cleanup(result.Close)
+
+			semantic, err := newRecoveryResultFromNormal(result)
+			if err != nil {
+				t.Fatalf("adapt real normal-reader result: %v", err)
+			}
+			t.Cleanup(semantic.Close)
+			if semantic.Outcome() != test.outcome || semantic.Stage() != test.stage ||
+				semantic.ForceProvenance() != ForceProvenanceNone || semantic.Code() != result.Code() {
+				t.Fatalf(
+					"semantic result = %v/%v/%v/%v; want %v/%v/no Force/%v",
+					semantic.Outcome(), semantic.Stage(), semantic.ForceProvenance(), semantic.Code(),
+					test.outcome, test.stage, result.Code(),
+				)
+			}
+
+			kind, archiveAuthorized := completion.authenticatedPayloadKind()
+			gotArchiveSeal := archiveAuthorized && kind == PayloadKindArchive
+			if gotArchiveSeal != test.archiveSeal {
+				t.Fatalf(
+					"archive authority = %v/%v; want archive seal %v for semantic outcome %v",
+					archiveAuthorized, kind, test.archiveSeal, semantic.Outcome(),
+				)
+			}
+		})
+	}
+}
+
 func runNormalBehaviorRead(
 	t *testing.T,
 	ctx context.Context,
