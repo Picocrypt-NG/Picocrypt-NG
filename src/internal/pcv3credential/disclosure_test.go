@@ -230,6 +230,9 @@ func TestPhase2DisclosureSentinelMatrix(t *testing.T) {
 		metadata := OwnerMetadata{
 			Suite:          SuiteStandard1,
 			ExpectedPolicy: FactorPolicyPasswordOnly,
+			CredentialMode: CredentialModePasswordOnly,
+			KeyfileMode:    KeyfileModeNone,
+			KeyfileCount:   0,
 		}
 		owner, err := newOwner(metadata, material)
 		if err != nil {

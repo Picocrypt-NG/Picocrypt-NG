@@ -230,6 +230,9 @@ func TestReaderCredentialExactlyOneKDFAndScopedKeys(t *testing.T) {
 	wantMetadata := OwnerMetadata{
 		Suite:          request.Suite,
 		ExpectedPolicy: request.Factors.ExpectedPolicy,
+		CredentialMode: request.Factors.Mode,
+		KeyfileMode:    request.Factors.KeyfileMode,
+		KeyfileCount:   uint16(len(request.Factors.Keyfiles)),
 	}
 	copy(wantMetadata.ArgonSalt[:], request.ArgonSalt)
 	copy(wantMetadata.VolumeID[:], request.VolumeID)
@@ -367,6 +370,44 @@ func TestReaderCredentialExactlyOneKDFAndScopedKeys(t *testing.T) {
 		if !allZero(alias) {
 			t.Fatalf("owner-controlled alias %d survived close", i)
 		}
+	}
+}
+
+func TestReaderOwnerMetadataBindsAuthenticatedFactors(t *testing.T) {
+	for _, test := range ownerMetadataFactorCases() {
+		t.Run(test.name, func(t *testing.T) {
+			request := readerCredentialRequest(t, SuiteStandard1)
+			if err := request.Factors.Close(); err != nil {
+				t.Fatalf("close default factors: %v", err)
+			}
+			request.Factors = factorRequestForOwnerMetadata(test)
+			request.ClaimedPolicy = test.policy
+			probe := newReaderCredentialProbe()
+			owner, err := newReaderCredential(
+				context.Background(),
+				request,
+				probe.admit,
+				func(reader *ReaderCredential) error {
+					return reader.AdoptVolumeKey(bytes.Repeat([]byte{0x5a}, derivedKeyBytes))
+				},
+				probe.seams(),
+			)
+			if err != nil {
+				t.Fatalf("newReaderCredential: %v", err)
+			}
+			defer owner.Close()
+
+			metadata := owner.Metadata()
+			if metadata.CredentialMode != test.mode ||
+				metadata.KeyfileMode != test.keyfileMode ||
+				metadata.KeyfileCount != uint16(len(test.keyfiles)) ||
+				metadata.ExpectedPolicy != test.policy {
+				t.Fatalf("reader owner metadata = %+v; want mode/order/count/policy %d/%d/%d/%d", metadata, test.mode, test.keyfileMode, len(test.keyfiles), test.policy)
+			}
+			if probe.kdfCalls != 1 {
+				t.Fatalf("reader KDF calls = %d; want 1", probe.kdfCalls)
+			}
+		})
 	}
 }
 

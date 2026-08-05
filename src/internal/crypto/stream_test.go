@@ -55,6 +55,40 @@ func TestPCV3StreamParanoid1MatchesIndependentWrapVector(t *testing.T) {
 	}
 }
 
+func TestPCV3WrapKnownAnswer(t *testing.T) {
+	t.Run("Standard-1", func(t *testing.T) {
+		destination := make([]byte, 32)
+		if err := PCV3WrapStandard1(
+			destination,
+			mustPCV3StreamHex(t, pcv3StreamVolumeKey),
+			mustPCV3StreamHex(t, pcv3StreamStandardXKey),
+			mustPCV3StreamHex(t, pcv3StreamStandardNonce),
+		); err != nil {
+			t.Fatalf("PCV3WrapStandard1() error = %v", err)
+		}
+		if want := mustPCV3StreamHex(t, pcv3StreamStandardWrapped); !bytes.Equal(destination, want) {
+			t.Fatalf("PCV3WrapStandard1() = %x, want independent ciphertext %x", destination, want)
+		}
+	})
+
+	t.Run("Paranoid-1 Serpent then XChaCha20", func(t *testing.T) {
+		destination := make([]byte, 32)
+		if err := PCV3WrapParanoid1(
+			destination,
+			mustPCV3StreamHex(t, pcv3StreamVolumeKey),
+			mustPCV3StreamHex(t, pcv3StreamParanoidXKey),
+			mustPCV3StreamHex(t, pcv3StreamParanoidNonce),
+			mustPCV3StreamHex(t, pcv3StreamParanoidSerpentKey),
+			mustPCV3StreamHex(t, pcv3StreamParanoidIV),
+		); err != nil {
+			t.Fatalf("PCV3WrapParanoid1() error = %v", err)
+		}
+		if want := mustPCV3StreamHex(t, pcv3StreamParanoidWrapped); !bytes.Equal(destination, want) {
+			t.Fatalf("PCV3WrapParanoid1() = %x, want independent ciphertext %x", destination, want)
+		}
+	})
+}
+
 func TestPCV3StreamParanoid1RejectsWrongParameters(t *testing.T) {
 	want := mustPCV3StreamHex(t, pcv3StreamVolumeKey)
 	tests := []struct {
@@ -136,6 +170,12 @@ func TestPCV3StreamInvalidShapesLeaveDestinationUnchanged(t *testing.T) {
 		}},
 		{name: "Serpent IV length", call: func(destination []byte) error {
 			return PCV3UnwrapParanoid1(destination, source, paranoidKey, paranoidNonce, serpentKey, serpentIV[:15])
+		}},
+		{name: "Standard wrap key length", call: func(destination []byte) error {
+			return PCV3WrapStandard1(destination, source, standardKey[:31], standardNonce)
+		}},
+		{name: "Paranoid wrap IV length", call: func(destination []byte) error {
+			return PCV3WrapParanoid1(destination, source, paranoidKey, paranoidNonce, serpentKey, serpentIV[:15])
 		}},
 	}
 	for _, testCase := range tests {

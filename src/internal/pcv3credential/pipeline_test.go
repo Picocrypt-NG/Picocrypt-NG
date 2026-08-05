@@ -177,6 +177,61 @@ func pipelineRequest(t *testing.T, suite Suite) *CredentialRequest {
 	}
 }
 
+type ownerMetadataFactorCase struct {
+	name        string
+	mode        CredentialMode
+	keyfileMode KeyfileMode
+	policy      FactorPolicy
+	password    []byte
+	keyfiles    [][]byte
+}
+
+func ownerMetadataFactorCases() []ownerMetadataFactorCase {
+	return []ownerMetadataFactorCase{
+		{
+			name: "password only", mode: CredentialModePasswordOnly,
+			keyfileMode: KeyfileModeNone, policy: FactorPolicyPasswordOnly,
+			password: []byte("metadata password"),
+		},
+		{
+			name: "keyfiles only ordered", mode: CredentialModeKeyfilesOnly,
+			keyfileMode: KeyfileModeOrdered, policy: FactorPolicyKeyfilesOnly,
+			keyfiles: [][]byte{[]byte("keyfile one"), []byte("keyfile two")},
+		},
+		{
+			name: "keyfiles only unordered", mode: CredentialModeKeyfilesOnly,
+			keyfileMode: KeyfileModeUnordered, policy: FactorPolicyKeyfilesOnly,
+			keyfiles: [][]byte{[]byte("keyfile two"), []byte("keyfile one")},
+		},
+		{
+			name: "combined ordered", mode: CredentialModePasswordAndKeyfiles,
+			keyfileMode: KeyfileModeOrdered, policy: FactorPolicyPasswordAndKeyfiles,
+			password: []byte("metadata password"),
+			keyfiles: [][]byte{[]byte("keyfile one"), []byte("keyfile two")},
+		},
+		{
+			name: "combined unordered", mode: CredentialModePasswordAndKeyfiles,
+			keyfileMode: KeyfileModeUnordered, policy: FactorPolicyPasswordAndKeyfiles,
+			password: []byte("metadata password"),
+			keyfiles: [][]byte{[]byte("keyfile two"), []byte("keyfile one")},
+		},
+	}
+}
+
+func factorRequestForOwnerMetadata(test ownerMetadataFactorCase) *FactorRequest {
+	keyfiles := make([]*KeyfileReader, len(test.keyfiles))
+	for i := range test.keyfiles {
+		keyfiles[i] = OwnKeyfileReader(io.NopCloser(bytes.NewReader(test.keyfiles[i])))
+	}
+	return &FactorRequest{
+		Mode:           test.mode,
+		KeyfileMode:    test.keyfileMode,
+		ExpectedPolicy: test.policy,
+		Password:       append([]byte(nil), test.password...),
+		Keyfiles:       keyfiles,
+	}
+}
+
 func requirePipelineCode(
 	t *testing.T,
 	err error,
@@ -720,7 +775,10 @@ func TestPipelinePublishesOneOwner(t *testing.T) {
 
 	metadata := owner.Metadata()
 	if metadata.Suite != SuiteStandard1 ||
-		metadata.ExpectedPolicy != FactorPolicyPasswordOnly {
+		metadata.ExpectedPolicy != FactorPolicyPasswordOnly ||
+		metadata.CredentialMode != CredentialModePasswordOnly ||
+		metadata.KeyfileMode != KeyfileModeNone ||
+		metadata.KeyfileCount != 0 {
 		t.Fatalf("owner metadata = %+v", metadata)
 	}
 	copied := make([]byte, derivedKeyBytes)
@@ -736,6 +794,37 @@ func TestPipelinePublishesOneOwner(t *testing.T) {
 		t.Fatal("published owner did not contain the admitted schedule")
 	}
 	crypto.SecureZero(copied)
+}
+
+func TestNewCredentialOwnerMetadataBindsValidatedFactors(t *testing.T) {
+	for _, test := range ownerMetadataFactorCases() {
+		t.Run(test.name, func(t *testing.T) {
+			request := pipelineRequest(t, SuiteStandard1)
+			if err := request.Factors.Close(); err != nil {
+				t.Fatalf("close default factors: %v", err)
+			}
+			request.Factors = factorRequestForOwnerMetadata(test)
+			probe := newPipelineProbe()
+			owner, err := newCredential(
+				context.Background(),
+				request,
+				probe.admit,
+				probe.seams(),
+			)
+			if err != nil {
+				t.Fatalf("newCredential: %v", err)
+			}
+			defer owner.Close()
+
+			metadata := owner.Metadata()
+			if metadata.CredentialMode != test.mode ||
+				metadata.KeyfileMode != test.keyfileMode ||
+				metadata.KeyfileCount != uint16(len(test.keyfiles)) ||
+				metadata.ExpectedPolicy != test.policy {
+				t.Fatalf("owner metadata = %+v; want mode/order/count/policy %d/%d/%d/%d", metadata, test.mode, test.keyfileMode, len(test.keyfiles), test.policy)
+			}
+		})
+	}
 }
 
 func TestPipelineRetryFreshness(t *testing.T) {

@@ -26,6 +26,26 @@ type ownerFixture struct {
 func newOwnerFixture(t *testing.T) *ownerFixture {
 	t.Helper()
 
+	material, aliases, rows := newOwnerMaterial(t)
+	metadata := validOwnerMetadataFixture()
+	owner, err := newOwner(metadata, material)
+	if err != nil {
+		material.close()
+		t.Fatalf("newOwner: %v", err)
+	}
+	return &ownerFixture{
+		owner:     owner,
+		metadata:  metadata,
+		request:   rows[0].request,
+		volumeKey: bytes.Repeat([]byte{0x22}, derivedKeyBytes),
+		key:       bytes.Repeat([]byte{0x50}, derivedKeyBytes),
+		aliases:   aliases,
+	}
+}
+
+func newOwnerMaterial(t *testing.T) (*keyMaterial, map[string][]byte, []scheduleRow) {
+	t.Helper()
+
 	rows, err := fixedScheduleForSuite(SuiteStandard1)
 	if err != nil {
 		t.Fatalf("fixedScheduleForSuite: %v", err)
@@ -59,10 +79,16 @@ func newOwnerFixture(t *testing.T) *ownerFixture {
 		}
 		aliases[fmt.Sprintf("DerivedKey[%d]", i)] = material.keys[i].secret.Bytes()
 	}
+	return material, aliases, rows
+}
 
+func validOwnerMetadataFixture() OwnerMetadata {
 	metadata := OwnerMetadata{
 		Suite:          SuiteStandard1,
 		ExpectedPolicy: FactorPolicyPasswordOnly,
+		CredentialMode: CredentialModePasswordOnly,
+		KeyfileMode:    KeyfileModeNone,
+		KeyfileCount:   0,
 	}
 	for i := range metadata.ArgonSalt {
 		metadata.ArgonSalt[i] = byte(i + 1)
@@ -70,20 +96,7 @@ func newOwnerFixture(t *testing.T) *ownerFixture {
 	for i := range metadata.VolumeID {
 		metadata.VolumeID[i] = byte(0x80 + i)
 	}
-
-	owner, err := newOwner(metadata, material)
-	if err != nil {
-		material.close()
-		t.Fatalf("newOwner: %v", err)
-	}
-	return &ownerFixture{
-		owner:     owner,
-		metadata:  metadata,
-		request:   rows[0].request,
-		volumeKey: bytes.Repeat([]byte{0x22}, derivedKeyBytes),
-		key:       bytes.Repeat([]byte{0x50}, derivedKeyBytes),
-		aliases:   aliases,
-	}
+	return metadata
 }
 
 func requireOwnerCode(
@@ -399,6 +412,9 @@ func TestOwnerDiagnosticsNoDisclosure(t *testing.T) {
 		OwnerMetadata{
 			Suite:          SuiteStandard1,
 			ExpectedPolicy: FactorPolicyPasswordOnly,
+			CredentialMode: CredentialModePasswordOnly,
+			KeyfileMode:    KeyfileModeNone,
+			KeyfileCount:   0,
 		},
 		material,
 	)
@@ -436,5 +452,60 @@ func TestOwnerDiagnosticsNoDisclosure(t *testing.T) {
 		if strings.Contains(diagnostics, encoded) {
 			t.Fatalf("owner diagnostics disclosed secret sentinel encoding %q", encoded)
 		}
+	}
+}
+
+func TestOwnerRejectsInvalidCredentialTuple(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*OwnerMetadata)
+	}{
+		{name: "unknown credential mode", edit: func(metadata *OwnerMetadata) {
+			metadata.CredentialMode = CredentialMode(0xff)
+		}},
+		{name: "password only with ordering", edit: func(metadata *OwnerMetadata) {
+			metadata.KeyfileMode = KeyfileModeOrdered
+		}},
+		{name: "password only with keyfile", edit: func(metadata *OwnerMetadata) {
+			metadata.KeyfileCount = 1
+		}},
+		{name: "keyfiles only without ordering", edit: func(metadata *OwnerMetadata) {
+			metadata.ExpectedPolicy = FactorPolicyKeyfilesOnly
+			metadata.CredentialMode = CredentialModeKeyfilesOnly
+			metadata.KeyfileMode = KeyfileModeNone
+			metadata.KeyfileCount = 1
+		}},
+		{name: "keyfiles only without keyfile", edit: func(metadata *OwnerMetadata) {
+			metadata.ExpectedPolicy = FactorPolicyKeyfilesOnly
+			metadata.CredentialMode = CredentialModeKeyfilesOnly
+			metadata.KeyfileMode = KeyfileModeOrdered
+			metadata.KeyfileCount = 0
+		}},
+		{name: "combined policy mismatch", edit: func(metadata *OwnerMetadata) {
+			metadata.CredentialMode = CredentialModePasswordAndKeyfiles
+			metadata.KeyfileMode = KeyfileModeOrdered
+			metadata.KeyfileCount = 1
+		}},
+		{name: "too many keyfiles", edit: func(metadata *OwnerMetadata) {
+			metadata.ExpectedPolicy = FactorPolicyKeyfilesOnly
+			metadata.CredentialMode = CredentialModeKeyfilesOnly
+			metadata.KeyfileMode = KeyfileModeUnordered
+			metadata.KeyfileCount = maxKeyfiles + 1
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			metadata := validOwnerMetadataFixture()
+			test.edit(&metadata)
+			material, aliases, _ := newOwnerMaterial(t)
+			owner, err := newOwner(metadata, material)
+			if owner != nil {
+				owner.Close()
+				t.Fatal("invalid credential tuple published an owner")
+			}
+			requireOwnerCode(t, err, OwnerErrorInvalidRequest)
+			requireOwnerAliasesZero(t, aliases)
+		})
 	}
 }
