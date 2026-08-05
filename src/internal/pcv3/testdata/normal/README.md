@@ -9,6 +9,7 @@ The suffix and extra-byte fixtures keep the canonical volume through Probe, Insp
 | Fixture | Volume bytes | Volume SHA-256 | Plaintext | Selected role | Expected |
 |---|---:|---|---|---|---|
 | `normal-standard-password-only-small` | 2353 | `4021b80c8f8a435b60d356134116baa24efb6211afcf5a7e31702d40c5e98be5` | `file:9` | `primary` | `success / none` |
+| `normal-standard-combined-ordered-archive-small` | 2730 | `e5d0c78ca379d76bbbb8874e6fc5857f8ce2bad3182220dee4bb54216b430505` | `file:386` | `primary` | `success / none` |
 | `normal-standard-combined-ordered-empty` | 2232 | `9d41537f4fbcf4ca1ca517a899ae191ae28abde592b9d0c811e9e1b5fa9f6f47` | `file:0` | `primary` | `success / none` |
 | `normal-standard-combined-ordered-one` | 2345 | `6c7f4519612e5767c55b2d5713f483b95eccb8f85969d4445cba7a72744f28f8` | `file:1` | `primary` | `success / none` |
 | `normal-standard-combined-ordered-before-mib` | 1050919 | `261f756bb7f5b5882ea9050a7562dc480bc67823af7e15295a75221ffef2dd6e` | `repeat:1048575x03` | `primary` | `success / none` |

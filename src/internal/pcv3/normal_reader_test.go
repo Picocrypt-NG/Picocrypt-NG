@@ -26,6 +26,7 @@ type normalFixtureManifest struct {
 
 type normalFixture struct {
 	ID          string                    `json:"id"`
+	PayloadKind string                    `json:"payload_kind"`
 	Volume      normalFixtureArtifact     `json:"volume"`
 	Plaintext   normalFixturePlaintext    `json:"plaintext"`
 	CommentHex  string                    `json:"comment_hex"`
