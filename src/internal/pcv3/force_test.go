@@ -2,6 +2,7 @@ package pcv3
 
 import (
 	"bytes"
+	"context"
 	"testing"
 )
 
@@ -167,6 +168,125 @@ func TestResolveForceCandidatesPreservesLiteralRecordRangesWithoutCoalescing(t *
 	}
 	if got := resolution.result.Ranges(); !bytes.Equal(recoveryRangeBytes(got), recoveryRangeBytes(want)) {
 		t.Fatalf("recovery ranges = %#v; want exact per-record map %#v", got, want)
+	}
+}
+
+func TestForceRecordAnalysisPrecedesAndConstrainsSecondPassOutput(t *testing.T) {
+	fixtures := loadNormalFixtureManifest(t).FixturesByID()
+	tests := []struct {
+		name          string
+		fixture       string
+		wantRange     RecoveryRangeState
+		wantFinal     RecoveryFinalState
+		wantStage     Stage
+		wantEmissions int
+	}{
+		{
+			name: "damaged data is missing and never emitted", fixture: "normal-negative-record",
+			wantRange: RecoveryRangeMissing, wantFinal: RecoveryFinalVerified,
+			wantStage: StageRecordAuth, wantEmissions: 0,
+		},
+		{
+			name: "verified data survives a missing final without inventing final bytes", fixture: "normal-negative-final",
+			wantRange: RecoveryRangeVerified, wantFinal: RecoveryFinalMissing,
+			wantStage: StageFinalRecord, wantEmissions: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := fixtures[test.fixture]
+			volume := readNormalFixtureArtifact(t, fixture.Volume)
+			structure := inspectNormalFixture(t, fixture)
+			candidate, _ := structure.CandidateAt(0)
+			geometry, _ := structure.GeometryAt(0)
+			provider := newNormalFixtureCredentialProvider(t, fixture.Keys)
+			provider.access.adopted = true
+			defer provider.close()
+			request, _ := newRecoveryRequest(RecoveryModeForce)
+
+			analysis, err := analyzeRecoveryRecords(
+				context.Background(), bytes.NewReader(volume), candidate, geometry,
+				provider, request, candidate.Role(),
+			)
+			if err != nil {
+				t.Fatalf("analyze frozen Force records: %v", err)
+			}
+			if len(analysis.ranges) != 1 || analysis.ranges[0].State() != test.wantRange ||
+				analysis.final != test.wantFinal || analysis.damageStage != test.wantStage {
+				t.Fatalf("analysis = %#v/%v/%v; want one %v range, final %v, stage %v", analysis.ranges, analysis.final, analysis.damageStage, test.wantRange, test.wantFinal, test.wantStage)
+			}
+
+			emissions := 0
+			var emitted []byte
+			err = emitRecoveryRecords(
+				context.Background(), bytes.NewReader(volume), candidate, geometry,
+				provider, request, candidate.Role(), analysis,
+				func(recoveryRange RecoveryRange, plaintext []byte) error {
+					emissions++
+					if recoveryRange.State() == RecoveryRangeMissing {
+						t.Fatal("second pass emitted a missing range")
+					}
+					emitted = append(emitted, plaintext...)
+					return nil
+				},
+			)
+			if err != nil {
+				t.Fatalf("emit frozen Force records: %v", err)
+			}
+			if emissions != test.wantEmissions {
+				t.Fatalf("emissions = %d; want %d", emissions, test.wantEmissions)
+			}
+			if test.wantEmissions != 0 {
+				wantPlaintext := readNormalFixturePlaintext(t, fixture.Plaintext)
+				if !bytes.Equal(emitted, wantPlaintext) {
+					t.Fatalf("emitted bytes = %x; want original-offset frozen plaintext %x", emitted, wantPlaintext)
+				}
+			}
+		})
+	}
+}
+
+func TestUnverifiedRecordAnalysisRequiresExactLiveRole(t *testing.T) {
+	fixture := loadNormalFixtureManifest(t).FixturesByID()["normal-negative-record"]
+	volume := readNormalFixtureArtifact(t, fixture.Volume)
+	structure := inspectNormalFixture(t, fixture)
+	candidate, _ := structure.CandidateAt(0)
+	geometry, _ := structure.GeometryAt(0)
+	provider := newNormalFixtureCredentialProvider(t, fixture.Keys)
+	provider.access.adopted = true
+	defer provider.close()
+
+	if err := withUnverifiedRecoveryRequest(CapsuleRolePrimary, func(request recoveryRequest) error {
+		analysis, err := analyzeRecoveryRecords(
+			context.Background(), bytes.NewReader(volume), candidate, geometry,
+			provider, request, CapsuleRolePrimary,
+		)
+		if err != nil {
+			return err
+		}
+		if len(analysis.ranges) != 1 || analysis.ranges[0].State() != RecoveryRangeUnverified ||
+			analysis.final != RecoveryFinalVerified {
+			t.Fatalf("authorized unverified analysis = %#v/%v; want unverified data plus verified final anchor", analysis.ranges, analysis.final)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("live primary consent: %v", err)
+	}
+
+	if err := withUnverifiedRecoveryRequest(CapsuleRoleBackup, func(request recoveryRequest) error {
+		analysis, err := analyzeRecoveryRecords(
+			context.Background(), bytes.NewReader(volume), candidate, geometry,
+			provider, request, CapsuleRolePrimary,
+		)
+		if err != nil {
+			return err
+		}
+		if analysis.ranges[0].State() != RecoveryRangeMissing {
+			t.Fatalf("role-mismatched analysis state = %v; want missing", analysis.ranges[0].State())
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("live backup consent: %v", err)
 	}
 }
 
