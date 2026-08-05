@@ -1,10 +1,9 @@
 package pcv3
 
 import (
-	pcv3crypto "Picocrypt-NG/internal/crypto"
-	pcencoding "Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3governance"
+	"Picocrypt-NG/internal/util"
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/binary"
@@ -13,6 +12,9 @@ import (
 	"io"
 	"math"
 	"unicode/utf8"
+
+	pcv3crypto "Picocrypt-NG/internal/crypto"
+	pcencoding "Picocrypt-NG/internal/encoding"
 )
 
 var (
@@ -509,25 +511,25 @@ func serializeNormalVolumeWithKeys(
 	if err := writer.write(metadataEncoded); err != nil {
 		return err
 	}
-	if writer.offset != uint64(geometry.frontHeaderLength) {
+	if !normalWriteOffsetMatches(writer.offset, geometry.frontHeaderLength) {
 		return newNormalWriteFailure(StageTailGeometry, errNormalWriteGeometry)
 	}
 	if err := writeNormalRecords(ctx, source, &writer, core, geometry, keys, codecs); err != nil {
 		return err
 	}
-	if writer.offset != uint64(geometry.backupCapsuleOffset) {
+	if !normalWriteOffsetMatches(writer.offset, geometry.backupCapsuleOffset) {
 		return newNormalWriteFailure(StageTailGeometry, errNormalWriteGeometry)
 	}
 	if err := writer.write(backupEncoded[:]); err != nil {
 		return err
 	}
-	if writer.offset != uint64(geometry.trailerOffset) {
+	if !normalWriteOffsetMatches(writer.offset, geometry.trailerOffset) {
 		return newNormalWriteFailure(StageTailGeometry, errNormalWriteGeometry)
 	}
 	if err := writer.write(trailerEncoded[:]); err != nil {
 		return err
 	}
-	if writer.offset != uint64(geometry.fileSize) {
+	if !normalWriteOffsetMatches(writer.offset, geometry.fileSize) {
 		return newNormalWriteFailure(StageTailGeometry, errNormalWriteGeometry)
 	}
 	return nil
@@ -672,10 +674,11 @@ func writeNormalRecords(
 		maximum = final
 	}
 	decodedMaximum, ok := decodedRecordBodyLength(maximum, geometry.payloadBodyRS)
-	if !ok || maximum.ciphertextLength > uint64(math.MaxInt) {
+	maximumCiphertextLength, lengthOK := normalWriteLengthToInt(maximum.ciphertextLength)
+	if !ok || !lengthOK {
 		return newNormalWriteFailure(StageRecordBodyRS, errNormalWriteGeometry)
 	}
-	plaintext := make([]byte, int(maximum.ciphertextLength))
+	plaintext := make([]byte, maximumCiphertextLength)
 	semantic := make([]byte, decodedMaximum)
 	defer pcv3crypto.SecureZero(plaintext)
 	defer pcv3crypto.SecureZero(semantic)
@@ -701,7 +704,7 @@ func writeNormalRecords(
 				return err
 			}
 		}
-		if writer.offset != uint64(expected.descriptorOffset) {
+		if !normalWriteOffsetMatches(writer.offset, expected.descriptorOffset) {
 			return newNormalWriteFailure(stage, errNormalWriteGeometry)
 		}
 		pcv3crypto.SecureZero(descriptor[:])
@@ -711,13 +714,16 @@ func writeNormalRecords(
 		if err := writer.write(descriptor[:]); err != nil {
 			return err
 		}
-		if writer.offset != uint64(expected.bodyOffset) {
+		if !normalWriteOffsetMatches(writer.offset, expected.bodyOffset) {
 			return newNormalWriteFailure(stage, errNormalWriteGeometry)
 		}
 
 		pcv3crypto.SecureZero(plaintext)
 		pcv3crypto.SecureZero(semantic)
-		ciphertextLength := int(expected.ciphertextLength)
+		ciphertextLength, ok := normalWriteLengthToInt(expected.ciphertextLength)
+		if !ok || ciphertextLength > len(plaintext) {
+			return newNormalWriteFailure(stage, errNormalWriteGeometry)
+		}
 		if !expected.final {
 			if err := readNormalWriteSourceExact(ctx, source, plaintext[:ciphertextLength]); err != nil {
 				return err
@@ -944,6 +950,18 @@ func normalKeyfileModeFromOwner(mode pcv3credential.KeyfileMode) (KeyfileMode, b
 	default:
 		return 0, false
 	}
+}
+
+func normalWriteOffsetMatches(actual uint64, expected int64) bool {
+	actualOffset, ok := util.SafeUint64ToInt64(actual)
+	return ok && actualOffset == expected
+}
+
+func normalWriteLengthToInt(length uint64) (int, bool) {
+	if length > uint64(math.MaxInt) {
+		return 0, false
+	}
+	return int(length), true
 }
 
 func newNormalWriteFailure(stage Stage, cause error) error {
