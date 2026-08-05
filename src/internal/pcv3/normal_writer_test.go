@@ -1,7 +1,7 @@
 package pcv3
 
 import (
-	pcencoding "Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/pcv3governance"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -10,7 +10,7 @@ import (
 	"io"
 	"testing"
 
-	"Picocrypt-NG/internal/pcv3governance"
+	pcencoding "Picocrypt-NG/internal/encoding"
 )
 
 // These are literal schema-1 fixture dimensions, deliberately independent of
@@ -148,41 +148,69 @@ func (entropy *normalCountingEntropy) Read(destination []byte) (int, error) {
 }
 
 func TestWriteNormalVolumeRequiresAuthorizationBeforeWork(t *testing.T) {
-	codecs, err := pcencoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("create TEST ONLY RS codecs: %v", err)
+	assertRefusal := func(t *testing.T, completion *normalWriteCompletion, err error) {
+		t.Helper()
+		if completion != nil {
+			t.Fatal("rejected writer minted completion")
+		}
+		var refusal *pcv3governance.RefusalError
+		if !errors.As(err, &refusal) || refusal.Reason != pcv3governance.ReasonAuthorizationMissing {
+			t.Fatalf("rejected writer error = %v; want authorization-missing refusal", err)
+		}
 	}
-	entropy := &normalCountingEntropy{reader: bytes.NewReader(make([]byte, 128))}
-	source := &normalIOProbe{reader: bytes.NewReader(nil)}
-	sink := &normalIOProbe{}
-	material := &normalLiteralWriteMaterial{}
 
-	completion, err := writeNormalVolumeWithSeams(
-		context.Background(),
-		&pcv3governance.EmissionAuthorization{},
-		normalWriteRequest{},
-		source,
-		sink,
-		material,
-		normalWriteSeams{entropy: entropy, codecs: codecs},
-	)
-	if completion != nil {
-		t.Fatal("rejected writer minted completion")
-	}
-	var refusal *pcv3governance.RefusalError
-	if !errors.As(err, &refusal) || refusal.Reason != pcv3governance.ReasonAuthorizationMissing {
-		t.Fatalf("rejected writer error = %v; want authorization-missing refusal", err)
-	}
-	if entropy.calls != 0 || entropy.bytes != 0 ||
-		material.metadataCalls != 0 || material.keyCalls != 0 ||
-		source.readCalls != 0 || source.readBytes != 0 ||
-		sink.writeCalls != 0 || sink.writtenBytes != 0 {
-		t.Fatalf(
-			"work before authorization: entropy=%d/%d metadata=%d keys=%d source=%d/%d sink=%d/%d",
-			entropy.calls, entropy.bytes, material.metadataCalls, material.keyCalls,
-			source.readCalls, source.readBytes, sink.writeCalls, sink.writtenBytes,
+	t.Run("production adapter rejects before source or destination", func(t *testing.T) {
+		source := &normalIOProbe{reader: bytes.NewReader(nil)}
+		sink := &normalIOProbe{}
+		completion, err := writeNormalVolume(
+			context.Background(),
+			&pcv3governance.EmissionAuthorization{},
+			normalWriteRequest{},
+			source,
+			sink,
+			nil,
 		)
-	}
+		assertRefusal(t, completion, err)
+		if source.readCalls != 0 || source.readBytes != 0 ||
+			sink.writeCalls != 0 || sink.writtenBytes != 0 {
+			t.Fatalf(
+				"production I/O before authorization: source=%d/%d sink=%d/%d",
+				source.readCalls, source.readBytes, sink.writeCalls, sink.writtenBytes,
+			)
+		}
+	})
+
+	t.Run("instrumented adapter rejects every hidden dependency", func(t *testing.T) {
+		codecs, err := pcencoding.NewRSCodecs()
+		if err != nil {
+			t.Fatalf("create TEST ONLY RS codecs: %v", err)
+		}
+		entropy := &normalCountingEntropy{reader: bytes.NewReader(make([]byte, 128))}
+		source := &normalIOProbe{reader: bytes.NewReader(nil)}
+		sink := &normalIOProbe{}
+		material := &normalLiteralWriteMaterial{}
+
+		completion, err := writeNormalVolumeWithSeams(
+			context.Background(),
+			&pcv3governance.EmissionAuthorization{},
+			normalWriteRequest{},
+			source,
+			sink,
+			material,
+			normalWriteSeams{entropy: entropy, codecs: codecs},
+		)
+		assertRefusal(t, completion, err)
+		if entropy.calls != 0 || entropy.bytes != 0 ||
+			material.metadataCalls != 0 || material.keyCalls != 0 ||
+			source.readCalls != 0 || source.readBytes != 0 ||
+			sink.writeCalls != 0 || sink.writtenBytes != 0 {
+			t.Fatalf(
+				"work before authorization: entropy=%d/%d metadata=%d keys=%d source=%d/%d sink=%d/%d",
+				entropy.calls, entropy.bytes, material.metadataCalls, material.keyCalls,
+				source.readCalls, source.readBytes, sink.writeCalls, sink.writtenBytes,
+			)
+		}
+	})
 }
 
 func TestSerializeNormalVolumeIndependentBytes(t *testing.T) {
@@ -284,7 +312,7 @@ func TestSerializeNormalVolumeShortIO(t *testing.T) {
 		ctx context.Context,
 		source io.Reader,
 		destination io.Writer,
-	) (*normalWriteCompletion, error, *normalLiteralWriteMaterial) {
+	) (*normalWriteCompletion, *normalLiteralWriteMaterial, error) {
 		t.Helper()
 		request, material, entropyBytes := decodeNormalWriterFixtureInputs(t, fixture, volume)
 		t.Cleanup(material.keys.close)
@@ -299,11 +327,11 @@ func TestSerializeNormalVolumeShortIO(t *testing.T) {
 				codecs:  codecs,
 			},
 		)
-		return completion, err, material
+		return completion, material, err
 	}
 
 	t.Run("early EOF cannot mint a complete volume", func(t *testing.T) {
-		completion, err, material := run(t, context.Background(), bytes.NewReader(nil), io.Discard)
+		completion, material, err := run(t, context.Background(), bytes.NewReader(nil), io.Discard)
 		assertNormalWriteFailure(t, completion, err, StageInputIO)
 		if material.borrowed == nil || !normalWriteKeysAreZero(material.borrowed) {
 			t.Fatal("early EOF retained writer-owned keys")
@@ -312,7 +340,7 @@ func TestSerializeNormalVolumeShortIO(t *testing.T) {
 
 	t.Run("trailing source byte cannot be hidden after declared payload", func(t *testing.T) {
 		source := append(append([]byte(nil), plaintext...), 0xa5)
-		completion, err, material := run(t, context.Background(), bytes.NewReader(source), io.Discard)
+		completion, material, err := run(t, context.Background(), bytes.NewReader(source), io.Discard)
 		assertNormalWriteFailure(t, completion, err, StageInputIO)
 		if material.borrowed == nil || !normalWriteKeysAreZero(material.borrowed) {
 			t.Fatal("trailing source rejection retained writer-owned keys")
@@ -322,7 +350,7 @@ func TestSerializeNormalVolumeShortIO(t *testing.T) {
 	t.Run("final data returned with EOF remains valid Reader behavior", func(t *testing.T) {
 		source := &normalFinalEOFReader{data: plaintext}
 		var destination bytes.Buffer
-		completion, err, material := run(t, context.Background(), source, &destination)
+		completion, material, err := run(t, context.Background(), source, &destination)
 		if err != nil || completion == nil {
 			t.Fatalf("full final read with EOF = completion %v, error %v", completion != nil, err)
 		}
@@ -344,7 +372,7 @@ func TestSerializeNormalVolumeShortIO(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			destination := &normalShortWriter{zero: test.zero}
 			source := &normalIOProbe{reader: bytes.NewReader(plaintext)}
-			completion, err, material := run(t, context.Background(), source, destination)
+			completion, material, err := run(t, context.Background(), source, destination)
 			assertNormalWriteFailure(t, completion, err, StageOutputWrite)
 			if destination.calls != 1 || source.readCalls != 0 {
 				t.Fatalf("short writer calls=%d source reads=%d; want rejection on first preamble write", destination.calls, source.readCalls)
@@ -359,7 +387,7 @@ func TestSerializeNormalVolumeShortIO(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		source := &normalCancelReader{reader: bytes.NewReader(plaintext), cancel: cancel}
 		var destination bytes.Buffer
-		completion, err, material := run(t, ctx, source, &destination)
+		completion, material, err := run(t, ctx, source, &destination)
 		assertNormalWriteFailure(t, completion, err, StageCancellation)
 		if source.calls != 1 || destination.Len() != int(binary.BigEndian.Uint32(volume[12:16]))+48 {
 			t.Fatalf("cancelled traversal source calls=%d bytes=%d; want header plus descriptor only", source.calls, destination.Len())
