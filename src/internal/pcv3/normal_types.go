@@ -14,7 +14,35 @@ type normalVolumeSink interface {
 	abortUncommitted()
 }
 
-type normalCompletion struct{}
+type normalCompletionSeal struct{}
+
+var authenticatedNormalCompletionSeal = &normalCompletionSeal{}
+
+// normalCompletion is a package-private capability created only by the normal
+// reader after the complete authenticated volume boundary. A degraded read may
+// retain a completion object for existing plaintext-staging semantics, but it
+// deliberately carries no seal and cannot authorize archive extraction.
+type normalCompletion struct {
+	seal        *normalCompletionSeal
+	payloadKind PayloadKind
+}
+
+func newNormalCompletion(payloadKind PayloadKind, wholeVolumeAuthenticated bool) *normalCompletion {
+	completion := &normalCompletion{payloadKind: payloadKind}
+	if wholeVolumeAuthenticated &&
+		(payloadKind == PayloadKindRaw || payloadKind == PayloadKindArchive) {
+		completion.seal = authenticatedNormalCompletionSeal
+	}
+	return completion
+}
+
+func (completion *normalCompletion) authenticatedPayloadKind() (PayloadKind, bool) {
+	if completion == nil || completion.seal != authenticatedNormalCompletionSeal ||
+		(completion.payloadKind != PayloadKindRaw && completion.payloadKind != PayloadKindArchive) {
+		return 0, false
+	}
+	return completion.payloadKind, true
+}
 
 // normalReadResult exposes only coarse conformance state and an authenticated
 // public comment copy. It intentionally contains no source or key material.

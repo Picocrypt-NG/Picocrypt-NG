@@ -118,7 +118,7 @@ func readNormalVolumeWithProvider(
 		stage = degradedStage
 	}
 	result := newNormalReadResult(outcome, stage, auth.AuthenticatedCapsules(), comment)
-	completion := &normalCompletion{}
+	completion := newNormalCompletion(auth.candidate.PayloadKind(), outcome == OutcomeSuccess)
 	completed = true
 	return result, completion
 }
