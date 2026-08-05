@@ -1,6 +1,11 @@
 package pcv3
 
-import "errors"
+import (
+	pcencoding "Picocrypt-NG/internal/encoding"
+	"context"
+	"errors"
+	"io"
+)
 
 var errInvalidForceAnalysis = errors.New("pcv3: invalid Force analysis")
 
@@ -26,6 +31,210 @@ type forceResolution struct {
 	result   *RecoveryResult
 	selected int
 	role     CapsuleRole
+}
+
+type recoveryRecordAnalysis struct {
+	ranges      []RecoveryRange
+	final       RecoveryFinalState
+	damageStage Stage
+}
+
+func analyzeRecoveryRecords(
+	ctx context.Context,
+	source io.ReaderAt,
+	candidate Candidate,
+	geometry Geometry,
+	keys normalKeyBorrower,
+	request recoveryRequest,
+	role CapsuleRole,
+) (recoveryRecordAnalysis, error) {
+	var analysis recoveryRecordAnalysis
+	if ctx == nil || source == nil || keys == nil || !request.valid() ||
+		!isSupportedCapsuleRole(role) || candidate.Role() != role {
+		return analysis, errInvalidForceAnalysis
+	}
+	codecs, err := pcencoding.NewRSCodecs()
+	if err != nil {
+		return analysis, err
+	}
+	evaluator, err := newRecordEvaluator(
+		ctx,
+		source,
+		candidate.core,
+		geometry,
+		codecs,
+		keys,
+		defaultRecordEngineSeams(),
+	)
+	if err != nil {
+		return analysis, err
+	}
+	defer evaluator.close()
+
+	for index := uint64(0); index <= candidate.RecordCount(); index++ {
+		state := RecoveryRangeMissing
+		finalState := RecoveryFinalMissing
+		err := evaluator.evaluateCanonicalRecord(
+			index,
+			request,
+			role,
+			func(evidence recordEvidence, _ []byte) error {
+				switch evidence.authentication {
+				case recordAuthenticationVerified:
+					state = RecoveryRangeVerified
+					finalState = RecoveryFinalVerified
+				case recordAuthenticationUnverified:
+					state = RecoveryRangeUnverified
+					finalState = RecoveryFinalUnverified
+				default:
+					return errInvalidForceAnalysis
+				}
+				return nil
+			},
+		)
+		if err != nil {
+			stage, missing := recoverableRecordFailure(err)
+			if !missing {
+				return recoveryRecordAnalysis{}, err
+			}
+			analysis.damageStage = earlierRecoveryDamageStage(analysis.damageStage, stage)
+		}
+		if index == candidate.RecordCount() {
+			analysis.final = finalState
+			break
+		}
+		start, ok := checkedMul64(index, recordPlaintextMax)
+		if !ok || start >= candidate.PlaintextLength() {
+			return recoveryRecordAnalysis{}, errInvalidForceAnalysis
+		}
+		end, ok := checkedAdd64(start, recordPlaintextMax)
+		if !ok || end > candidate.PlaintextLength() {
+			end = candidate.PlaintextLength()
+		}
+		analysis.ranges = append(analysis.ranges, RecoveryRange{
+			recordIndex: index,
+			start:       start,
+			end:         end,
+			state:       state,
+		})
+	}
+	return analysis, nil
+}
+
+func emitRecoveryRecords(
+	ctx context.Context,
+	source io.ReaderAt,
+	candidate Candidate,
+	geometry Geometry,
+	keys normalKeyBorrower,
+	request recoveryRequest,
+	role CapsuleRole,
+	analysis recoveryRecordAnalysis,
+	sink func(RecoveryRange, []byte) error,
+) error {
+	if ctx == nil || source == nil || keys == nil || !request.valid() ||
+		!isSupportedCapsuleRole(role) || candidate.Role() != role || sink == nil ||
+		!validCanonicalRecoveryRanges(candidate.PlaintextLength(), analysis.ranges) ||
+		!validRecoveryFinalState(analysis.final) {
+		return errInvalidForceAnalysis
+	}
+	codecs, err := pcencoding.NewRSCodecs()
+	if err != nil {
+		return err
+	}
+	evaluator, err := newRecordEvaluator(
+		ctx,
+		source,
+		candidate.core,
+		geometry,
+		codecs,
+		keys,
+		defaultRecordEngineSeams(),
+	)
+	if err != nil {
+		return err
+	}
+	defer evaluator.close()
+
+	for _, recoveryRange := range analysis.ranges {
+		if recoveryRange.state == RecoveryRangeMissing {
+			continue
+		}
+		err := evaluator.evaluateCanonicalRecord(
+			recoveryRange.recordIndex,
+			request,
+			role,
+			func(evidence recordEvidence, plaintext []byte) error {
+				if evidence.final || evidence.plaintextOffset != recoveryRange.start ||
+					evidence.plaintextLength != recoveryRange.end-recoveryRange.start ||
+					recoveryStateForAuthentication(evidence.authentication) != recoveryRange.state {
+					return errInvalidForceAnalysis
+				}
+				return sink(recoveryRange, plaintext)
+			},
+		)
+		if err != nil {
+			return err
+		}
+	}
+	if analysis.final == RecoveryFinalMissing {
+		return nil
+	}
+	return evaluator.evaluateCanonicalRecord(
+		candidate.RecordCount(),
+		request,
+		role,
+		func(evidence recordEvidence, plaintext []byte) error {
+			if !evidence.final || len(plaintext) != 0 ||
+				recoveryFinalForAuthentication(evidence.authentication) != analysis.final {
+				return errInvalidForceAnalysis
+			}
+			return nil
+		},
+	)
+}
+
+func recoverableRecordFailure(err error) (Stage, bool) {
+	var failure *recordFailure
+	if !errors.As(err, &failure) {
+		return 0, false
+	}
+	switch failure.stage {
+	case StageDescriptor, StageRecordBodyRS, StageRecordAuth, StageFinalRecord:
+		return failure.stage, true
+	default:
+		return failure.stage, false
+	}
+}
+
+func earlierRecoveryDamageStage(left, right Stage) Stage {
+	if left == StageNone {
+		return right
+	}
+	if right == StageNone {
+		return left
+	}
+	return left
+}
+
+func recoveryStateForAuthentication(authentication recordAuthenticationState) RecoveryRangeState {
+	if authentication == recordAuthenticationVerified {
+		return RecoveryRangeVerified
+	}
+	if authentication == recordAuthenticationUnverified {
+		return RecoveryRangeUnverified
+	}
+	return 0
+}
+
+func recoveryFinalForAuthentication(authentication recordAuthenticationState) RecoveryFinalState {
+	if authentication == recordAuthenticationVerified {
+		return RecoveryFinalVerified
+	}
+	if authentication == recordAuthenticationUnverified {
+		return RecoveryFinalUnverified
+	}
+	return 0
 }
 
 func resolveForceCandidates(
