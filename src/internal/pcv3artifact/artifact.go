@@ -573,14 +573,45 @@ func encodeEntry(entry Entry) [rangeEntryLength]byte {
 }
 
 func readFixedAt(source io.ReaderAt, destination []byte, offset uint64) error {
-	if offset > math.MaxInt64 || uint64(len(destination)) > math.MaxInt64-offset {
+	if source == nil || offset > math.MaxInt64 || uint64(len(destination)) > math.MaxInt64-offset {
 		return newArtifactError(errorInvalidArtifact, nil)
 	}
-	read, err := source.ReadAt(destination, int64(offset))
-	if read != len(destination) {
-		return newArtifactError(errorArtifactRead, err)
+	if len(destination) == 0 {
+		return nil
 	}
-	return nil
+
+	read := 0
+	consecutiveNoProgress := 0
+	callLimit := len(destination) + 2
+	for range callLimit {
+		count, err := source.ReadAt(destination[read:], int64(offset)+int64(read))
+		if count < 0 || count > len(destination)-read {
+			return newArtifactError(errorArtifactRead, errors.New("invalid reader progress"))
+		}
+		if count > 0 {
+			read += count
+			consecutiveNoProgress = 0
+		} else if err == nil {
+			consecutiveNoProgress++
+			if consecutiveNoProgress == 2 {
+				return newArtifactError(errorArtifactRead, io.ErrNoProgress)
+			}
+		}
+
+		if read == len(destination) {
+			if err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil
+			}
+			return newArtifactError(errorArtifactRead, err)
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return newArtifactError(errorArtifactRead, io.ErrUnexpectedEOF)
+			}
+			return newArtifactError(errorArtifactRead, err)
+		}
+	}
+	return newArtifactError(errorArtifactRead, io.ErrNoProgress)
 }
 
 func writeAll(destination io.Writer, data []byte) error {

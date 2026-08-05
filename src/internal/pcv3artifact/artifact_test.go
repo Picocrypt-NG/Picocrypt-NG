@@ -458,6 +458,63 @@ func TestParseRejectsMalformedLayoutsBeforeAttackerSizedReads(t *testing.T) {
 	}
 }
 
+func TestParseRetriesBoundedFixedFieldReadsAtHeaderAndRangeEntry(t *testing.T) {
+	literal := readLiteralArtifact(t, "partial")
+	targets := []struct {
+		name   string
+		start  int64
+		length int
+	}{
+		{name: "header", start: 0, length: int(headerLength)},
+		{name: "range entry", start: int64(headerLength), length: int(rangeEntryLength)},
+	}
+
+	for _, target := range targets {
+		t.Run(target.name+" positive short nil", func(t *testing.T) {
+			reader := &fixedFieldReaderAt{
+				data:        literal,
+				targetStart: target.start,
+				targetEnd:   target.start + int64(target.length),
+				chunk:       7,
+			}
+			artifact, err := Parse(reader, int64(len(literal)))
+			if err != nil {
+				t.Fatalf("parse valid artifact through short-nil %s reads: %v", target.name, err)
+			}
+			metadata := artifact.Metadata()
+			if metadata.State != StatePartial || metadata.RangeCount != 1 || metadata.TotalLength != uint64(len(literal)) {
+				t.Fatalf("short-nil %s metadata = %#v; want independent partial literal", target.name, metadata)
+			}
+			wantCalls := (target.length + reader.chunk - 1) / reader.chunk
+			if reader.targetCalls != wantCalls {
+				t.Fatalf("short-nil %s calls = %d; want exact bounded progress count %d", target.name, reader.targetCalls, wantCalls)
+			}
+			if reader.targetMaximumRequest > target.length || reader.maximumRequest > int(headerLength) {
+				t.Fatalf("short-nil %s requested target/global bytes %d/%d; want at most %d/%d", target.name, reader.targetMaximumRequest, reader.maximumRequest, target.length, headerLength)
+			}
+		})
+
+		t.Run(target.name+" repeated zero progress", func(t *testing.T) {
+			reader := &fixedFieldReaderAt{
+				data:        literal,
+				targetStart: target.start,
+				targetEnd:   target.start + int64(target.length),
+				stall:       true,
+			}
+			artifact, err := Parse(reader, int64(len(literal)))
+			if artifact != nil || !errors.Is(err, io.ErrNoProgress) {
+				t.Fatalf("repeated zero-progress %s parse = (%#v, %v); want bounded no-progress failure", target.name, artifact, err)
+			}
+			if reader.targetCalls != 2 {
+				t.Fatalf("repeated zero-progress %s calls = %d; want rejection after 2", target.name, reader.targetCalls)
+			}
+			if reader.targetMaximumRequest > target.length || reader.maximumRequest > int(headerLength) {
+				t.Fatalf("zero-progress %s requested target/global bytes %d/%d; want at most %d/%d", target.name, reader.targetMaximumRequest, reader.maximumRequest, target.length, headerLength)
+			}
+		})
+	}
+}
+
 func TestZeroLengthFinalOnlyEvidenceHasCanonicalForm(t *testing.T) {
 	literal := mustDecodeHex(t, ""+
 		"5049434f2d5245434f564552592d3300"+
@@ -534,6 +591,52 @@ func (reader *observedReaderAt) ReadAt(destination []byte, offset int64) (int, e
 		reader.maximumRequest = len(destination)
 	}
 	return reader.reader.ReadAt(destination, offset)
+}
+
+type fixedFieldReaderAt struct {
+	data                 []byte
+	targetStart          int64
+	targetEnd            int64
+	chunk                int
+	stall                bool
+	targetCalls          int
+	targetMaximumRequest int
+	maximumRequest       int
+}
+
+func (reader *fixedFieldReaderAt) ReadAt(destination []byte, offset int64) (int, error) {
+	if len(destination) > reader.maximumRequest {
+		reader.maximumRequest = len(destination)
+	}
+	targeted := offset >= reader.targetStart && offset < reader.targetEnd
+	if targeted {
+		reader.targetCalls++
+		if len(destination) > reader.targetMaximumRequest {
+			reader.targetMaximumRequest = len(destination)
+		}
+		if reader.stall {
+			return 0, nil
+		}
+	}
+	if offset < 0 || offset >= int64(len(reader.data)) {
+		return 0, io.EOF
+	}
+	readLength := len(destination)
+	if targeted && reader.chunk < readLength {
+		readLength = reader.chunk
+	}
+	remaining := len(reader.data) - int(offset)
+	if remaining < readLength {
+		readLength = remaining
+	}
+	read := copy(destination[:readLength], reader.data[int(offset):])
+	if targeted && read < len(destination) {
+		return read, nil
+	}
+	if read < len(destination) {
+		return read, io.EOF
+	}
+	return read, nil
 }
 
 type failingReaderAt struct{ cause error }
