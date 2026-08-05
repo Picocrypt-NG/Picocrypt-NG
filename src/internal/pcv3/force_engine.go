@@ -343,6 +343,9 @@ func analyzeRecoveryCandidate(
 	if structure.PreambleDamaged() || !authenticatedCoreMatchesPreamble(candidate.core, structure.Preamble()) {
 		damageStage = earlierRecoveryDamageStage(damageStage, StagePreamble)
 	}
+	if request.Mode() == RecoveryModeNormalV3 && candidate.Role() == CapsuleRoleBackup {
+		damageStage = earlierRecoveryDamageStage(damageStage, structure.primaryDamage)
+	}
 	if !wrapVerified {
 		damageStage = earlierRecoveryDamageStage(damageStage, StageWrapAuth)
 	}

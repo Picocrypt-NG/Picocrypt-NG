@@ -1,6 +1,7 @@
 package pcv3
 
 import (
+	"Picocrypt-NG/internal/pcv3credential"
 	"bytes"
 	"context"
 	"testing"
@@ -212,6 +213,76 @@ func TestRecoveryDamageStagePreservesProtocolOrder(t *testing.T) {
 				t.Fatalf("earlier recovery damage stage = %v; want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestRecoverNormalV3RetainsFixedPrimaryDamageThroughHealthyBackup(t *testing.T) {
+	fixture := loadNormalFixtureManifest(t).FixturesByID()["normal-degraded-capsule"]
+	volume := readNormalFixtureArtifact(t, fixture.Volume)
+	frozenVolume := append([]byte(nil), volume...)
+	wantPlaintext := readNormalFixturePlaintext(t, fixture.Plaintext)
+
+	password := []byte("mix")
+	red := &literalKeyfileReadCloser{reader: bytes.NewReader([]byte("red"))}
+	blue := &literalKeyfileReadCloser{reader: bytes.NewReader([]byte("blue"))}
+	factors := &pcv3credential.FactorRequest{
+		Mode:           pcv3credential.CredentialModePasswordAndKeyfiles,
+		KeyfileMode:    pcv3credential.KeyfileModeOrdered,
+		ExpectedPolicy: pcv3credential.FactorPolicyPasswordAndKeyfiles,
+		Password:       password,
+		Keyfiles: []*pcv3credential.KeyfileReader{
+			pcv3credential.OwnKeyfileReader(red),
+			pcv3credential.OwnKeyfileReader(blue),
+		},
+	}
+	admitter := &literalKDFAdmitter{}
+	callbackCalls := 0
+	callbackRole := CapsuleRolePrimary
+	var emitted []byte
+
+	result, err := Recover(
+		context.Background(),
+		bytes.NewReader(volume),
+		int64(len(volume)),
+		factors,
+		admitter,
+		RecoveryModeNormalV3,
+		func(got *RecoveryResult, role CapsuleRole, emit RecoveryEmitter) error {
+			callbackCalls++
+			callbackRole = role
+			return emit(func(_ RecoveryRange, plaintext []byte) error {
+				emitted = append(emitted, plaintext...)
+				return nil
+			})
+		},
+	)
+	if err != nil {
+		t.Fatalf("Recover NormalV3 through frozen backup: %v", err)
+	}
+	t.Cleanup(result.Close)
+	if result.Outcome() != OutcomeAuthenticatedDegraded ||
+		result.Stage() != StageCapsuleRS || callbackRole != CapsuleRoleBackup {
+		t.Fatalf(
+			"NormalV3 result = %v/%v/%v; want authenticated-degraded/capsule-rs/backup",
+			result.Outcome(), result.Stage(), callbackRole,
+		)
+	}
+	if callbackCalls != 1 || !bytes.Equal(emitted, wantPlaintext) {
+		t.Fatalf(
+			"NormalV3 output = callbacks %d, plaintext %x; want one callback and frozen plaintext %x",
+			callbackCalls, emitted, wantPlaintext,
+		)
+	}
+	if admitter.calls != 1 || factors.Password != nil || factors.Keyfiles != nil ||
+		!allZero(password) || red.closes != 1 || blue.closes != 1 {
+		t.Fatalf(
+			"NormalV3 credential cleanup = admissions %d, password retained %v/%v, keyfiles retained %v, closes %d/%d; want 1, false/zero, false, 1/1",
+			admitter.calls, factors.Password != nil, !allZero(password), factors.Keyfiles != nil,
+			red.closes, blue.closes,
+		)
+	}
+	if !bytes.Equal(volume, frozenVolume) {
+		t.Fatal("NormalV3 recovery modified the frozen source")
 	}
 }
 

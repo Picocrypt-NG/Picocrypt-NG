@@ -19,6 +19,7 @@ type RecoveryStructure struct {
 	geometries       [2]Geometry
 	candidateCount   uint8
 	preambleDamaged  bool
+	primaryDamage    Stage
 	suffixDamaged    bool
 	observedSize     int64
 	tailTruncation   uint8
@@ -103,19 +104,20 @@ func InspectRecovery(source io.ReaderAt, sourceSize int64) (RecoveryStructure, e
 	var earliest Stage
 	var primary [backupCapsuleLength]byte
 	if _, readErr := readExactAt(source, primaryCapsuleOffset, primary[:], StageCapsuleRS); readErr != nil {
-		if terminal := retainRecoveryStructuralFailure(readErr, &earliest); terminal != nil {
+		if terminal := retainRecoveryStructuralFailure(readErr, &structure.primaryDamage); terminal != nil {
 			return structure, terminal
 		}
 	} else {
 		candidate, geometry, inspectErr := inspectPrimaryCapsule(codecs, primary[:])
 		if inspectErr != nil {
-			if terminal := retainRecoveryStructuralFailure(inspectErr, &earliest); terminal != nil {
+			if terminal := retainRecoveryStructuralFailure(inspectErr, &structure.primaryDamage); terminal != nil {
 				return structure, terminal
 			}
 		} else {
 			structure.addCandidate(candidate, geometry)
 		}
 	}
+	earliest = earlierAuthStage(earliest, structure.primaryDamage)
 
 	var tailScratch [backupCapsuleLength]byte
 	var observedTrailer [trailerLength]byte
