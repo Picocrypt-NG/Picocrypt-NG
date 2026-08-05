@@ -39,7 +39,7 @@ func TestInspectRecoveryReadsOnlyFixedPrimaryAnd49TailIntervals(t *testing.T) {
 	}
 
 	want := []recoveryRead{{offset: 0, length: 16}, {offset: 16, length: 960}}
-	for truncation := int64(0); truncation <= 48; truncation++ {
+	for truncation := range int64(49) {
 		want = append(want, recoveryRead{
 			offset: int64(len(volume)) - truncation - 960,
 			length: 960,

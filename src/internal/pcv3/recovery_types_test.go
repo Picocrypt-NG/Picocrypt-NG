@@ -188,7 +188,8 @@ func TestRecoveryResultCopiesAndClearsOwnedEvidence(t *testing.T) {
 		fmt.Sprintf("%d", result),
 	}
 	valueCopy := *result
-	formatted = append(formatted,
+	formatted = append(
+		formatted,
 		fmt.Sprintf("%v", valueCopy),
 		fmt.Sprintf("%+v", valueCopy),
 		fmt.Sprintf("%#v", valueCopy),
@@ -251,11 +252,13 @@ func TestUnverifiedRecoveryConsentIsRoleBoundAndExpires(t *testing.T) {
 			return errors.New("live capability was not bound only to its explicit physical role")
 		}
 
+		//nolint:staticcheck // The empty serialized form is the authority-loss behavior under test.
 		encoded, err := json.Marshal(request)
 		if err != nil {
 			return fmt.Errorf("serialize private request: %w", err)
 		}
 		var decoded recoveryRequest
+		//nolint:staticcheck // Decoding the empty form must not mint private authority.
 		if err := json.Unmarshal(encoded, &decoded); err != nil {
 			return fmt.Errorf("deserialize private request: %w", err)
 		}

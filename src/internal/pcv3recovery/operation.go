@@ -54,10 +54,12 @@ func (semantic operationSemantic) outputCapable() bool {
 		semantic.outcome == pcv3.OutcomeForceUnverified
 }
 
-type operationSegmentSink func(operationRange, []byte) error
-type operationEmitter func(operationSegmentSink) error
-type operationOutput func(operationSemantic, pcv3.CapsuleRole, operationEmitter) error
-type recoveryCoreRunner func(context.Context, *Request, operationOutput) (operationSemantic, error)
+type (
+	operationSegmentSink func(operationRange, []byte) error
+	operationEmitter     func(operationSegmentSink) error
+	operationOutput      func(operationSemantic, pcv3.CapsuleRole, operationEmitter) error
+	recoveryCoreRunner   func(context.Context, *Request, operationOutput) (operationSemantic, error)
+)
 
 // Run executes the internal production recovery core and composes its output
 // capability with one no-replace stage. No public app surface calls Run in
@@ -191,14 +193,14 @@ func runWithCore(
 
 		file := stage.File()
 		if file == nil {
-			result.retainNotPublished(pcv3.StageOutputPublication, pcv3publication.CodeStageFailure)
+			result.retainNotPublished(pcv3.StageOutputPublication)
 			return errors.New("pcv3 recovery operation: stage unavailable")
 		}
 		if semantic.outcome == pcv3.OutcomeForcePartial ||
 			semantic.outcome == pcv3.OutcomeForceUnverified {
 			descriptor, descriptorErr := artifactDescriptor(semantic, role)
 			if descriptorErr != nil {
-				result.retainNotPublished(pcv3.StageOutputPublication, pcv3publication.CodeStageFailure)
+				result.retainNotPublished(pcv3.StageOutputPublication)
 				return descriptorErr
 			}
 			err = pcv3artifact.Encode(file, descriptor, func(yield func(uint64, io.Reader) error) error {
@@ -212,7 +214,7 @@ func runWithCore(
 			})
 		}
 		if err != nil {
-			result.retainNotPublished(pcv3.StageOutputWrite, pcv3publication.CodeStageFailure)
+			result.retainNotPublished(pcv3.StageOutputWrite)
 			return err
 		}
 		publication := stage.Publish(ctx)
@@ -252,13 +254,13 @@ func (result *Result) retainPublicationError(err error) {
 		result.retainPublication(publication)
 		return
 	}
-	result.retainNotPublished(pcv3.StageOutputPublication, pcv3publication.CodeStageFailure)
+	result.retainNotPublished(pcv3.StageOutputPublication)
 }
 
-func (result *Result) retainNotPublished(stage pcv3.Stage, code pcv3publication.Code) {
+func (result *Result) retainNotPublished(stage pcv3.Stage) {
 	result.publicationState = pcv3publication.StateNotPublished
 	result.publicationStage = stage
-	result.publicationCode = code
+	result.publicationCode = pcv3publication.CodeStageFailure
 }
 
 func cloneOperationSemantic(semantic operationSemantic) operationSemantic {

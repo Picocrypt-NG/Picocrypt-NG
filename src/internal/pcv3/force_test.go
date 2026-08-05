@@ -351,3 +351,14 @@ func recoveryRangeBytes(ranges []RecoveryRange) []byte {
 	}
 	return encoded
 }
+
+func TestRecoveryOperationFailureFallsBackToTypedPolicyFailure(t *testing.T) {
+	result := recoveryOperationFailure(Stage(255))
+	if result == nil {
+		t.Fatal("invalid-stage operation failure returned no typed result")
+	}
+	if result.Outcome() != OutcomeOperationFailed ||
+		result.Stage() != StageCredentialPolicy || result.Code() != CodeOperationFailed {
+		t.Fatalf("invalid-stage operation failure = %v/%v/%v; want typed policy failure", result.Outcome(), result.Stage(), result.Code())
+	}
+}

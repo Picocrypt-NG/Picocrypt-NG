@@ -1,8 +1,6 @@
 package pcv3
 
 import (
-	pcv3crypto "Picocrypt-NG/internal/crypto"
-	pcencoding "Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/pcv3credential"
 	"bytes"
 	"context"
@@ -15,6 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	pcv3crypto "Picocrypt-NG/internal/crypto"
+	pcencoding "Picocrypt-NG/internal/encoding"
 )
 
 const (
@@ -834,6 +835,29 @@ func recordFixturePlaintext(t *testing.T, fixture recordFixtureCase) []byte {
 func recordMutationFile(t *testing.T, name string) []byte {
 	t.Helper()
 	return recordFixtureFile(t, filepath.ToSlash(filepath.Join("mutations", name)))
+}
+
+func TestCheckedRecordCiphertextLengthRejectsHostNarrowingAndSliceOverflow(t *testing.T) {
+	tests := []struct {
+		name                     string
+		length                   uint64
+		decodedLength, plainSize int
+		want                     int
+		wantOK                   bool
+	}{
+		{name: "canonical record", length: 17, decodedLength: 33, plainSize: 1 << 20, want: 17, wantOK: true},
+		{name: "decoded slice overflow", length: 18, decodedLength: 17, plainSize: 1 << 20},
+		{name: "plaintext scratch overflow", length: (1 << 20) + 1, decodedLength: (1 << 20) + 1, plainSize: 1 << 20},
+		{name: "host integer overflow", length: math.MaxUint64, decodedLength: 33, plainSize: 1 << 20},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := checkedRecordCiphertextLength(test.length, test.decodedLength, test.plainSize)
+			if got != test.want || ok != test.wantOK {
+				t.Fatalf("checked ciphertext length = %d/%v; want %d/%v", got, ok, test.want, test.wantOK)
+			}
+		})
+	}
 }
 
 func recordFixtureHex(t *testing.T, literal string) []byte {

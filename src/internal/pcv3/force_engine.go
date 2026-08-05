@@ -1,13 +1,14 @@
 package pcv3
 
 import (
-	pcv3crypto "Picocrypt-NG/internal/crypto"
-	pcencoding "Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/pcv3credential"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+
+	pcv3crypto "Picocrypt-NG/internal/crypto"
+	pcencoding "Picocrypt-NG/internal/encoding"
 )
 
 // RecoverySegmentSink receives one callback-scoped non-missing record at its
@@ -185,7 +186,6 @@ func recoverWithRequest(
 		return recoveryResultForError(err)
 	}
 	credentialRequest, tupleIndexes, ok := recoveryCredentialRequest(structure, factors)
-	factors = nil
 	if !ok {
 		return recoveryOperationFailure(StageCredentialPolicy), &recoveryEngineError{stage: StageCredentialPolicy}
 	}
@@ -202,7 +202,7 @@ func recoverWithRequest(
 		admitter,
 		func(session *pcv3credential.RecoverySession) error {
 			analyses = make([]forceCandidateAnalysis, 0, structure.CandidateCount())
-			for index := 0; index < structure.CandidateCount(); index++ {
+			for index := range structure.CandidateCount() {
 				candidate, _ := structure.CandidateAt(index)
 				geometry, _ := structure.GeometryAt(index)
 				analysis, include, candidateErr := analyzeRecoveryCandidate(
@@ -524,7 +524,7 @@ func recoveryCredentialRequest(
 	}
 	request := &pcv3credential.RecoveryCredentialRequest{Factors: factors}
 	var tuples []credentialTuple
-	for index := 0; index < structure.CandidateCount(); index++ {
+	for index := range structure.CandidateCount() {
 		candidate, ok := structure.CandidateAt(index)
 		if !ok || !validAuthCandidate(candidate) {
 			_ = request.Close()
@@ -657,7 +657,10 @@ func recoveryOperationFailure(stage Stage) *RecoveryResult {
 		0,
 	)
 	if err != nil {
-		return nil
+		return &RecoveryResult{
+			outcome: OutcomeOperationFailed,
+			stage:   StageCredentialPolicy,
+		}
 	}
 	return result
 }

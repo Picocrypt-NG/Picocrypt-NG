@@ -55,6 +55,7 @@ func TestRunNilContextConsumesTransferredFactorsWithoutOutput(t *testing.T) {
 		},
 		Target: filepath.Join(t.TempDir(), "must-not-exist"),
 	}
+	//nolint:staticcheck // A nil production context is the failure/cleanup case under test.
 	result := Run(nil, request)
 	if result.Outcome() != pcv3.OutcomeOperationFailed || result.PublicationAttempted() {
 		t.Fatalf("nil-context result = %v/%v; want operation-failed without publication", result.Outcome(), result.PublicationAttempted())

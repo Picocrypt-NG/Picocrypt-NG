@@ -1,8 +1,6 @@
 package pcv3
 
 import (
-	pcv3crypto "Picocrypt-NG/internal/crypto"
-	pcencoding "Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/util"
 	"context"
@@ -13,6 +11,9 @@ import (
 	"fmt"
 	"io"
 	"math"
+
+	pcv3crypto "Picocrypt-NG/internal/crypto"
+	pcencoding "Picocrypt-NG/internal/encoding"
 )
 
 const recordMACDomain = "Picocrypt-NG/PCV3/record\x00"
@@ -542,7 +543,14 @@ func (evaluator *recordEvaluator) evaluateCanonicalRecord(
 		return callback(evidence, nil)
 	}
 
-	ciphertextLength := int(expected.ciphertextLength)
+	ciphertextLength, ok := checkedRecordCiphertextLength(
+		expected.ciphertextLength,
+		len(decoded),
+		len(evaluator.plaintext),
+	)
+	if !ok {
+		return newRecordFailure(bodyStage, errInvalidRecordRequest)
+	}
 	ciphertext := decoded[:ciphertextLength]
 	plain := evaluator.plaintext[:ciphertextLength]
 	pcv3crypto.SecureZero(plain)
@@ -826,6 +834,17 @@ func coreCommitment(core logicalCore) [32]byte {
 	var commitment [32]byte
 	copy(commitment[:], sum)
 	return commitment
+}
+
+func checkedRecordCiphertextLength(length uint64, decodedLength, plaintextLength int) (int, bool) {
+	if length > uint64(math.MaxInt) {
+		return 0, false
+	}
+	converted := int(length)
+	if converted > decodedLength || converted > plaintextLength {
+		return 0, false
+	}
+	return converted, true
 }
 
 func authenticateDecodedRecord(

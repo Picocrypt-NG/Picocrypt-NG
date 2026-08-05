@@ -1,10 +1,11 @@
 package pcv3
 
 import (
-	pcencoding "Picocrypt-NG/internal/encoding"
 	"errors"
 	"fmt"
 	"io"
+
+	pcencoding "Picocrypt-NG/internal/encoding"
 )
 
 const recoveryTailIntervalCount = 49
@@ -118,7 +119,7 @@ func InspectRecovery(source io.ReaderAt, sourceSize int64) (RecoveryStructure, e
 
 	var tailScratch [backupCapsuleLength]byte
 	var observedTrailer [trailerLength]byte
-	for truncation := int64(0); truncation < recoveryTailIntervalCount; truncation++ {
+	for truncation := range int64(recoveryTailIntervalCount) {
 		offset := sourceSize - int64(backupCapsuleLength) - truncation
 		if offset < 0 {
 			continue
