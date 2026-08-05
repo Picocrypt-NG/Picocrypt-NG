@@ -10,6 +10,9 @@ import (
 type OwnerMetadata struct {
 	Suite          Suite
 	ExpectedPolicy FactorPolicy
+	CredentialMode CredentialMode
+	KeyfileMode    KeyfileMode
+	KeyfileCount   uint16
 	ArgonSalt      [kdfSaltBytes]byte
 	VolumeID       [scheduleVolumeIDBytes]byte
 }
@@ -266,14 +269,13 @@ func validOwnerMetadata(metadata OwnerMetadata) bool {
 	default:
 		return false
 	}
-	switch metadata.ExpectedPolicy {
-	case FactorPolicyPasswordOnly,
-		FactorPolicyKeyfilesOnly,
-		FactorPolicyPasswordAndKeyfiles:
-		return true
-	default:
-		return false
-	}
+	return validFactorPolicy(metadata.ExpectedPolicy) &&
+		policyMatchesMode(metadata.ExpectedPolicy, metadata.CredentialMode) &&
+		validCredentialTuple(
+			metadata.CredentialMode,
+			metadata.KeyfileMode,
+			metadata.KeyfileCount,
+		)
 }
 
 func validOwnerMaterial(

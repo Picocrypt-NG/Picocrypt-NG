@@ -376,22 +376,20 @@ func validateFactorShape(
 		return newFactorError(FactorErrorKeyfileCount, -1, uint64(keyfileCount))
 	}
 
-	validCombination := false
+	validPassword := false
 	switch mode {
 	case CredentialModePasswordOnly:
-		validCombination = passwordLen > 0 &&
-			keyfileMode == KeyfileModeNone &&
-			keyfileCount == 0
+		validPassword = passwordLen > 0
 	case CredentialModeKeyfilesOnly:
-		validCombination = passwordLen == 0 &&
-			(keyfileMode == KeyfileModeOrdered || keyfileMode == KeyfileModeUnordered) &&
-			keyfileCount > 0
+		validPassword = passwordLen == 0
 	case CredentialModePasswordAndKeyfiles:
-		validCombination = passwordLen > 0 &&
-			(keyfileMode == KeyfileModeOrdered || keyfileMode == KeyfileModeUnordered) &&
-			keyfileCount > 0
+		validPassword = passwordLen > 0
 	}
-	if !validCombination {
+	if !validPassword || !validCredentialTuple(
+		mode,
+		keyfileMode,
+		uint16(keyfileCount), //nolint:gosec // Bounded to maxKeyfiles above.
+	) {
 		return newFactorError(
 			FactorErrorInvalidCombination,
 			-1,
@@ -413,6 +411,25 @@ func validateFactorShape(
 		seenReaders[reader.state] = struct{}{}
 	}
 	return nil
+}
+
+// validCredentialTuple is the single structural credential tuple check shared
+// by factor admission and the immutable key owner. Password presence remains a
+// factor-admission concern and is implied by CredentialMode after validation.
+func validCredentialTuple(
+	mode CredentialMode,
+	keyfileMode KeyfileMode,
+	keyfileCount uint16,
+) bool {
+	switch mode {
+	case CredentialModePasswordOnly:
+		return keyfileMode == KeyfileModeNone && keyfileCount == 0
+	case CredentialModeKeyfilesOnly, CredentialModePasswordAndKeyfiles:
+		return (keyfileMode == KeyfileModeOrdered || keyfileMode == KeyfileModeUnordered) &&
+			keyfileCount > 0 && keyfileCount <= maxKeyfiles
+	default:
+		return false
+	}
 }
 
 func validFactorPolicy(policy FactorPolicy) bool {

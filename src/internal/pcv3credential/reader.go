@@ -308,7 +308,10 @@ func newReaderCredential(
 
 			metadata := OwnerMetadata{
 				Suite:          suite,
-				ExpectedPolicy: expectedPolicy,
+				ExpectedPolicy: validated.expectedPolicy,
+				CredentialMode: validated.mode,
+				KeyfileMode:    validated.keyfileMode,
+				KeyfileCount:   uint16(len(validated.descriptors)), //nolint:gosec // Validated to at most maxKeyfiles.
 			}
 			copy(metadata.ArgonSalt[:], argonSalt)
 			copy(metadata.VolumeID[:], volumeID)
