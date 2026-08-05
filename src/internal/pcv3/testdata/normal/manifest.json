@@ -4,6 +4,60 @@
   "notice": "TEST ONLY PCV3 CONFORMANCE DATA; NOT SECRET OR OPERATIONAL",
   "fixtures": [
     {
+      "id": "normal-standard-password-only-small",
+      "case": "password-only-small",
+      "suite": "standard1",
+      "payload_rs": false,
+      "selected_role": "primary",
+      "credential_mode": "password-only",
+      "keyfile_mode": "none",
+      "kdf_evidence": "fast-seam",
+      "probe_view": "canonical-volume",
+      "volume": {
+        "file": "volumes/normal-standard-password-only-small.pcv",
+        "size": 2353,
+        "sha256": "4021b80c8f8a435b60d356134116baa24efb6211afcf5a7e31702d40c5e98be5"
+      },
+      "plaintext": {
+        "kind": "file",
+        "file": "plaintext/normal-standard-password-only-small.bin",
+        "size": 9,
+        "sha256": "040a5a009f9b9d5e4771742174142e74fa2d3e0aaa3df5717f01ade338d75d0e"
+      },
+      "comment_hex": "54455354204f4e4c5920636f6d6d656e74",
+      "password_hex": "6d6978",
+      "password": {
+        "file": "factors/sha256-2f907a6de331cc77376c52e70ba55765a30be18cd9bc69587585fbb71b80de1d.bin",
+        "size": 3,
+        "sha256": "2f907a6de331cc77376c52e70ba55765a30be18cd9bc69587585fbb71b80de1d"
+      },
+      "keyfiles": [],
+      "credential_root_hex": "73078416b9de7c85dee94044b3e4dbfbe809768d060e69cc704ca100695070f3",
+      "expected": {
+        "outcome": "success",
+        "stage": "none",
+        "kdf_calls": 1,
+        "authenticated_capsules": 2,
+        "completion": true
+      },
+      "keys": {
+        "volume_key_hex": "a0ba88694ce31479799d54e43af1bb76a05bfdf8d77175972c54605c57d974de",
+        "primary_wrap_xchacha20_hex": "15d8b2a4939daf258abd8de33e6f753a06b3d3eb8b83bd056349e69c52d0453a",
+        "backup_wrap_xchacha20_hex": "dd465cccfb4cf059098a55fa401063d18d555abcce2df9056dec25034e948e70",
+        "primary_wrap_serpent_hex": "",
+        "backup_wrap_serpent_hex": "",
+        "primary_wrap_mac_hex": "75dcb508d011394b8020e033eaa79ca38ec4d3735fb4eb63276b74cacccd8e9f",
+        "backup_wrap_mac_hex": "a73838b2f6057687b0d3a9ae66f7f7fbeb6a974d7b91686e20436d7c207a60e4",
+        "primary_replica_mac_hex": "3dad47acf3ef3e3b3587d39bcb21dc3607b7683f5d4f48645bc8ea35218ef2aa",
+        "backup_replica_mac_hex": "4800c24512112d1510e87db73ad568b15f39f64cfbff6fcd801d4f9d8d4254c8",
+        "metadata_mac_hex": "3540b877df4b4435e754f7c289ccaad32d2ad3b64f07aa4c7242cfc61e19ae7c",
+        "payload_xchacha20_hex": "226847526f10ba8f4318d2401a09c0e1257427be9e7e11a19924b69ea121be01",
+        "payload_serpent_hex": "",
+        "payload_mac_hex": "3690de43aa298b955f4fe04cf9634fdb2636ee554072900d71dcd965dd685a9b"
+      },
+      "mutations": []
+    },
+    {
       "id": "normal-standard-combined-ordered-empty",
       "case": "empty",
       "suite": "standard1",

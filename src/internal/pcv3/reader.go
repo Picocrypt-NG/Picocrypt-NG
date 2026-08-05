@@ -291,15 +291,20 @@ func inspectTrailer(codecs *pcencoding.RSCodecs, encoded []byte) error {
 		return err
 	}
 	defer clear(decoded[:])
-	if string(decoded[:4]) != "PCVT" ||
-		binary.BigEndian.Uint16(decoded[4:6]) != 3 ||
-		binary.BigEndian.Uint16(decoded[6:8]) != 1 ||
-		binary.BigEndian.Uint32(decoded[8:12]) != uint32(backupCapsuleLength) ||
-		binary.BigEndian.Uint16(decoded[12:14]) != 1 ||
-		binary.BigEndian.Uint16(decoded[14:16]) != 0 {
+	if decoded != canonicalTrailerBytes() {
 		return NewInvalidStructureError(StageTailGeometry)
 	}
 	return nil
+}
+
+func canonicalTrailerBytes() [trailerDecodedLength]byte {
+	var decoded [trailerDecodedLength]byte
+	copy(decoded[0:4], "PCVT")
+	binary.BigEndian.PutUint16(decoded[4:6], formatMajor)
+	binary.BigEndian.PutUint16(decoded[6:8], formatSchema)
+	binary.BigEndian.PutUint32(decoded[8:12], uint32(backupCapsuleLength))
+	binary.BigEndian.PutUint16(decoded[12:14], 1)
+	return decoded
 }
 
 func decodeTrailer(codecs *pcencoding.RSCodecs, encoded []byte) ([trailerDecodedLength]byte, error) {

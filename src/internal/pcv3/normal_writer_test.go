@@ -1,7 +1,6 @@
 package pcv3
 
 import (
-	pcv3crypto "Picocrypt-NG/internal/crypto"
 	pcencoding "Picocrypt-NG/internal/encoding"
 	"bytes"
 	"context"
@@ -31,7 +30,8 @@ type normalLiteralWriteMaterial struct {
 	metadataCalls int
 	keyCalls      int
 	borrowed      *normalWriteKeys
-	failure       error
+	metadataFault error
+	keyFault      error
 }
 
 func (material *normalLiteralWriteMaterial) credentialMetadata() (
@@ -39,8 +39,8 @@ func (material *normalLiteralWriteMaterial) credentialMetadata() (
 	error,
 ) {
 	material.metadataCalls++
-	if material.failure != nil {
-		return normalWriteCredentialMetadata{}, material.failure
+	if material.metadataFault != nil {
+		return normalWriteCredentialMetadata{}, material.metadataFault
 	}
 	return material.metadata, nil
 }
@@ -52,13 +52,13 @@ func (material *normalLiteralWriteMaterial) copyKeys(
 ) error {
 	material.keyCalls++
 	material.borrowed = destination
-	if material.failure != nil {
-		return material.failure
-	}
 	if ctx == nil || ctx.Err() != nil || destination == nil || suite != material.metadata.suite {
 		return errors.New("TEST ONLY literal writer material rejected")
 	}
 	*destination = material.keys
+	if material.keyFault != nil {
+		return material.keyFault
+	}
 	return nil
 }
 
@@ -93,6 +93,51 @@ type normalCountingEntropy struct {
 	reader io.Reader
 	calls  int
 	bytes  int
+}
+
+type normalShortWriter struct {
+	written bytes.Buffer
+	zero    bool
+	calls   int
+}
+
+func (writer *normalShortWriter) Write(source []byte) (int, error) {
+	writer.calls++
+	count := len(source) - 1
+	if writer.zero || count < 0 {
+		count = 0
+	}
+	_, _ = writer.written.Write(source[:count])
+	return count, nil
+}
+
+type normalFinalEOFReader struct {
+	data  []byte
+	done  bool
+	calls int
+}
+
+func (reader *normalFinalEOFReader) Read(destination []byte) (int, error) {
+	reader.calls++
+	if reader.done {
+		return 0, io.EOF
+	}
+	reader.done = true
+	count := copy(destination, reader.data)
+	return count, io.EOF
+}
+
+type normalCancelReader struct {
+	reader io.Reader
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (reader *normalCancelReader) Read(destination []byte) (int, error) {
+	reader.calls++
+	count, err := reader.reader.Read(destination)
+	reader.cancel()
+	return count, err
 }
 
 func (entropy *normalCountingEntropy) Read(destination []byte) (int, error) {
@@ -142,10 +187,75 @@ func TestWriteNormalVolumeRequiresAuthorizationBeforeWork(t *testing.T) {
 
 func TestSerializeNormalVolumeIndependentBytes(t *testing.T) {
 	testNormalWriterFixtures(t, []string{
+		"normal-standard-password-only-small",
 		"normal-standard-keyfiles-only-small",
 		"normal-standard-combined-unordered-rs-small",
 		"normal-paranoid-combined-unordered-rs-small",
 	}, false)
+}
+
+// This is an integration smoke test, not the serializer conformance oracle.
+// Exact writer bytes are protected independently by
+// TestSerializeNormalVolumeIndependentBytes.
+func TestSerializedNormalVolumeReaderSmoke(t *testing.T) {
+	fixtures := loadNormalFixtureManifest(t).FixturesByID()
+	fixture := requireNormalFixture(t, fixtures, "normal-standard-password-only-small")
+	frozenVolume := readNormalFixtureArtifact(t, fixture.Volume)
+	plaintext := readNormalFixturePlaintext(t, fixture.Plaintext)
+	request, material, entropy := decodeNormalWriterFixtureInputs(t, fixture, frozenVolume)
+	defer material.keys.close()
+	codecs, err := pcencoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("create TEST ONLY RS codecs: %v", err)
+	}
+
+	var serialized bytes.Buffer
+	writeCompletion, err := serializeNormalVolume(
+		context.Background(),
+		request,
+		bytes.NewReader(plaintext),
+		&serialized,
+		material,
+		normalWriteSeams{entropy: bytes.NewReader(entropy), codecs: codecs},
+	)
+	if err != nil || writeCompletion == nil {
+		t.Fatalf("serialize reader-smoke volume = completion %v, error %v", writeCompletion != nil, err)
+	}
+	if material.borrowed == nil || !normalWriteKeysAreZero(material.borrowed) {
+		t.Fatal("reader-smoke serialization retained writer-owned keys")
+	}
+
+	volume := serialized.Bytes()
+	source := &normalBorrowedSource{reader: bytes.NewReader(volume)}
+	route, structure, err := Probe(source, int64(len(volume)))
+	if err != nil || route != RouteNormalPCV {
+		t.Fatalf("Probe(serialized reader-smoke volume) = %v, %v; want normal PCV admission", route, err)
+	}
+	provider := newNormalFixtureCredentialProvider(t, fixture.Keys)
+	t.Cleanup(func() {
+		if provider.closeCalls == 0 {
+			provider.close()
+		}
+	})
+	sink := &normalFixtureSink{}
+	result, readCompletion := readNormalVolumeWithProvider(
+		context.Background(), source, int64(len(volume)), structure, provider, sink,
+	)
+	if result == nil {
+		t.Fatal("reader smoke returned no typed result")
+	}
+	defer result.Close()
+	assertNormalFixtureResult(t, result, OutcomeSuccess, StageNone, 2)
+	assertNormalCompletion(t, readCompletion, true)
+	if !bytes.Equal(sink.plaintext(), plaintext) {
+		t.Fatal("reader smoke did not recover the serialized plaintext")
+	}
+	if sink.aborted || provider.closeCalls != 1 || source.closeCalls != 0 {
+		t.Fatalf(
+			"reader-smoke lifecycle = aborted %v, provider closes %d, borrowed source closes %d",
+			sink.aborted, provider.closeCalls, source.closeCalls,
+		)
+	}
 }
 
 func TestSerializeNormalVolumeBoundaries(t *testing.T) {
@@ -157,6 +267,166 @@ func TestSerializeNormalVolumeBoundaries(t *testing.T) {
 		"normal-standard-combined-ordered-after-mib",
 		"normal-standard-combined-ordered-two-mib",
 	}, true)
+}
+
+func TestSerializeNormalVolumeShortIO(t *testing.T) {
+	fixtures := loadNormalFixtureManifest(t).FixturesByID()
+	fixture := requireNormalFixture(t, fixtures, "normal-standard-combined-ordered-one")
+	volume := readNormalFixtureArtifact(t, fixture.Volume)
+	plaintext := readNormalFixturePlaintext(t, fixture.Plaintext)
+	codecs, err := pcencoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("create TEST ONLY RS codecs: %v", err)
+	}
+
+	run := func(
+		t *testing.T,
+		ctx context.Context,
+		source io.Reader,
+		destination io.Writer,
+	) (*normalWriteCompletion, error, *normalLiteralWriteMaterial) {
+		t.Helper()
+		request, material, entropyBytes := decodeNormalWriterFixtureInputs(t, fixture, volume)
+		t.Cleanup(material.keys.close)
+		completion, err := serializeNormalVolume(
+			ctx,
+			request,
+			source,
+			destination,
+			material,
+			normalWriteSeams{
+				entropy: bytes.NewReader(entropyBytes),
+				codecs:  codecs,
+			},
+		)
+		return completion, err, material
+	}
+
+	t.Run("early EOF cannot mint a complete volume", func(t *testing.T) {
+		completion, err, material := run(t, context.Background(), bytes.NewReader(nil), io.Discard)
+		assertNormalWriteFailure(t, completion, err, StageInputIO)
+		if material.borrowed == nil || !normalWriteKeysAreZero(material.borrowed) {
+			t.Fatal("early EOF retained writer-owned keys")
+		}
+	})
+
+	t.Run("trailing source byte cannot be hidden after declared payload", func(t *testing.T) {
+		source := append(append([]byte(nil), plaintext...), 0xa5)
+		completion, err, material := run(t, context.Background(), bytes.NewReader(source), io.Discard)
+		assertNormalWriteFailure(t, completion, err, StageInputIO)
+		if material.borrowed == nil || !normalWriteKeysAreZero(material.borrowed) {
+			t.Fatal("trailing source rejection retained writer-owned keys")
+		}
+	})
+
+	t.Run("final data returned with EOF remains valid Reader behavior", func(t *testing.T) {
+		source := &normalFinalEOFReader{data: plaintext}
+		var destination bytes.Buffer
+		completion, err, material := run(t, context.Background(), source, &destination)
+		if err != nil || completion == nil {
+			t.Fatalf("full final read with EOF = completion %v, error %v", completion != nil, err)
+		}
+		if source.calls != 2 || !bytes.Equal(destination.Bytes(), volume) {
+			t.Fatalf("full+EOF traversal calls=%d exact-volume=%v; want two reads and frozen bytes", source.calls, bytes.Equal(destination.Bytes(), volume))
+		}
+		if material.borrowed == nil || !normalWriteKeysAreZero(material.borrowed) {
+			t.Fatal("full+EOF success retained writer-owned keys")
+		}
+	})
+
+	for _, test := range []struct {
+		name string
+		zero bool
+	}{
+		{name: "short nil-error write is a contract failure"},
+		{name: "zero-progress write is a contract failure", zero: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			destination := &normalShortWriter{zero: test.zero}
+			source := &normalIOProbe{reader: bytes.NewReader(plaintext)}
+			completion, err, material := run(t, context.Background(), source, destination)
+			assertNormalWriteFailure(t, completion, err, StageOutputWrite)
+			if destination.calls != 1 || source.readCalls != 0 {
+				t.Fatalf("short writer calls=%d source reads=%d; want rejection on first preamble write", destination.calls, source.readCalls)
+			}
+			if material.borrowed == nil || !normalWriteKeysAreZero(material.borrowed) {
+				t.Fatal("short writer retained writer-owned keys")
+			}
+		})
+	}
+
+	t.Run("cancellation during source read stops before record body", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		source := &normalCancelReader{reader: bytes.NewReader(plaintext), cancel: cancel}
+		var destination bytes.Buffer
+		completion, err, material := run(t, ctx, source, &destination)
+		assertNormalWriteFailure(t, completion, err, StageCancellation)
+		if source.calls != 1 || destination.Len() != int(binary.BigEndian.Uint32(volume[12:16]))+48 {
+			t.Fatalf("cancelled traversal source calls=%d bytes=%d; want header plus descriptor only", source.calls, destination.Len())
+		}
+		if material.borrowed == nil || !normalWriteKeysAreZero(material.borrowed) {
+			t.Fatal("cancelled source retained writer-owned keys")
+		}
+	})
+}
+
+func TestSerializeNormalVolumePreEmissionFailures(t *testing.T) {
+	fixtures := loadNormalFixtureManifest(t).FixturesByID()
+	fixture := requireNormalFixture(t, fixtures, "normal-standard-combined-ordered-one")
+	volume := readNormalFixtureArtifact(t, fixture.Volume)
+	codecs, err := pcencoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("create TEST ONLY RS codecs: %v", err)
+	}
+
+	t.Run("entropy truncation performs no key source or sink work", func(t *testing.T) {
+		request, material, entropy := decodeNormalWriterFixtureInputs(t, fixture, volume)
+		defer material.keys.close()
+		source := &normalIOProbe{reader: bytes.NewReader([]byte{1})}
+		sink := &normalIOProbe{}
+		completion, err := serializeNormalVolume(
+			context.Background(), request, source, sink, material,
+			normalWriteSeams{entropy: bytes.NewReader(entropy[:len(entropy)-1]), codecs: codecs},
+		)
+		assertNormalWriteFailure(t, completion, err, StageRNG)
+		if material.metadataCalls != 1 || material.keyCalls != 0 ||
+			source.readCalls != 0 || sink.writeCalls != 0 {
+			t.Fatalf("work after truncated entropy: metadata=%d keys=%d source=%d sink=%d", material.metadataCalls, material.keyCalls, source.readCalls, sink.writeCalls)
+		}
+	})
+
+	t.Run("key copy failure clears partial owned bundle before output", func(t *testing.T) {
+		request, material, entropy := decodeNormalWriterFixtureInputs(t, fixture, volume)
+		defer material.keys.close()
+		material.keyFault = errors.New("TEST ONLY key-copy fault")
+		source := &normalIOProbe{reader: bytes.NewReader([]byte{1})}
+		sink := &normalIOProbe{}
+		completion, err := serializeNormalVolume(
+			context.Background(), request, source, sink, material,
+			normalWriteSeams{entropy: bytes.NewReader(entropy), codecs: codecs},
+		)
+		assertNormalWriteFailure(t, completion, err, StageCredentialPolicy)
+		if material.metadataCalls != 1 || material.keyCalls != 1 || material.borrowed == nil ||
+			!normalWriteKeysAreZero(material.borrowed) || source.readCalls != 0 || sink.writeCalls != 0 {
+			t.Fatalf("key-copy closure: metadata=%d keys=%d zero=%v source=%d sink=%d", material.metadataCalls, material.keyCalls, normalWriteKeysAreZero(material.borrowed), source.readCalls, sink.writeCalls)
+		}
+	})
+
+	t.Run("unrepresentable volume geometry fails before keys or output", func(t *testing.T) {
+		request, material, entropy := decodeNormalWriterFixtureInputs(t, fixture, volume)
+		defer material.keys.close()
+		request.plaintextLength = ^uint64(0)
+		source := &normalIOProbe{reader: bytes.NewReader(nil)}
+		sink := &normalIOProbe{}
+		completion, err := serializeNormalVolume(
+			context.Background(), request, source, sink, material,
+			normalWriteSeams{entropy: bytes.NewReader(entropy), codecs: codecs},
+		)
+		assertNormalWriteFailure(t, completion, err, StageTailGeometry)
+		if material.keyCalls != 0 || source.readCalls != 0 || sink.writeCalls != 0 {
+			t.Fatalf("overflow work: keys=%d source=%d sink=%d", material.keyCalls, source.readCalls, sink.writeCalls)
+		}
+	})
 }
 
 func testNormalWriterFixtures(t *testing.T, fixtureIDs []string, assertStreaming bool) {
@@ -198,7 +468,7 @@ func testNormalWriterFixtures(t *testing.T, fixtureIDs []string, assertStreaming
 					entropy.bytes, len(entropyBytes), material.metadataCalls, material.keyCalls,
 				)
 			}
-			if material.borrowed == nil || !material.borrowed.isZero() {
+			if material.borrowed == nil || !normalWriteKeysAreZero(material.borrowed) {
 				t.Fatal("serializer retained nonzero writer-owned key material after success")
 			}
 			if assertStreaming && fixtureID == "normal-standard-combined-ordered-two-mib" {
@@ -296,5 +566,29 @@ func normalFixtureWriteKeys(t *testing.T, encoded normalFixtureKeys) normalWrite
 		payloadXChaCha20: provider.payloadXChaCha,
 		payloadSerpent:   provider.payloadSerpent,
 		payloadMAC:       provider.payloadMAC,
+	}
+}
+
+func normalWriteKeysAreZero(keys *normalWriteKeys) bool {
+	if keys == nil {
+		return false
+	}
+	zero := normalWriteKeys{}
+	return *keys == zero
+}
+
+func assertNormalWriteFailure(
+	t *testing.T,
+	completion *normalWriteCompletion,
+	err error,
+	wantStage Stage,
+) {
+	t.Helper()
+	if completion != nil || err == nil {
+		t.Fatalf("failed serializer = completion %v, error %v; want no completion and fixed failure", completion != nil, err)
+	}
+	var failure *normalWriteFailure
+	if !errors.As(err, &failure) || failure.Stage() != wantStage {
+		t.Fatalf("normal writer failure = %T stage %v; want %v", err, failure.Stage(), wantStage)
 	}
 }
