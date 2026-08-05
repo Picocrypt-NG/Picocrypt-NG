@@ -24,6 +24,7 @@ func TestPhase3Registry(t *testing.T) {
 		{pcv3.OutcomeForceUnverified, "force-unverified"},
 		{pcv3.OutcomeOperationFailed, "operation-failed"},
 		{pcv3.OutcomeCommittedDurabilityUncertain, "committed-durability-uncertain"},
+		{pcv3.OutcomePublicationIndeterminate, "publication-indeterminate"},
 		{pcv3.OutcomeSuccess, "success"},
 	}
 	for _, test := range outcomes {
