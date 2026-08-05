@@ -25,9 +25,13 @@ const (
 	scratchShort
 	scratchSourceError
 	scratchPanic
+	scratchOverlongProbe
+	scratchProbePanic
 )
 
 var errScratchSource = errors.New("TEST ONLY segment source fault")
+
+const scratchProbeCanary byte = 0xa7
 
 type retainingScratchReader struct {
 	input      []byte
@@ -59,6 +63,16 @@ func (reader *retainingScratchReader) Read(destination []byte) (int, error) {
 	case scratchPanic:
 		copy(destination, reader.input)
 		panic(reader.panicValue)
+	case scratchOverlongProbe, scratchProbePanic:
+		if reader.reads == 1 {
+			copy(destination, reader.input)
+			return len(reader.input), nil
+		}
+		destination[0] = scratchProbeCanary
+		if reader.mode == scratchProbePanic {
+			panic(reader.panicValue)
+		}
+		return 1, nil
 	default:
 		return 0, io.ErrNoProgress
 	}
@@ -188,7 +202,8 @@ func TestEncodeMatchesIndependentLiteralArtifacts(t *testing.T) {
 }
 
 func TestEncodeZeroesPlaintextScratchOnEveryExit(t *testing.T) {
-	panicValue := &struct{ label string }{label: "TEST ONLY segment panic"}
+	segmentPanic := &struct{ label string }{label: "TEST ONLY segment panic"}
+	probePanic := &struct{ label string }{label: "TEST ONLY probe panic"}
 	tests := []struct {
 		name      string
 		mode      scratchReaderMode
@@ -200,7 +215,9 @@ func TestEncodeZeroesPlaintextScratchOnEveryExit(t *testing.T) {
 		{name: "short segment", mode: scratchShort, writer: func() io.Writer { return io.Discard }, wantError: true},
 		{name: "source error", mode: scratchSourceError, writer: func() io.Writer { return io.Discard }, wantError: true},
 		{name: "writer error", mode: scratchSuccess, writer: func() io.Writer { return new(segmentFailWriter) }, wantError: true},
-		{name: "panic", mode: scratchPanic, writer: func() io.Writer { return io.Discard }, wantPanic: panicValue},
+		{name: "segment panic", mode: scratchPanic, writer: func() io.Writer { return io.Discard }, wantPanic: segmentPanic},
+		{name: "overlong probe", mode: scratchOverlongProbe, writer: func() io.Writer { return io.Discard }, wantError: true},
+		{name: "probe panic", mode: scratchProbePanic, writer: func() io.Writer { return io.Discard }, wantPanic: probePanic},
 	}
 	descriptor := Descriptor{
 		State: StatePartial, Role: RoleNone, Final: FinalMissing,
@@ -246,6 +263,8 @@ func TestEncodeZeroesPlaintextScratchOnEveryExit(t *testing.T) {
 				if !bytes.Equal(output, readLiteralArtifact(t, "partial")) {
 					t.Fatal("successful zeroing case changed independent artifact bytes")
 				}
+			}
+			if test.name == "success" || test.mode == scratchOverlongProbe || test.mode == scratchProbePanic {
 				if len(reader.aliases) != 2 || cap(reader.aliases[1]) != 1 {
 					t.Fatalf("extra-byte scratch = %d aliases, final capacity %d; want retained one-byte production probe", len(reader.aliases), cap(reader.aliases[len(reader.aliases)-1]))
 				}
