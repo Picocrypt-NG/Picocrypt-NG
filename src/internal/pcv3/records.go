@@ -115,7 +115,8 @@ func expectedRecord(
 	geometry Geometry,
 	index uint64,
 ) (recordExpectation, error) {
-	if !recordGeometryMatchesCore(core, geometry) ||
+	if geometry.frontHeaderLength < 0 || geometry.backupCapsuleOffset < 0 ||
+		!recordGeometryMatchesCore(core, geometry) ||
 		index > core.recordCount || index >= maximumRecordCount {
 		return recordExpectation{}, errInvalidRecordRequest
 	}
@@ -149,7 +150,9 @@ func expectedRecord(
 	if !ok {
 		return recordExpectation{}, errInvalidRecordRequest
 	}
-	descriptorOffset, ok := checkedAdd64(uint64(geometry.frontHeaderLength), relativeOffset)
+	frontHeaderLength := uint64(geometry.frontHeaderLength)
+	backupCapsuleOffset := uint64(geometry.backupCapsuleOffset)
+	descriptorOffset, ok := checkedAdd64(frontHeaderLength, relativeOffset)
 	if !ok {
 		return recordExpectation{}, errInvalidRecordRequest
 	}
@@ -165,8 +168,8 @@ func expectedRecord(
 		return recordExpectation{}, errInvalidRecordRequest
 	}
 	recordEnd, ok := checkedAdd64(bodyOffset, encodedBodyLength)
-	if !ok || recordEnd > uint64(geometry.backupCapsuleOffset) ||
-		(expected.final && recordEnd != uint64(geometry.backupCapsuleOffset)) {
+	if !ok || recordEnd > backupCapsuleOffset ||
+		(expected.final && recordEnd != backupCapsuleOffset) {
 		return recordExpectation{}, errInvalidRecordRequest
 	}
 
@@ -464,6 +467,9 @@ func readNormalRecordsWithSeams(
 			}, nil
 		}
 
+		if expected.ciphertextLength > uint64(math.MaxInt) {
+			return recordVerification{}, newRecordFailure(StageCredentialPolicy, errInvalidRecordRequest)
+		}
 		ciphertextLength := int(expected.ciphertextLength)
 		ciphertext := decoded[:ciphertextLength]
 		plain := plaintext[:ciphertextLength]
@@ -661,17 +667,21 @@ func authenticateDecodedRecord(
 ) (bool, error) {
 	semanticLength, ok := checkedAdd64(expected.ciphertextLength, recordTagSize)
 	if !ok || semanticLength > uint64(len(decoded)) ||
-		!recordPaddingIsZero(decoded[int(semanticLength):]) {
+		expected.ciphertextLength > uint64(math.MaxInt) || semanticLength > uint64(math.MaxInt) {
 		return false, errRecordBodyRecovery
 	}
 	ciphertextLength := int(expected.ciphertextLength)
+	semanticLengthInt := int(semanticLength)
+	if !recordPaddingIsZero(decoded[semanticLengthInt:]) {
+		return false, errRecordBodyRecovery
+	}
 	return verifyRecordTag(
 		suite,
 		macKey,
 		commitment,
 		expected.descriptor,
 		decoded[:ciphertextLength],
-		decoded[ciphertextLength:int(semanticLength)],
+		decoded[ciphertextLength:semanticLengthInt],
 	)
 }
 

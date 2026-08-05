@@ -4,6 +4,7 @@ import (
 	pcv3crypto "Picocrypt-NG/internal/crypto"
 	pcencoding "Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/pcv3credential"
+	"Picocrypt-NG/internal/util"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -181,21 +182,25 @@ func readMetadata(
 	decoded := make([]byte, int(decodedLength))
 	defer pcv3crypto.SecureZero(decoded)
 
-	for block := uint64(0); block < blocks; block++ {
+	for block := range blocks {
 		delta, ok := checkedMul64(block, rs128CodewordLength)
 		if !ok {
 			return nil, errInvalidMetadataRequest
 		}
 		offset, ok := checkedAdd64(frontHeaderBase, delta)
 		end, endOK := checkedAdd64(offset, rs128CodewordLength)
-		if !ok || !endOK || end > uint64(front) {
+		if !ok || !endOK || end > front {
+			return nil, errInvalidMetadataRequest
+		}
+		readOffset, ok := util.SafeUint64ToInt64(offset)
+		if !ok {
 			return nil, errInvalidMetadataRequest
 		}
 
 		decodedBlock, damaged, err := readMetadataBlock(
 			ctx,
 			source,
-			int64(offset),
+			readOffset,
 			codecs,
 		)
 		if err != nil {
@@ -216,7 +221,7 @@ func readMetadata(
 
 func authenticatedMetadataAuthority(
 	auth *normalAuthResult,
-) (logicalCore, uint64, int64, bool) {
+) (logicalCore, uint64, uint64, bool) {
 	if auth == nil || auth.authenticated == 0 ||
 		(auth.outcome != OutcomeSuccess && auth.outcome != OutcomeAuthenticatedDegraded) {
 		return logicalCore{}, 0, 0, false
@@ -233,7 +238,7 @@ func authenticatedMetadataAuthority(
 		uint64(core.frontHeaderLength) != expectedFront {
 		return logicalCore{}, 0, 0, false
 	}
-	return core, blocks, auth.geometry.frontHeaderLength, true
+	return core, blocks, expectedFront, true
 }
 
 func readMetadataBlock(
