@@ -88,37 +88,37 @@ func TestRecoveryResultRejectsSemanticAuthorityLaundering(t *testing.T) {
 		final      RecoveryFinalState
 	}{
 		{
-			name: "Force-verified relabelled healthy",
+			name:    "Force-verified relabelled healthy",
 			outcome: OutcomeSuccess, provenance: ForceProvenanceVerified,
 			stage: StageNone, ranges: verified, final: RecoveryFinalVerified,
 		},
 		{
-			name: "Force-verified with unverified bytes",
+			name:    "Force-verified with unverified bytes",
 			outcome: OutcomeAuthenticatedDegraded, provenance: ForceProvenanceVerified,
 			stage: StageWrapAuth, ranges: unverified, final: RecoveryFinalVerified,
 		},
 		{
-			name: "partial without a payload anchor",
+			name:    "partial without a payload anchor",
 			outcome: OutcomeForcePartial, provenance: ForceProvenancePartial,
 			stage: StageRecordAuth, ranges: unverified, final: RecoveryFinalMissing,
 		},
 		{
-			name: "partial with no damaged evidence",
+			name:    "partial with no damaged evidence",
 			outcome: OutcomeForcePartial, provenance: ForceProvenancePartial,
 			stage: StageRecordAuth, ranges: verified, final: RecoveryFinalVerified,
 		},
 		{
-			name: "unverified carrying verified bytes",
+			name:    "unverified carrying verified bytes",
 			outcome: OutcomeForceUnverified, provenance: ForceProvenanceUnverified,
 			stage: StageWrapAuth, ranges: partial, final: RecoveryFinalMissing,
 		},
 		{
-			name: "partial outcome with unverified provenance",
+			name:    "partial outcome with unverified provenance",
 			outcome: OutcomeForcePartial, provenance: ForceProvenanceUnverified,
 			stage: StageRecordAuth, ranges: unverified, final: RecoveryFinalMissing,
 		},
 		{
-			name: "noncanonical gap",
+			name:    "noncanonical gap",
 			outcome: OutcomeForceUnverified, provenance: ForceProvenanceUnverified,
 			stage: StageWrapAuth,
 			ranges: []RecoveryRange{

@@ -81,13 +81,15 @@ const (
 	CodeAmbiguousVolume
 	CodeSuccess
 	CodeAuthenticationFailed
+	CodeForcePartial
+	CodeForceUnverified
 )
 
 // ErrInvalidFailureMapping reports a caller attempt to create a non-normative
 // outcome/stage pairing.
 var ErrInvalidFailureMapping = errors.New("pcv3: invalid failure mapping")
 
-// Failure is the sealed typed view of a legal Phase-3 failure. Callers can use
+// Failure is the sealed typed view of a legal PCV3 failure. Callers can use
 // errors.As for inspection but cannot implement or construct this interface.
 type Failure interface {
 	error
@@ -150,6 +152,12 @@ func (failure *failureError) Error() string {
 		return "pcv3: ambiguous authenticated volume"
 	case OutcomeSuccess:
 		return "pcv3: authentication succeeded"
+	case OutcomeAuthenticationFailed:
+		return "pcv3: authentication failed"
+	case OutcomeForcePartial:
+		return "pcv3: Force recovery is partially verified"
+	case OutcomeForceUnverified:
+		return "pcv3: Force recovery is unverified"
 	default:
 		return "pcv3: failure"
 	}
@@ -192,7 +200,7 @@ func NewInvalidStructureError(stage Stage) error {
 	return newError(OutcomeInvalidStructurePreKDF, stage, nil)
 }
 
-// NewInputError returns the only Phase-3 operational failure. EOF-like causes
+// NewInputError returns an input-operation failure. EOF-like causes
 // are structural truncation and are rejected to prevent classification drift.
 func NewInputError(cause error) error {
 	if errors.Is(cause, io.EOF) || errors.Is(cause, io.ErrUnexpectedEOF) {
@@ -248,8 +256,23 @@ func codeFor(outcome Outcome, stage Stage) (Code, bool) {
 		default:
 			return 0, false
 		}
+	case OutcomeForcePartial:
+		return CodeForcePartial, isForceDamageStage(stage)
+	case OutcomeForceUnverified:
+		return CodeForceUnverified, isForceDamageStage(stage)
 	default:
 		return 0, false
+	}
+}
+
+func isForceDamageStage(stage Stage) bool {
+	switch stage {
+	case StagePreamble, StageCapsuleRS, StageCapsuleStructure,
+		StageTailGeometry, StageWrapAuth, StageReplicaAuth, StageMetadata,
+		StageDescriptor, StageRecordBodyRS, StageRecordAuth, StageFinalRecord:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -382,6 +405,10 @@ func (code Code) String() string {
 		return "PCV3_SUCCESS"
 	case CodeAuthenticationFailed:
 		return "PCV3_AUTHENTICATION_FAILED"
+	case CodeForcePartial:
+		return "PCV3_FORCE_PARTIAL"
+	case CodeForceUnverified:
+		return "PCV3_FORCE_UNVERIFIED"
 	default:
 		return "PCV3_UNKNOWN"
 	}

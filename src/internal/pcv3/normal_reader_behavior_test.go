@@ -370,19 +370,19 @@ func TestNormalReaderSemanticAuthorityFromFrozenFixtures(t *testing.T) {
 	}{
 		{
 			fixtureID: normalArchiveFixtureID,
-			outcome: OutcomeSuccess, stage: StageNone, archiveSeal: true,
+			outcome:   OutcomeSuccess, stage: StageNone, archiveSeal: true,
 		},
 		{
 			fixtureID: "normal-degraded-capsule",
-			outcome: OutcomeAuthenticatedDegraded, stage: StageCapsuleRS,
+			outcome:   OutcomeAuthenticatedDegraded, stage: StageCapsuleRS,
 		},
 		{
 			fixtureID: "normal-degraded-metadata",
-			outcome: OutcomeAuthenticatedDegraded, stage: StageMetadata,
+			outcome:   OutcomeAuthenticatedDegraded, stage: StageMetadata,
 		},
 		{
 			fixtureID: "normal-degraded-trailer",
-			outcome: OutcomeAuthenticatedDegraded, stage: StageTailGeometry,
+			outcome:   OutcomeAuthenticatedDegraded, stage: StageTailGeometry,
 		},
 	}
 
