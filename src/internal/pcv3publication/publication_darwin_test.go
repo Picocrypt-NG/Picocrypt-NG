@@ -1,4 +1,4 @@
-//go:build linux
+//go:build darwin
 
 package pcv3publication
 
@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestLinuxNativeNoReplacePublishesDurably(t *testing.T) {
+func TestDarwinNativeNoReplacePublishesDurably(t *testing.T) {
 	testNativeNoReplacePublication(
 		t,
 		StatePublishedDurable,
@@ -17,10 +17,10 @@ func TestLinuxNativeNoReplacePublishesDurably(t *testing.T) {
 	)
 }
 
-func TestLinuxRenameat2RejectsLateCollision(t *testing.T) {
+func TestDarwinRenameatxNpRejectsLateCollision(t *testing.T) {
 	testNativeLateCollision(t)
 }
 
-func TestLinuxSafeReplaceFailsBeforeStage(t *testing.T) {
+func TestDarwinSafeReplaceFailsBeforeStage(t *testing.T) {
 	testNativeSafeReplaceFailsBeforeStage(t)
 }
