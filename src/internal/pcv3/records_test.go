@@ -541,6 +541,75 @@ func TestCanonicalRecordEvaluatorRecoveryAuthority(t *testing.T) {
 	if len(retained) != len(wantPlaintext) || !allRecordBytesZero(retained) {
 		t.Fatal("evaluator retained plaintext borrow after callback")
 	}
+
+	assertUnreadable := func(name string, payload []byte, wantStage Stage) {
+		t.Helper()
+		evaluator.source = &recordTrackingReader{
+			base: int64(fixture.FrontHeaderLength),
+			data: payload,
+		}
+		beforeDecrypt := decryptCalls
+		beforeCallback := callbackCalls
+		err := withUnverifiedRecoveryRequest(CapsuleRolePrimary, func(request recoveryRequest) error {
+			return evaluator.evaluateCanonicalRecord(
+				0,
+				request,
+				CapsuleRolePrimary,
+				func(recordEvidence, []byte) error {
+					callbackCalls++
+					return nil
+				},
+			)
+		})
+		requireRecordFailureStage(t, err, wantStage)
+		if decryptCalls != beforeDecrypt || callbackCalls != beforeCallback {
+			t.Fatalf("%s reached decrypt/callback under unverified authority", name)
+		}
+	}
+	assertUnreadable(
+		"uncorrectable body",
+		recordMutationFile(t, "body_damage_9.bin"),
+		StageRecordBodyRS,
+	)
+	basePayload := recordMutationFile(t, "retry_base.bin")
+	truncatedAt := fixture.Records[0].BodyOffset + fixture.Records[0].EncodedBodyLength - 1
+	assertUnreadable(
+		"truncated body",
+		basePayload[:int(truncatedAt)],
+		StageRecordBodyRS,
+	)
+
+	evaluator.source = &recordTrackingReader{
+		base: int64(fixture.FrontHeaderLength),
+		data: recordMutationFile(t, "body_bad_tag_reencoded.bin"),
+	}
+	panicValue := &struct{ label string }{label: "TEST ONLY evaluator callback panic"}
+	var panicRetained []byte
+	recovered := func() (recovered any) {
+		defer func() {
+			recovered = recover()
+		}()
+		_ = withUnverifiedRecoveryRequest(CapsuleRolePrimary, func(request recoveryRequest) error {
+			return evaluator.evaluateCanonicalRecord(
+				0,
+				request,
+				CapsuleRolePrimary,
+				func(_ recordEvidence, plaintext []byte) error {
+					callbackCalls++
+					panicRetained = plaintext
+					panic(panicValue)
+				},
+			)
+		})
+		return nil
+	}()
+	if recovered != panicValue {
+		t.Fatalf("evaluator callback panic = %#v; want original %#v", recovered, panicValue)
+	}
+	if decryptCalls != 2 || callbackCalls != 2 ||
+		len(panicRetained) != len(wantPlaintext) || !allRecordBytesZero(panicRetained) {
+		t.Fatal("evaluator callback panic retained plaintext or changed callback bounds")
+	}
 }
 
 func TestRecordRSRetryBound(t *testing.T) {
