@@ -23,10 +23,6 @@ type platformOperations struct {
 	supportsSafeReplace bool
 }
 
-// The native build-tagged implementation replaces this fail-closed zero value
-// in the platform task. Until then, Create cannot perform filesystem effects.
-var defaultOperations platformOperations
-
 // Stage owns one private sibling staging file and the pinned directory handles
 // needed to publish it. It has no source-deletion authority.
 type Stage struct {
@@ -54,7 +50,7 @@ type Stage struct {
 // Create validates a publication request and creates its private stage through
 // the native fail-closed platform operations.
 func Create(target string, protected []string, policy Policy) (*Stage, error) {
-	return createWithOperations(target, protected, policy, defaultOperations)
+	return createWithOperations(target, protected, policy, nativeOperations())
 }
 
 func createWithOperations(
