@@ -35,6 +35,7 @@ type readerCredentialSeams struct {
 	beforeKDF                 func()
 	observeCredentialMaterial func(*keyMaterial)
 	observeReplicaMaterial    func(*keyMaterial)
+	observeVolumeMaterial     func(*keyMaterial)
 	observeOwnerMaterial      func(*keyMaterial)
 }
 
@@ -59,6 +60,7 @@ type readerCredentialState struct {
 	extract                hkdfExtractor
 	expand                 hkdfExpander
 	observeReplicaMaterial func(*keyMaterial)
+	observeVolumeMaterial  func(*keyMaterial)
 	observeOwnerMaterial   func(*keyMaterial)
 }
 
@@ -325,6 +327,20 @@ func fullReaderSchedule(suite Suite) (*validatedSchedule, error) {
 	return validateKeySchedule(suite, keyRequests)
 }
 
+func nonReplicaVolumeSchedule(suite Suite) (*validatedSchedule, error) {
+	rows, err := fixedScheduleForSuite(suite)
+	if err != nil {
+		return nil, err
+	}
+	keyRequests := make([]KeyRequest, 0, len(rows))
+	for _, row := range rows {
+		if row.root == scheduleRootVolume && row.request.Role == KeyRoleNotReplica {
+			keyRequests = append(keyRequests, row.request)
+		}
+	}
+	return validateKeySchedule(suite, keyRequests)
+}
+
 // withReaderCredentialRoot consumes one derived root and lends the same
 // candidate material/adoption state used by normal and recovery readers.
 func withReaderCredentialRoot(
@@ -335,9 +351,50 @@ func withReaderCredentialRoot(
 	callback func(*ReaderCredential) error,
 	seams readerCredentialSeams,
 ) (*Owner, error) {
+	suite := metadata.Suite
+	if callback == nil {
+		root.close()
+		return nil, newPipelineError(
+			PipelineErrorInvalidRequest,
+			PipelineStageRequest,
+			suite,
+		)
+	}
+	reader, err := newReaderCredentialRoot(ctx, root, schedule, metadata, seams)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.close()
+
+	if err := callback(reader); err != nil {
+		return nil, newPipelineError(
+			PipelineErrorCallback,
+			PipelineStageCallback,
+			suite,
+		)
+	}
+	if ctx.Err() != nil {
+		return nil, newPipelineError(
+			PipelineErrorCancelled,
+			PipelineStageCallback,
+			suite,
+		)
+	}
+	return reader.takeOwner(), nil
+}
+
+// newReaderCredentialRoot consumes one derived root and returns a live reader.
+// The caller must close the reader on every exit unless it transfers an Owner.
+func newReaderCredentialRoot(
+	ctx context.Context,
+	root *credentialRoot,
+	schedule *validatedSchedule,
+	metadata OwnerMetadata,
+	seams readerCredentialSeams,
+) (*ReaderCredential, error) {
 	defer root.close()
 	suite := metadata.Suite
-	if ctx == nil || callback == nil || seams.extract == nil || seams.expand == nil {
+	if ctx == nil || schedule == nil || seams.extract == nil || seams.expand == nil {
 		return nil, newPipelineError(
 			PipelineErrorInvalidRequest,
 			PipelineStageRequest,
@@ -358,11 +415,7 @@ func withReaderCredentialRoot(
 			material.close()
 		}
 	}()
-	if err := deriveCredentialRootStageWith(
-		material,
-		root,
-		seams.extract,
-	); err != nil {
+	if err := deriveCredentialRootStageWith(material, root, seams.extract); err != nil {
 		return nil, newPipelineError(
 			PipelineErrorKeyDerivation,
 			PipelineStageKeyDerivation,
@@ -392,27 +445,12 @@ func withReaderCredentialRoot(
 			extract:                seams.extract,
 			expand:                 seams.expand,
 			observeReplicaMaterial: seams.observeReplicaMaterial,
+			observeVolumeMaterial:  seams.observeVolumeMaterial,
 			observeOwnerMaterial:   seams.observeOwnerMaterial,
 		},
 	}
 	material = nil
-	defer reader.close()
-
-	if err := callback(reader); err != nil {
-		return nil, newPipelineError(
-			PipelineErrorCallback,
-			PipelineStageCallback,
-			suite,
-		)
-	}
-	if ctx.Err() != nil {
-		return nil, newPipelineError(
-			PipelineErrorCancelled,
-			PipelineStageCallback,
-			suite,
-		)
-	}
-	return reader.takeOwner(), nil
+	return reader, nil
 }
 
 // WithKeys lends only credential-root keys for role during callback.
@@ -513,6 +551,73 @@ func (reader *ReaderCredential) WithReplicaKey(
 		observe(material)
 	}
 	return withReaderKeys(ctx, material, role, scheduleRootVolume, callback)
+}
+
+// withVolumeKeys derives and lends only non-replica volume keys from a
+// read-only candidate VolumeKey borrow. The candidate remains caller-owned.
+func (reader *ReaderCredential) withVolumeKeys(
+	ctx context.Context,
+	candidate []byte,
+	callback func(*ReaderKeys) error,
+) error {
+	if reader == nil || reader.state == nil || ctx == nil || callback == nil ||
+		len(candidate) != derivedKeyBytes {
+		return newOwnerError(OwnerErrorInvalidRequest)
+	}
+	state := reader.state
+	state.mu.Lock()
+	if !state.active || state.adopting || state.material == nil ||
+		state.owner != nil || ctx.Err() != nil {
+		state.mu.Unlock()
+		if ctx.Err() != nil {
+			return newOwnerError(OwnerErrorCancelled)
+		}
+		return newOwnerError(OwnerErrorClosed)
+	}
+	state.borrows++
+	metadata := state.metadata
+	extract := state.extract
+	expand := state.expand
+	observe := state.observeVolumeMaterial
+	state.mu.Unlock()
+	defer func() {
+		state.mu.Lock()
+		state.borrows--
+		state.mu.Unlock()
+	}()
+
+	schedule, err := nonReplicaVolumeSchedule(metadata.Suite)
+	if err != nil {
+		return newOwnerError(OwnerErrorInvalidRequest)
+	}
+	material, err := newKeyMaterial(schedule, metadata.VolumeID[:])
+	if err != nil {
+		return newOwnerError(OwnerErrorInvalidRequest)
+	}
+	defer material.close()
+	owned := append([]byte(nil), candidate...)
+	key := &volumeKey{secret: crypto.SecretFrom(owned)}
+	defer key.close()
+	if err := deriveVolumeKeyStageWith(material, key, extract); err != nil {
+		return newOwnerError(OwnerErrorInvalidRequest)
+	}
+	if err := expandKeyMaterialWith(
+		material,
+		scheduleRootVolume,
+		expand,
+	); err != nil {
+		return newOwnerError(OwnerErrorInvalidRequest)
+	}
+	if observe != nil {
+		observe(material)
+	}
+	return withReaderKeys(
+		ctx,
+		material,
+		KeyRoleNotReplica,
+		scheduleRootVolume,
+		callback,
+	)
 }
 
 // AdoptVolumeKey transfers one authenticated VolumeKey into the staged owner.

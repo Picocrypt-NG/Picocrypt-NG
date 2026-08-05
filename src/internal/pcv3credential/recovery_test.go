@@ -25,6 +25,7 @@ func newRecoveryCredentialProbe() *recoveryCredentialProbe {
 
 func (probe *recoveryCredentialProbe) seams() readerCredentialSeams {
 	seams := probe.reader.seams()
+	seams.observeVolumeMaterial = seams.observeReplicaMaterial
 	seams.derive = func(input, salt []byte, _ KDFProfile) ([]byte, error) {
 		probe.activeKDF++
 		probe.maxActiveKDF = max(probe.maxActiveKDF, probe.activeKDF)
@@ -45,6 +46,260 @@ func (probe *recoveryCredentialProbe) seams() readerCredentialSeams {
 		return returned, nil
 	}
 	return seams
+}
+
+func TestRecoveryCredentialSessionAnalysesBoundCandidatesBeforeSelection(t *testing.T) {
+	factors := pipelineRequest(t, SuiteStandard1).Factors
+	passwordAlias := factors.Password
+	first := recoveryCredentialTuple(t, SuiteStandard1, factors, 0x31)
+	second := recoveryCredentialTuple(t, SuiteParanoid1, factors, 0x42)
+	probe := newRecoveryCredentialProbe()
+	firstTransfer := bytes.Repeat([]byte{0x5a}, derivedKeyBytes)
+	secondTransfer := bytes.Repeat([]byte{0x5a}, derivedKeyBytes)
+	var retained *RecoverySession
+	var selected *RecoveryVolumeCandidate
+	allTuplesDerivedBeforeCallback := false
+
+	owner, err := newRecoveryCredentialSession(
+		context.Background(),
+		&RecoveryCredentialRequest{
+			Factors: factors,
+			Tuples:  []RecoveryCredentialTuple{first, second},
+		},
+		probe.reader.admit,
+		func(session *RecoverySession) error {
+			retained = session
+			allTuplesDerivedBeforeCallback = probe.reader.kdfCalls == 2 &&
+				probe.reader.admit.calls == 2
+
+			for index := range 2 {
+				var wrapMAC [derivedKeyBytes]byte
+				err := session.WithTupleKeys(
+					context.Background(),
+					index,
+					KeyRolePrimary,
+					func(keys *ReaderKeys) error {
+						return keys.CopyKey(KeyRequest{
+							Label:       KeyLabelCredentialWrapMAC,
+							Role:        KeyRolePrimary,
+							OutputBytes: derivedKeyBytes,
+						}, wrapMAC[:])
+					},
+				)
+				if err != nil || allZero(wrapMAC[:]) {
+					return errors.New("retained tuple credential borrow failed")
+				}
+			}
+
+			firstCandidate, err := session.BindCandidate(
+				context.Background(),
+				0,
+				firstTransfer,
+			)
+			if err != nil {
+				return err
+			}
+			secondCandidate, err := session.BindCandidate(
+				context.Background(),
+				1,
+				secondTransfer,
+			)
+			if err != nil {
+				return err
+			}
+			selected = firstCandidate
+			same, err := session.SameVolumeKey(firstCandidate, secondCandidate)
+			if err != nil || !same {
+				return errors.New("constant-time candidate reconciliation failed")
+			}
+
+			var replicaMAC [derivedKeyBytes]byte
+			if err := session.WithReplicaKey(
+				context.Background(),
+				firstCandidate,
+				KeyRolePrimary,
+				func(keys *ReaderKeys) error {
+					return keys.CopyKey(KeyRequest{
+						Label:       KeyLabelVolumeReplicaMAC,
+						Role:        KeyRolePrimary,
+						OutputBytes: derivedKeyBytes,
+					}, replicaMAC[:])
+				},
+			); err != nil || allZero(replicaMAC[:]) {
+				return errors.New("candidate replica-key borrow failed")
+			}
+
+			var payloadMAC [derivedKeyBytes]byte
+			if err := session.WithVolumeKeys(
+				context.Background(),
+				firstCandidate,
+				func(keys *ReaderKeys) error {
+					return keys.CopyKey(KeyRequest{
+						Label:       KeyLabelVolumePayloadMAC,
+						Role:        KeyRoleNotReplica,
+						OutputBytes: derivedKeyBytes,
+					}, payloadMAC[:])
+				},
+			); err != nil || allZero(payloadMAC[:]) {
+				return errors.New("candidate volume-key borrow failed")
+			}
+
+			if err := session.Select(&RecoveryVolumeCandidate{}); err == nil {
+				return errors.New("fabricated recovery candidate was selected")
+			}
+			if err := session.Select(firstCandidate); err != nil {
+				return err
+			}
+			if err := session.Select(secondCandidate); err == nil {
+				return errors.New("recovery selection was not single-use")
+			}
+			return nil
+		},
+		probe.seams(),
+	)
+	if err != nil {
+		t.Fatalf("newRecoveryCredentialSession: %v", err)
+	}
+	if owner == nil || !allTuplesDerivedBeforeCallback {
+		if owner != nil {
+			owner.Close()
+		}
+		t.Fatal("session callback ran before both sequential derivations or published no owner")
+	}
+	if !allZero(firstTransfer) || !allZero(secondTransfer) || !allZero(passwordAlias) {
+		owner.Close()
+		t.Fatal("recovery session retained transferred candidate or factor bytes")
+	}
+	if owner.Metadata().Suite != first.Suite {
+		owner.Close()
+		t.Fatalf("selected owner suite = %#04x; want %#04x", owner.Metadata().Suite, first.Suite)
+	}
+	var selectedKey [derivedKeyBytes]byte
+	if err := owner.WithKeys(context.Background(), func(keys *BorrowedKeys) error {
+		return keys.CopyVolumeKey(selectedKey[:])
+	}); err != nil || !bytes.Equal(selectedKey[:], bytes.Repeat([]byte{0x5a}, derivedKeyBytes)) {
+		owner.Close()
+		t.Fatal("selected owner did not retain the exact bound candidate key")
+	}
+	owner.Close()
+	if retained == nil || selected == nil {
+		t.Fatal("session callback did not expose its bounded handles")
+	}
+	expiredCalls := 0
+	if err := retained.WithTupleKeys(
+		context.Background(),
+		0,
+		KeyRolePrimary,
+		func(*ReaderKeys) error {
+			expiredCalls++
+			return nil
+		},
+	); err == nil || expiredCalls != 0 {
+		t.Fatal("expired recovery session invoked a tuple callback")
+	}
+	if _, err := retained.SameVolumeKey(selected, selected); err == nil {
+		t.Fatal("expired recovery candidate remained comparable")
+	}
+	for i, alias := range probe.reader.ownedAliases {
+		if !allZero(alias) {
+			t.Fatalf("recovery session material alias %d survived owner close", i)
+		}
+	}
+}
+
+func TestRecoveryCredentialSessionClearsBoundCandidatesOnEveryExit(t *testing.T) {
+	tests := []struct {
+		name      string
+		exit      func(context.CancelFunc) error
+		wantPanic any
+		wantOwner bool
+	}{
+		{name: "success", exit: func(context.CancelFunc) error { return nil }, wantOwner: true},
+		{name: "callback error", exit: func(context.CancelFunc) error {
+			return errors.New("recovery session callback marker")
+		}},
+		{name: "cancellation", exit: func(cancel context.CancelFunc) error {
+			cancel()
+			return nil
+		}},
+		{name: "panic", exit: func(context.CancelFunc) error {
+			panic("recovery session panic marker")
+		}, wantPanic: "recovery session panic marker"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			factors := pipelineRequest(t, SuiteStandard1).Factors
+			passwordAlias := factors.Password
+			probe := newRecoveryCredentialProbe()
+			transfer := bytes.Repeat([]byte{0x6b}, derivedKeyBytes)
+			var candidateAlias []byte
+			var retained *RecoverySession
+			var candidate *RecoveryVolumeCandidate
+			var owner *Owner
+			var err error
+			var recovered any
+			func() {
+				defer func() { recovered = recover() }()
+				owner, err = newRecoveryCredentialSession(
+					ctx,
+					&RecoveryCredentialRequest{
+						Factors: factors,
+						Tuples: []RecoveryCredentialTuple{
+							recoveryCredentialTuple(t, SuiteStandard1, factors, 0x31),
+						},
+					},
+					probe.reader.admit,
+					func(session *RecoverySession) error {
+						retained = session
+						var bindErr error
+						candidate, bindErr = session.BindCandidate(ctx, 0, transfer)
+						if bindErr != nil {
+							return bindErr
+						}
+						candidateAlias = candidate.state.volumeKey.secret.Bytes()
+						if selectErr := session.Select(candidate); selectErr != nil {
+							return selectErr
+						}
+						return test.exit(cancel)
+					},
+					probe.seams(),
+				)
+			}()
+			if recovered != test.wantPanic {
+				if owner != nil {
+					owner.Close()
+				}
+				t.Fatalf("recovered panic = %#v; want %#v", recovered, test.wantPanic)
+			}
+			if (owner != nil) != test.wantOwner ||
+				(test.wantPanic == nil && test.wantOwner == (err != nil)) {
+				if owner != nil {
+					owner.Close()
+				}
+				t.Fatalf("owner/error = %v/%v; want owner=%t", owner, err, test.wantOwner)
+			}
+			if owner != nil {
+				owner.Close()
+			}
+			if !allZero(passwordAlias) || !allZero(transfer) || !allZero(candidateAlias) {
+				t.Fatal("session exit retained factor, transfer, or bound candidate bytes")
+			}
+			if retained == nil || candidate == nil {
+				t.Fatal("session callback did not bind a candidate")
+			}
+			if _, compareErr := retained.SameVolumeKey(candidate, candidate); compareErr == nil {
+				t.Fatal("session exit left the candidate handle live")
+			}
+			for i, alias := range probe.reader.ownedAliases {
+				if !allZero(alias) {
+					t.Fatalf("session exit retained derived alias %d", i)
+				}
+			}
+		})
+	}
 }
 
 func recoveryCredentialTuple(

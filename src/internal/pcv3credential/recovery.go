@@ -1,11 +1,17 @@
 package pcv3credential
 
 import (
+	"Picocrypt-NG/internal/crypto"
 	"context"
+	"crypto/subtle"
 	"errors"
+	"sync"
 )
 
-const maxRecoveryCredentialTuples = 2
+const (
+	maxRecoveryCredentialTuples = 2
+	maxRecoveryVolumeCandidates = 2
+)
 
 // RecoveryCredentialTuple is one structurally admitted public credential
 // tuple. ArgonSalt and VolumeID are transferred with RecoveryCredentialRequest.
@@ -59,6 +65,192 @@ type recoveryCredentialTupleSnapshot struct {
 	volumeID       [scheduleVolumeIDBytes]byte
 }
 
+// RecoverySession is a callback-scoped two-phase recovery credential session.
+// It retains at most two sequentially derived tuple credentials and exposes
+// only restricted key borrows and opaque bound candidate handles.
+type RecoverySession struct {
+	state *recoverySessionState
+}
+
+type recoverySessionState struct {
+	mu sync.Mutex
+
+	ctx                context.Context
+	active             bool
+	borrows            int
+	selectionAttempted bool
+	selected           *RecoveryVolumeCandidate
+	readers            []*ReaderCredential
+	candidates         []*RecoveryVolumeCandidate
+}
+
+// RecoveryVolumeCandidate is an opaque, session-bound VolumeKey candidate.
+// Its key bytes never leave the credential core through this handle.
+type RecoveryVolumeCandidate struct {
+	state *recoveryVolumeCandidateState
+}
+
+type recoveryVolumeCandidateState struct {
+	session    *recoverySessionState
+	tupleIndex int
+	active     bool
+	volumeKey  *volumeKey
+}
+
+func (*RecoverySession) String() string {
+	return "pcv3credential.RecoverySession([REDACTED])"
+}
+
+func (*RecoverySession) GoString() string {
+	return "pcv3credential.RecoverySession([REDACTED])"
+}
+
+func (*RecoveryVolumeCandidate) String() string {
+	return "pcv3credential.RecoveryVolumeCandidate([REDACTED])"
+}
+
+func (*RecoveryVolumeCandidate) GoString() string {
+	return "pcv3credential.RecoveryVolumeCandidate([REDACTED])"
+}
+
+// WithTupleKeys lends only credential-root keys for one admitted tuple.
+func (session *RecoverySession) WithTupleKeys(
+	ctx context.Context,
+	index int,
+	role KeyRole,
+	callback func(*ReaderKeys) error,
+) error {
+	reader, err := session.beginTupleBorrow(ctx, index)
+	if err != nil {
+		return err
+	}
+	defer session.endBorrow()
+	return reader.WithKeys(ctx, role, callback)
+}
+
+// BindCandidate transfers one exact unwrapped VolumeKey into an opaque handle.
+// The transfer buffer is cleared on every return.
+func (session *RecoverySession) BindCandidate(
+	ctx context.Context,
+	tupleIndex int,
+	transfer []byte,
+) (*RecoveryVolumeCandidate, error) {
+	defer crypto.SecureZero(transfer)
+	if session == nil || session.state == nil || ctx == nil ||
+		len(transfer) != derivedKeyBytes {
+		return nil, newOwnerError(OwnerErrorInvalidRequest)
+	}
+	state := session.state
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.active || state.selectionAttempted || state.borrows != 0 ||
+		tupleIndex < 0 || tupleIndex >= len(state.readers) ||
+		len(state.candidates) >= maxRecoveryVolumeCandidates {
+		return nil, newOwnerError(OwnerErrorClosed)
+	}
+	if ctx.Err() != nil || state.ctx.Err() != nil {
+		return nil, newOwnerError(OwnerErrorCancelled)
+	}
+	owned := append([]byte(nil), transfer...)
+	candidate := &RecoveryVolumeCandidate{
+		state: &recoveryVolumeCandidateState{
+			session:    state,
+			tupleIndex: tupleIndex,
+			active:     true,
+			volumeKey:  &volumeKey{secret: crypto.SecretFrom(owned)},
+		},
+	}
+	state.candidates = append(state.candidates, candidate)
+	return candidate, nil
+}
+
+// SameVolumeKey compares two live, exact-session candidates in constant time.
+func (session *RecoverySession) SameVolumeKey(
+	left *RecoveryVolumeCandidate,
+	right *RecoveryVolumeCandidate,
+) (bool, error) {
+	if session == nil || session.state == nil {
+		return false, newOwnerError(OwnerErrorInvalidRequest)
+	}
+	state := session.state
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	leftState, ok := recoveryCandidateStateLocked(state, left)
+	if !state.active || state.selectionAttempted || state.borrows != 0 ||
+		state.ctx.Err() != nil || !ok {
+		return false, newOwnerError(OwnerErrorClosed)
+	}
+	rightState, ok := recoveryCandidateStateLocked(state, right)
+	if !ok {
+		return false, newOwnerError(OwnerErrorClosed)
+	}
+	return subtle.ConstantTimeCompare(
+		leftState.volumeKey.secret.Bytes(),
+		rightState.volumeKey.secret.Bytes(),
+	) == 1, nil
+}
+
+// WithReplicaKey derives and lends only the selected physical role's replica
+// MAC key for one exact bound candidate.
+func (session *RecoverySession) WithReplicaKey(
+	ctx context.Context,
+	candidate *RecoveryVolumeCandidate,
+	role KeyRole,
+	callback func(*ReaderKeys) error,
+) error {
+	reader, transfer, err := session.beginCandidateBorrow(ctx, candidate)
+	if err != nil {
+		return err
+	}
+	defer session.endBorrow()
+	defer crypto.SecureZero(transfer)
+	return reader.WithReplicaKey(ctx, role, transfer, callback)
+}
+
+// WithVolumeKeys derives and lends only non-replica volume keys for one exact
+// bound candidate. VolumeKey and replica keys remain unavailable to callback.
+func (session *RecoverySession) WithVolumeKeys(
+	ctx context.Context,
+	candidate *RecoveryVolumeCandidate,
+	callback func(*ReaderKeys) error,
+) error {
+	reader, transfer, err := session.beginCandidateBorrow(ctx, candidate)
+	if err != nil {
+		return err
+	}
+	defer session.endBorrow()
+	defer crypto.SecureZero(transfer)
+	return reader.withVolumeKeys(ctx, transfer, callback)
+}
+
+// Select stages an Owner from one exact live candidate. Selection is
+// single-use, including a failed derivation attempt.
+func (session *RecoverySession) Select(candidate *RecoveryVolumeCandidate) error {
+	if session == nil || session.state == nil {
+		return newOwnerError(OwnerErrorInvalidRequest)
+	}
+	state := session.state
+	state.mu.Lock()
+	candidateState, ok := recoveryCandidateStateLocked(state, candidate)
+	if !state.active || state.selectionAttempted || state.borrows != 0 ||
+		state.ctx.Err() != nil || !ok {
+		state.mu.Unlock()
+		return newOwnerError(OwnerErrorClosed)
+	}
+	state.selectionAttempted = true
+	reader := state.readers[candidateState.tupleIndex]
+	transfer := append([]byte(nil), candidateState.volumeKey.secret.Bytes()...)
+	state.mu.Unlock()
+
+	if err := reader.AdoptVolumeKey(transfer); err != nil {
+		return err
+	}
+	state.mu.Lock()
+	state.selected = candidate
+	state.mu.Unlock()
+	return nil
+}
+
 // WithRecoveryCredential validates factors once and evaluates the complete
 // bounded tuple set sequentially. At most one adopted Owner may escape after
 // every tuple callback succeeds.
@@ -81,6 +273,28 @@ func WithRecoveryCredential(
 	)
 }
 
+// WithRecoveryCredentialSession derives the complete bounded tuple set before
+// lending one two-phase recovery session. Selection is optional; when present,
+// exactly one session-bound candidate becomes the returned Owner.
+func WithRecoveryCredentialSession(
+	ctx context.Context,
+	request *RecoveryCredentialRequest,
+	admitter Admitter,
+	callback func(*RecoverySession) error,
+) (*Owner, error) {
+	return newRecoveryCredentialSession(
+		ctx,
+		request,
+		admitter,
+		callback,
+		readerCredentialSeams{
+			derive:  deriveArgon2ID,
+			extract: defaultHKDFExtract,
+			expand:  defaultHKDFExpand,
+		},
+	)
+}
+
 func newRecoveryCredential(
 	ctx context.Context,
 	request *RecoveryCredentialRequest,
@@ -88,8 +302,146 @@ func newRecoveryCredential(
 	callback func(int, *ReaderCredential) error,
 	seams readerCredentialSeams,
 ) (*Owner, error) {
-	if request == nil {
+	var selected *Owner
+	completed := false
+	defer func() {
+		if !completed && selected != nil {
+			selected.Close()
+		}
+	}()
+
+	var consumer recoveryReaderConsumer
+	if callback != nil {
+		consumer = func(index int, reader *ReaderCredential) (bool, error) {
+			if err := callback(index, reader); err != nil {
+				return false, newPipelineError(
+					PipelineErrorCallback,
+					PipelineStageCallback,
+					reader.state.metadata.Suite,
+				)
+			}
+			if ctx.Err() != nil {
+				return false, newPipelineError(
+					PipelineErrorCancelled,
+					PipelineStageCallback,
+					reader.state.metadata.Suite,
+				)
+			}
+			owner := reader.takeOwner()
+			if owner == nil {
+				return false, nil
+			}
+			if selected != nil {
+				owner.Close()
+				return false, newPipelineError(
+					PipelineErrorOwner,
+					PipelineStageOwner,
+					reader.state.metadata.Suite,
+				)
+			}
+			selected = owner
+			return false, nil
+		}
+	}
+	if err := withRecoveryCredentialReaders(
+		ctx,
+		request,
+		admitter,
+		consumer,
+		seams,
+	); err != nil {
+		return nil, err
+	}
+	completed = true
+	return selected, nil
+}
+
+func newRecoveryCredentialSession(
+	ctx context.Context,
+	request *RecoveryCredentialRequest,
+	admitter Admitter,
+	callback func(*RecoverySession) error,
+	seams readerCredentialSeams,
+) (*Owner, error) {
+	session := &RecoverySession{
+		state: &recoverySessionState{ctx: ctx},
+	}
+	defer session.close()
+
+	var consumer recoveryReaderConsumer
+	if callback != nil {
+		consumer = func(index int, reader *ReaderCredential) (bool, error) {
+			state := session.state
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			if state.active || index != len(state.readers) ||
+				len(state.readers) >= maxRecoveryCredentialTuples {
+				return false, newPipelineError(
+					PipelineErrorOwner,
+					PipelineStageOwner,
+					reader.state.metadata.Suite,
+				)
+			}
+			state.readers = append(state.readers, reader)
+			return true, nil
+		}
+	}
+	if err := withRecoveryCredentialReaders(
+		ctx,
+		request,
+		admitter,
+		consumer,
+		seams,
+	); err != nil {
+		return nil, err
+	}
+
+	state := session.state
+	state.mu.Lock()
+	state.active = true
+	suite := state.readers[0].state.metadata.Suite
+	state.mu.Unlock()
+	if ctx.Err() != nil {
 		return nil, newPipelineError(
+			PipelineErrorCancelled,
+			PipelineStageCallback,
+			suite,
+		)
+	}
+	if err := callback(session); err != nil {
+		return nil, newPipelineError(
+			PipelineErrorCallback,
+			PipelineStageCallback,
+			suite,
+		)
+	}
+	if ctx.Err() != nil {
+		return nil, newPipelineError(
+			PipelineErrorCancelled,
+			PipelineStageCallback,
+			suite,
+		)
+	}
+	owner, err := session.takeSelectedOwner()
+	if err != nil {
+		return nil, err
+	}
+	return owner, nil
+}
+
+type recoveryReaderConsumer func(int, *ReaderCredential) (bool, error)
+
+// withRecoveryCredentialReaders is the single validation, transcript, KDF,
+// and reader-construction driver used by both recovery entry points.
+func withRecoveryCredentialReaders(
+	ctx context.Context,
+	request *RecoveryCredentialRequest,
+	admitter Admitter,
+	consumer recoveryReaderConsumer,
+	seams readerCredentialSeams,
+) error {
+	if request == nil {
+		return newPipelineError(
 			PipelineErrorInvalidRequest,
 			PipelineStageRequest,
 			0,
@@ -103,17 +455,17 @@ func newRecoveryCredential(
 	snapshots, ok := snapshotRecoveryCredentialTuples(tuples)
 	if !ok {
 		releaseFactorRequest(factors)
-		return nil, newPipelineError(
+		return newPipelineError(
 			PipelineErrorSchedule,
 			PipelineStageSchedule,
 			0,
 		)
 	}
 	suite := snapshots[0].suite
-	if ctx == nil || admitter == nil || callback == nil ||
+	if ctx == nil || admitter == nil || consumer == nil ||
 		seams.derive == nil || seams.extract == nil || seams.expand == nil {
 		releaseFactorRequest(factors)
-		return nil, newPipelineError(
+		return newPipelineError(
 			PipelineErrorInvalidRequest,
 			PipelineStageRequest,
 			suite,
@@ -121,20 +473,12 @@ func newRecoveryCredential(
 	}
 	if ctx.Err() != nil {
 		releaseFactorRequest(factors)
-		return nil, newPipelineError(
+		return newPipelineError(
 			PipelineErrorCancelled,
 			PipelineStageRequest,
 			suite,
 		)
 	}
-
-	var selected *Owner
-	completed := false
-	defer func() {
-		if !completed && selected != nil {
-			selected.Close()
-		}
-	}()
 
 	factorErr := WithValidatedFactors(
 		ctx,
@@ -226,66 +570,207 @@ func newRecoveryCredential(
 							ArgonSalt:      tuple.argonSalt,
 							VolumeID:       tuple.volumeID,
 						}
-						owner, err := withReaderCredentialRoot(
+						reader, err := newReaderCredentialRoot(
 							ctx,
 							root,
 							schedule,
 							metadata,
-							func(candidate *ReaderCredential) error {
-								return callback(index, candidate)
-							},
 							seams,
 						)
 						if err != nil {
 							return err
 						}
-						if owner == nil {
-							continue
+						retain := false
+						consumeErr := func() error {
+							defer func() {
+								if !retain {
+									reader.close()
+								}
+							}()
+							var err error
+							retain, err = consumer(index, reader)
+							return err
+						}()
+						if consumeErr != nil {
+							return consumeErr
 						}
-						if selected != nil {
-							owner.Close()
-							return newPipelineError(
-								PipelineErrorOwner,
-								PipelineStageOwner,
-								tuple.suite,
-							)
-						}
-						selected = owner
 					}
 					return nil
 				},
 			)
 		},
 	)
-	if factorErr != nil {
-		var pipelineErr *PipelineError
-		if errors.As(factorErr, &pipelineErr) {
-			return nil, pipelineErr
-		}
-		var factorFailure *FactorError
-		if errors.As(factorErr, &factorFailure) &&
-			factorFailure.Code == FactorErrorCancelled {
-			return nil, newPipelineError(
-				PipelineErrorCancelled,
-				PipelineStageFactors,
-				suite,
-			)
-		}
-		return nil, newPipelineError(
-			PipelineErrorFactors,
+	if factorErr == nil {
+		return nil
+	}
+	var pipelineErr *PipelineError
+	if errors.As(factorErr, &pipelineErr) {
+		return pipelineErr
+	}
+	var factorFailure *FactorError
+	if errors.As(factorErr, &factorFailure) &&
+		factorFailure.Code == FactorErrorCancelled {
+		return newPipelineError(
+			PipelineErrorCancelled,
 			PipelineStageFactors,
 			suite,
 		)
 	}
-	if ctx.Err() != nil {
+	return newPipelineError(
+		PipelineErrorFactors,
+		PipelineStageFactors,
+		suite,
+	)
+}
+
+func (session *RecoverySession) beginTupleBorrow(
+	ctx context.Context,
+	index int,
+) (*ReaderCredential, error) {
+	if session == nil || session.state == nil || ctx == nil {
+		return nil, newOwnerError(OwnerErrorInvalidRequest)
+	}
+	state := session.state
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.active || state.selectionAttempted || state.borrows != 0 ||
+		index < 0 || index >= len(state.readers) {
+		return nil, newOwnerError(OwnerErrorClosed)
+	}
+	if ctx.Err() != nil || state.ctx.Err() != nil {
+		return nil, newOwnerError(OwnerErrorCancelled)
+	}
+	state.borrows++
+	return state.readers[index], nil
+}
+
+func (session *RecoverySession) beginCandidateBorrow(
+	ctx context.Context,
+	candidate *RecoveryVolumeCandidate,
+) (*ReaderCredential, []byte, error) {
+	if session == nil || session.state == nil || ctx == nil {
+		return nil, nil, newOwnerError(OwnerErrorInvalidRequest)
+	}
+	state := session.state
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	candidateState, ok := recoveryCandidateStateLocked(state, candidate)
+	if !state.active || state.selectionAttempted || state.borrows != 0 || !ok {
+		return nil, nil, newOwnerError(OwnerErrorClosed)
+	}
+	if ctx.Err() != nil || state.ctx.Err() != nil {
+		return nil, nil, newOwnerError(OwnerErrorCancelled)
+	}
+	state.borrows++
+	transfer := append([]byte(nil), candidateState.volumeKey.secret.Bytes()...)
+	return state.readers[candidateState.tupleIndex], transfer, nil
+}
+
+func (session *RecoverySession) endBorrow() {
+	if session == nil || session.state == nil {
+		return
+	}
+	state := session.state
+	state.mu.Lock()
+	if state.borrows > 0 {
+		state.borrows--
+	}
+	state.mu.Unlock()
+}
+
+func recoveryCandidateStateLocked(
+	state *recoverySessionState,
+	candidate *RecoveryVolumeCandidate,
+) (*recoveryVolumeCandidateState, bool) {
+	if state == nil || candidate == nil || candidate.state == nil ||
+		candidate.state.session != state || !candidate.state.active ||
+		candidate.state.volumeKey == nil || candidate.state.volumeKey.secret == nil {
+		return nil, false
+	}
+	for _, bound := range state.candidates {
+		if bound == candidate {
+			return candidate.state, true
+		}
+	}
+	return nil, false
+}
+
+func (session *RecoverySession) takeSelectedOwner() (*Owner, error) {
+	if session == nil || session.state == nil {
 		return nil, newPipelineError(
-			PipelineErrorCancelled,
-			PipelineStageCallback,
+			PipelineErrorOwner,
+			PipelineStageOwner,
+			0,
+		)
+	}
+	state := session.state
+	state.mu.Lock()
+	if !state.active || state.borrows != 0 {
+		state.mu.Unlock()
+		return nil, newPipelineError(
+			PipelineErrorOwner,
+			PipelineStageOwner,
+			0,
+		)
+	}
+	selected := state.selected
+	if selected == nil {
+		state.mu.Unlock()
+		return nil, nil
+	}
+	candidateState, ok := recoveryCandidateStateLocked(state, selected)
+	if !ok {
+		state.mu.Unlock()
+		return nil, newPipelineError(
+			PipelineErrorOwner,
+			PipelineStageOwner,
+			0,
+		)
+	}
+	reader := state.readers[candidateState.tupleIndex]
+	suite := reader.state.metadata.Suite
+	state.mu.Unlock()
+	owner := reader.takeOwner()
+	if owner == nil {
+		return nil, newPipelineError(
+			PipelineErrorOwner,
+			PipelineStageOwner,
 			suite,
 		)
 	}
-	completed = true
-	return selected, nil
+	return owner, nil
+}
+
+func (session *RecoverySession) close() {
+	if session == nil || session.state == nil {
+		return
+	}
+	state := session.state
+	state.mu.Lock()
+	state.active = false
+	state.borrows = 0
+	state.selectionAttempted = true
+	state.selected = nil
+	readers := state.readers
+	state.readers = nil
+	candidates := state.candidates
+	state.candidates = nil
+	for _, candidate := range candidates {
+		if candidate == nil || candidate.state == nil {
+			continue
+		}
+		candidate.state.active = false
+		key := candidate.state.volumeKey
+		candidate.state.volumeKey = nil
+		candidate.state.session = nil
+		if key != nil {
+			key.close()
+		}
+	}
+	state.mu.Unlock()
+	for _, reader := range readers {
+		reader.close()
+	}
 }
 
 func snapshotRecoveryCredentialTuples(
