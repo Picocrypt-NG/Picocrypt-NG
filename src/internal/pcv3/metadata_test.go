@@ -738,7 +738,7 @@ func assertMetadataReadExtent(t *testing.T, spans []metadataReadSpan, front int6
 	covered := make([]bool, extent)
 	for _, span := range spans {
 		start := int(span.offset - int64(frontHeaderBase))
-		for index := 0; index < span.delivered; index++ {
+		for index := range span.delivered {
 			covered[start+index] = true
 		}
 	}

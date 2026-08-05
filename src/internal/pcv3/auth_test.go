@@ -697,10 +697,12 @@ func literalCandidate(t *testing.T, encoded string, role CapsuleRole) Candidate 
 }
 
 func literalStructure(candidates ...Candidate) Structure {
-	structure := Structure{candidateCount: uint8(len(candidates))}
-	for i := range candidates {
-		structure.candidates[i] = candidates[i]
+	structure := Structure{}
+	if len(candidates) > len(structure.candidates) {
+		panic("TEST ONLY too many literal candidates")
 	}
+	structure.candidateCount = uint8(len(candidates))
+	copy(structure.candidates[:], candidates)
 	if len(candidates) != 0 {
 		core := candidates[0].core
 		structure.preamble = Preamble{

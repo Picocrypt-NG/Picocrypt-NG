@@ -39,7 +39,7 @@ func (source *normalFuzzSource) ReadAt(destination []byte, offset int64) (int, e
 		source.violation = "call budget"
 		return 0, errNormalFuzzReadBound
 	}
-	if offset < 0 || uint64(offset) > uint64(^uint64(0)>>1)-uint64(len(destination)) {
+	if offset < 0 || uint64(offset) > (^uint64(0)>>1)-uint64(len(destination)) {
 		source.violation = "invalid request range"
 		return 0, errNormalFuzzReadBound
 	}

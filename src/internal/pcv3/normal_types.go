@@ -14,7 +14,7 @@ type normalVolumeSink interface {
 	abortUncommitted()
 }
 
-type normalCompletion struct{ sealed struct{} }
+type normalCompletion struct{}
 
 // normalReadResult exposes only coarse conformance state and an authenticated
 // public comment copy. It intentionally contains no source or key material.
@@ -44,18 +44,21 @@ func (result *normalReadResult) Outcome() Outcome {
 	}
 	return result.outcome
 }
+
 func (result *normalReadResult) Stage() Stage {
 	if result == nil {
 		return 0
 	}
 	return result.stage
 }
+
 func (result *normalReadResult) AuthenticatedCapsules() int {
 	if result == nil {
 		return 0
 	}
 	return int(result.authenticated)
 }
+
 func (result *normalReadResult) Code() Code {
 	if result == nil {
 		return 0
@@ -79,17 +82,22 @@ func (result *normalReadResult) Error() string {
 		return "pcv3: normal volume operation failed"
 	}
 }
-func (result *normalReadResult) String() string   { return result.Error() }
+
+func (result *normalReadResult) String() string { return result.Error() }
+
 func (result *normalReadResult) GoString() string { return result.Error() }
+
 func (result *normalReadResult) Format(state fmt.State, verb rune) {
 	writeFixedFormat(state, verb, result.Error())
 }
+
 func (result *normalReadResult) commentBytes() []byte {
 	if result == nil || result.comment == nil {
 		return nil
 	}
 	return append([]byte(nil), result.comment...)
 }
+
 func (result *normalReadResult) Close() {
 	if result != nil {
 		pcv3crypto.SecureZero(result.comment)

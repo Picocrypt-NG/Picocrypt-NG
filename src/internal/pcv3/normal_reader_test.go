@@ -350,7 +350,6 @@ func TestReadNormalVolume(t *testing.T) {
 	fixtures := make(map[string]normalFixture, len(manifest.Fixtures))
 	for _, fixture := range manifest.Fixtures {
 		fixtures[fixture.ID] = fixture
-		fixture := fixture
 		t.Run(fixture.ID, func(t *testing.T) {
 			volume := readNormalFixtureArtifact(t, fixture.Volume)
 			plaintext := readNormalFixturePlaintext(t, fixture.Plaintext)
@@ -552,7 +551,6 @@ func TestReadNormalVolume(t *testing.T) {
 			t.Fatalf("borrowed source close calls = cached %d, actual %d; want zero", cachedSource.closeCalls, actualSource.closeCalls)
 		}
 	})
-
 }
 
 type normalFixtureSource interface {
