@@ -86,6 +86,23 @@ type recordExpectation struct {
 	serpentIV         [16]byte
 }
 
+type recordAuthenticationState uint8
+
+const (
+	recordAuthenticationVerified recordAuthenticationState = iota + 1
+	recordAuthenticationUnverified
+)
+
+// recordEvidence contains only canonical identity and authentication state.
+// Plaintext is lent separately and never becomes part of retained evidence.
+type recordEvidence struct {
+	index           uint64
+	final           bool
+	plaintextOffset uint64
+	plaintextLength uint64
+	authentication  recordAuthenticationState
+}
+
 type recordEngineSeams struct {
 	decodeDescriptor func(*pcencoding.RSCodecs, []byte, []byte) error
 	decodeBody       func(*pcencoding.RSCodecs, []byte, []byte, bool) error
@@ -106,6 +123,51 @@ func (keys *recordKeys) close() {
 	pcv3crypto.SecureZero(keys.xChaCha20[:])
 	pcv3crypto.SecureZero(keys.serpent[:])
 	pcv3crypto.SecureZero(keys.mac[:])
+}
+
+// recordEvaluator owns the one-record scratch and key material shared by
+// normal and recovery record traversal. Policy remains with its callers.
+type recordEvaluator struct {
+	ctx               context.Context
+	source            io.ReaderAt
+	core              logicalCore
+	geometry          Geometry
+	codecs            *pcencoding.RSCodecs
+	keys              *recordKeys
+	commitment        [32]byte
+	seams             recordEngineSeams
+	encodedDescriptor [recordDescriptorSize]byte
+	decodedDescriptor [16]byte
+	encodedBody       []byte
+	decodedBody       []byte
+	plaintext         []byte
+	closed            bool
+}
+
+func (evaluator *recordEvaluator) close() {
+	if evaluator == nil || evaluator.closed {
+		return
+	}
+	evaluator.closed = true
+	if evaluator.keys != nil {
+		evaluator.keys.close()
+		evaluator.keys = nil
+	}
+	pcv3crypto.SecureZero(evaluator.commitment[:])
+	pcv3crypto.SecureZero(evaluator.encodedDescriptor[:])
+	pcv3crypto.SecureZero(evaluator.decodedDescriptor[:])
+	pcv3crypto.SecureZero(evaluator.encodedBody)
+	pcv3crypto.SecureZero(evaluator.decodedBody)
+	pcv3crypto.SecureZero(evaluator.plaintext)
+	evaluator.encodedBody = nil
+	evaluator.decodedBody = nil
+	evaluator.plaintext = nil
+	evaluator.ctx = nil
+	evaluator.source = nil
+	evaluator.core = logicalCore{}
+	evaluator.geometry = Geometry{}
+	evaluator.codecs = nil
+	evaluator.seams = recordEngineSeams{}
 }
 
 // expectedRecord derives one data/final descriptor and its physical extent
@@ -272,6 +334,254 @@ func encodedRecordBodyLength(ciphertextLength uint64, payloadBodyRS bool) (uint6
 	return checkedMul64(blocks, rs128CodewordLength)
 }
 
+func newRecordEvaluator(
+	ctx context.Context,
+	source io.ReaderAt,
+	core logicalCore,
+	geometry Geometry,
+	codecs *pcencoding.RSCodecs,
+	keyBorrower normalKeyBorrower,
+	seams recordEngineSeams,
+) (*recordEvaluator, error) {
+	if ctx == nil || keyBorrower == nil {
+		return nil, newRecordFailure(StageCredentialPolicy, errInvalidRecordRequest)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, newRecordFailure(StageCancellation, err)
+	}
+	if source == nil {
+		return nil, newRecordFailure(StageInputIO, errInvalidReader)
+	}
+	if !recordGeometryMatchesCore(core, geometry) ||
+		!validRecordCodecs(codecs, geometry.payloadBodyRS) || !validRecordSeams(seams) {
+		return nil, newRecordFailure(StageCredentialPolicy, errInvalidRecordRequest)
+	}
+
+	maximum, err := expectedRecord(core, geometry, 0)
+	if err != nil {
+		return nil, newRecordFailure(StageCredentialPolicy, err)
+	}
+	final, err := expectedRecord(core, geometry, core.recordCount)
+	if err != nil {
+		return nil, newRecordFailure(StageCredentialPolicy, err)
+	}
+	if final.encodedBodyLength > maximum.encodedBodyLength {
+		maximum = final
+	}
+	decodedBodyLength, ok := decodedRecordBodyLength(maximum, geometry.payloadBodyRS)
+	if !ok || maximum.ciphertextLength > uint64(math.MaxInt) {
+		return nil, newRecordFailure(StageCredentialPolicy, errInvalidRecordRequest)
+	}
+
+	evaluator := &recordEvaluator{
+		ctx:         ctx,
+		source:      source,
+		core:        core,
+		geometry:    geometry,
+		codecs:      codecs,
+		seams:       seams,
+		encodedBody: make([]byte, maximum.encodedBodyLength),
+		decodedBody: make([]byte, decodedBodyLength),
+		plaintext:   make([]byte, int(maximum.ciphertextLength)),
+	}
+	success := false
+	defer func() {
+		if !success {
+			evaluator.close()
+		}
+	}()
+	evaluator.keys, err = loadRecordKeys(ctx, keyBorrower, core.suite)
+	if err != nil {
+		return nil, err
+	}
+	evaluator.commitment = coreCommitment(core)
+	success = true
+	return evaluator, nil
+}
+
+// evaluateCanonicalRecord is the single descriptor/RS/MAC/cipher boundary.
+// It derives every record parameter internally and lends plaintext only for
+// the callback duration. Unauthenticated bytes require live role-bound
+// unverified authority; all other requests fail before decryption.
+func (evaluator *recordEvaluator) evaluateCanonicalRecord(
+	index uint64,
+	request recoveryRequest,
+	role CapsuleRole,
+	callback func(recordEvidence, []byte) error,
+) error {
+	if evaluator == nil || evaluator.closed || evaluator.ctx == nil ||
+		evaluator.source == nil || evaluator.keys == nil || callback == nil {
+		return newRecordFailure(StageCredentialPolicy, errInvalidRecordRequest)
+	}
+	if err := evaluator.ctx.Err(); err != nil {
+		return newRecordFailure(StageCancellation, err)
+	}
+	expected, err := expectedRecord(evaluator.core, evaluator.geometry, index)
+	if err != nil {
+		return newRecordFailure(StageCredentialPolicy, err)
+	}
+	recordStage := StageDescriptor
+	if expected.final {
+		recordStage = StageFinalRecord
+	}
+
+	pcv3crypto.SecureZero(evaluator.encodedDescriptor[:])
+	pcv3crypto.SecureZero(evaluator.decodedDescriptor[:])
+	if err := readRecordExactAt(
+		evaluator.ctx,
+		evaluator.source,
+		expected.descriptorOffset,
+		evaluator.encodedDescriptor[:],
+		recordStage,
+	); err != nil {
+		return err
+	}
+	if err := evaluator.seams.decodeDescriptor(
+		evaluator.codecs,
+		evaluator.encodedDescriptor[:],
+		evaluator.decodedDescriptor[:],
+	); err != nil {
+		return newRecordFailure(recordStage, err)
+	}
+	if subtle.ConstantTimeCompare(
+		evaluator.decodedDescriptor[:],
+		expected.descriptor[:],
+	) != 1 {
+		return newRecordFailure(recordStage, errRecordDescriptorRecovery)
+	}
+
+	encoded := evaluator.encodedBody[:expected.encodedBodyLength]
+	pcv3crypto.SecureZero(evaluator.encodedBody)
+	pcv3crypto.SecureZero(evaluator.decodedBody)
+	bodyStage := StageRecordAuth
+	if evaluator.geometry.payloadBodyRS {
+		bodyStage = StageRecordBodyRS
+	}
+	if expected.final {
+		bodyStage = StageFinalRecord
+	}
+	if err := readRecordExactAt(
+		evaluator.ctx,
+		evaluator.source,
+		expected.bodyOffset,
+		encoded,
+		bodyStage,
+	); err != nil {
+		return err
+	}
+
+	decodedLength, ok := decodedRecordBodyLength(expected, evaluator.geometry.payloadBodyRS)
+	if !ok || decodedLength > len(evaluator.decodedBody) {
+		return newRecordFailure(bodyStage, errInvalidRecordRequest)
+	}
+	decoded := evaluator.decodedBody[:decodedLength]
+	if evaluator.geometry.payloadBodyRS {
+		if err := evaluator.seams.decodeBody(
+			evaluator.codecs,
+			encoded,
+			decoded,
+			false,
+		); err != nil {
+			return newRecordFailure(bodyStage, err)
+		}
+	} else {
+		copy(decoded, encoded)
+	}
+
+	valid, err := authenticateDecodedRecord(
+		evaluator.core.suite,
+		evaluator.keys.mac[:],
+		evaluator.commitment,
+		expected,
+		decoded,
+	)
+	if err != nil {
+		return newRecordFailure(bodyStage, err)
+	}
+	if !valid && evaluator.geometry.payloadBodyRS {
+		pcv3crypto.SecureZero(decoded)
+		if err := evaluator.seams.decodeBody(
+			evaluator.codecs,
+			encoded,
+			decoded,
+			true,
+		); err != nil {
+			return newRecordFailure(bodyStage, err)
+		}
+		valid, err = authenticateDecodedRecord(
+			evaluator.core.suite,
+			evaluator.keys.mac[:],
+			evaluator.commitment,
+			expected,
+			decoded,
+		)
+		if err != nil {
+			return newRecordFailure(bodyStage, err)
+		}
+	}
+
+	authentication := recordAuthenticationVerified
+	if !valid {
+		if !request.authorizesUnverified(role) {
+			authStage := StageRecordAuth
+			if expected.final {
+				authStage = StageFinalRecord
+			}
+			return newRecordFailure(authStage, errRecordAuthentication)
+		}
+		authentication = recordAuthenticationUnverified
+	}
+	evidence := recordEvidence{
+		index:           expected.index,
+		final:           expected.final,
+		plaintextOffset: expected.plaintextOffset,
+		plaintextLength: expected.ciphertextLength,
+		authentication:  authentication,
+	}
+	if expected.final {
+		return callback(evidence, nil)
+	}
+
+	ciphertextLength := int(expected.ciphertextLength)
+	ciphertext := decoded[:ciphertextLength]
+	plain := evaluator.plaintext[:ciphertextLength]
+	pcv3crypto.SecureZero(plain)
+	defer pcv3crypto.SecureZero(plain)
+	switch evaluator.core.suite {
+	case SuiteStandard:
+		err = evaluator.seams.decryptStandard(
+			plain,
+			ciphertext,
+			evaluator.keys.xChaCha20[:],
+			expected.nonce[:],
+		)
+	case SuiteParanoid:
+		err = evaluator.seams.decryptParanoid(
+			plain,
+			ciphertext,
+			evaluator.keys.xChaCha20[:],
+			expected.nonce[:],
+			evaluator.keys.serpent[:],
+			expected.serpentIV[:],
+		)
+	default:
+		err = errRecordCipher
+	}
+	if err != nil {
+		return newRecordFailure(StageRecordAuth, errRecordCipher)
+	}
+	if err := evaluator.ctx.Err(); err != nil {
+		return newRecordFailure(StageCancellation, err)
+	}
+	if err := callback(evidence, plain); err != nil {
+		return err
+	}
+	if err := evaluator.ctx.Err(); err != nil {
+		return newRecordFailure(StageCancellation, err)
+	}
+	return nil
+}
+
 // readNormalRecords authenticates and decrypts the canonical data/final
 // sequence into an operation-owned nonpublishing sink. A nonzero summary is
 // returned only after the final tag verifies.
@@ -313,151 +623,56 @@ func readNormalRecordsWithSeams(
 	if !ok || !validRecordCodecs(codecs, geometry.payloadBodyRS) || !validRecordSeams(seams) {
 		return recordVerification{}, newRecordFailure(StageCredentialPolicy, errInvalidRecordRequest)
 	}
-
-	firstIndex := uint64(0)
-	maximum, err := expectedRecord(core, geometry, firstIndex)
-	if err != nil {
-		return recordVerification{}, newRecordFailure(StageCredentialPolicy, err)
-	}
-	final, err := expectedRecord(core, geometry, core.recordCount)
-	if err != nil {
-		return recordVerification{}, newRecordFailure(StageCredentialPolicy, err)
-	}
-	if final.encodedBodyLength > maximum.encodedBodyLength {
-		maximum = final
-	}
-
-	decodedBodyLength, ok := decodedRecordBodyLength(maximum, geometry.payloadBodyRS)
-	if !ok || maximum.ciphertextLength > uint64(math.MaxInt) {
-		return recordVerification{}, newRecordFailure(StageCredentialPolicy, errInvalidRecordRequest)
-	}
-	encodedBody := make([]byte, maximum.encodedBodyLength)
-	decodedBody := make([]byte, decodedBodyLength)
-	plaintext := make([]byte, int(maximum.ciphertextLength))
-	defer pcv3crypto.SecureZero(encodedBody)
-	defer pcv3crypto.SecureZero(decodedBody)
-	defer pcv3crypto.SecureZero(plaintext)
-
-	keys, err := loadRecordKeys(ctx, auth, core.suite)
+	evaluator, err := newRecordEvaluator(
+		ctx,
+		source,
+		core,
+		geometry,
+		codecs,
+		auth,
+		seams,
+	)
 	if err != nil {
 		return recordVerification{}, err
 	}
-	defer keys.close()
-	commitment := coreCommitment(core)
-	defer pcv3crypto.SecureZero(commitment[:])
-
-	var encodedDescriptor [recordDescriptorSize]byte
-	var decodedDescriptor [16]byte
-	defer pcv3crypto.SecureZero(encodedDescriptor[:])
-	defer pcv3crypto.SecureZero(decodedDescriptor[:])
+	defer evaluator.close()
 
 	var dataRecords uint64
 	var plaintextBytes uint64
 	for index := uint64(0); ; index++ {
-		if err := ctx.Err(); err != nil {
-			return recordVerification{}, newRecordFailure(StageCancellation, err)
-		}
-		expected, err := expectedRecord(core, geometry, index)
-		if err != nil {
-			return recordVerification{}, newRecordFailure(StageCredentialPolicy, err)
-		}
-		recordStage := StageDescriptor
-		if expected.final {
-			recordStage = StageFinalRecord
-		}
-
-		pcv3crypto.SecureZero(encodedDescriptor[:])
-		pcv3crypto.SecureZero(decodedDescriptor[:])
-		if err := readRecordExactAt(
-			ctx,
-			source,
-			expected.descriptorOffset,
-			encodedDescriptor[:],
-			recordStage,
-		); err != nil {
-			return recordVerification{}, err
-		}
-		if err := seams.decodeDescriptor(
-			codecs,
-			encodedDescriptor[:],
-			decodedDescriptor[:],
-		); err != nil {
-			return recordVerification{}, newRecordFailure(recordStage, err)
-		}
-		if subtle.ConstantTimeCompare(
-			decodedDescriptor[:],
-			expected.descriptor[:],
-		) != 1 {
-			return recordVerification{}, newRecordFailure(recordStage, errRecordDescriptorRecovery)
-		}
-
-		encoded := encodedBody[:expected.encodedBodyLength]
-		pcv3crypto.SecureZero(encodedBody)
-		pcv3crypto.SecureZero(decodedBody)
-		bodyStage := StageRecordAuth
-		if geometry.payloadBodyRS {
-			bodyStage = StageRecordBodyRS
-		}
-		if expected.final {
-			bodyStage = StageFinalRecord
-		}
-		if err := readRecordExactAt(
-			ctx,
-			source,
-			expected.bodyOffset,
-			encoded,
-			bodyStage,
-		); err != nil {
-			return recordVerification{}, err
-		}
-
-		decodedLength, ok := decodedRecordBodyLength(expected, geometry.payloadBodyRS)
-		if !ok || decodedLength > len(decodedBody) {
-			return recordVerification{}, newRecordFailure(bodyStage, errInvalidRecordRequest)
-		}
-		decoded := decodedBody[:decodedLength]
-		if geometry.payloadBodyRS {
-			if err := seams.decodeBody(codecs, encoded, decoded, false); err != nil {
-				return recordVerification{}, newRecordFailure(bodyStage, err)
-			}
-		} else {
-			copy(decoded, encoded)
-		}
-
-		valid, err := authenticateDecodedRecord(
-			core.suite,
-			keys.mac[:],
-			commitment,
-			expected,
-			decoded,
+		var evidence recordEvidence
+		var sinkErr error
+		invalidEvidence := false
+		err := evaluator.evaluateCanonicalRecord(
+			index,
+			recoveryRequest{},
+			0,
+			func(got recordEvidence, plaintext []byte) error {
+				evidence = got
+				if got.authentication != recordAuthenticationVerified {
+					invalidEvidence = true
+					return errInvalidRecordRequest
+				}
+				if got.final {
+					return nil
+				}
+				sinkErr = sink.writeVerifiedRecord(ctx, got.index, plaintext)
+				return sinkErr
+			},
 		)
+		if invalidEvidence {
+			return recordVerification{}, newRecordFailure(StageCredentialPolicy, errInvalidRecordRequest)
+		}
+		if sinkErr != nil {
+			if cancellation := recordCancellationCause(ctx, sinkErr); cancellation != nil {
+				return recordVerification{}, newRecordFailure(StageCancellation, cancellation)
+			}
+			return recordVerification{}, newRecordFailure(StageOutputWrite, sinkErr)
+		}
 		if err != nil {
-			return recordVerification{}, newRecordFailure(bodyStage, err)
+			return recordVerification{}, err
 		}
-		if !valid && geometry.payloadBodyRS {
-			pcv3crypto.SecureZero(decoded)
-			if err := seams.decodeBody(codecs, encoded, decoded, true); err != nil {
-				return recordVerification{}, newRecordFailure(bodyStage, err)
-			}
-			valid, err = authenticateDecodedRecord(
-				core.suite,
-				keys.mac[:],
-				commitment,
-				expected,
-				decoded,
-			)
-			if err != nil {
-				return recordVerification{}, newRecordFailure(bodyStage, err)
-			}
-		}
-		if !valid {
-			authStage := StageRecordAuth
-			if expected.final {
-				authStage = StageFinalRecord
-			}
-			return recordVerification{}, newRecordFailure(authStage, errRecordAuthentication)
-		}
-		if expected.final {
+		if evidence.final {
 			if dataRecords != core.recordCount || plaintextBytes != core.plaintextLength {
 				return recordVerification{}, newRecordFailure(StageFinalRecord, errRecordAccounting)
 			}
@@ -466,56 +681,11 @@ func readNormalRecordsWithSeams(
 				plaintextBytes: plaintextBytes,
 			}, nil
 		}
-
-		if expected.ciphertextLength > uint64(math.MaxInt) {
-			return recordVerification{}, newRecordFailure(StageCredentialPolicy, errInvalidRecordRequest)
-		}
-		ciphertextLength := int(expected.ciphertextLength)
-		ciphertext := decoded[:ciphertextLength]
-		plain := plaintext[:ciphertextLength]
-		pcv3crypto.SecureZero(plain)
-		switch core.suite {
-		case SuiteStandard:
-			err = seams.decryptStandard(
-				plain,
-				ciphertext,
-				keys.xChaCha20[:],
-				expected.nonce[:],
-			)
-		case SuiteParanoid:
-			err = seams.decryptParanoid(
-				plain,
-				ciphertext,
-				keys.xChaCha20[:],
-				expected.nonce[:],
-				keys.serpent[:],
-				expected.serpentIV[:],
-			)
-		default:
-			err = errRecordCipher
-		}
-		if err != nil {
-			return recordVerification{}, newRecordFailure(StageRecordAuth, errRecordCipher)
-		}
-		if err := ctx.Err(); err != nil {
-			return recordVerification{}, newRecordFailure(StageCancellation, err)
-		}
-		sinkErr := sink.writeVerifiedRecord(ctx, index, plain)
-		pcv3crypto.SecureZero(plain)
-		if sinkErr != nil {
-			if cancellation := recordCancellationCause(ctx, sinkErr); cancellation != nil {
-				return recordVerification{}, newRecordFailure(StageCancellation, cancellation)
-			}
-			return recordVerification{}, newRecordFailure(StageOutputWrite, sinkErr)
-		}
-		if err := ctx.Err(); err != nil {
-			return recordVerification{}, newRecordFailure(StageCancellation, err)
-		}
 		dataRecords, ok = checkedAdd64(dataRecords, 1)
 		if !ok {
 			return recordVerification{}, newRecordFailure(StageRecordAuth, errRecordAccounting)
 		}
-		plaintextBytes, ok = checkedAdd64(plaintextBytes, expected.ciphertextLength)
+		plaintextBytes, ok = checkedAdd64(plaintextBytes, evidence.plaintextLength)
 		if !ok || plaintextBytes > core.plaintextLength {
 			return recordVerification{}, newRecordFailure(StageRecordAuth, errRecordAccounting)
 		}
@@ -573,7 +743,7 @@ func decodedRecordBodyLength(expected recordExpectation, payloadBodyRS bool) (in
 
 func loadRecordKeys(
 	ctx context.Context,
-	auth *normalAuthResult,
+	borrower normalKeyBorrower,
 	suite Suite,
 ) (*recordKeys, error) {
 	keys := &recordKeys{}
@@ -584,7 +754,7 @@ func loadRecordKeys(
 		}
 	}()
 	borrow := func(label pcv3credential.KeyLabel, destination []byte) error {
-		return auth.withKey(
+		return borrower.withKey(
 			ctx,
 			pcv3credential.KeyRequest{
 				Label:       label,
