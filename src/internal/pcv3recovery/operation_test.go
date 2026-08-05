@@ -42,14 +42,14 @@ func TestRunPublishesOneCanonicalArtifactForPartialEvidence(t *testing.T) {
 	target := filepath.Join(directory, "evidence.pcv3-recovery")
 	semantic := operationSemantic{
 		outcome: pcv3.OutcomeForcePartial, provenance: pcv3.ForceProvenancePartial,
-		stage: pcv3.StageRecordAuth, plaintextLength: 9,
+		stage: pcv3.StageRecordAuth, plaintextLength: 1048581,
 		ranges: []operationRange{
-			{recordIndex: 0, start: 0, end: 4, state: pcv3.RecoveryRangeVerified},
-			{recordIndex: 1, start: 4, end: 9, state: pcv3.RecoveryRangeMissing},
+			{recordIndex: 0, start: 0, end: 1048576, state: pcv3.RecoveryRangeMissing},
+			{recordIndex: 1, start: 1048576, end: 1048581, state: pcv3.RecoveryRangeVerified},
 		},
 		final: pcv3.RecoveryFinalMissing,
 	}
-	runner := fixedCoreRunner(semantic, [][]byte{[]byte("safe")}, nil)
+	runner := fixedCoreRunner(semantic, [][]byte{[]byte("safe!")}, nil)
 
 	result := runWithCore(context.Background(), &Request{Target: target}, runner)
 	if result.Outcome() != pcv3.OutcomeForcePartial ||
@@ -66,7 +66,7 @@ func TestRunPublishesOneCanonicalArtifactForPartialEvidence(t *testing.T) {
 	}
 	metadata := artifact.Metadata()
 	if metadata.State != pcv3artifact.StatePartial || metadata.Role != pcv3artifact.RoleNone ||
-		metadata.Final != pcv3artifact.FinalMissing || metadata.PlaintextLength != 9 ||
+		metadata.Final != pcv3artifact.FinalMissing || metadata.PlaintextLength != 1048581 ||
 		metadata.RangeCount != 2 || metadata.EmittedSegmentCount != 1 {
 		t.Fatalf("artifact metadata = %#v; want exact partial map", metadata)
 	}
@@ -85,8 +85,8 @@ func TestRunPublishesOneCanonicalArtifactForPartialEvidence(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("visit artifact ranges: %v", err)
 	}
-	if len(entries) != 2 || len(segments) != 1 || !bytes.Equal(segments[0], []byte("safe")) ||
-		entries[1].Status != pcv3artifact.RangeMissing || entries[1].SegmentLength != 0 {
+	if len(entries) != 2 || len(segments) != 1 || !bytes.Equal(segments[0], []byte("safe!")) ||
+		entries[0].Status != pcv3artifact.RangeMissing || entries[0].SegmentLength != 0 {
 		t.Fatalf("artifact entries/segments = %#v/%q; want verified bytes plus explicit missing interval", entries, segments)
 	}
 }
