@@ -18,6 +18,55 @@ type archiveHandoffAuthority interface {
 	ArchiveHandoffAllowed() bool
 }
 
+type secondPassFault uint8
+
+const (
+	secondPassMutation secondPassFault = iota + 1
+	secondPassInputError
+	secondPassCancellation
+)
+
+var errSecondPassInput = errors.New("TEST ONLY second-pass input fault")
+
+type secondPassReaderAt struct {
+	source        io.ReaderAt
+	fault         secondPassFault
+	mutationByte  int64
+	matchingReads int
+	cancel        context.CancelFunc
+}
+
+func (reader *secondPassReaderAt) ReadAt(destination []byte, offset int64) (int, error) {
+	containsMutation := offset <= reader.mutationByte &&
+		reader.mutationByte < offset+int64(len(destination))
+	if containsMutation {
+		reader.matchingReads++
+		if reader.matchingReads == 2 && reader.fault == secondPassInputError {
+			return 0, errSecondPassInput
+		}
+	}
+	read, err := reader.source.ReadAt(destination, offset)
+	if !containsMutation || reader.matchingReads != 2 {
+		return read, err
+	}
+	switch reader.fault {
+	case secondPassMutation:
+		destination[reader.mutationByte-offset] ^= 0xc1
+	case secondPassCancellation:
+		reader.cancel()
+	}
+	return read, err
+}
+
+type recoveryOperationAdmitter struct{}
+
+func (recoveryOperationAdmitter) AdmitKDF(
+	context.Context,
+	pcv3credential.KDFProfile,
+) (pcv3credential.KDFAdmission, error) {
+	return pcv3credential.KDFAdmissionGranted, nil
+}
+
 func TestRunPublishesCompleteRecoveredPlaintextWithoutSemanticRelabelling(t *testing.T) {
 	directory := t.TempDir()
 	target := filepath.Join(directory, "recovered.bin")
@@ -223,6 +272,78 @@ func TestRunEmitterFailureCleansOnlyOwnedStageAndRetainsSource(t *testing.T) {
 	}
 	assertFileBytesAndMode(t, source, sourceBytes, 0o600)
 	assertNoRecoveryStageResidue(t, directory)
+}
+
+func TestRunSecondPassFailuresRetainCoreClassificationAndPublishNothing(t *testing.T) {
+	fixture, err := os.ReadFile("../pcv3/testdata/normal/volumes/normal-degraded-capsule.pcv")
+	if err != nil {
+		t.Fatalf("read frozen recovery fixture: %v", err)
+	}
+	tests := []struct {
+		name    string
+		fault   secondPassFault
+		outcome pcv3.Outcome
+		stage   pcv3.Stage
+		code    pcv3.Code
+	}{
+		{name: "record authentication drift", fault: secondPassMutation, outcome: pcv3.OutcomeAuthenticationFailed, stage: pcv3.StageRecordAuth, code: pcv3.CodeAuthenticationFailed},
+		{name: "non-EOF input failure", fault: secondPassInputError, outcome: pcv3.OutcomeOperationFailed, stage: pcv3.StageInputIO, code: pcv3.CodeOperationFailed},
+		{name: "cancellation", fault: secondPassCancellation, outcome: pcv3.OutcomeOperationFailed, stage: pcv3.StageCancellation, code: pcv3.CodeOperationFailed},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			sourcePath := filepath.Join(directory, "source.pcv")
+			target := filepath.Join(directory, "recovered.bin")
+			if err := os.WriteFile(sourcePath, fixture, 0o600); err != nil {
+				t.Fatalf("seed frozen recovery source: %v", err)
+			}
+			source, err := os.Open(sourcePath)
+			if err != nil {
+				t.Fatalf("open frozen recovery source: %v", err)
+			}
+			t.Cleanup(func() { _ = source.Close() })
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			reader := &secondPassReaderAt{
+				source: source, fault: test.fault, mutationByte: 1160, cancel: cancel,
+			}
+			factors := &pcv3credential.FactorRequest{
+				Mode:           pcv3credential.CredentialModePasswordAndKeyfiles,
+				KeyfileMode:    pcv3credential.KeyfileModeOrdered,
+				ExpectedPolicy: pcv3credential.FactorPolicyPasswordAndKeyfiles,
+				Password:       []byte("mix"),
+				Keyfiles: []*pcv3credential.KeyfileReader{
+					pcv3credential.OwnKeyfileReader(io.NopCloser(bytes.NewReader([]byte("red")))),
+					pcv3credential.OwnKeyfileReader(io.NopCloser(bytes.NewReader([]byte("blue")))),
+				},
+			}
+
+			result := Run(ctx, &Request{
+				Source: reader, SourceSize: int64(len(fixture)), Factors: factors,
+				Admitter: recoveryOperationAdmitter{}, Mode: pcv3.RecoveryModeNormalV3,
+				Target: target, Protected: []string{sourcePath},
+			})
+			if result.Outcome() != test.outcome || result.Stage() != test.stage || result.Code() != test.code {
+				t.Fatalf("second-pass result = %v/%v/%v; want %v/%v/%v", result.Outcome(), result.Stage(), result.Code(), test.outcome, test.stage, test.code)
+			}
+			if reader.matchingReads != 2 {
+				t.Fatalf("record-body reads = %d; want one analysis and one output pass", reader.matchingReads)
+			}
+			if !result.PublicationAttempted() || result.PublicationState() != pcv3publication.StateNotPublished {
+				t.Fatalf("second-pass publication = %v/%v; want attempted/not-published", result.PublicationAttempted(), result.PublicationState())
+			}
+			if result.PublicationStage() != test.stage {
+				t.Fatalf("second-pass publication stage = %v; want exact non-output stage %v", result.PublicationStage(), test.stage)
+			}
+			if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("second-pass failure left durable destination: %v", err)
+			}
+			assertFileBytesAndMode(t, sourcePath, fixture, 0o600)
+			assertNoRecoveryStageResidue(t, directory)
+		})
+	}
 }
 
 func fixedCoreRunner(

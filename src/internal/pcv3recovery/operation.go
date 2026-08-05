@@ -42,6 +42,7 @@ type operationSemantic struct {
 	outcome         pcv3.Outcome
 	provenance      pcv3.ForceProvenance
 	stage           pcv3.Stage
+	code            pcv3.Code
 	plaintextLength uint64
 	ranges          []operationRange
 	final           pcv3.RecoveryFinalState
@@ -103,6 +104,13 @@ func (result *Result) Stage() pcv3.Stage {
 	return result.semantic.stage
 }
 
+func (result *Result) Code() pcv3.Code {
+	if result == nil {
+		return 0
+	}
+	return result.semantic.code
+}
+
 func (result *Result) PublicationAttempted() bool {
 	return result != nil && result.publicationAttempted
 }
@@ -157,6 +165,7 @@ func runWithCore(
 		result.semantic = operationSemantic{
 			outcome: pcv3.OutcomeOperationFailed,
 			stage:   pcv3.StageCredentialPolicy,
+			code:    pcv3.CodeOperationFailed,
 		}
 		return result
 	}
@@ -226,11 +235,16 @@ func runWithCore(
 	}
 
 	semantic, _ := run(ctx, request, output)
+	if result.publicationAttempted && semantic.outcome != 0 && !semantic.outputCapable() {
+		result.semantic = cloneOperationSemantic(semantic)
+		result.retainNotPublished(semantic.stage)
+	}
 	if result.semantic.outcome == 0 {
 		if semantic.outcome == 0 {
 			result.semantic = operationSemantic{
 				outcome: pcv3.OutcomeOperationFailed,
 				stage:   pcv3.StageCredentialPolicy,
+				code:    pcv3.CodeOperationFailed,
 			}
 		} else {
 			result.semantic = cloneOperationSemantic(semantic)
@@ -312,6 +326,7 @@ func runProductionCore(
 		return operationSemantic{
 			outcome: pcv3.OutcomeOperationFailed,
 			stage:   pcv3.StageCredentialPolicy,
+			code:    pcv3.CodeOperationFailed,
 		}, errors.New("pcv3 recovery operation: invalid request")
 	}
 	factors := request.Factors
@@ -365,12 +380,14 @@ func semanticFromCore(result *pcv3.RecoveryResult) operationSemantic {
 		return operationSemantic{
 			outcome: pcv3.OutcomeOperationFailed,
 			stage:   pcv3.StageCredentialPolicy,
+			code:    pcv3.CodeOperationFailed,
 		}
 	}
 	semantic := operationSemantic{
 		outcome:         result.Outcome(),
 		provenance:      result.ForceProvenance(),
 		stage:           result.Stage(),
+		code:            result.Code(),
 		plaintextLength: result.PlaintextLength(),
 		final:           result.FinalRecordState(),
 	}

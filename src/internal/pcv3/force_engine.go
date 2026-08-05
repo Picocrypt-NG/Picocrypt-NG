@@ -285,12 +285,14 @@ func recoverWithRequest(
 	defer owner.Close()
 
 	emitterCalls := 0
+	var emitterErr error
 	emitter := func(sink RecoverySegmentSink) error {
 		emitterCalls++
 		if emitterCalls != 1 || sink == nil {
-			return &recoveryEngineError{stage: StageOutputWrite}
+			emitterErr = &recoveryEngineError{stage: StageOutputWrite}
+			return emitterErr
 		}
-		return emitRecoveryRecords(
+		emitterErr = emitRecoveryRecords(
 			ctx,
 			source,
 			selectedCandidate,
@@ -301,9 +303,16 @@ func recoverWithRequest(
 			selectedAnalysis,
 			sink,
 		)
+		return emitterErr
 	}
 	if err := output(resolution.result, selectedCandidate.Role(), emitter); err != nil {
+		if emitterErr != nil {
+			return recoveryResultForError(emitterErr)
+		}
 		return resolution.result, &recoveryEngineError{stage: StageOutputWrite}
+	}
+	if emitterErr != nil {
+		return recoveryResultForError(emitterErr)
 	}
 	if emitterCalls != 1 {
 		return resolution.result, &recoveryEngineError{stage: StageOutputWrite}
@@ -690,7 +699,20 @@ func recoveryResultForError(err error) (*RecoveryResult, error) {
 	}
 	var recordErr *recordFailure
 	if errors.As(err, &recordErr) {
-		return recoveryOperationFailure(recordErr.stage), &recoveryEngineError{stage: recordErr.stage}
+		switch recordErr.stage {
+		case StageDescriptor, StageRecordBodyRS, StageRecordAuth, StageFinalRecord:
+			result, resultErr := newRecoveryResult(
+				OutcomeAuthenticationFailed,
+				ForceProvenanceNone,
+				recordErr.stage,
+				0,
+				nil,
+				0,
+			)
+			return result, resultErr
+		case StageInputIO, StageCredentialPolicy, StageCancellation, StageOutputWrite:
+			return recoveryOperationFailure(recordErr.stage), &recoveryEngineError{stage: recordErr.stage}
+		}
 	}
 	return recoveryOperationFailure(StageCredentialPolicy), &recoveryEngineError{stage: StageCredentialPolicy}
 }
