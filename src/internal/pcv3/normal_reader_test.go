@@ -607,7 +607,7 @@ func newNormalFixtureSource(
 	return &normalSessionViewSource{canonical: volume, session: session}
 }
 
-func loadNormalFixtureManifest(t *testing.T) normalFixtureManifest {
+func loadNormalFixtureManifest(t testing.TB) normalFixtureManifest {
 	t.Helper()
 	encoded, err := os.ReadFile(filepath.Join(normalPublicFixtureRoot, "manifest.json"))
 	if err != nil {
@@ -620,7 +620,7 @@ func loadNormalFixtureManifest(t *testing.T) normalFixtureManifest {
 	return manifest
 }
 
-func readNormalFixtureArtifact(t *testing.T, artifact normalFixtureArtifact) []byte {
+func readNormalFixtureArtifact(t testing.TB, artifact normalFixtureArtifact) []byte {
 	t.Helper()
 	if artifact.File == "" || !filepath.IsLocal(artifact.File) {
 		t.Fatalf("invalid TEST ONLY fixture path %q", artifact.File)
@@ -653,7 +653,7 @@ func readNormalFixturePlaintext(t *testing.T, plaintext normalFixturePlaintext) 
 }
 
 func assertNormalFixtureBytes(
-	t *testing.T,
+	t testing.TB,
 	name string,
 	data []byte,
 	wantSize int64,
