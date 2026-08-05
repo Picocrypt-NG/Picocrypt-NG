@@ -179,7 +179,10 @@ func authenticateCapsulesWithProviderMode(
 				}
 			}()
 
-			for i := 0; i < int(structure.candidateCount); i++ {
+			for i := range structure.candidates {
+				if i >= int(structure.candidateCount) {
+					break
+				}
 				candidate := structure.candidates[i]
 				verified, failureStage, err := authenticateCandidate(
 					candidate,
@@ -473,7 +476,10 @@ func authenticatedCoreMatchesPreamble(
 
 func failedReplicaStage(structure Structure, failed [2]Stage) Stage {
 	stage := StageNone
-	for i := 0; i < int(structure.candidateCount); i++ {
+	for i := range failed {
+		if i >= int(structure.candidateCount) {
+			break
+		}
 		stage = earlierAuthStage(stage, failed[i])
 	}
 	if structure.candidateCount == 1 {
