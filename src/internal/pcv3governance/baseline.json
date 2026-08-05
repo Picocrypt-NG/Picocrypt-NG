@@ -1,8 +1,8 @@
 {
   "schema": "pcv3-governance-baseline-v1",
   "status": "review-candidate",
-  "spec_revision": "0.3",
-  "spec_sha256": "9b0c7cac133e1e349ed58bd2232ebff860d1e567348611d09c79d295bd81ad73",
+  "spec_revision": "0.4",
+  "spec_sha256": "004eba19eead0a8f7c18202be43ae2038d82c669aee86ff3c7fbe5a08850c69d",
   "implementation_commit": "1afdef825df4ca10d1b11326e82e1b3563f5df0e",
   "owner_approval_ref": "",
   "constraints": {

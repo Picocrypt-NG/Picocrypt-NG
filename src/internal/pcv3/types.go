@@ -33,6 +33,8 @@ const (
 	OutcomeForceUnverified
 	// OutcomeCommittedDurabilityUncertain reports publication without confirmed directory durability.
 	OutcomeCommittedDurabilityUncertain
+	// OutcomePublicationIndeterminate reports an atomic publication whose commit cannot be proven.
+	OutcomePublicationIndeterminate
 )
 
 // Stage identifies one boundary in the closed PCV3 conformance registry.
@@ -276,6 +278,8 @@ func (outcome Outcome) String() string {
 		return "force-unverified"
 	case OutcomeCommittedDurabilityUncertain:
 		return "committed-durability-uncertain"
+	case OutcomePublicationIndeterminate:
+		return "publication-indeterminate"
 	default:
 		return "unknown-outcome"
 	}

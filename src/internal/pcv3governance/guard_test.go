@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	literalCandidateRevision = "0.3"
-	literalCandidateSHA256   = "9b0c7cac133e1e349ed58bd2232ebff860d1e567348611d09c79d295bd81ad73"
+	literalCandidateRevision = "0.4"
+	literalCandidateSHA256   = "004eba19eead0a8f7c18202be43ae2038d82c669aee86ff3c7fbe5a08850c69d"
 	literalImplementation    = "1afdef825df4ca10d1b11326e82e1b3563f5df0e"
 )
 
@@ -95,8 +95,8 @@ type literalNormativeField struct {
 var literalNormativePromotionFields = []literalNormativeField{
 	{name: "schema", value: `"pcv3-governance-baseline-v1"`, wrongType: "false"},
 	{name: "status", value: `"review-candidate"`, wrongType: "false"},
-	{name: "spec_revision", value: `"0.3"`, wrongType: "false"},
-	{name: "spec_sha256", value: `"9b0c7cac133e1e349ed58bd2232ebff860d1e567348611d09c79d295bd81ad73"`, wrongType: "false"},
+	{name: "spec_revision", value: `"0.4"`, wrongType: "false"},
+	{name: "spec_sha256", value: `"004eba19eead0a8f7c18202be43ae2038d82c669aee86ff3c7fbe5a08850c69d"`, wrongType: "false"},
 	{name: "implementation_commit", value: `"1afdef825df4ca10d1b11326e82e1b3563f5df0e"`, wrongType: "false"},
 	{name: "owner_approval_ref", value: `""`, wrongType: "false"},
 	{
@@ -381,7 +381,7 @@ func TestValidatePromotionRefusesEachMaterialMutation(t *testing.T) {
 		{
 			name: "spec revision",
 			mutate: func(record *PromotionRecord) {
-				record.specRevision = "0.4"
+				record.specRevision = "0.5"
 			},
 			reason: ReasonSpecRevisionMismatch,
 		},

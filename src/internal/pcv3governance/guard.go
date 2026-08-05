@@ -111,7 +111,7 @@ var constraintFields = [...]string{
 }
 
 // WriterStatus is intentionally independent of release metadata, CI state,
-// and environment variables. The embedded revision 0.3 baseline is a review
+// and environment variables. The embedded revision 0.4 baseline is a review
 // candidate and no runtime input can enable a writer from this package.
 func WriterStatus() WriterState {
 	return WriterDisabled
