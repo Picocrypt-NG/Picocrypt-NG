@@ -20,6 +20,8 @@ var ErrCleanupIncomplete = errors.New("pcv3 publication: cleanup incomplete")
 type platformOperations struct {
 	atomicPublish       func(*os.File, string, string, Policy) error
 	syncDirectory       func(*os.File) error
+	syncStage           func(*os.File) error
+	closeStage          func(*os.File) error
 	supportsSafeReplace bool
 }
 
@@ -64,6 +66,12 @@ func createWithOperations(
 	}
 	if operations.atomicPublish == nil || operations.syncDirectory == nil {
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodePolicyUnsupported)
+	}
+	if operations.syncStage == nil {
+		operations.syncStage = (*os.File).Sync
+	}
+	if operations.closeStage == nil {
+		operations.closeStage = (*os.File).Close
 	}
 	if policy == PolicySafeReplace && !operations.supportsSafeReplace {
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodePolicyUnsupported)
@@ -201,13 +209,13 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 	if ctx.Err() != nil {
 		return stage.finish(StateNotPublished, pcv3.StageCancellation, CodeCancelled)
 	}
-	if err := stage.file.Sync(); err != nil {
+	if err := stage.operations.syncStage(stage.file); err != nil {
 		return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
 	}
 	if ctx.Err() != nil {
 		return stage.finish(StateNotPublished, pcv3.StageCancellation, CodeCancelled)
 	}
-	if err := stage.file.Close(); err != nil {
+	if err := stage.operations.closeStage(stage.file); err != nil {
 		stage.file = nil
 		return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
 	}
