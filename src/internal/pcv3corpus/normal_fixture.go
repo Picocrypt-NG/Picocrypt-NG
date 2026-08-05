@@ -18,6 +18,7 @@ const (
 	maxFixtureVolumeOverhead        = 1 << 20
 	maxFixtureKeyfileBytes          = 4 << 10
 	maxFixtureKeyfiles              = 64
+	maxNormalFixtureMutationOffsets = 65
 	testOnlyFixtureNotice           = "TEST ONLY PCV3 CONFORMANCE DATA; NOT SECRET OR OPERATIONAL"
 )
 
@@ -398,7 +399,7 @@ func requiredU64Hex(object map[string]any, field string) (uint64, error) {
 
 func requiredOffsets(object map[string]any, field string, volumeBytes uint64, allowEnd bool) ([]uint64, error) {
 	raw, ok := object[field].([]any)
-	if !ok || len(raw) > 32 {
+	if !ok || len(raw) > maxNormalFixtureMutationOffsets {
 		return nil, refusal(RefusalMalformed)
 	}
 	offsets := make([]uint64, 0, len(raw))
