@@ -18,6 +18,64 @@ type literalArtifactExpectation struct {
 	segment  []byte
 }
 
+type scratchReaderMode uint8
+
+const (
+	scratchSuccess scratchReaderMode = iota + 1
+	scratchShort
+	scratchSourceError
+	scratchPanic
+)
+
+var errScratchSource = errors.New("TEST ONLY segment source fault")
+
+type retainingScratchReader struct {
+	input      []byte
+	mode       scratchReaderMode
+	reads      int
+	aliases    [][]byte
+	panicValue any
+}
+
+func (reader *retainingScratchReader) Read(destination []byte) (int, error) {
+	reader.reads++
+	reader.aliases = append(reader.aliases, destination[:cap(destination)])
+	switch reader.mode {
+	case scratchSuccess:
+		if reader.reads == 1 {
+			copy(destination, reader.input)
+			return len(reader.input), nil
+		}
+		return 0, io.EOF
+	case scratchShort:
+		if reader.reads == 1 {
+			copy(destination, reader.input[:len(reader.input)-1])
+			return len(reader.input) - 1, nil
+		}
+		return 0, io.EOF
+	case scratchSourceError:
+		copy(destination, reader.input[:2])
+		return 2, errScratchSource
+	case scratchPanic:
+		copy(destination, reader.input)
+		panic(reader.panicValue)
+	default:
+		return 0, io.ErrNoProgress
+	}
+}
+
+type segmentFailWriter struct {
+	written int
+}
+
+func (writer *segmentFailWriter) Write(data []byte) (int, error) {
+	if writer.written >= 120 {
+		return 0, errors.New("TEST ONLY segment writer fault")
+	}
+	writer.written += len(data)
+	return len(data), nil
+}
+
 func TestParseIndependentLiteralArtifactsPreservesExactEvidence(t *testing.T) {
 	tests := []literalArtifactExpectation{
 		{
@@ -124,6 +182,73 @@ func TestEncodeMatchesIndependentLiteralArtifacts(t *testing.T) {
 			want := readLiteralArtifact(t, test.name)
 			if !bytes.Equal(output.Bytes(), want) {
 				t.Fatalf("encoded bytes = %x; want independent literal %x", output.Bytes(), want)
+			}
+		})
+	}
+}
+
+func TestEncodeZeroesPlaintextScratchOnEveryExit(t *testing.T) {
+	panicValue := &struct{ label string }{label: "TEST ONLY segment panic"}
+	tests := []struct {
+		name      string
+		mode      scratchReaderMode
+		writer    func() io.Writer
+		wantError bool
+		wantPanic any
+	}{
+		{name: "success", mode: scratchSuccess, writer: func() io.Writer { return new(bytes.Buffer) }},
+		{name: "short segment", mode: scratchShort, writer: func() io.Writer { return io.Discard }, wantError: true},
+		{name: "source error", mode: scratchSourceError, writer: func() io.Writer { return io.Discard }, wantError: true},
+		{name: "writer error", mode: scratchSuccess, writer: func() io.Writer { return new(segmentFailWriter) }, wantError: true},
+		{name: "panic", mode: scratchPanic, writer: func() io.Writer { return io.Discard }, wantPanic: panicValue},
+	}
+	descriptor := Descriptor{
+		State: StatePartial, Role: RoleNone, Final: FinalMissing,
+		PlaintextLength: 5,
+		Ranges:          []Range{{RecordIndex: 0, Start: 0, End: 5, Status: RangeVerified}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := []byte{'V', 'F', 'Y', '!', '\n'}
+			frozenInput := append([]byte(nil), input...)
+			reader := &retainingScratchReader{input: input, mode: test.mode, panicValue: test.wantPanic}
+			destination := test.writer()
+			var encodeErr error
+			var panicResult any
+			func() {
+				defer func() { panicResult = recover() }()
+				encodeErr = Encode(destination, descriptor, func(yield func(uint64, io.Reader) error) error {
+					return yield(0, reader)
+				})
+			}()
+			if panicResult != test.wantPanic {
+				t.Fatalf("Encode panic = %v; want original identity %v", panicResult, test.wantPanic)
+			}
+			if (encodeErr != nil) != test.wantError {
+				t.Fatalf("Encode error = %v; want error %v", encodeErr, test.wantError)
+			}
+			if len(reader.aliases) == 0 || cap(reader.aliases[0]) != segmentBufferLength {
+				t.Fatalf("retained production scratch = %d aliases, first capacity %d; want actual %d-byte buffer", len(reader.aliases), cap(reader.aliases[0]), segmentBufferLength)
+			}
+			for aliasIndex, alias := range reader.aliases {
+				for byteIndex, value := range alias {
+					if value != 0 {
+						t.Fatalf("production scratch alias %d byte %d = %x; want zero after unwind", aliasIndex, byteIndex, value)
+					}
+				}
+			}
+			if !bytes.Equal(input, frozenInput) {
+				t.Fatal("artifact cleanup zeroed caller-owned segment input")
+			}
+			if test.name == "success" {
+				output := destination.(*bytes.Buffer).Bytes()
+				if !bytes.Equal(output, readLiteralArtifact(t, "partial")) {
+					t.Fatal("successful zeroing case changed independent artifact bytes")
+				}
+				if len(reader.aliases) != 2 || cap(reader.aliases[1]) != 1 {
+					t.Fatalf("extra-byte scratch = %d aliases, final capacity %d; want retained one-byte production probe", len(reader.aliases), cap(reader.aliases[len(reader.aliases)-1]))
+				}
 			}
 		})
 	}

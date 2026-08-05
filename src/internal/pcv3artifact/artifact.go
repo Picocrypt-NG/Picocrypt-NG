@@ -4,6 +4,7 @@
 package pcv3artifact
 
 import (
+	pcv3crypto "Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/util"
 	"encoding/binary"
 	"errors"
@@ -602,6 +603,7 @@ func writeAll(destination io.Writer, data []byte) error {
 func copyExactSegment(destination io.Writer, source io.Reader, length uint64) error {
 	remaining := length
 	buffer := make([]byte, segmentBufferLength)
+	defer pcv3crypto.SecureZero(buffer)
 	for remaining > 0 {
 		readLength := uint64(len(buffer))
 		if remaining < readLength {
@@ -633,6 +635,7 @@ func copyExactSegment(destination io.Writer, source io.Reader, length uint64) er
 	}
 
 	var extra [1]byte
+	defer pcv3crypto.SecureZero(extra[:])
 	read, err := source.Read(extra[:])
 	if read != 0 || (err != nil && !errors.Is(err, io.EOF)) || err == nil {
 		return newArtifactError(errorInvalidSegment, err)
