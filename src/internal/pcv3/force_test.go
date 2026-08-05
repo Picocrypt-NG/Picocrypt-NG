@@ -172,7 +172,7 @@ func TestResolveForceCandidatesPreservesLiteralRecordRangesWithoutCoalescing(t *
 
 func inspectNormalFixture(t *testing.T, fixture normalFixture) Structure {
 	t.Helper()
-	volume := normalFixtureVolume(t, fixture)
+	volume := readNormalFixtureArtifact(t, fixture.Volume)
 	route, structure, err := Probe(bytes.NewReader(volume), int64(len(volume)))
 	if err != nil || route != RouteNormalPCV {
 		t.Fatalf("Probe(%s) = %v, %v", fixture.ID, route, err)

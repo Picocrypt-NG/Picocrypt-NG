@@ -3,6 +3,7 @@ package pcv3
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,7 +27,7 @@ func (reader *observingRecoveryReader) ReadAt(destination []byte, offset int64) 
 
 func TestInspectRecoveryReadsOnlyFixedPrimaryAnd49TailIntervals(t *testing.T) {
 	fixture := loadNormalFixtureManifest(t).FixturesByID()["normal-standard-password-only-small"]
-	volume := normalFixtureVolume(t, fixture)
+	volume := readNormalFixtureArtifact(t, fixture.Volume)
 	reader := &observingRecoveryReader{data: volume}
 
 	structure, err := InspectRecovery(reader, int64(len(volume)))
@@ -51,7 +52,7 @@ func TestInspectRecoveryReadsOnlyFixedPrimaryAnd49TailIntervals(t *testing.T) {
 
 func TestInspectRecoveryRetainsPrimaryAcrossFrozenSuffixBoundaries(t *testing.T) {
 	fixture := loadNormalFixtureManifest(t).FixturesByID()["normal-standard-password-only-small"]
-	volume := normalFixtureVolume(t, fixture)
+	volume := readNormalFixtureArtifact(t, fixture.Volume)
 	tests := []struct {
 		truncate int
 		want     int
@@ -63,7 +64,7 @@ func TestInspectRecoveryRetainsPrimaryAcrossFrozenSuffixBoundaries(t *testing.T)
 		{truncate: 1008, want: 1},
 	}
 	for _, test := range tests {
-		t.Run(string(rune(test.truncate)), func(t *testing.T) {
+		t.Run(fmt.Sprintf("truncate-%d", test.truncate), func(t *testing.T) {
 			source := volume[:len(volume)-test.truncate]
 			structure, err := InspectRecovery(bytes.NewReader(source), int64(len(source)))
 			if err != nil {
@@ -81,7 +82,7 @@ func TestInspectRecoveryRetainsPrimaryAcrossFrozenSuffixBoundaries(t *testing.T)
 
 func TestInspectRecoveryTreatsRawPreambleAsDamageNotRoutingAuthority(t *testing.T) {
 	fixture := loadNormalFixtureManifest(t).FixturesByID()["normal-standard-password-only-small"]
-	volume := append([]byte(nil), normalFixtureVolume(t, fixture)...)
+	volume := append([]byte(nil), readNormalFixtureArtifact(t, fixture.Volume)...)
 	volume[0] ^= 0xff
 
 	structure, err := InspectRecovery(bytes.NewReader(volume), int64(len(volume)))
