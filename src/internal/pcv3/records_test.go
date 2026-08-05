@@ -430,6 +430,119 @@ func TestRecordAuthBeforeDecrypt(t *testing.T) {
 	}
 }
 
+func TestCanonicalRecordEvaluatorRecoveryAuthority(t *testing.T) {
+	manifest := loadRecordFixtureManifest(t)
+	fixture := recordFixtureByName(t, manifest, "retry_standard_rs")
+	auth, borrower := recordFixtureAuthority(t, fixture)
+	defer borrower.close()
+	defer auth.Close()
+	core, geometry, ok := authenticatedRecordAuthority(auth)
+	if !ok {
+		t.Fatal("independent fixture did not produce authenticated record authority")
+	}
+
+	seams := defaultRecordEngineSeams()
+	decryptCalls := 0
+	realDecrypt := seams.decryptStandard
+	seams.decryptStandard = func(destination, source, key, nonce []byte) error {
+		decryptCalls++
+		return realDecrypt(destination, source, key, nonce)
+	}
+	evaluator, err := newRecordEvaluator(
+		context.Background(),
+		&recordTrackingReader{
+			base: int64(fixture.FrontHeaderLength),
+			data: recordMutationFile(t, "body_bad_tag_reencoded.bin"),
+		},
+		core,
+		geometry,
+		recordTestCodecs(t),
+		auth,
+		seams,
+	)
+	if err != nil {
+		t.Fatalf("newRecordEvaluator: %v", err)
+	}
+	defer evaluator.close()
+
+	callbackCalls := 0
+	assertDenied := func(name string, request recoveryRequest, role CapsuleRole) {
+		t.Helper()
+		err := evaluator.evaluateCanonicalRecord(
+			0,
+			request,
+			role,
+			func(recordEvidence, []byte) error {
+				callbackCalls++
+				return nil
+			},
+		)
+		requireRecordFailureStage(t, err, StageRecordAuth)
+		if decryptCalls != 0 || callbackCalls != 0 {
+			t.Fatalf("%s authority reached decrypt/callback: decrypt=%d callback=%d", name, decryptCalls, callbackCalls)
+		}
+	}
+
+	assertDenied("zero", recoveryRequest{}, CapsuleRolePrimary)
+	ordinary, err := newRecoveryRequest(RecoveryModeForce)
+	if err != nil {
+		t.Fatalf("newRecoveryRequest(Force): %v", err)
+	}
+	assertDenied("ordinary Force", ordinary, CapsuleRolePrimary)
+
+	var expired recoveryRequest
+	if err := withUnverifiedRecoveryRequest(CapsuleRolePrimary, func(request recoveryRequest) error {
+		expired = request
+		return nil
+	}); err != nil {
+		t.Fatalf("capture expiring recovery request: %v", err)
+	}
+	assertDenied("expired unverified", expired, CapsuleRolePrimary)
+
+	if err := withUnverifiedRecoveryRequest(CapsuleRoleBackup, func(request recoveryRequest) error {
+		assertDenied("wrong role", request, CapsuleRolePrimary)
+		return nil
+	}); err != nil {
+		t.Fatalf("wrong-role recovery request: %v", err)
+	}
+
+	wantPlaintext := recordFixturePlaintext(t, fixture)
+	var retained []byte
+	var copied []byte
+	var evidence recordEvidence
+	err = withUnverifiedRecoveryRequest(CapsuleRolePrimary, func(request recoveryRequest) error {
+		return evaluator.evaluateCanonicalRecord(
+			0,
+			request,
+			CapsuleRolePrimary,
+			func(got recordEvidence, plaintext []byte) error {
+				callbackCalls++
+				evidence = got
+				retained = plaintext
+				copied = append(copied, plaintext...)
+				return nil
+			},
+		)
+	})
+	if err != nil {
+		t.Fatalf("authorized unverified evaluation: %v", err)
+	}
+	if decryptCalls != 1 || callbackCalls != 1 {
+		t.Fatalf("authorized unverified work = decrypt %d/callback %d; want 1/1", decryptCalls, callbackCalls)
+	}
+	if evidence.index != 0 || evidence.final || evidence.plaintextOffset != 0 ||
+		evidence.plaintextLength != fixture.PlaintextLength ||
+		evidence.authentication != recordAuthenticationUnverified {
+		t.Fatalf("unverified evidence = %+v; want canonical record 0 range", evidence)
+	}
+	if !bytes.Equal(copied, wantPlaintext) {
+		t.Fatal("authorized unverified plaintext differs from independent literal")
+	}
+	if len(retained) != len(wantPlaintext) || !allRecordBytesZero(retained) {
+		t.Fatal("evaluator retained plaintext borrow after callback")
+	}
+}
+
 func TestRecordRSRetryBound(t *testing.T) {
 	manifest := loadRecordFixtureManifest(t)
 	fixture := recordFixtureByName(t, manifest, "retry_standard_rs")
