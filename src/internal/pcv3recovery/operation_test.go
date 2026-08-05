@@ -28,6 +28,14 @@ const (
 
 var errSecondPassInput = errors.New("TEST ONLY second-pass input fault")
 
+type failingStageWriter struct {
+	cause error
+}
+
+func (writer *failingStageWriter) Write([]byte) (int, error) {
+	return 0, writer.cause
+}
+
 type secondPassReaderAt struct {
 	source        io.ReaderAt
 	fault         secondPassFault
@@ -271,6 +279,59 @@ func TestRunEmitterFailureCleansOnlyOwnedStageAndRetainsSource(t *testing.T) {
 		t.Fatalf("failed emission left target: %v", err)
 	}
 	assertFileBytesAndMode(t, source, sourceBytes, 0o600)
+	assertNoRecoveryStageResidue(t, directory)
+}
+
+func TestRunDestinationWriteFailureRetainsOutputWriteClassificationAndCleansStage(t *testing.T) {
+	fixture, err := os.ReadFile("../pcv3/testdata/normal/volumes/normal-degraded-capsule.pcv")
+	if err != nil {
+		t.Fatalf("read frozen recovery fixture: %v", err)
+	}
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "source.pcv")
+	target := filepath.Join(directory, "recovered.bin")
+	if err := os.WriteFile(sourcePath, fixture, 0o600); err != nil {
+		t.Fatalf("seed frozen recovery source: %v", err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatalf("open frozen recovery source: %v", err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	writeFailure := errors.New("TEST ONLY destination write fault")
+	factors := &pcv3credential.FactorRequest{
+		Mode:           pcv3credential.CredentialModePasswordAndKeyfiles,
+		KeyfileMode:    pcv3credential.KeyfileModeOrdered,
+		ExpectedPolicy: pcv3credential.FactorPolicyPasswordAndKeyfiles,
+		Password:       []byte("mix"),
+		Keyfiles: []*pcv3credential.KeyfileReader{
+			pcv3credential.OwnKeyfileReader(io.NopCloser(bytes.NewReader([]byte("red")))),
+			pcv3credential.OwnKeyfileReader(io.NopCloser(bytes.NewReader([]byte("blue")))),
+		},
+	}
+	request := &Request{
+		Source: source, SourceSize: int64(len(fixture)), Factors: factors,
+		Admitter: recoveryOperationAdmitter{}, Mode: pcv3.RecoveryModeNormalV3,
+		Target: target, Protected: []string{sourcePath},
+		stageWriter: func(io.Writer) io.Writer {
+			return &failingStageWriter{cause: writeFailure}
+		},
+	}
+
+	result := Run(context.Background(), request)
+	if result.Outcome() != pcv3.OutcomeOperationFailed || result.Stage() != pcv3.StageOutputWrite ||
+		result.Code() != pcv3.CodeOperationFailed {
+		t.Fatalf("destination-write semantic = %v/%v/%v; want operation-failed/output-write/operation-failed", result.Outcome(), result.Stage(), result.Code())
+	}
+	if !result.PublicationAttempted() || result.PublicationState() != pcv3publication.StateNotPublished ||
+		result.PublicationStage() != pcv3.StageOutputWrite ||
+		result.PublicationCode() != pcv3publication.CodeStageFailure {
+		t.Fatalf("destination-write publication = %v/%v/%v/%v; want attempted/not-published/output-write/stage-failure", result.PublicationAttempted(), result.PublicationState(), result.PublicationStage(), result.PublicationCode())
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination-write failure left durable target: %v", err)
+	}
+	assertFileBytesAndMode(t, sourcePath, fixture, 0o600)
 	assertNoRecoveryStageResidue(t, directory)
 }
 

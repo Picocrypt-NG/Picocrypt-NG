@@ -29,6 +29,7 @@ type Request struct {
 	SelectedRole pcv3.CapsuleRole
 	Target       string
 	Protected    []string
+	stageWriter  func(io.Writer) io.Writer
 }
 
 type operationRange struct {
@@ -205,6 +206,14 @@ func runWithCore(
 			result.retainNotPublished(pcv3.StageOutputPublication)
 			return errors.New("pcv3 recovery operation: stage unavailable")
 		}
+		destination := io.Writer(file)
+		if request.stageWriter != nil {
+			destination = request.stageWriter(file)
+			if destination == nil {
+				result.retainNotPublished(pcv3.StageOutputWrite)
+				return errors.New("pcv3 recovery operation: stage writer unavailable")
+			}
+		}
 		if semantic.outcome == pcv3.OutcomeForcePartial ||
 			semantic.outcome == pcv3.OutcomeForceUnverified {
 			descriptor, descriptorErr := artifactDescriptor(semantic, role)
@@ -212,14 +221,14 @@ func runWithCore(
 				result.retainNotPublished(pcv3.StageOutputPublication)
 				return descriptorErr
 			}
-			err = pcv3artifact.Encode(file, descriptor, func(yield func(uint64, io.Reader) error) error {
+			err = pcv3artifact.Encode(destination, descriptor, func(yield func(uint64, io.Reader) error) error {
 				return emit(func(recoveryRange operationRange, plaintext []byte) error {
 					return yield(recoveryRange.recordIndex, bytes.NewReader(plaintext))
 				})
 			})
 		} else {
 			err = emit(func(_ operationRange, plaintext []byte) error {
-				return writeAll(file, plaintext)
+				return writeAll(destination, plaintext)
 			})
 		}
 		if err != nil {

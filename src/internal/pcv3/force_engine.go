@@ -286,6 +286,7 @@ func recoverWithRequest(
 
 	emitterCalls := 0
 	var emitterErr error
+	var sinkErr error
 	emitter := func(sink RecoverySegmentSink) error {
 		emitterCalls++
 		if emitterCalls != 1 || sink == nil {
@@ -301,11 +302,21 @@ func recoverWithRequest(
 			request,
 			selectedCandidate.Role(),
 			selectedAnalysis,
-			sink,
+			func(recoveryRange RecoveryRange, plaintext []byte) error {
+				sinkErr = sink(recoveryRange, plaintext)
+				return sinkErr
+			},
 		)
 		return emitterErr
 	}
-	if err := output(resolution.result, selectedCandidate.Role(), emitter); err != nil {
+	outputErr := output(resolution.result, selectedCandidate.Role(), emitter)
+	if sinkErr != nil {
+		if cancellation := recordCancellationCause(ctx, sinkErr); cancellation != nil {
+			return recoveryOperationFailure(StageCancellation), &recoveryEngineError{stage: StageCancellation}
+		}
+		return recoveryOperationFailure(StageOutputWrite), &recoveryEngineError{stage: StageOutputWrite}
+	}
+	if outputErr != nil {
 		if emitterErr != nil {
 			return recoveryResultForError(emitterErr)
 		}
