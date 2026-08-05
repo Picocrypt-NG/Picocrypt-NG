@@ -693,20 +693,39 @@ func verifyRecordTag(
 	ciphertext []byte,
 	expectedTag []byte,
 ) (bool, error) {
-	if len(key) != 32 || len(expectedTag) != pcv3crypto.MACSize || !isSupportedSuite(suite) {
+	if len(expectedTag) != pcv3crypto.MACSize {
 		return false, errRecordAuthentication
 	}
-	mac, err := pcv3crypto.NewMAC(key, suite == SuiteParanoid)
+	actual, err := recordTag(suite, key, commitment, descriptor, ciphertext)
 	if err != nil {
-		return false, errRecordAuthentication
+		return false, err
 	}
-	_, _ = mac.Write([]byte(recordMACDomain))
-	_, _ = mac.Write(commitment[:])
-	_, _ = mac.Write(descriptor[:])
-	_, _ = mac.Write(ciphertext)
-	actual := mac.Sum(nil)
-	defer pcv3crypto.SecureZero(actual)
-	return subtle.ConstantTimeCompare(actual, expectedTag) == 1, nil
+	defer pcv3crypto.SecureZero(actual[:])
+	return subtle.ConstantTimeCompare(actual[:], expectedTag) == 1, nil
+}
+
+func recordTag(
+	suite Suite,
+	key []byte,
+	commitment [32]byte,
+	descriptor [16]byte,
+	ciphertext []byte,
+) ([pcv3crypto.MACSize]byte, error) {
+	if len(key) != 32 || !isSupportedSuite(suite) {
+		return [pcv3crypto.MACSize]byte{}, errRecordAuthentication
+	}
+	tag, err := suiteMACTag(
+		suite,
+		key,
+		[]byte(recordMACDomain),
+		commitment[:],
+		descriptor[:],
+		ciphertext,
+	)
+	if err != nil {
+		return [pcv3crypto.MACSize]byte{}, errRecordAuthentication
+	}
+	return tag, nil
 }
 
 func recordPaddingIsZero(data []byte) bool {

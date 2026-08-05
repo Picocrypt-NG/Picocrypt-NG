@@ -6,6 +6,7 @@ import (
 	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/util"
 	"context"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -79,8 +80,6 @@ func authenticateMetadata(
 	if !ok {
 		return nil, errInvalidMetadataRequest
 	}
-	message := metadataAuthMessage(core, recovery)
-	defer pcv3crypto.SecureZero(message)
 	authenticated := false
 	err = auth.withKey(
 		ctx,
@@ -90,13 +89,18 @@ func authenticateMetadata(
 			OutputBytes: 32,
 		},
 		func(key []byte) error {
-			valid, err := verifySuiteMAC(
+			actual, err := metadataTag(
 				core.suite,
 				key,
-				message,
-				recovery.tag[:],
+				core,
+				recovery.header,
+				recovery.comment,
 			)
-			authenticated = valid
+			defer pcv3crypto.SecureZero(actual[:])
+			authenticated = err == nil && subtle.ConstantTimeCompare(
+				actual[:],
+				recovery.tag[:],
+			) == 1
 			return err
 		},
 	)
@@ -118,23 +122,23 @@ func authenticateMetadata(
 	}, nil
 }
 
-func metadataAuthMessage(
+func metadataTag(
+	suite Suite,
+	key []byte,
 	core logicalCore,
-	recovery *metadataRecovery,
-) []byte {
+	header [16]byte,
+	comment []byte,
+) ([pcv3crypto.MACSize]byte, error) {
 	commitment := coreCommitment(core)
 	defer pcv3crypto.SecureZero(commitment[:])
-
-	message := make(
-		[]byte,
-		0,
-		len(metadataMACDomain)+len(commitment)+len(recovery.header)+len(recovery.comment),
+	return suiteMACTag(
+		suite,
+		key,
+		[]byte(metadataMACDomain),
+		commitment[:],
+		header[:],
+		comment,
 	)
-	message = append(message, metadataMACDomain...)
-	message = append(message, commitment[:]...)
-	message = append(message, recovery.header[:]...)
-	message = append(message, recovery.comment...)
-	return message
 }
 
 func classifyMetadataKeyFailure(ctx context.Context, cause error) error {

@@ -598,17 +598,38 @@ func verifySuiteMAC(
 	suite Suite,
 	key, message, expected []byte,
 ) (bool, error) {
-	if len(key) != 32 || len(expected) != pcv3crypto.MACSize {
+	if len(expected) != pcv3crypto.MACSize {
 		return false, errors.New("pcv3: invalid capsule MAC shape")
+	}
+	actual, err := suiteMACTag(suite, key, message)
+	if err != nil {
+		return false, err
+	}
+	defer pcv3crypto.SecureZero(actual[:])
+	return subtle.ConstantTimeCompare(actual[:], expected) == 1, nil
+}
+
+// suiteMACTag is the single suite-MAC producer shared by reader verification
+// and canonical serialization. Parts are written in order without joining a
+// record-sized transcript into a second buffer.
+func suiteMACTag(suite Suite, key []byte, parts ...[]byte) ([pcv3crypto.MACSize]byte, error) {
+	var tag [pcv3crypto.MACSize]byte
+	if len(key) != 32 || !isSupportedSuite(suite) {
+		return tag, errors.New("pcv3: invalid capsule MAC shape")
 	}
 	mac, err := pcv3crypto.NewMAC(key, suite == SuiteParanoid)
 	if err != nil {
-		return false, errors.New("pcv3: capsule MAC unavailable")
+		return tag, errors.New("pcv3: capsule MAC unavailable")
 	}
-	_, _ = mac.Write(message)
-	actual := mac.Sum(nil)
-	defer pcv3crypto.SecureZero(actual)
-	return subtle.ConstantTimeCompare(actual, expected) == 1, nil
+	for _, part := range parts {
+		_, _ = mac.Write(part)
+	}
+	result := mac.Sum(tag[:0])
+	if len(result) != len(tag) {
+		pcv3crypto.SecureZero(result)
+		return [pcv3crypto.MACSize]byte{}, errors.New("pcv3: capsule MAC unavailable")
+	}
+	return tag, nil
 }
 
 // readerCredentialProvider is the production adapter. It has no injected KDF
