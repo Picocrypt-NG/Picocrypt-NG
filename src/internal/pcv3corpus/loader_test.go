@@ -1464,6 +1464,84 @@ func TestWithNormalVolumeFixturesRejectsDuplicateUnknownAndLegacySelections(t *t
 	}
 }
 
+func TestWithNormalVolumeFixturesPreservesRequiredMutationInventories(t *testing.T) {
+	// This is corpus-loader policy evidence. It does not exercise the reader or
+	// establish any cryptographic coverage.
+	t.Run("complete required inventories are lent in order", func(t *testing.T) {
+		root := writeTestCumulativeV3Corpus(t)
+		ids := []string{"normal-degraded-capsule", "normal-negative-descriptor"}
+		called := false
+		err := WithNormalVolumeFixtures(root, testCustodyID, ids, func(fixtures []*NormalVolumeFixture) error {
+			called = true
+			if len(fixtures) != len(ids) {
+				t.Fatalf("borrowed fixture count = %d, want %d", len(fixtures), len(ids))
+			}
+			for index, fixture := range fixtures {
+				if fixture.ID() != ids[index] {
+					t.Fatalf("borrowed fixture %d ID = %q, want %q", index, fixture.ID(), ids[index])
+				}
+				first, count := uint64(16), 65
+				if fixture.ID() == "normal-negative-descriptor" {
+					first, count = 1112, 33
+				}
+				offsets := fixture.MutationOffsets()
+				if len(offsets) != count {
+					t.Fatalf("borrowed %s mutation count = %d, want %d", fixture.ID(), len(offsets), count)
+				}
+				for offsetIndex, got := range offsets {
+					want := first + uint64(offsetIndex)
+					if got != want {
+						t.Fatalf("borrowed %s mutation offset %d = %d, want %d", fixture.ID(), offsetIndex, got, want)
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("WithNormalVolumeFixtures() rejected complete required mutation inventories: %v", err)
+		}
+		if !called {
+			t.Fatal("complete required mutation inventories did not reach the borrow callback")
+		}
+	})
+
+	t.Run("sixty six offsets exceed the finite boundary", func(t *testing.T) {
+		root := writeTestCumulativeV3Corpus(t)
+		const id = "normal-degraded-capsule"
+		logicalPath := "positive/" + id + ".json"
+		fixturePath := filepath.Join(root, filepath.FromSlash(logicalPath))
+		fixtureData, err := os.ReadFile(fixturePath)
+		if err != nil {
+			t.Fatalf("read normal-volume fixture: %v", err)
+		}
+		var fixture map[string]any
+		if err := json.Unmarshal(fixtureData, &fixture); err != nil {
+			t.Fatalf("decode normal-volume fixture: %v", err)
+		}
+		offsets := make([]any, 66)
+		for index := range offsets {
+			offsets[index] = 16 + index
+		}
+		fixture["mutation_offsets"] = offsets
+		updated, err := json.Marshal(fixture)
+		if err != nil {
+			t.Fatalf("encode normal-volume fixture: %v", err)
+		}
+		writeTestFile(t, root, logicalPath, string(updated))
+		repinV3Fixture(t, root, id, testBytesSHA256(updated))
+
+		called := false
+		err = WithNormalVolumeFixtures(root, testCustodyID, []string{id}, func([]*NormalVolumeFixture) error {
+			called = true
+			return nil
+		})
+		assertRefusal(t, err, RefusalMalformed)
+		if called {
+			t.Fatal("over-bound mutation inventory reached the borrow callback")
+		}
+	})
+}
+
 func writeTestCumulativeV3Corpus(t *testing.T) string {
 	t.Helper()
 	root := writeTestCumulativeV2Corpus(t)
@@ -1547,11 +1625,21 @@ func testV3NormalFixtureDocument(fixture testV3NormalFixture, fill byte) string 
 		comment = nil
 	}
 	mutationOffsets := []int{}
-	if fixture.outcome != "success" {
-		mutationOffsets = []int{16}
-	}
-	if fixture.id == "normal-negative-extra-byte" {
+	switch fixture.id {
+	case "normal-degraded-capsule":
+		mutationOffsets = make([]int, 65)
+		for index := range mutationOffsets {
+			mutationOffsets[index] = 16 + index
+		}
+	case "normal-negative-descriptor":
+		mutationOffsets = make([]int, 33)
+		for index := range mutationOffsets {
+			mutationOffsets[index] = 1112 + index
+		}
+	case "normal-negative-extra-byte":
 		mutationOffsets = []int{len(volume)}
+	case "normal-degraded-metadata", "normal-degraded-trailer", "normal-negative-record", "normal-negative-final", "normal-negative-suffix":
+		mutationOffsets = []int{16}
 	}
 	document := map[string]any{
 		"test_only": true, "public_test_data_notice": testOnlyNotice,
