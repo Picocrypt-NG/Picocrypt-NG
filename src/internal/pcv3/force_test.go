@@ -286,6 +286,82 @@ func TestRecoverNormalV3RetainsFixedPrimaryDamageThroughHealthyBackup(t *testing
 	}
 }
 
+func TestRecoverNormalV3PreservesLaterAuthenticationFailureAfterFixedPrimaryDamage(t *testing.T) {
+	fixtures := loadNormalFixtureManifest(t).FixturesByID()
+	degraded := requireNormalFixture(t, fixtures, "normal-degraded-capsule")
+	tests := []struct {
+		name     string
+		mutation string
+		stage    Stage
+	}{
+		{name: "data record", mutation: "normal-negative-record", stage: StageRecordAuth},
+		{name: "final record", mutation: "normal-negative-final", stage: StageFinalRecord},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			volume := readNormalFixtureArtifact(t, degraded.Volume)
+			mutation := requireNormalFixture(t, fixtures, test.mutation)
+			applyNormalFrozenXOR(t, volume, mutation.Mutations)
+			frozenVolume := append([]byte(nil), volume...)
+
+			password := []byte("mix")
+			red := &literalKeyfileReadCloser{reader: bytes.NewReader([]byte("red"))}
+			blue := &literalKeyfileReadCloser{reader: bytes.NewReader([]byte("blue"))}
+			factors := &pcv3credential.FactorRequest{
+				Mode:           pcv3credential.CredentialModePasswordAndKeyfiles,
+				KeyfileMode:    pcv3credential.KeyfileModeOrdered,
+				ExpectedPolicy: pcv3credential.FactorPolicyPasswordAndKeyfiles,
+				Password:       password,
+				Keyfiles: []*pcv3credential.KeyfileReader{
+					pcv3credential.OwnKeyfileReader(red),
+					pcv3credential.OwnKeyfileReader(blue),
+				},
+			}
+			admitter := &literalKDFAdmitter{}
+			outputCalls := 0
+
+			result, err := Recover(
+				context.Background(),
+				bytes.NewReader(volume),
+				int64(len(volume)),
+				factors,
+				admitter,
+				RecoveryModeNormalV3,
+				func(*RecoveryResult, CapsuleRole, RecoveryEmitter) error {
+					outputCalls++
+					return nil
+				},
+			)
+			if err != nil {
+				t.Fatalf("Recover compound frozen mutation: %v", err)
+			}
+			t.Cleanup(result.Close)
+			if result.Outcome() != OutcomeAuthenticationFailed || result.Stage() != test.stage ||
+				result.Code() != CodeAuthenticationFailed {
+				t.Fatalf(
+					"compound recovery result = %v/%v/%v; want authentication-failed/%v/authentication-failed",
+					result.Outcome(), result.Stage(), result.Code(), test.stage,
+				)
+			}
+			if outputCalls != 0 {
+				t.Fatalf("compound recovery output callbacks = %d; want zero", outputCalls)
+			}
+			if admitter.calls != 1 || factors.Password != nil || factors.Keyfiles != nil ||
+				!allZero(password) || red.closes != 1 || blue.closes != 1 {
+				t.Fatalf(
+					"compound recovery cleanup = admissions %d, password retained %v/%v, keyfiles retained %v, closes %d/%d; want 1, false/zero, false, 1/1",
+					admitter.calls, factors.Password != nil, !allZero(password), factors.Keyfiles != nil,
+					red.closes, blue.closes,
+				)
+			}
+			if !bytes.Equal(volume, frozenVolume) {
+				t.Fatal("compound recovery modified the frozen source")
+			}
+		})
+	}
+}
+
 func TestForceRecordAnalysisPrecedesAndConstrainsSecondPassOutput(t *testing.T) {
 	fixtures := loadNormalFixtureManifest(t).FixturesByID()
 	tests := []struct {

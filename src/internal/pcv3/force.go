@@ -16,15 +16,16 @@ type forceCandidateIdentity interface {
 }
 
 type forceCandidateAnalysis struct {
-	identity      forceCandidateIdentity
-	candidate     Candidate
-	geometry      Geometry
-	damageStage   Stage
-	wrapVerified  bool
-	replicaValid  bool
-	metadataValid bool
-	ranges        []RecoveryRange
-	final         RecoveryFinalState
+	identity           forceCandidateIdentity
+	candidate          Candidate
+	geometry           Geometry
+	damageStage        Stage
+	payloadDamageStage Stage
+	wrapVerified       bool
+	replicaValid       bool
+	metadataValid      bool
+	ranges             []RecoveryRange
+	final              RecoveryFinalState
 }
 
 type forceResolution struct {
@@ -337,7 +338,8 @@ func validForceCandidateAnalysis(analysis forceCandidateAnalysis) bool {
 	if analysis.identity == nil || !validAuthCandidate(analysis.candidate) ||
 		!recordGeometryMatchesCore(analysis.candidate.core, analysis.geometry) ||
 		!validCanonicalRecoveryRanges(analysis.candidate.PlaintextLength(), analysis.ranges) ||
-		!validRecoveryFinalState(analysis.final) {
+		!validRecoveryFinalState(analysis.final) ||
+		!validPayloadDamageStage(analysis.payloadDamageStage) {
 		return false
 	}
 	return analysis.damageStage == StageNone ||
@@ -352,6 +354,11 @@ func validForceCandidateAnalysis(analysis forceCandidateAnalysis) bool {
 		analysis.damageStage == StageRecordAuth ||
 		analysis.damageStage == StageFinalRecord ||
 		analysis.damageStage == StageTailGeometry
+}
+
+func validPayloadDamageStage(stage Stage) bool {
+	return stage == StageNone || stage == StageDescriptor || stage == StageRecordBodyRS ||
+		stage == StageRecordAuth || stage == StageFinalRecord
 }
 
 func forceAnalysisAnchored(analysis forceCandidateAnalysis) bool {

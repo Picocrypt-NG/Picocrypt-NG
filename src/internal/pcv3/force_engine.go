@@ -393,15 +393,16 @@ func analyzeRecoveryCandidate(
 	}
 	damageStage = earlierRecoveryDamageStage(damageStage, records.damageStage)
 	analysis = forceCandidateAnalysis{
-		identity:      identity,
-		candidate:     candidate,
-		geometry:      geometry,
-		damageStage:   damageStage,
-		wrapVerified:  wrapVerified,
-		replicaValid:  replicaVerified,
-		metadataValid: metadataValid,
-		ranges:        records.ranges,
-		final:         records.final,
+		identity:           identity,
+		candidate:          candidate,
+		geometry:           geometry,
+		damageStage:        damageStage,
+		payloadDamageStage: records.damageStage,
+		wrapVerified:       wrapVerified,
+		replicaValid:       replicaVerified,
+		metadataValid:      metadataValid,
+		ranges:             records.ranges,
+		final:              records.final,
 	}
 	return analysis, true, nil
 }
@@ -628,7 +629,13 @@ func resolveNormalRecoveryCandidates(analyses []forceCandidateAnalysis) (forceRe
 	}
 	analysis := analyses[selected]
 	if !forceAnalysisFullyVerified(analysis) {
-		stage := forceDamageStage(analysis)
+		stage := analysis.payloadDamageStage
+		if stage == StageNone {
+			stage = forceDamageStage(forceCandidateAnalysis{
+				ranges: analysis.ranges,
+				final:  analysis.final,
+			})
+		}
 		result, err := newRecoveryResult(
 			OutcomeAuthenticationFailed, ForceProvenanceNone, stage, 0, nil, 0,
 		)
