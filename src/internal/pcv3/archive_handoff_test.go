@@ -83,6 +83,15 @@ func TestArchiveHandoffRejectsWithoutWholeVolumeAuthentication(t *testing.T) {
 	})
 }
 
+func TestArchiveHandoffRejectsUnsealedArchiveCompletionWithoutSideEffects(t *testing.T) {
+	_, archive, _, _ := readArchiveHandoffFixture(t, context.Background(), normalArchiveFixtureID)
+	completion := newNormalCompletion(PayloadKindArchive, false)
+	if kind, authenticated := completion.authenticatedPayloadKind(); authenticated || kind != 0 {
+		t.Fatalf("unsealed archive completion = %v/%v; want no authenticated payload capability", authenticated, kind)
+	}
+	assertArchiveHandoffRejectedWithoutSideEffects(t, completion, archive)
+}
+
 func TestArchiveHandoffRejectsRawDamagedAndCancelledResults(t *testing.T) {
 	_, archive, _, _ := readArchiveHandoffFixture(t, context.Background(), normalArchiveFixtureID)
 
@@ -223,8 +232,12 @@ func assertArchiveHandoffRejectedWithoutSideEffects(
 	if err := os.WriteFile(sentinelPath, []byte(sentinel), 0o600); err != nil {
 		t.Fatalf("write extraction sentinel: %v", err)
 	}
+	sentinelInfo, err := os.Stat(sentinelPath)
+	if err != nil {
+		t.Fatalf("stat extraction sentinel before rejected handoff: %v", err)
+	}
 
-	err := unpackAuthenticatedArchive(completion, archiveFile, fileops.UnpackOptions{
+	err = unpackAuthenticatedArchive(completion, archiveFile, fileops.UnpackOptions{
 		ExtractDir: extractDir,
 		AvailableSpace: func(string) (int64, error) {
 			return math.MaxInt64, nil
@@ -234,6 +247,13 @@ func assertArchiveHandoffRejectedWithoutSideEffects(
 		t.Fatalf("archive handoff error = %v; want authenticated-admission denial", err)
 	}
 	assertArchiveHandoffFile(t, sentinelPath, sentinel)
+	retainedInfo, statErr := os.Stat(sentinelPath)
+	if statErr != nil {
+		t.Fatalf("stat extraction sentinel after rejected handoff: %v", statErr)
+	}
+	if retainedInfo.Mode() != sentinelInfo.Mode() {
+		t.Fatalf("rejected extraction changed sentinel mode from %v to %v", sentinelInfo.Mode(), retainedInfo.Mode())
+	}
 	entries, readErr := os.ReadDir(extractDir)
 	if readErr != nil {
 		t.Fatalf("read rejected extraction root: %v", readErr)
