@@ -187,6 +187,13 @@ func TestRecoveryResultCopiesAndClearsOwnedEvidence(t *testing.T) {
 		fmt.Sprintf("%#v", result),
 		fmt.Sprintf("%d", result),
 	}
+	valueCopy := *result
+	formatted = append(formatted,
+		fmt.Sprintf("%v", valueCopy),
+		fmt.Sprintf("%+v", valueCopy),
+		fmt.Sprintf("%#v", valueCopy),
+		fmt.Sprintf("%d", valueCopy),
+	)
 	for _, output := range formatted {
 		for _, disclosed := range []string{"37", "record_index", "plaintext", "credential", "candidate"} {
 			if strings.Contains(output, disclosed) {
