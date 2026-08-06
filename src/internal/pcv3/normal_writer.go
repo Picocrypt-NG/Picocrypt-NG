@@ -38,6 +38,14 @@ type normalWriteRequest struct {
 	comment         []byte
 }
 
+// normalWritePlan is the pure, canonical normal-volume geometry consumed by
+// both the normal serializer and the D1 wrapper. Its core contains no generated
+// identity, nonce, IV, credential, or key material.
+type normalWritePlan struct {
+	core     logicalCore
+	geometry Geometry
+}
+
 type normalWriteCredentialMetadata struct {
 	suite          Suite
 	credentialMode CredentialMode
@@ -326,17 +334,27 @@ func serializeNormalVolume(
 	if !validNormalWriteRequest(request) {
 		return nil, newNormalWriteFailure(StageCredentialPolicy, errInvalidNormalWriteRequest)
 	}
+	plan, err := planNormalWrite(request)
+	if err != nil {
+		return nil, err
+	}
 	metadata, err := material.credentialMetadata()
 	if err != nil || !validNormalWriteCredentialMetadata(metadata) || metadata.suite != request.suite {
 		return nil, newNormalWriteFailure(StageCredentialPolicy, errInvalidNormalWriteRequest)
 	}
 
-	core, primary, backup, err := prepareNormalWriteStructure(ctx, request, metadata, seams.entropy)
+	core, primary, backup, err := prepareNormalWriteStructure(
+		ctx,
+		request,
+		plan,
+		metadata,
+		seams.entropy,
+	)
 	if err != nil {
 		return nil, err
 	}
-	geometry, err := deriveCanonicalGeometry(primary)
-	if err != nil || !recordGeometryMatchesCore(core, geometry) {
+	geometry := plan.geometry
+	if !recordGeometryMatchesCore(core, geometry) {
 		return nil, newNormalWriteFailure(StageTailGeometry, errNormalWriteGeometry)
 	}
 
@@ -386,6 +404,47 @@ func validNormalWriteRequest(request normalWriteRequest) bool {
 	return ok
 }
 
+func planNormalWrite(request normalWriteRequest) (normalWritePlan, error) {
+	if !validNormalWriteRequest(request) {
+		return normalWritePlan{}, newNormalWriteFailure(
+			StageCredentialPolicy,
+			errInvalidNormalWriteRequest,
+		)
+	}
+	_, frontHeaderLength, ok := canonicalMetadataGeometry(uint32(len(request.comment))) //nolint:gosec // Maximum is validated above.
+	if !ok || frontHeaderLength > math.MaxUint32 {
+		return normalWritePlan{}, newNormalWriteFailure(
+			StageTailGeometry,
+			errNormalWriteGeometry,
+		)
+	}
+
+	var core logicalCore
+	copy(core.magic[:], normalDiscriminator)
+	core.major = formatMajor
+	core.schema = formatSchema
+	core.suite = request.suite
+	if request.payloadBodyRS {
+		core.featureFlags = payloadBodyRSFeatureMask
+	}
+	core.frontHeaderLength = uint32(frontHeaderLength) //nolint:gosec // Checked against MaxUint32 above.
+	core.payloadKind = request.payloadKind
+	core.recordProfile = 1
+	core.metadataProfile = 1
+	core.plaintextLength = request.plaintextLength
+	core.recordCount = canonicalRecordCount(request.plaintextLength)
+	core.commentLength = uint32(len(request.comment)) //nolint:gosec // Maximum is validated above.
+
+	geometry, err := deriveCanonicalGeometry(Candidate{core: core})
+	if err != nil || !recordGeometryMatchesCore(core, geometry) {
+		return normalWritePlan{}, newNormalWriteFailure(
+			StageTailGeometry,
+			errNormalWriteGeometry,
+		)
+	}
+	return normalWritePlan{core: core, geometry: geometry}, nil
+}
+
 func validNormalWriteCredentialMetadata(metadata normalWriteCredentialMetadata) bool {
 	return isSupportedSuite(metadata.suite) &&
 		metadata.kdfProfile == kdfProfileForSuite(metadata.suite) &&
@@ -402,29 +461,19 @@ func validNormalWriteSeams(seams normalWriteSeams) bool {
 func prepareNormalWriteStructure(
 	ctx context.Context,
 	request normalWriteRequest,
+	plan normalWritePlan,
 	metadata normalWriteCredentialMetadata,
 	entropy io.Reader,
 ) (logicalCore, Candidate, Candidate, error) {
-	blocks, frontHeaderLength, ok := canonicalMetadataGeometry(uint32(len(request.comment))) //nolint:gosec // Maximum is validated before this call.
-	if !ok || blocks < minimumMetadataBlocks || blocks > maximumMetadataBlocks || frontHeaderLength > math.MaxUint32 {
+	if plan.core.suite != request.suite ||
+		plan.core.payloadKind != request.payloadKind ||
+		plan.core.plaintextLength != request.plaintextLength ||
+		plan.core.commentLength != uint32(len(request.comment)) || //nolint:gosec // Maximum is validated before this call.
+		!recordGeometryMatchesCore(plan.core, plan.geometry) {
 		return logicalCore{}, Candidate{}, Candidate{}, newNormalWriteFailure(StageTailGeometry, errNormalWriteGeometry)
 	}
-	var core logicalCore
-	copy(core.magic[:], normalDiscriminator)
-	core.major = formatMajor
-	core.schema = formatSchema
-	core.suite = request.suite
-	if request.payloadBodyRS {
-		core.featureFlags = payloadBodyRSFeatureMask
-	}
-	core.frontHeaderLength = uint32(frontHeaderLength)
+	core := plan.core
 	core.volumeID = metadata.volumeID
-	core.payloadKind = request.payloadKind
-	core.recordProfile = 1
-	core.metadataProfile = 1
-	core.plaintextLength = request.plaintextLength
-	core.recordCount = canonicalRecordCount(request.plaintextLength)
-	core.commentLength = uint32(len(request.comment)) //nolint:gosec // Maximum is validated before this call.
 	if err := readNormalWriteEntropy(ctx, entropy, core.xChaChaNoncePrefix[:]); err != nil {
 		return logicalCore{}, Candidate{}, Candidate{}, err
 	}

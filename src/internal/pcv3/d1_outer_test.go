@@ -8,6 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha3"
 	"encoding/binary"
+	"hash"
 	"testing"
 )
 
@@ -83,7 +84,7 @@ func TestD1OuterCodecMatchesIndependentRecordLayout(t *testing.T) {
 		t.Fatal("outer codec ciphertext did not use the canonical nonce/IV transform")
 	}
 
-	mac := hmac.New(sha3.New512, keys.mac[:])
+	mac := hmac.New(func() hash.Hash { return sha3.New512() }, keys.mac[:])
 	_, _ = mac.Write([]byte("Picocrypt-NG/PCV3/outer/record\x00"))
 	var index [8]byte
 	binary.BigEndian.PutUint64(index[:], 7)
