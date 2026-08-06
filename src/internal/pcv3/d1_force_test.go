@@ -137,7 +137,7 @@ func TestD1ForceCandidatesClassifyEveryPhysicalWindowBeforeInnerKDF(t *testing.T
 		D1BootstrapTail,
 		0x71,
 		inner,
-		d1ForceTestBootstrapEvidence{wrapVerified: true, replicaVerified: true},
+		d1ForceTestBootstrapEvidence{wrapVerified: true},
 	)
 	physical := d1ForceSplitPhysicalFile(frontBody, []byte("TEST ONLY insertion gap"), tailBody)
 	source := &d1ForceObservedReader{bytes: physical}
@@ -583,82 +583,98 @@ func TestD1ForceAnchorsRejectFalseAnchorsAndFirstCandidateChoice(t *testing.T) {
 	})
 
 	t.Run("identical identity dedupes with matching provenance", func(t *testing.T) {
-		front, tail, body := newMatchingD1ForceTestBodyCandidates(
-			t,
-			0x71,
-			[]byte("TEST ONLY matching identity"),
-			d1ForceTestBootstrapEvidence{wrapVerified: true, replicaVerified: true},
-		)
-		frontSecret, tailSecret := front.secret, tail.secret
-		physical := d1ForceCanonicalPhysicalFile(body)
-		source := &d1ForceObservedReader{bytes: physical}
-		frontExpected := expectedD1ForceCandidate(front, true)
-		tailExpected := expectedD1ForceCandidate(tail, true)
-		request, err := newD1RecoveryRequest(RecoveryModeForce)
-		if err != nil {
-			t.Fatalf("create D1 Force request: %v", err)
-		}
-		seams := defaultD1ForceSeams()
-		realAuthenticate := seams.authenticateRecord
-		var events []d1ForceAuthEvent
-		seams.authenticateRecord = func(
-			candidate *d1ForceCandidate,
-			codec *d1OuterCodec,
-			ctx context.Context,
-			index uint64,
-			final bool,
-			ciphertext, tag []byte,
-		) error {
-			err := realAuthenticate(candidate, codec, ctx, index, final, ciphertext, tag)
-			events = append(events, d1ForceAuthEvent{
-				role: candidate.role, index: index, final: final, authenticated: err == nil,
-			})
-			return err
-		}
-		innerCalls := 0
-		result, err := resolveD1ForceCandidatesWithSeams(
-			context.Background(),
-			source,
-			int64(len(physical)),
-			request,
-			[]*d1ForceCandidate{front, tail},
-			seams,
-			func(*d1ForceCandidateAnalysis) (*RecoveryResult, error) {
-				innerCalls++
-				assertExactD1ForceAuthEvents(
-					t,
-					events,
-					frontExpected,
-					tailExpected,
-				)
-				assertExactD1ForcePhysicalReads(
-					t,
-					source.requests,
-					int64(len(physical)),
-					frontExpected,
-					tailExpected,
-				)
-				return newRecoveryResult(OutcomeSuccess, ForceProvenanceNone, StageNone, 0, nil, 0)
+		tests := []struct {
+			name     string
+			evidence d1ForceTestBootstrapEvidence
+			outcome  Outcome
+			stage    Stage
+		}{
+			{
+				name: "fully verified succeeds", evidence: d1ForceTestBootstrapEvidence{wrapVerified: true, replicaVerified: true},
+				outcome: OutcomeSuccess, stage: StageNone,
 			},
-		)
-		if err != nil {
-			t.Fatalf("resolve matching identity: %v", err)
+			{
+				name: "matching replica-only degrades at bootstrap", evidence: d1ForceTestBootstrapEvidence{replicaVerified: true},
+				outcome: OutcomeAuthenticatedDegraded, stage: StageD1Bootstrap,
+			},
 		}
-		defer result.Close()
-		if innerCalls != 1 || result.Outcome() != OutcomeSuccess || result.Stage() != StageNone ||
-			result.DetailStage() != StageNone ||
-			result.D1BootstrapProvenance() != D1BootstrapProvenanceMatching {
-			t.Fatalf(
-				"matching identity = calls %d, %v/%v detail %v provenance %v; want success/none/matching",
-				innerCalls,
-				result.Outcome(),
-				result.Stage(),
-				result.DetailStage(),
-				result.D1BootstrapProvenance(),
-			)
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				front, tail, body := newMatchingD1ForceTestBodyCandidates(
+					t,
+					0x71,
+					[]byte("TEST ONLY matching identity"),
+					test.evidence,
+				)
+				frontSecret, tailSecret := front.secret, tail.secret
+				physical := d1ForceCanonicalPhysicalFile(body)
+				source := &d1ForceObservedReader{bytes: physical}
+				frontExpected := expectedD1ForceCandidate(front, true)
+				tailExpected := expectedD1ForceCandidate(tail, true)
+				request, err := newD1RecoveryRequest(RecoveryModeForce)
+				if err != nil {
+					t.Fatalf("create D1 Force request: %v", err)
+				}
+				seams := defaultD1ForceSeams()
+				realAuthenticate := seams.authenticateRecord
+				var events []d1ForceAuthEvent
+				seams.authenticateRecord = func(
+					candidate *d1ForceCandidate,
+					codec *d1OuterCodec,
+					ctx context.Context,
+					index uint64,
+					final bool,
+					ciphertext, tag []byte,
+				) error {
+					err := realAuthenticate(candidate, codec, ctx, index, final, ciphertext, tag)
+					events = append(events, d1ForceAuthEvent{
+						role: candidate.role, index: index, final: final, authenticated: err == nil,
+					})
+					return err
+				}
+				innerCalls := 0
+				result, err := resolveD1ForceCandidatesWithSeams(
+					context.Background(),
+					source,
+					int64(len(physical)),
+					request,
+					[]*d1ForceCandidate{front, tail},
+					seams,
+					func(*d1ForceCandidateAnalysis) (*RecoveryResult, error) {
+						innerCalls++
+						assertExactD1ForceAuthEvents(t, events, frontExpected, tailExpected)
+						assertExactD1ForcePhysicalReads(
+							t,
+							source.requests,
+							int64(len(physical)),
+							frontExpected,
+							tailExpected,
+						)
+						return newRecoveryResult(OutcomeSuccess, ForceProvenanceNone, StageNone, 0, nil, 0)
+					},
+				)
+				if err != nil {
+					t.Fatalf("resolve matching identity: %v", err)
+				}
+				defer result.Close()
+				if innerCalls != 1 || result.Outcome() != test.outcome || result.Stage() != test.stage ||
+					result.DetailStage() != StageNone ||
+					result.D1BootstrapProvenance() != D1BootstrapProvenanceMatching {
+					t.Fatalf(
+						"matching identity = calls %d, %v/%v detail %v provenance %v; want %v/%v/none/matching",
+						innerCalls,
+						result.Outcome(),
+						result.Stage(),
+						result.DetailStage(),
+						result.D1BootstrapProvenance(),
+						test.outcome,
+						test.stage,
+					)
+				}
+				assertD1ForceCandidateClosed(t, front, frontSecret)
+				assertD1ForceCandidateClosed(t, tail, tailSecret)
+			})
 		}
-		assertD1ForceCandidateClosed(t, front, frontSecret)
-		assertD1ForceCandidateClosed(t, tail, tailSecret)
 	})
 
 	t.Run("matching replica identity without a body tag is not an anchor", func(t *testing.T) {
@@ -1018,7 +1034,7 @@ func TestD1ForceNestedOutcomePreservesOuterInnerAndRangeTruth(t *testing.T) {
 			t,
 			0xd2,
 			[]byte("TEST ONLY inner failure"),
-			d1ForceTestBootstrapEvidence{wrapVerified: true, replicaVerified: true},
+			d1ForceTestBootstrapEvidence{replicaVerified: true},
 		)
 		frontSecret, tailSecret := front.secret, tail.secret
 		physical := d1ForceCanonicalPhysicalFile(body)

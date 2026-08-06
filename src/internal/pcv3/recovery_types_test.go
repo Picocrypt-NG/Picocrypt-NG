@@ -209,6 +209,10 @@ func TestD1RecoveryRegistryAcceptsOnlyFrozenFullTuples(t *testing.T) {
 			d1Provenance: D1BootstrapProvenanceTail, detail: StageNone, code: CodeAuthenticatedDegraded,
 		},
 		{
+			name: "matching bootstrap degraded", outcome: OutcomeAuthenticatedDegraded, stage: StageD1Bootstrap,
+			d1Provenance: D1BootstrapProvenanceMatching, detail: StageNone, code: CodeAuthenticatedDegraded,
+		},
+		{
 			name: "bootstrap credentials or damage", outcome: OutcomeCredentialsOrDamage, stage: StageD1Bootstrap,
 			d1Provenance: D1BootstrapProvenanceNone, detail: StageNone, code: CodeCredentialsOrDamage,
 		},
