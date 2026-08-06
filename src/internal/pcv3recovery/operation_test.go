@@ -237,9 +237,7 @@ func TestRunNoReplaceAndProtectedAliasesRetainForeignBytes(t *testing.T) {
 			directory := t.TempDir()
 			target := filepath.Join(directory, "foreign.bin")
 			foreign := []byte("FOREIGN-SOURCE-BYTES")
-			if err := os.WriteFile(target, foreign, 0o640); err != nil {
-				t.Fatalf("seed foreign file: %v", err)
-			}
+			foreignMode := seedFileWithMode(t, target, foreign, 0o640)
 			request := &Request{Target: target}
 			if test.protectTarget {
 				request.Protected = []string{target}
@@ -254,7 +252,7 @@ func TestRunNoReplaceAndProtectedAliasesRetainForeignBytes(t *testing.T) {
 			if !result.PublicationAttempted() || result.PublicationState() != pcv3publication.StateNotPublished {
 				t.Fatalf("protected publication = %v/%v; want attempted/not-published", result.PublicationAttempted(), result.PublicationState())
 			}
-			assertFileBytesAndMode(t, target, foreign, 0o640)
+			assertFileBytesAndMode(t, target, foreign, foreignMode)
 			assertNoRecoveryStageResidue(t, directory)
 		})
 	}
