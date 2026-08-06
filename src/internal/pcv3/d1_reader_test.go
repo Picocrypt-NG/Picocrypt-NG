@@ -68,6 +68,75 @@ func TestD1ReaderAuthenticatesBeforeInnerCapability(t *testing.T) {
 	}
 }
 
+func TestD1ReaderLateTagFailureInvokesNoDecrypt(t *testing.T) {
+	access, owner := newD1TestOuterAccess(t, 0x69)
+	defer owner.Close()
+	inner := bytes.Repeat([]byte{0x3d}, 2*d1OuterChunkSize+1-d1OuterPrefixLength)
+	body := encodeD1TestBody(t, access, inner)
+	damagedBody := append([]byte(nil), body...)
+	damagedBody[len(damagedBody)-1] ^= 0x01
+	openCalls := 0
+
+	reader, err := newD1InnerReaderWithSeams(
+		context.Background(),
+		bytes.NewReader(damagedBody),
+		uint64(len(damagedBody)),
+		access,
+		d1InnerReaderSeams{
+			openRecord: func(
+				codec *d1OuterCodec,
+				ctx context.Context,
+				index uint64,
+				final bool,
+				ciphertext []byte,
+				tag []byte,
+				plaintext []byte,
+			) error {
+				openCalls++
+				return codec.openRecord(ctx, index, final, ciphertext, tag, plaintext)
+			},
+		},
+	)
+	if reader != nil {
+		reader.Close()
+		t.Fatal("late-tag damage minted an inner ReaderAt capability")
+	}
+	if err == nil {
+		t.Fatal("late-tag damage authenticated")
+	}
+	if openCalls != 0 {
+		t.Fatalf("late-tag damage invoked decrypt %d times before complete authentication", openCalls)
+	}
+
+	reader, err = newD1InnerReaderWithSeams(
+		context.Background(),
+		bytes.NewReader(body),
+		uint64(len(body)),
+		access,
+		d1InnerReaderSeams{
+			openRecord: func(
+				codec *d1OuterCodec,
+				ctx context.Context,
+				index uint64,
+				final bool,
+				ciphertext []byte,
+				tag []byte,
+				plaintext []byte,
+			) error {
+				openCalls++
+				return codec.openRecord(ctx, index, final, ciphertext, tag, plaintext)
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("authenticate valid body through decrypt seam: %v", err)
+	}
+	reader.Close()
+	if openCalls != 1 {
+		t.Fatalf("valid body invoked decrypt seam %d times; want 1 after complete authentication", openCalls)
+	}
+}
+
 func TestD1ReaderBoundedScratchAndReauthenticates(t *testing.T) {
 	access, owner := newD1TestOuterAccess(t, 0x74)
 	defer owner.Close()

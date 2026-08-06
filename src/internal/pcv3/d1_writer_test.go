@@ -1,7 +1,6 @@
 package pcv3
 
 import (
-	pcencoding "Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3governance"
 	"Picocrypt-NG/internal/pcv3publication"
@@ -15,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	pcencoding "Picocrypt-NG/internal/encoding"
 )
 
 func TestD1WritePlanReusesCanonicalNormalGeometry(t *testing.T) {
@@ -180,10 +181,10 @@ func TestD1WriterMandatoryFinalShortWriteAndCancellation(t *testing.T) {
 	})
 }
 
-func TestD1CreationStagePrecedesEntropyFactorsAndKDF(t *testing.T) {
+func TestD1WriterLiteralCredentialStageIntegration(t *testing.T) {
 	fixture := newD1CreationTestFixture(t)
 	var events []d1CreationBoundary
-	seams := newD1CreationTestSeams(t, func(
+	seams := newD1LiteralStageIntegrationSeams(t, func(
 		boundary d1CreationBoundary,
 		stage *pcv3publication.Stage,
 	) error {
@@ -203,29 +204,16 @@ func TestD1CreationStagePrecedesEntropyFactorsAndKDF(t *testing.T) {
 	if len(events) == 0 || events[0] != d1BoundaryStageCreated {
 		t.Fatalf("first D1 effect = %v; want stage creation", events)
 	}
-	wantKDF := []d1CreationBoundary{
-		d1BoundaryKDFFront,
-		d1BoundaryKDFTail,
-		d1BoundaryKDFInner,
-	}
-	var gotKDF []d1CreationBoundary
-	for _, event := range events {
-		switch event {
-		case d1BoundaryKDFFront, d1BoundaryKDFTail, d1BoundaryKDFInner:
-			gotKDF = append(gotKDF, event)
-		}
-	}
-	if !slices.Equal(gotKDF, wantKDF) {
-		t.Fatalf("D1 KDF boundaries = %v; want %v", gotKDF, wantKDF)
-	}
 	for _, boundary := range []d1CreationBoundary{
 		d1BoundaryOuterEntropy,
 		d1BoundaryFactors,
-		d1BoundaryKDFFront,
 	} {
 		if d1BoundaryIndex(events, boundary) <= 0 {
-			t.Fatalf("D1 boundary %v did not follow real stage creation: %v", boundary, events)
+			t.Fatalf("D1 integration boundary %v did not follow real stage creation: %v", boundary, events)
 		}
+	}
+	if d1BoundaryIndex(events, d1BoundaryFactors) <= d1BoundaryIndex(events, d1BoundaryOuterEntropy) {
+		t.Fatalf("literal credential integration started before outer entropy: %v", events)
 	}
 	requireD1SourceUnchanged(t, fixture)
 	requireD1NoStageResidue(t, fixture.directory)
@@ -277,7 +265,7 @@ func TestD1PureGeometryHasNoSideEffects(t *testing.T) {
 	fixture := newD1CreationTestFixture(t)
 	fixture.request.normal.plaintextLength = math.MaxUint64
 	effects := 0
-	seams := newD1CreationTestSeams(t, func(
+	seams := newD1LiteralStageIntegrationSeams(t, func(
 		_ d1CreationBoundary,
 		_ *pcv3publication.Stage,
 	) error {
@@ -308,52 +296,144 @@ func TestD1PureGeometryHasNoSideEffects(t *testing.T) {
 	}
 }
 
-func TestD1WriterCleanup(t *testing.T) {
-	injected := errors.New("TEST ONLY D1 injected boundary failure")
-	for _, boundary := range []d1CreationBoundary{
-		d1BoundaryStageCreated,
-		d1BoundaryOuterEntropy,
-		d1BoundaryFactors,
-		d1BoundaryKDFFront,
-		d1BoundaryFrontBootstrap,
-		d1BoundaryBody,
-		d1BoundaryTailBootstrap,
-		d1BoundaryFlush,
-		d1BoundaryPublish,
+func TestD1WriterRealFaultCleanup(t *testing.T) {
+	t.Run("outer entropy EOF", func(t *testing.T) {
+		fixture := newD1CreationTestFixture(t)
+		entropy := newD1TrackingEntropy(0)
+		seams := newD1ObservedProductionSeams(t, fixture, entropy)
+		runD1ComposerFailure(t, context.Background(), fixture, seams, entropy)
+	})
+
+	t.Run("outer entropy short read", func(t *testing.T) {
+		fixture := newD1CreationTestFixture(t)
+		entropy := newD1TrackingEntropy(15)
+		seams := newD1ObservedProductionSeams(t, fixture, entropy)
+		runD1ComposerFailure(t, context.Background(), fixture, seams, entropy)
+	})
+
+	t.Run("actual invalid factors", func(t *testing.T) {
+		fixture := newD1CreationTestFixture(t)
+		fixture.request.factors.ExpectedPolicy = pcv3credential.FactorPolicyKeyfilesOnly
+		admitter := &d1CountingAdmitter{admission: pcv3credential.KDFAdmissionDenied}
+		fixture.request.admitter = admitter
+		entropy := newD1TrackingEntropy(-1)
+		seams := newD1ObservedProductionSeams(t, fixture, entropy)
+		runD1ComposerFailure(t, context.Background(), fixture, seams, entropy)
+		if admitter.calls != 0 {
+			t.Fatalf("invalid factors reached KDF admission %d times", admitter.calls)
+		}
+	})
+
+	t.Run("actual KDF admission refusal", func(t *testing.T) {
+		fixture := newD1CreationTestFixture(t)
+		admitter := &d1CountingAdmitter{admission: pcv3credential.KDFAdmissionDenied}
+		fixture.request.admitter = admitter
+		entropy := newD1TrackingEntropy(-1)
+		seams := newD1ObservedProductionSeams(t, fixture, entropy)
+		runD1ComposerFailure(t, context.Background(), fixture, seams, entropy)
+		if admitter.calls != 1 {
+			t.Fatalf("denied D1 admission calls = %d; want exactly one before Argon", admitter.calls)
+		}
+	})
+
+	t.Run("actual no-follow source refusal", func(t *testing.T) {
+		fixture := newD1CreationTestFixture(t)
+		realSource := filepath.Join(fixture.directory, "source-real.bin")
+		if err := os.Rename(fixture.sourcePath, realSource); err != nil {
+			t.Fatalf("move TEST ONLY source behind symlink: %v", err)
+		}
+		if err := os.Symlink(filepath.Base(realSource), fixture.sourcePath); err != nil {
+			t.Fatalf("create TEST ONLY source symlink: %v", err)
+		}
+		seams := newD1ObservedProductionSeams(t, fixture, nil)
+		runD1ComposerFailure(t, context.Background(), fixture, seams, nil)
+	})
+
+	for _, test := range []struct {
+		name  string
+		limit int
+	}{
+		{name: "inner entropy EOF after complete outer entropy", limit: d1CreationOuterEntropyBytes},
+		{name: "inner entropy short read", limit: d1CreationOuterEntropyBytes + 15},
 	} {
-		t.Run(boundary.String(), func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			fixture := newD1CreationTestFixture(t)
-			seams := newD1CreationTestSeams(t, func(
-				observed d1CreationBoundary,
+			entropy := newD1TrackingEntropy(test.limit)
+			innerEntropyObserved := false
+			seams := newD1LiteralStageIntegrationSeams(t, func(
+				boundary d1CreationBoundary,
 				stage *pcv3publication.Stage,
 			) error {
 				requireD1LiveStage(t, fixture, stage)
-				if observed == boundary {
-					return injected
-				}
+				innerEntropyObserved = innerEntropyObserved || boundary == d1BoundaryInnerEntropy
 				return nil
 			})
-
-			result, err := composeD1OuterStage(context.Background(), fixture.request, seams)
-			if result != nil || !errors.Is(err, injected) {
-				t.Fatalf("injected D1 boundary %v = result %v, error %v", boundary, result, err)
-			}
-			requireD1SourceUnchanged(t, fixture)
-			if _, statErr := os.Lstat(fixture.destinationPath); !errors.Is(statErr, os.ErrNotExist) {
-				t.Fatalf("failed D1 boundary published destination: %v", statErr)
-			}
-			requireD1NoStageResidue(t, fixture.directory)
-			if !allZero(fixture.passwordAlias) {
-				t.Fatal("failed D1 boundary retained the transferred password")
+			seams.entropy = entropy
+			runD1ComposerFailure(t, context.Background(), fixture, seams, entropy)
+			if !innerEntropyObserved {
+				t.Fatal("bounded entropy failed before the real inner entropy request")
 			}
 		})
 	}
 
-	t.Run("cancellation before body", func(t *testing.T) {
+	t.Run("actual closed stage body write", func(t *testing.T) {
+		fixture := newD1CreationTestFixtureWithSize(t, d1OuterChunkSize+4096)
+		entropy := newD1TrackingEntropy(-1)
+		stageClosed := false
+		seams := newD1LiteralStageIntegrationSeams(t, func(
+			boundary d1CreationBoundary,
+			stage *pcv3publication.Stage,
+		) error {
+			if !stageClosed {
+				requireD1LiveStage(t, fixture, stage)
+			}
+			if boundary == d1BoundaryFrontBootstrap {
+				if err := stage.File().Close(); err != nil {
+					t.Fatalf("close real D1 stage: %v", err)
+				}
+				stageClosed = true
+			}
+			return nil
+		})
+		seams.entropy = entropy
+		runD1ComposerFailure(t, context.Background(), fixture, seams, entropy)
+		if !stageClosed {
+			t.Fatal("real D1 stage write fault was not armed")
+		}
+	})
+
+	t.Run("actual flush failure", func(t *testing.T) {
+		fixture := newD1CreationTestFixture(t)
+		entropy := newD1TrackingEntropy(-1)
+		stageClosed := false
+		seams := newD1LiteralStageIntegrationSeams(t, func(
+			boundary d1CreationBoundary,
+			stage *pcv3publication.Stage,
+		) error {
+			if !stageClosed {
+				requireD1LiveStage(t, fixture, stage)
+			}
+			if boundary == d1BoundaryFlush {
+				if err := stage.File().Close(); err != nil {
+					t.Fatalf("close real D1 stage before flush: %v", err)
+				}
+				stageClosed = true
+			}
+			return nil
+		})
+		seams.entropy = entropy
+		runD1ComposerFailure(t, context.Background(), fixture, seams, entropy)
+		if !stageClosed {
+			t.Fatal("real D1 flush fault was not armed")
+		}
+	})
+
+	t.Run("cancellation before body write", func(t *testing.T) {
 		fixture := newD1CreationTestFixture(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		seams := newD1CreationTestSeams(t, func(
+		entropy := newD1TrackingEntropy(-1)
+		seams := newD1LiteralStageIntegrationSeams(t, func(
 			boundary d1CreationBoundary,
 			stage *pcv3publication.Stage,
 		) error {
@@ -363,18 +443,17 @@ func TestD1WriterCleanup(t *testing.T) {
 			}
 			return nil
 		})
-		result, err := composeD1OuterStage(ctx, fixture.request, seams)
-		if result != nil || !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled D1 composition = result %v, error %v", result, err)
+		seams.entropy = entropy
+		err := runD1ComposerFailure(t, ctx, fixture, seams, entropy)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled D1 composition = %v; want context.Canceled", err)
 		}
-		requireD1SourceUnchanged(t, fixture)
-		requireD1NoStageResidue(t, fixture.directory)
 	})
 }
 
 func TestD1WriterNeverCreatesClearInnerArtifact(t *testing.T) {
 	fixture := newD1CreationTestFixture(t)
-	seams := newD1CreationTestSeams(t, func(
+	seams := newD1LiteralStageIntegrationSeams(t, func(
 		_ d1CreationBoundary,
 		stage *pcv3publication.Stage,
 	) error {
@@ -483,7 +562,7 @@ func TestD1WriterPublicationOutcome(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newD1CreationTestFixture(t)
 			foreign := []byte("TEST ONLY foreign destination")
-			seams := newD1CreationTestSeams(t, func(
+			seams := newD1LiteralStageIntegrationSeams(t, func(
 				boundary d1CreationBoundary,
 				stage *pcv3publication.Stage,
 			) error {
@@ -515,7 +594,10 @@ func TestD1WriterPublicationOutcome(t *testing.T) {
 	}
 }
 
-const d1CreationTestOuterKeySeed = 0x85
+const (
+	d1CreationTestOuterKeySeed  = 0x85
+	d1CreationOuterEntropyBytes = 224
+)
 
 type d1CreationTestFixture struct {
 	directory       string
@@ -535,12 +617,76 @@ func (d1CreationTestAdmitter) AdmitKDF(
 	return pcv3credential.KDFAdmissionGranted, nil
 }
 
+type d1CountingAdmitter struct {
+	admission pcv3credential.KDFAdmission
+	calls     int
+}
+
+func (admitter *d1CountingAdmitter) AdmitKDF(
+	context.Context,
+	pcv3credential.KDFProfile,
+) (pcv3credential.KDFAdmission, error) {
+	admitter.calls++
+	return admitter.admission, nil
+}
+
+type d1TrackingEntropy struct {
+	remaining int
+	offset    int
+	reads     int
+	aliases   [][]byte
+}
+
+func newD1TrackingEntropy(limit int) *d1TrackingEntropy {
+	return &d1TrackingEntropy{remaining: limit}
+}
+
+func (reader *d1TrackingEntropy) Read(destination []byte) (int, error) {
+	reader.reads++
+	reader.aliases = append(reader.aliases, destination)
+	if reader.remaining == 0 {
+		return 0, io.EOF
+	}
+	count := len(destination)
+	if reader.remaining > 0 && count > reader.remaining {
+		count = reader.remaining
+	}
+	for index := range count {
+		destination[index] = byte((reader.offset+index)*37 + 11)
+	}
+	reader.offset += count
+	if reader.remaining > 0 {
+		reader.remaining -= count
+	}
+	if count != len(destination) {
+		return count, io.ErrUnexpectedEOF
+	}
+	return count, nil
+}
+
+func (reader *d1TrackingEntropy) requireZero(t *testing.T) {
+	t.Helper()
+	if reader == nil {
+		return
+	}
+	for index, alias := range reader.aliases {
+		if !allZero(alias) {
+			t.Fatalf("D1 entropy alias %d retained secret bytes", index)
+		}
+	}
+}
+
 func newD1CreationTestFixture(t *testing.T) *d1CreationTestFixture {
+	t.Helper()
+	return newD1CreationTestFixtureWithSize(t, 4096)
+}
+
+func newD1CreationTestFixtureWithSize(t *testing.T, plaintextLength int) *d1CreationTestFixture {
 	t.Helper()
 	directory := t.TempDir()
 	sourcePath := filepath.Join(directory, "source.bin")
 	destinationPath := filepath.Join(directory, "destination.pcv")
-	sourceBytes := make([]byte, 4096)
+	sourceBytes := make([]byte, plaintextLength)
 	for index := range sourceBytes {
 		sourceBytes[index] = byte(index*29 + 7)
 	}
@@ -576,7 +722,69 @@ func newD1CreationTestFixture(t *testing.T) *d1CreationTestFixture {
 	}
 }
 
-func newD1CreationTestSeams(
+func newD1ObservedProductionSeams(
+	t *testing.T,
+	fixture *d1CreationTestFixture,
+	entropy io.Reader,
+) d1CreationSeams {
+	t.Helper()
+	seams := defaultD1CreationSeams()
+	if entropy != nil {
+		seams.entropy = entropy
+	}
+	seams.observe = func(
+		_ d1CreationBoundary,
+		stage *pcv3publication.Stage,
+	) error {
+		requireD1LiveStage(t, fixture, stage)
+		return nil
+	}
+	return seams
+}
+
+func runD1ComposerFailure(
+	t *testing.T,
+	ctx context.Context,
+	fixture *d1CreationTestFixture,
+	seams d1CreationSeams,
+	entropy *d1TrackingEntropy,
+) error {
+	t.Helper()
+	wantEntries := d1DirectoryEntries(t, fixture.directory)
+	result, err := composeD1OuterStage(ctx, fixture.request, seams)
+	if result != nil || err == nil {
+		t.Fatalf("faulted D1 composition = result %v, error %v", result, err)
+	}
+	requireD1SourceUnchanged(t, fixture)
+	if _, statErr := os.Lstat(fixture.destinationPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("faulted D1 composition changed destination: %v", statErr)
+	}
+	requireD1NoStageResidue(t, fixture.directory)
+	if gotEntries := d1DirectoryEntries(t, fixture.directory); !slices.Equal(gotEntries, wantEntries) {
+		t.Fatalf("faulted D1 directory entries = %v; want %v", gotEntries, wantEntries)
+	}
+	if !allZero(fixture.passwordAlias) {
+		t.Fatal("faulted D1 composition retained transferred factors")
+	}
+	entropy.requireZero(t)
+	return err
+}
+
+func d1DirectoryEntries(t *testing.T, directory string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatalf("list D1 test directory: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	slices.Sort(names)
+	return names
+}
+
+func newD1LiteralStageIntegrationSeams(
 	t *testing.T,
 	observer d1CreationObserver,
 ) d1CreationSeams {
@@ -606,15 +814,8 @@ func newD1CreationTestSeams(
 			return errors.New("TEST ONLY invalid D1 credential session")
 		}
 		defer func() { _ = request.Close() }()
-		for _, boundary := range []d1CreationBoundary{
-			d1BoundaryFactors,
-			d1BoundaryKDFFront,
-			d1BoundaryKDFTail,
-			d1BoundaryKDFInner,
-		} {
-			if err := observe(boundary); err != nil {
-				return err
-			}
+		if err := observe(d1BoundaryFactors); err != nil {
+			return err
 		}
 
 		front := newD1CreationTestBootstrapAccess(D1BootstrapFront, 0x31)
