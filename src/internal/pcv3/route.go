@@ -4,6 +4,7 @@ package pcv3
 import (
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3governance"
+	"Picocrypt-NG/internal/pcv3publication"
 	"context"
 	"errors"
 )
@@ -22,7 +23,7 @@ type d1RouteRequest struct {
 	destinationPath string
 }
 
-type d1RouteComposer func(context.Context) error
+type d1RouteComposer func(context.Context) (pcv3publication.Result, error)
 
 // Route identifies which format family may inspect an input.
 type Route uint8
@@ -52,21 +53,21 @@ func routeExplicitD1(
 	authorization *pcv3governance.EmissionAuthorization,
 	request *d1RouteRequest,
 	compose d1RouteComposer,
-) error {
+) (pcv3publication.Result, error) {
 	if ctx == nil || request == nil || request.mode != d1RouteExplicit ||
 		request.sourcePath == "" || request.destinationPath == "" || compose == nil {
-		return newError(OutcomeUnsupportedRoutingPreKDF, StageRouting, errInvalidD1Route)
+		return nil, newError(OutcomeUnsupportedRoutingPreKDF, StageRouting, errInvalidD1Route)
 	}
 
 	sameFile, err := fileops.SamePathOrFile(request.sourcePath, request.destinationPath)
 	if err != nil || sameFile {
-		return newError(OutcomeUnsupportedRoutingPreKDF, StageRouting, errInvalidD1Route)
+		return nil, newError(OutcomeUnsupportedRoutingPreKDF, StageRouting, errInvalidD1Route)
 	}
 	if err := pcv3governance.RequireEmissionAuthorization(authorization); err != nil {
-		return newError(OutcomeUnsupportedRoutingPreKDF, StageRouting, err)
+		return nil, newError(OutcomeUnsupportedRoutingPreKDF, StageRouting, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return newError(OutcomeOperationFailed, StageCancellation, err)
+		return nil, newError(OutcomeOperationFailed, StageCancellation, err)
 	}
 	return compose(ctx)
 }

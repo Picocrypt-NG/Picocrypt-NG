@@ -3,6 +3,7 @@ package pcv3
 import (
 	pcencoding "Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/pcv3credential"
+	"Picocrypt-NG/internal/pcv3governance"
 	"Picocrypt-NG/internal/pcv3publication"
 	"bytes"
 	"context"
@@ -242,13 +243,44 @@ func TestD1CreationStagePrecedesEntropyFactorsAndKDF(t *testing.T) {
 	}
 }
 
+func TestD1WriterRefusalUsesGuardedProductionEntry(t *testing.T) {
+	fixture := newD1CreationTestFixture(t)
+
+	result, err := writeD1Volume(
+		context.Background(),
+		&pcv3governance.EmissionAuthorization{},
+		fixture.request,
+	)
+	if result != nil {
+		t.Fatalf("guarded D1 refusal returned publication result %v", result)
+	}
+	var failure Failure
+	if !errors.As(err, &failure) || failure.Code() != CodeUnsupported {
+		t.Fatalf("guarded D1 refusal = %T %v; want closed unsupported failure", err, err)
+	}
+	if allZero(fixture.passwordAlias) {
+		t.Fatal("guarded D1 refusal consumed factors before authorization")
+	}
+	requireD1SourceUnchanged(t, fixture)
+	if _, statErr := os.Lstat(fixture.destinationPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("guarded D1 refusal changed destination: %v", statErr)
+	}
+	requireD1NoStageResidue(t, fixture.directory)
+	if closeErr := fixture.request.factors.Close(); closeErr != nil {
+		t.Fatalf("close refused D1 factors: %v", closeErr)
+	}
+	if !allZero(fixture.passwordAlias) {
+		t.Fatal("explicit refused-factor cleanup retained password bytes")
+	}
+}
+
 func TestD1PureGeometryHasNoSideEffects(t *testing.T) {
 	fixture := newD1CreationTestFixture(t)
 	fixture.request.normal.plaintextLength = math.MaxUint64
 	effects := 0
 	seams := newD1CreationTestSeams(t, func(
-		d1CreationBoundary,
-		*pcv3publication.Stage,
+		_ d1CreationBoundary,
+		_ *pcv3publication.Stage,
 	) error {
 		effects++
 		return nil
@@ -344,7 +376,7 @@ func TestD1WriterCleanup(t *testing.T) {
 func TestD1WriterNeverCreatesClearInnerArtifact(t *testing.T) {
 	fixture := newD1CreationTestFixture(t)
 	seams := newD1CreationTestSeams(t, func(
-		d1CreationBoundary,
+		_ d1CreationBoundary,
 		stage *pcv3publication.Stage,
 	) error {
 		stagePath := requireD1LiveStage(t, fixture, stage)
@@ -381,6 +413,35 @@ func TestD1WriterNeverCreatesClearInnerArtifact(t *testing.T) {
 	outerAccess, outerOwner := newD1TestOuterAccess(t, d1CreationTestOuterKeySeed)
 	defer outerOwner.Close()
 	bodyLength := uint64(len(raw) - 2*d1BootstrapLength)
+	for _, bootstrap := range []struct {
+		role   D1BootstrapRole
+		raw    []byte
+		access *d1TestBootstrapCredentialAccess
+	}{
+		{
+			role:   D1BootstrapFront,
+			raw:    raw[:d1BootstrapLength],
+			access: newD1CreationTestBootstrapAccess(D1BootstrapFront, 0x31),
+		},
+		{
+			role:   D1BootstrapTail,
+			raw:    raw[len(raw)-d1BootstrapLength:],
+			access: newD1CreationTestBootstrapAccess(D1BootstrapTail, 0x71),
+		},
+	} {
+		attempt := authenticateD1BootstrapTestFixture(
+			t,
+			bootstrap.raw,
+			bootstrap.role,
+			bootstrap.access,
+		)
+		if attempt.authenticated == nil || attempt.authenticated.secret == nil ||
+			attempt.authenticated.secret.bodyLength != bodyLength {
+			attempt.Close()
+			t.Fatalf("composed D1 %v bootstrap body length mismatch", bootstrap.role)
+		}
+		attempt.Close()
+	}
 	reader, err := newD1InnerReader(
 		context.Background(),
 		bytes.NewReader(raw[d1BootstrapLength:len(raw)-d1BootstrapLength]),

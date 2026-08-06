@@ -306,19 +306,6 @@ func (attempt *d1BootstrapAttempt) Close() {
 	attempt.stage = 0
 }
 
-func authenticateD1Bootstrap(
-	ctx context.Context,
-	candidate d1BootstrapCandidate,
-	owner *pcv3credential.D1OuterCredentialOwner,
-) *d1BootstrapAttempt {
-	return authenticateD1BootstrapWithAccess(
-		ctx,
-		candidate,
-		&d1BootstrapOwnerAccess{owner: owner},
-		defaultD1BootstrapAuthSeams(),
-	)
-}
-
 func authenticateD1BootstrapWithAccess(
 	ctx context.Context,
 	candidate d1BootstrapCandidate,
