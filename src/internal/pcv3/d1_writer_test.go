@@ -387,9 +387,9 @@ func TestD1WriterRealFaultCleanup(t *testing.T) {
 			if !stageClosed {
 				requireD1LiveStage(t, fixture, stage)
 			}
-			if boundary == d1BoundaryFrontBootstrap {
+			if boundary == d1BoundaryBody {
 				if err := stage.File().Close(); err != nil {
-					t.Fatalf("close real D1 stage: %v", err)
+					t.Fatalf("close real D1 stage at body boundary: %v", err)
 				}
 				stageClosed = true
 			}
