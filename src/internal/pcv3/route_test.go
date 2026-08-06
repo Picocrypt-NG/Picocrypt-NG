@@ -2,6 +2,7 @@ package pcv3
 
 import (
 	"Picocrypt-NG/internal/pcv3governance"
+	"Picocrypt-NG/internal/pcv3publication"
 	"context"
 	"errors"
 	"testing"
@@ -81,9 +82,9 @@ func TestDetectPrefix(t *testing.T) {
 
 func TestExplicitD1Route(t *testing.T) {
 	composerCalls := 0
-	composer := func(context.Context) error {
+	composer := func(context.Context) (pcv3publication.Result, error) {
 		composerCalls++
-		return nil
+		return nil, nil
 	}
 
 	tests := []struct {
@@ -103,12 +104,15 @@ func TestExplicitD1Route(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := routeExplicitD1(
+			result, err := routeExplicitD1(
 				context.Background(),
 				test.authorization,
 				test.request,
 				composer,
 			)
+			if result != nil {
+				t.Fatalf("route refusal returned publication result %v", result)
+			}
 			var failure Failure
 			if !errors.As(err, &failure) ||
 				failure.Outcome() != OutcomeUnsupportedRoutingPreKDF ||
@@ -130,13 +134,13 @@ func TestD1WriterRefusalHasNoStageFactorEntropyOrSourceRead(t *testing.T) {
 	effects := struct {
 		stage, factor, entropy, source, destination int
 	}{}
-	composer := func(context.Context) error {
+	composer := func(context.Context) (pcv3publication.Result, error) {
 		effects.stage++
 		effects.factor++
 		effects.entropy++
 		effects.source++
 		effects.destination++
-		return nil
+		return nil, nil
 	}
 	request := &d1RouteRequest{
 		mode:            d1RouteExplicit,
@@ -148,12 +152,15 @@ func TestD1WriterRefusalHasNoStageFactorEntropyOrSourceRead(t *testing.T) {
 		nil,
 		{},
 	} {
-		err := routeExplicitD1(
+		result, err := routeExplicitD1(
 			context.Background(),
 			authorization,
 			request,
 			composer,
 		)
+		if result != nil {
+			t.Fatalf("writer refusal returned publication result %v", result)
+		}
 		var failure Failure
 		if !errors.As(err, &failure) || failure.Code() != CodeUnsupported {
 			t.Fatalf("writer refusal = %T %v; want closed unsupported code", err, err)
