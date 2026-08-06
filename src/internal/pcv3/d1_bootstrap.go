@@ -160,6 +160,13 @@ func defaultD1BootstrapAuthSeams() d1BootstrapAuthSeams {
 	}
 }
 
+type d1BootstrapEvaluationPolicy uint8
+
+const (
+	d1BootstrapVerifyBeforeUnwrap d1BootstrapEvaluationPolicy = iota
+	d1BootstrapAllowRawUnwrap
+)
+
 type d1OuterSecretOwner struct {
 	bodyLength uint64
 	keys       *pcv3credential.D1OuterKeyOwner
@@ -306,6 +313,33 @@ func (attempt *d1BootstrapAttempt) Close() {
 	attempt.stage = 0
 }
 
+type d1BootstrapBinding struct {
+	secret          *d1OuterSecretOwner
+	wrapVerified    bool
+	replicaVerified bool
+}
+
+func (binding *d1BootstrapBinding) Close() {
+	if binding == nil {
+		return
+	}
+	if binding.secret != nil {
+		binding.secret.Close()
+		binding.secret = nil
+	}
+	binding.wrapVerified = false
+	binding.replicaVerified = false
+}
+
+func (binding *d1BootstrapBinding) takeSecret() *d1OuterSecretOwner {
+	if binding == nil {
+		return nil
+	}
+	secret := binding.secret
+	binding.secret = nil
+	return secret
+}
+
 func authenticateD1Bootstrap(
 	ctx context.Context,
 	candidate d1BootstrapCandidate,
@@ -325,25 +359,106 @@ func authenticateD1BootstrapWithAccess(
 	access d1BootstrapCredentialAccess,
 	seams d1BootstrapAuthSeams,
 ) *d1BootstrapAttempt {
-	if ctx == nil || access == nil || seams.unwrapParanoid == nil ||
-		!validD1BootstrapRole(candidate.role) || access.role() != candidate.role {
+	binding, stage, err := evaluateD1BootstrapWithAccess(
+		ctx,
+		candidate,
+		access,
+		seams,
+		d1BootstrapVerifyBeforeUnwrap,
+	)
+	if err != nil {
+		return newD1BootstrapAttempt(OutcomeOperationFailed, stage, nil)
+	}
+	defer binding.Close()
+	if !binding.wrapVerified {
 		return newD1BootstrapAttempt(
-			OutcomeOperationFailed,
-			StageCredentialPolicy,
+			OutcomeCredentialsOrDamage,
+			StageWrapAuth,
 			nil,
 		)
+	}
+	if !binding.replicaVerified {
+		return newD1BootstrapAttempt(
+			OutcomeCredentialsOrDamage,
+			StageReplicaAuth,
+			nil,
+		)
+	}
+	return newD1BootstrapAttempt(
+		OutcomeSuccess,
+		StageNone,
+		&d1AuthenticatedBootstrap{
+			candidate: candidate,
+			secret:    binding.takeSecret(),
+		},
+	)
+}
+
+func bindD1BootstrapWithAccess(
+	ctx context.Context,
+	candidate d1BootstrapCandidate,
+	access d1BootstrapCredentialAccess,
+	seams d1BootstrapAuthSeams,
+	callback func(*d1BootstrapBinding) error,
+) error {
+	if callback == nil {
+		return errInvalidD1Bootstrap
+	}
+	binding, _, err := evaluateD1BootstrapWithAccess(
+		ctx,
+		candidate,
+		access,
+		seams,
+		d1BootstrapAllowRawUnwrap,
+	)
+	if err != nil {
+		return err
+	}
+	defer binding.Close()
+	return callback(binding)
+}
+
+func bindD1Bootstrap(
+	ctx context.Context,
+	candidate d1BootstrapCandidate,
+	owner *pcv3credential.D1OuterCredentialOwner,
+	callback func(*d1BootstrapBinding) error,
+) error {
+	return bindD1BootstrapWithAccess(
+		ctx,
+		candidate,
+		&d1BootstrapOwnerAccess{owner: owner},
+		defaultD1BootstrapAuthSeams(),
+		callback,
+	)
+}
+
+func evaluateD1BootstrapWithAccess(
+	ctx context.Context,
+	candidate d1BootstrapCandidate,
+	access d1BootstrapCredentialAccess,
+	seams d1BootstrapAuthSeams,
+	policy d1BootstrapEvaluationPolicy,
+) (*d1BootstrapBinding, Stage, error) {
+	if ctx == nil || access == nil || seams.unwrapParanoid == nil ||
+		!validD1BootstrapRole(candidate.role) || access.role() != candidate.role ||
+		(policy != d1BootstrapVerifyBeforeUnwrap && policy != d1BootstrapAllowRawUnwrap) {
+		return nil, StageCredentialPolicy, errInvalidD1Bootstrap
 	}
 	if ctx.Err() != nil {
-		return newD1BootstrapAttempt(
-			OutcomeOperationFailed,
-			StageCancellation,
-			nil,
-		)
+		return nil, StageCancellation, ctx.Err()
 	}
 
+	binding := &d1BootstrapBinding{}
+	complete := false
+	defer func() {
+		if !complete {
+			binding.Close()
+		}
+	}()
 	var unwrapped [d1OuterSecretLength]byte
 	defer pcv3crypto.SecureZero(unwrapped[:])
-	wrapVerified := false
+	unwrapAttempted := false
 	err := access.withWrapKeys(ctx, func(keys *d1BootstrapWrapKeys) error {
 		message := d1BootstrapWrapMessage(candidate)
 		defer pcv3crypto.SecureZero(message)
@@ -353,10 +468,14 @@ func authenticateD1BootstrapWithAccess(
 			message,
 			candidate.wrapTag[:],
 		)
-		if err != nil || !valid {
+		if err != nil {
 			return err
 		}
-		wrapVerified = true
+		binding.wrapVerified = valid
+		if !valid && policy == d1BootstrapVerifyBeforeUnwrap {
+			return nil
+		}
+		unwrapAttempted = true
 		return seams.unwrapParanoid(
 			unwrapped[:],
 			candidate.wrappedSecret[:],
@@ -370,46 +489,27 @@ func authenticateD1BootstrapWithAccess(
 		stage := StageCredentialPolicy
 		if ctx.Err() != nil {
 			stage = StageCancellation
-		} else if wrapVerified {
+		} else if unwrapAttempted {
 			stage = StageUnwrap
 		}
-		return newD1BootstrapAttempt(OutcomeOperationFailed, stage, nil)
+		return nil, stage, err
 	}
-	if !wrapVerified {
-		return newD1BootstrapAttempt(
-			OutcomeCredentialsOrDamage,
-			StageWrapAuth,
-			nil,
-		)
+	if !unwrapAttempted {
+		complete = true
+		return binding, StageWrapAuth, nil
 	}
 
 	outerKey := make([]byte, 32)
 	copy(outerKey, unwrapped[0:32])
 	keyOwner, err := pcv3credential.NewD1OuterKeyOwner(outerKey)
 	if err != nil {
-		return newD1BootstrapAttempt(
-			OutcomeOperationFailed,
-			StageUnwrap,
-			nil,
-		)
+		return nil, StageUnwrap, err
 	}
-	secret := &d1OuterSecretOwner{
+	binding.secret = &d1OuterSecretOwner{
 		bodyLength: binary.BigEndian.Uint64(unwrapped[32:40]),
 		keys:       keyOwner,
 	}
-	authenticated := &d1AuthenticatedBootstrap{
-		candidate: candidate,
-		secret:    secret,
-	}
-	success := false
-	defer func() {
-		if !success {
-			authenticated.Close()
-		}
-	}()
-
-	replicaVerified := false
-	err = secret.withOuterKeys(
+	err = binding.secret.withOuterKeys(
 		ctx,
 		func(keys *pcv3credential.BorrowedD1OuterKeys) error {
 			var replicaKey [32]byte
@@ -429,7 +529,7 @@ func authenticateD1BootstrapWithAccess(
 				message,
 				candidate.replicaTag[:],
 			)
-			replicaVerified = valid
+			binding.replicaVerified = valid
 			return err
 		},
 	)
@@ -438,18 +538,10 @@ func authenticateD1BootstrapWithAccess(
 		if ctx.Err() != nil {
 			stage = StageCancellation
 		}
-		return newD1BootstrapAttempt(OutcomeOperationFailed, stage, nil)
+		return nil, stage, err
 	}
-	if !replicaVerified {
-		return newD1BootstrapAttempt(
-			OutcomeCredentialsOrDamage,
-			StageReplicaAuth,
-			nil,
-		)
-	}
-
-	success = true
-	return newD1BootstrapAttempt(OutcomeSuccess, StageNone, authenticated)
+	complete = true
+	return binding, StageNone, nil
 }
 
 func d1BootstrapReplicaMessage(candidate d1BootstrapCandidate) []byte {
