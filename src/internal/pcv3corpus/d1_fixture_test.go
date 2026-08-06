@@ -2,6 +2,7 @@ package pcv3corpus
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,6 +80,57 @@ func TestD1PrivateCorpusContract(t *testing.T) {
 		}
 		if !corpus.isCurrentPhase4() || corpus.isCurrentD1() {
 			t.Fatal("v3 corpus was not preserved as normal-only compatibility evidence")
+		}
+	})
+
+	t.Run("structured factors and operation schedule are callback scoped", func(t *testing.T) {
+		const id = "d1-paranoid-combined-ordered-healthy"
+		var aliases [][]byte
+		err := WithD1VolumeFixtures(writeTestD1Corpus(t), testCustodyID, []string{id}, func(fixtures []*D1VolumeFixture) error {
+			if len(fixtures) != 1 || fixtures[0] == nil {
+				t.Fatal("structured D1 fixture was not borrowed")
+			}
+			fixture := fixtures[0]
+			aliases = append(aliases, fixture.Password(), fixture.WrongPassword())
+			aliases = append(aliases, fixture.Keyfiles()...)
+			aliases = append(aliases, fixture.WrongKeyfiles()...)
+			for _, alias := range aliases {
+				if len(alias) == 0 || allZero(alias) {
+					t.Fatal("decoded D1 credential was empty or already zero inside callback")
+				}
+			}
+			normal, found := fixture.Operation("normal-correct")
+			if !found || normal.Mode() != "normal" || normal.Factors() != "correct" ||
+				normal.KeyfileOrder() != "manifest" || normal.ExpectedOutcome() != "success" ||
+				normal.ExpectedKDFCalls() != 2 || !normal.ExpectedCompletion() {
+				t.Fatal("decoded D1 normal operation did not preserve the closed schedule")
+			}
+			force, found := fixture.Operation("force-correct")
+			if !found || force.Mode() != "force" || force.ExpectedD1Provenance() != "matching" ||
+				force.ExpectedForceProvenance() != "verified" || force.ExpectedKDFCalls() != 3 {
+				t.Fatal("decoded D1 Force operation did not preserve independent expectations")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("WithD1VolumeFixtures(structured) error = %v", err)
+		}
+		assertAliasesZero(t, aliases)
+	})
+
+	t.Run("unknown credential grammar fails before callback", func(t *testing.T) {
+		root := writeTestD1Corpus(t)
+		mutateTestD1ArtifactDocument(t, root, testD1ArtifactID(testD1VectorContracts[0].id, "credentials"), func(document map[string]any) {
+			document["unexpected_secret_field"] = "must-not-be-accepted"
+		})
+		called := false
+		err := WithD1VolumeFixtures(root, testCustodyID, []string{testD1VectorContracts[0].id}, func([]*D1VolumeFixture) error {
+			called = true
+			return nil
+		})
+		assertRefusal(t, err, RefusalUnknown)
+		if called {
+			t.Fatal("malformed D1 credentials reached the callback")
 		}
 	})
 
@@ -295,10 +347,14 @@ func TestWithD1MutationPlanZeroesBorrowedBytes(t *testing.T) {
 }
 
 func d1FixtureAliases(fixture *D1VolumeFixture) [][]byte {
-	return [][]byte{
+	aliases := [][]byte{
 		fixture.Credentials(), fixture.Schedule(), fixture.FrontBootstrap(), fixture.TailBootstrap(),
 		fixture.Body(), fixture.Volume(), fixture.InnerVolume(), fixture.Plaintext(),
 	}
+	aliases = append(aliases, fixture.Password(), fixture.WrongPassword())
+	aliases = append(aliases, fixture.Keyfiles()...)
+	aliases = append(aliases, fixture.WrongKeyfiles()...)
+	return aliases
 }
 
 func assertAliasesZero(t *testing.T, aliases [][]byte) {
@@ -407,8 +463,19 @@ func testD1ManifestSchema(t *testing.T) string {
 }
 
 func testD1ArtifactBundle(contract testD1VectorContract, fill byte) map[string][]byte {
-	credentials := []byte("TEST ONLY SYNTHETIC D1 CREDENTIAL GRAMMAR: " + contract.id)
-	schedule := []byte("TEST ONLY SYNTHETIC D1 SCHEDULE GRAMMAR: " + contract.id)
+	password := []byte("TEST ONLY D1 password: " + contract.id)
+	wrongPassword := []byte("TEST ONLY D1 wrong password: " + contract.id)
+	keyfiles := [][]byte{{fill, fill ^ 0x31, fill ^ 0x72}, {fill ^ 0x5a, fill ^ 0xa5}}
+	wrongKeyfiles := [][]byte{{fill ^ 0xff, fill ^ 0x17}}
+	if contract.credentialMode == "password-only" {
+		keyfiles = nil
+		wrongKeyfiles = nil
+	}
+	if contract.credentialMode == "keyfiles-only" {
+		password = nil
+		wrongPassword = nil
+	}
+	credentials := testD1CredentialsDocument(contract, password, keyfiles, wrongPassword, wrongKeyfiles)
 	front := []byte(nil)
 	if contract.frontBootstrap {
 		front = bytes.Repeat([]byte{fill}, 224)
@@ -418,6 +485,8 @@ func testD1ArtifactBundle(contract testD1VectorContract, fill byte) map[string][
 		tail = bytes.Repeat([]byte{fill ^ 0x5a}, 224)
 	}
 	body := bytes.Repeat([]byte{fill ^ 0xa5}, 96)
+	plaintext := []byte("TEST ONLY SYNTHETIC PLAINTEXT GRAMMAR: " + contract.id)
+	schedule := testD1ScheduleDocument(contract)
 	volume := make([]byte, 0, len(front)+len(body)+len(tail))
 	volume = append(volume, front...)
 	volume = append(volume, body...)
@@ -430,8 +499,85 @@ func testD1ArtifactBundle(contract testD1VectorContract, fill byte) map[string][
 		"body":            body,
 		"volume":          volume,
 		"inner-volume":    []byte("PCV\x00TEST ONLY INVALID INNER GRAMMAR: " + contract.id),
-		"plaintext":       []byte("TEST ONLY SYNTHETIC PLAINTEXT GRAMMAR: " + contract.id),
+		"plaintext":       plaintext,
 	}
+}
+
+func testD1CredentialsDocument(
+	contract testD1VectorContract,
+	password []byte,
+	keyfiles [][]byte,
+	wrongPassword []byte,
+	wrongKeyfiles [][]byte,
+) []byte {
+	encodeFactors := func(password []byte, keyfiles [][]byte) map[string]any {
+		encodedKeyfiles := make([]any, 0, len(keyfiles))
+		for _, keyfile := range keyfiles {
+			encodedKeyfiles = append(encodedKeyfiles, hex.EncodeToString(keyfile))
+		}
+		return map[string]any{
+			"password_utf8_hex": hex.EncodeToString(password),
+			"keyfiles_hex":      encodedKeyfiles,
+		}
+	}
+	document := map[string]any{
+		"test_only": true, "public_test_data_notice": testD1GrammarNotice,
+		"id": contract.id, "category": "d1-credentials",
+		"credential_mode": contract.credentialMode, "keyfile_mode": contract.keyfileMode,
+		"correct": encodeFactors(password, keyfiles), "wrong": encodeFactors(wrongPassword, wrongKeyfiles),
+		"status": "required", "generated_at_test_time": false,
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
+}
+
+func testD1ScheduleDocument(contract testD1VectorContract) []byte {
+	code := "PCV3_AUTHENTICATION_FAILED"
+	switch contract.outcome {
+	case "success":
+		code = "PCV3_SUCCESS"
+	case "authenticated-degraded":
+		code = "PCV3_AUTHENTICATED_DEGRADED"
+	case "credentials-or-damage":
+		code = "PCV3_CREDENTIALS_OR_DAMAGE"
+	case "ambiguous-volume":
+		code = "PCV3_AMBIGUOUS_VOLUME"
+	}
+	operation := func(name, mode, d1Provenance, forceProvenance string, kdfCalls int) map[string]any {
+		return map[string]any{
+			"name": name, "mode": mode, "factors": "correct", "keyfile_order": "manifest",
+			"unverified_role": "none", "expected_outcome": contract.outcome,
+			"expected_stage": contract.stage, "expected_detail_stage": contract.detailStage,
+			"expected_code": code, "expected_d1_provenance": d1Provenance,
+			"expected_force_provenance": forceProvenance, "expected_kdf_calls": kdfCalls,
+			"expected_completion": contract.completion,
+			"expected_output": func() string {
+				if contract.completion {
+					return "plaintext"
+				}
+				return "none"
+			}(),
+			"expected_plaintext_length_hex": "0000000000000000",
+			"expected_final_state":          "none", "expected_ranges": []any{},
+		}
+	}
+	document := map[string]any{
+		"test_only": true, "public_test_data_notice": testD1GrammarNotice,
+		"id": contract.id, "category": "d1-schedule",
+		"operations": []any{
+			operation("normal-correct", "normal", "front", "none", contract.kdfCalls),
+			operation("force-correct", "force", "matching", "verified", 3),
+		},
+		"status": "required", "generated_at_test_time": false,
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
 }
 
 func testD1ManifestEntry(id, logicalPath string, data []byte, provenancePath, provenance, generatorPath, generatorSHA, category, outcome, stage string, kdfCalls int, forceState string) map[string]any {
@@ -508,6 +654,48 @@ func mutateTestD1Manifest(t *testing.T, root string, mutate func(map[string]any)
 		t.Fatalf("encode mutated D1 manifest: %v", err)
 	}
 	writeTestFile(t, root, "manifest.json", string(updated))
+}
+
+func mutateTestD1ArtifactDocument(t *testing.T, root, id string, mutate func(map[string]any)) {
+	t.Helper()
+	manifestPath := filepath.Join(root, "manifest.json")
+	manifestBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read synthetic D1 manifest: %v", err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("decode synthetic D1 manifest: %v", err)
+	}
+	for _, raw := range manifest["fixtures"].([]any) {
+		fixture := raw.(map[string]any)
+		if fixture["id"] != id {
+			continue
+		}
+		logicalPath := fixture["path"].(string)
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(logicalPath)))
+		if err != nil {
+			t.Fatalf("read synthetic D1 artifact: %v", err)
+		}
+		var document map[string]any
+		if err := json.Unmarshal(data, &document); err != nil {
+			t.Fatalf("decode synthetic D1 artifact: %v", err)
+		}
+		mutate(document)
+		updated, err := json.Marshal(document)
+		if err != nil {
+			t.Fatalf("encode mutated D1 artifact: %v", err)
+		}
+		writeTestFile(t, root, logicalPath, string(updated))
+		fixture["sha256"] = testBytesSHA256(updated)
+		encodedManifest, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatalf("encode synthetic D1 manifest: %v", err)
+		}
+		writeTestFile(t, root, "manifest.json", string(encodedManifest))
+		return
+	}
+	t.Fatalf("synthetic D1 artifact %q missing", id)
 }
 
 func removeTestD1ArtifactFile(t *testing.T, root, id string) {
