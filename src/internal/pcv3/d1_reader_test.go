@@ -54,7 +54,6 @@ func TestD1ReaderAuthenticatesBeforeInnerCapability(t *testing.T) {
 			reader, err := newD1InnerReader(
 				context.Background(),
 				bytes.NewReader(mutated),
-				0,
 				uint64(len(body)),
 				access,
 			)
@@ -80,7 +79,6 @@ func TestD1ReaderBoundedScratchAndReauthenticates(t *testing.T) {
 	reader, err := newD1InnerReader(
 		context.Background(),
 		bytes.NewReader(body),
-		0,
 		uint64(len(body)),
 		access,
 	)
@@ -105,7 +103,6 @@ func TestD1ReaderBoundedScratchAndReauthenticates(t *testing.T) {
 	reauth, err := newD1InnerReader(
 		context.Background(),
 		bytes.NewReader(mutable),
-		0,
 		uint64(len(mutable)),
 		access,
 	)

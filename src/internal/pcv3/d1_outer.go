@@ -107,7 +107,8 @@ func expectedD1OuterRecord(
 	geometry d1OuterGeometry,
 	index uint64,
 ) (d1OuterRecordExpectation, error) {
-	if index >= geometry.recordCount || index >= d1OuterRecordLimit {
+	if index >= geometry.recordCount || index >= d1OuterRecordLimit ||
+		geometry.finalCiphertextLength >= d1OuterChunkSize {
 		return d1OuterRecordExpectation{}, newD1OuterFailure(StageD1Body, errInvalidD1OuterRecord)
 	}
 	offset, ok := checkedMul64(index, d1OuterChunkSize+d1OuterTagSize)
@@ -120,11 +121,14 @@ func expectedD1OuterRecord(
 		final:  index == geometry.fullRecords,
 	}
 	if expected.final {
-		expected.ciphertextLength = int(geometry.finalCiphertextLength)
+		expected.ciphertextLength = int(geometry.finalCiphertextLength) //nolint:gosec // The chunk-size guard above bounds this value below 1 MiB.
 	} else {
 		expected.ciphertextLength = d1OuterChunkSize
 	}
-	end, ok := checkedAdd64(offset, uint64(expected.ciphertextLength)+d1OuterTagSize)
+	end, ok := checkedAdd64(
+		offset,
+		uint64(expected.ciphertextLength)+d1OuterTagSize, //nolint:gosec // Both assignments above prove ciphertextLength non-negative and at most one chunk.
+	)
 	if !ok || end > geometry.bodyLength || (expected.final && end != geometry.bodyLength) {
 		return d1OuterRecordExpectation{}, newD1OuterFailure(StageD1Body, errInvalidD1OuterRecord)
 	}

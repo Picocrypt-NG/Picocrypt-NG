@@ -17,7 +17,6 @@ type d1InnerReader struct {
 	mu                sync.Mutex
 	ctx               context.Context
 	source            io.ReaderAt
-	bodyOffset        int64
 	geometry          d1OuterGeometry
 	codec             *d1OuterCodec
 	ciphertextScratch []byte
@@ -29,19 +28,17 @@ type d1InnerReader struct {
 func newD1InnerReader(
 	ctx context.Context,
 	source io.ReaderAt,
-	bodyOffset int64,
 	bodyLength uint64,
 	outerKeys d1OuterKeyAccess,
 ) (*d1InnerReader, error) {
-	if ctx == nil || source == nil || bodyOffset < 0 || outerKeys == nil {
+	if ctx == nil || source == nil || outerKeys == nil {
 		return nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, newD1OuterFailure(StageCancellation, err)
 	}
 	geometry, err := parseD1OuterGeometry(bodyLength)
-	if err != nil || bodyLength > math.MaxInt64 ||
-		uint64(bodyOffset) > uint64(math.MaxInt64)-bodyLength {
+	if err != nil || bodyLength > math.MaxInt64 {
 		return nil, newD1OuterFailure(StageD1Body, errInvalidD1OuterGeometry)
 	}
 	codec, err := newD1OuterCodec(ctx, outerKeys)
@@ -51,7 +48,6 @@ func newD1InnerReader(
 	reader := &d1InnerReader{
 		ctx:               ctx,
 		source:            source,
-		bodyOffset:        bodyOffset,
 		geometry:          geometry,
 		codec:             codec,
 		ciphertextScratch: make([]byte, d1OuterChunkSize),
@@ -219,12 +215,11 @@ func (reader *d1InnerReader) Close() {
 	}
 	reader.ctx = nil
 	reader.source = nil
-	reader.bodyOffset = 0
 	reader.geometry = d1OuterGeometry{}
 }
 
 func (reader *d1InnerReader) authenticateAll() error {
-	for index := uint64(0); index < reader.geometry.recordCount; index++ {
+	for index := range reader.geometry.recordCount {
 		if err := reader.ctx.Err(); err != nil {
 			return newD1OuterFailure(StageCancellation, err)
 		}
@@ -296,8 +291,7 @@ func (reader *d1InnerReader) loadExpected(
 }
 
 func (reader *d1InnerReader) readExactAt(relativeOffset uint64, destination []byte) error {
-	absolute, ok := checkedAdd64(uint64(reader.bodyOffset), relativeOffset)
-	if !ok || absolute > math.MaxInt64 {
+	if relativeOffset > math.MaxInt64 {
 		return newD1OuterFailure(StageD1Body, errD1ReaderProgress)
 	}
 	read := 0
@@ -305,7 +299,7 @@ func (reader *d1InnerReader) readExactAt(relativeOffset uint64, destination []by
 		if err := reader.ctx.Err(); err != nil {
 			return newD1OuterFailure(StageCancellation, err)
 		}
-		offset, ok := checkedAdd64(absolute, uint64(read))
+		offset, ok := checkedAdd64(relativeOffset, uint64(read))
 		if !ok || offset > math.MaxInt64 {
 			return newD1OuterFailure(StageD1Body, errD1ReaderProgress)
 		}

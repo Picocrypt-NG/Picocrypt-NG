@@ -91,7 +91,6 @@ func TestD1WriterUsesCanonicalNormalSerializerSynchronously(t *testing.T) {
 	reader, err := newD1InnerReader(
 		context.Background(),
 		bytes.NewReader(destination.Bytes()),
-		0,
 		uint64(destination.Len()),
 		access,
 	)
@@ -445,7 +444,6 @@ func TestD1WriterNeverCreatesClearInnerArtifact(t *testing.T) {
 	reader, err := newD1InnerReader(
 		context.Background(),
 		bytes.NewReader(raw[d1BootstrapLength:len(raw)-d1BootstrapLength]),
-		0,
 		bodyLength,
 		outerAccess,
 	)
