@@ -362,7 +362,7 @@ func analyzeRecoveryCandidatesWithSession(
 			structure,
 			candidate,
 			geometry,
-			tupleIndexes[index],
+			tupleIndexes[index], //nolint:gosec // CandidateCount is checked above to fit the fixed two-entry tuple.
 			session,
 			request,
 		)

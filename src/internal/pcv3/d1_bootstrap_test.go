@@ -361,7 +361,7 @@ func TestD1ForceBootstrapBinderClosesPanicExit(t *testing.T) {
 		unwrapAlias = destination
 		return realUnwrap(destination, source, xKey, nonce, serpentKey, iv)
 	}
-	panicValue := errors.New("TEST ONLY D1 Force binder panic")
+	panicValue := &struct{ label string }{label: "TEST ONLY D1 Force binder panic"}
 	var recovered any
 	var retained *d1BootstrapBinding
 	var retainedBorrowed *pcv3credential.BorrowedD1OuterKeys

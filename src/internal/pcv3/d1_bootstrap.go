@@ -469,21 +469,6 @@ func bindD1BootstrapWithAccess(
 	return ctx.Err()
 }
 
-func bindD1Bootstrap(
-	ctx context.Context,
-	candidate d1BootstrapCandidate,
-	owner *pcv3credential.D1OuterCredentialOwner,
-	callback func(*d1BootstrapBinding) error,
-) error {
-	return bindD1BootstrapWithAccess(
-		ctx,
-		candidate,
-		&d1BootstrapOwnerAccess{owner: owner},
-		defaultD1BootstrapAuthSeams(),
-		callback,
-	)
-}
-
 func evaluateD1BootstrapWithAccess(
 	ctx context.Context,
 	candidate d1BootstrapCandidate,

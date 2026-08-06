@@ -521,8 +521,10 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 				if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 					return fmt.Errorf("TEST ONLY stage mode = %v", info.Mode())
 				}
-				if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
-					return fmt.Errorf("TEST ONLY destination existed before publish: %v", statErr)
+				if _, statErr := os.Lstat(target); statErr == nil {
+					return errors.New("TEST ONLY destination existed before publish")
+				} else if !errors.Is(statErr, os.ErrNotExist) {
+					return fmt.Errorf("TEST ONLY inspect destination before publish: %w", statErr)
 				}
 				return sink(semantic.ranges[0], rawOuter)
 			})
@@ -694,7 +696,7 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 }
 
 func TestD1PublicationCannotLaunderOutcome(t *testing.T) {
-	const plaintextLength = uint64(recoveryRecordPlaintextMax + 5)
+	const plaintextLength = recoveryRecordPlaintextMax + 5
 	semantic := operationSemantic{
 		outcome: pcv3.OutcomeForcePartial, provenance: pcv3.ForceProvenancePartial,
 		stage: pcv3.StageInnerVolume, code: pcv3.CodeForcePartial,

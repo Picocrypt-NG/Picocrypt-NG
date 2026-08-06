@@ -2562,7 +2562,7 @@ func observeD1ForceDecrypts(seams *d1ForceSeams) *int {
 		final bool,
 		ciphertext, plaintext []byte,
 	) error {
-		*decryptCalls = *decryptCalls + 1
+		(*decryptCalls)++
 		return realDecrypt(candidate, codec, ctx, index, final, ciphertext, plaintext)
 	}
 	return decryptCalls

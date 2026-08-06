@@ -341,6 +341,7 @@ func TestWithD1VolumeFixturesZeroesBorrowedBytes(t *testing.T) {
 func TestWithD1VolumeFixturesZeroesOnCallbackErrorAndPanic(t *testing.T) {
 	const id = "d1-paranoid-combined-ordered-healthy"
 	sentinel := errors.New("TEST ONLY callback sentinel")
+	panicSentinel := &struct{ label string }{label: "TEST ONLY callback panic sentinel"}
 
 	t.Run("error", func(t *testing.T) {
 		var aliases [][]byte
@@ -358,13 +359,13 @@ func TestWithD1VolumeFixturesZeroesOnCallbackErrorAndPanic(t *testing.T) {
 		var aliases [][]byte
 		func() {
 			defer func() {
-				if recovered := recover(); recovered != sentinel {
-					t.Fatalf("WithD1VolumeFixtures() panic = %v, want callback sentinel", recovered)
+				if recovered := recover(); recovered != panicSentinel {
+					t.Fatalf("WithD1VolumeFixtures() panic = %v, want callback panic sentinel", recovered)
 				}
 			}()
 			_ = WithD1VolumeFixtures(writeTestD1Corpus(t), testCustodyID, []string{id}, func(fixtures []*D1VolumeFixture) error {
 				aliases = append(aliases, d1FixtureAliases(fixtures[0])...)
-				panic(sentinel)
+				panic(panicSentinel)
 			})
 		}()
 		assertAliasesZero(t, aliases)
@@ -418,8 +419,10 @@ func TestWithD1MutationPlanZeroesBorrowedBytes(t *testing.T) {
 				aliases = append(aliases, alias)
 			}
 			formattedMutation := fmt.Sprintf("%s|%q|%v|%+v|%#v", mutation, mutation, mutation, mutation, mutation)
-			if strings.Contains(formattedMutation, fmt.Sprint(mutation.Before())) ||
-				strings.Contains(formattedMutation, fmt.Sprint(mutation.After())) {
+			beforeDefaultFormat := fmt.Sprint(mutation.Before()) //nolint:staticcheck // QF1010 would change the default []byte-format leak oracle.
+			afterDefaultFormat := fmt.Sprint(mutation.After())   //nolint:staticcheck // QF1010 would change the default []byte-format leak oracle.
+			if strings.Contains(formattedMutation, beforeDefaultFormat) ||
+				strings.Contains(formattedMutation, afterDefaultFormat) {
 				t.Fatal("D1 mutation formatting disclosed private transform bytes")
 			}
 		}
@@ -437,6 +440,7 @@ func TestWithD1MutationPlanZeroesBorrowedBytes(t *testing.T) {
 
 func TestWithD1MutationPlanZeroesOnCallbackErrorAndPanic(t *testing.T) {
 	sentinel := errors.New("TEST ONLY mutation callback sentinel")
+	panicSentinel := &struct{ label string }{label: "TEST ONLY mutation callback panic sentinel"}
 
 	t.Run("error", func(t *testing.T) {
 		var aliases [][]byte
@@ -454,13 +458,13 @@ func TestWithD1MutationPlanZeroesOnCallbackErrorAndPanic(t *testing.T) {
 		var aliases [][]byte
 		func() {
 			defer func() {
-				if recovered := recover(); recovered != sentinel {
-					t.Fatalf("WithD1MutationPlan() panic = %v, want callback sentinel", recovered)
+				if recovered := recover(); recovered != panicSentinel {
+					t.Fatalf("WithD1MutationPlan() panic = %v, want callback panic sentinel", recovered)
 				}
 			}()
 			_ = WithD1MutationPlan(writeTestD1Corpus(t), testCustodyID, func(plan *D1MutationPlan) error {
 				aliases = append(aliases, d1MutationAliases(plan)...)
-				panic(sentinel)
+				panic(panicSentinel)
 			})
 		}()
 		assertAliasesZero(t, aliases)

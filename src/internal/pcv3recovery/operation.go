@@ -98,10 +98,13 @@ func runOperation(
 
 // runD1 remains package-private until the PCV3 surface and writer gates are
 // complete. It deliberately has no CLI, UI, mobile, or WASM caller.
+//
+//nolint:unused // Phase 8 intentionally owns the first real D1 surface caller.
 func runD1(ctx context.Context, request *Request) *Result {
 	return runOperation(ctx, request, runD1ProductionCore)
 }
 
+//nolint:unused // Phase 8 intentionally owns the first real D1 surface caller.
 func runD1Unverified(
 	ctx context.Context,
 	request *Request,
@@ -521,7 +524,6 @@ func validSelectedD1Provenance(provenance pcv3.D1BootstrapProvenance) bool {
 	return provenance == pcv3.D1BootstrapProvenanceFront ||
 		provenance == pcv3.D1BootstrapProvenanceTail ||
 		provenance == pcv3.D1BootstrapProvenanceMatching
-
 }
 
 func validOperationD1ProvenanceForOutcome(
@@ -637,6 +639,7 @@ func runProductionCore(
 	return semantic, err
 }
 
+//nolint:unused // This adapter remains unreachable until Phase 8 wires explicit D1 routing.
 func runD1ProductionCore(
 	ctx context.Context,
 	request *Request,
@@ -645,6 +648,7 @@ func runD1ProductionCore(
 	return runD1ProductionCoreWithRole(ctx, request, nil, output)
 }
 
+//nolint:unused // This adapter remains unreachable until Phase 8 wires explicit D1 routing.
 func runD1ProductionCoreWithRole(
 	ctx context.Context,
 	request *Request,
@@ -807,6 +811,7 @@ func operationRoleForCapsule(role pcv3.CapsuleRole) (operationPhysicalRole, bool
 	}
 }
 
+//nolint:unused // D1 physical roles enter the operation only through the deferred Phase 8 adapter.
 func operationRoleForD1(role pcv3.D1BootstrapRole) (operationPhysicalRole, bool) {
 	switch role {
 	case pcv3.D1BootstrapFront:

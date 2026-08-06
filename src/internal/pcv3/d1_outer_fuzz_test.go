@@ -177,7 +177,6 @@ func TestD1FuzzSeedsReachProductionSeams(t *testing.T) {
 
 	t.Run("reader", func(t *testing.T) {
 		for _, seed := range d1ReaderFuzzSeeds {
-			seed := seed
 			t.Run(seed.name, func(t *testing.T) {
 				runD1ReaderFuzzCase(t, seed.payload, seed.mode, seed.parameter, seed.risk, seed.oracle, true)
 			})
@@ -186,7 +185,6 @@ func TestD1FuzzSeedsReachProductionSeams(t *testing.T) {
 
 	t.Run("writer", func(t *testing.T) {
 		for _, seed := range d1WriterFuzzSeeds {
-			seed := seed
 			t.Run(seed.name, func(t *testing.T) {
 				runD1WriterFuzzCase(t, seed.payload, seed.mode, seed.risk, seed.oracle, codecs)
 			})
@@ -551,7 +549,7 @@ func requireD1FuzzOuterFailure(
 ) {
 	t.Helper()
 	var failure *d1OuterFailure
-	if !errors.As(err, &failure) || failure.Stage() != wantStage || failure.Unwrap() != wantCause {
+	if !errors.As(err, &failure) || failure.Stage() != wantStage || !errors.Is(err, wantCause) {
 		t.Fatalf("%s: wrong D1 failure type, stage, or cause; oracle: %s", risk, oracle)
 	}
 }
@@ -566,7 +564,7 @@ func requireNormalFuzzWriteFailure(
 ) {
 	t.Helper()
 	var failure *normalWriteFailure
-	if !errors.As(err, &failure) || failure.Stage() != wantStage || failure.Unwrap() != wantCause {
+	if !errors.As(err, &failure) || failure.Stage() != wantStage || !errors.Is(err, wantCause) {
 		t.Fatalf("%s: wrong normal-writer failure type, stage, or cause; oracle: %s", risk, oracle)
 	}
 }

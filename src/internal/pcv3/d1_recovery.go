@@ -1,11 +1,12 @@
 package pcv3
 
 import (
-	pcv3crypto "Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/pcv3credential"
 	"context"
 	"errors"
 	"io"
+
+	pcv3crypto "Picocrypt-NG/internal/crypto"
 )
 
 // D1RecoveryOutput receives D1 semantic provenance and a callback-scoped
@@ -356,7 +357,7 @@ func selectNormalD1Front(
 	}
 	window, err := deriveD1ForceBodyWindow(sourceSize, front.bodyLength, front.role)
 	if err != nil {
-		return nil, selection, false, nil
+		return nil, selection, false, nil //nolint:nilerr // Invalid front geometry is candidate damage; normal recovery must still try the tail.
 	}
 	analysis, err := analyzeD1ForceCandidate(
 		ctx,
@@ -394,12 +395,12 @@ func usableD1RecoveryCandidates(
 		if candidate == nil || !candidate.valid() {
 			continue
 		}
-		window, err := deriveD1ForceBodyWindow(
+		_, err := deriveD1ForceBodyWindow(
 			sourceSize,
 			candidate.bodyLength,
 			candidate.role,
 		)
-		if err != nil || uint64(window.length) != candidate.bodyLength {
+		if err != nil {
 			continue
 		}
 		if _, err := parseD1OuterGeometry(candidate.bodyLength); err != nil {
@@ -702,8 +703,7 @@ func recoverD1Inner(
 				selectionErr = analysisErr
 				return selectionErr
 			}
-			resolution, resolved, resolvedRequest, resolveErr :=
-				resolveD1InnerRecoveryAnalyses(structure, analyses)
+			resolution, resolved, resolvedRequest, resolveErr := resolveD1InnerRecoveryAnalyses(structure, analyses)
 			if resolveErr != nil {
 				selectionErr = resolveErr
 				return selectionErr
@@ -1121,7 +1121,7 @@ func emitD1RawOuter(
 					rangeIndex++
 				}
 				if expected.final && expected.ciphertextLength != 0 {
-					wantFinal := RecoveryFinalMissing
+					var wantFinal RecoveryFinalState
 					switch recoveryRange.state {
 					case RecoveryRangeVerified:
 						wantFinal = RecoveryFinalVerified

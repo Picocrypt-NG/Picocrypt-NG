@@ -985,12 +985,15 @@ func (f *D1VolumeFixture) WrongPassword() []byte  { return f.wrong.password }
 func (f *D1VolumeFixture) Keyfiles() [][]byte {
 	return append([][]byte(nil), f.correct.keyfiles...)
 }
+
 func (f *D1VolumeFixture) WrongKeyfiles() [][]byte {
 	return append([][]byte(nil), f.wrong.keyfiles...)
 }
+
 func (f *D1VolumeFixture) Operations() []D1OperationExpectation {
 	return append([]D1OperationExpectation(nil), f.operations...)
 }
+
 func (f *D1VolumeFixture) Operation(name string) (D1OperationExpectation, bool) {
 	for _, operation := range f.operations {
 		if operation.name == name {
@@ -999,14 +1002,16 @@ func (f *D1VolumeFixture) Operation(name string) (D1OperationExpectation, bool) 
 	}
 	return D1OperationExpectation{}, false
 }
+
 func (f *D1VolumeFixture) String() string                 { return "pcv3 D1 volume fixture: redacted" }
 func (f *D1VolumeFixture) GoString() string               { return f.String() }
 func (f *D1VolumeFixture) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, f.String()) }
 func (p *D1MutationPlan) ID() string                      { return d1MutationPlanID }
 func (p *D1MutationPlan) Mutations() []D1Mutation         { return append([]D1Mutation(nil), p.mutations...) }
-func (p *D1MutationPlan) String() string                  { return "pcv3 D1 mutation plan: redacted" }
-func (p *D1MutationPlan) GoString() string                { return p.String() }
-func (p *D1MutationPlan) Format(state fmt.State, _ rune)  { _, _ = io.WriteString(state, p.String()) }
+
+func (p *D1MutationPlan) String() string                 { return "pcv3 D1 mutation plan: redacted" }
+func (p *D1MutationPlan) GoString() string               { return p.String() }
+func (p *D1MutationPlan) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, p.String()) }
 
 func (m D1Mutation) Contract() D1MutationContract { return m.contract }
 func (m D1Mutation) SourceSHA256() string         { return m.sourceSHA256 }
