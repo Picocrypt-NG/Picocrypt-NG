@@ -112,10 +112,6 @@ func loadCorpus(rootPath, custodyID string, selected map[string]struct{}) (*Corp
 			selectedDocuments[fixture.id] = document
 		}
 	}
-	if selected != nil && manifest.format != currentCorpusFormat {
-		zeroDocumentMap(selectedDocuments)
-		return nil, nil, refusal(RefusalUnknown)
-	}
 	var phase4Evidence uint64
 	for _, fixture := range manifest.fixtures {
 		if _, evidence, found := phase4Contract(fixture.id); found {
@@ -130,6 +126,7 @@ func loadCorpus(rootPath, custodyID string, selected map[string]struct{}) (*Corp
 		specRevision:   manifest.specRevision,
 		format:         manifest.format,
 		phase4Evidence: phase4Evidence,
+		d1Complete:     manifest.format == d1CorpusFormat,
 	}, selectedDocuments, nil
 }
 
@@ -384,6 +381,10 @@ func fixtureFileLimit(category string) int64 {
 		return maxCapsuleFixtureFileBytes
 	case "normal-volume":
 		return maxNormalFixtureFileBytes
+	case "d1-volume":
+		return maxD1VolumeArtifactBytes
+	case "d1-mutation-plan":
+		return maxD1MutationPlanBytes
 	default:
 		return maxLegacyFixtureFileBytes
 	}
@@ -395,6 +396,12 @@ func matchesSHA256(data []byte, expected string) bool {
 }
 
 func validateFixtureDocument(data []byte, fixture fixtureManifest) error {
+	switch fixture.category {
+	case "d1-volume":
+		return validateD1ArtifactDocument(data, fixture)
+	case "d1-mutation-plan":
+		return validateD1MutationPlanDocument(data, fixture)
+	}
 	document, err := decodeStrictJSON(data)
 	if err != nil {
 		return refusalForManifestJSON(err)
