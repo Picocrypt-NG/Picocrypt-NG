@@ -405,6 +405,12 @@ func evaluateD1OuterRecordsWithAuthenticator(
 			tagScratch,
 		)
 		if err != nil {
+			if d1OuterRecordMissing(err) {
+				if visitorErr := visitor(expected, err); visitorErr != nil {
+					return visitorErr
+				}
+				continue
+			}
 			return err
 		}
 		authErr := authenticate(
@@ -420,6 +426,15 @@ func evaluateD1OuterRecordsWithAuthenticator(
 		}
 	}
 	return nil
+}
+
+func d1OuterRecordMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	var failure *d1OuterFailure
+	return errors.As(err, &failure) && failure.Stage() == StageD1Body &&
+		errors.Is(err, errD1OuterAuthentication)
 }
 
 func loadD1OuterRecord(

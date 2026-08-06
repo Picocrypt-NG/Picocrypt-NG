@@ -201,7 +201,7 @@ func TestEncodeMatchesIndependentLiteralArtifacts(t *testing.T) {
 	}
 }
 
-func TestD1ArtifactPhysicalRolesRemainDistinctOnDisk(t *testing.T) {
+func TestD1ArtifactPhysicalRoles(t *testing.T) {
 	tests := []struct {
 		name     string
 		role     Role

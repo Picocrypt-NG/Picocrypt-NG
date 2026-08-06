@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	pcv3crypto "Picocrypt-NG/internal/crypto"
 	pcencoding "Picocrypt-NG/internal/encoding"
@@ -24,6 +25,21 @@ type RecoveryOutput func(*RecoveryResult, CapsuleRole, RecoveryEmitter) error
 
 type recoveryEngineError struct{ stage Stage }
 
+type recoverySelection struct {
+	resolution forceResolution
+	candidate  Candidate
+	geometry   Geometry
+	records    recoveryRecordAnalysis
+}
+
+type recoveryEmitterLease struct {
+	mu       sync.Mutex
+	idle     *sync.Cond
+	active   bool
+	called   bool
+	inFlight bool
+}
+
 func (*recoveryEngineError) Error() string { return "pcv3: recovery operation failed" }
 
 func (err *recoveryEngineError) String() string { return err.Error() }
@@ -32,6 +48,46 @@ func (err *recoveryEngineError) GoString() string { return err.Error() }
 
 func (err *recoveryEngineError) Format(state fmt.State, verb rune) {
 	writeFixedFormat(state, verb, err.Error())
+}
+
+func newRecoveryEmitterLease() *recoveryEmitterLease {
+	lease := &recoveryEmitterLease{active: true}
+	lease.idle = sync.NewCond(&lease.mu)
+	return lease
+}
+
+func (lease *recoveryEmitterLease) invoke(callback func() error) error {
+	if lease == nil || callback == nil {
+		return &recoveryEngineError{stage: StageOutputWrite}
+	}
+	lease.mu.Lock()
+	if !lease.active || lease.called || lease.inFlight {
+		lease.mu.Unlock()
+		return &recoveryEngineError{stage: StageOutputWrite}
+	}
+	lease.called = true
+	lease.inFlight = true
+	lease.mu.Unlock()
+	defer func() {
+		lease.mu.Lock()
+		lease.inFlight = false
+		lease.idle.Broadcast()
+		lease.mu.Unlock()
+	}()
+	return callback()
+}
+
+func (lease *recoveryEmitterLease) expire() bool {
+	if lease == nil {
+		return false
+	}
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	lease.active = false
+	for lease.inFlight {
+		lease.idle.Wait()
+	}
+	return lease.called
 }
 
 type sessionForceIdentity struct {
@@ -190,68 +246,22 @@ func recoverWithRequest(
 		return recoveryOperationFailure(StageCredentialPolicy), &recoveryEngineError{stage: StageCredentialPolicy}
 	}
 
-	var resolution forceResolution
-	var analyses []forceCandidateAnalysis
-	var selectedAnalysis recoveryRecordAnalysis
-	var selectedCandidate Candidate
-	var selectedGeometry Geometry
+	var selection recoverySelection
 	var analysisErr error
 	owner, credentialErr := pcv3credential.WithRecoveryCredentialSession(
 		ctx,
 		credentialRequest,
 		admitter,
 		func(session *pcv3credential.RecoverySession) error {
-			analyses = make([]forceCandidateAnalysis, 0, structure.CandidateCount())
-			for index := range structure.CandidateCount() {
-				candidate, _ := structure.CandidateAt(index)
-				geometry, _ := structure.GeometryAt(index)
-				analysis, include, candidateErr := analyzeRecoveryCandidate(
-					ctx,
-					source,
-					structure,
-					candidate,
-					geometry,
-					tupleIndexes[index],
-					session,
-					request,
-				)
-				if candidateErr != nil {
-					analysisErr = candidateErr
-					return candidateErr
-				}
-				if include {
-					analyses = append(analyses, analysis)
-				}
-			}
-			if request.Mode() == RecoveryModeNormalV3 {
-				resolution, analysisErr = resolveNormalRecoveryCandidates(analyses)
-			} else {
-				resolution, analysisErr = resolveForceCandidates(request, analyses)
-			}
-			if analysisErr != nil {
-				return analysisErr
-			}
-			if resolution.selected < 0 {
-				return nil
-			}
-			selected := analyses[resolution.selected]
-			identity, ok := selected.identity.(*sessionForceIdentity)
-			if !ok || identity == nil || identity.candidate == nil {
-				analysisErr = errInvalidForceAnalysis
-				return analysisErr
-			}
-			if selectErr := session.Select(identity.candidate); selectErr != nil {
-				analysisErr = selectErr
-				return selectErr
-			}
-			selectedCandidate = selected.candidate
-			selectedGeometry = selected.geometry
-			selectedAnalysis = recoveryRecordAnalysis{
-				ranges:      append([]RecoveryRange(nil), selected.ranges...),
-				final:       selected.final,
-				damageStage: selected.damageStage,
-			}
-			return nil
+			selection, analysisErr = selectRecoveryWithSession(
+				ctx,
+				source,
+				structure,
+				tupleIndexes,
+				session,
+				request,
+			)
+			return analysisErr
 		},
 	)
 	if analysisErr != nil {
@@ -267,49 +277,159 @@ func recoverWithRequest(
 		stage := credentialPipelineStage(credentialErr)
 		return recoveryOperationFailure(stage), &recoveryEngineError{stage: stage}
 	}
-	if resolution.result == nil {
+	if selection.resolution.result == nil {
 		if owner != nil {
 			owner.Close()
 		}
 		return recoveryOperationFailure(StageCredentialPolicy), &recoveryEngineError{stage: StageCredentialPolicy}
 	}
-	if resolution.selected < 0 {
+	if selection.resolution.selected < 0 {
 		if owner != nil {
 			owner.Close()
 		}
-		return resolution.result, nil
+		return selection.resolution.result, nil
 	}
 	if owner == nil {
 		return recoveryOperationFailure(StageUnwrap), &recoveryEngineError{stage: StageUnwrap}
 	}
 	defer owner.Close()
+	return emitRecoverySelection(
+		ctx,
+		source,
+		request,
+		selection,
+		owner,
+		selection.resolution.result,
+		func(result *RecoveryResult, emitter RecoveryEmitter) error {
+			return output(result, selection.candidate.Role(), emitter)
+		},
+	)
+}
 
-	emitterCalls := 0
+func selectRecoveryWithSession(
+	ctx context.Context,
+	source io.ReaderAt,
+	structure RecoveryStructure,
+	tupleIndexes [2]int,
+	session *pcv3credential.RecoverySession,
+	request recoveryRequest,
+) (recoverySelection, error) {
+	var selection recoverySelection
+	if ctx == nil || source == nil || session == nil || !request.valid() ||
+		structure.CandidateCount() < 1 || structure.CandidateCount() > 2 {
+		return selection, errInvalidForceAnalysis
+	}
+	analyses := make([]forceCandidateAnalysis, 0, structure.CandidateCount())
+	for index := range structure.CandidateCount() {
+		candidate, _ := structure.CandidateAt(index)
+		geometry, _ := structure.GeometryAt(index)
+		analysis, include, err := analyzeRecoveryCandidate(
+			ctx,
+			source,
+			structure,
+			candidate,
+			geometry,
+			tupleIndexes[index],
+			session,
+			request,
+		)
+		if err != nil {
+			return recoverySelection{}, err
+		}
+		if include {
+			analyses = append(analyses, analysis)
+		}
+	}
+	var err error
+	if request.Mode() == RecoveryModeNormalV3 {
+		selection.resolution, err = resolveNormalRecoveryCandidates(analyses)
+	} else {
+		selection.resolution, err = resolveForceCandidates(request, analyses)
+	}
+	if err != nil || selection.resolution.selected < 0 {
+		return selection, err
+	}
+	selected := analyses[selection.resolution.selected]
+	identity, ok := selected.identity.(*sessionForceIdentity)
+	if !ok || identity == nil || identity.candidate == nil {
+		return recoverySelection{}, errInvalidForceAnalysis
+	}
+	if err := session.Select(identity.candidate); err != nil {
+		return recoverySelection{}, err
+	}
+	selection.candidate = selected.candidate
+	selection.geometry = selected.geometry
+	selection.records = recoveryRecordAnalysis{
+		ranges:      append([]RecoveryRange(nil), selected.ranges...),
+		final:       selected.final,
+		damageStage: selected.damageStage,
+	}
+	return selection, nil
+}
+
+func emitRecoverySelection(
+	ctx context.Context,
+	source io.ReaderAt,
+	request recoveryRequest,
+	selection recoverySelection,
+	owner *pcv3credential.Owner,
+	result *RecoveryResult,
+	output func(*RecoveryResult, RecoveryEmitter) error,
+) (*RecoveryResult, error) {
+	if ctx == nil || source == nil || !request.valid() || owner == nil ||
+		selection.resolution.selected < 0 || result == nil || output == nil {
+		return recoveryOperationFailure(StageCredentialPolicy), &recoveryEngineError{stage: StageCredentialPolicy}
+	}
+	return deliverRecoveryOutput(
+		ctx,
+		result,
+		func(sink RecoverySegmentSink) error {
+			return emitRecoveryRecords(
+				ctx,
+				source,
+				selection.candidate,
+				selection.geometry,
+				&ownerVolumeKeyBorrower{owner: owner},
+				request,
+				selection.candidate.Role(),
+				selection.records,
+				sink,
+			)
+		},
+		output,
+	)
+}
+
+func deliverRecoveryOutput(
+	ctx context.Context,
+	result *RecoveryResult,
+	produce func(RecoverySegmentSink) error,
+	output func(*RecoveryResult, RecoveryEmitter) error,
+) (*RecoveryResult, error) {
+	if ctx == nil || result == nil || produce == nil || output == nil {
+		return recoveryOperationFailure(StageCredentialPolicy), &recoveryEngineError{stage: StageCredentialPolicy}
+	}
+	lease := newRecoveryEmitterLease()
+	defer lease.expire()
 	var emitterErr error
 	var sinkErr error
 	emitter := func(sink RecoverySegmentSink) error {
-		emitterCalls++
-		if emitterCalls != 1 || sink == nil {
-			emitterErr = &recoveryEngineError{stage: StageOutputWrite}
+		return lease.invoke(func() error {
+			if sink == nil {
+				emitterErr = &recoveryEngineError{stage: StageOutputWrite}
+				return emitterErr
+			}
+			emitterErr = produce(
+				func(recoveryRange RecoveryRange, plaintext []byte) error {
+					sinkErr = sink(recoveryRange, plaintext)
+					return sinkErr
+				},
+			)
 			return emitterErr
-		}
-		emitterErr = emitRecoveryRecords(
-			ctx,
-			source,
-			selectedCandidate,
-			selectedGeometry,
-			&ownerVolumeKeyBorrower{owner: owner},
-			request,
-			selectedCandidate.Role(),
-			selectedAnalysis,
-			func(recoveryRange RecoveryRange, plaintext []byte) error {
-				sinkErr = sink(recoveryRange, plaintext)
-				return sinkErr
-			},
-		)
-		return emitterErr
+		})
 	}
-	outputErr := output(resolution.result, selectedCandidate.Role(), emitter)
+	outputErr := output(result, emitter)
+	emitterCalled := lease.expire()
 	if sinkErr != nil {
 		if cancellation := recordCancellationCause(ctx, sinkErr); cancellation != nil {
 			return recoveryOperationFailure(StageCancellation), &recoveryEngineError{stage: StageCancellation}
@@ -328,15 +448,15 @@ func recoverWithRequest(
 			}
 			return recoveryResultForError(outputErr)
 		}
-		return resolution.result, &recoveryEngineError{stage: StageOutputWrite}
+		return result, &recoveryEngineError{stage: StageOutputWrite}
 	}
 	if emitterErr != nil {
 		return recoveryResultForError(emitterErr)
 	}
-	if emitterCalls != 1 {
-		return resolution.result, &recoveryEngineError{stage: StageOutputWrite}
+	if !emitterCalled {
+		return result, &recoveryEngineError{stage: StageOutputWrite}
 	}
-	return resolution.result, nil
+	return result, nil
 }
 
 func analyzeRecoveryCandidate(
@@ -549,40 +669,51 @@ func recoveryCredentialRequest(
 	structure RecoveryStructure,
 	factors *pcv3credential.FactorRequest,
 ) (*pcv3credential.RecoveryCredentialRequest, [2]int, bool) {
-	var tupleIndexes [2]int
-	if factors == nil || structure.CandidateCount() < 1 || structure.CandidateCount() > 2 {
+	tuples, tupleIndexes, ok := recoveryCredentialTuples(structure)
+	if factors == nil || !ok {
 		closeRecoveryFactors(factors)
 		return nil, tupleIndexes, false
 	}
-	request := &pcv3credential.RecoveryCredentialRequest{Factors: factors}
-	var tuples []credentialTuple
+	return &pcv3credential.RecoveryCredentialRequest{
+		Factors: factors,
+		Tuples:  tuples,
+	}, tupleIndexes, true
+}
+
+func recoveryCredentialTuples(
+	structure RecoveryStructure,
+) ([]pcv3credential.RecoveryCredentialTuple, [2]int, bool) {
+	var tupleIndexes [2]int
+	if structure.CandidateCount() < 1 || structure.CandidateCount() > 2 {
+		return nil, tupleIndexes, false
+	}
+	var identities []credentialTuple
+	var requests []pcv3credential.RecoveryCredentialTuple
 	for index := range structure.CandidateCount() {
 		candidate, ok := structure.CandidateAt(index)
 		if !ok || !validAuthCandidate(candidate) {
-			_ = request.Close()
 			return nil, tupleIndexes, false
 		}
 		tuple := credentialTupleForCandidate(candidate)
 		tupleIndex := -1
-		for existing := range tuples {
-			if tuples[existing] == tuple {
+		for existing := range identities {
+			if identities[existing] == tuple {
 				tupleIndex = existing
 				break
 			}
 		}
 		if tupleIndex == -1 {
-			tupleIndex = len(tuples)
+			tupleIndex = len(identities)
 			tupleRequest, valid := credentialRecoveryTuple(tuple)
 			if !valid {
-				_ = request.Close()
 				return nil, tupleIndexes, false
 			}
-			tuples = append(tuples, tuple)
-			request.Tuples = append(request.Tuples, tupleRequest)
+			identities = append(identities, tuple)
+			requests = append(requests, tupleRequest)
 		}
 		tupleIndexes[index] = tupleIndex
 	}
-	return request, tupleIndexes, true
+	return requests, tupleIndexes, true
 }
 
 func credentialRecoveryTuple(tuple credentialTuple) (pcv3credential.RecoveryCredentialTuple, bool) {

@@ -34,14 +34,16 @@ const (
 	StateUnverifiedForensic State = 2
 )
 
-// Role records the explicitly selected capsule role when unverified evidence
-// is present. RoleNone is canonical for verified/missing partial evidence.
+// Role records the explicitly selected physical recovery role when unverified
+// evidence is present. RoleNone is canonical for verified/missing evidence.
 type Role uint8
 
 const (
 	RoleNone    Role = 0
 	RolePrimary Role = 1
 	RoleBackup  Role = 2
+	RoleD1Front Role = 3
+	RoleD1Tail  Role = 4
 )
 
 // FinalStatus records the separately authenticated final-record evidence.
@@ -706,11 +708,11 @@ func validSemanticState(
 			return false
 		}
 		if hasUnverified {
-			return role == RolePrimary || role == RoleBackup
+			return validSelectedRole(role)
 		}
 		return role == RoleNone
 	case StateUnverifiedForensic:
-		return !hasVerified && hasUnverified && (role == RolePrimary || role == RoleBackup)
+		return !hasVerified && hasUnverified && validSelectedRole(role)
 	default:
 		return false
 	}
@@ -721,7 +723,12 @@ func validState(state State) bool {
 }
 
 func validRole(role Role) bool {
-	return role == RoleNone || role == RolePrimary || role == RoleBackup
+	return role == RoleNone || validSelectedRole(role)
+}
+
+func validSelectedRole(role Role) bool {
+	return role == RolePrimary || role == RoleBackup ||
+		role == RoleD1Front || role == RoleD1Tail
 }
 
 func validFinalStatus(status FinalStatus) bool {

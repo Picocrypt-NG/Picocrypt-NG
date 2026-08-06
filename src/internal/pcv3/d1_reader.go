@@ -25,6 +25,12 @@ type d1InnerReaderSeams struct {
 	) error
 }
 
+type d1ForceReaderPolicy struct {
+	request   d1RecoveryRequest
+	candidate *d1ForceCandidate
+	seams     d1ForceSeams
+}
+
 func defaultD1InnerReaderSeams() d1InnerReaderSeams {
 	return d1InnerReaderSeams{
 		openRecord: func(
@@ -51,6 +57,7 @@ type d1InnerReader struct {
 	plaintextScratch  []byte
 	tagScratch        [d1OuterTagSize]byte
 	seams             d1InnerReaderSeams
+	force             *d1ForceReaderPolicy
 	closed            bool
 }
 
@@ -78,7 +85,114 @@ func newD1InnerReaderWithSeams(
 	outerKeys d1OuterKeyAccess,
 	seams d1InnerReaderSeams,
 ) (*d1InnerReader, error) {
+	return newD1InnerReaderConfigured(
+		ctx,
+		source,
+		bodyLength,
+		outerKeys,
+		seams,
+		nil,
+		nil,
+	)
+}
+
+func newD1InnerReaderFromCompleteAnalysis(
+	ctx context.Context,
+	source io.ReaderAt,
+	sourceSize int64,
+	analysis *d1ForceCandidateAnalysis,
+) (*d1InnerReader, error) {
+	if source == nil || sourceSize < 0 || analysis == nil || analysis.candidate == nil ||
+		!analysis.candidate.valid() || !analysis.outerAnchored ||
+		!analysis.outerFullyAuthenticated || analysis.bodyWindow.offset < 0 ||
+		analysis.bodyWindow.length < 0 ||
+		uint64(analysis.bodyWindow.length) != analysis.candidate.bodyLength { //nolint:gosec // The non-negative guard proves the conversion.
+		return nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
+	}
+	if !normalD1Geometry(sourceSize, analysis.candidate.bodyLength) {
+		return nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
+	}
+	wantWindow, err := deriveD1ForceBodyWindow(
+		sourceSize,
+		analysis.candidate.bodyLength,
+		analysis.candidate.role,
+	)
+	if err != nil || wantWindow != analysis.bodyWindow {
+		return nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
+	}
+	geometry, err := parseD1OuterGeometry(analysis.candidate.bodyLength)
+	if err != nil || geometry != analysis.geometry {
+		return nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
+	}
+	body := io.NewSectionReader(
+		source,
+		analysis.bodyWindow.offset,
+		analysis.bodyWindow.length,
+	)
+	return newD1InnerReaderConfigured(
+		ctx,
+		body,
+		analysis.candidate.bodyLength,
+		analysis.candidate,
+		defaultD1InnerReaderSeams(),
+		nil,
+		analysis,
+	)
+}
+
+func newD1ForceInnerReader(
+	ctx context.Context,
+	source io.ReaderAt,
+	request d1RecoveryRequest,
+	analysis *d1ForceCandidateAnalysis,
+	seams d1ForceSeams,
+) (*d1InnerReader, error) {
+	if source == nil || analysis == nil || analysis.candidate == nil ||
+		analysis.bodyWindow.offset < 0 || analysis.bodyWindow.length < 0 {
+		return nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
+	}
+	body := io.NewSectionReader(
+		source,
+		analysis.bodyWindow.offset,
+		analysis.bodyWindow.length,
+	)
+	return newD1InnerReaderConfigured(
+		ctx,
+		body,
+		analysis.candidate.bodyLength,
+		analysis.candidate,
+		defaultD1InnerReaderSeams(),
+		&d1ForceReaderPolicy{
+			request:   request,
+			candidate: analysis.candidate,
+			seams:     seams,
+		},
+		nil,
+	)
+}
+
+func newD1InnerReaderConfigured(
+	ctx context.Context,
+	source io.ReaderAt,
+	bodyLength uint64,
+	outerKeys d1OuterKeyAccess,
+	seams d1InnerReaderSeams,
+	force *d1ForceReaderPolicy,
+	completeAnalysis *d1ForceCandidateAnalysis,
+) (*d1InnerReader, error) {
 	if ctx == nil || source == nil || outerKeys == nil || seams.openRecord == nil {
+		return nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
+	}
+	if completeAnalysis != nil {
+		candidate, ok := outerKeys.(*d1ForceCandidate)
+		if force != nil || !ok || candidate != completeAnalysis.candidate ||
+			!completeAnalysis.outerAnchored || !completeAnalysis.outerFullyAuthenticated {
+			return nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
+		}
+	}
+	if force != nil && (!force.request.valid() || force.candidate == nil ||
+		!force.candidate.valid() || force.seams.authenticateRecord == nil ||
+		force.seams.decryptRecord == nil) {
 		return nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
 	}
 	if err := ctx.Err(); err != nil {
@@ -87,6 +201,9 @@ func newD1InnerReaderWithSeams(
 	geometry, err := parseD1OuterGeometry(bodyLength)
 	if err != nil || bodyLength > math.MaxInt64 {
 		return nil, newD1OuterFailure(StageD1Body, errInvalidD1OuterGeometry)
+	}
+	if completeAnalysis != nil && completeAnalysis.geometry != geometry {
+		return nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
 	}
 	codec, err := newD1OuterCodec(ctx, outerKeys)
 	if err != nil {
@@ -100,6 +217,7 @@ func newD1InnerReaderWithSeams(
 		ciphertextScratch: make([]byte, d1OuterChunkSize),
 		plaintextScratch:  make([]byte, d1OuterChunkSize),
 		seams:             seams,
+		force:             force,
 	}
 	success := false
 	defer func() {
@@ -107,21 +225,24 @@ func newD1InnerReaderWithSeams(
 			reader.Close()
 		}
 	}()
-	if err := reader.authenticateAll(); err != nil {
-		return nil, err
+	if force == nil && completeAnalysis == nil {
+		if err := reader.authenticateAll(); err != nil {
+			return nil, err
+		}
 	}
 	first, err := expectedD1OuterRecord(geometry, 0)
 	if err != nil {
 		return nil, err
 	}
-	plaintext, err := reader.openExpected(first)
+	plaintext, authenticated, err := reader.openExpectedWithState(first)
 	if err != nil {
 		return nil, err
 	}
 	defer pcv3crypto.SecureZero(plaintext)
-	if len(plaintext) < d1OuterPrefixLength ||
-		!bytes.Equal(plaintext[:8], []byte(d1OuterMarker)) ||
-		binary.BigEndian.Uint64(plaintext[8:16]) != geometry.innerLength {
+	prefixValid := len(plaintext) >= d1OuterPrefixLength &&
+		bytes.Equal(plaintext[:8], []byte(d1OuterMarker)) &&
+		binary.BigEndian.Uint64(plaintext[8:16]) == geometry.innerLength
+	if !prefixValid && (force == nil || authenticated) {
 		return nil, newD1OuterFailure(StageD1Body, errD1OuterAuthentication)
 	}
 	success = true
@@ -129,7 +250,12 @@ func newD1InnerReaderWithSeams(
 }
 
 func (reader *d1InnerReader) Size() int64 {
-	if reader == nil || reader.closed || reader.geometry.innerLength > math.MaxInt64 {
+	if reader == nil {
+		return 0
+	}
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	if reader.closed || reader.geometry.innerLength > math.MaxInt64 {
 		return 0
 	}
 	return int64(reader.geometry.innerLength)
@@ -137,12 +263,14 @@ func (reader *d1InnerReader) Size() int64 {
 
 func (reader *d1InnerReader) ReadAt(destination []byte, offset int64) (int, error) {
 	if reader == nil {
+		pcv3crypto.SecureZero(destination)
 		return 0, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
 	}
 	reader.mu.Lock()
 	defer reader.mu.Unlock()
 	if reader.closed || reader.ctx == nil || reader.source == nil || reader.codec == nil ||
 		reader.seams.openRecord == nil || offset < 0 {
+		pcv3crypto.SecureZero(destination)
 		return 0, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
 	}
 	if len(destination) == 0 {
@@ -175,26 +303,28 @@ func (reader *d1InnerReader) ReadAt(destination []byte, offset int64) (int, erro
 	firstIndex := outerStart / d1OuterChunkSize
 	lastIndex := (outerEnd - 1) / d1OuterChunkSize
 
-	for index := firstIndex; index <= lastIndex; index++ {
-		expected, err := expectedD1OuterRecord(reader.geometry, index)
-		if err != nil {
-			pcv3crypto.SecureZero(destination)
-			return 0, err
-		}
-		ciphertext, tag, err := reader.loadExpected(expected)
-		if err != nil {
-			pcv3crypto.SecureZero(destination)
-			return 0, err
-		}
-		if err := reader.codec.authenticateRecord(
-			reader.ctx,
-			expected.index,
-			expected.final,
-			ciphertext,
-			tag,
-		); err != nil {
-			pcv3crypto.SecureZero(destination)
-			return 0, err
+	if reader.force == nil {
+		for index := firstIndex; index <= lastIndex; index++ {
+			expected, err := expectedD1OuterRecord(reader.geometry, index)
+			if err != nil {
+				pcv3crypto.SecureZero(destination)
+				return 0, err
+			}
+			ciphertext, tag, err := reader.loadExpected(expected)
+			if err != nil {
+				pcv3crypto.SecureZero(destination)
+				return 0, err
+			}
+			if err := reader.codec.authenticateRecord(
+				reader.ctx,
+				expected.index,
+				expected.final,
+				ciphertext,
+				tag,
+			); err != nil {
+				pcv3crypto.SecureZero(destination)
+				return 0, err
+			}
 		}
 	}
 
@@ -266,6 +396,7 @@ func (reader *d1InnerReader) Close() {
 	reader.source = nil
 	reader.geometry = d1OuterGeometry{}
 	reader.seams = d1InnerReaderSeams{}
+	reader.force = nil
 }
 
 func (reader *d1InnerReader) authenticateAll() error {
@@ -285,25 +416,48 @@ func (reader *d1InnerReader) authenticateAll() error {
 func (reader *d1InnerReader) openExpected(
 	expected d1OuterRecordExpectation,
 ) ([]byte, error) {
+	plaintext, _, err := reader.openExpectedWithState(expected)
+	return plaintext, err
+}
+
+func (reader *d1InnerReader) openExpectedWithState(
+	expected d1OuterRecordExpectation,
+) ([]byte, bool, error) {
 	ciphertext, tag, err := reader.loadExpected(expected)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	plaintext := reader.plaintextScratch[:expected.ciphertextLength]
 	pcv3crypto.SecureZero(plaintext)
-	if err := reader.seams.openRecord(
-		reader.codec,
-		reader.ctx,
-		expected.index,
-		expected.final,
-		ciphertext,
-		tag,
-		plaintext,
-	); err != nil {
-		pcv3crypto.SecureZero(plaintext)
-		return nil, err
+	authenticated := true
+	if reader.force == nil {
+		err = reader.seams.openRecord(
+			reader.codec,
+			reader.ctx,
+			expected.index,
+			expected.final,
+			ciphertext,
+			tag,
+			plaintext,
+		)
+	} else {
+		authenticated, err = openD1ForceRecord(
+			reader.ctx,
+			reader.force.request,
+			reader.force.candidate,
+			reader.codec,
+			expected,
+			ciphertext,
+			tag,
+			plaintext,
+			reader.force.seams,
+		)
 	}
-	return plaintext, nil
+	if err != nil {
+		pcv3crypto.SecureZero(plaintext)
+		return nil, false, err
+	}
+	return plaintext, authenticated, nil
 }
 
 func (reader *d1InnerReader) loadExpected(

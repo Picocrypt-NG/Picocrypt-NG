@@ -108,7 +108,7 @@ func FuzzParseEnforcesCanonicalSemanticLayout(f *testing.F) {
 			}
 		case StateUnverifiedForensic:
 			if hasVerified || !hasUnverified ||
-				(metadata.Role != RolePrimary && metadata.Role != RoleBackup) {
+				metadata.Role == RoleNone || !validRole(metadata.Role) {
 				t.Fatalf("successful parse exposed noncanonical unverified semantics: %#v", metadata)
 			}
 		default:

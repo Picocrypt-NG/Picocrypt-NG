@@ -138,14 +138,21 @@ func d1RecoveryCodeFor(
 	switch stage {
 	case StageNone:
 		return CodeSuccess, outcome == OutcomeSuccess &&
-			provenance == D1BootstrapProvenanceMatching && detailStage == StageNone
+			(provenance == D1BootstrapProvenanceFront ||
+				provenance == D1BootstrapProvenanceMatching) &&
+			detailStage == StageNone
 	case StageD1Bootstrap:
 		if detailStage != StageNone {
-			return 0, false
+			code, ok := codeFor(outcome, detailStage)
+			return code, ok && validD1ProvenanceForOutcome(outcome, provenance)
 		}
 		switch outcome {
 		case OutcomeAuthenticatedDegraded:
 			return CodeAuthenticatedDegraded, isSelectedD1BootstrapProvenance(provenance)
+		case OutcomeForcePartial:
+			return CodeForcePartial, isSelectedD1BootstrapProvenance(provenance)
+		case OutcomeForceUnverified:
+			return CodeForceUnverified, isPhysicalD1BootstrapProvenance(provenance)
 		case OutcomeCredentialsOrDamage:
 			return CodeCredentialsOrDamage, provenance == D1BootstrapProvenanceNone
 		case OutcomeAmbiguousVolume:
@@ -155,20 +162,27 @@ func d1RecoveryCodeFor(
 		}
 	case StageD1Body:
 		if detailStage != StageNone {
-			return 0, false
+			code, ok := codeFor(outcome, detailStage)
+			return code, ok && validD1ProvenanceForOutcome(outcome, provenance)
 		}
 		switch outcome {
 		case OutcomeAuthenticatedDegraded:
 			return CodeAuthenticatedDegraded, isSelectedD1BootstrapProvenance(provenance)
+		case OutcomeForcePartial:
+			return CodeForcePartial, isSelectedD1BootstrapProvenance(provenance)
+		case OutcomeForceUnverified:
+			return CodeForceUnverified, isPhysicalD1BootstrapProvenance(provenance)
 		case OutcomeAuthenticationFailed:
 			return CodeAuthenticationFailed, isSelectedD1BootstrapProvenance(provenance)
+		case OutcomeCredentialsOrDamage:
+			return CodeCredentialsOrDamage, isSelectedD1BootstrapProvenance(provenance)
 		case OutcomeAmbiguousVolume:
 			return CodeAmbiguousVolume, provenance == D1BootstrapProvenanceNone
 		default:
 			return 0, false
 		}
 	case StageInnerVolume:
-		if !isSelectedD1BootstrapProvenance(provenance) || detailStage == StageNone {
+		if !validD1ProvenanceForOutcome(outcome, provenance) || detailStage == StageNone {
 			return 0, false
 		}
 		return codeFor(outcome, detailStage)
@@ -177,10 +191,24 @@ func d1RecoveryCodeFor(
 	}
 }
 
+func validD1ProvenanceForOutcome(
+	outcome Outcome,
+	provenance D1BootstrapProvenance,
+) bool {
+	if outcome == OutcomeForceUnverified {
+		return isPhysicalD1BootstrapProvenance(provenance)
+	}
+	return isSelectedD1BootstrapProvenance(provenance)
+}
+
 func isSelectedD1BootstrapProvenance(provenance D1BootstrapProvenance) bool {
-	return provenance == D1BootstrapProvenanceFront ||
-		provenance == D1BootstrapProvenanceTail ||
+	return isPhysicalD1BootstrapProvenance(provenance) ||
 		provenance == D1BootstrapProvenanceMatching
+}
+
+func isPhysicalD1BootstrapProvenance(provenance D1BootstrapProvenance) bool {
+	return provenance == D1BootstrapProvenanceFront ||
+		provenance == D1BootstrapProvenanceTail
 }
 
 func newRecoveryResult(
@@ -327,7 +355,8 @@ func (result *RecoveryResult) D1BootstrapProvenance() D1BootstrapProvenance {
 	return result.d1BootstrapProvenance
 }
 
-// DetailStage returns the closed inner normal stage for StageInnerVolume.
+// DetailStage returns the closed inner normal stage reached through D1. When
+// outer damage is also present, Stage retains that earlier D1 boundary.
 func (result *RecoveryResult) DetailStage() Stage {
 	if result == nil {
 		return StageNone

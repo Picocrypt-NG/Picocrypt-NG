@@ -15,6 +15,8 @@ var errInvalidD1Force = errors.New("pcv3: invalid D1 Force request")
 
 type d1ForceCandidate struct {
 	role            D1BootstrapRole
+	bootstrap       d1BootstrapCandidate
+	bootstrapKnown  bool
 	bodyLength      uint64
 	secret          *d1OuterSecretOwner
 	borrowOuterKeys func(
@@ -59,6 +61,8 @@ func (candidate *d1ForceCandidate) Close() {
 		candidate.secret.Close()
 		candidate.secret = nil
 	}
+	clearD1BootstrapCandidate(&candidate.bootstrap)
+	candidate.bootstrapKnown = false
 	candidate.borrowOuterKeys = nil
 	candidate.role = 0
 	candidate.bodyLength = 0
@@ -67,7 +71,8 @@ func (candidate *d1ForceCandidate) Close() {
 }
 
 func (candidate *d1ForceCandidate) valid() bool {
-	if candidate == nil || !validD1BootstrapRole(candidate.role) || candidate.bodyLength == 0 {
+	if candidate == nil || !validD1BootstrapRole(candidate.role) || candidate.bodyLength == 0 ||
+		!candidate.bootstrapKnown || candidate.bootstrap.role != candidate.role {
 		return false
 	}
 	return (candidate.secret != nil) != (candidate.borrowOuterKeys != nil)
@@ -94,6 +99,8 @@ func bindD1ForceCandidateWithAccess(
 			}
 			candidate := &d1ForceCandidate{
 				role:            bootstrap.role,
+				bootstrap:       bootstrap,
+				bootstrapKnown:  true,
 				bodyLength:      binding.bodyLength,
 				borrowOuterKeys: binding.withOuterKeys,
 				wrapVerified:    binding.wrapVerified,
@@ -175,7 +182,7 @@ type d1RecoveryRequest struct {
 }
 
 func newD1RecoveryRequest(mode RecoveryMode) (d1RecoveryRequest, error) {
-	if mode != RecoveryModeForce {
+	if mode != RecoveryModeNormalV3 && mode != RecoveryModeForce {
 		return d1RecoveryRequest{}, errInvalidRecoveryRequest
 	}
 	return d1RecoveryRequest{mode: mode}, nil
@@ -199,7 +206,7 @@ func withUnverifiedD1RecoveryRequest(
 
 func (request d1RecoveryRequest) valid() bool {
 	switch request.mode {
-	case RecoveryModeForce:
+	case RecoveryModeNormalV3, RecoveryModeForce:
 		return request.consent == nil
 	case RecoveryModeForceUnverified:
 		return request.consent != nil && request.consent.valid()
@@ -291,11 +298,8 @@ func deriveD1ForceBodyWindow(
 		return d1ForceBodyWindow{}, errInvalidD1Force
 	}
 	length := int64(bodyLength) //nolint:gosec // The MaxInt64 guard above proves this conversion.
-	minimumSize, ok := checkedAdd64(
-		uint64(2*d1BootstrapLength),
-		bodyLength,
-	)
-	if !ok || minimumSize > math.MaxInt64 || sourceSize < int64(minimumSize) { //nolint:gosec // The preceding bound proves this conversion.
+	singleSize, ok := checkedAdd64(uint64(d1BootstrapLength), bodyLength)
+	if !ok || singleSize > math.MaxInt64 || sourceSize < int64(singleSize) { //nolint:gosec // The preceding bound proves this conversion.
 		return d1ForceBodyWindow{}, errInvalidD1Force
 	}
 	offset := int64(d1BootstrapLength)
@@ -303,8 +307,15 @@ func deriveD1ForceBodyWindow(
 		offset = sourceSize - int64(d1BootstrapLength) - length
 	}
 	end := offset + length
-	if offset < int64(d1BootstrapLength) || end < offset ||
-		end > sourceSize-int64(d1BootstrapLength) {
+	if end < offset {
+		return d1ForceBodyWindow{}, errInvalidD1Force
+	}
+	if sourceSize == int64(singleSize) { //nolint:gosec // The preceding bound proves this conversion.
+		if (role == D1BootstrapFront && (offset != int64(d1BootstrapLength) || end != sourceSize)) ||
+			(role == D1BootstrapTail && (offset != 0 || end != length)) {
+			return d1ForceBodyWindow{}, errInvalidD1Force
+		}
+	} else if offset < 0 || end > sourceSize {
 		return d1ForceBodyWindow{}, errInvalidD1Force
 	}
 	return d1ForceBodyWindow{offset: offset, length: length}, nil
@@ -316,6 +327,14 @@ type d1ForceCandidateAnalysis struct {
 	geometry                d1OuterGeometry
 	outerAnchored           bool
 	outerFullyAuthenticated bool
+}
+
+type d1ForceSelection struct {
+	analysis             *d1ForceCandidateAnalysis
+	provenance           D1BootstrapProvenance
+	bootstrapHealthy     bool
+	outerHealthy         bool
+	requiresRawAuthority bool
 }
 
 func analyzeD1ForceCandidate(
@@ -422,119 +441,31 @@ func resolveD1ForceCandidatesWithSeams(
 	for _, candidate := range candidates {
 		defer candidate.Close()
 	}
-	if ctx == nil || source == nil || sourceSize < 0 || !request.valid() ||
-		len(candidates) == 0 || len(candidates) > 2 || inner == nil ||
-		seams.authenticateRecord == nil || seams.decryptRecord == nil {
-		return nil, errInvalidD1Force
+	selection, terminal, err := selectD1ForceCandidate(
+		ctx,
+		source,
+		sourceSize,
+		request,
+		candidates,
+		seams,
+	)
+	if err != nil || terminal != nil {
+		return terminal, err
 	}
-	seenRoles := make(map[D1BootstrapRole]struct{}, len(candidates))
-	for _, candidate := range candidates {
-		if candidate == nil || !candidate.valid() {
-			return nil, errInvalidD1Force
-		}
-		if _, exists := seenRoles[candidate.role]; exists {
-			return nil, errInvalidD1Force
-		}
-		seenRoles[candidate.role] = struct{}{}
-	}
-
-	pairSameSecret := false
-	if len(candidates) == 2 {
-		var err error
-		pairSameSecret, err = sameD1OuterSecretAccess(
-			ctx,
-			candidates[0].bodyLength,
-			candidates[0],
-			candidates[1].bodyLength,
-			candidates[1],
-		)
-		if err != nil {
-			return nil, err
-		}
-		if candidates[0].wrapVerified && candidates[0].replicaVerified &&
-			candidates[1].wrapVerified && candidates[1].replicaVerified &&
-			!pairSameSecret {
-			return newD1ForceTerminalResult(
-				OutcomeAmbiguousVolume,
-				StageD1Bootstrap,
-			)
-		}
-	}
-
-	windows := make([]d1ForceBodyWindow, len(candidates))
-	analyses := make([]*d1ForceCandidateAnalysis, len(candidates))
-	for index, candidate := range candidates {
-		window, err := deriveD1ForceBodyWindow(sourceSize, candidate.bodyLength, candidate.role)
-		if err != nil {
-			return nil, err
-		}
-		windows[index] = window
-		analysis, err := analyzeD1ForceCandidate(ctx, source, window, candidate, seams)
-		if err != nil {
-			return nil, err
-		}
-		analyses[index] = analysis
-	}
-
-	pairSameContext := len(candidates) == 2 && pairSameSecret && windows[0] == windows[1]
-	anchored := make([]int, 0, len(analyses))
-	for index, analysis := range analyses {
-		if analysis.outerAnchored {
-			anchored = append(anchored, index)
-		}
-	}
-
-	selectedIndex := -1
-	provenance := D1BootstrapProvenanceNone
-	switch len(anchored) {
-	case 0:
-		for index, candidate := range candidates {
-			if request.authorizesRawOuter(candidate.role) {
-				selectedIndex = index
-				provenance = d1BootstrapProvenanceForRole(candidate.role)
-				break
-			}
-		}
-		if selectedIndex < 0 {
-			return newD1ForceTerminalResult(
-				OutcomeCredentialsOrDamage,
-				StageD1Bootstrap,
-			)
-		}
-	case 1:
-		selectedIndex = anchored[0]
-		provenance = d1BootstrapProvenanceForRole(candidates[selectedIndex].role)
-	case 2:
-		if !pairSameContext {
-			return newD1ForceTerminalResult(
-				OutcomeAmbiguousVolume,
-				StageD1Body,
-			)
-		}
-		selectedIndex = anchored[0]
-		provenance = D1BootstrapProvenanceMatching
-	default:
-		return nil, errInvalidD1Force
-	}
-	if selectedIndex < 0 || provenance == D1BootstrapProvenanceNone {
-		return nil, errInvalidD1Force
-	}
-
 	var innerResult *RecoveryResult
 	invokeInner := func() error {
 		if err := ctx.Err(); err != nil {
 			return newD1OuterFailure(StageCancellation, err)
 		}
 		var innerErr error
-		innerResult, innerErr = inner(analyses[selectedIndex])
+		innerResult, innerErr = inner(selection.analysis)
 		if innerErr == nil && ctx.Err() != nil {
 			return newD1OuterFailure(StageCancellation, ctx.Err())
 		}
 		return innerErr
 	}
-	var err error
-	if len(anchored) == 0 {
-		err = request.withRawOuterAuthority(candidates[selectedIndex].role, invokeInner)
+	if selection.requiresRawAuthority {
+		err = request.withRawOuterAuthority(selection.analysis.candidate.role, invokeInner)
 	} else {
 		err = invokeInner()
 	}
@@ -548,34 +479,253 @@ func resolveD1ForceCandidatesWithSeams(
 		return nil, errInvalidD1Force
 	}
 	defer innerResult.Close()
+	return mapD1ForceInnerResult(selection, innerResult)
+}
 
-	bootstrapHealthy := provenance == D1BootstrapProvenanceMatching
-	outerHealthy := analyses[selectedIndex].outerFullyAuthenticated
-	if bootstrapHealthy {
-		for index, candidate := range candidates {
-			bootstrapHealthy = bootstrapHealthy && candidate.wrapVerified && candidate.replicaVerified
-			outerHealthy = outerHealthy && analyses[index].outerFullyAuthenticated
+func selectD1ForceCandidate(
+	ctx context.Context,
+	source io.ReaderAt,
+	sourceSize int64,
+	request d1RecoveryRequest,
+	candidates []*d1ForceCandidate,
+	seams d1ForceSeams,
+) (d1ForceSelection, *RecoveryResult, error) {
+	return selectD1ForceCandidateWithPreanalysis(
+		ctx,
+		source,
+		sourceSize,
+		request,
+		candidates,
+		seams,
+		nil,
+	)
+}
+
+func selectD1ForceCandidateWithPreanalysis(
+	ctx context.Context,
+	source io.ReaderAt,
+	sourceSize int64,
+	request d1RecoveryRequest,
+	candidates []*d1ForceCandidate,
+	seams d1ForceSeams,
+	preanalyzed *d1ForceCandidateAnalysis,
+) (d1ForceSelection, *RecoveryResult, error) {
+	var selection d1ForceSelection
+	if ctx == nil || source == nil || sourceSize < 0 || !request.valid() ||
+		len(candidates) == 0 || len(candidates) > 2 ||
+		seams.authenticateRecord == nil || seams.decryptRecord == nil {
+		return selection, nil, errInvalidD1Force
+	}
+	seenRoles := make(map[D1BootstrapRole]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == nil || !candidate.valid() {
+			return selection, nil, errInvalidD1Force
+		}
+		if _, exists := seenRoles[candidate.role]; exists {
+			return selection, nil, errInvalidD1Force
+		}
+		seenRoles[candidate.role] = struct{}{}
+	}
+
+	pairSameSecret := false
+	if len(candidates) == 2 {
+		if fullyAuthenticatedD1Candidate(candidates[0]) &&
+			fullyAuthenticatedD1Candidate(candidates[1]) &&
+			!independentD1BootstrapParameters(
+				candidates[0].bootstrap,
+				candidates[1].bootstrap,
+			) {
+			terminal, err := newD1ForceTerminalResult(
+				OutcomeAmbiguousVolume,
+				StageD1Bootstrap,
+			)
+			return selection, terminal, err
+		}
+		var err error
+		pairSameSecret, err = sameD1OuterSecretAccess(
+			ctx,
+			candidates[0].bodyLength,
+			candidates[0],
+			candidates[1].bodyLength,
+			candidates[1],
+		)
+		if err != nil {
+			return selection, nil, err
+		}
+		if candidates[0].wrapVerified && candidates[0].replicaVerified &&
+			candidates[1].wrapVerified && candidates[1].replicaVerified &&
+			!pairSameSecret {
+			terminal, err := newD1ForceTerminalResult(
+				OutcomeAmbiguousVolume,
+				StageD1Bootstrap,
+			)
+			return selection, terminal, err
 		}
 	}
+
+	windows := make([]d1ForceBodyWindow, len(candidates))
+	analyses := make([]*d1ForceCandidateAnalysis, len(candidates))
+	usedPreanalysis := false
+	for index, candidate := range candidates {
+		window, err := deriveD1ForceBodyWindow(sourceSize, candidate.bodyLength, candidate.role)
+		if err != nil {
+			return selection, nil, err
+		}
+		windows[index] = window
+		if preanalyzed != nil && preanalyzed.candidate == candidate {
+			geometry, geometryErr := parseD1OuterGeometry(candidate.bodyLength)
+			if geometryErr != nil || preanalyzed.bodyWindow != window ||
+				preanalyzed.geometry != geometry {
+				return selection, nil, errInvalidD1Force
+			}
+			analyses[index] = preanalyzed
+			usedPreanalysis = true
+			continue
+		}
+		analysis, err := analyzeD1ForceCandidate(ctx, source, window, candidate, seams)
+		if err != nil {
+			return selection, nil, err
+		}
+		analyses[index] = analysis
+	}
+	if preanalyzed != nil && !usedPreanalysis {
+		return selection, nil, errInvalidD1Force
+	}
+
+	pairSameContext := len(candidates) == 2 && pairSameSecret && windows[0] == windows[1]
+	anchored := make([]int, 0, len(analyses))
+	for index, analysis := range analyses {
+		if analysis.outerAnchored {
+			anchored = append(anchored, index)
+		}
+	}
+
+	selectedIndex := -1
+	switch len(anchored) {
+	case 0:
+		for index, candidate := range candidates {
+			if request.authorizesRawOuter(candidate.role) {
+				selectedIndex = index
+				selection.provenance = d1BootstrapProvenanceForRole(candidate.role)
+				selection.requiresRawAuthority = true
+				break
+			}
+		}
+		if selectedIndex < 0 {
+			if provenance := authenticatedD1BootstrapProvenance(
+				candidates,
+				pairSameContext,
+			); provenance != D1BootstrapProvenanceNone {
+				terminal, err := newD1RecoveryResult(
+					OutcomeAuthenticationFailed,
+					ForceProvenanceNone,
+					StageD1Body,
+					provenance,
+					StageNone,
+					0,
+					nil,
+					0,
+				)
+				return selection, terminal, err
+			}
+			terminal, err := newD1ForceTerminalResult(
+				OutcomeCredentialsOrDamage,
+				StageD1Bootstrap,
+			)
+			return selection, terminal, err
+		}
+	case 1:
+		selectedIndex = anchored[0]
+		selection.provenance = d1BootstrapProvenanceForRole(candidates[selectedIndex].role)
+	case 2:
+		if !pairSameContext {
+			terminal, err := newD1ForceTerminalResult(
+				OutcomeAmbiguousVolume,
+				StageD1Body,
+			)
+			return selection, terminal, err
+		}
+		selectedIndex = anchored[0]
+		if request.mode == RecoveryModeForceUnverified {
+			for _, index := range anchored {
+				if request.authorizesRawOuter(candidates[index].role) {
+					selectedIndex = index
+					break
+				}
+			}
+		}
+		selection.provenance = D1BootstrapProvenanceMatching
+	default:
+		return selection, nil, errInvalidD1Force
+	}
+	if selectedIndex < 0 || selection.provenance == D1BootstrapProvenanceNone {
+		return selection, nil, errInvalidD1Force
+	}
+
+	selection.analysis = analyses[selectedIndex]
+	selection.bootstrapHealthy = len(candidates) == 2 && pairSameContext
+	selection.outerHealthy = analyses[selectedIndex].outerFullyAuthenticated
+	if selection.bootstrapHealthy {
+		for index, candidate := range candidates {
+			selection.bootstrapHealthy = selection.bootstrapHealthy &&
+				candidate.wrapVerified && candidate.replicaVerified
+			selection.outerHealthy = selection.outerHealthy && analyses[index].outerFullyAuthenticated
+		}
+	}
+	return selection, nil, nil
+}
+
+func authenticatedD1BootstrapProvenance(
+	candidates []*d1ForceCandidate,
+	pairSameContext bool,
+) D1BootstrapProvenance {
+	var provenance D1BootstrapProvenance
+	fullyAuthenticated := 0
+	for _, candidate := range candidates {
+		if candidate == nil || !candidate.wrapVerified || !candidate.replicaVerified {
+			continue
+		}
+		fullyAuthenticated++
+		provenance = d1BootstrapProvenanceForRole(candidate.role)
+	}
+	switch {
+	case fullyAuthenticated == 1:
+		return provenance
+	case fullyAuthenticated == 2 && pairSameContext:
+		return D1BootstrapProvenanceMatching
+	default:
+		return D1BootstrapProvenanceNone
+	}
+}
+
+func mapD1ForceInnerResult(
+	selection d1ForceSelection,
+	innerResult *RecoveryResult,
+) (*RecoveryResult, error) {
+	if selection.analysis == nil || innerResult == nil ||
+		selection.provenance == D1BootstrapProvenanceNone {
+		return nil, errInvalidD1Force
+	}
+
 	if innerResult.outcome == OutcomeSuccess {
 		switch {
-		case !bootstrapHealthy:
+		case !selection.bootstrapHealthy:
 			return newD1RecoveryResult(
 				OutcomeAuthenticatedDegraded,
 				ForceProvenanceNone,
 				StageD1Bootstrap,
-				provenance,
+				selection.provenance,
 				StageNone,
 				0,
 				nil,
 				0,
 			)
-		case !outerHealthy:
+		case !selection.outerHealthy:
 			return newD1RecoveryResult(
 				OutcomeAuthenticatedDegraded,
 				ForceProvenanceNone,
 				StageD1Body,
-				provenance,
+				selection.provenance,
 				StageNone,
 				0,
 				nil,
@@ -586,7 +736,7 @@ func resolveD1ForceCandidatesWithSeams(
 				OutcomeSuccess,
 				ForceProvenanceNone,
 				StageNone,
-				provenance,
+				selection.provenance,
 				StageNone,
 				0,
 				nil,
@@ -594,11 +744,17 @@ func resolveD1ForceCandidatesWithSeams(
 			)
 		}
 	}
+	stage := StageInnerVolume
+	if !selection.bootstrapHealthy {
+		stage = StageD1Bootstrap
+	} else if !selection.outerHealthy {
+		stage = StageD1Body
+	}
 	return newD1RecoveryResult(
 		innerResult.outcome,
 		innerResult.provenance,
-		StageInnerVolume,
-		provenance,
+		stage,
+		selection.provenance,
 		innerResult.stage,
 		innerResult.plaintextLength,
 		innerResult.ranges,
@@ -648,54 +804,142 @@ func openD1ForceRawRecordWithSeams(
 		!candidate.valid() || seams.decryptRecord == nil {
 		return errInvalidD1Force
 	}
-	return request.withRawOuterAuthority(candidate.role, func() error {
-		window, err := deriveD1ForceBodyWindow(sourceSize, candidate.bodyLength, candidate.role)
-		if err != nil {
-			return err
-		}
-		geometry, err := parseD1OuterGeometry(candidate.bodyLength)
-		if err != nil {
-			return err
-		}
-		expected, err := expectedD1OuterRecord(geometry, recordIndex)
-		if err != nil || len(destination) != expected.ciphertextLength {
-			return errInvalidD1Force
-		}
-		codec, err := newD1OuterCodec(ctx, candidate)
-		if err != nil {
-			return err
-		}
-		defer codec.Close()
-		ciphertext := make([]byte, expected.ciphertextLength)
-		defer pcv3crypto.SecureZero(ciphertext)
-		var tag [d1OuterTagSize]byte
-		defer pcv3crypto.SecureZero(tag[:])
-		bodySource := io.NewSectionReader(source, window.offset, window.length)
-		loaded, _, err := loadD1OuterRecord(
-			ctx,
-			bodySource,
-			expected,
-			ciphertext,
-			tag[:],
-		)
-		if err != nil {
-			return err
-		}
+	window, err := deriveD1ForceBodyWindow(sourceSize, candidate.bodyLength, candidate.role)
+	if err != nil {
+		return err
+	}
+	geometry, err := parseD1OuterGeometry(candidate.bodyLength)
+	if err != nil {
+		return err
+	}
+	expected, err := expectedD1OuterRecord(geometry, recordIndex)
+	if err != nil || len(destination) != expected.ciphertextLength {
+		return errInvalidD1Force
+	}
+	codec, err := newD1OuterCodec(ctx, candidate)
+	if err != nil {
+		return err
+	}
+	defer codec.Close()
+	ciphertext := make([]byte, expected.ciphertextLength)
+	defer pcv3crypto.SecureZero(ciphertext)
+	var tag [d1OuterTagSize]byte
+	defer pcv3crypto.SecureZero(tag[:])
+	bodySource := io.NewSectionReader(source, window.offset, window.length)
+	loaded, _, err := loadD1OuterRecord(
+		ctx,
+		bodySource,
+		expected,
+		ciphertext,
+		tag[:],
+	)
+	if err != nil {
+		return err
+	}
+	if err := decryptD1ForceRecordRaw(
+		request,
+		candidate,
+		codec,
+		ctx,
+		expected,
+		loaded,
+		destination,
+		seams,
+	); err != nil {
+		pcv3crypto.SecureZero(destination)
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		pcv3crypto.SecureZero(destination)
+		return newD1OuterFailure(StageCancellation, err)
+	}
+	return nil
+}
+
+func openD1ForceRecord(
+	ctx context.Context,
+	request d1RecoveryRequest,
+	candidate *d1ForceCandidate,
+	codec *d1OuterCodec,
+	expected d1OuterRecordExpectation,
+	ciphertext, tag, plaintext []byte,
+	seams d1ForceSeams,
+) (bool, error) {
+	pcv3crypto.SecureZero(plaintext)
+	if ctx == nil || candidate == nil || !candidate.valid() || codec == nil ||
+		seams.authenticateRecord == nil || seams.decryptRecord == nil ||
+		len(ciphertext) != len(plaintext) || len(tag) != d1OuterTagSize {
+		return false, errInvalidD1Force
+	}
+	authErr := seams.authenticateRecord(
+		candidate,
+		codec,
+		ctx,
+		expected.index,
+		expected.final,
+		ciphertext,
+		tag,
+	)
+	if authErr == nil {
 		if err := seams.decryptRecord(
 			candidate,
 			codec,
 			ctx,
 			expected.index,
 			expected.final,
-			loaded,
-			destination,
+			ciphertext,
+			plaintext,
 		); err != nil {
-			pcv3crypto.SecureZero(destination)
-			return err
+			pcv3crypto.SecureZero(plaintext)
+			return false, err
 		}
-		if err := ctx.Err(); err != nil {
-			pcv3crypto.SecureZero(destination)
-			return newD1OuterFailure(StageCancellation, err)
+		return true, nil
+	}
+	if !errors.Is(authErr, errD1OuterAuthentication) {
+		return false, authErr
+	}
+	if err := decryptD1ForceRecordRaw(
+		request,
+		candidate,
+		codec,
+		ctx,
+		expected,
+		ciphertext,
+		plaintext,
+		seams,
+	); err != nil {
+		pcv3crypto.SecureZero(plaintext)
+		return false, err
+	}
+	return false, nil
+}
+
+func decryptD1ForceRecordRaw(
+	request d1RecoveryRequest,
+	candidate *d1ForceCandidate,
+	codec *d1OuterCodec,
+	ctx context.Context,
+	expected d1OuterRecordExpectation,
+	ciphertext, plaintext []byte,
+	seams d1ForceSeams,
+) error {
+	pcv3crypto.SecureZero(plaintext)
+	if candidate == nil || !candidate.valid() || codec == nil || ctx == nil ||
+		seams.decryptRecord == nil || len(ciphertext) != len(plaintext) {
+		return errInvalidD1Force
+	}
+	return request.withRawOuterAuthority(candidate.role, func() error {
+		if err := seams.decryptRecord(
+			candidate,
+			codec,
+			ctx,
+			expected.index,
+			expected.final,
+			ciphertext,
+			plaintext,
+		); err != nil {
+			pcv3crypto.SecureZero(plaintext)
+			return err
 		}
 		return nil
 	})

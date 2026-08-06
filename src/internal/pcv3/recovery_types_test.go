@@ -201,6 +201,10 @@ func TestD1RecoveryRegistryAcceptsOnlyFrozenFullTuples(t *testing.T) {
 			d1Provenance: D1BootstrapProvenanceMatching, detail: StageNone, code: CodeSuccess,
 		},
 		{
+			name: "healthy front-first success", outcome: OutcomeSuccess, stage: StageNone,
+			d1Provenance: D1BootstrapProvenanceFront, detail: StageNone, code: CodeSuccess,
+		},
+		{
 			name: "front bootstrap degraded", outcome: OutcomeAuthenticatedDegraded, stage: StageD1Bootstrap,
 			d1Provenance: D1BootstrapProvenanceFront, detail: StageNone, code: CodeAuthenticatedDegraded,
 		},
@@ -295,6 +299,11 @@ func TestD1RecoveryRegistryAcceptsOnlyFrozenFullTuples(t *testing.T) {
 			name:    "selected success without provenance",
 			outcome: OutcomeSuccess, stage: StageNone,
 			d1Provenance: D1BootstrapProvenanceNone, detail: StageNone,
+		},
+		{
+			name:    "tail-only success without bootstrap degradation",
+			outcome: OutcomeSuccess, stage: StageNone,
+			d1Provenance: D1BootstrapProvenanceTail, detail: StageNone,
 		},
 		{
 			name:    "ambiguity with selected provenance",

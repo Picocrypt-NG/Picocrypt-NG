@@ -88,7 +88,7 @@ func TestRunPublishesCompleteRecoveredPlaintextWithoutSemanticRelabelling(t *tes
 	target := filepath.Join(directory, "recovered.bin")
 	semantic := operationSemantic{
 		outcome: pcv3.OutcomeAuthenticatedDegraded, provenance: pcv3.ForceProvenanceVerified,
-		stage: pcv3.StageWrapAuth, plaintextLength: 5,
+		stage: pcv3.StageWrapAuth, code: pcv3.CodeAuthenticatedDegraded, plaintextLength: 5,
 		ranges: []operationRange{{recordIndex: 0, start: 0, end: 5, state: pcv3.RecoveryRangeVerified}},
 		final:  pcv3.RecoveryFinalVerified,
 	}
@@ -153,7 +153,7 @@ func TestRunPublishesOneCanonicalArtifactForPartialEvidence(t *testing.T) {
 	target := filepath.Join(directory, "evidence.pcv3-recovery")
 	semantic := operationSemantic{
 		outcome: pcv3.OutcomeForcePartial, provenance: pcv3.ForceProvenancePartial,
-		stage: pcv3.StageRecordAuth, plaintextLength: 1048581,
+		stage: pcv3.StageRecordAuth, code: pcv3.CodeForcePartial, plaintextLength: 1048581,
 		ranges: []operationRange{
 			{recordIndex: 0, start: 0, end: 1048576, state: pcv3.RecoveryRangeMissing},
 			{recordIndex: 1, start: 1048576, end: 1048581, state: pcv3.RecoveryRangeVerified},
@@ -246,7 +246,7 @@ func TestRunNoReplaceAndProtectedAliasesRetainForeignBytes(t *testing.T) {
 			}
 			semantic := operationSemantic{
 				outcome: pcv3.OutcomeAuthenticatedDegraded, provenance: pcv3.ForceProvenanceVerified,
-				stage: pcv3.StageWrapAuth, plaintextLength: 3,
+				stage: pcv3.StageWrapAuth, code: pcv3.CodeAuthenticatedDegraded, plaintextLength: 3,
 				ranges: []operationRange{{recordIndex: 0, start: 0, end: 3, state: pcv3.RecoveryRangeVerified}},
 				final:  pcv3.RecoveryFinalVerified,
 			}
@@ -270,7 +270,7 @@ func TestRunEmitterFailureCleansOnlyOwnedStageAndRetainsSource(t *testing.T) {
 	}
 	semantic := operationSemantic{
 		outcome: pcv3.OutcomeForcePartial, provenance: pcv3.ForceProvenancePartial,
-		stage: pcv3.StageRecordAuth, plaintextLength: 4,
+		stage: pcv3.StageRecordAuth, code: pcv3.CodeForcePartial, plaintextLength: 4,
 		ranges: []operationRange{{recordIndex: 0, start: 0, end: 4, state: pcv3.RecoveryRangeVerified}},
 		final:  pcv3.RecoveryFinalMissing,
 	}
@@ -476,7 +476,8 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 	rawOuter := []byte("PCVOUT3\x00TEST ONLY raw inner volume")
 	semantic := operationSemantic{
 		outcome: pcv3.OutcomeForceUnverified, provenance: pcv3.ForceProvenanceUnverified,
-		stage: pcv3.StageD1Body, d1Provenance: pcv3.D1BootstrapProvenanceTail,
+		stage: pcv3.StageD1Body, code: pcv3.CodeForceUnverified,
+		d1Provenance:    pcv3.D1BootstrapProvenanceTail,
 		plaintextLength: uint64(len(rawOuter)),
 		ranges: []operationRange{{
 			recordIndex: 0, start: 0, end: uint64(len(rawOuter)), state: pcv3.RecoveryRangeUnverified,
@@ -633,14 +634,76 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("invalid D1 ownership cannot create an artifact", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			semantic operationSemantic
+			role     operationPhysicalRole
+		}{
+			{
+				name:     "tail semantic as front artifact",
+				semantic: semantic,
+				role:     operationRoleD1Front,
+			},
+			{
+				name: "unverified matching provenance",
+				semantic: func() operationSemantic {
+					invalid := semantic
+					invalid.d1Provenance = pcv3.D1BootstrapProvenanceMatching
+					return invalid
+				}(),
+				role: operationRoleD1Tail,
+			},
+			{
+				name: "tail-only success without bootstrap degradation",
+				semantic: operationSemantic{
+					outcome: pcv3.OutcomeSuccess, provenance: pcv3.ForceProvenanceNone,
+					stage: pcv3.StageNone, code: pcv3.CodeSuccess,
+					d1Provenance: pcv3.D1BootstrapProvenanceTail,
+				},
+				role: operationRoleD1Tail,
+			},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				directory := t.TempDir()
+				source := filepath.Join(directory, "source.d1")
+				target := filepath.Join(directory, "must-not-exist")
+				sourceBytes := []byte("TEST ONLY protected encrypted D1 source")
+				if err := os.WriteFile(source, sourceBytes, 0o600); err != nil {
+					t.Fatalf("seed protected D1 source: %v", err)
+				}
+				result := runWithCore(
+					context.Background(),
+					&Request{Target: target, Protected: []string{source}},
+					fixedRoleCoreRunner(test.semantic, test.role, [][]byte{rawOuter}, nil),
+				)
+				if result.Outcome() != pcv3.OutcomeOperationFailed ||
+					result.Stage() != pcv3.StageCredentialPolicy ||
+					result.Code() != pcv3.CodeOperationFailed || result.PublicationAttempted() {
+					t.Fatalf(
+						"invalid D1 ownership = %v/%v/%v publication %v; want fail-closed operation failure",
+						result.Outcome(), result.Stage(), result.Code(), result.PublicationAttempted(),
+					)
+				}
+				if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("invalid D1 ownership created destination: %v", err)
+				}
+				assertFileBytesAndMode(t, source, sourceBytes, 0o600)
+				assertNoRecoveryStageResidue(t, directory)
+			})
+		}
+	})
 }
 
 func TestD1PublicationCannotLaunderOutcome(t *testing.T) {
 	const plaintextLength = uint64(recoveryRecordPlaintextMax + 5)
 	semantic := operationSemantic{
 		outcome: pcv3.OutcomeForcePartial, provenance: pcv3.ForceProvenancePartial,
-		stage: pcv3.StageInnerVolume, d1Provenance: pcv3.D1BootstrapProvenanceTail,
-		detailStage: pcv3.StageRecordAuth, plaintextLength: plaintextLength,
+		stage: pcv3.StageInnerVolume, code: pcv3.CodeForcePartial,
+		d1Provenance: pcv3.D1BootstrapProvenanceTail,
+		detailStage:  pcv3.StageRecordAuth, plaintextLength: plaintextLength,
 		ranges: []operationRange{
 			{recordIndex: 0, start: 0, end: recoveryRecordPlaintextMax, state: pcv3.RecoveryRangeMissing},
 			{recordIndex: 1, start: recoveryRecordPlaintextMax, end: plaintextLength, state: pcv3.RecoveryRangeVerified},

@@ -46,6 +46,8 @@ type operationSemantic struct {
 	provenance      pcv3.ForceProvenance
 	stage           pcv3.Stage
 	code            pcv3.Code
+	d1Provenance    pcv3.D1BootstrapProvenance
+	detailStage     pcv3.Stage
 	plaintextLength uint64
 	ranges          []operationRange
 	final           pcv3.RecoveryFinalState
@@ -61,19 +63,61 @@ func (semantic operationSemantic) outputCapable() bool {
 type (
 	operationSegmentSink func(operationRange, []byte) error
 	operationEmitter     func(operationSegmentSink) error
-	operationOutput      func(operationSemantic, pcv3.CapsuleRole, operationEmitter) error
+	operationOutput      func(operationSemantic, operationPhysicalRole, operationEmitter) error
 	recoveryCoreRunner   func(context.Context, *Request, operationOutput) (operationSemantic, error)
+)
+
+type operationPhysicalRole uint8
+
+const (
+	operationRoleNone operationPhysicalRole = iota
+	operationRoleCapsulePrimary
+	operationRoleCapsuleBackup
+	operationRoleD1Front
+	operationRoleD1Tail
 )
 
 // Run executes the internal production recovery core and composes its output
 // capability with one no-replace stage. No public app surface calls Run in
 // Phase 6.
 func Run(ctx context.Context, request *Request) *Result {
+	return runOperation(ctx, request, runProductionCore)
+}
+
+func runOperation(
+	ctx context.Context,
+	request *Request,
+	run recoveryCoreRunner,
+) *Result {
 	if ctx == nil && request != nil && request.Factors != nil {
 		_ = request.Factors.Close()
 		request.Factors = nil
 	}
-	return runWithCore(ctx, request, runProductionCore)
+	return runWithCore(ctx, request, run)
+}
+
+// runD1 remains package-private until the PCV3 surface and writer gates are
+// complete. It deliberately has no CLI, UI, mobile, or WASM caller.
+func runD1(ctx context.Context, request *Request) *Result {
+	return runOperation(ctx, request, runD1ProductionCore)
+}
+
+func runD1Unverified(
+	ctx context.Context,
+	request *Request,
+	role pcv3.D1BootstrapRole,
+) *Result {
+	return runOperation(
+		ctx,
+		request,
+		func(
+			ctx context.Context,
+			request *Request,
+			output operationOutput,
+		) (operationSemantic, error) {
+			return runD1ProductionCoreWithRole(ctx, request, &role, output)
+		},
+	)
 }
 
 // Result keeps semantic recovery and transport publication as orthogonal
@@ -98,6 +142,20 @@ func (result *Result) ForceProvenance() pcv3.ForceProvenance {
 		return 0
 	}
 	return result.semantic.provenance
+}
+
+func (result *Result) D1BootstrapProvenance() pcv3.D1BootstrapProvenance {
+	if result == nil {
+		return pcv3.D1BootstrapProvenanceNone
+	}
+	return result.semantic.d1Provenance
+}
+
+func (result *Result) DetailStage() pcv3.Stage {
+	if result == nil {
+		return pcv3.StageNone
+	}
+	return result.semantic.detailStage
 }
 
 func (result *Result) Stage() pcv3.Stage {
@@ -176,11 +234,12 @@ func runWithCore(
 	outputCalls := 0
 	output := func(
 		semantic operationSemantic,
-		role pcv3.CapsuleRole,
+		role operationPhysicalRole,
 		emit operationEmitter,
 	) error {
 		outputCalls++
-		if outputCalls != 1 || !semantic.outputCapable() || !validOperationSemantic(semantic) || emit == nil {
+		if outputCalls != 1 || !semantic.outputCapable() || !validOperationSemantic(semantic) ||
+			!validOperationRole(semantic, role) || emit == nil {
 			return errors.New("pcv3 recovery operation: invalid core output")
 		}
 		result.semantic = cloneOperationSemantic(semantic)
@@ -252,7 +311,7 @@ func runWithCore(
 		result.retainNotPublished(semantic.stage)
 	}
 	if result.semantic.outcome == 0 {
-		if semantic.outcome == 0 {
+		if semantic.outcome == 0 || semantic.outputCapable() {
 			result.semantic = operationSemantic{
 				outcome: pcv3.OutcomeOperationFailed,
 				stage:   pcv3.StageCredentialPolicy,
@@ -295,9 +354,97 @@ func cloneOperationSemantic(semantic operationSemantic) operationSemantic {
 }
 
 func validOperationSemantic(semantic operationSemantic) bool {
-	if !semantic.outputCapable() {
+	if !semantic.outputCapable() || !validOperationClassification(semantic) ||
+		!validOperationEvidence(semantic) {
 		return false
 	}
+	return true
+}
+
+func validOperationClassification(semantic operationSemantic) bool {
+	if semantic.code != operationCodeForOutcome(semantic.outcome) {
+		return false
+	}
+	if semantic.d1Provenance == pcv3.D1BootstrapProvenanceNone {
+		if semantic.detailStage != pcv3.StageNone || semantic.stage == pcv3.StageD1Bootstrap ||
+			semantic.stage == pcv3.StageD1Body || semantic.stage == pcv3.StageInnerVolume {
+			return false
+		}
+		return validOperationInnerClassification(
+			semantic.outcome,
+			semantic.provenance,
+			semantic.stage,
+		)
+	}
+	if !validSelectedD1Provenance(semantic.d1Provenance) {
+		return false
+	}
+	if semantic.detailStage != pcv3.StageNone {
+		if semantic.stage != pcv3.StageD1Bootstrap && semantic.stage != pcv3.StageD1Body &&
+			semantic.stage != pcv3.StageInnerVolume {
+			return false
+		}
+		return validOperationD1ProvenanceForOutcome(semantic.outcome, semantic.d1Provenance) &&
+			validOperationInnerClassification(
+				semantic.outcome,
+				semantic.provenance,
+				semantic.detailStage,
+			)
+	}
+	switch semantic.stage {
+	case pcv3.StageNone:
+		return semantic.outcome == pcv3.OutcomeSuccess &&
+			semantic.provenance == pcv3.ForceProvenanceNone &&
+			(semantic.d1Provenance == pcv3.D1BootstrapProvenanceFront ||
+				semantic.d1Provenance == pcv3.D1BootstrapProvenanceMatching)
+	case pcv3.StageD1Bootstrap:
+		return (semantic.outcome == pcv3.OutcomeAuthenticatedDegraded &&
+			semantic.provenance == pcv3.ForceProvenanceNone) ||
+			(semantic.outcome == pcv3.OutcomeForcePartial &&
+				semantic.provenance == pcv3.ForceProvenancePartial) ||
+			(semantic.outcome == pcv3.OutcomeForceUnverified &&
+				semantic.provenance == pcv3.ForceProvenanceUnverified &&
+				isPhysicalD1Provenance(semantic.d1Provenance))
+	case pcv3.StageD1Body:
+		return (semantic.outcome == pcv3.OutcomeAuthenticatedDegraded &&
+			semantic.provenance == pcv3.ForceProvenanceNone) ||
+			(semantic.outcome == pcv3.OutcomeForcePartial &&
+				semantic.provenance == pcv3.ForceProvenancePartial) ||
+			(semantic.outcome == pcv3.OutcomeForceUnverified &&
+				semantic.provenance == pcv3.ForceProvenanceUnverified &&
+				isPhysicalD1Provenance(semantic.d1Provenance))
+	default:
+		return false
+	}
+}
+
+func validOperationInnerClassification(
+	outcome pcv3.Outcome,
+	provenance pcv3.ForceProvenance,
+	stage pcv3.Stage,
+) bool {
+	switch outcome {
+	case pcv3.OutcomeSuccess:
+		return provenance == pcv3.ForceProvenanceNone && stage == pcv3.StageNone
+	case pcv3.OutcomeAuthenticatedDegraded:
+		switch provenance {
+		case pcv3.ForceProvenanceNone:
+			return isNormalDegradedStage(stage)
+		case pcv3.ForceProvenanceVerified:
+			return isForceDamageStage(stage)
+		default:
+			return false
+		}
+	case pcv3.OutcomeForcePartial:
+		return provenance == pcv3.ForceProvenancePartial && isForceDamageStage(stage)
+	case pcv3.OutcomeForceUnverified:
+		return provenance == pcv3.ForceProvenanceUnverified && isForceDamageStage(stage)
+	default:
+		return false
+	}
+}
+
+func validOperationEvidence(semantic operationSemantic) bool {
 	if semantic.provenance == pcv3.ForceProvenanceNone {
 		return (semantic.outcome == pcv3.OutcomeSuccess ||
 			semantic.outcome == pcv3.OutcomeAuthenticatedDegraded) &&
@@ -324,9 +471,104 @@ func validOperationSemantic(semantic operationSemantic) bool {
 			return false
 		}
 	}
-	return semantic.final == pcv3.RecoveryFinalVerified ||
-		semantic.final == pcv3.RecoveryFinalUnverified ||
-		semantic.final == pcv3.RecoveryFinalMissing
+	if semantic.final != pcv3.RecoveryFinalVerified &&
+		semantic.final != pcv3.RecoveryFinalUnverified &&
+		semantic.final != pcv3.RecoveryFinalMissing {
+		return false
+	}
+	hasVerified := semantic.final == pcv3.RecoveryFinalVerified
+	hasUnverified := semantic.final == pcv3.RecoveryFinalUnverified
+	hasDamage := semantic.final != pcv3.RecoveryFinalVerified
+	for _, recoveryRange := range semantic.ranges {
+		switch recoveryRange.state {
+		case pcv3.RecoveryRangeVerified:
+			hasVerified = true
+		case pcv3.RecoveryRangeUnverified:
+			hasUnverified = true
+			hasDamage = true
+		case pcv3.RecoveryRangeMissing:
+			hasDamage = true
+		}
+	}
+	switch semantic.provenance {
+	case pcv3.ForceProvenanceVerified:
+		return semantic.outcome == pcv3.OutcomeAuthenticatedDegraded && !hasDamage
+	case pcv3.ForceProvenancePartial:
+		return semantic.outcome == pcv3.OutcomeForcePartial && hasVerified && hasDamage
+	case pcv3.ForceProvenanceUnverified:
+		return semantic.outcome == pcv3.OutcomeForceUnverified && !hasVerified && hasUnverified
+	default:
+		return false
+	}
+}
+
+func operationCodeForOutcome(outcome pcv3.Outcome) pcv3.Code {
+	switch outcome {
+	case pcv3.OutcomeSuccess:
+		return pcv3.CodeSuccess
+	case pcv3.OutcomeAuthenticatedDegraded:
+		return pcv3.CodeAuthenticatedDegraded
+	case pcv3.OutcomeForcePartial:
+		return pcv3.CodeForcePartial
+	case pcv3.OutcomeForceUnverified:
+		return pcv3.CodeForceUnverified
+	default:
+		return 0
+	}
+}
+
+func validSelectedD1Provenance(provenance pcv3.D1BootstrapProvenance) bool {
+	return provenance == pcv3.D1BootstrapProvenanceFront ||
+		provenance == pcv3.D1BootstrapProvenanceTail ||
+		provenance == pcv3.D1BootstrapProvenanceMatching
+
+}
+
+func validOperationD1ProvenanceForOutcome(
+	outcome pcv3.Outcome,
+	provenance pcv3.D1BootstrapProvenance,
+) bool {
+	if outcome == pcv3.OutcomeForceUnverified {
+		return isPhysicalD1Provenance(provenance)
+	}
+	return validSelectedD1Provenance(provenance)
+}
+
+func isPhysicalD1Provenance(provenance pcv3.D1BootstrapProvenance) bool {
+	return provenance == pcv3.D1BootstrapProvenanceFront ||
+		provenance == pcv3.D1BootstrapProvenanceTail
+}
+
+func isNormalDegradedStage(stage pcv3.Stage) bool {
+	switch stage {
+	case pcv3.StagePreamble, pcv3.StageCapsuleRS, pcv3.StageCapsuleStructure,
+		pcv3.StageTailGeometry, pcv3.StageWrapAuth, pcv3.StageReplicaAuth,
+		pcv3.StageMetadata:
+		return true
+	default:
+		return false
+	}
+}
+
+func isForceDamageStage(stage pcv3.Stage) bool {
+	return isNormalDegradedStage(stage) || stage == pcv3.StageDescriptor ||
+		stage == pcv3.StageRecordBodyRS || stage == pcv3.StageRecordAuth ||
+		stage == pcv3.StageFinalRecord
+}
+
+func validOperationRole(semantic operationSemantic, role operationPhysicalRole) bool {
+	switch semantic.d1Provenance {
+	case pcv3.D1BootstrapProvenanceNone:
+		return role == operationRoleCapsulePrimary || role == operationRoleCapsuleBackup
+	case pcv3.D1BootstrapProvenanceFront:
+		return role == operationRoleD1Front
+	case pcv3.D1BootstrapProvenanceTail:
+		return role == operationRoleD1Tail
+	case pcv3.D1BootstrapProvenanceMatching:
+		return role == operationRoleD1Front || role == operationRoleD1Tail
+	default:
+		return false
+	}
 }
 
 func runProductionCore(
@@ -349,7 +591,11 @@ func runProductionCore(
 		emitter pcv3.RecoveryEmitter,
 	) error {
 		semantic := semanticFromCore(result)
-		return output(semantic, role, func(sink operationSegmentSink) error {
+		physicalRole, ok := operationRoleForCapsule(role)
+		if !ok {
+			return errors.New("pcv3 recovery operation: invalid capsule role")
+		}
+		return output(semantic, physicalRole, func(sink operationSegmentSink) error {
 			return emitter(func(recoveryRange pcv3.RecoveryRange, plaintext []byte) error {
 				return sink(operationRange{
 					recordIndex: recoveryRange.RecordIndex(),
@@ -384,7 +630,96 @@ func runProductionCore(
 			coreOutput,
 		)
 	}
-	return semanticFromCore(result), err
+	semantic := semanticFromCore(result)
+	if result != nil {
+		result.Close()
+	}
+	return semantic, err
+}
+
+func runD1ProductionCore(
+	ctx context.Context,
+	request *Request,
+	output operationOutput,
+) (operationSemantic, error) {
+	return runD1ProductionCoreWithRole(ctx, request, nil, output)
+}
+
+func runD1ProductionCoreWithRole(
+	ctx context.Context,
+	request *Request,
+	selectedRole *pcv3.D1BootstrapRole,
+	output operationOutput,
+) (operationSemantic, error) {
+	if request == nil {
+		return operationSemantic{
+			outcome: pcv3.OutcomeOperationFailed,
+			stage:   pcv3.StageCredentialPolicy,
+			code:    pcv3.CodeOperationFailed,
+		}, errors.New("pcv3 recovery operation: invalid D1 request")
+	}
+	factors := request.Factors
+	request.Factors = nil
+	if (request.Mode == pcv3.RecoveryModeForceUnverified) != (selectedRole != nil) {
+		if factors != nil {
+			_ = factors.Close()
+		}
+		return operationSemantic{
+			outcome: pcv3.OutcomeOperationFailed,
+			stage:   pcv3.StageCredentialPolicy,
+			code:    pcv3.CodeOperationFailed,
+		}, errors.New("pcv3 recovery operation: invalid D1 mode")
+	}
+	coreOutput := func(
+		result *pcv3.RecoveryResult,
+		role pcv3.D1BootstrapRole,
+		emitter pcv3.RecoveryEmitter,
+	) error {
+		semantic := semanticFromCore(result)
+		physicalRole, ok := operationRoleForD1(role)
+		if !ok {
+			return errors.New("pcv3 recovery operation: invalid D1 role")
+		}
+		return output(semantic, physicalRole, func(sink operationSegmentSink) error {
+			return emitter(func(recoveryRange pcv3.RecoveryRange, plaintext []byte) error {
+				return sink(operationRange{
+					recordIndex: recoveryRange.RecordIndex(),
+					start:       recoveryRange.Start(),
+					end:         recoveryRange.End(),
+					state:       recoveryRange.State(),
+				}, plaintext)
+			})
+		})
+	}
+
+	var result *pcv3.RecoveryResult
+	var err error
+	if selectedRole != nil {
+		result, err = pcv3.RecoverD1Unverified(
+			ctx,
+			request.Source,
+			request.SourceSize,
+			factors,
+			request.Admitter,
+			*selectedRole,
+			coreOutput,
+		)
+	} else {
+		result, err = pcv3.RecoverD1(
+			ctx,
+			request.Source,
+			request.SourceSize,
+			factors,
+			request.Admitter,
+			request.Mode,
+			coreOutput,
+		)
+	}
+	semantic := semanticFromCore(result)
+	if result != nil {
+		result.Close()
+	}
+	return semantic, err
 }
 
 func semanticFromCore(result *pcv3.RecoveryResult) operationSemantic {
@@ -400,6 +735,8 @@ func semanticFromCore(result *pcv3.RecoveryResult) operationSemantic {
 		provenance:      result.ForceProvenance(),
 		stage:           result.Stage(),
 		code:            result.Code(),
+		d1Provenance:    result.D1BootstrapProvenance(),
+		detailStage:     result.DetailStage(),
 		plaintextLength: result.PlaintextLength(),
 		final:           result.FinalRecordState(),
 	}
@@ -416,7 +753,7 @@ func semanticFromCore(result *pcv3.RecoveryResult) operationSemantic {
 
 func artifactDescriptor(
 	semantic operationSemantic,
-	role pcv3.CapsuleRole,
+	role operationPhysicalRole,
 ) (pcv3artifact.Descriptor, error) {
 	descriptor := pcv3artifact.Descriptor{
 		PlaintextLength: semantic.plaintextLength,
@@ -443,16 +780,42 @@ func artifactDescriptor(
 	}
 	if hasUnverified {
 		switch role {
-		case pcv3.CapsuleRolePrimary:
+		case operationRoleCapsulePrimary:
 			descriptor.Role = pcv3artifact.RolePrimary
-		case pcv3.CapsuleRoleBackup:
+		case operationRoleCapsuleBackup:
 			descriptor.Role = pcv3artifact.RoleBackup
+		case operationRoleD1Front:
+			descriptor.Role = pcv3artifact.RoleD1Front
+		case operationRoleD1Tail:
+			descriptor.Role = pcv3artifact.RoleD1Tail
 		default:
 			return pcv3artifact.Descriptor{}, errors.New("pcv3 recovery operation: unverified role unavailable")
 		}
 	}
 	descriptor.Final = artifactFinalState(semantic.final)
 	return descriptor, nil
+}
+
+func operationRoleForCapsule(role pcv3.CapsuleRole) (operationPhysicalRole, bool) {
+	switch role {
+	case pcv3.CapsuleRolePrimary:
+		return operationRoleCapsulePrimary, true
+	case pcv3.CapsuleRoleBackup:
+		return operationRoleCapsuleBackup, true
+	default:
+		return operationRoleNone, false
+	}
+}
+
+func operationRoleForD1(role pcv3.D1BootstrapRole) (operationPhysicalRole, bool) {
+	switch role {
+	case pcv3.D1BootstrapFront:
+		return operationRoleD1Front, true
+	case pcv3.D1BootstrapTail:
+		return operationRoleD1Tail, true
+	default:
+		return operationRoleNone, false
+	}
 }
 
 func artifactRangeState(state pcv3.RecoveryRangeState) pcv3artifact.RangeStatus {
