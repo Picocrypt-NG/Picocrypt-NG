@@ -201,6 +201,87 @@ func TestEncodeMatchesIndependentLiteralArtifacts(t *testing.T) {
 	}
 }
 
+func TestD1ArtifactPhysicalRolesRemainDistinctOnDisk(t *testing.T) {
+	tests := []struct {
+		name     string
+		role     Role
+		wireRole byte
+	}{
+		{name: "front", role: RoleD1Front, wireRole: 3},
+		{name: "tail", role: RoleD1Tail, wireRole: 4},
+	}
+	segment := []byte("raw outer evidence")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			descriptor := Descriptor{
+				State:           StateUnverifiedForensic,
+				Role:            test.role,
+				Final:           FinalUnverified,
+				PlaintextLength: uint64(len(segment)),
+				Ranges: []Range{{
+					RecordIndex: 0,
+					Start:       0,
+					End:         uint64(len(segment)),
+					Status:      RangeUnverified,
+				}},
+			}
+
+			var encoded bytes.Buffer
+			err := Encode(&encoded, descriptor, func(yield func(uint64, io.Reader) error) error {
+				return yield(0, bytes.NewReader(segment))
+			})
+			if err != nil {
+				t.Fatalf("encode D1 recovery artifact: %v", err)
+			}
+			contents := encoded.Bytes()
+			if got := contents[19]; got != test.wireRole {
+				t.Fatalf("physical role byte = %d; want frozen D1 %s value %d", got, test.name, test.wireRole)
+			}
+
+			artifact, err := Parse(bytes.NewReader(contents), int64(len(contents)))
+			if err != nil {
+				t.Fatalf("parse D1 recovery artifact: %v", err)
+			}
+			if got := artifact.Metadata().Role; got != test.role {
+				t.Fatalf("parsed physical role = %v; want %v", got, test.role)
+			}
+			visits := 0
+			err = artifact.VisitRanges(func(entry Entry, reader io.Reader) error {
+				visits++
+				if entry.RecordIndex != 0 || entry.Status != RangeUnverified {
+					return fmt.Errorf("entry = %#v; want one unverified range", entry)
+				}
+				got, readErr := io.ReadAll(reader)
+				if readErr != nil {
+					return readErr
+				}
+				if !bytes.Equal(got, segment) {
+					return fmt.Errorf("segment = %x; want %x", got, segment)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("visit D1 recovery artifact: %v", err)
+			}
+			if visits != 1 {
+				t.Fatalf("range visits = %d; want 1", visits)
+			}
+		})
+	}
+
+	unknown := Descriptor{
+		State:           StateUnverifiedForensic,
+		Role:            Role(5),
+		Final:           FinalUnverified,
+		PlaintextLength: 1,
+		Ranges:          []Range{{RecordIndex: 0, Start: 0, End: 1, Status: RangeUnverified}},
+	}
+	var output bytes.Buffer
+	if err := Encode(&output, unknown, nil); err == nil || output.Len() != 0 {
+		t.Fatalf("unknown physical role = error %v, bytes %d; want pre-write rejection", err, output.Len())
+	}
+}
+
 func TestEncodeZeroesPlaintextScratchOnEveryExit(t *testing.T) {
 	segmentPanic := &struct{ label string }{label: "TEST ONLY segment panic"}
 	probePanic := &struct{ label string }{label: "TEST ONLY probe panic"}

@@ -8,9 +8,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -470,8 +472,220 @@ func TestRunSecondPassFailuresRetainCoreClassificationAndPublishNothing(t *testi
 	}
 }
 
+func TestD1ForceArtifactFilesystemContract(t *testing.T) {
+	rawOuter := []byte("PCVOUT3\x00TEST ONLY raw inner volume")
+	semantic := operationSemantic{
+		outcome: pcv3.OutcomeForceUnverified, provenance: pcv3.ForceProvenanceUnverified,
+		stage: pcv3.StageD1Body, d1Provenance: pcv3.D1BootstrapProvenanceTail,
+		plaintextLength: uint64(len(rawOuter)),
+		ranges: []operationRange{{
+			recordIndex: 0, start: 0, end: uint64(len(rawOuter)), state: pcv3.RecoveryRangeUnverified,
+		}},
+		final: pcv3.RecoveryFinalUnverified,
+	}
+
+	t.Run("durable exact-owner artifact", func(t *testing.T) {
+		directory := t.TempDir()
+		source := filepath.Join(directory, "source.d1")
+		target := filepath.Join(directory, "evidence.pcv3-recovery")
+		sourceBytes := []byte("TEST ONLY encrypted D1 source")
+		if err := os.WriteFile(source, sourceBytes, 0o600); err != nil {
+			t.Fatalf("seed D1 source: %v", err)
+		}
+
+		var observedStage string
+		runner := func(
+			_ context.Context,
+			_ *Request,
+			output operationOutput,
+		) (operationSemantic, error) {
+			err := output(semantic, operationRoleD1Tail, func(sink operationSegmentSink) error {
+				entries, readErr := os.ReadDir(directory)
+				if readErr != nil {
+					return readErr
+				}
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), ".picocrypt-pcv3-") {
+						if observedStage != "" {
+							return errors.New("TEST ONLY multiple recovery stages")
+						}
+						observedStage = filepath.Join(directory, entry.Name())
+					}
+				}
+				if observedStage == "" {
+					return errors.New("TEST ONLY missing recovery stage")
+				}
+				info, statErr := os.Stat(observedStage)
+				if statErr != nil {
+					return statErr
+				}
+				if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+					return fmt.Errorf("TEST ONLY stage mode = %v", info.Mode())
+				}
+				if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
+					return fmt.Errorf("TEST ONLY destination existed before publish: %v", statErr)
+				}
+				return sink(semantic.ranges[0], rawOuter)
+			})
+			return semantic, err
+		}
+
+		result := runWithCore(
+			context.Background(),
+			&Request{Target: target, Protected: []string{source}},
+			runner,
+		)
+		if result.Outcome() != pcv3.OutcomeForceUnverified ||
+			result.D1BootstrapProvenance() != pcv3.D1BootstrapProvenanceTail ||
+			result.PublicationState() != pcv3publication.StatePublishedDurable {
+			t.Fatalf("D1 operation = %v/%v/%v; want Force-unverified/tail/durable", result.Outcome(), result.D1BootstrapProvenance(), result.PublicationState())
+		}
+		if observedStage == "" || observedStage == target {
+			t.Fatalf("observed stage = %q; want distinct private sibling", observedStage)
+		}
+		contents, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("read D1 recovery artifact: %v", err)
+		}
+		artifact, err := pcv3artifact.Parse(bytes.NewReader(contents), int64(len(contents)))
+		if err != nil {
+			t.Fatalf("parse D1 recovery artifact: %v", err)
+		}
+		metadata := artifact.Metadata()
+		if metadata.State != pcv3artifact.StateUnverifiedForensic ||
+			metadata.Role != pcv3artifact.RoleD1Tail || metadata.Final != pcv3artifact.FinalUnverified {
+			t.Fatalf("D1 artifact metadata = %#v; want exact unverified tail evidence", metadata)
+		}
+		visits := 0
+		if err := artifact.VisitRanges(func(entry pcv3artifact.Entry, reader io.Reader) error {
+			visits++
+			got, readErr := io.ReadAll(reader)
+			if readErr != nil {
+				return readErr
+			}
+			if entry.Status != pcv3artifact.RangeUnverified || !bytes.Equal(got, rawOuter) {
+				return errors.New("D1 artifact changed raw outer evidence")
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("visit D1 recovery artifact: %v", err)
+		}
+		if visits != 1 {
+			t.Fatalf("D1 artifact visits = %d; want 1", visits)
+		}
+		assertFileBytesAndMode(t, source, sourceBytes, 0o600)
+		assertFileBytesAndMode(t, target, contents, 0o600)
+		assertNoRecoveryStageResidue(t, directory)
+	})
+
+	t.Run("collision preserves foreign destination", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "foreign.bin")
+		foreign := []byte("FOREIGN DESTINATION")
+		if err := os.WriteFile(target, foreign, 0o640); err != nil {
+			t.Fatalf("seed foreign destination: %v", err)
+		}
+		result := runWithCore(
+			context.Background(),
+			&Request{Target: target},
+			fixedRoleCoreRunner(semantic, operationRoleD1Tail, [][]byte{rawOuter}, nil),
+		)
+		if result.Outcome() != pcv3.OutcomeForceUnverified ||
+			result.PublicationState() != pcv3publication.StateNotPublished {
+			t.Fatalf("collision result = %v/%v; want retained Force-unverified/not-published", result.Outcome(), result.PublicationState())
+		}
+		assertFileBytesAndMode(t, target, foreign, 0o640)
+		assertNoRecoveryStageResidue(t, directory)
+	})
+
+	t.Run("cancellation and emitter failure leave no artifact", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			context func() context.Context
+			emitErr error
+		}{
+			{
+				name: "cancelled publication",
+				context: func() context.Context {
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+					return ctx
+				},
+			},
+			{name: "emitter failure", context: context.Background, emitErr: errors.New("TEST ONLY D1 emitter failure")},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				directory := t.TempDir()
+				target := filepath.Join(directory, "must-not-exist")
+				result := runWithCore(
+					test.context(),
+					&Request{Target: target},
+					fixedRoleCoreRunner(semantic, operationRoleD1Tail, [][]byte{rawOuter}, test.emitErr),
+				)
+				if result.PublicationState() != pcv3publication.StateNotPublished {
+					t.Fatalf("failed D1 publication state = %v; want not-published", result.PublicationState())
+				}
+				if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("failed D1 operation left destination: %v", err)
+				}
+				assertNoRecoveryStageResidue(t, directory)
+			})
+		}
+	})
+}
+
+func TestD1PublicationCannotLaunderOutcome(t *testing.T) {
+	const plaintextLength = uint64(recoveryRecordPlaintextMax + 5)
+	semantic := operationSemantic{
+		outcome: pcv3.OutcomeForcePartial, provenance: pcv3.ForceProvenancePartial,
+		stage: pcv3.StageInnerVolume, d1Provenance: pcv3.D1BootstrapProvenanceTail,
+		detailStage: pcv3.StageRecordAuth, plaintextLength: plaintextLength,
+		ranges: []operationRange{
+			{recordIndex: 0, start: 0, end: recoveryRecordPlaintextMax, state: pcv3.RecoveryRangeMissing},
+			{recordIndex: 1, start: recoveryRecordPlaintextMax, end: plaintextLength, state: pcv3.RecoveryRangeVerified},
+		},
+		final: pcv3.RecoveryFinalMissing,
+	}
+	directory := t.TempDir()
+	target := filepath.Join(directory, "foreign.bin")
+	foreign := []byte("FOREIGN DESTINATION")
+	if err := os.WriteFile(target, foreign, 0o640); err != nil {
+		t.Fatalf("seed foreign destination: %v", err)
+	}
+
+	result := runWithCore(
+		context.Background(),
+		&Request{Target: target},
+		fixedRoleCoreRunner(semantic, operationRoleD1Tail, [][]byte{[]byte("safe!")}, nil),
+	)
+	if result.Outcome() != pcv3.OutcomeForcePartial ||
+		result.ForceProvenance() != pcv3.ForceProvenancePartial ||
+		result.Stage() != pcv3.StageInnerVolume || result.DetailStage() != pcv3.StageRecordAuth ||
+		result.D1BootstrapProvenance() != pcv3.D1BootstrapProvenanceTail {
+		t.Fatalf(
+			"D1 semantic after publication failure = %v/%v/%v detail %v provenance %v; want unchanged nested Force-partial",
+			result.Outcome(), result.ForceProvenance(), result.Stage(), result.DetailStage(), result.D1BootstrapProvenance(),
+		)
+	}
+	if !result.PublicationAttempted() || result.PublicationState() != pcv3publication.StateNotPublished {
+		t.Fatalf("D1 publication = %v/%v; want attempted/not-published", result.PublicationAttempted(), result.PublicationState())
+	}
+	assertFileBytesAndMode(t, target, foreign, 0o640)
+	assertNoRecoveryStageResidue(t, directory)
+}
+
 func fixedCoreRunner(
 	semantic operationSemantic,
+	segments [][]byte,
+	emitErr error,
+) recoveryCoreRunner {
+	return fixedRoleCoreRunner(semantic, operationRoleCapsulePrimary, segments, emitErr)
+}
+
+func fixedRoleCoreRunner(
+	semantic operationSemantic,
+	role operationPhysicalRole,
 	segments [][]byte,
 	emitErr error,
 ) recoveryCoreRunner {
@@ -483,7 +697,7 @@ func fixedCoreRunner(
 		if !semantic.outputCapable() {
 			return semantic, nil
 		}
-		err := output(semantic, pcv3.CapsuleRolePrimary, func(sink operationSegmentSink) error {
+		err := output(semantic, role, func(sink operationSegmentSink) error {
 			if emitErr != nil {
 				return emitErr
 			}

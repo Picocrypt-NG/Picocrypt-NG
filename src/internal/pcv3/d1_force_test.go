@@ -898,7 +898,9 @@ func TestD1ForceAnchorsRejectFalseAnchorsAndFirstCandidateChoice(t *testing.T) {
 	})
 }
 
-func TestD1ForceAnchorsRawOpenRequiresLiveExactPhysicalRole(t *testing.T) {
+func TestD1ForceConsent(t *testing.T) {
+	t.Run("raw outer semantic requires physical selection", testD1ForceConsentRawOuterSemantic)
+
 	rawInner := []byte("PCV\x00TEST ONLY raw inner PK\x03\x04")
 	candidate, body := newD1ForceTestBodyCandidate(
 		t,
@@ -998,6 +1000,61 @@ func TestD1ForceAnchorsRawOpenRequiresLiveExactPhysicalRole(t *testing.T) {
 	assertRefused(t, retained)
 	if decryptCalls != 1 {
 		t.Fatalf("expired replay invoked raw decrypt; calls=%d", decryptCalls)
+	}
+}
+
+func testD1ForceConsentRawOuterSemantic(t *testing.T) {
+	const plaintextLength = uint64(17)
+	ranges := []RecoveryRange{{
+		recordIndex: 0,
+		start:       0,
+		end:         plaintextLength,
+		state:       RecoveryRangeUnverified,
+	}}
+	result, err := newD1RecoveryResult(
+		OutcomeForceUnverified,
+		ForceProvenanceUnverified,
+		StageD1Body,
+		D1BootstrapProvenanceFront,
+		StageNone,
+		plaintextLength,
+		ranges,
+		RecoveryFinalUnverified,
+	)
+	if err != nil {
+		t.Fatalf("construct consented D1 raw semantic: %v", err)
+	}
+	if result.Outcome() != OutcomeForceUnverified || result.Stage() != StageD1Body ||
+		result.D1BootstrapProvenance() != D1BootstrapProvenanceFront ||
+		result.ForceProvenance() != ForceProvenanceUnverified {
+		result.Close()
+		t.Fatalf(
+			"raw D1 semantic = %v/%v/%v/%v; want Force-unverified/d1-body/front/unverified",
+			result.Outcome(), result.Stage(), result.D1BootstrapProvenance(), result.ForceProvenance(),
+		)
+	}
+	result.Close()
+
+	for _, provenance := range []D1BootstrapProvenance{
+		D1BootstrapProvenanceNone,
+		D1BootstrapProvenanceMatching,
+	} {
+		result, err := newD1RecoveryResult(
+			OutcomeForceUnverified,
+			ForceProvenanceUnverified,
+			StageD1Body,
+			provenance,
+			StageNone,
+			plaintextLength,
+			ranges,
+			RecoveryFinalUnverified,
+		)
+		if err == nil || result != nil {
+			if result != nil {
+				result.Close()
+			}
+			t.Fatalf("raw D1 semantic accepted nonphysical provenance %v", provenance)
+		}
 	}
 }
 
