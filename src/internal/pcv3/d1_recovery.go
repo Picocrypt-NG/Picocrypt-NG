@@ -837,9 +837,17 @@ func d1InnerUnavailableResult(
 	cause error,
 	output D1RecoveryOutput,
 ) (*RecoveryResult, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return d1OperationResult(ctx, err)
+		}
+	}
 	if stage, ok := d1OperationalStage(ctx, cause); ok &&
-		!d1InnerOuterAuthenticationUnavailable(request, cause) {
-		return recoveryOperationFailure(stage), &recoveryEngineError{stage: stage}
+		(stage == StageCancellation || !d1InnerOuterAuthenticationUnavailable(request, cause)) {
+		return d1OperationResult(ctx, cause)
+	}
+	if cause != nil && !isD1OuterAuthenticationFailure(cause) {
+		return d1OperationResult(ctx, cause)
 	}
 	outcome := OutcomeAuthenticationFailed
 	if request.mode == RecoveryModeNormalV3 {
@@ -871,9 +879,11 @@ func d1InnerUnavailableResult(
 }
 
 func d1InnerOuterAuthenticationUnavailable(request d1RecoveryRequest, err error) bool {
-	if err == nil || (request.mode != RecoveryModeForce && request.mode != RecoveryModeForceUnverified) {
-		return false
-	}
+	return (request.mode == RecoveryModeForce || request.mode == RecoveryModeForceUnverified) &&
+		isD1OuterAuthenticationFailure(err)
+}
+
+func isD1OuterAuthenticationFailure(err error) bool {
 	var failure *d1OuterFailure
 	return errors.As(err, &failure) && failure.Stage() == StageD1Body &&
 		errors.Is(err, errD1OuterAuthentication)
@@ -892,12 +902,16 @@ func maybeEmitD1RawOuter(
 	if fallback == nil ||
 		(request.mode != RecoveryModeForce && request.mode != RecoveryModeForceUnverified) ||
 		!d1RawFallbackOutcome(fallback.outcome) ||
-		(request.mode == RecoveryModeForce && !d1InnerOuterAuthenticationUnavailable(request, cause)) {
+		(request.mode == RecoveryModeForce && selection.outerHealthy &&
+			!d1InnerOuterAuthenticationUnavailable(request, cause)) {
 		return fallback, nil
 	}
 	raw, err := analyzeD1RawOuter(ctx, source, request, selection, seams)
 	if err != nil {
 		fallback.Close()
+		if _, operational := d1OperationalStage(ctx, err); operational {
+			return d1OperationResult(ctx, err)
+		}
 		return nil, err
 	}
 	if raw == nil {

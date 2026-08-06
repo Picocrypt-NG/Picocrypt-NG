@@ -528,13 +528,15 @@ func selectD1ForceCandidateWithPreanalysis(
 	}
 
 	pairSameSecret := false
+	pairBootstrapHealthy := false
 	if len(candidates) == 2 {
-		if fullyAuthenticatedD1Candidate(candidates[0]) &&
-			fullyAuthenticatedD1Candidate(candidates[1]) &&
-			!independentD1BootstrapParameters(
-				candidates[0].bootstrap,
-				candidates[1].bootstrap,
-			) {
+		pairFullyAuthenticated := fullyAuthenticatedD1Candidate(candidates[0]) &&
+			fullyAuthenticatedD1Candidate(candidates[1])
+		pairParametersIndependent := independentD1BootstrapParameters(
+			candidates[0].bootstrap,
+			candidates[1].bootstrap,
+		)
+		if pairFullyAuthenticated && !pairParametersIndependent {
 			terminal, err := newD1ForceTerminalResult(
 				OutcomeAmbiguousVolume,
 				StageD1Bootstrap,
@@ -552,15 +554,15 @@ func selectD1ForceCandidateWithPreanalysis(
 		if err != nil {
 			return selection, nil, err
 		}
-		if candidates[0].wrapVerified && candidates[0].replicaVerified &&
-			candidates[1].wrapVerified && candidates[1].replicaVerified &&
-			!pairSameSecret {
+		if pairFullyAuthenticated && !pairSameSecret {
 			terminal, err := newD1ForceTerminalResult(
 				OutcomeAmbiguousVolume,
 				StageD1Bootstrap,
 			)
 			return selection, terminal, err
 		}
+		pairBootstrapHealthy = pairFullyAuthenticated &&
+			pairParametersIndependent && pairSameSecret
 	}
 
 	windows := make([]d1ForceBodyWindow, len(candidates))
@@ -663,12 +665,10 @@ func selectD1ForceCandidateWithPreanalysis(
 	}
 
 	selection.analysis = analyses[selectedIndex]
-	selection.bootstrapHealthy = len(candidates) == 2 && pairSameContext
+	selection.bootstrapHealthy = pairBootstrapHealthy
 	selection.outerHealthy = analyses[selectedIndex].outerFullyAuthenticated
 	if selection.bootstrapHealthy {
-		for index, candidate := range candidates {
-			selection.bootstrapHealthy = selection.bootstrapHealthy &&
-				candidate.wrapVerified && candidate.replicaVerified
+		for index := range candidates {
 			selection.outerHealthy = selection.outerHealthy && analyses[index].outerFullyAuthenticated
 		}
 	}

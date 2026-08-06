@@ -1791,6 +1791,134 @@ func TestD1ForceNestedOutcomePreservesOuterInnerAndRangeTruth(t *testing.T) {
 		resolution.result.Close()
 	})
 
+	t.Run("physical final-ciphertext deletion preserves bootstrap and body truth", func(t *testing.T) {
+		inner := bytes.Repeat([]byte{0x7b}, d1OuterChunkSize+257)
+		front, tail, body := newMatchingD1ForceTestBodyCandidates(
+			t,
+			0xb7,
+			inner,
+			d1ForceTestBootstrapEvidence{wrapVerified: true, replicaVerified: true},
+		)
+		defer front.Close()
+		defer tail.Close()
+		geometry, err := parseD1OuterGeometry(uint64(len(body)))
+		if err != nil || geometry.recordCount != 2 {
+			t.Fatalf("parse deletion geometry = %#v, %v; want exactly two outer records", geometry, err)
+		}
+		finalRecord, err := expectedD1OuterRecord(geometry, geometry.recordCount-1)
+		if err != nil || !finalRecord.final || finalRecord.ciphertextLength < 2 {
+			t.Fatalf("select deletion target = %#v, %v; want non-empty final ciphertext", finalRecord, err)
+		}
+		physical := d1ForceCanonicalPhysicalFile(body)
+		deletedAt64 := uint64(d1BootstrapLength) + finalRecord.offset +
+			uint64(finalRecord.ciphertextLength/2)
+		if deletedAt64 >= uint64(len(physical)) {
+			t.Fatalf("deletion offset %d exceeds physical fixture size %d", deletedAt64, len(physical))
+		}
+		deletedAt := int(deletedAt64) //nolint:gosec // The physical fixture length bound proves this conversion.
+		physical = append(physical[:deletedAt], physical[deletedAt+1:]...)
+		sourceSize := int64(len(physical))
+		frontWindow, err := deriveD1ForceBodyWindow(sourceSize, front.bodyLength, front.role)
+		if err != nil {
+			t.Fatalf("derive front deletion window: %v", err)
+		}
+		tailWindow, err := deriveD1ForceBodyWindow(sourceSize, tail.bodyLength, tail.role)
+		if err != nil || frontWindow == tailWindow {
+			t.Fatalf("deletion windows = front %#v tail %#v, %v; want distinct bounded contexts", frontWindow, tailWindow, err)
+		}
+
+		request, err := newD1RecoveryRequest(RecoveryModeForce)
+		if err != nil {
+			t.Fatalf("create deletion recovery request: %v", err)
+		}
+		selection, terminal, err := selectD1ForceCandidate(
+			context.Background(),
+			bytes.NewReader(physical),
+			sourceSize,
+			request,
+			[]*d1ForceCandidate{front, tail},
+			defaultD1ForceSeams(),
+		)
+		if terminal != nil {
+			defer terminal.Close()
+		}
+		if err != nil || terminal != nil || selection.analysis == nil ||
+			selection.analysis.candidate != front || selection.provenance != D1BootstrapProvenanceFront ||
+			!selection.bootstrapHealthy || selection.outerHealthy {
+			t.Fatalf(
+				"deletion selection = %#v, terminal %#v, error %v; want healthy bootstrap pair, damaged body, and front anchor",
+				selection, terminal, err,
+			)
+		}
+
+		wantOuter := make([]byte, d1OuterPrefixLength+len(inner))
+		copy(wantOuter, []byte("PCVOUT3\x00"))
+		binary.BigEndian.PutUint64(wantOuter[8:d1OuterPrefixLength], uint64(len(inner)))
+		copy(wantOuter[d1OuterPrefixLength:], inner)
+		wantRanges := []RecoveryRange{
+			{
+				recordIndex: 0,
+				start:       0,
+				end:         d1OuterChunkSize,
+				state:       RecoveryRangeVerified,
+			},
+			{
+				recordIndex: 1,
+				start:       d1OuterChunkSize,
+				end:         uint64(len(wantOuter)),
+				state:       RecoveryRangeMissing,
+			},
+		}
+		var emittedRanges []RecoveryRange
+		var emittedPlaintext []byte
+		result, recoverErr := d1InnerUnavailableResult(
+			context.Background(),
+			bytes.NewReader(physical),
+			request,
+			selection,
+			defaultD1ForceSeams(),
+			nil,
+			func(got *RecoveryResult, role D1BootstrapRole, emitter RecoveryEmitter) error {
+				if got == nil || role != D1BootstrapFront {
+					return errors.New("TEST ONLY deletion fallback lost its selected physical role")
+				}
+				return emitter(func(recoveryRange RecoveryRange, plaintext []byte) error {
+					if recoveryRange.State() != RecoveryRangeVerified {
+						return errors.New("TEST ONLY deletion fallback emitted unauthenticated plaintext")
+					}
+					emittedRanges = append(emittedRanges, recoveryRange)
+					emittedPlaintext = append(emittedPlaintext, plaintext...)
+					return nil
+				})
+			},
+		)
+		if recoverErr != nil || result == nil {
+			if result != nil {
+				result.Close()
+			}
+			t.Fatalf("deletion fallback = result %#v, error %v", result, recoverErr)
+		}
+		defer result.Close()
+		if result.Outcome() != OutcomeForcePartial || result.Stage() != StageD1Body ||
+			result.ForceProvenance() != ForceProvenancePartial ||
+			result.D1BootstrapProvenance() != D1BootstrapProvenanceFront ||
+			result.FinalRecordState() != RecoveryFinalMissing ||
+			!slices.Equal(result.Ranges(), wantRanges) {
+			t.Fatalf(
+				"deletion result = %v/%v/%v/%v final %v ranges %#v; want Force-partial/d1-body/partial/front and exact missing final range",
+				result.Outcome(), result.Stage(), result.ForceProvenance(), result.D1BootstrapProvenance(),
+				result.FinalRecordState(), result.Ranges(),
+			)
+		}
+		if !slices.Equal(emittedRanges, wantRanges[:1]) ||
+			!bytes.Equal(emittedPlaintext, wantOuter[:d1OuterChunkSize]) {
+			t.Fatalf(
+				"deletion emission = ranges %#v, plaintext %d bytes; want only the exact verified prefix",
+				emittedRanges, len(emittedPlaintext),
+			)
+		}
+	})
+
 	t.Run("late outer authentication damage falls back without operational laundering", func(t *testing.T) {
 		inner := bytes.Repeat([]byte("TEST ONLY late D1 authentication boundary; "), 30_000)
 		front, tail, body := newMatchingD1ForceTestBodyCandidates(
@@ -1897,57 +2025,91 @@ func TestD1ForceNestedOutcomePreservesOuterInnerAndRangeTruth(t *testing.T) {
 		}
 		result.Close()
 
-		t.Run("non-EOF input failure remains operational", func(t *testing.T) {
-			fault := &d1ForceFaultReader{bytes: physical, fault: d1ForceSourceNonEOF}
-			_, cause := openD1SelectedInner(
-				context.Background(), fault, int64(len(physical)), request, selection, defaultD1ForceSeams(),
-			)
-			if cause == nil {
-				t.Fatal("non-EOF D1 input fault did not reach the production reader")
-			}
+		assertFallbackOperation := func(
+			t *testing.T,
+			ctx context.Context,
+			source io.ReaderAt,
+			wantStage Stage,
+		) {
+			t.Helper()
 			outputCalls := 0
 			result, recoverErr := d1InnerUnavailableResult(
-				context.Background(), fault, request, selection, defaultD1ForceSeams(), cause,
+				ctx, source, request, selection, defaultD1ForceSeams(), cause,
 				func(*RecoveryResult, D1BootstrapRole, RecoveryEmitter) error {
 					outputCalls++
 					return nil
 				},
 			)
-			if result == nil || result.Outcome() != OutcomeOperationFailed || result.Stage() != StageInputIO ||
-				recoverErr == nil || outputCalls != 0 {
+			var engineErr *recoveryEngineError
+			if result == nil || result.Outcome() != OutcomeOperationFailed || result.Stage() != wantStage ||
+				!errors.As(recoverErr, &engineErr) || engineErr.stage != wantStage || outputCalls != 0 {
 				if result != nil {
 					result.Close()
 				}
 				t.Fatalf(
-					"non-EOF fallback boundary = result %#v error %v output %d; want input-io operation failure and no output",
-					result, recoverErr, outputCalls,
+					"fallback operational boundary = result %#v error %T/%v output %d; want operation-failed/%v and no output",
+					result, recoverErr, recoverErr, outputCalls, wantStage,
+				)
+			}
+			result.Close()
+		}
+
+		t.Run("internal reader invariant fails closed without fallback", func(t *testing.T) {
+			source := &d1ForceObservedReader{bytes: physical}
+			outputCalls := 0
+			result, recoverErr := d1InnerUnavailableResult(
+				context.Background(), source, request, selection, defaultD1ForceSeams(),
+				newD1OuterFailure(StageD1Body, errD1ReaderProgress),
+				func(*RecoveryResult, D1BootstrapRole, RecoveryEmitter) error {
+					outputCalls++
+					return nil
+				},
+			)
+			var engineErr *recoveryEngineError
+			if result == nil || result.Outcome() != OutcomeOperationFailed ||
+				result.Stage() != StageCredentialPolicy ||
+				!errors.As(recoverErr, &engineErr) || engineErr.stage != StageCredentialPolicy ||
+				len(source.requests) != 0 || outputCalls != 0 {
+				if result != nil {
+					result.Close()
+				}
+				t.Fatalf(
+					"internal reader invariant = result %#v error %T/%v reads %d output %d; want operation-failed/credential-policy and no fallback activity",
+					result, recoverErr, recoverErr, len(source.requests), outputCalls,
 				)
 			}
 			result.Close()
 		})
 
-		t.Run("cancellation remains operational", func(t *testing.T) {
+		t.Run("non-EOF input failure during re-analysis remains operational", func(t *testing.T) {
+			fault := &d1ForceFaultReader{bytes: physical, fault: d1ForceSourceNonEOF}
+			assertFallbackOperation(t, context.Background(), fault, StageInputIO)
+			if len(fault.requests) == 0 {
+				t.Fatal("non-EOF fault was not injected through fallback re-analysis")
+			}
+		})
+
+		t.Run("prior cancellation precedes authentication fallback", func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
-			outputCalls := 0
-			result, recoverErr := d1InnerUnavailableResult(
-				ctx, bytes.NewReader(physical), request, selection, defaultD1ForceSeams(), ctx.Err(),
-				func(*RecoveryResult, D1BootstrapRole, RecoveryEmitter) error {
-					outputCalls++
-					return nil
-				},
-			)
-			if result == nil || result.Outcome() != OutcomeOperationFailed || result.Stage() != StageCancellation ||
-				recoverErr == nil || outputCalls != 0 {
-				if result != nil {
-					result.Close()
-				}
-				t.Fatalf(
-					"cancellation fallback boundary = result %#v error %v output %d; want cancellation operation failure and no output",
-					result, recoverErr, outputCalls,
-				)
+			source := &d1ForceObservedReader{bytes: physical}
+			assertFallbackOperation(t, ctx, source, StageCancellation)
+			if len(source.requests) != 0 {
+				t.Fatalf("prior cancellation performed %d fallback reads; want none", len(source.requests))
 			}
-			result.Close()
+		})
+
+		t.Run("cancellation during re-analysis remains operational", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			fault := &d1ForceFaultReader{
+				bytes:  physical,
+				fault:  d1ForceSourceCancellation,
+				cancel: cancel,
+			}
+			assertFallbackOperation(t, ctx, fault, StageCancellation)
+			if len(fault.requests) == 0 {
+				t.Fatal("cancellation was not injected through fallback re-analysis")
+			}
 		})
 	})
 
@@ -2334,6 +2496,7 @@ const (
 	d1ForceSourceNonEOF d1ForceSourceFault = iota + 1
 	d1ForceSourceShortRead
 	d1ForceSourceFullReadNonEOF
+	d1ForceSourceCancellation
 )
 
 func (fault d1ForceSourceFault) String() string {
@@ -2342,6 +2505,8 @@ func (fault d1ForceSourceFault) String() string {
 		return "short source read"
 	case d1ForceSourceFullReadNonEOF:
 		return "full source read with non-EOF error"
+	case d1ForceSourceCancellation:
+		return "source cancellation"
 	default:
 		return "non-EOF source error"
 	}
@@ -2350,6 +2515,7 @@ func (fault d1ForceSourceFault) String() string {
 type d1ForceFaultReader struct {
 	bytes    []byte
 	fault    d1ForceSourceFault
+	cancel   context.CancelFunc
 	requests []d1ForceReadRequest
 }
 
@@ -2374,6 +2540,12 @@ func (reader *d1ForceFaultReader) ReadAt(destination []byte, offset int64) (int,
 			return read, err
 		}
 		return read, errD1ForceTestFullReadNonEOF
+	case d1ForceSourceCancellation:
+		if reader.cancel == nil {
+			return 0, errors.New("TEST ONLY D1 cancellation source omitted its cancel function")
+		}
+		reader.cancel()
+		return bytes.NewReader(reader.bytes).ReadAt(destination, offset)
 	default:
 		return bytes.NewReader(reader.bytes).ReadAt(destination, offset)
 	}
