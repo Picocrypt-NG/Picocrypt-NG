@@ -2,10 +2,13 @@ package pcv3corpus
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -24,6 +27,8 @@ const (
 	maxD1MutationPlanBytes   = 256 << 10
 	maxD1MutationCount       = 256
 	maxD1MutationBytes       = 64 << 10
+	maxD1ScheduleOperations  = 16
+	maxD1ExpectedRanges      = 65
 )
 
 var d1ArtifactRoles = [...]string{
@@ -135,6 +140,36 @@ type D1VolumeFixture struct {
 	credentials, schedule                []byte
 	frontBootstrap, tailBootstrap        []byte
 	body, volume, innerVolume, plaintext []byte
+	correct, wrong                       d1FixtureFactors
+	operations                           []D1OperationExpectation
+}
+
+type d1FixtureFactors struct {
+	password []byte
+	keyfiles [][]byte
+}
+
+// D1ExpectedRange is one independently supplied expected recovery interval.
+// It contains public indices and states only, never recovered bytes.
+type D1ExpectedRange struct {
+	recordIndex uint64
+	start       uint64
+	end         uint64
+	state       string
+}
+
+// D1OperationExpectation is one independently supplied production operation.
+// All fields are fixed public classifications; credentials remain on the
+// callback-scoped D1VolumeFixture.
+type D1OperationExpectation struct {
+	name, mode, factors, keyfileOrder, unverifiedRole           string
+	expectedOutcome, expectedStage, expectedDetailStage         string
+	expectedCode, expectedD1Provenance, expectedForceProvenance string
+	expectedOutput, expectedFinalState                          string
+	expectedKDFCalls                                            int
+	expectedCompletion                                          bool
+	expectedPlaintextLength                                     uint64
+	expectedRanges                                              []D1ExpectedRange
 }
 
 // WithD1VolumeFixtures validates the complete v4 corpus once and lends only
@@ -175,6 +210,9 @@ func WithD1VolumeFixtures(rootPath, custodyID string, fixtureIDs []string, use f
 	}
 
 	fixtures := make([]*D1VolumeFixture, 0, len(contracts))
+	defer func() {
+		closeD1VolumeFixtures(fixtures)
+	}()
 	for _, contract := range contracts {
 		fixture, err := assembleD1VolumeFixture(contract, documents)
 		if err != nil {
@@ -215,6 +253,19 @@ func assembleD1VolumeFixture(contract d1VolumeContract, documents map[string][]b
 		*field.dst = value
 	}
 	if err := validateD1VolumeGeometry(fixture); err != nil {
+		fixture.close()
+		return nil, err
+	}
+	correct, wrong, err := decodeD1Credentials(fixture.credentials, contract)
+	if err != nil {
+		fixture.close()
+		return nil, err
+	}
+	fixture.correct = correct
+	fixture.wrong = wrong
+	fixture.operations, err = decodeD1Schedule(fixture.schedule, contract)
+	if err != nil {
+		fixture.close()
 		return nil, err
 	}
 	return fixture, nil
@@ -276,10 +327,12 @@ func validateD1ArtifactDocument(data []byte, fixture fixtureManifest) error {
 		if len(data) == 0 || len(data) > maxD1CredentialBytes {
 			return refusal(RefusalMalformed)
 		}
+		return validateD1CredentialsDocument(data, fixture, contract)
 	case "schedule":
 		if len(data) == 0 || len(data) > maxD1ScheduleBytes {
 			return refusal(RefusalMalformed)
 		}
+		return validateD1ScheduleDocument(data, fixture, contract)
 	case "front-bootstrap":
 		want := 0
 		if contract.frontBootstrap {
@@ -316,6 +369,406 @@ func validateD1ArtifactDocument(data []byte, fixture fixtureManifest) error {
 		return refusal(RefusalUnknown)
 	}
 	return nil
+}
+
+var d1CredentialsFields = map[string]struct{}{
+	"test_only": {}, "public_test_data_notice": {}, "id": {}, "category": {},
+	"credential_mode": {}, "keyfile_mode": {}, "correct": {}, "wrong": {},
+	"status": {}, "generated_at_test_time": {},
+}
+
+var d1FactorFields = map[string]struct{}{
+	"password_utf8_hex": {}, "keyfiles_hex": {},
+}
+
+var d1ScheduleFields = map[string]struct{}{
+	"test_only": {}, "public_test_data_notice": {}, "id": {}, "category": {},
+	"operations": {}, "status": {}, "generated_at_test_time": {},
+}
+
+var d1OperationFields = map[string]struct{}{
+	"name": {}, "mode": {}, "factors": {}, "keyfile_order": {}, "unverified_role": {},
+	"expected_outcome": {}, "expected_stage": {}, "expected_detail_stage": {},
+	"expected_code": {}, "expected_d1_provenance": {}, "expected_force_provenance": {},
+	"expected_kdf_calls": {}, "expected_completion": {}, "expected_output": {},
+	"expected_plaintext_length_hex": {}, "expected_final_state": {}, "expected_ranges": {},
+}
+
+var d1ExpectedRangeFields = map[string]struct{}{
+	"record_index_hex": {}, "start_hex": {}, "end_hex": {}, "state": {},
+}
+
+func validateD1CredentialsDocument(data []byte, fixture fixtureManifest, contract d1VolumeContract) error {
+	correct, wrong, err := decodeD1CredentialsForManifest(data, fixture, contract)
+	correct.close()
+	wrong.close()
+	return err
+}
+
+func decodeD1Credentials(data []byte, contract d1VolumeContract) (d1FixtureFactors, d1FixtureFactors, error) {
+	return decodeD1CredentialsForManifest(data, fixtureManifest{id: contract.id, category: "d1-volume"}, contract)
+}
+
+func decodeD1CredentialsForManifest(
+	data []byte,
+	_ fixtureManifest,
+	contract d1VolumeContract,
+) (d1FixtureFactors, d1FixtureFactors, error) {
+	document, err := decodeStrictJSON(data)
+	if err != nil {
+		return d1FixtureFactors{}, d1FixtureFactors{}, refusalForManifestJSON(err)
+	}
+	object, ok := document.(map[string]any)
+	if !ok {
+		return d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
+	}
+	if err := rejectUnknownFields(object, d1CredentialsFields); err != nil {
+		return d1FixtureFactors{}, d1FixtureFactors{}, err
+	}
+	if err := validateD1DocumentEnvelope(object, contract.id, "d1-credentials"); err != nil {
+		return d1FixtureFactors{}, d1FixtureFactors{}, err
+	}
+	credentialMode, err := requiredString(object, "credential_mode")
+	if err != nil || credentialMode != contract.credentialMode {
+		return d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
+	}
+	keyfileMode, err := requiredString(object, "keyfile_mode")
+	if err != nil || keyfileMode != contract.keyfileMode {
+		return d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
+	}
+	correctObject, correctOK := object["correct"].(map[string]any)
+	wrongObject, wrongOK := object["wrong"].(map[string]any)
+	if !correctOK || !wrongOK {
+		return d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
+	}
+	correct, err := decodeD1Factors(correctObject, credentialMode, keyfileMode)
+	if err != nil {
+		return d1FixtureFactors{}, d1FixtureFactors{}, err
+	}
+	wrong, err := decodeD1Factors(wrongObject, credentialMode, keyfileMode)
+	if err != nil {
+		correct.close()
+		return d1FixtureFactors{}, d1FixtureFactors{}, err
+	}
+	if sameD1Factors(correct, wrong) {
+		correct.close()
+		wrong.close()
+		return d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
+	}
+	return correct, wrong, nil
+}
+
+func decodeD1Factors(object map[string]any, credentialMode, keyfileMode string) (d1FixtureFactors, error) {
+	if err := rejectUnknownFields(object, d1FactorFields); err != nil {
+		return d1FixtureFactors{}, err
+	}
+	passwordHex, err := requiredHex(object, "password_utf8_hex")
+	if err != nil || !validBoundedHex(passwordHex, 1<<20) {
+		return d1FixtureFactors{}, refusal(RefusalMalformed)
+	}
+	password, err := hex.DecodeString(passwordHex)
+	if err != nil || !utf8.Valid(password) {
+		zeroBytes(password)
+		return d1FixtureFactors{}, refusal(RefusalMalformed)
+	}
+	keyfileHex, err := requiredHexStrings(object, "keyfiles_hex", maxFixtureKeyfiles)
+	if err != nil || !validD1FixtureFactors(credentialMode, keyfileMode, password, keyfileHex) {
+		zeroBytes(password)
+		return d1FixtureFactors{}, refusal(RefusalMalformed)
+	}
+	factors := d1FixtureFactors{password: password, keyfiles: make([][]byte, 0, len(keyfileHex))}
+	for _, value := range keyfileHex {
+		decoded, decodeErr := hex.DecodeString(value)
+		if decodeErr != nil {
+			factors.close()
+			return d1FixtureFactors{}, refusal(RefusalMalformed)
+		}
+		factors.keyfiles = append(factors.keyfiles, decoded)
+	}
+	return factors, nil
+}
+
+func validD1FixtureFactors(mode, keyfileMode string, password []byte, keyfiles []string) bool {
+	if len(keyfiles) > maxFixtureKeyfiles {
+		return false
+	}
+	seen := make(map[string]struct{}, len(keyfiles))
+	for _, keyfile := range keyfiles {
+		if keyfile == "" || !validBoundedHex(keyfile, maxFixtureKeyfileBytes) {
+			return false
+		}
+		if _, duplicate := seen[keyfile]; duplicate {
+			return false
+		}
+		seen[keyfile] = struct{}{}
+	}
+	switch mode {
+	case "password-only":
+		return len(password) > 0 && keyfileMode == "none" && len(keyfiles) == 0
+	case "keyfiles-only":
+		return len(password) == 0 && (keyfileMode == "ordered" || keyfileMode == "unordered") && len(keyfiles) > 0
+	case "combined":
+		return len(password) > 0 && (keyfileMode == "ordered" || keyfileMode == "unordered") && len(keyfiles) > 0
+	default:
+		return false
+	}
+}
+
+func sameD1Factors(left, right d1FixtureFactors) bool {
+	if !bytes.Equal(left.password, right.password) || len(left.keyfiles) != len(right.keyfiles) {
+		return false
+	}
+	for index := range left.keyfiles {
+		if !bytes.Equal(left.keyfiles[index], right.keyfiles[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateD1ScheduleDocument(data []byte, fixture fixtureManifest, contract d1VolumeContract) error {
+	_, err := decodeD1ScheduleForManifest(data, fixture, contract)
+	return err
+}
+
+func decodeD1Schedule(data []byte, contract d1VolumeContract) ([]D1OperationExpectation, error) {
+	return decodeD1ScheduleForManifest(data, fixtureManifest{id: contract.id, category: "d1-volume"}, contract)
+}
+
+func decodeD1ScheduleForManifest(
+	data []byte,
+	_ fixtureManifest,
+	contract d1VolumeContract,
+) ([]D1OperationExpectation, error) {
+	document, err := decodeStrictJSON(data)
+	if err != nil {
+		return nil, refusalForManifestJSON(err)
+	}
+	object, ok := document.(map[string]any)
+	if !ok {
+		return nil, refusal(RefusalMalformed)
+	}
+	if err := rejectUnknownFields(object, d1ScheduleFields); err != nil {
+		return nil, err
+	}
+	if err := validateD1DocumentEnvelope(object, contract.id, "d1-schedule"); err != nil {
+		return nil, err
+	}
+	rawOperations, ok := object["operations"].([]any)
+	if !ok || len(rawOperations) < 2 || len(rawOperations) > maxD1ScheduleOperations {
+		return nil, refusal(RefusalMalformed)
+	}
+	operations := make([]D1OperationExpectation, 0, len(rawOperations))
+	seen := make(map[string]struct{}, len(rawOperations))
+	for _, raw := range rawOperations {
+		operationObject, ok := raw.(map[string]any)
+		if !ok {
+			return nil, refusal(RefusalMalformed)
+		}
+		operation, err := decodeD1Operation(operationObject, contract)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[operation.name]; duplicate {
+			return nil, refusal(RefusalDuplicate)
+		}
+		seen[operation.name] = struct{}{}
+		operations = append(operations, operation)
+	}
+	for _, required := range []string{"normal-correct", "force-correct"} {
+		if _, found := seen[required]; !found {
+			return nil, refusal(RefusalMissing)
+		}
+	}
+	return operations, nil
+}
+
+func decodeD1Operation(object map[string]any, contract d1VolumeContract) (D1OperationExpectation, error) {
+	if err := rejectUnknownFields(object, d1OperationFields); err != nil {
+		return D1OperationExpectation{}, err
+	}
+	operation := D1OperationExpectation{}
+	var err error
+	operation.name, err = requiredString(object, "name")
+	if err != nil || !validD1MutationID(operation.name) {
+		return D1OperationExpectation{}, refusal(RefusalMalformed)
+	}
+	operation.mode, err = requiredString(object, "mode")
+	if err != nil || !contains([]string{"normal", "force", "force-unverified"}, operation.mode) {
+		return D1OperationExpectation{}, refusal(RefusalMalformed)
+	}
+	operation.factors, err = requiredString(object, "factors")
+	if err != nil || !contains([]string{"correct", "wrong"}, operation.factors) {
+		return D1OperationExpectation{}, refusal(RefusalMalformed)
+	}
+	operation.keyfileOrder, err = requiredString(object, "keyfile_order")
+	if err != nil || !contains([]string{"manifest", "reversed"}, operation.keyfileOrder) ||
+		(operation.keyfileOrder == "reversed" && contract.keyfileMode == "none") {
+		return D1OperationExpectation{}, refusal(RefusalMalformed)
+	}
+	operation.unverifiedRole, err = requiredString(object, "unverified_role")
+	if err != nil || !validD1OperationAuthority(operation.mode, operation.unverifiedRole) {
+		return D1OperationExpectation{}, refusal(RefusalMalformed)
+	}
+	stringFields := []struct {
+		field   string
+		dst     *string
+		allowed []string
+	}{
+		{"expected_outcome", &operation.expectedOutcome, []string{"success", "authenticated-degraded", "credentials-or-damage", "authentication-failed", "ambiguous-volume", "force-partial", "force-unverified"}},
+		{"expected_stage", &operation.expectedStage, []string{"none", "d1-bootstrap", "d1-body", "inner-volume"}},
+		{"expected_detail_stage", &operation.expectedDetailStage, []string{"none", "preamble", "capsule-rs", "capsule-structure", "tail-geometry", "wrap-auth", "replica-auth", "metadata", "descriptor", "record-body-rs", "record-auth", "final-record"}},
+		{"expected_code", &operation.expectedCode, []string{"PCV3_CREDENTIALS_OR_DAMAGE", "PCV3_AUTHENTICATED_DEGRADED", "PCV3_AMBIGUOUS_VOLUME", "PCV3_SUCCESS", "PCV3_AUTHENTICATION_FAILED", "PCV3_FORCE_PARTIAL", "PCV3_FORCE_UNVERIFIED"}},
+		{"expected_d1_provenance", &operation.expectedD1Provenance, []string{"none", "front", "tail", "matching"}},
+		{"expected_force_provenance", &operation.expectedForceProvenance, []string{"none", "verified", "partial", "unverified"}},
+		{"expected_output", &operation.expectedOutput, []string{"none", "plaintext", "outer-inner"}},
+		{"expected_final_state", &operation.expectedFinalState, []string{"none", "verified", "unverified", "missing"}},
+	}
+	for _, field := range stringFields {
+		*field.dst, err = requiredString(object, field.field)
+		if err != nil || !contains(field.allowed, *field.dst) {
+			return D1OperationExpectation{}, refusal(RefusalMalformed)
+		}
+	}
+	kdfCalls, err := requiredNumberString(object, "expected_kdf_calls")
+	if err != nil {
+		return D1OperationExpectation{}, err
+	}
+	operation.expectedKDFCalls, err = strconv.Atoi(kdfCalls)
+	if err != nil || operation.expectedKDFCalls < 0 || operation.expectedKDFCalls > 4 {
+		return D1OperationExpectation{}, refusal(RefusalMalformed)
+	}
+	operation.expectedCompletion, err = requiredBool(object, "expected_completion")
+	if err != nil || operation.expectedCompletion != (operation.expectedOutput != "none") {
+		return D1OperationExpectation{}, refusal(RefusalMalformed)
+	}
+	operation.expectedPlaintextLength, err = requiredU64Hex(object, "expected_plaintext_length_hex")
+	if err != nil || operation.expectedPlaintextLength > maxD1VolumeArtifactBytes {
+		return D1OperationExpectation{}, refusal(RefusalMalformed)
+	}
+	operation.expectedRanges, err = decodeD1ExpectedRanges(object, operation.expectedPlaintextLength)
+	if err != nil {
+		return D1OperationExpectation{}, err
+	}
+	if operation.expectedPlaintextLength == 0 &&
+		(len(operation.expectedRanges) != 0 || operation.expectedFinalState != "none") {
+		return D1OperationExpectation{}, refusal(RefusalMalformed)
+	}
+	if operation.expectedPlaintextLength != 0 &&
+		(len(operation.expectedRanges) == 0 || operation.expectedFinalState == "none") {
+		return D1OperationExpectation{}, refusal(RefusalMalformed)
+	}
+	return operation, nil
+}
+
+func decodeD1ExpectedRanges(object map[string]any, plaintextLength uint64) ([]D1ExpectedRange, error) {
+	rawRanges, ok := object["expected_ranges"].([]any)
+	if !ok || len(rawRanges) > maxD1ExpectedRanges {
+		return nil, refusal(RefusalMalformed)
+	}
+	ranges := make([]D1ExpectedRange, 0, len(rawRanges))
+	nextStart := uint64(0)
+	for index, raw := range rawRanges {
+		rangeObject, ok := raw.(map[string]any)
+		if !ok {
+			return nil, refusal(RefusalMalformed)
+		}
+		if err := rejectUnknownFields(rangeObject, d1ExpectedRangeFields); err != nil {
+			return nil, err
+		}
+		recoveryRange := D1ExpectedRange{}
+		var err error
+		recoveryRange.recordIndex, err = requiredU64Hex(rangeObject, "record_index_hex")
+		if err != nil || recoveryRange.recordIndex != uint64(index) {
+			return nil, refusal(RefusalMalformed)
+		}
+		recoveryRange.start, err = requiredU64Hex(rangeObject, "start_hex")
+		if err != nil || recoveryRange.start != nextStart {
+			return nil, refusal(RefusalMalformed)
+		}
+		recoveryRange.end, err = requiredU64Hex(rangeObject, "end_hex")
+		if err != nil || recoveryRange.end <= recoveryRange.start || recoveryRange.end > plaintextLength {
+			return nil, refusal(RefusalMalformed)
+		}
+		recoveryRange.state, err = requiredString(rangeObject, "state")
+		if err != nil || !contains([]string{"verified", "unverified", "missing"}, recoveryRange.state) {
+			return nil, refusal(RefusalMalformed)
+		}
+		nextStart = recoveryRange.end
+		ranges = append(ranges, recoveryRange)
+	}
+	if len(ranges) != 0 && nextStart != plaintextLength {
+		return nil, refusal(RefusalMalformed)
+	}
+	return ranges, nil
+}
+
+func validateD1DocumentEnvelope(object map[string]any, id, category string) error {
+	testOnly, err := requiredBool(object, "test_only")
+	if err != nil || !testOnly {
+		return refusal(RefusalMalformed)
+	}
+	notice, err := requiredString(object, "public_test_data_notice")
+	if err != nil || (notice != d1PrivateFixtureNotice && notice != d1MutationGrammarNotice) {
+		return refusal(RefusalMalformed)
+	}
+	documentID, err := requiredString(object, "id")
+	if err != nil || documentID != id {
+		return refusal(RefusalMalformed)
+	}
+	documentCategory, err := requiredString(object, "category")
+	if err != nil || documentCategory != category {
+		return refusal(RefusalMalformed)
+	}
+	status, err := requiredString(object, "status")
+	if err != nil || status != "required" {
+		return refusal(RefusalMalformed)
+	}
+	generated, err := requiredBool(object, "generated_at_test_time")
+	if err != nil || generated {
+		return refusal(RefusalMalformed)
+	}
+	return nil
+}
+
+func validD1OperationAuthority(mode, role string) bool {
+	if mode == "force-unverified" {
+		return role == "front" || role == "tail"
+	}
+	return role == "none"
+}
+
+func closeD1VolumeFixtures(fixtures []*D1VolumeFixture) {
+	for _, fixture := range fixtures {
+		fixture.close()
+	}
+}
+
+func (f *D1VolumeFixture) close() {
+	if f == nil {
+		return
+	}
+	f.correct.close()
+	f.wrong.close()
+	for index := range f.operations {
+		for rangeIndex := range f.operations[index].expectedRanges {
+			f.operations[index].expectedRanges[rangeIndex] = D1ExpectedRange{}
+		}
+		f.operations[index] = D1OperationExpectation{}
+	}
+	f.operations = nil
+}
+
+func (f *d1FixtureFactors) close() {
+	if f == nil {
+		return
+	}
+	zeroBytes(f.password)
+	for _, keyfile := range f.keyfiles {
+		zeroBytes(keyfile)
+	}
+	f.password = nil
+	f.keyfiles = nil
 }
 
 var d1MutationPlanFields = map[string]struct{}{
@@ -428,25 +881,44 @@ func validD1TestName(value string) bool {
 	return true
 }
 
-func (f *D1VolumeFixture) ID() string                     { return f.contract.id }
-func (f *D1VolumeFixture) Case() string                   { return f.contract.caseName }
-func (f *D1VolumeFixture) CredentialMode() string         { return f.contract.credentialMode }
-func (f *D1VolumeFixture) KeyfileMode() string            { return f.contract.keyfileMode }
-func (f *D1VolumeFixture) Outcome() string                { return f.contract.outcome }
-func (f *D1VolumeFixture) FailureStage() string           { return f.contract.failureStage }
-func (f *D1VolumeFixture) DetailStage() string            { return f.contract.detailStage }
-func (f *D1VolumeFixture) ForceState() string             { return f.contract.forceState }
-func (f *D1VolumeFixture) KDFCalls() int                  { return f.contract.kdfCalls }
-func (f *D1VolumeFixture) AuthenticatedBootstraps() int   { return f.contract.authenticatedBootstraps }
-func (f *D1VolumeFixture) Completion() bool               { return f.contract.completion }
-func (f *D1VolumeFixture) Credentials() []byte            { return f.credentials }
-func (f *D1VolumeFixture) Schedule() []byte               { return f.schedule }
-func (f *D1VolumeFixture) FrontBootstrap() []byte         { return f.frontBootstrap }
-func (f *D1VolumeFixture) TailBootstrap() []byte          { return f.tailBootstrap }
-func (f *D1VolumeFixture) Body() []byte                   { return f.body }
-func (f *D1VolumeFixture) Volume() []byte                 { return f.volume }
-func (f *D1VolumeFixture) InnerVolume() []byte            { return f.innerVolume }
-func (f *D1VolumeFixture) Plaintext() []byte              { return f.plaintext }
+func (f *D1VolumeFixture) ID() string                   { return f.contract.id }
+func (f *D1VolumeFixture) Case() string                 { return f.contract.caseName }
+func (f *D1VolumeFixture) CredentialMode() string       { return f.contract.credentialMode }
+func (f *D1VolumeFixture) KeyfileMode() string          { return f.contract.keyfileMode }
+func (f *D1VolumeFixture) Outcome() string              { return f.contract.outcome }
+func (f *D1VolumeFixture) FailureStage() string         { return f.contract.failureStage }
+func (f *D1VolumeFixture) DetailStage() string          { return f.contract.detailStage }
+func (f *D1VolumeFixture) ForceState() string           { return f.contract.forceState }
+func (f *D1VolumeFixture) KDFCalls() int                { return f.contract.kdfCalls }
+func (f *D1VolumeFixture) AuthenticatedBootstraps() int { return f.contract.authenticatedBootstraps }
+func (f *D1VolumeFixture) Completion() bool             { return f.contract.completion }
+func (f *D1VolumeFixture) Credentials() []byte          { return f.credentials }
+func (f *D1VolumeFixture) Schedule() []byte             { return f.schedule }
+func (f *D1VolumeFixture) FrontBootstrap() []byte       { return f.frontBootstrap }
+func (f *D1VolumeFixture) TailBootstrap() []byte        { return f.tailBootstrap }
+func (f *D1VolumeFixture) Body() []byte                 { return f.body }
+func (f *D1VolumeFixture) Volume() []byte               { return f.volume }
+func (f *D1VolumeFixture) InnerVolume() []byte          { return f.innerVolume }
+func (f *D1VolumeFixture) Plaintext() []byte            { return f.plaintext }
+func (f *D1VolumeFixture) Password() []byte             { return f.correct.password }
+func (f *D1VolumeFixture) WrongPassword() []byte        { return f.wrong.password }
+func (f *D1VolumeFixture) Keyfiles() [][]byte {
+	return append([][]byte(nil), f.correct.keyfiles...)
+}
+func (f *D1VolumeFixture) WrongKeyfiles() [][]byte {
+	return append([][]byte(nil), f.wrong.keyfiles...)
+}
+func (f *D1VolumeFixture) Operations() []D1OperationExpectation {
+	return append([]D1OperationExpectation(nil), f.operations...)
+}
+func (f *D1VolumeFixture) Operation(name string) (D1OperationExpectation, bool) {
+	for _, operation := range f.operations {
+		if operation.name == name {
+			return operation, true
+		}
+	}
+	return D1OperationExpectation{}, false
+}
 func (f *D1VolumeFixture) String() string                 { return "pcv3 D1 volume fixture: redacted" }
 func (f *D1VolumeFixture) GoString() string               { return f.String() }
 func (f *D1VolumeFixture) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, f.String()) }
@@ -455,3 +927,28 @@ func (p *D1MutationPlan) Document() []byte                { return p.document }
 func (p *D1MutationPlan) String() string                  { return "pcv3 D1 mutation plan: redacted" }
 func (p *D1MutationPlan) GoString() string                { return p.String() }
 func (p *D1MutationPlan) Format(state fmt.State, _ rune)  { _, _ = io.WriteString(state, p.String()) }
+
+func (r D1ExpectedRange) RecordIndex() uint64 { return r.recordIndex }
+func (r D1ExpectedRange) Start() uint64       { return r.start }
+func (r D1ExpectedRange) End() uint64         { return r.end }
+func (r D1ExpectedRange) State() string       { return r.state }
+
+func (o D1OperationExpectation) Name() string                    { return o.name }
+func (o D1OperationExpectation) Mode() string                    { return o.mode }
+func (o D1OperationExpectation) Factors() string                 { return o.factors }
+func (o D1OperationExpectation) KeyfileOrder() string            { return o.keyfileOrder }
+func (o D1OperationExpectation) UnverifiedRole() string          { return o.unverifiedRole }
+func (o D1OperationExpectation) ExpectedOutcome() string         { return o.expectedOutcome }
+func (o D1OperationExpectation) ExpectedStage() string           { return o.expectedStage }
+func (o D1OperationExpectation) ExpectedDetailStage() string     { return o.expectedDetailStage }
+func (o D1OperationExpectation) ExpectedCode() string            { return o.expectedCode }
+func (o D1OperationExpectation) ExpectedD1Provenance() string    { return o.expectedD1Provenance }
+func (o D1OperationExpectation) ExpectedForceProvenance() string { return o.expectedForceProvenance }
+func (o D1OperationExpectation) ExpectedKDFCalls() int           { return o.expectedKDFCalls }
+func (o D1OperationExpectation) ExpectedCompletion() bool        { return o.expectedCompletion }
+func (o D1OperationExpectation) ExpectedOutput() string          { return o.expectedOutput }
+func (o D1OperationExpectation) ExpectedPlaintextLength() uint64 { return o.expectedPlaintextLength }
+func (o D1OperationExpectation) ExpectedFinalState() string      { return o.expectedFinalState }
+func (o D1OperationExpectation) ExpectedRanges() []D1ExpectedRange {
+	return append([]D1ExpectedRange(nil), o.expectedRanges...)
+}
