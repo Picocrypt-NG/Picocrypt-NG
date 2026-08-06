@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -145,6 +146,70 @@ func exactTestDiagnostic(output, want string) bool {
 	}
 	if separator := strings.LastIndex(line, ": "); separator >= 0 {
 		return line[separator+2:] == want
+	}
+	return false
+}
+
+// TestD1TrackedHistoryPolicy is tooling-policy evidence only. It prevents an
+// accidentally named private D1 corpus/vector/manifest/mutation artifact from
+// entering tracked source, docs, or planning paths; it is not codec evidence.
+func TestD1TrackedHistoryPolicy(t *testing.T) {
+	for _, name := range []string{
+		"src/internal/pcv3/testdata/d1-private-corpus/manifest.json",
+		"src/internal/pcv3/testdata/d1-complete-vector.bin",
+		"docs/d1-mutation-plan.json",
+		".planning/private-d1-vectors/volume.bin",
+	} {
+		if !prohibitedTrackedD1ArtifactPath(name) {
+			t.Fatalf("policy did not reject prohibited synthetic path %q", name)
+		}
+	}
+	for _, name := range []string{
+		"src/internal/pcv3/d1_fixture_test.go",
+		"src/internal/pcv3/testdata/normal/manifest.json",
+		"docs/PCV3_FORMAT_SPEC.md",
+		".planning/phases/07-d1-streaming-outer-codec/07-01-PLAN.md",
+	} {
+		if prohibitedTrackedD1ArtifactPath(name) {
+			t.Fatalf("policy rejected permitted synthetic path %q", name)
+		}
+	}
+
+	repoRootCommand := exec.Command("git", "rev-parse", "--show-toplevel")
+	repoRootBytes, err := repoRootCommand.Output()
+	if err != nil {
+		t.Fatal("tracked-history policy could not resolve the repository root")
+	}
+	repoRoot := strings.TrimSpace(string(repoRootBytes))
+	trackedCommand := exec.Command("git", "-C", repoRoot, "ls-files", "-z", "--", "src", "docs", ".planning")
+	tracked, err := trackedCommand.Output()
+	if err != nil {
+		t.Fatal("tracked-history policy could not enumerate tracked names")
+	}
+	for _, rawName := range bytes.Split(tracked, []byte{0}) {
+		if len(rawName) == 0 {
+			continue
+		}
+		name := filepath.ToSlash(string(rawName))
+		if prohibitedTrackedD1ArtifactPath(name) {
+			t.Fatalf("tracked private D1 artifact name is forbidden: %s", name)
+		}
+	}
+}
+
+func prohibitedTrackedD1ArtifactPath(name string) bool {
+	name = strings.ToLower(filepath.ToSlash(name))
+	inProtectedArea := strings.HasPrefix(name, "docs/") || strings.HasPrefix(name, ".planning/") ||
+		strings.HasPrefix(name, "src/") && strings.Contains(name, "/testdata/")
+	if !inProtectedArea || !strings.Contains(name, "d1") {
+		return false
+	}
+	for _, component := range strings.Split(name, "/") {
+		for _, marker := range []string{"corpus", "vector", "manifest", "mutation"} {
+			if strings.Contains(component, marker) {
+				return true
+			}
+		}
 	}
 	return false
 }
