@@ -36,7 +36,7 @@ var d1MutationRegistry = [...]D1MutationContract{
 		sourcePath:      "internal/pcv3/d1_force.go",
 		packageName:     "./internal/pcv3",
 		testName:        "TestD1ForceAnchorsRejectFalseAnchorsAndFirstCandidateChoice",
-		assertionMarker: "want pre-body ambiguous-volume/d1-bootstrap/none",
+		assertionMarker: "want ambiguous-volume/d1-body/none with no inner/output",
 	},
 	{
 		id:              "decrypt-before-tag",

@@ -2830,7 +2830,14 @@ func assertD1ForceBodyAnchoredAmbiguity(
 		seams,
 		func(*d1ForceCandidateAnalysis) (*RecoveryResult, error) {
 			innerCalls++
-			return nil, nil
+			return newRecoveryResult(
+				OutcomeSuccess,
+				ForceProvenanceNone,
+				StageNone,
+				0,
+				nil,
+				0,
+			)
 		},
 	)
 	if err != nil {
