@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"strconv"
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -626,16 +625,18 @@ func decodeFixture(document any, format string) (fixtureManifest, error) {
 		return fixture, nil
 	}
 	if fixture.category == "d1-volume" {
-		contract, _, found := findD1ArtifactContract(fixture.id)
+		_, _, found := findD1Artifact(fixture.id)
 		if !found {
 			return fixtureManifest{}, refusal(RefusalUnknown)
 		}
 		if fixture.generatorSourcePath == "" || !validCorpusEntryPath("generator_source_path", fixture.generatorSourcePath) || !validSHA256(fixture.generatorSourceSHA) {
 			return fixtureManifest{}, refusal(RefusalMalformed)
 		}
-		if fixture.outcome != contract.outcome || fixture.failureStage != contract.failureStage ||
-			fixture.kdfCalls.String() != strconv.Itoa(contract.kdfCalls) || fixture.publicationState != "not-applicable" ||
-			fixture.forceState != contract.forceState {
+		kdfCalls, err := fixture.kdfCalls.Int64()
+		if !contains([]string{"success", "authenticated-degraded", "credentials-or-damage", "authentication-failed", "ambiguous-volume"}, fixture.outcome) ||
+			!contains([]string{"none", "d1-bootstrap", "d1-body", "inner-volume"}, fixture.failureStage) ||
+			err != nil || kdfCalls < 0 || kdfCalls > 4 || fixture.publicationState != "not-applicable" ||
+			!contains([]string{"not-applicable", "verified", "partial", "unverified"}, fixture.forceState) {
 			return fixtureManifest{}, refusal(RefusalMalformed)
 		}
 		return fixture, nil

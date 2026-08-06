@@ -25,10 +25,11 @@ const (
 	maxD1ScheduleBytes       = 4 << 20
 	maxD1VolumeArtifactBytes = 64 << 20
 	maxD1MutationPlanBytes   = 256 << 10
-	maxD1MutationCount       = 256
 	maxD1MutationBytes       = 64 << 10
 	maxD1ScheduleOperations  = 16
 	maxD1ExpectedRanges      = 65
+	d1ExpectedRangeBytes     = 1 << 20
+	d1OuterPlaintextOverhead = 16
 )
 
 var d1ArtifactRoles = [...]string{
@@ -39,62 +40,62 @@ var d1ArtifactRoles = [...]string{
 	"body",
 	"volume",
 	"inner-volume",
+	"outer-plaintext",
 	"plaintext",
 }
 
-type d1VolumeContract struct {
-	id, caseName, credentialMode, keyfileMode string
-	outcome, failureStage, detailStage        string
-	forceState                                string
-	kdfCalls, authenticatedBootstraps         int
-	completion, frontBootstrap, tailBootstrap bool
+// d1VolumeIDs is the closed corpus inventory. It intentionally owns identities
+// only: all credential modes and product expectations come from the private
+// credentials and schedule documents.
+var d1VolumeIDs = [...]string{
+	"d1-paranoid-password-only-healthy",
+	"d1-paranoid-keyfiles-only-healthy",
+	"d1-paranoid-combined-ordered-healthy",
+	"d1-paranoid-combined-unordered-healthy",
+	"d1-degraded-front-bootstrap-only",
+	"d1-degraded-tail-bootstrap-only",
+	"d1-negative-wrong-credential",
+	"d1-negative-record-tamper",
+	"d1-negative-record-reorder",
+	"d1-negative-body-truncation",
+	"d1-negative-final-loss",
+	"d1-negative-bootstrap-splice",
+	"d1-negative-anchored-ambiguity",
+	"d1-negative-inner-volume",
 }
 
-// These stable identities describe the complete private D1 evidence matrix.
-// They deliberately contain no vector bytes, credentials, keys, or paths.
-var d1VolumeContracts = [...]d1VolumeContract{
-	{id: "d1-paranoid-password-only-healthy", caseName: "password-only-healthy", credentialMode: "password-only", keyfileMode: "none", outcome: "success", failureStage: "none", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 2, completion: true, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-paranoid-keyfiles-only-healthy", caseName: "keyfiles-only-healthy", credentialMode: "keyfiles-only", keyfileMode: "ordered", outcome: "success", failureStage: "none", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 2, completion: true, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-paranoid-combined-ordered-healthy", caseName: "combined-ordered-healthy", credentialMode: "combined", keyfileMode: "ordered", outcome: "success", failureStage: "none", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 2, completion: true, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-paranoid-combined-unordered-healthy", caseName: "combined-unordered-healthy", credentialMode: "combined", keyfileMode: "unordered", outcome: "success", failureStage: "none", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 2, completion: true, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-degraded-front-bootstrap-only", caseName: "front-bootstrap-only", credentialMode: "combined", keyfileMode: "ordered", outcome: "authenticated-degraded", failureStage: "d1-bootstrap", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 1, completion: true, frontBootstrap: true},
-	{id: "d1-degraded-tail-bootstrap-only", caseName: "tail-bootstrap-only", credentialMode: "combined", keyfileMode: "ordered", outcome: "authenticated-degraded", failureStage: "d1-bootstrap", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 1, completion: true, tailBootstrap: true},
-	{id: "d1-negative-wrong-credential", caseName: "wrong-credential", credentialMode: "combined", keyfileMode: "ordered", outcome: "credentials-or-damage", failureStage: "d1-bootstrap", detailStage: "none", forceState: "unverified", kdfCalls: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-record-tamper", caseName: "record-tamper", credentialMode: "combined", keyfileMode: "ordered", outcome: "authentication-failed", failureStage: "d1-body", detailStage: "none", forceState: "partial", kdfCalls: 1, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-record-reorder", caseName: "record-reorder", credentialMode: "combined", keyfileMode: "ordered", outcome: "authentication-failed", failureStage: "d1-body", detailStage: "none", forceState: "partial", kdfCalls: 1, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-body-truncation", caseName: "body-truncation", credentialMode: "combined", keyfileMode: "ordered", outcome: "authentication-failed", failureStage: "d1-body", detailStage: "none", forceState: "partial", kdfCalls: 1, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-final-loss", caseName: "final-loss", credentialMode: "combined", keyfileMode: "ordered", outcome: "authentication-failed", failureStage: "d1-body", detailStage: "none", forceState: "partial", kdfCalls: 1, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-bootstrap-splice", caseName: "bootstrap-splice", credentialMode: "combined", keyfileMode: "ordered", outcome: "ambiguous-volume", failureStage: "d1-bootstrap", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-anchored-ambiguity", caseName: "body-anchored-ambiguity", credentialMode: "combined", keyfileMode: "ordered", outcome: "ambiguous-volume", failureStage: "d1-body", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 0, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-inner-volume", caseName: "inner-volume-failure", credentialMode: "combined", keyfileMode: "ordered", outcome: "authentication-failed", failureStage: "inner-volume", detailStage: "record-auth", forceState: "verified", kdfCalls: 2, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
-}
-
-func findD1VolumeContract(id string) (d1VolumeContract, bool) {
-	for _, contract := range d1VolumeContracts {
-		if contract.id == id {
-			return contract, true
+func isD1VolumeID(id string) bool {
+	for _, candidate := range d1VolumeIDs {
+		if candidate == id {
+			return true
 		}
 	}
-	return d1VolumeContract{}, false
+	return false
+}
+
+// D1VolumeFixtureIDs returns the closed logical inventory in canonical order.
+func D1VolumeFixtureIDs() []string {
+	return append([]string(nil), d1VolumeIDs[:]...)
 }
 
 func d1ArtifactID(vectorID, role string) string {
 	return vectorID + "--" + role
 }
 
-func findD1ArtifactContract(id string) (d1VolumeContract, string, bool) {
-	for _, contract := range d1VolumeContracts {
+func findD1Artifact(id string) (string, string, bool) {
+	for _, volumeID := range d1VolumeIDs {
 		for _, role := range d1ArtifactRoles {
-			if id == d1ArtifactID(contract.id, role) {
-				return contract, role, true
+			if id == d1ArtifactID(volumeID, role) {
+				return volumeID, role, true
 			}
 		}
 	}
-	return d1VolumeContract{}, "", false
+	return "", "", false
 }
 
 func validateD1FixtureInventory(fixtures []fixtureManifest) (bool, error) {
-	seen := make(map[string]struct{}, len(d1VolumeContracts)*len(d1ArtifactRoles)+1)
+	seen := make(map[string]struct{}, len(d1VolumeIDs)*len(d1ArtifactRoles)+1)
+	semantics := make(map[string]fixtureManifest, len(d1VolumeIDs))
 	for _, fixture := range fixtures {
 		if fixture.category != "d1-volume" && fixture.category != "d1-mutation-plan" {
 			continue
@@ -109,8 +110,18 @@ func validateD1FixtureInventory(fixtures []fixtureManifest) (bool, error) {
 			}
 			continue
 		}
-		if _, _, found := findD1ArtifactContract(fixture.id); !found {
+		volumeID, _, found := findD1Artifact(fixture.id)
+		if !found {
 			return false, refusal(RefusalUnknown)
+		}
+		if first, exists := semantics[volumeID]; exists {
+			if fixture.outcome != first.outcome || fixture.failureStage != first.failureStage ||
+				fixture.kdfCalls.String() != first.kdfCalls.String() ||
+				fixture.publicationState != first.publicationState || fixture.forceState != first.forceState {
+				return false, refusal(RefusalMalformed)
+			}
+		} else {
+			semantics[volumeID] = fixture
 		}
 	}
 	if len(seen) == 0 {
@@ -119,14 +130,14 @@ func validateD1FixtureInventory(fixtures []fixtureManifest) (bool, error) {
 	if _, found := seen[d1MutationPlanID]; !found {
 		return false, refusal(RefusalMissing)
 	}
-	for _, contract := range d1VolumeContracts {
+	for _, volumeID := range d1VolumeIDs {
 		for _, role := range d1ArtifactRoles {
-			if _, found := seen[d1ArtifactID(contract.id, role)]; !found {
+			if _, found := seen[d1ArtifactID(volumeID, role)]; !found {
 				return false, refusal(RefusalMissing)
 			}
 		}
 	}
-	want := len(d1VolumeContracts)*len(d1ArtifactRoles) + 1
+	want := len(d1VolumeIDs)*len(d1ArtifactRoles) + 1
 	if len(seen) != want {
 		return false, refusal(RefusalExtra)
 	}
@@ -136,12 +147,12 @@ func validateD1FixtureInventory(fixtures []fixtureManifest) (bool, error) {
 // D1VolumeFixture lends complete TEST ONLY private D1 material. Every byte
 // accessor aliases loader-owned memory and becomes zero after the callback.
 type D1VolumeFixture struct {
-	contract                             d1VolumeContract
-	credentials, schedule                []byte
-	frontBootstrap, tailBootstrap        []byte
-	body, volume, innerVolume, plaintext []byte
-	correct, wrong                       d1FixtureFactors
-	operations                           []D1OperationExpectation
+	id, credentialMode, keyfileMode                      string
+	credentials, schedule                                []byte
+	frontBootstrap, tailBootstrap                        []byte
+	body, volume, innerVolume, outerPlaintext, plaintext []byte
+	correct, wrong                                       d1FixtureFactors
+	operations                                           []D1OperationExpectation
 }
 
 type d1FixtureFactors struct {
@@ -182,19 +193,18 @@ func WithD1VolumeFixtures(rootPath, custodyID string, fixtureIDs []string, use f
 	if use == nil {
 		return refusal(RefusalMalformed)
 	}
-	contracts := make([]d1VolumeContract, 0, len(fixtureIDs))
+	logicalIDs := make([]string, 0, len(fixtureIDs))
 	selected := make(map[string]struct{}, len(fixtureIDs)*len(d1ArtifactRoles))
-	logicalIDs := make(map[string]struct{}, len(fixtureIDs))
+	seenIDs := make(map[string]struct{}, len(fixtureIDs))
 	for _, id := range fixtureIDs {
-		contract, found := findD1VolumeContract(id)
-		if !found {
+		if !isD1VolumeID(id) {
 			return refusal(RefusalUnknown)
 		}
-		if _, duplicate := logicalIDs[id]; duplicate {
+		if _, duplicate := seenIDs[id]; duplicate {
 			return refusal(RefusalDuplicate)
 		}
-		logicalIDs[id] = struct{}{}
-		contracts = append(contracts, contract)
+		seenIDs[id] = struct{}{}
+		logicalIDs = append(logicalIDs, id)
 		for _, role := range d1ArtifactRoles {
 			selected[d1ArtifactID(id, role)] = struct{}{}
 		}
@@ -209,12 +219,12 @@ func WithD1VolumeFixtures(rootPath, custodyID string, fixtureIDs []string, use f
 		return refusal(RefusalUnknown)
 	}
 
-	fixtures := make([]*D1VolumeFixture, 0, len(contracts))
+	fixtures := make([]*D1VolumeFixture, 0, len(logicalIDs))
 	defer func() {
 		closeD1VolumeFixtures(fixtures)
 	}()
-	for _, contract := range contracts {
-		fixture, err := assembleD1VolumeFixture(contract, documents)
+	for _, id := range logicalIDs {
+		fixture, err := assembleD1VolumeFixture(id, documents)
 		if err != nil {
 			return err
 		}
@@ -223,15 +233,15 @@ func WithD1VolumeFixtures(rootPath, custodyID string, fixtureIDs []string, use f
 	return use(fixtures)
 }
 
-func assembleD1VolumeFixture(contract d1VolumeContract, documents map[string][]byte) (*D1VolumeFixture, error) {
+func assembleD1VolumeFixture(id string, documents map[string][]byte) (*D1VolumeFixture, error) {
 	artifact := func(role string) ([]byte, error) {
-		document, found := documents[d1ArtifactID(contract.id, role)]
+		document, found := documents[d1ArtifactID(id, role)]
 		if !found {
 			return nil, refusal(RefusalMissing)
 		}
 		return document, nil
 	}
-	fixture := &D1VolumeFixture{contract: contract}
+	fixture := &D1VolumeFixture{id: id}
 	fields := []struct {
 		role string
 		dst  *[]byte
@@ -243,6 +253,7 @@ func assembleD1VolumeFixture(contract d1VolumeContract, documents map[string][]b
 		{"body", &fixture.body},
 		{"volume", &fixture.volume},
 		{"inner-volume", &fixture.innerVolume},
+		{"outer-plaintext", &fixture.outerPlaintext},
 		{"plaintext", &fixture.plaintext},
 	}
 	for _, field := range fields {
@@ -256,15 +267,21 @@ func assembleD1VolumeFixture(contract d1VolumeContract, documents map[string][]b
 		fixture.close()
 		return nil, err
 	}
-	correct, wrong, err := decodeD1Credentials(fixture.credentials, contract)
+	credentialMode, keyfileMode, correct, wrong, err := decodeD1Credentials(fixture.credentials, id)
 	if err != nil {
 		fixture.close()
 		return nil, err
 	}
+	fixture.credentialMode = credentialMode
+	fixture.keyfileMode = keyfileMode
 	fixture.correct = correct
 	fixture.wrong = wrong
-	fixture.operations, err = decodeD1Schedule(fixture.schedule, contract)
+	fixture.operations, err = decodeD1Schedule(fixture.schedule, id, keyfileMode)
 	if err != nil {
+		fixture.close()
+		return nil, err
+	}
+	if err := validateD1ScheduleArtifacts(fixture); err != nil {
 		fixture.close()
 		return nil, err
 	}
@@ -290,11 +307,41 @@ func validateD1VolumeGeometry(fixture *D1VolumeFixture) error {
 	return nil
 }
 
-// D1MutationPlan lends the private semantic-mutation description as a
-// validated raw document. Parsing/execution remains in the private evidence
-// lane so this package never retains or serializes the campaign.
+func validateD1ScheduleArtifacts(fixture *D1VolumeFixture) error {
+	if fixture == nil {
+		return refusal(RefusalMalformed)
+	}
+	for _, operation := range fixture.operations {
+		if operation.expectedPlaintextLength == 0 {
+			continue
+		}
+		var expectedLength uint64
+		switch operation.expectedOutput {
+		case "plaintext":
+			expectedLength = uint64(len(fixture.plaintext))
+		case "outer-inner":
+			expectedLength = uint64(len(fixture.outerPlaintext))
+		default:
+			return refusal(RefusalMalformed)
+		}
+		if operation.expectedPlaintextLength != expectedLength {
+			return refusal(RefusalMalformed)
+		}
+	}
+	return nil
+}
+
+// D1MutationPlan lends callback-scoped private transforms. Execution identity
+// comes only from the tracked D1MutationContract attached to each mutation.
 type D1MutationPlan struct {
-	document []byte
+	mutations []D1Mutation
+}
+
+type D1Mutation struct {
+	contract     D1MutationContract
+	sourceSHA256 string
+	before       []byte
+	after        []byte
 }
 
 func WithD1MutationPlan(rootPath, custodyID string, use func(*D1MutationPlan) error) error {
@@ -314,11 +361,16 @@ func WithD1MutationPlan(rootPath, custodyID string, use func(*D1MutationPlan) er
 	if !found {
 		return refusal(RefusalMissing)
 	}
-	return use(&D1MutationPlan{document: document})
+	plan, err := decodeD1MutationPlan(document, fixtureManifest{id: d1MutationPlanID, category: "d1-mutation-plan"})
+	if err != nil {
+		return err
+	}
+	defer plan.close()
+	return use(plan)
 }
 
 func validateD1ArtifactDocument(data []byte, fixture fixtureManifest) error {
-	contract, role, found := findD1ArtifactContract(fixture.id)
+	volumeID, role, found := findD1Artifact(fixture.id)
 	if !found || fixture.category != "d1-volume" {
 		return refusal(RefusalUnknown)
 	}
@@ -327,26 +379,18 @@ func validateD1ArtifactDocument(data []byte, fixture fixtureManifest) error {
 		if len(data) == 0 || len(data) > maxD1CredentialBytes {
 			return refusal(RefusalMalformed)
 		}
-		return validateD1CredentialsDocument(data, fixture, contract)
+		return validateD1CredentialsDocument(data, volumeID)
 	case "schedule":
 		if len(data) == 0 || len(data) > maxD1ScheduleBytes {
 			return refusal(RefusalMalformed)
 		}
-		return validateD1ScheduleDocument(data, fixture, contract)
+		return validateD1ScheduleDocument(data, volumeID)
 	case "front-bootstrap":
-		want := 0
-		if contract.frontBootstrap {
-			want = d1BootstrapBytes
-		}
-		if len(data) != want {
+		if len(data) != 0 && len(data) != d1BootstrapBytes {
 			return refusal(RefusalMalformed)
 		}
 	case "tail-bootstrap":
-		want := 0
-		if contract.tailBootstrap {
-			want = d1BootstrapBytes
-		}
-		if len(data) != want {
+		if len(data) != 0 && len(data) != d1BootstrapBytes {
 			return refusal(RefusalMalformed)
 		}
 	case "body":
@@ -359,6 +403,10 @@ func validateD1ArtifactDocument(data []byte, fixture fixtureManifest) error {
 		}
 	case "inner-volume":
 		if len(data) == 0 || len(data) > maxD1VolumeArtifactBytes {
+			return refusal(RefusalMalformed)
+		}
+	case "outer-plaintext":
+		if len(data) == 0 || len(data) > maxD1VolumeArtifactBytes+d1OuterPlaintextOverhead {
 			return refusal(RefusalMalformed)
 		}
 	case "plaintext":
@@ -398,64 +446,56 @@ var d1ExpectedRangeFields = map[string]struct{}{
 	"record_index_hex": {}, "start_hex": {}, "end_hex": {}, "state": {},
 }
 
-func validateD1CredentialsDocument(data []byte, fixture fixtureManifest, contract d1VolumeContract) error {
-	correct, wrong, err := decodeD1CredentialsForManifest(data, fixture, contract)
+func validateD1CredentialsDocument(data []byte, id string) error {
+	_, _, correct, wrong, err := decodeD1Credentials(data, id)
 	correct.close()
 	wrong.close()
 	return err
 }
 
-func decodeD1Credentials(data []byte, contract d1VolumeContract) (d1FixtureFactors, d1FixtureFactors, error) {
-	return decodeD1CredentialsForManifest(data, fixtureManifest{id: contract.id, category: "d1-volume"}, contract)
-}
-
-func decodeD1CredentialsForManifest(
-	data []byte,
-	_ fixtureManifest,
-	contract d1VolumeContract,
-) (d1FixtureFactors, d1FixtureFactors, error) {
+func decodeD1Credentials(data []byte, id string) (string, string, d1FixtureFactors, d1FixtureFactors, error) {
 	document, err := decodeStrictJSON(data)
 	if err != nil {
-		return d1FixtureFactors{}, d1FixtureFactors{}, refusalForManifestJSON(err)
+		return "", "", d1FixtureFactors{}, d1FixtureFactors{}, refusalForManifestJSON(err)
 	}
 	object, ok := document.(map[string]any)
 	if !ok {
-		return d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
+		return "", "", d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
 	}
 	if err := rejectUnknownFields(object, d1CredentialsFields); err != nil {
-		return d1FixtureFactors{}, d1FixtureFactors{}, err
+		return "", "", d1FixtureFactors{}, d1FixtureFactors{}, err
 	}
-	if err := validateD1DocumentEnvelope(object, contract.id, "d1-credentials"); err != nil {
-		return d1FixtureFactors{}, d1FixtureFactors{}, err
+	if err := validateD1DocumentEnvelope(object, id, "d1-credentials"); err != nil {
+		return "", "", d1FixtureFactors{}, d1FixtureFactors{}, err
 	}
 	credentialMode, err := requiredString(object, "credential_mode")
-	if err != nil || credentialMode != contract.credentialMode {
-		return d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
+	if err != nil || !contains([]string{"password-only", "keyfiles-only", "combined"}, credentialMode) {
+		return "", "", d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
 	}
 	keyfileMode, err := requiredString(object, "keyfile_mode")
-	if err != nil || keyfileMode != contract.keyfileMode {
-		return d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
+	if err != nil || !contains([]string{"none", "ordered", "unordered"}, keyfileMode) {
+		return "", "", d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
 	}
 	correctObject, correctOK := object["correct"].(map[string]any)
 	wrongObject, wrongOK := object["wrong"].(map[string]any)
 	if !correctOK || !wrongOK {
-		return d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
+		return "", "", d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
 	}
 	correct, err := decodeD1Factors(correctObject, credentialMode, keyfileMode)
 	if err != nil {
-		return d1FixtureFactors{}, d1FixtureFactors{}, err
+		return "", "", d1FixtureFactors{}, d1FixtureFactors{}, err
 	}
 	wrong, err := decodeD1Factors(wrongObject, credentialMode, keyfileMode)
 	if err != nil {
 		correct.close()
-		return d1FixtureFactors{}, d1FixtureFactors{}, err
+		return "", "", d1FixtureFactors{}, d1FixtureFactors{}, err
 	}
 	if sameD1Factors(correct, wrong) {
 		correct.close()
 		wrong.close()
-		return d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
+		return "", "", d1FixtureFactors{}, d1FixtureFactors{}, refusal(RefusalMalformed)
 	}
-	return correct, wrong, nil
+	return credentialMode, keyfileMode, correct, wrong, nil
 }
 
 func decodeD1Factors(object map[string]any, credentialMode, keyfileMode string) (d1FixtureFactors, error) {
@@ -526,20 +566,12 @@ func sameD1Factors(left, right d1FixtureFactors) bool {
 	return true
 }
 
-func validateD1ScheduleDocument(data []byte, fixture fixtureManifest, contract d1VolumeContract) error {
-	_, err := decodeD1ScheduleForManifest(data, fixture, contract)
+func validateD1ScheduleDocument(data []byte, id string) error {
+	_, err := decodeD1Schedule(data, id, "")
 	return err
 }
 
-func decodeD1Schedule(data []byte, contract d1VolumeContract) ([]D1OperationExpectation, error) {
-	return decodeD1ScheduleForManifest(data, fixtureManifest{id: contract.id, category: "d1-volume"}, contract)
-}
-
-func decodeD1ScheduleForManifest(
-	data []byte,
-	_ fixtureManifest,
-	contract d1VolumeContract,
-) ([]D1OperationExpectation, error) {
+func decodeD1Schedule(data []byte, id, keyfileMode string) ([]D1OperationExpectation, error) {
 	document, err := decodeStrictJSON(data)
 	if err != nil {
 		return nil, refusalForManifestJSON(err)
@@ -551,7 +583,7 @@ func decodeD1ScheduleForManifest(
 	if err := rejectUnknownFields(object, d1ScheduleFields); err != nil {
 		return nil, err
 	}
-	if err := validateD1DocumentEnvelope(object, contract.id, "d1-schedule"); err != nil {
+	if err := validateD1DocumentEnvelope(object, id, "d1-schedule"); err != nil {
 		return nil, err
 	}
 	rawOperations, ok := object["operations"].([]any)
@@ -565,7 +597,7 @@ func decodeD1ScheduleForManifest(
 		if !ok {
 			return nil, refusal(RefusalMalformed)
 		}
-		operation, err := decodeD1Operation(operationObject, contract)
+		operation, err := decodeD1Operation(operationObject, keyfileMode)
 		if err != nil {
 			return nil, err
 		}
@@ -583,7 +615,7 @@ func decodeD1ScheduleForManifest(
 	return operations, nil
 }
 
-func decodeD1Operation(object map[string]any, contract d1VolumeContract) (D1OperationExpectation, error) {
+func decodeD1Operation(object map[string]any, keyfileMode string) (D1OperationExpectation, error) {
 	if err := rejectUnknownFields(object, d1OperationFields); err != nil {
 		return D1OperationExpectation{}, err
 	}
@@ -603,7 +635,7 @@ func decodeD1Operation(object map[string]any, contract d1VolumeContract) (D1Oper
 	}
 	operation.keyfileOrder, err = requiredString(object, "keyfile_order")
 	if err != nil || !contains([]string{"manifest", "reversed"}, operation.keyfileOrder) ||
-		(operation.keyfileOrder == "reversed" && contract.keyfileMode == "none") {
+		(operation.keyfileOrder == "reversed" && keyfileMode == "none") {
 		return D1OperationExpectation{}, refusal(RefusalMalformed)
 	}
 	operation.unverifiedRole, err = requiredString(object, "unverified_role")
@@ -643,7 +675,7 @@ func decodeD1Operation(object map[string]any, contract d1VolumeContract) (D1Oper
 		return D1OperationExpectation{}, refusal(RefusalMalformed)
 	}
 	operation.expectedPlaintextLength, err = requiredU64Hex(object, "expected_plaintext_length_hex")
-	if err != nil || operation.expectedPlaintextLength > maxD1VolumeArtifactBytes {
+	if err != nil || operation.expectedPlaintextLength > maxD1VolumeArtifactBytes+d1OuterPlaintextOverhead {
 		return D1OperationExpectation{}, refusal(RefusalMalformed)
 	}
 	operation.expectedRanges, err = decodeD1ExpectedRanges(object, operation.expectedPlaintextLength)
@@ -683,11 +715,16 @@ func decodeD1ExpectedRanges(object map[string]any, plaintextLength uint64) ([]D1
 			return nil, refusal(RefusalMalformed)
 		}
 		recoveryRange.start, err = requiredU64Hex(rangeObject, "start_hex")
-		if err != nil || recoveryRange.start != nextStart {
+		wantStart := uint64(index) * d1ExpectedRangeBytes
+		if err != nil || recoveryRange.start != nextStart || recoveryRange.start != wantStart {
 			return nil, refusal(RefusalMalformed)
 		}
 		recoveryRange.end, err = requiredU64Hex(rangeObject, "end_hex")
-		if err != nil || recoveryRange.end <= recoveryRange.start || recoveryRange.end > plaintextLength {
+		wantEnd := wantStart + d1ExpectedRangeBytes
+		if wantEnd > plaintextLength {
+			wantEnd = plaintextLength
+		}
+		if err != nil || recoveryRange.end != wantEnd || recoveryRange.end <= recoveryRange.start {
 			return nil, refusal(RefusalMalformed)
 		}
 		recoveryRange.state, err = requiredString(rangeObject, "state")
@@ -771,6 +808,18 @@ func (f *d1FixtureFactors) close() {
 	f.keyfiles = nil
 }
 
+func (p *D1MutationPlan) close() {
+	if p == nil {
+		return
+	}
+	for index := range p.mutations {
+		zeroBytes(p.mutations[index].before)
+		zeroBytes(p.mutations[index].after)
+		p.mutations[index] = D1Mutation{}
+	}
+	p.mutations = nil
+}
+
 var d1MutationPlanFields = map[string]struct{}{
 	"test_only": {}, "public_test_data_notice": {}, "id": {}, "category": {},
 	"mutations": {}, "status": {}, "generated_at_test_time": {},
@@ -778,20 +827,29 @@ var d1MutationPlanFields = map[string]struct{}{
 
 var d1MutationFields = map[string]struct{}{
 	"id": {}, "source_path": {}, "source_sha256": {}, "before_hex": {},
-	"after_hex": {}, "package": {}, "test_name": {}, "timeout_seconds": {},
+	"after_hex": {}, "package": {}, "test_name": {},
+	"expected_assertion_marker": {}, "timeout_seconds": {},
 }
 
 func validateD1MutationPlanDocument(data []byte, fixture fixtureManifest) error {
+	plan, err := decodeD1MutationPlan(data, fixture)
+	if plan != nil {
+		plan.close()
+	}
+	return err
+}
+
+func decodeD1MutationPlan(data []byte, fixture fixtureManifest) (plan *D1MutationPlan, retErr error) {
 	document, err := decodeStrictJSON(data)
 	if err != nil {
-		return refusalForManifestJSON(err)
+		return nil, refusalForManifestJSON(err)
 	}
 	object, ok := document.(map[string]any)
 	if !ok {
-		return refusal(RefusalMalformed)
+		return nil, refusal(RefusalMalformed)
 	}
 	if err := rejectUnknownFields(object, d1MutationPlanFields); err != nil {
-		return err
+		return nil, err
 	}
 	testOnly, testOnlyOK := object["test_only"].(bool)
 	notice, noticeOK := object["public_test_data_notice"].(string)
@@ -803,42 +861,75 @@ func validateD1MutationPlanDocument(data []byte, fixture fixtureManifest) error 
 	validNotice := notice == d1PrivateFixtureNotice || notice == d1MutationGrammarNotice
 	if !testOnlyOK || !testOnly || !noticeOK || !validNotice || !idOK || id != fixture.id || id != d1MutationPlanID ||
 		!categoryOK || category != fixture.category || category != "d1-mutation-plan" || !statusOK || status != "required" ||
-		!generatedOK || generated || !mutationsOK || len(mutations) == 0 || len(mutations) > maxD1MutationCount {
-		return refusal(RefusalMalformed)
+		!generatedOK || generated || !mutationsOK {
+		return nil, refusal(RefusalMalformed)
 	}
+	if len(mutations) < len(d1MutationRegistry) {
+		return nil, refusal(RefusalMissing)
+	}
+	if len(mutations) > len(d1MutationRegistry) {
+		return nil, refusal(RefusalExtra)
+	}
+	plan = &D1MutationPlan{mutations: make([]D1Mutation, 0, len(mutations))}
+	defer func() {
+		if retErr != nil {
+			plan.close()
+			plan = nil
+		}
+	}()
 	seen := make(map[string]struct{}, len(mutations))
 	for _, rawMutation := range mutations {
 		mutation, ok := rawMutation.(map[string]any)
 		if !ok {
-			return refusal(RefusalMalformed)
+			return plan, refusal(RefusalMalformed)
 		}
 		if err := rejectUnknownFields(mutation, d1MutationFields); err != nil {
-			return err
+			return plan, err
 		}
 		mutationID, mutationIDOK := mutation["id"].(string)
 		sourcePath, sourcePathOK := mutation["source_path"].(string)
 		sourceSHA, sourceSHAOK := mutation["source_sha256"].(string)
 		packageName, packageOK := mutation["package"].(string)
 		testName, testNameOK := mutation["test_name"].(string)
+		assertionMarker, assertionMarkerOK := mutation["expected_assertion_marker"].(string)
 		before, beforeOK := mutation["before_hex"].(string)
 		after, afterOK := mutation["after_hex"].(string)
 		timeout, timeoutOK := mutation["timeout_seconds"].(json.Number)
-		if !mutationIDOK || !validD1MutationID(mutationID) || !sourcePathOK || !validD1MutationSource(sourcePath, packageName) ||
-			!sourceSHAOK || !validSHA256(sourceSHA) || !packageOK || !testNameOK || !validD1TestName(testName) ||
+		contract, contractOK := findD1MutationContract(mutationID)
+		if !mutationIDOK || !contractOK || !sourcePathOK || !sourceSHAOK || !validSHA256(sourceSHA) ||
+			!packageOK || !testNameOK || !assertionMarkerOK ||
 			!beforeOK || !afterOK || before == after || before == "" || len(before) > maxD1MutationBytes*2 ||
 			len(after) > maxD1MutationBytes*2 || !validLowerHex(before) || !validLowerHex(after) || !timeoutOK {
-			return refusal(RefusalMalformed)
-		}
-		seconds, err := timeout.Int64()
-		if err != nil || seconds < 1 || seconds > 300 {
-			return refusal(RefusalMalformed)
+			if mutationIDOK && !contractOK {
+				return plan, refusal(RefusalUnknown)
+			}
+			return plan, refusal(RefusalMalformed)
 		}
 		if _, duplicate := seen[mutationID]; duplicate {
-			return refusal(RefusalDuplicate)
+			return plan, refusal(RefusalDuplicate)
+		}
+		seconds, err := timeout.Int64()
+		if err != nil || contract.ID() != d1MutationRegistry[len(plan.mutations)].ID() ||
+			sourcePath != contract.SourcePath() || packageName != contract.Package() ||
+			testName != contract.TestName() || assertionMarker != contract.AssertionMarker() ||
+			seconds != contract.TimeoutSeconds() {
+			return plan, refusal(RefusalMalformed)
 		}
 		seen[mutationID] = struct{}{}
+		beforeBytes, err := hex.DecodeString(before)
+		if err != nil {
+			return plan, refusal(RefusalMalformed)
+		}
+		afterBytes, err := hex.DecodeString(after)
+		if err != nil {
+			zeroBytes(beforeBytes)
+			return plan, refusal(RefusalMalformed)
+		}
+		plan.mutations = append(plan.mutations, D1Mutation{
+			contract: contract, sourceSHA256: sourceSHA, before: beforeBytes, after: afterBytes,
+		})
 	}
-	return nil
+	return plan, nil
 }
 
 func validD1MutationID(value string) bool {
@@ -854,20 +945,6 @@ func validD1MutationID(value string) bool {
 	return true
 }
 
-func validD1MutationSource(sourcePath, packageName string) bool {
-	if !validLogicalPath(sourcePath) || !strings.HasSuffix(sourcePath, ".go") {
-		return false
-	}
-	switch {
-	case strings.HasPrefix(sourcePath, "internal/pcv3/"):
-		return packageName == "./internal/pcv3"
-	case strings.HasPrefix(sourcePath, "internal/pcv3credential/"):
-		return packageName == "./internal/pcv3credential"
-	default:
-		return false
-	}
-}
-
 func validD1TestName(value string) bool {
 	if !strings.HasPrefix(value, "TestD1") || len(value) > 128 {
 		return false
@@ -881,27 +958,30 @@ func validD1TestName(value string) bool {
 	return true
 }
 
-func (f *D1VolumeFixture) ID() string                   { return f.contract.id }
-func (f *D1VolumeFixture) Case() string                 { return f.contract.caseName }
-func (f *D1VolumeFixture) CredentialMode() string       { return f.contract.credentialMode }
-func (f *D1VolumeFixture) KeyfileMode() string          { return f.contract.keyfileMode }
-func (f *D1VolumeFixture) Outcome() string              { return f.contract.outcome }
-func (f *D1VolumeFixture) FailureStage() string         { return f.contract.failureStage }
-func (f *D1VolumeFixture) DetailStage() string          { return f.contract.detailStage }
-func (f *D1VolumeFixture) ForceState() string           { return f.contract.forceState }
-func (f *D1VolumeFixture) KDFCalls() int                { return f.contract.kdfCalls }
-func (f *D1VolumeFixture) AuthenticatedBootstraps() int { return f.contract.authenticatedBootstraps }
-func (f *D1VolumeFixture) Completion() bool             { return f.contract.completion }
-func (f *D1VolumeFixture) Credentials() []byte          { return f.credentials }
-func (f *D1VolumeFixture) Schedule() []byte             { return f.schedule }
-func (f *D1VolumeFixture) FrontBootstrap() []byte       { return f.frontBootstrap }
-func (f *D1VolumeFixture) TailBootstrap() []byte        { return f.tailBootstrap }
-func (f *D1VolumeFixture) Body() []byte                 { return f.body }
-func (f *D1VolumeFixture) Volume() []byte               { return f.volume }
-func (f *D1VolumeFixture) InnerVolume() []byte          { return f.innerVolume }
-func (f *D1VolumeFixture) Plaintext() []byte            { return f.plaintext }
-func (f *D1VolumeFixture) Password() []byte             { return f.correct.password }
-func (f *D1VolumeFixture) WrongPassword() []byte        { return f.wrong.password }
+func validD1AssertionMarker(value string) bool {
+	if len(value) < 8 || len(value) > 256 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for index := range len(value) {
+		if value[index] < 0x20 || value[index] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func (f *D1VolumeFixture) ID() string             { return f.id }
+func (f *D1VolumeFixture) CredentialMode() string { return f.credentialMode }
+func (f *D1VolumeFixture) KeyfileMode() string    { return f.keyfileMode }
+func (f *D1VolumeFixture) FrontBootstrap() []byte { return f.frontBootstrap }
+func (f *D1VolumeFixture) TailBootstrap() []byte  { return f.tailBootstrap }
+func (f *D1VolumeFixture) Body() []byte           { return f.body }
+func (f *D1VolumeFixture) Volume() []byte         { return f.volume }
+func (f *D1VolumeFixture) InnerVolume() []byte    { return f.innerVolume }
+func (f *D1VolumeFixture) OuterPlaintext() []byte { return f.outerPlaintext }
+func (f *D1VolumeFixture) Plaintext() []byte      { return f.plaintext }
+func (f *D1VolumeFixture) Password() []byte       { return f.correct.password }
+func (f *D1VolumeFixture) WrongPassword() []byte  { return f.wrong.password }
 func (f *D1VolumeFixture) Keyfiles() [][]byte {
 	return append([][]byte(nil), f.correct.keyfiles...)
 }
@@ -923,10 +1003,20 @@ func (f *D1VolumeFixture) String() string                 { return "pcv3 D1 volu
 func (f *D1VolumeFixture) GoString() string               { return f.String() }
 func (f *D1VolumeFixture) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, f.String()) }
 func (p *D1MutationPlan) ID() string                      { return d1MutationPlanID }
-func (p *D1MutationPlan) Document() []byte                { return p.document }
+func (p *D1MutationPlan) Mutations() []D1Mutation         { return append([]D1Mutation(nil), p.mutations...) }
 func (p *D1MutationPlan) String() string                  { return "pcv3 D1 mutation plan: redacted" }
 func (p *D1MutationPlan) GoString() string                { return p.String() }
 func (p *D1MutationPlan) Format(state fmt.State, _ rune)  { _, _ = io.WriteString(state, p.String()) }
+
+func (m D1Mutation) Contract() D1MutationContract { return m.contract }
+func (m D1Mutation) SourceSHA256() string         { return m.sourceSHA256 }
+func (m D1Mutation) Before() []byte               { return m.before }
+func (m D1Mutation) After() []byte                { return m.after }
+func (m D1Mutation) String() string               { return "pcv3 D1 mutation: redacted" }
+func (m D1Mutation) GoString() string             { return m.String() }
+func (m D1Mutation) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, m.String())
+}
 
 func (r D1ExpectedRange) RecordIndex() uint64 { return r.recordIndex }
 func (r D1ExpectedRange) Start() uint64       { return r.start }

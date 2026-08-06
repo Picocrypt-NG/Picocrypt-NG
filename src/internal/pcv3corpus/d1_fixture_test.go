@@ -30,35 +30,37 @@ var testD1ArtifactRoles = [...]string{
 	"body",
 	"volume",
 	"inner-volume",
+	"outer-plaintext",
 	"plaintext",
 }
 
 type testD1VectorContract struct {
-	id, caseName, credentialMode, keyfileMode string
-	outcome, stage, detailStage, forceState   string
-	kdfCalls, authenticatedBootstraps         int
-	completion, frontBootstrap, tailBootstrap bool
+	id, credentialMode, keyfileMode string
+	frontBootstrap, tailBootstrap   bool
 }
 
-// These are case identities and expected public outcomes, not vector bytes.
-// The generated artifacts below are deliberately not cryptographically valid.
+// These are only identities, credential grammar, and physical membership for
+// synthetic loader-policy artifacts. Product expectations are built once by
+// testD1ScheduleDocument and never enter production loader tables.
 var testD1VectorContracts = [...]testD1VectorContract{
-	{id: "d1-paranoid-password-only-healthy", caseName: "password-only-healthy", credentialMode: "password-only", keyfileMode: "none", outcome: "success", stage: "none", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 2, completion: true, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-paranoid-keyfiles-only-healthy", caseName: "keyfiles-only-healthy", credentialMode: "keyfiles-only", keyfileMode: "ordered", outcome: "success", stage: "none", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 2, completion: true, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-paranoid-combined-ordered-healthy", caseName: "combined-ordered-healthy", credentialMode: "combined", keyfileMode: "ordered", outcome: "success", stage: "none", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 2, completion: true, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-paranoid-combined-unordered-healthy", caseName: "combined-unordered-healthy", credentialMode: "combined", keyfileMode: "unordered", outcome: "success", stage: "none", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 2, completion: true, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-degraded-front-bootstrap-only", caseName: "front-bootstrap-only", credentialMode: "combined", keyfileMode: "ordered", outcome: "authenticated-degraded", stage: "d1-bootstrap", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 1, completion: true, frontBootstrap: true},
-	{id: "d1-degraded-tail-bootstrap-only", caseName: "tail-bootstrap-only", credentialMode: "combined", keyfileMode: "ordered", outcome: "authenticated-degraded", stage: "d1-bootstrap", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 1, completion: true, tailBootstrap: true},
-	{id: "d1-negative-wrong-credential", caseName: "wrong-credential", credentialMode: "combined", keyfileMode: "ordered", outcome: "credentials-or-damage", stage: "d1-bootstrap", detailStage: "none", forceState: "unverified", kdfCalls: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-record-tamper", caseName: "record-tamper", credentialMode: "combined", keyfileMode: "ordered", outcome: "authentication-failed", stage: "d1-body", detailStage: "none", forceState: "partial", kdfCalls: 1, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-record-reorder", caseName: "record-reorder", credentialMode: "combined", keyfileMode: "ordered", outcome: "authentication-failed", stage: "d1-body", detailStage: "none", forceState: "partial", kdfCalls: 1, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-body-truncation", caseName: "body-truncation", credentialMode: "combined", keyfileMode: "ordered", outcome: "authentication-failed", stage: "d1-body", detailStage: "none", forceState: "partial", kdfCalls: 1, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-final-loss", caseName: "final-loss", credentialMode: "combined", keyfileMode: "ordered", outcome: "authentication-failed", stage: "d1-body", detailStage: "none", forceState: "partial", kdfCalls: 1, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-bootstrap-splice", caseName: "bootstrap-splice", credentialMode: "combined", keyfileMode: "ordered", outcome: "ambiguous-volume", stage: "d1-bootstrap", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-anchored-ambiguity", caseName: "body-anchored-ambiguity", credentialMode: "combined", keyfileMode: "ordered", outcome: "ambiguous-volume", stage: "d1-body", detailStage: "none", forceState: "not-applicable", kdfCalls: 2, authenticatedBootstraps: 0, frontBootstrap: true, tailBootstrap: true},
-	{id: "d1-negative-inner-volume", caseName: "inner-volume-failure", credentialMode: "combined", keyfileMode: "ordered", outcome: "authentication-failed", stage: "inner-volume", detailStage: "record-auth", forceState: "verified", kdfCalls: 2, authenticatedBootstraps: 2, frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-paranoid-password-only-healthy", credentialMode: "password-only", keyfileMode: "none", frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-paranoid-keyfiles-only-healthy", credentialMode: "keyfiles-only", keyfileMode: "ordered", frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-paranoid-combined-ordered-healthy", credentialMode: "combined", keyfileMode: "ordered", frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-paranoid-combined-unordered-healthy", credentialMode: "combined", keyfileMode: "unordered", frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-degraded-front-bootstrap-only", credentialMode: "combined", keyfileMode: "ordered", frontBootstrap: true},
+	{id: "d1-degraded-tail-bootstrap-only", credentialMode: "combined", keyfileMode: "ordered", tailBootstrap: true},
+	{id: "d1-negative-wrong-credential", credentialMode: "combined", keyfileMode: "ordered", frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-negative-record-tamper", credentialMode: "combined", keyfileMode: "ordered", frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-negative-record-reorder", credentialMode: "combined", keyfileMode: "ordered", frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-negative-body-truncation", credentialMode: "combined", keyfileMode: "ordered", frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-negative-final-loss", credentialMode: "combined", keyfileMode: "ordered", frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-negative-bootstrap-splice", credentialMode: "combined", keyfileMode: "ordered", frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-negative-anchored-ambiguity", credentialMode: "combined", keyfileMode: "ordered", frontBootstrap: true, tailBootstrap: true},
+	{id: "d1-negative-inner-volume", credentialMode: "combined", keyfileMode: "ordered", frontBootstrap: true, tailBootstrap: true},
 }
 
+// TestD1PrivateCorpusContract is custody/loader policy evidence. Product D1
+// behavior is asserted only by the tagged TestD1ProductionKDF lane.
 func TestD1PrivateCorpusContract(t *testing.T) {
 	t.Run("complete cumulative corpus is current", func(t *testing.T) {
 		corpus, err := Load(writeTestD1Corpus(t), testCustodyID)
@@ -131,6 +133,79 @@ func TestD1PrivateCorpusContract(t *testing.T) {
 		assertRefusal(t, err, RefusalUnknown)
 		if called {
 			t.Fatal("malformed D1 credentials reached the callback")
+		}
+	})
+
+	t.Run("credential mode is owned by the credentials document", func(t *testing.T) {
+		id := testD1VectorContracts[0].id
+		root := writeTestD1Corpus(t)
+		mutateTestD1ArtifactDocument(t, root, testD1ArtifactID(id, "credentials"), func(document map[string]any) {
+			document["credential_mode"] = "combined"
+			document["keyfile_mode"] = "unordered"
+			document["correct"].(map[string]any)["keyfiles_hex"] = []any{"0102"}
+			document["wrong"].(map[string]any)["keyfiles_hex"] = []any{"0304"}
+		})
+		err := WithD1VolumeFixtures(root, testCustodyID, []string{id}, func(fixtures []*D1VolumeFixture) error {
+			if len(fixtures) != 1 || fixtures[0].CredentialMode() != "combined" ||
+				fixtures[0].KeyfileMode() != "unordered" {
+				t.Fatal("D1 fixture did not take credential modes from its credentials document")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("WithD1VolumeFixtures(credentials-owned mode) error = %v", err)
+		}
+	})
+
+	t.Run("unknown schedule code fails before callback", func(t *testing.T) {
+		id := testD1VectorContracts[0].id
+		root := writeTestD1Corpus(t)
+		mutateTestD1ArtifactDocument(t, root, testD1ArtifactID(id, "schedule"), func(document map[string]any) {
+			operation := document["operations"].([]any)[0].(map[string]any)
+			operation["expected_code"] = "PCV3_NOT_A_CODE"
+		})
+		called := false
+		err := WithD1VolumeFixtures(root, testCustodyID, []string{id}, func([]*D1VolumeFixture) error {
+			called = true
+			return nil
+		})
+		assertRefusal(t, err, RefusalMalformed)
+		if called {
+			t.Fatal("internally inconsistent D1 schedule reached the callback")
+		}
+	})
+
+	t.Run("manifest semantics must agree across all physical roles", func(t *testing.T) {
+		root := writeTestD1Corpus(t)
+		id := testD1ArtifactID(testD1VectorContracts[0].id, "body")
+		mutateTestD1Manifest(t, root, func(manifest map[string]any) {
+			for _, raw := range manifest["fixtures"].([]any) {
+				fixture := raw.(map[string]any)
+				if fixture["id"] == id {
+					fixture["kdf_calls"] = 1
+					return
+				}
+			}
+			t.Fatal("synthetic D1 body manifest entry is missing")
+		})
+		_, err := Load(root, testCustodyID)
+		assertRefusal(t, err, RefusalMalformed)
+	})
+
+	t.Run("volume must be the exact physical artifact composition", func(t *testing.T) {
+		id := testD1VectorContracts[0].id
+		root := writeTestD1Corpus(t)
+		mutateTestD1ArtifactBytes(t, root, testD1ArtifactID(id, "volume"), func(data []byte) []byte {
+			return append(data, 0x7f)
+		})
+		called := false
+		err := WithD1VolumeFixtures(root, testCustodyID, []string{id}, func([]*D1VolumeFixture) error {
+			called = true
+			return nil
+		})
+		assertRefusal(t, err, RefusalMalformed)
+		if called {
+			t.Fatal("D1 volume with non-member bytes reached the callback")
 		}
 	})
 
@@ -238,12 +313,10 @@ func TestWithD1VolumeFixturesZeroesBorrowedBytes(t *testing.T) {
 				t.Fatalf("borrowed D1 fixture %d ID = %q, want %q", index, fixture.ID(), ids[index])
 			}
 			contract := testD1VectorContractForID(t, fixture.ID())
-			if fixture.Case() != contract.caseName || fixture.CredentialMode() != contract.credentialMode ||
-				fixture.KeyfileMode() != contract.keyfileMode || fixture.Outcome() != contract.outcome ||
-				fixture.FailureStage() != contract.stage || fixture.DetailStage() != contract.detailStage ||
-				fixture.ForceState() != contract.forceState || fixture.KDFCalls() != contract.kdfCalls ||
-				fixture.AuthenticatedBootstraps() != contract.authenticatedBootstraps || fixture.Completion() != contract.completion {
-				t.Fatal("borrowed D1 fixture metadata did not match the closed contract")
+			if fixture.CredentialMode() != contract.credentialMode || fixture.KeyfileMode() != contract.keyfileMode ||
+				(len(fixture.FrontBootstrap()) == d1BootstrapBytes) != contract.frontBootstrap ||
+				(len(fixture.TailBootstrap()) == d1BootstrapBytes) != contract.tailBootstrap {
+				t.Fatal("borrowed D1 fixture did not preserve credential grammar or physical membership")
 			}
 			borrowed := d1FixtureAliases(fixture)
 			for _, alias := range borrowed {
@@ -325,14 +398,30 @@ func TestWithD1VolumeFixturesRejectsDuplicateUnknownAndLegacySelections(t *testi
 }
 
 func TestWithD1MutationPlanZeroesBorrowedBytes(t *testing.T) {
-	var alias []byte
+	var aliases [][]byte
 	err := WithD1MutationPlan(writeTestD1Corpus(t), testCustodyID, func(plan *D1MutationPlan) error {
 		if plan.ID() != testD1MutationPlanID {
 			t.Fatalf("D1 mutation plan ID = %q, want %q", plan.ID(), testD1MutationPlanID)
 		}
-		alias = plan.Document()
-		if len(alias) == 0 || allZero(alias) {
-			t.Fatal("D1 mutation plan was empty or already zero inside callback")
+		mutations := plan.Mutations()
+		if len(mutations) != len(d1MutationRegistry) {
+			t.Fatal("D1 mutation plan did not preserve the closed registry")
+		}
+		for index, mutation := range mutations {
+			if mutation.Contract().ID() != d1MutationRegistry[index].ID() || !validSHA256(mutation.SourceSHA256()) {
+				t.Fatal("D1 mutation plan did not bind private material to tracked authority")
+			}
+			for _, alias := range [][]byte{mutation.Before(), mutation.After()} {
+				if len(alias) == 0 || allZero(alias) {
+					t.Fatal("D1 mutation transform was empty or already zero inside callback")
+				}
+				aliases = append(aliases, alias)
+			}
+			formattedMutation := fmt.Sprintf("%s|%q|%v|%+v|%#v", mutation, mutation, mutation, mutation, mutation)
+			if strings.Contains(formattedMutation, fmt.Sprint(mutation.Before())) ||
+				strings.Contains(formattedMutation, fmt.Sprint(mutation.After())) {
+				t.Fatal("D1 mutation formatting disclosed private transform bytes")
+			}
 		}
 		formatted := fmt.Sprintf("%s|%q|%v|%+v|%#v", plan, plan, plan, plan, plan)
 		if strings.Contains(formatted, "grammar-only-a") || strings.Contains(formatted, "internal/pcv3") {
@@ -343,13 +432,82 @@ func TestWithD1MutationPlanZeroesBorrowedBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WithD1MutationPlan() error = %v", err)
 	}
-	assertAliasesZero(t, [][]byte{alias})
+	assertAliasesZero(t, aliases)
+}
+
+func TestWithD1MutationPlanZeroesOnCallbackErrorAndPanic(t *testing.T) {
+	sentinel := errors.New("TEST ONLY mutation callback sentinel")
+
+	t.Run("error", func(t *testing.T) {
+		var aliases [][]byte
+		err := WithD1MutationPlan(writeTestD1Corpus(t), testCustodyID, func(plan *D1MutationPlan) error {
+			aliases = append(aliases, d1MutationAliases(plan)...)
+			return sentinel
+		})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("WithD1MutationPlan() error = %v, want callback sentinel", err)
+		}
+		assertAliasesZero(t, aliases)
+	})
+
+	t.Run("panic", func(t *testing.T) {
+		var aliases [][]byte
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != sentinel {
+					t.Fatalf("WithD1MutationPlan() panic = %v, want callback sentinel", recovered)
+				}
+			}()
+			_ = WithD1MutationPlan(writeTestD1Corpus(t), testCustodyID, func(plan *D1MutationPlan) error {
+				aliases = append(aliases, d1MutationAliases(plan)...)
+				panic(sentinel)
+			})
+		}()
+		assertAliasesZero(t, aliases)
+	})
+}
+
+func TestWithD1MutationPlanRejectsPrivateExecutionAuthority(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		field string
+		value any
+		want  RefusalKind
+	}{
+		{name: "self-authored marker", field: "expected_assertion_marker", value: "private marker is not authority", want: RefusalMalformed},
+		{name: "per-entry timeout", field: "timeout_seconds", value: d1MutationTimeoutSeconds - 1, want: RefusalMalformed},
+		{name: "unknown semantic ID", field: "id", value: "private-extra-mutation", want: RefusalUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := writeTestD1Corpus(t)
+			mutateTestD1ArtifactDocument(t, root, testD1MutationPlanID, func(document map[string]any) {
+				document["mutations"].([]any)[0].(map[string]any)[tt.field] = tt.value
+			})
+			called := false
+			err := WithD1MutationPlan(root, testCustodyID, func(*D1MutationPlan) error {
+				called = true
+				return nil
+			})
+			assertRefusal(t, err, tt.want)
+			if called {
+				t.Fatal("private mutation execution authority reached the callback")
+			}
+		})
+	}
+}
+
+func d1MutationAliases(plan *D1MutationPlan) [][]byte {
+	var aliases [][]byte
+	for _, mutation := range plan.Mutations() {
+		aliases = append(aliases, mutation.Before(), mutation.After())
+	}
+	return aliases
 }
 
 func d1FixtureAliases(fixture *D1VolumeFixture) [][]byte {
 	aliases := [][]byte{
-		fixture.Credentials(), fixture.Schedule(), fixture.FrontBootstrap(), fixture.TailBootstrap(),
-		fixture.Body(), fixture.Volume(), fixture.InnerVolume(), fixture.Plaintext(),
+		fixture.credentials, fixture.schedule, fixture.FrontBootstrap(), fixture.TailBootstrap(),
+		fixture.Body(), fixture.Volume(), fixture.InnerVolume(), fixture.OuterPlaintext(), fixture.Plaintext(),
 	}
 	aliases = append(aliases, fixture.Password(), fixture.WrongPassword())
 	aliases = append(aliases, fixture.Keyfiles()...)
@@ -397,20 +555,16 @@ func writeTestD1Corpus(t *testing.T) string {
 	fixtures := manifest["fixtures"].([]any)
 	for index, contract := range testD1VectorContracts {
 		bundle := testD1ArtifactBundle(contract, byte(index+1))
-		direction := "negative"
-		if contract.outcome == "success" || contract.outcome == "authenticated-degraded" {
-			direction = "positive"
-		}
 		for _, role := range testD1ArtifactRoles {
 			artifactID := testD1ArtifactID(contract.id, role)
-			artifactPath := direction + "/" + artifactID + ".bin"
+			artifactPath := "positive/" + artifactID + ".bin"
 			provenancePath := "provenance/" + artifactID + ".json"
 			data := bundle[role]
 			writeTestFile(t, root, artifactPath, string(data))
 			writeTestFile(t, root, provenancePath, provenance)
 			fixtures = append(fixtures, testD1ManifestEntry(
 				artifactID, artifactPath, data, provenancePath, provenance, generatorPath, generatorSHA,
-				"d1-volume", contract.outcome, contract.stage, contract.kdfCalls, contract.forceState,
+				"d1-volume", "success", "none", 0, "not-applicable",
 			))
 		}
 	}
@@ -486,7 +640,8 @@ func testD1ArtifactBundle(contract testD1VectorContract, fill byte) map[string][
 	}
 	body := bytes.Repeat([]byte{fill ^ 0xa5}, 96)
 	plaintext := []byte("TEST ONLY SYNTHETIC PLAINTEXT GRAMMAR: " + contract.id)
-	schedule := testD1ScheduleDocument(contract)
+	outerPlaintext := []byte("TEST ONLY SYNTHETIC OUTER PLAINTEXT GRAMMAR: " + contract.id)
+	schedule := testD1ScheduleDocument(contract.id, uint64(len(plaintext)))
 	volume := make([]byte, 0, len(front)+len(body)+len(tail))
 	volume = append(volume, front...)
 	volume = append(volume, body...)
@@ -499,6 +654,7 @@ func testD1ArtifactBundle(contract testD1VectorContract, fill byte) map[string][
 		"body":            body,
 		"volume":          volume,
 		"inner-volume":    []byte("PCV\x00TEST ONLY INVALID INNER GRAMMAR: " + contract.id),
+		"outer-plaintext": outerPlaintext,
 		"plaintext":       plaintext,
 	}
 }
@@ -534,43 +690,31 @@ func testD1CredentialsDocument(
 	return encoded
 }
 
-func testD1ScheduleDocument(contract testD1VectorContract) []byte {
-	code := "PCV3_AUTHENTICATION_FAILED"
-	switch contract.outcome {
-	case "success":
-		code = "PCV3_SUCCESS"
-	case "authenticated-degraded":
-		code = "PCV3_AUTHENTICATED_DEGRADED"
-	case "credentials-or-damage":
-		code = "PCV3_CREDENTIALS_OR_DAMAGE"
-	case "ambiguous-volume":
-		code = "PCV3_AMBIGUOUS_VOLUME"
+func testD1ScheduleDocument(id string, plaintextLength uint64) []byte {
+	normal := map[string]any{
+		"name": "normal-correct", "mode": "normal", "factors": "correct", "keyfile_order": "manifest",
+		"unverified_role": "none", "expected_outcome": "success", "expected_stage": "none",
+		"expected_detail_stage": "none", "expected_code": "PCV3_SUCCESS", "expected_d1_provenance": "front",
+		"expected_force_provenance": "none", "expected_kdf_calls": 2, "expected_completion": true,
+		"expected_output": "plaintext", "expected_plaintext_length_hex": "0000000000000000",
+		"expected_final_state": "none", "expected_ranges": []any{},
 	}
-	operation := func(name, mode, d1Provenance, forceProvenance string, kdfCalls int) map[string]any {
-		return map[string]any{
-			"name": name, "mode": mode, "factors": "correct", "keyfile_order": "manifest",
-			"unverified_role": "none", "expected_outcome": contract.outcome,
-			"expected_stage": contract.stage, "expected_detail_stage": contract.detailStage,
-			"expected_code": code, "expected_d1_provenance": d1Provenance,
-			"expected_force_provenance": forceProvenance, "expected_kdf_calls": kdfCalls,
-			"expected_completion": contract.completion,
-			"expected_output": func() string {
-				if contract.completion {
-					return "plaintext"
-				}
-				return "none"
-			}(),
-			"expected_plaintext_length_hex": "0000000000000000",
-			"expected_final_state":          "none", "expected_ranges": []any{},
-		}
+	force := map[string]any{
+		"name": "force-correct", "mode": "force", "factors": "correct", "keyfile_order": "manifest",
+		"unverified_role": "none", "expected_outcome": "authenticated-degraded", "expected_stage": "d1-body",
+		"expected_detail_stage": "none", "expected_code": "PCV3_AUTHENTICATED_DEGRADED",
+		"expected_d1_provenance": "matching", "expected_force_provenance": "verified",
+		"expected_kdf_calls": 3, "expected_completion": true, "expected_output": "plaintext",
+		"expected_plaintext_length_hex": fmt.Sprintf("%016x", plaintextLength),
+		"expected_final_state":          "verified",
+		"expected_ranges": []any{map[string]any{
+			"record_index_hex": "0000000000000000", "start_hex": "0000000000000000",
+			"end_hex": fmt.Sprintf("%016x", plaintextLength), "state": "verified",
+		}},
 	}
 	document := map[string]any{
 		"test_only": true, "public_test_data_notice": testD1GrammarNotice,
-		"id": contract.id, "category": "d1-schedule",
-		"operations": []any{
-			operation("normal-correct", "normal", "front", "none", contract.kdfCalls),
-			operation("force-correct", "force", "matching", "verified", 3),
-		},
+		"id": id, "category": "d1-schedule", "operations": []any{normal, force},
 		"status": "required", "generated_at_test_time": false,
 	}
 	encoded, err := json.Marshal(document)
@@ -593,22 +737,24 @@ func testD1ManifestEntry(id, logicalPath string, data []byte, provenancePath, pr
 
 func testD1MutationPlanDocument(t *testing.T) []byte {
 	t.Helper()
+	mutations := make([]any, 0, len(d1MutationRegistry))
+	for index, contract := range d1MutationRegistry {
+		before := []byte{byte(index + 1), 0x5a}
+		after := []byte{byte(index + 1), 0xa5}
+		mutations = append(mutations, map[string]any{
+			"id": contract.ID(), "source_path": contract.SourcePath(),
+			"source_sha256": strings.Repeat(fmt.Sprintf("%x", (index%15)+1), 64),
+			"before_hex":    hex.EncodeToString(before), "after_hex": hex.EncodeToString(after),
+			"package": contract.Package(), "test_name": contract.TestName(),
+			"expected_assertion_marker": contract.AssertionMarker(),
+			"timeout_seconds":           contract.TimeoutSeconds(),
+		})
+	}
 	document := map[string]any{
 		"test_only": true, "public_test_data_notice": testD1GrammarNotice,
 		"id": testD1MutationPlanID, "category": "d1-mutation-plan",
-		"mutations": []any{
-			map[string]any{
-				"id": "grammar-only-a", "source_path": "internal/pcv3/d1_grammar_only.go",
-				"source_sha256": strings.Repeat("11", 32), "before_hex": "0102", "after_hex": "0304",
-				"package": "./internal/pcv3", "test_name": "TestD1GrammarOnlyA", "timeout_seconds": 30,
-			},
-			map[string]any{
-				"id": "grammar-only-b", "source_path": "internal/pcv3credential/d1_grammar_only.go",
-				"source_sha256": strings.Repeat("22", 32), "before_hex": "0506", "after_hex": "0708",
-				"package": "./internal/pcv3credential", "test_name": "TestD1GrammarOnlyB", "timeout_seconds": 30,
-			},
-		},
-		"status": "required", "generated_at_test_time": false,
+		"mutations": mutations,
+		"status":    "required", "generated_at_test_time": false,
 	}
 	encoded, err := json.Marshal(document)
 	if err != nil {
@@ -686,6 +832,40 @@ func mutateTestD1ArtifactDocument(t *testing.T, root, id string, mutate func(map
 		if err != nil {
 			t.Fatalf("encode mutated D1 artifact: %v", err)
 		}
+		writeTestFile(t, root, logicalPath, string(updated))
+		fixture["sha256"] = testBytesSHA256(updated)
+		encodedManifest, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatalf("encode synthetic D1 manifest: %v", err)
+		}
+		writeTestFile(t, root, "manifest.json", string(encodedManifest))
+		return
+	}
+	t.Fatalf("synthetic D1 artifact %q missing", id)
+}
+
+func mutateTestD1ArtifactBytes(t *testing.T, root, id string, mutate func([]byte) []byte) {
+	t.Helper()
+	manifestPath := filepath.Join(root, "manifest.json")
+	manifestBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read synthetic D1 manifest: %v", err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("decode synthetic D1 manifest: %v", err)
+	}
+	for _, raw := range manifest["fixtures"].([]any) {
+		fixture := raw.(map[string]any)
+		if fixture["id"] != id {
+			continue
+		}
+		logicalPath := fixture["path"].(string)
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(logicalPath)))
+		if err != nil {
+			t.Fatalf("read synthetic D1 artifact: %v", err)
+		}
+		updated := mutate(data)
 		writeTestFile(t, root, logicalPath, string(updated))
 		fixture["sha256"] = testBytesSHA256(updated)
 		encodedManifest, err := json.Marshal(manifest)

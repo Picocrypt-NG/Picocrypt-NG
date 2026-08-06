@@ -8,7 +8,6 @@ import (
 	"Picocrypt-NG/internal/pcv3credential"
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -17,28 +16,11 @@ import (
 	"testing"
 )
 
-var d1ProductionKDFFixtureIDs = []string{
-	"d1-paranoid-password-only-healthy",
-	"d1-paranoid-keyfiles-only-healthy",
-	"d1-paranoid-combined-ordered-healthy",
-	"d1-paranoid-combined-unordered-healthy",
-	"d1-degraded-front-bootstrap-only",
-	"d1-degraded-tail-bootstrap-only",
-	"d1-negative-wrong-credential",
-	"d1-negative-record-tamper",
-	"d1-negative-record-reorder",
-	"d1-negative-body-truncation",
-	"d1-negative-final-loss",
-	"d1-negative-bootstrap-splice",
-	"d1-negative-anchored-ambiguity",
-	"d1-negative-inner-volume",
-}
-
 type d1ProductionKDFAdmitter struct {
-	calls          int
+	calls          atomic.Int32
 	active         atomic.Int32
 	maximumActive  atomic.Int32
-	profileInvalid bool
+	profileInvalid atomic.Bool
 }
 
 func (admitter *d1ProductionKDFAdmitter) AdmitKDF(
@@ -53,14 +35,14 @@ func (admitter *d1ProductionKDFAdmitter) AdmitKDF(
 			break
 		}
 	}
-	admitter.calls++
+	admitter.calls.Add(1)
 	if ctx == nil || ctx.Err() != nil {
 		return pcv3credential.KDFAdmissionDenied, ctx.Err()
 	}
 	if profile.ID != 0x02 || profile.Argon2Version != 0x13 || profile.Time != 8 ||
 		profile.MemoryKiB != 1_048_576 || profile.Parallelism != 8 ||
 		profile.SaltBytes != 16 || profile.OutputBytes != 32 {
-		admitter.profileInvalid = true
+		admitter.profileInvalid.Store(true)
 	}
 	return pcv3credential.KDFAdmissionGranted, nil
 }
@@ -95,17 +77,18 @@ func TestD1ProductionKDF(t *testing.T) {
 	if !custodyPresent || custodyID == "" {
 		t.Fatalf("%s must be set for the private D1 production-KDF test", productionKDFPrivateCustodyEnv)
 	}
+	fixtureIDs := pcv3corpus.D1VolumeFixtureIDs()
 
 	err := pcv3corpus.WithD1VolumeFixtures(
 		root,
 		custodyID,
-		d1ProductionKDFFixtureIDs,
+		fixtureIDs,
 		func(fixtures []*pcv3corpus.D1VolumeFixture) error {
-			if len(fixtures) != len(d1ProductionKDFFixtureIDs) {
+			if len(fixtures) != len(fixtureIDs) {
 				return errors.New("private D1 fixture inventory was incomplete")
 			}
 			for fixtureIndex, fixture := range fixtures {
-				if fixture == nil || fixture.ID() != d1ProductionKDFFixtureIDs[fixtureIndex] {
+				if fixture == nil || fixture.ID() != fixtureIDs[fixtureIndex] {
 					return errors.New("private D1 fixture order did not match the closed inventory")
 				}
 				operations := fixture.Operations()
@@ -213,13 +196,18 @@ func runD1ProductionKDFOperation(
 	if callbackCalls != wantCallbacks {
 		return fmt.Errorf("D1 output callbacks = %d; want %d", callbackCalls, wantCallbacks)
 	}
-	if admitter.profileInvalid {
+	if admitter.profileInvalid.Load() {
 		return errors.New("D1 production KDF did not use the fixed Paranoid-1 profile")
 	}
-	if admitter.calls != operation.ExpectedKDFCalls() {
-		return fmt.Errorf("D1 production KDF admissions = %d; want %d", admitter.calls, operation.ExpectedKDFCalls())
+	calls := admitter.calls.Load()
+	if calls != int32(operation.ExpectedKDFCalls()) {
+		return fmt.Errorf("D1 production KDF admissions = %d; want %d", calls, operation.ExpectedKDFCalls())
 	}
-	if admitter.maximumActive.Load() != 1 || admitter.active.Load() != 0 {
+	wantMaximumActive := int32(0)
+	if calls != 0 {
+		wantMaximumActive = 1
+	}
+	if admitter.maximumActive.Load() != wantMaximumActive || admitter.active.Load() != 0 {
 		return errors.New("D1 production KDF admissions overlapped or remained active")
 	}
 	return nil
@@ -417,12 +405,7 @@ func d1ProductionKDFExpectedOutput(
 	case "plaintext":
 		return append([]byte(nil), fixture.Plaintext()...), nil
 	case "outer-inner":
-		inner := fixture.InnerVolume()
-		output := make([]byte, 16+len(inner))
-		copy(output, []byte("PCVOUT3\x00"))
-		binary.BigEndian.PutUint64(output[8:16], uint64(len(inner)))
-		copy(output[16:], inner)
-		return output, nil
+		return append([]byte(nil), fixture.OuterPlaintext()...), nil
 	default:
 		return nil, errors.New("private D1 schedule selected an unknown output artifact")
 	}
