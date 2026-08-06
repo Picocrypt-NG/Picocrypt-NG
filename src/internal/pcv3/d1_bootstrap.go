@@ -847,29 +847,51 @@ func reconcileD1BootstrapAttempts(
 func sameD1OuterSecret(
 	left, right *d1OuterSecretOwner,
 ) (bool, error) {
-	if left == nil || right == nil || left.bodyLength != right.bodyLength {
+	if left == nil || right == nil {
 		return false, nil
 	}
-	var leftKey, rightKey [32]byte
-	defer pcv3crypto.SecureZero(leftKey[:])
-	defer pcv3crypto.SecureZero(rightKey[:])
-	if err := left.withOuterKeys(
+	return sameD1OuterSecretAccess(
 		context.Background(),
-		func(keys *pcv3credential.BorrowedD1OuterKeys) error {
-			return keys.CopyOuterKey(leftKey[:])
-		},
-	); err != nil {
+		left.bodyLength,
+		left,
+		right.bodyLength,
+		right,
+	)
+}
+
+func sameD1OuterSecretAccess(
+	ctx context.Context,
+	leftLength uint64,
+	left d1OuterKeyAccess,
+	rightLength uint64,
+	right d1OuterKeyAccess,
+) (bool, error) {
+	if ctx == nil || left == nil || right == nil {
+		return false, errInvalidD1Bootstrap
+	}
+	if leftLength != rightLength {
+		return false, nil
+	}
+	var leftSecret, rightSecret [d1OuterSecretLength]byte
+	defer pcv3crypto.SecureZero(leftSecret[:])
+	defer pcv3crypto.SecureZero(rightSecret[:])
+	copyOuterKey := func(access d1OuterKeyAccess, destination []byte) error {
+		return access.withOuterKeys(
+			ctx,
+			func(keys *pcv3credential.BorrowedD1OuterKeys) error {
+				return keys.CopyOuterKey(destination)
+			},
+		)
+	}
+	if err := copyOuterKey(left, leftSecret[:32]); err != nil {
 		return false, err
 	}
-	if err := right.withOuterKeys(
-		context.Background(),
-		func(keys *pcv3credential.BorrowedD1OuterKeys) error {
-			return keys.CopyOuterKey(rightKey[:])
-		},
-	); err != nil {
+	if err := copyOuterKey(right, rightSecret[:32]); err != nil {
 		return false, err
 	}
-	return subtle.ConstantTimeCompare(leftKey[:], rightKey[:]) == 1, nil
+	binary.BigEndian.PutUint64(leftSecret[32:], leftLength)
+	binary.BigEndian.PutUint64(rightSecret[32:], rightLength)
+	return subtle.ConstantTimeCompare(leftSecret[:], rightSecret[:]) == 1, nil
 }
 
 func independentD1BootstrapParameters(

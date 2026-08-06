@@ -145,8 +145,7 @@ func d1RecoveryCodeFor(
 		}
 		switch outcome {
 		case OutcomeAuthenticatedDegraded:
-			return CodeAuthenticatedDegraded,
-				provenance == D1BootstrapProvenanceFront || provenance == D1BootstrapProvenanceTail
+			return CodeAuthenticatedDegraded, isSelectedD1BootstrapProvenance(provenance)
 		case OutcomeCredentialsOrDamage:
 			return CodeCredentialsOrDamage, provenance == D1BootstrapProvenanceNone
 		case OutcomeAmbiguousVolume:

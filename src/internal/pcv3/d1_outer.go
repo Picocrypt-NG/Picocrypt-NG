@@ -8,6 +8,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 )
 
 const (
@@ -297,6 +299,22 @@ func (codec *d1OuterCodec) openRecord(
 	if err := codec.authenticateRecord(ctx, index, final, ciphertext, expectedTag); err != nil {
 		return err
 	}
+	return codec.decryptRecord(ctx, index, final, ciphertext, plaintext)
+}
+
+// decryptRecord performs only the canonical D1 record transform. Ordinary
+// readers call it through openRecord after authentication. D1 Force may call
+// it only after its private policy has selected one identity and authorized
+// the exact physical bootstrap role.
+func (codec *d1OuterCodec) decryptRecord(
+	ctx context.Context,
+	index uint64,
+	final bool,
+	ciphertext, plaintext []byte,
+) error {
+	if err := codec.validateRecord(ctx, index, final, ciphertext, plaintext); err != nil {
+		return err
+	}
 	nonce, serpentIV := codec.recordParameters(index)
 	defer pcv3crypto.SecureZero(nonce[:])
 	defer pcv3crypto.SecureZero(serpentIV[:])
@@ -310,6 +328,169 @@ func (codec *d1OuterCodec) openRecord(
 	); err != nil {
 		pcv3crypto.SecureZero(plaintext)
 		return newD1OuterFailure(StageD1Body, errD1OuterCrypto)
+	}
+	return nil
+}
+
+type d1OuterRecordVisitor func(d1OuterRecordExpectation, error) error
+
+type d1OuterRecordAuthenticator func(
+	*d1OuterCodec,
+	context.Context,
+	uint64,
+	bool,
+	[]byte,
+	[]byte,
+) error
+
+// evaluateD1OuterRecords is the one tag-only traversal shared by the strict
+// authenticated reader and D1 Force. It never decrypts record plaintext.
+func evaluateD1OuterRecords(
+	ctx context.Context,
+	source io.ReaderAt,
+	geometry d1OuterGeometry,
+	codec *d1OuterCodec,
+	ciphertextScratch []byte,
+	tagScratch []byte,
+	visitor d1OuterRecordVisitor,
+) error {
+	return evaluateD1OuterRecordsWithAuthenticator(
+		ctx,
+		source,
+		geometry,
+		codec,
+		ciphertextScratch,
+		tagScratch,
+		func(
+			codec *d1OuterCodec,
+			ctx context.Context,
+			index uint64,
+			final bool,
+			ciphertext, tag []byte,
+		) error {
+			return codec.authenticateRecord(ctx, index, final, ciphertext, tag)
+		},
+		visitor,
+	)
+}
+
+func evaluateD1OuterRecordsWithAuthenticator(
+	ctx context.Context,
+	source io.ReaderAt,
+	geometry d1OuterGeometry,
+	codec *d1OuterCodec,
+	ciphertextScratch []byte,
+	tagScratch []byte,
+	authenticate d1OuterRecordAuthenticator,
+	visitor d1OuterRecordVisitor,
+) error {
+	if ctx == nil || source == nil || codec == nil || codec.closed ||
+		len(ciphertextScratch) < d1OuterChunkSize || len(tagScratch) != d1OuterTagSize ||
+		authenticate == nil || visitor == nil {
+		return newD1OuterFailure(StageD1Body, errInvalidD1OuterRecord)
+	}
+	for index := range geometry.recordCount {
+		if err := ctx.Err(); err != nil {
+			return newD1OuterFailure(StageCancellation, err)
+		}
+		expected, err := expectedD1OuterRecord(geometry, index)
+		if err != nil {
+			return err
+		}
+		ciphertext, tag, err := loadD1OuterRecord(
+			ctx,
+			source,
+			expected,
+			ciphertextScratch,
+			tagScratch,
+		)
+		if err != nil {
+			return err
+		}
+		authErr := authenticate(
+			codec,
+			ctx,
+			expected.index,
+			expected.final,
+			ciphertext,
+			tag,
+		)
+		if err := visitor(expected, authErr); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func loadD1OuterRecord(
+	ctx context.Context,
+	source io.ReaderAt,
+	expected d1OuterRecordExpectation,
+	ciphertextScratch []byte,
+	tagScratch []byte,
+) ([]byte, []byte, error) {
+	if ctx == nil || source == nil || expected.ciphertextLength < 0 ||
+		expected.ciphertextLength > len(ciphertextScratch) || len(tagScratch) != d1OuterTagSize {
+		return nil, nil, newD1OuterFailure(StageD1Body, errInvalidD1OuterRecord)
+	}
+	ciphertext := ciphertextScratch[:expected.ciphertextLength]
+	pcv3crypto.SecureZero(ciphertext)
+	pcv3crypto.SecureZero(tagScratch)
+	tagOffset, ok := checkedAdd64(expected.offset, uint64(expected.ciphertextLength)) //nolint:gosec // Expected record lengths are validated non-negative above.
+	if !ok {
+		return nil, nil, newD1OuterFailure(StageD1Body, errInvalidD1OuterRecord)
+	}
+	if err := readD1OuterExactAt(ctx, source, expected.offset, ciphertext); err != nil {
+		return nil, nil, err
+	}
+	if err := readD1OuterExactAt(ctx, source, tagOffset, tagScratch); err != nil {
+		pcv3crypto.SecureZero(ciphertext)
+		return nil, nil, err
+	}
+	return ciphertext, tagScratch, nil
+}
+
+func readD1OuterExactAt(
+	ctx context.Context,
+	source io.ReaderAt,
+	relativeOffset uint64,
+	destination []byte,
+) error {
+	if ctx == nil || source == nil || relativeOffset > math.MaxInt64 {
+		return newD1OuterFailure(StageD1Body, errInvalidD1OuterRecord)
+	}
+	read := 0
+	for read < len(destination) {
+		if err := ctx.Err(); err != nil {
+			return newD1OuterFailure(StageCancellation, err)
+		}
+		offset, ok := checkedAdd64(relativeOffset, uint64(read))
+		if !ok || offset > math.MaxInt64 {
+			return newD1OuterFailure(StageD1Body, errInvalidD1OuterRecord)
+		}
+		count, err := source.ReadAt(destination[read:], int64(offset)) //nolint:gosec // Bounds above prove the conversion.
+		if count < 0 || count > len(destination)-read {
+			return newD1OuterFailure(StageInputIO, errInvalidD1OuterRecord)
+		}
+		read += count
+		if read == len(destination) {
+			if cancellation := ctx.Err(); cancellation != nil {
+				return newD1OuterFailure(StageCancellation, cancellation)
+			}
+			if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+				return newD1OuterFailure(StageInputIO, err)
+			}
+			return nil
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return newD1OuterFailure(StageD1Body, errD1OuterAuthentication)
+		}
+		if err != nil {
+			return newD1OuterFailure(StageInputIO, err)
+		}
+		if count == 0 {
+			return newD1OuterFailure(StageInputIO, errInvalidD1OuterRecord)
+		}
 	}
 	return nil
 }

@@ -269,29 +269,17 @@ func (reader *d1InnerReader) Close() {
 }
 
 func (reader *d1InnerReader) authenticateAll() error {
-	for index := range reader.geometry.recordCount {
-		if err := reader.ctx.Err(); err != nil {
-			return newD1OuterFailure(StageCancellation, err)
-		}
-		expected, err := expectedD1OuterRecord(reader.geometry, index)
-		if err != nil {
-			return err
-		}
-		ciphertext, tag, err := reader.loadExpected(expected)
-		if err != nil {
-			return err
-		}
-		if err := reader.codec.authenticateRecord(
-			reader.ctx,
-			expected.index,
-			expected.final,
-			ciphertext,
-			tag,
-		); err != nil {
-			return err
-		}
-	}
-	return nil
+	return evaluateD1OuterRecords(
+		reader.ctx,
+		reader.source,
+		reader.geometry,
+		reader.codec,
+		reader.ciphertextScratch,
+		reader.tagScratch[:],
+		func(_ d1OuterRecordExpectation, authenticationErr error) error {
+			return authenticationErr
+		},
+	)
 }
 
 func (reader *d1InnerReader) openExpected(
@@ -321,59 +309,11 @@ func (reader *d1InnerReader) openExpected(
 func (reader *d1InnerReader) loadExpected(
 	expected d1OuterRecordExpectation,
 ) ([]byte, []byte, error) {
-	if expected.ciphertextLength < 0 || expected.ciphertextLength > len(reader.ciphertextScratch) {
-		return nil, nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
-	}
-	ciphertext := reader.ciphertextScratch[:expected.ciphertextLength]
-	pcv3crypto.SecureZero(ciphertext)
-	pcv3crypto.SecureZero(reader.tagScratch[:])
-	relativeTagOffset, ok := checkedAdd64(expected.offset, uint64(expected.ciphertextLength))
-	if !ok {
-		return nil, nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
-	}
-	if err := reader.readExactAt(expected.offset, ciphertext); err != nil {
-		return nil, nil, err
-	}
-	if err := reader.readExactAt(relativeTagOffset, reader.tagScratch[:]); err != nil {
-		pcv3crypto.SecureZero(ciphertext)
-		return nil, nil, err
-	}
-	return ciphertext, reader.tagScratch[:], nil
-}
-
-func (reader *d1InnerReader) readExactAt(relativeOffset uint64, destination []byte) error {
-	if relativeOffset > math.MaxInt64 {
-		return newD1OuterFailure(StageD1Body, errD1ReaderProgress)
-	}
-	read := 0
-	for read < len(destination) {
-		if err := reader.ctx.Err(); err != nil {
-			return newD1OuterFailure(StageCancellation, err)
-		}
-		offset, ok := checkedAdd64(relativeOffset, uint64(read))
-		if !ok || offset > math.MaxInt64 {
-			return newD1OuterFailure(StageD1Body, errD1ReaderProgress)
-		}
-		count, err := reader.source.ReadAt(destination[read:], int64(offset))
-		if count < 0 || count > len(destination)-read {
-			return newD1OuterFailure(StageInputIO, errD1ReaderProgress)
-		}
-		read += count
-		if read == len(destination) {
-			if cancellation := reader.ctx.Err(); cancellation != nil {
-				return newD1OuterFailure(StageCancellation, cancellation)
-			}
-			return nil
-		}
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return newD1OuterFailure(StageD1Body, errD1OuterAuthentication)
-		}
-		if err != nil {
-			return newD1OuterFailure(StageInputIO, err)
-		}
-		if count == 0 {
-			return newD1OuterFailure(StageInputIO, errD1ReaderProgress)
-		}
-	}
-	return nil
+	return loadD1OuterRecord(
+		reader.ctx,
+		reader.source,
+		expected,
+		reader.ciphertextScratch,
+		reader.tagScratch[:],
+	)
 }
