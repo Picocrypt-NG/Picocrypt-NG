@@ -149,6 +149,177 @@ func TestRecoveryResultRejectsSemanticAuthorityLaundering(t *testing.T) {
 	}
 }
 
+func TestD1RecoveryRegistryKeepsWrapperStagesOutOfOrdinaryConstructors(t *testing.T) {
+	ordinary := []struct {
+		name    string
+		outcome Outcome
+		stage   Stage
+	}{
+		{name: "D1 bootstrap", outcome: OutcomeAmbiguousVolume, stage: StageD1Bootstrap},
+		{name: "D1 body", outcome: OutcomeAuthenticationFailed, stage: StageD1Body},
+		{name: "inner volume", outcome: OutcomeAuthenticationFailed, stage: StageInnerVolume},
+	}
+	for _, test := range ordinary {
+		t.Run("ordinary result rejects "+test.name, func(t *testing.T) {
+			result, err := newRecoveryResult(
+				test.outcome,
+				ForceProvenanceNone,
+				test.stage,
+				0,
+				nil,
+				0,
+			)
+			if !errors.Is(err, errInvalidRecoveryResult) || result != nil {
+				if result != nil {
+					result.Close()
+				}
+				t.Fatalf("ordinary result accepted D1 wrapper %v/%v: result=%v error=%v", test.outcome, test.stage, result, err)
+			}
+		})
+	}
+
+	for _, stage := range []Stage{StageD1Bootstrap, StageD1Body, StageInnerVolume} {
+		t.Run("invalid-structure rejects "+stage.String(), func(t *testing.T) {
+			if err := NewInvalidStructureError(stage); !errors.Is(err, ErrInvalidFailureMapping) {
+				t.Fatalf("NewInvalidStructureError(%v) = %v; want invalid mapping", stage, err)
+			}
+		})
+	}
+}
+
+func TestD1RecoveryRegistryAcceptsOnlyFrozenFullTuples(t *testing.T) {
+	legal := []struct {
+		name         string
+		outcome      Outcome
+		stage        Stage
+		d1Provenance D1BootstrapProvenance
+		detail       Stage
+		code         Code
+	}{
+		{
+			name: "matching success", outcome: OutcomeSuccess, stage: StageNone,
+			d1Provenance: D1BootstrapProvenanceMatching, detail: StageNone, code: CodeSuccess,
+		},
+		{
+			name: "front bootstrap degraded", outcome: OutcomeAuthenticatedDegraded, stage: StageD1Bootstrap,
+			d1Provenance: D1BootstrapProvenanceFront, detail: StageNone, code: CodeAuthenticatedDegraded,
+		},
+		{
+			name: "tail bootstrap degraded", outcome: OutcomeAuthenticatedDegraded, stage: StageD1Bootstrap,
+			d1Provenance: D1BootstrapProvenanceTail, detail: StageNone, code: CodeAuthenticatedDegraded,
+		},
+		{
+			name: "bootstrap credentials or damage", outcome: OutcomeCredentialsOrDamage, stage: StageD1Bootstrap,
+			d1Provenance: D1BootstrapProvenanceNone, detail: StageNone, code: CodeCredentialsOrDamage,
+		},
+		{
+			name: "selected body authentication failure", outcome: OutcomeAuthenticationFailed, stage: StageD1Body,
+			d1Provenance: D1BootstrapProvenanceFront, detail: StageNone, code: CodeAuthenticationFailed,
+		},
+		{
+			name: "bootstrap ambiguity", outcome: OutcomeAmbiguousVolume, stage: StageD1Bootstrap,
+			d1Provenance: D1BootstrapProvenanceNone, detail: StageNone, code: CodeAmbiguousVolume,
+		},
+		{
+			name: "body ambiguity", outcome: OutcomeAmbiguousVolume, stage: StageD1Body,
+			d1Provenance: D1BootstrapProvenanceNone, detail: StageNone, code: CodeAmbiguousVolume,
+		},
+		{
+			name: "selected inner record authentication failure", outcome: OutcomeAuthenticationFailed, stage: StageInnerVolume,
+			d1Provenance: D1BootstrapProvenanceTail, detail: StageRecordAuth, code: CodeAuthenticationFailed,
+		},
+	}
+	for _, test := range legal {
+		t.Run("legal "+test.name, func(t *testing.T) {
+			result, err := newD1RecoveryResult(
+				test.outcome,
+				ForceProvenanceNone,
+				test.stage,
+				test.d1Provenance,
+				test.detail,
+				0,
+				nil,
+				0,
+			)
+			if err != nil {
+				t.Fatalf("legal D1 tuple rejected: %v", err)
+			}
+			defer result.Close()
+			if result.Outcome() != test.outcome || result.Stage() != test.stage ||
+				result.D1BootstrapProvenance() != test.d1Provenance ||
+				result.DetailStage() != test.detail || result.Code() != test.code {
+				t.Fatalf(
+					"D1 tuple = %v/%v/%v/%v code %v; want %v/%v/%v/%v code %v",
+					result.Outcome(),
+					result.Stage(),
+					result.D1BootstrapProvenance(),
+					result.DetailStage(),
+					result.Code(),
+					test.outcome,
+					test.stage,
+					test.d1Provenance,
+					test.detail,
+					test.code,
+				)
+			}
+		})
+	}
+
+	illegal := []struct {
+		name         string
+		outcome      Outcome
+		stage        Stage
+		d1Provenance D1BootstrapProvenance
+		detail       Stage
+	}{
+		{
+			name:    "credentials outcome with record-auth detail",
+			outcome: OutcomeCredentialsOrDamage, stage: StageInnerVolume,
+			d1Provenance: D1BootstrapProvenanceFront, detail: StageRecordAuth,
+		},
+		{
+			name:    "authentication outcome with wrap-auth detail",
+			outcome: OutcomeAuthenticationFailed, stage: StageInnerVolume,
+			d1Provenance: D1BootstrapProvenanceFront, detail: StageWrapAuth,
+		},
+		{
+			name:    "ordinary stage with D1 provenance",
+			outcome: OutcomeAuthenticationFailed, stage: StageRecordAuth,
+			d1Provenance: D1BootstrapProvenanceFront, detail: StageNone,
+		},
+		{
+			name:    "selected success without provenance",
+			outcome: OutcomeSuccess, stage: StageNone,
+			d1Provenance: D1BootstrapProvenanceNone, detail: StageNone,
+		},
+		{
+			name:    "ambiguity with selected provenance",
+			outcome: OutcomeAmbiguousVolume, stage: StageD1Bootstrap,
+			d1Provenance: D1BootstrapProvenanceFront, detail: StageNone,
+		},
+	}
+	for _, test := range illegal {
+		t.Run("illegal "+test.name, func(t *testing.T) {
+			result, err := newD1RecoveryResult(
+				test.outcome,
+				ForceProvenanceNone,
+				test.stage,
+				test.d1Provenance,
+				test.detail,
+				0,
+				nil,
+				0,
+			)
+			if !errors.Is(err, errInvalidRecoveryResult) || result != nil {
+				if result != nil {
+					result.Close()
+				}
+				t.Fatalf("illegal D1 tuple accepted: result=%v error=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestRecoveryResultCopiesAndClearsOwnedEvidence(t *testing.T) {
 	ranges := []RecoveryRange{
 		{recordIndex: 0, start: 0, end: 37, state: RecoveryRangeUnverified},
