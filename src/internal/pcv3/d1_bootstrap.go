@@ -313,31 +313,60 @@ func (attempt *d1BootstrapAttempt) Close() {
 	attempt.stage = 0
 }
 
-type d1BootstrapBinding struct {
+type d1BootstrapEvaluation struct {
 	secret          *d1OuterSecretOwner
 	wrapVerified    bool
 	replicaVerified bool
 }
 
-func (binding *d1BootstrapBinding) Close() {
+func (evaluation *d1BootstrapEvaluation) Close() {
+	if evaluation == nil {
+		return
+	}
+	if evaluation.secret != nil {
+		evaluation.secret.Close()
+		evaluation.secret = nil
+	}
+	evaluation.wrapVerified = false
+	evaluation.replicaVerified = false
+}
+
+func (evaluation *d1BootstrapEvaluation) takeSecret() *d1OuterSecretOwner {
+	if evaluation == nil {
+		return nil
+	}
+	secret := evaluation.secret
+	evaluation.secret = nil
+	return secret
+}
+
+type d1BootstrapBinding struct {
+	bodyLength      uint64
+	wrapVerified    bool
+	replicaVerified bool
+	borrowOuterKeys func(
+		context.Context,
+		func(*pcv3credential.BorrowedD1OuterKeys) error,
+	) error
+}
+
+func (binding *d1BootstrapBinding) withOuterKeys(
+	ctx context.Context,
+	callback func(*pcv3credential.BorrowedD1OuterKeys) error,
+) error {
+	if binding == nil || ctx == nil || callback == nil || binding.borrowOuterKeys == nil {
+		return errInvalidD1Bootstrap
+	}
+	return binding.borrowOuterKeys(ctx, callback)
+}
+
+func (binding *d1BootstrapBinding) expire() {
 	if binding == nil {
 		return
 	}
-	if binding.secret != nil {
-		binding.secret.Close()
-		binding.secret = nil
-	}
+	binding.bodyLength = 0
 	binding.wrapVerified = false
 	binding.replicaVerified = false
-}
-
-func (binding *d1BootstrapBinding) takeSecret() *d1OuterSecretOwner {
-	if binding == nil {
-		return nil
-	}
-	secret := binding.secret
-	binding.secret = nil
-	return secret
 }
 
 func authenticateD1Bootstrap(
@@ -359,7 +388,7 @@ func authenticateD1BootstrapWithAccess(
 	access d1BootstrapCredentialAccess,
 	seams d1BootstrapAuthSeams,
 ) *d1BootstrapAttempt {
-	binding, stage, err := evaluateD1BootstrapWithAccess(
+	evaluation, stage, err := evaluateD1BootstrapWithAccess(
 		ctx,
 		candidate,
 		access,
@@ -369,15 +398,15 @@ func authenticateD1BootstrapWithAccess(
 	if err != nil {
 		return newD1BootstrapAttempt(OutcomeOperationFailed, stage, nil)
 	}
-	defer binding.Close()
-	if !binding.wrapVerified {
+	defer evaluation.Close()
+	if !evaluation.wrapVerified {
 		return newD1BootstrapAttempt(
 			OutcomeCredentialsOrDamage,
 			StageWrapAuth,
 			nil,
 		)
 	}
-	if !binding.replicaVerified {
+	if !evaluation.replicaVerified {
 		return newD1BootstrapAttempt(
 			OutcomeCredentialsOrDamage,
 			StageReplicaAuth,
@@ -389,7 +418,7 @@ func authenticateD1BootstrapWithAccess(
 		StageNone,
 		&d1AuthenticatedBootstrap{
 			candidate: candidate,
-			secret:    binding.takeSecret(),
+			secret:    evaluation.takeSecret(),
 		},
 	)
 }
@@ -404,7 +433,7 @@ func bindD1BootstrapWithAccess(
 	if callback == nil {
 		return errInvalidD1Bootstrap
 	}
-	binding, _, err := evaluateD1BootstrapWithAccess(
+	evaluation, _, err := evaluateD1BootstrapWithAccess(
 		ctx,
 		candidate,
 		access,
@@ -414,8 +443,30 @@ func bindD1BootstrapWithAccess(
 	if err != nil {
 		return err
 	}
-	defer binding.Close()
-	return callback(binding)
+	defer evaluation.Close()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if evaluation.secret == nil || evaluation.secret.keys == nil {
+		return errInvalidD1Bootstrap
+	}
+	keyOwner := evaluation.secret.keys
+	binding := &d1BootstrapBinding{
+		bodyLength:      evaluation.secret.bodyLength,
+		wrapVerified:    evaluation.wrapVerified,
+		replicaVerified: evaluation.replicaVerified,
+		borrowOuterKeys: func(
+			ctx context.Context,
+			callback func(*pcv3credential.BorrowedD1OuterKeys) error,
+		) error {
+			return keyOwner.WithKeys(ctx, callback)
+		},
+	}
+	defer binding.expire()
+	if err := callback(binding); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 func bindD1Bootstrap(
@@ -439,7 +490,7 @@ func evaluateD1BootstrapWithAccess(
 	access d1BootstrapCredentialAccess,
 	seams d1BootstrapAuthSeams,
 	policy d1BootstrapEvaluationPolicy,
-) (*d1BootstrapBinding, Stage, error) {
+) (*d1BootstrapEvaluation, Stage, error) {
 	if ctx == nil || access == nil || seams.unwrapParanoid == nil ||
 		!validD1BootstrapRole(candidate.role) || access.role() != candidate.role ||
 		(policy != d1BootstrapVerifyBeforeUnwrap && policy != d1BootstrapAllowRawUnwrap) {
@@ -449,11 +500,11 @@ func evaluateD1BootstrapWithAccess(
 		return nil, StageCancellation, ctx.Err()
 	}
 
-	binding := &d1BootstrapBinding{}
+	evaluation := &d1BootstrapEvaluation{}
 	complete := false
 	defer func() {
 		if !complete {
-			binding.Close()
+			evaluation.Close()
 		}
 	}()
 	var unwrapped [d1OuterSecretLength]byte
@@ -471,7 +522,7 @@ func evaluateD1BootstrapWithAccess(
 		if err != nil {
 			return err
 		}
-		binding.wrapVerified = valid
+		evaluation.wrapVerified = valid
 		if !valid && policy == d1BootstrapVerifyBeforeUnwrap {
 			return nil
 		}
@@ -496,7 +547,7 @@ func evaluateD1BootstrapWithAccess(
 	}
 	if !unwrapAttempted {
 		complete = true
-		return binding, StageWrapAuth, nil
+		return evaluation, StageWrapAuth, nil
 	}
 
 	outerKey := make([]byte, 32)
@@ -505,11 +556,11 @@ func evaluateD1BootstrapWithAccess(
 	if err != nil {
 		return nil, StageUnwrap, err
 	}
-	binding.secret = &d1OuterSecretOwner{
+	evaluation.secret = &d1OuterSecretOwner{
 		bodyLength: binary.BigEndian.Uint64(unwrapped[32:40]),
 		keys:       keyOwner,
 	}
-	err = binding.secret.withOuterKeys(
+	err = evaluation.secret.withOuterKeys(
 		ctx,
 		func(keys *pcv3credential.BorrowedD1OuterKeys) error {
 			var replicaKey [32]byte
@@ -529,7 +580,7 @@ func evaluateD1BootstrapWithAccess(
 				message,
 				candidate.replicaTag[:],
 			)
-			binding.replicaVerified = valid
+			evaluation.replicaVerified = valid
 			return err
 		},
 	)
@@ -541,7 +592,7 @@ func evaluateD1BootstrapWithAccess(
 		return nil, stage, err
 	}
 	complete = true
-	return binding, StageNone, nil
+	return evaluation, StageNone, nil
 }
 
 func d1BootstrapReplicaMessage(candidate d1BootstrapCandidate) []byte {
