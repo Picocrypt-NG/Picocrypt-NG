@@ -15,8 +15,10 @@ const (
 	credentialTranscriptVersion = 0x01
 	credentialTranscriptFixed   = 10
 	keyfileDigestBytes          = 32
-	credentialInputNormalBytes  = 64
+	credentialInputBytes        = 64
+	credentialInputNormalBytes  = credentialInputBytes
 	normalInputDomain           = "Picocrypt-NG/PCV3/credential/normal\x00"
+	outerInputDomain            = "Picocrypt-NG/PCV3/credential/outer\x00"
 	maxCredentialTranscript     = credentialTranscriptFixed +
 		maxPasswordBytes +
 		(maxKeyfiles * keyfileDigestBytes)
@@ -204,33 +206,14 @@ func (CredentialInputNormal) GoString() string {
 func NewCredentialInputNormal(
 	transcript *CanonicalTranscript,
 ) (*CredentialInputNormal, error) {
-	if transcript == nil {
-		return nil, newTranscriptError(TranscriptErrorClosed, 0, 0)
-	}
-
-	owned := transcript.secret
-	transcript.secret = nil
-	if owned == nil {
-		return nil, newTranscriptError(TranscriptErrorClosed, 0, 0)
-	}
-	defer owned.Close()
-
-	if owned.Len() < credentialTranscriptFixed ||
-		owned.Len() > maxCredentialTranscript {
-		ownedLength := uint64(owned.Len()) //nolint:gosec // Secret.Len cannot be negative.
-		return nil, newTranscriptError(
-			TranscriptErrorLength,
-			0,
-			ownedLength,
-		)
-	}
-
-	hasher := sha3.New512()
-	defer hasher.Reset()
-	_, _ = hasher.Write([]byte(normalInputDomain))
-	_, _ = hasher.Write(owned.Bytes())
-	digest := hasher.Sum(nil)
-	return &CredentialInputNormal{secret: crypto.SecretFrom(digest)}, nil
+	var input *CredentialInputNormal
+	err := consumeCanonicalTranscript(transcript, func(serialized []byte) error {
+		input = &CredentialInputNormal{
+			secret: credentialInputDigest(normalInputDomain, serialized),
+		}
+		return nil
+	})
+	return input, err
 }
 
 // Close clears the owned normal credential input. It is nil-safe and
@@ -261,6 +244,118 @@ func (input *CredentialInputNormal) consume(
 		return newTranscriptError(TranscriptErrorClosed, 0, 0)
 	}
 	return callback(owned.Bytes())
+}
+
+// CredentialInputOuter owns the exact 64-byte D1 outer Argon2id input. It may
+// be borrowed sequentially for the independent front and tail derivations and
+// must not be copied.
+type CredentialInputOuter struct {
+	secret    *crypto.Secret
+	state     *credentialInputBorrowState
+	closeOnce sync.Once
+}
+
+func (*CredentialInputOuter) String() string {
+	return "pcv3credential.CredentialInputOuter([REDACTED])"
+}
+
+func (*CredentialInputOuter) GoString() string {
+	return "pcv3credential.CredentialInputOuter([REDACTED])"
+}
+
+// NewD1CredentialInputs consumes one transcript and derives both protocol
+// inputs without reopening or rehashing any factor source.
+func NewD1CredentialInputs(
+	transcript *CanonicalTranscript,
+) (*CredentialInputNormal, *CredentialInputOuter, error) {
+	var normal *CredentialInputNormal
+	var outer *CredentialInputOuter
+	err := consumeCanonicalTranscript(transcript, func(serialized []byte) error {
+		normal = &CredentialInputNormal{
+			secret: credentialInputDigest(normalInputDomain, serialized),
+		}
+		outerSecret := credentialInputDigest(outerInputDomain, serialized)
+		state := &credentialInputBorrowState{
+			input:  outerSecret.Bytes(),
+			active: true,
+		}
+		state.idle = sync.NewCond(&state.mu)
+		outer = &CredentialInputOuter{
+			secret: outerSecret,
+			state:  state,
+		}
+		return nil
+	})
+	if err != nil {
+		if normal != nil {
+			normal.Close()
+		}
+		if outer != nil {
+			outer.Close()
+		}
+		return nil, nil, err
+	}
+	return normal, outer, nil
+}
+
+// Close clears the owned outer credential input after any active borrow
+// returns. It is nil-safe and idempotent.
+func (input *CredentialInputOuter) Close() {
+	if input == nil {
+		return
+	}
+	input.closeOnce.Do(func() {
+		if input.state != nil {
+			input.state.expire()
+		}
+		if input.secret != nil {
+			input.secret.Close()
+		}
+	})
+}
+
+func (input *CredentialInputOuter) withInput(
+	callback func([]byte) error,
+) error {
+	if input == nil || input.state == nil {
+		return newTranscriptError(TranscriptErrorClosed, 0, 0)
+	}
+	return (&credentialInputBorrow{state: input.state}).withInput(callback)
+}
+
+func consumeCanonicalTranscript(
+	transcript *CanonicalTranscript,
+	callback func([]byte) error,
+) error {
+	if transcript == nil || callback == nil {
+		return newTranscriptError(TranscriptErrorClosed, 0, 0)
+	}
+
+	owned := transcript.secret
+	transcript.secret = nil
+	if owned == nil {
+		return newTranscriptError(TranscriptErrorClosed, 0, 0)
+	}
+	defer owned.Close()
+
+	if owned.Len() < credentialTranscriptFixed ||
+		owned.Len() > maxCredentialTranscript {
+		ownedLength := uint64(owned.Len()) //nolint:gosec // Secret.Len cannot be negative.
+		return newTranscriptError(
+			TranscriptErrorLength,
+			0,
+			ownedLength,
+		)
+	}
+	return callback(owned.Bytes())
+}
+
+func credentialInputDigest(domain string, serialized []byte) *crypto.Secret {
+	hasher := sha3.New512()
+	defer hasher.Reset()
+	_, _ = hasher.Write([]byte(domain))
+	_, _ = hasher.Write(serialized)
+	return crypto.SecretFrom(hasher.Sum(nil))
 }
 
 // credentialInputBorrow lends one callback-scoped normal input to at most one

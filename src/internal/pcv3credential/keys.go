@@ -756,7 +756,14 @@ func expandKeyMaterialWith(
 }
 
 func scheduleInfo(row scheduleRow) string {
-	label := string(row.request.Label)
+	return scheduleInfoFor(
+		string(row.request.Label),
+		row.suite,
+		row.request.Role,
+	)
+}
+
+func scheduleInfoFor(label string, suite Suite, role KeyRole) string {
 	info := make([]byte, 0, len(scheduleDomain)+9+len(label))
 	info = append(info, []byte(scheduleDomain)...)
 	var encoded [2]byte
@@ -764,9 +771,9 @@ func scheduleInfo(row scheduleRow) string {
 	info = append(info, encoded[:]...)
 	binary.BigEndian.PutUint16(encoded[:], 0x0001)
 	info = append(info, encoded[:]...)
-	binary.BigEndian.PutUint16(encoded[:], uint16(row.suite))
+	binary.BigEndian.PutUint16(encoded[:], uint16(suite))
 	info = append(info, encoded[:]...)
-	info = append(info, byte(row.request.Role))
+	info = append(info, byte(role))
 	labelBytes := uint16(len(label)) //nolint:gosec // Closed registry labels are all shorter than 2^16 bytes.
 	binary.BigEndian.PutUint16(encoded[:], labelBytes)
 	info = append(info, encoded[:]...)
@@ -799,14 +806,32 @@ func ownProviderResult(
 	index int,
 	providerCode ScheduleErrorCode,
 ) (*crypto.Secret, error) {
+	return ownProviderResultSized(
+		returned,
+		providerErr,
+		derivedKeyBytes,
+		suite,
+		index,
+		providerCode,
+	)
+}
+
+func ownProviderResultSized(
+	returned []byte,
+	providerErr error,
+	outputBytes int,
+	suite Suite,
+	index int,
+	providerCode ScheduleErrorCode,
+) (*crypto.Secret, error) {
 	defer crypto.SecureZero(returned)
 	if providerErr != nil {
 		return nil, newScheduleError(providerCode, suite, index)
 	}
-	if len(returned) != derivedKeyBytes {
+	if outputBytes <= 0 || len(returned) != outputBytes {
 		return nil, newScheduleError(ScheduleErrorOutput, suite, index)
 	}
-	owned := make([]byte, derivedKeyBytes)
+	owned := make([]byte, outputBytes)
 	copy(owned, returned)
 	return crypto.SecretFrom(owned), nil
 }

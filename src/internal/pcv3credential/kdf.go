@@ -212,10 +212,32 @@ func runCredentialKDFBorrowed(
 	admitter Admitter,
 	derive kdfDeriver,
 ) (*credentialRoot, error) {
+	secret, err := runFixedProfileKDFBorrowed(
+		ctx,
+		normalInput,
+		salt,
+		suite,
+		admitter,
+		derive,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &credentialRoot{secret: secret}, nil
+}
+
+func runFixedProfileKDFBorrowed(
+	ctx context.Context,
+	input []byte,
+	salt []byte,
+	suite Suite,
+	admitter Admitter,
+	derive kdfDeriver,
+) (*crypto.Secret, error) {
 	if ctx == nil || admitter == nil || derive == nil {
 		return nil, newKDFError(KDFErrorInvalidRequest, suite)
 	}
-	if len(normalInput) != credentialInputNormalBytes {
+	if len(input) != credentialInputBytes {
 		return nil, newKDFError(KDFErrorInvalidInput, suite)
 	}
 
@@ -240,7 +262,7 @@ func runCredentialKDFBorrowed(
 		return nil, newKDFError(KDFErrorAdmission, suite)
 	}
 
-	returned, deriveErr := derive(normalInput, fixedSalt[:], profile)
+	returned, deriveErr := derive(input, fixedSalt[:], profile)
 	defer crypto.SecureZero(returned)
 	if ctx.Err() != nil {
 		return nil, newKDFError(KDFErrorCancelled, suite)
@@ -254,7 +276,7 @@ func runCredentialKDFBorrowed(
 
 	owned := make([]byte, credentialRootBytes)
 	copy(owned, returned)
-	return &credentialRoot{secret: crypto.SecretFrom(owned)}, nil
+	return crypto.SecretFrom(owned), nil
 }
 
 func deriveArgon2ID(
