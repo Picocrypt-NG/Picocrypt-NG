@@ -583,9 +583,7 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 		directory := t.TempDir()
 		target := filepath.Join(directory, "foreign.bin")
 		foreign := []byte("FOREIGN DESTINATION")
-		if err := os.WriteFile(target, foreign, 0o640); err != nil {
-			t.Fatalf("seed foreign destination: %v", err)
-		}
+		foreignMode := seedFileWithMode(t, target, foreign, 0o640)
 		result := runWithCore(
 			context.Background(),
 			&Request{Target: target},
@@ -595,7 +593,7 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 			result.PublicationState() != pcv3publication.StateNotPublished {
 			t.Fatalf("collision result = %v/%v; want retained Force-unverified/not-published", result.Outcome(), result.PublicationState())
 		}
-		assertFileBytesAndMode(t, target, foreign, 0o640)
+		assertFileBytesAndMode(t, target, foreign, foreignMode)
 		assertNoRecoveryStageResidue(t, directory)
 	})
 
@@ -713,9 +711,7 @@ func TestD1PublicationCannotLaunderOutcome(t *testing.T) {
 	directory := t.TempDir()
 	target := filepath.Join(directory, "foreign.bin")
 	foreign := []byte("FOREIGN DESTINATION")
-	if err := os.WriteFile(target, foreign, 0o640); err != nil {
-		t.Fatalf("seed foreign destination: %v", err)
-	}
+	foreignMode := seedFileWithMode(t, target, foreign, 0o640)
 
 	result := runWithCore(
 		context.Background(),
@@ -734,7 +730,7 @@ func TestD1PublicationCannotLaunderOutcome(t *testing.T) {
 	if !result.PublicationAttempted() || result.PublicationState() != pcv3publication.StateNotPublished {
 		t.Fatalf("D1 publication = %v/%v; want attempted/not-published", result.PublicationAttempted(), result.PublicationState())
 	}
-	assertFileBytesAndMode(t, target, foreign, 0o640)
+	assertFileBytesAndMode(t, target, foreign, foreignMode)
 	assertNoRecoveryStageResidue(t, directory)
 }
 
@@ -802,6 +798,21 @@ func assertFileBytesAndMode(t *testing.T, path string, want []byte, wantMode os.
 	if info.Mode().Perm() != wantMode {
 		t.Fatalf("%s mode = %04o; want %04o", filepath.Base(path), info.Mode().Perm(), wantMode)
 	}
+}
+
+func seedFileWithMode(t *testing.T, path string, contents []byte, mode os.FileMode) os.FileMode {
+	t.Helper()
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatalf("seed %s: %v", filepath.Base(path), err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("set %s mode: %v", filepath.Base(path), err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", filepath.Base(path), err)
+	}
+	return info.Mode().Perm()
 }
 
 func assertNoRecoveryStageResidue(t *testing.T, directory string) {
