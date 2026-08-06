@@ -582,6 +582,32 @@ func TestD1ForceAnchorsRejectFalseAnchorsAndFirstCandidateChoice(t *testing.T) {
 		assertD1ForceCandidateClosed(t, tail, tailSecret)
 	})
 
+	t.Run("same outer secret in distinct authenticated body windows is terminal", func(t *testing.T) {
+		replicaOnly := d1ForceTestBootstrapEvidence{replicaVerified: true}
+		front, frontBody := newD1ForceTestBodyCandidate(
+			t,
+			D1BootstrapFront,
+			0x69,
+			bytes.Repeat([]byte{0x41}, d1OuterChunkSize+17),
+			replicaOnly,
+		)
+		tail, tailBody := newD1ForceTestBodyCandidate(
+			t,
+			D1BootstrapTail,
+			0x69,
+			bytes.Repeat([]byte{0x42}, d1OuterChunkSize+17),
+			replicaOnly,
+		)
+		if front.bodyLength != tail.bodyLength || len(frontBody) != len(tailBody) || bytes.Equal(frontBody, tailBody) {
+			t.Fatal("same-secret fixture did not produce distinct equal-length D1 bodies")
+		}
+		frontSecret, tailSecret := front.secret, tail.secret
+		physical := d1ForceSplitPhysicalFile(frontBody, nil, tailBody)
+		assertD1ForceBodyAnchoredAmbiguity(t, physical, front, tail)
+		assertD1ForceCandidateClosed(t, front, frontSecret)
+		assertD1ForceCandidateClosed(t, tail, tailSecret)
+	})
+
 	t.Run("identical identity dedupes with matching provenance", func(t *testing.T) {
 		tests := []struct {
 			name     string
