@@ -295,6 +295,32 @@ func WithRecoveryCredentialSession(
 	)
 }
 
+// WithD1RecoveryCredentialSession consumes one D1 normal input and lends the
+// complete Paranoid-1 tuple set through the shared recovery session lifecycle.
+// Factors are borrowed synchronously and remain owned by the caller.
+func WithD1RecoveryCredentialSession(
+	ctx context.Context,
+	input *CredentialInputNormal,
+	factors *ValidatedFactors,
+	tuples []RecoveryCredentialTuple,
+	admitter Admitter,
+	callback func(*RecoverySession) error,
+) (*Owner, error) {
+	return newD1RecoveryCredentialSession(
+		ctx,
+		input,
+		factors,
+		tuples,
+		admitter,
+		callback,
+		readerCredentialSeams{
+			derive:  deriveArgon2ID,
+			extract: defaultHKDFExtract,
+			expand:  defaultHKDFExpand,
+		},
+	)
+}
+
 func newRecoveryCredential(
 	ctx context.Context,
 	request *RecoveryCredentialRequest,
@@ -363,28 +389,12 @@ func newRecoveryCredentialSession(
 	callback func(*RecoverySession) error,
 	seams readerCredentialSeams,
 ) (*Owner, error) {
-	session := &RecoverySession{
-		state: &recoverySessionState{ctx: ctx},
-	}
+	session := newRecoverySession(ctx)
 	defer session.close()
 
 	var consumer recoveryReaderConsumer
 	if callback != nil {
-		consumer = func(index int, reader *ReaderCredential) (bool, error) {
-			state := session.state
-			state.mu.Lock()
-			defer state.mu.Unlock()
-			if state.active || index != len(state.readers) ||
-				len(state.readers) >= maxRecoveryCredentialTuples {
-				return false, newPipelineError(
-					PipelineErrorOwner,
-					PipelineStageOwner,
-					reader.state.metadata.Suite,
-				)
-			}
-			state.readers = append(state.readers, reader)
-			return true, nil
-		}
+		consumer = session.retainReader
 	}
 	if err := withRecoveryCredentialReaders(
 		ctx,
@@ -395,7 +405,114 @@ func newRecoveryCredentialSession(
 	); err != nil {
 		return nil, err
 	}
+	return session.finish(ctx, callback)
+}
 
+func newD1RecoveryCredentialSession(
+	ctx context.Context,
+	input *CredentialInputNormal,
+	factors *ValidatedFactors,
+	tuples []RecoveryCredentialTuple,
+	admitter Admitter,
+	callback func(*RecoverySession) error,
+	seams readerCredentialSeams,
+) (*Owner, error) {
+	defer input.Close()
+
+	snapshots, ok := snapshotRecoveryCredentialTuples(tuples)
+	if !ok {
+		return nil, newPipelineError(
+			PipelineErrorSchedule,
+			PipelineStageSchedule,
+			0,
+		)
+	}
+	suite := snapshots[0].suite
+	if !validD1RecoveryCredentialTuples(snapshots) {
+		return nil, newPipelineError(
+			PipelineErrorSchedule,
+			PipelineStageSchedule,
+			suite,
+		)
+	}
+	if ctx == nil || input == nil || factors == nil || admitter == nil || callback == nil ||
+		seams.derive == nil || seams.extract == nil || seams.expand == nil {
+		return nil, newPipelineError(
+			PipelineErrorInvalidRequest,
+			PipelineStageRequest,
+			suite,
+		)
+	}
+	if ctx.Err() != nil {
+		return nil, newPipelineError(
+			PipelineErrorCancelled,
+			PipelineStageRequest,
+			suite,
+		)
+	}
+	if err := validateRecoveryTupleFactors(snapshots, factors); err != nil {
+		return nil, err
+	}
+
+	session := newRecoverySession(ctx)
+	defer session.close()
+	err := withCredentialInputNormalBorrow(
+		input,
+		func(borrow *credentialInputBorrow) error {
+			return withRecoveryCredentialReadersFromInput(
+				ctx,
+				snapshots,
+				factors,
+				borrow,
+				admitter,
+				session.retainReader,
+				seams,
+			)
+		},
+	)
+	if err != nil {
+		var pipelineErr *PipelineError
+		if errors.As(err, &pipelineErr) {
+			return nil, pipelineErr
+		}
+		return nil, newPipelineError(
+			PipelineErrorTranscript,
+			PipelineStageTranscript,
+			suite,
+		)
+	}
+	return session.finish(ctx, callback)
+}
+
+type recoveryReaderConsumer func(int, *ReaderCredential) (bool, error)
+
+func newRecoverySession(ctx context.Context) *RecoverySession {
+	return &RecoverySession{state: &recoverySessionState{ctx: ctx}}
+}
+
+func (session *RecoverySession) retainReader(
+	index int,
+	reader *ReaderCredential,
+) (bool, error) {
+	state := session.state
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.active || index != len(state.readers) ||
+		len(state.readers) >= maxRecoveryCredentialTuples {
+		return false, newPipelineError(
+			PipelineErrorOwner,
+			PipelineStageOwner,
+			reader.state.metadata.Suite,
+		)
+	}
+	state.readers = append(state.readers, reader)
+	return true, nil
+}
+
+func (session *RecoverySession) finish(
+	ctx context.Context,
+	callback func(*RecoverySession) error,
+) (*Owner, error) {
 	state := session.state
 	state.mu.Lock()
 	state.active = true
@@ -428,8 +545,6 @@ func newRecoveryCredentialSession(
 	}
 	return owner, nil
 }
-
-type recoveryReaderConsumer func(int, *ReaderCredential) (bool, error)
 
 // withRecoveryCredentialReaders is the single validation, transcript, KDF,
 // and reader-construction driver used by both recovery entry points.
@@ -484,14 +599,8 @@ func withRecoveryCredentialReaders(
 		ctx,
 		factors,
 		func(validated *ValidatedFactors) error {
-			for _, tuple := range snapshots {
-				if !recoveryTupleMatchesFactors(tuple, validated) {
-					return newPipelineError(
-						PipelineErrorFactors,
-						PipelineStageFactors,
-						tuple.suite,
-					)
-				}
+			if err := validateRecoveryTupleFactors(snapshots, validated); err != nil {
+				return err
 			}
 
 			transcript, err := NewCanonicalTranscript(validated)
@@ -507,95 +616,15 @@ func withRecoveryCredentialReaders(
 			return withCredentialInputBorrow(
 				transcript,
 				func(input *credentialInputBorrow) error {
-					for index, tuple := range snapshots {
-						if ctx.Err() != nil {
-							return newPipelineError(
-								PipelineErrorCancelled,
-								PipelineStageKDF,
-								tuple.suite,
-							)
-						}
-						schedule, err := fullReaderSchedule(tuple.suite)
-						if err != nil {
-							return newPipelineError(
-								PipelineErrorSchedule,
-								PipelineStageSchedule,
-								tuple.suite,
-							)
-						}
-						admitted, err := admitFixedProfile(ctx, tuple.suite, admitter)
-						if err != nil {
-							return err
-						}
-						if seams.beforeKDF != nil {
-							seams.beforeKDF()
-						}
-						if ctx.Err() != nil {
-							return newPipelineError(
-								PipelineErrorCancelled,
-								PipelineStageKDF,
-								tuple.suite,
-							)
-						}
-
-						var root *credentialRoot
-						var deriveErr error
-						if err := input.withInput(func(normalInput []byte) error {
-							root, deriveErr = runCredentialKDFBorrowed(
-								ctx,
-								normalInput,
-								tuple.argonSalt[:],
-								tuple.suite,
-								admitted,
-								seams.derive,
-							)
-							return nil
-						}); err != nil {
-							return newPipelineError(
-								PipelineErrorTranscript,
-								PipelineStageTranscript,
-								tuple.suite,
-							)
-						}
-						if deriveErr != nil {
-							return recoveryKDFPipelineError(deriveErr, tuple.suite)
-						}
-
-						metadata := OwnerMetadata{
-							Suite:          tuple.suite,
-							ExpectedPolicy: validated.expectedPolicy,
-							CredentialMode: validated.mode,
-							KeyfileMode:    validated.keyfileMode,
-							KeyfileCount:   uint16(len(validated.descriptors)), //nolint:gosec // Validated to at most maxKeyfiles.
-							ArgonSalt:      tuple.argonSalt,
-							VolumeID:       tuple.volumeID,
-						}
-						reader, err := newReaderCredentialRoot(
-							ctx,
-							root,
-							schedule,
-							metadata,
-							seams,
-						)
-						if err != nil {
-							return err
-						}
-						retain := false
-						consumeErr := func() error {
-							defer func() {
-								if !retain {
-									reader.close()
-								}
-							}()
-							var err error
-							retain, err = consumer(index, reader)
-							return err
-						}()
-						if consumeErr != nil {
-							return consumeErr
-						}
-					}
-					return nil
+					return withRecoveryCredentialReadersFromInput(
+						ctx,
+						snapshots,
+						validated,
+						input,
+						admitter,
+						consumer,
+						seams,
+					)
 				},
 			)
 		},
@@ -621,6 +650,122 @@ func withRecoveryCredentialReaders(
 		PipelineStageFactors,
 		suite,
 	)
+}
+
+func validateRecoveryTupleFactors(
+	snapshots []recoveryCredentialTupleSnapshot,
+	factors *ValidatedFactors,
+) error {
+	for _, tuple := range snapshots {
+		if !recoveryTupleMatchesFactors(tuple, factors) {
+			return newPipelineError(
+				PipelineErrorFactors,
+				PipelineStageFactors,
+				tuple.suite,
+			)
+		}
+	}
+	return nil
+}
+
+func withRecoveryCredentialReadersFromInput(
+	ctx context.Context,
+	snapshots []recoveryCredentialTupleSnapshot,
+	validated *ValidatedFactors,
+	input *credentialInputBorrow,
+	admitter Admitter,
+	consumer recoveryReaderConsumer,
+	seams readerCredentialSeams,
+) error {
+	for index, tuple := range snapshots {
+		if ctx.Err() != nil {
+			return newPipelineError(
+				PipelineErrorCancelled,
+				PipelineStageKDF,
+				tuple.suite,
+			)
+		}
+		schedule, err := fullReaderSchedule(tuple.suite)
+		if err != nil {
+			return newPipelineError(
+				PipelineErrorSchedule,
+				PipelineStageSchedule,
+				tuple.suite,
+			)
+		}
+		admitted, err := admitFixedProfile(ctx, tuple.suite, admitter)
+		if err != nil {
+			return err
+		}
+		if seams.beforeKDF != nil {
+			seams.beforeKDF()
+		}
+		if ctx.Err() != nil {
+			return newPipelineError(
+				PipelineErrorCancelled,
+				PipelineStageKDF,
+				tuple.suite,
+			)
+		}
+
+		var root *credentialRoot
+		var deriveErr error
+		if err := input.withInput(func(normalInput []byte) error {
+			root, deriveErr = runCredentialKDFBorrowed(
+				ctx,
+				normalInput,
+				tuple.argonSalt[:],
+				tuple.suite,
+				admitted,
+				seams.derive,
+			)
+			return nil
+		}); err != nil {
+			return newPipelineError(
+				PipelineErrorTranscript,
+				PipelineStageTranscript,
+				tuple.suite,
+			)
+		}
+		if deriveErr != nil {
+			return recoveryKDFPipelineError(deriveErr, tuple.suite)
+		}
+
+		metadata := OwnerMetadata{
+			Suite:          tuple.suite,
+			ExpectedPolicy: validated.expectedPolicy,
+			CredentialMode: validated.mode,
+			KeyfileMode:    validated.keyfileMode,
+			KeyfileCount:   uint16(len(validated.descriptors)), //nolint:gosec // Validated to at most maxKeyfiles.
+			ArgonSalt:      tuple.argonSalt,
+			VolumeID:       tuple.volumeID,
+		}
+		reader, err := newReaderCredentialRoot(
+			ctx,
+			root,
+			schedule,
+			metadata,
+			seams,
+		)
+		if err != nil {
+			return err
+		}
+		retain := false
+		consumeErr := func() error {
+			defer func() {
+				if !retain {
+					reader.close()
+				}
+			}()
+			var err error
+			retain, err = consumer(index, reader)
+			return err
+		}()
+		if consumeErr != nil {
+			return consumeErr
+		}
+	}
+	return nil
 }
 
 func (session *RecoverySession) beginTupleBorrow(
@@ -809,6 +954,19 @@ func snapshotRecoveryCredentialTuples(
 		snapshots[index] = snapshot
 	}
 	return snapshots, true
+}
+
+func validD1RecoveryCredentialTuples(snapshots []recoveryCredentialTupleSnapshot) bool {
+	profile, err := fixedProfileForSuite(SuiteParanoid1)
+	if err != nil {
+		return false
+	}
+	for _, tuple := range snapshots {
+		if tuple.suite != SuiteParanoid1 || tuple.profileID != profile.ID {
+			return false
+		}
+	}
+	return true
 }
 
 func recoveryTupleMatchesFactors(

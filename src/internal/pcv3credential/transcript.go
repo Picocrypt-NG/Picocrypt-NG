@@ -383,8 +383,20 @@ func withCredentialInputBorrow(
 	if err != nil {
 		return err
 	}
-	defer input.Close()
+	return withCredentialInputNormalBorrow(input, callback)
+}
 
+func withCredentialInputNormalBorrow(
+	input *CredentialInputNormal,
+	callback func(*credentialInputBorrow) error,
+) error {
+	if input == nil || callback == nil {
+		if input != nil {
+			input.Close()
+		}
+		return newTranscriptError(TranscriptErrorClosed, 0, 0)
+	}
+	defer input.Close()
 	return input.consume(func(normalInput []byte) error {
 		state := &credentialInputBorrowState{
 			input:  normalInput,
