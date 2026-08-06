@@ -302,6 +302,392 @@ func TestRecoveryCredentialSessionClearsBoundCandidatesOnEveryExit(t *testing.T)
 	}
 }
 
+func TestD1RecoveryCredentialSessionConsumesOwnedInputSequentially(t *testing.T) {
+	probe := newRecoveryCredentialProbe()
+	var retainedInput *CredentialInputNormal
+	var retainedSession *RecoverySession
+	var inputAlias []byte
+	allTuplesReady := false
+
+	err := withD1NormalTestInput(t, func(
+		normal *CredentialInputNormal,
+		factors *ValidatedFactors,
+	) error {
+		retainedInput = normal
+		inputAlias = normal.secret.Bytes()
+		tuples := []RecoveryCredentialTuple{
+			d1RecoveryCredentialTuple(t, factors, 0x31),
+			d1RecoveryCredentialTuple(t, factors, 0x42),
+		}
+		// A D1 recovery session receives the already-owned normal input and the
+		// same validated-factor borrow. Closing the password makes rebuilding a
+		// second canonical transcript impossible while preserving factor metadata.
+		factors.password.Close()
+
+		owner, sessionErr := newD1RecoveryCredentialSession(
+			context.Background(),
+			normal,
+			factors,
+			tuples,
+			probe.reader.admit,
+			func(session *RecoverySession) error {
+				retainedSession = session
+				allTuplesReady = probe.reader.admit.calls == 2 &&
+					probe.reader.kdfCalls == 2 &&
+					len(session.state.readers) == 2
+				for index := range 2 {
+					var wrapMAC [derivedKeyBytes]byte
+					if err := session.WithTupleKeys(
+						context.Background(),
+						index,
+						KeyRolePrimary,
+						func(keys *ReaderKeys) error {
+							return keys.CopyKey(KeyRequest{
+								Label:       KeyLabelCredentialWrapMAC,
+								Role:        KeyRolePrimary,
+								OutputBytes: derivedKeyBytes,
+							}, wrapMAC[:])
+						},
+					); err != nil || allZero(wrapMAC[:]) {
+						return errors.New("D1 recovery tuple was not live inside the callback")
+					}
+				}
+				return nil
+			},
+			probe.seams(),
+		)
+		if owner != nil {
+			owner.Close()
+			return errors.New("unselected D1 recovery session published an owner")
+		}
+		return sessionErr
+	})
+	if err != nil {
+		t.Fatalf("newD1RecoveryCredentialSession: %v", err)
+	}
+	if !allTuplesReady || retainedSession == nil || retainedInput == nil ||
+		retainedInput.secret != nil {
+		t.Fatal("D1 recovery session did not consume one owned input before lending two tuples")
+	}
+	if probe.reader.admit.calls != 2 || probe.reader.kdfCalls != 2 ||
+		probe.maxActiveKDF != 1 || len(probe.kdfSalts) != 2 ||
+		!bytes.Equal(probe.kdfSalts[0], bytes.Repeat([]byte{0x31}, kdfSaltBytes)) ||
+		!bytes.Equal(probe.kdfSalts[1], bytes.Repeat([]byte{0x42}, kdfSaltBytes)) {
+		t.Fatalf(
+			"D1 admission/KDF/max-active/salts = %d/%d/%d/%x; want 2/2/1/[31,42]",
+			probe.reader.admit.calls,
+			probe.reader.kdfCalls,
+			probe.maxActiveKDF,
+			probe.kdfSalts,
+		)
+	}
+	if len(probe.kdfInputs) != 2 || len(probe.kdfSnapshots) != 2 ||
+		len(inputAlias) != credentialInputNormalBytes ||
+		&probe.kdfInputs[0][0] != &inputAlias[0] ||
+		&probe.kdfInputs[1][0] != &inputAlias[0] ||
+		!bytes.Equal(probe.kdfSnapshots[0], probe.kdfSnapshots[1]) ||
+		allZero(probe.kdfSnapshots[0]) {
+		t.Fatal("D1 recovery KDFs did not sequentially borrow the one supplied normal input")
+	}
+	assertD1RecoverySessionExpired(t, retainedSession)
+	assertD1RecoveryProbeCleared(t, probe, inputAlias)
+}
+
+func TestD1RecoveryCredentialSessionClosesFailureCancellationAndBounds(t *testing.T) {
+	t.Run("callback error", func(t *testing.T) {
+		probe := newRecoveryCredentialProbe()
+		var retained *RecoverySession
+		var inputAlias []byte
+		err := withD1NormalTestInput(t, func(
+			normal *CredentialInputNormal,
+			factors *ValidatedFactors,
+		) error {
+			inputAlias = normal.secret.Bytes()
+			factors.password.Close()
+			owner, sessionErr := newD1RecoveryCredentialSession(
+				context.Background(),
+				normal,
+				factors,
+				[]RecoveryCredentialTuple{
+					d1RecoveryCredentialTuple(t, factors, 0x51),
+					d1RecoveryCredentialTuple(t, factors, 0x62),
+				},
+				probe.reader.admit,
+				func(session *RecoverySession) error {
+					retained = session
+					return errors.New("TEST ONLY D1 recovery callback failure")
+				},
+				probe.seams(),
+			)
+			if owner != nil {
+				owner.Close()
+				t.Fatal("failed D1 recovery callback published an owner")
+			}
+			return sessionErr
+		})
+		requirePipelineCode(t, err, PipelineErrorCallback, PipelineStageCallback)
+		if retained == nil || probe.reader.kdfCalls != 2 || probe.maxActiveKDF != 1 {
+			t.Fatal("D1 recovery callback failure did not follow the bounded sequential session path")
+		}
+		assertD1RecoverySessionExpired(t, retained)
+		assertD1RecoveryProbeCleared(t, probe, inputAlias)
+	})
+
+	t.Run("cancel before second KDF", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		probe := newRecoveryCredentialProbe()
+		seams := probe.seams()
+		beforeKDFCalls := 0
+		seams.beforeKDF = func() {
+			beforeKDFCalls++
+			if beforeKDFCalls == 2 {
+				cancel()
+			}
+		}
+		callbackCalls := 0
+		var inputAlias []byte
+		err := withD1NormalTestInput(t, func(
+			normal *CredentialInputNormal,
+			factors *ValidatedFactors,
+		) error {
+			inputAlias = normal.secret.Bytes()
+			factors.password.Close()
+			owner, sessionErr := newD1RecoveryCredentialSession(
+				ctx,
+				normal,
+				factors,
+				[]RecoveryCredentialTuple{
+					d1RecoveryCredentialTuple(t, factors, 0x71),
+					d1RecoveryCredentialTuple(t, factors, 0x82),
+				},
+				probe.reader.admit,
+				func(*RecoverySession) error {
+					callbackCalls++
+					return nil
+				},
+				seams,
+			)
+			if owner != nil {
+				owner.Close()
+				t.Fatal("cancelled D1 recovery session published an owner")
+			}
+			return sessionErr
+		})
+		requirePipelineCode(t, err, PipelineErrorCancelled, PipelineStageKDF)
+		if beforeKDFCalls != 2 || probe.reader.kdfCalls != 1 ||
+			probe.maxActiveKDF != 1 || callbackCalls != 0 {
+			t.Fatalf(
+				"cancelled D1 sequence = before %d, KDF %d, max-active %d, callback %d; want 2/1/1/0",
+				beforeKDFCalls,
+				probe.reader.kdfCalls,
+				probe.maxActiveKDF,
+				callbackCalls,
+			)
+		}
+		assertD1RecoveryProbeCleared(t, probe, inputAlias)
+	})
+
+	t.Run("third tuple rejected before KDF", func(t *testing.T) {
+		probe := newRecoveryCredentialProbe()
+		callbackCalls := 0
+		var inputAlias []byte
+		err := withD1NormalTestInput(t, func(
+			normal *CredentialInputNormal,
+			factors *ValidatedFactors,
+		) error {
+			inputAlias = normal.secret.Bytes()
+			factors.password.Close()
+			owner, sessionErr := newD1RecoveryCredentialSession(
+				context.Background(),
+				normal,
+				factors,
+				[]RecoveryCredentialTuple{
+					d1RecoveryCredentialTuple(t, factors, 0x91),
+					d1RecoveryCredentialTuple(t, factors, 0xa2),
+					d1RecoveryCredentialTuple(t, factors, 0xb3),
+				},
+				probe.reader.admit,
+				func(*RecoverySession) error {
+					callbackCalls++
+					return nil
+				},
+				probe.seams(),
+			)
+			if owner != nil {
+				owner.Close()
+				t.Fatal("unbounded D1 recovery tuple set published an owner")
+			}
+			return sessionErr
+		})
+		requirePipelineCode(t, err, PipelineErrorSchedule, PipelineStageSchedule)
+		if probe.reader.admit.calls != 0 || probe.reader.kdfCalls != 0 || callbackCalls != 0 {
+			t.Fatalf(
+				"third D1 tuple reached admission/KDF/callback = %d/%d/%d",
+				probe.reader.admit.calls,
+				probe.reader.kdfCalls,
+				callbackCalls,
+			)
+		}
+		assertD1RecoveryProbeCleared(t, probe, inputAlias)
+	})
+
+	t.Run("non-paranoid tuple rejected before KDF", func(t *testing.T) {
+		probe := newRecoveryCredentialProbe()
+		callbackCalls := 0
+		var inputAlias []byte
+		err := withD1NormalTestInput(t, func(
+			normal *CredentialInputNormal,
+			factors *ValidatedFactors,
+		) error {
+			inputAlias = normal.secret.Bytes()
+			factors.password.Close()
+			tuple := d1RecoveryCredentialTuple(t, factors, 0xb4)
+			profile, profileErr := fixedProfileForSuite(SuiteStandard1)
+			if profileErr != nil {
+				t.Fatalf("load structurally valid non-D1 profile: %v", profileErr)
+			}
+			tuple.Suite = SuiteStandard1
+			tuple.ProfileID = profile.ID
+			owner, sessionErr := newD1RecoveryCredentialSession(
+				context.Background(),
+				normal,
+				factors,
+				[]RecoveryCredentialTuple{tuple},
+				probe.reader.admit,
+				func(*RecoverySession) error {
+					callbackCalls++
+					return nil
+				},
+				probe.seams(),
+			)
+			if owner != nil {
+				owner.Close()
+				t.Fatal("non-D1 recovery tuple published an owner")
+			}
+			return sessionErr
+		})
+		requirePipelineCode(t, err, PipelineErrorSchedule, PipelineStageSchedule)
+		if probe.reader.admit.calls != 0 || probe.reader.kdfCalls != 0 || callbackCalls != 0 {
+			t.Fatalf(
+				"non-D1 tuple reached admission/KDF/callback = %d/%d/%d",
+				probe.reader.admit.calls,
+				probe.reader.kdfCalls,
+				callbackCalls,
+			)
+		}
+		assertD1RecoveryProbeCleared(t, probe, inputAlias)
+	})
+
+	t.Run("tuple factor mismatch rejected before KDF", func(t *testing.T) {
+		probe := newRecoveryCredentialProbe()
+		callbackCalls := 0
+		var inputAlias []byte
+		err := withD1NormalTestInput(t, func(
+			normal *CredentialInputNormal,
+			factors *ValidatedFactors,
+		) error {
+			inputAlias = normal.secret.Bytes()
+			factors.password.Close()
+			tuple := d1RecoveryCredentialTuple(t, factors, 0xc4)
+			tuple.CredentialMode = CredentialModePasswordAndKeyfiles
+			tuple.KeyfileMode = KeyfileModeOrdered
+			tuple.KeyfileCount = 1
+			owner, sessionErr := newD1RecoveryCredentialSession(
+				context.Background(),
+				normal,
+				factors,
+				[]RecoveryCredentialTuple{tuple},
+				probe.reader.admit,
+				func(*RecoverySession) error {
+					callbackCalls++
+					return nil
+				},
+				probe.seams(),
+			)
+			if owner != nil {
+				owner.Close()
+				t.Fatal("factor-mismatched D1 recovery tuple published an owner")
+			}
+			return sessionErr
+		})
+		requirePipelineCode(t, err, PipelineErrorFactors, PipelineStageFactors)
+		if probe.reader.admit.calls != 0 || probe.reader.kdfCalls != 0 || callbackCalls != 0 {
+			t.Fatalf(
+				"factor-mismatched D1 tuple reached admission/KDF/callback = %d/%d/%d",
+				probe.reader.admit.calls,
+				probe.reader.kdfCalls,
+				callbackCalls,
+			)
+		}
+		assertD1RecoveryProbeCleared(t, probe, inputAlias)
+	})
+}
+
+func d1RecoveryCredentialTuple(
+	t *testing.T,
+	factors *ValidatedFactors,
+	marker byte,
+) RecoveryCredentialTuple {
+	t.Helper()
+	profile, err := fixedProfileForSuite(SuiteParanoid1)
+	if err != nil {
+		t.Fatalf("load D1 inner profile: %v", err)
+	}
+	return RecoveryCredentialTuple{
+		Suite:          SuiteParanoid1,
+		ProfileID:      profile.ID,
+		CredentialMode: factors.mode,
+		KeyfileMode:    factors.keyfileMode,
+		KeyfileCount:   uint16(len(factors.descriptors)), //nolint:gosec // Validated factors are bounded to maxKeyfiles.
+		ArgonSalt:      bytes.Repeat([]byte{marker}, kdfSaltBytes),
+		VolumeID:       bytes.Repeat([]byte{marker + 0x20}, scheduleVolumeIDBytes),
+	}
+}
+
+func assertD1RecoverySessionExpired(t *testing.T, session *RecoverySession) {
+	t.Helper()
+	callbackCalls := 0
+	err := session.WithTupleKeys(
+		context.Background(),
+		0,
+		KeyRolePrimary,
+		func(*ReaderKeys) error {
+			callbackCalls++
+			return nil
+		},
+	)
+	if err == nil || callbackCalls != 0 {
+		t.Fatal("expired D1 recovery session invoked a tuple callback")
+	}
+}
+
+func assertD1RecoveryProbeCleared(
+	t *testing.T,
+	probe *recoveryCredentialProbe,
+	inputAlias []byte,
+) {
+	t.Helper()
+	if len(inputAlias) != credentialInputNormalBytes || !allZero(inputAlias) {
+		t.Fatal("D1 recovery session retained the supplied normal input")
+	}
+	for index, alias := range probe.kdfInputs {
+		if !allZero(alias) {
+			t.Fatalf("D1 recovery KDF input alias %d survived session exit", index)
+		}
+	}
+	for index, alias := range probe.reader.providerData {
+		if !allZero(alias) {
+			t.Fatalf("D1 recovery provider alias %d survived session exit", index)
+		}
+	}
+	for index, alias := range probe.reader.ownedAliases {
+		if !allZero(alias) {
+			t.Fatalf("D1 recovery owned alias %d survived session exit", index)
+		}
+	}
+}
+
 func recoveryCredentialTuple(
 	t *testing.T,
 	suite Suite,
