@@ -1,7 +1,7 @@
 package pcv3publication
 
 import (
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3result"
 	"bytes"
 	"context"
 	"errors"
@@ -73,8 +73,8 @@ func requireResult(
 	t *testing.T,
 	result Result,
 	wantState State,
-	wantOutcome pcv3.Outcome,
-	wantStage pcv3.Stage,
+	wantOutcome pcv3result.Outcome,
+	wantStage pcv3result.Stage,
 	wantCode Code,
 ) {
 	t.Helper()
@@ -196,8 +196,8 @@ func TestNoReplacePreservesDestination(t *testing.T) {
 		t,
 		result,
 		StateNotPublished,
-		pcv3.OutcomeOperationFailed,
-		pcv3.StageOutputPublication,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
 		CodeDestinationExists,
 	)
 	if counts.atomic != 0 || counts.sync != 0 {
@@ -236,8 +236,8 @@ func TestSafeReplaceFailsClosedWithoutIdentityPrimitive(t *testing.T) {
 		t,
 		result,
 		StateNotPublished,
-		pcv3.OutcomeOperationFailed,
-		pcv3.StageOutputPublication,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
 		CodePolicyUnsupported,
 	)
 	if counts.atomic != 0 || counts.sync != 0 {
@@ -262,8 +262,8 @@ func TestProtectedOutputAliasFailsBeforeStage(t *testing.T) {
 		t,
 		result,
 		StateNotPublished,
-		pcv3.OutcomeOperationFailed,
-		pcv3.StageOutputPublication,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
 		CodeInvalidRequest,
 	)
 	if counts.atomic != 0 || counts.sync != 0 {
@@ -293,8 +293,8 @@ func TestPublishCancellationBoundary(t *testing.T) {
 			t,
 			result,
 			StateNotPublished,
-			pcv3.OutcomeOperationFailed,
-			pcv3.StageCancellation,
+			pcv3result.OutcomeOperationFailed,
+			pcv3result.StageCancellation,
 			CodeCancelled,
 		)
 		if counts.atomic != 0 || counts.sync != 0 {
@@ -346,8 +346,8 @@ func TestPublishCancellationBoundary(t *testing.T) {
 			t,
 			result,
 			StatePublishedDurable,
-			pcv3.OutcomeSuccess,
-			pcv3.StageNone,
+			pcv3result.OutcomeSuccess,
+			pcv3result.StageNone,
 			CodePublishedDurable,
 		)
 		if counts.atomic != 1 || counts.sync != 1 {
@@ -410,8 +410,8 @@ func TestPublishIndeterminateRetainsUnprovenPaths(t *testing.T) {
 		t,
 		result,
 		StatePublicationIndeterminate,
-		pcv3.OutcomePublicationIndeterminate,
-		pcv3.StageOutputPublication,
+		pcv3result.OutcomePublicationIndeterminate,
+		pcv3result.StageOutputPublication,
 		CodePublicationIndeterminate,
 	)
 	if counts.atomic != 1 || counts.sync != 0 {
@@ -565,8 +565,8 @@ func TestPublishStageFinalizationFailuresNeverCreateDestination(t *testing.T) {
 				t,
 				result,
 				StateNotPublished,
-				pcv3.OutcomeOperationFailed,
-				pcv3.StageOutputPublication,
+				pcv3result.OutcomeOperationFailed,
+				pcv3result.StageOutputPublication,
 				CodeStageFailure,
 			)
 			if syncCalls != test.wantSync || closeCalls != test.wantClose {
@@ -627,7 +627,7 @@ func TestPublishIdentityChangesFailClosed(t *testing.T) {
 		}
 
 		result := stage.Publish(context.Background())
-		requireResult(t, result, StateNotPublished, pcv3.OutcomeOperationFailed, pcv3.StageOutputPublication, CodeIdentityChanged)
+		requireResult(t, result, StateNotPublished, pcv3result.OutcomeOperationFailed, pcv3result.StageOutputPublication, CodeIdentityChanged)
 		if counts.atomic != 0 || counts.sync != 0 {
 			t.Fatalf("parent replacement reached commit = atomic %d sync %d", counts.atomic, counts.sync)
 		}
@@ -666,7 +666,7 @@ func TestPublishIdentityChangesFailClosed(t *testing.T) {
 		}
 
 		result := stage.Publish(context.Background())
-		requireResult(t, result, StateNotPublished, pcv3.OutcomeOperationFailed, pcv3.StageOutputPublication, CodeIdentityChanged)
+		requireResult(t, result, StateNotPublished, pcv3result.OutcomeOperationFailed, pcv3result.StageOutputPublication, CodeIdentityChanged)
 		if counts.atomic != 0 || counts.sync != 0 {
 			t.Fatalf("stage replacement reached commit = atomic %d sync %d", counts.atomic, counts.sync)
 		}
@@ -698,7 +698,7 @@ func TestPublishIdentityChangesFailClosed(t *testing.T) {
 		}
 
 		result := stage.Publish(context.Background())
-		requireResult(t, result, StateNotPublished, pcv3.OutcomeOperationFailed, pcv3.StageOutputPublication, CodeDestinationExists)
+		requireResult(t, result, StateNotPublished, pcv3result.OutcomeOperationFailed, pcv3result.StageOutputPublication, CodeDestinationExists)
 		if counts.atomic != 0 || counts.sync != 0 {
 			t.Fatalf("late target reached commit = atomic %d sync %d", counts.atomic, counts.sync)
 		}
@@ -742,7 +742,7 @@ func TestPublishDefiniteAtomicFailureCleansOnlyOwnedStage(t *testing.T) {
 	}
 
 	result := stage.Publish(context.Background())
-	requireResult(t, result, StateNotPublished, pcv3.OutcomeOperationFailed, pcv3.StageOutputPublication, CodeAtomicFailed)
+	requireResult(t, result, StateNotPublished, pcv3result.OutcomeOperationFailed, pcv3result.StageOutputPublication, CodeAtomicFailed)
 	if atomicCalls != 1 || directorySyncCalls != 0 {
 		t.Fatalf("definite failure calls = atomic %d sync %d; want 1/0", atomicCalls, directorySyncCalls)
 	}
@@ -797,8 +797,8 @@ func TestPublishDurabilityFailureRetainsCommittedDestination(t *testing.T) {
 				t,
 				result,
 				StatePublishedDurabilityUncertain,
-				pcv3.OutcomeCommittedDurabilityUncertain,
-				pcv3.StageDirectorySync,
+				pcv3result.OutcomeCommittedDurabilityUncertain,
+				pcv3result.StageDirectorySync,
 				CodeDurabilityUncertain,
 			)
 			if counts.atomic != 1 || counts.sync != 1 {

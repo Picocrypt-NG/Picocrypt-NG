@@ -1,72 +1,60 @@
 package pcv3
 
 import (
+	"Picocrypt-NG/internal/pcv3result"
 	"errors"
 	"fmt"
 	"io"
 	"strconv"
 )
 
-// Outcome identifies one name in the closed PCV3 conformance registry.
-type Outcome uint8
+// Outcome and Stage remain source-compatible aliases of the dependency-leaf
+// result registry used by both format and publication packages.
+type Outcome = pcv3result.Outcome
 
 const (
-	// OutcomeUnsupportedRoutingPreKDF rejects an unknown claimed PCV route.
-	OutcomeUnsupportedRoutingPreKDF Outcome = iota + 1
-	// OutcomeInvalidStructurePreKDF rejects malformed claimed PCV structure.
-	OutcomeInvalidStructurePreKDF
-	// OutcomeOperationFailed reports a non-structural input operation failure.
-	OutcomeOperationFailed
-	// OutcomeCredentialsOrDamage collapses wrong credentials and capsule damage.
-	OutcomeCredentialsOrDamage
-	// OutcomeAuthenticatedDegraded retains one authenticated recovery path.
-	OutcomeAuthenticatedDegraded
-	// OutcomeAmbiguousVolume rejects conflicting authenticated replicas.
-	OutcomeAmbiguousVolume
-	// OutcomeSuccess reports a fully authenticated, non-degraded result.
-	OutcomeSuccess
-	// OutcomeAuthenticationFailed rejects a confirmed volume with failed payload authentication.
-	OutcomeAuthenticationFailed
-	// OutcomeForcePartial reports verified anchors with missing or damaged payload records.
-	OutcomeForcePartial
-	// OutcomeForceUnverified reports explicit unverified recovery without a payload anchor.
-	OutcomeForceUnverified
-	// OutcomeCommittedDurabilityUncertain reports publication without confirmed directory durability.
-	OutcomeCommittedDurabilityUncertain
-	// OutcomePublicationIndeterminate reports an atomic publication whose commit cannot be proven.
-	OutcomePublicationIndeterminate
+	OutcomeUnsupportedRoutingPreKDF     = pcv3result.OutcomeUnsupportedRoutingPreKDF
+	OutcomeInvalidStructurePreKDF       = pcv3result.OutcomeInvalidStructurePreKDF
+	OutcomeOperationFailed              = pcv3result.OutcomeOperationFailed
+	OutcomeCredentialsOrDamage          = pcv3result.OutcomeCredentialsOrDamage
+	OutcomeAuthenticatedDegraded        = pcv3result.OutcomeAuthenticatedDegraded
+	OutcomeAmbiguousVolume              = pcv3result.OutcomeAmbiguousVolume
+	OutcomeSuccess                      = pcv3result.OutcomeSuccess
+	OutcomeAuthenticationFailed         = pcv3result.OutcomeAuthenticationFailed
+	OutcomeForcePartial                 = pcv3result.OutcomeForcePartial
+	OutcomeForceUnverified              = pcv3result.OutcomeForceUnverified
+	OutcomeCommittedDurabilityUncertain = pcv3result.OutcomeCommittedDurabilityUncertain
+	OutcomePublicationIndeterminate     = pcv3result.OutcomePublicationIndeterminate
 )
 
-// Stage identifies one boundary in the closed PCV3 conformance registry.
-type Stage uint8
-
-const StageNone Stage = 0
+type Stage = pcv3result.Stage
 
 const (
-	StageRouting Stage = iota + 1
-	StagePreamble
-	StageCapsuleRS
-	StageCapsuleStructure
-	StageTailGeometry
-	StageInputIO
-	StageCredentialPolicy
-	StageWrapAuth
-	StageUnwrap
-	StageReplicaAuth
-	StageKDFRuntime
-	StageCancellation
-	StageMetadata
-	StageDescriptor
-	StageRecordBodyRS
-	StageRecordAuth
-	StageFinalRecord
-	StageOutputPublication
-	StageD1Bootstrap
-	StageD1Body
-	StageInnerVolume
-	StageRNG
-	StageOutputWrite
-	StageDirectorySync
+	StageNone              = pcv3result.StageNone
+	StageRouting           = pcv3result.StageRouting
+	StagePreamble          = pcv3result.StagePreamble
+	StageCapsuleRS         = pcv3result.StageCapsuleRS
+	StageCapsuleStructure  = pcv3result.StageCapsuleStructure
+	StageTailGeometry      = pcv3result.StageTailGeometry
+	StageInputIO           = pcv3result.StageInputIO
+	StageCredentialPolicy  = pcv3result.StageCredentialPolicy
+	StageWrapAuth          = pcv3result.StageWrapAuth
+	StageUnwrap            = pcv3result.StageUnwrap
+	StageReplicaAuth       = pcv3result.StageReplicaAuth
+	StageKDFRuntime        = pcv3result.StageKDFRuntime
+	StageCancellation      = pcv3result.StageCancellation
+	StageMetadata          = pcv3result.StageMetadata
+	StageDescriptor        = pcv3result.StageDescriptor
+	StageRecordBodyRS      = pcv3result.StageRecordBodyRS
+	StageRecordAuth        = pcv3result.StageRecordAuth
+	StageFinalRecord       = pcv3result.StageFinalRecord
+	StageOutputPublication = pcv3result.StageOutputPublication
+	StageD1Bootstrap       = pcv3result.StageD1Bootstrap
+	StageD1Body            = pcv3result.StageD1Body
+	StageInnerVolume       = pcv3result.StageInnerVolume
+	StageRNG               = pcv3result.StageRNG
+	StageOutputWrite       = pcv3result.StageOutputWrite
+	StageDirectorySync     = pcv3result.StageDirectorySync
 )
 
 // Code is the stable coarse code exposed by platform adapters.
@@ -280,116 +268,6 @@ func isForceDamageStage(stage Stage) bool {
 	default:
 		return false
 	}
-}
-
-// String returns the exact conformance outcome name.
-func (outcome Outcome) String() string {
-	switch outcome {
-	case OutcomeUnsupportedRoutingPreKDF:
-		return "unsupported-routing-pre-kdf"
-	case OutcomeInvalidStructurePreKDF:
-		return "invalid-structure-pre-kdf"
-	case OutcomeOperationFailed:
-		return "operation-failed"
-	case OutcomeCredentialsOrDamage:
-		return "credentials-or-damage"
-	case OutcomeAuthenticatedDegraded:
-		return "authenticated-degraded"
-	case OutcomeAmbiguousVolume:
-		return "ambiguous-volume"
-	case OutcomeSuccess:
-		return "success"
-	case OutcomeAuthenticationFailed:
-		return "authentication-failed"
-	case OutcomeForcePartial:
-		return "force-partial"
-	case OutcomeForceUnverified:
-		return "force-unverified"
-	case OutcomeCommittedDurabilityUncertain:
-		return "committed-durability-uncertain"
-	case OutcomePublicationIndeterminate:
-		return "publication-indeterminate"
-	default:
-		return "unknown-outcome"
-	}
-}
-
-// GoString returns a fixed, non-numeric outcome name.
-func (outcome Outcome) GoString() string {
-	return outcome.String()
-}
-
-// Format keeps unknown outcomes from rendering their numeric value.
-func (outcome Outcome) Format(state fmt.State, verb rune) {
-	writeFixedFormat(state, verb, outcome.String())
-}
-
-// String returns the exact conformance stage name.
-func (stage Stage) String() string {
-	switch stage {
-	case StageNone:
-		return "none"
-	case StageRouting:
-		return "routing"
-	case StagePreamble:
-		return "preamble"
-	case StageCapsuleRS:
-		return "capsule-rs"
-	case StageCapsuleStructure:
-		return "capsule-structure"
-	case StageTailGeometry:
-		return "tail-geometry"
-	case StageInputIO:
-		return "input-io"
-	case StageCredentialPolicy:
-		return "credential-policy"
-	case StageWrapAuth:
-		return "wrap-auth"
-	case StageUnwrap:
-		return "unwrap"
-	case StageReplicaAuth:
-		return "replica-auth"
-	case StageKDFRuntime:
-		return "kdf-runtime"
-	case StageCancellation:
-		return "cancellation"
-	case StageMetadata:
-		return "metadata"
-	case StageDescriptor:
-		return "descriptor"
-	case StageRecordBodyRS:
-		return "record-body-rs"
-	case StageRecordAuth:
-		return "record-auth"
-	case StageFinalRecord:
-		return "final-record"
-	case StageOutputPublication:
-		return "output-publication"
-	case StageD1Bootstrap:
-		return "d1-bootstrap"
-	case StageD1Body:
-		return "d1-body"
-	case StageInnerVolume:
-		return "inner-volume"
-	case StageRNG:
-		return "rng"
-	case StageOutputWrite:
-		return "output-write"
-	case StageDirectorySync:
-		return "directory-sync"
-	default:
-		return "unknown-stage"
-	}
-}
-
-// GoString returns a fixed, non-numeric stage name.
-func (stage Stage) GoString() string {
-	return stage.String()
-}
-
-// Format keeps unknown stages from rendering their numeric value.
-func (stage Stage) Format(state fmt.State, verb rune) {
-	writeFixedFormat(state, verb, stage.String())
 }
 
 // String returns the stable adapter code.

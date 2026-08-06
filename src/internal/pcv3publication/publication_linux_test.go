@@ -3,7 +3,7 @@
 package pcv3publication
 
 import (
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3result"
 	"testing"
 )
 
@@ -11,8 +11,8 @@ func TestLinuxNativeNoReplacePublishesDurably(t *testing.T) {
 	testNativeNoReplacePublication(
 		t,
 		StatePublishedDurable,
-		pcv3.OutcomeSuccess,
-		pcv3.StageNone,
+		pcv3result.OutcomeSuccess,
+		pcv3result.StageNone,
 		CodePublishedDurable,
 	)
 }

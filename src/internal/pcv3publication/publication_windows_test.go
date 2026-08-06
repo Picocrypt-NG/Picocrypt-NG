@@ -3,7 +3,7 @@
 package pcv3publication
 
 import (
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3result"
 	"testing"
 )
 
@@ -11,8 +11,8 @@ func TestWindowsNativeNoReplacePublishesWithUncertainDurability(t *testing.T) {
 	testNativeNoReplacePublication(
 		t,
 		StatePublishedDurabilityUncertain,
-		pcv3.OutcomeCommittedDurabilityUncertain,
-		pcv3.StageDirectorySync,
+		pcv3result.OutcomeCommittedDurabilityUncertain,
+		pcv3result.StageDirectorySync,
 		CodeDurabilityUncertain,
 	)
 }

@@ -1,7 +1,7 @@
 package pcv3publication
 
 import (
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3result"
 	"context"
 	"errors"
 	"os"
@@ -13,8 +13,8 @@ import (
 func testNativeNoReplacePublication(
 	t *testing.T,
 	wantState State,
-	wantOutcome pcv3.Outcome,
-	wantStage pcv3.Stage,
+	wantOutcome pcv3result.Outcome,
+	wantStage pcv3result.Stage,
 	wantCode Code,
 ) {
 	t.Helper()
@@ -78,8 +78,8 @@ func testNativeLateCollision(t *testing.T) {
 		t,
 		result,
 		StateNotPublished,
-		pcv3.OutcomeOperationFailed,
-		pcv3.StageOutputPublication,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
 		CodeAtomicFailed,
 	)
 	if err := stage.Cleanup(); err != nil {
@@ -110,8 +110,8 @@ func testNativeSafeReplaceFailsBeforeStage(t *testing.T) {
 		t,
 		result,
 		StateNotPublished,
-		pcv3.OutcomeOperationFailed,
-		pcv3.StageOutputPublication,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
 		CodePolicyUnsupported,
 	)
 	requireFileBytes(t, target, original)

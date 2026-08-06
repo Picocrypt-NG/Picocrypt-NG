@@ -2,7 +2,7 @@ package pcv3publication
 
 import (
 	"Picocrypt-NG/internal/fileops"
-	"Picocrypt-NG/internal/pcv3"
+	pcv3 "Picocrypt-NG/internal/pcv3result"
 	"context"
 	"crypto/rand"
 	"errors"

@@ -1,7 +1,7 @@
 package pcv3publication
 
 import (
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3result"
 	"context"
 	"errors"
 	"os"
@@ -43,19 +43,19 @@ func FuzzPublicationStateMachine(f *testing.F) {
 		recovery := filepath.Join(directory, "recovery.pcv")
 
 		wantState := StateNotPublished
-		wantOutcome := pcv3.OutcomeOperationFailed
-		wantStage := pcv3.StageOutputPublication
+		wantOutcome := pcv3result.OutcomeOperationFailed
+		wantStage := pcv3result.StageOutputPublication
 		wantCode := CodeAtomicFailed
 		switch mode {
 		case 0:
 			wantState = StatePublishedDurable
-			wantOutcome = pcv3.OutcomeSuccess
-			wantStage = pcv3.StageNone
+			wantOutcome = pcv3result.OutcomeSuccess
+			wantStage = pcv3result.StageNone
 			wantCode = CodePublishedDurable
 			if runtime.GOOS == "windows" {
 				wantState = StatePublishedDurabilityUncertain
-				wantOutcome = pcv3.OutcomeCommittedDurabilityUncertain
-				wantStage = pcv3.StageDirectorySync
+				wantOutcome = pcv3result.OutcomeCommittedDurabilityUncertain
+				wantStage = pcv3result.StageDirectorySync
 				wantCode = CodeDurabilityUncertain
 			}
 		case 1:
@@ -70,13 +70,13 @@ func FuzzPublicationStateMachine(f *testing.F) {
 				return errors.New("TEST ONLY error after real commit")
 			}
 			wantState = StatePublishedDurable
-			wantOutcome = pcv3.OutcomeSuccess
-			wantStage = pcv3.StageNone
+			wantOutcome = pcv3result.OutcomeSuccess
+			wantStage = pcv3result.StageNone
 			wantCode = CodePublishedDurable
 			if runtime.GOOS == "windows" {
 				wantState = StatePublishedDurabilityUncertain
-				wantOutcome = pcv3.OutcomeCommittedDurabilityUncertain
-				wantStage = pcv3.StageDirectorySync
+				wantOutcome = pcv3result.OutcomeCommittedDurabilityUncertain
+				wantStage = pcv3result.StageDirectorySync
 				wantCode = CodeDurabilityUncertain
 			}
 		case 3:
@@ -94,7 +94,7 @@ func FuzzPublicationStateMachine(f *testing.F) {
 				return errors.New("TEST ONLY indeterminate commit")
 			}
 			wantState = StatePublicationIndeterminate
-			wantOutcome = pcv3.OutcomePublicationIndeterminate
+			wantOutcome = pcv3result.OutcomePublicationIndeterminate
 			wantCode = CodePublicationIndeterminate
 		case 4:
 			operations.atomicPublish = func(parent *os.File, stageName, targetName string, policy Policy) error {
@@ -114,14 +114,14 @@ func FuzzPublicationStateMachine(f *testing.F) {
 				return errors.ErrUnsupported
 			}
 			wantState = StatePublishedDurabilityUncertain
-			wantOutcome = pcv3.OutcomeCommittedDurabilityUncertain
-			wantStage = pcv3.StageDirectorySync
+			wantOutcome = pcv3result.OutcomeCommittedDurabilityUncertain
+			wantStage = pcv3result.StageDirectorySync
 			wantCode = CodeDurabilityUncertain
 		case 7:
 			cancelled, cancel := context.WithCancel(context.Background())
 			cancel()
 			ctx = cancelled
-			wantStage = pcv3.StageCancellation
+			wantStage = pcv3result.StageCancellation
 			wantCode = CodeCancelled
 		}
 
