@@ -80,7 +80,7 @@ func TestDetectPrefix(t *testing.T) {
 	}
 }
 
-func TestExplicitD1Route(t *testing.T) {
+func TestD1ExplicitRoute(t *testing.T) {
 	composerCalls := 0
 	composer := func(context.Context) (pcv3publication.Result, error) {
 		composerCalls++
