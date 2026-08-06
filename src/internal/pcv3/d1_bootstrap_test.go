@@ -98,6 +98,13 @@ func TestD1BootstrapRejectsDecryptBeforeWrapTag(t *testing.T) {
 }
 
 func TestD1ForceBootstrapBinderRetainsCompleteSecretAndExactValidity(t *testing.T) {
+	if err := (*d1BootstrapBinding)(nil).withOuterKeys(
+		context.Background(),
+		func(*pcv3credential.BorrowedD1OuterKeys) error { return nil },
+	); err == nil {
+		t.Fatal("nil Force bootstrap view accepted an outer-key borrow")
+	}
+
 	const bodyLength = uint64(4096)
 	outerKey := bytes.Repeat([]byte{0x6d}, 32)
 	tests := []struct {
@@ -162,8 +169,11 @@ func TestD1ForceBootstrapBinderRetainsCompleteSecretAndExactValidity(t *testing.
 				return realUnwrap(destination, source, xKey, nonce, serpentKey, iv)
 			}
 			var retained *d1BootstrapBinding
-			var retainedSecret *d1OuterSecretOwner
-			var retainedKeys *pcv3credential.D1OuterKeyOwner
+			var retainedBorrowed *pcv3credential.BorrowedD1OuterKeys
+			var retainedWithOuterKeys func(
+				context.Context,
+				func(*pcv3credential.BorrowedD1OuterKeys) error,
+			) error
 			callbackCalls := 0
 			err = bindD1BootstrapWithAccess(
 				context.Background(),
@@ -173,10 +183,10 @@ func TestD1ForceBootstrapBinderRetainsCompleteSecretAndExactValidity(t *testing.
 				func(binding *d1BootstrapBinding) error {
 					callbackCalls++
 					retained = binding
-					if binding == nil || binding.secret == nil || binding.secret.keys == nil ||
+					if binding == nil ||
 						binding.wrapVerified != test.wantWrapVerified ||
 						binding.replicaVerified != test.wantReplicaVerified ||
-						binding.secret.bodyLength != bodyLength {
+						binding.bodyLength != bodyLength {
 						t.Fatalf(
 							"Force binding = %#v; want complete secret and validity %t/%t",
 							binding,
@@ -184,12 +194,12 @@ func TestD1ForceBootstrapBinderRetainsCompleteSecretAndExactValidity(t *testing.
 							test.wantReplicaVerified,
 						)
 					}
-					retainedSecret = binding.secret
-					retainedKeys = binding.secret.keys
+					retainedWithOuterKeys = binding.withOuterKeys
 					var gotOuterKey [32]byte
-					if err := binding.secret.withOuterKeys(
+					if err := binding.withOuterKeys(
 						context.Background(),
 						func(keys *pcv3credential.BorrowedD1OuterKeys) error {
+							retainedBorrowed = keys
 							return keys.CopyOuterKey(gotOuterKey[:])
 						},
 					); err != nil || !bytes.Equal(gotOuterKey[:], outerKey) {
@@ -204,8 +214,8 @@ func TestD1ForceBootstrapBinderRetainsCompleteSecretAndExactValidity(t *testing.
 			assertD1ForceBootstrapBindingClosed(
 				t,
 				retained,
-				retainedSecret,
-				retainedKeys,
+				retainedBorrowed,
+				retainedWithOuterKeys,
 				unwrapAlias,
 			)
 
@@ -228,6 +238,17 @@ func TestD1ForceBootstrapBinderRetainsCompleteSecretAndExactValidity(t *testing.
 					test.wantStrictOutcome == OutcomeSuccess,
 				)
 			}
+			if strict.authenticated != nil {
+				var strictOuterKey [32]byte
+				if err := strict.authenticated.secret.withOuterKeys(
+					context.Background(),
+					func(keys *pcv3credential.BorrowedD1OuterKeys) error {
+						return keys.CopyOuterKey(strictOuterKey[:])
+					},
+				); err != nil || !bytes.Equal(strictOuterKey[:], outerKey) {
+					t.Fatal("strict success did not take ownership of the evaluated OuterSecret")
+				}
+			}
 		})
 	}
 }
@@ -246,6 +267,14 @@ func TestD1ForceBootstrapBinderClosesEveryCallbackExit(t *testing.T) {
 			exit: func(cancel context.CancelFunc) error {
 				cancel()
 				return context.Canceled
+			},
+			wantErr: context.Canceled,
+		},
+		{
+			name: "cancellation after nil callback result",
+			exit: func(cancel context.CancelFunc) error {
+				cancel()
+				return nil
 			},
 			wantErr: context.Canceled,
 		},
@@ -274,8 +303,11 @@ func TestD1ForceBootstrapBinderClosesEveryCallbackExit(t *testing.T) {
 				return realUnwrap(destination, source, xKey, nonce, serpentKey, iv)
 			}
 			var retained *d1BootstrapBinding
-			var retainedSecret *d1OuterSecretOwner
-			var retainedKeys *pcv3credential.D1OuterKeyOwner
+			var retainedBorrowed *pcv3credential.BorrowedD1OuterKeys
+			var retainedWithOuterKeys func(
+				context.Context,
+				func(*pcv3credential.BorrowedD1OuterKeys) error,
+			) error
 			err = bindD1BootstrapWithAccess(
 				ctx,
 				candidate,
@@ -283,8 +315,16 @@ func TestD1ForceBootstrapBinderClosesEveryCallbackExit(t *testing.T) {
 				seams,
 				func(binding *d1BootstrapBinding) error {
 					retained = binding
-					retainedSecret = binding.secret
-					retainedKeys = binding.secret.keys
+					retainedWithOuterKeys = binding.withOuterKeys
+					if borrowErr := binding.withOuterKeys(
+						context.Background(),
+						func(keys *pcv3credential.BorrowedD1OuterKeys) error {
+							retainedBorrowed = keys
+							return nil
+						},
+					); borrowErr != nil {
+						return borrowErr
+					}
 					return test.exit(cancel)
 				},
 			)
@@ -294,12 +334,76 @@ func TestD1ForceBootstrapBinderClosesEveryCallbackExit(t *testing.T) {
 			assertD1ForceBootstrapBindingClosed(
 				t,
 				retained,
-				retainedSecret,
-				retainedKeys,
+				retainedBorrowed,
+				retainedWithOuterKeys,
 				unwrapAlias,
 			)
 		})
 	}
+}
+
+func TestD1ForceBootstrapBinderClosesPanicExit(t *testing.T) {
+	raw, access := newD1BootstrapTestFixture(
+		t,
+		D1BootstrapFront,
+		0x4a,
+		bytes.Repeat([]byte{0x9f}, 32),
+		12_288,
+	)
+	candidate, err := parseD1Bootstrap(raw, D1BootstrapFront)
+	if err != nil {
+		t.Fatalf("parse panic lifecycle bootstrap fixture: %v", err)
+	}
+	seams := defaultD1BootstrapAuthSeams()
+	realUnwrap := seams.unwrapParanoid
+	var unwrapAlias []byte
+	seams.unwrapParanoid = func(destination, source, xKey, nonce, serpentKey, iv []byte) error {
+		unwrapAlias = destination
+		return realUnwrap(destination, source, xKey, nonce, serpentKey, iv)
+	}
+	panicValue := errors.New("TEST ONLY D1 Force binder panic")
+	var recovered any
+	var retained *d1BootstrapBinding
+	var retainedBorrowed *pcv3credential.BorrowedD1OuterKeys
+	var retainedWithOuterKeys func(
+		context.Context,
+		func(*pcv3credential.BorrowedD1OuterKeys) error,
+	) error
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+		_ = bindD1BootstrapWithAccess(
+			context.Background(),
+			candidate,
+			access,
+			seams,
+			func(binding *d1BootstrapBinding) error {
+				retained = binding
+				retainedWithOuterKeys = binding.withOuterKeys
+				if borrowErr := binding.withOuterKeys(
+					context.Background(),
+					func(keys *pcv3credential.BorrowedD1OuterKeys) error {
+						retainedBorrowed = keys
+						return nil
+					},
+				); borrowErr != nil {
+					t.Fatalf("borrow before panic: %v", borrowErr)
+				}
+				panic(panicValue)
+			},
+		)
+	}()
+	if recovered != panicValue {
+		t.Fatalf("binder panic = %v; want exact callback panic", recovered)
+	}
+	assertD1ForceBootstrapBindingClosed(
+		t,
+		retained,
+		retainedBorrowed,
+		retainedWithOuterKeys,
+		unwrapAlias,
+	)
 }
 
 func TestD1BootstrapBindsPhysicalRole(t *testing.T) {
@@ -717,25 +821,37 @@ func authenticateD1BootstrapTestFixture(
 func assertD1ForceBootstrapBindingClosed(
 	t *testing.T,
 	binding *d1BootstrapBinding,
-	secret *d1OuterSecretOwner,
-	keys *pcv3credential.D1OuterKeyOwner,
+	borrowed *pcv3credential.BorrowedD1OuterKeys,
+	withOuterKeys func(
+		context.Context,
+		func(*pcv3credential.BorrowedD1OuterKeys) error,
+	) error,
 	unwrapAlias []byte,
 ) {
 	t.Helper()
-	if binding == nil || secret == nil || keys == nil {
-		t.Fatal("Force bootstrap callback did not expose its owned binding")
+	if binding == nil || borrowed == nil || withOuterKeys == nil {
+		t.Fatal("Force bootstrap callback did not expose its borrowed view")
 	}
-	if binding.secret != nil || binding.wrapVerified || binding.replicaVerified {
+	if binding.bodyLength != 0 || binding.wrapVerified || binding.replicaVerified {
 		t.Fatalf("expired Force bootstrap binding retained state: %#v", binding)
 	}
-	if secret.bodyLength != 0 || secret.keys != nil {
-		t.Fatalf("expired Force bootstrap secret retained state: %#v", secret)
+	var copied [32]byte
+	if err := borrowed.CopyOuterKey(copied[:]); !ownerErrorHasCode(err, pcv3credential.OwnerErrorBorrowExpired) {
+		t.Fatalf("retained Force bootstrap borrow error = %T %v", err, err)
 	}
-	if err := keys.WithKeys(
+	callbackCalls := 0
+	if err := withOuterKeys(
 		context.Background(),
-		func(*pcv3credential.BorrowedD1OuterKeys) error { return nil },
-	); !ownerErrorHasCode(err, pcv3credential.OwnerErrorClosed) {
-		t.Fatalf("expired Force bootstrap key owner error = %T %v", err, err)
+		func(*pcv3credential.BorrowedD1OuterKeys) error {
+			callbackCalls++
+			return nil
+		},
+	); err == nil || callbackCalls != 0 {
+		t.Fatalf(
+			"retained Force bootstrap method = error %v callbacks %d; want expired without callback",
+			err,
+			callbackCalls,
+		)
 	}
 	if len(unwrapAlias) != d1OuterSecretLength || !allZero(unwrapAlias) {
 		t.Fatal("Force bootstrap binder retained unwrapped OuterSecret scratch")
