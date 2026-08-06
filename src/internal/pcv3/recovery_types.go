@@ -31,6 +31,17 @@ const (
 	ForceProvenanceUnverified
 )
 
+// D1BootstrapProvenance records the exact physical bootstrap evidence used to
+// select one D1 OuterSecret. It is semantic provenance, never authorization.
+type D1BootstrapProvenance uint8
+
+const (
+	D1BootstrapProvenanceNone D1BootstrapProvenance = iota
+	D1BootstrapProvenanceFront
+	D1BootstrapProvenanceTail
+	D1BootstrapProvenanceMatching
+)
+
 // RecoveryRangeState identifies the authentication state of one canonical
 // plaintext-record interval.
 type RecoveryRangeState uint8
@@ -79,12 +90,98 @@ func (recoveryRange RecoveryRange) Format(state fmt.State, verb rune) {
 // RecoveryResult is the immutable semantic recovery state. It contains no raw
 // errors, identities, comments, keys, credentials, or recovered bytes.
 type RecoveryResult struct {
-	outcome         Outcome
-	provenance      ForceProvenance
-	stage           Stage
-	plaintextLength uint64
-	ranges          []RecoveryRange
-	final           RecoveryFinalState
+	outcome               Outcome
+	provenance            ForceProvenance
+	stage                 Stage
+	d1BootstrapProvenance D1BootstrapProvenance
+	detailStage           Stage
+	plaintextLength       uint64
+	ranges                []RecoveryRange
+	final                 RecoveryFinalState
+}
+
+func newD1RecoveryResult(
+	outcome Outcome,
+	provenance ForceProvenance,
+	stage Stage,
+	d1Provenance D1BootstrapProvenance,
+	detailStage Stage,
+	plaintextLength uint64,
+	ranges []RecoveryRange,
+	final RecoveryFinalState,
+) (*RecoveryResult, error) {
+	if _, ok := d1RecoveryCodeFor(outcome, stage, d1Provenance, detailStage); !ok ||
+		!validRecoveryEvidence(outcome, provenance, plaintextLength, ranges, final) {
+		return nil, errInvalidRecoveryResult
+	}
+	result := &RecoveryResult{
+		outcome:               outcome,
+		provenance:            provenance,
+		stage:                 stage,
+		d1BootstrapProvenance: d1Provenance,
+		detailStage:           detailStage,
+		plaintextLength:       plaintextLength,
+		final:                 final,
+	}
+	if ranges != nil {
+		result.ranges = append([]RecoveryRange(nil), ranges...)
+	}
+	return result, nil
+}
+
+func d1RecoveryCodeFor(
+	outcome Outcome,
+	stage Stage,
+	provenance D1BootstrapProvenance,
+	detailStage Stage,
+) (Code, bool) {
+	switch stage {
+	case StageNone:
+		return CodeSuccess, outcome == OutcomeSuccess &&
+			provenance == D1BootstrapProvenanceMatching && detailStage == StageNone
+	case StageD1Bootstrap:
+		if detailStage != StageNone {
+			return 0, false
+		}
+		switch outcome {
+		case OutcomeAuthenticatedDegraded:
+			return CodeAuthenticatedDegraded,
+				provenance == D1BootstrapProvenanceFront || provenance == D1BootstrapProvenanceTail
+		case OutcomeCredentialsOrDamage:
+			return CodeCredentialsOrDamage, provenance == D1BootstrapProvenanceNone
+		case OutcomeAmbiguousVolume:
+			return CodeAmbiguousVolume, provenance == D1BootstrapProvenanceNone
+		default:
+			return 0, false
+		}
+	case StageD1Body:
+		if detailStage != StageNone {
+			return 0, false
+		}
+		switch outcome {
+		case OutcomeAuthenticatedDegraded:
+			return CodeAuthenticatedDegraded, isSelectedD1BootstrapProvenance(provenance)
+		case OutcomeAuthenticationFailed:
+			return CodeAuthenticationFailed, isSelectedD1BootstrapProvenance(provenance)
+		case OutcomeAmbiguousVolume:
+			return CodeAmbiguousVolume, provenance == D1BootstrapProvenanceNone
+		default:
+			return 0, false
+		}
+	case StageInnerVolume:
+		if !isSelectedD1BootstrapProvenance(provenance) || detailStage == StageNone {
+			return 0, false
+		}
+		return codeFor(outcome, detailStage)
+	default:
+		return 0, false
+	}
+}
+
+func isSelectedD1BootstrapProvenance(provenance D1BootstrapProvenance) bool {
+	return provenance == D1BootstrapProvenanceFront ||
+		provenance == D1BootstrapProvenanceTail ||
+		provenance == D1BootstrapProvenanceMatching
 }
 
 func newRecoveryResult(
@@ -223,9 +320,33 @@ func (result *RecoveryResult) Stage() Stage {
 	return result.stage
 }
 
+// D1BootstrapProvenance returns the selected physical D1 bootstrap evidence.
+func (result *RecoveryResult) D1BootstrapProvenance() D1BootstrapProvenance {
+	if result == nil {
+		return D1BootstrapProvenanceNone
+	}
+	return result.d1BootstrapProvenance
+}
+
+// DetailStage returns the closed inner normal stage for StageInnerVolume.
+func (result *RecoveryResult) DetailStage() Stage {
+	if result == nil {
+		return StageNone
+	}
+	return result.detailStage
+}
+
 func (result *RecoveryResult) Code() Code {
 	if result == nil {
 		return 0
+	}
+	if code, ok := d1RecoveryCodeFor(
+		result.outcome,
+		result.stage,
+		result.d1BootstrapProvenance,
+		result.detailStage,
+	); ok {
+		return code
 	}
 	code, _ := codeFor(result.outcome, result.stage)
 	return code
@@ -293,6 +414,8 @@ func (result *RecoveryResult) Close() {
 	result.outcome = 0
 	result.provenance = 0
 	result.stage = 0
+	result.d1BootstrapProvenance = 0
+	result.detailStage = 0
 	result.plaintextLength = 0
 	result.final = 0
 }
