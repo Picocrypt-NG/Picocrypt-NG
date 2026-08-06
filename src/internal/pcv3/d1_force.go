@@ -898,6 +898,9 @@ func openD1ForceRecord(
 	if !errors.Is(authErr, errD1OuterAuthentication) {
 		return false, authErr
 	}
+	if request.mode == RecoveryModeForce {
+		return false, newD1OuterFailure(StageD1Body, errD1OuterAuthentication)
+	}
 	if err := decryptD1ForceRecordRaw(
 		request,
 		candidate,

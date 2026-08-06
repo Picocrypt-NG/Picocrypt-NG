@@ -471,7 +471,7 @@ func recoverD1Selection(
 		if !normalD1Geometry(sourceSize, selection.analysis.candidate.bodyLength) ||
 			!selection.analysis.outerFullyAuthenticated {
 			return newD1RecoveryResult(
-				OutcomeCredentialsOrDamage,
+				OutcomeAuthenticationFailed,
 				ForceProvenanceNone,
 				StageD1Body,
 				selection.provenance,
@@ -541,6 +541,61 @@ func canonicalD1Geometry(sourceSize int64, bodyLength uint64) bool {
 	return ok && uint64(sourceSize) == size //nolint:gosec // The negative size guard proves this conversion.
 }
 
+func resolveD1InnerRecoveryAnalyses(
+	structure RecoveryStructure,
+	analyses []forceCandidateAnalysis,
+) (forceResolution, []forceCandidateAnalysis, recoveryRequest, error) {
+	var empty forceResolution
+	if structure.CandidateCount() < 1 || structure.CandidateCount() > 2 ||
+		len(analyses) != structure.CandidateCount() {
+		return empty, nil, recoveryRequest{}, errInvalidForceAnalysis
+	}
+	normalRequest, err := newRecoveryRequest(RecoveryModeNormalV3)
+	if err != nil {
+		return empty, nil, recoveryRequest{}, err
+	}
+	forceRequest, err := newRecoveryRequest(RecoveryModeForce)
+	if err != nil {
+		return empty, nil, recoveryRequest{}, err
+	}
+
+	ordinary := make([]forceCandidateAnalysis, 0, len(analyses))
+	for _, analysis := range analyses {
+		if !analysis.wrapVerified || !analysis.replicaValid {
+			continue
+		}
+		candidate := analysis
+		if candidate.candidate.Role() == CapsuleRoleBackup {
+			candidate.damageStage = earlierRecoveryDamageStage(
+				candidate.damageStage,
+				structure.primaryDamage,
+			)
+		}
+		ordinary = append(ordinary, candidate)
+	}
+	ordinaryResolution, err := resolveNormalRecoveryCandidates(ordinary)
+	if err != nil {
+		return empty, nil, recoveryRequest{}, err
+	}
+	if ordinaryResolution.selected >= 0 ||
+		(ordinaryResolution.result.Outcome() != OutcomeAuthenticationFailed &&
+			ordinaryResolution.result.Outcome() != OutcomeCredentialsOrDamage) {
+		return ordinaryResolution, ordinary, normalRequest, nil
+	}
+
+	forceResolution, err := resolveForceCandidates(forceRequest, analyses)
+	if err != nil {
+		ordinaryResolution.result.Close()
+		return empty, nil, recoveryRequest{}, err
+	}
+	if forceResolution.selected < 0 && forceResolution.result.Outcome() != OutcomeAmbiguousVolume {
+		forceResolution.result.Close()
+		return ordinaryResolution, ordinary, normalRequest, nil
+	}
+	ordinaryResolution.result.Close()
+	return forceResolution, analyses, forceRequest, nil
+}
+
 func recoverD1Inner(
 	ctx context.Context,
 	source io.ReaderAt,
@@ -568,6 +623,17 @@ func recoverD1Inner(
 	defer inner.Close()
 	structure, err := InspectRecovery(inner, inner.Size())
 	if err != nil {
+		if d1InnerOuterAuthenticationUnavailable(request, err) {
+			return d1InnerUnavailableResult(
+				ctx,
+				source,
+				request,
+				selection,
+				seams,
+				err,
+				output,
+			)
+		}
 		innerResult, innerErr := recoveryResultForError(err)
 		if innerResult == nil {
 			return d1OperationResult(ctx, innerErr)
@@ -587,6 +653,7 @@ func recoverD1Inner(
 			selection,
 			seams,
 			mapped,
+			nil,
 			output,
 		)
 	}
@@ -594,11 +661,7 @@ func recoverD1Inner(
 	if !ok {
 		return nil, errInvalidD1Force
 	}
-	innerMode := RecoveryModeForce
-	if request.mode == RecoveryModeNormalV3 {
-		innerMode = RecoveryModeNormalV3
-	}
-	innerRequest, err := newRecoveryRequest(innerMode)
+	innerRequest, err := newRecoveryRequest(RecoveryModeNormalV3)
 	if err != nil {
 		return nil, err
 	}
@@ -611,20 +674,59 @@ func recoverD1Inner(
 		tuples,
 		admitter,
 		func(session *pcv3credential.RecoverySession) error {
-			innerSelection, selectionErr = selectRecoveryWithSession(
+			if request.mode == RecoveryModeNormalV3 {
+				innerSelection, selectionErr = selectRecoveryWithSession(
+					ctx,
+					inner,
+					structure,
+					tupleIndexes,
+					session,
+					innerRequest,
+				)
+				return selectionErr
+			}
+			forceRequest, requestErr := newRecoveryRequest(RecoveryModeForce)
+			if requestErr != nil {
+				selectionErr = requestErr
+				return selectionErr
+			}
+			analyses, analysisErr := analyzeRecoveryCandidatesWithSession(
 				ctx,
 				inner,
 				structure,
 				tupleIndexes,
 				session,
-				innerRequest,
+				forceRequest,
 			)
+			if analysisErr != nil {
+				selectionErr = analysisErr
+				return selectionErr
+			}
+			resolution, resolved, resolvedRequest, resolveErr :=
+				resolveD1InnerRecoveryAnalyses(structure, analyses)
+			if resolveErr != nil {
+				selectionErr = resolveErr
+				return selectionErr
+			}
+			innerRequest = resolvedRequest
+			innerSelection, selectionErr = selectRecoveryAnalysis(session, resolved, resolution)
 			return selectionErr
 		},
 	)
 	if selectionErr != nil {
 		if owner != nil {
 			owner.Close()
+		}
+		if d1InnerOuterAuthenticationUnavailable(request, selectionErr) {
+			return d1InnerUnavailableResult(
+				ctx,
+				source,
+				request,
+				selection,
+				seams,
+				selectionErr,
+				output,
+			)
 		}
 		innerResult, innerErr := recoveryResultForError(selectionErr)
 		if innerResult == nil {
@@ -645,6 +747,7 @@ func recoverD1Inner(
 			selection,
 			seams,
 			mapped,
+			nil,
 			output,
 		)
 	}
@@ -681,6 +784,7 @@ func recoverD1Inner(
 			selection,
 			seams,
 			mapped,
+			nil,
 			output,
 		)
 	}
@@ -733,7 +837,8 @@ func d1InnerUnavailableResult(
 	cause error,
 	output D1RecoveryOutput,
 ) (*RecoveryResult, error) {
-	if stage, ok := d1OperationalStage(ctx, cause); ok {
+	if stage, ok := d1OperationalStage(ctx, cause); ok &&
+		!d1InnerOuterAuthenticationUnavailable(request, cause) {
 		return recoveryOperationFailure(stage), &recoveryEngineError{stage: stage}
 	}
 	outcome := OutcomeAuthenticationFailed
@@ -760,8 +865,18 @@ func d1InnerUnavailableResult(
 		selection,
 		seams,
 		result,
+		cause,
 		output,
 	)
+}
+
+func d1InnerOuterAuthenticationUnavailable(request d1RecoveryRequest, err error) bool {
+	if err == nil || (request.mode != RecoveryModeForce && request.mode != RecoveryModeForceUnverified) {
+		return false
+	}
+	var failure *d1OuterFailure
+	return errors.As(err, &failure) && failure.Stage() == StageD1Body &&
+		errors.Is(err, errD1OuterAuthentication)
 }
 
 func maybeEmitD1RawOuter(
@@ -771,11 +886,13 @@ func maybeEmitD1RawOuter(
 	selection d1ForceSelection,
 	seams d1ForceSeams,
 	fallback *RecoveryResult,
+	cause error,
 	output D1RecoveryOutput,
 ) (*RecoveryResult, error) {
 	if fallback == nil ||
 		(request.mode != RecoveryModeForce && request.mode != RecoveryModeForceUnverified) ||
-		!d1RawFallbackOutcome(fallback.outcome) {
+		!d1RawFallbackOutcome(fallback.outcome) ||
+		(request.mode == RecoveryModeForce && !d1InnerOuterAuthenticationUnavailable(request, cause)) {
 		return fallback, nil
 	}
 	raw, err := analyzeD1RawOuter(ctx, source, request, selection, seams)

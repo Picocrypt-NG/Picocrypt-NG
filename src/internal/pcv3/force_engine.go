@@ -314,15 +314,48 @@ func selectRecoveryWithSession(
 	session *pcv3credential.RecoverySession,
 	request recoveryRequest,
 ) (recoverySelection, error) {
-	var selection recoverySelection
+	analyses, err := analyzeRecoveryCandidatesWithSession(
+		ctx,
+		source,
+		structure,
+		tupleIndexes,
+		session,
+		request,
+	)
+	if err != nil {
+		return recoverySelection{}, err
+	}
+	var resolution forceResolution
+	if request.Mode() == RecoveryModeNormalV3 {
+		resolution, err = resolveNormalRecoveryCandidates(analyses)
+	} else {
+		resolution, err = resolveForceCandidates(request, analyses)
+	}
+	if err != nil {
+		return recoverySelection{}, err
+	}
+	return selectRecoveryAnalysis(session, analyses, resolution)
+}
+
+func analyzeRecoveryCandidatesWithSession(
+	ctx context.Context,
+	source io.ReaderAt,
+	structure RecoveryStructure,
+	tupleIndexes [2]int,
+	session *pcv3credential.RecoverySession,
+	request recoveryRequest,
+) ([]forceCandidateAnalysis, error) {
 	if ctx == nil || source == nil || session == nil || !request.valid() ||
 		structure.CandidateCount() < 1 || structure.CandidateCount() > 2 {
-		return selection, errInvalidForceAnalysis
+		return nil, errInvalidForceAnalysis
 	}
 	analyses := make([]forceCandidateAnalysis, 0, structure.CandidateCount())
 	for index := range structure.CandidateCount() {
-		candidate, _ := structure.CandidateAt(index)
-		geometry, _ := structure.GeometryAt(index)
+		candidate, candidateOK := structure.CandidateAt(index)
+		geometry, geometryOK := structure.GeometryAt(index)
+		if !candidateOK || !geometryOK {
+			return nil, errInvalidForceAnalysis
+		}
 		analysis, include, err := analyzeRecoveryCandidate(
 			ctx,
 			source,
@@ -334,27 +367,39 @@ func selectRecoveryWithSession(
 			request,
 		)
 		if err != nil {
-			return recoverySelection{}, err
+			return nil, err
 		}
 		if include {
 			analyses = append(analyses, analysis)
 		}
 	}
-	var err error
-	if request.Mode() == RecoveryModeNormalV3 {
-		selection.resolution, err = resolveNormalRecoveryCandidates(analyses)
-	} else {
-		selection.resolution, err = resolveForceCandidates(request, analyses)
+	return analyses, nil
+}
+
+func selectRecoveryAnalysis(
+	session *pcv3credential.RecoverySession,
+	analyses []forceCandidateAnalysis,
+	resolution forceResolution,
+) (recoverySelection, error) {
+	selection := recoverySelection{resolution: resolution}
+	if session == nil || resolution.result == nil || resolution.selected < -1 ||
+		resolution.selected >= len(analyses) {
+		if resolution.result != nil {
+			resolution.result.Close()
+		}
+		return recoverySelection{}, errInvalidForceAnalysis
 	}
-	if err != nil || selection.resolution.selected < 0 {
-		return selection, err
+	if resolution.selected < 0 {
+		return selection, nil
 	}
-	selected := analyses[selection.resolution.selected]
+	selected := analyses[resolution.selected]
 	identity, ok := selected.identity.(*sessionForceIdentity)
 	if !ok || identity == nil || identity.candidate == nil {
+		resolution.result.Close()
 		return recoverySelection{}, errInvalidForceAnalysis
 	}
 	if err := session.Select(identity.candidate); err != nil {
+		resolution.result.Close()
 		return recoverySelection{}, err
 	}
 	selection.candidate = selected.candidate
