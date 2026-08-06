@@ -1684,6 +1684,273 @@ func testD1ForceConsentRawOuterSemantic(t *testing.T) {
 }
 
 func TestD1ForceNestedOutcomePreservesOuterInnerAndRangeTruth(t *testing.T) {
+	t.Run("inner ordinary result precedes Force without rebinding candidates", func(t *testing.T) {
+		fixture := loadNormalFixtureManifest(t).FixturesByID()["normal-standard-password-only-small"]
+		volume := readNormalFixtureArtifact(t, fixture.Volume)
+		structure, err := InspectRecovery(bytes.NewReader(volume), int64(len(volume)))
+		if err != nil {
+			t.Fatalf("inspect TEST ONLY ordinary-first recovery fixture: %v", err)
+		}
+		analyses := make([]forceCandidateAnalysis, 0, structure.CandidateCount())
+		for index := range structure.CandidateCount() {
+			candidate, candidateOK := structure.CandidateAt(index)
+			geometry, geometryOK := structure.GeometryAt(index)
+			if !candidateOK || !geometryOK {
+				t.Fatal("TEST ONLY ordinary-first fixture omitted a bounded candidate")
+			}
+			ranges := make([]RecoveryRange, 0, candidate.RecordCount())
+			for recordIndex := range candidate.RecordCount() {
+				start := recordIndex * recordPlaintextMax
+				end := min(start+recordPlaintextMax, candidate.PlaintextLength())
+				ranges = append(ranges, RecoveryRange{
+					recordIndex: recordIndex,
+					start:       start,
+					end:         end,
+					state:       RecoveryRangeVerified,
+				})
+			}
+			analyses = append(analyses, forceCandidateAnalysis{
+				identity:      &forceTestIdentity{value: 0x71},
+				candidate:     candidate,
+				geometry:      geometry,
+				wrapVerified:  true,
+				replicaValid:  true,
+				metadataValid: true,
+				ranges:        ranges,
+				final:         RecoveryFinalVerified,
+			})
+		}
+
+		resolution, resolved, request, err := resolveD1InnerRecoveryAnalyses(structure, analyses)
+		if err != nil {
+			t.Fatalf("resolve healthy ordinary-first evidence: %v", err)
+		}
+		if resolution.result == nil {
+			t.Fatal("healthy ordinary-first evidence returned no semantic result")
+		}
+		if resolution.result.Outcome() != OutcomeSuccess ||
+			resolution.result.ForceProvenance() != ForceProvenanceNone ||
+			request.Mode() != RecoveryModeNormalV3 || resolution.selected < 0 || len(resolved) == 0 {
+			resolution.result.Close()
+			t.Fatalf(
+				"healthy ordinary-first evidence = %v/%v mode %v selected %d; want success/none/normal",
+				resolution.result.Outcome(), resolution.result.ForceProvenance(), request.Mode(), resolution.selected,
+			)
+		}
+		resolution.result.Close()
+
+		damaged := append([]forceCandidateAnalysis(nil), analyses...)
+		for index := range damaged {
+			damaged[index].ranges = append([]RecoveryRange(nil), analyses[index].ranges...)
+			damaged[index].ranges[0].state = RecoveryRangeMissing
+			damaged[index].damageStage = StageRecordAuth
+			damaged[index].payloadDamageStage = StageRecordAuth
+		}
+		resolution, resolved, request, err = resolveD1InnerRecoveryAnalyses(structure, damaged)
+		if err != nil {
+			t.Fatalf("resolve anchored ordinary failure: %v", err)
+		}
+		if resolution.result == nil {
+			t.Fatal("anchored ordinary failure returned no semantic result")
+		}
+		if resolution.result.Outcome() != OutcomeForcePartial ||
+			resolution.result.ForceProvenance() != ForceProvenancePartial ||
+			request.Mode() != RecoveryModeForce || resolution.selected < 0 || len(resolved) == 0 {
+			resolution.result.Close()
+			t.Fatalf(
+				"anchored ordinary failure = %v/%v mode %v selected %d; want Force-partial/partial/Force",
+				resolution.result.Outcome(), resolution.result.ForceProvenance(), request.Mode(), resolution.selected,
+			)
+		}
+		resolution.result.Close()
+
+		unanchored := append([]forceCandidateAnalysis(nil), damaged...)
+		for index := range unanchored {
+			unanchored[index].ranges = append([]RecoveryRange(nil), damaged[index].ranges...)
+			for rangeIndex := range unanchored[index].ranges {
+				unanchored[index].ranges[rangeIndex].state = RecoveryRangeMissing
+			}
+			unanchored[index].final = RecoveryFinalMissing
+		}
+		resolution, resolved, request, err = resolveD1InnerRecoveryAnalyses(structure, unanchored)
+		if err != nil {
+			t.Fatalf("resolve unanchored ordinary failure: %v", err)
+		}
+		if resolution.result == nil {
+			t.Fatal("unanchored ordinary failure returned no semantic result")
+		}
+		if resolution.result.Outcome() != OutcomeAuthenticationFailed ||
+			resolution.result.ForceProvenance() != ForceProvenanceNone ||
+			request.Mode() != RecoveryModeNormalV3 || resolution.selected != -1 || len(resolved) == 0 {
+			resolution.result.Close()
+			t.Fatalf(
+				"unanchored ordinary failure = %v/%v mode %v selected %d; want authentication-failed/none/normal",
+				resolution.result.Outcome(), resolution.result.ForceProvenance(), request.Mode(), resolution.selected,
+			)
+		}
+		resolution.result.Close()
+	})
+
+	t.Run("late outer authentication damage falls back without operational laundering", func(t *testing.T) {
+		inner := bytes.Repeat([]byte("TEST ONLY late D1 authentication boundary; "), 30_000)
+		front, tail, body := newMatchingD1ForceTestBodyCandidates(
+			t,
+			0xd5,
+			inner,
+			d1ForceTestBootstrapEvidence{wrapVerified: true, replicaVerified: true},
+		)
+		defer front.Close()
+		defer tail.Close()
+		geometry, err := parseD1OuterGeometry(uint64(len(body)))
+		if err != nil || geometry.recordCount < 2 {
+			t.Fatalf("parse late-damage outer geometry = %#v, %v; want at least two records", geometry, err)
+		}
+		damagedRecord, err := expectedD1OuterRecord(geometry, 1)
+		if err != nil || damagedRecord.ciphertextLength == 0 {
+			t.Fatalf("select late damaged record = %#v, %v", damagedRecord, err)
+		}
+		body[damagedRecord.offset+uint64(damagedRecord.ciphertextLength)] ^= 0x01
+		physical := d1ForceCanonicalPhysicalFile(body)
+		window, err := deriveD1ForceBodyWindow(int64(len(physical)), front.bodyLength, front.role)
+		if err != nil {
+			t.Fatalf("derive late-damage body window: %v", err)
+		}
+		analysis, err := analyzeD1ForceCandidate(
+			context.Background(), bytes.NewReader(physical), window, front, defaultD1ForceSeams(),
+		)
+		if err != nil || !analysis.outerAnchored || analysis.outerFullyAuthenticated {
+			t.Fatalf("analyze late-damage body = %#v, %v; want anchored partial body", analysis, err)
+		}
+		selection := d1ForceSelection{
+			analysis:         analysis,
+			provenance:       D1BootstrapProvenanceMatching,
+			bootstrapHealthy: true,
+			outerHealthy:     false,
+		}
+		request, err := newD1RecoveryRequest(RecoveryModeForce)
+		if err != nil {
+			t.Fatalf("create late-damage request: %v", err)
+		}
+		reader, err := openD1SelectedInner(
+			context.Background(), bytes.NewReader(physical), int64(len(physical)), request, selection, defaultD1ForceSeams(),
+		)
+		if err != nil {
+			t.Fatalf("open authenticated outer prefix: %v", err)
+		}
+		probe := bytes.Repeat([]byte{0xa5}, 64)
+		_, cause := reader.ReadAt(probe, int64(d1OuterChunkSize-d1OuterPrefixLength))
+		reader.Close()
+		if cause == nil || !allZero(probe) {
+			t.Fatalf("late damaged read = error %v, zeroed %v; want fail-closed authentication cause", cause, allZero(probe))
+		}
+
+		outerPlaintext := make([]byte, d1OuterPrefixLength+len(inner))
+		copy(outerPlaintext, []byte("PCVOUT3\x00"))
+		binary.BigEndian.PutUint64(outerPlaintext[8:d1OuterPrefixLength], uint64(len(inner)))
+		copy(outerPlaintext[d1OuterPrefixLength:], inner)
+		emittedRanges := make([]RecoveryRange, 0)
+		result, recoverErr := d1InnerUnavailableResult(
+			context.Background(),
+			bytes.NewReader(physical),
+			request,
+			selection,
+			defaultD1ForceSeams(),
+			cause,
+			func(got *RecoveryResult, role D1BootstrapRole, emitter RecoveryEmitter) error {
+				if role != D1BootstrapFront || got == nil {
+					return errors.New("TEST ONLY late fallback lost its physical role or semantic result")
+				}
+				return emitter(func(recoveryRange RecoveryRange, plaintext []byte) error {
+					if recoveryRange.State() != RecoveryRangeVerified ||
+						!bytes.Equal(plaintext, outerPlaintext[recoveryRange.Start():recoveryRange.End()]) {
+						return errors.New("TEST ONLY late fallback emitted unauthenticated or noncanonical bytes")
+					}
+					emittedRanges = append(emittedRanges, recoveryRange)
+					return nil
+				})
+			},
+		)
+		if recoverErr != nil || result == nil {
+			if result != nil {
+				result.Close()
+			}
+			t.Fatalf("late authentication fallback = result %#v, error %v", result, recoverErr)
+		}
+		if result.Outcome() != OutcomeForcePartial || result.Stage() != StageD1Body ||
+			result.ForceProvenance() != ForceProvenancePartial ||
+			result.D1BootstrapProvenance() != D1BootstrapProvenanceMatching || len(emittedRanges) == 0 {
+			gotOutcome := result.Outcome()
+			gotStage := result.Stage()
+			gotForce := result.ForceProvenance()
+			gotD1 := result.D1BootstrapProvenance()
+			result.Close()
+			t.Fatalf(
+				"late authentication fallback = %v/%v/%v/%v emitted %d; want Force-partial/d1-body/partial/matching with authenticated prefix",
+				gotOutcome, gotStage, gotForce, gotD1, len(emittedRanges),
+			)
+		}
+		for _, recoveryRange := range result.Ranges() {
+			if recoveryRange.State() == RecoveryRangeMissing && slices.Contains(emittedRanges, recoveryRange) {
+				result.Close()
+				t.Fatal("late authentication fallback emitted a missing range")
+			}
+		}
+		result.Close()
+
+		t.Run("non-EOF input failure remains operational", func(t *testing.T) {
+			fault := &d1ForceFaultReader{bytes: physical, fault: d1ForceSourceNonEOF}
+			_, cause := openD1SelectedInner(
+				context.Background(), fault, int64(len(physical)), request, selection, defaultD1ForceSeams(),
+			)
+			if cause == nil {
+				t.Fatal("non-EOF D1 input fault did not reach the production reader")
+			}
+			outputCalls := 0
+			result, recoverErr := d1InnerUnavailableResult(
+				context.Background(), fault, request, selection, defaultD1ForceSeams(), cause,
+				func(*RecoveryResult, D1BootstrapRole, RecoveryEmitter) error {
+					outputCalls++
+					return nil
+				},
+			)
+			if result == nil || result.Outcome() != OutcomeOperationFailed || result.Stage() != StageInputIO ||
+				recoverErr == nil || outputCalls != 0 {
+				if result != nil {
+					result.Close()
+				}
+				t.Fatalf(
+					"non-EOF fallback boundary = result %#v error %v output %d; want input-io operation failure and no output",
+					result, recoverErr, outputCalls,
+				)
+			}
+			result.Close()
+		})
+
+		t.Run("cancellation remains operational", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			outputCalls := 0
+			result, recoverErr := d1InnerUnavailableResult(
+				ctx, bytes.NewReader(physical), request, selection, defaultD1ForceSeams(), ctx.Err(),
+				func(*RecoveryResult, D1BootstrapRole, RecoveryEmitter) error {
+					outputCalls++
+					return nil
+				},
+			)
+			if result == nil || result.Outcome() != OutcomeOperationFailed || result.Stage() != StageCancellation ||
+				recoverErr == nil || outputCalls != 0 {
+				if result != nil {
+					result.Close()
+				}
+				t.Fatalf(
+					"cancellation fallback boundary = result %#v error %v output %d; want cancellation operation failure and no output",
+					result, recoverErr, outputCalls,
+				)
+			}
+			result.Close()
+		})
+	})
+
 	t.Run("damaged outer plus authenticated inner is D1 degraded", func(t *testing.T) {
 		front, tail, body := newMatchingD1ForceTestBodyCandidates(
 			t,
