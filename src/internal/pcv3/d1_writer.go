@@ -53,9 +53,6 @@ const (
 	d1BoundaryStageCreated d1CreationBoundary = iota + 1
 	d1BoundaryOuterEntropy
 	d1BoundaryFactors
-	d1BoundaryKDFFront
-	d1BoundaryKDFTail
-	d1BoundaryKDFInner
 	d1BoundaryFrontBootstrap
 	d1BoundaryBody
 	d1BoundaryInnerEntropy
@@ -72,12 +69,6 @@ func (boundary d1CreationBoundary) String() string {
 		return "outer-entropy"
 	case d1BoundaryFactors:
 		return "factors"
-	case d1BoundaryKDFFront:
-		return "kdf-front"
-	case d1BoundaryKDFTail:
-		return "kdf-tail"
-	case d1BoundaryKDFInner:
-		return "kdf-inner"
 	case d1BoundaryFrontBootstrap:
 		return "front-bootstrap"
 	case d1BoundaryBody:
@@ -518,50 +509,43 @@ func withD1ProductionCredentialSession(
 			defer normalInput.Close()
 			defer outerInput.Close()
 
-			outerOwner, err := pcv3credential.NewD1OuterKeyOwner(secrets.outerKey)
+			outerKeyTransfer := secrets.outerKey
+			secrets.outerKey = nil
+			outerOwner, err := pcv3credential.NewD1OuterKeyOwner(outerKeyTransfer)
 			if err != nil {
 				return err
 			}
 			defer outerOwner.Close()
-			if err := observe(d1BoundaryKDFFront); err != nil {
-				return err
-			}
-			return pcv3credential.WithD1OuterCredentialOwner(
+			return pcv3credential.WithD1CreationCredentialRoots(
 				ctx,
+				normalInput,
 				outerInput,
-				secrets.front.argonSalt[:],
-				pcv3credential.KeyRolePrimary,
+				pcv3credential.D1CreationSalts{
+					Front: secrets.front.argonSalt,
+					Tail:  secrets.tail.argonSalt,
+				},
 				admitter,
-				func(front *pcv3credential.D1OuterCredentialOwner) error {
-					if err := observe(d1BoundaryKDFTail); err != nil {
-						return err
-					}
-					return pcv3credential.WithD1OuterCredentialOwner(
+				func(
+					front *pcv3credential.D1OuterCredentialOwner,
+					tail *pcv3credential.D1OuterCredentialOwner,
+					innerInput *pcv3credential.CredentialInputNormal,
+				) error {
+					volumeKeyTransfer := secrets.volumeKey
+					secrets.volumeKey = nil
+					return pcv3credential.WithD1NormalCredentialOwner(
 						ctx,
-						outerInput,
-						secrets.tail.argonSalt[:],
-						pcv3credential.KeyRoleBackup,
+						innerInput,
+						factors,
+						secrets.innerSalt,
+						secrets.volumeID,
+						volumeKeyTransfer,
 						admitter,
-						func(tail *pcv3credential.D1OuterCredentialOwner) error {
-							if err := observe(d1BoundaryKDFInner); err != nil {
-								return err
-							}
-							return pcv3credential.WithD1NormalCredentialOwner(
-								ctx,
-								normalInput,
-								factors,
-								secrets.innerSalt,
-								secrets.volumeID,
-								secrets.volumeKey,
-								admitter,
-								func(normal *pcv3credential.Owner) error {
-									return callback(
-										&d1BootstrapOwnerAccess{owner: front},
-										&d1BootstrapOwnerAccess{owner: tail},
-										&d1OuterOwnerAccess{owner: outerOwner},
-										ownerNormalWriteMaterial{owner: normal},
-									)
-								},
+						func(normal *pcv3credential.Owner) error {
+							return callback(
+								&d1BootstrapOwnerAccess{owner: front},
+								&d1BootstrapOwnerAccess{owner: tail},
+								&d1OuterOwnerAccess{owner: outerOwner},
+								ownerNormalWriteMaterial{owner: normal},
 							)
 						},
 					)

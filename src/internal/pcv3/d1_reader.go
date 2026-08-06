@@ -13,6 +13,34 @@ import (
 
 var errD1ReaderProgress = errors.New("pcv3: invalid D1 reader progress")
 
+type d1InnerReaderSeams struct {
+	openRecord func(
+		*d1OuterCodec,
+		context.Context,
+		uint64,
+		bool,
+		[]byte,
+		[]byte,
+		[]byte,
+	) error
+}
+
+func defaultD1InnerReaderSeams() d1InnerReaderSeams {
+	return d1InnerReaderSeams{
+		openRecord: func(
+			codec *d1OuterCodec,
+			ctx context.Context,
+			index uint64,
+			final bool,
+			ciphertext []byte,
+			tag []byte,
+			plaintext []byte,
+		) error {
+			return codec.openRecord(ctx, index, final, ciphertext, tag, plaintext)
+		},
+	}
+}
+
 type d1InnerReader struct {
 	mu                sync.Mutex
 	ctx               context.Context
@@ -22,16 +50,35 @@ type d1InnerReader struct {
 	ciphertextScratch []byte
 	plaintextScratch  []byte
 	tagScratch        [d1OuterTagSize]byte
+	seams             d1InnerReaderSeams
 	closed            bool
 }
 
+// newD1InnerReader is a private authenticated-body component. Plan 07-03 owns
+// composing it into the production D1 reader after bootstrap authentication.
 func newD1InnerReader(
 	ctx context.Context,
 	source io.ReaderAt,
 	bodyLength uint64,
 	outerKeys d1OuterKeyAccess,
 ) (*d1InnerReader, error) {
-	if ctx == nil || source == nil || outerKeys == nil {
+	return newD1InnerReaderWithSeams(
+		ctx,
+		source,
+		bodyLength,
+		outerKeys,
+		defaultD1InnerReaderSeams(),
+	)
+}
+
+func newD1InnerReaderWithSeams(
+	ctx context.Context,
+	source io.ReaderAt,
+	bodyLength uint64,
+	outerKeys d1OuterKeyAccess,
+	seams d1InnerReaderSeams,
+) (*d1InnerReader, error) {
+	if ctx == nil || source == nil || outerKeys == nil || seams.openRecord == nil {
 		return nil, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
 	}
 	if err := ctx.Err(); err != nil {
@@ -52,6 +99,7 @@ func newD1InnerReader(
 		codec:             codec,
 		ciphertextScratch: make([]byte, d1OuterChunkSize),
 		plaintextScratch:  make([]byte, d1OuterChunkSize),
+		seams:             seams,
 	}
 	success := false
 	defer func() {
@@ -93,7 +141,8 @@ func (reader *d1InnerReader) ReadAt(destination []byte, offset int64) (int, erro
 	}
 	reader.mu.Lock()
 	defer reader.mu.Unlock()
-	if reader.closed || reader.ctx == nil || reader.source == nil || reader.codec == nil || offset < 0 {
+	if reader.closed || reader.ctx == nil || reader.source == nil || reader.codec == nil ||
+		reader.seams.openRecord == nil || offset < 0 {
 		return 0, newD1OuterFailure(StageD1Body, errD1ReaderProgress)
 	}
 	if len(destination) == 0 {
@@ -216,6 +265,7 @@ func (reader *d1InnerReader) Close() {
 	reader.ctx = nil
 	reader.source = nil
 	reader.geometry = d1OuterGeometry{}
+	reader.seams = d1InnerReaderSeams{}
 }
 
 func (reader *d1InnerReader) authenticateAll() error {
@@ -253,7 +303,8 @@ func (reader *d1InnerReader) openExpected(
 	}
 	plaintext := reader.plaintextScratch[:expected.ciphertextLength]
 	pcv3crypto.SecureZero(plaintext)
-	if err := reader.codec.openRecord(
+	if err := reader.seams.openRecord(
+		reader.codec,
 		reader.ctx,
 		expected.index,
 		expected.final,

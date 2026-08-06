@@ -353,6 +353,7 @@ func serializeNormalVolume(
 	if err != nil {
 		return nil, err
 	}
+	defer clearNormalWriteEntropy(&core, &primary, &backup)
 	geometry := plan.geometry
 	if !recordGeometryMatchesCore(core, geometry) {
 		return nil, newNormalWriteFailure(StageTailGeometry, errNormalWriteGeometry)
@@ -473,6 +474,7 @@ func prepareNormalWriteStructure(
 		return logicalCore{}, Candidate{}, Candidate{}, newNormalWriteFailure(StageTailGeometry, errNormalWriteGeometry)
 	}
 	core := plan.core
+	defer clearNormalWriteEntropy(&core)
 	core.volumeID = metadata.volumeID
 	if err := readNormalWriteEntropy(ctx, entropy, core.xChaChaNoncePrefix[:]); err != nil {
 		return logicalCore{}, Candidate{}, Candidate{}, err
@@ -499,6 +501,7 @@ func prepareNormalWriteStructure(
 	}
 	primary := newCandidate(CapsuleRolePrimary)
 	backup := newCandidate(CapsuleRoleBackup)
+	defer clearNormalWriteEntropy(nil, &primary, &backup)
 	for _, candidate := range []*Candidate{&primary, &backup} {
 		if err := readNormalWriteEntropy(ctx, entropy, candidate.wrapNonce[:]); err != nil {
 			return logicalCore{}, Candidate{}, Candidate{}, err
@@ -513,6 +516,20 @@ func prepareNormalWriteStructure(
 		}
 	}
 	return core, primary, backup, nil
+}
+
+func clearNormalWriteEntropy(core *logicalCore, candidates ...*Candidate) {
+	if core != nil {
+		pcv3crypto.SecureZero(core.xChaChaNoncePrefix[:])
+		pcv3crypto.SecureZero(core.serpentIVPrefix[:])
+	}
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		pcv3crypto.SecureZero(candidate.wrapNonce[:])
+		pcv3crypto.SecureZero(candidate.wrapSerpentIV[:])
+	}
 }
 
 func serializeNormalVolumeWithKeys(
