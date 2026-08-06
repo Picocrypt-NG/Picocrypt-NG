@@ -18,13 +18,107 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"Picocrypt-NG/internal/pcv3corpus"
 )
 
 const (
 	manifestSchemaVersion = 1
 	expectedSpecRevision  = "0.3"
 	commandTimeout        = 10 * time.Minute
+
+	d1PrivateCorpusFlag = "-d1-private-corpus"
+	d1PrivateRootEnv    = "PCV3_PRIVATE_CORPUS_ROOT"
+	d1PrivateCustodyEnv = "PCV3_PRIVATE_CORPUS_CUSTODY_ID"
+	d1SourceCopyEnv     = "PCV3_D1_MUTATION_SOURCE_COPY"
+	d1ResultEnv         = "PCV3_D1_MUTATION_RESULT"
 )
+
+var canonicalD1CampaignCommand = []string{
+	"go", "run", "-p", "1", "./internal/pcv3/testdata/mutator", d1PrivateCorpusFlag,
+}
+
+type d1Terminal string
+
+const (
+	d1Killed          d1Terminal = "killed"
+	d1SetupFailed     d1Terminal = "setup-failed"
+	d1BaselineFailed  d1Terminal = "baseline-failed"
+	d1CompileFailed   d1Terminal = "compile-failed"
+	d1SourceDrift     d1Terminal = "source-drift"
+	d1Timeout         d1Terminal = "timeout"
+	d1MissingMarker   d1Terminal = "missing-marker"
+	d1ReportCollision d1Terminal = "report-collision"
+	d1Survived        d1Terminal = "survived"
+	d1RunnerFailed    d1Terminal = "runner-failed"
+)
+
+var d1Diagnostics = map[d1Terminal]string{
+	d1Killed:          "named-product-assertion-failed",
+	d1SetupFailed:     "campaign-setup-failed",
+	d1BaselineFailed:  "named-baseline-did-not-pass",
+	d1CompileFailed:   "mutated-package-did-not-compile",
+	d1SourceDrift:     "candidate-source-or-transform-drift",
+	d1Timeout:         "command-deadline-exceeded",
+	d1MissingMarker:   "named-failure-marker-absent",
+	d1ReportCollision: "result-already-exists",
+	d1Survived:        "named-product-assertion-passed",
+	d1RunnerFailed:    "campaign-runner-failed",
+}
+
+type d1PrivateEnvironment struct {
+	corpusRoot string
+	custodyID  string
+	sourceCopy string
+	result     string
+}
+
+type d1MutationJob struct {
+	contract     pcv3corpus.D1MutationContract
+	sourceSHA256 string
+	before       []byte
+	after        []byte
+}
+
+type d1PlanLoader func(string, string, func([]d1MutationJob) error) error
+
+type d1CommandResult struct {
+	output      []byte
+	err         error
+	timedOut    bool
+	startFailed bool
+}
+
+type d1CommandRunner func(string, []string, time.Duration) d1CommandResult
+
+type d1CommandIdentity struct {
+	Baseline []string `json:"baseline"`
+	Compile  []string `json:"compile"`
+	Mutant   []string `json:"mutant"`
+}
+
+type d1MutationReport struct {
+	MutantID               string            `json:"mutant_id"`
+	CommandIdentity        d1CommandIdentity `json:"command_identity"`
+	TerminalClassification d1Terminal        `json:"terminal_classification"`
+	Diagnostic             string            `json:"diagnostic"`
+}
+
+type d1CampaignReport struct {
+	CandidateID            string             `json:"candidate_id"`
+	CommandIdentity        []string           `json:"command_identity"`
+	TerminalClassification d1Terminal         `json:"terminal_classification"`
+	Diagnostic             string             `json:"diagnostic"`
+	Mutations              []d1MutationReport `json:"mutations"`
+}
+
+type d1CampaignError struct {
+	terminal d1Terminal
+}
+
+func (err *d1CampaignError) Error() string {
+	return d1Diagnostics[err.terminal]
+}
 
 var canonicalCampaignCommand = []string{
 	"go", "run", "./internal/pcv3/testdata/mutator",
@@ -135,6 +229,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) == 1 && args[0] == d1PrivateCorpusFlag {
+		return runD1PrivateCampaign()
+	}
 	options, err := parseOptions(args)
 	if err != nil {
 		return err
@@ -203,6 +300,495 @@ func run(args []string) error {
 		return err
 	}
 	return writeAtomicReport(options.result, reportBytes)
+}
+
+func runD1PrivateCampaign() error {
+	environment, err := d1EnvironmentFromProcess()
+	if err != nil {
+		return err
+	}
+	loader := func(root, custody string, use func([]d1MutationJob) error) error {
+		return pcv3corpus.WithD1MutationPlan(root, custody, func(plan *pcv3corpus.D1MutationPlan) error {
+			mutations := plan.Mutations()
+			jobs := make([]d1MutationJob, 0, len(mutations))
+			for _, mutation := range mutations {
+				jobs = append(jobs, d1MutationJob{
+					contract:     mutation.Contract(),
+					sourceSHA256: mutation.SourceSHA256(),
+					before:       mutation.Before(),
+					after:        mutation.After(),
+				})
+			}
+			return use(jobs)
+		})
+	}
+	return runD1PrivateCampaignWith(environment, loader, runD1Command)
+}
+
+func d1EnvironmentFromProcess() (d1PrivateEnvironment, error) {
+	var environment d1PrivateEnvironment
+	values := []struct {
+		name string
+		dst  *string
+	}{
+		{d1PrivateRootEnv, &environment.corpusRoot},
+		{d1PrivateCustodyEnv, &environment.custodyID},
+		{d1SourceCopyEnv, &environment.sourceCopy},
+		{d1ResultEnv, &environment.result},
+	}
+	for _, value := range values {
+		resolved, present := os.LookupEnv(value.name)
+		if !present || resolved == "" {
+			return d1PrivateEnvironment{}, &d1CampaignError{terminal: d1SetupFailed}
+		}
+		*value.dst = resolved
+	}
+	return environment, nil
+}
+
+func runD1PrivateCampaignWith(
+	environment d1PrivateEnvironment,
+	loader d1PlanLoader,
+	runner d1CommandRunner,
+) error {
+	if loader == nil || runner == nil {
+		return &d1CampaignError{terminal: d1SetupFailed}
+	}
+	if terminal := preflightD1Result(environment.result); terminal != "" {
+		return &d1CampaignError{terminal: terminal}
+	}
+
+	callbackCalled := false
+	var callbackErr error
+	loadErr := loader(environment.corpusRoot, environment.custodyID, func(jobs []d1MutationJob) error {
+		callbackCalled = true
+		report, terminal := executeD1Campaign(environment.sourceCopy, jobs, runner)
+		if writeTerminal := writeD1ReportExclusive(environment.result, report); writeTerminal != "" {
+			callbackErr = &d1CampaignError{terminal: writeTerminal}
+			return callbackErr
+		}
+		if terminal != d1Killed {
+			callbackErr = &d1CampaignError{terminal: terminal}
+			return callbackErr
+		}
+		return nil
+	})
+	if callbackCalled {
+		return callbackErr
+	}
+	if loadErr != nil {
+		return &d1CampaignError{terminal: d1SetupFailed}
+	}
+	return &d1CampaignError{terminal: d1RunnerFailed}
+}
+
+func executeD1Campaign(sourceCopy string, jobs []d1MutationJob, runner d1CommandRunner) (d1CampaignReport, d1Terminal) {
+	report := d1CampaignReport{
+		CandidateID:            d1CandidateID(jobs),
+		CommandIdentity:        append([]string(nil), canonicalD1CampaignCommand...),
+		TerminalClassification: d1Killed,
+		Diagnostic:             d1Diagnostics[d1Killed],
+		Mutations:              make([]d1MutationReport, 0, len(jobs)),
+	}
+	if len(jobs) == 0 {
+		report.TerminalClassification = d1SetupFailed
+		report.Diagnostic = d1Diagnostics[d1SetupFailed]
+		return report, d1SetupFailed
+	}
+	root, terminal := openD1SourceRoot(sourceCopy)
+	if terminal != "" {
+		report.TerminalClassification = terminal
+		report.Diagnostic = d1Diagnostics[terminal]
+		return report, terminal
+	}
+	defer root.Close()
+
+	for _, job := range jobs {
+		mutationReport := executeD1Mutation(root, sourceCopy, job, runner)
+		report.Mutations = append(report.Mutations, mutationReport)
+		if mutationReport.TerminalClassification != d1Killed {
+			report.TerminalClassification = mutationReport.TerminalClassification
+			report.Diagnostic = d1Diagnostics[mutationReport.TerminalClassification]
+			return report, mutationReport.TerminalClassification
+		}
+	}
+	return report, d1Killed
+}
+
+func executeD1Mutation(
+	root *os.Root,
+	sourceCopy string,
+	job d1MutationJob,
+	runner d1CommandRunner,
+) (report d1MutationReport) {
+	report = d1MutationReport{
+		MutantID: job.contract.ID(),
+		CommandIdentity: d1CommandIdentity{
+			Baseline: d1NamedTestCommand(job.contract),
+			Compile:  d1CompileCommand(job.contract),
+			Mutant:   d1NamedTestCommand(job.contract),
+		},
+		TerminalClassification: d1RunnerFailed,
+		Diagnostic:             d1Diagnostics[d1RunnerFailed],
+	}
+	setTerminal := func(terminal d1Terminal) {
+		report.TerminalClassification = terminal
+		report.Diagnostic = d1Diagnostics[terminal]
+	}
+
+	original, mode, terminal := readD1Source(root, job.contract.SourcePath())
+	if terminal != "" {
+		setTerminal(terminal)
+		return report
+	}
+	defer clear(original)
+	if sha256Hex(original) != job.sourceSHA256 || len(job.before) == 0 ||
+		len(job.after) == 0 || bytes.Equal(job.before, job.after) || bytes.Count(original, job.before) != 1 {
+		setTerminal(d1SourceDrift)
+		return report
+	}
+
+	baseline := runner(sourceCopy, report.CommandIdentity.Baseline, d1CommandTimeout(job.contract))
+	terminal = classifyD1Baseline(baseline, job.contract)
+	clear(baseline.output)
+	if terminal != "" {
+		setTerminal(terminal)
+		return report
+	}
+	if !d1SourceHashMatches(root, job.contract.SourcePath(), job.sourceSHA256) {
+		setTerminal(d1SourceDrift)
+		return report
+	}
+
+	mutated := bytes.Replace(original, job.before, job.after, 1)
+	defer clear(mutated)
+	if bytes.Equal(mutated, original) {
+		setTerminal(d1SourceDrift)
+		return report
+	}
+	if replaceTerminal := replaceD1Source(root, job.contract.SourcePath(), mutated, mode); replaceTerminal != "" {
+		setTerminal(replaceTerminal)
+		return report
+	}
+	defer func() {
+		if replaceD1Source(root, job.contract.SourcePath(), original, mode) != "" ||
+			!d1SourceHashMatches(root, job.contract.SourcePath(), job.sourceSHA256) {
+			setTerminal(d1RunnerFailed)
+		}
+	}()
+	mutatedSHA256 := sha256Hex(mutated)
+	if !d1SourceHashMatches(root, job.contract.SourcePath(), mutatedSHA256) {
+		setTerminal(d1SourceDrift)
+		return report
+	}
+
+	compile := runner(sourceCopy, report.CommandIdentity.Compile, d1CommandTimeout(job.contract))
+	terminal = classifyD1Compile(compile)
+	clear(compile.output)
+	if terminal != "" {
+		setTerminal(terminal)
+		return report
+	}
+	if !d1SourceHashMatches(root, job.contract.SourcePath(), mutatedSHA256) {
+		setTerminal(d1SourceDrift)
+		return report
+	}
+
+	mutant := runner(sourceCopy, report.CommandIdentity.Mutant, d1CommandTimeout(job.contract))
+	terminal = classifyD1Mutant(mutant, job.contract)
+	clear(mutant.output)
+	if !d1SourceHashMatches(root, job.contract.SourcePath(), mutatedSHA256) {
+		setTerminal(d1SourceDrift)
+		return report
+	}
+	setTerminal(terminal)
+	return report
+}
+
+func d1NamedTestCommand(contract pcv3corpus.D1MutationContract) []string {
+	return []string{"go", "test", "-json", "-p", "1", "-count=1", "-run", "^" + contract.TestName() + "$", contract.Package()}
+}
+
+func d1CompileCommand(contract pcv3corpus.D1MutationContract) []string {
+	return []string{"go", "test", "-json", "-p", "1", "-count=1", "-run", "^$", contract.Package()}
+}
+
+func d1CommandTimeout(contract pcv3corpus.D1MutationContract) time.Duration {
+	return time.Duration(contract.TimeoutSeconds()) * time.Second
+}
+
+func runD1Command(directory string, command []string, timeout time.Duration) d1CommandResult {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd.Dir = directory
+	cmd.Env = d1ChildEnvironment()
+	output, err := cmd.CombinedOutput()
+	result := d1CommandResult{output: output, err: err, timedOut: errors.Is(ctx.Err(), context.DeadlineExceeded)}
+	var exitErr *exec.ExitError
+	result.startFailed = err != nil && !result.timedOut && !errors.As(err, &exitErr)
+	return result
+}
+
+func d1ChildEnvironment() []string {
+	privateNames := map[string]struct{}{
+		d1PrivateRootEnv: {}, d1PrivateCustodyEnv: {}, d1SourceCopyEnv: {}, d1ResultEnv: {}, "GOWORK": {},
+	}
+	environment := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, private := privateNames[name]; !private {
+			environment = append(environment, entry)
+		}
+	}
+	return append(environment, "GOWORK=off")
+}
+
+func classifyD1Baseline(result d1CommandResult, contract pcv3corpus.D1MutationContract) d1Terminal {
+	if result.timedOut {
+		return d1Timeout
+	}
+	if result.startFailed {
+		return d1SetupFailed
+	}
+	events, err := parseTestEvents(result.output)
+	if err != nil {
+		return d1RunnerFailed
+	}
+	run, pass, fail, skip := d1NamedTestState(events, contract.TestName())
+	if !run {
+		return d1SetupFailed
+	}
+	if result.err != nil || fail || skip || !pass {
+		return d1BaselineFailed
+	}
+	return ""
+}
+
+func classifyD1Compile(result d1CommandResult) d1Terminal {
+	if result.timedOut {
+		return d1Timeout
+	}
+	if result.startFailed {
+		return d1SetupFailed
+	}
+	if result.err != nil {
+		return d1CompileFailed
+	}
+	return ""
+}
+
+func classifyD1Mutant(result d1CommandResult, contract pcv3corpus.D1MutationContract) d1Terminal {
+	if result.timedOut {
+		return d1Timeout
+	}
+	if result.startFailed {
+		return d1SetupFailed
+	}
+	events, err := parseTestEvents(result.output)
+	if err != nil {
+		return d1RunnerFailed
+	}
+	run, pass, fail, skip := d1NamedTestState(events, contract.TestName())
+	if !run {
+		return d1SetupFailed
+	}
+	if result.err == nil {
+		if pass && !fail && !skip {
+			return d1Survived
+		}
+		return d1RunnerFailed
+	}
+	if skip || !fail {
+		return d1RunnerFailed
+	}
+	for _, event := range events {
+		inNamedTest := event.Test == contract.TestName() || strings.HasPrefix(event.Test, contract.TestName()+"/")
+		if inNamedTest && strings.Contains(event.Output, contract.AssertionMarker()) {
+			return d1Killed
+		}
+	}
+	return d1MissingMarker
+}
+
+func d1NamedTestState(events []testEvent, testName string) (run, pass, fail, skip bool) {
+	for _, event := range events {
+		if event.Test == testName {
+			switch event.Action {
+			case "run":
+				run = true
+			case "pass":
+				pass = true
+			case "fail":
+				fail = true
+			case "skip":
+				skip = true
+			}
+		}
+		if strings.HasPrefix(event.Test, testName+"/") && event.Action == "skip" {
+			skip = true
+		}
+	}
+	return run, pass, fail, skip
+}
+
+func d1CandidateID(jobs []d1MutationJob) string {
+	hasher := sha256.New()
+	for _, job := range jobs {
+		_, _ = hasher.Write([]byte(job.contract.ID()))
+		_, _ = hasher.Write([]byte{0})
+		_, _ = hasher.Write([]byte(job.sourceSHA256))
+		_, _ = hasher.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func openD1SourceRoot(path string) (*os.Root, d1Terminal) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, d1SetupFailed
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, d1SetupFailed
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || resolved != path || rejectLiveCheckout(path) != nil {
+		return nil, d1SetupFailed
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, d1SetupFailed
+	}
+	return root, ""
+}
+
+func rejectLiveCheckout(root string) error {
+	for current := root; ; current = filepath.Dir(current) {
+		if _, err := os.Lstat(filepath.Join(current, ".git")); err == nil {
+			return errors.New("refusing to mutate inside a live Git checkout")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect source-copy Git marker: %w", err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+	}
+	return nil
+}
+
+func readD1Source(root *os.Root, path string) ([]byte, os.FileMode, d1Terminal) {
+	if !validRelativePath(path) {
+		return nil, 0, d1SourceDrift
+	}
+	info, err := root.Lstat(filepath.FromSlash(path))
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, 0, d1SourceDrift
+	}
+	data, err := root.ReadFile(filepath.FromSlash(path))
+	if err != nil {
+		return nil, 0, d1SourceDrift
+	}
+	return data, info.Mode().Perm(), ""
+}
+
+func d1SourceHashMatches(root *os.Root, path, expected string) bool {
+	data, _, terminal := readD1Source(root, path)
+	if terminal != "" {
+		return false
+	}
+	defer clear(data)
+	return sha256Hex(data) == expected
+}
+
+func replaceD1Source(root *os.Root, path string, data []byte, mode os.FileMode) d1Terminal {
+	target := filepath.FromSlash(path)
+	temporary := filepath.Join(filepath.Dir(target), ".pcv3-d1-mutator.tmp")
+	file, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return d1RunnerFailed
+	}
+	keep := false
+	defer func() {
+		_ = file.Close()
+		if !keep {
+			_ = root.Remove(temporary)
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
+		return d1RunnerFailed
+	}
+	if err := file.Sync(); err != nil {
+		return d1RunnerFailed
+	}
+	if err := file.Close(); err != nil {
+		return d1RunnerFailed
+	}
+	if err := root.Rename(temporary, target); err != nil {
+		return d1RunnerFailed
+	}
+	keep = true
+	return ""
+}
+
+func preflightD1Result(path string) d1Terminal {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return d1SetupFailed
+	}
+	parent := filepath.Dir(path)
+	info, err := os.Lstat(parent)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return d1SetupFailed
+	}
+	resolved, err := filepath.EvalSymlinks(parent)
+	if err != nil || resolved != parent {
+		return d1SetupFailed
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return d1ReportCollision
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return d1SetupFailed
+	}
+	return ""
+}
+
+func writeD1ReportExclusive(path string, report d1CampaignReport) d1Terminal {
+	data, err := json.Marshal(report)
+	if err != nil {
+		return d1RunnerFailed
+	}
+	data = append(data, '\n')
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return d1RunnerFailed
+	}
+	defer root.Close()
+	name := filepath.Base(path)
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return d1ReportCollision
+	}
+	if err != nil {
+		return d1RunnerFailed
+	}
+	keep := false
+	defer func() {
+		_ = file.Close()
+		if !keep {
+			_ = root.Remove(name)
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
+		return d1RunnerFailed
+	}
+	if err := file.Sync(); err != nil {
+		return d1RunnerFailed
+	}
+	if err := file.Close(); err != nil {
+		return d1RunnerFailed
+	}
+	keep = true
+	return ""
 }
 
 func parseOptions(args []string) (campaignOptions, error) {
