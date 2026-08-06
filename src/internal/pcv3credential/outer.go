@@ -43,6 +43,12 @@ type d1OuterDerivationSeams struct {
 	expand  hkdfExpander
 }
 
+type d1NormalOwnerSeams struct {
+	derive  kdfDeriver
+	extract hkdfExtractor
+	expand  hkdfExpander
+}
+
 type d1OuterCredentialRoot struct {
 	secret *crypto.Secret
 }
@@ -498,6 +504,117 @@ func WithD1CreationCredentialRoots(
 		},
 		callback,
 	)
+}
+
+// WithD1NormalCredentialOwner consumes the normal D1 credential input and a
+// transferred VolumeKey, derives the fixed full Paranoid-1 schedule, and keeps
+// the resulting owner valid only for callback duration.
+func WithD1NormalCredentialOwner(
+	ctx context.Context,
+	input *CredentialInputNormal,
+	factors *ValidatedFactors,
+	argonSalt [kdfSaltBytes]byte,
+	volumeID [scheduleVolumeIDBytes]byte,
+	volumeKeyTransfer []byte,
+	admitter Admitter,
+	callback func(*Owner) error,
+) error {
+	return withD1NormalCredentialOwner(
+		ctx,
+		input,
+		factors,
+		argonSalt,
+		volumeID,
+		volumeKeyTransfer,
+		admitter,
+		d1NormalOwnerSeams{
+			derive:  deriveArgon2ID,
+			extract: defaultHKDFExtract,
+			expand:  defaultHKDFExpand,
+		},
+		callback,
+	)
+}
+
+func withD1NormalCredentialOwner(
+	ctx context.Context,
+	input *CredentialInputNormal,
+	factors *ValidatedFactors,
+	argonSalt [kdfSaltBytes]byte,
+	volumeID [scheduleVolumeIDBytes]byte,
+	volumeKeyTransfer []byte,
+	admitter Admitter,
+	seams d1NormalOwnerSeams,
+	callback func(*Owner) error,
+) error {
+	defer input.Close()
+	defer crypto.SecureZero(volumeKeyTransfer)
+
+	if ctx == nil || input == nil || factors == nil || admitter == nil ||
+		callback == nil || len(volumeKeyTransfer) != derivedKeyBytes ||
+		!validD1NormalOwnerSeams(seams) {
+		return newOwnerError(OwnerErrorInvalidRequest)
+	}
+	metadata := OwnerMetadata{
+		Suite:          SuiteParanoid1,
+		ExpectedPolicy: factors.expectedPolicy,
+		CredentialMode: factors.mode,
+		KeyfileMode:    factors.keyfileMode,
+		KeyfileCount:   uint16(len(factors.descriptors)), //nolint:gosec // Validated factors are bounded to 64 keyfiles.
+		ArgonSalt:      argonSalt,
+		VolumeID:       volumeID,
+	}
+	if !validOwnerMetadata(metadata) {
+		return newOwnerError(OwnerErrorInvalidRequest)
+	}
+	if ctx.Err() != nil {
+		return newKDFError(KDFErrorCancelled, SuiteParanoid1)
+	}
+
+	schedule, err := fullReaderSchedule(SuiteParanoid1)
+	if err != nil {
+		return err
+	}
+	root, err := runCredentialKDF(
+		ctx,
+		input,
+		argonSalt[:],
+		SuiteParanoid1,
+		admitter,
+		seams.derive,
+	)
+	if err != nil {
+		return err
+	}
+	defer root.close()
+	if ctx.Err() != nil {
+		return newKDFError(KDFErrorCancelled, SuiteParanoid1)
+	}
+
+	material, err := deriveKeyMaterialWith(
+		schedule,
+		root,
+		&volumeKey{secret: crypto.SecretFrom(volumeKeyTransfer)},
+		volumeID[:],
+		seams.extract,
+		seams.expand,
+	)
+	if err != nil {
+		return err
+	}
+	owner, err := newOwner(metadata, material)
+	if err != nil {
+		return err
+	}
+	defer owner.Close()
+	if ctx.Err() != nil {
+		return newOwnerError(OwnerErrorCancelled)
+	}
+	return callback(owner)
+}
+
+func validD1NormalOwnerSeams(seams d1NormalOwnerSeams) bool {
+	return seams.derive != nil && seams.extract != nil && seams.expand != nil
 }
 
 func withD1CreationCredentialRoots(
