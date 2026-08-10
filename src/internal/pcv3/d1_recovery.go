@@ -327,12 +327,10 @@ func withD1RecoveryCredentialCandidate(
 	if ctx == nil || outerInput == nil || admitter == nil || !request.valid() || callback == nil {
 		return errInvalidD1Force
 	}
-	role := pcv3credential.KeyRolePrimary
-	if bootstrap.role == D1BootstrapTail {
-		role = pcv3credential.KeyRoleBackup
-	} else if bootstrap.role != D1BootstrapFront {
+	if !validD1BootstrapRole(bootstrap.role) {
 		return errInvalidD1Force
 	}
+	role := keyRoleForD1Bootstrap(bootstrap.role)
 	return pcv3credential.WithD1OuterCredentialOwner(
 		ctx,
 		outerInput,
