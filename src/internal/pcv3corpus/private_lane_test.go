@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const approvedPrivateCorpusCustodyID = "pcv3-foundation-2026"
+
 func TestPrivateCorpusContract(t *testing.T) {
 	root, ok := os.LookupEnv("PCV3_PRIVATE_CORPUS_ROOT")
 	if !ok || root == "" {
@@ -16,7 +18,7 @@ func TestPrivateCorpusContract(t *testing.T) {
 	if !ok || custodyID == "" {
 		t.Fatal("PCV3 private corpus custody ID is required")
 	}
-	if custodyID != testCustodyID {
+	if custodyID != approvedPrivateCorpusCustodyID {
 		t.Fatal("PCV3 private corpus custody ID is not approved")
 	}
 

@@ -39,6 +39,26 @@ func TestPrivateCorpusContractHandoffFailuresAreObservable(t *testing.T) {
 			wantDiagnostic: "PCV3 private corpus custody ID is required",
 		},
 		{
+			name: "synthetic unit fixture custody is not owner approved",
+			env: func(t *testing.T) []string {
+				return []string{
+					privateCorpusRootEnv + "=" + t.TempDir(),
+					privateCorpusCustodyIDEnv + "=synthetic-test-custody",
+				}
+			},
+			wantDiagnostic: "PCV3 private corpus custody ID is not approved",
+		},
+		{
+			name: "owner approved custody reaches corpus loader",
+			env: func(t *testing.T) []string {
+				return []string{
+					privateCorpusRootEnv + "=" + t.TempDir(),
+					privateCorpusCustodyIDEnv + "=pcv3-foundation-2026",
+				}
+			},
+			wantDiagnostic: "missing required entry",
+		},
+		{
 			name: "unapproved custody ID",
 			env: func(t *testing.T) []string {
 				return []string{
