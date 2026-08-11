@@ -55,7 +55,7 @@ var d1VolumeIDs = [...]string{
 	"d1-degraded-front-bootstrap-only",
 	"d1-degraded-tail-bootstrap-only",
 	"d1-negative-wrong-credential",
-	"d1-negative-record-tamper",
+	"d1-negative-record-tamper", //gitleaks:allow // Public test-only corpus identifier, not a credential.
 	"d1-negative-record-reorder",
 	"d1-negative-body-truncation",
 	"d1-negative-final-loss",

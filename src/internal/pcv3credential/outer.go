@@ -14,7 +14,7 @@ const d1OuterRootDomain = "Picocrypt-NG/PCV3/outer/root\x00"
 type D1OuterCredentialLabel string
 
 const (
-	D1OuterCredentialWrapXChaCha20 D1OuterCredentialLabel = "outer/wrap/xchacha20" //nolint:gosec // Public protocol label, not a credential.
+	D1OuterCredentialWrapXChaCha20 D1OuterCredentialLabel = "outer/wrap/xchacha20" //nolint:gosec //gitleaks:allow // Public protocol label, not a credential.
 	D1OuterCredentialWrapSerpent   D1OuterCredentialLabel = "outer/wrap/serpent"   //nolint:gosec // Public protocol label, not a credential.
 	D1OuterCredentialWrapMAC       D1OuterCredentialLabel = "outer/wrap/mac"       //nolint:gosec // Public protocol label, not a credential.
 )
