@@ -117,14 +117,13 @@ func (req *DecryptRequest) Validate() error {
 }
 
 func (req *DecryptRequest) validate(preparedInput bool) error {
-	// Check for input file
-	if req.InputFile == "" {
-		return errors.NewValidationError("InputFile", "input file path is required")
+	if err := req.validateInputPath(); err != nil {
+		return err
 	}
 
 	// A recombine request may name the base path before that file exists. In
 	// that mode the numbered chunks are the real protected inputs.
-	if req.Recombine {
+	if req.Recombine && !preparedInput {
 		inputBase := recombineInputBase(req.InputFile)
 		if _, _, err := fileops.CountChunks(inputBase); err != nil {
 			return errors.NewFileError("stat chunks", inputBase, err)
@@ -150,7 +149,17 @@ func (req *DecryptRequest) validate(preparedInput bool) error {
 		}
 	}
 
+	if preparedInput {
+		return nil
+	}
 	return req.ValidateOutputSafety()
+}
+
+func (req *DecryptRequest) validateInputPath() error {
+	if req == nil || req.InputFile == "" {
+		return errors.NewValidationError("InputFile", "input file path is required")
+	}
+	return nil
 }
 
 func (req *DecryptRequest) validatePrepared(input *PreparedDecryptInput) error {
@@ -160,7 +169,27 @@ func (req *DecryptRequest) validatePrepared(input *PreparedDecryptInput) error {
 	if err := req.validate(true); err != nil {
 		return err
 	}
+	if err := req.validatePreparedOutputSafety(input); err != nil {
+		return err
+	}
 	return input.ValidateOutputAlias(req.OutputFile)
+}
+
+func (req *DecryptRequest) validatePreparedOutputSafety(input *PreparedDecryptInput) error {
+	if input == nil || len(input.inputInfos) == 0 {
+		return errors.NewValidationError("InputFile", "prepared input identity is unavailable")
+	}
+	protected := make([]string, 0, 2+len(input.inputInfos)+len(req.Keyfiles))
+	protected = append(protected, req.InputFile)
+	if req.Recombine {
+		inputBase := recombineInputBase(req.InputFile)
+		protected = append(protected, inputBase)
+		for i := range len(input.inputInfos) {
+			protected = append(protected, fmt.Sprintf("%s.%d", inputBase, i))
+		}
+	}
+	protected = append(protected, req.Keyfiles...)
+	return validateOutputSafety(req.OutputFile, protected)
 }
 
 // ValidateOutputAlias rejects an output path that currently names the exact

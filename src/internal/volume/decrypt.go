@@ -31,7 +31,7 @@ var newPayloadReader = func(r io.Reader) io.Reader { return r }
 // This is the main entry point for decryption.
 // If ctx is nil, a background context is used.
 func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
-	if err := req.Validate(); err != nil {
+	if err := req.validateInputPath(); err != nil {
 		return err
 	}
 	preparedInput, err := PrepareDecryptInput(req.InputFile, req.Recombine)
@@ -39,10 +39,7 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 		return err
 	}
 	defer func() { retErr = errors.Join(retErr, preparedInput.Close()) }()
-	if err := preparedInput.ValidateOutputAlias(req.OutputFile); err != nil {
-		return err
-	}
-	return decryptPrepared(ctx, req, preparedInput)
+	return DecryptPrepared(ctx, req, preparedInput)
 }
 
 // DecryptPrepared decrypts using the exact descriptor routed before a caller

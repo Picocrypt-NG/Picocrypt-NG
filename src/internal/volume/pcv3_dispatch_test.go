@@ -439,6 +439,60 @@ func TestDecryptPCV3RoutesBeforeLegacy(t *testing.T) {
 	}
 }
 
+func TestDecryptSplitPCV3ClaimPrecedesChunkEnumeration(t *testing.T) {
+	fixture := loadPCV3DispatchFixture(t)
+	dir := t.TempDir()
+	base := filepath.Join(dir, "claimed-split.pcv")
+	output := filepath.Join(dir, "plaintext")
+	writePCV3DispatchInput(t, base+".0", fixture)
+	if err := os.WriteFile(base+".2", []byte("gap after the claimed first chunk"), 0o600); err != nil {
+		t.Fatalf("write non-contiguous later chunk: %v", err)
+	}
+	reporter := &pcv3DispatchReporter{}
+
+	err := Decrypt(t.Context(), &DecryptRequest{
+		InputFile:  base + ".0",
+		OutputFile: output,
+		Recombine:  true,
+		Reporter:   reporter,
+	})
+	if !errors.Is(err, pcv3.ErrReaderUnavailable) {
+		t.Fatalf("Decrypt(claimed split PCV3 with a chunk gap) = %v; want terminal PCV3 routing before chunk enumeration", err)
+	}
+	if reporter.calls() != 0 {
+		t.Fatalf("reporter calls = %d; claimed split PCV3 reached the legacy operation", reporter.calls())
+	}
+	if _, statErr := os.Stat(output); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("claimed split PCV3 created output %q: %v", output, statErr)
+	}
+}
+
+func TestDecryptPCV3ClaimPrecedesKeyfileInspection(t *testing.T) {
+	fixture := loadPCV3DispatchFixture(t)
+	dir := t.TempDir()
+	input := filepath.Join(dir, "claimed.pcv")
+	output := filepath.Join(dir, "plaintext")
+	writePCV3DispatchInput(t, input, fixture)
+	reporter := &pcv3DispatchReporter{}
+
+	err := Decrypt(t.Context(), &DecryptRequest{
+		InputFile:    input,
+		OutputFile:   output,
+		Keyfiles:     []string{filepath.Join(dir, "must-not-be-inspected.key")},
+		ForceDecrypt: true,
+		Reporter:     reporter,
+	})
+	if !errors.Is(err, pcv3.ErrReaderUnavailable) {
+		t.Fatalf("Decrypt(claimed PCV3 with a missing keyfile) = %v; want terminal PCV3 routing before keyfile inspection", err)
+	}
+	if reporter.calls() != 0 {
+		t.Fatalf("reporter calls = %d; claimed PCV3 reached the legacy operation", reporter.calls())
+	}
+	if _, statErr := os.Stat(output); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("claimed PCV3 created output %q: %v", output, statErr)
+	}
+}
+
 func TestRemoveDeniabilityRejectsBorrowedPCV3BeforeEffects(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "claimed.pcv")
