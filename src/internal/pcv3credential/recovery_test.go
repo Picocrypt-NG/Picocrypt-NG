@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"testing/synctest"
 )
 
 type recoveryCredentialProbe struct {
@@ -300,6 +301,144 @@ func TestRecoveryCredentialSessionClearsBoundCandidatesOnEveryExit(t *testing.T)
 			}
 		})
 	}
+}
+
+func TestRecoverySessionTeardownWaitsForActiveReaderCallback(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		factors := pipelineRequest(t, SuiteStandard1).Factors
+		tuple := recoveryCredentialTuple(t, SuiteStandard1, factors, 0x31)
+		probe := newRecoveryCredentialProbe()
+		request := KeyRequest{
+			Label:       KeyLabelCredentialWrapMAC,
+			Role:        KeyRolePrimary,
+			OutputBytes: derivedKeyBytes,
+		}
+		borrowEntered := make(chan struct{})
+		releaseBorrow := make(chan struct{})
+		borrowReleased := false
+		release := func() {
+			if !borrowReleased {
+				close(releaseBorrow)
+				borrowReleased = true
+			}
+		}
+		defer release()
+		borrowObservation := make(chan struct {
+			key [derivedKeyBytes]byte
+			err error
+		}, 1)
+		borrowDone := make(chan error, 1)
+		sessionReady := make(chan *RecoverySession, 1)
+		operationDone := make(chan struct {
+			owner *Owner
+			err   error
+		}, 1)
+		var beforeClose [derivedKeyBytes]byte
+		var retainedKeys *ReaderKeys
+
+		go func() {
+			owner, err := newRecoveryCredentialSession(
+				context.Background(),
+				&RecoveryCredentialRequest{
+					Factors: factors,
+					Tuples:  []RecoveryCredentialTuple{tuple},
+				},
+				probe.reader.admit,
+				func(session *RecoverySession) error {
+					sessionReady <- session
+					go func() {
+						borrowDone <- session.WithTupleKeys(
+							context.Background(),
+							0,
+							KeyRolePrimary,
+							func(keys *ReaderKeys) error {
+								retainedKeys = keys
+								initialErr := keys.CopyKey(request, beforeClose[:])
+								close(borrowEntered)
+								<-releaseBorrow
+
+								observation := struct {
+									key [derivedKeyBytes]byte
+									err error
+								}{err: initialErr}
+								if observation.err == nil {
+									observation.err = keys.CopyKey(request, observation.key[:])
+								}
+								borrowObservation <- observation
+								return observation.err
+							},
+						)
+					}()
+					<-borrowEntered
+					return errors.New("TEST ONLY recovery callback failure")
+				},
+				probe.seams(),
+			)
+			operationDone <- struct {
+				owner *Owner
+				err   error
+			}{owner: owner, err: err}
+		}()
+
+		session := <-sessionReady
+		<-borrowEntered
+		if allZero(beforeClose[:]) {
+			t.Fatal("active recovery callback received an empty credential key")
+		}
+
+		// Wait until teardown and the active callback are both durably blocked.
+		// A correct teardown cannot complete while the callback still owns its
+		// scoped ReaderKeys borrow.
+		synctest.Wait()
+		select {
+		case <-operationDone:
+			t.Fatal("recovery teardown completed while a reader callback was active")
+		default:
+		}
+
+		lateCallbackCalls := 0
+		err := session.WithTupleKeys(
+			context.Background(),
+			0,
+			KeyRolePrimary,
+			func(*ReaderKeys) error {
+				lateCallbackCalls++
+				return nil
+			},
+		)
+		requireOwnerCode(t, err, OwnerErrorClosed)
+		if lateCallbackCalls != 0 {
+			t.Fatal("recovery teardown admitted a new reader callback")
+		}
+
+		release()
+		observation := <-borrowObservation
+		if observation.err != nil {
+			t.Fatalf("active recovery callback lost its key during teardown: %v", observation.err)
+		}
+		if !bytes.Equal(observation.key[:], beforeClose[:]) {
+			t.Fatal("active recovery callback observed changed key material during teardown")
+		}
+		if err := <-borrowDone; err != nil {
+			t.Fatalf("active recovery borrow failed after release: %v", err)
+		}
+		result := <-operationDone
+		if result.owner != nil {
+			result.owner.Close()
+			t.Fatal("callback failure published a recovery owner")
+		}
+		requirePipelineCode(t, result.err, PipelineErrorCallback, PipelineStageCallback)
+		requireOwnerCode(
+			t,
+			retainedKeys.CopyKey(request, make([]byte, derivedKeyBytes)),
+			OwnerErrorBorrowExpired,
+		)
+		for index, alias := range probe.reader.ownedAliases {
+			if !allZero(alias) {
+				t.Fatalf("recovery teardown retained derived alias %d", index)
+			}
+		}
+	})
 }
 
 func TestD1RecoveryCredentialSessionConsumesOwnedInputSequentially(t *testing.T) {

@@ -893,7 +893,6 @@ func (session *RecoverySession) close() {
 	state := session.state
 	state.mu.Lock()
 	state.active = false
-	state.borrows = 0
 	state.selectionAttempted = true
 	state.selected = nil
 	readers := state.readers

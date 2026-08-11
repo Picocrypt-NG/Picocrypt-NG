@@ -47,7 +47,8 @@ type ReaderCredential struct {
 }
 
 type readerCredentialState struct {
-	mu sync.Mutex
+	mu   sync.Mutex
+	idle *sync.Cond
 
 	active   bool
 	adopting bool
@@ -437,18 +438,18 @@ func newReaderCredentialRoot(
 		seams.observeCredentialMaterial(material)
 	}
 
-	reader := &ReaderCredential{
-		state: &readerCredentialState{
-			active:                 true,
-			metadata:               metadata,
-			material:               material,
-			extract:                seams.extract,
-			expand:                 seams.expand,
-			observeReplicaMaterial: seams.observeReplicaMaterial,
-			observeVolumeMaterial:  seams.observeVolumeMaterial,
-			observeOwnerMaterial:   seams.observeOwnerMaterial,
-		},
+	state := &readerCredentialState{
+		active:                 true,
+		metadata:               metadata,
+		material:               material,
+		extract:                seams.extract,
+		expand:                 seams.expand,
+		observeReplicaMaterial: seams.observeReplicaMaterial,
+		observeVolumeMaterial:  seams.observeVolumeMaterial,
+		observeOwnerMaterial:   seams.observeOwnerMaterial,
 	}
+	state.idle = sync.NewCond(&state.mu)
+	reader := &ReaderCredential{state: state}
 	material = nil
 	return reader, nil
 }
@@ -476,11 +477,7 @@ func (reader *ReaderCredential) WithKeys(
 	state.borrows++
 	material := state.material
 	state.mu.Unlock()
-	defer func() {
-		state.mu.Lock()
-		state.borrows--
-		state.mu.Unlock()
-	}()
+	defer reader.endBorrow()
 
 	return withReaderKeys(ctx, material, role, scheduleRootCredential, callback)
 }
@@ -514,11 +511,7 @@ func (reader *ReaderCredential) WithReplicaKey(
 	expand := state.expand
 	observe := state.observeReplicaMaterial
 	state.mu.Unlock()
-	defer func() {
-		state.mu.Lock()
-		state.borrows--
-		state.mu.Unlock()
-	}()
+	defer reader.endBorrow()
 
 	request := KeyRequest{
 		Label:       KeyLabelVolumeReplicaMAC,
@@ -580,11 +573,7 @@ func (reader *ReaderCredential) withVolumeKeys(
 	expand := state.expand
 	observe := state.observeVolumeMaterial
 	state.mu.Unlock()
-	defer func() {
-		state.mu.Lock()
-		state.borrows--
-		state.mu.Unlock()
-	}()
+	defer reader.endBorrow()
 
 	schedule, err := nonReplicaVolumeSchedule(metadata.Suite)
 	if err != nil {
@@ -644,6 +633,7 @@ func (reader *ReaderCredential) AdoptVolumeKey(transfer []byte) (returnErr error
 	defer func() {
 		state.mu.Lock()
 		state.adopting = false
+		state.idle.Broadcast()
 		state.mu.Unlock()
 	}()
 
@@ -778,6 +768,16 @@ func (reader *ReaderCredential) failMaterial() {
 	}
 }
 
+func (reader *ReaderCredential) endBorrow() {
+	state := reader.state
+	state.mu.Lock()
+	state.borrows--
+	if state.borrows == 0 {
+		state.idle.Broadcast()
+	}
+	state.mu.Unlock()
+}
+
 func (reader *ReaderCredential) close() {
 	if reader == nil || reader.state == nil {
 		return
@@ -785,6 +785,9 @@ func (reader *ReaderCredential) close() {
 	state := reader.state
 	state.mu.Lock()
 	state.active = false
+	for state.borrows != 0 || state.adopting {
+		state.idle.Wait()
+	}
 	material := state.material
 	owner := state.owner
 	state.material = nil
