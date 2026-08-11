@@ -22,6 +22,8 @@ type platformOperations struct {
 	syncDirectory       func(*os.File) error
 	syncStage           func(*os.File) error
 	closeStage          func(*os.File) error
+	statStage           func(*os.File) (os.FileInfo, error)
+	removeStage         func(*os.Root, string) error
 	supportsSafeReplace bool
 }
 
@@ -72,6 +74,12 @@ func createWithOperations(
 	}
 	if operations.closeStage == nil {
 		operations.closeStage = (*os.File).Close
+	}
+	if operations.statStage == nil {
+		operations.statStage = (*os.File).Stat
+	}
+	if operations.removeStage == nil {
+		operations.removeStage = (*os.Root).Remove
 	}
 	if policy == PolicySafeReplace && !operations.supportsSafeReplace {
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodePolicyUnsupported)
@@ -155,12 +163,15 @@ func createWithOperations(
 		_ = root.Close()
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
 	}
-	stageInfo, err := file.Stat()
-	if err != nil || !stageInfo.Mode().IsRegular() {
+	stageInfo, err := operations.statStage(file)
+	if err != nil || stageInfo == nil || !stageInfo.Mode().IsRegular() {
 		_ = file.Close()
 		_ = parent.Close()
 		_ = root.Close()
-		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
+		return nil, errors.Join(
+			newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure),
+			ErrCleanupIncomplete,
+		)
 	}
 
 	stage := &Stage{
@@ -179,8 +190,11 @@ func createWithOperations(
 		cleanupAllowed: true,
 	}
 	if !stage.parentIdentityCurrent() {
-		_ = stage.Cleanup()
-		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeIdentityChanged)
+		result := newResult(StateNotPublished, pcv3.StageOutputPublication, CodeIdentityChanged)
+		if cleanupErr := stage.Cleanup(); cleanupErr != nil {
+			return nil, errors.Join(result, cleanupErr)
+		}
+		return nil, result
 	}
 	return stage, nil
 }
@@ -390,7 +404,7 @@ func (stage *Stage) Cleanup() error {
 	if stage.cleanupAllowed && stage.root != nil && stage.stageName != "" {
 		switch probeIdentity(stage.root, stage.stageName, stage.stageInfo) {
 		case identityExpected:
-			if err := stage.root.Remove(stage.stageName); err != nil {
+			if err := stage.operations.removeStage(stage.root, stage.stageName); err != nil {
 				remaining := probeIdentity(stage.root, stage.stageName, stage.stageInfo)
 				if remaining == identityExpected || remaining == identityUnknown {
 					cleanupFailed = true

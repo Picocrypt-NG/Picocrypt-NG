@@ -31,6 +31,7 @@ type Request struct {
 	SelectedRole pcv3.CapsuleRole
 	Target       string
 	Protected    []string
+	createStage  func(string, []string, pcv3publication.Policy) (*pcv3publication.Stage, error)
 	stageWriter  func(io.Writer) io.Writer
 }
 
@@ -131,6 +132,7 @@ type Result struct {
 	publicationState     pcv3publication.State
 	publicationStage     pcv3.Stage
 	publicationCode      pcv3publication.Code
+	cleanupIncomplete    bool
 }
 
 func (result *Result) Outcome() pcv3.Outcome {
@@ -219,6 +221,13 @@ func (result *Result) Format(state fmt.State, verb rune) {
 	_, _ = io.WriteString(state, value)
 }
 
+func (result *Result) Unwrap() error {
+	if result == nil || !result.cleanupIncomplete {
+		return nil
+	}
+	return pcv3publication.ErrCleanupIncomplete
+}
+
 func runWithCore(
 	ctx context.Context,
 	request *Request,
@@ -248,7 +257,11 @@ func runWithCore(
 		result.semantic = cloneOperationSemantic(semantic)
 		result.publicationAttempted = true
 
-		stage, err := pcv3publication.Create(
+		createStage := request.createStage
+		if createStage == nil {
+			createStage = pcv3publication.Create
+		}
+		stage, err := createStage(
 			request.Target,
 			append([]string(nil), request.Protected...),
 			pcv3publication.PolicyNoReplace,
@@ -258,11 +271,7 @@ func runWithCore(
 			return err
 		}
 		defer func() {
-			if cleanupErr := stage.Cleanup(); cleanupErr != nil &&
-				result.publicationState == pcv3publication.StateNotPublished {
-				result.publicationStage = pcv3.StageOutputPublication
-				result.publicationCode = pcv3publication.CodeStageFailure
-			}
+			result.retainCleanupError(stage.Cleanup())
 		}()
 
 		file := stage.File()
@@ -340,9 +349,16 @@ func (result *Result) retainPublicationError(err error) {
 	var publication pcv3publication.Result
 	if errors.As(err, &publication) {
 		result.retainPublication(publication)
-		return
+	} else {
+		result.retainNotPublished(pcv3.StageOutputPublication)
 	}
-	result.retainNotPublished(pcv3.StageOutputPublication)
+	result.retainCleanupError(err)
+}
+
+func (result *Result) retainCleanupError(err error) {
+	if result != nil && errors.Is(err, pcv3publication.ErrCleanupIncomplete) {
+		result.cleanupIncomplete = true
+	}
 }
 
 func (result *Result) retainNotPublished(stage pcv3.Stage) {

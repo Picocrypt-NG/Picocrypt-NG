@@ -106,6 +106,141 @@ func requireFileBytes(t *testing.T, path string, want []byte) {
 	}
 }
 
+func TestCreateReportsCleanupIncompleteWhenStageIdentityCannotBeEstablished(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "must-not-exist.pcv")
+	statFailure := errors.New("TEST ONLY stage identity failure")
+	operations, _ := realRenameOperations(t, directory)
+	var ownedInfo os.FileInfo
+	operations.statStage = func(file *os.File) (os.FileInfo, error) {
+		var err error
+		ownedInfo, err = file.Stat()
+		if err != nil {
+			t.Fatalf("stat real stage for independent identity oracle: %v", err)
+		}
+		return nil, statFailure
+	}
+
+	_, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+	result := requireResultError(t, err)
+	requireResult(
+		t,
+		result,
+		StateNotPublished,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
+		CodeStageFailure,
+	)
+	if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed stage identity created destination: %v", statErr)
+	}
+	entries, readErr := os.ReadDir(directory)
+	if readErr != nil {
+		t.Fatalf("read directory containing retained stage: %v", readErr)
+	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), stageNamePrefix) {
+		t.Fatalf("retained entries = %v; want exactly the operation-owned stage", entries)
+	}
+	stagePath := filepath.Join(directory, entries[0].Name())
+	pathInfo, statErr := os.Lstat(stagePath)
+	if statErr != nil || !pathInfo.Mode().IsRegular() || ownedInfo == nil ||
+		!os.SameFile(ownedInfo, pathInfo) {
+		t.Fatalf("retained stage identity = %v/%v; want exact owned regular file", pathInfo, statErr)
+	}
+	if runtime.GOOS != "windows" && pathInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("retained stage mode = %04o; want 0600", pathInfo.Mode().Perm())
+	}
+	formatted := fmt.Sprintf("%v|%+v|%q", err, err, err)
+	if strings.Contains(formatted, directory) || strings.Contains(formatted, statFailure.Error()) {
+		t.Fatalf("cleanup diagnostic disclosed a path or raw platform error: %q", formatted)
+	}
+	if !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("create error = %v; want observable ErrCleanupIncomplete for retained owned stage", err)
+	}
+}
+
+func TestCreateReportsCleanupIncompleteWhenIdentityFailureCannotRemoveOwnedStage(t *testing.T) {
+	base := t.TempDir()
+	directory := filepath.Join(base, "parent")
+	movedDirectory := filepath.Join(base, "pinned-parent")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatalf("create publication parent: %v", err)
+	}
+	target := filepath.Join(directory, "must-not-exist.pcv")
+	foreign := []byte("TEST ONLY replacement-parent stage-name canary")
+	removeFailure := errors.New("TEST ONLY owned-stage removal failure")
+	operations, _ := realRenameOperations(t, directory)
+	var ownedInfo os.FileInfo
+	var stageName string
+	var replacementInfo os.FileInfo
+	var replaceErr error
+	operations.statStage = func(file *os.File) (os.FileInfo, error) {
+		info, err := file.Stat()
+		if err != nil {
+			return nil, err
+		}
+		ownedInfo = info
+		stageName = filepath.Base(file.Name())
+		if err := os.Rename(directory, movedDirectory); err != nil {
+			replaceErr = err
+			return nil, err
+		}
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatalf("create replacement parent: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, stageName), foreign, 0o640); err != nil {
+			t.Fatalf("write replacement-parent canary: %v", err)
+		}
+		replacementInfo, err = os.Lstat(filepath.Join(directory, stageName))
+		if err != nil {
+			t.Fatalf("stat replacement-parent canary: %v", err)
+		}
+		return info, nil
+	}
+	operations.removeStage = func(*os.Root, string) error {
+		return removeFailure
+	}
+
+	_, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+	if replaceErr != nil {
+		if removeErr := os.Remove(filepath.Join(directory, stageName)); removeErr != nil {
+			t.Fatalf("remove stage after unsupported parent replacement: %v", removeErr)
+		}
+		t.Skipf("platform prevents replacing an open parent path: %v", replaceErr)
+	}
+	result := requireResultError(t, err)
+	requireResult(
+		t,
+		result,
+		StateNotPublished,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
+		CodeIdentityChanged,
+	)
+	retainedPath := filepath.Join(movedDirectory, stageName)
+	pathInfo, statErr := os.Lstat(retainedPath)
+	if statErr != nil || ownedInfo == nil || !os.SameFile(ownedInfo, pathInfo) {
+		t.Fatalf("retained pinned-parent stage identity = %v/%v; want exact owned stage", pathInfo, statErr)
+	}
+	replacementPath := filepath.Join(directory, stageName)
+	requireFileBytes(t, replacementPath, foreign)
+	currentReplacement, statErr := os.Lstat(replacementPath)
+	if statErr != nil || replacementInfo == nil || !os.SameFile(replacementInfo, currentReplacement) ||
+		currentReplacement.Mode().Perm() != replacementInfo.Mode().Perm() {
+		t.Fatalf("replacement-parent canary identity/mode changed: %v/%v", currentReplacement, statErr)
+	}
+	if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("identity failure created replacement-parent destination: %v", statErr)
+	}
+	formatted := fmt.Sprintf("%v|%+v|%q", err, err, err)
+	if strings.Contains(formatted, base) || strings.Contains(formatted, removeFailure.Error()) {
+		t.Fatalf("cleanup diagnostic disclosed a path or raw platform error: %q", formatted)
+	}
+	if !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("create error = %v; want observable ErrCleanupIncomplete for retained pinned-parent stage", err)
+	}
+}
+
 func requireNoStageEntries(t *testing.T, directory string) {
 	t.Helper()
 	entries, err := os.ReadDir(directory)

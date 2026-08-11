@@ -147,6 +147,7 @@ type d1CreationSeams struct {
 	codecs      *pcencoding.RSCodecs
 	credentials d1CreationCredentialSession
 	observe     d1CreationObserver
+	createStage func(string, []string, pcv3publication.Policy) (*pcv3publication.Stage, error)
 	openSource  func(string) (*os.File, error)
 	flush       func(*bufio.Writer) error
 }
@@ -160,6 +161,7 @@ func defaultD1CreationSeams() d1CreationSeams {
 		observe: func(d1CreationBoundary, *pcv3publication.Stage) error {
 			return nil
 		},
+		createStage: pcv3publication.Create,
 		openSource: func(path string) (*os.File, error) {
 			return fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
 		},
@@ -212,7 +214,7 @@ func composeD1OuterStage(
 		return nil, newD1OuterFailure(StageCancellation, err)
 	}
 
-	stage, err := pcv3publication.Create(
+	stage, err := seams.createStage(
 		request.route.destinationPath,
 		[]string{request.route.sourcePath},
 		pcv3publication.PolicyNoReplace,
@@ -220,6 +222,12 @@ func composeD1OuterStage(
 	if err != nil {
 		var publicationResult pcv3publication.Result
 		if errors.As(err, &publicationResult) {
+			if errors.Is(err, pcv3publication.ErrCleanupIncomplete) {
+				return publicationResult, newD1OuterFailure(
+					StageOutputPublication,
+					pcv3publication.ErrCleanupIncomplete,
+				)
+			}
 			return publicationResult, nil
 		}
 		return nil, newD1OuterFailure(StageOutputPublication, err)
@@ -373,7 +381,7 @@ func composeD1OuterStage(
 
 func validD1CreationSeams(seams d1CreationSeams) bool {
 	return seams.credentials != nil && seams.observe != nil &&
-		seams.openSource != nil && seams.flush != nil &&
+		seams.createStage != nil && seams.openSource != nil && seams.flush != nil &&
 		validNormalWriteSeams(normalWriteSeams{
 			entropy: seams.entropy,
 			codecs:  seams.codecs,

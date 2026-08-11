@@ -151,21 +151,32 @@ func TestRunRejectsZeroCoreSemantic(t *testing.T) {
 func TestRunPublishesOneCanonicalArtifactForPartialEvidence(t *testing.T) {
 	directory := t.TempDir()
 	target := filepath.Join(directory, "evidence.pcv3-recovery")
+	firstSegment := bytes.Repeat([]byte{0xa5}, int(recoveryRecordPlaintextMax))
+	finalSegment := []byte("safe!")
+	plaintextLength := 2*recoveryRecordPlaintextMax + uint64(len(finalSegment))
 	semantic := operationSemantic{
 		outcome: pcv3.OutcomeForcePartial, provenance: pcv3.ForceProvenancePartial,
-		stage: pcv3.StageRecordAuth, code: pcv3.CodeForcePartial, plaintextLength: 1048581,
+		stage: pcv3.StageRecordAuth, code: pcv3.CodeForcePartial, plaintextLength: plaintextLength,
 		ranges: []operationRange{
-			{recordIndex: 0, start: 0, end: 1048576, state: pcv3.RecoveryRangeMissing},
-			{recordIndex: 1, start: 1048576, end: 1048581, state: pcv3.RecoveryRangeVerified},
+			{recordIndex: 0, start: 0, end: recoveryRecordPlaintextMax, state: pcv3.RecoveryRangeVerified},
+			{recordIndex: 1, start: recoveryRecordPlaintextMax, end: 2 * recoveryRecordPlaintextMax, state: pcv3.RecoveryRangeMissing},
+			{recordIndex: 2, start: 2 * recoveryRecordPlaintextMax, end: plaintextLength, state: pcv3.RecoveryRangeVerified},
 		},
-		final: pcv3.RecoveryFinalMissing,
+		final: pcv3.RecoveryFinalVerified,
 	}
-	runner := fixedCoreRunner(semantic, [][]byte{[]byte("safe!")}, nil)
+	runner := fixedCoreRunner(semantic, [][]byte{firstSegment, finalSegment}, nil)
 
 	result := runWithCore(context.Background(), &Request{Target: target}, runner)
 	if result.Outcome() != pcv3.OutcomeForcePartial ||
-		result.PublicationState() != pcv3publication.StatePublishedDurable {
-		t.Fatalf("operation = %v/%v; want Force-partial plus durable publication", result.Outcome(), result.PublicationState())
+		result.ForceProvenance() != pcv3.ForceProvenancePartial ||
+		result.Stage() != pcv3.StageRecordAuth || result.Code() != pcv3.CodeForcePartial {
+		t.Fatalf("semantic result = %v/%v/%v/%v; want exact Force-partial classification", result.Outcome(), result.ForceProvenance(), result.Stage(), result.Code())
+	}
+	if !result.PublicationAttempted() ||
+		result.PublicationState() != pcv3publication.StatePublishedDurable ||
+		result.PublicationStage() != pcv3.StageNone ||
+		result.PublicationCode() != pcv3publication.CodePublishedDurable {
+		t.Fatalf("publication result = %v/%v/%v/%v; want attempted durable publication", result.PublicationAttempted(), result.PublicationState(), result.PublicationStage(), result.PublicationCode())
 	}
 	contents, err := os.ReadFile(target)
 	if err != nil {
@@ -177,8 +188,10 @@ func TestRunPublishesOneCanonicalArtifactForPartialEvidence(t *testing.T) {
 	}
 	metadata := artifact.Metadata()
 	if metadata.State != pcv3artifact.StatePartial || metadata.Role != pcv3artifact.RoleNone ||
-		metadata.Final != pcv3artifact.FinalMissing || metadata.PlaintextLength != 1048581 ||
-		metadata.RangeCount != 2 || metadata.EmittedSegmentCount != 1 {
+		metadata.Final != pcv3artifact.FinalVerified || metadata.PlaintextLength != plaintextLength ||
+		metadata.RangeCount != 3 || metadata.EmittedSegmentCount != 2 ||
+		metadata.TableOffset != 80 || metadata.DataOffset != 200 ||
+		metadata.TotalLength != uint64(len(contents)) {
 		t.Fatalf("artifact metadata = %#v; want exact partial map", metadata)
 	}
 	var entries []pcv3artifact.Entry
@@ -196,10 +209,22 @@ func TestRunPublishesOneCanonicalArtifactForPartialEvidence(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("visit artifact ranges: %v", err)
 	}
-	if len(entries) != 2 || len(segments) != 1 || !bytes.Equal(segments[0], []byte("safe!")) ||
-		entries[0].Status != pcv3artifact.RangeMissing || entries[0].SegmentLength != 0 {
-		t.Fatalf("artifact entries/segments = %#v/%q; want verified bytes plus explicit missing interval", entries, segments)
+	if len(entries) != 3 || len(segments) != 2 ||
+		entries[0].RecordIndex != 0 || entries[0].Start != 0 ||
+		entries[0].End != recoveryRecordPlaintextMax || entries[0].Status != pcv3artifact.RangeVerified ||
+		entries[0].SegmentOffset != 200 || entries[0].SegmentLength != uint32(len(firstSegment)) ||
+		entries[1].RecordIndex != 1 || entries[1].Start != recoveryRecordPlaintextMax ||
+		entries[1].End != 2*recoveryRecordPlaintextMax || entries[1].Status != pcv3artifact.RangeMissing ||
+		entries[1].SegmentOffset != 0 || entries[1].SegmentLength != 0 ||
+		entries[2].RecordIndex != 2 || entries[2].Start != 2*recoveryRecordPlaintextMax ||
+		entries[2].End != plaintextLength || entries[2].Status != pcv3artifact.RangeVerified ||
+		entries[2].SegmentOffset != 200+recoveryRecordPlaintextMax ||
+		entries[2].SegmentLength != uint32(len(finalSegment)) ||
+		!bytes.Equal(segments[0], firstSegment) || !bytes.Equal(segments[1], finalSegment) {
+		t.Fatalf("artifact entries/segments do not preserve verified/missing/verified evidence: %#v", entries)
 	}
+	assertFileBytesAndMode(t, target, contents, 0o600)
+	assertNoRecoveryStageResidue(t, directory)
 }
 
 func TestRunNoOutputStatesNeverCreateDestination(t *testing.T) {
@@ -255,6 +280,66 @@ func TestRunNoReplaceAndProtectedAliasesRetainForeignBytes(t *testing.T) {
 			assertFileBytesAndMode(t, target, foreign, foreignMode)
 			assertNoRecoveryStageResidue(t, directory)
 		})
+	}
+}
+
+func TestRunCreateCleanupWarningPreservesSemanticAndPublicationResult(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "source.pcv")
+	sourceBytes := []byte("TEST ONLY encrypted source")
+	if err := os.WriteFile(source, sourceBytes, 0o600); err != nil {
+		t.Fatalf("seed protected recovery source: %v", err)
+	}
+	target := filepath.Join(directory, "missing-parent", "recovered.bin")
+	semantic := operationSemantic{
+		outcome: pcv3.OutcomeAuthenticatedDegraded, provenance: pcv3.ForceProvenanceVerified,
+		stage: pcv3.StageWrapAuth, code: pcv3.CodeAuthenticatedDegraded, plaintextLength: 3,
+		ranges: []operationRange{{recordIndex: 0, start: 0, end: 3, state: pcv3.RecoveryRangeVerified}},
+		final:  pcv3.RecoveryFinalVerified,
+	}
+	request := &Request{
+		Target: target, Protected: []string{source},
+		createStage: func(
+			target string,
+			protected []string,
+			policy pcv3publication.Policy,
+		) (*pcv3publication.Stage, error) {
+			stage, createErr := pcv3publication.Create(target, protected, policy)
+			if createErr == nil {
+				if stage != nil {
+					_ = stage.Cleanup()
+				}
+				return nil, errors.New("TEST ONLY expected real publication refusal")
+			}
+			return nil, errors.Join(createErr, pcv3publication.ErrCleanupIncomplete)
+		},
+	}
+
+	result := runWithCore(
+		context.Background(),
+		request,
+		fixedCoreRunner(semantic, [][]byte{[]byte("new")}, nil),
+	)
+	if result.Outcome() != pcv3.OutcomeAuthenticatedDegraded ||
+		result.ForceProvenance() != pcv3.ForceProvenanceVerified || result.Stage() != pcv3.StageWrapAuth {
+		t.Fatalf("cleanup warning changed semantic result = %v/%v/%v", result.Outcome(), result.ForceProvenance(), result.Stage())
+	}
+	if !result.PublicationAttempted() || result.PublicationState() != pcv3publication.StateNotPublished ||
+		result.PublicationStage() != pcv3.StageOutputPublication ||
+		result.PublicationCode() != pcv3publication.CodeStageFailure {
+		t.Fatalf("cleanup warning changed publication result = %v/%v/%v/%v", result.PublicationAttempted(), result.PublicationState(), result.PublicationStage(), result.PublicationCode())
+	}
+	assertFileBytesAndMode(t, source, sourceBytes, 0o600)
+	if _, statErr := os.Lstat(filepath.Dir(target)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed recovery create changed missing destination parent: %v", statErr)
+	}
+	assertNoRecoveryStageResidue(t, directory)
+	if strings.Contains(result.Error(), directory) ||
+		strings.Contains(result.Error(), "TEST ONLY expected real publication refusal") {
+		t.Fatalf("recovery cleanup diagnostic disclosed a path or raw error: %q", result.Error())
+	}
+	if !errors.Is(result, pcv3publication.ErrCleanupIncomplete) {
+		t.Fatalf("recovery result = %v; want observable ErrCleanupIncomplete", result)
 	}
 }
 
@@ -319,7 +404,14 @@ func TestRunDestinationWriteFailureRetainsOutputWriteClassificationAndCleansStag
 		Source: source, SourceSize: int64(len(fixture)), Factors: factors,
 		Admitter: recoveryOperationAdmitter{}, Mode: pcv3.RecoveryModeNormalV3,
 		Target: target, Protected: []string{sourcePath},
-		stageWriter: func(io.Writer) io.Writer {
+		stageWriter: func(destination io.Writer) io.Writer {
+			stage, ok := destination.(*os.File)
+			if !ok {
+				t.Fatalf("production stage writer = %T; want real file", destination)
+			}
+			if err := stage.Close(); err != nil {
+				t.Fatalf("close real stage before injected write failure: %v", err)
+			}
 			return &failingStageWriter{cause: writeFailure}
 		},
 	}
@@ -333,6 +425,9 @@ func TestRunDestinationWriteFailureRetainsOutputWriteClassificationAndCleansStag
 		result.PublicationStage() != pcv3.StageOutputWrite ||
 		result.PublicationCode() != pcv3publication.CodeStageFailure {
 		t.Fatalf("destination-write publication = %v/%v/%v/%v; want attempted/not-published/output-write/stage-failure", result.PublicationAttempted(), result.PublicationState(), result.PublicationStage(), result.PublicationCode())
+	}
+	if !errors.Is(result, pcv3publication.ErrCleanupIncomplete) {
+		t.Fatalf("destination-write cleanup result = %v; want observable ErrCleanupIncomplete", result)
 	}
 	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("destination-write failure left durable target: %v", err)

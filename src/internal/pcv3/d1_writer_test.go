@@ -594,6 +594,55 @@ func TestD1WriterPublicationOutcome(t *testing.T) {
 	}
 }
 
+func TestD1WriterCreateCleanupWarningPreservesSealedPublicationResult(t *testing.T) {
+	fixture := newD1CreationTestFixture(t)
+	fixture.destinationPath = filepath.Join(fixture.directory, "missing-parent", "output.pcv")
+	fixture.request.route.destinationPath = fixture.destinationPath
+	t.Cleanup(func() { _ = fixture.request.factors.Close() })
+	seams := newD1LiteralStageIntegrationSeams(t, func(
+		d1CreationBoundary,
+		*pcv3publication.Stage,
+	) error {
+		return errors.New("TEST ONLY unexpected post-create D1 effect")
+	})
+	seams.createStage = func(
+		target string,
+		protected []string,
+		policy pcv3publication.Policy,
+	) (*pcv3publication.Stage, error) {
+		stage, createErr := pcv3publication.Create(target, protected, policy)
+		if createErr == nil {
+			if stage != nil {
+				_ = stage.Cleanup()
+			}
+			return nil, errors.New("TEST ONLY expected real publication refusal")
+		}
+		return nil, errors.Join(createErr, pcv3publication.ErrCleanupIncomplete)
+	}
+
+	result, err := composeD1OuterStage(context.Background(), fixture.request, seams)
+	if result == nil || result.State() != pcv3publication.StateNotPublished ||
+		result.Stage() != StageOutputPublication || result.Code() != pcv3publication.CodeStageFailure {
+		t.Fatalf("D1 create result = %T %v; want sealed not-published/output-publication/stage-failure", result, result)
+	}
+	requireD1SourceUnchanged(t, fixture)
+	if _, statErr := os.Lstat(filepath.Dir(fixture.destinationPath)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed D1 create changed missing destination parent: %v", statErr)
+	}
+	requireD1NoStageResidue(t, fixture.directory)
+	if err == nil || !errors.Is(err, pcv3publication.ErrCleanupIncomplete) {
+		t.Fatalf("D1 create cleanup error = %v; want observable ErrCleanupIncomplete", err)
+	}
+	var failure *d1OuterFailure
+	if !errors.As(err, &failure) || failure.Stage() != StageOutputPublication {
+		t.Fatalf("D1 create cleanup error = %T %v; want output-publication D1 failure", err, err)
+	}
+	if strings.Contains(err.Error(), fixture.directory) ||
+		strings.Contains(err.Error(), "TEST ONLY expected real publication refusal") {
+		t.Fatalf("D1 create cleanup diagnostic disclosed a path or raw error: %q", err.Error())
+	}
+}
+
 const (
 	d1CreationTestOuterKeySeed  = 0x85
 	d1CreationOuterEntropyBytes = 224
