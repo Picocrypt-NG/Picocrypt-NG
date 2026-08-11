@@ -1,6 +1,7 @@
 package pcv3
 
 import (
+	pcencoding "Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/pcv3credential"
 	"bytes"
 	"context"
@@ -434,6 +435,187 @@ func TestForceRecordAnalysisPrecedesAndConstrainsSecondPassOutput(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+func TestForceMiddleMissingRecordDoesNotSuppressLaterVerifiedEmission(t *testing.T) {
+	const (
+		recordPlaintextLength  = 1048576
+		plaintextLength        = 3145728
+		frontHeaderLength      = 1112
+		middleDescriptorOffset = 1049800
+		middleBodyOffset       = 1049848
+		middleTagOffset        = 2098424
+		volumeLength           = 3148296
+	)
+
+	fixtures := loadNormalFixtureManifest(t).FixturesByID()
+	fixture := requireNormalFixture(t, fixtures, "normal-standard-combined-ordered-two-mib")
+	frozenVolume := readNormalFixtureArtifact(t, fixture.Volume)
+	writeRequest, material, entropy := decodeNormalWriterFixtureInputs(t, fixture, frozenVolume)
+	defer material.keys.close()
+	if writeRequest.suite != SuiteStandard || writeRequest.payloadBodyRS {
+		t.Fatal("middle-hole seed must use the standard suite without payload Reed-Solomon")
+	}
+	writeRequest.plaintextLength = plaintextLength
+
+	plaintext := make([]byte, 0, plaintextLength)
+	plaintext = append(plaintext, bytes.Repeat([]byte{0x41}, recordPlaintextLength)...)
+	plaintext = append(plaintext, bytes.Repeat([]byte{0x42}, recordPlaintextLength)...)
+	plaintext = append(plaintext, bytes.Repeat([]byte{0x43}, recordPlaintextLength)...)
+	codecs, err := pcencoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("create TEST ONLY RS codecs: %v", err)
+	}
+	var serialized bytes.Buffer
+	completion, err := serializeNormalVolume(
+		context.Background(),
+		writeRequest,
+		bytes.NewReader(plaintext),
+		&serialized,
+		material,
+		normalWriteSeams{entropy: bytes.NewReader(entropy), codecs: codecs},
+	)
+	if err != nil || completion == nil {
+		t.Fatalf("serialize three-record Force volume = completion %v, error %v", completion != nil, err)
+	}
+	volume := append([]byte(nil), serialized.Bytes()...)
+	if len(volume) != volumeLength {
+		t.Fatalf("three-record volume length = %d; want literal format length %d", len(volume), volumeLength)
+	}
+
+	route, structure, err := Probe(bytes.NewReader(volume), int64(len(volume)))
+	if err != nil || route != RouteNormalPCV {
+		t.Fatalf("Probe(three-record Force volume) = %v, %v; want normal PCV admission", route, err)
+	}
+	candidate, ok := structure.CandidateAt(0)
+	if !ok {
+		t.Fatal("three-record Force volume has no primary candidate")
+	}
+	geometry, ok := structure.GeometryAt(0)
+	if !ok {
+		t.Fatal("three-record Force volume has no primary geometry")
+	}
+	if geometry.PayloadBodyRS() || geometry.RecordCount() != 3 ||
+		geometry.FrontHeaderLength() != frontHeaderLength || geometry.FileSize() != volumeLength {
+		t.Fatalf(
+			"three-record geometry = RS %v, records %d, front %d, file %d; want false, 3, %d, %d",
+			geometry.PayloadBodyRS(), geometry.RecordCount(), geometry.FrontHeaderLength(),
+			geometry.FileSize(), frontHeaderLength, volumeLength,
+		)
+	}
+	middle, err := expectedRecord(candidate.core, geometry, 1)
+	if err != nil {
+		t.Fatalf("derive middle record geometry: %v", err)
+	}
+	if middle.final || middle.descriptorOffset != middleDescriptorOffset ||
+		middle.bodyOffset != middleBodyOffset ||
+		middle.encodedBodyLength != recordPlaintextLength+64 ||
+		middle.bodyOffset+recordPlaintextLength != middleTagOffset {
+		t.Fatalf(
+			"middle record geometry = final %v, descriptor %d, body %d, encoded body %d, tag %d; want false, %d, %d, %d, %d",
+			middle.final, middle.descriptorOffset, middle.bodyOffset, middle.encodedBodyLength,
+			middle.bodyOffset+recordPlaintextLength, middleDescriptorOffset, middleBodyOffset,
+			recordPlaintextLength+64, middleTagOffset,
+		)
+	}
+	volume[middleTagOffset] ^= 0x80
+
+	provider := newNormalFixtureCredentialProvider(t, fixture.Keys)
+	provider.access.adopted = true
+	defer provider.close()
+	forceRequest, err := newRecoveryRequest(RecoveryModeForce)
+	if err != nil {
+		t.Fatalf("new Force request: %v", err)
+	}
+	analysis, err := analyzeRecoveryRecords(
+		context.Background(), bytes.NewReader(volume), candidate, geometry,
+		provider, forceRequest, candidate.Role(),
+	)
+	if err != nil {
+		t.Fatalf("analyze three-record Force volume: %v", err)
+	}
+	resolution, err := resolveForceCandidates(forceRequest, []forceCandidateAnalysis{{
+		identity:    &forceTestIdentity{value: 13},
+		candidate:   candidate,
+		geometry:    geometry,
+		damageStage: analysis.damageStage,
+		ranges:      analysis.ranges,
+		final:       analysis.final,
+	}})
+	if err != nil {
+		t.Fatalf("resolve three-record Force volume: %v", err)
+	}
+	if resolution.result == nil {
+		t.Fatal("three-record Force resolution returned no typed result")
+	}
+	defer resolution.result.Close()
+	wantRanges := []RecoveryRange{
+		{recordIndex: 0, start: 0, end: 1048576, state: RecoveryRangeVerified},
+		{recordIndex: 1, start: 1048576, end: 2097152, state: RecoveryRangeMissing},
+		{recordIndex: 2, start: 2097152, end: 3145728, state: RecoveryRangeVerified},
+	}
+	gotRanges := resolution.result.Ranges()
+	if len(gotRanges) != len(wantRanges) {
+		t.Fatalf("resolved recovery ranges = %#v; want exact three-record map %#v", gotRanges, wantRanges)
+	}
+	for index := range wantRanges {
+		if gotRanges[index] != wantRanges[index] {
+			t.Fatalf("resolved recovery range %d = %#v; want %#v", index, gotRanges[index], wantRanges[index])
+		}
+	}
+	if resolution.selected != 0 ||
+		resolution.result.Outcome() != OutcomeForcePartial ||
+		resolution.result.ForceProvenance() != ForceProvenancePartial ||
+		resolution.result.Stage() != StageRecordAuth ||
+		resolution.result.Code() != CodeForcePartial ||
+		resolution.result.PlaintextLength() != plaintextLength ||
+		resolution.result.FinalRecordState() != RecoveryFinalVerified {
+		t.Fatalf(
+			"Force resolution = selected %d, %v/%v/%v/%v, length %d, final %v; want 0, partial/partial/record-auth/force-partial, %d, verified",
+			resolution.selected, resolution.result.Outcome(), resolution.result.ForceProvenance(),
+			resolution.result.Stage(), resolution.result.Code(), resolution.result.PlaintextLength(),
+			resolution.result.FinalRecordState(), plaintextLength,
+		)
+	}
+
+	type emission struct {
+		recoveryRange RecoveryRange
+		plaintext     []byte
+	}
+	var emissions []emission
+	err = emitRecoveryRecords(
+		context.Background(), bytes.NewReader(volume), candidate, geometry,
+		provider, forceRequest, candidate.Role(), analysis,
+		func(recoveryRange RecoveryRange, emitted []byte) error {
+			if recoveryRange.State() == RecoveryRangeMissing {
+				t.Fatal("Force emitted bytes for the missing middle record")
+			}
+			emissions = append(emissions, emission{
+				recoveryRange: recoveryRange,
+				plaintext:     append([]byte(nil), emitted...),
+			})
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("emit three-record Force volume: %v", err)
+	}
+	if len(emissions) != 2 {
+		t.Fatalf("Force emissions = %d; want record 0 and record 2 around one literal hole", len(emissions))
+	}
+	wantEmissionRanges := []RecoveryRange{wantRanges[0], wantRanges[2]}
+	wantEmissionBytes := [][]byte{
+		bytes.Repeat([]byte{0x41}, recordPlaintextLength),
+		bytes.Repeat([]byte{0x43}, recordPlaintextLength),
+	}
+	for index := range emissions {
+		if emissions[index].recoveryRange != wantEmissionRanges[index] {
+			t.Fatalf("Force emission %d range = %#v; want %#v", index, emissions[index].recoveryRange, wantEmissionRanges[index])
+		}
+		if !bytes.Equal(emissions[index].plaintext, wantEmissionBytes[index]) {
+			t.Fatalf("Force emission %d did not preserve the verified record bytes at their original range", index)
+		}
 	}
 }
 
