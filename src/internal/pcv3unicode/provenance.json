@@ -43,8 +43,8 @@
       "source_path": "unicode/norm/tables17.0.0.go",
       "source_sha256": "26784025eb1881a4452f101a7ef34b33c8ca02bd0603bfec41d2c823494ff7cb",
       "artifact_path": "norm17/tables17.go",
-      "artifact_sha256": "e2aa3a26d408ac8c3e6ed34875cdb25feafa7e9bc215d8045636013699411f60",
-      "modification": "Removed only the upstream go1.27 build constraint so the frozen Unicode-17 data compiles under the pinned Go 1.26 toolchain."
+      "artifact_sha256": "93f894d12d02fa546b9da7ae02f2130ceda06399908fb48db1425ef4ea54b22e",
+      "modification": "Removed the upstream go1.27 build constraint, then applied gofmt/gofumpt-only source layout normalization; the frozen Unicode-17 table data was not rewritten."
     },
     "assignment_table": {
       "source_path": "unicode/rangetable/tables17.0.0.go",
@@ -80,13 +80,13 @@
         "norm17/iter.go": "4d580123776d78ff862131bd8c99fa5758f3cb70530619edc80ed4ee173cd83a",
         "norm17/normalize.go": "706fc4731c847f4b9d8b4022efd1bc5a8a4e076c44cb37442e5ac62fd6014838",
         "norm17/recomposition17.go": "3db85120aaf91ab9f8cb7afdef408fdcfc0f0c947d98fedf0013a7e2e1a51e9e",
-        "norm17/tables17.go": "e2aa3a26d408ac8c3e6ed34875cdb25feafa7e9bc215d8045636013699411f60",
+        "norm17/tables17.go": "93f894d12d02fa546b9da7ae02f2130ceda06399908fb48db1425ef4ea54b22e",
         "norm17/transform.go": "6f8014595643e2acae76d47ed6abe8ace969a0c9070dbfa5a89c86bebcec812d",
         "norm17/trie.go": "d87793d558251ee8824954f0b7bc5564803e4c9d59a8c4eebb4c3c5cfbd19492"
       },
       "license_path": "LICENSE and norm17/LICENSE",
       "license_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
-      "local_code_modifications": "Removed upstream go:generate directives and canonical import comment from norm17/normalize.go; removed the Go 1.27 build constraint from tables17.go; added a provenance-pinned full-width supplementary recomposition guard for all 33 Unicode 17 mappings; documented the fixed bounds of seven inherited integer conversions for gosec."
+      "local_code_modifications": "Removed upstream go:generate directives and canonical import comment from norm17/normalize.go; removed the Go 1.27 build constraint from tables17.go and applied gofmt/gofumpt-only source layout normalization without rewriting table data; added a provenance-pinned full-width supplementary recomposition guard for all 33 Unicode 17 mappings; documented the fixed bounds of seven inherited integer conversions for gosec."
     }
   }
 }

@@ -109,7 +109,7 @@ func TestFrozenProvenancePinsExternalEvidence(t *testing.T) {
 	if provenance.CopiedData.NormalizationTable.SourceSHA256 != "26784025eb1881a4452f101a7ef34b33c8ca02bd0603bfec41d2c823494ff7cb" || provenance.CopiedData.AssignmentTable.SourceSHA256 != "59da556571457cb08fdc4913dc614bd6a342a17d693f5cc4c3a1ffb510929cbd" {
 		t.Fatal("provenance changed an upstream copied-data hash")
 	}
-	if provenance.CopiedData.NormalizationTable.ArtifactPath != "norm17/tables17.go" || provenance.CopiedData.NormalizationTable.ArtifactSHA256 != "e2aa3a26d408ac8c3e6ed34875cdb25feafa7e9bc215d8045636013699411f60" || provenance.CopiedData.NormalizationTable.Modification != "Removed only the upstream go1.27 build constraint so the frozen Unicode-17 data compiles under the pinned Go 1.26 toolchain." {
+	if provenance.CopiedData.NormalizationTable.ArtifactPath != "norm17/tables17.go" || provenance.CopiedData.NormalizationTable.ArtifactSHA256 != "93f894d12d02fa546b9da7ae02f2130ceda06399908fb48db1425ef4ea54b22e" || provenance.CopiedData.NormalizationTable.Modification != "Removed the upstream go1.27 build constraint, then applied gofmt/gofumpt-only source layout normalization; the frozen Unicode-17 table data was not rewritten." {
 		t.Fatal("provenance changed the reviewed local Unicode-17 normalization artifact")
 	}
 	if provenance.CopiedData.AssignmentTable.ArtifactPath != "assigned17.go" || provenance.CopiedData.AssignmentTable.ArtifactSHA256 != "070dd459d8fa2fcaccbd7c6ccc86acac4ad0808ef965a3041f6d2ca7b18a2114" || provenance.CopiedData.AssignmentTable.Extraction != "Exact assigned17_0_0 declaration extracted from unicode/rangetable/tables17.0.0.go; no ranges were rewritten." {
@@ -135,7 +135,7 @@ func TestFrozenArtifactHashes(t *testing.T) {
 		"norm17/iter.go":            "4d580123776d78ff862131bd8c99fa5758f3cb70530619edc80ed4ee173cd83a",
 		"norm17/normalize.go":       "706fc4731c847f4b9d8b4022efd1bc5a8a4e076c44cb37442e5ac62fd6014838",
 		"norm17/recomposition17.go": "3db85120aaf91ab9f8cb7afdef408fdcfc0f0c947d98fedf0013a7e2e1a51e9e",
-		"norm17/tables17.go":        "e2aa3a26d408ac8c3e6ed34875cdb25feafa7e9bc215d8045636013699411f60",
+		"norm17/tables17.go":        "93f894d12d02fa546b9da7ae02f2130ceda06399908fb48db1425ef4ea54b22e",
 		"norm17/transform.go":       "6f8014595643e2acae76d47ed6abe8ace969a0c9070dbfa5a89c86bebcec812d",
 		"norm17/trie.go":            "d87793d558251ee8824954f0b7bc5564803e4c9d59a8c4eebb4c3c5cfbd19492",
 	}
@@ -167,7 +167,7 @@ func TestFrozenArtifactHashes(t *testing.T) {
 	if !reflect.DeepEqual(provenance.CopiedData.NormalizerSupport.SourceFiles, wantSources) {
 		t.Fatal("provenance source hashes no longer match the reviewed upstream files")
 	}
-	if provenance.CopiedData.NormalizerSupport.LicensePath != "LICENSE and norm17/LICENSE" || provenance.CopiedData.NormalizerSupport.LicenseSHA256 != "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad" || provenance.CopiedData.NormalizerSupport.LocalCodeModifications != "Removed upstream go:generate directives and canonical import comment from norm17/normalize.go; removed the Go 1.27 build constraint from tables17.go; added a provenance-pinned full-width supplementary recomposition guard for all 33 Unicode 17 mappings; documented the fixed bounds of seven inherited integer conversions for gosec." {
+	if provenance.CopiedData.NormalizerSupport.LicensePath != "LICENSE and norm17/LICENSE" || provenance.CopiedData.NormalizerSupport.LicenseSHA256 != "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad" || provenance.CopiedData.NormalizerSupport.LocalCodeModifications != "Removed upstream go:generate directives and canonical import comment from norm17/normalize.go; removed the Go 1.27 build constraint from tables17.go and applied gofmt/gofumpt-only source layout normalization without rewriting table data; added a provenance-pinned full-width supplementary recomposition guard for all 33 Unicode 17 mappings; documented the fixed bounds of seven inherited integer conversions for gosec." {
 		t.Fatal("provenance changed the required BSD-3-Clause license record")
 	}
 }
