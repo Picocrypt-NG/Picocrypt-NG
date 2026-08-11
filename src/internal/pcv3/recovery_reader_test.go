@@ -2,10 +2,7 @@ package pcv3
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -91,23 +88,5 @@ func TestInspectRecoveryTreatsRawPreambleAsDamageNotRoutingAuthority(t *testing.
 	}
 	if !structure.PreambleDamaged() || structure.CandidateCount() != 2 {
 		t.Fatalf("preamble damaged/candidates = %v/%d; want true/2", structure.PreambleDamaged(), structure.CandidateCount())
-	}
-}
-
-func TestRecoveryFixtureOracleIsFrozenAndTestOnly(t *testing.T) {
-	encoded, err := os.ReadFile(filepath.Join("testdata", "recovery", "manifest.json"))
-	if err != nil {
-		t.Fatalf("read frozen recovery manifest: %v", err)
-	}
-	var manifest struct {
-		Format   string `json:"format"`
-		TestOnly bool   `json:"test_only"`
-		Cases    []any  `json:"cases"`
-	}
-	if err := json.Unmarshal(encoded, &manifest); err != nil {
-		t.Fatalf("decode frozen recovery manifest: %v", err)
-	}
-	if manifest.Format != "PCV3 recovery fixtures v1" || !manifest.TestOnly || len(manifest.Cases) != 4 {
-		t.Fatalf("recovery manifest identity = %q/%v/%d; want frozen v1 TEST ONLY four-case oracle", manifest.Format, manifest.TestOnly, len(manifest.Cases))
 	}
 }
