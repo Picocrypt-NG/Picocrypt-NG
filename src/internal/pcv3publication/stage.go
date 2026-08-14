@@ -13,8 +13,9 @@ import (
 
 const stageNamePrefix = ".picocrypt-pcv3-"
 
-// ErrCleanupIncomplete reports retained publication residue without claiming
-// that a proven publication did or did not occur.
+// ErrCleanupIncomplete reports that absence of operation-owned publication
+// residue was not proven. It does not claim that residue is present or that a
+// proven publication did or did not occur.
 var ErrCleanupIncomplete = errors.New("pcv3 publication: cleanup incomplete")
 
 type platformOperations struct {
@@ -23,9 +24,19 @@ type platformOperations struct {
 	syncStage           func(*os.File) error
 	closeStage          func(*os.File) error
 	statStage           func(*os.File) (os.FileInfo, error)
+	openRetained        func(*os.Root, string) (*os.File, error)
 	removeStage         func(*os.Root, string) error
 	supportsSafeReplace bool
 }
+
+type cleanupDisposition uint8
+
+const (
+	cleanupUncertain cleanupDisposition = iota
+	cleanupOwned
+	cleanupPublishedOwned
+	cleanupNotRequired
+)
 
 // Stage owns one private sibling staging file and the pinned directory handles
 // needed to publish it. It has no source-deletion authority.
@@ -41,14 +52,17 @@ type Stage struct {
 	stagePath  string
 	stageName  string
 	targetName string
+	protected  []string
 
 	policy     Policy
 	operations platformOperations
 	terminal   Result
 
-	cleanupAllowed bool
-	cleanupDone    bool
-	cleanupErr     error
+	cleanupDisposition cleanupDisposition
+	cleanupMayRemain   bool
+	cleanupDone        bool
+	cleanupErr         error
+	retentionAttempted bool
 }
 
 // Create validates a publication request and creates its private stage through
@@ -78,6 +92,9 @@ func createWithOperations(
 	if operations.statStage == nil {
 		operations.statStage = (*os.File).Stat
 	}
+	if operations.openRetained == nil {
+		operations.openRetained = (*os.Root).Open
+	}
 	if operations.removeStage == nil {
 		operations.removeStage = (*os.Root).Remove
 	}
@@ -96,14 +113,20 @@ func createWithOperations(
 	if targetName == "" || targetName == "." || targetName == string(filepath.Separator) {
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeInvalidRequest)
 	}
+	protectedPaths := make([]string, 0, len(protected))
 	for _, protectedPath := range protected {
 		if protectedPath == "" {
 			return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeInvalidRequest)
 		}
-		alias, aliasErr := fileops.SamePathOrFile(absoluteTarget, protectedPath)
+		absoluteProtected, pathErr := filepath.Abs(filepath.Clean(protectedPath))
+		if pathErr != nil {
+			return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeInvalidRequest)
+		}
+		alias, aliasErr := fileops.SamePathOrFile(absoluteTarget, absoluteProtected)
 		if aliasErr != nil || alias {
 			return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeInvalidRequest)
 		}
+		protectedPaths = append(protectedPaths, absoluteProtected)
 	}
 
 	parentPath := filepath.Dir(absoluteTarget)
@@ -175,19 +198,20 @@ func createWithOperations(
 	}
 
 	stage := &Stage{
-		file:           file,
-		root:           root,
-		parent:         parent,
-		rootInfo:       rootInfo,
-		stageInfo:      stageInfo,
-		targetInfo:     targetInfo,
-		parentPath:     parentPath,
-		stagePath:      filepath.Join(parentPath, stageName),
-		stageName:      stageName,
-		targetName:     targetName,
-		policy:         policy,
-		operations:     operations,
-		cleanupAllowed: true,
+		file:               file,
+		root:               root,
+		parent:             parent,
+		rootInfo:           rootInfo,
+		stageInfo:          stageInfo,
+		targetInfo:         targetInfo,
+		parentPath:         parentPath,
+		stagePath:          filepath.Join(parentPath, stageName),
+		stageName:          stageName,
+		targetName:         targetName,
+		protected:          protectedPaths,
+		policy:             policy,
+		operations:         operations,
+		cleanupDisposition: cleanupOwned,
 	}
 	if !stage.parentIdentityCurrent() {
 		result := newResult(StateNotPublished, pcv3.StageOutputPublication, CodeIdentityChanged)
@@ -246,6 +270,12 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 	if ctx.Err() != nil {
 		return stage.finish(StateNotPublished, pcv3.StageCancellation, CodeCancelled)
 	}
+	// This is the last safe userspace check before the platform atomic call. It
+	// blocks aliases visible at this boundary, but cannot promise safety against
+	// a hostile process racing namespace changes after the check.
+	if stage.protectedStageAliasUncertain() {
+		return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeIdentityChanged)
+	}
 
 	atomicErr := stage.operations.atomicPublish(
 		stage.parent,
@@ -255,7 +285,11 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 	)
 	classification, stageStillOwned := stage.classifyAfterAtomic()
 	if atomicErr == nil && classification != atomicCommitted {
-		stage.cleanupAllowed = false
+		if stageStillOwned {
+			stage.cleanupDisposition = cleanupOwned
+		} else {
+			stage.cleanupDisposition = cleanupUncertain
+		}
 		return stage.finish(
 			StatePublicationIndeterminate,
 			pcv3.StageOutputPublication,
@@ -265,7 +299,7 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 
 	switch classification {
 	case atomicCommitted:
-		stage.cleanupAllowed = false
+		stage.cleanupDisposition = cleanupNotRequired
 		if err := stage.operations.syncDirectory(stage.parent); err != nil {
 			return stage.finish(
 				StatePublishedDurabilityUncertain,
@@ -275,16 +309,110 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 		}
 		return stage.finish(StatePublishedDurable, pcv3.StageNone, CodePublishedDurable)
 	case atomicNotCommitted:
-		stage.cleanupAllowed = true
+		stage.cleanupDisposition = cleanupOwned
 		return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeAtomicFailed)
 	default:
-		stage.cleanupAllowed = stageStillOwned
+		if stageStillOwned {
+			stage.cleanupDisposition = cleanupOwned
+		} else {
+			stage.cleanupDisposition = cleanupUncertain
+		}
 		return stage.finish(
 			StatePublicationIndeterminate,
 			pcv3.StageOutputPublication,
 			CodePublicationIndeterminate,
 		)
 	}
+}
+
+// PublishRetained performs the same publication as Publish and transfers an
+// opaque exact-file owner only after durable publication is proven. Failure to
+// establish the post-publication identity grants no capability and immediately
+// removes the exact published file; any cleanup uncertainty is terminal.
+func (stage *Stage) PublishRetained(ctx context.Context) (Result, *RetainedFile) {
+	if stage != nil && stage.retentionAttempted {
+		return stage.terminal, nil
+	}
+	if stage != nil {
+		stage.retentionAttempted = true
+	}
+	publication := stage.Publish(ctx)
+	if publication == nil || publication.State() != StatePublishedDurable {
+		return publication, nil
+	}
+	retained := stage.takeRetainedFile()
+	if retained == nil {
+		// A prior Cleanup may already have closed every pinned handle after an
+		// ordinary durable Publish. Preserve that durable truth; no exact cleanup
+		// authority remains from which a retained capability could be minted.
+		if stage.cleanupDone {
+			return publication, nil
+		}
+		stage.cleanupDisposition = cleanupPublishedOwned
+		if cleanupErr := stage.Cleanup(); cleanupErr != nil {
+			stage.terminal = newResult(
+				StatePublicationIndeterminate,
+				pcv3.StageOutputPublication,
+				CodePublicationIndeterminate,
+			)
+		} else {
+			stage.terminal = newResult(
+				StateNotPublished,
+				pcv3.StageOutputPublication,
+				CodeStageFailure,
+			)
+		}
+		return stage.terminal, nil
+	}
+	return publication, retained
+}
+
+func (stage *Stage) takeRetainedFile() *RetainedFile {
+	if stage == nil || stage.terminal == nil ||
+		stage.terminal.State() != StatePublishedDurable || stage.file != nil ||
+		stage.root == nil || stage.parent == nil || stage.stageInfo == nil ||
+		stage.targetName == "" || stage.operations.removeStage == nil ||
+		stage.operations.openRetained == nil || stage.operations.syncDirectory == nil ||
+		!stage.parentIdentityCurrent() ||
+		probeIdentity(stage.root, stage.targetName, stage.stageInfo) != identityExpected {
+		return nil
+	}
+
+	file, err := stage.operations.openRetained(stage.root, stage.targetName)
+	if err != nil {
+		return nil
+	}
+	info, err := file.Stat()
+	if err != nil || info == nil || !info.Mode().IsRegular() ||
+		!os.SameFile(stage.stageInfo, info) ||
+		probeIdentity(stage.root, stage.targetName, stage.stageInfo) != identityExpected {
+		_ = file.Close()
+		return nil
+	}
+
+	retained := &RetainedFile{
+		file:          file,
+		root:          stage.root,
+		parent:        stage.parent,
+		identity:      stage.stageInfo,
+		targetName:    stage.targetName,
+		remove:        stage.operations.removeStage,
+		syncDirectory: stage.operations.syncDirectory,
+		active:        true,
+	}
+	stage.root = nil
+	stage.parent = nil
+	stage.rootInfo = nil
+	stage.stageInfo = nil
+	stage.targetInfo = nil
+	stage.parentPath = ""
+	stage.stagePath = ""
+	stage.stageName = ""
+	stage.targetName = ""
+	stage.protected = nil
+	stage.cleanupDisposition = cleanupNotRequired
+	stage.cleanupDone = true
+	return retained
 }
 
 func (stage *Stage) finish(state State, failureStage pcv3.Stage, code Code) Result {
@@ -332,6 +460,26 @@ func (stage *Stage) targetIdentityCode() Code {
 	default:
 		return CodeInvalidRequest
 	}
+}
+
+func (stage *Stage) protectedStageAliasUncertain() bool {
+	if stage == nil || stage.stagePath == "" {
+		if stage != nil {
+			stage.cleanupMayRemain = true
+		}
+		return true
+	}
+	for _, protectedPath := range stage.protected {
+		alias, err := fileops.SamePathOrFile(stage.stagePath, protectedPath)
+		if err != nil || alias {
+			// Cleanup may remove only the operation-owned stage name. An alias or
+			// an uninspectable protected name prevents proving that no ciphertext
+			// remains reachable elsewhere.
+			stage.cleanupMayRemain = true
+			return true
+		}
+	}
+	return false
 }
 
 type atomicClassification uint8
@@ -384,7 +532,9 @@ func probeIdentity(root *os.Root, name string, expected os.FileInfo) identityPro
 }
 
 // Cleanup closes retained handles and removes only the exact operation-owned
-// stage when publication state permits it. It never removes a replacement path.
+// stage when publication state permits it. A missing, replaced, or
+// uninspectable cleanup-required pathname is uncertainty, not proof that the
+// owned plaintext is absent, and the observed pathname is left untouched.
 func (stage *Stage) Cleanup() error {
 	if stage == nil {
 		return nil
@@ -401,18 +551,48 @@ func (stage *Stage) Cleanup() error {
 		}
 		stage.file = nil
 	}
-	if stage.cleanupAllowed && stage.root != nil && stage.stageName != "" {
-		switch probeIdentity(stage.root, stage.stageName, stage.stageInfo) {
-		case identityExpected:
-			if err := stage.operations.removeStage(stage.root, stage.stageName); err != nil {
-				remaining := probeIdentity(stage.root, stage.stageName, stage.stageInfo)
-				if remaining == identityExpected || remaining == identityUnknown {
+	if stage.cleanupDisposition == cleanupUncertain && stage.stageName != "" {
+		cleanupFailed = true
+	}
+	if stage.cleanupDisposition == cleanupOwned {
+		// Publication can fail before the precommit check. Probe again before
+		// removing the owned name so cleanup never claims all ciphertext is gone
+		// while a protected alias may still retain it.
+		stage.protectedStageAliasUncertain()
+		if stage.root == nil || stage.stageName == "" || stage.stageInfo == nil ||
+			stage.operations.removeStage == nil {
+			cleanupFailed = true
+		} else {
+			switch probeIdentity(stage.root, stage.stageName, stage.stageInfo) {
+			case identityExpected:
+				if err := stage.operations.removeStage(stage.root, stage.stageName); err != nil {
 					cleanupFailed = true
 				}
+			case identityMissing, identityOther, identityUnknown:
+				cleanupFailed = true
 			}
-		case identityUnknown:
-			cleanupFailed = true
 		}
+	}
+	if stage.cleanupDisposition == cleanupPublishedOwned {
+		if stage.root == nil || stage.targetName == "" || stage.stageInfo == nil ||
+			stage.operations.removeStage == nil || stage.operations.syncDirectory == nil {
+			cleanupFailed = true
+		} else {
+			switch probeIdentity(stage.root, stage.targetName, stage.stageInfo) {
+			case identityExpected:
+				if err := stage.operations.removeStage(stage.root, stage.targetName); err != nil {
+					cleanupFailed = true
+				} else if stage.parent == nil ||
+					stage.operations.syncDirectory(stage.parent) != nil {
+					cleanupFailed = true
+				}
+			case identityMissing, identityOther, identityUnknown:
+				cleanupFailed = true
+			}
+		}
+	}
+	if stage.cleanupMayRemain {
+		cleanupFailed = true
 	}
 	if stage.parent != nil {
 		if err := stage.parent.Close(); err != nil {
@@ -429,6 +609,7 @@ func (stage *Stage) Cleanup() error {
 	stage.rootInfo = nil
 	stage.stageInfo = nil
 	stage.targetInfo = nil
+	stage.protected = nil
 	if cleanupFailed {
 		stage.cleanupErr = ErrCleanupIncomplete
 	}

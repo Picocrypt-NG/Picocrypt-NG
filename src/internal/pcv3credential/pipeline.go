@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
-	"sync"
 )
 
 // CredentialRequest transfers ownership of Factors to NewCredential.
@@ -197,11 +196,6 @@ func newCredential(
 				seams.observeNormalInput(input.secret.Bytes())
 			}
 
-			admitted, err := admitFixedProfile(ctx, suite, admitter)
-			if err != nil {
-				return err
-			}
-
 			argonSalt := make([]byte, kdfSaltBytes)
 			defer crypto.SecureZero(argonSalt)
 			if err := readPipelineEntropy(
@@ -254,24 +248,11 @@ func newCredential(
 				input,
 				argonSalt,
 				suite,
-				admitted,
+				admitter,
 				seams.derive,
 			)
 			if err != nil {
-				var kdfErr *KDFError
-				if errors.As(err, &kdfErr) &&
-					kdfErr.Code == KDFErrorCancelled {
-					return newPipelineError(
-						PipelineErrorCancelled,
-						PipelineStageKDF,
-						suite,
-					)
-				}
-				return newPipelineError(
-					PipelineErrorKDF,
-					PipelineStageKDF,
-					suite,
-				)
+				return pipelineErrorFromKDF(err, suite)
 			}
 			defer root.close()
 			if ctx.Err() != nil {
@@ -373,68 +354,29 @@ func newCredential(
 	)
 }
 
-type fixedAdmission struct {
-	mu        sync.Mutex
-	profile   KDFProfile
-	available bool
-}
-
-func (admission *fixedAdmission) AdmitKDF(
-	ctx context.Context,
-	profile KDFProfile,
-) (KDFAdmission, error) {
-	admission.mu.Lock()
-	defer admission.mu.Unlock()
-	if ctx == nil ||
-		ctx.Err() != nil ||
-		!admission.available ||
-		profile != admission.profile {
-		admission.available = false
-		return KDFAdmissionDenied, nil
+func pipelineErrorFromKDF(err error, suite Suite) error {
+	var kdfErr *KDFError
+	if errors.As(err, &kdfErr) {
+		switch kdfErr.Code {
+		case KDFErrorAdmission:
+			return newPipelineError(
+				PipelineErrorAdmission,
+				PipelineStageAdmission,
+				suite,
+			)
+		case KDFErrorCancelled:
+			return newPipelineError(
+				PipelineErrorCancelled,
+				PipelineStageKDF,
+				suite,
+			)
+		}
 	}
-	admission.available = false
-	return KDFAdmissionGranted, nil
-}
-
-func admitFixedProfile(
-	ctx context.Context,
-	suite Suite,
-	admitter Admitter,
-) (Admitter, error) {
-	profile, err := fixedProfileForSuite(suite)
-	if err != nil {
-		return nil, newPipelineError(
-			PipelineErrorSchedule,
-			PipelineStageSchedule,
-			suite,
-		)
-	}
-	if ctx.Err() != nil {
-		return nil, newPipelineError(
-			PipelineErrorCancelled,
-			PipelineStageAdmission,
-			suite,
-		)
-	}
-	admission, admissionErr := admitter.AdmitKDF(ctx, profile)
-	if ctx.Err() != nil {
-		return nil, newPipelineError(
-			PipelineErrorCancelled,
-			PipelineStageAdmission,
-			suite,
-		)
-	}
-	if admissionErr != nil || admission != KDFAdmissionGranted {
-		return nil, newPipelineError(
-			PipelineErrorAdmission,
-			PipelineStageAdmission,
-			suite,
-		)
-	}
-	return &fixedAdmission{
-		profile:   profile,
-		available: true,
-	}, nil
+	return newPipelineError(
+		PipelineErrorKDF,
+		PipelineStageKDF,
+		suite,
+	)
 }
 
 func readPipelineEntropy(

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -827,6 +828,206 @@ func TestD1PublicationCannotLaunderOutcome(t *testing.T) {
 	}
 	assertFileBytesAndMode(t, target, foreign, foreignMode)
 	assertNoRecoveryStageResidue(t, directory)
+}
+
+func TestArtifactInspectionPagesDurableForceEvidenceWithoutReopeningArtifact(t *testing.T) {
+	const rangeCount = uint64(260)
+	plaintextLength := rangeCount * recoveryRecordPlaintextMax
+	ranges := make([]operationRange, rangeCount)
+	for recordIndex := range rangeCount {
+		state := pcv3.RecoveryRangeMissing
+		if recordIndex == 0 {
+			state = pcv3.RecoveryRangeVerified
+		}
+		ranges[recordIndex] = operationRange{
+			recordIndex: recordIndex,
+			start:       recordIndex * recoveryRecordPlaintextMax,
+			end:         (recordIndex + 1) * recoveryRecordPlaintextMax,
+			state:       state,
+		}
+	}
+	semantic := operationSemantic{
+		outcome: pcv3.OutcomeForcePartial, provenance: pcv3.ForceProvenancePartial,
+		stage: pcv3.StageRecordAuth, code: pcv3.CodeForcePartial,
+		plaintextLength: plaintextLength,
+		ranges:          ranges,
+		final:           pcv3.RecoveryFinalMissing,
+	}
+	directory := t.TempDir()
+	target := filepath.Join(directory, "large-evidence.pcv3-recovery")
+	result := runWithCore(
+		context.Background(),
+		&Request{Target: target},
+		fixedCoreRunner(
+			semantic,
+			[][]byte{bytes.Repeat([]byte{0xa5}, int(recoveryRecordPlaintextMax))},
+			nil,
+		),
+	)
+	if result.PublicationState() != pcv3publication.StatePublishedDurable {
+		t.Fatalf("publication state = %v; want durable before inspection", result.PublicationState())
+	}
+	inspection := result.ArtifactInspection()
+	if inspection == nil {
+		t.Fatal("durable Force-partial result did not expose artifact inspection")
+	}
+	metadata := inspection.Metadata()
+	if metadata.Kind != pcv3artifact.StatePartial || metadata.Role != pcv3artifact.RoleNone ||
+		metadata.PlaintextLength != plaintextLength || metadata.Final != pcv3artifact.FinalMissing ||
+		metadata.RangeCount != 260 || metadata.VerifiedRangeCount != 1 ||
+		metadata.UnverifiedRangeCount != 0 || metadata.MissingRangeCount != 259 {
+		t.Fatalf("inspection metadata = %#v; want exact frozen Force-partial summary", metadata)
+	}
+
+	if err := os.Remove(target); err != nil {
+		t.Fatalf("remove published test artifact before path-free inspection: %v", err)
+	}
+	first, ok := inspection.Page(0, 128)
+	if !ok || len(first) != 128 || first[0] != (pcv3artifact.Range{
+		RecordIndex: 0,
+		Start:       0,
+		End:         recoveryRecordPlaintextMax,
+		Status:      pcv3artifact.RangeVerified,
+	}) || first[127] != (pcv3artifact.Range{
+		RecordIndex: 127,
+		Start:       127 * recoveryRecordPlaintextMax,
+		End:         128 * recoveryRecordPlaintextMax,
+		Status:      pcv3artifact.RangeMissing,
+	}) {
+		t.Fatalf("first page = ok %v length %d endpoints %#v/%#v; want exact records 0..127", ok, len(first), first[0], first[len(first)-1])
+	}
+	middle, ok := inspection.Page(128, 128)
+	if !ok || len(middle) != 128 || middle[0].RecordIndex != 128 ||
+		middle[127].RecordIndex != 255 || middle[0].Status != pcv3artifact.RangeMissing ||
+		middle[127].Status != pcv3artifact.RangeMissing {
+		t.Fatalf("middle page = ok %v length %d endpoints %#v/%#v; want exact records 128..255", ok, len(middle), middle[0], middle[len(middle)-1])
+	}
+	final, ok := inspection.Page(256, 128)
+	if !ok || len(final) != 4 || final[0].RecordIndex != 256 ||
+		final[3] != (pcv3artifact.Range{
+			RecordIndex: 259,
+			Start:       259 * recoveryRecordPlaintextMax,
+			End:         plaintextLength,
+			Status:      pcv3artifact.RangeMissing,
+		}) {
+		t.Fatalf("final page = ok %v length %d endpoints %#v/%#v; want exact records 256..259", ok, len(final), final[0], final[len(final)-1])
+	}
+
+	first[0] = pcv3artifact.Range{RecordIndex: math.MaxUint64, Status: pcv3artifact.RangeUnverified}
+	metadata.Kind = pcv3artifact.StateUnverifiedForensic
+	again, ok := inspection.Page(0, 1)
+	if !ok || len(again) != 1 || again[0].RecordIndex != 0 ||
+		again[0].Status != pcv3artifact.RangeVerified ||
+		inspection.Metadata().Kind != pcv3artifact.StatePartial {
+		t.Fatalf("caller mutation changed sealed inspection: page=%#v metadata=%#v", again, inspection.Metadata())
+	}
+
+	invalidPages := []struct {
+		name   string
+		offset uint64
+		limit  uint64
+	}{
+		{name: "zero limit", offset: 0, limit: 0},
+		{name: "over maximum limit", offset: 0, limit: 129},
+		{name: "offset at range count", offset: 260, limit: 1},
+		{name: "overflowing end", offset: math.MaxUint64, limit: 2},
+	}
+	for _, test := range invalidPages {
+		t.Run(test.name, func(t *testing.T) {
+			page, ok := inspection.Page(test.offset, test.limit)
+			if ok || page != nil {
+				t.Fatalf("invalid page (%d, %d) = %#v/%v; want nil/false", test.offset, test.limit, page, ok)
+			}
+		})
+	}
+	var nilInspection *ArtifactInspection
+	if page, ok := nilInspection.Page(0, 1); ok || page != nil {
+		t.Fatalf("nil inspection page = %#v/%v; want nil/false", page, ok)
+	}
+	assertNoRecoveryStageResidue(t, directory)
+}
+
+func TestArtifactInspectionRequiresDurableForceResultTuple(t *testing.T) {
+	forceSemantic := operationSemantic{
+		outcome: pcv3.OutcomeForceUnverified, provenance: pcv3.ForceProvenanceUnverified,
+		stage: pcv3.StageRecordAuth, code: pcv3.CodeForceUnverified, plaintextLength: 5,
+		ranges: []operationRange{{
+			recordIndex: 0, start: 0, end: 5, state: pcv3.RecoveryRangeUnverified,
+		}},
+		final: pcv3.RecoveryFinalUnverified,
+	}
+	durableDirectory := t.TempDir()
+	durable := runWithCore(
+		context.Background(),
+		&Request{Target: filepath.Join(durableDirectory, "unverified.pcv3-recovery")},
+		fixedRoleCoreRunner(
+			forceSemantic,
+			operationRoleCapsuleBackup,
+			[][]byte{[]byte("raw!!")},
+			nil,
+		),
+	)
+	inspection := durable.ArtifactInspection()
+	if inspection == nil {
+		t.Fatal("durable Force-unverified result did not expose artifact inspection")
+	}
+	metadata := inspection.Metadata()
+	if metadata.Kind != pcv3artifact.StateUnverifiedForensic || metadata.Role != pcv3artifact.RoleBackup ||
+		metadata.PlaintextLength != 5 || metadata.Final != pcv3artifact.FinalUnverified ||
+		metadata.RangeCount != 1 || metadata.VerifiedRangeCount != 0 ||
+		metadata.UnverifiedRangeCount != 1 || metadata.MissingRangeCount != 0 {
+		t.Fatalf("unverified inspection metadata = %#v; want exact backup-role summary", metadata)
+	}
+
+	for _, state := range []pcv3publication.State{
+		pcv3publication.StatePublishedDurabilityUncertain,
+		pcv3publication.StatePublicationIndeterminate,
+	} {
+		changed := *durable
+		changed.publicationState = state
+		if changed.ArtifactInspection() != nil {
+			t.Fatalf("publication state %v retained inspection; want fail-closed nil", state)
+		}
+	}
+
+	collisionDirectory := t.TempDir()
+	collisionTarget := filepath.Join(collisionDirectory, "foreign.bin")
+	if err := os.WriteFile(collisionTarget, []byte("FOREIGN"), 0o600); err != nil {
+		t.Fatalf("seed colliding destination: %v", err)
+	}
+	nonDurable := runWithCore(
+		context.Background(),
+		&Request{Target: collisionTarget},
+		fixedRoleCoreRunner(
+			forceSemantic,
+			operationRoleCapsuleBackup,
+			[][]byte{[]byte("raw!!")},
+			nil,
+		),
+	)
+	if nonDurable.PublicationState() != pcv3publication.StateNotPublished ||
+		nonDurable.ArtifactInspection() != nil {
+		t.Fatalf("non-durable Force result = %v inspection %#v; want not-published/nil", nonDurable.PublicationState(), nonDurable.ArtifactInspection())
+	}
+
+	nonForceSemantic := operationSemantic{
+		outcome: pcv3.OutcomeAuthenticatedDegraded, provenance: pcv3.ForceProvenanceVerified,
+		stage: pcv3.StageWrapAuth, code: pcv3.CodeAuthenticatedDegraded, plaintextLength: 5,
+		ranges: []operationRange{{
+			recordIndex: 0, start: 0, end: 5, state: pcv3.RecoveryRangeVerified,
+		}},
+		final: pcv3.RecoveryFinalVerified,
+	}
+	nonForceDirectory := t.TempDir()
+	nonForce := runWithCore(
+		context.Background(),
+		&Request{Target: filepath.Join(nonForceDirectory, "recovered.bin")},
+		fixedCoreRunner(nonForceSemantic, [][]byte{[]byte("clear")}, nil),
+	)
+	if nonForce.PublicationState() != pcv3publication.StatePublishedDurable ||
+		nonForce.ArtifactInspection() != nil {
+		t.Fatalf("durable non-Force result = %v inspection %#v; want durable/nil", nonForce.PublicationState(), nonForce.ArtifactInspection())
+	}
 }
 
 func fixedCoreRunner(

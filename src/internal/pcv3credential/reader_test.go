@@ -373,6 +373,103 @@ func TestReaderCredentialExactlyOneKDFAndScopedKeys(t *testing.T) {
 	}
 }
 
+func TestReaderAdmissionOccursAtKDFBoundary(t *testing.T) {
+	request := readerCredentialRequest(t, SuiteStandard1)
+	passwordAlias := request.Factors.Password
+	probe := newReaderCredentialProbe()
+	probe.admit.result = KDFAdmissionDenied
+	beforeKDF := false
+	admissionAfterBoundary := false
+	probe.admit.onCall = func() {
+		admissionAfterBoundary = beforeKDF
+	}
+	seams := probe.seams()
+	seams.beforeKDF = func() {
+		if probe.admit.calls != 0 || probe.kdfCalls != 0 {
+			t.Fatalf(
+				"reader pre-KDF boundary already had admission/KDF = %d/%d",
+				probe.admit.calls, probe.kdfCalls,
+			)
+		}
+		beforeKDF = true
+	}
+	callbackCalls := 0
+
+	owner, err := newReaderCredential(
+		context.Background(),
+		request,
+		probe.admit,
+		func(*ReaderCredential) error {
+			callbackCalls++
+			return nil
+		},
+		seams,
+	)
+	requirePipelineCode(t, err, PipelineErrorAdmission, PipelineStageAdmission)
+	if owner != nil {
+		owner.Close()
+		t.Fatal("resource-refused reader published an owner")
+	}
+	if !beforeKDF || !admissionAfterBoundary || probe.admit.calls != 1 ||
+		probe.kdfCalls != 0 || callbackCalls != 0 {
+		t.Fatalf(
+			"reader boundary/admission-order/admission/KDF/callback = %t/%t/%d/%d/%d; want true/true/1/0/0",
+			beforeKDF, admissionAfterBoundary, probe.admit.calls,
+			probe.kdfCalls, callbackCalls,
+		)
+	}
+	if !allZero(passwordAlias) {
+		t.Fatal("resource-refused reader retained transferred password")
+	}
+}
+
+func TestReaderCancellationBeforeCallback(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := readerCredentialRequest(t, SuiteStandard1)
+	passwordAlias := request.Factors.Password
+	probe := newReaderCredentialProbe()
+	seams := probe.seams()
+	originalObserve := seams.observeCredentialMaterial
+	seams.observeCredentialMaterial = func(material *keyMaterial) {
+		originalObserve(material)
+		cancel()
+	}
+	callbackCalls := 0
+
+	owner, err := newReaderCredential(
+		ctx,
+		request,
+		probe.admit,
+		func(*ReaderCredential) error {
+			callbackCalls++
+			return nil
+		},
+		seams,
+	)
+	requirePipelineCode(t, err, PipelineErrorCancelled, PipelineStageKeyDerivation)
+	if owner != nil {
+		owner.Close()
+		t.Fatal("cancelled reader published an owner")
+	}
+	if callbackCalls != 0 || probe.admit.calls != 1 || probe.kdfCalls != 1 {
+		t.Fatalf(
+			"cancelled reader callback/admission/KDF = %d/%d/%d; want 0/1/1",
+			callbackCalls,
+			probe.admit.calls,
+			probe.kdfCalls,
+		)
+	}
+	if !allZero(passwordAlias) {
+		t.Fatal("cancelled reader retained transferred password")
+	}
+	for index, alias := range probe.ownedAliases {
+		if !allZero(alias) {
+			t.Fatalf("cancelled reader retained derived alias %d", index)
+		}
+	}
+}
+
 func TestReaderOwnerMetadataBindsAuthenticatedFactors(t *testing.T) {
 	for _, test := range ownerMetadataFactorCases() {
 		t.Run(test.name, func(t *testing.T) {

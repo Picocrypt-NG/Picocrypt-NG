@@ -15,13 +15,21 @@ import (
 	"io"
 )
 
-const recoveryRecordPlaintextMax = uint64(1 << 20)
+const (
+	recoveryRecordPlaintextMax    = uint64(1 << 20)
+	artifactInspectionPageMaximum = uint64(128)
+)
+
+// ExecutionOptions selects internal output custody without adding authority to
+// Request. The zero value preserves terminal publication behavior.
+type ExecutionOptions struct {
+	RetainDurableOutput bool
+}
 
 var errInvalidRecoveryWriteProgress = errors.New("pcv3 recovery operation: invalid write progress")
 
-// Request contains the operation-owned publication inputs. Credential and
-// source fields are added by the production core adapter; tests exercise the
-// exact filesystem composition through runWithCore.
+// Request contains the operation-owned credential, source, and publication
+// inputs transferred by the shared internal native operation.
 type Request struct {
 	Source       io.ReaderAt
 	SourceSize   int64
@@ -54,6 +62,61 @@ type operationSemantic struct {
 	final           pcv3.RecoveryFinalState
 }
 
+// ArtifactInspectionMetadata is the path-free summary of one durably
+// published Force recovery artifact.
+type ArtifactInspectionMetadata struct {
+	Kind                 pcv3artifact.State
+	Role                 pcv3artifact.Role
+	PlaintextLength      uint64
+	Final                pcv3artifact.FinalStatus
+	RangeCount           uint64
+	VerifiedRangeCount   uint64
+	UnverifiedRangeCount uint64
+	MissingRangeCount    uint64
+}
+
+// ArtifactInspection is an immutable, in-memory view of the exact semantic
+// descriptor accepted by the artifact encoder. It owns no file or operation
+// authority.
+type ArtifactInspection struct {
+	metadata ArtifactInspectionMetadata
+	ranges   []pcv3artifact.Range
+}
+
+// Metadata returns a copy of the bounded artifact summary.
+func (inspection *ArtifactInspection) Metadata() ArtifactInspectionMetadata {
+	if inspection == nil {
+		return ArtifactInspectionMetadata{}
+	}
+	return inspection.metadata
+}
+
+// Page returns a defensive copy of at most 128 canonical range descriptors.
+// An invalid, overflowing, or out-of-range request fails closed.
+func (inspection *ArtifactInspection) Page(
+	offset uint64,
+	limit uint64,
+) ([]pcv3artifact.Range, bool) {
+	if inspection == nil || limit == 0 || limit > artifactInspectionPageMaximum {
+		return nil, false
+	}
+	end := offset + limit
+	if end < offset {
+		return nil, false
+	}
+	rangeCount := uint64(len(inspection.ranges))
+	if offset >= rangeCount {
+		return nil, false
+	}
+	if end > rangeCount {
+		end = rangeCount
+	}
+	return append(
+		[]pcv3artifact.Range(nil),
+		inspection.ranges[int(offset):int(end)]...,
+	), true
+}
+
 func (semantic operationSemantic) outputCapable() bool {
 	return semantic.outcome == pcv3.OutcomeSuccess ||
 		semantic.outcome == pcv3.OutcomeAuthenticatedDegraded ||
@@ -79,37 +142,67 @@ const (
 )
 
 // Run executes the internal production recovery core and composes its output
-// capability with one no-replace stage. No public app surface calls Run in
-// Phase 6.
+// capability with one no-replace stage.
 func Run(ctx context.Context, request *Request) *Result {
-	return runOperation(ctx, request, runProductionCore)
+	return RunWithOptions(ctx, request, ExecutionOptions{})
+}
+
+// RunWithOptions executes normal recovery with an optional exact retained
+// owner for a durably published output.
+func RunWithOptions(
+	ctx context.Context,
+	request *Request,
+	options ExecutionOptions,
+) *Result {
+	return runOperation(ctx, request, runProductionCore, options)
 }
 
 func runOperation(
 	ctx context.Context,
 	request *Request,
 	run recoveryCoreRunner,
+	options ExecutionOptions,
 ) *Result {
 	if ctx == nil && request != nil && request.Factors != nil {
 		_ = request.Factors.Close()
 		request.Factors = nil
 	}
-	return runWithCore(ctx, request, run)
+	return runWithCoreOptions(ctx, request, run, options)
 }
 
-// runD1 remains package-private until the PCV3 surface and writer gates are
-// complete. It deliberately has no CLI, UI, mobile, or WASM caller.
-//
-//nolint:unused // Phase 8 intentionally owns the first real D1 surface caller.
-func runD1(ctx context.Context, request *Request) *Result {
-	return runOperation(ctx, request, runD1ProductionCore)
+// RunD1 exposes the existing D1 recovery composition to the shared internal
+// native operation. It adds no second core or publication path.
+func RunD1(ctx context.Context, request *Request) *Result {
+	return RunD1WithOptions(ctx, request, ExecutionOptions{})
 }
 
-//nolint:unused // Phase 8 intentionally owns the first real D1 surface caller.
-func runD1Unverified(
+// RunD1WithOptions executes D1 recovery with the same optional retained-output
+// custody as RunWithOptions.
+func RunD1WithOptions(
+	ctx context.Context,
+	request *Request,
+	options ExecutionOptions,
+) *Result {
+	return runOperation(ctx, request, runD1ProductionCore, options)
+}
+
+// RunD1Unverified exposes the same composition under one exact physical D1
+// role. The underlying core still owns its callback-scoped consent state.
+func RunD1Unverified(
 	ctx context.Context,
 	request *Request,
 	role pcv3.D1BootstrapRole,
+) *Result {
+	return RunD1UnverifiedWithOptions(ctx, request, role, ExecutionOptions{})
+}
+
+// RunD1UnverifiedWithOptions preserves the exact selected physical D1 role
+// while optionally retaining a durably published output.
+func RunD1UnverifiedWithOptions(
+	ctx context.Context,
+	request *Request,
+	role pcv3.D1BootstrapRole,
+	options ExecutionOptions,
 ) *Result {
 	return runOperation(
 		ctx,
@@ -121,6 +214,7 @@ func runD1Unverified(
 		) (operationSemantic, error) {
 			return runD1ProductionCoreWithRole(ctx, request, &role, output)
 		},
+		options,
 	)
 }
 
@@ -133,6 +227,8 @@ type Result struct {
 	publicationStage     pcv3.Stage
 	publicationCode      pcv3publication.Code
 	cleanupIncomplete    bool
+	artifactInspection   *ArtifactInspection
+	retainedOutput       *pcv3publication.RetainedFile
 }
 
 func (result *Result) Outcome() pcv3.Outcome {
@@ -202,6 +298,33 @@ func (result *Result) PublicationCode() pcv3publication.Code {
 	return result.publicationCode
 }
 
+// ArtifactInspection returns immutable artifact metadata only for a durably
+// published Force result. It grants no access to the artifact path or bytes.
+func (result *Result) ArtifactInspection() *ArtifactInspection {
+	if result == nil || !result.publicationAttempted ||
+		result.publicationState != pcv3publication.StatePublishedDurable ||
+		(result.semantic.outcome != pcv3.OutcomeForcePartial &&
+			result.semantic.outcome != pcv3.OutcomeForceUnverified) {
+		return nil
+	}
+	return result.artifactInspection
+}
+
+// TakeRetainedOutput transfers the exact retained output at most once. Only a
+// durable output-capable result can carry this internal capability.
+func (result *Result) TakeRetainedOutput() *pcv3publication.RetainedFile {
+	if result == nil || !result.publicationAttempted ||
+		result.publicationState != pcv3publication.StatePublishedDurable ||
+		result.publicationStage != pcv3.StageNone ||
+		result.publicationCode != pcv3publication.CodePublishedDurable ||
+		!validOperationSemantic(result.semantic) {
+		return nil
+	}
+	retained := result.retainedOutput
+	result.retainedOutput = nil
+	return retained
+}
+
 func (result *Result) Error() string {
 	if result == nil {
 		return "pcv3 recovery operation: unavailable"
@@ -233,7 +356,29 @@ func runWithCore(
 	request *Request,
 	run recoveryCoreRunner,
 ) *Result {
-	result := &Result{}
+	return runWithCoreOptions(ctx, request, run, ExecutionOptions{})
+}
+
+func runWithCoreOptions(
+	ctx context.Context,
+	request *Request,
+	run recoveryCoreRunner,
+	options ExecutionOptions,
+) (result *Result) {
+	result = &Result{}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			cleanupIncomplete := false
+			if result.retainedOutput != nil {
+				cleanupIncomplete = result.retainedOutput.RemoveExact() != nil
+				result.retainedOutput = nil
+			}
+			if cleanupIncomplete {
+				panic(pcv3publication.ErrCleanupIncomplete)
+			}
+			panic(recovered)
+		}
+	}()
 	if ctx == nil || request == nil || run == nil {
 		result.semantic = operationSemantic{
 			outcome: pcv3.OutcomeOperationFailed,
@@ -244,6 +389,7 @@ func runWithCore(
 	}
 
 	outputCalls := 0
+	var encodedArtifactDescriptor *pcv3artifact.Descriptor
 	output := func(
 		semantic operationSemantic,
 		role operationPhysicalRole,
@@ -300,6 +446,9 @@ func runWithCore(
 					return yield(recoveryRange.recordIndex, bytes.NewReader(plaintext))
 				})
 			})
+			if err == nil {
+				encodedArtifactDescriptor = &descriptor
+			}
 		} else {
 			err = emit(func(_ operationRange, plaintext []byte) error {
 				return writeAll(destination, plaintext)
@@ -309,7 +458,12 @@ func runWithCore(
 			result.retainNotPublished(pcv3.StageOutputWrite)
 			return err
 		}
-		publication := stage.Publish(ctx)
+		var publication pcv3publication.Result
+		if options.RetainDurableOutput {
+			publication, result.retainedOutput = stage.PublishRetained(ctx)
+		} else {
+			publication = stage.Publish(ctx)
+		}
 		result.retainPublication(publication)
 		if publication.State() != pcv3publication.StatePublishedDurable {
 			return publication
@@ -332,6 +486,30 @@ func runWithCore(
 		} else {
 			result.semantic = cloneOperationSemantic(semantic)
 		}
+	}
+	if result.retainedOutput != nil &&
+		(!result.publicationAttempted ||
+			result.publicationState != pcv3publication.StatePublishedDurable ||
+			result.publicationStage != pcv3.StageNone ||
+			result.publicationCode != pcv3publication.CodePublishedDurable ||
+			!validOperationSemantic(result.semantic)) {
+		cleanupErr := result.retainedOutput.RemoveExact()
+		result.retainedOutput = nil
+		if cleanupErr != nil {
+			result.publicationState = pcv3publication.StatePublicationIndeterminate
+			result.publicationStage = pcv3.StageOutputPublication
+			result.publicationCode = pcv3publication.CodePublicationIndeterminate
+			result.cleanupIncomplete = true
+		}
+	}
+	if outputCalls == 1 && result.publicationAttempted &&
+		result.publicationState == pcv3publication.StatePublishedDurable &&
+		(result.semantic.outcome == pcv3.OutcomeForcePartial ||
+			result.semantic.outcome == pcv3.OutcomeForceUnverified) &&
+		encodedArtifactDescriptor != nil {
+		result.artifactInspection = artifactInspectionFromEncodedDescriptor(
+			*encodedArtifactDescriptor,
+		)
 	}
 	return result
 }
@@ -655,7 +833,6 @@ func runProductionCore(
 	return semantic, err
 }
 
-//nolint:unused // This adapter remains unreachable until Phase 8 wires explicit D1 routing.
 func runD1ProductionCore(
 	ctx context.Context,
 	request *Request,
@@ -664,7 +841,6 @@ func runD1ProductionCore(
 	return runD1ProductionCoreWithRole(ctx, request, nil, output)
 }
 
-//nolint:unused // This adapter remains unreachable until Phase 8 wires explicit D1 routing.
 func runD1ProductionCoreWithRole(
 	ctx context.Context,
 	request *Request,
@@ -816,6 +992,57 @@ func artifactDescriptor(
 	return descriptor, nil
 }
 
+func artifactInspectionFromEncodedDescriptor(
+	descriptor pcv3artifact.Descriptor,
+) *ArtifactInspection {
+	metadata := ArtifactInspectionMetadata{
+		Kind:            descriptor.State,
+		Role:            descriptor.Role,
+		PlaintextLength: descriptor.PlaintextLength,
+		Final:           descriptor.Final,
+		RangeCount:      uint64(len(descriptor.Ranges)),
+	}
+	switch metadata.Kind {
+	case pcv3artifact.StatePartial, pcv3artifact.StateUnverifiedForensic:
+	default:
+		return nil
+	}
+	switch metadata.Role {
+	case pcv3artifact.RoleNone, pcv3artifact.RolePrimary, pcv3artifact.RoleBackup,
+		pcv3artifact.RoleD1Front, pcv3artifact.RoleD1Tail:
+	default:
+		return nil
+	}
+	switch metadata.Final {
+	case pcv3artifact.FinalVerified, pcv3artifact.FinalUnverified, pcv3artifact.FinalMissing:
+	default:
+		return nil
+	}
+
+	ranges := append([]pcv3artifact.Range(nil), descriptor.Ranges...)
+	for _, evidenceRange := range ranges {
+		switch evidenceRange.Status {
+		case pcv3artifact.RangeVerified:
+			metadata.VerifiedRangeCount++
+		case pcv3artifact.RangeUnverified:
+			metadata.UnverifiedRangeCount++
+		case pcv3artifact.RangeMissing:
+			metadata.MissingRangeCount++
+		default:
+			return nil
+		}
+	}
+	counted := metadata.VerifiedRangeCount + metadata.UnverifiedRangeCount
+	if counted < metadata.VerifiedRangeCount {
+		return nil
+	}
+	counted += metadata.MissingRangeCount
+	if counted < metadata.MissingRangeCount || counted != metadata.RangeCount {
+		return nil
+	}
+	return &ArtifactInspection{metadata: metadata, ranges: ranges}
+}
+
 func operationRoleForCapsule(role pcv3.CapsuleRole) (operationPhysicalRole, bool) {
 	switch role {
 	case pcv3.CapsuleRolePrimary:
@@ -827,7 +1054,6 @@ func operationRoleForCapsule(role pcv3.CapsuleRole) (operationPhysicalRole, bool
 	}
 }
 
-//nolint:unused // D1 physical roles enter the operation only through the deferred Phase 8 adapter.
 func operationRoleForD1(role pcv3.D1BootstrapRole) (operationPhysicalRole, bool) {
 	switch role {
 	case pcv3.D1BootstrapFront:

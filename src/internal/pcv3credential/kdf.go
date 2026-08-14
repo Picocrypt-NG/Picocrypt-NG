@@ -41,6 +41,12 @@ const (
 	KDFAdmissionUnknown KDFAdmission = iota
 	KDFAdmissionGranted
 	KDFAdmissionDenied
+	// KDFAdmissionDeniedInsufficient reports a fresh, valid observation that
+	// cannot satisfy the fixed profile without weakening it.
+	KDFAdmissionDeniedInsufficient
+	// KDFAdmissionDeniedUnknown reports that safe admission could not be
+	// established from the available resource facts.
+	KDFAdmissionDeniedUnknown
 )
 
 // Admitter decides whether the already-selected fixed profile may run.
@@ -121,6 +127,10 @@ type kdfDeriver func(
 	salt []byte,
 	profile KDFProfile,
 ) ([]byte, error)
+
+// fixedProfileKDFLease serializes the complete fresh-admission and fixed KDF
+// boundary process-wide. Sending acquires the lease; receiving releases it.
+var fixedProfileKDFLease = make(chan struct{}, 1)
 
 var errUnsupportedArgon2Version = errors.New(
 	"pcv3credential: unsupported built-in Argon2 version",
@@ -251,6 +261,17 @@ func runFixedProfileKDFBorrowed(
 	var fixedSalt [kdfSaltBytes]byte
 	copy(fixedSalt[:], salt)
 
+	if ctx.Err() != nil {
+		return nil, newKDFError(KDFErrorCancelled, suite)
+	}
+	select {
+	case fixedProfileKDFLease <- struct{}{}:
+		defer func() { <-fixedProfileKDFLease }()
+	case <-ctx.Done():
+		return nil, newKDFError(KDFErrorCancelled, suite)
+	}
+	// Cancellation and acquisition may become ready together. Recheck before
+	// obtaining a resource decision so a cancelled waiter has no side effects.
 	if ctx.Err() != nil {
 		return nil, newKDFError(KDFErrorCancelled, suite)
 	}

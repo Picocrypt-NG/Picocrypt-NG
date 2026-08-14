@@ -36,6 +36,7 @@ type pipelineAdmission struct {
 	result   KDFAdmission
 	err      error
 	profiles []KDFProfile
+	onCall   func()
 }
 
 func (admission *pipelineAdmission) AdmitKDF(
@@ -44,6 +45,9 @@ func (admission *pipelineAdmission) AdmitKDF(
 ) (KDFAdmission, error) {
 	admission.calls++
 	admission.profiles = append(admission.profiles, profile)
+	if admission.onCall != nil {
+		admission.onCall()
+	}
 	return admission.result, admission.err
 }
 
@@ -307,24 +311,6 @@ func TestPipelineRejectsBeforeEntropyAndKDF(t *testing.T) {
 			code:  PipelineErrorSchedule,
 			stage: PipelineStageSchedule,
 		},
-		{
-			name: "admission denied",
-			edit: func(_ *CredentialRequest, probe *pipelineProbe) {
-				probe.admit.result = KDFAdmissionDenied
-			},
-			code:          PipelineErrorAdmission,
-			stage:         PipelineStageAdmission,
-			wantAdmission: 1,
-		},
-		{
-			name: "admission error",
-			edit: func(_ *CredentialRequest, probe *pipelineProbe) {
-				probe.admit.err = errors.New(pipelineSecretSentinel)
-			},
-			code:          PipelineErrorAdmission,
-			stage:         PipelineStageAdmission,
-			wantAdmission: 1,
-		},
 	}
 
 	for _, test := range tests {
@@ -366,6 +352,68 @@ func TestPipelineRejectsBeforeEntropyAndKDF(t *testing.T) {
 			}
 			if strings.Contains(fmt.Sprintf("%v %+v %#v", err, err, err), pipelineSecretSentinel) {
 				t.Fatal("pipeline diagnostics disclosed admission sentinel")
+			}
+		})
+	}
+}
+
+func TestPipelineAdmissionOccursAtKDFBoundary(t *testing.T) {
+	tests := []struct {
+		name      string
+		admission KDFAdmission
+		wantOwner bool
+		wantKDF   int
+	}{
+		{name: "granted", admission: KDFAdmissionGranted, wantOwner: true, wantKDF: 1},
+		{name: "refused", admission: KDFAdmissionDenied},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			probe := newPipelineProbe()
+			probe.admit.result = test.admission
+			entropyAtAdmission := -1
+			kdfAtAdmission := -1
+			probe.admit.onCall = func() {
+				entropyAtAdmission = probe.entropy.calls
+				kdfAtAdmission = probe.kdfCalls
+			}
+
+			owner, err := newCredential(
+				context.Background(),
+				pipelineRequest(t, SuiteStandard1),
+				probe.admit,
+				probe.seams(),
+			)
+			if test.wantOwner {
+				if err != nil || owner == nil {
+					t.Fatalf("admitted pipeline = owner %v, error %v; want owner", owner, err)
+				}
+				owner.Close()
+			} else {
+				requirePipelineCode(t, err, PipelineErrorAdmission, PipelineStageAdmission)
+				if owner != nil {
+					owner.Close()
+					t.Fatal("resource-refused pipeline published an owner")
+				}
+			}
+			if entropyAtAdmission != 3 || kdfAtAdmission != 0 ||
+				probe.entropy.calls != 3 || probe.admit.calls != 1 ||
+				probe.kdfCalls != test.wantKDF {
+				t.Fatalf(
+					"boundary entropy/admission-KDF/final admission/KDF = %d/%d/%d/%d; want 3/0/1/%d",
+					entropyAtAdmission, kdfAtAdmission, probe.admit.calls,
+					probe.kdfCalls, test.wantKDF,
+				)
+			}
+			if !test.wantOwner {
+				if probe.materialCalls != 0 || probe.published != 0 {
+					t.Fatalf(
+						"resource refusal material/publication = %d/%d; want zero",
+						probe.materialCalls, probe.published,
+					)
+				}
+				requirePipelineBuffersZero(t, probe.entropy.destinations)
 			}
 		})
 	}
@@ -536,59 +584,6 @@ func TestPipelineExactlyOneKDF(t *testing.T) {
 		t.Fatal("pipeline adapted or repeated the suite-selected profile")
 	}
 
-	replayProbe := newPipelineProbe()
-	admitted, err := admitFixedProfile(
-		context.Background(),
-		SuiteParanoid1,
-		replayProbe.admit,
-	)
-	if err != nil {
-		t.Fatalf("admit fixed profile for replay check: %v", err)
-	}
-	first, err := admitted.AdmitKDF(context.Background(), profile)
-	if err != nil || first != KDFAdmissionGranted {
-		t.Fatalf("first bound admission = %d, %v; want granted", first, err)
-	}
-	second, err := admitted.AdmitKDF(context.Background(), profile)
-	if err != nil || second != KDFAdmissionDenied {
-		t.Fatalf("replayed bound admission = %d, %v; want denied", second, err)
-	}
-
-	mismatchProbe := newPipelineProbe()
-	mismatchToken, err := admitFixedProfile(
-		context.Background(),
-		SuiteParanoid1,
-		mismatchProbe.admit,
-	)
-	if err != nil {
-		t.Fatalf("admit fixed profile for mismatch check: %v", err)
-	}
-	standardProfile, err := fixedProfileForSuite(SuiteStandard1)
-	if err != nil {
-		t.Fatalf("fixed Standard-1 profile: %v", err)
-	}
-	mismatch, err := mismatchToken.AdmitKDF(
-		context.Background(),
-		standardProfile,
-	)
-	if err != nil || mismatch != KDFAdmissionDenied {
-		t.Fatalf(
-			"cross-suite bound admission = %d, %v; want denied",
-			mismatch,
-			err,
-		)
-	}
-	afterMismatch, err := mismatchToken.AdmitKDF(
-		context.Background(),
-		profile,
-	)
-	if err != nil || afterMismatch != KDFAdmissionDenied {
-		t.Fatalf(
-			"post-mismatch bound admission = %d, %v; want denied",
-			afterMismatch,
-			err,
-		)
-	}
 }
 
 func TestPipelinePreKDFCancellation(t *testing.T) {
@@ -610,7 +605,7 @@ func TestPipelinePreKDFCancellation(t *testing.T) {
 		PipelineStageKDF,
 	)
 	if owner != nil ||
-		probe.admit.calls != 1 ||
+		probe.admit.calls != 0 ||
 		probe.entropy.calls != 3 ||
 		probe.kdfCalls != 0 ||
 		probe.materialCalls != 0 ||

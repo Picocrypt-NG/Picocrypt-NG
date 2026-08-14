@@ -970,6 +970,171 @@ func TestRecoveryCredentialConsumesFactorsOnceAcrossTwoTuples(t *testing.T) {
 	}
 }
 
+func TestRecoveryAdmissionOccursAtEveryKDFBoundary(t *testing.T) {
+	tests := []struct {
+		name               string
+		configureAdmission func(*recoveryCredentialProbe)
+		cancelBeforeSecond bool
+		cancelDuringSecond bool
+		wantCode           PipelineErrorCode
+		wantStage          PipelineStage
+		wantAdmission      int
+		wantKDF            int
+		wantCallbacks      []int
+		wantBoundaries     []int
+		wantOwner          bool
+	}{
+		{
+			name:               "each tuple obtains a fresh decision",
+			configureAdmission: func(*recoveryCredentialProbe) {},
+			wantAdmission:      2,
+			wantKDF:            2,
+			wantCallbacks:      []int{0, 1},
+			wantBoundaries:     []int{0, 1},
+			wantOwner:          true,
+		},
+		{
+			name: "second decision refuses before its KDF",
+			configureAdmission: func(probe *recoveryCredentialProbe) {
+				probe.reader.admit.onCall = func() {
+					if probe.reader.admit.calls == 2 {
+						probe.reader.admit.result = KDFAdmissionDenied
+					}
+				}
+			},
+			wantCode:       PipelineErrorAdmission,
+			wantStage:      PipelineStageAdmission,
+			wantAdmission:  2,
+			wantKDF:        1,
+			wantCallbacks:  []int{0},
+			wantBoundaries: []int{0, 1},
+		},
+		{
+			name:               "cancellation before second decision",
+			configureAdmission: func(*recoveryCredentialProbe) {},
+			cancelBeforeSecond: true,
+			wantCode:           PipelineErrorCancelled,
+			wantStage:          PipelineStageKDF,
+			wantAdmission:      1,
+			wantKDF:            1,
+			wantCallbacks:      []int{0},
+			wantBoundaries:     []int{0, 1},
+		},
+		{
+			name:               "cancellation during second key derivation",
+			configureAdmission: func(*recoveryCredentialProbe) {},
+			cancelDuringSecond: true,
+			wantCode:           PipelineErrorCancelled,
+			wantStage:          PipelineStageKeyDerivation,
+			wantAdmission:      2,
+			wantKDF:            2,
+			wantCallbacks:      []int{0},
+			wantBoundaries:     []int{0, 1},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			factors := pipelineRequest(t, SuiteStandard1).Factors
+			passwordAlias := factors.Password
+			request := &RecoveryCredentialRequest{
+				Factors: factors,
+				Tuples: []RecoveryCredentialTuple{
+					recoveryCredentialTuple(t, SuiteStandard1, factors, 0x31),
+					recoveryCredentialTuple(t, SuiteParanoid1, factors, 0x42),
+				},
+			}
+			probe := newRecoveryCredentialProbe()
+			test.configureAdmission(probe)
+			boundaries := make([]int, 0, 2)
+			seams := probe.seams()
+			originalObserve := seams.observeCredentialMaterial
+			materialCalls := 0
+			seams.observeCredentialMaterial = func(material *keyMaterial) {
+				originalObserve(material)
+				materialCalls++
+				if test.cancelDuringSecond && materialCalls == 2 {
+					cancel()
+				}
+			}
+			seams.beforeKDF = func() {
+				boundaries = append(boundaries, probe.reader.admit.calls)
+				if test.cancelBeforeSecond && len(boundaries) == 2 {
+					cancel()
+				}
+			}
+			transfer := bytes.Repeat([]byte{0x5a}, derivedKeyBytes)
+			callbacks := make([]int, 0, 2)
+
+			owner, err := newRecoveryCredential(
+				ctx,
+				request,
+				probe.reader.admit,
+				func(index int, candidate *ReaderCredential) error {
+					callbacks = append(callbacks, index)
+					if index == 0 {
+						return candidate.AdoptVolumeKey(transfer)
+					}
+					return candidate.WithKeys(
+						context.Background(),
+						KeyRolePrimary,
+						func(*ReaderKeys) error { return nil },
+					)
+				},
+				seams,
+			)
+
+			if test.wantCode == PipelineErrorCode(0) {
+				if err != nil {
+					if owner != nil {
+						owner.Close()
+					}
+					t.Fatalf("newRecoveryCredential: %v", err)
+				}
+			} else {
+				requirePipelineCode(t, err, test.wantCode, test.wantStage)
+			}
+			if (owner != nil) != test.wantOwner {
+				if owner != nil {
+					owner.Close()
+				}
+				t.Fatalf("owner present = %t; want %t", owner != nil, test.wantOwner)
+			}
+			if owner != nil {
+				owner.Close()
+			}
+			if probe.reader.admit.calls != test.wantAdmission ||
+				probe.reader.kdfCalls != test.wantKDF ||
+				!slices.Equal(callbacks, test.wantCallbacks) ||
+				!slices.Equal(boundaries, test.wantBoundaries) {
+				t.Fatalf(
+					"admission/KDF/callbacks/boundaries = %d/%d/%v/%v; want %d/%d/%v/%v",
+					probe.reader.admit.calls,
+					probe.reader.kdfCalls,
+					callbacks,
+					boundaries,
+					test.wantAdmission,
+					test.wantKDF,
+					test.wantCallbacks,
+					test.wantBoundaries,
+				)
+			}
+			if request.Factors != nil || request.Tuples != nil ||
+				!allZero(passwordAlias) || !allZero(transfer) {
+				t.Fatal("recovery admission path retained transferred credentials or candidate material")
+			}
+			for index, alias := range probe.reader.ownedAliases {
+				if !allZero(alias) {
+					t.Fatalf("recovery admission path retained derived alias %d", index)
+				}
+			}
+		})
+	}
+}
+
 func TestRecoveryCredentialRejectsTupleSetBeforeKDF(t *testing.T) {
 	tests := []struct {
 		name string

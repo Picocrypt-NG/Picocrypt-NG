@@ -216,10 +216,6 @@ func newReaderCredential(
 			}
 			defer input.Close()
 
-			admitted, err := admitFixedProfile(ctx, suite, admitter)
-			if err != nil {
-				return err
-			}
 			if seams.beforeKDF != nil {
 				seams.beforeKDF()
 			}
@@ -236,24 +232,11 @@ func newReaderCredential(
 				input,
 				argonSalt,
 				suite,
-				admitted,
+				admitter,
 				seams.derive,
 			)
 			if err != nil {
-				var kdfErr *KDFError
-				if errors.As(err, &kdfErr) &&
-					kdfErr.Code == KDFErrorCancelled {
-					return newPipelineError(
-						PipelineErrorCancelled,
-						PipelineStageKDF,
-						suite,
-					)
-				}
-				return newPipelineError(
-					PipelineErrorKDF,
-					PipelineStageKDF,
-					suite,
-				)
+				return pipelineErrorFromKDF(err, suite)
 			}
 			defer root.close()
 
@@ -366,6 +349,13 @@ func withReaderCredentialRoot(
 		return nil, err
 	}
 	defer reader.close()
+	if ctx.Err() != nil {
+		return nil, newPipelineError(
+			PipelineErrorCancelled,
+			PipelineStageCallback,
+			suite,
+		)
+	}
 
 	if err := callback(reader); err != nil {
 		return nil, newPipelineError(
@@ -436,6 +426,13 @@ func newReaderCredentialRoot(
 	}
 	if seams.observeCredentialMaterial != nil {
 		seams.observeCredentialMaterial(material)
+	}
+	if ctx.Err() != nil {
+		return nil, newPipelineError(
+			PipelineErrorCancelled,
+			PipelineStageKeyDerivation,
+			suite,
+		)
 	}
 
 	state := &readerCredentialState{

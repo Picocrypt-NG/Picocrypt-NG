@@ -20,6 +20,36 @@ func unpackAuthenticatedArchive(
 	archive *os.File,
 	options fileops.UnpackOptions,
 ) error {
+	if err := validateAuthenticatedArchive(completion, archive); err != nil {
+		return err
+	}
+	options.ZipPath = ""
+	options.ZipFile = archive
+	return fileops.Unpack(options)
+}
+
+func unpackAuthenticatedArchiveWithResult(
+	completion *normalCompletion,
+	archive *os.File,
+	root *os.Root,
+	expectedRoot os.FileInfo,
+) fileops.UnpackResult {
+	if validateAuthenticatedArchive(completion, archive) != nil ||
+		root == nil || expectedRoot == nil {
+		return nil
+	}
+	return fileops.UnpackWithResult(fileops.UnpackOptions{
+		ZipFile:             archive,
+		ExtractDir:          root.Name(),
+		ExtractRoot:         root,
+		ExpectedExtractRoot: expectedRoot,
+	})
+}
+
+func validateAuthenticatedArchive(
+	completion *normalCompletion,
+	archive *os.File,
+) error {
 	payloadKind, authenticated := completion.authenticatedPayloadKind()
 	if !authenticated || payloadKind != PayloadKindArchive {
 		return errArchiveHandoffDenied
@@ -27,7 +57,5 @@ func unpackAuthenticatedArchive(
 	if archive == nil {
 		return errArchivePlaintextUnavailable
 	}
-	options.ZipPath = ""
-	options.ZipFile = archive
-	return fileops.Unpack(options)
+	return nil
 }

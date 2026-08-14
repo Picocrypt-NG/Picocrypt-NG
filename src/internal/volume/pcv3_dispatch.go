@@ -119,6 +119,9 @@ func (input *PreparedDecryptInput) rewindRouted() (*os.File, error) {
 	if !os.SameFile(input.info, current) {
 		return nil, errors.New("prepared decrypt input identity changed")
 	}
+	if current.Size() != input.info.Size() {
+		return nil, errors.New("prepared decrypt input size changed")
+	}
 	if err := rejectClaimedPCV3Size(input.file, current.Size()); err != nil {
 		return nil, err
 	}
@@ -184,20 +187,51 @@ func (ctx *OperationContext) pinLegacyDecryptInput(source *os.File, owned bool) 
 	if _, err := source.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("rewind decrypt input before pinning: %w", err)
 	}
+	info, err := source.Stat()
+	if err != nil {
+		return fmt.Errorf("stat decrypt input before pinning: %w", err)
+	}
 	if err := rejectClaimedPCV3(source); err != nil {
 		return err
 	}
 	ctx.pinnedLegacyInput = source
 	ctx.ownsPinnedLegacyInput = owned
+	ctx.pinnedLegacyInputInfo = info
+	ctx.pinnedLegacyInputSize = info.Size()
 	return nil
 }
 
-func (ctx *OperationContext) openLegacyDecryptInput() (*os.File, error) {
+func (ctx *OperationContext) openLegacyDecryptInput() (io.ReadSeeker, error) {
+	if ctx.legacyInputFactory != nil {
+		if err := ctx.closeLegacyInputPass(); err != nil {
+			return nil, err
+		}
+		reader, err := ctx.legacyInputFactory()
+		if err != nil {
+			return nil, err
+		}
+		closer, ok := reader.(io.Closer)
+		if !ok {
+			return nil, errors.New("legacy input factory returned an unclosable pass")
+		}
+		ctx.legacyInputPass = closer
+		return reader, nil
+	}
 	if ctx.pinnedLegacyInput == nil {
 		return nil, errors.New("decrypt input descriptor is not pinned")
 	}
 	if _, err := ctx.pinnedLegacyInput.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("rewind pinned decrypt input: %w", err)
+	}
+	current, err := ctx.pinnedLegacyInput.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat pinned decrypt input: %w", err)
+	}
+	if ctx.pinnedLegacyInputInfo == nil || !os.SameFile(ctx.pinnedLegacyInputInfo, current) {
+		return nil, errors.New("pinned decrypt input identity changed")
+	}
+	if current.Size() != ctx.pinnedLegacyInputSize {
+		return nil, errors.New("pinned decrypt input size changed")
 	}
 	if err := rejectClaimedPCV3(ctx.pinnedLegacyInput); err != nil {
 		return nil, err
@@ -206,18 +240,37 @@ func (ctx *OperationContext) openLegacyDecryptInput() (*os.File, error) {
 }
 
 func (ctx *OperationContext) releasePinnedLegacyInput() error {
-	if ctx == nil || ctx.pinnedLegacyInput == nil {
+	if ctx == nil {
 		return nil
+	}
+	passErr := ctx.closeLegacyInputPass()
+	ctx.legacyInputFactory = nil
+	if ctx.pinnedLegacyInput == nil {
+		return passErr
 	}
 	file := ctx.pinnedLegacyInput
 	owned := ctx.ownsPinnedLegacyInput
 	ctx.pinnedLegacyInput = nil
 	ctx.ownsPinnedLegacyInput = false
+	ctx.pinnedLegacyInputInfo = nil
+	ctx.pinnedLegacyInputSize = 0
 	if !owned {
-		return nil
+		return passErr
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("close pinned decrypt input: %w", err)
+		return errors.Join(passErr, fmt.Errorf("close pinned decrypt input: %w", err))
+	}
+	return passErr
+}
+
+func (ctx *OperationContext) closeLegacyInputPass() error {
+	if ctx == nil || ctx.legacyInputPass == nil {
+		return nil
+	}
+	pass := ctx.legacyInputPass
+	ctx.legacyInputPass = nil
+	if err := pass.Close(); err != nil {
+		return fmt.Errorf("close legacy input pass: %w", err)
 	}
 	return nil
 }

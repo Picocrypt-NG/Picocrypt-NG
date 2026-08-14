@@ -74,6 +74,44 @@ type normalWriteKeys struct {
 	payloadMAC       [32]byte
 }
 
+// normalWriteKeyRequests is the canonical key set consumed by the sole normal
+// serializer. Creation adapters request exactly this set from the credential
+// owner instead of maintaining a second writer-specific schedule.
+func normalWriteKeyRequests(suite Suite) ([]pcv3credential.KeyRequest, bool) {
+	request := func(label pcv3credential.KeyLabel, role pcv3credential.KeyRole) pcv3credential.KeyRequest {
+		return pcv3credential.KeyRequest{Label: label, Role: role, OutputBytes: 32}
+	}
+	requests := []pcv3credential.KeyRequest{
+		request(pcv3credential.KeyLabelCredentialWrapXChaCha20, pcv3credential.KeyRolePrimary),
+		request(pcv3credential.KeyLabelCredentialWrapXChaCha20, pcv3credential.KeyRoleBackup),
+	}
+	if suite == SuiteParanoid {
+		requests = append(requests,
+			request(pcv3credential.KeyLabelCredentialWrapSerpent, pcv3credential.KeyRolePrimary),
+			request(pcv3credential.KeyLabelCredentialWrapSerpent, pcv3credential.KeyRoleBackup),
+		)
+	} else if suite != SuiteStandard {
+		return nil, false
+	}
+	requests = append(requests,
+		request(pcv3credential.KeyLabelCredentialWrapMAC, pcv3credential.KeyRolePrimary),
+		request(pcv3credential.KeyLabelCredentialWrapMAC, pcv3credential.KeyRoleBackup),
+		request(pcv3credential.KeyLabelVolumeReplicaMAC, pcv3credential.KeyRolePrimary),
+		request(pcv3credential.KeyLabelVolumeReplicaMAC, pcv3credential.KeyRoleBackup),
+		request(pcv3credential.KeyLabelVolumeMetadataMAC, pcv3credential.KeyRoleNotReplica),
+		request(pcv3credential.KeyLabelVolumePayloadXChaCha20, pcv3credential.KeyRoleNotReplica),
+	)
+	if suite == SuiteParanoid {
+		requests = append(requests,
+			request(pcv3credential.KeyLabelVolumePayloadSerpent, pcv3credential.KeyRoleNotReplica),
+		)
+	}
+	requests = append(requests,
+		request(pcv3credential.KeyLabelVolumePayloadMAC, pcv3credential.KeyRoleNotReplica),
+	)
+	return requests, true
+}
+
 func (keys *normalWriteKeys) close() {
 	if keys == nil {
 		return

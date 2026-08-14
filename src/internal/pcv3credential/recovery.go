@@ -693,10 +693,6 @@ func withRecoveryCredentialReadersFromInput(
 				tuple.suite,
 			)
 		}
-		admitted, err := admitFixedProfile(ctx, tuple.suite, admitter)
-		if err != nil {
-			return err
-		}
 		if seams.beforeKDF != nil {
 			seams.beforeKDF()
 		}
@@ -716,7 +712,7 @@ func withRecoveryCredentialReadersFromInput(
 				normalInput,
 				tuple.argonSalt[:],
 				tuple.suite,
-				admitted,
+				admitter,
 				seams.derive,
 			)
 			return nil
@@ -728,7 +724,7 @@ func withRecoveryCredentialReadersFromInput(
 			)
 		}
 		if deriveErr != nil {
-			return recoveryKDFPipelineError(deriveErr, tuple.suite)
+			return pipelineErrorFromKDF(deriveErr, tuple.suite)
 		}
 
 		metadata := OwnerMetadata{
@@ -749,6 +745,14 @@ func withRecoveryCredentialReadersFromInput(
 		)
 		if err != nil {
 			return err
+		}
+		if ctx.Err() != nil {
+			reader.close()
+			return newPipelineError(
+				PipelineErrorCancelled,
+				PipelineStageCallback,
+				tuple.suite,
+			)
 		}
 		retain := false
 		consumeErr := func() error {
@@ -976,20 +980,4 @@ func recoveryTupleMatchesFactors(
 		tuple.credentialMode == factors.mode &&
 		tuple.keyfileMode == factors.keyfileMode &&
 		int(tuple.keyfileCount) == len(factors.descriptors)
-}
-
-func recoveryKDFPipelineError(err error, suite Suite) error {
-	var kdfErr *KDFError
-	if errors.As(err, &kdfErr) && kdfErr.Code == KDFErrorCancelled {
-		return newPipelineError(
-			PipelineErrorCancelled,
-			PipelineStageKDF,
-			suite,
-		)
-	}
-	return newPipelineError(
-		PipelineErrorKDF,
-		PipelineStageKDF,
-		suite,
-	)
 }

@@ -174,7 +174,15 @@ type OperationContext struct {
 	// PreparedDecryptInput/staged file or owned by this context.
 	pinnedLegacyInput     *os.File
 	ownsPinnedLegacyInput bool
-	protectedInputInfos   []os.FileInfo
+	pinnedLegacyInputInfo os.FileInfo
+	pinnedLegacyInputSize int64
+	// legacyInputFactory is used only by the explicit-deniability migration
+	// source. Each call returns a fresh, bounded sequential view of the same
+	// pinned wrapper descriptor; ordinary v1/v2 decrypts continue to use the
+	// concrete pinnedLegacyInput above.
+	legacyInputFactory  func() (io.ReadSeeker, error)
+	legacyInputPass     io.Closer
+	protectedInputInfos []os.FileInfo
 
 	publishedOutputInfo os.FileInfo
 

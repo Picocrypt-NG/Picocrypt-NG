@@ -522,7 +522,8 @@ func verifyFirstProgressDelta(n int) int64 {
 // MAC mismatch with Reed-Solomon enabled it retries once with full RS correction
 // (DATA-01) via decryptVerifyMACFirstWithDecode.
 func decryptVerifyMACFirst(ctx *OperationContext, req *DecryptRequest) error {
-	return decryptVerifyMACFirstWithDecode(ctx, req, true)
+	_, _, err := decryptVerifyMACFirstWithDecode(ctx, req, true)
+	return err
 }
 
 // decryptVerifyMACFirstWithDecode is the verify-first pass body, parameterized by
@@ -537,39 +538,39 @@ func decryptVerifyMACFirst(ctx *OperationContext, req *DecryptRequest) error {
 // which is owned exclusively by decryptFinalize; reusing it would disable the
 // decrypt-pass retry or risk infinite recursion. The fastDecode=false invocation
 // never recurses again, so the retry is one-shot (T-03-05).
-func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest, fastDecode bool) error {
+func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest, fastDecode bool) (LegacyDecodeMode, int64, error) {
 	ctx.SetStatus("Verifying integrity (pass 1 of 2)...")
 
 	// Read remaining subkeys (same order as decryptPayload)
 	macSubkey, err := ctx.SubkeyReader.MACSubkey()
 	if err != nil {
-		return err
+		return LegacyDecodeUnknown, 0, err
 	}
 	defer crypto.SecureZero(macSubkey)
 
 	// Skip serpent key read to maintain HKDF stream position
 	serpentKey, err := ctx.SubkeyReader.SerpentKey()
 	if err != nil {
-		return err
+		return LegacyDecodeUnknown, 0, err
 	}
 	defer crypto.SecureZero(serpentKey)
 
 	// Create MAC for verification
 	mac, err := crypto.NewMAC(macSubkey, ctx.Header.Flags.Paranoid)
 	if err != nil {
-		return err
+		return LegacyDecodeUnknown, 0, err
 	}
 
 	// Open input file
 	fin, err := ctx.openLegacyDecryptInput()
 	if err != nil {
-		return fmt.Errorf("open input: %w", err)
+		return LegacyDecodeUnknown, 0, fmt.Errorf("open input: %w", err)
 	}
 
 	// Skip past header
 	headerSize := header.HeaderSize(len(ctx.Header.Comments))
 	if _, err := fin.Seek(int64(headerSize), 0); err != nil {
-		return fmt.Errorf("seek past header: %w", err)
+		return LegacyDecodeUnknown, 0, fmt.Errorf("seek past header: %w", err)
 	}
 
 	// Verification loop - read ciphertext and update MAC without decrypting
@@ -585,6 +586,7 @@ func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest,
 	// display semantics ever change (e.g. a future fixed-block increment), and the
 	// fast first pass and the full-RS verify retry detect the final chunk identically.
 	var read int64
+	var plaintextLength int64
 
 	reedsolo := ctx.Header.Flags.ReedSolomon
 	padded := ctx.Header.Flags.Padded
@@ -602,7 +604,7 @@ func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest,
 
 	for {
 		if ctx.IsCancelled() {
-			return ctx.CancellationError()
+			return LegacyDecodeUnknown, 0, ctx.CancellationError()
 		}
 
 		n, readErr := io.ReadFull(reader, src)
@@ -623,7 +625,7 @@ func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest,
 				var decErr error
 				data, decErr = decodeWithRSFast(srcData, req.RSCodecs, isLast, padded, req.ForceDecrypt, fastDecode)
 				if decErr != nil && !req.ForceDecrypt {
-					return decErr
+					return LegacyDecodeUnknown, 0, decErr
 				}
 			} else {
 				data = srcData
@@ -631,6 +633,7 @@ func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest,
 
 			// Update MAC with ciphertext (no decryption!)
 			mac.Write(data)
+			plaintextLength += int64(len(data))
 
 			done += verifyFirstProgressDelta(n) // display only
 
@@ -649,7 +652,7 @@ func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest,
 			break
 		}
 		if readErr != nil {
-			return fmt.Errorf("read input: %w", readErr)
+			return LegacyDecodeUnknown, 0, fmt.Errorf("read input: %w", readErr)
 		}
 	}
 
@@ -675,17 +678,24 @@ func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest,
 			// output, so there is no staged plaintext to reset.
 			ctx.SetStatus("Repairing (verifying)...")
 			if err := reDeriveForRetry(ctx, req); err != nil {
-				return err
+				return LegacyDecodeUnknown, 0, err
 			}
 			// One-shot: fastDecode=false never recurses again (T-03-05).
 			return decryptVerifyMACFirstWithDecode(ctx, req, false)
 		} else {
-			return perrors.ErrAuthFailed
+			return LegacyDecodeUnknown, 0, perrors.ErrAuthFailed
 		}
 	}
 
 	ctx.SetStatus("Integrity verified, decrypting...")
-	return nil
+	mode := LegacyDecodePlain
+	if reedsolo {
+		mode = LegacyDecodeRSFull
+		if fastDecode {
+			mode = LegacyDecodeRSFast
+		}
+	}
+	return mode, plaintextLength, nil
 }
 
 func decryptPayload(ctx *OperationContext, req *DecryptRequest) error {
@@ -696,6 +706,14 @@ func decryptPayload(ctx *OperationContext, req *DecryptRequest) error {
 // When fastDecode is true, RS decoding just returns first 128 bytes (no error correction).
 // This matches the original Picocrypt behavior for performance.
 func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fastDecode bool) error {
+	return decryptPayloadTo(ctx, req, fastDecode, nil)
+}
+
+// decryptPayloadTo is the single legacy payload transform. A nil output selects
+// the ordinary private stage at the same point in the pipeline as before this
+// extraction; migration passes only its bounded in-process consumer. It never
+// closes output.
+func decryptPayloadTo(ctx *OperationContext, req *DecryptRequest, fastDecode bool, output io.Writer) error {
 	// Read remaining subkeys
 	macSubkey, err := ctx.SubkeyReader.MACSubkey()
 	if err != nil {
@@ -749,16 +767,20 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 		return fmt.Errorf("seek past header: %w", err)
 	}
 
-	if ctx.stagedOutput == nil {
-		if err := ctx.beginStagedOutput(); err != nil {
-			return fmt.Errorf("create output: %w", err)
+	var stagedOutput *os.File
+	if output == nil {
+		if ctx.stagedOutput == nil {
+			if err := ctx.beginStagedOutput(); err != nil {
+				return fmt.Errorf("create output: %w", err)
+			}
+		} else if err := ctx.resetStagedOutput(); err != nil {
+			return fmt.Errorf("reset output: %w", err)
 		}
-	} else if err := ctx.resetStagedOutput(); err != nil {
-		return fmt.Errorf("reset output: %w", err)
-	}
-	fout, err := ctx.stagedOutputFile()
-	if err != nil {
-		return err
+		stagedOutput, err = ctx.stagedOutputFile()
+		if err != nil {
+			return err
+		}
+		output = stagedOutput
 	}
 
 	// Decrypt loop
@@ -810,8 +832,12 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 			// Decrypt: MAC -> XChaCha20 -> Serpent
 			ctx.CipherSuite.Decrypt(dstData, data)
 
-			if _, err := fout.Write(dstData); err != nil {
+			written, err := output.Write(dstData)
+			if err != nil {
 				return fmt.Errorf("write plaintext: %w", err)
+			}
+			if written != len(dstData) {
+				return fmt.Errorf("write plaintext: %w", io.ErrShortWrite)
 			}
 
 			if reedsolo {
@@ -846,9 +872,12 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 		}
 	}
 
-	// Sync before verifying MAC to ensure all data is written
-	if err := fout.Sync(); err != nil {
-		return fmt.Errorf("sync output: %w", err)
+	if stagedOutput != nil {
+		// Preserve the ordinary legacy guarantee: staged plaintext reaches the
+		// filesystem before the final MAC/publication decision.
+		if err := stagedOutput.Sync(); err != nil {
+			return fmt.Errorf("sync output: %w", err)
+		}
 	}
 
 	return nil

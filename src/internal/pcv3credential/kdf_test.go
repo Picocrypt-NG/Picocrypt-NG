@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -721,6 +722,476 @@ func TestKDFSequential(t *testing.T) {
 	}
 }
 
+type kdfLeaseResult struct {
+	secret *crypto.Secret
+	err    error
+}
+
+func withKDFLeaseBubble(t *testing.T, test func(*testing.T)) {
+	t.Helper()
+	synctest.Test(t, func(t *testing.T) {
+		previous := fixedProfileKDFLease
+		fixedProfileKDFLease = make(chan struct{}, 1)
+		defer func() { fixedProfileKDFLease = previous }()
+		test(t)
+	})
+}
+
+func requireNoKDFLeaseEffect(t *testing.T, effect <-chan struct{}, failure string) {
+	t.Helper()
+	select {
+	case <-effect:
+		t.Error(failure)
+	default:
+	}
+}
+
+func closeKDFLeaseResult(t *testing.T, result kdfLeaseResult) {
+	t.Helper()
+	if result.secret != nil {
+		result.secret.Close()
+	}
+}
+
+func requireKDFLeaseAvailable(t *testing.T) {
+	t.Helper()
+	admitted := make(chan struct{}, 1)
+	derived := make(chan struct{}, 1)
+	result := make(chan kdfLeaseResult, 1)
+	go func() {
+		secret, err := runFixedProfileKDFBorrowed(
+			context.Background(),
+			make([]byte, literalCredentialInputBytes),
+			make([]byte, literalKDFSaltBytes),
+			SuiteStandard1,
+			testAdmitter(func(
+				context.Context,
+				KDFProfile,
+			) (KDFAdmission, error) {
+				admitted <- struct{}{}
+				return KDFAdmissionGranted, nil
+			}),
+			func(
+				_ []byte,
+				_ []byte,
+				_ KDFProfile,
+			) ([]byte, error) {
+				derived <- struct{}{}
+				return fakeKDFResult(0x75, literalCredentialRootBytes), nil
+			},
+		)
+		result <- kdfLeaseResult{secret: secret, err: err}
+	}()
+	synctest.Wait()
+	select {
+	case got := <-result:
+		admittedOK := len(admitted) == 1
+		derivedOK := len(derived) == 1
+		if got.err != nil || got.secret == nil || !admittedOK || !derivedOK {
+			closeKDFLeaseResult(t, got)
+			t.Fatalf(
+				"follow-up KDF = secret %v, error %v, admitted/derived %t/%t; want successful derivation",
+				got.secret,
+				got.err,
+				admittedOK,
+				derivedOK,
+			)
+		}
+		got.secret.Close()
+		return
+	default:
+	}
+
+	// The test owns this isolated lease. Drain a leaked token so the probe can
+	// terminate before reporting the regression instead of hanging the suite.
+	select {
+	case <-fixedProfileKDFLease:
+	default:
+	}
+	synctest.Wait()
+	select {
+	case got := <-result:
+		closeKDFLeaseResult(t, got)
+	default:
+	}
+	t.Fatal("follow-up KDF remained durably blocked; prior exit did not release the process lease")
+}
+
+func TestDerivationLeaseSerializesAndRechecksFixedProfile(t *testing.T) {
+	withKDFLeaseBubble(t, func(t *testing.T) {
+		firstAdmissionEntered := make(chan struct{})
+		releaseFirstAdmission := make(chan struct{})
+		firstDerivationEntered := make(chan struct{})
+		releaseFirstDerivation := make(chan struct{})
+		firstResult := make(chan kdfLeaseResult, 1)
+
+		go func() {
+			secret, err := runFixedProfileKDFBorrowed(
+				context.Background(),
+				make([]byte, literalCredentialInputBytes),
+				make([]byte, literalKDFSaltBytes),
+				SuiteStandard1,
+				testAdmitter(func(
+					context.Context,
+					KDFProfile,
+				) (KDFAdmission, error) {
+					close(firstAdmissionEntered)
+					<-releaseFirstAdmission
+					return KDFAdmissionGranted, nil
+				}),
+				func(
+					_ []byte,
+					_ []byte,
+					_ KDFProfile,
+				) ([]byte, error) {
+					close(firstDerivationEntered)
+					<-releaseFirstDerivation
+					return fakeKDFResult(0x76, literalCredentialRootBytes), nil
+				},
+			)
+			firstResult <- kdfLeaseResult{secret: secret, err: err}
+		}()
+		<-firstAdmissionEntered
+
+		secondAdmissionEntered := make(chan struct{}, 1)
+		secondDecision := make(chan KDFAdmission, 1)
+		secondDerivationEntered := make(chan struct{}, 1)
+		secondResult := make(chan kdfLeaseResult, 1)
+
+		go func() {
+			secret, err := runFixedProfileKDFBorrowed(
+				context.Background(),
+				make([]byte, literalCredentialInputBytes),
+				make([]byte, literalKDFSaltBytes),
+				SuiteStandard1,
+				testAdmitter(func(
+					_ context.Context,
+					profile KDFProfile,
+				) (KDFAdmission, error) {
+					if profile != (KDFProfile{
+						ID:            0x01,
+						Argon2Version: 0x13,
+						Time:          4,
+						MemoryKiB:     1048576,
+						Parallelism:   4,
+						SaltBytes:     16,
+						OutputBytes:   32,
+					}) {
+						return KDFAdmissionUnknown, errors.New("unexpected fixed profile")
+					}
+					secondAdmissionEntered <- struct{}{}
+					return <-secondDecision, nil
+				}),
+				func(
+					_ []byte,
+					_ []byte,
+					_ KDFProfile,
+				) ([]byte, error) {
+					secondDerivationEntered <- struct{}{}
+					return fakeKDFResult(0x77, literalCredentialRootBytes), nil
+				},
+			)
+			secondResult <- kdfLeaseResult{secret: secret, err: err}
+		}()
+
+		synctest.Wait()
+		requireNoKDFLeaseEffect(
+			t,
+			secondAdmissionEntered,
+			"second caller overlapped the first admission",
+		)
+
+		close(releaseFirstAdmission)
+		<-firstDerivationEntered
+		synctest.Wait()
+		requireNoKDFLeaseEffect(
+			t,
+			secondAdmissionEntered,
+			"second caller reached admission while the first derivation was active",
+		)
+
+		// The resource state changes while caller two is queued. Its only decision
+		// must therefore be the denial supplied after lease acquisition, not a
+		// reusable preflight decision from before caller one finished.
+		secondDecision <- KDFAdmissionDenied
+		close(releaseFirstDerivation)
+
+		gotFirst := <-firstResult
+		defer closeKDFLeaseResult(t, gotFirst)
+		gotSecond := <-secondResult
+		defer closeKDFLeaseResult(t, gotSecond)
+		if gotFirst.err != nil || gotFirst.secret == nil {
+			t.Errorf(
+				"first leased derivation = secret %v, error %v; want success",
+				gotFirst.secret,
+				gotFirst.err,
+			)
+		}
+		requireKDFCode(t, gotSecond.err, KDFErrorAdmission)
+		if gotSecond.secret != nil {
+			t.Error("fresh post-queue resource refusal published a secret")
+		}
+		requireNoKDFLeaseEffect(
+			t,
+			secondDerivationEntered,
+			"fresh post-queue resource refusal reached derivation",
+		)
+	})
+}
+
+func TestDerivationLeaseReleasesEveryExit(t *testing.T) {
+	tests := []struct {
+		name      string
+		run       func() (error, any)
+		want      KDFErrorCode
+		wantPanic string
+	}{
+		{
+			name: "resource denial",
+			want: KDFErrorAdmission,
+			run: func() (error, any) {
+				_, err := runFixedProfileKDFBorrowed(
+					context.Background(),
+					make([]byte, literalCredentialInputBytes),
+					make([]byte, literalKDFSaltBytes),
+					SuiteStandard1,
+					testAdmitter(func(
+						context.Context,
+						KDFProfile,
+					) (KDFAdmission, error) {
+						return KDFAdmissionDenied, nil
+					}),
+					func([]byte, []byte, KDFProfile) ([]byte, error) {
+						return fakeKDFResult(0x78, literalCredentialRootBytes), nil
+					},
+				)
+				return err, nil
+			},
+		},
+		{
+			name: "derivation error",
+			want: KDFErrorDerivation,
+			run: func() (error, any) {
+				_, err := runFixedProfileKDFBorrowed(
+					context.Background(),
+					make([]byte, literalCredentialInputBytes),
+					make([]byte, literalKDFSaltBytes),
+					SuiteStandard1,
+					grantKDFAdmission(),
+					func([]byte, []byte, KDFProfile) ([]byte, error) {
+						return nil, errors.New("derive failure")
+					},
+				)
+				return err, nil
+			},
+		},
+		{
+			name: "cancellation after admission",
+			want: KDFErrorCancelled,
+			run: func() (error, any) {
+				ctx, cancel := context.WithCancel(context.Background())
+				_, err := runFixedProfileKDFBorrowed(
+					ctx,
+					make([]byte, literalCredentialInputBytes),
+					make([]byte, literalKDFSaltBytes),
+					SuiteStandard1,
+					testAdmitter(func(
+						context.Context,
+						KDFProfile,
+					) (KDFAdmission, error) {
+						cancel()
+						return KDFAdmissionGranted, nil
+					}),
+					func([]byte, []byte, KDFProfile) ([]byte, error) {
+						return fakeKDFResult(0x79, literalCredentialRootBytes), nil
+					},
+				)
+				return err, nil
+			},
+		},
+		{
+			name:      "admission panic",
+			wantPanic: "admission panic",
+			run: func() (err error, recovered any) {
+				defer func() { recovered = recover() }()
+				_, err = runFixedProfileKDFBorrowed(
+					context.Background(),
+					make([]byte, literalCredentialInputBytes),
+					make([]byte, literalKDFSaltBytes),
+					SuiteStandard1,
+					testAdmitter(func(
+						context.Context,
+						KDFProfile,
+					) (KDFAdmission, error) {
+						panic("admission panic")
+					}),
+					func([]byte, []byte, KDFProfile) ([]byte, error) {
+						return fakeKDFResult(0x7a, literalCredentialRootBytes), nil
+					},
+				)
+				return err, nil
+			},
+		},
+		{
+			name:      "derivation panic",
+			wantPanic: "derivation panic",
+			run: func() (err error, recovered any) {
+				defer func() { recovered = recover() }()
+				_, err = runFixedProfileKDFBorrowed(
+					context.Background(),
+					make([]byte, literalCredentialInputBytes),
+					make([]byte, literalKDFSaltBytes),
+					SuiteStandard1,
+					grantKDFAdmission(),
+					func([]byte, []byte, KDFProfile) ([]byte, error) {
+						panic("derivation panic")
+					},
+				)
+				return err, nil
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			withKDFLeaseBubble(t, func(t *testing.T) {
+				err, recovered := test.run()
+				if test.want != 0 {
+					requireKDFCode(t, err, test.want)
+					if recovered != nil {
+						t.Fatalf("unexpected panic after typed exit: %v", recovered)
+					}
+				} else if recovered != test.wantPanic {
+					t.Fatalf("propagated panic = %v; want exact %q", recovered, test.wantPanic)
+				}
+				requireKDFLeaseAvailable(t)
+			})
+		})
+	}
+}
+
+func TestCredentialKDFLeaseOrder(t *testing.T) {
+	withKDFLeaseBubble(t, func(t *testing.T) {
+		holderEntered := make(chan struct{})
+		releaseHolder := make(chan struct{})
+		holderResult := make(chan kdfLeaseResult, 1)
+		holderReleased := false
+		defer func() {
+			if !holderReleased {
+				close(releaseHolder)
+			}
+		}()
+
+		go func() {
+			secret, err := runFixedProfileKDFBorrowed(
+				context.Background(),
+				make([]byte, literalCredentialInputBytes),
+				make([]byte, literalKDFSaltBytes),
+				SuiteStandard1,
+				grantKDFAdmission(),
+				func([]byte, []byte, KDFProfile) ([]byte, error) {
+					close(holderEntered)
+					<-releaseHolder
+					return fakeKDFResult(0x7b, literalCredentialRootBytes), nil
+				},
+			)
+			holderResult <- kdfLeaseResult{secret: secret, err: err}
+		}()
+		<-holderEntered
+
+		queuedContext, cancelQueued := context.WithCancelCause(context.Background())
+		queuedAdmission := make(chan struct{}, 1)
+		queuedDerivation := make(chan struct{}, 1)
+		queuedResult := make(chan kdfLeaseResult, 1)
+		go func() {
+			secret, err := runFixedProfileKDFBorrowed(
+				queuedContext,
+				make([]byte, literalCredentialInputBytes),
+				make([]byte, literalKDFSaltBytes),
+				SuiteParanoid1,
+				testAdmitter(func(
+					context.Context,
+					KDFProfile,
+				) (KDFAdmission, error) {
+					queuedAdmission <- struct{}{}
+					return KDFAdmissionGranted, nil
+				}),
+				func([]byte, []byte, KDFProfile) ([]byte, error) {
+					queuedDerivation <- struct{}{}
+					return fakeKDFResult(0x7c, literalCredentialRootBytes), nil
+				},
+			)
+			queuedResult <- kdfLeaseResult{secret: secret, err: err}
+		}()
+
+		synctest.Wait()
+		requireNoKDFLeaseEffect(
+			t,
+			queuedAdmission,
+			"queued caller reached admission before cancellation",
+		)
+		cancelQueued(errors.New("queued cancellation"))
+		gotQueued := <-queuedResult
+		defer closeKDFLeaseResult(t, gotQueued)
+		requireKDFCode(t, gotQueued.err, KDFErrorCancelled)
+		if gotQueued.secret != nil {
+			t.Error("queued cancellation published a secret")
+		}
+		requireNoKDFLeaseEffect(
+			t,
+			queuedAdmission,
+			"queued cancellation reached resource admission",
+		)
+		requireNoKDFLeaseEffect(
+			t,
+			queuedDerivation,
+			"queued cancellation reached derivation",
+		)
+
+		close(releaseHolder)
+		holderReleased = true
+		gotHolder := <-holderResult
+		defer closeKDFLeaseResult(t, gotHolder)
+		if gotHolder.err != nil || gotHolder.secret == nil {
+			t.Errorf(
+				"lease holder completion = secret %v, error %v; want success",
+				gotHolder.secret,
+				gotHolder.err,
+			)
+		}
+	})
+}
+
+func TestFixedProfileResourceRefusalHasZeroKDF(t *testing.T) {
+	derivationEntered := make(chan struct{}, 1)
+	secret, err := runFixedProfileKDFBorrowed(
+		context.Background(),
+		make([]byte, literalCredentialInputBytes),
+		make([]byte, literalKDFSaltBytes),
+		SuiteParanoid1,
+		testAdmitter(func(
+			context.Context,
+			KDFProfile,
+		) (KDFAdmission, error) {
+			return KDFAdmissionDenied, nil
+		}),
+		func([]byte, []byte, KDFProfile) ([]byte, error) {
+			derivationEntered <- struct{}{}
+			return fakeKDFResult(0x7d, literalCredentialRootBytes), nil
+		},
+	)
+	requireKDFCode(t, err, KDFErrorAdmission)
+	if secret != nil {
+		secret.Close()
+		t.Fatal("resource refusal published a secret")
+	}
+	select {
+	case <-derivationEntered:
+		t.Fatal("resource refusal reached the KDF deriver")
+	default:
+	}
+}
+
 type kdfReturnedSliceCleanupCase struct {
 	name      string
 	size      int
@@ -939,72 +1410,66 @@ func TestKDFCancellationBoundary(t *testing.T) {
 	})
 
 	t.Run("external cancellation waits for non-interruptible KDF", func(t *testing.T) {
-		ctx, cancel := context.WithCancelCause(context.Background())
-		input, owner, inputAlias := testNormalInput(t)
-		returned := fakeKDFResult(0x93, literalCredentialRootBytes)
-		entered := make(chan struct{})
-		release := make(chan struct{})
-		type result struct {
-			root *credentialRoot
-			err  error
-		}
-		resultCh := make(chan result, 1)
-		go func() {
-			root, err := runCredentialKDF(
-				ctx,
-				input,
-				make([]byte, literalKDFSaltBytes),
-				SuiteStandard1,
-				grantKDFAdmission(),
-				func(
-					_ []byte,
-					_ []byte,
-					_ KDFProfile,
-				) ([]byte, error) {
-					close(entered)
-					<-release
-					return returned, nil
-				},
-			)
-			resultCh <- result{root: root, err: err}
-		}()
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			input, owner, inputAlias := testNormalInput(t)
+			returned := fakeKDFResult(0x93, literalCredentialRootBytes)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			type result struct {
+				root *credentialRoot
+				err  error
+			}
+			resultCh := make(chan result, 1)
+			go func() {
+				root, err := runCredentialKDF(
+					ctx,
+					input,
+					make([]byte, literalKDFSaltBytes),
+					SuiteStandard1,
+					grantKDFAdmission(),
+					func(
+						_ []byte,
+						_ []byte,
+						_ KDFProfile,
+					) ([]byte, error) {
+						close(entered)
+						<-release
+						return returned, nil
+					},
+				)
+				resultCh <- result{root: root, err: err}
+			}()
 
-		select {
-		case <-entered:
-		case <-time.After(2 * time.Second):
-			t.Fatal("KDF did not enter the non-interruptible seam")
-		}
-		cancel(errors.New("private-inflight-cancel-sentinel"))
-		earlyReturnTimer := time.NewTimer(100 * time.Millisecond)
-		defer earlyReturnTimer.Stop()
-		select {
-		case got := <-resultCh:
-			if got.root != nil {
-				got.root.close()
+			<-entered
+			cancel(errors.New("private-inflight-cancel-sentinel"))
+			synctest.Wait()
+			select {
+			case got := <-resultCh:
+				if got.root != nil {
+					got.root.close()
+				}
+				close(release)
+				t.Fatalf(
+					"runner returned before non-interruptible KDF completed: %v",
+					got.err,
+				)
+			default:
 			}
 			close(release)
-			t.Fatalf(
-				"runner returned before non-interruptible KDF completed: %v",
-				got.err,
-			)
-		case <-earlyReturnTimer.C:
-		}
-		close(release)
+			synctest.Wait()
 
-		select {
-		case got := <-resultCh:
+			got := <-resultCh
 			requireKDFCode(t, got.err, KDFErrorCancelled)
 			if got.root != nil {
 				got.root.close()
 				t.Fatal("in-flight cancellation published a credential root")
 			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("runner did not return after non-interruptible KDF completed")
-		}
-		if input.secret != nil || owner.Len() != 0 ||
-			!allZero(inputAlias) || !allZero(returned) {
-			t.Fatal("in-flight cancellation did not clear KDF and input material")
-		}
+			if input.secret != nil || owner.Len() != 0 ||
+				!allZero(inputAlias) || !allZero(returned) {
+				t.Fatal("in-flight cancellation did not clear KDF and input material")
+			}
+		})
 	})
 
 	t.Run("post-call cancellation clears result and publishes nothing", func(t *testing.T) {
