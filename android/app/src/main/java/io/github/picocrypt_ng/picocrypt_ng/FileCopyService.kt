@@ -2,6 +2,10 @@ package io.github.picocrypt_ng.picocrypt_ng
 
 import android.content.Context
 import android.net.Uri
+import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
+import android.system.Os
+import android.system.OsConstants
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -17,7 +21,49 @@ import java.io.InputStream
 
 object FileCopyService {
     private const val INTERNAL_FILES_DIR = "picocrypt_files"
+    private const val PCV3_RETAINED_OUTPUT_NAME = "pcv3_retained_output"
+    private const val PCV3_PRIVATE_PREFIX = ".picocrypt-pcv3-"
+    private const val MAX_INPUT_EXTENSION_LENGTH = 32
+    private const val MAX_PCV3_DESTINATION_DISPLAY_NAME_LENGTH = 255
+    private const val PCV3_RECOVERY_SUFFIX = ".pcv3-recovery"
+    private const val PCV3_RECOVERY_DESTINATION_NAME_INVALID =
+        "PCV3_RECOVERY_DESTINATION_NAME_INVALID"
+    private const val PCV3_OUTPUT_DESCRIPTOR_OPEN_FAILED = "PCV3_OUTPUT_DESCRIPTOR_OPEN_FAILED"
+    private val safeInputExtensionCharacters = Regex("[A-Za-z0-9_+-]+")
+    private val startupInputName = Regex("input_file(?:\\.[^/\\\\]+)?")
+    private val startupInputStageName = Regex("input_.+\\.incomplete")
+    private val startupKeyfileName = Regex("keyfile_[0-9]+")
+    private val startupKeyfileStageName = Regex("keyfile_[0-9]+_.+\\.incomplete")
+    private val inputCopyMutex = Mutex()
     private val keyfileCopyMutex = Mutex()
+
+    internal data class FileIdentity(val device: Long, val inode: Long)
+
+    internal interface AtomicFilePublisher {
+        fun identity(file: File): FileIdentity?
+        fun linkNoReplace(source: File, target: File)
+    }
+
+    private object AndroidAtomicFilePublisher : AtomicFilePublisher {
+        override fun identity(file: File): FileIdentity? {
+            val stat = try {
+                Os.lstat(file.absolutePath)
+            } catch (error: android.system.ErrnoException) {
+                if (error.errno == OsConstants.ENOENT) return null
+                throw error
+            }
+            if (!OsConstants.S_ISREG(stat.st_mode)) {
+                throw IOException("Owned path is not a regular file")
+            }
+            return FileIdentity(stat.st_dev, stat.st_ino)
+        }
+
+        override fun linkNoReplace(source: File, target: File) {
+            // link(2) atomically publishes a complete inode and fails with EEXIST;
+            // unlike rename(2), it cannot replace another owner's pathname.
+            Os.link(source.absolutePath, target.absolutePath)
+        }
+    }
 
     /**
      * Copies a file from a URI to the internal app data directory.
@@ -28,47 +74,101 @@ object FileCopyService {
         context: Context,
         uri: Uri,
         originalFileName: String
-    ): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            // Get internal files directory
+    ): Result<String> = copyFileToInternalStorage(
+        context = context,
+        uri = uri,
+        originalFileName = originalFileName,
+        publisher = AndroidAtomicFilePublisher,
+        afterAcquire = {},
+        afterPublish = {},
+    )
+
+    internal suspend fun copyFileToInternalStorage(
+        context: Context,
+        uri: Uri,
+        originalFileName: String,
+        publisher: AtomicFilePublisher,
+        afterAcquire: suspend () -> Unit,
+        afterPublish: suspend () -> Unit,
+    ): Result<String> {
+        inputCopyMutex.lock()
+        return try {
+            afterAcquire()
             val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
-            if (!internalDir.exists()) {
-                internalDir.mkdirs()
-            }
-
-            // Use fixed filename "input_file" (preserve extension if present)
-            val ext = if (originalFileName.contains(".")) {
-                originalFileName.substringAfterLast(".", "")
-            } else {
-                ""
-            }
-            val fixedFileName = if (ext.isNotEmpty()) {
-                "input_file.$ext"
-            } else {
-                "input_file"
-            }
+            val ext = originalFileName.substringAfterLast(".", "")
+                .takeIf {
+                    it.length in 1..MAX_INPUT_EXTENSION_LENGTH &&
+                        it.matches(safeInputExtensionCharacters)
+                }
+                .orEmpty()
+            val fixedFileName = if (ext.isEmpty()) "input_file" else "input_file.$ext"
             val destFile = File(internalDir, fixedFileName)
+            var incompleteFile: File? = null
+            var incompleteIdentity: FileIdentity? = null
+            var publishedIdentity: FileIdentity? = null
+            var resultDelivered = false
 
-            // Open input stream from URI
-            val inputStream: InputStream = context.contentResolver.openInputStream(uri)
-                ?: return@withContext Result.failure(
-                    copyFailed(context, "Could not open input stream for URI: $uri")
-                )
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    try {
+                        if ((!internalDir.exists() && !internalDir.mkdirs()) ||
+                            !internalDir.isDirectory ||
+                            internalDir.canonicalFile != File(context.filesDir.canonicalFile, INTERNAL_FILES_DIR)
+                        ) {
+                            throw IOException("Could not create internal input directory")
+                        }
 
-            // Copy file (overwrite if exists)
-            inputStream.use { input ->
-                FileOutputStream(destFile).use { output ->
-                    input.copyTo(output)
+                        val ownedIncompleteFile = File.createTempFile(
+                            "input_",
+                            ".incomplete",
+                            internalDir,
+                        )
+                        incompleteFile = ownedIncompleteFile
+                        val ownedIncompleteIdentity = publisher.identity(ownedIncompleteFile)
+                            ?: throw IOException("Could not identify incomplete input copy")
+                        incompleteIdentity = ownedIncompleteIdentity
+
+                        val inputStream: InputStream = context.contentResolver.openInputStream(uri)
+                            ?: throw IOException("Could not open input stream for URI: $uri")
+                        inputStream.use { input ->
+                            FileOutputStream(ownedIncompleteFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        currentCoroutineContext().ensureActive()
+
+                        publisher.linkNoReplace(ownedIncompleteFile, destFile)
+                        publishedIdentity = ownedIncompleteIdentity
+                        if (publisher.identity(destFile) != ownedIncompleteIdentity) {
+                            throw IOException("Published input identity does not match its complete copy")
+                        }
+                        if (!ownedIncompleteFile.delete() || ownedIncompleteFile.exists()) {
+                            throw IOException("Could not remove incomplete input link after publication")
+                        }
+                        incompleteIdentity = null
+                        afterPublish()
+                        Result.success(destFile.absolutePath)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Result.failure(copyFailed(context, e.message))
+                    }
+                }
+                resultDelivered = result.isSuccess
+                result
+            } finally {
+                if (!resultDelivered) {
+                    // Until the successful result reaches FileCard this service remains
+                    // the sole owner. A cancelled dispatcher handoff must not leak either
+                    // name, and an identity mismatch must never delete a replacement.
+                    withContext(NonCancellable + Dispatchers.IO) {
+                        deleteIfOwned(incompleteFile, incompleteIdentity, publisher)
+                        deleteIfOwned(destFile, publishedIdentity, publisher)
+                    }
                 }
             }
-
-            Result.success(destFile.absolutePath)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(
-                copyFailed(context, e.message)
-            )
+        } finally {
+            inputCopyMutex.unlock()
         }
     }
     
@@ -222,7 +322,7 @@ object FileCopyService {
 
             var allDeleted = true
             files.forEach { file ->
-                if (!NoFollowFileTree.delete(filesDir, file)) {
+                if (!isPcv3PrivateEntry(file) && !NoFollowFileTree.delete(filesDir, file)) {
                     allDeleted = false
                 }
             }
@@ -236,10 +336,147 @@ object FileCopyService {
     }
 
     /**
+     * Removes only app-private entries whose transient ownership is proven by
+     * their production writer. Published or uncertain outputs, retained PCV3
+     * trees, and unknown future entries remain untouched until their exact owner
+     * authorizes removal.
+     */
+    suspend fun cleanupStartupTransientFiles(context: Context): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val filesDir = context.filesDir
+            val entries = filesDir.list() ?: return@withContext false
+            if (INTERNAL_FILES_DIR !in entries) return@withContext true
+
+            val internalDir = File(filesDir, INTERNAL_FILES_DIR)
+            val expectedInternalDir = File(filesDir.canonicalFile, INTERNAL_FILES_DIR)
+            if (internalDir.canonicalFile != expectedInternalDir ||
+                !internalDir.exists() ||
+                !internalDir.isDirectory
+            ) {
+                return@withContext false
+            }
+
+            val files = internalDir.listFiles() ?: return@withContext false
+            var allDeleted = true
+            files.forEach { file ->
+                val transientTree = file.name == "staging"
+                val transientFile = file.name.matches(startupInputName) ||
+                    file.name.matches(startupInputStageName) ||
+                    file.name.matches(startupKeyfileName) ||
+                    file.name.matches(startupKeyfileStageName) ||
+                    file.name == "output_file.incomplete" ||
+                    file.name == "output_file.pcv.incomplete"
+
+                when {
+                    transientTree -> {
+                        if (!NoFollowFileTree.delete(filesDir, file)) allDeleted = false
+                    }
+                    transientFile -> {
+                        if (!isRegularFileInDirectory(internalDir, file) ||
+                            !file.delete() ||
+                            file.exists()
+                        ) {
+                            allDeleted = false
+                        }
+                    }
+                }
+            }
+            allDeleted
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Confidentiality-first process-start discard for the one clean PCV3 output.
+     * Receipt custody is decided by [StartupCleanup] before this exact-name path
+     * can be called. Unexpected entries are preserved and block UI startup.
+     */
+    suspend fun cleanupPcv3RetainedOutputAtStartup(context: Context): Boolean =
+        cleanupPcv3RetainedOutputAtStartup(context, AndroidAtomicFilePublisher)
+
+    internal suspend fun cleanupPcv3RetainedOutputAtStartup(
+        context: Context,
+        publisher: AtomicFilePublisher,
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val filesDir = context.filesDir
+            val rootEntries = filesDir.list() ?: return@withContext false
+            if (INTERNAL_FILES_DIR !in rootEntries) return@withContext true
+
+            val internalDir = File(filesDir, INTERNAL_FILES_DIR)
+            val expectedInternalDir = File(filesDir.canonicalFile, INTERNAL_FILES_DIR)
+            if (internalDir.canonicalFile != expectedInternalDir ||
+                !internalDir.exists() ||
+                !internalDir.isDirectory
+            ) {
+                return@withContext false
+            }
+
+            val retainedEntries = internalDir.list() ?: return@withContext false
+            if (PCV3_RETAINED_OUTPUT_NAME !in retainedEntries) return@withContext true
+
+            val retainedOutput = File(internalDir, PCV3_RETAINED_OUTPUT_NAME)
+            val identity = publisher.identity(retainedOutput) ?: return@withContext false
+            deletePcv3RetainedOutputIfOwned(
+                filesDir = filesDir,
+                retainedOutput = retainedOutput,
+                expectedIdentity = identity,
+                publisher = publisher,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
      * Gets the internal storage directory path.
      */
     fun getInternalStoragePath(context: Context): String {
         return File(context.filesDir, INTERNAL_FILES_DIR).absolutePath
+    }
+
+    /**
+     * Creates the existing app-private PCV3 parent on a clean install, then pins
+     * and validates both directory identities without following a replacement.
+     */
+    suspend fun ensurePcv3PrivateParent(context: Context): File? =
+        ensurePcv3PrivateParent(context, AndroidPcv3FilesystemBoundary)
+
+    internal suspend fun ensurePcv3PrivateParent(
+        context: Context,
+        filesystem: Pcv3FilesystemBoundary,
+    ): File? = withContext(Dispatchers.IO) {
+        try {
+            val filesDir = context.filesDir.absoluteFile.normalize()
+            if (!verifyPcv3Directory(filesDir, filesystem, sync = false)) return@withContext null
+            val parent = File(filesDir, INTERNAL_FILES_DIR).absoluteFile.normalize()
+            if (parent.parentFile != filesDir) return@withContext null
+
+            when (val existing = filesystem.lstat(parent)) {
+                null -> {
+                    filesystem.createDirectory(parent)
+                    if (!verifyPcv3Directory(filesDir, filesystem, sync = true)) return@withContext null
+                }
+                else -> if (existing.kind != Pcv3FilesystemKind.DIRECTORY) return@withContext null
+            }
+            parent.takeIf { verifyPcv3Directory(it, filesystem, sync = false) }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
+        } catch (_: LinkageError) {
+            null
+        }
+    }
+
+    /** Returns the sole app-private target accepted by Android PCV3 operations. */
+    fun getPcv3RetainedOutputPath(context: Context): String {
+        return File(context.filesDir, "$INTERNAL_FILES_DIR/$PCV3_RETAINED_OUTPUT_NAME").absolutePath
     }
 
     /**
@@ -336,6 +573,80 @@ object FileCopyService {
             )
         }
     }
+
+    /**
+     * Validates the provider-owned display name for a Force recovery destination.
+     * The content URI remains opaque; missing or untrusted metadata fails closed.
+     */
+    suspend fun validatePcv3RecoveryDestination(
+        context: Context,
+        destinationUri: Uri,
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val displayName = context.contentResolver.query(
+                destinationUri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameColumn < 0 || !cursor.moveToFirst()) null else cursor.getString(nameColumn)
+            }
+            if (displayName != null &&
+                displayName.length in 1..MAX_PCV3_DESTINATION_DISPLAY_NAME_LENGTH &&
+                displayName.endsWith(PCV3_RECOVERY_SUFFIX)
+            ) {
+                Result.success(Unit)
+            } else {
+                Result.failure(saveFailed(context, PCV3_RECOVERY_DESTINATION_NAME_INVALID))
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            Result.failure(saveFailed(context, PCV3_RECOVERY_DESTINATION_NAME_INVALID))
+        }
+    }
+
+    /**
+     * Opens an opaque SAF destination for transfer to the Go-owned output action.
+     * The successful descriptor is returned open and owned by the caller.
+     */
+    suspend fun openPcv3OutputDescriptor(
+        context: Context,
+        destinationUri: Uri,
+    ): Result<ParcelFileDescriptor> {
+        var openedDescriptor: ParcelFileDescriptor? = null
+        var resultDelivered = false
+        try {
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    val descriptor = context.contentResolver.openFileDescriptor(destinationUri, "rwt")
+                        ?: return@withContext Result.failure(
+                            saveFailed(context, PCV3_OUTPUT_DESCRIPTOR_OPEN_FAILED),
+                        )
+                    openedDescriptor = descriptor
+                    Result.success(descriptor)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    Result.failure(saveFailed(context, PCV3_OUTPUT_DESCRIPTOR_OPEN_FAILED))
+                }
+            }
+            resultDelivered = result.isSuccess
+            return result
+        } finally {
+            if (!resultDelivered) {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    try {
+                        openedDescriptor?.close()
+                    } catch (_: Exception) {
+                        // The primary cancellation/failure remains authoritative.
+                    }
+                }
+            }
+        }
+    }
     
     /**
      * Generates the output file path based on operation type.
@@ -402,7 +713,7 @@ object FileCopyService {
             val files = internalDir.listFiles() ?: return@withContext false
             var allSuccess = true
             files.forEach { file ->
-                if (file.name.endsWith(".incomplete")) {
+                if (file.name.endsWith(".incomplete") && !isPcv3PrivateEntry(file)) {
                     if (!isRegularFileInDirectory(internalDir, file) ||
                         !file.delete() ||
                         file.exists()
@@ -515,19 +826,6 @@ object FileCopyService {
                 }
             }
 
-            // Go publishes through random sibling stages. A process crash can leave
-            // one behind, including plaintext from decryption. Only remove direct
-            // regular files with Go's exact private stage prefix; never follow links
-            // or recursively delete a matching directory.
-            files.forEach { file ->
-                if (file.name.startsWith(".picocrypt-") &&
-                    isRegularFileInDirectory(internalDir, file) &&
-                    (!file.delete() || file.exists())
-                ) {
-                    allSuccess = false
-                }
-            }
-
             // Clean up any remaining incomplete files (but not input/keyfiles)
             if (!cleanupIncompleteFiles(context)) {
                 allSuccess = false
@@ -543,6 +841,39 @@ object FileCopyService {
 
     private fun isRegularFileInDirectory(directory: File, file: File): Boolean {
         return file.isFile && file.canonicalFile == File(directory.canonicalFile, file.name)
+    }
+
+    private fun isPcv3PrivateEntry(file: File): Boolean =
+        file.name == PCV3_RETAINED_OUTPUT_NAME || file.name.startsWith(PCV3_PRIVATE_PREFIX)
+
+    private fun deleteIfOwned(
+        file: File?,
+        expectedIdentity: FileIdentity?,
+        publisher: AtomicFilePublisher,
+    ): Boolean {
+        if (file == null || expectedIdentity == null) return true
+        return try {
+            val currentIdentity = publisher.identity(file) ?: return true
+            currentIdentity == expectedIdentity && file.delete() && !file.exists()
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun deletePcv3RetainedOutputIfOwned(
+        filesDir: File,
+        retainedOutput: File,
+        expectedIdentity: FileIdentity,
+        publisher: AtomicFilePublisher,
+    ): Boolean {
+        return try {
+            val currentIdentity = publisher.identity(retainedOutput) ?: return false
+            currentIdentity == expectedIdentity &&
+                NoFollowFileTree.delete(filesDir, retainedOutput) &&
+                publisher.identity(retainedOutput) == null
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun copyFailed(context: Context, technicalMessage: String?) =

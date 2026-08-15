@@ -455,4 +455,108 @@ class FormDataTest {
         val fd = TestDataBuilders.createEncryptFormData(copiedFilePath = "")
         assertFalse(fd.hasSelectedInput)
     }
+
+    @Test
+    fun `content-claimed PCV3 never becomes a legacy operation from its filename`() {
+        val formData = TestDataBuilders.createEncryptFormData(
+            selectedFilename = "misleading.txt",
+            copiedFilePath = "",
+        ).copy(
+            pcv3Intent = Pcv3OperationIntent(format = Pcv3FormatIntent.NORMAL),
+            pcv3OwnedSource = Pcv3OwnedSource("/app-private/claimed-input"),
+        )
+
+        assertTrue(formData.isPcv3Selection)
+        assertTrue(formData.hasSelectedInput)
+        assertFalse("a content claim must suppress filename-based encryption", formData.isEncrypt)
+        assertFalse("a content claim must not enter legacy decryption", formData.isDecrypt)
+        assertFalse("new PCV3 selections start with explicit intent unset", formData.isFormValid)
+    }
+
+    @Test
+    fun `explicit format and action map to every strict Go read mode without conflation`() {
+        val expectedModes = mapOf(
+            Pcv3FormatIntent.NORMAL to mapOf(
+                Pcv3ActionIntent.DECRYPT to "read-normal",
+                Pcv3ActionIntent.RECOVERY to "recover-normal",
+                Pcv3ActionIntent.FORCE_AUTHENTICATED_ONLY to "force-normal",
+                Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT to "force-unverified-normal",
+            ),
+            Pcv3FormatIntent.D1 to mapOf(
+                Pcv3ActionIntent.DECRYPT to "read-d1",
+                Pcv3ActionIntent.RECOVERY to "recover-d1",
+                Pcv3ActionIntent.FORCE_AUTHENTICATED_ONLY to "force-d1",
+                Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT to "force-unverified-d1",
+            ),
+        )
+
+        expectedModes.forEach { (format, actions) ->
+            actions.forEach { (action, expected) ->
+                val intent = Pcv3OperationIntent(format = format, action = action)
+                assertEquals("$format/$action", expected, intent.goModeOrNull())
+            }
+        }
+        assertNull(Pcv3OperationIntent(Pcv3FormatIntent.NORMAL).goModeOrNull())
+    }
+
+    @Test
+    fun `PCV3 factor policy rejects ignored factors and requires explicit keyfile order`() {
+        val source = Pcv3OwnedSource("/app-private/claimed-input")
+        val base = TestDataBuilders.createDecryptFormData(
+            selectedFilename = "misleading.bin",
+            copiedFilePath = "",
+            password = "",
+        ).copy(
+            pcv3Intent = Pcv3OperationIntent(
+                format = Pcv3FormatIntent.NORMAL,
+                action = Pcv3ActionIntent.DECRYPT,
+            ),
+            pcv3OwnedSource = source,
+        )
+        val keyfiles = listOf(
+            KeyfileInfo("/app-private/key-b", "key-b"),
+            KeyfileInfo("/app-private/key-a", "key-a"),
+        )
+
+        assertFalse("unset factor policy cannot start", base.isFormValid)
+        assertFalse(
+            "password-only must not silently ignore selected keyfiles",
+            base.copy(
+                passwordInput = "secret".toCharArray(),
+                keyfileFilenames = keyfiles,
+                pcv3Intent = base.pcv3Intent?.copy(
+                    factorPolicy = Pcv3FactorPolicyIntent.PASSWORD_ONLY,
+                ),
+            ).isFormValid,
+        )
+        assertFalse(
+            "keyfiles-only must not silently ignore a password",
+            base.copy(
+                passwordInput = "secret".toCharArray(),
+                keyfileFilenames = keyfiles,
+                pcv3Intent = base.pcv3Intent?.copy(
+                    factorPolicy = Pcv3FactorPolicyIntent.KEYFILES_ONLY,
+                    keyfileOrder = Pcv3KeyfileOrderIntent.SELECTED,
+                ),
+            ).isFormValid,
+        )
+        assertFalse(
+            "a keyfile policy needs an explicit ordered or unordered choice",
+            base.copy(
+                keyfileFilenames = keyfiles,
+                pcv3Intent = base.pcv3Intent?.copy(
+                    factorPolicy = Pcv3FactorPolicyIntent.KEYFILES_ONLY,
+                ),
+            ).isFormValid,
+        )
+        assertTrue(
+            base.copy(
+                keyfileFilenames = keyfiles,
+                pcv3Intent = base.pcv3Intent?.copy(
+                    factorPolicy = Pcv3FactorPolicyIntent.KEYFILES_ONLY,
+                    keyfileOrder = Pcv3KeyfileOrderIntent.SELECTED,
+                ),
+            ).isFormValid,
+        )
+    }
 }
