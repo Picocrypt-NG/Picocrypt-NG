@@ -41,12 +41,14 @@ const (
 // Stage owns one private sibling staging file and the pinned directory handles
 // needed to publish it. It has no source-deletion authority.
 type Stage struct {
-	file       *os.File
-	root       *os.Root
-	parent     *os.File
-	rootInfo   os.FileInfo
-	stageInfo  os.FileInfo
-	targetInfo os.FileInfo
+	file                 *os.File
+	root                 *os.Root
+	parent               *os.File
+	rootInfo             os.FileInfo
+	stageInfo            os.FileInfo
+	journalInfo          os.FileInfo
+	journalStageIdentity journalFileIdentity
+	targetInfo           os.FileInfo
 
 	parentPath string
 	stagePath  string
@@ -58,11 +60,15 @@ type Stage struct {
 	operations platformOperations
 	terminal   Result
 
-	cleanupDisposition cleanupDisposition
-	cleanupMayRemain   bool
-	cleanupDone        bool
-	cleanupErr         error
-	retentionAttempted bool
+	cleanupDisposition  cleanupDisposition
+	journaled           bool
+	journalRemoved      bool
+	targetRemoved       bool
+	targetRemovalSynced bool
+	cleanupMayRemain    bool
+	cleanupDone         bool
+	cleanupErr          error
+	retentionAttempted  bool
 }
 
 // Create validates a publication request and creates its private stage through
@@ -130,7 +136,7 @@ func createWithOperations(
 	}
 
 	parentPath := filepath.Dir(absoluteTarget)
-	root, err := os.OpenRoot(parentPath)
+	root, err := fileops.OpenRootNoSymlink(parentPath)
 	if err != nil {
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
 	}
@@ -150,8 +156,9 @@ func createWithOperations(
 		_ = root.Close()
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
 	}
-	currentParent, err := os.Stat(parentPath)
-	if err != nil || !os.SameFile(rootInfo, currentParent) {
+	currentParent, err := os.Lstat(parentPath)
+	if err != nil || currentParent == nil || !currentParent.IsDir() ||
+		currentParent.Mode()&os.ModeSymlink != 0 || !os.SameFile(rootInfo, currentParent) {
 		_ = parent.Close()
 		_ = root.Close()
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeIdentityChanged)
@@ -301,11 +308,17 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 	case atomicCommitted:
 		stage.cleanupDisposition = cleanupNotRequired
 		if err := stage.operations.syncDirectory(stage.parent); err != nil {
+			if stage.journaled {
+				return stage.finishJournaledCommitFailure()
+			}
 			return stage.finish(
 				StatePublishedDurabilityUncertain,
 				pcv3.StageDirectorySync,
 				CodeDurabilityUncertain,
 			)
+		}
+		if stage.journaled && !stage.retireCleanupJournal() {
+			return stage.finishJournaledCommitFailure()
 		}
 		return stage.finish(StatePublishedDurable, pcv3.StageNone, CodePublishedDurable)
 	case atomicNotCommitted:
@@ -323,6 +336,34 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 			CodePublicationIndeterminate,
 		)
 	}
+}
+
+func (stage *Stage) finishJournaledCommitFailure() Result {
+	if stage.journalRemoved {
+		// Retirement already unlinked the journal but did not prove that unlink
+		// durable. Deleting the target now would invert the required barriers: a
+		// crash could restore plaintext while leaving cleanup authority absent.
+		// Preserve the exact target and report indeterminate; startup decides from
+		// the journal name actually observed after restart.
+		stage.cleanupDisposition = cleanupUncertain
+		return stage.finish(
+			StatePublicationIndeterminate,
+			pcv3.StageOutputPublication,
+			CodePublicationIndeterminate,
+		)
+	}
+	stage.cleanupDisposition = cleanupPublishedOwned
+	cleanupFailed := false
+	stage.cleanupPublishedJournaledOwned(&cleanupFailed)
+	if !cleanupFailed {
+		stage.cleanupDisposition = cleanupNotRequired
+		return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
+	}
+	return stage.finish(
+		StatePublicationIndeterminate,
+		pcv3.StageOutputPublication,
+		CodePublicationIndeterminate,
+	)
 }
 
 // PublishRetained performs the same publication as Publish and transfers an
@@ -428,8 +469,9 @@ func (stage *Stage) parentIdentityCurrent() bool {
 	if err != nil || !os.SameFile(stage.rootInfo, pinned) {
 		return false
 	}
-	current, err := os.Stat(stage.parentPath)
-	return err == nil && os.SameFile(stage.rootInfo, current)
+	current, err := os.Lstat(stage.parentPath)
+	return err == nil && current != nil && current.IsDir() &&
+		current.Mode()&os.ModeSymlink == 0 && os.SameFile(stage.rootInfo, current)
 }
 
 func (stage *Stage) stageIdentityCurrent() bool {
@@ -437,7 +479,10 @@ func (stage *Stage) stageIdentityCurrent() bool {
 		return false
 	}
 	current, err := stage.root.Lstat(stage.stageName)
-	return err == nil && current.Mode().IsRegular() && os.SameFile(stage.stageInfo, current)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(stage.stageInfo, current) {
+		return false
+	}
+	return !stage.journaled || stage.journalStageIdentity.matches(current)
 }
 
 func (stage *Stage) targetIdentityCode() Code {
@@ -544,6 +589,7 @@ func (stage *Stage) Cleanup() error {
 	}
 	stage.cleanupDone = true
 	cleanupFailed := false
+	journaledPublishedCleanup := stage.cleanupDisposition == cleanupPublishedOwned && stage.journaled
 
 	if stage.file != nil {
 		if err := stage.file.Close(); err != nil {
@@ -554,7 +600,11 @@ func (stage *Stage) Cleanup() error {
 	if stage.cleanupDisposition == cleanupUncertain && stage.stageName != "" {
 		cleanupFailed = true
 	}
-	if stage.cleanupDisposition == cleanupOwned {
+	if stage.cleanupDisposition == cleanupOwned && stage.journaled {
+		stage.cleanupJournaledOwned(&cleanupFailed)
+	} else if stage.cleanupDisposition == cleanupPublishedOwned && stage.journaled {
+		stage.cleanupPublishedJournaledOwned(&cleanupFailed)
+	} else if stage.cleanupDisposition == cleanupOwned {
 		// Publication can fail before the precommit check. Probe again before
 		// removing the owned name so cleanup never claims all ciphertext is gone
 		// while a protected alias may still retain it.
@@ -573,7 +623,7 @@ func (stage *Stage) Cleanup() error {
 			}
 		}
 	}
-	if stage.cleanupDisposition == cleanupPublishedOwned {
+	if stage.cleanupDisposition == cleanupPublishedOwned && !journaledPublishedCleanup {
 		if stage.root == nil || stage.targetName == "" || stage.stageInfo == nil ||
 			stage.operations.removeStage == nil || stage.operations.syncDirectory == nil {
 			cleanupFailed = true
@@ -608,6 +658,8 @@ func (stage *Stage) Cleanup() error {
 	}
 	stage.rootInfo = nil
 	stage.stageInfo = nil
+	stage.journalInfo = nil
+	stage.journalStageIdentity = journalFileIdentity{}
 	stage.targetInfo = nil
 	stage.protected = nil
 	if cleanupFailed {
