@@ -783,10 +783,15 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 	seenTargets := make(map[string]struct{})
 	for _, f := range reader.File {
 		// Normalize and validate path to prevent zip slip attacks
-		if hasUnsafeWindowsTrimTraversalComponent(f.Name) {
+		canonicalName, pathErr := ParseZIPEntryPath(
+			f.Name,
+			f.FileInfo().IsDir(),
+			ZIPPathExtractionCompatible,
+		)
+		if pathErr != nil {
 			return errors.New("potentially malicious zip item path")
 		}
-		normalizedName := normalizeZipPath(f.Name)
+		normalizedName := filepath.FromSlash(canonicalName)
 		targetName, outPath, err := prepareExtractionPath(
 			extractRoot,
 			extractDir,
@@ -858,10 +863,15 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 		// Revalidate before staging. The first pass creates directories and
 		// sizes the extraction; the stage and final rename both go through
 		// os.Root so their paths remain root-confined.
-		if hasUnsafeWindowsTrimTraversalComponent(f.Name) {
+		canonicalName, pathErr := ParseZIPEntryPath(
+			f.Name,
+			false,
+			ZIPPathExtractionCompatible,
+		)
+		if pathErr != nil {
 			return errors.New("potentially malicious zip item path")
 		}
-		normalizedName := normalizeZipPath(f.Name)
+		normalizedName := filepath.FromSlash(canonicalName)
 		targetName, outPath, err := prepareExtractionPath(
 			extractRoot,
 			extractDir,
@@ -903,21 +913,10 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 		stagedEntry := &stagedEntries[len(stagedEntries)-1]
 
 		// Decompression bomb protection
-		compressedSize, ok := util.SafeUint64ToInt64(f.CompressedSize64)
+		maxBytes, ok := ZIPDecompressionLimit(f.CompressedSize64)
 		if !ok {
 			_ = fileInArchive.Close()
 			return fmt.Errorf("file %s: compressed size exceeds int64 max", f.Name)
-		}
-		// Overflow-safe ratio calculation: check before multiply
-		var maxBytes int64
-		if compressedSize > math.MaxInt64/util.MaxDecompressRatio {
-			maxBytes = math.MaxInt64 // allow: ratio can't overflow, trust content
-		} else {
-			maxBytes = compressedSize * util.MaxDecompressRatio
-		}
-		// Floor for small compressed files to avoid false positives
-		if maxBytes < util.MiB {
-			maxBytes = util.MiB
 		}
 
 		var written int64
