@@ -88,6 +88,89 @@ func TestMobilePCV3DetectOperationRoutesContentBeforeFilename(t *testing.T) {
 	}
 }
 
+func TestMobilePCV3RouteDiscriminatorSeparatesNormalFromRefusedClaims(t *testing.T) {
+	admitted := loadMobilePCV3Fixture(t)
+	unsupported := append([]byte(nil), admitted...)
+	unsupported[5] = 4
+
+	for _, test := range []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{name: "normal", data: admitted, want: "normal"},
+		{name: "unsupported", data: unsupported, want: "unsupported"},
+		{name: "invalid", data: []byte{'P', 'C', 'V', 0}, want: "invalid"},
+		{name: "legacy", data: []byte{'P', 'C', 'X', 0, 1}, want: "legacy"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := writeMobilePCV3Input(t, "misleading.pcv", test.data)
+			got, err := DetectPCV3Route(input)
+			if err != nil {
+				t.Fatalf("DetectPCV3Route() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("DetectPCV3Route() = %q; want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestMobilePCV3AndroidPolicyStateIsClosed(t *testing.T) {
+	if got := PCV3AndroidPolicyState(); got != "unconfigured" {
+		t.Fatalf("PCV3AndroidPolicyState() = %q; want exact fail-closed state %q", got, "unconfigured")
+	}
+	operation := startPCV3Operation()
+	t.Cleanup(func() { cleanupOperation(operation.id) })
+	if challenge := operation.ResourceChallenge(); challenge != nil {
+		t.Fatal("unconfigured Android policy exposed a resource challenge")
+	}
+	if (&PCV3ResourceChallenge{}).Submit(
+		"TestVendor",
+		"TestModel",
+		"arm64-v8a",
+		"aarch64",
+		8<<30,
+		4<<30,
+		true,
+		true,
+		false,
+	) {
+		t.Fatal("zero-value resource challenge accepted observations")
+	}
+}
+
+func TestMobilePCV3RouteDiscriminatorUsesTheOpenedDescriptor(t *testing.T) {
+	input := writeMobilePCV3Input(t, "selected.pcv", loadMobilePCV3Fixture(t))
+	replacement := []byte{'P', 'C', 'V', 0}
+	originalOpen := openPCV3Existing
+	openPCV3Existing = func(path string, flag int) (*os.File, error) {
+		opened, err := originalOpen(path, flag)
+		if err != nil {
+			return nil, err
+		}
+		moved := path + ".opened"
+		if err := os.Rename(path, moved); err != nil {
+			_ = opened.Close()
+			return nil, err
+		}
+		if err := os.WriteFile(path, replacement, 0o600); err != nil {
+			_ = opened.Close()
+			return nil, err
+		}
+		return opened, nil
+	}
+	t.Cleanup(func() { openPCV3Existing = originalOpen })
+
+	got, err := DetectPCV3Route(input)
+	if err != nil {
+		t.Fatalf("DetectPCV3Route() error = %v", err)
+	}
+	if got != "normal" {
+		t.Fatalf("DetectPCV3Route() = %q; want route from opened normal descriptor", got)
+	}
+}
+
 func TestMobilePCV3GetDecryptionInfoReturnsOnlyRedactedCode(t *testing.T) {
 	for _, test := range mobilePCV3ClaimedCases(t) {
 		t.Run(test.name, func(t *testing.T) {
