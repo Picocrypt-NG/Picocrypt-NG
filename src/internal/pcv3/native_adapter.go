@@ -117,12 +117,13 @@ func normalCredentialSuite(suite Suite) (pcv3credential.Suite, bool) {
 // authenticated reader. Source is borrowed. Factors transfer to RunNativeRead.
 // No frontend imports this package-level bridge directly.
 type NativeReadRequest struct {
-	Source     io.ReaderAt
-	SourceSize int64
-	Factors    *pcv3credential.FactorRequest
-	Admitter   pcv3credential.Admitter
-	Target     string
-	Protected  []string
+	Source              io.ReaderAt
+	SourceSize          int64
+	Factors             *pcv3credential.FactorRequest
+	Admitter            pcv3credential.Admitter
+	Target              string
+	Protected           []string
+	JournalPrivateStage bool
 }
 
 // NativePayloadDisposition tells the operation whether the completed stage is
@@ -437,11 +438,13 @@ func RunNativeRead(
 	admitter := request.Admitter
 	target := request.Target
 	protected := append([]string(nil), request.Protected...)
+	journalPrivateStage := request.JournalPrivateStage
 	request.Source = nil
 	request.SourceSize = 0
 	request.Factors = nil
 	request.Admitter = nil
 	request.Target = ""
+	request.JournalPrivateStage = false
 	for index := range request.Protected {
 		request.Protected[index] = ""
 	}
@@ -479,7 +482,11 @@ func RunNativeRead(
 		return nativeReadFailure(OutcomeOperationFailed, StageCredentialPolicy, CodeOperationFailed)
 	}
 
-	sink := &nativeReadSink{target: target, protected: protected}
+	sink := &nativeReadSink{
+		target:              target,
+		protected:           protected,
+		journalPrivateStage: journalPrivateStage,
+	}
 	provider := &nativeCredentialProvider{readerCredentialProvider: readerCredentialProvider{
 		factors:  factors,
 		admitter: admitter,
@@ -600,11 +607,13 @@ func nativeReadResultFromSemantic(semantic *normalReadResult) *NativeReadResult 
 }
 
 type nativeReadSink struct {
-	target     string
-	protected  []string
-	stage      *pcv3publication.Stage
-	nextRecord uint64
-	closed     bool
+	target              string
+	protected           []string
+	journalPrivateStage bool
+	stage               *pcv3publication.Stage
+	stageWriter         func(io.Writer) io.Writer
+	nextRecord          uint64
+	closed              bool
 
 	publicationAttempted bool
 	publishCalled        bool
@@ -626,6 +635,16 @@ func (sink *nativeReadSink) ensureStage() error {
 		append([]string(nil), sink.protected...),
 		pcv3publication.PolicyNoReplace,
 	)
+	if err == nil && sink.journalPrivateStage {
+		if journalErr := stage.PersistCleanupJournal(); journalErr != nil {
+			err = errors.Join(
+				journalErr,
+				pcv3publication.ErrCleanupIncomplete,
+				stage.Cleanup(),
+			)
+			stage = nil
+		}
+	}
 	if err != nil {
 		if sink.publicationAttempted {
 			sink.retainPublicationError(err)
@@ -656,8 +675,15 @@ func (sink *nativeReadSink) writeVerifiedRecord(
 	if file == nil {
 		return errors.New("pcv3: native output stage unavailable")
 	}
+	destination := io.Writer(file)
+	if sink.stageWriter != nil {
+		destination = sink.stageWriter(file)
+		if destination == nil {
+			return errors.New("pcv3: native output stage writer unavailable")
+		}
+	}
 	for len(plaintext) != 0 {
-		written, err := file.Write(plaintext)
+		written, err := destination.Write(plaintext)
 		if written < 0 || written > len(plaintext) {
 			return errors.New("pcv3: native output writer contract violated")
 		}
@@ -756,6 +782,8 @@ func (sink *nativeReadSink) abortUncommitted() {
 	}
 	sink.protected = nil
 	sink.target = ""
+	sink.journalPrivateStage = false
+	sink.stageWriter = nil
 }
 
 func (sink *nativeReadSink) retainPublication(publication pcv3publication.Result) {
