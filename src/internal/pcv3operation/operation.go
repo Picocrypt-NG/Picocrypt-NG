@@ -133,10 +133,12 @@ type Request struct {
 	Consent   Consent
 }
 
-// ExecutionOptions selects internal output custody without expanding Request
-// or its serializable frontend contract. The zero value preserves Run.
+// ExecutionOptions selects internal output custody and crash cleanup without
+// expanding Request or its serializable frontend contract. The zero value
+// preserves Run.
 type ExecutionOptions struct {
 	RetainDurableOutput bool
+	JournalPrivateStage bool
 }
 
 func (Request) String() string { return "pcv3operation.Request([REDACTED])" }
@@ -193,8 +195,8 @@ func Run(ctx context.Context, request *Request) *Result {
 	return RunWithOptions(ctx, request, ExecutionOptions{})
 }
 
-// RunWithOptions executes the same operation runner with an optional retained
-// owner for a durably published non-archive output.
+// RunWithOptions executes the same operation runner with optional retained
+// output and private-stage crash-cleanup custody.
 func RunWithOptions(
 	ctx context.Context,
 	request *Request,
@@ -341,12 +343,13 @@ func runNormalRead(
 		return owner.reportFailure()
 	}
 	request := &pcv3.NativeReadRequest{
-		Source:     owner.source,
-		SourceSize: sourceSize,
-		Factors:    owner.takeFactors(),
-		Admitter:   seams.admitter,
-		Target:     owner.target,
-		Protected:  owner.outputProtected(),
+		Source:              owner.source,
+		SourceSize:          sourceSize,
+		Factors:             owner.takeFactors(),
+		Admitter:            seams.admitter,
+		Target:              owner.target,
+		Protected:           owner.outputProtected(),
+		JournalPrivateStage: options.JournalPrivateStage,
 	}
 	var archive *pcv3.NativeArchiveHandoff
 	var retainedOutput *pcv3publication.RetainedFile
@@ -462,6 +465,7 @@ func runRecovery(
 	var recoveryResult *pcv3recovery.Result
 	recoveryOptions := pcv3recovery.ExecutionOptions{
 		RetainDurableOutput: options.RetainDurableOutput,
+		JournalPrivateStage: options.JournalPrivateStage,
 	}
 	if d1Role != nil {
 		recoveryResult = pcv3recovery.RunD1UnverifiedWithOptions(
@@ -531,7 +535,10 @@ func runUnverified(
 		return owner.finishReportedResult(resultFromRecovery(pcv3recovery.RunWithOptions(
 			ctx,
 			request,
-			pcv3recovery.ExecutionOptions{RetainDurableOutput: options.RetainDurableOutput},
+			pcv3recovery.ExecutionOptions{
+				RetainDurableOutput: options.RetainDurableOutput,
+				JournalPrivateStage: options.JournalPrivateStage,
+			},
 		)))
 	}
 	consentRequest := consentRequestForMode(owner.mode)
