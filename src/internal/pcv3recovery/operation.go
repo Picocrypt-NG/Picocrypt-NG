@@ -20,10 +20,11 @@ const (
 	artifactInspectionPageMaximum = uint64(128)
 )
 
-// ExecutionOptions selects internal output custody without adding authority to
-// Request. The zero value preserves terminal publication behavior.
+// ExecutionOptions selects internal output custody and crash cleanup without
+// adding authority to Request. The zero value preserves terminal publication.
 type ExecutionOptions struct {
 	RetainDurableOutput bool
+	JournalPrivateStage bool
 }
 
 var errInvalidRecoveryWriteProgress = errors.New("pcv3 recovery operation: invalid write progress")
@@ -147,8 +148,8 @@ func Run(ctx context.Context, request *Request) *Result {
 	return RunWithOptions(ctx, request, ExecutionOptions{})
 }
 
-// RunWithOptions executes normal recovery with an optional exact retained
-// owner for a durably published output.
+// RunWithOptions executes normal recovery with optional retained-output and
+// private-stage crash-cleanup custody.
 func RunWithOptions(
 	ctx context.Context,
 	request *Request,
@@ -419,6 +420,13 @@ func runWithCoreOptions(
 		defer func() {
 			result.retainCleanupError(stage.Cleanup())
 		}()
+		if options.JournalPrivateStage {
+			if err := stage.PersistCleanupJournal(); err != nil {
+				err = errors.Join(err, pcv3publication.ErrCleanupIncomplete)
+				result.retainPublicationError(err)
+				return err
+			}
+		}
 
 		file := stage.File()
 		if file == nil {
