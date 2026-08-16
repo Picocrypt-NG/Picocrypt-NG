@@ -184,7 +184,6 @@ func TestPCV3MobileRetainedOutputRejectsStaleCompletionAndRedactsExports(t *test
 	if code := operation.Release(); code != "" {
 		t.Fatalf("release invalid projection = %q", code)
 	}
-
 }
 
 func TestPCV3MobileRetainedOutputContainsDiscardPanic(t *testing.T) {
@@ -246,7 +245,8 @@ func TestPCV3MobileRetainedOutputSaveFDTransfersExactOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create transferred destination: %v", err)
 	}
-	destinationFD := int64(destination.Fd())
+	t.Cleanup(func() { _ = destination.Close() })
+	destinationFD := duplicateMobileTransferredFD(t, destination)
 	copy := *output
 	result := make(chan *PCV3OutputResult, 1)
 	go func() { result <- output.SaveFD(destinationFD) }()
@@ -262,8 +262,9 @@ func TestPCV3MobileRetainedOutputSaveFDTransfersExactOwner(t *testing.T) {
 	if saved == nil || saved.Code() != "saved" || saved.CleanupIncomplete() {
 		t.Fatalf("SaveFD result = %#v; want saved exact owner", saved)
 	}
-	if _, err := destination.Stat(); err == nil {
-		t.Fatal("SaveFD returned with the transferred descriptor still usable")
+	assertMobileTransferredFDClosed(t, destinationFD)
+	if _, err := destination.Stat(); err != nil {
+		t.Fatalf("SaveFD closed the provider-owned original descriptor: %v", err)
 	}
 	requirePCV3MobileFileBytes(t, destinationPath, payload)
 	if _, err := os.Lstat(retainedPath); !errors.Is(err, os.ErrNotExist) {
@@ -322,12 +323,15 @@ func TestPCV3MobileRetainedOutputSaveFDContainsInvalidAndPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create panic destination: %v", err)
 	}
-	panicResult := output.SaveFD(int64(destination.Fd()))
+	t.Cleanup(func() { _ = destination.Close() })
+	transferredFD := duplicateMobileTransferredFD(t, destination)
+	panicResult := output.SaveFD(transferredFD)
 	if panicResult == nil || panicResult.Code() != "save-failed-cleanup-incomplete" || !panicResult.CleanupIncomplete() {
 		t.Fatalf("contained SaveFD panic = %#v; want fixed cleanup-incomplete failure", panicResult)
 	}
-	if _, err := destination.Stat(); err == nil {
-		t.Fatal("panicking SaveFD returned with its transferred descriptor still usable")
+	assertMobileTransferredFDClosed(t, transferredFD)
+	if _, err := destination.Stat(); err != nil {
+		t.Fatalf("panicking SaveFD closed the provider-owned original descriptor: %v", err)
 	}
 	if again := output.SaveFD(-1); again == nil || again.Code() != "expired" || again.CleanupIncomplete() {
 		t.Fatalf("panic-consumed SaveFD reuse = %#v; want fixed expired result", again)
@@ -358,12 +362,15 @@ func TestPCV3MobileRetainedOutputSaveFDClosesExpiredTransferredDescriptor(t *tes
 	if err != nil {
 		t.Fatalf("create expired transferred descriptor: %v", err)
 	}
-	result := expired.SaveFD(int64(destination.Fd()))
+	t.Cleanup(func() { _ = destination.Close() })
+	transferredFD := duplicateMobileTransferredFD(t, destination)
+	result := expired.SaveFD(transferredFD)
 	if result == nil || result.Code() != "expired" || result.CleanupIncomplete() {
 		t.Fatalf("expired SaveFD result = %#v; want fixed expired result", result)
 	}
-	if _, err := destination.Stat(); err == nil {
-		t.Fatal("expired SaveFD leaked the transferred descriptor")
+	assertMobileTransferredFDClosed(t, transferredFD)
+	if _, err := destination.Stat(); err != nil {
+		t.Fatalf("expired SaveFD closed the provider-owned original descriptor: %v", err)
 	}
 	if code := operation.Release(); code != "" {
 		t.Fatalf("release after expired SaveFD = %q", code)

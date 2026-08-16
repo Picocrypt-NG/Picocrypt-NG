@@ -114,7 +114,7 @@ func (inspection *ArtifactInspection) Page(
 	}
 	return append(
 		[]pcv3artifact.Range(nil),
-		inspection.ranges[int(offset):int(end)]...,
+		inspection.ranges[offset:end]...,
 	), true
 }
 

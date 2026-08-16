@@ -3,9 +3,8 @@
 package pcv3resource
 
 import (
-	"context"
-
 	"Picocrypt-NG/internal/pcv3credential"
+	"context"
 )
 
 // androidSnapshotProvider deliberately supplies no guessed resource facts.
@@ -21,16 +20,19 @@ func (androidSnapshotProvider) AndroidReadPolicyConfigured() bool {
 }
 
 func (androidSnapshotProvider) Snapshot(context.Context) Snapshot {
-	return newAndroidBrokerSnapshot(snapshotStateUnconfigured, 0, 0, 0, false)
+	return newAndroidBrokerSnapshot(snapshotStateUnconfigured)
 }
 
 func (androidSnapshotProvider) snapshotForKDF(
 	ctx context.Context,
 	profile pcv3credential.KDFProfile,
 ) Snapshot {
-	session := androidResourceSessionFromContext(ctx)
+	if ctx == nil {
+		return newAndroidBrokerSnapshot(snapshotStateUnconfigured)
+	}
+	session, _ := ctx.Value(androidResourceSessionContextKey{}).(*AndroidResourceSession)
 	if session == nil {
-		return newAndroidBrokerSnapshot(snapshotStateUnconfigured, 0, 0, 0, false)
+		return newAndroidBrokerSnapshot(snapshotStateUnconfigured)
 	}
 	return session.snapshotForKDF(ctx, profile)
 }

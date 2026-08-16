@@ -7,6 +7,10 @@ import (
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/log"
+	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3credential"
+	"Picocrypt-NG/internal/pcv3operation"
+	"Picocrypt-NG/internal/pcv3recovery"
 	"Picocrypt-NG/internal/util"
 	"Picocrypt-NG/internal/volume"
 	"context"
@@ -21,6 +25,9 @@ import (
 	"sync"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/widget"
 )
 
 type operationInput struct {
@@ -71,6 +78,11 @@ type operationExecutor func(
 	operationInput,
 	volume.ProgressReporter,
 ) operationResult
+
+type pcv3OperationExecutor func(
+	context.Context,
+	*pcv3operation.Request,
+) *pcv3operation.Result
 
 type operationSourceRemover func(context.Context, string) error
 
@@ -394,7 +406,12 @@ func (a *App) onClickStart() {
 	}
 	a.cancelOpenedPathReadiness()
 
-	if a.State.Mode == "" || a.startDisabled(a.State.UISnapshot()) {
+	uiSnap := a.State.UISnapshot()
+	if uiSnap.Mode == "" || a.startDisabled(uiSnap) {
+		return
+	}
+	if uiSnap.PCV3Route == app.PCV3RouteReady {
+		a.startPCV3Work()
 		return
 	}
 
@@ -598,8 +615,12 @@ func (a *App) captureOperationInput(snap app.Snapshot) (operationInput, error) {
 }
 
 func (a *App) newOperationSession() *operationSession {
-	ctx, cancel := context.WithCancel(a.workers.ctx)
 	generation := a.operationGeneration.Add(1)
+	return a.newOperationSessionForGeneration(generation)
+}
+
+func (a *App) newOperationSessionForGeneration(generation uint64) *operationSession {
+	ctx, cancel := context.WithCancel(a.workers.ctx)
 	session := &operationSession{
 		ctx:        ctx,
 		cancel:     cancel,
@@ -651,6 +672,10 @@ func (a *App) operationCanApply(session *operationSession) bool {
 // startWork begins the encryption/decryption operation. It is called only from
 // Fyne callbacks and captures every worker input before launching the worker.
 func (a *App) startWork() {
+	if a.State.UISnapshot().PCV3Route == app.PCV3RouteReady {
+		a.startPCV3Work()
+		return
+	}
 	snap := a.State.Snapshot()
 	uiSnap := a.State.UISnapshot()
 	mobile := isMobile()
@@ -740,6 +765,641 @@ func (a *App) startWork() {
 		}
 		a.finishOperationWorker(session, input, result, false)
 	})
+}
+
+func pcv3ModeForIntent(intent app.PCV3OperationIntent) (pcv3operation.Mode, bool) {
+	normal := intent.Format == app.PCV3FormatNormal
+	switch intent.Action {
+	case app.PCV3ActionDecrypt:
+		if normal {
+			return pcv3operation.ModeReadNormal, true
+		}
+		return pcv3operation.ModeReadD1, intent.Format == app.PCV3FormatD1
+	case app.PCV3ActionRecovery:
+		if normal {
+			return pcv3operation.ModeRecoverNormal, true
+		}
+		return pcv3operation.ModeRecoverD1, intent.Format == app.PCV3FormatD1
+	case app.PCV3ActionForce:
+		if normal {
+			return pcv3operation.ModeForceUnverifiedNormal, true
+		}
+		return pcv3operation.ModeForceUnverifiedD1, intent.Format == app.PCV3FormatD1
+	default:
+		return 0, false
+	}
+}
+
+func pcv3FactorsForIntent(intent *app.PCV3OperationIntent) (*pcv3credential.FactorRequest, error) {
+	if intent == nil {
+		return nil, errors.New("invalid PCV3 intent")
+	}
+	factors := &pcv3credential.FactorRequest{Password: intent.Password}
+	intent.Password = nil
+	switch intent.FactorPolicy {
+	case app.PCV3FactorPolicyPassword:
+		factors.Mode = pcv3credential.CredentialModePasswordOnly
+		factors.ExpectedPolicy = pcv3credential.FactorPolicyPasswordOnly
+		factors.KeyfileMode = pcv3credential.KeyfileModeNone
+	case app.PCV3FactorPolicyKeyfiles:
+		factors.Mode = pcv3credential.CredentialModeKeyfilesOnly
+		factors.ExpectedPolicy = pcv3credential.FactorPolicyKeyfilesOnly
+	case app.PCV3FactorPolicyCombined:
+		factors.Mode = pcv3credential.CredentialModePasswordAndKeyfiles
+		factors.ExpectedPolicy = pcv3credential.FactorPolicyPasswordAndKeyfiles
+	default:
+		_ = factors.Close()
+		return nil, errors.New("invalid PCV3 factor policy")
+	}
+	if intent.FactorPolicy != app.PCV3FactorPolicyPassword {
+		switch intent.KeyfileOrder {
+		case app.PCV3KeyfileOrderSelected:
+			factors.KeyfileMode = pcv3credential.KeyfileModeOrdered
+		case app.PCV3KeyfileOrderAny:
+			factors.KeyfileMode = pcv3credential.KeyfileModeUnordered
+		default:
+			_ = factors.Close()
+			return nil, errors.New("invalid PCV3 keyfile order")
+		}
+	}
+	for _, path := range intent.Keyfiles {
+		file, err := fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
+		if err != nil {
+			_ = factors.Close()
+			return nil, errors.New("PCV3 keyfile could not be opened safely")
+		}
+		info, statErr := file.Stat()
+		if statErr != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
+			_ = file.Close()
+			_ = factors.Close()
+			return nil, errors.New("PCV3 keyfile must be a regular file")
+		}
+		factors.Keyfiles = append(factors.Keyfiles, pcv3credential.OwnKeyfileReader(file))
+	}
+	return factors, nil
+}
+
+func buildPCV3Request(intent *app.PCV3OperationIntent) (*pcv3operation.Request, error) {
+	if intent == nil || intent.Source == nil || intent.Target == "" {
+		return nil, errors.New("invalid PCV3 operation intent")
+	}
+	mode, ok := pcv3ModeForIntent(*intent)
+	if !ok {
+		return nil, errors.New("invalid PCV3 operation mode")
+	}
+	factors, err := pcv3FactorsForIntent(intent)
+	if err != nil {
+		return nil, err
+	}
+	request := &pcv3operation.Request{
+		Mode:      mode,
+		Source:    intent.Source,
+		Factors:   factors,
+		Target:    intent.Target,
+		Protected: append([]string(nil), intent.Keyfiles...),
+	}
+	intent.Source = nil
+	for index := range intent.Keyfiles {
+		intent.Keyfiles[index] = ""
+	}
+	intent.Keyfiles = nil
+	intent.Target = ""
+	return request, nil
+}
+
+func closePCV3Intent(intent *app.PCV3OperationIntent) {
+	if intent == nil {
+		return
+	}
+	crypto.SecureZero(intent.Password)
+	intent.Password = nil
+	if intent.Source != nil {
+		_ = intent.Source.Close()
+		intent.Source = nil
+	}
+	for index := range intent.Keyfiles {
+		intent.Keyfiles[index] = ""
+	}
+	intent.Keyfiles = nil
+}
+
+func pcv3TerminalPresentation(diagnostic pcv3operation.Diagnostic) pcv3operation.Presentation {
+	stage := pcv3.StageCredentialPolicy
+	if diagnostic == pcv3operation.DiagnosticCancellation {
+		stage = pcv3.StageCancellation
+	}
+	presentation, _ := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
+		Outcome:    pcv3.OutcomeOperationFailed,
+		Stage:      stage,
+		Code:       pcv3.CodeOperationFailed,
+		Diagnostic: diagnostic,
+	})
+	return presentation
+}
+
+func (a *App) startPCV3Work() {
+	reservation, ok := a.workers.reserve()
+	if !ok {
+		a.pcv3Result = nil
+		a.State.SetPCV3Result(pcv3TerminalPresentation(pcv3operation.DiagnosticResourceBusy))
+		a.updateUIState()
+		return
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			reservation.release()
+		}
+	}()
+
+	intent, ok := a.State.TakePCV3OperationIntent()
+	if !ok {
+		return
+	}
+	defer closePCV3Intent(&intent)
+	request, err := buildPCV3Request(&intent)
+	if err != nil {
+		a.pcv3Result = nil
+		a.State.SetPCV3Result(pcv3TerminalPresentation(pcv3operation.DiagnosticCredentialPolicy))
+		a.clearCredentialEntries()
+		a.updateUIState()
+		return
+	}
+
+	session := a.newOperationSession()
+	a.setOperationSession(session)
+	a.releasePCV3Result()
+	a.State.SetWorking(true)
+	a.State.SetCanCancel(true)
+	request.Reporter = a.pcv3Reporter(session)
+	request.Consent = a.pcv3Consent(session)
+	executor := a.pcv3OperationExecutor
+	if executor == nil {
+		executor = pcv3operation.Run
+	}
+	launched = true
+	reservation.launch(func(context.Context) {
+		result := executor(session.ctx, request)
+		a.finishPCV3Worker(session, result)
+	})
+	a.clearCredentialEntries()
+	a.refreshAdvanced()
+	a.updateUIState()
+}
+
+func (a *App) pcv3Reporter(session *operationSession) pcv3operation.Reporter {
+	return func(status pcv3operation.Status) error {
+		if !session.gate.accept(func() { a.State.SetPCV3Progress(status.Code()) }) {
+			return context.Canceled
+		}
+		fyne.Do(func() {
+			if session.gate.canApply() {
+				a.updateUIState()
+			}
+		})
+		return nil
+	}
+}
+
+func (a *App) pcv3Consent(session *operationSession) pcv3operation.Consent {
+	return func(request pcv3operation.ConsentRequest, action pcv3operation.ConsentAction) error {
+		if session == nil || action == nil || a.Window == nil || !session.gate.canApply() {
+			return nil
+		}
+		type choice struct {
+			role pcv3operation.PhysicalRole
+			ok   bool
+		}
+		chosen := make(chan choice, 1)
+		var once sync.Once
+		send := func(value choice) { once.Do(func() { chosen <- value }) }
+		var consentDialog dialog.Dialog
+		valid := false
+		fyne.DoAndWait(func() {
+			view, ok := newPCV3ConsentView(
+				request.Mode(), request.AllowedRoles(),
+				func(role pcv3operation.PhysicalRole) {
+					send(choice{role: role, ok: true})
+					if consentDialog != nil {
+						consentDialog.Hide()
+					}
+				},
+				func() {
+					send(choice{})
+					if consentDialog != nil {
+						consentDialog.Hide()
+					}
+				},
+			)
+			if !ok {
+				return
+			}
+			valid = true
+			consentDialog = dialog.NewCustomWithoutButtons(
+				tr("pcv3.consent.title", "Recover unverified data?"), view.content, a.Window,
+			)
+			consentDialog.SetOnClosed(func() { send(choice{}) })
+			consentDialog.Show()
+			a.Window.Canvas().Focus(view.cancel)
+		})
+		if !valid {
+			return nil
+		}
+		select {
+		case selection := <-chosen:
+			if !selection.ok || !session.gate.canApply() {
+				return nil
+			}
+			return action(selection.role)
+		case <-session.ctx.Done():
+			fyne.Do(func() {
+				if consentDialog != nil {
+					consentDialog.Hide()
+				}
+			})
+			return nil
+		}
+	}
+}
+
+func (a *App) finishPCV3Worker(session *operationSession, result *pcv3operation.Result) {
+	cancelled := session.gate.finish(session.cancel)
+	if a.workers.isStopping() || a.operationGeneration.Load() != session.generation {
+		cleanupIncomplete := a.disposePCV3Result(result)
+		a.clearOperationSession(session)
+		a.refreshPCV3CleanupWarningIfAlive(cleanupIncomplete)
+		return
+	}
+	fyne.Do(func() {
+		if a.workers.isStopping() || !a.isCurrentOperation(session) {
+			cleanupIncomplete := a.disposePCV3Result(result)
+			a.clearOperationSession(session)
+			if cleanupIncomplete && !a.workers.isStopping() {
+				a.updateUIState()
+			}
+			return
+		}
+		a.clearOperationSession(session)
+		a.State.SetWorking(false)
+		a.State.SetCanCancel(false)
+		if result != nil {
+			a.pcv3Result = result
+			a.pcv3ResultGeneration = session.generation
+			a.State.SetPCV3Result(result.Presentation())
+		} else if cancelled {
+			a.pcv3Result = nil
+			a.State.SetPCV3Result(pcv3TerminalPresentation(pcv3operation.DiagnosticCancellation))
+		} else {
+			a.pcv3Result = nil
+			a.State.SetPCV3Result(pcv3TerminalPresentation(pcv3operation.DiagnosticCoreFailure))
+		}
+		a.refreshAdvanced()
+		a.updateUIState()
+	})
+}
+
+func disposePCV3Result(result *pcv3operation.Result) (incomplete bool) {
+	if result == nil {
+		return false
+	}
+	incomplete = pcv3CleanupIncomplete(result.Presentation())
+	defer func() {
+		if recover() != nil {
+			incomplete = true
+		}
+	}()
+	followUp := result.ArchiveFollowUp()
+	if followUp == nil {
+		return incomplete
+	}
+	next := followUp.Close()
+	return incomplete || next == nil || pcv3CleanupIncomplete(next.Presentation())
+}
+
+func pcv3CleanupIncomplete(presentation pcv3operation.Presentation) bool {
+	for _, warning := range presentation.Warnings() {
+		if warning == pcv3operation.WarningCleanupIncomplete {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) latchPCV3CleanupPresentation(presentation pcv3operation.Presentation) {
+	if pcv3CleanupIncomplete(presentation) {
+		a.State.LatchPCV3CleanupIncomplete()
+	}
+}
+
+func (a *App) latchPCV3CleanupResult(result *pcv3operation.Result) bool {
+	if result == nil {
+		a.State.LatchPCV3CleanupIncomplete()
+		return true
+	}
+	incomplete := pcv3CleanupIncomplete(result.Presentation())
+	if incomplete {
+		a.State.LatchPCV3CleanupIncomplete()
+	}
+	return incomplete
+}
+
+func (a *App) disposePCV3Result(result *pcv3operation.Result) bool {
+	disposer := a.pcv3ResultDisposer
+	incomplete := false
+	if disposer == nil {
+		incomplete = disposePCV3Result(result)
+	} else {
+		incomplete = disposer(result)
+	}
+	if incomplete {
+		a.State.LatchPCV3CleanupIncomplete()
+	}
+	return incomplete
+}
+
+func (a *App) refreshPCV3CleanupWarningIfAlive(cleanupIncomplete bool) {
+	if !cleanupIncomplete || a.workers.isStopping() {
+		return
+	}
+	fyne.Do(func() {
+		if !a.workers.isStopping() {
+			a.updateUIState()
+		}
+	})
+}
+
+func (a *App) releasePCV3Result() {
+	result := a.pcv3Result
+	a.pcv3Result = nil
+	a.pcv3ResultGeneration = 0
+	a.disposePCV3Result(result)
+}
+
+func (a *App) refreshPCV3Surface(snap app.UISnapshot) {
+	if a.pcv3Container == nil {
+		return
+	}
+	a.pcv3Container.RemoveAll()
+	if snap.PCV3CleanupIncomplete && !pcv3CleanupIncomplete(snap.PCV3Result) {
+		a.pcv3Container.Add(wrappedPCV3Title(tr("pcv3.warning.cleanup_title", "Cleanup could not be confirmed")))
+		a.pcv3Container.Add(wrappedPCV3Label(pcv3WarningText(pcv3operation.WarningCleanupIncomplete)))
+	}
+	switch snap.PCV3Route {
+	case app.PCV3RouteChecking:
+		a.pcv3Container.Show()
+		a.pcv3Container.Add(wrappedPCV3Label(tr("pcv3.routing.checking", "Checking selected file…")))
+		return
+	case app.PCV3RouteFailed:
+		a.pcv3Container.Show()
+		a.pcv3Container.Add(wrappedPCV3Label(tr("pcv3.routing.failed", "The selected file could not be classified safely. No operation was started.")))
+		return
+	case app.PCV3RouteReady, app.PCV3RouteTransferred:
+		a.pcv3Container.Show()
+		if snap.Working {
+			a.pcv3Container.Add(wrappedPCV3Label(pcv3ProgressText(snap.PCV3Progress)))
+			if snap.CanCancel {
+				label := tr("pcv3.progress.cancel_decryption", "Cancel decryption")
+				if snap.PCV3Action != app.PCV3ActionDecrypt {
+					label = tr("pcv3.progress.cancel_recovery", "Cancel recovery")
+				}
+				a.pcv3CancelButton = widget.NewButton(label, func() {
+					a.operationMu.Lock()
+					session := a.operationSession
+					a.operationMu.Unlock()
+					if session != nil {
+						a.cancelOperation(session)
+					}
+				})
+				a.pcv3CancelButton.Importance = widget.HighImportance
+				a.pcv3Container.Add(a.pcv3CancelButton)
+			} else {
+				a.pcv3CancelButton = nil
+			}
+			return
+		}
+		if snap.PCV3Result.CompletionClass() != pcv3operation.CompletionUnknown {
+			a.pcv3Container.Add(a.buildPCV3ResultView(snap.PCV3Result, a.pcv3Result))
+			return
+		}
+		a.pcv3Container.Add(buildPCV3IntentSummary(snap))
+		return
+	}
+	if !hasSelectedInput(snap) {
+		a.pcv3Container.Show()
+		title := widget.NewLabelWithStyle(
+			tr("pcv3.empty.title", "Choose a file"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true},
+		)
+		a.pcv3Container.Add(title)
+		a.pcv3Container.Add(wrappedPCV3Label(tr("pcv3.empty.body", "Choose one file to decrypt, recover, or open explicitly as PCV3 D1.")))
+		return
+	}
+	if snap.PCV3CleanupIncomplete {
+		a.pcv3Container.Show()
+		return
+	}
+	a.pcv3Container.Hide()
+}
+
+func (a *App) buildPCV3ResultView(
+	presentation pcv3operation.Presentation,
+	result *pcv3operation.Result,
+) fyne.CanvasObject {
+	outcome := pcv3OutcomeCopy(presentation)
+	publication := pcv3PublicationCopy(presentation)
+	content := container.NewVBox()
+	if outcome.Title != "" {
+		content.Add(wrappedPCV3Title(outcome.Title))
+	}
+	if outcome.Body != "" {
+		content.Add(wrappedPCV3Label(outcome.Body))
+	}
+	if publication.Title != "" && publication.Title != outcome.Title {
+		content.Add(wrappedPCV3Title(publication.Title))
+	}
+	if publication.Body != "" {
+		content.Add(wrappedPCV3Label(publication.Body))
+	}
+	hasCleanupWarning := false
+	for _, warning := range presentation.Warnings() {
+		if warning == pcv3operation.WarningCleanupIncomplete {
+			hasCleanupWarning = true
+			content.Add(wrappedPCV3Title(tr("pcv3.warning.cleanup_title", "Cleanup could not be confirmed")))
+		}
+		content.Add(wrappedPCV3Label(pcv3WarningText(warning)))
+	}
+
+	generation := a.pcv3ResultGeneration
+	if presentation.ArchivePending() && result != nil && result == a.pcv3Result &&
+		result.ArchiveFollowUp() != nil {
+		extract := widget.NewButton(tr("pcv3.archive.extract", "Extract archive"), func() {
+			if result != a.pcv3Result || generation != a.pcv3ResultGeneration {
+				return
+			}
+			picker := dialog.NewFolderOpen(func(uri fyne.ListableURI, err error) {
+				if err != nil || uri == nil || result != a.pcv3Result || generation != a.pcv3ResultGeneration {
+					return
+				}
+				root, openErr := fileops.OpenRootNoSymlink(uri.Path())
+				if openErr != nil {
+					return
+				}
+				a.consumePCV3Archive(result, generation, root)
+			}, a.Window)
+			picker.Show()
+		})
+		closeButton := widget.NewButton(tr("pcv3.archive.close", "Close without extracting"), func() {
+			a.consumePCV3Archive(result, generation, nil)
+		})
+		closeButton.Importance = widget.HighImportance
+		content.Add(container.NewGridWithColumns(2, closeButton, extract))
+		return content
+	}
+	if presentation.ArchivePending() {
+		return content
+	}
+	if result != nil && result == a.pcv3Result {
+		if inspection := result.ArtifactInspection(); inspection != nil {
+			inspect := widget.NewButton(tr("pcv3.recovery.inspect", "Inspect recovery artifact"), func() {
+				if result == a.pcv3Result && generation == a.pcv3ResultGeneration {
+					a.showPCV3ArtifactInspection(inspection)
+				}
+			})
+			content.Add(inspect)
+		}
+	}
+	closeText := publication.Action
+	if hasCleanupWarning {
+		closeText = tr("pcv3.warning.cleanup_close", "Close cleanup warning")
+	}
+	if closeText == "" {
+		closeText = tr("pcv3.result.close", "Close recovery result")
+	}
+	closeButton := widget.NewButton(closeText, func() { a.resetUI() })
+	closeButton.Importance = widget.HighImportance
+	content.Add(closeButton)
+	return content
+}
+
+func (a *App) consumePCV3Archive(
+	result *pcv3operation.Result,
+	generation uint64,
+	root *os.Root,
+) {
+	if result == nil || result != a.pcv3Result || generation != a.pcv3ResultGeneration {
+		if root != nil {
+			_ = root.Close()
+		}
+		return
+	}
+	followUp := result.ArchiveFollowUp()
+	if followUp == nil {
+		if root != nil {
+			_ = root.Close()
+		}
+		return
+	}
+	started := a.startPCV3ArchiveFollowUp(result, generation, root != nil, func(ctx context.Context) *pcv3operation.Result {
+		if root == nil {
+			return followUp.Close()
+		}
+		return followUp.Extract(ctx, root)
+	})
+	if !started && root != nil {
+		_ = root.Close()
+	}
+}
+
+func (a *App) startPCV3ArchiveFollowUp(
+	result *pcv3operation.Result,
+	generation uint64,
+	cancellable bool,
+	run func(context.Context) *pcv3operation.Result,
+) bool {
+	if run == nil {
+		return false
+	}
+	reservation, ok := a.workers.reserve()
+	if !ok {
+		return false
+	}
+	var session *operationSession
+	effectContext := a.workers.ctx
+	if cancellable {
+		session = a.newOperationSessionForGeneration(generation)
+		if !session.gate.canApply() {
+			session.gate.cancel(session.cancel)
+			reservation.release()
+			return false
+		}
+		effectContext = session.ctx
+	}
+	if !a.State.BeginPCV3ArchiveFollowUp() {
+		if session != nil {
+			session.gate.cancel(session.cancel)
+		}
+		reservation.release()
+		return false
+	}
+	if session != nil {
+		a.setOperationSession(session)
+		a.State.SetCanCancel(true)
+	}
+	a.updateUIState()
+	reservation.launch(func(context.Context) {
+		next := run(effectContext)
+		cleanupIncomplete := a.latchPCV3CleanupResult(next)
+		cancelled := false
+		if session != nil {
+			cancelled = session.gate.finish(session.cancel)
+		}
+		if a.workers.isStopping() || a.operationGeneration.Load() != generation {
+			if session != nil {
+				a.clearOperationSession(session)
+			}
+			a.refreshPCV3CleanupWarningIfAlive(cleanupIncomplete)
+			return
+		}
+		fyne.Do(func() {
+			if a.workers.isStopping() || result != a.pcv3Result ||
+				generation != a.pcv3ResultGeneration ||
+				(session != nil && !a.isCurrentOperation(session)) {
+				if session != nil {
+					a.clearOperationSession(session)
+				}
+				if cleanupIncomplete && !a.workers.isStopping() {
+					a.updateUIState()
+				}
+				return
+			}
+			if session != nil {
+				a.clearOperationSession(session)
+				a.State.SetCanCancel(false)
+			}
+			a.pcv3Result = next
+			a.State.SetWorking(false)
+			switch {
+			case next != nil:
+				a.State.SetPCV3Result(next.Presentation())
+			case cancelled:
+				a.State.SetPCV3Result(pcv3TerminalPresentation(pcv3operation.DiagnosticCancellation))
+			default:
+				a.State.SetPCV3Result(pcv3TerminalPresentation(pcv3operation.DiagnosticCoreFailure))
+			}
+			a.updateUIState()
+		})
+	})
+	return true
+}
+
+func (a *App) showPCV3ArtifactInspection(inspection *pcv3recovery.ArtifactInspection) {
+	if inspection == nil || a.Window == nil {
+		return
+	}
+	surface := buildPCV3ArtifactSurface(pcv3ArtifactReady, inspection)
+	dialog.NewCustom(
+		tr("pcv3.recovery.inspect", "Inspect recovery artifact"),
+		tr("pcv3.result.close", "Close recovery result"), surface, a.Window,
+	).Show()
 }
 
 func (a *App) runCapturedOperation(
@@ -942,11 +1602,18 @@ func (a *App) captureRecursiveOperationInput(
 	var input operationInput
 	applied := false
 	selectionFailed := false
+	if !a.operationCanApply(session) {
+		return input, recursiveSelectionUnapplied
+	}
+	isSplit := fileops.IsSplitChunkPath(file)
+	result := routeDroppedFile(file, isSplit)
+	resultConsumed := false
 	fyne.DoAndWait(func() {
 		if !a.operationCanApply(session) {
 			return
 		}
-		if !a.applyDropSelection([]string{file}) {
+		resultConsumed = true
+		if !a.applyRecursiveDroppedFileRoute(file, isSplit, result) {
 			selectionFailed = true
 			return
 		}
@@ -965,6 +1632,9 @@ func (a *App) captureRecursiveOperationInput(
 		input = captured
 		applied = true
 	})
+	if !resultConsumed && result.source != nil {
+		_ = result.source.Close()
+	}
 
 	if !applied || session.ctx.Err() != nil || a.operationGeneration.Load() != session.generation {
 		crypto.SecureZero(input.password)

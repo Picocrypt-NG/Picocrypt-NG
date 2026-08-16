@@ -547,9 +547,7 @@ func parseLinuxCgroupValue(contents []byte) (uint64, bool) {
 
 func singleLinuxToken(contents []byte) (string, bool) {
 	text := string(contents)
-	if strings.HasSuffix(text, "\n") {
-		text = strings.TrimSuffix(text, "\n")
-	}
+	text = strings.TrimSuffix(text, "\n")
 	if text == "" || strings.ContainsAny(text, " \t\r\n") {
 		return "", false
 	}

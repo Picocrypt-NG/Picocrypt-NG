@@ -593,8 +593,9 @@ func TestPCV3MobileRestoredReceiptIsDenyOnly(t *testing.T) {
 		"Operation": {}, "Consent": {}, "Archive": {}, "Retry": {}, "Resume": {},
 		"Extract": {}, "Export": {}, "Discard": {}, "Cleanup": {}, "Delete": {},
 	}
-	for index := 0; index < reflect.TypeOf(restored).NumMethod(); index++ {
-		method := reflect.TypeOf(restored).Method(index)
+	restoredType := reflect.TypeOf(restored)
+	for index := range restoredType.NumMethod() {
+		method := restoredType.Method(index)
 		if _, grants := forbidden[method.Name]; grants {
 			t.Fatalf("restored receipt exposes %s authority", method.Name)
 		}
@@ -725,7 +726,6 @@ func TestPCV3MobileKeepsWriterAndMigrationAbsent(t *testing.T) {
 			t.Fatalf("gomobile request %s fields = %v; writer-disabled ABI requires %v", requestType.Name(), got, want)
 		}
 	}
-
 }
 
 // TestPCV3OperationABI is a policy oracle for the exact gomobile surface. It

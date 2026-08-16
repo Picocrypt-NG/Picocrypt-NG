@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3publication"
 	"Picocrypt-NG/internal/pcv3recovery"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -152,7 +153,7 @@ func validWarningSlice(warnings []Warning) bool {
 // follow-up state. Task 4 adds the concrete extraction lifecycle.
 type archiveFollowUpState interface {
 	live() bool
-	extract(*os.Root) *Result
+	extract(context.Context, *os.Root) *Result
 	close() *Result
 }
 
@@ -250,7 +251,7 @@ func (result *Result) appendWarning(warning Warning) {
 	if result == nil || warning == 0 {
 		return
 	}
-	for index := uint8(0); index < result.warningCount; index++ {
+	for index := range result.warningCount {
 		if result.warnings[index] == warning {
 			return
 		}
@@ -611,7 +612,7 @@ func validSemanticPresentation(outcome pcv3.Outcome, stage pcv3.Stage, code pcv3
 
 func validPresentationWarnings(presentation Presentation) bool {
 	var seen [maxResultWarnings + 1]bool
-	for index := uint8(0); index < presentation.warningCount; index++ {
+	for index := range presentation.warningCount {
 		warning := presentation.warnings[index]
 		if warning < WarningAuthenticatedDegraded || warning > WarningCallbackFailure ||
 			seen[warning] {
@@ -661,7 +662,7 @@ func (result *Result) hasWarning(warning Warning) bool {
 	if result == nil {
 		return false
 	}
-	for index := uint8(0); index < result.warningCount; index++ {
+	for index := range result.warningCount {
 		if result.warnings[index] == warning {
 			return true
 		}

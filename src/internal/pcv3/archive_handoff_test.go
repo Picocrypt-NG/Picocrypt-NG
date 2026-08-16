@@ -25,13 +25,43 @@ func TestArchiveFollowUpConsumesAuthenticatedArchiveOnce(t *testing.T) {
 	assertNativeArchiveStage(t, stageParent, rawTarget, 1)
 
 	extractRoot := openNativeArchiveRoot(t)
-	result := handoff.Extract(extractRoot)
+	result := handoff.Extract(context.Background(), extractRoot)
 	if result == nil || result.State() != fileops.UnpackStatePublishedDurable ||
 		result.CleanupIncomplete() {
 		t.Fatalf("archive extraction result = %#v; want durable with proven cleanup", result)
 	}
 	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() {
 		t.Fatal("copied archive handoff retained authority after first consumption")
+	}
+	assertNativeArchiveStage(t, stageParent, rawTarget, 0)
+}
+
+func TestArchiveFollowUpCancelledContextConsumesAndCleansWithoutPublication(t *testing.T) {
+	handoff, stageParent, rawTarget := newNativeArchiveHandoffFixture(t)
+	copyOfHandoff := *handoff
+	extractPath := t.TempDir()
+	extractRoot, err := os.OpenRoot(extractPath)
+	if err != nil {
+		t.Fatalf("open extraction root: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := handoff.Extract(ctx, extractRoot)
+
+	if result == nil || result.State() != fileops.UnpackStateNotPublished ||
+		result.CleanupIncomplete() {
+		t.Fatalf("cancelled archive extraction result = %#v; want not-published with proven cleanup", result)
+	}
+	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() {
+		t.Fatal("cancelled archive extraction retained one-shot authority")
+	}
+	if _, err := extractRoot.Stat("."); err == nil {
+		t.Fatal("cancelled archive extraction left extraction root open")
+	}
+	entries, err := os.ReadDir(extractPath)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("cancelled archive extraction entries = %v, error %v; want empty root", entries, err)
 	}
 	assertNativeArchiveStage(t, stageParent, rawTarget, 0)
 }
@@ -75,7 +105,7 @@ func TestArchiveFollowUpDeniesWithoutFilesystemEffects(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open extraction root: %v", err)
 			}
-			if result := (&NativeArchiveHandoff{}).Extract(root); result != nil {
+			if result := (&NativeArchiveHandoff{}).Extract(context.Background(), root); result != nil {
 				t.Fatalf("zero archive handoff result = %#v; want denial", result)
 			}
 			assertArchiveHandoffFile(t, sentinel, "foreign\n")
@@ -94,7 +124,7 @@ func TestArchiveFollowUpFrozenTreeContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open extraction root: %v", err)
 	}
-	result := handoff.Extract(root)
+	result := handoff.Extract(context.Background(), root)
 	if result == nil || result.State() != fileops.UnpackStatePublishedDurable ||
 		result.CleanupIncomplete() {
 		t.Fatalf("frozen archive result = %#v; want durable with proven cleanup", result)

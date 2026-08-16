@@ -279,14 +279,15 @@ func TestOperationReporterUsesRealBoundariesAndStopsBeforeKDF(t *testing.T) {
 }
 
 type operationTestArchiveState struct {
-	active bool
+	active            bool
+	cleanupIncomplete bool
 }
 
 func (state *operationTestArchiveState) live() bool {
 	return state != nil && state.active
 }
 
-func (state *operationTestArchiveState) extract(root *os.Root) *Result {
+func (state *operationTestArchiveState) extract(_ context.Context, root *os.Root) *Result {
 	if state == nil || !state.active {
 		return archiveNoOutput(DiagnosticInvalidRequest, closeExtractionRoot(root))
 	}
@@ -299,7 +300,7 @@ func (state *operationTestArchiveState) close() *Result {
 		return archiveNoOutput(DiagnosticInvalidRequest, false)
 	}
 	state.active = false
-	return archiveNoOutput(DiagnosticNone, false)
+	return archiveNoOutput(DiagnosticNone, state.cleanupIncomplete)
 }
 
 func TestPCV3OperationPreservesResultAxes(t *testing.T) {

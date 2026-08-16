@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"Picocrypt-NG/internal/pcv3operation"
 	"errors"
 	"fmt"
 	"os"
@@ -19,9 +20,30 @@ import (
 var Version = "dev"
 
 const (
-	ExitGeneralError     = 1
-	ExitForceDecryptKept = 2
+	ExitGeneralError                 = 1
+	ExitForceDecryptKept             = 2
+	ExitPCV3Warning                  = 2
+	ExitPCV3DurabilityUncertain      = 3
+	ExitPCV3PublicationIndeterminate = 4
 )
+
+func pcv3ExitCode(result pcv3CLIResult) int {
+	if result == nil {
+		return ExitGeneralError
+	}
+	switch result.CompletionClass() {
+	case pcv3operation.CompletionClean:
+		return 0
+	case pcv3operation.CompletionWarning:
+		return ExitPCV3Warning
+	case pcv3operation.CompletionDurabilityUncertain:
+		return ExitPCV3DurabilityUncertain
+	case pcv3operation.CompletionPublicationIndeterminate:
+		return ExitPCV3PublicationIndeterminate
+	default:
+		return ExitGeneralError
+	}
+}
 
 type ExitCodeError interface {
 	error

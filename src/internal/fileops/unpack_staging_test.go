@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -39,6 +40,56 @@ func TestUnpackCancellationLeavesNoPartialDestination(t *testing.T) {
 	if _, err := os.Lstat(victimPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Partial destination exists after cancellation: %v", err)
 	}
+	requireEmptyExtractionDir(t, extractDir)
+}
+
+// TestUnpackCancellationAfterStagingPreventsPublication protects the final
+// cancellation boundary: a signal delivered after plaintext staging and sync
+// but before publication must remove every stage and publish no destination.
+func TestUnpackCancellationAfterStagingPreventsPublication(t *testing.T) {
+	tmpDir := t.TempDir()
+	zipPath := filepath.Join(tmpDir, "cancel-before-publish.zip")
+	createStoredZipForUnpackStagingTest(t, zipPath, "victim.txt", []byte("staged plaintext"))
+	extractDir := filepath.Join(tmpDir, "out")
+	if err := os.Mkdir(extractDir, 0o700); err != nil {
+		t.Fatalf("create extraction directory: %v", err)
+	}
+
+	stageSyncEntered := make(chan struct{})
+	releaseStageSync := make(chan struct{})
+	originalStageSync := unpackStageSyncFn
+	unpackStageSyncFn = func(file *os.File) error {
+		close(stageSyncEntered)
+		<-releaseStageSync
+		return originalStageSync(file)
+	}
+	t.Cleanup(func() { unpackStageSyncFn = originalStageSync })
+
+	var cancelled atomic.Bool
+	resultReady := make(chan UnpackResult, 1)
+	go func() {
+		resultReady <- UnpackWithResult(UnpackOptions{
+			ZipPath:    zipPath,
+			ExtractDir: extractDir,
+			Cancel:     cancelled.Load,
+		})
+	}()
+	<-stageSyncEntered
+	cancelled.Store(true)
+	close(releaseStageSync)
+	result := <-resultReady
+
+	if result == nil || result.State() != UnpackStateNotPublished {
+		t.Fatalf("post-stage cancellation result = %#v; want not-published", result)
+	}
+	cause := errors.Unwrap(result)
+	if cause == nil || !strings.Contains(cause.Error(), "operation cancelled") {
+		t.Fatalf("post-stage cancellation cause = %v; want operation cancelled", cause)
+	}
+	if _, err := os.Lstat(filepath.Join(extractDir, "victim.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("post-stage cancellation published destination: %v", err)
+	}
+	requireNoUnpackStages(t, extractDir)
 	requireEmptyExtractionDir(t, extractDir)
 }
 

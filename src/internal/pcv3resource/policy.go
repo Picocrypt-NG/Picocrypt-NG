@@ -2,13 +2,12 @@
 package pcv3resource
 
 import (
+	"Picocrypt-NG/internal/pcv3credential"
 	"context"
 	"math"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"Picocrypt-NG/internal/pcv3credential"
 )
 
 const (

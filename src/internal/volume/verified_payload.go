@@ -58,7 +58,7 @@ func prepareVerifiedLegacyPayload(
 		return nil, errors.New("legacy Reed-Solomon codecs are unavailable")
 	}
 	if req.ForceDecrypt {
-		return nil, errors.New("Force-decrypted legacy input is not eligible for migration")
+		return nil, errors.New("force-decrypted legacy input is not eligible for migration")
 	}
 	if req.Deniability {
 		return nil, errors.New("explicit deniability requires the deniable legacy source")

@@ -1,12 +1,11 @@
 package pcv3resource
 
 import (
+	"Picocrypt-NG/internal/pcv3credential"
 	"context"
 	"math"
 	"sync"
 	"time"
-
-	"Picocrypt-NG/internal/pcv3credential"
 )
 
 const (
@@ -98,14 +97,6 @@ func WithAndroidResourceSession(
 	return context.WithValue(ctx, androidResourceSessionContextKey{}, session)
 }
 
-func androidResourceSessionFromContext(ctx context.Context) *AndroidResourceSession {
-	if ctx == nil {
-		return nil
-	}
-	session, _ := ctx.Value(androidResourceSessionContextKey{}).(*AndroidResourceSession)
-	return session
-}
-
 func newAndroidResourceSession(
 	policy androidFrozenPolicy,
 	timeout time.Duration,
@@ -125,7 +116,7 @@ func newAndroidResourceSession(
 
 // Snapshot cannot initiate Android resource admission without a fixed profile.
 func (*AndroidResourceSession) Snapshot(context.Context) Snapshot {
-	return newAndroidBrokerSnapshot(snapshotStateUnknown, 0, 0, 0, false)
+	return newAndroidBrokerSnapshot(snapshotStateUnknown)
 }
 
 func (session *AndroidResourceSession) snapshotForKDF(
@@ -133,17 +124,17 @@ func (session *AndroidResourceSession) snapshotForKDF(
 	profile pcv3credential.KDFProfile,
 ) Snapshot {
 	if session == nil || session.policy == nil {
-		return newAndroidBrokerSnapshot(snapshotStateUnconfigured, 0, 0, 0, false)
+		return newAndroidBrokerSnapshot(snapshotStateUnconfigured)
 	}
 	if ctx == nil || ctx.Err() != nil || session.timeout <= 0 ||
 		!session.supportsProfile(profile) {
-		return newAndroidBrokerSnapshot(snapshotStateUnknown, 0, 0, 0, false)
+		return newAndroidBrokerSnapshot(snapshotStateUnknown)
 	}
 
 	session.mu.Lock()
 	if session.pending != nil || session.nextGeneration == math.MaxUint64 {
 		session.mu.Unlock()
-		return newAndroidBrokerSnapshot(snapshotStateUnknown, 0, 0, 0, false)
+		return newAndroidBrokerSnapshot(snapshotStateUnknown)
 	}
 	session.nextGeneration++
 	issuedAt := time.Now()
@@ -161,14 +152,14 @@ func (session *AndroidResourceSession) snapshotForKDF(
 
 	select {
 	case <-ctx.Done():
-		return newAndroidBrokerSnapshot(snapshotStateUnknown, 0, 0, 0, false)
+		return newAndroidBrokerSnapshot(snapshotStateUnknown)
 	case <-timer.C:
-		return newAndroidBrokerSnapshot(snapshotStateUnknown, 0, 0, 0, false)
+		return newAndroidBrokerSnapshot(snapshotStateUnknown)
 	case response := <-pending.response:
 		deviceClass, ok := session.matchDeviceClass(response.observation)
 		if !response.valid || !ok || ctx.Err() != nil ||
 			response.observation.observedAt.After(pending.expiresAt) {
-			return newAndroidBrokerSnapshot(snapshotStateUnknown, 0, 0, 0, false)
+			return newAndroidBrokerSnapshot(snapshotStateUnknown)
 		}
 		return newAndroidBrokerSnapshotAt(
 			snapshotStateReady,
@@ -310,7 +301,7 @@ func validAndroidFrozenPolicy(policy androidFrozenPolicy) bool {
 			deviceClass.platformThreshold > uint64(maximumAndroidObservationInteger) {
 			return false
 		}
-		for prior := 0; prior < index; prior++ {
+		for prior := range index {
 			if sameAndroidFrozenDeviceClass(deviceClass, policy.deviceClasses[prior]) {
 				return false
 			}
@@ -322,7 +313,7 @@ func validAndroidFrozenPolicy(policy androidFrozenPolicy) bool {
 			profile.SaltBytes == 0 || profile.OutputBytes == 0 {
 			return false
 		}
-		for prior := 0; prior < index; prior++ {
+		for prior := range index {
 			if profile == policy.profiles[prior] {
 				return false
 			}
@@ -343,7 +334,7 @@ func validAndroidObservationText(value string) bool {
 	if len(value) == 0 || len(value) > maximumAndroidDeviceTextBytes {
 		return false
 	}
-	for index := 0; index < len(value); index++ {
+	for index := range len(value) {
 		character := value[index]
 		if character >= 'a' && character <= 'z' ||
 			character >= 'A' && character <= 'Z' ||
@@ -357,19 +348,13 @@ func validAndroidObservationText(value string) bool {
 	return true
 }
 
-func newAndroidBrokerSnapshot(
-	state snapshotState,
-	effectiveAvailable uint64,
-	platformThreshold uint64,
-	codeOwnedReserve uint64,
-	lowMemory bool,
-) Snapshot {
+func newAndroidBrokerSnapshot(state snapshotState) Snapshot {
 	return newAndroidBrokerSnapshotAt(
 		state,
-		effectiveAvailable,
-		platformThreshold,
-		codeOwnedReserve,
-		lowMemory,
+		0,
+		0,
+		0,
+		false,
 		time.Now(),
 	)
 }

@@ -61,7 +61,7 @@ func TestRecoveryPrivateJournalCollisionPreventsStageWriterAndPlaintext(t *testi
 	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("journal collision created a target: %v", err)
 	}
-	requireForeignJournalUnchanged(t, journalPath, foreignInfo, foreign, 0o640)
+	requireForeignJournalUnchanged(t, journalPath, foreignInfo, foreign, foreignInfo.Mode())
 	requireNoRecoveryPrivateStageResidue(t, directory)
 }
 
@@ -88,7 +88,7 @@ func TestRecoveryDefaultOutputDoesNotAdoptPrivateJournalContract(t *testing.T) {
 	if err != nil || !bytes.Equal(got, []byte("hello")) {
 		t.Fatalf("default recovery output = %q, %v; want exact plaintext", got, err)
 	}
-	requireForeignJournalUnchanged(t, journalPath, foreignInfo, foreign, 0o640)
+	requireForeignJournalUnchanged(t, journalPath, foreignInfo, foreign, foreignInfo.Mode())
 	requireNoRecoveryPrivateStageResidue(t, directory)
 }
 

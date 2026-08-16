@@ -101,7 +101,7 @@ func TestNativeReadPrivateJournalCollisionPrecedesFirstPlaintextWrite(t *testing
 	}
 	gotBytes, err := os.ReadFile(journalPath)
 	if err != nil || !bytes.Equal(gotBytes, foreign) || !os.SameFile(foreignInfo, gotInfo) ||
-		gotInfo.Mode().Perm() != 0o640 {
+		gotInfo.Mode().Perm() != foreignInfo.Mode().Perm() {
 		t.Fatalf(
 			"foreign journal changed: bytes=%q error=%v same-inode=%v mode=%o",
 			gotBytes, err, os.SameFile(foreignInfo, gotInfo), gotInfo.Mode().Perm(),

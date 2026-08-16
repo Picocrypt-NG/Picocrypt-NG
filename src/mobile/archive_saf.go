@@ -313,7 +313,7 @@ func (archive *PCV3Archive) BeginSAF() (result *PCV3ArchiveBegin) {
 	safAction, ok := action.(pcv3ArchiveSAFAction)
 	if !ok {
 		closed, cleanupIncomplete := closePCV3ArchiveAction(action)
-		presentation := archiveFailurePCV3Presentation(pcv3operation.DiagnosticCoreFailure, closed)
+		presentation := archiveFailurePCV3Presentation(closed)
 		if cleanupIncomplete {
 			presentation = pcv3ArchiveSAFFailurePresentation()
 		}
@@ -323,7 +323,7 @@ func (archive *PCV3Archive) BeginSAF() (result *PCV3ArchiveBegin) {
 	coreBegin, panicked := callPCV3ArchiveSAFBegin(safAction)
 	if panicked {
 		closed, cleanupIncomplete := closePCV3ArchiveAction(action)
-		presentation := archiveFailurePCV3Presentation(pcv3operation.DiagnosticCoreFailure, closed)
+		presentation := archiveFailurePCV3Presentation(closed)
 		if cleanupIncomplete {
 			presentation = pcv3ArchiveSAFFailurePresentation()
 		}

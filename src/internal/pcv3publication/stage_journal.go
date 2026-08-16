@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -555,7 +554,7 @@ func decodeCleanupJournal(data []byte) (cleanupJournal, error) {
 		return cleanupJournal{}, errors.New("cleanup journal has trailing data")
 	}
 	if record.Version != cleanupJournalVersion {
-		return cleanupJournal{}, fmt.Errorf("unsupported cleanup journal version")
+		return cleanupJournal{}, errors.New("unsupported cleanup journal version")
 	}
 	canonical, err := json.Marshal(record)
 	if err != nil {

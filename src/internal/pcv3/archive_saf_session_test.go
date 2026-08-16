@@ -30,7 +30,7 @@ func TestArchiveSAFSessionStreamsExactFilesAndFinishesDurabilityUncertain(t *tes
 		2: []byte("exact provider payload"),
 	}
 
-	for index := 0; index < session.EntryCount(); index++ {
+	for index := range session.EntryCount() {
 		attempt := session.Attempt(index)
 		if attempt == nil || attempt.Kind() != NativeArchiveSAFStepAttempted ||
 			attempt.NextIndex() != index || !session.AttemptedEver() {
@@ -122,7 +122,7 @@ func TestArchiveSAFSessionFrozenAuthenticatedArchiveStreamsToRealDescriptors(t *
 		2: []byte("Extraction is admitted only after whole-volume authentication.\n"),
 	}
 
-	for index := 0; index < session.EntryCount(); index++ {
+	for index := range session.EntryCount() {
 		if step := session.Attempt(index); step == nil ||
 			step.Kind() != NativeArchiveSAFStepAttempted || step.NextIndex() != index {
 			t.Fatalf("authenticated attempt %d = %#v", index, step)

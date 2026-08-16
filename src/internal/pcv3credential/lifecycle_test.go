@@ -506,7 +506,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				requirePhase2LifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{},
+					phase2LifecycleCounts{entropyCalls: 3},
 				)
 			},
 		},

@@ -284,7 +284,10 @@ func (handoff *NativeArchiveHandoff) Live() bool {
 // Extract consumes the handoff before effects and takes ownership of root.
 // The same still-open stage descriptor is passed to the authenticated unpack
 // gate and then cleaned on every return.
-func (handoff *NativeArchiveHandoff) Extract(root *os.Root) *NativeArchiveResult {
+func (handoff *NativeArchiveHandoff) Extract(
+	ctx context.Context,
+	root *os.Root,
+) *NativeArchiveResult {
 	completion, stage, ok := handoff.consume()
 	if !ok {
 		if root != nil {
@@ -304,11 +307,15 @@ func (handoff *NativeArchiveHandoff) Extract(root *os.Root) *NativeArchiveResult
 	if root == nil {
 		return result
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	expectedRoot, err := root.Stat(".")
 	if err != nil || expectedRoot == nil || !expectedRoot.IsDir() {
 		return result
 	}
 	unpack := unpackAuthenticatedArchiveWithResult(
+		ctx,
 		completion,
 		stage.File(),
 		root,

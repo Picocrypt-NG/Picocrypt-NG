@@ -18,8 +18,10 @@ import (
 	perrors "Picocrypt-NG/internal/errors"
 )
 
-const verifiedLegacyPlaintextSHA256 = "f13a40d162f6002d178bc052d93a177a2a261260f1fe03e359755901b039ad95"
-const verifiedLegacyRSPlaintextSHA256 = "479ad71598de182171230acbe3322cdac3b9bb9f70894a7cc3e7b526be46693b"
+const (
+	verifiedLegacyPlaintextSHA256   = "f13a40d162f6002d178bc052d93a177a2a261260f1fe03e359755901b039ad95"
+	verifiedLegacyRSPlaintextSHA256 = "479ad71598de182171230acbe3322cdac3b9bb9f70894a7cc3e7b526be46693b"
+)
 
 func verifiedLegacyRequest(t *testing.T, fixture string) (*DecryptRequest, *PreparedDecryptInput) {
 	t.Helper()

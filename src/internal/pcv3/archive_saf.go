@@ -124,7 +124,8 @@ type NativeArchiveSAFReceiptArm struct {
 	marker *nativeArchiveSAFArmMarker
 }
 
-type nativeArchiveSAFArmMarker struct{ value byte }
+// A non-zero-size marker gives every receipt arm a distinct pointer identity.
+type nativeArchiveSAFArmMarker struct{ _ byte }
 
 type NativeArchiveSAFBegin struct {
 	kind    NativeArchiveSAFBeginKind

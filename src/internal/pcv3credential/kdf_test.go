@@ -942,14 +942,14 @@ func TestDerivationLeaseSerializesAndRechecksFixedProfile(t *testing.T) {
 func TestDerivationLeaseReleasesEveryExit(t *testing.T) {
 	tests := []struct {
 		name      string
-		run       func() (error, any)
+		run       func() (any, error)
 		want      KDFErrorCode
 		wantPanic string
 	}{
 		{
 			name: "resource denial",
 			want: KDFErrorAdmission,
-			run: func() (error, any) {
+			run: func() (any, error) {
 				_, err := runFixedProfileKDFBorrowed(
 					context.Background(),
 					make([]byte, literalCredentialInputBytes),
@@ -965,13 +965,13 @@ func TestDerivationLeaseReleasesEveryExit(t *testing.T) {
 						return fakeKDFResult(0x78, literalCredentialRootBytes), nil
 					},
 				)
-				return err, nil
+				return nil, err
 			},
 		},
 		{
 			name: "derivation error",
 			want: KDFErrorDerivation,
-			run: func() (error, any) {
+			run: func() (any, error) {
 				_, err := runFixedProfileKDFBorrowed(
 					context.Background(),
 					make([]byte, literalCredentialInputBytes),
@@ -982,13 +982,13 @@ func TestDerivationLeaseReleasesEveryExit(t *testing.T) {
 						return nil, errors.New("derive failure")
 					},
 				)
-				return err, nil
+				return nil, err
 			},
 		},
 		{
 			name: "cancellation after admission",
 			want: KDFErrorCancelled,
-			run: func() (error, any) {
+			run: func() (any, error) {
 				ctx, cancel := context.WithCancel(context.Background())
 				_, err := runFixedProfileKDFBorrowed(
 					ctx,
@@ -1006,13 +1006,13 @@ func TestDerivationLeaseReleasesEveryExit(t *testing.T) {
 						return fakeKDFResult(0x79, literalCredentialRootBytes), nil
 					},
 				)
-				return err, nil
+				return nil, err
 			},
 		},
 		{
 			name:      "admission panic",
 			wantPanic: "admission panic",
-			run: func() (err error, recovered any) {
+			run: func() (recovered any, err error) {
 				defer func() { recovered = recover() }()
 				_, err = runFixedProfileKDFBorrowed(
 					context.Background(),
@@ -1029,13 +1029,13 @@ func TestDerivationLeaseReleasesEveryExit(t *testing.T) {
 						return fakeKDFResult(0x7a, literalCredentialRootBytes), nil
 					},
 				)
-				return err, nil
+				return nil, err
 			},
 		},
 		{
 			name:      "derivation panic",
 			wantPanic: "derivation panic",
-			run: func() (err error, recovered any) {
+			run: func() (recovered any, err error) {
 				defer func() { recovered = recover() }()
 				_, err = runFixedProfileKDFBorrowed(
 					context.Background(),
@@ -1047,7 +1047,7 @@ func TestDerivationLeaseReleasesEveryExit(t *testing.T) {
 						panic("derivation panic")
 					},
 				)
-				return err, nil
+				return nil, err
 			},
 		},
 	}
@@ -1055,7 +1055,7 @@ func TestDerivationLeaseReleasesEveryExit(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			withKDFLeaseBubble(t, func(t *testing.T) {
-				err, recovered := test.run()
+				recovered, err := test.run()
 				if test.want != 0 {
 					requireKDFCode(t, err, test.want)
 					if recovered != nil {

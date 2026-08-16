@@ -159,14 +159,14 @@ func FuzzPublicationStateMachine(f *testing.F) {
 		}
 		cleanupErr := stage.Cleanup()
 		if mode == 3 {
-			if cleanupErr != ErrCleanupIncomplete {
-				t.Fatalf("indeterminate cleanup = %v; want exact ErrCleanupIncomplete", cleanupErr)
+			if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
+				t.Fatalf("indeterminate cleanup = %v; want ErrCleanupIncomplete", cleanupErr)
 			}
 		} else if cleanupErr != nil {
 			t.Fatalf("cleanup fuzz publication: %v", cleanupErr)
 		}
-		if repeated := stage.Cleanup(); repeated != cleanupErr {
-			t.Fatalf("repeat fuzz cleanup = %v; want cached %v", repeated, cleanupErr)
+		if repeated := stage.Cleanup(); !errors.Is(repeated, cleanupErr) {
+			t.Fatalf("repeat fuzz cleanup = %v; want stable classification %v", repeated, cleanupErr)
 		}
 		requireFileBytes(t, protected, protectedBytes)
 

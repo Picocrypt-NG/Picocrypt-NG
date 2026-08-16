@@ -458,7 +458,7 @@ func TestPCV3MobileArchiveSAFCompletionDrainsAdmittedWriteBeforeCoreTerminal(t *
 				t.Fatal(err)
 			}
 			defer destination.Close()
-			transferredFD := duplicateMobileArchiveSAFFD(t, destination)
+			transferredFD := duplicateMobileTransferredFD(t, destination)
 			writeResult := make(chan *PCV3ArchiveStep, 1)
 			go func() { writeResult <- session.WriteFD(0, transferredFD) }()
 			<-probe.writeEntered
@@ -490,7 +490,7 @@ func TestPCV3MobileArchiveSAFCompletionDrainsAdmittedWriteBeforeCoreTerminal(t *
 			if terminal == nil || terminal.CompletionClass() == "unknown" {
 				t.Fatalf("terminal after admitted provider call = %#v", terminal)
 			}
-			assertMobileArchiveSAFFDClosed(t, transferredFD)
+			assertMobileTransferredFDClosed(t, transferredFD)
 			if code := operation.Release(); code != "" {
 				t.Fatalf("Release after settled completion = %q", code)
 			}
@@ -693,12 +693,12 @@ func TestPCV3MobileArchiveSAFWriteFDOwnsRegularAndRejectsInvalidDescriptors(t *t
 			t.Fatalf("create provider observer: %v", err)
 		}
 		defer original.Close()
-		transferredFD := duplicateMobileArchiveSAFFD(t, original)
+		transferredFD := duplicateMobileTransferredFD(t, original)
 		step := session.WriteFD(0, transferredFD)
 		if step == nil || step.Kind() != "ready" || step.NextIndex() != 1 {
 			t.Fatalf("WriteFD regular = %#v", step)
 		}
-		assertMobileArchiveSAFFDClosed(t, transferredFD)
+		assertMobileTransferredFDClosed(t, transferredFD)
 		if _, err := original.Stat(); err != nil {
 			t.Fatalf("Go closed Kotlin-retained original observer: %v", err)
 		}
@@ -753,12 +753,12 @@ func TestPCV3MobileArchiveSAFWriteFDOwnsRegularAndRejectsInvalidDescriptors(t *t
 			t.Fatal(err)
 		}
 		defer directory.Close()
-		transferredFD := duplicateMobileArchiveSAFFD(t, directory)
+		transferredFD := duplicateMobileTransferredFD(t, directory)
 		step := session.WriteFD(0, transferredFD)
 		if step == nil || step.Kind() != "poisoned" {
 			t.Fatalf("directory WriteFD = %#v; want core poison", step)
 		}
-		assertMobileArchiveSAFFDClosed(t, transferredFD)
+		assertMobileTransferredFDClosed(t, transferredFD)
 		if _, err := directory.Stat(); err != nil {
 			t.Fatalf("rejected duplicate closed the retained directory: %v", err)
 		}
@@ -776,16 +776,16 @@ func TestPCV3MobileArchiveSAFWriteFDOwnsRegularAndRejectsInvalidDescriptors(t *t
 			t.Fatal(err)
 		}
 		defer first.Close()
-		firstFD := duplicateMobileArchiveSAFFD(t, first)
+		firstFD := duplicateMobileTransferredFD(t, first)
 		if step := stale.WriteFD(0, firstFD); step == nil || step.Kind() != "rejected" {
 			t.Fatalf("expired WriteFD = %#v", step)
 		}
-		assertMobileArchiveSAFFDClosed(t, firstFD)
-		secondFD := duplicateMobileArchiveSAFFD(t, first)
+		assertMobileTransferredFDClosed(t, firstFD)
+		secondFD := duplicateMobileTransferredFD(t, first)
 		if step := stale.WriteFD(0, secondFD); step == nil || step.Kind() != "rejected" {
 			t.Fatalf("copied stale WriteFD = %#v", step)
 		}
-		assertMobileArchiveSAFFDClosed(t, secondFD)
+		assertMobileTransferredFDClosed(t, secondFD)
 		if _, err := first.Stat(); err != nil {
 			t.Fatalf("stale calls closed the retained provider descriptor: %v", err)
 		}
@@ -802,12 +802,12 @@ func TestPCV3MobileArchiveSAFWriteFDOwnsRegularAndRejectsInvalidDescriptors(t *t
 			t.Fatal(err)
 		}
 		defer destination.Close()
-		transferredFD := duplicateMobileArchiveSAFFD(t, destination)
+		transferredFD := duplicateMobileTransferredFD(t, destination)
 		step := session.WriteFD(0, transferredFD)
 		if step == nil || step.Kind() != "poisoned" {
 			t.Fatalf("contained WriteFD panic = %#v", step)
 		}
-		assertMobileArchiveSAFFDClosed(t, transferredFD)
+		assertMobileTransferredFDClosed(t, transferredFD)
 		if _, err := destination.Stat(); err != nil {
 			t.Fatalf("contained panic closed the retained provider descriptor: %v", err)
 		}
@@ -830,7 +830,7 @@ func TestPCV3MobileArchiveSAFCancelClosesOnlyTheExactBlockedPipe(t *testing.T) {
 	}
 	defer reader.Close()
 	defer writer.Close()
-	transferredFD := duplicateMobileArchiveSAFFD(t, writer)
+	transferredFD := duplicateMobileTransferredFD(t, writer)
 	writeResult := make(chan *PCV3ArchiveStep, 1)
 	go func() { writeResult <- session.WriteFD(0, transferredFD) }()
 	<-probe.writeEntered
@@ -854,7 +854,7 @@ func TestPCV3MobileArchiveSAFCancelClosesOnlyTheExactBlockedPipe(t *testing.T) {
 	if result := <-writeResult; result == nil || result.Kind() != "poisoned" {
 		t.Fatalf("blocked pipe WriteFD settlement = %#v", result)
 	}
-	assertMobileArchiveSAFFDClosed(t, transferredFD)
+	assertMobileTransferredFDClosed(t, transferredFD)
 	if _, err := writer.Stat(); err != nil {
 		t.Fatalf("Cancel closed the retained pipe writer: %v", err)
 	}
@@ -922,22 +922,22 @@ func TestPCV3MobileArchiveSAFJournalWrapperUsesOnlyClosedLocalStates(t *testing.
 	}
 }
 
-func duplicateMobileArchiveSAFFD(t *testing.T, original *os.File) int64 {
+func duplicateMobileTransferredFD(t *testing.T, original *os.File) int64 {
 	t.Helper()
 	if original == nil {
-		t.Fatal("duplicate SAF descriptor from nil original")
+		t.Fatal("duplicate transferred descriptor from nil original")
 	}
 	fd, err := unix.Dup(int(original.Fd()))
 	if err != nil {
-		t.Fatalf("duplicate SAF descriptor: %v", err)
+		t.Fatalf("duplicate transferred descriptor: %v", err)
 	}
 	return int64(fd)
 }
 
-func assertMobileArchiveSAFFDClosed(t *testing.T, fd int64) {
+func assertMobileTransferredFDClosed(t *testing.T, fd int64) {
 	t.Helper()
 	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
-		t.Fatalf("transferred SAF descriptor %d remains open: %v", fd, err)
+		t.Fatalf("transferred descriptor %d remains open: %v", fd, err)
 	}
 }
 

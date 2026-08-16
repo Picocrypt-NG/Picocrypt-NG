@@ -45,9 +45,35 @@ var startupPathStat = os.Stat
 
 var (
 	previewDroppedHeader    = previewHeader
-	openDroppedPCVInput     = volume.OpenLegacyPCVInput
+	openDroppedPCVInput     = openDroppedInput
+	probeDroppedPCVInput    = pcv3.Probe
 	isDroppedVolumeDeniable = volume.IsDeniableFile
 )
+
+type droppedRouteResult struct {
+	source *os.File
+	size   int64
+	route  pcv3.Route
+	err    error
+}
+
+func openDroppedInput(path string, recombine bool) (*os.File, error) {
+	if recombine {
+		base, ok := fileops.SplitChunkBase(path)
+		if !ok {
+			return nil, errors.New("invalid split input")
+		}
+		path = base + ".0"
+	}
+	return fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
+}
+
+func defaultPCV3Output(path string) string {
+	if trimmed := trimPCVSuffix(path); trimmed != path {
+		return trimmed
+	}
+	return path + ".decrypted"
+}
 
 func isPCV3UnavailableError(err error) bool {
 	if errors.Is(err, pcv3.ErrReaderUnavailable) {
@@ -375,48 +401,52 @@ func (a *App) applyDropSelection(names []string) bool {
 				return false
 			}
 
-			// Is the file a part of a split volume?
-			isSplit := fileops.IsSplitChunkPath(names[0])
-			routedInput, err := openDroppedPCVInput(names[0], isSplit)
+			path := names[0]
+			isSplit := fileops.IsSplitChunkPath(path)
+			leaf, err := os.Lstat(path)
 			if err != nil {
-				if isPCV3UnavailableError(err) {
-					a.State.SetPCVUnavailable(names[0], stat.Size())
-					a.refreshAdvanced()
-					a.refreshUI()
-					return true
-				}
 				a.State.SetScanning(false)
 				a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
 				a.refreshAdvanced()
 				return false
 			}
-			defer func() { _ = routedInput.Close() }()
-
-			// Decide if encrypting or decrypting
-			if isDecryptVolumePath(names[0]) {
-				a.handleDecryptDrop(names[0], isSplit, routedInput)
-				// For decrypt, no folder scanning needed
-				a.State.SetScanning(false)
-				a.refreshUI()
-				a.refreshAdvanced()
-				return true
-			} else {
-				// Encrypting a single file
-				a.State.Mode = "encrypt"
-				a.State.InputFile = names[0]
-				a.State.SetInputSelection(1, 0, a.State.CompressTotal, false)
-				a.State.SetStartAction(app.StartActionEncrypt)
-				// Set output file based on compress state
-				if a.State.Compress {
-					a.State.OutputFile = names[0] + ".zip.pcv"
-				} else {
-					a.State.OutputFile = names[0] + ".pcv"
+			if leaf.Mode()&os.ModeSymlink != 0 {
+				routedInput, routeErr := volume.OpenLegacyPCVInput(path, isSplit)
+				if routeErr != nil {
+					if isPCV3UnavailableError(routeErr) {
+						a.State.SetPCVUnavailable(path, stat.Size())
+						a.refreshAdvanced()
+						a.refreshUI()
+						return true
+					}
+					a.State.SetScanning(false)
+					a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
+					a.refreshAdvanced()
+					return false
 				}
-				a.State.OnlyFiles = append(a.State.OnlyFiles, names[0])
-				a.State.AllFiles = append(a.State.AllFiles, names[0])
-				// Add to compressTotal for size display (like original line 1077)
-				a.State.CompressTotal += stat.Size()
+				accepted := a.applyLegacyDroppedFileRoute(path, isSplit, droppedRouteResult{
+					source: routedInput,
+					size:   stat.Size(),
+					route:  pcv3.RouteLegacyEligible,
+				})
+				// Leaf symlinks remain a legacy compatibility path only. Do not
+				// retain their descriptor as later explicit D1 authority.
+				a.State.ClosePCV3Source()
+				a.refreshAdvanced()
+				a.refreshUI()
+				return accepted
 			}
+			a.State.SetPCV3RoutingChecking(path, stat.Size())
+			a.refreshAdvanced()
+			a.refreshUI()
+			workerLaunched = true
+			reservation.launch(func(ctx context.Context) {
+				result := routeDroppedFile(path, isSplit)
+				fyne.DoAndWait(func() {
+					a.applyDroppedFileRoute(ctx, generation, path, isSplit, result)
+				})
+			})
+			return true
 		}
 	} else if !a.handleMultipleDrop(names) {
 		return false
@@ -442,6 +472,134 @@ func (a *App) applyDropSelection(names []string) bool {
 		a.runFolderScan(ctx, job, emit)
 	})
 	return true
+}
+
+func routeDroppedFile(path string, split bool) droppedRouteResult {
+	source, err := openDroppedPCVInput(path, split)
+	if err != nil {
+		return droppedRouteResult{err: err}
+	}
+	info, err := source.Stat()
+	if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
+		_ = source.Close()
+		return droppedRouteResult{err: errors.New("selected input is not a regular file")}
+	}
+	route, _, err := probeDroppedPCVInput(source, info.Size())
+	return droppedRouteResult{source: source, size: info.Size(), route: route, err: err}
+}
+
+// prepareRecursiveDropSelection replaces only the per-file selection state.
+// The recursive operation itself remains live: this must not call resetUI,
+// cancel the operation session, or change its generation.
+func (a *App) prepareRecursiveDropSelection() {
+	a.State.ClosePCV3Source()
+	a.State.PCVUnavailable = false
+	a.State.Mode = ""
+	a.State.InputFile = ""
+	a.State.OutputFile = ""
+	a.State.OutputChosenViaSaveDialog = false
+	a.State.OnlyFiles = nil
+	a.State.OnlyFolders = nil
+	a.State.AllFiles = nil
+	a.State.Recombine = false
+	a.State.CompressTotal = 0
+	a.State.RequiredFreeSpace = 0
+	a.State.Keyfile = false
+	a.State.KeyfileOrdered = false
+	a.State.Comments = ""
+	a.State.CommentsPreviewState = app.CommentsPreviewNormal
+	a.State.Deniability = false
+	a.State.SetPCV3LegacyEligible()
+	a.State.SetInputPrompt()
+	a.State.SetStartAction(app.StartActionStart)
+}
+
+// applyLegacyDroppedFileRoute applies a legacy-eligible result after routing
+// has completed. The caller owns result.source until RetainPCV3D1Candidate
+// succeeds or this function closes it.
+func (a *App) applyLegacyDroppedFileRoute(path string, isSplit bool, result droppedRouteResult) bool {
+	if result.source == nil {
+		return false
+	}
+	a.State.SetPCV3LegacyEligible()
+	if isDecryptVolumePath(path) {
+		a.handleDecryptDrop(path, isSplit, result.source)
+	} else {
+		a.State.Mode = "encrypt"
+		a.State.InputFile = path
+		a.State.SetInputSelection(1, 0, result.size, true)
+		a.State.SetStartAction(app.StartActionEncrypt)
+		a.State.OutputFile = path + ".pcv"
+		a.State.OnlyFiles = []string{path}
+		a.State.AllFiles = []string{path}
+		a.State.CompressTotal = result.size
+	}
+	accepted := a.State.Mode != ""
+	if !accepted || !a.State.RetainPCV3D1Candidate(result.source) {
+		_ = result.source.Close()
+	}
+	a.State.SetScanning(false)
+	return accepted
+}
+
+// applyRecursiveDroppedFileRoute consumes one synchronously routed result on
+// the Fyne thread. Normal PCV3 is terminal for the legacy recursive path and
+// must never fall through to the legacy executor.
+func (a *App) applyRecursiveDroppedFileRoute(path string, isSplit bool, result droppedRouteResult) bool {
+	a.prepareRecursiveDropSelection()
+	if result.err != nil || result.route != pcv3.RouteLegacyEligible {
+		if result.source != nil {
+			_ = result.source.Close()
+		}
+		return false
+	}
+	return a.applyLegacyDroppedFileRoute(path, isSplit, result)
+}
+
+func (a *App) applyDroppedFileRoute(
+	ctx context.Context,
+	generation uint64,
+	path string,
+	isSplit bool,
+	result droppedRouteResult,
+) {
+	if !a.folderScanCanApply(ctx, generation) {
+		if result.source != nil {
+			_ = result.source.Close()
+		}
+		return
+	}
+	if result.err != nil {
+		if result.source != nil {
+			_ = result.source.Close()
+		}
+		a.State.SetPCV3RoutingFailed()
+		a.refreshAdvanced()
+		a.refreshUI()
+		return
+	}
+	if result.route == pcv3.RouteNormalPCV {
+		if isSplit {
+			_ = result.source.Close()
+			a.State.SetPCV3RoutingFailed()
+			a.refreshAdvanced()
+			a.refreshUI()
+			return
+		}
+		if !a.State.SetPCV3Ready(
+			result.source, app.PCV3FormatNormal, path, defaultPCV3Output(path), result.size,
+		) {
+			_ = result.source.Close()
+			a.State.SetPCV3RoutingFailed()
+		}
+		a.refreshAdvanced()
+		a.refreshUI()
+		return
+	}
+
+	a.applyLegacyDroppedFileRoute(path, isSplit, result)
+	a.refreshAdvanced()
+	a.refreshUI()
 }
 
 func (a *App) applyDropError(status string, closeKeyfileModal bool) {
@@ -617,9 +775,6 @@ func (a *App) handleKeyfileDrop(paths []string) bool {
 
 	// Add keyfiles, checking for duplicates and access
 	for _, path := range paths {
-		// Check if duplicate
-		duplicate := slices.Contains(a.State.Keyfiles, path)
-
 		// Check if accessible and not a directory
 		stat, err := os.Stat(path)
 		if err != nil {
@@ -628,7 +783,8 @@ func (a *App) handleKeyfileDrop(paths []string) bool {
 			return true
 		}
 
-		if !duplicate && !stat.IsDir() {
+		if !stat.IsDir() && (a.State.UISnapshot().PCV3Route == app.PCV3RouteReady ||
+			!slices.Contains(a.State.Keyfiles, path)) {
 			a.State.Keyfiles = append(a.State.Keyfiles, path)
 		}
 	}

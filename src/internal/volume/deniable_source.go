@@ -75,7 +75,7 @@ func prepareDeniableSource(
 		return nil, errors.New("legacy Reed-Solomon codecs are unavailable")
 	}
 	if req.ForceDecrypt {
-		return nil, errors.New("Force-decrypted deniable input is not eligible for migration")
+		return nil, errors.New("force-decrypted deniable input is not eligible for migration")
 	}
 
 	opCtx := NewDecryptContext(ctx, req)

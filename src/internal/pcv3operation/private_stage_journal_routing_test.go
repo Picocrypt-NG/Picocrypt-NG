@@ -209,7 +209,7 @@ func assertOperationJournalSentinel(t *testing.T, sentinel operationJournalSenti
 	}
 	data, err := os.ReadFile(sentinel.path)
 	if err != nil || !bytes.Equal(data, sentinel.bytes) || !os.SameFile(sentinel.info, info) ||
-		info.Mode().Perm() != 0o640 {
+		info.Mode().Perm() != sentinel.info.Mode().Perm() {
 		t.Fatalf(
 			"operation foreign journal changed: bytes=%q error=%v same-inode=%v mode=%o",
 			data, err, os.SameFile(sentinel.info, info), info.Mode().Perm(),

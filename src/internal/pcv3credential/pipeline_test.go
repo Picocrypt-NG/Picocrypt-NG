@@ -583,7 +583,6 @@ func TestPipelineExactlyOneKDF(t *testing.T) {
 		probe.admit.profiles[0] != profile {
 		t.Fatal("pipeline adapted or repeated the suite-selected profile")
 	}
-
 }
 
 func TestPipelinePreKDFCancellation(t *testing.T) {

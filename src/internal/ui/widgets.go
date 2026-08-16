@@ -2,13 +2,273 @@
 package ui
 
 import (
+	"Picocrypt-NG/internal/app"
+	"Picocrypt-NG/internal/pcv3artifact"
+	"Picocrypt-NG/internal/pcv3operation"
+	"Picocrypt-NG/internal/pcv3recovery"
 	"image/color"
+	"strconv"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
+
+type pcv3ArtifactView interface {
+	Metadata() pcv3recovery.ArtifactInspectionMetadata
+	Page(offset, limit uint64) ([]pcv3artifact.Range, bool)
+}
+
+type pcv3ArtifactSurfaceState uint8
+
+const (
+	pcv3ArtifactLoading pcv3ArtifactSurfaceState = iota + 1
+	pcv3ArtifactFailed
+	pcv3ArtifactReady
+)
+
+type pcv3ArtifactRangeModel struct {
+	view       pcv3ArtifactView
+	rangeCount uint64
+	pageOffset uint64
+	page       []pcv3artifact.Range
+}
+
+func (model *pcv3ArtifactRangeModel) length() int {
+	maxInt := uint64(^uint(0) >> 1)
+	if model == nil || model.rangeCount == 0 {
+		return 0
+	}
+	if model.rangeCount > maxInt {
+		return int(maxInt)
+	}
+	return int(model.rangeCount)
+}
+
+func (model *pcv3ArtifactRangeModel) at(index int) (pcv3artifact.Range, bool) {
+	if model == nil || model.view == nil || index < 0 || uint64(index) >= model.rangeCount {
+		return pcv3artifact.Range{}, false
+	}
+	offset := (uint64(index) / 128) * 128
+	if model.page == nil || model.pageOffset != offset {
+		page, ok := model.view.Page(offset, 128)
+		if !ok || len(page) == 0 {
+			return pcv3artifact.Range{}, false
+		}
+		model.pageOffset = offset
+		model.page = page
+	}
+	position := uint64(index) - model.pageOffset
+	if position >= uint64(len(model.page)) {
+		return pcv3artifact.Range{}, false
+	}
+	return model.page[position], true
+}
+
+func wrappedPCV3Label(text string) *widget.Label {
+	label := widget.NewLabel(text)
+	label.Wrapping = fyne.TextWrapWord
+	return label
+}
+
+func wrappedPCV3Title(text string) *widget.Label {
+	label := wrappedPCV3Label(text)
+	label.TextStyle = fyne.TextStyle{Bold: true}
+	return label
+}
+
+func buildPCV3ArtifactSurface(state pcv3ArtifactSurfaceState, view pcv3ArtifactView) fyne.CanvasObject {
+	switch state {
+	case pcv3ArtifactLoading:
+		return wrappedPCV3Label(tr("pcv3.recovery.loading", "Loading recovery details…"))
+	case pcv3ArtifactFailed:
+		return wrappedPCV3Label(tr("pcv3.recovery.failed", "Recovery details could not be loaded"))
+	}
+	if view == nil {
+		return wrappedPCV3Label(tr("pcv3.recovery.failed", "Recovery details could not be loaded"))
+	}
+	metadata := view.Metadata()
+	summary := container.NewVBox(
+		wrappedPCV3Label(tr("pcv3.recovery.summary.kind", "Artifact kind")+": "+pcv3ArtifactKindText(metadata.Kind)),
+		wrappedPCV3Label(tr("pcv3.recovery.summary.length", "Plaintext length")+": "+strconv.FormatUint(metadata.PlaintextLength, 10)),
+		wrappedPCV3Label(tr("pcv3.recovery.summary.final", "Final record")+": "+pcv3ArtifactFinalText(metadata.Final)),
+		wrappedPCV3Label(tr("pcv3.recovery.summary.counts", "Recovery ranges")+": "+pcv3RecoveryRangeCount(metadata.RangeCount)),
+	)
+	if role := pcv3ArtifactRoleText(metadata.Role); role != "" {
+		summary.Add(wrappedPCV3Label(tr("pcv3.recovery.summary.role", "Physical role") + ": " + role))
+	}
+	counts := strconv.FormatUint(metadata.VerifiedRangeCount, 10) + " / " +
+		strconv.FormatUint(metadata.UnverifiedRangeCount, 10) + " / " +
+		strconv.FormatUint(metadata.MissingRangeCount, 10)
+	summary.Add(wrappedPCV3Label(counts))
+	if metadata.RangeCount == 0 {
+		summary.Add(wrappedPCV3Label(pcv3RecoveryRangeCount(0)))
+		return summary
+	}
+	model := &pcv3ArtifactRangeModel{view: view, rangeCount: metadata.RangeCount}
+	list := widget.NewList(
+		model.length,
+		func() fyne.CanvasObject { return widget.NewLabel("") },
+		func(id widget.ListItemID, object fyne.CanvasObject) {
+			label, ok := object.(*widget.Label)
+			if !ok {
+				return
+			}
+			rangeValue, ok := model.at(id)
+			if !ok {
+				label.SetText("")
+				return
+			}
+			label.SetText(pcv3RecoveryRangeRow(
+				rangeValue.RecordIndex, rangeValue.Start, rangeValue.End, rangeValue.Status,
+			))
+		},
+	)
+	list.SetItemHeight(0, theme.TextSize()+theme.Padding()*2)
+	list.Resize(fyne.NewSize(desktopContentWidth(), 180))
+	return container.NewBorder(summary, nil, nil, nil, list)
+}
+
+func pcv3FactorPolicyText(policy app.PCV3FactorPolicy) string {
+	switch policy {
+	case app.PCV3FactorPolicyPassword:
+		return tr("pcv3.factor.password", "Password only")
+	case app.PCV3FactorPolicyKeyfiles:
+		return tr("pcv3.factor.keyfiles", "Keyfiles only")
+	case app.PCV3FactorPolicyCombined:
+		return tr("pcv3.factor.combined", "Password + keyfiles")
+	default:
+		return tr("pcv3.factor.unset", "Not selected")
+	}
+}
+
+func pcv3KeyfileOrderText(order app.PCV3KeyfileOrder) string {
+	switch order {
+	case app.PCV3KeyfileOrderSelected:
+		return tr("pcv3.order.ordered", "Use selected order")
+	case app.PCV3KeyfileOrderAny:
+		return tr("pcv3.order.unordered", "Any order")
+	default:
+		return ""
+	}
+}
+
+func buildPCV3IntentSummary(snap app.UISnapshot) fyne.CanvasObject {
+	format := tr("pcv3.format.normal", "Normal PCV3")
+	if snap.PCV3Format == app.PCV3FormatD1 {
+		format = tr("pcv3.format.d1", "PCV3 D1")
+	}
+	action := ""
+	switch snap.PCV3Action {
+	case app.PCV3ActionDecrypt:
+		action = tr("pcv3.action.decrypt", "Decrypt")
+	case app.PCV3ActionRecovery:
+		action = tr("pcv3.action.recovery", "Recovery")
+	case app.PCV3ActionForce:
+		action = tr("pcv3.action.force", "Force recovery")
+	}
+	lines := []fyne.CanvasObject{
+		wrappedPCV3Label(tr("pcv3.format.label", "Format:") + " " + format),
+		wrappedPCV3Label(tr("pcv3.action.label", "PCV3 operation") + ": " + action),
+		wrappedPCV3Label(tr("pcv3.factor.label", "Credential policy") + ": " + pcv3FactorPolicyText(snap.PCV3Factor)),
+		wrappedPCV3Label(tr("pcv3.intent.keyfiles", "Keyfiles") + ": " + keyfileDisplayLabel(false, snap.KeyfileCount, true)),
+		wrappedPCV3Label(tr("pcv3.intent.destination", "Destination") + ": " + func() string {
+			if snap.OutputFile == "" {
+				return tr("pcv3.factor.unset", "Not selected")
+			}
+			return tr("pcv3.intent.destination", "Destination")
+		}()),
+	}
+	if order := pcv3KeyfileOrderText(snap.PCV3Order); order != "" {
+		lines = append(lines, wrappedPCV3Label(tr("pcv3.order.label", "Keyfile order")+": "+order))
+	}
+	if len(snap.PCV3KeyfileNames) != 0 {
+		items := container.NewVBox()
+		for index, name := range snap.PCV3KeyfileNames {
+			itemText := strconv.Itoa(index+1) + ". " + name
+			label := widget.NewLabel(itemText)
+			label.Truncation = fyne.TextTruncateEllipsis
+			items.Add(label)
+		}
+		list := container.NewVScroll(items)
+		list.SetMinSize(fyne.NewSize(0, 96))
+		lines = append(lines, list)
+	}
+	return container.NewVBox(lines...)
+}
+
+type pcv3ConsentView struct {
+	content *fyne.Container
+	roles   *widget.RadioGroup
+	ack     *widget.Check
+	confirm *widget.Button
+	cancel  *widget.Button
+}
+
+func validPCV3ConsentRoles(mode pcv3operation.Mode, roles []pcv3operation.PhysicalRole) bool {
+	if len(roles) != 2 || roles[0] == roles[1] {
+		return false
+	}
+	switch mode {
+	case pcv3operation.ModeForceUnverifiedNormal:
+		return roles[0] == pcv3operation.RolePrimary && roles[1] == pcv3operation.RoleBackup
+	case pcv3operation.ModeForceUnverifiedD1:
+		return roles[0] == pcv3operation.RoleD1Front && roles[1] == pcv3operation.RoleD1Tail
+	default:
+		return false
+	}
+}
+
+func newPCV3ConsentView(
+	mode pcv3operation.Mode,
+	roles []pcv3operation.PhysicalRole,
+	choose func(pcv3operation.PhysicalRole),
+	cancel func(),
+) (*pcv3ConsentView, bool) {
+	if !validPCV3ConsentRoles(mode, roles) || choose == nil || cancel == nil {
+		return nil, false
+	}
+	labels := make([]string, len(roles))
+	roleByLabel := make(map[string]pcv3operation.PhysicalRole, len(roles))
+	for index, role := range roles {
+		label := pcv3PhysicalRoleText(role)
+		if label == "" {
+			return nil, false
+		}
+		labels[index] = label
+		roleByLabel[label] = role
+	}
+	view := &pcv3ConsentView{}
+	view.confirm = widget.NewButton(tr("pcv3.consent.confirm", "Recover unverified"), func() {
+		role, ok := roleByLabel[view.roles.Selected]
+		if ok && view.ack.Checked {
+			choose(role)
+		}
+	})
+	view.confirm.Importance = widget.DangerImportance
+	view.confirm.Disable()
+	view.cancel = widget.NewButton(tr("pcv3.consent.cancel", "Cancel recovery"), cancel)
+	view.cancel.Importance = widget.HighImportance
+	update := func() {
+		_, selected := roleByLabel[view.roles.Selected]
+		if selected && view.ack.Checked {
+			view.confirm.Enable()
+		} else {
+			view.confirm.Disable()
+		}
+	}
+	view.roles = widget.NewRadioGroup(labels, func(string) { update() })
+	view.ack = widget.NewCheck(
+		tr("pcv3.consent.acknowledgement", "I understand that this output is unverified."),
+		func(bool) { update() },
+	)
+	body := widget.NewLabel(tr("pcv3.consent.body", "This operation can save bytes that are not authenticated. They may be incomplete, corrupted, or unsafe to open. Choose the exact physical source to use."))
+	body.Wrapping = fyne.TextWrapWord
+	view.content = container.NewVBox(body, view.roles, view.ack, container.NewGridWithColumns(2, view.cancel, view.confirm))
+	return view, true
+}
 
 // PasswordStrengthIndicator is a custom widget that displays password strength
 // as a circular arc, colored from red (weak) to green (strong).

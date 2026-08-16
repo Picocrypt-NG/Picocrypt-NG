@@ -5,7 +5,6 @@ package mobile
 import (
 	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/encoding"
-	perrors "Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/pcv3"
@@ -24,6 +23,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	perrors "Picocrypt-NG/internal/errors"
 )
 
 var (
@@ -215,23 +216,23 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 	}
 
-	modeText, err := decodePCV3String(values["mode"], 64, false)
+	modeText, err := decodePCV3String(values["mode"], 64)
 	if err != nil {
 		return pcv3Envelope{}, err
 	}
-	policyText, err := decodePCV3String(values["factorPolicy"], 64, false)
+	policyText, err := decodePCV3String(values["factorPolicy"], 64)
 	if err != nil {
 		return pcv3Envelope{}, err
 	}
-	orderText, err := decodePCV3String(values["keyfileOrder"], 64, false)
+	orderText, err := decodePCV3String(values["keyfileOrder"], 64)
 	if err != nil {
 		return pcv3Envelope{}, err
 	}
-	source, err := decodePCV3String(values["source"], maxPCV3PathBytes, false)
+	source, err := decodePCV3String(values["source"], maxPCV3PathBytes)
 	if err != nil {
 		return pcv3Envelope{}, err
 	}
-	target, err := decodePCV3String(values["target"], maxPCV3PathBytes, false)
+	target, err := decodePCV3String(values["target"], maxPCV3PathBytes)
 	if err != nil {
 		return pcv3Envelope{}, err
 	}
@@ -290,14 +291,14 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 	return envelope, nil
 }
 
-func decodePCV3String(raw json.RawMessage, maximum int, allowEmpty bool) (string, error) {
+func decodePCV3String(raw json.RawMessage, maximum int) (string, error) {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return "", errors.New("invalid PCV3 envelope")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	var value string
 	if err := decoder.Decode(&value); err != nil || !jsonDecoderAtEOF(decoder) ||
-		(!allowEmpty && value == "") || len(value) > maximum || strings.IndexByte(value, 0) >= 0 {
+		value == "" || len(value) > maximum || strings.IndexByte(value, 0) >= 0 {
 		return "", errors.New("invalid PCV3 envelope")
 	}
 	return value, nil
@@ -318,7 +319,7 @@ func decodePCV3StringArray(raw json.RawMessage, maximumItems, maximumBytes int) 
 		if err := decoder.Decode(&rawValue); err != nil {
 			return nil, errors.New("invalid PCV3 envelope")
 		}
-		value, err := decodePCV3String(rawValue, maximumBytes, false)
+		value, err := decodePCV3String(rawValue, maximumBytes)
 		if err != nil {
 			return nil, err
 		}

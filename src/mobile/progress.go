@@ -1099,10 +1099,7 @@ func completePCV3PresentationWithArchiveAndInspection(
 		if cleanupIncomplete {
 			presentation = archiveCleanupIncompletePCV3Presentation()
 		} else {
-			presentation = archiveFailurePCV3Presentation(
-				pcv3operation.DiagnosticCoreFailure,
-				closed,
-			)
+			presentation = archiveFailurePCV3Presentation(closed)
 		}
 	}
 	var rejected pcv3ArchiveAction
@@ -1115,7 +1112,6 @@ func completePCV3PresentationWithArchiveAndInspection(
 	if !ok || state.terminal {
 		if action != nil {
 			rejected = action
-			action = nil
 		}
 		globalProgressMap.mu.Unlock()
 		if rejected != nil {
@@ -1289,10 +1285,6 @@ func fallbackPCV3Presentation(diagnostic pcv3operation.Diagnostic) pcv3operation
 	return presentation
 }
 
-func archiveInputFailurePCV3Presentation(closed pcv3operation.Presentation) pcv3operation.Presentation {
-	return archiveFailurePCV3Presentation(pcv3operation.DiagnosticInvalidRequest, closed)
-}
-
 // closePCV3ArchiveAction contains only terminal-projection cleanup panics.
 // It runs before any registry mutation, so the caller can publish one bounded
 // cleanup-uncertain terminal state instead of leaking a goroutine panic.
@@ -1327,10 +1319,7 @@ func archiveCleanupIncompletePCV3Presentation() pcv3operation.Presentation {
 	return presentation
 }
 
-func archiveFailurePCV3Presentation(
-	diagnostic pcv3operation.Diagnostic,
-	closed pcv3operation.Presentation,
-) pcv3operation.Presentation {
+func archiveFailurePCV3Presentation(closed pcv3operation.Presentation) pcv3operation.Presentation {
 	var warnings []pcv3operation.Warning
 	for _, warning := range closed.Warnings() {
 		if warning == pcv3operation.WarningCleanupIncomplete {
@@ -1343,7 +1332,7 @@ func archiveFailurePCV3Presentation(
 		Stage:      pcv3.StageOutputPublication,
 		Code:       pcv3.CodeOperationFailed,
 		Warnings:   warnings,
-		Diagnostic: diagnostic,
+		Diagnostic: pcv3operation.DiagnosticCoreFailure,
 	})
 	if err != nil {
 		return fallbackPCV3Presentation(pcv3operation.DiagnosticCoreFailure)
@@ -1376,7 +1365,7 @@ func outputArchiveFailurePCV3Presentation(
 	closed pcv3operation.Presentation,
 	result pcv3OutputActionResult,
 ) pcv3operation.Presentation {
-	presentation := archiveFailurePCV3Presentation(pcv3operation.DiagnosticCoreFailure, closed)
+	presentation := archiveFailurePCV3Presentation(closed)
 	if !result.cleanupIncomplete {
 		return presentation
 	}

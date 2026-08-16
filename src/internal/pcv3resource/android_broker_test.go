@@ -1,13 +1,12 @@
 package pcv3resource
 
 import (
+	"Picocrypt-NG/internal/pcv3credential"
 	"context"
 	"math"
 	"strings"
 	"testing"
 	"time"
-
-	"Picocrypt-NG/internal/pcv3credential"
 )
 
 const androidBrokerTestMiB = uint64(1 << 20)
@@ -22,7 +21,7 @@ func TestAndroidBrokerRequiresOneFreshChallengePerAdmission(t *testing.T) {
 	admitter := newAdmitter(session)
 
 	var previousGeneration uint64
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		result := make(chan androidAdmissionResult, 1)
 		go admitAndroidBrokerTestKDF(context.Background(), admitter, androidBrokerTestProfile(), result)
 

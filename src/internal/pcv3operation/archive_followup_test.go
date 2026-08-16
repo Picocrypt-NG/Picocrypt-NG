@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3publication"
+	"errors"
 	"slices"
 	"testing"
 )
@@ -95,11 +96,15 @@ func TestArchiveFollowUpReturnsCommonTerminalResult(t *testing.T) {
 		})
 	}
 
-	state := &operationTestArchiveState{active: true}
+	state := &operationTestArchiveState{active: true, cleanupIncomplete: true}
 	followUp := &ArchiveFollowUp{state: state}
 	closed := followUp.Close()
 	if closed.CompletionClass() != CompletionNoOutput || state.active ||
-		followUp.state.live() {
-		t.Fatalf("close tuple = class %v active=%v; want consumed no-output", closed.CompletionClass(), state.active)
+		followUp.state.live() || !slices.Equal(closed.Warnings(), []Warning{WarningCleanupIncomplete}) ||
+		!errors.Is(closed, pcv3publication.ErrCleanupIncomplete) {
+		t.Fatalf("close tuple = class %v active=%v warnings=%v cleanup=%v; want consumed no-output with cleanup warning", closed.CompletionClass(), state.active, closed.Warnings(), errors.Is(closed, pcv3publication.ErrCleanupIncomplete))
+	}
+	if expired := followUp.Close(); expired == nil || expired.Diagnostic() != DiagnosticInvalidRequest {
+		t.Fatalf("second close = %#v; want one-shot expired invalid-request result", expired)
 	}
 }

@@ -26,6 +26,24 @@ func (a *App) updateAdvancedSection() {
 	a.advancedToggleBtn = nil
 	a.advancedDetail = nil
 
+	snap := a.State.UISnapshot()
+	if snap.PCV3Route != app.PCV3RouteNone && snap.PCV3Route != app.PCV3RouteReady {
+		if a.advancedLabel != nil {
+			a.advancedLabel.Hide()
+		}
+		a.advancedContainer.Refresh()
+		return
+	}
+	if snap.PCV3Route == app.PCV3RouteReady {
+		if a.advancedLabel != nil {
+			a.advancedLabel.Show()
+		}
+		a.buildDesktopAdvancedDisclosure(a.buildPCV3Options(snap), true)
+		a.updateAdvancedDisableState()
+		a.advancedContainer.Refresh()
+		return
+	}
+
 	switch a.State.Mode {
 	case "":
 		// Initial state - no files selected, hide advanced section entirely
@@ -71,6 +89,17 @@ func (a *App) advancedShouldAutoOpen() bool {
 
 func (a *App) buildAdvancedDetailContent(mode string) fyne.CanvasObject {
 	options := container.NewVBox()
+	snap := a.State.UISnapshot()
+	if snap.InputFile != "" && snap.OnlyFileCount == 1 && snap.OnlyFolderCount == 0 {
+		d1 := widget.NewButton(tr("pcv3.format.d1_action", "Open as PCV3 D1"), func() {
+			if a.State.SelectPCV3D1() {
+				a.refreshAdvanced()
+				a.updateUIState()
+			}
+		})
+		d1.Importance = widget.LowImportance
+		options.Add(d1)
+	}
 	switch mode {
 	case "decrypt":
 		a.buildDecryptOptionsInto(options)
@@ -79,6 +108,141 @@ func (a *App) buildAdvancedDetailContent(mode string) fyne.CanvasObject {
 	}
 
 	return options
+}
+
+func (a *App) buildPCV3Options(snap app.UISnapshot) fyne.CanvasObject {
+	format := tr("pcv3.format.normal", "Normal PCV3")
+	if snap.PCV3Format == app.PCV3FormatD1 {
+		format = tr("pcv3.format.d1", "PCV3 D1")
+	}
+	formatText := tr("pcv3.format.label", "Format:") + " " + format
+	formatLabel := widget.NewLabel(formatText)
+	formatLabel.Wrapping = fyne.TextWrapWord
+
+	actionValues := []struct {
+		label string
+		value app.PCV3Action
+	}{
+		{tr("pcv3.action.decrypt", "Decrypt"), app.PCV3ActionDecrypt},
+		{tr("pcv3.action.recovery", "Recovery"), app.PCV3ActionRecovery},
+		{tr("pcv3.action.force", "Force recovery"), app.PCV3ActionForce},
+	}
+	a.pcv3ActionGroup = widget.NewRadioGroup(labelsForPCV3Actions(actionValues), func(selected string) {
+		for _, option := range actionValues {
+			if selected == option.label {
+				a.State.SetPCV3Intent(option.value, a.State.UISnapshot().PCV3Factor, a.State.UISnapshot().PCV3Order)
+				a.updateUIState()
+				return
+			}
+		}
+	})
+	a.pcv3ActionGroup.Required = true
+	for _, option := range actionValues {
+		if option.value == snap.PCV3Action {
+			a.pcv3ActionGroup.Selected = option.label
+		}
+	}
+
+	factorValues := []struct {
+		label string
+		value app.PCV3FactorPolicy
+	}{
+		{tr("pcv3.factor.password", "Password only"), app.PCV3FactorPolicyPassword},
+		{tr("pcv3.factor.keyfiles", "Keyfiles only"), app.PCV3FactorPolicyKeyfiles},
+		{tr("pcv3.factor.combined", "Password + keyfiles"), app.PCV3FactorPolicyCombined},
+	}
+	a.pcv3FactorGroup = widget.NewRadioGroup(labelsForPCV3Factors(factorValues), func(selected string) {
+		for _, option := range factorValues {
+			if selected == option.label {
+				current := a.State.UISnapshot()
+				a.State.SetPCV3Intent(current.PCV3Action, option.value, current.PCV3Order)
+				a.refreshAdvanced()
+				a.updateUIState()
+				return
+			}
+		}
+	})
+	a.pcv3FactorGroup.Required = true
+	for _, option := range factorValues {
+		if option.value == snap.PCV3Factor {
+			a.pcv3FactorGroup.Selected = option.label
+		}
+	}
+
+	content := container.NewVBox(
+		formatLabel,
+		widget.NewLabel(tr("pcv3.action.label", "PCV3 operation")),
+		a.pcv3ActionGroup,
+		widget.NewLabel(tr("pcv3.factor.label", "Credential policy")),
+		a.pcv3FactorGroup,
+	)
+	if snap.PCV3Factor == app.PCV3FactorPolicyKeyfiles ||
+		snap.PCV3Factor == app.PCV3FactorPolicyCombined {
+		orderValues := []struct {
+			label string
+			value app.PCV3KeyfileOrder
+		}{
+			{tr("pcv3.order.ordered", "Use selected order"), app.PCV3KeyfileOrderSelected},
+			{tr("pcv3.order.unordered", "Any order"), app.PCV3KeyfileOrderAny},
+		}
+		a.pcv3OrderGroup = widget.NewRadioGroup(labelsForPCV3Orders(orderValues), func(selected string) {
+			for _, option := range orderValues {
+				if selected == option.label {
+					current := a.State.UISnapshot()
+					a.State.SetPCV3Intent(current.PCV3Action, current.PCV3Factor, option.value)
+					a.updateUIState()
+					return
+				}
+			}
+		})
+		a.pcv3OrderGroup.Required = true
+		for _, option := range orderValues {
+			if option.value == snap.PCV3Order {
+				a.pcv3OrderGroup.Selected = option.label
+			}
+		}
+		content.Add(widget.NewLabel(tr("pcv3.order.label", "Keyfile order")))
+		content.Add(a.pcv3OrderGroup)
+	} else {
+		a.pcv3OrderGroup = nil
+	}
+	return content
+}
+
+func labelsForPCV3Actions(values []struct {
+	label string
+	value app.PCV3Action
+},
+) []string {
+	labels := make([]string, len(values))
+	for index := range values {
+		labels[index] = values[index].label
+	}
+	return labels
+}
+
+func labelsForPCV3Factors(values []struct {
+	label string
+	value app.PCV3FactorPolicy
+},
+) []string {
+	labels := make([]string, len(values))
+	for index := range values {
+		labels[index] = values[index].label
+	}
+	return labels
+}
+
+func labelsForPCV3Orders(values []struct {
+	label string
+	value app.PCV3KeyfileOrder
+},
+) []string {
+	labels := make([]string, len(values))
+	for index := range values {
+		labels[index] = values[index].label
+	}
+	return labels
 }
 
 func (a *App) buildDesktopAdvancedDisclosure(detail fyne.CanvasObject, autoOpen bool) {
@@ -235,7 +399,8 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 	})
 	a.splitUnitSelect.SetSelectedIndex(int(a.State.SplitSelected))
 
-	splitRow := container.NewBorder(nil, nil,
+	splitRow := container.NewBorder(
+		nil, nil,
 		a.splitCheck,
 		a.splitUnitSelect,
 		a.splitSizeEntry,
@@ -346,6 +511,12 @@ func (a *App) updateAdvancedDisableState() {
 
 func (a *App) updateAdvancedDisableStateFromSnapshot(snap app.UISnapshot, configureDisabled bool) {
 	advancedDisabled := configureDisabled
+	if snap.PCV3Route == app.PCV3RouteReady {
+		setWidgetDisabled(a.pcv3ActionGroup, advancedDisabled || snap.Working)
+		setWidgetDisabled(a.pcv3FactorGroup, advancedDisabled || snap.Working)
+		setWidgetDisabled(a.pcv3OrderGroup, advancedDisabled || snap.Working)
+		return
+	}
 	if snap.PCVUnavailable {
 		a.updateEncryptOptionsState(true, snap)
 		a.updateDecryptOptionsState(true, snap)

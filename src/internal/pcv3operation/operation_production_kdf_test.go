@@ -113,7 +113,7 @@ func TestOperationProductionKDFArchiveRequiresExplicitOneShotExtraction(t *testi
 	if err != nil {
 		t.Fatalf("open archive extraction root: %v", err)
 	}
-	extracted := followUp.Extract(extractRoot)
+	extracted := followUp.Extract(context.Background(), extractRoot)
 	if extracted == nil {
 		t.Fatal("archive extraction returned no closed result")
 	}
@@ -211,7 +211,7 @@ func assertOperationArchiveReuseDenied(t *testing.T, followUp *ArchiveFollowUp, 
 	if err != nil {
 		t.Fatalf("open %s-use extraction root: %v", name, err)
 	}
-	denied := followUp.Extract(root)
+	denied := followUp.Extract(context.Background(), root)
 	if denied == nil {
 		t.Fatalf("%s archive reuse returned no closed denial", name)
 	}

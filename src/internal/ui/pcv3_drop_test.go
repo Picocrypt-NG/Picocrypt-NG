@@ -5,22 +5,22 @@ import (
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/volume"
+	"Picocrypt-NG/internal/pcv3operation"
 	"bytes"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2"
+	fynetest "fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/widget"
 )
-
-const pcv3DesktopUnavailable = "This PCV volume is not supported by this version. Keep the original file; no output was created."
 
 func loadPCV3DropFixture(t *testing.T) []byte {
 	t.Helper()
@@ -31,439 +31,359 @@ func loadPCV3DropFixture(t *testing.T) []byte {
 	return fixture
 }
 
-func pcv3DropDirectoryNames(t *testing.T, dir string) []string {
+func waitForPCV3UI(t *testing.T, condition func() bool, failure string) {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read drop directory: %v", err)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		matched := false
+		fyne.DoAndWait(func() { matched = condition() })
+		if matched {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	names := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		names = append(names, entry.Name())
-	}
-	sort.Strings(names)
-	return names
+	t.Fatal(failure)
 }
 
-func primePCV3DropWidgets(t *testing.T, a *App) {
-	t.Helper()
-	fyne.DoAndWait(func() {
-		a.State.Mode = "decrypt"
-		a.State.InputFile = "previous.zip.pcv"
-		a.State.OnlyFiles = []string{"previous.zip.pcv"}
-		a.State.Password = "stale-password"
-		a.State.Comments = "stale-comment"
-		a.State.Keyfile = true
-		a.State.Keyfiles = []string{"stale-keyfile"}
-		a.State.Deniability = false
-		a.State.Keep = true
-		a.State.OutputFile = "previous.zip"
-		a.State.SetInputDecryptVolume()
-		a.State.SetStartAction(app.StartActionDecrypt)
-		a.refreshAdvanced()
-		a.updateUIState()
-		// Leave stale state that the atomic unavailable setter must clear, while
-		// keeping the already-built Force widget observably enabled beforehand.
-		a.State.Deniability = true
-	})
-	if a.forceDecryptCheck == nil {
-		t.Fatal("failed to build real Force decrypt widget")
+func findPCV3Button(object fyne.CanvasObject, text string) *widget.Button {
+	if button, ok := object.(*widget.Button); ok && button.Text == text {
+		return button
 	}
-	if a.forceDecryptCheck.Disabled() {
-		t.Fatal("Force decrypt widget precondition is disabled")
+	if popup, ok := object.(*widget.PopUp); ok {
+		return findPCV3Button(popup.Content, text)
 	}
+	if container, ok := object.(*fyne.Container); ok {
+		for _, child := range container.Objects {
+			if button := findPCV3Button(child, text); button != nil {
+				return button
+			}
+		}
+	}
+	return nil
 }
 
-func assertPCV3UnavailableDrop(t *testing.T, a *App, input string, size int64) {
-	t.Helper()
-	fyne.DoAndWait(func() {
-		snap := a.State.UISnapshot()
-		if !snap.PCVUnavailable {
-			t.Fatal("PCVUnavailable = false; claimed selection must be terminal")
-		}
-		if snap.Mode != "" || snap.OutputFile != "" || snap.Comments != "" || snap.Keyfile || snap.KeyfileCount != 0 {
-			t.Fatalf("mode/output/metadata survived unavailable state: mode=%q output=%q comments=%q keyfile=%v count=%d",
-				snap.Mode, snap.OutputFile, snap.Comments, snap.Keyfile, snap.KeyfileCount)
-		}
-		if snap.InputFile != input {
-			t.Fatalf("InputFile = %q; want retained selected path %q", snap.InputFile, input)
-		}
-		if snap.InputSummary.Kind != app.InputSummarySelection || snap.InputSummary.Files != 1 ||
-			snap.InputSummary.Folders != 0 || snap.InputSummary.SizeBytes != size || !snap.InputSummary.ShowSize {
-			t.Fatalf("selected summary = %#v; want one selected file with size %d", snap.InputSummary, size)
-		}
-		if snap.Deniability || a.State.Keep || a.State.VerifyFirst || a.State.AutoUnzip || a.State.SameLevel {
-			t.Fatalf("decrypt options survived unavailable state: deniability=%v force=%v verify=%v unzip=%v same=%v",
-				snap.Deniability, a.State.Keep, a.State.VerifyFirst, a.State.AutoUnzip, a.State.SameLevel)
-		}
-		if snap.StartAction != app.StartActionStart || snap.CanStart() || a.State.CanStart() {
-			t.Fatalf("start state = action %v snapshotCanStart=%v stateCanStart=%v; want terminal Start/false/false",
-				snap.StartAction, snap.CanStart(), a.State.CanStart())
-		}
-		if snap.Scanning || snap.Working || snap.ShowProgress || a.State.Progress != 0 || a.State.CanCancel {
-			t.Fatalf("progress state survived unavailable selection: scanning=%v working=%v shown=%v progress=%v cancel=%v",
-				snap.Scanning, snap.Working, snap.ShowProgress, a.State.Progress, a.State.CanCancel)
-		}
-		if got := renderStatus(snap.Status, snap); got != pcv3DesktopUnavailable {
-			t.Fatalf("rendered status = %q; want %q", got, pcv3DesktopUnavailable)
-		}
-		if a.statusLabel == nil {
-			t.Fatal("status widget is nil")
-		}
-		if a.statusLabel.text != pcv3DesktopUnavailable {
-			t.Fatalf("status widget = %q; want canonical unavailable copy", a.statusLabel.text)
-		}
-		if a.inputLabel == nil {
-			t.Fatal("input summary widget is nil")
-		}
-		if a.inputLabel.Text != renderInputSummary(snap.InputSummary) {
-			t.Fatalf("input summary widget = %q; want %q", a.inputLabel.Text, renderInputSummary(snap.InputSummary))
-		}
-		if a.startButton == nil || !a.startButton.Disabled() {
-			t.Fatal("Start button is enabled for unavailable PCV selection")
-		}
-		if a.forceDecryptCheck == nil || !a.forceDecryptCheck.Disabled() {
-			t.Fatal("Force decrypt widget is enabled for unavailable PCV selection")
-		}
-		if a.passwordEntry == nil || !a.passwordEntry.Disabled() {
-			t.Fatal("credential input is enabled for unavailable PCV selection")
-		}
-		if a.startHintLabel != nil && a.startHintLabel.Visible() {
-			t.Fatalf("unavailable selection shows unrelated start hint %q", a.startHintLabel.Text)
-		}
-	})
-}
+func TestPCV3FyneRequiresExplicitModeAndLiveConsent(t *testing.T) {
+	resetLocalizationForTest(t)
 
-func TestPCV3DropRoutesBeforeFilenameClassification(t *testing.T) {
-	if err := loadTranslations(); err != nil {
-		t.Fatalf("load translations: %v", err)
-	}
-	previousLanguage := activeLanguage()
-	if err := setActiveLanguage("en"); err != nil {
-		t.Fatalf("set English language: %v", err)
-	}
-	t.Cleanup(func() { _ = setActiveLanguage(previousLanguage) })
-
-	previousPreview := previewDroppedHeader
-	previousDeniability := isDroppedVolumeDeniable
-	previewCalls := 0
-	deniabilityCalls := 0
-	previewDroppedHeader = func(reader io.Reader, codecs *encoding.RSCodecs) (*header.ReadResult, error) {
-		previewCalls++
-		return previousPreview(reader, codecs)
-	}
-	isDroppedVolumeDeniable = func(source *os.File, codecs *encoding.RSCodecs) bool {
-		deniabilityCalls++
-		return previousDeniability(source, codecs)
-	}
-	t.Cleanup(func() {
-		previewDroppedHeader = previousPreview
-		isDroppedVolumeDeniable = previousDeniability
-	})
-
-	fixture := loadPCV3DropFixture(t)
-
-	t.Run("misleading txt name owns the unavailable state", func(t *testing.T) {
-		fyneApp := newTestFyneApp(t)
-		a := createUIReadyDropTestApp(t, fyneApp)
-		primePCV3DropWidgets(t, a)
+	t.Run("content routing stays pending and never infers operation intent", func(t *testing.T) {
+		previousProbe := probeDroppedPCVInput
+		previousPreview := previewDroppedHeader
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		var legacyPreviewCalls atomic.Int32
+		probeDroppedPCVInput = func(source io.ReaderAt, size int64) (pcv3.Route, pcv3.Structure, error) {
+			once.Do(func() { close(entered) })
+			<-release
+			return previousProbe(source, size)
+		}
+		previewDroppedHeader = func(reader io.Reader, codecs *encoding.RSCodecs) (*header.ReadResult, error) {
+			legacyPreviewCalls.Add(1)
+			return previousPreview(reader, codecs)
+		}
+		t.Cleanup(func() {
+			probeDroppedPCVInput = previousProbe
+			previewDroppedHeader = previousPreview
+		})
 
 		dir := t.TempDir()
-		input := filepath.Join(dir, "looks-like-plaintext.txt")
-		potentialOutput := input + ".pcv"
-		originalOutput := []byte("existing output sentinel")
-		if err := os.WriteFile(input, fixture, 0o600); err != nil {
-			t.Fatalf("write claimed input: %v", err)
+		input := filepath.Join(dir, "misleading.txt")
+		if err := os.WriteFile(input, loadPCV3DropFixture(t), 0o600); err != nil {
+			t.Fatalf("write PCV3 input: %v", err)
 		}
-		if err := os.WriteFile(potentialOutput, originalOutput, 0o600); err != nil {
-			t.Fatalf("write output sentinel: %v", err)
-		}
-		beforePreview, beforeDeniability := previewCalls, deniabilityCalls
-
-		fyne.DoAndWait(func() { a.onDrop([]string{input}) })
-		waitForDropProcessing(t, a)
-		assertPCV3UnavailableDrop(t, a, input, int64(len(fixture)))
-		if previewCalls != beforePreview || deniabilityCalls != beforeDeniability {
-			t.Fatalf("claimed .txt reached legacy preview: preview=%d deniability=%d; want %d/%d",
-				previewCalls, deniabilityCalls, beforePreview, beforeDeniability)
-		}
-		gotInput, err := os.ReadFile(input)
-		if err != nil || !bytes.Equal(gotInput, fixture) {
-			t.Fatalf("claimed input changed: len=%d err=%v", len(gotInput), err)
-		}
-		gotOutput, err := os.ReadFile(potentialOutput)
-		if err != nil || !bytes.Equal(gotOutput, originalOutput) {
-			t.Fatalf("existing output changed: %q err=%v", gotOutput, err)
-		}
-		if names := pcv3DropDirectoryNames(t, dir); len(names) != 2 {
-			t.Fatalf("drop created filesystem artifacts: %v", names)
-		}
-
-		fyne.DoAndWait(func() {
-			if err := a.SwitchLanguage("ru"); err != nil {
-				t.Fatalf("switch language: %v", err)
-			}
-			snap := a.State.UISnapshot()
-			if !snap.PCVUnavailable || snap.Status.Kind != app.StatusPCVUnavailable {
-				t.Fatalf("language refresh cleared unavailable state: %#v", snap)
-			}
-			want := "Этот том PCV не поддерживается этой версией. Сохраните исходный файл; выходной файл не был создан."
-			if got := renderStatus(snap.Status, snap); got != want || a.statusLabel.text != want {
-				t.Fatalf("Russian unavailable status = %q / %q; want %q", got, a.statusLabel.text, want)
-			}
-			if err := a.SwitchLanguage("en"); err != nil {
-				t.Fatalf("restore English: %v", err)
-			}
-		})
-
-		legacy := filepath.Join(dir, "replacement.txt")
-		if err := os.WriteFile(legacy, []byte("legacy eligible"), 0o600); err != nil {
-			t.Fatalf("write replacement: %v", err)
-		}
-		fyne.DoAndWait(func() { a.onDrop([]string{legacy}) })
-		waitForDropProcessing(t, a)
-		fyne.DoAndWait(func() {
-			snap := a.State.UISnapshot()
-			if snap.PCVUnavailable || snap.Mode != "encrypt" || snap.InputFile != legacy {
-				t.Fatalf("legacy replacement state = unavailable %v mode %q input %q", snap.PCVUnavailable, snap.Mode, snap.InputFile)
-			}
-		})
-
-		fyne.DoAndWait(func() { a.onDrop([]string{input}) })
-		waitForDropProcessing(t, a)
-		fyne.DoAndWait(func() { a.clearButton.OnTapped() })
-		fyne.DoAndWait(func() {
-			snap := a.State.UISnapshot()
-			if snap.PCVUnavailable || snap.InputSummary.Kind != app.InputSummaryDropPrompt || snap.InputFile != "" {
-				t.Fatalf("clear left unavailable selection: unavailable=%v summary=%#v input=%q", snap.PCVUnavailable, snap.InputSummary, snap.InputFile)
-			}
-		})
-	})
-
-	t.Run("legacy-looking filename cannot reach legacy preview", func(t *testing.T) {
 		fyneApp := newTestFyneApp(t)
 		a := createUIReadyDropTestApp(t, fyneApp)
-		primePCV3DropWidgets(t, a)
+		fyne.DoAndWait(func() { a.onDrop([]string{input}) })
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("content detector did not run asynchronously")
+		}
+		fyne.DoAndWait(func() {
+			snap := a.State.UISnapshot()
+			if snap.PCV3Route != app.PCV3RouteChecking || !snap.Scanning || !a.startButton.Disabled() {
+				t.Fatalf("pending route = route %v scanning %v startDisabled %v", snap.PCV3Route, snap.Scanning, a.startButton.Disabled())
+			}
+			if a.pcv3Container == nil || len(a.pcv3Container.Objects) != 1 {
+				t.Fatal("pending route did not render one bounded checking state")
+			}
+		})
+		close(release)
+		waitForPCV3UI(t, func() bool {
+			return a.State.UISnapshot().PCV3Route == app.PCV3RouteReady
+		}, "content-routed PCV3 did not become ready")
+		fyne.DoAndWait(func() {
+			snap := a.State.UISnapshot()
+			if snap.PCV3Format != app.PCV3FormatNormal || snap.PCV3Action != app.PCV3ActionNone ||
+				snap.PCV3Factor != app.PCV3FactorPolicyUnset || !a.startButton.Disabled() {
+				t.Fatalf("detector inferred intent: %#v", snap)
+			}
+			if !a.State.SelectPCV3D1() {
+				t.Fatal("explicit D1 action refused retained descriptor")
+			}
+			a.updateAdvancedSection()
+			a.updateUIState()
+			if got := a.State.UISnapshot().PCV3Format; got != app.PCV3FormatD1 {
+				t.Fatalf("explicit D1 format = %v", got)
+			}
+		})
+		if legacyPreviewCalls.Load() != 0 {
+			t.Fatalf("content-claimed PCV3 reached legacy preview %d times", legacyPreviewCalls.Load())
+		}
+	})
+
+	t.Run("dismissal refuses the one live core consent without KDF or output", func(t *testing.T) {
 		dir := t.TempDir()
-		input := filepath.Join(dir, "looks-like-legacy.pcv")
-		if err := os.WriteFile(input, fixture, 0o600); err != nil {
-			t.Fatalf("write claimed input: %v", err)
+		input := filepath.Join(dir, "d1-input.bin")
+		output := filepath.Join(dir, "recovery.pcv3-recovery")
+		if err := os.WriteFile(input, nil, 0o600); err != nil {
+			t.Fatalf("write D1 input: %v", err)
 		}
-		beforePreview, beforeDeniability := previewCalls, deniabilityCalls
-		fyne.DoAndWait(func() { a.onDrop([]string{input}) })
-		waitForDropProcessing(t, a)
-		assertPCV3UnavailableDrop(t, a, input, int64(len(fixture)))
-		if previewCalls != beforePreview || deniabilityCalls != beforeDeniability {
-			t.Fatalf("claimed .pcv reached legacy preview: preview=%d deniability=%d; want %d/%d",
-				previewCalls, deniabilityCalls, beforePreview, beforeDeniability)
-		}
-	})
-
-	t.Run("partial and mismatched inputs keep legacy routing", func(t *testing.T) {
-		for _, test := range []struct {
-			name        string
-			filename    string
-			data        []byte
-			wantMode    string
-			wantPreview bool
-		}{
-			{name: "partial pcv filename", filename: "partial.pcv", data: []byte{'P', 'C', 'V'}, wantMode: "decrypt", wantPreview: true},
-			{name: "mismatched txt filename", filename: "mismatch.txt", data: []byte{'P', 'C', 'X', 0}, wantMode: "encrypt"},
-		} {
-			t.Run(test.name, func(t *testing.T) {
-				fyneApp := newTestFyneApp(t)
-				a := createUIReadyDropTestApp(t, fyneApp)
-				dir := t.TempDir()
-				input := filepath.Join(dir, test.filename)
-				if err := os.WriteFile(input, test.data, 0o600); err != nil {
-					t.Fatalf("write legacy-eligible input: %v", err)
-				}
-				beforePreview := previewCalls
-				fyne.DoAndWait(func() { a.onDrop([]string{input}) })
-				waitForDropProcessing(t, a)
-				fyne.DoAndWait(func() {
-					snap := a.State.UISnapshot()
-					if snap.PCVUnavailable || snap.Mode != test.wantMode {
-						t.Fatalf("legacy-eligible route = unavailable %v mode %q; want false/%q", snap.PCVUnavailable, snap.Mode, test.wantMode)
-					}
-				})
-				if got := previewCalls > beforePreview; got != test.wantPreview {
-					t.Fatalf("legacy preview called = %v; want %v", got, test.wantPreview)
-				}
-			})
-		}
-	})
-
-	t.Run("valid legacy volume still reaches both legacy probes", func(t *testing.T) {
-		fyneApp := newTestFyneApp(t)
-		a := createUIReadyDropTestApp(t, fyneApp)
-		legacy, err := filepath.Abs(filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"))
+		source, err := os.Open(input)
 		if err != nil {
-			t.Fatalf("resolve legacy fixture: %v", err)
+			t.Fatalf("open D1 input: %v", err)
 		}
-		beforePreview, beforeDeniability := previewCalls, deniabilityCalls
-		fyne.DoAndWait(func() { a.onDrop([]string{legacy}) })
-		waitForDropProcessing(t, a)
+		fyneApp := newTestFyneApp(t)
+		a := createUIReadyDropTestApp(t, fyneApp)
+		fyne.DoAndWait(func() {
+			if !a.State.SetPCV3Ready(source, app.PCV3FormatD1, input, output, 0) {
+				t.Fatal("set D1 selection")
+			}
+			a.State.Password = "consent-only password"
+			a.State.SetPCV3Intent(app.PCV3ActionForce, app.PCV3FactorPolicyPassword, app.PCV3KeyfileOrderUnset)
+			a.refreshAdvanced()
+			a.updateUIState()
+			a.startPCV3Work()
+		})
+		var cancel *widget.Button
+		waitForPCV3UI(t, func() bool {
+			focused, ok := a.Window.Canvas().Focused().(*widget.Button)
+			if !ok || focused.Text != tr("pcv3.consent.cancel", "Cancel recovery") {
+				return false
+			}
+			cancel = focused
+			return true
+		}, "live consent did not focus its safe-default cancellation")
+		fyne.DoAndWait(func() { fynetest.Tap(cancel) })
+		waitForPCV3UI(t, func() bool { return !a.State.IsWorking() }, "consent dismissal did not terminate operation")
 		fyne.DoAndWait(func() {
 			snap := a.State.UISnapshot()
-			if snap.PCVUnavailable || snap.Mode != "decrypt" {
-				t.Fatalf("legacy volume route = unavailable %v mode %q; want false/decrypt", snap.PCVUnavailable, snap.Mode)
+			if snap.PCV3Result.Diagnostic() != pcv3operation.DiagnosticCredentialPolicy ||
+				snap.PCV3Result.PublicationAttempted() {
+				t.Fatalf("dismissed consent result = diagnostic %v attempted %v", snap.PCV3Result.Diagnostic(), snap.PCV3Result.PublicationAttempted())
+			}
+			if !a.startButton.Disabled() {
+				t.Fatal("dismissed consent restored start authority")
 			}
 		})
-		if previewCalls != beforePreview+1 || deniabilityCalls != beforeDeniability+1 {
-			t.Fatalf("legacy probes = preview %d deniability %d; want %d/%d",
-				previewCalls, deniabilityCalls, beforePreview+1, beforeDeniability+1)
+		if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("dismissed consent created output: %v", err)
 		}
 	})
 }
 
 func TestPCV3DropKeepsRoutedDescriptorAcrossPathReplacement(t *testing.T) {
-	if err := loadTranslations(); err != nil {
-		t.Fatalf("load translations: %v", err)
-	}
-	previousLanguage := activeLanguage()
-	if err := setActiveLanguage("en"); err != nil {
-		t.Fatalf("set English language: %v", err)
-	}
-	t.Cleanup(func() { _ = setActiveLanguage(previousLanguage) })
-
+	resetLocalizationForTest(t)
 	dir := t.TempDir()
 	input := filepath.Join(dir, "input.pcv")
-	backup := filepath.Join(dir, "legacy-input.pcv")
+	backup := filepath.Join(dir, "original.pcv")
 	replacement := filepath.Join(dir, "replacement.pcv")
 	legacy, err := os.ReadFile(filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"))
 	if err != nil {
-		t.Fatalf("read legacy golden volume: %v", err)
+		t.Fatalf("read legacy fixture: %v", err)
 	}
 	if err := os.WriteFile(input, legacy, 0o600); err != nil {
 		t.Fatalf("write legacy input: %v", err)
 	}
 	if err := os.WriteFile(replacement, loadPCV3DropFixture(t), 0o600); err != nil {
-		t.Fatalf("write PCV3 replacement: %v", err)
-	}
-
-	type descriptorObservation struct {
-		prefix [4]byte
-		err    error
-	}
-	previewObserved := make(chan descriptorObservation, 1)
-	deniabilityObserved := make(chan descriptorObservation, 1)
-	swapResult := make(chan error, 1)
-	var openCalls atomic.Int32
-	var previewCalls atomic.Int32
-	var deniabilityCalls atomic.Int32
-	var swapOnce sync.Once
-	var swapErr error
-	observeDescriptor := func(source *os.File) descriptorObservation {
-		var observation descriptorObservation
-		_, observation.err = source.ReadAt(observation.prefix[:], 0)
-		return observation
+		t.Fatalf("write replacement: %v", err)
 	}
 
 	previousOpen := openDroppedPCVInput
-	previousPreview := previewDroppedHeader
-	previousDeniability := isDroppedVolumeDeniable
-	openDroppedPCVInput = func(path string, recombine bool) (*os.File, error) {
-		fin, openErr := previousOpen(path, recombine)
+	var openCalls atomic.Int32
+	openDroppedPCVInput = func(path string, split bool) (*os.File, error) {
+		file, openErr := previousOpen(path, split)
 		if openErr != nil {
 			return nil, openErr
 		}
 		openCalls.Add(1)
-		swapOnce.Do(func() {
-			if swapErr = os.Rename(path, backup); swapErr == nil {
-				swapErr = os.Rename(replacement, path)
-			}
-			swapResult <- swapErr
-		})
-		if swapErr != nil {
-			_ = fin.Close()
-			return nil, swapErr
+		if renameErr := os.Rename(path, backup); renameErr != nil {
+			_ = file.Close()
+			return nil, renameErr
 		}
-		return fin, nil
-	}
-	previewDroppedHeader = func(reader io.Reader, codecs *encoding.RSCodecs) (*header.ReadResult, error) {
-		previewCalls.Add(1)
-		fin, ok := reader.(*os.File)
-		if !ok {
-			select {
-			case previewObserved <- descriptorObservation{err: errors.New("legacy preview did not receive the routed file descriptor")}:
-			default:
-			}
-		} else {
-			select {
-			case previewObserved <- observeDescriptor(fin):
-			default:
-			}
+		if renameErr := os.Rename(replacement, path); renameErr != nil {
+			_ = file.Close()
+			return nil, renameErr
 		}
-		return previousPreview(reader, codecs)
+		return file, nil
 	}
-	isDroppedVolumeDeniable = func(source *os.File, codecs *encoding.RSCodecs) bool {
-		deniabilityCalls.Add(1)
-		select {
-		case deniabilityObserved <- observeDescriptor(source):
-		default:
-		}
-		return previousDeniability(source, codecs)
-	}
-	t.Cleanup(func() {
-		openDroppedPCVInput = previousOpen
-		previewDroppedHeader = previousPreview
-		isDroppedVolumeDeniable = previousDeniability
-	})
+	t.Cleanup(func() { openDroppedPCVInput = previousOpen })
 
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	fyne.DoAndWait(func() { a.onDrop([]string{input}) })
 	waitForDropProcessing(t, a)
-	select {
-	case swapErr = <-swapResult:
-	default:
-		t.Fatal("drop path did not open the routed descriptor")
-	}
-	if swapErr != nil {
-		if runtime.GOOS == "windows" {
-			t.Skipf("Windows denied atomic replacement of an open descriptor: %v", swapErr)
-		}
-		t.Fatalf("replace routed pathname: %v", swapErr)
-	}
-	if got := openCalls.Load(); got != 1 {
-		t.Fatalf("routed input opens = %d; want one exact descriptor", got)
-	}
-	if got := previewCalls.Load(); got != 1 {
-		t.Fatalf("legacy header previews = %d; want one read from the routed descriptor", got)
-	}
-	if got := deniabilityCalls.Load(); got != 1 {
-		t.Fatalf("deniability probes = %d; want one read from the routed descriptor", got)
-	}
-	for name, observed := range map[string]<-chan descriptorObservation{
-		"header preview":    previewObserved,
-		"deniability probe": deniabilityObserved,
-	} {
-		var observation descriptorObservation
-		select {
-		case observation = <-observed:
-		default:
-			t.Fatalf("%s did not consume the routed descriptor", name)
-		}
-		if observation.err != nil {
-			t.Fatalf("%s descriptor observation: %v", name, observation.err)
-		}
-		if !bytes.Equal(observation.prefix[:], legacy[:4]) {
-			t.Fatalf("%s consumed replacement prefix %q; want routed legacy prefix %q", name, observation.prefix, legacy[:4])
-		}
+	if openCalls.Load() != 1 {
+		t.Fatalf("selection opened %d descriptors; want exactly one", openCalls.Load())
 	}
 	fyne.DoAndWait(func() {
 		snap := a.State.UISnapshot()
-		if snap.PCVUnavailable || snap.Mode != "decrypt" || snap.InputFile != input {
-			t.Fatalf("routed legacy state = unavailable %v mode %q input %q; want false/decrypt/%q",
-				snap.PCVUnavailable, snap.Mode, snap.InputFile, input)
+		if runtime.GOOS == "windows" && snap.PCV3Route == app.PCV3RouteFailed {
+			t.Skip("Windows denied replacement of an open descriptor")
+		}
+		if snap.PCV3Route != app.PCV3RouteNone || snap.Mode != "decrypt" {
+			t.Fatalf("routed original changed family after pathname replacement: %#v", snap)
+		}
+		if !a.State.SelectPCV3D1() {
+			t.Fatal("legacy-eligible descriptor was not retained for explicit D1")
 		}
 	})
-	if err := volume.PreflightPCV3(input, false); !errors.Is(err, pcv3.ErrReaderUnavailable) {
-		t.Fatalf("replacement pathname route = %v; want ErrReaderUnavailable", err)
+	got, readErr := os.ReadFile(backup)
+	if readErr != nil || !bytes.Equal(got, legacy) {
+		t.Fatalf("original selection changed: len=%d err=%v", len(got), readErr)
 	}
-	gotBackup, err := os.ReadFile(backup)
-	if err != nil || !bytes.Equal(gotBackup, legacy) {
-		t.Fatalf("routed legacy input changed: len=%d err=%v", len(gotBackup), err)
+}
+
+// TestPCV3DropRejectsNormalFormatInLegacySplitSelection protects the split
+// authority boundary. Chunk zero classifies a legacy split, but its descriptor
+// must never authorize a normal PCV3 operation whose visible input and target
+// are derived from a different selected chunk.
+func TestPCV3DropRejectsNormalFormatInLegacySplitSelection(t *testing.T) {
+	resetLocalizationForTest(t)
+	dir := t.TempDir()
+	base := filepath.Join(dir, "claimed.pcv")
+	chunkZero := base + ".0"
+	selected := base + ".1"
+	if err := os.WriteFile(chunkZero, loadPCV3DropFixture(t), 0o600); err != nil {
+		t.Fatalf("write normal PCV3 chunk zero: %v", err)
 	}
+	if err := os.WriteFile(selected, []byte("legacy-looking later chunk"), 0o600); err != nil {
+		t.Fatalf("write selected later chunk: %v", err)
+	}
+
+	previousOpen := openDroppedPCVInput
+	opened := make(chan *os.File, 1)
+	var openCalls atomic.Int32
+	openDroppedPCVInput = func(path string, split bool) (*os.File, error) {
+		source, err := previousOpen(path, split)
+		if err == nil {
+			openCalls.Add(1)
+			select {
+			case opened <- source:
+			default:
+			}
+		}
+		return source, err
+	}
+	t.Cleanup(func() { openDroppedPCVInput = previousOpen })
+
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	t.Cleanup(func() { a.State.Reset() })
+	fyne.DoAndWait(func() { a.onDrop([]string{selected}) })
+	waitForDropProcessing(t, a)
+
+	var routed *os.File
+	select {
+	case routed = <-opened:
+	default:
+		t.Fatal("drop did not open authoritative chunk zero")
+	}
+	if got := openCalls.Load(); got != 1 {
+		t.Fatalf("drop opened %d routing descriptors; want one authoritative chunk-zero descriptor", got)
+	}
+	var snap app.UISnapshot
+	var startDisabled, retainedD1 bool
+	fyne.DoAndWait(func() {
+		snap = a.State.UISnapshot()
+		startDisabled = a.startButton.Disabled()
+		retainedD1 = a.State.SelectPCV3D1()
+	})
+	if snap.PCV3Route != app.PCV3RouteFailed || snap.PCV3Format != app.PCV3FormatNone ||
+		snap.OutputFile != "" || snap.CanStart() || !startDisabled {
+		t.Fatalf("split normal-PCV3 route retained operation authority: %#v", snap)
+	}
+	if retainedD1 {
+		t.Fatal("rejected split normal-PCV3 route retained explicit D1 authority")
+	}
+	if _, err := routed.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("rejected chunk-zero descriptor remains open: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read split directory: %v", err)
+	}
+	if len(entries) != 2 || entries[0].Name() != filepath.Base(chunkZero) || entries[1].Name() != filepath.Base(selected) {
+		t.Fatalf("rejected split selection created filesystem artifacts: %v", entries)
+	}
+}
+
+// TestPCV3DropSplitRoutingPreservesLegacyCompatibility protects the paths that
+// remain valid after the normal-PCV3 split rejection: a real legacy split and
+// a user-selected chunk-zero symlink both continue through legacy routing.
+func TestPCV3DropSplitRoutingPreservesLegacyCompatibility(t *testing.T) {
+	resetLocalizationForTest(t)
+	legacy, err := os.ReadFile(filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"))
+	if err != nil {
+		t.Fatalf("read frozen legacy volume: %v", err)
+	}
+	if len(legacy) <= 800 {
+		t.Fatalf("frozen legacy volume is too small for a complete header chunk: %d", len(legacy))
+	}
+
+	t.Run("regular chunks", func(t *testing.T) {
+		dir := t.TempDir()
+		base := filepath.Join(dir, "legacy.pcv")
+		if err := os.WriteFile(base+".0", legacy[:800], 0o600); err != nil {
+			t.Fatalf("write legacy chunk zero: %v", err)
+		}
+		selected := base + ".1"
+		if err := os.WriteFile(selected, legacy[800:], 0o600); err != nil {
+			t.Fatalf("write legacy chunk one: %v", err)
+		}
+		a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+		t.Cleanup(func() { a.State.Reset() })
+
+		fyne.DoAndWait(func() { a.onDrop([]string{selected}) })
+		waitForDropProcessing(t, a)
+		var snap app.UISnapshot
+		fyne.DoAndWait(func() { snap = a.State.UISnapshot() })
+		if snap.PCV3Route != app.PCV3RouteNone || snap.Mode != "decrypt" || !snap.Recombine ||
+			snap.InputFile != base || snap.OutputFile != trimPCVSuffix(base) {
+			t.Fatalf("legacy split compatibility route changed: %#v", snap)
+		}
+	})
+
+	t.Run("selected chunk-zero symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		base := filepath.Join(dir, "legacy-link.pcv")
+		selected := base + ".0"
+		target, err := filepath.Abs(filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"))
+		if err != nil {
+			t.Fatalf("resolve frozen legacy volume: %v", err)
+		}
+		if err := os.Symlink(target, selected); err != nil {
+			t.Skipf("chunk-zero symlinks unavailable: %v", err)
+		}
+		if err := os.WriteFile(base+".1", nil, 0o600); err != nil {
+			t.Fatalf("write later chunk: %v", err)
+		}
+		a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+		t.Cleanup(func() { a.State.Reset() })
+
+		fyne.DoAndWait(func() { a.onDrop([]string{selected}) })
+		waitForDropProcessing(t, a)
+		var snap app.UISnapshot
+		var retainedD1 bool
+		fyne.DoAndWait(func() {
+			snap = a.State.UISnapshot()
+			retainedD1 = a.State.SelectPCV3D1()
+		})
+		if snap.PCV3Route != app.PCV3RouteNone || snap.Mode != "decrypt" || !snap.Recombine ||
+			snap.InputFile != base || snap.OutputFile != trimPCVSuffix(base) {
+			t.Fatalf("chunk-zero symlink compatibility route changed: %#v", snap)
+		}
+		if retainedD1 {
+			t.Fatal("legacy-compatible chunk-zero symlink retained explicit D1 authority")
+		}
+	})
 }

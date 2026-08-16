@@ -1,6 +1,10 @@
 package ui
 
 import (
+	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3artifact"
+	"Picocrypt-NG/internal/pcv3operation"
+	"Picocrypt-NG/internal/pcv3publication"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -187,6 +191,232 @@ func TestRussianFyneCatalogPluralizesAtRuntime(t *testing.T) {
 			t.Errorf("%s = %q; want %q", tc.name, tc.got, tc.want)
 		}
 	}
+}
+
+func TestPCV3LocalizationContract(t *testing.T) {
+	resetLocalizationForTest(t)
+	if err := loadTranslations(); err != nil {
+		t.Fatalf("loadTranslations returned error: %v", err)
+	}
+
+	mustPresentation := func(spec pcv3operation.PresentationSpec) pcv3operation.Presentation {
+		t.Helper()
+		presentation, err := pcv3operation.NewPresentation(spec)
+		if err != nil {
+			t.Fatalf("NewPresentation(%+v) returned error: %v", spec, err)
+		}
+		return presentation
+	}
+
+	t.Run("English stable codes and closed results", func(t *testing.T) {
+		progress := []struct {
+			code pcv3operation.StatusCode
+			want string
+		}{
+			{pcv3operation.StatusCheckingRequest, "Checking operation…"},
+			{pcv3operation.StatusCheckingFactors, "Checking credential policy…"},
+			{pcv3operation.StatusCheckingResources, "Checking device resources…"},
+			{pcv3operation.StatusDerivingKey, "Deriving key…"},
+			{pcv3operation.StatusAuthenticating, "Authenticating volume…"},
+			{pcv3operation.StatusRecovering, "Recovering available ranges…"},
+			{pcv3operation.StatusPreparingArtifact, "Preparing recovery artifact…"},
+			{pcv3operation.StatusPublishing, "Publishing output…"},
+			{pcv3operation.StatusConfirmingDurability, "Confirming output durability…"},
+			{pcv3operation.StatusCode(255), "Working…"},
+		}
+		for _, test := range progress {
+			if got := pcv3ProgressText(test.code); got != test.want {
+				t.Errorf("pcv3ProgressText(%d) = %q; want %q", test.code, got, test.want)
+			}
+		}
+
+		roles := []struct {
+			role pcv3operation.PhysicalRole
+			want string
+		}{
+			{pcv3operation.RolePrimary, "Primary capsule"},
+			{pcv3operation.RoleBackup, "Backup capsule"},
+			{pcv3operation.RoleD1Front, "Front bootstrap"},
+			{pcv3operation.RoleD1Tail, "Tail bootstrap"},
+			{pcv3operation.RoleNone, ""},
+			{pcv3operation.PhysicalRole(255), ""},
+		}
+		for _, test := range roles {
+			if got := pcv3PhysicalRoleText(test.role); got != test.want {
+				t.Errorf("pcv3PhysicalRoleText(%d) = %q; want %q", test.role, got, test.want)
+			}
+		}
+
+		resources := []struct {
+			diagnostic pcv3operation.Diagnostic
+			want       pcv3LocalizedCopy
+		}{
+			{
+				pcv3operation.DiagnosticResourceBusy,
+				pcv3LocalizedCopy{
+					Title:  "Another secure operation is running",
+					Body:   "Wait for it to finish. This operation did not start, and no output was created.",
+					Action: "Close resource notice",
+				},
+			},
+			{
+				pcv3operation.DiagnosticResourceInsufficient,
+				pcv3LocalizedCopy{
+					Title:  "Required resources are unavailable",
+					Body:   "This device cannot safely run the fixed security profile right now. Security settings were not reduced, and no output was created.",
+					Action: "Close resource notice",
+				},
+			},
+			{
+				pcv3operation.DiagnosticResourceUnknown,
+				pcv3LocalizedCopy{
+					Title:  "Device resources could not be verified",
+					Body:   "The operation stopped before key derivation. No output was created.",
+					Action: "Close resource notice",
+				},
+			},
+		}
+		for _, test := range resources {
+			presentation := mustPresentation(pcv3operation.PresentationSpec{
+				Outcome:    pcv3.OutcomeOperationFailed,
+				Stage:      pcv3.StageCredentialPolicy,
+				Code:       pcv3.CodeOperationFailed,
+				Args:       []uint64{^uint64(0), 1, 2, 3},
+				Diagnostic: test.diagnostic,
+			})
+			if got := pcv3OutcomeCopy(presentation); got != test.want {
+				t.Errorf("pcv3OutcomeCopy(resource %d) = %#v; want %#v", test.diagnostic, got, test.want)
+			}
+		}
+
+		archive := mustPresentation(pcv3operation.PresentationSpec{
+			Outcome:        pcv3.OutcomeSuccess,
+			Stage:          pcv3.StageNone,
+			Code:           pcv3.CodeSuccess,
+			ArchivePending: true,
+		})
+		wantArchive := pcv3LocalizedCopy{
+			Title: "Authenticated archive ready to extract",
+			Body:  "The archive payload is fully authenticated. Choose a new extraction folder. The encrypted source is kept.",
+		}
+		if got := pcv3OutcomeCopy(archive); got != wantArchive {
+			t.Fatalf("pcv3OutcomeCopy(archive) = %#v; want %#v", got, wantArchive)
+		}
+
+		closedArchive := mustPresentation(pcv3operation.PresentationSpec{
+			Outcome: pcv3.OutcomeOperationFailed,
+			Stage:   pcv3.StageOutputPublication,
+			Code:    pcv3.CodeOperationFailed,
+		})
+		wantClosedArchive := pcv3LocalizedCopy{
+			Title:  "No output was requested",
+			Body:   "The authenticated archive was closed without extraction. The encrypted source was kept.",
+			Action: "Close publication result",
+		}
+		if got := pcv3PublicationCopy(closedArchive); got != wantClosedArchive {
+			t.Fatalf("pcv3PublicationCopy(closed archive) = %#v; want %#v", got, wantClosedArchive)
+		}
+		invalidArchiveAction := mustPresentation(pcv3operation.PresentationSpec{
+			Outcome:    pcv3.OutcomeOperationFailed,
+			Stage:      pcv3.StageOutputPublication,
+			Code:       pcv3.CodeOperationFailed,
+			Diagnostic: pcv3operation.DiagnosticInvalidRequest,
+		})
+		if got := pcv3PublicationCopy(invalidArchiveAction); got != (pcv3LocalizedCopy{}) {
+			t.Fatalf("invalid archive action rendered benign publication copy: %#v", got)
+		}
+
+		uncertain := mustPresentation(pcv3operation.PresentationSpec{
+			Outcome:              pcv3.OutcomeSuccess,
+			Stage:                pcv3.StageNone,
+			Code:                 pcv3.CodeSuccess,
+			PublicationAttempted: true,
+			PublicationState:     pcv3publication.StatePublishedDurabilityUncertain,
+			PublicationStage:     pcv3.StageDirectorySync,
+			PublicationCode:      pcv3publication.CodeDurabilityUncertain,
+		})
+		wantPublication := pcv3LocalizedCopy{
+			Title:  "Output durability not confirmed",
+			Body:   "The destination may contain the output, but filesystem durability could not be confirmed. Keep every source and the destination. Do not retry, replace, delete, or clean up this operation.",
+			Action: "Close durability warning",
+		}
+		if got := pcv3PublicationCopy(uncertain); got != wantPublication {
+			t.Fatalf("pcv3PublicationCopy(uncertain) = %#v; want %#v", got, wantPublication)
+		}
+	})
+
+	t.Run("English fixed interaction copy", func(t *testing.T) {
+		tests := []struct {
+			key      string
+			fallback string
+			want     string
+		}{
+			{"pcv3.empty.title", "Choose a file", "Choose a file"},
+			{"pcv3.empty.body", "Choose one file to decrypt, recover, or open explicitly as PCV3 D1.", "Choose one file to decrypt, recover, or open explicitly as PCV3 D1."},
+			{"pcv3.routing.checking", "Checking selected file…", "Checking selected file…"},
+			{"pcv3.credential.policy.unset_hint", "Choose the credential policy used for this operation.", "Choose the credential policy used for this operation."},
+			{"pcv3.consent.title", "Recover unverified data?", "Recover unverified data?"},
+			{"pcv3.consent.body", "This operation can save bytes that are not authenticated. They may be incomplete, corrupted, or unsafe to open. Choose the exact physical source to use.", "This operation can save bytes that are not authenticated. They may be incomplete, corrupted, or unsafe to open. Choose the exact physical source to use."},
+			{"pcv3.consent.acknowledgement", "I understand that this output is unverified.", "I understand that this output is unverified."},
+			{"pcv3.consent.confirm", "Recover unverified", "Recover unverified"},
+			{"pcv3.consent.cancel", "Cancel recovery", "Cancel recovery"},
+			{"pcv3.recovery.loading", "Loading recovery details…", "Loading recovery details…"},
+			{"pcv3.recovery.failed", "Recovery details could not be loaded", "Recovery details could not be loaded"},
+			{"pcv3.recovery.inspect", "Inspect recovery artifact", "Inspect recovery artifact"},
+			{"pcv3.result.close", "Close recovery result", "Close recovery result"},
+		}
+		for _, test := range tests {
+			if got := tr(test.key, test.fallback); got != test.want {
+				t.Errorf("tr(%s) = %q; want %q", test.key, got, test.want)
+			}
+		}
+	})
+
+	t.Run("Russian plural and fixed enum copy", func(t *testing.T) {
+		if err := setActiveLanguage("ru"); err != nil {
+			t.Fatalf("setActiveLanguage(ru) returned error: %v", err)
+		}
+		if got := pcv3ProgressText(pcv3operation.StatusCheckingResources); got != "Проверка ресурсов устройства…" {
+			t.Fatalf("Russian resource progress = %q; want Проверка ресурсов устройства…", got)
+		}
+		counts := []struct {
+			count uint64
+			want  string
+		}{
+			{0, "Диапазоны, пригодные для восстановления, не зарегистрированы."},
+			{1, "1 диапазон восстановления"},
+			{2, "2 диапазона восстановления"},
+			{5, "5 диапазонов восстановления"},
+			{21, "21 диапазон восстановления"},
+			{^uint64(0), "18446744073709551615 диапазонов восстановления"},
+		}
+		for _, test := range counts {
+			if got := pcv3RecoveryRangeCount(test.count); got != test.want {
+				t.Errorf("pcv3RecoveryRangeCount(%d) = %q; want %q", test.count, got, test.want)
+			}
+		}
+		if got := pcv3RecoveryRangeRow(18446744073709551610, 18446744073709551611, 18446744073709551615, pcv3artifact.RangeUnverified); got != "Запись 18446744073709551610: байты 18446744073709551611–18446744073709551615 — не проверен" {
+			t.Fatalf("Russian long recovery row = %q", got)
+		}
+		if got := pcv3ArtifactRoleText(pcv3artifact.RoleD1Tail); got != "Конечная загрузочная запись" {
+			t.Fatalf("Russian D1 tail role = %q; want Конечная загрузочная запись", got)
+		}
+	})
+
+	t.Run("Untranslated bundled locale falls back to bounded English", func(t *testing.T) {
+		if err := setActiveLanguage("de"); err != nil {
+			t.Fatalf("setActiveLanguage(de) returned error: %v", err)
+		}
+		if got := pcv3ProgressText(pcv3operation.StatusAuthenticating); got != "Authenticating volume…" {
+			t.Fatalf("German PCV3 fallback = %q; want bounded English fallback", got)
+		}
+		if got := pcv3OutcomeCopy(pcv3operation.Presentation{}); got != (pcv3LocalizedCopy{
+			Title: "Operation failed",
+			Body:  "The operation failed safely. No output was published. Keep the source and review the reported state.",
+		}) {
+			t.Fatalf("unknown PCV3 presentation fallback = %#v", got)
+		}
+	})
 }
 
 func TestRussianFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
@@ -709,6 +939,12 @@ func assertCatalogMatchesEnglish(t *testing.T, code LanguageCode, path string, e
 	for key, englishValue := range english {
 		translatedValue, ok := translated[key]
 		if !ok {
+			// PCV3 launches with reviewed English and Russian copy only. Other
+			// bundled locales deliberately use go-i18n's English fallback until
+			// translators provide their own complete entries.
+			if strings.HasPrefix(key, "pcv3.") && code != "ru" {
+				continue
+			}
 			failures = append(failures, key+": missing")
 			continue
 		}

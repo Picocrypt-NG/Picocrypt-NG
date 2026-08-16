@@ -33,7 +33,7 @@ func makeJournalParentIdentity(info os.FileInfo) (journalParentIdentity, error) 
 		return journalParentIdentity{}, errors.ErrUnsupported
 	}
 	return journalParentIdentity{
-		Device: uint64(stat.Dev),
+		Device: stat.Dev,
 		Inode:  stat.Ino,
 		Mode:   uint32(info.Mode()),
 		UID:    stat.Uid,
@@ -47,13 +47,17 @@ func makeJournalFileIdentity(info os.FileInfo) (journalFileIdentity, error) {
 		return journalFileIdentity{}, errors.ErrUnsupported
 	}
 	return journalFileIdentity{
-		Device: uint64(stat.Dev),
+		Device: stat.Dev,
 		Inode:  stat.Ino,
 		Mode:   uint32(info.Mode()),
 		UID:    stat.Uid,
 		GID:    stat.Gid,
-		Links:  uint64(stat.Nlink),
+		Links:  journalLinkCount(stat.Nlink),
 	}, nil
+}
+
+func journalLinkCount[T ~uint32 | ~uint64](links T) uint64 {
+	return uint64(links)
 }
 
 func (identity journalParentIdentity) matches(info os.FileInfo) bool {

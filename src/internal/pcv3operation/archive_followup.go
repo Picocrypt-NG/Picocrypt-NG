@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3publication"
+	"context"
 	"io"
 	"os"
 	"sync"
@@ -33,12 +34,12 @@ func (state *nativeArchiveFollowUpState) live() bool {
 	return state.active && state.handoff != nil && state.handoff.Live()
 }
 
-func (state *nativeArchiveFollowUpState) extract(root *os.Root) *Result {
+func (state *nativeArchiveFollowUpState) extract(ctx context.Context, root *os.Root) *Result {
 	handoff := state.consume()
 	if handoff == nil {
 		return archiveNoOutput(DiagnosticInvalidRequest, closeExtractionRoot(root))
 	}
-	return resultFromArchiveExtraction(handoff.Extract(root))
+	return resultFromArchiveExtraction(handoff.Extract(ctx, root))
 }
 
 func (state *nativeArchiveFollowUpState) close() *Result {
@@ -74,11 +75,11 @@ func (state *nativeArchiveFollowUpState) consume() *pcv3.NativeArchiveHandoff {
 
 // Extract consumes the follow-up before effects and takes ownership of the
 // caller-opened, pre-existing extraction root.
-func (followUp *ArchiveFollowUp) Extract(root *os.Root) *Result {
+func (followUp *ArchiveFollowUp) Extract(ctx context.Context, root *os.Root) *Result {
 	if followUp == nil || followUp.state == nil {
 		return archiveNoOutput(DiagnosticInvalidRequest, closeExtractionRoot(root))
 	}
-	return followUp.state.extract(root)
+	return followUp.state.extract(ctx, root)
 }
 
 // Close consumes the follow-up without publishing or extracting plaintext.
@@ -157,7 +158,7 @@ func (followUp *ArchiveFollowUp) BeginSAF() *ArchiveSAFBegin {
 	if begin == nil {
 		return &ArchiveSAFBegin{
 			kind:   ArchiveSAFBeginTerminal,
-			result: archiveSAFCoreFailure(true),
+			result: archiveSAFCoreFailure(),
 		}
 	}
 	return begin
@@ -165,7 +166,7 @@ func (followUp *ArchiveFollowUp) BeginSAF() *ArchiveSAFBegin {
 
 func archiveSAFBeginFromNative(begin *pcv3.NativeArchiveSAFBegin) *ArchiveSAFBegin {
 	if begin == nil {
-		return &ArchiveSAFBegin{kind: ArchiveSAFBeginTerminal, result: archiveSAFCoreFailure(true)}
+		return &ArchiveSAFBegin{kind: ArchiveSAFBeginTerminal, result: archiveSAFCoreFailure()}
 	}
 	switch begin.Kind() {
 	case pcv3.NativeArchiveSAFBeginExpired:
@@ -184,7 +185,7 @@ func archiveSAFBeginFromNative(begin *pcv3.NativeArchiveSAFBegin) *ArchiveSAFBeg
 			}
 			return &ArchiveSAFBegin{
 				kind:   ArchiveSAFBeginTerminal,
-				result: archiveSAFCoreFailure(true),
+				result: archiveSAFCoreFailure(),
 			}
 		}
 		state := &archiveSAFSessionState{native: nativeSession}
@@ -194,7 +195,7 @@ func archiveSAFBeginFromNative(begin *pcv3.NativeArchiveSAFBegin) *ArchiveSAFBeg
 			arm:     &ArchiveSAFReceiptArm{native: nativeArm, state: state},
 		}
 	default:
-		return &ArchiveSAFBegin{kind: ArchiveSAFBeginTerminal, result: archiveSAFCoreFailure(true)}
+		return &ArchiveSAFBegin{kind: ArchiveSAFBeginTerminal, result: archiveSAFCoreFailure()}
 	}
 }
 
@@ -345,21 +346,21 @@ func (session *ArchiveSAFSession) AttemptedEver() bool {
 
 func (session *ArchiveSAFSession) Finish() *Result {
 	if session == nil || session.state == nil || session.state.native == nil {
-		return archiveSAFCoreFailure(true)
+		return archiveSAFCoreFailure()
 	}
 	return session.state.complete(session.state.native.Finish())
 }
 
 func (session *ArchiveSAFSession) Abort() *Result {
 	if session == nil || session.state == nil || session.state.native == nil {
-		return archiveSAFCoreFailure(true)
+		return archiveSAFCoreFailure()
 	}
 	return session.state.complete(session.state.native.Abort())
 }
 
 func (state *archiveSAFSessionState) complete(native archiveSAFResult) *Result {
 	if state == nil {
-		return archiveSAFCoreFailure(true)
+		return archiveSAFCoreFailure()
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -393,7 +394,7 @@ type archiveSAFResult interface {
 
 func resultFromArchiveSAF(native archiveSAFResult) *Result {
 	if native == nil {
-		return archiveSAFCoreFailure(true)
+		return archiveSAFCoreFailure()
 	}
 	data := resultData{
 		outcome:              pcv3.OutcomeSuccess,
@@ -404,7 +405,7 @@ func resultFromArchiveSAF(native archiveSAFResult) *Result {
 	switch native.State() {
 	case fileops.UnpackStateNotPublished:
 		if native.AttemptedEver() || native.CleanupIncomplete() {
-			return archiveSAFCoreFailure(true)
+			return archiveSAFCoreFailure()
 		}
 		data.outcome = pcv3.OutcomeOperationFailed
 		data.stage = pcv3.StageOutputPublication
@@ -414,7 +415,7 @@ func resultFromArchiveSAF(native archiveSAFResult) *Result {
 		data.publicationCode = pcv3publication.CodeAtomicFailed
 	case fileops.UnpackStatePublishedDurabilityUncertain:
 		if !native.AttemptedEver() {
-			return archiveSAFCoreFailure(true)
+			return archiveSAFCoreFailure()
 		}
 		data.publicationState = pcv3publication.StatePublishedDurabilityUncertain
 		data.publicationStage = pcv3.StageDirectorySync
@@ -424,7 +425,7 @@ func resultFromArchiveSAF(native archiveSAFResult) *Result {
 		data.publicationStage = pcv3.StageOutputPublication
 		data.publicationCode = pcv3publication.CodePublicationIndeterminate
 	default:
-		return archiveSAFCoreFailure(true)
+		return archiveSAFCoreFailure()
 	}
 	result := newResult(data)
 	if native.CleanupIncomplete() {
@@ -433,7 +434,7 @@ func resultFromArchiveSAF(native archiveSAFResult) *Result {
 	return result
 }
 
-func archiveSAFCoreFailure(cleanupIncomplete bool) *Result {
+func archiveSAFCoreFailure() *Result {
 	result := newResult(resultData{
 		outcome:              pcv3.OutcomeSuccess,
 		stage:                pcv3.StageNone,
@@ -444,9 +445,7 @@ func archiveSAFCoreFailure(cleanupIncomplete bool) *Result {
 		publicationCode:      pcv3publication.CodePublicationIndeterminate,
 		diagnostic:           DiagnosticCoreFailure,
 	})
-	if cleanupIncomplete {
-		result.appendWarning(WarningCleanupIncomplete)
-	}
+	result.appendWarning(WarningCleanupIncomplete)
 	return result
 }
 

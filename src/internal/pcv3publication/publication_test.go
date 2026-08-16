@@ -569,8 +569,8 @@ func TestPublishIndeterminateRetainsUnprovenPaths(t *testing.T) {
 			}
 		}
 	}
-	if err := stage.Cleanup(); err != ErrCleanupIncomplete {
-		t.Fatalf("non-destructive indeterminate cleanup = %v; want exact ErrCleanupIncomplete", err)
+	if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("non-destructive indeterminate cleanup = %v; want ErrCleanupIncomplete", err)
 	}
 	requireFileBytes(t, stagePath, foreignStageBytes)
 	requireFileBytes(t, target, foreignTargetBytes)
@@ -647,11 +647,11 @@ func TestCleanupReportsUnprovenOwnedStage(t *testing.T) {
 		}
 
 		cleanupErr := stage.Cleanup()
-		if cleanupErr != ErrCleanupIncomplete {
-			t.Fatalf("cleanup after stage replacement = %v; want exact ErrCleanupIncomplete", cleanupErr)
+		if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
+			t.Fatalf("cleanup after stage replacement = %v; want ErrCleanupIncomplete", cleanupErr)
 		}
-		if repeated := stage.Cleanup(); repeated != cleanupErr {
-			t.Fatalf("repeated cleanup = %v; want cached %v", repeated, cleanupErr)
+		if repeated := stage.Cleanup(); !errors.Is(repeated, cleanupErr) {
+			t.Fatalf("repeated cleanup = %v; want stable classification %v", repeated, cleanupErr)
 		}
 
 		escapedAfter, err := os.Lstat(escapedPath)
@@ -688,11 +688,11 @@ func TestCleanupReportsUnprovenOwnedStage(t *testing.T) {
 		}
 
 		cleanupErr := stage.Cleanup()
-		if cleanupErr != ErrCleanupIncomplete {
-			t.Fatalf("cleanup with missing expected pathname = %v; want exact ErrCleanupIncomplete", cleanupErr)
+		if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
+			t.Fatalf("cleanup with missing expected pathname = %v; want ErrCleanupIncomplete", cleanupErr)
 		}
-		if repeated := stage.Cleanup(); repeated != cleanupErr {
-			t.Fatalf("repeated cleanup = %v; want cached %v", repeated, cleanupErr)
+		if repeated := stage.Cleanup(); !errors.Is(repeated, cleanupErr) {
+			t.Fatalf("repeated cleanup = %v; want stable classification %v", repeated, cleanupErr)
 		}
 		if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("missing stage pathname reappeared: %v", err)
@@ -873,8 +873,8 @@ func TestPublishIdentityChangesFailClosed(t *testing.T) {
 		if counts.atomic != 0 || counts.sync != 0 {
 			t.Fatalf("stage replacement reached commit = atomic %d sync %d", counts.atomic, counts.sync)
 		}
-		if err := stage.Cleanup(); err != ErrCleanupIncomplete {
-			t.Fatalf("cleanup foreign stage replacement = %v; want exact ErrCleanupIncomplete", err)
+		if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
+			t.Fatalf("cleanup foreign stage replacement = %v; want ErrCleanupIncomplete", err)
 		}
 		requireFileBytes(t, stage.stagePath, foreign)
 		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {

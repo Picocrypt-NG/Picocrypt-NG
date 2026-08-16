@@ -1003,6 +1003,9 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 			return fmt.Errorf("stage path changed before publishing %s", entry.outPath)
 		}
 	}
+	if opts.Cancel != nil && opts.Cancel() {
+		return errors.New("operation cancelled")
+	}
 	published := make([]ownedUnpackFile, 0, len(stagedEntries))
 	for i := range stagedEntries {
 		entry := &stagedEntries[i]

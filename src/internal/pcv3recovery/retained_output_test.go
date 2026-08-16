@@ -72,6 +72,10 @@ func TestRecoveryRetainsOnlyOptInDurableOutputCapability(t *testing.T) {
 		if err := os.WriteFile(target, foreign, 0o640); err != nil {
 			t.Fatalf("seed collision: %v", err)
 		}
+		foreignInfo, err := os.Lstat(target)
+		if err != nil {
+			t.Fatalf("stat seeded collision: %v", err)
+		}
 		result := runWithCoreOptions(
 			context.Background(),
 			&Request{Target: target},
@@ -86,7 +90,7 @@ func TestRecoveryRetainsOnlyOptInDurableOutputCapability(t *testing.T) {
 				result.PublicationState(), retained,
 			)
 		}
-		assertFileBytesAndMode(t, target, foreign, 0o640)
+		assertFileBytesAndMode(t, target, foreign, foreignInfo.Mode())
 	})
 }
 
