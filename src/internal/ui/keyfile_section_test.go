@@ -101,3 +101,18 @@ func TestKeyfileControlsFreezeNewWritesButRemainAvailableForLegacyDecrypt(t *tes
 		t.Fatal("keyfile generation must stay disabled during decryption")
 	}
 }
+
+func TestEncryptKeyfileSectionDoesNotInviteUnavailableSelection(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.updateUIState()
+	})
+
+	want := tr("keyfiles.not_applicable", "Not applicable")
+	if got := a.keyfileLabel.Text; got != want {
+		t.Fatalf("encrypt keyfile label = %q; want %q because v2 keyfile writes are disabled", got, want)
+	}
+}

@@ -2093,6 +2093,11 @@ func TestKeyfileDropHandling(t *testing.T) {
 	// be skipped by the !duplicate && !stat.IsDir() guard in handleKeyfileDrop.
 	var handled bool
 	fyne.DoAndWait(func() {
+		// Keyfile selection is intentionally available only while decrypting a
+		// legacy volume that declares keyfiles. Model that real UI state so this
+		// test does not imply that new v2 volumes can accept keyfiles.
+		a.State.Mode = "decrypt"
+		a.State.Keyfile = true
 		a.State.ShowKeyfile = true
 		handled = a.handleKeyfileDrop([]string{key1, key2, key1, subdir})
 	})

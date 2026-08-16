@@ -25,7 +25,7 @@ const (
 )
 
 func keyfileApplicable(mode string, required bool, deniable bool) bool {
-	return mode != "decrypt" || required || deniable
+	return mode == "decrypt" && (required || deniable)
 }
 
 func keyfileApplicableForSnapshot(snap app.UISnapshot) bool {
