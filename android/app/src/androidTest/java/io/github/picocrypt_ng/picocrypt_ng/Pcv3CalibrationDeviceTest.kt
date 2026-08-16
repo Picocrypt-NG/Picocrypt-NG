@@ -18,6 +18,7 @@ import org.junit.runner.RunWith
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * One-shot instrumentation for the default-excluded calibration AAR.
@@ -32,7 +33,7 @@ class Pcv3CalibrationDeviceTest {
     fun calibration() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val invocation = readInvocation(context)
-        val device = observePhysicalDevice(context)
+        val physicalDevice = observePhysicalDevice(context)
         val directory = File(context.cacheDir, "pcv3-calibration-${invocation.runNonce}")
         if (!directory.mkdir()) {
             throw AssertionError("calibration workspace must be newly owned")
@@ -47,13 +48,13 @@ class Pcv3CalibrationDeviceTest {
             val tagged = observeSuccessfulTaggedProbe()
             assertTrue(
                 "device total RAM must bound tagged VmHWM",
-                tagged.window.afterBytes <= device.totalRamBytes,
+                tagged.window.afterBytes <= physicalDevice.device.totalRamBytes,
             )
 
             val observation = JSONObject()
                 .put("schema_version", 2)
                 .put("provenance", invocation.toJson())
-                .put("device", device.toJson())
+                .put("device", physicalDevice.device.toJson())
                 .put(
                     "memory",
                     JSONObject()
@@ -64,6 +65,10 @@ class Pcv3CalibrationDeviceTest {
                         .put("tagged_vmhwm_before_bytes", tagged.window.beforeBytes)
                         .put("tagged_vmhwm_after_bytes", tagged.window.afterBytes)
                         .put("tagged_vmhwm_delta_bytes", tagged.window.deltaBytes)
+                        .put(
+                            "activity_manager_threshold_bytes",
+                            physicalDevice.activityManagerThresholdBytes,
+                        )
                         .put("reserve_bytes", tagged.reserveBytes),
                 )
                 .put("ordinary", ordinary.toJson())
@@ -254,7 +259,7 @@ class Pcv3CalibrationDeviceTest {
         assertTrue("$label must be a nonnegative JSON-safe integer", value >= 0 && value <= MAX_SAFE_INTEGER)
     }
 
-    private fun observePhysicalDevice(context: android.content.Context): DeviceObservation {
+    private fun observePhysicalDevice(context: android.content.Context): PhysicalDeviceObservation {
         val memory = ActivityManager.MemoryInfo().also {
             val manager = context.getSystemService(ActivityManager::class.java)
                 ?: throw AssertionError("Android memory service is unavailable")
@@ -276,13 +281,40 @@ class Pcv3CalibrationDeviceTest {
         )
         assertTrue("device total RAM must be positive", memory.totalMem > 0)
         assertUint53("device total RAM", memory.totalMem)
-        return DeviceObservation(
-            manufacturer = Build.MANUFACTURER,
-            model = Build.MODEL,
-            abi = abi,
-            osArch = osArch,
-            totalRamBytes = memory.totalMem,
+        assertTrue("ActivityManager threshold must be positive", memory.threshold > 0)
+        assertUint53("ActivityManager threshold", memory.threshold)
+        assertTrue(
+            "ActivityManager threshold must be below device total RAM",
+            memory.threshold < memory.totalMem,
         )
+        return PhysicalDeviceObservation(
+            device = DeviceObservation(
+                manufacturer = Build.MANUFACTURER,
+                model = Build.MODEL,
+                abi = abi,
+                osArch = osArch,
+                totalRamBytes = memory.totalMem,
+                buildFingerprintSha256 = hashBuildFingerprint(),
+            ),
+            activityManagerThresholdBytes = memory.threshold,
+        )
+    }
+
+    private fun hashBuildFingerprint(): String {
+        val fingerprint = Build.FINGERPRINT.orEmpty()
+        assertTrue("device build fingerprint must be present", fingerprint.isNotBlank())
+        assertFalse("device build fingerprint must not be unknown", fingerprint == Build.UNKNOWN)
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(fingerprint.toByteArray(Charsets.UTF_8))
+        return buildString(digest.size * 2) {
+            digest.forEach { byte ->
+                val value = byte.toInt() and 0xff
+                append(HEX_DIGITS[value ushr 4])
+                append(HEX_DIGITS[value and 0x0f])
+            }
+        }.also { encoded ->
+            assertTrue("device build fingerprint hash must be lowercase SHA-256", SHA256.matches(encoded))
+        }
     }
 
     private fun readInvocation(context: android.content.Context): InvocationBinding {
@@ -515,6 +547,7 @@ class Pcv3CalibrationDeviceTest {
         val abi: String,
         val osArch: String,
         val totalRamBytes: Long,
+        val buildFingerprintSha256: String,
     ) {
         fun toJson(): JSONObject = JSONObject()
             .put("manufacturer", manufacturer)
@@ -524,7 +557,13 @@ class Pcv3CalibrationDeviceTest {
             .put("process_is_64_bit", true)
             .put("emulator_traits_clear", true)
             .put("total_ram_bytes", totalRamBytes)
+            .put("build_fingerprint_sha256", buildFingerprintSha256)
     }
+
+    private data class PhysicalDeviceObservation(
+        val device: DeviceObservation,
+        val activityManagerThresholdBytes: Long,
+    )
 
     private fun ordinaryTerminal() = TerminalObservation(
         startCode = "",
@@ -586,6 +625,7 @@ class Pcv3CalibrationDeviceTest {
 
         val SHA1 = Regex("^[0-9a-f]{40}$")
         val SHA256 = Regex("^[0-9a-f]{64}$")
+        const val HEX_DIGITS = "0123456789abcdef"
         val SERIAL = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
         val PACKAGE_NAME = Regex("^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$")
         val DEVICE_TEXT = Regex("^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,127}$")
