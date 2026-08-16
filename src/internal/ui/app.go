@@ -607,7 +607,6 @@ func (a *App) scheduleStartupPaths(startupPaths []string) {
 func (a *App) showFileDialogWithResize(d dialog.Dialog, dialogSize fyne.Size) {
 	// Skip resize handling on mobile - windows are flexible there
 	if isMobile() {
-		d.Resize(dialogSize)
 		d.Show()
 		return
 	}
@@ -624,8 +623,8 @@ func (a *App) showFileDialogWithResize(d dialog.Dialog, dialogSize fyne.Size) {
 		a.Window.SetFixedSize(true)
 	})
 
-	d.Resize(dialogSize)
 	d.Show()
+	d.Resize(dialogSize)
 }
 
 // fixedWidthLayout is a layout that forces a fixed width (used in tests).

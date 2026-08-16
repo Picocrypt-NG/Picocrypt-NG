@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
@@ -374,3 +375,36 @@ func pcv3ReadyOutputTicket(t *testing.T, a *App) uint64 {
 type testListableURI struct{ fyne.URI }
 
 func (testListableURI) List() ([]fyne.URI, error) { return nil, nil }
+
+func TestShowFileDialogWithResizeSupportsFyne28Lifecycle(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	location, err := storage.ListerForURI(storage.NewFileURI(t.TempDir()))
+	if err != nil {
+		t.Fatalf("create save-dialog location: %v", err)
+	}
+	saveDialog := dialog.NewFileSave(func(fyne.URIWriteCloser, error) {}, a.Window)
+	saveDialog.SetLocation(location)
+	overlaysBefore := len(a.Window.Canvas().Overlays().List())
+
+	fyne.DoAndWait(func() {
+		a.Window.SetFixedSize(true)
+		a.showFileDialogWithResize(saveDialog, fyne.NewSize(600, 450))
+	})
+
+	if got := len(a.Window.Canvas().Overlays().List()); got != overlaysBefore+1 {
+		t.Fatalf("file dialog overlay count = %d; want %d", got, overlaysBefore+1)
+	}
+	if a.Window.FixedSize() {
+		t.Fatal("parent window stayed fixed while the file dialog was open")
+	}
+
+	fyne.DoAndWait(saveDialog.Dismiss)
+
+	if got := len(a.Window.Canvas().Overlays().List()); got != overlaysBefore {
+		t.Fatalf("overlay count after dismiss = %d; want %d", got, overlaysBefore)
+	}
+	if !a.Window.FixedSize() {
+		t.Fatal("parent window was not restored to fixed size after dismiss")
+	}
+}
