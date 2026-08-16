@@ -1032,7 +1032,7 @@ func TestWindowsDownloadsAreBoundedAndChecksumGated(t *testing.T) {
 	const (
 		resourceHackerURL = "https://www.angusj.com/resourcehacker/reshacker_setup.exe"
 		upxURL            = "https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-win64.zip"
-		legacyGoURL       = "https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.5-1/go-legacy-win7-1.26.5-1.windows_amd64.zip"
+		legacyGoURL       = "https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.6-1/go-legacy-win7-1.26.6-1.windows_amd64.zip"
 	)
 	cases := []struct {
 		name     string
@@ -1747,6 +1747,7 @@ func TestPrereleaseVersionPatternCoversCommonMarkers(t *testing.T) {
 func TestAndroidGomobileBuildUsesReproducibleLinkerFlags(t *testing.T) {
 	content := mustReadRepoFile(t, "android/build-gomobile.sh")
 
+	mustContain(t, content, `REQUIRED_GO_VERSION="go1.26.6"`)
 	mustContain(t, content, `-ldflags="$GOMOBILE_LDFLAGS"`)
 	mustContain(t, content, `-s -w -buildid=`)
 }
@@ -1861,8 +1862,8 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 					continue
 				}
 				setupGoSteps[lane]++
-				if got := step.With["go-version"]; got != "1.26.5" {
-					t.Fatalf("%s job %s go-version = %#v, want 1.26.5", relPath, jobName, got)
+				if got := step.With["go-version"]; got != "1.26.6" {
+					t.Fatalf("%s job %s go-version = %#v, want 1.26.6", relPath, jobName, got)
 				}
 			}
 		}
@@ -1874,11 +1875,11 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	}
 
 	mise := mustReadRepoFile(t, "mise.toml")
-	mustContain(t, mise, `go = "1.26.5"`)
+	mustContain(t, mise, `go = "1.26.6"`)
 	mustContain(t, mise, `"go:golang.org/x/vuln/cmd/govulncheck" = "1.6.0"`)
 
 	goMod := mustReadRepoFile(t, "src/go.mod")
-	mustMatch(t, goMod, `(?m)^go 1\.26\.0$`)
+	mustMatch(t, goMod, `(?m)^go 1\.26\.6$`)
 	mustNotContain(t, goMod, "\ntoolchain ")
 
 	staticChecks := mustReadWorkflow(t, ".github/workflows/pr-static-checks.yml")
@@ -1888,12 +1889,12 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 
 func TestSnapcraftBuildUsesExactGoToolchain(t *testing.T) {
 	content := mustReadRepoFile(t, "dist/snapcraft/snapcraft.yaml")
-	mustContain(t, content, "https://go.dev/dl/go1.26.5.linux-amd64.tar.gz")
-	mustContain(t, content, "sha256/5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053")
+	mustContain(t, content, "https://go.dev/dl/go1.26.6.linux-amd64.tar.gz")
+	mustContain(t, content, "sha256/708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89")
 	mustContain(t, content, `PATH: "${CRAFT_STAGE}/go/bin:${PATH}"`)
 	mustContain(t, content, `GOROOT: "${CRAFT_STAGE}/go"`)
 	mustContain(t, content, "GOTOOLCHAIN: local")
-	mustContain(t, content, `test "$(go env GOVERSION)" = "go1.26.5"`)
+	mustContain(t, content, `test "$(go env GOVERSION)" = "go1.26.6"`)
 	mustNotContain(t, content, "source-subdir: go")
 	mustNotContain(t, content, "build-snaps:\n      - go")
 }
@@ -1917,15 +1918,15 @@ func TestWindowsLegacyWorkflowsUsePinnedLocalFork(t *testing.T) {
 			t.Fatalf("%s legacy cache must not restore an older checksum", tc.path)
 		}
 		content := mustReadWorkflow(t, tc.path)
-		mustContain(t, content, "c9d0c79dc2b408a4ea580b62a3d093a4219f9ff95316ef891dc987827e6900e3")
-		mustContain(t, content, "v1.26.5-1/go-legacy-win7-1.26.5-1.windows_amd64.zip")
+		mustContain(t, content, "a0fb26ae90b33dd223da09f5f4476237d65bb185acbf12e57cdaba90d32257f3")
+		mustContain(t, content, "v1.26.6-1/go-legacy-win7-1.26.6-1.windows_amd64.zip")
 		mustContain(t, content, `C:\go-legacy\go-legacy-win7\bin`)
 		mustNotContain(t, content, `C:\go-legacy\go\bin`)
 		mustContain(t, content, "Get-Command go")
 		mustContain(t, content, "Get-Command go -CommandType Application | Select-Object -First 1")
 		mustContain(t, content, "go env GOROOT")
 		mustContain(t, content, "go env GOVERSION")
-		mustContain(t, content, "go1.26.5")
+		mustContain(t, content, "go1.26.6")
 		mustContain(t, content, "go version -m")
 	}
 }

@@ -111,7 +111,7 @@ var literalNormativePromotionFields = []literalNormativeField{
 		name:      "toolchain",
 		wrongType: "[]",
 		children: []literalNormativeField{
-			{name: "go_version", value: `"go1.26.5"`, wrongType: "false"},
+			{name: "go_version", value: `"go1.26.6"`, wrongType: "false"},
 			{name: "x_mobile_version", value: `"v0.0.0-20260709172247-6129f5bee9d5"`, wrongType: "false"},
 			{name: "android_ndk_version", value: `"29.0.14206865"`, wrongType: "false"},
 			{name: "jdk", value: `"temurin-21"`, wrongType: "false"},
@@ -340,7 +340,7 @@ func TestBaselinePinsCandidateIdentityAndEvidence(t *testing.T) {
 		t.Fatalf("baseline constraints = %#v, want %#v", record.constraints, wantConstraints)
 	}
 	wantToolchain := toolchain{
-		goVersion:         "go1.26.5",
+		goVersion:         "go1.26.6",
 		xMobileVersion:    "v0.0.0-20260709172247-6129f5bee9d5",
 		androidNDKVersion: "29.0.14206865",
 		jdk:               "temurin-21",
@@ -425,7 +425,7 @@ func TestValidatePromotionRefusesEachMaterialMutation(t *testing.T) {
 		{
 			name: "go version",
 			mutate: func(record *PromotionRecord) {
-				record.toolchain.goVersion = "go1.26.6"
+				record.toolchain.goVersion = "go1.26.5"
 			},
 			reason:    ReasonToolchainMismatch,
 			fieldName: "go_version",

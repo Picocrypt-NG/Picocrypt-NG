@@ -10,7 +10,7 @@
     "d05_android_evidence": "future-representative-device-evidence-required"
   },
   "toolchain": {
-    "go_version": "go1.26.5",
+    "go_version": "go1.26.6",
     "x_mobile_version": "v0.0.0-20260709172247-6129f5bee9d5",
     "android_ndk_version": "29.0.14206865",
     "jdk": "temurin-21",
