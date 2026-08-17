@@ -595,7 +595,7 @@ class Pcv3CalibrationDeviceTest {
         statusArgs = emptyList(),
         outcome = "success",
         stage = "none",
-        code = "success",
+        code = "PCV3_SUCCESS",
         forceProvenance = "none",
         d1BootstrapProvenance = "none",
         detailStage = "none",
