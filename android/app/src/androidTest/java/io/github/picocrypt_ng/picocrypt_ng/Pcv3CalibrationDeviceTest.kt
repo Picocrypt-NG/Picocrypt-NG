@@ -571,7 +571,7 @@ class Pcv3CalibrationDeviceTest {
         statusArgs = emptyList(),
         outcome = "operation-failed",
         stage = "credential-policy",
-        code = "operation-failed",
+        code = "PCV3_OPERATION_FAILED",
         forceProvenance = "none",
         d1BootstrapProvenance = "none",
         detailStage = "none",
