@@ -166,6 +166,262 @@ func TestPCV3FynePreservesFactorIntent(t *testing.T) {
 	}
 }
 
+// TestPCV3FynePreservesResultAxes protects the desktop projection of the
+// closed result tuple: every frozen literal PresentationSpec must keep its
+// outcome/stage/code/diagnostic/completion/publication axes through the real
+// State snapshot and render exactly the matching bounded copy, warnings, and
+// terminal action. It is the Fyne counterpart of the CLI and mobile
+// PreservesResultAxes contracts.
+func TestPCV3FynePreservesResultAxes(t *testing.T) {
+	resetLocalizationForTest(t)
+	tests := []struct {
+		name           string
+		spec           pcv3operation.PresentationSpec
+		wantCompletion pcv3operation.CompletionClass
+		wantText       []string
+		forbidText     []string
+		wantAction     string
+		forbidActions  []string
+	}{
+		{
+			name: "clean durable",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+				PublicationAttempted: true,
+				PublicationState:     pcv3publication.StatePublishedDurable,
+				PublicationCode:      pcv3publication.CodePublishedDurable,
+			},
+			wantCompletion: pcv3operation.CompletionClean,
+			wantText: []string{
+				"Decryption complete", "The output is fully authenticated.",
+				"Output publication is durable.",
+			},
+			forbidText: []string{"Cleanup could not be confirmed"},
+			wantAction: "Close publication result",
+		},
+		{
+			name: "authenticated degraded durable",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3.OutcomeAuthenticatedDegraded, Stage: pcv3.StageMetadata,
+				Code:                 pcv3.CodeAuthenticatedDegraded,
+				PublicationAttempted: true,
+				PublicationState:     pcv3publication.StatePublishedDurable,
+				PublicationCode:      pcv3publication.CodePublishedDurable,
+				Warnings:             []pcv3operation.Warning{pcv3operation.WarningAuthenticatedDegraded},
+			},
+			wantCompletion: pcv3operation.CompletionWarning,
+			wantText: []string{
+				"Authenticated output recovered with damage", "Output publication is durable.",
+				"The output is authenticated, but recovery redundancy is damaged. Keep the original volume.",
+			},
+			forbidText: []string{"Decryption complete"},
+			wantAction: "Close publication result",
+		},
+		{
+			name: "force partial durable",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3.OutcomeForcePartial, Stage: pcv3.StageRecordAuth, Code: pcv3.CodeForcePartial,
+				PublicationAttempted: true,
+				PublicationState:     pcv3publication.StatePublishedDurable,
+				PublicationCode:      pcv3publication.CodePublishedDurable,
+				Warnings:             []pcv3operation.Warning{pcv3operation.WarningForcePartial},
+			},
+			wantCompletion: pcv3operation.CompletionWarning,
+			wantText: []string{
+				"Partial recovery artifact created",
+				"Some ranges are verified and some are missing. This .pcv3-recovery file is not a complete plaintext file.",
+				"Output publication is durable.",
+			},
+			forbidText: []string{"Decryption complete"},
+			wantAction: "Close publication result",
+		},
+		{
+			name: "force unverified durable",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3.OutcomeForceUnverified, Stage: pcv3.StageRecordAuth, Code: pcv3.CodeForceUnverified,
+				PublicationAttempted: true,
+				PublicationState:     pcv3publication.StatePublishedDurable,
+				PublicationCode:      pcv3publication.CodePublishedDurable,
+				Warnings:             []pcv3operation.Warning{pcv3operation.WarningForceUnverified},
+			},
+			wantCompletion: pcv3operation.CompletionWarning,
+			wantText: []string{
+				"Unverified recovery artifact created",
+				"Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content.",
+				"Output publication is durable.",
+			},
+			forbidText: []string{"Decryption complete"},
+			wantAction: "Close publication result",
+		},
+		{
+			name: "clean durable with cleanup warning",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+				PublicationAttempted: true,
+				PublicationState:     pcv3publication.StatePublishedDurable,
+				PublicationCode:      pcv3publication.CodePublishedDurable,
+				Warnings:             []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete},
+			},
+			wantCompletion: pcv3operation.CompletionWarning,
+			wantText: []string{
+				"Decryption complete", "Output publication is durable.",
+				"Cleanup could not be confirmed",
+				"The application could not prove that all operation-owned temporary plaintext was removed. Keep the encrypted source and do not delete files based on this result.",
+			},
+			wantAction:    "Close cleanup warning",
+			forbidActions: []string{"Close publication result"},
+		},
+		{
+			name: "durability uncertain overrides clean",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+				PublicationAttempted: true,
+				PublicationState:     pcv3publication.StatePublishedDurabilityUncertain,
+				PublicationStage:     pcv3.StageDirectorySync,
+				PublicationCode:      pcv3publication.CodeDurabilityUncertain,
+				Warnings:             []pcv3operation.Warning{pcv3operation.WarningDurabilityUncertain},
+			},
+			wantCompletion: pcv3operation.CompletionDurabilityUncertain,
+			wantText: []string{
+				"Decryption complete", "Output durability not confirmed",
+				"The destination may contain the output, but filesystem durability could not be confirmed. Keep every source and the destination. Do not retry, replace, delete, or clean up this operation.",
+				"Output durability was not confirmed. Keep every source and the destination.",
+			},
+			wantAction:    "Close durability warning",
+			forbidActions: []string{"Close publication result"},
+		},
+		{
+			name: "publication indeterminate overrides force",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3.OutcomeForcePartial, Stage: pcv3.StageRecordAuth, Code: pcv3.CodeForcePartial,
+				PublicationAttempted: true,
+				PublicationState:     pcv3publication.StatePublicationIndeterminate,
+				PublicationStage:     pcv3.StageOutputPublication,
+				PublicationCode:      pcv3publication.CodePublicationIndeterminate,
+				Warnings: []pcv3operation.Warning{
+					pcv3operation.WarningForcePartial,
+					pcv3operation.WarningPublicationIndeterminate,
+				},
+			},
+			wantCompletion: pcv3operation.CompletionPublicationIndeterminate,
+			wantText: []string{
+				"Partial recovery artifact created", "Output state is unknown",
+				"The application cannot determine whether publication committed. Keep every source and the destination exactly as they are. Do not retry or clean up this operation.",
+				"Output publication state is unknown. Keep every source and the destination exactly as they are.",
+			},
+			forbidText: []string{"Decryption complete"},
+			wantAction: "Close publication warning",
+		},
+		{
+			name: "refused without publication",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3.OutcomeUnsupportedRoutingPreKDF, Stage: pcv3.StageRouting,
+				Code: pcv3.CodeUnsupported,
+			},
+			wantCompletion: pcv3operation.CompletionRefused,
+			wantText: []string{
+				"Unsupported PCV3 format",
+				"No output was created, and the file was not tried as a legacy volume.",
+			},
+			forbidText: []string{"Output publication is durable."},
+			wantAction: "Close recovery result",
+		},
+		{
+			name: "not published",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3.OutcomeOperationFailed, Stage: pcv3.StageOutputPublication,
+				Code:                 pcv3.CodeOperationFailed,
+				PublicationAttempted: true,
+				PublicationState:     pcv3publication.StateNotPublished,
+				PublicationStage:     pcv3.StageOutputPublication,
+				PublicationCode:      pcv3publication.CodeAtomicFailed,
+			},
+			wantCompletion: pcv3operation.CompletionNoOutput,
+			wantText: []string{
+				"Operation failed",
+				"The operation failed safely. No output was published. Keep the source and review the reported state.",
+				"No output was published", "Source files were kept.",
+			},
+			wantAction: "Close publication result",
+		},
+		{
+			name: "archive pending remains visibly nonterminal",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+				ArchivePending: true,
+			},
+			wantCompletion: pcv3operation.CompletionArchivePending,
+			wantText: []string{
+				"Authenticated archive ready to extract",
+				"The archive payload is fully authenticated. Choose a new extraction folder. The encrypted source is kept.",
+			},
+			forbidText: []string{"Decryption complete"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := mustNewState(t)
+			state.SetPCV3Result(mustPCV3Presentation(t, test.spec))
+			snapshot := state.UISnapshot().PCV3Result
+			if snapshot.Outcome() != test.spec.Outcome ||
+				snapshot.Stage() != test.spec.Stage ||
+				snapshot.Code() != test.spec.Code ||
+				snapshot.Diagnostic() != test.spec.Diagnostic ||
+				snapshot.ArchivePending() != test.spec.ArchivePending ||
+				snapshot.PublicationAttempted() != test.spec.PublicationAttempted ||
+				snapshot.PublicationState() != test.spec.PublicationState ||
+				snapshot.PublicationStage() != test.spec.PublicationStage ||
+				snapshot.PublicationCode() != test.spec.PublicationCode ||
+				!slices.Equal(snapshot.Warnings(), test.spec.Warnings) ||
+				snapshot.CompletionClass() != test.wantCompletion {
+				t.Fatalf(
+					"Fyne result snapshot lost axes: outcome=%v stage=%v code=%v diagnostic=%v pending=%v "+
+						"publication=%v/%v/%v/%v warnings=%v completion=%v; want completion=%v from spec %#v",
+					snapshot.Outcome(), snapshot.Stage(), snapshot.Code(), snapshot.Diagnostic(),
+					snapshot.ArchivePending(), snapshot.PublicationAttempted(), snapshot.PublicationState(),
+					snapshot.PublicationStage(), snapshot.PublicationCode(), snapshot.Warnings(),
+					snapshot.CompletionClass(), test.wantCompletion, test.spec,
+				)
+			}
+
+			view := (&App{}).buildPCV3ResultView(snapshot, nil)
+			text := pcv3RenderedText(view)
+			for _, fragment := range test.wantText {
+				if !strings.Contains(text, fragment) {
+					t.Fatalf("rendered result %q does not contain %q", text, fragment)
+				}
+			}
+			for _, fragment := range test.forbidText {
+				if strings.Contains(text, fragment) {
+					t.Fatalf("rendered result %q must not contain %q", text, fragment)
+				}
+			}
+			if test.wantAction == "" {
+				for _, action := range []string{
+					"Extract archive", "Close without extracting", "Inspect recovery artifact",
+					"Close publication result", "Close durability warning", "Close publication warning",
+					"Close cleanup warning", "Close recovery result",
+				} {
+					if findPCV3Button(view, action) != nil {
+						t.Fatalf("nonterminal presentation minted action %q", action)
+					}
+				}
+				return
+			}
+			button := findPCV3Button(view, test.wantAction)
+			if button == nil || button.Disabled() {
+				t.Fatalf("terminal action %q = %v; want a live enabled button", test.wantAction, button)
+			}
+			for _, action := range test.forbidActions {
+				if findPCV3Button(view, action) != nil {
+					t.Fatalf("result rendered superseded action %q", action)
+				}
+			}
+		})
+	}
+}
+
 func TestPCV3FyneGenerationOwnsTerminalResult(t *testing.T) {
 	resetLocalizationForTest(t)
 	fyneApp := newTestFyneApp(t)
