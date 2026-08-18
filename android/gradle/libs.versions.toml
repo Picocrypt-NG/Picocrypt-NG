@@ -14,7 +14,7 @@ coroutines = "1.11.0"
 mockk = "1.14.11"
 archTesting = "2.2.0"
 documentfile = "1.1.0"
-orgJson = "20260719"
+orgJson = "20260814"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
