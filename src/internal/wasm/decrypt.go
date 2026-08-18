@@ -7,6 +7,7 @@ import (
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/keyfile"
 	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"bytes"
 	"crypto/subtle"
@@ -48,11 +49,24 @@ type DecryptResult struct {
 type DecryptOptions struct {
 	Keyfiles [][]byte // required iff the volume's header sets UseKeyfiles
 	Force    bool     // keep best-effort output despite a payload MAC failure (untrusted)
+	// PCV3Mode carries explicit PCV3 operation intent using the closed
+	// pcv3operation.Mode discriminator. Zero means no intent (legacy path);
+	// any nonzero value is rejected with ErrUnsupported before the volume
+	// bytes are inspected or any key is derived — the WASM boundary implements
+	// no PCV3 operation.
+	PCV3Mode pcv3operation.Mode
 }
 
 // DecryptVolume decrypts a Picocrypt volume from memory.
 // Returns (DecryptResult, 0) on success, or (zero, errorCode) on failure.
 func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptResult, int) {
+	// Explicit PCV3 operation intent is terminal before the volume bytes are
+	// inspected or any key is derived: this in-memory path implements no PCV3
+	// operation, and D1 content is never sniffed.
+	if opts.PCV3Mode != 0 {
+		return DecryptResult{}, ErrUnsupported
+	}
+
 	if pcv3.DetectPrefix(volumeData) == pcv3.RouteNormalPCV {
 		return DecryptResult{}, ErrUnsupported
 	}
