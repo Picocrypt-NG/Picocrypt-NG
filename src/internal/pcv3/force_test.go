@@ -198,6 +198,94 @@ func TestResolveForceCandidatesPreservesLiteralRecordRangesWithoutCoalescing(t *
 	}
 }
 
+func TestResolveForceCandidatesSelectsExactlyTheLiveConsentedAnchoredRole(t *testing.T) {
+	fixture := loadNormalFixtureManifest(t).FixturesByID()["normal-standard-combined-ordered-two-mib"]
+	structure := inspectNormalFixture(t, fixture)
+	primary, ok := structure.CandidateAt(0)
+	if !ok || primary.Role() != CapsuleRolePrimary {
+		t.Fatal("TEST ONLY two-record fixture has no primary candidate")
+	}
+	backup, ok := structure.CandidateAt(1)
+	if !ok || backup.Role() != CapsuleRoleBackup {
+		t.Fatal("TEST ONLY two-record fixture has no backup candidate")
+	}
+	if primary.core != backup.core {
+		t.Fatal("TEST ONLY fixture replicas carry divergent logical cores")
+	}
+	geometry, ok := structure.GeometryAt(0)
+	if !ok {
+		t.Fatal("TEST ONLY two-record fixture has no primary geometry")
+	}
+
+	// Both anchored candidates share the frozen identity and logical core and
+	// carry the same partial map: record 0 verified, record 1 and the final
+	// record unverified. Only the live consent role may be selected.
+	analysisFor := func(candidate Candidate) forceCandidateAnalysis {
+		return forceCandidateAnalysis{
+			identity:  &forceTestIdentity{value: 21},
+			candidate: candidate,
+			geometry:  geometry,
+			ranges: []RecoveryRange{
+				{recordIndex: 0, start: 0, end: 1048576, state: RecoveryRangeVerified},
+				{recordIndex: 1, start: 1048576, end: 2097152, state: RecoveryRangeUnverified},
+			},
+			final: RecoveryFinalUnverified,
+		}
+	}
+	analyses := []forceCandidateAnalysis{analysisFor(primary), analysisFor(backup)}
+	wantRanges := []RecoveryRange{
+		{recordIndex: 0, start: 0, end: 1048576, state: RecoveryRangeVerified},
+		{recordIndex: 1, start: 1048576, end: 2097152, state: RecoveryRangeUnverified},
+	}
+
+	tests := []struct {
+		name         string
+		consent      CapsuleRole
+		wantSelected int
+	}{
+		{name: "live primary consent selects the primary anchor", consent: CapsuleRolePrimary, wantSelected: 0},
+		{name: "live backup consent selects the backup anchor", consent: CapsuleRoleBackup, wantSelected: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := withUnverifiedRecoveryRequest(test.consent, func(request recoveryRequest) error {
+				resolution, resolveErr := resolveForceCandidates(request, analyses)
+				if resolveErr != nil {
+					return resolveErr
+				}
+				if resolution.selected != test.wantSelected || resolution.role != test.consent {
+					t.Fatalf(
+						"anchored unverified selection = %d/%v; want exactly %d/%v",
+						resolution.selected, resolution.role, test.wantSelected, test.consent,
+					)
+				}
+				result := resolution.result
+				if result == nil {
+					t.Fatal("anchored unverified resolution returned no typed result")
+				}
+				defer result.Close()
+				if result.Outcome() != OutcomeForcePartial ||
+					result.ForceProvenance() != ForceProvenancePartial ||
+					result.Stage() != StageFinalRecord || result.Code() != CodeForcePartial ||
+					result.PlaintextLength() != 2097152 ||
+					result.FinalRecordState() != RecoveryFinalUnverified {
+					t.Fatalf(
+						"anchored unverified result = %v/%v/%v/%v, length %d, final %v; want partial/partial/final-record/force-partial, 2097152, unverified",
+						result.Outcome(), result.ForceProvenance(), result.Stage(),
+						result.Code(), result.PlaintextLength(), result.FinalRecordState(),
+					)
+				}
+				if got := result.Ranges(); !bytes.Equal(recoveryRangeBytes(got), recoveryRangeBytes(wantRanges)) {
+					t.Fatalf("anchored unverified ranges = %#v; want exact two-record map %#v", got, wantRanges)
+				}
+				return nil
+			}); err != nil {
+				t.Fatalf("live %v consent resolution: %v", test.consent, err)
+			}
+		})
+	}
+}
+
 func TestRecoveryDamageStagePreservesProtocolOrder(t *testing.T) {
 	tests := []struct {
 		name        string

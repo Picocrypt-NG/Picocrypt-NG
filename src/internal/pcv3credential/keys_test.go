@@ -419,6 +419,47 @@ func TestReaderCredentialStagesMatchWriterSchedule(t *testing.T) {
 	}
 }
 
+// frozenScheduleInfoForSuite returns the independent expected HKDF Info hex
+// for every schedule row, reconstructed from the frozen specification's Info
+// construction (domain, version, schema, suite, role, label length, label)
+// rather than from any production helper. The first entries of each suite
+// match the literals that predate this table.
+func frozenScheduleInfoForSuite(t *testing.T, suite Suite) []string {
+	t.Helper()
+	switch suite {
+	case Suite(0x0001):
+		return []string{
+			"5069636f63727970742d4e472f504356332f484b44460000030001000100001963726564656e7469616c2f777261702f786368616368613230",
+			"5069636f63727970742d4e472f504356332f484b44460000030001000101001963726564656e7469616c2f777261702f786368616368613230",
+			"5069636f63727970742d4e472f504356332f484b44460000030001000100001363726564656e7469616c2f777261702f6d6163",
+			"5069636f63727970742d4e472f504356332f484b44460000030001000101001363726564656e7469616c2f777261702f6d6163",
+			"5069636f63727970742d4e472f504356332f484b444600000300010001000012766f6c756d652f7265706c6963612f6d6163",
+			"5069636f63727970742d4e472f504356332f484b444600000300010001010012766f6c756d652f7265706c6963612f6d6163",
+			"5069636f63727970742d4e472f504356332f484b444600000300010001ff0013766f6c756d652f6d657461646174612f6d6163",
+			"5069636f63727970742d4e472f504356332f484b444600000300010001ff0018766f6c756d652f7061796c6f61642f786368616368613230",
+			"5069636f63727970742d4e472f504356332f484b444600000300010001ff0012766f6c756d652f7061796c6f61642f6d6163",
+		}
+	case Suite(0x0002):
+		return []string{
+			"5069636f63727970742d4e472f504356332f484b44460000030001000200001963726564656e7469616c2f777261702f786368616368613230",
+			"5069636f63727970742d4e472f504356332f484b44460000030001000201001963726564656e7469616c2f777261702f786368616368613230",
+			"5069636f63727970742d4e472f504356332f484b44460000030001000200001763726564656e7469616c2f777261702f73657270656e74",
+			"5069636f63727970742d4e472f504356332f484b44460000030001000201001763726564656e7469616c2f777261702f73657270656e74",
+			"5069636f63727970742d4e472f504356332f484b44460000030001000200001363726564656e7469616c2f777261702f6d6163",
+			"5069636f63727970742d4e472f504356332f484b44460000030001000201001363726564656e7469616c2f777261702f6d6163",
+			"5069636f63727970742d4e472f504356332f484b444600000300010002000012766f6c756d652f7265706c6963612f6d6163",
+			"5069636f63727970742d4e472f504356332f484b444600000300010002010012766f6c756d652f7265706c6963612f6d6163",
+			"5069636f63727970742d4e472f504356332f484b444600000300010002ff0013766f6c756d652f6d657461646174612f6d6163",
+			"5069636f63727970742d4e472f504356332f484b444600000300010002ff0018766f6c756d652f7061796c6f61642f786368616368613230",
+			"5069636f63727970742d4e472f504356332f484b444600000300010002ff0016766f6c756d652f7061796c6f61642f73657270656e74",
+			"5069636f63727970742d4e472f504356332f484b444600000300010002ff0012766f6c756d652f7061796c6f61642f6d6163",
+		}
+	default:
+		t.Fatalf("test has no frozen Info rows for suite %#04x", suite)
+		return nil
+	}
+}
+
 func TestScheduleExactRows(t *testing.T) {
 	total := 0
 	for _, suite := range []Suite{Suite(0x0001), Suite(0x0002)} {
@@ -462,41 +503,30 @@ func TestScheduleExactRows(t *testing.T) {
 		t.Fatalf("global schedule row count = %d; want 21", total)
 	}
 
-	infoTests := []struct {
-		suite Suite
-		index int
-		want  string
-	}{
-		{
-			suite: Suite(0x0001),
-			index: 0,
-			want:  "5069636f63727970742d4e472f504356332f484b44460000030001000100001963726564656e7469616c2f777261702f786368616368613230",
-		},
-		{
-			suite: Suite(0x0001),
-			index: 5,
-			want:  "5069636f63727970742d4e472f504356332f484b444600000300010001010012766f6c756d652f7265706c6963612f6d6163",
-		},
-		{
-			suite: Suite(0x0002),
-			index: 10,
-			want:  "5069636f63727970742d4e472f504356332f484b444600000300010002ff0016766f6c756d652f7061796c6f61642f73657270656e74",
-		},
-	}
-	for _, test := range infoTests {
-		rows, err := fixedScheduleForSuite(test.suite)
+	for _, suite := range []Suite{Suite(0x0001), Suite(0x0002)} {
+		rows, err := fixedScheduleForSuite(suite)
 		if err != nil {
-			t.Fatalf("load suite %#04x for Info: %v", test.suite, err)
+			t.Fatalf("load suite %#04x for Info: %v", suite, err)
 		}
-		got := hex.EncodeToString([]byte(scheduleInfo(rows[test.index])))
-		if got != test.want {
+		frozen := frozenScheduleInfoForSuite(t, suite)
+		if len(rows) != len(frozen) {
 			t.Fatalf(
-				"suite %#04x Info row %d = %s; want %s",
-				test.suite,
-				test.index,
-				got,
-				test.want,
+				"suite %#04x Info row count = %d; want %d",
+				suite,
+				len(rows),
+				len(frozen),
 			)
+		}
+		for index := range rows {
+			if got := hex.EncodeToString([]byte(scheduleInfo(rows[index]))); got != frozen[index] {
+				t.Fatalf(
+					"suite %#04x Info row %d = %s; want %s",
+					suite,
+					index,
+					got,
+					frozen[index],
+				)
+			}
 		}
 	}
 
@@ -1028,9 +1058,31 @@ func TestScheduleIndependentExpandMutation(t *testing.T) {
 		}
 	}()
 	requireIndependentScheduleInfo(t, calls)
+	rows := literalRowsForSuite(t, SuiteStandard1)
+	frozen := frozenScheduleInfoForSuite(t, SuiteStandard1)
+	if len(calls) != len(rows) {
+		t.Fatalf("Expand calls = %d; want one per schedule row %d", len(calls), len(rows))
+	}
 	for i, call := range calls {
 		if call.length != 32 {
 			t.Fatalf("Expand %d length = %d; want 32", i, call.length)
+		}
+		// Every row expands from its own root's PRK: the credential root is the
+		// first independent Extract result and the volume root is the second.
+		wantPRK := byte(0xc1)
+		if rows[i].root == scheduleRoot(2) {
+			wantPRK = 0xc2
+		}
+		if !bytes.Equal(call.prk, bytes.Repeat([]byte{wantPRK}, 32)) {
+			t.Fatalf(
+				"Expand %d PRK = %x; want root marker %02x",
+				i,
+				call.prk,
+				wantPRK,
+			)
+		}
+		if got := hex.EncodeToString([]byte(call.info)); got != frozen[i] {
+			t.Fatalf("Expand %d Info = %s; want frozen row Info %s", i, got, frozen[i])
 		}
 	}
 }

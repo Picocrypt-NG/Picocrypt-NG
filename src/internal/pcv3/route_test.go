@@ -45,6 +45,15 @@ func TestDetectPrefix(t *testing.T) {
 		t.Fatalf("literal PCV discriminator with suffix route = %v; want normal PCV", got)
 	}
 
+	// A complete claim is terminal: the byte immediately after the full
+	// discriminator is payload, never a routing or version hint.
+	for fifth := range 1 << 8 {
+		claimed := []byte{'P', 'C', 'V', 0, byte(fifth), 0x03, 0x00}
+		if got := DetectPrefix(claimed); got != RouteNormalPCV {
+			t.Fatalf("complete claim with fifth byte %#02x route = %v; want terminal normal PCV", fifth, got)
+		}
+	}
+
 	for position, original := range discriminator {
 		for replacement := range 1 << 8 {
 			if byte(replacement) == original {
@@ -88,9 +97,10 @@ func TestD1ExplicitRoute(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		request       *d1RouteRequest
-		authorization *pcv3governance.EmissionAuthorization
+		name               string
+		request            *d1RouteRequest
+		authorization      *pcv3governance.EmissionAuthorization
+		wantGovernanceSeam bool
 	}{
 		{name: "nil request"},
 		{name: "zero mode", request: &d1RouteRequest{sourcePath: "source", destinationPath: "destination"}},
@@ -98,8 +108,8 @@ func TestD1ExplicitRoute(t *testing.T) {
 		{name: "empty source", request: &d1RouteRequest{mode: d1RouteExplicit, destinationPath: "destination"}},
 		{name: "empty destination", request: &d1RouteRequest{mode: d1RouteExplicit, sourcePath: "source"}},
 		{name: "same identity", request: &d1RouteRequest{mode: d1RouteExplicit, sourcePath: "same", destinationPath: "same"}},
-		{name: "nil authorization", request: &d1RouteRequest{mode: d1RouteExplicit, sourcePath: "source", destinationPath: "destination"}},
-		{name: "zero authorization", request: &d1RouteRequest{mode: d1RouteExplicit, sourcePath: "source", destinationPath: "destination"}, authorization: &pcv3governance.EmissionAuthorization{}},
+		{name: "nil authorization", request: &d1RouteRequest{mode: d1RouteExplicit, sourcePath: "source", destinationPath: "destination"}, wantGovernanceSeam: true},
+		{name: "zero authorization", request: &d1RouteRequest{mode: d1RouteExplicit, sourcePath: "source", destinationPath: "destination"}, authorization: &pcv3governance.EmissionAuthorization{}, wantGovernanceSeam: true},
 	}
 
 	for _, test := range tests {
@@ -116,10 +126,43 @@ func TestD1ExplicitRoute(t *testing.T) {
 			var failure Failure
 			if !errors.As(err, &failure) ||
 				failure.Outcome() != OutcomeUnsupportedRoutingPreKDF ||
-				failure.Stage() != StageRouting {
+				failure.Stage() != StageRouting ||
+				failure.Code() != CodeUnsupported {
 				t.Fatalf("route refusal = %T %v; want closed routing failure", err, err)
 			}
+			// Every refusal before the governance seam carries the closed
+			// invalid-route cause; only a fully valid explicit request may reach
+			// the sealed authorization check.
+			if test.wantGovernanceSeam {
+				var refusal *pcv3governance.RefusalError
+				if !errors.As(err, &refusal) || refusal.Reason != pcv3governance.ReasonAuthorizationMissing {
+					t.Fatalf("authorization refusal cause = %v; want missing-authorization refusal", err)
+				}
+			} else if !errors.Is(err, errInvalidD1Route) {
+				t.Fatalf("route refusal cause = %v; want errInvalidD1Route", err)
+			}
 		})
+	}
+
+	// No mode value outside the one explicit D1 route can reach the governance
+	// seam: extension, content, and authentication state are never consulted.
+	for mode := range 1 << 8 {
+		if d1RouteMode(mode) == d1RouteExplicit {
+			continue
+		}
+		result, err := routeExplicitD1(
+			context.Background(),
+			nil,
+			&d1RouteRequest{
+				mode:            d1RouteMode(mode),
+				sourcePath:      "source",
+				destinationPath: "destination",
+			},
+			composer,
+		)
+		if result != nil || !errors.Is(err, errInvalidD1Route) {
+			t.Fatalf("mode %#02x route = %v, %v; want invalid-route refusal before authorization", mode, result, err)
+		}
 	}
 
 	if composerCalls != 0 {
@@ -162,8 +205,14 @@ func TestD1WriterRefusalHasNoStageFactorEntropyOrSourceRead(t *testing.T) {
 			t.Fatalf("writer refusal returned publication result %v", result)
 		}
 		var failure Failure
-		if !errors.As(err, &failure) || failure.Code() != CodeUnsupported {
-			t.Fatalf("writer refusal = %T %v; want closed unsupported code", err, err)
+		if !errors.As(err, &failure) || failure.Code() != CodeUnsupported ||
+			failure.Outcome() != OutcomeUnsupportedRoutingPreKDF ||
+			failure.Stage() != StageRouting {
+			t.Fatalf("writer refusal = %T %v; want closed unsupported routing refusal", err, err)
+		}
+		var refusal *pcv3governance.RefusalError
+		if !errors.As(err, &refusal) || refusal.Reason != pcv3governance.ReasonAuthorizationMissing {
+			t.Fatalf("writer refusal cause = %v; want the sealed missing-authorization refusal", err)
 		}
 	}
 

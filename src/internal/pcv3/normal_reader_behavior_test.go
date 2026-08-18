@@ -44,6 +44,34 @@ func (source *normalCancelReadSource) ReadAt(destination []byte, offset int64) (
 	return source.reader.ReadAt(destination, offset)
 }
 
+// normalBetweenPassTailSource returns the canonical bytes on the first
+// canonical-suffix read and flips one trailer byte inside the second read,
+// simulating a source whose tail changes after payload authentication.
+type normalBetweenPassTailSource struct {
+	reader           io.ReaderAt
+	offset           int64
+	length           int
+	suffixReads      int
+	mutateSecondPass bool
+	closeCalls       int
+}
+
+func (source *normalBetweenPassTailSource) ReadAt(destination []byte, offset int64) (int, error) {
+	count, err := source.reader.ReadAt(destination, offset)
+	if offset == source.offset && len(destination) == source.length {
+		source.suffixReads++
+		if source.mutateSecondPass && source.suffixReads == 2 && count == len(destination) {
+			destination[len(destination)-1] ^= 0x40
+		}
+	}
+	return count, err
+}
+
+func (source *normalBetweenPassTailSource) Close() error {
+	source.closeCalls++
+	return nil
+}
+
 type normalFailingSink struct {
 	normalFixtureSink
 	calls int
@@ -131,6 +159,71 @@ func TestReadNormalVolumeBehavioralClosure(t *testing.T) {
 		checkNormalBehaviorCompletion(t, completion, false)
 		plaintext := readNormalFixturePlaintext(t, fixture.Plaintext)
 		checkNormalBehaviorDiscarded(t, sink, plaintext, 1)
+		closeNormalBehaviorResult(result)
+		checkNormalBehaviorOwnership(t, provider, source.closeCalls)
+	})
+
+	t.Run("tail bytes mutated between authenticated passes never complete or publish", func(t *testing.T) {
+		fixture := requireNormalFixture(t, fixtures, "normal-standard-combined-ordered-one")
+		volume := readNormalFixtureArtifact(t, fixture.Volume)
+		structure := probeNormalBehavior(t, bytes.NewReader(volume), int64(len(volume)))
+		geometry := requireNormalBehaviorGeometry(t, structure)
+		source := &normalBetweenPassTailSource{
+			reader:           bytes.NewReader(volume),
+			offset:           geometry.backupCapsuleOffset,
+			length:           int(fixedSuffixLength),
+			mutateSecondPass: true,
+		}
+		sink := &normalFixtureSink{}
+		result, completion, provider := runNormalBehaviorRead(
+			t, context.Background(), fixture, source, int64(len(volume)), sink,
+		)
+		checkNormalBehaviorResult(
+			t, result, OutcomeAuthenticationFailed, StageTailGeometry, 2, CodeAuthenticationFailed,
+		)
+		checkNormalBehaviorCompletion(t, completion, false)
+		plaintext := readNormalFixturePlaintext(t, fixture.Plaintext)
+		checkNormalBehaviorDiscarded(t, sink, plaintext, 1)
+		if source.suffixReads != 2 {
+			t.Errorf("canonical suffix reads = %d; want initial capture plus one post-record reread", source.suffixReads)
+		}
+		closeNormalBehaviorResult(result)
+		checkNormalBehaviorOwnership(t, provider, source.closeCalls)
+	})
+
+	t.Run("stable canonical suffix completes with exact plaintext and comment", func(t *testing.T) {
+		fixture := requireNormalFixture(t, fixtures, "normal-standard-combined-ordered-one")
+		volume := readNormalFixtureArtifact(t, fixture.Volume)
+		structure := probeNormalBehavior(t, bytes.NewReader(volume), int64(len(volume)))
+		geometry := requireNormalBehaviorGeometry(t, structure)
+		source := &normalBetweenPassTailSource{
+			reader: bytes.NewReader(volume),
+			offset: geometry.backupCapsuleOffset,
+			length: int(fixedSuffixLength),
+		}
+		sink := &normalFixtureSink{}
+		result, completion, provider := runNormalBehaviorRead(
+			t, context.Background(), fixture, source, int64(len(volume)), sink,
+		)
+		checkNormalBehaviorResult(t, result, OutcomeSuccess, StageNone, 2, CodeSuccess)
+		checkNormalBehaviorCompletion(t, completion, true)
+		plaintext := readNormalFixturePlaintext(t, fixture.Plaintext)
+		if sink.aborted || !bytes.Equal(sink.plaintext(), plaintext) {
+			t.Errorf(
+				"healthy staging = aborted %v, plaintext %d bytes; want retained exact %d-byte plaintext",
+				sink.aborted, len(sink.plaintext()), len(plaintext),
+			)
+		}
+		wantComment := decodeNormalFixtureHex(t, fixture.CommentHex, len(fixture.CommentHex)/2)
+		if !bytes.Equal(result.commentBytes(), wantComment) {
+			t.Errorf(
+				"published comment = %d bytes; want exact frozen %d-byte comment",
+				len(result.commentBytes()), len(wantComment),
+			)
+		}
+		if source.suffixReads != 2 {
+			t.Errorf("canonical suffix reads = %d; want initial capture plus one post-record reread", source.suffixReads)
+		}
 		closeNormalBehaviorResult(result)
 		checkNormalBehaviorOwnership(t, provider, source.closeCalls)
 	})

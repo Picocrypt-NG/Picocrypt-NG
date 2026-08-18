@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -70,6 +71,7 @@ func (reader *metadataGapReader) ReadAt(destination []byte, offset int64) (int, 
 
 type metadataLiteralKeyBorrower struct {
 	keys        map[pcv3credential.KeyRequest][32]byte
+	requests    []pcv3credential.KeyRequest
 	afterBorrow func()
 }
 
@@ -81,6 +83,7 @@ func (borrower *metadataLiteralKeyBorrower) withKey(
 	if borrower == nil || ctx == nil || callback == nil || ctx.Err() != nil {
 		return context.Canceled
 	}
+	borrower.requests = append(borrower.requests, request)
 	key, ok := borrower.keys[request]
 	if !ok {
 		return errors.New("TEST ONLY unknown key request")
@@ -406,8 +409,50 @@ func TestAuthenticateMetadata(t *testing.T) {
 						t.Fatal("authenticated comment aliases source or decode scratch")
 					}
 				}
+				requireMetadataKeyBorrows(t, borrower, pcv3credential.KeyLabelVolumeMetadataMAC)
 			})
 		}
+	})
+
+	t.Run("authenticated RS repair releases exactly the recovered public comment", func(t *testing.T) {
+		auth := metadataTestAuthority(t, metadataTestStandardCore, 2, 1248)
+		borrower := metadataTestBorrower(t, auth, metadataTestStandardKey)
+		defer borrower.close()
+		source := &metadataTrackingReader{
+			base: int64(frontHeaderBase),
+			data: metadataFixture(t, "repair4.bin"),
+		}
+		result, err := authenticateMetadata(context.Background(), source, auth, codecs)
+		if err != nil {
+			t.Fatalf("authenticate repairable TEST ONLY metadata: %v", err)
+		}
+		defer result.close()
+		if result.state != metadataAuthenticatedPublic {
+			t.Fatalf("repaired metadata result state = %v; want authenticated-public", result.state)
+		}
+		if !bytes.Equal(result.commentBytes(), []byte(metadataTestUnicodeComment)) {
+			t.Fatal("repaired metadata did not release the exact frozen comment")
+		}
+		requireMetadataKeyBorrows(t, borrower, pcv3credential.KeyLabelVolumeMetadataMAC)
+		assertMetadataReadExtent(t, source.spans, 1248)
+	})
+
+	t.Run("unrecoverable RS damage borrows no key and releases nothing", func(t *testing.T) {
+		auth := metadataTestAuthority(t, metadataTestStandardCore, 2, 1248)
+		borrower := metadataTestBorrower(t, auth, metadataTestStandardKey)
+		defer borrower.close()
+		source := &metadataTrackingReader{
+			base: int64(frontHeaderBase),
+			data: metadataFixture(t, "damage5.bin"),
+		}
+		result, err := authenticateMetadata(context.Background(), source, auth, codecs)
+		if err != nil {
+			t.Fatalf("unrecoverable TEST ONLY metadata became operational: %v", err)
+		}
+		defer result.close()
+		assertMetadataResultDamaged(t, result)
+		requireMetadataKeyBorrows(t, borrower)
+		assertMetadataRequestsBounded(t, source.spans, 1248)
 	})
 
 	t.Run("valid RS re-encoding cannot replace authentication", func(t *testing.T) {
@@ -427,6 +472,7 @@ func TestAuthenticateMetadata(t *testing.T) {
 				}
 				defer result.close()
 				assertMetadataResultDamaged(t, result)
+				requireMetadataKeyBorrows(t, borrower, pcv3credential.KeyLabelVolumeMetadataMAC)
 			})
 		}
 	})
@@ -447,6 +493,7 @@ func TestAuthenticateMetadata(t *testing.T) {
 		}
 		defer result.close()
 		assertMetadataResultDamaged(t, result)
+		requireMetadataKeyBorrows(t, borrower, pcv3credential.KeyLabelVolumeMetadataMAC)
 	})
 
 	t.Run("missing authenticated key owner is an internal request failure", func(t *testing.T) {
@@ -487,6 +534,7 @@ func TestAuthenticateMetadata(t *testing.T) {
 			t.Fatal("post-borrow cancellation released metadata state")
 		}
 		assertMetadataOperationFailure(t, err, StageCancellation)
+		requireMetadataKeyBorrows(t, borrower, pcv3credential.KeyLabelVolumeMetadataMAC)
 	})
 }
 
@@ -500,6 +548,7 @@ func TestMetadataDamagePreservesAuthenticatedSession(t *testing.T) {
 		front       int64
 		truncate    bool
 		metadataKey string
+		wantBorrows []pcv3credential.KeyLabel
 	}{
 		{
 			name:        "canonical schema damage",
@@ -508,6 +557,7 @@ func TestMetadataDamagePreservesAuthenticatedSession(t *testing.T) {
 			blocks:      1,
 			front:       1112,
 			metadataKey: metadataTestStandardKey,
+			wantBorrows: []pcv3credential.KeyLabel{pcv3credential.KeyLabelVolumePayloadMAC},
 		},
 		{
 			name:        "invalid UTF-8",
@@ -516,6 +566,7 @@ func TestMetadataDamagePreservesAuthenticatedSession(t *testing.T) {
 			blocks:      1,
 			front:       1112,
 			metadataKey: metadataTestStandardKey,
+			wantBorrows: []pcv3credential.KeyLabel{pcv3credential.KeyLabelVolumePayloadMAC},
 		},
 		{
 			name:        "hostile raw comment length",
@@ -524,6 +575,7 @@ func TestMetadataDamagePreservesAuthenticatedSession(t *testing.T) {
 			blocks:      1,
 			front:       1112,
 			metadataKey: metadataTestStandardKey,
+			wantBorrows: []pcv3credential.KeyLabel{pcv3credential.KeyLabelVolumePayloadMAC},
 		},
 		{
 			name:        "RS damage beyond correction budget",
@@ -532,6 +584,7 @@ func TestMetadataDamagePreservesAuthenticatedSession(t *testing.T) {
 			blocks:      2,
 			front:       1248,
 			metadataKey: metadataTestStandardKey,
+			wantBorrows: []pcv3credential.KeyLabel{pcv3credential.KeyLabelVolumePayloadMAC},
 		},
 		{
 			name:        "metadata tag damage",
@@ -540,6 +593,10 @@ func TestMetadataDamagePreservesAuthenticatedSession(t *testing.T) {
 			blocks:      1,
 			front:       1112,
 			metadataKey: metadataTestStandardKey,
+			wantBorrows: []pcv3credential.KeyLabel{
+				pcv3credential.KeyLabelVolumeMetadataMAC,
+				pcv3credential.KeyLabelVolumePayloadMAC,
+			},
 		},
 		{
 			name:        "metadata truncation",
@@ -549,6 +606,7 @@ func TestMetadataDamagePreservesAuthenticatedSession(t *testing.T) {
 			front:       1248,
 			truncate:    true,
 			metadataKey: metadataTestStandardKey,
+			wantBorrows: []pcv3credential.KeyLabel{pcv3credential.KeyLabelVolumePayloadMAC},
 		},
 	}
 
@@ -616,6 +674,7 @@ func TestMetadataDamagePreservesAuthenticatedSession(t *testing.T) {
 			}
 			pcv3crypto.SecureZero(payloadKey[:])
 			pcv3crypto.SecureZero(wantPayloadKey[:])
+			requireMetadataKeyBorrows(t, borrower, test.wantBorrows...)
 		})
 	}
 }
@@ -773,5 +832,28 @@ func assertMetadataOperationFailure(t *testing.T, err error, stage Stage) {
 	if !errors.As(err, &failure) ||
 		failure.Outcome() != OutcomeOperationFailed || failure.Stage() != stage {
 		t.Fatalf("operation failure = %v; want operation-failed/%v", err, stage)
+	}
+}
+
+// requireMetadataKeyBorrows pins the exact ordered key-borrow transcript of an
+// authenticateMetadata call: canonically damaged or unrecoverable metadata
+// must borrow nothing, and an authenticated tag check must borrow exactly the
+// metadata MAC key once.
+func requireMetadataKeyBorrows(
+	t *testing.T,
+	borrower *metadataLiteralKeyBorrower,
+	labels ...pcv3credential.KeyLabel,
+) {
+	t.Helper()
+	want := make([]pcv3credential.KeyRequest, 0, len(labels))
+	for _, label := range labels {
+		want = append(want, pcv3credential.KeyRequest{
+			Label:       label,
+			Role:        pcv3credential.KeyRoleNotReplica,
+			OutputBytes: 32,
+		})
+	}
+	if !slices.Equal(borrower.requests, want) {
+		t.Fatalf("metadata key borrows = %v; want exact %v", borrower.requests, want)
 	}
 }

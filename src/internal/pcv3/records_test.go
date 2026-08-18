@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	pcv3crypto "Picocrypt-NG/internal/crypto"
@@ -166,7 +167,8 @@ func (sink *recordCollectingSink) assertBorrowsCleared(t *testing.T) {
 }
 
 type recordLiteralKeyBorrower struct {
-	keys map[pcv3credential.KeyRequest][32]byte
+	keys     map[pcv3credential.KeyRequest][32]byte
+	requests []pcv3credential.KeyRequest
 }
 
 func (borrower *recordLiteralKeyBorrower) withKey(
@@ -180,6 +182,7 @@ func (borrower *recordLiteralKeyBorrower) withKey(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	borrower.requests = append(borrower.requests, request)
 	key, ok := borrower.keys[request]
 	if !ok {
 		return errors.New("TEST ONLY unknown record key request")
@@ -287,6 +290,7 @@ func TestReadNormalRecords(t *testing.T) {
 					t.Fatalf("sink index %d = %d; want %d", index, got, index)
 				}
 			}
+			requireRecordKeyBorrows(t, borrower, Suite(required.suite))
 			assertRecordReadBounds(t, reader, fixture)
 			sink.assertBorrowsCleared(t)
 		})
@@ -309,6 +313,7 @@ func TestReadNormalRecords(t *testing.T) {
 		if err != nil || verified.dataRecords != 1 || !bytes.Equal(sink.copied, plaintext) {
 			t.Fatalf("correctable descriptor result = %+v, err %v, plaintext %x", verified, err, sink.copied)
 		}
+		requireRecordKeyBorrows(t, borrower, SuiteStandard)
 		sink.assertBorrowsCleared(t)
 	})
 
@@ -316,13 +321,24 @@ func TestReadNormalRecords(t *testing.T) {
 		auth, borrower := recordFixtureAuthority(t, retry)
 		defer borrower.close()
 		defer auth.Close()
+		seams := defaultRecordEngineSeams()
+		decryptCalls := 0
+		realDecrypt := seams.decryptStandard
+		seams.decryptStandard = func(destination, source, key, nonce []byte) error {
+			decryptCalls++
+			return realDecrypt(destination, source, key, nonce)
+		}
 		reader := &recordTrackingReader{base: int64(retry.FrontHeaderLength), data: recordMutationFile(t, "descriptor_damage_33.bin")}
 		sink := &recordCollectingSink{}
-		verified, err := readNormalRecords(context.Background(), reader, auth, codecs, sink)
+		verified, err := readNormalRecordsWithSeams(context.Background(), reader, auth, codecs, sink, seams)
 		requireRecordFailureStage(t, err, StageDescriptor)
 		if verified != (recordVerification{}) || len(sink.indexes) != 0 || len(reader.spans) == 0 {
 			t.Fatalf("uncorrectable descriptor produced verification/sink or no real read: %+v/%v/%v", verified, sink.indexes, reader.spans)
 		}
+		if decryptCalls != 0 {
+			t.Fatalf("uncorrectable descriptor reached decrypt %d times", decryptCalls)
+		}
+		requireRecordKeyBorrows(t, borrower, SuiteStandard)
 		for _, span := range reader.spans {
 			if span.offset+int64(span.delivered) > int64(retry.FrontHeaderLength)+48 {
 				t.Fatalf("descriptor failure reached body at span %+v", span)
@@ -334,12 +350,24 @@ func TestReadNormalRecords(t *testing.T) {
 		auth, borrower := recordFixtureAuthority(t, retry)
 		defer borrower.close()
 		defer auth.Close()
-		reader := &recordTrackingReader{base: int64(retry.FrontHeaderLength), data: recordMutationFile(t, "descriptor_wrong_length.bin")}
-		verified, err := readNormalRecords(context.Background(), reader, auth, codecs, &recordCollectingSink{})
-		requireRecordFailureStage(t, err, StageDescriptor)
-		if verified != (recordVerification{}) {
-			t.Fatalf("attacker descriptor produced verification %+v", verified)
+		seams := defaultRecordEngineSeams()
+		decryptCalls := 0
+		realDecrypt := seams.decryptStandard
+		seams.decryptStandard = func(destination, source, key, nonce []byte) error {
+			decryptCalls++
+			return realDecrypt(destination, source, key, nonce)
 		}
+		reader := &recordTrackingReader{base: int64(retry.FrontHeaderLength), data: recordMutationFile(t, "descriptor_wrong_length.bin")}
+		sink := &recordCollectingSink{}
+		verified, err := readNormalRecordsWithSeams(context.Background(), reader, auth, codecs, sink, seams)
+		requireRecordFailureStage(t, err, StageDescriptor)
+		if verified != (recordVerification{}) || len(sink.indexes) != 0 {
+			t.Fatalf("attacker descriptor produced verification/sink: %+v/%v", verified, sink.indexes)
+		}
+		if decryptCalls != 0 {
+			t.Fatalf("attacker descriptor reached decrypt %d times", decryptCalls)
+		}
+		requireRecordKeyBorrows(t, borrower, SuiteStandard)
 		for _, span := range reader.spans {
 			if span.offset+int64(span.delivered) > int64(retry.FrontHeaderLength)+48 {
 				t.Fatalf("attacker descriptor selected a body read: %+v", span)
@@ -417,9 +445,13 @@ func TestRecordAuthBeforeDecrypt(t *testing.T) {
 		return realDecrypt(destination, source, key, nonce)
 	}
 	sink := &recordCollectingSink{}
+	reader := &recordTrackingReader{
+		base: int64(fixture.FrontHeaderLength),
+		data: recordMutationFile(t, "body_bad_tag_reencoded.bin"),
+	}
 	verified, err := readNormalRecordsWithSeams(
 		context.Background(),
-		&recordTrackingReader{base: int64(fixture.FrontHeaderLength), data: recordMutationFile(t, "body_bad_tag_reencoded.bin")},
+		reader,
 		auth,
 		codecs,
 		sink,
@@ -429,6 +461,22 @@ func TestRecordAuthBeforeDecrypt(t *testing.T) {
 	if decryptCalls != 0 || len(sink.indexes) != 0 || verified != (recordVerification{}) {
 		t.Fatalf("bad tag reached decrypt/sink/completion: decrypt=%d sink=%v verified=%+v", decryptCalls, sink.indexes, verified)
 	}
+	requireRecordKeyBorrows(t, borrower, SuiteStandard)
+	// The unauthenticated candidate may cost exactly one descriptor read and
+	// one body read of the frozen first record; no byte of any later record
+	// may be touched and no retry may reread the source.
+	requireRecordReadSpans(t, reader, []recordReadSpan{
+		{
+			offset:    int64(fixture.FrontHeaderLength + fixture.Records[0].DescriptorOffset),
+			requested: int(recordDescriptorSize),
+			delivered: int(recordDescriptorSize),
+		},
+		{
+			offset:    int64(fixture.FrontHeaderLength + fixture.Records[0].BodyOffset),
+			requested: int(fixture.Records[0].EncodedBodyLength),
+			delivered: int(fixture.Records[0].EncodedBodyLength),
+		},
+	})
 }
 
 func TestCanonicalRecordEvaluatorRecoveryAuthority(t *testing.T) {
@@ -622,9 +670,10 @@ func TestRecordRSRetryBound(t *testing.T) {
 		mutation       string
 		wantStage      Stage
 		wantFullPasses int
+		wantDecrypt    int
 		wantPlaintext  bool
 	}{
-		{name: "four data errors repair once", mutation: "body_repair_4.bin", wantFullPasses: 1, wantPlaintext: true},
+		{name: "four data errors repair once", mutation: "body_repair_4.bin", wantFullPasses: 1, wantDecrypt: 1, wantPlaintext: true},
 		{name: "nine data errors fail after one full pass", mutation: "body_damage_9.bin", wantStage: StageRecordBodyRS, wantFullPasses: 1},
 		{name: "valid malicious tag gets no second full pass", mutation: "body_bad_tag_reencoded.bin", wantStage: StageRecordAuth, wantFullPasses: 1},
 		{name: "nonzero padding fails before tag retry", mutation: "body_bad_padding_reencoded.bin", wantStage: StageRecordBodyRS, wantFullPasses: 0},
@@ -643,6 +692,12 @@ func TestRecordRSRetryBound(t *testing.T) {
 				}
 				return realDecode(codecs, encoded, decoded, fullCorrection)
 			}
+			decryptCalls := 0
+			realDecrypt := seams.decryptStandard
+			seams.decryptStandard = func(destination, source, key, nonce []byte) error {
+				decryptCalls++
+				return realDecrypt(destination, source, key, nonce)
+			}
 			sink := &recordCollectingSink{}
 			verified, err := readNormalRecordsWithSeams(
 				context.Background(),
@@ -655,6 +710,10 @@ func TestRecordRSRetryBound(t *testing.T) {
 			if fullPasses != test.wantFullPasses {
 				t.Fatalf("full RS correction passes = %d; want %d", fullPasses, test.wantFullPasses)
 			}
+			if decryptCalls != test.wantDecrypt {
+				t.Fatalf("decrypt calls = %d; want %d", decryptCalls, test.wantDecrypt)
+			}
+			requireRecordKeyBorrows(t, borrower, SuiteStandard)
 			if test.wantStage != StageNone {
 				requireRecordFailureStage(t, err, test.wantStage)
 				if verified != (recordVerification{}) || len(sink.indexes) != 0 {
@@ -678,15 +737,18 @@ func TestFinalRecordRequired(t *testing.T) {
 	manifest := loadRecordFixtureManifest(t)
 	codecs := recordTestCodecs(t)
 	tests := []struct {
-		name     string
-		fixture  string
-		payload  func(*testing.T, recordFixtureCase) []byte
-		wantData bool
+		name        string
+		fixture     string
+		payload     func(*testing.T, recordFixtureCase) []byte
+		suite       Suite
+		wantData    bool
+		wantDecrypt int
 	}{
 		{
 			name:    "empty payload still needs final",
 			fixture: "empty_standard_no_rs",
 			payload: func(*testing.T, recordFixtureCase) []byte { return nil },
+			suite:   SuiteStandard,
 		},
 		{
 			name:    "exact multiple cannot end after data record",
@@ -695,7 +757,9 @@ func TestFinalRecordRequired(t *testing.T) {
 				payload := assembleRecordFixturePayload(t, fixture)
 				return payload[:fixture.Records[len(fixture.Records)-1].DescriptorOffset]
 			},
-			wantData: true,
+			suite:       SuiteParanoid,
+			wantData:    true,
+			wantDecrypt: 1,
 		},
 		{
 			name:    "damaged final tag is not completion",
@@ -703,7 +767,9 @@ func TestFinalRecordRequired(t *testing.T) {
 			payload: func(t *testing.T, _ recordFixtureCase) []byte {
 				return recordMutationFile(t, "bad_final_tag_reencoded.bin")
 			},
-			wantData: true,
+			suite:       SuiteStandard,
+			wantData:    true,
+			wantDecrypt: 1,
 		},
 	}
 	for _, test := range tests {
@@ -712,13 +778,26 @@ func TestFinalRecordRequired(t *testing.T) {
 			auth, borrower := recordFixtureAuthority(t, fixture)
 			defer borrower.close()
 			defer auth.Close()
+			seams := defaultRecordEngineSeams()
+			decryptCalls := 0
+			realStandard := seams.decryptStandard
+			seams.decryptStandard = func(destination, source, key, nonce []byte) error {
+				decryptCalls++
+				return realStandard(destination, source, key, nonce)
+			}
+			realParanoid := seams.decryptParanoid
+			seams.decryptParanoid = func(destination, source, xKey, nonce, serpentKey, iv []byte) error {
+				decryptCalls++
+				return realParanoid(destination, source, xKey, nonce, serpentKey, iv)
+			}
 			sink := &recordCollectingSink{}
-			verified, err := readNormalRecords(
+			verified, err := readNormalRecordsWithSeams(
 				context.Background(),
 				&recordTrackingReader{base: int64(fixture.FrontHeaderLength), data: test.payload(t, fixture)},
 				auth,
 				codecs,
 				sink,
+				seams,
 			)
 			requireRecordFailureStage(t, err, StageFinalRecord)
 			if verified != (recordVerification{}) {
@@ -726,6 +805,18 @@ func TestFinalRecordRequired(t *testing.T) {
 			}
 			if test.wantData != (len(sink.indexes) != 0) {
 				t.Fatalf("verified data staging presence = %t; want %t", len(sink.indexes) != 0, test.wantData)
+			}
+			if decryptCalls != test.wantDecrypt {
+				t.Fatalf("decrypt calls before final failure = %d; want %d", decryptCalls, test.wantDecrypt)
+			}
+			requireRecordKeyBorrows(t, borrower, test.suite)
+			if test.wantData {
+				// Verified data records staged before the final failure must
+				// be exactly the frozen plaintext prefix; partial verified
+				// bytes never become completion.
+				if want := recordFixturePlaintext(t, fixture); !bytes.Equal(sink.copied, want) {
+					t.Fatalf("staged verified prefix = %d bytes; want exact frozen %d-byte plaintext", len(sink.copied), len(want))
+				}
 			}
 			sink.assertBorrowsCleared(t)
 		})
@@ -746,6 +837,7 @@ func TestFinalRecordRequired(t *testing.T) {
 	if err != nil || verified != (recordVerification{dataRecords: 0, plaintextBytes: 0}) || len(sink.indexes) != 0 {
 		t.Fatalf("authenticated empty final result = %+v/%v/%v", verified, err, sink.indexes)
 	}
+	requireRecordKeyBorrows(t, borrower, SuiteStandard)
 }
 
 func loadRecordFixtureManifest(t *testing.T) recordFixtureManifest {
@@ -981,6 +1073,37 @@ func requireRecordFailureStage(t *testing.T, err error, want Stage) {
 	}
 	if failure.stage != want {
 		t.Fatalf("record failure stage = %v; want %v", failure.stage, want)
+	}
+}
+
+// requireRecordKeyBorrows pins the exact ordered key-borrow transcript: the
+// record engine must derive exactly the suite's payload keys, each exactly
+// once, in the canonical label order, and nothing else.
+func requireRecordKeyBorrows(t *testing.T, borrower *recordLiteralKeyBorrower, suite Suite) {
+	t.Helper()
+	want := []pcv3credential.KeyRequest{
+		{Label: pcv3credential.KeyLabelVolumePayloadXChaCha20, Role: pcv3credential.KeyRoleNotReplica, OutputBytes: 32},
+	}
+	if suite == SuiteParanoid {
+		want = append(want, pcv3credential.KeyRequest{
+			Label: pcv3credential.KeyLabelVolumePayloadSerpent, Role: pcv3credential.KeyRoleNotReplica, OutputBytes: 32,
+		})
+	}
+	want = append(want, pcv3credential.KeyRequest{
+		Label: pcv3credential.KeyLabelVolumePayloadMAC, Role: pcv3credential.KeyRoleNotReplica, OutputBytes: 32,
+	})
+	if !slices.Equal(borrower.requests, want) {
+		t.Fatalf("record key borrows = %v; want exact %v", borrower.requests, want)
+	}
+}
+
+// requireRecordReadSpans pins the exact physical read transcript against the
+// independently frozen fixture offsets: no more and no fewer source reads than
+// the canonical descriptor/body extents.
+func requireRecordReadSpans(t *testing.T, reader *recordTrackingReader, want []recordReadSpan) {
+	t.Helper()
+	if !slices.Equal(reader.spans, want) {
+		t.Fatalf("record source reads = %+v; want exact %+v", reader.spans, want)
 	}
 }
 

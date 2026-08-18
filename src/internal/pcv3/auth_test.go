@@ -485,6 +485,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 		wantUnwrap   int
 		wantReplica  int
 		wantAdopt    int
+		wantSelected int
 	}{
 		{
 			name:         "healthy Standard-1",
@@ -497,6 +498,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 			wantUnwrap:   2,
 			wantReplica:  2,
 			wantAdopt:    1,
+			wantSelected: 0,
 		},
 		{
 			name:         "healthy Paranoid-1",
@@ -509,6 +511,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 			wantUnwrap:   2,
 			wantReplica:  2,
 			wantAdopt:    1,
+			wantSelected: 0,
 		},
 		{
 			name:         "wrap failure never unwraps",
@@ -521,6 +524,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 			wantUnwrap:   1,
 			wantReplica:  1,
 			wantAdopt:    1,
+			wantSelected: 1,
 		},
 		{
 			name:         "replica failure after valid wrap",
@@ -533,6 +537,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 			wantUnwrap:   2,
 			wantReplica:  2,
 			wantAdopt:    1,
+			wantSelected: 1,
 		},
 		{
 			name:         "backup role survives compressed index zero",
@@ -545,6 +550,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 			wantUnwrap:   1,
 			wantReplica:  1,
 			wantAdopt:    1,
+			wantSelected: 0,
 		},
 		{
 			name: "authenticated semantics reject stale tags",
@@ -561,6 +567,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 			wantUnwrap:   1,
 			wantReplica:  1,
 			wantAdopt:    1,
+			wantSelected: 1,
 		},
 		{
 			name:         "wrong credential is generic",
@@ -573,6 +580,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 			wantUnwrap:   0,
 			wantReplica:  0,
 			wantAdopt:    0,
+			wantSelected: -1,
 		},
 		{
 			name:         "divergent tuple stops before KDF",
@@ -585,6 +593,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 			wantUnwrap:   0,
 			wantReplica:  0,
 			wantAdopt:    0,
+			wantSelected: -1,
 		},
 		{
 			name:         "authenticated splice is ambiguous",
@@ -597,6 +606,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 			wantUnwrap:   2,
 			wantReplica:  2,
 			wantAdopt:    0,
+			wantSelected: -1,
 		},
 		{
 			name: "authenticated core mismatch degrades at preamble",
@@ -613,6 +623,7 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 			wantUnwrap:   2,
 			wantReplica:  2,
 			wantAdopt:    1,
+			wantSelected: 0,
 		},
 	}
 
@@ -672,6 +683,28 @@ func TestAuthenticateCapsulesFrozenCases(t *testing.T) {
 					test.wantReplica,
 					test.wantAdopt,
 				)
+			}
+			// The adopted key identity, selected candidate identity, and
+			// Owner/publication state are independent frozen observations:
+			// no outcome may publish an Owner through the literal provider,
+			// failure outcomes publish no candidate, and an adoption must
+			// transfer exactly the independently frozen VolumeKey bytes.
+			if test.wantSelected >= 0 {
+				if result.candidate != test.structure.candidates[test.wantSelected] {
+					t.Fatalf("selected candidate is not exactly frozen structure slot %d", test.wantSelected)
+				}
+			} else if result.candidate != (Candidate{}) {
+				t.Fatal("unauthenticated or ambiguous result published candidate state")
+			}
+			if result.owner != nil {
+				t.Fatal("literal-provider authentication published an Owner")
+			}
+			wantAdopted := [32]byte{}
+			if test.wantAdopt == 1 {
+				wantAdopted = literalVolumeKey(t, 0x20)
+			}
+			if access.adopted != wantAdopted {
+				t.Fatal("adopted VolumeKey differs from the independently frozen literal")
 			}
 			for i, alias := range unwrapAliases {
 				if !allZero(alias) {

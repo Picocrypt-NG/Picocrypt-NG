@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -305,6 +306,33 @@ func TestCreateStageOwnsExclusivePrivateSibling(t *testing.T) {
 	}
 	if counts.atomic != 0 || counts.sync != 0 {
 		t.Fatalf("stage creation invoked publication operations: atomic=%d sync=%d", counts.atomic, counts.sync)
+	}
+
+	// Each stage carries independent exact bytes through its owned handle, and
+	// no destination appears before publication.
+	payloads := [][]byte{
+		[]byte("first stage exact unpublished bytes"),
+		[]byte("second stage exact unpublished bytes\x00\xff"),
+	}
+	for index, stage := range []*Stage{first, second} {
+		if _, err := stage.File().Write(payloads[index]); err != nil {
+			t.Fatalf("write stage %d: %v", index, err)
+		}
+		if _, err := stage.File().Seek(0, io.SeekStart); err != nil {
+			t.Fatalf("rewind stage %d: %v", index, err)
+		}
+		recovered := make([]byte, len(payloads[index]))
+		if _, err := io.ReadFull(stage.File(), recovered); err != nil {
+			t.Fatalf("read stage %d: %v", index, err)
+		}
+		if !bytes.Equal(recovered, payloads[index]) {
+			t.Fatalf("stage %d bytes drifted between the two owned handles", index)
+		}
+	}
+	for _, name := range []string{"first.pcv", "second.pcv"} {
+		if _, err := os.Lstat(filepath.Join(directory, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("staging created destination %q: %v", name, err)
+		}
 	}
 }
 
@@ -690,6 +718,128 @@ func TestCleanupReportsUnprovenOwnedStage(t *testing.T) {
 		cleanupErr := stage.Cleanup()
 		if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
 			t.Fatalf("cleanup with missing expected pathname = %v; want ErrCleanupIncomplete", cleanupErr)
+		}
+		if repeated := stage.Cleanup(); !errors.Is(repeated, cleanupErr) {
+			t.Fatalf("repeated cleanup = %v; want stable classification %v", repeated, cleanupErr)
+		}
+		if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("missing stage pathname reappeared: %v", err)
+		}
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cleanup uncertainty created destination: %v", err)
+		}
+	})
+}
+
+func TestCleanupRemovesOnlyOwnedUnpublishedStage(t *testing.T) {
+	t.Run("owned unpublished stage with foreign neighbor", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "output.pcv")
+		foreignPath := filepath.Join(directory, "foreign.txt")
+		foreign := []byte("foreign neighbor bytes must survive cleanup")
+		if err := os.WriteFile(foreignPath, foreign, 0o640); err != nil {
+			t.Fatalf("write foreign neighbor: %v", err)
+		}
+		foreignBefore, err := os.Lstat(foreignPath)
+		if err != nil {
+			t.Fatalf("inspect foreign neighbor: %v", err)
+		}
+		operations, _ := realRenameOperations(t, directory)
+		stage, err := createWithOperations(target, []string{foreignPath}, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		stagePath := stage.stagePath
+		if _, err := stage.File().Write([]byte("unpublished owned stage bytes")); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write owned stage: %v", err)
+		}
+
+		if err := stage.Cleanup(); err != nil {
+			t.Fatalf("cleanup owned unpublished stage: %v", err)
+		}
+		if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("owned unpublished stage remains: %v", err)
+		}
+		foreignAfter, err := os.Lstat(foreignPath)
+		if err != nil || !os.SameFile(foreignBefore, foreignAfter) ||
+			foreignAfter.Mode() != foreignBefore.Mode() {
+			t.Fatalf("foreign neighbor identity/mode = %v/%v; want %v", foreignAfter, err, foreignBefore.Mode())
+		}
+		requireFileBytes(t, foreignPath, foreign)
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cleanup created destination: %v", err)
+		}
+		requireNoStageEntries(t, directory)
+	})
+
+	t.Run("foreign replacement at the owned stage name is retained", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "output.pcv")
+		operations, _ := realRenameOperations(t, directory)
+		stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		stagePath := stage.stagePath
+		if _, err := stage.File().Write([]byte("unlinked operation-owned plaintext")); err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("write owned stage: %v", err)
+		}
+		if err := os.Remove(stagePath); err != nil {
+			_ = stage.Cleanup()
+			t.Skipf("platform prevents unlinking an open stage: %v", err)
+		}
+		foreign := []byte("foreign bytes occupying the remembered stage name")
+		if err := os.WriteFile(stagePath, foreign, 0o640); err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("write foreign stage-name replacement: %v", err)
+		}
+		foreignBefore, err := os.Lstat(stagePath)
+		if err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("inspect foreign stage-name replacement: %v", err)
+		}
+
+		cleanupErr := stage.Cleanup()
+		if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
+			t.Fatalf("cleanup at foreign-occupied stage name = %v; want ErrCleanupIncomplete", cleanupErr)
+		}
+		if repeated := stage.Cleanup(); !errors.Is(repeated, cleanupErr) {
+			t.Fatalf("repeated cleanup = %v; want stable classification %v", repeated, cleanupErr)
+		}
+		foreignAfter, err := os.Lstat(stagePath)
+		if err != nil || !os.SameFile(foreignBefore, foreignAfter) ||
+			foreignAfter.Mode() != foreignBefore.Mode() {
+			t.Fatalf("foreign stage-name replacement identity/mode = %v/%v; want %v", foreignAfter, err, foreignBefore.Mode())
+		}
+		requireFileBytes(t, stagePath, foreign)
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cleanup uncertainty created destination: %v", err)
+		}
+	})
+
+	t.Run("missing owned pathname stays uncertain", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "output.pcv")
+		operations, _ := realRenameOperations(t, directory)
+		stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		stagePath := stage.stagePath
+		if _, err := stage.File().Write([]byte("unlinked operation-owned plaintext")); err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("write owned stage: %v", err)
+		}
+		if err := os.Remove(stagePath); err != nil {
+			_ = stage.Cleanup()
+			t.Skipf("platform prevents unlinking an open stage: %v", err)
+		}
+
+		cleanupErr := stage.Cleanup()
+		if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
+			t.Fatalf("cleanup with missing owned pathname = %v; want ErrCleanupIncomplete, never inferred from absence", cleanupErr)
 		}
 		if repeated := stage.Cleanup(); !errors.Is(repeated, cleanupErr) {
 			t.Fatalf("repeated cleanup = %v; want stable classification %v", repeated, cleanupErr)
