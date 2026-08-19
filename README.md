@@ -68,9 +68,10 @@ sudo apt install -y libc6 libgcc-s1 libgl1 libgtk-3-0 libstdc++6 libx11-6
 ## Android
 The native Android app requires Android 7.0 or newer on a 64-bit ARM (<code>arm64-v8a</code>) or x86-64 device. Download the signed universal 64-bit APK <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG-android-universal.apk">here</a>, or choose the smaller matching per-ABI APK from the latest GitHub release. Historical 32-bit APKs remain available with their original releases but are no longer supported. PR artifacts remain debug/testing-only.
 
-*Verification info:*
-App ID: `io.github.picocrypt_ng.picocrypt_ng`
-SHA256 hash:
+**Verification info:**
+
+- App ID: `io.github.picocrypt_ng.picocrypt_ng`  
+- SHA256 hash:  
 ```
 E2:F2:A9:71:23:1A:A0:B8:68:82:C6:3B:87:B6:89:C7:16:32:C6:D5:51:68:B1:CE:85:69:52:D0:7F:61:72:B7
 ```
