@@ -50,7 +50,7 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.26.5"
+        go-version: "1.26.6"
         cache-dependency-path: src/go.sum
 
     - name: Update repository
@@ -86,7 +86,7 @@ jobs:
         cd src
         GOMAXPROCS=1 GOOS=js GOARCH=wasm go test -count=1 \
           -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-          -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness)$' ./cmd/wasm
+          -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness|TestBridgePCV3UnsupportedBeforeKDF)$' ./cmd/wasm
 
     - name: Run tests
       run: |

@@ -1,0 +1,58 @@
+# Reviewed public test-vector false positives.
+#
+# Commit-scoped entries preserve detection everywhere else in history. The
+# line-scoped entries cover the current tree only; moving a frozen vector or
+# adding another finding requires a new review.
+
+# Historical findings.
+3bed10bfeffc827da867db5a6d150978814760d0:src/internal/pcv3corpus/loader_test.go:generic-api-key:1553
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:46
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:111
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:176
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:241
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:306
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:371
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:436
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:445
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:501
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:510
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:566
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:631
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:769
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:847
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:937
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:1043
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:1117
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:1198
+bc2f054088efb69eae0441ecfa59ed2da83d1f6b:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:1279
+8d68dc13f1331d17117e968578757159e8407859:src/internal/pcv3/normal_types_test.go:generic-api-key:36
+ffd8602a14d4b1755f723f12b0ce66cde1d8a2ef:src/internal/pcv3corpus/normal_fixture.go:generic-api-key:319
+7097566da181bd6fb9b3682189998c8f1ca382a0:src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:101
+
+# Current-tree findings.
+src/internal/crypto/crypto_test.go:generic-api-key:247
+src/internal/pcv3/normal_types_test.go:generic-api-key:44
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:35
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:44
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:101
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:166
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:231
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:296
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:361
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:426
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:491
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:556
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:565
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:621
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:630
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:686
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:751
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:889
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:967
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:1057
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:1163
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:1237
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:1318
+src/internal/pcv3/testdata/normal/manifest.json:generic-api-key:1399
+src/internal/pcv3corpus/loader_test.go:generic-api-key:1675
+src/internal/pcv3corpus/normal_fixture.go:generic-api-key:324

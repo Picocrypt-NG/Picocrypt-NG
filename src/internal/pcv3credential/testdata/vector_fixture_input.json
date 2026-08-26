@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "public_test_data_notice": "PUBLIC DETERMINISTIC PCV3 TEST DATA; NOT SECRET OR OPERATIONAL CREDENTIALS OR KEYS",
+  "credential_cases": [
+    {
+      "id": "password-only-nfc",
+      "credential_mode": 1,
+      "keyfile_mode": 0,
+      "transcript_hex": "0101000000000005436166c3a90000",
+      "normal_input_hex": "47156ab898a6329d3388ca7d762b35af622897e7ce3e7da960aa55f9b1051073afeb902632ea30ddef7d6da4fc6f12c34493bb5abda4ee9a3ac191cba09dd011"
+    },
+    {
+      "id": "keyfiles-only-ordered",
+      "credential_mode": 2,
+      "keyfile_mode": 1,
+      "transcript_hex": "0102010000000000000208fdf76ad6cbc6d144ac0c77f6a6d9a2e2c0af9b372b1af799540cb8e677e78655037c27d86a76c7d61cce3aa2dc97a778dbefb63cecc9be20adda385935e0d5",
+      "normal_input_hex": "b46f148394701876e14463e4e49ea0e47a5ba76bf798f165452413902273081f466f22547c86aeca4185d13e706cd3eec72eaa59a6983fe9115ea27d25715420"
+    },
+    {
+      "id": "combined-ordered",
+      "credential_mode": 3,
+      "keyfile_mode": 1,
+      "transcript_hex": "01030100000000036d697800026d6788bf3bb7ebee87c9c2503a97aacdd7912e8b4093d4c99f17843af69f2f549eb695bdf185f656ac1ee1f68647bbd6c2288ef9f8a5c5b9ef3fec6336b7e3e0",
+      "normal_input_hex": "d4ac95f6c2f0d7ddfe7eadd0a7a01d527acc8c302876884f9c5fb240446f0655d5e0201aecfb73af77e07ac7e18692271a6bec281bc8fc7b270aec30d99f1b02"
+    },
+    {
+      "id": "combined-unordered",
+      "credential_mode": 3,
+      "keyfile_mode": 2,
+      "transcript_hex": "01030200000000036d697800026d6788bf3bb7ebee87c9c2503a97aacdd7912e8b4093d4c99f17843af69f2f549eb695bdf185f656ac1ee1f68647bbd6c2288ef9f8a5c5b9ef3fec6336b7e3e0",
+      "normal_input_hex": "5089ee8f6c1fcce5338e0fb2054b8ec9d461d5d5987627d866329e8bc6eb07965af1a1fdd1c3f89c92838ac6e0080629eacf5935decdaff29301678550085544"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "normal-1",
+      "profile_id": 1,
+      "suite_id": 1,
+      "argon2_version": 19,
+      "time": 4,
+      "memory_kib": 1048576,
+      "parallelism": 4,
+      "output_bytes": 32,
+      "argon_salt_hex": "000102030405060708090a0b0c0d0e0f",
+      "credential_case_id": "combined-ordered",
+      "volume_id_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "volume_key_hex": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+      "schedule": [
+        {
+          "id": "credential-wrap-xchacha20-primary",
+          "root": "credential-prk",
+          "suite_id": 1,
+          "role": 0,
+          "label": "credential/wrap/xchacha20",
+          "output_bytes": 32
+        },
+        {
+          "id": "credential-wrap-xchacha20-backup",
+          "root": "credential-prk",
+          "suite_id": 1,
+          "role": 1,
+          "label": "credential/wrap/xchacha20",
+          "output_bytes": 32
+        },
+        {
+          "id": "credential-wrap-mac-primary",
+          "root": "credential-prk",
+          "suite_id": 1,
+          "role": 0,
+          "label": "credential/wrap/mac",
+          "output_bytes": 32
+        },
+        {
+          "id": "credential-wrap-mac-backup",
+          "root": "credential-prk",
+          "suite_id": 1,
+          "role": 1,
+          "label": "credential/wrap/mac",
+          "output_bytes": 32
+        },
+        {
+          "id": "volume-replica-mac-primary",
+          "root": "volume-prk",
+          "suite_id": 1,
+          "role": 0,
+          "label": "volume/replica/mac",
+          "output_bytes": 32
+        },
+        {
+          "id": "volume-replica-mac-backup",
+          "root": "volume-prk",
+          "suite_id": 1,
+          "role": 1,
+          "label": "volume/replica/mac",
+          "output_bytes": 32
+        },
+        {
+          "id": "volume-metadata-mac",
+          "root": "volume-prk",
+          "suite_id": 1,
+          "role": 255,
+          "label": "volume/metadata/mac",
+          "output_bytes": 32
+        },
+        {
+          "id": "volume-payload-xchacha20",
+          "root": "volume-prk",
+          "suite_id": 1,
+          "role": 255,
+          "label": "volume/payload/xchacha20",
+          "output_bytes": 32
+        },
+        {
+          "id": "volume-payload-mac",
+          "root": "volume-prk",
+          "suite_id": 1,
+          "role": 255,
+          "label": "volume/payload/mac",
+          "output_bytes": 32
+        }
+      ]
+    },
+    {
+      "id": "paranoid-1",
+      "profile_id": 2,
+      "suite_id": 2,
+      "argon2_version": 19,
+      "time": 8,
+      "memory_kib": 1048576,
+      "parallelism": 8,
+      "output_bytes": 32,
+      "argon_salt_hex": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "credential_case_id": "combined-unordered",
+      "volume_id_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "volume_key_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "schedule": [
+        {
+          "id": "credential-wrap-xchacha20-primary",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 0,
+          "label": "credential/wrap/xchacha20",
+          "output_bytes": 32
+        },
+        {
+          "id": "credential-wrap-xchacha20-backup",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 1,
+          "label": "credential/wrap/xchacha20",
+          "output_bytes": 32
+        },
+        {
+          "id": "credential-wrap-serpent-primary",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 0,
+          "label": "credential/wrap/serpent",
+          "output_bytes": 32
+        },
+        {
+          "id": "credential-wrap-serpent-backup",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 1,
+          "label": "credential/wrap/serpent",
+          "output_bytes": 32
+        },
+        {
+          "id": "credential-wrap-mac-primary",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 0,
+          "label": "credential/wrap/mac",
+          "output_bytes": 32
+        },
+        {
+          "id": "credential-wrap-mac-backup",
+          "root": "credential-prk",
+          "suite_id": 2,
+          "role": 1,
+          "label": "credential/wrap/mac",
+          "output_bytes": 32
+        },
+        {
+          "id": "volume-replica-mac-primary",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 0,
+          "label": "volume/replica/mac",
+          "output_bytes": 32
+        },
+        {
+          "id": "volume-replica-mac-backup",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 1,
+          "label": "volume/replica/mac",
+          "output_bytes": 32
+        },
+        {
+          "id": "volume-metadata-mac",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 255,
+          "label": "volume/metadata/mac",
+          "output_bytes": 32
+        },
+        {
+          "id": "volume-payload-xchacha20",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 255,
+          "label": "volume/payload/xchacha20",
+          "output_bytes": 32
+        },
+        {
+          "id": "volume-payload-serpent",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 255,
+          "label": "volume/payload/serpent",
+          "output_bytes": 32
+        },
+        {
+          "id": "volume-payload-mac",
+          "root": "volume-prk",
+          "suite_id": 2,
+          "role": 255,
+          "label": "volume/payload/mac",
+          "output_bytes": 32
+        }
+      ]
+    }
+  ]
+}

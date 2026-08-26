@@ -25,7 +25,12 @@ const (
 )
 
 func keyfileApplicable(mode string, required bool, deniable bool) bool {
-	return mode != "decrypt" || required || deniable
+	return mode == "decrypt" && (required || deniable)
+}
+
+func keyfileApplicableForSnapshot(snap app.UISnapshot) bool {
+	return snap.PCV3Route == app.PCV3RouteReady ||
+		keyfileApplicable(snap.Mode, snap.Keyfile, snap.Deniability)
 }
 
 func keyfileDisplayLabel(required bool, count int, applicable bool) string {
@@ -226,8 +231,7 @@ func (a *App) createKeyfile() {
 func (a *App) updateKeyfileUIState(mainDisabled bool, snap app.UISnapshot) {
 	// New v2 keyfile writes are frozen; selection remains available only when a
 	// legacy volume requires keyfiles (or a deniable header cannot say yet).
-	keyfileDisabled := mainDisabled || snap.Mode == "encrypt" ||
-		(snap.Mode == "decrypt" && !snap.Keyfile && !snap.Deniability)
+	keyfileDisabled := mainDisabled || snap.Mode == "encrypt" || !keyfileApplicableForSnapshot(snap)
 	if a.keyfileEditBtn != nil {
 		if keyfileDisabled {
 			a.keyfileEditBtn.Disable()

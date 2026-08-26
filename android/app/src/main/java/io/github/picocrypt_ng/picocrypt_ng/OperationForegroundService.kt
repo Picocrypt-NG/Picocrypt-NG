@@ -14,18 +14,73 @@ import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val OPERATION_NOTIFICATION_CHANNEL_ID = "operation_progress"
+
+internal fun shouldStopOperationForegroundHost(
+    operation: OperationState?,
+    pcv3Busy: Boolean,
+): Boolean = (operation == null || operation.done) && !pcv3Busy
+
+/** One immediate service-owned cadence step; neither UI polling nor resource data is involved. */
+internal suspend fun pollOperationForegroundOwners(
+    operation: OperationState?,
+    pcv3Busy: Boolean,
+    pollLegacy: suspend () -> Unit,
+    refreshPcv3: suspend () -> Unit,
+) {
+    if (pcv3Busy) refreshPcv3()
+    if (operation != null && !operation.done) pollLegacy()
+}
+
+/** Timeout requests cancellation from every owner that can still hold native work. */
+internal suspend fun cancelOperationForegroundOwners(
+    operation: OperationState?,
+    pcv3Busy: Boolean,
+    cancelLegacy: suspend () -> Unit,
+    cancelPcv3: suspend () -> Unit,
+) {
+    var firstCancellation: CancellationException? = null
+    var firstFailure: Throwable? = null
+
+    withContext(NonCancellable) {
+        suspend fun attempt(cancel: suspend () -> Unit) {
+            try {
+                cancel()
+            } catch (error: CancellationException) {
+                if (firstCancellation == null) firstCancellation = error
+            } catch (error: Exception) {
+                if (firstFailure == null) firstFailure = error
+            } catch (error: LinkageError) {
+                if (firstFailure == null) firstFailure = error
+            }
+        }
+
+        if (operation != null && !operation.done) {
+            attempt(cancelLegacy)
+        }
+        if (pcv3Busy) {
+            attempt(cancelPcv3)
+        }
+    }
+
+    // Throw outside withContext so coroutine stack-trace recovery cannot replace the exact cause.
+    firstCancellation?.let { throw it }
+    firstFailure?.let { throw it }
+}
 
 internal fun buildOperationNotification(
     context: Context,
@@ -60,12 +115,11 @@ internal fun buildOperationNotification(
 }
 
 /**
- * Foreground service (type dataSync) that hosts an active encrypt/decrypt operation so it
- * survives the app being backgrounded.
+ * Foreground service (type dataSync) that hosts active legacy or PCV3 native ownership so it
+ * survives UI pause and ViewModel teardown.
  *
- * The service owns its own stop lifecycle: it observes [OperationManager.currentOperation] and,
- * when that becomes null OR the operation is done, demotes itself and stops. Callers only need to
- * START it (from a user-initiated tap while the app is foreground) when an operation begins.
+ * It stops only after both owners are inactive. PCV3 resource observations remain private to the
+ * lifecycle refresh and never enter notifications.
  */
 class OperationForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -78,38 +132,51 @@ class OperationForegroundService : Service() {
 
         // Register exactly once for the service's lifetime (onCreate runs once;
         // onStartCommand runs on every start() and would otherwise stack collectors).
-        OperationManager.currentOperation
-            .onEach { state ->
-                if (state == null || state.done) {
+        combine(
+            OperationManager.currentOperation,
+            OperationManager.currentPcv3Busy,
+        ) { state, pcv3Busy -> state to pcv3Busy }
+            .onEach { (state, pcv3Busy) ->
+                if (shouldStopOperationForegroundHost(state, pcv3Busy)) {
                     stopSelfAndForeground()
                 } else {
+                    val activeLegacy = state?.takeUnless { it.done }
                     notificationManager().notify(
                         NOTIFICATION_ID,
                         buildOperationNotification(
                             this,
-                            state.type,
-                            state.status,
-                            state.detail,
-                            state.progress,
+                            activeLegacy?.type,
+                            activeLegacy?.status ?: OperationStatusData(OperationStatus.WORKING),
+                            activeLegacy?.detail ?: OperationProgressDetail(OperationProgress.NONE),
+                            activeLegacy?.progress ?: 0f,
                         )
                     )
                 }
             }
             .launchIn(scope)
 
-        // Self-driving poll loop: advances OperationManager state even when no UI
-        // ViewModel is alive (e.g. the app was swiped from recents mid-operation),
-        // so the collector above eventually observes `done` and self-stops.
-        scope.launch {
+        // Immediate first step is required because a Go KDF challenge is time-bounded.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
             while (isActive) {
-                OperationManager.pollProgress()
+                val operation = OperationManager.currentOperation.value
+                val pcv3Busy = OperationManager.currentPcv3Busy.value
+                if (shouldStopOperationForegroundHost(operation, pcv3Busy)) {
+                    stopSelfAndForeground()
+                    break
+                }
+                pollOperationForegroundOwners(
+                    operation = operation,
+                    pcv3Busy = pcv3Busy,
+                    pollLegacy = { OperationManager.pollProgress() },
+                    refreshPcv3 = { OperationManager.refreshPcv3() },
+                )
                 delay(POLL_INTERVAL_MS)
             }
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val op = OperationManager.currentOperation.value
+        val op = OperationManager.currentOperation.value?.takeUnless { it.done }
         startForegroundCompat(
             buildOperationNotification(
                 this,
@@ -126,13 +193,26 @@ class OperationForegroundService : Service() {
      * Called by the system when a dataSync foreground service exceeds its time limit
      * (6h / 24h on Android 15+). Cancel the operation and stop promptly to avoid a crash.
      */
-    @OptIn(DelicateCoroutinesApi::class)
     @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
     override fun onTimeout(startId: Int, fgsType: Int) {
-        // Cancel on a process-lifetime scope: stopSelf() below cancels `scope`, so a cancel
-        // launched on `scope` could be cancelled before it signals the native Go operation.
-        GlobalScope.launch { OperationManager.cancelOperation() }
-        stopSelfAndForeground()
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                cancelOperationForegroundOwners(
+                    operation = OperationManager.currentOperation.value,
+                    pcv3Busy = OperationManager.currentPcv3Busy.value,
+                    cancelLegacy = { OperationManager.cancelOperation() },
+                    cancelPcv3 = { OperationManager.cancelPcv3() },
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                // Timeout still must demote the service after both bounded requests were attempted.
+            } catch (_: LinkageError) {
+                // A stale native boundary cannot keep a timed-out foreground service alive.
+            } finally {
+                stopSelfAndForeground()
+            }
+        }
     }
 
     private fun stopSelfAndForeground() {
@@ -170,7 +250,7 @@ class OperationForegroundService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 1
-        private const val POLL_INTERVAL_MS = 1000L
+        private const val POLL_INTERVAL_MS = 500L
 
         /**
          * Starts the service in the foreground. Must be called while the app is in the

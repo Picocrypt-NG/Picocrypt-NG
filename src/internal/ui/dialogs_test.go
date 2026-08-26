@@ -1,11 +1,17 @@
 package ui
 
 import (
+	"Picocrypt-NG/internal/app"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/storage"
+	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/widget"
 )
 
 // TestAboutModalShowsAppVersion pins the GUI's only version indicator: the
@@ -54,5 +60,351 @@ func TestShouldShowOverwriteModalSkipsDialogConfirmedOutput(t *testing.T) {
 	}
 	if !showOverwriteModalForOutput(true, false, false) {
 		t.Fatal("plain existing output should still trigger overwrite modal")
+	}
+}
+
+// TestPCV3ChangeOutputSelectionUsesFolderPickerWithoutTouchingDestination
+// drives the production Change surface. It must require a folder picker, then
+// preserve an existing target and leave a new target absent until the PCV3
+// executor owns publication.
+func TestPCV3ChangeOutputSelectionUsesFolderPickerWithoutTouchingDestination(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.pcv3")
+	if err := os.WriteFile(input, []byte("pcv3 input"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	source, err := os.Open(input)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, filepath.Join(dir, "suggested-output"), int64(len("pcv3 input"))) {
+		t.Fatal("SetPCV3Ready rejected regular PCV3 input")
+	}
+	fyne.DoAndWait(a.updateUIState)
+
+	sentinel := filepath.Join(dir, "existing-output")
+	sentinelBytes := []byte("do not modify")
+	if err := os.WriteFile(sentinel, sentinelBytes, 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	fyne.DoAndWait(a.changeBtn.OnTapped)
+	selectPCV3FolderOutputDestination(t, a, filepath.Base(sentinel))
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != string(sentinelBytes) {
+		t.Fatalf("Change modified existing destination: read = %q, err = %v", got, err)
+	}
+
+	newDestination := filepath.Join(dir, "new-output")
+	fyne.DoAndWait(a.changeBtn.OnTapped)
+	selectPCV3FolderOutputDestination(t, a, filepath.Base(newDestination))
+	if _, err := os.Stat(newDestination); !os.IsNotExist(err) {
+		t.Fatalf("Change created destination before the PCV3 executor: stat(%q) = %v", newDestination, err)
+	}
+	snap := a.State.UISnapshot()
+	if snap.OutputFile != newDestination || snap.Status.Kind != app.StatusReady {
+		t.Fatalf("Change did not update ready output: %#v", snap)
+	}
+}
+
+// TestApplyPCV3OutputSelectionDoesNotTouchDestination isolates the path-only
+// callback seam used by Change. It must update the ready destination without
+// opening, truncating, renaming, or deleting either a pre-existing target or
+// a new target before the PCV3 executor owns publication.
+func TestApplyPCV3OutputSelectionDoesNotTouchDestination(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.pcv3")
+	if err := os.WriteFile(input, []byte("pcv3 input"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	source, err := os.Open(input)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, filepath.Join(dir, "suggested-output"), int64(len("pcv3 input"))) {
+		t.Fatal("SetPCV3Ready rejected regular PCV3 input")
+	}
+
+	sentinel := filepath.Join(dir, "existing-output")
+	sentinelBytes := []byte("do not modify")
+	if err := os.WriteFile(sentinel, sentinelBytes, 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	ticket := pcv3ReadyOutputTicket(t, a)
+	if err := a.applyPCV3OutputSelection(ticket, dir, filepath.Base(sentinel)); err != nil {
+		t.Fatalf("apply selected destination: %v", err)
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != string(sentinelBytes) {
+		t.Fatalf("pre-existing destination changed: read = %q, err = %v", got, err)
+	}
+
+	newDestination := filepath.Join(dir, "new-output")
+	if err := a.applyPCV3OutputSelection(ticket, dir, filepath.Base(newDestination)); err != nil {
+		t.Fatalf("apply new destination: %v", err)
+	}
+	if _, err := os.Stat(newDestination); !os.IsNotExist(err) {
+		t.Fatalf("new destination exists before executor: stat(%q) = %v", newDestination, err)
+	}
+	snap := a.State.UISnapshot()
+	if snap.OutputFile != newDestination {
+		t.Fatalf("OutputFile = %q, want %q", snap.OutputFile, newDestination)
+	}
+	if snap.Status.Kind != app.StatusReady {
+		t.Fatalf("status = %v, want ready", snap.Status.Kind)
+	}
+}
+
+// TestApplyPCV3OutputSelectionRejectsUnsafeFilename ensures a cancelled or
+// invalid filename leaves both the operation state and the filesystem as it
+// was. The folder picker callback takes the same no-op path on cancellation or
+// an error before this validation is reached.
+func TestApplyPCV3OutputSelectionRejectsUnsafeFilename(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.pcv3")
+	if err := os.WriteFile(input, []byte("pcv3 input"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	source, err := os.Open(input)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	originalOutput := filepath.Join(dir, "suggested-output")
+	if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, originalOutput, int64(len("pcv3 input"))) {
+		t.Fatal("SetPCV3Ready rejected regular PCV3 input")
+	}
+	before := a.State.UISnapshot()
+
+	if err := a.applyPCV3OutputSelection(pcv3ReadyOutputTicket(t, a), dir, "../outside"); err == nil {
+		t.Fatal("unsafe filename was accepted")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "outside")); !os.IsNotExist(err) {
+		t.Fatalf("unsafe selection created a path: %v", err)
+	}
+	snap := a.State.UISnapshot()
+	if snap.OutputFile != originalOutput || snap.Status != before.Status {
+		t.Fatalf("invalid selection changed state: output=%q status=%#v", snap.OutputFile, snap.Status)
+	}
+}
+
+// TestPCV3OutputFolderSelectionCancellationOrErrorIsNoOp protects the picker
+// boundary itself: cancellation and a picker failure must retain the chosen
+// output, ready state, and every destination byte unchanged.
+func TestPCV3OutputFolderSelectionCancellationOrErrorIsNoOp(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.pcv3")
+	if err := os.WriteFile(input, []byte("pcv3 input"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	source, err := os.Open(input)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	output := filepath.Join(dir, "existing-output")
+	sentinelBytes := []byte("do not modify")
+	if err := os.WriteFile(output, sentinelBytes, 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, output, int64(len("pcv3 input"))) {
+		t.Fatal("SetPCV3Ready rejected regular PCV3 input")
+	}
+	before := a.State.UISnapshot()
+
+	ticket := pcv3ReadyOutputTicket(t, a)
+	a.handlePCV3OutputFolderSelection(ticket, nil, nil)
+	a.handlePCV3OutputFolderSelection(ticket, nil, os.ErrPermission)
+
+	if got, err := os.ReadFile(output); err != nil || string(got) != string(sentinelBytes) {
+		t.Fatalf("picker cancellation or error changed destination: read = %q, err = %v", got, err)
+	}
+	if snap := a.State.UISnapshot(); snap.OutputFile != before.OutputFile || snap.Status != before.Status {
+		t.Fatalf("picker cancellation or error changed state: output=%q status=%#v", snap.OutputFile, snap.Status)
+	}
+}
+
+// TestPCV3OutputFolderSelectionRejectsNonFileURI keeps a provider URI from
+// being converted to a local-looking path. The desktop PCV3 executor owns only
+// local destinations selected through the folder picker.
+func TestPCV3OutputFolderSelectionRejectsNonFileURI(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.pcv3")
+	if err := os.WriteFile(input, []byte("pcv3 input"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	source, err := os.Open(input)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	originalOutput := filepath.Join(dir, "existing-output")
+	if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, originalOutput, int64(len("pcv3 input"))) {
+		t.Fatal("SetPCV3Ready rejected regular PCV3 input")
+	}
+	nonFileURI, err := storage.ParseURI("content:///otherapp/output")
+	if err != nil {
+		t.Fatalf("parse non-file URI: %v", err)
+	}
+	a.handlePCV3OutputFolderSelection(pcv3ReadyOutputTicket(t, a), testListableURI{URI: nonFileURI}, nil)
+	if a.Window.Canvas().Overlays().Top() != nil {
+		t.Fatal("non-file folder URI opened a filename form")
+	}
+	if snap := a.State.UISnapshot(); snap.OutputFile != originalOutput {
+		t.Fatalf("non-file folder URI changed output: %q", snap.OutputFile)
+	}
+}
+
+// TestPCV3ChangeOutputSelectionRejectsStaleReadyTicket reproduces A's open
+// folder/form, a reset and Ready selection B, then A's delayed confirmation.
+// The stale confirmation must not alter B or create A's requested destination.
+func TestPCV3ChangeOutputSelectionRejectsStaleReadyTicket(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	dir := t.TempDir()
+	aInput := filepath.Join(dir, "a.pcv3")
+	bInput := filepath.Join(dir, "b.pcv3")
+	if err := os.WriteFile(aInput, []byte("A"), 0o600); err != nil {
+		t.Fatalf("write A: %v", err)
+	}
+	if err := os.WriteFile(bInput, []byte("B"), 0o600); err != nil {
+		t.Fatalf("write B: %v", err)
+	}
+	aSource, err := os.Open(aInput)
+	if err != nil {
+		t.Fatalf("open A: %v", err)
+	}
+	if !a.State.SetPCV3Ready(aSource, app.PCV3FormatNormal, aInput, filepath.Join(dir, "a-output"), 1) {
+		t.Fatal("SetPCV3Ready rejected A")
+	}
+	fyne.DoAndWait(func() {
+		a.updateUIState()
+		a.changeBtn.OnTapped()
+	})
+	entry, confirm := openPCV3OutputFilenameForm(t, a)
+
+	a.State.Reset()
+	bSource, err := os.Open(bInput)
+	if err != nil {
+		t.Fatalf("open B: %v", err)
+	}
+	bOutput := filepath.Join(dir, "b-output")
+	if !a.State.SetPCV3Ready(bSource, app.PCV3FormatNormal, bInput, bOutput, 1) {
+		t.Fatal("SetPCV3Ready rejected B")
+	}
+	staleDestination := filepath.Join(dir, "a-stale-output")
+	entry.SetText(filepath.Base(staleDestination))
+	test.Tap(confirm)
+
+	if _, err := os.Stat(staleDestination); !os.IsNotExist(err) {
+		t.Fatalf("stale A confirmation created output: %v", err)
+	}
+	if snap := a.State.UISnapshot(); snap.OutputFile != bOutput {
+		t.Fatalf("stale A confirmation changed B output: %q", snap.OutputFile)
+	}
+}
+
+func selectPCV3FolderOutputDestination(t *testing.T, a *App, filename string) {
+	t.Helper()
+	entry, buttons := outputPickerControls(t, a)
+	if entry != nil || buttons["Save"] != nil {
+		t.Fatal("PCV3 Change used a writer-based save picker instead of folder selection")
+	}
+	open := buttons["Open"]
+	if open == nil {
+		t.Fatal("PCV3 Change did not expose a folder Open action")
+	}
+	test.Tap(open)
+	entry, confirm := pcv3OutputFilenameFormControls(t, a)
+	entry.SetText(filename)
+	test.Tap(confirm)
+}
+
+func openPCV3OutputFilenameForm(t *testing.T, a *App) (*widget.Entry, *widget.Button) {
+	t.Helper()
+	entry, buttons := outputPickerControls(t, a)
+	if entry != nil || buttons["Save"] != nil || buttons["Open"] == nil {
+		t.Fatal("PCV3 Change did not show the expected folder picker")
+	}
+	test.Tap(buttons["Open"])
+	return pcv3OutputFilenameFormControls(t, a)
+}
+
+func pcv3OutputFilenameFormControls(t *testing.T, a *App) (*widget.Entry, *widget.Button) {
+	t.Helper()
+	entry, buttons := outputPickerControls(t, a)
+	confirm := buttons[tr("action.change", "Change")]
+	if entry == nil || confirm == nil {
+		t.Fatal("PCV3 filename form did not expose its entry and Change action")
+	}
+	return entry, confirm
+}
+
+func outputPickerControls(t *testing.T, a *App) (*widget.Entry, map[string]*widget.Button) {
+	t.Helper()
+	overlay := a.Window.Canvas().Overlays().Top()
+	if overlay == nil {
+		t.Fatal("output picker was not shown")
+	}
+	buttons := make(map[string]*widget.Button)
+	var entry *widget.Entry
+	for _, object := range test.LaidOutObjects(overlay) {
+		switch object := object.(type) {
+		case *widget.Entry:
+			entry = object
+		case *widget.Button:
+			buttons[object.Text] = object
+		}
+	}
+	return entry, buttons
+}
+
+func pcv3ReadyOutputTicket(t *testing.T, a *App) uint64 {
+	t.Helper()
+	ticket, _, ok := a.State.PCV3ReadyOutputSelection()
+	if !ok {
+		t.Fatal("PCV3 Ready selection did not expose an output ticket")
+	}
+	return ticket
+}
+
+type testListableURI struct{ fyne.URI }
+
+func (testListableURI) List() ([]fyne.URI, error) { return nil, nil }
+
+func TestShowFileDialogWithResizeSupportsFyne28Lifecycle(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	location, err := storage.ListerForURI(storage.NewFileURI(t.TempDir()))
+	if err != nil {
+		t.Fatalf("create save-dialog location: %v", err)
+	}
+	saveDialog := dialog.NewFileSave(func(fyne.URIWriteCloser, error) {}, a.Window)
+	saveDialog.SetLocation(location)
+	overlaysBefore := len(a.Window.Canvas().Overlays().List())
+
+	fyne.DoAndWait(func() {
+		a.Window.SetFixedSize(true)
+		a.showFileDialogWithResize(saveDialog, fyne.NewSize(600, 450))
+	})
+
+	if got := len(a.Window.Canvas().Overlays().List()); got != overlaysBefore+1 {
+		t.Fatalf("file dialog overlay count = %d; want %d", got, overlaysBefore+1)
+	}
+	if a.Window.FixedSize() {
+		t.Fatal("parent window stayed fixed while the file dialog was open")
+	}
+
+	fyne.DoAndWait(saveDialog.Dismiss)
+
+	if got := len(a.Window.Canvas().Overlays().List()); got != overlaysBefore {
+		t.Fatalf("overlay count after dismiss = %d; want %d", got, overlaysBefore)
+	}
+	if !a.Window.FixedSize() {
+		t.Fatal("parent window was not restored to fixed size after dismiss")
 	}
 }

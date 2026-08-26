@@ -86,6 +86,17 @@ sealed class AppError(
             @StringRes messageResId: Int? = R.string.error_file_not_found,
             messageArgs: List<Any> = emptyList(),
         ) : OperationError(userMessage, technicalMessage, messageResId, messageArgs)
+
+        /**
+         * A claimed PCV3 volume that this Android build cannot safely process.
+         * This terminal state deliberately offers neither retry nor force-decrypt.
+         */
+        class PCVUnavailable(
+            userMessage: String = "This PCV volume is not supported by this version. Keep the original file; no output was created.",
+            technicalMessage: String? = null,
+            @StringRes messageResId: Int? = R.string.error_pcv_unavailable,
+            messageArgs: List<Any> = emptyList(),
+        ) : OperationError(userMessage, technicalMessage, messageResId, messageArgs)
         
         /**
          * Generic operation error.
@@ -244,6 +255,11 @@ sealed class AppError(
                     userMessage = "",
                     technicalMessage = errorString,
                     messageResId = R.string.error_file_not_found,
+                )
+                "PCV3_UNSUPPORTED", "PCV3_INVALID_STRUCTURE" -> OperationError.PCVUnavailable(
+                    userMessage = "",
+                    technicalMessage = errorString,
+                    messageResId = R.string.error_pcv_unavailable,
                 )
                 "CANCELLED" -> OperationError.GenericOperation(
                     userMessage = "",

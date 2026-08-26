@@ -24,7 +24,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.26.5"
+        go-version: "1.26.6"
         cache-dependency-path: src/go.sum
 
     - name: Install gomobile
@@ -80,6 +80,14 @@ jobs:
       run: |
         chmod +x build-gomobile.sh
         ./build-gomobile.sh
+
+    - name: Compile PCV3 Phase 1 Go packages for Android
+      run: |
+        cd src
+        for arch in arm64 amd64; do
+          GOMAXPROCS=1 CGO_ENABLED=0 GOOS=android GOARCH="$arch" go build \
+            ./internal/pcv3unicode ./internal/pcv3governance ./internal/pcv3corpus
+        done
 
     - name: Make gradlew executable
       working-directory: android

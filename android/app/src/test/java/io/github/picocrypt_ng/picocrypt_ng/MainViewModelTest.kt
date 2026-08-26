@@ -337,4 +337,188 @@ class MainViewModelTest {
         val errorMessage = viewModel.errorMessage.first()
         assertNull("Error message should be null initially", errorMessage)
     }
+
+    @Test
+    fun `claimed PCV3 transfers strict request and mutable credentials exactly once`() {
+        val source = "/app-private/claimed-input"
+        val keyfiles = listOf(
+            KeyfileInfo("/app-private/key-b", "key-b"),
+            KeyfileInfo("/app-private/duplicate", "duplicate-one"),
+            KeyfileInfo("/app-private/duplicate", "duplicate-two"),
+            KeyfileInfo("/app-private/key-a", "key-a"),
+        )
+
+        viewModel.claimPcv3Normal("misleading.txt", source)
+        viewModel.updateFormData(
+            viewModel.formState.value.copy(
+                pcv3Intent = viewModel.formState.value.pcv3Intent?.copy(
+                    action = Pcv3ActionIntent.FORCE_AUTHENTICATED_ONLY,
+                ),
+            ),
+        )
+        assertNull(
+            "generic form copies must not select a PCV3 operation action",
+            viewModel.formState.value.pcv3Intent?.action,
+        )
+        viewModel.setPcv3Action(Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT)
+        viewModel.setPcv3FactorPolicy(Pcv3FactorPolicyIntent.PASSWORD_AND_KEYFILES)
+        viewModel.setPcv3KeyfileOrder(Pcv3KeyfileOrderIntent.SELECTED)
+        viewModel.updateFormData(viewModel.formState.value.copy(keyfileFilenames = keyfiles))
+        viewModel.updatePasswords(password = "owned password".toCharArray())
+        val ownedPassword = viewModel.formState.value.passwordInput
+
+        val transfer = requireNotNull(viewModel.takePcv3Operation("/app-private/output"))
+
+        assertEquals(Pcv3FormatIntent.NORMAL, transfer.intent.format)
+        assertEquals(Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT, transfer.intent.action)
+        assertEquals("force-unverified-normal", transfer.request.mode)
+        assertEquals("password-and-keyfiles", transfer.request.factorPolicy)
+        assertEquals("ordered", transfer.request.keyfileOrder)
+        assertEquals(source, transfer.request.source)
+        assertEquals("/app-private/output", transfer.request.target)
+        assertEquals(keyfiles.map(KeyfileInfo::internalPath), transfer.request.keyfiles)
+        assertSame("the mutable password owner must move rather than be copied", ownedPassword, transfer.password)
+        assertArrayEquals("owned password".toCharArray(), transfer.password)
+
+        val afterTransfer = viewModel.formState.value
+        assertEquals("", afterTransfer.selectedFilename)
+        assertEquals(0, afterTransfer.passwordInput.size)
+        assertTrue(afterTransfer.keyfileFilenames.isEmpty())
+        assertFalse(afterTransfer.isPcv3Selection)
+        assertFalse(afterTransfer.isEncrypt)
+        assertFalse(afterTransfer.isDecrypt)
+        assertFalse(afterTransfer.isFormValid)
+        assertNull("the content-owned source must not transfer twice", viewModel.takePcv3Operation("/other"))
+
+        transfer.password.fill('\u0000')
+    }
+
+    @Test
+    fun `replacement releases each app owned legacy and PCV3 source once and zeros credentials`() {
+        val legacySource = "/app-private/input_file.txt"
+        val pcv3Source = "/app-private/input_file.pcv"
+        viewModel.updateFormData(
+            TestDataBuilders.createEncryptFormData(
+                selectedFilename = "plain.txt",
+                copiedFilePath = legacySource,
+            ),
+        )
+
+        assertEquals(listOf(legacySource), viewModel.resetFormToDefaults())
+        viewModel.claimPcv3Normal("volume.bin", pcv3Source)
+        viewModel.updatePasswords(
+            password = "secret".toCharArray(),
+            confirmPassword = "secret".toCharArray(),
+        )
+        val passwordOwner = viewModel.formState.value.passwordInput
+        val confirmationOwner = viewModel.formState.value.confirmPasswordInput
+
+        assertEquals(listOf(pcv3Source), viewModel.resetFormToDefaults())
+        assertEquals("the same source must not be released twice", emptyList<String>(), viewModel.resetFormToDefaults())
+        assertTrue(passwordOwner.all { it == '\u0000' })
+        assertTrue(confirmationOwner.all { it == '\u0000' })
+        assertFalse(viewModel.formState.value.isPcv3Selection)
+    }
+
+    @Test
+    fun `explicit D1 moves one legacy candidate without filename inference or remembered intent`() {
+        val source = "/app-private/arbitrary-name.txt"
+        viewModel.updateFormData(
+            TestDataBuilders.createEncryptFormData(
+                selectedFilename = "arbitrary-name.txt",
+                copiedFilePath = source,
+                password = "",
+                confirmPassword = "",
+            ),
+        )
+
+        viewModel.updatePasswords(confirmPassword = "orphan confirmation".toCharArray())
+        assertFalse("D1 must be chosen before either credential field is populated", viewModel.selectPcv3D1())
+        viewModel.updatePasswords(confirmPassword = CharArray(0))
+        assertTrue(viewModel.selectPcv3D1())
+        val selected = viewModel.formState.value
+        assertEquals(Pcv3FormatIntent.D1, selected.pcv3Intent?.format)
+        assertNull(selected.pcv3Intent?.action)
+        assertNull(selected.pcv3Intent?.factorPolicy)
+        assertNull(selected.pcv3Intent?.keyfileOrder)
+        assertEquals("", selected.copiedFilePath)
+        assertTrue(selected.hasSelectedInput)
+        assertFalse(selected.isEncrypt)
+        assertFalse(selected.isDecrypt)
+        assertFalse(selected.isFormValid)
+        assertFalse(savedStateHandle.keys().contains("copied_file_path"))
+
+        val recreated = MainViewModel(mockApplication, savedStateHandle).formState.value
+        assertFalse("D1 intent must never survive process recreation", recreated.isPcv3Selection)
+        assertEquals("", recreated.selectedFilename)
+    }
+
+    @Test
+    fun `refused PCV3 remains visible and releases its source for immediate cleanup only once`() {
+        val source = "/app-private/invalid-claimed-input"
+        val error = AppError.OperationError.PCVUnavailable(technicalMessage = "PCV3_INVALID_STRUCTURE")
+
+        assertEquals(
+            listOf(source),
+            viewModel.retainRefusedPcv3("damaged.bin", source, error),
+        )
+        viewModel.setPcv3Action(Pcv3ActionIntent.DECRYPT)
+        viewModel.setPcv3FactorPolicy(Pcv3FactorPolicyIntent.PASSWORD_ONLY)
+        val rejectedPassword = "secret".toCharArray()
+        viewModel.updatePasswords(password = rejectedPassword)
+        viewModel.updateFormData(
+            viewModel.formState.value.copy(
+                keyfileFilenames = listOf(KeyfileInfo("/app-private/key", "key")),
+            ),
+        )
+
+        val refused = viewModel.formState.value
+        assertTrue(refused.isPcv3Selection)
+        assertTrue(refused.pcvUnavailable)
+        assertNull("an unavailable route must not accept action intent", refused.pcv3Intent?.action)
+        assertNull("an unavailable route must not accept factor intent", refused.pcv3Intent?.factorPolicy)
+        assertFalse("an unavailable route must not retain a password", refused.hasPassword)
+        assertTrue("a rejected mutable password must be zeroed", rejectedPassword.all { it == '\u0000' })
+        assertTrue("an unavailable route must not retain keyfiles", refused.keyfileFilenames.isEmpty())
+        assertFalse(refused.isFormValid)
+        assertNull(viewModel.takePcv3Operation("/app-private/output"))
+        assertSame(error, viewModel.errorMessage.value)
+        assertNull("the refused source was already released for immediate cleanup", viewModel.clearSensitiveData(clearFiles = true))
+        assertNull(viewModel.clearSensitiveData(clearFiles = true))
+    }
+
+    @Test
+    fun `strict transfer preserves each factor policy and unordered duplicate descriptors`() {
+        val duplicateKeyfiles = listOf(
+            KeyfileInfo("/app-private/key-b", "first"),
+            KeyfileInfo("/app-private/key-b", "duplicate"),
+            KeyfileInfo("/app-private/key-a", "last"),
+        )
+        viewModel.claimPcv3Normal("claimed.bin", "/app-private/keyfile-source")
+        viewModel.setPcv3Action(Pcv3ActionIntent.DECRYPT)
+        viewModel.setPcv3FactorPolicy(Pcv3FactorPolicyIntent.KEYFILES_ONLY)
+        viewModel.setPcv3KeyfileOrder(Pcv3KeyfileOrderIntent.ANY)
+        viewModel.updateFormData(viewModel.formState.value.copy(keyfileFilenames = duplicateKeyfiles))
+
+        val keyfileTransfer = requireNotNull(viewModel.takePcv3Operation("/app-private/keyfile-output"))
+        assertEquals("keyfiles", keyfileTransfer.request.factorPolicy)
+        assertEquals("unordered", keyfileTransfer.request.keyfileOrder)
+        assertEquals(duplicateKeyfiles.map(KeyfileInfo::internalPath), keyfileTransfer.request.keyfiles)
+        assertEquals(0, keyfileTransfer.password.size)
+
+        val passwordViewModel = MainViewModel(mockApplication, SavedStateHandle())
+        // A provider display name is untrusted metadata, not start authority.
+        passwordViewModel.claimPcv3Normal("", "/app-private/password-source")
+        passwordViewModel.setPcv3Action(Pcv3ActionIntent.DECRYPT)
+        passwordViewModel.setPcv3FactorPolicy(Pcv3FactorPolicyIntent.PASSWORD_ONLY)
+        passwordViewModel.updatePasswords(password = "secret".toCharArray())
+
+        val passwordTransfer = requireNotNull(
+            passwordViewModel.takePcv3Operation("/app-private/password-output"),
+        )
+        assertEquals("password", passwordTransfer.request.factorPolicy)
+        assertEquals("none", passwordTransfer.request.keyfileOrder)
+        assertTrue(passwordTransfer.request.keyfiles.isEmpty())
+        passwordTransfer.password.fill('\u0000')
+    }
 }

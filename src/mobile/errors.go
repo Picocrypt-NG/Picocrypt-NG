@@ -2,10 +2,115 @@ package mobile
 
 import (
 	"Picocrypt-NG/internal/header"
+	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation"
 	"errors"
 
 	perrors "Picocrypt-NG/internal/errors"
 )
+
+func pcv3DiagnosticCode(diagnostic pcv3operation.Diagnostic) string {
+	switch diagnostic {
+	case pcv3operation.DiagnosticNone:
+		return "none"
+	case pcv3operation.DiagnosticInvalidRequest:
+		return "invalid-request"
+	case pcv3operation.DiagnosticRoutingRefusal:
+		return "routing-refusal"
+	case pcv3operation.DiagnosticCredentialPolicy:
+		return "credential-policy"
+	case pcv3operation.DiagnosticCancellation:
+		return "cancellation"
+	case pcv3operation.DiagnosticCoreFailure:
+		return "core-failure"
+	case pcv3operation.DiagnosticCallbackFailure:
+		return "callback-failure"
+	case pcv3operation.DiagnosticCallbackPanic:
+		return "callback-panic"
+	case pcv3operation.DiagnosticGovernanceRefusal:
+		return "governance-refusal"
+	case pcv3operation.DiagnosticResourceBusy:
+		return "resource-busy"
+	case pcv3operation.DiagnosticResourceInsufficient:
+		return "resource-insufficient"
+	case pcv3operation.DiagnosticResourceUnknown:
+		return "resource-unknown"
+	default:
+		return "unknown"
+	}
+}
+
+func pcv3WarningCode(warning pcv3operation.Warning) string {
+	switch warning {
+	case pcv3operation.WarningAuthenticatedDegraded:
+		return "authenticated-degraded"
+	case pcv3operation.WarningForcePartial:
+		return "force-partial"
+	case pcv3operation.WarningForceUnverified:
+		return "force-unverified"
+	case pcv3operation.WarningDurabilityUncertain:
+		return "durability-uncertain"
+	case pcv3operation.WarningPublicationIndeterminate:
+		return "publication-indeterminate"
+	case pcv3operation.WarningCleanupIncomplete:
+		return "cleanup-incomplete"
+	case pcv3operation.WarningCallbackFailure:
+		return "callback-failure"
+	default:
+		return "unknown"
+	}
+}
+
+func pcv3CompletionCode(completion pcv3operation.CompletionClass) string {
+	switch completion {
+	case pcv3operation.CompletionRefused:
+		return "refused"
+	case pcv3operation.CompletionNoOutput:
+		return "no-output"
+	case pcv3operation.CompletionClean:
+		return "clean"
+	case pcv3operation.CompletionWarning:
+		return "warning"
+	case pcv3operation.CompletionArchivePending:
+		return "archive-pending"
+	case pcv3operation.CompletionDurabilityUncertain:
+		return "durability-uncertain"
+	case pcv3operation.CompletionPublicationIndeterminate:
+		return "publication-indeterminate"
+	default:
+		return "unknown"
+	}
+}
+
+func pcv3ForceProvenance(provenance pcv3.ForceProvenance) string {
+	switch provenance {
+	case pcv3.ForceProvenanceNone:
+		return "none"
+	case pcv3.ForceProvenanceVerified:
+		return "verified"
+	case pcv3.ForceProvenancePartial:
+		return "partial"
+	case pcv3.ForceProvenanceUnverified:
+		return "unverified"
+	default:
+		return "unknown"
+	}
+}
+
+func pcv3D1Provenance(provenance pcv3.D1BootstrapProvenance) string {
+	switch provenance {
+	case pcv3.D1BootstrapProvenanceNone:
+		return "none"
+	case pcv3.D1BootstrapProvenanceFront:
+		return "front"
+	case pcv3.D1BootstrapProvenanceTail:
+		return "tail"
+	case pcv3.D1BootstrapProvenanceMatching:
+		return "matching"
+	default:
+		return "unknown"
+	}
+}
 
 // errorCode maps a pipeline error to a stable, locale-independent code for the
 // Android layer. Empty string means no error.
@@ -41,6 +146,9 @@ func errorCode(err error) string {
 	if err == nil {
 		return ""
 	}
+	if code, ok := pcv3ErrorCode(err); ok {
+		return code
+	}
 
 	// Auth failure: bare sentinel (verify-first path) OR the typed
 	// *header.AuthError returned on the normal decrypt path.
@@ -63,5 +171,24 @@ func errorCode(err error) string {
 		return "CANCELLED"
 	default:
 		return "GENERIC"
+	}
+}
+
+func pcv3ErrorCode(err error) (string, bool) {
+	if errors.Is(err, pcv3.ErrReaderUnavailable) {
+		return pcv3.CodeUnsupported.String(), true
+	}
+
+	var failure pcv3.Failure
+	if !errors.As(err, &failure) {
+		return "", false
+	}
+	switch failure.Code() {
+	case pcv3.CodeUnsupported:
+		return pcv3.CodeUnsupported.String(), true
+	case pcv3.CodeInvalidStructure:
+		return pcv3.CodeInvalidStructure.String(), true
+	default:
+		return "", false
 	}
 }

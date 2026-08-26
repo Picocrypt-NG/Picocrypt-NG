@@ -97,6 +97,7 @@
   "status.completed_some_delete_failed": "已完成（部分文件无法删除）",
   "status.kept_output_unverified": "完整性检查失败；保留的输出未经验证，可能已损坏。",
   "status.completed_volume_delete_failed": "已完成（无法删除加密卷）",
+  "status.pcv_unavailable": "此版本不支持该 PCV 卷。请保留原始文件；未创建任何输出。",
   "drop.prompt": "将文件和文件夹拖到此窗口",
   "drop.failed_walk": "无法遍历拖入的项目",
   "drop.failed_stat_item": "无法获取拖入项目的信息",

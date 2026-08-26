@@ -2,6 +2,7 @@ package cli
 
 import (
 	perrors "Picocrypt-NG/internal/errors"
+	"Picocrypt-NG/internal/pcv3"
 	"archive/zip"
 	"bytes"
 	"errors"
@@ -140,6 +141,86 @@ func cliContractDirNames(t *testing.T, path string) []string {
 func TestCLIInputContract(t *testing.T) {
 	binaryPath := buildCLITestBinary(t)
 	const password = "input-contract-test"
+
+	t.Run("decrypt leaf symlink preserves legacy compatibility without granting PCV3 authority", func(t *testing.T) {
+		t.Run("legacy golden v2 decrypts successfully", func(t *testing.T) {
+			golden, err := filepath.Abs(filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"))
+			if err != nil {
+				t.Fatalf("resolve golden v2 fixture: %v", err)
+			}
+			if _, err := os.Stat(golden); err != nil {
+				t.Fatalf("golden v2 fixture unavailable: %v", err)
+			}
+			dir := t.TempDir()
+			input := filepath.Join(dir, "legacy-link.pcv")
+			if err := os.Symlink(golden, input); err != nil {
+				t.Skipf("leaf symlink unavailable: %v", err)
+			}
+			output := filepath.Join(dir, "recovered.txt")
+
+			result := runCLIInputContractCommand(
+				t, binaryPath, "", "decrypt", input,
+				"-o", output, "-p", "test", "-q", "-y",
+			)
+			if result.exitCode != 0 || len(result.stdout) != 0 || len(result.stderr) != 0 {
+				t.Fatalf(
+					"legacy symlink decrypt = exit %d stdout %q stderr %q; want clean success",
+					result.exitCode, result.stdout, result.stderr,
+				)
+			}
+			got, err := os.ReadFile(output)
+			if err != nil || string(got) != "There is a test file for Picocrypt validation.\n" {
+				t.Fatalf("legacy symlink plaintext = %q, err = %v; want frozen golden plaintext", got, err)
+			}
+		})
+
+		fixture := loadPCV3CLIFixture(t)
+		for _, test := range []struct {
+			name           string
+			args           func(string, string) []string
+			wantDiagnostic string
+		}{
+			{
+				name: "normal PCV3 without explicit intent is stopped by pinned preflight",
+				args: func(input, output string) []string {
+					return []string{"decrypt", input, "-o", output, "-p", "unused", "-q", "-y"}
+				},
+				wantDiagnostic: pcv3.ErrReaderUnavailable.Error(),
+			},
+			{
+				name: "explicit D1 intent is refused before opening the target",
+				args: func(input, output string) []string {
+					return []string{
+						"decrypt", input, "-o", output, "--pcv3-format=d1",
+						"--pcv3-factors=password", "-p", "unused",
+					}
+				},
+				wantDiagnostic: "input source must not be a symlink",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				dir := t.TempDir()
+				target := writePCV3CLIFixture(t, dir, "real.pcv", fixture)
+				input := filepath.Join(dir, "input-link.pcv")
+				if err := os.Symlink(target, input); err != nil {
+					t.Skipf("leaf symlink unavailable: %v", err)
+				}
+				output := filepath.Join(dir, "output")
+				result, observation := runPCV3CLIHelper(t, dir, pcv3CLIHelperConfig{
+					Args:        test.args(input, output),
+					Observation: filepath.Join(dir, "observation.json"),
+				}, nil)
+				if result.exitCode != ExitGeneralError || len(result.stdout) != 0 ||
+					observation.Called || !strings.Contains(result.stderr, test.wantDiagnostic) {
+					t.Fatalf(
+						"PCV3 symlink route = exit %d called %v stdout %q stderr %q; want refusal before operation containing %q",
+						result.exitCode, observation.Called, result.stdout, result.stderr, test.wantDiagnostic,
+					)
+				}
+				assertCLIContractAbsent(t, output, output+".incomplete")
+			})
+		}
+	})
 
 	t.Run("literal pattern-looking path wins over decoy", func(t *testing.T) {
 		dir := t.TempDir()

@@ -103,6 +103,7 @@
   "status.completed_some_delete_failed": "Terminé (certains fichiers n’ont pas pu être supprimés)",
   "status.kept_output_unverified": "Échec de la vérification d’intégrité ; la sortie conservée n’est pas vérifiée et peut être corrompue",
   "status.completed_volume_delete_failed": "Terminé (impossible de supprimer le volume chiffré)",
+  "status.pcv_unavailable": "Ce volume PCV n’est pas pris en charge par cette version. Conservez le fichier d’origine ; aucune sortie n’a été créée.",
   "drop.prompt": "Déposez des fichiers et dossiers dans cette fenêtre",
   "drop.failed_walk": "Impossible d’examiner les éléments déposés",
   "drop.failed_stat_item": "Impossible d’obtenir les informations de l’élément déposé",

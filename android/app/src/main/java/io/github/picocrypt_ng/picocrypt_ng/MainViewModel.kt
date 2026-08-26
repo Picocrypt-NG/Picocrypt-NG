@@ -58,20 +58,209 @@ class MainViewModel(
     fun clearError() {
         _errorMessage.value = null
     }
+
+    /** Retains the content-claimed normal PCV3 copy without entering a legacy route. */
+    @Synchronized
+    fun claimPcv3Normal(selectedFilename: String, ownedCopyPath: String): String? =
+        retainPcv3Selection(selectedFilename, ownedCopyPath, refusedError = null)
+
+    /** Retains bounded refusal metadata and returns every owned copy for immediate cleanup. */
+    @Synchronized
+    fun retainRefusedPcv3(
+        selectedFilename: String,
+        ownedCopyPath: String,
+        error: AppError.OperationError.PCVUnavailable,
+    ): List<String> {
+        if (ownedCopyPath.isBlank()) return emptyList()
+        val replaced = retainPcv3Selection(selectedFilename, ownedCopyPath, refusedError = error)
+        val refused = _formState.value.pcv3OwnedSource?.release()
+        return listOfNotNull(replaced, refused).distinct()
+    }
+
+    private fun retainPcv3Selection(
+        selectedFilename: String,
+        ownedCopyPath: String,
+        refusedError: AppError.OperationError.PCVUnavailable?,
+    ): String? {
+        if (ownedCopyPath.isBlank()) {
+            return null
+        }
+        val current = _formState.value
+        current.clearPasswords()
+        val releasedSource = current.pcv3OwnedSource?.release()
+        val selected = current.copy(
+            selectedFilename = selectedFilename,
+            copiedFilePath = "",
+            comments = "",
+            passwordInput = CharArray(0),
+            confirmPasswordInput = CharArray(0),
+            reedSolomon = false,
+            paranoid = false,
+            deniability = false,
+            verifyFirst = false,
+            keyfileFilenames = emptyList(),
+            keyfileOrdered = false,
+            compress = false,
+            inputFiles = emptyList(),
+            onlyFolders = emptyList(),
+            onlyFiles = emptyList(),
+            selectionKind = SelectionKind.SINGLE_FILE,
+            suggestedOutputName = "",
+            decryptionInfo = null,
+            pcvUnavailable = refusedError != null,
+            pcv3Intent = Pcv3OperationIntent(format = Pcv3FormatIntent.NORMAL),
+            pcv3OwnedSource = Pcv3OwnedSource(ownedCopyPath),
+        )
+
+        clearSavedForm()
+        _formState.value = selected
+        _errorMessage.value = refusedError
+        // Replacing an owner with the same deterministic app-private pathname is
+        // an ownership handoff, not a request to delete the newly retained bytes.
+        return releasedSource?.takeUnless { it == ownedCopyPath }
+    }
+
+    /** Moves one already-copied regular legacy candidate into explicit D1 intent. */
+    @Synchronized
+    fun selectPcv3D1(): Boolean {
+        val current = _formState.value
+        if (current.isPcv3Selection || current.pcvUnavailable ||
+            current.selectionKind != SelectionKind.SINGLE_FILE ||
+            current.copiedFilePath.isBlank() || current.inputFiles.isNotEmpty() ||
+            current.hasAnyCredentialInput
+        ) {
+            return false
+        }
+        _formState.value = current.copy(
+            copiedFilePath = "",
+            comments = "",
+            reedSolomon = false,
+            paranoid = false,
+            deniability = false,
+            verifyFirst = false,
+            keyfileOrdered = false,
+            compress = false,
+            suggestedOutputName = "",
+            decryptionInfo = null,
+            pcv3Intent = Pcv3OperationIntent(format = Pcv3FormatIntent.D1),
+            pcv3OwnedSource = Pcv3OwnedSource(current.copiedFilePath),
+        )
+        clearSavedForm()
+        _errorMessage.value = null
+        return true
+    }
+
+    @Synchronized
+    fun setPcv3Action(action: Pcv3ActionIntent) {
+        updatePcv3Intent { it.copy(action = action) }
+    }
+
+    @Synchronized
+    fun setPcv3FactorPolicy(policy: Pcv3FactorPolicyIntent) {
+        updatePcv3Intent { current ->
+            val currentUsesKeyfiles = current.factorPolicy == Pcv3FactorPolicyIntent.KEYFILES_ONLY ||
+                current.factorPolicy == Pcv3FactorPolicyIntent.PASSWORD_AND_KEYFILES
+            val nextUsesKeyfiles = policy == Pcv3FactorPolicyIntent.KEYFILES_ONLY ||
+                policy == Pcv3FactorPolicyIntent.PASSWORD_AND_KEYFILES
+            current.copy(
+                factorPolicy = policy,
+                keyfileOrder = if (currentUsesKeyfiles && nextUsesKeyfiles) current.keyfileOrder else null,
+            )
+        }
+    }
+
+    @Synchronized
+    fun setPcv3KeyfileOrder(order: Pcv3KeyfileOrderIntent?) {
+        updatePcv3Intent { current ->
+            if (current.factorPolicy == Pcv3FactorPolicyIntent.PASSWORD_ONLY) current
+            else current.copy(keyfileOrder = order)
+        }
+    }
+
+    private inline fun updatePcv3Intent(transform: (Pcv3OperationIntent) -> Pcv3OperationIntent) {
+        val current = _formState.value
+        val intent = current.pcv3Intent ?: return
+        if (current.pcvUnavailable || current.pcv3OwnedSource?.isAvailable() != true) return
+        _formState.value = current.copy(pcv3Intent = transform(intent))
+        clearSavedForm()
+    }
+
+    /**
+     * Atomically validates and transfers one strict PCV3 request. The source path
+     * crosses Kotlin only inside [Pcv3Request], and the original mutable password
+     * buffer becomes the caller's owner. A stale second take always returns null.
+     */
+    @Synchronized
+    fun takePcv3Operation(target: String): Pcv3OperationTransfer? {
+        val current = _formState.value
+        val intent = current.pcv3Intent ?: return null
+        val mode = intent.goModeOrNull() ?: return null
+        val factorPolicy = intent.factorPolicyCodeOrNull() ?: return null
+        val keyfileOrder = intent.keyfileOrderCodeOrNull() ?: return null
+        if (target.isBlank() || !current.isFormValid) return null
+        val source = current.pcv3OwnedSource?.take() ?: return null
+
+        val password = current.passwordInput
+        current.confirmPasswordInput.fill('\u0000')
+        val transfer = Pcv3OperationTransfer(
+            intent = intent,
+            request = Pcv3Request(
+                mode = mode,
+                factorPolicy = factorPolicy,
+                keyfileOrder = keyfileOrder,
+                source = source,
+                target = target,
+                keyfiles = current.keyfileFilenames.map(KeyfileInfo::internalPath),
+            ),
+            password = password,
+        )
+
+        _formState.value = current.copy(
+            selectedFilename = "",
+            copiedFilePath = "",
+            comments = "",
+            passwordInput = CharArray(0),
+            confirmPasswordInput = CharArray(0),
+            keyfileFilenames = emptyList(),
+            inputFiles = emptyList(),
+            onlyFolders = emptyList(),
+            onlyFiles = emptyList(),
+            suggestedOutputName = "",
+            decryptionInfo = null,
+            pcvUnavailable = false,
+            pcv3Intent = null,
+            pcv3OwnedSource = null,
+        )
+        clearSavedForm()
+        _errorMessage.value = null
+        return transfer
+    }
     
     /**
      * Updates the form data with new values.
      * Only saves minimal fields to SavedStateHandle for process recreation.
      * Advanced settings and keyfile settings are NOT persisted.
      */
+    @Synchronized
     fun updateFormData(newData: FormData) {
+        val current = _formState.value
+        if (current.isPcv3Selection) {
+            // Generic UI copies are needed only for the existing keyfile picker. Route,
+            // format, action, factor policy, refusal, and source ownership stay behind
+            // their explicit transitions and cannot be changed by a stale FormData copy.
+            if (current.pcvUnavailable || newData.pcv3OwnedSource !== current.pcv3OwnedSource) {
+                return
+            }
+            _formState.value = current.copy(keyfileFilenames = newData.keyfileFilenames)
+            clearSavedForm()
+            return
+        }
+        // A generic legacy update cannot mint a claimed/refused PCV3 route.
+        if (newData.pcv3Intent != null || newData.pcv3OwnedSource != null || newData.pcvUnavailable) {
+            return
+        }
         _formState.value = newData
-        
-        // Only save minimal fields to SavedStateHandle for process recreation
-        // Do NOT persist advanced settings or keyfile settings
-        savedStateHandle[KEY_SELECTED_FILENAME] = newData.selectedFilename
-        savedStateHandle[KEY_COPIED_FILE_PATH] = newData.copiedFilePath
-        savedStateHandle[KEY_COMMENTS] = newData.comments
+        persistFormData(newData)
         // Note: passwordInput, confirmPasswordInput, decryptionInfo, advanced settings, 
         // and keyfile settings are NOT saved
     }
@@ -83,7 +272,13 @@ class MainViewModel(
      * @param password New password as CharArray, or null to keep current
      * @param confirmPassword New confirm password as CharArray, or null to keep current
      */
+    @Synchronized
     fun updatePasswords(password: CharArray? = null, confirmPassword: CharArray? = null) {
+        if (_formState.value.isPcv3Selection && _formState.value.pcvUnavailable) {
+            password?.fill('\u0000')
+            confirmPassword?.fill('\u0000')
+            return
+        }
         _formState.update { current ->
             // Store references to old password arrays for clearing
             val oldPassword = current.passwordInput
@@ -108,10 +303,7 @@ class MainViewModel(
         }
         
         // Update SavedStateHandle (passwords are not saved, but other fields might have changed)
-        val updated = _formState.value
-        savedStateHandle[KEY_SELECTED_FILENAME] = updated.selectedFilename
-        savedStateHandle[KEY_COPIED_FILE_PATH] = updated.copiedFilePath
-        savedStateHandle[KEY_COMMENTS] = updated.comments
+        persistFormData(_formState.value)
     }
     
     /**
@@ -119,8 +311,10 @@ class MainViewModel(
      * Explicitly zeros password arrays for security.
      * @param clearFiles If true, also clears file selections and keyfiles
      */
-    fun clearSensitiveData(clearFiles: Boolean = true) {
+    @Synchronized
+    fun clearSensitiveData(clearFiles: Boolean = true): String? {
         val current = _formState.value
+        val releasedSource = if (clearFiles) current.pcv3OwnedSource?.release() else null
         
         // Clear and zero password arrays
         current.clearPasswords()
@@ -143,18 +337,16 @@ class MainViewModel(
                 onlyFiles = emptyList(),
                 selectionKind = SelectionKind.SINGLE_FILE,
                 suggestedOutputName = "",
-                decryptionInfo = null
+                decryptionInfo = null,
+                pcvUnavailable = false,
+                pcv3Intent = null,
+                pcv3OwnedSource = null,
             )
-            
-            // Also clear from SavedStateHandle
-            savedStateHandle.remove<String>(KEY_SELECTED_FILENAME)
-            savedStateHandle.remove<String>(KEY_COPIED_FILE_PATH)
-            savedStateHandle.remove<String>(KEY_COMMENTS)
         }
         
         _formState.value = cleared
-        // Update SavedStateHandle with new values
-        updateFormData(cleared)
+        persistFormData(cleared)
+        return releasedSource
     }
     
     /**
@@ -162,13 +354,20 @@ class MainViewModel(
      * Clears all fields including comments, passwords, advanced settings, and keyfiles.
      * Explicitly zeros password arrays for security.
      */
-    fun resetFormToDefaults() {
+    @Synchronized
+    fun resetFormToDefaults(): List<String> {
         val current = _formState.value
+        val releasedSources = buildList {
+            current.copiedFilePath.takeIf(String::isNotBlank)?.let(::add)
+            current.pcv3OwnedSource?.release()?.let(::add)
+        }.distinct()
         
         // Clear and zero existing password arrays
         current.clearPasswords()
         
         val reset = current.copy(
+            selectedFilename = "",
+            copiedFilePath = "",
             comments = "",
             passwordInput = CharArray(0),
             confirmPasswordInput = CharArray(0),
@@ -183,11 +382,31 @@ class MainViewModel(
             onlyFiles = emptyList(),
             selectionKind = SelectionKind.SINGLE_FILE,
             suggestedOutputName = "",
-            decryptionInfo = null
+            decryptionInfo = null,
+            pcvUnavailable = false,
+            pcv3Intent = null,
+            pcv3OwnedSource = null,
         )
         _formState.value = reset
-        // Update SavedStateHandle
-        updateFormData(reset)
+        persistFormData(reset)
+        return releasedSources
+    }
+
+    private fun persistFormData(data: FormData) {
+        if (data.isPcv3Selection || data.pcvUnavailable) {
+            clearSavedForm()
+            return
+        }
+        // Only convenience fields survive process recreation. Intent, credentials,
+        // keyfiles, source ownership, and advanced options never do.
+        savedStateHandle[KEY_SELECTED_FILENAME] = data.selectedFilename
+        savedStateHandle[KEY_COPIED_FILE_PATH] = data.copiedFilePath
+        savedStateHandle[KEY_COMMENTS] = data.comments
+    }
+
+    private fun clearSavedForm() {
+        savedStateHandle.remove<String>(KEY_SELECTED_FILENAME)
+        savedStateHandle.remove<String>(KEY_COPIED_FILE_PATH)
+        savedStateHandle.remove<String>(KEY_COMMENTS)
     }
 }
-

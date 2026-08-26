@@ -1,0 +1,1214 @@
+{
+  "schema": "picocrypt-ng/phase9-fuzz-seeds@1",
+  "package": "Picocrypt-NG/internal/pcv3",
+  "targets": [
+    {
+      "id": "Z01",
+      "target": "FuzzReadStructure",
+      "control": "TestPhase9ParserFuzzSeedsReachParser",
+      "seam": "bounded structure/preamble parser",
+      "artifacts": [
+        {
+          "path": "testdata/schema1-minimal.pcv",
+          "sha256": "3866a4543150211bece6e50d45d3dc5b909fd33c5ace65c1c2fb7e6c05b7fbd7"
+        }
+      ],
+      "seeds": [
+        {
+          "id": "Z01-S01",
+          "sha256": "7ee7f175a74809368a2b873c69341021211391e04a0b5bb63e1b3f4af5b6aed5",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 2,
+              "max_request": 960,
+              "read_calls": 5
+            }
+          }
+        },
+        {
+          "id": "Z01-S02",
+          "sha256": "ab5778b2ea983e299d2c568a1a33781f4d8cdaba028959fd5f14a132ebee8dbb",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 1,
+              "max_request": 960,
+              "read_calls": 5
+            }
+          }
+        },
+        {
+          "id": "Z01-S03",
+          "sha256": "c8cabdb5705d0b3b63fff6d4aa7c156bab7d99023be31d80f70c7b5d51a17f80",
+          "expect": {
+            "outcome": "legacy-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 0,
+              "max_request": 4,
+              "read_calls": 1
+            }
+          }
+        },
+        {
+          "id": "Z01-S04",
+          "sha256": "0f795c330076ed1b4f04cb8d1b3141d705feb1e32739f2b55e0aa176b24d5cba",
+          "expect": {
+            "outcome": "legacy-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 0,
+              "max_request": 4,
+              "read_calls": 1
+            }
+          }
+        },
+        {
+          "id": "Z01-S05",
+          "sha256": "91651fcb77804e57e490bccabb69705af7c6cc99d56cc2636947d3117e5af64f",
+          "expect": {
+            "outcome": "legacy-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 0,
+              "max_request": 4,
+              "read_calls": 1
+            }
+          }
+        },
+        {
+          "id": "Z01-S06",
+          "sha256": "1c68100995f1a1ee25de661bebd31cbd9f7accfb0bf36b270fec021eb4fa6f22",
+          "expect": {
+            "outcome": "invalid-structure",
+            "stage": "preamble",
+            "detail": "",
+            "counters": {
+              "candidates": 0,
+              "max_request": 12,
+              "read_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z01-S07",
+          "sha256": "5a67c35b3abb401eaad94df7470b95c97015b5cb994141a787f9cd62f7f31d8f",
+          "expect": {
+            "outcome": "invalid-structure",
+            "stage": "preamble",
+            "detail": "",
+            "counters": {
+              "candidates": 0,
+              "max_request": 12,
+              "read_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z01-S08",
+          "sha256": "f9191f6eba160737616c44b859c56103357b6cfd4f2d08f0f30d588af1c9e9a2",
+          "expect": {
+            "outcome": "invalid-structure",
+            "stage": "tail-geometry",
+            "detail": "",
+            "counters": {
+              "candidates": 0,
+              "max_request": 12,
+              "read_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z01-S09",
+          "sha256": "7f5acafbc9bae0cac06136711a4306e45a2bde58cd5a350f5b90b50bce3172ea",
+          "expect": {
+            "outcome": "invalid-structure",
+            "stage": "tail-geometry",
+            "detail": "",
+            "counters": {
+              "candidates": 0,
+              "max_request": 12,
+              "read_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z01-S10",
+          "sha256": "f72cfa4b55333f85befbe1bee634add7088a3a03da5348b546c276bf272ef59b",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 1,
+              "max_request": 960,
+              "read_calls": 3
+            }
+          }
+        },
+        {
+          "id": "Z01-S11",
+          "sha256": "b70d7e701dc82618784573fb160f9ef1d3cb8534f8d66900934ff8048060880c",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 1,
+              "max_request": 960,
+              "read_calls": 3
+            }
+          }
+        },
+        {
+          "id": "Z01-S12",
+          "sha256": "0264755bcff46e4b3ff4c7dbfb9e6630404d34fc7d9543e6dbca7bb9a302d1a6",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 1,
+              "max_request": 960,
+              "read_calls": 3
+            }
+          }
+        },
+        {
+          "id": "Z01-S13",
+          "sha256": "9f21946d31c3c149e9f7720791bb91f76748b0938def45c032eefa7146bdca4b",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 1,
+              "max_request": 960,
+              "read_calls": 5
+            }
+          }
+        },
+        {
+          "id": "Z01-S14",
+          "sha256": "c74a8589aeca19fba4c2f99ee7ec9241d0aaf91bbcf24690c68fb902849a4437",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 1,
+              "max_request": 960,
+              "read_calls": 5
+            }
+          }
+        },
+        {
+          "id": "Z01-S15",
+          "sha256": "fa813aa8be0aba15c7bd8ce4c2dd29b9ab9e93850420b82de206541b38e17d8a",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 1,
+              "max_request": 960,
+              "read_calls": 5
+            }
+          }
+        },
+        {
+          "id": "Z01-S16",
+          "sha256": "3026667d72feebfbced466e86920af7156cb2ec7ec8f3a82b2c76d67f7b20b6e",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 2,
+              "max_request": 960,
+              "read_calls": 5
+            }
+          }
+        },
+        {
+          "id": "Z01-S17",
+          "sha256": "1c9282190778204c630e679726a8042948a2dd1e2224363aaf57718b66b92b15",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 2,
+              "max_request": 960,
+              "read_calls": 5
+            }
+          }
+        },
+        {
+          "id": "Z01-S18",
+          "sha256": "9d1ae8c24111b3a2f1948d46fd412abadc83c793163d964ffd682f03e528b54e",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 2,
+              "max_request": 960,
+              "read_calls": 5
+            }
+          }
+        },
+        {
+          "id": "Z01-S19",
+          "sha256": "ab377ee99876215ada70e81225b651d495939e9e604fc491349e5f381e0f3864",
+          "expect": {
+            "outcome": "invalid-structure",
+            "stage": "tail-geometry",
+            "detail": "",
+            "counters": {
+              "candidates": 0,
+              "max_request": 12,
+              "read_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z01-S20",
+          "sha256": "dab6cd9ccf838354ca5b370b0a89e2981a771c236bd42b8aa9a6f6fe77e5765b",
+          "expect": {
+            "outcome": "normal-route",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "candidates": 1,
+              "max_request": 960,
+              "read_calls": 5
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "Z02",
+      "target": "FuzzReadNormalRecords",
+      "control": "TestPhase9NormalRecordFuzzSeedsReachEvaluator",
+      "seam": "admitted normal-record evaluator",
+      "artifacts": [
+        {
+          "path": "testdata/normal/manifest.json",
+          "sha256": "001e3c61720c9e948b636bb7d60dbb64c4c2623143552b62337b170349d187c3"
+        },
+        {
+          "path": "testdata/normal/volumes/normal-standard-password-only-small.pcv",
+          "sha256": "4021b80c8f8a435b60d356134116baa24efb6211afcf5a7e31702d40c5e98be5"
+        },
+        {
+          "path": "testdata/normal/volumes/normal-standard-combined-unordered-rs-small.pcv",
+          "sha256": "0e72c6b980369851e4fcd83e3a07003cc1b79596d49d59210f256d4729b8e6db"
+        },
+        {
+          "path": "testdata/normal/volumes/normal-paranoid-combined-unordered-rs-small.pcv",
+          "sha256": "2c0d508e1da532ff9826e74a9ba97ef5ece161a052c05c963286e610f8a8b480"
+        }
+      ],
+      "seeds": [
+        {
+          "id": "Z02-S01",
+          "sha256": "8d0a4001996e3e061a5b1049158ee4bb535bdf34255ff0c9bcc626c20ec13c39",
+          "expect": {
+            "outcome": "verified",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "body_reads": 2,
+              "descriptor_reads": 2,
+              "sink_bytes": 9,
+              "sink_records": 1
+            }
+          }
+        },
+        {
+          "id": "Z02-S02",
+          "sha256": "db9f9b58f2fef312135b9e03aa18c5b7989a4a437245d8f4499349244728fef0",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "record-auth",
+            "detail": "",
+            "counters": {
+              "body_reads": 1,
+              "descriptor_reads": 1,
+              "sink_bytes": 0,
+              "sink_records": 0
+            }
+          }
+        },
+        {
+          "id": "Z02-S03",
+          "sha256": "dd221d3ab71c88b0feab831fcfa2c0ee829df31a101ea45d85c1c940e4f08b97",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "descriptor",
+            "detail": "",
+            "counters": {
+              "body_reads": 0,
+              "descriptor_reads": 1,
+              "sink_bytes": 0,
+              "sink_records": 0
+            }
+          }
+        },
+        {
+          "id": "Z02-S04",
+          "sha256": "4e856ca654add2e10d1866a0c0d0087bf9afe8ce0f644c5ae94806ff78006bf1",
+          "expect": {
+            "outcome": "verified",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "body_reads": 2,
+              "descriptor_reads": 2,
+              "sink_bytes": 33,
+              "sink_records": 1
+            }
+          }
+        },
+        {
+          "id": "Z02-S05",
+          "sha256": "353f85e795a367b836d8b654147bc63e6b1205547e21f5298ceac990415343c2",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "record-body-rs",
+            "detail": "",
+            "counters": {
+              "body_reads": 1,
+              "descriptor_reads": 1,
+              "sink_bytes": 0,
+              "sink_records": 0
+            }
+          }
+        },
+        {
+          "id": "Z02-S06",
+          "sha256": "8b1f51fc60cf141532aae9d123f148e781a4ffef5f8b5f88b1ebda983c46de34",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "descriptor",
+            "detail": "",
+            "counters": {
+              "body_reads": 0,
+              "descriptor_reads": 1,
+              "sink_bytes": 0,
+              "sink_records": 0
+            }
+          }
+        },
+        {
+          "id": "Z02-S07",
+          "sha256": "afd38ca02bbc1942d886c79b9f8f3faf71d6a82ce6c6d9c3e658fc9e255ec3f1",
+          "expect": {
+            "outcome": "verified",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "body_reads": 2,
+              "descriptor_reads": 2,
+              "sink_bytes": 65,
+              "sink_records": 1
+            }
+          }
+        },
+        {
+          "id": "Z02-S08",
+          "sha256": "5f917033fd80778c29d4699cae304d7f6caea477b085fc7b62342fb9502d5b44",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "record-body-rs",
+            "detail": "",
+            "counters": {
+              "body_reads": 1,
+              "descriptor_reads": 1,
+              "sink_bytes": 0,
+              "sink_records": 0
+            }
+          }
+        },
+        {
+          "id": "Z02-S09",
+          "sha256": "63176f923805d5a5703f580617e333a6a9697ee5694541d3b61609b59ac1f4b9",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "descriptor",
+            "detail": "",
+            "counters": {
+              "body_reads": 0,
+              "descriptor_reads": 1,
+              "sink_bytes": 0,
+              "sink_records": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "Z03",
+      "target": "FuzzAuthenticateCapsules",
+      "control": "TestPhase9CapsuleFuzzSeedsReachAuthenticator",
+      "seam": "capsule authentication and policy binding",
+      "artifacts": [
+        {
+          "path": "testdata/normal/manifest.json",
+          "sha256": "001e3c61720c9e948b636bb7d60dbb64c4c2623143552b62337b170349d187c3"
+        },
+        {
+          "path": "testdata/normal/volumes/normal-standard-password-only-small.pcv",
+          "sha256": "4021b80c8f8a435b60d356134116baa24efb6211afcf5a7e31702d40c5e98be5"
+        },
+        {
+          "path": "testdata/normal/volumes/normal-paranoid-combined-unordered-rs-small.pcv",
+          "sha256": "2c0d508e1da532ff9826e74a9ba97ef5ece161a052c05c963286e610f8a8b480"
+        }
+      ],
+      "seeds": [
+        {
+          "id": "Z03-S01",
+          "sha256": "efe79fc80752aa624d0a8f9cdc6e0e46f3c266ee50eeb5533ff0359a3d5ea4c4",
+          "expect": {
+            "outcome": "success",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 1,
+              "authenticated": 2,
+              "credential_calls": 1,
+              "replica_key_calls": 2,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S02",
+          "sha256": "560e034e629c3e357ed68f9bcdde4501a22ece68d9a00216145f75762916beac",
+          "expect": {
+            "outcome": "authenticated-degraded",
+            "stage": "wrap-auth",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 1,
+              "authenticated": 1,
+              "credential_calls": 1,
+              "replica_key_calls": 1,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S03",
+          "sha256": "72b94bfd53f9218c32f94e5e870ca872cd9e5ba204bcbab235bf4509fbef4c88",
+          "expect": {
+            "outcome": "credentials-or-damage",
+            "stage": "wrap-auth",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 0,
+              "authenticated": 0,
+              "credential_calls": 1,
+              "replica_key_calls": 0,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S04",
+          "sha256": "78b295a8b10e24c48dbc398a092982e0c62bff007bcea9b0890587ec83d47c67",
+          "expect": {
+            "outcome": "authenticated-degraded",
+            "stage": "replica-auth",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 1,
+              "authenticated": 1,
+              "credential_calls": 1,
+              "replica_key_calls": 2,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S05",
+          "sha256": "1afbc60ce8cba0e96ee7e5c7ca4b071d824defba08a44c2806140b45eb83d1ef",
+          "expect": {
+            "outcome": "authenticated-degraded",
+            "stage": "wrap-auth",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 1,
+              "authenticated": 1,
+              "credential_calls": 1,
+              "replica_key_calls": 1,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S06",
+          "sha256": "43468056c4bb5d92625707150e7628bb06e359620c705771f315c4ddcb9691c8",
+          "expect": {
+            "outcome": "credentials-or-damage",
+            "stage": "wrap-auth",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 0,
+              "authenticated": 0,
+              "credential_calls": 1,
+              "replica_key_calls": 0,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S07",
+          "sha256": "e91f17e243581c09851af147e115b8555da589e3961a8b63b960e8ec5abe3baf",
+          "expect": {
+            "outcome": "invalid-structure-pre-kdf",
+            "stage": "capsule-structure",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 0,
+              "authenticated": 0,
+              "credential_calls": 0,
+              "replica_key_calls": 0,
+              "wrap_key_calls": 0
+            }
+          }
+        },
+        {
+          "id": "Z03-S08",
+          "sha256": "dc87bc1bcddff52d305a87d5f88975fb1097dcfc471cb177c934fb70e8341679",
+          "expect": {
+            "outcome": "invalid-structure-pre-kdf",
+            "stage": "capsule-structure",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 0,
+              "authenticated": 0,
+              "credential_calls": 0,
+              "replica_key_calls": 0,
+              "wrap_key_calls": 0
+            }
+          }
+        },
+        {
+          "id": "Z03-S09",
+          "sha256": "0a6f721a16dc1e7b9f90cf9910eeb9c4eb0a204ff7a8e719084a4e0b006ccaab",
+          "expect": {
+            "outcome": "authenticated-degraded",
+            "stage": "preamble",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 1,
+              "authenticated": 2,
+              "credential_calls": 1,
+              "replica_key_calls": 2,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S10",
+          "sha256": "501107cb0471363beb65a73029d135915c344188f51ced0bbebda224f5e56101",
+          "expect": {
+            "outcome": "success",
+            "stage": "none",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 1,
+              "authenticated": 2,
+              "credential_calls": 1,
+              "replica_key_calls": 2,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S11",
+          "sha256": "11abb6caae532ab9687e20b91a6134933ee3b1d688a5f85313466eb1bdc09305",
+          "expect": {
+            "outcome": "authenticated-degraded",
+            "stage": "wrap-auth",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 1,
+              "authenticated": 1,
+              "credential_calls": 1,
+              "replica_key_calls": 1,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S12",
+          "sha256": "26f73e78fbdc191b949693c5227577110e51c8b833dfb03976ccb1c98dd82dd5",
+          "expect": {
+            "outcome": "credentials-or-damage",
+            "stage": "wrap-auth",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 0,
+              "authenticated": 0,
+              "credential_calls": 1,
+              "replica_key_calls": 0,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S13",
+          "sha256": "2df88cab9f91a287f5cd34f4f0e682a688bb667b15412b87c9718a5644f5f7a1",
+          "expect": {
+            "outcome": "authenticated-degraded",
+            "stage": "replica-auth",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 1,
+              "authenticated": 1,
+              "credential_calls": 1,
+              "replica_key_calls": 2,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S14",
+          "sha256": "f0ec679e4ee41dd82470d44980ac220fa173a62de8a017bfe070946b8ace54e3",
+          "expect": {
+            "outcome": "authenticated-degraded",
+            "stage": "wrap-auth",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 1,
+              "authenticated": 1,
+              "credential_calls": 1,
+              "replica_key_calls": 1,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S15",
+          "sha256": "0e7997f8080191f2fd069a890295c3f3ff29ceb75acf23b7f343d8378a2337d7",
+          "expect": {
+            "outcome": "credentials-or-damage",
+            "stage": "wrap-auth",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 0,
+              "authenticated": 0,
+              "credential_calls": 1,
+              "replica_key_calls": 0,
+              "wrap_key_calls": 2
+            }
+          }
+        },
+        {
+          "id": "Z03-S16",
+          "sha256": "57984c687b025d0ed0357dd114ca588167c5ac8355798274a853b6fdd13397f8",
+          "expect": {
+            "outcome": "invalid-structure-pre-kdf",
+            "stage": "capsule-structure",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 0,
+              "authenticated": 0,
+              "credential_calls": 0,
+              "replica_key_calls": 0,
+              "wrap_key_calls": 0
+            }
+          }
+        },
+        {
+          "id": "Z03-S17",
+          "sha256": "84e9e468fd25da4d002e68c506197b4da7272f56be0f11803216a5fa0e5cce73",
+          "expect": {
+            "outcome": "invalid-structure-pre-kdf",
+            "stage": "capsule-structure",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 0,
+              "authenticated": 0,
+              "credential_calls": 0,
+              "replica_key_calls": 0,
+              "wrap_key_calls": 0
+            }
+          }
+        },
+        {
+          "id": "Z03-S18",
+          "sha256": "5ffe430903b81cb626a2acce6ff0bb148032237fb727d2c93059c3de35836c9f",
+          "expect": {
+            "outcome": "authenticated-degraded",
+            "stage": "preamble",
+            "detail": "",
+            "counters": {
+              "adopt_calls": 1,
+              "authenticated": 2,
+              "credential_calls": 1,
+              "replica_key_calls": 2,
+              "wrap_key_calls": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "Z04",
+      "target": "FuzzRecordRSRecovery",
+      "control": "TestPhase9RSFuzzSeedsReachBoundedRetry",
+      "seam": "bounded Reed-Solomon retry followed by authentication",
+      "artifacts": [
+        {
+          "path": "testdata/records/manifest.json",
+          "sha256": "4fb4c6a832077b8a1dcd0ddae402f86dd7fd2661847bc5c24dcdb819c6b556f2"
+        },
+        {
+          "path": "testdata/records/cases/retry_standard_rs/core.bin",
+          "sha256": "238ee1ba02117afb6453f8056953f219ee1deda1c1ab7ea1eb370e545ee50d69"
+        },
+        {
+          "path": "testdata/records/cases/retry_standard_rs/keys.bin",
+          "sha256": "8c2bc426bb0a51ffdf0dfa5f4edeb613ec497cc7f916246c4f8b4939d2d34c8a"
+        },
+        {
+          "path": "testdata/records/mutations/retry_base.bin",
+          "sha256": "23b55a8f5323058e12f905099586fc58cce97c36eed4433b967ae41eba63a631"
+        },
+        {
+          "path": "testdata/records/mutations/body_repair_4.bin",
+          "sha256": "0fde49884109903d94e2967bca06c36da594ee0435f11e3d64839c8c7c5908a2"
+        },
+        {
+          "path": "testdata/records/mutations/body_damage_9.bin",
+          "sha256": "e47055307e7f5814cbcb1249aa4ed03a3f69a3048472645ef67c53632bbbe89a"
+        },
+        {
+          "path": "testdata/records/mutations/body_bad_tag_reencoded.bin",
+          "sha256": "6e858f528a33fc72785ecc7e43ba3ac62a8f3c3d15668b308e67e918d1af6845"
+        },
+        {
+          "path": "testdata/records/mutations/body_bad_padding_reencoded.bin",
+          "sha256": "865c7d22d61495b808599f04ccddf080447f1afb05c489eebd88a760392851ed"
+        },
+        {
+          "path": "testdata/records/mutations/bad_final_tag_reencoded.bin",
+          "sha256": "40299400bc83e58d09533967eb76672581fdc01b2393ff47f83b59f6ecb8f681"
+        },
+        {
+          "path": "testdata/records/mutations/descriptor_repair_16.bin",
+          "sha256": "195300674618ea7c671c596d2ca1f4c35270bea358ff83f96b1bc064f7c9fe4d"
+        },
+        {
+          "path": "testdata/records/mutations/descriptor_damage_33.bin",
+          "sha256": "76ae1fef0c9a34eef612f1a61619235a5f8e759f5d747654b8a018ad95b50f79"
+        },
+        {
+          "path": "testdata/records/mutations/missing_final.bin",
+          "sha256": "f6e18047c0ba8a652df9cdbef931a7fef8f26fdb29b5eb3a010ab0a60b5a3a75"
+        }
+      ],
+      "seeds": [
+        {
+          "id": "Z04-S01",
+          "sha256": "b26fecec1f8d0dd4a4660868a4f9dde88b3c3b29cdae1355aabeb2383fb5c344",
+          "expect": {
+            "outcome": "verified",
+            "stage": "none",
+            "detail": "fast",
+            "counters": {
+              "decrypt_calls": 1,
+              "descriptor_decodes": 2,
+              "fast_body_decodes": 2,
+              "full_body_decodes": 0,
+              "sink_records": 1
+            }
+          }
+        },
+        {
+          "id": "Z04-S02",
+          "sha256": "2054ad71bec1b4cd893208266c141ac205d761620676ff2ab2505cee328d8f5c",
+          "expect": {
+            "outcome": "verified",
+            "stage": "none",
+            "detail": "full-correction",
+            "counters": {
+              "decrypt_calls": 1,
+              "descriptor_decodes": 2,
+              "fast_body_decodes": 2,
+              "full_body_decodes": 1,
+              "sink_records": 1
+            }
+          }
+        },
+        {
+          "id": "Z04-S03",
+          "sha256": "e55571a8ada817c6a227e42211e82efaee246d5aff991292da96e379df4ada94",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "record-body-rs",
+            "detail": "none",
+            "counters": {
+              "decrypt_calls": 0,
+              "descriptor_decodes": 1,
+              "fast_body_decodes": 1,
+              "full_body_decodes": 1,
+              "sink_records": 0
+            }
+          }
+        },
+        {
+          "id": "Z04-S04",
+          "sha256": "8eca3593372bd8ca37d0929219aa2c0e001a9e9e631f31c8ea954538308d0026",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "record-auth",
+            "detail": "none",
+            "counters": {
+              "decrypt_calls": 0,
+              "descriptor_decodes": 1,
+              "fast_body_decodes": 1,
+              "full_body_decodes": 1,
+              "sink_records": 0
+            }
+          }
+        },
+        {
+          "id": "Z04-S05",
+          "sha256": "9e8d7fac98ea24b5058b8e30a204c0d2e0fcfe21c7c52366ae7a32487fbd6034",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "record-body-rs",
+            "detail": "none",
+            "counters": {
+              "decrypt_calls": 0,
+              "descriptor_decodes": 1,
+              "fast_body_decodes": 1,
+              "full_body_decodes": 0,
+              "sink_records": 0
+            }
+          }
+        },
+        {
+          "id": "Z04-S06",
+          "sha256": "1a7a85507dc2844ff07b09870fb99c06a6a96d7242bccf2c4cfc50adcd6299e3",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "final-record",
+            "detail": "none",
+            "counters": {
+              "decrypt_calls": 1,
+              "descriptor_decodes": 2,
+              "fast_body_decodes": 2,
+              "full_body_decodes": 1,
+              "sink_records": 1
+            }
+          }
+        },
+        {
+          "id": "Z04-S07",
+          "sha256": "1e130a2846794ff198a5f82e74997df2f1ba3a986df0c61d6415948a2f466861",
+          "expect": {
+            "outcome": "verified",
+            "stage": "none",
+            "detail": "fast",
+            "counters": {
+              "decrypt_calls": 1,
+              "descriptor_decodes": 2,
+              "fast_body_decodes": 2,
+              "full_body_decodes": 0,
+              "sink_records": 1
+            }
+          }
+        },
+        {
+          "id": "Z04-S08",
+          "sha256": "975d26380e3b577cb4f0a9d5cdf743522fd7d4d0c40c5fb7d8e1343a654d2ff2",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "descriptor",
+            "detail": "none",
+            "counters": {
+              "decrypt_calls": 0,
+              "descriptor_decodes": 1,
+              "fast_body_decodes": 0,
+              "full_body_decodes": 0,
+              "sink_records": 0
+            }
+          }
+        },
+        {
+          "id": "Z04-S09",
+          "sha256": "b5ea3244da85109039b8b37c21f453a6ee75d13de57e23eaf2b31ff88ad93c02",
+          "expect": {
+            "outcome": "typed-failure",
+            "stage": "final-record",
+            "detail": "none",
+            "counters": {
+              "decrypt_calls": 1,
+              "descriptor_decodes": 1,
+              "fast_body_decodes": 1,
+              "full_body_decodes": 0,
+              "sink_records": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "Z05",
+      "target": "FuzzReadD1Volume",
+      "control": "TestD1FuzzSeedsReachProductionSeams",
+      "seam": "explicit D1 outer/body reader",
+      "artifacts": [],
+      "seeds": [
+        {
+          "id": "Z05-S01",
+          "sha256": "8c312591a37cfee7d946e53f8f0c84adf1afc2c823622d24e8978302fd6a61b3",
+          "expect": {
+            "outcome": "no-inner-capability",
+            "stage": "d1-body",
+            "counters": {
+              "baseline_capability": 1,
+              "damaged_capability": 0
+            },
+            "detail": "outer-authentication"
+          }
+        },
+        {
+          "id": "Z05-S02",
+          "sha256": "de0224b8fa5a960f0f7de7e80be3d596a6a28af5e9ed05ec9e0feb561e6e7e63",
+          "expect": {
+            "outcome": "no-inner-capability",
+            "stage": "d1-body",
+            "counters": {
+              "baseline_capability": 1,
+              "damaged_capability": 0
+            },
+            "detail": "outer-authentication"
+          }
+        },
+        {
+          "id": "Z05-S03",
+          "sha256": "404a87821b05595edc6efa05d85cc200934d79866e5f7d41df1a2b42f32f8391",
+          "expect": {
+            "outcome": "no-inner-capability",
+            "stage": "d1-body",
+            "counters": {
+              "baseline_capability": 1,
+              "damaged_capability": 0
+            },
+            "detail": "outer-authentication"
+          }
+        },
+        {
+          "id": "Z05-S04",
+          "sha256": "39a6e96a6c37bc9df1dc25c03792c5504ae97bcc26179c2194af5a70e3b9ac26",
+          "expect": {
+            "outcome": "no-inner-capability",
+            "stage": "d1-body",
+            "counters": {
+              "baseline_capability": 1,
+              "damaged_capability": 0
+            },
+            "detail": "invalid-outer-geometry"
+          }
+        },
+        {
+          "id": "Z05-S05",
+          "sha256": "db687c42b97d0a0ec9e5a0b9363052f3978488495d67f82ca6fefb7dd879b0ec",
+          "expect": {
+            "outcome": "no-inner-capability",
+            "stage": "d1-body",
+            "counters": {
+              "baseline_capability": 1,
+              "damaged_capability": 0
+            },
+            "detail": "outer-authentication"
+          }
+        },
+        {
+          "id": "Z05-S06",
+          "sha256": "97478ab4d9140e49f4cca45955780c4faa226e10717e8558c2e56565f55cb0d0",
+          "expect": {
+            "outcome": "no-inner-capability",
+            "stage": "cancellation",
+            "counters": {
+              "baseline_capability": 1,
+              "damaged_capability": 0
+            },
+            "detail": "canceled"
+          }
+        }
+      ]
+    },
+    {
+      "id": "Z06",
+      "target": "FuzzResolveForceRecords",
+      "control": "TestPhase9ForceFuzzSeedsReachAnalysis",
+      "seam": "Force anchor/range/role analysis",
+      "artifacts": [
+        {
+          "path": "testdata/normal/manifest.json",
+          "sha256": "001e3c61720c9e948b636bb7d60dbb64c4c2623143552b62337b170349d187c3"
+        },
+        {
+          "path": "testdata/normal/volumes/normal-standard-password-only-small.pcv",
+          "sha256": "4021b80c8f8a435b60d356134116baa24efb6211afcf5a7e31702d40c5e98be5"
+        },
+        {
+          "path": "testdata/normal/volumes/normal-negative-record.pcv",
+          "sha256": "48fb15ee38dd96f1d76370474da449cdb79cf1080e2bd3215d631f19a3a44c81"
+        },
+        {
+          "path": "testdata/normal/volumes/normal-negative-final.pcv",
+          "sha256": "111cd3040ceaedd0c68e25a897d6ccc26e53d6d3165049c7b8b3abe212ffa7f8"
+        }
+      ],
+      "seeds": [
+        {
+          "id": "Z06-S01",
+          "sha256": "efe79fc80752aa624d0a8f9cdc6e0e46f3c266ee50eeb5533ff0359a3d5ea4c4",
+          "expect": {
+            "outcome": "authenticated-degraded",
+            "stage": "wrap-auth",
+            "detail": "final-verified",
+            "counters": {
+              "body_reads": 2,
+              "descriptor_reads": 2,
+              "missing_ranges": 0,
+              "unverified_ranges": 0,
+              "verified_ranges": 1
+            }
+          }
+        },
+        {
+          "id": "Z06-S02",
+          "sha256": "501107cb0471363beb65a73029d135915c344188f51ced0bbebda224f5e56101",
+          "expect": {
+            "outcome": "force-partial",
+            "stage": "record-auth",
+            "detail": "final-verified",
+            "counters": {
+              "body_reads": 2,
+              "descriptor_reads": 2,
+              "missing_ranges": 1,
+              "unverified_ranges": 0,
+              "verified_ranges": 0
+            }
+          }
+        },
+        {
+          "id": "Z06-S03",
+          "sha256": "605bc4b0d7c0048248c7e96c4f53296f7f63e7ffe76f27400e1ab946e1dc9954",
+          "expect": {
+            "outcome": "force-partial",
+            "stage": "final-record",
+            "detail": "final-missing",
+            "counters": {
+              "body_reads": 2,
+              "descriptor_reads": 2,
+              "missing_ranges": 0,
+              "unverified_ranges": 0,
+              "verified_ranges": 1
+            }
+          }
+        },
+        {
+          "id": "Z06-S04",
+          "sha256": "d26204ac0a20ed13a674c850b5c672ab9b64621863dab7d1eb04137cebdf6b3c",
+          "expect": {
+            "outcome": "force-partial",
+            "stage": "record-auth",
+            "detail": "final-verified",
+            "counters": {
+              "body_reads": 2,
+              "descriptor_reads": 2,
+              "missing_ranges": 0,
+              "unverified_ranges": 1,
+              "verified_ranges": 0
+            }
+          }
+        },
+        {
+          "id": "Z06-S05",
+          "sha256": "02ca0e47c963de3ff32a2e34a2f19e256cba6510c69ebce3a9292d463dddc0cb",
+          "expect": {
+            "outcome": "force-partial",
+            "stage": "record-auth",
+            "detail": "final-verified",
+            "counters": {
+              "body_reads": 2,
+              "descriptor_reads": 2,
+              "missing_ranges": 1,
+              "unverified_ranges": 0,
+              "verified_ranges": 0
+            }
+          }
+        },
+        {
+          "id": "Z06-S06",
+          "sha256": "6d7f3a1aef070d4cf20663e7cc2dee87a586e40378199d922c2e4c6cd1044cf5",
+          "expect": {
+            "outcome": "force-partial",
+            "stage": "final-record",
+            "detail": "final-unverified",
+            "counters": {
+              "body_reads": 2,
+              "descriptor_reads": 2,
+              "missing_ranges": 0,
+              "unverified_ranges": 0,
+              "verified_ranges": 1
+            }
+          }
+        },
+        {
+          "id": "Z06-S07",
+          "sha256": "87475b92f9ab2744397ad630683fc50307e474d69cf789f3ffb9f1b628ef2e2e",
+          "expect": {
+            "outcome": "ambiguous-volume",
+            "stage": "capsule-structure",
+            "detail": "final-verified",
+            "counters": {
+              "body_reads": 2,
+              "descriptor_reads": 2,
+              "missing_ranges": 0,
+              "unverified_ranges": 0,
+              "verified_ranges": 1
+            }
+          }
+        },
+        {
+          "id": "Z06-S08",
+          "sha256": "b3586511a06e35682330935c19b07771ed50a428105be341a73921d83acadde5",
+          "expect": {
+            "outcome": "credentials-or-damage",
+            "stage": "wrap-auth",
+            "detail": "final-missing",
+            "counters": {
+              "body_reads": 2,
+              "descriptor_reads": 2,
+              "missing_ranges": 1,
+              "unverified_ranges": 0,
+              "verified_ranges": 0
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

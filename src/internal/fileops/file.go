@@ -1,6 +1,7 @@
 package fileops
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -56,4 +57,29 @@ func OpenExistingNoSymlink(path string, flag int) (*os.File, error) {
 		}
 	}
 	return nil, err
+}
+
+// OpenRootNoSymlink opens one pre-existing directory without accepting a
+// symlink as the selected root and proves that the opened handle has the same
+// identity observed before the open. Callers own the returned root.
+func OpenRootNoSymlink(path string) (*os.Root, error) {
+	expected, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if expected.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to open directory symlink: %s", path)
+	}
+	if !expected.IsDir() {
+		return nil, fmt.Errorf("path is not a directory: %s", path)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	opened, statErr := root.Stat(".")
+	if statErr != nil || opened == nil || !os.SameFile(expected, opened) {
+		return nil, errors.Join(errors.New("directory identity changed while opening"), statErr, root.Close())
+	}
+	return root, nil
 }

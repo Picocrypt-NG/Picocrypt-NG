@@ -2,8 +2,12 @@
 package cli
 
 import (
+	"Picocrypt-NG/internal/pcv3operation"
+	"context"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,13 +16,14 @@ import (
 // Reporter implements volume.ProgressReporter for terminal output.
 // It displays progress updates on a single line that gets overwritten.
 type Reporter struct {
-	mu        sync.Mutex
-	status    string
-	progress  float32
-	info      string
-	quiet     bool
-	cancelled atomic.Bool
-	lastLine  int // Length of last printed line (for clearing)
+	mu         sync.Mutex
+	status     string
+	progress   float32
+	info       string
+	quiet      bool
+	cancelled  atomic.Bool
+	lastLine   int // Length of last printed line (for clearing)
+	pcv3Cancel context.CancelFunc
 }
 
 // NewReporter creates a new CLI progress reporter.
@@ -83,6 +88,22 @@ func (r *Reporter) IsCancelled() bool {
 // Cancel marks the operation as cancelled.
 func (r *Reporter) Cancel() {
 	r.cancelled.Store(true)
+	r.mu.Lock()
+	cancel := r.pcv3Cancel
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (r *Reporter) setPCV3Cancel(cancel context.CancelFunc) {
+	r.mu.Lock()
+	r.pcv3Cancel = cancel
+	alreadyCancelled := r.cancelled.Load()
+	r.mu.Unlock()
+	if cancel != nil && alreadyCancelled {
+		cancel()
+	}
 }
 
 // Finish prints a newline to move past the progress line.
@@ -107,4 +128,109 @@ func (r *Reporter) PrintSuccess(format string, args ...any) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
+}
+
+// PrintPCV3Status renders only operation-owned stable codes and bounded
+// numeric arguments. Quiet mode suppresses progress, never terminal warnings.
+func (r *Reporter) PrintPCV3Status(status pcv3operation.Status) error {
+	if r.quiet {
+		return nil
+	}
+
+	message := "Working…"
+	switch status.Code() {
+	case pcv3operation.StatusCheckingRequest:
+		message = "Checking operation…"
+	case pcv3operation.StatusCheckingFactors:
+		message = "Checking credential policy…"
+	case pcv3operation.StatusCheckingResources:
+		message = "Checking device resources…"
+	case pcv3operation.StatusDerivingKey:
+		message = "Deriving key…"
+	case pcv3operation.StatusAuthenticating:
+		message = "Authenticating…"
+	case pcv3operation.StatusRecovering:
+		message = "Recovering…"
+	case pcv3operation.StatusPreparingArtifact:
+		message = "Preparing recovery artifact…"
+	case pcv3operation.StatusPublishing:
+		message = "Publishing output…"
+	case pcv3operation.StatusConfirmingDurability:
+		message = "Confirming output durability…"
+	case pcv3operation.StatusVerifyingLegacy:
+		message = "Verifying legacy volume…"
+	case pcv3operation.StatusMigrating:
+		message = "Migrating volume…"
+	}
+
+	var line strings.Builder
+	line.WriteString(message)
+	args := status.Args()
+	if len(args) > 4 {
+		args = args[:4]
+	}
+	if len(args) > 0 {
+		line.WriteString(" [")
+		for index, value := range args {
+			if index > 0 {
+				line.WriteString(", ")
+			}
+			line.WriteString(strconv.FormatUint(value, 10))
+		}
+		line.WriteByte(']')
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, err := fmt.Fprintln(os.Stderr, line.String())
+	return err
+}
+
+func renderPCV3CLIResult(output io.Writer, result pcv3CLIResult) int {
+	if output == nil {
+		return ExitGeneralError
+	}
+	outcome := "unknown-outcome"
+	publication := "not-attempted"
+	var warnings []pcv3operation.Warning
+	if result != nil {
+		outcome = result.Outcome().String()
+		if result.PublicationAttempted() {
+			publication = result.PublicationState().String()
+		}
+		warnings = result.Warnings()
+	}
+	if _, err := fmt.Fprintf(output, "Outcome: %s\nPublication: %s\n", outcome, publication); err != nil {
+		return ExitGeneralError
+	}
+	if len(warnings) > 8 {
+		warnings = warnings[:8]
+	}
+	for _, warning := range warnings {
+		if _, err := fmt.Fprintln(output, pcv3CLIWarningText(warning)); err != nil {
+			return ExitGeneralError
+		}
+	}
+	return pcv3ExitCode(result)
+}
+
+func pcv3CLIWarningText(warning pcv3operation.Warning) string {
+	switch warning {
+	case pcv3operation.WarningAuthenticatedDegraded:
+		return "Warning: output is authenticated but recovery redundancy is damaged"
+	case pcv3operation.WarningForcePartial:
+		return "Warning: partial recovery output is not a complete plaintext file"
+	case pcv3operation.WarningForceUnverified:
+		return "Warning: recovered bytes are unverified and may be unsafe"
+	case pcv3operation.WarningDurabilityUncertain:
+		return "Warning: output durability was not confirmed; keep source and destination unchanged"
+	case pcv3operation.WarningPublicationIndeterminate:
+		return "Warning: output state is unknown; keep source and destination unchanged"
+	case pcv3operation.WarningCleanupIncomplete:
+		return "Warning: cleanup of operation-owned temporary plaintext could not be confirmed"
+	case pcv3operation.WarningCallbackFailure:
+		return "Warning: an operation callback failed; clean completion was not confirmed"
+	default:
+		return "Warning: operation completed with a caution"
+	}
 }

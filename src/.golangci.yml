@@ -68,6 +68,19 @@ linters:
       - path: internal/ui/macos_open\.go
         linters:
           - unused
+      # Frozen Unicode 17 normalizer support tracks the pinned x/text source
+      # byte-for-byte except for the separately hashed supplementary-key
+      # security guard. Keep security/correctness linters active; suppress only
+      # upstream style/dead-code diagnostics that would require unrelated edits
+      # to the reviewed frozen artifact.
+      - path: internal/pcv3unicode/norm17/
+        linters:
+          - gocritic
+          - intrange
+          - perfsprint
+          - unconvert
+          - unparam
+          - unused
       # Tests legitimately ignore returns, use ad-hoc params, and trip the
       # production security scanner on fixtures (test passwords -> G101,
       # temp-dir perms -> G301/G302, controlled paths -> G703). gosec stays

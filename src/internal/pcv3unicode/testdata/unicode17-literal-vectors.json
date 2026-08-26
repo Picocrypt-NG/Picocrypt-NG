@@ -1,0 +1,249 @@
+{
+  "schema": "pcv3unicode-literal-vectors-v1",
+  "notice": "TEST ONLY. Public Unicode conformance literals; no user credentials, paths, keys, tokens, or generated production values.",
+  "unicode_version": "17.0.0",
+  "uax15_revision": "57",
+  "max_utf8_bytes": 1048576,
+  "sources": {
+    "normalization_test_sha256": "5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db",
+    "derived_age_sha256": "f8ecdf768bdc210f201abd271d9bc587825618a86a7046a8146cc816393f1998",
+    "unicode_data_sha256": "2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c",
+    "derived_normalization_properties_sha256": "71fd6a206a2c0cdd41feb6b7f656aa31091db45e9cedc926985d718397f9e488",
+    "uax15_revision_57_sha256": "c0c05f91e1c4f9be3d987e27d76cf254b30003b6be41eb94977cc3fe148d4c4e"
+  },
+  "positive": [
+    {
+      "id": "unicode17-todhri-differential-nfc",
+      "input_hex": "f0909792cc87",
+      "unicode17_nfc_hex": "f0909789",
+      "unicode15_nfc_hex": "f0909792cc87",
+      "source": "NormalizationTest-17.0.0.txt line 15154, c3 (U+105D2 U+0307 -> U+105C9)"
+    },
+    {
+      "id": "unicode17-assigned-only-combining-double-caron",
+      "input_hex": "e1ab8f",
+      "unicode17_nfc_hex": "e1ab8f",
+      "unicode15_assignment": "unassigned",
+      "source": "DerivedAge-17.0.0.txt line 2072 (U+1ACF, age 17.0)"
+    },
+    {
+      "id": "ordinary-composition-e-acute",
+      "input_hex": "65cc81",
+      "unicode17_nfc_hex": "c3a9",
+      "source": "NormalizationTest-17.0.0.txt line 141 (U+0065 U+0301 -> U+00E9)"
+    },
+    {
+      "id": "canonical-combining-mark-order",
+      "input_hex": "cc81cca3",
+      "unicode17_nfc_hex": "cca3cc81",
+      "source": "UAX #15 revision 57 canonical ordering; UnicodeData-17.0.0 combining classes U+0301=230 and U+0323=220"
+    },
+    {
+      "id": "embedded-nul-is-data",
+      "input_hex": "00",
+      "unicode17_nfc_hex": "00",
+      "source": "PCV3_FORMAT_SPEC.md section 7.2"
+    }
+  ],
+  "supplementary_recompositions": [
+    {
+      "id": "u105d2-u0307-to-u105c9",
+      "input_hex": "f0909792cc87",
+      "unicode17_nfc_hex": "f0909789"
+    },
+    {
+      "id": "u105da-u0307-to-u105e4",
+      "input_hex": "f090979acc87",
+      "unicode17_nfc_hex": "f09097a4"
+    },
+    {
+      "id": "u11099-u110ba-to-u1109a",
+      "input_hex": "f0918299f09182ba",
+      "unicode17_nfc_hex": "f091829a"
+    },
+    {
+      "id": "u1109b-u110ba-to-u1109c",
+      "input_hex": "f091829bf09182ba",
+      "unicode17_nfc_hex": "f091829c"
+    },
+    {
+      "id": "u110a5-u110ba-to-u110ab",
+      "input_hex": "f09182a5f09182ba",
+      "unicode17_nfc_hex": "f09182ab"
+    },
+    {
+      "id": "u11131-u11127-to-u1112e",
+      "input_hex": "f09184b1f09184a7",
+      "unicode17_nfc_hex": "f09184ae"
+    },
+    {
+      "id": "u11132-u11127-to-u1112f",
+      "input_hex": "f09184b2f09184a7",
+      "unicode17_nfc_hex": "f09184af"
+    },
+    {
+      "id": "u11347-u1133e-to-u1134b",
+      "input_hex": "f0918d87f0918cbe",
+      "unicode17_nfc_hex": "f0918d8b"
+    },
+    {
+      "id": "u11347-u11357-to-u1134c",
+      "input_hex": "f0918d87f0918d97",
+      "unicode17_nfc_hex": "f0918d8c"
+    },
+    {
+      "id": "u11382-u113c9-to-u11383",
+      "input_hex": "f0918e82f0918f89",
+      "unicode17_nfc_hex": "f0918e83"
+    },
+    {
+      "id": "u11384-u113bb-to-u11385",
+      "input_hex": "f0918e84f0918ebb",
+      "unicode17_nfc_hex": "f0918e85"
+    },
+    {
+      "id": "u1138b-u113c2-to-u1138e",
+      "input_hex": "f0918e8bf0918f82",
+      "unicode17_nfc_hex": "f0918e8e"
+    },
+    {
+      "id": "u11390-u113c9-to-u11391",
+      "input_hex": "f0918e90f0918f89",
+      "unicode17_nfc_hex": "f0918e91"
+    },
+    {
+      "id": "u113c2-u113c2-to-u113c5",
+      "input_hex": "f0918f82f0918f82",
+      "unicode17_nfc_hex": "f0918f85"
+    },
+    {
+      "id": "u113c2-u113b8-to-u113c7",
+      "input_hex": "f0918f82f0918eb8",
+      "unicode17_nfc_hex": "f0918f87"
+    },
+    {
+      "id": "u113c2-u113c9-to-u113c8",
+      "input_hex": "f0918f82f0918f89",
+      "unicode17_nfc_hex": "f0918f88"
+    },
+    {
+      "id": "u114b9-u114ba-to-u114bb",
+      "input_hex": "f09192b9f09192ba",
+      "unicode17_nfc_hex": "f09192bb"
+    },
+    {
+      "id": "u114b9-u114b0-to-u114bc",
+      "input_hex": "f09192b9f09192b0",
+      "unicode17_nfc_hex": "f09192bc"
+    },
+    {
+      "id": "u114b9-u114bd-to-u114be",
+      "input_hex": "f09192b9f09192bd",
+      "unicode17_nfc_hex": "f09192be"
+    },
+    {
+      "id": "u115b8-u115af-to-u115ba",
+      "input_hex": "f09196b8f09196af",
+      "unicode17_nfc_hex": "f09196ba"
+    },
+    {
+      "id": "u115b9-u115af-to-u115bb",
+      "input_hex": "f09196b9f09196af",
+      "unicode17_nfc_hex": "f09196bb"
+    },
+    {
+      "id": "u11935-u11930-to-u11938",
+      "input_hex": "f091a4b5f091a4b0",
+      "unicode17_nfc_hex": "f091a4b8"
+    },
+    {
+      "id": "u1611e-u1611e-to-u16121",
+      "input_hex": "f096849ef096849e",
+      "unicode17_nfc_hex": "f09684a1"
+    },
+    {
+      "id": "u1611e-u16129-to-u16122",
+      "input_hex": "f096849ef09684a9",
+      "unicode17_nfc_hex": "f09684a2"
+    },
+    {
+      "id": "u1611e-u1611f-to-u16123",
+      "input_hex": "f096849ef096849f",
+      "unicode17_nfc_hex": "f09684a3"
+    },
+    {
+      "id": "u16129-u1611f-to-u16124",
+      "input_hex": "f09684a9f096849f",
+      "unicode17_nfc_hex": "f09684a4"
+    },
+    {
+      "id": "u1611e-u16120-to-u16125",
+      "input_hex": "f096849ef09684a0",
+      "unicode17_nfc_hex": "f09684a5"
+    },
+    {
+      "id": "u16121-u1611f-to-u16126",
+      "input_hex": "f09684a1f096849f",
+      "unicode17_nfc_hex": "f09684a6"
+    },
+    {
+      "id": "u16122-u1611f-to-u16127",
+      "input_hex": "f09684a2f096849f",
+      "unicode17_nfc_hex": "f09684a7"
+    },
+    {
+      "id": "u16121-u16120-to-u16128",
+      "input_hex": "f09684a1f09684a0",
+      "unicode17_nfc_hex": "f09684a8"
+    },
+    {
+      "id": "u16d67-u16d67-to-u16d68",
+      "input_hex": "f096b5a7f096b5a7",
+      "unicode17_nfc_hex": "f096b5a8"
+    },
+    {
+      "id": "u16d63-u16d67-to-u16d69",
+      "input_hex": "f096b5a3f096b5a7",
+      "unicode17_nfc_hex": "f096b5a9"
+    },
+    {
+      "id": "u16d69-u16d67-to-u16d6a",
+      "input_hex": "f096b5a9f096b5a7",
+      "unicode17_nfc_hex": "f096b5aa"
+    }
+  ],
+  "supplementary_alias_regressions": [
+    {
+      "id": "hebrew-gimel-dot-must-not-alias-todhri",
+      "input_hex": "d792cc87",
+      "unicode17_nfc_hex": "d792cc87"
+    },
+    {
+      "id": "hebrew-final-kaf-dot-must-not-alias-todhri",
+      "input_hex": "d79acc87",
+      "unicode17_nfc_hex": "d79acc87"
+    },
+    {
+      "id": "linear-b-a3-grave-must-not-alias-latin-a",
+      "input_hex": "f0908181cc80",
+      "unicode17_nfc_hex": "f0908181cc80"
+    }
+  ],
+  "negative": [
+    {
+      "id": "malformed-utf8",
+      "input_hex": "c328",
+      "rejection": "invalid-utf8"
+    },
+    {
+      "id": "unicode17-unassigned-u0378",
+      "input_hex": "cdb8",
+      "rejection": "unassigned"
+    }
+  ],
+  "post_normalization_limit": {
+    "input_unit_hex": "cd84",
+    "repeat": 524288,
+    "source": "NormalizationTest-17.0.0.txt line 400: U+0344 NFC decomposes to U+0308 U+0301"
+  }
+}

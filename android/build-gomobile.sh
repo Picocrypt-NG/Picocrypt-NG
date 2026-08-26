@@ -4,12 +4,21 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GO_SRC_DIR="$SCRIPT_DIR/../src"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+GO_SRC_DIR="$(cd "$SCRIPT_DIR/../src" && pwd -P)"
 OUTPUT_DIR="$SCRIPT_DIR/app/libs"
 GOMOBILE_LDFLAGS="${GOMOBILE_LDFLAGS:--s -w -buildid=}"
+GOMOBILE_BUILD_TAG_ARGS=()
+case "${PCV3_CALIBRATION_BUILD:-}" in
+    "") ;;
+    1) GOMOBILE_BUILD_TAG_ARGS=(-tags=pcv3_calibration) ;;
+    *)
+        echo "Error: PCV3_CALIBRATION_BUILD must be empty or 1." >&2
+        exit 1
+        ;;
+esac
 NDK_VERSION_FILE="$SCRIPT_DIR/ndk-version.txt"
-REQUIRED_GO_VERSION="go1.26.5"
+REQUIRED_GO_VERSION="go1.26.6"
 
 # Set Android SDK/NDK paths
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
@@ -154,21 +163,93 @@ mkdir -p "$OUTPUT_DIR"
 
 REAL_GO="$(command -v go)"
 REAL_GOBIND="$(command -v gobind)"
+if ! JQ="$(command -v jq)"; then
+    echo "Error: jq is required for generated-module replacement validation." >&2
+    exit 1
+fi
 WRAPPER_DIR="$(mktemp -d)"
+VERIFY_DIR=""
 cleanup() {
-    rm -rf "$WRAPPER_DIR"
+    if [ -n "${WRAPPER_DIR:-}" ]; then
+        rm -rf -- "$WRAPPER_DIR"
+    fi
+    if [ -n "${VERIFY_DIR:-}" ]; then
+        rm -rf -- "$VERIFY_DIR"
+    fi
 }
 trap cleanup EXIT
+VERIFY_DIR="$(mktemp -d)"
 
-cat > "$WRAPPER_DIR/go" <<EOF
+if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ]; then
+    echo "Error: current user home is unavailable for AAR privacy validation." >&2
+    exit 1
+fi
+USER_HOME="$(cd "$HOME" && pwd -P)"
+
+case "$(uname -s)" in
+    Linux)
+        NDK_HOST_TAG="linux-x86_64"
+        ;;
+    Darwin)
+        NDK_HOST_TAG="darwin-x86_64"
+        ;;
+    *)
+        echo "Error: unsupported host for pinned NDK llvm-readelf validation." >&2
+        exit 1
+        ;;
+esac
+LLVM_READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$NDK_HOST_TAG/bin/llvm-readelf"
+if [ ! -x "$LLVM_READELF" ]; then
+    echo "Error: pinned NDK llvm-readelf is unavailable for AAR validation." >&2
+    exit 1
+fi
+
+export PICOCRYPT_REAL_GO="$REAL_GO"
+export PICOCRYPT_GO_SRC_DIR="$GO_SRC_DIR"
+export PICOCRYPT_JQ="$JQ"
+
+cat > "$WRAPPER_DIR/go" <<'EOF'
 #!/bin/sh
 set -e
-if [ -n "\$GOFLAGS" ]; then
-    export GOFLAGS="\$GOFLAGS -trimpath"
+REAL_GO="${PICOCRYPT_REAL_GO:?}"
+GO_SRC_DIR="${PICOCRYPT_GO_SRC_DIR:?}"
+JQ="${PICOCRYPT_JQ:?}"
+
+if [ "$#" -eq 2 ] && [ "$1" = "mod" ] && [ "$2" = "tidy" ]; then
+    generated_module="$($REAL_GO list -m -f '{{.Path}}' 2>/dev/null || true)"
+    if [ "$generated_module" = "gobind" ]; then
+        replacement_path="$($REAL_GO mod edit -json 2>/dev/null | "$JQ" -r '
+            [.Replace[]? | select(.Old.Path == "Picocrypt-NG")] as $matches
+            | if ($matches | length) == 1 and ($matches[0].Old.Version // "") == "" and ($matches[0].New.Version // "") == "" then $matches[0].New.Path else empty end
+        ' 2>/dev/null || true)"
+        if [ -z "$replacement_path" ] || [ "$(cd "$replacement_path" 2>/dev/null && pwd -P)" != "$GO_SRC_DIR" ]; then
+            echo "Error: generated gobind replacement policy failed." >&2
+            exit 1
+        fi
+        if [ -e localmod ] || [ -L localmod ]; then
+            echo "Error: generated gobind localmod policy failed." >&2
+            exit 1
+        fi
+        ln -s "$GO_SRC_DIR" localmod
+        "$REAL_GO" mod edit -replace=Picocrypt-NG=./localmod
+
+        replacement_path="$($REAL_GO mod edit -json 2>/dev/null | "$JQ" -r '
+            [.Replace[]? | select(.Old.Path == "Picocrypt-NG")] as $matches
+            | if ($matches | length) == 1 and ($matches[0].Old.Version // "") == "" and $matches[0].New.Path == "./localmod" and ($matches[0].New.Version // "") == "" then $matches[0].New.Path else empty end
+        ' 2>/dev/null || true)"
+        if [ "$replacement_path" != "./localmod" ] || [ "$(cd "$replacement_path" 2>/dev/null && pwd -P)" != "$GO_SRC_DIR" ]; then
+            echo "Error: generated gobind replacement policy failed." >&2
+            exit 1
+        fi
+    fi
+fi
+
+if [ -n "$GOFLAGS" ]; then
+    export GOFLAGS="$GOFLAGS -trimpath"
 else
     export GOFLAGS="-trimpath"
 fi
-exec "$REAL_GO" "\$@"
+exec "$REAL_GO" "$@"
 EOF
 chmod +x "$WRAPPER_DIR/go"
 
@@ -190,7 +271,13 @@ cd "$GO_SRC_DIR"
 
 # gomobile uses ANDROID_NDK_HOME environment variable (already set above)
 # Always use API level 24 (matches app's minSdk)
-PATH="$WRAPPER_DIR:$PATH" gomobile bind -target android/arm64,android/amd64 $USE_ANDROID_API -ldflags="$GOMOBILE_LDFLAGS" -o "$OUTPUT_DIR/picocrypt-mobile.aar" ./mobile
+PATH="$WRAPPER_DIR:$PATH" gomobile bind \
+    -target android/arm64,android/amd64 \
+    $USE_ANDROID_API \
+    "${GOMOBILE_BUILD_TAG_ARGS[@]}" \
+    -ldflags="$GOMOBILE_LDFLAGS" \
+    -o "$OUTPUT_DIR/picocrypt-mobile.aar" \
+    ./mobile
 
 expected_abis="$(printf '%s\n' arm64-v8a x86_64)"
 actual_abis="$(
@@ -206,6 +293,89 @@ if [ "$actual_abis" != "$expected_abis" ]; then
     printf '%s\n' "$actual_abis" >&2
     exit 1
 fi
+
+if ! unzip -qq "$OUTPUT_DIR/picocrypt-mobile.aar" -d "$VERIFY_DIR"; then
+    echo "Error: AAR reproducibility policy failed during extraction." >&2
+    exit 1
+fi
+
+ensure_absent_from_aar() {
+    local prohibited_value="$1"
+    local policy_name="$2"
+    local scan_status
+
+    set +e
+    LC_ALL=C grep -a -r -F -q -- "$prohibited_value" "$VERIFY_DIR"
+    scan_status=$?
+    set -e
+    case "$scan_status" in
+        0)
+            echo "Error: AAR reproducibility policy failed: $policy_name." >&2
+            exit 1
+            ;;
+        1)
+            ;;
+        *)
+            echo "Error: AAR reproducibility policy could not scan: $policy_name." >&2
+            exit 1
+            ;;
+    esac
+}
+
+verify_native_so() {
+    local abi="$1"
+    local native_so="$VERIFY_DIR/jni/$abi/libgojni.so"
+    local metadata
+    local build_id
+    local section_headers
+
+    if ! metadata="$($REAL_GO version -m "$native_so" 2>/dev/null)"; then
+        echo "Error: AAR reproducibility policy failed for ABI $abi: go-build-metadata." >&2
+        exit 1
+    fi
+    if ! printf '%s\n' "$metadata" | awk -F '\t' '$2 == "build" && $3 == "-trimpath=true" { found = 1 } END { exit(found ? 0 : 1) }'; then
+        echo "Error: AAR reproducibility policy failed for ABI $abi: trimpath." >&2
+        exit 1
+    fi
+    if ! printf '%s\n' "$metadata" | awk -F '\t' '
+        $2 == "dep" && $3 == "Picocrypt-NG" { awaiting_replacement = 1; seen = 1; next }
+        awaiting_replacement && $2 == "=>" { if ($3 == "./localmod") exact_replacement = 1; awaiting_replacement = 0; next }
+        awaiting_replacement && $2 != "" { awaiting_replacement = 0 }
+        END { exit(seen && exact_replacement ? 0 : 1) }
+    '; then
+        echo "Error: AAR reproducibility policy failed for ABI $abi: project-replacement." >&2
+        exit 1
+    fi
+    if ! printf '%s\n' "$metadata" | awk -F '\t' '
+        $2 == "=>" {
+            replacement_path = $3
+            if (replacement_path ~ /^\// || replacement_path ~ /^[[:alpha:]]:[\\\\/]/ || replacement_path ~ /^\\\\\\\\/) bad = 1
+        }
+        END { exit(bad ? 1 : 0) }
+    '; then
+        echo "Error: AAR reproducibility policy failed for ABI $abi: absolute-replacement." >&2
+        exit 1
+    fi
+    if ! build_id="$($REAL_GO tool buildid "$native_so" 2>/dev/null)" || [ -n "$build_id" ]; then
+        echo "Error: AAR reproducibility policy failed for ABI $abi: go-buildid." >&2
+        exit 1
+    fi
+    if ! section_headers="$($LLVM_READELF -S "$native_so" 2>/dev/null)"; then
+        echo "Error: AAR reproducibility policy failed for ABI $abi: llvm-readelf." >&2
+        exit 1
+    fi
+    if printf '%s\n' "$section_headers" | grep -F -q '.note.gnu.build-id'; then
+        echo "Error: AAR reproducibility policy failed for ABI $abi: elf-buildid." >&2
+        exit 1
+    fi
+}
+
+for abi in $expected_abis; do
+    verify_native_so "$abi"
+done
+
+ensure_absent_from_aar "$GO_SRC_DIR" "checkout-path"
+ensure_absent_from_aar "$USER_HOME" "user-home"
 
 echo "✓ Build successful!"
 echo "  AAR location: $OUTPUT_DIR/picocrypt-mobile.aar"

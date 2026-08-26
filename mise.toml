@@ -2,7 +2,7 @@
 min_version = "2026.6.14"
 
 [tools]
-go = "1.26.5"
+go = "1.26.6"
 java = "temurin-21"
 golangci-lint = "2.12.2"
 "go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20260709172247-6129f5bee9d5"

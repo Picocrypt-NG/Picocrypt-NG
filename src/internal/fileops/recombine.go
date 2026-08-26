@@ -39,16 +39,23 @@ func parseUnsignedChunkIndex(s string) (int, bool) {
 
 // RecombineOptions configures chunk recombination
 type RecombineOptions struct {
-	InputBase  string       // Base path without .N suffix
-	OutputPath string       // Output .pcv file path
-	OutputInfo *os.FileInfo // Optional exact identity of the completed output
-	Progress   ProgressFunc
-	Status     StatusFunc
-	Cancel     CancelFunc
+	InputBase          string               // Base path without .N suffix
+	OutputPath         string               // Output .pcv file path
+	OutputInfo         *os.FileInfo         // Optional exact identity of the completed output
+	InputInfos         *[]os.FileInfo       // Optional identities of the exact consumed chunk descriptors
+	FirstChunk         *os.File             // Optional borrowed, pre-routed chunk-zero descriptor
+	ValidateFirstChunk func(*os.File) error // Optional validation before output creation
+	Progress           ProgressFunc
+	Status             StatusFunc
+	Cancel             CancelFunc
 }
 
 // CountChunks returns the number of split chunks for a given base path
 func CountChunks(basePath string) (int, int64, error) {
+	return countChunks(basePath, nil)
+}
+
+func countChunks(basePath string, firstChunkInfo os.FileInfo) (int, int64, error) {
 	dir := filepath.Dir(basePath)
 	if dir == "" {
 		dir = "."
@@ -75,13 +82,17 @@ func CountChunks(basePath string) (int, int64, error) {
 			continue
 		}
 
-		stat, err := entry.Info()
-		if err != nil {
-			return 0, 0, fmt.Errorf("stat chunk %s: %w", filepath.Join(dir, name), err)
+		if index == 0 && firstChunkInfo != nil {
+			totalSize += firstChunkInfo.Size()
+		} else {
+			stat, err := entry.Info()
+			if err != nil {
+				return 0, 0, fmt.Errorf("stat chunk %s: %w", filepath.Join(dir, name), err)
+			}
+			totalSize += stat.Size()
 		}
 
 		indexes = append(indexes, index)
-		totalSize += stat.Size()
 	}
 
 	if len(indexes) == 0 {
@@ -101,7 +112,41 @@ func CountChunks(basePath string) (int, int64, error) {
 // Recombine merges split chunks back into a single file.
 // Chunks are expected to be named: basePath.0, basePath.1, etc.
 func Recombine(opts RecombineOptions) (retErr error) {
-	numChunks, totalSize, err := CountChunks(opts.InputBase)
+	firstChunk := opts.FirstChunk
+	borrowedFirstChunk := firstChunk != nil
+	if firstChunk == nil && opts.ValidateFirstChunk != nil {
+		firstChunkPath := opts.InputBase + ".0"
+		// #nosec G304 -- chunk path derived from user-provided base path
+		firstChunk, retErr = os.Open(firstChunkPath)
+		if retErr != nil {
+			return fmt.Errorf("open chunk 0: %w", retErr)
+		}
+		defer func() {
+			if firstChunk != nil && !borrowedFirstChunk {
+				retErr = errors.Join(retErr, firstChunk.Close())
+			}
+		}()
+	}
+	if firstChunk != nil {
+		if opts.ValidateFirstChunk != nil {
+			if err := opts.ValidateFirstChunk(firstChunk); err != nil {
+				return err
+			}
+		}
+		if _, err := firstChunk.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind chunk 0 after validation: %w", err)
+		}
+	}
+
+	var firstChunkInfo os.FileInfo
+	if firstChunk != nil {
+		var err error
+		firstChunkInfo, err = firstChunk.Stat()
+		if err != nil {
+			return fmt.Errorf("stat chunk 0: %w", err)
+		}
+	}
+	numChunks, totalSize, err := countChunks(opts.InputBase, firstChunkInfo)
 	if err != nil {
 		return err
 	}
@@ -130,6 +175,7 @@ func Recombine(opts RecombineOptions) (retErr error) {
 	}()
 
 	var totalDone int64
+	inputInfos := make([]os.FileInfo, 0, numChunks)
 	startTime := time.Now()
 
 	for i := range numChunks {
@@ -137,24 +183,47 @@ func Recombine(opts RecombineOptions) (retErr error) {
 			return errors.New("operation cancelled")
 		}
 
-		chunkPath := fmt.Sprintf("%s.%d", opts.InputBase, i)
-		// #nosec G304 -- chunk paths derived from user-provided base path
-		fin, err := os.Open(chunkPath)
-		if err != nil {
-			return fmt.Errorf("open chunk %d: %w", i, err)
+		var (
+			fin      *os.File
+			closeFin bool
+		)
+		if i == 0 && firstChunk != nil {
+			fin = firstChunk
+			closeFin = !borrowedFirstChunk
+			firstChunk = nil
+		} else {
+			chunkPath := fmt.Sprintf("%s.%d", opts.InputBase, i)
+			// #nosec G304 -- chunk paths derived from user-provided base path
+			fin, err = os.Open(chunkPath)
+			if err != nil {
+				return fmt.Errorf("open chunk %d: %w", i, err)
+			}
+			closeFin = true
 		}
+		finInfo, err := fin.Stat()
+		if err != nil {
+			if closeFin {
+				_ = fin.Close()
+			}
+			return fmt.Errorf("stat chunk %d: %w", i, err)
+		}
+		inputInfos = append(inputInfos, finInfo)
 
 		buf := make([]byte, util.MiB)
 		for {
 			if opts.Cancel != nil && opts.Cancel() {
-				_ = fin.Close()
+				if closeFin {
+					_ = fin.Close()
+				}
 				return errors.New("operation cancelled")
 			}
 
 			n, readErr := fin.Read(buf)
 			if n > 0 {
 				if _, err := fout.Write(buf[:n]); err != nil {
-					_ = fin.Close()
+					if closeFin {
+						_ = fin.Close()
+					}
 					return fmt.Errorf("write from chunk %d: %w", i, err)
 				}
 				totalDone += int64(n)
@@ -172,13 +241,17 @@ func Recombine(opts RecombineOptions) (retErr error) {
 				break
 			}
 			if readErr != nil {
-				_ = fin.Close()
+				if closeFin {
+					_ = fin.Close()
+				}
 				return fmt.Errorf("read chunk %d: %w", i, readErr)
 			}
 		}
 
-		if err := recombineCloseFn(fin); err != nil {
-			return fmt.Errorf("close chunk %d: %w", i, err)
+		if closeFin {
+			if err := recombineCloseFn(fin); err != nil {
+				return fmt.Errorf("close chunk %d: %w", i, err)
+			}
 		}
 	}
 
@@ -195,6 +268,9 @@ func Recombine(opts RecombineOptions) (retErr error) {
 	}
 	if opts.OutputInfo != nil {
 		*opts.OutputInfo = ownedOutput.info
+	}
+	if opts.InputInfos != nil {
+		*opts.InputInfos = append([]os.FileInfo(nil), inputInfos...)
 	}
 	keepOutput = true
 

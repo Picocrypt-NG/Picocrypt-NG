@@ -1,0 +1,1170 @@
+package pcv3publication
+
+import (
+	"Picocrypt-NG/internal/pcv3result"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+type operationCounts struct {
+	atomic int
+	sync   int
+}
+
+func realRenameOperations(t *testing.T, directory string) (platformOperations, *operationCounts) {
+	t.Helper()
+	counts := &operationCounts{}
+	return platformOperations{
+		atomicPublish: func(parent *os.File, stageName, targetName string, policy Policy) error {
+			counts.atomic++
+			if policy != PolicyNoReplace {
+				return errors.New("test operation received replacing policy")
+			}
+			if !sameDirectoryHandle(parent, directory) {
+				return errors.New("test operation received wrong directory handle")
+			}
+			return os.Rename(
+				filepath.Join(directory, stageName),
+				filepath.Join(directory, targetName),
+			)
+		},
+		syncDirectory: func(parent *os.File) error {
+			counts.sync++
+			if !sameDirectoryHandle(parent, directory) {
+				return errors.New("test sync received wrong directory handle")
+			}
+			return parent.Sync()
+		},
+	}, counts
+}
+
+func sameDirectoryHandle(parent *os.File, directory string) bool {
+	if parent == nil {
+		return false
+	}
+	pinned, err := parent.Stat()
+	if err != nil {
+		return false
+	}
+	current, err := os.Stat(directory)
+	return err == nil && os.SameFile(pinned, current)
+}
+
+func requireResultError(t *testing.T, err error) Result {
+	t.Helper()
+	if err == nil {
+		t.Fatal("operation unexpectedly succeeded")
+	}
+	var result Result
+	if !errors.As(err, &result) {
+		t.Fatalf("error type = %T; want sealed publication Result", err)
+	}
+	return result
+}
+
+func requireResult(
+	t *testing.T,
+	result Result,
+	wantState State,
+	wantOutcome pcv3result.Outcome,
+	wantStage pcv3result.Stage,
+	wantCode Code,
+) {
+	t.Helper()
+	if result == nil {
+		t.Fatal("publication returned a nil result")
+	}
+	if got := result.State(); got != wantState {
+		t.Errorf("state = %s; want %s", got, wantState)
+	}
+	if got := result.Outcome(); got != wantOutcome {
+		t.Errorf("outcome = %s; want %s", got, wantOutcome)
+	}
+	if got := result.Stage(); got != wantStage {
+		t.Errorf("stage = %s; want %s", got, wantStage)
+	}
+	if got := result.Code(); got != wantCode {
+		t.Errorf("code = %s; want %s", got, wantCode)
+	}
+}
+
+func requireFileBytes(t *testing.T, path string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read test file: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("test file bytes = %q; want %q", got, want)
+	}
+}
+
+func TestCreateReportsCleanupIncompleteWhenStageIdentityCannotBeEstablished(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "must-not-exist.pcv")
+	statFailure := errors.New("TEST ONLY stage identity failure")
+	operations, _ := realRenameOperations(t, directory)
+	var ownedInfo os.FileInfo
+	operations.statStage = func(file *os.File) (os.FileInfo, error) {
+		var err error
+		ownedInfo, err = file.Stat()
+		if err != nil {
+			t.Fatalf("stat real stage for independent identity oracle: %v", err)
+		}
+		return nil, statFailure
+	}
+
+	_, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+	result := requireResultError(t, err)
+	requireResult(
+		t,
+		result,
+		StateNotPublished,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
+		CodeStageFailure,
+	)
+	if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed stage identity created destination: %v", statErr)
+	}
+	entries, readErr := os.ReadDir(directory)
+	if readErr != nil {
+		t.Fatalf("read directory containing retained stage: %v", readErr)
+	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), stageNamePrefix) {
+		t.Fatalf("retained entries = %v; want exactly the operation-owned stage", entries)
+	}
+	stagePath := filepath.Join(directory, entries[0].Name())
+	pathInfo, statErr := os.Lstat(stagePath)
+	if statErr != nil || !pathInfo.Mode().IsRegular() || ownedInfo == nil ||
+		!os.SameFile(ownedInfo, pathInfo) {
+		t.Fatalf("retained stage identity = %v/%v; want exact owned regular file", pathInfo, statErr)
+	}
+	if runtime.GOOS != "windows" && pathInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("retained stage mode = %04o; want 0600", pathInfo.Mode().Perm())
+	}
+	formatted := fmt.Sprintf("%v|%+v|%q", err, err, err)
+	if strings.Contains(formatted, directory) || strings.Contains(formatted, statFailure.Error()) {
+		t.Fatalf("cleanup diagnostic disclosed a path or raw platform error: %q", formatted)
+	}
+	if !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("create error = %v; want observable ErrCleanupIncomplete for retained owned stage", err)
+	}
+}
+
+func TestCreateReportsCleanupIncompleteWhenIdentityFailureCannotRemoveOwnedStage(t *testing.T) {
+	base := t.TempDir()
+	directory := filepath.Join(base, "parent")
+	movedDirectory := filepath.Join(base, "pinned-parent")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatalf("create publication parent: %v", err)
+	}
+	target := filepath.Join(directory, "must-not-exist.pcv")
+	foreign := []byte("TEST ONLY replacement-parent stage-name canary")
+	removeFailure := errors.New("TEST ONLY owned-stage removal failure")
+	operations, _ := realRenameOperations(t, directory)
+	var ownedInfo os.FileInfo
+	var stageName string
+	var replacementInfo os.FileInfo
+	var replaceErr error
+	operations.statStage = func(file *os.File) (os.FileInfo, error) {
+		info, err := file.Stat()
+		if err != nil {
+			return nil, err
+		}
+		ownedInfo = info
+		stageName = filepath.Base(file.Name())
+		if err := os.Rename(directory, movedDirectory); err != nil {
+			replaceErr = err
+			return nil, err
+		}
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatalf("create replacement parent: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, stageName), foreign, 0o640); err != nil {
+			t.Fatalf("write replacement-parent canary: %v", err)
+		}
+		replacementInfo, err = os.Lstat(filepath.Join(directory, stageName))
+		if err != nil {
+			t.Fatalf("stat replacement-parent canary: %v", err)
+		}
+		return info, nil
+	}
+	operations.removeStage = func(*os.Root, string) error {
+		return removeFailure
+	}
+
+	_, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+	if replaceErr != nil {
+		if removeErr := os.Remove(filepath.Join(directory, stageName)); removeErr != nil {
+			t.Fatalf("remove stage after unsupported parent replacement: %v", removeErr)
+		}
+		t.Skipf("platform prevents replacing an open parent path: %v", replaceErr)
+	}
+	result := requireResultError(t, err)
+	requireResult(
+		t,
+		result,
+		StateNotPublished,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
+		CodeIdentityChanged,
+	)
+	retainedPath := filepath.Join(movedDirectory, stageName)
+	pathInfo, statErr := os.Lstat(retainedPath)
+	if statErr != nil || ownedInfo == nil || !os.SameFile(ownedInfo, pathInfo) {
+		t.Fatalf("retained pinned-parent stage identity = %v/%v; want exact owned stage", pathInfo, statErr)
+	}
+	replacementPath := filepath.Join(directory, stageName)
+	requireFileBytes(t, replacementPath, foreign)
+	currentReplacement, statErr := os.Lstat(replacementPath)
+	if statErr != nil || replacementInfo == nil || !os.SameFile(replacementInfo, currentReplacement) ||
+		currentReplacement.Mode().Perm() != replacementInfo.Mode().Perm() {
+		t.Fatalf("replacement-parent canary identity/mode changed: %v/%v", currentReplacement, statErr)
+	}
+	if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("identity failure created replacement-parent destination: %v", statErr)
+	}
+	formatted := fmt.Sprintf("%v|%+v|%q", err, err, err)
+	if strings.Contains(formatted, base) || strings.Contains(formatted, removeFailure.Error()) {
+		t.Fatalf("cleanup diagnostic disclosed a path or raw platform error: %q", formatted)
+	}
+	if !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("create error = %v; want observable ErrCleanupIncomplete for retained pinned-parent stage", err)
+	}
+}
+
+func requireNoStageEntries(t *testing.T, directory string) {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatalf("read test directory: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), stageNamePrefix) {
+			t.Fatalf("unexpected publication stage remains: %q", entry.Name())
+		}
+	}
+}
+
+func TestCreateStageOwnsExclusivePrivateSibling(t *testing.T) {
+	directory := t.TempDir()
+	operations, counts := realRenameOperations(t, directory)
+	first, err := createWithOperations(
+		filepath.Join(directory, "first.pcv"),
+		nil,
+		PolicyNoReplace,
+		operations,
+	)
+	if err != nil {
+		t.Fatalf("create first stage: %v", err)
+	}
+	defer first.Cleanup()
+	second, err := createWithOperations(
+		filepath.Join(directory, "second.pcv"),
+		nil,
+		PolicyNoReplace,
+		operations,
+	)
+	if err != nil {
+		t.Fatalf("create second stage: %v", err)
+	}
+	defer second.Cleanup()
+
+	if first.stageName == second.stageName {
+		t.Fatal("two operation-owned stages reused one supposedly random name")
+	}
+	for _, stage := range []*Stage{first, second} {
+		if !strings.HasPrefix(stage.stageName, stageNamePrefix) {
+			t.Fatalf("stage name %q lacks the private publication prefix", stage.stageName)
+		}
+		if filepath.Dir(stage.stagePath) != directory {
+			t.Fatalf("stage is not a sibling of its destination: %q", stage.stagePath)
+		}
+		info, err := stage.File().Stat()
+		if err != nil {
+			t.Fatalf("inspect open stage: %v", err)
+		}
+		current, err := os.Lstat(stage.stagePath)
+		if err != nil {
+			t.Fatalf("inspect stage path: %v", err)
+		}
+		if !info.Mode().IsRegular() || !os.SameFile(info, current) {
+			t.Fatal("stage path does not name the exclusively opened regular file")
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+			t.Fatalf("stage mode = %04o; want 0600", info.Mode().Perm())
+		}
+	}
+	if counts.atomic != 0 || counts.sync != 0 {
+		t.Fatalf("stage creation invoked publication operations: atomic=%d sync=%d", counts.atomic, counts.sync)
+	}
+
+	// Each stage carries independent exact bytes through its owned handle, and
+	// no destination appears before publication.
+	payloads := [][]byte{
+		[]byte("first stage exact unpublished bytes"),
+		[]byte("second stage exact unpublished bytes\x00\xff"),
+	}
+	for index, stage := range []*Stage{first, second} {
+		if _, err := stage.File().Write(payloads[index]); err != nil {
+			t.Fatalf("write stage %d: %v", index, err)
+		}
+		if _, err := stage.File().Seek(0, io.SeekStart); err != nil {
+			t.Fatalf("rewind stage %d: %v", index, err)
+		}
+		recovered := make([]byte, len(payloads[index]))
+		if _, err := io.ReadFull(stage.File(), recovered); err != nil {
+			t.Fatalf("read stage %d: %v", index, err)
+		}
+		if !bytes.Equal(recovered, payloads[index]) {
+			t.Fatalf("stage %d bytes drifted between the two owned handles", index)
+		}
+	}
+	for _, name := range []string{"first.pcv", "second.pcv"} {
+		if _, err := os.Lstat(filepath.Join(directory, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("staging created destination %q: %v", name, err)
+		}
+	}
+}
+
+func TestNoReplacePreservesDestination(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "occupied.pcv")
+	original := []byte("existing destination must survive")
+	if err := os.WriteFile(target, original, 0o640); err != nil {
+		t.Fatalf("write existing destination: %v", err)
+	}
+	before, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("inspect existing destination: %v", err)
+	}
+	operations, counts := realRenameOperations(t, directory)
+
+	stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+	if stage != nil {
+		stage.Cleanup()
+		t.Fatal("no-replace returned a stage for an occupied destination")
+	}
+	result := requireResultError(t, err)
+	requireResult(
+		t,
+		result,
+		StateNotPublished,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
+		CodeDestinationExists,
+	)
+	if counts.atomic != 0 || counts.sync != 0 {
+		t.Fatalf("occupied destination reached publication operations: atomic=%d sync=%d", counts.atomic, counts.sync)
+	}
+	after, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("inspect destination after refusal: %v", err)
+	}
+	if !os.SameFile(before, after) || before.Mode() != after.Mode() {
+		t.Fatal("no-replace changed destination identity or mode")
+	}
+	requireFileBytes(t, target, original)
+	requireNoStageEntries(t, directory)
+	if strings.Contains(fmt.Sprintf("%+v", err), target) {
+		t.Fatal("no-replace refusal disclosed the destination path")
+	}
+}
+
+func TestSafeReplaceFailsClosedWithoutIdentityPrimitive(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "existing.pcv")
+	original := []byte("identity-pinned destination")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		t.Fatalf("write existing destination: %v", err)
+	}
+	operations, counts := realRenameOperations(t, directory)
+
+	stage, err := createWithOperations(target, nil, PolicySafeReplace, operations)
+	if stage != nil {
+		stage.Cleanup()
+		t.Fatal("unsupported safe-replace created staging")
+	}
+	result := requireResultError(t, err)
+	requireResult(
+		t,
+		result,
+		StateNotPublished,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
+		CodePolicyUnsupported,
+	)
+	if counts.atomic != 0 || counts.sync != 0 {
+		t.Fatalf("unsupported safe-replace reached publication operations: atomic=%d sync=%d", counts.atomic, counts.sync)
+	}
+	requireFileBytes(t, target, original)
+	requireNoStageEntries(t, directory)
+}
+
+func TestProtectedOutputAliasFailsBeforeStage(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "source-and-output.pcv")
+	operations, counts := realRenameOperations(t, directory)
+
+	stage, err := createWithOperations(target, []string{target}, PolicyNoReplace, operations)
+	if stage != nil {
+		stage.Cleanup()
+		t.Fatal("protected output alias created staging")
+	}
+	result := requireResultError(t, err)
+	requireResult(
+		t,
+		result,
+		StateNotPublished,
+		pcv3result.OutcomeOperationFailed,
+		pcv3result.StageOutputPublication,
+		CodeInvalidRequest,
+	)
+	if counts.atomic != 0 || counts.sync != 0 {
+		t.Fatalf("protected alias reached publication operations: atomic=%d sync=%d", counts.atomic, counts.sync)
+	}
+	requireNoStageEntries(t, directory)
+}
+
+func TestPublishCancellationBoundary(t *testing.T) {
+	t.Run("before atomic call", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "cancelled.pcv")
+		operations, counts := realRenameOperations(t, directory)
+		stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		if _, err := stage.File().Write([]byte("must never publish")); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write stage: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		result := stage.Publish(ctx)
+		requireResult(
+			t,
+			result,
+			StateNotPublished,
+			pcv3result.OutcomeOperationFailed,
+			pcv3result.StageCancellation,
+			CodeCancelled,
+		)
+		if counts.atomic != 0 || counts.sync != 0 {
+			t.Fatalf("pre-call cancellation reached publication operations: atomic=%d sync=%d", counts.atomic, counts.sync)
+		}
+		if err := stage.Cleanup(); err != nil {
+			t.Fatalf("cleanup cancelled stage: %v", err)
+		}
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("pre-call cancellation published a destination: %v", err)
+		}
+		requireNoStageEntries(t, directory)
+	})
+
+	t.Run("after proven commit", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "committed.pcv")
+		payload := []byte("complete committed output")
+		ctx, cancel := context.WithCancel(context.Background())
+		counts := &operationCounts{}
+		operations := platformOperations{
+			atomicPublish: func(parent *os.File, stageName, targetName string, policy Policy) error {
+				counts.atomic++
+				if !sameDirectoryHandle(parent, directory) || policy != PolicyNoReplace {
+					return errors.New("wrong test publication request")
+				}
+				if err := os.Rename(filepath.Join(directory, stageName), filepath.Join(directory, targetName)); err != nil {
+					return err
+				}
+				cancel()
+				return errors.New("atomic-call-error-after-commit-canary")
+			},
+			syncDirectory: func(parent *os.File) error {
+				counts.sync++
+				return parent.Sync()
+			},
+		}
+		stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		if _, err := stage.File().Write(payload); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write stage: %v", err)
+		}
+
+		result := stage.Publish(ctx)
+		requireResult(
+			t,
+			result,
+			StatePublishedDurable,
+			pcv3result.OutcomeSuccess,
+			pcv3result.StageNone,
+			CodePublishedDurable,
+		)
+		if counts.atomic != 1 || counts.sync != 1 {
+			t.Fatalf("proven commit calls: atomic=%d sync=%d; want 1/1", counts.atomic, counts.sync)
+		}
+		if again := stage.Publish(context.Background()); again != result {
+			t.Fatal("second Publish did not return the sealed terminal result")
+		}
+		if counts.atomic != 1 || counts.sync != 1 {
+			t.Fatalf("second Publish repeated effects: atomic=%d sync=%d", counts.atomic, counts.sync)
+		}
+		if err := stage.Cleanup(); err != nil {
+			t.Fatalf("cleanup committed stage: %v", err)
+		}
+		requireFileBytes(t, target, payload)
+	})
+}
+
+func TestPublishIndeterminateRetainsUnprovenPaths(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "ambiguous.pcv")
+	recovery := filepath.Join(directory, "operation-bytes-recovery")
+	operationBytes := []byte("complete operation-owned output")
+	foreignStageBytes := []byte("foreign bytes at remembered stage name")
+	foreignTargetBytes := []byte("foreign bytes at target name")
+	atomicCanary := "atomic-unprovable-error-canary"
+	counts := &operationCounts{}
+	operations := platformOperations{
+		atomicPublish: func(parent *os.File, stageName, targetName string, policy Policy) error {
+			counts.atomic++
+			stagePath := filepath.Join(directory, stageName)
+			if err := os.Rename(stagePath, recovery); err != nil {
+				return err
+			}
+			if err := os.WriteFile(stagePath, foreignStageBytes, 0o600); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(directory, targetName), foreignTargetBytes, 0o600); err != nil {
+				return err
+			}
+			return errors.New(atomicCanary)
+		},
+		syncDirectory: func(*os.File) error {
+			counts.sync++
+			return nil
+		},
+	}
+	stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+	if err != nil {
+		t.Fatalf("create stage: %v", err)
+	}
+	stagePath := stage.stagePath
+	if _, err := stage.File().Write(operationBytes); err != nil {
+		stage.Cleanup()
+		t.Fatalf("write stage: %v", err)
+	}
+
+	result := stage.Publish(context.Background())
+	requireResult(
+		t,
+		result,
+		StatePublicationIndeterminate,
+		pcv3result.OutcomePublicationIndeterminate,
+		pcv3result.StageOutputPublication,
+		CodePublicationIndeterminate,
+	)
+	if counts.atomic != 1 || counts.sync != 0 {
+		t.Fatalf("indeterminate calls: atomic=%d sync=%d; want 1/0", counts.atomic, counts.sync)
+	}
+	for _, rendered := range []string{
+		result.Error(),
+		result.String(),
+		result.GoString(),
+		fmt.Sprintf("%v", result),
+		fmt.Sprintf("%+v", result),
+		fmt.Sprintf("%#v", result),
+		fmt.Sprintf("%q", result),
+		fmt.Sprintf("%x", result),
+		fmt.Sprintf("%d", result),
+	} {
+		for _, canary := range []string{atomicCanary, target, stagePath, recovery} {
+			if strings.Contains(rendered, canary) {
+				t.Fatalf("indeterminate result disclosed %q in %q", canary, rendered)
+			}
+		}
+	}
+	if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("non-destructive indeterminate cleanup = %v; want ErrCleanupIncomplete", err)
+	}
+	requireFileBytes(t, stagePath, foreignStageBytes)
+	requireFileBytes(t, target, foreignTargetBytes)
+	requireFileBytes(t, recovery, operationBytes)
+}
+
+func TestCleanupReportsUnprovenOwnedStage(t *testing.T) {
+	t.Run("owned stage", func(t *testing.T) {
+		directory := t.TempDir()
+		operations, _ := realRenameOperations(t, directory)
+		stage, err := createWithOperations(
+			filepath.Join(directory, "output.pcv"),
+			nil,
+			PolicyNoReplace,
+			operations,
+		)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		stagePath := stage.stagePath
+		if _, err := stage.File().Write([]byte("unpublished bytes")); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write stage: %v", err)
+		}
+		if err := stage.Cleanup(); err != nil {
+			t.Fatalf("cleanup owned stage: %v", err)
+		}
+		if err := stage.Cleanup(); err != nil {
+			t.Fatalf("second cleanup changed terminal result: %v", err)
+		}
+		if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("owned unpublished stage remains: %v", err)
+		}
+	})
+
+	t.Run("renamed owned stage and foreign replacement", func(t *testing.T) {
+		directory := t.TempDir()
+		operations, _ := realRenameOperations(t, directory)
+		stage, err := createWithOperations(
+			filepath.Join(directory, "output.pcv"),
+			nil,
+			PolicyNoReplace,
+			operations,
+		)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		target := filepath.Join(directory, "output.pcv")
+		stagePath := stage.stagePath
+		escapedPath := filepath.Join(directory, "escaped-owned-stage")
+		ownedBytes := []byte("operation-owned plaintext must remain observable")
+		if _, err := stage.File().Write(ownedBytes); err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("write owned stage: %v", err)
+		}
+		ownedBefore, err := os.Lstat(stagePath)
+		if err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("stat owned stage before rename: %v", err)
+		}
+		if err := os.Rename(stagePath, escapedPath); err != nil {
+			stage.Cleanup()
+			t.Skipf("platform prevents renaming an open stage: %v", err)
+		}
+		foreign := []byte("must not be removed by cleanup")
+		if err := os.WriteFile(stagePath, foreign, 0o640); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write foreign stage replacement: %v", err)
+		}
+		foreignBefore, err := os.Lstat(stagePath)
+		if err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("stat foreign stage replacement: %v", err)
+		}
+
+		cleanupErr := stage.Cleanup()
+		if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
+			t.Fatalf("cleanup after stage replacement = %v; want ErrCleanupIncomplete", cleanupErr)
+		}
+		if repeated := stage.Cleanup(); !errors.Is(repeated, cleanupErr) {
+			t.Fatalf("repeated cleanup = %v; want stable classification %v", repeated, cleanupErr)
+		}
+
+		escapedAfter, err := os.Lstat(escapedPath)
+		if err != nil || !os.SameFile(ownedBefore, escapedAfter) || escapedAfter.Mode() != ownedBefore.Mode() {
+			t.Fatalf("escaped owned stage identity/mode = %v/%v; want %v", escapedAfter, err, ownedBefore.Mode())
+		}
+		requireFileBytes(t, escapedPath, ownedBytes)
+		foreignAfter, err := os.Lstat(stagePath)
+		if err != nil || !os.SameFile(foreignBefore, foreignAfter) || foreignAfter.Mode() != foreignBefore.Mode() {
+			t.Fatalf("foreign replacement identity/mode = %v/%v; want %v", foreignAfter, err, foreignBefore.Mode())
+		}
+		requireFileBytes(t, stagePath, foreign)
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cleanup uncertainty created destination: %v", err)
+		}
+	})
+
+	t.Run("missing expected pathname", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "output.pcv")
+		operations, _ := realRenameOperations(t, directory)
+		stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		stagePath := stage.stagePath
+		if _, err := stage.File().Write([]byte("unlinked operation-owned plaintext")); err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("write owned stage: %v", err)
+		}
+		if err := os.Remove(stagePath); err != nil {
+			_ = stage.Cleanup()
+			t.Skipf("platform prevents unlinking an open stage: %v", err)
+		}
+
+		cleanupErr := stage.Cleanup()
+		if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
+			t.Fatalf("cleanup with missing expected pathname = %v; want ErrCleanupIncomplete", cleanupErr)
+		}
+		if repeated := stage.Cleanup(); !errors.Is(repeated, cleanupErr) {
+			t.Fatalf("repeated cleanup = %v; want stable classification %v", repeated, cleanupErr)
+		}
+		if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("missing stage pathname reappeared: %v", err)
+		}
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cleanup uncertainty created destination: %v", err)
+		}
+	})
+}
+
+func TestCleanupRemovesOnlyOwnedUnpublishedStage(t *testing.T) {
+	t.Run("owned unpublished stage with foreign neighbor", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "output.pcv")
+		foreignPath := filepath.Join(directory, "foreign.txt")
+		foreign := []byte("foreign neighbor bytes must survive cleanup")
+		if err := os.WriteFile(foreignPath, foreign, 0o640); err != nil {
+			t.Fatalf("write foreign neighbor: %v", err)
+		}
+		foreignBefore, err := os.Lstat(foreignPath)
+		if err != nil {
+			t.Fatalf("inspect foreign neighbor: %v", err)
+		}
+		operations, _ := realRenameOperations(t, directory)
+		stage, err := createWithOperations(target, []string{foreignPath}, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		stagePath := stage.stagePath
+		if _, err := stage.File().Write([]byte("unpublished owned stage bytes")); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write owned stage: %v", err)
+		}
+
+		if err := stage.Cleanup(); err != nil {
+			t.Fatalf("cleanup owned unpublished stage: %v", err)
+		}
+		if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("owned unpublished stage remains: %v", err)
+		}
+		foreignAfter, err := os.Lstat(foreignPath)
+		if err != nil || !os.SameFile(foreignBefore, foreignAfter) ||
+			foreignAfter.Mode() != foreignBefore.Mode() {
+			t.Fatalf("foreign neighbor identity/mode = %v/%v; want %v", foreignAfter, err, foreignBefore.Mode())
+		}
+		requireFileBytes(t, foreignPath, foreign)
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cleanup created destination: %v", err)
+		}
+		requireNoStageEntries(t, directory)
+	})
+
+	t.Run("foreign replacement at the owned stage name is retained", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "output.pcv")
+		operations, _ := realRenameOperations(t, directory)
+		stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		stagePath := stage.stagePath
+		if _, err := stage.File().Write([]byte("unlinked operation-owned plaintext")); err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("write owned stage: %v", err)
+		}
+		if err := os.Remove(stagePath); err != nil {
+			_ = stage.Cleanup()
+			t.Skipf("platform prevents unlinking an open stage: %v", err)
+		}
+		foreign := []byte("foreign bytes occupying the remembered stage name")
+		if err := os.WriteFile(stagePath, foreign, 0o640); err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("write foreign stage-name replacement: %v", err)
+		}
+		foreignBefore, err := os.Lstat(stagePath)
+		if err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("inspect foreign stage-name replacement: %v", err)
+		}
+
+		cleanupErr := stage.Cleanup()
+		if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
+			t.Fatalf("cleanup at foreign-occupied stage name = %v; want ErrCleanupIncomplete", cleanupErr)
+		}
+		if repeated := stage.Cleanup(); !errors.Is(repeated, cleanupErr) {
+			t.Fatalf("repeated cleanup = %v; want stable classification %v", repeated, cleanupErr)
+		}
+		foreignAfter, err := os.Lstat(stagePath)
+		if err != nil || !os.SameFile(foreignBefore, foreignAfter) ||
+			foreignAfter.Mode() != foreignBefore.Mode() {
+			t.Fatalf("foreign stage-name replacement identity/mode = %v/%v; want %v", foreignAfter, err, foreignBefore.Mode())
+		}
+		requireFileBytes(t, stagePath, foreign)
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cleanup uncertainty created destination: %v", err)
+		}
+	})
+
+	t.Run("missing owned pathname stays uncertain", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "output.pcv")
+		operations, _ := realRenameOperations(t, directory)
+		stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		stagePath := stage.stagePath
+		if _, err := stage.File().Write([]byte("unlinked operation-owned plaintext")); err != nil {
+			_ = stage.Cleanup()
+			t.Fatalf("write owned stage: %v", err)
+		}
+		if err := os.Remove(stagePath); err != nil {
+			_ = stage.Cleanup()
+			t.Skipf("platform prevents unlinking an open stage: %v", err)
+		}
+
+		cleanupErr := stage.Cleanup()
+		if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
+			t.Fatalf("cleanup with missing owned pathname = %v; want ErrCleanupIncomplete, never inferred from absence", cleanupErr)
+		}
+		if repeated := stage.Cleanup(); !errors.Is(repeated, cleanupErr) {
+			t.Fatalf("repeated cleanup = %v; want stable classification %v", repeated, cleanupErr)
+		}
+		if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("missing stage pathname reappeared: %v", err)
+		}
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cleanup uncertainty created destination: %v", err)
+		}
+	})
+}
+
+func TestPublishStageFinalizationFailuresNeverCreateDestination(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*testing.T, *platformOperations, *int, *int)
+		wantSync  int
+		wantClose int
+	}{
+		{
+			name: "file sync failure",
+			configure: func(_ *testing.T, operations *platformOperations, syncCalls, _ *int) {
+				operations.syncStage = func(*os.File) error {
+					(*syncCalls)++
+					return errors.New("TEST ONLY stage sync failure")
+				}
+			},
+			wantSync: 1,
+		},
+		{
+			name: "file close failure",
+			configure: func(t *testing.T, operations *platformOperations, syncCalls, closeCalls *int) {
+				operations.syncStage = func(file *os.File) error {
+					(*syncCalls)++
+					return file.Sync()
+				}
+				operations.closeStage = func(file *os.File) error {
+					(*closeCalls)++
+					if err := file.Close(); err != nil {
+						t.Fatalf("close real stage before forced close result: %v", err)
+					}
+					return errors.New("TEST ONLY close reported failure after closing")
+				}
+			},
+			wantSync:  1,
+			wantClose: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			target := filepath.Join(directory, "must-not-exist.pcv")
+			foreignPath := filepath.Join(directory, "foreign.txt")
+			payload := []byte("complete staged bytes")
+			foreign := []byte("foreign bytes must survive")
+			if err := os.WriteFile(foreignPath, foreign, 0o640); err != nil {
+				t.Fatalf("write foreign file: %v", err)
+			}
+			operations, counts := realRenameOperations(t, directory)
+			var syncCalls, closeCalls int
+			test.configure(t, &operations, &syncCalls, &closeCalls)
+			stage, err := createWithOperations(target, []string{foreignPath}, PolicyNoReplace, operations)
+			if err != nil {
+				t.Fatalf("create stage: %v", err)
+			}
+			stagePath := stage.stagePath
+			if count, err := stage.File().Write(payload); err != nil || count != len(payload) {
+				stage.Cleanup()
+				t.Fatalf("write complete stage = %d/%v; want %d/nil", count, err, len(payload))
+			}
+
+			result := stage.Publish(context.Background())
+			requireResult(
+				t,
+				result,
+				StateNotPublished,
+				pcv3result.OutcomeOperationFailed,
+				pcv3result.StageOutputPublication,
+				CodeStageFailure,
+			)
+			if syncCalls != test.wantSync || closeCalls != test.wantClose {
+				t.Fatalf("stage finalization calls = sync %d close %d; want %d/%d", syncCalls, closeCalls, test.wantSync, test.wantClose)
+			}
+			if counts.atomic != 0 || counts.sync != 0 {
+				t.Fatalf("failed finalization reached commit = atomic %d directory-sync %d", counts.atomic, counts.sync)
+			}
+			requireFileBytes(t, stagePath, payload)
+			requireFileBytes(t, foreignPath, foreign)
+			if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed finalization created destination: %v", err)
+			}
+			if err := stage.Cleanup(); err != nil {
+				t.Fatalf("cleanup failed finalization: %v", err)
+			}
+			if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("owned stage remains after cleanup: %v", err)
+			}
+			requireFileBytes(t, foreignPath, foreign)
+		})
+	}
+}
+
+func TestPublishIdentityChangesFailClosed(t *testing.T) {
+	t.Run("parent path replacement", func(t *testing.T) {
+		base := t.TempDir()
+		directory := filepath.Join(base, "parent")
+		movedDirectory := filepath.Join(base, "pinned-parent")
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatalf("create publication parent: %v", err)
+		}
+		target := filepath.Join(directory, "output.pcv")
+		payload := []byte("owned stage in pinned parent")
+		operations, counts := realRenameOperations(t, directory)
+		stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		if _, err := stage.File().Write(payload); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write stage: %v", err)
+		}
+		stageName := stage.stageName
+		if err := os.Rename(directory, movedDirectory); err != nil {
+			stage.Cleanup()
+			t.Skipf("platform prevents replacing an open parent path: %v", err)
+		}
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			stage.Cleanup()
+			t.Fatalf("create replacement parent: %v", err)
+		}
+		foreignPath := filepath.Join(directory, "foreign.txt")
+		foreign := []byte("replacement-parent bytes")
+		if err := os.WriteFile(foreignPath, foreign, 0o640); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write replacement-parent file: %v", err)
+		}
+
+		result := stage.Publish(context.Background())
+		requireResult(t, result, StateNotPublished, pcv3result.OutcomeOperationFailed, pcv3result.StageOutputPublication, CodeIdentityChanged)
+		if counts.atomic != 0 || counts.sync != 0 {
+			t.Fatalf("parent replacement reached commit = atomic %d sync %d", counts.atomic, counts.sync)
+		}
+		if err := stage.Cleanup(); err != nil {
+			t.Fatalf("cleanup pinned-parent stage: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(movedDirectory, stageName)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("owned stage remains in pinned parent: %v", err)
+		}
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("replacement parent gained destination: %v", err)
+		}
+		requireFileBytes(t, foreignPath, foreign)
+	})
+
+	t.Run("stage path replacement", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "output.pcv")
+		operations, counts := realRenameOperations(t, directory)
+		stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		if _, err := stage.File().Write([]byte("unlinked owned stage")); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write stage: %v", err)
+		}
+		if err := os.Remove(stage.stagePath); err != nil {
+			stage.Cleanup()
+			t.Skipf("platform prevents replacing an open stage: %v", err)
+		}
+		foreign := []byte("foreign stage replacement")
+		if err := os.WriteFile(stage.stagePath, foreign, 0o640); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write foreign stage replacement: %v", err)
+		}
+
+		result := stage.Publish(context.Background())
+		requireResult(t, result, StateNotPublished, pcv3result.OutcomeOperationFailed, pcv3result.StageOutputPublication, CodeIdentityChanged)
+		if counts.atomic != 0 || counts.sync != 0 {
+			t.Fatalf("stage replacement reached commit = atomic %d sync %d", counts.atomic, counts.sync)
+		}
+		if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
+			t.Fatalf("cleanup foreign stage replacement = %v; want ErrCleanupIncomplete", err)
+		}
+		requireFileBytes(t, stage.stagePath, foreign)
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stage replacement created destination: %v", err)
+		}
+	})
+
+	t.Run("target appears before commit", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "output.pcv")
+		operations, counts := realRenameOperations(t, directory)
+		stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+		if err != nil {
+			t.Fatalf("create stage: %v", err)
+		}
+		if _, err := stage.File().Write([]byte("owned stage")); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write stage: %v", err)
+		}
+		foreign := []byte("late target bytes")
+		if err := os.WriteFile(target, foreign, 0o640); err != nil {
+			stage.Cleanup()
+			t.Fatalf("write late target: %v", err)
+		}
+
+		result := stage.Publish(context.Background())
+		requireResult(t, result, StateNotPublished, pcv3result.OutcomeOperationFailed, pcv3result.StageOutputPublication, CodeDestinationExists)
+		if counts.atomic != 0 || counts.sync != 0 {
+			t.Fatalf("late target reached commit = atomic %d sync %d", counts.atomic, counts.sync)
+		}
+		if err := stage.Cleanup(); err != nil {
+			t.Fatalf("cleanup after late target: %v", err)
+		}
+		requireFileBytes(t, target, foreign)
+		requireNoStageEntries(t, directory)
+	})
+}
+
+func TestPublishDefiniteAtomicFailureCleansOnlyOwnedStage(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "output.pcv")
+	foreignPath := filepath.Join(directory, "foreign.txt")
+	payload := []byte("complete unpublished stage")
+	foreign := []byte("unrelated foreign bytes")
+	if err := os.WriteFile(foreignPath, foreign, 0o640); err != nil {
+		t.Fatalf("write foreign file: %v", err)
+	}
+	atomicCalls := 0
+	directorySyncCalls := 0
+	operations := platformOperations{
+		atomicPublish: func(*os.File, string, string, Policy) error {
+			atomicCalls++
+			return errors.New("TEST ONLY definite pre-commit failure")
+		},
+		syncDirectory: func(*os.File) error {
+			directorySyncCalls++
+			return nil
+		},
+	}
+	stage, err := createWithOperations(target, []string{foreignPath}, PolicyNoReplace, operations)
+	if err != nil {
+		t.Fatalf("create stage: %v", err)
+	}
+	stagePath := stage.stagePath
+	if _, err := stage.File().Write(payload); err != nil {
+		stage.Cleanup()
+		t.Fatalf("write stage: %v", err)
+	}
+
+	result := stage.Publish(context.Background())
+	requireResult(t, result, StateNotPublished, pcv3result.OutcomeOperationFailed, pcv3result.StageOutputPublication, CodeAtomicFailed)
+	if atomicCalls != 1 || directorySyncCalls != 0 {
+		t.Fatalf("definite failure calls = atomic %d sync %d; want 1/0", atomicCalls, directorySyncCalls)
+	}
+	requireFileBytes(t, stagePath, payload)
+	requireFileBytes(t, foreignPath, foreign)
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("definite failure created destination: %v", err)
+	}
+	if err := stage.Cleanup(); err != nil {
+		t.Fatalf("cleanup definite failure: %v", err)
+	}
+	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owned failed stage remains: %v", err)
+	}
+	requireFileBytes(t, foreignPath, foreign)
+}
+
+func TestPublishDurabilityFailureRetainsCommittedDestination(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		syncErr error
+	}{
+		{name: "filesystem failure", syncErr: errors.New("TEST ONLY directory sync failure")},
+		{name: "durability unavailable", syncErr: errors.ErrUnsupported},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			target := filepath.Join(directory, "durability-uncertain.pcv")
+			payload := []byte("complete committed output")
+			counts := &operationCounts{}
+			operations := platformOperations{
+				atomicPublish: func(parent *os.File, stageName, targetName string, policy Policy) error {
+					counts.atomic++
+					return os.Rename(filepath.Join(directory, stageName), filepath.Join(directory, targetName))
+				},
+				syncDirectory: func(*os.File) error {
+					counts.sync++
+					return test.syncErr
+				},
+			}
+			stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+			if err != nil {
+				t.Fatalf("create stage: %v", err)
+			}
+			if _, err := stage.File().Write(payload); err != nil {
+				stage.Cleanup()
+				t.Fatalf("write stage: %v", err)
+			}
+
+			result := stage.Publish(context.Background())
+			requireResult(
+				t,
+				result,
+				StatePublishedDurabilityUncertain,
+				pcv3result.OutcomeCommittedDurabilityUncertain,
+				pcv3result.StageDirectorySync,
+				CodeDurabilityUncertain,
+			)
+			if counts.atomic != 1 || counts.sync != 1 {
+				t.Fatalf("durability failure calls: atomic=%d sync=%d; want 1/1", counts.atomic, counts.sync)
+			}
+			if strings.Contains(fmt.Sprintf("%+v", result), test.syncErr.Error()) {
+				t.Fatal("durability result disclosed the raw sync error")
+			}
+			if err := stage.Cleanup(); err != nil {
+				t.Fatalf("cleanup after committed durability failure: %v", err)
+			}
+			requireFileBytes(t, target, payload)
+			requireNoStageEntries(t, directory)
+		})
+	}
+}

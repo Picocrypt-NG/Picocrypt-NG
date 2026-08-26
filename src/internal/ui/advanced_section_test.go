@@ -1,14 +1,141 @@
 package ui
 
 import (
+	"Picocrypt-NG/internal/app"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	fynetest "fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 
 	ttwidget "github.com/dweymouth/fyne-tooltip/widget"
 )
+
+func tapPCV3RadioOption(t *testing.T, group *widget.RadioGroup, index int) {
+	t.Helper()
+	if group == nil {
+		t.Fatal("PCV3 radio group is nil")
+	}
+	objects := fynetest.WidgetRenderer(group).Objects()
+	if index < 0 || index >= len(objects) {
+		t.Fatalf("radio option index %d outside %d rendered items", index, len(objects))
+	}
+	item, ok := objects[index].(fyne.Tappable)
+	if !ok {
+		t.Fatalf("radio option %d is not tappable: %T", index, objects[index])
+	}
+	fynetest.Tap(item)
+}
+
+// TestPCV3RequiredRadioGroupsKeepUIAndIntentAligned exercises the same tap
+// path as a user. Re-tapping a selected PCV3 choice must not clear only the
+// widget while the closed intent continues to authorize Start.
+func TestPCV3RequiredRadioGroupsKeepUIAndIntentAligned(t *testing.T) {
+	resetLocalizationForTest(t)
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	directory := t.TempDir()
+	input := filepath.Join(directory, "input.pcv3")
+	if err := os.WriteFile(input, nil, 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	source, err := os.Open(input)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	t.Cleanup(func() {
+		fyne.DoAndWait(func() { a.State.Reset() })
+	})
+
+	fyne.DoAndWait(func() {
+		if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, filepath.Join(directory, "output"), 0) {
+			t.Fatal("set PCV3 selection")
+		}
+		a.passwordEntry.SetText("password-only")
+		a.refreshAdvanced()
+		a.updateUIState()
+
+		tapPCV3RadioOption(t, a.pcv3ActionGroup, 0)
+		tapPCV3RadioOption(t, a.pcv3ActionGroup, 0)
+		if a.pcv3ActionGroup.Selected != "Decrypt PCV3" || a.State.UISnapshot().PCV3Action != app.PCV3ActionDecrypt {
+			t.Fatalf("action re-tap diverged: widget=%q state=%v", a.pcv3ActionGroup.Selected, a.State.UISnapshot().PCV3Action)
+		}
+
+		tapPCV3RadioOption(t, a.pcv3FactorGroup, 1)
+		tapPCV3RadioOption(t, a.pcv3FactorGroup, 1)
+		if a.pcv3FactorGroup.Selected != "Keyfiles only" || a.State.UISnapshot().PCV3Factor != app.PCV3FactorPolicyKeyfiles {
+			t.Fatalf("keyfile factor re-tap diverged: widget=%q state=%v", a.pcv3FactorGroup.Selected, a.State.UISnapshot().PCV3Factor)
+		}
+		if a.pcv3OrderGroup == nil {
+			t.Fatal("keyfile policy did not render order control")
+		}
+
+		tapPCV3RadioOption(t, a.pcv3OrderGroup, 0)
+		tapPCV3RadioOption(t, a.pcv3OrderGroup, 0)
+		if a.pcv3OrderGroup.Selected != "Use selected order" || a.State.UISnapshot().PCV3Order != app.PCV3KeyfileOrderSelected {
+			t.Fatalf("order re-tap diverged: widget=%q state=%v", a.pcv3OrderGroup.Selected, a.State.UISnapshot().PCV3Order)
+		}
+
+		tapPCV3RadioOption(t, a.pcv3FactorGroup, 0)
+		tapPCV3RadioOption(t, a.pcv3FactorGroup, 0)
+		snap := a.State.UISnapshot()
+		if a.pcv3FactorGroup.Selected != "Password only" || snap.PCV3Factor != app.PCV3FactorPolicyPassword ||
+			snap.PCV3Order != app.PCV3KeyfileOrderUnset || !snap.CanStart() || a.startButton.Disabled() {
+			t.Fatalf("password re-tap broke PCV3 readiness: widget=%q snapshot=%#v disabled=%v", a.pcv3FactorGroup.Selected, snap, a.startButton.Disabled())
+		}
+	})
+}
+
+// TestPCV3PasswordPolicySelectionClearsStaleOrder drives the real factor and
+// order RadioGroups. A password-only operation cannot carry an old keyfile
+// ordering, otherwise the shared Start gate rejects a valid password choice.
+func TestPCV3PasswordPolicySelectionClearsStaleOrder(t *testing.T) {
+	resetLocalizationForTest(t)
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	directory := t.TempDir()
+	input := filepath.Join(directory, "input.pcv3")
+	if err := os.WriteFile(input, nil, 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	source, err := os.Open(input)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	t.Cleanup(func() {
+		fyne.DoAndWait(func() { a.State.Reset() })
+	})
+
+	fyne.DoAndWait(func() {
+		if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, filepath.Join(directory, "output"), 0) {
+			t.Fatal("set PCV3 selection")
+		}
+		a.refreshAdvanced()
+		a.updateUIState()
+		a.pcv3ActionGroup.SetSelected("Decrypt PCV3")
+		a.pcv3FactorGroup.SetSelected("Keyfiles only")
+		if a.pcv3OrderGroup == nil {
+			t.Fatal("keyfile policy did not render ordering control")
+		}
+		a.pcv3OrderGroup.SetSelected("Use selected order")
+		if got := a.State.UISnapshot().PCV3Order; got != app.PCV3KeyfileOrderSelected {
+			t.Fatalf("keyfile policy order = %v; want selected", got)
+		}
+		a.pcv3FactorGroup.SetSelected("Password only")
+		a.passwordEntry.SetText("password-only")
+	})
+
+	snap := a.State.UISnapshot()
+	if snap.PCV3Order != app.PCV3KeyfileOrderUnset {
+		t.Fatalf("password policy retained keyfile order %v", snap.PCV3Order)
+	}
+	if !snap.CanStart() || a.startButton.Disabled() {
+		t.Fatalf("password-only PCV3 operation remained non-startable: snapshot=%#v disabled=%v", snap, a.startButton.Disabled())
+	}
+}
 
 // assertCheckboxWiring verifies a build...Options checkbox is present, labeled
 // (non-empty), and that its OnChanged closure drives the mapped State field in

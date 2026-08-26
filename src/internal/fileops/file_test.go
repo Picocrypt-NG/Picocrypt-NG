@@ -99,3 +99,59 @@ func TestOpenExistingNoSymlinkRejectsSymlink(t *testing.T) {
 		t.Fatalf("Victim file content modified: got %q, want %q", got, "victim")
 	}
 }
+
+func TestOpenRootNoSymlinkPinsSelectedDirectory(t *testing.T) {
+	temp := t.TempDir()
+	selected := filepath.Join(temp, "selected")
+	if err := os.Mkdir(selected, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Lstat(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := OpenRootNoSymlink(selected)
+	if err != nil {
+		t.Fatalf("open selected directory: %v", err)
+	}
+	opened, err := root.Stat(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(expected, opened) {
+		t.Fatal("opened root identity differs from the selected directory")
+	}
+	if err := root.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	notDirectory := filepath.Join(temp, "file")
+	if err := os.WriteFile(notDirectory, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if unexpected, err := OpenRootNoSymlink(notDirectory); err == nil || unexpected != nil {
+		if unexpected != nil {
+			_ = unexpected.Close()
+		}
+		t.Fatalf("regular file root = (%v, %v); want nil, error", unexpected, err)
+	}
+
+	alias := filepath.Join(temp, "alias")
+	if err := os.Symlink(selected, alias); err != nil {
+		t.Skipf("directory symlinks unavailable on this platform: %v", err)
+	}
+	if unexpected, err := OpenRootNoSymlink(alias); err == nil || unexpected != nil {
+		if unexpected != nil {
+			_ = unexpected.Close()
+		}
+		t.Fatalf("symlink root = (%v, %v); want nil, error", unexpected, err)
+	}
+	marker := filepath.Join(selected, "marker")
+	if err := os.WriteFile(marker, []byte("target unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(marker)
+	if err != nil || string(content) != "target unchanged" {
+		t.Fatalf("symlink rejection affected target: %q, %v", content, err)
+	}
+}

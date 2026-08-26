@@ -1,14 +1,21 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
 import android.content.Context
+import android.net.Uri
+import android.os.ParcelFileDescriptor
 import androidx.arch.core.executor.testing.InstantTaskExecutorRule
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.*
@@ -18,11 +25,14 @@ import org.junit.Test
 import io.github.picocrypt_ng.picocrypt_ng.testutils.MainDispatcherRule
 import io.github.picocrypt_ng.picocrypt_ng.testutils.TestDataBuilders
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
 import io.mockk.verify
+import java.io.File
+import kotlin.io.path.createTempDirectory
 
 /**
  * Unit tests for OperationViewModel.
@@ -41,11 +51,14 @@ class OperationViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     private lateinit var mockContext: Context
+    private lateinit var testFilesDir: File
     private lateinit var viewModel: OperationViewModel
     
     @Before
     fun setUp() {
+        testFilesDir = createTempDirectory("pcv3-view-model").toFile()
         mockContext = mockk<Context>(relaxed = true)
+        every { mockContext.filesDir } returns testFilesDir
         viewModel = OperationViewModel()
         resetOperationState()
     }
@@ -58,6 +71,7 @@ class OperationViewModelTest {
             }
         }
         resetOperationState()
+        if (::testFilesDir.isInitialized) testFilesDir.deleteRecursively()
     }
     
     @Test
@@ -172,31 +186,320 @@ class OperationViewModelTest {
         val operationState = viewModel.operationState.first()
         assertNull("Operation should be cleared", operationState)
     }
-    
+
     @Test
-    fun `pausePolling switches to background mode`() = runTest(mainDispatcherRule.testDispatcher) {
-        // pausePolling sets isForeground to false and starts background polling
-        viewModel.pausePolling()
-        
-        advanceUntilIdle()
-        
-        // Method should not throw
-        // Note: We can't easily verify isForeground without exposing it,
-        // but we can verify the method executes without error
+    fun `PCV3 poller accepts only its current identity and stops at Final`() = runTest(mainDispatcherRule.testDispatcher) {
+        val first = livePcv3("op_current", generation = 7)
+        val stale = livePcv3("op_stale", generation = 6)
+        val current = livePcv3("op_current", generation = 7, statusCode = "authenticating")
+        val terminal = finalPcv3("op_current", generation = 7)
+        val route = FakePcv3Operations(
+            startResult = Result.success(first),
+            refreshResults = ArrayDeque(
+                listOf(
+                    RefreshStep(Result.success(stale), updateAuthority = false, busy = true),
+                    RefreshStep(Result.success(current)),
+                    RefreshStep(Result.success(terminal)),
+                )
+            ),
+        )
+        val cleaner = RecordingPcv3Cleaner()
+        val pcv3ViewModel = OperationViewModel(route, cleaner)
+        val password = "password".toCharArray()
+
+        pcv3ViewModel.startPcv3(mockContext, pcv3Transfer(password))
+        runCurrent()
+        assertEquals(first, pcv3ViewModel.pcv3Presentation.value)
+        assertEquals(listOf(listOf("/private/input")), cleaner.deletedPaths)
+        assertEquals(
+            listOf(Pcv3ReceiptStore.receiptFile(mockContext)),
+            route.receiptFiles,
+        )
+
+        advanceTimeBy(500)
+        runCurrent()
+        assertEquals("a stale operation must not replace the current generation", first, pcv3ViewModel.pcv3Presentation.value)
+
+        advanceTimeBy(500)
+        runCurrent()
+        assertEquals(current, pcv3ViewModel.pcv3Presentation.value)
+
+        advanceTimeBy(500)
+        runCurrent()
+        assertEquals(terminal, pcv3ViewModel.pcv3Presentation.value)
+        val terminalPollCount = route.refreshCalls
+
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertEquals("a Final presentation terminates the sole cadence", terminalPollCount, route.refreshCalls)
+        assertTrue("the transferred password is cleared by the owner", password.all { it == '\u0000' })
+        pcv3ViewModel.dismissPcv3("op_stale", generation = 6)
+        pcv3ViewModel.dismissPcv3("op_current", generation = 7)
+        runCurrent()
+        assertEquals(1, route.dismissCalls)
+        assertNull("only the exact terminal ticket dismisses the result", pcv3ViewModel.pcv3Presentation.value)
+        pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
     }
-    
+
     @Test
-    fun `resumePolling switches to foreground mode`() = runTest(mainDispatcherRule.testDispatcher) {
-        // First pause
-        viewModel.pausePolling()
-        advanceUntilIdle()
-        
-        // Then resume
-        viewModel.resumePolling()
-        advanceUntilIdle()
-        
-        // Method should not throw
+    fun `PCV3 poller pauses without a background duplicate and restored state never polls`() = runTest(mainDispatcherRule.testDispatcher) {
+        val live = livePcv3("op_resume", generation = 9)
+        val route = FakePcv3Operations(
+            startResult = Result.success(live),
+            refreshResults = ArrayDeque(
+                listOf(
+                    RefreshStep(
+                        Result.failure(Pcv3BridgeFailure("PCV3_OPERATION_UNAVAILABLE")),
+                        updateAuthority = false,
+                        busy = true,
+                    ),
+                    RefreshStep(Result.success(finalPcv3("op_resume", generation = 9))),
+                )
+            ),
+        )
+        val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+
+        pcv3ViewModel.startPcv3(mockContext, pcv3Transfer("password".toCharArray()))
+        runCurrent()
+        pcv3ViewModel.pausePolling()
+
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertEquals(0, route.refreshCalls)
+
+        pcv3ViewModel.resumePolling()
+        runCurrent()
+        assertEquals("a refresh failure is not a locally invented terminal state", live, pcv3ViewModel.pcv3Presentation.value)
+        assertEquals(1, route.refreshCalls)
+        advanceTimeBy(500)
+        runCurrent()
+        assertTrue(pcv3ViewModel.pcv3Presentation.value is Pcv3Presentation.Final)
+        val finalPollCount = route.refreshCalls
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertEquals("a Final presentation terminates polling", finalPollCount, route.refreshCalls)
+        pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+
+        val restoredRoute = FakePcv3Operations(
+            startResult = Result.failure(Pcv3BridgeFailure("PCV3_OPERATION_UNAVAILABLE")),
+            initialPresentation = restoredPcv3("op_1700000000000000000_7", generation = 10),
+        )
+        val restoredViewModel = OperationViewModel(restoredRoute, RecordingPcv3Cleaner())
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertTrue(restoredViewModel.pcv3Presentation.value is Pcv3Presentation.Restored)
+        assertEquals("a deny-only Restored presentation has no refresh authority", 0, restoredRoute.refreshCalls)
+        restoredViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
     }
+
+    @Test
+    fun `PCV3 action ticket rejects a stale rendered callback before manager invocation`() = runTest(mainDispatcherRule.testDispatcher) {
+        val route = FakePcv3Operations(startResult = Result.success(livePcv3("op_action", generation = 4)))
+        val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+        pcv3ViewModel.startPcv3(mockContext, pcv3Transfer("password".toCharArray()))
+        runCurrent()
+
+        pcv3ViewModel.cancelPcv3("op_previous", 3)
+        pcv3ViewModel.selectPcv3ConsentRole("op_action", 3, "primary")
+        pcv3ViewModel.confirmPcv3Consent("op_previous", 4)
+        pcv3ViewModel.refusePcv3Consent("op_action", 5)
+        pcv3ViewModel.closePcv3Archive("op_previous", 3)
+        pcv3ViewModel.dismissPcv3("op_action", 4)
+        runCurrent()
+
+        assertEquals(0, route.cancelCalls)
+        assertEquals(0, route.selectRoleCalls)
+        assertEquals(0, route.confirmCalls)
+        assertEquals(0, route.refuseCalls)
+        assertEquals(0, route.closeArchiveCalls)
+        assertEquals("a live ticket has no terminal-dismiss authority", 0, route.dismissCalls)
+        pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+    }
+
+    @Test
+    fun `PCV3 archive picker tombstone rejects stale callbacks and excludes output tickets`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val original = archivePcv3("op-archive-a", generation = 40)
+            val replacementOutput = outputPcv3("op-output-b", generation = 41)
+            val replacementArchive = archivePcv3("op-archive-b", generation = 42)
+            val route = FakePcv3Operations(
+                startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                initialPresentation = original,
+            )
+            val opaqueRoot = mockk<Uri>().also { uri ->
+                every { uri.toString() } throws AssertionError("URI string conversion")
+                every { uri.path } throws AssertionError("URI path conversion")
+            }
+            var exportedRoot: Uri? = null
+            route.exportArchiveAction = { operationId, generation, root ->
+                assertEquals(replacementArchive.operationId, operationId)
+                assertEquals(replacementArchive.generation, generation)
+                exportedRoot = root
+                Result.success(Unit)
+            }
+            val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+            try {
+                assertFalse(pcv3ViewModel.beginPcv3Archive(original.operationId, original.generation - 1))
+                assertTrue(pcv3ViewModel.beginPcv3Archive(original.operationId, original.generation))
+
+                route.publish(replacementOutput)
+                runCurrent()
+                assertNull(
+                    "the outstanding archive picker is an ABA tombstone for a newer output",
+                    pcv3ViewModel.beginPcv3Save(
+                        replacementOutput.operationId,
+                        replacementOutput.generation,
+                    ),
+                )
+                pcv3ViewModel.completePcv3Archive(mockContext, opaqueRoot)
+                runCurrent()
+                assertEquals("the stale callback has zero native effect", 0, route.exportArchiveCalls)
+
+                assertEquals(
+                    "decrypted-output",
+                    pcv3ViewModel.beginPcv3Save(
+                        replacementOutput.operationId,
+                        replacementOutput.generation,
+                    ),
+                )
+                pcv3ViewModel.completePcv3Save(mockContext, null)
+                runCurrent()
+
+                route.publish(replacementArchive)
+                runCurrent()
+                assertTrue(
+                    pcv3ViewModel.beginPcv3Archive(
+                        replacementArchive.operationId,
+                        replacementArchive.generation,
+                    ),
+                )
+                pcv3ViewModel.completePcv3Archive(mockContext, null)
+                runCurrent()
+                assertEquals("a null callback has zero native effect", 0, route.exportArchiveCalls)
+
+                assertTrue(
+                    pcv3ViewModel.beginPcv3Archive(
+                        replacementArchive.operationId,
+                        replacementArchive.generation,
+                    ),
+                )
+                assertFalse(
+                    "one picker ticket cannot be replaced before its callback",
+                    pcv3ViewModel.beginPcv3Archive(
+                        replacementArchive.operationId,
+                        replacementArchive.generation,
+                    ),
+                )
+                pcv3ViewModel.completePcv3Archive(mockContext, opaqueRoot)
+                pcv3ViewModel.completePcv3Archive(mockContext, opaqueRoot)
+                runCurrent()
+
+                assertEquals(1, route.exportArchiveCalls)
+                assertSame(opaqueRoot, exportedRoot)
+            } finally {
+                pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+            }
+        }
+
+    @Test
+    fun `cancelled suspended PCV3 start clears password and every transferred path once`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val route = FakePcv3Operations(
+                startResult = Result.success(livePcv3("op_cancel_start", generation = 11)),
+                startEntered = entered,
+                startRelease = release,
+            )
+            val cleaner = RecordingPcv3Cleaner()
+            val pcv3ViewModel = OperationViewModel(route, cleaner)
+            val password = "cancel-secret".toCharArray()
+            val transfer = pcv3Transfer(
+                password = password,
+                keyfiles = listOf("/private/key-a", "/private/key-a", "/private/key-b"),
+            )
+            pcv3ViewModel.startPcv3(mockContext, transfer)
+            entered.await()
+            assertTrue("source replacement stays disabled before native start returns", pcv3ViewModel.pcv3Busy.value)
+
+            pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+
+            assertTrue(password.all { it == '\u0000' })
+            assertEquals(
+                listOf(listOf("/private/key-a", "/private/key-b", "/private/input")),
+                cleaner.deletedPaths,
+            )
+            assertFalse("cancelled start no longer owns a mutable selection", pcv3ViewModel.pcv3Busy.value)
+        }
+
+    @Test
+    fun `failed PCV3 start keeps private drain busy and one cadence reaches terminal release`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val terminal = finalPcv3("op_drain", generation = 12)
+            val route = FakePcv3Operations(
+                startResult = Result.failure(Pcv3BridgeFailure("PCV3_OPERATION_RELEASE_DENIED")),
+                busyAfterStart = true,
+                refreshResults = ArrayDeque(listOf(RefreshStep(Result.success(terminal)))),
+            )
+            val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+            pcv3ViewModel.startPcv3(mockContext, pcv3Transfer("password".toCharArray()))
+            runCurrent()
+            assertTrue("private Draining state keeps replacement disabled", pcv3ViewModel.pcv3Busy.value)
+            assertNull("private authority is never projected while draining", pcv3ViewModel.pcv3Presentation.value)
+            assertNull("private cleanup is not replaced by a locally invented terminal error", pcv3ViewModel.pcv3Error.value)
+
+            advanceTimeBy(500)
+            runCurrent()
+
+            assertEquals(1, route.refreshCalls)
+            assertEquals(terminal, pcv3ViewModel.pcv3Presentation.value)
+            assertFalse(pcv3ViewModel.pcv3Busy.value)
+            val terminalPollCount = route.refreshCalls
+            advanceTimeBy(2_000)
+            runCurrent()
+            assertEquals(terminalPollCount, route.refreshCalls)
+            pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+
+    @Test
+    fun `transferred resource cleanup failure preserves native terminal result and surfaces cleanup error`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val terminal = finalPcv3("op_cleanup_warning", generation = 13)
+            val route = FakePcv3Operations(startResult = Result.success(terminal))
+            val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner(result = false))
+            pcv3ViewModel.startPcv3(mockContext, pcv3Transfer("password".toCharArray()))
+            runCurrent()
+
+            assertSame("native terminal meaning must not be replaced", terminal, pcv3ViewModel.pcv3Presentation.value)
+            assertTrue(pcv3ViewModel.pcv3Error.value is AppError.FileError.DeleteFailed)
+            assertFalse(pcv3ViewModel.pcv3Busy.value)
+            pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+
+    @Test
+    fun `failed PCV3 start surfaces its primary error before the transferred resource cleanup error`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val route = FakePcv3Operations(
+                startResult = Result.failure(Pcv3BridgeFailure("PCV3_BRIDGE_FAILURE")),
+            )
+            val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner(result = false))
+
+            pcv3ViewModel.startPcv3(mockContext, pcv3Transfer("password".toCharArray()))
+            runCurrent()
+
+            assertTrue(
+                "the native start failure remains the first user-visible result",
+                pcv3ViewModel.pcv3Error.value is AppError.OperationError.GenericOperation,
+            )
+            pcv3ViewModel.clearPcv3Error()
+            assertTrue(
+                "plaintext or keyfile cleanup uncertainty is not silently discarded",
+                pcv3ViewModel.pcv3Error.value is AppError.FileError.DeleteFailed,
+            )
+            pcv3ViewModel.clearPcv3Error()
+            assertNull(pcv3ViewModel.pcv3Error.value)
+            pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+        }
     
     @Test
     fun `startForegroundServiceSafely swallows a background-start IllegalStateException`() {
@@ -219,6 +522,816 @@ class OperationViewModelTest {
         }
     }
 
+    @Test
+    fun `PCV3 native owner receives its Android reader and foreground host before transferred input cleanup`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val events = mutableListOf<String>()
+            every { mockContext.applicationContext } returns mockContext
+            val route = FakePcv3Operations(
+                startResult = Result.success(livePcv3("op_host", generation = 21)),
+                events = events,
+            )
+            val cleaner = RecordingPcv3Cleaner(events = events)
+            val host = Pcv3ForegroundHost { context ->
+                assertSame(mockContext, context)
+                events += "foreground-host"
+            }
+            val pcv3ViewModel = OperationViewModel(route, cleaner, host)
+
+            pcv3ViewModel.startPcv3(mockContext, pcv3Transfer("password".toCharArray()))
+            runCurrent()
+
+            assertEquals(
+                listOf("native-start", "resource-reader", "foreground-host", "transferred-cleanup"),
+                events,
+            )
+            assertTrue(route.resourceReader is Pcv3AndroidResourceObservationReader)
+
+            pcv3ViewModel.pausePolling()
+            pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+            assertEquals("UI teardown has no authority to stop the service-owned pump", 1, events.count { it == "foreground-host" })
+        }
+
+    @Test
+    fun `PCV3 save picker begins only for an exact live output tuple and uses fixed safe names`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            data class Case(
+                val outcome: String,
+                val completionClass: String,
+                val artifact: Pcv3ArtifactMetadataView?,
+                val expectedName: String,
+                val forceProvenance: String? = null,
+                val warnings: List<String>? = null,
+            )
+
+            val cases = listOf(
+                Case("success", "clean", null, "decrypted-output"),
+                Case(
+                    "success",
+                    "warning",
+                    null,
+                    "decrypted-output",
+                    warnings = listOf("cleanup-incomplete"),
+                ),
+                Case(
+                    "authenticated-degraded",
+                    "warning",
+                    null,
+                    "decrypted-output",
+                    forceProvenance = "verified",
+                ),
+                Case("force-partial", "warning", artifactMetadata("partial"), "decrypted-output.pcv3-recovery"),
+                Case(
+                    "force-unverified",
+                    "warning",
+                    artifactMetadata("unverified-forensic"),
+                    "decrypted-output.pcv3-recovery",
+                ),
+            )
+
+            cases.forEachIndexed { index, case ->
+                val operationId = "op-save-name-$index"
+                val route = FakePcv3Operations(
+                    startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                    initialPresentation = outputPcv3(
+                        operationId = operationId,
+                        generation = index.toLong() + 30,
+                        outcome = case.outcome,
+                        completionClass = case.completionClass,
+                        artifactMetadata = case.artifact,
+                        forceProvenance = case.forceProvenance,
+                        warnings = case.warnings,
+                    ),
+                )
+                val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+                try {
+                    assertEquals(
+                        case.expectedName,
+                        pcv3ViewModel.beginPcv3Save(operationId, index.toLong() + 30),
+                    )
+                    assertNull("a second picker cannot replace the outstanding ticket", pcv3ViewModel.beginPcv3Save(operationId, index.toLong() + 30))
+                    pcv3ViewModel.completePcv3Save(mockContext, null)
+                    runCurrent()
+                    assertEquals(0, route.saveOutputCalls)
+                } finally {
+                    pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+                }
+            }
+
+            val malformedForce = outputPcv3(
+                operationId = "op-force-without-inspection",
+                generation = 41,
+                outcome = "force-partial",
+                completionClass = "warning",
+                artifactMetadata = null,
+            )
+            val malformedRoute = FakePcv3Operations(
+                startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                initialPresentation = malformedForce,
+            )
+            val malformedViewModel = OperationViewModel(malformedRoute, RecordingPcv3Cleaner())
+            assertNull(
+                "a Force-looking scalar without the core-vetted artifact tuple grants no picker",
+                malformedViewModel.beginPcv3Save(malformedForce.operationId, malformedForce.generation),
+            )
+            val invalidDegraded = outputPcv3(
+                operationId = "op-invalid-degraded-provenance",
+                generation = 411,
+                outcome = "authenticated-degraded",
+                completionClass = "warning",
+                forceProvenance = "unverified",
+            )
+            malformedRoute.publish(invalidDegraded)
+            assertNull(
+                "an unverified degraded scalar without a vetted Force artifact grants no output action",
+                malformedViewModel.beginPcv3Save(invalidDegraded.operationId, invalidDegraded.generation),
+            )
+            malformedViewModel.discardPcv3Output(invalidDegraded.operationId, invalidDegraded.generation)
+            runCurrent()
+            assertEquals(0, malformedRoute.discardOutputCalls)
+
+            val restored = restoredPcv3("op-restored-no-output", generation = 42)
+            malformedRoute.publish(restored)
+            assertNull(
+                "a restored receipt is deny-only and cannot recreate output authority",
+                malformedViewModel.beginPcv3Save(restored.operationId, restored.generation),
+            )
+            malformedViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+
+    @Test
+    fun `PCV3 ViewModel denies Save and Discard for every non-none diagnostic`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            listOf(
+                "resource-busy",
+                "resource-insufficient",
+                "resource-unknown",
+                "PRIVATE diagnostic",
+            ).forEachIndexed { index, diagnostic ->
+                val live = outputPcv3(
+                    operationId = "op-diagnostic-denied-$index",
+                    generation = 420L + index,
+                    diagnostic = diagnostic,
+                )
+                val route = FakePcv3Operations(
+                    startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                    initialPresentation = live,
+                )
+                val diagnosticViewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+                try {
+                    assertNull(
+                        "diagnostic=$diagnostic cannot mint a Save picker ticket",
+                        diagnosticViewModel.beginPcv3Save(live.operationId, live.generation),
+                    )
+                    diagnosticViewModel.discardPcv3Output(live.operationId, live.generation)
+                    runCurrent()
+                    assertEquals(
+                        "diagnostic=$diagnostic cannot consume the live handle through Discard",
+                        0,
+                        route.discardOutputCalls,
+                    )
+                } finally {
+                    diagnosticViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+                }
+            }
+        }
+
+    @Test
+    fun `PCV3 ViewModel denies output actions for invalid semantic stages`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val clean = outputPcv3("op-invalid-clean-stage", generation = 440)
+            val degraded = outputPcv3(
+                operationId = "op-invalid-degraded-stage",
+                generation = 441,
+                outcome = "authenticated-degraded",
+                completionClass = "warning",
+                forceProvenance = "verified",
+            )
+            val recovery = outputPcv3(
+                operationId = "op-invalid-force-stage",
+                generation = 442,
+                outcome = "force-partial",
+                completionClass = "warning",
+                artifactMetadata = artifactMetadata("partial"),
+            )
+            val invalidStages = listOf(
+                clean.copy(
+                    snapshot = clean.snapshot.copy(
+                        semantic = clean.snapshot.semantic.copy(stage = "PRIVATE stage"),
+                    ),
+                ),
+                degraded.copy(
+                    snapshot = degraded.snapshot.copy(
+                        semantic = degraded.snapshot.semantic.copy(stage = "none"),
+                    ),
+                ),
+                degraded.copy(
+                    snapshot = degraded.snapshot.copy(
+                        semantic = degraded.snapshot.semantic.copy(stage = "record-auth"),
+                    ),
+                ),
+                recovery.copy(
+                    snapshot = recovery.snapshot.copy(
+                        semantic = recovery.snapshot.semantic.copy(stage = "credential-policy"),
+                    ),
+                ),
+                recovery.copy(
+                    snapshot = recovery.snapshot.copy(
+                        semantic = recovery.snapshot.semantic.copy(stage = "PRIVATE stage"),
+                    ),
+                ),
+            )
+
+            invalidStages.forEach { live ->
+                val route = FakePcv3Operations(
+                    startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                    initialPresentation = live,
+                )
+                val invalidViewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+                try {
+                    runCurrent()
+                    assertNull(
+                        "stage=${live.snapshot.semantic.stage} cannot mint a Save ticket",
+                        invalidViewModel.beginPcv3Save(live.operationId, live.generation),
+                    )
+                    invalidViewModel.discardPcv3Output(live.operationId, live.generation)
+                    runCurrent()
+                    assertEquals(0, route.discardOutputCalls)
+                } finally {
+                    invalidViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+                }
+            }
+        }
+
+    @Test
+    fun `PCV3 ViewModel reserves Discard for recovery artifacts`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val decryptedOutputs = listOf(
+                outputPcv3("op-clean-discard-denied", generation = 430),
+                outputPcv3(
+                    operationId = "op-degraded-discard-denied",
+                    generation = 431,
+                    outcome = "authenticated-degraded",
+                    completionClass = "warning",
+                    forceProvenance = "verified",
+                ),
+            )
+            decryptedOutputs.forEach { live ->
+                val route = FakePcv3Operations(
+                    startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                    initialPresentation = live,
+                )
+                val decryptedViewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+                try {
+                    decryptedViewModel.discardPcv3Output(live.operationId, live.generation)
+                    runCurrent()
+                    assertEquals(
+                        "decrypted output must not enter the recovery-artifact Discard path",
+                        0,
+                        route.discardOutputCalls,
+                    )
+                    assertEquals(
+                        "decrypted-output",
+                        decryptedViewModel.beginPcv3Save(live.operationId, live.generation),
+                    )
+                    decryptedViewModel.completePcv3Save(mockContext, null)
+                    runCurrent()
+                } finally {
+                    decryptedViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+                }
+            }
+        }
+
+    @Test
+    fun `PCV3 stale picker callback cannot consume a newer generation ticket`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            mockkObject(FileCopyService)
+            val staleUri = mockk<Uri>()
+            val original = outputPcv3("op-save-stale-before", generation = 51)
+            val replacement = outputPcv3("op-replacement", generation = 52)
+            val route = FakePcv3Operations(
+                startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                initialPresentation = original,
+            )
+            val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+            try {
+                assertEquals(
+                    "decrypted-output",
+                    pcv3ViewModel.beginPcv3Save(original.operationId, original.generation),
+                )
+                route.publish(replacement)
+                runCurrent()
+                assertNull(
+                    "a stale picker ticket remains a one-result tombstone and blocks an ABA replacement",
+                    pcv3ViewModel.beginPcv3Save(
+                        replacement.operationId,
+                        replacement.generation,
+                    ),
+                )
+
+                pcv3ViewModel.completePcv3Save(mockContext, staleUri)
+                runCurrent()
+                coVerify(exactly = 0) {
+                    FileCopyService.openPcv3OutputDescriptor(mockContext, staleUri)
+                }
+                assertEquals(0, route.saveOutputCalls)
+
+                assertEquals(
+                    "decrypted-output",
+                    pcv3ViewModel.beginPcv3Save(
+                        replacement.operationId,
+                        replacement.generation,
+                    ),
+                )
+                pcv3ViewModel.completePcv3Save(mockContext, null)
+                runCurrent()
+            } finally {
+                pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+                unmockkObject(FileCopyService)
+            }
+        }
+
+    @Test
+    fun `PCV3 discard retains the outstanding picker tombstone until its callback`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            mockkObject(FileCopyService)
+            val staleUri = mockk<Uri>()
+            val original = outputPcv3(
+                operationId = "op-save-then-discard",
+                generation = 521,
+                outcome = "force-partial",
+                completionClass = "warning",
+                artifactMetadata = artifactMetadata("partial"),
+            )
+            val replacement = outputPcv3("op-after-discard", generation = 522)
+            val route = FakePcv3Operations(
+                startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                initialPresentation = original,
+            )
+            val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+            try {
+                assertEquals(
+                    "decrypted-output.pcv3-recovery",
+                    pcv3ViewModel.beginPcv3Save(original.operationId, original.generation),
+                )
+                pcv3ViewModel.discardPcv3Output(original.operationId, original.generation)
+                runCurrent()
+                assertEquals(1, route.discardOutputCalls)
+
+                route.publish(replacement)
+                runCurrent()
+                assertNull(
+                    "Discard must not expose a newer ticket to the outstanding A callback",
+                    pcv3ViewModel.beginPcv3Save(
+                        replacement.operationId,
+                        replacement.generation,
+                    ),
+                )
+
+                pcv3ViewModel.completePcv3Save(mockContext, staleUri)
+                runCurrent()
+                coVerify(exactly = 0) {
+                    FileCopyService.openPcv3OutputDescriptor(mockContext, staleUri)
+                }
+                assertEquals("the stale callback cannot invoke Save", 0, route.saveOutputCalls)
+
+                assertEquals(
+                    "decrypted-output",
+                    pcv3ViewModel.beginPcv3Save(
+                        replacement.operationId,
+                        replacement.generation,
+                    ),
+                )
+                pcv3ViewModel.completePcv3Save(mockContext, null)
+                runCurrent()
+            } finally {
+                pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+                unmockkObject(FileCopyService)
+            }
+        }
+
+    @Test
+    fun `PCV3 save picker ticket is one shot and closes only a descriptor not transferred to the exact generation`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            mockkObject(FileCopyService)
+            val uri = mockk<Uri>()
+            val staleAfterUri = mockk<Uri>()
+            val forceUri = mockk<Uri>()
+            val blockedUri = mockk<Uri>()
+            val failureUri = mockk<Uri>()
+            val cancellationUri = mockk<Uri>()
+            val currentDescriptor = mockk<ParcelFileDescriptor>(relaxed = true)
+            val staleDescriptor = mockk<ParcelFileDescriptor>(relaxed = true)
+            val forceDescriptor = mockk<ParcelFileDescriptor>(relaxed = true)
+            val blockedDescriptor = mockk<ParcelFileDescriptor>(relaxed = true)
+            val failureDescriptor = mockk<ParcelFileDescriptor>(relaxed = true)
+            val cancellationDescriptor = mockk<ParcelFileDescriptor>(relaxed = true)
+            val ownedViewModels = mutableListOf<OperationViewModel>()
+            try {
+                val current = outputPcv3(
+                    operationId = "op-save-current",
+                    generation = 50,
+                    outcome = "success",
+                    completionClass = "warning",
+                    warnings = listOf("cleanup-incomplete"),
+                )
+                val currentRoute = FakePcv3Operations(
+                    startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                    initialPresentation = current,
+                )
+                val currentViewModel = OperationViewModel(currentRoute, RecordingPcv3Cleaner())
+                ownedViewModels += currentViewModel
+                coEvery { FileCopyService.openPcv3OutputDescriptor(mockContext, uri) } returns
+                    Result.success(currentDescriptor)
+
+                assertEquals("decrypted-output", currentViewModel.beginPcv3Save(current.operationId, current.generation))
+                currentViewModel.completePcv3Save(mockContext, null)
+                runCurrent()
+                coVerify(exactly = 0) { FileCopyService.openPcv3OutputDescriptor(mockContext, uri) }
+                assertEquals("picker cancellation consumes no native capability", 0, currentRoute.saveOutputCalls)
+
+                assertEquals("decrypted-output", currentViewModel.beginPcv3Save(current.operationId, current.generation))
+                currentViewModel.completePcv3Save(mockContext, uri)
+                currentViewModel.completePcv3Save(mockContext, uri)
+                runCurrent()
+                assertEquals(1, currentRoute.saveOutputCalls)
+                assertSame(currentDescriptor, currentRoute.savedDestinations.single())
+                verify(exactly = 0) { currentDescriptor.close() }
+
+                val recoveryArtifact = outputPcv3(
+                    operationId = "op-discard-recovery-artifact",
+                    generation = 500,
+                    outcome = "force-partial",
+                    completionClass = "warning",
+                    artifactMetadata = artifactMetadata("partial"),
+                )
+                val recoveryArtifactRoute = FakePcv3Operations(
+                    startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                    initialPresentation = recoveryArtifact,
+                )
+                val recoveryArtifactViewModel = OperationViewModel(
+                    recoveryArtifactRoute,
+                    RecordingPcv3Cleaner(),
+                )
+                ownedViewModels += recoveryArtifactViewModel
+                recoveryArtifactViewModel.discardPcv3Output(
+                    recoveryArtifact.operationId,
+                    recoveryArtifact.generation,
+                )
+                runCurrent()
+                assertEquals(1, recoveryArtifactRoute.discardOutputCalls)
+
+                val openEntered = CompletableDeferred<Unit>()
+                val allowOpen = CompletableDeferred<Unit>()
+                val blocked = outputPcv3("op-save-blocked-open", generation = 501)
+                val blockedRoute = FakePcv3Operations(
+                    startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                    initialPresentation = blocked,
+                )
+                val blockedViewModel = OperationViewModel(blockedRoute, RecordingPcv3Cleaner())
+                ownedViewModels += blockedViewModel
+                coEvery { FileCopyService.openPcv3OutputDescriptor(mockContext, blockedUri) } coAnswers {
+                    openEntered.complete(Unit)
+                    allowOpen.await()
+                    Result.success(blockedDescriptor)
+                }
+                assertEquals(
+                    "decrypted-output",
+                    blockedViewModel.beginPcv3Save(blocked.operationId, blocked.generation),
+                )
+                blockedViewModel.completePcv3Save(mockContext, blockedUri)
+                runCurrent()
+                openEntered.await()
+                assertNull(
+                    "an in-flight provider open must not mint a second picker ticket",
+                    blockedViewModel.beginPcv3Save(blocked.operationId, blocked.generation),
+                )
+                allowOpen.complete(Unit)
+                runCurrent()
+                assertEquals(1, blockedRoute.saveOutputCalls)
+
+                val staleAfter = outputPcv3("op-save-stale-after", generation = 53)
+                val staleAfterRoute = FakePcv3Operations(
+                    startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                    initialPresentation = staleAfter,
+                )
+                val staleAfterViewModel = OperationViewModel(staleAfterRoute, RecordingPcv3Cleaner())
+                ownedViewModels += staleAfterViewModel
+                coEvery { FileCopyService.openPcv3OutputDescriptor(mockContext, staleAfterUri) } coAnswers {
+                    staleAfterRoute.publish(outputPcv3("op-replaced-after-open", generation = 54))
+                    Result.success(staleDescriptor)
+                }
+                assertEquals(
+                    "decrypted-output",
+                    staleAfterViewModel.beginPcv3Save(staleAfter.operationId, staleAfter.generation),
+                )
+                staleAfterViewModel.completePcv3Save(mockContext, staleAfterUri)
+                runCurrent()
+                assertEquals(0, staleAfterRoute.saveOutputCalls)
+                verify(exactly = 1) { staleDescriptor.close() }
+
+                val events = mutableListOf<String>()
+                val force = outputPcv3(
+                    operationId = "op-save-force",
+                    generation = 55,
+                    outcome = "force-unverified",
+                    completionClass = "warning",
+                    artifactMetadata = artifactMetadata("unverified-forensic"),
+                )
+                val forceRoute = FakePcv3Operations(
+                    startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                    initialPresentation = force,
+                    events = events,
+                )
+                val forceViewModel = OperationViewModel(forceRoute, RecordingPcv3Cleaner())
+                ownedViewModels += forceViewModel
+                coEvery { FileCopyService.validatePcv3RecoveryDestination(mockContext, forceUri) } coAnswers {
+                    events += "validate-name"
+                    Result.success(Unit)
+                }
+                coEvery { FileCopyService.openPcv3OutputDescriptor(mockContext, forceUri) } coAnswers {
+                    events += "open-descriptor"
+                    Result.success(forceDescriptor)
+                }
+
+                assertEquals(
+                    "decrypted-output.pcv3-recovery",
+                    forceViewModel.beginPcv3Save(force.operationId, force.generation),
+                )
+                forceViewModel.completePcv3Save(mockContext, forceUri)
+                runCurrent()
+                assertEquals(
+                    listOf("validate-name", "open-descriptor", "save-output"),
+                    events,
+                )
+                assertSame(forceDescriptor, forceRoute.savedDestinations.single())
+                coVerify(exactly = 0) { FileCopyService.saveFileToUri(any(), any(), any()) }
+
+                val postNativeFailure = outputPcv3("op-save-native-failure", generation = 56)
+                val postNativeFailureRoute = FakePcv3Operations(
+                    startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                    initialPresentation = postNativeFailure,
+                ).apply {
+                    saveOutputAction = {
+                        Result.failure(Pcv3BridgeFailure("PCV3_OPERATION_FAILURE"))
+                    }
+                }
+                val postNativeFailureViewModel = OperationViewModel(
+                    postNativeFailureRoute,
+                    RecordingPcv3Cleaner(),
+                )
+                ownedViewModels += postNativeFailureViewModel
+                coEvery { FileCopyService.openPcv3OutputDescriptor(mockContext, failureUri) } returns
+                    Result.success(failureDescriptor)
+                assertEquals(
+                    "decrypted-output",
+                    postNativeFailureViewModel.beginPcv3Save(
+                        postNativeFailure.operationId,
+                        postNativeFailure.generation,
+                    ),
+                )
+                postNativeFailureViewModel.completePcv3Save(mockContext, failureUri)
+                runCurrent()
+                assertEquals(1, postNativeFailureRoute.saveOutputCalls)
+                verify(exactly = 0) { failureDescriptor.close() }
+                verify(exactly = 0) { failureDescriptor.detachFd() }
+
+                val exactCancellation = CancellationException("exact post-native cancellation")
+                val postNativeCancellation = outputPcv3("op-save-native-cancellation", generation = 57)
+                val postNativeCancellationRoute = FakePcv3Operations(
+                    startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                    initialPresentation = postNativeCancellation,
+                ).apply {
+                    saveOutputAction = { throw exactCancellation }
+                }
+                val postNativeCancellationViewModel = OperationViewModel(
+                    postNativeCancellationRoute,
+                    RecordingPcv3Cleaner(),
+                )
+                ownedViewModels += postNativeCancellationViewModel
+                coEvery { FileCopyService.openPcv3OutputDescriptor(mockContext, cancellationUri) } returns
+                    Result.success(cancellationDescriptor)
+                assertEquals(
+                    "decrypted-output",
+                    postNativeCancellationViewModel.beginPcv3Save(
+                        postNativeCancellation.operationId,
+                        postNativeCancellation.generation,
+                    ),
+                )
+                postNativeCancellationViewModel.completePcv3Save(mockContext, cancellationUri)
+                runCurrent()
+                assertEquals(1, postNativeCancellationRoute.saveOutputCalls)
+                assertSame(exactCancellation, postNativeCancellationRoute.saveCancellation)
+                verify(exactly = 0) { cancellationDescriptor.close() }
+                verify(exactly = 0) { cancellationDescriptor.detachFd() }
+            } finally {
+                ownedViewModels.forEach { it.viewModelScope.coroutineContext[Job]?.cancelAndJoin() }
+                unmockkObject(FileCopyService)
+            }
+        }
+
+    @Test
+    fun `PCV3 artifact pages preserve decimal evidence and delayed work cannot outlive its exact ticket`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val max = "18446744073709551615"
+            val last = "18446744073709551614"
+            val metadata = artifactMetadata("partial").copy(
+                plaintextLength = max,
+                rangeCount = max,
+                verifiedCount = last,
+                unverifiedCount = "0",
+                missingCount = "1",
+            )
+            val final = finalPcv3(
+                operationId = "op-artifact-final",
+                generation = 60,
+                snapshot = outputSnapshot("force-partial", "warning"),
+                artifactMetadata = metadata,
+            )
+            val route = FakePcv3Operations(
+                startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                initialPresentation = final,
+            )
+            val pageZero = Pcv3ArtifactPageView(
+                offsetDecimal = "0",
+                ranges = listOf(Pcv3ArtifactRangeView("0", "0", "17", "verified")),
+            )
+            route.artifactLoader = { _, _, offset, limit ->
+                assertEquals("0", offset)
+                assertEquals(128, limit)
+                Result.success(pageZero)
+            }
+            val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+
+            pcv3ViewModel.inspectPcv3Artifact(final.operationId, final.generation)
+            assertEquals(Pcv3ArtifactDetailsUiState.Loading, pcv3ViewModel.pcv3ArtifactDetails.value)
+            runCurrent()
+            assertEquals(
+                Pcv3ArtifactDetailsUiState.Ready(metadata, pageZero),
+                pcv3ViewModel.pcv3ArtifactDetails.value,
+            )
+
+            val lastPage = Pcv3ArtifactPageView(
+                offsetDecimal = last,
+                ranges = listOf(Pcv3ArtifactRangeView(last, max, max, "missing")),
+            )
+            route.artifactLoader = { id, generation, offset, limit ->
+                assertEquals(final.operationId, id)
+                assertEquals(final.generation, generation)
+                assertEquals(last, offset)
+                assertEquals(128, limit)
+                Result.success(lastPage)
+            }
+            pcv3ViewModel.loadPcv3ArtifactPage(final.operationId, final.generation, last)
+            assertEquals(Pcv3ArtifactDetailsUiState.Loading, pcv3ViewModel.pcv3ArtifactDetails.value)
+            runCurrent()
+            assertEquals(
+                Pcv3ArtifactDetailsUiState.Ready(metadata, lastPage),
+                pcv3ViewModel.pcv3ArtifactDetails.value,
+            )
+
+            route.artifactLoader = { _, _, _, _ ->
+                Result.failure(Pcv3BridgeFailure("provider-private-detail"))
+            }
+            pcv3ViewModel.loadPcv3ArtifactPage(final.operationId, final.generation, "0")
+            assertEquals(Pcv3ArtifactDetailsUiState.Loading, pcv3ViewModel.pcv3ArtifactDetails.value)
+            runCurrent()
+            assertEquals(
+                Pcv3ArtifactDetailsUiState.Failed("PCV3_ARTIFACT_INSPECTION_UNAVAILABLE"),
+                pcv3ViewModel.pcv3ArtifactDetails.value,
+            )
+            pcv3ViewModel.closePcv3ArtifactInspection(final.operationId, final.generation)
+            assertEquals(Pcv3ArtifactDetailsUiState.Closed, pcv3ViewModel.pcv3ArtifactDetails.value)
+            assertEquals(0, route.discardOutputCalls)
+            assertEquals(0, route.dismissCalls)
+
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val live = outputPcv3(
+                operationId = "op-artifact-live",
+                generation = 61,
+                outcome = "force-partial",
+                completionClass = "warning",
+                artifactMetadata = metadata,
+            )
+            val concurrentRoute = FakePcv3Operations(
+                startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                initialPresentation = live,
+            )
+            concurrentRoute.artifactLoader = { _, _, _, _ ->
+                entered.complete(Unit)
+                release.await()
+                Result.success(pageZero)
+            }
+            val concurrentViewModel = OperationViewModel(concurrentRoute, RecordingPcv3Cleaner())
+            pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+
+            concurrentViewModel.inspectPcv3Artifact(live.operationId, live.generation)
+            runCurrent()
+            entered.await()
+            assertEquals(Pcv3ArtifactDetailsUiState.Loading, concurrentViewModel.pcv3ArtifactDetails.value)
+            concurrentViewModel.discardPcv3Output(live.operationId, live.generation)
+            assertEquals(
+                "an output action invalidates passive detail publication before native dispatch",
+                Pcv3ArtifactDetailsUiState.Closed,
+                concurrentViewModel.pcv3ArtifactDetails.value,
+            )
+            runCurrent()
+            release.complete(Unit)
+            runCurrent()
+            assertEquals(1, concurrentRoute.discardOutputCalls)
+            assertEquals(
+                "a delayed page cannot publish across the output action ticket",
+                Pcv3ArtifactDetailsUiState.Closed,
+                concurrentViewModel.pcv3ArtifactDetails.value,
+            )
+
+            val race = finalPcv3(
+                operationId = "op-artifact-page-race",
+                generation = 63,
+                snapshot = outputSnapshot("force-partial", "warning"),
+                artifactMetadata = artifactMetadata("partial"),
+            )
+            val raceRoute = FakePcv3Operations(
+                startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                initialPresentation = race,
+            )
+            val raceViewModel = OperationViewModel(raceRoute, RecordingPcv3Cleaner())
+            val delayedFailureEntered = CompletableDeferred<Unit>()
+            val releaseDelayedFailure = CompletableDeferred<Unit>()
+            val newerPage = Pcv3ArtifactPageView(
+                offsetDecimal = "1",
+                ranges = listOf(Pcv3ArtifactRangeView("1", "17", "17", "missing")),
+            )
+            raceRoute.artifactLoader = { _, _, offset, _ ->
+                when (offset) {
+                    "0" -> {
+                        delayedFailureEntered.complete(Unit)
+                        releaseDelayedFailure.await()
+                        Result.failure(Pcv3BridgeFailure("private-old-failure"))
+                    }
+                    "1" -> Result.success(newerPage)
+                    else -> error("unexpected offset")
+                }
+            }
+            raceViewModel.loadPcv3ArtifactPage(race.operationId, race.generation, "0")
+            runCurrent()
+            delayedFailureEntered.await()
+            raceViewModel.loadPcv3ArtifactPage(race.operationId, race.generation, "1")
+            runCurrent()
+            assertEquals(
+                Pcv3ArtifactDetailsUiState.Ready(race.artifactMetadata!!, newerPage),
+                raceViewModel.pcv3ArtifactDetails.value,
+            )
+            releaseDelayedFailure.complete(Unit)
+            runCurrent()
+            assertEquals(
+                "a delayed A failure cannot overwrite the newer B page",
+                Pcv3ArtifactDetailsUiState.Ready(race.artifactMetadata, newerPage),
+                raceViewModel.pcv3ArtifactDetails.value,
+            )
+
+            val delayedSuccessEntered = CompletableDeferred<Unit>()
+            val releaseDelayedSuccess = CompletableDeferred<Unit>()
+            raceRoute.artifactLoader = { _, _, offset, _ ->
+                when (offset) {
+                    "0" -> {
+                        delayedSuccessEntered.complete(Unit)
+                        releaseDelayedSuccess.await()
+                        Result.success(pageZero)
+                    }
+                    "1" -> Result.failure(Pcv3BridgeFailure("private-new-failure"))
+                    else -> error("unexpected offset")
+                }
+            }
+            raceViewModel.loadPcv3ArtifactPage(race.operationId, race.generation, "0")
+            runCurrent()
+            delayedSuccessEntered.await()
+            raceViewModel.loadPcv3ArtifactPage(race.operationId, race.generation, "1")
+            runCurrent()
+            assertEquals(
+                Pcv3ArtifactDetailsUiState.Failed("PCV3_ARTIFACT_INSPECTION_UNAVAILABLE"),
+                raceViewModel.pcv3ArtifactDetails.value,
+            )
+            releaseDelayedSuccess.complete(Unit)
+            runCurrent()
+            assertEquals(
+                "a delayed A success cannot overwrite the newer B failure",
+                Pcv3ArtifactDetailsUiState.Failed("PCV3_ARTIFACT_INSPECTION_UNAVAILABLE"),
+                raceViewModel.pcv3ArtifactDetails.value,
+            )
+            raceViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+
+            val restored = restoredPcv3("op-artifact-restored", generation = 62)
+            concurrentRoute.publish(restored)
+            concurrentViewModel.inspectPcv3Artifact(restored.operationId, restored.generation)
+            concurrentViewModel.discardPcv3Output(restored.operationId, restored.generation)
+            runCurrent()
+            assertEquals("restored receipt exposes no passive native handle", 1, concurrentRoute.artifactPageCalls)
+            assertEquals("restored receipt exposes no output action", 1, concurrentRoute.discardOutputCalls)
+            concurrentViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+
     private fun resetOperationState() {
         setOperationState(null)
     }
@@ -229,5 +1342,409 @@ class OperationViewModelTest {
         @Suppress("UNCHECKED_CAST")
         val flow = field.get(OperationManager) as MutableStateFlow<OperationState?>
         flow.value = state
+    }
+
+    private fun pcv3Transfer(
+        password: CharArray,
+        keyfiles: List<String> = emptyList(),
+    ): Pcv3OperationTransfer {
+        val hasKeyfiles = keyfiles.isNotEmpty()
+        return Pcv3OperationTransfer(
+            intent = Pcv3OperationIntent(
+                format = Pcv3FormatIntent.NORMAL,
+                action = Pcv3ActionIntent.DECRYPT,
+                factorPolicy = if (hasKeyfiles) {
+                    Pcv3FactorPolicyIntent.PASSWORD_AND_KEYFILES
+                } else {
+                    Pcv3FactorPolicyIntent.PASSWORD_ONLY
+                },
+                keyfileOrder = if (hasKeyfiles) Pcv3KeyfileOrderIntent.SELECTED else null,
+            ),
+            request = Pcv3Request(
+                mode = "read-normal",
+                factorPolicy = if (hasKeyfiles) "password-and-keyfiles" else "password",
+                keyfileOrder = if (hasKeyfiles) "ordered" else "none",
+                source = "/private/input",
+                target = "/private/output",
+                keyfiles = keyfiles,
+            ),
+            password = password,
+        )
+    }
+
+    private fun livePcv3(
+        operationId: String,
+        generation: Long,
+        statusCode: String = "checking-request",
+    ) = Pcv3Presentation.Live(
+        snapshot = pcv3Snapshot(statusCode = statusCode),
+        operationId = operationId,
+        generation = generation,
+        operationHandle = FakePcv3Operation(operationId),
+        consentHandle = null,
+        archiveHandle = null,
+        consent = null,
+    )
+
+    private fun outputPcv3(
+        operationId: String,
+        generation: Long,
+        outcome: String = "success",
+        completionClass: String = "clean",
+        artifactMetadata: Pcv3ArtifactMetadataView? = null,
+        forceProvenance: String? = null,
+        warnings: List<String>? = null,
+        diagnostic: String = "none",
+    ) = Pcv3Presentation.Live(
+        snapshot = outputSnapshot(
+            outcome,
+            completionClass,
+            forceProvenance,
+            warnings,
+            diagnostic,
+        ),
+        operationId = operationId,
+        generation = generation,
+        operationHandle = FakePcv3Operation(operationId),
+        consentHandle = null,
+        archiveHandle = null,
+        consent = null,
+        outputHandle = mockk(relaxed = true),
+        outputPending = true,
+        artifactMetadata = artifactMetadata,
+    )
+
+    private fun archivePcv3(
+        operationId: String,
+        generation: Long,
+    ) = Pcv3Presentation.Live(
+        snapshot = pcv3Snapshot("none").copy(
+            semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
+            completionClass = "archive-pending",
+            archivePending = true,
+        ),
+        operationId = operationId,
+        generation = generation,
+        operationHandle = FakePcv3Operation(operationId),
+        consentHandle = null,
+        archiveHandle = mockk(relaxed = true),
+        consent = null,
+    )
+
+    private fun finalPcv3(
+        operationId: String,
+        generation: Long,
+        snapshot: Pcv3SnapshotView = cancelledPcv3Snapshot(),
+        artifactMetadata: Pcv3ArtifactMetadataView? = null,
+    ) = Pcv3Presentation.Final(
+        snapshot = snapshot,
+        operationId = operationId,
+        generation = generation,
+        artifactMetadata = artifactMetadata,
+    )
+
+    private fun restoredPcv3(operationId: String, generation: Long) = Pcv3Presentation.Restored(
+        snapshot = durabilityUncertainPcv3Snapshot(),
+        operationId = operationId,
+        generation = generation,
+        receiptId = "r_00112233445566778899aabbccddeeff",
+    )
+
+    private fun pcv3Snapshot(statusCode: String) = Pcv3SnapshotView(
+        statusCode = statusCode,
+        statusArgs = emptyList(),
+        semantic = Pcv3Semantic("unknown-outcome", "none", "PCV3_UNKNOWN"),
+        publication = Pcv3Publication(false, "none", "none", "none"),
+        forceProvenance = "none",
+        d1BootstrapProvenance = "none",
+        detailStage = "none",
+        diagnostic = "none",
+        completionClass = "unknown",
+        resultArgs = emptyList(),
+        warnings = emptyList(),
+        archivePending = false,
+        restoredReceipt = "",
+    )
+
+    private fun cancelledPcv3Snapshot() = Pcv3SnapshotView(
+        statusCode = "none",
+        statusArgs = emptyList(),
+        semantic = Pcv3Semantic("operation-failed", "cancellation", "PCV3_OPERATION_FAILED"),
+        publication = Pcv3Publication(false, "none", "none", "none"),
+        forceProvenance = "none",
+        d1BootstrapProvenance = "none",
+        detailStage = "none",
+        diagnostic = "cancellation",
+        completionClass = "refused",
+        resultArgs = emptyList(),
+        warnings = emptyList(),
+        archivePending = false,
+        restoredReceipt = "",
+    )
+
+    private fun durabilityUncertainPcv3Snapshot(): Pcv3SnapshotView {
+        val receipt = """{"version":1,"receiptID":"r_00112233445566778899aabbccddeeff","operationID":"op_1700000000000000000_7","outcome":7,"stage":0,"code":7,"forceProvenance":1,"d1BootstrapProvenance":3,"detailStage":13,"publicationAttempted":true,"publicationState":3,"publicationStage":24,"publicationCode":9,"args":[7,11,13,17],"warnings":[6,4],"diagnostic":0}"""
+        return Pcv3SnapshotView(
+            statusCode = "none",
+            statusArgs = emptyList(),
+            semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
+            publication = Pcv3Publication(
+                true,
+                "published-durability-uncertain",
+                "directory-sync",
+                "PCV3_PUBLICATION_DURABILITY_UNCERTAIN",
+            ),
+            forceProvenance = "verified",
+            d1BootstrapProvenance = "matching",
+            detailStage = "metadata",
+            diagnostic = "none",
+            completionClass = "durability-uncertain",
+            resultArgs = listOf("7", "11", "13", "17"),
+            warnings = listOf("cleanup-incomplete", "durability-uncertain"),
+            archivePending = false,
+            restoredReceipt = receipt,
+        )
+    }
+
+    private fun outputSnapshot(
+        outcome: String,
+        completionClass: String,
+        forceProvenance: String? = null,
+        warnings: List<String>? = null,
+        diagnostic: String = "none",
+    ) = Pcv3SnapshotView(
+        statusCode = "none",
+        statusArgs = emptyList(),
+        semantic = Pcv3Semantic(
+            outcome = outcome,
+            stage = when (outcome) {
+                "authenticated-degraded" -> "metadata"
+                "force-partial", "force-unverified" -> "record-auth"
+                else -> "none"
+            },
+            code = when (outcome) {
+                "success" -> "PCV3_SUCCESS"
+                "authenticated-degraded" -> "PCV3_AUTHENTICATED_DEGRADED"
+                "force-partial" -> "PCV3_FORCE_PARTIAL"
+                "force-unverified" -> "PCV3_FORCE_UNVERIFIED"
+                else -> "PCV3_UNKNOWN"
+            },
+        ),
+        publication = Pcv3Publication(
+            attempted = true,
+            state = "published-durable",
+            stage = "none",
+            code = "PCV3_PUBLICATION_PUBLISHED_DURABLE",
+        ),
+        forceProvenance = forceProvenance ?: when (outcome) {
+            "force-partial" -> "partial"
+            "force-unverified" -> "unverified"
+            else -> "none"
+        },
+        d1BootstrapProvenance = "none",
+        detailStage = "none",
+        diagnostic = diagnostic,
+        completionClass = completionClass,
+        resultArgs = emptyList(),
+        warnings = warnings ?: when (outcome) {
+            "authenticated-degraded", "force-partial", "force-unverified" -> listOf(outcome)
+            else -> emptyList()
+        },
+        archivePending = false,
+        restoredReceipt = "",
+    )
+
+    private fun artifactMetadata(kind: String) = Pcv3ArtifactMetadataView(
+        kind = kind,
+        role = "none",
+        plaintextLength = "17",
+        finalStatus = if (kind == "partial") "missing" else "unverified",
+        rangeCount = "2",
+        verifiedCount = "1",
+        unverifiedCount = if (kind == "partial") "0" else "1",
+        missingCount = if (kind == "partial") "1" else "0",
+    )
+
+    private class FakePcv3Operation(override val id: String) : Pcv3OperationCapability {
+        override fun snapshot() = error("not called by the ViewModel fake")
+        override fun consent(): Pcv3ConsentCapability? = null
+        override fun archive(): Pcv3ArchiveCapability? = null
+        override fun cancel() = error("not called by the ViewModel fake")
+        override fun release(): String = ""
+    }
+
+    private data class RefreshStep(
+        val returned: Result<Pcv3Presentation>,
+        val authoritative: Pcv3Presentation? = returned.getOrNull(),
+        val updateAuthority: Boolean = true,
+        val busy: Boolean = authoritative is Pcv3Presentation.Live,
+    )
+
+    private class FakePcv3Operations(
+        private val startResult: Result<Pcv3Presentation>,
+        private val refreshResults: ArrayDeque<RefreshStep> = ArrayDeque(),
+        initialPresentation: Pcv3Presentation? = null,
+        private val busyAfterStart: Boolean? = null,
+        private val startEntered: CompletableDeferred<Unit>? = null,
+        private val startRelease: CompletableDeferred<Unit>? = null,
+        private val events: MutableList<String>? = null,
+    ) : Pcv3Operations {
+        private val presentationFlow = MutableStateFlow(initialPresentation)
+        private val busyFlow = MutableStateFlow(initialPresentation is Pcv3Presentation.Live)
+        override val presentation: StateFlow<Pcv3Presentation?> = presentationFlow
+        override val busy: StateFlow<Boolean> = busyFlow
+        var refreshCalls = 0
+        var cancelCalls = 0
+        var selectRoleCalls = 0
+        var confirmCalls = 0
+        var refuseCalls = 0
+        var closeArchiveCalls = 0
+        var exportArchiveCalls = 0
+        var dismissCalls = 0
+        var saveOutputCalls = 0
+        var discardOutputCalls = 0
+        var artifactPageCalls = 0
+        val receiptFiles = mutableListOf<File>()
+        val savedDestinations = mutableListOf<ParcelFileDescriptor>()
+        var resourceReader: Pcv3ResourceObservationReader? = null
+        var artifactLoader: suspend (String, Long, String, Int) -> Result<Pcv3ArtifactPageView> =
+            { _, _, _, _ -> Result.failure(Pcv3BridgeFailure("PCV3_ARTIFACT_INSPECTION_UNAVAILABLE")) }
+        var saveOutputAction: suspend (ParcelFileDescriptor) -> Result<Unit> = { Result.success(Unit) }
+        var exportArchiveAction: suspend (String, Long, Uri) -> Result<Unit> = { _, _, _ ->
+            Result.success(Unit)
+        }
+        var saveCancellation: CancellationException? = null
+
+        fun publish(presentation: Pcv3Presentation?) {
+            presentationFlow.value = presentation
+            busyFlow.value = presentation is Pcv3Presentation.Live
+        }
+
+        override suspend fun start(
+            request: Pcv3Request,
+            password: CharArray,
+            receiptFile: File,
+        ): Result<Pcv3Presentation> {
+            events?.add("native-start")
+            receiptFiles += receiptFile
+            busyFlow.value = true
+            startEntered?.complete(Unit)
+            return try {
+                startRelease?.await()
+                startResult.also { result ->
+                    presentationFlow.value = result.getOrNull()
+                    busyFlow.value = busyAfterStart ?: (result.getOrNull() is Pcv3Presentation.Live)
+                }
+            } catch (error: CancellationException) {
+                busyFlow.value = false
+                throw error
+            }
+        }
+
+        override suspend fun installResourceObservationReader(reader: Pcv3ResourceObservationReader): Boolean {
+            events?.add("resource-reader")
+            resourceReader = reader
+            return busyFlow.value
+        }
+
+        override suspend fun refresh(): Result<Pcv3Presentation> {
+            refreshCalls += 1
+            val step = if (refreshResults.isEmpty()) null else refreshResults.removeFirst()
+            if (step == null) {
+                return Result.failure(Pcv3BridgeFailure("PCV3_OPERATION_UNAVAILABLE"))
+            }
+            if (step.updateAuthority) presentationFlow.value = step.authoritative
+            busyFlow.value = step.busy
+            return step.returned
+        }
+
+        override suspend fun cancel(): Result<Unit> {
+            cancelCalls += 1
+            return Result.success(Unit)
+        }
+
+        override suspend fun selectConsentRole(role: String): Result<Unit> {
+            selectRoleCalls += 1
+            return Result.success(Unit)
+        }
+
+        override suspend fun confirmConsent(): Result<Unit> {
+            confirmCalls += 1
+            return Result.success(Unit)
+        }
+
+        override suspend fun refuseConsent(): Result<Unit> {
+            refuseCalls += 1
+            return Result.success(Unit)
+        }
+
+        override suspend fun closeArchive(): Result<Unit> {
+            closeArchiveCalls += 1
+            return Result.success(Unit)
+        }
+
+        override suspend fun exportArchive(
+            context: Context,
+            operationId: String,
+            generation: Long,
+            root: Uri,
+        ): Result<Unit> {
+            exportArchiveCalls += 1
+            return exportArchiveAction(operationId, generation, root)
+        }
+
+        override suspend fun saveOutput(
+            operationId: String,
+            generation: Long,
+            destination: ParcelFileDescriptor,
+        ): Result<Unit> {
+            saveOutputCalls += 1
+            savedDestinations += destination
+            events?.add("save-output")
+            return try {
+                saveOutputAction(destination)
+            } catch (error: CancellationException) {
+                saveCancellation = error
+                throw error
+            }
+        }
+
+        override suspend fun discardOutput(operationId: String, generation: Long): Result<Unit> {
+            discardOutputCalls += 1
+            events?.add("discard-output")
+            return Result.success(Unit)
+        }
+
+        override suspend fun loadArtifactPage(
+            operationId: String,
+            generation: Long,
+            offsetDecimal: String,
+            limit: Int,
+        ): Result<Pcv3ArtifactPageView> {
+            artifactPageCalls += 1
+            return artifactLoader(operationId, generation, offsetDecimal, limit)
+        }
+
+        override suspend fun dismiss(operationId: String, generation: Long): Boolean {
+            dismissCalls += 1
+            val current = presentationFlow.value
+            val accepted = current != null && current.operationId == operationId && current.generation == generation &&
+                (current is Pcv3Presentation.Final || current is Pcv3Presentation.Restored)
+            if (accepted) presentationFlow.value = null
+            return accepted
+        }
+    }
+
+    private class RecordingPcv3Cleaner(
+        private val result: Boolean = true,
+        private val events: MutableList<String>? = null,
+    ) : Pcv3TransferredResourceCleaner {
+        val deletedPaths = mutableListOf<List<String>>()
+
+        override suspend fun delete(context: Context, paths: List<String>): Boolean {
+            events?.add("transferred-cleanup")
+            deletedPaths += paths
+            return result
+        }
     }
 }

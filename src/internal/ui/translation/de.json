@@ -100,6 +100,7 @@
   "status.completed_some_delete_failed": "Abgeschlossen (einige Dateien konnten nicht gelöscht werden)",
   "status.kept_output_unverified": "Integritätsprüfung fehlgeschlagen; die behaltene Ausgabe ist nicht verifiziert und kann beschädigt sein",
   "status.completed_volume_delete_failed": "Abgeschlossen (Volume konnte nicht gelöscht werden)",
+  "status.pcv_unavailable": "Dieses PCV-Volume wird von dieser Version nicht unterstützt. Bewahren Sie die Originaldatei auf; es wurde keine Ausgabe erstellt.",
   "drop.prompt": "Dateien und Ordner in dieses Fenster ziehen",
   "drop.failed_walk": "Abgelegte Elemente konnten nicht durchsucht werden",
   "drop.failed_stat_item": "Eigenschaften des abgelegten Elements konnten nicht gelesen werden",

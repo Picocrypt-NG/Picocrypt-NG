@@ -30,6 +30,7 @@ package ui
 import (
 	"Picocrypt-NG/internal/app"
 	"Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"context"
 	_ "embed"
@@ -96,6 +97,10 @@ type App struct {
 	operationGeneration    atomic.Uint64
 	operationExecutor      operationExecutor
 	operationSourceRemover operationSourceRemover
+	pcv3OperationExecutor  pcv3OperationExecutor
+	pcv3ResultDisposer     func(*pcv3operation.Result) bool
+	pcv3Result             *pcv3operation.Result
+	pcv3ResultGeneration   uint64
 
 	// macOS opened-path readiness session. It is used for Finder/Dock-opened
 	// paths that may point at iCloud placeholders. It is separate from the global
@@ -138,6 +143,11 @@ type App struct {
 	startButton        *widget.Button
 	startHintLabel     *widget.Label
 	statusLabel        *ColoredLabel
+	pcv3Container      *fyne.Container
+	pcv3ActionGroup    *widget.RadioGroup
+	pcv3FactorGroup    *widget.RadioGroup
+	pcv3OrderGroup     *widget.RadioGroup
+	pcv3CancelButton   *widget.Button
 
 	// Confirm password section (hidden in decrypt mode)
 	confirmLabel *widget.Label
@@ -230,6 +240,7 @@ func NewApp(version string) (*App, error) {
 		workers:                newWorkerLifecycle(),
 		operationExecutor:      executeVolumeOperation,
 		operationSourceRemover: removeOperationSource,
+		pcv3OperationExecutor:  pcv3operation.Run,
 		// Initialize data bindings
 		boundProgress: binding.NewFloat(),
 		boundStatus:   binding.NewString(),
@@ -506,6 +517,9 @@ func (a *App) stopSourcesAndContexts() {
 	stopOpenedPathsNotify()
 	a.cancelOpenedPathReadiness()
 	a.stopCurrentOperation()
+	a.operationGeneration.Add(1)
+	a.releasePCV3Result()
+	a.State.ClosePCV3Source()
 }
 
 func (a *App) beginOrderlyShutdown() {
@@ -593,7 +607,6 @@ func (a *App) scheduleStartupPaths(startupPaths []string) {
 func (a *App) showFileDialogWithResize(d dialog.Dialog, dialogSize fyne.Size) {
 	// Skip resize handling on mobile - windows are flexible there
 	if isMobile() {
-		d.Resize(dialogSize)
 		d.Show()
 		return
 	}
@@ -610,8 +623,8 @@ func (a *App) showFileDialogWithResize(d dialog.Dialog, dialogSize fyne.Size) {
 		a.Window.SetFixedSize(true)
 	})
 
-	d.Resize(dialogSize)
 	d.Show()
+	d.Resize(dialogSize)
 }
 
 // fixedWidthLayout is a layout that forces a fixed width (used in tests).
@@ -665,6 +678,7 @@ func (a *App) buildUI() fyne.CanvasObject {
 
 	// Password section (from password_section.go)
 	passwordSection := a.buildPasswordSection()
+	a.pcv3Container = container.NewVBox()
 
 	// Keyfiles section (from keyfile_section.go)
 	keyfilesSection := a.buildKeyfilesSection()
@@ -681,7 +695,7 @@ func (a *App) buildUI() fyne.CanvasObject {
 	outputSection := a.buildOutputSection()
 
 	// Start button and status
-	a.startButton = widget.NewButton(renderStartAction(snap.StartAction, snap.Recursively), a.onClickStart)
+	a.startButton = widget.NewButton(renderStartActionForSnapshot(snap), a.onClickStart)
 	a.startButton.Importance = widget.HighImportance
 	a.startHintLabel = widget.NewLabel("")
 	a.startHintLabel.Importance = widget.LowImportance
@@ -692,6 +706,7 @@ func (a *App) buildUI() fyne.CanvasObject {
 
 	// Main content container
 	a.mainContent = container.NewVBox(
+		a.pcv3Container,
 		passwordSection,
 		keyfilesSection,
 		widget.NewSeparator(),
@@ -811,11 +826,54 @@ func renderStartAction(action app.StartAction, recursively bool) string {
 	}
 }
 
+func renderStartActionForSnapshot(snap app.UISnapshot) string {
+	if snap.PCV3Route == app.PCV3RouteReady {
+		switch snap.PCV3Action {
+		case app.PCV3ActionDecrypt:
+			return tr("pcv3.action.decrypt", "Decrypt PCV3")
+		case app.PCV3ActionRecovery:
+			return tr("pcv3.action.recovery", "Start recovery")
+		case app.PCV3ActionForce:
+			return tr("pcv3.action.force", "Start Force recovery")
+		}
+	}
+	return renderStartAction(snap.StartAction, snap.Recursively)
+}
+
 func hasSelectedInput(snap app.UISnapshot) bool {
 	return snap.AllFileCount > 0 || snap.OnlyFileCount > 0 || snap.OnlyFolderCount > 0 || snap.InputFile != ""
 }
 
 func (a *App) startReadinessHint(snap app.UISnapshot) string {
+	if snap.PCV3Route != app.PCV3RouteNone {
+		if snap.PCV3Route != app.PCV3RouteReady || snap.PCV3Action == app.PCV3ActionNone {
+			return ""
+		}
+		if snap.PCV3Factor == app.PCV3FactorPolicyUnset {
+			return tr("pcv3.intent.policy_required", "Choose the credential policy used for this operation.")
+		}
+		hasPassword := snap.Password != ""
+		hasKeyfiles := snap.KeyfileCount != 0
+		valid := false
+		switch snap.PCV3Factor {
+		case app.PCV3FactorPolicyPassword:
+			valid = hasPassword && !hasKeyfiles && snap.PCV3Order == app.PCV3KeyfileOrderUnset
+		case app.PCV3FactorPolicyKeyfiles:
+			valid = !hasPassword && hasKeyfiles && snap.PCV3Order != app.PCV3KeyfileOrderUnset
+		case app.PCV3FactorPolicyCombined:
+			valid = hasPassword && hasKeyfiles && snap.PCV3Order != app.PCV3KeyfileOrderUnset
+		}
+		if !valid {
+			return tr("pcv3.intent.factor_mismatch", "The visible credentials do not match the selected policy.")
+		}
+		if snap.OutputFile == "" {
+			return tr("pcv3.intent.destination", "Choose a destination for this operation.")
+		}
+		return ""
+	}
+	if snap.PCVUnavailable {
+		return ""
+	}
 	if !hasSelectedInput(snap) {
 		return tr("start.hint.noFiles", "Add files or folders to continue.")
 	}
@@ -856,7 +914,7 @@ func (a *App) startReadinessHint(snap app.UISnapshot) string {
 
 func (a *App) startDisabled(snap app.UISnapshot) bool {
 	configureDisabled := snap.Scanning || !hasSelectedInput(snap)
-	return configureDisabled || !snap.CanStart() || !splitSizeReady(snap)
+	return snap.PCVUnavailable || configureDisabled || !snap.CanStart() || !splitSizeReady(snap)
 }
 
 func renderStatus(msg app.StatusMessage, snap app.UISnapshot) string {
@@ -889,6 +947,8 @@ func renderStatus(msg app.StatusMessage, snap app.UISnapshot) string {
 		return tr("status.kept_output_unverified", "Integrity check failed; kept output is unverified and may be corrupted")
 	case app.StatusCompletedVolumeDeleteFailed:
 		return tr("status.completed_volume_delete_failed", "Completed (volume couldn't be deleted)")
+	case app.StatusPCVUnavailable:
+		return tr("status.pcv_unavailable", "This PCV volume is not supported by this version. Keep the original file; no output was created.")
 	case app.StatusStartupPathAccessFailed:
 		return startupPathAccessStatus()
 	case app.StatusStartupPathPartialAccessFailed:
@@ -988,6 +1048,10 @@ func (a *App) buildOutputSection() fyne.CanvasObject {
 	a.outputEntry = outputEntry
 
 	a.changeBtn = widget.NewButton(tr("action.change", "Change"), func() {
+		if a.State.UISnapshot().PCV3Route == app.PCV3RouteReady {
+			a.changePCV3OutputFile()
+			return
+		}
 		a.changeOutputFile()
 	})
 
@@ -1018,7 +1082,12 @@ func (a *App) refreshAdvanced() {
 // This mirrors the exact logic from the original giu implementation.
 func (a *App) updateUIState() {
 	snap := a.State.UISnapshot()
-	configureDisabled := a.mobileImportActive || snap.Scanning || !hasSelectedInput(snap)
+	a.refreshPCV3Surface(snap)
+	baseConfigureDisabled := a.mobileImportActive || snap.Scanning || !hasSelectedInput(snap)
+	pcv3Terminal := snap.PCV3Route == app.PCV3RouteFailed || snap.PCV3Route == app.PCV3RouteTransferred
+	configureDisabled := baseConfigureDisabled || snap.PCVUnavailable || pcv3Terminal
+	credentialsDisabled := configureDisabled ||
+		(snap.PCV3Route == app.PCV3RouteReady && snap.PCV3Action == app.PCV3ActionNone)
 	startDisabled := a.mobileImportActive || a.startDisabled(snap)
 
 	for _, button := range []*widget.Button{a.mobileSelectFilesBtn, a.mobileSelectFolderBtn, a.mobileAppStorageBtn} {
@@ -1034,7 +1103,7 @@ func (a *App) updateUIState() {
 
 	// Clear button
 	if a.clearButton != nil {
-		if configureDisabled {
+		if baseConfigureDisabled || snap.PCV3Route == app.PCV3RouteTransferred {
 			a.clearButton.Disable()
 		} else {
 			a.clearButton.Enable()
@@ -1042,10 +1111,10 @@ func (a *App) updateUIState() {
 	}
 
 	// Password section state (from password_section.go)
-	a.updatePasswordUIState(configureDisabled, snap)
+	a.updatePasswordUIState(credentialsDisabled, snap)
 
 	// Keyfile section state (from keyfile_section.go)
-	a.updateKeyfileUIState(configureDisabled, snap)
+	a.updateKeyfileUIState(credentialsDisabled, snap)
 
 	// Comments section - complex nested logic
 	commentsOuterDisabled := (snap.Mode != "decrypt" &&
@@ -1064,7 +1133,7 @@ func (a *App) updateUIState() {
 		}
 		// In decrypt mode with valid comments, keep entry enabled but read-only
 		// (OnChanged will prevent actual changes). This keeps text visible, not pale.
-		if configureDisabled {
+		if credentialsDisabled {
 			a.commentsEntry.Disable()
 		} else if snap.Mode == "decrypt" && snap.CommentsPreviewState == app.CommentsPreviewNormal && snap.Comments != "" {
 			a.commentsEntry.Enable() // Keep text visible (not pale)
@@ -1079,7 +1148,7 @@ func (a *App) updateUIState() {
 	a.updateAdvancedDisableStateFromSnapshot(snap, configureDisabled)
 
 	if a.startButton != nil {
-		a.startButton.SetText(renderStartAction(snap.StartAction, snap.Recursively))
+		a.startButton.SetText(renderStartActionForSnapshot(snap))
 		if startDisabled {
 			a.startButton.Disable()
 		} else {
@@ -1135,7 +1204,7 @@ func (a *App) updateUIState() {
 		a.keyfileLabel.SetText(keyfileDisplayLabel(
 			snap.Keyfile,
 			snap.KeyfileCount,
-			keyfileApplicable(snap.Mode, snap.Keyfile, snap.Deniability),
+			keyfileApplicableForSnapshot(snap),
 		))
 	}
 
@@ -1148,6 +1217,9 @@ func (a *App) updateUIState() {
 
 // resetUI clears UI state but preserves progress flags.
 func (a *App) resetUI() {
+	a.stopCurrentOperation()
+	a.operationGeneration.Add(1)
+	a.releasePCV3Result()
 	a.State.ResetUI()
 	if a.passwordEntry != nil {
 		a.passwordEntry.SetText("")

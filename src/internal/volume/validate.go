@@ -113,20 +113,25 @@ func (req *EncryptRequest) validateSplit() error {
 // Validate checks that the DecryptRequest has all required fields and valid configuration.
 // Returns nil if valid, or an error describing the validation failure.
 func (req *DecryptRequest) Validate() error {
-	// Check for input file
-	if req.InputFile == "" {
-		return errors.NewValidationError("InputFile", "input file path is required")
+	return req.validate(false)
+}
+
+func (req *DecryptRequest) validate(preparedInput bool) error {
+	if err := req.validateInputPath(); err != nil {
+		return err
 	}
 
 	// A recombine request may name the base path before that file exists. In
 	// that mode the numbered chunks are the real protected inputs.
-	if req.Recombine {
+	if req.Recombine && !preparedInput {
 		inputBase := recombineInputBase(req.InputFile)
 		if _, _, err := fileops.CountChunks(inputBase); err != nil {
 			return errors.NewFileError("stat chunks", inputBase, err)
 		}
-	} else if _, err := os.Stat(req.InputFile); err != nil {
-		return errors.NewFileError("stat", req.InputFile, err)
+	} else if !preparedInput {
+		if _, err := os.Stat(req.InputFile); err != nil {
+			return errors.NewFileError("stat", req.InputFile, err)
+		}
 	}
 
 	// Note: We don't require password/keyfiles here because they may be
@@ -144,7 +149,85 @@ func (req *DecryptRequest) Validate() error {
 		}
 	}
 
+	if preparedInput {
+		return nil
+	}
 	return req.ValidateOutputSafety()
+}
+
+func (req *DecryptRequest) validateInputPath() error {
+	if req == nil || req.InputFile == "" {
+		return errors.NewValidationError("InputFile", "input file path is required")
+	}
+	return nil
+}
+
+func (req *DecryptRequest) validatePrepared(input *PreparedDecryptInput) error {
+	if input == nil || !input.matches(req.InputFile, req.Recombine) {
+		return errors.NewValidationError("InputFile", "prepared input does not match the decrypt request")
+	}
+	if err := req.validate(true); err != nil {
+		return err
+	}
+	if err := req.validatePreparedOutputSafety(input); err != nil {
+		return err
+	}
+	return input.ValidateOutputAlias(req.OutputFile)
+}
+
+func (req *DecryptRequest) validatePreparedOutputSafety(input *PreparedDecryptInput) error {
+	if input == nil || len(input.inputInfos) == 0 {
+		return errors.NewValidationError("InputFile", "prepared input identity is unavailable")
+	}
+	protected := make([]string, 0, 2+len(input.inputInfos)+len(req.Keyfiles))
+	protected = append(protected, req.InputFile)
+	if req.Recombine {
+		inputBase := recombineInputBase(req.InputFile)
+		protected = append(protected, inputBase)
+		for i := range len(input.inputInfos) {
+			protected = append(protected, fmt.Sprintf("%s.%d", inputBase, i))
+		}
+	}
+	protected = append(protected, req.Keyfiles...)
+	return validateOutputSafety(req.OutputFile, protected)
+}
+
+// ValidateOutputAlias rejects an output path that currently names the exact
+// descriptor prepared for decryption, even if its original pathname was moved
+// or replaced after routing.
+func (input *PreparedDecryptInput) ValidateOutputAlias(output string) error {
+	if input == nil || input.info == nil {
+		return errors.NewValidationError("InputFile", "prepared input identity is unavailable")
+	}
+	return validatePreparedOutputAliases(output, input.inputInfos)
+}
+
+func validatePreparedOutputAliases(output string, inputInfos []os.FileInfo) error {
+	if len(inputInfos) == 0 {
+		return errors.NewValidationError("InputFile", "prepared input identity is unavailable")
+	}
+	if output == "" {
+		return nil
+	}
+	outputInfo, err := os.Stat(output)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return errors.NewFileError("stat", output, err)
+	}
+	for _, inputInfo := range inputInfos {
+		if inputInfo == nil {
+			return errors.NewValidationError("InputFile", "prepared input identity is unavailable")
+		}
+		if os.SameFile(inputInfo, outputInfo) {
+			return errors.NewValidationError(
+				"OutputFile",
+				fmt.Sprintf("output %q conflicts with a routed encrypted input", output),
+			)
+		}
+	}
+	return nil
 }
 
 // ValidateOutputSafety rejects destinations that alias the encrypted volume or

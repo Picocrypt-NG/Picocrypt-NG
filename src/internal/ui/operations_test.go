@@ -546,9 +546,6 @@ func TestRecursiveOperationKeepsWorkingAndProcessesEveryFile(t *testing.T) {
 		fyneApp := newTestFyneApp(t)
 		a := createUIReadyDropTestApp(t, fyneApp)
 		file := filepath.Join(t.TempDir(), "disappears.txt")
-		if err := os.WriteFile(file, []byte("payload"), 0o600); err != nil {
-			t.Fatalf("write input: %v", err)
-		}
 		var calls atomic.Int32
 		a.operationExecutor = func(context.Context, operationInput, volume.ProgressReporter) operationResult {
 			calls.Add(1)
@@ -565,9 +562,6 @@ func TestRecursiveOperationKeepsWorkingAndProcessesEveryFile(t *testing.T) {
 			a.State.CPassword = "secret"
 			a.State.Recursively = true
 			a.startWork()
-			if err := os.Remove(file); err != nil {
-				t.Fatalf("remove captured input: %v", err)
-			}
 		})
 		drainOperationFinalizer(t, a)
 		if got := calls.Load(); got != 0 {
@@ -578,6 +572,158 @@ func TestRecursiveOperationKeepsWorkingAndProcessesEveryFile(t *testing.T) {
 			t.Fatalf("selection failure status = %+v; want failed-all count 1", status)
 		}
 	})
+}
+
+func TestRecursiveNormalPCV3NeverFallsBackToLegacy(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	input := filepath.Join("..", "pcv3", "testdata", "schema1-minimal.pcv")
+	output := filepath.Join(t.TempDir(), "legacy-fallback.out")
+	previousOpen := openDroppedPCVInput
+	var routedSource *os.File
+	openDroppedPCVInput = func(path string, split bool) (*os.File, error) {
+		source, err := previousOpen(path, split)
+		if err == nil {
+			routedSource = source
+		}
+		return source, err
+	}
+	defer func() { openDroppedPCVInput = previousOpen }()
+	var legacyCalls atomic.Int32
+	a.operationExecutor = func(_ context.Context, input operationInput, _ volume.ProgressReporter) operationResult {
+		legacyCalls.Add(1)
+		if err := os.WriteFile(input.outputFile, []byte("legacy output"), 0o600); err != nil {
+			t.Fatalf("write legacy fallback output: %v", err)
+		}
+		return operationResult{completed: true}
+	}
+
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.State.InputFile = input
+		a.State.OutputFile = output
+		a.State.OnlyFiles = []string{input}
+		a.State.AllFiles = []string{input}
+		a.State.Password = "recursive-normal-pcv3"
+		a.State.CPassword = "recursive-normal-pcv3"
+		a.State.Recursively = true
+		a.startWork()
+	})
+	drainOperationFinalizer(t, a)
+
+	if got := legacyCalls.Load(); got != 0 {
+		t.Fatalf("normal PCV3 recursive input reached legacy executor %d time(s)", got)
+	}
+	if _, err := os.Lstat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("normal PCV3 recursive input produced legacy output: %v", err)
+	}
+	if routedSource == nil {
+		t.Fatal("normal PCV3 recursive route did not open its source")
+	}
+	if _, err := routedSource.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("normal PCV3 recursive rejection left routed source open: %v", err)
+	}
+	snap := a.State.UISnapshot()
+	if snap.Working {
+		t.Fatal("normal PCV3 recursive rejection left the operation working")
+	}
+	if snap.Status.Kind != app.StatusRecursiveFailedAll || snap.Status.Args.Count != 1 {
+		t.Fatalf("normal PCV3 recursive status = %+v; want failed-all count 1", snap.Status)
+	}
+}
+
+func TestRecursiveLegacyDecryptPreservesVolumeAndSplitSelection(t *testing.T) {
+	golden := filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv")
+	goldenBytes, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read frozen legacy volume: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		selected      func(t *testing.T) string
+		wantInput     func(selected string) string
+		wantOutput    func(selected string) string
+		wantRecombine bool
+	}{
+		{
+			name:     "volume",
+			selected: func(*testing.T) string { return golden },
+			wantInput: func(selected string) string {
+				return selected
+			},
+			wantOutput: trimPCVSuffix,
+		},
+		{
+			name: "split chunk",
+			selected: func(t *testing.T) string {
+				base := filepath.Join(t.TempDir(), "legacy.pcv")
+				if err := os.WriteFile(base+".0", goldenBytes, 0o600); err != nil {
+					t.Fatalf("write split chunk: %v", err)
+				}
+				return base + ".0"
+			},
+			wantInput: func(selected string) string {
+				base, ok := fileops.SplitChunkBase(selected)
+				if !ok {
+					return ""
+				}
+				return base
+			},
+			wantOutput: func(selected string) string {
+				base, ok := fileops.SplitChunkBase(selected)
+				if !ok {
+					return ""
+				}
+				return trimPCVSuffix(base)
+			},
+			wantRecombine: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fyneApp := newTestFyneApp(t)
+			a := createUIReadyDropTestApp(t, fyneApp)
+			selected := tc.selected(t)
+			observed := make(chan operationInput, 1)
+			a.operationExecutor = func(_ context.Context, input operationInput, _ volume.ProgressReporter) operationResult {
+				observed <- input
+				return operationResult{completed: true}
+			}
+
+			fyne.DoAndWait(func() {
+				a.State.Mode = "encrypt"
+				a.State.InputFile = selected
+				a.State.OutputFile = selected + ".pcv"
+				a.State.OnlyFiles = []string{selected}
+				a.State.AllFiles = []string{selected}
+				a.State.Password = "recursive-legacy-decrypt"
+				a.State.CPassword = "recursive-legacy-decrypt"
+				a.State.Recursively = true
+				a.startWork()
+			})
+			drainOperationFinalizer(t, a)
+
+			select {
+			case got := <-observed:
+				if got.mode != "decrypt" {
+					t.Fatalf("recursive mode = %q; want decrypt", got.mode)
+				}
+				if want := tc.wantInput(selected); got.inputFile != want {
+					t.Fatalf("recursive input = %q; want %q", got.inputFile, want)
+				}
+				if want := tc.wantOutput(selected); got.outputFile != want {
+					t.Fatalf("recursive output = %q; want %q", got.outputFile, want)
+				}
+				if got.recombine != tc.wantRecombine {
+					t.Fatalf("recursive recombine = %v; want %v", got.recombine, tc.wantRecombine)
+				}
+			default:
+				t.Fatal("recursive legacy selection did not reach executor")
+			}
+		})
+	}
 }
 
 // TestOnClickStartValidation tests the validation logic in onClickStart.

@@ -1,12 +1,27 @@
 package mobile
 
 import (
+	"Picocrypt-NG/internal/pcv3publication"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
+
+func openPCV3Regular(path string) (*os.File, error) {
+	file, err := openPCV3Existing(path, os.O_RDONLY)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
+		_ = file.Close()
+		return nil, errors.New("PCV3 input is not a regular file")
+	}
+	return file, nil
+}
 
 // RemoveTreeNoFollow removes targetPath without following any directory
 // symlink between rootPath and the target. The empty string means success.
@@ -19,6 +34,30 @@ func RemoveTreeNoFollow(rootPath, targetPath string) string {
 		return err.Error()
 	}
 	return ""
+}
+
+// CleanupPCV3Journal performs deny-by-default startup cleanup for one local
+// parent directory. It exposes only the closed cleanup state, never a path or
+// raw filesystem error.
+func CleanupPCV3Journal(parentPath string) string {
+	if parentPath == "" || len(parentPath) > maxPCV3PathBytes ||
+		!utf8.ValidString(parentPath) || strings.ContainsRune(parentPath, '\x00') ||
+		strings.Contains(parentPath, "://") || !filepath.IsAbs(parentPath) ||
+		filepath.Clean(parentPath) != parentPath {
+		return "incomplete"
+	}
+	state, err := pcv3publication.CleanupJournaledStage(parentPath)
+	if err != nil {
+		return "incomplete"
+	}
+	switch state {
+	case pcv3publication.CleanupJournalAbsent:
+		return "absent"
+	case pcv3publication.CleanupJournalCleaned:
+		return "cleaned"
+	default:
+		return "incomplete"
+	}
 }
 
 func removeTreeNoFollow(rootPath, targetPath string) (retErr error) {

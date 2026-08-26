@@ -1,0 +1,828 @@
+{
+  "schema_version": 1,
+  "go_version": "go1.26.5",
+  "module": "Picocrypt-NG",
+  "build_attestation": {
+    "classification": "controlled-build self-attestation; not proof against a malicious builder",
+    "baseline_ldflag": "-X=main.phase2Baseline=${BASELINE}",
+    "base_ldflag": "-X=main.phase2Base=${BASE}",
+    "source_manifest_sha256_ldflag": "-X=main.phase2SourceManifestSHA256=${SOURCE_MANIFEST_SHA256}"
+  },
+  "runtime_bindings": {
+    "baseline": "required",
+    "base": "required",
+    "source_tree": "required",
+    "source_manifest_sha256": "required",
+    "diff_sha256": "required",
+    "config_sha256": "required",
+    "spec_sha256": "required",
+    "vectors_sha256": "required",
+    "vector_input_sha256": "required",
+    "mutations_sha256": "required",
+    "runner": {
+      "absolute_path": "required",
+      "sha256": "required",
+      "go_build_version": "go1.26.5"
+    },
+    "inspector": {
+      "absolute_path": "required",
+      "sha256": "required",
+      "go_build_version": "go1.26.5"
+    }
+  },
+  "dependency_contract": {
+    "mode": "archive-local-vendor",
+    "vendor_modules_path": "src/vendor/modules.txt",
+    "source_manifest_coverage": "complete-tree",
+    "goflags": "-mod=vendor -trimpath",
+    "module_cache_fallback": "forbidden-empty-sentinel",
+    "stage_build_cache": "distinct-empty-per-stage"
+  },
+  "cpu_contract": {
+    "online_source": "runtime.NumCPU",
+    "minimum_online": 2,
+    "exact_profile_minimum_online": 8,
+    "phase_jobs_formula": "min(floor(online/2),10)",
+    "gomaxprocs": "${PHASE_JOBS}",
+    "maximum_concurrency": "10",
+    "memory_hard_package_parallelism": 1,
+    "require_for_all_go_and_go_based_children": true
+  },
+  "child_environment": {
+    "allowlist": [
+      "CGO_ENABLED",
+      "GOCACHE",
+      "GOENV",
+      "GOFLAGS",
+      "GOMAXPROCS",
+      "GOMODCACHE",
+      "GOPATH",
+      "GOPROXY",
+      "GOSUMDB",
+      "GOTOOLCHAIN",
+      "GOWORK",
+      "HOME",
+      "PATH",
+      "SYSTEMROOT",
+      "TMPDIR",
+      "XDG_CACHE_HOME",
+      "XDG_CONFIG_HOME"
+    ],
+    "required": {
+      "CGO_ENABLED": "0",
+      "GOCACHE": "${STAGE_GOCACHE}",
+      "GOENV": "off",
+      "GOFLAGS": "-mod=vendor -trimpath",
+      "GOMAXPROCS": "${PHASE_JOBS}",
+      "GOMODCACHE": "${WORKSPACE_GOMODCACHE}",
+      "GOPATH": "${WORKSPACE_GOPATH}",
+      "GOPROXY": "off",
+      "GOSUMDB": "off",
+      "GOTOOLCHAIN": "local",
+      "GOWORK": "off",
+      "HOME": "${WORKSPACE_HOME}",
+      "PATH": "${GO_DIR}",
+      "SYSTEMROOT": "${FROZEN_SYSTEMROOT}",
+      "TMPDIR": "${STAGE_TMPDIR}",
+      "XDG_CACHE_HOME": "${WORKSPACE_XDG_CACHE}",
+      "XDG_CONFIG_HOME": "${WORKSPACE_XDG_CONFIG}"
+    },
+    "reject_name_fragments": [
+      "AUTH",
+      "CREDENTIAL",
+      "KEY",
+      "PASSWORD",
+      "SECRET",
+      "TOKEN"
+    ]
+  },
+  "required_threat_ids": [
+    "T-02-01",
+    "T-02-02",
+    "T-02-03",
+    "T-02-04",
+    "T-02-05",
+    "T-02-06",
+    "T-02-07",
+    "T-02-08",
+    "T-02-09",
+    "T-02-10",
+    "T-02-11",
+    "T-02-12",
+    "T-02-13",
+    "T-02-14",
+    "T-02-15",
+    "T-02-16",
+    "T-02-17",
+    "T-02-18",
+    "T-02-19",
+    "T-02-20",
+    "T-02-21"
+  ],
+  "threat_closure": [
+    {"id":"T-02-01","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestFactorModeMatrix"]},
+    {"id":"T-02-02","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestCanonicalTranscriptLiteralKAT"]},
+    {"id":"T-02-03","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestFactorReaderContract"]},
+    {"id":"T-02-04","stage":"host","command_id":"host-fixture-schema","required_observed_ids":["TestLiteralInputValidation"]},
+    {"id":"T-02-05","stage":"host","command_id":"host-fixture-schema","required_observed_ids":["TestCheckFixture"]},
+    {"id":"T-02-06","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestKDFSequential"]},
+    {"id":"T-02-07","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestFixedProfileTable"]},
+    {"id":"T-02-08","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestScheduleExactRows"]},
+    {"id":"T-02-09","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestKDFCallsOnce"]},
+    {"id":"T-02-10","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestPipelinePublishesOneOwner"]},
+    {"id":"T-02-11","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestPipelinePostKDFCancellation"]},
+    {"id":"T-02-12","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestOwnerClearsEveryAlias"]},
+    {"id":"T-02-13","stage":"mutation","command_id":"mutation-campaign","required_observed_ids":["M-CRD08-KDF-RETURN-CLEANUP-REMOVAL"]},
+    {"id":"T-02-14","stage":"mutation","command_id":"mutation-campaign","required_observed_ids":["M-CRD07-SELECTED-FACTOR-REMOVAL"]},
+    {"id":"T-02-15","stage":"host","command_id":"host-phase2-tests","required_observed_ids":["TestPhase2DisclosureSentinelMatrix"]},
+    {
+      "id": "T-02-16",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestFreezeIdentityBindsRunnerAndInspector",
+        "TestStageRejectsIdentityBeforeReservation",
+        "TestStageZeroSubprocessOnMismatch",
+        "TestStageRevalidatesAfterRun"
+      ]
+    },
+    {
+      "id": "T-02-17",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestStageRejectsIdentityBeforeReservation",
+        "TestStageCreateExclusive",
+        "TestStageRejectsSymlink",
+        "TestStagePublicationDirectorySyncOrderingAndFailure",
+        "TestStageUsesExactArgvAndEnv",
+        "TestEvidenceReplacementIsDetected",
+        "TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects",
+        "TestReviewedGateRejectsBroadenedHostEvidence"
+      ]
+    },
+    {
+      "id": "T-02-18",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestFreezeIdentityRejectsSecrets",
+        "TestFreezeIdentityRequiresPrivateEvidenceRoot",
+        "TestStageUsesExactArgvAndEnv",
+        "TestStageBoundsChildOutput",
+        "TestStageRejectsEveryRuntimeSkip",
+        "TestStageRecordsBoundedGoTestFailureSummary",
+        "TestReviewedGateRejectsExecutableGoTestArguments",
+        "TestGoTestJSONRejectsEverySkipAndRequiresPass"
+      ]
+    },
+    {
+      "id": "T-02-19",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestInspectorValidClosure",
+        "TestInspectorRejectsStageSet",
+        "TestInspectorRejectsEvidenceProofBinding",
+        "TestInspectorRejectsIdentityMismatch",
+        "TestInspectorRejectsSelfPathHashOrVersionMismatch",
+        "TestInspectorRejectsEveryRuntimeSkip",
+        "TestInspectorRejectsPassWithFailureSummary",
+        "TestInspectorRejectsSkipOrNoOp",
+        "TestInspectorRejectsInventedObservedIDs",
+        "TestInspectorRequiresExactNestedGoTestEvents",
+        "TestInspectorRejectsBroadenedHostEvidence"
+      ]
+    },
+    {
+      "id": "T-02-20",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestInspectorReadOnlyCopiesUnchanged"
+      ]
+    },
+    {
+      "id": "T-02-21",
+      "stage": "host",
+      "command_id": "host-controller-tests",
+      "required_observed_ids": [
+        "TestInspectorStrictVerdictSchema",
+        "TestInspectorExactThreatClosure",
+        "TestInspectorRejectsStageSet",
+        "TestInspectorRejectsSkipOrNoOp"
+      ]
+    }
+  ],
+  "required_mutation_ids": [
+    "M-CRD06-ADMISSION-ONE-SHOT-REMOVAL",
+    "M-CRD06-FIXED-PROFILE-WEAKENING",
+    "M-CRD07-KEYFILE-DOMAIN-REMOVAL",
+    "M-CRD07-KEYFILE-MODE-OFFSET-2",
+    "M-CRD07-LEGACY-PROCESSOR-REENTRY",
+    "M-CRD07-NONADJACENT-DUPLICATE-ACCEPT",
+    "M-CRD07-POLICY-FALLBACK",
+    "M-CRD07-RAW-NFD-FALLBACK",
+    "M-CRD07-SELECTED-FACTOR-REMOVAL",
+    "M-CRD07-UNORDERED-SORT-REMOVAL",
+    "M-CRD07-XOR-FALLBACK",
+    "M-CRD08-BORROW-EXPIRY-REMOVAL",
+    "M-CRD08-DERIVED-KEY-CLEANUP-REMOVAL",
+    "M-CRD08-KDF-RETURN-CLEANUP-REMOVAL",
+    "M-CRD08-POSTKDF-CANCEL-CHECK-REMOVAL",
+    "M-CRD09-INDEPENDENT-INFO-REMOVAL",
+    "M-CRD09-PREEXPAND-VALIDATION-REMOVAL",
+    "M-CRD09-SEPARATE-ROOTS-REMOVAL",
+    "M-CRD10-OWNER-PUBLICATION-REMOVAL",
+    "M-CRD10-VOLUME-ID-ENTROPY-REMOVAL"
+  ],
+  "required_execution_units": [
+    "mutation-campaign",
+    "normal-1-exact-profile",
+    "paranoid-1-exact-profile",
+    "host-phase2-tests",
+    "host-controller-tests",
+    "host-fixture-reproduction",
+    "host-fixture-schema",
+    "host-lint-normal",
+    "host-lint-reproduction",
+    "host-lint-production",
+    "host-gitleaks",
+    "host-threat-closure"
+  ],
+  "skip_allowlist": [],
+  "skip_runtime_cardinality": {
+    "minimum": 0,
+    "maximum": 0
+  },
+  "lint_runs": [
+    {
+      "id": "lint-normal",
+      "tags": [
+        "migrated_fynedo"
+      ],
+      "argv": [
+        "${GOLANGCI_LINT}",
+        "run",
+        "-c",
+        ".golangci.phase2.yml",
+        "--build-tags",
+        "migrated_fynedo",
+        "--concurrency",
+        "1",
+        "--output.text.path",
+        "/dev/null",
+        "--output.json.path",
+        "${STAGE_TMPDIR}/lint-normal.json",
+        "./internal/pcv3credential",
+        "./internal/pcv3credential/testdata/mutator",
+        "./internal/pcv3credential/testdata/phasegates",
+        "./internal/pcv3credential/testdata/phaseinspect",
+        "./internal/pcv3credential/testdata/vectorfixture"
+      ],
+      "json_path": "${STAGE_TMPDIR}/lint-normal.json",
+      "json_required": true,
+      "issues_required": 0,
+      "exit_code_required": 0,
+      "text_output": "discard"
+    },
+    {
+      "id": "lint-fixture-reproduction",
+      "tags": [
+        "migrated_fynedo",
+        "pcv3_fixture_reproduction"
+      ],
+      "argv": [
+        "${GOLANGCI_LINT}",
+        "run",
+        "-c",
+        ".golangci.phase2.yml",
+        "--build-tags",
+        "migrated_fynedo,pcv3_fixture_reproduction",
+        "--concurrency",
+        "1",
+        "--output.text.path",
+        "/dev/null",
+        "--output.json.path",
+        "${STAGE_TMPDIR}/lint-fixture-reproduction.json",
+        "./internal/pcv3credential",
+        "./internal/pcv3credential/testdata/mutator",
+        "./internal/pcv3credential/testdata/phasegates",
+        "./internal/pcv3credential/testdata/phaseinspect"
+      ],
+      "json_path": "${STAGE_TMPDIR}/lint-fixture-reproduction.json",
+      "json_required": true,
+      "issues_required": 0,
+      "exit_code_required": 0,
+      "text_output": "discard"
+    },
+    {
+      "id": "lint-production-kdf",
+      "tags": [
+        "migrated_fynedo",
+        "pcv3_production_kdf"
+      ],
+      "argv": [
+        "${GOLANGCI_LINT}",
+        "run",
+        "-c",
+        ".golangci.phase2.yml",
+        "--build-tags",
+        "migrated_fynedo,pcv3_production_kdf",
+        "--concurrency",
+        "1",
+        "--output.text.path",
+        "/dev/null",
+        "--output.json.path",
+        "${STAGE_TMPDIR}/lint-production-kdf.json",
+        "./internal/pcv3credential",
+        "./internal/pcv3credential/testdata/mutator",
+        "./internal/pcv3credential/testdata/phasegates",
+        "./internal/pcv3credential/testdata/phaseinspect"
+      ],
+      "json_path": "${STAGE_TMPDIR}/lint-production-kdf.json",
+      "json_required": true,
+      "issues_required": 0,
+      "exit_code_required": 0,
+      "text_output": "discard"
+    }
+  ],
+  "stages": {
+    "mutation": {
+      "minimum_online": 2,
+      "owned_execution_units": [
+        "mutation-campaign"
+      ],
+      "commands": [
+        {
+          "id": "mutation-campaign",
+          "kind": "mutation-campaign",
+          "execution_surface": {
+            "package_paths": ["./internal/pcv3credential"],
+            "build_tags": ["migrated_fynedo"],
+            "test_selector": "required_mutation_ids",
+            "evidence_kind": "mutation-campaign"
+          },
+          "cwd": "${SOURCE}/src",
+          "timeout_seconds": 3600,
+          "go_based": true,
+          "package_parallelism": 1,
+          "required_ids_source": "required_mutation_ids",
+          "required_exit_code": 0
+        }
+      ]
+    },
+    "normal1": {
+      "minimum_online": 8,
+      "owned_execution_units": [
+        "normal-1-exact-profile"
+      ],
+      "commands": [
+        {
+          "id": "normal-1-exact-profile",
+          "kind": "go-test",
+          "execution_surface": {
+            "package_paths": ["./internal/pcv3credential"],
+            "build_tags": ["migrated_fynedo", "pcv3_production_kdf"],
+            "test_selector": "^TestProductionKDFExactProfiles$/^normal-1$",
+            "evidence_kind": "go-test-json"
+          },
+          "argv": [
+            "${GO}",
+            "test",
+            "-tags",
+            "migrated_fynedo,pcv3_production_kdf",
+            "-p",
+            "1",
+            "./internal/pcv3credential",
+            "-run",
+            "^TestProductionKDFExactProfiles$/^normal-1$",
+            "-count=1",
+            "-timeout=60m",
+            "-json"
+          ],
+          "cwd": "${SOURCE}/src",
+          "timeout_seconds": 3900,
+          "go_based": true,
+          "memory_hard": true,
+          "package_parallelism": 1,
+          "required_test_ids": [
+            "TestProductionKDFExactProfiles/normal-1"
+          ],
+          "required_test_packages": {
+            "TestProductionKDFExactProfiles/normal-1": "Picocrypt-NG/internal/pcv3credential"
+          },
+          "required_exit_code": 0
+        }
+      ]
+    },
+    "paranoid1": {
+      "minimum_online": 8,
+      "owned_execution_units": [
+        "paranoid-1-exact-profile"
+      ],
+      "commands": [
+        {
+          "id": "paranoid-1-exact-profile",
+          "kind": "go-test",
+          "execution_surface": {
+            "package_paths": ["./internal/pcv3credential"],
+            "build_tags": ["migrated_fynedo", "pcv3_production_kdf"],
+            "test_selector": "^TestProductionKDFExactProfiles$/^paranoid-1$",
+            "evidence_kind": "go-test-json"
+          },
+          "argv": [
+            "${GO}",
+            "test",
+            "-tags",
+            "migrated_fynedo,pcv3_production_kdf",
+            "-p",
+            "1",
+            "./internal/pcv3credential",
+            "-run",
+            "^TestProductionKDFExactProfiles$/^paranoid-1$",
+            "-count=1",
+            "-timeout=120m",
+            "-json"
+          ],
+          "cwd": "${SOURCE}/src",
+          "timeout_seconds": 7500,
+          "go_based": true,
+          "memory_hard": true,
+          "package_parallelism": 1,
+          "required_test_ids": [
+            "TestProductionKDFExactProfiles/paranoid-1"
+          ],
+          "required_test_packages": {
+            "TestProductionKDFExactProfiles/paranoid-1": "Picocrypt-NG/internal/pcv3credential"
+          },
+          "required_exit_code": 0
+        }
+      ]
+    },
+    "host": {
+      "minimum_online": 2,
+      "owned_execution_units": [
+        "host-phase2-tests",
+        "host-controller-tests",
+        "host-fixture-reproduction",
+        "host-fixture-schema",
+        "host-lint-normal",
+        "host-lint-reproduction",
+        "host-lint-production",
+        "host-gitleaks",
+        "host-threat-closure"
+      ],
+      "commands": [
+        {
+          "id": "host-phase2-tests",
+          "kind": "go-test",
+          "execution_surface": {
+            "package_paths": ["./internal/pcv3credential"],
+            "build_tags": ["migrated_fynedo"],
+            "test_selector": "all",
+            "evidence_kind": "go-test-json"
+          },
+          "argv": [
+            "${GO}",
+            "test",
+            "-tags",
+            "migrated_fynedo",
+            "-p",
+            "1",
+            "./internal/pcv3credential",
+            "-count=1",
+            "-timeout=30m",
+            "-json"
+          ],
+          "cwd": "${SOURCE}/src",
+          "timeout_seconds": 2100,
+          "go_based": true,
+          "package_parallelism": 1,
+          "required_test_ids": [
+            "TestFactorModeMatrix",
+            "TestCanonicalTranscriptLiteralKAT",
+            "TestFactorReaderContract",
+            "TestKDFSequential",
+            "TestFixedProfileTable",
+            "TestScheduleExactRows",
+            "TestKDFCallsOnce",
+            "TestPipelinePublishesOneOwner",
+            "TestPipelinePostKDFCancellation",
+            "TestOwnerClearsEveryAlias",
+            "TestPhase2DisclosureSentinelMatrix"
+          ],
+          "required_test_packages": {
+            "TestFactorModeMatrix": "Picocrypt-NG/internal/pcv3credential",
+            "TestCanonicalTranscriptLiteralKAT": "Picocrypt-NG/internal/pcv3credential",
+            "TestFactorReaderContract": "Picocrypt-NG/internal/pcv3credential",
+            "TestKDFSequential": "Picocrypt-NG/internal/pcv3credential",
+            "TestFixedProfileTable": "Picocrypt-NG/internal/pcv3credential",
+            "TestScheduleExactRows": "Picocrypt-NG/internal/pcv3credential",
+            "TestKDFCallsOnce": "Picocrypt-NG/internal/pcv3credential",
+            "TestPipelinePublishesOneOwner": "Picocrypt-NG/internal/pcv3credential",
+            "TestPipelinePostKDFCancellation": "Picocrypt-NG/internal/pcv3credential",
+            "TestOwnerClearsEveryAlias": "Picocrypt-NG/internal/pcv3credential",
+            "TestPhase2DisclosureSentinelMatrix": "Picocrypt-NG/internal/pcv3credential"
+          },
+          "required_exit_code": 0
+        },
+        {
+          "id": "host-controller-tests",
+          "kind": "go-test",
+          "execution_surface": {
+            "package_paths": [
+              "./internal/pcv3credential/testdata/phasegates",
+              "./internal/pcv3credential/testdata/phaseinspect"
+            ],
+            "build_tags": ["migrated_fynedo"],
+            "test_selector": "^(TestFreezeIdentityBindsRunnerAndInspector|TestStageRejectsIdentityBeforeReservation|TestStageZeroSubprocessOnMismatch|TestStageRevalidatesAfterRun|TestStageCreateExclusive|TestStageRejectsSymlink|TestStagePublicationDirectorySyncOrderingAndFailure|TestStageUsesExactArgvAndEnv|TestEvidenceReplacementIsDetected|TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects|TestReviewedGateRejectsBroadenedHostEvidence|TestFreezeIdentityRejectsSecrets|TestFreezeIdentityRequiresPrivateEvidenceRoot|TestStageBoundsChildOutput|TestStageRejectsEveryRuntimeSkip|TestStageRecordsBoundedGoTestFailureSummary|TestReviewedGateRejectsExecutableGoTestArguments|TestGoTestJSONRejectsEverySkipAndRequiresPass|TestInspectorValidClosure|TestInspectorRejectsStageSet|TestInspectorRejectsEvidenceProofBinding|TestInspectorRejectsIdentityMismatch|TestInspectorRejectsSelfPathHashOrVersionMismatch|TestInspectorRejectsEveryRuntimeSkip|TestInspectorRejectsPassWithFailureSummary|TestInspectorRejectsSkipOrNoOp|TestInspectorRejectsInventedObservedIDs|TestInspectorRequiresExactNestedGoTestEvents|TestInspectorRejectsBroadenedHostEvidence|TestInspectorReadOnlyCopiesUnchanged|TestInspectorStrictVerdictSchema|TestInspectorExactThreatClosure)$",
+            "evidence_kind": "go-test-json"
+          },
+          "argv": [
+            "${GO}",
+            "test",
+            "-tags",
+            "migrated_fynedo",
+            "-p",
+            "1",
+            "./internal/pcv3credential/testdata/phasegates",
+            "./internal/pcv3credential/testdata/phaseinspect",
+            "-run",
+            "^(TestFreezeIdentityBindsRunnerAndInspector|TestStageRejectsIdentityBeforeReservation|TestStageZeroSubprocessOnMismatch|TestStageRevalidatesAfterRun|TestStageCreateExclusive|TestStageRejectsSymlink|TestStagePublicationDirectorySyncOrderingAndFailure|TestStageUsesExactArgvAndEnv|TestEvidenceReplacementIsDetected|TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects|TestReviewedGateRejectsBroadenedHostEvidence|TestFreezeIdentityRejectsSecrets|TestFreezeIdentityRequiresPrivateEvidenceRoot|TestStageBoundsChildOutput|TestStageRejectsEveryRuntimeSkip|TestStageRecordsBoundedGoTestFailureSummary|TestReviewedGateRejectsExecutableGoTestArguments|TestGoTestJSONRejectsEverySkipAndRequiresPass|TestInspectorValidClosure|TestInspectorRejectsStageSet|TestInspectorRejectsEvidenceProofBinding|TestInspectorRejectsIdentityMismatch|TestInspectorRejectsSelfPathHashOrVersionMismatch|TestInspectorRejectsEveryRuntimeSkip|TestInspectorRejectsPassWithFailureSummary|TestInspectorRejectsSkipOrNoOp|TestInspectorRejectsInventedObservedIDs|TestInspectorRequiresExactNestedGoTestEvents|TestInspectorRejectsBroadenedHostEvidence|TestInspectorReadOnlyCopiesUnchanged|TestInspectorStrictVerdictSchema|TestInspectorExactThreatClosure)$",
+            "-count=1",
+            "-timeout=30m",
+            "-json"
+          ],
+          "cwd": "${SOURCE}/src",
+          "timeout_seconds": 2100,
+          "go_based": true,
+          "package_parallelism": 1,
+          "required_test_ids": [
+            "TestFreezeIdentityBindsRunnerAndInspector",
+            "TestStageRejectsIdentityBeforeReservation",
+            "TestStageZeroSubprocessOnMismatch",
+            "TestStageRevalidatesAfterRun",
+            "TestStageCreateExclusive",
+            "TestStageRejectsSymlink",
+            "TestStagePublicationDirectorySyncOrderingAndFailure",
+            "TestStageUsesExactArgvAndEnv",
+            "TestEvidenceReplacementIsDetected",
+            "TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects",
+            "TestReviewedGateRejectsBroadenedHostEvidence",
+            "TestFreezeIdentityRejectsSecrets",
+            "TestFreezeIdentityRequiresPrivateEvidenceRoot",
+            "TestStageBoundsChildOutput",
+            "TestStageRejectsEveryRuntimeSkip",
+            "TestStageRecordsBoundedGoTestFailureSummary",
+            "TestReviewedGateRejectsExecutableGoTestArguments",
+            "TestGoTestJSONRejectsEverySkipAndRequiresPass",
+            "TestInspectorValidClosure",
+            "TestInspectorRejectsStageSet",
+            "TestInspectorRejectsEvidenceProofBinding",
+            "TestInspectorRejectsIdentityMismatch",
+            "TestInspectorRejectsSelfPathHashOrVersionMismatch",
+            "TestInspectorRejectsEveryRuntimeSkip",
+            "TestInspectorRejectsPassWithFailureSummary",
+            "TestInspectorRejectsSkipOrNoOp",
+            "TestInspectorRejectsInventedObservedIDs",
+            "TestInspectorRequiresExactNestedGoTestEvents",
+            "TestInspectorRejectsBroadenedHostEvidence",
+            "TestInspectorReadOnlyCopiesUnchanged",
+            "TestInspectorStrictVerdictSchema",
+            "TestInspectorExactThreatClosure"
+          ],
+          "required_test_packages": {
+            "TestFreezeIdentityBindsRunnerAndInspector": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageRejectsIdentityBeforeReservation": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageZeroSubprocessOnMismatch": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageRevalidatesAfterRun": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageCreateExclusive": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageRejectsSymlink": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStagePublicationDirectorySyncOrderingAndFailure": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageUsesExactArgvAndEnv": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestEvidenceReplacementIsDetected": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestRuntimeRejectsEmptyThreatClosureBeforeSideEffects": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestReviewedGateRejectsBroadenedHostEvidence": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestFreezeIdentityRejectsSecrets": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestFreezeIdentityRequiresPrivateEvidenceRoot": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageBoundsChildOutput": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageRejectsEveryRuntimeSkip": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestStageRecordsBoundedGoTestFailureSummary": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestReviewedGateRejectsExecutableGoTestArguments": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestGoTestJSONRejectsEverySkipAndRequiresPass": "Picocrypt-NG/internal/pcv3credential/testdata/phasegates",
+            "TestInspectorValidClosure": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsStageSet": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsEvidenceProofBinding": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsIdentityMismatch": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsSelfPathHashOrVersionMismatch": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsEveryRuntimeSkip": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsPassWithFailureSummary": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsSkipOrNoOp": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsInventedObservedIDs": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRequiresExactNestedGoTestEvents": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorRejectsBroadenedHostEvidence": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorReadOnlyCopiesUnchanged": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorStrictVerdictSchema": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect",
+            "TestInspectorExactThreatClosure": "Picocrypt-NG/internal/pcv3credential/testdata/phaseinspect"
+          },
+          "required_exit_code": 0
+        },
+        {
+          "id": "host-fixture-reproduction",
+          "kind": "go-test",
+          "execution_surface": {
+            "package_paths": ["./internal/pcv3credential"],
+            "build_tags": ["migrated_fynedo", "pcv3_fixture_reproduction"],
+            "test_selector": "^TestKDFLiteralFixtureReproduction$",
+            "evidence_kind": "go-test-json"
+          },
+          "argv": [
+            "${GO}",
+            "test",
+            "-tags",
+            "migrated_fynedo,pcv3_fixture_reproduction",
+            "-p",
+            "1",
+            "./internal/pcv3credential",
+            "-run",
+            "^TestKDFLiteralFixtureReproduction$",
+            "-count=1",
+            "-timeout=5m",
+            "-json"
+          ],
+          "cwd": "${SOURCE}/src",
+          "timeout_seconds": 420,
+          "go_based": true,
+          "package_parallelism": 1,
+          "required_test_ids": [
+            "TestKDFLiteralFixtureReproduction"
+          ],
+          "required_test_packages": {
+            "TestKDFLiteralFixtureReproduction": "Picocrypt-NG/internal/pcv3credential"
+          },
+          "required_exit_code": 0
+        },
+        {
+          "id": "host-fixture-schema",
+          "kind": "go-test",
+          "execution_surface": {
+            "package_paths": [
+              "./internal/pcv3credential/testdata/vectorfixture",
+              "./internal/pcv3credential/testdata/mutator"
+            ],
+            "build_tags": ["migrated_fynedo"],
+            "test_selector": "all",
+            "evidence_kind": "go-test-json"
+          },
+          "argv": [
+            "${GO}",
+            "test",
+            "-tags",
+            "migrated_fynedo",
+            "-p",
+            "1",
+            "./internal/pcv3credential/testdata/vectorfixture",
+            "./internal/pcv3credential/testdata/mutator",
+            "-count=1",
+            "-timeout=5m",
+            "-json"
+          ],
+          "cwd": "${SOURCE}/src",
+          "timeout_seconds": 420,
+          "go_based": true,
+          "package_parallelism": 1,
+          "required_test_ids": [
+            "TestLiteralInputValidation",
+            "TestCheckFixture"
+          ],
+          "required_test_packages": {
+            "TestLiteralInputValidation": "Picocrypt-NG/internal/pcv3credential/testdata/vectorfixture",
+            "TestCheckFixture": "Picocrypt-NG/internal/pcv3credential/testdata/vectorfixture"
+          },
+          "required_exit_code": 0
+        },
+        {
+          "id": "host-lint-normal",
+          "kind": "golangci-lint",
+          "execution_surface": {
+            "package_paths": [
+              "./internal/pcv3credential",
+              "./internal/pcv3credential/testdata/mutator",
+              "./internal/pcv3credential/testdata/phasegates",
+              "./internal/pcv3credential/testdata/phaseinspect",
+              "./internal/pcv3credential/testdata/vectorfixture"
+            ],
+            "build_tags": ["migrated_fynedo"],
+            "test_selector": "all",
+            "evidence_kind": "lint-json"
+          },
+          "lint_run": "lint-normal"
+        },
+        {
+          "id": "host-lint-reproduction",
+          "kind": "golangci-lint",
+          "execution_surface": {
+            "package_paths": [
+              "./internal/pcv3credential",
+              "./internal/pcv3credential/testdata/mutator",
+              "./internal/pcv3credential/testdata/phasegates",
+              "./internal/pcv3credential/testdata/phaseinspect"
+            ],
+            "build_tags": ["migrated_fynedo", "pcv3_fixture_reproduction"],
+            "test_selector": "all",
+            "evidence_kind": "lint-json"
+          },
+          "lint_run": "lint-fixture-reproduction"
+        },
+        {
+          "id": "host-lint-production",
+          "kind": "golangci-lint",
+          "execution_surface": {
+            "package_paths": [
+              "./internal/pcv3credential",
+              "./internal/pcv3credential/testdata/mutator",
+              "./internal/pcv3credential/testdata/phasegates",
+              "./internal/pcv3credential/testdata/phaseinspect"
+            ],
+            "build_tags": ["migrated_fynedo", "pcv3_production_kdf"],
+            "test_selector": "all",
+            "evidence_kind": "lint-json"
+          },
+          "lint_run": "lint-production-kdf"
+        },
+        {
+          "id": "host-gitleaks",
+          "kind": "gitleaks",
+          "execution_surface": {
+            "package_paths": ["./internal/pcv3credential"],
+            "build_tags": [],
+            "test_selector": "all",
+            "evidence_kind": "gitleaks"
+          },
+          "argv": [
+            "${GITLEAKS}",
+            "detect",
+            "--no-git",
+            "--source",
+            "${SOURCE}/src/internal/pcv3credential"
+          ],
+          "cwd": "${SOURCE}/src",
+          "timeout_seconds": 300,
+          "go_based": true,
+          "package_parallelism": 1,
+          "required_exit_code": 0
+        },
+        {
+          "id": "host-threat-closure",
+          "kind": "internal",
+          "execution_surface": {
+            "package_paths": [],
+            "build_tags": [],
+            "test_selector": "required_threat_ids",
+            "evidence_kind": "threat-closure"
+          },
+          "required_ids_source": "required_threat_ids",
+          "required_count": 21
+        }
+      ]
+    }
+  },
+  "evidence_contract": {
+    "schema_version": 1,
+    "terminal_statuses": [
+      "PASS",
+      "FAIL"
+    ],
+    "required_stage_names": [
+      "mutation",
+      "normal1",
+      "paranoid1",
+      "host"
+    ],
+    "stage_filenames": {
+      "mutation": "mutation.evidence.json",
+      "normal1": "normal1.evidence.json",
+      "paranoid1": "paranoid1.evidence.json",
+      "host": "host.evidence.json"
+    },
+    "create_exclusive": true,
+    "replace_forbidden": true,
+    "publication_proof_suffix": ".verified",
+    "required_fields": [
+      "schema_version",
+      "stage",
+      "status",
+      "baseline",
+      "base",
+      "execution_identity_sha256",
+      "config_sha256",
+      "started_at",
+      "finished_at",
+      "commands",
+      "required_ids",
+      "observed_ids",
+      "skip_events"
+    ]
+  }
+}

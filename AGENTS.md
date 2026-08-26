@@ -2,11 +2,22 @@
 These rules apply to every task in this project unless explicitly overridden.
 Bias: caution over speed on non-trivial work. Use judgment on trivial tasks.
 
+Security, correctness, prevention of data loss or plaintext/key leakage, on-disk
+compatibility, and release integrity are hard constraints. When rules conflict,
+prioritize: (1) safety, security, and data integrity; (2) explicit task
+requirements; (3) public and on-disk contracts and backward compatibility;
+(4) applicable sources of truth and verified codebase conventions; (5) simplicity
+and minimal scope; (6) speed. A task changes an existing contract only when that
+change is explicit and its compatibility or migration consequences are addressed.
+
 ## Rule 1 — Think Before Coding
-State assumptions explicitly. If uncertain, ask rather than guess.
-Present multiple interpretations when ambiguity exists.
+State material assumptions explicitly.
+Ask when ambiguity could materially change behavior, compatibility, security,
+data, architecture, or acceptance criteria. For minor ambiguity, choose the
+safest reasonable assumption, state it, and proceed.
+Present multiple interpretations when they would lead to materially different work.
 Push back when a simpler approach exists.
-Stop when confused. Name what's unclear.
+Stop when evidence is contradictory or insufficient. Name exactly what's unclear.
 
 ## Rule 2 — Simplicity First
 Minimum code that solves the problem. Nothing speculative.
@@ -19,14 +30,16 @@ Don't "improve" adjacent code, comments, or formatting.
 Don't refactor what isn't broken. Match existing style.
 
 ## Rule 4 — Goal-Driven Execution
-Define success criteria. Loop until verified.
-Don't follow steps. Define success and iterate.
-Strong success criteria let you loop independently.
+Define observable success criteria and loop until they are verified.
+Use a goal-oriented plan and adapt it based on verification results.
+Follow mandatory security, compatibility, build, signing, and release procedures;
+completing a checklist is not itself proof of success.
 
-## Rule 5 — Use the model only for judgment calls
-Use me for: classification, drafting, summarization, extraction.
-Do NOT use me for: routing, retries, deterministic transforms.
-If code can answer, code answers.
+## Rule 5 — Prefer Executable Evidence
+Use model judgment for interpretation, trade-offs, classification, design, and
+communication. Use deterministic tools for deterministic questions.
+Prefer repository search, parsers, compilers, tests, linters, and scripts over
+memory or guesswork. If code can answer, code answers.
 
 ## Rule 6 — Token budgets are not advisory
 If approaching budget, summarize and start fresh.
@@ -34,31 +47,69 @@ Try using subagents.
 Surface the breach. Do not silently overrun.
 
 ## Rule 7 — Surface conflicts, don't average them
-If two patterns contradict, pick one (more recent / more tested).
-Explain why. Flag the other for cleanup.
-Don't blend conflicting patterns.
+When patterns contradict, prefer the applicable source of truth, frozen-format
+and golden compatibility evidence, public contracts, then the tested convention
+of the affected module. Recency alone is not authority.
+Explain the choice and flag the other pattern for later cleanup.
+Do not blend incompatible patterns. Stop on unresolved security or compatibility
+conflicts rather than inventing a third convention.
 
 ## Rule 8 — Read before you write
-Before adding code, read exports, immediate callers, shared utilities.
-"Looks orthogonal" is dangerous. If unsure why code is structured a way, ask.
+Before changing code, read the target, immediate callers and callees, relevant
+tests, shared utilities, and the applicable source-of-truth documentation.
+Trace affected success, failure, cleanup, and compatibility paths.
+For format, credential, or bridge work, check every affected writer, reader, and
+frontend boundary. "Looks orthogonal" is dangerous.
 
-## Rule 9 — Tests verify intent, not just behavior
-Tests must encode WHY behavior matters, not just WHAT it does.
-A test that can't fail when business logic changes is wrong.
+## Rule 9 — Tests Protect Production Risks
+Every test must protect a named production behavior, invariant, compatibility
+contract, or security/release policy and fail on a plausible regression of it.
+Before adding a test, identify the system under test, the risk, the oracle, and
+the execution lane. Use the lowest reliable level; add a higher-fidelity test
+when the risk crosses a real filesystem, process, platform, or frontend boundary.
+Make the protected risk and oracle clear through the test name, fixture, action,
+and assertions; add a requirement or defect reference only when that intent is
+not otherwise obvious.
 
-## Rule 10 — Checkpoint after every significant step
-Summarize what was done, what's verified, what's left.
-Don't continue from a state you can't describe back.
-If you lose track, stop and restate.
+Prefer production paths and independent or frozen expectations. For security
+fixes, cover fail-closed, no-output, and cleanup behavior plus a positive or
+compatibility case where applicable. Do not duplicate the production algorithm
+as the oracle or add tests solely to increase coverage.
+
+Do not count checks of mocks, prose, arbitrary line or item counts, dependency
+versions, file presence, or a test harness as product-behavior coverage. Add such
+checks only when that exact property is an explicit compatibility, supply-chain,
+release, or audit contract, and classify them separately as tooling or policy
+checks. Prefer compiling or executing a public path over scanning source text;
+source-structure checks belong in lint/policy lanes and are justified only when
+the structure itself is the enforceable contract. Likewise, tests of governance
+or evidence tooling and future packages not reached by production entry points
+do not establish current product coverage.
+
+Do not delete, disable, or weaken a meaningful test merely to obtain a green
+result. For a bug fix, add a regression test when practical and show that it
+fails for the defective behavior. Use mutation testing selectively: a surviving
+non-equivalent mutant is a candidate gap, not proof of a defect. Do not build a
+custom mutation/evidence framework unless an explicit audit requirement justifies
+it, and never count its self-tests as product coverage.
+
+## Rule 10 — Checkpoint at Logical Boundaries
+Checkpoint after understanding a non-trivial task, after a logical phase, before
+a high-risk or irreversible action, after a failed check that changes the plan,
+before expanding scope, and before completion.
+State what changed, what was verified, exact failures or skips, what remains, and
+any new risk. Do not checkpoint routine edits.
 
 ## Rule 11 — Match the codebase's conventions, even if you disagree
 Conformance > taste inside the codebase.
 If you genuinely think a convention is harmful, surface it. Don't fork silently.
 
 ## Rule 12 — Fail loud
-"Completed" is wrong if anything was skipped silently.
-"Tests pass" is wrong if any were skipped.
-Default to surfacing uncertainty, not hiding it.
+Never claim broader validation than actually ran.
+Report passed, failed, expected skipped, not run, blocked, and uncertain results
+separately. An intentional platform or opt-in skip can be valid; a missing
+required golden or security fixture is a failure, not a skip.
+"Completed" is wrong while required work or verification remains.
 
 # Repository Context
 Picocrypt NG is a security-sensitive file encryption app. Treat correctness,
@@ -106,6 +157,11 @@ compatibility, golden vectors, deniability semantics, keyfile behavior, Reed-Sol
 behavior, and verify-first behavior. Use crypto-secure randomness, constant-time
 MAC comparison, explicit sensitive-memory zeroing, and existing cleanup patterns.
 Never rely on AI confidence for a cryptographic decision.
+All audit-critical changes require human review before merge.
+
+Password normalization, Reed-Solomon and padding, archive/path/staging cleanup,
+and desktop/CLI/WASM/mobile credential bridges are also security-sensitive when
+touched, even when they do not directly define encrypted volume semantics.
 
 ## Platform And Feature Notes
 - Desktop GUI uses Fyne; CLI-only builds use the `cli` tag.
@@ -126,10 +182,10 @@ Never rely on AI confidence for a cryptographic decision.
 ## Common Commands
 Run commands from `src/` unless noted.
 - Fast Go suite: `go test -tags migrated_fynedo ./...`
-- Golden compatibility: `go test -run 'TestGoldenDecryption|TestGoldenCompressedDecryption|TestGoldenWrongPassword|TestGoldenV1WrongPassword' ./internal/volume`
+- Golden compatibility: `go test -count=1 -run '^TestGolden' ./internal/volume`
 - CLI package: `go test ./internal/cli`
 - Opt-in CLI integration: `PICOCRYPT_RUN_CLI_INTEGRATION=1 go test ./internal/cli`
-- Race-sensitive Go work: `go test -tags migrated_fynedo -race ./...`
+- Race-sensitive Go work: `CGO_ENABLED=1 go test -tags migrated_fynedo -race -p 2 -timeout 15m ./...`
 - Desktop build: `CGO_ENABLED=1 go build -tags migrated_fynedo -ldflags="-s -w" -o Picocrypt-NG ./cmd/picocrypt`
 - CLI-only build: `CGO_ENABLED=1 go build -tags cli -ldflags="-s -w" -o Picocrypt-NG-cli ./cmd/picocrypt`
 - Android gomobile AAR from `android/`: `./build-gomobile.sh`
@@ -138,12 +194,18 @@ Run commands from `src/` unless noted.
 ## Change Discipline
 - Make surgical changes. Do not refactor crypto, UI, Android, or packaging while
   solving an unrelated issue.
-- When docs disagree with executable config, prefer executable config and surface
-  the conflict.
+- When documentation, executable config, and code disagree, apply the Sources Of
+  Truth and compatibility evidence above. Current behavior is evidence, not
+  automatically intended behavior. Surface the conflict.
 - For release/version work, check `VERSION`, `src/cmd/picocrypt/main.go`,
   `src/internal/app/state.go`, `src/internal/header/format.go`,
   `src/internal/distmeta`, packaging metadata, changelog, and workflows together.
 - For dependency or library/API questions, use Context7 docs first as required above.
 - Keep generated/local artifacts out of commits: build outputs, gomobile AARs unless
   explicitly intended, local signing material, IDE files, and AI-agent state.
+- Never include private PCV3 specifications or local planning/AI-agent artifacts in
+  GitHub-bound history.
+- Do not commit, push, merge, tag, or publish unless explicitly requested. Before
+  any authorized publication, inspect the exact outgoing commits and tree for
+  secrets, private material, generated artifacts, and unrelated changes.
 - If a validation command cannot run, say exactly which command was skipped and why.

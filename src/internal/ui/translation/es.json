@@ -103,6 +103,7 @@
   "status.completed_some_delete_failed": "Completado (no se pudieron eliminar algunos archivos)",
   "status.kept_output_unverified": "Falló la verificación de integridad; la salida conservada no se ha verificado y puede estar dañada",
   "status.completed_volume_delete_failed": "Completado (no se pudo eliminar el volumen cifrado)",
+  "status.pcv_unavailable": "Esta versión no admite este volumen PCV. Conserve el archivo original; no se creó ninguna salida.",
   "drop.prompt": "Arrastre archivos y carpetas a esta ventana",
   "drop.failed_walk": "No se pudieron recorrer los elementos soltados",
   "drop.failed_stat_item": "No se pudo obtener la información del elemento soltado",
