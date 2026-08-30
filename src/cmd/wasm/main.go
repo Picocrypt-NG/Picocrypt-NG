@@ -69,7 +69,7 @@ func optBool(obj js.Value, key string) bool {
 	return v.Type() == js.TypeBoolean && v.Bool()
 }
 
-// explicitPCV3Intent reports whether opts carries the closed Phase 8 operation
+// explicitPCV3Intent reports whether opts carries a supported operation
 // mode discriminator as a JS number holding one of the closed valid modes.
 // The browser bridge implements no PCV3 operation, so recognized intent is the
 // only property consumed before rejection. A missing, non-numeric, or
@@ -84,8 +84,7 @@ func explicitPCV3Intent(opts js.Value) bool {
 	case pcv3operation.ModeReadNormal, pcv3operation.ModeReadD1,
 		pcv3operation.ModeRecoverNormal, pcv3operation.ModeRecoverD1,
 		pcv3operation.ModeForceNormal, pcv3operation.ModeForceD1,
-		pcv3operation.ModeForceUnverifiedNormal, pcv3operation.ModeForceUnverifiedD1,
-		pcv3operation.ModeMigrate:
+		pcv3operation.ModeForceUnverifiedNormal, pcv3operation.ModeForceUnverifiedD1:
 		return true
 	}
 	return false

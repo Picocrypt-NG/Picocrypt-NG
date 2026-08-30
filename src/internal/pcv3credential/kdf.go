@@ -163,23 +163,6 @@ func fixedProfileForSuite(suite Suite) (KDFProfile, error) {
 	}
 }
 
-func deriveCredentialRoot(
-	ctx context.Context,
-	input *CredentialInputNormal,
-	salt []byte,
-	suite Suite,
-	admitter Admitter,
-) (*credentialRoot, error) {
-	return runCredentialKDF(
-		ctx,
-		input,
-		salt,
-		suite,
-		admitter,
-		deriveArgon2ID,
-	)
-}
-
 func runCredentialKDF(
 	ctx context.Context,
 	input *CredentialInputNormal,

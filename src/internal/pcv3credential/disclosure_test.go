@@ -15,21 +15,21 @@ import (
 	"testing"
 )
 
-type phase2DisclosureCapture struct {
+type credentialDisclosureCapture struct {
 	diagnostics []string
 	stdout      bytes.Buffer
 	stderr      bytes.Buffer
 	logs        bytes.Buffer
 }
 
-func phase2DisclosureSentinel(kind string) []byte {
+func credentialDisclosureSentinel(kind string) []byte {
 	digest := sha3.Sum256(
-		[]byte("Picocrypt-NG Phase-2 disclosure sentinel: " + kind),
+		[]byte("Picocrypt-NG Credential disclosure sentinel: " + kind),
 	)
 	return append([]byte(nil), digest[:]...)
 }
 
-func phase2DisclosureVariants(secret []byte) []string {
+func credentialDisclosureVariants(secret []byte) []string {
 	return []string{
 		string(secret),
 		hex.EncodeToString(secret),
@@ -42,7 +42,7 @@ func phase2DisclosureVariants(secret []byte) []string {
 	}
 }
 
-func (capture *phase2DisclosureCapture) add(values ...any) {
+func (capture *credentialDisclosureCapture) add(values ...any) {
 	for _, value := range values {
 		capture.diagnostics = append(
 			capture.diagnostics,
@@ -51,7 +51,7 @@ func (capture *phase2DisclosureCapture) add(values ...any) {
 	}
 }
 
-func capturePhase2ProcessOutput(
+func captureCredentialProcessOutput(
 	t *testing.T,
 	callback func(),
 ) (stdout string, stderr string, logs string) {
@@ -112,26 +112,26 @@ func capturePhase2ProcessOutput(
 	return string(stdoutBytes), string(stderrBytes), logBuffer.String()
 }
 
-func TestPhase2DisclosureSentinelMatrix(t *testing.T) {
+func TestCredentialDisclosureSentinelMatrix(t *testing.T) {
 	secrets := map[string][]byte{
-		"password":       phase2DisclosureSentinel("password"),
-		"transcript":     phase2DisclosureSentinel("transcript"),
-		"kdf-result":     phase2DisclosureSentinel("kdf-result"),
-		"volume-key":     phase2DisclosureSentinel("volume-key"),
-		"credential-prk": phase2DisclosureSentinel("credential-prk"),
-		"volume-prk":     phase2DisclosureSentinel("volume-prk"),
-		"expanded-key":   phase2DisclosureSentinel("expanded-key"),
+		"password":       credentialDisclosureSentinel("password"),
+		"transcript":     credentialDisclosureSentinel("transcript"),
+		"kdf-result":     credentialDisclosureSentinel("kdf-result"),
+		"volume-key":     credentialDisclosureSentinel("volume-key"),
+		"credential-prk": credentialDisclosureSentinel("credential-prk"),
+		"volume-prk":     credentialDisclosureSentinel("volume-prk"),
+		"expanded-key":   credentialDisclosureSentinel("expanded-key"),
 	}
 	for _, secret := range secrets {
 		defer crypto.SecureZero(secret)
 	}
 	secretVariants := make(map[string][]string, len(secrets)+10)
 	for name, secret := range secrets {
-		secretVariants[name] = phase2DisclosureVariants(secret)
+		secretVariants[name] = credentialDisclosureVariants(secret)
 	}
 
-	capture := &phase2DisclosureCapture{}
-	stdout, stderr, logs := capturePhase2ProcessOutput(t, func() {
+	capture := &credentialDisclosureCapture{}
+	stdout, stderr, logs := captureCredentialProcessOutput(t, func() {
 		passwordAlias := append([]byte(nil), secrets["password"]...)
 		factorRequest := &FactorRequest{
 			Mode:           CredentialModePasswordOnly,
@@ -189,8 +189,8 @@ func TestPhase2DisclosureSentinelMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fixedScheduleForSuite: %v", err)
 		}
-		ownerCredentialRoot := phase2DisclosureSentinel("owner-credential-root")
-		secretVariants["owner-credential-root"] = phase2DisclosureVariants(ownerCredentialRoot)
+		ownerCredentialRoot := credentialDisclosureSentinel("owner-credential-root")
+		secretVariants["owner-credential-root"] = credentialDisclosureVariants(ownerCredentialRoot)
 		ownerAliases := map[string][]byte{
 			"CredentialRoot": ownerCredentialRoot,
 			"VolumeKey":      append([]byte(nil), secrets["volume-key"]...),
@@ -216,10 +216,10 @@ func TestPhase2DisclosureSentinelMatrix(t *testing.T) {
 		for i, row := range rows {
 			keyBytes := ownerAliases["DerivedKey"]
 			if i > 0 {
-				keyBytes = phase2DisclosureSentinel(
+				keyBytes = credentialDisclosureSentinel(
 					fmt.Sprintf("expanded-key-%d", i),
 				)
-				secretVariants[fmt.Sprintf("expanded-key-%d", i)] = phase2DisclosureVariants(keyBytes)
+				secretVariants[fmt.Sprintf("expanded-key-%d", i)] = credentialDisclosureVariants(keyBytes)
 				defer crypto.SecureZero(keyBytes)
 			}
 			material.keys[i] = derivedKey{

@@ -6,8 +6,6 @@ import (
 	"errors"
 	"os"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 type journalParentIdentity struct {
@@ -74,6 +72,5 @@ func installCleanupJournalNoReplace(parent *os.File, oldName, newName string) er
 	if parent == nil {
 		return errors.ErrUnsupported
 	}
-	parentFD := int(parent.Fd())
-	return unix.Renameat2(parentFD, oldName, parentFD, newName, unix.RENAME_NOREPLACE)
+	return renameNoReplace(int(parent.Fd()), oldName, newName)
 }

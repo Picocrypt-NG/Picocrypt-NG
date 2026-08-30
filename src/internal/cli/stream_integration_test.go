@@ -579,7 +579,7 @@ func testStdinStdoutErrorCases(t *testing.T) {
 			t.Fatal("expected error for wrong password, got nil")
 		}
 		// For v2 volumes (the default), a wrong password is caught at the
-		// header-auth phase before the MAC tail is ever reached. The decrypt
+		// header-auth step before the MAC tail is ever reached. The decrypt
 		// pipeline returns *header.AuthError (NewV2PasswordOrTamperError),
 		// whose message is "The password is incorrect or header is tampered".
 		// The CLI prints that verbatim via reporter.PrintError("%v", err).

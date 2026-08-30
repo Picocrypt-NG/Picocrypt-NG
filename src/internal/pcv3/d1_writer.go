@@ -5,7 +5,6 @@ import (
 	pcencoding "Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3credential"
-	"Picocrypt-NG/internal/pcv3governance"
 	"Picocrypt-NG/internal/pcv3publication"
 	"bufio"
 	"context"
@@ -87,10 +86,16 @@ func (boundary d1CreationBoundary) String() string {
 }
 
 type d1CreationRequest struct {
-	route    d1RouteRequest
-	normal   normalWriteRequest
-	factors  *pcv3credential.FactorRequest
-	admitter pcv3credential.Admitter
+	sourcePath      string
+	destinationPath string
+	protected       []string
+	expectedSource  os.FileInfo
+	source          *os.File
+	plaintext       io.Reader
+	splitOptions    *fileops.SplitOptions
+	normal          normalWriteRequest
+	factors         *pcv3credential.FactorRequest
+	admitter        pcv3credential.Admitter
 }
 
 type d1BootstrapWriteParameters struct {
@@ -148,7 +153,6 @@ type d1CreationSeams struct {
 	credentials d1CreationCredentialSession
 	observe     d1CreationObserver
 	createStage func(string, []string, pcv3publication.Policy) (*pcv3publication.Stage, error)
-	openSource  func(string) (*os.File, error)
 	flush       func(*bufio.Writer) error
 }
 
@@ -162,30 +166,8 @@ func defaultD1CreationSeams() d1CreationSeams {
 			return nil
 		},
 		createStage: pcv3publication.Create,
-		openSource: func(path string) (*os.File, error) {
-			return fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
-		},
-		flush: (*bufio.Writer).Flush,
+		flush:       (*bufio.Writer).Flush,
 	}
-}
-
-func writeD1Volume(
-	ctx context.Context,
-	authorization *pcv3governance.EmissionAuthorization,
-	request *d1CreationRequest,
-) (pcv3publication.Result, error) {
-	var route *d1RouteRequest
-	if request != nil {
-		route = &request.route
-	}
-	return routeExplicitD1(
-		ctx,
-		authorization,
-		route,
-		func(ctx context.Context) (pcv3publication.Result, error) {
-			return composeD1OuterStage(ctx, request, defaultD1CreationSeams())
-		},
-	)
 }
 
 func composeD1OuterStage(
@@ -193,8 +175,8 @@ func composeD1OuterStage(
 	request *d1CreationRequest,
 	seams d1CreationSeams,
 ) (result pcv3publication.Result, returnErr error) {
-	if ctx == nil || request == nil || request.route.mode != d1RouteExplicit ||
-		request.route.sourcePath == "" || request.route.destinationPath == "" ||
+	if ctx == nil || request == nil || request.sourcePath == "" || request.destinationPath == "" ||
+		request.source == nil || request.plaintext == nil ||
 		request.normal.suite != SuiteParanoid || request.factors == nil ||
 		request.admitter == nil {
 		return nil, newD1OuterFailure(StageCredentialPolicy, errInvalidD1Creation)
@@ -204,8 +186,8 @@ func composeD1OuterStage(
 		return nil, err
 	}
 	sameFile, err := fileops.SamePathOrFile(
-		request.route.sourcePath,
-		request.route.destinationPath,
+		request.sourcePath,
+		request.destinationPath,
 	)
 	if err != nil || sameFile || !validD1CreationSeams(seams) {
 		return nil, newD1OuterFailure(StageCredentialPolicy, errInvalidD1Creation)
@@ -214,9 +196,10 @@ func composeD1OuterStage(
 		return nil, newD1OuterFailure(StageCancellation, err)
 	}
 
+	protected := append([]string{request.sourcePath}, request.protected...)
 	stage, err := seams.createStage(
-		request.route.destinationPath,
-		[]string{request.route.sourcePath},
+		request.destinationPath,
+		protected,
 		pcv3publication.PolicyNoReplace,
 	)
 	if err != nil {
@@ -255,25 +238,14 @@ func composeD1OuterStage(
 		return nil, err
 	}
 
-	source, err := seams.openSource(request.route.sourcePath)
-	if err != nil {
-		return nil, newD1OuterFailure(StageInputIO, err)
-	}
-	sourceOpen := true
-	defer func() {
-		if sourceOpen {
-			if closeErr := source.Close(); closeErr != nil {
-				returnErr = errors.Join(
-					returnErr,
-					newD1OuterFailure(StageInputIO, closeErr),
-				)
-			}
-		}
-	}()
-	sourceInfo, err := source.Stat()
+	sourceInfo, err := request.source.Stat()
 	if err != nil || !sourceInfo.Mode().IsRegular() || sourceInfo.Size() < 0 ||
-		uint64(sourceInfo.Size()) != request.normal.plaintextLength { //nolint:gosec // The preceding sourceInfo.Size() < 0 guard proves this conversion non-negative.
+		uint64(sourceInfo.Size()) != request.normal.plaintextLength || //nolint:gosec // The preceding sourceInfo.Size() < 0 guard proves this conversion non-negative.
+		(request.expectedSource != nil && !os.SameFile(request.expectedSource, sourceInfo)) {
 		return nil, newD1OuterFailure(StageInputIO, errInvalidD1Creation)
+	}
+	if _, err := request.source.Seek(0, io.SeekStart); err != nil {
+		return nil, newD1OuterFailure(StageInputIO, err)
 	}
 
 	secrets, err := newD1CreationSecrets(ctx, seams.entropy, observe)
@@ -318,7 +290,7 @@ func composeD1OuterStage(
 			completion, err := writeD1NormalBody(
 				ctx,
 				request.normal,
-				source,
+				request.plaintext,
 				buffered,
 				normal,
 				normalWriteSeams{
@@ -359,11 +331,6 @@ func composeD1OuterStage(
 	if err != nil {
 		return nil, err
 	}
-	if err := source.Close(); err != nil {
-		sourceOpen = false
-		return nil, newD1OuterFailure(StageInputIO, err)
-	}
-	sourceOpen = false
 	if err := observe(d1BoundaryFlush); err != nil {
 		return nil, err
 	}
@@ -376,12 +343,32 @@ func composeD1OuterStage(
 	if err := observe(d1BoundaryPublish); err != nil {
 		return nil, err
 	}
-	return stage.Publish(ctx), nil
+	if request.splitOptions == nil {
+		return stage.Publish(ctx), nil
+	}
+	publication, retained := stage.PublishRetained(ctx)
+	if publication == nil || publication.State() != pcv3publication.StatePublishedDurable || retained == nil {
+		if retained != nil {
+			_ = retained.RemoveExact()
+		}
+		if publication != nil {
+			return publication, newD1OuterFailure(StageOutputPublication, publication)
+		}
+		return nil, newD1OuterFailure(StageOutputPublication, errInvalidD1Creation)
+	}
+	if err := pcv3publication.SplitRetained(retained, *request.splitOptions); err != nil {
+		stage := StageOutputPublication
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			stage = StageCancellation
+		}
+		return publication, newD1OuterFailure(stage, err)
+	}
+	return publication, nil
 }
 
 func validD1CreationSeams(seams d1CreationSeams) bool {
 	return seams.credentials != nil && seams.observe != nil &&
-		seams.createStage != nil && seams.openSource != nil && seams.flush != nil &&
+		seams.createStage != nil && seams.flush != nil &&
 		validNormalWriteSeams(normalWriteSeams{
 			entropy: seams.entropy,
 			codecs:  seams.codecs,

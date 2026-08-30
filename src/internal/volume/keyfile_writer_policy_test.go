@@ -71,7 +71,7 @@ func TestEncryptRejectsAllNewV2KeyfileWritesBeforeWork(t *testing.T) {
 			if validationErr.Field != "Keyfiles" {
 				t.Fatalf("ValidationError.Field = %q; want Keyfiles", validationErr.Field)
 			}
-			const want = "creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format"
+			const want = "creating new v2 volumes with keyfiles is disabled; use explicit PCV3 creation"
 			if validationErr.Message != want {
 				t.Fatalf("ValidationError.Message = %q; want %q", validationErr.Message, want)
 			}

@@ -185,7 +185,7 @@ sealed class AppError(
         )
 
         object KeyfileWritesDisabled : ValidationError(
-            "Creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format",
+            "Creating new v2 volumes with keyfiles is disabled; use explicit PCV3 creation",
             R.string.error_keyfile_writes_disabled,
         )
         

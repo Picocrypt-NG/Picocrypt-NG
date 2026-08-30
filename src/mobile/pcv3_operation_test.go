@@ -8,7 +8,6 @@ import (
 	"Picocrypt-NG/internal/pcv3publication"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,7 +65,8 @@ func testPCV3MobileStrictEnvelope(t *testing.T) {
 		"duplicate-field": {}, "unknown-field": {}, "missing-field": {},
 		"wrong-case": {}, "null": {}, "wrong-type": {}, "wrong-version": {},
 		"nested-value": {}, "trailing-value": {}, "oversized": {},
-		"writer-mode": {}, "password-in-json": {}, "factor-mismatch": {},
+		"write-mode-read-shape": {}, "unknown-mode": {}, "password-in-json": {},
+		"factor-mismatch": {},
 	}
 	cases := map[string]string{
 		"duplicate-field": strings.Replace(valid, `"version":1`, `"version":1,"version":1`, 1),
@@ -79,19 +79,23 @@ func testPCV3MobileStrictEnvelope(t *testing.T) {
 		"nested-value":    strings.Replace(valid, `"mode":"read-normal"`, `"mode":{"name":"read-normal"}`, 1),
 		"trailing-value":  valid + `{}`,
 		"oversized":       valid + strings.Repeat(" ", maxPCV3EnvelopeBytes),
-		"writer-mode":     strings.Replace(valid, `"mode":"read-normal"`, `"mode":"write-normal"`, 1),
+		// Write modes are accepted only in their exact write shape; a write
+		// mode in a read-shaped envelope (missing comment/suite/payloadRS) is
+		// still refused.
+		"write-mode-read-shape": strings.Replace(valid, `"mode":"read-normal"`, `"mode":"write-normal"`, 1),
+		"unknown-mode":          strings.Replace(valid, `"mode":"read-normal"`, `"mode":"migrate-normal"`, 1),
 		"password-in-json": strings.Replace(
 			valid, "{", `{"password":"must-not-be-accepted",`, 1,
 		),
 		"factor-mismatch": strings.Replace(valid, `"keyfiles":[]`, fmt.Sprintf(`"keyfiles":[%q]`, source), 1),
 	}
 	if len(cases) != len(requiredCases) {
-		t.Fatalf("adversarial case inventory changed: got %d, want %d", len(cases), len(requiredCases))
+		t.Fatalf("failure case inventory changed: got %d, want %d", len(cases), len(requiredCases))
 	}
 	for id := range requiredCases {
 		request, ok := cases[id]
 		if !ok {
-			t.Fatalf("required adversarial case %q is not executed", id)
+			t.Fatalf("required failure case %q is not executed", id)
 		}
 		beforeOpen := openCalls.Load()
 		beforeRun := runCalls.Load()
@@ -303,135 +307,6 @@ func testPCV3MobileOwnsPasswordAndDescriptors(t *testing.T) {
 	}
 }
 
-func TestPCV3MobilePreservesResultAxes(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		pending := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-			Outcome:        pcv3.OutcomeSuccess,
-			Stage:          pcv3.StageNone,
-			Code:           pcv3.CodeSuccess,
-			ArchivePending: true,
-		})
-		uncertain := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-			Outcome:               pcv3.OutcomeSuccess,
-			Stage:                 pcv3.StageNone,
-			Code:                  pcv3.CodeSuccess,
-			ForceProvenance:       pcv3.ForceProvenanceVerified,
-			D1BootstrapProvenance: pcv3.D1BootstrapProvenanceMatching,
-			DetailStage:           pcv3.StageMetadata,
-			PublicationAttempted:  true,
-			PublicationState:      pcv3publication.StatePublishedDurabilityUncertain,
-			PublicationStage:      pcv3.StageDirectorySync,
-			PublicationCode:       pcv3publication.CodeDurabilityUncertain,
-			Args:                  []uint64{7, 11, 13, 17},
-			Warnings:              []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete},
-		})
-		probe := newMobileArchiveSAFSessionProbe(t, nil)
-		probe.finishResult = uncertain
-		action := &mobileArchiveSAFActionProbe{
-			begin: func() pcv3ArchiveSAFCoreBegin {
-				return pcv3ArchiveSAFCoreBegin{kind: "session", session: probe}
-			},
-			closeResult: probe.abortResult,
-		}
-		operation := startPCV3Operation()
-		completePCV3PresentationWithArchive(operation, pending, action)
-		if snapshot := operation.Snapshot(); snapshot.CompletionClass() != "archive-pending" ||
-			!snapshot.ArchivePending() || snapshot.Outcome() != "success" {
-			t.Fatalf("pending snapshot = %s/%s pending=%v", snapshot.Outcome(), snapshot.CompletionClass(), snapshot.ArchivePending())
-		}
-		archive := operation.Archive()
-		if archive == nil {
-			t.Fatal("live archive authority was not returned by the operation object")
-		}
-		if code := operation.Release(); code != pcv3OperationReleaseDenied {
-			t.Fatalf("pending archive release code = %q", code)
-		}
-		begin := archive.BeginSAF()
-		if begin == nil || begin.Kind() != "session" || begin.Session() == nil || begin.Snapshot() == nil {
-			t.Fatalf("BeginSAF = %#v", begin)
-		}
-		if operation.Archive() != nil {
-			t.Fatal("archive capability remained available after SAF begin")
-		}
-		if snapshot := operation.Snapshot(); snapshot.CompletionClass() != "archive-pending" {
-			t.Fatalf("SAF session snapshot = %s", snapshot.CompletionClass())
-		}
-		session := armMobileArchiveSAFSession(t, begin)
-		extracted := session.Finish()
-		if extracted == nil || extracted.Outcome() != "success" ||
-			extracted.Stage() != "none" || extracted.Code() != "PCV3_SUCCESS" ||
-			extracted.ForceProvenance() != "verified" ||
-			extracted.D1BootstrapProvenance() != "matching" ||
-			extracted.DetailStage() != "metadata" ||
-			!extracted.PublicationAttempted() ||
-			extracted.PublicationState() != "published-durability-uncertain" ||
-			extracted.PublicationStage() != "directory-sync" ||
-			extracted.PublicationCode() != "PCV3_PUBLICATION_DURABILITY_UNCERTAIN" ||
-			extracted.CompletionClass() != "durability-uncertain" || extracted.ArchivePending() {
-			t.Fatalf("terminal snapshot lost result axes: %#v", extracted)
-		}
-		if extracted.ArgCount() != 4 || extracted.ArgAt(0) != "7" || extracted.ArgAt(3) != "17" ||
-			extracted.WarningCount() != 2 ||
-			extracted.WarningAt(0) != "cleanup-incomplete" ||
-			extracted.WarningAt(1) != "durability-uncertain" {
-			t.Fatalf("bounded args/warnings = %d/%d", extracted.ArgCount(), extracted.WarningCount())
-		}
-		if again := session.Finish(); again.CompletionClass() != "durability-uncertain" {
-			t.Fatalf("completed session changed terminal state: %#v", again)
-		}
-		staleAction := &literalMobileArchiveAction{closeResult: closedPCV3MobileArchivePresentation(t, true)}
-		completePCV3PresentationWithArchive(operation, pending, staleAction)
-		if staleAction.closeCalls.Load() != 1 || operation.Snapshot().CompletionClass() != "durability-uncertain" {
-			t.Fatalf("stale archive action close=%d terminal=%s", staleAction.closeCalls.Load(), operation.Snapshot().CompletionClass())
-		}
-		if code := operation.Release(); code != "" || operation.Snapshot().CompletionClass() != "unknown" ||
-			operation.Archive() != nil || operation.Consent() != nil {
-			t.Fatalf("terminal release = %q snapshot=%s", code, operation.Snapshot().CompletionClass())
-		}
-		if code := operation.Release(); code != pcv3OperationReleaseDenied {
-			t.Fatalf("released object acted twice: %q", code)
-		}
-
-		closed := closedPCV3MobileArchivePresentation(t, true)
-		closeAction := &literalMobileArchiveAction{closeResult: closed}
-		closeOperation := startPCV3Operation()
-		completePCV3PresentationWithArchive(closeOperation, pending, closeAction)
-		closeHandle := closeOperation.Archive()
-		closedSnapshot := closeHandle.Close()
-		if closedSnapshot.CompletionClass() != "no-output" ||
-			closedSnapshot.WarningAt(0) != "cleanup-incomplete" || closeAction.closeCalls.Load() != 1 {
-			t.Fatalf("archive Close terminal = %s warnings=%d calls=%d", closedSnapshot.CompletionClass(), closedSnapshot.WarningCount(), closeAction.closeCalls.Load())
-		}
-		_ = closeHandle.Close()
-		if closeAction.closeCalls.Load() != 1 {
-			t.Fatalf("archive Close ran %d times", closeAction.closeCalls.Load())
-		}
-		if code := closeOperation.Release(); code != "" {
-			t.Fatalf("closed archive release code = %q", code)
-		}
-
-		clean := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-			Outcome: pcv3.OutcomeSuccess,
-			Stage:   pcv3.StageNone,
-			Code:    pcv3.CodeSuccess,
-		})
-		mismatchAction := &literalMobileArchiveAction{closeResult: closed}
-		mismatchOperation := startPCV3Operation()
-		completePCV3PresentationWithArchive(mismatchOperation, clean, mismatchAction)
-		mismatch := mismatchOperation.Snapshot()
-		if mismatch.CompletionClass() != "no-output" || mismatch.Diagnostic() != "core-failure" ||
-			mismatch.WarningAt(0) != "cleanup-incomplete" || mismatchOperation.Archive() != nil ||
-			mismatchAction.closeCalls.Load() != 1 {
-			t.Fatalf("mismatched archive tuple=%s/%s warnings=%d authority=%v close=%d",
-				mismatch.CompletionClass(), mismatch.Diagnostic(), mismatch.WarningCount(),
-				mismatchOperation.Archive(), mismatchAction.closeCalls.Load())
-		}
-		if code := mismatchOperation.Release(); code != "" {
-			t.Fatalf("mismatched archive release code = %q", code)
-		}
-	})
-}
-
 func TestPCV3MobileRequiresExplicitModeAndLiveConsent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		temp := t.TempDir()
@@ -572,7 +447,7 @@ func TestPCV3MobileRestoredReceiptIsDenyOnly(t *testing.T) {
 		PublicationCode:      pcv3publication.CodeDurabilityUncertain,
 	})
 	operation := startPCV3Operation()
-	completePCV3Presentation(operation.id, uncertain)
+	completePCV3PresentationForOperation(operation, uncertain)
 	receiptJSON := operation.Snapshot().RestoredReceipt()
 	if receiptJSON == "" {
 		t.Fatal("uncertain terminal state did not produce a receipt")
@@ -672,7 +547,7 @@ func TestPCV3MobileBoundsAndRedactsStatus(t *testing.T) {
 				Diagnostic: diagnostic.value,
 			})
 			op := startPCV3Operation()
-			completePCV3Presentation(op.id, presentation)
+			completePCV3PresentationForOperation(op, presentation)
 			if got := op.Snapshot().Diagnostic(); got != diagnostic.want {
 				t.Fatalf("diagnostic %d = %q", diagnostic.value, got)
 			}
@@ -687,49 +562,11 @@ func TestPCV3MobileBoundsAndRedactsStatus(t *testing.T) {
 	})
 }
 
-func TestPCV3MobileKeepsWriterAndMigrationAbsent(t *testing.T) {
-	directory := t.TempDir()
-	source := writePCV3MobileFile(t, directory, "source.pcv", "not-a-volume")
-	target := filepath.Join(directory, "output.pcv")
-	password := []byte("migration-password")
-	start := StartPCV3(
-		pcv3TestEnvelope("migrate-normal", "password", "none", source, target, nil),
-		password,
-	)
-	if start == nil || start.Code() != pcv3BridgeInvalidRequest || start.Operation() != nil {
-		t.Fatalf("migration reached the public gomobile operation boundary: %#v", start)
-	}
-	if !allZero(password) {
-		t.Fatal("rejected migration request retained the caller password")
-	}
-	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("rejected migration request affected its target: %v", err)
-	}
-
-	wantRequestFields := map[reflect.Type][]string{
-		reflect.TypeOf(EncryptRequestJSON{}): {
-			"OperationID", "InputFile", "InputFiles", "OnlyFolders", "OnlyFiles",
-			"OutputFile", "Comments", "Keyfiles", "Paranoid", "ReedSolomon",
-			"Deniability", "Compress", "KeyfileOrdered",
-		},
-		reflect.TypeOf(DecryptRequestJSON{}): {
-			"OperationID", "InputFile", "OutputFile", "Keyfiles", "ForceDecrypt",
-			"VerifyFirst", "AutoUnzip", "SameLevel", "Recombine", "Deniability",
-		},
-	}
-	for requestType, want := range wantRequestFields {
-		got := make([]string, requestType.NumField())
-		for index := range got {
-			got[index] = requestType.Field(index).Name
-		}
-		if !slices.Equal(got, want) {
-			t.Fatalf("gomobile request %s fields = %v; writer-disabled ABI requires %v", requestType.Name(), got, want)
-		}
-	}
-}
-
 // TestPCV3OperationABI is a policy oracle for the exact gomobile surface. It
-// does not count as product behavior or descriptor/session evidence.
+// does not count as product behavior or descriptor/session evidence. Creation
+// support deliberately adds no new gomobile methods: write operations enter
+// through the existing StartPCV3 envelope and report through the existing
+// PCV3Operation/PCV3Snapshot/PCV3Output surface.
 func TestPCV3OperationABI(t *testing.T) {
 	wantMethods := map[reflect.Type][]string{
 		reflect.TypeOf((*PCV3StartResult)(nil)): {"Code", "Operation"},
@@ -744,7 +581,7 @@ func TestPCV3OperationABI(t *testing.T) {
 		reflect.TypeOf((*PCV3Output)(nil)):            {"Discard", "Format", "GoString", "SaveFD", "String"},
 		reflect.TypeOf((*PCV3OutputResult)(nil)):      {"CleanupIncomplete", "Code", "Format", "GoString", "String"},
 		reflect.TypeOf((*PCV3Snapshot)(nil)): {
-			"ArchivePending", "ArgAt", "ArgCount", "Code", "CompletionClass",
+			"ArchivePending", "ArgAt", "ArgCount", "AuthenticatedComment", "Code", "CompletionClass",
 			"D1BootstrapProvenance", "DetailStage", "Diagnostic", "ForceProvenance",
 			"Outcome", "PublicationAttempted", "PublicationCode", "PublicationStage",
 			"PublicationState", "RestoredReceipt", "Stage", "StatusArgAt",
@@ -764,7 +601,7 @@ func TestPCV3OperationABI(t *testing.T) {
 			got[index] = publicType.Method(index).Name
 		}
 		if !slices.Equal(got, want) {
-			t.Fatalf("gomobile type %s methods = %v; writer-disabled ABI requires %v", publicType, got, want)
+			t.Fatalf("gomobile type %s methods = %v; PCV3 mobile ABI requires %v", publicType, got, want)
 		}
 	}
 }

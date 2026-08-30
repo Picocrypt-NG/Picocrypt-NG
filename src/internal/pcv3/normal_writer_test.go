@@ -1,7 +1,6 @@
 package pcv3
 
 import (
-	"Picocrypt-NG/internal/pcv3governance"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -147,72 +146,6 @@ func (entropy *normalCountingEntropy) Read(destination []byte) (int, error) {
 	return count, err
 }
 
-func TestWriteNormalVolumeRequiresAuthorizationBeforeWork(t *testing.T) {
-	assertRefusal := func(t *testing.T, completion *normalWriteCompletion, err error) {
-		t.Helper()
-		if completion != nil {
-			t.Fatal("rejected writer minted completion")
-		}
-		var refusal *pcv3governance.RefusalError
-		if !errors.As(err, &refusal) || refusal.Reason != pcv3governance.ReasonAuthorizationMissing {
-			t.Fatalf("rejected writer error = %v; want authorization-missing refusal", err)
-		}
-	}
-
-	t.Run("production adapter rejects before source or destination", func(t *testing.T) {
-		source := &normalIOProbe{reader: bytes.NewReader(nil)}
-		sink := &normalIOProbe{}
-		completion, err := writeNormalVolume(
-			context.Background(),
-			&pcv3governance.EmissionAuthorization{},
-			normalWriteRequest{},
-			source,
-			sink,
-			nil,
-		)
-		assertRefusal(t, completion, err)
-		if source.readCalls != 0 || source.readBytes != 0 ||
-			sink.writeCalls != 0 || sink.writtenBytes != 0 {
-			t.Fatalf(
-				"production I/O before authorization: source=%d/%d sink=%d/%d",
-				source.readCalls, source.readBytes, sink.writeCalls, sink.writtenBytes,
-			)
-		}
-	})
-
-	t.Run("instrumented adapter rejects every hidden dependency", func(t *testing.T) {
-		codecs, err := pcencoding.NewRSCodecs()
-		if err != nil {
-			t.Fatalf("create TEST ONLY RS codecs: %v", err)
-		}
-		entropy := &normalCountingEntropy{reader: bytes.NewReader(make([]byte, 128))}
-		source := &normalIOProbe{reader: bytes.NewReader(nil)}
-		sink := &normalIOProbe{}
-		material := &normalLiteralWriteMaterial{}
-
-		completion, err := writeNormalVolumeWithSeams(
-			context.Background(),
-			&pcv3governance.EmissionAuthorization{},
-			normalWriteRequest{},
-			source,
-			sink,
-			material,
-			normalWriteSeams{entropy: entropy, codecs: codecs},
-		)
-		assertRefusal(t, completion, err)
-		if entropy.calls != 0 || entropy.bytes != 0 ||
-			material.metadataCalls != 0 || material.keyCalls != 0 ||
-			source.readCalls != 0 || source.readBytes != 0 ||
-			sink.writeCalls != 0 || sink.writtenBytes != 0 {
-			t.Fatalf(
-				"work before authorization: entropy=%d/%d metadata=%d keys=%d source=%d/%d sink=%d/%d",
-				entropy.calls, entropy.bytes, material.metadataCalls, material.keyCalls,
-				source.readCalls, source.readBytes, sink.writeCalls, sink.writtenBytes,
-			)
-		}
-	})
-}
-
 func TestSerializeNormalVolumeIndependentBytes(t *testing.T) {
 	testNormalWriterFixtures(t, []string{
 		"normal-standard-password-only-small",
@@ -220,70 +153,6 @@ func TestSerializeNormalVolumeIndependentBytes(t *testing.T) {
 		"normal-standard-combined-unordered-rs-small",
 		"normal-paranoid-combined-unordered-rs-small",
 	}, false)
-}
-
-// This is an integration smoke test, not the serializer conformance oracle.
-// Exact writer bytes are protected independently by
-// TestSerializeNormalVolumeIndependentBytes.
-func TestSerializedNormalVolumeReaderSmoke(t *testing.T) {
-	fixtures := loadNormalFixtureManifest(t).FixturesByID()
-	fixture := requireNormalFixture(t, fixtures, "normal-standard-password-only-small")
-	frozenVolume := readNormalFixtureArtifact(t, fixture.Volume)
-	plaintext := readNormalFixturePlaintext(t, fixture.Plaintext)
-	request, material, entropy := decodeNormalWriterFixtureInputs(t, fixture, frozenVolume)
-	defer material.keys.close()
-	codecs, err := pcencoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("create TEST ONLY RS codecs: %v", err)
-	}
-
-	var serialized bytes.Buffer
-	writeCompletion, err := serializeNormalVolume(
-		context.Background(),
-		request,
-		bytes.NewReader(plaintext),
-		&serialized,
-		material,
-		normalWriteSeams{entropy: bytes.NewReader(entropy), codecs: codecs},
-	)
-	if err != nil || writeCompletion == nil {
-		t.Fatalf("serialize reader-smoke volume = completion %v, error %v", writeCompletion != nil, err)
-	}
-	if material.borrowed == nil || !normalWriteKeysAreZero(material.borrowed) {
-		t.Fatal("reader-smoke serialization retained writer-owned keys")
-	}
-
-	volume := serialized.Bytes()
-	source := &normalBorrowedSource{reader: bytes.NewReader(volume)}
-	route, structure, err := Probe(source, int64(len(volume)))
-	if err != nil || route != RouteNormalPCV {
-		t.Fatalf("Probe(serialized reader-smoke volume) = %v, %v; want normal PCV admission", route, err)
-	}
-	provider := newNormalFixtureCredentialProvider(t, fixture.Keys)
-	t.Cleanup(func() {
-		if provider.closeCalls == 0 {
-			provider.close()
-		}
-	})
-	sink := &normalFixtureSink{}
-	result, readCompletion := readNormalVolumeWithProvider(
-		context.Background(), source, int64(len(volume)), structure, provider, sink,
-	)
-	if result == nil {
-		t.Fatal("reader smoke returned no typed result")
-	}
-	defer result.Close()
-	assertNormalFixtureResult(t, result, OutcomeSuccess, StageNone, 2)
-	assertNormalCompletion(t, readCompletion, true)
-	if !bytes.Equal(sink.plaintext(), plaintext) {
-		t.Fatal("reader smoke did not recover the serialized plaintext")
-	}
-	if sink.aborted || provider.closeCalls != 1 || source.closeCalls != 0 {
-		t.Fatalf(
-			"reader-smoke lifecycle = aborted %v, provider closes %d, borrowed source closes %d",
-			sink.aborted, provider.closeCalls, source.closeCalls,
-		)
-	}
 }
 
 func TestSerializeNormalVolumeBoundaries(t *testing.T) {

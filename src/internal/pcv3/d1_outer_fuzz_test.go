@@ -260,7 +260,7 @@ func runD1ReaderFuzzCase(
 
 	if verifyBaseline {
 		baselineSource := newD1FuzzReaderAt(body, false)
-		baseline, err := newD1InnerReader(context.Background(), baselineSource, uint64(len(body)), access)
+		baseline, err := newTestD1InnerReader(context.Background(), baselineSource, uint64(len(body)), access)
 		baselineSource.assertBounded(t, risk, oracle)
 		if err != nil || baseline == nil {
 			t.Fatalf("%s: synthetic authenticated precondition failed; oracle: %s", risk, oracle)
@@ -292,7 +292,7 @@ func runD1ReaderFuzzCase(
 	}
 
 	source := newD1FuzzReaderAt(sourceBytes, shortRead)
-	reader, err := newD1InnerReader(ctx, source, bodyLength, access)
+	reader, err := newTestD1InnerReader(ctx, source, bodyLength, access)
 	source.assertBounded(t, risk, oracle)
 	if reader != nil {
 		reader.Close()
@@ -424,12 +424,16 @@ func runD1FuzzComposerFailure(
 	if err := os.WriteFile(sourcePath, payload, 0o600); err != nil {
 		t.Fatal("create TEST ONLY public D1 fuzz source")
 	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal("open TEST ONLY public D1 fuzz source")
+	}
+	t.Cleanup(func() { _ = source.Close() })
 	request := &d1CreationRequest{
-		route: d1RouteRequest{
-			mode:            d1RouteExplicit,
-			sourcePath:      sourcePath,
-			destinationPath: destinationPath,
-		},
+		sourcePath:      sourcePath,
+		destinationPath: destinationPath,
+		source:          source,
+		plaintext:       source,
 		normal: normalWriteRequest{
 			suite:           SuiteParanoid,
 			payloadKind:     PayloadKindRaw,

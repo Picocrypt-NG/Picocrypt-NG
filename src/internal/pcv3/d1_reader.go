@@ -61,41 +61,6 @@ type d1InnerReader struct {
 	closed            bool
 }
 
-// newD1InnerReader is a private authenticated-body component. Plan 07-03 owns
-// composing it into the production D1 reader after bootstrap authentication.
-func newD1InnerReader(
-	ctx context.Context,
-	source io.ReaderAt,
-	bodyLength uint64,
-	outerKeys d1OuterKeyAccess,
-) (*d1InnerReader, error) {
-	return newD1InnerReaderWithSeams(
-		ctx,
-		source,
-		bodyLength,
-		outerKeys,
-		defaultD1InnerReaderSeams(),
-	)
-}
-
-func newD1InnerReaderWithSeams(
-	ctx context.Context,
-	source io.ReaderAt,
-	bodyLength uint64,
-	outerKeys d1OuterKeyAccess,
-	seams d1InnerReaderSeams,
-) (*d1InnerReader, error) {
-	return newD1InnerReaderConfigured(
-		ctx,
-		source,
-		bodyLength,
-		outerKeys,
-		seams,
-		nil,
-		nil,
-	)
-}
-
 func newD1InnerReaderFromCompleteAnalysis(
 	ctx context.Context,
 	source io.ReaderAt,

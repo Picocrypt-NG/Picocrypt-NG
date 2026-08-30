@@ -4,6 +4,7 @@ import (
 	perrors "Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/header"
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -12,6 +13,34 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestPCV3EncryptHonorsCommandCancellation(t *testing.T) {
+	resetEncryptFlagsForDirTest()
+	t.Cleanup(resetEncryptFlagsForDirTest)
+	t.Cleanup(func() { encryptCmd.SetContext(context.Background()) })
+	dir := t.TempDir()
+	input := filepath.Join(dir, "plain.bin")
+	output := filepath.Join(dir, "encrypted.pcv")
+	if err := os.WriteFile(input, []byte("cancelled PCV3 input"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	encOutput = output
+	encPassword = "password"
+	encPCV3 = true
+	encQuiet = true
+	encYes = true
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	encryptCmd.SetContext(ctx)
+
+	err := encryptCmd.RunE(encryptCmd, []string{input})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled PCV3 encrypt error = %v; want context.Canceled", err)
+	}
+	if _, err := os.Lstat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled PCV3 encrypt created output: %v", err)
+	}
+}
 
 func TestEncryptValidation(t *testing.T) {
 	// Save original args

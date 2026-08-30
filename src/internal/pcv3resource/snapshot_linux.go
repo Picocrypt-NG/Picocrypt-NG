@@ -4,6 +4,7 @@ package pcv3resource
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"math"
@@ -458,6 +459,9 @@ func readLinuxCgroupHeadroom(
 		}
 		limitBytes, ok := readLinuxFact(ctx, root, path.Join(level, limitName), maxLinuxFactBytes)
 		if !ok {
+			if selection.kind == linuxCgroupV2 && linuxV2LimitFileAbsent(root, level, path.Join(level, limitName)) {
+				continue
+			}
 			return 0, false, false
 		}
 		limit, finite, ok := parseLinuxCgroupLimit(limitBytes, selection.kind)
@@ -485,6 +489,24 @@ func readLinuxCgroupHeadroom(
 		return 0, false, false
 	}
 	return minimum, constrained, true
+}
+
+// linuxV2LimitFileAbsent reports whether the limit interface file is absent
+// inside an existing cgroup v2 directory. The cgroup v2 root carries no
+// resource control files at all, and non-root directories expose memory.max
+// only when the memory controller is delegated to their parent, so an absent
+// file means the level enforces no limit. A missing or unreadable directory,
+// or any other read failure, stays fail-closed.
+func linuxV2LimitFileAbsent(root *os.Root, level, name string) bool {
+	if root == nil {
+		return false
+	}
+	info, err := root.Lstat(level)
+	if err != nil || !info.Mode().IsDir() {
+		return false
+	}
+	_, err = root.Lstat(name)
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 func linuxCgroupLevels(selection linuxCgroupSelection) ([]string, bool) {

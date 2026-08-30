@@ -1,4 +1,4 @@
-; Picocrypt-NG NSIS installer script (Phase 4 D-01 canonical source-of-truth).
+; Picocrypt-NG NSIS installer script (canonical source-of-truth).
 ;
 ; Build:   makensis -WX -V4 -DVERSION=<version> dist/windows/installer.nsi
 ; Signed uninstaller round trip:

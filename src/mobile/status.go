@@ -27,10 +27,6 @@ func pcv3StatusCode(code pcv3operation.StatusCode) string {
 		return "publishing"
 	case pcv3operation.StatusConfirmingDurability:
 		return "confirming-durability"
-	case pcv3operation.StatusVerifyingLegacy:
-		return "verifying-legacy"
-	case pcv3operation.StatusMigrating:
-		return "migrating"
 	default:
 		return "none"
 	}

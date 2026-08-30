@@ -52,6 +52,25 @@ func TestStartHintExplainsMissingCredentials(t *testing.T) {
 	}
 }
 
+func TestStartHintOffersPasswordOrKeyfilesForPCV3D1(t *testing.T) {
+	newTestFyneApp(t)
+
+	a := createTestApp(t)
+	a.State.Mode = "encrypt"
+	a.State.InputFile = "input.txt"
+	a.State.AllFiles = []string{"input.txt"}
+	a.State.OnlyFiles = []string{"input.txt"}
+	a.State.CreatePCV3 = true
+	a.State.Deniability = true
+	a.State.Paranoid = true
+
+	got := a.startReadinessHint(a.State.UISnapshot())
+	want := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
+	if got != want {
+		t.Fatalf("startReadinessHint() = %q; want %q", got, want)
+	}
+}
+
 func TestStartHintExplainsV2KeyfileWriterFreeze(t *testing.T) {
 	newTestFyneApp(t)
 
@@ -67,7 +86,7 @@ func TestStartHintExplainsV2KeyfileWriterFreeze(t *testing.T) {
 	got := a.startReadinessHint(a.State.UISnapshot())
 	want := tr(
 		"start.hint.keyfileWritesDisabled",
-		"New v2 volumes with keyfiles are disabled pending a reviewed v3 format; existing keyfile volumes remain decryptable.",
+		"Legacy v2 cannot create new volumes with keyfiles. Enable Create PCV3 or remove the keyfiles.",
 	)
 	if got != want {
 		t.Fatalf("startReadinessHint() = %q; want %q", got, want)

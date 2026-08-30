@@ -278,7 +278,7 @@ internal fun Pcv3ConsentDialog(
         consent.allowedRoles,
     ) { mutableStateOf(false) }
     val cancelFocus = remember(live.operationId, live.generation) { FocusRequester() }
-    LaunchedEffect(cancelFocus) { cancelFocus.requestFocus() }
+    SafeDefaultDialogFocus(cancelFocus)
 
     AlertDialog(
         modifier = modifier.testTag(PCV3_CONSENT_TAG),

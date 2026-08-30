@@ -30,7 +30,8 @@ var encryptCmd = &cobra.Command{
 
 If no password is provided, you will be prompted to enter one interactively
 (with confirmation). The password is hidden while typing.
-Deniability always requires a non-empty password.
+Legacy deniability requires a non-empty password. PCV3 D1 accepts its explicit
+password/keyfile credential policy.
 
 Examples:
   # Encrypt interactively (prompts for password)
@@ -51,8 +52,8 @@ Examples:
   # Read password from stdin (for scripts)
 	  echo "mypassword" | Picocrypt-NG encrypt secret.txt -o secret.pcv -P
 
-  # Encrypt from stdin to stdout (use -p since stdin is taken by data)
-	  cat data.txt | Picocrypt-NG encrypt - -o - -p "pw" > data.pcv
+  # Encrypt from stdin to stdout with a separate password descriptor
+	  cat data.txt | Picocrypt-NG encrypt - -o - --password-fd=3 3< /path/to/password-file > data.pcv
 
   # Encrypt to stdout
 	  Picocrypt-NG encrypt secret.txt -o - -p "pw" > secret.pcv`,
@@ -75,8 +76,10 @@ var (
 	encOutput         string
 	encPassword       string
 	encPasswordStdin  bool
+	encPasswordFD     int
 	encKeyfiles       []string
 	encKeyfileOrder   bool
+	encPCV3           bool
 	encComments       string
 	encParanoid       bool
 	encReedSolomon    bool
@@ -102,14 +105,16 @@ func init() {
 	// Credentials
 	encryptCmd.Flags().StringVarP(&encPassword, "password", "p", "", "Encryption password")
 	encryptCmd.Flags().BoolVarP(&encPasswordStdin, "password-stdin", "P", false, "Read password from stdin")
-	encryptCmd.Flags().StringArrayVarP(&encKeyfiles, "keyfile", "k", nil, "Unavailable for encryption in 2.19; retained to return a migration error")
-	encryptCmd.Flags().BoolVar(&encKeyfileOrder, "keyfile-ordered", false, "Unavailable while v2 keyfile writing is disabled")
+	encryptCmd.Flags().IntVar(&encPasswordFD, "password-fd", -1, "Read password from inherited Unix file descriptor (3 or higher)")
+	encryptCmd.Flags().StringArrayVarP(&encKeyfiles, "keyfile", "k", nil, "PCV3 keyfile path (can be specified multiple times)")
+	encryptCmd.Flags().BoolVar(&encKeyfileOrder, "keyfile-ordered", false, "Use the selected keyfile order for PCV3")
+	encryptCmd.Flags().BoolVar(&encPCV3, "pcv3", false, "Create a Normal PCV3 volume")
 
 	// Security options
 	encryptCmd.Flags().StringVarP(&encComments, "comments", "c", "", "Comments to store in header (NOT encrypted)")
 	encryptCmd.Flags().BoolVar(&encParanoid, "paranoid", false, "Enable paranoid mode (Serpent + XChaCha20, HMAC-SHA3)")
 	encryptCmd.Flags().BoolVar(&encReedSolomon, "reed-solomon", false, "Enable Reed-Solomon error correction (6% overhead)")
-	encryptCmd.Flags().BoolVar(&encDeniability, "deniability", false, "Add deniability wrapper (requires a non-empty password)")
+	encryptCmd.Flags().BoolVar(&encDeniability, "deniability", false, "Create a legacy deniability wrapper or PCV3 D1 (legacy requires a non-empty password)")
 	encryptCmd.Flags().BoolVar(&encCompress, "compress", false, "Compress files before encryption")
 
 	// Split options
@@ -145,7 +150,7 @@ func defaultEncryptOutput(rawInput string, allFiles []string, onlyFolders []stri
 	return "encrypted" + extension
 }
 
-func runEncrypt(cmd *cobra.Command, args []string) error {
+func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 	if cmd.Flags().Changed("input") || len(encLegacyInputs) > 0 {
 		return errors.New("--input/-i was removed; pass literal paths as arguments or use --glob for patterns")
 	}
@@ -165,6 +170,7 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		}
 	}
 	useStdin := len(args) == 1 && hasStdinInput && len(encGlob) == 0
+	passwordFDSet := cmd.Flags().Changed("password-fd")
 
 	// Validate stdin/stdout constraints
 	if hasStdinInput && !useStdin {
@@ -173,16 +179,23 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	if useStdin && encPasswordStdin {
 		return errors.New("cannot use -P (password from stdin) with - (input from stdin)")
 	}
+	if passwordFDSet {
+		if encPasswordFD < 3 {
+			return errors.New("--password-fd must be 3 or higher")
+		}
+		if encPasswordStdin || cmd.Flags().Changed("password") {
+			return errors.New("--password-fd cannot be combined with -p or -P")
+		}
+	}
 	if (useStdin || useStdout) && encSplit {
 		return errors.New("stdin/stdout not compatible with --split")
 	}
-	if (useStdin || useStdout) && encDeniability {
+	if (useStdin || useStdout) && encDeniability && !encPCV3 {
 		return errors.New("stdin/stdout not compatible with --deniability")
 	}
-	if len(encKeyfiles) > 0 {
+	if len(encKeyfiles) > 0 && !encPCV3 {
 		return perrors.NewKeyfileWritesDisabledError()
 	}
-
 	// Validate split options before any input buffering, temp creation,
 	// overwrite confirmation, or credential prompting.
 	var chunkSize int
@@ -228,7 +241,9 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	// the stdout temp holds the .pcv output; both are removed when the run ends.
 	var stdinTempFile string
 	var stdoutTempFile string
-	defer func() { cleanupTempFiles(stdinTempFile, stdoutTempFile) }()
+	defer func() {
+		retErr = errors.Join(retErr, cleanupTempFiles(stdinTempFile, stdoutTempFile))
+	}()
 
 	outputFile := encOutput
 	if outputFile == "" && useStdin {
@@ -239,6 +254,11 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	}
 	if outputFile != "" && !useStdout && !strings.HasSuffix(outputFile, ".pcv") {
 		outputFile += ".pcv"
+	}
+	if encPCV3 && !useStdout && outputFile != "" {
+		if err := requireVacantPCV3Output(outputFile); err != nil {
+			return err
+		}
 	}
 	if useStdin && !useStdout {
 		if err := validateEncryptOutputPaths(encryptInputs{}, encKeyfiles, outputFile, false); err != nil {
@@ -284,6 +304,11 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("creating temp output: %w", err)
 		}
+		if encPCV3 {
+			if err := os.Remove(stdoutTempFile); err != nil {
+				return fmt.Errorf("prepare PCV3 stdout target: %w", err)
+			}
+		}
 		outputFile = stdoutTempFile
 	} else if outputFile == "" {
 		rawInput := ""
@@ -307,20 +332,26 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 
 	// Check if output exists (skip for stdout)
 	if !useStdout {
-		if info, err := os.Stat(outputFile); err == nil {
-			if info.IsDir() {
-				return fmt.Errorf("output path is a directory: %s", outputFile)
+		if encPCV3 {
+			if err := requireVacantPCV3Output(outputFile); err != nil {
+				return err
 			}
-			if !encYes {
-				fmt.Fprintf(os.Stderr, "Output file %s already exists. Overwrite? [y/N]: ", outputFile)
-				reader := bufio.NewReader(os.Stdin)
-				response, err := reader.ReadString('\n')
-				if err != nil && err != io.EOF {
-					return fmt.Errorf("reading confirmation: %w", err)
+		} else {
+			if info, err := os.Stat(outputFile); err == nil {
+				if info.IsDir() {
+					return fmt.Errorf("output path is a directory: %s", outputFile)
 				}
-				response = strings.TrimSpace(strings.ToLower(response))
-				if response != "y" && response != "yes" {
-					return errors.New("operation cancelled")
+				if !encYes {
+					fmt.Fprintf(os.Stderr, "Output file %s already exists. Overwrite? [y/N]: ", outputFile)
+					reader := bufio.NewReader(os.Stdin)
+					response, err := reader.ReadString('\n')
+					if err != nil && err != io.EOF {
+						return fmt.Errorf("reading confirmation: %w", err)
+					}
+					response = strings.TrimSpace(strings.ToLower(response))
+					if response != "y" && response != "yes" {
+						return errors.New("operation cancelled")
+					}
 				}
 			}
 		}
@@ -332,27 +363,41 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	// a plain defer would bind the initial []byte(encPassword) at defer time.
 	password := []byte(encPassword)
 	defer func() { crypto.SecureZero(password) }()
-	if encPasswordStdin {
+	passwordExplicit := cmd.Flags().Changed("password") || passwordFDSet
+	if passwordFDSet {
+		var err error
+		crypto.SecureZero(password)
+		password, err = ReadPasswordFromFD(encPasswordFD)
+		if err != nil {
+			return err
+		}
+		if encDeniability && !encPCV3 && len(password) == 0 {
+			return perrors.NewDeniabilityPasswordRequiredError()
+		}
+		if len(password) == 0 && (!encPCV3 || len(encKeyfiles) == 0) {
+			return fmt.Errorf("password input: %w", ErrPasswordEmpty)
+		}
+	} else if encPasswordStdin {
 		var err error
 		password, err = ReadPasswordFromStdin()
 		if err != nil {
 			return err
 		}
-		if encDeniability && len(password) == 0 {
+		if encDeniability && !encPCV3 && len(password) == 0 {
 			return perrors.NewDeniabilityPasswordRequiredError()
 		}
-		if len(password) == 0 {
+		if len(password) == 0 && (!encPCV3 || len(encKeyfiles) == 0) {
 			return fmt.Errorf("password input: %w", ErrPasswordEmpty)
 		}
-	} else if len(password) == 0 {
+	} else if len(password) == 0 && (!encPCV3 || len(encKeyfiles) == 0 || !passwordExplicit) {
 		// Prompt for password interactively
 		var err error
-		password, err = ReadPasswordInteractive(true, encDeniability)
+		password, err = ReadPasswordInteractive(true, encDeniability || (encPCV3 && len(encKeyfiles) > 0))
 		if err != nil {
 			return fmt.Errorf("password input: %w", err)
 		}
 	}
-	if encDeniability && len(password) == 0 {
+	if encDeniability && !encPCV3 && len(password) == 0 {
 		return perrors.NewDeniabilityPasswordRequiredError()
 	}
 
@@ -365,6 +410,7 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	// Create reporter
 	reporter := NewReporter(encQuiet)
 	globalReporter.Store(reporter)
+	defer globalReporter.CompareAndSwap(reporter, nil)
 
 	// Build request
 	req := &volume.EncryptRequest{
@@ -375,6 +421,7 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		Password:       password,
 		Keyfiles:       encKeyfiles,
 		KeyfileOrdered: encKeyfileOrder,
+		PCV3:           encPCV3,
 		Comments:       encComments,
 		Paranoid:       encParanoid,
 		ReedSolomon:    encReedSolomon,
@@ -407,11 +454,32 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		if encDeniability {
 			fmt.Fprintln(os.Stderr, "Deniability: Enabled")
 		}
+		if encPCV3 {
+			fmt.Fprintln(os.Stderr, "Format: PCV3")
+		}
 		fmt.Fprintln(os.Stderr)
 	}
 
 	// Run encryption
-	err = volume.Encrypt(context.Background(), req)
+	operationCtx := cmd.Context()
+	if operationCtx == nil {
+		operationCtx = context.Background()
+	}
+	if encPCV3 {
+		var cancel context.CancelFunc
+		operationCtx, cancel = context.WithCancel(operationCtx)
+		reporter.setPCV3Cancel(cancel)
+		defer func() {
+			reporter.setPCV3Cancel(nil)
+			cancel()
+		}()
+	}
+	if encPCV3 && useStdout {
+		// The PCV3 publication core now owns the absent random target name.
+		// Never delete a later pathname replacement from the CLI defer.
+		stdoutTempFile = ""
+	}
+	err = volume.Encrypt(operationCtx, req)
 	reporter.Finish()
 
 	if err != nil {
@@ -421,10 +489,17 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 		// volume instead of unlinking a pathname the CLI no longer owns.
 		return err
 	}
+	if stdinTempFile != "" {
+		if err := cleanupTempFiles(stdinTempFile); err != nil {
+			return err
+		}
+		stdinTempFile = ""
+	}
 
 	// Stream to stdout if requested
 	if useStdout {
-		if err := StreamFileToStdout(outputFile); err != nil {
+		stdoutTempFile = ""
+		if err := StreamFileToStdout(operationCtx, outputFile); err != nil {
 			return fmt.Errorf("streaming to stdout: %w", err)
 		}
 		return nil

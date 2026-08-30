@@ -91,11 +91,12 @@ internal class Pcv3Lifecycle(
 
     private sealed interface State {
         data object Idle : State
-        data class Starting(val generation: Long, val receiptFile: File) : State
+        data class Starting(val generation: Long, val receiptFile: File, val creation: Boolean = false) : State
         data class Active(
             val generation: Long,
             val operation: Pcv3OperationCapability,
             val receiptFile: File,
+            val creation: Boolean = false,
             val receiptPersisted: Boolean = false,
             val snapshot: Pcv3SnapshotData? = null,
             val consentHandle: Pcv3ConsentCapability? = null,
@@ -119,6 +120,7 @@ internal class Pcv3Lifecycle(
             val generation: Long,
             val operation: Pcv3OperationCapability,
             val receiptFile: File,
+            val creation: Boolean = false,
             val receiptPersisted: Boolean = false,
             val snapshot: Pcv3SnapshotData? = null,
             val cancelRequested: Boolean = false,
@@ -132,6 +134,7 @@ internal class Pcv3Lifecycle(
             val generation: Long,
             val receiptFile: File,
             val receiptPersisted: Boolean,
+            val creation: Boolean = false,
             val artifactInspection: Pcv3ArtifactInspectionCapability? = null,
             val artifactMetadata: Pcv3ArtifactMetadataData? = null,
             val receiptCustodian: Pcv3ReceiptCustodyCapability? = null,
@@ -269,7 +272,7 @@ internal class Pcv3Lifecycle(
     }
 
     suspend fun start(
-        request: Pcv3Request,
+        request: Pcv3StartRequest,
         password: CharArray,
         receiptFile: File,
     ): Result<Pcv3Presentation> = try {
@@ -279,15 +282,16 @@ internal class Pcv3Lifecycle(
     }
 
     private suspend fun startOwned(
-        request: Pcv3Request,
+        request: Pcv3StartRequest,
         password: CharArray,
         receiptFile: File,
     ): Result<Pcv3Presentation> {
+        val creation = request is Pcv3WriteRequest
         val generation = mutex.withLock {
             when (state) {
                 State.Idle -> {
                     val next = ++nextGeneration
-                    state = State.Starting(next, receiptFile)
+                    state = State.Starting(next, receiptFile, creation)
                     _presentation.value = null
                     artifactPageToken = null
                     _artifactDetails.value = Pcv3ArtifactDetailsUiState.Closed
@@ -333,6 +337,7 @@ internal class Pcv3Lifecycle(
                         generation = generation,
                         operation = startData.operation,
                         receiptFile = receiptFile,
+                        creation = creation,
                     ).also { state = it }
                 }
             }
@@ -388,6 +393,7 @@ internal class Pcv3Lifecycle(
                 generation = generation,
                 operation = operation,
                 receiptFile = starting.receiptFile,
+                creation = starting.creation,
             )
             state = active
             try {
@@ -962,6 +968,7 @@ internal class Pcv3Lifecycle(
                 generation = current.generation,
                 operation = current.operation,
                 receiptFile = current.receiptFile,
+                creation = current.creation,
                 receiptPersisted = action.custodian.custody is ReceiptCustody.Exact,
                 snapshot = terminal ?: current.snapshot,
                 cancelRequested = true,
@@ -991,11 +998,13 @@ internal class Pcv3Lifecycle(
             generation = current.generation,
             outputAction = current.outputActionResult,
             artifactMetadata = current.artifactMetadata?.toView(),
+            isCreation = current.creation,
         )
         state = State.Final(
             generation = current.generation,
             receiptFile = current.receiptFile,
             receiptPersisted = action.custodian.custody is ReceiptCustody.Exact,
+            creation = current.creation,
             artifactInspection = current.artifactInspection,
             artifactMetadata = current.artifactMetadata,
             receiptCustodian = action.custodian,
@@ -1664,6 +1673,7 @@ internal class Pcv3Lifecycle(
                         generation = active.generation,
                         outputAction = active.outputActionResult,
                         artifactMetadata = active.artifactMetadata?.toView(),
+                        isCreation = active.creation,
                     )
                 } catch (error: Exception) {
                     return beginDrainLocked(active, snapshot, "PCV3_OPERATION_FAILURE", error as? CancellationException)
@@ -1690,6 +1700,7 @@ internal class Pcv3Lifecycle(
                         generation = active.generation,
                         receiptFile = active.receiptFile,
                         receiptPersisted = active.receiptPersisted,
+                        creation = active.creation,
                         artifactInspection = active.artifactInspection,
                         artifactMetadata = active.artifactMetadata,
                         receiptCustodian = active.receiptCustodian,
@@ -1721,6 +1732,7 @@ internal class Pcv3Lifecycle(
             generation = active.generation,
             operation = active.operation,
             receiptFile = active.receiptFile,
+            creation = active.creation,
             receiptPersisted = active.receiptPersisted,
             snapshot = snapshot,
             outputActionResult = active.outputActionResult,
@@ -1746,6 +1758,7 @@ internal class Pcv3Lifecycle(
             generation = active.generation,
             operation = active.operation,
             receiptFile = active.receiptFile,
+            creation = active.creation,
             receiptPersisted = active.receiptPersisted,
             snapshot = snapshot,
             cancelRequested = true,
@@ -1947,6 +1960,7 @@ internal class Pcv3Lifecycle(
                     generation = draining.generation,
                     outputAction = draining.outputActionResult,
                     artifactMetadata = draining.artifactMetadata?.toView(),
+                    isCreation = draining.creation,
                 )
             } catch (error: Exception) {
                 record(error)
@@ -1983,6 +1997,7 @@ internal class Pcv3Lifecycle(
                         generation = draining.generation,
                         receiptFile = draining.receiptFile,
                         receiptPersisted = draining.receiptPersisted,
+                        creation = draining.creation,
                         artifactInspection = draining.artifactInspection,
                         artifactMetadata = draining.artifactMetadata,
                         receiptCustodian = draining.receiptCustodian,
@@ -2024,6 +2039,7 @@ internal class Pcv3Lifecycle(
             outputPending = active.outputHandle != null,
             outputActionInFlight = active.outputActionInFlight,
             artifactMetadata = active.artifactMetadata?.toView(),
+            isCreation = active.creation,
         ).also { _presentation.value = it }
     }
 
@@ -2111,10 +2127,12 @@ object OperationManager {
 
     /**
      * Starts an explicit PCV3 operation without joining the legacy operation state.
-     * It is intentionally not wired to the ordinary Android UI before calibration.
+     * Resource admission is performed from a fresh operation-scoped observation.
+     * Read and creation envelopes share this exact lifecycle; the request subtype
+     * decides which strict JSON shape crosses the bridge.
      */
     suspend fun startPcv3(
-        request: Pcv3Request,
+        request: Pcv3StartRequest,
         password: CharArray,
         receiptFile: File,
     ): Result<Pcv3Presentation> = try {

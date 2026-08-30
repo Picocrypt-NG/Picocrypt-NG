@@ -330,52 +330,6 @@ func TestOutputDisplay(t *testing.T) {
 	})
 }
 
-// TestFixedWidthLayout tests the fixed width layout.
-func TestFixedWidthLayout(t *testing.T) {
-	newTestFyneApp(t)
-
-	t.Run("MinSize_Empty", func(t *testing.T) {
-		layout := &fixedWidthLayout{width: 100}
-		minSize := layout.MinSize(nil)
-
-		if minSize.Width != 100 {
-			t.Errorf("Expected width 100, got %f", minSize.Width)
-		}
-		if minSize.Height != 0 {
-			t.Errorf("Expected height 0, got %f", minSize.Height)
-		}
-	})
-
-	t.Run("MinSize_WithObject", func(t *testing.T) {
-		layout := &fixedWidthLayout{width: 100}
-
-		// Create a simple label widget
-		label := NewColoredLabel("Test", color.White)
-		objects := []fyne.CanvasObject{label}
-		minSize := layout.MinSize(objects)
-
-		if minSize.Width != 100 {
-			t.Errorf("Expected width 100, got %f", minSize.Width)
-		}
-	})
-
-	t.Run("Layout", func(t *testing.T) {
-		layout := &fixedWidthLayout{width: 100}
-
-		// Create a simple label widget
-		label := NewColoredLabel("Test", color.White)
-		objects := []fyne.CanvasObject{label}
-
-		// Apply layout
-		layout.Layout(objects, fyne.NewSize(200, 50))
-
-		// Check that object was resized to fixed width
-		if label.Size().Width != 100 {
-			t.Errorf("Expected object width 100, got %f", label.Size().Width)
-		}
-	})
-}
-
 // TestCompactTheme tests the compact theme.
 func TestCompactTheme(t *testing.T) {
 	t.Run("Size", func(t *testing.T) {

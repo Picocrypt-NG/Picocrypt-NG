@@ -3,7 +3,6 @@ package pcv3
 import (
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3credential"
-	"Picocrypt-NG/internal/pcv3governance"
 	"Picocrypt-NG/internal/pcv3publication"
 	"context"
 	"errors"
@@ -12,10 +11,8 @@ import (
 	"sync"
 )
 
-// NativeNormalWriteRequest is the narrow internal-module bridge from the
-// operation-owned migration stream to the sole canonical normal serializer.
-// Source and Destination are borrowed for the call; Factors transfers only
-// after a genuine emission authorization has passed.
+// NativeNormalWriteRequest is the narrow bridge to the canonical normal
+// serializer. Source and Destination are borrowed; Factors transfers on call.
 type NativeNormalWriteRequest struct {
 	Suite           Suite
 	PayloadKind     PayloadKind
@@ -28,17 +25,117 @@ type NativeNormalWriteRequest struct {
 	Destination     io.Writer
 }
 
-// RunNativeNormalWrite repeats the opaque governance check as its first
-// operation. The current review-candidate baseline cannot reach the
-// credential pipeline, entropy, source, or destination through this adapter.
+// NativeD1WriteRequest creates one random-looking D1 volume from a pinned
+// regular source. Source and Plaintext are borrowed; Factors transfers on call.
+type NativeD1WriteRequest struct {
+	Suite           Suite
+	PayloadKind     PayloadKind
+	PayloadBodyRS   bool
+	PlaintextLength uint64
+	Comment         []byte
+	Factors         *pcv3credential.FactorRequest
+	Admitter        pcv3credential.Admitter
+	SourcePath      string
+	Source          *os.File
+	Plaintext       io.Reader
+	DestinationPath string
+	Protected       []string
+	SplitOptions    *fileops.SplitOptions
+}
+
+func RunNativeD1Write(ctx context.Context, request *NativeD1WriteRequest) error {
+	if request == nil {
+		return newD1OuterFailure(StageCredentialPolicy, errInvalidD1Creation)
+	}
+	suite := request.Suite
+	payloadKind := request.PayloadKind
+	payloadBodyRS := request.PayloadBodyRS
+	plaintextLength := request.PlaintextLength
+	comment := append([]byte(nil), request.Comment...)
+	factors := request.Factors
+	admitter := request.Admitter
+	sourcePath := request.SourcePath
+	source := request.Source
+	plaintext := request.Plaintext
+	destinationPath := request.DestinationPath
+	protected := append([]string(nil), request.Protected...)
+	var splitOptions *fileops.SplitOptions
+	if request.SplitOptions != nil {
+		copied := *request.SplitOptions
+		splitOptions = &copied
+	}
+	request.Suite = 0
+	request.PayloadKind = 0
+	request.PayloadBodyRS = false
+	request.PlaintextLength = 0
+	clear(request.Comment)
+	request.Comment = nil
+	request.Factors = nil
+	request.Admitter = nil
+	request.SourcePath = ""
+	request.Source = nil
+	request.Plaintext = nil
+	request.DestinationPath = ""
+	for index := range request.Protected {
+		request.Protected[index] = ""
+	}
+	request.Protected = nil
+	request.SplitOptions = nil
+	defer clear(comment)
+	defer func() {
+		if factors != nil {
+			_ = factors.Close()
+		}
+	}()
+
+	if ctx == nil || suite != SuiteParanoid || factors == nil ||
+		admitter == nil || sourcePath == "" || source == nil || plaintext == nil ||
+		destinationPath == "" {
+		return newD1OuterFailure(StageCredentialPolicy, errInvalidD1Creation)
+	}
+	if err := ctx.Err(); err != nil {
+		return newD1OuterFailure(StageCancellation, err)
+	}
+	info, statErr := source.Stat()
+	if statErr != nil || info == nil || !info.Mode().IsRegular() ||
+		info.Size() < 0 || uint64(info.Size()) != plaintextLength { //nolint:gosec // Size is checked non-negative above.
+		return newD1OuterFailure(StageInputIO, errInvalidD1Creation)
+	}
+
+	result, err := composeD1OuterStage(ctx, &d1CreationRequest{
+		sourcePath:      sourcePath,
+		destinationPath: destinationPath,
+		protected:       protected,
+		expectedSource:  info,
+		source:          source,
+		plaintext:       plaintext,
+		splitOptions:    splitOptions,
+		normal: normalWriteRequest{
+			suite:           suite,
+			payloadKind:     payloadKind,
+			payloadBodyRS:   payloadBodyRS,
+			plaintextLength: plaintextLength,
+			comment:         comment,
+		},
+		factors:  factors,
+		admitter: admitter,
+	}, defaultD1CreationSeams())
+	if err != nil {
+		return err
+	}
+	if result == nil {
+		return newD1OuterFailure(StageOutputPublication, errInvalidD1Creation)
+	}
+	if result.State() != pcv3publication.StatePublishedDurable {
+		return result
+	}
+	return nil
+}
+
 func RunNativeNormalWrite(
 	ctx context.Context,
-	authorization *pcv3governance.EmissionAuthorization,
 	request *NativeNormalWriteRequest,
 ) error {
-	if err := pcv3governance.RequireEmissionAuthorization(authorization); err != nil {
-		return newNormalWriteFailure(StageOutputPublication, err)
-	}
 	if request == nil {
 		return newNormalWriteFailure(StageCredentialPolicy, errInvalidNormalWriteRequest)
 	}
@@ -78,10 +175,13 @@ func RunNativeNormalWrite(
 		plaintextLength: plaintextLength,
 		comment:         comment,
 	}
-	if ctx == nil || ctx.Err() != nil || !ok || !requestsOK ||
+	if ctx == nil || !ok || !requestsOK ||
 		!validNormalWriteRequest(writeRequest) || factors == nil || admitter == nil ||
 		source == nil || destination == nil {
 		return newNormalWriteFailure(StageCredentialPolicy, errInvalidNormalWriteRequest)
+	}
+	if err := ctx.Err(); err != nil {
+		return newNormalWriteFailure(StageCancellation, err)
 	}
 
 	credentialRequest := &pcv3credential.CredentialRequest{
@@ -98,7 +198,7 @@ func RunNativeNormalWrite(
 		return newNormalWriteFailure(StageCredentialPolicy, err)
 	}
 	defer owner.Close()
-	_, err = writeNormalVolume(ctx, authorization, writeRequest, source, destination, owner)
+	_, err = writeNormalVolume(ctx, writeRequest, source, destination, owner)
 	return err
 }
 
@@ -128,7 +228,7 @@ type NativeReadRequest struct {
 
 // NativePayloadDisposition tells the operation whether the completed stage is
 // ordinary publishable plaintext or an exact-success archive awaiting the
-// separate sealed follow-up introduced in Task 4.
+// separate sealed follow-up.
 type NativePayloadDisposition uint8
 
 const (
@@ -366,6 +466,7 @@ type NativeReadResult struct {
 	outcome              Outcome
 	stage                Stage
 	code                 Code
+	authenticatedComment string
 	publicationAttempted bool
 	publicationState     pcv3publication.State
 	publicationStage     Stage
@@ -393,6 +494,15 @@ func (result *NativeReadResult) Code() Code {
 		return 0
 	}
 	return result.code
+}
+
+// AuthenticatedComment returns public metadata only after the normal reader
+// has authenticated it. Failed and unauthenticated reads return an empty value.
+func (result *NativeReadResult) AuthenticatedComment() string {
+	if result == nil {
+		return ""
+	}
+	return result.authenticatedComment
 }
 
 func (result *NativeReadResult) PublicationAttempted() bool {
@@ -607,9 +717,10 @@ func nativeReadResultFromSemantic(semantic *normalReadResult) *NativeReadResult 
 		return nativeReadFailure(OutcomeOperationFailed, StageCredentialPolicy, CodeOperationFailed)
 	}
 	return &NativeReadResult{
-		outcome: semantic.Outcome(),
-		stage:   semantic.Stage(),
-		code:    semantic.Code(),
+		outcome:              semantic.Outcome(),
+		stage:                semantic.Stage(),
+		code:                 semantic.Code(),
+		authenticatedComment: string(semantic.commentBytes()),
 	}
 }
 

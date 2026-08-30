@@ -19,19 +19,6 @@ const (
 	literalCredentialRootBytes  = 32
 )
 
-// These compile-only bindings keep the real adapter on the same typed runner
-// while exact-profile execution remains isolated to the later production gate.
-var (
-	_ kdfDeriver = deriveArgon2ID
-	_ func(
-		context.Context,
-		*CredentialInputNormal,
-		[]byte,
-		Suite,
-		Admitter,
-	) (*credentialRoot, error) = deriveCredentialRoot
-)
-
 type testAdmitter func(
 	context.Context,
 	KDFProfile,

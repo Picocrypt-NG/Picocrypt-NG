@@ -172,7 +172,7 @@
     <string name="error_decrypt_retry_only">강제 복호화로 다시 시도할 수 있는 작업은 복호화뿐입니다.</string>
     <string name="error_no_file_selected">파일을 선택하세요.</string>
     <string name="error_invalid_password">비밀번호를 입력하세요.</string>
-    <string name="error_keyfile_writes_disabled">검토를 마친 v3 형식이 마련될 때까지 키 파일을 사용하는 새 v2 볼륨을 만들 수 없습니다. 기존 키 파일 볼륨은 계속 복호화할 수 있습니다.</string>
+    <string name="error_keyfile_writes_disabled">새 v2 볼륨은 키 파일을 사용할 수 없습니다. 대신 PCV3 생성을 명시적으로 사용하세요. 기존 키 파일 볼륨은 계속 복호화할 수 있습니다.</string>
     <string name="error_passwords_mismatch">비밀번호가 일치하지 않습니다.</string>
     <string name="error_split_volume_not_supported">Android에서는 분할 볼륨을 지원하지 않습니다. 먼저 컴퓨터에서 조각을 다시 결합한 다음 단일 %1$s 파일을 전송하세요.</string>
     <string name="error_copy_failed">파일을 복사하지 못했습니다.</string>
@@ -206,11 +206,13 @@
     <string name="pcv3_keyfile_order_selected">선택한 순서 사용</string>
     <string name="pcv3_keyfile_order_any">순서 무관</string>
     <string name="pcv3_password_not_allowed">비밀번호를 지우거나 비밀번호와 키 파일 정책을 선택하세요.</string>
+    <string name="pcv3_create">PCV3 생성</string>
     <string name="pcv3_start_decrypt">PCV3 복호화</string>
     <string name="pcv3_start_recovery">복구 시작</string>
     <string name="pcv3_start_force_recovery">강제 복구 시작</string>
     <string name="pcv3_cancel_decryption">복호화 취소</string>
     <string name="pcv3_cancel_recovery">복구 취소</string>
+    <string name="pcv3_cancel_creation">생성 취소</string>
 
     <string name="pcv3_consent_title">검증되지 않은 데이터를 복구할까요?</string>
     <string name="pcv3_consent_body">이 작업은 인증되지 않은 바이트를 저장할 수 있습니다. 데이터가 불완전하거나 손상되었거나 열기에 위험할 수 있습니다. 사용할 정확한 물리적 원본을 선택하세요.</string>
@@ -231,8 +233,6 @@
     <string name="pcv3_progress_preparing_artifact">복구 결과물 준비 중…</string>
     <string name="pcv3_progress_publishing">출력 게시 중…</string>
     <string name="pcv3_progress_confirming_durability">출력 영속성 확인 중…</string>
-    <string name="pcv3_progress_verifying_legacy">기존 볼륨 검증 중…</string>
-    <string name="pcv3_progress_migrating">인증된 콘텐츠 이전 중…</string>
     <string name="pcv3_progress_working">작업 중…</string>
 
     <string name="pcv3_resource_busy_title">다른 보안 작업이 실행 중입니다</string>
@@ -246,6 +246,8 @@
 
     <string name="pcv3_outcome_success_title">복호화 완료</string>
     <string name="pcv3_outcome_success_body">출력이 완전히 인증되었습니다.</string>
+    <string name="pcv3_create_outcome_title">PCV3 볼륨 생성됨</string>
+    <string name="pcv3_create_outcome_body">새 볼륨이 완성되었습니다. 보관하려면 원하는 위치에 저장하세요.</string>
     <string name="pcv3_outcome_archive_pending_title">인증된 압축 파일을 풀 수 있습니다</string>
     <string name="pcv3_outcome_archive_pending_body">압축 파일 내용이 완전히 인증되었습니다. 새 압축 해제 폴더를 선택하세요. 암호화된 원본은 그대로 유지됩니다.</string>
     <string name="pcv3_outcome_degraded_title">손상이 있는 인증된 출력 복구됨</string>
@@ -314,6 +316,7 @@
     <string name="pcv3_output_expired_close">만료된 출력 작업 닫기</string>
     <string name="pcv3_output_unknown_close">출력 작업 경고 닫기</string>
     <string name="pcv3_save_decrypted_output">복호화된 출력 저장</string>
+    <string name="pcv3_save_created_volume">생성된 볼륨 저장</string>
     <string name="pcv3_save_recovery_artifact">복구 아티팩트 저장</string>
     <string name="pcv3_inspect_recovery_artifact">복구 아티팩트 검사</string>
     <string name="pcv3_discard_artifact_title">복구 아티팩트를 삭제할까요?</string>

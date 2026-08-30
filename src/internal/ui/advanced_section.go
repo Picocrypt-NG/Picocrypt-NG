@@ -76,7 +76,7 @@ func (a *App) updateAdvancedSection() {
 func (a *App) advancedShouldAutoOpen() bool {
 	switch a.State.Mode {
 	case "encrypt":
-		return a.State.Paranoid || a.State.Compress || a.State.ReedSolomon ||
+		return a.State.CreatePCV3 || a.State.Paranoid || a.State.Compress || a.State.ReedSolomon ||
 			a.State.Delete || a.State.Deniability || a.State.Recursively ||
 			a.State.Split || a.State.SplitSize != ""
 	case "decrypt":
@@ -126,6 +126,7 @@ func (a *App) buildPCV3Options(snap app.UISnapshot) fyne.CanvasObject {
 		{tr("pcv3.action.decrypt", "Decrypt"), app.PCV3ActionDecrypt},
 		{tr("pcv3.action.recovery", "Recovery"), app.PCV3ActionRecovery},
 		{tr("pcv3.action.force", "Force recovery"), app.PCV3ActionForce},
+		{tr("pcv3.action.force_unverified", "Unverified Force recovery"), app.PCV3ActionForceUnverified},
 	}
 	a.pcv3ActionGroup = widget.NewRadioGroup(labelsForPCV3Actions(actionValues), func(selected string) {
 		for _, option := range actionValues {
@@ -176,6 +177,16 @@ func (a *App) buildPCV3Options(snap app.UISnapshot) fyne.CanvasObject {
 		widget.NewLabel(tr("pcv3.factor.label", "Credential policy")),
 		a.pcv3FactorGroup,
 	)
+	if snap.PCV3Format == app.PCV3FormatNormal {
+		d1 := widget.NewButton(tr("pcv3.format.d1_action", "Open as PCV3 D1"), func() {
+			if a.State.SelectPCV3D1() {
+				a.refreshAdvanced()
+				a.updateUIState()
+			}
+		})
+		d1.Importance = widget.LowImportance
+		content.Add(d1)
+	}
 	if snap.PCV3Factor == app.PCV3FactorPolicyKeyfiles ||
 		snap.PCV3Factor == app.PCV3FactorPolicyCombined {
 		orderValues := []struct {
@@ -299,11 +310,6 @@ func (a *App) setAdvancedDisclosureOpen(open bool) {
 	a.resizeDesktopWindowForCurrentContent(0)
 }
 
-// buildEncryptOptions creates encrypt mode options.
-func (a *App) buildEncryptOptions() {
-	a.buildEncryptOptionsInto(a.advancedContainer)
-}
-
 func adaptiveAdvancedOptionPair(left, right fyne.CanvasObject) fyne.CanvasObject {
 	pair := container.NewGridWithColumns(2, left, right)
 	if pair.MinSize().Width > desktopContentWidth() {
@@ -316,6 +322,20 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 	if target == nil {
 		return
 	}
+
+	a.pcv3CreateCheck = ttwidget.NewCheck(tr("advanced.pcv3.label", "Create PCV3"), func(checked bool) {
+		if a.State.CreatePCV3 == checked {
+			return
+		}
+		a.State.CreatePCV3 = checked
+		if checked && a.State.Deniability {
+			a.State.Paranoid = true
+		}
+		a.refreshAdvanced()
+		a.updateUIState()
+	})
+	a.pcv3CreateCheck.SetToolTip(tr("advanced.pcv3.tooltip", "Create the new authenticated PCV3 format"))
+	a.pcv3CreateCheck.SetChecked(a.State.CreatePCV3)
 
 	a.paranoidCheck = ttwidget.NewCheck(tr("advanced.paranoid.label", "Paranoid mode"), func(checked bool) {
 		a.State.Paranoid = checked
@@ -348,10 +368,21 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 	row2 := adaptiveAdvancedOptionPair(a.reedSolomonCheck, a.deleteCheck)
 
 	a.deniabilityCheck = ttwidget.NewCheck(tr("advanced.deniability.label", "Deniability"), func(checked bool) {
+		if a.State.Deniability == checked {
+			return
+		}
 		a.State.Deniability = checked
+		if checked && a.State.CreatePCV3 {
+			a.State.Paranoid = true
+		}
+		a.refreshAdvanced()
 		a.updateUIState()
 	})
-	a.deniabilityCheck.SetToolTip(tr("advanced.deniability.tooltip", "No readable Picocrypt header. A non-empty password protects the outer wrapper; keyfiles protect only the inner volume."))
+	deniabilityTooltip := tr("advanced.deniability.tooltip", "No readable Picocrypt header. Legacy deniability requires a non-empty outer password.")
+	if a.State.CreatePCV3 {
+		deniabilityTooltip = tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection.")
+	}
+	a.deniabilityCheck.SetToolTip(deniabilityTooltip)
 	a.deniabilityCheck.SetChecked(a.State.Deniability)
 
 	a.recursivelyCheck = ttwidget.NewCheck(tr("advanced.recursively.label", "Recursively"), func(checked bool) {
@@ -406,6 +437,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 		a.splitSizeEntry,
 	)
 
+	target.Add(a.pcv3CreateCheck)
 	target.Add(row1)
 	target.Add(row2)
 	target.Add(row3)
@@ -425,11 +457,6 @@ func localizedSplitUnit(unit string) string {
 		return tr("advanced.split.unit.total", "Total")
 	}
 	return unit
-}
-
-// buildDecryptOptions creates decrypt mode options.
-func (a *App) buildDecryptOptions() {
-	a.buildDecryptOptionsInto(a.advancedContainer)
 }
 
 func (a *App) buildDecryptOptionsInto(target *fyne.Container) {
@@ -550,10 +577,12 @@ func (a *App) updateEncryptOptionsState(advancedDisabled bool, snap app.UISnapsh
 	// disabled separately until credentials and required values are ready.
 
 	notEnoughFiles := snap.AllFileCount <= 1 && snap.OnlyFolderCount == 0
+	d1Selected := snap.CreatePCV3 && snap.Deniability
 
+	setWidgetDisabled(a.pcv3CreateCheck, advancedDisabled)
 	setWidgetDisabled(a.compressCheck, advancedDisabled || snap.Recursively)
 	setWidgetDisabled(a.recursivelyCheck, advancedDisabled || notEnoughFiles)
-	setWidgetDisabled(a.paranoidCheck, advancedDisabled)
+	setWidgetDisabled(a.paranoidCheck, advancedDisabled || d1Selected)
 	setWidgetDisabled(a.reedSolomonCheck, advancedDisabled)
 	setWidgetDisabled(a.deleteCheck, advancedDisabled)
 	setWidgetDisabled(a.deniabilityCheck, advancedDisabled)

@@ -107,6 +107,85 @@ func TestPCV3ChangeOutputSelectionUsesFolderPickerWithoutTouchingDestination(t *
 	}
 }
 
+func TestPCV3CreationChangeUsesPathOnlyPickerWithoutTouchingDestination(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	dir := t.TempDir()
+	input := filepath.Join(dir, "plain.bin")
+	if err := os.WriteFile(input, []byte("plaintext"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	a.State.Mode = "encrypt"
+	a.State.InputFile = input
+	a.State.AllFiles = []string{input}
+	a.State.OnlyFiles = []string{input}
+	a.State.OutputFile = filepath.Join(dir, "suggested.bin.pcv")
+	a.State.CreatePCV3 = true
+	a.State.SetInputSelection(1, 0, int64(len("plaintext")), true)
+	fyne.DoAndWait(a.updateUIState)
+
+	sentinel := filepath.Join(dir, "existing.bin.pcv")
+	sentinelBytes := []byte("do not truncate")
+	if err := os.WriteFile(sentinel, sentinelBytes, 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	fyne.DoAndWait(a.changeBtn.OnTapped)
+	selectPCV3FolderOutputDestination(t, a, "existing")
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != string(sentinelBytes) {
+		t.Fatalf("PCV3 creation Change modified existing destination: read=%q err=%v", got, err)
+	}
+
+	newDestination := filepath.Join(dir, "new.bin.pcv")
+	fyne.DoAndWait(a.changeBtn.OnTapped)
+	selectPCV3FolderOutputDestination(t, a, "new")
+	if _, err := os.Lstat(newDestination); !os.IsNotExist(err) {
+		t.Fatalf("PCV3 creation Change created destination before publication: %v", err)
+	}
+	snap := a.State.UISnapshot()
+	if snap.OutputFile != newDestination || a.State.OutputChosenViaSaveDialog || snap.Status.Kind != app.StatusReady {
+		t.Fatalf("PCV3 creation path-only selection = %#v", snap)
+	}
+}
+
+func TestPCV3CreationChangeRejectsStaleSelectionWithIdenticalPaths(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	dir := t.TempDir()
+	input := filepath.Join(dir, "plain.bin")
+	if err := os.WriteFile(input, []byte("plaintext"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	configure := func() {
+		a.State.Mode = "encrypt"
+		a.State.InputFile = input
+		a.State.AllFiles = []string{input}
+		a.State.OnlyFiles = []string{input}
+		a.State.OutputFile = filepath.Join(dir, "same.bin.pcv")
+		a.State.CreatePCV3 = true
+		a.State.SetInputSelection(1, 0, int64(len("plaintext")), true)
+		a.updateUIState()
+	}
+	fyne.DoAndWait(configure)
+	fyne.DoAndWait(a.changeBtn.OnTapped)
+	entry, confirm := openPCV3OutputFilenameForm(t, a)
+
+	fyne.DoAndWait(func() {
+		a.resetUI()
+		configure()
+	})
+	entry.SetText("stale")
+	test.Tap(confirm)
+
+	unchanged := filepath.Join(dir, "same.bin.pcv")
+	stale := filepath.Join(dir, "stale.bin.pcv")
+	if snap := a.State.UISnapshot(); snap.OutputFile != unchanged {
+		t.Fatalf("stale creation picker changed replacement selection: %q", snap.OutputFile)
+	}
+	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale creation picker created a destination: %v", err)
+	}
+}
+
 // TestApplyPCV3OutputSelectionDoesNotTouchDestination isolates the path-only
 // callback seam used by Change. It must update the ready destination without
 // opening, truncating, renaming, or deleting either a pre-existing target or

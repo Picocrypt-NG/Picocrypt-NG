@@ -2,11 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsStdin(t *testing.T) {
@@ -78,7 +83,7 @@ func TestBufferStdinToTemp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BufferStdinToTemp() error = %v", err)
 	}
-	defer os.Remove(tmpPath)
+	t.Cleanup(func() { _ = cleanupTempFiles(tmpPath) })
 
 	// Verify file exists with correct permissions
 	info, err := os.Stat(tmpPath)
@@ -118,7 +123,7 @@ func TestBufferStdinToTempEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BufferStdinToTemp() error = %v", err)
 	}
-	defer os.Remove(tmpPath)
+	t.Cleanup(func() { _ = cleanupTempFiles(tmpPath) })
 
 	info, err := os.Stat(tmpPath)
 	if err != nil {
@@ -160,7 +165,7 @@ func TestBufferStdinToTempLarge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BufferStdinToTemp() error = %v", err)
 	}
-	defer os.Remove(tmpPath)
+	t.Cleanup(func() { _ = cleanupTempFiles(tmpPath) })
 
 	content, err := os.ReadFile(tmpPath)
 	if err != nil {
@@ -195,7 +200,7 @@ func TestBufferStdinToTempDoesNotUseOutputDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BufferStdinToTemp() error = %v", err)
 	}
-	defer os.Remove(tmpPath)
+	t.Cleanup(func() { _ = cleanupTempFiles(tmpPath) })
 
 	if filepath.Dir(tmpPath) == outputDir {
 		t.Fatalf("stdin temp file should not be created in output dir %s", outputDir)
@@ -254,7 +259,7 @@ func TestStreamFileToStdout(t *testing.T) {
 	// Stream in goroutine
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- StreamFileToStdout(tmpPath)
+		errCh <- StreamFileToStdout(context.Background(), tmpPath)
 		w.Close()
 	}()
 
@@ -270,10 +275,13 @@ func TestStreamFileToStdout(t *testing.T) {
 	if !bytes.Equal(captured.Bytes(), testData) {
 		t.Errorf("output mismatch\ngot:  %q\nwant: %q", captured.Bytes(), testData)
 	}
+	if _, err := os.Lstat(tmpPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stdout plaintext temp remained after streaming: %v", err)
+	}
 }
 
 func TestStreamFileToStdoutNonexistent(t *testing.T) {
-	err := StreamFileToStdout("/nonexistent/file/path")
+	err := StreamFileToStdout(context.Background(), "/nonexistent/file/path")
 	if err == nil {
 		t.Error("expected error for nonexistent file")
 	}
@@ -348,6 +356,262 @@ func TestCleanupTempFilesSkipsEmptyPaths(t *testing.T) {
 	}
 }
 
+func TestCLIReportsStdinTempCleanupFailure(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("directory permissions cannot reliably force unlink failure on this host")
+	}
+
+	dir := t.TempDir()
+	tempDir := filepath.Join(dir, "temp")
+	if err := os.Mkdir(tempDir, 0o700); err != nil {
+		t.Fatalf("create temp directory: %v", err)
+	}
+	output := filepath.Join(dir, "encrypted.pcv")
+	binary := buildCLITestBinary(t)
+	command := exec.Command(
+		binary,
+		"--temp-dir", tempDir,
+		"encrypt", "-", "-o", output,
+		"--pcv3", "-p", "cleanup-password", "--quiet",
+	)
+	command.Stdin = bytes.NewReader([]byte("plaintext requiring fail-loud cleanup"))
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatalf("start CLI: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	found := false
+	for time.Now().Before(deadline) {
+		entries, err := os.ReadDir(tempDir)
+		if err != nil {
+			t.Fatalf("inspect temp directory: %v", err)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "picocrypt-stdin-") {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !found {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal("CLI did not create the stdin plaintext temp")
+	}
+	if err := os.Chmod(tempDir, 0o500); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatalf("make temp directory non-writable: %v", err)
+	}
+	err := command.Wait()
+	if chmodErr := os.Chmod(tempDir, 0o700); chmodErr != nil {
+		t.Fatalf("restore temp directory permissions: %v", chmodErr)
+	}
+	if err == nil {
+		t.Fatalf("CLI reported success after plaintext cleanup failed; stderr = %q", stderr.String())
+	}
+	if !strings.Contains(strings.ToLower(stderr.String()), "cleanup") {
+		t.Fatalf("cleanup failure was not reported: %q", stderr.String())
+	}
+}
+
+func TestPCV3DecryptStdoutCancelsWithoutPlaintextResidue(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process interrupt and unlink semantics are platform-specific")
+	}
+
+	dir := t.TempDir()
+	tempDir := filepath.Join(dir, "temp")
+	if err := os.Mkdir(tempDir, 0o700); err != nil {
+		t.Fatalf("create temp directory: %v", err)
+	}
+	plaintext := bytes.Repeat([]byte("blocked stdout plaintext\n"), 100_000)
+	input := filepath.Join(dir, "plain.bin")
+	volume := filepath.Join(dir, "encrypted.pcv")
+	if err := os.WriteFile(input, plaintext, 0o600); err != nil {
+		t.Fatalf("write plaintext: %v", err)
+	}
+	binary := buildCLITestBinary(t)
+	encrypted := runCLITestCommand(
+		t,
+		binary,
+		"encrypt", input, "-o", volume, "--pcv3", "-p", "signal-password", "--quiet",
+	)
+	if encrypted.exitCode != 0 {
+		t.Fatalf("prepare PCV3 volume: exit %d stderr %q", encrypted.exitCode, encrypted.stderr)
+	}
+
+	stderrPath := filepath.Join(dir, "stderr")
+	stderrFile, err := os.Create(stderrPath)
+	if err != nil {
+		t.Fatalf("create stderr capture: %v", err)
+	}
+	command := exec.Command(
+		binary,
+		"--temp-dir", tempDir,
+		"decrypt", volume, "-o", "-",
+		"--pcv3-factors=password", "-p", "signal-password", "--quiet",
+	)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		_ = stderrFile.Close()
+		t.Fatalf("create stdout pipe: %v", err)
+	}
+	defer stdout.Close()
+	command.Stderr = stderrFile
+	if err := command.Start(); err != nil {
+		_ = stderrFile.Close()
+		t.Fatalf("start decrypt: %v", err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	published := false
+	for time.Now().Before(deadline) {
+		captured, readErr := os.ReadFile(stderrPath)
+		if readErr != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			_ = stderrFile.Close()
+			t.Fatalf("read stderr capture: %v", readErr)
+		}
+		if bytes.Contains(captured, []byte("Publication: published-durable")) {
+			published = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !published {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		_ = stderrFile.Close()
+		t.Fatal("decrypt did not reach durable publication")
+	}
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		_ = stderrFile.Close()
+		t.Fatalf("interrupt decrypt: %v", err)
+	}
+
+	waited := make(chan error, 1)
+	go func() { waited <- command.Wait() }()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		_ = command.Process.Kill()
+		<-waited
+		_ = stderrFile.Close()
+		t.Fatal("decrypt did not stop after SIGINT")
+	}
+	if err := stderrFile.Close(); err != nil {
+		t.Fatalf("close stderr capture: %v", err)
+	}
+	captured, err := os.ReadFile(stderrPath)
+	if err != nil {
+		t.Fatalf("read final stderr: %v", err)
+	}
+	if !bytes.Contains(captured, []byte("Cancelling operation")) {
+		t.Fatalf("SIGINT bypassed cooperative cancellation: %q", captured)
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("inspect temp directory: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "picocrypt-out-") {
+			t.Fatalf("plaintext temp remained after SIGINT: %s", entry.Name())
+		}
+	}
+}
+
+func TestCLIInterruptDuringStdinBufferingRemovesPlaintextTemp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process interrupt and open-file unlink semantics are platform-specific")
+	}
+
+	dir := t.TempDir()
+	tempDir := filepath.Join(dir, "temp")
+	if err := os.Mkdir(tempDir, 0o700); err != nil {
+		t.Fatalf("create temp directory: %v", err)
+	}
+	binary := buildCLITestBinary(t)
+	command := exec.Command(
+		binary,
+		"--temp-dir", tempDir,
+		"encrypt", "-", "-o", filepath.Join(dir, "encrypted.pcv"),
+		"--pcv3", "-p", "buffer-signal-password", "--quiet",
+	)
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatalf("create stdin pipe: %v", err)
+	}
+	if err := command.Start(); err != nil {
+		_ = stdin.Close()
+		t.Fatalf("start encrypt: %v", err)
+	}
+	if _, err := stdin.Write([]byte("plaintext held in an open input pipe")); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatalf("write stdin: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	found := false
+	for time.Now().Before(deadline) {
+		entries, readErr := os.ReadDir(tempDir)
+		if readErr != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			t.Fatalf("inspect temp directory: %v", readErr)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "picocrypt-stdin-") {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !found {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal("CLI did not create the stdin plaintext temp")
+	}
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatalf("interrupt encrypt: %v", err)
+	}
+	_ = stdin.Close()
+	waited := make(chan error, 1)
+	go func() { waited <- command.Wait() }()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		_ = command.Process.Kill()
+		<-waited
+		t.Fatal("encrypt did not stop after SIGINT")
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("inspect final temp directory: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "picocrypt-stdin-") {
+			t.Fatalf("plaintext temp remained after SIGINT: %s", entry.Name())
+		}
+	}
+}
+
 func TestStreamFileToStdoutLarge(t *testing.T) {
 	// Test streaming 1 MiB
 	testData := make([]byte, 1024*1024)
@@ -378,7 +642,7 @@ func TestStreamFileToStdoutLarge(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- StreamFileToStdout(tmpPath)
+		errCh <- StreamFileToStdout(context.Background(), tmpPath)
 		w.Close()
 	}()
 

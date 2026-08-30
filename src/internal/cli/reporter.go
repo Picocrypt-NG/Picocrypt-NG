@@ -157,10 +157,6 @@ func (r *Reporter) PrintPCV3Status(status pcv3operation.Status) error {
 		message = "Publishing output…"
 	case pcv3operation.StatusConfirmingDurability:
 		message = "Confirming output durability…"
-	case pcv3operation.StatusVerifyingLegacy:
-		message = "Verifying legacy volume…"
-	case pcv3operation.StatusMigrating:
-		message = "Migrating volume…"
 	}
 
 	var line strings.Builder
@@ -202,6 +198,13 @@ func renderPCV3CLIResult(output io.Writer, result pcv3CLIResult) int {
 	}
 	if _, err := fmt.Fprintf(output, "Outcome: %s\nPublication: %s\n", outcome, publication); err != nil {
 		return ExitGeneralError
+	}
+	if commented, ok := result.(interface{ AuthenticatedComment() string }); ok {
+		if comment := commented.AuthenticatedComment(); comment != "" {
+			if _, err := fmt.Fprintf(output, "Comment: %s\n", strconv.Quote(comment)); err != nil {
+				return ExitGeneralError
+			}
+		}
 	}
 	if len(warnings) > 8 {
 		warnings = warnings[:8]

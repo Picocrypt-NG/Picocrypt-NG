@@ -2,6 +2,7 @@
 package pcv3operation
 
 import (
+	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3publication"
@@ -27,7 +28,6 @@ const (
 	ModeForceD1
 	ModeForceUnverifiedNormal
 	ModeForceUnverifiedD1
-	ModeMigrate
 )
 
 // PhysicalRole is the exact physical input authorized for unverified Force.
@@ -55,8 +55,6 @@ const (
 	StatusPreparingArtifact
 	StatusPublishing
 	StatusConfirmingDurability
-	StatusVerifyingLegacy
-	StatusMigrating
 )
 
 // Status carries only a closed code and bounded numeric arguments.
@@ -77,8 +75,7 @@ func (status Status) Args() []uint64 {
 	return args
 }
 
-// Reporter is operation-owned after Run begins. Task 3 establishes ownership;
-// later platform integration supplies the typed progress producers.
+// Reporter is operation-owned after Run begins; callers must not reuse it.
 type Reporter func(Status) error
 
 // ConsentRequest identifies one exact unverified operation and the complete
@@ -125,8 +122,8 @@ var (
 type Request struct {
 	Mode      Mode
 	Source    *os.File
+	SplitBase string
 	Factors   *pcv3credential.FactorRequest
-	Migration *MigrationRequest
 	Target    string
 	Protected []string
 	Reporter  Reporter
@@ -207,14 +204,6 @@ func RunWithOptions(
 	}, options)
 }
 
-func runWithSeams(
-	ctx context.Context,
-	request *Request,
-	seams operationSeams,
-) (result *Result) {
-	return runWithSeamsAndOptions(ctx, request, seams, ExecutionOptions{})
-}
-
 func runWithSeamsAndOptions(
 	ctx context.Context,
 	request *Request,
@@ -259,9 +248,6 @@ func runWithSeamsAndOptions(
 			DiagnosticRoutingRefusal,
 		)
 	}
-	if owner.mode == ModeMigrate {
-		return runMigration(ctx, owner, seams, nil)
-	}
 	if ctx == nil || owner.source == nil || owner.factors == nil ||
 		owner.target == "" || !owner.validProtected() || !owner.validRoleAndConsent() {
 		return closedFailure(
@@ -278,6 +264,22 @@ func runWithSeamsAndOptions(
 			pcv3.CodeOperationFailed,
 			DiagnosticCancellation,
 		)
+	}
+	if owner.splitBase != "" {
+		if err := owner.prepareSplitInput(ctx); err != nil {
+			stage := pcv3.StageInputIO
+			diagnostic := DiagnosticCoreFailure
+			if ctx.Err() != nil {
+				stage = pcv3.StageCancellation
+				diagnostic = DiagnosticCancellation
+			}
+			return closedFailure(
+				pcv3.OutcomeOperationFailed,
+				stage,
+				pcv3.CodeOperationFailed,
+				diagnostic,
+			)
+		}
 	}
 	info, err := owner.source.Stat()
 	if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
@@ -325,7 +327,7 @@ func validMode(mode Mode) bool {
 	switch mode {
 	case ModeReadNormal, ModeReadD1, ModeRecoverNormal, ModeRecoverD1,
 		ModeForceNormal, ModeForceD1, ModeForceUnverifiedNormal,
-		ModeForceUnverifiedD1, ModeMigrate:
+		ModeForceUnverifiedD1:
 		return true
 	default:
 		return false
@@ -421,7 +423,7 @@ func runNormalRead(
 	if archive == nil {
 		return result
 	}
-	followUp := newArchiveFollowUp(archive)
+	followUp := newArchiveFollowUp(archive, result.AuthenticatedComment())
 	if followUp != nil && result.outcome == pcv3.OutcomeSuccess &&
 		result.stage == pcv3.StageNone && result.code == pcv3.CodeSuccess &&
 		!result.publicationAttempted && result.warningCount == 0 {
@@ -718,6 +720,7 @@ func resultFromNativeRead(native *pcv3.NativeReadResult) *Result {
 		publicationCode:      native.PublicationCode(),
 		diagnostic:           diagnostic,
 	})
+	result.authenticatedComment = native.AuthenticatedComment()
 	if native.CleanupIncomplete() {
 		result.appendWarning(WarningCleanupIncomplete)
 	}
@@ -761,6 +764,7 @@ func resultFromRecovery(recovery *pcv3recovery.Result) (result *Result) {
 		publicationStage:      recovery.PublicationStage(),
 		publicationCode:       recovery.PublicationCode(),
 	})
+	result.authenticatedComment = recovery.AuthenticatedComment()
 	if errors.Is(recovery, pcv3publication.ErrCleanupIncomplete) {
 		result.appendWarning(WarningCleanupIncomplete)
 	}
@@ -805,8 +809,9 @@ func closedFailure(
 type operationOwner struct {
 	mode               Mode
 	source             *os.File
+	splitBase          string
+	splitStage         *fileops.StagedFile
 	factors            *pcv3credential.FactorRequest
-	migration          *MigrationRequest
 	target             string
 	protected          []string
 	reporter           Reporter
@@ -824,8 +829,8 @@ func takeOperationRequest(request *Request) *operationOwner {
 	}
 	owner.mode = request.Mode
 	owner.source = request.Source
+	owner.splitBase = request.SplitBase
 	owner.factors = request.Factors
-	owner.migration = request.Migration
 	owner.target = request.Target
 	owner.protected = append([]string(nil), request.Protected...)
 	owner.reporter = request.Reporter
@@ -833,8 +838,8 @@ func takeOperationRequest(request *Request) *operationOwner {
 
 	request.Mode = 0
 	request.Source = nil
+	request.SplitBase = ""
 	request.Factors = nil
-	request.Migration = nil
 	request.Target = ""
 	for index := range request.Protected {
 		request.Protected[index] = ""
@@ -957,18 +962,19 @@ func (owner *operationOwner) close() bool {
 	owner.closed = true
 	failed := safeCloseFactors(owner.factors)
 	owner.factors = nil
-	if owner.migration != nil && owner.migration.close() != nil {
-		failed = true
-	}
-	owner.migration = nil
 	if safeCloseSource(owner.source) {
 		failed = true
 	}
 	owner.source = nil
+	if owner.splitStage != nil && owner.splitStage.Cleanup() != nil {
+		failed = true
+	}
+	owner.splitStage = nil
 	owner.reporter = nil
 	owner.consent = nil
 	owner.resourceDiagnostic = DiagnosticNone
 	owner.mode = 0
+	owner.splitBase = ""
 	owner.target = ""
 	for index := range owner.protected {
 		owner.protected[index] = ""

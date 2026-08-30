@@ -180,6 +180,7 @@ type App struct {
 
 	// Advanced options (encrypt mode)
 	paranoidCheck    *ttwidget.Check
+	pcv3CreateCheck  *ttwidget.Check
 	compressCheck    *ttwidget.Check
 	reedSolomonCheck *ttwidget.Check
 	deleteCheck      *ttwidget.Check
@@ -379,7 +380,11 @@ func (a *App) refreshAdvancedLocalizedText() {
 		setCheckTooltip(a.deleteCheck, tr("advanced.delete_files.tooltip", "Delete source files after encryption"))
 	}
 	setCheckText(a.deniabilityCheck, tr("advanced.deniability.label", "Deniability"))
-	setCheckTooltip(a.deniabilityCheck, tr("advanced.deniability.tooltip", "No readable Picocrypt header. A non-empty password protects the outer wrapper; keyfiles protect only the inner volume."))
+	deniabilityTooltip := tr("advanced.deniability.tooltip", "No readable Picocrypt header. Legacy deniability requires a non-empty outer password.")
+	if a.State != nil && a.State.CreatePCV3 {
+		deniabilityTooltip = tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection.")
+	}
+	setCheckTooltip(a.deniabilityCheck, deniabilityTooltip)
 	setCheckText(a.recursivelyCheck, tr("advanced.recursively.label", "Recursively"))
 	setCheckTooltip(a.recursivelyCheck, tr("advanced.recursively.tooltip", "Process each file separately"))
 	setCheckText(a.splitCheck, tr("advanced.split.label", "Split:"))
@@ -627,30 +632,6 @@ func (a *App) showFileDialogWithResize(d dialog.Dialog, dialogSize fyne.Size) {
 	d.Resize(dialogSize)
 }
 
-// fixedWidthLayout is a layout that forces a fixed width (used in tests).
-//
-//nolint:unused // used by widgets_test.go
-type fixedWidthLayout struct {
-	width float32
-}
-
-//nolint:unused // used by widgets_test.go
-func (f *fixedWidthLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
-	if len(objects) == 0 {
-		return fyne.NewSize(f.width, 0)
-	}
-	min := objects[0].MinSize()
-	return fyne.NewSize(f.width, min.Height)
-}
-
-//nolint:unused // used by widgets_test.go
-func (f *fixedWidthLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
-	for _, obj := range objects {
-		obj.Resize(fyne.NewSize(f.width, size.Height))
-		obj.Move(fyne.NewPos(0, 0))
-	}
-}
-
 // buildUI creates the main UI layout.
 func (a *App) buildUI() fyne.CanvasObject {
 	snap := a.State.UISnapshot()
@@ -835,6 +816,8 @@ func renderStartActionForSnapshot(snap app.UISnapshot) string {
 			return tr("pcv3.action.recovery", "Start recovery")
 		case app.PCV3ActionForce:
 			return tr("pcv3.action.force", "Start Force recovery")
+		case app.PCV3ActionForceUnverified:
+			return tr("pcv3.action.force_unverified", "Start unverified Force recovery")
 		}
 	}
 	return renderStartAction(snap.StartAction, snap.Recursively)
@@ -880,19 +863,19 @@ func (a *App) startReadinessHint(snap app.UISnapshot) string {
 	if snap.Scanning {
 		return tr("start.hint.scanning", "Scanning files; wait before starting.")
 	}
-	if snap.Mode == "encrypt" && snap.KeyfileCount > 0 {
+	if snap.Mode == "encrypt" && snap.KeyfileCount > 0 && !snap.CreatePCV3 {
 		return tr(
 			"start.hint.keyfileWritesDisabled",
-			"New v2 volumes with keyfiles are disabled pending a reviewed v3 format; existing keyfile volumes remain decryptable.",
+			"Legacy v2 cannot create new volumes with keyfiles. Enable Create PCV3 or remove the keyfiles.",
 		)
 	}
-	if snap.Mode == "encrypt" && snap.Deniability && snap.Password == "" {
+	if snap.Mode == "encrypt" && snap.Deniability && !snap.CreatePCV3 && snap.Password == "" {
 		return tr(
 			"start.hint.deniabilityPasswordRequired",
 			"Deniability requires a non-empty password.",
 		)
 	}
-	if snap.Mode == "encrypt" && snap.Password == "" {
+	if snap.Mode == "encrypt" && snap.Password == "" && !snap.CreatePCV3 {
 		return tr("start.hint.enterPassword", "Enter a password to continue.")
 	}
 	if snap.KeyfileCount == 0 && snap.Password == "" {
@@ -1048,8 +1031,13 @@ func (a *App) buildOutputSection() fyne.CanvasObject {
 	a.outputEntry = outputEntry
 
 	a.changeBtn = widget.NewButton(tr("action.change", "Change"), func() {
-		if a.State.UISnapshot().PCV3Route == app.PCV3RouteReady {
+		snap := a.State.UISnapshot()
+		if snap.PCV3Route == app.PCV3RouteReady {
 			a.changePCV3OutputFile()
+			return
+		}
+		if snap.Mode == "encrypt" && snap.CreatePCV3 {
+			a.changePCV3CreationOutputFile()
 			return
 		}
 		a.changeOutputFile()

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-type phase2LifecycleCounts struct {
+type credentialLifecycleCounts struct {
 	entropyCalls         int
 	kdfCalls             int
 	expandCalls          int
@@ -19,7 +19,7 @@ type phase2LifecycleCounts struct {
 	unclearedOwnedBuffer int
 }
 
-type phase2LifecycleProbe struct {
+type credentialLifecycleProbe struct {
 	entropy *pipelineEntropy
 	admit   *pipelineAdmission
 
@@ -36,8 +36,8 @@ type phase2LifecycleProbe struct {
 	aliases           map[string][]byte
 }
 
-func newPhase2LifecycleProbe() *phase2LifecycleProbe {
-	return &phase2LifecycleProbe{
+func newCredentialLifecycleProbe() *credentialLifecycleProbe {
+	return &credentialLifecycleProbe{
 		entropy: &pipelineEntropy{},
 		admit: &pipelineAdmission{
 			result: KDFAdmissionGranted,
@@ -46,7 +46,7 @@ func newPhase2LifecycleProbe() *phase2LifecycleProbe {
 	}
 }
 
-func (probe *phase2LifecycleProbe) observe(
+func (probe *credentialLifecycleProbe) observe(
 	name string,
 	alias []byte,
 ) {
@@ -55,7 +55,7 @@ func (probe *phase2LifecycleProbe) observe(
 	}
 }
 
-func (probe *phase2LifecycleProbe) observeMaterial(material *keyMaterial) {
+func (probe *credentialLifecycleProbe) observeMaterial(material *keyMaterial) {
 	if material == nil {
 		return
 	}
@@ -87,7 +87,7 @@ func (probe *phase2LifecycleProbe) observeMaterial(material *keyMaterial) {
 	}
 }
 
-func (probe *phase2LifecycleProbe) seams() pipelineSeams {
+func (probe *credentialLifecycleProbe) seams() pipelineSeams {
 	return pipelineSeams{
 		entropy: probe.entropy,
 		derive: func(
@@ -180,9 +180,9 @@ func (probe *phase2LifecycleProbe) seams() pipelineSeams {
 	}
 }
 
-func (probe *phase2LifecycleProbe) counts(
+func (probe *credentialLifecycleProbe) counts(
 	activeBorrows int,
-) phase2LifecycleCounts {
+) credentialLifecycleCounts {
 	uncleared := 0
 	for _, alias := range probe.aliases {
 		if !allZero(alias) {
@@ -194,7 +194,7 @@ func (probe *phase2LifecycleProbe) counts(
 			uncleared++
 		}
 	}
-	return phase2LifecycleCounts{
+	return credentialLifecycleCounts{
 		entropyCalls:         probe.entropy.calls,
 		kdfCalls:             probe.kdfCalls,
 		expandCalls:          probe.expandCalls,
@@ -204,10 +204,10 @@ func (probe *phase2LifecycleProbe) counts(
 	}
 }
 
-func requirePhase2LifecycleCounts(
+func requireCredentialLifecycleCounts(
 	t *testing.T,
-	got phase2LifecycleCounts,
-	want phase2LifecycleCounts,
+	got credentialLifecycleCounts,
+	want credentialLifecycleCounts,
 ) {
 	t.Helper()
 	if got != want {
@@ -215,7 +215,7 @@ func requirePhase2LifecycleCounts(
 	}
 }
 
-func requirePhase2PipelineFailure(
+func requireCredentialPipelineFailure(
 	t *testing.T,
 	err error,
 	code PipelineErrorCode,
@@ -235,7 +235,7 @@ func requirePipelinePreExpandScheduleValidation(t *testing.T) {
 		allRequests[0],
 	}
 	passwordAlias := request.Factors.Password
-	probe := newPhase2LifecycleProbe()
+	probe := newCredentialLifecycleProbe()
 	owner, err := newCredential(
 		context.Background(),
 		request,
@@ -246,7 +246,7 @@ func requirePipelinePreExpandScheduleValidation(t *testing.T) {
 		owner.Close()
 		t.Fatal("schedule rejection published an owner")
 	}
-	requirePhase2PipelineFailure(
+	requireCredentialPipelineFailure(
 		t,
 		err,
 		PipelineErrorSchedule,
@@ -255,14 +255,14 @@ func requirePipelinePreExpandScheduleValidation(t *testing.T) {
 	if !allZero(passwordAlias) {
 		t.Fatal("schedule rejection retained the password")
 	}
-	requirePhase2LifecycleCounts(
+	requireCredentialLifecycleCounts(
 		t,
 		probe.counts(0),
-		phase2LifecycleCounts{},
+		credentialLifecycleCounts{},
 	)
 }
 
-func TestPhase2LifecycleExitMatrix(t *testing.T) {
+func TestCredentialLifecycleExitMatrix(t *testing.T) {
 	const standardExpands = 9
 	required := map[string]bool{
 		"success":                   false,
@@ -297,7 +297,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 			run: func(t *testing.T) {
 				request := pipelineRequest(t, SuiteStandard1)
 				passwordAlias := request.Factors.Password
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				owner, err := newCredential(
 					context.Background(),
 					request,
@@ -311,10 +311,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				if !allZero(passwordAlias) {
 					t.Fatal("success retained the transferred password")
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{
+					credentialLifecycleCounts{
 						entropyCalls:      3,
 						kdfCalls:          1,
 						expandCalls:       standardExpands,
@@ -329,7 +329,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				request := pipelineRequest(t, SuiteStandard1)
 				passwordAlias := request.Factors.Password
 				request.Factors.Mode = CredentialModeKeyfilesOnly
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				owner, err := newCredential(
 					context.Background(),
 					request,
@@ -340,7 +340,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					owner.Close()
 					t.Fatal("factor rejection published an owner")
 				}
-				requirePhase2PipelineFailure(
+				requireCredentialPipelineFailure(
 					t,
 					err,
 					PipelineErrorFactors,
@@ -349,10 +349,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				if !allZero(passwordAlias) {
 					t.Fatal("factor rejection retained the transferred password")
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{},
+					credentialLifecycleCounts{},
 				)
 			},
 		},
@@ -368,7 +368,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					ExpectedPolicy: FactorPolicyKeyfilesOnly,
 					Keyfiles:       ownKeyfileReaders(reader),
 				}
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				owner, err := newCredential(
 					context.Background(),
 					request,
@@ -379,7 +379,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					owner.Close()
 					t.Fatal("reader failure published an owner")
 				}
-				requirePhase2PipelineFailure(
+				requireCredentialPipelineFailure(
 					t,
 					err,
 					PipelineErrorFactors,
@@ -392,10 +392,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 						reader.closeCalls,
 					)
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{},
+					credentialLifecycleCounts{},
 				)
 			},
 		},
@@ -411,7 +411,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					ExpectedPolicy: FactorPolicyKeyfilesOnly,
 					Keyfiles:       ownKeyfileReaders(reader),
 				}
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				owner, err := newCredential(
 					context.Background(),
 					request,
@@ -422,7 +422,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					owner.Close()
 					t.Fatal("close failure published an owner")
 				}
-				requirePhase2PipelineFailure(
+				requireCredentialPipelineFailure(
 					t,
 					err,
 					PipelineErrorFactors,
@@ -431,10 +431,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				if reader.closeCalls != 1 {
 					t.Fatalf("reader close calls = %d; want 1", reader.closeCalls)
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{},
+					credentialLifecycleCounts{},
 				)
 			},
 		},
@@ -450,7 +450,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				request := pipelineRequest(t, SuiteStandard1)
 				request.Factors.Password = []byte{0xff}
 				passwordAlias := request.Factors.Password
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				owner, err := newCredential(
 					context.Background(),
 					request,
@@ -461,7 +461,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					owner.Close()
 					t.Fatal("transcript rejection published an owner")
 				}
-				requirePhase2PipelineFailure(
+				requireCredentialPipelineFailure(
 					t,
 					err,
 					PipelineErrorTranscript,
@@ -470,10 +470,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				if !allZero(passwordAlias) {
 					t.Fatal("transcript rejection retained the password")
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{},
+					credentialLifecycleCounts{},
 				)
 			},
 		},
@@ -482,7 +482,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 			run: func(t *testing.T) {
 				request := pipelineRequest(t, SuiteStandard1)
 				passwordAlias := request.Factors.Password
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				probe.admit.result = KDFAdmissionDenied
 				owner, err := newCredential(
 					context.Background(),
@@ -494,7 +494,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					owner.Close()
 					t.Fatal("admission failure published an owner")
 				}
-				requirePhase2PipelineFailure(
+				requireCredentialPipelineFailure(
 					t,
 					err,
 					PipelineErrorAdmission,
@@ -503,17 +503,17 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				if !allZero(passwordAlias) {
 					t.Fatal("admission failure retained the password")
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{entropyCalls: 3},
+					credentialLifecycleCounts{entropyCalls: 3},
 				)
 			},
 		},
 		{
 			name: "entropy-argon-salt",
 			run: func(t *testing.T) {
-				testPhase2EntropyFailure(
+				testCredentialEntropyFailure(
 					t,
 					1,
 					PipelineStageArgonSalt,
@@ -523,13 +523,13 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 		{
 			name: "entropy-volume-id",
 			run: func(t *testing.T) {
-				testPhase2EntropyFailure(t, 2, PipelineStageVolumeID)
+				testCredentialEntropyFailure(t, 2, PipelineStageVolumeID)
 			},
 		},
 		{
 			name: "entropy-volume-key",
 			run: func(t *testing.T) {
-				testPhase2EntropyFailure(t, 3, PipelineStageVolumeKey)
+				testCredentialEntropyFailure(t, 3, PipelineStageVolumeKey)
 			},
 		},
 		{
@@ -539,7 +539,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				cancel()
 				request := pipelineRequest(t, SuiteStandard1)
 				passwordAlias := request.Factors.Password
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				owner, err := newCredential(
 					ctx,
 					request,
@@ -550,7 +550,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					owner.Close()
 					t.Fatal("initial cancellation published an owner")
 				}
-				requirePhase2PipelineFailure(
+				requireCredentialPipelineFailure(
 					t,
 					err,
 					PipelineErrorCancelled,
@@ -559,10 +559,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				if !allZero(passwordAlias) {
 					t.Fatal("initial cancellation retained the password")
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{},
+					credentialLifecycleCounts{},
 				)
 			},
 		},
@@ -572,7 +572,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				request := pipelineRequest(t, SuiteStandard1)
 				passwordAlias := request.Factors.Password
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				seams := probe.seams()
 				seams.beforeKDF = cancel
 				owner, err := newCredential(
@@ -585,7 +585,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					owner.Close()
 					t.Fatal("pre-KDF cancellation published an owner")
 				}
-				requirePhase2PipelineFailure(
+				requireCredentialPipelineFailure(
 					t,
 					err,
 					PipelineErrorCancelled,
@@ -594,10 +594,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				if !allZero(passwordAlias) {
 					t.Fatal("pre-KDF cancellation retained the password")
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{entropyCalls: 3},
+					credentialLifecycleCounts{entropyCalls: 3},
 				)
 			},
 		},
@@ -606,7 +606,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 			run: func(t *testing.T) {
 				request := pipelineRequest(t, SuiteStandard1)
 				passwordAlias := request.Factors.Password
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				probe.kdfErr = errors.New("injected KDF failure")
 				owner, err := newCredential(
 					context.Background(),
@@ -618,7 +618,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					owner.Close()
 					t.Fatal("KDF failure published an owner")
 				}
-				requirePhase2PipelineFailure(
+				requireCredentialPipelineFailure(
 					t,
 					err,
 					PipelineErrorKDF,
@@ -627,10 +627,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				if !allZero(passwordAlias) {
 					t.Fatal("KDF failure retained the password")
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{
+					credentialLifecycleCounts{
 						entropyCalls: 3,
 						kdfCalls:     1,
 					},
@@ -643,7 +643,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				request := pipelineRequest(t, SuiteStandard1)
 				passwordAlias := request.Factors.Password
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				probe.cancelDuringKDF = cancel
 				owner, err := newCredential(
 					ctx,
@@ -655,7 +655,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					owner.Close()
 					t.Fatal("post-KDF cancellation published an owner")
 				}
-				requirePhase2PipelineFailure(
+				requireCredentialPipelineFailure(
 					t,
 					err,
 					PipelineErrorCancelled,
@@ -664,10 +664,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				if !allZero(passwordAlias) {
 					t.Fatal("post-KDF cancellation retained the password")
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{
+					credentialLifecycleCounts{
 						entropyCalls: 3,
 						kdfCalls:     1,
 					},
@@ -677,7 +677,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 		{
 			name: "derivation-extract",
 			run: func(t *testing.T) {
-				testPhase2DerivationFailure(
+				testCredentialDerivationFailure(
 					t,
 					1,
 					0,
@@ -691,7 +691,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				request := pipelineRequest(t, SuiteStandard1)
 				passwordAlias := request.Factors.Password
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				probe.cancelAfterDerive = cancel
 				owner, err := newCredential(
 					ctx,
@@ -703,7 +703,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					owner.Close()
 					t.Fatal("owner-stage cancellation published an owner")
 				}
-				requirePhase2PipelineFailure(
+				requireCredentialPipelineFailure(
 					t,
 					err,
 					PipelineErrorCancelled,
@@ -712,10 +712,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				if !allZero(passwordAlias) {
 					t.Fatal("owner-stage cancellation retained the password")
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{
+					credentialLifecycleCounts{
 						entropyCalls: 3,
 						kdfCalls:     1,
 						expandCalls:  standardExpands,
@@ -726,7 +726,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 		{
 			name: "derivation-expand",
 			run: func(t *testing.T) {
-				testPhase2DerivationFailure(
+				testCredentialDerivationFailure(
 					t,
 					0,
 					4,
@@ -739,7 +739,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 			run: func(t *testing.T) {
 				request := pipelineRequest(t, SuiteStandard1)
 				passwordAlias := request.Factors.Password
-				probe := newPhase2LifecycleProbe()
+				probe := newCredentialLifecycleProbe()
 				probe.invalidateOwner = true
 				owner, err := newCredential(
 					context.Background(),
@@ -751,7 +751,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 					owner.Close()
 					t.Fatal("owner validation failure published an owner")
 				}
-				requirePhase2PipelineFailure(
+				requireCredentialPipelineFailure(
 					t,
 					err,
 					PipelineErrorOwner,
@@ -760,10 +760,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				if !allZero(passwordAlias) {
 					t.Fatal("owner validation failure retained the password")
 				}
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
 					probe.counts(0),
-					phase2LifecycleCounts{
+					credentialLifecycleCounts{
 						entropyCalls: 3,
 						kdfCalls:     1,
 						expandCalls:  standardExpands,
@@ -774,7 +774,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 		{
 			name: "callback-return",
 			run: func(t *testing.T) {
-				testPhase2OwnerCallback(
+				testCredentialOwnerCallback(
 					t,
 					func(*BorrowedKeys) error { return nil },
 					nil,
@@ -784,7 +784,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 		{
 			name: "callback-error",
 			run: func(t *testing.T) {
-				testPhase2OwnerCallback(
+				testCredentialOwnerCallback(
 					t,
 					func(*BorrowedKeys) error {
 						return errors.New("injected callback failure")
@@ -797,7 +797,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 			name: "callback-cancellation",
 			run: func(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
-				testPhase2OwnerCallbackWithContext(
+				testCredentialOwnerCallbackWithContext(
 					t,
 					ctx,
 					func(*BorrowedKeys) error {
@@ -815,10 +815,10 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 				fixture.owner.Close()
 				fixture.owner.Close()
 				requireOwnerAliasesZero(t, fixture.aliases)
-				requirePhase2LifecycleCounts(
+				requireCredentialLifecycleCounts(
 					t,
-					phase2LifecycleCounts{},
-					phase2LifecycleCounts{},
+					credentialLifecycleCounts{},
+					credentialLifecycleCounts{},
 				)
 			},
 		},
@@ -832,7 +832,7 @@ func TestPhase2LifecycleExitMatrix(t *testing.T) {
 			t.Fatalf("duplicate lifecycle case %q", test.name)
 		}
 		required[test.name] = true
-		requireNoPhase2ProcessOutput(t, test.name, func() {
+		requireNoCredentialProcessOutput(t, test.name, func() {
 			t.Run(test.name, test.run)
 		})
 	}
@@ -847,13 +847,13 @@ func TestPipelinePreExpandScheduleValidationMutation(t *testing.T) {
 	requirePipelinePreExpandScheduleValidation(t)
 }
 
-func requireNoPhase2ProcessOutput(
+func requireNoCredentialProcessOutput(
 	t *testing.T,
 	name string,
 	callback func(),
 ) {
 	t.Helper()
-	stdout, stderr, logs := capturePhase2ProcessOutput(t, callback)
+	stdout, stderr, logs := captureCredentialProcessOutput(t, callback)
 	if stdout != "" || stderr != "" || logs != "" {
 		t.Fatalf(
 			"lifecycle case %q wrote package output: stdout=%q stderr=%q logs=%q",
@@ -865,7 +865,7 @@ func requireNoPhase2ProcessOutput(
 	}
 }
 
-func testPhase2EntropyFailure(
+func testCredentialEntropyFailure(
 	t *testing.T,
 	failAt int,
 	stage PipelineStage,
@@ -873,7 +873,7 @@ func testPhase2EntropyFailure(
 	t.Helper()
 	request := pipelineRequest(t, SuiteStandard1)
 	passwordAlias := request.Factors.Password
-	probe := newPhase2LifecycleProbe()
+	probe := newCredentialLifecycleProbe()
 	probe.entropy.failAt = failAt
 	owner, err := newCredential(
 		context.Background(),
@@ -885,7 +885,7 @@ func testPhase2EntropyFailure(
 		owner.Close()
 		t.Fatal("entropy failure published an owner")
 	}
-	requirePhase2PipelineFailure(
+	requireCredentialPipelineFailure(
 		t,
 		err,
 		PipelineErrorEntropy,
@@ -894,14 +894,14 @@ func testPhase2EntropyFailure(
 	if !allZero(passwordAlias) {
 		t.Fatal("entropy failure retained the password")
 	}
-	requirePhase2LifecycleCounts(
+	requireCredentialLifecycleCounts(
 		t,
 		probe.counts(0),
-		phase2LifecycleCounts{entropyCalls: failAt},
+		credentialLifecycleCounts{entropyCalls: failAt},
 	)
 }
 
-func testPhase2DerivationFailure(
+func testCredentialDerivationFailure(
 	t *testing.T,
 	extractErrAt int,
 	expandErrAt int,
@@ -910,7 +910,7 @@ func testPhase2DerivationFailure(
 	t.Helper()
 	request := pipelineRequest(t, SuiteStandard1)
 	passwordAlias := request.Factors.Password
-	probe := newPhase2LifecycleProbe()
+	probe := newCredentialLifecycleProbe()
 	probe.extractErrAt = extractErrAt
 	probe.expandErrAt = expandErrAt
 	owner, err := newCredential(
@@ -923,7 +923,7 @@ func testPhase2DerivationFailure(
 		owner.Close()
 		t.Fatal("derivation failure published an owner")
 	}
-	requirePhase2PipelineFailure(
+	requireCredentialPipelineFailure(
 		t,
 		err,
 		PipelineErrorKeyDerivation,
@@ -932,10 +932,10 @@ func testPhase2DerivationFailure(
 	if !allZero(passwordAlias) {
 		t.Fatal("derivation failure retained the password")
 	}
-	requirePhase2LifecycleCounts(
+	requireCredentialLifecycleCounts(
 		t,
 		probe.counts(0),
-		phase2LifecycleCounts{
+		credentialLifecycleCounts{
 			entropyCalls: 3,
 			kdfCalls:     1,
 			expandCalls:  wantExpands,
@@ -943,13 +943,13 @@ func testPhase2DerivationFailure(
 	)
 }
 
-func testPhase2OwnerCallback(
+func testCredentialOwnerCallback(
 	t *testing.T,
 	callback func(*BorrowedKeys) error,
 	wantErr error,
 ) {
 	t.Helper()
-	testPhase2OwnerCallbackWithContext(
+	testCredentialOwnerCallbackWithContext(
 		t,
 		context.Background(),
 		callback,
@@ -957,7 +957,7 @@ func testPhase2OwnerCallback(
 	)
 }
 
-func testPhase2OwnerCallbackWithContext(
+func testCredentialOwnerCallbackWithContext(
 	t *testing.T,
 	ctx context.Context,
 	callback func(*BorrowedKeys) error,
@@ -1001,20 +1001,20 @@ func testPhase2OwnerCallbackWithContext(
 	}
 	fixture.owner.Close()
 	requireOwnerAliasesZero(t, fixture.aliases)
-	requirePhase2LifecycleCounts(
+	requireCredentialLifecycleCounts(
 		t,
-		phase2LifecycleCounts{activeBorrows: activeBorrows},
-		phase2LifecycleCounts{},
+		credentialLifecycleCounts{activeBorrows: activeBorrows},
+		credentialLifecycleCounts{},
 	)
 }
 
-func TestPhase2ActiveBorrowCloseBarrier(t *testing.T) {
-	requireNoPhase2ProcessOutput(t, "active-borrow-close-barrier", func() {
-		testPhase2ActiveBorrowCloseBarrier(t)
+func TestCredentialActiveBorrowCloseBarrier(t *testing.T) {
+	requireNoCredentialProcessOutput(t, "active-borrow-close-barrier", func() {
+		testCredentialActiveBorrowCloseBarrier(t)
 	})
 }
 
-func testPhase2ActiveBorrowCloseBarrier(t *testing.T) {
+func testCredentialActiveBorrowCloseBarrier(t *testing.T) {
 	t.Helper()
 	fixture := newOwnerFixture(t)
 	borrowStarted := make(chan *BorrowedKeys, 1)
@@ -1083,13 +1083,13 @@ func testPhase2ActiveBorrowCloseBarrier(t *testing.T) {
 	}
 }
 
-func TestPhase2CallbackPanicCleanup(t *testing.T) {
-	requireNoPhase2ProcessOutput(t, "callback-panic-cleanup", func() {
-		testPhase2CallbackPanicCleanup(t)
+func TestCredentialCallbackPanicCleanup(t *testing.T) {
+	requireNoCredentialProcessOutput(t, "callback-panic-cleanup", func() {
+		testCredentialCallbackPanicCleanup(t)
 	})
 }
 
-func testPhase2CallbackPanicCleanup(t *testing.T) {
+func testCredentialCallbackPanicCleanup(t *testing.T) {
 	t.Helper()
 	fixture := newOwnerFixture(t)
 	var retained *BorrowedKeys
@@ -1101,12 +1101,12 @@ func testPhase2CallbackPanicCleanup(t *testing.T) {
 			context.Background(),
 			func(keys *BorrowedKeys) error {
 				retained = keys
-				panic("phase2 callback panic marker")
+				panic("credential callback panic marker")
 			},
 		)
 		return nil
 	}()
-	if panicValue != "phase2 callback panic marker" {
+	if panicValue != "credential callback panic marker" {
 		fixture.owner.Close()
 		t.Fatalf("recovered panic = %#v", panicValue)
 	}
@@ -1119,15 +1119,15 @@ func testPhase2CallbackPanicCleanup(t *testing.T) {
 	requireOwnerAliasesZero(t, fixture.aliases)
 }
 
-func TestPhase2RetryFreshnessAndCleanup(t *testing.T) {
-	requireNoPhase2ProcessOutput(t, "retry-freshness-and-cleanup", func() {
-		testPhase2RetryFreshnessAndCleanup(t)
+func TestCredentialRetryFreshnessAndCleanup(t *testing.T) {
+	requireNoCredentialProcessOutput(t, "retry-freshness-and-cleanup", func() {
+		testCredentialRetryFreshnessAndCleanup(t)
 	})
 }
 
-func testPhase2RetryFreshnessAndCleanup(t *testing.T) {
+func testCredentialRetryFreshnessAndCleanup(t *testing.T) {
 	t.Helper()
-	probe := newPhase2LifecycleProbe()
+	probe := newCredentialLifecycleProbe()
 	probe.kdfErr = errors.New("injected first-attempt KDF failure")
 	first, err := newCredential(
 		context.Background(),
@@ -1135,7 +1135,7 @@ func testPhase2RetryFreshnessAndCleanup(t *testing.T) {
 		probe.admit,
 		probe.seams(),
 	)
-	requirePhase2PipelineFailure(
+	requireCredentialPipelineFailure(
 		t,
 		err,
 		PipelineErrorKDF,
@@ -1190,10 +1190,10 @@ func testPhase2RetryFreshnessAndCleanup(t *testing.T) {
 	for _, snapshot := range probe.kdfSaltSnapshots {
 		crypto.SecureZero(snapshot)
 	}
-	requirePhase2LifecycleCounts(
+	requireCredentialLifecycleCounts(
 		t,
 		probe.counts(0),
-		phase2LifecycleCounts{
+		credentialLifecycleCounts{
 			entropyCalls:      6,
 			kdfCalls:          2,
 			expandCalls:       9,

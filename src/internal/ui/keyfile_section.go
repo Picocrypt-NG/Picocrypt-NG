@@ -30,6 +30,7 @@ func keyfileApplicable(mode string, required bool, deniable bool) bool {
 
 func keyfileApplicableForSnapshot(snap app.UISnapshot) bool {
 	return snap.PCV3Route == app.PCV3RouteReady ||
+		(snap.Mode == "encrypt" && snap.CreatePCV3) ||
 		keyfileApplicable(snap.Mode, snap.Keyfile, snap.Deniability)
 }
 
@@ -229,9 +230,8 @@ func (a *App) createKeyfile() {
 
 // updateKeyfileUIState updates the enabled/disabled state of keyfile controls.
 func (a *App) updateKeyfileUIState(mainDisabled bool, snap app.UISnapshot) {
-	// New v2 keyfile writes are frozen; selection remains available only when a
-	// legacy volume requires keyfiles (or a deniable header cannot say yet).
-	keyfileDisabled := mainDisabled || snap.Mode == "encrypt" || !keyfileApplicableForSnapshot(snap)
+	// Legacy v2 creation cannot use keyfiles; PCV3 creation and supported reads can.
+	keyfileDisabled := mainDisabled || (snap.Mode == "encrypt" && !snap.CreatePCV3) || !keyfileApplicableForSnapshot(snap)
 	if a.keyfileEditBtn != nil {
 		if keyfileDisabled {
 			a.keyfileEditBtn.Disable()
@@ -239,10 +239,9 @@ func (a *App) updateKeyfileUIState(mainDisabled bool, snap app.UISnapshot) {
 			a.keyfileEditBtn.Enable()
 		}
 	}
-	// Keyfile creation is unavailable while the v2 writer is frozen and is never
-	// needed during decryption.
+	// Keyfile creation is available only for PCV3 creation.
 	if a.keyfileCreateBtn != nil {
-		if mainDisabled || snap.Mode == "encrypt" || snap.Mode == "decrypt" {
+		if mainDisabled || snap.Mode == "decrypt" || (snap.Mode == "encrypt" && !snap.CreatePCV3) {
 			a.keyfileCreateBtn.Disable()
 		} else {
 			a.keyfileCreateBtn.Enable()

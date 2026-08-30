@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
 )
 
 // TestFileTypeDetection tests detection of encrypted vs plain files.
@@ -288,43 +287,6 @@ func TestMultipleDropLabels(t *testing.T) {
 			// the grammar prefix is what this test pins.
 			if !strings.HasPrefix(label, tc.expected) {
 				t.Errorf("InputLabel = %q; want prefix %q", label, tc.expected)
-			}
-		})
-	}
-}
-
-func TestApplyDropErrorPreservesStatusAfterReset(t *testing.T) {
-	newTestFyneApp(t)
-
-	testCases := []struct {
-		name              string
-		status            string
-		closeKeyfileModal bool
-	}{
-		{name: "DecryptDrop", status: "Read access denied", closeKeyfileModal: false},
-		{name: "KeyfileDrop", status: "Cannot read keyfile", closeKeyfileModal: true},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			a := &App{
-				State:             mustNewState(t),
-				advancedContainer: container.NewVBox(),
-			}
-			a.State.SetStartAction(app.StartActionDecrypt)
-			a.State.SetStatus("Old status", util.GREEN)
-
-			a.applyDropError(tc.status, tc.closeKeyfileModal)
-
-			snap := a.State.UISnapshot()
-			if snap.StartAction != app.StartActionStart {
-				t.Fatalf("expected resetUI() to run, StartAction = %v", snap.StartAction)
-			}
-			if snap.Status.Kind != app.StatusCustom || snap.Status.Text != tc.status {
-				t.Fatalf("Status = %#v, want custom %q", snap.Status, tc.status)
-			}
-			if snap.Status.Color != util.RED {
-				t.Fatalf("Status.Color = %#v, want %#v", snap.Status.Color, util.RED)
 			}
 		})
 	}
@@ -827,7 +789,7 @@ func TestScheduleStartupPathsPreservesPartialAccessWarningForArgv(t *testing.T) 
 // Apple-Event-buffered paths from a Finder cold launch may be the only source
 // of startup paths and are drained inside the OnStarted closure via
 // drainOpenedPaths(). Removing the wiring on empty input would silently lose
-// those events. (FA-MAC-03 / Plan 03-03)
+// those events. (FA-MAC-03)
 func TestScheduleStartupPathsAlwaysWiresStartHook(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 
@@ -2644,7 +2606,9 @@ func (a *lifecycleCaptureApp) Driver() fyne.Driver                 { return a.dr
 func (a *lifecycleCaptureApp) UniqueID() string                    { return "lifecycle-capture-app" }
 func (a *lifecycleCaptureApp) SendNotification(*fyne.Notification) {}
 func (a *lifecycleCaptureApp) Settings() fyne.Settings             { return fyne.CurrentApp().Settings() }
-func (a *lifecycleCaptureApp) Preferences() fyne.Preferences       { return fyne.CurrentApp().Preferences() }
+
+func (a *lifecycleCaptureApp) Preferences() fyne.Preferences { return fyne.CurrentApp().Preferences() }
+
 func (a *lifecycleCaptureApp) Storage() fyne.Storage               { return fyne.CurrentApp().Storage() }
 func (a *lifecycleCaptureApp) Lifecycle() fyne.Lifecycle           { return a }
 func (a *lifecycleCaptureApp) Metadata() fyne.AppMetadata          { return fyne.AppMetadata{} }

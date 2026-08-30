@@ -6,7 +6,7 @@ import (
 )
 
 // OwnerMetadata is the immutable public snapshot associated with one admitted
-// Phase-2 key owner.
+// credential key owner.
 type OwnerMetadata struct {
 	Suite          Suite
 	ExpectedPolicy FactorPolicy
@@ -59,7 +59,7 @@ func (err *OwnerError) Error() string {
 	}
 }
 
-// Owner is the single cleanup authority for one complete Phase-2 key set.
+// Owner is the single cleanup authority for one complete credential key set.
 type Owner struct {
 	state *ownerState
 }

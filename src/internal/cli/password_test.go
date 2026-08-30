@@ -2,12 +2,31 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"slices"
 	"strings"
 	"testing"
 
 	"golang.org/x/term"
 )
+
+func TestReadPasswordFDLineKeepsSecretInSingleBoundedAllocation(t *testing.T) {
+	want := bytes.Repeat([]byte{'x'}, 256)
+	input := append(append([]byte(nil), want...), '\n')
+	got, err := readPasswordFDLine(bytes.NewReader(input))
+	if err != nil {
+		t.Fatalf("readPasswordFDLine() error = %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("readPasswordFDLine() length = %d; want exact %d-byte password", len(got), len(want))
+	}
+	if cap(got) != maximumCLIPasswordBytes+2 {
+		t.Fatalf(
+			"password backing capacity = %d; want one fixed bounded allocation of %d bytes",
+			cap(got), maximumCLIPasswordBytes+2,
+		)
+	}
+}
 
 func TestNonASCIIPasswordNote(t *testing.T) {
 	// Built from a code point so the literal cannot be silently re-normalized.

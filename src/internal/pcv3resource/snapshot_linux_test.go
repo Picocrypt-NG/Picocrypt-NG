@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -15,7 +16,9 @@ type linuxSnapshotFixture struct {
 	limits      string
 	cgroup      string
 	mountinfo   string
+	cgroupDirs  []string
 	cgroupFiles map[string]string
+	cgroupLinks map[string]string
 }
 
 func newLinuxSnapshotFixture() linuxSnapshotFixture {
@@ -47,6 +50,11 @@ func (fixture linuxSnapshotFixture) provider(t *testing.T) linuxSnapshotProvider
 
 func writeLinuxSnapshotFixture(t *testing.T, root string, fixture linuxSnapshotFixture) {
 	t.Helper()
+	for _, name := range fixture.cgroupDirs {
+		if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(name)), 0o700); err != nil {
+			t.Fatalf("create cgroup fixture directory: %v", err)
+		}
+	}
 	files := map[string]string{
 		"proc/meminfo":        fixture.meminfo,
 		"proc/self/status":    fixture.status,
@@ -64,6 +72,11 @@ func writeLinuxSnapshotFixture(t *testing.T, root string, fixture linuxSnapshotF
 		}
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatalf("write fixture file: %v", err)
+		}
+	}
+	for name, target := range fixture.cgroupLinks {
+		if err := os.Symlink(target, filepath.Join(root, filepath.FromSlash(name))); err != nil {
+			t.Fatalf("create cgroup fixture symlink: %v", err)
 		}
 	}
 }
@@ -105,6 +118,88 @@ func TestLinuxSnapshotProviderResolvesV1MemoryController(t *testing.T) {
 	if snapshot.effectiveAvailable != 2097152 {
 		t.Fatalf("effective available = %d; want v1 headroom 2097152", snapshot.effectiveAvailable)
 	}
+}
+
+func TestLinuxSnapshotProviderToleratesAbsentV2LimitFiles(t *testing.T) {
+	t.Run("root limit file absent keeps descendant limit", func(t *testing.T) {
+		// Real systemd cgroup v2 layout: the root cgroup carries no resource
+		// control files, descendant limits still apply.
+		fixture := newLinuxSnapshotFixture()
+		fixture.limits = "Limit Soft Limit Hard Limit Units\nMax address space 4194304 4194304 bytes\n"
+		delete(fixture.cgroupFiles, "sys/fs/cgroup/memory.max")
+		snapshot := fixture.provider(t).Snapshot(context.Background())
+		if snapshot.source != snapshotSourceLinux || snapshot.state != snapshotStateReady {
+			t.Fatalf("snapshot source/state = %v/%v; want Linux/ready", snapshot.source, snapshot.state)
+		}
+		if snapshot.effectiveAvailable != 2097152 {
+			t.Fatalf("effective available = %d; want descendant cgroup headroom 2097152", snapshot.effectiveAvailable)
+		}
+		if snapshot.codeOwnedReserve != 262144 {
+			t.Fatalf("code-owned reserve = %d; want same-snapshot VmRSS 262144", snapshot.codeOwnedReserve)
+		}
+	})
+	t.Run("absent limit files mean unconstrained", func(t *testing.T) {
+		fixture := newLinuxSnapshotFixture()
+		fixture.cgroupDirs = []string{
+			"sys/fs/cgroup",
+			"sys/fs/cgroup/tenant",
+			"sys/fs/cgroup/tenant/job",
+		}
+		for name := range fixture.cgroupFiles {
+			if strings.HasSuffix(name, "memory.max") {
+				delete(fixture.cgroupFiles, name)
+			}
+		}
+		snapshot := fixture.provider(t).Snapshot(context.Background())
+		if snapshot.state != snapshotStateReady {
+			t.Fatalf("snapshot state = %v; want ready", snapshot.state)
+		}
+		if snapshot.effectiveAvailable != 1048576 {
+			t.Fatalf("effective available = %d; want finite RLIMIT_AS headroom 1048576", snapshot.effectiveAvailable)
+		}
+	})
+	t.Run("non-directory level is not an unconstrained cgroup", func(t *testing.T) {
+		fixture := newLinuxSnapshotFixture()
+		fixture.cgroup = "0::/tenant\n"
+		fixture.cgroupFiles = map[string]string{
+			"sys/fs/cgroup/memory.max": "max\n",
+			"sys/fs/cgroup/tenant":     "not a directory\n",
+		}
+		snapshot := fixture.provider(t).Snapshot(context.Background())
+		if snapshot.source != snapshotSourceLinux || snapshot.state != snapshotStateUnconfigured {
+			t.Fatalf("snapshot source/state = %v/%v; want Linux/unconfigured", snapshot.source, snapshot.state)
+		}
+		if snapshot.effectiveAvailable != 0 || snapshot.codeOwnedReserve != 0 {
+			t.Fatalf("non-directory cgroup level exposed resource facts: available=%d reserve=%d", snapshot.effectiveAvailable, snapshot.codeOwnedReserve)
+		}
+	})
+	t.Run("terminal symlink level is not an unconstrained cgroup", func(t *testing.T) {
+		fixture := newLinuxSnapshotFixture()
+		fixture.cgroup = "0::/tenant\n"
+		fixture.cgroupDirs = []string{"sys/fs/cgroup/uncontrolled"}
+		fixture.cgroupFiles = map[string]string{
+			"sys/fs/cgroup/memory.max": "max\n",
+		}
+		fixture.cgroupLinks = map[string]string{
+			"sys/fs/cgroup/tenant": "uncontrolled",
+		}
+		snapshot := fixture.provider(t).Snapshot(context.Background())
+		if snapshot.source != snapshotSourceLinux || snapshot.state != snapshotStateUnconfigured {
+			t.Fatalf("snapshot source/state = %v/%v; want Linux/unconfigured", snapshot.source, snapshot.state)
+		}
+		if snapshot.effectiveAvailable != 0 || snapshot.codeOwnedReserve != 0 {
+			t.Fatalf("terminal-symlink cgroup level exposed resource facts: available=%d reserve=%d", snapshot.effectiveAvailable, snapshot.codeOwnedReserve)
+		}
+	})
+	t.Run("missing limit directory stays fail closed", func(t *testing.T) {
+		// The whole cgroup tree absent is an anomaly, not a no-limit policy.
+		fixture := newLinuxSnapshotFixture()
+		fixture.cgroupFiles = map[string]string{}
+		snapshot := fixture.provider(t).Snapshot(context.Background())
+		if snapshot.state != snapshotStateUnconfigured {
+			t.Fatalf("snapshot state = %v; want unconfigured", snapshot.state)
+		}
+	})
 }
 
 func TestLinuxSnapshotProviderRejectsAmbiguousOrUnreadableFacts(t *testing.T) {

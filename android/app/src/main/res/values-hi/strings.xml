@@ -162,7 +162,7 @@
     <string name="error_decrypt_retry_only">केवल डिक्रिप्शन कार्रवाइयों को बलपूर्वक डिक्रिप्ट करके फिर से आज़माया जा सकता है।</string>
     <string name="error_no_file_selected">कृपया फ़ाइल चुनें।</string>
     <string name="error_invalid_password">कृपया पासवर्ड दर्ज करें।</string>
-    <string name="error_keyfile_writes_disabled">समीक्षित v3 प्रारूप उपलब्ध होने तक कुंजी फ़ाइलों वाले नए v2 वॉल्यूम बनाना बंद है। मौजूदा कुंजी फ़ाइल वॉल्यूम अभी भी डिक्रिप्ट किए जा सकते हैं।</string>
+    <string name="error_keyfile_writes_disabled">नए v2 वॉल्यूम कुंजी फ़ाइलों का उपयोग नहीं कर सकते। इसके बजाय स्पष्ट रूप से PCV3 बनाएँ। मौजूदा कुंजी फ़ाइल वॉल्यूम अभी भी डिक्रिप्ट किए जा सकते हैं।</string>
     <string name="error_passwords_mismatch">पासवर्ड मेल नहीं खाते।</string>
     <string name="error_split_volume_not_supported">Android पर विभाजित वॉल्यूम समर्थित नहीं हैं। पहले अपने कंप्यूटर पर भागों को फिर से जोड़ें, फिर एक %1$s फ़ाइल ट्रांसफ़र करें।</string>
     <string name="error_copy_failed">फ़ाइल कॉपी नहीं हो सकी।</string>
@@ -196,11 +196,13 @@
     <string name="pcv3_keyfile_order_selected">चुना हुआ क्रम उपयोग करें</string>
     <string name="pcv3_keyfile_order_any">कोई भी क्रम</string>
     <string name="pcv3_password_not_allowed">पासवर्ड हटाएँ या संयुक्त प्रमाणीकरण कारक नीति चुनें।</string>
+    <string name="pcv3_create">PCV3 बनाएँ</string>
     <string name="pcv3_start_decrypt">PCV3 डिक्रिप्ट करें</string>
     <string name="pcv3_start_recovery">पुनर्प्राप्ति शुरू करें</string>
     <string name="pcv3_start_force_recovery">बलपूर्वक पुनर्प्राप्ति शुरू करें</string>
     <string name="pcv3_cancel_decryption">डिक्रिप्शन रद्द करें</string>
     <string name="pcv3_cancel_recovery">पुनर्प्राप्ति रद्द करें</string>
+    <string name="pcv3_cancel_creation">निर्माण रद्द करें</string>
 
     <string name="pcv3_consent_title">असत्यापित डेटा पुनर्प्राप्त करें?</string>
     <string name="pcv3_consent_body">यह कार्रवाई ऐसे बाइट सहेज सकती है जिनका प्रमाणीकरण नहीं हुआ है। वे अधूरे, क्षतिग्रस्त या खोलने के लिए हानिकारक हो सकते हैं। उपयोग करने के लिए सटीक भौतिक स्रोत चुनें।</string>
@@ -221,8 +223,6 @@
     <string name="pcv3_progress_preparing_artifact">पुनर्प्राप्ति आर्टिफ़ैक्ट तैयार किया जा रहा है…</string>
     <string name="pcv3_progress_publishing">आउटपुट प्रकाशित किया जा रहा है…</string>
     <string name="pcv3_progress_confirming_durability">आउटपुट का स्थायित्व पक्का किया जा रहा है…</string>
-    <string name="pcv3_progress_verifying_legacy">पुराना वॉल्यूम सत्यापित किया जा रहा है…</string>
-    <string name="pcv3_progress_migrating">प्रमाणित सामग्री माइग्रेट की जा रही है…</string>
     <string name="pcv3_progress_working">कार्रवाई जारी है…</string>
 
     <string name="pcv3_resource_busy_title">एक अन्य संरक्षित कार्रवाई चल रही है</string>
@@ -236,6 +236,8 @@
 
     <string name="pcv3_outcome_success_title">डिक्रिप्शन पूरा हुआ</string>
     <string name="pcv3_outcome_success_body">आउटपुट पूरी तरह प्रमाणित है।</string>
+    <string name="pcv3_create_outcome_title">PCV3 वॉल्यूम बनाया गया</string>
+    <string name="pcv3_create_outcome_body">नया वॉल्यूम तैयार है। इसे रखने के लिए चुने गए स्थान पर सहेजें।</string>
     <string name="pcv3_outcome_archive_pending_title">प्रमाणित आर्काइव निकालने के लिए तैयार है</string>
     <string name="pcv3_outcome_archive_pending_body">आर्काइव का पेलोड पूरी तरह प्रमाणित है। निकालने के लिए नया फ़ोल्डर चुनें। एन्क्रिप्टेड स्रोत रखा गया है।</string>
     <string name="pcv3_outcome_degraded_title">प्रमाणित आउटपुट क्षति के साथ पुनर्प्राप्त हुआ</string>
@@ -304,6 +306,7 @@
     <string name="pcv3_output_expired_close">समय-सीमा समाप्त आउटपुट कार्रवाई बंद करें</string>
     <string name="pcv3_output_unknown_close">आउटपुट कार्रवाई चेतावनी बंद करें</string>
     <string name="pcv3_save_decrypted_output">डिक्रिप्ट किया गया आउटपुट सहेजें</string>
+    <string name="pcv3_save_created_volume">बनाया गया वॉल्यूम सहेजें</string>
     <string name="pcv3_save_recovery_artifact">पुनर्प्राप्ति आर्टिफ़ैक्ट सहेजें</string>
     <string name="pcv3_inspect_recovery_artifact">पुनर्प्राप्ति आर्टिफ़ैक्ट जाँचें</string>
     <string name="pcv3_discard_artifact_title">पुनर्प्राप्ति आर्टिफ़ैक्ट हटाएँ?</string>

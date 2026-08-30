@@ -24,7 +24,6 @@ src/
 │   │
 │   ├── diskspace/         # Available disk space checks
 │   ├── distmeta/          # Distribution metadata (version strings)
-│   ├── docs/              # Embedded documentation
 │   │
 │   ├── encoding/          # Reed-Solomon and padding
 │   │   ├── rs.go          # Error correction
@@ -49,6 +48,16 @@ src/
 │   │
 │   ├── log/               # Logging seam (null logger by default)
 │   ├── password/          # Password normalization (Unicode NFC)
+│   │
+│   ├── pcv3/              # PCV3 routing and structural admission
+│   ├── pcv3artifact/      # PCV3 plaintext artifact container
+│   ├── pcv3credential/    # PCV3 password/keyfile credential transcript
+│   ├── pcv3operation/     # Native PCV3 operation boundary
+│   ├── pcv3publication/   # PCV3 staging and atomic publication
+│   ├── pcv3recovery/      # PCV3 recovery and unverified Force paths
+│   ├── pcv3resource/      # PCV3 resource admission
+│   ├── pcv3result/        # PCV3 outcome/stage leaf types
+│   ├── pcv3unicode/       # Frozen Unicode credential normalization
 │   │
 │   ├── ui/                # Fyne GUI
 │   │   ├── app.go         # Main window
@@ -86,7 +95,8 @@ User drops files -> ui/drop.go
 Password/options -> app/state.go
          ↓
 Click "Encrypt" -> volume.Encrypt():
-  1. Validate non-empty password; reject every keyfile write
+  1. Validate credentials (legacy v2: non-empty password, keyfiles rejected;
+     explicit PCV3 creation accepts its declared password/keyfile policy)
   2. Zip multiple files (fileops/zip.go)
   3. Generate salts, nonces, IVs (crypto/kdf.go)
   4. Write RS-encoded header (header/writer.go)
@@ -112,8 +122,9 @@ volume.Decrypt():
 ```
 
 Picocrypt-NG 2.19 writes password-only v2 volumes. Keyfile processing remains on
-the legacy v1/v2 read path so existing data is recoverable; it is not an active
-writer feature. Unknown major versions fail closed even under force decrypt.
+the legacy v1/v2 read path so existing data is recoverable; keyfile-bound writes
+exist only through explicit PCV3 creation. Unknown major versions fail closed even
+under force decrypt.
 
 ### Android mobile status and error boundary
 
@@ -167,11 +178,20 @@ changes the XChaCha20 key but does not bind the header MAC, payload MAC, Serpent
 key, or rekey values. This is why all new v2 keyfile writes are disabled in
 2.19 while legacy reads remain available.
 
+PCV3 is an explicit writer path: `EncryptRequest.PCV3` selects the canonical
+PCV3 serializer while the zero value preserves legacy v2 output. Linux GUI and
+CLI expose this opt-in; the Android app exposes it for single-file inputs under
+the same runtime resource admission as PCV3 reads, while WASM creation remains
+unavailable. Normal
+PCV3 and PCV3 D1 support password, keyfile, and combined credentials. D1 is the
+random-looking Paranoid-mode path; its complete credential transcript protects
+both outer and inner key wrapping.
+
 ## Security
 
 ### Audit-Critical Code
 
-Packages `crypto/`, `header/`, `keyfile/`, `volume/` contain audited code. Changes require:
+The legacy paths in `crypto/`, `header/`, `keyfile/`, and `volume/` descend from audited code. PCV3 has not received an independent audit. Changes require:
 
 1. Running the complete golden corpus: `go test -count=1 -run '^TestGolden' ./internal/volume`
 2. Verifying v1.x backward compatibility

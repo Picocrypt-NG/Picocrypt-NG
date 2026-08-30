@@ -338,7 +338,12 @@ func TestArchiveSAFSessionCancelClosesOnlyActiveWriterWithoutHoldingStateLock(t 
 		destination.forceClose()
 		t.Fatal("Cancel did not close the active writer without waiting on I/O")
 	}
-	if step := session.Cancel(); step == nil || step.Kind() != NativeArchiveSAFStepPoisoned {
+	// A blocked Abort may win the state lock after the first Cancel settles the
+	// writer and move the session to Finishing/Terminal, in which case a repeat
+	// Cancel is correctly Rejected (archive_saf.go). Both acknowledgements are
+	// fail-closed; neither grants provider-effect authority.
+	if step := session.Cancel(); step == nil ||
+		(step.Kind() != NativeArchiveSAFStepPoisoned && step.Kind() != NativeArchiveSAFStepRejected) {
 		t.Fatalf("idempotent Cancel = %#v", step)
 	}
 	select {
@@ -383,7 +388,7 @@ func TestArchiveSAFSessionCancelSettlesBlockedRealPipeWrite(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		session.state.mu.Lock()
-		active := session.state.activeWriter != nil && session.state.phase == nativeArchiveSAFWriting
+		active := session.state.activeWriter != nil && session.state.status == nativeArchiveSAFWriting
 		session.state.mu.Unlock()
 		if active {
 			break

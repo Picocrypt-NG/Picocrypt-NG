@@ -1,5 +1,9 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
+import android.app.ActivityManager
+import android.os.Debug
+import android.os.ParcelFileDescriptor
+import android.os.Process
 import android.os.SystemClock
 import android.system.ErrnoException
 import android.system.Os
@@ -13,6 +17,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assume
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -51,6 +56,10 @@ class Pcv3DeviceBehaviorTest {
                 password,
             )
             val operation = start.operation()
+            // The cleanup helper cannot distinguish an already-released
+            // operation from a just-started one through the bridge, so the
+            // success path records its own release.
+            var operationReleased = false
             try {
                 assertEquals("ownership start must succeed", "", start.code())
                 assertTrue(
@@ -77,6 +86,7 @@ class Pcv3DeviceBehaviorTest {
                     descriptorsResolvingTo(keyfile),
                 )
                 assertEquals("terminal release must succeed", "", liveOperation.release())
+                operationReleased = true
                 assertEquals(
                     "a released operation must not act twice",
                     RELEASE_DENIED,
@@ -92,7 +102,7 @@ class Pcv3DeviceBehaviorTest {
                 throw failure
             } finally {
                 if (operation != null) {
-                    attachCleanupFailure(primaryFailure) { release(operation, "ownership") }
+                    attachCleanupFailure(primaryFailure) { release(operation, "ownership", operationReleased) }
                 }
             }
 
@@ -224,17 +234,10 @@ class Pcv3DeviceBehaviorTest {
         val target = File(directory, "final-output.bin")
         var primaryFailure: Throwable? = null
         try {
-            val calibrationSeams = Mobile::class.java.methods
-                .map { it.name }
-                .filter { it.contains("calibration", ignoreCase = true) }
             assertEquals(
-                "the untagged final AAR must expose no calibration seam",
-                emptyList<String>(),
-                calibrationSeams,
-            )
-            assertTrue(
-                "the Android policy state must stay closed",
-                Mobile.pcV3AndroidPolicyState() in POLICY_STATES,
+                "the production AAR must use fresh runtime admission",
+                "configured",
+                Mobile.pcV3AndroidPolicyState(),
             )
             val routeProbe = File(directory, ROUTE_PROBE_NAME)
             routeProbe.writeBytes(NON_VOLUME_SOURCE)
@@ -251,20 +254,44 @@ class Pcv3DeviceBehaviorTest {
             }
 
             source.writeBytes(NON_VOLUME_SOURCE)
-            for (mode in listOf("write-normal", "migrate-normal")) {
-                val password = CALLER_PASSWORD.copyOf()
-                val rejected = Mobile.startPCV3(
-                    envelope(mode, "password", "none", source, target, emptyList()),
-                    password,
-                )
-                assertEquals("the $mode seam must stay refused", BRIDGE_INVALID_REQUEST, rejected.code())
-                assertNull("a refused $mode seam must return no operation", rejected.operation())
-                assertTrue(
-                    "a refused $mode seam must zero the caller password",
-                    password.all { it == 0.toByte() },
-                )
-                assertFalse("a refused $mode seam must create no output", target.exists())
-            }
+            // The migrate seam is not a bridge mode at all: it stays refused wholesale.
+            val migratePassword = CALLER_PASSWORD.copyOf()
+            val rejectedMigrate = Mobile.startPCV3(
+                envelope("migrate-normal", "password", "none", source, target, emptyList()),
+                migratePassword,
+            )
+            assertEquals(
+                "the migrate-normal seam must stay refused",
+                BRIDGE_INVALID_REQUEST,
+                rejectedMigrate.code(),
+            )
+            assertNull("a refused migrate-normal seam must return no operation", rejectedMigrate.operation())
+            assertTrue(
+                "a refused migrate-normal seam must zero the caller password",
+                migratePassword.all { it == 0.toByte() },
+            )
+            assertFalse("a refused migrate-normal seam must create no output", target.exists())
+
+            // write-normal is a live creation mode now, but the exact write-shaped
+            // field set (comment/suite/payloadRS in addition to the shared fields) is
+            // enforced: a read-shaped envelope is refused as the wrong shape before any
+            // operation or output exists.
+            val writePassword = CALLER_PASSWORD.copyOf()
+            val rejectedWrite = Mobile.startPCV3(
+                envelope("write-normal", "password", "none", source, target, emptyList()),
+                writePassword,
+            )
+            assertEquals(
+                "a read-shaped write-normal envelope must be refused as the wrong shape",
+                BRIDGE_INVALID_REQUEST,
+                rejectedWrite.code(),
+            )
+            assertNull("a wrong-shape write-normal envelope must return no operation", rejectedWrite.operation())
+            assertTrue(
+                "a refused write-normal envelope must zero the caller password",
+                writePassword.all { it == 0.toByte() },
+            )
+            assertFalse("a refused write-normal envelope must create no output", target.exists())
 
             val password = CALLER_PASSWORD.copyOf()
             val start = Mobile.startPCV3(
@@ -272,6 +299,7 @@ class Pcv3DeviceBehaviorTest {
                 password,
             )
             val operation = start.operation()
+            var operationReleased = false
             try {
                 assertEquals("final read start must succeed", "", start.code())
                 assertTrue(
@@ -293,12 +321,13 @@ class Pcv3DeviceBehaviorTest {
                     descriptorsResolvingTo(source),
                 )
                 assertEquals("terminal release must succeed", "", liveOperation.release())
+                operationReleased = true
             } catch (failure: Throwable) {
                 primaryFailure = failure
                 throw failure
             } finally {
                 if (operation != null) {
-                    attachCleanupFailure(primaryFailure) { release(operation, "final read") }
+                    attachCleanupFailure(primaryFailure) { release(operation, "final read", operationReleased) }
                 }
             }
         } catch (failure: Throwable) {
@@ -316,6 +345,144 @@ class Pcv3DeviceBehaviorTest {
         }
     }
 
+    @Test
+    fun v11WriteNormalCreationRoundTrip() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val directory = File(context.cacheDir, "pcv3-v11-creation")
+        assertFalse("v11 workspace residue from an earlier attempt", directory.exists())
+        if (!directory.mkdir()) {
+            throw AssertionError("v11 workspace must be newly owned")
+        }
+        val source = File(directory, "creation-plaintext.bin")
+        val target = File(directory, "creation-staging.pcv")
+        val saved = File(directory, "creation-volume.pcv")
+        val roundTrip = File(directory, "creation-roundtrip.bin")
+        var primaryFailure: Throwable? = null
+        try {
+            source.writeBytes(ROUND_TRIP_PLAINTEXT)
+
+            val password = CALLER_PASSWORD.copyOf()
+            val start = Mobile.startPCV3(
+                writeEnvelope("write-normal", source, target),
+                password,
+            )
+            val operation = start.operation()
+            // The success path releases the operation itself; the flag tells
+            // the cleanup helper the release already happened so it verifies
+            // the released state instead of re-releasing.
+            var operationReleased = false
+            try {
+                assertEquals("creation start must succeed", "", start.code())
+                assertTrue(
+                    "bridge must zero the caller password before returning",
+                    password.all { it == 0.toByte() },
+                )
+                val liveOperation = operation
+                    ?: throw AssertionError("creation start returned no operation")
+                val terminal = awaitTerminalPumping(context, liveOperation)
+                skipOnResourceAdmissionDenial(terminal)
+                assertEquals("creation must succeed", "success", terminal.outcome())
+                assertEquals("creation must leave no failure stage", "none", terminal.stage())
+                assertEquals("creation must report success", "PCV3_SUCCESS", terminal.code())
+                assertEquals("creation must carry no diagnostic", "none", terminal.diagnostic())
+                assertEquals("creation must complete clean", "clean", terminal.completionClass())
+                assertTrue("creation must attempt publication", terminal.publicationAttempted())
+                assertEquals(
+                    "creation must publish durably",
+                    "published-durable",
+                    terminal.publicationState(),
+                )
+                assertEquals("creation must leave no publication stage", "none", terminal.publicationStage())
+                assertEquals(
+                    "creation must report durable publication",
+                    "PCV3_PUBLICATION_PUBLISHED_DURABLE",
+                    terminal.publicationCode(),
+                )
+                assertEquals("creation must raise no warnings", 0L, terminal.warningCount())
+                assertFalse("creation must not pend an archive", terminal.archivePending())
+                val output = liveOperation.output()
+                    ?: throw AssertionError("durable creation retained no output authority")
+                assertEquals(
+                    "release with a live creation output must stay denied",
+                    RELEASE_DENIED,
+                    liveOperation.release(),
+                )
+
+                // SAF-shaped transfer: the created volume moves out of staging
+                // through a caller-owned descriptor, exactly like the UI path.
+                val destination = ParcelFileDescriptor.open(
+                    saved,
+                    ParcelFileDescriptor.MODE_READ_WRITE or ParcelFileDescriptor.MODE_CREATE,
+                )
+                val transferred = output.saveFD(destination.detachFd().toLong())
+                assertEquals("creation output transfer must save", "saved", transferred.code())
+                assertFalse("creation output transfer must complete cleanup", transferred.cleanupIncomplete())
+                assertFalse("a transferred volume must leave staging", target.exists())
+                assertEquals("a transferred output must act once", "expired", output.discard().code())
+                assertEquals("creation release must succeed", "", liveOperation.release())
+                operationReleased = true
+            } catch (failure: Throwable) {
+                primaryFailure = failure
+                throw failure
+            } finally {
+                if (operation != null) {
+                    attachCleanupFailure(primaryFailure) { release(operation, "creation", operationReleased) }
+                }
+            }
+
+            val readPassword = CALLER_PASSWORD.copyOf()
+            val read = Mobile.startPCV3(
+                envelope("read-normal", "password", "none", saved, roundTrip, emptyList()),
+                readPassword,
+            )
+            val readOperation = read.operation()
+            var readReleased = false
+            try {
+                assertEquals("round-trip read start must succeed", "", read.code())
+                assertTrue(
+                    "bridge must zero the read caller password before returning",
+                    readPassword.all { it == 0.toByte() },
+                )
+                val liveRead = readOperation
+                    ?: throw AssertionError("round-trip read start returned no operation")
+                val readTerminal = awaitTerminalPumping(context, liveRead)
+                skipOnResourceAdmissionDenial(readTerminal)
+                assertEquals("round-trip read must succeed", "success", readTerminal.outcome())
+                assertEquals("round-trip read must complete clean", "clean", readTerminal.completionClass())
+                assertEquals("round-trip read must expose the empty comment", "", readTerminal.authenticatedComment())
+                assertTrue(
+                    "round-trip plaintext must be byte-exact",
+                    ROUND_TRIP_PLAINTEXT.contentEquals(roundTrip.readBytes()),
+                )
+                val readOutput = liveRead.output()
+                    ?: throw AssertionError("round-trip read retained no output authority")
+                assertEquals("round-trip read output must discard", "discarded", readOutput.discard().code())
+                assertEquals("round-trip read release must succeed", "", liveRead.release())
+                readReleased = true
+            } catch (failure: Throwable) {
+                primaryFailure = failure
+                throw failure
+            } finally {
+                if (readOperation != null) {
+                    attachCleanupFailure(primaryFailure) { release(readOperation, "round-trip read", readReleased) }
+                }
+            }
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            attachCleanupFailure(primaryFailure) {
+                cleanupFiles(
+                    roundTrip to "round-trip plaintext",
+                    saved to "transferred volume",
+                    target to "creation staging",
+                    source to "creation plaintext",
+                    directory to "v11 workspace",
+                )
+            }
+        }
+    }
+
     private fun awaitTerminal(operation: mobile.PCV3Operation): mobile.PCV3Snapshot {
         val deadline = SystemClock.elapsedRealtime() + TERMINAL_TIMEOUT_MILLIS
         while (SystemClock.elapsedRealtime() < deadline) {
@@ -328,7 +495,93 @@ class Pcv3DeviceBehaviorTest {
         throw AssertionError("PCV3 operation did not reach a terminal state")
     }
 
-    private fun release(operation: mobile.PCV3Operation, label: String) {
+    /**
+     * Awaits the terminal snapshot while answering each KDF resource challenge
+     * with fresh, real ActivityManager facts, mirroring the production pump in
+     * OperationManager. A challenge the device cannot answer inside its bounded
+     * window surfaces as a resource diagnostic, which the caller skips on.
+     */
+    private fun awaitTerminalPumping(
+        context: android.content.Context,
+        operation: mobile.PCV3Operation,
+    ): mobile.PCV3Snapshot {
+        val deadline = SystemClock.elapsedRealtime() + TERMINAL_TIMEOUT_MILLIS
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val challenge = operation.resourceChallenge()
+            if (challenge != null) {
+                submitDeviceFacts(context, challenge)
+            }
+            val snapshot = operation.snapshot()
+            if (snapshot.completionClass() != "unknown") {
+                return snapshot
+            }
+            SystemClock.sleep(POLL_MILLIS)
+        }
+        throw AssertionError("PCV3 operation did not reach a terminal state")
+    }
+
+    private fun submitDeviceFacts(context: android.content.Context, challenge: mobile.PCV3ResourceChallenge) {
+        val manager = context.getSystemService(ActivityManager::class.java) ?: return
+        val system = ActivityManager.MemoryInfo()
+        manager.getMemoryInfo(system)
+        val process = Debug.MemoryInfo()
+        Debug.getMemoryInfo(process)
+        val footprint = process.totalPss.toLong() * 1024
+        if (system.totalMem <= 0 || system.availMem <= 0 || system.threshold <= 0 || footprint <= 0) {
+            return
+        }
+        challenge.submit(
+            system.totalMem,
+            system.availMem,
+            system.threshold,
+            footprint,
+            Process.is64Bit(),
+            system.lowMemory,
+        )
+    }
+
+    /**
+     * The fixed 1 GiB Argon2id profile is genuinely unaffordable on some
+     * devices; an admission denial is environment evidence, not a product
+     * regression, so it skips with the exact diagnostic.
+     */
+    private fun skipOnResourceAdmissionDenial(snapshot: mobile.PCV3Snapshot) {
+        Assume.assumeFalse(
+            "resource-admission environment skip: the platform admitter refused the fixed 1 GiB " +
+                "KDF profile on this device (diagnostic ${snapshot.diagnostic()})",
+            RESOURCE_ADMISSION_DIAGNOSTICS.contains(snapshot.diagnostic()),
+        )
+    }
+
+    /**
+     * Cleanup release for an operation. [alreadyReleased] must be true exactly
+     * when the test body already released the operation itself.
+     *
+     * RELEASE_DENIED is ambiguous on the bridge (src/mobile/progress.go
+     * Release): it covers both a genuinely live operation (not terminal, or a
+     * live consent/archive/output capability retains it) and an operation that
+     * is already released and therefore gone from the registry. The registry
+     * lookup behind that difference is not observable through the bridge: a
+     * released operation's snapshot is the invalid all-"unknown" one, but a
+     * just-started live operation presents the same zero snapshot until its
+     * first status report. The caller's release fact is the only exact
+     * discriminator, so this helper stays strict in both directions: a
+     * body-released operation must stay released, and any other operation is
+     * cancelled, driven to terminal, and released, failing loudly when it
+     * still refuses.
+     */
+    private fun release(operation: mobile.PCV3Operation, label: String, alreadyReleased: Boolean) {
+        if (alreadyReleased) {
+            val code = operation.release()
+            if (code != RELEASE_DENIED) {
+                throw AssertionError("$label operation must stay released after the body release: $code")
+            }
+            val completion = operation.snapshot().completionClass()
+            if (completion != "unknown") {
+                throw AssertionError("$label released operation must expose only the unknown snapshot: $completion")
+            }
+            return
+        }
         var cleanupFailure: Throwable? = null
         val initiallyReleased = try {
             operation.release().isEmpty()
@@ -399,6 +652,9 @@ class Pcv3DeviceBehaviorTest {
         val keys = keyfiles.joinToString(separator = ",") { jsonString(it.absolutePath) }
         return """{"version":1,"mode":${jsonString(mode)},"factorPolicy":${jsonString(factorPolicy)},"keyfileOrder":${jsonString(keyfileOrder)},"source":${jsonString(source.absolutePath)},"target":${jsonString(target.absolutePath)},"keyfiles":[$keys]}"""
     }
+
+    private fun writeEnvelope(mode: String, source: File, target: File): String =
+        """{"version":1,"mode":${jsonString(mode)},"factorPolicy":"password","keyfileOrder":"none","source":${jsonString(source.absolutePath)},"target":${jsonString(target.absolutePath)},"keyfiles":[],"comment":"","suite":"standard","payloadRS":false}"""
 
     private fun deleteExactly(file: File, label: String) {
         if (file.exists() && !file.delete()) {
@@ -572,7 +828,8 @@ class Pcv3DeviceBehaviorTest {
         val NON_VOLUME_SOURCE = "device behavior source without any PCV3 claim".toByteArray(Charsets.UTF_8)
         val KEYFILE_FACTOR = "device behavior keyfile factor".toByteArray(Charsets.UTF_8)
         val CALLER_PASSWORD = "device behavior caller password".toByteArray(Charsets.UTF_8)
-        val POLICY_STATES = setOf("configured", "unconfigured")
+        val ROUND_TRIP_PLAINTEXT = "device creation round-trip payload\u0000\u0001\u0002".toByteArray(Charsets.UTF_8)
+        val RESOURCE_ADMISSION_DIAGNOSTICS = setOf("resource-busy", "resource-insufficient", "resource-unknown")
         val FORBIDDEN_RECEIPT_AUTHORITIES = setOf(
             "operation", "consent", "archive", "retry", "resume",
             "extract", "export", "discard", "cleanup", "delete",

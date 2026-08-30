@@ -352,6 +352,7 @@ func (archive *PCV3Archive) BeginSAF() (result *PCV3ArchiveBegin) {
 		stateCopy.status,
 		state.operation.id,
 		receiptID,
+		stateCopy.authenticatedComment,
 	)
 	activeReceipt := activeSnapshot.RestoredReceipt()
 	if activeReceipt == "" {
@@ -609,7 +610,7 @@ func callPCV3ArchiveSAFStep(call func() pcv3ArchiveSAFCoreStep) (
 
 func (session *PCV3ArchiveSession) complete(abort bool) *PCV3Snapshot {
 	if session == nil || session.state == nil {
-		return newPCV3Snapshot(pcv3operation.Presentation{}, pcv3operation.Status{}, "", "")
+		return newPCV3Snapshot(pcv3operation.Presentation{}, pcv3operation.Status{}, "", "", "")
 	}
 	state := session.state
 	state.mu.Lock()

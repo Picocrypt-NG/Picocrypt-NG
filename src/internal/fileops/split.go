@@ -7,6 +7,9 @@ package fileops
 
 import (
 	"Picocrypt-NG/internal/util"
+	"bytes"
+	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +19,10 @@ import (
 	"strings"
 	"time"
 )
+
+var splitDirectorySyncFn = (*os.File).Sync
+
+var ErrSplitCleanupIncomplete = errors.New("split cleanup incomplete")
 
 func isSplitArtifact(baseName, candidateName string) bool {
 	prefix := baseName + "."
@@ -46,19 +53,32 @@ func existingSplitArtifact(basePath string) (string, error) {
 
 type ownedFilePath struct {
 	path string
+	name string
 	info os.FileInfo
+	root *os.Root
 }
 
 func newOwnedFilePath(path string, file *os.File) (ownedFilePath, error) {
+	return newOwnedFileInRoot(path, "", nil, file)
+}
+
+func newOwnedFileInRoot(path, name string, root *os.Root, file *os.File) (ownedFilePath, error) {
 	info, err := file.Stat()
 	if err != nil {
 		return ownedFilePath{}, err
 	}
-	return ownedFilePath{path: path, info: info}, nil
+	return ownedFilePath{path: path, name: name, info: info, root: root}, nil
+}
+
+func (owned ownedFilePath) lstat() (os.FileInfo, error) {
+	if owned.root != nil {
+		return owned.root.Lstat(owned.name)
+	}
+	return os.Lstat(owned.path)
 }
 
 func (owned ownedFilePath) remove() error {
-	current, err := os.Lstat(owned.path)
+	current, err := owned.lstat()
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -68,14 +88,19 @@ func (owned ownedFilePath) remove() error {
 	if !current.Mode().IsRegular() || !os.SameFile(owned.info, current) {
 		return nil
 	}
-	if err := os.Remove(owned.path); err != nil {
+	if owned.root != nil {
+		err = owned.root.Remove(owned.name)
+	} else {
+		err = os.Remove(owned.path)
+	}
+	if err != nil {
 		return fmt.Errorf("remove owned output %s: %w", owned.path, err)
 	}
 	return nil
 }
 
 func (owned ownedFilePath) matches() (bool, error) {
-	current, err := os.Lstat(owned.path)
+	current, err := owned.lstat()
 	if err != nil {
 		return false, err
 	}
@@ -95,13 +120,17 @@ const (
 
 // SplitOptions configures how a file should be split into chunks.
 type SplitOptions struct {
-	InputPath     string       // Path to file to split
-	ExpectedInput os.FileInfo  // Optional identity that InputPath must still name
-	ChunkSize     int          // Size of each chunk in Unit (or number of parts if Unit=Total)
-	Unit          SplitUnit    // Unit of ChunkSize
-	Progress      ProgressFunc // Progress callback (optional)
-	Status        StatusFunc   // Status message callback (optional)
-	Cancel        CancelFunc   // Cancellation check callback (optional)
+	InputPath            string             // Path to file to split
+	ExpectedInput        os.FileInfo        // Optional identity that InputPath must still name
+	ExpectedDirectory    os.FileInfo        // Optional identity that the output directory must retain
+	ExpectedSHA256       *[sha256.Size]byte // Optional digest frozen before splitting starts
+	ChunkSize            int                // Size of each chunk in Unit (or number of parts if Unit=Total)
+	Unit                 SplitUnit          // Unit of ChunkSize
+	MinimumChunkSize     int64              // Optional minimum bytes required in every non-final chunk
+	RequireDirectorySync bool               // Require durable chunk creation and rollback removal
+	Progress             ProgressFunc       // Progress callback (optional)
+	Status               StatusFunc         // Status message callback (optional)
+	Cancel               CancelFunc         // Cancellation check callback (optional)
 }
 
 // ChunkSizeToBytes converts a chunk size expressed in unit to a byte count,
@@ -147,6 +176,75 @@ func cleanupSplitOnError(stage *StagedFile, chunks []ownedFilePath) error {
 	return errors.Join(cleanupErrs...)
 }
 
+func openSplitDirectory(path string) (*os.Root, *os.File, os.FileInfo, error) {
+	root, err := OpenRootNoSymlink(path)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("open split output directory: %w", err)
+	}
+	identity, err := root.Stat(".")
+	if err != nil {
+		return nil, nil, nil, errors.Join(
+			fmt.Errorf("inspect split output directory: %w", err),
+			root.Close(),
+		)
+	}
+	directory, err := root.Open(".")
+	if err != nil {
+		return nil, nil, nil, errors.Join(
+			fmt.Errorf("retain split output directory: %w", err),
+			root.Close(),
+		)
+	}
+	opened, statErr := directory.Stat()
+	if statErr != nil || opened == nil || !os.SameFile(identity, opened) {
+		return nil, nil, nil, errors.Join(
+			errors.New("split output directory identity changed while opening"),
+			statErr,
+			directory.Close(),
+			root.Close(),
+		)
+	}
+	return root, directory, identity, nil
+}
+
+func existingSplitArtifactInRoot(root *os.Root, basePath string) (string, error) {
+	directory, err := root.Open(".")
+	if err != nil {
+		return "", fmt.Errorf("open split output directory: %w", err)
+	}
+	entries, readErr := directory.ReadDir(-1)
+	closeErr := directory.Close()
+	if readErr != nil || closeErr != nil {
+		return "", errors.Join(fmt.Errorf("read split output directory: %w", readErr), closeErr)
+	}
+	baseName := filepath.Base(basePath)
+	for _, entry := range entries {
+		if isSplitArtifact(baseName, entry.Name()) {
+			return filepath.Join(filepath.Dir(basePath), entry.Name()), nil
+		}
+	}
+	return "", nil
+}
+
+func syncSplitDirectory(directory *os.File, path string, identity os.FileInfo) error {
+	if directory == nil || identity == nil {
+		return errors.New("split output directory is unavailable")
+	}
+	pinned, err := directory.Stat()
+	if err != nil || pinned == nil || !os.SameFile(identity, pinned) {
+		return errors.Join(errors.New("split output directory identity changed"), err)
+	}
+	current, err := os.Lstat(path)
+	if err != nil || current == nil || !current.IsDir() ||
+		current.Mode()&os.ModeSymlink != 0 || !os.SameFile(identity, current) {
+		return errors.Join(errors.New("split output directory path changed"), err)
+	}
+	if err := splitDirectorySyncFn(directory); err != nil {
+		return fmt.Errorf("sync split output directory: %w", err)
+	}
+	return nil
+}
+
 // Split divides a file into multiple sequential chunks for easier storage/transfer.
 //
 // Output files are named with numeric suffixes: inputPath.0, inputPath.1, inputPath.2, etc.
@@ -159,24 +257,93 @@ func cleanupSplitOnError(stage *StagedFile, chunks []ownedFilePath) error {
 //
 // To reassemble, use Recombine() or concatenate files in order: cat file.pcv.* > file.pcv
 func Split(opts SplitOptions) (chunks []string, retErr error) {
+	return split(opts, nil, nil, nil)
+}
+
+// SplitPinned is Split with borrowed input and output-directory handles. All
+// chunk names are resolved through root; the handles remain owned by the caller.
+func SplitPinned(
+	opts SplitOptions,
+	input *os.File,
+	root *os.Root,
+	directory *os.File,
+) (chunks []string, retErr error) {
+	if input == nil || root == nil || directory == nil {
+		return nil, os.ErrInvalid
+	}
+	opts.RequireDirectorySync = true
+	return split(opts, input, root, directory)
+}
+
+func split(
+	opts SplitOptions,
+	pinnedInput *os.File,
+	pinnedRoot *os.Root,
+	pinnedDirectory *os.File,
+) (chunks []string, retErr error) {
 	if opts.ChunkSize <= 0 {
 		return nil, errors.New("chunk size must be greater than zero")
 	}
 
-	fin, err := os.Open(opts.InputPath)
-	if err != nil {
-		return nil, fmt.Errorf("open input: %w", err)
+	fin := pinnedInput
+	closeInput := false
+	var err error
+	if fin == nil {
+		fin, err = os.Open(opts.InputPath)
+		if err != nil {
+			return nil, fmt.Errorf("open input: %w", err)
+		}
+		closeInput = true
 	}
-	defer func() { _ = fin.Close() }()
+	if closeInput {
+		defer func() { _ = fin.Close() }()
+	}
 
 	stat, err := fin.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat input: %w", err)
 	}
-	if opts.ExpectedInput != nil && !os.SameFile(opts.ExpectedInput, stat) {
-		return nil, errors.New("input path changed before splitting")
+	if opts.ExpectedInput != nil &&
+		(!opts.ExpectedInput.Mode().IsRegular() || !stat.Mode().IsRegular() ||
+			opts.ExpectedInput.Size() != stat.Size() || !os.SameFile(opts.ExpectedInput, stat)) {
+		return nil, errors.New("input path changed before splitting (identity or size mismatch)")
 	}
 	totalSize := stat.Size()
+	if _, err := fin.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind input: %w", err)
+	}
+
+	splitRoot := pinnedRoot
+	splitDirectory := pinnedDirectory
+	var splitDirectoryIdentity os.FileInfo
+	splitDirectoryPath := filepath.Dir(opts.InputPath)
+	if opts.RequireDirectorySync {
+		closeDirectory := false
+		if splitRoot == nil || splitDirectory == nil {
+			splitRoot, splitDirectory, splitDirectoryIdentity, err = openSplitDirectory(splitDirectoryPath)
+			if err != nil {
+				return nil, err
+			}
+			closeDirectory = true
+		} else {
+			rootInfo, rootErr := splitRoot.Stat(".")
+			directoryInfo, directoryErr := splitDirectory.Stat()
+			if rootErr != nil || directoryErr != nil || rootInfo == nil || directoryInfo == nil ||
+				!rootInfo.IsDir() || !directoryInfo.IsDir() || !os.SameFile(rootInfo, directoryInfo) {
+				return nil, errors.Join(errors.New("pinned split output directory is invalid"), rootErr, directoryErr)
+			}
+			splitDirectoryIdentity = rootInfo
+		}
+		if closeDirectory {
+			defer func() {
+				_ = splitDirectory.Close()
+				_ = splitRoot.Close()
+			}()
+		}
+		if opts.ExpectedDirectory != nil && !os.SameFile(opts.ExpectedDirectory, splitDirectoryIdentity) {
+			return nil, errors.New("split output directory changed before splitting")
+		}
+	}
 
 	// Calculate actual chunk size in bytes
 	var chunkSize int64
@@ -189,10 +356,18 @@ func Split(opts SplitOptions) (chunks []string, retErr error) {
 			return nil, err
 		}
 	}
+	if opts.MinimumChunkSize > 0 && chunkSize < opts.MinimumChunkSize {
+		return nil, fmt.Errorf("chunk size %d is below required minimum %d", chunkSize, opts.MinimumChunkSize)
+	}
 
 	numChunks := int(math.Ceil(float64(totalSize) / float64(chunkSize)))
 
-	existing, err := existingSplitArtifact(opts.InputPath)
+	var existing string
+	if splitRoot != nil {
+		existing, err = existingSplitArtifactInRoot(splitRoot, opts.InputPath)
+	} else {
+		existing, err = existingSplitArtifact(opts.InputPath)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -202,24 +377,40 @@ func Split(opts SplitOptions) (chunks []string, retErr error) {
 
 	var ownedChunks []ownedFilePath
 	var activeStage *StagedFile
+	directoryModified := false
 	defer func() {
 		if retErr != nil {
-			retErr = errors.Join(retErr, cleanupSplitOnError(activeStage, ownedChunks))
+			cleanupErr := cleanupSplitOnError(activeStage, ownedChunks)
+			if opts.RequireDirectorySync && directoryModified {
+				cleanupErr = errors.Join(
+					cleanupErr,
+					syncSplitDirectory(splitDirectory, splitDirectoryPath, splitDirectoryIdentity),
+				)
+			}
+			retErr = errors.Join(retErr, cleanupErr)
 		}
 	}()
 	var totalDone int64
+	firstPassDigest := sha256.New()
 	startTime := time.Now()
 
 	for i := range numChunks {
 		if opts.Cancel != nil && opts.Cancel() {
-			return nil, errors.New("operation cancelled")
+			return nil, context.Canceled
 		}
 
 		finalPath := fmt.Sprintf("%s.%d", opts.InputPath, i)
-		stage, err := CreateSiblingTemp(finalPath)
+		finalName := filepath.Base(finalPath)
+		var stage *StagedFile
+		if splitRoot != nil {
+			stage, err = createSiblingTempInRoot(splitRoot, splitDirectoryIdentity, finalName, finalPath)
+		} else {
+			stage, err = CreateSiblingTemp(finalPath)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("create chunk stage %d: %w", i, err)
 		}
+		directoryModified = true
 		activeStage = stage
 		fout := stage.File()
 
@@ -228,7 +419,7 @@ func Split(opts SplitOptions) (chunks []string, retErr error) {
 
 		for chunkDone < chunkSize {
 			if opts.Cancel != nil && opts.Cancel() {
-				return nil, errors.New("operation cancelled")
+				return nil, context.Canceled
 			}
 
 			// Adjust buffer size if near end of chunk
@@ -239,6 +430,9 @@ func Split(opts SplitOptions) (chunks []string, retErr error) {
 
 			n, readErr := fin.Read(buf)
 			if n > 0 {
+				if opts.RequireDirectorySync || opts.ExpectedSHA256 != nil {
+					_, _ = firstPassDigest.Write(buf[:n])
+				}
 				if _, err := fout.Write(buf[:n]); err != nil {
 					return nil, fmt.Errorf("write chunk %d: %w", i, err)
 				}
@@ -269,14 +463,22 @@ func Split(opts SplitOptions) (chunks []string, retErr error) {
 			return nil, fmt.Errorf("rewind chunk stage %d: %w", i, err)
 		}
 
-		finalFile, err := CreateExclusiveNoSymlink(finalPath)
+		var finalFile *os.File
+		if splitRoot != nil {
+			finalFile, err = splitRoot.OpenFile(finalName, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+		} else {
+			finalFile, err = CreateExclusiveNoSymlink(finalPath)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("create chunk %d: %w", i, err)
 		}
-		ownedChunk, err := newOwnedFilePath(finalPath, finalFile)
+		ownedChunk, err := newOwnedFileInRoot(finalPath, finalName, splitRoot, finalFile)
 		if err != nil {
-			_ = finalFile.Close()
-			return nil, fmt.Errorf("inspect chunk %d: %w", i, err)
+			return nil, errors.Join(
+				fmt.Errorf("inspect chunk %d: %w", i, err),
+				finalFile.Close(),
+				ErrSplitCleanupIncomplete,
+			)
 		}
 		ownedChunks = append(ownedChunks, ownedChunk)
 		copied, err := io.Copy(finalFile, fout)
@@ -317,6 +519,54 @@ func Split(opts SplitOptions) (chunks []string, retErr error) {
 				return nil, fmt.Errorf("inspect completed chunk %d: %w", i, err)
 			}
 			return nil, fmt.Errorf("chunk %d path changed during splitting", i)
+		}
+	}
+	if totalDone != totalSize {
+		return nil, fmt.Errorf("split source changed size while reading: copied %d of %d bytes", totalDone, totalSize)
+	}
+	if opts.ExpectedSHA256 != nil && !bytes.Equal(firstPassDigest.Sum(nil), opts.ExpectedSHA256[:]) {
+		return nil, errors.New("split source does not match its prepublication digest")
+	}
+	if opts.RequireDirectorySync {
+		current, err := fin.Stat()
+		if err != nil || current == nil || !current.Mode().IsRegular() ||
+			current.Size() != totalSize || !os.SameFile(stat, current) {
+			return nil, errors.Join(errors.New("split source changed before verification"), err)
+		}
+		if _, err := fin.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("rewind split source for verification: %w", err)
+		}
+		secondPassDigest := sha256.New()
+		remaining := totalSize
+		buffer := make([]byte, util.MiB)
+		for remaining > 0 {
+			if opts.Cancel != nil && opts.Cancel() {
+				return nil, context.Canceled
+			}
+			want := int64(len(buffer))
+			if remaining < want {
+				want = remaining
+			}
+			count, readErr := io.ReadFull(fin, buffer[:want])
+			if count > 0 {
+				_, _ = secondPassDigest.Write(buffer[:count])
+				remaining -= int64(count)
+			}
+			if readErr != nil {
+				return nil, fmt.Errorf("verify split source: %w", readErr)
+			}
+		}
+		verified, err := fin.Stat()
+		if err != nil || verified == nil || !verified.Mode().IsRegular() ||
+			verified.Size() != totalSize || !os.SameFile(stat, verified) ||
+			!bytes.Equal(firstPassDigest.Sum(nil), secondPassDigest.Sum(nil)) ||
+			(opts.ExpectedSHA256 != nil && !bytes.Equal(secondPassDigest.Sum(nil), opts.ExpectedSHA256[:])) {
+			return nil, errors.Join(errors.New("split source changed while creating chunks"), err)
+		}
+	}
+	if opts.RequireDirectorySync {
+		if err := syncSplitDirectory(splitDirectory, splitDirectoryPath, splitDirectoryIdentity); err != nil {
+			return nil, err
 		}
 	}
 

@@ -118,6 +118,7 @@ func TestRecoveryCleansRetainedOutputIfCoreLaterWithdrawsOutputSemantic(t *testi
 		err := output(
 			outputSemantic,
 			operationRoleCapsulePrimary,
+			"",
 			func(sink operationSegmentSink) error {
 				return sink(outputSemantic.ranges[0], []byte("hello"))
 			},
@@ -169,6 +170,7 @@ func TestRecoveryPanicAfterRetainedPublicationRemovesInternalPlaintext(t *testin
 		err := output(
 			semantic,
 			operationRoleCapsulePrimary,
+			"",
 			func(sink operationSegmentSink) error {
 				return sink(semantic.ranges[0], []byte("hello"))
 			},

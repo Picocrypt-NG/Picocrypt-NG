@@ -5,8 +5,10 @@ import (
 	pcv3 "Picocrypt-NG/internal/pcv3result"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -69,6 +71,9 @@ type Stage struct {
 	cleanupDone         bool
 	cleanupErr          error
 	retentionAttempted  bool
+	retainedSHA256      [sha256.Size]byte
+	retainedSize        int64
+	retainedDigestReady bool
 }
 
 // Create validates a publication request and creates its private stage through
@@ -238,6 +243,64 @@ func (stage *Stage) File() *os.File {
 	return stage.file
 }
 
+func (stage *Stage) freezeRetainedDigest(ctx context.Context) error {
+	if stage != nil && stage.retainedDigestReady {
+		return nil
+	}
+	if stage == nil || stage.file == nil || stage.root == nil || stage.stageInfo == nil ||
+		stage.terminal != nil || ctx == nil {
+		return os.ErrInvalid
+	}
+	info, err := stage.file.Stat()
+	if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 ||
+		!os.SameFile(stage.stageInfo, info) ||
+		probeIdentity(stage.root, stage.stageName, stage.stageInfo) != identityExpected {
+		return errors.Join(errors.New("inspect stage before digest"), err)
+	}
+	offset, err := stage.file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return fmt.Errorf("record stage offset before digest: %w", err)
+	}
+	if _, err := stage.file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind stage before digest: %w", err)
+	}
+	hash := sha256.New()
+	remaining := info.Size()
+	buffer := make([]byte, 128<<10)
+	defer clear(buffer)
+	for remaining > 0 {
+		if err := ctx.Err(); err != nil {
+			_, _ = stage.file.Seek(offset, io.SeekStart)
+			return err
+		}
+		want := int64(len(buffer))
+		if remaining < want {
+			want = remaining
+		}
+		count, err := io.ReadFull(stage.file, buffer[:want])
+		if err != nil {
+			_, _ = stage.file.Seek(offset, io.SeekStart)
+			return fmt.Errorf("read stage for digest: %w", err)
+		}
+		_, _ = hash.Write(buffer[:count])
+		remaining -= int64(count)
+	}
+	verified, err := stage.file.Stat()
+	if err != nil || verified == nil || !verified.Mode().IsRegular() ||
+		verified.Size() != info.Size() || !os.SameFile(info, verified) ||
+		probeIdentity(stage.root, stage.stageName, stage.stageInfo) != identityExpected {
+		_, _ = stage.file.Seek(offset, io.SeekStart)
+		return errors.Join(errors.New("stage changed while computing digest"), err)
+	}
+	if _, err := stage.file.Seek(offset, io.SeekStart); err != nil {
+		return fmt.Errorf("restore stage offset after digest: %w", err)
+	}
+	copy(stage.retainedSHA256[:], hash.Sum(nil))
+	stage.retainedSize = info.Size()
+	stage.retainedDigestReady = true
+	return nil
+}
+
 // Publish finalizes the stage, invokes the one platform atomic operation, and
 // reports the identity-proven terminal state. Repeated calls return the same
 // result without repeating filesystem effects.
@@ -376,6 +439,14 @@ func (stage *Stage) PublishRetained(ctx context.Context) (Result, *RetainedFile)
 	}
 	if stage != nil {
 		stage.retentionAttempted = true
+		if stage.terminal == nil {
+			if err := stage.freezeRetainedDigest(ctx); err != nil {
+				if errors.Is(err, context.Canceled) || (ctx != nil && ctx.Err() != nil) {
+					return stage.finish(StateNotPublished, pcv3.StageCancellation, CodeCancelled), nil
+				}
+				return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure), nil
+			}
+		}
 	}
 	publication := stage.Publish(ctx)
 	if publication == nil || publication.State() != StatePublishedDurable {
@@ -412,6 +483,7 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 	if stage == nil || stage.terminal == nil ||
 		stage.terminal.State() != StatePublishedDurable || stage.file != nil ||
 		stage.root == nil || stage.parent == nil || stage.stageInfo == nil ||
+		!stage.retainedDigestReady ||
 		stage.targetName == "" || stage.operations.removeStage == nil ||
 		stage.operations.openRetained == nil || stage.operations.syncDirectory == nil ||
 		!stage.parentIdentityCurrent() ||
@@ -425,7 +497,7 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 	}
 	info, err := file.Stat()
 	if err != nil || info == nil || !info.Mode().IsRegular() ||
-		!os.SameFile(stage.stageInfo, info) ||
+		info.Size() != stage.retainedSize || !os.SameFile(stage.stageInfo, info) ||
 		probeIdentity(stage.root, stage.targetName, stage.stageInfo) != identityExpected {
 		_ = file.Close()
 		return nil
@@ -435,7 +507,9 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 		file:          file,
 		root:          stage.root,
 		parent:        stage.parent,
-		identity:      stage.stageInfo,
+		identity:      info,
+		sha256:        stage.retainedSHA256,
+		digestReady:   true,
 		targetName:    stage.targetName,
 		remove:        stage.operations.removeStage,
 		syncDirectory: stage.operations.syncDirectory,
@@ -446,6 +520,9 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 	stage.rootInfo = nil
 	stage.stageInfo = nil
 	stage.targetInfo = nil
+	clear(stage.retainedSHA256[:])
+	stage.retainedSize = 0
+	stage.retainedDigestReady = false
 	stage.parentPath = ""
 	stage.stagePath = ""
 	stage.stageName = ""
@@ -661,6 +738,9 @@ func (stage *Stage) Cleanup() error {
 	stage.journalInfo = nil
 	stage.journalStageIdentity = journalFileIdentity{}
 	stage.targetInfo = nil
+	clear(stage.retainedSHA256[:])
+	stage.retainedSize = 0
+	stage.retainedDigestReady = false
 	stage.protected = nil
 	if cleanupFailed {
 		stage.cleanupErr = ErrCleanupIncomplete

@@ -4,7 +4,6 @@ import (
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3credential"
-	"Picocrypt-NG/internal/volume"
 	"archive/zip"
 	"bytes"
 	"context"
@@ -21,22 +20,22 @@ import (
 	"testing"
 )
 
-// phase9Sentinel is one unique non-zero secret or path token with a stable
+// pcv3Sentinel is one unique non-zero secret or path token with a stable
 // public ID. Failure output names only the ID, never the value.
-type phase9Sentinel struct {
+type pcv3Sentinel struct {
 	id    string
 	value []byte
 }
 
-// phase9LifecycleAdmitter records every admission request with its exact
+// pcv3LifecycleAdmitter records every admission request with its exact
 // profile snapshot so the oracle can prove one-flight, fixed-profile scope.
-type phase9LifecycleAdmitter struct {
+type pcv3LifecycleAdmitter struct {
 	calls     int
 	profiles  []pcv3credential.KDFProfile
 	admission pcv3credential.KDFAdmission
 }
 
-func (admitter *phase9LifecycleAdmitter) AdmitKDF(
+func (admitter *pcv3LifecycleAdmitter) AdmitKDF(
 	_ context.Context,
 	profile pcv3credential.KDFProfile,
 ) (pcv3credential.KDFAdmission, error) {
@@ -48,33 +47,28 @@ func (admitter *phase9LifecycleAdmitter) AdmitKDF(
 	return pcv3credential.KDFAdmissionDenied, nil
 }
 
-// phase9LifecycleRun carries one operation run plus every retained alias and
+// pcv3LifecycleRun carries one operation run plus every retained alias and
 // channel the oracle inspects after the terminal result.
-type phase9LifecycleRun struct {
+type pcv3LifecycleRun struct {
 	ctx       context.Context
 	request   *Request
-	admitter  *phase9LifecycleAdmitter
+	admitter  *pcv3LifecycleAdmitter
 	outputDir string
 	statuses  []StatusCode
 	statusDbg []string
 	statusArg []uint64
 
-	passwords       []phase9Sentinel // aliases: exact value before Run, zero after
-	keyfiles        []*operationObservedReadCloser
-	source          *os.File
-	consentCalls    int
-	retainedAction  ConsentAction
-	comment         []byte // migration comment alias: exact before, zero after
-	legacyRequest   *volume.DecryptRequest
-	legacyPassword  []byte   // migration legacy password alias
-	legacyKeyfiles  []string // migration legacy keyfile path alias: cleared after
-	migrationActive bool
-	sentinels       []phase9Sentinel // tokens that must never reach a channel
+	passwords      []pcv3Sentinel // aliases: exact value before Run, zero after
+	keyfiles       []*operationObservedReadCloser
+	source         *os.File
+	consentCalls   int
+	retainedAction ConsentAction
+	sentinels      []pcv3Sentinel // tokens that must never reach a channel
 }
 
-type phase9LifecycleCase struct {
+type pcv3LifecycleCase struct {
 	name             string
-	build            func(t *testing.T) *phase9LifecycleRun
+	build            func(t *testing.T) *pcv3LifecycleRun
 	wantOutcome      pcv3.Outcome
 	wantStage        pcv3.Stage
 	wantCode         pcv3.Code
@@ -86,10 +80,10 @@ type phase9LifecycleCase struct {
 	wantConsentCalls int
 }
 
-// phase9Standard1Profile is the frozen fixed Argon2id profile for suite
+// pcv3Standard1Profile is the frozen fixed Argon2id profile for suite
 // 0x0001 (spec §6.4: Normal-1, version 0x13, t=4, m=1048576 KiB, p=4, 16-byte
 // salt, 32-byte output). It is an independent literal, not a re-derivation.
-var phase9Standard1Profile = pcv3credential.KDFProfile{
+var pcv3Standard1Profile = pcv3credential.KDFProfile{
 	ID:            0x01,
 	Argon2Version: 0x13,
 	Time:          4,
@@ -99,39 +93,39 @@ var phase9Standard1Profile = pcv3credential.KDFProfile{
 	OutputBytes:   32,
 }
 
-func phase9SentinelBytes(id string) []byte {
-	return []byte("p9-life-" + id + "-7d21c94af0")
+func pcv3SentinelBytes(id string) []byte {
+	return []byte("pcv3-life-" + id + "-7d21c94af0")
 }
 
-func phase9PathSentinel(t *testing.T, id string) (directory, token string) {
+func pcv3PathSentinel(t *testing.T, id string) (directory, token string) {
 	t.Helper()
 	directory = t.TempDir()
-	token = "p9-life-path-" + id + "-51b0e2"
+	token = "pcv3-life-path-" + id + "-51b0e2"
 	return directory, token
 }
 
-func phase9BaseRun(t *testing.T, id string) *phase9LifecycleRun {
+func pcv3BaseRun(t *testing.T, id string) *pcv3LifecycleRun {
 	t.Helper()
-	admitter := &phase9LifecycleAdmitter{}
-	run := &phase9LifecycleRun{
+	admitter := &pcv3LifecycleAdmitter{}
+	run := &pcv3LifecycleRun{
 		ctx:      context.Background(),
 		admitter: admitter,
 	}
-	targetDir, targetToken := phase9PathSentinel(t, id+"-target")
-	protectedDir, protectedToken := phase9PathSentinel(t, id+"-protected")
+	targetDir, targetToken := pcv3PathSentinel(t, id+"-target")
+	protectedDir, protectedToken := pcv3PathSentinel(t, id+"-protected")
 	run.outputDir = targetDir
 	run.request = &Request{
 		Target:    filepath.Join(targetDir, targetToken+".bin"),
 		Protected: []string{filepath.Join(protectedDir, protectedToken+".bin")},
 	}
 	run.sentinels = append(run.sentinels,
-		phase9Sentinel{id: id + "-target-path", value: []byte(targetToken)},
-		phase9Sentinel{id: id + "-protected-path", value: []byte(protectedToken)},
+		pcv3Sentinel{id: id + "-target-path", value: []byte(targetToken)},
+		pcv3Sentinel{id: id + "-protected-path", value: []byte(protectedToken)},
 	)
 	return run
 }
 
-func phase9WireReporter(run *phase9LifecycleRun) {
+func pcv3WireReporter(run *pcv3LifecycleRun) {
 	run.request.Reporter = func(status Status) error {
 		run.statuses = append(run.statuses, status.Code())
 		run.statusDbg = append(run.statusDbg, fmt.Sprintf("%#v", status))
@@ -140,14 +134,14 @@ func phase9WireReporter(run *phase9LifecycleRun) {
 	}
 }
 
-func phase9PasswordFactors(run *phase9LifecycleRun, id string) *pcv3credential.FactorRequest {
-	password := phase9SentinelBytes(id)
-	run.passwords = append(run.passwords, phase9Sentinel{id: id, value: password})
-	run.sentinels = append(run.sentinels, phase9Sentinel{id: id, value: password})
+func pcv3PasswordFactors(run *pcv3LifecycleRun, id string) *pcv3credential.FactorRequest {
+	password := pcv3SentinelBytes(id)
+	run.passwords = append(run.passwords, pcv3Sentinel{id: id, value: password})
+	run.sentinels = append(run.sentinels, pcv3Sentinel{id: id, value: password})
 	return operationPasswordFactors(password)
 }
 
-func phase9CaptureProcess(t *testing.T, run func()) (stdout, stderr []byte) {
+func pcv3CaptureProcess(t *testing.T, run func()) (stdout, stderr []byte) {
 	t.Helper()
 	originalStdout, originalStderr := os.Stdout, os.Stderr
 	stdoutReader, stdoutWriter, err := os.Pipe()
@@ -180,9 +174,9 @@ func phase9CaptureProcess(t *testing.T, run func()) (stdout, stderr []byte) {
 	return stdout, stderr
 }
 
-func phase9ScanChannels(
+func pcv3ScanChannels(
 	t *testing.T,
-	run *phase9LifecycleRun,
+	run *pcv3LifecycleRun,
 	result *Result,
 	stdout, stderr, logBytes []byte,
 ) {
@@ -219,7 +213,7 @@ func phase9ScanChannels(
 	}
 }
 
-func phase9AssertZeroed(t *testing.T, run *phase9LifecycleRun) {
+func pcv3AssertZeroed(t *testing.T, run *pcv3LifecycleRun) {
 	t.Helper()
 	for _, sentinel := range run.passwords {
 		for index, value := range sentinel.value {
@@ -228,51 +222,23 @@ func phase9AssertZeroed(t *testing.T, run *phase9LifecycleRun) {
 			}
 		}
 	}
-	if run.comment != nil {
-		for index, value := range run.comment {
-			if value != 0 {
-				t.Fatalf("sentinel migration-comment byte %d survived owner close", index)
-			}
-		}
-	}
-	if run.legacyPassword != nil {
-		for index, value := range run.legacyPassword {
-			if value != 0 {
-				t.Fatalf("sentinel legacy-password byte %d survived owner close", index)
-			}
-		}
-	}
-	if run.legacyKeyfiles != nil {
-		for index, value := range run.legacyKeyfiles {
-			if value != "" {
-				t.Fatalf("sentinel legacy-keyfile %d reference survived owner close", index)
-			}
-		}
-	}
-	if run.legacyRequest != nil {
-		if run.legacyRequest.InputFile != "" || run.legacyRequest.OutputFile != "" ||
-			run.legacyRequest.Password != nil || run.legacyRequest.Keyfiles != nil ||
-			run.legacyRequest.Reporter != nil {
-			t.Fatal("migration legacy owner retained transferred references")
-		}
-	}
 	if run.source != nil {
 		assertOperationFileClosed(t, run.source)
 	}
 	assertOperationKeyfilesClosedOnce(t, run.keyfiles)
 }
 
-func TestPhase9LifecycleMutationOracle(t *testing.T) {
-	cases := []phase9LifecycleCase{
+func TestPCV3LifecycleMutationOracle(t *testing.T) {
+	cases := []pcv3LifecycleCase{
 		{
 			name: "routing refusal closes every transferred owner before effects",
-			build: func(t *testing.T) *phase9LifecycleRun {
-				run := phase9BaseRun(t, "routing")
+			build: func(t *testing.T) *pcv3LifecycleRun {
+				run := pcv3BaseRun(t, "routing")
 				run.source = newOperationEmptySource(t)
 				run.request.Mode = 0
 				run.request.Source = run.source
-				run.request.Factors = phase9PasswordFactors(run, "password-routing")
-				phase9WireReporter(run)
+				run.request.Factors = pcv3PasswordFactors(run, "password-routing")
+				pcv3WireReporter(run)
 				run.request.Consent = func(ConsentRequest, ConsentAction) error {
 					run.consentCalls++
 					return nil
@@ -287,11 +253,11 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 		},
 		{
 			name: "credential policy refusal closes owners before admission",
-			build: func(t *testing.T) *phase9LifecycleRun {
-				run := phase9BaseRun(t, "credential")
+			build: func(t *testing.T) *pcv3LifecycleRun {
+				run := pcv3BaseRun(t, "credential")
 				run.source = openOperationNormalFixture(t, "normal-standard-keyfiles-only-small.pcv")
-				keyfileContent := phase9SentinelBytes("keyfile-content-credential")
-				run.sentinels = append(run.sentinels, phase9Sentinel{
+				keyfileContent := pcv3SentinelBytes("keyfile-content-credential")
+				run.sentinels = append(run.sentinels, pcv3Sentinel{
 					id:    "keyfile-content-credential",
 					value: keyfileContent,
 				})
@@ -307,7 +273,7 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 					ExpectedPolicy: pcv3credential.FactorPolicyKeyfilesOnly,
 					Keyfiles:       operationKeyfileHandles(run.keyfiles),
 				}
-				phase9WireReporter(run)
+				pcv3WireReporter(run)
 				return run
 			},
 			wantOutcome:    pcv3.OutcomeOperationFailed,
@@ -323,19 +289,19 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 		},
 		{
 			name: "resource refusal admits exactly one fixed profile and derives nothing",
-			build: func(t *testing.T) *phase9LifecycleRun {
-				run := phase9BaseRun(t, "resource")
+			build: func(t *testing.T) *pcv3LifecycleRun {
+				run := pcv3BaseRun(t, "resource")
 				run.admitter.admission = pcv3credential.KDFAdmissionDeniedInsufficient
 				run.source = openOperationNormalFixture(t, "normal-standard-combined-ordered-archive-small.pcv")
-				keyfileOne := phase9SentinelBytes("keyfile-one-resource")
-				keyfileTwo := phase9SentinelBytes("keyfile-two-resource")
+				keyfileOne := pcv3SentinelBytes("keyfile-one-resource")
+				keyfileTwo := pcv3SentinelBytes("keyfile-two-resource")
 				run.keyfiles = []*operationObservedReadCloser{
 					newOperationObservedKeyfile(t, keyfileOne),
 					newOperationObservedKeyfile(t, keyfileTwo),
 				}
 				run.sentinels = append(run.sentinels,
-					phase9Sentinel{id: "keyfile-one-resource", value: keyfileOne},
-					phase9Sentinel{id: "keyfile-two-resource", value: keyfileTwo},
+					pcv3Sentinel{id: "keyfile-one-resource", value: keyfileOne},
+					pcv3Sentinel{id: "keyfile-two-resource", value: keyfileTwo},
 				)
 				run.request.Mode = ModeReadNormal
 				run.request.Source = run.source
@@ -343,18 +309,18 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 					Mode:           pcv3credential.CredentialModePasswordAndKeyfiles,
 					KeyfileMode:    pcv3credential.KeyfileModeOrdered,
 					ExpectedPolicy: pcv3credential.FactorPolicyPasswordAndKeyfiles,
-					Password:       phase9SentinelBytes("password-resource"),
+					Password:       pcv3SentinelBytes("password-resource"),
 					Keyfiles:       operationKeyfileHandles(run.keyfiles),
 				}
-				run.passwords = append(run.passwords, phase9Sentinel{
+				run.passwords = append(run.passwords, pcv3Sentinel{
 					id:    "password-resource",
 					value: run.request.Factors.Password,
 				})
-				run.sentinels = append(run.sentinels, phase9Sentinel{
+				run.sentinels = append(run.sentinels, pcv3Sentinel{
 					id:    "password-resource",
 					value: run.request.Factors.Password,
 				})
-				phase9WireReporter(run)
+				pcv3WireReporter(run)
 				return run
 			},
 			wantOutcome:    pcv3.OutcomeOperationFailed,
@@ -372,16 +338,16 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 		},
 		{
 			name: "cancellation closes owners before any status or admission",
-			build: func(t *testing.T) *phase9LifecycleRun {
-				run := phase9BaseRun(t, "cancel")
+			build: func(t *testing.T) *pcv3LifecycleRun {
+				run := pcv3BaseRun(t, "cancel")
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
 				run.ctx = ctx
 				run.source = newOperationEmptySource(t)
 				run.request.Mode = ModeReadNormal
 				run.request.Source = run.source
-				run.request.Factors = phase9PasswordFactors(run, "password-cancel")
-				phase9WireReporter(run)
+				run.request.Factors = pcv3PasswordFactors(run, "password-cancel")
+				pcv3WireReporter(run)
 				return run
 			},
 			wantOutcome:    pcv3.OutcomeOperationFailed,
@@ -392,13 +358,13 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 		},
 		{
 			name: "consent refusal keeps one-shot authority expired and closes owners",
-			build: func(t *testing.T) *phase9LifecycleRun {
-				run := phase9BaseRun(t, "consent-refusal")
+			build: func(t *testing.T) *pcv3LifecycleRun {
+				run := pcv3BaseRun(t, "consent-refusal")
 				run.source = newOperationEmptySource(t)
 				run.request.Mode = ModeForceUnverifiedD1
 				run.request.Source = run.source
-				run.request.Factors = phase9PasswordFactors(run, "password-consent-refusal")
-				phase9WireReporter(run)
+				run.request.Factors = pcv3PasswordFactors(run, "password-consent-refusal")
+				pcv3WireReporter(run)
 				run.request.Consent = func(request ConsentRequest, action ConsentAction) error {
 					run.consentCalls++
 					if request.Mode() != ModeForceUnverifiedD1 {
@@ -419,15 +385,15 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 		},
 		{
 			name: "consent callback failure closes owners without leaking the callback error",
-			build: func(t *testing.T) *phase9LifecycleRun {
-				run := phase9BaseRun(t, "consent-failure")
+			build: func(t *testing.T) *pcv3LifecycleRun {
+				run := pcv3BaseRun(t, "consent-failure")
 				run.source = newOperationEmptySource(t)
 				run.request.Mode = ModeForceUnverifiedD1
 				run.request.Source = run.source
-				run.request.Factors = phase9PasswordFactors(run, "password-consent-failure")
-				phase9WireReporter(run)
-				callbackSentinel := phase9SentinelBytes("consent-error")
-				run.sentinels = append(run.sentinels, phase9Sentinel{
+				run.request.Factors = pcv3PasswordFactors(run, "password-consent-failure")
+				pcv3WireReporter(run)
+				callbackSentinel := pcv3SentinelBytes("consent-error")
+				run.sentinels = append(run.sentinels, pcv3Sentinel{
 					id:    "consent-error",
 					value: callbackSentinel,
 				})
@@ -448,15 +414,15 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 		},
 		{
 			name: "consent callback panic is contained and closes owners without leaking the payload",
-			build: func(t *testing.T) *phase9LifecycleRun {
-				run := phase9BaseRun(t, "consent-panic")
+			build: func(t *testing.T) *pcv3LifecycleRun {
+				run := pcv3BaseRun(t, "consent-panic")
 				run.source = newOperationEmptySource(t)
 				run.request.Mode = ModeForceUnverifiedD1
 				run.request.Source = run.source
-				run.request.Factors = phase9PasswordFactors(run, "password-consent-panic")
-				phase9WireReporter(run)
-				panicSentinel := phase9SentinelBytes("panic-payload")
-				run.sentinels = append(run.sentinels, phase9Sentinel{
+				run.request.Factors = pcv3PasswordFactors(run, "password-consent-panic")
+				pcv3WireReporter(run)
+				panicSentinel := pcv3SentinelBytes("panic-payload")
+				run.sentinels = append(run.sentinels, pcv3Sentinel{
 					id:    "panic-payload",
 					value: panicSentinel,
 				})
@@ -477,13 +443,13 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 		},
 		{
 			name: "D1 bootstrap failure closes owners with no admission and no output",
-			build: func(t *testing.T) *phase9LifecycleRun {
-				run := phase9BaseRun(t, "d1-bootstrap")
+			build: func(t *testing.T) *pcv3LifecycleRun {
+				run := pcv3BaseRun(t, "d1-bootstrap")
 				run.source = newOperationEmptySource(t)
 				run.request.Mode = ModeReadD1
 				run.request.Source = run.source
-				run.request.Factors = phase9PasswordFactors(run, "password-d1-bootstrap")
-				phase9WireReporter(run)
+				run.request.Factors = pcv3PasswordFactors(run, "password-d1-bootstrap")
+				pcv3WireReporter(run)
 				return run
 			},
 			wantOutcome:    pcv3.OutcomeCredentialsOrDamage,
@@ -497,53 +463,6 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 				StatusRecovering,
 			},
 		},
-		{
-			name: "migration stays governance-disabled before effects and closes both credential owners",
-			build: func(t *testing.T) *phase9LifecycleRun {
-				run := phase9BaseRun(t, "migration")
-				run.migrationActive = true
-				run.source = newOperationEmptySource(t)
-				run.request.Mode = ModeMigrate
-				run.request.Source = run.source
-				run.request.Factors = phase9PasswordFactors(run, "password-migration-outer")
-				phase9WireReporter(run)
-				comment := phase9SentinelBytes("migration-comment")
-				legacyPassword := phase9SentinelBytes("legacy-password")
-				legacyKeyfilePath := "p9-life-legacy-keyfile-2c48aa"
-				run.comment = comment
-				run.legacyPassword = legacyPassword
-				run.legacyKeyfiles = []string{legacyKeyfilePath}
-				run.legacyRequest = &volume.DecryptRequest{
-					InputFile: "p9-life-legacy-input-60f1bb",
-					Password:  legacyPassword,
-					Keyfiles:  run.legacyKeyfiles,
-				}
-				run.sentinels = append(run.sentinels,
-					phase9Sentinel{id: "migration-comment", value: comment},
-					phase9Sentinel{id: "legacy-password", value: legacyPassword},
-					phase9Sentinel{id: "legacy-keyfile-path", value: []byte(legacyKeyfilePath)},
-				)
-				run.request.Migration = &MigrationRequest{
-					Legacy:     run.legacyRequest,
-					NewFactors: operationPasswordFactors(phase9SentinelBytes("password-migration-new")),
-					Comment:    comment,
-				}
-				run.passwords = append(run.passwords, phase9Sentinel{
-					id:    "password-migration-new",
-					value: run.request.Migration.NewFactors.Password,
-				})
-				run.sentinels = append(run.sentinels,
-					phase9Sentinel{id: "password-migration-new", value: run.request.Migration.NewFactors.Password},
-					phase9Sentinel{id: "legacy-input-path", value: []byte("p9-life-legacy-input-60f1bb")},
-				)
-				return run
-			},
-			wantOutcome:    pcv3.OutcomeUnsupportedRoutingPreKDF,
-			wantStage:      pcv3.StageRouting,
-			wantCode:       pcv3.CodeUnsupported,
-			wantDiagnostic: DiagnosticGovernanceRefusal,
-			wantClass:      CompletionRefused,
-		},
 	}
 
 	for _, test := range cases {
@@ -553,17 +472,10 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 			// Anti-vacuity: every retained alias holds its exact sentinel value
 			// before ownership transfers.
 			for _, sentinel := range run.passwords {
-				if !bytes.Equal(sentinel.value, phase9SentinelBytes(sentinel.id)) {
+				if !bytes.Equal(sentinel.value, pcv3SentinelBytes(sentinel.id)) {
 					t.Fatalf("sentinel %s was not live before transfer", sentinel.id)
 				}
 			}
-			if run.migrationActive {
-				if !bytes.Equal(run.comment, phase9SentinelBytes("migration-comment")) ||
-					!bytes.Equal(run.legacyPassword, phase9SentinelBytes("legacy-password")) {
-					t.Fatal("migration sentinels were not live before transfer")
-				}
-			}
-
 			var logBytes bytes.Buffer
 			originalLogOutput := log.Writer()
 			originalLogFlags := log.Flags()
@@ -574,7 +486,7 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 			}()
 
 			var result *Result
-			stdout, stderr := phase9CaptureProcess(t, func() {
+			stdout, stderr := pcv3CaptureProcess(t, func() {
 				result = runWithSeams(run.ctx, run.request, operationSeams{admitter: run.admitter})
 			})
 
@@ -605,7 +517,7 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 			}
 			if test.wantAdmissions > 0 {
 				if len(run.admitter.profiles) != 1 ||
-					run.admitter.profiles[0] != phase9Standard1Profile {
+					run.admitter.profiles[0] != pcv3Standard1Profile {
 					t.Fatalf("admitted profiles = %+v; want exactly the frozen fixed profile", run.admitter.profiles)
 				}
 			}
@@ -618,11 +530,8 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 			}
 
 			assertOperationRequestTransferred(t, run.request)
-			if run.request.Migration != nil {
-				t.Fatal("operation request retained the transferred migration owner")
-			}
-			phase9AssertZeroed(t, run)
-			phase9ScanChannels(t, run, result, stdout, stderr, logBytes.Bytes())
+			pcv3AssertZeroed(t, run)
+			pcv3ScanChannels(t, run, result, stdout, stderr, logBytes.Bytes())
 
 			// The refused operation created no output or stage residue.
 			entries, err := os.ReadDir(run.outputDir)
@@ -633,7 +542,7 @@ func TestPhase9LifecycleMutationOracle(t *testing.T) {
 	}
 }
 
-func phase9BuildZipArchive(t *testing.T, path, entryName string, content []byte) {
+func pcv3BuildZipArchive(t *testing.T, path, entryName string, content []byte) {
 	t.Helper()
 	file, err := os.Create(path) // #nosec G304 -- test-owned archive path
 	if err != nil {
@@ -655,11 +564,11 @@ func phase9BuildZipArchive(t *testing.T, path, entryName string, content []byte)
 	}
 }
 
-func TestPhase9TypedExtractionMissingRoot(t *testing.T) {
-	frozenPayload := []byte("P9 typed extraction oracle payload\n")
+func TestPCV3TypedExtractionMissingRoot(t *testing.T) {
+	frozenPayload := []byte("typed extraction oracle payload\n")
 	directory := t.TempDir()
 	zipPath := filepath.Join(directory, "archive.zip")
-	phase9BuildZipArchive(t, zipPath, "payload.txt", frozenPayload)
+	pcv3BuildZipArchive(t, zipPath, "payload.txt", frozenPayload)
 
 	t.Run("missing pinned root is not published before output", func(t *testing.T) {
 		missingRoot := filepath.Join(directory, "missing-root")

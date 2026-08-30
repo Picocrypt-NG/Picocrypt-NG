@@ -126,13 +126,10 @@ func TestMobilePCV3AndroidPolicyStateIsClosed(t *testing.T) {
 		t.Fatal("unconfigured Android policy exposed a resource challenge")
 	}
 	if (&PCV3ResourceChallenge{}).Submit(
-		"TestVendor",
-		"TestModel",
-		"arm64-v8a",
-		"aarch64",
 		8<<30,
 		4<<30,
-		true,
+		256<<20,
+		128<<20,
 		true,
 		false,
 	) {

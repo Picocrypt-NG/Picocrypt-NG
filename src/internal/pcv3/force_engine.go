@@ -26,10 +26,11 @@ type RecoveryOutput func(*RecoveryResult, CapsuleRole, RecoveryEmitter) error
 type recoveryEngineError struct{ stage Stage }
 
 type recoverySelection struct {
-	resolution forceResolution
-	candidate  Candidate
-	geometry   Geometry
-	records    recoveryRecordAnalysis
+	resolution           forceResolution
+	candidate            Candidate
+	geometry             Geometry
+	records              recoveryRecordAnalysis
+	authenticatedComment string
 }
 
 type recoveryEmitterLease struct {
@@ -404,6 +405,7 @@ func selectRecoveryAnalysis(
 	}
 	selection.candidate = selected.candidate
 	selection.geometry = selected.geometry
+	selection.authenticatedComment = selected.authenticatedComment
 	selection.records = recoveryRecordAnalysis{
 		ranges:      append([]RecoveryRange(nil), selected.ranges...),
 		final:       selected.final,
@@ -566,6 +568,10 @@ func analyzeRecoveryCandidate(
 		return forceCandidateAnalysis{}, false, metadataErr
 	}
 	metadataValid := metadata != nil && metadata.state == metadataAuthenticatedPublic
+	authenticatedComment := ""
+	if metadataValid {
+		authenticatedComment = string(metadata.commentBytes())
+	}
 	if metadata != nil {
 		metadata.close()
 	}
@@ -586,16 +592,17 @@ func analyzeRecoveryCandidate(
 	}
 	damageStage = earlierRecoveryDamageStage(damageStage, records.damageStage)
 	analysis = forceCandidateAnalysis{
-		identity:           identity,
-		candidate:          candidate,
-		geometry:           geometry,
-		damageStage:        damageStage,
-		payloadDamageStage: records.damageStage,
-		wrapVerified:       wrapVerified,
-		replicaValid:       replicaVerified,
-		metadataValid:      metadataValid,
-		ranges:             records.ranges,
-		final:              records.final,
+		identity:             identity,
+		candidate:            candidate,
+		geometry:             geometry,
+		damageStage:          damageStage,
+		payloadDamageStage:   records.damageStage,
+		wrapVerified:         wrapVerified,
+		replicaValid:         replicaVerified,
+		metadataValid:        metadataValid,
+		authenticatedComment: authenticatedComment,
+		ranges:               records.ranges,
+		final:                records.final,
 	}
 	return analysis, true, nil
 }

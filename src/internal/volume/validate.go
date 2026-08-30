@@ -23,19 +23,27 @@ func (req *EncryptRequest) Validate() error {
 		return errors.ErrNoInputFiles
 	}
 
-	// v2 derives authentication and Serpent subkeys before keyfile XOR, so a
-	// keyfile is not bound to every secret operational key. Keep the legacy v1/v2
-	// reader, but do not create more affected volumes until the reviewed v3
-	// schedule exists.
-	if len(req.Keyfiles) > 0 {
-		return errors.NewKeyfileWritesDisabledError()
-	}
-
-	if req.Deniability && len(req.Password) == 0 {
-		return requireDeniabilityPassword(req.Password)
-	}
-	if len(req.Password) == 0 {
-		return errors.NewEncryptionPasswordRequiredError()
+	if req.PCV3 {
+		if req.Deniability {
+			if !req.Paranoid {
+				return errors.NewValidationError("Paranoid", "PCV3 D1 creation requires paranoid mode")
+			}
+		}
+		if len(req.Password) == 0 && len(req.Keyfiles) == 0 {
+			return errors.NewEncryptionPasswordRequiredError()
+		}
+	} else {
+		// v2 derives authentication and Serpent subkeys before keyfile XOR, so a
+		// keyfile is not bound to every secret operational key.
+		if len(req.Keyfiles) > 0 {
+			return errors.NewKeyfileWritesDisabledError()
+		}
+		if req.Deniability && len(req.Password) == 0 {
+			return requireDeniabilityPassword(req.Password)
+		}
+		if len(req.Password) == 0 {
+			return errors.NewEncryptionPasswordRequiredError()
+		}
 	}
 
 	// QUAL-05: reject an over-long comment here, before the expensive Argon2id

@@ -321,6 +321,26 @@ class OperationStatusTest {
     }
 
     @Test
+    fun `authenticated PCV3 comment survives result and output-action projection`() {
+        val authenticated = snapshot(
+            semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
+            publication = durablePublication(),
+            completionClass = "clean",
+            authenticatedComment = "public authenticated note",
+        )
+        assertEquals("public authenticated note", pcv3ResultDisplay(authenticated).authenticatedComment)
+
+        val saved = Pcv3Presentation.Final(
+            snapshot = authenticated,
+            operationId = "comment-output",
+            generation = 1,
+            outputAction = Pcv3OutputResultView("saved", cleanupIncomplete = false),
+        )
+        assertEquals("public authenticated note", pcv3ResultDisplay(saved).authenticatedComment)
+        assertNull(pcv3ResultDisplay(snapshot()).authenticatedComment)
+    }
+
+    @Test
     fun `PCV3 resource refusal permits only its fixed no-output dismissal`() {
         resourceNotices.forEach { (diagnostic, expectedTitle) ->
             val display = pcv3ResultDisplay(
@@ -696,6 +716,64 @@ class OperationStatusTest {
     }
 
     @Test
+    fun `PCV3 creation shows creation copy and binds save to the created volume`() {
+        val operation = mockk<Pcv3OperationCapability>(relaxed = true)
+        val output = mockk<Pcv3OutputCapability>(relaxed = true)
+        val creationSnapshot = snapshot(
+            semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
+            publication = durablePublication(),
+            completionClass = "clean",
+        )
+        // A normal creation keeps the retained output capability until Save settles it.
+        val liveCreation = Pcv3Presentation.Live(
+            snapshot = creationSnapshot,
+            operationId = "create-live",
+            generation = 1,
+            operationHandle = operation,
+            consentHandle = null,
+            archiveHandle = null,
+            consent = null,
+            outputHandle = output,
+            outputPending = true,
+            isCreation = true,
+        )
+        assertEquals(
+            setOf(Pcv3ResultAction.SAVE_CREATED_VOLUME),
+            pcv3ResultActions(liveCreation).actions,
+        )
+        // A creation without a settled output action shows creation copy, never decryption copy.
+        val creationDisplay = pcv3ResultDisplay(liveCreation)
+        assertEquals(R.string.pcv3_create_outcome_title, creationDisplay.outcome.titleResId)
+        assertEquals(R.string.pcv3_create_outcome_body, creationDisplay.outcome.bodyResId)
+        assertNull(creationDisplay.publication)
+
+        // A D1 creation has no retained output capability: the terminal Final offers only
+        // the host staging copy-out until it settles.
+        val d1Final = Pcv3Presentation.Final(
+            snapshot = creationSnapshot,
+            operationId = "create-d1-final",
+            generation = 2,
+            isCreation = true,
+        )
+        assertEquals(
+            setOf(Pcv3ResultAction.SAVE_CREATED_VOLUME),
+            pcv3ResultActions(d1Final).actions,
+        )
+        assertEquals(
+            R.string.pcv3_create_outcome_title,
+            pcv3ResultDisplay(d1Final).outcome.titleResId,
+        )
+
+        // A creation that did not reach the exact clean durable success offers no save.
+        val failedFinal = d1Final.copy(
+            snapshot = creationSnapshot.copy(
+                semantic = Pcv3Semantic("operation-failed", "input-io", "PCV3_OPERATION_FAILED"),
+            ),
+        )
+        assertEquals(setOf(Pcv3ResultAction.CLOSE_RESULT), pcv3ResultActions(failedFinal).actions)
+    }
+
+    @Test
     fun `PCV3 action projector accepts only exact live output and archive capabilities`() {
         val operation = mockk<Pcv3OperationCapability>(relaxed = true)
         val output = mockk<Pcv3OutputCapability>(relaxed = true)
@@ -914,6 +992,7 @@ class OperationStatusTest {
         warnings: List<String> = emptyList(),
         archivePending: Boolean = false,
         restoredReceipt: String = "",
+        authenticatedComment: String = "",
     ) = Pcv3SnapshotView(
         statusCode = statusCode,
         statusArgs = statusArgs,
@@ -928,6 +1007,7 @@ class OperationStatusTest {
         warnings = warnings,
         archivePending = archivePending,
         restoredReceipt = restoredReceipt,
+        authenticatedComment = authenticatedComment,
     )
 
     private fun durablePublication() = Pcv3Publication(
@@ -1002,8 +1082,6 @@ class OperationStatusTest {
             Pcv3ProgressStatus.PUBLISHING to R.string.pcv3_progress_publishing,
             Pcv3ProgressStatus.CONFIRMING_DURABILITY to
                 R.string.pcv3_progress_confirming_durability,
-            Pcv3ProgressStatus.VERIFYING_LEGACY to R.string.pcv3_progress_verifying_legacy,
-            Pcv3ProgressStatus.MIGRATING to R.string.pcv3_progress_migrating,
         )
 
         private val resourceNotices = linkedMapOf(

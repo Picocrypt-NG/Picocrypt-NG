@@ -80,6 +80,10 @@ type pcv3CLIArchiveFollowUp interface {
 	Close() pcv3CLIResult
 }
 
+type pcv3CLIOutputFollowUp interface {
+	StreamTo(context.Context, *os.File) pcv3operation.OutputActionResult
+}
+
 type pcv3CLIResult interface {
 	Outcome() pcv3.Outcome
 	Stage() pcv3.Stage
@@ -91,6 +95,7 @@ type pcv3CLIResult interface {
 	Warnings() []pcv3operation.Warning
 	CompletionClass() pcv3operation.CompletionClass
 	ArchiveFollowUp() pcv3CLIArchiveFollowUp
+	OutputFollowUp() pcv3CLIOutputFollowUp
 }
 
 type pcv3CLIResultAdapter struct {
@@ -100,6 +105,11 @@ type pcv3CLIResultAdapter struct {
 func (adapter pcv3CLIResultAdapter) Outcome() pcv3.Outcome { return adapter.result.Outcome() }
 func (adapter pcv3CLIResultAdapter) Stage() pcv3.Stage     { return adapter.result.Stage() }
 func (adapter pcv3CLIResultAdapter) Code() pcv3.Code       { return adapter.result.Code() }
+
+func (adapter pcv3CLIResultAdapter) AuthenticatedComment() string {
+	return adapter.result.AuthenticatedComment()
+}
+
 func (adapter pcv3CLIResultAdapter) PublicationAttempted() bool {
 	return adapter.result.PublicationAttempted()
 }
@@ -132,6 +142,14 @@ func (adapter pcv3CLIResultAdapter) ArchiveFollowUp() pcv3CLIArchiveFollowUp {
 	return pcv3CLIArchiveAdapter{followUp: followUp}
 }
 
+func (adapter pcv3CLIResultAdapter) OutputFollowUp() pcv3CLIOutputFollowUp {
+	followUp := adapter.result.OutputFollowUp()
+	if followUp == nil {
+		return nil
+	}
+	return followUp
+}
+
 type pcv3CLIArchiveAdapter struct {
 	followUp *pcv3operation.ArchiveFollowUp
 }
@@ -145,8 +163,16 @@ func (adapter pcv3CLIArchiveAdapter) Close() pcv3CLIResult {
 }
 
 var (
-	pcv3CLIRunOperation = func(ctx context.Context, request *pcv3operation.Request) pcv3CLIResult {
-		return pcv3CLIResultAdapter{result: pcv3operation.Run(ctx, request)}
+	pcv3CLIRunOperation = func(
+		ctx context.Context,
+		request *pcv3operation.Request,
+		retainOutput bool,
+	) pcv3CLIResult {
+		return pcv3CLIResultAdapter{result: pcv3operation.RunWithOptions(
+			ctx,
+			request,
+			pcv3operation.ExecutionOptions{RetainDurableOutput: retainOutput},
+		)}
 	}
 	pcv3CLIOpenKeyfile = func(path string) (*os.File, error) {
 		return fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
@@ -195,6 +221,7 @@ var (
 	decOutput        string
 	decPassword      string
 	decPasswordStdin bool
+	decPasswordFD    int
 	decKeyfiles      []string
 	decForce         bool
 	decVerifyFirst   bool
@@ -224,6 +251,7 @@ func init() {
 	// Credentials
 	decryptCmd.Flags().StringVarP(&decPassword, "password", "p", "", "Decryption password")
 	decryptCmd.Flags().BoolVarP(&decPasswordStdin, "password-stdin", "P", false, "Read password from stdin")
+	decryptCmd.Flags().IntVar(&decPasswordFD, "password-fd", -1, "Read password from inherited Unix file descriptor (3 or higher)")
 	decryptCmd.Flags().StringArrayVarP(&decKeyfiles, "keyfile", "k", nil, "Keyfile path(s) (can be specified multiple times)")
 
 	// Decryption options
@@ -263,10 +291,19 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	// Check for stdin/stdout
 	useStdin := IsStdin(inputPath)
 	useStdout := IsStdout(decOutput)
+	passwordFDSet := cmd.Flags().Changed("password-fd")
 
 	// Validate stdin/stdout constraints
 	if useStdin && decPasswordStdin {
 		return errors.New("cannot use -P (password from stdin) with - (input from stdin)")
+	}
+	if passwordFDSet {
+		if decPasswordFD < 3 {
+			return errors.New("--password-fd must be 3 or higher")
+		}
+		if decPasswordStdin || cmd.Flags().Changed("password") {
+			return errors.New("--password-fd cannot be combined with -p or -P")
+		}
 	}
 	if useStdin && decRecombine {
 		return errors.New("stdin not compatible with --recombine")
@@ -277,11 +314,8 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	if useStdout && decAutoUnzip {
 		return errors.New("stdout not compatible with --auto-unzip")
 	}
-	if useStdout && decRecombine {
-		return errors.New("stdout not compatible with --recombine")
-	}
 	if pcv3Explicit {
-		if err := validatePCV3CLICompatibility(useStdin, useStdout); err != nil {
+		if err := validatePCV3CLICompatibility(); err != nil {
 			return err
 		}
 		if decPCV3Format != "" && decPCV3Format != "d1" {
@@ -310,11 +344,27 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	// the stdin temp holds the .pcv input; both are removed when the run ends.
 	var stdinTempFile string
 	var stdoutTempFile string
-	defer func() { cleanupTempFiles(stdinTempFile, stdoutTempFile) }()
+	defer func() {
+		retErr = errors.Join(retErr, cleanupTempFiles(stdinTempFile, stdoutTempFile))
+	}()
 
 	outputFile := decOutput
-	if outputFile == "" && useStdin {
-		outputFile = "decrypted"
+	if outputFile == "" {
+		if useStdin {
+			outputFile = "decrypted"
+		} else if filepath.Base(inputPath) == ".pcv" {
+			outputFile = inputPath + ".decrypted"
+		} else {
+			outputFile = strings.TrimSuffix(inputPath, ".pcv")
+			if decRecombine {
+				if idx := strings.LastIndex(outputFile, ".pcv."); idx > 0 {
+					outputFile = outputFile[:idx]
+				}
+			}
+			if outputFile == inputPath {
+				outputFile = inputPath + ".decrypted"
+			}
+		}
 	}
 
 	// Handle stdin input
@@ -350,6 +400,57 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	// a PCV3 result and must never fall back to the legacy reader.
 	pcv3RoutePath := inputFile
 	pcv3RouteDirect := !leafIsSymlink
+	preparePCV3Target := func() (string, error) {
+		if !useStdout {
+			decOutput = outputFile
+			return "", nil
+		}
+		path, err := CreateTempOutput(0)
+		if err != nil {
+			return "", err
+		}
+		stdoutTempFile = path
+		if err := os.Remove(path); err != nil {
+			return "", fmt.Errorf("prepare PCV3 stdout target: %w", err)
+		}
+		decOutput = path
+		return path, nil
+	}
+	if !useStdin && !leafIsSymlink && decRecombine {
+		prepared, err := volume.PrepareDecryptInput(inputFile, true)
+		if err != nil {
+			return err
+		}
+		normal := prepared.ClaimsNormalPCV3()
+		if normal || decPCV3Format == "d1" {
+			if decPCV3Format == "d1" {
+				normal = false
+			}
+			source := prepared.DetachSource()
+			if source == nil {
+				return errors.Join(errors.New("PCV3 split source is unavailable"), prepared.Close())
+			}
+			stdoutPath, outputErr := preparePCV3Target()
+			if outputErr != nil {
+				return errors.Join(outputErr, source.Close(), prepared.Close())
+			}
+			if stdoutPath != "" {
+				stdoutTempFile = ""
+			}
+			splitBase := inputFile
+			if base, ok := fileops.SplitChunkBase(inputFile); ok {
+				splitBase = base
+			}
+			decRecombine = false
+			return errors.Join(
+				runPCV3CLI(cmd.Context(), source, normal, stdoutPath, splitBase),
+				prepared.Close(),
+			)
+		}
+		if err := prepared.Close(); err != nil {
+			return err
+		}
+	}
 	if !useStdin && decRecombine && decPCV3Format != "d1" {
 		base := inputFile
 		if chunkBase, ok := fileops.SplitChunkBase(inputFile); ok {
@@ -359,7 +460,7 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 		routeInfo, err := os.Lstat(pcv3RoutePath)
 		pcv3RouteDirect = pcv3RouteDirect && err == nil && routeInfo.Mode()&os.ModeSymlink == 0
 	}
-	if !useStdin && pcv3RouteDirect {
+	if pcv3RouteDirect {
 		pcv3Source, err := fileops.OpenExistingNoSymlink(pcv3RoutePath, os.O_RDONLY)
 		if err != nil {
 			return errors.New("input source could not be opened safely")
@@ -376,13 +477,33 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 			return errors.New("input source is not a regular file")
 		}
 		if decPCV3Format == "d1" {
+			stdoutPath, outputErr := preparePCV3Target()
+			if outputErr != nil {
+				return outputErr
+			}
+			if stdoutPath != "" {
+				stdoutTempFile = ""
+			}
 			pcv3SourceTransferred = true
-			return runPCV3CLI(cmd.Context(), pcv3Source, false)
+			if err := runPCV3CLI(cmd.Context(), pcv3Source, false, stdoutPath, ""); err != nil {
+				return err
+			}
+			return nil
 		}
 		route, _, probeErr := pcv3.Probe(pcv3Source, info.Size())
 		if route == pcv3.RouteNormalPCV {
+			stdoutPath, outputErr := preparePCV3Target()
+			if outputErr != nil {
+				return outputErr
+			}
+			if stdoutPath != "" {
+				stdoutTempFile = ""
+			}
 			pcv3SourceTransferred = true
-			return runPCV3CLI(cmd.Context(), pcv3Source, true)
+			if err := runPCV3CLI(cmd.Context(), pcv3Source, true, stdoutPath, ""); err != nil {
+				return err
+			}
+			return nil
 		}
 		if probeErr != nil {
 			return errors.New("input source could not be classified safely")
@@ -401,7 +522,7 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 		var failure pcv3.Failure
 		if useStdin && (errors.Is(err, pcv3.ErrReaderUnavailable) ||
 			(errors.As(err, &failure) && failure.Outcome() != pcv3.OutcomeOperationFailed)) {
-			return errors.New("PCV3 does not support stdin input")
+			return errors.New("PCV3 input from stdin could not be routed safely")
 		}
 		return err
 	}
@@ -431,23 +552,6 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 			return fmt.Errorf("creating temp output: %w", err)
 		}
 		outputFile = stdoutTempFile
-	} else if outputFile == "" {
-		// Auto-generate from input by removing .pcv extension
-		if useStdin {
-			outputFile = "decrypted"
-		} else {
-			outputFile = strings.TrimSuffix(inputPath, ".pcv")
-			if decRecombine {
-				// For split files like file.pcv.0, need to strip more
-				if idx := strings.LastIndex(outputFile, ".pcv."); idx > 0 {
-					outputFile = outputFile[:idx]
-				}
-			}
-			// If we're left with the same name, add .decrypted
-			if outputFile == inputPath {
-				outputFile = inputPath + ".decrypted"
-			}
-		}
 	}
 
 	// Reject protected aliases before an overwrite confirmation or password
@@ -514,7 +618,14 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	// a plain defer would bind the initial []byte(decPassword) at defer time.
 	password := []byte(decPassword)
 	defer func() { crypto.SecureZero(password) }()
-	if decPasswordStdin {
+	if passwordFDSet {
+		var err error
+		crypto.SecureZero(password)
+		password, err = ReadPasswordFromFD(decPasswordFD)
+		if err != nil {
+			return err
+		}
+	} else if decPasswordStdin {
 		var err error
 		password, err = ReadPasswordFromStdin()
 		if err != nil {
@@ -630,7 +741,8 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Stream to stdout if requested
 	if useStdout {
-		if err := StreamFileToStdout(outputFile); err != nil {
+		stdoutTempFile = ""
+		if err := StreamFileToStdout(cmd.Context(), outputFile); err != nil {
 			return fmt.Errorf("streaming to stdout: %w", err)
 		}
 		if kept {
@@ -651,7 +763,13 @@ func forceDecryptKeptResult(destination string) error {
 	return newExitCodeError(ExitForceDecryptKept, "force decrypt kept output after MAC verification failed")
 }
 
-func runPCV3CLI(ctx context.Context, source *os.File, normal bool) (retErr error) {
+func runPCV3CLI(
+	ctx context.Context,
+	source *os.File,
+	normal bool,
+	stdoutPath string,
+	splitBase string,
+) (retErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -670,6 +788,7 @@ func runPCV3CLI(ctx context.Context, source *os.File, normal bool) (retErr error
 			cleanupFailed = request.Source.Close() != nil || cleanupFailed
 			request.Source = nil
 		}
+		request.SplitBase = ""
 		request.Target = ""
 		for index := range request.Protected {
 			request.Protected[index] = ""
@@ -691,7 +810,7 @@ func runPCV3CLI(ctx context.Context, source *os.File, normal bool) (retErr error
 		}
 		decKeyfiles = nil
 	}()
-	if err := validatePCV3CLICompatibility(false, decOutput == "-"); err != nil {
+	if err := validatePCV3CLICompatibility(); err != nil {
 		return err
 	}
 	if decForce {
@@ -702,6 +821,12 @@ func runPCV3CLI(ctx context.Context, source *os.File, normal bool) (retErr error
 	}
 	if decOutput == "" || decOutput == "-" {
 		return errors.New("PCV3 requires an explicit file destination")
+	}
+	if err := requireVacantPCV3Output(decOutput); err != nil {
+		return err
+	}
+	if !normal && (decPCV3Archive != "" || decPCV3ExtractTo != "") {
+		return errors.New("D1 archive payload is returned as a .zip file; D1 automatic extraction is not available")
 	}
 	switch decPCV3Archive {
 	case "", "close":
@@ -731,7 +856,16 @@ func runPCV3CLI(ctx context.Context, source *os.File, normal bool) (retErr error
 	password := []byte(decPassword)
 	decPassword = ""
 	defer func() { crypto.SecureZero(password) }()
-	if decPasswordStdin {
+	if decPasswordFD >= 3 {
+		if factorMode == pcv3credential.CredentialModeKeyfilesOnly {
+			return errors.New("keyfiles-only PCV3 policy cannot read a password from a file descriptor")
+		}
+		crypto.SecureZero(password)
+		password, err = ReadPasswordFromFD(decPasswordFD)
+		if err != nil {
+			return err
+		}
+	} else if decPasswordStdin {
 		if factorMode == pcv3credential.CredentialModeKeyfilesOnly {
 			return errors.New("keyfiles-only PCV3 policy cannot read a password from stdin")
 		}
@@ -752,6 +886,7 @@ func runPCV3CLI(ctx context.Context, source *os.File, normal bool) (retErr error
 	request.Mode = mode
 	request.Target = decOutput
 	decOutput = ""
+	request.SplitBase = splitBase
 	request.Protected = append([]string(nil), decKeyfiles...)
 
 	request.Factors = &pcv3credential.FactorRequest{
@@ -800,19 +935,39 @@ func runPCV3CLI(ctx context.Context, source *os.File, normal bool) (retErr error
 	globalReporter.Store(reporter)
 	defer globalReporter.CompareAndSwap(reporter, nil)
 	transferred = true
-	result := pcv3CLIRunOperation(operationCtx, request)
+	result := pcv3CLIRunOperation(operationCtx, request, stdoutPath != "")
 	result = finishPCV3CLIArchive(operationCtx, result, decPCV3Archive, decPCV3ExtractTo)
 	exitCode := renderPCV3CLIResult(os.Stderr, result)
-	if exitCode == 0 {
-		return nil
+	if stdoutPath != "" && result != nil {
+		followUp := result.OutputFollowUp()
+		if followUp != nil {
+			action := followUp.StreamTo(operationCtx, os.Stdout)
+			if action.Code() != pcv3operation.OutputActionSaved || action.CleanupIncomplete() {
+				return errors.New("PCV3 stdout transport or temporary plaintext cleanup failed")
+			}
+		} else if exitCode == 0 {
+			return errors.New("PCV3 stdout output capability is unavailable")
+		}
 	}
-	return newExitCodeError(exitCode, "PCV3 operation did not complete cleanly")
+	if exitCode != 0 {
+		return newExitCodeError(exitCode, "PCV3 operation did not complete cleanly")
+	}
+	return nil
 }
 
-func validatePCV3CLICompatibility(useStdin, useStdout bool) error {
-	if useStdin || useStdout || decRecombine || decDeniability || decVerifyFirst ||
+func requireVacantPCV3Output(path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return errors.New("PCV3 output already exists; choose a different path (--yes does not replace PCV3 outputs)")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return errors.New("PCV3 output path could not be inspected safely")
+	}
+	return nil
+}
+
+func validatePCV3CLICompatibility() error {
+	if decDeniability || decVerifyFirst ||
 		decAutoUnzip || decSameLevel {
-		return errors.New("PCV3 does not support stdin, stdout, or legacy transform flags")
+		return errors.New("PCV3 does not support legacy transform flags")
 	}
 	return nil
 }

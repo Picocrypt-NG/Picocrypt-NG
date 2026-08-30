@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -484,6 +485,19 @@ func routeDroppedFile(path string, split bool) droppedRouteResult {
 		_ = source.Close()
 		return droppedRouteResult{err: errors.New("selected input is not a regular file")}
 	}
+	if split {
+		var prefix [4]byte
+		count, readErr := io.ReadFull(source, prefix[:])
+		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			_ = source.Close()
+			return droppedRouteResult{err: readErr}
+		}
+		if _, err := source.Seek(0, io.SeekStart); err != nil {
+			_ = source.Close()
+			return droppedRouteResult{err: err}
+		}
+		return droppedRouteResult{source: source, size: info.Size(), route: pcv3.DetectPrefix(prefix[:count])}
+	}
 	route, _, err := probeDroppedPCVInput(source, info.Size())
 	return droppedRouteResult{source: source, size: info.Size(), route: route, err: err}
 }
@@ -580,8 +594,23 @@ func (a *App) applyDroppedFileRoute(
 	}
 	if result.route == pcv3.RouteNormalPCV {
 		if isSplit {
-			_ = result.source.Close()
-			a.State.SetPCV3RoutingFailed()
+			base, ok := fileops.SplitChunkBase(path)
+			if !ok {
+				_ = result.source.Close()
+				a.State.SetPCV3RoutingFailed()
+				a.refreshAdvanced()
+				a.refreshUI()
+				return
+			}
+			_, totalSize, err := fileops.CountChunks(base)
+			if err != nil || !a.State.SetPCV3Ready(
+				result.source, app.PCV3FormatNormal, base, defaultPCV3Output(base), totalSize,
+			) {
+				_ = result.source.Close()
+				a.State.SetPCV3RoutingFailed()
+			} else {
+				a.State.Recombine = true
+			}
 			a.refreshAdvanced()
 			a.refreshUI()
 			return
@@ -599,15 +628,6 @@ func (a *App) applyDroppedFileRoute(
 
 	a.applyLegacyDroppedFileRoute(path, isSplit, result)
 	a.refreshAdvanced()
-	a.refreshUI()
-}
-
-func (a *App) applyDropError(status string, closeKeyfileModal bool) {
-	if closeKeyfileModal && a.keyfileModal != nil {
-		a.keyfileModal.Hide()
-	}
-	a.resetUI()
-	a.State.SetStatus(status, util.RED)
 	a.refreshUI()
 }
 

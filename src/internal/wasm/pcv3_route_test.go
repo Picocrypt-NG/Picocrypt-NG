@@ -108,7 +108,6 @@ func TestExplicitPCV3IntentUnsupportedBeforeData(t *testing.T) {
 		{"force d1", pcv3operation.ModeForceD1},
 		{"force unverified normal", pcv3operation.ModeForceUnverifiedNormal},
 		{"force unverified d1", pcv3operation.ModeForceUnverifiedD1},
-		{"migrate", pcv3operation.ModeMigrate},
 		{"outside the closed registry", pcv3operation.Mode(255)},
 	}
 

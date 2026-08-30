@@ -2,6 +2,7 @@ package pcv3operation
 
 import (
 	"Picocrypt-NG/internal/pcv3publication"
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -161,6 +162,31 @@ func (followUp *OutputFollowUp) SaveTo(destination *os.File) OutputActionResult 
 		}
 	}
 	return OutputActionResult{code: OutputActionSaved}
+}
+
+// StreamTo consumes the action and streams from the retained descriptor. The
+// destination remains open after a successful copy and is closed on cancel.
+func (followUp *OutputFollowUp) StreamTo(
+	ctx context.Context,
+	destination *os.File,
+) OutputActionResult {
+	retained := followUp.consume()
+	if retained == nil {
+		return OutputActionResult{code: OutputActionExpired}
+	}
+	copyResult := retained.StreamTo(ctx, destination)
+	code := OutputActionSaved
+	if !copyResult.Copied() {
+		code = OutputActionSaveFailed
+	}
+	if copyResult.CleanupIncomplete() {
+		if copyResult.Copied() {
+			code = OutputActionSavedCleanupIncomplete
+		} else {
+			code = OutputActionSaveFailedCleanupIncomplete
+		}
+	}
+	return OutputActionResult{code: code, cleanupIncomplete: copyResult.CleanupIncomplete()}
 }
 
 // Discard consumes the action before effects and removes only the exact

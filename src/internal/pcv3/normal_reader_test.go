@@ -52,7 +52,7 @@ type normalFixturePlaintext struct {
 }
 
 type normalFixtureSessionView struct {
-	Phase        string `json:"phase"`
+	State        string `json:"state"`
 	Trigger      string `json:"trigger"`
 	Operation    string `json:"operation"`
 	Offset       int64  `json:"offset"`
@@ -576,8 +576,8 @@ func newNormalFixtureSource(
 	if fixture.SessionView == nil {
 		return &normalBorrowedSource{reader: bytes.NewReader(volume)}
 	}
-	if fixture.SessionView.Phase != "after-pre-kdf-revalidation" {
-		t.Fatalf("unsupported TEST ONLY session-view phase %q", fixture.SessionView.Phase)
+	if fixture.SessionView.State != "after-pre-kdf-revalidation" {
+		t.Fatalf("unsupported TEST ONLY session-view state %q", fixture.SessionView.State)
 	}
 	if fixture.SessionView.Trigger != "first-metadata-read" {
 		t.Fatalf("unsupported TEST ONLY session-view trigger %q", fixture.SessionView.Trigger)

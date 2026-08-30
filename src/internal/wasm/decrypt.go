@@ -31,7 +31,7 @@ const (
 	// protected by inner-volume keyfiles.
 	ErrDeniabilityPasswordRequired = 11
 	// Encrypt-only: v2 keyfile writers are frozen until every secret
-	// operational key is bound to the keyfile in the reviewed v3 format.
+	// operational key is bound to the keyfile in PCV3.
 	ErrKeyfileWritesDisabled = 12
 	// Encrypt-only: a new password-only volume needs a non-empty password.
 	ErrEncryptionPasswordRequired = 13

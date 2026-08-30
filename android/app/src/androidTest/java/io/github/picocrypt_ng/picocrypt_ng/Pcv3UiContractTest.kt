@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.width
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import io.github.picocrypt_ng.picocrypt_ng.ui.components.PCV3_CONSENT_TAG
 import io.github.picocrypt_ng.picocrypt_ng.ui.components.PCV3_PROGRESS_TAG
 import io.github.picocrypt_ng.picocrypt_ng.ui.components.PCV3_RESULT_TAG
@@ -33,6 +34,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -43,6 +45,37 @@ import java.io.File
 class Pcv3UiContractTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @After
+    fun restoreTouchMode() {
+        InstrumentationRegistry.getInstrumentation().setInTouchMode(true)
+    }
+
+    /**
+     * Focus navigation does not exist in touch mode — the default state of
+     * every phone and emulator until a key is pressed — and a dialog cannot
+     * grant focus there. The safe-default focus contract protects keyboard
+     * and DPAD users, so it is exercised in that environment; [restoreTouchMode]
+     * returns the device to its natural state afterwards.
+     */
+    private fun leaveTouchMode() {
+        InstrumentationRegistry.getInstrumentation().setInTouchMode(false)
+    }
+
+    /**
+     * Leaving touch mode reaches the dialog through several window-manager
+     * hops, so the safe-default focus grant lands after the next idle sync;
+     * wait for the grant instead of racing it, then keep the exact assertion.
+     */
+    private fun assertEventuallyFocused(content: String) {
+        compose.waitUntil(FOCUS_TIMEOUT_MILLIS) {
+            compose.onNodeWithText(content)
+                .fetchSemanticsNode()
+                .config
+                .getOrElse(SemanticsProperties.Focused) { false }
+        }
+        compose.onNodeWithText(content).assertIsFocused()
+    }
 
     private val context: Context
         get() = ApplicationProvider.getApplicationContext()
@@ -65,7 +98,8 @@ class Pcv3UiContractTest {
 
         compose.onNodeWithTag(PCV3_CONSENT_TAG).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.pcv3_consent_confirm)).assertIsNotEnabled()
-        compose.onNodeWithText(text(R.string.pcv3_consent_cancel)).assertIsFocused()
+        leaveTouchMode()
+        assertEventuallyFocused(text(R.string.pcv3_consent_cancel))
         assertNull(presentation.consent?.selectedRole)
         assertTrue(consent.live)
     }
@@ -452,7 +486,10 @@ class Pcv3UiContractTest {
         compose.onNodeWithText(text(R.string.pcv3_inspect_recovery_artifact)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.pcv3_discard_recovery_artifact)).performClick()
         compose.onNodeWithText(text(R.string.pcv3_discard_artifact_body)).assertIsDisplayed()
-        compose.onNodeWithText(text(R.string.pcv3_keep_recovery_artifact)).assertIsFocused()
+        // The injected touch click re-entered touch mode; leave it again so
+        // the dialog can grant the safe-default focus.
+        leaveTouchMode()
+        assertEventuallyFocused(text(R.string.pcv3_keep_recovery_artifact))
         compose.onNodeWithText(text(R.string.pcv3_keep_recovery_artifact)).performClick()
         assertEquals(0, discardCalls)
 
@@ -797,6 +834,7 @@ class Pcv3UiContractTest {
     }
 
     private companion object {
+        const val FOCUS_TIMEOUT_MILLIS = 5_000L
         const val VALID_RECEIPT_ID = "r_00112233445566778899aabbccddeeff"
         const val VALID_RECEIPT_OPERATION_ID = "op_1700000000000000000_7"
         const val VALID_RECEIPT = "{\"version\":1,\"receiptID\":\"r_00112233445566778899aabbccddeeff\",\"operationID\":\"op_1700000000000000000_7\",\"outcome\":7,\"stage\":0,\"code\":7,\"forceProvenance\":1,\"d1BootstrapProvenance\":3,\"detailStage\":13,\"publicationAttempted\":true,\"publicationState\":3,\"publicationStage\":24,\"publicationCode\":9,\"args\":[7,11,13,17],\"warnings\":[6,4],\"diagnostic\":0}"

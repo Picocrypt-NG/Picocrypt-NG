@@ -453,7 +453,7 @@ func TestReadNormalVolumeBehavioralClosure(t *testing.T) {
 	})
 }
 
-func TestNormalReaderSemanticAuthorityFromFrozenFixtures(t *testing.T) {
+func TestNormalReaderAuthenticationAuthorityFromFrozenFixtures(t *testing.T) {
 	fixtures := loadNormalFixtureManifest(t).FixturesByID()
 	tests := []struct {
 		fixtureID   string
@@ -492,18 +492,10 @@ func TestNormalReaderSemanticAuthorityFromFrozenFixtures(t *testing.T) {
 				t.Fatalf("reader result/completion = %v/%v; want authenticated semantic state", result, completion)
 			}
 			t.Cleanup(result.Close)
-
-			semantic, err := newRecoveryResultFromNormal(result)
-			if err != nil {
-				t.Fatalf("adapt real normal-reader result: %v", err)
-			}
-			t.Cleanup(semantic.Close)
-			if semantic.Outcome() != test.outcome || semantic.Stage() != test.stage ||
-				semantic.ForceProvenance() != ForceProvenanceNone || semantic.Code() != result.Code() {
+			if result.Outcome() != test.outcome || result.Stage() != test.stage {
 				t.Fatalf(
-					"semantic result = %v/%v/%v/%v; want %v/%v/no Force/%v",
-					semantic.Outcome(), semantic.Stage(), semantic.ForceProvenance(), semantic.Code(),
-					test.outcome, test.stage, result.Code(),
+					"reader result = %v/%v; want %v/%v",
+					result.Outcome(), result.Stage(), test.outcome, test.stage,
 				)
 			}
 
@@ -512,7 +504,7 @@ func TestNormalReaderSemanticAuthorityFromFrozenFixtures(t *testing.T) {
 			if gotArchiveSeal != test.archiveSeal {
 				t.Fatalf(
 					"archive authority = %v/%v; want archive seal %v for semantic outcome %v",
-					archiveAuthorized, kind, test.archiveSeal, semantic.Outcome(),
+					archiveAuthorized, kind, test.archiveSeal, result.Outcome(),
 				)
 			}
 		})

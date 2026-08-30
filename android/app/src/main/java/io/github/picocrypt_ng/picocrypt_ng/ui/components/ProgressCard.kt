@@ -21,7 +21,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +39,7 @@ import io.github.picocrypt_ng.picocrypt_ng.OperationType
 import io.github.picocrypt_ng.picocrypt_ng.OperationStatus
 import io.github.picocrypt_ng.picocrypt_ng.OperationUiState
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3OperationIntent
+import io.github.picocrypt_ng.picocrypt_ng.Pcv3ActionIntent
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3ArtifactDetailsUiState
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3Presentation
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3ResultAction
@@ -79,6 +79,9 @@ fun ProgressCard(
     onInspectPcv3Artifact: ((operationId: String, generation: Long) -> Unit)? = null,
     onLoadPcv3ArtifactPage: ((operationId: String, generation: Long, offsetDecimal: String) -> Unit)? = null,
     onClosePcv3ArtifactInspection: ((operationId: String, generation: Long) -> Unit)? = null,
+    onBeginPcv3StagingSave: ((operationId: String, generation: Long) -> String?)? = null,
+    onCompletePcv3StagingSave: ((android.content.Context, Uri?) -> Unit)? = null,
+    pcv3StagingSaveError: AppError? = null,
 ) {
     if (pcv3Presentation != null) {
         Pcv3PresentationDialog(
@@ -96,6 +99,9 @@ fun ProgressCard(
             onInspectArtifact = onInspectPcv3Artifact,
             onLoadArtifactPage = onLoadPcv3ArtifactPage,
             onCloseArtifactInspection = onClosePcv3ArtifactInspection,
+            onBeginStagingSave = onBeginPcv3StagingSave,
+            onCompleteStagingSave = onCompletePcv3StagingSave,
+            stagingSaveError = pcv3StagingSaveError,
             modifier = modifier,
         )
         return
@@ -417,6 +423,9 @@ internal fun Pcv3PresentationDialog(
     onCloseArtifactInspection: ((operationId: String, generation: Long) -> Unit)?,
     onBeginArchive: ((operationId: String, generation: Long) -> Boolean)? = null,
     onCompleteArchive: ((android.content.Context, Uri?) -> Unit)? = null,
+    onBeginStagingSave: ((operationId: String, generation: Long) -> String?)? = null,
+    onCompleteStagingSave: ((android.content.Context, Uri?) -> Unit)? = null,
+    stagingSaveError: AppError? = null,
     modifier: Modifier = Modifier,
 ) {
     if (presentation is Pcv3Presentation.Live && presentation.consent != null) {
@@ -436,10 +445,13 @@ internal fun Pcv3PresentationDialog(
         }
         Pcv3ProgressDialog(
             snapshot = presentation.snapshot,
-            cancelLabelResId = if (action.isRecovery) {
-                R.string.pcv3_cancel_recovery
-            } else {
-                R.string.pcv3_cancel_decryption
+            cancelLabelResId = when (action) {
+                Pcv3ActionIntent.CREATE -> R.string.pcv3_cancel_creation
+                else -> if (action.isRecovery) {
+                    R.string.pcv3_cancel_recovery
+                } else {
+                    R.string.pcv3_cancel_decryption
+                }
             },
             onCancel = if (live != null && onCancel != null) {
                 { onCancel(live.operationId, live.generation) }
@@ -462,6 +474,9 @@ internal fun Pcv3PresentationDialog(
         onCloseArchive = onCloseArchive,
         onBeginArchive = onBeginArchive,
         onCompleteArchive = onCompleteArchive,
+        onBeginStagingSave = onBeginStagingSave,
+        onCompleteStagingSave = onCompleteStagingSave,
+        stagingSaveError = stagingSaveError,
         modifier = modifier,
     )
 }
@@ -513,6 +528,9 @@ private fun Pcv3ResultDialog(
     onBeginArchive: ((operationId: String, generation: Long) -> Boolean)?,
     onCompleteArchive: ((android.content.Context, Uri?) -> Unit)?,
     modifier: Modifier,
+    onBeginStagingSave: ((operationId: String, generation: Long) -> String?)? = null,
+    onCompleteStagingSave: ((android.content.Context, Uri?) -> Unit)? = null,
+    stagingSaveError: AppError? = null,
 ) {
     val display = pcv3ResultDisplay(presentation)
     val actionProjection = pcv3ResultActions(presentation)
@@ -622,6 +640,16 @@ private fun Pcv3ResultDialog(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
+                display.authenticatedComment?.let { comment ->
+                    Text(
+                        text = stringResource(R.string.comments_section),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = comment,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
                 display.warnings.forEach { warning ->
                     Text(
                         text = stringResource(warning.titleResId),
@@ -662,6 +690,29 @@ private fun Pcv3ResultDialog(
                         onBeginSave = onBeginSave,
                         onCompleteSave = onCompleteSave,
                     )
+                }
+                if (Pcv3ResultAction.SAVE_CREATED_VOLUME in actions) {
+                    if (presentation is Pcv3Presentation.Live &&
+                        onBeginSave != null && onCompleteSave != null
+                    ) {
+                        // Normal creation retains an output capability: save via SaveFD.
+                        Pcv3SaveButton(
+                            presentation = presentation,
+                            labelResId = R.string.pcv3_save_created_volume,
+                            onBeginSave = onBeginSave,
+                            onCompleteSave = onCompleteSave,
+                        )
+                    } else if (presentation is Pcv3Presentation.Final &&
+                        onBeginStagingSave != null && onCompleteStagingSave != null
+                    ) {
+                        // D1 creation published the staging file natively: host copy-out.
+                        Pcv3StagingSaveButton(
+                            presentation = presentation,
+                            saveError = stagingSaveError,
+                            onBeginStagingSave = onBeginStagingSave,
+                            onCompleteStagingSave = onCompleteStagingSave,
+                        )
+                    }
                 }
                 if (Pcv3ResultAction.SAVE_RECOVERY_ARTIFACT in actions &&
                     onBeginSave != null && onCompleteSave != null
@@ -748,6 +799,38 @@ private fun Pcv3SaveButton(
 }
 
 @Composable
+private fun Pcv3StagingSaveButton(
+    presentation: Pcv3Presentation,
+    saveError: AppError?,
+    onBeginStagingSave: (operationId: String, generation: Long) -> String?,
+    onCompleteStagingSave: (android.content.Context, Uri?) -> Unit,
+) {
+    val applicationContext = LocalContext.current.applicationContext
+    val saveLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri: Uri? ->
+        onCompleteStagingSave(applicationContext, uri)
+    }
+    Button(
+        onClick = {
+            onBeginStagingSave(presentation.operationId, presentation.generation)
+                ?.let(saveLauncher::launch)
+        },
+    ) {
+        Text(stringResource(R.string.pcv3_save_created_volume))
+    }
+    // The D1 staging copy-out fails host-side, so the bounded save failure is shown
+    // next to the only remaining action instead of replacing the terminal result.
+    saveError?.let { error ->
+        Text(
+            text = error.localizedMessage(applicationContext),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
+}
+
+@Composable
 private fun Pcv3DiscardConfirmationDialog(
     operationId: String,
     generation: Long,
@@ -757,7 +840,7 @@ private fun Pcv3DiscardConfirmationDialog(
 ) {
     val keepFocus = remember(operationId, generation) { FocusRequester() }
     var consumed by remember(operationId, generation) { mutableStateOf(false) }
-    LaunchedEffect(keepFocus) { keepFocus.requestFocus() }
+    SafeDefaultDialogFocus(keepFocus)
 
     AlertDialog(
         modifier = modifier,

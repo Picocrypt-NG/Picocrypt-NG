@@ -1279,7 +1279,7 @@
       "kdf_evidence": "production-vector",
       "probe_view": "canonical-volume",
       "session_view": {
-        "phase": "after-pre-kdf-revalidation",
+        "state": "after-pre-kdf-revalidation",
         "trigger": "first-metadata-read",
         "operation": "truncate-at",
         "offset": 2360,
@@ -1359,7 +1359,7 @@
       "kdf_evidence": "production-vector",
       "probe_view": "canonical-volume",
       "session_view": {
-        "phase": "after-pre-kdf-revalidation",
+        "state": "after-pre-kdf-revalidation",
         "trigger": "first-metadata-read",
         "operation": "append-byte-at",
         "offset": 2361,

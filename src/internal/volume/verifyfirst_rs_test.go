@@ -22,7 +22,7 @@ import (
 // decryptFinalize's full-RS retry can run. The fix (D-08) re-runs the verify
 // pass with full RS correction on MAC mismatch before rejecting.
 //
-// Reuses the Phase 2 SHARED helpers encryptRSVolume / corruptOneRSBlock (D-09).
+// Reuses the shared helpers encryptRSVolume and corruptOneRSBlock (D-09).
 func TestVerifyFirstCorrectableRS(t *testing.T) {
 	t.Run("correctable damage decrypts under verify-first", func(t *testing.T) {
 		rsCodecs, err := encoding.NewRSCodecs()

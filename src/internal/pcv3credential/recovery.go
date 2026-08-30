@@ -65,7 +65,7 @@ type recoveryCredentialTupleSnapshot struct {
 	volumeID       [scheduleVolumeIDBytes]byte
 }
 
-// RecoverySession is a callback-scoped two-phase recovery credential session.
+// RecoverySession is a callback-scoped two-step recovery credential session.
 // It retains at most two sequentially derived tuple credentials and exposes
 // only restricted key borrows and opaque bound candidate handles.
 type RecoverySession struct {
@@ -274,7 +274,7 @@ func WithRecoveryCredential(
 }
 
 // WithRecoveryCredentialSession derives the complete bounded tuple set before
-// lending one two-phase recovery session. Selection is optional; when present,
+// lending one two-step recovery session. Selection is optional; when present,
 // exactly one session-bound candidate becomes the returned Owner.
 func WithRecoveryCredentialSession(
 	ctx context.Context,

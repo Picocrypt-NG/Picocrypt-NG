@@ -166,7 +166,7 @@
     <string name="error_decrypt_retry_only">Solo las operaciones de descifrado se pueden reintentar con descifrado forzado.</string>
     <string name="error_no_file_selected">Seleccione un archivo.</string>
     <string name="error_invalid_password">Introduzca una contraseña.</string>
-    <string name="error_keyfile_writes_disabled">La creación de nuevos volúmenes v2 con archivos de clave está deshabilitada hasta que se revise el formato v3. Los volúmenes existentes con archivos de clave aún se pueden descifrar.</string>
+    <string name="error_keyfile_writes_disabled">Los volúmenes v2 nuevos no pueden usar archivos de clave. Cree PCV3 explícitamente en su lugar. Los volúmenes existentes con archivos de clave aún se pueden descifrar.</string>
     <string name="error_passwords_mismatch">Las contraseñas no coinciden.</string>
     <string name="error_split_volume_not_supported">Los volúmenes divididos no se admiten en Android. Recombine primero las partes en su equipo y después transfiera el único archivo %1$s.</string>
     <string name="error_copy_failed">No se pudo copiar el archivo.</string>
@@ -200,11 +200,13 @@
     <string name="pcv3_keyfile_order_selected">Usar el orden seleccionado</string>
     <string name="pcv3_keyfile_order_any">Cualquier orden</string>
     <string name="pcv3_password_not_allowed">Quita la contraseña o elige la política de credenciales combinada.</string>
+    <string name="pcv3_create">Crear PCV3</string>
     <string name="pcv3_start_decrypt">Descifrar PCV3</string>
     <string name="pcv3_start_recovery">Iniciar recuperación</string>
     <string name="pcv3_start_force_recovery">Iniciar recuperación forzada</string>
     <string name="pcv3_cancel_decryption">Cancelar descifrado</string>
     <string name="pcv3_cancel_recovery">Cancelar recuperación</string>
+    <string name="pcv3_cancel_creation">Cancelar creación</string>
 
     <string name="pcv3_consent_title">¿Recuperar datos no verificados?</string>
     <string name="pcv3_consent_body">Esta operación puede guardar bytes que no están autenticados. Pueden estar incompletos o dañados, o no ser seguros al abrirlos. Elige la fuente física exacta que se usará.</string>
@@ -225,8 +227,6 @@
     <string name="pcv3_progress_preparing_artifact">Preparando el artefacto de recuperación…</string>
     <string name="pcv3_progress_publishing">Publicando la salida…</string>
     <string name="pcv3_progress_confirming_durability">Confirmando la durabilidad de la salida…</string>
-    <string name="pcv3_progress_verifying_legacy">Verificando el volumen antiguo…</string>
-    <string name="pcv3_progress_migrating">Migrando el contenido autenticado…</string>
     <string name="pcv3_progress_working">Trabajando…</string>
 
     <string name="pcv3_resource_busy_title">Hay otra operación protegida en curso</string>
@@ -240,6 +240,8 @@
 
     <string name="pcv3_outcome_success_title">Descifrado completado</string>
     <string name="pcv3_outcome_success_body">La salida está totalmente autenticada.</string>
+    <string name="pcv3_create_outcome_title">Volumen PCV3 creado</string>
+    <string name="pcv3_create_outcome_body">El nuevo volumen está completo. Guárdalo en la ubicación que elijas para conservarlo.</string>
     <string name="pcv3_outcome_archive_pending_title">Archivo autenticado listo para extraer</string>
     <string name="pcv3_outcome_archive_pending_body">El contenido del archivo está totalmente autenticado. Elige una carpeta nueva para extraerlo. Se conservará la fuente cifrada.</string>
     <string name="pcv3_outcome_degraded_title">Salida autenticada recuperada con daños</string>
@@ -308,6 +310,7 @@
     <string name="pcv3_output_expired_close">Cerrar acción de salida caducada</string>
     <string name="pcv3_output_unknown_close">Cerrar advertencia de acción sobre la salida</string>
     <string name="pcv3_save_decrypted_output">Guardar salida descifrada</string>
+    <string name="pcv3_save_created_volume">Guardar volumen creado</string>
     <string name="pcv3_save_recovery_artifact">Guardar artefacto de recuperación</string>
     <string name="pcv3_inspect_recovery_artifact">Inspeccionar artefacto de recuperación</string>
     <string name="pcv3_discard_artifact_title">¿Descartar artefacto de recuperación?</string>

@@ -128,7 +128,7 @@ func (semantic operationSemantic) outputCapable() bool {
 type (
 	operationSegmentSink func(operationRange, []byte) error
 	operationEmitter     func(operationSegmentSink) error
-	operationOutput      func(operationSemantic, operationPhysicalRole, operationEmitter) error
+	operationOutput      func(operationSemantic, operationPhysicalRole, string, operationEmitter) error
 	recoveryCoreRunner   func(context.Context, *Request, operationOutput) (operationSemantic, error)
 )
 
@@ -223,6 +223,7 @@ func RunD1UnverifiedWithOptions(
 // dimensions. Its formatting never contains a path or wrapped error.
 type Result struct {
 	semantic             operationSemantic
+	authenticatedComment string
 	publicationAttempted bool
 	publicationState     pcv3publication.State
 	publicationStage     pcv3.Stage
@@ -299,6 +300,15 @@ func (result *Result) PublicationCode() pcv3publication.Code {
 	return result.publicationCode
 }
 
+// AuthenticatedComment returns public D1 metadata only after the selected
+// inner volume authenticated it. It is never populated by Force output.
+func (result *Result) AuthenticatedComment() string {
+	if result == nil {
+		return ""
+	}
+	return result.authenticatedComment
+}
+
 // ArtifactInspection returns immutable artifact metadata only for a durably
 // published Force result. It grants no access to the artifact path or bytes.
 func (result *Result) ArtifactInspection() *ArtifactInspection {
@@ -352,14 +362,6 @@ func (result *Result) Unwrap() error {
 	return pcv3publication.ErrCleanupIncomplete
 }
 
-func runWithCore(
-	ctx context.Context,
-	request *Request,
-	run recoveryCoreRunner,
-) *Result {
-	return runWithCoreOptions(ctx, request, run, ExecutionOptions{})
-}
-
 func runWithCoreOptions(
 	ctx context.Context,
 	request *Request,
@@ -394,14 +396,22 @@ func runWithCoreOptions(
 	output := func(
 		semantic operationSemantic,
 		role operationPhysicalRole,
+		authenticatedComment string,
 		emit operationEmitter,
 	) error {
 		outputCalls++
+		commentValid := authenticatedComment == "" ||
+			(semantic.d1Provenance != pcv3.D1BootstrapProvenanceNone &&
+				semantic.provenance == pcv3.ForceProvenanceNone &&
+				(semantic.outcome == pcv3.OutcomeSuccess ||
+					semantic.outcome == pcv3.OutcomeAuthenticatedDegraded))
 		if outputCalls != 1 || !semantic.outputCapable() || !validOperationSemantic(semantic) ||
-			!validOperationRole(semantic, role) || emit == nil {
+			!validOperationRole(semantic, role) ||
+			!commentValid || emit == nil {
 			return errors.New("pcv3 recovery operation: invalid core output")
 		}
 		result.semantic = cloneOperationSemantic(semantic)
+		result.authenticatedComment = authenticatedComment
 		result.publicationAttempted = true
 
 		createStage := request.createStage
@@ -799,7 +809,7 @@ func runProductionCore(
 		if !ok {
 			return errors.New("pcv3 recovery operation: invalid capsule role")
 		}
-		return output(semantic, physicalRole, func(sink operationSegmentSink) error {
+		return output(semantic, physicalRole, "", func(sink operationSegmentSink) error {
 			return emitter(func(recoveryRange pcv3.RecoveryRange, plaintext []byte) error {
 				return sink(operationRange{
 					recordIndex: recoveryRange.RecordIndex(),
@@ -877,6 +887,7 @@ func runD1ProductionCoreWithRole(
 	coreOutput := func(
 		result *pcv3.RecoveryResult,
 		role pcv3.D1BootstrapRole,
+		authenticatedComment string,
 		emitter pcv3.RecoveryEmitter,
 	) error {
 		semantic := semanticFromCore(result)
@@ -884,7 +895,7 @@ func runD1ProductionCoreWithRole(
 		if !ok {
 			return errors.New("pcv3 recovery operation: invalid D1 role")
 		}
-		return output(semantic, physicalRole, func(sink operationSegmentSink) error {
+		return output(semantic, physicalRole, authenticatedComment, func(sink operationSegmentSink) error {
 			return emitter(func(recoveryRange pcv3.RecoveryRange, plaintext []byte) error {
 				return sink(operationRange{
 					recordIndex: recoveryRange.RecordIndex(),

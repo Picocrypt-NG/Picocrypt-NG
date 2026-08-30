@@ -122,10 +122,12 @@ func TestPCV3FynePreservesFactorIntent(t *testing.T) {
 	}{
 		{"normal decrypt", app.PCV3FormatNormal, app.PCV3ActionDecrypt, pcv3operation.ModeReadNormal},
 		{"normal recovery", app.PCV3FormatNormal, app.PCV3ActionRecovery, pcv3operation.ModeRecoverNormal},
-		{"normal Force", app.PCV3FormatNormal, app.PCV3ActionForce, pcv3operation.ModeForceUnverifiedNormal},
+		{"normal Force", app.PCV3FormatNormal, app.PCV3ActionForce, pcv3operation.ModeForceNormal},
+		{"normal unverified Force", app.PCV3FormatNormal, app.PCV3ActionForceUnverified, pcv3operation.ModeForceUnverifiedNormal},
 		{"D1 decrypt", app.PCV3FormatD1, app.PCV3ActionDecrypt, pcv3operation.ModeReadD1},
 		{"D1 recovery", app.PCV3FormatD1, app.PCV3ActionRecovery, pcv3operation.ModeRecoverD1},
-		{"D1 Force", app.PCV3FormatD1, app.PCV3ActionForce, pcv3operation.ModeForceUnverifiedD1},
+		{"D1 Force", app.PCV3FormatD1, app.PCV3ActionForce, pcv3operation.ModeForceD1},
+		{"D1 unverified Force", app.PCV3FormatD1, app.PCV3ActionForceUnverified, pcv3operation.ModeForceUnverifiedD1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source, err := os.Open(sourcePath)
@@ -161,6 +163,87 @@ func TestPCV3FynePreservesFactorIntent(t *testing.T) {
 			}
 			if intent.Source != nil || intent.Password != nil || intent.Keyfiles != nil || intent.Target != "" {
 				t.Fatalf("caller retained transferred fields: %#v", intent)
+			}
+		})
+	}
+}
+
+func TestPCV3ForceConsentExistsOnlyForExplicitUnverifiedAction(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		format      app.PCV3Format
+		action      app.PCV3Action
+		wantMode    pcv3operation.Mode
+		wantConsent bool
+	}{
+		{"normal authenticated", app.PCV3FormatNormal, app.PCV3ActionForce, pcv3operation.ModeForceNormal, false},
+		{"D1 authenticated", app.PCV3FormatD1, app.PCV3ActionForce, pcv3operation.ModeForceD1, false},
+		{"normal unverified", app.PCV3FormatNormal, app.PCV3ActionForceUnverified, pcv3operation.ModeForceUnverifiedNormal, true},
+		{"D1 unverified", app.PCV3FormatD1, app.PCV3ActionForceUnverified, pcv3operation.ModeForceUnverifiedD1, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fyneApp := newTestFyneApp(t)
+			a := createUIReadyDropTestApp(t, fyneApp)
+			directory := t.TempDir()
+			input := filepath.Join(directory, "input.pcv")
+			if err := os.WriteFile(input, nil, 0o600); err != nil {
+				t.Fatalf("write input: %v", err)
+			}
+			source, err := os.Open(input)
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+
+			type observation struct {
+				mode       pcv3operation.Mode
+				hasConsent bool
+			}
+			observed := make(chan observation, 1)
+			a.pcv3OperationExecutor = func(_ context.Context, request *pcv3operation.Request) *pcv3operation.Result {
+				observed <- observation{mode: request.Mode, hasConsent: request.Consent != nil}
+				if request.Source != nil {
+					_ = request.Source.Close()
+					request.Source = nil
+				}
+				if request.Factors != nil {
+					_ = request.Factors.Close()
+					request.Factors = nil
+				}
+				return pcv3operation.Run(context.Background(), &pcv3operation.Request{})
+			}
+			t.Cleanup(func() {
+				a.workers.wait()
+				fyne.DoAndWait(func() { a.State.Reset() })
+			})
+
+			fyne.DoAndWait(func() {
+				if !a.State.SetPCV3Ready(
+					source,
+					test.format,
+					input,
+					filepath.Join(directory, "output"),
+					0,
+				) {
+					t.Fatal("set PCV3 selection")
+				}
+				a.State.Password = "password-only"
+				a.State.SetPCV3Intent(test.action, app.PCV3FactorPolicyPassword, app.PCV3KeyfileOrderUnset)
+				a.startPCV3Work()
+			})
+
+			select {
+			case got := <-observed:
+				if got.mode != test.wantMode || got.hasConsent != test.wantConsent {
+					t.Fatalf(
+						"request = mode %v consent %v; want mode %v consent %v",
+						got.mode,
+						got.hasConsent,
+						test.wantMode,
+						test.wantConsent,
+					)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("PCV3 request did not reach the executor")
 			}
 		})
 	}
@@ -880,17 +963,19 @@ func startPCV3ArchiveFollowUpForTest(
 	}
 }
 
-// TestPCV3CleanupIncompletePersistsAcrossReleasePaths protects the warning
-// that remains after an archive's one-shot close capability is gone. The
-// App-level seam is needed because UI cannot mint the core-private follow-up.
-func TestPCV3CleanupIncompletePersistsAcrossReleasePaths(t *testing.T) {
+// TestPCV3CleanupIncompletePersistsAfterResultRelease protects the warning
+// that remains after a result's one-shot cleanup capability is gone.
+func TestPCV3CleanupIncompletePersistsAfterResultRelease(t *testing.T) {
 	resetLocalizationForTest(t)
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	result := pcv3operation.Run(context.Background(), &pcv3operation.Request{})
 	a.pcv3ResultDisposer = func(got *pcv3operation.Result) bool {
 		if got == nil {
-			t.Fatal("release disposer received no current result")
+			return false
+		}
+		if got != result {
+			t.Fatal("release disposer received a different result")
 		}
 		return true
 	}
@@ -906,28 +991,14 @@ func TestPCV3CleanupIncompletePersistsAcrossReleasePaths(t *testing.T) {
 		t.Fatal("release plus ResetUI lost cleanup-incomplete truth")
 	}
 	fyne.DoAndWait(func() {
-		requirePCV3Text(t, a.pcv3Container,
+		requirePCV3Text(
+			t, a.pcv3Container,
 			tr("pcv3.warning.cleanup_title", "Cleanup could not be confirmed"),
 			pcv3WarningText(pcv3operation.WarningCleanupIncomplete),
 		)
 	})
 
-	warning := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-		Outcome: pcv3.OutcomeOperationFailed, Stage: pcv3.StageOutputPublication,
-		Code: pcv3.CodeOperationFailed, PublicationAttempted: true,
-		PublicationState: pcv3publication.StateNotPublished,
-		PublicationStage: pcv3.StageOutputPublication,
-		PublicationCode:  pcv3publication.CodeAtomicFailed,
-		Warnings:         []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete},
-	})
-	other := pcv3operation.Run(context.Background(), &pcv3operation.Request{})
 	fyne.DoAndWait(func() {
-		a.pcv3Result = other
-		a.pcv3ResultGeneration = 42
-		a.latchPCV3CleanupPresentation(warning)
-		if a.pcv3Result != other || a.pcv3ResultGeneration != 42 {
-			t.Fatal("stale archive warning replaced current result ownership")
-		}
 		a.handleCloseRequest()
 	})
 	if snap := a.State.UISnapshot(); !snap.PCV3CleanupIncomplete {
@@ -952,7 +1023,8 @@ func TestPCV3CleanupWarningSurvivesLegacyRoute(t *testing.T) {
 	if a.pcv3Container.Hidden {
 		t.Fatal("legacy route hid persistent cleanup warning")
 	}
-	requirePCV3Text(t, a.pcv3Container,
+	requirePCV3Text(
+		t, a.pcv3Container,
 		tr("pcv3.warning.cleanup_title", "Cleanup could not be confirmed"),
 		pcv3WarningText(pcv3operation.WarningCleanupIncomplete),
 	)
@@ -1535,89 +1607,4 @@ func TestPCV3RecoveryArtifactLargeRangeView(t *testing.T) {
 		}
 	})
 	checkPCV3CaseInventory(t, executed, required)
-}
-
-func TestPCV3FyneKeepsWriterAndMigrationAbsent(t *testing.T) {
-	resetLocalizationForTest(t)
-	fyneApp := newTestFyneApp(t)
-	a := createUIReadyDropTestApp(t, fyneApp)
-	directory := t.TempDir()
-	sourcePath := filepath.Join(directory, "source.pcv")
-	if err := os.WriteFile(sourcePath, nil, 0o600); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
-	source, err := os.Open(sourcePath)
-	if err != nil {
-		t.Fatalf("open source: %v", err)
-	}
-	t.Cleanup(func() {
-		fyne.DoAndWait(func() { a.State.Reset() })
-	})
-
-	fyne.DoAndWait(func() {
-		if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, sourcePath, filepath.Join(directory, "output"), 0) {
-			t.Fatal("set PCV3 selection")
-		}
-		a.State.SetPCV3Intent(app.PCV3ActionDecrypt, app.PCV3FactorPolicyCombined, app.PCV3KeyfileOrderSelected)
-		a.refreshAdvanced()
-		a.updateUIState()
-	})
-
-	wantActions := []string{"Decrypt PCV3", "Start recovery", "Start Force recovery"}
-	wantFactors := []string{"Password only", "Keyfiles only", "Password + keyfiles"}
-	wantOrders := []string{"Use selected order", "Any order"}
-	if a.pcv3ActionGroup == nil || !slices.Equal(a.pcv3ActionGroup.Options, wantActions) {
-		t.Fatalf("PCV3 action controls = %v; want only %v", a.pcv3ActionGroup, wantActions)
-	}
-	if a.pcv3FactorGroup == nil || !slices.Equal(a.pcv3FactorGroup.Options, wantFactors) {
-		t.Fatalf("PCV3 factor controls = %v; want %v", a.pcv3FactorGroup, wantFactors)
-	}
-	if a.pcv3OrderGroup == nil || !slices.Equal(a.pcv3OrderGroup.Options, wantOrders) {
-		t.Fatalf("PCV3 order controls = %v; want %v", a.pcv3OrderGroup, wantOrders)
-	}
-
-	allowedGroups := map[*widget.RadioGroup]struct{}{
-		a.pcv3ActionGroup: {},
-		a.pcv3FactorGroup: {},
-		a.pcv3OrderGroup:  {},
-	}
-	var inspectControls func(fyne.CanvasObject)
-	inspectControls = func(object fyne.CanvasObject) {
-		switch control := object.(type) {
-		case *fyne.Container:
-			for _, child := range control.Objects {
-				inspectControls(child)
-			}
-		case *widget.RadioGroup:
-			if _, ok := allowedGroups[control]; !ok {
-				t.Errorf("unexpected PCV3 radio action: %v", control.Options)
-			}
-			delete(allowedGroups, control)
-		case *widget.Button:
-			t.Errorf("unexpected direct PCV3 action button %q", control.Text)
-		case *widget.Check:
-			t.Errorf("unexpected direct PCV3 action check %q", control.Text)
-		case *widget.Entry:
-			t.Error("unexpected direct PCV3 action entry")
-		case *widget.Select:
-			t.Errorf("unexpected direct PCV3 action select %v", control.Options)
-		}
-	}
-	inspectControls(a.advancedDetail)
-	if len(allowedGroups) != 0 {
-		t.Fatalf("real PCV3 form omitted expected controls: %v", allowedGroups)
-	}
-
-	wantSelection := map[string]app.PCV3Action{
-		"Decrypt PCV3":         app.PCV3ActionDecrypt,
-		"Start recovery":       app.PCV3ActionRecovery,
-		"Start Force recovery": app.PCV3ActionForce,
-	}
-	for _, label := range wantActions {
-		fyne.DoAndWait(func() { a.pcv3ActionGroup.SetSelected(label) })
-		snapshot := a.State.UISnapshot()
-		if snapshot.PCV3Action != wantSelection[label] || a.startButton.Text != label {
-			t.Fatalf("select %q produced action %v and Start %q", label, snapshot.PCV3Action, a.startButton.Text)
-		}
-	}
 }

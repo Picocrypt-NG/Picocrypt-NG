@@ -27,8 +27,6 @@ func pcv3DiagnosticCode(diagnostic pcv3operation.Diagnostic) string {
 		return "callback-failure"
 	case pcv3operation.DiagnosticCallbackPanic:
 		return "callback-panic"
-	case pcv3operation.DiagnosticGovernanceRefusal:
-		return "governance-refusal"
 	case pcv3operation.DiagnosticResourceBusy:
 		return "resource-busy"
 	case pcv3operation.DiagnosticResourceInsufficient:

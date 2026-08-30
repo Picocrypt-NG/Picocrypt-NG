@@ -66,6 +66,8 @@ fun WorkButton(
             try {
                 if (formData.isPcv3Selection) {
                     dispatchPcv3Selection(context, mainViewModel, operationViewModel)
+                } else if (formData.isPcv3Creation) {
+                    dispatchPcv3Creation(context, mainViewModel, operationViewModel)
                 } else if (formData.isEncrypt) {
                     operationViewModel.startEncrypt(context, formData)
                 } else {
@@ -110,6 +112,24 @@ internal fun dispatchPcv3Selection(
     val applicationContext = context.applicationContext
     val target = FileCopyService.getPcv3RetainedOutputPath(applicationContext)
     mainViewModel.takePcv3Operation(target)?.let { transfer ->
+        operationViewModel.startPcv3(applicationContext, transfer)
+    }
+}
+
+/**
+ * The same exact handoff for a PCV3 creation: the legacy-shaped encrypt form is
+ * consumed into one opaque write transfer that cannot fall through to the legacy
+ * encrypt path. The created volume is staged at the sole app-private target.
+ */
+internal fun dispatchPcv3Creation(
+    context: Context,
+    mainViewModel: MainViewModel,
+    operationViewModel: OperationViewModel,
+) {
+    if (!StartupCleanup.allowsPcv3Dispatch()) return
+    val applicationContext = context.applicationContext
+    val target = FileCopyService.getPcv3RetainedOutputPath(applicationContext)
+    mainViewModel.takePcv3CreateOperation(target)?.let { transfer ->
         operationViewModel.startPcv3(applicationContext, transfer)
     }
 }

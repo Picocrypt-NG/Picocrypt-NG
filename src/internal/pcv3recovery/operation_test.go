@@ -21,6 +21,14 @@ type archiveHandoffAuthority interface {
 	ArchiveHandoffAllowed() bool
 }
 
+func runWithCore(
+	ctx context.Context,
+	request *Request,
+	run recoveryCoreRunner,
+) *Result {
+	return runWithCoreOptions(ctx, request, run, ExecutionOptions{})
+}
+
 type secondPassFault uint8
 
 const (
@@ -594,7 +602,7 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 			_ *Request,
 			output operationOutput,
 		) (operationSemantic, error) {
-			err := output(semantic, operationRoleD1Tail, func(sink operationSegmentSink) error {
+			err := output(semantic, operationRoleD1Tail, "", func(sink operationSegmentSink) error {
 				entries, readErr := os.ReadDir(directory)
 				if readErr != nil {
 					return readErr
@@ -1052,7 +1060,7 @@ func fixedRoleCoreRunner(
 		if !semantic.outputCapable() {
 			return semantic, nil
 		}
-		err := output(semantic, role, func(sink operationSegmentSink) error {
+		err := output(semantic, role, "", func(sink operationSegmentSink) error {
 			if emitErr != nil {
 				return emitErr
 			}

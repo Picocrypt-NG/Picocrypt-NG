@@ -1,3 +1,5 @@
+//go:build android || linux
+
 package mobile
 
 import (
@@ -14,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -920,6 +923,145 @@ func TestPCV3MobileArchiveSAFJournalWrapperUsesOnlyClosedLocalStates(t *testing.
 	if got, err := os.ReadFile(journal); err != nil || !bytes.Equal(got, []byte("not a journal\n")) {
 		t.Fatalf("malformed journal was not preserved: %q, %v", got, err)
 	}
+}
+
+// TestPCV3MobilePreservesResultAxes lives in this gated file because it drives
+// the SAF session probe fixture shared with the FD-ownership tests above.
+func TestPCV3MobilePreservesResultAxes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pending := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
+			Outcome:        pcv3.OutcomeSuccess,
+			Stage:          pcv3.StageNone,
+			Code:           pcv3.CodeSuccess,
+			ArchivePending: true,
+		})
+		uncertain := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
+			Outcome:               pcv3.OutcomeSuccess,
+			Stage:                 pcv3.StageNone,
+			Code:                  pcv3.CodeSuccess,
+			ForceProvenance:       pcv3.ForceProvenanceVerified,
+			D1BootstrapProvenance: pcv3.D1BootstrapProvenanceMatching,
+			DetailStage:           pcv3.StageMetadata,
+			PublicationAttempted:  true,
+			PublicationState:      pcv3publication.StatePublishedDurabilityUncertain,
+			PublicationStage:      pcv3.StageDirectorySync,
+			PublicationCode:       pcv3publication.CodeDurabilityUncertain,
+			Args:                  []uint64{7, 11, 13, 17},
+			Warnings:              []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete},
+		})
+		probe := newMobileArchiveSAFSessionProbe(t, nil)
+		probe.finishResult = uncertain
+		action := &mobileArchiveSAFActionProbe{
+			begin: func() pcv3ArchiveSAFCoreBegin {
+				return pcv3ArchiveSAFCoreBegin{kind: "session", session: probe}
+			},
+			closeResult: probe.abortResult,
+		}
+		operation := startPCV3Operation()
+		completePCV3PresentationWithArchive(operation, pending, action)
+		if snapshot := operation.Snapshot(); snapshot.CompletionClass() != "archive-pending" ||
+			!snapshot.ArchivePending() || snapshot.Outcome() != "success" {
+			t.Fatalf("pending snapshot = %s/%s pending=%v", snapshot.Outcome(), snapshot.CompletionClass(), snapshot.ArchivePending())
+		}
+		archive := operation.Archive()
+		if archive == nil {
+			t.Fatal("live archive authority was not returned by the operation object")
+		}
+		if code := operation.Release(); code != pcv3OperationReleaseDenied {
+			t.Fatalf("pending archive release code = %q", code)
+		}
+		begin := archive.BeginSAF()
+		if begin == nil || begin.Kind() != "session" || begin.Session() == nil || begin.Snapshot() == nil {
+			t.Fatalf("BeginSAF = %#v", begin)
+		}
+		if operation.Archive() != nil {
+			t.Fatal("archive capability remained available after SAF begin")
+		}
+		if snapshot := operation.Snapshot(); snapshot.CompletionClass() != "archive-pending" {
+			t.Fatalf("SAF session snapshot = %s", snapshot.CompletionClass())
+		}
+		session := armMobileArchiveSAFSession(t, begin)
+		extracted := session.Finish()
+		if extracted == nil || extracted.Outcome() != "success" ||
+			extracted.Stage() != "none" || extracted.Code() != "PCV3_SUCCESS" ||
+			extracted.ForceProvenance() != "verified" ||
+			extracted.D1BootstrapProvenance() != "matching" ||
+			extracted.DetailStage() != "metadata" ||
+			!extracted.PublicationAttempted() ||
+			extracted.PublicationState() != "published-durability-uncertain" ||
+			extracted.PublicationStage() != "directory-sync" ||
+			extracted.PublicationCode() != "PCV3_PUBLICATION_DURABILITY_UNCERTAIN" ||
+			extracted.CompletionClass() != "durability-uncertain" || extracted.ArchivePending() {
+			t.Fatalf("terminal snapshot lost result axes: %#v", extracted)
+		}
+		if extracted.ArgCount() != 4 || extracted.ArgAt(0) != "7" || extracted.ArgAt(3) != "17" ||
+			extracted.WarningCount() != 2 ||
+			extracted.WarningAt(0) != "cleanup-incomplete" ||
+			extracted.WarningAt(1) != "durability-uncertain" {
+			t.Fatalf("bounded args/warnings = %d/%d", extracted.ArgCount(), extracted.WarningCount())
+		}
+		if again := session.Finish(); again.CompletionClass() != "durability-uncertain" {
+			t.Fatalf("completed session changed terminal state: %#v", again)
+		}
+		staleAction := &literalMobileArchiveAction{closeResult: closedPCV3MobileArchivePresentation(t, true)}
+		completePCV3PresentationWithArchive(operation, pending, staleAction)
+		if staleAction.closeCalls.Load() != 1 || operation.Snapshot().CompletionClass() != "durability-uncertain" {
+			t.Fatalf("stale archive action close=%d terminal=%s", staleAction.closeCalls.Load(), operation.Snapshot().CompletionClass())
+		}
+		if code := operation.Release(); code != "" || operation.Snapshot().CompletionClass() != "unknown" ||
+			operation.Archive() != nil || operation.Consent() != nil {
+			t.Fatalf("terminal release = %q snapshot=%s", code, operation.Snapshot().CompletionClass())
+		}
+		if code := operation.Release(); code != pcv3OperationReleaseDenied {
+			t.Fatalf("released object acted twice: %q", code)
+		}
+
+		closed := closedPCV3MobileArchivePresentation(t, true)
+		closeAction := &literalMobileArchiveAction{closeResult: closed}
+		closeOperation := startPCV3Operation()
+		completePCV3PresentationWithArchiveAndInspectionComment(
+			closeOperation,
+			pending,
+			closeAction,
+			nil,
+			"authenticated archive comment",
+		)
+		closeHandle := closeOperation.Archive()
+		closedSnapshot := closeHandle.Close()
+		if closedSnapshot.CompletionClass() != "no-output" ||
+			closedSnapshot.WarningAt(0) != "cleanup-incomplete" ||
+			closedSnapshot.AuthenticatedComment() != "authenticated archive comment" ||
+			closeAction.closeCalls.Load() != 1 {
+			t.Fatalf("archive Close terminal = %s warnings=%d calls=%d", closedSnapshot.CompletionClass(), closedSnapshot.WarningCount(), closeAction.closeCalls.Load())
+		}
+		_ = closeHandle.Close()
+		if closeAction.closeCalls.Load() != 1 {
+			t.Fatalf("archive Close ran %d times", closeAction.closeCalls.Load())
+		}
+		if code := closeOperation.Release(); code != "" {
+			t.Fatalf("closed archive release code = %q", code)
+		}
+
+		clean := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
+			Outcome: pcv3.OutcomeSuccess,
+			Stage:   pcv3.StageNone,
+			Code:    pcv3.CodeSuccess,
+		})
+		mismatchAction := &literalMobileArchiveAction{closeResult: closed}
+		mismatchOperation := startPCV3Operation()
+		completePCV3PresentationWithArchive(mismatchOperation, clean, mismatchAction)
+		mismatch := mismatchOperation.Snapshot()
+		if mismatch.CompletionClass() != "no-output" || mismatch.Diagnostic() != "core-failure" ||
+			mismatch.WarningAt(0) != "cleanup-incomplete" || mismatchOperation.Archive() != nil ||
+			mismatchAction.closeCalls.Load() != 1 {
+			t.Fatalf("mismatched archive tuple=%s/%s warnings=%d authority=%v close=%d",
+				mismatch.CompletionClass(), mismatch.Diagnostic(), mismatch.WarningCount(),
+				mismatchOperation.Archive(), mismatchAction.closeCalls.Load())
+		}
+		if code := mismatchOperation.Release(); code != "" {
+			t.Fatalf("mismatched archive release code = %q", code)
+		}
+	})
 }
 
 func duplicateMobileTransferredFD(t *testing.T, original *os.File) int64 {

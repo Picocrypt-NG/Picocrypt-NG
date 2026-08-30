@@ -119,6 +119,101 @@ class Pcv3BridgeTest {
     }
 
     @Test
+    fun `PCV3 write request is a strict write-shaped non-secret envelope`() {
+        val request = validWriteRequest()
+
+        val json = JSONObject(GoBridge.buildPcv3WriteRequestJson(request)!!)
+
+        assertEquals(
+            setOf(
+                "version", "mode", "factorPolicy", "keyfileOrder",
+                "source", "target", "keyfiles", "comment", "suite", "payloadRS",
+            ),
+            json.names()!!.let { names -> (0 until names.length()).map(names::getString).toSet() },
+        )
+        assertEquals(1, json.getInt("version"))
+        assertEquals("write-normal", json.getString("mode"))
+        assertEquals("password", json.getString("factorPolicy"))
+        assertEquals("none", json.getString("keyfileOrder"))
+        assertEquals("input", json.getString("source"))
+        assertEquals("output", json.getString("target"))
+        assertEquals(0, json.getJSONArray("keyfiles").length())
+        assertEquals("plaintext comment", json.getString("comment"))
+        assertEquals("standard", json.getString("suite"))
+        assertFalse(json.getBoolean("payloadRS"))
+        assertFalse("password must never enter the request JSON", json.has("password"))
+    }
+
+    @Test
+    fun `PCV3 write envelope admits the exact keyfile and D1 shapes`() {
+        val withKeyfiles = validWriteRequest().copy(
+            factorPolicy = "password-and-keyfiles",
+            keyfileOrder = "ordered",
+            keyfiles = listOf("keyfile-a", "keyfile-b"),
+        )
+        val keyfileJson = JSONObject(GoBridge.buildPcv3WriteRequestJson(withKeyfiles)!!)
+        assertEquals("ordered", keyfileJson.getString("keyfileOrder"))
+        assertEquals(2, keyfileJson.getJSONArray("keyfiles").length())
+
+        val d1 = validWriteRequest().copy(mode = "write-d1", suite = "paranoid", comment = "")
+        val d1Json = JSONObject(GoBridge.buildPcv3WriteRequestJson(d1)!!)
+        assertEquals("write-d1", d1Json.getString("mode"))
+        assertEquals("paranoid", d1Json.getString("suite"))
+
+        // The comment bound mirrors header.MaxCommentLen and is counted in UTF-8 bytes.
+        val atCommentBound = validWriteRequest().copy(comment = "x".repeat(99999))
+        assertTrue(GoBridge.buildPcv3WriteRequestJson(atCommentBound) != null)
+    }
+
+    @Test
+    fun `PCV3 write envelope refuses every wrong shape before the native boundary`() {
+        listOf(
+            "unknown mode" to validWriteRequest().copy(mode = "migrate-normal"),
+            "read shape is not a write shape" to validWriteRequest().copy(mode = "read-normal"),
+            "unknown suite" to validWriteRequest().copy(suite = "future"),
+            "D1 has no standard suite choice" to validWriteRequest().copy(mode = "write-d1", suite = "standard"),
+            "password policy has no keyfile order" to validWriteRequest().copy(keyfileOrder = "ordered"),
+            "password policy has no keyfiles" to validWriteRequest().copy(keyfiles = listOf("keyfile-a")),
+            "keyfile policy needs keyfiles" to validWriteRequest().copy(factorPolicy = "keyfiles", keyfileOrder = "ordered"),
+            "keyfile policy needs an order" to validWriteRequest().copy(factorPolicy = "keyfiles", keyfiles = listOf("keyfile-a")),
+            "keyfile count is bounded" to validWriteRequest().copy(
+                factorPolicy = "keyfiles",
+                keyfileOrder = "unordered",
+                keyfiles = (1..65).map { "keyfile-$it" },
+            ),
+            "blank source" to validWriteRequest().copy(source = " "),
+            "blank target" to validWriteRequest().copy(target = ""),
+            "blank keyfile" to validWriteRequest().copy(
+                factorPolicy = "keyfiles",
+                keyfileOrder = "ordered",
+                keyfiles = listOf(""),
+            ),
+            "oversized comment" to validWriteRequest().copy(comment = "x".repeat(100000)),
+        ).forEach { (label, request) ->
+            assertNull(
+                "$label must be refused locally as PCV3_BRIDGE_INVALID_REQUEST",
+                GoBridge.buildPcv3WriteRequestJson(request),
+            )
+        }
+    }
+
+    @Test
+    fun `PCV3 locally refused write envelope clears caller password before transport`() {
+        val transport = RecordingTransport { _, _ ->
+            error("a locally refused write envelope must not reach the native transport")
+        }
+        val callerPassword = "sensitive".toCharArray()
+        val invalid = validWriteRequest().copy(suite = "future")
+
+        val result = Pcv3Bridge(transport).start(invalid, callerPassword)
+
+        assertTrue(result.isFailure)
+        assertEquals("PCV3_BRIDGE_INVALID_REQUEST", result.exceptionOrNull()?.message)
+        assertEquals(0, transport.startCalls)
+        assertTrue(callerPassword.all { it == '\u0000' })
+    }
+
+    @Test
     fun `PCV3 bridge clears caller chars and UTF8 bytes after native refusal`() {
         val transport = RecordingTransport { _, _ -> Pcv3StartData("PCV3_BRIDGE_INPUT_UNAVAILABLE", null) }
         val callerPassword = "sensitive".toCharArray()
@@ -340,19 +435,15 @@ class Pcv3BridgeTest {
     @Test
     fun `PCV3 resource challenge forwards the exact observation and fails closed at a stale AAR`() {
         val firstObservation = Pcv3AndroidResourceObservation(
-            manufacturer = "Acme",
-            model = "Secure Phone 9",
-            abi = "arm64-v8a",
-            osArch = "aarch64",
             totalRamBytes = 8_589_934_592L,
             effectiveAvailableBytes = 3_221_225_472L,
+            platformThresholdBytes = 536_870_912L,
+            processFootprintBytes = 134_217_728L,
             processIs64Bit = false,
-            emulatorTraitsClear = true,
             lowMemory = false,
         )
         val secondObservation = firstObservation.copy(
             processIs64Bit = true,
-            emulatorTraitsClear = false,
             lowMemory = false,
         )
         val firstNative = RecordingResourceChallengeNative()
@@ -497,6 +588,18 @@ class Pcv3BridgeTest {
         keyfiles = emptyList(),
     )
 
+    private fun validWriteRequest() = Pcv3WriteRequest(
+        mode = "write-normal",
+        factorPolicy = "password",
+        keyfileOrder = "none",
+        source = "input",
+        target = "output",
+        keyfiles = emptyList(),
+        comment = "plaintext comment",
+        suite = "standard",
+        payloadRS = false,
+    )
+
     private class RecordingTransport(
         private val startBlock: (String, ByteArray) -> Pcv3StartData,
     ) : Pcv3Transport {
@@ -545,27 +648,21 @@ class Pcv3BridgeTest {
         var failure: Throwable? = null
 
         override fun submit(
-            manufacturer: String,
-            model: String,
-            abi: String,
-            osArch: String,
             totalRamBytes: Long,
             effectiveAvailableBytes: Long,
+            platformThresholdBytes: Long,
+            processFootprintBytes: Long,
             processIs64Bit: Boolean,
-            emulatorTraitsClear: Boolean,
             lowMemory: Boolean,
         ): Boolean {
             calls += 1
             failure?.let { throw it }
             submissions += Pcv3AndroidResourceObservation(
-                manufacturer,
-                model,
-                abi,
-                osArch,
                 totalRamBytes,
                 effectiveAvailableBytes,
+                platformThresholdBytes,
+                processFootprintBytes,
                 processIs64Bit,
-                emulatorTraitsClear,
                 lowMemory,
             )
             return true

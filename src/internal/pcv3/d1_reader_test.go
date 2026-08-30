@@ -1,15 +1,47 @@
 package pcv3
 
 import (
-	bytes "bytes"
+	"Picocrypt-NG/internal/pcv3credential"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"io"
 	"testing"
-
-	"Picocrypt-NG/internal/pcv3credential"
 )
+
+func newTestD1InnerReader(
+	ctx context.Context,
+	source io.ReaderAt,
+	bodyLength uint64,
+	outerKeys d1OuterKeyAccess,
+) (*d1InnerReader, error) {
+	return newTestD1InnerReaderWithSeams(
+		ctx,
+		source,
+		bodyLength,
+		outerKeys,
+		defaultD1InnerReaderSeams(),
+	)
+}
+
+func newTestD1InnerReaderWithSeams(
+	ctx context.Context,
+	source io.ReaderAt,
+	bodyLength uint64,
+	outerKeys d1OuterKeyAccess,
+	seams d1InnerReaderSeams,
+) (*d1InnerReader, error) {
+	return newD1InnerReaderConfigured(
+		ctx,
+		source,
+		bodyLength,
+		outerKeys,
+		seams,
+		nil,
+		nil,
+	)
+}
 
 func TestD1ReaderAuthenticatesBeforeInnerCapability(t *testing.T) {
 	access, owner := newD1TestOuterAccess(t, 0x63)
@@ -54,7 +86,7 @@ func TestD1ReaderAuthenticatesBeforeInnerCapability(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			mutated := test.mutate(append([]byte(nil), body...))
-			reader, err := newD1InnerReader(
+			reader, err := newTestD1InnerReader(
 				context.Background(),
 				bytes.NewReader(mutated),
 				uint64(len(body)),
@@ -82,7 +114,7 @@ func TestD1ReaderLateTagFailureInvokesNoDecrypt(t *testing.T) {
 	damagedBody[len(damagedBody)-1] ^= 0x01
 	openCalls := 0
 
-	reader, err := newD1InnerReaderWithSeams(
+	reader, err := newTestD1InnerReaderWithSeams(
 		context.Background(),
 		bytes.NewReader(damagedBody),
 		uint64(len(damagedBody)),
@@ -115,7 +147,7 @@ func TestD1ReaderLateTagFailureInvokesNoDecrypt(t *testing.T) {
 		t.Fatalf("late-tag damage invoked decrypt %d times before complete authentication", openCalls)
 	}
 
-	reader, err = newD1InnerReaderWithSeams(
+	reader, err = newTestD1InnerReaderWithSeams(
 		context.Background(),
 		bytes.NewReader(body),
 		uint64(len(body)),
@@ -152,7 +184,7 @@ func TestD1ReaderBoundedScratchAndReauthenticates(t *testing.T) {
 		inner[index] = byte(index*29 + 7)
 	}
 	body := encodeD1TestBody(t, access, inner)
-	reader, err := newD1InnerReader(
+	reader, err := newTestD1InnerReader(
 		context.Background(),
 		bytes.NewReader(body),
 		uint64(len(body)),
@@ -176,7 +208,7 @@ func TestD1ReaderBoundedScratchAndReauthenticates(t *testing.T) {
 	}
 
 	mutable := append([]byte(nil), body...)
-	reauth, err := newD1InnerReader(
+	reauth, err := newTestD1InnerReader(
 		context.Background(),
 		bytes.NewReader(mutable),
 		uint64(len(mutable)),
@@ -248,7 +280,7 @@ func TestD1ReaderSecondPassMutationScrubsPartialPlaintext(t *testing.T) {
 		body:          append([]byte(nil), body...),
 		mutationPoint: mutationPoint,
 	}
-	reader, err := newD1InnerReader(
+	reader, err := newTestD1InnerReader(
 		context.Background(),
 		source,
 		uint64(len(body)),
@@ -274,7 +306,7 @@ func TestD1ReaderSecondPassMutationScrubsPartialPlaintext(t *testing.T) {
 	}
 
 	// Positive control: the same body without mutation reads back exactly.
-	control, err := newD1InnerReader(
+	control, err := newTestD1InnerReader(
 		context.Background(),
 		bytes.NewReader(body),
 		uint64(len(body)),
@@ -306,7 +338,7 @@ func TestD1ReaderCloseZerosKeysAndScratches(t *testing.T) {
 		t.Fatalf("single-record body length = %d; want %d", len(body), ciphertextLength+d1OuterTagSize)
 	}
 
-	reader, err := newD1InnerReader(
+	reader, err := newTestD1InnerReader(
 		context.Background(),
 		bytes.NewReader(body),
 		uint64(len(body)),

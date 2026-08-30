@@ -20,7 +20,8 @@ enum class Pcv3ActionIntent {
     DECRYPT,
     RECOVERY,
     FORCE_AUTHENTICATED_ONLY,
-    FORCE_WITH_UNVERIFIED_CONSENT;
+    FORCE_WITH_UNVERIFIED_CONSENT,
+    CREATE;
 
     val isRecovery: Boolean
         get() = this != DECRYPT
@@ -43,6 +44,7 @@ data class Pcv3OperationIntent(
             Pcv3ActionIntent.RECOVERY -> "recover-normal"
             Pcv3ActionIntent.FORCE_AUTHENTICATED_ONLY -> "force-normal"
             Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT -> "force-unverified-normal"
+            Pcv3ActionIntent.CREATE -> "write-normal"
             null -> null
         }
         Pcv3FormatIntent.D1 -> when (action) {
@@ -50,6 +52,7 @@ data class Pcv3OperationIntent(
             Pcv3ActionIntent.RECOVERY -> "recover-d1"
             Pcv3ActionIntent.FORCE_AUTHENTICATED_ONLY -> "force-d1"
             Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT -> "force-unverified-d1"
+            Pcv3ActionIntent.CREATE -> "write-d1"
             null -> null
         }
     }
@@ -96,8 +99,9 @@ class Pcv3OwnedSource internal constructor(sourcePath: String) {
 /** The sole Kotlin-to-operation ownership transfer; [password] is mutable and caller-owned. */
 class Pcv3OperationTransfer internal constructor(
     internal val intent: Pcv3OperationIntent,
-    internal val request: Pcv3Request,
+    internal val request: Pcv3StartRequest,
     internal val password: CharArray,
+    internal val createName: String? = null,
 ) {
     override fun toString(): String = "Pcv3OperationTransfer([REDACTED])"
 }
@@ -118,6 +122,7 @@ data class FormData(
     val paranoid: Boolean,
     val deniability: Boolean,
     val verifyFirst: Boolean = false,
+    val createPcv3: Boolean = false,
     val keyfileFilenames: List<KeyfileInfo>, // Keyfile info with internal path and display name
     val keyfileOrdered: Boolean,
     val compress: Boolean = false,
@@ -146,6 +151,13 @@ data class FormData(
             )
     val isPcv3Selection: Boolean
         get() = pcv3Intent != null
+    /**
+     * True when the user asked to create a PCV3 volume from a single selected file.
+     * Folder/multi selections stage a tree that the PCV3 creation bridge does not
+     * accept, so creation stays a single-file concept (like PCV3 selections).
+     */
+    val isPcv3Creation: Boolean
+        get() = createPcv3 && isEncrypt && selectionKind == SelectionKind.SINGLE_FILE
     // clearPasswords overwrites buffers in place, so allocated length does not imply a credential.
     val hasPassword: Boolean
         get() = passwordInput.any { it != '\u0000' }
@@ -158,15 +170,20 @@ data class FormData(
             passwordInput.contentEquals(confirmPasswordInput)
     val hasKeyfiles: Boolean
         get() = keyfileFilenames.isNotEmpty()
+    // Legacy v2 creation cannot use keyfiles; explicit PCV3 creation can (desktop parity).
     val isKeyfileEncryptionUnsupported: Boolean
-        get() = isEncrypt && hasKeyfiles
+        get() = isEncrypt && !isPcv3Creation && hasKeyfiles
+    // Legacy deniability requires a non-empty outer password; PCV3 D1 binds the
+    // complete factor transcript to both layers, so keyfile-only D1 is allowed.
     val isDeniabilityPasswordMissing: Boolean
-        get() = isEncrypt && deniability && !hasPassword
+        get() = isEncrypt && !isPcv3Creation && deniability && !hasPassword
     val isPasswordInputRequired: Boolean
         get() = if (pcvUnavailable) {
             false
         } else if (isPcv3Selection) {
             !hasPassword && pcv3Intent?.factorPolicy != Pcv3FactorPolicyIntent.KEYFILES_ONLY
+        } else if (isPcv3Creation) {
+            !hasPassword && !hasKeyfiles
         } else {
             !hasPassword && (isEncrypt || !hasKeyfiles)
         }
@@ -174,6 +191,7 @@ data class FormData(
         get() = when {
             pcvUnavailable -> false
             isPcv3Selection -> isPcv3CredentialIntentValid
+            isPcv3Creation -> isPasswordsMatch && (hasPassword || hasKeyfiles)
             isEncrypt -> hasPassword && !hasKeyfiles && isPasswordsMatch
             isDecrypt -> hasPassword || hasKeyfiles
             else -> false
@@ -245,6 +263,7 @@ data class FormData(
         if (paranoid != other.paranoid) return false
         if (deniability != other.deniability) return false
         if (verifyFirst != other.verifyFirst) return false
+        if (createPcv3 != other.createPcv3) return false
         if (keyfileFilenames != other.keyfileFilenames) return false
         if (keyfileOrdered != other.keyfileOrdered) return false
         if (compress != other.compress) return false
@@ -271,6 +290,7 @@ data class FormData(
         result = 31 * result + paranoid.hashCode()
         result = 31 * result + deniability.hashCode()
         result = 31 * result + verifyFirst.hashCode()
+        result = 31 * result + createPcv3.hashCode()
         result = 31 * result + keyfileFilenames.hashCode()
         result = 31 * result + keyfileOrdered.hashCode()
         result = 31 * result + compress.hashCode()

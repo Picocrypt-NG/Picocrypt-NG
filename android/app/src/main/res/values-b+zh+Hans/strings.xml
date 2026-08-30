@@ -158,7 +158,7 @@
     <string name="error_decrypt_retry_only">只有解密操作可以使用强制解密重试。</string>
     <string name="error_no_file_selected">请选择文件。</string>
     <string name="error_invalid_password">请输入密码。</string>
-    <string name="error_keyfile_writes_disabled">在 v3 格式完成审核前，已禁用创建使用密钥文件的新 v2 卷。现有的密钥文件卷仍可解密。</string>
+    <string name="error_keyfile_writes_disabled">新的 v2 卷不能使用密钥文件。请改用显式创建 PCV3。现有密钥文件卷仍可解密。</string>
     <string name="error_passwords_mismatch">密码不一致。</string>
     <string name="error_split_volume_not_supported">Android 不支持分卷。请先在计算机上合并分卷，然后传输单个 %1$s 文件。</string>
     <string name="error_copy_failed">无法复制文件。</string>
@@ -192,11 +192,13 @@
     <string name="pcv3_keyfile_order_selected">使用所选顺序</string>
     <string name="pcv3_keyfile_order_any">任意顺序</string>
     <string name="pcv3_password_not_allowed">请移除密码或选择组合凭据策略。</string>
+    <string name="pcv3_create">创建 PCV3</string>
     <string name="pcv3_start_decrypt">解密 PCV3</string>
     <string name="pcv3_start_recovery">开始恢复</string>
     <string name="pcv3_start_force_recovery">开始强制恢复</string>
     <string name="pcv3_cancel_decryption">取消解密</string>
     <string name="pcv3_cancel_recovery">取消恢复</string>
+    <string name="pcv3_cancel_creation">取消创建</string>
 
     <string name="pcv3_consent_title">要恢复未经验证的数据吗？</string>
     <string name="pcv3_consent_body">此操作可能保存未经身份验证的字节。这些字节可能不完整、已损坏或打开后有危险。请选择要使用的确切物理源。</string>
@@ -217,8 +219,6 @@
     <string name="pcv3_progress_preparing_artifact">正在准备恢复产物…</string>
     <string name="pcv3_progress_publishing">正在发布输出…</string>
     <string name="pcv3_progress_confirming_durability">正在确认输出持久性…</string>
-    <string name="pcv3_progress_verifying_legacy">正在验证旧格式卷…</string>
-    <string name="pcv3_progress_migrating">正在迁移已通过身份验证的内容…</string>
     <string name="pcv3_progress_working">正在处理…</string>
 
     <string name="pcv3_resource_busy_title">另一项安全操作正在运行</string>
@@ -232,6 +232,8 @@
 
     <string name="pcv3_outcome_success_title">解密完成</string>
     <string name="pcv3_outcome_success_body">输出已通过完整的身份验证。</string>
+    <string name="pcv3_create_outcome_title">PCV3 卷已创建</string>
+    <string name="pcv3_create_outcome_body">新卷已完成。请将其保存到所选位置以保留。</string>
     <string name="pcv3_outcome_archive_pending_title">已通过身份验证的归档可供提取</string>
     <string name="pcv3_outcome_archive_pending_body">归档载荷已通过完整的身份验证。请选择新的提取文件夹。加密源将保留。</string>
     <string name="pcv3_outcome_degraded_title">已恢复有损坏的身份验证输出</string>
@@ -300,6 +302,7 @@
     <string name="pcv3_output_expired_close">关闭已过期的输出操作</string>
     <string name="pcv3_output_unknown_close">关闭输出操作警告</string>
     <string name="pcv3_save_decrypted_output">保存解密输出</string>
+    <string name="pcv3_save_created_volume">保存已创建的卷</string>
     <string name="pcv3_save_recovery_artifact">保存恢复产物</string>
     <string name="pcv3_inspect_recovery_artifact">检查恢复产物</string>
     <string name="pcv3_discard_artifact_title">丢弃恢复产物？</string>

@@ -49,12 +49,14 @@ jobs:
         go mod download
 
     - name: Run tests
-      # Skip internal/crypto and internal/volume - Argon2 is extremely slow on macOS ARM64 runners
+      # Skip internal/crypto - Argon2 is extremely slow on macOS ARM64 runners
       run: |
         cd src
         go test -v -race -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
         go test -v -race -timeout 15m ./internal/pcv3publication/...
-        go test -v -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...
+        go test -v -race -timeout 15m ./internal/pcv3/... ./internal/pcv3credential/... ./internal/pcv3operation/... ./internal/pcv3recovery/... ./internal/pcv3artifact/... ./internal/pcv3resource/... ./internal/app/...
+        go test -v -race -timeout 15m ./internal/volume/...
+        PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -timeout 15m ./internal/cli/...
 
     - name: Build GUI
       run: |
@@ -82,7 +84,7 @@ jobs:
         mv src/Picocrypt-NG Picocrypt-NG.app/Contents/MacOS/Picocrypt-NG
         rm Picocrypt-NG.app/Contents/Resources/icon.icns
         mv dist/macos/iconSmall.icns Picocrypt-NG.app/Contents/Resources/icon.icns
-        # === Phase 3 (FA-MAC-04): inject canonical Info.plist ===
+        # Inject canonical Info.plist.
         cp dist/macos/Info.plist Picocrypt-NG.app/Contents/Info.plist
         plutil -replace CFBundleShortVersionString -string "$(cat VERSION)" \
             Picocrypt-NG.app/Contents/Info.plist
@@ -96,7 +98,6 @@ jobs:
         plutil -extract UTExportedTypeDeclarations json -o - \
             Picocrypt-NG.app/Contents/Info.plist | grep -q 'io.github.picocryptng.pcv' \
             || (echo "::error::UTExportedTypeDeclarations lost UTI"; exit 1)
-        # === end Phase 3 ===
         # === Ad-hoc code signing (free; no paid Apple Developer ID) ===
         # Re-seal the assembled bundle so the signature covers the swapped
         # executable, icon and injected Info.plist. Without a valid seal a

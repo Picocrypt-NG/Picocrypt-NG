@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -11,7 +12,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.yield
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -2782,14 +2782,19 @@ class OperationManagerTest {
         snapshotEntered.await()
 
         val waitingPassword = "must-clear".toCharArray()
-        val waiting = launch(Dispatchers.Default) {
+        // UNDISPATCHED guarantees the caller actually parks at the lifecycle
+        // mutex before cancelAndJoin; a plain launch races the cancellation and
+        // can leave the blocked snapshot gate (and runTest) hanging forever.
+        val waiting = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
             lifecycle.start(pcv3Request(), waitingPassword, pcv3ReceiptFile)
         }
-        yield()
         waiting.cancelAndJoin()
 
-        assertTrue("mutex cancellation must not retain caller password", waitingPassword.all { it == '\u0000' })
-        releaseSnapshot.complete(Unit)
+        try {
+            assertTrue("mutex cancellation must not retain caller password", waitingPassword.all { it == '\u0000' })
+        } finally {
+            releaseSnapshot.complete(Unit)
+        }
         assertTrue(first.await().isSuccess)
     }
 
@@ -2847,14 +2852,11 @@ class OperationManagerTest {
     }
 
     private fun resourceObservation(available: Long, lowMemory: Boolean) = Pcv3AndroidResourceObservation(
-        manufacturer = "Acme",
-        model = "Secure Phone",
-        abi = "arm64-v8a",
-        osArch = "aarch64",
         totalRamBytes = 8_000L,
         effectiveAvailableBytes = available,
+        platformThresholdBytes = 500L,
+        processFootprintBytes = 200L,
         processIs64Bit = true,
-        emulatorTraitsClear = true,
         lowMemory = lowMemory,
     )
 

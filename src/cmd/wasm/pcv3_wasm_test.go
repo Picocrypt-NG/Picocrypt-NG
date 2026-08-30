@@ -120,7 +120,7 @@ func TestBridgePCV3UnsupportedBeforeKDF(t *testing.T) {
 }
 
 // Explicit PCV3 operation intent is rejected before the bridge reads data,
-// credentials, options, or copies a single byte; the closed Phase 8 operation
+// credentials, options, or copies a single byte; the operation
 // mode discriminator is the only property consumed.
 func TestBridgeExplicitPCV3IntentRejectsBeforeData(t *testing.T) {
 	modes := []struct {
@@ -135,7 +135,6 @@ func TestBridgeExplicitPCV3IntentRejectsBeforeData(t *testing.T) {
 		{"force-d1", pcv3operation.ModeForceD1},
 		{"force-unverified-normal", pcv3operation.ModeForceUnverifiedNormal},
 		{"force-unverified-d1", pcv3operation.ModeForceUnverifiedD1},
-		{"migrate", pcv3operation.ModeMigrate},
 	}
 	for _, tc := range modes {
 		t.Run(tc.name, func(t *testing.T) {

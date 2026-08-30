@@ -1,9 +1,16 @@
 package pcv3publication
 
 import (
+	"Picocrypt-NG/internal/fileops"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 )
 
@@ -20,12 +27,12 @@ type CopyResult struct {
 	cleanupIncomplete bool
 }
 
-// Copied reports that the complete source was written, synchronized, and the
-// transferred destination descriptor was closed successfully.
+// Copied reports that the complete source was written under the copy method's
+// destination contract.
 func (result CopyResult) Copied() bool { return result.copied }
 
-// CleanupIncomplete reports that absence of partial plaintext at the
-// destination could not be proven after a failed copy.
+// CleanupIncomplete reports that cleanup of an operation-owned source or
+// partial destination could not be proven.
 func (result CopyResult) CleanupIncomplete() bool { return result.cleanupIncomplete }
 
 // RetainedFile is an opaque, one-owner capability for one durably published
@@ -34,11 +41,13 @@ func (result CopyResult) CleanupIncomplete() bool { return result.cleanupIncompl
 type RetainedFile struct {
 	mu sync.Mutex
 
-	file       *os.File
-	root       *os.Root
-	parent     *os.File
-	identity   os.FileInfo
-	targetName string
+	file        *os.File
+	root        *os.Root
+	parent      *os.File
+	identity    os.FileInfo
+	sha256      [sha256.Size]byte
+	digestReady bool
+	targetName  string
 
 	remove        func(*os.Root, string) error
 	syncDirectory func(*os.File) error
@@ -58,7 +67,7 @@ func (file *RetainedFile) Live() bool {
 
 func (file *RetainedFile) liveLocked() bool {
 	return file.active && file.file != nil && file.root != nil && file.parent != nil &&
-		file.identity != nil && file.targetName != "" && file.remove != nil &&
+		file.identity != nil && file.digestReady && file.targetName != "" && file.remove != nil &&
 		file.syncDirectory != nil
 }
 
@@ -84,7 +93,7 @@ func (file *RetainedFile) CopyTo(destination *os.File) CopyResult {
 		os.SameFile(sourceInfo, destinationInfo)
 	if sourceErr != nil || destinationErr != nil || sourceInfo == nil || destinationInfo == nil ||
 		!sourceInfo.Mode().IsRegular() || !destinationInfo.Mode().IsRegular() ||
-		!os.SameFile(file.identity, sourceInfo) || sameIdentity {
+		sourceInfo.Size() != file.identity.Size() || !os.SameFile(file.identity, sourceInfo) || sameIdentity {
 		closeUnusedDestination(destination)
 		return CopyResult{cleanupIncomplete: sameIdentity}
 	}
@@ -102,13 +111,14 @@ func (file *RetainedFile) CopyTo(destination *os.File) CopyResult {
 
 	buffer := make([]byte, retainedCopyBufferSize)
 	defer clear(buffer)
+	digest := sha256.New()
 	written, copyErr := io.CopyBuffer(
-		retainedWriter{Writer: destination},
+		io.MultiWriter(retainedWriter{Writer: destination}, digest),
 		retainedReader{Reader: file.file},
 		buffer,
 	)
 	plaintextWritten := written > 0
-	if copyErr != nil || written != sourceInfo.Size() {
+	if copyErr != nil || written != sourceInfo.Size() || !bytes.Equal(digest.Sum(nil), file.sha256[:]) {
 		return failedRetainedCopy(destination, plaintextWritten)
 	}
 	after, err := file.file.Stat()
@@ -123,6 +133,139 @@ func (file *RetainedFile) CopyTo(destination *os.File) CopyResult {
 		return failedRetainedCopy(destination, plaintextWritten)
 	}
 	return CopyResult{copied: true}
+}
+
+// StreamTo consumes the retained source and writes its exact open descriptor
+// to destination. On Unix the owned pathname is unlinked before the first
+// write; cancellation closes destination to interrupt a blocked stream.
+func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) CopyResult {
+	if file == nil {
+		return CopyResult{}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	file.mu.Lock()
+	defer file.mu.Unlock()
+	if !file.liveLocked() {
+		return CopyResult{}
+	}
+	file.active = false
+	if destination == nil {
+		cleanupIncomplete := file.removeExactLocked() != nil
+		return CopyResult{cleanupIncomplete: cleanupIncomplete}
+	}
+
+	sourceInfo, err := file.file.Stat()
+	if err != nil || sourceInfo == nil || !sourceInfo.Mode().IsRegular() || sourceInfo.Size() < 0 ||
+		sourceInfo.Size() != file.identity.Size() || !os.SameFile(file.identity, sourceInfo) {
+		return CopyResult{cleanupIncomplete: file.removeExactLocked() != nil}
+	}
+	cleanupIncomplete := false
+	if runtime.GOOS != "windows" {
+		if probeIdentity(file.root, file.targetName, file.identity) != identityExpected ||
+			file.remove(file.root, file.targetName) != nil {
+			cleanupIncomplete = true
+		} else if file.syncDirectory(file.parent) != nil {
+			cleanupIncomplete = true
+		}
+	}
+	if _, err := file.file.Seek(0, io.SeekStart); err != nil {
+		if runtime.GOOS == "windows" {
+			cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
+		} else if file.closeHandlesLocked() {
+			cleanupIncomplete = true
+		}
+		return CopyResult{cleanupIncomplete: cleanupIncomplete}
+	}
+	buffer := make([]byte, retainedCopyBufferSize)
+	defer clear(buffer)
+	preDigest := sha256.New()
+	remaining := sourceInfo.Size()
+	for remaining > 0 {
+		if err := ctx.Err(); err != nil {
+			_ = destination.Close()
+			if runtime.GOOS == "windows" {
+				cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
+			} else if file.closeHandlesLocked() {
+				cleanupIncomplete = true
+			}
+			return CopyResult{cleanupIncomplete: cleanupIncomplete}
+		}
+		want := int64(len(buffer))
+		if remaining < want {
+			want = remaining
+		}
+		count, readErr := io.ReadFull(file.file, buffer[:want])
+		if readErr != nil {
+			if runtime.GOOS == "windows" {
+				cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
+			} else if file.closeHandlesLocked() {
+				cleanupIncomplete = true
+			}
+			return CopyResult{cleanupIncomplete: cleanupIncomplete}
+		}
+		_, _ = preDigest.Write(buffer[:count])
+		remaining -= int64(count)
+	}
+	if !bytes.Equal(preDigest.Sum(nil), file.sha256[:]) {
+		clear(buffer)
+		if runtime.GOOS == "windows" {
+			cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
+		} else if file.closeHandlesLocked() {
+			cleanupIncomplete = true
+		}
+		return CopyResult{cleanupIncomplete: cleanupIncomplete}
+	}
+	if _, err := file.file.Seek(0, io.SeekStart); err != nil {
+		clear(buffer)
+		if runtime.GOOS == "windows" {
+			cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
+		} else if file.closeHandlesLocked() {
+			cleanupIncomplete = true
+		}
+		return CopyResult{cleanupIncomplete: cleanupIncomplete}
+	}
+	clear(buffer)
+
+	type streamResult struct {
+		written int64
+		digest  []byte
+		err     error
+	}
+	done := make(chan streamResult, 1)
+	source := file.file
+	go func() {
+		buffer := make([]byte, retainedCopyBufferSize)
+		defer clear(buffer)
+		digest := sha256.New()
+		written, copyErr := io.CopyBuffer(io.MultiWriter(destination, digest), source, buffer)
+		done <- streamResult{written: written, digest: digest.Sum(nil), err: copyErr}
+	}()
+	var streamed streamResult
+	cancelled := false
+	select {
+	case streamed = <-done:
+	case <-ctx.Done():
+		_ = destination.Close()
+		streamed.err = ctx.Err()
+		cancelled = true
+	}
+	copied := !cancelled && streamed.err == nil && streamed.written == sourceInfo.Size() &&
+		bytes.Equal(streamed.digest, file.sha256[:])
+	if !cancelled {
+		after, statErr := file.file.Stat()
+		if statErr != nil || after == nil || !after.Mode().IsRegular() ||
+			after.Size() != sourceInfo.Size() || !os.SameFile(file.identity, after) {
+			copied = false
+		}
+	}
+	if runtime.GOOS == "windows" {
+		cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
+	} else if file.closeHandlesLocked() {
+		cleanupIncomplete = true
+	}
+	return CopyResult{copied: copied, cleanupIncomplete: cleanupIncomplete}
 }
 
 func failedRetainedCopy(destination *os.File, plaintextWritten bool) CopyResult {
@@ -149,6 +292,52 @@ func closeUnusedDestination(destination *os.File) {
 	}
 }
 
+// SplitRetained consumes one retained capability and splits only its exact
+// durably published file. A split failure leaves the full source in place. A
+// successful split removes the full source only after the chunk set is durable.
+func SplitRetained(
+	retained *RetainedFile,
+	options fileops.SplitOptions,
+) error {
+	if retained == nil {
+		return ErrCleanupIncomplete
+	}
+	retained.mu.Lock()
+	defer retained.mu.Unlock()
+	if !retained.liveLocked() {
+		return ErrCleanupIncomplete
+	}
+	retained.active = false
+
+	options.InputPath = filepath.Join(retained.root.Name(), retained.targetName)
+	sourceInfo, sourceErr := retained.file.Stat()
+	parentInfo, parentErr := retained.parent.Stat()
+	if sourceErr != nil || parentErr != nil || sourceInfo == nil || parentInfo == nil ||
+		!sourceInfo.Mode().IsRegular() || !parentInfo.IsDir() ||
+		retained.identity.Size() != sourceInfo.Size() || !os.SameFile(retained.identity, sourceInfo) {
+		_ = retained.closeHandlesLocked()
+		return errors.Join(sourceErr, parentErr, ErrCleanupIncomplete)
+	}
+	options.ExpectedInput = sourceInfo
+	options.ExpectedDirectory = parentInfo
+	options.ExpectedSHA256 = &retained.sha256
+	options.RequireDirectorySync = true
+	if options.MinimumChunkSize < 4 {
+		options.MinimumChunkSize = 4
+	}
+	chunks, splitErr := fileops.SplitPinned(options, retained.file, retained.root, retained.parent)
+	if splitErr == nil && len(chunks) == 0 {
+		splitErr = errors.New("pcv3 publication: retained split produced no chunks")
+	}
+	if splitErr != nil {
+		if retained.closeHandlesLocked() {
+			return errors.Join(splitErr, ErrCleanupIncomplete)
+		}
+		return splitErr
+	}
+	return retained.removeExactLocked()
+}
+
 // RemoveExact consumes the capability before effects and removes only while
 // the pinned target name still resolves to the exact retained regular file.
 func (file *RetainedFile) RemoveExact() error {
@@ -161,7 +350,10 @@ func (file *RetainedFile) RemoveExact() error {
 		return ErrCleanupIncomplete
 	}
 	file.active = false
+	return file.removeExactLocked()
+}
 
+func (file *RetainedFile) removeExactLocked() error {
 	cleanupIncomplete := false
 	sourceInfo, err := file.file.Stat()
 	if err != nil || sourceInfo == nil || !sourceInfo.Mode().IsRegular() ||
@@ -210,6 +402,8 @@ func (file *RetainedFile) closeHandlesLocked() (failed bool) {
 		file.root = nil
 	}
 	file.identity = nil
+	clear(file.sha256[:])
+	file.digestReady = false
 	file.targetName = ""
 	file.remove = nil
 	file.syncDirectory = nil

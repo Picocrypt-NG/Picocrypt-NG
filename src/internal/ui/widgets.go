@@ -168,6 +168,8 @@ func buildPCV3IntentSummary(snap app.UISnapshot) fyne.CanvasObject {
 		action = tr("pcv3.action.recovery", "Recovery")
 	case app.PCV3ActionForce:
 		action = tr("pcv3.action.force", "Force recovery")
+	case app.PCV3ActionForceUnverified:
+		action = tr("pcv3.action.force_unverified", "Unverified Force recovery")
 	}
 	lines := []fyne.CanvasObject{
 		wrappedPCV3Label(tr("pcv3.format.label", "Format:") + " " + format),

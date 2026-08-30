@@ -30,6 +30,7 @@ data class Pcv3SnapshotView(
     val warnings: List<String>,
     val archivePending: Boolean,
     val restoredReceipt: String,
+    val authenticatedComment: String = "",
 )
 
 data class Pcv3Semantic(val outcome: String, val stage: String, val code: String)
@@ -119,6 +120,9 @@ sealed interface Pcv3Presentation {
     val generation: Long
     val artifactMetadata: Pcv3ArtifactMetadataView? get() = null
 
+    /** True when this presentation projects a PCV3 creation (write) operation. */
+    val isCreation: Boolean get() = false
+
     data class Live(
         override val snapshot: Pcv3SnapshotView,
         override val operationId: String,
@@ -131,6 +135,7 @@ sealed interface Pcv3Presentation {
         val outputPending: Boolean = false,
         val outputActionInFlight: Boolean = false,
         override val artifactMetadata: Pcv3ArtifactMetadataView? = null,
+        override val isCreation: Boolean = false,
     ) : Pcv3Presentation
 
     data class Restored(
@@ -147,6 +152,7 @@ sealed interface Pcv3Presentation {
         override val generation: Long,
         val outputAction: Pcv3OutputResultView? = null,
         override val artifactMetadata: Pcv3ArtifactMetadataView? = null,
+        override val isCreation: Boolean = false,
     ) : Pcv3Presentation
 }
 
@@ -167,6 +173,7 @@ internal fun projectPcv3Snapshot(
         warnings = snapshot.warnings,
         archivePending = snapshot.archivePending,
         restoredReceipt = snapshot.restoredReceipt,
+        authenticatedComment = snapshot.authenticatedComment,
     )
 
 /** Accepts only Go's two exact closed role tuples, in their canonical order. */

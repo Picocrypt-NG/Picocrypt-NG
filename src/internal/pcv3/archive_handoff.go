@@ -12,23 +12,6 @@ var (
 	errArchivePlaintextUnavailable = errors.New("pcv3: authenticated archive plaintext unavailable")
 )
 
-// unpackAuthenticatedArchive is the sole PCV3 archive admission boundary. It
-// validates the reader-minted capability before fileops can inspect the archive
-// or create an extraction destination, then delegates all containment, staging,
-// no-clobber, and rollback behavior to the existing extractor.
-func unpackAuthenticatedArchive(
-	completion *normalCompletion,
-	archive *os.File,
-	options fileops.UnpackOptions,
-) error {
-	if err := validateAuthenticatedArchive(completion, archive); err != nil {
-		return err
-	}
-	options.ZipPath = ""
-	options.ZipFile = archive
-	return fileops.Unpack(options)
-}
-
 func unpackAuthenticatedArchiveWithResult(
 	ctx context.Context,
 	completion *normalCompletion,

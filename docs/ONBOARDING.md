@@ -19,7 +19,7 @@ The codebase follows a strict one-directional layer hierarchy (`cmd → ui/cli/w
 |---|---|---|
 | **Entry points** | 7 | Thin entry points in `src/cmd`: build-tag dispatch (`!cli`, `cli`, `js && wasm`) hands off to the interface layer immediately |
 | **Interface** | 67 | Fyne GUI (`internal/ui`), Cobra CLI (`internal/cli`), WASM bindings (`internal/wasm`), gomobile bridge (`src/mobile`), and thread-safe app state (`internal/app`) |
-| **Volume orchestration** ⚠️ | 26 | AUDIT-CRITICAL: the 8-phase encrypt and 7-phase decrypt pipelines, `OperationContext`, `EncryptRequest`/`DecryptRequest` (`internal/volume`) |
+| **Volume orchestration** ⚠️ | 26 | AUDIT-CRITICAL: the encrypt and decrypt pipelines, `OperationContext`, `EncryptRequest`/`DecryptRequest` (`internal/volume`) |
 | **Crypto core** ⚠️ | 19 | AUDIT-CRITICAL primitives: XChaCha20 + Serpent-CTR, Argon2id KDF, keyed MAC, volume-header format & auth, keyfile processing (`internal/crypto`, `header`, `keyfile`) |
 | **Foundation** | 40 | No crypto/UI deps: Reed-Solomon codecs (`encoding`), file ops (zip/split/recombine, `fileops`), typed errors, structured logging, constants |
 | **Android app** | 88 | Kotlin/Jetpack Compose host, `GoBridge` over the gomobile AAR, Gradle build, unit + instrumented tests (`android/`) |
@@ -48,8 +48,8 @@ The codebase follows a strict one-directional layer hierarchy (`cmd → ui/cli/w
 2. **Entry points & build tags** — `src/cmd/picocrypt/main.go`, `main_gui.go` (`!cli`), `main_cli.go` (`cli`), `src/go.mod`: `main()` just calls `run()`; build tags pick the implementation.
 3. **Frontends: Fyne GUI & Cobra CLI** — `internal/ui/app.go`, `internal/cli/root.go` (note the `detectCLIMode` heuristic), `internal/app/state.go` (RWMutex-guarded single source of truth).
 4. **The pipeline contract** — `internal/volume/context.go` + `internal/app/reporter.go`: `ProgressReporter` and `OperationContext` are how every frontend reuses one core.
-5. **8-phase encryption** — `internal/volume/encrypt.go`, `internal/fileops/zip.go`: preprocessing (zip), randomness, header write, KDF, keyfiles, auth values, stream encryption, finalization.
-6. **7-phase decryption & plausible deniability** — `internal/volume/decrypt.go`, `deniability.go`: recombine, deniability removal, RS header read, key derivation, v1/v2 auth, optional verify-first pass.
+5. **Encryption** — `internal/volume/encrypt.go`, `internal/fileops/zip.go`: preprocessing (zip), randomness, header write, KDF, keyfiles, auth values, stream encryption, finalization.
+6. **Decryption & plausible deniability** — `internal/volume/decrypt.go`, `deniability.go`: recombine, deniability removal, RS header read, key derivation, v1/v2 auth, optional verify-first pass.
 7. **Crypto core** — `internal/crypto/{cipher,kdf,mac,rekey,zeroing}.go`: `CipherSuite`, Argon2id, MAC selection, the rekey counter, secure zeroing.
 8. **Volume header, Reed-Solomon, keyfiles** — `internal/header/{format,auth}.go`, `internal/encoding/rs.go`, `internal/keyfile/processor.go`: every header field independently RS-encoded; v1 vs v2 header auth.
 9. **Specifications** — `Internals.md` (byte-level format spec), `ARCHITECTURE.md` (layer map): read these after seeing the code.
@@ -78,7 +78,7 @@ The codebase follows a strict one-directional layer hierarchy (`cmd → ui/cli/w
 
 **Volume orchestration (AUDIT-CRITICAL)**
 - `src/internal/volume/context.go` — `ProgressReporter`, request structs, `OperationContext` with `Close()` zeroing
-- `src/internal/volume/encrypt.go` / `decrypt.go` — the 8-phase / 7-phase pipelines
+- `src/internal/volume/encrypt.go` / `decrypt.go` — the encryption and decryption pipelines
 - `src/internal/volume/deniability.go` — add/remove the deniability layer
 - `src/internal/volume/validate.go` — request validation
 
@@ -110,7 +110,7 @@ The codebase follows a strict one-directional layer hierarchy (`cmd → ui/cli/w
 
 Approach these with extra care (run `go test ./...` in `src/`, plus `go vet` and `govulncheck`, before and after):
 
-1. **`src/internal/volume/encrypt.go` / `decrypt.go` / `context.go` / `deniability.go`** — AUDIT-CRITICAL pipeline orchestration. Any change here must keep golden + roundtrip tests green. Never reorder cipher/MAC phases or the HKDF subkey read order.
+1. **`src/internal/volume/encrypt.go` / `decrypt.go` / `context.go` / `deniability.go`** — AUDIT-CRITICAL pipeline orchestration. Any change here must keep golden + roundtrip tests green. Never reorder cipher/MAC operations or the HKDF subkey read order.
 2. **`src/internal/crypto/kdf.go`** — the `SubkeyReader` stream order is a format invariant (v1 vs v2 HKDF layout).
 3. **`src/internal/header/reader.go`** — the only validated header parser; comment-length guard and RS retry behavior have regression tests (`rs_corruption_test.go`).
 4. **`src/internal/fileops/unpack.go`** — security-hardened zip extraction (path traversal, symlink swaps, Windows name-truncation tricks). Its test file documents the attack catalog.
@@ -121,6 +121,6 @@ Approach these with extra care (run `go test ./...` in `src/`, plus `go vet` and
 ## Working Conventions (short version)
 
 - Write the failing test first, then fix; small focused commits.
-- `go test ./...` + `go vet` + `govulncheck` must be green before closing any phase of work.
+- `go test ./...` + `go vet` + `govulncheck` must be green before finishing work.
 - AUDIT-CRITICAL packages (`crypto/`, `header/`, `keyfile/`, `volume/`) — never modify without running golden vectors.
 - Match existing style: doc comments on exported symbols, `CRITICAL:`/`SECURITY:` callouts for invariants, build tags over `runtime.GOOS`.

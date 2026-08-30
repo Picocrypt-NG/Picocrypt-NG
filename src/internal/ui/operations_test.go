@@ -5,6 +5,7 @@ import (
 	"Picocrypt-NG/internal/app"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/volume"
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -1198,6 +1199,47 @@ func TestUpdateOutputFileForCompressClearsDialogConfirmation(t *testing.T) {
 	}
 	if got := a.State.OutputFile; got != filepath.Join(filepath.Dir(a.State.OutputFile), "report.txt.zip.pcv") {
 		t.Fatalf("OutputFile = %q", got)
+	}
+}
+
+func TestPCV3StartRejectsExistingOutputWithoutOverwriteModal(t *testing.T) {
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	dir := t.TempDir()
+	input := filepath.Join(dir, "plain.bin")
+	output := filepath.Join(dir, "existing.bin.pcv")
+	if err := os.WriteFile(input, []byte("plaintext"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	sentinel := []byte("existing output")
+	if err := os.WriteFile(output, sentinel, 0o600); err != nil {
+		t.Fatalf("write existing output: %v", err)
+	}
+	var calls atomic.Int32
+	a.operationExecutor = func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+		calls.Add(1)
+		return operationResult{completed: true}
+	}
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.State.InputFile = input
+		a.State.AllFiles = []string{input}
+		a.State.OnlyFiles = []string{input}
+		a.State.OutputFile = output
+		a.State.CreatePCV3 = true
+		a.State.Password = "password"
+		a.State.CPassword = "password"
+		a.State.SetInputSelection(1, 0, int64(len("plaintext")), true)
+		a.updateUIState()
+		a.onClickStart()
+	})
+	if calls.Load() != 0 || a.overwriteModal != nil {
+		t.Fatalf("occupied PCV3 output reached executor/modal: calls=%d modal=%v", calls.Load(), a.overwriteModal != nil)
+	}
+	if !strings.Contains(a.State.UISnapshot().MainStatus, "already exists") {
+		t.Fatalf("occupied PCV3 status = %q", a.State.UISnapshot().MainStatus)
+	}
+	if got, err := os.ReadFile(output); err != nil || !bytes.Equal(got, sentinel) {
+		t.Fatalf("occupied PCV3 start changed output: %q err=%v", got, err)
 	}
 }
 

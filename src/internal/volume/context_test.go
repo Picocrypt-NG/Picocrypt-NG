@@ -68,14 +68,14 @@ func TestOperationContextClosesPinnedDecryptInput(t *testing.T) {
 		t.Fatalf("openLegacyDecryptInput() = %v", err)
 	}
 	if routed != fin {
-		t.Fatal("classified input ownership was left with a phase-local caller")
+		t.Fatal("classified input ownership was left with a local caller")
 	}
 	again, err := ctx.openLegacyDecryptInput()
 	if err != nil {
 		t.Fatalf("second openLegacyDecryptInput() = %v", err)
 	}
 	if again != fin {
-		t.Fatal("later decrypt phase did not reuse the context-owned descriptor")
+		t.Fatal("later decrypt step did not reuse the context-owned descriptor")
 	}
 	if err := ctx.Close(); err != nil {
 		t.Fatalf("Close() = %v", err)

@@ -16,16 +16,17 @@ type forceCandidateIdentity interface {
 }
 
 type forceCandidateAnalysis struct {
-	identity           forceCandidateIdentity
-	candidate          Candidate
-	geometry           Geometry
-	damageStage        Stage
-	payloadDamageStage Stage
-	wrapVerified       bool
-	replicaValid       bool
-	metadataValid      bool
-	ranges             []RecoveryRange
-	final              RecoveryFinalState
+	identity             forceCandidateIdentity
+	candidate            Candidate
+	geometry             Geometry
+	damageStage          Stage
+	payloadDamageStage   Stage
+	wrapVerified         bool
+	replicaValid         bool
+	metadataValid        bool
+	authenticatedComment string
+	ranges               []RecoveryRange
+	final                RecoveryFinalState
 }
 
 type forceResolution struct {

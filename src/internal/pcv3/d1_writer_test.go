@@ -2,7 +2,6 @@ package pcv3
 
 import (
 	"Picocrypt-NG/internal/pcv3credential"
-	"Picocrypt-NG/internal/pcv3governance"
 	"Picocrypt-NG/internal/pcv3publication"
 	"bytes"
 	"context"
@@ -89,7 +88,7 @@ func TestD1WriterUsesCanonicalNormalSerializerSynchronously(t *testing.T) {
 		t.Fatalf("outer destination write = %d; want at most one chunk", destination.maxWrite)
 	}
 
-	reader, err := newD1InnerReader(
+	reader, err := newTestD1InnerReader(
 		context.Background(),
 		bytes.NewReader(destination.Bytes()),
 		uint64(destination.Len()),
@@ -230,37 +229,6 @@ func TestD1WriterLiteralCredentialStageIntegration(t *testing.T) {
 	}
 }
 
-func TestD1WriterRefusalUsesGuardedProductionEntry(t *testing.T) {
-	fixture := newD1CreationTestFixture(t)
-
-	result, err := writeD1Volume(
-		context.Background(),
-		&pcv3governance.EmissionAuthorization{},
-		fixture.request,
-	)
-	if result != nil {
-		t.Fatalf("guarded D1 refusal returned publication result %v", result)
-	}
-	var failure Failure
-	if !errors.As(err, &failure) || failure.Code() != CodeUnsupported {
-		t.Fatalf("guarded D1 refusal = %T %v; want closed unsupported failure", err, err)
-	}
-	if allZero(fixture.passwordAlias) {
-		t.Fatal("guarded D1 refusal consumed factors before authorization")
-	}
-	requireD1SourceUnchanged(t, fixture)
-	if _, statErr := os.Lstat(fixture.destinationPath); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("guarded D1 refusal changed destination: %v", statErr)
-	}
-	requireD1NoStageResidue(t, fixture.directory)
-	if closeErr := fixture.request.factors.Close(); closeErr != nil {
-		t.Fatalf("close refused D1 factors: %v", closeErr)
-	}
-	if !allZero(fixture.passwordAlias) {
-		t.Fatal("explicit refused-factor cleanup retained password bytes")
-	}
-}
-
 func TestD1PureGeometryHasNoSideEffects(t *testing.T) {
 	fixture := newD1CreationTestFixture(t)
 	fixture.request.normal.plaintextLength = math.MaxUint64
@@ -334,19 +302,6 @@ func TestD1WriterRealFaultCleanup(t *testing.T) {
 		if admitter.calls != 1 {
 			t.Fatalf("denied D1 admission calls = %d; want exactly one before Argon", admitter.calls)
 		}
-	})
-
-	t.Run("actual no-follow source refusal", func(t *testing.T) {
-		fixture := newD1CreationTestFixture(t)
-		realSource := filepath.Join(fixture.directory, "source-real.bin")
-		if err := os.Rename(fixture.sourcePath, realSource); err != nil {
-			t.Fatalf("move TEST ONLY source behind symlink: %v", err)
-		}
-		if err := os.Symlink(filepath.Base(realSource), fixture.sourcePath); err != nil {
-			t.Fatalf("create TEST ONLY source symlink: %v", err)
-		}
-		seams := newD1ObservedProductionSeams(t, fixture, nil)
-		runD1ComposerFailure(t, context.Background(), fixture, seams, nil)
 	})
 
 	for _, test := range []struct {
@@ -520,7 +475,7 @@ func TestD1WriterNeverCreatesClearInnerArtifact(t *testing.T) {
 		}
 		attempt.Close()
 	}
-	reader, err := newD1InnerReader(
+	reader, err := newTestD1InnerReader(
 		context.Background(),
 		bytes.NewReader(raw[d1BootstrapLength:len(raw)-d1BootstrapLength]),
 		bodyLength,
@@ -597,7 +552,7 @@ func TestD1WriterPublicationOutcome(t *testing.T) {
 func TestD1WriterCreateCleanupWarningPreservesSealedPublicationResult(t *testing.T) {
 	fixture := newD1CreationTestFixture(t)
 	fixture.destinationPath = filepath.Join(fixture.directory, "missing-parent", "output.pcv")
-	fixture.request.route.destinationPath = fixture.destinationPath
+	fixture.request.destinationPath = fixture.destinationPath
 	t.Cleanup(func() { _ = fixture.request.factors.Close() })
 	seams := newD1LiteralStageIntegrationSeams(t, func(
 		d1CreationBoundary,
@@ -742,6 +697,11 @@ func newD1CreationTestFixtureWithSize(t *testing.T, plaintextLength int) *d1Crea
 	if err := os.WriteFile(sourcePath, sourceBytes, 0o600); err != nil {
 		t.Fatalf("write TEST ONLY D1 source: %v", err)
 	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatalf("open TEST ONLY D1 source: %v", err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
 	passwordAlias := []byte("TEST ONLY D1 creation password")
 	return &d1CreationTestFixture{
 		directory:       directory,
@@ -750,11 +710,10 @@ func newD1CreationTestFixtureWithSize(t *testing.T, plaintextLength int) *d1Crea
 		sourceBytes:     append([]byte(nil), sourceBytes...),
 		passwordAlias:   passwordAlias,
 		request: &d1CreationRequest{
-			route: d1RouteRequest{
-				mode:            d1RouteExplicit,
-				sourcePath:      sourcePath,
-				destinationPath: destinationPath,
-			},
+			sourcePath:      sourcePath,
+			destinationPath: destinationPath,
+			source:          source,
+			plaintext:       source,
 			normal: normalWriteRequest{
 				suite:           SuiteParanoid,
 				payloadKind:     PayloadKindRaw,

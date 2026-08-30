@@ -162,10 +162,10 @@ func (begin *NativeArchiveSAFBegin) Result() *NativeArchiveSAFResult {
 	return begin.result
 }
 
-type nativeArchiveSAFSessionPhase uint8
+type nativeArchiveSAFStatus uint8
 
 const (
-	nativeArchiveSAFReceiptUnarmed nativeArchiveSAFSessionPhase = iota + 1
+	nativeArchiveSAFReceiptUnarmed nativeArchiveSAFStatus = iota + 1
 	nativeArchiveSAFReady
 	nativeArchiveSAFAttempted
 	nativeArchiveSAFWriting
@@ -177,7 +177,7 @@ const (
 type nativeArchiveSAFSessionState struct {
 	mu           sync.Mutex
 	cond         *sync.Cond
-	phase        nativeArchiveSAFSessionPhase
+	status       nativeArchiveSAFStatus
 	stage        *pcv3publication.Stage
 	cleanupStage func(*pcv3publication.Stage) bool
 	manifest     []nativeArchiveSAFManifestEntry
@@ -270,7 +270,7 @@ func (handoff *NativeArchiveHandoff) BeginSAF() (begin *NativeArchiveSAFBegin) {
 	}
 	marker := &nativeArchiveSAFArmMarker{}
 	state := &nativeArchiveSAFSessionState{
-		phase:        nativeArchiveSAFReceiptUnarmed,
+		status:       nativeArchiveSAFReceiptUnarmed,
 		stage:        stage,
 		cleanupStage: cleanupNativeArchiveSAFStage,
 		manifest:     manifest,
@@ -417,7 +417,7 @@ func (session *NativeArchiveSAFSession) EntryCount() int {
 	}
 	session.state.mu.Lock()
 	defer session.state.mu.Unlock()
-	if session.state.phase == nativeArchiveSAFTerminal {
+	if session.state.status == nativeArchiveSAFTerminal {
 		return 0
 	}
 	return len(session.state.manifest)
@@ -429,7 +429,7 @@ func (session *NativeArchiveSAFSession) Entry(index int) *NativeArchiveSAFEntry 
 	}
 	session.state.mu.Lock()
 	defer session.state.mu.Unlock()
-	if session.state.phase == nativeArchiveSAFTerminal || index < 0 ||
+	if session.state.status == nativeArchiveSAFTerminal || index < 0 ||
 		index >= len(session.state.manifest) {
 		return nil
 	}
@@ -446,12 +446,12 @@ func (session *NativeArchiveSAFSession) ConfirmReceiptPersisted(
 	state := session.state
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.phase != nativeArchiveSAFReceiptUnarmed || arm.state != state ||
+	if state.status != nativeArchiveSAFReceiptUnarmed || arm.state != state ||
 		arm.marker == nil || arm.marker != state.armMarker {
 		return &NativeArchiveSAFStep{kind: NativeArchiveSAFStepRejected, nextIndex: state.current}
 	}
 	state.armMarker = nil
-	state.phase = nativeArchiveSAFReady
+	state.status = nativeArchiveSAFReady
 	return &NativeArchiveSAFStep{kind: NativeArchiveSAFStepReady, nextIndex: state.current}
 }
 
@@ -462,16 +462,16 @@ func (session *NativeArchiveSAFSession) Attempt(index int) *NativeArchiveSAFStep
 	state := session.state
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.phase == nativeArchiveSAFReceiptUnarmed ||
-		state.phase == nativeArchiveSAFTerminal || state.phase == nativeArchiveSAFFinishing {
+	if state.status == nativeArchiveSAFReceiptUnarmed ||
+		state.status == nativeArchiveSAFTerminal || state.status == nativeArchiveSAFFinishing {
 		return &NativeArchiveSAFStep{kind: NativeArchiveSAFStepRejected, nextIndex: state.current}
 	}
-	if state.phase != nativeArchiveSAFReady || index != state.current ||
+	if state.status != nativeArchiveSAFReady || index != state.current ||
 		index < 0 || index >= len(state.manifest) {
-		state.phase = nativeArchiveSAFPoisoned
+		state.status = nativeArchiveSAFPoisoned
 		return &NativeArchiveSAFStep{kind: NativeArchiveSAFStepPoisoned, nextIndex: state.current}
 	}
-	state.phase = nativeArchiveSAFAttempted
+	state.status = nativeArchiveSAFAttempted
 	state.attemptedEver = true
 	return &NativeArchiveSAFStep{kind: NativeArchiveSAFStepAttempted, nextIndex: state.current}
 }
@@ -483,10 +483,10 @@ func (session *NativeArchiveSAFSession) AckDirectory(index int) *NativeArchiveSA
 	state := session.state
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.phase == nativeArchiveSAFTerminal {
+	if state.status == nativeArchiveSAFTerminal {
 		return &NativeArchiveSAFStep{kind: NativeArchiveSAFStepRejected, nextIndex: state.current}
 	}
-	if state.phase == nativeArchiveSAFFinishing {
+	if state.status == nativeArchiveSAFFinishing {
 		// A directory acknowledgement proves that a provider create call may
 		// already have succeeded. Preserve that evidence while terminal cleanup
 		// is outside the lock.
@@ -494,16 +494,16 @@ func (session *NativeArchiveSAFSession) AckDirectory(index int) *NativeArchiveSA
 		state.finishingPoisoned = true
 		return &NativeArchiveSAFStep{kind: NativeArchiveSAFStepPoisoned, nextIndex: state.current}
 	}
-	if state.phase != nativeArchiveSAFAttempted || index != state.current ||
+	if state.status != nativeArchiveSAFAttempted || index != state.current ||
 		index < 0 || index >= len(state.manifest) || !state.manifest[index].directory {
 		// An acknowledgement can only follow a provider create call. Treat even
 		// an out-of-order acknowledgement as evidence that an effect was possible.
 		state.attemptedEver = true
-		state.phase = nativeArchiveSAFPoisoned
+		state.status = nativeArchiveSAFPoisoned
 		return &NativeArchiveSAFStep{kind: NativeArchiveSAFStepPoisoned, nextIndex: state.current}
 	}
 	state.current++
-	state.phase = nativeArchiveSAFReady
+	state.status = nativeArchiveSAFReady
 	return &NativeArchiveSAFStep{kind: NativeArchiveSAFStepReady, nextIndex: state.current}
 }
 
@@ -531,7 +531,7 @@ func (session *NativeArchiveSAFSession) Write(
 		state.mu.Unlock()
 		return &NativeArchiveSAFStep{kind: NativeArchiveSAFStepPoisoned, nextIndex: next}
 	}
-	if state.phase == nativeArchiveSAFFinishing && destination != nil {
+	if state.status == nativeArchiveSAFFinishing && destination != nil {
 		// Receipt of an owned provider closer is evidence of a possible create
 		// or open effect. Register its settlement before closing outside the
 		// mutex so the in-progress terminal operation cannot freeze stale truth.
@@ -542,31 +542,31 @@ func (session *NativeArchiveSAFSession) Write(
 	if destination == nil {
 		next := state.current
 		kind := NativeArchiveSAFStepRejected
-		if state.phase == nativeArchiveSAFAttempted {
+		if state.status == nativeArchiveSAFAttempted {
 			// Descriptor adoption failure after Attempt is an ambiguous provider
 			// boundary and must never leave the entry retryable.
-			state.phase = nativeArchiveSAFPoisoned
+			state.status = nativeArchiveSAFPoisoned
 			kind = NativeArchiveSAFStepPoisoned
 		}
 		state.mu.Unlock()
 		_ = owned.Close()
 		return &NativeArchiveSAFStep{kind: kind, nextIndex: next}
 	}
-	if state.phase != nativeArchiveSAFAttempted || index != state.current ||
+	if state.status != nativeArchiveSAFAttempted || index != state.current ||
 		index < 0 || index >= len(state.manifest) || state.manifest[index].directory ||
 		state.activeWriter != nil {
-		if state.phase != nativeArchiveSAFTerminal && state.phase != nativeArchiveSAFFinishing {
+		if state.status != nativeArchiveSAFTerminal && state.status != nativeArchiveSAFFinishing {
 			// Receipt of a provider-owned closer means a create/open effect may
 			// already have happened even if the caller violated Attempt ordering.
 			state.attemptedEver = true
-			state.phase = nativeArchiveSAFPoisoned
+			state.status = nativeArchiveSAFPoisoned
 		}
 		next := state.current
 		return settleRejectedWriter(next)
 	}
 	entry := state.manifest[index]
 	state.activeWriter = owned
-	state.phase = nativeArchiveSAFWriting
+	state.status = nativeArchiveSAFWriting
 	state.mu.Unlock()
 
 	writeErr := streamNativeArchiveSAFEntry(entry, owned)
@@ -576,14 +576,14 @@ func (session *NativeArchiveSAFSession) Write(
 	if state.activeWriter == owned {
 		state.activeWriter = nil
 	}
-	if writeErr == nil && closeErr == nil && state.phase == nativeArchiveSAFWriting {
+	if writeErr == nil && closeErr == nil && state.status == nativeArchiveSAFWriting {
 		state.current++
-		state.phase = nativeArchiveSAFReady
+		state.status = nativeArchiveSAFReady
 	} else {
-		state.phase = nativeArchiveSAFPoisoned
+		state.status = nativeArchiveSAFPoisoned
 	}
 	kind := NativeArchiveSAFStepPoisoned
-	if state.phase == nativeArchiveSAFReady {
+	if state.status == nativeArchiveSAFReady {
 		kind = NativeArchiveSAFStepReady
 	}
 	next := state.current
@@ -675,12 +675,12 @@ func (session *NativeArchiveSAFSession) Cancel() *NativeArchiveSAFStep {
 	}
 	state := session.state
 	state.mu.Lock()
-	if state.phase == nativeArchiveSAFTerminal || state.phase == nativeArchiveSAFFinishing {
+	if state.status == nativeArchiveSAFTerminal || state.status == nativeArchiveSAFFinishing {
 		next := state.current
 		state.mu.Unlock()
 		return &NativeArchiveSAFStep{kind: NativeArchiveSAFStepRejected, nextIndex: next}
 	}
-	state.phase = nativeArchiveSAFPoisoned
+	state.status = nativeArchiveSAFPoisoned
 	writer := state.activeWriter
 	next := state.current
 	state.mu.Unlock()
@@ -705,15 +705,15 @@ func (session *NativeArchiveSAFSession) Abort() *NativeArchiveSAFResult {
 	}
 	state := session.state
 	state.mu.Lock()
-	for state.phase == nativeArchiveSAFFinishing || state.activeWriter != nil {
+	for state.status == nativeArchiveSAFFinishing || state.activeWriter != nil {
 		state.cond.Wait()
 	}
-	if state.phase == nativeArchiveSAFTerminal {
+	if state.status == nativeArchiveSAFTerminal {
 		result := state.terminalResult
 		state.mu.Unlock()
 		return result
 	}
-	state.phase = nativeArchiveSAFFinishing
+	state.status = nativeArchiveSAFFinishing
 	stage := state.stage
 	state.stage = nil
 	cleanupStage := state.cleanupStage
@@ -738,7 +738,7 @@ func (session *NativeArchiveSAFSession) Abort() *NativeArchiveSAFResult {
 		attemptedEver:     attemptedEver,
 		cleanupIncomplete: cleanupIncomplete,
 	}
-	state.phase = nativeArchiveSAFTerminal
+	state.status = nativeArchiveSAFTerminal
 	state.manifest = nil
 	state.terminalResult = result
 	state.cond.Broadcast()
@@ -755,21 +755,21 @@ func (session *NativeArchiveSAFSession) Finish() *NativeArchiveSAFResult {
 	}
 	state := session.state
 	state.mu.Lock()
-	for state.phase == nativeArchiveSAFFinishing {
+	for state.status == nativeArchiveSAFFinishing {
 		state.cond.Wait()
 	}
-	if state.phase == nativeArchiveSAFTerminal {
+	if state.status == nativeArchiveSAFTerminal {
 		result := state.terminalResult
 		state.mu.Unlock()
 		return result
 	}
-	if state.phase != nativeArchiveSAFReady || state.current != len(state.manifest) ||
+	if state.status != nativeArchiveSAFReady || state.current != len(state.manifest) ||
 		state.activeWriter != nil {
-		state.phase = nativeArchiveSAFPoisoned
+		state.status = nativeArchiveSAFPoisoned
 		state.mu.Unlock()
 		return session.Abort()
 	}
-	state.phase = nativeArchiveSAFFinishing
+	state.status = nativeArchiveSAFFinishing
 	stage := state.stage
 	state.stage = nil
 	cleanupStage := state.cleanupStage
@@ -794,7 +794,7 @@ func (session *NativeArchiveSAFSession) Finish() *NativeArchiveSAFResult {
 		attemptedEver:     attemptedEver,
 		cleanupIncomplete: cleanupIncomplete,
 	}
-	state.phase = nativeArchiveSAFTerminal
+	state.status = nativeArchiveSAFTerminal
 	state.manifest = nil
 	state.terminalResult = result
 	state.cond.Broadcast()

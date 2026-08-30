@@ -10,6 +10,15 @@ import (
 	"testing"
 )
 
+func authenticateCapsulesWithProvider(
+	ctx context.Context,
+	structure Structure,
+	provider capsuleCredentialProvider,
+	seams capsuleAuthSeams,
+) *normalAuthResult {
+	return authenticateCapsulesWithProviderMode(ctx, structure, provider, seams, true, false)
+}
+
 func TestAuthenticateCapsulesCredentialPipelineClassification(t *testing.T) {
 	claimed, ok := credentialFactorPolicy(CredentialModeCombined)
 	if !ok || claimed != pcv3credential.FactorPolicyPasswordAndKeyfiles {

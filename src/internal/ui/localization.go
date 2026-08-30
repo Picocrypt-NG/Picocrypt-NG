@@ -211,8 +211,8 @@ func pcv3ProgressText(code pcv3operation.StatusCode) string {
 	case pcv3operation.StatusConfirmingDurability:
 		return tr("pcv3.progress.confirming_durability", "Confirming output durability…")
 	default:
-		// Migration-only and unknown codes stay neutral while writer governance
-		// is disabled. No caller-provided data participates in this fallback.
+		// Unknown codes stay neutral. No caller-provided data participates in
+		// this fallback.
 		return tr("pcv3.progress.working", "Working…")
 	}
 }
@@ -455,8 +455,8 @@ func pcv3RecoveryRangeCount(count uint64) string {
 	}
 
 	// go-i18n accepts only signed integers or signed decimal strings. Preserve
-	// the full displayed uint64 while selecting a safe plural operand. PCV3 has
-	// dedicated English and Russian copy in this phase; other locales fall back
+	// the full displayed uint64 while selecting a safe plural operand. Bundled
+	// locales carry dedicated PCV3 copy; any locale without it falls back
 	// to the English catalog.
 	pluralCount := count
 	maxInt := uint64(^uint(0) >> 1)

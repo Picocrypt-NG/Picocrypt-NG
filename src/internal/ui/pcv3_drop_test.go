@@ -3,6 +3,7 @@ package ui
 import (
 	"Picocrypt-NG/internal/app"
 	"Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3operation"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,6 +31,76 @@ func loadPCV3DropFixture(t *testing.T) []byte {
 		t.Fatalf("read literal PCV3 fixture: %v", err)
 	}
 	return fixture
+}
+
+func TestPCV3DropAcceptsNormalSplitFromAnyChunk(t *testing.T) {
+	resetLocalizationForTest(t)
+	dir := t.TempDir()
+	base := filepath.Join(dir, "normal.pcv")
+	if err := os.WriteFile(base, loadPCV3DropFixture(t), 0o600); err != nil {
+		t.Fatalf("write normal PCV3 fixture: %v", err)
+	}
+	chunks, err := fileops.Split(fileops.SplitOptions{
+		InputPath: base,
+		ChunkSize: 1,
+		Unit:      fileops.SplitUnitKiB,
+	})
+	if err != nil || len(chunks) < 2 {
+		t.Fatalf("split normal PCV3 fixture: chunks=%d err=%v", len(chunks), err)
+	}
+	if err := os.Remove(base); err != nil {
+		t.Fatalf("remove unsplit fixture: %v", err)
+	}
+
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	t.Cleanup(func() {
+		a.workers.wait()
+		fyne.DoAndWait(func() { a.State.Reset() })
+	})
+	fyne.DoAndWait(func() { a.onDrop([]string{chunks[1]}) })
+	waitForDropProcessing(t, a)
+	snap := a.State.UISnapshot()
+	if snap.PCV3Route != app.PCV3RouteReady || snap.PCV3Format != app.PCV3FormatNormal ||
+		!snap.Recombine || snap.InputFile != base || snap.OutputFile != strings.TrimSuffix(base, ".pcv") {
+		t.Fatalf("normal PCV3 split route = %#v", snap)
+	}
+}
+
+func TestPCV3DropKeepsExplicitD1OverrideForNormalLookingSplit(t *testing.T) {
+	resetLocalizationForTest(t)
+	dir := t.TempDir()
+	base := filepath.Join(dir, "collision.pcv")
+	if err := os.WriteFile(base+".0", []byte{'P', 'C', 'V', 0, 1, 2, 3, 4}, 0o600); err != nil {
+		t.Fatalf("write normal-looking D1 chunk zero: %v", err)
+	}
+	if err := os.WriteFile(base+".1", []byte{5, 6, 7, 8}, 0o600); err != nil {
+		t.Fatalf("write D1 chunk one: %v", err)
+	}
+
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	t.Cleanup(func() {
+		a.workers.wait()
+		fyne.DoAndWait(func() { a.State.Reset() })
+	})
+	fyne.DoAndWait(func() { a.onDrop([]string{base + ".1"}) })
+	waitForDropProcessing(t, a)
+
+	fyne.DoAndWait(func() {
+		snap := a.State.UISnapshot()
+		if snap.PCV3Route != app.PCV3RouteReady || snap.PCV3Format != app.PCV3FormatNormal || !snap.Recombine {
+			t.Fatalf("normal-looking split route = %#v", snap)
+		}
+		button := findPCV3Button(a.advancedContainer, tr("pcv3.format.d1_action", "Open as PCV3 D1"))
+		if button == nil {
+			t.Fatal("ready Normal split has no explicit D1 override")
+		}
+		fynetest.Tap(button)
+		snap = a.State.UISnapshot()
+		if snap.PCV3Format != app.PCV3FormatD1 || !snap.Recombine || snap.InputFile != base ||
+			snap.OutputFile != strings.TrimSuffix(base, ".pcv") || snap.PCV3Action != app.PCV3ActionNone {
+			t.Fatalf("explicit D1 override changed split intent: %#v", snap)
+		}
+	})
 }
 
 func waitForPCV3UI(t *testing.T, condition func() bool, failure string) {
@@ -150,7 +222,7 @@ func TestPCV3FyneRequiresExplicitModeAndLiveConsent(t *testing.T) {
 				t.Fatal("set D1 selection")
 			}
 			a.State.Password = "consent-only password"
-			a.State.SetPCV3Intent(app.PCV3ActionForce, app.PCV3FactorPolicyPassword, app.PCV3KeyfileOrderUnset)
+			a.State.SetPCV3Intent(app.PCV3ActionForceUnverified, app.PCV3FactorPolicyPassword, app.PCV3KeyfileOrderUnset)
 			a.refreshAdvanced()
 			a.updateUIState()
 			a.startPCV3Work()
@@ -244,82 +316,8 @@ func TestPCV3DropKeepsRoutedDescriptorAcrossPathReplacement(t *testing.T) {
 	}
 }
 
-// TestPCV3DropRejectsNormalFormatInLegacySplitSelection protects the split
-// authority boundary. Chunk zero classifies a legacy split, but its descriptor
-// must never authorize a normal PCV3 operation whose visible input and target
-// are derived from a different selected chunk.
-func TestPCV3DropRejectsNormalFormatInLegacySplitSelection(t *testing.T) {
-	resetLocalizationForTest(t)
-	dir := t.TempDir()
-	base := filepath.Join(dir, "claimed.pcv")
-	chunkZero := base + ".0"
-	selected := base + ".1"
-	if err := os.WriteFile(chunkZero, loadPCV3DropFixture(t), 0o600); err != nil {
-		t.Fatalf("write normal PCV3 chunk zero: %v", err)
-	}
-	if err := os.WriteFile(selected, []byte("legacy-looking later chunk"), 0o600); err != nil {
-		t.Fatalf("write selected later chunk: %v", err)
-	}
-
-	previousOpen := openDroppedPCVInput
-	opened := make(chan *os.File, 1)
-	var openCalls atomic.Int32
-	openDroppedPCVInput = func(path string, split bool) (*os.File, error) {
-		source, err := previousOpen(path, split)
-		if err == nil {
-			openCalls.Add(1)
-			select {
-			case opened <- source:
-			default:
-			}
-		}
-		return source, err
-	}
-	t.Cleanup(func() { openDroppedPCVInput = previousOpen })
-
-	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
-	t.Cleanup(func() { a.State.Reset() })
-	fyne.DoAndWait(func() { a.onDrop([]string{selected}) })
-	waitForDropProcessing(t, a)
-
-	var routed *os.File
-	select {
-	case routed = <-opened:
-	default:
-		t.Fatal("drop did not open authoritative chunk zero")
-	}
-	if got := openCalls.Load(); got != 1 {
-		t.Fatalf("drop opened %d routing descriptors; want one authoritative chunk-zero descriptor", got)
-	}
-	var snap app.UISnapshot
-	var startDisabled, retainedD1 bool
-	fyne.DoAndWait(func() {
-		snap = a.State.UISnapshot()
-		startDisabled = a.startButton.Disabled()
-		retainedD1 = a.State.SelectPCV3D1()
-	})
-	if snap.PCV3Route != app.PCV3RouteFailed || snap.PCV3Format != app.PCV3FormatNone ||
-		snap.OutputFile != "" || snap.CanStart() || !startDisabled {
-		t.Fatalf("split normal-PCV3 route retained operation authority: %#v", snap)
-	}
-	if retainedD1 {
-		t.Fatal("rejected split normal-PCV3 route retained explicit D1 authority")
-	}
-	if _, err := routed.Stat(); !errors.Is(err, os.ErrClosed) {
-		t.Fatalf("rejected chunk-zero descriptor remains open: %v", err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read split directory: %v", err)
-	}
-	if len(entries) != 2 || entries[0].Name() != filepath.Base(chunkZero) || entries[1].Name() != filepath.Base(selected) {
-		t.Fatalf("rejected split selection created filesystem artifacts: %v", entries)
-	}
-}
-
-// TestPCV3DropSplitRoutingPreservesLegacyCompatibility protects the paths that
-// remain valid after the normal-PCV3 split rejection: a real legacy split and
-// a user-selected chunk-zero symlink both continue through legacy routing.
+// TestPCV3DropSplitRoutingPreservesLegacyCompatibility protects a real legacy
+// split and a user-selected chunk-zero symlink through legacy routing.
 func TestPCV3DropSplitRoutingPreservesLegacyCompatibility(t *testing.T) {
 	resetLocalizationForTest(t)
 	legacy, err := os.ReadFile(filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"))

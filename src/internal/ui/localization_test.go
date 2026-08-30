@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"unicode/utf8"
 )
 
@@ -403,12 +404,73 @@ func TestPCV3LocalizationContract(t *testing.T) {
 		}
 	})
 
-	t.Run("Untranslated bundled locale falls back to bounded English", func(t *testing.T) {
+	t.Run("German plural and fixed enum copy", func(t *testing.T) {
+		if err := setActiveLanguage("de"); err != nil {
+			t.Fatalf("setActiveLanguage(de) returned error: %v", err)
+		}
+		if got := pcv3ProgressText(pcv3operation.StatusAuthenticating); got != "Volume wird authentifiziert…" {
+			t.Fatalf("German authenticating progress = %q; want Volume wird authentifiziert…", got)
+		}
+		counts := []struct {
+			count uint64
+			want  string
+		}{
+			{0, "Es wurden keine wiederherstellbaren Bereiche aufgezeichnet."},
+			{1, "1 Wiederherstellungsbereich"},
+			{2, "2 Wiederherstellungsbereiche"},
+			{^uint64(0), "18446744073709551615 Wiederherstellungsbereiche"},
+		}
+		for _, test := range counts {
+			if got := pcv3RecoveryRangeCount(test.count); got != test.want {
+				t.Errorf("pcv3RecoveryRangeCount(%d) = %q; want %q", test.count, got, test.want)
+			}
+		}
+		if got := pcv3ArtifactRoleText(pcv3artifact.RoleD1Tail); got != "Hinterer Bootstrap" {
+			t.Fatalf("German D1 tail role = %q; want Hinterer Bootstrap", got)
+		}
+	})
+
+	t.Run("French plural and fixed enum copy", func(t *testing.T) {
+		if err := setActiveLanguage("fr"); err != nil {
+			t.Fatalf("setActiveLanguage(fr) returned error: %v", err)
+		}
+		if got := pcv3ProgressText(pcv3operation.StatusAuthenticating); got != "Authentification du volume…" {
+			t.Fatalf("French authenticating progress = %q; want Authentification du volume…", got)
+		}
+		counts := []struct {
+			count uint64
+			want  string
+		}{
+			{0, "Aucune plage récupérable n’a été enregistrée."},
+			{1, "1 plage de récupération"},
+			{2, "2 plages de récupération"},
+			{1000000, "1000000 plages de récupération"},
+			{^uint64(0), "18446744073709551615 plages de récupération"},
+		}
+		for _, test := range counts {
+			if got := pcv3RecoveryRangeCount(test.count); got != test.want {
+				t.Errorf("pcv3RecoveryRangeCount(%d) = %q; want %q", test.count, got, test.want)
+			}
+		}
+		if got := pcv3ArtifactRoleText(pcv3artifact.RoleD1Tail); got != "Amorce arrière" {
+			t.Fatalf("French D1 tail role = %q; want Amorce arrière", got)
+		}
+	})
+
+	t.Run("Locale without PCV3 copy falls back to bounded English", func(t *testing.T) {
+		resetLocalizationForTest(t)
+		testFS := fstest.MapFS{
+			"translation/en.json": {Data: []byte(`{"pcv3.progress.authenticating":"Authenticating volume…"}`)},
+			"translation/de.json": {Data: []byte(`{"status.ready":"Bereit"}`)},
+		}
+		if err := loadTranslationsFromFS(testFS); err != nil {
+			t.Fatalf("loadTranslationsFromFS returned error: %v", err)
+		}
 		if err := setActiveLanguage("de"); err != nil {
 			t.Fatalf("setActiveLanguage(de) returned error: %v", err)
 		}
 		if got := pcv3ProgressText(pcv3operation.StatusAuthenticating); got != "Authenticating volume…" {
-			t.Fatalf("German PCV3 fallback = %q; want bounded English fallback", got)
+			t.Fatalf("untranslated PCV3 fallback = %q; want bounded English fallback", got)
 		}
 		if got := pcv3OutcomeCopy(pcv3operation.Presentation{}); got != (pcv3LocalizedCopy{
 			Title: "Operation failed",
@@ -939,12 +1001,6 @@ func assertCatalogMatchesEnglish(t *testing.T, code LanguageCode, path string, e
 	for key, englishValue := range english {
 		translatedValue, ok := translated[key]
 		if !ok {
-			// PCV3 launches with reviewed English and Russian copy only. Other
-			// bundled locales deliberately use go-i18n's English fallback until
-			// translators provide their own complete entries.
-			if strings.HasPrefix(key, "pcv3.") && code != "ru" {
-				continue
-			}
 			failures = append(failures, key+": missing")
 			continue
 		}

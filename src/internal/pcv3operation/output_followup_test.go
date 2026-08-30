@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,104 @@ func TestOutputFollowUpFailedSaveConsumesAuthorityAndRemovesInternalSource(t *te
 		t.Fatalf("failed save left internal plaintext: %v", err)
 	}
 	requireOperationFileBytes(t, destinationPath, nil)
+}
+
+func TestOutputFollowUpStreamsTheRetainedFileAcrossPathReplacement(t *testing.T) {
+	directory := t.TempDir()
+	payload := []byte("authenticated plaintext from the retained descriptor")
+	foreign := []byte("foreign pathname replacement")
+	retained, retainedPath := newOperationRetainedFile(t, directory, payload)
+	moved := filepath.Join(directory, "moved-private-output.bin")
+	if err := os.Rename(retainedPath, moved); err != nil {
+		t.Fatalf("move retained output: %v", err)
+	}
+	if err := os.WriteFile(retainedPath, foreign, 0o600); err != nil {
+		t.Fatalf("write foreign replacement: %v", err)
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create output pipe: %v", err)
+	}
+
+	action := newOutputFollowUp(retained).StreamTo(context.Background(), writer)
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close output pipe writer: %v", err)
+	}
+	streamed, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("read streamed output: read=%v close=%v", readErr, closeErr)
+	}
+	if action.Code() != OutputActionSavedCleanupIncomplete || !action.CleanupIncomplete() {
+		t.Fatalf("replacement stream action = %v cleanup=%v; want streamed with cleanup warning", action.Code(), action.CleanupIncomplete())
+	}
+	if string(streamed) != string(payload) {
+		t.Fatalf("streamed replacement bytes = %q; want retained plaintext", streamed)
+	}
+	requireOperationFileBytes(t, retainedPath, foreign)
+	requireOperationFileBytes(t, moved, payload)
+}
+
+func TestOutputFollowUpRejectsMutatedRetainedBytesBeforeStreaming(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func([]byte) []byte
+	}{
+		{
+			name: "same size",
+			mutate: func(payload []byte) []byte {
+				mutated := append([]byte(nil), payload...)
+				mutated[len(mutated)/2] ^= 0xff
+				return mutated
+			},
+		},
+		{
+			name: "resized",
+			mutate: func(payload []byte) []byte {
+				return append([]byte(nil), payload[:len(payload)/2]...)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			payload := []byte("authenticated plaintext must be unchanged before stdout")
+			retained, retainedPath := newOperationRetainedFile(t, directory, payload)
+			if err := os.WriteFile(retainedPath, test.mutate(payload), 0o600); err != nil {
+				t.Fatalf("mutate retained output: %v", err)
+			}
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("create output pipe: %v", err)
+			}
+			action := newOutputFollowUp(retained).StreamTo(context.Background(), writer)
+			if err := writer.Close(); err != nil {
+				t.Fatalf("close output writer: %v", err)
+			}
+			streamed, readErr := io.ReadAll(reader)
+			closeErr := reader.Close()
+			if readErr != nil || closeErr != nil {
+				t.Fatalf("read rejected stream: read=%v close=%v", readErr, closeErr)
+			}
+			if action.Code() != OutputActionSaveFailed || action.CleanupIncomplete() || len(streamed) != 0 {
+				t.Fatalf("mutated stream action=%v cleanup=%v bytes=%d", action.Code(), action.CleanupIncomplete(), len(streamed))
+			}
+			if _, err := os.Lstat(retainedPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("mutated retained plaintext survived rejection: %v", err)
+			}
+		})
+	}
+}
+
+func TestOutputFollowUpNilStreamDestinationStillRemovesPlaintext(t *testing.T) {
+	directory := t.TempDir()
+	retained, retainedPath := newOperationRetainedFile(t, directory, []byte("must be removed"))
+	action := newOutputFollowUp(retained).StreamTo(context.Background(), nil)
+	if action.Code() != OutputActionSaveFailed || action.CleanupIncomplete() {
+		t.Fatalf("nil stream action=%v cleanup=%v", action.Code(), action.CleanupIncomplete())
+	}
+	if _, err := os.Lstat(retainedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("nil stream destination orphaned retained plaintext: %v", err)
+	}
 }
 
 func TestOutputFollowUpDiscardIsExactIdentityOnly(t *testing.T) {

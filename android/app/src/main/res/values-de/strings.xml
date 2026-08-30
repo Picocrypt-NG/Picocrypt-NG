@@ -162,7 +162,7 @@
     <string name="error_decrypt_retry_only">Nur Entschlüsselungsvorgänge können mit erzwungener Entschlüsselung erneut versucht werden.</string>
     <string name="error_no_file_selected">Wählen Sie eine Datei aus.</string>
     <string name="error_invalid_password">Geben Sie ein Passwort ein.</string>
-    <string name="error_keyfile_writes_disabled">Neue v2-Volumes mit Schlüsseldateien sind bis zur Prüfung des v3-Formats deaktiviert. Vorhandene Volumes mit Schlüsseldateien können weiterhin entschlüsselt werden.</string>
+    <string name="error_keyfile_writes_disabled">Neue v2-Volumes können keine Schlüsseldateien verwenden. Erstellen Sie stattdessen explizit PCV3. Vorhandene Schlüsseldatei-Volumes können weiterhin entschlüsselt werden.</string>
     <string name="error_passwords_mismatch">Passwörter stimmen nicht überein.</string>
     <string name="error_split_volume_not_supported">Aufgeteilte Volumes werden unter Android nicht unterstützt. Führen Sie die Teile zuerst auf Ihrem Computer zusammen und übertragen Sie dann die einzelne %1$s-Datei.</string>
     <string name="error_copy_failed">Datei konnte nicht kopiert werden.</string>
@@ -196,11 +196,13 @@
     <string name="pcv3_keyfile_order_selected">Ausgewählte Reihenfolge verwenden</string>
     <string name="pcv3_keyfile_order_any">Beliebige Reihenfolge</string>
     <string name="pcv3_password_not_allowed">Entfernen Sie das Passwort oder wählen Sie die kombinierte Faktorrichtlinie.</string>
+    <string name="pcv3_create">PCV3 erstellen</string>
     <string name="pcv3_start_decrypt">PCV3 entschlüsseln</string>
     <string name="pcv3_start_recovery">Wiederherstellung starten</string>
     <string name="pcv3_start_force_recovery">Erzwungene Wiederherstellung starten</string>
     <string name="pcv3_cancel_decryption">Entschlüsselung abbrechen</string>
     <string name="pcv3_cancel_recovery">Wiederherstellung abbrechen</string>
+    <string name="pcv3_cancel_creation">Erstellung abbrechen</string>
 
     <string name="pcv3_consent_title">Nicht verifizierte Daten wiederherstellen?</string>
     <string name="pcv3_consent_body">Dieser Vorgang kann nicht authentifizierte Bytes speichern. Sie können unvollständig, beschädigt oder beim Öffnen gefährlich sein. Wählen Sie die genaue physische Quelle aus.</string>
@@ -221,8 +223,6 @@
     <string name="pcv3_progress_preparing_artifact">Wiederherstellungsartefakt wird vorbereitet…</string>
     <string name="pcv3_progress_publishing">Ausgabe wird veröffentlicht…</string>
     <string name="pcv3_progress_confirming_durability">Dauerhaftigkeit der Ausgabe wird bestätigt…</string>
-    <string name="pcv3_progress_verifying_legacy">Altes Volume wird verifiziert…</string>
-    <string name="pcv3_progress_migrating">Authentifizierter Inhalt wird migriert…</string>
     <string name="pcv3_progress_working">Vorgang läuft…</string>
 
     <string name="pcv3_resource_busy_title">Ein anderer geschützter Vorgang läuft</string>
@@ -236,6 +236,8 @@
 
     <string name="pcv3_outcome_success_title">Entschlüsselung abgeschlossen</string>
     <string name="pcv3_outcome_success_body">Die Ausgabe ist vollständig authentifiziert.</string>
+    <string name="pcv3_create_outcome_title">PCV3-Volume erstellt</string>
+    <string name="pcv3_create_outcome_body">Das neue Volume ist fertig. Speichern Sie es an einem gewählten Ort, um es zu behalten.</string>
     <string name="pcv3_outcome_archive_pending_title">Authentifiziertes Archiv kann entpackt werden</string>
     <string name="pcv3_outcome_archive_pending_body">Der Archivinhalt ist vollständig authentifiziert. Wählen Sie einen neuen Ordner zum Entpacken. Die verschlüsselte Quelle bleibt erhalten.</string>
     <string name="pcv3_outcome_degraded_title">Authentifizierte Ausgabe mit Schäden wiederhergestellt</string>
@@ -304,6 +306,7 @@
     <string name="pcv3_output_expired_close">Abgelaufene Ausgabeaktion schließen</string>
     <string name="pcv3_output_unknown_close">Warnung zur Ausgabeaktion schließen</string>
     <string name="pcv3_save_decrypted_output">Entschlüsselte Ausgabe speichern</string>
+    <string name="pcv3_save_created_volume">Erstelltes Volume speichern</string>
     <string name="pcv3_save_recovery_artifact">Wiederherstellungsartefakt speichern</string>
     <string name="pcv3_inspect_recovery_artifact">Wiederherstellungsartefakt prüfen</string>
     <string name="pcv3_discard_artifact_title">Wiederherstellungsartefakt verwerfen?</string>

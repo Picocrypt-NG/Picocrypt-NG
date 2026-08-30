@@ -57,6 +57,7 @@ type pcv3CLIFixedResult struct {
 	warnings             []pcv3operation.Warning
 	class                pcv3operation.CompletionClass
 	archive              pcv3CLIArchiveFollowUp
+	output               pcv3CLIOutputFollowUp
 	diagnostic           string
 }
 
@@ -92,6 +93,10 @@ func (result *pcv3CLIFixedResult) CompletionClass() pcv3operation.CompletionClas
 
 func (result *pcv3CLIFixedResult) ArchiveFollowUp() pcv3CLIArchiveFollowUp {
 	return result.archive
+}
+
+func (result *pcv3CLIFixedResult) OutputFollowUp() pcv3CLIOutputFollowUp {
+	return result.output
 }
 
 func (result *pcv3CLIFixedResult) Error() string { return result.diagnostic }
@@ -150,10 +155,18 @@ func TestPCV3CLIProcessHelper(t *testing.T) {
 		}
 	}
 
-	pcv3CLIRunOperation = func(_ context.Context, request *pcv3operation.Request) pcv3CLIResult {
+	pcv3CLIRunOperation = func(
+		_ context.Context,
+		request *pcv3operation.Request,
+		retainOutput bool,
+	) pcv3CLIResult {
 		observation := observePCV3CLIRequest(request)
 		if config.RealOperation {
-			result := pcv3CLIResultAdapter{result: pcv3operation.Run(context.Background(), request)}
+			result := pcv3CLIResultAdapter{result: pcv3operation.RunWithOptions(
+				context.Background(),
+				request,
+				pcv3operation.ExecutionOptions{RetainDurableOutput: retainOutput},
+			)}
 			writePCV3CLIObservation(config.Observation, observation)
 			return result
 		}
@@ -718,6 +731,7 @@ func TestPCV3CLIRequiresExplicitModeAndLiveConsent(t *testing.T) {
 				t.Fatalf("consent callback present = %v; want %v", observation.ConsentPresent, test.wantConsent)
 			}
 			if test.wantOutcome != "" && !strings.Contains(result.stderr, test.wantOutcome) {
+				skipOnPCV3ResourceAdmissionDenial(t, result)
 				t.Fatalf("stderr = %q; want real-core terminal %q", result.stderr, test.wantOutcome)
 			}
 			hasProgress := strings.Contains(result.stderr, "Checking operation…") &&
@@ -808,30 +822,6 @@ func TestPCV3CLIRecombineBaseUsesChunkZeroAuthority(t *testing.T) {
 	}
 }
 
-func TestPCV3CLISplitRoutingRejectsPCV3ChunkZero(t *testing.T) {
-	dir := t.TempDir()
-	base := filepath.Join(dir, "claimed.pcv")
-	if err := os.WriteFile(base+".0", loadPCV3CLIFixture(t), 0o600); err != nil {
-		t.Fatalf("write PCV3 chunk zero: %v", err)
-	}
-	if err := os.WriteFile(base+".1", []byte("legacy-looking later chunk"), 0o600); err != nil {
-		t.Fatalf("write legacy-looking later chunk: %v", err)
-	}
-	result, observation := runPCV3CLIHelper(t, dir, pcv3CLIHelperConfig{
-		Args: []string{
-			"decrypt", base + ".1", "-o", filepath.Join(dir, "output"),
-			"-p", "test",
-		},
-		Observation: filepath.Join(dir, "observation.json"),
-	}, nil)
-	if observation.Called {
-		t.Fatal("split PCV3 incompatibility reached the operation boundary")
-	}
-	if !strings.Contains(result.stderr, "PCV3 does not support stdin, stdout, or legacy transform flags") {
-		t.Fatalf("chunk-zero PCV3 authority was not routed before legacy preflight: exit %d stderr %q", result.exitCode, result.stderr)
-	}
-}
-
 func TestPCV3CLISplitChunkZeroSymlinkPreservesLegacyFallback(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "legacy.pcv")
@@ -880,26 +870,17 @@ func TestPCV3RouteBeforeLegacyPrompts(t *testing.T) {
 		}
 	})
 
-	t.Run("PCV3 stdin stdout and legacy transforms fail closed", func(t *testing.T) {
+	t.Run("PCV3 legacy transforms fail closed", func(t *testing.T) {
 		for _, flags := range [][]string{
-			{"-o", "-"},
-			{"--recombine"},
 			{"--deniability"},
 			{"--auto-unzip"},
 			{"--verify-first"},
 		} {
 			dir := t.TempDir()
 			input := writePCV3CLIFixture(t, dir, "claimed", fixture)
-			if reflect.DeepEqual(flags, []string{"--recombine"}) {
-				writePCV3CLIFixture(t, dir, "claimed.0", fixture)
-			}
 			output := filepath.Join(dir, "output")
 			args := []string{"decrypt", input, "-o", output, "--pcv3-factors=password", "-p", "pw"}
-			if reflect.DeepEqual(flags, []string{"-o", "-"}) {
-				args = []string{"decrypt", input, "--pcv3-factors=password", "-p", "pw", "-o", "-"}
-			} else {
-				args = append(args, flags...)
-			}
+			args = append(args, flags...)
 			result, observation := runPCV3CLIHelper(t, dir, pcv3CLIHelperConfig{
 				Args:        args,
 				Observation: filepath.Join(dir, "observation.json"),
@@ -910,33 +891,6 @@ func TestPCV3RouteBeforeLegacyPrompts(t *testing.T) {
 			if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("flags %v created output: %v", flags, err)
 			}
-		}
-	})
-
-	t.Run("content-routed PCV3 stdin and split-looking input stay unsupported", func(t *testing.T) {
-		dir := t.TempDir()
-		output := filepath.Join(dir, "output")
-		stdinResult, stdinObservation := runPCV3CLIHelper(t, dir, pcv3CLIHelperConfig{
-			Args:        []string{"decrypt", "-", "-o", output, "-p", "pw"},
-			Observation: filepath.Join(dir, "stdin-observation.json"),
-		}, fixture)
-		if stdinResult.exitCode != ExitGeneralError || stdinObservation.Called || len(stdinResult.stdout) != 0 {
-			t.Fatalf("PCV3 stdin = exit %d called %v stdout %q stderr %q", stdinResult.exitCode, stdinObservation.Called, stdinResult.stdout, stdinResult.stderr)
-		}
-		if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("PCV3 stdin created output: %v", err)
-		}
-
-		split := writePCV3CLIFixture(t, dir, "claimed.pcv.0", fixture)
-		splitResult, splitObservation := runPCV3CLIHelper(t, dir, pcv3CLIHelperConfig{
-			Args: []string{
-				"decrypt", split, "-o", output,
-				"--pcv3-factors=password", "-p", "pw",
-			},
-			Observation: filepath.Join(dir, "split-observation.json"),
-		}, nil)
-		if splitResult.exitCode != ExitGeneralError || splitObservation.Called || len(splitResult.stdout) != 0 {
-			t.Fatalf("PCV3 split = exit %d called %v stdout %q stderr %q", splitResult.exitCode, splitObservation.Called, splitResult.stdout, splitResult.stderr)
 		}
 	})
 

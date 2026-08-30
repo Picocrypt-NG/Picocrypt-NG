@@ -1,11 +1,14 @@
 package io.github.picocrypt_ng.picocrypt_ng.ui.components
 
+import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.github.picocrypt_ng.picocrypt_ng.AppError
+import io.github.picocrypt_ng.picocrypt_ng.R
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -13,7 +16,7 @@ import org.junit.runner.RunWith
 /**
  * UI tests for ErrorDialog component.
  *
- * These assert the dialog actually surfaces the error's userMessage (and that it
+ * These assert the dialog actually surfaces the error's user-facing message (and that it
  * renders nothing when error is null). Asserting onRoot().assertIsDisplayed() would
  * be tautological — the test harness root is always displayed regardless of whether
  * ErrorDialog renders.
@@ -32,8 +35,12 @@ class ErrorDialogTest {
             ErrorDialog(error = error, onDismiss = {})
         }
 
-        // The dialog must render the user-facing message ("Please select a file").
-        composeTestRule.onNodeWithText(error.userMessage).assertIsDisplayed()
+        // The dialog renders the error's localized user-facing message
+        // (R.string.error_no_file_selected): ErrorDialog displays localizedMessage,
+        // which prefers messageResId over the raw userMessage fallback.
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        composeTestRule.onNodeWithText(context.getString(R.string.error_no_file_selected))
+            .assertIsDisplayed()
     }
 
     @Test

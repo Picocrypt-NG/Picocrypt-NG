@@ -184,7 +184,7 @@
     <string name="error_decrypt_retry_only">Только операции расшифровки можно повторить с принудительной расшифровкой.</string>
     <string name="error_no_file_selected">Выберите файл.</string>
     <string name="error_invalid_password">Введите пароль.</string>
-    <string name="error_keyfile_writes_disabled">Создание новых томов v2 с ключевыми файлами отключено до завершения проверки формата v3. Существующие тома с ключевыми файлами по-прежнему можно расшифровать.</string>
+    <string name="error_keyfile_writes_disabled">Новые тома v2 не поддерживают ключ-файлы. Вместо этого используйте явное создание PCV3. Существующие тома с ключ-файлами можно расшифровать.</string>
     <string name="error_passwords_mismatch">Пароли не совпадают.</string>
     <string name="error_split_volume_not_supported">Разделённые тома не поддерживаются на Android. Сначала объедините части на компьютере, затем перенесите один файл %1$s.</string>
     <string name="error_copy_failed">Не удалось скопировать файл.</string>
@@ -218,11 +218,13 @@
     <string name="pcv3_keyfile_order_selected">Использовать выбранный порядок</string>
     <string name="pcv3_keyfile_order_any">Любой порядок</string>
     <string name="pcv3_password_not_allowed">Удалите пароль или выберите сочетание пароля и ключевых файлов.</string>
+    <string name="pcv3_create">Создать PCV3</string>
     <string name="pcv3_start_decrypt">Расшифровать PCV3</string>
     <string name="pcv3_start_recovery">Начать восстановление</string>
     <string name="pcv3_start_force_recovery">Начать принудительное восстановление</string>
     <string name="pcv3_cancel_decryption">Отменить расшифрование</string>
     <string name="pcv3_cancel_recovery">Отменить восстановление</string>
+    <string name="pcv3_cancel_creation">Отменить создание</string>
 
     <string name="pcv3_consent_title">Восстановить непроверенные данные?</string>
     <string name="pcv3_consent_body">Эта операция может сохранить байты, не прошедшие аутентификацию. Они могут быть неполными, повреждёнными или небезопасными для открытия. Выберите точный физический источник.</string>
@@ -243,8 +245,6 @@
     <string name="pcv3_progress_preparing_artifact">Подготовка артефакта восстановления…</string>
     <string name="pcv3_progress_publishing">Публикация выходных данных…</string>
     <string name="pcv3_progress_confirming_durability">Подтверждение надёжности публикации…</string>
-    <string name="pcv3_progress_verifying_legacy">Проверка устаревшего тома…</string>
-    <string name="pcv3_progress_migrating">Перенос аутентифицированного содержимого…</string>
     <string name="pcv3_progress_working">Выполнение…</string>
 
     <string name="pcv3_resource_busy_title">Выполняется другая защищённая операция</string>
@@ -258,6 +258,8 @@
 
     <string name="pcv3_outcome_success_title">Расшифрование завершено</string>
     <string name="pcv3_outcome_success_body">Выходные данные полностью аутентифицированы.</string>
+    <string name="pcv3_create_outcome_title">Том PCV3 создан</string>
+    <string name="pcv3_create_outcome_body">Новый том готов. Сохраните его в выбранное место, чтобы оставить.</string>
     <string name="pcv3_outcome_archive_pending_title">Аутентифицированный архив готов к извлечению</string>
     <string name="pcv3_outcome_archive_pending_body">Содержимое архива полностью аутентифицировано. Выберите новую папку для извлечения. Зашифрованный источник сохранён.</string>
     <string name="pcv3_outcome_degraded_title">Аутентифицированные данные восстановлены с повреждением</string>
@@ -326,6 +328,7 @@
     <string name="pcv3_output_expired_close">Закрыть просроченную операцию с результатом</string>
     <string name="pcv3_output_unknown_close">Закрыть предупреждение об операции с данными</string>
     <string name="pcv3_save_decrypted_output">Сохранить расшифрованные данные</string>
+    <string name="pcv3_save_created_volume">Сохранить созданный том</string>
     <string name="pcv3_save_recovery_artifact">Сохранить артефакт восстановления</string>
     <string name="pcv3_inspect_recovery_artifact">Проверить артефакт восстановления</string>
     <string name="pcv3_discard_artifact_title">Удалить артефакт восстановления?</string>

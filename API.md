@@ -158,16 +158,18 @@ type EncryptRequest struct {
     OnlyFiles   []string // files dropped directly (affects zip paths)
     OutputFile  string
 
-    // Credentials — Picocrypt-NG 2.19 writers require a non-empty Password
+    // Credentials — legacy v2 requires Password; PCV3 accepts password,
+    // keyfile, or combined policies
     Password       []byte   // Owned by caller; caller zeros it after the operation
-    Keyfiles       []string // Legacy API field; any non-empty value is rejected on encryption
-    KeyfileOrdered bool     // Legacy API field; no effect without Keyfiles
+    Keyfiles       []string // PCV3 keyfile paths; legacy v2 rejects non-empty values
+    KeyfileOrdered bool     // Preserve keyfile order for PCV3
+    PCV3           bool     // Select PCV3 instead of legacy v2
 
     // Options
     Comments    string // Plaintext header comment (max 99999 chars, NOT encrypted)
     Paranoid    bool   // 8 Argon2 passes, Serpent-CTR + XChaCha20, HMAC-SHA3
     ReedSolomon bool   // Reed-Solomon on payload (~6% size overhead)
-    Deniability bool   // Wrap volume; requires a non-empty Password
+    Deniability bool   // Legacy wrapper or, with PCV3+Paranoid, D1
     Compress    bool   // Deflate compression in temp zip
 
     // Splitting
@@ -306,22 +308,21 @@ func RemoveDeniability(volumePath string, password []byte, reporter ProgressRepo
 func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool
 ```
 
-**Picocrypt-NG 2.19 writer contract.** Every new volume requires a non-empty password.
-`EncryptRequest.Validate` rejects any non-empty `Keyfiles` value with
-`validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3
-format`. This applies to keyfile-only and password-plus-keyfile requests, with or without
-deniability. The core pipeline, desktop, CLI, WASM, and mobile writer boundaries enforce the same
-policy before encryption begins. Direct `AddDeniability` additionally returns
-`validation: Password: a non-empty password is required for deniability` before deriving its outer
-key or replacing the input volume.
+**Writer contract.** `EncryptRequest.PCV3 == false` preserves legacy v2 output and rejects
+encryption-side keyfiles. `EncryptRequest.PCV3 == true` selects PCV3 and accepts password-only,
+keyfile-only, or combined factors. Normal PCV3 uses the canonical streaming serializer; PCV3 with
+`Deniability` requires `Paranoid` and creates D1. ZIP preprocessing is supported; D1 archive
+payloads decrypt to a durable ZIP and are not automatically extracted. The selected credential
+policy applies to both Normal PCV3 and D1.
+PCV3 creation publishes through the identity-bound no-replace publisher and returns success only
+after directory durability is confirmed.
 
-This is a writer restriction, not a format rewrite. Existing v1/v2 keyfile volumes remain readable
-through their legacy branches, including keyfile-only deniable v2 volumes whose outer password was
-empty. In legacy v2, the keyfile is XORed into the XChaCha20 key after the HKDF stream has already
-been initialized: it remains necessary for XChaCha20 confidentiality, but it does not bind the
-header MAC, payload MAC, Serpent key, or HKDF rekey schedule. Recover plaintext and create a new
-password-only 2.19 volume, or wait for a reviewed v3 format if a keyfile factor is mandatory. This
-release neither implements nor schedules v3.
+This does not rewrite or upgrade existing volumes. Existing v1/v2 keyfile volumes remain readable
+through their legacy branches. Recover plaintext before creating PCV3; merely wrapping an affected
+legacy v2 volume does not make its old authentication schedule keyfile-bound. WASM does not expose
+PCV3 creation. The Android gomobile bridge accepts `write-normal` and `write-d1` creation envelopes
+alongside the read, recovery, and force modes; `write-d1` always runs the paranoid suite, and
+creation uses the same runtime resource admission as reads.
 
 ---
 
@@ -611,23 +612,32 @@ const (
 )
 
 type SplitOptions struct {
-    InputPath     string
-    ExpectedInput os.FileInfo // optional identity InputPath must still name
-    ChunkSize     int
-    Unit          SplitUnit
-    Progress      ProgressFunc
-    Status        StatusFunc
-    Cancel        CancelFunc
+    InputPath            string
+    ExpectedInput        os.FileInfo // optional identity InputPath must still name
+    ExpectedDirectory    os.FileInfo // optional pinned split-directory identity
+    ExpectedSHA256       *[32]byte   // optional digest frozen before splitting
+    ChunkSize            int
+    Unit                 SplitUnit
+    MinimumChunkSize     int64
+    RequireDirectorySync bool
+    Progress             ProgressFunc
+    Status               StatusFunc
+    Cancel               CancelFunc
 }
 
 // Split splits a file into chunks.  Returns the list of chunk paths.
 func Split(opts SplitOptions) ([]string, error)
 
+// SplitPinned uses caller-owned input and directory handles for every chunk.
+func SplitPinned(opts SplitOptions, input *os.File, root *os.Root, directory *os.File) ([]string, error)
+
 type RecombineOptions struct {
     InputBase          string // base path without the .N chunk suffix
     OutputPath         string
+    Output             *os.File // optional borrowed output descriptor
     OutputInfo         *os.FileInfo // optional exact identity of completed output
     InputInfos         *[]os.FileInfo // optional identities of consumed chunks
+    ExpectedInputs     []os.FileInfo // optional pinned identity and size for every chunk
     FirstChunk         *os.File     // optional borrowed chunk-zero descriptor
     ValidateFirstChunk func(*os.File) error
     Progress           ProgressFunc

@@ -2,7 +2,6 @@ package pcv3
 
 import (
 	"Picocrypt-NG/internal/pcv3credential"
-	"Picocrypt-NG/internal/pcv3governance"
 	"Picocrypt-NG/internal/util"
 	"context"
 	cryptorand "crypto/rand"
@@ -304,21 +303,14 @@ func copyNormalWriteKey(
 	)
 }
 
-// writeNormalVolume is the only production-shaped normal writer seam. The
-// current governance package cannot create a valid authorization capability.
-// Authorization is checked before codec creation, entropy, keys, source, or
-// destination can be observed.
+// writeNormalVolume is the production normal writer seam.
 func writeNormalVolume(
 	ctx context.Context,
-	authorization *pcv3governance.EmissionAuthorization,
 	request normalWriteRequest,
 	source io.Reader,
 	destination io.Writer,
 	owner *pcv3credential.Owner,
 ) (*normalWriteCompletion, error) {
-	if err := pcv3governance.RequireEmissionAuthorization(authorization); err != nil {
-		return nil, newNormalWriteFailure(StageOutputPublication, err)
-	}
 	codecs, err := pcencoding.NewRSCodecs()
 	if err != nil {
 		return nil, newNormalWriteFailure(StageKDFRuntime, errNormalWriteRS)
@@ -333,27 +325,9 @@ func writeNormalVolume(
 	)
 }
 
-// writeNormalVolumeWithSeams exists only to make the authorization side-effect
-// barrier observable in package tests. It remains unexported and validates the
-// same opaque capability before inspecting any supplied seam or input.
-func writeNormalVolumeWithSeams(
-	ctx context.Context,
-	authorization *pcv3governance.EmissionAuthorization,
-	request normalWriteRequest,
-	source io.Reader,
-	destination io.Writer,
-	material normalWriteMaterial,
-	seams normalWriteSeams,
-) (*normalWriteCompletion, error) {
-	if err := pcv3governance.RequireEmissionAuthorization(authorization); err != nil {
-		return nil, newNormalWriteFailure(StageOutputPublication, err)
-	}
-	return serializeNormalVolume(ctx, request, source, destination, material, seams)
-}
-
 // serializeNormalVolume is the single path-free streaming format engine. Its
-// explicit entropy seam is unexported and has no production caller except the
-// authorized adapter above, which always supplies crypto/rand.Reader.
+// explicit entropy seam is unexported; the production adapter always supplies
+// crypto/rand.Reader.
 func serializeNormalVolume(
 	ctx context.Context,
 	request normalWriteRequest,

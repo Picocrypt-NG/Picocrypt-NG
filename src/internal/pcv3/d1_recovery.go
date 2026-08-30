@@ -9,9 +9,10 @@ import (
 	pcv3crypto "Picocrypt-NG/internal/crypto"
 )
 
-// D1RecoveryOutput receives D1 semantic provenance and a callback-scoped
-// emitter. The physical D1 role is never interchangeable with a capsule role.
-type D1RecoveryOutput func(*RecoveryResult, D1BootstrapRole, RecoveryEmitter) error
+// D1RecoveryOutput receives D1 semantic provenance, authenticated public
+// metadata, and a callback-scoped emitter. The physical D1 role is never
+// interchangeable with a capsule role.
+type D1RecoveryOutput func(*RecoveryResult, D1BootstrapRole, string, RecoveryEmitter) error
 
 // RecoverD1 executes an explicitly routed normal or Force D1 recovery. It is
 // internal to this module tree and is not connected to a public frontend.
@@ -792,6 +793,10 @@ func recoverD1Inner(
 			&recoveryEngineError{stage: StageUnwrap}
 	}
 	defer owner.Close()
+	authenticatedComment := ""
+	if request.mode == RecoveryModeNormalV3 {
+		authenticatedComment = innerSelection.authenticatedComment
+	}
 	returned, emitErr := emitRecoverySelection(
 		ctx,
 		inner,
@@ -800,7 +805,12 @@ func recoverD1Inner(
 		owner,
 		mapped,
 		func(result *RecoveryResult, emitter RecoveryEmitter) error {
-			return output(result, selection.analysis.candidate.role, emitter)
+			return output(
+				result,
+				selection.analysis.candidate.role,
+				authenticatedComment,
+				emitter,
+			)
 		},
 	)
 	if returned != mapped {
@@ -1188,7 +1198,7 @@ func emitD1RawOuter(
 			return nil
 		},
 		func(result *RecoveryResult, emitter RecoveryEmitter) error {
-			return output(result, analysis.candidate.role, emitter)
+			return output(result, analysis.candidate.role, "", emitter)
 		},
 	)
 }

@@ -41,7 +41,7 @@ if command -v optipng >/dev/null 2>&1; then
   fi
 fi
 
-# --- ICO build for Windows (Phase 4 D-17) ---
+# --- ICO build for Windows ---
 # Reproducible byte-identical output via explicit metadata stripping.
 # ImageMagick does not honor SOURCE_DATE_EPOCH reliably as of 7.1.x
 # (see arch reproducible-builds todo + ImageMagick issues #1565, #8301).

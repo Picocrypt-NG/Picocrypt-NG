@@ -86,7 +86,7 @@ jobs:
         cd src
         GOMAXPROCS=1 CGO_ENABLED=0 GOOS=js GOARCH=wasm go test -count=1 \
           -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-          ./internal/pcv3unicode ./internal/pcv3governance
+          ./internal/pcv3unicode
 
     - name: Test Unicode 17 normalization conformance
       if: matrix.arch == 'amd64'

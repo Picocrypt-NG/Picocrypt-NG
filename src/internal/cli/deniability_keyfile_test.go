@@ -77,7 +77,7 @@ func TestEncryptRejectsAllNewV2KeyfileWritesBeforeCreatingOutput(t *testing.T) {
 			encYes = true
 
 			err := encryptCmd.RunE(encryptCmd, []string{input})
-			const wantErr = "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format"
+			const wantErr = "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled; use explicit PCV3 creation"
 			if err == nil {
 				t.Error("encrypt returned nil; new v2 keyfile writes must be rejected")
 			} else if got := err.Error(); got != wantErr {
@@ -93,7 +93,7 @@ func TestEncryptRejectsAllNewV2KeyfileWritesBeforeCreatingOutput(t *testing.T) {
 	}
 }
 
-func TestEncryptRejectsEmptyDeniabilityPasswordBeforeCreatingOutput(t *testing.T) {
+func TestEncryptRejectsEmptyLegacyDeniabilityPasswordBeforeCreatingOutput(t *testing.T) {
 	originalReader := cryptorand.Reader
 	reader := &countingZeroCLIReader{}
 	cryptorand.Reader = reader
@@ -133,9 +133,9 @@ func TestEncryptRejectsEmptyDeniabilityPasswordBeforeCreatingOutput(t *testing.T
 		)
 	}
 	if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
-		t.Errorf("empty-password deniability created output %q: %v", output, statErr)
+		t.Errorf("empty-password legacy deniability created output %q: %v", output, statErr)
 	}
 	if reader.reads != 0 {
-		t.Errorf("crypto/rand reads = %d; empty-password deniability must fail before randomness", reader.reads)
+		t.Errorf("crypto/rand reads = %d; empty-password legacy deniability must fail before randomness", reader.reads)
 	}
 }

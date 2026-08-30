@@ -237,20 +237,6 @@ func newRecoveryResult(
 	return result, nil
 }
 
-func newRecoveryResultFromNormal(result *normalReadResult) (*RecoveryResult, error) {
-	if result == nil {
-		return nil, errInvalidRecoveryResult
-	}
-	return newRecoveryResult(
-		result.Outcome(),
-		ForceProvenanceNone,
-		result.Stage(),
-		0,
-		nil,
-		0,
-	)
-}
-
 func validRecoveryEvidence(
 	outcome Outcome,
 	provenance ForceProvenance,

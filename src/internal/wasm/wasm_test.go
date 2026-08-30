@@ -134,7 +134,7 @@ func TestWASMUsesWriteAuthValues(t *testing.T) {
 		return originalWriteAuthValues(w, offset, sentinelKeyHash, sentinelKeyfileHash, sentinelAuthTag, rs)
 	}
 
-	volumeData, errCode := EncryptVolume([]byte("phase 6 wasm auth writer guard"), []byte("phase6-password"), EncryptOptions{})
+	volumeData, errCode := EncryptVolume([]byte("wasm auth writer guard"), []byte("wasm-password"), EncryptOptions{})
 	if errCode != 0 {
 		t.Fatalf("EncryptVolume returned error code %d", errCode)
 	}
@@ -165,8 +165,8 @@ func TestWASMUsesWriteAuthValues(t *testing.T) {
 func TestWASMRoundtripDesktopDecrypt(t *testing.T) {
 	useProductionTestWASMKDF(t)
 
-	original := []byte("Phase 6 WASM standard volume decrypts through the shared desktop volume path.")
-	password := "phase6-desktop-interop"
+	original := []byte("WASM standard volume decrypts through the shared desktop volume path.")
+	password := "wasm-desktop-interop"
 
 	volumeData, errCode := EncryptVolume(original, []byte(password), EncryptOptions{})
 	if errCode != 0 {
@@ -212,8 +212,8 @@ func observeWASMZeroingForTest(observer func(wasmZeroingEvent)) func() {
 }
 
 func TestWASMBuffersZeroed(t *testing.T) {
-	plaintext := []byte("Phase 6 zeroing coverage needs plaintext-derived ciphertext staging.")
-	password := "phase6-zeroing-password"
+	plaintext := []byte("Zeroing coverage needs plaintext-derived ciphertext staging.")
+	password := "wasm-zeroing-password"
 
 	var events []wasmZeroingEvent
 	restore := observeWASMZeroingForTest(func(event wasmZeroingEvent) {
@@ -235,7 +235,7 @@ func TestWASMBuffersZeroed(t *testing.T) {
 	// The plaintext argument is caller-owned at the internal package boundary.
 	// Browser bridge input-copy zeroing is covered by the bridge task; this test
 	// only observes encryption-local Go buffers that EncryptVolume owns.
-	if !bytes.Equal(plaintext, []byte("Phase 6 zeroing coverage needs plaintext-derived ciphertext staging.")) {
+	if !bytes.Equal(plaintext, []byte("Zeroing coverage needs plaintext-derived ciphertext staging.")) {
 		t.Fatal("EncryptVolume wiped caller-owned plaintext input")
 	}
 
@@ -301,7 +301,7 @@ func TestWASMUnsupportedFeatureFlagsReturnUnsupported(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			volumeData := wasmVolumeWithFlags(t, tc.flags)
 
-			_, errCode := DecryptVolume(volumeData, []byte("phase6-unsupported-flags"), DecryptOptions{})
+			_, errCode := DecryptVolume(volumeData, []byte("wasm-unsupported-flags"), DecryptOptions{})
 			if errCode != ErrUnsupported {
 				t.Fatalf("DecryptVolume error code = %d; want ErrUnsupported", errCode)
 			}
@@ -310,8 +310,8 @@ func TestWASMUnsupportedFeatureFlagsReturnUnsupported(t *testing.T) {
 }
 
 func TestWASMDecryptBuffersZeroed(t *testing.T) {
-	original := []byte("Phase 6 decrypt zeroing coverage needs returned plaintext intact.")
-	password := "phase6-decrypt-zeroing"
+	original := []byte("Decrypt zeroing coverage needs returned plaintext intact.")
+	password := "wasm-decrypt-zeroing"
 	volumeData, errCode := EncryptVolume(original, []byte(password), EncryptOptions{})
 	if errCode != 0 {
 		t.Fatalf("EncryptVolume returned error code %d", errCode)
@@ -370,8 +370,8 @@ func TestWASMDecryptBuffersZeroed(t *testing.T) {
 func TestWASMParanoidCommentsDesktopDecrypt(t *testing.T) {
 	useProductionTestWASMKDF(t)
 
-	original := []byte("P0: paranoid + comments interop through the desktop volume path.")
-	password := "p0-paranoid-interop"
+	original := []byte("Paranoid + comments interop through the desktop volume path.")
+	password := "paranoid-interop"
 	comments := "made in the browser"
 
 	volumeData, errCode := EncryptVolume(original, []byte(password), EncryptOptions{Paranoid: true, Comments: comments})
@@ -422,8 +422,8 @@ func TestWASMParanoidCommentsDesktopDecrypt(t *testing.T) {
 func TestWASMDecryptParanoidAndComments(t *testing.T) {
 	useProductionTestWASMKDF(t)
 
-	original := []byte("P0: desktop paranoid volume decrypts in WASM and yields comments.")
-	password := "p0-desktop-to-wasm"
+	original := []byte("Desktop paranoid volume decrypts in WASM and yields comments.")
+	password := "desktop-to-wasm"
 	comments := "round-trip comment"
 
 	// Desktop-encrypt a paranoid volume with comments to a temp file.
@@ -677,7 +677,7 @@ func TestWASMDecryptKeyfileCipherKeyZeroedOnCipherError(t *testing.T) {
 func wasmVolumeWithFlags(t *testing.T, flags header.Flags) []byte {
 	t.Helper()
 
-	volumeData, errCode := EncryptVolume([]byte("unsupported wasm feature flags"), []byte("phase6-unsupported-flags"), EncryptOptions{})
+	volumeData, errCode := EncryptVolume([]byte("unsupported wasm feature flags"), []byte("wasm-unsupported-flags"), EncryptOptions{})
 	if errCode != 0 {
 		t.Fatalf("EncryptVolume returned error code %d", errCode)
 	}

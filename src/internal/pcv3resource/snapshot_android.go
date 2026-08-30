@@ -7,8 +7,8 @@ import (
 	"context"
 )
 
-// androidSnapshotProvider deliberately supplies no guessed resource facts.
-// A calibrated provider is frozen only after the representative-device gate.
+// androidSnapshotProvider obtains fresh facts through the operation-scoped
+// Kotlin challenge. It has no device or firmware allowlist.
 type androidSnapshotProvider struct{}
 
 func newPlatformSnapshotProvider() snapshotProvider {
@@ -16,11 +16,11 @@ func newPlatformSnapshotProvider() snapshotProvider {
 }
 
 func (androidSnapshotProvider) AndroidReadPolicyConfigured() bool {
-	return false
+	return true
 }
 
 func (androidSnapshotProvider) Snapshot(context.Context) Snapshot {
-	return newAndroidBrokerSnapshot(snapshotStateUnconfigured)
+	return newUnknownAndroidSnapshot()
 }
 
 func (androidSnapshotProvider) snapshotForKDF(
@@ -28,11 +28,11 @@ func (androidSnapshotProvider) snapshotForKDF(
 	profile pcv3credential.KDFProfile,
 ) Snapshot {
 	if ctx == nil {
-		return newAndroidBrokerSnapshot(snapshotStateUnconfigured)
+		return newUnknownAndroidSnapshot()
 	}
 	session, _ := ctx.Value(androidResourceSessionContextKey{}).(*AndroidResourceSession)
 	if session == nil {
-		return newAndroidBrokerSnapshot(snapshotStateUnconfigured)
+		return newUnknownAndroidSnapshot()
 	}
 	return session.snapshotForKDF(ctx, profile)
 }

@@ -32,7 +32,7 @@ import (
 )
 
 // newRSCodecs is the Reed-Solomon codec constructor used by NewState. It is a
-// package-level seam (mirroring the Phase 3/4 RekeyThreshold / deriveVolumeKey
+// package-level seam (mirroring the RekeyThreshold / deriveVolumeKey
 // pattern) so tests can inject a failing constructor to exercise the RS-init
 // error path without a real failure (see TestNewStateRSInitFailure).
 var newRSCodecs = encoding.NewRSCodecs
@@ -111,6 +111,7 @@ const (
 	PCV3ActionDecrypt
 	PCV3ActionRecovery
 	PCV3ActionForce
+	PCV3ActionForceUnverified
 )
 
 type PCV3FactorPolicy uint8
@@ -139,6 +140,7 @@ type PCV3OperationIntent struct {
 	FactorPolicy PCV3FactorPolicy
 	KeyfileOrder PCV3KeyfileOrder
 	Source       *os.File
+	SplitBase    string
 	Target       string
 	Password     []byte
 	Keyfiles     []string
@@ -263,10 +265,8 @@ type State struct {
 	// layer no longer carries the password as a string: volume.EncryptRequest/
 	// DecryptRequest.Password are owned []byte, and ui/operations.go converts this
 	// string to an owned []byte at request-build and zeros that copy. This one GUI
-	// string is the documented residual — guaranteed zeroing of it is intentionally
-	// out of scope (CONCERNS 3.1; ROADMAP "Out of Scope: Guaranteed password
-	// zeroing"); all []byte key material derived from it is zeroed (see
-	// OperationContext.Close).
+	// string is the documented residual; all []byte key material derived from it
+	// is zeroed (see OperationContext.Close).
 	Password  string
 	CPassword string // Confirm password
 
@@ -295,6 +295,7 @@ type State struct {
 	ReedSolomon bool
 	Deniability bool
 	Compress    bool
+	CreatePCV3  bool
 
 	// Decryption options
 	Keep        bool // Force decrypt despite errors
@@ -488,6 +489,7 @@ func (s *State) resetUILocked() {
 	s.ReedSolomon = false
 	s.Deniability = false
 	s.Compress = false
+	s.CreatePCV3 = false
 
 	s.Keep = false
 	s.Kept = false
@@ -783,7 +785,7 @@ func pcv3IntentReady(
 	if route != PCV3RouteReady ||
 		(format != PCV3FormatNormal && format != PCV3FormatD1) ||
 		(action != PCV3ActionDecrypt && action != PCV3ActionRecovery &&
-			action != PCV3ActionForce) || output == "" {
+			action != PCV3ActionForce && action != PCV3ActionForceUnverified) || output == "" {
 		return false
 	}
 	hasPassword := password != ""
@@ -841,6 +843,9 @@ func (s *State) TakePCV3OperationIntent() (PCV3OperationIntent, bool) {
 		Password:     []byte(s.Password),
 		Keyfiles:     append([]string(nil), s.Keyfiles...),
 	}
+	if s.Recombine {
+		intent.SplitBase = s.InputFile
+	}
 	s.pcv3Source = nil
 	s.PCV3Route = PCV3RouteTransferred
 	s.Password = ""
@@ -854,11 +859,9 @@ func (s *State) TakePCV3OperationIntent() (PCV3OperationIntent, bool) {
 
 // canStart is the single source of truth for the start-gate condition, shared by
 // the live State.CanStart() and the render-path UISnapshot.CanStart() (DRY).
-func canStart(mode, password, cpassword string, keyfileCount int, deniability bool) bool {
-	// New v2 writes with keyfiles are frozen until the reviewed v3 format binds
-	// keyfiles to every secret operational key. Legacy v1/v2 decryption remains
-	// available below.
-	if mode == "encrypt" && keyfileCount > 0 {
+func canStart(mode, password, cpassword string, keyfileCount int, deniability, createPCV3 bool) bool {
+	// Legacy v2 creation cannot use keyfiles; explicit PCV3 creation can.
+	if mode == "encrypt" && keyfileCount > 0 && !createPCV3 {
 		return false
 	}
 
@@ -868,9 +871,10 @@ func canStart(mode, password, cpassword string, keyfileCount int, deniability bo
 		return false
 	}
 
-	// Keyfiles protect the inner volume, not the password-derived deniability
-	// wrapper. Legacy keyfile-only deniable volumes remain decryptable.
-	if mode == "encrypt" && deniability && password == "" {
+	// In the legacy format, keyfiles protect the inner volume but not the
+	// password-derived deniability wrapper. PCV3 D1 binds the complete factor
+	// transcript to both layers.
+	if mode == "encrypt" && deniability && !createPCV3 && password == "" {
 		return false
 	}
 
@@ -889,7 +893,7 @@ func (s *State) CanStart() bool {
 	if s.PCV3Route != PCV3RouteNone {
 		return !s.PCVUnavailable && !s.Working && !s.Scanning && pcv3IntentReadyLocked(s)
 	}
-	return !s.PCVUnavailable && canStart(s.Mode, s.Password, s.CPassword, len(s.Keyfiles), s.Deniability)
+	return !s.PCVUnavailable && canStart(s.Mode, s.Password, s.CPassword, len(s.Keyfiles), s.Deniability, s.CreatePCV3)
 }
 
 // CanStart returns true if the operation can be started, evaluated against this
@@ -902,7 +906,7 @@ func (snap UISnapshot) CanStart() bool {
 			snap.Password, snap.OutputFile, snap.KeyfileCount,
 		)
 	}
-	return !snap.PCVUnavailable && canStart(snap.Mode, snap.Password, snap.CPassword, snap.KeyfileCount, snap.Deniability)
+	return !snap.PCVUnavailable && canStart(snap.Mode, snap.Password, snap.CPassword, snap.KeyfileCount, snap.Deniability, snap.CreatePCV3)
 }
 
 // TogglePasswordVisibility toggles password show/hide.
@@ -1080,6 +1084,7 @@ type Snapshot struct {
 	ReedSolomon bool
 	Deniability bool
 	Compress    bool
+	CreatePCV3  bool
 
 	// Decryption options
 	Keep        bool
@@ -1116,6 +1121,7 @@ type UISnapshot struct {
 	PasswordMode          PasswordInputMode
 	Keyfile               bool
 	Deniability           bool
+	CreatePCV3            bool
 	Comments              string
 	CommentsPreviewState  CommentsPreviewState
 	StartLabel            string
@@ -1163,6 +1169,7 @@ type RecursiveSnapshot struct {
 	Paranoid       bool
 	ReedSolomon    bool
 	Deniability    bool
+	CreatePCV3     bool
 	Split          bool
 	SplitSize      string
 	SplitSelected  int32
@@ -1189,6 +1196,7 @@ func (s *State) Snapshot() Snapshot {
 		Paranoid:       s.Paranoid,
 		ReedSolomon:    s.ReedSolomon,
 		Deniability:    s.Deniability,
+		CreatePCV3:     s.CreatePCV3,
 		Compress:       s.Compress,
 		Keep:           s.Keep,
 		VerifyFirst:    s.VerifyFirst,
@@ -1228,6 +1236,7 @@ func (s *State) UISnapshot() UISnapshot {
 		PasswordMode:          s.PasswordMode,
 		Keyfile:               s.Keyfile,
 		Deniability:           s.Deniability,
+		CreatePCV3:            s.CreatePCV3,
 		Comments:              s.Comments,
 		CommentsPreviewState:  s.CommentsPreviewState,
 		StartLabel:            s.StartLabel,
@@ -1277,6 +1286,7 @@ func (s *State) RecursiveSnapshot() RecursiveSnapshot {
 		Paranoid:       s.Paranoid,
 		ReedSolomon:    s.ReedSolomon,
 		Deniability:    s.Deniability,
+		CreatePCV3:     s.CreatePCV3,
 		Split:          s.Split,
 		SplitSize:      s.SplitSize,
 		SplitSelected:  s.SplitSelected,
@@ -1304,6 +1314,7 @@ func (s *State) ApplyRecursiveSelection(rs RecursiveSnapshot) {
 	s.ReedSolomon = rs.ReedSolomon
 	if s.Mode != "decrypt" {
 		s.Deniability = rs.Deniability
+		s.CreatePCV3 = rs.CreatePCV3
 	}
 	s.Split = rs.Split
 	s.SplitSize = rs.SplitSize

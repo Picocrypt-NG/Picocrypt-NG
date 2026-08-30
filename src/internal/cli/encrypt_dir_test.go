@@ -96,8 +96,11 @@ func resetEncryptFlagsForDirTest() {
 	encLegacyInputs = nil
 	encOutput = ""
 	encPassword = ""
+	encPasswordStdin = false
+	encPasswordFD = -1
 	encKeyfiles = nil
 	encKeyfileOrder = false
+	encPCV3 = false
 	encParanoid = false
 	encReedSolomon = false
 	encDeniability = false
@@ -108,6 +111,11 @@ func resetEncryptFlagsForDirTest() {
 	encQuiet = false
 	encYes = false
 	encFollowSymlinks = false
+	for _, name := range []string{"password", "password-stdin", "password-fd"} {
+		if flag := encryptCmd.Flags().Lookup(name); flag != nil {
+			flag.Changed = false
+		}
+	}
 }
 
 // resetDecryptFlagsForDirTest clears the package-level decrypt flags this test
@@ -116,6 +124,8 @@ func resetDecryptFlagsForDirTest() {
 	decLegacyInputs = nil
 	decOutput = ""
 	decPassword = ""
+	decPasswordStdin = false
+	decPasswordFD = -1
 	decKeyfiles = nil
 	decForce = false
 	decVerifyFirst = false
@@ -125,4 +135,9 @@ func resetDecryptFlagsForDirTest() {
 	decDeniability = false
 	decQuiet = false
 	decYes = false
+	for _, name := range []string{"password", "password-stdin", "password-fd"} {
+		if flag := decryptCmd.Flags().Lookup(name); flag != nil {
+			flag.Changed = false
+		}
+	}
 }

@@ -41,8 +41,10 @@ func parseUnsignedChunkIndex(s string) (int, bool) {
 type RecombineOptions struct {
 	InputBase          string               // Base path without .N suffix
 	OutputPath         string               // Output .pcv file path
+	Output             *os.File             // Optional borrowed output descriptor
 	OutputInfo         *os.FileInfo         // Optional exact identity of the completed output
 	InputInfos         *[]os.FileInfo       // Optional identities of the exact consumed chunk descriptors
+	ExpectedInputs     []os.FileInfo        // Optional pinned identities and sizes for every chunk
 	FirstChunk         *os.File             // Optional borrowed, pre-routed chunk-zero descriptor
 	ValidateFirstChunk func(*os.File) error // Optional validation before output creation
 	Progress           ProgressFunc
@@ -114,6 +116,7 @@ func countChunks(basePath string, firstChunkInfo os.FileInfo) (int, int64, error
 func Recombine(opts RecombineOptions) (retErr error) {
 	firstChunk := opts.FirstChunk
 	borrowedFirstChunk := firstChunk != nil
+	var firstChunkInfo os.FileInfo
 	if firstChunk == nil && opts.ValidateFirstChunk != nil {
 		firstChunkPath := opts.InputBase + ".0"
 		// #nosec G304 -- chunk path derived from user-provided base path
@@ -128,6 +131,16 @@ func Recombine(opts RecombineOptions) (retErr error) {
 		}()
 	}
 	if firstChunk != nil {
+		if opts.ExpectedInputs != nil {
+			var err error
+			firstChunkInfo, err = firstChunk.Stat()
+			if err != nil {
+				return fmt.Errorf("stat chunk 0: %w", err)
+			}
+			if len(opts.ExpectedInputs) == 0 || !sameRegularFileAndSize(opts.ExpectedInputs[0], firstChunkInfo) {
+				return errors.New("chunk 0 changed before recombination")
+			}
+		}
 		if opts.ValidateFirstChunk != nil {
 			if err := opts.ValidateFirstChunk(firstChunk); err != nil {
 				return err
@@ -136,43 +149,60 @@ func Recombine(opts RecombineOptions) (retErr error) {
 		if _, err := firstChunk.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("rewind chunk 0 after validation: %w", err)
 		}
-	}
-
-	var firstChunkInfo os.FileInfo
-	if firstChunk != nil {
-		var err error
-		firstChunkInfo, err = firstChunk.Stat()
-		if err != nil {
-			return fmt.Errorf("stat chunk 0: %w", err)
+		if firstChunkInfo == nil {
+			var err error
+			firstChunkInfo, err = firstChunk.Stat()
+			if err != nil {
+				return fmt.Errorf("stat chunk 0: %w", err)
+			}
 		}
 	}
+
 	numChunks, totalSize, err := countChunks(opts.InputBase, firstChunkInfo)
 	if err != nil {
 		return err
 	}
-
-	fout, err := CreateExclusiveNoSymlink(opts.OutputPath)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("output file already exists: %s: %w", opts.OutputPath, err)
-		}
-		return fmt.Errorf("create output: %w", err)
+	if opts.ExpectedInputs != nil && len(opts.ExpectedInputs) != numChunks {
+		return fmt.Errorf("expected %d chunk identities, found %d chunks", len(opts.ExpectedInputs), numChunks)
 	}
-	ownedOutput, err := newOwnedFilePath(opts.OutputPath, fout)
-	if err != nil {
-		_ = fout.Close()
-		return fmt.Errorf("inspect output: %w", err)
+
+	fout := opts.Output
+	borrowedOutput := fout != nil
+	var ownedOutput ownedFilePath
+	if borrowedOutput {
+		info, err := fout.Stat()
+		if err != nil {
+			return fmt.Errorf("inspect borrowed output: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("borrowed output is not a regular file")
+		}
+	} else {
+		fout, err = CreateExclusiveNoSymlink(opts.OutputPath)
+		if err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return fmt.Errorf("output file already exists: %s: %w", opts.OutputPath, err)
+			}
+			return fmt.Errorf("create output: %w", err)
+		}
+		ownedOutput, err = newOwnedFilePath(opts.OutputPath, fout)
+		if err != nil {
+			_ = fout.Close()
+			return fmt.Errorf("inspect output: %w", err)
+		}
 	}
 	keepOutput := false
-	defer func() {
-		if err := fout.Close(); err != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("close output: %w", err))
-			keepOutput = false
-		}
-		if !keepOutput {
-			retErr = errors.Join(retErr, ownedOutput.remove())
-		}
-	}()
+	if !borrowedOutput {
+		defer func() {
+			if err := fout.Close(); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close output: %w", err))
+				keepOutput = false
+			}
+			if !keepOutput {
+				retErr = errors.Join(retErr, ownedOutput.remove())
+			}
+		}()
+	}
 
 	var totalDone int64
 	inputInfos := make([]os.FileInfo, 0, numChunks)
@@ -193,8 +223,12 @@ func Recombine(opts RecombineOptions) (retErr error) {
 			firstChunk = nil
 		} else {
 			chunkPath := fmt.Sprintf("%s.%d", opts.InputBase, i)
-			// #nosec G304 -- chunk paths derived from user-provided base path
-			fin, err = os.Open(chunkPath)
+			if opts.ExpectedInputs != nil && i > 0 {
+				fin, err = OpenExistingNoSymlink(chunkPath, os.O_RDONLY)
+			} else {
+				// #nosec G304 -- chunk paths derived from user-provided base path
+				fin, err = os.Open(chunkPath)
+			}
 			if err != nil {
 				return fmt.Errorf("open chunk %d: %w", i, err)
 			}
@@ -206,6 +240,12 @@ func Recombine(opts RecombineOptions) (retErr error) {
 				_ = fin.Close()
 			}
 			return fmt.Errorf("stat chunk %d: %w", i, err)
+		}
+		if opts.ExpectedInputs != nil && !sameRegularFileAndSize(opts.ExpectedInputs[i], finInfo) {
+			if closeFin {
+				_ = fin.Close()
+			}
+			return fmt.Errorf("chunk %d changed before recombination", i)
 		}
 		inputInfos = append(inputInfos, finInfo)
 
@@ -259,20 +299,39 @@ func Recombine(opts RecombineOptions) (retErr error) {
 	if err := recombineSyncFn(fout); err != nil {
 		return fmt.Errorf("sync output file: %w", err)
 	}
-	current, err := os.Lstat(opts.OutputPath)
-	if err != nil || !current.Mode().IsRegular() || !os.SameFile(ownedOutput.info, current) {
-		if err != nil {
-			return fmt.Errorf("inspect completed output: %w", err)
+	if borrowedOutput {
+		if _, err := fout.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind borrowed output: %w", err)
 		}
-		return errors.New("output path changed during recombination")
-	}
-	if opts.OutputInfo != nil {
-		*opts.OutputInfo = ownedOutput.info
+		if opts.OutputInfo != nil {
+			info, err := fout.Stat()
+			if err != nil {
+				return fmt.Errorf("inspect completed borrowed output: %w", err)
+			}
+			*opts.OutputInfo = info
+		}
+	} else {
+		current, err := os.Lstat(opts.OutputPath)
+		if err != nil || !current.Mode().IsRegular() || !os.SameFile(ownedOutput.info, current) {
+			if err != nil {
+				return fmt.Errorf("inspect completed output: %w", err)
+			}
+			return errors.New("output path changed during recombination")
+		}
+		if opts.OutputInfo != nil {
+			*opts.OutputInfo = ownedOutput.info
+		}
+		keepOutput = true
 	}
 	if opts.InputInfos != nil {
 		*opts.InputInfos = append([]os.FileInfo(nil), inputInfos...)
 	}
-	keepOutput = true
 
 	return nil
+}
+
+func sameRegularFileAndSize(expected, actual os.FileInfo) bool {
+	return expected != nil && actual != nil &&
+		expected.Mode().IsRegular() && actual.Mode().IsRegular() &&
+		expected.Size() == actual.Size() && os.SameFile(expected, actual)
 }

@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestPhase3Registry(t *testing.T) {
+func TestPCV3Registry(t *testing.T) {
 	outcomes := []struct {
 		outcome pcv3.Outcome
 		want    string

@@ -815,16 +815,16 @@ func TestMacOSInfoPlist(t *testing.T) {
 
 	// --- Negative assertion: ensure stale hyphenated bundle ID is gone (D-14 fix) ---
 	if strings.Contains(string(data), "io.github.picocrypt-ng") {
-		t.Errorf("Info.plist still contains pre-Phase-3 stale ID 'io.github.picocrypt-ng' (must be picocryptng — no hyphen)")
+		t.Errorf("Info.plist still contains stale ID 'io.github.picocrypt-ng' (must be picocryptng — no hyphen)")
 	}
 }
 
 // TestWindowsNSISScript validates the canonical NSIS installer script in
-// dist/windows/installer.nsi. Mirrors Phase 2/3 contract test patterns
+// dist/windows/installer.nsi. Mirrors the existing contract test patterns
 // (TestSnapDesktopMimeType + TestMacOSInfoPlist) — regex-based assertions
 // since NSIS has no formal Go grammar (D-32). makensis itself is not invoked
 // here; CI compiles the script on a Windows host (D-33, build-windows.yml
-// Phase 4 step).
+// installer build step).
 func TestWindowsNSISScript(t *testing.T) {
 	data := mustReadFile(t, "dist/windows/installer.nsi")
 	text := string(data)

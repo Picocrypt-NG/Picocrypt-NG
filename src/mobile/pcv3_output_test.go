@@ -1,3 +1,5 @@
+//go:build android || linux
+
 package mobile
 
 import (
@@ -71,7 +73,7 @@ func TestPCV3MobileRetainedOutputOwnsExactDurableFile(t *testing.T) {
 		release:  make(chan struct{}),
 	}
 	operation := startPCV3Operation()
-	completePCV3PresentationWithOutput(operation, durablePCV3MobilePresentation(t), action)
+	completePCV3PresentationWithOutputAndInspectionComment(operation, durablePCV3MobilePresentation(t), action, nil, "")
 
 	output := operation.Output()
 	if output == nil {
@@ -130,7 +132,7 @@ func TestPCV3MobileRetainedOutputPreservesForeignReplacement(t *testing.T) {
 		t.Fatalf("write foreign replacement: %v", err)
 	}
 	operation := startPCV3Operation()
-	completePCV3PresentationWithOutput(operation, durablePCV3MobilePresentation(t), &retainedMobileOutputAction{retained: retained})
+	completePCV3PresentationWithOutputAndInspectionComment(operation, durablePCV3MobilePresentation(t), &retainedMobileOutputAction{retained: retained}, nil, "")
 
 	result := operation.Output().Discard()
 	if result == nil || result.Code() != "discard-cleanup-incomplete" || !result.CleanupIncomplete() {
@@ -149,7 +151,7 @@ func TestPCV3MobileRetainedOutputRejectsStaleCompletionAndRedactsExports(t *test
 	action := &retainedMobileOutputAction{retained: retained}
 	operation := startPCV3Operation()
 	completePCV3PresentationForOperation(operation, fallbackPCV3Presentation(pcv3operation.DiagnosticCoreFailure))
-	completePCV3PresentationWithOutput(operation, durablePCV3MobilePresentation(t), action)
+	completePCV3PresentationWithOutputAndInspectionComment(operation, durablePCV3MobilePresentation(t), action, nil, "")
 	if calls := action.calls.Load(); calls != 1 {
 		t.Fatalf("stale completion discard calls = %d; want exactly one", calls)
 	}
@@ -171,7 +173,7 @@ func TestPCV3MobileRetainedOutputRejectsStaleCompletionAndRedactsExports(t *test
 		Stage:   pcv3.StageNone,
 		Code:    pcv3.CodeSuccess,
 	})
-	completePCV3PresentationWithOutput(operation, invalid, action)
+	completePCV3PresentationWithOutputAndInspectionComment(operation, invalid, action, nil, "")
 	if snapshot := operation.Snapshot(); snapshot.Diagnostic() != "core-failure" || operation.Output() != nil {
 		t.Fatalf("invalid output projection = %s output=%v; want fixed fail-closed result", snapshot.Diagnostic(), operation.Output())
 	}
@@ -189,7 +191,7 @@ func TestPCV3MobileRetainedOutputRejectsStaleCompletionAndRedactsExports(t *test
 func TestPCV3MobileRetainedOutputContainsDiscardPanic(t *testing.T) {
 	operation := startPCV3Operation()
 	action := &panicMobileOutputAction{}
-	completePCV3PresentationWithOutput(operation, durablePCV3MobilePresentation(t), action)
+	completePCV3PresentationWithOutputAndInspectionComment(operation, durablePCV3MobilePresentation(t), action, nil, "")
 
 	output := operation.Output()
 	if output == nil {
@@ -212,7 +214,7 @@ func TestPCV3MobileRetainedOutputContainsDiscardPanic(t *testing.T) {
 	operation = startPCV3Operation()
 	action = &panicMobileOutputAction{}
 	completePCV3PresentationForOperation(operation, fallbackPCV3Presentation(pcv3operation.DiagnosticCoreFailure))
-	completePCV3PresentationWithOutput(operation, durablePCV3MobilePresentation(t), action)
+	completePCV3PresentationWithOutputAndInspectionComment(operation, durablePCV3MobilePresentation(t), action, nil, "")
 	if snapshot := operation.Snapshot(); snapshot.Diagnostic() != "core-failure" || operation.Output() != nil {
 		t.Fatalf("contained stale cleanup panic = %s output=%v; want fail-closed terminal", snapshot.Diagnostic(), operation.Output())
 	}
@@ -234,7 +236,7 @@ func TestPCV3MobileRetainedOutputSaveFDTransfersExactOwner(t *testing.T) {
 		release:  make(chan struct{}),
 	}
 	operation := startPCV3Operation()
-	completePCV3PresentationWithOutput(operation, durablePCV3MobilePresentation(t), action)
+	completePCV3PresentationWithOutputAndInspectionComment(operation, durablePCV3MobilePresentation(t), action, nil, "")
 	output := operation.Output()
 	if output == nil {
 		t.Fatal("durable retained output did not expose a SaveFD capability")
@@ -295,7 +297,7 @@ func TestPCV3MobileRetainedOutputSaveFDContainsInvalidAndPanic(t *testing.T) {
 
 	retained, retainedPath := publishPCV3MobileRetainedFile(t, directory, "invalid.bin", []byte("invalid FD cleanup"))
 	operation := startPCV3Operation()
-	completePCV3PresentationWithOutput(operation, durablePCV3MobilePresentation(t), &retainedMobileOutputAction{retained: retained})
+	completePCV3PresentationWithOutputAndInspectionComment(operation, durablePCV3MobilePresentation(t), &retainedMobileOutputAction{retained: retained}, nil, "")
 	truncatedFD := int64(guard.Fd()) + (int64(1) << 32)
 	invalid := operation.Output().SaveFD(truncatedFD)
 	if invalid == nil || invalid.Code() != "save-failed" || invalid.CleanupIncomplete() {
@@ -317,7 +319,7 @@ func TestPCV3MobileRetainedOutputSaveFDContainsInvalidAndPanic(t *testing.T) {
 
 	operation = startPCV3Operation()
 	action := &panicMobileOutputAction{}
-	completePCV3PresentationWithOutput(operation, durablePCV3MobilePresentation(t), action)
+	completePCV3PresentationWithOutputAndInspectionComment(operation, durablePCV3MobilePresentation(t), action, nil, "")
 	output := operation.Output()
 	destination, err := os.CreateTemp(directory, "panic-fd")
 	if err != nil {
@@ -348,7 +350,7 @@ func TestPCV3MobileRetainedOutputSaveFDClosesExpiredTransferredDescriptor(t *tes
 	directory := t.TempDir()
 	retained, _ := publishPCV3MobileRetainedFile(t, directory, "expired.bin", []byte("consume before reused SaveFD"))
 	operation := startPCV3Operation()
-	completePCV3PresentationWithOutput(operation, durablePCV3MobilePresentation(t), &retainedMobileOutputAction{retained: retained})
+	completePCV3PresentationWithOutputAndInspectionComment(operation, durablePCV3MobilePresentation(t), &retainedMobileOutputAction{retained: retained}, nil, "")
 	output := operation.Output()
 	if output == nil {
 		t.Fatal("live output was not exposed before expiration")

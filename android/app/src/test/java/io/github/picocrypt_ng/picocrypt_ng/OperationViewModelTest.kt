@@ -1131,6 +1131,46 @@ class OperationViewModelTest {
         }
 
     @Test
+    fun `PCV3 creation save claims the created-volume target and reaches the native save`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            mockkObject(FileCopyService)
+            val uri = mockk<Uri>()
+            val descriptor = mockk<ParcelFileDescriptor>(relaxed = true)
+            val creation = outputPcv3(
+                operationId = "op-save-created-volume",
+                generation = 60,
+                outcome = "success",
+                completionClass = "clean",
+            ).copy(isCreation = true)
+            val route = FakePcv3Operations(
+                startResult = Result.failure(Pcv3BridgeFailure("unused")),
+                initialPresentation = creation,
+            )
+            val viewModel = OperationViewModel(route, RecordingPcv3Cleaner())
+            try {
+                coEvery { FileCopyService.openPcv3OutputDescriptor(mockContext, uri) } returns
+                    Result.success(descriptor)
+
+                assertEquals(
+                    "created-volume.pcv",
+                    viewModel.beginPcv3Save(creation.operationId, creation.generation),
+                )
+                viewModel.completePcv3Save(mockContext, uri)
+                runCurrent()
+                assertEquals(
+                    "the creation claim must project the created-volume target, not a decrypted output",
+                    1,
+                    route.saveOutputCalls,
+                )
+                assertSame(descriptor, route.savedDestinations.single())
+                verify(exactly = 0) { descriptor.close() }
+            } finally {
+                viewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+                unmockkObject(FileCopyService)
+            }
+        }
+
+    @Test
     fun `PCV3 artifact pages preserve decimal evidence and delayed work cannot outlive its exact ticket`() =
         runTest(mainDispatcherRule.testDispatcher) {
             val max = "18446744073709551615"
@@ -1621,7 +1661,7 @@ class OperationViewModelTest {
         }
 
         override suspend fun start(
-            request: Pcv3Request,
+            request: Pcv3StartRequest,
             password: CharArray,
             receiptFile: File,
         ): Result<Pcv3Presentation> {

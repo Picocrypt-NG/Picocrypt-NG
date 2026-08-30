@@ -73,9 +73,15 @@ func (operation *PCV3Operation) ID() string {
 func (operation *PCV3Operation) Snapshot() *PCV3Snapshot {
 	state, ok := copyPCV3State(operation)
 	if !ok {
-		return newPCV3Snapshot(pcv3operation.Presentation{}, pcv3operation.Status{}, "", "")
+		return newPCV3Snapshot(pcv3operation.Presentation{}, pcv3operation.Status{}, "", "", "")
 	}
-	return newPCV3Snapshot(state.presentation, state.status, operation.id, state.receiptID)
+	return newPCV3Snapshot(
+		state.presentation,
+		state.status,
+		operation.id,
+		state.receiptID,
+		state.authenticatedComment,
+	)
 }
 
 func (operation *PCV3Operation) Consent() *PCV3Consent {
@@ -132,8 +138,7 @@ type PCV3ResourceChallenge struct {
 }
 
 // ResourceChallenge returns the current challenge only through its matching
-// live operation object. An unconfigured policy and a non-waiting KDF both
-// return nil.
+// live operation object. A non-waiting KDF returns nil.
 func (operation *PCV3Operation) ResourceChallenge() *PCV3ResourceChallenge {
 	globalProgressMap.mu.RLock()
 	state, ok := livePCV3StateLocked(operation)
@@ -153,14 +158,11 @@ func (operation *PCV3Operation) ResourceChallenge() *PCV3ResourceChallenge {
 // whether this one-shot transport handle was consumed; it is never a resource
 // sufficiency or KDF admission decision.
 func (challenge *PCV3ResourceChallenge) Submit(
-	manufacturer string,
-	model string,
-	abi string,
-	osArch string,
 	totalRAMBytes int64,
 	effectiveAvailable int64,
+	platformThreshold int64,
+	processFootprint int64,
 	processIs64Bit bool,
-	emulatorTraitsClear bool,
 	lowMemory bool,
 ) bool {
 	if challenge == nil || challenge.operation == nil || challenge.challenge == nil {
@@ -174,14 +176,11 @@ func (challenge *PCV3ResourceChallenge) Submit(
 		return false
 	}
 	return challenge.challenge.Submit(
-		manufacturer,
-		model,
-		abi,
-		osArch,
 		totalRAMBytes,
 		effectiveAvailable,
+		platformThreshold,
+		processFootprint,
 		processIs64Bit,
-		emulatorTraitsClear,
 		lowMemory,
 	)
 }
@@ -233,26 +232,28 @@ func (operation *PCV3Operation) Release() string {
 // PCV3Snapshot is an authority-free scalar view. It intentionally has no raw
 // error, path, completion boolean, or capability field.
 type PCV3Snapshot struct {
-	presentation pcv3operation.Presentation
-	status       pcv3operation.Status
-	operationID  string
-	receiptID    string
-	args         [4]uint64
-	argCount     int
-	warnings     [8]string
-	warningCount int
+	presentation         pcv3operation.Presentation
+	status               pcv3operation.Status
+	operationID          string
+	receiptID            string
+	authenticatedComment string
+	args                 [4]uint64
+	argCount             int
+	warnings             [8]string
+	warningCount         int
 }
 
 func newPCV3Snapshot(
 	presentation pcv3operation.Presentation,
 	status pcv3operation.Status,
-	operationID, receiptID string,
+	operationID, receiptID, authenticatedComment string,
 ) *PCV3Snapshot {
 	snapshot := &PCV3Snapshot{
-		presentation: presentation,
-		status:       status,
-		operationID:  operationID,
-		receiptID:    receiptID,
+		presentation:         presentation,
+		status:               status,
+		operationID:          operationID,
+		receiptID:            receiptID,
+		authenticatedComment: authenticatedComment,
 	}
 	args := presentation.Args()
 	if len(args) > len(snapshot.args) {
@@ -420,25 +421,36 @@ func (snapshot *PCV3Snapshot) RestoredReceipt() string {
 	return mintPCV3ReceiptV1(snapshot.operationID, snapshot.receiptID, snapshot.presentation)
 }
 
+// AuthenticatedComment returns header metadata only after the core has
+// authenticated it. Comments are public metadata, not secret content.
+func (snapshot *PCV3Snapshot) AuthenticatedComment() string {
+	if snapshot == nil {
+		return ""
+	}
+	return snapshot.authenticatedComment
+}
+
 type pcv3ProgressState struct {
-	generation         uint64
-	presentation       pcv3operation.Presentation
-	status             pcv3operation.Status
-	terminal           bool
-	receiptID          string
-	cancelRequested    bool
-	consent            *pcv3ConsentState
-	archive            *pcv3ArchiveState
-	archiveInFlight    bool
-	output             *pcv3OutputState
-	outputInFlight     bool
-	artifactInspection *PCV3ArtifactInspection
+	generation           uint64
+	presentation         pcv3operation.Presentation
+	status               pcv3operation.Status
+	terminal             bool
+	receiptID            string
+	authenticatedComment string
+	cancelRequested      bool
+	consent              *pcv3ConsentState
+	archive              *pcv3ArchiveState
+	archiveInFlight      bool
+	output               *pcv3OutputState
+	outputInFlight       bool
+	artifactInspection   *PCV3ArtifactInspection
 }
 
 type pcv3StateCopy struct {
-	presentation pcv3operation.Presentation
-	status       pcv3operation.Status
-	receiptID    string
+	presentation         pcv3operation.Presentation
+	status               pcv3operation.Status
+	receiptID            string
+	authenticatedComment string
 }
 
 type pcv3ConsentState struct {
@@ -605,7 +617,7 @@ func (archive *PCV3Archive) consume() (*pcv3ArchiveState, pcv3ArchiveAction) {
 
 func (archive *PCV3Archive) snapshot() *PCV3Snapshot {
 	if archive == nil || archive.state == nil || archive.state.operation == nil {
-		return newPCV3Snapshot(pcv3operation.Presentation{}, pcv3operation.Status{}, "", "")
+		return newPCV3Snapshot(pcv3operation.Presentation{}, pcv3operation.Status{}, "", "", "")
 	}
 	return archive.state.operation.Snapshot()
 }
@@ -939,9 +951,10 @@ func copyPCV3State(operation *PCV3Operation) (pcv3StateCopy, bool) {
 		return pcv3StateCopy{}, false
 	}
 	return pcv3StateCopy{
-		presentation: state.presentation,
-		status:       state.status,
-		receiptID:    state.receiptID,
+		presentation:         state.presentation,
+		status:               state.status,
+		receiptID:            state.receiptID,
+		authenticatedComment: state.authenticatedComment,
 	}, true
 }
 
@@ -996,11 +1009,13 @@ func detachPCV3Consent(consent *pcv3ConsentState) {
 
 func completePCV3Result(operation *PCV3Operation, result *pcv3operation.Result) {
 	presentation := fallbackPCV3Presentation(pcv3operation.DiagnosticCoreFailure)
+	authenticatedComment := ""
 	var archive pcv3ArchiveAction
 	var output pcv3OutputAction
 	var inspection *PCV3ArtifactInspection
 	if result != nil {
 		presentation = result.Presentation()
+		authenticatedComment = result.AuthenticatedComment()
 		if followUp := result.ArchiveFollowUp(); followUp != nil {
 			archive = &nativePCV3ArchiveAction{followUp: followUp}
 		}
@@ -1012,48 +1027,38 @@ func completePCV3Result(operation *PCV3Operation, result *pcv3operation.Result) 
 	if archive != nil && output != nil {
 		outputResult := discardPCV3OutputAction(output)
 		closed := archive.Close()
-		completePCV3PresentationForOperation(
+		completePCV3PresentationForOperationWithComment(
 			operation,
 			outputArchiveFailurePCV3Presentation(closed, outputResult),
+			authenticatedComment,
 		)
 		return
 	}
 	if archive != nil && inspection != nil {
-		completePCV3PresentationWithArchiveAndInspection(operation, presentation, archive, inspection)
+		completePCV3PresentationWithArchiveAndInspectionComment(
+			operation, presentation, archive, inspection, authenticatedComment,
+		)
 		return
 	}
 	if output != nil {
-		completePCV3PresentationWithOutputAndInspection(operation, presentation, output, inspection)
+		completePCV3PresentationWithOutputAndInspectionComment(
+			operation, presentation, output, inspection, authenticatedComment,
+		)
 		return
 	}
 	if archive == nil {
-		completePCV3PresentationWithInspection(operation, presentation, inspection)
+		completePCV3PresentationWithArchiveAndInspectionComment(
+			operation, presentation, nil, inspection, authenticatedComment,
+		)
 		return
 	}
-	completePCV3PresentationWithArchive(operation, presentation, archive)
+	completePCV3PresentationWithArchiveAndInspectionComment(
+		operation, presentation, archive, nil, authenticatedComment,
+	)
 }
 
 func completePCV3Panic(operation *PCV3Operation) {
 	completePCV3PresentationForOperation(operation, fallbackPCV3Presentation(pcv3operation.DiagnosticCallbackPanic))
-}
-
-func completePCV3Presentation(id string, presentation pcv3operation.Presentation) {
-	if presentation.CompletionClass() == pcv3operation.CompletionUnknown || presentation.ArchivePending() {
-		presentation = fallbackPCV3Presentation(pcv3operation.DiagnosticCoreFailure)
-	}
-	receiptID := ""
-	if restorablePCV3Presentation(presentation) {
-		receiptID = pcv3ReceiptIDGenerator()
-	}
-	globalProgressMap.mu.Lock()
-	defer globalProgressMap.mu.Unlock()
-	state, ok := globalProgressMap.pcv3[id]
-	if !ok || state.terminal {
-		return
-	}
-	state.presentation = presentation
-	state.terminal = true
-	state.receiptID = receiptID
 }
 
 func completePCV3PresentationForOperation(
@@ -1061,6 +1066,16 @@ func completePCV3PresentationForOperation(
 	presentation pcv3operation.Presentation,
 ) {
 	completePCV3PresentationWithInspection(operation, presentation, nil)
+}
+
+func completePCV3PresentationForOperationWithComment(
+	operation *PCV3Operation,
+	presentation pcv3operation.Presentation,
+	authenticatedComment string,
+) {
+	completePCV3PresentationWithArchiveAndInspectionComment(
+		operation, presentation, nil, nil, authenticatedComment,
+	)
 }
 
 func completePCV3PresentationWithInspection(
@@ -1084,6 +1099,18 @@ func completePCV3PresentationWithArchiveAndInspection(
 	presentation pcv3operation.Presentation,
 	action pcv3ArchiveAction,
 	inspection *PCV3ArtifactInspection,
+) {
+	completePCV3PresentationWithArchiveAndInspectionComment(
+		operation, presentation, action, inspection, "",
+	)
+}
+
+func completePCV3PresentationWithArchiveAndInspectionComment(
+	operation *PCV3Operation,
+	presentation pcv3operation.Presentation,
+	action pcv3ArchiveAction,
+	inspection *PCV3ArtifactInspection,
+	authenticatedComment string,
 ) {
 	if presentation.CompletionClass() == pcv3operation.CompletionUnknown ||
 		(action != nil && inspection != nil) ||
@@ -1120,6 +1147,7 @@ func completePCV3PresentationWithArchiveAndInspection(
 		return
 	}
 	state.presentation = presentation
+	state.authenticatedComment = authenticatedComment
 	state.terminal = true
 	if action != nil {
 		state.archive = &pcv3ArchiveState{operation: operation, action: action, live: true}
@@ -1133,30 +1161,26 @@ func completePCV3PresentationWithArchiveAndInspection(
 	}
 }
 
-func completePCV3PresentationWithOutput(
-	operation *PCV3Operation,
-	presentation pcv3operation.Presentation,
-	action pcv3OutputAction,
-) {
-	completePCV3PresentationWithOutputAndInspection(operation, presentation, action, nil)
-}
-
-func completePCV3PresentationWithOutputAndInspection(
+func completePCV3PresentationWithOutputAndInspectionComment(
 	operation *PCV3Operation,
 	presentation pcv3operation.Presentation,
 	action pcv3OutputAction,
 	inspection *PCV3ArtifactInspection,
+	authenticatedComment string,
 ) {
 	if action == nil {
-		completePCV3PresentationWithInspection(operation, presentation, inspection)
+		completePCV3PresentationWithArchiveAndInspectionComment(
+			operation, presentation, nil, inspection, authenticatedComment,
+		)
 		return
 	}
 	completion := presentation.CompletionClass()
 	if completion != pcv3operation.CompletionClean && completion != pcv3operation.CompletionWarning {
 		result := discardPCV3OutputAction(action)
-		completePCV3PresentationForOperation(
+		completePCV3PresentationForOperationWithComment(
 			operation,
 			outputFailurePCV3Presentation(pcv3operation.DiagnosticCoreFailure, result),
+			authenticatedComment,
 		)
 		return
 	}
@@ -1175,6 +1199,7 @@ func completePCV3PresentationWithOutputAndInspection(
 		return
 	}
 	state.presentation = presentation
+	state.authenticatedComment = authenticatedComment
 	state.terminal = true
 	state.output = &pcv3OutputState{operation: operation, action: action, live: true}
 	state.artifactInspection = inspection
@@ -1225,13 +1250,19 @@ func replacePCV3ArchivePresentationWithReceipt(
 	defer globalProgressMap.mu.Unlock()
 	state, ok := livePCV3StateLocked(operation)
 	if !ok || state.archive != nil || !state.archiveInFlight || presentation.ArchivePending() {
-		return newPCV3Snapshot(pcv3operation.Presentation{}, pcv3operation.Status{}, "", "")
+		return newPCV3Snapshot(pcv3operation.Presentation{}, pcv3operation.Status{}, "", "", "")
 	}
 	state.presentation = presentation
 	state.terminal = true
 	state.receiptID = receiptID
 	state.archiveInFlight = false
-	return newPCV3Snapshot(state.presentation, state.status, operation.id, state.receiptID)
+	return newPCV3Snapshot(
+		state.presentation,
+		state.status,
+		operation.id,
+		state.receiptID,
+		state.authenticatedComment,
+	)
 }
 
 func markPCV3ArchiveInFlight(archive *pcv3ArchiveState) {
@@ -1536,7 +1567,7 @@ func RestorePCV3Receipt(input string) *PCV3RestoredReceipt {
 	if err != nil || !restorablePCV3Presentation(presentation) {
 		return invalid
 	}
-	snapshot := newPCV3Snapshot(presentation, pcv3operation.Status{}, wire.OperationID, wire.ReceiptID)
+	snapshot := newPCV3Snapshot(presentation, pcv3operation.Status{}, wire.OperationID, wire.ReceiptID, "")
 	return &PCV3RestoredReceipt{
 		receiptID: wire.ReceiptID, operationID: wire.OperationID, snapshot: snapshot,
 	}
@@ -1574,6 +1605,23 @@ func decodePCV3ExactObject(
 	maximum int,
 	required map[string]struct{},
 ) (map[string]json.RawMessage, error) {
+	values, err := decodePCV3ObjectFields(input, maximum, required)
+	if err != nil {
+		return nil, err
+	}
+	if len(values) != len(required) {
+		return nil, errors.New("invalid PCV3 object")
+	}
+	return values, nil
+}
+
+// decodePCV3ObjectFields parses one bounded flat object, rejecting duplicate
+// and unlisted fields. Callers own the exact required-field-set decision.
+func decodePCV3ObjectFields(
+	input string,
+	maximum int,
+	allowed map[string]struct{},
+) (map[string]json.RawMessage, error) {
 	if len(input) == 0 || len(input) > maximum {
 		return nil, errors.New("invalid PCV3 object")
 	}
@@ -1582,14 +1630,14 @@ func decodePCV3ExactObject(
 	if err != nil || token != json.Delim('{') {
 		return nil, errors.New("invalid PCV3 object")
 	}
-	values := make(map[string]json.RawMessage, len(required))
+	values := make(map[string]json.RawMessage, len(allowed))
 	for decoder.More() {
 		nameToken, tokenErr := decoder.Token()
 		name, ok := nameToken.(string)
 		if tokenErr != nil || !ok {
 			return nil, errors.New("invalid PCV3 object")
 		}
-		if _, ok := required[name]; !ok {
+		if _, ok := allowed[name]; !ok {
 			return nil, errors.New("invalid PCV3 object")
 		}
 		if _, duplicate := values[name]; duplicate {
@@ -1602,7 +1650,7 @@ func decodePCV3ExactObject(
 		values[name] = value
 	}
 	if token, err = decoder.Token(); err != nil || token != json.Delim('}') ||
-		len(values) != len(required) || !jsonDecoderAtEOF(decoder) {
+		!jsonDecoderAtEOF(decoder) {
 		return nil, errors.New("invalid PCV3 object")
 	}
 	return values, nil
@@ -1697,12 +1745,6 @@ func cancelOperationAndGetProgress(id string) (*ProgressState, error) {
 	}
 
 	return copyProgressState(op), nil
-}
-
-// cancelOperation cancels an operation.
-func cancelOperation(id string) error {
-	_, err := cancelOperationAndGetProgress(id)
-	return err
 }
 
 // getContext retrieves the context for an operation

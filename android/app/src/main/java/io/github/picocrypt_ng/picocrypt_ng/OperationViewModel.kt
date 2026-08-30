@@ -23,7 +23,7 @@ internal interface Pcv3Operations {
     val presentation: StateFlow<Pcv3Presentation?>
     val busy: StateFlow<Boolean>
     suspend fun start(
-        request: Pcv3Request,
+        request: Pcv3StartRequest,
         password: CharArray,
         receiptFile: File,
     ): Result<Pcv3Presentation>
@@ -74,7 +74,7 @@ private object ManagerPcv3Operations : Pcv3Operations {
     override val presentation = OperationManager.currentPcv3Presentation
     override val busy = OperationManager.currentPcv3Busy
     override suspend fun start(
-        request: Pcv3Request,
+        request: Pcv3StartRequest,
         password: CharArray,
         receiptFile: File,
     ) = OperationManager.startPcv3(request, password, receiptFile)
@@ -169,6 +169,10 @@ class OperationViewModel internal constructor(
     val pcv3Error: StateFlow<AppError?> = _pcv3Error.asStateFlow()
     private var pendingPcv3CleanupError: AppError.FileError.DeleteFailed? = null
 
+    /** Bounded save failure for the host-copied D1 creation staging file. */
+    private val _pcv3StagingSaveError = MutableStateFlow<AppError?>(null)
+    val pcv3StagingSaveError: StateFlow<AppError?> = _pcv3StagingSaveError.asStateFlow()
+
     private val _pcv3ArtifactDetails =
         MutableStateFlow<Pcv3ArtifactDetailsUiState>(Pcv3ArtifactDetailsUiState.Closed)
     val pcv3ArtifactDetails: StateFlow<Pcv3ArtifactDetailsUiState> =
@@ -178,6 +182,9 @@ class OperationViewModel internal constructor(
     private var currentPcv3Ticket: Pcv3Ticket? = pcv3Operations.presentation.value?.toTicket()
     private var pendingPcv3Save: Pcv3SaveTicket? = null
     private var pcv3SaveCompletion: Pcv3SaveTicket? = null
+    private var pendingPcv3StagingSave: Pcv3Ticket? = null
+    private var pcv3StagingSaveCompletion: Pcv3Ticket? = null
+    private var pcv3CreateName: String? = null
     private var pendingPcv3Archive: Pcv3Ticket? = null
     private var pcv3ArchiveCompletion: Pcv3Ticket? = null
     private var pcv3OutputActionTicket: Pcv3Ticket? = null
@@ -210,6 +217,7 @@ class OperationViewModel internal constructor(
                 } else if (!pcv3StartPending && !pcv3Operations.busy.value) {
                     currentPcv3Ticket = null
                     _pcv3Intent.value = null
+                    pcv3CreateName = null
                 }
                 if (!presentation.supportsArtifactTicket(pcv3ArtifactTicket)) {
                     invalidatePcv3ArtifactDetails()
@@ -238,7 +246,9 @@ class OperationViewModel internal constructor(
         pcv3StartPending = true
         _pcv3Busy.value = true
         _pcv3Intent.value = intent
+        pcv3CreateName = transfer.createName
         _pcv3Error.value = null
+        _pcv3StagingSaveError.value = null
         pendingPcv3CleanupError = null
 
         try {
@@ -296,6 +306,7 @@ class OperationViewModel internal constructor(
                     } else if (presentation == null && !pcv3Operations.busy.value) {
                         currentPcv3Ticket = null
                         _pcv3Intent.value = null
+                        pcv3CreateName = null
                     }
                 }
             }
@@ -332,7 +343,8 @@ class OperationViewModel internal constructor(
     /** Opens one tree picker for the exact live archive generation without retaining its URI. */
     fun beginPcv3Archive(operationId: String, generation: Long): Boolean {
         if (pendingPcv3Archive != null || pcv3ArchiveCompletion != null ||
-            pendingPcv3Save != null || pcv3SaveCompletion != null || pcv3OutputActionTicket != null
+            pendingPcv3Save != null || pcv3SaveCompletion != null || pcv3OutputActionTicket != null ||
+            pendingPcv3StagingSave != null || pcv3StagingSaveCompletion != null
         ) {
             return false
         }
@@ -370,14 +382,19 @@ class OperationViewModel internal constructor(
     fun beginPcv3Save(operationId: String, generation: Long): String? {
         if (pendingPcv3Save != null || pcv3SaveCompletion != null ||
             pcv3OutputActionTicket != null || pendingPcv3Archive != null ||
-            pcv3ArchiveCompletion != null
+            pcv3ArchiveCompletion != null || pendingPcv3StagingSave != null ||
+            pcv3StagingSaveCompletion != null
         ) {
             return null
         }
         val live = currentLivePcv3Output(operationId, generation) ?: return null
         val destination = live.pcv3SaveDestination() ?: return null
         pendingPcv3Save = Pcv3SaveTicket(live.toTicket(), destination)
-        return destination.suggestedName
+        return if (destination == Pcv3SaveDestination.CREATED_VOLUME) {
+            pcv3CreateName?.takeIf(String::isNotBlank) ?: destination.suggestedName
+        } else {
+            destination.suggestedName
+        }
     }
 
     /** Consumes the outstanding picker ticket once; a null picker result has no native effect. */
@@ -455,6 +472,102 @@ class OperationViewModel internal constructor(
         }
     }
 
+    /**
+     * Opens one save picker for the exact D1 creation terminal generation. The native
+     * D1 writer published the created volume to the app-private staging path; the host
+     * copies it to the user-chosen destination and deletes the staging file.
+     */
+    fun beginPcv3StagingSave(operationId: String, generation: Long): String? {
+        if (pendingPcv3Save != null || pcv3SaveCompletion != null ||
+            pcv3OutputActionTicket != null || pendingPcv3Archive != null ||
+            pcv3ArchiveCompletion != null || pendingPcv3StagingSave != null ||
+            pcv3StagingSaveCompletion != null
+        ) {
+            return null
+        }
+        if (currentFinalPcv3Creation(operationId, generation) == null) return null
+        _pcv3StagingSaveError.value = null
+        pendingPcv3StagingSave = Pcv3Ticket(operationId, generation)
+        return pcv3CreateName?.takeIf(String::isNotBlank) ?: "created-volume"
+    }
+
+    /** Copies the exact D1 staging file into the picked destination, then removes it. */
+    fun completePcv3StagingSave(context: Context, destinationUri: Uri?) {
+        val ticket = pendingPcv3StagingSave ?: return
+        pendingPcv3StagingSave = null
+        if (destinationUri == null) return
+        pcv3StagingSaveCompletion = ticket
+
+        viewModelScope.launch {
+            try {
+                if (currentFinalPcv3Creation(ticket.operationId, ticket.generation) == null) {
+                    return@launch
+                }
+                // The staging path is the fixed app-private target chosen at dispatch;
+                // the ticket above proves this exact generation still owns it.
+                val stagingPath = FileCopyService.getPcv3RetainedOutputPath(context)
+                val saved = try {
+                    FileCopyService.saveFileToUri(context, stagingPath, destinationUri)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    Result.failure(
+                        AppError.FileError.SaveFailed(
+                            userMessage = "",
+                            technicalMessage = PCV3_OUTPUT_SAVE_FAILED,
+                            messageResId = R.string.error_save_failed,
+                        ),
+                    )
+                }
+                val failure = saved.exceptionOrNull()
+                if (failure != null) {
+                    if (currentFinalPcv3Creation(ticket.operationId, ticket.generation) != null) {
+                        _pcv3StagingSaveError.value = failure as? AppError
+                            ?: AppError.FileError.SaveFailed(
+                                userMessage = "",
+                                technicalMessage = PCV3_OUTPUT_SAVE_FAILED,
+                                messageResId = R.string.error_save_failed,
+                            )
+                    }
+                    return@launch
+                }
+                val stagingDeleted = withContext(NonCancellable) {
+                    try {
+                        pcv3ResourceCleaner.delete(context, listOf(stagingPath))
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
+                if (!stagingDeleted) {
+                    // The volume is safely at the user destination; only private
+                    // residue remains, reported after the terminal result is dismissed.
+                    pendingPcv3CleanupError = AppError.FileError.DeleteFailed(
+                        userMessage = "",
+                        technicalMessage = "Failed to clear the saved PCV3 staging file",
+                        messageResId = R.string.error_delete_failed,
+                    )
+                }
+                dismissPcv3(ticket.operationId, ticket.generation)
+            } finally {
+                if (pcv3StagingSaveCompletion == ticket) pcv3StagingSaveCompletion = null
+            }
+        }
+    }
+
+    private fun currentFinalPcv3Creation(
+        operationId: String,
+        generation: Long,
+    ): Pcv3Presentation.Final? {
+        val final = pcv3Operations.presentation.value as? Pcv3Presentation.Final ?: return null
+        val ticket = Pcv3Ticket(operationId, generation)
+        return final.takeIf {
+            it.toTicket() == ticket && currentPcv3Ticket == ticket &&
+                it.isCreation && it.outputAction == null &&
+                pcv3OutputActionTarget(it.snapshot, it.artifactMetadata, it.isCreation) ==
+                    Pcv3OutputActionTarget.CREATED_VOLUME
+        }
+    }
+
     fun inspectPcv3Artifact(operationId: String, generation: Long) {
         loadPcv3ArtifactPage(operationId, generation, "0")
     }
@@ -506,6 +619,8 @@ class OperationViewModel internal constructor(
         viewModelScope.launch {
             if (pcv3Operations.dismiss(operationId, generation)) {
                 _pcv3Intent.value = null
+                pcv3CreateName = null
+                _pcv3StagingSaveError.value = null
                 currentPcv3Ticket = null
                 stopPcv3Polling()
                 publishPcv3Busy()
@@ -548,8 +663,9 @@ class OperationViewModel internal constructor(
             currentLivePcv3Archive(operationId, generation) != null
 
     private fun Pcv3Presentation.Live.pcv3SaveDestination(): Pcv3SaveDestination? =
-        when (pcv3OutputActionTarget(snapshot, artifactMetadata)) {
+        when (pcv3OutputActionTarget(snapshot, artifactMetadata, isCreation)) {
             Pcv3OutputActionTarget.DECRYPTED_OUTPUT -> Pcv3SaveDestination.DECRYPTED_OUTPUT
+            Pcv3OutputActionTarget.CREATED_VOLUME -> Pcv3SaveDestination.CREATED_VOLUME
             Pcv3OutputActionTarget.RECOVERY_ARTIFACT -> Pcv3SaveDestination.RECOVERY_ARTIFACT
             null -> null
         }
@@ -564,7 +680,7 @@ class OperationViewModel internal constructor(
         expectedTarget: Pcv3OutputActionTarget,
     ): Boolean {
         val live = currentLivePcv3Output(ticket.operationId, ticket.generation) ?: return false
-        if (pcv3OutputActionTarget(live.snapshot, live.artifactMetadata) != expectedTarget) {
+        if (pcv3OutputActionTarget(live.snapshot, live.artifactMetadata, live.isCreation) != expectedTarget) {
             return false
         }
         pcv3OutputActionTicket = ticket
@@ -611,7 +727,7 @@ class OperationViewModel internal constructor(
         if (this is Pcv3Presentation.Live && outputActionInFlight) return false
         if (this !is Pcv3Presentation.Live && this !is Pcv3Presentation.Final) return false
         val metadata = artifactMetadata ?: return false
-        return pcv3OutputActionTarget(snapshot, metadata) ==
+        return pcv3OutputActionTarget(snapshot, metadata, isCreation) ==
             Pcv3OutputActionTarget.RECOVERY_ARTIFACT
     }
 
@@ -930,6 +1046,11 @@ class OperationViewModel internal constructor(
             "decrypted-output",
             requiresRecoverySuffix = false,
             outputTarget = Pcv3OutputActionTarget.DECRYPTED_OUTPUT,
+        ),
+        CREATED_VOLUME(
+            "created-volume.pcv",
+            requiresRecoverySuffix = false,
+            outputTarget = Pcv3OutputActionTarget.CREATED_VOLUME,
         ),
         RECOVERY_ARTIFACT(
             "decrypted-output.pcv3-recovery",

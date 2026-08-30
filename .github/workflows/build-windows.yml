@@ -183,7 +183,7 @@ jobs:
         upx/upx-5.2.0-win64/upx.exe --lzma -o src/Picocrypt-NG.exe src/5.exe
         upx/upx-5.2.0-win64/upx.exe --lzma src/Picocrypt-NG-cli.exe
 
-    # === Phase 4 (FA-WIN-04): build NSIS installer ===
+    # Build the NSIS installer.
     # NSIS is NOT pre-installed on windows-2025 [actions/runner-images#11754,
     # verified 2026-05-01]; CONTEXT D-04 assumed pre-install based on
     # windows-2022 precedent — invalidated. We install via choco; choco itself
@@ -234,7 +234,6 @@ jobs:
         if ($size -gt 100MB) {
           throw "Setup.exe suspiciously large (> 100 MB): $size bytes"
         }
-    # === end Phase 4 ===
 
     # Stage all release files into a single directory so upload-artifact's
     # least-common-ancestor rule produces a flat zip (LCA == staging dir).

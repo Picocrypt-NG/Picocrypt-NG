@@ -163,6 +163,7 @@ fun MainLayout() {
     val pcv3Busy by operationViewModel.pcv3Busy.collectAsState()
     val pcv3Error by operationViewModel.pcv3Error.collectAsState()
     val pcv3ArtifactDetails by operationViewModel.pcv3ArtifactDetails.collectAsState()
+    val pcv3StagingSaveError by operationViewModel.pcv3StagingSaveError.collectAsState()
     var previousOperationState by remember { mutableStateOf<OperationState?>(null) }
     
     LaunchedEffect(operationState) {
@@ -246,7 +247,9 @@ fun MainLayout() {
         if (isCommentsCardVisible) add { CommentsCard(mainViewModel) }
         if (isDecryptionInfoCardVisible) add { DecryptionInfoCard(mainViewModel) }
         if (isPasswordCardVisible) add { PasswordCard(mainViewModel) }
-        if (isAdvancedCardVisible) add { AdvancedCard(mainViewModel) }
+        if (isAdvancedCardVisible) add {
+            AdvancedCard(mainViewModel, pcv3AndroidPolicyState = pcv3AndroidPolicyState)
+        }
         if (isDecryptOptionsCardVisible) add {
             DecryptOptionsCard(
                 viewModel = mainViewModel,
@@ -306,6 +309,9 @@ fun MainLayout() {
             onInspectPcv3Artifact = operationViewModel::inspectPcv3Artifact,
             onLoadPcv3ArtifactPage = operationViewModel::loadPcv3ArtifactPage,
             onClosePcv3ArtifactInspection = operationViewModel::closePcv3ArtifactInspection,
+            onBeginPcv3StagingSave = operationViewModel::beginPcv3StagingSave,
+            onCompletePcv3StagingSave = operationViewModel::completePcv3StagingSave,
+            pcv3StagingSaveError = pcv3StagingSaveError,
         )
         
         // ErrorDialog for non-operation errors (file operations, etc.)

@@ -29,7 +29,9 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import io.github.picocrypt_ng.picocrypt_ng.MainViewModel
+import io.github.picocrypt_ng.picocrypt_ng.Pcv3AndroidPolicyState
 import io.github.picocrypt_ng.picocrypt_ng.R
+import io.github.picocrypt_ng.picocrypt_ng.SelectionKind
 import androidx.compose.runtime.collectAsState
 
 
@@ -83,15 +85,35 @@ fun LabeledCheckbox(label: String, value: Boolean, onChange: (Boolean) -> Unit) 
 
 
 @Composable
-fun AdvancedCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
+fun AdvancedCard(
+    viewModel: MainViewModel,
+    modifier: Modifier = Modifier,
+    pcv3AndroidPolicyState: Pcv3AndroidPolicyState = Pcv3AndroidPolicyState.UNCONFIGURED,
+) {
     val formData by viewModel.formState.collectAsState()
     if (!formData.isEncrypt) {
         return
     }
+    // PCV3 creation is a single-file concept; the staged folder/multi tree only feeds
+    // the legacy zip path. The toggle also requires a configured PCV3 Android build.
+    val canCreatePcv3 = pcv3AndroidPolicyState == Pcv3AndroidPolicyState.CONFIGURED &&
+        formData.selectionKind == SelectionKind.SINGLE_FILE
     val count =
-        (if (formData.reedSolomon) 1 else 0) + (if (formData.deniability) 1 else 0) + (if (formData.paranoid) 1 else 0)
+        (if (formData.reedSolomon) 1 else 0) + (if (formData.deniability) 1 else 0) +
+            (if (formData.paranoid) 1 else 0) + (if (formData.createPcv3) 1 else 0)
     ExpandableCard(title = stringResource(R.string.advanced_settings, count), modifier = modifier) {
         Column(modifier = Modifier.padding(16.dp)) {
+            if (canCreatePcv3) {
+                LabeledCheckbox(stringResource(R.string.pcv3_create), formData.createPcv3) { checked ->
+                    // D1 creation has no suite choice: deniability with PCV3 forces paranoid.
+                    viewModel.updateFormData(
+                        formData.copy(
+                            createPcv3 = checked,
+                            paranoid = formData.paranoid || (checked && formData.deniability),
+                        )
+                    )
+                }
+            }
             LabeledCheckbox(stringResource(R.string.reed_solomon), formData.reedSolomon) {
                 viewModel.updateFormData(formData.copy(reedSolomon = it))
             }
@@ -99,10 +121,19 @@ fun AdvancedCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 viewModel.updateFormData(formData.copy(paranoid = it))
             }
             LabeledCheckbox(stringResource(R.string.deniability), formData.deniability) {
-                viewModel.updateFormData(formData.copy(deniability = it))
+                viewModel.updateFormData(
+                    formData.copy(
+                        deniability = it,
+                        paranoid = formData.paranoid || (it && formData.createPcv3),
+                    )
+                )
             }
-            LabeledCheckbox(stringResource(R.string.compress), formData.compress) {
-                viewModel.updateFormData(formData.copy(compress = it))
+            // The PCV3 creation envelope has no compression input; the toggle stays
+            // legacy-only so it can never silently not apply.
+            if (!formData.createPcv3) {
+                LabeledCheckbox(stringResource(R.string.compress), formData.compress) {
+                    viewModel.updateFormData(formData.copy(compress = it))
+                }
             }
         }
     }

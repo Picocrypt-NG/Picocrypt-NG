@@ -20,6 +20,7 @@ type PreparedDecryptInput struct {
 	file       *os.File
 	info       os.FileInfo
 	inputInfos []os.FileInfo
+	route      pcv3.Route
 }
 
 // PrepareDecryptInput opens and routes the descriptor that authorizes a legacy
@@ -31,7 +32,7 @@ func PrepareDecryptInput(inputPath string, recombine bool) (*PreparedDecryptInpu
 		sourcePath = recombineInputBase(inputPath) + ".0"
 	}
 
-	source, err := os.Open(sourcePath) // #nosec G304 -- caller-provided input path
+	source, err := os.Open(sourcePath) // #nosec G304 -- legacy compatibility permits a leaf symlink
 	if err != nil {
 		return nil, fmt.Errorf("open input for PCV3 preflight: %w", err)
 	}
@@ -42,11 +43,28 @@ func PrepareDecryptInput(inputPath string, recombine bool) (*PreparedDecryptInpu
 			source.Close(),
 		)
 	}
-	if err := rejectClaimedPCV3Size(source, info.Size()); err != nil {
+	if info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
+		return nil, errors.Join(
+			errors.New("prepared decrypt input must be a regular file"),
+			source.Close(),
+		)
+	}
+	route := pcv3.RouteLegacyEligible
+	if recombine {
+		var prefix [4]byte
+		count, readErr := io.ReadFull(source, prefix[:])
+		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			return nil, errors.Join(readErr, source.Close())
+		}
+		route = pcv3.DetectPrefix(prefix[:count])
+		if _, err := source.Seek(0, io.SeekStart); err != nil {
+			return nil, errors.Join(err, source.Close())
+		}
+	} else if err := rejectClaimedPCV3Size(source, info.Size()); err != nil {
 		return nil, errors.Join(err, source.Close())
 	}
 	inputInfos := []os.FileInfo{info}
-	if recombine {
+	if recombine && route != pcv3.RouteNormalPCV {
 		inputBase := recombineInputBase(inputPath)
 		numChunks, _, err := fileops.CountChunks(inputBase)
 		if err != nil {
@@ -59,10 +77,11 @@ func PrepareDecryptInput(inputPath string, recombine bool) (*PreparedDecryptInpu
 		inputInfos[0] = info
 		for i := 1; i < numChunks; i++ {
 			chunkPath := fmt.Sprintf("%s.%d", inputBase, i)
-			chunkInfo, err := os.Stat(chunkPath)
-			if err != nil {
+			chunkInfo, statErr := os.Stat(chunkPath)
+			if statErr != nil || chunkInfo == nil || !chunkInfo.Mode().IsRegular() {
 				return nil, errors.Join(
-					fmt.Errorf("inspect split input %d for PCV3 routing: %w", i, err),
+					fmt.Errorf("inspect split input %d for PCV3 routing", i),
+					statErr,
 					source.Close(),
 				)
 			}
@@ -76,7 +95,12 @@ func PrepareDecryptInput(inputPath string, recombine bool) (*PreparedDecryptInpu
 		file:       source,
 		info:       info,
 		inputInfos: inputInfos,
+		route:      route,
 	}, nil
+}
+
+func (input *PreparedDecryptInput) ClaimsNormalPCV3() bool {
+	return input != nil && input.route == pcv3.RouteNormalPCV
 }
 
 // Close releases the prepared descriptor. It is safe to call more than once.
@@ -88,6 +112,7 @@ func (input *PreparedDecryptInput) Close() error {
 	input.file = nil
 	input.info = nil
 	input.inputInfos = nil
+	input.route = pcv3.RouteLegacyEligible
 	return err
 }
 
@@ -138,12 +163,24 @@ func (input *PreparedDecryptInput) detach() *os.File {
 	return file
 }
 
+// DetachSource transfers the pinned descriptor while leaving no cleanup
+// authority on PreparedDecryptInput.
+func (input *PreparedDecryptInput) DetachSource() *os.File {
+	if input == nil {
+		return nil
+	}
+	return input.detach()
+}
+
 // PreflightPCV3 routes a native input before legacy operation state or side
 // effects exist. A recombine request is inspected through chunk zero only.
 func PreflightPCV3(inputPath string, recombine bool) error {
 	input, err := PrepareDecryptInput(inputPath, recombine)
 	if err != nil {
 		return err
+	}
+	if input.ClaimsNormalPCV3() {
+		return errors.Join(pcv3.ErrReaderUnavailable, input.Close())
 	}
 	return input.Close()
 }
@@ -202,21 +239,6 @@ func (ctx *OperationContext) pinLegacyDecryptInput(source *os.File, owned bool) 
 }
 
 func (ctx *OperationContext) openLegacyDecryptInput() (io.ReadSeeker, error) {
-	if ctx.legacyInputFactory != nil {
-		if err := ctx.closeLegacyInputPass(); err != nil {
-			return nil, err
-		}
-		reader, err := ctx.legacyInputFactory()
-		if err != nil {
-			return nil, err
-		}
-		closer, ok := reader.(io.Closer)
-		if !ok {
-			return nil, errors.New("legacy input factory returned an unclosable pass")
-		}
-		ctx.legacyInputPass = closer
-		return reader, nil
-	}
 	if ctx.pinnedLegacyInput == nil {
 		return nil, errors.New("decrypt input descriptor is not pinned")
 	}
@@ -243,10 +265,8 @@ func (ctx *OperationContext) releasePinnedLegacyInput() error {
 	if ctx == nil {
 		return nil
 	}
-	passErr := ctx.closeLegacyInputPass()
-	ctx.legacyInputFactory = nil
 	if ctx.pinnedLegacyInput == nil {
-		return passErr
+		return nil
 	}
 	file := ctx.pinnedLegacyInput
 	owned := ctx.ownsPinnedLegacyInput
@@ -255,22 +275,10 @@ func (ctx *OperationContext) releasePinnedLegacyInput() error {
 	ctx.pinnedLegacyInputInfo = nil
 	ctx.pinnedLegacyInputSize = 0
 	if !owned {
-		return passErr
-	}
-	if err := file.Close(); err != nil {
-		return errors.Join(passErr, fmt.Errorf("close pinned decrypt input: %w", err))
-	}
-	return passErr
-}
-
-func (ctx *OperationContext) closeLegacyInputPass() error {
-	if ctx == nil || ctx.legacyInputPass == nil {
 		return nil
 	}
-	pass := ctx.legacyInputPass
-	ctx.legacyInputPass = nil
-	if err := pass.Close(); err != nil {
-		return fmt.Errorf("close legacy input pass: %w", err)
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close pinned decrypt input: %w", err)
 	}
 	return nil
 }

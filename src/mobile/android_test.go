@@ -117,7 +117,7 @@ func TestCompleteOperationDoesNotOverwriteCancelledState(t *testing.T) {
 	resetProgressMap()
 
 	id := startOperation()
-	if err := cancelOperation(id); err != nil {
+	if _, err := CancelOperation(id); err != nil {
 		t.Fatal(err)
 	}
 
@@ -145,7 +145,7 @@ func TestCancelledOperationIgnoresLateReporterCallbacksAndCompletion(t *testing.
 	reporter := &androidProgressReporter{opID: id}
 	reporter.SetStatus("Deriving key...")
 	reporter.SetProgress(0.25, "1/10")
-	if err := cancelOperation(id); err != nil {
+	if _, err := CancelOperation(id); err != nil {
 		t.Fatal(err)
 	}
 
@@ -182,7 +182,7 @@ func TestCancelOperationPreservesSuccessfulTerminalSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cancelOperation(id); err != nil {
+	if _, err := CancelOperation(id); err != nil {
 		t.Fatal(err)
 	}
 	afterCancel, err := getProgress(id)
@@ -207,7 +207,7 @@ func TestCancelOperationPreservesFailedTerminalSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cancelOperation(id); err != nil {
+	if _, err := CancelOperation(id); err != nil {
 		t.Fatal(err)
 	}
 	afterCancel, err := getProgress(id)
@@ -309,7 +309,7 @@ func TestProgressTerminalStatusCodes(t *testing.T) {
 		{
 			name: "cancellation",
 			finish: func(t *testing.T, id string) {
-				if err := cancelOperation(id); err != nil {
+				if _, err := CancelOperation(id); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -595,7 +595,7 @@ func TestStartEncryptRejectsKeyfileOnlyV2WriteBeforeStartingWorker(t *testing.T)
 	if got == "" {
 		_ = waitForDone(t, id)
 	}
-	want := "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format"
+	want := "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled; use explicit PCV3 creation"
 	if got != want {
 		t.Errorf("StartEncrypt(...) = %q; want %q", got, want)
 	}
@@ -657,7 +657,7 @@ func TestStartEncryptRejectsPasswordAndKeyfileV2WriteBeforeStartingWorker(t *tes
 	}
 
 	got := StartEncrypt(string(reqJSON), []byte("secret"))
-	const want = "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format"
+	const want = "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled; use explicit PCV3 creation"
 	if got != want {
 		t.Fatalf("StartEncrypt(...) = %q; want %q", got, want)
 	}

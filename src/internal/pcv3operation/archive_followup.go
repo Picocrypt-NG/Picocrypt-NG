@@ -11,17 +11,18 @@ import (
 )
 
 type nativeArchiveFollowUpState struct {
-	mu      sync.Mutex
-	active  bool
-	handoff *pcv3.NativeArchiveHandoff
+	mu                   sync.Mutex
+	active               bool
+	handoff              *pcv3.NativeArchiveHandoff
+	authenticatedComment string
 }
 
-func newArchiveFollowUp(handoff *pcv3.NativeArchiveHandoff) *ArchiveFollowUp {
+func newArchiveFollowUp(handoff *pcv3.NativeArchiveHandoff, authenticatedComment string) *ArchiveFollowUp {
 	if handoff == nil || !handoff.Live() {
 		return nil
 	}
 	return &ArchiveFollowUp{state: &nativeArchiveFollowUpState{
-		active: true, handoff: handoff,
+		active: true, handoff: handoff, authenticatedComment: authenticatedComment,
 	}}
 }
 
@@ -35,42 +36,48 @@ func (state *nativeArchiveFollowUpState) live() bool {
 }
 
 func (state *nativeArchiveFollowUpState) extract(ctx context.Context, root *os.Root) *Result {
-	handoff := state.consume()
+	handoff, comment := state.consume()
 	if handoff == nil {
 		return archiveNoOutput(DiagnosticInvalidRequest, closeExtractionRoot(root))
 	}
-	return resultFromArchiveExtraction(handoff.Extract(ctx, root))
+	result := resultFromArchiveExtraction(handoff.Extract(ctx, root))
+	result.authenticatedComment = comment
+	return result
 }
 
 func (state *nativeArchiveFollowUpState) close() *Result {
-	handoff := state.consume()
+	handoff, comment := state.consume()
 	if handoff == nil {
 		return archiveNoOutput(DiagnosticInvalidRequest, false)
 	}
-	return archiveNoOutput(DiagnosticNone, handoff.Close())
+	result := archiveNoOutput(DiagnosticNone, handoff.Close())
+	result.authenticatedComment = comment
+	return result
 }
 
 func (state *nativeArchiveFollowUpState) beginSAF() *ArchiveSAFBegin {
-	handoff := state.consume()
+	handoff, _ := state.consume()
 	if handoff == nil {
 		return &ArchiveSAFBegin{kind: ArchiveSAFBeginExpired}
 	}
 	return archiveSAFBeginFromNative(handoff.BeginSAF())
 }
 
-func (state *nativeArchiveFollowUpState) consume() *pcv3.NativeArchiveHandoff {
+func (state *nativeArchiveFollowUpState) consume() (*pcv3.NativeArchiveHandoff, string) {
 	if state == nil {
-		return nil
+		return nil, ""
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if !state.active || state.handoff == nil {
-		return nil
+		return nil, ""
 	}
 	state.active = false
 	handoff := state.handoff
+	comment := state.authenticatedComment
 	state.handoff = nil
-	return handoff
+	state.authenticatedComment = ""
+	return handoff, comment
 }
 
 // Extract consumes the follow-up before effects and takes ownership of the

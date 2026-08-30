@@ -58,7 +58,7 @@ const (
 	DiagnosticCoreFailure
 	DiagnosticCallbackFailure
 	DiagnosticCallbackPanic
-	DiagnosticGovernanceRefusal
+	diagnosticReserved
 	DiagnosticResourceBusy
 	DiagnosticResourceInsufficient
 	DiagnosticResourceUnknown
@@ -150,7 +150,7 @@ func validWarningSlice(warnings []Warning) bool {
 }
 
 // archiveFollowUpState is implemented only by operation-owned, Go-minted
-// follow-up state. Task 4 adds the concrete extraction lifecycle.
+// follow-up state.
 type archiveFollowUpState interface {
 	live() bool
 	extract(context.Context, *os.Root) *Result
@@ -169,6 +169,7 @@ type Result struct {
 	outcome               pcv3.Outcome
 	stage                 pcv3.Stage
 	code                  pcv3.Code
+	authenticatedComment  string
 	forceProvenance       pcv3.ForceProvenance
 	d1BootstrapProvenance pcv3.D1BootstrapProvenance
 	detailStage           pcv3.Stage
@@ -282,6 +283,16 @@ func (result *Result) Code() pcv3.Code {
 		return 0
 	}
 	return result.code
+}
+
+// AuthenticatedComment returns public PCV3 metadata released by the reader
+// only after successful authentication. It is deliberately absent from the
+// authority-free Presentation snapshot.
+func (result *Result) AuthenticatedComment() string {
+	if result == nil {
+		return ""
+	}
+	return result.authenticatedComment
 }
 
 func (result *Result) ForceProvenance() pcv3.ForceProvenance {

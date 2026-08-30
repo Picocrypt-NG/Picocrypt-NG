@@ -48,6 +48,7 @@ type operationInput struct {
 	reedSolomon bool
 	deniability bool
 	compress    bool
+	createPCV3  bool
 
 	split     bool
 	chunkSize int
@@ -410,9 +411,21 @@ func (a *App) onClickStart() {
 	if uiSnap.Mode == "" || a.startDisabled(uiSnap) {
 		return
 	}
-	if uiSnap.PCV3Route == app.PCV3RouteReady {
-		a.startPCV3Work()
-		return
+	pcv3Output := uiSnap.PCV3Route == app.PCV3RouteReady ||
+		(uiSnap.Mode == "encrypt" && uiSnap.CreatePCV3)
+	if pcv3Output {
+		if _, err := os.Lstat(uiSnap.OutputFile); err == nil {
+			a.State.SetStatus(
+				tr("status.pcv3_output_exists", "PCV3 output already exists. Choose a different name."),
+				util.RED,
+			)
+			a.updateUIState()
+			return
+		}
+		if uiSnap.PCV3Route == app.PCV3RouteReady {
+			a.startPCV3Work()
+			return
+		}
 	}
 
 	if !a.State.Recursively {
@@ -601,6 +614,7 @@ func (a *App) captureOperationInput(snap app.Snapshot) (operationInput, error) {
 		reedSolomon:    snap.ReedSolomon,
 		deniability:    snap.Deniability,
 		compress:       snap.Compress,
+		createPCV3:     snap.CreatePCV3,
 		split:          snap.Split,
 		chunkSize:      chunkSize,
 		chunkUnit:      splitUnitFromIndex(snap.SplitSelected),
@@ -782,6 +796,11 @@ func pcv3ModeForIntent(intent app.PCV3OperationIntent) (pcv3operation.Mode, bool
 		return pcv3operation.ModeRecoverD1, intent.Format == app.PCV3FormatD1
 	case app.PCV3ActionForce:
 		if normal {
+			return pcv3operation.ModeForceNormal, true
+		}
+		return pcv3operation.ModeForceD1, intent.Format == app.PCV3FormatD1
+	case app.PCV3ActionForceUnverified:
+		if normal {
 			return pcv3operation.ModeForceUnverifiedNormal, true
 		}
 		return pcv3operation.ModeForceUnverifiedD1, intent.Format == app.PCV3FormatD1
@@ -854,11 +873,13 @@ func buildPCV3Request(intent *app.PCV3OperationIntent) (*pcv3operation.Request, 
 	request := &pcv3operation.Request{
 		Mode:      mode,
 		Source:    intent.Source,
+		SplitBase: intent.SplitBase,
 		Factors:   factors,
 		Target:    intent.Target,
 		Protected: append([]string(nil), intent.Keyfiles...),
 	}
 	intent.Source = nil
+	intent.SplitBase = ""
 	for index := range intent.Keyfiles {
 		intent.Keyfiles[index] = ""
 	}
@@ -877,6 +898,7 @@ func closePCV3Intent(intent *app.PCV3OperationIntent) {
 		_ = intent.Source.Close()
 		intent.Source = nil
 	}
+	intent.SplitBase = ""
 	for index := range intent.Keyfiles {
 		intent.Keyfiles[index] = ""
 	}
@@ -932,7 +954,12 @@ func (a *App) startPCV3Work() {
 	a.State.SetWorking(true)
 	a.State.SetCanCancel(true)
 	request.Reporter = a.pcv3Reporter(session)
-	request.Consent = a.pcv3Consent(session)
+	switch request.Mode {
+	case pcv3operation.ModeForceUnverifiedNormal, pcv3operation.ModeForceUnverifiedD1:
+		// Only unverified Force modes may carry a consent callback; the
+		// operation boundary rejects consent on every other mode.
+		request.Consent = a.pcv3Consent(session)
+	}
 	executor := a.pcv3OperationExecutor
 	if executor == nil {
 		executor = pcv3operation.Run
@@ -1085,12 +1112,6 @@ func pcv3CleanupIncomplete(presentation pcv3operation.Presentation) bool {
 	return false
 }
 
-func (a *App) latchPCV3CleanupPresentation(presentation pcv3operation.Presentation) {
-	if pcv3CleanupIncomplete(presentation) {
-		a.State.LatchPCV3CleanupIncomplete()
-	}
-}
-
 func (a *App) latchPCV3CleanupResult(result *pcv3operation.Result) bool {
 	if result == nil {
 		a.State.LatchPCV3CleanupIncomplete()
@@ -1212,6 +1233,12 @@ func (a *App) buildPCV3ResultView(
 	}
 	if outcome.Body != "" {
 		content.Add(wrappedPCV3Label(outcome.Body))
+	}
+	if result != nil && result == a.pcv3Result {
+		if comment := result.AuthenticatedComment(); comment != "" {
+			content.Add(wrappedPCV3Title(tr("comments.label", "Comments:")))
+			content.Add(wrappedPCV3Label(comment))
+		}
 	}
 	if publication.Title != "" && publication.Title != outcome.Title {
 		content.Add(wrappedPCV3Title(publication.Title))
@@ -1462,6 +1489,7 @@ func executeVolumeOperation(
 			ReedSolomon:    input.reedSolomon,
 			Deniability:    input.deniability,
 			Compress:       input.compress,
+			PCV3:           input.createPCV3,
 			Split:          input.split,
 			ChunkSize:      input.chunkSize,
 			ChunkUnit:      input.chunkUnit,

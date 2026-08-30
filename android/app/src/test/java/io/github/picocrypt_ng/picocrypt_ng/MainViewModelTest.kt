@@ -371,12 +371,13 @@ class MainViewModelTest {
 
         assertEquals(Pcv3FormatIntent.NORMAL, transfer.intent.format)
         assertEquals(Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT, transfer.intent.action)
-        assertEquals("force-unverified-normal", transfer.request.mode)
-        assertEquals("password-and-keyfiles", transfer.request.factorPolicy)
-        assertEquals("ordered", transfer.request.keyfileOrder)
-        assertEquals(source, transfer.request.source)
-        assertEquals("/app-private/output", transfer.request.target)
-        assertEquals(keyfiles.map(KeyfileInfo::internalPath), transfer.request.keyfiles)
+        val request = transfer.request as Pcv3Request
+        assertEquals("force-unverified-normal", request.mode)
+        assertEquals("password-and-keyfiles", request.factorPolicy)
+        assertEquals("ordered", request.keyfileOrder)
+        assertEquals(source, request.source)
+        assertEquals("/app-private/output", request.target)
+        assertEquals(keyfiles.map(KeyfileInfo::internalPath), request.keyfiles)
         assertSame("the mutable password owner must move rather than be copied", ownedPassword, transfer.password)
         assertArrayEquals("owned password".toCharArray(), transfer.password)
 
@@ -501,9 +502,10 @@ class MainViewModelTest {
         viewModel.updateFormData(viewModel.formState.value.copy(keyfileFilenames = duplicateKeyfiles))
 
         val keyfileTransfer = requireNotNull(viewModel.takePcv3Operation("/app-private/keyfile-output"))
-        assertEquals("keyfiles", keyfileTransfer.request.factorPolicy)
-        assertEquals("unordered", keyfileTransfer.request.keyfileOrder)
-        assertEquals(duplicateKeyfiles.map(KeyfileInfo::internalPath), keyfileTransfer.request.keyfiles)
+        val keyfileRequest = keyfileTransfer.request as Pcv3Request
+        assertEquals("keyfiles", keyfileRequest.factorPolicy)
+        assertEquals("unordered", keyfileRequest.keyfileOrder)
+        assertEquals(duplicateKeyfiles.map(KeyfileInfo::internalPath), keyfileRequest.keyfiles)
         assertEquals(0, keyfileTransfer.password.size)
 
         val passwordViewModel = MainViewModel(mockApplication, SavedStateHandle())
@@ -516,9 +518,103 @@ class MainViewModelTest {
         val passwordTransfer = requireNotNull(
             passwordViewModel.takePcv3Operation("/app-private/password-output"),
         )
-        assertEquals("password", passwordTransfer.request.factorPolicy)
-        assertEquals("none", passwordTransfer.request.keyfileOrder)
-        assertTrue(passwordTransfer.request.keyfiles.isEmpty())
+        val passwordRequest = passwordTransfer.request as Pcv3Request
+        assertEquals("password", passwordRequest.factorPolicy)
+        assertEquals("none", passwordRequest.keyfileOrder)
+        assertTrue(passwordRequest.keyfiles.isEmpty())
         passwordTransfer.password.fill('\u0000')
+    }
+
+    @Test
+    fun `create transfer builds the exact write request and resets the form`() {
+        val keyfiles = listOf(
+            KeyfileInfo("/app-private/key-a", "first"),
+            KeyfileInfo("/app-private/key-b", "second"),
+        )
+        viewModel.updateFormData(
+            viewModel.formState.value.copy(
+                selectedFilename = "secret.txt",
+                copiedFilePath = "/app-private/secret.txt",
+                comments = "plaintext comment",
+                reedSolomon = true,
+                paranoid = true,
+                createPcv3 = true,
+                keyfileFilenames = keyfiles,
+                keyfileOrdered = true,
+            ),
+        )
+        viewModel.updatePasswords(
+            password = "owned password".toCharArray(),
+            confirmPassword = "owned password".toCharArray(),
+        )
+        val ownedPassword = viewModel.formState.value.passwordInput
+        val ownedConfirm = viewModel.formState.value.confirmPasswordInput
+
+        val transfer = requireNotNull(viewModel.takePcv3CreateOperation("/app-private/staging"))
+
+        assertEquals(Pcv3ActionIntent.CREATE, transfer.intent.action)
+        val request = transfer.request as Pcv3WriteRequest
+        assertEquals("write-normal", request.mode)
+        assertEquals("password-and-keyfiles", request.factorPolicy)
+        assertEquals("ordered", request.keyfileOrder)
+        assertEquals("/app-private/secret.txt", request.source)
+        assertEquals("/app-private/staging", request.target)
+        assertEquals(keyfiles.map(KeyfileInfo::internalPath), request.keyfiles)
+        assertEquals("plaintext comment", request.comment)
+        assertEquals("paranoid", request.suite)
+        assertTrue(request.payloadRS)
+        assertEquals("secret.txt.pcv", transfer.createName)
+        assertSame("the mutable password owner must move rather than be copied", ownedPassword, transfer.password)
+        assertArrayEquals("owned password".toCharArray(), transfer.password)
+        assertTrue("the confirm buffer is zeroed on transfer", ownedConfirm.all { it == '\u0000' })
+
+        val afterTransfer = viewModel.formState.value
+        assertFalse(afterTransfer.createPcv3)
+        assertFalse(afterTransfer.isPcv3Creation)
+        assertEquals("", afterTransfer.selectedFilename)
+        assertEquals(0, afterTransfer.passwordInput.size)
+        transfer.password.fill('\u0000')
+    }
+
+    @Test
+    fun `create transfer maps deniability to D1 and blanks the comment`() {
+        viewModel.updateFormData(
+            viewModel.formState.value.copy(
+                selectedFilename = "outer.bin",
+                copiedFilePath = "/app-private/outer.bin",
+                comments = "stale comment",
+                deniability = true,
+                createPcv3 = true,
+                keyfileFilenames = listOf(KeyfileInfo("/app-private/key", "key")),
+            ),
+        )
+
+        val transfer = requireNotNull(viewModel.takePcv3CreateOperation("/app-private/staging"))
+
+        assertEquals(Pcv3FormatIntent.D1, transfer.intent.format)
+        val request = transfer.request as Pcv3WriteRequest
+        assertEquals("write-d1", request.mode)
+        assertEquals("paranoid", request.suite)
+        assertEquals("", request.comment)
+        assertEquals("keyfiles", request.factorPolicy)
+        assertEquals("unordered", request.keyfileOrder)
+        assertEquals("outer.bin", transfer.createName)
+    }
+
+    @Test
+    fun `create transfer refuses a credential-less form without touching state`() {
+        viewModel.updateFormData(
+            viewModel.formState.value.copy(
+                selectedFilename = "secret.txt",
+                copiedFilePath = "/app-private/secret.txt",
+                createPcv3 = true,
+            ),
+        )
+
+        assertNull(viewModel.takePcv3CreateOperation("/app-private/staging"))
+
+        val retained = viewModel.formState.value
+        assertTrue(retained.isPcv3Creation)
+        assertEquals("/app-private/secret.txt", retained.copiedFilePath)
     }
 }

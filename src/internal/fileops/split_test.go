@@ -2,6 +2,8 @@ package fileops
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,6 +68,157 @@ func TestSplitAndRecombine(t *testing.T) {
 	}
 
 	t.Log("Split and recombine cycle successful")
+}
+
+func TestSplitDirectorySyncRemainsOptIn(t *testing.T) {
+	directory := t.TempDir()
+	inputPath := filepath.Join(directory, "legacy.pcv")
+	if err := os.WriteFile(inputPath, bytes.Repeat([]byte("L"), 2048), 0o600); err != nil {
+		t.Fatalf("create legacy split input: %v", err)
+	}
+
+	originalSync := splitDirectorySyncFn
+	t.Cleanup(func() { splitDirectorySyncFn = originalSync })
+	syncCalls := 0
+	splitDirectorySyncFn = func(*os.File) error {
+		syncCalls++
+		return errors.New("TEST ONLY unexpected directory sync")
+	}
+
+	chunks, err := Split(SplitOptions{
+		InputPath: inputPath,
+		ChunkSize: 1,
+		Unit:      SplitUnitKiB,
+	})
+	if err != nil {
+		t.Fatalf("legacy split without durability requirement: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("legacy chunks = %d; want 2", len(chunks))
+	}
+	if syncCalls != 0 {
+		t.Fatalf("legacy directory sync calls = %d; want 0", syncCalls)
+	}
+}
+
+func TestSplitRequiredDirectorySyncFlushesCompleteSet(t *testing.T) {
+	directory := t.TempDir()
+	inputPath := filepath.Join(directory, "durable.pcv")
+	payload := bytes.Repeat([]byte("D"), 2500)
+	if err := os.WriteFile(inputPath, payload, 0o600); err != nil {
+		t.Fatalf("create durable split input: %v", err)
+	}
+
+	originalSync := splitDirectorySyncFn
+	t.Cleanup(func() { splitDirectorySyncFn = originalSync })
+	syncCalls := 0
+	splitDirectorySyncFn = func(parent *os.File) error {
+		syncCalls++
+		pinned, err := parent.Stat()
+		if err != nil {
+			t.Fatalf("stat synced split directory: %v", err)
+		}
+		current, err := os.Stat(directory)
+		if err != nil {
+			t.Fatalf("stat current split directory: %v", err)
+		}
+		if !os.SameFile(pinned, current) {
+			t.Fatal("split synced a different directory identity")
+		}
+		for index := range 3 {
+			if _, err := os.Stat(inputPath + "." + string(rune('0'+index))); err != nil {
+				t.Fatalf("chunk %d was not published before directory sync: %v", index, err)
+			}
+		}
+		return parent.Sync()
+	}
+
+	chunks, err := Split(SplitOptions{
+		InputPath:            inputPath,
+		ChunkSize:            1,
+		Unit:                 SplitUnitKiB,
+		RequireDirectorySync: true,
+	})
+	if err != nil {
+		t.Fatalf("durable split: %v", err)
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("durable chunks = %d; want 3", len(chunks))
+	}
+	if syncCalls != 1 {
+		t.Fatalf("completed-set directory sync calls = %d; want 1", syncCalls)
+	}
+}
+
+func TestSplitDirectorySyncFailureRollsBackThenSyncsRemoval(t *testing.T) {
+	directory := t.TempDir()
+	inputPath := filepath.Join(directory, "rollback.pcv")
+	payload := bytes.Repeat([]byte("R"), 2500)
+	if err := os.WriteFile(inputPath, payload, 0o600); err != nil {
+		t.Fatalf("create rollback split input: %v", err)
+	}
+
+	originalSync := splitDirectorySyncFn
+	t.Cleanup(func() { splitDirectorySyncFn = originalSync })
+	syncFailure := errors.New("TEST ONLY completed-set directory sync failure")
+	syncCalls := 0
+	splitDirectorySyncFn = func(parent *os.File) error {
+		syncCalls++
+		pinned, err := parent.Stat()
+		if err != nil {
+			t.Fatalf("stat rollback sync directory: %v", err)
+		}
+		current, err := os.Stat(directory)
+		if err != nil {
+			t.Fatalf("stat current rollback directory: %v", err)
+		}
+		if !os.SameFile(pinned, current) {
+			t.Fatal("rollback synced a different directory identity")
+		}
+
+		switch syncCalls {
+		case 1:
+			for index := range 3 {
+				if _, err := os.Stat(inputPath + "." + string(rune('0'+index))); err != nil {
+					t.Fatalf("chunk %d missing before failed completed-set sync: %v", index, err)
+				}
+			}
+			return syncFailure
+		case 2:
+			entries, err := os.ReadDir(directory)
+			if err != nil {
+				t.Fatalf("read rollback directory: %v", err)
+			}
+			if len(entries) != 1 || entries[0].Name() != filepath.Base(inputPath) {
+				t.Fatalf("rollback directory entries = %v; want only retained input", entries)
+			}
+			return parent.Sync()
+		default:
+			t.Fatalf("unexpected directory sync call %d", syncCalls)
+			return nil
+		}
+	}
+
+	chunks, err := Split(SplitOptions{
+		InputPath:            inputPath,
+		ChunkSize:            1,
+		Unit:                 SplitUnitKiB,
+		RequireDirectorySync: true,
+	})
+	if !errors.Is(err, syncFailure) {
+		t.Fatalf("split sync failure = %v; want sentinel", err)
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("failed durable split returned chunks: %v", chunks)
+	}
+	if syncCalls != 2 {
+		t.Fatalf("directory sync calls = %d; want completed set plus rollback", syncCalls)
+	}
+	if got, err := os.ReadFile(inputPath); err != nil {
+		t.Fatalf("read preserved split input: %v", err)
+	} else if !bytes.Equal(got, payload) {
+		t.Fatal("split sync failure changed the input")
+	}
 }
 
 // TestSplitUnits tests different split unit types.
@@ -231,8 +384,8 @@ func TestSplitCancellation(t *testing.T) {
 		t.Fatal("Expected cancellation error, got nil")
 	}
 
-	if err.Error() != "operation cancelled" {
-		t.Errorf("Expected 'operation cancelled' error, got: %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Expected context.Canceled, got: %v", err)
 	}
 	if calls <= 3 {
 		t.Fatalf("Cancel fired too early (%d calls); cancellation was not mid-stream", calls)
@@ -734,6 +887,28 @@ func TestChunkSizeToBytes(t *testing.T) {
 				t.Errorf("ChunkSizeToBytes(%d, %v) = %d; want %d", tc.chunkSize, tc.unit, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSplitRejectsChunksBelowRequiredPrefix(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "small.pcv")
+	input := []byte("0123456789abcdef")
+	if err := os.WriteFile(inputPath, input, 0o600); err != nil {
+		t.Fatalf("write split input: %v", err)
+	}
+	chunks, err := Split(SplitOptions{
+		InputPath:        inputPath,
+		ChunkSize:        len(input),
+		Unit:             SplitUnitTotal,
+		MinimumChunkSize: 4,
+	})
+	if err == nil || len(chunks) != 0 {
+		t.Fatalf("Split accepted one-byte chunks: chunks=%v err=%v", chunks, err)
+	}
+	got, readErr := os.ReadFile(inputPath)
+	if readErr != nil || !bytes.Equal(got, input) {
+		t.Fatalf("rejected split changed source: %q err=%v", got, readErr)
 	}
 }
 

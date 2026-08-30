@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,195 @@ func TestRecombineValidatesAndConsumesSameFirstChunkBeforeOutput(t *testing.T) {
 	}
 	if !bytes.Equal(currentFirst, replacementFirst) {
 		t.Fatalf("replacement chunk changed: got %q want %q", currentFirst, replacementFirst)
+	}
+}
+
+func TestRecombineExpectedInputsRejectsReplacedLaterChunkBeforeReading(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "split.pcv")
+	output := filepath.Join(dir, "recombined.pcv")
+	originalTailPath := base + ".1.original"
+	replacement := []byte("foreign replacement")
+	for path, content := range map[string][]byte{
+		base + ".0": []byte("first chunk"),
+		base + ".1": []byte("original tail bytes"),
+	} {
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatalf("write chunk %s: %v", path, err)
+		}
+	}
+	expected := make([]os.FileInfo, 2)
+	for i := range expected {
+		info, err := os.Stat(fmt.Sprintf("%s.%d", base, i))
+		if err != nil {
+			t.Fatalf("stat expected chunk %d: %v", i, err)
+		}
+		expected[i] = info
+	}
+	if err := os.Rename(base+".1", originalTailPath); err != nil {
+		t.Fatalf("retain original later chunk: %v", err)
+	}
+	if err := os.WriteFile(base+".1", replacement, 0o600); err != nil {
+		t.Fatalf("install replacement later chunk: %v", err)
+	}
+
+	readReplacement := false
+	err := Recombine(RecombineOptions{
+		InputBase:      base,
+		OutputPath:     output,
+		ExpectedInputs: expected,
+		Progress: func(_ float32, info string) {
+			if info == "2/2" {
+				readReplacement = true
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "chunk 1 changed before recombination") {
+		t.Fatalf("Recombine error = %v, want pinned-identity refusal", err)
+	}
+	if readReplacement {
+		t.Fatal("Recombine reported reading the replacement before rejecting it")
+	}
+	if got, readErr := os.ReadFile(base + ".1"); readErr != nil {
+		t.Fatalf("read replacement later chunk: %v", readErr)
+	} else if !bytes.Equal(got, replacement) {
+		t.Fatalf("replacement later chunk = %q, want %q", got, replacement)
+	}
+	if _, statErr := os.Lstat(output); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("partial recombined output survived refusal: %v", statErr)
+	}
+}
+
+func TestRecombineExpectedInputsRejectsChangedLaterChunkSizeBeforeReading(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "split.pcv")
+	output := filepath.Join(dir, "recombined.pcv")
+	for path, content := range map[string][]byte{
+		base + ".0": []byte("first chunk"),
+		base + ".1": []byte("tail"),
+	} {
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatalf("write chunk %s: %v", path, err)
+		}
+	}
+	expected := make([]os.FileInfo, 2)
+	for i := range expected {
+		info, err := os.Stat(fmt.Sprintf("%s.%d", base, i))
+		if err != nil {
+			t.Fatalf("stat expected chunk %d: %v", i, err)
+		}
+		expected[i] = info
+	}
+	changedTail := []byte("tail grew after routing")
+	if err := os.WriteFile(base+".1", changedTail, 0o600); err != nil {
+		t.Fatalf("resize later chunk: %v", err)
+	}
+
+	err := Recombine(RecombineOptions{
+		InputBase:      base,
+		OutputPath:     output,
+		ExpectedInputs: expected,
+	})
+	if err == nil || !strings.Contains(err.Error(), "chunk 1 changed before recombination") {
+		t.Fatalf("Recombine error = %v, want pinned-size refusal", err)
+	}
+	if got, readErr := os.ReadFile(base + ".1"); readErr != nil {
+		t.Fatalf("read resized later chunk: %v", readErr)
+	} else if !bytes.Equal(got, changedTail) {
+		t.Fatalf("resized later chunk = %q, want %q", got, changedTail)
+	}
+	if _, statErr := os.Lstat(output); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("partial recombined output survived refusal: %v", statErr)
+	}
+}
+
+func TestRecombineExpectedInputsDoNotFollowLaterChunkSymlink(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "split.pcv")
+	output := filepath.Join(dir, "recombined.pcv")
+	originalTailPath := base + ".1.original"
+	for path, content := range map[string][]byte{
+		base + ".0": []byte("first chunk"),
+		base + ".1": []byte("original tail"),
+	} {
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatalf("write chunk %s: %v", path, err)
+		}
+	}
+	expected := make([]os.FileInfo, 2)
+	for i := range expected {
+		info, err := os.Stat(fmt.Sprintf("%s.%d", base, i))
+		if err != nil {
+			t.Fatalf("stat expected chunk %d: %v", i, err)
+		}
+		expected[i] = info
+	}
+	if err := os.Rename(base+".1", originalTailPath); err != nil {
+		t.Fatalf("retain original later chunk: %v", err)
+	}
+	if err := os.Symlink(originalTailPath, base+".1"); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	err := Recombine(RecombineOptions{
+		InputBase:      base,
+		OutputPath:     output,
+		ExpectedInputs: expected,
+	})
+	if err == nil || !strings.Contains(err.Error(), "open chunk 1") {
+		t.Fatalf("Recombine error = %v, want no-follow open refusal", err)
+	}
+	if target, readErr := os.Readlink(base + ".1"); readErr != nil {
+		t.Fatalf("replacement symlink was removed: %v", readErr)
+	} else if target != originalTailPath {
+		t.Fatalf("replacement symlink target = %q, want %q", target, originalTailPath)
+	}
+	if _, statErr := os.Lstat(output); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("partial recombined output survived refusal: %v", statErr)
+	}
+}
+
+func TestRecombineWritesToBorrowedOutputAndLeavesItOpen(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "split.pcv")
+	payload := []byte("first chunk and tail")
+	if err := os.WriteFile(base+".0", payload[:11], 0o600); err != nil {
+		t.Fatalf("write first chunk: %v", err)
+	}
+	if err := os.WriteFile(base+".1", payload[11:], 0o600); err != nil {
+		t.Fatalf("write later chunk: %v", err)
+	}
+	outputPath := filepath.Join(dir, "borrowed-stage")
+	output, err := os.OpenFile(outputPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("create borrowed output: %v", err)
+	}
+	t.Cleanup(func() { _ = output.Close() })
+	before, err := output.Stat()
+	if err != nil {
+		t.Fatalf("stat borrowed output: %v", err)
+	}
+
+	err = Recombine(RecombineOptions{
+		InputBase: base,
+		Output:    output,
+	})
+	if err != nil {
+		t.Fatalf("Recombine: %v", err)
+	}
+	got, err := io.ReadAll(output)
+	if err != nil {
+		t.Fatalf("read rewound borrowed output: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("borrowed output = %q, want %q", got, payload)
+	}
+	after, err := os.Lstat(outputPath)
+	if err != nil {
+		t.Fatalf("borrowed output pathname was cleaned: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("borrowed output pathname changed identity")
 	}
 }
 

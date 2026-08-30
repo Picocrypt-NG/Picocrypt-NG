@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	perrors "Picocrypt-NG/internal/errors"
 )
@@ -59,6 +60,11 @@ const (
 
 type pcv3Envelope struct {
 	mode         pcv3operation.Mode
+	create       bool
+	d1           bool
+	suite        pcv3.Suite
+	payloadRS    bool
+	comment      string
 	factorMode   pcv3credential.CredentialMode
 	keyfileMode  pcv3credential.KeyfileMode
 	factorPolicy pcv3credential.FactorPolicy
@@ -67,9 +73,11 @@ type pcv3Envelope struct {
 	keyfiles     []string
 }
 
-// StartPCV3 starts one explicit PCV3 read/recovery operation. The JSON
-// envelope is a strict, versioned, authority-free value; password remains a
-// separate mutable byte buffer and is zeroed before this function returns.
+// StartPCV3 starts one explicit PCV3 read/recovery or creation operation. The
+// JSON envelope is a strict, versioned, authority-free value; password remains
+// a separate mutable byte buffer and is zeroed before this function returns.
+// Creation modes ("write-normal", "write-d1") require the exact write field
+// set; write-d1 always runs the paranoid suite.
 func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 	defer crypto.SecureZero(password)
 
@@ -137,6 +145,21 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 	}
 	ownedSource = false
 
+	if envelope.create {
+		go executePCV3WriteOperation(operation, &pcv3WriteRequest{
+			d1:         envelope.d1,
+			suite:      envelope.suite,
+			payloadRS:  envelope.payloadRS,
+			comment:    []byte(envelope.comment),
+			sourcePath: envelope.source,
+			source:     source,
+			factors:    factors,
+			target:     envelope.target,
+			protected:  append(append([]string(nil), envelope.keyfiles...), envelope.source),
+		})
+		return newPCV3StartResult("", operation)
+	}
+
 	request := &pcv3operation.Request{
 		Mode:      envelope.mode,
 		Source:    source,
@@ -203,12 +226,23 @@ func closePCV3Files(files []*os.File) {
 	}
 }
 
-func decodePCV3Envelope(input string) (pcv3Envelope, error) {
-	allowed := map[string]struct{}{
+var (
+	// pcv3ReadEnvelopeFields is the exact field set of a read/recovery/force
+	// envelope. pcv3WriteEnvelopeFields is the exact field set of a creation
+	// envelope; every other combination is refused deterministically.
+	pcv3ReadEnvelopeFields = map[string]struct{}{
 		"version": {}, "mode": {}, "factorPolicy": {}, "keyfileOrder": {},
 		"source": {}, "target": {}, "keyfiles": {},
 	}
-	values, err := decodePCV3ExactObject(input, maxPCV3EnvelopeBytes, allowed)
+	pcv3WriteEnvelopeFields = map[string]struct{}{
+		"version": {}, "mode": {}, "factorPolicy": {}, "keyfileOrder": {},
+		"source": {}, "target": {}, "keyfiles": {},
+		"comment": {}, "suite": {}, "payloadRS": {},
+	}
+)
+
+func decodePCV3Envelope(input string) (pcv3Envelope, error) {
+	values, err := decodePCV3ObjectFields(input, maxPCV3EnvelopeBytes, pcv3WriteEnvelopeFields)
 	if err != nil {
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 	}
@@ -220,6 +254,45 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 	if err != nil {
 		return pcv3Envelope{}, err
 	}
+
+	envelope := pcv3Envelope{}
+	required := pcv3ReadEnvelopeFields
+	switch modeText {
+	case "read-normal":
+		envelope.mode = pcv3operation.ModeReadNormal
+	case "read-d1":
+		envelope.mode = pcv3operation.ModeReadD1
+	case "recover-normal":
+		envelope.mode = pcv3operation.ModeRecoverNormal
+	case "recover-d1":
+		envelope.mode = pcv3operation.ModeRecoverD1
+	case "force-normal":
+		envelope.mode = pcv3operation.ModeForceNormal
+	case "force-d1":
+		envelope.mode = pcv3operation.ModeForceD1
+	case "force-unverified-normal":
+		envelope.mode = pcv3operation.ModeForceUnverifiedNormal
+	case "force-unverified-d1":
+		envelope.mode = pcv3operation.ModeForceUnverifiedD1
+	case "write-normal":
+		envelope.create = true
+		required = pcv3WriteEnvelopeFields
+	case "write-d1":
+		envelope.create = true
+		envelope.d1 = true
+		required = pcv3WriteEnvelopeFields
+	default:
+		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
+	}
+	if len(values) != len(required) {
+		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
+	}
+	for name := range required {
+		if _, ok := values[name]; !ok {
+			return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
+		}
+	}
+
 	policyText, err := decodePCV3String(values["factorPolicy"], 64)
 	if err != nil {
 		return pcv3Envelope{}, err
@@ -241,27 +314,9 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 		return pcv3Envelope{}, err
 	}
 
-	envelope := pcv3Envelope{source: source, target: target, keyfiles: keyfiles}
-	switch modeText {
-	case "read-normal":
-		envelope.mode = pcv3operation.ModeReadNormal
-	case "read-d1":
-		envelope.mode = pcv3operation.ModeReadD1
-	case "recover-normal":
-		envelope.mode = pcv3operation.ModeRecoverNormal
-	case "recover-d1":
-		envelope.mode = pcv3operation.ModeRecoverD1
-	case "force-normal":
-		envelope.mode = pcv3operation.ModeForceNormal
-	case "force-d1":
-		envelope.mode = pcv3operation.ModeForceD1
-	case "force-unverified-normal":
-		envelope.mode = pcv3operation.ModeForceUnverifiedNormal
-	case "force-unverified-d1":
-		envelope.mode = pcv3operation.ModeForceUnverifiedD1
-	default:
-		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
-	}
+	envelope.source = source
+	envelope.target = target
+	envelope.keyfiles = keyfiles
 	switch policyText {
 	case "password":
 		envelope.factorMode = pcv3credential.CredentialModePasswordOnly
@@ -285,10 +340,64 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 	default:
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 	}
+	if envelope.create {
+		comment, err := decodePCV3WriteComment(values["comment"])
+		if err != nil {
+			return pcv3Envelope{}, err
+		}
+		suiteText, err := decodePCV3String(values["suite"], 64)
+		if err != nil {
+			return pcv3Envelope{}, err
+		}
+		payloadRS, err := decodePCV3Boolean(values["payloadRS"])
+		if err != nil {
+			return pcv3Envelope{}, err
+		}
+		switch suiteText {
+		case "standard":
+			envelope.suite = pcv3.SuiteStandard
+		case "paranoid":
+			envelope.suite = pcv3.SuiteParanoid
+		default:
+			return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
+		}
+		// D1 creation has no suite choice: it always runs the paranoid suite.
+		if envelope.d1 && envelope.suite != pcv3.SuiteParanoid {
+			return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
+		}
+		envelope.comment = comment
+		envelope.payloadRS = payloadRS
+	}
 	if !envelope.validFactorShape() {
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 	}
 	return envelope, nil
+}
+
+// decodePCV3WriteComment decodes the public, plaintext creation comment. It
+// may be empty but stays within the shared header bound and valid UTF-8.
+func decodePCV3WriteComment(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", errors.New("invalid PCV3 envelope")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	var value string
+	if err := decoder.Decode(&value); err != nil || !jsonDecoderAtEOF(decoder) ||
+		len(value) > header.MaxCommentLen || !utf8.ValidString(value) {
+		return "", errors.New("invalid PCV3 envelope")
+	}
+	return value, nil
+}
+
+func decodePCV3Boolean(raw json.RawMessage) (bool, error) {
+	switch trimmed := bytes.TrimSpace(raw); {
+	case bytes.Equal(trimmed, []byte("true")):
+		return true, nil
+	case bytes.Equal(trimmed, []byte("false")):
+		return false, nil
+	default:
+		return false, errors.New("invalid PCV3 envelope")
+	}
 }
 
 func decodePCV3String(raw json.RawMessage, maximum int) (string, error) {

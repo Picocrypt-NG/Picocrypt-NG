@@ -96,19 +96,6 @@ func (*capsuleAuthError) Error() string {
 	return "pcv3: capsule authentication operation failed"
 }
 
-// authenticateCapsulesWithProvider is the single package-local normal capsule
-// engine. Fast tests supply frozen literal keys through provider; the
-// production adapter below routes the same interface through
-// pcv3credential.WithReaderCredential.
-func authenticateCapsulesWithProvider(
-	ctx context.Context,
-	structure Structure,
-	provider capsuleCredentialProvider,
-	seams capsuleAuthSeams,
-) *normalAuthResult {
-	return authenticateCapsulesWithProviderMode(ctx, structure, provider, seams, true, false)
-}
-
 // authenticateCapsulesBorrowingProvider keeps a caller-owned provider alive
 // through the post-capsule authenticated reader stages.
 func authenticateCapsulesBorrowingProvider(

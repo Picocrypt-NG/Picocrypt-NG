@@ -1,6 +1,7 @@
 package pcv3publication
 
 import (
+	"Picocrypt-NG/internal/fileops"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,167 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestSplitRetainedConsumesExactSourceAfterDurableChunks(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "encrypted.pcv")
+	payload := []byte(strings.Repeat("authenticated encrypted bytes", 100))
+	retained := publishRetainedTestFile(t, target, payload)
+
+	decoy := filepath.Join(directory, "caller-selected.bin")
+	decoyBytes := []byte("caller input path must not redirect retained authority")
+	if err := os.WriteFile(decoy, decoyBytes, 0o600); err != nil {
+		t.Fatalf("create caller-selected decoy: %v", err)
+	}
+	decoyInfo, err := os.Stat(decoy)
+	if err != nil {
+		t.Fatalf("stat caller-selected decoy: %v", err)
+	}
+
+	err = SplitRetained(retained, fileops.SplitOptions{
+		InputPath:     decoy,
+		ExpectedInput: decoyInfo,
+		ChunkSize:     1,
+		Unit:          fileops.SplitUnitKiB,
+	})
+	if err != nil {
+		t.Fatalf("split retained file: %v", err)
+	}
+	if retained.Live() {
+		t.Fatal("successful split left retained authority live")
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful split left full retained source: %v", err)
+	}
+	requireFileBytes(t, decoy, decoyBytes)
+
+	recombined := filepath.Join(directory, "recombined.pcv")
+	if err := fileops.Recombine(fileops.RecombineOptions{
+		InputBase:  target,
+		OutputPath: recombined,
+	}); err != nil {
+		t.Fatalf("recombine retained chunks: %v", err)
+	}
+	requireFileBytes(t, recombined, payload)
+}
+
+func TestSplitRetainedFailurePreservesFullSourceAndConsumesAuthority(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "encrypted.pcv")
+	payload := []byte(strings.Repeat("recoverable encrypted bytes", 100))
+	retained := publishRetainedTestFile(t, target, payload)
+	occupied := target + ".0"
+	foreign := []byte("pre-existing chunk must survive")
+	if err := os.WriteFile(occupied, foreign, 0o640); err != nil {
+		t.Fatalf("create occupied chunk: %v", err)
+	}
+
+	err := SplitRetained(retained, fileops.SplitOptions{
+		ChunkSize: 1,
+		Unit:      fileops.SplitUnitKiB,
+	})
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("occupied retained split = %v; want os.ErrExist", err)
+	}
+	if retained.Live() {
+		t.Fatal("failed split left retained authority live")
+	}
+	requireFileBytes(t, target, payload)
+	requireFileBytes(t, occupied, foreign)
+
+	destination, err := os.OpenFile(
+		filepath.Join(directory, "unavailable-copy.bin"),
+		os.O_CREATE|os.O_EXCL|os.O_RDWR,
+		0o600,
+	)
+	if err != nil {
+		t.Fatalf("create post-consumption destination: %v", err)
+	}
+	copyResult := retained.CopyTo(destination)
+	if copyResult.Copied() || copyResult.CleanupIncomplete() {
+		t.Fatalf(
+			"post-consumption copy = copied=%v cleanup=%v; want refused/clean",
+			copyResult.Copied(), copyResult.CleanupIncomplete(),
+		)
+	}
+	if _, err := destination.Stat(); err == nil {
+		t.Fatal("post-consumption CopyTo left destination handle open")
+	}
+}
+
+func TestSplitRetainedNeverRemovesSourceReplacement(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "encrypted.pcv")
+	moved := filepath.Join(directory, "moved-owned-source.pcv")
+	payload := []byte(strings.Repeat("identity-bound encrypted bytes", 100))
+	foreign := []byte("foreign replacement must survive")
+	retained := publishRetainedTestFile(t, target, payload)
+	replaced := false
+
+	err := SplitRetained(retained, fileops.SplitOptions{
+		ChunkSize: 1,
+		Unit:      fileops.SplitUnitKiB,
+		Progress: func(_ float32, info string) {
+			if replaced || info != "3/3" {
+				return
+			}
+			if err := os.Rename(target, moved); err != nil {
+				t.Fatalf("move exact retained source: %v", err)
+			}
+			if err := os.WriteFile(target, foreign, 0o640); err != nil {
+				t.Fatalf("install foreign source replacement: %v", err)
+			}
+			replaced = true
+		},
+	})
+	if !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("replacement-safe retained split = %v; want ErrCleanupIncomplete", err)
+	}
+	if !replaced {
+		t.Fatal("test did not replace the retained source")
+	}
+	if retained.Live() {
+		t.Fatal("source replacement left retained authority live")
+	}
+	requireFileBytes(t, target, foreign)
+	requireFileBytes(t, moved, payload)
+
+	recombined := filepath.Join(directory, "recombined.pcv")
+	if err := fileops.Recombine(fileops.RecombineOptions{
+		InputBase:  target,
+		OutputPath: recombined,
+	}); err != nil {
+		t.Fatalf("recombine chunks after source replacement: %v", err)
+	}
+	requireFileBytes(t, recombined, payload)
+}
+
+func TestSplitRetainedRejectsContentChangedAfterPrepublicationDigest(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "encrypted.pcv")
+	payload := []byte(strings.Repeat("prepublication digest binding", 100))
+	retained := publishRetainedTestFile(t, target, payload)
+
+	mutated := append([]byte(nil), payload...)
+	mutated[len(mutated)/2] ^= 0xff
+	if err := os.WriteFile(target, mutated, 0o600); err != nil {
+		t.Fatalf("mutate retained source in place: %v", err)
+	}
+	err := SplitRetained(retained, fileops.SplitOptions{
+		ChunkSize: 1,
+		Unit:      fileops.SplitUnitKiB,
+	})
+	if err == nil {
+		t.Fatal("split accepted content changed after its prepublication digest")
+	}
+	if retained.Live() {
+		t.Fatal("rejected split left retained authority live")
+	}
+	requireFileBytes(t, target, mutated)
+	if matches, globErr := filepath.Glob(target + ".*"); globErr != nil || len(matches) != 0 {
+		t.Fatalf("rejected split left chunks: %v err=%v", matches, globErr)
+	}
+}
 
 func TestPublishRetainedGrantsOnlyExactDurableIdentity(t *testing.T) {
 	directory := t.TempDir()

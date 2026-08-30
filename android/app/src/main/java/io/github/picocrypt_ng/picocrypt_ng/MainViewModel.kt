@@ -98,6 +98,7 @@ class MainViewModel(
             paranoid = false,
             deniability = false,
             verifyFirst = false,
+            createPcv3 = false,
             keyfileFilenames = emptyList(),
             keyfileOrdered = false,
             compress = false,
@@ -138,6 +139,7 @@ class MainViewModel(
             paranoid = false,
             deniability = false,
             verifyFirst = false,
+            createPcv3 = false,
             keyfileOrdered = false,
             compress = false,
             suggestedOutputName = "",
@@ -236,6 +238,83 @@ class MainViewModel(
         return transfer
     }
     
+    /**
+     * Atomically validates and transfers one strict PCV3 creation request built from
+     * the legacy-shaped encrypt form. Ownership of the copied source and password
+     * buffer moves to the caller exactly as in [takePcv3Operation].
+     */
+    @Synchronized
+    fun takePcv3CreateOperation(target: String): Pcv3OperationTransfer? {
+        val current = _formState.value
+        if (!current.isPcv3Creation || target.isBlank() || !current.isFormValid) return null
+        val factorPolicy = when {
+            current.hasPassword && current.hasKeyfiles -> Pcv3FactorPolicyIntent.PASSWORD_AND_KEYFILES
+            current.hasPassword -> Pcv3FactorPolicyIntent.PASSWORD_ONLY
+            current.hasKeyfiles -> Pcv3FactorPolicyIntent.KEYFILES_ONLY
+            else -> return null
+        }
+        val keyfileOrder = when (factorPolicy) {
+            Pcv3FactorPolicyIntent.PASSWORD_ONLY -> null
+            Pcv3FactorPolicyIntent.KEYFILES_ONLY,
+            Pcv3FactorPolicyIntent.PASSWORD_AND_KEYFILES,
+            -> if (current.keyfileOrdered) Pcv3KeyfileOrderIntent.SELECTED else Pcv3KeyfileOrderIntent.ANY
+        }
+        val intent = Pcv3OperationIntent(
+            format = if (current.deniability) Pcv3FormatIntent.D1 else Pcv3FormatIntent.NORMAL,
+            action = Pcv3ActionIntent.CREATE,
+            factorPolicy = factorPolicy,
+            keyfileOrder = keyfileOrder,
+        )
+        val mode = intent.goModeOrNull() ?: return null
+        val factorPolicyCode = intent.factorPolicyCodeOrNull() ?: return null
+        val keyfileOrderCode = intent.keyfileOrderCodeOrNull() ?: return null
+
+        val password = current.passwordInput
+        current.confirmPasswordInput.fill('\u0000')
+        // A D1 volume carries no plaintext comment; the field is disabled in the UI,
+        // and it is blanked here as well so a stale value can never cross the bridge.
+        val transfer = Pcv3OperationTransfer(
+            intent = intent,
+            request = Pcv3WriteRequest(
+                mode = mode,
+                factorPolicy = factorPolicyCode,
+                keyfileOrder = keyfileOrderCode,
+                source = current.copiedFilePath,
+                target = target,
+                keyfiles = current.keyfileFilenames.map(KeyfileInfo::internalPath),
+                comment = if (current.deniability) "" else current.comments,
+                suite = if (current.paranoid || current.deniability) "paranoid" else "standard",
+                payloadRS = current.reedSolomon,
+            ),
+            password = password,
+            createName = if (current.deniability) {
+                current.selectedFilename
+            } else {
+                "${current.selectedFilename}.pcv"
+            },
+        )
+
+        _formState.value = current.copy(
+            selectedFilename = "",
+            copiedFilePath = "",
+            comments = "",
+            passwordInput = CharArray(0),
+            confirmPasswordInput = CharArray(0),
+            reedSolomon = false,
+            paranoid = false,
+            deniability = false,
+            createPcv3 = false,
+            keyfileFilenames = emptyList(),
+            keyfileOrdered = false,
+            compress = false,
+            suggestedOutputName = "",
+            decryptionInfo = null,
+        )
+        clearSavedForm()
+        _errorMessage.value = null
+        return transfer
+    }
+
     /**
      * Updates the form data with new values.
      * Only saves minimal fields to SavedStateHandle for process recreation.
@@ -375,6 +454,7 @@ class MainViewModel(
             paranoid = false,
             deniability = false,
             verifyFirst = false,
+            createPcv3 = false,
             keyfileFilenames = emptyList(),
             keyfileOrdered = false,
             inputFiles = emptyList(),

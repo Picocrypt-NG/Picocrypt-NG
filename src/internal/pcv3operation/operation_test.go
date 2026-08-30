@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -20,6 +21,14 @@ type operationTestAdmitter struct {
 	calls     int
 	grant     bool
 	admission pcv3credential.KDFAdmission
+}
+
+func runWithSeams(
+	ctx context.Context,
+	request *Request,
+	seams operationSeams,
+) *Result {
+	return runWithSeamsAndOptions(ctx, request, seams, ExecutionOptions{})
 }
 
 func (admitter *operationTestAdmitter) AdmitKDF(
@@ -39,6 +48,68 @@ func (admitter *operationTestAdmitter) AdmitKDF(
 type operationObservedReadCloser struct {
 	file       *os.File
 	closeCalls int
+}
+
+type splitCleanupFailureContext struct {
+	context.Context
+	directory string
+	calls     int
+}
+
+func (ctx *splitCleanupFailureContext) Err() error {
+	ctx.calls++
+	if ctx.calls == 1 {
+		return nil
+	}
+	_ = os.Chmod(ctx.directory, 0o500)
+	return context.Canceled
+}
+
+func TestSplitPreparationReportsUnremovedRecombineStage(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		t.Skip("directory permission removal semantics differ on this platform")
+	}
+	directory := t.TempDir()
+	t.Cleanup(func() { _ = os.Chmod(directory, 0o700) })
+	probe := filepath.Join(directory, "permission-probe")
+	if err := os.WriteFile(probe, nil, 0o600); err != nil {
+		t.Fatalf("write permission probe: %v", err)
+	}
+	if err := os.Chmod(directory, 0o500); err != nil {
+		t.Fatalf("restrict test directory: %v", err)
+	}
+	removeErr := os.Remove(probe)
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatalf("restore test directory: %v", err)
+	}
+	if removeErr == nil {
+		t.Skip("current user bypasses directory removal permissions")
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatalf("remove permission probe: %v", err)
+	}
+	base := filepath.Join(directory, "split.pcv")
+	if err := os.WriteFile(base+".0", []byte{'P', 'C', 'V', 0, 1, 2, 3, 4}, 0o600); err != nil {
+		t.Fatalf("write chunk zero: %v", err)
+	}
+	if err := os.WriteFile(base+".1", []byte{5, 6, 7, 8}, 0o600); err != nil {
+		t.Fatalf("write chunk one: %v", err)
+	}
+	source, err := os.Open(base + ".0")
+	if err != nil {
+		t.Fatalf("open chunk zero: %v", err)
+	}
+	ctx := &splitCleanupFailureContext{Context: context.Background(), directory: directory}
+	result := runWithSeams(ctx, &Request{
+		Mode:      ModeReadNormal,
+		Source:    source,
+		SplitBase: base,
+		Factors:   &pcv3credential.FactorRequest{},
+		Target:    filepath.Join(directory, "output"),
+	}, operationSeams{admitter: &operationTestAdmitter{grant: true}})
+	if result == nil || !result.hasWarning(WarningCleanupIncomplete) {
+		t.Fatalf("split cleanup failure result = %v warnings=%v", result, result.Warnings())
+	}
 }
 
 func (reader *operationObservedReadCloser) Read(destination []byte) (int, error) {

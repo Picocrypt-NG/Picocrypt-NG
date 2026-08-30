@@ -128,6 +128,9 @@ func handleSignal() {
 		fmt.Fprintln(os.Stderr, "\nCancelling operation...")
 		return
 	}
+	if err := cleanupActiveStdinTemp(); err != nil {
+		fmt.Fprintln(os.Stderr, "\nWarning: temporary plaintext cleanup failed")
+	}
 	restoreTerminalState()
 	exitFn(1)
 }

@@ -46,12 +46,14 @@ data class Pcv3ResultDisplay(
     val warnings: List<Pcv3CopyResources> = emptyList(),
     val tone: Pcv3ResultTone,
     @StringRes val closeActionResId: Int,
+    val authenticatedComment: String? = null,
 )
 
 /** The only PCV3 terminal actions Android may render for a typed presentation. */
 enum class Pcv3ResultAction {
     EXPORT_ARCHIVE,
     SAVE_DECRYPTED_OUTPUT,
+    SAVE_CREATED_VOLUME,
     SAVE_RECOVERY_ARTIFACT,
     INSPECT_RECOVERY_ARTIFACT,
     DISCARD_RECOVERY_ARTIFACT,
@@ -66,7 +68,7 @@ data class Pcv3ResultActionProjection(
 )
 
 /** The only scalar output targets that may refine an already-live native capability. */
-internal enum class Pcv3OutputActionTarget { DECRYPTED_OUTPUT, RECOVERY_ARTIFACT }
+internal enum class Pcv3OutputActionTarget { DECRYPTED_OUTPUT, CREATED_VOLUME, RECOVERY_ARTIFACT }
 
 /** Validated offsets for one bounded artifact page. */
 data class Pcv3ArtifactPageNavigation(
@@ -135,8 +137,6 @@ object Pcv3ProgressStatus {
     const val PREPARING_ARTIFACT = "preparing-artifact"
     const val PUBLISHING = "publishing"
     const val CONFIRMING_DURABILITY = "confirming-durability"
-    const val VERIFYING_LEGACY = "verifying-legacy"
-    const val MIGRATING = "migrating"
 }
 
 /**
@@ -155,8 +155,6 @@ fun pcv3ProgressDisplay(snapshot: Pcv3SnapshotView): Pcv3ProgressDisplay {
         Pcv3ProgressStatus.PUBLISHING -> R.string.pcv3_progress_publishing
         Pcv3ProgressStatus.CONFIRMING_DURABILITY ->
             R.string.pcv3_progress_confirming_durability
-        Pcv3ProgressStatus.VERIFYING_LEGACY -> R.string.pcv3_progress_verifying_legacy
-        Pcv3ProgressStatus.MIGRATING -> R.string.pcv3_progress_migrating
         else -> return Pcv3ProgressDisplay(R.string.pcv3_progress_working)
     }
 
@@ -191,12 +189,14 @@ fun pcv3ConsentRoleResource(role: String): Int? = when (role) {
 
 /** Selects bounded copy from the complete Go projection without rendering raw snapshot values. */
 fun pcv3ResultDisplay(snapshot: Pcv3SnapshotView): Pcv3ResultDisplay {
+    val authenticatedComment = snapshot.authenticatedComment.takeIf { it.isNotEmpty() }
     val resourceNotice = resourceNotice(snapshot.diagnostic)
     if (resourceNotice != null) {
         return Pcv3ResultDisplay(
             outcome = resourceNotice,
             tone = Pcv3ResultTone.WARNING,
             closeActionResId = R.string.pcv3_resource_close,
+            authenticatedComment = authenticatedComment,
         )
     }
 
@@ -333,6 +333,7 @@ fun pcv3ResultDisplay(snapshot: Pcv3SnapshotView): Pcv3ResultDisplay {
         warnings = warnings,
         tone = tone,
         closeActionResId = closeAction,
+        authenticatedComment = authenticatedComment,
     )
 }
 
@@ -343,11 +344,27 @@ fun pcv3ResultDisplay(snapshot: Pcv3SnapshotView): Pcv3ResultDisplay {
 fun pcv3ResultDisplay(presentation: Pcv3Presentation): Pcv3ResultDisplay {
     val snapshotDisplay = pcv3ResultDisplay(presentation.snapshot)
     val outputAction = (presentation as? Pcv3Presentation.Final)?.outputAction
-        ?: return snapshotDisplay
+    // A creation that has not yet settled an output action shows creation copy, never
+    // decryption copy; publication durability of the private staging file is not the
+    // user-visible save.
+    if (presentation.isCreation && outputAction == null &&
+        presentation.snapshot.semantic.outcome == "success" &&
+        presentation.snapshot.diagnostic == "none"
+    ) {
+        return snapshotDisplay.copy(
+            outcome = copy(
+                R.string.pcv3_create_outcome_title,
+                R.string.pcv3_create_outcome_body,
+            ),
+            publication = null,
+        )
+    }
+    if (outputAction == null) return snapshotDisplay
     val result = outputAction.closedDisplay(
         target = pcv3OutputActionTarget(
             presentation.snapshot,
             presentation.artifactMetadata,
+            presentation.isCreation,
         ),
     )
     val cleanupUncertain = outputAction.cleanupIncomplete ||
@@ -393,6 +410,7 @@ fun pcv3ResultDisplay(presentation: Pcv3Presentation): Pcv3ResultDisplay {
         } else {
             result.closeActionResId
         },
+        authenticatedComment = snapshotDisplay.authenticatedComment,
     )
 }
 
@@ -423,7 +441,11 @@ fun pcv3ResultActions(presentation: Pcv3Presentation): Pcv3ResultActionProjectio
         }
     }
 
-    val outputTarget = pcv3OutputActionTarget(snapshot, presentation.artifactMetadata)
+    val outputTarget = pcv3OutputActionTarget(
+        snapshot,
+        presentation.artifactMetadata,
+        presentation.isCreation,
+    )
     if (presentation is Pcv3Presentation.Live) {
         if (presentation.outputHandle == null || !presentation.outputPending ||
             presentation.outputActionInFlight
@@ -440,8 +462,19 @@ fun pcv3ResultActions(presentation: Pcv3Presentation): Pcv3ResultActionProjectio
             )
             Pcv3OutputActionTarget.DECRYPTED_OUTPUT ->
                 Pcv3ResultActionProjection(setOf(Pcv3ResultAction.SAVE_DECRYPTED_OUTPUT))
+            Pcv3OutputActionTarget.CREATED_VOLUME ->
+                Pcv3ResultActionProjection(setOf(Pcv3ResultAction.SAVE_CREATED_VOLUME))
             null -> Pcv3ResultActionProjection(emptySet())
         }
+    }
+
+    // A D1 creation has no retained output capability: the native writer published the
+    // staging file directly and the host must copy it out. Until it is saved, closing
+    // would abandon the only copy, so Save is the only rendered action.
+    if (presentation is Pcv3Presentation.Final && presentation.isCreation &&
+        presentation.outputAction == null && outputTarget == Pcv3OutputActionTarget.CREATED_VOLUME
+    ) {
+        return Pcv3ResultActionProjection(setOf(Pcv3ResultAction.SAVE_CREATED_VOLUME))
     }
 
     if (presentation is Pcv3Presentation.Final &&
@@ -537,6 +570,7 @@ private fun closeProjection(
 internal fun pcv3OutputActionTarget(
     snapshot: Pcv3SnapshotView,
     artifactMetadata: Pcv3ArtifactMetadataView?,
+    isCreation: Boolean = false,
 ): Pcv3OutputActionTarget? {
     if (snapshot.diagnostic != "none" || !snapshot.publication.attempted ||
         snapshot.publication.state != "published-durable" ||
@@ -545,6 +579,21 @@ internal fun pcv3OutputActionTarget(
         snapshot.archivePending || snapshot.restoredReceipt.isNotEmpty()
     ) {
         return null
+    }
+    // A created volume is never a decrypted output or a recovery artifact; only the
+    // exact clean durable creation success may offer saving the created volume.
+    if (isCreation) {
+        return if (artifactMetadata == null &&
+            snapshot.semantic.outcome == "success" &&
+            snapshot.semantic.stage == "none" &&
+            snapshot.semantic.code == "PCV3_SUCCESS" &&
+            snapshot.completionClass in setOf("clean", "warning") &&
+            snapshot.forceProvenance == "none"
+        ) {
+            Pcv3OutputActionTarget.CREATED_VOLUME
+        } else {
+            null
+        }
     }
     val vettedArtifactKind = artifactMetadata
         ?.takeIf { pcv3ArtifactMetadataDisplay(it) != null }

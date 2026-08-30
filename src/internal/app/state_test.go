@@ -271,7 +271,7 @@ func mustNewState(t *testing.T) *State {
 // TestNewStateRSInitFailure proves APP-01/D-05: when the RS-codec constructor
 // fails, NewState returns a non-nil error (wrapping the cause) and a nil *State,
 // and never panics. The newRSCodecs package-level seam is overridden to force
-// the failure, mirroring the Phase 3/4 var-seam override+restore pattern.
+// the failure, mirroring the existing variable-seam override/restore pattern.
 func TestNewStateRSInitFailure(t *testing.T) {
 	orig := newRSCodecs
 	t.Cleanup(func() { newRSCodecs = orig })
@@ -559,7 +559,7 @@ func TestCanStart(t *testing.T) {
 		t.Error("Should be able to start with password")
 	}
 
-	// New v2 encryption with keyfiles is frozen until the reviewed v3 writer.
+	// Legacy v2 encryption with keyfiles remains disabled; explicit PCV3 is separate.
 	state.Mode = "encrypt"
 	state.Password = ""
 	state.CPassword = ""
@@ -633,6 +633,33 @@ func TestCanStartPreservesLegacyKeyfileDecryptionButFreezesV2Writer(t *testing.T
 			}
 			if got := state.UISnapshot().CanStart(); got != tc.want {
 				t.Fatalf("UISnapshot.CanStart() = %v; want %v for %s with a legacy keyfile credential", got, tc.want, tc.mode)
+			}
+		})
+	}
+}
+
+func TestCanStartAllowsKeyfileOnlyD1OnlyForPCV3(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		createPCV3 bool
+		want       bool
+	}{
+		{name: "legacy wrapper remains password-required", want: false},
+		{name: "PCV3 D1 accepts keyfile-only", createPCV3: true, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := mustNewState(t)
+			state.Mode = "encrypt"
+			state.Deniability = true
+			state.Paranoid = true
+			state.CreatePCV3 = test.createPCV3
+			state.Keyfiles = []string{"keyfile.bin"}
+
+			if got := state.CanStart(); got != test.want {
+				t.Fatalf("State.CanStart() = %v; want %v", got, test.want)
+			}
+			if got := state.UISnapshot().CanStart(); got != test.want {
+				t.Fatalf("UISnapshot.CanStart() = %v; want %v", got, test.want)
 			}
 		})
 	}

@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/spf13/pflag"
 )
 
 func TestPCV3CLIPreservesResultAxes(t *testing.T) {
@@ -445,86 +443,5 @@ func TestPCV3CLITerminalContract(t *testing.T) {
 	}
 	if len(executed) != 0 {
 		t.Fatalf("unexpected scenario IDs executed: %v", executed)
-	}
-}
-
-func TestPCV3CLIKeepsWriterAndMigrationAbsent(t *testing.T) {
-	wantCommands := map[string]string{
-		"decrypt": "decrypt VOLUME",
-		"encrypt": "encrypt [PATH...]",
-	}
-	for _, command := range rootCmd.Commands() {
-		if command.Name() == "help" {
-			continue
-		}
-		wantUse, ok := wantCommands[command.Name()]
-		if !ok {
-			t.Fatalf("unexpected public CLI action %q (%q)", command.Name(), command.Use)
-		}
-		if command.Use != wantUse || len(command.Aliases) != 0 {
-			t.Fatalf("public CLI action %q = use %q aliases %q; want use %q and no aliases", command.Name(), command.Use, command.Aliases, wantUse)
-		}
-		delete(wantCommands, command.Name())
-	}
-	if len(wantCommands) != 0 {
-		t.Fatalf("public CLI actions missing from the real command tree: %v", wantCommands)
-	}
-
-	wantFlags := map[string]map[string]struct{}{
-		"Picocrypt-NG": {
-			"temp-dir": {},
-		},
-		"encrypt": {
-			"comments": {}, "compress": {}, "deniability": {}, "follow-symlinks": {},
-			"glob": {}, "input": {}, "keyfile": {}, "keyfile-ordered": {}, "output": {},
-			"paranoid": {}, "password": {}, "password-stdin": {}, "quiet": {},
-			"reed-solomon": {}, "split": {}, "split-size": {}, "split-unit": {}, "yes": {},
-		},
-		"decrypt": {
-			"auto-unzip": {}, "deniability": {}, "force": {}, "input": {}, "keyfile": {},
-			"output": {}, "password": {}, "password-stdin": {}, "pcv3-action": {},
-			"pcv3-archive": {}, "pcv3-extract-to": {}, "pcv3-factors": {}, "pcv3-format": {},
-			"pcv3-keyfile-order": {}, "pcv3-role": {}, "quiet": {}, "recombine": {},
-			"same-level": {}, "verify-first": {}, "yes": {},
-		},
-	}
-	checkFlags := func(name string, commandFlags *pflag.FlagSet) {
-		t.Helper()
-		remaining := wantFlags[name]
-		commandFlags.VisitAll(func(flag *pflag.Flag) {
-			if flag.Name == "help" || flag.Name == "version" {
-				return
-			}
-			if _, ok := remaining[flag.Name]; !ok {
-				t.Errorf("unexpected %s CLI request field --%s", name, flag.Name)
-				return
-			}
-			delete(remaining, flag.Name)
-		})
-		if len(remaining) != 0 {
-			t.Errorf("%s CLI request fields missing from the real flag set: %v", name, remaining)
-		}
-	}
-	checkFlags("Picocrypt-NG", rootCmd.PersistentFlags())
-	checkFlags("encrypt", encryptCmd.Flags())
-	checkFlags("decrypt", decryptCmd.Flags())
-
-	var help strings.Builder
-	rootCmd.SetOut(&help)
-	t.Cleanup(func() { rootCmd.SetOut(nil) })
-	if err := rootCmd.Help(); err != nil {
-		t.Fatalf("render root help: %v", err)
-	}
-	rootCmd.SetOut(nil)
-	if !strings.Contains(help.String(), "encrypt") || !strings.Contains(help.String(), "decrypt") {
-		t.Fatalf("root help did not render the real command tree: %q", help.String())
-	}
-
-	var completion strings.Builder
-	if err := rootCmd.GenBashCompletion(&completion); err != nil {
-		t.Fatalf("render Bash completion: %v", err)
-	}
-	if !strings.Contains(completion.String(), "encrypt") || !strings.Contains(completion.String(), "decrypt") {
-		t.Fatal("Bash completion did not enumerate the real CLI actions")
 	}
 }

@@ -39,7 +39,7 @@ func (ew *encryptedWriter) Write(data []byte) (int, error) {
 }
 
 // encryptedReader wraps an io.Reader to decrypt data on-the-fly using ChaCha20.
-// Used to read the encrypted temporary zip during encryption phase.
+// Used to read the encrypted temporary zip during encryption.
 type encryptedReader struct {
 	r      io.Reader
 	cipher *chacha20.Cipher

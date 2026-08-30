@@ -183,6 +183,70 @@ func normalizeSelectedOutputPath(filePath, mode, inputFile string, multiInput, c
 	return file + filepath.Ext(tmp)
 }
 
+// changePCV3CreationOutputFile selects only a path. The PCV3 publisher must be
+// the first code that opens or creates the destination.
+func (a *App) changePCV3CreationOutputFile() {
+	selected := a.State.UISnapshot()
+	if selected.Mode != "encrypt" || !selected.CreatePCV3 || selected.InputFile == "" ||
+		selected.OutputFile == "" || selected.Working || selected.Scanning {
+		return
+	}
+	selectionGeneration := a.operationGeneration.Load()
+	selectionCurrent := func() bool {
+		current := a.State.UISnapshot()
+		return a.operationGeneration.Load() == selectionGeneration &&
+			current.Mode == "encrypt" && current.CreatePCV3 && !current.Working &&
+			!current.Scanning && current.InputFile == selected.InputFile &&
+			current.OutputFile == selected.OutputFile
+	}
+	picker := dialog.NewFolderOpen(func(folder fyne.ListableURI, err error) {
+		if err != nil || folder == nil || folder.Scheme() != "file" || !selectionCurrent() {
+			return
+		}
+		filename := widget.NewEntry()
+		tmp := strings.TrimSuffix(filepath.Base(selected.OutputFile), ".pcv")
+		filename.SetText(strings.TrimSuffix(tmp, filepath.Ext(tmp)))
+		filename.Validator = validatePCV3OutputFilename
+		form := dialog.NewForm(
+			tr("output.label", "Save output as:"),
+			tr("action.change", "Change"),
+			tr("action.cancel", "Cancel"),
+			[]*widget.FormItem{widget.NewFormItem(tr("output.label", "Save output as:"), filename)},
+			func(confirm bool) {
+				if !confirm || !selectionCurrent() || validatePCV3OutputFilename(filename.Text) != nil {
+					return
+				}
+				current := a.State.Snapshot()
+				a.State.OutputFile = normalizeSelectedOutputPath(
+					filepath.Join(folder.Path(), filename.Text),
+					"encrypt",
+					current.InputFile,
+					len(current.InputFiles) > 1 || len(current.OnlyFolders) > 0,
+					current.Compress,
+				)
+				a.State.OutputChosenViaSaveDialog = false
+				a.State.SetReadyStatus()
+				a.updateUIState()
+			},
+			a.Window,
+		)
+		form.Show()
+	}, a.Window)
+
+	startDir := ""
+	if len(a.State.OnlyFiles) > 0 {
+		startDir = filepath.Dir(a.State.OnlyFiles[0])
+	} else if len(a.State.OnlyFolders) > 0 {
+		startDir = filepath.Dir(a.State.OnlyFolders[0])
+	}
+	if startDir != "" {
+		if folder, err := storage.ListerForURI(storage.NewFileURI(startDir)); err == nil {
+			picker.SetLocation(folder)
+		}
+	}
+	picker.Show()
+}
+
 // changePCV3OutputFile chooses a destination without asking Fyne to open a
 // writer. PCV3 publication is no-replace, so only its executor may create the
 // selected path.

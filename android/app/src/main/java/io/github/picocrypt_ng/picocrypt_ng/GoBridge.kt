@@ -83,15 +83,40 @@ data class ProgressState(
     val errorCode: String = "",
 )
 
+/** Shared authority-free identity of one strict PCV3 envelope; shape stays exact per subtype. */
+sealed interface Pcv3StartRequest {
+    val source: String
+    val target: String
+    val keyfiles: List<String>
+}
+
 /** Strict, authority-free request envelope for one explicit PCV3 read operation. */
 data class Pcv3Request(
     val mode: String,
     val factorPolicy: String,
     val keyfileOrder: String,
-    val source: String,
-    val target: String,
-    val keyfiles: List<String>,
-)
+    override val source: String,
+    override val target: String,
+    override val keyfiles: List<String>,
+) : Pcv3StartRequest
+
+/**
+ * Strict, authority-free request envelope for one explicit PCV3 creation. The exact
+ * write-shaped field set (comment/suite/payloadRS in addition to the shared fields)
+ * is enforced by [GoBridge.buildPcv3WriteRequestJson]; an invalid combination is
+ * refused locally as PCV3_BRIDGE_INVALID_REQUEST before any native call.
+ */
+data class Pcv3WriteRequest(
+    val mode: String,
+    val factorPolicy: String,
+    val keyfileOrder: String,
+    override val source: String,
+    override val target: String,
+    override val keyfiles: List<String>,
+    val comment: String,
+    val suite: String,
+    val payloadRS: Boolean,
+) : Pcv3StartRequest
 
 enum class Pcv3Route {
     LEGACY,
@@ -112,6 +137,7 @@ data class Pcv3SnapshotData(
     val publicationAttempted: Boolean, val publicationState: String, val publicationStage: String, val publicationCode: String,
     val diagnostic: String, val completionClass: String, val args: List<String>, val warnings: List<String>, val archivePending: Boolean,
     val restoredReceipt: String = "",
+    val authenticatedComment: String = "",
 )
 interface Pcv3OperationCapability {
     val id: String
@@ -233,11 +259,20 @@ internal interface Pcv3Transport {
  * [Pcv3Lifecycle] retains and drains that handle before surfacing the code.
  */
 internal class Pcv3Bridge(private val transport: Pcv3Transport) {
-    fun start(request: Pcv3Request, password: CharArray): Result<Pcv3StartData> {
+    fun start(request: Pcv3StartRequest, password: CharArray): Result<Pcv3StartData> {
+        val requestJson = when (request) {
+            is Pcv3Request -> GoBridge.buildPcv3RequestJson(request)
+            is Pcv3WriteRequest -> GoBridge.buildPcv3WriteRequestJson(request)
+        }
+        if (requestJson == null) {
+            // A locally refused write envelope still zeroes the caller credential.
+            password.fill('\u0000')
+            return Result.failure(Pcv3BridgeFailure("PCV3_BRIDGE_INVALID_REQUEST"))
+        }
         var passwordBytes: ByteArray? = null
         return try {
             passwordBytes = encodePcv3Password(password)
-            Result.success(transport.start(GoBridge.buildPcv3RequestJson(request), passwordBytes))
+            Result.success(transport.start(requestJson, passwordBytes))
         } catch (_: CharacterCodingException) {
             Result.failure(Pcv3BridgeFailure("PCV3_BRIDGE_INVALID_REQUEST"))
         } catch (error: CancellationException) {
@@ -408,17 +443,14 @@ internal class GoPcv3Output(private val native: Pcv3OutputNative) : Pcv3OutputCa
     }
 }
 
-/** Narrow native seam: the nine raw observations are the entire Android authority. */
+/** Narrow native seam: fresh memory facts are the entire Android authority. */
 internal interface Pcv3ResourceChallengeNative {
     fun submit(
-        manufacturer: String,
-        model: String,
-        abi: String,
-        osArch: String,
         totalRamBytes: Long,
         effectiveAvailableBytes: Long,
+        platformThresholdBytes: Long,
+        processFootprintBytes: Long,
         processIs64Bit: Boolean,
-        emulatorTraitsClear: Boolean,
         lowMemory: Boolean,
     ): Boolean
 }
@@ -427,24 +459,18 @@ private class GoMobilePcv3ResourceChallenge(
     private val native: PCV3ResourceChallenge,
 ) : Pcv3ResourceChallengeNative {
     override fun submit(
-        manufacturer: String,
-        model: String,
-        abi: String,
-        osArch: String,
         totalRamBytes: Long,
         effectiveAvailableBytes: Long,
+        platformThresholdBytes: Long,
+        processFootprintBytes: Long,
         processIs64Bit: Boolean,
-        emulatorTraitsClear: Boolean,
         lowMemory: Boolean,
     ): Boolean = native.submit(
-        manufacturer,
-        model,
-        abi,
-        osArch,
         totalRamBytes,
         effectiveAvailableBytes,
+        platformThresholdBytes,
+        processFootprintBytes,
         processIs64Bit,
-        emulatorTraitsClear,
         lowMemory,
     )
 }
@@ -454,14 +480,11 @@ internal class GoPcv3ResourceChallenge(
 ) : Pcv3ResourceChallengeCapability {
     override fun submit(observation: Pcv3AndroidResourceObservation): Boolean = try {
         native.submit(
-            observation.manufacturer,
-            observation.model,
-            observation.abi,
-            observation.osArch,
             observation.totalRamBytes,
             observation.effectiveAvailableBytes,
+            observation.platformThresholdBytes,
+            observation.processFootprintBytes,
             observation.processIs64Bit,
-            observation.emulatorTraitsClear,
             observation.lowMemory,
         )
     } catch (error: CancellationException) {
@@ -963,6 +986,45 @@ object GoBridge {
         put("keyfiles", JSONArray().apply { request.keyfiles.forEach { put(it) } })
     }.toString()
 
+    /** Mirrors header.MaxCommentLen (D-02 bound source of truth). */
+    private const val PCV3_MAX_COMMENT_BYTES = 99999
+    private const val PCV3_MAX_KEYFILES = 64
+
+    /**
+     * Builds the exact write-shaped PCV3 creation envelope, or null when any field
+     * violates the closed creation contract. The native boundary re-validates the same
+     * exact field set; this local refusal keeps malformed construction off the wire.
+     */
+    internal fun buildPcv3WriteRequestJson(request: Pcv3WriteRequest): String? {
+        if (request.mode != "write-normal" && request.mode != "write-d1") return null
+        val factorShapeValid = when (request.factorPolicy) {
+            "password" -> request.keyfileOrder == "none" && request.keyfiles.isEmpty()
+            "keyfiles", "password-and-keyfiles" ->
+                (request.keyfileOrder == "ordered" || request.keyfileOrder == "unordered") &&
+                    request.keyfiles.isNotEmpty() && request.keyfiles.size <= PCV3_MAX_KEYFILES
+            else -> false
+        }
+        if (!factorShapeValid) return null
+        if (request.suite != "standard" && request.suite != "paranoid") return null
+        // D1 creation has no suite choice: it always runs the paranoid suite.
+        if (request.mode == "write-d1" && request.suite != "paranoid") return null
+        if (request.source.isBlank() || request.target.isBlank()) return null
+        if (request.keyfiles.any { it.isBlank() }) return null
+        if (request.comment.toByteArray(Charsets.UTF_8).size > PCV3_MAX_COMMENT_BYTES) return null
+        return JSONObject().apply {
+            put("version", 1)
+            put("mode", request.mode)
+            put("factorPolicy", request.factorPolicy)
+            put("keyfileOrder", request.keyfileOrder)
+            put("source", request.source)
+            put("target", request.target)
+            put("keyfiles", JSONArray().apply { request.keyfiles.forEach { put(it) } })
+            put("comment", request.comment)
+            put("suite", request.suite)
+            put("payloadRS", request.payloadRS)
+        }.toString()
+    }
+
     private fun PCV3StartResult.toStartData(): Pcv3StartData = Pcv3StartData(code(), operation()?.let(::GoPcv3Operation))
     private fun PCV3RestoredReceipt.toRestoredData(): Pcv3RestoredReceiptData = Pcv3RestoredReceiptData(
         code = code(),
@@ -989,6 +1051,7 @@ object GoBridge {
         warnings = bounded(warningCount()) { warningAt(it) },
         archivePending = archivePending(),
         restoredReceipt = restoredReceipt(),
+        authenticatedComment = authenticatedComment(),
     )
     private fun bounded(count: Long, at: (Long) -> String): List<String> = (0 until count.coerceIn(0, 8)).map(at)
     private class GoPcv3Operation(private val native: PCV3Operation) : Pcv3OperationCapability {

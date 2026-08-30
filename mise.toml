@@ -129,7 +129,7 @@ run = "./build-gomobile.sh"
 description = "Run Android JVM tests after rebuilding the gomobile AAR"
 depends = ["android:gomobile"]
 dir = "android"
-run = "./gradlew test"
+run = "./gradlew --no-daemon test"
 
 [tasks."android:assemble-debug"]
 description = "Assemble the Android debug APK after rebuilding the gomobile AAR"
@@ -155,7 +155,7 @@ description = "Run local non-emulator CI gates"
 run = [
   "mise run check",
   "mise run android:gomobile",
-  "cd android && ./gradlew test assembleDebug",
+  "cd android && ./gradlew --no-daemon test assembleDebug",
 ]
 
 [tasks.default]
