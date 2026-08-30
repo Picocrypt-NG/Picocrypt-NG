@@ -364,8 +364,10 @@ for abi in $expected_abis; do
     verify_native_so "$abi"
 done
 
-ensure_absent_from_aar "$GO_SRC_DIR" "checkout-path"
-ensure_absent_from_aar "$USER_HOME" "user-home"
+# Trailing slash: only a real path prefix (always followed by content) matches;
+# a bare substring like "PCV3/outer/root" in a root-user build must not trip the policy.
+ensure_absent_from_aar "$GO_SRC_DIR/" "checkout-path"
+ensure_absent_from_aar "$USER_HOME/" "user-home"
 
 echo "✓ Build successful!"
 echo "  AAR location: $OUTPUT_DIR/picocrypt-mobile.aar"

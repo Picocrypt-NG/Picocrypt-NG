@@ -380,12 +380,26 @@ func TestCLIReportsStdinTempCleanupFailure(t *testing.T) {
 	if err := command.Start(); err != nil {
 		t.Fatalf("start CLI: %v", err)
 	}
+	waited := make(chan error, 1)
+	go func() { waited <- command.Wait() }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	found := false
+	exited := false
+	var runErr error
 	for time.Now().Before(deadline) {
+		select {
+		case runErr = <-waited:
+			exited = true
+		default:
+		}
+		if exited {
+			break
+		}
 		entries, err := os.ReadDir(tempDir)
 		if err != nil {
+			_ = command.Process.Kill()
+			<-waited
 			t.Fatalf("inspect temp directory: %v", err)
 		}
 		for _, entry := range entries {
@@ -400,16 +414,34 @@ func TestCLIReportsStdinTempCleanupFailure(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !found {
+		if exited {
+			// A legitimate platform resource-admission denial refuses the
+			// fixed 1 GiB KDF profile before encryption, so the staging temp
+			// is created and removed within milliseconds and the poll cannot
+			// observe it. Convert only that environment denial into a skip;
+			// any other early exit stays a failure with stderr attached.
+			exitCode := 0
+			if runErr != nil {
+				exitCode = 1
+				var exitErr *exec.ExitError
+				if errors.As(runErr, &exitErr) {
+					exitCode = exitErr.ExitCode()
+				}
+			}
+			result := cliTestResult{exitCode: exitCode, stderr: stderr.String()}
+			skipOnPCV3ResourceAdmissionDenial(t, result)
+			t.Fatalf("CLI exited before the stdin plaintext temp was observed: exit %d stderr %q", exitCode, result.stderr)
+		}
 		_ = command.Process.Kill()
-		_ = command.Wait()
+		<-waited
 		t.Fatal("CLI did not create the stdin plaintext temp")
 	}
 	if err := os.Chmod(tempDir, 0o500); err != nil {
 		_ = command.Process.Kill()
-		_ = command.Wait()
+		<-waited
 		t.Fatalf("make temp directory non-writable: %v", err)
 	}
-	err := command.Wait()
+	err := <-waited
 	if chmodErr := os.Chmod(tempDir, 0o700); chmodErr != nil {
 		t.Fatalf("restore temp directory permissions: %v", chmodErr)
 	}
@@ -444,6 +476,7 @@ func TestPCV3DecryptStdoutCancelsWithoutPlaintextResidue(t *testing.T) {
 		"encrypt", input, "-o", volume, "--pcv3", "-p", "signal-password", "--quiet",
 	)
 	if encrypted.exitCode != 0 {
+		skipOnPCV3ResourceAdmissionDenial(t, encrypted)
 		t.Fatalf("prepare PCV3 volume: exit %d stderr %q", encrypted.exitCode, encrypted.stderr)
 	}
 

@@ -354,7 +354,7 @@ func parseLinuxCgroupMemberships(contents []byte) (string, string, bool, bool) {
 		if _, ok := parseLinuxDecimal(parts[0]); !ok {
 			return "", "", false, false
 		}
-		membership, ok := cleanLinuxAbsolutePath(parts[2])
+		membership, ok := cleanLinuxCgroupPath(parts[2])
 		if !ok {
 			return "", "", false, false
 		}
@@ -625,6 +625,25 @@ func decodeLinuxMountPath(encoded string) (string, bool) {
 		index += 4
 	}
 	return cleanLinuxAbsolutePath(decoded.String())
+}
+
+// cleanLinuxCgroupPath validates a /proc/self/cgroup membership path. systemd
+// escapes unit-name characters as literal "\xHH" sequences in the cgroupfs
+// directory names themselves (for example
+// "app-com.mitchellh.ghostty\x2dopen\x2dhere@….service" is the real directory
+// name on disk), so a backslash is an ordinary, non-special filename
+// character here — Linux paths have no escape processing, and the path is
+// only ever joined under the cgroup mount point and opened via os.Root.
+func cleanLinuxCgroupPath(value string) (string, bool) {
+	if value == "" || len(value) > maxLinuxPathBytes || value[0] != '/' ||
+		strings.ContainsAny(value, "\x00\r\n") ||
+		path.Clean(value) != value {
+		return "", false
+	}
+	if _, ok := linuxRootRelativePath(value); !ok {
+		return "", false
+	}
+	return value, true
 }
 
 func cleanLinuxAbsolutePath(value string) (string, bool) {

@@ -120,6 +120,59 @@ func TestLinuxSnapshotProviderResolvesV1MemoryController(t *testing.T) {
 	}
 }
 
+func TestLinuxSnapshotProviderAcceptsSystemdEscapedCgroupPath(t *testing.T) {
+	// Desktop sessions launched from escaped app.slice units (terminals,
+	// browsers) carry literal systemd "\xHH" sequences in their cgroupfs
+	// directory names; admission must resolve that real path instead of
+	// failing closed.
+	fixture := newLinuxSnapshotFixture()
+	fixture.cgroup = "0::/app.slice/app-ghostty\\x2dopen.slice/transient\\x2djob.scope\n"
+	fixture.cgroupFiles = map[string]string{
+		"sys/fs/cgroup/memory.max":                                                                  "max\n",
+		"sys/fs/cgroup/app.slice/memory.max":                                                        "max\n",
+		"sys/fs/cgroup/app.slice/app-ghostty\\x2dopen.slice/memory.max":                             "max\n",
+		"sys/fs/cgroup/app.slice/app-ghostty\\x2dopen.slice/transient\\x2djob.scope/memory.max":     "3145728\n",
+		"sys/fs/cgroup/app.slice/app-ghostty\\x2dopen.slice/transient\\x2djob.scope/memory.current": "1048576\n",
+	}
+
+	snapshot := fixture.provider(t).Snapshot(context.Background())
+	if snapshot.state != snapshotStateReady {
+		t.Fatalf("escaped cgroup path snapshot state = %v; want ready", snapshot.state)
+	}
+	if snapshot.effectiveAvailable != 1048576 {
+		t.Fatalf("effective available = %d; want escaped-path headroom 1048576", snapshot.effectiveAvailable)
+	}
+}
+
+func TestCleanLinuxCgroupPath(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		ok    bool
+	}{
+		{name: "plain path accepted", value: "/user.slice/user-1000.slice", ok: true},
+		{name: "escaped name accepted raw", value: `/app.slice/app-ghostty\x2dopen.slice`, ok: true},
+		{name: "NUL rejected", value: "/tenant/\x00x", ok: false},
+		{name: "carriage return rejected", value: "/tenant/\rx", ok: false},
+		{name: "newline rejected", value: "/tenant/\nx", ok: false},
+		{name: "relative path rejected", value: "tenant/job", ok: false},
+		{name: "dot element rejected", value: "/tenant/./job", ok: false},
+		{name: "dot-dot element rejected", value: "/tenant/../job", ok: false},
+		{name: "trailing slash rejected", value: "/tenant/job/", ok: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := cleanLinuxCgroupPath(tc.value)
+			if ok != tc.ok {
+				t.Fatalf("cleanLinuxCgroupPath(%q) ok = %v; want %v", tc.value, ok, tc.ok)
+			}
+			if ok && got != tc.value {
+				t.Fatalf("cleanLinuxCgroupPath(%q) = %q; want unchanged", tc.value, got)
+			}
+		})
+	}
+}
+
 func TestLinuxSnapshotProviderToleratesAbsentV2LimitFiles(t *testing.T) {
 	t.Run("root limit file absent keeps descendant limit", func(t *testing.T) {
 		// Real systemd cgroup v2 layout: the root cgroup carries no resource
