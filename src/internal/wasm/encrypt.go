@@ -36,6 +36,8 @@ const (
 	wasmZeroingDecryptMACSubkey      wasmZeroingBufferKind = "decrypt mac subkey"
 	wasmZeroingDecryptSerpentKey     wasmZeroingBufferKind = "decrypt serpent key"
 	wasmZeroingDecryptPlaintextChunk wasmZeroingBufferKind = "decrypt plaintext chunk"
+	wasmZeroingDecryptAggregate      wasmZeroingBufferKind = "decrypt plaintext buffer"
+	wasmZeroingDecryptStaging        wasmZeroingBufferKind = "decrypt owned staging"
 	wasmZeroingDecryptComputedMAC    wasmZeroingBufferKind = "decrypt computed mac"
 	wasmZeroingKeyfileKey            wasmZeroingBufferKind = "keyfile key"
 	wasmZeroingCipherKey             wasmZeroingBufferKind = "keyfile cipher key"

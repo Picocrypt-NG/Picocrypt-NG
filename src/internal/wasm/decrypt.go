@@ -341,24 +341,42 @@ func hasUnsupportedWASMFeature(flags header.Flags) bool {
 // strips parity without correction (fast first pass); false applies full RS
 // correction (repairs <=4 errors per 136-byte block). forceDecode=true returns raw
 // bytes on uncorrectable blocks (user force-decrypt) instead of erroring.
-// DecodeRSPayloadBlock returns a freshly-allocated slice, so paranoid Decrypt
-// (which mutates src) never touches the caller's payload, keeping it pristine for
-// a retry pass.
+// Decoded staging is owned here, including the borrowed short-tail exception
+// from DecodeRSPayloadBlock. Paranoid Decrypt mutates src, so this ownership also
+// keeps the caller's payload pristine for retry and salvage passes.
 func decryptRSPayload(payload []byte, cs *crypto.CipherSuite, rs *encoding.RSCodecs, padded, forceDecode, fastDecode bool) ([]byte, error) {
 	plaintext := make([]byte, 0, len(payload))
+	transferred := false
+	defer func() {
+		if !transferred {
+			zeroWASMSensitiveBuffer(wasmZeroingDecryptAggregate, plaintext)
+		}
+	}()
 	var counter int64
 	blockSize := encoding.RSEncodedBlockSize
 	for offset := 0; offset < len(payload); offset += blockSize {
 		end := min(offset+blockSize, len(payload))
 		isLast := end >= len(payload)
-		data, err := encoding.DecodeRSPayloadBlock(payload[offset:end], rs, isLast, padded, forceDecode, fastDecode)
+		// Scope cleanup to this block, including unexpected unwinds, without
+		// retaining each block's buffers until the entire volume is processed.
+		err := func() error {
+			data, err := encoding.DecodeRSPayloadBlock(payload[offset:end], rs, isLast, padded, forceDecode, fastDecode)
+			if err != nil {
+				return err
+			}
+			if forceDecode && end-offset < encoding.RS128EncodedSize {
+				data = bytes.Clone(data)
+			}
+			defer zeroWASMSensitiveBuffer(wasmZeroingDecryptStaging, data)
+			dst := make([]byte, len(data))
+			defer zeroWASMSensitiveBuffer(wasmZeroingDecryptPlaintextChunk, dst)
+			cs.Decrypt(dst, data)
+			plaintext = append(plaintext, dst...)
+			return nil
+		}()
 		if err != nil {
 			return nil, err
 		}
-		dst := make([]byte, len(data))
-		cs.Decrypt(dst, data)
-		plaintext = append(plaintext, dst...)
-		zeroWASMSensitiveBuffer(wasmZeroingDecryptPlaintextChunk, dst)
 		counter += int64(util.MiB)
 		if counter >= crypto.RekeyThreshold {
 			if err := cs.Rekey(); err != nil {
@@ -367,6 +385,7 @@ func decryptRSPayload(payload []byte, cs *crypto.CipherSuite, rs *encoding.RSCod
 			counter = 0
 		}
 	}
+	transferred = true
 	return plaintext, nil
 }
 
@@ -409,18 +428,37 @@ func buildDecryptCipherSuite(key, cipherKey []byte, hdr *header.VolumeHeader, is
 // decryptPlainPayload decrypts non-RS payload in chunks
 func decryptPlainPayload(payload []byte, cs *crypto.CipherSuite, counter *int64) ([]byte, error) {
 	plaintext := make([]byte, 0, len(payload))
+	transferred := false
+	defer func() {
+		if !transferred {
+			zeroWASMSensitiveBuffer(wasmZeroingDecryptAggregate, plaintext)
+		}
+	}()
 	chunkSize := util.MiB
+	// Only Paranoid Decrypt mutates src. Reuse one block-bounded staging
+	// allocation so borrowed ciphertext is preserved without a volume copy.
+	var staging []byte
+	if cs.IsParanoid() {
+		staging = make([]byte, min(chunkSize, len(payload)))
+	}
 
 	for offset := 0; offset < len(payload); offset += chunkSize {
 		end := min(offset+chunkSize, len(payload))
 
-		chunk := payload[offset:end]
-		dst := make([]byte, len(chunk))
-		cs.Decrypt(dst, chunk)
-		plaintext = append(plaintext, dst...)
-		zeroWASMSensitiveBuffer(wasmZeroingDecryptPlaintextChunk, dst)
+		func() {
+			chunk := payload[offset:end]
+			if staging != nil {
+				chunk = staging[:len(chunk)]
+				defer zeroWASMSensitiveBuffer(wasmZeroingDecryptStaging, chunk)
+				copy(chunk, payload[offset:end])
+			}
+			dst := make([]byte, len(chunk))
+			defer zeroWASMSensitiveBuffer(wasmZeroingDecryptPlaintextChunk, dst)
+			cs.Decrypt(dst, chunk)
+			plaintext = append(plaintext, dst...)
+		}()
 
-		*counter += int64(len(chunk))
+		*counter += int64(end - offset)
 
 		// Rekey every 60 GiB
 		if *counter >= crypto.RekeyThreshold {
@@ -431,5 +469,6 @@ func decryptPlainPayload(payload []byte, cs *crypto.CipherSuite, counter *int64)
 		}
 	}
 
+	transferred = true
 	return plaintext, nil
 }
