@@ -16,14 +16,14 @@ import (
 // Reporter implements volume.ProgressReporter for terminal output.
 // It displays progress updates on a single line that gets overwritten.
 type Reporter struct {
-	mu         sync.Mutex
-	status     string
-	progress   float32
-	info       string
-	quiet      bool
-	cancelled  atomic.Bool
-	lastLine   int // Length of last printed line (for clearing)
-	pcv3Cancel context.CancelFunc
+	mu              sync.Mutex
+	status          string
+	progress        float32
+	info            string
+	quiet           bool
+	cancelled       atomic.Bool
+	lastLine        int // Length of last printed line (for clearing)
+	cancelOperation atomic.Pointer[context.CancelFunc]
 }
 
 // NewReporter creates a new CLI progress reporter.
@@ -88,20 +88,19 @@ func (r *Reporter) IsCancelled() bool {
 // Cancel marks the operation as cancelled.
 func (r *Reporter) Cancel() {
 	r.cancelled.Store(true)
-	r.mu.Lock()
-	cancel := r.pcv3Cancel
-	r.mu.Unlock()
+	cancel := r.cancelOperation.Load()
 	if cancel != nil {
-		cancel()
+		(*cancel)()
 	}
 }
 
-func (r *Reporter) setPCV3Cancel(cancel context.CancelFunc) {
-	r.mu.Lock()
-	r.pcv3Cancel = cancel
-	alreadyCancelled := r.cancelled.Load()
-	r.mu.Unlock()
-	if cancel != nil && alreadyCancelled {
+func (r *Reporter) setCancel(cancel context.CancelFunc) {
+	if cancel == nil {
+		r.cancelOperation.Store(nil)
+		return
+	}
+	r.cancelOperation.Store(&cancel)
+	if r.cancelled.Load() {
 		cancel()
 	}
 }

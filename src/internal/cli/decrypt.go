@@ -183,13 +183,7 @@ var (
 		return fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
 	}
 	pcv3CLIIsInteractive = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
-	pcv3CLIReadConsent   = func() (string, error) {
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return "", err
-		}
-		return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"), nil
-	}
+	pcv3CLIReadConsent   = readConsentLine
 )
 
 const pcv3UnavailableMessage = "this PCV volume is not supported by this version; no output was created"
@@ -698,7 +692,14 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Create reporter
 	reporter := NewReporter(decQuiet)
+	operationCtx, cancelOperation := context.WithCancel(cmd.Context())
+	reporter.setCancel(cancelOperation)
+	defer func() {
+		reporter.setCancel(nil)
+		cancelOperation()
+	}()
 	globalReporter.Store(reporter)
+	defer globalReporter.CompareAndSwap(reporter, nil)
 
 	// Build request
 	var kept bool
@@ -735,7 +736,7 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	}
 
 	// Run decryption
-	err = volume.DecryptPrepared(context.Background(), req, preparedInput)
+	err = volume.DecryptPrepared(operationCtx, req, preparedInput)
 	err = errors.Join(err, preparedInput.Close())
 	reporter.Finish()
 
@@ -747,7 +748,7 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	// Stream to stdout if requested
 	if useStdout {
 		stdoutTempFile = ""
-		if err := StreamFileToStdout(cmd.Context(), outputFile); err != nil {
+		if err := StreamFileToStdout(operationCtx, outputFile); err != nil {
 			return fmt.Errorf("streaming to stdout: %w", err)
 		}
 		if kept {
@@ -921,22 +922,20 @@ func runPCV3CLI(
 		decKeyfiles[index] = ""
 	}
 	decKeyfiles = nil
+	operationCtx, cancelOperation := context.WithCancel(ctx)
+	defer cancelOperation()
 	if needsConsent {
 		selectedRole, ok := pcv3CLIPhysicalRole(normal, decPCV3Role)
 		if !ok {
 			return errors.New("PCV3 unverified Force requires a valid explicit physical role")
 		}
-		request.Consent = pcv3CLIConsent(selectedRole)
+		request.Consent = pcv3CLIConsent(operationCtx, selectedRole)
 	}
 
 	reporter := NewReporter(decQuiet)
 	request.Reporter = reporter.PrintPCV3Status
-	operationCtx, cancelOperation := context.WithCancel(ctx)
-	reporter.setPCV3Cancel(cancelOperation)
-	defer func() {
-		reporter.setPCV3Cancel(nil)
-		cancelOperation()
-	}()
+	reporter.setCancel(cancelOperation)
+	defer reporter.setCancel(nil)
 	globalReporter.Store(reporter)
 	defer globalReporter.CompareAndSwap(reporter, nil)
 	transferred = true
@@ -1072,7 +1071,7 @@ func pcv3CLIPhysicalRole(normal bool, name string) (pcv3operation.PhysicalRole, 
 	}
 }
 
-func pcv3CLIConsent(selected pcv3operation.PhysicalRole) pcv3operation.Consent {
+func pcv3CLIConsent(ctx context.Context, selected pcv3operation.PhysicalRole) pcv3operation.Consent {
 	return func(request pcv3operation.ConsentRequest, action pcv3operation.ConsentAction) error {
 		if action == nil || !pcv3CLIIsInteractive() {
 			return pcv3operation.ErrConsentExpired
@@ -1088,7 +1087,10 @@ func pcv3CLIConsent(selected pcv3operation.PhysicalRole) pcv3operation.Consent {
 			return pcv3operation.ErrConsentRole
 		}
 		fmt.Fprintln(os.Stderr, "Type RECOVER UNVERIFIED to authorize this unverified recovery:")
-		line, err := pcv3CLIReadConsent()
+		line, err := pcv3CLIReadConsent(ctx)
+		if ctx.Err() != nil {
+			return nil //nolint:nilerr // The runner owns cancellation classification; no action was authorized.
+		}
 		if err != nil || line != "RECOVER UNVERIFIED" {
 			return pcv3operation.ErrConsentExpired
 		}

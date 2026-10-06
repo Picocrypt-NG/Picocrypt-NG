@@ -125,13 +125,10 @@ var (
 func handleSignal() {
 	if r := globalReporter.Load(); r != nil {
 		r.Cancel()
-		fmt.Fprintln(os.Stderr, "\nCancelling operation...")
 		return
 	}
-	if err := cleanupActiveStdinTemp(); err != nil {
-		fmt.Fprintln(os.Stderr, "\nWarning: temporary plaintext cleanup failed")
-	}
 	restoreTerminalState()
+	_ = cleanupActiveStdinTemp()
 	exitFn(1)
 }
 
@@ -152,21 +149,52 @@ func Execute(version string) bool {
 		return false
 	}
 
-	// Set up signal handling for graceful cancellation
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		handleSignal()
-	}()
-
-	if err := rootCmd.Execute(); err != nil {
-		if !isExitCodeError(err) {
-			fmt.Fprintln(os.Stderr, "Error:", err)
-		}
-		os.Exit(exitCodeForError(err))
+	if code := executeCLICommand(); code != 0 {
+		os.Exit(code)
 	}
 	return true
+}
+
+// executeCLICommand owns signal registration until command cleanup and result
+// reporting finish. The signal loop never writes to possibly stalled stderr.
+func executeCLICommand() int {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	var interrupted atomic.Bool
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-signals:
+				if interrupted.Swap(true) {
+					// A repeated interrupt explicitly abandons cooperative cleanup. Restore
+					// tty first; never wait for a reporter lock or claim cleanup completed.
+					restoreTerminalState()
+					_ = cleanupActiveStdinTemp()
+					exitFn(1)
+					return
+				}
+				handleSignal()
+			}
+		}
+	}()
+	defer func() {
+		signal.Stop(signals)
+		close(stop)
+		<-stopped
+	}()
+	err := rootCmd.Execute()
+	if interrupted.Load() {
+		fmt.Fprintln(os.Stderr, "\nCancelling operation...")
+	}
+	if err != nil && !isExitCodeError(err) {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+	}
+	return exitCodeForError(err)
 }
 
 func detectCLIMode(args []string) bool {

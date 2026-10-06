@@ -436,9 +436,9 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 	if encPCV3 {
 		var cancel context.CancelFunc
 		operationCtx, cancel = context.WithCancel(operationCtx)
-		reporter.setPCV3Cancel(cancel)
+		reporter.setCancel(cancel)
 		defer func() {
-			reporter.setPCV3Cancel(nil)
+			reporter.setCancel(nil)
 			cancel()
 		}()
 	}

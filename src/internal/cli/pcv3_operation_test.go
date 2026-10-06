@@ -306,10 +306,10 @@ func TestPCV3CLIArchiveExtractionObservesSignalCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	reporter := NewReporter(true)
-	reporter.setPCV3Cancel(cancel)
+	reporter.setCancel(cancel)
 	previousReporter := globalReporter.Swap(reporter)
 	t.Cleanup(func() {
-		reporter.setPCV3Cancel(nil)
+		reporter.setCancel(nil)
 		cancel()
 		globalReporter.Store(previousReporter)
 	})
@@ -353,7 +353,6 @@ func TestPCV3CLIArchiveExtractionKeepsOperationSignalContext(t *testing.T) {
 	}, nil)
 
 	if result.exitCode != ExitGeneralError || !observation.Called ||
-		!strings.Contains(result.stderr, "Cancelling operation") ||
 		!strings.Contains(result.stderr, "Publication: not-published") {
 		t.Fatalf(
 			"archive signal route = exit %d called=%v stdout=%q stderr=%q; want cancelled not-published terminal",

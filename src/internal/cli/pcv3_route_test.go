@@ -131,7 +131,7 @@ func TestPCV3CLIProcessHelper(t *testing.T) {
 	}
 
 	pcv3CLIIsInteractive = func() bool { return config.Interactive }
-	pcv3CLIReadConsent = func() (string, error) { return config.ConsentLine, nil }
+	pcv3CLIReadConsent = func(context.Context) (string, error) { return config.ConsentLine, nil }
 	if config.OpenLog != "" {
 		pcv3CLIOpenKeyfile = func(path string) (*os.File, error) {
 			file, openErr := fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
