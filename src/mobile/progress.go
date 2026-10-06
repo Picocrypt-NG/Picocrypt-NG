@@ -1011,6 +1011,17 @@ func pcv3ConsentCallback(operation *PCV3Operation) pcv3operation.Consent {
 			globalProgressMap.mu.Unlock()
 			return nil
 		}
+		if progress.cancelRequested {
+			cancel := globalProgressMap.cancels[operation.id]
+			globalProgressMap.mu.Unlock()
+			// Cancel may have published its request before invoking this same
+			// idempotent function. Make cancellation visible to the core before
+			// returning so a rejected consent cannot become a policy refusal.
+			if cancel != nil {
+				cancel()
+			}
+			return nil
+		}
 		progress.consent = state
 		globalProgressMap.mu.Unlock()
 		decision := <-state.decision
