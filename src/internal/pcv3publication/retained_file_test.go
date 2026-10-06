@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -598,4 +599,49 @@ func TestSplitRetainedCompleteUncertaintyPreservesFullIdentityAndChunks(t *testi
 		t.Fatal(err)
 	}
 	requireFileBytes(t, recombined, payload)
+}
+
+// Real pipe failure and pre-cancelled streaming must consume the same retained
+// source as a successful stream, without publishing bytes after cancellation.
+func TestRetainedStreamFailureAndCancellationConsumeSource(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		name := "broken-pipe"
+		if cancelled {
+			name = "cancelled-before-stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "retained")
+			retained := publishRetainedTestFile(t, path, []byte("owned plaintext must not survive failed streaming"))
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			defer writer.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if cancelled {
+				cancel()
+			} else if err := reader.Close(); err != nil {
+				t.Fatal(err)
+			}
+			result := retained.StreamTo(ctx, writer)
+			if result.Copied() || result.CleanupIncomplete() || retained.Live() {
+				t.Fatalf("stream retained custody or reported success: copied=%v cleanup=%v live=%v", result.Copied(), result.CleanupIncomplete(), retained.Live())
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("failed stream retained internal plaintext: %v", err)
+			}
+			if cancelled {
+				if _, err := writer.Stat(); !errors.Is(err, os.ErrClosed) {
+					t.Fatalf("cancelled stream left destination open: %v", err)
+				}
+				var probe [1]byte
+				count, err := reader.Read(probe[:])
+				if count != 0 || err != io.EOF {
+					t.Errorf("cancelled stream published bytes or left writer open: count=%d err=%v", count, err)
+				}
+			}
+		})
+	}
 }

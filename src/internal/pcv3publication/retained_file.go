@@ -2,6 +2,7 @@ package pcv3publication
 
 import (
 	"Picocrypt-NG/internal/fileops"
+	"Picocrypt-NG/internal/secret"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -110,7 +111,7 @@ func (file *RetainedFile) CopyTo(destination *os.File) CopyResult {
 	}
 
 	buffer := make([]byte, retainedCopyBufferSize)
-	defer clear(buffer)
+	defer secret.SecureZero(buffer)
 	digest := sha256.New()
 	written, copyErr := io.CopyBuffer(
 		io.MultiWriter(retainedWriter{Writer: destination}, digest),
@@ -179,7 +180,7 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 		return CopyResult{cleanupIncomplete: cleanupIncomplete}
 	}
 	buffer := make([]byte, retainedCopyBufferSize)
-	defer clear(buffer)
+	defer secret.SecureZero(buffer)
 	preDigest := sha256.New()
 	remaining := sourceInfo.Size()
 	for remaining > 0 {
@@ -209,7 +210,7 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 		remaining -= int64(count)
 	}
 	if !bytes.Equal(preDigest.Sum(nil), file.sha256[:]) {
-		clear(buffer)
+		secret.SecureZero(buffer)
 		if runtime.GOOS == "windows" {
 			cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
 		} else if file.closeHandlesLocked() {
@@ -218,7 +219,7 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 		return CopyResult{cleanupIncomplete: cleanupIncomplete}
 	}
 	if _, err := file.file.Seek(0, io.SeekStart); err != nil {
-		clear(buffer)
+		secret.SecureZero(buffer)
 		if runtime.GOOS == "windows" {
 			cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
 		} else if file.closeHandlesLocked() {
@@ -226,7 +227,7 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 		}
 		return CopyResult{cleanupIncomplete: cleanupIncomplete}
 	}
-	clear(buffer)
+	secret.SecureZero(buffer)
 
 	type streamResult struct {
 		written int64
@@ -236,11 +237,19 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 	done := make(chan streamResult, 1)
 	source := file.file
 	go func() {
-		buffer := make([]byte, retainedCopyBufferSize)
-		defer clear(buffer)
-		digest := sha256.New()
-		written, copyErr := io.CopyBuffer(io.MultiWriter(destination, digest), source, buffer)
-		done <- streamResult{written: written, digest: digest.Sum(nil), err: copyErr}
+		streamed := func() streamResult {
+			buffer := make([]byte, retainedCopyBufferSize)
+			defer secret.SecureZero(buffer)
+			digest := sha256.New()
+			written, copyErr := io.CopyBuffer(
+				io.MultiWriter(retainedWriter{Writer: destination}, digest),
+				retainedReader{Reader: source},
+				buffer,
+			)
+			return streamResult{written: written, digest: digest.Sum(nil), err: copyErr}
+		}()
+		// Finish owned scratch cleanup before publishing copy completion.
+		done <- streamed
 	}()
 	var streamed streamResult
 	cancelled := false
