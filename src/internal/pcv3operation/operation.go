@@ -228,6 +228,10 @@ func runWithSeamsAndOptions(
 	options ExecutionOptions,
 ) (result *Result) {
 	owner := takeOperationRequest(request)
+	// Retain only a sequential cleanup observation across takeFactors. Native
+	// readers own and consume the credentials; flattened errors cannot erase
+	// a keyfile close failure recorded by that same factor owner.
+	factorCleanup := owner.factors
 	var archivePlan *archiveReadPlan
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -249,6 +253,9 @@ func runWithSeamsAndOptions(
 			}
 		}
 		cleanupIncomplete := owner.close()
+		if factorCleanup.CleanupIncomplete() {
+			cleanupIncomplete = true
+		}
 		if archivePlan.close() {
 			cleanupIncomplete = true
 		}
@@ -1084,7 +1091,8 @@ func safeCloseFactors(factors *pcv3credential.FactorRequest) (failed bool) {
 			failed = true
 		}
 	}()
-	return factors.Close() != nil
+	closeErr := factors.Close()
+	return closeErr != nil || factors.CleanupIncomplete()
 }
 
 func safeCloseSource(source *os.File) (failed bool) {

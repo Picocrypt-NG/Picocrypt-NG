@@ -91,6 +91,7 @@ func (reader *KeyfileReader) Close() error {
 // their backing storage.
 type FactorRequest struct {
 	requireNonemptyKeyfiles bool
+	cleanupIncomplete       bool
 	Mode                    CredentialMode
 	KeyfileMode             KeyfileMode
 	ExpectedPolicy          FactorPolicy
@@ -120,7 +121,18 @@ func (request *FactorRequest) Close() error {
 	if request == nil {
 		return nil
 	}
-	return takeFactorRequest(request).close()
+	owned := takeFactorRequest(request)
+	err := owned.close()
+	request.cleanupIncomplete = request.cleanupIncomplete || owned.cleanupIncomplete
+	return err
+}
+
+// CleanupIncomplete reports an owned keyfile close failure even after the
+// factors were consumed. Like factor ownership, observation is sequential;
+// the operation owner may inspect it only after the consuming call settles.
+// It retains no provider error, credential, reader or cleanup authority.
+func (request *FactorRequest) CleanupIncomplete() bool {
+	return request != nil && request.cleanupIncomplete
 }
 
 // FactorErrorCode identifies a public, non-secret failure reason.
@@ -231,6 +243,7 @@ type factorHooks struct {
 
 type ownedFactors struct {
 	requireNonemptyKeyfiles bool
+	cleanupIncomplete       bool
 	password                *pcsecret.Secret
 	readers                 []*KeyfileReader
 	descriptors             []FactorDescriptor
@@ -261,6 +274,7 @@ func withValidatedFactors(
 	owned := takeFactorRequest(request)
 	defer func() {
 		closeErr := owned.close()
+		request.cleanupIncomplete = request.cleanupIncomplete || owned.cleanupIncomplete
 		switch {
 		case closeErr == nil:
 		case err == nil:
@@ -628,8 +642,11 @@ func (owned *ownedFactors) close() error {
 func (owned *ownedFactors) closeReaders() error {
 	var closeFailure *FactorError
 	for i, reader := range owned.readers {
-		if reader.close() && closeFailure == nil {
-			closeFailure = newFactorError(FactorErrorClose, i, 0)
+		if reader.close() {
+			owned.cleanupIncomplete = true
+			if closeFailure == nil {
+				closeFailure = newFactorError(FactorErrorClose, i, 0)
+			}
 		}
 		owned.readers[i] = nil
 	}
