@@ -1,5 +1,9 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
+import org.junit.Rule
+import io.github.picocrypt_ng.picocrypt_ng.testutils.MainDispatcherRule
 import android.content.Context
 import android.net.Uri
 import android.os.ParcelFileDescriptor
@@ -36,6 +40,7 @@ import kotlin.io.path.createTempDirectory
  * on validation logic and state management that can be tested without full integration.
  */
 class OperationManagerTest {
+    @get:Rule val mainDispatcherRule = MainDispatcherRule()
     
     private lateinit var mockContext: Context
     private lateinit var pcv3ReceiptDirectory: File
@@ -1719,7 +1724,7 @@ class OperationManagerTest {
         val live = lifecycle.refreshPcv3().getOrThrow() as Pcv3Presentation.Live
         assertSame(consent, live.consentHandle)
         assertEquals(listOf("primary", "backup"), live.consent?.allowedRoles)
-        assertTrue(lifecycle.selectPcv3ConsentRole("backup").isSuccess)
+        assertTrue(lifecycle.selectPcv3ConsentRole(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation, "backup").isSuccess)
         assertEquals(0, operation.cancelCalls)
         assertEquals(0, operation.releaseCalls)
     }
@@ -1839,8 +1844,8 @@ class OperationManagerTest {
         operation.installConsent(consent)
         val waiting = lifecycle.refreshPcv3().getOrThrow() as Pcv3Presentation.Live
         assertEquals(listOf("primary", "backup"), waiting.consent?.allowedRoles)
-        assertTrue(lifecycle.selectPcv3ConsentRole("backup").isSuccess)
-        assertTrue(lifecycle.confirmPcv3Consent().isSuccess)
+        assertTrue(lifecycle.selectPcv3ConsentRole(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation, "backup").isSuccess)
+        assertTrue(lifecycle.confirmPcv3Consent(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation).isSuccess)
         assertTrue("choice is a request; Go remains authoritative until a later poll", lifecycle.presentation.value is Pcv3Presentation.Live)
 
         operation.replaceSnapshot(pcv3CleanSnapshot())
@@ -1940,8 +1945,8 @@ class OperationManagerTest {
         val lifecycle = lifecycleFor(ContractTransport(operation))
 
         lifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile).getOrThrow()
-        lifecycle.selectPcv3ConsentRole("primary").getOrThrow()
-        val action = async(Dispatchers.Default) { lifecycle.confirmPcv3Consent() }
+        lifecycle.selectPcv3ConsentRole(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation, "primary").getOrThrow()
+        val action = async(Dispatchers.Default) { lifecycle.confirmPcv3Consent(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation) }
         chooseEntered.await()
         action.cancel(CancellationException("cancel consent owner after native state changed"))
         releaseChoose.complete(Unit)
@@ -1972,8 +1977,8 @@ class OperationManagerTest {
         val lifecycle = lifecycleFor(ContractTransport(operation))
 
         lifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile).getOrThrow()
-        lifecycle.selectPcv3ConsentRole("primary").getOrThrow()
-        val result = lifecycle.confirmPcv3Consent()
+        lifecycle.selectPcv3ConsentRole(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation, "primary").getOrThrow()
+        val result = lifecycle.confirmPcv3Consent(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation)
 
         assertTrue(result.isFailure)
         assertEquals("PCV3_OPERATION_FAILURE", result.exceptionOrNull()?.message)
@@ -2056,7 +2061,7 @@ class OperationManagerTest {
         val lifecycle = lifecycleFor(ContractTransport(operation))
 
         lifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile).getOrThrow()
-        assertTrue(lifecycle.cancelPcv3().isSuccess)
+        assertTrue(lifecycle.cancelPcv3(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation).isSuccess)
         assertEquals(1, operation.cancelCalls)
         assertTrue("cancel does not invent a terminal presentation", lifecycle.presentation.value is Pcv3Presentation.Live)
 
@@ -2117,7 +2122,7 @@ class OperationManagerTest {
         assertEquals(Pcv3ArtifactDetailsUiState.Closed, lifecycle.artifactDetails.value)
         val restoredPresentation: Pcv3Presentation = restored
         assertTrue("restored state has no live Go capability", restoredPresentation !is Pcv3Presentation.Live)
-        assertTrue(lifecycle.cancelPcv3().isFailure)
+        assertTrue(lifecycle.cancelPcv3(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation).isFailure)
         assertFalse(lifecycle.dismissPcv3("wrong-operation", restored.generation))
         assertTrue(lifecycle.dismissPcv3(restored.operationId, restored.generation))
         assertNull(lifecycle.presentation.value)
@@ -2475,7 +2480,7 @@ class OperationManagerTest {
         val lifecycle = safLifecycleFor(ContractTransport(operation))
 
         lifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile).getOrThrow()
-        assertTrue(lifecycle.closePcv3Archive().isSuccess)
+        assertTrue(lifecycle.closePcv3Archive(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation).isSuccess)
 
         val final = lifecycle.presentation.value as Pcv3Presentation.Final
         assertEquals("operation-failed", final.snapshot.semantic.outcome)
@@ -2488,7 +2493,7 @@ class OperationManagerTest {
         assertFalse(final.snapshot.archivePending)
         assertEquals(1, archive.closeCalls)
         assertEquals(1, operation.releaseCalls)
-        assertTrue("the consumed Close authority cannot run twice", lifecycle.closePcv3Archive().isFailure)
+        assertTrue("the consumed Close authority cannot run twice", lifecycle.closePcv3Archive(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation).isFailure)
         assertEquals(1, archive.closeCalls)
     }
 
@@ -2705,7 +2710,7 @@ class OperationManagerTest {
         cancelledLifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile).getOrThrow()
         cancelledOperation.installResourceChallenge(cancelledChallenge)
         assertTrue(cancelledLifecycle.installResourceObservationReader(cancelledReader))
-        cancelledLifecycle.cancelPcv3()
+        cancelledLifecycle.cancelPcv3(cancelledLifecycle.presentation.value!!.operationId, cancelledLifecycle.presentation.value!!.generation)
         assertEquals(0, cancelledChallenge.submitCalls)
 
         val drainingOperation = ContractOperation("pcv3-resource-drain", pcv3WorkingSnapshot())
@@ -2767,6 +2772,82 @@ class OperationManagerTest {
             releaseSnapshot.complete(Unit)
         }
         assertTrue(first.await().isSuccess)
+    }
+
+    @Test fun `late cancel cannot claim replacement operation`() = staleScalarAction("cancel")
+    @Test fun `late role selection cannot mutate replacement consent`() = staleScalarAction("select")
+    @Test fun `late confirmation cannot consume replacement consent`() = staleScalarAction("confirm")
+    @Test fun `late refusal cannot consume replacement consent`() = staleScalarAction("refuse")
+    @Test fun `late close cannot consume replacement archive`() = staleScalarAction("close")
+
+    private fun staleScalarAction(kind: String) = runTest {
+        val old = ContractOperation("old", pcv3WorkingSnapshot())
+        val replacement = ContractOperation("replacement", if (kind == "close") pcv3ArchivePendingSnapshot() else pcv3WorkingSnapshot())
+        val consent = ContractConsent(replacement, "force-unverified-normal", listOf("primary", "backup"))
+        val archive = ContractArchive(replacement, CompletableDeferred(), CompletableDeferred<Unit>().also { it.complete(Unit) })
+        if (kind == "close") replacement.installArchive(archive)
+        else if (kind != "cancel") replacement.installConsent(consent)
+        val lifecycle = lifecycleFor(SequencedContractTransport(ArrayDeque(listOf(old, replacement))))
+        val a = lifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile).getOrThrow()
+        val dispatch = CompletableDeferred<Unit>()
+        val entered = CompletableDeferred<Unit>()
+        val delivered = CompletableDeferred<Result<Unit>>()
+        suspend fun invoke(id: String, generation: Long): Result<Unit> = when (kind) {
+            "cancel" -> lifecycle.cancelPcv3(id, generation)
+            "select" -> lifecycle.selectPcv3ConsentRole(id, generation, "backup")
+            "confirm" -> lifecycle.confirmPcv3Consent(id, generation)
+            "refuse" -> lifecycle.refusePcv3Consent(id, generation)
+            else -> lifecycle.closePcv3Archive(id, generation)
+        }
+        suspend fun dispatched(id: String, generation: Long): Result<Unit> {
+            entered.complete(Unit)
+            dispatch.await()
+            return invoke(id, generation).also { delivered.complete(it) }
+        }
+        val route = mockk<Pcv3Operations>()
+        every { route.presentation } returns lifecycle.presentation
+        every { route.busy } returns lifecycle.busy
+        coEvery { route.refresh() } coAnswers { lifecycle.refreshPcv3() }
+        coEvery { route.cancel(any(), any()) } coAnswers { dispatched(firstArg(), secondArg()) }
+        coEvery { route.selectConsentRole(any(), any(), any()) } coAnswers { dispatched(firstArg(), secondArg()) }
+        coEvery { route.confirmConsent(any(), any()) } coAnswers { dispatched(firstArg(), secondArg()) }
+        coEvery { route.refuseConsent(any(), any()) } coAnswers { dispatched(firstArg(), secondArg()) }
+        coEvery { route.closeArchive(any(), any()) } coAnswers { dispatched(firstArg(), secondArg()) }
+        val model = OperationViewModel(route)
+        try {
+            when (kind) {
+                "cancel" -> model.cancelPcv3(a.operationId, a.generation)
+                "select" -> model.selectPcv3ConsentRole(a.operationId, a.generation, "backup")
+                "confirm" -> model.confirmPcv3Consent(a.operationId, a.generation)
+                "refuse" -> model.refusePcv3Consent(a.operationId, a.generation)
+                else -> model.closePcv3Archive(a.operationId, a.generation)
+            }
+            entered.await() // The real UI checks passed; IO dispatch has not claimed native authority yet.
+            old.replaceSnapshot(pcv3CleanSnapshot())
+            lifecycle.refreshPcv3().getOrThrow()
+            assertTrue(lifecycle.dismissPcv3(a.operationId, a.generation))
+            val b = lifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile).getOrThrow()
+            if (kind == "confirm") lifecycle.selectPcv3ConsentRole(b.operationId, b.generation, "primary").getOrThrow()
+            val before = lifecycle.presentation.value
+            dispatch.complete(Unit)
+            assertTrue("stale $kind must fail without touching replacement", delivered.await().isFailure)
+            assertTrue("generation alone must independently guard ownership", invoke(b.operationId, a.generation).isFailure)
+            assertTrue("operation ID alone must independently guard ownership", invoke(a.operationId, b.generation).isFailure)
+            assertSame(before, lifecycle.presentation.value)
+            assertEquals(0, replacement.cancelCalls)
+            assertEquals(0, archive.closeCalls)
+            assertEquals(b.generation, lifecycle.presentation.value?.generation)
+            assertTrue("the exact current action remains available", invoke(b.operationId, b.generation).isSuccess)
+            if (kind == "cancel") {
+                // Cancel is a request until the worker acknowledges completion.
+                replacement.replaceSnapshot(pcv3CancelledSnapshot())
+                lifecycle.refreshPcv3().getOrThrow()
+            }
+            if (kind != "select") assertTrue("settled or consumed action cannot be replayed", invoke(b.operationId, b.generation).isFailure)
+        } finally {
+            dispatch.complete(Unit)
+            model.viewModelScope.coroutineContext[Job]!!.cancelAndJoin()
+        }
     }
 
     private fun lifecycleFor(

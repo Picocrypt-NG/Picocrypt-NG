@@ -86,9 +86,24 @@ internal class Pcv3Lifecycle(
     private var nextActionToken = 0L
     private var nextArtifactPageToken = 0L
     private var artifactPageToken: Long? = null
+    private var startedInputCustody: Pcv3InputCustody? = null
     private var state: State = State.Idle
         set(value) {
             field = value
+            when (value) {
+                is State.Active -> if (value.snapshot?.completionClass !in listOf(null, "", "unknown")) {
+                    startedInputCustody?.observeNativeStop(value.generation)
+                }
+                is State.Draining -> if (value.snapshot?.completionClass !in listOf(null, "", "unknown")) {
+                    startedInputCustody?.observeNativeStop(value.generation)
+                }
+                is State.Final -> {
+                    startedInputCustody?.observeNativeStop(value.generation)
+                    startedInputCustody = null
+                }
+                State.Idle -> startedInputCustody = null
+                is State.Starting -> Unit
+            }
             _busy.value = value is State.Starting || value is State.Active || value is State.Draining
         }
 
@@ -287,8 +302,9 @@ internal class Pcv3Lifecycle(
         request: Pcv3StartRequest,
         password: CharArray,
         receiptFile: File,
+        inputCustody: Pcv3InputCustody? = null,
     ): Result<Pcv3Presentation> = try {
-        startOwned(request, password, receiptFile)
+        startOwned(request, password, receiptFile, inputCustody)
     } finally {
         password.fill('\u0000')
     }
@@ -297,12 +313,14 @@ internal class Pcv3Lifecycle(
         request: Pcv3StartRequest,
         password: CharArray,
         receiptFile: File,
+        inputCustody: Pcv3InputCustody?,
     ): Result<Pcv3Presentation> {
         val creation = request is Pcv3WriteRequest
         val generation = mutex.withLock {
             when (state) {
                 State.Idle -> {
                     val next = ++nextGeneration
+                    startedInputCustody = inputCustody
                     state = State.Starting(next, receiptFile, creation)
                     _presentation.value = null
                     artifactPageToken = null
@@ -324,6 +342,7 @@ internal class Pcv3Lifecycle(
             finishStarting(generation)
             throw error
         }
+        started.getOrNull()?.operation?.let { inputCustody?.bind(it.id, generation) }
         try {
             callerContext.ensureActive()
         } catch (error: CancellationException) {
@@ -684,9 +703,19 @@ internal class Pcv3Lifecycle(
         _artifactDetails.value = Pcv3ArtifactDetailsUiState.Closed
     }
 
-    suspend fun cancelPcv3(): Result<Unit> {
+    suspend fun cancelCurrentPcv3ForHost(): Result<Unit> {
+        val target = mutex.withLock {
+            (state as? State.Active)?.let { it.operation.id to it.generation }
+        } ?: return Result.failure(Pcv3BridgeFailure("PCV3_OPERATION_UNAVAILABLE"))
+        return cancelPcv3(target.first, target.second)
+    }
+
+    private fun State.Active.matches(operationId: String, generation: Long): Boolean =
+        this.generation == generation && operation.id == operationId
+
+    suspend fun cancelPcv3(expectedOperationId: String, expectedGeneration: Long): Result<Unit> {
         val safAction = mutex.withLock {
-            (state as? State.Active)?.archiveSafAction
+            (state as? State.Active)?.takeIf { it.matches(expectedOperationId, expectedGeneration) }?.archiveSafAction
         }
         if (safAction != null) {
             cancelSafSession(safAction.requestCancellation())
@@ -697,7 +726,7 @@ internal class Pcv3Lifecycle(
         val action = mutex.withLock {
             val current = state as? State.Active
                 ?: return@withLock null
-            if (current.actionToken != null || current.archiveSafAction != null ||
+            if (!current.matches(expectedOperationId, expectedGeneration) || current.actionToken != null || current.archiveSafAction != null ||
                 current.outputHandle != null || current.outputActionInFlight
             ) {
                 return@withLock null
@@ -731,7 +760,7 @@ internal class Pcv3Lifecycle(
         return actionResult(reconciled, actionFailure)
     }
 
-    suspend fun closePcv3Archive(): Result<Unit> = archiveAction { it.close() }
+    suspend fun closePcv3Archive(expectedOperationId: String, expectedGeneration: Long): Result<Unit> = archiveAction(expectedOperationId, expectedGeneration) { it.close() }
 
     /**
      * Claims the exact archive generation before BeginSAF. The selected URI stays
@@ -1389,11 +1418,11 @@ internal class Pcv3Lifecycle(
         return OutputAction(ticket, handle)
     }
 
-    suspend fun selectPcv3ConsentRole(role: String): Result<Unit> = mutex.withLock {
+    suspend fun selectPcv3ConsentRole(expectedOperationId: String, expectedGeneration: Long, role: String): Result<Unit> = mutex.withLock {
         val current = state as? State.Active
             ?: return@withLock Result.failure(Pcv3BridgeFailure("PCV3_CONSENT_EXPIRED"))
         val consent = current.consent
-        if (current.actionToken != null || current.consentHandle == null || consent == null || role !in consent.allowedRoles) {
+        if (!current.matches(expectedOperationId, expectedGeneration) || current.actionToken != null || current.consentHandle == null || consent == null || role !in consent.allowedRoles) {
             return@withLock Result.failure(Pcv3BridgeFailure("PCV3_CONSENT_EXPIRED"))
         }
         val selected = current.copy(consent = consent.copy(selectedRole = role))
@@ -1402,17 +1431,17 @@ internal class Pcv3Lifecycle(
         Result.success(Unit)
     }
 
-    suspend fun confirmPcv3Consent(): Result<Unit> = consentAction(requireSelection = true)
+    suspend fun confirmPcv3Consent(expectedOperationId: String, expectedGeneration: Long): Result<Unit> = consentAction(expectedOperationId, expectedGeneration, requireSelection = true)
 
-    suspend fun refusePcv3Consent(): Result<Unit> = consentAction(requireSelection = false)
+    suspend fun refusePcv3Consent(expectedOperationId: String, expectedGeneration: Long): Result<Unit> = consentAction(expectedOperationId, expectedGeneration, requireSelection = false)
 
-    private suspend fun consentAction(requireSelection: Boolean): Result<Unit> {
+    private suspend fun consentAction(expectedOperationId: String, expectedGeneration: Long, requireSelection: Boolean): Result<Unit> {
         val action = mutex.withLock {
             val current = state as? State.Active
                 ?: return@withLock null
             val handle = current.consentHandle ?: return@withLock null
             val selected = current.consent?.selectedRole
-            if (current.actionToken != null || (requireSelection && selected == null)) return@withLock null
+            if (!current.matches(expectedOperationId, expectedGeneration) || current.actionToken != null || (requireSelection && selected == null)) return@withLock null
             val ticket = ActionTicket(++nextActionToken, current.generation, current.operation)
             val pending = current.copy(consentHandle = null, consent = null, actionToken = ticket.token)
             state = pending
@@ -1437,12 +1466,12 @@ internal class Pcv3Lifecycle(
         return actionResult(reconciled, actionFailure)
     }
 
-    private suspend fun archiveAction(actionCall: (Pcv3ArchiveCapability) -> Pcv3SnapshotData): Result<Unit> {
+    private suspend fun archiveAction(expectedOperationId: String, expectedGeneration: Long, actionCall: (Pcv3ArchiveCapability) -> Pcv3SnapshotData): Result<Unit> {
         val action = mutex.withLock {
             val current = state as? State.Active
                 ?: return@withLock null
             val handle = current.archiveHandle ?: return@withLock null
-            if (current.actionToken != null) return@withLock null
+            if (!current.matches(expectedOperationId, expectedGeneration) || current.actionToken != null) return@withLock null
             val ticket = ActionTicket(++nextActionToken, current.generation, current.operation)
             val pending = current.copy(archiveHandle = null, actionToken = ticket.token)
             state = pending
@@ -2232,9 +2261,6 @@ internal class Pcv3Lifecycle(
 
 }
 
-/** Exact host authority over one transferred request's input paths. */
-internal class Pcv3InputCustody internal constructor(internal val request: Pcv3StartRequest)
-
 /**
  * Manages encryption/decryption operations and their progress.
  */
@@ -2242,6 +2268,8 @@ object OperationManager {
     private val legacyOperationMutex = Mutex()
     private val pcv3InputCustodyLock = Any()
     private var pcv3InputCustody: Pcv3InputCustody? = null
+    private val _pcv3InputCleanupFailure = MutableStateFlow<Pcv3InputCleanupFailure?>(null)
+    internal val currentPcv3InputCleanupFailure = _pcv3InputCleanupFailure.asStateFlow()
     private val _pcv3InputCleanupPending = MutableStateFlow(false)
     internal val currentPcv3InputCleanupPending: StateFlow<Boolean> = _pcv3InputCleanupPending.asStateFlow()
     private val _currentOperation = MutableStateFlow<OperationState?>(null)
@@ -2261,11 +2289,27 @@ object OperationManager {
         }
     }
 
-    internal fun releasePcv3InputCustody(owner: Pcv3InputCustody) = synchronized(pcv3InputCustodyLock) {
+    internal fun finishPcv3InputCleanup(owner: Pcv3InputCustody, complete: Boolean) = synchronized(pcv3InputCustodyLock) {
         if (pcv3InputCustody === owner) {
-            pcv3InputCustody = null
-            _pcv3InputCleanupPending.value = false
+            if (complete) {
+                pcv3InputCustody = null
+                _pcv3InputCleanupFailure.value = null
+                _pcv3InputCleanupPending.value = false
+            } else {
+                _pcv3InputCleanupFailure.value = Pcv3InputCleanupFailure(owner, AppError.FileError.DeleteFailed(
+                    userMessage = "",
+                    technicalMessage = "Failed to clear transferred PCV3 input resources",
+                    messageResId = R.string.error_delete_failed,
+                ))
+            }
         }
+    }
+
+    internal fun retryPcv3InputCleanup(failure: Pcv3InputCleanupFailure) {
+        val owner = synchronized(pcv3InputCustodyLock) {
+            failure.owner.takeIf { pcv3InputCustody === it && _pcv3InputCleanupFailure.value === failure }
+        }
+        owner?.retryCleanup()
     }
 
     private fun ownsPcv3Inputs(owner: Pcv3InputCustody?, request: Pcv3StartRequest): Boolean =
@@ -2302,7 +2346,7 @@ object OperationManager {
         if (!ownsPcv3Inputs(inputCustody, request) || !StartupCleanup.allowsPcv3Dispatch()) {
             Result.failure(Pcv3BridgeFailure("PCV3_OPERATION_UNAVAILABLE"))
         } else {
-            withContext(Dispatchers.IO) { pcv3Lifecycle.start(request, password, receiptFile) }
+            withContext(Dispatchers.IO) { pcv3Lifecycle.start(request, password, receiptFile, inputCustody) }
         }
     } finally {
         password.fill('\u0000')
@@ -2320,12 +2364,15 @@ object OperationManager {
     suspend fun dismissPcv3(expectedOperationId: String, expectedGeneration: Long): Boolean =
         withContext(Dispatchers.IO) { pcv3Lifecycle.dismissPcv3(expectedOperationId, expectedGeneration) }
 
+    suspend fun cancelCurrentPcv3ForHost(): Result<Unit> =
+        withContext(Dispatchers.IO) { pcv3Lifecycle.cancelCurrentPcv3ForHost() }
+
     /** Cancellation is only a request; the later Go snapshot supplies terminal meaning. */
-    suspend fun cancelPcv3(): Result<Unit> = withContext(Dispatchers.IO) { pcv3Lifecycle.cancelPcv3() }
+    suspend fun cancelPcv3(expectedOperationId: String, expectedGeneration: Long): Result<Unit> = withContext(Dispatchers.IO) { pcv3Lifecycle.cancelPcv3(expectedOperationId, expectedGeneration) }
 
     /** Atomically consumes the current archive capability before delegating to Go. */
-    suspend fun closePcv3Archive(): Result<Unit> =
-        withContext(Dispatchers.IO) { pcv3Lifecycle.closePcv3Archive() }
+    suspend fun closePcv3Archive(expectedOperationId: String, expectedGeneration: Long): Result<Unit> =
+        withContext(Dispatchers.IO) { pcv3Lifecycle.closePcv3Archive(expectedOperationId, expectedGeneration) }
 
     /** Publishes only the exact claimed archive generation into the selected SAF tree. */
     suspend fun exportPcv3Archive(
@@ -2375,16 +2422,16 @@ object OperationManager {
     }
 
     /** Selects an exact Go-granted role but does not invoke consent yet. */
-    suspend fun selectPcv3ConsentRole(role: String): Result<Unit> =
-        withContext(Dispatchers.IO) { pcv3Lifecycle.selectPcv3ConsentRole(role) }
+    suspend fun selectPcv3ConsentRole(expectedOperationId: String, expectedGeneration: Long, role: String): Result<Unit> =
+        withContext(Dispatchers.IO) { pcv3Lifecycle.selectPcv3ConsentRole(expectedOperationId, expectedGeneration, role) }
 
     /** Invokes only Choose(exact selected role); a consumed handle is never reused. */
-    suspend fun confirmPcv3Consent(): Result<Unit> =
-        withContext(Dispatchers.IO) { pcv3Lifecycle.confirmPcv3Consent() }
+    suspend fun confirmPcv3Consent(expectedOperationId: String, expectedGeneration: Long): Result<Unit> =
+        withContext(Dispatchers.IO) { pcv3Lifecycle.confirmPcv3Consent(expectedOperationId, expectedGeneration) }
 
     /** Invokes only Refuse; no local fallback decision is made. */
-    suspend fun refusePcv3Consent(): Result<Unit> =
-        withContext(Dispatchers.IO) { pcv3Lifecycle.refusePcv3Consent() }
+    suspend fun refusePcv3Consent(expectedOperationId: String, expectedGeneration: Long): Result<Unit> =
+        withContext(Dispatchers.IO) { pcv3Lifecycle.refusePcv3Consent(expectedOperationId, expectedGeneration) }
 
     /** Restores only an authority-free receipt projection, never a live operation. */
     suspend fun restorePcv3Receipt(

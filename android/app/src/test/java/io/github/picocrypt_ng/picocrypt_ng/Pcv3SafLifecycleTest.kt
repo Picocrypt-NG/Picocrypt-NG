@@ -539,7 +539,7 @@ class Pcv3SafLifecycleTest {
         }
         providerEntered.await()
 
-        val cancel = async(Dispatchers.Default) { lifecycle.cancelPcv3() }
+        val cancel = async(Dispatchers.Default) { lifecycle.cancelPcv3(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation) }
         while (session.cancelCalls == 0) kotlinx.coroutines.yield()
         assertFalse("Cancel cannot finish before the provider call settles", cancel.isCompleted)
         providerRelease.complete(Unit)
@@ -631,7 +631,7 @@ class Pcv3SafLifecycleTest {
         val publisher = RecordingPublisher(events)
         val export = async(Dispatchers.Default) { lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueUri(), publisher) }
         assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
-        val cancel = async(Dispatchers.Default) { lifecycle.cancelPcv3() }
+        val cancel = async(Dispatchers.Default) { lifecycle.cancelPcv3(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation) }
         try {
             assertTrue("Begin cancellation must reach the archive owner without an exposed session", cancelled.await(3, java.util.concurrent.TimeUnit.SECONDS))
             assertFalse(cancel.isCompleted)
@@ -718,7 +718,7 @@ class Pcv3SafLifecycleTest {
             )
         }
         finishEntered.await()
-        val cancel = async(Dispatchers.Default) { lifecycle.cancelPcv3() }
+        val cancel = async(Dispatchers.Default) { lifecycle.cancelPcv3(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation) }
         while (publisher.cancellation.cancelCalls == 0) kotlinx.coroutines.yield()
         assertFalse("Cancel waits for the claimed Finish to settle", cancel.isCompleted)
         finishRelease.complete(Unit)
@@ -728,6 +728,50 @@ class Pcv3SafLifecycleTest {
         assertEquals(1, session.finishCalls)
         assertEquals("Finish ownership excludes session Cancel", 0, session.cancelCalls)
         assertEquals("Finish ownership excludes Abort", 0, session.abortCalls)
+    }
+
+    @Test
+    fun `late old cancellation cannot capture replacement SAF action`() = runTest {
+        val events = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val old = SafOperation("old-saf", archivePendingSnapshot(), events)
+        val oldSession = SafSession(old, "", cancelledPreparationTerminal(), events)
+        old.archive = SafArchive(old, oldSession, cancelledPreparationTerminal(), events)
+        val next = SafOperation("new-saf", archivePendingSnapshot(), events)
+        val session = SafSession(next, "active-receipt", terminalSnapshot("terminal-receipt"), events)
+        next.archive = SafArchive(next, session, activeSnapshot("active-receipt"), events)
+        val operations = ArrayDeque(listOf(old, next))
+        val lifecycle = Pcv3Lifecycle(Pcv3Bridge(object : Pcv3Transport {
+            override fun start(requestJson: String, password: ByteArray) = Pcv3StartData("", operations.removeFirst())
+            override fun restoreReceipt(receipt: String) = Pcv3RestoredReceiptData("PCV3_RECEIPT_INVALID", "", "", null)
+        }), receiptCustodyFactory = Pcv3ReceiptCustodyFactory { _, _ -> RecordingCustodian(events) })
+        val a = lifecycle.start(request(), "password".toCharArray(), File("receipt")).getOrThrow()
+        val dispatch = CompletableDeferred<Unit>()
+        val late = async(start = CoroutineStart.UNDISPATCHED) {
+            assertEquals(a.operationId, lifecycle.presentation.value?.operationId)
+            dispatch.await()
+            lifecycle.cancelPcv3(a.operationId, a.generation)
+        }
+        lifecycle.closePcv3Archive(a.operationId, a.generation).getOrThrow()
+        assertTrue(lifecycle.dismissPcv3(a.operationId, a.generation))
+        val b = lifecycle.start(request(), "password".toCharArray(), File("receipt")).getOrThrow()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val publisher = RecordingPublisher(events, entered, release)
+        val export = async(Dispatchers.Default) { lifecycle.exportPcv3Archive(b.operationId, b.generation, opaqueUri(), publisher) }
+        entered.await()
+        try {
+            val before = lifecycle.presentation.value
+            dispatch.complete(Unit)
+            assertTrue(late.await().isFailure)
+            assertSame(before, lifecycle.presentation.value)
+            assertEquals(0, publisher.cancellation.cancelCalls)
+            assertEquals(0, session.cancelCalls)
+            assertEquals(0, session.abortCalls)
+        } finally {
+            release.complete(Unit)
+        }
+        assertTrue(export.await().isSuccess)
+        assertEquals(1, session.finishCalls)
     }
 
     private fun lifecycle(

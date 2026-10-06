@@ -227,7 +227,7 @@ class OperationForegroundService : Service() {
             pcv3Busy = OperationManager.currentPcv3Busy.value,
             stopHost = ::stopSelfAndForeground,
             cancelLegacy = { OperationManager.cancelOperation() },
-            cancelPcv3 = { OperationManager.cancelPcv3() },
+            cancelPcv3 = { OperationManager.cancelCurrentPcv3ForHost() },
         )
     }
 

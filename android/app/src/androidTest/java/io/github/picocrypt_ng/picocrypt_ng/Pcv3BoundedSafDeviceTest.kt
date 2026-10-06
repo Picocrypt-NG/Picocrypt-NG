@@ -187,7 +187,7 @@ class Pcv3BoundedSafDeviceTest {
             }
             if (cancelPreparation) {
                 assertTrue("real BeginSAF must request a fresh observation", entered.await(10, TimeUnit.SECONDS))
-                val cancelled = async(Dispatchers.IO) { lifecycle.cancelPcv3() }
+                val cancelled = async(Dispatchers.IO) { lifecycle.cancelPcv3(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation) }
                 // Native cancellation must settle even while its observation
                 // callback is blocked; elapsed time alone proves no ordering.
                 withTimeout(3_000) {
@@ -258,7 +258,7 @@ class Pcv3BoundedSafDeviceTest {
             recordMemory(label, "settled", publishedEntries, elapsed)
         } finally {
             continueObservation.countDown()
-            if (!settled) runCatching { withTimeout(10_000) { lifecycle.cancelPcv3() } }
+            if (!settled) runCatching { withTimeout(10_000) { lifecycle.cancelCurrentPcv3ForHost() } }
             if (providerReady) assertTrue(providerCall("cleanup").getBoolean("cleaned"))
             assertTrue("test-owned workspace cleanup", directory.deleteRecursively())
         }

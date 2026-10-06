@@ -5,6 +5,9 @@ import android.net.Uri
 import android.os.ParcelFileDescriptor
 import androidx.arch.core.executor.testing.InstantTaskExecutorRule
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CompletableDeferred
@@ -65,6 +68,7 @@ class OperationViewModelTest {
         testFilesDir = createTempDirectory("pcv3-view-model").toFile()
         mockContext = mockk<Context>(relaxed = true)
         every { mockContext.filesDir } returns testFilesDir
+        every { mockContext.applicationContext } returns mockContext
         viewModel = OperationViewModel()
         resetOperationState()
     }
@@ -513,7 +517,7 @@ class OperationViewModelTest {
                 listOf(listOf("/private/key-a", "/private/key-b", "/private/input")),
                 cleaner.deletedPaths,
             )
-            assertFalse("cancelled start no longer owns a mutable selection", pcv3ViewModel.pcv3Busy.value)
+            assertFalse("cancelled start releases process input custody", OperationManager.currentPcv3InputCleanupPending.value)
         }
 
     @Test
@@ -550,12 +554,17 @@ class OperationViewModelTest {
         runTest(mainDispatcherRule.testDispatcher) {
             val terminal = finalPcv3("op_cleanup_warning", generation = 13)
             val route = FakePcv3Operations(startResult = Result.success(terminal))
-            val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner(result = false))
+            val cleaner = RecordingPcv3Cleaner(result = false)
+            val pcv3ViewModel = OperationViewModel(route, cleaner)
             pcv3ViewModel.startPcv3(mockContext, pcv3Transfer("password".toCharArray()))
             runCurrent()
 
             assertSame("native terminal meaning must not be replaced", terminal, pcv3ViewModel.pcv3Presentation.value)
             assertTrue(pcv3ViewModel.pcv3Error.value is AppError.FileError.DeleteFailed)
+            assertTrue("failed cleanup retains occupancy", pcv3ViewModel.pcv3Busy.value)
+            cleaner.result = true
+            pcv3ViewModel.clearPcv3Error()
+            runCurrent()
             assertFalse(pcv3ViewModel.pcv3Busy.value)
             pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
         }
@@ -566,7 +575,8 @@ class OperationViewModelTest {
             val route = FakePcv3Operations(
                 startResult = Result.failure(Pcv3BridgeFailure("PCV3_BRIDGE_FAILURE")),
             )
-            val pcv3ViewModel = OperationViewModel(route, RecordingPcv3Cleaner(result = false))
+            val cleaner = RecordingPcv3Cleaner(result = false)
+            val pcv3ViewModel = OperationViewModel(route, cleaner)
 
             pcv3ViewModel.startPcv3(mockContext, pcv3Transfer("password".toCharArray()))
             runCurrent()
@@ -580,7 +590,9 @@ class OperationViewModelTest {
                 "plaintext or keyfile cleanup uncertainty is not silently discarded",
                 pcv3ViewModel.pcv3Error.value is AppError.FileError.DeleteFailed,
             )
+            cleaner.result = true
             pcv3ViewModel.clearPcv3Error()
+            runCurrent()
             assertNull(pcv3ViewModel.pcv3Error.value)
             pcv3ViewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
         }
@@ -643,7 +655,8 @@ class OperationViewModelTest {
             val uri = mockk<Uri>()
             val live = outputPcv3("save-rejected-with-cleanup", generation = 49).copy(isCreation = true)
             val route = FakePcv3Operations(startResult = Result.success(live))
-            val viewModel = OperationViewModel(route, RecordingPcv3Cleaner(result = false))
+            val cleaner = RecordingPcv3Cleaner(result = false)
+            val viewModel = OperationViewModel(route, cleaner)
             try {
                 viewModel.startPcv3(mockContext, pcv3Transfer("password".toCharArray()))
                 runCurrent()
@@ -662,6 +675,9 @@ class OperationViewModelTest {
                 assertTrue("save feedback must not erase sensitive input cleanup uncertainty",
                     viewModel.pcv3Error.value is AppError.FileError.DeleteFailed)
             } finally {
+                cleaner.result = true
+                viewModel.clearPcv3Error()
+                runCurrent()
                 viewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
                 unmockkObject(FileCopyService)
             }
@@ -1566,8 +1582,8 @@ class OperationViewModelTest {
             assertFalse("Final and dismissal must never briefly publish an available selection", false in busyChanges)
             release.complete(Unit)
             model.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+            OperationManager.currentPcv3InputCleanupPending.first { !it }
             assertFalse("Transferred plaintext must be deleted before replacement becomes enabled", source.exists())
-            assertFalse(model.pcv3Busy.value)
         } finally {
             release.complete(Unit)
             model.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
@@ -1649,6 +1665,7 @@ class OperationViewModelTest {
             assertTrue("Dismissing native Final must retain process-wide input occupancy", newModel.pcv3Busy.value)
             release.complete(Unit)
             oldModel.viewModelScope.coroutineContext[Job]!!.join()
+            OperationManager.currentPcv3InputCleanupPending.first { !it }
 
             assertTrue(
                 "A replacement VM exposed selection=$replacementInitiallyBusy, native start accepted=${attempted.isSuccess}, source remains=${source.exists()}",
@@ -1671,7 +1688,7 @@ class OperationViewModelTest {
             assertArrayEquals("Late old cleanup must never delete new owned bytes", newBytes, source.readBytes())
         } finally {
             release.complete(Unit)
-            OperationManager.cancelPcv3()
+            OperationManager.cancelCurrentPcv3ForHost()
             OperationManager.refreshPcv3()
             oldModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
             replacement?.viewModelScope?.coroutineContext?.get(Job)?.cancelAndJoin()
@@ -1696,7 +1713,177 @@ class OperationViewModelTest {
         runCurrent()
         model.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
         assertEquals(1, route.cancelCalls)
-        assertTrue("unobserved native worker may still be reading", cleaner.deletedPaths.isEmpty())
+        try {
+            assertTrue("unobserved native worker may still be reading", cleaner.deletedPaths.isEmpty())
+            assertTrue(OperationManager.currentPcv3InputCleanupPending.value)
+        } finally {
+            route.publish(finalPcv3("archive-uncertain", 502))
+            runCurrent()
+        }
+        assertEquals(1, cleaner.deletedPaths.size)
+        assertFalse(OperationManager.currentPcv3InputCleanupPending.value)
+    }
+
+    @Test
+    fun `process custody deletes exact staged inputs after late native acknowledgment without ViewModel`() = runTest(mainDispatcherRule.testDispatcher) {
+        for (delayed in listOf(false, true)) {
+            val source = File(testFilesDir, "staged-$delayed").apply { writeText("owned plaintext") }
+            val unrelated = File(testFilesDir, "unrelated-$delayed").apply { writeText("retained") }
+            val live = livePcv3("detached-$delayed", 601, "preparing-input")
+            val route = FakePcv3Operations(Result.success(live))
+            var nativeStopped = false
+            var cleanupCalls = 0
+            route.cancelAction = { if (!delayed) nativeStopped = true }
+            route.nativeRefresh = { if (nativeStopped) route.publish(finalPcv3(live.operationId, live.generation)) }
+            val cleaner = Pcv3TransferredResourceCleaner { _, paths ->
+                assertTrue("never delete while native can still read", nativeStopped)
+                cleanupCalls++
+                paths.all { NoFollowFileTree.delete(testFilesDir, File(it)) }
+            }
+            val model = OperationViewModel(route, cleaner, Pcv3ForegroundHost { })
+            val password = "secret".toCharArray()
+            try {
+                model.startPcv3(mockContext, Pcv3OperationTransfer(
+                    Pcv3OperationIntent(Pcv3FormatIntent.NORMAL, action = Pcv3ActionIntent.CREATE),
+                    Pcv3WriteRequest("write-normal", "password", "none", source.path, "/private/output", emptyList(), "", "standard", false, inputFiles = listOf(source.path)),
+                    password,
+                ))
+                runCurrent()
+                assertTrue(password.all { it == '\u0000' })
+                assertTrue(source.exists())
+                model.viewModelScope.coroutineContext[Job]!!.cancelAndJoin()
+                runCurrent()
+                if (delayed) {
+                    advanceTimeBy(1_000)
+                    runCurrent()
+                    assertTrue(source.exists())
+                    assertTrue(OperationManager.currentPcv3InputCleanupPending.value)
+                    assertEquals(0, cleanupCalls)
+                }
+                nativeStopped = true
+                advanceTimeBy(500)
+                runCurrent()
+                assertFalse("process polling observes late native terminal", source.exists())
+                assertEquals(1, cleanupCalls)
+                assertFalse(OperationManager.currentPcv3InputCleanupPending.value)
+                assertEquals("retained", unrelated.readText())
+            } finally {
+                nativeStopped = true
+                route.publish(finalPcv3(live.operationId, live.generation))
+                model.viewModelScope.coroutineContext[Job]!!.cancelAndJoin()
+                runCurrent()
+            }
+        }
+    }
+
+    @Test
+    fun `accepted native start cancelled before IO return retains exact inputs until late completion`() = runTest(mainDispatcherRule.testDispatcher) {
+        val source = File(testFilesDir, "picocrypt_files/staging/accepted.txt").apply { parentFile!!.mkdirs(); writeText("accepted input") }
+        val entered = CompletableDeferred<Unit>()
+        val releaseStart = CompletableDeferred<Unit>()
+        val working = Pcv3SnapshotData("preparing-input", emptyList(), "unknown-outcome", "none", "PCV3_UNKNOWN",
+            "none", "none", "none", false, "none", "none", "none", "none", "unknown", emptyList(), emptyList(), false)
+        val terminal = working.copy(outcome = "operation-failed", stage = "cancellation", code = "PCV3_OPERATION_FAILED", diagnostic = "cancellation", completionClass = "refused")
+        val native = AtomicReference(working)
+        val operation = mockk<Pcv3OperationCapability>(relaxed = true)
+        every { operation.id } returns "accepted-before-return"
+        every { operation.snapshot() } answers { native.get() }
+        every { operation.cancel() } answers { native.get() }
+        every { operation.release() } returns ""
+        every { operation.consent() } returns null
+        every { operation.archive() } returns null
+        every { operation.output() } returns null
+        every { operation.artifactInspection() } returns null
+        every { operation.resourceChallenge() } returns null
+        val bridge = GoBridge.pcv3Bridge
+        mockkObject(bridge, StartupCleanup)
+        every { StartupCleanup.allowsPcv3Dispatch() } returns true
+        every { bridge.start(any(), any()) } answers {
+            entered.complete(Unit)
+            runBlocking { releaseStart.await() }
+            Result.success(Pcv3StartData("", operation))
+        }
+        val model = OperationViewModel()
+        val password = "accepted secret".toCharArray()
+        try {
+            model.startPcv3(mockContext, Pcv3OperationTransfer(
+                Pcv3OperationIntent(Pcv3FormatIntent.NORMAL, action = Pcv3ActionIntent.CREATE),
+                Pcv3WriteRequest("write-normal", "password", "none", source.path, "/private/output", emptyList(), "", "standard", false, inputFiles = listOf(source.path)), password,
+            ))
+            entered.await()
+            model.viewModelScope.coroutineContext[Job]!!.cancelAndJoin()
+            releaseStart.complete(Unit)
+            // Native acceptance is now bound even though no start result reaches the destroyed VM.
+            withContext(Dispatchers.IO) { kotlinx.coroutines.withTimeout(10_000) { while (password.any { it != '\u0000' }) delay(5) } }
+            runCurrent()
+            assertTrue(source.exists())
+            assertTrue(OperationManager.currentPcv3InputCleanupPending.value)
+            native.set(terminal)
+            advanceTimeBy(500)
+            OperationManager.currentPcv3InputCleanupPending.first { !it }
+            assertFalse(source.exists())
+            assertTrue(password.all { it == '\u0000' })
+        } finally {
+            native.set(terminal)
+            releaseStart.complete(Unit)
+            model.viewModelScope.coroutineContext[Job]!!.cancelAndJoin()
+            OperationManager.refreshPcv3()
+            OperationManager.currentPcv3InputCleanupPending.first { !it }
+            OperationManager.currentPcv3Presentation.value?.let { OperationManager.dismissPcv3(it.operationId, it.generation) }
+            unmockkObject(bridge, StartupCleanup)
+        }
+    }
+
+    @Test
+    fun `failed detached input cleanup blocks replacement and exact acknowledged retry releases it`() = runTest(mainDispatcherRule.testDispatcher) {
+        val source = File(testFilesDir, "failed-cleanup").apply { writeText("retained input") }
+        val live = livePcv3("failed-cleanup", 602, "preparing-input")
+        val route = FakePcv3Operations(Result.success(live))
+        var allowDelete = false
+        var deletes = 0
+        val cleaner = Pcv3TransferredResourceCleaner { _, paths ->
+            deletes++
+            allowDelete && paths.all { NoFollowFileTree.delete(testFilesDir, File(it)) }
+        }
+        val model = OperationViewModel(route, cleaner, Pcv3ForegroundHost { })
+        var replacement: OperationViewModel? = null
+        try {
+            model.startPcv3(mockContext, Pcv3OperationTransfer(
+                Pcv3OperationIntent(Pcv3FormatIntent.NORMAL, action = Pcv3ActionIntent.CREATE),
+                Pcv3WriteRequest("write-normal", "password", "none", source.path, "/private/output", emptyList(), "", "standard", false, inputFiles = listOf(source.path)), "secret".toCharArray(),
+            ))
+            runCurrent()
+            model.viewModelScope.coroutineContext[Job]!!.cancelAndJoin()
+            route.publish(finalPcv3(live.operationId, live.generation))
+            runCurrent()
+            val failure = requireNotNull(OperationManager.currentPcv3InputCleanupFailure.value)
+            val next = OperationViewModel(route, cleaner, Pcv3ForegroundHost { }).also { replacement = it }
+            runCurrent()
+            assertTrue(source.exists())
+            assertTrue(next.pcv3Busy.value)
+            assertTrue(next.pcv3Error.value is AppError.FileError.DeleteFailed)
+            advanceTimeBy(2_000)
+            runCurrent()
+            assertEquals("failed deletion must not spin", 1, deletes)
+            allowDelete = true
+            next.clearPcv3Error()
+            runCurrent()
+            assertFalse(source.exists())
+            assertFalse(OperationManager.currentPcv3InputCleanupPending.value)
+            source.writeText("replacement bytes")
+            OperationManager.retryPcv3InputCleanup(failure)
+            runCurrent()
+            assertEquals("replacement bytes", source.readText())
+            assertEquals("settled cleanup authority is one-shot", 2, deletes)
+        } finally {
+            allowDelete = true
+            route.publish(finalPcv3(live.operationId, live.generation))
+            runCurrent()
+            OperationManager.currentPcv3InputCleanupFailure.value?.let(OperationManager::retryPcv3InputCleanup)
+            model.viewModelScope.coroutineContext[Job]!!.cancelAndJoin()
+            replacement?.viewModelScope?.coroutineContext?.get(Job)?.cancelAndJoin()
+            runCurrent()
+        }
     }
 
     private fun pcv3Transfer(
@@ -1948,6 +2135,8 @@ class OperationViewModelTest {
         private val busyFlow = MutableStateFlow(initialPresentation is Pcv3Presentation.Live)
         override val presentation: StateFlow<Pcv3Presentation?> = presentationFlow
         override val busy: StateFlow<Boolean> = busyFlow
+        var nativeRefresh: (() -> Unit)? = null
+        var cancelAction: () -> Unit = {}
         var refreshCalls = 0
         var cancelCalls = 0
         var selectRoleCalls = 0
@@ -2005,6 +2194,7 @@ class OperationViewModelTest {
 
         override suspend fun refresh(): Result<Pcv3Presentation> {
             refreshCalls += 1
+            nativeRefresh?.invoke()
             val step = if (refreshResults.isEmpty()) null else refreshResults.removeFirst()
             if (step == null) {
                 return Result.failure(Pcv3BridgeFailure("PCV3_OPERATION_UNAVAILABLE"))
@@ -2014,27 +2204,28 @@ class OperationViewModelTest {
             return step.returned
         }
 
-        override suspend fun cancel(): Result<Unit> {
+        override suspend fun cancel(operationId: String, generation: Long): Result<Unit> {
             cancelCalls += 1
+            cancelAction()
             return Result.success(Unit)
         }
 
-        override suspend fun selectConsentRole(role: String): Result<Unit> {
+        override suspend fun selectConsentRole(operationId: String, generation: Long, role: String): Result<Unit> {
             selectRoleCalls += 1
             return Result.success(Unit)
         }
 
-        override suspend fun confirmConsent(): Result<Unit> {
+        override suspend fun confirmConsent(operationId: String, generation: Long): Result<Unit> {
             confirmCalls += 1
             return Result.success(Unit)
         }
 
-        override suspend fun refuseConsent(): Result<Unit> {
+        override suspend fun refuseConsent(operationId: String, generation: Long): Result<Unit> {
             refuseCalls += 1
             return Result.success(Unit)
         }
 
-        override suspend fun closeArchive(): Result<Unit> {
+        override suspend fun closeArchive(operationId: String, generation: Long): Result<Unit> {
             closeArchiveCalls += 1
             return Result.success(Unit)
         }
@@ -2092,7 +2283,7 @@ class OperationViewModelTest {
     }
 
     private class RecordingPcv3Cleaner(
-        private val result: Boolean = true,
+        var result: Boolean = true,
         private val events: MutableList<String>? = null,
     ) : Pcv3TransferredResourceCleaner {
         val deletedPaths = mutableListOf<List<String>>()

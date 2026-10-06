@@ -13,7 +13,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -32,11 +31,11 @@ internal interface Pcv3Operations {
     suspend fun refresh(): Result<Pcv3Presentation>
     suspend fun installResourceObservationReader(reader: Pcv3ResourceObservationReader): Boolean
     suspend fun dismiss(operationId: String, generation: Long): Boolean
-    suspend fun cancel(): Result<Unit>
-    suspend fun selectConsentRole(role: String): Result<Unit>
-    suspend fun confirmConsent(): Result<Unit>
-    suspend fun refuseConsent(): Result<Unit>
-    suspend fun closeArchive(): Result<Unit>
+    suspend fun cancel(operationId: String, generation: Long): Result<Unit>
+    suspend fun selectConsentRole(operationId: String, generation: Long, role: String): Result<Unit>
+    suspend fun confirmConsent(operationId: String, generation: Long): Result<Unit>
+    suspend fun refuseConsent(operationId: String, generation: Long): Result<Unit>
+    suspend fun closeArchive(operationId: String, generation: Long): Result<Unit>
     suspend fun exportArchive(
         context: Context,
         operationId: String,
@@ -86,11 +85,11 @@ private object ManagerPcv3Operations : Pcv3Operations {
         OperationManager.installPcv3ResourceObservationReader(reader)
     override suspend fun dismiss(operationId: String, generation: Long) =
         OperationManager.dismissPcv3(operationId, generation)
-    override suspend fun cancel() = OperationManager.cancelPcv3()
-    override suspend fun selectConsentRole(role: String) = OperationManager.selectPcv3ConsentRole(role)
-    override suspend fun confirmConsent() = OperationManager.confirmPcv3Consent()
-    override suspend fun refuseConsent() = OperationManager.refusePcv3Consent()
-    override suspend fun closeArchive() = OperationManager.closePcv3Archive()
+    override suspend fun cancel(operationId: String, generation: Long) = OperationManager.cancelPcv3(operationId, generation)
+    override suspend fun selectConsentRole(operationId: String, generation: Long, role: String) = OperationManager.selectPcv3ConsentRole(operationId, generation, role)
+    override suspend fun confirmConsent(operationId: String, generation: Long) = OperationManager.confirmPcv3Consent(operationId, generation)
+    override suspend fun refuseConsent(operationId: String, generation: Long) = OperationManager.refusePcv3Consent(operationId, generation)
+    override suspend fun closeArchive(operationId: String, generation: Long) = OperationManager.closePcv3Archive(operationId, generation)
     override suspend fun exportArchive(
         context: Context,
         operationId: String,
@@ -171,6 +170,7 @@ class OperationViewModel internal constructor(
 
     private val _pcv3Error = MutableStateFlow<AppError?>(null)
     val pcv3Error: StateFlow<AppError?> = _pcv3Error.asStateFlow()
+    private var pcv3CleanupFailure: Pcv3InputCleanupFailure? = null
     private var pendingPcv3CleanupError: AppError.FileError.DeleteFailed? = null
 
     /** Bounded save failure for the host-copied D1 creation staging file. */
@@ -197,6 +197,15 @@ class OperationViewModel internal constructor(
     private var isForeground = true
 
     init {
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            OperationManager.currentPcv3InputCleanupFailure.collect { failure ->
+                pcv3CleanupFailure = failure
+                if (failure != null) {
+                    if (_pcv3Error.value == null) _pcv3Error.value = failure.error
+                    else pendingPcv3CleanupError = failure.error
+                }
+            }
+        }
         viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
             OperationManager.currentPcv3InputCleanupPending.collect { publishPcv3Busy() }
         }
@@ -241,13 +250,8 @@ class OperationViewModel internal constructor(
         val password = transfer.password
         val request = transfer.request
         val intent = transfer.intent
-        val write = request as? Pcv3WriteRequest
-        val deferredInputs = write != null && (write.inputFiles.isNotEmpty() || write.compress)
-        val transferredPaths = (request.keyfiles + request.source + (write?.inputFiles ?: emptyList()) +
-            (write?.onlyFiles ?: emptyList()) + (write?.onlyFolders ?: emptyList())).distinct()
-        // WorkButton passes applicationContext. Derive the exact operation custody
-        // path before launching so no Context is retained by the lifecycle owner.
-        val receiptFile = Pcv3ReceiptStore.receiptFile(context)
+        val applicationContext = context.applicationContext
+        val receiptFile = Pcv3ReceiptStore.receiptFile(applicationContext)
         val inputCustody = OperationManager.claimPcv3InputCustody(request)
         if (inputCustody == null) {
             password.fill('\u0000')
@@ -263,118 +267,46 @@ class OperationViewModel internal constructor(
         _pcv3Error.value = null
         pendingPcv3CleanupError = null
 
-        try {
-            val job = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
-                var primaryFailure: Exception? = null
-                var inputOwner: Pcv3Ticket? = null
-                var inputReleased = !deferredInputs
-                try {
-                    val result = pcv3Operations.start(request, password, receiptFile, inputCustody)
-                    password.fill('\u0000')
-                    primaryFailure = result.exceptionOrNull() as? Exception
-                    acceptPcv3OwnerState(result.getOrNull())
-                    inputOwner = result.getOrNull()?.toTicket()
-                    if (inputOwner == null && !pcv3Operations.busy.value) inputReleased = true
-                    if (pcv3Operations.busy.value) {
-                        if (pcv3Operations.presentation.value is Pcv3Presentation.Live) {
-                            pcv3Operations.installResourceObservationReader(
-                                Pcv3AndroidResourceObservationReader(context.applicationContext),
-                            )
-                        }
-                        startForegroundServiceSafely(context)
-                    }
-                    if (deferredInputs && inputOwner != null) {
-                        pcv3StartPending = false
-                        publishPcv3Busy()
-                        if (isForeground) startPcv3Polling()
-                        val terminal = pcv3Operations.presentation.first { state ->
-                            state?.toTicket() == inputOwner && state.snapshot.completionClass !in listOf("", "unknown")
-                        }
-                        inputReleased = terminal?.toTicket() == inputOwner
-                    }
-                } catch (error: CancellationException) {
-                    acceptPcv3OwnerState(pcv3Operations.presentation.value)
-                    throw error
-                } catch (error: Exception) {
-                    primaryFailure = error
-                    acceptPcv3OwnerState(pcv3Operations.presentation.value)
-                } finally {
-                    val cleanupComplete = withContext(NonCancellable) {
-                        try {
-                            // WorkButton passes the application context. Reusing the
-                            // received context avoids a second fallible access after
-                            // MainViewModel has already transferred source ownership.
-                            if (!inputReleased && inputOwner != null &&
-                                pcv3Operations.presentation.value?.toTicket() == inputOwner
-                            ) {
-                                pcv3Operations.cancel()
-                                pcv3Operations.refresh()
-                                val observed = pcv3Operations.presentation.value
-                                inputReleased = observed?.toTicket() == inputOwner &&
-                                    observed.snapshot.completionClass !in listOf("", "unknown")
-                            }
-                            inputReleased && pcv3ResourceCleaner.delete(context, transferredPaths)
-                        } catch (_: Exception) {
-                            false
-                        } finally {
-                            password.fill('\u0000')
-                        }
-                    }
-
-                    OperationManager.releasePcv3InputCustody(inputCustody)
-                    pcv3StartPending = false
-                    publishPcv3Busy()
-                    val presentation = pcv3Operations.presentation.value
-                    val cleanupError = if (cleanupComplete) null else AppError.FileError.DeleteFailed(
-                        userMessage = "",
-                        technicalMessage = "Failed to clear transferred PCV3 input resources",
-                        messageResId = R.string.error_delete_failed,
-                    )
-                    if (primaryFailure != null && presentation == null && !pcv3Operations.busy.value) {
-                        _pcv3Error.value = AppError.fromException(primaryFailure)
-                        pendingPcv3CleanupError = cleanupError
-                    } else if (cleanupError != null && _pcv3Error.value == null) {
-                        _pcv3Error.value = cleanupError
-                    }
-
-                    if (shouldPollPcv3() && isForeground) {
-                        startPcv3Polling()
-                    } else if (presentation == null && !pcv3Operations.busy.value) {
-                        currentPcv3Ticket = null
-                        _pcv3Intent.value = null
-                        pcv3CreateName = null
-                    }
+        inputCustody.start(applicationContext, password, receiptFile, pcv3Operations, pcv3ResourceCleaner, pcv3ForegroundHost)
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                val result = inputCustody.started.await()
+                acceptPcv3OwnerState(result.getOrNull())
+                pcv3StartPending = false
+                publishPcv3Busy()
+                if (shouldPollPcv3() && isForeground) startPcv3Polling()
+                val primaryFailure = result.exceptionOrNull() as? Exception
+                if (primaryFailure != null && pcv3Operations.presentation.value == null && !pcv3Operations.busy.value) {
+                    _pcv3Error.value = AppError.fromException(primaryFailure)
                 }
+                inputCustody.cleanupAttempt.await()
+            } catch (error: CancellationException) {
+                inputCustody.cancel()
+                throw error
+            } finally {
+                pcv3StartPending = false
+                publishPcv3Busy()
             }
-            // UNDISTPATCHED installs the try/finally before the first suspension; this
-            // completion hook is a final idempotent credential clear, not the file owner.
-            job.invokeOnCompletion { password.fill('\u0000') }
-        } catch (error: Exception) {
-            password.fill('\u0000')
-            OperationManager.releasePcv3InputCustody(inputCustody)
-            pcv3StartPending = false
-            publishPcv3Busy()
-            throw error
         }
     }
 
     fun cancelPcv3(operationId: String, generation: Long) = runPcv3Action(operationId, generation) {
-        pcv3Operations.cancel()
+        pcv3Operations.cancel(operationId, generation)
     }
 
     fun selectPcv3ConsentRole(operationId: String, generation: Long, role: String) =
-        runPcv3Action(operationId, generation) { pcv3Operations.selectConsentRole(role) }
+        runPcv3Action(operationId, generation) { pcv3Operations.selectConsentRole(operationId, generation, role) }
 
     fun confirmPcv3Consent(operationId: String, generation: Long) = runPcv3Action(operationId, generation) {
-        pcv3Operations.confirmConsent()
+        pcv3Operations.confirmConsent(operationId, generation)
     }
 
     fun refusePcv3Consent(operationId: String, generation: Long) = runPcv3Action(operationId, generation) {
-        pcv3Operations.refuseConsent()
+        pcv3Operations.refuseConsent(operationId, generation)
     }
 
     fun closePcv3Archive(operationId: String, generation: Long) = runPcv3Action(operationId, generation) {
-        pcv3Operations.closeArchive()
+        pcv3Operations.closeArchive(operationId, generation)
     }
 
     /** Opens one tree picker for the exact live archive generation without retaining its URI. */
@@ -570,6 +502,8 @@ class OperationViewModel internal constructor(
     }
 
     fun clearPcv3Error() {
+        pcv3CleanupFailure?.takeIf { _pcv3Error.value === it.error }
+            ?.let(OperationManager::retryPcv3InputCleanup)
         _pcv3Error.value = pendingPcv3CleanupError
         pendingPcv3CleanupError = null
     }

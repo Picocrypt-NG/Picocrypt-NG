@@ -63,7 +63,7 @@ class OperationManagerIntegrationTest {
             assertArrayEquals(original, decoded.readBytes())
             lifecycle.discardPcv3Output(decrypted.operationId, decrypted.generation).getOrThrow()
         } finally {
-            lifecycle.cancelPcv3()
+            lifecycle.cancelCurrentPcv3ForHost()
             lifecycle.refreshPcv3()
             if (!lifecycle.busy.value) directory.deleteRecursively()
         }
