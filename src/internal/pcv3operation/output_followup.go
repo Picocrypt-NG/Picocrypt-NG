@@ -72,8 +72,10 @@ type outputFollowUpState struct {
 	retained  *pcv3publication.RetainedFile
 }
 
-// OutputFollowUp is a one-shot Go-minted capability for a retained durable
-// non-archive output. Copies share one consumption state.
+// OutputFollowUp is a Go-minted capability for retained non-archive output.
+// Plaintext requires durable publication; ciphertext may retain an uncertain
+// directory barrier. Copies share custody and consumption state. Failed
+// ciphertext SaveTo retains custody for deliberate retry.
 type OutputFollowUp struct {
 	state *outputFollowUpState
 }
@@ -141,9 +143,10 @@ func cleanupRetainedExact(retained **pcv3publication.RetainedFile) bool {
 	return owned.RemoveExact() != nil
 }
 
-// SaveTo consumes the action before effects and takes ownership of destination.
-// A failed transport immediately removes the exact internal owner because the
-// one-shot action cannot safely leave plaintext with no remaining authority.
+// SaveTo takes ownership of destination. Plaintext consumes the action before
+// effects and removes its exact internal owner even on failure. Ciphertext
+// consumes only after successful transport; failure retains the live capability
+// for deliberate retry. Neither transport grants source-deletion authority.
 func (followUp *OutputFollowUp) SaveTo(destination *os.File) OutputActionResult {
 	if followUp != nil && followUp.state != nil && followUp.state.retryCopy {
 		return followUp.saveWriteTo(destination)
@@ -176,8 +179,9 @@ func (followUp *OutputFollowUp) SaveTo(destination *os.File) OutputActionResult 
 	return OutputActionResult{code: OutputActionSaved}
 }
 
-// StreamTo consumes the action and streams from the retained descriptor. The
-// destination remains open after a successful copy and is closed on cancel.
+// StreamTo consumes both plaintext and ciphertext actions, including on failure,
+// and streams from the retained descriptor. The destination remains open after
+// a successful copy and is closed on cancel.
 func (followUp *OutputFollowUp) StreamTo(
 	ctx context.Context,
 	destination *os.File,

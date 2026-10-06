@@ -481,9 +481,11 @@ func (result *Result) ArchiveFollowUp() *ArchiveFollowUp {
 	return result.archiveFollowUp
 }
 
-// OutputFollowUp returns authority only for an exact live retained output
-// whose publication was proven durable. Presentation cannot mint or restore
-// this capability.
+// OutputFollowUp returns authority only for an exact live retained output with
+// durable publication, or ciphertext with an uncertain directory barrier. Only
+// this live capability permits retry after a failed ciphertext SaveTo;
+// presentation cannot mint or restore it. Uncertain writes never permit source
+// deletion.
 func (result *Result) OutputFollowUp() *OutputFollowUp {
 	if !result.hasLiveOutputFollowUp() {
 		return nil

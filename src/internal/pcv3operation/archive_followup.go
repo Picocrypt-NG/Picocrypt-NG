@@ -241,9 +241,10 @@ type archiveSAFBeginState interface {
 	beginSAF() *ArchiveSAFBegin
 }
 
-// BeginSAF consumes the same follow-up as Extract and Close. Implementations
-// not backed by the authenticated native handoff return the closed expired
-// variant rather than a consumed nil/error gap.
+// BeginSAF consumes the same follow-up as Extract and Close. Only the Normal
+// native archive handoff supports SAF; D1 archive custody is consumed and closed
+// with a terminal invalid-request result. A missing SAF implementation returns
+// the closed expired variant.
 func (followUp *ArchiveFollowUp) BeginSAF() *ArchiveSAFBegin {
 	return followUp.BeginSAFWithContext(context.Background())
 }

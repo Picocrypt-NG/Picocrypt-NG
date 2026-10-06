@@ -346,6 +346,9 @@ override this policy. Ordinary payload decryption can still save a ZIP without
 parsing it. `BeginSAFWithContext` supports preparation cancellation; mobile
 `PCV3Archive.CancelPreparation` reaches a pending begin before a session exists.
 `HostMemoryBudgetBytes` exposes only the remaining host allowance, not policy authority.
+SAF archive extraction requires the Normal native archive handoff. D1 archives
+can use the existing ZIP save or native extraction actions; `BeginSAF` consumes
+and closes their custody with a terminal invalid-request result.
 PCV3 creation publishes through the identity-bound no-replace publisher.
 `EncryptWithResult(ctx, request, options)` returns the common operation result
 after input and preprocessing cleanup. A committed output with uncertain directory
@@ -357,8 +360,13 @@ durability, PCV3 retains both the chunks and the complete ciphertext.
 `Result.SourceDeletionAllowed()` accounts for complete durable publication, follow-ups
 and cleanup. A nil Go error or a presentation snapshot does not grant that permission.
 Stdout and Android provider handoff use the operation's retained output capability,
-which holds the original descriptor. Failed ciphertext handoff supports retry to
-another destination; successful handoff does not assert provider storage durability.
+which holds the original descriptor. Plaintext `SaveTo` consumes that capability
+even on failure and removes its exact internal owner. Ciphertext `SaveTo` failure
+retains the capability for a deliberate retry to another destination; only a live
+`Result.OutputFollowUp()` establishes that authority. `StreamTo` consumes both
+plaintext and ciphertext capabilities, including on failure. A durability-uncertain
+write follow-up never grants source deletion. Successful handoff does not assert
+provider storage durability.
 
 This does not rewrite or upgrade existing volumes. Existing v1/v2 keyfile volumes remain readable
 through their legacy branches. Recover plaintext before creating PCV3; merely wrapping an affected
