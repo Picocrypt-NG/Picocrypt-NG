@@ -526,6 +526,22 @@ class MainViewModelTest {
     }
 
     @Test
+    fun `oversized creation envelope keeps form and credentials and reports refusal`() {
+        val paths = List(4096) { "/staging/" + "x".repeat(1000) + it }
+        viewModel.updateFormData(viewModel.formState.value.copy(
+            selectedFilename = "selection", copiedFilePath = paths.first(),
+            inputFiles = paths, onlyFiles = paths, selectionKind = SelectionKind.MULTI_FILE,
+        ))
+        viewModel.updatePasswords("owned password".toCharArray(), "owned password".toCharArray())
+        val before = viewModel.formState.value
+        assertNull(viewModel.takePcv3CreateOperation("/private/output"))
+        assertSame(before, viewModel.formState.value)
+        assertArrayEquals("owned password".toCharArray(), before.passwordInput)
+        assertArrayEquals("owned password".toCharArray(), before.confirmPasswordInput)
+        assertNotNull("refusal must be visible before custody transfer", viewModel.errorMessage.value)
+    }
+
+    @Test
     fun `create transfer builds the exact write request and resets the form`() {
         val keyfiles = listOf(
             KeyfileInfo("/app-private/key-a", "first"),
@@ -538,7 +554,6 @@ class MainViewModelTest {
                 comments = "plaintext comment",
                 reedSolomon = true,
                 paranoid = true,
-                createPcv3 = true,
                 keyfileFilenames = keyfiles,
                 keyfileOrdered = true,
             ),
@@ -569,7 +584,6 @@ class MainViewModelTest {
         assertTrue("the confirm buffer is zeroed on transfer", ownedConfirm.all { it == '\u0000' })
 
         val afterTransfer = viewModel.formState.value
-        assertFalse(afterTransfer.createPcv3)
         assertFalse(afterTransfer.isPcv3Creation)
         assertEquals("", afterTransfer.selectedFilename)
         assertEquals(0, afterTransfer.passwordInput.size)
@@ -584,7 +598,6 @@ class MainViewModelTest {
                 copiedFilePath = "/app-private/outer.bin",
                 comments = "stale comment",
                 deniability = true,
-                createPcv3 = true,
                 keyfileFilenames = listOf(KeyfileInfo("/app-private/key", "key")),
             ),
         )
@@ -607,7 +620,6 @@ class MainViewModelTest {
             viewModel.formState.value.copy(
                 selectedFilename = "secret.txt",
                 copiedFilePath = "/app-private/secret.txt",
-                createPcv3 = true,
             ),
         )
 
@@ -617,4 +629,27 @@ class MainViewModelTest {
         assertTrue(retained.isPcv3Creation)
         assertEquals("/app-private/secret.txt", retained.copiedFilePath)
     }
+    @Test
+    fun `folder creation transfers the exact staged inputs without falling back to legacy`() {
+        val files = listOf("/private/tree/a", "/private/tree/b")
+        viewModel.updateFormData(viewModel.formState.value.copy(
+            selectedFilename = "tree", copiedFilePath = "", selectionKind = SelectionKind.FOLDER,
+            inputFiles = files, onlyFolders = listOf("/private/tree"), compress = true,
+            suggestedOutputName = "tree.zip.pcv",
+        ))
+        viewModel.updatePasswords("secret".toCharArray(), "secret".toCharArray())
+        val transfer = requireNotNull(viewModel.takePcv3CreateOperation("/private/output"))
+        val request = transfer.request as Pcv3WriteRequest
+        assertEquals("write-normal", request.mode)
+        assertEquals(files, request.inputFiles)
+        assertEquals(files.first(), request.source)
+        assertEquals(listOf("/private/tree"), request.onlyFolders)
+        assertTrue(request.compress)
+        assertEquals("tree.zip.pcv", transfer.createName)
+        assertTrue(viewModel.formState.value.inputFiles.isEmpty())
+        assertTrue(viewModel.formState.value.onlyFolders.isEmpty())
+        assertFalse(viewModel.formState.value.isPcv3Creation)
+        transfer.password.fill('\u0000')
+    }
+
 }

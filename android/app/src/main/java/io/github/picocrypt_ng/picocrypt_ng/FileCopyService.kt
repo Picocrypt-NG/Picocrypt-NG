@@ -41,7 +41,7 @@ object FileCopyService {
 
     internal interface AtomicFilePublisher {
         fun identity(file: File): FileIdentity?
-        fun linkNoReplace(source: File, target: File)
+        fun publishNoReplace(source: File, target: File, expected: FileIdentity): InputCopyPublication
     }
 
     private object AndroidAtomicFilePublisher : AtomicFilePublisher {
@@ -58,11 +58,9 @@ object FileCopyService {
             return FileIdentity(stat.st_dev, stat.st_ino)
         }
 
-        override fun linkNoReplace(source: File, target: File) {
-            // link(2) atomically publishes a complete inode and fails with EEXIST;
-            // unlike rename(2), it cannot replace another owner's pathname.
-            Os.link(source.absolutePath, target.absolutePath)
-        }
+        override fun publishNoReplace(source: File, target: File, expected: FileIdentity): InputCopyPublication =
+            GoBridge.publishInputCopy(requireNotNull(source.parentFile).absolutePath,
+                source.name, target.name, expected.device, expected.inode)
     }
 
     /**
@@ -137,15 +135,20 @@ object FileCopyService {
                         }
                         currentCoroutineContext().ensureActive()
 
-                        publisher.linkNoReplace(ownedIncompleteFile, destFile)
+                        val publication = publisher.publishNoReplace(ownedIncompleteFile, destFile, ownedIncompleteIdentity)
+                        if (publication != InputCopyPublication.PUBLISHED && publication != InputCopyPublication.PUBLISHED_ERROR) {
+                            throw IOException("Input publication was not confirmed")
+                        }
                         publishedIdentity = ownedIncompleteIdentity
+                        // Confirmed native publication consumed the source name. A new
+                        // file at that name belongs to a different owner.
+                        incompleteIdentity = null
                         if (publisher.identity(destFile) != ownedIncompleteIdentity) {
                             throw IOException("Published input identity does not match its complete copy")
                         }
-                        if (!ownedIncompleteFile.delete() || ownedIncompleteFile.exists()) {
-                            throw IOException("Could not remove incomplete input link after publication")
+                        if (publication == InputCopyPublication.PUBLISHED_ERROR) {
+                            throw IOException("Input publication completed with an error")
                         }
-                        incompleteIdentity = null
                         afterPublish()
                         Result.success(destFile.absolutePath)
                     } catch (e: CancellationException) {
@@ -276,17 +279,11 @@ object FileCopyService {
     }
 
     /**
-     * Deletes a file from internal storage.
+     * Removes an owned app-private file or tree without following links. Absence is complete.
      */
     suspend fun deleteFile(context: Context, filePath: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            val file = File(filePath)
-            if (file.exists()) {
-                file.delete()
-                true
-            } else {
-                false
-            }
+            NoFollowFileTree.delete(context.filesDir, File(filePath))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -541,14 +538,18 @@ object FileCopyService {
      * @param context Android context
      * @param sourceFilePath Path to source file in internal storage
      * @param destinationUri Destination URI selected by user
+     * @param ownsSource Whether the initiating operation still owns this save
      * @return Result with Unit on success, AppError on failure
      */
     suspend fun saveFileToUri(
         context: Context,
         sourceFilePath: String,
-        destinationUri: Uri
+        destinationUri: Uri,
+        ownsSource: () -> Boolean,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
+            currentCoroutineContext().ensureActive()
+            if (!ownsSource()) return@withContext Result.failure(saveFailed(context, "Save owner changed"))
             val sourceFile = File(sourceFilePath)
             if (!sourceFile.exists()) {
                 return@withContext Result.failure(
@@ -556,13 +557,32 @@ object FileCopyService {
                 )
             }
             
-            context.contentResolver.openOutputStream(destinationUri)?.use { outputStream ->
-                FileInputStream(sourceFile).use { inputStream ->
-                    inputStream.copyTo(outputStream)
-                }
-            } ?: return@withContext Result.failure(
-                saveFailed(context, "Could not open output stream for URI: $destinationUri")
-            )
+            // Pin the selected output before a provider call can suspend ownership
+            // or allow the pathname to be reused by a later operation.
+            FileInputStream(sourceFile).use { inputStream ->
+                currentCoroutineContext().ensureActive()
+                if (!ownsSource()) return@withContext Result.failure(saveFailed(context, "Save owner changed"))
+                context.contentResolver.openOutputStream(destinationUri)?.use { outputStream ->
+                    currentCoroutineContext().ensureActive()
+                    if (!ownsSource()) return@withContext Result.failure(saveFailed(context, "Save owner changed"))
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    try {
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            if (!ownsSource()) return@withContext Result.failure(saveFailed(context, "Save owner changed"))
+                            val count = inputStream.read(buffer)
+                            if (count < 0) break
+                            currentCoroutineContext().ensureActive()
+                            if (!ownsSource()) return@withContext Result.failure(saveFailed(context, "Save owner changed"))
+                            outputStream.write(buffer, 0, count)
+                        }
+                    } finally {
+                        buffer.fill(0)
+                    }
+                } ?: return@withContext Result.failure(
+                    saveFailed(context, "Could not open output stream for URI: $destinationUri")
+                )
+            }
             
             Result.success(Unit)
         } catch (e: CancellationException) {
@@ -608,13 +628,23 @@ object FileCopyService {
         }
     }
 
+    // Go repeats this check after descriptor ownership transfers. Refuse unsupported
+    // providers here so the retained output remains available for another destination.
+    internal fun supportsPcv3OutputDescriptor(descriptor: ParcelFileDescriptor): Boolean = try {
+        OsConstants.S_ISREG(Os.fstat(descriptor.fileDescriptor).st_mode) &&
+            Os.lseek(descriptor.fileDescriptor, 0, OsConstants.SEEK_CUR) >= 0
+    } catch (_: Exception) {
+        false
+    }
+
     /**
      * Opens an opaque SAF destination for transfer to the Go-owned output action.
      * The successful descriptor is returned open and owned by the caller.
      */
-    suspend fun openPcv3OutputDescriptor(
+    internal suspend fun openPcv3OutputDescriptor(
         context: Context,
         destinationUri: Uri,
+        supportsDescriptor: (ParcelFileDescriptor) -> Boolean = ::supportsPcv3OutputDescriptor,
     ): Result<ParcelFileDescriptor> {
         var openedDescriptor: ParcelFileDescriptor? = null
         var resultDelivered = false
@@ -626,6 +656,15 @@ object FileCopyService {
                             saveFailed(context, PCV3_OUTPUT_DESCRIPTOR_OPEN_FAILED),
                         )
                     openedDescriptor = descriptor
+                    if (!supportsDescriptor(descriptor)) {
+                        return@withContext Result.failure(
+                            AppError.FileError.SaveFailed(
+                                userMessage = context.getString(R.string.pcv3_output_provider_unsupported),
+                                technicalMessage = "PCV3_OUTPUT_PROVIDER_UNSUPPORTED",
+                                messageResId = R.string.pcv3_output_provider_unsupported,
+                            ),
+                        )
+                    }
                     Result.success(descriptor)
                 } catch (e: CancellationException) {
                     throw e

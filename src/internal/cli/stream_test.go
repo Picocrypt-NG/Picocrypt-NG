@@ -429,7 +429,6 @@ func TestCLIReportsStdinTempCleanupFailure(t *testing.T) {
 				}
 			}
 			result := cliTestResult{exitCode: exitCode, stderr: stderr.String()}
-			skipOnPCV3ResourceAdmissionDenial(t, result)
 			t.Fatalf("CLI exited before the stdin plaintext temp was observed: exit %d stderr %q", exitCode, result.stderr)
 		}
 		_ = command.Process.Kill()
@@ -476,7 +475,6 @@ func TestPCV3DecryptStdoutCancelsWithoutPlaintextResidue(t *testing.T) {
 		"encrypt", input, "-o", volume, "--pcv3", "-p", "signal-password", "--quiet",
 	)
 	if encrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, encrypted)
 		t.Fatalf("prepare PCV3 volume: exit %d stderr %q", encrypted.exitCode, encrypted.stderr)
 	}
 

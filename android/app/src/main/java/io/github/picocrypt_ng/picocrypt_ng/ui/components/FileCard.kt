@@ -2,6 +2,7 @@ package io.github.picocrypt_ng.picocrypt_ng.ui.components
 
 
 import android.net.Uri
+import android.os.CancellationSignal
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,6 +40,7 @@ import io.github.picocrypt_ng.picocrypt_ng.FileCopyService
 import io.github.picocrypt_ng.picocrypt_ng.FormData
 import io.github.picocrypt_ng.picocrypt_ng.GoBridge
 import io.github.picocrypt_ng.picocrypt_ng.MainViewModel
+import io.github.picocrypt_ng.picocrypt_ng.OperationManager
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3AndroidPolicyState
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3FormatIntent
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3Route
@@ -48,8 +50,11 @@ import androidx.compose.runtime.collectAsState
 import io.github.picocrypt_ng.picocrypt_ng.StagedSelection
 import io.github.picocrypt_ng.picocrypt_ng.StagingService
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -58,9 +63,7 @@ private const val MAX_SELECTED_FILE_DISPLAY_CHARS = 256
 
 private data class PendingSingleFileSelection(
     val uri: Uri,
-    val displayName: String,
     val releasedSources: List<String>,
-    val primaryError: AppError? = null,
 )
 
 @Composable
@@ -77,6 +80,9 @@ fun ChooseFile(
     var pendingSingleFile by remember { mutableStateOf<PendingSingleFileSelection?>(null) }
     var allowPcv3D1 by remember(pcv3AndroidPolicyState) { mutableStateOf(false) }
     val selectionEnabled by rememberUpdatedState(enabled)
+
+    fun canAcceptSelection(): Boolean = selectionEnabled && !isCopying && !isCheckingRoute &&
+        pendingSingleFile == null && !OperationManager.currentPcv3InputCleanupPending.value
     
     // Handle file copying and detection when URI is selected
     LaunchedEffect(pendingSingleFile) {
@@ -87,21 +93,56 @@ fun ChooseFile(
             // The picker callback already invalidated the runnable form. Its released
             // owner must be deleted before this copy can claim the fixed final path.
             if (!cleanupReplacedSelection(context, selection.releasedSources)) {
-                viewModel.setError(selection.primaryError ?: selectionCleanupError())
-                return@LaunchedEffect
-            }
-            selection.primaryError?.let {
-                viewModel.setError(it)
+                viewModel.setError(selectionCleanupError())
                 return@LaunchedEffect
             }
             if (!selectionEnabled) {
                 return@LaunchedEffect
             }
 
+            val (displayName, queryError) = withContext(Dispatchers.IO) {
+                val signal = CancellationSignal()
+                val watcher = launch(start = CoroutineStart.UNDISPATCHED) {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        try { signal.cancel() } catch (_: Exception) { }
+                    }
+                }
+                try {
+                    var name = ""
+                    val failure = try {
+                        context.contentResolver.query(
+                            selection.uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null, signal,
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                                if (nameIndex != -1) name = cursor.getString(nameIndex).orEmpty()
+                            }
+                        }
+                        null
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        error.toAppError(unknownErrorMsg)
+                    }
+                    name to failure
+                } finally {
+                    withContext(NonCancellable) { watcher.cancelAndJoin() }
+                }
+            }
+            val primaryError = queryError ?: if (FormData.isSplitVolumeChunkName(displayName)) {
+                AppError.ValidationError.SplitVolumeNotSupported
+            } else null
+            primaryError?.let {
+                viewModel.setError(it)
+                return@LaunchedEffect
+            }
+
             val copiedPath = FileCopyService.copyFileToInternalStorage(
                 context,
                 selection.uri,
-                selection.displayName,
+                displayName,
             ).getOrElse { error ->
                 viewModel.setError(error.toAppError(unknownErrorMsg))
                 return@LaunchedEffect
@@ -123,7 +164,7 @@ fun ChooseFile(
                 Pcv3Route.NORMAL -> {
                     val cleanup = routeNormalPcv3Selection(
                         viewModel = viewModel,
-                        selectedFilename = selection.displayName,
+                        selectedFilename = displayName,
                         copiedPath = copiedPath,
                         policyState = pcv3AndroidPolicyState,
                     )
@@ -155,7 +196,7 @@ fun ChooseFile(
                         messageResId = R.string.error_pcv_unavailable,
                     )
                     val cleanup = viewModel.retainRefusedPcv3(
-                        selection.displayName,
+                        displayName,
                         copiedPath,
                         refusal,
                     )
@@ -168,7 +209,7 @@ fun ChooseFile(
                     if (applyLegacySelection(
                         context = context,
                         viewModel = viewModel,
-                        selectedFilename = selection.displayName,
+                        selectedFilename = displayName,
                         copiedPath = copiedPath,
                         unknownErrorMsg = unknownErrorMsg,
                     )) {
@@ -193,7 +234,7 @@ fun ChooseFile(
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        if (!selectionEnabled) return@rememberLauncherForActivityResult
+        if (!canAcceptSelection()) return@rememberLauncherForActivityResult
         uri?.let { selected ->
             allowPcv3D1 = false
             // This is the first mutation after accepting a picker result. It closes
@@ -202,31 +243,9 @@ fun ChooseFile(
             val releasedSources = viewModel.resetFormToDefaults()
             isCopying = true
 
-            // Get filename from URI
-            var fileName = ""
-            val queryError = try {
-                context.contentResolver.query(selected, null, null, null, null)?.use { cursor ->
-                    if (cursor.moveToFirst()) {
-                        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        if (nameIndex != -1) {
-                            fileName = cursor.getString(nameIndex).orEmpty()
-                        }
-                    }
-                }
-                null
-            } catch (error: Exception) {
-                error.toAppError(unknownErrorMsg)
-            }
-            val primaryError = queryError ?: if (FormData.isSplitVolumeChunkName(fileName)) {
-                // Android cannot safely enumerate sibling split chunks. The pending
-                // selection still runs owned cleanup, but never copies or detects it.
-                AppError.ValidationError.SplitVolumeNotSupported
-            } else null
             pendingSingleFile = PendingSingleFileSelection(
                 uri = selected,
-                displayName = fileName,
                 releasedSources = releasedSources,
-                primaryError = primaryError,
             )
         }
     }
@@ -236,7 +255,7 @@ fun ChooseFile(
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
-        if (!selectionEnabled) return@rememberLauncherForActivityResult
+        if (!canAcceptSelection()) return@rememberLauncherForActivityResult
         uri ?: return@rememberLauncherForActivityResult
         allowPcv3D1 = false
         // Invalidate the runnable form before scheduling staging. UNDISPATCHED
@@ -251,8 +270,9 @@ fun ChooseFile(
                 }
                 if (!selectionEnabled) return@launch
 
-                val result = StagingService.copyTreeToStaging(context, uri)
-                applyStagedSelection(viewModel, result, unknownErrorMsg)
+                applyStagedSelection(viewModel, unknownErrorMsg) {
+                    StagingService.copyTreeToStaging(context, uri)
+                }
             } finally {
                 isCopying = false
             }
@@ -262,7 +282,7 @@ fun ChooseFile(
     val filesPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
-        if (!selectionEnabled) return@rememberLauncherForActivityResult
+        if (!canAcceptSelection()) return@rememberLauncherForActivityResult
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         allowPcv3D1 = false
         // Match the single/folder path: old source ownership is removed from the
@@ -277,12 +297,13 @@ fun ChooseFile(
                 }
                 if (!selectionEnabled) return@launch
 
-                val result = StagingService.copyFilesToStaging(
-                    context,
-                    uris,
-                    System.currentTimeMillis() / 1000,
-                )
-                applyStagedSelection(viewModel, result, unknownErrorMsg)
+                applyStagedSelection(viewModel, unknownErrorMsg) {
+                    StagingService.copyFilesToStaging(
+                        context,
+                        uris,
+                        System.currentTimeMillis() / 1000,
+                    )
+                }
             } finally {
                 isCopying = false
             }
@@ -465,11 +486,12 @@ private suspend fun applyLegacySelection(
     })
 }
 
-private suspend fun cleanupReplacedSelection(context: android.content.Context, sources: List<String>): Boolean =
+internal suspend fun cleanupReplacedSelection(context: android.content.Context, sources: List<String>): Boolean =
     withContext(NonCancellable) {
         val sourcesDeleted = deleteOwnedCopies(context, sources.distinct())
         val keyfilesDeleted = FileCopyService.cleanupKeyfiles(context)
-        sourcesDeleted && keyfilesDeleted
+        val stagingDeleted = StagingService.wipeStaging(context)
+        sourcesDeleted && keyfilesDeleted && stagingDeleted
     }
 
 private suspend fun deleteOwnedCopies(context: android.content.Context, paths: List<String>): Boolean =
@@ -498,11 +520,17 @@ private fun Throwable.toAppError(unknownErrorMsg: String): AppError =
         this as? Exception ?: Exception(message ?: unknownErrorMsg),
     )
 
-private fun applyStagedSelection(
+internal suspend fun applyStagedSelection(
     viewModel: MainViewModel,
-    result: Result<StagedSelection>,
     unknownErrorMsg: String,
+    prepare: suspend () -> Result<StagedSelection>,
 ) {
+    val result = try {
+        prepare()
+    } catch (cancelled: CancellationException) {
+        StagingService.cleanupFailure(cancelled)?.let(viewModel::setError)
+        throw cancelled
+    }
     result.onSuccess { sel ->
         viewModel.resetFormToDefaults()
         val base = viewModel.formState.value

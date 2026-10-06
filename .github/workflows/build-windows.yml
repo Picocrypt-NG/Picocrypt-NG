@@ -38,14 +38,14 @@ jobs:
       contents: read
     env:
       RESHACKER_SHA256: b611be2f35cb44efd1c29df03e7ebe62bd556a500585680e1afa5e073eaf1756
-      UPX_SHA256: b471ebf1b7f20f4a89150264ed9a008a2a5bfd247f3c6d1184a75bb59ca08f5d
+      UPX_SHA256: eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.26.6"
+        go-version: "1.27.1"
         cache-dependency-path: src/go.sum
 
     - name: Install dependencies
@@ -170,7 +170,7 @@ jobs:
           --retry-max-time 600 `
           --remove-on-error `
           --output upx.zip `
-          https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-win64.zip
+          https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip
         if ($LASTEXITCODE -ne 0) {
           throw "UPX download failed with exit code $LASTEXITCODE"
         }
@@ -180,8 +180,8 @@ jobs:
           throw "Checksum mismatch for upx.zip: expected $expectedHash, got $actualHash"
         }
         Expand-Archive -DestinationPath upx upx.zip
-        upx/upx-5.2.0-win64/upx.exe --lzma -o src/Picocrypt-NG.exe src/5.exe
-        upx/upx-5.2.0-win64/upx.exe --lzma src/Picocrypt-NG-cli.exe
+        upx/upx-5.2.1-win64/upx.exe --lzma -o src/Picocrypt-NG.exe src/5.exe
+        upx/upx-5.2.1-win64/upx.exe --lzma src/Picocrypt-NG-cli.exe
 
     # Build the NSIS installer.
     # NSIS is NOT pre-installed on windows-2025 [actions/runner-images#11754,
@@ -197,7 +197,7 @@ jobs:
     - name: Install NSIS
       shell: pwsh
       run: |
-        choco install -y --no-progress nsis --version=3.12.0
+        choco install -y --no-progress nsis --version=3.13.0
         & "C:\Program Files (x86)\NSIS\makensis.exe" -VERSION
 
     - name: Build NSIS installer
@@ -308,7 +308,7 @@ jobs:
         retention-days: 1
 
     - name: Sign binaries with SignPath
-      uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2.2
+      uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
       with:
         api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
         organization-id: d6e78672-6bae-47d3-b2b8-fa464705b34e
@@ -355,7 +355,7 @@ jobs:
         Copy-Item signpath-signed-binaries/Picocrypt-NG-portable.exe src/Picocrypt-NG-portable.exe
         Copy-Item signpath-signed-binaries/Picocrypt-NG-cli.exe src/Picocrypt-NG-cli.exe
 
-        choco install -y --no-progress nsis --version=3.12.0
+        choco install -y --no-progress nsis --version=3.13.0
         & "C:\Program Files (x86)\NSIS\makensis.exe" -VERSION
 
         $version = (Get-Content -Path "VERSION" -Raw).Trim()
@@ -389,7 +389,7 @@ jobs:
         retention-days: 1
 
     - name: Sign uninstaller with SignPath
-      uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2.2
+      uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
       with:
         api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
         organization-id: d6e78672-6bae-47d3-b2b8-fa464705b34e
@@ -453,7 +453,7 @@ jobs:
         retention-days: 1
 
     - name: Sign installer with SignPath
-      uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2.2
+      uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
       with:
         api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
         organization-id: d6e78672-6bae-47d3-b2b8-fa464705b34e

@@ -2,7 +2,7 @@ package pcv3operation
 
 import (
 	"Picocrypt-NG/internal/fileops"
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3publication"
 	"slices"
 	"testing"
@@ -126,5 +126,33 @@ func TestArchiveFollowUpBeginSAFAlwaysReturnsAClosedVariant(t *testing.T) {
 	if begin == nil || begin.Kind() != ArchiveSAFBeginExpired ||
 		begin.Session() != nil || begin.ReceiptArm() != nil || begin.Result() != nil {
 		t.Fatalf("zero follow-up begin = %#v; want expired only", begin)
+	}
+}
+
+type classifiedSAFResult struct {
+	archiveSAFResultFixture
+	cancelled       bool
+	resourceLimited bool
+}
+
+func (result classifiedSAFResult) Cancelled() bool       { return result.cancelled }
+func (result classifiedSAFResult) ResourceLimited() bool { return result.resourceLimited }
+
+func TestArchiveSAFPreparationFailuresKeepTypedDiagnosticsAndNoOutput(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		native         classifiedSAFResult
+		want           Diagnostic
+		wantCompletion CompletionClass
+	}{
+		{"cancel", classifiedSAFResult{archiveSAFResultFixture: archiveSAFResultFixture{state: fileops.UnpackStateNotPublished}, cancelled: true}, DiagnosticCancellation, CompletionRefused},
+		{"budget", classifiedSAFResult{archiveSAFResultFixture: archiveSAFResultFixture{state: fileops.UnpackStateNotPublished}, resourceLimited: true}, DiagnosticResourceLimit, CompletionNoOutput},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := resultFromArchiveSAF(test.native)
+			if result.Diagnostic() != test.want || result.CompletionClass() != test.wantCompletion || result.PublicationState() == pcv3publication.StatePublicationIndeterminate {
+				t.Fatalf("preparation failure lost typed no-output result: %#v", result)
+			}
+		})
 	}
 }

@@ -37,7 +37,7 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.26.6"
+        go-version: "1.27.1"
         cache-dependency-path: src/go.sum
 
     - name: Install packages
@@ -56,9 +56,9 @@ jobs:
         # linuxdeploy/appimagetool "continuous" builds; if upstream republishes them this
         # check fails and the pin must be refreshed -- intentional, not silent drift.
         wget -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-        echo "e87ee0815d109282fdda73e34c2361d64d02b0ffaea3674b18f1fd1f6a687dcf  linuxdeploy" | sha256sum --check --strict --status
+        echo "8aea8da0f7f7039d2a2cecb14657d752a222a5e1d3825caeef186c82f751cdd1  linuxdeploy" | sha256sum --check --strict --status
         wget -O appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-        echo "a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0  appimagetool" | sha256sum --check --strict --status
+        echo "95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6  appimagetool" | sha256sum --check --strict --status
         chmod +x linuxdeploy appimagetool
         # linuxdeploy invokes appimagetool from PATH during --output appimage.
         sudo mv appimagetool /usr/local/bin/appimagetool

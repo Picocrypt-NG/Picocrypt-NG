@@ -255,3 +255,34 @@ func TestRenameNoReplaceFallbackLinkSemantics(t *testing.T) {
 		requireFileBytes(t, filepath.Join(directory, "stage"), stageBytes)
 	})
 }
+
+// A kernel without renameat2 is supported only if the filesystem's hard-link
+// fallback actually enforces no-replace on the pinned output directory.
+func TestCapabilityProbeENOSYSFallback(t *testing.T) {
+	forceRenameat2Error(t, unix.ENOSYS)
+	stage, err := Create(filepath.Join(t.TempDir(), "output"), nil, PolicyNoReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stage.Cleanup()
+	if err := stage.CheckCapability(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCapabilityProbePermissionRefusal(t *testing.T) {
+	forceRenameat2Error(t, unix.EPERM)
+	directory := t.TempDir()
+	stage, err := Create(filepath.Join(directory, "output"), nil, PolicyNoReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stage.Cleanup()
+	if err := stage.CheckCapability(); !errors.Is(err, errors.ErrUnsupported) {
+		t.Fatalf("probe = %v", err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("probe residue: %v %v", entries, err)
+	}
+}

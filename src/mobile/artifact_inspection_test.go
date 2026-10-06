@@ -1,11 +1,8 @@
 package mobile
 
 import (
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3artifact"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
-	"Picocrypt-NG/internal/pcv3recovery"
 	"context"
 	"math"
 	"os"
@@ -15,20 +12,20 @@ import (
 // frozenMobileArtifactInspection is an adapter-only immutable Metadata/Page
 // source. It never substitutes a Result, publication result, or capability.
 type frozenMobileArtifactInspection struct {
-	metadata pcv3recovery.ArtifactInspectionMetadata
-	ranges   []pcv3artifact.Range
+	metadata pcv3operation.ArtifactInspectionMetadata
+	ranges   []pcv3operation.ArtifactRange
 }
 
-var _ func(*pcv3operation.Result) *pcv3recovery.ArtifactInspection = (*pcv3operation.Result).ArtifactInspection
+var _ func(*pcv3operation.Result) *pcv3operation.ArtifactInspection = (*pcv3operation.Result).ArtifactInspection
 
-func (inspection *frozenMobileArtifactInspection) Metadata() pcv3recovery.ArtifactInspectionMetadata {
+func (inspection *frozenMobileArtifactInspection) Metadata() pcv3operation.ArtifactInspectionMetadata {
 	if inspection == nil {
-		return pcv3recovery.ArtifactInspectionMetadata{}
+		return pcv3operation.ArtifactInspectionMetadata{}
 	}
 	return inspection.metadata
 }
 
-func (inspection *frozenMobileArtifactInspection) Page(offset, limit uint64) ([]pcv3artifact.Range, bool) {
+func (inspection *frozenMobileArtifactInspection) Page(offset, limit uint64) ([]pcv3operation.ArtifactRange, bool) {
 	if inspection == nil || limit == 0 || limit > 128 || offset >= uint64(len(inspection.ranges)) {
 		return nil, false
 	}
@@ -39,7 +36,7 @@ func (inspection *frozenMobileArtifactInspection) Page(offset, limit uint64) ([]
 	if end > uint64(len(inspection.ranges)) {
 		end = uint64(len(inspection.ranges))
 	}
-	return append([]pcv3artifact.Range(nil), inspection.ranges[offset:end]...), true
+	return append([]pcv3operation.ArtifactRange(nil), inspection.ranges[offset:end]...), true
 }
 
 type panicMobileArtifactArchiveAction struct{}
@@ -56,7 +53,7 @@ func (panicMobileArtifactArchiveAction) Close() pcv3operation.Presentation {
 }
 
 func TestPCV3ArtifactInspectionDoesNotWrapTypedNilCoreView(t *testing.T) {
-	var coreInspection *pcv3recovery.ArtifactInspection
+	var coreInspection *pcv3operation.ArtifactInspection
 	if wrapped := newPCV3ArtifactInspection(coreInspection); wrapped != nil {
 		t.Fatalf("typed-nil core inspection became mobile wrapper %#v", wrapped)
 	}
@@ -77,19 +74,19 @@ func TestPCV3ArtifactInspectionDoesNotWrapTypedNilCoreView(t *testing.T) {
 
 func TestPCV3ArtifactInspectionRemainsPathFreeAndReadableAfterRelease(t *testing.T) {
 	view := &frozenMobileArtifactInspection{
-		metadata: pcv3recovery.ArtifactInspectionMetadata{
-			Kind:                 pcv3artifact.StatePartial,
-			Role:                 pcv3artifact.RoleBackup,
+		metadata: pcv3operation.ArtifactInspectionMetadata{
+			Kind:                 pcv3operation.ArtifactStatePartial,
+			Role:                 pcv3operation.ArtifactRoleBackup,
 			PlaintextLength:      math.MaxUint64,
-			Final:                pcv3artifact.FinalMissing,
+			Final:                pcv3operation.ArtifactFinalMissing,
 			RangeCount:           2,
 			VerifiedRangeCount:   1,
 			UnverifiedRangeCount: 0,
 			MissingRangeCount:    1,
 		},
-		ranges: []pcv3artifact.Range{
-			{RecordIndex: 0, Start: 0, End: 7, Status: pcv3artifact.RangeVerified},
-			{RecordIndex: math.MaxUint64, Start: 7, End: math.MaxUint64, Status: pcv3artifact.RangeMissing},
+		ranges: []pcv3operation.ArtifactRange{
+			{RecordIndex: 0, Start: 0, End: 7, Status: pcv3operation.ArtifactRangeVerified},
+			{RecordIndex: math.MaxUint64, Start: 7, End: math.MaxUint64, Status: pcv3operation.ArtifactRangeMissing},
 		},
 	}
 	inspection := newPCV3ArtifactInspectionFromView(view)
@@ -149,9 +146,9 @@ func TestPCV3ArtifactInspectionRejectsArchiveCombination(t *testing.T) {
 	completePCV3PresentationWithArchiveAndInspection(
 		operation,
 		mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-			Outcome:        pcv3.OutcomeSuccess,
-			Stage:          pcv3.StageNone,
-			Code:           pcv3.CodeSuccess,
+			Outcome:        pcv3operation.OutcomeSuccess,
+			Stage:          pcv3operation.StageNone,
+			Code:           pcv3operation.CodeSuccess,
 			ArchivePending: true,
 		}),
 		action,
@@ -174,9 +171,9 @@ func TestPCV3ArtifactInspectionContainsContradictoryArchiveClosePanic(t *testing
 		completePCV3PresentationWithArchiveAndInspection(
 			operation,
 			mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-				Outcome:        pcv3.OutcomeSuccess,
-				Stage:          pcv3.StageNone,
-				Code:           pcv3.CodeSuccess,
+				Outcome:        pcv3operation.OutcomeSuccess,
+				Stage:          pcv3operation.StageNone,
+				Code:           pcv3operation.CodeSuccess,
 				ArchivePending: true,
 			}),
 			panicMobileArtifactArchiveAction{},
@@ -200,13 +197,13 @@ func TestPCV3ArtifactInspectionContainsContradictoryArchiveClosePanic(t *testing
 func durableForcePartialPCV3Presentation(t *testing.T) pcv3operation.Presentation {
 	t.Helper()
 	return mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-		Outcome:              pcv3.OutcomeForcePartial,
-		Stage:                pcv3.StageRecordAuth,
-		Code:                 pcv3.CodeForcePartial,
-		ForceProvenance:      pcv3.ForceProvenancePartial,
+		Outcome:              pcv3operation.OutcomeForcePartial,
+		Stage:                pcv3operation.StageRecordAuth,
+		Code:                 pcv3operation.CodeForcePartial,
+		ForceProvenance:      pcv3operation.ForceProvenancePartial,
 		PublicationAttempted: true,
 		PublicationState:     pcv3publication.StatePublishedDurable,
-		PublicationStage:     pcv3.StageNone,
+		PublicationStage:     pcv3operation.StageNone,
 		PublicationCode:      pcv3publication.CodePublishedDurable,
 	})
 }

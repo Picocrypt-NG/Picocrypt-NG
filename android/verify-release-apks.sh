@@ -183,8 +183,8 @@ verify_apk() {
         echo "$filename versionCode = '$actual_version_code', want '$expected_version_code'" >&2
         exit 1
     fi
-    if ! grep -Fx "sdkVersion:'24'" <<< "$badging" >/dev/null; then
-        echo "$filename does not declare minSdk 24" >&2
+    if ! grep -Fx "sdkVersion:'26'" <<< "$badging" >/dev/null; then
+        echo "$filename does not declare minSdk 26" >&2
         exit 1
     fi
 

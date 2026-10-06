@@ -2,12 +2,88 @@
 package ui
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/test"
 
 	ttwidget "github.com/dweymouth/fyne-tooltip/widget"
 )
+
+func TestLargePasswordPasteKeepsFullValueAndResponsiveControls(t *testing.T) {
+	for _, method := range []string{"toolbar", "keyboard", "decrypt"} {
+		t.Run(method, func(t *testing.T) {
+			fyneApp := newTestFyneApp(t)
+			a := createUIReadyDropTestApp(t, fyneApp)
+			// Public text comparable to accidentally pasting a document. The
+			// tail must survive: limiting the estimator must not change the key.
+			password := strings.Repeat("Public текст для проверки. ", 1024) + "unique tail"
+			started := time.Now()
+			fyne.DoAndWait(func() {
+				a.State.Mode = "encrypt"
+				if method == "decrypt" {
+					a.State.Mode = "decrypt"
+				}
+				hasFilesForUI(a)
+				a.updateUIState()
+				fyneApp.Clipboard().SetContent(password)
+				if method == "keyboard" {
+					a.passwordEntry.TypedShortcut(&fyne.ShortcutPaste{Clipboard: fyneApp.Clipboard()})
+					a.cPasswordEntry.TypedShortcut(&fyne.ShortcutPaste{Clipboard: fyneApp.Clipboard()})
+				} else {
+					test.Tap(a.pasteBtn)
+				}
+				if a.passwordEntry.Text != password || a.State.Password != password ||
+					(method != "decrypt" && (a.cPasswordEntry.Text != password || a.State.CPassword != password)) {
+					t.Fatal("large paste changed or truncated the actual password")
+				}
+				test.Tap(a.clearPwdBtn)
+				if a.passwordEntry.Text != "" || a.cPasswordEntry.Text != "" || a.State.Password != "" || a.State.CPassword != "" {
+					t.Fatal("password controls did not respond after large paste")
+				}
+			})
+			if elapsed := time.Since(started); elapsed > 2*time.Second {
+				t.Fatalf("paste and clear blocked the UI for %v", elapsed)
+			}
+			a.workers.wait()
+			fyne.DoAndWait(func() {
+				if a.State.PasswordStrength != 0 || a.strengthIndicator.visible {
+					t.Fatal("late strength result restored the cleared password indicator")
+				}
+			})
+		})
+	}
+}
+
+func TestPasswordStrengthAdversarialTextRemainsResponsive(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	for _, value := range []string{
+		strings.Repeat("4@8({[<3691!|70$5+%2", 5),
+		"ééé", "KKK", "😀😀😀", "épassword1", "\xffp@ssw0rd\x80", "\xff\xff\xff",
+	} {
+		started := time.Now()
+		fyne.DoAndWait(func() {
+			a.State.Password = value
+			a.updatePasswordStrength()
+			if a.State.Password != value {
+				t.Fatal("strength estimation changed the actual password")
+			}
+		})
+		// This queued event must run promptly even while the real estimator
+		// is still computing. Completion itself has no UI-latency deadline.
+		fyne.DoAndWait(func() {})
+		elapsed := time.Since(started)
+		t.Logf("%d-byte input accepted and next UI event handled in %v", len(value), elapsed)
+		if elapsed > 2*time.Second {
+			t.Fatalf("bounded password still blocked the UI for %v", elapsed)
+		}
+		a.workers.wait()
+		fyne.DoAndWait(func() {})
+	}
+}
 
 // TestPasswordStrengthScoring drives the real updatePasswordStrength and asserts
 // it writes the zxcvbn score into State.PasswordStrength and the strength widget.
@@ -61,6 +137,9 @@ func TestPasswordStrengthScoring(t *testing.T) {
 		fyne.DoAndWait(func() {
 			a.State.Password = password
 			a.updatePasswordStrength()
+		})
+		a.workers.wait()
+		fyne.DoAndWait(func() {
 			s = a.State.PasswordStrength
 			// The widget must mirror the stored score.
 			if a.strengthIndicator.strength != s {
@@ -474,7 +553,13 @@ func TestPasswordEntryOnChanged(t *testing.T) {
 		fyne.DoAndWait(func() {
 			a.passwordEntry.SetText("newpassword")
 			password = a.State.Password
+		})
+		a.workers.wait()
+		fyne.DoAndWait(func() {
 			strength = a.State.PasswordStrength
+			if !a.strengthIndicator.visible {
+				t.Error("strengthIndicator should be visible after scoring a non-empty password")
+			}
 		})
 		if password != "newpassword" {
 			t.Errorf("State.Password = %q; want %q", password, "newpassword")
@@ -483,9 +568,6 @@ func TestPasswordEntryOnChanged(t *testing.T) {
 		// password must yield a non-negative score and mark the widget visible.
 		if strength < 0 {
 			t.Errorf("State.PasswordStrength = %d; want >= 0 after OnChanged", strength)
-		}
-		if !a.strengthIndicator.visible {
-			t.Error("strengthIndicator should be visible for a non-empty password")
 		}
 	})
 
@@ -525,6 +607,9 @@ func TestPasswordStrengthIndicatorVisibility(t *testing.T) {
 			fyne.DoAndWait(func() {
 				a.State.Password = tc.password
 				a.updatePasswordStrength()
+			})
+			a.workers.wait()
+			fyne.DoAndWait(func() {
 				visible = a.strengthIndicator.visible
 			})
 			if visible != tc.visible {

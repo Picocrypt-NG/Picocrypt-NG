@@ -2,7 +2,6 @@ package app
 
 import (
 	"Picocrypt-NG/internal/encoding"
-	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"bytes"
@@ -75,8 +74,8 @@ func TestPCV3FynePreservesFactorIntent(t *testing.T) {
 			t.Fatal("source descriptor transferred more than once")
 		}
 		pending, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
-			Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone,
-			Code: pcv3.CodeSuccess, ArchivePending: true,
+			Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone,
+			Code: pcv3operation.CodeSuccess, ArchivePending: true,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -108,6 +107,69 @@ func TestPCV3FynePreservesFactorIntent(t *testing.T) {
 			t.Fatal("Reset left the untransferred PCV3 descriptor open")
 		}
 	})
+}
+
+func TestPCV3IncompleteIntentCannotStartOrTransferSource(t *testing.T) {
+	for _, combined := range []bool{false, true} {
+		name := "operation and policy not selected"
+		if combined {
+			name = "combined policy missing password"
+		}
+		t.Run(name, func(t *testing.T) {
+			state := mustNewState(t)
+			path := filepath.Join(t.TempDir(), "selected.bin")
+			if err := os.WriteFile(path, []byte("selected"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			source, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !state.SetPCV3Ready(source, PCV3FormatNormal, path, path+".out", 8) {
+				_ = source.Close()
+				t.Fatal("SetPCV3Ready refused descriptor")
+			}
+			t.Cleanup(state.Reset)
+			factor, order := PCV3FactorPolicyPassword, PCV3KeyfileOrderUnset
+			if combined {
+				factor, order = PCV3FactorPolicyCombined, PCV3KeyfileOrderSelected
+				state.Keyfiles = []string{"factor.key"}
+				state.SetPCV3Intent(PCV3ActionDecrypt, factor, order)
+			} else {
+				state.Password = "public test password"
+			}
+			if state.CanStart() || state.UISnapshot().CanStart() {
+				t.Fatal("incomplete explicit intent enabled Start")
+			}
+			if intent, ok := state.TakePCV3OperationIntent(); ok || intent.Source != nil || len(intent.Password) != 0 || len(intent.Keyfiles) != 0 {
+				clear(intent.Password)
+				if intent.Source != nil {
+					_ = intent.Source.Close()
+				}
+				t.Fatal("incomplete explicit intent transferred source or credentials")
+			}
+			if state.UISnapshot().PCV3Route != PCV3RouteReady {
+				t.Fatal("refused transfer consumed the selection")
+			}
+			if _, err := source.Stat(); err != nil {
+				t.Fatalf("refused transfer closed the held source: %v", err)
+			}
+
+			state.Password = "public test password"
+			state.SetPCV3Intent(PCV3ActionDecrypt, factor, order)
+			if !state.CanStart() || !state.UISnapshot().CanStart() {
+				t.Fatal("completing the intent did not enable Start")
+			}
+			intent, ok := state.TakePCV3OperationIntent()
+			defer clear(intent.Password)
+			if intent.Source != nil {
+				defer intent.Source.Close()
+			}
+			if !ok || intent.Source != source || intent.FactorPolicy != factor || intent.KeyfileOrder != order {
+				t.Fatal("completed intent did not transfer the original source and factor policy")
+			}
+		})
+	}
 }
 
 // TestClosePCV3SourceClosesOnlyTheRetainedDescriptor protects shutdown from
@@ -559,18 +621,18 @@ func TestCanStart(t *testing.T) {
 		t.Error("Should be able to start with password")
 	}
 
-	// Legacy v2 encryption with keyfiles remains disabled; explicit PCV3 is separate.
+	// New native encryption accepts keyfiles through the default PCV3 writer.
 	state.Mode = "encrypt"
 	state.Password = ""
 	state.CPassword = ""
 	state.Keyfiles = []string{"keyfile.bin"}
-	if state.CanStart() {
-		t.Error("Should not be able to start new encryption with keyfiles only")
+	if !state.CanStart() {
+		t.Error("Should be able to start PCV3 encryption with keyfiles only")
 	}
 	state.Password = "secret"
 	state.CPassword = "secret"
-	if state.CanStart() {
-		t.Error("Should not be able to start new encryption with password and keyfiles")
+	if !state.CanStart() {
+		t.Error("Should be able to start PCV3 encryption with password and keyfiles")
 	}
 
 	// Legacy v1/v2 keyfile volumes remain decryptable.
@@ -603,16 +665,16 @@ func TestCanStart(t *testing.T) {
 	}
 }
 
-func TestCanStartPreservesLegacyKeyfileDecryptionButFreezesV2Writer(t *testing.T) {
+func TestCanStartPreservesLegacyKeyfileDecryptionAndDefaultsToPCV3(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		mode string
 		want bool
 	}{
 		{
-			name: "new encryption is rejected",
+			name: "new PCV3 encryption accepts keyfiles",
 			mode: "encrypt",
-			want: false,
+			want: true,
 		},
 		{
 			name: "legacy decryption remains available",

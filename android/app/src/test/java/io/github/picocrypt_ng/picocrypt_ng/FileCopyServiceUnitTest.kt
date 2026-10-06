@@ -19,6 +19,7 @@ import java.io.InputStream
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.io.path.createTempDirectory
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -38,6 +39,143 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 class FileCopyServiceUnitTest {
+    @Test
+    fun legacySavePinsSourceBeforeWaitingForTheProvider() = runTest {
+        val root = createTempDirectory("legacy-save-source-").toFile()
+        val oldBytes = "output of the operation whose Save was selected".toByteArray()
+        val replacementBytes = "private output of a later operation".toByteArray()
+        val source = File(root, "output").apply { writeBytes(oldBytes) }
+        val destination = File(root, "saved")
+        val resolver = mockk<android.content.ContentResolver>()
+        val context = mockk<Context> { every { contentResolver } returns resolver }
+        val uri = mockk<Uri>()
+        val providerEntered = CountDownLatch(1)
+        val releaseProvider = CountDownLatch(1)
+        every { resolver.openOutputStream(uri) } answers {
+            providerEntered.countDown()
+            check(releaseProvider.await(5, TimeUnit.SECONDS))
+            destination.outputStream()
+        }
+        try {
+            val saving = async(Dispatchers.Default) {
+                FileCopyService.saveFileToUri(context, source.path, uri) { true }
+            }
+            assertTrue(providerEntered.await(5, TimeUnit.SECONDS))
+            // A later publication replaces the pathname while the old picker is
+            // waiting on its provider. The already selected input must stay pinned.
+            assertTrue(source.delete())
+            source.writeBytes(replacementBytes)
+            releaseProvider.countDown()
+            saving.await().getOrThrow()
+            assertArrayEquals("A delayed provider must never redirect a Save to later bytes", oldBytes, destination.readBytes())
+            assertArrayEquals(replacementBytes, source.readBytes())
+        } finally {
+            releaseProvider.countDown()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun legacySaveDoesNotWriteAfterOwnerLossOrCancellationDuringProviderOpen() = runTest {
+        for (cancelled in listOf(false, true)) {
+            val root = createTempDirectory("legacy-save-revoked-").toFile()
+            val replacementBytes = "new output must remain private".toByteArray()
+            val source = File(root, "output").apply { writeText("old output") }
+            val destination = File(root, "saved")
+            val resolver = mockk<android.content.ContentResolver>()
+            val context = mockk<Context> {
+                every { contentResolver } returns resolver
+                every { getString(any()) } returns "Save failed"
+            }
+            val uri = mockk<Uri>()
+            val owned = AtomicBoolean(true)
+            val providerEntered = CountDownLatch(1)
+            val releaseProvider = CountDownLatch(1)
+            var openedOutput: java.io.FileOutputStream? = null
+            every { resolver.openOutputStream(uri) } answers {
+                providerEntered.countDown()
+                check(releaseProvider.await(5, TimeUnit.SECONDS))
+                destination.outputStream().also { openedOutput = it }
+            }
+            try {
+                val saving = async(Dispatchers.Default) {
+                    FileCopyService.saveFileToUri(context, source.path, uri, owned::get)
+                }
+                assertTrue(providerEntered.await(5, TimeUnit.SECONDS))
+                assertTrue(source.delete())
+                source.writeBytes(replacementBytes)
+                if (cancelled) saving.cancel() else owned.set(false)
+                releaseProvider.countDown()
+                if (cancelled) {
+                    assertTrue(runCatching { saving.await() }.exceptionOrNull() is CancellationException)
+                    saving.join()
+                } else {
+                    assertTrue(saving.await().exceptionOrNull() is AppError.FileError.SaveFailed)
+                }
+                assertEquals("No bytes may be sent after revocation (cancelled=$cancelled)", 0L, destination.length())
+                assertFalse("The eventual provider descriptor must be closed", requireNotNull(openedOutput).fd.valid())
+                assertArrayEquals(replacementBytes, source.readBytes())
+            } finally {
+                releaseProvider.countDown()
+                root.deleteRecursively()
+            }
+        }
+    }
+
+    @Test
+    fun ownedDeletionRemovesNestedStagingAndTreatsAbsentAsComplete() = runTest {
+        val root = createTempDirectory("owned-cleanup-").toFile()
+        val context = mockk<Context> { every { filesDir } returns root }
+        val directory = File(root, "picocrypt_files/staging/selection")
+        File(directory, "nested/plaintext").apply { parentFile!!.mkdirs(); writeText("private") }
+        try {
+            assertTrue(FileCopyService.deleteFile(context, directory.path))
+            assertFalse("no nested staging may remain after reported cleanup", directory.exists())
+            assertTrue("repeated cleanup is already complete", FileCopyService.deleteFile(context, directory.path))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun ownedDeletionRefusesOutsideRootAndDoesNotTraverseLinks() = runTest {
+        val root = createTempDirectory("owned-cleanup-").toFile()
+        val outside = createTempDirectory("unowned-").toFile()
+        val context = mockk<Context> { every { filesDir } returns root }
+        val kept = File(outside, "keep").apply { writeText("unowned") }
+        val link = File(root, "link")
+        Files.createSymbolicLink(link.toPath(), outside.toPath())
+        try {
+            assertFalse(FileCopyService.deleteFile(context, kept.path))
+            assertFalse(FileCopyService.deleteFile(context, File(link, "keep").path))
+            assertTrue(FileCopyService.deleteFile(context, link.path))
+            assertEquals("unowned", kept.readText())
+            assertFalse(FileCopyService.deleteFile(context, root.path))
+        } finally {
+            root.deleteRecursively()
+            outside.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun ownedDeletionReportsFailedUnlinkAndAllowsRetry() = runTest {
+        val root = createTempDirectory("owned-cleanup-").toFile()
+        val context = mockk<Context> { every { filesDir } returns root }
+        val parent = File(root, "blocked").apply { mkdir() }
+        val file = File(parent, "plaintext").apply { writeText("private") }
+        try {
+            check(parent.setWritable(false, false))
+            assertFalse("failed unlink must not claim plaintext cleanup", FileCopyService.deleteFile(context, file.path))
+            assertTrue(file.exists())
+            check(parent.setWritable(true, true))
+            assertTrue(FileCopyService.deleteFile(context, file.path))
+            assertFalse(file.exists())
+        } finally {
+            parent.setWritable(true, true)
+            root.deleteRecursively()
+        }
+    }
+
     @Test
     fun copyFileKeepsTheDestinationInvisibleUntilTheCopyIsComplete() = runTest {
         val waitingAfterFirstChunk = CountDownLatch(1)
@@ -213,6 +351,81 @@ class FileCopyServiceUnitTest {
                 "A rejected publication must remove its temporary input",
                 fixture.destination.parentFile!!.listFiles().orEmpty().none { it.name.endsWith(".incomplete") },
             )
+        } finally {
+            fixture.filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun copyFilePublicationErrorAfterMoveRemovesItsFinalButPreservesAReusedStageName() = runTest {
+        val fixture = singleFileCopyFixture(ByteArrayInputStream(byteArrayOf(7, 8, 9)))
+        var reusedStage: File? = null
+        val publisher = object : FileCopyService.AtomicFilePublisher by JvmAtomicFilePublisher {
+            override fun publishNoReplace(source: File, target: File, expected: FileCopyService.FileIdentity): InputCopyPublication {
+                assertEquals(InputCopyPublication.PUBLISHED, JvmAtomicFilePublisher.publishNoReplace(source, target, expected))
+                source.writeText("new owner at old stage name")
+                reusedStage = source
+                return InputCopyPublication.PUBLISHED_ERROR
+            }
+        }
+        try {
+            val result = FileCopyService.copyFileToInternalStorage(
+                fixture.context, fixture.uri, "secret.txt", publisher, {},
+                { fail("A publication error must never reach the successful handoff") },
+            )
+            assertTrue(result.exceptionOrNull() is AppError.FileError.CopyFailed)
+            assertFalse("A confirmed moved owner must be removed after its publication error", fixture.destination.exists())
+            assertEquals("new owner at old stage name", requireNotNull(reusedStage).readText())
+        } finally {
+            fixture.filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun copyFileRefusedOrIndeterminatePublicationCannotDeleteASameInodeTarget() = runTest {
+        for (publication in listOf(InputCopyPublication.NOT_PUBLISHED, InputCopyPublication.INDETERMINATE)) {
+            val bytes = byteArrayOf(7, 8, 9)
+            val fixture = singleFileCopyFixture(ByteArrayInputStream(bytes))
+            var claimedIdentity: FileCopyService.FileIdentity? = null
+            val publisher = object : FileCopyService.AtomicFilePublisher by JvmAtomicFilePublisher {
+                override fun publishNoReplace(source: File, target: File, expected: FileCopyService.FileIdentity): InputCopyPublication {
+                    // Another owner may already have an alias of the exact source inode.
+                    Files.createLink(target.toPath(), source.toPath())
+                    claimedIdentity = JvmAtomicFilePublisher.identity(target)
+                    return publication
+                }
+            }
+            try {
+                val result = FileCopyService.copyFileToInternalStorage(
+                    fixture.context, fixture.uri, "secret.txt", publisher, {}, {},
+                )
+                assertTrue("$publication cannot authorize a successful handoff", result.isFailure)
+                assertArrayEquals("$publication cannot authorize target deletion", bytes, fixture.destination.readBytes())
+                assertEquals(claimedIdentity, JvmAtomicFilePublisher.identity(fixture.destination))
+                assertEquals(listOf("input_file.txt"), fixture.destination.parentFile!!.list()!!.toList())
+            } finally {
+                fixture.filesDir.deleteRecursively()
+            }
+        }
+    }
+
+    @Test
+    fun copyFileUnexpectedPublicationExceptionCannotClaimTheTarget() = runTest {
+        val bytes = byteArrayOf(7, 8, 9)
+        val fixture = singleFileCopyFixture(ByteArrayInputStream(bytes))
+        val publisher = object : FileCopyService.AtomicFilePublisher by JvmAtomicFilePublisher {
+            override fun publishNoReplace(source: File, target: File, expected: FileCopyService.FileIdentity): InputCopyPublication {
+                Files.createLink(target.toPath(), source.toPath())
+                throw IOException("native publication disposition unavailable")
+            }
+        }
+        try {
+            val result = FileCopyService.copyFileToInternalStorage(
+                fixture.context, fixture.uri, "secret.txt", publisher, {}, {},
+            )
+            assertTrue(result.isFailure)
+            assertArrayEquals("An exception grants no target deletion custody", bytes, fixture.destination.readBytes())
+            assertEquals(listOf("input_file.txt"), fixture.destination.parentFile!!.list()!!.toList())
         } finally {
             fixture.filesDir.deleteRecursively()
         }
@@ -779,7 +992,7 @@ class FileCopyServiceUnitTest {
         every { uri.toString() } throws AssertionError("A SAF URI must remain opaque")
         every { resolver.openFileDescriptor(uri, "rwt") } returns descriptor
 
-        val result = FileCopyService.openPcv3OutputDescriptor(context, uri)
+        val result = FileCopyService.openPcv3OutputDescriptor(context, uri) { true }
 
         assertSame(descriptor, result.getOrThrow())
         verify(exactly = 1) { resolver.openFileDescriptor(uri, "rwt") }
@@ -807,7 +1020,7 @@ class FileCopyServiceUnitTest {
         }
 
         val opening = async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
-            val result = FileCopyService.openPcv3OutputDescriptor(context, uri)
+            val result = FileCopyService.openPcv3OutputDescriptor(context, uri) { true }
             delivered = result.getOrNull()
             result
         }
@@ -838,6 +1051,22 @@ class FileCopyServiceUnitTest {
     }
 
     @Test
+    fun unsupportedPcv3ProviderClosesDescriptorBeforeRefusingTransfer() = runTest {
+        val context = mockk<Context>()
+        val resolver = mockk<android.content.ContentResolver>()
+        val uri = mockk<Uri>()
+        val descriptor = mockk<ParcelFileDescriptor>(relaxed = true)
+        every { context.contentResolver } returns resolver
+        every { context.getString(R.string.pcv3_output_provider_unsupported) } returns "Choose another destination"
+        every { resolver.openFileDescriptor(uri, "rwt") } returns descriptor
+        val result = FileCopyService.openPcv3OutputDescriptor(context, uri) { false }
+        assertTrue(result.isFailure)
+        assertEquals("PCV3_OUTPUT_PROVIDER_UNSUPPORTED", (result.exceptionOrNull() as AppError).technicalMessage)
+        verify(exactly = 1) { descriptor.close() }
+        verify(exactly = 0) { descriptor.detachFd() }
+    }
+
+    @Test
     fun openPcv3OutputDescriptorReturnsTypedFailureWhenProviderReturnsNull() = runTest {
         val context = mockk<Context>()
         val resolver = mockk<android.content.ContentResolver>()
@@ -846,7 +1075,7 @@ class FileCopyServiceUnitTest {
         every { context.getString(R.string.error_save_failed) } returns "Save failed"
         every { resolver.openFileDescriptor(uri, "rwt") } returns null
 
-        val result = FileCopyService.openPcv3OutputDescriptor(context, uri)
+        val result = FileCopyService.openPcv3OutputDescriptor(context, uri) { true }
 
         val error = result.exceptionOrNull()
         assertTrue(error is AppError.FileError.SaveFailed)
@@ -863,7 +1092,7 @@ class FileCopyServiceUnitTest {
         every { context.getString(R.string.error_save_failed) } returns "Save failed"
         every { resolver.openFileDescriptor(uri, "rwt") } throws IOException(providerDetail)
 
-        val result = FileCopyService.openPcv3OutputDescriptor(context, uri)
+        val result = FileCopyService.openPcv3OutputDescriptor(context, uri) { true }
 
         val error = result.exceptionOrNull()
         assertTrue(error is AppError.FileError.SaveFailed)
@@ -1077,8 +1306,8 @@ class FileCopyServiceUnitTest {
                 return JvmAtomicFilePublisher.identity(file)
             }
 
-            override fun linkNoReplace(source: File, target: File) =
-                JvmAtomicFilePublisher.linkNoReplace(source, target)
+            override fun publishNoReplace(source: File, target: File, expected: FileCopyService.FileIdentity) =
+                JvmAtomicFilePublisher.publishNoReplace(source, target, expected)
         }
 
         try {
@@ -1111,8 +1340,8 @@ class FileCopyServiceUnitTest {
                 return JvmAtomicFilePublisher.identity(file)
             }
 
-            override fun linkNoReplace(source: File, target: File) =
-                JvmAtomicFilePublisher.linkNoReplace(source, target)
+            override fun publishNoReplace(source: File, target: File, expected: FileCopyService.FileIdentity) =
+                JvmAtomicFilePublisher.publishNoReplace(source, target, expected)
         }
 
         try {
@@ -1663,8 +1892,15 @@ class FileCopyServiceUnitTest {
             )
         }
 
-        override fun linkNoReplace(source: File, target: File) {
-            Files.createLink(target.toPath(), source.toPath())
+        override fun publishNoReplace(source: File, target: File, expected: FileCopyService.FileIdentity): InputCopyPublication {
+            if (identity(source) != expected) return InputCopyPublication.NOT_PUBLISHED
+            try {
+                Files.createLink(target.toPath(), source.toPath())
+            } catch (_: java.nio.file.FileAlreadyExistsException) {
+                return InputCopyPublication.NOT_PUBLISHED
+            }
+            Files.delete(source.toPath())
+            return InputCopyPublication.PUBLISHED
         }
     }
 }

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"Picocrypt-NG/internal/header"
 	"archive/zip"
 	"bytes"
 	"errors"
@@ -64,10 +63,11 @@ func TestCLIRoundTrip(t *testing.T) {
 			setupEncrypt: func(t *testing.T, in, out string) {
 				encPassword = "pass6"
 				encDeniability = true
+				encParanoid = true
 			},
 			setupDecrypt: func(t *testing.T, in, out string) {
 				decPassword = "pass6"
-				decDeniability = true
+				decPCV3Format = "d1"
 			},
 		},
 		{
@@ -127,7 +127,10 @@ func TestCLIRoundTrip(t *testing.T) {
 			encYes = true
 			tc.setupEncrypt(t, inputFile, encryptedFile)
 
-			if err := encryptCmd.RunE(encryptCmd, []string{inputFile}); err != nil {
+			if tc.name == "verify-first" {
+				// Preserve the legacy verify-first contract using a frozen legacy fixture.
+				copyCLITestFile(t, filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"), encryptedFile)
+			} else if err := encryptCmd.RunE(encryptCmd, []string{inputFile}); err != nil {
 				t.Fatalf("encrypt: %v", err)
 			}
 
@@ -136,22 +139,28 @@ func TestCLIRoundTrip(t *testing.T) {
 			decQuiet = true
 			decYes = true
 			tc.setupDecrypt(t, encryptedFile, decryptedFile)
+			if tc.name == "verify-first" {
+				decPassword = "test"
+			} else {
+				decPCV3Factors = "password"
+			}
+			if tc.name == "compress" {
+				decPCV3Archive = "extract"
+				decPCV3ExtractTo = t.TempDir()
+			}
 
 			decErr := decryptCmd.RunE(decryptCmd, []string{encryptedFile})
 			if tc.wantErr {
 				if decErr == nil {
 					t.Fatal("expected decrypt error (wrong password), got nil")
 				}
-				// A bare non-nil check passes even on a crash or unrelated error.
-				// Assert the specific auth type so the test is falsifiable: a
-				// wrong-password error MUST be *header.AuthError with
-				// PasswordIncorrect=true (Rule 9). errors.Is on a plain sentinel
-				// would not match because decrypt.go returns *header.AuthError
-				// (not perrors.ErrAuthFailed) for header authentication failures.
-				var authErr *header.AuthError
-				if !errors.As(decErr, &authErr) || !authErr.PasswordIncorrect {
-					t.Fatalf("wrong-password decrypt error = %v; want *header.AuthError{PasswordIncorrect:true}", decErr)
+				if exitCodeForError(decErr) != ExitGeneralError || !isExitCodeError(decErr) {
+					t.Fatalf("wrong-password error not classified: %v", decErr)
 				}
+				if _, err := os.Lstat(decryptedFile); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("wrong password produced output: %v", err)
+				}
+
 				return
 			}
 			if decErr != nil {
@@ -161,13 +170,24 @@ func TestCLIRoundTrip(t *testing.T) {
 			// Assert recovered bytes == original.
 			// The compress case produces a zip archive; verify the first entry.
 			if tc.name == "compress" {
-				assertZipContainsPlaintext(t, decryptedFile, plaintext)
+				got, err := os.ReadFile(filepath.Join(decPCV3ExtractTo, filepath.Base(inputFile)))
+				if err != nil || !bytes.Equal(got, plaintext) {
+					t.Fatalf("compressed payload = %q, %v", got, err)
+				}
 			} else {
 				got, err := os.ReadFile(decryptedFile)
 				if err != nil {
 					t.Fatalf("read decrypted output: %v", err)
 				}
-				if !bytes.Equal(got, plaintext) {
+				want := plaintext
+				if tc.name == "verify-first" {
+					var err error
+					want, err = os.ReadFile(filepath.Join("..", "..", "testdata", "golden", "pico_test.txt"))
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !bytes.Equal(got, want) {
 					t.Fatalf("roundtrip mismatch: got %q, want %q", got, plaintext)
 				}
 			}
@@ -211,7 +231,6 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"--comments", comment, "--quiet",
 	)
 	if encrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, encrypted)
 		t.Fatalf("PCV3 encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
 	}
 	encoded, err := os.ReadFile(volume)
@@ -229,7 +248,6 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"--pcv3-factors=password", "-p", "roundtrip-password", "--quiet",
 	)
 	if decrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, decrypted)
 		t.Fatalf("PCV3 decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
 	}
 	if !strings.Contains(decrypted.stderr, "Comment: "+strconv.Quote(comment)+"\n") {
@@ -295,7 +313,6 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"-k", keyfileA, "-k", keyfileB, "-p", "", "--quiet",
 	)
 	if encrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, encrypted)
 		t.Fatalf("PCV3 keyfile encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
 	}
 	if strings.Contains(encrypted.stderr, "Password:") {
@@ -309,7 +326,6 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"-k", keyfileA, "-k", keyfileB, "-p", "", "--quiet",
 	)
 	if decrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, decrypted)
 		t.Fatalf("PCV3 keyfile decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
 	}
 	got, err = os.ReadFile(keyfileOutput)
@@ -337,7 +353,6 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"-p", "archive-password", "--quiet",
 	)
 	if encrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, encrypted)
 		t.Fatalf("PCV3 archive encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
 	}
 	decrypted = runCLITestCommand(
@@ -348,7 +363,6 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"--pcv3-archive=extract", "--pcv3-extract-to="+extractRoot, "--quiet",
 	)
 	if decrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, decrypted)
 		t.Fatalf("PCV3 archive decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
 	}
 	got, err = os.ReadFile(filepath.Join(extractRoot, filepath.Base(archiveInput)))
@@ -369,7 +383,6 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"-p", "d1-archive-password", "--quiet",
 	)
 	if encrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, encrypted)
 		t.Fatalf("PCV3 D1 archive encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
 	}
 	d1ExtractRoot := filepath.Join(dir, "d1-extract")
@@ -384,7 +397,6 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"--pcv3-archive=extract", "--pcv3-extract-to="+d1ExtractRoot, "--quiet",
 	)
 	if extractAttempt.exitCode == 0 || !strings.Contains(extractAttempt.stderr, "D1 archive") {
-		skipOnPCV3ResourceAdmissionDenial(t, extractAttempt)
 		t.Fatalf("D1 archive extraction was not rejected explicitly: exit %d stderr %q", extractAttempt.exitCode, extractAttempt.stderr)
 	}
 	decrypted = runCLITestCommand(
@@ -394,7 +406,6 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"--pcv3-factors=password", "-p", "d1-archive-password", "--quiet",
 	)
 	if decrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, decrypted)
 		t.Fatalf("PCV3 D1 archive decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
 	}
 	assertZipContainsPlaintext(t, d1ArchiveOutput, archivePlaintext)
@@ -409,7 +420,6 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"-p", "d1-password", "--comments", d1Comment, "--quiet",
 	)
 	if encrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, encrypted)
 		t.Fatalf("PCV3 D1 encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
 	}
 	decrypted = runCLITestCommand(
@@ -419,7 +429,6 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"--pcv3-factors=password", "-p", "d1-password", "--quiet",
 	)
 	if decrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, decrypted)
 		t.Fatalf("PCV3 D1 decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
 	}
 	if !strings.Contains(decrypted.stderr, "Comment: "+strconv.Quote(d1Comment)+"\n") {
@@ -481,7 +490,6 @@ func TestPCV3CLIStreamPasswordFDKeepsCredentialOutOfPayloadAndOutput(t *testing.
 				t, binary, plaintext, password, encryptArgs...,
 			)
 			if encrypted.exitCode != 0 {
-				skipOnPCV3ResourceAdmissionDenial(t, encrypted)
 				t.Fatalf("stream encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
 			}
 			if bytes.Contains(encrypted.stdout, password) || strings.Contains(encrypted.stderr, string(password)) {
@@ -500,7 +508,6 @@ func TestPCV3CLIStreamPasswordFDKeepsCredentialOutOfPayloadAndOutput(t *testing.
 				t, binary, encrypted.stdout, password, decryptArgs...,
 			)
 			if decrypted.exitCode != 0 {
-				skipOnPCV3ResourceAdmissionDenial(t, decrypted)
 				t.Fatalf("stream decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
 			}
 			if !bytes.Equal(decrypted.stdout, plaintext) {
@@ -541,7 +548,6 @@ func TestPCV3CLIKeyfileOnlyD1RoundTripAndWrongKeyRefusal(t *testing.T) {
 		"-k", keyfile, "-p", "", "--quiet",
 	)
 	if encrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, encrypted)
 		t.Fatalf("keyfile-only D1 encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
 	}
 	encoded, err := os.ReadFile(volume)
@@ -560,7 +566,6 @@ func TestPCV3CLIKeyfileOnlyD1RoundTripAndWrongKeyRefusal(t *testing.T) {
 		"--pcv3-keyfile-order=unordered", "-k", keyfile, "-p", "", "--quiet",
 	)
 	if decrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, decrypted)
 		t.Fatalf("keyfile-only D1 decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
 	}
 	got, err := os.ReadFile(output)
@@ -602,7 +607,6 @@ func TestPCV3CLIDecryptUsesDefaultOutput(t *testing.T) {
 		"encrypt", input, "-o", volume, "--pcv3", "-p", "default-output-password", "--quiet",
 	)
 	if encrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, encrypted)
 		t.Fatalf("PCV3 encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
 	}
 	if err := os.Remove(input); err != nil {
@@ -615,7 +619,6 @@ func TestPCV3CLIDecryptUsesDefaultOutput(t *testing.T) {
 		"decrypt", volume, "--pcv3-factors=password", "-p", "default-output-password", "--quiet",
 	)
 	if decrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, decrypted)
 		t.Fatalf("PCV3 decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
 	}
 	got, err := os.ReadFile(input)
@@ -641,7 +644,6 @@ func TestPCV3CLIDecryptUsesDefaultOutput(t *testing.T) {
 		"decrypt", hiddenVolume, "--pcv3-factors=password", "-p", "default-output-password", "--quiet",
 	)
 	if decrypted.exitCode != 0 {
-		skipOnPCV3ResourceAdmissionDenial(t, decrypted)
 		t.Fatalf(".pcv decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
 	}
 	got, err = os.ReadFile(hiddenOutput)
@@ -688,7 +690,6 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 			encryptArgs = append(encryptArgs, test.encryptFlags...)
 			encrypted := runCLITestCommand(t, binary, encryptArgs...)
 			if encrypted.exitCode != 0 {
-				skipOnPCV3ResourceAdmissionDenial(t, encrypted)
 				t.Fatalf("split encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
 			}
 			if _, err := os.Lstat(volume); !errors.Is(err, os.ErrNotExist) {
@@ -730,7 +731,6 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 				wantExit = ExitPCV3Warning
 			}
 			if decrypted.exitCode != wantExit {
-				skipOnPCV3ResourceAdmissionDenial(t, decrypted)
 				t.Fatalf("split decrypt exit = %d, want %d, stderr = %q", decrypted.exitCode, wantExit, decrypted.stderr)
 			}
 			got, err := os.ReadFile(output)
@@ -747,7 +747,6 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 					"--pcv3-factors=password", "-p", "split-password", "--quiet",
 				)
 				if streamed.exitCode != 0 || !bytes.Equal(streamed.stdout, plaintext) {
-					skipOnPCV3ResourceAdmissionDenial(t, streamed)
 					t.Fatalf("split stdout decrypt exit=%d bytes=%d stderr=%q", streamed.exitCode, len(streamed.stdout), streamed.stderr)
 				}
 			}
@@ -828,5 +827,47 @@ func assertZipContainsPlaintext(t *testing.T, path string, plaintext []byte) {
 	}
 	if !bytes.Equal(got, plaintext) {
 		t.Fatalf("compress: zip entry content = %q, want %q", got, plaintext)
+	}
+}
+
+// A completed legacy KDF leaves a reclaimable workspace in the Go heap. A new
+// PCV3 operation must observe memory after reclaiming that workspace, while
+// retaining its fixed KDF profile and fail-closed admission policy. Run this
+// sequential cross-format regression in the memory-bounded integration lane.
+func TestPCV3WriteAfterLegacyReadReclaimsCompletedWorkspace(t *testing.T) {
+	resetEncryptFlagsForDirTest()
+	resetDecryptFlagsForDirTest()
+	t.Cleanup(resetEncryptFlagsForDirTest)
+	t.Cleanup(resetDecryptFlagsForDirTest)
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "legacy.pcv")
+	plain := filepath.Join(dir, "plain.txt")
+	encrypted := filepath.Join(dir, "current.pcv")
+	output := filepath.Join(dir, "recovered.txt")
+	copyCLITestFile(t, filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"), legacy)
+	decOutput, decPassword, decQuiet, decYes = plain, "test", true, true
+	decVerifyFirst = true
+	if err := decryptCmd.RunE(decryptCmd, []string{legacy}); err != nil {
+		t.Fatalf("legacy decrypt: %v", err)
+	}
+	want, err := os.ReadFile(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encOutput, encPassword, encQuiet, encYes = encrypted, "new password", true, true
+	if err := encryptCmd.RunE(encryptCmd, []string{plain}); err != nil {
+		t.Fatalf("PCV3 write after completed legacy KDF: %v", err)
+	}
+	resetDecryptFlagsForDirTest()
+	decOutput, decPassword, decPCV3Factors, decQuiet, decYes = output, "new password", "password", true, true
+	if err := decryptCmd.RunE(decryptCmd, []string{encrypted}); err != nil {
+		t.Fatalf("PCV3 decrypt: %v", err)
+	}
+	got, err := os.ReadFile(output)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("PCV3 recovered plaintext mismatch: %v", err)
+	}
+	if _, err := os.Stat(plain); err != nil {
+		t.Fatalf("plaintext source removed: %v", err)
 	}
 }

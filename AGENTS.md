@@ -146,11 +146,14 @@ Always say "Picocrypt NG" or "Picocrypt-NG" when referring to this project.
 - `.github/workflows/`: release and PR validation workflows.
 
 ## Audit-Critical Code
-These packages directly affect encrypted volume semantics:
+These packages affect cryptography, encrypted volume semantics, or plaintext publication:
 - `src/internal/crypto/`
 - `src/internal/header/`
 - `src/internal/keyfile/`
 - `src/internal/volume/`
+- `src/internal/pcv3operation/`, including its private implementation packages
+- `src/internal/pcv3publication/`, `src/internal/pcv3result/`
+- `src/internal/secret/`
 
 For changes there, read immediate callers and relevant docs first. Preserve v1/v2
 compatibility, golden vectors, deniability semantics, keyfile behavior, Reed-Solomon
@@ -181,11 +184,12 @@ touched, even when they do not directly define encrypted volume semantics.
 
 ## Common Commands
 Run commands from `src/` unless noted.
-- Fast Go suite: `go test -tags migrated_fynedo ./...`
+- Default Go suite (serialize KDF-heavy packages): `go test -p 1 -tags migrated_fynedo ./...`
+- Separate PCV3 production-KDF checks: `go test -count=1 -p 1 -tags pcv3_production_kdf ./internal/pcv3operation/...`
 - Golden compatibility: `go test -count=1 -run '^TestGolden' ./internal/volume`
 - CLI package: `go test ./internal/cli`
 - Opt-in CLI integration: `PICOCRYPT_RUN_CLI_INTEGRATION=1 go test ./internal/cli`
-- Race-sensitive Go work: `CGO_ENABLED=1 go test -tags migrated_fynedo -race -p 2 -timeout 15m ./...`
+- Race-sensitive Go work: `CGO_ENABLED=1 go test -tags migrated_fynedo -race -p 1 -timeout 15m ./...`
 - Desktop build: `CGO_ENABLED=1 go build -tags migrated_fynedo -ldflags="-s -w" -o Picocrypt-NG ./cmd/picocrypt`
 - CLI-only build: `CGO_ENABLED=1 go build -tags cli -ldflags="-s -w" -o Picocrypt-NG-cli ./cmd/picocrypt`
 - Android gomobile AAR from `android/`: `./build-gomobile.sh`

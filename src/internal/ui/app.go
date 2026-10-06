@@ -1,7 +1,6 @@
 // Package ui provides the Picocrypt NG graphical user interface using Fyne.
 //
-// The UI is designed to match the original audited Picocrypt layout exactly, ensuring
-// users familiar with the original application can transition seamlessly. Key features:
+// Features include:
 //
 //   - Drag-and-drop file/folder selection
 //   - Password strength indicator (using zxcvbn algorithm)
@@ -57,13 +56,11 @@ import (
 //go:embed key.png
 var appIconData []byte
 
-// UI dimensions matching original giu implementation
+// Initial desktop size; subsequent resizing belongs to the user.
 const (
-	windowWidth         = 340
-	windowHeightEncrypt = 512 // Full height for encrypt mode (more options)
-	windowHeightDecrypt = 430 // Reduced height for decrypt mode (fewer options)
-	windowHeightInitial = 350 // Compact height for initial state (no advanced options)
-	buttonWidth         = 54
+	windowWidth  = 480
+	windowHeight = 640
+	buttonWidth  = 54
 )
 
 func desktopContentWidth() float32 {
@@ -92,15 +89,19 @@ type App struct {
 	// Reed-Solomon codecs
 	rsCodecs *encoding.RSCodecs
 
-	operationMu            sync.Mutex
-	operationSession       *operationSession
-	operationGeneration    atomic.Uint64
-	operationExecutor      operationExecutor
-	operationSourceRemover operationSourceRemover
-	pcv3OperationExecutor  pcv3OperationExecutor
-	pcv3ResultDisposer     func(*pcv3operation.Result) bool
-	pcv3Result             *pcv3operation.Result
-	pcv3ResultGeneration   uint64
+	operationMu                sync.Mutex
+	operationSession           *operationSession
+	operationGeneration        atomic.Uint64
+	operationExecutor          operationExecutor
+	operationSourceRemover     operationSourceRemover
+	pcv3OperationExecutor      pcv3OperationExecutor
+	pcv3ResultDisposer         func(*pcv3operation.Result) bool
+	pcv3Result                 *pcv3operation.Result
+	pcv3ResultGeneration       uint64
+	passwordStrengthMu         sync.Mutex
+	passwordStrengthGeneration uint64
+	passwordStrengthRunning    bool
+	passwordStrengthPending    string
 
 	// macOS opened-path readiness session. It is used for Finder/Dock-opened
 	// paths that may point at iCloud placeholders. It is separate from the global
@@ -122,6 +123,9 @@ type App struct {
 	languageSelector   *languageSelector
 	aboutVersionLabel  *widget.Label
 	mainContent        *fyne.Container
+	configurationForm  *fyne.Container
+	operationFooter    *fyne.Container
+	mainScroll         *container.Scroll
 	passwordContainer  *fyne.Container
 	passwordLabel      *widget.Label
 	passwordEntry      *PasswordEntry
@@ -144,10 +148,10 @@ type App struct {
 	startHintLabel     *widget.Label
 	statusLabel        *ColoredLabel
 	pcv3Container      *fyne.Container
-	pcv3ActionGroup    *widget.RadioGroup
-	pcv3FactorGroup    *widget.RadioGroup
-	pcv3OrderGroup     *widget.RadioGroup
+	pcv3ActionSelect   *widget.Select
+	pcv3FormatButton   *widget.Button
 	pcv3CancelButton   *widget.Button
+	pcv3ArchiveSummary *pcv3operation.ArchiveSummary
 
 	// Confirm password section (hidden in decrypt mode)
 	confirmLabel *widget.Label
@@ -180,12 +184,12 @@ type App struct {
 
 	// Advanced options (encrypt mode)
 	paranoidCheck    *ttwidget.Check
-	pcv3CreateCheck  *ttwidget.Check
 	compressCheck    *ttwidget.Check
 	reedSolomonCheck *ttwidget.Check
 	deleteCheck      *ttwidget.Check
 	deniabilityCheck *ttwidget.Check
 	recursivelyCheck *ttwidget.Check
+	recursiveD1Check *ttwidget.Check
 	splitCheck       *ttwidget.Check
 	splitSizeEntry   *widget.Entry
 	splitUnitSelect  *widget.Select
@@ -198,11 +202,12 @@ type App struct {
 	sameLevelCheck    *ttwidget.Check
 
 	// Modals
-	passgenModal   dialog.Dialog
-	keyfileModal   dialog.Dialog
-	overwriteModal dialog.Dialog
-	progressModal  dialog.Dialog
-	aboutModal     dialog.Dialog
+	passgenModal           dialog.Dialog
+	keyfileModal           dialog.Dialog
+	overwriteModal         dialog.Dialog
+	progressModal          dialog.Dialog
+	aboutModal             dialog.Dialog
+	pcv3ArchiveReviewModal dialog.Dialog
 
 	// Keyfile modal widgets (moved from package-level to avoid global state)
 	keyfileListContainer *fyne.Container
@@ -241,7 +246,6 @@ func NewApp(version string) (*App, error) {
 		workers:                newWorkerLifecycle(),
 		operationExecutor:      executeVolumeOperation,
 		operationSourceRemover: removeOperationSource,
-		pcv3OperationExecutor:  pcv3operation.Run,
 		// Initialize data bindings
 		boundProgress: binding.NewFloat(),
 		boundStatus:   binding.NewString(),
@@ -386,6 +390,7 @@ func (a *App) refreshAdvancedLocalizedText() {
 	}
 	setCheckTooltip(a.deniabilityCheck, deniabilityTooltip)
 	setCheckText(a.recursivelyCheck, tr("advanced.recursively.label", "Recursively"))
+	setCheckText(a.recursiveD1Check, tr("advanced.recursive_d1.label", "All selected files are PCV3 D1"))
 	setCheckTooltip(a.recursivelyCheck, tr("advanced.recursively.tooltip", "Process each file separately"))
 	setCheckText(a.splitCheck, tr("advanced.split.label", "Split:"))
 	setCheckTooltip(a.splitCheck, tr("advanced.split.tooltip", "Split output into parts"))
@@ -443,12 +448,6 @@ func (a *App) Run(startupPaths []string) {
 	prepareWindowIdentity()
 	a.Window.SetIcon(appIcon)
 
-	// On desktop: fixed size window; on mobile: flexible size
-	if !isMobile() {
-		a.Window.SetFixedSize(true)
-		a.Window.Resize(fyne.NewSize(windowWidth, windowHeightEncrypt))
-	}
-
 	// Set clipboard callback for the UI-owned password generator.
 	a.State.SetClipboard = func(text string) {
 		a.fyneApp.Clipboard().SetContent(text)
@@ -479,11 +478,7 @@ func (a *App) Run(startupPaths []string) {
 
 	// Set up Enter key handler
 	if deskCanvas, ok := a.Window.Canvas().(desktop.Canvas); ok {
-		deskCanvas.SetOnKeyDown(func(event *fyne.KeyEvent) {
-			if event.Name == fyne.KeyReturn || event.Name == fyne.KeyEnter {
-				a.onClickStart()
-			}
-		})
+		deskCanvas.SetOnKeyDown(a.onDesktopKeyDown)
 	}
 
 	a.scheduleStartupPaths(startupPaths)
@@ -492,7 +487,7 @@ func (a *App) Run(startupPaths []string) {
 		content = fynetooltip.AddWindowToolTipLayer(content, a.Window.Canvas())
 	}
 	a.Window.SetContent(content)
-	a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+	a.initializeDesktopWindow()
 	a.Window.ShowAndRun()
 
 	// A platform stop can bypass CloseIntercept, and Fyne may drop a queued
@@ -507,6 +502,18 @@ func (a *App) Run(startupPaths []string) {
 	stopOpenedPathsNotify()
 }
 
+func (a *App) onDesktopKeyDown(event *fyne.KeyEvent) {
+	if (event.Name == fyne.KeyReturn || event.Name == fyne.KeyEnter) && a.Window.Canvas().Overlays().Top() == nil {
+		a.onClickStart()
+	}
+}
+
+func (a *App) onDesktopEntrySubmitted(_ string) {
+	if !isMobile() {
+		a.onDesktopKeyDown(&fyne.KeyEvent{Name: fyne.KeyReturn})
+	}
+}
+
 func (a *App) handleCloseRequest() {
 	snap := a.State.UISnapshot()
 	if snap.Working || snap.ShowProgress {
@@ -519,6 +526,7 @@ func (a *App) handleCloseRequest() {
 // is safe to call from Fyne's OnStopped lifecycle callback.
 func (a *App) stopSourcesAndContexts() {
 	a.workers.beginStop()
+	a.clearPendingPasswordStrength()
 	stopOpenedPathsNotify()
 	a.cancelOpenedPathReadiness()
 	a.stopCurrentOperation()
@@ -606,9 +614,8 @@ func (a *App) scheduleStartupPaths(startupPaths []string) {
 	})
 }
 
-// showFileDialogWithResize temporarily resizes the window to accommodate file dialogs.
-// This is necessary because Fyne file dialogs are constrained by the parent window size
-// when using fixed-size windows. The window is restored after the dialog closes.
+// showFileDialogWithResize makes room for a file dialog without losing the
+// user's window size when it closes.
 func (a *App) showFileDialogWithResize(d dialog.Dialog, dialogSize fyne.Size) {
 	// Skip resize handling on mobile - windows are flexible there
 	if isMobile() {
@@ -616,16 +623,16 @@ func (a *App) showFileDialogWithResize(d dialog.Dialog, dialogSize fyne.Size) {
 		return
 	}
 
-	// Calculate current window size to restore later
-	originalHeight := preferredDesktopWindowHeight(a.State.Mode)
+	originalSize := a.Window.Canvas().Size()
+	originalFixed := a.Window.FixedSize()
 
 	// Temporarily allow window resizing and make room for dialog
 	a.Window.SetFixedSize(false)
-	a.Window.Resize(fyne.NewSize(dialogSize.Width+50, dialogSize.Height+50))
+	a.Window.Resize(originalSize.Max(dialogSize.Add(fyne.NewSquareSize(50))))
 
 	d.SetOnClosed(func() {
-		a.resizeDesktopWindowForCurrentContent(originalHeight)
-		a.Window.SetFixedSize(true)
+		a.Window.Resize(originalSize)
+		a.Window.SetFixedSize(originalFixed)
 	})
 
 	d.Show()
@@ -684,29 +691,23 @@ func (a *App) buildUI() fyne.CanvasObject {
 	a.startHintLabel.Hide()
 
 	a.statusLabel = NewColoredLabel(renderStatus(snap.Status, snap), snap.Status.Color)
+	a.statusLabel.SetOnTapped(a.showStatusDetails)
 
-	// Main content container
-	a.mainContent = container.NewVBox(
-		a.pcv3Container,
+	a.configurationForm = container.NewVBox(
 		passwordSection,
 		keyfilesSection,
 		widget.NewSeparator(),
 		commentsSection,
-		a.advancedContainer,
 		outputSection,
-		widget.NewSeparator(),
-		container.NewVBox(
-			a.startButton,
-			a.startHintLabel,
-		),
-		a.statusLabel,
+		a.advancedContainer,
 	)
+	a.mainContent = container.NewVBox(a.pcv3Container, a.configurationForm)
 
-	// Full layout with padding
-	fullLayout := container.NewVBox(
-		headerRow,
-		widget.NewSeparator(),
-		a.mainContent,
+	a.operationFooter = container.NewVBox(widget.NewSeparator(), a.startButton, a.startHintLabel, a.statusLabel.object())
+	a.mainScroll = container.NewVScroll(a.mainContent)
+	fullLayout := container.NewBorder(
+		container.NewVBox(headerRow, widget.NewSeparator()), a.operationFooter, nil, nil,
+		a.mainScroll,
 	)
 
 	// Add padding
@@ -717,39 +718,15 @@ func (a *App) buildUI() fyne.CanvasObject {
 	return padded
 }
 
-func preferredDesktopWindowHeight(mode string) float32 {
-	switch mode {
-	case "encrypt":
-		return windowHeightEncrypt
-	case "decrypt":
-		return windowHeightDecrypt
-	default:
-		return windowHeightInitial
-	}
-}
-
-func (a *App) resizeDesktopWindowForCurrentContent(preferredHeight float32) {
-	var content fyne.CanvasObject
-	if a.Window != nil {
-		content = a.Window.Content()
-	}
-	a.resizeDesktopWindowForContent(content, preferredHeight)
-}
-
-func (a *App) resizeDesktopWindowForContent(content fyne.CanvasObject, preferredHeight float32) {
+func (a *App) initializeDesktopWindow() {
 	if isMobile() || a.Window == nil {
 		return
 	}
-	if content == nil && preferredHeight <= 0 {
-		return
-	}
-	size := fyne.NewSize(windowWidth, preferredHeight)
-	if content != nil {
+	size := fyne.NewSize(windowWidth, windowHeight)
+	if content := a.Window.Content(); content != nil {
 		size = size.Max(content.MinSize())
 	}
-	if size.Height == 0 {
-		size.Height = preferredHeight
-	}
+	a.Window.SetFixedSize(false)
 	a.Window.Resize(size)
 }
 
@@ -807,17 +784,37 @@ func renderStartAction(action app.StartAction, recursively bool) string {
 	}
 }
 
+func recursiveD1Selected(snap app.UISnapshot) bool {
+	return snap.Recursively && snap.RecursiveD1
+}
+
+// A folder selection retains its original mode so leaving explicit D1 restores
+// its options. Only the visible operation and readiness use decrypt semantics.
+func operationUISnapshot(snap app.UISnapshot) app.UISnapshot {
+	if recursiveD1Selected(snap) {
+		snap.Mode = "decrypt"
+		snap.Split = false
+		snap.Deniability = false
+		snap.Comments = ""
+		snap.CommentsPreviewState = app.CommentsPreviewUnavailable
+	}
+	return snap
+}
+
 func renderStartActionForSnapshot(snap app.UISnapshot) string {
+	if recursiveD1Selected(snap) {
+		return tr("pcv3.action.decrypt", "Decrypt")
+	}
 	if snap.PCV3Route == app.PCV3RouteReady {
 		switch snap.PCV3Action {
 		case app.PCV3ActionDecrypt:
-			return tr("pcv3.action.decrypt", "Decrypt PCV3")
+			return tr("pcv3.action.decrypt", "Decrypt")
 		case app.PCV3ActionRecovery:
-			return tr("pcv3.action.recovery", "Start recovery")
+			return tr("pcv3.action.recovery", "Recover")
 		case app.PCV3ActionForce:
-			return tr("pcv3.action.force", "Start Force recovery")
+			return tr("pcv3.action.force", "Force recovery")
 		case app.PCV3ActionForceUnverified:
-			return tr("pcv3.action.force_unverified", "Start unverified Force recovery")
+			return tr("pcv3.action.force_unverified", "Unverified recovery")
 		}
 	}
 	return renderStartAction(snap.StartAction, snap.Recursively)
@@ -828,12 +825,13 @@ func hasSelectedInput(snap app.UISnapshot) bool {
 }
 
 func (a *App) startReadinessHint(snap app.UISnapshot) string {
+	snap = operationUISnapshot(snap)
 	if snap.PCV3Route != app.PCV3RouteNone {
 		if snap.PCV3Route != app.PCV3RouteReady || snap.PCV3Action == app.PCV3ActionNone {
 			return ""
 		}
 		if snap.PCV3Factor == app.PCV3FactorPolicyUnset {
-			return tr("pcv3.intent.policy_required", "Choose the credential policy used for this operation.")
+			return tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
 		}
 		hasPassword := snap.Password != ""
 		hasKeyfiles := snap.KeyfileCount != 0
@@ -896,6 +894,7 @@ func (a *App) startReadinessHint(snap app.UISnapshot) string {
 }
 
 func (a *App) startDisabled(snap app.UISnapshot) bool {
+	snap = operationUISnapshot(snap)
 	configureDisabled := snap.Scanning || !hasSelectedInput(snap)
 	return snap.PCVUnavailable || configureDisabled || !snap.CanStart() || !splitSizeReady(snap)
 }
@@ -1005,11 +1004,12 @@ func (a *App) buildCommentsSection() fyne.CanvasObject {
 	a.commentsLabel.TextStyle = fyne.TextStyle{Bold: true}
 
 	a.commentsEntry = widget.NewEntry()
+	a.commentsEntry.OnSubmitted = a.onDesktopEntrySubmitted
 	a.commentsEntry.SetPlaceHolder(tr("comments.placeholder", "Public note; not encrypted."))
 	a.commentsEntry.OnChanged = func(text string) {
 		// In decrypt mode, comments are read-only - revert any changes
-		if a.State.Mode == "decrypt" {
-			snap := a.State.UISnapshot()
+		snap := operationUISnapshot(a.State.UISnapshot())
+		if snap.Mode == "decrypt" {
 			displayText := commentsDisplayText(snap.Mode, snap.Comments, snap.CommentsPreviewState)
 			if text != displayText {
 				a.commentsEntry.SetText(displayText)
@@ -1021,7 +1021,7 @@ func (a *App) buildCommentsSection() fyne.CanvasObject {
 
 	return container.NewVBox(
 		a.commentsLabel,
-		a.commentsEntry,
+		a.scrollFormOver(a.commentsEntry),
 	)
 }
 
@@ -1069,8 +1069,22 @@ func (a *App) refreshAdvanced() {
 // updateUIState updates the enabled/disabled state of all UI elements.
 // This mirrors the exact logic from the original giu implementation.
 func (a *App) updateUIState() {
-	snap := a.State.UISnapshot()
-	a.refreshPCV3Surface(snap)
+	a.syncPCV3CredentialIntent()
+	snap := operationUISnapshot(a.State.UISnapshot())
+	operationView := a.refreshPCV3Surface(snap)
+	if operationView && a.configurationForm != nil && a.configurationForm.Visible() && a.mainScroll != nil {
+		a.mainScroll.ScrollToTop()
+	}
+	for _, section := range []*fyne.Container{a.configurationForm, a.operationFooter} {
+		if section == nil {
+			continue
+		}
+		if operationView {
+			section.Hide()
+		} else {
+			section.Show()
+		}
+	}
 	baseConfigureDisabled := a.mobileImportActive || snap.Scanning || !hasSelectedInput(snap)
 	pcv3Terminal := snap.PCV3Route == app.PCV3RouteFailed || snap.PCV3Route == app.PCV3RouteTransferred
 	configureDisabled := baseConfigureDisabled || snap.PCVUnavailable || pcv3Terminal
@@ -1146,7 +1160,7 @@ func (a *App) updateUIState() {
 	if a.startHintLabel != nil {
 		hint := a.startReadinessHint(snap)
 		a.startHintLabel.SetText(hint)
-		if hint == "" {
+		if hint == "" || (!isMobile() && !hasSelectedInput(snap) && !snap.Scanning) {
 			a.startHintLabel.Hide()
 		} else {
 			a.startHintLabel.Show()
@@ -1200,7 +1214,9 @@ func (a *App) updateUIState() {
 		a.commentsLabel.SetText(commentsLabelText(snap.Mode))
 	}
 
-	a.resizeDesktopWindowForCurrentContent(0)
+	if a.mainScroll != nil {
+		a.mainScroll.Refresh()
+	}
 }
 
 // resetUI clears UI state but preserves progress flags.
@@ -1222,4 +1238,7 @@ func (a *App) resetUI() {
 	a.updatePasswordStrength()
 	a.updateValidation()
 	a.updateUIState()
+	if a.mainScroll != nil {
+		a.mainScroll.ScrollToTop()
+	}
 }

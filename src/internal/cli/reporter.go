@@ -147,6 +147,10 @@ func (r *Reporter) PrintPCV3Status(status pcv3operation.Status) error {
 		message = "Checking device resources…"
 	case pcv3operation.StatusDerivingKey:
 		message = "Deriving key…"
+	case pcv3operation.StatusEncrypting:
+		message = "Encrypting volume…"
+	case pcv3operation.StatusSplitting:
+		message = "Splitting encrypted output…"
 	case pcv3operation.StatusAuthenticating:
 		message = "Authenticating…"
 	case pcv3operation.StatusRecovering:
@@ -199,11 +203,21 @@ func renderPCV3CLIResult(output io.Writer, result pcv3CLIResult) int {
 	if _, err := fmt.Fprintf(output, "Outcome: %s\nPublication: %s\n", outcome, publication); err != nil {
 		return ExitGeneralError
 	}
+	if result != nil && result.Stage() == pcv3operation.StageResourceBudget {
+		if _, err := fmt.Fprintln(output, "Resource limit reached: the operation exceeded its processing resource budget."); err != nil {
+			return ExitGeneralError
+		}
+	}
 	if commented, ok := result.(interface{ AuthenticatedComment() string }); ok {
 		if comment := commented.AuthenticatedComment(); comment != "" {
 			if _, err := fmt.Fprintf(output, "Comment: %s\n", strconv.Quote(comment)); err != nil {
 				return ExitGeneralError
 			}
+		}
+	}
+	if split, ok := result.(interface{ SplitOutputUncertain() bool }); ok && split.SplitOutputUncertain() {
+		if _, err := fmt.Fprintln(output, "All parts were created. Write durability could not be confirmed, so the complete encrypted file and source files were kept."); err != nil {
+			return ExitGeneralError
 		}
 	}
 	if len(warnings) > 8 {
@@ -230,7 +244,7 @@ func pcv3CLIWarningText(warning pcv3operation.Warning) string {
 	case pcv3operation.WarningPublicationIndeterminate:
 		return "Warning: output state is unknown; keep source and destination unchanged"
 	case pcv3operation.WarningCleanupIncomplete:
-		return "Warning: cleanup of operation-owned temporary plaintext could not be confirmed"
+		return "Warning: cleanup of operation-owned temporary files could not be confirmed"
 	case pcv3operation.WarningCallbackFailure:
 		return "Warning: an operation callback failed; clean completion was not confirmed"
 	default:

@@ -1,8 +1,7 @@
 package mobile
 
 import (
-	"Picocrypt-NG/internal/pcv3artifact"
-	"Picocrypt-NG/internal/pcv3recovery"
+	"Picocrypt-NG/internal/pcv3operation"
 	"strconv"
 )
 
@@ -12,8 +11,8 @@ const pcv3ArtifactInspectionPageMaximum = 128
 // carries neither a Result nor any path, plaintext, publication, or action
 // authority.
 type pcv3ArtifactInspectionView interface {
-	Metadata() pcv3recovery.ArtifactInspectionMetadata
-	Page(offset, limit uint64) ([]pcv3artifact.Range, bool)
+	Metadata() pcv3operation.ArtifactInspectionMetadata
+	Page(offset, limit uint64) ([]pcv3operation.ArtifactRange, bool)
 }
 
 // PCV3ArtifactInspection is an immutable, passive view of one durable Force
@@ -25,7 +24,7 @@ type PCV3ArtifactInspection struct {
 
 // newPCV3ArtifactInspection is the production core boundary. Keeping its
 // concrete pointer type preserves a denied typed-nil core inspection as nil.
-func newPCV3ArtifactInspection(inspection *pcv3recovery.ArtifactInspection) *PCV3ArtifactInspection {
+func newPCV3ArtifactInspection(inspection *pcv3operation.ArtifactInspection) *PCV3ArtifactInspection {
 	if inspection == nil {
 		return nil
 	}
@@ -48,9 +47,9 @@ func (inspection *PCV3ArtifactInspection) Kind() string {
 		return "unknown"
 	}
 	switch inspection.view.Metadata().Kind {
-	case pcv3artifact.StatePartial:
+	case pcv3operation.ArtifactStatePartial:
 		return "partial"
-	case pcv3artifact.StateUnverifiedForensic:
+	case pcv3operation.ArtifactStateUnverifiedForensic:
 		return "unverified-forensic"
 	default:
 		return "unknown"
@@ -64,15 +63,15 @@ func (inspection *PCV3ArtifactInspection) Role() string {
 		return "unknown"
 	}
 	switch inspection.view.Metadata().Role {
-	case pcv3artifact.RoleNone:
+	case pcv3operation.ArtifactRoleNone:
 		return "none"
-	case pcv3artifact.RolePrimary:
+	case pcv3operation.ArtifactRolePrimary:
 		return "primary"
-	case pcv3artifact.RoleBackup:
+	case pcv3operation.ArtifactRoleBackup:
 		return "backup"
-	case pcv3artifact.RoleD1Front:
+	case pcv3operation.ArtifactRoleD1Front:
 		return "d1-front"
-	case pcv3artifact.RoleD1Tail:
+	case pcv3operation.ArtifactRoleD1Tail:
 		return "d1-tail"
 	default:
 		return "unknown"
@@ -87,11 +86,11 @@ func (inspection *PCV3ArtifactInspection) PlaintextLength() string {
 // FinalStatus returns the closed final-record evidence status.
 func (inspection *PCV3ArtifactInspection) FinalStatus() string {
 	switch inspection.metadata().Final {
-	case pcv3artifact.FinalVerified:
+	case pcv3operation.ArtifactFinalVerified:
 		return "verified"
-	case pcv3artifact.FinalUnverified:
+	case pcv3operation.ArtifactFinalUnverified:
 		return "unverified"
-	case pcv3artifact.FinalMissing:
+	case pcv3operation.ArtifactFinalMissing:
 		return "missing"
 	default:
 		return "unknown"
@@ -118,9 +117,9 @@ func (inspection *PCV3ArtifactInspection) MissingCount() string {
 	return strconv.FormatUint(inspection.metadata().MissingRangeCount, 10)
 }
 
-func (inspection *PCV3ArtifactInspection) metadata() pcv3recovery.ArtifactInspectionMetadata {
+func (inspection *PCV3ArtifactInspection) metadata() pcv3operation.ArtifactInspectionMetadata {
 	if inspection == nil || inspection.view == nil {
-		return pcv3recovery.ArtifactInspectionMetadata{}
+		return pcv3operation.ArtifactInspectionMetadata{}
 	}
 	return inspection.view.Metadata()
 }
@@ -139,7 +138,7 @@ func (inspection *PCV3ArtifactInspection) Page(offsetDecimal string, limit int) 
 	if !ok || len(ranges) == 0 {
 		return nil
 	}
-	return &PCV3ArtifactPage{ranges: append([]pcv3artifact.Range(nil), ranges...)}
+	return &PCV3ArtifactPage{ranges: append([]pcv3operation.ArtifactRange(nil), ranges...)}
 }
 
 func parsePCV3DecimalUint(value string) (uint64, bool) {
@@ -158,7 +157,7 @@ func parsePCV3DecimalUint(value string) (uint64, bool) {
 // PCV3ArtifactPage is one immutable bounded evidence page. It exposes only
 // closed status codes and decimal unsigned values.
 type PCV3ArtifactPage struct {
-	ranges []pcv3artifact.Range
+	ranges []pcv3operation.ArtifactRange
 }
 
 func (page *PCV3ArtifactPage) Count() int {
@@ -195,20 +194,20 @@ func (page *PCV3ArtifactPage) StatusAt(index int) string {
 		return "unknown"
 	}
 	switch rangeAt.Status {
-	case pcv3artifact.RangeVerified:
+	case pcv3operation.ArtifactRangeVerified:
 		return "verified"
-	case pcv3artifact.RangeUnverified:
+	case pcv3operation.ArtifactRangeUnverified:
 		return "unverified"
-	case pcv3artifact.RangeMissing:
+	case pcv3operation.ArtifactRangeMissing:
 		return "missing"
 	default:
 		return "unknown"
 	}
 }
 
-func (page *PCV3ArtifactPage) rangeAt(index int) (pcv3artifact.Range, bool) {
+func (page *PCV3ArtifactPage) rangeAt(index int) (pcv3operation.ArtifactRange, bool) {
 	if page == nil || index < 0 || index >= len(page.ranges) {
-		return pcv3artifact.Range{}, false
+		return pcv3operation.ArtifactRange{}, false
 	}
 	return page.ranges[index], true
 }

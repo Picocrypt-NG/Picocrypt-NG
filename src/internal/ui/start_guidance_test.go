@@ -46,7 +46,7 @@ func TestStartHintExplainsMissingCredentials(t *testing.T) {
 	a.State.OnlyFiles = []string{"input.txt"}
 
 	got := a.startReadinessHint(a.State.UISnapshot())
-	want := tr("start.hint.enterPassword", "Enter a password to continue.")
+	want := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
 	if got != want {
 		t.Fatalf("startReadinessHint() = %q; want %q", got, want)
 	}
@@ -71,7 +71,7 @@ func TestStartHintOffersPasswordOrKeyfilesForPCV3D1(t *testing.T) {
 	}
 }
 
-func TestStartHintExplainsV2KeyfileWriterFreeze(t *testing.T) {
+func TestStartHintAcceptsDefaultPCV3Keyfiles(t *testing.T) {
 	newTestFyneApp(t)
 
 	a := createTestApp(t)
@@ -84,10 +84,7 @@ func TestStartHintExplainsV2KeyfileWriterFreeze(t *testing.T) {
 	a.State.CPassword = "secret"
 
 	got := a.startReadinessHint(a.State.UISnapshot())
-	want := tr(
-		"start.hint.keyfileWritesDisabled",
-		"Legacy v2 cannot create new volumes with keyfiles. Enable Create PCV3 or remove the keyfiles.",
-	)
+	want := ""
 	if got != want {
 		t.Fatalf("startReadinessHint() = %q; want %q", got, want)
 	}
@@ -201,7 +198,7 @@ func TestOutputChangeEnabledBeforeCredentialsAfterFileSelection(t *testing.T) {
 	if a.startHintLabel == nil {
 		t.Fatal("startHintLabel was not built")
 	}
-	wantHint := tr("start.hint.enterPassword", "Enter a password to continue.")
+	wantHint := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
 	if got := a.startHintLabel.Text; got != wantHint {
 		t.Fatalf("startHintLabel.Text = %q; want %q", got, wantHint)
 	}

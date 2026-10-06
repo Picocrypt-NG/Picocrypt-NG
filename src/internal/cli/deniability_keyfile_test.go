@@ -1,8 +1,8 @@
 package cli
 
 import (
-	perrors "Picocrypt-NG/internal/errors"
 	cryptorand "crypto/rand"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,7 +35,7 @@ func useCLIStdin(t *testing.T, data []byte) {
 	})
 }
 
-func TestEncryptRejectsAllNewV2KeyfileWritesBeforeCreatingOutput(t *testing.T) {
+func TestEncryptRejectsExplicitLegacySelectionBeforeCreatingOutput(t *testing.T) {
 	originalReader := cryptorand.Reader
 	reader := &countingZeroCLIReader{}
 	cryptorand.Reader = reader
@@ -73,11 +73,12 @@ func TestEncryptRejectsAllNewV2KeyfileWritesBeforeCreatingOutput(t *testing.T) {
 			encPassword = tc.password
 			encPasswordStdin = tc.passwordStdin
 			encKeyfiles = []string{keyfile}
+			encPCV3 = false
 			encQuiet = true
 			encYes = true
 
 			err := encryptCmd.RunE(encryptCmd, []string{input})
-			const wantErr = "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled; use explicit PCV3 creation"
+			const wantErr = "new encryption requires PCV3; --pcv3=false is unsupported"
 			if err == nil {
 				t.Error("encrypt returned nil; new v2 keyfile writes must be rejected")
 			} else if got := err.Error(); got != wantErr {
@@ -93,7 +94,7 @@ func TestEncryptRejectsAllNewV2KeyfileWritesBeforeCreatingOutput(t *testing.T) {
 	}
 }
 
-func TestEncryptRejectsEmptyLegacyDeniabilityPasswordBeforeCreatingOutput(t *testing.T) {
+func TestEncryptRejectsEmptyD1PasswordWithoutKeyfilesBeforeCreatingOutput(t *testing.T) {
 	originalReader := cryptorand.Reader
 	reader := &countingZeroCLIReader{}
 	cryptorand.Reader = reader
@@ -114,24 +115,15 @@ func TestEncryptRejectsEmptyLegacyDeniabilityPasswordBeforeCreatingOutput(t *tes
 	encOutput = output
 	encPasswordStdin = true
 	encDeniability = true
+	encParanoid = true
 	encQuiet = true
 	encYes = true
 
 	err := encryptCmd.RunE(encryptCmd, []string{input})
-	var validationErr *perrors.ValidationError
-	if !perrors.As(err, &validationErr) {
-		t.Fatalf("encrypt error = %v; want *errors.ValidationError", err)
+	if !errors.Is(err, ErrPasswordEmpty) {
+		t.Fatalf("empty D1 credential error = %v; want ErrPasswordEmpty", err)
 	}
-	if validationErr.Field != "Password" {
-		t.Errorf("ValidationError.Field = %q; want Password", validationErr.Field)
-	}
-	if validationErr.Message != perrors.DeniabilityPasswordRequiredMessage {
-		t.Errorf(
-			"ValidationError.Message = %q; want %q",
-			validationErr.Message,
-			perrors.DeniabilityPasswordRequiredMessage,
-		)
-	}
+
 	if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
 		t.Errorf("empty-password legacy deniability created output %q: %v", output, statErr)
 	}

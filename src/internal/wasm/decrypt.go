@@ -6,14 +6,12 @@ import (
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/keyfile"
-	"Picocrypt-NG/internal/pcv3"
+	pwnorm "Picocrypt-NG/internal/password"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"bytes"
 	"crypto/subtle"
 	"errors"
-
-	pwnorm "Picocrypt-NG/internal/password"
 )
 
 // Error codes matching website convention
@@ -67,7 +65,7 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 		return DecryptResult{}, ErrUnsupported
 	}
 
-	if pcv3.DetectPrefix(volumeData) == pcv3.RouteNormalPCV {
+	if pcv3operation.DetectPrefix(volumeData) == pcv3operation.RouteNormalPCV {
 		return DecryptResult{}, ErrUnsupported
 	}
 
@@ -147,7 +145,9 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 	// candidate, so there is no extra KDF work for the common case.
 	var key []byte
 	var subkeyReader *crypto.SubkeyReader
-	for _, cand := range pwnorm.Candidates(password) {
+	candidates := pwnorm.Candidates(password)
+	defer crypto.SecureZeroMultiple(candidates...)
+	for _, cand := range candidates {
 		k, err := deriveWASMKey(cand, hdr.Salt, hdr.Flags.Paranoid)
 		zeroWASMSensitiveBuffer(wasmZeroingDecryptPasswordBytes, cand)
 		if err != nil {

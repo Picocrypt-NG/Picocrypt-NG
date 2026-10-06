@@ -1,9 +1,9 @@
 package mobile
 
 import (
-	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
+	"context"
 	"io"
 	"os"
 	"sync"
@@ -55,10 +55,14 @@ type nativePCV3ArchiveSAFSession struct {
 }
 
 func (action *nativePCV3ArchiveAction) beginSAF() pcv3ArchiveSAFCoreBegin {
+	return action.beginSAFWithContext(context.Background())
+}
+
+func (action *nativePCV3ArchiveAction) beginSAFWithContext(ctx context.Context) pcv3ArchiveSAFCoreBegin {
 	if action == nil || action.followUp == nil {
 		return pcv3ArchiveSAFCoreBegin{kind: pcv3ArchiveSAFTerminal, presentation: pcv3ArchiveSAFFailurePresentation()}
 	}
-	begin := action.followUp.BeginSAF()
+	begin := action.followUp.BeginSAFWithContext(ctx)
 	if begin == nil {
 		return pcv3ArchiveSAFCoreBegin{kind: pcv3ArchiveSAFTerminal, presentation: pcv3ArchiveSAFFailurePresentation()}
 	}
@@ -320,13 +324,31 @@ func (archive *PCV3Archive) BeginSAF() (result *PCV3ArchiveBegin) {
 		return terminalPCV3ArchiveBegin(state.operation, presentation)
 	}
 
-	coreBegin, panicked := callPCV3ArchiveSAFBegin(safAction)
+	base := pcv3operation.WithAndroidResourceSession(context.Background(), state.operation.resourceSession)
+	ctx, cancel := context.WithCancel(base)
+	state.mu.Lock()
+	state.preparationCancel = cancel
+	if state.preparationCancelled {
+		cancel()
+	}
+	state.mu.Unlock()
+	defer func() {
+		state.mu.Lock()
+		state.preparationCancel = nil
+		state.mu.Unlock()
+		cancel()
+	}()
+	coreBegin, panicked := callPCV3ArchiveSAFBegin(ctx, safAction)
 	if panicked {
 		closed, cleanupIncomplete := closePCV3ArchiveAction(action)
 		presentation := archiveFailurePCV3Presentation(closed)
 		if cleanupIncomplete {
 			presentation = pcv3ArchiveSAFFailurePresentation()
 		}
+		return terminalPCV3ArchiveBegin(state.operation, presentation)
+	}
+	if ctx.Err() != nil && coreBegin.session != nil {
+		presentation := callPCV3ArchiveSAFTerminal(coreBegin.session, true)
 		return terminalPCV3ArchiveBegin(state.operation, presentation)
 	}
 	switch coreBegin.kind {
@@ -372,7 +394,7 @@ func (archive *PCV3Archive) BeginSAF() (result *PCV3ArchiveBegin) {
 	}
 }
 
-func callPCV3ArchiveSAFBegin(action pcv3ArchiveSAFAction) (
+func callPCV3ArchiveSAFBegin(ctx context.Context, action pcv3ArchiveSAFAction) (
 	begin pcv3ArchiveSAFCoreBegin,
 	panicked bool,
 ) {
@@ -382,6 +404,11 @@ func callPCV3ArchiveSAFBegin(action pcv3ArchiveSAFAction) (
 			panicked = true
 		}
 	}()
+	if cancellable, ok := action.(interface {
+		beginSAFWithContext(context.Context) pcv3ArchiveSAFCoreBegin
+	}); ok {
+		return cancellable.beginSAFWithContext(ctx), false
+	}
 	return action.beginSAF(), false
 }
 
@@ -415,6 +442,22 @@ func terminalPCV3ArchiveBegin(
 		code:     snapshot.Code(),
 		snapshot: snapshot,
 	}
+}
+
+// HostMemoryBudgetBytes is native policy, never a host-selected allowance.
+func (session *PCV3ArchiveSession) HostMemoryBudgetBytes() int64 {
+	core := session.core()
+	if budget, ok := core.(interface{ HostMemoryBudgetBytes() int64 }); ok {
+		return budget.HostMemoryBudgetBytes()
+	}
+	return 0
+}
+
+func (session *nativePCV3ArchiveSAFSession) HostMemoryBudgetBytes() int64 {
+	if session == nil || session.session == nil {
+		return 0
+	}
+	return session.session.HostMemoryBudgetBytes()
 }
 
 func (session *PCV3ArchiveSession) EntryCount() int {
@@ -788,12 +831,12 @@ func rejectedPCV3ArchiveStep() *PCV3ArchiveStep {
 
 func pcv3ArchiveSAFActivePresentation() pcv3operation.Presentation {
 	presentation, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
-		Outcome:              pcv3.OutcomeSuccess,
-		Stage:                pcv3.StageNone,
-		Code:                 pcv3.CodeSuccess,
+		Outcome:              pcv3operation.OutcomeSuccess,
+		Stage:                pcv3operation.StageNone,
+		Code:                 pcv3operation.CodeSuccess,
 		PublicationAttempted: true,
 		PublicationState:     pcv3publication.StatePublicationIndeterminate,
-		PublicationStage:     pcv3.StageOutputPublication,
+		PublicationStage:     pcv3operation.StageOutputPublication,
 		PublicationCode:      pcv3publication.CodePublicationIndeterminate,
 	})
 	if err != nil {
@@ -804,12 +847,12 @@ func pcv3ArchiveSAFActivePresentation() pcv3operation.Presentation {
 
 func pcv3ArchiveSAFFailurePresentation() pcv3operation.Presentation {
 	presentation, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
-		Outcome:              pcv3.OutcomeSuccess,
-		Stage:                pcv3.StageNone,
-		Code:                 pcv3.CodeSuccess,
+		Outcome:              pcv3operation.OutcomeSuccess,
+		Stage:                pcv3operation.StageNone,
+		Code:                 pcv3operation.CodeSuccess,
 		PublicationAttempted: true,
 		PublicationState:     pcv3publication.StatePublicationIndeterminate,
-		PublicationStage:     pcv3.StageOutputPublication,
+		PublicationStage:     pcv3operation.StageOutputPublication,
 		PublicationCode:      pcv3publication.CodePublicationIndeterminate,
 		Warnings:             []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete},
 		Diagnostic:           pcv3operation.DiagnosticCoreFailure,

@@ -2,22 +2,30 @@ package pcv3operation
 
 import (
 	"Picocrypt-NG/internal/fileops"
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3recovery"
 	"Picocrypt-NG/internal/pcv3publication"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"sync"
 )
 
+type archiveHandoff interface {
+	Live() bool
+	Publish(context.Context) (pcv3publication.Result, bool)
+	Close() bool
+}
+
 type nativeArchiveFollowUpState struct {
 	mu                   sync.Mutex
 	active               bool
-	handoff              *pcv3.NativeArchiveHandoff
+	handoff              archiveHandoff
 	authenticatedComment string
 }
 
-func newArchiveFollowUp(handoff *pcv3.NativeArchiveHandoff, authenticatedComment string) *ArchiveFollowUp {
+func newArchiveFollowUp(handoff archiveHandoff, authenticatedComment string) *ArchiveFollowUp {
 	if handoff == nil || !handoff.Live() {
 		return nil
 	}
@@ -35,12 +43,47 @@ func (state *nativeArchiveFollowUpState) live() bool {
 	return state.active && state.handoff != nil && state.handoff.Live()
 }
 
-func (state *nativeArchiveFollowUpState) extract(ctx context.Context, root *os.Root) *Result {
+func (state *nativeArchiveFollowUpState) extract(ctx context.Context, root *os.Root, review func(fileops.ZIPSummary) error) *Result {
 	handoff, comment := state.consume()
 	if handoff == nil {
 		return archiveNoOutput(DiagnosticInvalidRequest, closeExtractionRoot(root))
 	}
-	result := resultFromArchiveExtraction(handoff.Extract(ctx, root))
+	// Cancelled extraction already has a closed no-output path below. Otherwise
+	// obtain fresh headroom before the extractor allocates archive bookkeeping.
+	if ctx == nil || ctx.Err() == nil {
+		if err := AdmitZIPWorkingMemory(ctx, fileops.NewZIPResourceBudget()); err != nil {
+			cleanupIncomplete := handoff.Close()
+			if closeExtractionRoot(root) {
+				cleanupIncomplete = true
+			}
+			return archiveWorkingMemoryRefusal(ctx, cleanupIncomplete)
+		}
+	}
+	var extraction archiveExtractionResult
+	switch handoff := handoff.(type) {
+	case *pcv3.NativeArchiveHandoff:
+		extraction = handoff.ExtractWithReview(ctx, root, review)
+	case *pcv3recovery.ArchiveHandoff:
+		extraction = handoff.ExtractWithReview(ctx, root, review)
+	default:
+		cleanupIncomplete := handoff.Close()
+		if closeExtractionRoot(root) {
+			cleanupIncomplete = true
+		}
+		return archiveNoOutput(DiagnosticInvalidRequest, cleanupIncomplete)
+	}
+	result := resultFromArchiveExtraction(ctx, extraction)
+	result.authenticatedComment = comment
+	return result
+}
+
+func (state *nativeArchiveFollowUpState) publish(ctx context.Context) *Result {
+	handoff, comment := state.consume()
+	if handoff == nil {
+		return archiveNoOutput(DiagnosticInvalidRequest, false)
+	}
+	publication, cleanupIncomplete := handoff.Publish(ctx)
+	result := resultFromArchivePublication(ctx, publication, cleanupIncomplete)
 	result.authenticatedComment = comment
 	return result
 }
@@ -56,14 +99,23 @@ func (state *nativeArchiveFollowUpState) close() *Result {
 }
 
 func (state *nativeArchiveFollowUpState) beginSAF() *ArchiveSAFBegin {
+	return state.beginSAFWithContext(context.Background())
+}
+
+func (state *nativeArchiveFollowUpState) beginSAFWithContext(ctx context.Context) *ArchiveSAFBegin {
 	handoff, _ := state.consume()
 	if handoff == nil {
 		return &ArchiveSAFBegin{kind: ArchiveSAFBeginExpired}
 	}
-	return archiveSAFBeginFromNative(handoff.BeginSAF())
+	if native, ok := handoff.(*pcv3.NativeArchiveHandoff); ok {
+		return archiveSAFBeginFromNative(native.BeginSAFWithContext(ctx))
+	}
+	return &ArchiveSAFBegin{
+		kind: ArchiveSAFBeginTerminal, result: archiveNoOutput(DiagnosticInvalidRequest, handoff.Close()),
+	}
 }
 
-func (state *nativeArchiveFollowUpState) consume() (*pcv3.NativeArchiveHandoff, string) {
+func (state *nativeArchiveFollowUpState) consume() (archiveHandoff, string) {
 	if state == nil {
 		return nil, ""
 	}
@@ -83,10 +135,31 @@ func (state *nativeArchiveFollowUpState) consume() (*pcv3.NativeArchiveHandoff, 
 // Extract consumes the follow-up before effects and takes ownership of the
 // caller-opened, pre-existing extraction root.
 func (followUp *ArchiveFollowUp) Extract(ctx context.Context, root *os.Root) *Result {
+	return followUp.extract(ctx, root, nil)
+}
+
+func (followUp *ArchiveFollowUp) extract(ctx context.Context, root *os.Root, review func(fileops.ZIPSummary) error) *Result {
 	if followUp == nil || followUp.state == nil {
 		return archiveNoOutput(DiagnosticInvalidRequest, closeExtractionRoot(root))
 	}
-	return followUp.state.extract(ctx, root)
+	return followUp.state.extract(ctx, root, review)
+}
+
+type archivePublishState interface {
+	publish(context.Context) *Result
+}
+
+// Publish consumes the same follow-up as Extract and Close, saving the ZIP to
+// the destination pinned by the original read request.
+func (followUp *ArchiveFollowUp) Publish(ctx context.Context) *Result {
+	if followUp == nil || followUp.state == nil {
+		return archiveNoOutput(DiagnosticInvalidRequest, false)
+	}
+	state, ok := followUp.state.(archivePublishState)
+	if !ok {
+		return archiveNoOutput(DiagnosticInvalidRequest, false)
+	}
+	return state.publish(ctx)
 }
 
 // Close consumes the follow-up without publishing or extracting plaintext.
@@ -95,6 +168,24 @@ func (followUp *ArchiveFollowUp) Close() *Result {
 		return archiveNoOutput(DiagnosticInvalidRequest, false)
 	}
 	return followUp.state.close()
+}
+
+func cleanupArchiveExact(result *Result) bool {
+	if result == nil || result.archiveFollowUp == nil {
+		return false
+	}
+	followUp := result.archiveFollowUp
+	result.archiveFollowUp = nil
+	closed := followUp.Close()
+	if closed == nil {
+		return true
+	}
+	for _, warning := range closed.Warnings() {
+		if warning == WarningCleanupIncomplete {
+			return true
+		}
+	}
+	return false
 }
 
 // ArchiveSAFBeginKind closes the one-shot archive consumer race. A begin value
@@ -154,6 +245,11 @@ type archiveSAFBeginState interface {
 // not backed by the authenticated native handoff return the closed expired
 // variant rather than a consumed nil/error gap.
 func (followUp *ArchiveFollowUp) BeginSAF() *ArchiveSAFBegin {
+	return followUp.BeginSAFWithContext(context.Background())
+}
+
+// BeginSAFWithContext consumes the follow-up with independently owned preparation cancellation.
+func (followUp *ArchiveFollowUp) BeginSAFWithContext(ctx context.Context) *ArchiveSAFBegin {
 	if followUp == nil || followUp.state == nil {
 		return &ArchiveSAFBegin{kind: ArchiveSAFBeginExpired}
 	}
@@ -161,7 +257,14 @@ func (followUp *ArchiveFollowUp) BeginSAF() *ArchiveSAFBegin {
 	if !ok {
 		return &ArchiveSAFBegin{kind: ArchiveSAFBeginExpired}
 	}
-	begin := state.beginSAF()
+	var begin *ArchiveSAFBegin
+	if cancellable, ok := state.(interface {
+		beginSAFWithContext(context.Context) *ArchiveSAFBegin
+	}); ok {
+		begin = cancellable.beginSAFWithContext(ctx)
+	} else {
+		begin = state.beginSAF()
+	}
 	if begin == nil {
 		return &ArchiveSAFBegin{
 			kind:   ArchiveSAFBeginTerminal,
@@ -275,6 +378,14 @@ type archiveSAFSessionState struct {
 // ArchiveSAFSession copies share both native transition authority and the
 // canonical mapped terminal Result.
 type ArchiveSAFSession struct{ state *archiveSAFSessionState }
+
+// HostMemoryBudgetBytes grants only the allowance not held by native metadata.
+func (session *ArchiveSAFSession) HostMemoryBudgetBytes() int64 {
+	if session == nil || session.state == nil || session.state.native == nil {
+		return 0
+	}
+	return session.state.native.HostMemoryBudgetBytes()
+}
 
 func (session *ArchiveSAFSession) EntryCount() int {
 	if session == nil || session.state == nil || session.state.native == nil {
@@ -420,6 +531,24 @@ func resultFromArchiveSAF(native archiveSAFResult) *Result {
 		data.publicationState = pcv3publication.StateNotPublished
 		data.publicationStage = pcv3.StageOutputPublication
 		data.publicationCode = pcv3publication.CodeAtomicFailed
+		if reason, ok := native.(interface {
+			Cancelled() bool
+			ResourceLimited() bool
+		}); ok {
+			if reason.Cancelled() {
+				data.stage = pcv3.StageCancellation
+				data.diagnostic = DiagnosticCancellation
+				data.publicationStage = pcv3.StageCancellation
+				data.publicationCode = pcv3publication.CodeCancelled
+			} else if reason.ResourceLimited() {
+				data.stage = pcv3.StageResourceBudget
+				data.diagnostic = DiagnosticResourceLimit
+				data.publicationAttempted = false
+				data.publicationState = 0
+				data.publicationStage = pcv3.StageNone
+				data.publicationCode = 0
+			}
+		}
 	case fileops.UnpackStatePublishedDurabilityUncertain:
 		if !native.AttemptedEver() {
 			return archiveSAFCoreFailure()
@@ -459,9 +588,41 @@ func archiveSAFCoreFailure() *Result {
 type archiveExtractionResult interface {
 	State() fileops.UnpackState
 	CleanupIncomplete() bool
+	ResourceLimited() bool
 }
 
-func resultFromArchiveExtraction(extraction archiveExtractionResult) *Result {
+func resultFromArchivePublication(ctx context.Context, publication pcv3publication.Result, cleanupIncomplete bool) *Result {
+	if publication == nil {
+		return archiveNoOutput(DiagnosticInvalidRequest, cleanupIncomplete)
+	}
+	data := resultData{
+		outcome:              pcv3.OutcomeSuccess,
+		stage:                pcv3.StageNone,
+		code:                 pcv3.CodeSuccess,
+		publicationAttempted: true,
+		publicationState:     publication.State(),
+		publicationStage:     publication.Stage(),
+		publicationCode:      publication.Code(),
+	}
+	if publication.State() == pcv3publication.StateNotPublished {
+		data.outcome = pcv3.OutcomeOperationFailed
+		data.stage = publication.Stage()
+		data.code = pcv3.CodeOperationFailed
+		if publication.Stage() == pcv3.StageCancellation {
+			data.diagnostic = DiagnosticCancellation
+		}
+	}
+	result := newResult(data)
+	if data.diagnostic == DiagnosticCancellation && ctx != nil {
+		result.cancellationDeadline = errors.Is(ctx.Err(), context.DeadlineExceeded)
+	}
+	if cleanupIncomplete {
+		result.appendWarning(WarningCleanupIncomplete)
+	}
+	return result
+}
+
+func resultFromArchiveExtraction(ctx context.Context, extraction archiveExtractionResult) *Result {
 	if extraction == nil {
 		return archiveNoOutput(DiagnosticInvalidRequest, false)
 	}
@@ -479,6 +640,17 @@ func resultFromArchiveExtraction(extraction archiveExtractionResult) *Result {
 		data.publicationState = pcv3publication.StateNotPublished
 		data.publicationStage = pcv3.StageOutputPublication
 		data.publicationCode = pcv3publication.CodeAtomicFailed
+		if ctx != nil && ctx.Err() != nil {
+			data.stage = pcv3.StageCancellation
+			data.diagnostic = DiagnosticCancellation
+			data.publicationStage = pcv3.StageCancellation
+			data.publicationCode = pcv3publication.CodeCancelled
+		} else if extraction.ResourceLimited() {
+			data.stage = pcv3.StageResourceBudget
+			data.diagnostic = DiagnosticResourceLimit
+			data.publicationAttempted = false
+			data.publicationState, data.publicationStage, data.publicationCode = 0, pcv3.StageNone, 0
+		}
 	case fileops.UnpackStatePublishedDurable:
 		data.publicationState = pcv3publication.StatePublishedDurable
 		data.publicationCode = pcv3publication.CodePublishedDurable
@@ -494,6 +666,9 @@ func resultFromArchiveExtraction(extraction archiveExtractionResult) *Result {
 		return archiveNoOutput(DiagnosticCoreFailure, extraction.CleanupIncomplete())
 	}
 	result := newResult(data)
+	if data.diagnostic == DiagnosticCancellation && ctx != nil {
+		result.cancellationDeadline = errors.Is(ctx.Err(), context.DeadlineExceeded)
+	}
 	if extraction.CleanupIncomplete() {
 		result.appendWarning(WarningCleanupIncomplete)
 	}

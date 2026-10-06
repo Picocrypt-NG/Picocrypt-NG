@@ -58,66 +58,6 @@ class OperationManagerTest {
     }
     
     @Test
-    fun `startEncrypt returns error when no file selected`() = runTest {
-        val formData = TestDataBuilders.createEncryptFormData(
-            copiedFilePath = "" // Empty file path
-        )
-        
-        val result = OperationManager.startEncrypt(mockContext, formData)
-        
-        assertTrue("Should fail with NoFileSelected", result.isFailure)
-        result.onFailure { error ->
-            assertTrue("Error should be NoFileSelected", error is AppError.ValidationError.NoFileSelected)
-        }
-    }
-    
-    @Test
-    fun `startEncrypt returns error when password invalid`() = runTest {
-        val formData = FormData(
-            selectedFilename = "test.txt",
-            copiedFilePath = "/path/to/file.txt",
-            passwordInput = CharArray(0), // Empty password
-            confirmPasswordInput = CharArray(0),
-            comments = "",
-            reedSolomon = false,
-            paranoid = false,
-            deniability = false,
-            keyfileFilenames = emptyList(),
-            keyfileOrdered = false
-        )
-        
-        val result = OperationManager.startEncrypt(mockContext, formData)
-        
-        assertTrue("Should fail with InvalidPassword", result.isFailure)
-        result.onFailure { error ->
-            assertTrue("Error should be InvalidPassword", error is AppError.ValidationError.InvalidPassword)
-        }
-    }
-    
-    @Test
-    fun `startEncrypt returns error when passwords do not match`() = runTest {
-        val formData = FormData(
-            selectedFilename = "test.txt",
-            copiedFilePath = "/path/to/file.txt",
-            passwordInput = "password1".toCharArray(),
-            confirmPasswordInput = "password2".toCharArray(), // Mismatch
-            comments = "",
-            reedSolomon = false,
-            paranoid = false,
-            deniability = false,
-            keyfileFilenames = emptyList(),
-            keyfileOrdered = false
-        )
-        
-        val result = OperationManager.startEncrypt(mockContext, formData)
-        
-        assertTrue("Should fail with PasswordsMismatch", result.isFailure)
-        result.onFailure { error ->
-            assertTrue("Error should be PasswordsMismatch", error is AppError.ValidationError.PasswordsMismatch)
-        }
-    }
-    
-    @Test
     fun `startDecrypt returns error when no file selected`() = runTest {
         val formData = TestDataBuilders.createDecryptFormData(
             copiedFilePath = "" // Empty file path
@@ -151,83 +91,6 @@ class OperationManagerTest {
         assertTrue("Should fail with InvalidPassword", result.isFailure)
         result.onFailure { error ->
             assertTrue("Error should be InvalidPassword", error is AppError.ValidationError.InvalidPassword)
-        }
-    }
-
-    @Test
-    fun `startEncrypt rejects password-and-keyfile v2 writer before Go`() = runTest {
-        val tmpDir = createTempDirectory(prefix = "opmgr_keyfile_only_encrypt").toFile()
-        every { mockContext.filesDir } returns tmpDir
-
-        mockkObject(GoBridge)
-        try {
-            every { GoBridge.startOperation() } returns Result.success("op_keyfile_encrypt")
-            every {
-                GoBridge.startEncrypt(
-                    any(),
-                    any(),
-                    any(),
-                    any(),
-                    any(),
-                    any(),
-                    any(),
-                    any(),
-                )
-            } returns Result.success(Unit)
-
-            val keyfile = TestDataBuilders.createKeyfileInfo(
-                internalPath = "/data/test/keyfile_0",
-            )
-            val formData = TestDataBuilders.createEncryptFormData(
-                password = "temporary",
-                confirmPassword = "temporary",
-                deniability = false,
-                keyfiles = listOf(keyfile),
-            )
-
-            val result = OperationManager.startEncrypt(
-                mockContext,
-                formData,
-            )
-
-            assertTrue("new v2 keyfile encryption must fail", result.isFailure)
-            assertTrue(
-                result.exceptionOrNull() is AppError.ValidationError.KeyfileWritesDisabled,
-            )
-            verify(exactly = 0) { GoBridge.startOperation() }
-            verify(exactly = 0) {
-                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
-            }
-        } finally {
-            unmockkObject(GoBridge)
-            tmpDir.deleteRecursively()
-        }
-    }
-
-    @Test
-    fun `startEncrypt rejects keyfile-only deniability before Go`() = runTest {
-        mockkObject(GoBridge)
-        try {
-            val result = OperationManager.startEncrypt(
-                mockContext,
-                TestDataBuilders.createEncryptFormData(
-                    password = "",
-                    confirmPassword = "",
-                    deniability = true,
-                    keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
-                ),
-            )
-
-            assertTrue("keyfile-only deniability must fail", result.isFailure)
-            assertTrue(
-                result.exceptionOrNull() is AppError.ValidationError.KeyfileWritesDisabled,
-            )
-            verify(exactly = 0) { GoBridge.startOperation() }
-            verify(exactly = 0) {
-                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
-            }
-        } finally {
-            unmockkObject(GoBridge)
         }
     }
 
@@ -274,42 +137,6 @@ class OperationManagerTest {
         } finally {
             unmockkObject(GoBridge)
             tmpDir.deleteRecursively()
-        }
-    }
-
-    @Test
-    fun `startEncrypt does not invoke Go when pre-start cleanup fails`() = runTest {
-        mockkObject(FileCopyService)
-        mockkObject(GoBridge)
-        try {
-            coEvery {
-                FileCopyService.cleanupOperationFilesBeforeStart(mockContext)
-            } returns false
-            every {
-                FileCopyService.getOutputFilePath(mockContext, any(), isEncrypt = true)
-            } returns "/output.pcv"
-            every { GoBridge.startOperation() } returns Result.success("must_not_start")
-            every {
-                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
-            } returns Result.success(Unit)
-
-            val result = OperationManager.startEncrypt(
-                mockContext,
-                TestDataBuilders.createEncryptFormData(),
-            )
-
-            verify(exactly = 0) { GoBridge.startOperation() }
-            verify(exactly = 0) {
-                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
-            }
-            assertTrue("Cleanup failure must fail the operation start", result.isFailure)
-            assertTrue(
-                "Cleanup failure must surface as a file deletion error",
-                result.exceptionOrNull() is AppError.FileError.DeleteFailed,
-            )
-        } finally {
-            unmockkObject(GoBridge)
-            unmockkObject(FileCopyService)
         }
     }
 
@@ -582,10 +409,10 @@ class OperationManagerTest {
     fun `pollProgress does not overwrite a terminal (done) state with a stale poll`() = runTest {
         // GoBridge is an object backed by the Go mobile AAR, which is absent on the JVM
         // unit-test classpath. Mock it so we can (a) drive _currentOperation to a real
-        // done=true state via the only public seam (startEncrypt + pollProgress), then
+        // done=true state via the only public seam (startDecrypt + pollProgress), then
         // (b) prove the done-guard rejects a later stale poll. This is the narrowest
         // reachable level: there is no public setter for _currentOperation.
-        // startEncrypt resolves an output path under context.filesDir; the relaxed mock
+        // startDecrypt resolves an output path under context.filesDir; the relaxed mock
         // returns null for it, so back it with a real temp dir.
         val tmpDir = createTempDirectory(prefix = "opmgr_test").toFile()
         every { mockContext.filesDir } returns tmpDir
@@ -594,15 +421,15 @@ class OperationManagerTest {
         try {
             every { GoBridge.startOperation() } returns Result.success("op_test")
             every {
-                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
             } returns Result.success(Unit)
 
             // Establish an active (non-done) operation.
-            val started = OperationManager.startEncrypt(
+            val started = OperationManager.startDecrypt(
                 mockContext,
-                TestDataBuilders.createEncryptFormData()
+                TestDataBuilders.createDecryptFormData()
             )
-            assertTrue("startEncrypt should succeed", started.isSuccess)
+            assertTrue("startDecrypt should succeed", started.isSuccess)
 
             // First poll transitions the operation to a terminal done=true state.
             every { GoBridge.getProgress("op_test") } returns Result.success(
@@ -668,7 +495,7 @@ class OperationManagerTest {
         // suspend fun and the MockK answers block is not a coroutine body), THEN
         // returns a non-done progress. After pollProgress, _currentOperation must
         // still be null. GoBridge is the Go mobile AAR (absent on the JVM classpath),
-        // so mock it. startEncrypt resolves an output path under context.filesDir;
+        // so mock it. startDecrypt resolves an output path under context.filesDir;
         // back it with a real temp dir since the relaxed mock returns null.
         val tmpDir = createTempDirectory(prefix = "opmgr_resurrect_test").toFile()
         every { mockContext.filesDir } returns tmpDir
@@ -677,15 +504,15 @@ class OperationManagerTest {
         try {
             every { GoBridge.startOperation() } returns Result.success("op_clear")
             every {
-                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
             } returns Result.success(Unit)
 
             // Establish an active (non-done) operation through the public seam.
-            val started = OperationManager.startEncrypt(
+            val started = OperationManager.startDecrypt(
                 mockContext,
-                TestDataBuilders.createEncryptFormData()
+                TestDataBuilders.createDecryptFormData()
             )
-            assertTrue("startEncrypt should succeed", started.isSuccess)
+            assertTrue("startDecrypt should succeed", started.isSuccess)
             assertNotNull("operation should be active", OperationManager.currentOperation.value)
 
             val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
@@ -735,14 +562,14 @@ class OperationManagerTest {
         try {
             every { GoBridge.startOperation() } returns Result.success("op_old")
             every {
-                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
             } returns Result.success(Unit)
 
-            val started = OperationManager.startEncrypt(
+            val started = OperationManager.startDecrypt(
                 mockContext,
-                TestDataBuilders.createEncryptFormData()
+                TestDataBuilders.createDecryptFormData()
             )
-            assertTrue("startEncrypt should succeed", started.isSuccess)
+            assertTrue("startDecrypt should succeed", started.isSuccess)
 
             // A different-id operation installed concurrently during getProgress I/O.
             val replacement = TestDataBuilders.createOperationState(
@@ -809,6 +636,59 @@ class OperationManagerTest {
         assertNull("Operation should be null after clearing", OperationManager.currentOperation.first())
         assertTrue("Password should be cleared by OperationManager.clearOperation", formData.passwordInput.all { it == '\u0000' })
         assertTrue("Confirm password should be cleared by OperationManager.clearOperation", formData.confirmPasswordInput.all { it == '\u0000' })
+    }
+
+    @Test
+    fun `clearOperation keeps selection closed while owned cleanup is suspended`() = runTest {
+        val filesDir = createTempDirectory(prefix = "opmgr_clear_owned").toFile()
+        val source = File(filesDir, "picocrypt_files/input_file.pcv")
+        val staged = File(filesDir, "picocrypt_files/staging/plaintext.txt")
+        val cleanupEntered = CompletableDeferred<Unit>()
+        val cleanupRelease = CompletableDeferred<Unit>()
+        every { mockContext.filesDir } returns filesDir
+        mockkObject(GoBridge, FileCopyService)
+        every { GoBridge.startOperation() } returns Result.success("owned-cleanup")
+        every { GoBridge.startDecrypt(any(), any(), any(), any(), any()) } returns Result.success(Unit)
+        coEvery { FileCopyService.cleanupOperationFiles(any(), any(), any(), any()) } coAnswers {
+            cleanupEntered.complete(Unit)
+            cleanupRelease.await()
+            source.delete()
+        }
+        try {
+            assertTrue(source.parentFile!!.mkdirs())
+            source.writeText("old encrypted input")
+            assertTrue(OperationManager.startDecrypt(
+                mockContext,
+                TestDataBuilders.createDecryptFormData(copiedFilePath = source.absolutePath),
+            ).isSuccess)
+            assertTrue(staged.parentFile!!.mkdirs())
+            staged.writeText("old staged plaintext")
+            val cleaning = async(start = CoroutineStart.UNDISPATCHED) {
+                OperationManager.clearOperation(mockContext)
+            }
+            cleanupEntered.await()
+            val dismissing = async(start = CoroutineStart.UNDISPATCHED) {
+                OperationManager.clearOperation(shouldCleanupFiles = false)
+            }
+            try {
+                assertEquals(
+                    "A duplicate dismissal must not enable a new selection before old cleanup ends",
+                    "owned-cleanup",
+                    OperationManager.currentOperation.value?.id,
+                )
+                assertTrue("The blocked owner has not removed its plaintext yet", staged.exists())
+            } finally {
+                cleanupRelease.complete(Unit)
+                cleaning.await()
+                dismissing.await()
+            }
+            assertNull(OperationManager.currentOperation.value)
+            assertFalse("The owner must finish its actual staging cleanup", staged.exists())
+        } finally {
+            cleanupRelease.complete(Unit)
+            unmockkObject(GoBridge, FileCopyService)
+            filesDir.deleteRecursively()
+        }
     }
 
     @Test
@@ -1067,7 +947,7 @@ class OperationManagerTest {
         // operation (operation.type != DECRYPT -> GenericOperation with
         // error_decrypt_retry_only). It short-circuits BEFORE any decrypt-side GoBridge
         // call, so the Go AAR is not needed — establish an ENCRYPT op through the public
-        // seam (GoBridge mocked) and assert the rejection. startEncrypt resolves an
+        // seam (GoBridge mocked) and assert the rejection. startDecrypt resolves an
         // output path under context.filesDir; back it with a real temp dir.
         val tmpDir = createTempDirectory(prefix = "opmgr_notdecrypt").toFile()
         every { mockContext.filesDir } returns tmpDir
@@ -1076,14 +956,10 @@ class OperationManagerTest {
         try {
             every { GoBridge.startOperation() } returns Result.success("op_enc")
             every {
-                GoBridge.startEncrypt(any(), any(), any(), any(), any(), any(), any(), any())
+                GoBridge.startDecrypt(any(), any(), any(), any(), any())
             } returns Result.success(Unit)
 
-            val started = OperationManager.startEncrypt(
-                mockContext,
-                TestDataBuilders.createEncryptFormData()
-            )
-            assertTrue("startEncrypt should succeed", started.isSuccess)
+            setCurrentOperationForTest(TestDataBuilders.createOperationState(id = "op_enc", type = OperationType.ENCRYPT))
             assertEquals(OperationType.ENCRYPT, OperationManager.currentOperation.value?.type)
 
             val result = OperationManager.retryDecryptWithForce(mockContext)
@@ -1248,114 +1124,6 @@ class OperationManagerTest {
     }
 
     @Test
-    fun `startEncrypt on a folder selection sends empty inputFile and the staged arrays`() = runTest {
-        // A folder/multi selection encrypts the staged tree, not a single copied file.
-        // OperationManager must hand GoBridge an EMPTY inputFile (so Go does not also try
-        // to read a non-existent single path) and forward the inputFiles/onlyFolders the
-        // staging step produced. Capture the bridge args and prove the selection flows
-        // through. GoBridge is the Go mobile AAR (absent on the JVM classpath), so mock
-        // it; startEncrypt resolves an output path under context.filesDir, so back it
-        // with a real temp dir (the relaxed mock returns null otherwise).
-        val tmpDir = createTempDirectory(prefix = "opmgr_folder").toFile()
-        every { mockContext.filesDir } returns tmpDir
-
-        mockkObject(GoBridge)
-        try {
-            every { GoBridge.startOperation() } returns Result.success("op_folder")
-            val inputFileSlot = slot<String>()
-            val inputFilesSlot = slot<List<String>>()
-            val onlyFoldersSlot = slot<List<String>>()
-            every {
-                GoBridge.startEncrypt(
-                    any(),
-                    capture(inputFileSlot),
-                    any(),
-                    any(),
-                    any(),
-                    inputFiles = capture(inputFilesSlot),
-                    onlyFolders = capture(onlyFoldersSlot),
-                    onlyFiles = any(),
-                )
-            } returns Result.success(Unit)
-
-            val formData = TestDataBuilders.createFolderEncryptFormData(displayName = "MyDocs")
-            val result = OperationManager.startEncrypt(mockContext, formData)
-
-            assertTrue("folder encrypt should start", result.isSuccess)
-            assertTrue("bridge args must be captured", inputFilesSlot.isCaptured)
-            assertEquals(
-                "a multi selection must send an empty single inputFile",
-                "",
-                inputFileSlot.captured
-            )
-            assertEquals(
-                "the staged inputFiles must flow to the bridge",
-                formData.inputFiles,
-                inputFilesSlot.captured
-            )
-            assertEquals(
-                "the staged onlyFolders must flow to the bridge",
-                formData.onlyFolders,
-                onlyFoldersSlot.captured
-            )
-        } finally {
-            unmockkObject(GoBridge)
-            tmpDir.deleteRecursively()
-        }
-    }
-
-    @Test
-    fun `startEncrypt fails loud on a folder selection with no staged files`() = runTest {
-        // A FOLDER selectionKind with an empty inputFiles list is an invalid selection
-        // (staging produced nothing). It must fail with NoFileSelected before any Go work,
-        // exactly as an empty single-file copiedFilePath does.
-        mockkObject(GoBridge)
-        try {
-            val formData = TestDataBuilders.createFolderEncryptFormData()
-                .copy(inputFiles = emptyList())
-            val result = OperationManager.startEncrypt(mockContext, formData)
-
-            assertTrue("empty folder selection must fail", result.isFailure)
-            result.onFailure {
-                assertTrue(
-                    "Error should be NoFileSelected",
-                    it is AppError.ValidationError.NoFileSelected
-                )
-            }
-            verify(exactly = 0) { GoBridge.startOperation() }
-        } finally {
-            unmockkObject(GoBridge)
-        }
-    }
-
-    @Test
-    fun `startEncrypt fails loud on a split-volume chunk`() = runTest {
-        // A .pcv.N chunk does NOT end in .pcv, so FormData.isEncrypt is true -- the work
-        // button would DOUBLE-ENCRYPT it. Android cannot recombine (single-file picker),
-        // so the operation must fail loud BEFORE reaching the Go bridge.
-        mockkObject(GoBridge)
-        try {
-            val formData = TestDataBuilders.createEncryptFormData(
-                selectedFilename = "secret.pcv.0",
-                copiedFilePath = "/data/test/input_file"
-            )
-            val result = OperationManager.startEncrypt(mockContext, formData)
-
-            assertTrue("Split chunk must fail", result.isFailure)
-            result.onFailure {
-                assertTrue(
-                    "Error should be SplitVolumeNotSupported",
-                    it is AppError.ValidationError.SplitVolumeNotSupported
-                )
-            }
-            // Must short-circuit before any Go work.
-            verify(exactly = 0) { GoBridge.startOperation() }
-        } finally {
-            unmockkObject(GoBridge)
-        }
-    }
-
-    @Test
     fun `startDecrypt fails loud on a split-volume chunk`() = runTest {
         // A desktop split volume selected on Android (secret.pcv.0) cannot be decrypted
         // without recombining its sibling chunks, which Android has no way to supply.
@@ -1402,6 +1170,74 @@ class OperationManagerTest {
         val refreshed = lifecycle.refreshPcv3().getOrThrow() as Pcv3Presentation.Live
         assertTrue(refreshed.outputPending)
         assertEquals(0, operation.releaseCalls)
+    }
+
+    @Test
+    fun `PCV3 failed ciphertext save retains the exact capability for another destination`() = runTest {
+        val operation = ContractOperation("pcv3-ciphertext-retry", pcv3CleanSnapshot())
+        val output = ContractOutput(operation, saveResult = Pcv3OutputResultData("save-failed", false),
+            retainAfterSaveForContradiction = true)
+        operation.installOutput(output)
+        val lifecycle = lifecycleFor(ContractTransport(operation))
+        val live = lifecycle.start(
+            Pcv3WriteRequest("write-normal", "password", "none", "input", "output", emptyList(), "", "standard", false),
+            "password".toCharArray(), pcv3ReceiptFile,
+        ).getOrThrow() as Pcv3Presentation.Live
+        lifecycle.savePcv3Output(live.operationId, live.generation, mockk(relaxed = true))
+        val retry = lifecycle.refreshPcv3().getOrThrow() as Pcv3Presentation.Live
+        assertSame(output, retry.outputHandle)
+        assertTrue(retry.outputPending)
+        assertEquals(0, output.discardCalls)
+        assertEquals(0, operation.releaseCalls)
+        lifecycle.savePcv3Output(retry.operationId, retry.generation, mockk(relaxed = true))
+        assertEquals(2, output.saveCalls)
+        assertEquals(0, output.discardCalls)
+        lifecycle.discardPcv3Output(retry.operationId, retry.generation).getOrThrow()
+        val discarded = lifecycle.presentation.value as Pcv3Presentation.Final
+        assertEquals("discarded", discarded.outputAction?.code)
+        assertEquals(1, output.discardCalls)
+    }
+
+    @Test
+    fun `PCV3 successful ciphertext retry replaces save failure with terminal saved result`() = runTest {
+        for (savedCode in listOf("saved", "saved-cleanup-incomplete")) {
+            val operation = ContractOperation("pcv3-retry-$savedCode", pcv3CleanSnapshot())
+            val output = ContractOutput(operation, saveResult = Pcv3OutputResultData("save-failed", false),
+                retainAfterSaveForContradiction = true)
+            operation.installOutput(output)
+            val lifecycle = lifecycleFor(ContractTransport(operation))
+            val live = lifecycle.start(
+                Pcv3WriteRequest("write-normal", "password", "none", "input", "output", emptyList(), "", "standard", false),
+                "password".toCharArray(), pcv3ReceiptFile,
+            ).getOrThrow() as Pcv3Presentation.Live
+            assertTrue(lifecycle.savePcv3Output(live.operationId, live.generation, mockk(relaxed = true)).isFailure)
+            val retry = lifecycle.refreshPcv3().getOrThrow() as Pcv3Presentation.Live
+            assertSame(output, retry.outputHandle)
+            output.saveResult = Pcv3OutputResultData(savedCode, savedCode != "saved")
+            output.retainAfterSaveForContradiction = false
+            lifecycle.savePcv3Output(retry.operationId, retry.generation, mockk(relaxed = true)).getOrThrow()
+            val terminal = lifecycle.presentation.value as Pcv3Presentation.Final
+            assertEquals(savedCode, terminal.outputAction?.code)
+            assertEquals(savedCode != "saved", terminal.outputAction?.cleanupIncomplete)
+            assertEquals(2, output.saveCalls)
+            assertEquals(0, output.discardCalls)
+            assertEquals(1, operation.releaseCalls)
+        }
+    }
+
+    @Test
+    fun `PCV3 failed plaintext save still discards a surviving capability`() = runTest {
+        val operation = ContractOperation("pcv3-plaintext-no-retry", pcv3CleanSnapshot())
+        val output = ContractOutput(operation, saveResult = Pcv3OutputResultData("save-failed", false),
+            retainAfterSaveForContradiction = true)
+        operation.installOutput(output)
+        val lifecycle = lifecycleFor(ContractTransport(operation))
+        val live = lifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile)
+            .getOrThrow() as Pcv3Presentation.Live
+        assertTrue(lifecycle.savePcv3Output(live.operationId, live.generation, mockk(relaxed = true)).isFailure)
+        assertEquals(1, output.discardCalls)
+        assertEquals(1, operation.releaseCalls)
+        assertTrue(lifecycle.presentation.value is Pcv3Presentation.Final)
     }
 
     @Test
@@ -1812,6 +1648,136 @@ class OperationManagerTest {
             final.outputAction,
         )
         assertEquals(2, operation.releaseCalls)
+    }
+
+    @Test
+    fun `PCV3 worker completion between snapshot and capabilities retains each native result`() = runTest {
+        data class Case(val name: String, val snapshot: Pcv3SnapshotData, val metadata: Pcv3ArtifactMetadataData? = null)
+        val cases = listOf(
+            Case("creation", pcv3CleanSnapshot()),
+            Case("read", pcv3CleanSnapshot()),
+            Case("degraded", pcv3AuthenticatedDegradedSnapshot()),
+            Case("partial", pcv3WarningSnapshot(), pcv3PartialArtifactMetadata()),
+            Case("unverified", pcv3ForceUnverifiedSnapshot(), pcv3UnverifiedArtifactMetadata()),
+            Case("archive", pcv3ArchivePendingSnapshot()),
+        )
+        for (case in cases) for (afterOutput in listOf(false, true)) {
+            val operation = ContractOperation("pcv3-race-${case.name}-$afterOutput", pcv3WorkingSnapshot())
+            val output = ContractOutput(operation)
+            val archive = ContractArchive(operation, CompletableDeferred(), CompletableDeferred())
+            var complete = false
+            fun finishWorker() {
+                if (!complete) return
+                complete = false
+                operation.replaceSnapshot(case.snapshot)
+                if (case.name == "archive") operation.installArchive(archive) else operation.installOutput(output)
+                case.metadata?.let { operation.installArtifactInspection(ContractArtifactInspection(it)) }
+            }
+            val boundary = object : Pcv3OperationCapability by operation {
+                override fun snapshot(): Pcv3SnapshotData = operation.snapshot().also {
+                    if (!afterOutput) finishWorker()
+                }
+                override fun output(): Pcv3OutputCapability? = operation.output().also {
+                    if (afterOutput) finishWorker()
+                }
+            }
+            val lifecycle = lifecycleFor(ContractTransport(boundary))
+            val request = if (case.name == "creation") {
+                Pcv3WriteRequest("write-normal", "password", "none", "input", "output", emptyList(), "", "standard", false)
+            } else pcv3Request()
+            lifecycle.start(request, "password".toCharArray(), pcv3ReceiptFile).getOrThrow()
+            complete = true
+
+            val live = lifecycle.refreshPcv3().getOrThrow() as Pcv3Presentation.Live
+
+            assertEquals("${case.name}: completion is not a discard decision", 0, output.discardCalls)
+            assertEquals("${case.name}: archive remains available for explicit export or close", 0, archive.closeCalls)
+            assertEquals("${case.name}: live follow-up must block release", 0, operation.releaseCalls)
+            assertEquals(case.snapshot.completionClass, live.snapshot.completionClass)
+            if (case.name == "archive") assertSame(archive, live.archiveHandle) else assertSame(output, live.outputHandle)
+            assertEquals(case.metadata?.toView(), live.artifactMetadata)
+            assertTrue(lifecycle.refreshPcv3().getOrThrow() is Pcv3Presentation.Live)
+        }
+    }
+
+    @Test
+    fun `PCV3 consent arriving after a running snapshot remains selectable without cancelling work`() = runTest {
+        val operation = ContractOperation("pcv3-consent-arrival", pcv3WorkingSnapshot())
+        val consent = ContractConsent(operation, "force-unverified-normal", listOf("primary", "backup"))
+        var arrive = false
+        val boundary = object : Pcv3OperationCapability by operation {
+            override fun snapshot(): Pcv3SnapshotData = operation.snapshot().also {
+                if (arrive) {
+                    arrive = false
+                    operation.installConsent(consent)
+                }
+            }
+        }
+        val lifecycle = lifecycleFor(ContractTransport(boundary))
+        lifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile).getOrThrow()
+        arrive = true
+        val live = lifecycle.refreshPcv3().getOrThrow() as Pcv3Presentation.Live
+        assertSame(consent, live.consentHandle)
+        assertEquals(listOf("primary", "backup"), live.consent?.allowedRoles)
+        assertTrue(lifecycle.selectPcv3ConsentRole("backup").isSuccess)
+        assertEquals(0, operation.cancelCalls)
+        assertEquals(0, operation.releaseCalls)
+    }
+
+    @Test
+    fun `PCV3 uncertain creation keeps ciphertext live until explicit save or discard then persists its receipt`() = runTest {
+        for (mode in listOf("write-normal", "write-d1")) for (save in listOf(false, true)) {
+            val events = mutableListOf<String>()
+            val snapshot = pcv3SafTerminalSnapshot()
+            val operation = ContractOperation("pcv3-uncertain-$mode-$save", snapshot, events)
+            val output = ContractOutput(operation, events = events)
+            operation.installOutput(output)
+            val persistence = RecordingReceiptPersistence(events)
+            val lifecycle = lifecycleFor(ContractTransport(operation), persistence)
+            val live = lifecycle.start(
+                Pcv3WriteRequest(mode, "password", "none", "input", "output", emptyList(), "", "paranoid", false),
+                "password".toCharArray(), pcv3ReceiptFile,
+            ).getOrThrow() as Pcv3Presentation.Live
+
+            assertEquals("durability uncertainty cannot revoke retained ciphertext", 0, output.discardCalls)
+            assertEquals(0, operation.releaseCalls)
+            assertSame(output, live.outputHandle)
+            assertTrue(live.outputPending)
+            assertEquals("durability-uncertain", live.snapshot.completionClass)
+            assertFalse(lifecycle.dismissPcv3(live.operationId, live.generation))
+            if (save) lifecycle.savePcv3Output(live.operationId, live.generation, mockk(relaxed = true)).getOrThrow()
+            else lifecycle.discardPcv3Output(live.operationId, live.generation).getOrThrow()
+
+            val final = lifecycle.presentation.value as Pcv3Presentation.Final
+            assertEquals(if (save) "saved" else "discarded", final.outputAction?.code)
+            assertEquals("durability-uncertain", final.snapshot.completionClass)
+            assertEquals(snapshot.restoredReceipt, persistence.savedReceipt)
+            assertTrue(events.indexOf("receipt-save") in 0 until events.indexOf("release"))
+            assertEquals(1, operation.releaseCalls)
+        }
+    }
+
+    @Test
+    fun `PCV3 uncertainty never authorizes plaintext Force indeterminate or receiptless creation output`() = runTest {
+        val uncertain = pcv3SafTerminalSnapshot()
+        val cases = listOf(
+            pcv3Request() to uncertain,
+            pcv3Request() to uncertain.copy(outcome = "force-partial", code = "PCV3_FORCE_PARTIAL", forceProvenance = "partial"),
+            Pcv3WriteRequest("write-normal", "password", "none", "input", "output", emptyList(), "", "standard", false) to
+                uncertain.copy(restoredReceipt = ""),
+            Pcv3WriteRequest("write-normal", "password", "none", "input", "output", emptyList(), "", "standard", false) to
+                pcv3SafActiveSnapshot(),
+            pcv3Request() to pcv3WorkingSnapshot(),
+        )
+        for ((index, case) in cases.withIndex()) {
+            val operation = ContractOperation("pcv3-invalid-output-$index", case.second)
+            val output = ContractOutput(operation)
+            operation.installOutput(output)
+            val lifecycle = lifecycleFor(ContractTransport(operation), RecordingReceiptPersistence(mutableListOf()))
+            assertTrue(lifecycle.start(case.first, "password".toCharArray(), pcv3ReceiptFile).isFailure)
+            assertEquals("a stable contradiction must still be drained", 1, output.discardCalls)
+            assertTrue(lifecycle.presentation.value !is Pcv3Presentation.Live)
+        }
     }
 
     @Test
@@ -2701,13 +2667,12 @@ class OperationManagerTest {
     }
 
     @Test
-    fun `PCV3 action ticket prevents resource submission until the native action returns`() = runTest {
+    fun `PCV3 action ticket blocks normal refresh after the preparation pump has retired`() = runTest {
         val operation = ContractOperation("pcv3-resource-action", pcv3ArchivePendingSnapshot())
         val entered = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
         operation.installArchive(ContractArchive(operation, entered, release))
         val challenge = ContractResourceChallenge(operation)
-        operation.installResourceChallenge(challenge)
         val reader = RecordingResourceReader { resourceObservation(3_000L, false) }
         val lifecycle = lifecycleFor(ContractTransport(operation))
         lifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile).getOrThrow()
@@ -2718,10 +2683,16 @@ class OperationManagerTest {
             lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueSafRoot(), ReadySafPublisher)
         }
         entered.await()
-        assertTrue(lifecycle.refreshPcv3().isFailure)
-        assertEquals(0, reader.calls)
-        assertEquals(0, challenge.submitCalls)
-        release.complete(Unit)
+        // This challenge is published after Begin has handed off and its pump
+        // has joined; provider/terminal work cannot keep polling observations.
+        operation.installResourceChallenge(challenge)
+        try {
+            assertTrue(lifecycle.refreshPcv3().isFailure)
+            assertEquals(0, reader.calls)
+            assertEquals(0, challenge.submitCalls)
+        } finally {
+            release.complete(Unit)
+        }
         action.await()
     }
 
@@ -3260,8 +3231,12 @@ class OperationManagerTest {
     private class RecordingReceiptPersistence(
         private val events: MutableList<String>,
     ) : Pcv3ReceiptPersistence {
+        var savedReceipt: String? = null
+            private set
+
         override fun save(file: File, receipt: String): Boolean {
             events += "receipt-save"
+            savedReceipt = receipt
             return true
         }
 
@@ -3270,12 +3245,12 @@ class OperationManagerTest {
 
     private class ContractOutput(
         private val operation: ContractOperation,
-        private val saveResult: Pcv3OutputResultData = Pcv3OutputResultData("saved", cleanupIncomplete = false),
+        var saveResult: Pcv3OutputResultData = Pcv3OutputResultData("saved", cleanupIncomplete = false),
         private val discardResult: Pcv3OutputResultData = Pcv3OutputResultData("discarded", cleanupIncomplete = false),
         private val saveEntered: CompletableDeferred<Unit>? = null,
         private val saveRelease: CompletableDeferred<Unit>? = null,
         private val events: MutableList<String>? = null,
-        private val retainAfterSaveForContradiction: Boolean = false,
+        var retainAfterSaveForContradiction: Boolean = false,
         private val retainAfterDiscardForDrain: Boolean = false,
     ) : Pcv3OutputCapability {
         private val lock = Any()
@@ -3372,6 +3347,7 @@ class OperationManagerTest {
         private val failFreshSnapshot: Boolean = false,
         private val terminalSnapshot: Pcv3SnapshotData? = null,
     ) : Pcv3ArchiveCapability {
+        override fun cancelPreparation() = Unit
         @Volatile
         var live = true
             private set
@@ -3424,6 +3400,7 @@ class OperationManagerTest {
         }
 
         private inner class Session : Pcv3ArchiveSessionCapability {
+            override fun hostMemoryBudgetBytes(): Long = PCV3_SAF_MAX_WORKING_BYTES
             override fun entryCount(): Long = 1
             override fun entry(index: Long): Pcv3ArchiveEntryData? =
                 Pcv3ArchiveEntryData("file", -1, isDirectory = false, size = 1).takeIf { index == 0L }

@@ -68,8 +68,6 @@ fun WorkButton(
                     dispatchPcv3Selection(context, mainViewModel, operationViewModel)
                 } else if (formData.isPcv3Creation) {
                     dispatchPcv3Creation(context, mainViewModel, operationViewModel)
-                } else if (formData.isEncrypt) {
-                    operationViewModel.startEncrypt(context, formData)
                 } else {
                     operationViewModel.startDecrypt(context, formData)
                 }

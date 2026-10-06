@@ -20,6 +20,8 @@
 package password
 
 import (
+	"Picocrypt-NG/internal/password/legacyunicode15"
+	"Picocrypt-NG/internal/secret"
 	"bytes"
 	"unicode/utf8"
 
@@ -50,7 +52,7 @@ func EncodeForKDF(pw []byte) []byte {
 //
 // For an ASCII password it returns exactly one candidate (the raw bytes): ASCII
 // is invariant under every normalization form, so there is no extra KDF work
-// for the common case. For a non-ASCII password it returns up to three forms,
+// for the common case. For a non-ASCII password it returns up to five forms,
 // duplicates removed while preserving order:
 //
 //  1. NFC  — opens new volumes and legacy ASCII/NFC volumes; tried first so a
@@ -58,6 +60,9 @@ func EncodeForKDF(pw []byte) []byte {
 //  2. NFD  — opens legacy volumes whose password was decomposed.
 //  3. raw  — opens legacy volumes whose bytes were neither NFC nor NFD (e.g. a
 //     password pasted with combining marks in non-canonical order).
+//  4. Historical Unicode 15 NFC — retains keys derived before upstream
+//     normalization fixes, including the old supplementary-scalar behavior.
+//  5. Historical Unicode 15 NFD — retains the earlier decomposition tables.
 //
 // Each candidate is authenticated independently against the volume MAC by the
 // caller; trying several canonical forms of the SAME password never bypasses
@@ -73,18 +78,26 @@ func Candidates(pw []byte) [][]byte {
 		return [][]byte{append([]byte(nil), pw...)}
 	}
 
-	// Distinct allocations (norm.*.Bytes may alias its input or return a shared
-	// buffer) so the caller can zero each candidate independently.
-	forms := [3][]byte{
-		append([]byte(nil), norm.NFC.Bytes(pw)...),
-		append([]byte(nil), norm.NFD.Bytes(pw)...),
-		append([]byte(nil), pw...),
+	forms := [5][]byte{
+		norm.NFC.Bytes(pw),
+		norm.NFD.Bytes(pw),
+		pw,
+		legacyunicode15.NFC.Bytes(pw),
+		legacyunicode15.NFD.Bytes(pw),
 	}
 
 	candidates := make([][]byte, 0, len(forms))
 	for _, f := range forms {
-		if !containsBytes(candidates, f) {
-			candidates = append(candidates, f)
+		// Bytes returns either the input or a fresh normalization buffer.
+		// Own each returned candidate and clear temporary/duplicate copies.
+		candidate := append([]byte(nil), f...)
+		if len(f) != 0 && &f[0] != &pw[0] {
+			secret.SecureZero(f)
+		}
+		if containsBytes(candidates, candidate) {
+			secret.SecureZero(candidate)
+		} else {
+			candidates = append(candidates, candidate)
 		}
 	}
 	return candidates
@@ -105,7 +118,7 @@ func ContainsNonASCII(pw []byte) bool {
 }
 
 // containsBytes reports whether set already holds a slice byte-equal to b. A
-// linear scan over at most three short slices is cheaper than a map and, unlike
+// linear scan over at most five short slices is cheaper than a map and, unlike
 // a map keyed by string(b), creates no extra in-memory copies of the password.
 func containsBytes(set [][]byte, b []byte) bool {
 	for _, e := range set {

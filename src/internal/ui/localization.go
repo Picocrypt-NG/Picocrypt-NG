@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3artifact"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"embed"
@@ -200,6 +198,10 @@ func pcv3ProgressText(code pcv3operation.StatusCode) string {
 		return tr("pcv3.progress.checking_resources", "Checking device resources…")
 	case pcv3operation.StatusDerivingKey:
 		return tr("pcv3.progress.deriving_key", "Deriving key…")
+	case pcv3operation.StatusEncrypting:
+		return tr("pcv3.progress.encrypting", "Encrypting volume…")
+	case pcv3operation.StatusSplitting:
+		return tr("pcv3.progress.splitting", "Splitting encrypted output…")
 	case pcv3operation.StatusAuthenticating:
 		return tr("pcv3.progress.authenticating", "Authenticating volume…")
 	case pcv3operation.StatusRecovering:
@@ -236,6 +238,8 @@ func pcv3PhysicalRoleText(role pcv3operation.PhysicalRole) string {
 
 func pcv3OutcomeCopy(presentation pcv3operation.Presentation) pcv3LocalizedCopy {
 	switch presentation.Diagnostic() {
+	case pcv3operation.DiagnosticResourceLimit:
+		return resourceLimitCopy()
 	case pcv3operation.DiagnosticResourceBusy:
 		return pcv3LocalizedCopy{
 			Title:  tr("pcv3.resource.busy.title", "Another secure operation is running"),
@@ -264,52 +268,52 @@ func pcv3OutcomeCopy(presentation pcv3operation.Presentation) pcv3LocalizedCopy 
 	}
 
 	switch presentation.Outcome() {
-	case pcv3.OutcomeSuccess:
+	case pcv3operation.OutcomeSuccess:
 		return pcv3LocalizedCopy{
-			Title: tr("pcv3.outcome.success.title", "Decryption complete"),
+			Title: tr("pcv3.outcome.success.title", "Operation complete"),
 			Body:  tr("pcv3.outcome.success.body", "The output is fully authenticated."),
 		}
-	case pcv3.OutcomeAuthenticatedDegraded:
+	case pcv3operation.OutcomeAuthenticatedDegraded:
 		return pcv3LocalizedCopy{
 			Title: tr("pcv3.outcome.degraded.title", "Authenticated output recovered with damage"),
 			Body:  tr("pcv3.outcome.degraded.body", "The output is authenticated, but recovery redundancy is damaged. Keep the original volume."),
 		}
-	case pcv3.OutcomeForcePartial:
+	case pcv3operation.OutcomeForcePartial:
 		return pcv3LocalizedCopy{
 			Title: tr("pcv3.outcome.force_partial.title", "Partial recovery artifact created"),
 			Body:  tr("pcv3.outcome.force_partial.body", "Some ranges are verified and some are missing. This .pcv3-recovery file is not a complete plaintext file."),
 		}
-	case pcv3.OutcomeForceUnverified:
+	case pcv3operation.OutcomeForceUnverified:
 		return pcv3LocalizedCopy{
 			Title: tr("pcv3.outcome.force_unverified.title", "Unverified recovery artifact created"),
 			Body:  tr("pcv3.outcome.force_unverified.body", "Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content."),
 		}
-	case pcv3.OutcomeCredentialsOrDamage:
+	case pcv3operation.OutcomeCredentialsOrDamage:
 		return pcv3LocalizedCopy{
 			Title: tr("pcv3.outcome.credentials_or_damage.title", "Credentials or recovery data could not be verified"),
 			Body:  tr("pcv3.outcome.credentials_or_damage.body", "Check the selected credential policy, keyfiles, and keyfile order. No output was published."),
 		}
-	case pcv3.OutcomeAuthenticationFailed:
+	case pcv3operation.OutcomeAuthenticationFailed:
 		return pcv3LocalizedCopy{
 			Title: tr("pcv3.outcome.authentication_failed.title", "Authentication failed"),
 			Body:  tr("pcv3.outcome.authentication_failed.body", "No output was published. Recovery was not started automatically."),
 		}
-	case pcv3.OutcomeAmbiguousVolume:
+	case pcv3operation.OutcomeAmbiguousVolume:
 		return pcv3LocalizedCopy{
 			Title: tr("pcv3.outcome.ambiguous.title", "Conflicting authenticated recovery data"),
 			Body:  tr("pcv3.outcome.ambiguous.body", "No output was published. Keep the original volume and do not choose a candidate in the frontend."),
 		}
-	case pcv3.OutcomeUnsupportedRoutingPreKDF:
+	case pcv3operation.OutcomeUnsupportedRoutingPreKDF:
 		return pcv3LocalizedCopy{
 			Title: tr("pcv3.outcome.unsupported.title", "Unsupported PCV3 format"),
 			Body:  tr("pcv3.outcome.unsupported.body", "No output was created, and the file was not tried as a legacy volume."),
 		}
-	case pcv3.OutcomeInvalidStructurePreKDF:
+	case pcv3operation.OutcomeInvalidStructurePreKDF:
 		return pcv3LocalizedCopy{
 			Title: tr("pcv3.outcome.invalid_structure.title", "Invalid or damaged PCV3 structure"),
 			Body:  tr("pcv3.outcome.invalid_structure.body", "The operation stopped before credential processing and output creation."),
 		}
-	case pcv3.OutcomeOperationFailed:
+	case pcv3operation.OutcomeOperationFailed:
 		switch presentation.Diagnostic() {
 		case pcv3operation.DiagnosticCredentialPolicy:
 			return pcv3LocalizedCopy{
@@ -329,18 +333,26 @@ func pcv3OutcomeCopy(presentation pcv3operation.Presentation) pcv3LocalizedCopy 
 	}
 }
 
+func resourceLimitCopy() pcv3LocalizedCopy {
+	return pcv3LocalizedCopy{
+		Title:  tr("pcv3.resource.limit.title", "Resource limit reached"),
+		Body:   tr("pcv3.resource.limit.body", "The operation stopped because a processing resource limit was reached."),
+		Action: tr("pcv3.resource.close", "Close resource notice"),
+	}
+}
+
 func pcv3PublicationCopy(presentation pcv3operation.Presentation) pcv3LocalizedCopy {
 	if !presentation.PublicationAttempted() {
 		if presentation.ArchivePending() {
 			return pcv3LocalizedCopy{}
 		}
-		if presentation.Outcome() == pcv3.OutcomeOperationFailed &&
-			presentation.Stage() == pcv3.StageOutputPublication &&
+		if presentation.Outcome() == pcv3operation.OutcomeOperationFailed &&
+			presentation.Stage() == pcv3operation.StageOutputPublication &&
 			presentation.Diagnostic() == pcv3operation.DiagnosticNone {
 			return pcv3LocalizedCopy{
 				Title:  tr("pcv3.publication.not_requested.title", "No output was requested"),
 				Body:   tr("pcv3.publication.not_requested.body", "The authenticated archive was closed without extraction. The encrypted source was kept."),
-				Action: tr("pcv3.publication.close", "Close publication result"),
+				Action: tr("pcv3.publication.close", "Close"),
 			}
 		}
 		return pcv3LocalizedCopy{}
@@ -351,13 +363,13 @@ func pcv3PublicationCopy(presentation pcv3operation.Presentation) pcv3LocalizedC
 		return pcv3LocalizedCopy{
 			Title:  tr("pcv3.publication.not_published.title", "No output was published"),
 			Body:   tr("pcv3.publication.not_published.body", "Source files were kept."),
-			Action: tr("pcv3.publication.close", "Close publication result"),
+			Action: tr("pcv3.publication.close", "Close"),
 		}
 	case pcv3publication.StatePublishedDurable:
 		return pcv3LocalizedCopy{
 			Title:  pcv3OutcomeCopy(presentation).Title,
-			Body:   tr("pcv3.publication.durable.body", "Output publication is durable."),
-			Action: tr("pcv3.publication.close", "Close publication result"),
+			Body:   tr("pcv3.publication.durable.body", "File saved."),
+			Action: tr("pcv3.publication.close", "Close"),
 		}
 	case pcv3publication.StatePublishedDurabilityUncertain:
 		return pcv3LocalizedCopy{
@@ -389,7 +401,7 @@ func pcv3WarningText(warning pcv3operation.Warning) string {
 	case pcv3operation.WarningPublicationIndeterminate:
 		return tr("pcv3.warning.publication_indeterminate", "Output publication state is unknown. Keep every source and the destination exactly as they are.")
 	case pcv3operation.WarningCleanupIncomplete:
-		return tr("pcv3.warning.cleanup_incomplete", "The application could not prove that all operation-owned temporary plaintext was removed. Keep the encrypted source and do not delete files based on this result.")
+		return tr("pcv3.warning.cleanup_incomplete", "The application could not confirm removal of all temporary files created by this operation. Keep the source files and do not delete files based on this result.")
 	case pcv3operation.WarningCallbackFailure:
 		return tr("pcv3.warning.callback_failure", "A user-interface callback failed. No additional action was authorized.")
 	default:
@@ -397,52 +409,52 @@ func pcv3WarningText(warning pcv3operation.Warning) string {
 	}
 }
 
-func pcv3ArtifactKindText(kind pcv3artifact.State) string {
+func pcv3ArtifactKindText(kind pcv3operation.ArtifactState) string {
 	switch kind {
-	case pcv3artifact.StatePartial:
+	case pcv3operation.ArtifactStatePartial:
 		return tr("pcv3.artifact.kind.partial", "Partial recovery")
-	case pcv3artifact.StateUnverifiedForensic:
+	case pcv3operation.ArtifactStateUnverifiedForensic:
 		return tr("pcv3.artifact.kind.unverified", "Unverified forensic recovery")
 	default:
 		return tr("pcv3.artifact.kind.unknown", "Unknown recovery artifact")
 	}
 }
 
-func pcv3ArtifactRoleText(role pcv3artifact.Role) string {
+func pcv3ArtifactRoleText(role pcv3operation.ArtifactRole) string {
 	switch role {
-	case pcv3artifact.RolePrimary:
+	case pcv3operation.ArtifactRolePrimary:
 		return tr("pcv3.artifact.role.primary", "Primary capsule")
-	case pcv3artifact.RoleBackup:
+	case pcv3operation.ArtifactRoleBackup:
 		return tr("pcv3.artifact.role.backup", "Backup capsule")
-	case pcv3artifact.RoleD1Front:
+	case pcv3operation.ArtifactRoleD1Front:
 		return tr("pcv3.artifact.role.d1_front", "Front bootstrap")
-	case pcv3artifact.RoleD1Tail:
+	case pcv3operation.ArtifactRoleD1Tail:
 		return tr("pcv3.artifact.role.d1_tail", "Tail bootstrap")
 	default:
 		return ""
 	}
 }
 
-func pcv3ArtifactFinalText(status pcv3artifact.FinalStatus) string {
+func pcv3ArtifactFinalText(status pcv3operation.ArtifactFinalStatus) string {
 	switch status {
-	case pcv3artifact.FinalVerified:
+	case pcv3operation.ArtifactFinalVerified:
 		return tr("pcv3.artifact.final.verified", "Verified")
-	case pcv3artifact.FinalUnverified:
+	case pcv3operation.ArtifactFinalUnverified:
 		return tr("pcv3.artifact.final.unverified", "Unverified")
-	case pcv3artifact.FinalMissing:
+	case pcv3operation.ArtifactFinalMissing:
 		return tr("pcv3.artifact.final.missing", "Missing")
 	default:
 		return tr("pcv3.artifact.final.unknown", "Unknown")
 	}
 }
 
-func pcv3ArtifactRangeStateText(status pcv3artifact.RangeStatus) string {
+func pcv3ArtifactRangeStateText(status pcv3operation.ArtifactRangeStatus) string {
 	switch status {
-	case pcv3artifact.RangeVerified:
+	case pcv3operation.ArtifactRangeVerified:
 		return tr("pcv3.artifact.range.verified", "verified")
-	case pcv3artifact.RangeUnverified:
+	case pcv3operation.ArtifactRangeUnverified:
 		return tr("pcv3.artifact.range.unverified", "unverified")
-	case pcv3artifact.RangeMissing:
+	case pcv3operation.ArtifactRangeMissing:
 		return tr("pcv3.artifact.range.missing", "missing")
 	default:
 		return tr("pcv3.artifact.range.unknown", "unknown status")
@@ -480,7 +492,7 @@ func pcv3RecoveryRangeRow(
 	index uint64,
 	start uint64,
 	end uint64,
-	status pcv3artifact.RangeStatus,
+	status pcv3operation.ArtifactRangeStatus,
 ) string {
 	return tr("pcv3.recovery.range_row", "Record {{.Index}}: bytes {{.Start}}–{{.End}} — {{.Status}}", map[string]any{
 		"Index":  strconv.FormatUint(index, 10),

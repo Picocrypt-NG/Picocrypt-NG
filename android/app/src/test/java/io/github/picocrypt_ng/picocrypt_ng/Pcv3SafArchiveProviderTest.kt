@@ -21,6 +21,99 @@ import org.junit.Test
 
 class Pcv3SafArchiveProviderTest {
     @Test
+    fun `selected tree backing is charged even when normalization returns a small URI`() {
+        val events = mutableListOf<String>()
+        val root = opaqueUri("provider")
+        val normalized = opaqueUri("provider")
+        val session = RecordingArchiveSession(listOf(Pcv3ArchiveEntryData("folder", -1, true, 0)))
+        val manifest = requireNotNull(capturePcv3SafManifest(session, 8L * 1024 * 1024 + 4096))
+        val platform = RecordingSafPlatform(events, normalizer = { normalized },
+            uriSize = { if (it === root) 4096 else 32 },
+            creations = ArrayDeque(listOf(opaqueUri("provider"))),
+            metadata = ArrayDeque(listOf(exactMetadata("provider", "id", "folder", PCV3_SAF_DIRECTORY_MIME))))
+        val result = Pcv3SafArchiveProvider(platform).publish(root, manifest, session, RecordingSafCancellation(events))
+        assertEquals(Pcv3SafPublicationResult.NEEDS_ABORT, result)
+        assertEquals(0, platform.createCalls)
+        assertEquals(0, session.attemptCalls)
+    }
+
+    @Test
+    fun `capture cannot enlarge the remaining native allowance`() {
+        val session = RecordingArchiveSession(listOf(Pcv3ArchiveEntryData("file", -1, false, 0)), hostAllowance = 1024)
+        assertNull(capturePcv3SafManifest(session, PCV3_SAF_MAX_WORKING_BYTES))
+    }
+
+    @Test
+    fun `giant provider identity refuses before query or acknowledgement`() {
+        val events = mutableListOf<String>()
+        val session = RecordingArchiveSession(listOf(Pcv3ArchiveEntryData("folder", -1, true, 0)))
+        val manifest = requireNotNull(capturePcv3SafManifest(session, 8L * 1024 * 1024 + 4096))
+        val platform = RecordingSafPlatform(events, creations = ArrayDeque(listOf(opaqueUri("provider"))),
+            metadata = ArrayDeque(listOf(exactMetadata("provider", "x".repeat(8192), "folder", PCV3_SAF_DIRECTORY_MIME))),
+            identityOverride = { _, index -> Pcv3SafDocumentIdentity("provider", if (index == 0) "root" else "x".repeat(8192)) })
+        val result = Pcv3SafArchiveProvider(platform).publish(opaqueUri("provider"), manifest, session, RecordingSafCancellation(events))
+        assertEquals(Pcv3SafPublicationResult.NEEDS_ABORT, result)
+        assertEquals(1, platform.createCalls)
+        assertEquals(0, platform.queryCalls)
+        assertEquals(0, session.ackCalls)
+    }
+
+    @Test
+    fun `giant root URI refuses before any document creation`() {
+        val events = mutableListOf<String>()
+        val session = RecordingArchiveSession(listOf(Pcv3ArchiveEntryData("folder", -1, true, 0)))
+        val manifest = requireNotNull(capturePcv3SafManifest(session))
+        val platform = RecordingSafPlatform(events, creations = ArrayDeque(listOf(opaqueUri("provider"))), uriBytes = 192L * 1024 * 1024)
+        val result = Pcv3SafArchiveProvider(platform).publish(opaqueUri("provider"), manifest, session, RecordingSafCancellation(events))
+        assertEquals(Pcv3SafPublicationResult.NEEDS_ABORT, result)
+        assertEquals(0, platform.createCalls)
+        assertEquals(0, session.attemptCalls)
+    }
+
+    @Test
+    fun `manifest capture admits short entries above the former count limit`() {
+        val entries = List(65_537) { index ->
+            Pcv3ArchiveEntryData("f$index", -1, isDirectory = false, size = 0)
+        }
+
+        val manifest = capturePcv3SafManifest(RecordingArchiveSession(entries))
+
+        assertNotNull(manifest)
+        assertEquals(entries.first(), manifest?.entries?.first())
+        assertEquals(entries.last(), manifest?.entries?.last())
+        assertEquals(entries.size, manifest?.entries?.size)
+    }
+
+    @Test
+    fun `manifest capture admits shared paths above the former aggregate path limit`() {
+        val entries = deepManifest(directoryCount = 127, leafCount = 4_100, leafLength = 32)
+
+        val manifest = capturePcv3SafManifest(RecordingArchiveSession(entries))
+
+        assertNotNull(manifest)
+        assertEquals(entries, manifest?.entries)
+    }
+
+    @Test
+    fun `captured manifest cannot be changed before provider publication`() {
+        val entries = listOf(
+            Pcv3ArchiveEntryData("file", -1, isDirectory = false, size = 7),
+            Pcv3ArchiveEntryData("second", -1, isDirectory = false, size = 11),
+        )
+        val manifest = requireNotNull(capturePcv3SafManifest(RecordingArchiveSession(entries)))
+
+        try {
+            @Suppress("UNCHECKED_CAST")
+            (manifest.entries as MutableList<Pcv3ArchiveEntryData>)[0] =
+                Pcv3ArchiveEntryData("replacement", -1, isDirectory = false, size = 99)
+        } catch (_: UnsupportedOperationException) {
+            // The captured metadata must retain the exact validated entry.
+        }
+
+        assertEquals(entries, manifest.entries)
+    }
+
+    @Test
     fun `manifest capture reads each bounded immutable entry once`() {
         val events = mutableListOf<String>()
         val session = RecordingArchiveSession(
@@ -89,7 +182,7 @@ class Pcv3SafArchiveProviderTest {
     @Test
     fun `manifest capture enforces count component path depth and total path bounds`() {
         assertNull(capturePcv3SafManifest(CountOnlySession(0)))
-        assertNull(capturePcv3SafManifest(CountOnlySession(65_537)))
+        assertNull(capturePcv3SafManifest(CountOnlySession(Long.MAX_VALUE)))
         assertNotNull(
             capturePcv3SafManifest(
                 RecordingArchiveSession(
@@ -117,7 +210,7 @@ class Pcv3SafArchiveProviderTest {
                 RecordingArchiveSession(deepManifest(127, 4_000, 32)),
             ),
         )
-        assertNull(
+        assertNotNull(
             capturePcv3SafManifest(
                 RecordingArchiveSession(deepManifest(127, 4_100, 32)),
             ),
@@ -819,6 +912,7 @@ class Pcv3SafArchiveProviderTest {
         private val writeEntered: CountDownLatch? = null,
         private val allowWriteReturn: CountDownLatch? = null,
         private val writeFailure: Throwable? = null,
+        private val hostAllowance: Long = PCV3_SAF_MAX_WORKING_BYTES,
     ) : Pcv3ArchiveSessionCapability, Pcv3SafEntrySession {
         var attemptCalls = 0
             private set
@@ -828,6 +922,8 @@ class Pcv3SafArchiveProviderTest {
             private set
         var cancelCalls = 0
             private set
+
+        override fun hostMemoryBudgetBytes(): Long = hostAllowance
 
         override fun entryCount(): Long {
             events += "entry-count"
@@ -878,6 +974,7 @@ class Pcv3SafArchiveProviderTest {
     private class CountOnlySession(
         private val count: Long,
     ) : Pcv3ArchiveSessionCapability {
+        override fun hostMemoryBudgetBytes(): Long = PCV3_SAF_MAX_WORKING_BYTES
         override fun entryCount(): Long = count
         override fun entry(index: Long): Pcv3ArchiveEntryData? = error("out-of-range count must fail before Entry")
         override fun confirmCrashReceiptPersisted(receipt: String) = Pcv3ArchiveStepData("rejected", -1)
@@ -919,6 +1016,8 @@ class Pcv3SafArchiveProviderTest {
         private val queryEntered: CountDownLatch? = null,
         private val waitForQueryCancellation: Boolean = false,
         private val identityOverride: ((Uri, Int) -> Pcv3SafDocumentIdentity?)? = null,
+        private val uriBytes: Long = 128,
+        private val uriSize: ((Uri) -> Long)? = null,
     ) : Pcv3SafPlatform {
         private var identityCalls = 0
         var createCalls = 0
@@ -928,6 +1027,8 @@ class Pcv3SafArchiveProviderTest {
         var openCalls = 0
             private set
         val createdParents = mutableListOf<Uri>()
+
+        override fun retainedUriWorkingBytes(document: Uri): Long = 4L * (uriSize?.invoke(document) ?: uriBytes)
 
         override fun newCancellation(): Pcv3SafCancellation = RecordingSafCancellation(events)
 

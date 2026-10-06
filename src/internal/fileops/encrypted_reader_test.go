@@ -2,52 +2,54 @@ package fileops
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"os"
 	"testing"
+
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
-// eofDataReader returns its entire payload together with io.EOF in a single Read,
-// then io.EOF with no data on every subsequent Read. This is a legal io.Reader
-// (Go permits returning n>0 alongside io.EOF) and exercises the encryptedReader
-// path where data arrives simultaneously with EOF.
-type eofDataReader struct {
+type tempEOFReaderAt struct {
 	data []byte
-	done bool
+	err  error
 }
 
-func (e *eofDataReader) Read(p []byte) (int, error) {
-	if e.done {
+func (r tempEOFReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off >= int64(len(r.data)) {
 		return 0, io.EOF
 	}
-	n := copy(p, e.data)
-	e.done = true
-	return n, io.EOF
+	return copy(p, r.data[off:]), r.err
 }
 
-// TestEncryptedReaderDecryptsDataDeliveredWithEOF: a reader that returns data
-// together with io.EOF must still be decrypted. The old `err == nil && n > 0`
-// guard skipped XORKeyStream when err == io.EOF, leaking raw ciphertext to the
-// caller.
+// EOF with a complete final record is legal; all other errors remain terminal
+// even when they accompany a full count, so source probes cannot swallow faults.
 func TestEncryptedReaderDecryptsDataDeliveredWithEOF(t *testing.T) {
-	c, err := NewTempZipCiphers()
-	if err != nil {
-		t.Fatalf("NewTempZipCiphers: %v", err)
+	fixture, e := os.ReadFile("testdata/temp_zip_stream/1.bin")
+	if e != nil {
+		t.Fatal(e)
 	}
-	defer c.Close()
-
-	plaintext := []byte("Picocrypt-NG encryptedReader EOF+data regression payload.")
-
-	// Encrypt the known plaintext with the Writer cipher to obtain ciphertext.
-	ciphertext := make([]byte, len(plaintext))
-	c.Writer.XORKeyStream(ciphertext, plaintext)
-
-	er := &encryptedReader{r: &eofDataReader{data: ciphertext}, cipher: c.Reader}
-	got, err := io.ReadAll(er)
-	if err != nil {
-		t.Fatalf("io.ReadAll(encryptedReader): %v", err)
+	a, _ := chacha20poly1305.New(tempStreamKey())
+	r := newTempStreamReader(tempEOFReaderAt{fixture, io.EOF}, a, 1, nil)
+	got, e := io.ReadAll(r)
+	if e != nil || !bytes.Equal(got, []byte{0}) {
+		t.Fatalf("complete data with EOF: %x %v", got, e)
 	}
+}
 
-	if !bytes.Equal(got, plaintext) {
-		t.Fatalf("encryptedReader did not decrypt data delivered with io.EOF\n got: %q\nwant: %q", got, plaintext)
+func TestTempStreamFullReadWithErrorRemainsSticky(t *testing.T) {
+	fixture, e := os.ReadFile("testdata/temp_zip_stream/1.bin")
+	if e != nil {
+		t.Fatal(e)
+	}
+	a, _ := chacha20poly1305.New(tempStreamKey())
+	fault := errors.New("source fault")
+	r := newTempStreamReader(tempEOFReaderAt{fixture, fault}, a, 1, nil)
+	got, e := io.ReadAll(r)
+	if len(got) != 0 || e != fault { //nolint:errorlint // Exact error identity proves the original storage fault survives.
+		t.Fatalf("released faulted plaintext: %x %v", got, e)
+	}
+	if _, e = r.Read(make([]byte, 1)); e != fault { //nolint:errorlint // The original error must remain sticky, not merely wrapped.
+		t.Fatal("fault lost")
 	}
 }

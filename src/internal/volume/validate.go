@@ -63,14 +63,9 @@ func (req *EncryptRequest) Validate() error {
 		return err
 	}
 
-	// Validate input files exist
-	if req.InputFile != "" {
-		if _, err := os.Stat(req.InputFile); err != nil {
-			return errors.NewFileError("stat", req.InputFile, err)
-		}
-	}
-
-	for _, f := range req.InputFiles {
+	// Match preprocessing: an explicit selection takes precedence over the
+	// single-file field, which the GUI also uses for a proposed archive name.
+	for _, f := range preprocessInputFiles(req) {
 		if _, err := os.Stat(f); err != nil {
 			return errors.NewFileError("stat", f, err)
 		}

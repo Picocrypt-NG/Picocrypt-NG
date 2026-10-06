@@ -3,19 +3,22 @@ package io.github.picocrypt_ng.picocrypt_ng
 import android.content.ContentResolver
 import android.net.Uri
 import android.os.CancellationSignal
+import android.os.Parcel
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal const val PCV3_SAF_DIRECTORY_MIME = DocumentsContract.Document.MIME_TYPE_DIR
 internal const val PCV3_SAF_FILE_MIME = "application/octet-stream"
 internal const val PCV3_SAF_FIXED_WRITE_ERROR = "Picocrypt NG archive export failed"
 
-private const val PCV3_SAF_MAX_ENTRIES = 65_536
 private const val PCV3_SAF_MAX_COMPONENT_BYTES = 255
 private const val PCV3_SAF_MAX_PATH_BYTES = 4_096
-private const val PCV3_SAF_MAX_TOTAL_PATH_BYTES = 16 * 1_024 * 1_024
 private const val PCV3_SAF_MAX_DEPTH = 128
+internal const val PCV3_SAF_MAX_WORKING_BYTES = 192L * 1_024 * 1_024
+private const val PCV3_SAF_FIXED_WORKING_BYTES = 8L * 1_024 * 1_024
+private const val PCV3_SAF_ENTRY_WORKING_BYTES = 768L
 
 data class Pcv3ArchiveEntryData(
     val name: String,
@@ -31,6 +34,7 @@ data class Pcv3ArchiveStepData(
 
 /** Closed Kotlin owner around one Go SAF session. Finish and Abort remain lifecycle-only. */
 interface Pcv3ArchiveSessionCapability {
+    fun hostMemoryBudgetBytes(): Long
     fun entryCount(): Long
     fun entry(index: Long): Pcv3ArchiveEntryData?
     fun confirmCrashReceiptPersisted(receipt: String): Pcv3ArchiveStepData
@@ -44,7 +48,29 @@ interface Pcv3ArchiveSessionCapability {
 
 internal class Pcv3SafManifest internal constructor(
     val entries: List<Pcv3ArchiveEntryData>,
+    internal val memory: Pcv3SafMemoryBudget,
 )
+
+/** One host allowance left by the native owner; provider data cannot enlarge it. */
+internal class Pcv3SafMemoryBudget(private val limit: Long) {
+    private var used = 0L
+    var resourceLimited = false
+        private set
+
+    fun reserve(bytes: Long): Boolean {
+        if (bytes < 0 || limit <= 0 || used > limit || bytes > limit - used) {
+            resourceLimited = true
+            return false
+        }
+        used += bytes
+        return true
+    }
+
+    fun release(bytes: Long) {
+        check(bytes >= 0 && bytes <= used)
+        used -= bytes
+    }
+}
 
 /**
  * Reads the gomobile manifest exactly once into a path-free immutable value and
@@ -52,20 +78,40 @@ internal class Pcv3SafManifest internal constructor(
  */
 internal fun capturePcv3SafManifest(
     session: Pcv3ArchiveSessionCapability,
+    memoryBudgetBytes: Long = PCV3_SAF_MAX_WORKING_BYTES,
+    isCancelled: () -> Boolean = { false },
+    onResourceLimit: () -> Unit = {},
 ): Pcv3SafManifest? = try {
+    if (isCancelled() || memoryBudgetBytes !in 1..PCV3_SAF_MAX_WORKING_BYTES) return null
+    val allowance = minOf(memoryBudgetBytes, session.hostMemoryBudgetBytes())
+    if (allowance <= 0) {
+        onResourceLimit()
+        return null
+    }
+    val memory = Pcv3SafMemoryBudget(allowance)
+    if (!memory.reserve(PCV3_SAF_FIXED_WORKING_BYTES)) {
+        onResourceLimit()
+        return null
+    }
     val count = session.entryCount()
-    if (count !in 1..PCV3_SAF_MAX_ENTRIES.toLong()) return null
+    if (count !in 1..Int.MAX_VALUE.toLong()) return null
+    if (count > (allowance - PCV3_SAF_FIXED_WORKING_BYTES) / PCV3_SAF_ENTRY_WORKING_BYTES ||
+        !memory.reserve(count * PCV3_SAF_ENTRY_WORKING_BYTES)
+    ) {
+        onResourceLimit()
+        return null
+    }
 
     val entries = ArrayList<Pcv3ArchiveEntryData>(count.toInt())
     val pathBytes = IntArray(count.toInt())
     val depths = IntArray(count.toInt())
     val siblings = HashSet<Pcv3SafSibling>(count.toInt())
-    var totalPathBytes = 0L
     var totalFileBytes = 0L
 
     repeat(count.toInt()) { index ->
+        if (isCancelled()) return null
         val entry = session.entry(index.toLong()) ?: return null
-        val componentBytes = entry.name.strictUtf8Size() ?: return null
+        val componentBytes = entry.name.strictUtf8Size(PCV3_SAF_MAX_COMPONENT_BYTES) ?: return null
         if (componentBytes !in 1..PCV3_SAF_MAX_COMPONENT_BYTES ||
             entry.name == "." || entry.name == ".." ||
             entry.name.any { it == '\u0000' || it == '/' || it == '\\' } ||
@@ -89,8 +135,10 @@ internal fun capturePcv3SafManifest(
         }
         if (depth > PCV3_SAF_MAX_DEPTH || fullPathBytes > PCV3_SAF_MAX_PATH_BYTES) return null
 
-        totalPathBytes += fullPathBytes.toLong()
-        if (totalPathBytes > PCV3_SAF_MAX_TOTAL_PATH_BYTES) return null
+        if (!memory.reserve(6L * componentBytes)) {
+            onResourceLimit()
+            return null
+        }
         if (!entry.isDirectory) {
             if (totalFileBytes > Long.MAX_VALUE - entry.size) return null
             totalFileBytes += entry.size
@@ -101,7 +149,8 @@ internal fun capturePcv3SafManifest(
         pathBytes[index] = fullPathBytes
         depths[index] = depth
     }
-    Pcv3SafManifest(entries.toList())
+    if (isCancelled()) return null
+    Pcv3SafManifest(Collections.unmodifiableList(entries), memory)
 } catch (_: Exception) {
     null
 } catch (_: LinkageError) {
@@ -110,20 +159,31 @@ internal fun capturePcv3SafManifest(
 
 private data class Pcv3SafSibling(val parentIndex: Long, val name: String)
 
-private fun String.strictUtf8Size(): Int? {
+internal fun String.strictUtf8Size(maxBytes: Int): Int? {
     var index = 0
+    var bytes = 0
     while (index < length) {
         val current = this[index]
-        when {
+        val width = when {
             current.isHighSurrogate() -> {
                 if (index + 1 >= length || !this[index + 1].isLowSurrogate()) return null
                 index += 2
+                4
             }
             current.isLowSurrogate() -> return null
-            else -> index += 1
+            else -> {
+                index += 1
+                when {
+                    current.code <= 0x7f -> 1
+                    current.code <= 0x7ff -> 2
+                    else -> 3
+                }
+            }
         }
+        if (width > maxBytes - bytes) return null
+        bytes += width
     }
-    return toByteArray(Charsets.UTF_8).size
+    return bytes
 }
 
 private fun String.hasWindowsDrivePrefix(): Boolean =
@@ -162,6 +222,7 @@ internal interface Pcv3SafOriginalDescriptor {
 internal interface Pcv3SafPlatform {
     fun newCancellation(): Pcv3SafCancellation
     fun normalizeTreeRoot(tree: Uri): Uri?
+    fun retainedUriWorkingBytes(document: Uri): Long?
     fun documentIdentity(document: Uri): Pcv3SafDocumentIdentity?
     fun createDocument(parent: Uri, mimeType: String, displayName: String): Uri?
     fun queryDocument(document: Uri, cancellation: Pcv3SafCancellation): Pcv3SafDocumentMetadata?
@@ -204,10 +265,18 @@ internal class Pcv3SafArchiveProvider(
         session: Pcv3SafEntrySession,
         cancellation: Pcv3SafCancellation,
     ): Pcv3SafPublicationResult {
+        if (cancellation.isCancelled()) return Pcv3SafPublicationResult.NEEDS_ABORT
+        val treeUriCharge = uriCharge(root) ?: return Pcv3SafPublicationResult.NEEDS_ABORT
+        if (!manifest.memory.reserve(treeUriCharge)) return Pcv3SafPublicationResult.NEEDS_ABORT
         val normalizedRoot = platformCall { platform.normalizeTreeRoot(root) }
             ?: return Pcv3SafPublicationResult.NEEDS_ABORT
+        if (normalizedRoot !== root) {
+            val rootUriCharge = uriCharge(normalizedRoot) ?: return Pcv3SafPublicationResult.NEEDS_ABORT
+            if (!manifest.memory.reserve(rootUriCharge)) return Pcv3SafPublicationResult.NEEDS_ABORT
+        }
         val rootIdentity = platformCall { platform.documentIdentity(normalizedRoot) }
             ?: return Pcv3SafPublicationResult.NEEDS_ABORT
+        if (!reserveIdentity(manifest.memory, rootIdentity)) return Pcv3SafPublicationResult.NEEDS_ABORT
         val rootAuthority = rootIdentity.authority
 
         val documents = arrayOfNulls<Uri>(manifest.entries.size)
@@ -234,9 +303,12 @@ internal class Pcv3SafArchiveProvider(
             } ?: return Pcv3SafPublicationResult.NEEDS_ABORT
             if (cancellation.isCancelled()) return Pcv3SafPublicationResult.NEEDS_ABORT
 
+            val uriCharge = uriCharge(created) ?: return Pcv3SafPublicationResult.NEEDS_ABORT
+            if (!manifest.memory.reserve(uriCharge)) return Pcv3SafPublicationResult.NEEDS_ABORT
             val createdIdentity = platformCall { platform.documentIdentity(created) }
                 ?.takeIf { it.authority == rootAuthority }
                 ?: return Pcv3SafPublicationResult.NEEDS_ABORT
+            if (!reserveIdentity(manifest.memory, createdIdentity)) return Pcv3SafPublicationResult.NEEDS_ABORT
             if (!identities.add(createdIdentity)) return Pcv3SafPublicationResult.NEEDS_ABORT
 
             val metadata = platformCall { platform.queryDocument(created, cancellation) }
@@ -247,7 +319,7 @@ internal class Pcv3SafArchiveProvider(
                 expectedMime = expectedMime,
                 directory = entry.isDirectory,
             )) return Pcv3SafPublicationResult.NEEDS_ABORT
-            documents[index] = created
+            if (entry.isDirectory) documents[index] = created
             if (cancellation.isCancelled()) return Pcv3SafPublicationResult.NEEDS_ABORT
 
             if (entry.isDirectory) {
@@ -255,11 +327,26 @@ internal class Pcv3SafArchiveProvider(
                 if (acknowledged?.kind != "ready" || acknowledged.nextIndex != index.toLong() + 1L) {
                     return Pcv3SafPublicationResult.NEEDS_ABORT
                 }
-            } else if (publishFile(created, index, session, cancellation) != Pcv3SafPublicationResult.READY_TO_FINISH) {
-                return Pcv3SafPublicationResult.NEEDS_ABORT
+            } else {
+                if (publishFile(created, index, session, cancellation) != Pcv3SafPublicationResult.READY_TO_FINISH) {
+                    return Pcv3SafPublicationResult.NEEDS_ABORT
+                }
+                manifest.memory.release(uriCharge)
             }
         }
         return Pcv3SafPublicationResult.READY_TO_FINISH
+    }
+
+    private fun uriCharge(document: Uri): Long? {
+        val bytes = platformCall { platform.retainedUriWorkingBytes(document) } ?: return null
+        if (bytes <= 0) return null
+        return bytes
+    }
+
+    private fun reserveIdentity(memory: Pcv3SafMemoryBudget, identity: Pcv3SafDocumentIdentity): Boolean {
+        val authority = identity.authority.strictUtf8Size(PCV3_SAF_MAX_WORKING_BYTES.toInt() / 4) ?: return false
+        val id = identity.documentId.strictUtf8Size(PCV3_SAF_MAX_WORKING_BYTES.toInt() / 4) ?: return false
+        return memory.reserve(4L * (authority.toLong() + id))
     }
 
     private fun publishFile(
@@ -372,6 +459,32 @@ internal class AndroidPcv3SafPlatform(
 
     override fun normalizeTreeRoot(tree: Uri): Uri? =
         DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+
+    // Framework/provider responses and this measurement allocate before admission.
+    // Account serialized backing, an encoded-path copy and the string/list cache
+    // that getDocumentId or normalizeTreeRoot may materialize for every segment.
+    // Counting separators does not allocate pathSegments. No application URI string
+    // conversion/logging/persistence; framework writeToParcel may build a string.
+    override fun retainedUriWorkingBytes(document: Uri): Long? {
+        val parcel = Parcel.obtain()
+        return try {
+            document.writeToParcel(parcel, 0)
+            val serialized = parcel.dataSize().toLong()
+            if (serialized <= 0) return null
+            val encodedPath = document.encodedPath
+            var components = if (encodedPath.isNullOrEmpty()) 0L else 1L
+            encodedPath?.forEach { if (it == '/') components++ }
+            Math.addExact(
+                Math.multiplyExact(serialized, 4L),
+                Math.addExact(
+                    Math.multiplyExact(components, 64L),
+                    Math.multiplyExact(encodedPath?.length?.toLong() ?: 0L, 2L),
+                ),
+            )
+        } finally {
+            parcel.recycle()
+        }
+    }
 
     override fun documentIdentity(document: Uri): Pcv3SafDocumentIdentity? {
         val authority = document.authority?.takeIf { it.isNotBlank() } ?: return null

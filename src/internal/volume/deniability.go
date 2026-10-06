@@ -388,8 +388,11 @@ func removeDeniability(
 // weaken the wrapper: each candidate must still yield a recognizable inner
 // header. ASCII passwords yield a single candidate, so there is no extra work.
 func selectDeniabilityKey(password []byte, salt, nonce, probe []byte, rs *encoding.RSCodecs) ([]byte, error) {
-	for _, cand := range pwnorm.Candidates(password) {
+	candidates := pwnorm.Candidates(password)
+	defer crypto.SecureZeroMultiple(candidates...)
+	for _, cand := range candidates {
 		key := deriveDeniabilityKey(cand, salt)
+		crypto.SecureZero(cand)
 		cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
 		if err != nil {
 			crypto.SecureZero(key)

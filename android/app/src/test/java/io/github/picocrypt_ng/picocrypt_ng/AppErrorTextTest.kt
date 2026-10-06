@@ -16,6 +16,16 @@ import org.w3c.dom.Element
 
 class AppErrorTextTest {
     @Test
+    fun `resource limit bridge failure uses resource text without credential retries`() {
+        val error = AppError.fromException(Pcv3BridgeFailure("PCV3_RESOURCE_LIMIT"))
+
+        assertEquals(R.string.pcv3_resource_limit_body, error.messageResId)
+        assertFalse(error.allowsPasswordRetry())
+        assertFalse(error.allowsForceDecrypt())
+        assertTrue(error.messageArgs.isEmpty())
+    }
+
+    @Test
     fun `localizedMessage prefers resource text over fallback userMessage`() {
         val context = mockk<Context>()
         every { context.getString(R.string.error_auth_failed) } returns "Localized authentication failure"

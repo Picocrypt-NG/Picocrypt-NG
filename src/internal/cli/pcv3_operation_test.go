@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"context"
@@ -22,7 +21,7 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 		{
 			name: "clean durable",
 			result: &pcv3CLIFixedResult{
-				outcome: pcv3.OutcomeSuccess, stage: pcv3.StageNone, code: pcv3.CodeSuccess,
+				outcome: pcv3operation.OutcomeSuccess, stage: pcv3operation.StageNone, code: pcv3operation.CodeSuccess,
 				publicationAttempted: true,
 				publicationState:     pcv3publication.StatePublishedDurable,
 				publicationCode:      pcv3publication.CodePublishedDurable,
@@ -34,7 +33,7 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 		{
 			name: "authenticated degraded durable",
 			result: &pcv3CLIFixedResult{
-				outcome: pcv3.OutcomeAuthenticatedDegraded, stage: pcv3.StageMetadata, code: pcv3.CodeAuthenticatedDegraded,
+				outcome: pcv3operation.OutcomeAuthenticatedDegraded, stage: pcv3operation.StageMetadata, code: pcv3operation.CodeAuthenticatedDegraded,
 				publicationAttempted: true,
 				publicationState:     pcv3publication.StatePublishedDurable,
 				publicationCode:      pcv3publication.CodePublishedDurable,
@@ -48,7 +47,7 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 		{
 			name: "force partial durable",
 			result: &pcv3CLIFixedResult{
-				outcome: pcv3.OutcomeForcePartial, stage: pcv3.StageRecordAuth, code: pcv3.CodeForcePartial,
+				outcome: pcv3operation.OutcomeForcePartial, stage: pcv3operation.StageRecordAuth, code: pcv3operation.CodeForcePartial,
 				publicationAttempted: true,
 				publicationState:     pcv3publication.StatePublishedDurable,
 				publicationCode:      pcv3publication.CodePublishedDurable,
@@ -62,7 +61,7 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 		{
 			name: "force unverified durable",
 			result: &pcv3CLIFixedResult{
-				outcome: pcv3.OutcomeForceUnverified, stage: pcv3.StageRecordAuth, code: pcv3.CodeForceUnverified,
+				outcome: pcv3operation.OutcomeForceUnverified, stage: pcv3operation.StageRecordAuth, code: pcv3operation.CodeForceUnverified,
 				publicationAttempted: true,
 				publicationState:     pcv3publication.StatePublishedDurable,
 				publicationCode:      pcv3publication.CodePublishedDurable,
@@ -76,7 +75,7 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 		{
 			name: "clean durable with cleanup warning",
 			result: &pcv3CLIFixedResult{
-				outcome: pcv3.OutcomeSuccess, stage: pcv3.StageNone, code: pcv3.CodeSuccess,
+				outcome: pcv3operation.OutcomeSuccess, stage: pcv3operation.StageNone, code: pcv3operation.CodeSuccess,
 				publicationAttempted: true,
 				publicationState:     pcv3publication.StatePublishedDurable,
 				publicationCode:      pcv3publication.CodePublishedDurable,
@@ -85,15 +84,15 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 			},
 			wantExit: 2,
 			wantOutput: "Outcome: success\nPublication: published-durable\n" +
-				"Warning: cleanup of operation-owned temporary plaintext could not be confirmed\n",
+				"Warning: cleanup of operation-owned temporary files could not be confirmed\n",
 		},
 		{
 			name: "durability uncertain overrides clean",
 			result: &pcv3CLIFixedResult{
-				outcome: pcv3.OutcomeSuccess, stage: pcv3.StageNone, code: pcv3.CodeSuccess,
+				outcome: pcv3operation.OutcomeSuccess, stage: pcv3operation.StageNone, code: pcv3operation.CodeSuccess,
 				publicationAttempted: true,
 				publicationState:     pcv3publication.StatePublishedDurabilityUncertain,
-				publicationStage:     pcv3.StageDirectorySync,
+				publicationStage:     pcv3operation.StageDirectorySync,
 				publicationCode:      pcv3publication.CodeDurabilityUncertain,
 				warnings:             []pcv3operation.Warning{pcv3operation.WarningDurabilityUncertain},
 				class:                pcv3operation.CompletionDurabilityUncertain,
@@ -105,10 +104,10 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 		{
 			name: "publication indeterminate overrides force",
 			result: &pcv3CLIFixedResult{
-				outcome: pcv3.OutcomeForcePartial, stage: pcv3.StageRecordAuth, code: pcv3.CodeForcePartial,
+				outcome: pcv3operation.OutcomeForcePartial, stage: pcv3operation.StageRecordAuth, code: pcv3operation.CodeForcePartial,
 				publicationAttempted: true,
 				publicationState:     pcv3publication.StatePublicationIndeterminate,
-				publicationStage:     pcv3.StageOutputPublication,
+				publicationStage:     pcv3operation.StageOutputPublication,
 				publicationCode:      pcv3publication.CodePublicationIndeterminate,
 				warnings: []pcv3operation.Warning{
 					pcv3operation.WarningForcePartial,
@@ -124,7 +123,7 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 		{
 			name: "refused without publication",
 			result: &pcv3CLIFixedResult{
-				outcome: pcv3.OutcomeUnsupportedRoutingPreKDF, stage: pcv3.StageRouting, code: pcv3.CodeUnsupported,
+				outcome: pcv3operation.OutcomeUnsupportedRoutingPreKDF, stage: pcv3operation.StageRouting, code: pcv3operation.CodeUnsupported,
 				class: pcv3operation.CompletionRefused,
 			},
 			wantExit:   1,
@@ -133,10 +132,10 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 		{
 			name: "not published",
 			result: &pcv3CLIFixedResult{
-				outcome: pcv3.OutcomeOperationFailed, stage: pcv3.StageOutputPublication, code: pcv3.CodeOperationFailed,
+				outcome: pcv3operation.OutcomeOperationFailed, stage: pcv3operation.StageOutputPublication, code: pcv3operation.CodeOperationFailed,
 				publicationAttempted: true,
 				publicationState:     pcv3publication.StateNotPublished,
-				publicationStage:     pcv3.StageOutputPublication,
+				publicationStage:     pcv3operation.StageOutputPublication,
 				publicationCode:      pcv3publication.CodeAtomicFailed,
 				class:                pcv3operation.CompletionNoOutput,
 			},
@@ -144,12 +143,34 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 			wantOutput: "Outcome: operation-failed\nPublication: not-published\n",
 		},
 		{
+			name: "resource refusal explains no output",
+			result: &pcv3CLIFixedResult{
+				outcome: pcv3operation.OutcomeOperationFailed, stage: pcv3operation.StageResourceBudget, code: pcv3operation.CodeOperationFailed,
+				class: pcv3operation.CompletionNoOutput,
+			},
+			wantExit: 1,
+			wantOutput: "Outcome: operation-failed\nPublication: not-attempted\n" +
+				"Resource limit reached: the operation exceeded its processing resource budget.\n",
+		},
+		{
+			name: "resource refusal retains cleanup warning",
+			result: &pcv3CLIFixedResult{
+				outcome: pcv3operation.OutcomeOperationFailed, stage: pcv3operation.StageResourceBudget, code: pcv3operation.CodeOperationFailed,
+				warnings: []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete},
+				class:    pcv3operation.CompletionNoOutput,
+			},
+			wantExit: 1,
+			wantOutput: "Outcome: operation-failed\nPublication: not-attempted\n" +
+				"Resource limit reached: the operation exceeded its processing resource budget.\n" +
+				"Warning: cleanup of operation-owned temporary files could not be confirmed\n",
+		},
+		{
 			name: "unknown tuple remains neutral",
 			result: &pcv3CLIFixedResult{
-				outcome: pcv3.Outcome(255), stage: pcv3.Stage(255), code: pcv3.Code(255),
+				outcome: pcv3operation.Outcome(255), stage: pcv3operation.Stage(255), code: pcv3operation.Code(255),
 				publicationAttempted: true,
 				publicationState:     pcv3publication.State(255),
-				publicationStage:     pcv3.Stage(255),
+				publicationStage:     pcv3operation.Stage(255),
 				publicationCode:      pcv3publication.Code(255),
 				warnings:             []pcv3operation.Warning{pcv3operation.Warning(255)},
 				class:                pcv3operation.CompletionUnknown,
@@ -198,25 +219,25 @@ func (archive *pcv3CLIFakeArchive) Close() pcv3CLIResult {
 func TestPCV3CLIArchiveUnavailableRootIsAttemptedNotPublished(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "missing")
 	notPublished := &pcv3CLIFixedResult{
-		outcome:              pcv3.OutcomeOperationFailed,
-		stage:                pcv3.StageOutputPublication,
-		code:                 pcv3.CodeOperationFailed,
+		outcome:              pcv3operation.OutcomeOperationFailed,
+		stage:                pcv3operation.StageOutputPublication,
+		code:                 pcv3operation.CodeOperationFailed,
 		publicationAttempted: true,
 		publicationState:     pcv3publication.StateNotPublished,
-		publicationStage:     pcv3.StageOutputPublication,
+		publicationStage:     pcv3operation.StageOutputPublication,
 		publicationCode:      pcv3publication.CodeAtomicFailed,
 		class:                pcv3operation.CompletionNoOutput,
 	}
 	closedWithoutExtraction := &pcv3CLIFixedResult{
-		outcome: pcv3.OutcomeOperationFailed,
-		stage:   pcv3.StageOutputPublication,
-		code:    pcv3.CodeOperationFailed,
+		outcome: pcv3operation.OutcomeOperationFailed,
+		stage:   pcv3operation.StageOutputPublication,
+		code:    pcv3operation.CodeOperationFailed,
 		class:   pcv3operation.CompletionNoOutput,
 	}
 	pending := &pcv3CLIFixedResult{
-		outcome: pcv3.OutcomeSuccess,
-		stage:   pcv3.StageNone,
-		code:    pcv3.CodeSuccess,
+		outcome: pcv3operation.OutcomeSuccess,
+		stage:   pcv3operation.StageNone,
+		code:    pcv3operation.CodeSuccess,
 		class:   pcv3operation.CompletionArchivePending,
 		archive: &pcv3CLIFakeArchive{
 			extract: func(_ context.Context, root *os.Root) pcv3CLIResult {
@@ -236,7 +257,7 @@ func TestPCV3CLIArchiveUnavailableRootIsAttemptedNotPublished(t *testing.T) {
 	}
 	if !result.PublicationAttempted() ||
 		result.PublicationState() != pcv3publication.StateNotPublished ||
-		result.PublicationStage() != pcv3.StageOutputPublication ||
+		result.PublicationStage() != pcv3operation.StageOutputPublication ||
 		result.PublicationCode() != pcv3publication.CodeAtomicFailed ||
 		result.CompletionClass() != pcv3operation.CompletionNoOutput {
 		t.Fatalf(
@@ -257,20 +278,20 @@ func TestPCV3CLIArchiveUnavailableRootIsAttemptedNotPublished(t *testing.T) {
 func TestPCV3CLIArchiveExtractionObservesSignalCancellation(t *testing.T) {
 	destination := t.TempDir()
 	terminal := &pcv3CLIFixedResult{
-		outcome:              pcv3.OutcomeOperationFailed,
-		stage:                pcv3.StageOutputPublication,
-		code:                 pcv3.CodeOperationFailed,
+		outcome:              pcv3operation.OutcomeOperationFailed,
+		stage:                pcv3operation.StageOutputPublication,
+		code:                 pcv3operation.CodeOperationFailed,
 		publicationAttempted: true,
 		publicationState:     pcv3publication.StateNotPublished,
-		publicationStage:     pcv3.StageOutputPublication,
+		publicationStage:     pcv3operation.StageOutputPublication,
 		publicationCode:      pcv3publication.CodeAtomicFailed,
 		class:                pcv3operation.CompletionNoOutput,
 	}
 	entered := make(chan struct{})
 	pending := &pcv3CLIFixedResult{
-		outcome: pcv3.OutcomeSuccess,
-		stage:   pcv3.StageNone,
-		code:    pcv3.CodeSuccess,
+		outcome: pcv3operation.OutcomeSuccess,
+		stage:   pcv3operation.StageNone,
+		code:    pcv3operation.CodeSuccess,
 		class:   pcv3operation.CompletionArchivePending,
 		archive: &pcv3CLIFakeArchive{
 			extract: func(ctx context.Context, root *os.Root) pcv3CLIResult {
@@ -370,7 +391,7 @@ func TestPCV3CLITerminalContract(t *testing.T) {
 		{id: "degraded", scenario: "degraded", wantExit: 2, wantStderr: "Outcome: authenticated-degraded\nPublication: published-durable\nWarning: output is authenticated but recovery redundancy is damaged\n"},
 		{id: "force-partial", scenario: "partial", wantExit: 2, wantStderr: "Outcome: force-partial\nPublication: published-durable\nWarning: partial recovery output is not a complete plaintext file\n"},
 		{id: "force-unverified-quiet", scenario: "warning", quiet: true, wantExit: 2, wantStderr: "Outcome: force-unverified\nPublication: published-durable\nWarning: recovered bytes are unverified and may be unsafe\n"},
-		{id: "cleanup-warning", scenario: "cleanup-warning", wantExit: 2, wantStderr: "Outcome: success\nPublication: published-durable\nWarning: cleanup of operation-owned temporary plaintext could not be confirmed\n"},
+		{id: "cleanup-warning", scenario: "cleanup-warning", wantExit: 2, wantStderr: "Outcome: success\nPublication: published-durable\nWarning: cleanup of operation-owned temporary files could not be confirmed\n"},
 		{id: "durability-uncertain", scenario: "uncertain", wantExit: 3, wantStderr: "Outcome: success\nPublication: published-durability-uncertain\nWarning: output durability was not confirmed; keep source and destination unchanged\n"},
 		{id: "publication-indeterminate", scenario: "indeterminate", wantExit: 4, wantStderr: "Outcome: force-partial\nPublication: publication-indeterminate\nWarning: partial recovery output is not a complete plaintext file\nWarning: output state is unknown; keep source and destination unchanged\n"},
 		{id: "refusal", scenario: "refusal", wantExit: 1, wantStderr: "Outcome: operation-failed\nPublication: not-attempted\n"},

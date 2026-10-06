@@ -4,7 +4,7 @@ import (
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation"
 	"errors"
 	"fmt"
 	"io"
@@ -20,7 +20,7 @@ type PreparedDecryptInput struct {
 	file       *os.File
 	info       os.FileInfo
 	inputInfos []os.FileInfo
-	route      pcv3.Route
+	route      pcv3operation.Route
 }
 
 // PrepareDecryptInput opens and routes the descriptor that authorizes a legacy
@@ -49,14 +49,14 @@ func PrepareDecryptInput(inputPath string, recombine bool) (*PreparedDecryptInpu
 			source.Close(),
 		)
 	}
-	route := pcv3.RouteLegacyEligible
+	route := pcv3operation.RouteLegacyEligible
 	if recombine {
 		var prefix [4]byte
 		count, readErr := io.ReadFull(source, prefix[:])
 		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
 			return nil, errors.Join(readErr, source.Close())
 		}
-		route = pcv3.DetectPrefix(prefix[:count])
+		route = pcv3operation.DetectPrefix(prefix[:count])
 		if _, err := source.Seek(0, io.SeekStart); err != nil {
 			return nil, errors.Join(err, source.Close())
 		}
@@ -64,7 +64,7 @@ func PrepareDecryptInput(inputPath string, recombine bool) (*PreparedDecryptInpu
 		return nil, errors.Join(err, source.Close())
 	}
 	inputInfos := []os.FileInfo{info}
-	if recombine && route != pcv3.RouteNormalPCV {
+	if recombine && route != pcv3operation.RouteNormalPCV {
 		inputBase := recombineInputBase(inputPath)
 		numChunks, _, err := fileops.CountChunks(inputBase)
 		if err != nil {
@@ -100,7 +100,7 @@ func PrepareDecryptInput(inputPath string, recombine bool) (*PreparedDecryptInpu
 }
 
 func (input *PreparedDecryptInput) ClaimsNormalPCV3() bool {
-	return input != nil && input.route == pcv3.RouteNormalPCV
+	return input != nil && input.route == pcv3operation.RouteNormalPCV
 }
 
 // Close releases the prepared descriptor. It is safe to call more than once.
@@ -112,7 +112,7 @@ func (input *PreparedDecryptInput) Close() error {
 	input.file = nil
 	input.info = nil
 	input.inputInfos = nil
-	input.route = pcv3.RouteLegacyEligible
+	input.route = pcv3operation.RouteLegacyEligible
 	return err
 }
 
@@ -180,7 +180,7 @@ func PreflightPCV3(inputPath string, recombine bool) error {
 		return err
 	}
 	if input.ClaimsNormalPCV3() {
-		return errors.Join(pcv3.ErrReaderUnavailable, input.Close())
+		return errors.Join(pcv3operation.ErrReaderUnavailable, input.Close())
 	}
 	return input.Close()
 }
@@ -204,12 +204,12 @@ func rejectClaimedPCV3(source *os.File) error {
 }
 
 func rejectClaimedPCV3Size(source *os.File, sourceSize int64) error {
-	route, _, err := pcv3.Probe(source, sourceSize)
+	route, err := pcv3operation.Probe(source, sourceSize)
 	if err != nil {
 		return err
 	}
-	if route == pcv3.RouteNormalPCV {
-		return pcv3.ErrReaderUnavailable
+	if route == pcv3operation.RouteNormalPCV {
+		return pcv3operation.ErrReaderUnavailable
 	}
 	return nil
 }

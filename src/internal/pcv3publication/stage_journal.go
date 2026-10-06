@@ -256,10 +256,15 @@ func (stage *Stage) cleanupJournaledOwned(cleanupFailed *bool) {
 		*cleanupFailed = true
 		return
 	}
+	// Ciphertext retirement may already have removed the journal before its
+	// directory barrier failed. The pinned stage is still ours; remove it and
+	// synchronize both removals without requiring a journal that we just unlinked.
+	journalIdentity := probeIdentity(stage.root, cleanupJournalName, stage.journalInfo)
+	retiredWriteJournal := stage.writePublication && stage.journalRemoved && journalIdentity == identityMissing
 	currentStage, stageErr := stage.root.Lstat(stage.stageName)
 	if stageErr != nil || currentStage == nil || !currentStage.Mode().IsRegular() ||
 		!os.SameFile(stage.stageInfo, currentStage) || !stage.journalStageIdentity.matches(currentStage) ||
-		probeIdentity(stage.root, cleanupJournalName, stage.journalInfo) != identityExpected {
+		(journalIdentity != identityExpected && !retiredWriteJournal) {
 		*cleanupFailed = true
 		return
 	}
@@ -276,6 +281,9 @@ func (stage *Stage) cleanupJournaledOwned(cleanupFailed *bool) {
 	}
 	if stage.operations.syncDirectory(stage.parent) != nil {
 		*cleanupFailed = true
+		return
+	}
+	if retiredWriteJournal {
 		return
 	}
 	journalRemoved := removeExactJournalEntry(
@@ -395,7 +403,7 @@ type journalCleanupOperations struct {
 func nativeJournalCleanupOperations() journalCleanupOperations {
 	return journalCleanupOperations{
 		remove:        (*os.Root).Remove,
-		syncDirectory: (*os.File).Sync,
+		syncDirectory: fileops.SyncDirectory,
 	}
 }
 

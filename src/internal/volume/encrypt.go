@@ -7,10 +7,7 @@ import (
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/keyfile"
 	"Picocrypt-NG/internal/log"
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3credential"
-	"Picocrypt-NG/internal/pcv3publication"
-	"Picocrypt-NG/internal/pcv3resource"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"context"
 	"errors"
@@ -20,21 +17,60 @@ import (
 	"time"
 
 	perrors "Picocrypt-NG/internal/errors"
-
 	pwnorm "Picocrypt-NG/internal/password"
 )
 
 // Encrypt performs a complete volume encryption operation.
 // This is the main entry point for encryption.
 // If ctx is nil, a background context is used.
-func Encrypt(ctx context.Context, req *EncryptRequest) (retErr error) {
+func Encrypt(ctx context.Context, req *EncryptRequest) error {
+	_, err := EncryptWithResult(ctx, req, pcv3operation.ExecutionOptions{})
+	return err
+}
+
+// EncryptWithResult returns the core-owned PCV3 result only after source and
+// preprocessing cleanup. Legacy v2 returns a nil result and its existing error.
+func EncryptWithResult(ctx context.Context, req *EncryptRequest, options pcv3operation.ExecutionOptions) (result *pcv3operation.Result, retErr error) {
+	if req == nil {
+		return nil, errors.New("encryption request is required")
+	}
+	if !req.PCV3 {
+		return nil, encryptLegacy(ctx, req)
+	}
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
+	opCtx := NewEncryptContext(ctx, req)
+	defer func() {
+		panicValue := recover()
+		cleanupErr := opCtx.Close()
+		if cleanupErr != nil {
+			if result != nil {
+				result.WithCleanupWarning()
+			}
+			retErr = errors.Join(retErr, cleanupErr)
+		}
+		if panicValue != nil {
+			fileops.RepanicWithCleanup(panicValue, cleanupErr)
+		}
+	}()
+
+	return encryptPCV3(opCtx, req, options)
+}
+
+func encryptLegacy(ctx context.Context, req *EncryptRequest) (retErr error) {
 	if err := req.Validate(); err != nil {
 		return err
 	}
 
 	opCtx := NewEncryptContext(ctx, req)
 	defer func() {
-		retErr = errors.Join(retErr, opCtx.Close())
+		panicValue := recover()
+		cleanupErr := opCtx.Close()
+		retErr = errors.Join(retErr, cleanupErr)
+		if panicValue != nil {
+			fileops.RepanicWithCleanup(panicValue, cleanupErr)
+		}
 	}() // Secure zeroing of key material and fail-loud stage cleanup
 
 	log.Info("starting encryption", log.String("output", req.OutputFile))
@@ -42,13 +78,6 @@ func Encrypt(ctx context.Context, req *EncryptRequest) (retErr error) {
 	// Preprocess (zip if multiple files or compression is requested).
 	if err := encryptPreprocess(opCtx, req); err != nil {
 		return err
-	}
-	if req.PCV3 {
-		if err := encryptPCV3(opCtx, req); err != nil {
-			return err
-		}
-		log.Info("PCV3 encryption completed successfully")
-		return nil
 	}
 
 	// Generate cryptographic values.
@@ -90,225 +119,94 @@ func Encrypt(ctx context.Context, req *EncryptRequest) (retErr error) {
 	return nil
 }
 
-func encryptPCV3(ctx *OperationContext, req *EncryptRequest) (retErr error) {
+func encryptPCV3(ctx *OperationContext, req *EncryptRequest, options pcv3operation.ExecutionOptions) (result *pcv3operation.Result, retErr error) {
 	ctx.SetStatus("Generating values...")
 	ctx.SetCanCancel(true)
-	if req.Deniability {
-		return encryptPCV3D1(ctx, req)
-	}
-
-	var source *os.File
-	closeSource := false
-	var err error
-	if ctx.tempInput != nil && ctx.InputFile == ctx.tempInput.Path() {
-		source, _, err = ctx.openInput()
-	} else {
-		source, err = fileops.OpenExistingNoSymlink(ctx.InputFile, os.O_RDONLY)
-		closeSource = err == nil
-	}
+	prepared, err := prepareEncryptInput(ctx, req, nil)
 	if err != nil {
-		return fmt.Errorf("open PCV3 input: %w", err)
+		return nil, err
 	}
-	if closeSource {
-		defer func() { retErr = errors.Join(retErr, source.Close()) }()
+	defer func() {
+		panicValue := recover()
+		cleanupErr := prepared.Close()
+		if cleanupErr != nil {
+			if result != nil {
+				result.WithCleanupWarning()
+			}
+			retErr = errors.Join(retErr, cleanupErr)
+		}
+		if panicValue != nil {
+			fileops.RepanicWithCleanup(panicValue, cleanupErr)
+		}
+	}()
+	factors, err := pcv3WriteFactors(req)
+	if err != nil {
+		return nil, err
 	}
-	info, err := source.Stat()
-	if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
-		return errors.New("PCV3 input must be a regular file")
-	}
-
-	protected := make([]string, 0,
-		1+len(req.InputFiles)+len(req.OnlyFiles)+len(req.OnlyFolders)+len(req.Keyfiles),
-	)
-	if req.InputFile != "" {
-		protected = append(protected, req.InputFile)
-	}
-	protected = append(protected, req.InputFiles...)
+	protected := append([]string{ctx.InputFile}, req.InputFiles...)
 	protected = append(protected, req.OnlyFiles...)
 	protected = append(protected, req.OnlyFolders...)
 	protected = append(protected, req.Keyfiles...)
-	stage, err := pcv3publication.Create(
-		req.OutputFile,
-		protected,
-		pcv3publication.PolicyNoReplace,
-	)
-	if err != nil {
-		return err
-	}
-	defer func() { retErr = errors.Join(retErr, stage.Cleanup()) }()
-
-	factors, err := pcv3WriteFactors(req)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if factors != nil {
-			retErr = errors.Join(retErr, factors.Close())
-		}
-	}()
-	suite := pcv3.SuiteStandard
+	mode := pcv3operation.WriteModeNormal
+	suite := pcv3operation.SuiteStandard
 	if req.Paranoid {
-		suite = pcv3.SuiteParanoid
+		suite = pcv3operation.SuiteParanoid
 	}
-	payloadKind := pcv3.PayloadKindRaw
-	if ctx.TempZipInUse {
-		payloadKind = pcv3.PayloadKindArchive
+	if req.Deniability {
+		mode = pcv3operation.WriteModeD1
 	}
-	request := &pcv3.NativeNormalWriteRequest{
-		Suite:           suite,
-		PayloadKind:     payloadKind,
-		PayloadBodyRS:   req.ReedSolomon,
-		PlaintextLength: uint64(info.Size()), //nolint:gosec // Size is checked non-negative above.
-		Comment:         []byte(req.Comments),
-		Factors:         factors,
-		Admitter:        pcv3resource.NewPlatformAdmitter(),
-		Source:          ctx.TempZipReader(source),
-		Destination:     stage.File(),
-	}
-	err = pcv3.RunNativeNormalWrite(ctx.Ctx, request)
-	factors = request.Factors
-	if err != nil {
-		return err
-	}
-	var publication pcv3publication.Result
-	if req.Split {
-		ctx.SetStatus("Splitting...")
-		var retained *pcv3publication.RetainedFile
-		publication, retained = stage.PublishRetained(ctx.Ctx)
-		if publication == nil ||
-			publication.State() != pcv3publication.StatePublishedDurable || retained == nil {
-			if retained != nil {
-				_ = retained.RemoveExact()
+	request := &pcv3operation.WriteRequest{
+		Mode: mode, Suite: suite, PayloadKind: prepared.PayloadKind(), PayloadBodyRS: req.ReedSolomon,
+		PlaintextLength: prepared.Length(),
+		Comment:         []byte(req.Comments), Factors: factors, Source: prepared.Reader(),
+		SourceFile: prepared.File(), SourcePath: prepared.Path(), Target: req.OutputFile, Protected: protected,
+		Reporter: func(status pcv3operation.Status) error {
+			switch status.Code() {
+			case pcv3operation.StatusEncrypting, pcv3operation.StatusSplitting:
+				args := status.Args()
+				if len(args) == 2 && args[1] > 0 && args[0] <= args[1] {
+					ctx.UpdateProgress(float32(float64(args[0])/float64(args[1])), "")
+				}
+			case pcv3operation.StatusDerivingKey:
+				ctx.SetStatus("Deriving key...")
+			case pcv3operation.StatusPublishing:
+				ctx.SetStatus("Writing values...")
 			}
-			if publication != nil {
-				return publication
-			}
-			return errors.New("PCV3 retained publication failed")
-		}
-		if err := pcv3publication.SplitRetained(retained, pcv3SplitOptions(ctx, req)); err != nil {
-			return err
-		}
-	} else {
-		publication = stage.Publish(ctx.Ctx)
-	}
-	if publication == nil {
-		return errors.New("PCV3 publication failed")
-	}
-	if publication.State() != pcv3publication.StatePublishedDurable {
-		return publication
-	}
-	ctx.UpdateProgress(1, "100.00%")
-	return nil
-}
-
-func pcv3SplitOptions(ctx *OperationContext, req *EncryptRequest) fileops.SplitOptions {
-	return fileops.SplitOptions{
-		ChunkSize: req.ChunkSize,
-		Unit:      req.ChunkUnit,
-		Progress: func(progress float32, info string) {
-			ctx.UpdateProgress(progress, info)
-		},
-		Cancel: func() bool {
-			return ctx.IsCancelled()
+			return nil
 		},
 	}
-}
-
-func encryptPCV3D1(ctx *OperationContext, req *EncryptRequest) (retErr error) {
-	var source *os.File
-	closeSource := false
-	var err error
-	if ctx.tempInput != nil && ctx.InputFile == ctx.tempInput.Path() {
-		source, _, err = ctx.openInput()
-	} else {
-		source, err = fileops.OpenExistingNoSymlink(ctx.InputFile, os.O_RDONLY)
-		closeSource = err == nil
-	}
-	if err != nil {
-		return fmt.Errorf("open PCV3 D1 input: %w", err)
-	}
-	if closeSource {
-		defer func() { retErr = errors.Join(retErr, source.Close()) }()
-	}
-	info, statErr := source.Stat()
-	if statErr != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
-		return errors.New("PCV3 D1 input must be a regular file")
-	}
-	if err := req.ValidateOutputSafety(); err != nil {
-		return err
-	}
-	factors, err := pcv3WriteFactors(req)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if factors != nil {
-			retErr = errors.Join(retErr, factors.Close())
-		}
-	}()
-	payloadKind := pcv3.PayloadKindRaw
-	if ctx.TempZipInUse {
-		payloadKind = pcv3.PayloadKindArchive
-	}
-	protected := make([]string, 0,
-		1+len(req.InputFiles)+len(req.OnlyFiles)+len(req.OnlyFolders)+len(req.Keyfiles),
-	)
-	if req.InputFile != "" {
-		protected = append(protected, req.InputFile)
-	}
-	protected = append(protected, req.InputFiles...)
-	protected = append(protected, req.OnlyFiles...)
-	protected = append(protected, req.OnlyFolders...)
-	protected = append(protected, req.Keyfiles...)
-	request := &pcv3.NativeD1WriteRequest{
-		Suite:           pcv3.SuiteParanoid,
-		PayloadKind:     payloadKind,
-		PayloadBodyRS:   req.ReedSolomon,
-		PlaintextLength: uint64(info.Size()), //nolint:gosec // Size is checked non-negative above.
-		Comment:         []byte(req.Comments),
-		Factors:         factors,
-		Admitter:        pcv3resource.NewPlatformAdmitter(),
-		SourcePath:      ctx.InputFile,
-		Source:          source,
-		Plaintext:       ctx.TempZipReader(source),
-		DestinationPath: req.OutputFile,
-		Protected:       protected,
-	}
 	if req.Split {
-		ctx.SetStatus("Splitting...")
-		splitOptions := pcv3SplitOptions(ctx, req)
-		request.SplitOptions = &splitOptions
+		request.Split = &pcv3operation.WriteSplitOptions{ChunkSize: req.ChunkSize, Unit: req.ChunkUnit}
 	}
-	err = pcv3.RunNativeD1Write(ctx.Ctx, request)
-	factors = request.Factors
-	if err != nil {
-		return err
+	result = pcv3operation.RunWriteWithOptions(ctx.Ctx, request, options)
+	if result.CompletionClass() != pcv3operation.CompletionClean {
+		return result, result
 	}
 	ctx.UpdateProgress(1, "100.00%")
-	return nil
+	return result, nil
 }
 
-func pcv3WriteFactors(req *EncryptRequest) (*pcv3credential.FactorRequest, error) {
-	request := &pcv3credential.FactorRequest{
+func pcv3WriteFactors(req *EncryptRequest) (*pcv3operation.FactorRequest, error) {
+	request := &pcv3operation.FactorRequest{
 		Password: append([]byte(nil), req.Password...),
 	}
 	if len(req.Keyfiles) == 0 {
-		request.Mode = pcv3credential.CredentialModePasswordOnly
-		request.KeyfileMode = pcv3credential.KeyfileModeNone
-		request.ExpectedPolicy = pcv3credential.FactorPolicyPasswordOnly
+		request.Mode = pcv3operation.CredentialModePasswordOnly
+		request.KeyfileMode = pcv3operation.KeyfileModeNone
+		request.ExpectedPolicy = pcv3operation.FactorPolicyPasswordOnly
 		return request, nil
 	}
 
-	request.KeyfileMode = pcv3credential.KeyfileModeUnordered
+	request.KeyfileMode = pcv3operation.KeyfileModeUnordered
 	if req.KeyfileOrdered {
-		request.KeyfileMode = pcv3credential.KeyfileModeOrdered
+		request.KeyfileMode = pcv3operation.KeyfileModeOrdered
 	}
 	if len(req.Password) == 0 {
-		request.Mode = pcv3credential.CredentialModeKeyfilesOnly
-		request.ExpectedPolicy = pcv3credential.FactorPolicyKeyfilesOnly
+		request.Mode = pcv3operation.CredentialModeKeyfilesOnly
+		request.ExpectedPolicy = pcv3operation.FactorPolicyKeyfilesOnly
 	} else {
-		request.Mode = pcv3credential.CredentialModePasswordAndKeyfiles
-		request.ExpectedPolicy = pcv3credential.FactorPolicyPasswordAndKeyfiles
+		request.Mode = pcv3operation.CredentialModePasswordAndKeyfiles
+		request.ExpectedPolicy = pcv3operation.FactorPolicyPasswordAndKeyfiles
 	}
 	for _, path := range req.Keyfiles {
 		file, err := fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
@@ -322,7 +220,7 @@ func pcv3WriteFactors(req *EncryptRequest) (*pcv3credential.FactorRequest, error
 			_ = request.Close()
 			return nil, errors.New("PCV3 keyfile must be a regular file")
 		}
-		request.Keyfiles = append(request.Keyfiles, pcv3credential.OwnKeyfileReader(file))
+		request.Keyfiles = append(request.Keyfiles, pcv3operation.OwnKeyfileReader(file))
 	}
 	return request, nil
 }
@@ -347,15 +245,19 @@ func encryptPreprocess(ctx *OperationContext, req *EncryptRequest) error {
 	// a real zip that preserves the folder structure — see issue #130. OnlyFolders
 	// is the signal that a folder (not a bare file) was selected.
 	if len(inputFiles) > 1 || (len(inputFiles) == 1 && (req.Compress || len(req.OnlyFolders) > 0)) {
-		ctx.SetStatus("Compressing files...")
-
-		// Create temp zip ciphers for encrypting the temporary file
-		var err error
-		ctx.TempCiphers, err = fileops.NewTempZipCiphers()
+		budget := req.ZIPBudget
+		if budget == nil {
+			budget = fileops.NewZIPResourceBudget()
+		}
+		if err := pcv3operation.AdmitZIPWorkingMemory(ctx.Ctx, budget); err != nil {
+			return err
+		}
+		selectionCharge, err := reserveZIPSelection(budget, req, inputFiles)
 		if err != nil {
 			return err
 		}
-
+		defer budget.Release(selectionCharge)
+		ctx.SetStatus("Compressing files...")
 		zipReq := *req
 		zipReq.InputFiles = inputFiles
 
@@ -364,37 +266,24 @@ func encryptPreprocess(ctx *OperationContext, req *EncryptRequest) error {
 			return err
 		}
 
-		tempZip, err := fileops.CreateSiblingTemp(req.OutputFile)
+		maxPhysical, err := admitTemporaryZIP(req)
 		if err != nil {
 			return err
 		}
-		ctx.adoptTempInput(tempZip)
-
-		// Create the zip through the exclusively owned handle. The random path
-		// is never reopened for writing.
-		err = fileops.CreateZip(fileops.ZipOptions{
-			Files:      inputFiles,
-			RootDir:    commonRoot,
-			EntryNames: entryNames,
-			OutputFile: tempZip.File(),
-			Compress:   req.Compress,
-			Cipher:     ctx.TempCiphers,
-			Progress: func(p float32, info string) {
-				ctx.UpdateProgress(p, info)
-			},
-			Status: func(s string) {
-				ctx.SetStatus(s)
-			},
-			Cancel: func() bool {
-				return ctx.IsCancelled()
-			},
+		tempZip, err := fileops.CreateTempZip(ctx.Ctx, fileops.TempZipOptions{
+			Files: inputFiles, RootDir: commonRoot, EntryNames: entryNames,
+			NearPath: req.OutputFile, Compress: req.Compress, MaxPhysicalBytes: maxPhysical,
+			Budget: budget, Progress: ctx.UpdateProgress, Status: ctx.SetStatus, Cancel: ctx.IsCancelled,
 		})
 		if err != nil {
+			if errors.Is(err, fileops.ErrTempZipCleanupIncomplete) {
+				return errors.Join(err, ErrEncryptInputCleanupIncomplete)
+			}
 			return err
 		}
 
 		ctx.InputFile = tempZip.Path()
-		ctx.TempZipInUse = true
+		ctx.tempZip = tempZip
 	} else if len(inputFiles) == 1 {
 		ctx.InputFile = inputFiles[0]
 	} else {
@@ -428,12 +317,17 @@ func encryptGenerateValues(ctx *OperationContext, req *EncryptRequest) error {
 		return err
 	}
 
-	// Get input file size for padded flag
-	stat, err := os.Stat(ctx.InputFile)
-	if err != nil {
-		return fmt.Errorf("stat input: %w", err)
+	// Authentication tags belong only to the private spool, never to the
+	// public legacy payload length or RS padding decision.
+	if ctx.tempZip != nil {
+		ctx.Total = int64(ctx.tempZip.Length()) //nolint:gosec // The finalized spool enforces physical extent <= MaxInt64.
+	} else {
+		stat, err := os.Stat(ctx.InputFile)
+		if err != nil {
+			return fmt.Errorf("stat input: %w", err)
+		}
+		ctx.Total = stat.Size()
 	}
-	ctx.Total = stat.Size()
 
 	// Determine if padding is needed (RS internals)
 	// Padding is required when the last partial block would leave fewer than RS128DataSize
@@ -599,10 +493,9 @@ func encryptPayload(ctx *OperationContext, req *EncryptRequest) error {
 		return fmt.Errorf("seek output: %w", err)
 	}
 
-	// Wrap with temp zip cipher if needed
-	var reader io.Reader = fin
-	if ctx.TempZipInUse && ctx.TempCiphers != nil {
-		reader = fileops.WrapReaderWithCipher(fin, ctx.TempCiphers)
+	reader, err := ctx.TempZipReader(fin)
+	if err != nil {
+		return err
 	}
 	reader = newPayloadReader(reader)
 

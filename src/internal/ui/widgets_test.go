@@ -2,11 +2,14 @@
 package ui
 
 import (
+	"Picocrypt-NG/internal/util"
 	"image/color"
 	"strings"
 	"testing"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/test"
 	fynetheme "fyne.io/fyne/v2/theme"
 )
 
@@ -134,8 +137,8 @@ func TestPasswordStrengthIndicator(t *testing.T) {
 func TestValidationIndicator(t *testing.T) {
 	newTestFyneApp(t)
 
-	// SetValid+SetVisible are merged into one renderer check on the drawn circle's
-	// StrokeColor (the only visible channel; FillColor stays transparent): green
+	// SetValid+SetVisible are merged into one renderer check on the ring's
+	// FillColor: green
 	// when valid, red when invalid, fully transparent when hidden. This asserts the
 	// rendered output of updateColor, so it fails if any branch's color regresses
 	// or the visibility guard is dropped — a field-echo could not catch that.
@@ -161,8 +164,8 @@ func TestValidationIndicator(t *testing.T) {
 				indicator.SetVisible(tc.visible)
 				renderer.updateColor()
 
-				if got := renderer.circle.StrokeColor; got != tc.want {
-					t.Errorf("circle.StrokeColor = %v, want %v", got, tc.want)
+				if got := renderer.arc.FillColor; got != tc.want {
+					t.Errorf("arc.FillColor = %v, want %v", got, tc.want)
 				}
 			})
 		}
@@ -189,9 +192,9 @@ func TestValidationIndicator(t *testing.T) {
 		}
 
 		objects := renderer.Objects()
-		// Uses single canvas.Circle instead of 24 line segments for efficient rendering
+		// Uses the same Arc primitive as the strength indicator.
 		if len(objects) != 1 {
-			t.Errorf("Expected 1 canvas object (Circle), got %d", len(objects))
+			t.Errorf("Expected 1 canvas object (Arc), got %d", len(objects))
 		}
 	})
 }
@@ -228,83 +231,60 @@ func TestPasswordEntry(t *testing.T) {
 	}
 }
 
-// TestColoredLabel tests the colored label widget.
 func TestColoredLabel(t *testing.T) {
-	newTestFyneApp(t)
-
-	// SetText asserts the rendered canvas.Text reflects the new value. Layout is
-	// called with a width wide enough that updateText's truncation leaves the text
-	// intact, so the drawn Text must equal what was set. This fails if SetText
-	// stops propagating into updateText (the renderer would keep the old string).
-	t.Run("SetText", func(t *testing.T) {
-		label := NewColoredLabel("Initial", color.White)
-		renderer := label.CreateRenderer().(*coloredLabelRenderer)
-		renderer.Layout(fyne.NewSize(1000, 50)) // wide: no truncation
-
+	fyneApp := newTestFyneApp(t)
+	fyne.DoAndWait(func() {
+		label := NewColoredLabel("Initial", util.WHITE)
+		label.object().Resize(fyne.NewSize(300, 30))
 		label.SetText("Updated")
-		renderer.Refresh()
-
-		if got := renderer.text.Text; got != "Updated" {
-			t.Errorf("rendered text = %q, want %q", got, "Updated")
+		for _, variant := range []fyne.ThemeVariant{fynetheme.VariantLight, fynetheme.VariantDark} {
+			current := fixedVariantTheme{Theme: NewCompactTheme(), variant: variant}
+			fyneApp.Settings().SetTheme(current)
+			for _, status := range []struct {
+				color color.Color
+				name  fyne.ThemeColorName
+			}{
+				{util.RED, fynetheme.ColorNameError},
+				{util.YELLOW, fynetheme.ColorNameWarning},
+				{util.GREEN, fynetheme.ColorNameSuccess},
+				{util.WHITE, fynetheme.ColorNameForeground},
+			} {
+				label.SetColor(status.color)
+				found := false
+				for _, object := range test.LaidOutObjects(label.object()) {
+					text, ok := object.(*canvas.Text)
+					if !ok || text.Text != "Updated" {
+						continue
+					}
+					found = true
+					want := current.Color(status.name, variant)
+					if !sameColor(text.Color, want) {
+						t.Errorf("status %s rendered %v, want theme color %v", status.name, text.Color, want)
+					}
+				}
+				if !found {
+					t.Error("status did not render updated text")
+				}
+			}
 		}
-	})
-
-	// SetColor asserts the rendered canvas.Text carries the new color. updateText
-	// copies label.color onto the drawn text, so a regression that drops the color
-	// assignment is caught here where a field-echo on label.color would not.
-	t.Run("SetColor", func(t *testing.T) {
-		label := NewColoredLabel("Test", color.White)
-		renderer := label.CreateRenderer().(*coloredLabelRenderer)
-		renderer.Layout(fyne.NewSize(1000, 50))
-
-		newColor := color.RGBA{R: 0, G: 255, B: 0, A: 255}
-		label.SetColor(newColor)
-		renderer.Refresh()
-
-		if got := renderer.text.Color; got != color.Color(newColor) {
-			t.Errorf("rendered text color = %v, want %v", got, newColor)
+		message := "stat /" + strings.Repeat("directory/", 80) + "file: not found"
+		label.SetText(message)
+		found := false
+		for _, object := range test.LaidOutObjects(label.object()) {
+			text, ok := object.(*canvas.Text)
+			if !ok || text.Text == "" {
+				continue
+			}
+			found = true
+			if text.Text == message || !strings.HasSuffix(text.Text, "…") {
+				t.Error("long status did not render an ellipsized preview")
+			}
+			if text.MinSize().Width > label.object().Size().Width {
+				t.Error("status preview overflows available width")
+			}
 		}
-	})
-
-	t.Run("MinSize", func(t *testing.T) {
-		label := NewColoredLabel("Test", color.White)
-		minSize := label.MinSize()
-
-		// Width/height must equal the measured text size at the theme text size.
-		want := fyne.MeasureText("Test", fynetheme.TextSize(), fyne.TextStyle{})
-		if minSize.Width != want.Width {
-			t.Errorf("Expected width %f, got %f", want.Width, minSize.Width)
-		}
-		if minSize.Height != want.Height {
-			t.Errorf("Expected height %f, got %f", want.Height, minSize.Height)
-		}
-	})
-
-	t.Run("MinSize_TruncationCap", func(t *testing.T) {
-		// Default truncation is ellipsis (see NewColoredLabel), so a long string
-		// must be capped at 600px to avoid forcing window resizing.
-		long := strings.Repeat("A", 500)
-		raw := fyne.MeasureText(long, fynetheme.TextSize(), fyne.TextStyle{})
-		if raw.Width <= 600 {
-			t.Fatalf("precondition: long string must exceed 600px, got %f", raw.Width)
-		}
-		label := NewColoredLabel(long, color.White)
-		if got := label.MinSize().Width; got != 600 {
-			t.Errorf("Expected capped width 600, got %f", got)
-		}
-	})
-
-	t.Run("CreateRenderer", func(t *testing.T) {
-		label := NewColoredLabel("Test", color.White)
-		renderer := label.CreateRenderer()
-
-		if renderer == nil {
-			t.Fatal("Expected non-nil renderer")
-		}
-
-		objects := renderer.Objects()
-		if len(objects) != 1 {
-			t.Errorf("Expected 1 object, got %d", len(objects))
+		if !found {
+			t.Error("long status preview was not rendered")
 		}
 	})
 }

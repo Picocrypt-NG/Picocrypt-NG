@@ -9,7 +9,7 @@ GO_SRC_DIR="$(cd "$SCRIPT_DIR/../src" && pwd -P)"
 OUTPUT_DIR="$SCRIPT_DIR/app/libs"
 GOMOBILE_LDFLAGS="${GOMOBILE_LDFLAGS:--s -w -buildid=}"
 NDK_VERSION_FILE="$SCRIPT_DIR/ndk-version.txt"
-REQUIRED_GO_VERSION="go1.26.6"
+REQUIRED_GO_VERSION="go1.27.1"
 
 # Set Android SDK/NDK paths
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
@@ -139,8 +139,8 @@ validate_mobile_tool() {
 validate_mobile_tool gomobile
 validate_mobile_tool gobind
 
-# Always use API level 24 (matches app's minSdk)
-USE_ANDROID_API="-androidapi 24"
+# Always use API level 26 (matches app's minSdk)
+USE_ANDROID_API="-androidapi 26"
 
 echo "Building Go Mobile bindings for Android..."
 echo "Go source directory: $GO_SRC_DIR"
@@ -154,6 +154,9 @@ mkdir -p "$OUTPUT_DIR"
 
 REAL_GO="$(command -v go)"
 REAL_GOBIND="$(command -v gobind)"
+# Preserve effective Go linker settings while aligning LOAD and RELRO for 16 KB pages.
+CGO_LDFLAGS="$($REAL_GO env CGO_LDFLAGS) -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
+export CGO_LDFLAGS
 if ! JQ="$(command -v jq)"; then
     echo "Error: jq is required for generated-module replacement validation." >&2
     exit 1
@@ -261,7 +264,7 @@ echo "Building AAR..."
 cd "$GO_SRC_DIR"
 
 # gomobile uses ANDROID_NDK_HOME environment variable (already set above)
-# Always use API level 24 (matches app's minSdk)
+# Always use API level 26 (matches app's minSdk)
 PATH="$WRAPPER_DIR:$PATH" gomobile bind \
     -target android/arm64,android/amd64 \
     $USE_ANDROID_API \
@@ -318,6 +321,10 @@ verify_native_so() {
     local metadata
     local build_id
     local section_headers
+    local program_headers
+    local segment first second
+    local load_count=0
+    local relro_count=0
 
     if ! metadata="$($REAL_GO version -m "$native_so" 2>/dev/null)"; then
         echo "Error: AAR reproducibility policy failed for ABI $abi: go-build-metadata." >&2
@@ -356,6 +363,34 @@ verify_native_so() {
     fi
     if printf '%s\n' "$section_headers" | grep -F -q '.note.gnu.build-id'; then
         echo "Error: AAR reproducibility policy failed for ABI $abi: elf-buildid." >&2
+        exit 1
+    fi
+    if ! program_headers="$($LLVM_READELF -lW "$native_so" 2>/dev/null)"; then
+        echo "Error: AAR page alignment validation failed for ABI $abi: llvm-readelf." >&2
+        exit 1
+    fi
+    # Android requires LOAD alignment >= 16 KB and a 16 KB aligned RELRO end.
+    # https://developer.android.com/guide/practices/page-sizes
+    while read -r segment first second; do
+        case "$segment" in
+            LOAD)
+                load_count=$((load_count + 1))
+                if (( first < 16384 )); then
+                    echo "Error: AAR 16 KB page alignment failed for ABI $abi: LOAD." >&2
+                    exit 1
+                fi
+                ;;
+            GNU_RELRO)
+                relro_count=$((relro_count + 1))
+                if (( (first + second) % 16384 != 0 )); then
+                    echo "Error: AAR 16 KB page alignment failed for ABI $abi: RELRO." >&2
+                    exit 1
+                fi
+                ;;
+        esac
+    done <<< "$(printf '%s\n' "$program_headers" | awk '$1 == "LOAD" { print $1, $NF } $1 == "GNU_RELRO" { print $1, $3, $6 }')"
+    if (( load_count == 0 || relro_count == 0 )); then
+        echo "Error: AAR page alignment validation failed for ABI $abi: missing LOAD or RELRO." >&2
         exit 1
     fi
 }

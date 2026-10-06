@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"archive/zip"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,6 +39,10 @@ func TestEncryptDirectoryProducesZip(t *testing.T) {
 
 	encryptedPath := filepath.Join(tmpDir, "encrypted.zip.pcv")
 	decryptedPath := filepath.Join(tmpDir, "decrypted.zip")
+	extracted := filepath.Join(tmpDir, "extracted")
+	if err := os.Mkdir(extracted, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	// Encrypt the directory through the real CLI command.
 	encOutput = encryptedPath
@@ -51,8 +53,11 @@ func TestEncryptDirectoryProducesZip(t *testing.T) {
 		t.Fatalf("encrypt directory: %v", err)
 	}
 
-	// Decrypt WITHOUT auto-unzip: the on-disk output must itself be a valid zip.
+	// Authenticate and extract the PCV3 archive through the real CLI follow-up.
 	decOutput = decryptedPath
+	decPCV3Factors = "password"
+	decPCV3Archive = "extract"
+	decPCV3ExtractTo = extracted
 	decPassword = "pw"
 	decQuiet = true
 	decYes = true
@@ -60,32 +65,9 @@ func TestEncryptDirectoryProducesZip(t *testing.T) {
 		t.Fatalf("decrypt: %v", err)
 	}
 
-	// The decrypted output must be a real zip archive containing test_dir/hello.txt.
-	zr, err := zip.OpenReader(decryptedPath)
-	if err != nil {
-		t.Fatalf("decrypted output is not a valid zip archive (issue #130): %v", err)
-	}
-	defer func() { _ = zr.Close() }()
-
-	if len(zr.File) != 1 {
-		t.Fatalf("expected 1 zip entry, got %d", len(zr.File))
-	}
-	entry := zr.File[0]
-	if entry.Name != "test_dir/hello.txt" {
-		t.Fatalf("expected entry name %q, got %q", "test_dir/hello.txt", entry.Name)
-	}
-
-	rc, err := entry.Open()
-	if err != nil {
-		t.Fatalf("open zip entry: %v", err)
-	}
-	got, err := io.ReadAll(rc)
-	_ = rc.Close()
-	if err != nil {
-		t.Fatalf("read zip entry: %v", err)
-	}
-	if string(got) != string(innerContent) {
-		t.Fatalf("zip entry content = %q, want %q", got, innerContent)
+	got, err := os.ReadFile(filepath.Join(extracted, "test_dir", "hello.txt"))
+	if err != nil || string(got) != string(innerContent) {
+		t.Fatalf("extracted directory payload = %q, %v", got, err)
 	}
 }
 
@@ -100,7 +82,7 @@ func resetEncryptFlagsForDirTest() {
 	encPasswordFD = -1
 	encKeyfiles = nil
 	encKeyfileOrder = false
-	encPCV3 = false
+	encPCV3 = true
 	encParanoid = false
 	encReedSolomon = false
 	encDeniability = false
@@ -111,7 +93,7 @@ func resetEncryptFlagsForDirTest() {
 	encQuiet = false
 	encYes = false
 	encFollowSymlinks = false
-	for _, name := range []string{"password", "password-stdin", "password-fd"} {
+	for _, name := range []string{"password", "password-stdin", "password-fd", "pcv3"} {
 		if flag := encryptCmd.Flags().Lookup(name); flag != nil {
 			flag.Changed = false
 		}
@@ -121,6 +103,13 @@ func resetEncryptFlagsForDirTest() {
 // resetDecryptFlagsForDirTest clears the package-level decrypt flags this test
 // touches so leftover state cannot bleed in.
 func resetDecryptFlagsForDirTest() {
+	decPCV3Factors = ""
+	decPCV3Format = ""
+	decPCV3Action = ""
+	decPCV3Order = ""
+	decPCV3Role = ""
+	decPCV3Archive = ""
+	decPCV3ExtractTo = ""
 	decLegacyInputs = nil
 	decOutput = ""
 	decPassword = ""

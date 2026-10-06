@@ -26,8 +26,8 @@ default (this repo is a monorepo — the Android app lives in `android/`, deskto
 ## versionCode
 
 `versionCode` is derived from the repo-root `VERSION` file by the release workflow:
-`major*10000 + minor*100 + patch`. The current release target is **2.19** → base
-versionCode `21900` (`VERSION` is `2.19`).
+`major*10000 + minor*100 + patch`. The current development target is **3.0** → base
+versionCode `30000` (`VERSION` is `3.0`). This version is not yet released.
 
 Current source builds ship **64-bit per-ABI APKs** for `arm64-v8a` and `x86_64`
 plus a 64-bit universal APK. Their stable versionCode offsets remain

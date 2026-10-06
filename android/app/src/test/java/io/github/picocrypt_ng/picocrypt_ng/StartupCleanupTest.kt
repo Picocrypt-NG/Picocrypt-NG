@@ -1,6 +1,7 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
 import android.content.Context
+import io.mockk.every
 import io.mockk.mockk
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
@@ -11,6 +12,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -103,6 +105,94 @@ class StartupCleanupTest {
         assertEquals(0, retainedRuns.get())
         assertEquals(0, transientRuns.get())
         assertFalse("A restored receipt must block new operations until explicit dismissal", StartupCleanup.allowsPcv3Dispatch())
+    }
+
+    @Test
+    fun `restored dismissal requires the exact ticket and receipt clear before completing deferred cleanup`() = runTest {
+        val events = mutableListOf<String>()
+        var clearAllowed = false
+        val applicationContext = mockk<Context>()
+        every { context.applicationContext } returns applicationContext
+        val lifecycle = restoredLifecycle {
+            events += "receipt-clear"
+            clearAllowed
+        }
+        assertTrue(StartupCleanup.runBeforeUi(
+            context = context,
+            restoreReceipt = { restoreInto(lifecycle) },
+            ensurePrivateParent = { parent },
+            cleanupJournal = { Pcv3JournalCleanupState.CLEANED },
+            cleanupRetainedOutput = {
+                assertSame(applicationContext, it)
+                assertFalse(StartupCleanup.allowsPcv3Dispatch())
+                assertSame(lifecycle.presentation.value, lifecycle.refreshPcv3().getOrThrow())
+                events += "retained"
+                true
+            },
+            cleanupTransient = {
+                assertSame(applicationContext, it)
+                assertFalse(StartupCleanup.allowsPcv3Dispatch())
+                events += "transient"
+                true
+            },
+        ))
+        val restored = lifecycle.presentation.value as Pcv3Presentation.Restored
+        assertFalse(lifecycle.dismissPcv3("stale-operation", restored.generation))
+        assertFalse(lifecycle.dismissPcv3(restored.operationId, restored.generation + 1))
+        assertTrue(events.isEmpty())
+        assertFalse(lifecycle.dismissPcv3(restored.operationId, restored.generation))
+        assertEquals(listOf("receipt-clear"), events)
+        assertSame(restored, lifecycle.presentation.value)
+        assertFalse(StartupCleanup.allowsPcv3Dispatch())
+
+        clearAllowed = true
+        assertTrue(lifecycle.dismissPcv3(restored.operationId, restored.generation))
+
+        assertTrue("successful dismissal must allow another operation without restarting", StartupCleanup.allowsPcv3Dispatch())
+        assertNull(lifecycle.presentation.value)
+        assertEquals(listOf("receipt-clear", "receipt-clear", "retained", "transient"), events)
+        assertFalse(lifecycle.dismissPcv3(restored.operationId, restored.generation))
+    }
+
+    @Test
+    fun `deferred cleanup failure and cancellation keep restored dismissal retryable without clearing another receipt`() = runTest {
+        val events = mutableListOf<String>()
+        val cancellation = CancellationException("cancel deferred transient cleanup")
+        var transientCalls = 0
+        val lifecycle = restoredLifecycle {
+            check("receipt-clear" !in events) { "cleared custody cannot clear a later receipt" }
+            events += "receipt-clear"
+            true
+        }
+        assertTrue(StartupCleanup.runBeforeUi(
+            context = context,
+            restoreReceipt = { restoreInto(lifecycle) },
+            ensurePrivateParent = { parent },
+            cleanupJournal = { Pcv3JournalCleanupState.CLEANED },
+            cleanupRetainedOutput = { events += "retained"; true },
+            cleanupTransient = {
+                events += "transient"
+                when (++transientCalls) {
+                    1 -> false
+                    2 -> throw cancellation
+                    else -> true
+                }
+            },
+        ))
+        val restored = lifecycle.presentation.value as Pcv3Presentation.Restored
+        assertFalse(lifecycle.dismissPcv3(restored.operationId, restored.generation))
+        assertSame(restored, lifecycle.presentation.value)
+        assertFalse(StartupCleanup.allowsPcv3Dispatch())
+
+        val thrown = runCatching { lifecycle.dismissPcv3(restored.operationId, restored.generation) }.exceptionOrNull()
+        assertSame(cancellation, thrown)
+        assertSame(restored, lifecycle.presentation.value)
+        assertFalse(StartupCleanup.allowsPcv3Dispatch())
+
+        assertTrue(lifecycle.dismissPcv3(restored.operationId, restored.generation))
+        assertTrue(StartupCleanup.allowsPcv3Dispatch())
+        assertNull(lifecycle.presentation.value)
+        assertEquals(listOf("receipt-clear", "retained", "transient", "transient", "transient"), events)
     }
 
     @Test
@@ -364,6 +454,31 @@ class StartupCleanupTest {
 
     private fun validReceipt(): String =
         """{"version":1,"receiptID":"r_restored","operationID":"op_restored"}"""
+
+    private fun restoredLifecycle(clearReceipt: () -> Boolean): Pcv3Lifecycle {
+        val transport = mockk<Pcv3Transport>()
+        every { transport.restoreReceipt(validReceipt()) } returns Pcv3RestoredReceiptData(
+            code = "", receiptId = "r_restored", operationId = "op_restored",
+            snapshot = Pcv3SnapshotData(
+                statusCode = "none", statusArgs = emptyList(), outcome = "success", stage = "none", code = "PCV3_SUCCESS",
+                forceProvenance = "none", d1BootstrapProvenance = "none", detailStage = "none",
+                publicationAttempted = true, publicationState = "published-durability-uncertain",
+                publicationStage = "directory-sync", publicationCode = "PCV3_PUBLICATION_DURABILITY_UNCERTAIN",
+                diagnostic = "none", completionClass = "durability-uncertain", args = emptyList(),
+                warnings = listOf("durability-uncertain"), archivePending = false, restoredReceipt = validReceipt(),
+            ),
+        )
+        return Pcv3Lifecycle(Pcv3Bridge(transport), object : Pcv3ReceiptPersistence {
+            override fun save(file: File, receipt: String): Boolean = error("restored receipt is already persisted")
+            override fun clear(file: File): Boolean = clearReceipt()
+        })
+    }
+
+    private suspend fun restoreInto(lifecycle: Pcv3Lifecycle): Pcv3ReceiptRestore.Exact {
+        val restored = lifecycle.restorePcv3Receipt(validReceipt(), File(parent, "receipt"))
+            .getOrThrow() as Pcv3Presentation.Restored
+        return Pcv3ReceiptRestore.Exact(ReceiptCustody.Exact(validReceipt()), restored)
+    }
 
     private fun restoredPresentation(receipt: String) = Pcv3Presentation.Restored(
         snapshot = Pcv3SnapshotView(

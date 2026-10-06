@@ -201,7 +201,7 @@ func TestSingleFileLeafSymlinkPreservesLegacyRoutes(t *testing.T) {
 // a normal PCV3 volume fall through to the legacy UI or mint Start authority.
 func TestSingleFileLeafSymlinkToPCV3FailsClosed(t *testing.T) {
 	resetLocalizationForTest(t)
-	target, err := filepath.Abs(filepath.Join("..", "pcv3", "testdata", "schema1-minimal.pcv"))
+	target, err := filepath.Abs(filepath.Join("..", "pcv3operation", "internal", "pcv3", "testdata", "schema1-minimal.pcv"))
 	if err != nil {
 		t.Fatalf("resolve PCV3 fixture: %v", err)
 	}
@@ -2133,11 +2133,9 @@ func TestPCV3KeyfileModalDropPreservesSelectedOrderAndDuplicates(t *testing.T) {
 		if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, filepath.Join(directory, "output"), 5) {
 			t.Fatal("set PCV3 selection")
 		}
+		a.State.SetPCV3Intent(app.PCV3ActionDecrypt, app.PCV3FactorPolicyUnset, app.PCV3KeyfileOrderUnset)
 		a.refreshAdvanced()
 		a.updateUIState()
-		a.pcv3ActionGroup.SetSelected("Decrypt PCV3")
-		a.pcv3FactorGroup.SetSelected("Keyfiles only")
-		a.pcv3OrderGroup.SetSelected("Use selected order")
 		if a.keyfileEditBtn.Disabled() {
 			t.Fatal("PCV3 keyfile policy disabled the real Edit control")
 		}
@@ -2146,9 +2144,12 @@ func TestPCV3KeyfileModalDropPreservesSelectedOrderAndDuplicates(t *testing.T) {
 			t.Fatal("enabled Edit control did not open the keyfile modal")
 		}
 		a.onDrop([]string{key1, key2, key1})
+		a.keyfileOrderCheck.SetChecked(true)
 		if !a.State.CanStart() || a.startButton.Disabled() {
 			t.Fatal("complete PCV3 keyfile intent did not enable Start")
 		}
+		a.keyfileModal.Hide()
+		a.State.ShowKeyfile = false
 		a.onClickStart()
 	})
 
@@ -2271,6 +2272,7 @@ func createUIReadyDropTestApp(t *testing.T, fyneApp fyne.App) *App {
 	fyne.DoAndWait(func() {
 		a.Window = fyneApp.NewWindow("drop-test")
 		a.Window.SetContent(a.buildUI())
+		a.initializeDesktopWindow()
 	})
 	return a
 }

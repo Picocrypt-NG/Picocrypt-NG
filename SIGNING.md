@@ -96,7 +96,7 @@ attestation is published to GitHub.
 > the artifact was produced by Picocrypt-NG's official CI, recorded in a public
 > transparency log.
 
-Install [cosign](https://docs.sigstore.dev/cosign/installation/) and the
+Install [cosign](https://docs.sigstore.dev/cosign/installation/) **3.1.3 or newer** and the
 [GitHub CLI](https://cli.github.com/).
 
 ### 1. Authenticity (cosign) — strict, pins the producing workflow

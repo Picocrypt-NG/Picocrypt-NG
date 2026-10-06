@@ -1,12 +1,12 @@
 package cli
 
 import (
-	perrors "Picocrypt-NG/internal/errors"
-	"Picocrypt-NG/internal/pcv3"
-	"archive/zip"
+	"Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/pcv3operation"
+	"Picocrypt-NG/internal/volume"
 	"bytes"
+	"context"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,43 +88,6 @@ func mustWriteCLIContractFile(t *testing.T, path string, content []byte) {
 	}
 }
 
-func requireCLIContractZipEntry(t *testing.T, zipPath, name string, want []byte) {
-	t.Helper()
-
-	reader, err := zip.OpenReader(zipPath)
-	if err != nil {
-		t.Fatalf("open recovered ZIP: %v", err)
-	}
-	defer func() {
-		if err := reader.Close(); err != nil {
-			t.Errorf("close recovered ZIP: %v", err)
-		}
-	}()
-	wantName := filepath.ToSlash(name)
-	for _, file := range reader.File {
-		if file.Name != wantName {
-			continue
-		}
-		entry, err := file.Open()
-		if err != nil {
-			t.Fatalf("open recovered ZIP entry %q: %v", wantName, err)
-		}
-		got, readErr := io.ReadAll(entry)
-		closeErr := entry.Close()
-		if readErr != nil {
-			t.Fatalf("read recovered ZIP entry %q: %v", wantName, readErr)
-		}
-		if closeErr != nil {
-			t.Fatalf("close recovered ZIP entry %q: %v", wantName, closeErr)
-		}
-		if !bytes.Equal(got, want) {
-			t.Fatalf("recovered ZIP entry %q = %q, want %q", wantName, got, want)
-		}
-		return
-	}
-	t.Fatalf("recovered ZIP does not contain %q", wantName)
-}
-
 func cliContractDirNames(t *testing.T, path string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(path)
@@ -185,7 +148,7 @@ func TestCLIInputContract(t *testing.T) {
 				args: func(input, output string) []string {
 					return []string{"decrypt", input, "-o", output, "-p", "unused", "-q", "-y"}
 				},
-				wantDiagnostic: pcv3.ErrReaderUnavailable.Error(),
+				wantDiagnostic: pcv3operation.ErrReaderUnavailable.Error(),
 			},
 			{
 				name: "explicit D1 intent is refused before opening the target",
@@ -236,7 +199,7 @@ func TestCLIInputContract(t *testing.T) {
 		if enc.exitCode != 0 {
 			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
 		}
-		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath,
+		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password",
 			"-o", recovered, "-p", password, "-q", "-y")
 		if dec.exitCode != 0 {
 			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
@@ -267,12 +230,12 @@ func TestCLIInputContract(t *testing.T) {
 			t.Fatalf("read encrypted fixture: %v", err)
 		}
 
-		rejected := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath,
+		rejected := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password",
 			"-o", volumePath, "-p", password, "-q", "-y")
 		if rejected.exitCode == 0 {
 			t.Fatalf("decrypt replaced its encrypted input despite -y; stderr: %s", rejected.stderr)
 		}
-		if !strings.Contains(rejected.stderr, "OutputFile") || !strings.Contains(rejected.stderr, "protected source") {
+		if !strings.Contains(rejected.stderr, "PCV3 output already exists") {
 			t.Fatalf("decrypt alias rejection was not explicit: %q", rejected.stderr)
 		}
 		after, err := os.ReadFile(volumePath)
@@ -284,7 +247,7 @@ func TestCLIInputContract(t *testing.T) {
 		}
 
 		safeOutput := filepath.Join(dir, "safe-output.txt")
-		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath,
+		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password",
 			"-o", safeOutput, "-p", password, "-q", "-y")
 		if dec.exitCode != 0 {
 			t.Fatalf("safe decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
@@ -306,10 +269,17 @@ func TestCLIInputContract(t *testing.T) {
 		mustWriteCLIContractFile(t, inputA, []byte("first real ZIP payload"))
 		mustWriteCLIContractFile(t, inputB, []byte("second real ZIP payload"))
 
-		enc := runCLIInputContractCommand(t, binaryPath, "", "encrypt", inputA, inputB,
-			"-o", volumePath, "-p", password, "-q", "-y")
-		if enc.exitCode != 0 {
-			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
+		// Keep this legacy auto-unzip regression on an actual legacy archive;
+		// native CLI creation now selects PCV3, whose extraction is explicit.
+		codecs, err := encoding.NewRSCodecs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := volume.Encrypt(context.Background(), &volume.EncryptRequest{
+			InputFiles: []string{inputA, inputB}, OnlyFiles: []string{inputA, inputB},
+			OutputFile: volumePath, Password: []byte(password), RSCodecs: codecs,
+		}); err != nil {
+			t.Fatalf("prepare legacy archive: %v", err)
 		}
 
 		for _, tc := range []struct {
@@ -412,7 +382,7 @@ func TestCLIInputContract(t *testing.T) {
 		if enc.exitCode == 0 {
 			t.Fatal("split unexpectedly replaced an occupied chunk")
 		}
-		if !strings.Contains(enc.stderr, "split artifact already exists") {
+		if !strings.Contains(enc.stderr, "Outcome: operation-failed") || !strings.Contains(enc.stderr, "Publication: published-durable") {
 			t.Fatalf("split refusal was not explicit: %q", enc.stderr)
 		}
 		gotChunk, err := os.ReadFile(occupiedChunk)
@@ -424,7 +394,7 @@ func TestCLIInputContract(t *testing.T) {
 		}
 
 		recovered := filepath.Join(dir, "recovered.txt")
-		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", output,
+		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", output, "--pcv3-factors=password",
 			"-o", recovered, "-p", password, "-q", "-y")
 		if dec.exitCode != 0 {
 			t.Fatalf("published volume was not recoverable after split refusal: exit %d; stderr: %s", dec.exitCode, dec.stderr)
@@ -450,7 +420,7 @@ func TestCLIInputContract(t *testing.T) {
 		if enc.exitCode != 0 {
 			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
 		}
-		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath,
+		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password",
 			"-o", recovered, "-p", password, "-q", "-y")
 		if dec.exitCode != 0 {
 			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
@@ -478,11 +448,14 @@ func TestCLIInputContract(t *testing.T) {
 		if enc.exitCode != 0 {
 			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
 		}
-		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "-o", recovered, "-p", password, "-q", "-y")
+		if err := os.Mkdir(recovered, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password", "-o", recovered+".unused", "-p", password, "--pcv3-archive=extract", "--pcv3-extract-to", recovered, "-q", "-y")
 		if dec.exitCode != 0 {
 			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
 		}
-		assertCLIContractZip(t, recovered, map[string][]byte{"alpha.txt": []byte("alpha"), "bravo.txt": []byte("bravo")})
+		assertCLIContractTree(t, recovered, map[string][]byte{"alpha.txt": []byte("alpha"), "bravo.txt": []byte("bravo")})
 	})
 
 	t.Run("two-file directory uses directory default output and exact archive paths", func(t *testing.T) {
@@ -507,11 +480,14 @@ func TestCLIInputContract(t *testing.T) {
 		}
 		assertCLIContractAbsent(t, filepath.Join(root, "encrypted.zip.pcv"))
 
-		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "-o", recovered, "-p", password, "-q", "-y")
+		if err := os.Mkdir(recovered, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password", "-o", recovered+".unused", "-p", password, "--pcv3-archive=extract", "--pcv3-extract-to", recovered, "-q", "-y")
 		if dec.exitCode != 0 {
 			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
 		}
-		assertCLIContractZip(t, recovered, map[string][]byte{
+		assertCLIContractTree(t, recovered, map[string][]byte{
 			"documents/alpha.txt": []byte("alpha directory bytes"),
 			"documents/bravo.bin": {0x00, 0x01, 0xfe, 0xff},
 		})
@@ -530,11 +506,14 @@ func TestCLIInputContract(t *testing.T) {
 		if enc.exitCode != 0 {
 			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
 		}
-		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "-o", recovered, "-p", password, "-q", "-y")
+		if err := os.Mkdir(recovered, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password", "-o", recovered+".unused", "-p", password, "--pcv3-archive=extract", "--pcv3-extract-to", recovered, "-q", "-y")
 		if dec.exitCode != 0 {
 			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
 		}
-		assertCLIContractZip(t, recovered, map[string][]byte{"alpha.txt": []byte("alpha"), "bravo.txt": []byte("bravo")})
+		assertCLIContractTree(t, recovered, map[string][]byte{"alpha.txt": []byte("alpha"), "bravo.txt": []byte("bravo")})
 	})
 
 	t.Run("literal glob-like operand gives migration hint", func(t *testing.T) {
@@ -602,20 +581,20 @@ func TestCLIInputContract(t *testing.T) {
 		assertCLIContractAbsent(t, output, output+".incomplete", output+".0", output+".0.incomplete")
 	})
 
-	t.Run("keyfile writer is rejected before stdin buffering or keyfile lookup", func(t *testing.T) {
+	t.Run("missing keyfile is rejected before stdin buffering", func(t *testing.T) {
 		dir := t.TempDir()
 		output := filepath.Join(dir, "out.pcv")
 		missingKeyfile := filepath.Join(dir, "missing.key")
 
 		result := runCLIInputContractCommandWithOpenStdin(t, binaryPath, "", "encrypt", "-",
 			"-o", output, "-p", password, "-k", missingKeyfile, "-q", "-y")
-		if result.exitCode == 0 || !strings.Contains(result.stderr, perrors.KeyfileWritesDisabledMessage) {
+		if result.exitCode == 0 || !strings.Contains(result.stderr, "keyfile not found") {
 			t.Fatalf("keyfile policy result = exit %d stderr %q", result.exitCode, result.stderr)
 		}
 		assertCLIContractAbsent(t, output, output+".incomplete")
 	})
 
-	t.Run("stdin keyfile writer policy preserves the named file before input read", func(t *testing.T) {
+	t.Run("stdin output collision preserves keyfile before input read", func(t *testing.T) {
 		dir := t.TempDir()
 		output := filepath.Join(dir, "final.pcv")
 		keyfileBytes := []byte("stdin collision keyfile exact bytes")
@@ -623,7 +602,7 @@ func TestCLIInputContract(t *testing.T) {
 
 		result := runCLIInputContractCommandWithOpenStdin(t, binaryPath, "", "encrypt", "-",
 			"-o", strings.TrimSuffix(output, ".pcv"), "-p", password, "-k", output, "-q", "-y")
-		if result.exitCode == 0 || !strings.Contains(result.stderr, perrors.KeyfileWritesDisabledMessage) {
+		if result.exitCode == 0 || !strings.Contains(result.stderr, "PCV3 output already exists") {
 			t.Fatalf("stdin keyfile policy result = exit %d stderr %q", result.exitCode, result.stderr)
 		}
 		got, err := os.ReadFile(output)
@@ -686,7 +665,7 @@ func TestCLIInputContract(t *testing.T) {
 		if enc.exitCode != 0 {
 			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
 		}
-		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "-o", recovered, "-p", password, "-q", "-y")
+		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password", "-o", recovered, "-p", password, "-q", "-y")
 		if dec.exitCode != 0 {
 			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
 		}
@@ -737,11 +716,14 @@ func TestCLIInputContract(t *testing.T) {
 			t.Fatalf("encryption changed input = %q, err = %v", got, err)
 		}
 		recovered := filepath.Join(dir, "recovered.zip")
-		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", output, "-o", recovered, "-p", password, "-q", "-y")
+		if err := os.Mkdir(recovered, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", output, "--pcv3-factors=password", "-o", recovered+".unused", "-p", password, "--pcv3-archive=extract", "--pcv3-extract-to", recovered, "-q", "-y")
 		if dec.exitCode != 0 {
 			t.Fatalf("decrypt result = exit %d stderr %q", dec.exitCode, dec.stderr)
 		}
-		requireCLIContractZipEntry(t, recovered, filepath.Base(input), inputBytes)
+		assertCLIContractTree(t, recovered, map[string][]byte{filepath.Base(input): inputBytes})
 	})
 
 	t.Run("tmp-named directory round trips", func(t *testing.T) {
@@ -764,11 +746,14 @@ func TestCLIInputContract(t *testing.T) {
 			t.Fatalf("directory encryption changed leaf = %q, err = %v", got, err)
 		}
 		recovered := filepath.Join(dir, "directory-recovered.zip")
-		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", output, "-o", recovered, "-p", password, "-q", "-y")
+		if err := os.Mkdir(recovered, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", output, "--pcv3-factors=password", "-o", recovered+".unused", "-p", password, "--pcv3-archive=extract", "--pcv3-extract-to", recovered, "-q", "-y")
 		if dec.exitCode != 0 {
 			t.Fatalf("directory decrypt result = exit %d stderr %q", dec.exitCode, dec.stderr)
 		}
-		requireCLIContractZipEntry(t, recovered, filepath.Join(filepath.Base(selection), filepath.Base(leaf)), leafBytes)
+		assertCLIContractTree(t, recovered, map[string][]byte{filepath.ToSlash(filepath.Join(filepath.Base(selection), filepath.Base(leaf))): leafBytes})
 	})
 
 	t.Run("numeric split artifact collisions protect inputs", func(t *testing.T) {
@@ -928,35 +913,41 @@ func cliContractFilesystemCaseInsensitive(t *testing.T, dir string) bool {
 	return false
 }
 
-func assertCLIContractZip(t *testing.T, path string, want map[string][]byte) {
+// Exact recovered names and bytes ensure glob expansion, deduplication and ZIP
+// preprocessing cannot encrypt an unintended file or the encrypted temporary ZIP.
+func assertCLIContractTree(t *testing.T, root string, want map[string][]byte) {
 	t.Helper()
-	reader, err := zip.OpenReader(path)
+	got := make(map[string][]byte)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			t.Fatalf("unexpected extracted entry type %v at %s", entry.Type(), path)
+		}
+		name, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		got[filepath.ToSlash(name)] = data
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = reader.Close() }()
-	got := make(map[string][]byte, len(reader.File))
-	for _, file := range reader.File {
-		if _, exists := got[file.Name]; exists {
-			t.Fatalf("duplicate zip entry %q", file.Name)
-		}
-		rc, err := file.Open()
-		if err != nil {
-			t.Fatal(err)
-		}
-		content, err := io.ReadAll(rc)
-		_ = rc.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		got[file.Name] = content
-	}
 	if len(got) != len(want) {
-		t.Fatalf("zip entry count = %d, want %d: got %#v", len(got), len(want), got)
+		t.Fatalf("extracted files = %v; want %v", got, want)
 	}
-	for name, wantContent := range want {
-		if content, ok := got[name]; !ok || !bytes.Equal(content, wantContent) {
-			t.Fatalf("zip entry %q = %q, want %q", name, content, wantContent)
+	for name, data := range want {
+		if actual, ok := got[name]; !ok || !bytes.Equal(actual, data) {
+			t.Fatalf("extracted %s = %q; want %q", name, actual, data)
 		}
 	}
 }

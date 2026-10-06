@@ -9,7 +9,7 @@ import (
 )
 
 // pcv3MobileFixturePath locates the frozen public production-vector volume.
-const pcv3MobileFixturePath = "../internal/pcv3/testdata/normal/volumes/normal-standard-combined-ordered-one.pcv"
+const pcv3MobileFixturePath = "../internal/pcv3operation/internal/pcv3/testdata/normal/volumes/normal-standard-combined-ordered-one.pcv"
 
 // pcv3MobileObserveDescriptors records every descriptor the bridge opens
 // while delegating to the real no-follow opener; it replaces nothing.
@@ -119,7 +119,6 @@ func TestPCV3MobileResultAndPrivacyBoundary(t *testing.T) {
 			synctest.Wait()
 
 			snapshot := operation.Snapshot()
-			skipOnPCV3ResourceAdmissionDenial(t, snapshot)
 			if snapshot.Outcome() != "success" ||
 				snapshot.Stage() != "none" ||
 				snapshot.Code() != "PCV3_SUCCESS" ||
@@ -226,7 +225,6 @@ func TestPCV3MobileResultAndPrivacyBoundary(t *testing.T) {
 			synctest.Wait()
 
 			snapshot := operation.Snapshot()
-			skipOnPCV3ResourceAdmissionDenial(t, snapshot)
 			if snapshot.Outcome() != "credentials-or-damage" ||
 				snapshot.Stage() != "wrap-auth" ||
 				snapshot.Code() != "PCV3_CREDENTIALS_OR_DAMAGE" ||

@@ -5,7 +5,6 @@ import (
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
-	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3operation"
 	"bytes"
 	"errors"
@@ -26,7 +25,7 @@ import (
 
 func loadPCV3DropFixture(t *testing.T) []byte {
 	t.Helper()
-	fixture, err := os.ReadFile(filepath.Join("..", "pcv3", "testdata", "schema1-minimal.pcv"))
+	fixture, err := os.ReadFile(filepath.Join("..", "pcv3operation", "internal", "pcv3", "testdata", "schema1-minimal.pcv"))
 	if err != nil {
 		t.Fatalf("read literal PCV3 fixture: %v", err)
 	}
@@ -90,16 +89,74 @@ func TestPCV3DropKeepsExplicitD1OverrideForNormalLookingSplit(t *testing.T) {
 		if snap.PCV3Route != app.PCV3RouteReady || snap.PCV3Format != app.PCV3FormatNormal || !snap.Recombine {
 			t.Fatalf("normal-looking split route = %#v", snap)
 		}
-		button := findPCV3Button(a.advancedContainer, tr("pcv3.format.d1_action", "Open as PCV3 D1"))
-		if button == nil {
-			t.Fatal("ready Normal split has no explicit D1 override")
+		if findPCV3Button(a.advancedContainer, tr("pcv3.format.d1_action", "Open as PCV3 D1")) != nil {
+			t.Fatal("recognized Normal volume exposes D1 as a primary action")
 		}
-		fynetest.Tap(button)
+		menu := openPCV3FormatMenu(t, a)
+		menu.TypedKey(&fyne.KeyEvent{Name: fyne.KeyDown})
+		menu.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
 		snap = a.State.UISnapshot()
 		if snap.PCV3Format != app.PCV3FormatD1 || !snap.Recombine || snap.InputFile != base ||
-			snap.OutputFile != strings.TrimSuffix(base, ".pcv") || snap.PCV3Action != app.PCV3ActionNone {
+			snap.OutputFile != strings.TrimSuffix(base, ".pcv") || snap.PCV3Action != app.PCV3ActionDecrypt {
 			t.Fatalf("explicit D1 override changed split intent: %#v", snap)
 		}
+	})
+}
+
+func TestPCV3FormatMenuRejectsStaleSelection(t *testing.T) {
+	a := newPCV3ReadUI(t, app.PCV3FormatNormal)
+	input := filepath.Join(t.TempDir(), "new-input.txt")
+	if err := os.WriteFile(input, []byte("new public selection"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var menu *widget.PopUpMenu
+	fyne.DoAndWait(func() {
+		a.setAdvancedDisclosureOpen(true)
+		menu = openPCV3FormatMenu(t, a)
+		a.onDrop([]string{input})
+	})
+	waitForDropProcessing(t, a)
+	fyne.DoAndWait(func() {
+		menu.TypedKey(&fyne.KeyEvent{Name: fyne.KeyDown})
+		menu.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
+		snap := a.State.UISnapshot()
+		if snap.Mode != "encrypt" || snap.PCV3Format != app.PCV3FormatNone || snap.InputFile != input {
+			t.Error("old format menu changed the newly selected file")
+		}
+	})
+}
+
+func TestExplicitD1ClearsLegacyHeaderNoticeAndPreservesCleanupWarning(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "pcv3operation", "internal", "pcv3", "testdata", "d1", "independent", "d1.pcv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	t.Cleanup(func() { fyne.DoAndWait(a.State.Reset) })
+	input := filepath.Join(t.TempDir(), "input.pcv")
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fyne.DoAndWait(func() { a.onDrop([]string{input}) })
+	waitForDropProcessing(t, a)
+	fyne.DoAndWait(func() {
+		kind := a.State.UISnapshot().Status.Kind
+		if kind != app.StatusDropHeaderMayBeDeniable && kind != app.StatusDropHeaderDamaged {
+			t.Fatalf("D1 did not reach the legacy header notice: %v", kind)
+		}
+		a.State.LatchPCV3CleanupIncomplete()
+		a.updateUIState()
+		a.setAdvancedDisclosureOpen(true)
+		button := findPCV3Button(a.advancedContainer, tr("pcv3.format.d1_action", "Open as PCV3 D1"))
+		if button == nil {
+			t.Fatal("unidentified file lost the explicit D1 action")
+		}
+		fynetest.Tap(button)
+		snap := a.State.UISnapshot()
+		if snap.PCV3Format != app.PCV3FormatD1 || snap.Status.Kind != app.StatusReady || !snap.PCV3CleanupIncomplete {
+			t.Error("explicit D1 did not replace the obsolete header notice while preserving cleanup state")
+		}
+		requirePCV3Text(t, a.pcv3Container, "Cleanup could not be confirmed")
 	})
 }
 
@@ -134,17 +191,17 @@ func findPCV3Button(object fyne.CanvasObject, text string) *widget.Button {
 	return nil
 }
 
-func TestPCV3FyneRequiresExplicitModeAndLiveConsent(t *testing.T) {
+func TestPCV3FyneDefaultsToDecryptAndRequiresLiveConsent(t *testing.T) {
 	resetLocalizationForTest(t)
 
-	t.Run("content routing stays pending and never infers operation intent", func(t *testing.T) {
+	t.Run("content routing stays pending then defaults to ordinary decryption", func(t *testing.T) {
 		previousProbe := probeDroppedPCVInput
 		previousPreview := previewDroppedHeader
 		entered := make(chan struct{})
 		release := make(chan struct{})
 		var once sync.Once
 		var legacyPreviewCalls atomic.Int32
-		probeDroppedPCVInput = func(source io.ReaderAt, size int64) (pcv3.Route, pcv3.Structure, error) {
+		probeDroppedPCVInput = func(source io.ReaderAt, size int64) (pcv3operation.Route, error) {
 			once.Do(func() { close(entered) })
 			<-release
 			return previousProbe(source, size)
@@ -186,9 +243,9 @@ func TestPCV3FyneRequiresExplicitModeAndLiveConsent(t *testing.T) {
 		}, "content-routed PCV3 did not become ready")
 		fyne.DoAndWait(func() {
 			snap := a.State.UISnapshot()
-			if snap.PCV3Format != app.PCV3FormatNormal || snap.PCV3Action != app.PCV3ActionNone ||
+			if snap.PCV3Format != app.PCV3FormatNormal || snap.PCV3Action != app.PCV3ActionDecrypt ||
 				snap.PCV3Factor != app.PCV3FactorPolicyUnset || !a.startButton.Disabled() {
-				t.Fatalf("detector inferred intent: %#v", snap)
+				t.Fatalf("ordinary read defaults: %#v", snap)
 			}
 			if !a.State.SelectPCV3D1() {
 				t.Fatal("explicit D1 action refused retained descriptor")

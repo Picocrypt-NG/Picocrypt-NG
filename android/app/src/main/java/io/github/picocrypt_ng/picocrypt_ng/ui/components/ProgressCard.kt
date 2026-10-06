@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -49,6 +50,7 @@ import io.github.picocrypt_ng.picocrypt_ng.AppError
 import io.github.picocrypt_ng.picocrypt_ng.FileCopyService
 import io.github.picocrypt_ng.picocrypt_ng.R
 import io.github.picocrypt_ng.picocrypt_ng.localizedMessage
+import io.github.picocrypt_ng.picocrypt_ng.hasSameOwnerAs
 import io.github.picocrypt_ng.picocrypt_ng.pcv3ProgressDisplay
 import io.github.picocrypt_ng.picocrypt_ng.pcv3ArtifactMetadataDisplay
 import io.github.picocrypt_ng.picocrypt_ng.pcv3ArtifactPageNavigation
@@ -79,9 +81,6 @@ fun ProgressCard(
     onInspectPcv3Artifact: ((operationId: String, generation: Long) -> Unit)? = null,
     onLoadPcv3ArtifactPage: ((operationId: String, generation: Long, offsetDecimal: String) -> Unit)? = null,
     onClosePcv3ArtifactInspection: ((operationId: String, generation: Long) -> Unit)? = null,
-    onBeginPcv3StagingSave: ((operationId: String, generation: Long) -> String?)? = null,
-    onCompletePcv3StagingSave: ((android.content.Context, Uri?) -> Unit)? = null,
-    pcv3StagingSaveError: AppError? = null,
 ) {
     if (pcv3Presentation != null) {
         Pcv3PresentationDialog(
@@ -99,9 +98,6 @@ fun ProgressCard(
             onInspectArtifact = onInspectPcv3Artifact,
             onLoadArtifactPage = onLoadPcv3ArtifactPage,
             onCloseArtifactInspection = onClosePcv3ArtifactInspection,
-            onBeginStagingSave = onBeginPcv3StagingSave,
-            onCompleteStagingSave = onCompletePcv3StagingSave,
-            stagingSaveError = pcv3StagingSaveError,
             modifier = modifier,
         )
         return
@@ -110,31 +106,47 @@ fun ProgressCard(
     val context = LocalContext.current
     val unknownErrorMsg = stringResource(R.string.error_unknown)
     val operationState by operationViewModel.operationState.collectAsState()
+    val displayedOperation = operationState
     var saveError by remember { mutableStateOf<AppError?>(null) }
+    // The picker may return after recomposition or Activity recreation. Only its
+    // launch-time native operation ID may authorize saving the current output.
+    var pendingSaveOperationId by rememberSaveable { mutableStateOf<String?>(null) }
+    var saveInProgress by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     // File save launcher
     val saveFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("*/*")
     ) { uri: Uri? ->
+        val operationId = pendingSaveOperationId
+        pendingSaveOperationId = null
         uri?.let { destinationUri ->
-            val op = operationState
+            val op = operationViewModel.operationState.value
             if (
-                op != null && op.done && op.error == null &&
+                operationId != null && op != null && op.id == operationId && op.done && op.error == null &&
                 op.status.code != OperationStatus.CANCELLED
             ) {
+                saveInProgress = true
                 scope.launch {
-                    val result = FileCopyService.saveFileToUri(context, op.outputFile, destinationUri)
-                    result.onSuccess {
-                        // Successfully saved, cleanup files and clear operation
-                        saveError = null
-                        operationViewModel.clearOperation(context, shouldCleanupFiles = true)
-                    }.onFailure { error ->
-                        saveError = if (error is AppError) {
-                            error
-                        } else {
-                            AppError.fromException(error as? Exception ?: Exception(error.message ?: unknownErrorMsg))
+                    try {
+                        if (operationViewModel.operationState.value?.hasSameOwnerAs(op) != true) return@launch
+                        val result = FileCopyService.saveFileToUri(context, op.outputFile, destinationUri) {
+                            operationViewModel.operationState.value?.hasSameOwnerAs(op) == true
                         }
+                        if (operationViewModel.operationState.value?.hasSameOwnerAs(op) != true) return@launch
+                        result.onSuccess {
+                            // Successfully saved, cleanup files and clear operation
+                            saveError = null
+                            operationViewModel.clearOperation(context, shouldCleanupFiles = true, expectedOperation = op)
+                        }.onFailure { error ->
+                            saveError = if (error is AppError) {
+                                error
+                            } else {
+                                AppError.fromException(error as? Exception ?: Exception(error.message ?: unknownErrorMsg))
+                            }
+                        }
+                    } finally {
+                        saveInProgress = false
                     }
                 }
             }
@@ -232,9 +244,10 @@ fun ProgressCard(
                             TextButton(
                                 onClick = {
                                     // Cleanup files and clear operation
-                                    operationViewModel.clearOperation(context, shouldCleanupFiles = true)
-                                    // Explicitly clear form data since Cancel means "give up"
-                                    mainViewModel.clearSensitiveData(clearFiles = true)
+                                    if (operationViewModel.clearOperation(context, shouldCleanupFiles = true, expectedOperation = displayedOperation)) {
+                                        // Explicitly clear form data since Cancel means "give up"
+                                        mainViewModel.clearSensitiveData(clearFiles = true)
+                                    }
                                 }
                             ) {
                                 Text(stringResource(R.string.cancel))
@@ -258,7 +271,7 @@ fun ProgressCard(
                             Button(
                                 onClick = {
                                     // Clear operation state but keep files and settings for retry
-                                    operationViewModel.clearOperation(context, shouldCleanupFiles = false)
+                                    operationViewModel.clearOperation(context, shouldCleanupFiles = false, expectedOperation = displayedOperation)
                                     // Note: Password fields remain - user can re-enter or overwrite
                                 }
                             ) {
@@ -269,9 +282,10 @@ fun ProgressCard(
                             TextButton(
                                 onClick = {
                                     // Full cleanup on cancel - delete files and clear form data
-                                    operationViewModel.clearOperation(context, shouldCleanupFiles = true)
-                                    // Explicitly clear form data since Cancel means "give up"
-                                    mainViewModel.clearSensitiveData(clearFiles = true)
+                                    if (operationViewModel.clearOperation(context, shouldCleanupFiles = true, expectedOperation = displayedOperation)) {
+                                        // Explicitly clear form data since Cancel means "give up"
+                                        mainViewModel.clearSensitiveData(clearFiles = true)
+                                    }
                                 }
                             ) {
                                 Text(stringResource(R.string.cancel))
@@ -295,9 +309,10 @@ fun ProgressCard(
                             TextButton(
                                 onClick = {
                                     // Full cleanup on error
-                                    operationViewModel.clearOperation(context, shouldCleanupFiles = true)
-                                    // Explicitly clear form data since Close means "give up"
-                                    mainViewModel.clearSensitiveData(clearFiles = true)
+                                    if (operationViewModel.clearOperation(context, shouldCleanupFiles = true, expectedOperation = displayedOperation)) {
+                                        // Explicitly clear form data since Close means "give up"
+                                        mainViewModel.clearSensitiveData(clearFiles = true)
+                                    }
                                 }
                             ) {
                                 Text(stringResource(R.string.close))
@@ -321,8 +336,9 @@ fun ProgressCard(
                 confirmButton = {
                     TextButton(
                         onClick = {
-                            operationViewModel.clearOperation(context, shouldCleanupFiles = true)
-                            mainViewModel.clearSensitiveData(clearFiles = true)
+                            if (operationViewModel.clearOperation(context, shouldCleanupFiles = true, expectedOperation = displayedOperation)) {
+                                mainViewModel.clearSensitiveData(clearFiles = true)
+                            }
                         }
                     ) {
                         Text(stringResource(R.string.close))
@@ -375,9 +391,21 @@ fun ProgressCard(
                 },
                 confirmButton = {
                     Button(
+                        enabled = pendingSaveOperationId == null && !saveInProgress,
                         onClick = {
-                            saveError = null
-                            outputFileName?.let { saveFileLauncher.launch(it) }
+                            if (op != null && op.id.isNotBlank() && outputFileName != null &&
+                                pendingSaveOperationId == null && !saveInProgress &&
+                                operationViewModel.operationState.value?.hasSameOwnerAs(op) == true
+                            ) {
+                                pendingSaveOperationId = op.id
+                                saveError = null
+                                try {
+                                    saveFileLauncher.launch(outputFileName)
+                                } catch (error: Exception) {
+                                    pendingSaveOperationId = null
+                                    saveError = AppError.fromException(error)
+                                }
+                            }
                         }
                     ) {
                         Text(stringResource(R.string.save))
@@ -387,9 +415,10 @@ fun ProgressCard(
                     TextButton(
                         onClick = {
                             // Cleanup files and clear operation
-                            operationViewModel.clearOperation(context, shouldCleanupFiles = true)
-                            // Explicitly clear form data (LaunchedEffect should handle this, but be explicit)
-                            mainViewModel.clearSensitiveData(clearFiles = true)
+                            if (operationViewModel.clearOperation(context, shouldCleanupFiles = true, expectedOperation = displayedOperation)) {
+                                // Explicitly clear form data (LaunchedEffect should handle this, but be explicit)
+                                mainViewModel.clearSensitiveData(clearFiles = true)
+                            }
                         }
                     ) {
                         Text(stringResource(R.string.discard_output))
@@ -423,9 +452,6 @@ internal fun Pcv3PresentationDialog(
     onCloseArtifactInspection: ((operationId: String, generation: Long) -> Unit)?,
     onBeginArchive: ((operationId: String, generation: Long) -> Boolean)? = null,
     onCompleteArchive: ((android.content.Context, Uri?) -> Unit)? = null,
-    onBeginStagingSave: ((operationId: String, generation: Long) -> String?)? = null,
-    onCompleteStagingSave: ((android.content.Context, Uri?) -> Unit)? = null,
-    stagingSaveError: AppError? = null,
     modifier: Modifier = Modifier,
 ) {
     if (presentation is Pcv3Presentation.Live && presentation.consent != null) {
@@ -474,9 +500,6 @@ internal fun Pcv3PresentationDialog(
         onCloseArchive = onCloseArchive,
         onBeginArchive = onBeginArchive,
         onCompleteArchive = onCompleteArchive,
-        onBeginStagingSave = onBeginStagingSave,
-        onCompleteStagingSave = onCompleteStagingSave,
-        stagingSaveError = stagingSaveError,
         modifier = modifier,
     )
 }
@@ -528,9 +551,6 @@ private fun Pcv3ResultDialog(
     onBeginArchive: ((operationId: String, generation: Long) -> Boolean)?,
     onCompleteArchive: ((android.content.Context, Uri?) -> Unit)?,
     modifier: Modifier,
-    onBeginStagingSave: ((operationId: String, generation: Long) -> String?)? = null,
-    onCompleteStagingSave: ((android.content.Context, Uri?) -> Unit)? = null,
-    stagingSaveError: AppError? = null,
 ) {
     val display = pcv3ResultDisplay(presentation)
     val actionProjection = pcv3ResultActions(presentation)
@@ -564,12 +584,15 @@ private fun Pcv3ResultDialog(
         return
     }
 
-    if (confirmDiscard && Pcv3ResultAction.DISCARD_RECOVERY_ARTIFACT in actions &&
+    val discardRecovery = Pcv3ResultAction.DISCARD_RECOVERY_ARTIFACT in actions
+    val discardOutput = Pcv3ResultAction.DISCARD_OUTPUT in actions
+    if (confirmDiscard && (discardRecovery || discardOutput) &&
         onDiscardOutput != null
     ) {
         Pcv3DiscardConfirmationDialog(
             operationId = presentation.operationId,
             generation = presentation.generation,
+            recoveryArtifact = discardRecovery,
             onKeep = { confirmDiscard = false },
             onDiscard = {
                 confirmDiscard = false
@@ -695,22 +718,12 @@ private fun Pcv3ResultDialog(
                     if (presentation is Pcv3Presentation.Live &&
                         onBeginSave != null && onCompleteSave != null
                     ) {
-                        // Normal creation retains an output capability: save via SaveFD.
+                        // Both creation modes retain the exact native output for SaveFD.
                         Pcv3SaveButton(
                             presentation = presentation,
                             labelResId = R.string.pcv3_save_created_volume,
                             onBeginSave = onBeginSave,
                             onCompleteSave = onCompleteSave,
-                        )
-                    } else if (presentation is Pcv3Presentation.Final &&
-                        onBeginStagingSave != null && onCompleteStagingSave != null
-                    ) {
-                        // D1 creation published the staging file natively: host copy-out.
-                        Pcv3StagingSaveButton(
-                            presentation = presentation,
-                            saveError = stagingSaveError,
-                            onBeginStagingSave = onBeginStagingSave,
-                            onCompleteStagingSave = onCompleteStagingSave,
                         )
                     }
                 }
@@ -740,6 +753,11 @@ private fun Pcv3ResultDialog(
                 ) {
                     TextButton(onClick = { confirmDiscard = true }) {
                         Text(stringResource(R.string.pcv3_discard_recovery_artifact))
+                    }
+                }
+                if (discardOutput && onDiscardOutput != null) {
+                    TextButton(onClick = { confirmDiscard = true }) {
+                        Text(stringResource(R.string.discard_output))
                     }
                 }
                 if (close != null && actionProjection.closeActionResId != null) {
@@ -799,41 +817,10 @@ private fun Pcv3SaveButton(
 }
 
 @Composable
-private fun Pcv3StagingSaveButton(
-    presentation: Pcv3Presentation,
-    saveError: AppError?,
-    onBeginStagingSave: (operationId: String, generation: Long) -> String?,
-    onCompleteStagingSave: (android.content.Context, Uri?) -> Unit,
-) {
-    val applicationContext = LocalContext.current.applicationContext
-    val saveLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
-    ) { uri: Uri? ->
-        onCompleteStagingSave(applicationContext, uri)
-    }
-    Button(
-        onClick = {
-            onBeginStagingSave(presentation.operationId, presentation.generation)
-                ?.let(saveLauncher::launch)
-        },
-    ) {
-        Text(stringResource(R.string.pcv3_save_created_volume))
-    }
-    // The D1 staging copy-out fails host-side, so the bounded save failure is shown
-    // next to the only remaining action instead of replacing the terminal result.
-    saveError?.let { error ->
-        Text(
-            text = error.localizedMessage(applicationContext),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-        )
-    }
-}
-
-@Composable
 private fun Pcv3DiscardConfirmationDialog(
     operationId: String,
     generation: Long,
+    recoveryArtifact: Boolean,
     onKeep: () -> Unit,
     onDiscard: () -> Unit,
     modifier: Modifier,
@@ -845,8 +832,8 @@ private fun Pcv3DiscardConfirmationDialog(
     AlertDialog(
         modifier = modifier,
         onDismissRequest = onKeep,
-        title = { Text(stringResource(R.string.pcv3_discard_artifact_title)) },
-        text = { Text(stringResource(R.string.pcv3_discard_artifact_body)) },
+        title = { Text(stringResource(if (recoveryArtifact) R.string.pcv3_discard_artifact_title else R.string.pcv3_discard_retained_title)) },
+        text = { Text(stringResource(if (recoveryArtifact) R.string.pcv3_discard_artifact_body else R.string.pcv3_discard_retained_body)) },
         confirmButton = {
             Button(
                 enabled = !consumed,
@@ -857,7 +844,7 @@ private fun Pcv3DiscardConfirmationDialog(
                     }
                 },
             ) {
-                Text(stringResource(R.string.pcv3_discard_recovery_artifact))
+                Text(stringResource(if (recoveryArtifact) R.string.pcv3_discard_recovery_artifact else R.string.discard_output))
             }
         },
         dismissButton = {
@@ -865,7 +852,7 @@ private fun Pcv3DiscardConfirmationDialog(
                 onClick = onKeep,
                 modifier = Modifier.focusRequester(keepFocus),
             ) {
-                Text(stringResource(R.string.pcv3_keep_recovery_artifact))
+                Text(stringResource(if (recoveryArtifact) R.string.pcv3_keep_recovery_artifact else R.string.cancel))
             }
         },
     )

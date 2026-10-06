@@ -3,7 +3,6 @@
 package mobile
 
 import (
-	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"bytes"
@@ -51,7 +50,7 @@ func (action *retainedMobileOutputAction) SaveTo(destination *os.File) pcv3Outpu
 	}
 	copyResult := action.retained.CopyTo(destination)
 	if !copyResult.Copied() {
-		cleanupIncomplete := copyResult.CleanupIncomplete() || action.retained.RemoveExact() != nil
+		cleanupIncomplete := action.retained.RemoveExact() != nil || copyResult.CleanupIncomplete()
 		code := "save-failed"
 		if cleanupIncomplete {
 			code = "save-failed-cleanup-incomplete"
@@ -169,9 +168,9 @@ func TestPCV3MobileRetainedOutputRejectsStaleCompletionAndRedactsExports(t *test
 	action = &retainedMobileOutputAction{retained: retained}
 	operation = startPCV3Operation()
 	invalid := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-		Outcome: pcv3.OutcomeSuccess,
-		Stage:   pcv3.StageNone,
-		Code:    pcv3.CodeSuccess,
+		Outcome: pcv3operation.OutcomeSuccess,
+		Stage:   pcv3operation.StageNone,
+		Code:    pcv3operation.CodeSuccess,
 	})
 	completePCV3PresentationWithOutputAndInspectionComment(operation, invalid, action, nil, "")
 	if snapshot := operation.Snapshot(); snapshot.Diagnostic() != "core-failure" || operation.Output() != nil {
@@ -420,12 +419,12 @@ func publishPCV3MobileRetainedFile(
 func durablePCV3MobilePresentation(t *testing.T) pcv3operation.Presentation {
 	t.Helper()
 	return mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-		Outcome:              pcv3.OutcomeSuccess,
-		Stage:                pcv3.StageNone,
-		Code:                 pcv3.CodeSuccess,
+		Outcome:              pcv3operation.OutcomeSuccess,
+		Stage:                pcv3operation.StageNone,
+		Code:                 pcv3operation.CodeSuccess,
 		PublicationAttempted: true,
 		PublicationState:     pcv3publication.StatePublishedDurable,
-		PublicationStage:     pcv3.StageNone,
+		PublicationStage:     pcv3operation.StageNone,
 		PublicationCode:      pcv3publication.CodePublishedDurable,
 	})
 }

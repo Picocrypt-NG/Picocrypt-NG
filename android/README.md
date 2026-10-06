@@ -6,15 +6,15 @@ This directory contains the Android app that integrates with the Go encryption b
 
 ### Prerequisites
 
-1. **Go Mobile**: Use exactly Go 1.26.6 and install Go mobile bindings
+1. **Go Mobile**: Use exactly Go 1.27.1 and install Go mobile bindings
    ```bash
-   go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260709172247-6129f5bee9d5
-   go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260709172247-6129f5bee9d5
+   go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
+   go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
    mkdir -p "$(go env GOPATH | cut -d: -f1)/pkg/gomobile"
    ```
 
 2. **Android SDK**: Ensure Android SDK is installed and `ANDROID_HOME` is set.
-   - Requires the stable NDK `29.0.14206865` pin from `ndk-version.txt` (minimum API level 24,
+   - Requires the stable NDK `30.0.16248370` pin from `ndk-version.txt` (minimum API level 26,
      matching app's minSdk)
    - CI and recommended local builds use JDK 21
    - Android app and gomobile outputs are 64-bit only: `arm64-v8a` and `x86_64`
@@ -35,9 +35,10 @@ This directory contains the Android app that integrates with the Go encryption b
    ```bash
    ./android/build-gomobile.sh
    ```
-   The script requires exactly Go 1.26.6 and the exact NDK revision in `ndk-version.txt`. It verifies
+   The script requires exactly Go 1.27.1 and the exact NDK revision in `ndk-version.txt`. It verifies
    that `gomobile` and `gobind` match the `golang.org/x/mobile` version in `src/go.mod` and were built
-   with Go 1.26.6 before generating `app/libs/picocrypt-mobile.aar`.
+   with Go 1.27.1 before generating `app/libs/picocrypt-mobile.aar`.
+   The mise task selects these versions independently of the desktop development tools.
 
 2. **Build Android App**:
    ```bash
@@ -52,9 +53,10 @@ This directory contains the Android app that integrates with the Go encryption b
 The Go mobile package exports (see `src/mobile/android.go`):
 - `StartOperation()` - Reserves a new operation and returns its ID
 - `DetectOperation(filePath)` - Determines whether a file should be encrypted or decrypted
-- `StartEncrypt(requestJSON, password)` - Starts encryption in the background; the request JSON
-  carries the staged selection (single file, multiple files, or a folder) so the Go side can
-  encrypt a single output or a recursive archive
+- `StartPCV3(requestJSON, password)` - Starts PCV3 creation or reading in the background;
+  creation accepts a single file, multiple files, or a folder, with optional compression
+- `StartEncrypt(requestJSON, password)` - Retired compatibility entry point; clears the
+  supplied password and returns `PCV3_UNSUPPORTED` without starting encryption
 - `StartDecrypt(requestJSON, password)` - Starts decryption in the background
 - `GetProgress(operationID)` - Returns `ProgressResult` with `Status`, `StatusCode`,
   `StatusSpeedMiBPerSecond`, `StatusETA`, `Progress`, `Info`, `InfoCode`, `InfoCurrent`,
@@ -65,9 +67,11 @@ The Go mobile package exports (see `src/mobile/android.go`):
 - `CancelOperation(operationID)` - Cancels a running operation and returns its canonical terminal
   `ProgressResult`; an already-recorded success or failure wins over a late cancellation request
 
-Passwords cross the bridge as `[]byte` (not `String`) so the Kotlin side can zero its buffer after
-use. On the Go side the password becomes a normal `string` for the operation's duration (released
-when it ends), so it is not separately wiped.
+Passwords cross the bridge as `[]byte` so the Kotlin side can zero its transfer buffer after
+use. `StartPCV3` clears the caller buffer and transfers an owned copy into the shared
+credential lifecycle, which clears its owned byte buffers. Legacy decryption can still
+create Go password strings that cannot be explicitly wiped; UI strings and runtime copies
+are outside the owned-byte cleanup guarantee.
 
 ### Android Components (`app/src/main/.../picocrypt_ng/`)
 
@@ -164,10 +168,48 @@ before release admission.
   `PICOCRYPT_REQUIRE_RELEASE_SIGNING=true` so official GitHub release builds still fail if signing
   secrets are missing.
 - Release builds produce **64-bit per-ABI APKs** for `arm64-v8a` and `x86_64`
-  plus a **64-bit universal** fallback APK. Android 7.0/API 24 remains the OS
+  plus a **64-bit universal** fallback APK. Android 8.0/API 26 remains the OS
   floor, but the device must support one of those 64-bit ABIs. Stable split
   versionCode offsets remain `arm64-v8a=2` and `x86_64=4`; the universal APK
   keeps `base`. The next fdroiddata release must mirror this as
   `VercodeOperation: [10*%c+2, 10*%c+4]`. Published v2.18 metadata remains a
   historical four-ABI release.
 - The release workflow publishes three signed release APKs; PR workflow artifacts remain debug/testing-only
+
+### PCV3 publication and document providers
+
+Android 8.0/API 26 and a supported 64-bit ABI are the installation minimum.
+The OS version does not establish filesystem publication support: creation probes
+atomic no-replace behavior in the actual app-private output directory before the
+KDF. Unsupported kernels, filesystems, or SELinux policies fail closed; an
+ordinary rename after an existence check is never substituted.
+
+Saving retained PCV3 output requires a provider that exposes a seekable regular
+file descriptor in `rwt` mode. Pipes and other unsupported descriptors are refused
+with `PCV3_OUTPUT_PROVIDER_UNSUPPORTED`; select another destination. A failed
+ciphertext save retains the same encrypted result for retry without repeating the
+KDF. Decrypted temporary plaintext remains subject to its one-shot cleanup policy.
+Successful descriptor transfer confirms only the local transfer; it does not prove
+that a remote provider durably stored or synchronized the document. Archive SAF
+publication likewise reports durability uncertainty rather than durable storage.
+
+### PCV3 request and retained-output limits
+
+Android uses a bounded 4 MiB UTF-8 JSON request, including JSON escaping and all path
+lists. This aggregate transport limit is separate from the 99,999-byte UTF-8 comment,
+4,096-byte path, 64-keyfile and 4,096-path-per-selection-list limits. Creation checks
+these limits before transferring form ownership; a refusal keeps the selection and
+credentials available for correction. JSON size is admitted before aggregate allocation.
+
+An ordinary retained ciphertext or plaintext result offers Save and explicit, confirmed
+Discard. A rejected destination keeps the result available and displays the save error.
+Native plaintext transfer remains one-shot; only confirmed ciphertext save failure
+allows retry. Foreground timeout stops the service promptly while process-owned
+cancellation retains native and SAF cleanup custody until settlement.
+
+ZIP preparation and SAF export share a 192 MiB accounting budget across Go and
+Kotlin, with a separate check of fresh platform memory observations. The budget
+covers retained metadata, paths and provider identities; it is not a process PSS
+limit. Archive preparation owns its cancellation context after decryption ends,
+and the active export continues supplying fresh memory observations. Resource
+refusal preserves cleanup custody and does not offer a password retry.

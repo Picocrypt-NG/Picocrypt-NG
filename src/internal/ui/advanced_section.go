@@ -25,6 +25,8 @@ func (a *App) updateAdvancedSection() {
 	a.advancedContainer.RemoveAll()
 	a.advancedToggleBtn = nil
 	a.advancedDetail = nil
+	a.pcv3FormatButton = nil
+	a.recursiveD1Check = nil
 
 	snap := a.State.UISnapshot()
 	if snap.PCV3Route != app.PCV3RouteNone && snap.PCV3Route != app.PCV3RouteReady {
@@ -38,31 +40,28 @@ func (a *App) updateAdvancedSection() {
 		if a.advancedLabel != nil {
 			a.advancedLabel.Show()
 		}
-		a.buildDesktopAdvancedDisclosure(a.buildPCV3Options(snap), true)
+		a.buildDesktopAdvancedDisclosure(a.buildPCV3Options(snap), snap.PCV3Action != app.PCV3ActionNone && snap.PCV3Action != app.PCV3ActionDecrypt)
 		a.updateAdvancedDisableState()
 		a.advancedContainer.Refresh()
 		return
 	}
 
-	switch a.State.Mode {
+	switch operationUISnapshot(snap).Mode {
 	case "":
 		// Initial state - no files selected, hide advanced section entirely
 		if a.advancedLabel != nil {
 			a.advancedLabel.Hide()
 		}
-		a.resizeDesktopWindowForCurrentContent(0)
 	case "encrypt":
 		if a.advancedLabel != nil {
 			a.advancedLabel.Show()
 		}
 		a.buildDesktopAdvancedDisclosure(a.buildAdvancedDetailContent("encrypt"), a.advancedShouldAutoOpen())
-		a.resizeDesktopWindowForCurrentContent(0)
 	case "decrypt":
 		if a.advancedLabel != nil {
 			a.advancedLabel.Show()
 		}
 		a.buildDesktopAdvancedDisclosure(a.buildAdvancedDetailContent("decrypt"), a.advancedShouldAutoOpen())
-		a.resizeDesktopWindowForCurrentContent(0)
 	}
 
 	// IMPORTANT: Newly rebuilt controls must immediately reflect the current
@@ -76,7 +75,7 @@ func (a *App) updateAdvancedSection() {
 func (a *App) advancedShouldAutoOpen() bool {
 	switch a.State.Mode {
 	case "encrypt":
-		return a.State.CreatePCV3 || a.State.Paranoid || a.State.Compress || a.State.ReedSolomon ||
+		return a.State.Paranoid || a.State.Compress || a.State.ReedSolomon ||
 			a.State.Delete || a.State.Deniability || a.State.Recursively ||
 			a.State.Split || a.State.SplitSize != ""
 	case "decrypt":
@@ -90,13 +89,15 @@ func (a *App) advancedShouldAutoOpen() bool {
 func (a *App) buildAdvancedDetailContent(mode string) fyne.CanvasObject {
 	options := container.NewVBox()
 	snap := a.State.UISnapshot()
+	if recursiveD1Selected(snap) {
+		a.buildRecursiveControls()
+		options.Add(a.recursivelyCheck)
+		options.Add(a.recursiveD1Check)
+		options.Add(a.buildArchiveOptions())
+		return options
+	}
 	if snap.InputFile != "" && snap.OnlyFileCount == 1 && snap.OnlyFolderCount == 0 {
-		d1 := widget.NewButton(tr("pcv3.format.d1_action", "Open as PCV3 D1"), func() {
-			if a.State.SelectPCV3D1() {
-				a.refreshAdvanced()
-				a.updateUIState()
-			}
-		})
+		d1 := widget.NewButton(tr("pcv3.format.d1_action", "Open as PCV3 D1"), a.selectPCV3D1)
 		d1.Importance = widget.LowImportance
 		options.Add(d1)
 	}
@@ -110,150 +111,81 @@ func (a *App) buildAdvancedDetailContent(mode string) fyne.CanvasObject {
 	return options
 }
 
+func (a *App) selectPCV3D1() {
+	if a.State.SelectPCV3D1() {
+		switch a.State.UISnapshot().Status.Kind {
+		case app.StatusDropHeaderMayBeDeniable, app.StatusDropHeaderDamaged:
+			a.State.SetReadyStatus()
+		}
+		a.State.SetPCV3Intent(app.PCV3ActionDecrypt, app.PCV3FactorPolicyUnset, app.PCV3KeyfileOrderUnset)
+		a.advancedOverridden = false
+		a.refreshAdvanced()
+		a.updateUIState()
+		if a.mainScroll != nil {
+			a.mainScroll.ScrollToTop()
+		}
+	}
+}
+
 func (a *App) buildPCV3Options(snap app.UISnapshot) fyne.CanvasObject {
 	format := tr("pcv3.format.normal", "Normal PCV3")
 	if snap.PCV3Format == app.PCV3FormatD1 {
 		format = tr("pcv3.format.d1", "PCV3 D1")
 	}
-	formatText := tr("pcv3.format.label", "Format:") + " " + format
-	formatLabel := widget.NewLabel(formatText)
-	formatLabel.Wrapping = fyne.TextWrapWord
-
-	actionValues := []struct {
+	actions := []struct {
 		label string
 		value app.PCV3Action
 	}{
 		{tr("pcv3.action.decrypt", "Decrypt"), app.PCV3ActionDecrypt},
-		{tr("pcv3.action.recovery", "Recovery"), app.PCV3ActionRecovery},
+		{tr("pcv3.action.recovery", "Recover"), app.PCV3ActionRecovery},
 		{tr("pcv3.action.force", "Force recovery"), app.PCV3ActionForce},
-		{tr("pcv3.action.force_unverified", "Unverified Force recovery"), app.PCV3ActionForceUnverified},
+		{tr("pcv3.action.force_unverified", "Unverified recovery"), app.PCV3ActionForceUnverified},
 	}
-	a.pcv3ActionGroup = widget.NewRadioGroup(labelsForPCV3Actions(actionValues), func(selected string) {
-		for _, option := range actionValues {
-			if selected == option.label {
-				a.State.SetPCV3Intent(option.value, a.State.UISnapshot().PCV3Factor, a.State.UISnapshot().PCV3Order)
-				a.updateUIState()
-				return
-			}
-		}
-	})
-	a.pcv3ActionGroup.Required = true
-	for _, option := range actionValues {
-		if option.value == snap.PCV3Action {
-			a.pcv3ActionGroup.Selected = option.label
-		}
+	labels := make([]string, len(actions))
+	for index, action := range actions {
+		labels[index] = action.label
 	}
-
-	factorValues := []struct {
-		label string
-		value app.PCV3FactorPolicy
-	}{
-		{tr("pcv3.factor.password", "Password only"), app.PCV3FactorPolicyPassword},
-		{tr("pcv3.factor.keyfiles", "Keyfiles only"), app.PCV3FactorPolicyKeyfiles},
-		{tr("pcv3.factor.combined", "Password + keyfiles"), app.PCV3FactorPolicyCombined},
-	}
-	a.pcv3FactorGroup = widget.NewRadioGroup(labelsForPCV3Factors(factorValues), func(selected string) {
-		for _, option := range factorValues {
-			if selected == option.label {
+	a.pcv3ActionSelect = widget.NewSelect(labels, func(selected string) {
+		for _, action := range actions {
+			if action.label == selected {
 				current := a.State.UISnapshot()
-				a.State.SetPCV3Intent(current.PCV3Action, option.value, current.PCV3Order)
-				a.refreshAdvanced()
+				a.State.SetPCV3Intent(action.value, current.PCV3Factor, current.PCV3Order)
 				a.updateUIState()
 				return
 			}
 		}
 	})
-	a.pcv3FactorGroup.Required = true
-	for _, option := range factorValues {
-		if option.value == snap.PCV3Factor {
-			a.pcv3FactorGroup.Selected = option.label
+	for _, action := range actions {
+		if action.value == snap.PCV3Action {
+			a.pcv3ActionSelect.Selected = action.label
 		}
 	}
-
-	content := container.NewVBox(
-		formatLabel,
-		widget.NewLabel(tr("pcv3.action.label", "PCV3 operation")),
-		a.pcv3ActionGroup,
-		widget.NewLabel(tr("pcv3.factor.label", "Credential policy")),
-		a.pcv3FactorGroup,
-	)
+	var formatControl fyne.CanvasObject = widget.NewLabel(format)
 	if snap.PCV3Format == app.PCV3FormatNormal {
-		d1 := widget.NewButton(tr("pcv3.format.d1_action", "Open as PCV3 D1"), func() {
-			if a.State.SelectPCV3D1() {
-				a.refreshAdvanced()
-				a.updateUIState()
+		a.pcv3FormatButton = widget.NewButtonWithIcon(format, theme.MenuDropDownIcon(), func() {
+			ticket, _, ready := a.State.PCV3ReadyOutputSelection()
+			if !ready {
+				return
 			}
-		})
-		d1.Importance = widget.LowImportance
-		content.Add(d1)
-	}
-	if snap.PCV3Factor == app.PCV3FactorPolicyKeyfiles ||
-		snap.PCV3Factor == app.PCV3FactorPolicyCombined {
-		orderValues := []struct {
-			label string
-			value app.PCV3KeyfileOrder
-		}{
-			{tr("pcv3.order.ordered", "Use selected order"), app.PCV3KeyfileOrderSelected},
-			{tr("pcv3.order.unordered", "Any order"), app.PCV3KeyfileOrderAny},
-		}
-		a.pcv3OrderGroup = widget.NewRadioGroup(labelsForPCV3Orders(orderValues), func(selected string) {
-			for _, option := range orderValues {
-				if selected == option.label {
-					current := a.State.UISnapshot()
-					a.State.SetPCV3Intent(current.PCV3Action, current.PCV3Factor, option.value)
-					a.updateUIState()
-					return
+			menu := fyne.NewMenu("", fyne.NewMenuItem(tr("pcv3.format.d1_action", "Open as PCV3 D1"), func() {
+				if a.State.IsPCV3ReadyOutputSelection(ticket) {
+					a.selectPCV3D1()
 				}
-			}
+			}))
+			widget.ShowPopUpMenuAtRelativePosition(menu, a.Window.Canvas(), fyne.NewPos(0, a.pcv3FormatButton.Size().Height), a.pcv3FormatButton)
 		})
-		a.pcv3OrderGroup.Required = true
-		for _, option := range orderValues {
-			if option.value == snap.PCV3Order {
-				a.pcv3OrderGroup.Selected = option.label
-			}
-		}
-		content.Add(widget.NewLabel(tr("pcv3.order.label", "Keyfile order")))
-		content.Add(a.pcv3OrderGroup)
-	} else {
-		a.pcv3OrderGroup = nil
+		a.pcv3FormatButton.Importance = widget.LowImportance
+		a.pcv3FormatButton.Alignment = widget.ButtonAlignLeading
+		a.pcv3FormatButton.IconPlacement = widget.ButtonIconTrailingText
+		formatControl = a.pcv3FormatButton
 	}
+	content := container.NewVBox(
+		formatControl,
+		widget.NewLabel(tr("pcv3.action.label", "Operation")),
+		a.pcv3ActionSelect,
+		a.buildArchiveOptions(),
+	)
 	return content
-}
-
-func labelsForPCV3Actions(values []struct {
-	label string
-	value app.PCV3Action
-},
-) []string {
-	labels := make([]string, len(values))
-	for index := range values {
-		labels[index] = values[index].label
-	}
-	return labels
-}
-
-func labelsForPCV3Factors(values []struct {
-	label string
-	value app.PCV3FactorPolicy
-},
-) []string {
-	labels := make([]string, len(values))
-	for index := range values {
-		labels[index] = values[index].label
-	}
-	return labels
-}
-
-func labelsForPCV3Orders(values []struct {
-	label string
-	value app.PCV3KeyfileOrder
-},
-) []string {
-	labels := make([]string, len(values))
-	for index := range values {
-		labels[index] = values[index].label
-	}
-	return labels
 }
 
 func (a *App) buildDesktopAdvancedDisclosure(detail fyne.CanvasObject, autoOpen bool) {
@@ -307,7 +239,9 @@ func (a *App) setAdvancedDisclosureOpen(open bool) {
 	if a.advancedContainer != nil {
 		a.advancedContainer.Refresh()
 	}
-	a.resizeDesktopWindowForCurrentContent(0)
+	if a.mainScroll != nil {
+		a.mainScroll.Refresh()
+	}
 }
 
 func adaptiveAdvancedOptionPair(left, right fyne.CanvasObject) fyne.CanvasObject {
@@ -323,19 +257,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 		return
 	}
 
-	a.pcv3CreateCheck = ttwidget.NewCheck(tr("advanced.pcv3.label", "Create PCV3"), func(checked bool) {
-		if a.State.CreatePCV3 == checked {
-			return
-		}
-		a.State.CreatePCV3 = checked
-		if checked && a.State.Deniability {
-			a.State.Paranoid = true
-		}
-		a.refreshAdvanced()
-		a.updateUIState()
-	})
-	a.pcv3CreateCheck.SetToolTip(tr("advanced.pcv3.tooltip", "Create the new authenticated PCV3 format"))
-	a.pcv3CreateCheck.SetChecked(a.State.CreatePCV3)
+	a.State.CreatePCV3 = true
 
 	a.paranoidCheck = ttwidget.NewCheck(tr("advanced.paranoid.label", "Paranoid mode"), func(checked bool) {
 		a.State.Paranoid = checked
@@ -385,18 +307,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 	a.deniabilityCheck.SetToolTip(deniabilityTooltip)
 	a.deniabilityCheck.SetChecked(a.State.Deniability)
 
-	a.recursivelyCheck = ttwidget.NewCheck(tr("advanced.recursively.label", "Recursively"), func(checked bool) {
-		a.State.Recursively = checked
-		if checked {
-			a.State.Compress = false
-			if a.compressCheck != nil {
-				a.compressCheck.SetChecked(false)
-			}
-		}
-		a.updateUIState()
-	})
-	a.recursivelyCheck.SetToolTip(tr("advanced.recursively.tooltip", "Process each file separately"))
-	a.recursivelyCheck.SetChecked(a.State.Recursively)
+	a.buildRecursiveControls()
 
 	row3 := adaptiveAdvancedOptionPair(a.deniabilityCheck, a.recursivelyCheck)
 
@@ -408,6 +319,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 	a.splitCheck.SetChecked(a.State.Split)
 
 	a.splitSizeEntry = widget.NewEntry()
+	a.splitSizeEntry.OnSubmitted = a.onDesktopEntrySubmitted
 	a.splitSizeEntry.SetPlaceHolder(tr("advanced.split.size_placeholder", "Size"))
 	a.splitSizeEntry.SetText(a.State.SplitSize)
 	a.splitSizeEntry.OnChanged = func(text string) {
@@ -434,14 +346,56 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 		nil, nil,
 		a.splitCheck,
 		a.splitUnitSelect,
-		a.splitSizeEntry,
+		a.scrollFormOver(a.splitSizeEntry),
 	)
 
-	target.Add(a.pcv3CreateCheck)
 	target.Add(row1)
 	target.Add(row2)
 	target.Add(row3)
+	target.Add(a.recursiveD1Check)
 	target.Add(splitRow)
+}
+
+func (a *App) buildRecursiveControls() {
+	a.recursivelyCheck = ttwidget.NewCheck(tr("advanced.recursively.label", "Recursively"), func(checked bool) {
+		snap := a.State.UISnapshot()
+		if snap.Working || snap.Scanning || snap.Recursively == checked {
+			return
+		}
+		a.State.Recursively = checked
+		if checked {
+			a.State.Compress = false
+			if a.compressCheck != nil {
+				a.compressCheck.SetChecked(false)
+			}
+		} else {
+			a.State.SetRecursiveD1(false)
+		}
+		if snap.RecursiveD1 && !checked {
+			a.refreshAdvanced()
+		}
+		a.refreshRecursiveCredentialUI()
+	})
+	a.recursivelyCheck.SetToolTip(tr("advanced.recursively.tooltip", "Process each file separately"))
+	a.recursivelyCheck.SetChecked(a.State.Recursively)
+	a.recursiveD1Check = ttwidget.NewCheck(tr("advanced.recursive_d1.label", "All selected files are PCV3 D1"), func(checked bool) {
+		if a.State.UISnapshot().RecursiveD1 == checked || !a.State.SetRecursiveD1(checked) {
+			return
+		}
+		a.refreshAdvanced()
+		a.refreshRecursiveCredentialUI()
+	})
+	a.recursiveD1Check.SetChecked(a.State.UISnapshot().RecursiveD1)
+}
+
+func (a *App) refreshRecursiveCredentialUI() {
+	snap := operationUISnapshot(a.State.UISnapshot())
+	if a.commentsEntry != nil && snap.Mode != "decrypt" {
+		a.commentsEntry.SetText(snap.Comments)
+	}
+	a.updatePasswordStrength()
+	a.updateValidation()
+	a.updateUIState()
 }
 
 func localizedSplitUnits(units []string) []string {
@@ -484,30 +438,7 @@ func (a *App) buildDecryptOptionsInto(target *fyne.Container) {
 	a.deleteVolumeCheck.SetToolTip(tr("advanced.delete_volume.tooltip", "Delete volume after decryption"))
 	a.deleteVolumeCheck.SetChecked(a.State.Delete)
 
-	a.autoUnzipCheck = ttwidget.NewCheck(tr("advanced.auto_unzip.label", "Auto unzip"), func(checked bool) {
-		a.State.AutoUnzip = checked
-		if !checked {
-			a.State.SameLevel = false
-			if a.sameLevelCheck != nil {
-				a.sameLevelCheck.SetChecked(false)
-			}
-		}
-		a.updateUIState()
-	})
-	a.autoUnzipCheck.SetToolTip(tr("advanced.auto_unzip.tooltip", "Extract {{.Extension}}; may overwrite files", map[string]any{
-		"Extension": ".zip",
-	}))
-	a.autoUnzipCheck.SetChecked(a.State.AutoUnzip)
-
-	a.sameLevelCheck = ttwidget.NewCheck(tr("advanced.same_level.label", "Same level"), func(checked bool) {
-		a.State.SameLevel = checked
-	})
-	a.sameLevelCheck.SetToolTip(tr("advanced.same_level.tooltip", "Extract {{.Extension}} beside the volume", map[string]any{
-		"Extension": ".zip",
-	}))
-	a.sameLevelCheck.SetChecked(a.State.SameLevel)
-
-	row2 := container.NewGridWithColumns(2, a.autoUnzipCheck, a.sameLevelCheck)
+	row2 := a.buildArchiveOptions()
 
 	target.Add(row1)
 	target.Add(a.deleteVolumeCheck)
@@ -530,6 +461,29 @@ func (a *App) buildDecryptOptionsInto(target *fyne.Container) {
 	}
 }
 
+func (a *App) buildArchiveOptions() fyne.CanvasObject {
+	snap := a.State.UISnapshot()
+	a.autoUnzipCheck = ttwidget.NewCheck(tr("advanced.auto_unzip.label", "Auto unzip"), func(checked bool) {
+		a.State.SetAutoUnzip(checked)
+		if !checked && a.sameLevelCheck != nil {
+			a.sameLevelCheck.SetChecked(false)
+		}
+		a.updateUIState()
+	})
+	a.autoUnzipCheck.SetToolTip(tr("advanced.auto_unzip.tooltip", "Extract {{.Extension}} archives; keep existing files", map[string]any{
+		"Extension": ".zip",
+	}))
+	a.autoUnzipCheck.SetChecked(snap.AutoUnzip)
+	a.sameLevelCheck = ttwidget.NewCheck(tr("advanced.same_level.label", "Same level"), func(checked bool) {
+		a.State.SetSameLevel(checked)
+	})
+	a.sameLevelCheck.SetToolTip(tr("advanced.same_level.tooltip", "Extract {{.Extension}} in the output directory, without a subfolder", map[string]any{
+		"Extension": ".zip",
+	}))
+	a.sameLevelCheck.SetChecked(snap.SameLevel)
+	return adaptiveAdvancedOptionPair(a.autoUnzipCheck, a.sameLevelCheck)
+}
+
 // updateAdvancedDisableState updates the disable state of advanced options.
 func (a *App) updateAdvancedDisableState() {
 	snap := a.State.UISnapshot()
@@ -538,10 +492,19 @@ func (a *App) updateAdvancedDisableState() {
 
 func (a *App) updateAdvancedDisableStateFromSnapshot(snap app.UISnapshot, configureDisabled bool) {
 	advancedDisabled := configureDisabled
+	setWidgetDisabled(a.recursiveD1Check, advancedDisabled || snap.Working || snap.Scanning || !snap.Recursively)
+	if recursiveD1Selected(snap) {
+		setWidgetDisabled(a.recursivelyCheck, advancedDisabled || snap.Working || snap.Scanning)
+		setWidgetDisabled(a.autoUnzipCheck, advancedDisabled || snap.Working || snap.Scanning)
+		setWidgetDisabled(a.sameLevelCheck, advancedDisabled || snap.Working || snap.Scanning || !snap.AutoUnzip)
+		return
+	}
 	if snap.PCV3Route == app.PCV3RouteReady {
-		setWidgetDisabled(a.pcv3ActionGroup, advancedDisabled || snap.Working)
-		setWidgetDisabled(a.pcv3FactorGroup, advancedDisabled || snap.Working)
-		setWidgetDisabled(a.pcv3OrderGroup, advancedDisabled || snap.Working)
+		setWidgetDisabled(a.pcv3ActionSelect, advancedDisabled || snap.Working)
+		setWidgetDisabled(a.pcv3FormatButton, advancedDisabled || snap.Working)
+		archiveDisabled := advancedDisabled || snap.Working || snap.PCV3Action != app.PCV3ActionDecrypt
+		setWidgetDisabled(a.autoUnzipCheck, archiveDisabled)
+		setWidgetDisabled(a.sameLevelCheck, archiveDisabled || !snap.AutoUnzip)
 		return
 	}
 	if snap.PCVUnavailable {
@@ -579,7 +542,6 @@ func (a *App) updateEncryptOptionsState(advancedDisabled bool, snap app.UISnapsh
 	notEnoughFiles := snap.AllFileCount <= 1 && snap.OnlyFolderCount == 0
 	d1Selected := snap.CreatePCV3 && snap.Deniability
 
-	setWidgetDisabled(a.pcv3CreateCheck, advancedDisabled)
 	setWidgetDisabled(a.compressCheck, advancedDisabled || snap.Recursively)
 	setWidgetDisabled(a.recursivelyCheck, advancedDisabled || notEnoughFiles)
 	setWidgetDisabled(a.paranoidCheck, advancedDisabled || d1Selected)

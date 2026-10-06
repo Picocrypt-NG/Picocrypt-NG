@@ -3,116 +3,14 @@ package fileops
 import (
 	"archive/zip"
 	"bytes"
-	cryptorand "crypto/rand"
+	"context"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"golang.org/x/crypto/chacha20"
 )
-
-func TestTempZipCiphersClose(t *testing.T) {
-	ciphers, err := NewTempZipCiphers()
-	if err != nil {
-		t.Fatalf("NewTempZipCiphers() failed: %v", err)
-	}
-
-	// Save references to the backing arrays before Close() to verify zeroing
-	keyRef := ciphers.key.Bytes()
-	nonceRef := ciphers.nonce.Bytes()
-
-	ciphers.Close()
-
-	// Key and nonce should be zeroed
-	for i, b := range keyRef {
-		if b != 0 {
-			t.Errorf("Key byte %d = %d; want 0 after Close()", i, b)
-			break
-		}
-	}
-	for i, b := range nonceRef {
-		if b != 0 {
-			t.Errorf("Nonce byte %d = %d; want 0 after Close()", i, b)
-			break
-		}
-	}
-
-	// Ciphers should be nil
-	if ciphers.Writer != nil {
-		t.Error("Writer should be nil after Close()")
-	}
-	if ciphers.Reader != nil {
-		t.Error("Reader should be nil after Close()")
-	}
-	if ciphers.key != nil {
-		t.Error("key Secret should be nil after Close()")
-	}
-	if ciphers.nonce != nil {
-		t.Error("nonce Secret should be nil after Close()")
-	}
-}
-
-func TestTempZipCiphersCloseNil(t *testing.T) {
-	// Close on nil should not panic
-	var ciphers *TempZipCiphers
-	ciphers.Close()
-}
-
-func TestTempZipCiphersEncryptDecryptsWithSuccessfulCryptoRandOutput(t *testing.T) {
-	// Do not parallelize this test: crypto/rand.Reader is process-global.
-	originalReader := cryptorand.Reader
-	cryptorand.Reader = bytes.NewReader(
-		make([]byte, chacha20.KeySize+chacha20.NonceSize),
-	)
-	t.Cleanup(func() {
-		cryptorand.Reader = originalReader
-	})
-
-	ciphers, err := NewTempZipCiphers()
-	if err != nil {
-		t.Fatalf("NewTempZipCiphers() failed: %v", err)
-	}
-	defer ciphers.Close()
-
-	// Create a buffer to simulate a file
-	var buf bytes.Buffer
-
-	// Encrypt some data using the Writer cipher
-	plaintext := []byte("Hello, World! This is test data for encryption.")
-	ew := &encryptedWriter{w: &buf, cipher: ciphers.Writer}
-	n, err := ew.Write(plaintext)
-	if err != nil {
-		t.Fatalf("encryptedWriter.Write() failed: %v", err)
-	}
-	if n != len(plaintext) {
-		t.Errorf("Write returned %d; want %d", n, len(plaintext))
-	}
-
-	// The encrypted data should be different from plaintext
-	encrypted := buf.Bytes()
-	if bytes.Equal(encrypted, plaintext) {
-		t.Error("Encrypted data should be different from plaintext")
-	}
-
-	// Decrypt using the Reader cipher
-	er := &encryptedReader{r: bytes.NewReader(encrypted), cipher: ciphers.Reader}
-	decrypted := make([]byte, len(encrypted))
-	n, err = er.Read(decrypted)
-	if err != nil {
-		t.Fatalf("encryptedReader.Read() failed: %v", err)
-	}
-	if n != len(plaintext) {
-		t.Errorf("Read returned %d; want %d", n, len(plaintext))
-	}
-
-	// Decrypted should match original plaintext
-	if !bytes.Equal(decrypted[:n], plaintext) {
-		t.Errorf("Decrypted = %q; want %q", decrypted[:n], plaintext)
-	}
-}
 
 func TestCreateZip(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -430,53 +328,28 @@ func TestCreateZipWithEncryption(t *testing.T) {
 		t.Fatalf("Create file: %v", err)
 	}
 
-	// Create cipher for temp encryption
-	ciphers, err := NewTempZipCiphers()
+	owner, err := CreateTempZip(context.Background(), TempZipOptions{Files: []string{file1}, RootDir: tmpDir, NearPath: filepath.Join(tmpDir, "out.pcv"), MaxPhysicalBytes: 1 << 20})
 	if err != nil {
-		t.Fatalf("NewTempZipCiphers() failed: %v", err)
+		t.Fatal(err)
 	}
-	defer ciphers.Close()
-
-	// Create encrypted zip
-	zipPath := filepath.Join(tmpDir, "encrypted.tmp")
-	err = CreateZip(ZipOptions{
-		Files:      []string{file1},
-		RootDir:    tmpDir,
-		OutputPath: zipPath,
-		Compress:   false,
-		Cipher:     ciphers,
-	})
+	defer owner.Close()
+	zipPath := owner.Path()
+	if zr, e := zip.OpenReader(zipPath); e == nil {
+		zr.Close()
+		t.Fatal("temporary archive is plaintext")
+	}
+	reader, err := owner.OpenReader()
 	if err != nil {
-		t.Fatalf("CreateZip with encryption failed: %v", err)
+		t.Fatal(err)
 	}
-
-	// Read the encrypted file
-	encryptedData, err := os.ReadFile(zipPath)
+	decrypted, err := io.ReadAll(reader)
 	if err != nil {
-		t.Fatalf("Read encrypted zip: %v", err)
+		t.Fatal(err)
 	}
-
-	// The file should NOT be a valid zip (it's encrypted)
-	_, err = zip.OpenReader(zipPath)
-	if err == nil {
-		t.Error("Encrypted zip should not be readable as a normal zip")
-	}
-
-	// Decrypt and verify it's a valid zip
 	decryptedPath := filepath.Join(tmpDir, "decrypted.zip")
-	decryptedFile, err := os.Create(decryptedPath)
-	if err != nil {
-		t.Fatalf("Create decrypted file: %v", err)
+	if err = os.WriteFile(decryptedPath, decrypted, 0o600); err != nil {
+		t.Fatal(err)
 	}
-
-	reader := WrapReaderWithCipher(bytes.NewReader(encryptedData), ciphers)
-	decrypted := make([]byte, len(encryptedData))
-	n, err := reader.Read(decrypted)
-	if err != nil && !errors.Is(err, io.EOF) {
-		t.Fatalf("Read decrypted data: %v", err)
-	}
-	_, _ = decryptedFile.Write(decrypted[:n])
-	_ = decryptedFile.Close()
 
 	// Now it should be a valid zip
 	zipReader, err := zip.OpenReader(decryptedPath)
@@ -536,52 +409,6 @@ func TestCreateZipCancellation(t *testing.T) {
 	// Zip should not exist
 	if _, err := os.Stat(zipPath); !os.IsNotExist(err) {
 		t.Error("Cancelled zip should be removed")
-	}
-}
-
-func TestWrapReaderWithCipher(t *testing.T) {
-	// Test with nil cipher
-	reader := bytes.NewReader([]byte("test"))
-	wrapped := WrapReaderWithCipher(reader, nil)
-	if wrapped != reader {
-		t.Error("WrapReaderWithCipher(nil) should return original reader")
-	}
-
-	// Test with actual cipher
-	ciphers, err := NewTempZipCiphers()
-	if err != nil {
-		t.Fatalf("NewTempZipCiphers() failed: %v", err)
-	}
-	defer ciphers.Close()
-
-	reader2 := bytes.NewReader([]byte("test data"))
-	wrapped2 := WrapReaderWithCipher(reader2, ciphers)
-	if wrapped2 == reader2 {
-		t.Error("WrapReaderWithCipher should wrap the reader")
-	}
-
-	// Round-trip: encrypt a known plaintext with the Writer cipher, then read it
-	// back through WrapReaderWithCipher and assert we recover the plaintext.
-	// This pins the wrapper to the *Reader* cipher: if it were wired to the Writer
-	// cipher (or made a no-op), the keystream would not cancel and the output
-	// would differ from the plaintext, failing bytes.Equal.
-	plaintext := []byte("round-trip plaintext for cipher wiring check")
-	var encBuf bytes.Buffer
-	ew := &encryptedWriter{w: &encBuf, cipher: ciphers.Writer}
-	if _, err := ew.Write(plaintext); err != nil {
-		t.Fatalf("encryptedWriter.Write() failed: %v", err)
-	}
-	if bytes.Equal(encBuf.Bytes(), plaintext) {
-		t.Fatal("ciphertext must differ from plaintext")
-	}
-
-	rt := WrapReaderWithCipher(bytes.NewReader(encBuf.Bytes()), ciphers)
-	got, err := io.ReadAll(rt)
-	if err != nil {
-		t.Fatalf("io.ReadAll(wrapped) failed: %v", err)
-	}
-	if !bytes.Equal(got, plaintext) {
-		t.Errorf("round-trip = %q; want %q", got, plaintext)
 	}
 }
 

@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-var splitDirectorySyncFn = (*os.File).Sync
+var splitDirectorySyncFn = SyncDirectory
 
 var ErrSplitCleanupIncomplete = errors.New("split cleanup incomplete")
 
@@ -226,7 +226,7 @@ func existingSplitArtifactInRoot(root *os.Root, basePath string) (string, error)
 	return "", nil
 }
 
-func syncSplitDirectory(directory *os.File, path string, identity os.FileInfo) error {
+func validateSplitDirectory(directory *os.File, path string, identity os.FileInfo) error {
 	if directory == nil || identity == nil {
 		return errors.New("split output directory is unavailable")
 	}
@@ -238,6 +238,13 @@ func syncSplitDirectory(directory *os.File, path string, identity os.FileInfo) e
 	if err != nil || current == nil || !current.IsDir() ||
 		current.Mode()&os.ModeSymlink != 0 || !os.SameFile(identity, current) {
 		return errors.Join(errors.New("split output directory path changed"), err)
+	}
+	return nil
+}
+
+func syncSplitDirectory(directory *os.File, path string, identity os.FileInfo) error {
+	if err := validateSplitDirectory(directory, path, identity); err != nil {
+		return err
 	}
 	if err := splitDirectorySyncFn(directory); err != nil {
 		return fmt.Errorf("sync split output directory: %w", err)
@@ -257,7 +264,7 @@ func syncSplitDirectory(directory *os.File, path string, identity os.FileInfo) e
 //
 // To reassemble, use Recombine() or concatenate files in order: cat file.pcv.* > file.pcv
 func Split(opts SplitOptions) (chunks []string, retErr error) {
-	return split(opts, nil, nil, nil)
+	return split(opts, nil, nil, nil, nil, splitDirectorySyncFn)
 }
 
 // SplitPinned is Split with borrowed input and output-directory handles. All
@@ -272,7 +279,39 @@ func SplitPinned(
 		return nil, os.ErrInvalid
 	}
 	opts.RequireDirectorySync = true
-	return split(opts, input, root, directory)
+	return split(opts, input, root, directory, nil, splitDirectorySyncFn)
+}
+
+// SplitState describes verified chunk completion, independently of any full-file removal.
+type SplitState uint8
+
+const (
+	SplitFailed SplitState = iota
+	SplitCompleteDurable
+	SplitCompleteDurabilityUncertain
+)
+
+// SplitResult preserves a complete chunk set when only its final directory
+// barrier failed. A non-nil returned error instead means split failure/rollback.
+type SplitResult struct {
+	State           SplitState
+	Chunks          []string
+	DurabilityError error
+}
+
+// SplitPinnedWithResult borrows the pinned handles and directory barrier policy.
+// The barrier runs only after internal directory identity and content checks;
+// uncertainty never relaxes file flush, close, cancellation or identity checks.
+func SplitPinnedWithResult(opts SplitOptions, input *os.File, root *os.Root, directory *os.File, barrier func(*os.File) error) (result SplitResult, err error) {
+	if input == nil || root == nil || directory == nil || barrier == nil {
+		return result, os.ErrInvalid
+	}
+	opts.RequireDirectorySync = true
+	result.Chunks, err = split(opts, input, root, directory, &result, barrier)
+	if err == nil && result.State != SplitCompleteDurabilityUncertain {
+		result.State = SplitCompleteDurable
+	}
+	return result, err
 }
 
 func split(
@@ -280,6 +319,8 @@ func split(
 	pinnedInput *os.File,
 	pinnedRoot *os.Root,
 	pinnedDirectory *os.File,
+	completion *SplitResult,
+	barrier func(*os.File) error,
 ) (chunks []string, retErr error) {
 	if opts.ChunkSize <= 0 {
 		return nil, errors.New("chunk size must be greater than zero")
@@ -564,9 +605,83 @@ func split(
 			return nil, errors.Join(errors.New("split source changed while creating chunks"), err)
 		}
 	}
+	if completion != nil {
+		// Verify the published chunk bytes, not just the source read passes.
+		chunkDigest := sha256.New()
+		var verifiedBytes int64
+		buffer := make([]byte, util.MiB)
+		for i, chunk := range ownedChunks {
+			file, err := splitRoot.Open(chunk.name)
+			if err != nil {
+				return nil, fmt.Errorf("open completed chunk %d: %w", i, err)
+			}
+			info, statErr := file.Stat()
+			if statErr != nil || info == nil || !info.Mode().IsRegular() || !os.SameFile(chunk.info, info) {
+				return nil, errors.Join(errors.New("completed chunk identity changed"), statErr, file.Close())
+			}
+			for {
+				if opts.Cancel != nil && opts.Cancel() {
+					return nil, errors.Join(context.Canceled, file.Close())
+				}
+				n, readErr := file.Read(buffer)
+				if n > 0 {
+					_, _ = chunkDigest.Write(buffer[:n])
+					verifiedBytes += int64(n)
+				}
+				if readErr == io.EOF {
+					break
+				}
+				if readErr != nil {
+					return nil, errors.Join(readErr, file.Close())
+				}
+			}
+			if err := file.Close(); err != nil {
+				return nil, err
+			}
+			matches, err := chunk.matches()
+			if err != nil || !matches {
+				return nil, errors.Join(errors.New("completed chunk path changed"), err)
+			}
+		}
+		if verifiedBytes != totalSize || !bytes.Equal(chunkDigest.Sum(nil), firstPassDigest.Sum(nil)) {
+			return nil, errors.New("completed chunk content does not match split source")
+		}
+	}
+	if opts.Cancel != nil && opts.Cancel() {
+		return nil, context.Canceled
+	}
 	if opts.RequireDirectorySync {
-		if err := syncSplitDirectory(splitDirectory, splitDirectoryPath, splitDirectoryIdentity); err != nil {
+		if err := validateSplitDirectory(splitDirectory, splitDirectoryPath, splitDirectoryIdentity); err != nil {
 			return nil, err
+		}
+		sourcePath := ownedFilePath{path: opts.InputPath, name: filepath.Base(opts.InputPath), root: splitRoot, info: stat}
+		if completion != nil {
+			matches, err := sourcePath.matches()
+			if err != nil || !matches {
+				return nil, errors.Join(errors.New("split source path changed"), err)
+			}
+		}
+		barrierErr := barrier(splitDirectory)
+		// Revalidate after the syscall too: a lost/replaced directory is a
+		// failed split, never merely unconfirmed durability.
+		if identityErr := validateSplitDirectory(splitDirectory, splitDirectoryPath, splitDirectoryIdentity); identityErr != nil {
+			return nil, errors.Join(barrierErr, identityErr)
+		}
+		if completion != nil {
+			matches, err := sourcePath.matches()
+			if err != nil || !matches {
+				return nil, errors.Join(errors.New("split source path changed"), err)
+			}
+		}
+		if opts.Cancel != nil && opts.Cancel() {
+			return nil, context.Canceled
+		}
+		if err := barrierErr; err != nil {
+			if completion == nil {
+				return nil, fmt.Errorf("sync split output directory: %w", err)
+			}
+			completion.State = SplitCompleteDurabilityUncertain
+			completion.DurabilityError = err
 		}
 	}
 

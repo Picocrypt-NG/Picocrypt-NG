@@ -1,10 +1,9 @@
 package mobile
 
 import (
-	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/volume"
-	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -489,275 +488,6 @@ func TestGetProgressCopiesStructuredFields(t *testing.T) {
 	}
 }
 
-func TestStartEncryptFailsWhenOperationContextIsMissing(t *testing.T) {
-	resetProgressMap()
-
-	inputPath := filepath.Join(t.TempDir(), "plain.txt")
-	if err := os.WriteFile(inputPath, []byte("secret"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	outputPath := filepath.Join(t.TempDir(), "plain.txt.pcv")
-	id := StartOperation()
-
-	globalProgressMap.mu.Lock()
-	delete(globalProgressMap.ctxs, id)
-	globalProgressMap.mu.Unlock()
-
-	reqJSON, err := json.Marshal(EncryptRequestJSON{
-		OperationID: id,
-		InputFile:   inputPath,
-		OutputFile:  outputPath,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got := StartEncrypt(string(reqJSON), []byte("password")); got != "" {
-		t.Fatalf("StartEncrypt(...) returned %q, want empty string", got)
-	}
-
-	state := waitForDone(t, id)
-	if state.Status != "Error" {
-		t.Fatalf("state.Status = %q, want %q", state.Status, "Error")
-	}
-	if !strings.Contains(state.Error, "context") {
-		t.Fatalf("state.Error = %q, want context-related error", state.Error)
-	}
-}
-
-func TestStartEncryptValidationFailureCleansUpOperation(t *testing.T) {
-	resetProgressMap()
-
-	id := StartOperation()
-	reqJSON, err := json.Marshal(EncryptRequestJSON{
-		OperationID: id,
-		InputFile:   "",
-		OutputFile:  "out.pcv",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got := StartEncrypt(string(reqJSON), []byte("password")); !strings.Contains(got, "input file is required") {
-		t.Fatalf("StartEncrypt(...) = %q", got)
-	}
-
-	globalProgressMap.mu.RLock()
-	_, opExists := globalProgressMap.ops[id]
-	_, ctxExists := globalProgressMap.ctxs[id]
-	_, cancelExists := globalProgressMap.cancels[id]
-	globalProgressMap.mu.RUnlock()
-
-	if opExists || ctxExists || cancelExists {
-		t.Fatalf("validation failure leaked operation state: op=%v ctx=%v cancel=%v", opExists, ctxExists, cancelExists)
-	}
-}
-
-func TestStartEncryptRejectsKeyfileOnlyV2WriteBeforeStartingWorker(t *testing.T) {
-	resetProgressMap()
-	t.Cleanup(resetProgressMap)
-
-	dir := t.TempDir()
-	inputPath := filepath.Join(dir, "plain.txt")
-	keyfilePath := filepath.Join(dir, "keyfile.bin")
-	outputPath := filepath.Join(dir, "plain.txt.pcv")
-	if err := os.WriteFile(inputPath, []byte("plaintext must not be encrypted"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keyfilePath, []byte("keyfile material"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	workerCalled := make(chan struct{}, 1)
-	originalRunEncrypt := runEncrypt
-	runEncrypt = func(context.Context, *volume.EncryptRequest) error {
-		workerCalled <- struct{}{}
-		return nil
-	}
-	t.Cleanup(func() {
-		runEncrypt = originalRunEncrypt
-	})
-
-	id := StartOperation()
-	reqJSON, err := json.Marshal(EncryptRequestJSON{
-		OperationID: id,
-		InputFile:   inputPath,
-		OutputFile:  outputPath,
-		Keyfiles:    []string{keyfilePath},
-		Deniability: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got := StartEncrypt(string(reqJSON), nil)
-	if got == "" {
-		_ = waitForDone(t, id)
-	}
-	want := "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled; use explicit PCV3 creation"
-	if got != want {
-		t.Errorf("StartEncrypt(...) = %q; want %q", got, want)
-	}
-
-	select {
-	case <-workerCalled:
-		t.Error("runEncrypt was called; unsafe request must fail synchronously before starting a worker")
-	default:
-	}
-
-	globalProgressMap.mu.RLock()
-	_, opExists := globalProgressMap.ops[id]
-	_, ctxExists := globalProgressMap.ctxs[id]
-	_, cancelExists := globalProgressMap.cancels[id]
-	globalProgressMap.mu.RUnlock()
-	if opExists || ctxExists || cancelExists {
-		t.Errorf("validation failure leaked operation state: op=%v ctx=%v cancel=%v", opExists, ctxExists, cancelExists)
-	}
-	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
-		t.Errorf("output must not exist after rejected request; os.Stat error = %v", statErr)
-	}
-}
-
-func TestStartEncryptRejectsPasswordAndKeyfileV2WriteBeforeStartingWorker(t *testing.T) {
-	resetProgressMap()
-	t.Cleanup(resetProgressMap)
-
-	dir := t.TempDir()
-	inputPath := filepath.Join(dir, "plain.txt")
-	keyfilePath := filepath.Join(dir, "keyfile.bin")
-	outputPath := filepath.Join(dir, "plain.txt.pcv")
-	if err := os.WriteFile(inputPath, []byte("plaintext"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keyfilePath, []byte("keyfile material"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	workerCalled := make(chan struct{}, 1)
-	originalRunEncrypt := runEncrypt
-	runEncrypt = func(context.Context, *volume.EncryptRequest) error {
-		workerCalled <- struct{}{}
-		return nil
-	}
-	t.Cleanup(func() {
-		runEncrypt = originalRunEncrypt
-	})
-
-	id := StartOperation()
-	reqJSON, err := json.Marshal(EncryptRequestJSON{
-		OperationID: id,
-		InputFile:   inputPath,
-		OutputFile:  outputPath,
-		Keyfiles:    []string{keyfilePath},
-		Deniability: false,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got := StartEncrypt(string(reqJSON), []byte("secret"))
-	const want = "validation: Keyfiles: creating new v2 volumes with keyfiles is disabled; use explicit PCV3 creation"
-	if got != want {
-		t.Fatalf("StartEncrypt(...) = %q; want %q", got, want)
-	}
-
-	select {
-	case <-workerCalled:
-		t.Error("runEncrypt was called; v2 keyfile writer must fail synchronously")
-	default:
-	}
-
-	globalProgressMap.mu.RLock()
-	_, opExists := globalProgressMap.ops[id]
-	_, ctxExists := globalProgressMap.ctxs[id]
-	_, cancelExists := globalProgressMap.cancels[id]
-	globalProgressMap.mu.RUnlock()
-	if opExists || ctxExists || cancelExists {
-		t.Errorf("validation failure leaked operation state: op=%v ctx=%v cancel=%v", opExists, ctxExists, cancelExists)
-	}
-	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
-		t.Errorf("output must not exist after rejected request; os.Stat error = %v", statErr)
-	}
-}
-
-func TestStartEncryptRejectsMissingRequiredPasswordBeforeStartingWorker(t *testing.T) {
-	originalRunEncrypt := runEncrypt
-	workerCalled := make(chan struct{}, 1)
-	runEncrypt = func(context.Context, *volume.EncryptRequest) error {
-		workerCalled <- struct{}{}
-		return nil
-	}
-	t.Cleanup(func() {
-		runEncrypt = originalRunEncrypt
-		resetProgressMap()
-	})
-
-	for _, tc := range []struct {
-		name        string
-		deniability bool
-		wantMessage string
-	}{
-		{
-			name:        "ordinary encryption",
-			wantMessage: perrors.EncryptionPasswordRequiredMessage,
-		},
-		{
-			name:        "deniability",
-			deniability: true,
-			wantMessage: perrors.DeniabilityPasswordRequiredMessage,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			resetProgressMap()
-			dir := t.TempDir()
-			inputPath := filepath.Join(dir, "plain.txt")
-			outputPath := filepath.Join(dir, "plain.txt.pcv")
-			if err := os.WriteFile(inputPath, []byte("plaintext must not be encrypted"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-
-			id := StartOperation()
-			reqJSON, err := json.Marshal(EncryptRequestJSON{
-				OperationID: id,
-				InputFile:   inputPath,
-				OutputFile:  outputPath,
-				Deniability: tc.deniability,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			got := StartEncrypt(string(reqJSON), nil)
-			want := "validation: Password: " + tc.wantMessage
-			if got != want {
-				t.Errorf("StartEncrypt(...) = %q; want %q", got, want)
-			}
-			select {
-			case <-workerCalled:
-				t.Error("runEncrypt was called; missing required password must fail synchronously")
-			default:
-			}
-			globalProgressMap.mu.RLock()
-			_, opExists := globalProgressMap.ops[id]
-			_, ctxExists := globalProgressMap.ctxs[id]
-			_, cancelExists := globalProgressMap.cancels[id]
-			globalProgressMap.mu.RUnlock()
-			if opExists || ctxExists || cancelExists {
-				t.Errorf(
-					"validation failure leaked operation state: op=%v ctx=%v cancel=%v",
-					opExists,
-					ctxExists,
-					cancelExists,
-				)
-			}
-			if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
-				t.Errorf("missing-password request created output %q: %v", outputPath, statErr)
-			}
-		})
-	}
-}
-
 func TestStartDecryptValidationFailureCleansUpOperation(t *testing.T) {
 	resetProgressMap()
 
@@ -862,166 +592,6 @@ func TestStartDecryptRecoversPanic(t *testing.T) {
 	}
 }
 
-func TestStartEncryptZeroesPasswordBytes(t *testing.T) {
-	resetProgressMap()
-	inputPath := filepath.Join(t.TempDir(), "plain.txt")
-	if err := os.WriteFile(inputPath, []byte("secret"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	outputPath := filepath.Join(t.TempDir(), "plain.txt.pcv")
-	id := StartOperation()
-
-	orig := runEncrypt
-	runEncrypt = func(context.Context, *volume.EncryptRequest) error { return nil }
-	defer func() { runEncrypt = orig }()
-
-	reqJSON, err := json.Marshal(EncryptRequestJSON{OperationID: id, InputFile: inputPath, OutputFile: outputPath})
-	if err != nil {
-		t.Fatal(err)
-	}
-	password := []byte("hunter2")
-	if got := StartEncrypt(string(reqJSON), password); got != "" {
-		t.Fatalf("StartEncrypt(...) = %q, want empty", got)
-	}
-	for i, b := range password {
-		if b != 0 {
-			t.Fatalf("password[%d] = %d, want 0", i, b)
-		}
-	}
-	_ = waitForDone(t, id)
-}
-
-func TestStartEncryptPassesMultiFileSelection(t *testing.T) {
-	resetProgressMap()
-
-	dir := t.TempDir()
-	a := filepath.Join(dir, "a.txt")
-	b := filepath.Join(dir, "b.txt")
-	for _, p := range []string{a, b} {
-		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	outputPath := filepath.Join(dir, "out.pcv")
-
-	var captured *volume.EncryptRequest
-	orig := runEncrypt
-	runEncrypt = func(_ context.Context, req *volume.EncryptRequest) error {
-		captured = req
-		return nil
-	}
-	defer func() { runEncrypt = orig }()
-
-	id := StartOperation()
-	reqJSON, err := json.Marshal(EncryptRequestJSON{
-		OperationID: id,
-		InputFiles:  []string{a, b},
-		OnlyFiles:   []string{a, b},
-		OnlyFolders: []string{dir},
-		OutputFile:  outputPath,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := StartEncrypt(string(reqJSON), []byte("pw")); got != "" {
-		t.Fatalf("StartEncrypt(...) = %q, want empty", got)
-	}
-	_ = waitForDone(t, id)
-
-	if captured == nil {
-		t.Fatal("runEncrypt was not called")
-	}
-	if len(captured.InputFiles) != 2 || captured.InputFiles[0] != a || captured.InputFiles[1] != b {
-		t.Fatalf("InputFiles = %#v, want [%q %q]", captured.InputFiles, a, b)
-	}
-	if len(captured.OnlyFiles) != 2 {
-		t.Fatalf("OnlyFiles = %#v, want 2 entries", captured.OnlyFiles)
-	}
-	if len(captured.OnlyFolders) != 1 || captured.OnlyFolders[0] != dir {
-		t.Fatalf("OnlyFolders = %#v, want [%q]", captured.OnlyFolders, dir)
-	}
-	if captured.InputFile != "" {
-		t.Fatalf("InputFile = %q, want empty for multi-file selection", captured.InputFile)
-	}
-}
-
-func TestStartEncryptFolderRoundTripsToZip(t *testing.T) {
-	if raceEnabled {
-		// This drives the real, memory-hard (~1 GiB) Argon2id KDF. Under -race's shadow
-		// memory times `go test ./...` package parallelism it OOM-kills the hosted amd64
-		// runner (SIGTERM / exit 143). It tests crypto, not concurrency, so -race adds no
-		// coverage; it still runs on the no-race matrix (arm64) and locally.
-		t.Skip("skipping real memory-hard Argon2id KDF round-trip under -race (OOMs CI runners)")
-	}
-	resetProgressMap()
-
-	root := t.TempDir()
-	folder := filepath.Join(root, "MyDocs")
-	if err := os.MkdirAll(filepath.Join(folder, "sub"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	a := filepath.Join(folder, "a.txt")
-	b := filepath.Join(folder, "sub", "b.txt")
-	if err := os.WriteFile(a, []byte("aaa"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(b, []byte("bbb"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(root, "MyDocs.zip.pcv")
-
-	id := StartOperation()
-	reqJSON, err := json.Marshal(EncryptRequestJSON{
-		OperationID: id,
-		InputFiles:  []string{a, b},
-		OnlyFolders: []string{folder},
-		OutputFile:  out,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := StartEncrypt(string(reqJSON), []byte("pw")); got != "" {
-		t.Fatalf("StartEncrypt = %q, want empty", got)
-	}
-	// Real Argon2id KDF takes ~3-4 s locally, but it is memory-hard: a contended or
-	// low-memory CI runner can run it many times slower (a hosted amd64 runner has timed
-	// out at 30 s while arm64 passed). Use a generous deadline that absorbs CI variance
-	// without masking a genuine hang -- still well under Go's 10 min per-package timeout.
-	if state := waitForDoneTimeout(t, id, 120*time.Second); state.Status == "Error" {
-		t.Fatalf("encrypt failed: %s", state.Error)
-	}
-
-	// Decrypt to a .zip and inspect entries.
-	zipOut := filepath.Join(root, "decrypted.zip")
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := volume.Decrypt(context.Background(), &volume.DecryptRequest{
-		InputFile:  out,
-		OutputFile: zipOut,
-		Password:   []byte("pw"),
-		RSCodecs:   rsCodecs,
-	}); err != nil {
-		t.Fatalf("decrypt: %v", err)
-	}
-
-	zr, err := zip.OpenReader(zipOut)
-	if err != nil {
-		t.Fatalf("open zip: %v", err)
-	}
-	defer func() { _ = zr.Close() }()
-	got := map[string]bool{}
-	for _, f := range zr.File {
-		got[f.Name] = true
-	}
-	for _, want := range []string{"MyDocs/a.txt", "MyDocs/sub/b.txt"} {
-		if !got[want] {
-			t.Fatalf("zip missing %q; entries=%v", want, got)
-		}
-	}
-}
-
 func waitForDone(t *testing.T, id string) *ProgressState {
 	t.Helper()
 	return waitForDoneTimeout(t, id, 2*time.Second)
@@ -1044,4 +614,41 @@ func waitForDoneTimeout(t *testing.T, id string, timeout time.Duration) *Progres
 
 	t.Fatalf("operation %s did not complete before timeout", id)
 	return nil
+}
+
+func TestRetiredStartEncryptRefusesEveryCreationShapeAndClearsPassword(t *testing.T) {
+	resetProgressMap()
+	dir := t.TempDir()
+	input := filepath.Join(dir, "plain")
+	original := []byte("unchanged original")
+	if err := os.WriteFile(input, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(dir, "output")
+	for _, request := range []EncryptRequestJSON{
+		{InputFile: input, OutputFile: output},
+		{InputFiles: []string{input}, OnlyFolders: []string{dir}, OutputFile: output},
+		{InputFile: input, OutputFile: output, Keyfiles: []string{input}, Deniability: true},
+	} {
+		request.OperationID = StartOperation()
+		encoded, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		password := []byte("owned credential")
+		if code := StartEncrypt(string(encoded), password); code != "PCV3_UNSUPPORTED" {
+			t.Fatalf("retired writer returned %q", code)
+		}
+		if !allZero(password) {
+			t.Fatal("retired endpoint retained credential")
+		}
+		cleanupOperation(request.OperationID)
+		if _, err := os.Stat(output); !os.IsNotExist(err) {
+			t.Fatalf("retired writer created output: %v", err)
+		}
+		actual, err := os.ReadFile(input)
+		if err != nil || !bytes.Equal(actual, original) {
+			t.Fatalf("retired writer changed source: %v", err)
+		}
+	}
 }

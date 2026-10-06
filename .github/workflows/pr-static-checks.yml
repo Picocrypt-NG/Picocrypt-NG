@@ -22,7 +22,7 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.26.6"
+        go-version: "1.27.1"
         cache-dependency-path: src/go.sum
 
     # GUI packages (internal/ui) import Fyne, so vet/lint/govulncheck need the
@@ -57,13 +57,15 @@ jobs:
     - name: Lint (golangci-lint)
       run: |
         cd src
-        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-        export PATH="$PATH:$(go env GOPATH)/bin"
+        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+        go_bin_dir="$(go env GOPATH)/bin"
+        export PATH="$PATH:$go_bin_dir"
         golangci-lint run --build-tags migrated_fynedo ./...
 
     - name: Vulnerability scan (govulncheck)
       run: |
         cd src
-        go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
-        export PATH="$PATH:$(go env GOPATH)/bin"
+        go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+        go_bin_dir="$(go env GOPATH)/bin"
+        export PATH="$PATH:$go_bin_dir"
         govulncheck -tags migrated_fynedo ./...

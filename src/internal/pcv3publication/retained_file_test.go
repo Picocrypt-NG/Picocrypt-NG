@@ -525,3 +525,77 @@ func publishRetainedTestFile(t *testing.T, target string, payload []byte) *Retai
 	}
 	return retained
 }
+
+func TestSplitRetainedDirectoryBarrierFailurePreservesCompleteContainer(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "encrypted.pcv")
+	payload := []byte(strings.Repeat("complete ciphertext retained until chunks are durable", 100))
+	retained := publishRetainedTestFile(t, target, payload)
+	closed := false
+	err := SplitRetained(retained, fileops.SplitOptions{
+		ChunkSize: 1,
+		Unit:      fileops.SplitUnitKiB,
+		Progress: func(_ float32, _ string) {
+			if !closed {
+				// Invalidate the actual borrowed directory descriptor after split
+				// preflight. Chunk writes still use the independent pinned root;
+				// their final durability barrier must fail before source removal.
+				if err := retained.parent.Close(); err != nil {
+					t.Fatal(err)
+				}
+				closed = true
+			}
+		},
+	})
+	if !closed || err == nil {
+		t.Fatalf("split with lost directory barrier returned %v (closed=%v)", err, closed)
+	}
+	if retained.Live() {
+		t.Fatal("failed split retained follow-up authority")
+	}
+	requireFileBytes(t, target, payload)
+	entries, readErr := os.ReadDir(directory)
+	if readErr != nil || len(entries) != 1 || entries[0].Name() != filepath.Base(target) {
+		t.Fatalf("failed split residue = %v/%v; want complete container only", entries, readErr)
+	}
+}
+
+func TestSplitRetainedCompleteUncertaintyPreservesFullIdentityAndChunks(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "encrypted.pcv")
+	payload := []byte(strings.Repeat("complete uncertain encrypted bytes", 100))
+	retained := publishRetainedTestFile(t, target, payload)
+	original, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, parent, root := retained.file, retained.parent, retained.root
+	calls := 0
+	retained.syncDirectory = func(*os.File) error { calls++; return errors.ErrUnsupported }
+	state, err := SplitRetainedWithResult(retained, fileops.SplitOptions{ChunkSize: 1, Unit: fileops.SplitUnitKiB})
+	if err != nil || state != fileops.SplitCompleteDurabilityUncertain || calls != 1 {
+		t.Fatalf("split completion = %v, %v; barrier calls=%d", state, err, calls)
+	}
+	if retained.Live() {
+		t.Fatal("uncertain split left retained authority live")
+	}
+	if _, err := file.Stat(); err == nil {
+		t.Fatal("source handle not closed")
+	}
+	if _, err := parent.Stat(); err == nil {
+		t.Fatal("parent handle not closed")
+	}
+	if _, err := root.Stat("."); err == nil {
+		t.Fatal("root handle not closed")
+	}
+	current, err := os.Stat(target)
+	if err != nil || !os.SameFile(original, current) {
+		t.Fatalf("full ciphertext inode changed: %v", err)
+	}
+	requireFileBytes(t, target, payload)
+	recombined := filepath.Join(directory, "recombined.pcv")
+	if err := fileops.Recombine(fileops.RecombineOptions{InputBase: target, OutputPath: recombined}); err != nil {
+		t.Fatal(err)
+	}
+	requireFileBytes(t, recombined, payload)
+}

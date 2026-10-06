@@ -269,7 +269,7 @@
     <string name="pcv3_publication_indeterminate_title">输出状态未知</string>
     <string name="pcv3_publication_indeterminate_body">应用无法确定发布是否已提交。请将所有源和目标位置完全保持原样。请勿重试或清理此次操作。</string>
     <string name="pcv3_warning_cleanup_title">无法确认清理已完成</string>
-    <string name="pcv3_warning_cleanup_body">应用无法证明此操作拥有的全部临时明文数据均已移除。请保留加密源，不要根据此结果删除任何文件。</string>
+    <string name="pcv3_warning_cleanup_body">应用无法确认此操作创建的全部临时文件均已移除。请保留源文件，不要根据此结果删除任何文件。</string>
     <string name="pcv3_warning_callback_title">恢复确认失败</string>
     <string name="pcv3_warning_callback_body">无法完成当前恢复确认。未授予生成未经验证输出的权限。</string>
     <string name="pcv3_warning_unknown_title">其他操作警告</string>
@@ -283,11 +283,11 @@
     <string name="pcv3_output_saved_title">输出已保存</string>
     <string name="pcv3_output_saved_body">所选输出已保存。下方显示的身份验证和恢复提示仍然适用。</string>
     <string name="pcv3_output_saved_cleanup_title">输出已保存；清理未完成</string>
-    <string name="pcv3_output_saved_cleanup_body">所选输出已保存，但无法确认应用所拥有明文的清理情况。</string>
+    <string name="pcv3_output_saved_cleanup_body">所选输出已保存，但无法确认应用临时文件的清理情况。</string>
     <string name="pcv3_output_save_failed_title">无法保存输出</string>
-    <string name="pcv3_output_save_failed_body">无法确认所选目标包含输出。请保留加密源文件。</string>
+    <string name="pcv3_output_save_failed_body">无法确认所选目标包含输出。请保留源文件。</string>
     <string name="pcv3_output_save_failed_cleanup_title">保存失败；清理未完成</string>
-    <string name="pcv3_output_save_failed_cleanup_body">无法确认目标包含输出，也无法确认应用所拥有明文的清理情况。</string>
+    <string name="pcv3_output_save_failed_cleanup_body">无法确认目标包含输出，也无法确认应用临时文件的清理情况。</string>
     <string name="pcv3_output_discarded_title">恢复产物已丢弃</string>
     <string name="pcv3_output_discarded_body">应用所拥有的恢复产物已移除。加密源文件已保留。</string>
     <string name="pcv3_output_discard_cleanup_title">恢复产物清理未完成</string>
@@ -295,7 +295,7 @@
     <string name="pcv3_output_expired_title">输出操作已过期</string>
     <string name="pcv3_output_expired_body">保存或丢弃操作已不再有效。无法确认新目标或移除操作。</string>
     <string name="pcv3_output_unknown_title">输出操作结果未知</string>
-    <string name="pcv3_output_unknown_body">应用无法验证保存或丢弃结果。请保留加密源文件，并且不要推断输出已保存或移除。</string>
+    <string name="pcv3_output_unknown_body">应用无法验证保存或丢弃结果。请保留源文件，并且不要推断输出已保存或移除。</string>
     <string name="pcv3_output_saved_close">关闭已保存输出结果</string>
     <string name="pcv3_output_save_failed_close">关闭保存失败结果</string>
     <string name="pcv3_output_discarded_close">关闭丢弃结果</string>
@@ -330,4 +330,16 @@
     <string name="pcv3_artifact_row">记录 %1$s，字节 %2$s 到 %3$s，%4$s</string>
     <string name="pcv3_artifact_previous_page">上一个范围</string>
     <string name="pcv3_artifact_next_page">下一个范围</string>
+    <string name="pcv3_output_provider_unsupported">此文档提供程序不支持保存此结果。请选择其他位置。结果仍保留在应用中。</string>
+
+    <!-- Retained output and bounded creation request feedback. -->
+    <string name="pcv3_request_too_large">所选文件或备注超出允许范围。请选择更少的文件或缩短备注。</string>
+    <string name="pcv3_discard_retained_title">丢弃输出？</string>
+    <string name="pcv3_discard_retained_body">这将永久删除应用保存的输出，无法撤销。原始文件将保留。</string>
+    <string name="pcv3_retained_discarded_title">输出已丢弃</string>
+    <string name="pcv3_retained_discarded_body">应用保存的输出已删除。原始文件已保留。</string>
+    <string name="pcv3_retained_discard_cleanup_title">输出清理未完成</string>
+    <string name="pcv3_retained_discard_cleanup_body">应用无法确认已删除所保存的输出。请保留原始文件。</string>
+    <string name="pcv3_resource_limit_title">资源用量达到上限</string>
+    <string name="pcv3_resource_limit_body">处理所需的资源用量已达到限制，操作已停止。</string>
 </resources>

@@ -3,11 +3,11 @@ package pcv3operation
 
 import (
 	"Picocrypt-NG/internal/fileops"
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3credential"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3recovery"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3resource"
 	"Picocrypt-NG/internal/pcv3publication"
-	"Picocrypt-NG/internal/pcv3recovery"
-	"Picocrypt-NG/internal/pcv3resource"
 	"context"
 	"errors"
 	"os"
@@ -55,6 +55,9 @@ const (
 	StatusPreparingArtifact
 	StatusPublishing
 	StatusConfirmingDurability
+	StatusEncrypting
+	StatusSplitting
+	StatusPreparingInput
 )
 
 // Status carries only a closed code and bounded numeric arguments.
@@ -62,6 +65,12 @@ type Status struct {
 	code     StatusCode
 	args     [maxResultArgs]uint64
 	argCount uint8
+}
+
+// InputPreparationStatus projects trusted input-staging progress into bounded
+// presentation data. It grants no result or filesystem authority.
+func InputPreparationStatus(processed, total uint64) Status {
+	return Status{code: StatusPreparingInput, args: [maxResultArgs]uint64{min(processed, total), total}, argCount: 2}
 }
 
 func (status Status) Code() StatusCode { return status.code }
@@ -136,6 +145,14 @@ type Request struct {
 type ExecutionOptions struct {
 	RetainDurableOutput bool
 	JournalPrivateStage bool
+	ArchiveAction       ArchiveAction
+	// ArchiveReview approves the declared extraction budget after authentication.
+	// It is valid only with ArchiveExtract or ArchiveExtractSameLevel.
+	ArchiveReview func(context.Context, ArchiveSummary) error
+}
+
+func preparesArchive(action ArchiveAction) bool {
+	return action == ArchivePrepare || action == ArchiveExtract || action == ArchiveExtractSameLevel
 }
 
 func (Request) String() string { return "pcv3operation.Request([REDACTED])" }
@@ -211,10 +228,14 @@ func runWithSeamsAndOptions(
 	options ExecutionOptions,
 ) (result *Result) {
 	owner := takeOperationRequest(request)
+	var archivePlan *archiveReadPlan
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			cleanupIncomplete := panicCleanupIncomplete(recovered)
 			if cleanupOutputExact(result) {
+				cleanupIncomplete = true
+			}
+			if cleanupArchiveExact(result) {
 				cleanupIncomplete = true
 			}
 			result = closedFailure(
@@ -227,7 +248,11 @@ func runWithSeamsAndOptions(
 				result.appendWarning(WarningCleanupIncomplete)
 			}
 		}
-		if owner.close() {
+		cleanupIncomplete := owner.close()
+		if archivePlan.close() {
+			cleanupIncomplete = true
+		}
+		if cleanupIncomplete {
 			if result == nil {
 				result = closedFailure(
 					pcv3.OutcomeOperationFailed,
@@ -237,6 +262,17 @@ func runWithSeamsAndOptions(
 				)
 			}
 			result.appendWarning(WarningCleanupIncomplete)
+		}
+		if result != nil && result.archiveFollowUp != nil && result.ArchiveFollowUp() == nil {
+			if cleanupArchiveExact(result) {
+				result.appendWarning(WarningCleanupIncomplete)
+			}
+		}
+		if result != nil && result.stage == pcv3.StageCancellation && result.diagnostic == DiagnosticNone {
+			result.diagnostic = DiagnosticCancellation
+		}
+		if result != nil && result.diagnostic == DiagnosticCancellation && ctx != nil {
+			result.cancellationDeadline = errors.Is(ctx.Err(), context.DeadlineExceeded)
 		}
 	}()
 
@@ -249,7 +285,11 @@ func runWithSeamsAndOptions(
 		)
 	}
 	if ctx == nil || owner.source == nil || owner.factors == nil ||
-		owner.target == "" || !owner.validProtected() || !owner.validRoleAndConsent() {
+		owner.target == "" || !owner.validProtected() || !owner.validRoleAndConsent() ||
+		options.ArchiveAction > ArchiveExtractSameLevel ||
+		(options.ArchiveReview != nil && options.ArchiveAction != ArchiveExtract && options.ArchiveAction != ArchiveExtractSameLevel) ||
+		(options.ArchiveAction != ArchiveDefault && (options.RetainDurableOutput ||
+			(owner.mode != ModeReadNormal && owner.mode != ModeReadD1))) {
 		return closedFailure(
 			pcv3.OutcomeOperationFailed,
 			pcv3.StageCredentialPolicy,
@@ -264,6 +304,14 @@ func runWithSeamsAndOptions(
 			pcv3.CodeOperationFailed,
 			DiagnosticCancellation,
 		)
+	}
+	var archiveErr error
+	archivePlan, archiveErr = newArchiveReadPlan(options.ArchiveAction, owner.target)
+	if archiveErr != nil {
+		return archiveNoOutput(DiagnosticInvalidRequest, errors.Is(archiveErr, pcv3publication.ErrCleanupIncomplete))
+	}
+	if archivePlan != nil {
+		archivePlan.review = options.ArchiveReview
 	}
 	if owner.splitBase != "" {
 		if err := owner.prepareSplitInput(ctx); err != nil {
@@ -300,19 +348,19 @@ func runWithSeamsAndOptions(
 
 	switch owner.mode {
 	case ModeReadNormal:
-		return runNormalRead(ctx, owner, info.Size(), seams, options)
+		result = runNormalRead(ctx, owner, info.Size(), seams, options)
 	case ModeReadD1, ModeRecoverD1:
-		return runRecovery(ctx, owner, info.Size(), seams, options, true, pcv3.RecoveryModeNormalV3, nil)
+		result = runRecovery(ctx, owner, info.Size(), seams, options, true, pcv3.RecoveryModeNormalV3, nil)
 	case ModeRecoverNormal:
-		return runRecovery(ctx, owner, info.Size(), seams, options, false, pcv3.RecoveryModeNormalV3, nil)
+		result = runRecovery(ctx, owner, info.Size(), seams, options, false, pcv3.RecoveryModeNormalV3, nil)
 	case ModeForceNormal:
-		return runRecovery(ctx, owner, info.Size(), seams, options, false, pcv3.RecoveryModeForce, nil)
+		result = runRecovery(ctx, owner, info.Size(), seams, options, false, pcv3.RecoveryModeForce, nil)
 	case ModeForceD1:
-		return runRecovery(ctx, owner, info.Size(), seams, options, true, pcv3.RecoveryModeForce, nil)
+		result = runRecovery(ctx, owner, info.Size(), seams, options, true, pcv3.RecoveryModeForce, nil)
 	case ModeForceUnverifiedNormal:
-		return runUnverified(ctx, owner, info.Size(), seams, options, false)
+		result = runUnverified(ctx, owner, info.Size(), seams, options, false)
 	case ModeForceUnverifiedD1:
-		return runUnverified(ctx, owner, info.Size(), seams, options, true)
+		result = runUnverified(ctx, owner, info.Size(), seams, options, true)
 	default:
 		return closedFailure(
 			pcv3.OutcomeUnsupportedRoutingPreKDF,
@@ -321,6 +369,7 @@ func runWithSeamsAndOptions(
 			DiagnosticRoutingRefusal,
 		)
 	}
+	return archivePlan.apply(ctx, result)
 }
 
 func validMode(mode Mode) bool {
@@ -352,6 +401,7 @@ func runNormalRead(
 		Target:              owner.target,
 		Protected:           owner.outputProtected(),
 		JournalPrivateStage: options.JournalPrivateStage,
+		PrepareArchive:      preparesArchive(options.ArchiveAction),
 	}
 	var archive *pcv3.NativeArchiveHandoff
 	var retainedOutput *pcv3publication.RetainedFile
@@ -468,6 +518,7 @@ func runRecovery(
 	recoveryOptions := pcv3recovery.ExecutionOptions{
 		RetainDurableOutput: options.RetainDurableOutput,
 		JournalPrivateStage: options.JournalPrivateStage,
+		PrepareArchive:      preparesArchive(options.ArchiveAction),
 	}
 	if d1Role != nil {
 		recoveryResult = pcv3recovery.RunD1UnverifiedWithOptions(
@@ -707,6 +758,9 @@ func resultFromNativeRead(native *pcv3.NativeReadResult) *Result {
 		)
 	}
 	diagnostic := DiagnosticNone
+	if native.Stage() == pcv3.StageResourceBudget {
+		diagnostic = DiagnosticResourceLimit
+	}
 	if native.CallbackFailed() {
 		diagnostic = DiagnosticCallbackFailure
 	}
@@ -732,10 +786,17 @@ func resultFromNativeRead(native *pcv3.NativeReadResult) *Result {
 
 func resultFromRecovery(recovery *pcv3recovery.Result) (result *Result) {
 	var retained *pcv3publication.RetainedFile
+	var archive *pcv3recovery.ArchiveHandoff
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			cleanupIncomplete := cleanupRetainedExact(&retained)
 			if cleanupOutputExact(result) {
+				cleanupIncomplete = true
+			}
+			if archive != nil && archive.Close() {
+				cleanupIncomplete = true
+			}
+			if cleanupArchiveExact(result) {
 				cleanupIncomplete = true
 			}
 			if cleanupIncomplete {
@@ -764,11 +825,29 @@ func resultFromRecovery(recovery *pcv3recovery.Result) (result *Result) {
 		publicationStage:      recovery.PublicationStage(),
 		publicationCode:       recovery.PublicationCode(),
 	})
+	if recovery.Stage() == pcv3.StageResourceBudget {
+		result.diagnostic = DiagnosticResourceLimit
+	}
 	result.authenticatedComment = recovery.AuthenticatedComment()
 	if errors.Is(recovery, pcv3publication.ErrCleanupIncomplete) {
 		result.appendWarning(WarningCleanupIncomplete)
 	}
 	result.artifactInspection = recovery.ArtifactInspection()
+	archive = recovery.TakeArchiveHandoff()
+	if archive != nil {
+		followUp := newArchiveFollowUp(archive, result.AuthenticatedComment())
+		if followUp != nil && result.outcome == pcv3.OutcomeSuccess &&
+			result.stage == pcv3.StageNone && result.code == pcv3.CodeSuccess &&
+			!result.publicationAttempted && result.warningCount == 0 {
+			result.archiveFollowUp = followUp
+			archive = nil
+			return result
+		}
+		if archive.Close() {
+			result.appendWarning(WarningCleanupIncomplete)
+		}
+		archive = nil
+	}
 	retained = recovery.TakeRetainedOutput()
 	if retained != nil {
 		followUp := newOutputFollowUp(retained)
@@ -896,7 +975,7 @@ func (owner *operationOwner) outputProtected() []string {
 	return protected
 }
 
-func (owner *operationOwner) report(code StatusCode) (ok bool) {
+func (owner *operationOwner) report(code StatusCode, args ...uint64) (ok bool) {
 	if owner == nil || owner.reporterFailed || owner.reporterPanicked {
 		return false
 	}
@@ -912,7 +991,17 @@ func (owner *operationOwner) report(code StatusCode) (ok bool) {
 			ok = false
 		}
 	}()
-	callbackErr = reporter(Status{code: code})
+	status := Status{code: code}
+	if len(args) > len(status.args) {
+		owner.reporterFailed = true
+		owner.reporter = nil
+		return false
+	}
+	for _, arg := range args {
+		status.args[status.argCount] = arg
+		status.argCount++
+	}
+	callbackErr = reporter(status)
 	if callbackErr != nil {
 		owner.reporterFailed = true
 		owner.reporter = nil
@@ -943,6 +1032,9 @@ func (owner *operationOwner) finishReportedResult(result *Result) *Result {
 	if owner.reporterFailed || owner.reporterPanicked {
 		failure := owner.reportFailure()
 		if cleanupOutputExact(result) {
+			failure.appendWarning(WarningCleanupIncomplete)
+		}
+		if cleanupArchiveExact(result) {
 			failure.appendWarning(WarningCleanupIncomplete)
 		}
 		return failure

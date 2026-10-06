@@ -2,8 +2,6 @@ package ui
 
 import (
 	"Picocrypt-NG/internal/app"
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"context"
@@ -62,7 +60,7 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		}
 		secret := "wrong-password"
 		fixturePath := filepath.Join(
-			"..", "pcv3", "testdata", "normal", "volumes",
+			"..", "pcv3operation", "internal", "pcv3", "testdata", "normal", "volumes",
 			"normal-standard-combined-ordered-one.pcv",
 		)
 		info, err := os.Stat(fixturePath)
@@ -96,6 +94,7 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 			}
 			a.State.Password = secret
 			a.State.Keyfiles = []string{red, blue}
+			a.State.KeyfileOrdered = true
 			a.State.SetPCV3Intent(app.PCV3ActionForceUnverified, app.PCV3FactorPolicyCombined, app.PCV3KeyfileOrderSelected)
 			a.refreshAdvanced()
 			a.updateUIState()
@@ -158,7 +157,6 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		if executorCalls != 1 || executed == nil {
 			t.Fatalf("real operation executor calls = %d; want exactly one", executorCalls)
 		}
-		skipOnPCV3ResourceAdmissionResult(t, executed)
 		if a.pcv3Result != executed {
 			t.Fatal("the desktop reconstructed rather than retained the operation's closed result")
 		}
@@ -174,9 +172,9 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 			presentation.ArchivePending() != core.ArchivePending() {
 			t.Fatal("State presentation drifted from the operation's closed presentation")
 		}
-		if presentation.Outcome() != pcv3.OutcomeForceUnverified ||
-			presentation.Stage() != pcv3.StageWrapAuth ||
-			presentation.Code() != pcv3.CodeForceUnverified ||
+		if presentation.Outcome() != pcv3operation.OutcomeForceUnverified ||
+			presentation.Stage() != pcv3operation.StageWrapAuth ||
+			presentation.Code() != pcv3operation.CodeForceUnverified ||
 			presentation.Diagnostic() != pcv3operation.DiagnosticNone ||
 			presentation.CompletionClass() != pcv3operation.CompletionWarning ||
 			!presentation.PublicationAttempted() ||
@@ -197,9 +195,9 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		for _, fragment := range []string{
 			"Unverified recovery artifact created",
 			"Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content.",
-			"Output publication is durable.",
+			"File saved.",
 			"Inspect recovery artifact",
-			"Close publication result",
+			"Close",
 		} {
 			if !strings.Contains(text, fragment) {
 				t.Fatalf("rendered result view %q lacks exact fragment %q", text, fragment)
@@ -257,7 +255,7 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		}
 		secret := "mix"
 		fixturePath := filepath.Join(
-			"..", "pcv3", "testdata", "normal", "volumes",
+			"..", "pcv3operation", "internal", "pcv3", "testdata", "normal", "volumes",
 			"normal-standard-combined-ordered-one.pcv",
 		)
 		info, err := os.Stat(fixturePath)
@@ -286,9 +284,9 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 			shape := ""
 			if request == nil || request.Mode != pcv3operation.ModeReadNormal || request.Consent != nil ||
 				request.Source == nil || request.Source.Name() != fixturePath || request.Target != output ||
-				request.Factors == nil || request.Factors.Mode != pcv3credential.CredentialModePasswordAndKeyfiles ||
-				request.Factors.ExpectedPolicy != pcv3credential.FactorPolicyPasswordAndKeyfiles ||
-				request.Factors.KeyfileMode != pcv3credential.KeyfileModeOrdered ||
+				request.Factors == nil || request.Factors.Mode != pcv3operation.CredentialModePasswordAndKeyfiles ||
+				request.Factors.ExpectedPolicy != pcv3operation.FactorPolicyPasswordAndKeyfiles ||
+				request.Factors.KeyfileMode != pcv3operation.KeyfileModeOrdered ||
 				len(request.Factors.Keyfiles) != 2 || len(request.Protected) != 2 ||
 				request.Protected[0] != red || request.Protected[1] != blue {
 				shape = "normal request did not preserve nil consent and red/blue factor order"
@@ -304,6 +302,7 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 			}
 			a.State.Password = secret
 			a.State.Keyfiles = []string{red, blue}
+			a.State.KeyfileOrdered = true
 			a.State.SetPCV3Intent(app.PCV3ActionDecrypt, app.PCV3FactorPolicyCombined, app.PCV3KeyfileOrderSelected)
 			a.refreshAdvanced()
 			a.updateUIState()
@@ -334,7 +333,6 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		if !ok || executed == nil {
 			t.Fatal("normal operation executor returned no closed result")
 		}
-		skipOnPCV3ResourceAdmissionResult(t, executed)
 		if a.pcv3Result != executed {
 			t.Fatal("the desktop reconstructed rather than retained the normal operation result")
 		}
@@ -353,17 +351,17 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 			presentation.ArchivePending() != core.ArchivePending() {
 			t.Fatal("State presentation drifted from the normal operation's closed presentation")
 		}
-		if presentation.Outcome() != pcv3.OutcomeSuccess || presentation.Stage() != pcv3.StageNone ||
-			presentation.Code() != pcv3.CodeSuccess || presentation.Diagnostic() != pcv3operation.DiagnosticNone ||
+		if presentation.Outcome() != pcv3operation.OutcomeSuccess || presentation.Stage() != pcv3operation.StageNone ||
+			presentation.Code() != pcv3operation.CodeSuccess || presentation.Diagnostic() != pcv3operation.DiagnosticNone ||
 			presentation.CompletionClass() != pcv3operation.CompletionClean || !presentation.PublicationAttempted() ||
 			presentation.PublicationState() != pcv3publication.StatePublishedDurable ||
-			presentation.PublicationStage() != pcv3.StageNone ||
+			presentation.PublicationStage() != pcv3operation.StageNone ||
 			presentation.PublicationCode() != pcv3publication.CodePublishedDurable ||
 			len(presentation.Warnings()) != 0 || presentation.ArchivePending() {
 			t.Fatalf("normal desktop presentation = %v/%v/%v diagnostic=%v class=%v publication=%v/%v warnings=%v pending=%v; want exact durable success", presentation.Outcome(), presentation.Stage(), presentation.Code(), presentation.Diagnostic(), presentation.CompletionClass(), presentation.PublicationState(), presentation.PublicationCode(), presentation.Warnings(), presentation.ArchivePending())
 		}
 		text := pcv3RenderedText(a.pcv3Container)
-		if text != "Decryption complete\nThe output is fully authenticated.\nComments:\nTEST ONLY comment\nOutput publication is durable.\nClose publication result" {
+		if text != "Operation complete\nThe output is fully authenticated.\nComments:\nTEST ONLY comment\nFile saved.\nClose" {
 			t.Fatalf("normal result view = %q; want exact bounded success rendering", text)
 		}
 		for _, sentinel := range []string{

@@ -35,8 +35,8 @@ func (result CopyResult) Copied() bool { return result.copied }
 // partial destination could not be proven.
 func (result CopyResult) CleanupIncomplete() bool { return result.cleanupIncomplete }
 
-// RetainedFile is an opaque, one-owner capability for one durably published
-// file. It retains pinned filesystem handles and exact identity, never a path
+// RetainedFile is an opaque, one-owner capability for one proven published
+// file (durable or durability-uncertain). It retains pinned filesystem handles and exact identity, never a path
 // accepted later from a caller.
 type RetainedFile struct {
 	mu sync.Mutex
@@ -293,19 +293,30 @@ func closeUnusedDestination(destination *os.File) {
 }
 
 // SplitRetained consumes one retained capability and splits only its exact
-// durably published file. A split failure leaves the full source in place. A
+// published file. A split failure leaves the full source in place. A
 // successful split removes the full source only after the chunk set is durable.
 func SplitRetained(
 	retained *RetainedFile,
 	options fileops.SplitOptions,
 ) error {
+	_, err := splitRetained(retained, options, false)
+	return err
+}
+
+// SplitRetainedWithResult preserves both complete chunks and the full ciphertext
+// when only the final chunk directory barrier cannot confirm durability.
+func SplitRetainedWithResult(retained *RetainedFile, options fileops.SplitOptions) (fileops.SplitState, error) {
+	return splitRetained(retained, options, true)
+}
+
+func splitRetained(retained *RetainedFile, options fileops.SplitOptions, preserveUncertain bool) (fileops.SplitState, error) {
 	if retained == nil {
-		return ErrCleanupIncomplete
+		return fileops.SplitFailed, ErrCleanupIncomplete
 	}
 	retained.mu.Lock()
 	defer retained.mu.Unlock()
 	if !retained.liveLocked() {
-		return ErrCleanupIncomplete
+		return fileops.SplitFailed, ErrCleanupIncomplete
 	}
 	retained.active = false
 
@@ -316,7 +327,7 @@ func SplitRetained(
 		!sourceInfo.Mode().IsRegular() || !parentInfo.IsDir() ||
 		retained.identity.Size() != sourceInfo.Size() || !os.SameFile(retained.identity, sourceInfo) {
 		_ = retained.closeHandlesLocked()
-		return errors.Join(sourceErr, parentErr, ErrCleanupIncomplete)
+		return fileops.SplitFailed, errors.Join(sourceErr, parentErr, ErrCleanupIncomplete)
 	}
 	options.ExpectedInput = sourceInfo
 	options.ExpectedDirectory = parentInfo
@@ -325,17 +336,32 @@ func SplitRetained(
 	if options.MinimumChunkSize < 4 {
 		options.MinimumChunkSize = 4
 	}
-	chunks, splitErr := fileops.SplitPinned(options, retained.file, retained.root, retained.parent)
-	if splitErr == nil && len(chunks) == 0 {
+	var completion fileops.SplitResult
+	var splitErr error
+	if preserveUncertain {
+		completion, splitErr = fileops.SplitPinnedWithResult(options, retained.file, retained.root, retained.parent, retained.syncDirectory)
+	} else {
+		completion.Chunks, splitErr = fileops.SplitPinned(options, retained.file, retained.root, retained.parent)
+		if splitErr == nil {
+			completion.State = fileops.SplitCompleteDurable
+		}
+	}
+	if splitErr == nil && len(completion.Chunks) == 0 {
 		splitErr = errors.New("pcv3 publication: retained split produced no chunks")
 	}
 	if splitErr != nil {
 		if retained.closeHandlesLocked() {
-			return errors.Join(splitErr, ErrCleanupIncomplete)
+			return fileops.SplitFailed, errors.Join(splitErr, ErrCleanupIncomplete)
 		}
-		return splitErr
+		return fileops.SplitFailed, splitErr
 	}
-	return retained.removeExactLocked()
+	if completion.State == fileops.SplitCompleteDurabilityUncertain {
+		if retained.closeHandlesLocked() {
+			return completion.State, ErrCleanupIncomplete
+		}
+		return completion.State, nil
+	}
+	return completion.State, retained.removeExactLocked()
 }
 
 // RemoveExact consumes the capability before effects and removes only while
@@ -416,4 +442,18 @@ func (file *RetainedFile) GoString() string { return file.String() }
 
 func (file *RetainedFile) Format(state fmt.State, verb rune) {
 	writeFixedFormat(state, verb, file.String())
+}
+
+// Close releases custody without removing the published file.
+func (file *RetainedFile) Close() error {
+	if file == nil {
+		return nil
+	}
+	file.mu.Lock()
+	defer file.mu.Unlock()
+	file.active = false
+	if file.closeHandlesLocked() {
+		return ErrCleanupIncomplete
+	}
+	return nil
 }

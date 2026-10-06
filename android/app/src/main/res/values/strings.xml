@@ -289,7 +289,7 @@
     <string name="pcv3_publication_indeterminate_title">Output state is unknown</string>
     <string name="pcv3_publication_indeterminate_body">The application cannot determine whether publication committed. Keep every source and the destination exactly as they are. Do not retry or clean up this operation.</string>
     <string name="pcv3_warning_cleanup_title">Cleanup could not be confirmed</string>
-    <string name="pcv3_warning_cleanup_body">The application could not prove that all operation-owned temporary plaintext was removed. Keep the encrypted source and do not delete files based on this result.</string>
+    <string name="pcv3_warning_cleanup_body">The application could not confirm that all temporary files created by this operation were removed. Keep the source files and do not delete files based on this result.</string>
     <string name="pcv3_warning_callback_title">Recovery confirmation failed</string>
     <string name="pcv3_warning_callback_body">The live recovery confirmation could not be completed. No unverified-output authority was granted.</string>
     <string name="pcv3_warning_unknown_title">Additional operation warning</string>
@@ -303,11 +303,11 @@
     <string name="pcv3_output_saved_title">Output saved</string>
     <string name="pcv3_output_saved_body">The selected output was saved. Authentication and recovery notices shown below still apply.</string>
     <string name="pcv3_output_saved_cleanup_title">Output saved; cleanup incomplete</string>
-    <string name="pcv3_output_saved_cleanup_body">The selected output was saved, but cleanup of app-owned plaintext could not be confirmed.</string>
+    <string name="pcv3_output_saved_cleanup_body">The selected output was saved, but cleanup of temporary files created by the app could not be confirmed.</string>
     <string name="pcv3_output_save_failed_title">Output could not be saved</string>
-    <string name="pcv3_output_save_failed_body">The selected destination was not confirmed to contain the output. Keep the encrypted source.</string>
+    <string name="pcv3_output_save_failed_body">The selected destination was not confirmed to contain the output. Keep the source files.</string>
     <string name="pcv3_output_save_failed_cleanup_title">Save failed; cleanup incomplete</string>
-    <string name="pcv3_output_save_failed_cleanup_body">The destination was not confirmed to contain the output, and cleanup of app-owned plaintext could not be confirmed.</string>
+    <string name="pcv3_output_save_failed_cleanup_body">The destination was not confirmed to contain the output, and cleanup of temporary files created by the app could not be confirmed.</string>
     <string name="pcv3_output_discarded_title">Recovery artifact discarded</string>
     <string name="pcv3_output_discarded_body">The app-owned recovery artifact was removed. The encrypted source was kept.</string>
     <string name="pcv3_output_discard_cleanup_title">Recovery artifact cleanup incomplete</string>
@@ -315,7 +315,7 @@
     <string name="pcv3_output_expired_title">Output action expired</string>
     <string name="pcv3_output_expired_body">The Save or Discard action was no longer valid. No new destination or removal was confirmed.</string>
     <string name="pcv3_output_unknown_title">Output action result is unknown</string>
-    <string name="pcv3_output_unknown_body">The application could not verify the Save or Discard result. Keep the encrypted source and do not infer that output was saved or removed.</string>
+    <string name="pcv3_output_unknown_body">The application could not verify the Save or Discard result. Keep the source files and do not infer that output was saved or removed.</string>
     <string name="pcv3_output_saved_close">Close saved output result</string>
     <string name="pcv3_output_save_failed_close">Close save failure</string>
     <string name="pcv3_output_discarded_close">Close discard result</string>
@@ -350,4 +350,16 @@
     <string name="pcv3_artifact_row">Record %1$s, bytes %2$s to %3$s, %4$s</string>
     <string name="pcv3_artifact_previous_page">Previous ranges</string>
     <string name="pcv3_artifact_next_page">Next ranges</string>
+    <string name="pcv3_output_provider_unsupported">This provider does not support saving this output. Choose another destination. The retained output is still available.</string>
+
+    <!-- Retained output and bounded creation request feedback. -->
+    <string name="pcv3_request_too_large">The selection or comment exceeds supported limits. Choose fewer items or a shorter comment.</string>
+    <string name="pcv3_discard_retained_title">Discard output?</string>
+    <string name="pcv3_discard_retained_body">This removes the app-owned output and cannot be undone. Your original files are kept.</string>
+    <string name="pcv3_retained_discarded_title">Output discarded</string>
+    <string name="pcv3_retained_discarded_body">The app-owned output was removed. Your original files were kept.</string>
+    <string name="pcv3_retained_discard_cleanup_title">Output cleanup incomplete</string>
+    <string name="pcv3_retained_discard_cleanup_body">The application could not confirm that the app-owned output was removed. Keep your original files.</string>
+    <string name="pcv3_resource_limit_title">Resource limit reached</string>
+    <string name="pcv3_resource_limit_body">The operation stopped because a processing resource limit was reached.</string>
 </resources>

@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3artifact"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"encoding/json"
@@ -279,9 +277,9 @@ func TestPCV3LocalizationContract(t *testing.T) {
 		}
 		for _, test := range resources {
 			presentation := mustPresentation(pcv3operation.PresentationSpec{
-				Outcome:    pcv3.OutcomeOperationFailed,
-				Stage:      pcv3.StageCredentialPolicy,
-				Code:       pcv3.CodeOperationFailed,
+				Outcome:    pcv3operation.OutcomeOperationFailed,
+				Stage:      pcv3operation.StageCredentialPolicy,
+				Code:       pcv3operation.CodeOperationFailed,
 				Args:       []uint64{^uint64(0), 1, 2, 3},
 				Diagnostic: test.diagnostic,
 			})
@@ -291,9 +289,9 @@ func TestPCV3LocalizationContract(t *testing.T) {
 		}
 
 		archive := mustPresentation(pcv3operation.PresentationSpec{
-			Outcome:        pcv3.OutcomeSuccess,
-			Stage:          pcv3.StageNone,
-			Code:           pcv3.CodeSuccess,
+			Outcome:        pcv3operation.OutcomeSuccess,
+			Stage:          pcv3operation.StageNone,
+			Code:           pcv3operation.CodeSuccess,
 			ArchivePending: true,
 		})
 		wantArchive := pcv3LocalizedCopy{
@@ -305,22 +303,22 @@ func TestPCV3LocalizationContract(t *testing.T) {
 		}
 
 		closedArchive := mustPresentation(pcv3operation.PresentationSpec{
-			Outcome: pcv3.OutcomeOperationFailed,
-			Stage:   pcv3.StageOutputPublication,
-			Code:    pcv3.CodeOperationFailed,
+			Outcome: pcv3operation.OutcomeOperationFailed,
+			Stage:   pcv3operation.StageOutputPublication,
+			Code:    pcv3operation.CodeOperationFailed,
 		})
 		wantClosedArchive := pcv3LocalizedCopy{
 			Title:  "No output was requested",
 			Body:   "The authenticated archive was closed without extraction. The encrypted source was kept.",
-			Action: "Close publication result",
+			Action: "Close",
 		}
 		if got := pcv3PublicationCopy(closedArchive); got != wantClosedArchive {
 			t.Fatalf("pcv3PublicationCopy(closed archive) = %#v; want %#v", got, wantClosedArchive)
 		}
 		invalidArchiveAction := mustPresentation(pcv3operation.PresentationSpec{
-			Outcome:    pcv3.OutcomeOperationFailed,
-			Stage:      pcv3.StageOutputPublication,
-			Code:       pcv3.CodeOperationFailed,
+			Outcome:    pcv3operation.OutcomeOperationFailed,
+			Stage:      pcv3operation.StageOutputPublication,
+			Code:       pcv3operation.CodeOperationFailed,
 			Diagnostic: pcv3operation.DiagnosticInvalidRequest,
 		})
 		if got := pcv3PublicationCopy(invalidArchiveAction); got != (pcv3LocalizedCopy{}) {
@@ -328,12 +326,12 @@ func TestPCV3LocalizationContract(t *testing.T) {
 		}
 
 		uncertain := mustPresentation(pcv3operation.PresentationSpec{
-			Outcome:              pcv3.OutcomeSuccess,
-			Stage:                pcv3.StageNone,
-			Code:                 pcv3.CodeSuccess,
+			Outcome:              pcv3operation.OutcomeSuccess,
+			Stage:                pcv3operation.StageNone,
+			Code:                 pcv3operation.CodeSuccess,
 			PublicationAttempted: true,
 			PublicationState:     pcv3publication.StatePublishedDurabilityUncertain,
-			PublicationStage:     pcv3.StageDirectorySync,
+			PublicationStage:     pcv3operation.StageDirectorySync,
 			PublicationCode:      pcv3publication.CodeDurabilityUncertain,
 		})
 		wantPublication := pcv3LocalizedCopy{
@@ -396,10 +394,10 @@ func TestPCV3LocalizationContract(t *testing.T) {
 				t.Errorf("pcv3RecoveryRangeCount(%d) = %q; want %q", test.count, got, test.want)
 			}
 		}
-		if got := pcv3RecoveryRangeRow(18446744073709551610, 18446744073709551611, 18446744073709551615, pcv3artifact.RangeUnverified); got != "Запись 18446744073709551610: байты 18446744073709551611–18446744073709551615 — не проверен" {
+		if got := pcv3RecoveryRangeRow(18446744073709551610, 18446744073709551611, 18446744073709551615, pcv3operation.ArtifactRangeUnverified); got != "Запись 18446744073709551610: байты 18446744073709551611–18446744073709551615 — не проверен" {
 			t.Fatalf("Russian long recovery row = %q", got)
 		}
-		if got := pcv3ArtifactRoleText(pcv3artifact.RoleD1Tail); got != "Конечная загрузочная запись" {
+		if got := pcv3ArtifactRoleText(pcv3operation.ArtifactRoleD1Tail); got != "Конечная загрузочная запись" {
 			t.Fatalf("Russian D1 tail role = %q; want Конечная загрузочная запись", got)
 		}
 	})
@@ -425,7 +423,7 @@ func TestPCV3LocalizationContract(t *testing.T) {
 				t.Errorf("pcv3RecoveryRangeCount(%d) = %q; want %q", test.count, got, test.want)
 			}
 		}
-		if got := pcv3ArtifactRoleText(pcv3artifact.RoleD1Tail); got != "Hinterer Bootstrap" {
+		if got := pcv3ArtifactRoleText(pcv3operation.ArtifactRoleD1Tail); got != "Hinterer Bootstrap" {
 			t.Fatalf("German D1 tail role = %q; want Hinterer Bootstrap", got)
 		}
 	})
@@ -452,7 +450,7 @@ func TestPCV3LocalizationContract(t *testing.T) {
 				t.Errorf("pcv3RecoveryRangeCount(%d) = %q; want %q", test.count, got, test.want)
 			}
 		}
-		if got := pcv3ArtifactRoleText(pcv3artifact.RoleD1Tail); got != "Amorce arrière" {
+		if got := pcv3ArtifactRoleText(pcv3operation.ArtifactRoleD1Tail); got != "Amorce arrière" {
 			t.Fatalf("French D1 tail role = %q; want Amorce arrière", got)
 		}
 	})
@@ -488,7 +486,7 @@ func TestRussianFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 	assertCatalogStringContains(t, catalog, "status.kept_output_unverified", "не провер", "повреж")
 	assertCatalogStringContains(t, catalog, "comments.placeholder", "открыт", "не шифру")
 	assertCatalogStringContains(t, catalog, "advanced.delete_files.tooltip", "удал", "исходн", "после шифр")
-	assertCatalogStringContains(t, catalog, "advanced.auto_unzip.tooltip", "извлеч", "перезапис")
+	assertCatalogStringContains(t, catalog, "advanced.auto_unzip.tooltip", "распак", "сохраня", "существующ")
 	assertCatalogStringContains(t, catalog, "advanced.deniability.tooltip", "заголов", "непуст", "парол", "оболоч")
 	assertCatalogStringContains(t, catalog, "start.hint.deniabilityPasswordRequired", "правдоподоб", "непуст", "парол")
 	assertCatalogStringContains(t, catalog, "start.hint.keyfileWritesDisabled", "нов", "v2", "ключ", "отключ", "расшифр")
@@ -525,7 +523,7 @@ func TestKoreanFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 	assertCatalogStringContains(t, catalog, "status.kept_output_unverified", "무결성 검사", "검증되지", "손상")
 	assertCatalogStringContains(t, catalog, "comments.placeholder", "평문", "암호화되지")
 	assertCatalogStringContains(t, catalog, "advanced.delete_files.tooltip", "암호화 후", "원본", "삭제")
-	assertCatalogStringContains(t, catalog, "advanced.auto_unzip.tooltip", "압축", "덮어")
+	assertCatalogStringContains(t, catalog, "advanced.auto_unzip.tooltip", "압축", "기존 파일", "유지")
 	assertCatalogStringContains(t, catalog, "advanced.deniability.tooltip", "판독 가능한", "빈 비밀번호", "외부 래퍼")
 	assertCatalogStringContains(t, catalog, "start.hint.deniabilityPasswordRequired", "부인 가능", "빈 비밀번호", "사용할 수 없습니다")
 	assertCatalogStringContains(t, catalog, "start.hint.keyfileWritesDisabled", "새", "v2", "키 파일", "만들 수 없습니다", "v3", "기존", "복호화")

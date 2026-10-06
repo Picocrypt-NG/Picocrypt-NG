@@ -82,6 +82,31 @@ internal suspend fun cancelOperationForegroundOwners(
     firstFailure?.let { throw it }
 }
 
+/** Timeout orchestration, kept separate from Android callbacks for cancellation tests. */
+internal fun stopTimedOutOperationForegroundHost(
+    cleanupScope: CoroutineScope,
+    operation: OperationState?,
+    pcv3Busy: Boolean,
+    stopHost: () -> Unit,
+    cancelLegacy: suspend () -> Unit,
+    cancelPcv3: suspend () -> Unit,
+) {
+    // Android's grace period cannot wait for native or provider calls. The process
+    // owner keeps exact receipt/cleanup custody after the Service is destroyed.
+    stopHost()
+    cleanupScope.launch {
+        try {
+            cancelOperationForegroundOwners(operation, pcv3Busy, cancelLegacy, cancelPcv3)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            // Native ownership and its failure presentation remain in OperationManager.
+        } catch (_: LinkageError) {
+            // A stale bridge must not prevent prompt service shutdown.
+        }
+    }
+}
+
 internal fun buildOperationNotification(
     context: Context,
     type: OperationType?,
@@ -118,8 +143,9 @@ internal fun buildOperationNotification(
  * Foreground service (type dataSync) that hosts active legacy or PCV3 native ownership so it
  * survives UI pause and ViewModel teardown.
  *
- * It stops only after both owners are inactive. PCV3 resource observations remain private to the
- * lifecycle refresh and never enter notifications.
+ * Normal completion stops after both owners are inactive. A system timeout stops the service
+ * promptly and leaves cancellation with a process-scoped owner. PCV3 resource observations
+ * remain private to the lifecycle refresh and never enter notifications.
  */
 class OperationForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -195,24 +221,14 @@ class OperationForegroundService : Service() {
      */
     @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
     override fun onTimeout(startId: Int, fgsType: Int) {
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            try {
-                cancelOperationForegroundOwners(
-                    operation = OperationManager.currentOperation.value,
-                    pcv3Busy = OperationManager.currentPcv3Busy.value,
-                    cancelLegacy = { OperationManager.cancelOperation() },
-                    cancelPcv3 = { OperationManager.cancelPcv3() },
-                )
-            } catch (error: CancellationException) {
-                throw error
-            } catch (_: Exception) {
-                // Timeout still must demote the service after both bounded requests were attempted.
-            } catch (_: LinkageError) {
-                // A stale native boundary cannot keep a timed-out foreground service alive.
-            } finally {
-                stopSelfAndForeground()
-            }
-        }
+        stopTimedOutOperationForegroundHost(
+            cleanupScope = timeoutCleanupScope,
+            operation = OperationManager.currentOperation.value,
+            pcv3Busy = OperationManager.currentPcv3Busy.value,
+            stopHost = ::stopSelfAndForeground,
+            cancelLegacy = { OperationManager.cancelOperation() },
+            cancelPcv3 = { OperationManager.cancelPcv3() },
+        )
     }
 
     private fun stopSelfAndForeground() {
@@ -249,6 +265,8 @@ class OperationForegroundService : Service() {
     }
 
     companion object {
+        // Independent of onDestroy; it holds no Service or Activity reference.
+        private val timeoutCleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private const val NOTIFICATION_ID = 1
         private const val POLL_INTERVAL_MS = 500L
 

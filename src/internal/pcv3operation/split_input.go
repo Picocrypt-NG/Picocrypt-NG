@@ -2,7 +2,7 @@ package pcv3operation
 
 import (
 	"Picocrypt-NG/internal/fileops"
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3"
 	"context"
 	"errors"
 	"fmt"

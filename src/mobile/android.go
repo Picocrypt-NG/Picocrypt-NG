@@ -3,14 +3,11 @@
 package mobile
 
 import (
-	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3operation"
-	"Picocrypt-NG/internal/pcv3resource"
+	"Picocrypt-NG/internal/secret"
 	"Picocrypt-NG/internal/volume"
 	"bytes"
 	"context"
@@ -24,12 +21,9 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	perrors "Picocrypt-NG/internal/errors"
 )
 
 var (
-	runEncrypt                  = volume.Encrypt
 	runDecrypt                  = volume.Decrypt
 	openDecryptionInfoPCVInput  = volume.OpenLegacyPCVInput
 	runPCV3OperationWithOptions = pcv3operation.RunWithOptions
@@ -48,7 +42,9 @@ func runAndroidPCV3Operation(
 }
 
 const (
-	maxPCV3EnvelopeBytes           = 64 << 10
+	// Aggregate UTF-8 JSON transport bound, separate from per-path/count limits.
+	// Kotlin preflights this same bound before transferring form ownership.
+	maxPCV3EnvelopeBytes           = 4 << 20
 	maxPCV3PathBytes               = 4096
 	maxPCV3Keyfiles                = 64
 	maxPCV3PasswordBytes           = 1 << 20
@@ -59,18 +55,20 @@ const (
 )
 
 type pcv3Envelope struct {
-	mode         pcv3operation.Mode
-	create       bool
-	d1           bool
-	suite        pcv3.Suite
-	payloadRS    bool
-	comment      string
-	factorMode   pcv3credential.CredentialMode
-	keyfileMode  pcv3credential.KeyfileMode
-	factorPolicy pcv3credential.FactorPolicy
-	source       string
-	target       string
-	keyfiles     []string
+	mode                               pcv3operation.Mode
+	create                             bool
+	d1                                 bool
+	suite                              pcv3operation.Suite
+	payloadRS                          bool
+	compress                           bool
+	inputFiles, onlyFiles, onlyFolders []string
+	comment                            string
+	factorMode                         pcv3operation.CredentialMode
+	keyfileMode                        pcv3operation.KeyfileMode
+	factorPolicy                       pcv3operation.FactorPolicy
+	source                             string
+	target                             string
+	keyfiles                           []string
 }
 
 // StartPCV3 starts one explicit PCV3 read/recovery or creation operation. The
@@ -79,7 +77,7 @@ type pcv3Envelope struct {
 // Creation modes ("write-normal", "write-d1") require the exact write field
 // set; write-d1 always runs the paranoid suite.
 func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
-	defer crypto.SecureZero(password)
+	defer secret.SecureZero(password)
 
 	envelope, err := decodePCV3Envelope(requestJSON)
 	if err != nil || !envelope.acceptsPassword(password) {
@@ -90,7 +88,7 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 	ownedPassword := true
 	defer func() {
 		if ownedPassword {
-			crypto.SecureZero(passwordCopy)
+			secret.SecureZero(passwordCopy)
 		}
 	}()
 
@@ -121,14 +119,14 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 		}
 	}()
 
-	readers := make([]*pcv3credential.KeyfileReader, len(keyfiles))
+	readers := make([]*pcv3operation.KeyfileReader, len(keyfiles))
 	for index, keyfile := range keyfiles {
-		readers[index] = pcv3credential.OwnKeyfileReader(keyfile)
+		readers[index] = pcv3operation.OwnKeyfileReader(keyfile)
 		keyfiles[index] = nil
 	}
 	ownedKeyfiles = false
 
-	factors := &pcv3credential.FactorRequest{
+	factors := &pcv3operation.FactorRequest{
 		Mode:           envelope.factorMode,
 		KeyfileMode:    envelope.keyfileMode,
 		ExpectedPolicy: envelope.factorPolicy,
@@ -147,6 +145,13 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 
 	if envelope.create {
 		go executePCV3WriteOperation(operation, &pcv3WriteRequest{
+			input: volume.EncryptInputRequest{
+				InputFile: envelope.source, InputFiles: envelope.inputFiles,
+				OnlyFiles: envelope.onlyFiles, OnlyFolders: envelope.onlyFolders,
+				OutputFile: envelope.target, Compress: envelope.compress, BorrowedSource: source,
+				PCV3: true, Paranoid: envelope.suite == pcv3operation.SuiteParanoid,
+				Deniability: envelope.d1, ReedSolomon: envelope.payloadRS, Comments: envelope.comment,
+			},
 			d1:         envelope.d1,
 			suite:      envelope.suite,
 			payloadRS:  envelope.payloadRS,
@@ -155,7 +160,7 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 			source:     source,
 			factors:    factors,
 			target:     envelope.target,
-			protected:  append(append([]string(nil), envelope.keyfiles...), envelope.source),
+			protected:  append(append(append(append([]string{envelope.source}, envelope.keyfiles...), envelope.inputFiles...), envelope.onlyFiles...), envelope.onlyFolders...),
 		})
 		return newPCV3StartResult("", operation)
 	}
@@ -183,7 +188,7 @@ func executePCV3Operation(operation *PCV3Operation, request *pcv3operation.Reque
 		recovered := recover()
 		releasePCV3Request(request)
 		if recovered != nil {
-			completePCV3Panic(operation)
+			completePCV3Panic(operation, fileops.PanicCleanupIncomplete(recovered))
 			return
 		}
 		completePCV3Result(operation, result)
@@ -242,7 +247,14 @@ var (
 )
 
 func decodePCV3Envelope(input string) (pcv3Envelope, error) {
-	values, err := decodePCV3ObjectFields(input, maxPCV3EnvelopeBytes, pcv3WriteEnvelopeFields)
+	allowed := make(map[string]struct{}, len(pcv3WriteEnvelopeFields)+4)
+	for key := range pcv3WriteEnvelopeFields {
+		allowed[key] = struct{}{}
+	}
+	for _, key := range []string{"inputFiles", "onlyFiles", "onlyFolders", "compress"} {
+		allowed[key] = struct{}{}
+	}
+	values, err := decodePCV3ObjectFields(input, maxPCV3EnvelopeBytes, allowed)
 	if err != nil {
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 	}
@@ -284,7 +296,8 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 	default:
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 	}
-	if len(values) != len(required) {
+	extended := envelope.create && len(values) == len(required)+4
+	if !extended && len(values) != len(required) {
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 	}
 	for name := range required {
@@ -309,7 +322,7 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 	if err != nil {
 		return pcv3Envelope{}, err
 	}
-	keyfiles, err := decodePCV3StringArray(values["keyfiles"], maxPCV3Keyfiles, maxPCV3PathBytes)
+	keyfiles, err := decodePCV3StringArray(values["keyfiles"], maxPCV3Keyfiles)
 	if err != nil {
 		return pcv3Envelope{}, err
 	}
@@ -319,24 +332,24 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 	envelope.keyfiles = keyfiles
 	switch policyText {
 	case "password":
-		envelope.factorMode = pcv3credential.CredentialModePasswordOnly
-		envelope.factorPolicy = pcv3credential.FactorPolicyPasswordOnly
+		envelope.factorMode = pcv3operation.CredentialModePasswordOnly
+		envelope.factorPolicy = pcv3operation.FactorPolicyPasswordOnly
 	case "keyfiles":
-		envelope.factorMode = pcv3credential.CredentialModeKeyfilesOnly
-		envelope.factorPolicy = pcv3credential.FactorPolicyKeyfilesOnly
+		envelope.factorMode = pcv3operation.CredentialModeKeyfilesOnly
+		envelope.factorPolicy = pcv3operation.FactorPolicyKeyfilesOnly
 	case "password-and-keyfiles":
-		envelope.factorMode = pcv3credential.CredentialModePasswordAndKeyfiles
-		envelope.factorPolicy = pcv3credential.FactorPolicyPasswordAndKeyfiles
+		envelope.factorMode = pcv3operation.CredentialModePasswordAndKeyfiles
+		envelope.factorPolicy = pcv3operation.FactorPolicyPasswordAndKeyfiles
 	default:
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 	}
 	switch orderText {
 	case "none":
-		envelope.keyfileMode = pcv3credential.KeyfileModeNone
+		envelope.keyfileMode = pcv3operation.KeyfileModeNone
 	case "ordered":
-		envelope.keyfileMode = pcv3credential.KeyfileModeOrdered
+		envelope.keyfileMode = pcv3operation.KeyfileModeOrdered
 	case "unordered":
-		envelope.keyfileMode = pcv3credential.KeyfileModeUnordered
+		envelope.keyfileMode = pcv3operation.KeyfileModeUnordered
 	default:
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 	}
@@ -355,18 +368,43 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 		}
 		switch suiteText {
 		case "standard":
-			envelope.suite = pcv3.SuiteStandard
+			envelope.suite = pcv3operation.SuiteStandard
 		case "paranoid":
-			envelope.suite = pcv3.SuiteParanoid
+			envelope.suite = pcv3operation.SuiteParanoid
 		default:
 			return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 		}
 		// D1 creation has no suite choice: it always runs the paranoid suite.
-		if envelope.d1 && envelope.suite != pcv3.SuiteParanoid {
+		if envelope.d1 && envelope.suite != pcv3operation.SuiteParanoid {
 			return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 		}
 		envelope.comment = comment
 		envelope.payloadRS = payloadRS
+	}
+	if extended {
+		var err error
+		envelope.inputFiles, err = decodePCV3StringArray(values["inputFiles"], 4096)
+		if err != nil {
+			return pcv3Envelope{}, err
+		}
+		envelope.onlyFiles, err = decodePCV3StringArray(values["onlyFiles"], 4096)
+		if err != nil {
+			return pcv3Envelope{}, err
+		}
+		envelope.onlyFolders, err = decodePCV3StringArray(values["onlyFolders"], 4096)
+		if err != nil {
+			return pcv3Envelope{}, err
+		}
+		envelope.compress, err = decodePCV3Boolean(values["compress"])
+		if err != nil {
+			return pcv3Envelope{}, err
+		}
+		if len(envelope.inputFiles) > 0 && envelope.source != envelope.inputFiles[0] {
+			return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
+		}
+		if len(envelope.inputFiles) == 0 && (len(envelope.onlyFiles) > 0 || len(envelope.onlyFolders) > 0) {
+			return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
+		}
 	}
 	if !envelope.validFactorShape() {
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
@@ -413,7 +451,7 @@ func decodePCV3String(raw json.RawMessage, maximum int) (string, error) {
 	return value, nil
 }
 
-func decodePCV3StringArray(raw json.RawMessage, maximumItems, maximumBytes int) ([]string, error) {
+func decodePCV3StringArray(raw json.RawMessage, maximumItems int) ([]string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	token, err := decoder.Token()
 	if err != nil || token != json.Delim('[') {
@@ -428,7 +466,7 @@ func decodePCV3StringArray(raw json.RawMessage, maximumItems, maximumBytes int) 
 		if err := decoder.Decode(&rawValue); err != nil {
 			return nil, errors.New("invalid PCV3 envelope")
 		}
-		value, err := decodePCV3String(rawValue, maximumBytes)
+		value, err := decodePCV3String(rawValue, maxPCV3PathBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -448,11 +486,11 @@ func jsonDecoderAtEOF(decoder *json.Decoder) bool {
 
 func (envelope pcv3Envelope) validFactorShape() bool {
 	switch envelope.factorMode {
-	case pcv3credential.CredentialModePasswordOnly:
-		return envelope.keyfileMode == pcv3credential.KeyfileModeNone && len(envelope.keyfiles) == 0
-	case pcv3credential.CredentialModeKeyfilesOnly,
-		pcv3credential.CredentialModePasswordAndKeyfiles:
-		return envelope.keyfileMode != pcv3credential.KeyfileModeNone && len(envelope.keyfiles) > 0
+	case pcv3operation.CredentialModePasswordOnly:
+		return envelope.keyfileMode == pcv3operation.KeyfileModeNone && len(envelope.keyfiles) == 0
+	case pcv3operation.CredentialModeKeyfilesOnly,
+		pcv3operation.CredentialModePasswordAndKeyfiles:
+		return envelope.keyfileMode != pcv3operation.KeyfileModeNone && len(envelope.keyfiles) > 0
 	default:
 		return false
 	}
@@ -463,11 +501,11 @@ func (envelope pcv3Envelope) acceptsPassword(password []byte) bool {
 		return false
 	}
 	switch envelope.factorMode {
-	case pcv3credential.CredentialModePasswordOnly:
+	case pcv3operation.CredentialModePasswordOnly:
 		return len(password) > 0
-	case pcv3credential.CredentialModeKeyfilesOnly:
+	case pcv3operation.CredentialModeKeyfilesOnly:
 		return len(password) == 0
-	case pcv3credential.CredentialModePasswordAndKeyfiles:
+	case pcv3operation.CredentialModePasswordAndKeyfiles:
 		return len(password) > 0
 	default:
 		return false
@@ -512,7 +550,7 @@ func DetectOperation(filePath string) (isEncrypt bool, err error) {
 // PCV3AndroidPolicyState exposes the closed presentation state used by the
 // Android host. This is not a resource or operation admission decision.
 func PCV3AndroidPolicyState() string {
-	if pcv3resource.AndroidReadPolicyConfigured() {
+	if pcv3operation.AndroidReadPolicyConfigured() {
 		return "configured"
 	}
 	return "unconfigured"
@@ -538,22 +576,22 @@ func DetectPCV3Route(filePath string) (route string, retErr error) {
 	if err != nil {
 		return "", errors.New(pcv3BridgeInputUnavailable)
 	}
-	detected, _, err := pcv3.Probe(source, info.Size())
+	detected, err := pcv3operation.Probe(source, info.Size())
 	if err != nil {
-		var failure pcv3.Failure
+		var failure pcv3operation.Failure
 		if !errors.As(err, &failure) {
 			return "", errors.New(pcv3BridgeInputUnavailable)
 		}
 		switch failure.Code() {
-		case pcv3.CodeUnsupported:
+		case pcv3operation.CodeUnsupported:
 			return "unsupported", nil
-		case pcv3.CodeInvalidStructure:
+		case pcv3operation.CodeInvalidStructure:
 			return "invalid", nil
 		default:
 			return "", errors.New(pcv3BridgeInputUnavailable)
 		}
 	}
-	if detected == pcv3.RouteNormalPCV {
+	if detected == pcv3operation.RouteNormalPCV {
 		return "normal", nil
 	}
 	return "legacy", nil
@@ -590,128 +628,12 @@ type DecryptRequestJSON struct {
 	Deniability  bool     `json:"deniability"`
 }
 
-// StartEncrypt starts an encryption operation in the background.
-// The operationID should be obtained by calling StartOperation() first.
-// Returns an error message (empty string on success).
-// Errors during execution are also reported through the progress system (GetProgress).
-// requestJSON is a JSON string containing all encryption parameters.
-// password carries the plaintext password as raw bytes (kept out of the JSON so
-// it never becomes an un-zeroable JVM String); it is zeroed before this returns.
-func StartEncrypt(requestJSON string, password []byte) string {
-	defer crypto.SecureZero(password)
-
-	var req EncryptRequestJSON
-	if err := json.Unmarshal([]byte(requestJSON), &req); err != nil {
-		return fmt.Sprintf("failed to parse request JSON: %v", err)
-	}
-
-	// Verify the operation exists (should have been created by StartOperation)
-	globalProgressMap.mu.RLock()
-	_, exists := globalProgressMap.ops[req.OperationID]
-	globalProgressMap.mu.RUnlock()
-
-	if !exists {
-		return fmt.Sprintf("operation %s not found - call StartOperation() first", req.OperationID)
-	}
-
-	// Validate inputs
-	if req.InputFile == "" && len(req.InputFiles) == 0 {
-		return failOperation(req.OperationID, errors.New("input file is required"))
-	}
-	if req.OutputFile == "" {
-		return failOperation(req.OperationID, errors.New("output file is required"))
-	}
-	if len(req.Keyfiles) > 0 {
-		return failOperation(req.OperationID, perrors.NewKeyfileWritesDisabledError())
-	}
-	if req.Deniability && len(password) == 0 {
-		return failOperation(req.OperationID, perrors.NewDeniabilityPasswordRequiredError())
-	}
-	if len(password) == 0 {
-		return failOperation(req.OperationID, perrors.NewEncryptionPasswordRequiredError())
-	}
-
-	// Own a goroutine-private []byte copy of the password BEFORE launching the
-	// worker. The worker runs async and the outer `defer crypto.SecureZero(password)`
-	// above fires on this function's return — the goroutine must NOT read `password`
-	// itself or it races that zeroing. pwCopy is captured by the goroutine and zeroed
-	// when the worker returns. No intermediate immutable string is created.
-	pwCopy := append([]byte(nil), password...)
-
-	// Capture only the operation ID for the delayed cleanup so the
-	// credential-bearing worker goroutine below can drop pwCopy/req the instant it
-	// returns, instead of holding them alive across the 60s poll window.
-	opID := req.OperationID
-
-	// Start the operation in a goroutine
-	go func() {
-		defer crypto.SecureZero(pwCopy)
-
-		defer func() {
-			// Delay cleanup to allow UI to poll for final status (60s handles the
-			// app being backgrounded). Run it in its OWN goroutine capturing only
-			// opID, so this worker goroutine returns immediately after
-			// completeOperation, releasing pwCopy/req/encryptReq before the sleep.
-			go func() {
-				time.Sleep(60 * time.Second)
-				cleanupOperation(opID)
-			}()
-		}()
-
-		// Recover from panics to prevent silent failures
-		defer func() {
-			if r := recover(); r != nil {
-				completeOperation(req.OperationID, fmt.Errorf("panic: %v", r))
-			}
-		}()
-
-		// Initialize Reed-Solomon codecs (always needed for header encoding, even if payload RS is disabled)
-		rsCodecs, err := encoding.NewRSCodecs()
-		if err != nil {
-			completeOperation(req.OperationID, fmt.Errorf("failed to initialize Reed-Solomon: %w", err))
-			return
-		}
-
-		// Create progress reporter
-		reporter := &androidProgressReporter{opID: req.OperationID}
-
-		// Build encrypt request
-		encryptReq := &volume.EncryptRequest{
-			InputFile:      req.InputFile,
-			InputFiles:     req.InputFiles,
-			OnlyFolders:    req.OnlyFolders,
-			OnlyFiles:      req.OnlyFiles,
-			OutputFile:     req.OutputFile,
-			Password:       pwCopy,
-			Keyfiles:       req.Keyfiles,
-			KeyfileOrdered: req.KeyfileOrdered,
-			Comments:       req.Comments,
-			Paranoid:       req.Paranoid,
-			ReedSolomon:    req.ReedSolomon,
-			Deniability:    req.Deniability,
-			Compress:       req.Compress,
-			Reporter:       reporter,
-			RSCodecs:       rsCodecs,
-		}
-
-		// Get cancellation context
-		opCtx, exists := getContext(req.OperationID)
-		if !exists {
-			completeOperation(req.OperationID, fmt.Errorf("operation context %s not found", req.OperationID))
-			return
-		}
-
-		// Perform encryption
-		err = runEncrypt(opCtx, encryptReq)
-		if err != nil {
-			completeOperation(req.OperationID, err)
-			return
-		}
-
-		completeOperation(req.OperationID, nil)
-	}()
-
-	return "" // Success - operation started
+// StartEncrypt preserves the old gomobile ABI but no longer creates volumes.
+// Native callers must use StartPCV3 for typed results and retained output custody.
+// Credentials are cleared even when an older caller invokes this retired entry.
+func StartEncrypt(_ string, password []byte) string {
+	defer secret.SecureZero(password)
+	return pcv3operation.CodeUnsupported.String()
 }
 
 // StartDecrypt starts a decryption operation in the background.
@@ -722,7 +644,7 @@ func StartEncrypt(requestJSON string, password []byte) string {
 // password carries the plaintext password as raw bytes (kept out of the JSON so
 // it never becomes an un-zeroable JVM String); it is zeroed before this returns.
 func StartDecrypt(requestJSON string, password []byte) string {
-	defer crypto.SecureZero(password)
+	defer secret.SecureZero(password)
 
 	var req DecryptRequestJSON
 	if err := json.Unmarshal([]byte(requestJSON), &req); err != nil {
@@ -757,7 +679,7 @@ func StartDecrypt(requestJSON string, password []byte) string {
 	}
 
 	// Own a goroutine-private []byte copy of the password BEFORE launching the
-	// worker. The worker runs async and the outer `defer crypto.SecureZero(password)`
+	// worker. The worker runs async and the outer `defer secret.SecureZero(password)`
 	// above fires on this function's return — the goroutine must NOT read `password`
 	// itself or it races that zeroing. pwCopy is captured by the goroutine and zeroed
 	// when the worker returns. No intermediate immutable string is created.
@@ -770,7 +692,7 @@ func StartDecrypt(requestJSON string, password []byte) string {
 
 	// Start the operation in a goroutine
 	go func() {
-		defer crypto.SecureZero(pwCopy)
+		defer secret.SecureZero(pwCopy)
 
 		defer func() {
 			// Delay cleanup to allow UI to poll for final status (60s handles the

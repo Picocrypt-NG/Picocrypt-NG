@@ -1,10 +1,8 @@
 package mobile
 
 import (
-	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
-	"Picocrypt-NG/internal/pcv3resource"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -60,7 +58,7 @@ func (result *PCV3StartResult) Operation() *PCV3Operation {
 type PCV3Operation struct {
 	id              string
 	generation      uint64
-	resourceSession *pcv3resource.AndroidResourceSession
+	resourceSession *pcv3operation.AndroidResourceSession
 }
 
 func (operation *PCV3Operation) ID() string {
@@ -134,15 +132,16 @@ func (operation *PCV3Operation) ArtifactInspection() *PCV3ArtifactInspection {
 // admission result and cannot be reconstructed from an operation ID.
 type PCV3ResourceChallenge struct {
 	operation *PCV3Operation
-	challenge *pcv3resource.AndroidResourceChallenge
+	challenge *pcv3operation.AndroidResourceChallenge
 }
 
 // ResourceChallenge returns the current challenge only through its matching
-// live operation object. A non-waiting KDF returns nil.
+// live operation object, including a claimed archive preparation. A non-waiting
+// resource decision returns nil.
 func (operation *PCV3Operation) ResourceChallenge() *PCV3ResourceChallenge {
 	globalProgressMap.mu.RLock()
 	state, ok := livePCV3StateLocked(operation)
-	live := ok && !state.terminal && !state.cancelRequested
+	live := ok && (!state.terminal || state.archiveInFlight) && !state.cancelRequested
 	globalProgressMap.mu.RUnlock()
 	if !live || operation.resourceSession == nil {
 		return nil
@@ -170,7 +169,7 @@ func (challenge *PCV3ResourceChallenge) Submit(
 	}
 	globalProgressMap.mu.RLock()
 	state, ok := livePCV3StateLocked(challenge.operation)
-	live := ok && !state.terminal && !state.cancelRequested
+	live := ok && (!state.terminal || state.archiveInFlight) && !state.cancelRequested
 	globalProgressMap.mu.RUnlock()
 	if !live {
 		return false
@@ -579,14 +578,32 @@ func (action *nativePCV3ArchiveAction) Close() pcv3operation.Presentation {
 }
 
 type pcv3ArchiveState struct {
-	mu        sync.Mutex
-	operation *PCV3Operation
-	action    pcv3ArchiveAction
-	live      bool
+	preparationCancelled bool
+	preparationCancel    context.CancelFunc
+	mu                   sync.Mutex
+	operation            *PCV3Operation
+	action               pcv3ArchiveAction
+	live                 bool
 }
 
 // PCV3Archive is a one-shot Go-owned archive follow-up capability.
 type PCV3Archive struct{ state *pcv3ArchiveState }
+
+// CancelPreparation interrupts a follow-up's BeginSAF even after the parent
+// operation becomes terminal. Cancellation before Begin is remembered.
+func (archive *PCV3Archive) CancelPreparation() {
+	if archive == nil || archive.state == nil {
+		return
+	}
+	state := archive.state
+	state.mu.Lock()
+	state.preparationCancelled = true
+	cancel := state.preparationCancel
+	state.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
 
 func (archive *PCV3Archive) Close() *PCV3Snapshot {
 	state, action := archive.consume()
@@ -642,6 +659,7 @@ type pcv3OutputAction interface {
 }
 
 type nativePCV3OutputAction struct {
+	result   *pcv3operation.Result
 	followUp *pcv3operation.OutputFollowUp
 }
 
@@ -788,6 +806,14 @@ func (output *PCV3Output) SaveFD(destinationFD int64) (result *PCV3OutputResult)
 	}()
 
 	actionResult := savePCV3OutputAction(action, destination)
+	// Only the shared result can authorize retaining the exact capability.
+	// Failed plaintext transfers have already consumed theirs.
+	if native, ok := action.(*nativePCV3OutputAction); ok && native.result != nil && native.result.OutputFollowUp() != nil {
+		state.mu.Lock()
+		state.action = action
+		state.live = true
+		state.mu.Unlock()
+	}
 	return &PCV3OutputResult{code: actionResult.code, cleanupIncomplete: actionResult.cleanupIncomplete}
 }
 
@@ -906,9 +932,9 @@ func startPCV3Operation() *PCV3Operation {
 	for {
 		id := newOperationID()
 		generation := pcv3Generation.Add(1)
-		resourceSession := pcv3resource.NewAndroidResourceSession()
+		resourceSession := pcv3operation.NewAndroidResourceSession()
 		baseContext, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: stored in registry and released by PCV3Operation.Cancel/cleanup
-		ctx := pcv3resource.WithAndroidResourceSession(baseContext, resourceSession)
+		ctx := pcv3operation.WithAndroidResourceSession(baseContext, resourceSession)
 		globalProgressMap.mu.Lock()
 		if !operationIDAvailableLocked(id) {
 			globalProgressMap.mu.Unlock()
@@ -1020,7 +1046,7 @@ func completePCV3Result(operation *PCV3Operation, result *pcv3operation.Result) 
 			archive = &nativePCV3ArchiveAction{followUp: followUp}
 		}
 		if followUp := result.OutputFollowUp(); followUp != nil {
-			output = &nativePCV3OutputAction{followUp: followUp}
+			output = &nativePCV3OutputAction{followUp: followUp, result: result}
 		}
 		inspection = newPCV3ArtifactInspection(result.ArtifactInspection())
 	}
@@ -1057,8 +1083,12 @@ func completePCV3Result(operation *PCV3Operation, result *pcv3operation.Result) 
 	)
 }
 
-func completePCV3Panic(operation *PCV3Operation) {
-	completePCV3PresentationForOperation(operation, fallbackPCV3Presentation(pcv3operation.DiagnosticCallbackPanic))
+func completePCV3Panic(operation *PCV3Operation, cleanupIncomplete bool) {
+	var warnings []pcv3operation.Warning
+	if cleanupIncomplete {
+		warnings = []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete}
+	}
+	completePCV3PresentationForOperation(operation, fallbackPCV3Presentation(pcv3operation.DiagnosticCallbackPanic, warnings...))
 }
 
 func completePCV3PresentationForOperation(
@@ -1175,7 +1205,7 @@ func completePCV3PresentationWithOutputAndInspectionComment(
 		return
 	}
 	completion := presentation.CompletionClass()
-	if completion != pcv3operation.CompletionClean && completion != pcv3operation.CompletionWarning {
+	if completion != pcv3operation.CompletionClean && completion != pcv3operation.CompletionWarning && completion != pcv3operation.CompletionDurabilityUncertain {
 		result := discardPCV3OutputAction(action)
 		completePCV3PresentationForOperationWithComment(
 			operation,
@@ -1300,15 +1330,19 @@ func settlePCV3Output(output *pcv3OutputState) {
 	defer globalProgressMap.mu.Unlock()
 	if state, ok := livePCV3StateLocked(output.operation); ok && state.output == nil && state.outputInFlight {
 		state.outputInFlight = false
+		if output.isLive() {
+			state.output = output
+		}
 	}
 }
 
-func fallbackPCV3Presentation(diagnostic pcv3operation.Diagnostic) pcv3operation.Presentation {
+func fallbackPCV3Presentation(diagnostic pcv3operation.Diagnostic, warnings ...pcv3operation.Warning) pcv3operation.Presentation {
 	presentation, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
-		Outcome:    pcv3.OutcomeOperationFailed,
-		Stage:      pcv3.StageCredentialPolicy,
-		Code:       pcv3.CodeOperationFailed,
+		Outcome:    pcv3operation.OutcomeOperationFailed,
+		Stage:      pcv3operation.StageCredentialPolicy,
+		Code:       pcv3operation.CodeOperationFailed,
 		Diagnostic: diagnostic,
+		Warnings:   warnings,
 	})
 	if err != nil {
 		return pcv3operation.Presentation{}
@@ -1338,9 +1372,9 @@ func closePCV3ArchiveAction(action pcv3ArchiveAction) (presentation pcv3operatio
 
 func archiveCleanupIncompletePCV3Presentation() pcv3operation.Presentation {
 	presentation, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
-		Outcome:    pcv3.OutcomeOperationFailed,
-		Stage:      pcv3.StageOutputPublication,
-		Code:       pcv3.CodeOperationFailed,
+		Outcome:    pcv3operation.OutcomeOperationFailed,
+		Stage:      pcv3operation.StageOutputPublication,
+		Code:       pcv3operation.CodeOperationFailed,
 		Warnings:   []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete},
 		Diagnostic: pcv3operation.DiagnosticCoreFailure,
 	})
@@ -1359,9 +1393,9 @@ func archiveFailurePCV3Presentation(closed pcv3operation.Presentation) pcv3opera
 		}
 	}
 	presentation, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
-		Outcome:    pcv3.OutcomeOperationFailed,
-		Stage:      pcv3.StageOutputPublication,
-		Code:       pcv3.CodeOperationFailed,
+		Outcome:    pcv3operation.OutcomeOperationFailed,
+		Stage:      pcv3operation.StageOutputPublication,
+		Code:       pcv3operation.CodeOperationFailed,
 		Warnings:   warnings,
 		Diagnostic: pcv3operation.DiagnosticCoreFailure,
 	})
@@ -1380,9 +1414,9 @@ func outputFailurePCV3Presentation(
 		warnings = append(warnings, pcv3operation.WarningCleanupIncomplete)
 	}
 	presentation, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
-		Outcome:    pcv3.OutcomeOperationFailed,
-		Stage:      pcv3.StageOutputPublication,
-		Code:       pcv3.CodeOperationFailed,
+		Outcome:    pcv3operation.OutcomeOperationFailed,
+		Stage:      pcv3operation.StageOutputPublication,
+		Code:       pcv3operation.CodeOperationFailed,
 		Warnings:   warnings,
 		Diagnostic: diagnostic,
 	})
@@ -1550,15 +1584,15 @@ func RestorePCV3Receipt(input string) *PCV3RestoredReceipt {
 		warnings[index] = pcv3operation.Warning(warning)
 	}
 	presentation, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
-		Outcome:               pcv3.Outcome(wire.Outcome),
-		Stage:                 pcv3.Stage(wire.Stage),
-		Code:                  pcv3.Code(wire.Code),
-		ForceProvenance:       pcv3.ForceProvenance(wire.ForceProvenance),
-		D1BootstrapProvenance: pcv3.D1BootstrapProvenance(wire.D1BootstrapProvenance),
-		DetailStage:           pcv3.Stage(wire.DetailStage),
+		Outcome:               pcv3operation.Outcome(wire.Outcome),
+		Stage:                 pcv3operation.Stage(wire.Stage),
+		Code:                  pcv3operation.Code(wire.Code),
+		ForceProvenance:       pcv3operation.ForceProvenance(wire.ForceProvenance),
+		D1BootstrapProvenance: pcv3operation.D1BootstrapProvenance(wire.D1BootstrapProvenance),
+		DetailStage:           pcv3operation.Stage(wire.DetailStage),
 		PublicationAttempted:  wire.PublicationAttempted,
 		PublicationState:      pcv3publication.State(wire.PublicationState),
-		PublicationStage:      pcv3.Stage(wire.PublicationStage),
+		PublicationStage:      pcv3operation.Stage(wire.PublicationStage),
 		PublicationCode:       pcv3publication.Code(wire.PublicationCode),
 		Args:                  wire.Args,
 		Warnings:              warnings,

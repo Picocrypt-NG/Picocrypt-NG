@@ -10,6 +10,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -174,6 +177,7 @@ internal class Pcv3Lifecycle(
         val handle: Pcv3ArchiveCapability,
         val custodian: Pcv3ReceiptCustodyCapability,
         val cancellation: Pcv3SafCancellation,
+        val resourceObservationReader: Pcv3ResourceObservationReader?,
     ) {
         val settled = CompletableDeferred<Unit>()
         private val lock = Any()
@@ -188,6 +192,17 @@ internal class Pcv3Lifecycle(
         }
 
         fun requestCancellation(): Pcv3ArchiveSessionCapability? {
+            val claimed = synchronized(lock) {
+                cancelRequested = true
+                claimCancellationLocked()
+            }
+            try {
+                handle.cancelPreparation()
+            } catch (_: Exception) {
+                // The session, if already handed off, still has cancellation custody.
+            } catch (_: LinkageError) {
+                // An incompatible bridge never grants provider effects below.
+            }
             try {
                 cancellation.cancel()
             } catch (_: Exception) {
@@ -195,10 +210,7 @@ internal class Pcv3Lifecycle(
             } catch (_: LinkageError) {
                 // Native cancellation below remains authoritative.
             }
-            return synchronized(lock) {
-                cancelRequested = true
-                claimCancellationLocked()
-            }
+            return claimed
         }
 
         fun cancellationRequested(): Boolean = synchronized(lock) { cancelRequested }
@@ -558,14 +570,47 @@ internal class Pcv3Lifecycle(
             terminal.receiptCustodian
         }
         if (custody == null) {
-            return mutex.withLock {
+            val restored = mutex.withLock {
                 val terminal = exactDismissTerminalLocked(expectedOperationId, expectedGeneration)
-                    ?: return@withLock false
+                    ?: return false
                 if (terminal.receiptPersisted && !receiptPersistence.clear(terminal.receiptFile)) {
-                    return@withLock false
+                    return false
                 }
-                clearPcv3PresentationLocked()
-                true
+                val presentation = _presentation.value as? Pcv3Presentation.Restored
+                if (presentation == null) {
+                    clearPcv3PresentationLocked()
+                    return true
+                }
+                // Cleanup may fail or be cancelled after receipt clearing. Keep this
+                // exact UI ticket retryable without clearing any later receipt.
+                state = terminal.copy(receiptPersisted = false, dismissInFlight = true)
+                presentation
+            }
+            val cleaned = try {
+                StartupCleanup.completeRestoredDismissal(restored)
+            } catch (error: CancellationException) {
+                withContext(NonCancellable) { finishFailedPcv3Dismiss(null, expectedGeneration) }
+                throw error
+            } catch (_: Exception) {
+                false
+            } catch (_: LinkageError) {
+                false
+            }
+            return withContext(NonCancellable) {
+                mutex.withLock {
+                    val terminal = state as? State.Final ?: return@withLock false
+                    if (terminal.generation != expectedGeneration || !terminal.dismissInFlight ||
+                        _presentation.value !== restored
+                    ) {
+                        return@withLock false
+                    }
+                    if (!cleaned) {
+                        state = terminal.copy(dismissInFlight = false)
+                        return@withLock false
+                    }
+                    clearPcv3PresentationLocked()
+                    true
+                }
             }
         }
 
@@ -621,7 +666,7 @@ internal class Pcv3Lifecycle(
     }
 
     private suspend fun finishFailedPcv3Dismiss(
-        custody: Pcv3ReceiptCustodyCapability,
+        custody: Pcv3ReceiptCustodyCapability?,
         expectedGeneration: Long,
     ) = mutex.withLock {
         val terminal = state as? State.Final ?: return@withLock
@@ -719,7 +764,10 @@ internal class Pcv3Lifecycle(
             }
             val ticket = ActionTicket(++nextActionToken, current.generation, current.operation)
             val custodian = receiptCustodyFactory.create(current.receiptFile, ReceiptCustody.None)
-            val claimed = SafArchiveAction(ticket, handle, custodian, cancellation)
+            val claimed = SafArchiveAction(
+                ticket, handle, custodian, cancellation,
+                current.resourceObservationReader?.takeIf { current.resourcePumpEnabled },
+            )
             val pending = current.copy(
                 archiveHandle = null,
                 archiveSafAction = claimed,
@@ -757,6 +805,32 @@ internal class Pcv3Lifecycle(
         return finalized
     }
 
+    /** The claimed follow-up owns its pump because normal refresh excludes actionToken. */
+    private suspend fun beginSafWithResourcePump(action: SafArchiveAction): Pcv3ArchiveBeginData {
+        val reader = action.resourceObservationReader ?: return action.handle.beginSaf()
+        val pump = CoroutineScope(currentCoroutineContext()).launch(Dispatchers.IO) {
+            try {
+                while (isActive && !action.cancellationRequested()) {
+                    val challenge = action.ticket.operation.resourceChallenge()
+                    if (challenge != null) {
+                        val observation = reader.read() ?: return@launch
+                        if (!challenge.submit(observation)) return@launch
+                    }
+                    delay(25)
+                }
+            } catch (_: Exception) {
+                // The Go-owned challenge expires or cancels; never fabricate facts.
+            } catch (_: LinkageError) {
+                // An incompatible observation boundary cannot grant admission.
+            }
+        }
+        return try {
+            action.handle.beginSaf()
+        } finally {
+            withContext(NonCancellable) { pump.cancelAndJoin() }
+        }
+    }
+
     private suspend fun performSafArchiveAction(
         action: SafArchiveAction,
         root: Uri,
@@ -783,7 +857,7 @@ internal class Pcv3Lifecycle(
 
             try {
                 callerContext.ensureActive()
-                val begin = action.handle.beginSaf()
+                val begin = beginSafWithResourcePump(action)
                 session = begin.session
                 session?.let { action.bindSession(it)?.let(::cancelSafSession) }
                 callerContext.ensureActive()
@@ -804,7 +878,11 @@ internal class Pcv3Lifecycle(
                             if (action.cancellationRequested()) {
                                 failureCode = "PCV3_OPERATION_CANCELLED"
                             }
-                            val manifest = if (failureCode == null) capturePcv3SafManifest(activeSession) else null
+                            val manifest = if (failureCode == null) capturePcv3SafManifest(
+                                activeSession,
+                                isCancelled = action::cancellationRequested,
+                                onResourceLimit = { failureCode = "PCV3_RESOURCE_LIMIT" },
+                            ) else null
                             if (failureCode == null && manifest == null) {
                                 failureCode = "PCV3_ARCHIVE_UNAVAILABLE"
                             }
@@ -841,6 +919,8 @@ internal class Pcv3Lifecycle(
                                 ) {
                                     failureCode = if (action.cancellationRequested()) {
                                         "PCV3_OPERATION_CANCELLED"
+                                    } else if (manifest.memory.resourceLimited) {
+                                        "PCV3_RESOURCE_LIMIT"
                                     } else {
                                         "PCV3_ARCHIVE_UNAVAILABLE"
                                     }
@@ -1027,6 +1107,7 @@ internal class Pcv3Lifecycle(
     private fun Pcv3SnapshotData.isClosedSafTerminal(): Boolean {
         if (archivePending || !hasExactSafBaseAxes()) return false
         return isExactSafNoOutputWithoutAttempt() || isExactSafNotPublished() ||
+            isExactSafResourceRefusal() || isExactSafPreparationCancelled() ||
             isExactSafDurabilityUncertain() || isExactSafPublicationIndeterminate()
     }
 
@@ -1049,6 +1130,20 @@ internal class Pcv3Lifecycle(
             publicationState == "not-published" && publicationStage == "output-publication" &&
             publicationCode == "PCV3_PUBLICATION_NOT_PUBLISHED" && completionClass == "no-output" &&
             diagnostic == "none" && warnings.isEmpty() && restoredReceipt.isEmpty()
+
+    private fun Pcv3SnapshotData.isExactSafResourceRefusal(): Boolean =
+        outcome == "operation-failed" && stage == "resource-budget" &&
+            code == "PCV3_OPERATION_FAILED" && !publicationAttempted &&
+            publicationState == "none" && publicationStage == "none" &&
+            publicationCode == "none" && completionClass == "no-output" &&
+            diagnostic == "resource-limit" && warnings.isEmpty() && restoredReceipt.isEmpty()
+
+    private fun Pcv3SnapshotData.isExactSafPreparationCancelled(): Boolean =
+        outcome == "operation-failed" && stage == "cancellation" &&
+            code == "PCV3_OPERATION_FAILED" && publicationAttempted &&
+            publicationState == "not-published" && publicationStage == "cancellation" &&
+            publicationCode == "PCV3_PUBLICATION_CANCELLED" && completionClass == "refused" &&
+            diagnostic == "cancellation" && warnings.isEmpty() && restoredReceipt.isEmpty()
 
     private fun Pcv3SnapshotData.isExactSafDurabilityUncertain(): Boolean =
         hasExactSafSuccessSemantic() && publicationAttempted &&
@@ -1413,7 +1508,9 @@ internal class Pcv3Lifecycle(
                 actionToken = null,
                 outputActionInFlight = false,
                 outputActionResult = mergeOutputActionResult(
-                    current.outputActionResult,
+                    current.outputActionResult.takeUnless {
+                        current.creation && it?.code == "save-failed" && !it.cleanupIncomplete
+                    },
                     actionResult.toView(),
                 ),
             )
@@ -1439,6 +1536,17 @@ internal class Pcv3Lifecycle(
                 )
             }
             if (remainingOutput != null) {
+                // Ciphertext remains a reusable result after a confirmed failed save.
+                // Plaintext and uncertain bridge outcomes retain the cleanup path.
+                if (active.creation && actionResult.code == "save-failed" &&
+                    !actionResult.cleanupIncomplete && actionFailure == null && cancellation == null
+                ) {
+                    active = active.copy(outputHandle = remainingOutput)
+                    state = active
+                    val reconciled = reconcileActiveLocked(active)
+                    return@withLock if (reconciled.isFailure) reconciled else
+                        Result.failure(Pcv3BridgeFailure("PCV3_OUTPUT_SAVE_FAILED"))
+                }
                 active = active.withOutputCleanupUncertain().copy(outputHandle = remainingOutput)
                 return@withLock beginDrainLocked(active, failureCode = "PCV3_OPERATION_FAILURE")
             }
@@ -1624,13 +1732,31 @@ internal class Pcv3Lifecycle(
                 actionToken = null,
             )
 
-            when (val artifact = captureArtifactInspection(
+            val artifact = captureArtifactInspection(
                 operation = active.operation,
                 snapshot = snapshot,
                 existingInspection = active.artifactInspection,
                 existingMetadata = active.artifactMetadata,
                 rejected = active.artifactInspectionRejected,
-            )) {
+            )
+            if (snapshot.completionClass == "unknown" &&
+                (artifact !is ArtifactCapture.Rejected || artifact.cancellation == null)
+            ) {
+                // JNI accessors are separate observations: the worker may attach a
+                // terminal result between them. Terminal (including archive-pending)
+                // state stays stable until a Kotlin-owned action. Recollect once from
+                // that settled snapshot before judging a mixed observation invalid.
+                val settled = try {
+                    active.operation.snapshot()
+                } catch (error: Exception) {
+                    return beginDrainLocked(active, snapshot, "PCV3_OPERATION_FAILURE", error as? CancellationException)
+                }
+                if (settled.completionClass != "unknown") {
+                    suppliedSnapshot = settled
+                    continue
+                }
+            }
+            when (artifact) {
                 is ArtifactCapture.Accepted -> active = active.copy(
                     artifactInspection = artifact.inspection,
                     artifactMetadata = artifact.metadata,
@@ -1651,6 +1777,7 @@ internal class Pcv3Lifecycle(
                     consentHandle = consentHandle,
                     archiveHandle = archiveHandle,
                     priorAction = active.outputActionResult,
+                    creation = active.creation,
                 )
             ) {
                 return beginDrainLocked(active, snapshot, "PCV3_OPERATION_FAILURE")
@@ -2050,12 +2177,18 @@ internal class Pcv3Lifecycle(
         consentHandle: Pcv3ConsentCapability?,
         archiveHandle: Pcv3ArchiveCapability?,
         priorAction: Pcv3OutputResultView?,
+        creation: Boolean,
     ): Boolean =
-        consentHandle == null && archiveHandle == null && priorAction == null &&
-            !archivePending && restoredReceipt.isEmpty() && !requiresReceipt() &&
-            (completionClass == "clean" || completionClass == "warning") &&
-            publicationAttempted && publicationState == "published-durable" &&
-            publicationStage == "none" && publicationCode == "PCV3_PUBLICATION_PUBLISHED_DURABLE"
+        consentHandle == null && archiveHandle == null &&
+            (priorAction == null || creation && priorAction.code == "save-failed" && !priorAction.cleanupIncomplete) &&
+            !archivePending && (
+                restoredReceipt.isEmpty() && !requiresReceipt() &&
+                    (completionClass == "clean" || completionClass == "warning") &&
+                    publicationAttempted && publicationState == "published-durable" &&
+                    publicationStage == "none" && publicationCode == "PCV3_PUBLICATION_PUBLISHED_DURABLE" ||
+                    creation && pcv3OutputActionTarget(projectPcv3Snapshot(this), null, isCreation = true) ==
+                        Pcv3OutputActionTarget.CREATED_VOLUME
+                )
 
     private fun Pcv3SnapshotData.requiresReceipt(): Boolean =
         completionClass == "durability-uncertain" || completionClass == "publication-indeterminate"
@@ -2099,10 +2232,18 @@ internal class Pcv3Lifecycle(
 
 }
 
+/** Exact host authority over one transferred request's input paths. */
+internal class Pcv3InputCustody internal constructor(internal val request: Pcv3StartRequest)
+
 /**
  * Manages encryption/decryption operations and their progress.
  */
 object OperationManager {
+    private val legacyOperationMutex = Mutex()
+    private val pcv3InputCustodyLock = Any()
+    private var pcv3InputCustody: Pcv3InputCustody? = null
+    private val _pcv3InputCleanupPending = MutableStateFlow(false)
+    internal val currentPcv3InputCleanupPending: StateFlow<Boolean> = _pcv3InputCleanupPending.asStateFlow()
     private val _currentOperation = MutableStateFlow<OperationState?>(null)
     val currentOperation: StateFlow<OperationState?> = _currentOperation.asStateFlow()
     private val pcv3Lifecycle = Pcv3Lifecycle(GoBridge.pcv3Bridge)
@@ -2110,6 +2251,27 @@ object OperationManager {
     val currentPcv3ArtifactDetails: StateFlow<Pcv3ArtifactDetailsUiState> = pcv3Lifecycle.artifactDetails
     /** Authority-free lifecycle occupancy; true while native ownership may still be live. */
     val currentPcv3Busy: StateFlow<Boolean> = pcv3Lifecycle.busy
+
+    /** Host-owned input paths stay occupied across native Final and ViewModel destruction. */
+    internal fun claimPcv3InputCustody(request: Pcv3StartRequest): Pcv3InputCustody? = synchronized(pcv3InputCustodyLock) {
+        if (pcv3InputCustody != null || currentPcv3Busy.value || _currentOperation.value != null) return@synchronized null
+        Pcv3InputCustody(request).also {
+            pcv3InputCustody = it
+            _pcv3InputCleanupPending.value = true
+        }
+    }
+
+    internal fun releasePcv3InputCustody(owner: Pcv3InputCustody) = synchronized(pcv3InputCustodyLock) {
+        if (pcv3InputCustody === owner) {
+            pcv3InputCustody = null
+            _pcv3InputCleanupPending.value = false
+        }
+    }
+
+    private fun ownsPcv3Inputs(owner: Pcv3InputCustody?, request: Pcv3StartRequest): Boolean =
+        synchronized(pcv3InputCustodyLock) {
+            owner != null && pcv3InputCustody === owner && owner.request === request
+        }
 
     private fun FormData.passwordBytesForGo(): ByteArray =
         if (hasPassword) passwordInput.toUtf8BytesSecure() else ByteArray(0)
@@ -2131,12 +2293,13 @@ object OperationManager {
      * Read and creation envelopes share this exact lifecycle; the request subtype
      * decides which strict JSON shape crosses the bridge.
      */
-    suspend fun startPcv3(
+    internal suspend fun startPcv3(
         request: Pcv3StartRequest,
         password: CharArray,
         receiptFile: File,
+        inputCustody: Pcv3InputCustody? = null,
     ): Result<Pcv3Presentation> = try {
-        if (!StartupCleanup.allowsPcv3Dispatch()) {
+        if (!ownsPcv3Inputs(inputCustody, request) || !StartupCleanup.allowsPcv3Dispatch()) {
             Result.failure(Pcv3BridgeFailure("PCV3_OPERATION_UNAVAILABLE"))
         } else {
             withContext(Dispatchers.IO) { pcv3Lifecycle.start(request, password, receiptFile) }
@@ -2232,100 +2395,18 @@ object OperationManager {
     }
     
     /**
-     * Starts an encryption operation.
-     */
-    suspend fun startEncrypt(
-        context: Context,
-        formData: FormData
-    ): Result<String> = withContext(Dispatchers.IO) {
-        // A folder/multi-file selection encrypts the staged tree (inputFiles), not a
-        // single copiedFilePath. Validate the right source per selection kind.
-        val isMulti = formData.selectionKind != SelectionKind.SINGLE_FILE
-        if (!isMulti && formData.copiedFilePath.isEmpty()) {
-            return@withContext Result.failure(AppError.ValidationError.NoFileSelected)
-        }
-        if (isMulti && formData.inputFiles.isEmpty()) {
-            return@withContext Result.failure(AppError.ValidationError.NoFileSelected)
-        }
-
-        // A numbered split-volume chunk (secret.pcv.0) does not end in .pcv, so it lands
-        // on the encrypt path and would be DOUBLE-ENCRYPTED. Android cannot recombine
-        // (single-file picker), so reject it loudly before any work. Only meaningful for
-        // a single-file selection (isSplitVolumeChunk is already SINGLE_FILE-gated).
-        if (!isMulti && formData.isSplitVolumeChunk) {
-            return@withContext Result.failure(AppError.ValidationError.SplitVolumeNotSupported)
-        }
-
-        if (!formData.isPasswordValid) {
-            val error = when {
-                formData.isKeyfileEncryptionUnsupported ->
-                    AppError.ValidationError.KeyfileWritesDisabled
-                formData.isEncrypt && !formData.isPasswordsMatch ->
-                    AppError.ValidationError.PasswordsMismatch
-                else -> AppError.ValidationError.InvalidPassword
-            }
-            return@withContext Result.failure(error)
-        }
-
-        // Clean up old files before starting new operation to prevent contamination
-        if (!FileCopyService.cleanupOperationFilesBeforeStart(context)) {
-            return@withContext Result.failure(AppError.FileError.DeleteFailed())
-        }
-
-        // Generate output file path using FileCopyService. For encrypt this is a fixed
-        // output_file.pcv regardless of the input path, so an empty copiedFilePath (multi
-        // selection) is fine.
-        val outputFilePath = FileCopyService.getOutputFilePath(context, formData.copiedFilePath, isEncrypt = true)
-
-        // Start operation
-        val operationID = GoBridge.startOperation().getOrElse { return@withContext Result.failure(it) }
-
-        val options = EncryptOptions(
-            comments = formData.comments,
-            paranoid = formData.paranoid,
-            reedSolomon = formData.reedSolomon,
-            deniability = formData.deniability,
-            compress = formData.compress,
-            keyfiles = formData.keyfileFilenames.map { it.internalPath },
-            keyfileOrdered = formData.keyfileOrdered
-        )
-
-        // Encode the password to UTF-8 bytes without a String; GoBridge zeroes them.
-        // For a multi selection the single inputFile is empty and the staged arrays carry
-        // the inputs; for a single file the arrays are empty (the degenerate case).
-        val result = GoBridge.startEncrypt(
-            operationID,
-            if (isMulti) "" else formData.copiedFilePath,
-            outputFilePath,
-            formData.passwordBytesForGo(),
-            options,
-            inputFiles = formData.inputFiles,
-            onlyFolders = formData.onlyFolders,
-            onlyFiles = formData.onlyFiles
-        )
-        
-        result.onSuccess {
-            _currentOperation.value = OperationState(
-                id = operationID,
-                type = OperationType.ENCRYPT,
-                inputFile = formData.copiedFilePath,
-                outputFile = outputFilePath,
-                status = OperationStatusData(OperationStatus.STARTING),
-                detail = OperationProgressDetail(OperationProgress.NONE),
-                progress = 0f,
-                formData = formData
-            )
-        }
-        
-        result.map { operationID }
-    }
-    
-    /**
      * Starts a decryption operation.
      */
     suspend fun startDecrypt(
         context: Context,
         formData: FormData
+    ): Result<String> = legacyOperationMutex.withLock {
+        startDecryptLocked(context, formData)
+    }
+
+    private suspend fun startDecryptLocked(
+        context: Context,
+        formData: FormData,
     ): Result<String> = withContext(Dispatchers.IO) {
         if (formData.copiedFilePath.isEmpty()) {
             return@withContext Result.failure(AppError.ValidationError.NoFileSelected)
@@ -2501,8 +2582,19 @@ object OperationManager {
     suspend fun clearOperation(
         context: Context? = null,
         shouldCleanupFiles: Boolean = true,
+        expectedOperation: OperationState? = _currentOperation.value,
+    ): Result<Unit> = legacyOperationMutex.withLock {
+        clearOperationLocked(context, shouldCleanupFiles, expectedOperation)
+    }
+
+    private suspend fun clearOperationLocked(
+        context: Context?,
+        shouldCleanupFiles: Boolean,
+        expectedOperation: OperationState?,
     ): Result<Unit> {
-        val operation = _currentOperation.value
+        // A delayed or duplicate clear owns only the operation captured by its caller.
+        // Keep replacement starts and other dismissals out until all deletion ends.
+        val operation = _currentOperation.value?.takeIf { it.hasSameOwnerAs(expectedOperation) }
             ?: return Result.success(Unit)
         
         // Clear passwords from form data before clearing operation
@@ -2576,13 +2668,24 @@ object OperationManager {
      * Retries decryption with force decrypt enabled.
      * This should only be called when a decryption operation has failed due to data corruption.
      */
-    suspend fun retryDecryptWithForce(context: Context): Result<String> = withContext(Dispatchers.IO) {
-        val operation = _currentOperation.value ?: return@withContext Result.failure(
-            AppError.OperationError.GenericOperation(
-                userMessage = "",
-                messageResId = R.string.error_no_active_operation,
+    suspend fun retryDecryptWithForce(
+        context: Context,
+        expectedOperation: OperationState? = _currentOperation.value,
+    ): Result<String> = legacyOperationMutex.withLock {
+        retryDecryptWithForceLocked(context, expectedOperation)
+    }
+
+    private suspend fun retryDecryptWithForceLocked(
+        context: Context,
+        expectedOperation: OperationState?,
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val operation = _currentOperation.value?.takeIf { it.hasSameOwnerAs(expectedOperation) }
+            ?: return@withContext Result.failure(
+                AppError.OperationError.GenericOperation(
+                    userMessage = "",
+                    messageResId = R.string.error_no_active_operation,
+                )
             )
-        )
         
         if (operation.type != OperationType.DECRYPT) {
             return@withContext Result.failure(
@@ -2668,6 +2771,10 @@ data class OperationState(
     val error: AppError? = null,
     val formData: FormData? = null
 )
+
+/** Native IDs survive progress snapshots; failed starts without an ID own only their exact state. */
+internal fun OperationState.hasSameOwnerAs(expected: OperationState?): Boolean =
+    this === expected || (id.isNotBlank() && id == expected?.id)
 
 enum class OperationType {
     ENCRYPT,

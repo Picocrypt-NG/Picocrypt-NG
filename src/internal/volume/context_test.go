@@ -49,6 +49,40 @@ func TestOperationContextCloseZerosAllSecrets(t *testing.T) {
 	}
 }
 
+// This constructed internal state protects setter/registry cleanup, not a claim
+// that user input reaches an empty-to-nonempty transition in a volume operation.
+func TestOperationContextEmptySecretReplacementStaysOwnedUntilClose(t *testing.T) {
+	for _, field := range []string{"key", "keyfile key", "password"} {
+		t.Run(field, func(t *testing.T) {
+			ctx := &OperationContext{}
+			set := ctx.setKey
+			switch field {
+			case "keyfile key":
+				set = ctx.setKeyfileKey
+			case "password":
+				set = ctx.setPasswordBytes
+			}
+			t.Cleanup(func() {
+				if err := ctx.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			set(make([]byte, 0))
+			next := []byte{8, 9, 10}
+			set(next)
+			if !bytes.Equal(next, []byte{8, 9, 10}) {
+				t.Fatal("replacement wiped the newly adopted live secret")
+			}
+			if err := ctx.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(next, []byte{0, 0, 0}) {
+				t.Fatal("context cleanup lost custody of the replacement")
+			}
+		})
+	}
+}
+
 func TestOperationContextClosesPinnedDecryptInput(t *testing.T) {
 	input := filepath.Join(t.TempDir(), "legacy.pcv")
 	if err := os.WriteFile(input, []byte("legacy-eligible input"), 0o600); err != nil {

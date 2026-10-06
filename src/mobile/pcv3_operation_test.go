@@ -2,8 +2,6 @@ package mobile
 
 import (
 	"Picocrypt-NG/internal/fileops"
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"context"
@@ -166,9 +164,9 @@ func testPCV3MobilePreservesFactorIntent(t *testing.T) {
 			t.Errorf("mode = %v", request.Mode)
 		}
 		if request.Factors == nil ||
-			request.Factors.Mode != pcv3credential.CredentialModePasswordAndKeyfiles ||
-			request.Factors.KeyfileMode != pcv3credential.KeyfileModeUnordered ||
-			request.Factors.ExpectedPolicy != pcv3credential.FactorPolicyPasswordAndKeyfiles ||
+			request.Factors.Mode != pcv3operation.CredentialModePasswordAndKeyfiles ||
+			request.Factors.KeyfileMode != pcv3operation.KeyfileModeUnordered ||
+			request.Factors.ExpectedPolicy != pcv3operation.FactorPolicyPasswordAndKeyfiles ||
 			len(request.Factors.Keyfiles) != 3 {
 			t.Errorf("factor intent was changed: %#v", request.Factors)
 		}
@@ -438,12 +436,12 @@ func TestPCV3MobileRequiresExplicitModeAndLiveConsent(t *testing.T) {
 
 func TestPCV3MobileRestoredReceiptIsDenyOnly(t *testing.T) {
 	uncertain := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-		Outcome:              pcv3.OutcomeSuccess,
-		Stage:                pcv3.StageNone,
-		Code:                 pcv3.CodeSuccess,
+		Outcome:              pcv3operation.OutcomeSuccess,
+		Stage:                pcv3operation.StageNone,
+		Code:                 pcv3operation.CodeSuccess,
 		PublicationAttempted: true,
 		PublicationState:     pcv3publication.StatePublishedDurabilityUncertain,
-		PublicationStage:     pcv3.StageDirectorySync,
+		PublicationStage:     pcv3operation.StageDirectorySync,
 		PublicationCode:      pcv3publication.CodeDurabilityUncertain,
 	})
 	operation := startPCV3Operation()
@@ -493,7 +491,7 @@ func TestPCV3MobileRestoredReceiptIsDenyOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	wire["publicationState"] = float64(pcv3publication.StatePublishedDurable)
-	wire["publicationStage"] = float64(pcv3.StageNone)
+	wire["publicationStage"] = float64(pcv3operation.StageNone)
 	wire["publicationCode"] = float64(pcv3publication.CodePublishedDurable)
 	wire["warnings"] = []any{}
 	tampered, _ = json.Marshal(wire)
@@ -541,9 +539,9 @@ func TestPCV3MobileBoundsAndRedactsStatus(t *testing.T) {
 			{pcv3operation.DiagnosticResourceUnknown, "resource-unknown"},
 		} {
 			presentation := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-				Outcome:    pcv3.OutcomeOperationFailed,
-				Stage:      pcv3.StageCredentialPolicy,
-				Code:       pcv3.CodeOperationFailed,
+				Outcome:    pcv3operation.OutcomeOperationFailed,
+				Stage:      pcv3operation.StageCredentialPolicy,
+				Code:       pcv3operation.CodeOperationFailed,
 				Diagnostic: diagnostic.value,
 			})
 			op := startPCV3Operation()
@@ -588,10 +586,10 @@ func TestPCV3OperationABI(t *testing.T) {
 			"StatusArgCount", "StatusCode", "WarningAt", "WarningCount",
 		},
 		reflect.TypeOf((*PCV3Consent)(nil)):         {"Choose", "Mode", "Refuse", "RoleAt", "RoleCount"},
-		reflect.TypeOf((*PCV3Archive)(nil)):         {"BeginSAF", "Close"},
+		reflect.TypeOf((*PCV3Archive)(nil)):         {"BeginSAF", "CancelPreparation", "Close"},
 		reflect.TypeOf((*PCV3ArchiveBegin)(nil)):    {"Code", "Kind", "Session", "Snapshot"},
 		reflect.TypeOf((*PCV3ArchiveEntry)(nil)):    {"IsDirectory", "Name", "ParentIndex", "Size"},
-		reflect.TypeOf((*PCV3ArchiveSession)(nil)):  {"Abort", "AckDirectory", "Attempt", "Cancel", "ConfirmCrashReceiptPersisted", "Entry", "EntryCount", "Finish", "WriteFD"},
+		reflect.TypeOf((*PCV3ArchiveSession)(nil)):  {"Abort", "AckDirectory", "Attempt", "Cancel", "ConfirmCrashReceiptPersisted", "Entry", "EntryCount", "Finish", "HostMemoryBudgetBytes", "WriteFD"},
 		reflect.TypeOf((*PCV3ArchiveStep)(nil)):     {"Kind", "NextIndex"},
 		reflect.TypeOf((*PCV3RestoredReceipt)(nil)): {"Code", "OperationID", "ReceiptID", "Snapshot"},
 	}
@@ -622,9 +620,9 @@ func closedPCV3MobileArchivePresentation(t *testing.T, cleanupIncomplete bool) p
 		warnings = []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete}
 	}
 	return mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-		Outcome:    pcv3.OutcomeOperationFailed,
-		Stage:      pcv3.StageOutputPublication,
-		Code:       pcv3.CodeOperationFailed,
+		Outcome:    pcv3operation.OutcomeOperationFailed,
+		Stage:      pcv3operation.StageOutputPublication,
+		Code:       pcv3operation.CodeOperationFailed,
 		Warnings:   warnings,
 		Diagnostic: pcv3operation.DiagnosticNone,
 	})

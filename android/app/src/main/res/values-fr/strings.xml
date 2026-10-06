@@ -277,7 +277,7 @@
     <string name="pcv3_publication_indeterminate_title">État de la sortie inconnu</string>
     <string name="pcv3_publication_indeterminate_body">L’application ne peut pas déterminer si la publication a été validée. Conservez toutes les sources et la destination exactement en l’état. Ne réessayez pas et ne nettoyez pas cette opération.</string>
     <string name="pcv3_warning_cleanup_title">Impossible de confirmer le nettoyage</string>
-    <string name="pcv3_warning_cleanup_body">L’application n’a pas pu prouver la suppression de toutes les données temporaires en clair appartenant à l’opération. Conservez la source chiffrée et ne supprimez aucun fichier sur la base de ce résultat.</string>
+    <string name="pcv3_warning_cleanup_body">L’application n’a pas pu confirmer la suppression de toutes les fichiers temporaires créés par cette opération. Conservez les fichiers sources et ne supprimez aucun fichier sur la base de ce résultat.</string>
     <string name="pcv3_warning_callback_title">Échec de la confirmation de récupération</string>
     <string name="pcv3_warning_callback_body">La confirmation active de récupération n’a pas pu être effectuée. Aucune autorité de sortie non vérifiée n’a été accordée.</string>
     <string name="pcv3_warning_unknown_title">Avertissement supplémentaire sur l’opération</string>
@@ -291,11 +291,11 @@
     <string name="pcv3_output_saved_title">Sortie enregistrée</string>
     <string name="pcv3_output_saved_body">La sortie sélectionnée a été enregistrée. Les avis d’authentification et de récupération ci-dessous restent applicables.</string>
     <string name="pcv3_output_saved_cleanup_title">Sortie enregistrée ; nettoyage incomplet</string>
-    <string name="pcv3_output_saved_cleanup_body">La sortie sélectionnée a été enregistrée, mais le nettoyage du texte en clair appartenant à l’application n’a pas pu être confirmé.</string>
+    <string name="pcv3_output_saved_cleanup_body">La sortie sélectionnée a été enregistrée, mais le nettoyage des fichiers temporaires de l’application n’a pas pu être confirmé.</string>
     <string name="pcv3_output_save_failed_title">La sortie n’a pas pu être enregistrée</string>
-    <string name="pcv3_output_save_failed_body">Il n’a pas été confirmé que la destination sélectionnée contient la sortie. Conservez la source chiffrée.</string>
+    <string name="pcv3_output_save_failed_body">Il n’a pas été confirmé que la destination sélectionnée contient la sortie. Conservez les fichiers sources.</string>
     <string name="pcv3_output_save_failed_cleanup_title">Échec de l’enregistrement ; nettoyage incomplet</string>
-    <string name="pcv3_output_save_failed_cleanup_body">Il n’a été confirmé ni que la destination contient la sortie, ni que le texte en clair appartenant à l’application a été nettoyé.</string>
+    <string name="pcv3_output_save_failed_cleanup_body">Il n’a été confirmé ni que la destination contient la sortie, ni que les fichiers temporaires de l’application ont été supprimés.</string>
     <string name="pcv3_output_discarded_title">Artefact de récupération supprimé</string>
     <string name="pcv3_output_discarded_body">L’artefact de récupération appartenant à l’application a été supprimé. La source chiffrée a été conservée.</string>
     <string name="pcv3_output_discard_cleanup_title">Nettoyage de l’artefact de récupération incomplet</string>
@@ -303,7 +303,7 @@
     <string name="pcv3_output_expired_title">Action sur la sortie expirée</string>
     <string name="pcv3_output_expired_body">L’action d’enregistrement ou de suppression n’était plus valide. Aucune nouvelle destination ni suppression n’a été confirmée.</string>
     <string name="pcv3_output_unknown_title">Résultat de l’action sur la sortie inconnu</string>
-    <string name="pcv3_output_unknown_body">L’application n’a pas pu vérifier le résultat de l’enregistrement ou de la suppression. Conservez la source chiffrée et ne supposez pas que la sortie a été enregistrée ou supprimée.</string>
+    <string name="pcv3_output_unknown_body">L’application n’a pas pu vérifier le résultat de l’enregistrement ou de la suppression. Conservez les fichiers sources et ne supposez pas que la sortie a été enregistrée ou supprimée.</string>
     <string name="pcv3_output_saved_close">Fermer le résultat de la sortie enregistrée</string>
     <string name="pcv3_output_save_failed_close">Fermer l’échec de l’enregistrement</string>
     <string name="pcv3_output_discarded_close">Fermer le résultat de la suppression</string>
@@ -338,4 +338,16 @@
     <string name="pcv3_artifact_row">Enregistrement %1$s, octets %2$s à %3$s, %4$s</string>
     <string name="pcv3_artifact_previous_page">Plages précédentes</string>
     <string name="pcv3_artifact_next_page">Plages suivantes</string>
+    <string name="pcv3_output_provider_unsupported">Ce fournisseur ne prend pas en charge l’enregistrement de ce résultat. Choisissez une autre destination. Le résultat reste disponible dans l’application.</string>
+
+    <!-- Retained output and bounded creation request feedback. -->
+    <string name="pcv3_request_too_large">La sélection ou le commentaire dépasse les limites autorisées. Sélectionnez moins de fichiers ou raccourcissez le commentaire.</string>
+    <string name="pcv3_discard_retained_title">Supprimer le résultat ?</string>
+    <string name="pcv3_discard_retained_body">Le résultat conservé par l’application sera supprimé définitivement. Vos fichiers originaux seront conservés.</string>
+    <string name="pcv3_retained_discarded_title">Résultat supprimé</string>
+    <string name="pcv3_retained_discarded_body">Le résultat conservé par l’application a été supprimé. Vos fichiers originaux ont été conservés.</string>
+    <string name="pcv3_retained_discard_cleanup_title">Nettoyage du résultat incomplet</string>
+    <string name="pcv3_retained_discard_cleanup_body">L’application ne peut pas confirmer la suppression du résultat. Conservez vos fichiers originaux.</string>
+    <string name="pcv3_resource_limit_title">Limite de ressources atteinte</string>
+    <string name="pcv3_resource_limit_body">L’opération a été arrêtée, car une limite de ressources de traitement a été atteinte.</string>
 </resources>

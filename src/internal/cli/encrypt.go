@@ -1,16 +1,14 @@
 package cli
 
 import (
-	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/encoding"
-	perrors "Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/fileops"
+	"Picocrypt-NG/internal/pcv3operation"
+	"Picocrypt-NG/internal/secret"
 	"Picocrypt-NG/internal/volume"
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -30,8 +28,8 @@ var encryptCmd = &cobra.Command{
 
 If no password is provided, you will be prompted to enter one interactively
 (with confirmation). The password is hidden while typing.
-Legacy deniability requires a non-empty password. PCV3 D1 accepts its explicit
-password/keyfile credential policy.
+New volumes use PCV3. Deniability uses PCV3 D1 and requires --paranoid.
+Legacy v1/v2 volumes remain readable.
 
 Examples:
   # Encrypt interactively (prompts for password)
@@ -108,13 +106,13 @@ func init() {
 	encryptCmd.Flags().IntVar(&encPasswordFD, "password-fd", -1, "Read password from inherited Unix file descriptor (3 or higher)")
 	encryptCmd.Flags().StringArrayVarP(&encKeyfiles, "keyfile", "k", nil, "PCV3 keyfile path (can be specified multiple times)")
 	encryptCmd.Flags().BoolVar(&encKeyfileOrder, "keyfile-ordered", false, "Use the selected keyfile order for PCV3")
-	encryptCmd.Flags().BoolVar(&encPCV3, "pcv3", false, "Create a Normal PCV3 volume")
+	encryptCmd.Flags().BoolVar(&encPCV3, "pcv3", true, "Create a PCV3 volume (default; disabling is unsupported)")
 
 	// Security options
 	encryptCmd.Flags().StringVarP(&encComments, "comments", "c", "", "Comments to store in header (NOT encrypted)")
-	encryptCmd.Flags().BoolVar(&encParanoid, "paranoid", false, "Enable paranoid mode (Serpent + XChaCha20, HMAC-SHA3)")
-	encryptCmd.Flags().BoolVar(&encReedSolomon, "reed-solomon", false, "Enable Reed-Solomon error correction (6% overhead)")
-	encryptCmd.Flags().BoolVar(&encDeniability, "deniability", false, "Create a legacy deniability wrapper or PCV3 D1 (legacy requires a non-empty password)")
+	encryptCmd.Flags().BoolVar(&encParanoid, "paranoid", false, "Enable paranoid mode (Serpent + XChaCha20)")
+	encryptCmd.Flags().BoolVar(&encReedSolomon, "reed-solomon", false, "Enable Reed-Solomon error correction")
+	encryptCmd.Flags().BoolVar(&encDeniability, "deniability", false, "Create PCV3 D1 (requires --paranoid)")
 	encryptCmd.Flags().BoolVar(&encCompress, "compress", false, "Compress files before encryption")
 
 	// Split options
@@ -151,6 +149,12 @@ func defaultEncryptOutput(rawInput string, allFiles []string, onlyFolders []stri
 }
 
 func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
+	if !encPCV3 {
+		return errors.New("new encryption requires PCV3; --pcv3=false is unsupported")
+	}
+	if encDeniability && !encParanoid {
+		return errors.New("PCV3 D1 requires --paranoid")
+	}
 	if cmd.Flags().Changed("input") || len(encLegacyInputs) > 0 {
 		return errors.New("--input/-i was removed; pass literal paths as arguments or use --glob for patterns")
 	}
@@ -189,12 +193,6 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 	}
 	if (useStdin || useStdout) && encSplit {
 		return errors.New("stdin/stdout not compatible with --split")
-	}
-	if (useStdin || useStdout) && encDeniability && !encPCV3 {
-		return errors.New("stdin/stdout not compatible with --deniability")
-	}
-	if len(encKeyfiles) > 0 && !encPCV3 {
-		return perrors.NewKeyfileWritesDisabledError()
 	}
 	// Validate split options before any input buffering, temp creation,
 	// overwrite confirmation, or credential prompting.
@@ -286,7 +284,7 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 		inputs.inputFiles = []string{stdinTempFile}
 		inputs.onlyFiles = []string{stdinTempFile}
 	} else {
-		inputs, err = resolveEncryptInputs(args, encGlob, encFollowSymlinks)
+		inputs, err = resolveEncryptInputsWithBudget(cmd.Context(), args, encGlob, encFollowSymlinks, fileops.NewZIPResourceBudget())
 		if err != nil {
 			return err
 		}
@@ -330,51 +328,27 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 
-	// Check if output exists (skip for stdout)
 	if !useStdout {
-		if encPCV3 {
-			if err := requireVacantPCV3Output(outputFile); err != nil {
-				return err
-			}
-		} else {
-			if info, err := os.Stat(outputFile); err == nil {
-				if info.IsDir() {
-					return fmt.Errorf("output path is a directory: %s", outputFile)
-				}
-				if !encYes {
-					fmt.Fprintf(os.Stderr, "Output file %s already exists. Overwrite? [y/N]: ", outputFile)
-					reader := bufio.NewReader(os.Stdin)
-					response, err := reader.ReadString('\n')
-					if err != nil && err != io.EOF {
-						return fmt.Errorf("reading confirmation: %w", err)
-					}
-					response = strings.TrimSpace(strings.ToLower(response))
-					if response != "y" && response != "yes" {
-						return errors.New("operation cancelled")
-					}
-				}
-			}
+		if err := requireVacantPCV3Output(outputFile); err != nil {
+			return err
 		}
 	}
 
 	// Get password. Owned []byte from boundary to KDF; zeroed when this returns.
-	// A closure (not `defer crypto.SecureZero(password)`) so the FINAL value is
+	// A closure (not `defer secret.SecureZero(password)`) so the FINAL value is
 	// zeroed — password is reassigned below by the stdin/interactive readers, and
 	// a plain defer would bind the initial []byte(encPassword) at defer time.
 	password := []byte(encPassword)
-	defer func() { crypto.SecureZero(password) }()
+	defer func() { secret.SecureZero(password) }()
 	passwordExplicit := cmd.Flags().Changed("password") || passwordFDSet
 	if passwordFDSet {
 		var err error
-		crypto.SecureZero(password)
+		secret.SecureZero(password)
 		password, err = ReadPasswordFromFD(encPasswordFD)
 		if err != nil {
 			return err
 		}
-		if encDeniability && !encPCV3 && len(password) == 0 {
-			return perrors.NewDeniabilityPasswordRequiredError()
-		}
-		if len(password) == 0 && (!encPCV3 || len(encKeyfiles) == 0) {
+		if len(password) == 0 && len(encKeyfiles) == 0 {
 			return fmt.Errorf("password input: %w", ErrPasswordEmpty)
 		}
 	} else if encPasswordStdin {
@@ -383,22 +357,16 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 		if err != nil {
 			return err
 		}
-		if encDeniability && !encPCV3 && len(password) == 0 {
-			return perrors.NewDeniabilityPasswordRequiredError()
-		}
-		if len(password) == 0 && (!encPCV3 || len(encKeyfiles) == 0) {
+		if len(password) == 0 && len(encKeyfiles) == 0 {
 			return fmt.Errorf("password input: %w", ErrPasswordEmpty)
 		}
-	} else if len(password) == 0 && (!encPCV3 || len(encKeyfiles) == 0 || !passwordExplicit) {
+	} else if len(password) == 0 && (len(encKeyfiles) == 0 || !passwordExplicit) {
 		// Prompt for password interactively
 		var err error
 		password, err = ReadPasswordInteractive(true, encDeniability || (encPCV3 && len(encKeyfiles) > 0))
 		if err != nil {
 			return fmt.Errorf("password input: %w", err)
 		}
-	}
-	if encDeniability && !encPCV3 && len(password) == 0 {
-		return perrors.NewDeniabilityPasswordRequiredError()
 	}
 
 	// Initialize RS codecs
@@ -446,10 +414,10 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 		}
 		fmt.Fprintf(os.Stderr, "Encrypting %s to %s\n", srcName, destName)
 		if encParanoid {
-			fmt.Fprintln(os.Stderr, "Mode: Paranoid (Serpent-CTR + XChaCha20, HMAC-SHA3)")
+			fmt.Fprintln(os.Stderr, "Mode: Paranoid (Serpent-CTR + XChaCha20)")
 		}
 		if encReedSolomon {
-			fmt.Fprintln(os.Stderr, "Reed-Solomon: Enabled (6% size overhead)")
+			fmt.Fprintln(os.Stderr, "Reed-Solomon: Enabled")
 		}
 		if encDeniability {
 			fmt.Fprintln(os.Stderr, "Deniability: Enabled")
@@ -479,32 +447,51 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 		// Never delete a later pathname replacement from the CLI defer.
 		stdoutTempFile = ""
 	}
-	err = volume.Encrypt(operationCtx, req)
+	result, operationErr := volume.EncryptWithResult(operationCtx, req, pcv3operation.ExecutionOptions{RetainDurableOutput: useStdout})
 	reporter.Finish()
-
-	if err != nil {
-		reporter.PrintError("%v", err)
-		// Core owns and removes every unpublished stage. If a later deniability
-		// or split step fails after publication, retain the complete encrypted
-		// volume instead of unlinking a pathname the CLI no longer owns.
-		return err
-	}
 	if stdinTempFile != "" {
-		if err := cleanupTempFiles(stdinTempFile); err != nil {
-			return err
-		}
+		cleanupErr := cleanupTempFiles(stdinTempFile)
 		stdinTempFile = ""
-	}
-
-	// Stream to stdout if requested
-	if useStdout {
-		stdoutTempFile = ""
-		if err := StreamFileToStdout(operationCtx, outputFile); err != nil {
-			return fmt.Errorf("streaming to stdout: %w", err)
+		if cleanupErr != nil {
+			if result != nil {
+				result.WithCleanupWarning()
+			}
+			operationErr = errors.Join(operationErr, cleanupErr)
 		}
-		return nil
 	}
+	return finishPCV3Encryption(operationCtx, result, operationErr, useStdout)
+}
 
-	reporter.PrintSuccess("Encryption completed successfully: %s", outputFile)
-	return nil
+// finishPCV3Encryption consumes the runner-owned output capability. It never
+// reopens a published pathname, which may already name an unrelated file.
+func finishPCV3Encryption(operationCtx context.Context, result *pcv3operation.Result, operationErr error, useStdout bool) error {
+	if result == nil {
+		if operationErr != nil {
+			return operationErr
+		}
+		return errors.New("PCV3 encryption result is unavailable")
+	}
+	var transportErr error
+	if useStdout {
+		followUp := result.OutputFollowUp()
+		if followUp != nil {
+			action := followUp.StreamTo(operationCtx, os.Stdout)
+			if action.CleanupIncomplete() {
+				result.WithCleanupWarning()
+			}
+			if action.Code() != pcv3operation.OutputActionSaved && action.Code() != pcv3operation.OutputActionSavedCleanupIncomplete {
+				transportErr = errors.New("PCV3 stdout transport failed; source files were preserved")
+			}
+		} else if result.CompletionClass() == pcv3operation.CompletionClean {
+			transportErr = errors.New("PCV3 stdout output capability is unavailable")
+		}
+	}
+	exitCode := renderPCV3CLIResult(os.Stderr, pcv3CLIResultAdapter{result: result})
+	if transportErr != nil {
+		return errors.Join(transportErr, operationErr)
+	}
+	if exitCode != 0 {
+		return errors.Join(newExitCodeError(exitCode, "PCV3 encryption did not complete cleanly"), operationErr)
+	}
+	return operationErr
 }

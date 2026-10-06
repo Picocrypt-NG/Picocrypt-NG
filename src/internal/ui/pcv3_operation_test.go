@@ -2,18 +2,13 @@ package ui
 
 import (
 	"Picocrypt-NG/internal/app"
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3artifact"
-	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
-	"Picocrypt-NG/internal/pcv3recovery"
 	"context"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -153,9 +148,9 @@ func TestPCV3FynePreservesFactorIntent(t *testing.T) {
 			if request.Mode != test.mode {
 				t.Fatalf("operation mode = %v; want %v", request.Mode, test.mode)
 			}
-			if request.Factors.Mode != pcv3credential.CredentialModePasswordAndKeyfiles ||
-				request.Factors.ExpectedPolicy != pcv3credential.FactorPolicyPasswordAndKeyfiles ||
-				request.Factors.KeyfileMode != pcv3credential.KeyfileModeOrdered ||
+			if request.Factors.Mode != pcv3operation.CredentialModePasswordAndKeyfiles ||
+				request.Factors.ExpectedPolicy != pcv3operation.FactorPolicyPasswordAndKeyfiles ||
+				request.Factors.KeyfileMode != pcv3operation.KeyfileModeOrdered ||
 				string(request.Factors.Password) != "owned password" ||
 				len(request.Factors.Keyfiles) != 2 ||
 				!reflect.DeepEqual(request.Protected, []string{keyfilePath, keyfilePath}) {
@@ -269,24 +264,24 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 		{
 			name: "clean durable",
 			spec: pcv3operation.PresentationSpec{
-				Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+				Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone, Code: pcv3operation.CodeSuccess,
 				PublicationAttempted: true,
 				PublicationState:     pcv3publication.StatePublishedDurable,
 				PublicationCode:      pcv3publication.CodePublishedDurable,
 			},
 			wantCompletion: pcv3operation.CompletionClean,
 			wantText: []string{
-				"Decryption complete", "The output is fully authenticated.",
-				"Output publication is durable.",
+				"Operation complete", "The output is fully authenticated.",
+				"File saved.",
 			},
 			forbidText: []string{"Cleanup could not be confirmed"},
-			wantAction: "Close publication result",
+			wantAction: "Close",
 		},
 		{
 			name: "authenticated degraded durable",
 			spec: pcv3operation.PresentationSpec{
-				Outcome: pcv3.OutcomeAuthenticatedDegraded, Stage: pcv3.StageMetadata,
-				Code:                 pcv3.CodeAuthenticatedDegraded,
+				Outcome: pcv3operation.OutcomeAuthenticatedDegraded, Stage: pcv3operation.StageMetadata,
+				Code:                 pcv3operation.CodeAuthenticatedDegraded,
 				PublicationAttempted: true,
 				PublicationState:     pcv3publication.StatePublishedDurable,
 				PublicationCode:      pcv3publication.CodePublishedDurable,
@@ -294,16 +289,16 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 			},
 			wantCompletion: pcv3operation.CompletionWarning,
 			wantText: []string{
-				"Authenticated output recovered with damage", "Output publication is durable.",
+				"Authenticated output recovered with damage", "File saved.",
 				"The output is authenticated, but recovery redundancy is damaged. Keep the original volume.",
 			},
-			forbidText: []string{"Decryption complete"},
-			wantAction: "Close publication result",
+			forbidText: []string{"Operation complete"},
+			wantAction: "Close",
 		},
 		{
 			name: "force partial durable",
 			spec: pcv3operation.PresentationSpec{
-				Outcome: pcv3.OutcomeForcePartial, Stage: pcv3.StageRecordAuth, Code: pcv3.CodeForcePartial,
+				Outcome: pcv3operation.OutcomeForcePartial, Stage: pcv3operation.StageRecordAuth, Code: pcv3operation.CodeForcePartial,
 				PublicationAttempted: true,
 				PublicationState:     pcv3publication.StatePublishedDurable,
 				PublicationCode:      pcv3publication.CodePublishedDurable,
@@ -313,15 +308,15 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 			wantText: []string{
 				"Partial recovery artifact created",
 				"Some ranges are verified and some are missing. This .pcv3-recovery file is not a complete plaintext file.",
-				"Output publication is durable.",
+				"File saved.",
 			},
-			forbidText: []string{"Decryption complete"},
-			wantAction: "Close publication result",
+			forbidText: []string{"Operation complete"},
+			wantAction: "Close",
 		},
 		{
 			name: "force unverified durable",
 			spec: pcv3operation.PresentationSpec{
-				Outcome: pcv3.OutcomeForceUnverified, Stage: pcv3.StageRecordAuth, Code: pcv3.CodeForceUnverified,
+				Outcome: pcv3operation.OutcomeForceUnverified, Stage: pcv3operation.StageRecordAuth, Code: pcv3operation.CodeForceUnverified,
 				PublicationAttempted: true,
 				PublicationState:     pcv3publication.StatePublishedDurable,
 				PublicationCode:      pcv3publication.CodePublishedDurable,
@@ -331,15 +326,15 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 			wantText: []string{
 				"Unverified recovery artifact created",
 				"Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content.",
-				"Output publication is durable.",
+				"File saved.",
 			},
-			forbidText: []string{"Decryption complete"},
-			wantAction: "Close publication result",
+			forbidText: []string{"Operation complete"},
+			wantAction: "Close",
 		},
 		{
 			name: "clean durable with cleanup warning",
 			spec: pcv3operation.PresentationSpec{
-				Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+				Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone, Code: pcv3operation.CodeSuccess,
 				PublicationAttempted: true,
 				PublicationState:     pcv3publication.StatePublishedDurable,
 				PublicationCode:      pcv3publication.CodePublishedDurable,
@@ -347,39 +342,39 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 			},
 			wantCompletion: pcv3operation.CompletionWarning,
 			wantText: []string{
-				"Decryption complete", "Output publication is durable.",
+				"Operation complete", "File saved.",
 				"Cleanup could not be confirmed",
-				"The application could not prove that all operation-owned temporary plaintext was removed. Keep the encrypted source and do not delete files based on this result.",
+				"The application could not confirm removal of all temporary files created by this operation. Keep the source files and do not delete files based on this result.",
 			},
 			wantAction:    "Close cleanup warning",
-			forbidActions: []string{"Close publication result"},
+			forbidActions: []string{"Close"},
 		},
 		{
 			name: "durability uncertain overrides clean",
 			spec: pcv3operation.PresentationSpec{
-				Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+				Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone, Code: pcv3operation.CodeSuccess,
 				PublicationAttempted: true,
 				PublicationState:     pcv3publication.StatePublishedDurabilityUncertain,
-				PublicationStage:     pcv3.StageDirectorySync,
+				PublicationStage:     pcv3operation.StageDirectorySync,
 				PublicationCode:      pcv3publication.CodeDurabilityUncertain,
 				Warnings:             []pcv3operation.Warning{pcv3operation.WarningDurabilityUncertain},
 			},
 			wantCompletion: pcv3operation.CompletionDurabilityUncertain,
 			wantText: []string{
-				"Decryption complete", "Output durability not confirmed",
+				"Operation complete", "Output durability not confirmed",
 				"The destination may contain the output, but filesystem durability could not be confirmed. Keep every source and the destination. Do not retry, replace, delete, or clean up this operation.",
 				"Output durability was not confirmed. Keep every source and the destination.",
 			},
 			wantAction:    "Close durability warning",
-			forbidActions: []string{"Close publication result"},
+			forbidActions: []string{"Close"},
 		},
 		{
 			name: "publication indeterminate overrides force",
 			spec: pcv3operation.PresentationSpec{
-				Outcome: pcv3.OutcomeForcePartial, Stage: pcv3.StageRecordAuth, Code: pcv3.CodeForcePartial,
+				Outcome: pcv3operation.OutcomeForcePartial, Stage: pcv3operation.StageRecordAuth, Code: pcv3operation.CodeForcePartial,
 				PublicationAttempted: true,
 				PublicationState:     pcv3publication.StatePublicationIndeterminate,
-				PublicationStage:     pcv3.StageOutputPublication,
+				PublicationStage:     pcv3operation.StageOutputPublication,
 				PublicationCode:      pcv3publication.CodePublicationIndeterminate,
 				Warnings: []pcv3operation.Warning{
 					pcv3operation.WarningForcePartial,
@@ -392,31 +387,31 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 				"The application cannot determine whether publication committed. Keep every source and the destination exactly as they are. Do not retry or clean up this operation.",
 				"Output publication state is unknown. Keep every source and the destination exactly as they are.",
 			},
-			forbidText: []string{"Decryption complete"},
+			forbidText: []string{"Operation complete"},
 			wantAction: "Close publication warning",
 		},
 		{
 			name: "refused without publication",
 			spec: pcv3operation.PresentationSpec{
-				Outcome: pcv3.OutcomeUnsupportedRoutingPreKDF, Stage: pcv3.StageRouting,
-				Code: pcv3.CodeUnsupported,
+				Outcome: pcv3operation.OutcomeUnsupportedRoutingPreKDF, Stage: pcv3operation.StageRouting,
+				Code: pcv3operation.CodeUnsupported,
 			},
 			wantCompletion: pcv3operation.CompletionRefused,
 			wantText: []string{
 				"Unsupported PCV3 format",
 				"No output was created, and the file was not tried as a legacy volume.",
 			},
-			forbidText: []string{"Output publication is durable."},
+			forbidText: []string{"File saved."},
 			wantAction: "Close recovery result",
 		},
 		{
 			name: "not published",
 			spec: pcv3operation.PresentationSpec{
-				Outcome: pcv3.OutcomeOperationFailed, Stage: pcv3.StageOutputPublication,
-				Code:                 pcv3.CodeOperationFailed,
+				Outcome: pcv3operation.OutcomeOperationFailed, Stage: pcv3operation.StageOutputPublication,
+				Code:                 pcv3operation.CodeOperationFailed,
 				PublicationAttempted: true,
 				PublicationState:     pcv3publication.StateNotPublished,
-				PublicationStage:     pcv3.StageOutputPublication,
+				PublicationStage:     pcv3operation.StageOutputPublication,
 				PublicationCode:      pcv3publication.CodeAtomicFailed,
 			},
 			wantCompletion: pcv3operation.CompletionNoOutput,
@@ -425,12 +420,12 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 				"The operation failed safely. No output was published. Keep the source and review the reported state.",
 				"No output was published", "Source files were kept.",
 			},
-			wantAction: "Close publication result",
+			wantAction: "Close",
 		},
 		{
 			name: "archive pending remains visibly nonterminal",
 			spec: pcv3operation.PresentationSpec{
-				Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+				Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone, Code: pcv3operation.CodeSuccess,
 				ArchivePending: true,
 			},
 			wantCompletion: pcv3operation.CompletionArchivePending,
@@ -438,7 +433,7 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 				"Authenticated archive ready to extract",
 				"The archive payload is fully authenticated. Choose a new extraction folder. The encrypted source is kept.",
 			},
-			forbidText: []string{"Decryption complete"},
+			forbidText: []string{"Operation complete"},
 		},
 	}
 
@@ -483,7 +478,7 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 			if test.wantAction == "" {
 				for _, action := range []string{
 					"Extract archive", "Close without extracting", "Inspect recovery artifact",
-					"Close publication result", "Close durability warning", "Close publication warning",
+					"Close", "Close durability warning", "Close publication warning",
 					"Close cleanup warning", "Close recovery result",
 				} {
 					if findPCV3Button(view, action) != nil {
@@ -525,9 +520,9 @@ func TestPCV3FyneGenerationOwnsTerminalResult(t *testing.T) {
 	cancel()
 	firstResult := pcv3operation.Run(cancelledContext, &pcv3operation.Request{
 		Mode: pcv3operation.ModeReadD1, Source: resultSource,
-		Factors: &pcv3credential.FactorRequest{
-			Mode:           pcv3credential.CredentialModePasswordOnly,
-			ExpectedPolicy: pcv3credential.FactorPolicyPasswordOnly,
+		Factors: &pcv3operation.FactorRequest{
+			Mode:           pcv3operation.CredentialModePasswordOnly,
+			ExpectedPolicy: pcv3operation.FactorPolicyPasswordOnly,
 			Password:       []byte("cancelled result"),
 		},
 		Target: filepath.Join(dir, "cancelled.out"),
@@ -920,9 +915,9 @@ func preparePCV3ArchiveFollowUpState(
 	closePCV3Intent(&intent)
 
 	presentation := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-		Outcome:        pcv3.OutcomeSuccess,
-		Stage:          pcv3.StageNone,
-		Code:           pcv3.CodeSuccess,
+		Outcome:        pcv3operation.OutcomeSuccess,
+		Stage:          pcv3operation.StageNone,
+		Code:           pcv3operation.CodeSuccess,
 		ArchivePending: true,
 	})
 	result := pcv3operation.Run(context.Background(), &pcv3operation.Request{})
@@ -1046,7 +1041,7 @@ func TestPCV3StaleWorkerLatchesCleanupBeforeUIQueueing(t *testing.T) {
 	}
 	session := a.newOperationSession()
 	a.operationGeneration.Add(1)
-	a.finishPCV3Worker(session, result)
+	a.finishPCV3Worker(session, result, pcv3operation.DiagnosticCoreFailure)
 
 	if !a.State.UISnapshot().PCV3CleanupIncomplete {
 		t.Fatal("stale worker deferred cleanup latch to Fyne callback")
@@ -1060,7 +1055,7 @@ func TestPCV3StaleWorkerLatchesCleanupBeforeUIQueueing(t *testing.T) {
 func TestPCV3FyneContractAtCompactWidth(t *testing.T) {
 	resetLocalizationForTest(t)
 	required := []string{
-		"C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09", "C10",
+		"C01", "C02", "C03", "C05", "C06",
 		"C11", "C12", "C13", "C14", "C15", "C16", "C17", "B01", "UI-D01", "UI-D02",
 	}
 	executed := make([]string, 0, len(required))
@@ -1074,7 +1069,9 @@ func TestPCV3FyneContractAtCompactWidth(t *testing.T) {
 	run("C01", func(t *testing.T) {
 		fyneApp := newTestFyneApp(t)
 		a := createUIReadyDropTestApp(t, fyneApp)
-		requirePCV3Text(t, a.pcv3Container, "Choose a file", "Choose one file to decrypt")
+		if a.pcv3Container.Visible() || a.inputLabel.Text == "" {
+			t.Fatal("empty window must use the general file-selection instruction")
+		}
 		if !a.startButton.Disabled() {
 			t.Fatal("empty PCV3 surface enabled Start")
 		}
@@ -1100,127 +1097,20 @@ func TestPCV3FyneContractAtCompactWidth(t *testing.T) {
 			t.Fatalf("route failure copy = %q", text)
 		}
 	})
-	run("C04", func(t *testing.T) {
-		snap := app.UISnapshot{PCV3Route: app.PCV3RouteReady, PCV3Format: app.PCV3FormatNormal, OutputFile: "out"}
-		view := buildPCV3IntentSummary(snap)
-		requirePCV3Text(t, view, "Normal PCV3", "Not selected")
-		if snap.CanStart() {
-			t.Fatal("incomplete explicit operation intent became startable")
-		}
-	})
 	run("C05", func(t *testing.T) {
 		snap := app.UISnapshot{PCV3Route: app.PCV3RouteReady, PCV3Format: app.PCV3FormatNormal, PCV3Action: app.PCV3ActionDecrypt, OutputFile: "out"}
 		state := &App{State: mustNewState(t)}
-		if hint := state.startReadinessHint(snap); hint != "Choose the credential policy used for this operation." {
+		if hint := state.startReadinessHint(snap); hint != "Enter a password or add keyfiles." {
 			t.Fatalf("unset policy hint = %q", hint)
 		}
 	})
 	run("C06", func(t *testing.T) {
 		presentation := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-			Outcome: pcv3.OutcomeOperationFailed, Stage: pcv3.StageCredentialPolicy,
-			Code: pcv3.CodeOperationFailed, Diagnostic: pcv3operation.DiagnosticCredentialPolicy,
+			Outcome: pcv3operation.OutcomeOperationFailed, Stage: pcv3operation.StageCredentialPolicy,
+			Code: pcv3operation.CodeOperationFailed, Diagnostic: pcv3operation.DiagnosticCredentialPolicy,
 		})
 		view := (&App{}).buildPCV3ResultView(presentation, nil)
 		requirePCV3Text(t, view, "Credential policy does not match", "No key derivation or output started")
-	})
-	run("C07", func(t *testing.T) {
-		snap := app.UISnapshot{
-			PCV3Route: app.PCV3RouteReady, PCV3Format: app.PCV3FormatD1,
-			PCV3Action: app.PCV3ActionRecovery, PCV3Factor: app.PCV3FactorPolicyCombined,
-			PCV3Order: app.PCV3KeyfileOrderSelected, KeyfileCount: 2, OutputFile: "private/path",
-		}
-		view := buildPCV3IntentSummary(snap)
-		text := pcv3RenderedText(view)
-		for _, requiredText := range []string{"PCV3 D1", "Start recovery", "Password + keyfiles", "Use selected order", "2"} {
-			if !strings.Contains(text, requiredText) {
-				t.Fatalf("intent summary %q lacks %q", text, requiredText)
-			}
-		}
-		if strings.Contains(text, "private/path") || strings.Contains(strings.ToLower(text), "identity") {
-			t.Fatalf("intent summary leaked path or identity claim: %q", text)
-		}
-	})
-	run("C08", func(t *testing.T) {
-		snap := app.UISnapshot{
-			PCV3Route: app.PCV3RouteReady, PCV3Format: app.PCV3FormatNormal,
-			PCV3Action: app.PCV3ActionDecrypt, PCV3Factor: app.PCV3FactorPolicyCombined,
-			PCV3Order: app.PCV3KeyfileOrderSelected, KeyfileCount: 2, OutputFile: "out",
-		}
-		view := buildPCV3IntentSummary(snap)
-		requirePCV3Text(t, view, "Password + keyfiles", "2")
-		if snap.CanStart() {
-			t.Fatal("partial combined factors became startable")
-		}
-	})
-	run("C09", func(t *testing.T) {
-		_ = newTestFyneApp(t)
-		dir := t.TempDir()
-		sourcePath := filepath.Join(dir, "source.pcv")
-		if err := os.WriteFile(sourcePath, nil, 0o600); err != nil {
-			t.Fatalf("write source: %v", err)
-		}
-		source, err := os.Open(sourcePath)
-		if err != nil {
-			t.Fatalf("open source: %v", err)
-		}
-		state := mustNewState(t)
-		if !state.SetPCV3Ready(source, app.PCV3FormatNormal, sourcePath, filepath.Join(dir, "out"), 0) {
-			t.Fatal("set PCV3 selection")
-		}
-		t.Cleanup(state.Reset)
-		privateRoot := filepath.Join(dir, "private-staging-tree")
-		names := make([]string, 64)
-		state.Keyfiles = make([]string, len(names))
-		for index := range names {
-			names[index] = strings.Repeat("long-keyfile-name-", 6) + strconv.Itoa(index) + ".bin"
-			state.Keyfiles[index] = filepath.Join(privateRoot, names[index])
-		}
-		state.SetPCV3Intent(app.PCV3ActionDecrypt, app.PCV3FactorPolicyCombined, app.PCV3KeyfileOrderSelected)
-		view := buildPCV3IntentSummary(state.UISnapshot())
-		scroll := findPCV3Scroll(view)
-		if scroll == nil {
-			t.Fatal("many keyfiles did not render in a bounded scroll surface")
-		}
-		text := pcv3RenderedText(scroll)
-		rendered := pcv3RenderedText(view)
-		previous := -1
-		for _, name := range names {
-			position := strings.Index(text, name)
-			if position <= previous {
-				t.Fatalf("full keyfile display names lost selection order at %q", name)
-			}
-			previous = position
-		}
-		if strings.Contains(rendered, privateRoot) {
-			t.Fatalf("keyfile list leaked private staging path: %q", rendered)
-		}
-	})
-	run("C10", func(t *testing.T) {
-		translations := []struct {
-			language LanguageCode
-			want     [3]string
-		}{
-			{language: "en", want: [3]string{"None selected", "1 keyfile", "3 keyfiles"}},
-			{language: "ru", want: [3]string{"Не выбраны", "1 ключ-файл", "3 ключ-файла"}},
-		}
-		for _, translation := range translations {
-			if err := setActiveLanguage(translation.language); err != nil {
-				t.Fatalf("set language %s: %v", translation.language, err)
-			}
-			for index, count := range []int{0, 1, 3} {
-				snap := app.UISnapshot{
-					PCV3Route: app.PCV3RouteReady, PCV3Format: app.PCV3FormatNormal,
-					PCV3Action: app.PCV3ActionDecrypt, PCV3Factor: app.PCV3FactorPolicyKeyfiles,
-					PCV3Order: app.PCV3KeyfileOrderSelected, KeyfileCount: count, OutputFile: "out",
-				}
-				view := buildPCV3IntentSummary(snap)
-				requirePCV3Text(t, view, translation.want[index])
-				if count == 0 && snap.CanStart() {
-					t.Fatal("zero keyfiles started keyfile-only policy")
-				}
-			}
-		}
-		_ = setActiveLanguage("en")
 	})
 	run("C11", func(t *testing.T) {
 		view, ok := newPCV3ConsentView(
@@ -1325,8 +1215,8 @@ func TestPCV3FyneContractAtCompactWidth(t *testing.T) {
 			pcv3operation.DiagnosticResourceUnknown:      "Device resources could not be verified",
 		} {
 			presentation := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-				Outcome: pcv3.OutcomeOperationFailed, Stage: pcv3.StageCredentialPolicy,
-				Code: pcv3.CodeOperationFailed, Diagnostic: diagnostic,
+				Outcome: pcv3operation.OutcomeOperationFailed, Stage: pcv3operation.StageCredentialPolicy,
+				Code: pcv3operation.CodeOperationFailed, Diagnostic: diagnostic,
 			})
 			view := (&App{}).buildPCV3ResultView(presentation, nil)
 			requirePCV3Text(t, view, title)
@@ -1354,21 +1244,21 @@ func TestPCV3FyneContractAtCompactWidth(t *testing.T) {
 			{
 				name: "archive ready without detached authority",
 				spec: pcv3operation.PresentationSpec{
-					Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone,
-					Code: pcv3.CodeSuccess, ArchivePending: true,
+					Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone,
+					Code: pcv3operation.CodeSuccess, ArchivePending: true,
 				},
 			},
 			{
 				name: "closed without extraction",
 				spec: pcv3operation.PresentationSpec{
-					Outcome: pcv3.OutcomeOperationFailed, Stage: pcv3.StageOutputPublication,
-					Code: pcv3.CodeOperationFailed, Diagnostic: pcv3operation.DiagnosticNone,
+					Outcome: pcv3operation.OutcomeOperationFailed, Stage: pcv3operation.StageOutputPublication,
+					Code: pcv3operation.CodeOperationFailed, Diagnostic: pcv3operation.DiagnosticNone,
 				},
 			},
 			{
 				name: "extracted durable",
 				spec: pcv3operation.PresentationSpec{
-					Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+					Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone, Code: pcv3operation.CodeSuccess,
 					PublicationAttempted: true, PublicationState: pcv3publication.StatePublishedDurable,
 					PublicationCode: pcv3publication.CodePublishedDurable,
 				},
@@ -1376,37 +1266,37 @@ func TestPCV3FyneContractAtCompactWidth(t *testing.T) {
 			{
 				name: "extraction not published",
 				spec: pcv3operation.PresentationSpec{
-					Outcome: pcv3.OutcomeOperationFailed, Stage: pcv3.StageOutputPublication,
-					Code: pcv3.CodeOperationFailed, PublicationAttempted: true,
+					Outcome: pcv3operation.OutcomeOperationFailed, Stage: pcv3operation.StageOutputPublication,
+					Code: pcv3operation.CodeOperationFailed, PublicationAttempted: true,
 					PublicationState: pcv3publication.StateNotPublished,
-					PublicationStage: pcv3.StageOutputPublication,
+					PublicationStage: pcv3operation.StageOutputPublication,
 					PublicationCode:  pcv3publication.CodeAtomicFailed,
 				},
 			},
 			{
 				name: "extraction durability uncertain",
 				spec: pcv3operation.PresentationSpec{
-					Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+					Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone, Code: pcv3operation.CodeSuccess,
 					PublicationAttempted: true,
 					PublicationState:     pcv3publication.StatePublishedDurabilityUncertain,
-					PublicationStage:     pcv3.StageDirectorySync,
+					PublicationStage:     pcv3operation.StageDirectorySync,
 					PublicationCode:      pcv3publication.CodeDurabilityUncertain,
 				},
 			},
 			{
 				name: "extraction publication indeterminate",
 				spec: pcv3operation.PresentationSpec{
-					Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+					Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone, Code: pcv3operation.CodeSuccess,
 					PublicationAttempted: true,
 					PublicationState:     pcv3publication.StatePublicationIndeterminate,
-					PublicationStage:     pcv3.StageOutputPublication,
+					PublicationStage:     pcv3operation.StageOutputPublication,
 					PublicationCode:      pcv3publication.CodePublicationIndeterminate,
 				},
 			},
 			{
 				name: "durable extraction with cleanup warning",
 				spec: pcv3operation.PresentationSpec{
-					Outcome: pcv3.OutcomeSuccess, Stage: pcv3.StageNone, Code: pcv3.CodeSuccess,
+					Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone, Code: pcv3operation.CodeSuccess,
 					PublicationAttempted: true, PublicationState: pcv3publication.StatePublishedDurable,
 					PublicationCode: pcv3publication.CodePublishedDurable,
 					Warnings:        []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete},
@@ -1479,16 +1369,16 @@ func TestPCV3FyneContractAtCompactWidth(t *testing.T) {
 }
 
 type frozenArtifactView struct {
-	metadata pcv3recovery.ArtifactInspectionMetadata
-	ranges   []pcv3artifact.Range
+	metadata pcv3operation.ArtifactInspectionMetadata
+	ranges   []pcv3operation.ArtifactRange
 	maxPage  uint64
 }
 
-func (view *frozenArtifactView) Metadata() pcv3recovery.ArtifactInspectionMetadata {
+func (view *frozenArtifactView) Metadata() pcv3operation.ArtifactInspectionMetadata {
 	return view.metadata
 }
 
-func (view *frozenArtifactView) Page(offset, limit uint64) ([]pcv3artifact.Range, bool) {
+func (view *frozenArtifactView) Page(offset, limit uint64) ([]pcv3operation.ArtifactRange, bool) {
 	if limit == 0 || limit > 128 || offset >= uint64(len(view.ranges)) || offset+limit < offset {
 		return nil, false
 	}
@@ -1499,30 +1389,30 @@ func (view *frozenArtifactView) Page(offset, limit uint64) ([]pcv3artifact.Range
 	if end > uint64(len(view.ranges)) {
 		end = uint64(len(view.ranges))
 	}
-	return append([]pcv3artifact.Range(nil), view.ranges[offset:end]...), true
+	return append([]pcv3operation.ArtifactRange(nil), view.ranges[offset:end]...), true
 }
 
 func TestPCV3RecoveryArtifactLargeRangeView(t *testing.T) {
 	resetLocalizationForTest(t)
 	required := []string{"C18", "C19", "C20", "C21", "C22", "C23", "C24", "B03"}
 	executed := make([]string, 0, len(required))
-	ranges := make([]pcv3artifact.Range, 4097)
+	ranges := make([]pcv3operation.ArtifactRange, 4097)
 	for index := range ranges {
-		status := pcv3artifact.RangeVerified
+		status := pcv3operation.ArtifactRangeVerified
 		if index%3 == 1 {
-			status = pcv3artifact.RangeUnverified
+			status = pcv3operation.ArtifactRangeUnverified
 		} else if index%3 == 2 {
-			status = pcv3artifact.RangeMissing
+			status = pcv3operation.ArtifactRangeMissing
 		}
-		ranges[index] = pcv3artifact.Range{
+		ranges[index] = pcv3operation.ArtifactRange{
 			RecordIndex: uint64(index), Start: uint64(index) * 4096,
 			End: uint64(index)*4096 + 4095, Status: status,
 		}
 	}
 	view := &frozenArtifactView{
-		metadata: pcv3recovery.ArtifactInspectionMetadata{
-			Kind: pcv3artifact.StateUnverifiedForensic, Role: pcv3artifact.RoleBackup,
-			PlaintextLength: 16781312, Final: pcv3artifact.FinalUnverified,
+		metadata: pcv3operation.ArtifactInspectionMetadata{
+			Kind: pcv3operation.ArtifactStateUnverifiedForensic, Role: pcv3operation.ArtifactRoleBackup,
+			PlaintextLength: 16781312, Final: pcv3operation.ArtifactFinalUnverified,
 			RangeCount: 4097, VerifiedRangeCount: 1366, UnverifiedRangeCount: 1366, MissingRangeCount: 1365,
 		},
 		ranges: ranges,
@@ -1531,7 +1421,7 @@ func TestPCV3RecoveryArtifactLargeRangeView(t *testing.T) {
 		t.Run(id, func(t *testing.T) { executed = append(executed, id); test(t) })
 	}
 	run("C18", func(t *testing.T) {
-		empty := &frozenArtifactView{metadata: pcv3recovery.ArtifactInspectionMetadata{Kind: pcv3artifact.StatePartial, Final: pcv3artifact.FinalMissing}}
+		empty := &frozenArtifactView{metadata: pcv3operation.ArtifactInspectionMetadata{Kind: pcv3operation.ArtifactStatePartial, Final: pcv3operation.ArtifactFinalMissing}}
 		surface := buildPCV3ArtifactSurface(pcv3ArtifactReady, empty)
 		requirePCV3Text(t, surface, "No recoverable ranges were recorded.")
 		if strings.Contains(strings.ToLower(pcv3RenderedText(surface)), "complete") {

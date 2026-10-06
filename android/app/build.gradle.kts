@@ -46,7 +46,7 @@ android {
 
     defaultConfig {
         applicationId = "io.github.picocrypt_ng.picocrypt_ng"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 36
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -63,6 +63,11 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+
+    // Frozen public reference fixtures belong only to the instrumentation APK.
+    sourceSets.getByName("androidTest").assets.srcDir(
+        "../../src/internal/pcv3operation/internal/pcv3/testdata/d1/independent",
+    )
 
     signingConfigs {
         if (releaseSigningConfigured) {

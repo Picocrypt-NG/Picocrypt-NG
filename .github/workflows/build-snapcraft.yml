@@ -97,7 +97,7 @@ jobs:
     - name: Get version tag
       run: |
         VERSION=$(cat VERSION)
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
     - name: Sign and attest artifacts
       uses: ./.github/actions/sign-and-attest

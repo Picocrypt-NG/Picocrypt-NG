@@ -103,7 +103,7 @@ class FormDataTest {
     }
 
     @Test
-    fun `new v2 keyfile-only encryption is invalid`() {
+    fun `default PCV3 keyfile-only encryption is valid`() {
         val formData = TestDataBuilders.createEncryptFormData(
             password = "",
             confirmPassword = "",
@@ -111,12 +111,12 @@ class FormDataTest {
             keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
         )
 
-        assertFalse(formData.isPasswordValid)
-        assertFalse(formData.isFormValid)
+        assertTrue(formData.isPasswordValid)
+        assertTrue(formData.isFormValid)
     }
 
     @Test
-    fun `new v2 password-and-keyfile encryption is invalid`() {
+    fun `default PCV3 password-and-keyfile encryption is valid`() {
         val formData = TestDataBuilders.createEncryptFormData(
             password = "secret",
             confirmPassword = "secret",
@@ -124,12 +124,12 @@ class FormDataTest {
             keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
         )
 
-        assertFalse(formData.isPasswordValid)
-        assertFalse(formData.isFormValid)
+        assertTrue(formData.isPasswordValid)
+        assertTrue(formData.isFormValid)
     }
 
     @Test
-    fun `keyfile-only encryption is invalid with deniability`() {
+    fun `default PCV3 D1 keyfile-only encryption is valid`() {
         val formData = TestDataBuilders.createEncryptFormData(
             password = "",
             confirmPassword = "",
@@ -137,8 +137,8 @@ class FormDataTest {
             keyfiles = listOf(TestDataBuilders.createKeyfileInfo()),
         )
 
-        assertFalse(formData.isPasswordValid)
-        assertFalse(formData.isFormValid)
+        assertTrue(formData.isPasswordValid)
+        assertTrue(formData.isFormValid)
     }
 
     @Test

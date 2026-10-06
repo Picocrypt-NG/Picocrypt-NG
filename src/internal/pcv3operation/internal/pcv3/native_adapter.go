@@ -1,0 +1,1046 @@
+package pcv3
+
+import (
+	"Picocrypt-NG/internal/fileops"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3resource"
+	"Picocrypt-NG/internal/pcv3publication"
+	"context"
+	"errors"
+	"io"
+	"os"
+	"sync"
+)
+
+// NativeNormalWriteRequest is the narrow bridge to the canonical normal
+// serializer. Source and Destination are borrowed; Factors transfers on call.
+type NativeNormalWriteRequest struct {
+	Suite           Suite
+	PayloadKind     PayloadKind
+	PayloadBodyRS   bool
+	PlaintextLength uint64
+	Comment         []byte
+	Factors         *pcv3credential.FactorRequest
+	Admitter        pcv3credential.Admitter
+	Source          io.Reader
+	Destination     io.Writer
+}
+
+// NativeD1WriteRequest creates one random-looking D1 volume from a pinned
+// regular source. Source and Plaintext are borrowed; Factors transfers on call.
+type NativeD1WriteRequest struct {
+	Suite               Suite
+	PayloadKind         PayloadKind
+	PayloadBodyRS       bool
+	PlaintextLength     uint64
+	Comment             []byte
+	Factors             *pcv3credential.FactorRequest
+	Admitter            pcv3credential.Admitter
+	SourcePath          string
+	Source              *os.File
+	Plaintext           io.Reader
+	DestinationPath     string
+	Protected           []string
+	SplitOptions        *fileops.SplitOptions
+	JournalPrivateStage bool
+}
+
+func RunNativeD1Write(ctx context.Context, request *NativeD1WriteRequest) error {
+	publication, _, err := runNativeD1Write(ctx, request, false, false)
+	if err != nil {
+		return err
+	}
+	if publication == nil {
+		return newD1OuterFailure(StageOutputPublication, errInvalidD1Creation)
+	}
+	if publication.State() != pcv3publication.StatePublishedDurable {
+		return publication
+	}
+	return nil
+}
+
+// RunNativeD1WriteRetained transfers the original published ciphertext descriptor.
+// Source remains borrowed. The operation layer owns publication follow-up policy.
+func RunNativeD1WriteRetained(ctx context.Context, request *NativeD1WriteRequest) (pcv3publication.Result, *pcv3publication.RetainedFile, error) {
+	return RunNativeD1WriteWithPublication(ctx, request, true)
+}
+
+// RunNativeD1WriteWithPublication returns typed publication truth and optionally
+// held-descriptor custody. Ciphertext journaling and capability admission are
+// enforced independently of whether a follow-up descriptor is requested.
+func RunNativeD1WriteWithPublication(ctx context.Context, request *NativeD1WriteRequest, retain bool) (pcv3publication.Result, *pcv3publication.RetainedFile, error) {
+	return runNativeD1Write(ctx, request, retain, true)
+}
+
+func runNativeD1Write(ctx context.Context, request *NativeD1WriteRequest, retain, writePublication bool) (pcv3publication.Result, *pcv3publication.RetainedFile, error) {
+	if request == nil {
+		return nil, nil, newD1OuterFailure(StageCredentialPolicy, errInvalidD1Creation)
+	}
+	suite := request.Suite
+	payloadKind := request.PayloadKind
+	payloadBodyRS := request.PayloadBodyRS
+	plaintextLength := request.PlaintextLength
+	comment := append([]byte(nil), request.Comment...)
+	factors := request.Factors
+	factors.RequireNonemptyKeyfiles()
+	admitter := request.Admitter
+	sourcePath := request.SourcePath
+	source := request.Source
+	plaintext := request.Plaintext
+	destinationPath := request.DestinationPath
+	journalPrivateStage := request.JournalPrivateStage
+	protected := append([]string(nil), request.Protected...)
+	var splitOptions *fileops.SplitOptions
+	if request.SplitOptions != nil {
+		copied := *request.SplitOptions
+		splitOptions = &copied
+	}
+	request.Suite = 0
+	request.PayloadKind = 0
+	request.PayloadBodyRS = false
+	request.PlaintextLength = 0
+	clear(request.Comment)
+	request.Comment = nil
+	request.Factors = nil
+	request.Admitter = nil
+	request.SourcePath = ""
+	request.Source = nil
+	request.Plaintext = nil
+	request.DestinationPath = ""
+	for index := range request.Protected {
+		request.Protected[index] = ""
+	}
+	request.Protected = nil
+	request.SplitOptions = nil
+	request.JournalPrivateStage = false
+	defer clear(comment)
+	defer func() {
+		if factors != nil {
+			_ = factors.Close()
+		}
+	}()
+
+	if ctx == nil || suite != SuiteParanoid || factors == nil ||
+		admitter == nil || sourcePath == "" || source == nil || plaintext == nil ||
+		destinationPath == "" {
+		return nil, nil, newD1OuterFailure(StageCredentialPolicy, errInvalidD1Creation)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, newD1OuterFailure(StageCancellation, err)
+	}
+	info, statErr := source.Stat()
+	if statErr != nil || info == nil || !info.Mode().IsRegular() ||
+		info.Size() < 0 {
+		return nil, nil, newD1OuterFailure(StageInputIO, errInvalidD1Creation)
+	}
+
+	var retained *pcv3publication.RetainedFile
+	var retainedOutput **pcv3publication.RetainedFile
+	if retain {
+		retainedOutput = &retained
+		splitOptions = nil
+	}
+	result, err := composeD1OuterStage(ctx, &d1CreationRequest{
+		sourcePath:          sourcePath,
+		destinationPath:     destinationPath,
+		protected:           protected,
+		expectedSource:      info,
+		source:              source,
+		plaintext:           plaintext,
+		splitOptions:        splitOptions,
+		retainedOutput:      retainedOutput,
+		journalPrivateStage: journalPrivateStage,
+		writePublication:    writePublication,
+		normal: normalWriteRequest{
+			suite:           suite,
+			payloadKind:     payloadKind,
+			payloadBodyRS:   payloadBodyRS,
+			plaintextLength: plaintextLength,
+			comment:         comment,
+		},
+		factors:  factors,
+		admitter: admitter,
+	}, defaultD1CreationSeams())
+	return result, retained, err
+}
+
+func RunNativeNormalWrite(
+	ctx context.Context,
+	request *NativeNormalWriteRequest,
+) error {
+	if request == nil {
+		return newNormalWriteFailure(StageCredentialPolicy, errInvalidNormalWriteRequest)
+	}
+
+	suite := request.Suite
+	payloadKind := request.PayloadKind
+	payloadBodyRS := request.PayloadBodyRS
+	plaintextLength := request.PlaintextLength
+	comment := append([]byte(nil), request.Comment...)
+	factors := request.Factors
+	factors.RequireNonemptyKeyfiles()
+	admitter := request.Admitter
+	source := request.Source
+	destination := request.Destination
+	request.Suite = 0
+	request.PayloadKind = 0
+	request.PayloadBodyRS = false
+	request.PlaintextLength = 0
+	clear(request.Comment)
+	request.Comment = nil
+	request.Factors = nil
+	request.Admitter = nil
+	request.Source = nil
+	request.Destination = nil
+	defer clear(comment)
+	defer func() {
+		if factors != nil {
+			_ = factors.Close()
+		}
+	}()
+
+	credentialSuite, ok := normalCredentialSuite(suite)
+	keyRequests, requestsOK := normalWriteKeyRequests(suite)
+	writeRequest := normalWriteRequest{
+		suite:           suite,
+		payloadKind:     payloadKind,
+		payloadBodyRS:   payloadBodyRS,
+		plaintextLength: plaintextLength,
+		comment:         comment,
+	}
+	if ctx == nil || !ok || !requestsOK ||
+		!validNormalWriteRequest(writeRequest) || factors == nil || admitter == nil ||
+		source == nil || destination == nil {
+		return newNormalWriteFailure(StageCredentialPolicy, errInvalidNormalWriteRequest)
+	}
+	if err := ctx.Err(); err != nil {
+		return newNormalWriteFailure(StageCancellation, err)
+	}
+
+	credentialRequest := &pcv3credential.CredentialRequest{
+		Suite:       credentialSuite,
+		Factors:     factors,
+		KeyRequests: keyRequests,
+	}
+	factors = nil
+	owner, err := pcv3credential.NewCredential(ctx, credentialRequest, admitter)
+	if err != nil {
+		if ctx.Err() != nil {
+			return newNormalWriteFailure(StageCancellation, ctx.Err())
+		}
+		return newNormalWriteFailure(StageCredentialPolicy, err)
+	}
+	defer owner.Close()
+	_, err = writeNormalVolume(ctx, writeRequest, source, destination, owner)
+	return err
+}
+
+func normalCredentialSuite(suite Suite) (pcv3credential.Suite, bool) {
+	switch suite {
+	case SuiteStandard:
+		return pcv3credential.SuiteStandard1, true
+	case SuiteParanoid:
+		return pcv3credential.SuiteParanoid1, true
+	default:
+		return 0, false
+	}
+}
+
+// NativeReadRequest is the narrow internal-module input to the ordinary
+// authenticated reader. Source is borrowed. Factors transfer to RunNativeRead.
+// No frontend imports this package-level bridge directly.
+type NativeReadRequest struct {
+	Source              io.ReaderAt
+	SourceSize          int64
+	Factors             *pcv3credential.FactorRequest
+	Admitter            pcv3credential.Admitter
+	Target              string
+	Protected           []string
+	JournalPrivateStage bool
+	PrepareArchive      bool
+}
+
+// NativePayloadDisposition tells the operation whether the completed stage is
+// ordinary publishable plaintext or an exact-success archive awaiting the
+// separate sealed follow-up.
+type NativePayloadDisposition uint8
+
+const (
+	NativePayloadPublish NativePayloadDisposition = iota + 1
+	NativePayloadArchive
+)
+
+// NativeReadCallback receives only a callback-scoped, opaque output action.
+// Retaining the value after callback return grants no authority.
+type NativeReadCallback func(*NativeReadOutput) error
+
+// NativeReadOutput exposes neither a stage, file, sink, provider, completion,
+// nor key. Archive returns only a sealed one-shot handoff.
+type NativeReadOutput struct {
+	state *nativeReadOutputState
+}
+
+type nativeReadOutputState struct {
+	mu          sync.Mutex
+	active      bool
+	consumed    bool
+	disposition NativePayloadDisposition
+	sink        *nativeReadSink
+	completion  *normalCompletion
+}
+
+func (output *NativeReadOutput) Disposition() NativePayloadDisposition {
+	if output == nil || output.state == nil {
+		return 0
+	}
+	output.state.mu.Lock()
+	defer output.state.mu.Unlock()
+	if !output.state.active {
+		return 0
+	}
+	return output.state.disposition
+}
+
+// Publish consumes the callback-scoped ordinary-output action. Exact-success
+// archive output is never raw-published through this method.
+func (output *NativeReadOutput) Publish(ctx context.Context) pcv3publication.Result {
+	if output == nil || output.state == nil {
+		return nil
+	}
+	output.state.mu.Lock()
+	defer output.state.mu.Unlock()
+	if !output.state.active || output.state.consumed ||
+		output.state.disposition != NativePayloadPublish || output.state.sink == nil {
+		return nil
+	}
+	output.state.consumed = true
+	return output.state.sink.publish(ctx)
+}
+
+// PublishRetained consumes the callback-scoped ordinary-output action and
+// returns an opaque exact-file owner only after durable publication. Archive
+// output and every non-durable publication grant no retained authority.
+func (output *NativeReadOutput) PublishRetained(
+	ctx context.Context,
+) *pcv3publication.RetainedFile {
+	if output == nil || output.state == nil {
+		return nil
+	}
+	output.state.mu.Lock()
+	defer output.state.mu.Unlock()
+	if !output.state.active || output.state.consumed ||
+		output.state.disposition != NativePayloadPublish || output.state.sink == nil {
+		return nil
+	}
+	output.state.consumed = true
+	return output.state.sink.publishRetained(ctx)
+}
+
+// Archive consumes the callback-scoped archive action and returns an opaque
+// handoff that owns the original private stage. It never exposes the stage,
+// completion seal, or a path.
+func (output *NativeReadOutput) Archive() *NativeArchiveHandoff {
+	if output == nil || output.state == nil {
+		return nil
+	}
+	output.state.mu.Lock()
+	defer output.state.mu.Unlock()
+	if !output.state.active || output.state.consumed ||
+		output.state.disposition != NativePayloadArchive {
+		return nil
+	}
+	handoff := newNativeArchiveHandoff(output.state.completion, output.state.sink)
+	if handoff == nil {
+		return nil
+	}
+	output.state.consumed = true
+	return handoff
+}
+
+// NativeArchiveResult is the closed extractor projection returned by the
+// opaque archive handoff. It contains no path or raw error.
+type NativeArchiveResult struct {
+	state             fileops.UnpackState
+	cleanupIncomplete bool
+	resourceLimited   bool
+}
+
+func (result *NativeArchiveResult) State() fileops.UnpackState {
+	if result == nil {
+		return 0
+	}
+	return result.state
+}
+
+func (result *NativeArchiveResult) CleanupIncomplete() bool {
+	return result != nil && result.cleanupIncomplete
+}
+
+// ResourceLimited reports a closed resource-refusal cause, independently of
+// publication and cleanup truth.
+func (result *NativeArchiveResult) ResourceLimited() bool {
+	return result != nil && result.resourceLimited
+}
+
+// NativeArchiveHandoff owns a fully authenticated declared archive or an
+// explicitly prepared raw ZIP. Copies share one consumption state.
+type NativeArchiveHandoff struct {
+	state *nativeArchiveHandoffState
+}
+
+type nativeArchiveHandoffState struct {
+	mu          sync.Mutex
+	active      bool
+	completion  *normalCompletion
+	stage       *pcv3publication.Stage
+	preparedZIP bool
+}
+
+func newNativeArchiveHandoff(
+	completion *normalCompletion,
+	sink *nativeReadSink,
+) *NativeArchiveHandoff {
+	kind, authenticated := completion.authenticatedPayloadKind()
+	if !authenticated || sink == nil ||
+		(kind != PayloadKindArchive && (kind != PayloadKindRaw || !sink.preparedZIP)) {
+		return nil
+	}
+	stage := sink.takeArchiveStage()
+	if stage == nil {
+		return nil
+	}
+	return &NativeArchiveHandoff{state: &nativeArchiveHandoffState{
+		active: true, completion: completion, stage: stage, preparedZIP: sink.preparedZIP,
+	}}
+}
+
+func (handoff *NativeArchiveHandoff) Live() bool {
+	if handoff == nil || handoff.state == nil {
+		return false
+	}
+	handoff.state.mu.Lock()
+	defer handoff.state.mu.Unlock()
+	return handoff.state.active && handoff.state.completion != nil &&
+		handoff.state.stage != nil
+}
+
+// Publish consumes the handoff and saves the authenticated ZIP to the original
+// pinned target. Cleanup truth remains separate from publication durability.
+func (handoff *NativeArchiveHandoff) Publish(ctx context.Context) (publication pcv3publication.Result, cleanupIncomplete bool) {
+	_, stage, ok := handoff.consume()
+	if !ok {
+		return nil, false
+	}
+	defer func() { cleanupIncomplete = stage.Cleanup() != nil }()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return stage.Publish(ctx), false
+}
+
+// Extract consumes the handoff before effects and takes ownership of root.
+// The same still-open stage descriptor is passed to the authenticated unpack
+// gate and then cleaned on every return.
+func (handoff *NativeArchiveHandoff) Extract(
+	ctx context.Context,
+	root *os.Root,
+) *NativeArchiveResult {
+	return handoff.ExtractWithReview(ctx, root, nil)
+}
+
+// ExtractWithReview approves a declared size budget using the held archive.
+// It consumes the same one-shot authority and root as Extract.
+func (handoff *NativeArchiveHandoff) ExtractWithReview(
+	ctx context.Context,
+	root *os.Root,
+	review func(fileops.ZIPSummary) error,
+) *NativeArchiveResult {
+	completion, stage, ok := handoff.consume()
+	if !ok {
+		if root != nil {
+			_ = root.Close()
+		}
+		return nil
+	}
+	result := &NativeArchiveResult{state: fileops.UnpackStateNotPublished}
+	defer func() {
+		if stage.Cleanup() != nil {
+			result.cleanupIncomplete = true
+		}
+		if root != nil && root.Close() != nil {
+			result.cleanupIncomplete = true
+		}
+	}()
+	if root == nil {
+		return result
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	expectedRoot, err := root.Stat(".")
+	if err != nil || expectedRoot == nil || !expectedRoot.IsDir() {
+		return result
+	}
+	var unpack fileops.UnpackResult
+	if handoff.state.preparedZIP {
+		if kind, authenticated := completion.authenticatedPayloadKind(); authenticated && kind == PayloadKindRaw {
+			unpack = unpackAuthenticatedZIPWithResult(ctx, stage.File(), root, expectedRoot, review)
+		}
+	} else {
+		unpack = unpackAuthenticatedArchiveWithResult(ctx, completion, stage.File(), root, expectedRoot, review)
+	}
+	if unpack == nil {
+		return result
+	}
+	result.state = unpack.State()
+	result.resourceLimited = errors.Is(unpack, fileops.ErrZIPMetadataLimit)
+	if errors.Is(unpack, fileops.ErrUnpackCleanupIncomplete) {
+		result.cleanupIncomplete = true
+	}
+	return result
+}
+
+// Close consumes the handoff without extraction and reports only whether
+// cleanup of the private stage could be proven.
+func (handoff *NativeArchiveHandoff) Close() bool {
+	_, stage, ok := handoff.consume()
+	return ok && stage.Cleanup() != nil
+}
+
+func (handoff *NativeArchiveHandoff) consume() (
+	*normalCompletion,
+	*pcv3publication.Stage,
+	bool,
+) {
+	if handoff == nil || handoff.state == nil {
+		return nil, nil, false
+	}
+	handoff.state.mu.Lock()
+	defer handoff.state.mu.Unlock()
+	if !handoff.state.active || handoff.state.completion == nil ||
+		handoff.state.stage == nil {
+		return nil, nil, false
+	}
+	handoff.state.active = false
+	completion := handoff.state.completion
+	stage := handoff.state.stage
+	handoff.state.completion = nil
+	handoff.state.stage = nil
+	return completion, stage, true
+}
+
+// NativeReadResult is the closed operation-facing projection of the ordinary
+// reader. It retains no raw error, path, source, credential, or callback.
+type NativeReadResult struct {
+	outcome              Outcome
+	stage                Stage
+	code                 Code
+	authenticatedComment string
+	publicationAttempted bool
+	publicationState     pcv3publication.State
+	publicationStage     Stage
+	publicationCode      pcv3publication.Code
+	cleanupIncomplete    bool
+	callbackFailed       bool
+}
+
+func (result *NativeReadResult) Outcome() Outcome {
+	if result == nil {
+		return 0
+	}
+	return result.outcome
+}
+
+func (result *NativeReadResult) Stage() Stage {
+	if result == nil {
+		return 0
+	}
+	return result.stage
+}
+
+func (result *NativeReadResult) Code() Code {
+	if result == nil {
+		return 0
+	}
+	return result.code
+}
+
+// AuthenticatedComment returns public metadata only after the normal reader
+// has authenticated it. Failed and unauthenticated reads return an empty value.
+func (result *NativeReadResult) AuthenticatedComment() string {
+	if result == nil {
+		return ""
+	}
+	return result.authenticatedComment
+}
+
+func (result *NativeReadResult) PublicationAttempted() bool {
+	return result != nil && result.publicationAttempted
+}
+
+func (result *NativeReadResult) PublicationState() pcv3publication.State {
+	if result == nil {
+		return 0
+	}
+	return result.publicationState
+}
+
+func (result *NativeReadResult) PublicationStage() Stage {
+	if result == nil {
+		return StageNone
+	}
+	return result.publicationStage
+}
+
+func (result *NativeReadResult) PublicationCode() pcv3publication.Code {
+	if result == nil {
+		return 0
+	}
+	return result.publicationCode
+}
+
+func (result *NativeReadResult) CleanupIncomplete() bool {
+	return result != nil && result.cleanupIncomplete
+}
+
+func (result *NativeReadResult) CallbackFailed() bool {
+	return result != nil && result.callbackFailed
+}
+
+// RunNativeRead enters the sole ordinary normal-volume reader with production
+// credential composition and a private lazy publication sink. The stage is not
+// created until factor validation and record authentication reach real output.
+func RunNativeRead(
+	ctx context.Context,
+	request *NativeReadRequest,
+	callback NativeReadCallback,
+) *NativeReadResult {
+	if request == nil {
+		return nativeReadFailure(OutcomeOperationFailed, StageCredentialPolicy, CodeOperationFailed)
+	}
+	source := request.Source
+	sourceSize := request.SourceSize
+	factors := request.Factors
+	admitter := request.Admitter
+	target := request.Target
+	protected := append([]string(nil), request.Protected...)
+	journalPrivateStage := request.JournalPrivateStage
+	prepareArchive := request.PrepareArchive
+	request.Source = nil
+	request.SourceSize = 0
+	request.Factors = nil
+	request.Admitter = nil
+	request.Target = ""
+	request.JournalPrivateStage = false
+	request.PrepareArchive = false
+	for index := range request.Protected {
+		request.Protected[index] = ""
+	}
+	request.Protected = nil
+	defer func() {
+		closeNativeReadFactors(factors)
+	}()
+
+	if ctx == nil || source == nil || sourceSize < 0 || factors == nil ||
+		target == "" || callback == nil {
+		closeNativeReadFactors(factors)
+		factors = nil
+		return nativeReadFailure(OutcomeOperationFailed, StageCredentialPolicy, CodeOperationFailed)
+	}
+	if ctx.Err() != nil {
+		closeNativeReadFactors(factors)
+		factors = nil
+		return nativeReadFailure(OutcomeOperationFailed, StageCancellation, CodeOperationFailed)
+	}
+
+	route, structure, err := Probe(source, sourceSize)
+	if err != nil {
+		closeNativeReadFactors(factors)
+		factors = nil
+		return nativeReadFailureFromError(err)
+	}
+	if route != RouteNormalPCV {
+		closeNativeReadFactors(factors)
+		factors = nil
+		return nativeReadFailure(OutcomeUnsupportedRoutingPreKDF, StageRouting, CodeUnsupported)
+	}
+	if admitter == nil {
+		closeNativeReadFactors(factors)
+		factors = nil
+		return nativeReadFailure(OutcomeOperationFailed, StageCredentialPolicy, CodeOperationFailed)
+	}
+
+	sink := &nativeReadSink{
+		target:              target,
+		protected:           protected,
+		journalPrivateStage: journalPrivateStage,
+		prepareArchive:      prepareArchive,
+	}
+	provider := &nativeCredentialProvider{readerCredentialProvider: readerCredentialProvider{
+		factors:  factors,
+		admitter: admitter,
+	}}
+	factors = nil
+	return runNativeReadSession(
+		ctx,
+		source,
+		sourceSize,
+		structure,
+		provider,
+		sink,
+		callback,
+	)
+}
+
+// runNativeReadSession is the one adapter session shared by the production
+// factor owner and frozen same-package codec fixtures. It contains the real
+// output-disposition, callback lifetime, and stage-transfer logic.
+func runNativeReadSession(
+	ctx context.Context,
+	source io.ReaderAt,
+	sourceSize int64,
+	structure Structure,
+	provider capsuleCredentialProvider,
+	sink *nativeReadSink,
+	callback NativeReadCallback,
+) *NativeReadResult {
+	if sink == nil || callback == nil {
+		if closer, ok := provider.(capsuleCredentialProviderCloser); ok {
+			closer.close()
+		}
+		return nativeReadFailure(OutcomeOperationFailed, StageCredentialPolicy, CodeOperationFailed)
+	}
+	defer sink.abortUncommitted()
+	semantic, completion := readNormalVolumeWithProvider(
+		ctx,
+		source,
+		sourceSize,
+		structure,
+		provider,
+		sink,
+	)
+	result := nativeReadResultFromSemantic(semantic)
+	if semantic != nil {
+		semantic.Close()
+	}
+	if completion == nil ||
+		(result.outcome != OutcomeSuccess && result.outcome != OutcomeAuthenticatedDegraded) {
+		sink.snapshot(result)
+		return result
+	}
+	if err := sink.ensureStage(); err != nil {
+		result.outcome = OutcomeOperationFailed
+		result.stage = StageOutputWrite
+		result.code = CodeOperationFailed
+		sink.snapshot(result)
+		return result
+	}
+
+	disposition := NativePayloadPublish
+	if kind, authenticated := completion.authenticatedPayloadKind(); authenticated && result.outcome == OutcomeSuccess {
+		if kind == PayloadKindArchive {
+			disposition = NativePayloadArchive
+		} else if sink.prepareArchive {
+			file := sink.stage.File()
+			info, err := file.Stat()
+			if err == nil && info.Mode().IsRegular() && info.Size() >= 0 {
+				var reader *fileops.ZIPReader
+				budget := fileops.NewZIPResourceBudget()
+				err = pcv3resource.AdmitZIPWorkingMemory(ctx, budget)
+				if err == nil {
+					reader, err = fileops.OpenZIPReader(file, info.Size(), fileops.ZIPReadOptions{
+						Cancel: func() bool { return ctx.Err() != nil }, Budget: budget,
+					})
+				}
+				if reader != nil {
+					err = errors.Join(err, reader.Close())
+				}
+				if err == nil {
+					sink.preparedZIP = true
+					disposition = NativePayloadArchive
+				}
+			} else if err == nil {
+				err = os.ErrInvalid
+			}
+			var pathErr *os.PathError
+			if ctx.Err() != nil || errors.As(err, &pathErr) || errors.Is(err, os.ErrInvalid) ||
+				errors.Is(err, fileops.ErrZIPMetadataLimit) {
+				result.outcome, result.stage, result.code = OutcomeOperationFailed, StageOutputWrite, CodeOperationFailed
+				if ctx.Err() != nil {
+					result.stage = StageCancellation
+				} else if errors.Is(err, fileops.ErrZIPMetadataLimit) {
+					result.stage = StageResourceBudget
+				}
+				sink.abortUncommitted()
+				sink.snapshot(result)
+				return result
+			}
+		}
+	}
+	outputState := &nativeReadOutputState{
+		active:      true,
+		disposition: disposition,
+		sink:        sink,
+		completion:  completion,
+	}
+	output := &NativeReadOutput{state: outputState}
+	var callbackErr error
+	func() {
+		defer func() {
+			outputState.mu.Lock()
+			defer outputState.mu.Unlock()
+			outputState.active = false
+			outputState.sink = nil
+			outputState.completion = nil
+		}()
+		callbackErr = callback(output)
+	}()
+	if callbackErr != nil {
+		result.callbackFailed = true
+	}
+	sink.abortUncommitted()
+	sink.snapshot(result)
+	return result
+}
+
+func closeNativeReadFactors(factors *pcv3credential.FactorRequest) {
+	if factors != nil {
+		_ = factors.Close()
+	}
+}
+
+func nativeReadFailure(outcome Outcome, stage Stage, code Code) *NativeReadResult {
+	return &NativeReadResult{outcome: outcome, stage: stage, code: code}
+}
+
+func nativeReadFailureFromError(err error) *NativeReadResult {
+	var failure Failure
+	if errors.As(err, &failure) {
+		return nativeReadFailure(failure.Outcome(), failure.Stage(), failure.Code())
+	}
+	return nativeReadFailure(OutcomeOperationFailed, StageInputIO, CodeOperationFailed)
+}
+
+func nativeReadResultFromSemantic(semantic *normalReadResult) *NativeReadResult {
+	if semantic == nil {
+		return nativeReadFailure(OutcomeOperationFailed, StageCredentialPolicy, CodeOperationFailed)
+	}
+	return &NativeReadResult{
+		outcome:              semantic.Outcome(),
+		stage:                semantic.Stage(),
+		code:                 semantic.Code(),
+		authenticatedComment: string(semantic.commentBytes()),
+	}
+}
+
+type nativeReadSink struct {
+	target              string
+	protected           []string
+	journalPrivateStage bool
+	prepareArchive      bool
+	preparedZIP         bool
+	stage               *pcv3publication.Stage
+	stageWriter         func(io.Writer) io.Writer
+	nextRecord          uint64
+	closed              bool
+
+	publicationAttempted bool
+	publishCalled        bool
+	publicationState     pcv3publication.State
+	publicationStage     Stage
+	publicationCode      pcv3publication.Code
+	cleanupIncomplete    bool
+}
+
+func (sink *nativeReadSink) ensureStage() error {
+	if sink == nil || sink.closed {
+		return errors.New("pcv3: native output unavailable")
+	}
+	if sink.stage != nil {
+		return nil
+	}
+	stage, err := pcv3publication.Create(
+		sink.target,
+		append([]string(nil), sink.protected...),
+		pcv3publication.PolicyNoReplace,
+	)
+	if err == nil && sink.journalPrivateStage {
+		if journalErr := stage.PersistCleanupJournal(); journalErr != nil {
+			err = errors.Join(
+				journalErr,
+				pcv3publication.ErrCleanupIncomplete,
+				stage.Cleanup(),
+			)
+			stage = nil
+		}
+	}
+	if err != nil {
+		if sink.publicationAttempted {
+			sink.retainPublicationError(err)
+		} else if errors.Is(err, pcv3publication.ErrCleanupIncomplete) {
+			sink.cleanupIncomplete = true
+		}
+		return err
+	}
+	sink.stage = stage
+	return nil
+}
+
+func (sink *nativeReadSink) writeVerifiedRecord(
+	ctx context.Context,
+	index uint64,
+	plaintext []byte,
+) error {
+	if sink == nil || sink.closed || ctx == nil || index != sink.nextRecord {
+		return errors.New("pcv3: native output write refused")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := sink.ensureStage(); err != nil {
+		return err
+	}
+	file := sink.stage.File()
+	if file == nil {
+		return errors.New("pcv3: native output stage unavailable")
+	}
+	destination := io.Writer(file)
+	if sink.stageWriter != nil {
+		destination = sink.stageWriter(file)
+		if destination == nil {
+			return errors.New("pcv3: native output stage writer unavailable")
+		}
+	}
+	for len(plaintext) != 0 {
+		written, err := destination.Write(plaintext)
+		if written < 0 || written > len(plaintext) {
+			return errors.New("pcv3: native output writer contract violated")
+		}
+		plaintext = plaintext[written:]
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrNoProgress
+		}
+	}
+	sink.nextRecord++
+	return nil
+}
+
+func (sink *nativeReadSink) publish(ctx context.Context) pcv3publication.Result {
+	if !sink.beginPublication() {
+		return nil
+	}
+	publication := sink.stage.Publish(ctx)
+	sink.retainPublication(publication)
+	return publication
+}
+
+func (sink *nativeReadSink) publishRetained(
+	ctx context.Context,
+) *pcv3publication.RetainedFile {
+	if !sink.beginPublication() {
+		return nil
+	}
+	publication, retained := sink.stage.PublishRetained(ctx)
+	sink.retainPublication(publication)
+	if retained != nil {
+		sink.stage = nil
+	}
+	return retained
+}
+
+func (sink *nativeReadSink) beginPublication() bool {
+	if sink == nil || sink.closed || sink.publishCalled {
+		return false
+	}
+	sink.publishCalled = true
+	sink.publicationAttempted = true
+	if err := sink.ensureStage(); err != nil {
+		return false
+	}
+	return true
+}
+
+func (sink *nativeReadSink) takeArchiveStage() *pcv3publication.Stage {
+	if sink == nil || sink.closed || sink.publishCalled || sink.stage == nil {
+		return nil
+	}
+	stage := sink.stage
+	sink.stage = nil
+	return stage
+}
+
+// nativeCredentialProvider pins the caller's already-declared factor mode,
+// order mode, and count to the structurally admitted capsule tuple before the
+// credential package reaches admission. The credential package remains the
+// sole owner of shape validation, keyfile reads/order/digests, duplicate
+// detection, canonicalization, policy validation, and factor cleanup.
+type nativeCredentialProvider struct {
+	readerCredentialProvider
+}
+
+func (provider *nativeCredentialProvider) withCredential(
+	ctx context.Context,
+	tuple credentialTuple,
+	callback func(capsuleCredentialAccess) error,
+) error {
+	mode, keyfileMode, ok := credentialRecoveryModes(tuple.credentialMode, tuple.keyfileMode)
+	if provider == nil || provider.factors == nil || !ok ||
+		provider.factors.Mode != mode || provider.factors.KeyfileMode != keyfileMode ||
+		len(provider.factors.Keyfiles) != int(tuple.keyfileCount) {
+		return &capsuleAuthError{stage: StageCredentialPolicy}
+	}
+	return provider.readerCredentialProvider.withCredential(ctx, tuple, callback)
+}
+
+func (sink *nativeReadSink) abortUncommitted() {
+	if sink == nil || sink.closed {
+		return
+	}
+	sink.closed = true
+	if sink.stage != nil {
+		if err := sink.stage.Cleanup(); err != nil {
+			sink.cleanupIncomplete = true
+		}
+		sink.stage = nil
+	}
+	for index := range sink.protected {
+		sink.protected[index] = ""
+	}
+	sink.protected = nil
+	sink.target = ""
+	sink.journalPrivateStage = false
+	sink.stageWriter = nil
+}
+
+func (sink *nativeReadSink) retainPublication(publication pcv3publication.Result) {
+	if sink == nil || publication == nil {
+		return
+	}
+	sink.publicationState = publication.State()
+	sink.publicationStage = publication.Stage()
+	sink.publicationCode = publication.Code()
+}
+
+func (sink *nativeReadSink) retainPublicationError(err error) {
+	var publication pcv3publication.Result
+	if errors.As(err, &publication) {
+		sink.retainPublication(publication)
+	}
+	if errors.Is(err, pcv3publication.ErrCleanupIncomplete) {
+		sink.cleanupIncomplete = true
+	}
+}
+
+func (sink *nativeReadSink) snapshot(result *NativeReadResult) {
+	if sink == nil || result == nil {
+		return
+	}
+	result.publicationAttempted = sink.publicationAttempted
+	result.publicationState = sink.publicationState
+	result.publicationStage = sink.publicationStage
+	result.publicationCode = sink.publicationCode
+	result.cleanupIncomplete = sink.cleanupIncomplete
+}

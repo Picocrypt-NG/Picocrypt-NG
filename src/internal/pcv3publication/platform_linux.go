@@ -3,6 +3,7 @@
 package pcv3publication
 
 import (
+	"Picocrypt-NG/internal/fileops"
 	"errors"
 	"os"
 
@@ -49,8 +50,6 @@ func nativeOperations() platformOperations {
 			parentFD := int(parent.Fd())
 			return renameNoReplace(parentFD, stageName, targetName)
 		},
-		syncDirectory: func(parent *os.File) error {
-			return unix.Fsync(int(parent.Fd()))
-		},
+		syncDirectory: fileops.SyncDirectory,
 	}
 }

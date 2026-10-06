@@ -277,6 +277,14 @@ sealed class AppError(
         fun fromException(exception: Exception): AppError {
             if (exception is AppError) return exception
 
+            if (exception is Pcv3BridgeFailure && exception.code == "PCV3_RESOURCE_LIMIT") {
+                return OperationError.GenericOperation(
+                    userMessage = "",
+                    technicalMessage = exception.code,
+                    messageResId = R.string.pcv3_resource_limit_body,
+                )
+            }
+
             val technicalDetail = exception.message ?: exception.toString()
             if (failureReasonResId(exception) == R.string.error_reason_file_not_found) {
                 return OperationError.FileNotFound(

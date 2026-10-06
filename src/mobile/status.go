@@ -15,6 +15,12 @@ func pcv3StatusCode(code pcv3operation.StatusCode) string {
 		return "checking-factors"
 	case pcv3operation.StatusCheckingResources:
 		return "checking-resources"
+	case pcv3operation.StatusPreparingInput:
+		return "preparing-input"
+	case pcv3operation.StatusEncrypting:
+		return "encrypting"
+	case pcv3operation.StatusSplitting:
+		return "splitting"
 	case pcv3operation.StatusDerivingKey:
 		return "deriving-key"
 	case pcv3operation.StatusAuthenticating:

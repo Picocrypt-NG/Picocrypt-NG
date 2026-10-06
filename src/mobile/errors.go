@@ -1,12 +1,10 @@
 package mobile
 
 import (
+	perrors "Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/header"
-	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3operation"
 	"errors"
-
-	perrors "Picocrypt-NG/internal/errors"
 )
 
 func pcv3DiagnosticCode(diagnostic pcv3operation.Diagnostic) string {
@@ -33,6 +31,8 @@ func pcv3DiagnosticCode(diagnostic pcv3operation.Diagnostic) string {
 		return "resource-insufficient"
 	case pcv3operation.DiagnosticResourceUnknown:
 		return "resource-unknown"
+	case pcv3operation.DiagnosticResourceLimit:
+		return "resource-limit"
 	default:
 		return "unknown"
 	}
@@ -80,30 +80,30 @@ func pcv3CompletionCode(completion pcv3operation.CompletionClass) string {
 	}
 }
 
-func pcv3ForceProvenance(provenance pcv3.ForceProvenance) string {
+func pcv3ForceProvenance(provenance pcv3operation.ForceProvenance) string {
 	switch provenance {
-	case pcv3.ForceProvenanceNone:
+	case pcv3operation.ForceProvenanceNone:
 		return "none"
-	case pcv3.ForceProvenanceVerified:
+	case pcv3operation.ForceProvenanceVerified:
 		return "verified"
-	case pcv3.ForceProvenancePartial:
+	case pcv3operation.ForceProvenancePartial:
 		return "partial"
-	case pcv3.ForceProvenanceUnverified:
+	case pcv3operation.ForceProvenanceUnverified:
 		return "unverified"
 	default:
 		return "unknown"
 	}
 }
 
-func pcv3D1Provenance(provenance pcv3.D1BootstrapProvenance) string {
+func pcv3D1Provenance(provenance pcv3operation.D1BootstrapProvenance) string {
 	switch provenance {
-	case pcv3.D1BootstrapProvenanceNone:
+	case pcv3operation.D1BootstrapProvenanceNone:
 		return "none"
-	case pcv3.D1BootstrapProvenanceFront:
+	case pcv3operation.D1BootstrapProvenanceFront:
 		return "front"
-	case pcv3.D1BootstrapProvenanceTail:
+	case pcv3operation.D1BootstrapProvenanceTail:
 		return "tail"
-	case pcv3.D1BootstrapProvenanceMatching:
+	case pcv3operation.D1BootstrapProvenanceMatching:
 		return "matching"
 	default:
 		return "unknown"
@@ -173,19 +173,19 @@ func errorCode(err error) string {
 }
 
 func pcv3ErrorCode(err error) (string, bool) {
-	if errors.Is(err, pcv3.ErrReaderUnavailable) {
-		return pcv3.CodeUnsupported.String(), true
+	if errors.Is(err, pcv3operation.ErrReaderUnavailable) {
+		return pcv3operation.CodeUnsupported.String(), true
 	}
 
-	var failure pcv3.Failure
+	var failure pcv3operation.Failure
 	if !errors.As(err, &failure) {
 		return "", false
 	}
 	switch failure.Code() {
-	case pcv3.CodeUnsupported:
-		return pcv3.CodeUnsupported.String(), true
-	case pcv3.CodeInvalidStructure:
-		return pcv3.CodeInvalidStructure.String(), true
+	case pcv3operation.CodeUnsupported:
+		return pcv3operation.CodeUnsupported.String(), true
+	case pcv3operation.CodeInvalidStructure:
+		return pcv3operation.CodeInvalidStructure.String(), true
 	default:
 		return "", false
 	}

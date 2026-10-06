@@ -295,7 +295,7 @@
     <string name="pcv3_publication_indeterminate_title">Состояние выходных данных неизвестно</string>
     <string name="pcv3_publication_indeterminate_body">Приложение не может определить, зафиксирована ли публикация. Сохраните все источники и место назначения без изменений. Не повторяйте операцию и не выполняйте очистку.</string>
     <string name="pcv3_warning_cleanup_title">Не удалось подтвердить очистку</string>
-    <string name="pcv3_warning_cleanup_body">Приложение не смогло доказать удаление всех временных открытых данных, принадлежащих операции. Сохраните зашифрованный источник и не удаляйте файлы на основании этого результата.</string>
+    <string name="pcv3_warning_cleanup_body">Приложение не смогло подтвердить удаление всех временных файлов этой операции. Сохраните исходные файлы и не удаляйте файлы на основании этого результата.</string>
     <string name="pcv3_warning_callback_title">Не удалось подтвердить восстановление</string>
     <string name="pcv3_warning_callback_body">Не удалось завершить активное подтверждение восстановления. Разрешение на непроверенные выходные данные не предоставлено.</string>
     <string name="pcv3_warning_unknown_title">Дополнительное предупреждение об операции</string>
@@ -309,11 +309,11 @@
     <string name="pcv3_output_saved_title">Результат сохранён</string>
     <string name="pcv3_output_saved_body">Выбранный результат сохранён. Показанные ниже предупреждения о проверке подлинности и восстановлении остаются в силе.</string>
     <string name="pcv3_output_saved_cleanup_title">Результат сохранён, очистка не завершена</string>
-    <string name="pcv3_output_saved_cleanup_body">Выбранный результат сохранён, но очистку принадлежащих приложению открытых данных подтвердить не удалось.</string>
+    <string name="pcv3_output_saved_cleanup_body">Выбранный результат сохранён, но очистку временных файлов приложения подтвердить не удалось.</string>
     <string name="pcv3_output_save_failed_title">Не удалось сохранить результат</string>
-    <string name="pcv3_output_save_failed_body">Не подтверждено, что выбранное место содержит результат. Сохраните зашифрованный источник.</string>
+    <string name="pcv3_output_save_failed_body">Не подтверждено, что выбранное место содержит результат. Сохраните исходные файлы.</string>
     <string name="pcv3_output_save_failed_cleanup_title">Ошибка сохранения, очистка не завершена</string>
-    <string name="pcv3_output_save_failed_cleanup_body">Не подтверждено ни наличие результата в выбранном месте, ни очистка принадлежащих приложению открытых данных.</string>
+    <string name="pcv3_output_save_failed_cleanup_body">Не подтверждено ни наличие результата в выбранном месте, ни очистка временных файлов приложения.</string>
     <string name="pcv3_output_discarded_title">Артефакт восстановления удалён</string>
     <string name="pcv3_output_discarded_body">Принадлежащий приложению артефакт восстановления удалён. Зашифрованный источник сохранён.</string>
     <string name="pcv3_output_discard_cleanup_title">Очистка артефакта восстановления не завершена</string>
@@ -321,7 +321,7 @@
     <string name="pcv3_output_expired_title">Срок действия операции с результатом истёк</string>
     <string name="pcv3_output_expired_body">Операция сохранения или удаления больше не была действительна. Новое место или удаление не подтверждены.</string>
     <string name="pcv3_output_unknown_title">Результат операции с данными неизвестен</string>
-    <string name="pcv3_output_unknown_body">Приложению не удалось проверить результат сохранения или удаления. Сохраните зашифрованный источник и не считайте, что данные сохранены или удалены.</string>
+    <string name="pcv3_output_unknown_body">Приложению не удалось проверить результат сохранения или удаления. Сохраните исходные файлы и не считайте, что данные сохранены или удалены.</string>
     <string name="pcv3_output_saved_close">Закрыть результат сохранения</string>
     <string name="pcv3_output_save_failed_close">Закрыть ошибку сохранения</string>
     <string name="pcv3_output_discarded_close">Закрыть результат удаления</string>
@@ -356,4 +356,16 @@
     <string name="pcv3_artifact_row">Запись %1$s, байты с %2$s по %3$s, %4$s</string>
     <string name="pcv3_artifact_previous_page">Предыдущие диапазоны</string>
     <string name="pcv3_artifact_next_page">Следующие диапазоны</string>
+    <string name="pcv3_output_provider_unsupported">Этот поставщик документов не поддерживает сохранение результата. Выберите другое место. Результат сохранён в приложении.</string>
+
+    <!-- Retained output and bounded creation request feedback. -->
+    <string name="pcv3_request_too_large">Выбор файлов или комментарий превышает допустимые ограничения. Выберите меньше файлов или сократите комментарий.</string>
+    <string name="pcv3_discard_retained_title">Удалить результат?</string>
+    <string name="pcv3_discard_retained_body">Результат в хранилище приложения будет удалён без возможности восстановления. Исходные файлы сохранятся.</string>
+    <string name="pcv3_retained_discarded_title">Результат удалён</string>
+    <string name="pcv3_retained_discarded_body">Результат в хранилище приложения удалён. Исходные файлы сохранены.</string>
+    <string name="pcv3_retained_discard_cleanup_title">Очистка результата не завершена</string>
+    <string name="pcv3_retained_discard_cleanup_body">Приложение не смогло подтвердить удаление результата из своего хранилища. Сохраните исходные файлы.</string>
+    <string name="pcv3_resource_limit_title">Достигнут лимит ресурсов</string>
+    <string name="pcv3_resource_limit_body">Операция остановлена: превышен допустимый расход ресурсов.</string>
 </resources>

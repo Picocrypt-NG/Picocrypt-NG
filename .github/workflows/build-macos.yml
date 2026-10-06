@@ -36,7 +36,7 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.26.6"
+        go-version: "1.27.1"
         cache-dependency-path: src/go.sum
 
     - name: Install packages
@@ -54,7 +54,7 @@ jobs:
         cd src
         go test -v -race -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
         go test -v -race -timeout 15m ./internal/pcv3publication/...
-        go test -v -race -timeout 15m ./internal/pcv3/... ./internal/pcv3credential/... ./internal/pcv3operation/... ./internal/pcv3recovery/... ./internal/pcv3artifact/... ./internal/pcv3resource/... ./internal/app/...
+        go test -v -race -timeout 15m ./internal/pcv3operation/internal/pcv3/... ./internal/pcv3operation/internal/pcv3credential/... ./internal/pcv3operation/... ./internal/pcv3operation/internal/pcv3recovery/... ./internal/pcv3operation/internal/pcv3artifact/... ./internal/pcv3operation/internal/pcv3resource/... ./internal/app/...
         go test -v -race -timeout 15m ./internal/volume/...
         go test -v -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...
 
@@ -155,7 +155,7 @@ jobs:
     - name: Get version tag
       run: |
         VERSION=$(cat VERSION)
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
     - name: Verify artifacts present
       run: |

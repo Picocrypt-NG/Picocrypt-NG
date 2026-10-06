@@ -71,6 +71,8 @@ type Stage struct {
 	cleanupDone         bool
 	cleanupErr          error
 	retentionAttempted  bool
+	retainWriteHandle   bool
+	writePublication    bool
 	retainedSHA256      [sha256.Size]byte
 	retainedSize        int64
 	retainedDigestReady bool
@@ -301,6 +303,16 @@ func (stage *Stage) freezeRetainedDigest(ctx context.Context) error {
 	return nil
 }
 
+// PublishWrite finalizes ciphertext without retaining a follow-up descriptor.
+// Its journal is retired after file synchronization and before publication;
+// startup cleanup must never remove committed ciphertext with uncertain durability.
+func (stage *Stage) PublishWrite(ctx context.Context) Result {
+	if stage != nil && stage.terminal == nil {
+		stage.writePublication = true
+	}
+	return stage.Publish(ctx)
+}
+
 // Publish finalizes the stage, invokes the one platform atomic operation, and
 // reports the identity-proven terminal state. Repeated calls return the same
 // result without repeating filesystem effects.
@@ -323,11 +335,16 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 	if ctx.Err() != nil {
 		return stage.finish(StateNotPublished, pcv3.StageCancellation, CodeCancelled)
 	}
-	if err := stage.operations.closeStage(stage.file); err != nil {
-		stage.file = nil
+	if stage.writePublication && stage.journaled && !stage.retireCleanupJournal() {
 		return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
 	}
-	stage.file = nil
+	if !stage.retainWriteHandle {
+		if err := stage.operations.closeStage(stage.file); err != nil {
+			stage.file = nil
+			return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
+		}
+		stage.file = nil
+	}
 	if ctx.Err() != nil {
 		return stage.finish(StateNotPublished, pcv3.StageCancellation, CodeCancelled)
 	}
@@ -434,11 +451,24 @@ func (stage *Stage) finishJournaledCommitFailure() Result {
 // establish the post-publication identity grants no capability and immediately
 // removes the exact published file; any cleanup uncertainty is terminal.
 func (stage *Stage) PublishRetained(ctx context.Context) (Result, *RetainedFile) {
+	return stage.publishRetained(ctx, false)
+}
+
+// PublishWriteRetained keeps the original ciphertext descriptor across publication.
+// A committed file remains available even when directory durability is uncertain.
+// This does not grant source-deletion authority.
+func (stage *Stage) PublishWriteRetained(ctx context.Context) (Result, *RetainedFile) {
+	return stage.publishRetained(ctx, true)
+}
+
+func (stage *Stage) publishRetained(ctx context.Context, write bool) (Result, *RetainedFile) {
 	if stage != nil && stage.retentionAttempted {
 		return stage.terminal, nil
 	}
 	if stage != nil {
 		stage.retentionAttempted = true
+		stage.retainWriteHandle = write && stage.terminal == nil
+		stage.writePublication = stage.retainWriteHandle
 		if stage.terminal == nil {
 			if err := stage.freezeRetainedDigest(ctx); err != nil {
 				if errors.Is(err, context.Canceled) || (ctx != nil && ctx.Err() != nil) {
@@ -449,11 +479,17 @@ func (stage *Stage) PublishRetained(ctx context.Context) (Result, *RetainedFile)
 		}
 	}
 	publication := stage.Publish(ctx)
-	if publication == nil || publication.State() != StatePublishedDurable {
+	if publication == nil || (publication.State() != StatePublishedDurable &&
+		(!stage.retainWriteHandle || publication.State() != StatePublishedDurabilityUncertain)) {
 		return publication, nil
 	}
 	retained := stage.takeRetainedFile()
 	if retained == nil {
+		if stage.retainWriteHandle {
+			// Preserve committed ciphertext when custody cannot be established.
+			stage.cleanupMayRemain = true
+			return publication, nil
+		}
 		// A prior Cleanup may already have closed every pinned handle after an
 		// ordinary durable Publish. Preserve that durable truth; no exact cleanup
 		// authority remains from which a retained capability could be minted.
@@ -481,7 +517,9 @@ func (stage *Stage) PublishRetained(ctx context.Context) (Result, *RetainedFile)
 
 func (stage *Stage) takeRetainedFile() *RetainedFile {
 	if stage == nil || stage.terminal == nil ||
-		stage.terminal.State() != StatePublishedDurable || stage.file != nil ||
+		(stage.terminal.State() != StatePublishedDurable &&
+			(!stage.retainWriteHandle || stage.terminal.State() != StatePublishedDurabilityUncertain)) ||
+		(!stage.retainWriteHandle && stage.file != nil) ||
 		stage.root == nil || stage.parent == nil || stage.stageInfo == nil ||
 		!stage.retainedDigestReady ||
 		stage.targetName == "" || stage.operations.removeStage == nil ||
@@ -491,15 +529,24 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 		return nil
 	}
 
-	file, err := stage.operations.openRetained(stage.root, stage.targetName)
-	if err != nil {
+	file := stage.file
+	if !stage.retainWriteHandle {
+		var err error
+		file, err = stage.operations.openRetained(stage.root, stage.targetName)
+		if err != nil {
+			return nil
+		}
+	}
+	if file == nil {
 		return nil
 	}
 	info, err := file.Stat()
 	if err != nil || info == nil || !info.Mode().IsRegular() ||
 		info.Size() != stage.retainedSize || !os.SameFile(stage.stageInfo, info) ||
 		probeIdentity(stage.root, stage.targetName, stage.stageInfo) != identityExpected {
-		_ = file.Close()
+		if !stage.retainWriteHandle {
+			_ = file.Close()
+		}
 		return nil
 	}
 
@@ -515,6 +562,7 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 		syncDirectory: stage.operations.syncDirectory,
 		active:        true,
 	}
+	stage.file = nil
 	stage.root = nil
 	stage.parent = nil
 	stage.rootInfo = nil

@@ -4,7 +4,7 @@ import (
 	"Picocrypt-NG/internal/app"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"Picocrypt-NG/internal/volume"
 	"context"
@@ -38,6 +38,7 @@ type folderScanJob struct {
 	fileCount   int
 	folderCount int
 	generation  uint64
+	budget      *fileops.ZIPResourceBudget
 }
 
 var errFolderScanSuperseded = errors.New("folder scan superseded")
@@ -47,15 +48,16 @@ var startupPathStat = os.Stat
 var (
 	previewDroppedHeader    = previewHeader
 	openDroppedPCVInput     = openDroppedInput
-	probeDroppedPCVInput    = pcv3.Probe
+	probeDroppedPCVInput    = pcv3operation.Probe
 	isDroppedVolumeDeniable = volume.IsDeniableFile
 )
 
 type droppedRouteResult struct {
-	source *os.File
-	size   int64
-	route  pcv3.Route
-	err    error
+	source     *os.File
+	size       int64
+	route      pcv3operation.Route
+	err        error
+	explicitD1 bool
 }
 
 func openDroppedInput(path string, recombine bool) (*os.File, error) {
@@ -77,11 +79,11 @@ func defaultPCV3Output(path string) string {
 }
 
 func isPCV3UnavailableError(err error) bool {
-	if errors.Is(err, pcv3.ErrReaderUnavailable) {
+	if errors.Is(err, pcv3operation.ErrReaderUnavailable) {
 		return true
 	}
-	var failure pcv3.Failure
-	return errors.As(err, &failure) && failure.Outcome() != pcv3.OutcomeOperationFailed
+	var failure pcv3operation.Failure
+	return errors.As(err, &failure) && failure.Outcome() != pcv3operation.OutcomeOperationFailed
 }
 
 func dropPromptLabel() string {
@@ -228,6 +230,24 @@ func (a *App) appendScannedFiles(files []scannedFile) {
 }
 
 func scanFolders(ctx context.Context, roots []string, emit scannedFileBatch) error {
+	return scanFoldersWithBudget(ctx, roots, fileops.NewZIPResourceBudget(), emit)
+}
+
+func scanFoldersWithBudget(ctx context.Context, roots []string, budget *fileops.ZIPResourceBudget, emit scannedFileBatch) (retErr error) {
+	if err := pcv3operation.AdmitZIPWorkingMemory(ctx, budget); err != nil {
+		return err
+	}
+	const batchWorkspace = 8 << 10
+	if err := budget.Reserve(batchWorkspace); err != nil {
+		return err
+	}
+	defer budget.Release(batchWorkspace)
+	var retained uint64
+	defer func() {
+		if retErr != nil {
+			budget.Release(retained)
+		}
+	}()
 	pendingFiles := make([]scannedFile, 0, dropScanBatchSize)
 	lastFlush := time.Now()
 
@@ -253,7 +273,7 @@ func scanFolders(ctx context.Context, roots []string, emit scannedFileBatch) err
 			return err
 		}
 
-		err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		err := fileops.WalkZIPInputs(ctx, root, budget, func(path string, info os.FileInfo, walkErr error) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -264,6 +284,11 @@ func scanFolders(ctx context.Context, roots []string, emit scannedFileBatch) err
 				return nil
 			}
 
+			cost, err := fileops.ReserveZIPInputPath(budget, len(path))
+			if err != nil {
+				return err
+			}
+			retained += cost
 			pendingFiles = append(pendingFiles, scannedFile{path: path, size: info.Size()})
 			if len(pendingFiles) >= dropScanBatchSize || time.Since(lastFlush) >= dropScanFlushInterval {
 				return flushPendingFiles()
@@ -307,7 +332,11 @@ func (a *App) scannedFileEmitter(generation uint64) scannedFileBatch {
 }
 
 func (a *App) runFolderScan(ctx context.Context, job folderScanJob, emit scannedFileBatch) {
-	err := scanFolders(ctx, job.roots, emit)
+	budget := job.budget
+	if budget == nil {
+		budget = fileops.NewZIPResourceBudget()
+	}
+	err := scanFoldersWithBudget(ctx, job.roots, budget, emit)
 	fyne.DoAndWait(func() {
 		if !a.folderScanCanApply(ctx, job.generation) {
 			return
@@ -321,6 +350,10 @@ func (a *App) runFolderScan(ctx context.Context, job folderScanJob, emit scanned
 			a.refreshAdvanced()
 		case errors.Is(err, context.Canceled), errors.Is(err, errFolderScanSuperseded):
 			return
+		case errors.Is(err, fileops.ErrZIPMetadataLimit):
+			a.applyFolderWalkError()
+			a.State.SetStatus(resourceLimitCopy().Title, util.RED)
+			a.refreshUI()
 		default:
 			a.applyFolderWalkError()
 		}
@@ -352,6 +385,23 @@ func (a *App) onDrop(names []string) {
 // Recursive processing uses it inside its DoAndWait transaction so it bypasses
 // only onDrop's user-input busy guard and never re-enters the public handler.
 func (a *App) applyDropSelection(names []string) bool {
+	budget := fileops.NewZIPResourceBudget()
+	if len(names) > 1 {
+		if err := pcv3operation.AdmitZIPWorkingMemory(context.Background(), budget); err != nil {
+			a.applyFolderWalkError()
+			a.State.SetStatus(resourceLimitCopy().Title, util.RED)
+			a.refreshUI()
+			return false
+		}
+	}
+	for _, name := range names {
+		if _, err := fileops.ReserveZIPInputPath(budget, len(name)); err != nil {
+			a.applyFolderWalkError()
+			a.State.SetStatus(resourceLimitCopy().Title, util.RED)
+			a.refreshUI()
+			return false
+		}
+	}
 	reservation, ok := a.workers.reserve()
 	if !ok {
 		return false
@@ -428,7 +478,7 @@ func (a *App) applyDropSelection(names []string) bool {
 				accepted := a.applyLegacyDroppedFileRoute(path, isSplit, droppedRouteResult{
 					source: routedInput,
 					size:   stat.Size(),
-					route:  pcv3.RouteLegacyEligible,
+					route:  pcv3operation.RouteLegacyEligible,
 				})
 				// Leaf symlinks remain a legacy compatibility path only. Do not
 				// retain their descriptor as later explicit D1 authority.
@@ -466,6 +516,7 @@ func (a *App) applyDropSelection(names []string) bool {
 		fileCount:   len(a.State.OnlyFiles),
 		folderCount: len(a.State.OnlyFolders),
 		generation:  generation,
+		budget:      budget,
 	}
 	emit := a.scannedFileEmitter(generation)
 	workerLaunched = true
@@ -496,9 +547,9 @@ func routeDroppedFile(path string, split bool) droppedRouteResult {
 			_ = source.Close()
 			return droppedRouteResult{err: err}
 		}
-		return droppedRouteResult{source: source, size: info.Size(), route: pcv3.DetectPrefix(prefix[:count])}
+		return droppedRouteResult{source: source, size: info.Size(), route: pcv3operation.DetectPrefix(prefix[:count])}
 	}
-	route, _, err := probeDroppedPCVInput(source, info.Size())
+	route, err := probeDroppedPCVInput(source, info.Size())
 	return droppedRouteResult{source: source, size: info.Size(), route: route, err: err}
 }
 
@@ -506,6 +557,7 @@ func routeDroppedFile(path string, split bool) droppedRouteResult {
 // The recursive operation itself remains live: this must not call resetUI,
 // cancel the operation session, or change its generation.
 func (a *App) prepareRecursiveDropSelection() {
+	a.pcv3ArchiveSummary = nil
 	a.State.ClosePCV3Source()
 	a.State.PCVUnavailable = false
 	a.State.Mode = ""
@@ -556,12 +608,36 @@ func (a *App) applyLegacyDroppedFileRoute(path string, isSplit bool, result drop
 	return accepted
 }
 
+// routeRecursiveD1File opens the exact selected file under explicit D1 intent.
+// Prefixes cannot change that intent, even when random D1 bytes resemble PCV.
+func routeRecursiveD1File(path string) droppedRouteResult {
+	source, err := openPCV3InputFile(path)
+	if err != nil {
+		return droppedRouteResult{err: err}
+	}
+	info, err := source.Stat()
+	if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
+		_ = source.Close()
+		return droppedRouteResult{err: errors.New("selected D1 input is not a regular file")}
+	}
+	return droppedRouteResult{source: source, size: info.Size(), explicitD1: true}
+}
+
 // applyRecursiveDroppedFileRoute consumes one synchronously routed result on
-// the Fyne thread. Normal PCV3 is terminal for the legacy recursive path and
-// must never fall through to the legacy executor.
+// the Fyne thread. PCV3 transfers only to the selected typed batch reader;
+// malformed or unsupported PCV input never falls through to legacy.
 func (a *App) applyRecursiveDroppedFileRoute(path string, isSplit bool, result droppedRouteResult) bool {
 	a.prepareRecursiveDropSelection()
-	if result.err != nil || result.route != pcv3.RouteLegacyEligible {
+	if result.err == nil && (result.explicitD1 || result.route == pcv3operation.RouteNormalPCV) && !isSplit {
+		format := app.PCV3FormatNormal
+		if result.explicitD1 {
+			format = app.PCV3FormatD1
+		}
+		if a.State.SetPCV3Ready(result.source, format, path, defaultPCV3Output(path), result.size) {
+			return true
+		}
+	}
+	if result.err != nil || result.explicitD1 || result.route != pcv3operation.RouteLegacyEligible {
 		if result.source != nil {
 			_ = result.source.Close()
 		}
@@ -583,7 +659,16 @@ func (a *App) applyDroppedFileRoute(
 		}
 		return
 	}
-	if result.err != nil {
+	// Structural probe failures still belong to the Normal family. Keep the
+	// held source so the user can explicitly choose recovery or D1; the
+	// selected reader will validate it again. Actual input I/O failures remain
+	// terminal and no claimed PCV source may fall back to the legacy reader.
+	var failure pcv3operation.Failure
+	structuralFailure := result.route == pcv3operation.RouteNormalPCV &&
+		errors.As(result.err, &failure) &&
+		(failure.Outcome() == pcv3operation.OutcomeInvalidStructurePreKDF ||
+			failure.Outcome() == pcv3operation.OutcomeUnsupportedRoutingPreKDF)
+	if result.err != nil && !structuralFailure {
 		if result.source != nil {
 			_ = result.source.Close()
 		}
@@ -592,7 +677,7 @@ func (a *App) applyDroppedFileRoute(
 		a.refreshUI()
 		return
 	}
-	if result.route == pcv3.RouteNormalPCV {
+	if result.route == pcv3operation.RouteNormalPCV {
 		if isSplit {
 			base, ok := fileops.SplitChunkBase(path)
 			if !ok {
@@ -610,6 +695,7 @@ func (a *App) applyDroppedFileRoute(
 				a.State.SetPCV3RoutingFailed()
 			} else {
 				a.State.Recombine = true
+				a.State.SetPCV3Intent(app.PCV3ActionDecrypt, app.PCV3FactorPolicyUnset, app.PCV3KeyfileOrderUnset)
 			}
 			a.refreshAdvanced()
 			a.refreshUI()
@@ -620,6 +706,8 @@ func (a *App) applyDroppedFileRoute(
 		) {
 			_ = result.source.Close()
 			a.State.SetPCV3RoutingFailed()
+		} else {
+			a.State.SetPCV3Intent(app.PCV3ActionDecrypt, app.PCV3FactorPolicyUnset, app.PCV3KeyfileOrderUnset)
 		}
 		a.refreshAdvanced()
 		a.refreshUI()

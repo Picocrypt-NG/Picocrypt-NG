@@ -2,8 +2,6 @@ package cli
 
 import (
 	"Picocrypt-NG/internal/fileops"
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"bytes"
@@ -47,12 +45,12 @@ type pcv3CLIObservation struct {
 }
 
 type pcv3CLIFixedResult struct {
-	outcome              pcv3.Outcome
-	stage                pcv3.Stage
-	code                 pcv3.Code
+	outcome              pcv3operation.Outcome
+	stage                pcv3operation.Stage
+	code                 pcv3operation.Code
 	publicationAttempted bool
 	publicationState     pcv3publication.State
-	publicationStage     pcv3.Stage
+	publicationStage     pcv3operation.Stage
 	publicationCode      pcv3publication.Code
 	warnings             []pcv3operation.Warning
 	class                pcv3operation.CompletionClass
@@ -61,11 +59,11 @@ type pcv3CLIFixedResult struct {
 	diagnostic           string
 }
 
-func (result *pcv3CLIFixedResult) Outcome() pcv3.Outcome { return result.outcome }
+func (result *pcv3CLIFixedResult) Outcome() pcv3operation.Outcome { return result.outcome }
 
-func (result *pcv3CLIFixedResult) Stage() pcv3.Stage { return result.stage }
+func (result *pcv3CLIFixedResult) Stage() pcv3operation.Stage { return result.stage }
 
-func (result *pcv3CLIFixedResult) Code() pcv3.Code { return result.code }
+func (result *pcv3CLIFixedResult) Code() pcv3operation.Code { return result.code }
 
 func (result *pcv3CLIFixedResult) PublicationAttempted() bool {
 	return result.publicationAttempted
@@ -75,7 +73,7 @@ func (result *pcv3CLIFixedResult) PublicationState() pcv3publication.State {
 	return result.publicationState
 }
 
-func (result *pcv3CLIFixedResult) PublicationStage() pcv3.Stage {
+func (result *pcv3CLIFixedResult) PublicationStage() pcv3operation.Stage {
 	return result.publicationStage
 }
 
@@ -105,9 +103,9 @@ func (result *pcv3CLIFixedResult) String() string { return result.diagnostic }
 
 func pcv3CLIRefusalResult() pcv3CLIResult {
 	return &pcv3CLIFixedResult{
-		outcome: pcv3.OutcomeOperationFailed,
-		stage:   pcv3.StageCredentialPolicy,
-		code:    pcv3.CodeOperationFailed,
+		outcome: pcv3operation.OutcomeOperationFailed,
+		stage:   pcv3operation.StageCredentialPolicy,
+		code:    pcv3operation.CodeOperationFailed,
 		class:   pcv3operation.CompletionRefused,
 	}
 }
@@ -240,7 +238,7 @@ func pcv3CLIFixedResultForScenario(scenario, attacker string) pcv3CLIResult {
 		return pcv3CLIRefusalResult()
 	case "clean":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeSuccess, stage: pcv3.StageNone, code: pcv3.CodeSuccess,
+			outcome: pcv3operation.OutcomeSuccess, stage: pcv3operation.StageNone, code: pcv3operation.CodeSuccess,
 			publicationAttempted: true,
 			publicationState:     pcv3publication.StatePublishedDurable,
 			publicationCode:      pcv3publication.CodePublishedDurable,
@@ -249,7 +247,7 @@ func pcv3CLIFixedResultForScenario(scenario, attacker string) pcv3CLIResult {
 		}
 	case "warning":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeForceUnverified, stage: pcv3.StageRecordAuth, code: pcv3.CodeForceUnverified,
+			outcome: pcv3operation.OutcomeForceUnverified, stage: pcv3operation.StageRecordAuth, code: pcv3operation.CodeForceUnverified,
 			publicationAttempted: true,
 			publicationState:     pcv3publication.StatePublishedDurable,
 			publicationCode:      pcv3publication.CodePublishedDurable,
@@ -259,7 +257,7 @@ func pcv3CLIFixedResultForScenario(scenario, attacker string) pcv3CLIResult {
 		}
 	case "degraded":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeAuthenticatedDegraded, stage: pcv3.StageMetadata, code: pcv3.CodeAuthenticatedDegraded,
+			outcome: pcv3operation.OutcomeAuthenticatedDegraded, stage: pcv3operation.StageMetadata, code: pcv3operation.CodeAuthenticatedDegraded,
 			publicationAttempted: true,
 			publicationState:     pcv3publication.StatePublishedDurable,
 			publicationCode:      pcv3publication.CodePublishedDurable,
@@ -269,7 +267,7 @@ func pcv3CLIFixedResultForScenario(scenario, attacker string) pcv3CLIResult {
 		}
 	case "partial":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeForcePartial, stage: pcv3.StageRecordAuth, code: pcv3.CodeForcePartial,
+			outcome: pcv3operation.OutcomeForcePartial, stage: pcv3operation.StageRecordAuth, code: pcv3operation.CodeForcePartial,
 			publicationAttempted: true,
 			publicationState:     pcv3publication.StatePublishedDurable,
 			publicationCode:      pcv3publication.CodePublishedDurable,
@@ -279,7 +277,7 @@ func pcv3CLIFixedResultForScenario(scenario, attacker string) pcv3CLIResult {
 		}
 	case "cleanup-warning":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeSuccess, stage: pcv3.StageNone, code: pcv3.CodeSuccess,
+			outcome: pcv3operation.OutcomeSuccess, stage: pcv3operation.StageNone, code: pcv3operation.CodeSuccess,
 			publicationAttempted: true,
 			publicationState:     pcv3publication.StatePublishedDurable,
 			publicationCode:      pcv3publication.CodePublishedDurable,
@@ -289,10 +287,10 @@ func pcv3CLIFixedResultForScenario(scenario, attacker string) pcv3CLIResult {
 		}
 	case "uncertain":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeSuccess, stage: pcv3.StageNone, code: pcv3.CodeSuccess,
+			outcome: pcv3operation.OutcomeSuccess, stage: pcv3operation.StageNone, code: pcv3operation.CodeSuccess,
 			publicationAttempted: true,
 			publicationState:     pcv3publication.StatePublishedDurabilityUncertain,
-			publicationStage:     pcv3.StageDirectorySync,
+			publicationStage:     pcv3operation.StageDirectorySync,
 			publicationCode:      pcv3publication.CodeDurabilityUncertain,
 			warnings:             []pcv3operation.Warning{pcv3operation.WarningDurabilityUncertain},
 			class:                pcv3operation.CompletionDurabilityUncertain,
@@ -300,10 +298,10 @@ func pcv3CLIFixedResultForScenario(scenario, attacker string) pcv3CLIResult {
 		}
 	case "indeterminate":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeForcePartial, stage: pcv3.StageRecordAuth, code: pcv3.CodeForcePartial,
+			outcome: pcv3operation.OutcomeForcePartial, stage: pcv3operation.StageRecordAuth, code: pcv3operation.CodeForcePartial,
 			publicationAttempted: true,
 			publicationState:     pcv3publication.StatePublicationIndeterminate,
-			publicationStage:     pcv3.StageOutputPublication,
+			publicationStage:     pcv3operation.StageOutputPublication,
 			publicationCode:      pcv3publication.CodePublicationIndeterminate,
 			warnings: []pcv3operation.Warning{
 				pcv3operation.WarningForcePartial,
@@ -314,10 +312,10 @@ func pcv3CLIFixedResultForScenario(scenario, attacker string) pcv3CLIResult {
 		}
 	case "unknown":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.Outcome(255), stage: pcv3.Stage(255), code: pcv3.Code(255),
+			outcome: pcv3operation.Outcome(255), stage: pcv3operation.Stage(255), code: pcv3operation.Code(255),
 			publicationAttempted: true,
 			publicationState:     pcv3publication.State(255),
-			publicationStage:     pcv3.Stage(255),
+			publicationStage:     pcv3operation.Stage(255),
 			publicationCode:      pcv3publication.Code(255),
 			warnings:             []pcv3operation.Warning{pcv3operation.Warning(255)},
 			class:                pcv3operation.CompletionUnknown,
@@ -325,17 +323,17 @@ func pcv3CLIFixedResultForScenario(scenario, attacker string) pcv3CLIResult {
 		}
 	case "not-published":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeOperationFailed, stage: pcv3.StageOutputPublication, code: pcv3.CodeOperationFailed,
+			outcome: pcv3operation.OutcomeOperationFailed, stage: pcv3operation.StageOutputPublication, code: pcv3operation.CodeOperationFailed,
 			publicationAttempted: true,
 			publicationState:     pcv3publication.StateNotPublished,
-			publicationStage:     pcv3.StageOutputPublication,
+			publicationStage:     pcv3operation.StageOutputPublication,
 			publicationCode:      pcv3publication.CodeAtomicFailed,
 			class:                pcv3operation.CompletionNoOutput,
 			diagnostic:           attacker,
 		}
 	case "archive-signal":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeSuccess, stage: pcv3.StageNone, code: pcv3.CodeSuccess,
+			outcome: pcv3operation.OutcomeSuccess, stage: pcv3operation.StageNone, code: pcv3operation.CodeSuccess,
 			class: pcv3operation.CompletionArchivePending,
 			archive: &pcv3CLIFakeArchive{extract: func(ctx context.Context, root *os.Root) pcv3CLIResult {
 				if root != nil {
@@ -350,20 +348,20 @@ func pcv3CLIFixedResultForScenario(scenario, attacker string) pcv3CLIResult {
 		}
 	case "archive-close":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeSuccess, stage: pcv3.StageNone, code: pcv3.CodeSuccess,
+			outcome: pcv3operation.OutcomeSuccess, stage: pcv3operation.StageNone, code: pcv3operation.CodeSuccess,
 			class: pcv3operation.CompletionArchivePending,
 			archive: &pcv3CLIFakeArchive{close: func() pcv3CLIResult {
 				return &pcv3CLIFixedResult{
-					outcome: pcv3.OutcomeOperationFailed,
-					stage:   pcv3.StageOutputPublication,
-					code:    pcv3.CodeOperationFailed,
+					outcome: pcv3operation.OutcomeOperationFailed,
+					stage:   pcv3operation.StageOutputPublication,
+					code:    pcv3operation.CodeOperationFailed,
 					class:   pcv3operation.CompletionNoOutput,
 				}
 			}},
 		}
 	case "archive-extract":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeSuccess, stage: pcv3.StageNone, code: pcv3.CodeSuccess,
+			outcome: pcv3operation.OutcomeSuccess, stage: pcv3operation.StageNone, code: pcv3operation.CodeSuccess,
 			class: pcv3operation.CompletionArchivePending,
 			archive: &pcv3CLIFakeArchive{extract: func(_ context.Context, root *os.Root) pcv3CLIResult {
 				if root == nil {
@@ -383,7 +381,7 @@ func pcv3CLIFixedResultForScenario(scenario, attacker string) pcv3CLIResult {
 		}
 	case "archive-expired":
 		return &pcv3CLIFixedResult{
-			outcome: pcv3.OutcomeSuccess, stage: pcv3.StageNone, code: pcv3.CodeSuccess,
+			outcome: pcv3operation.OutcomeSuccess, stage: pcv3operation.StageNone, code: pcv3operation.CodeSuccess,
 			class: pcv3operation.CompletionArchivePending,
 		}
 	}
@@ -440,7 +438,7 @@ func runPCV3CLIHelper(
 
 func loadPCV3CLIFixture(t *testing.T) []byte {
 	t.Helper()
-	fixture, err := os.ReadFile(filepath.Join("..", "pcv3", "testdata", "schema1-minimal.pcv"))
+	fixture, err := os.ReadFile(filepath.Join("..", "pcv3operation", "internal", "pcv3", "testdata", "schema1-minimal.pcv"))
 	if err != nil {
 		t.Fatalf("read literal PCV3 fixture: %v", err)
 	}
@@ -462,9 +460,9 @@ func TestPCV3CLIPreservesFactorIntent(t *testing.T) {
 		name          string
 		args          func(input, output, first, second string) []string
 		wantMode      pcv3operation.Mode
-		wantFactor    pcv3credential.CredentialMode
-		wantOrder     pcv3credential.KeyfileMode
-		wantPolicy    pcv3credential.FactorPolicy
+		wantFactor    pcv3operation.CredentialMode
+		wantOrder     pcv3operation.KeyfileMode
+		wantPolicy    pcv3operation.FactorPolicy
 		wantPassword  string
 		wantOpenOrder []string
 	}{
@@ -474,9 +472,9 @@ func TestPCV3CLIPreservesFactorIntent(t *testing.T) {
 				return []string{"decrypt", input, "-o", output, "--pcv3-factors=password", "-p", "raw-password"}
 			},
 			wantMode:     pcv3operation.ModeReadNormal,
-			wantFactor:   pcv3credential.CredentialModePasswordOnly,
-			wantOrder:    pcv3credential.KeyfileModeNone,
-			wantPolicy:   pcv3credential.FactorPolicyPasswordOnly,
+			wantFactor:   pcv3operation.CredentialModePasswordOnly,
+			wantOrder:    pcv3operation.KeyfileModeNone,
+			wantPolicy:   pcv3operation.FactorPolicyPasswordOnly,
 			wantPassword: "raw-password",
 		},
 		{
@@ -489,9 +487,9 @@ func TestPCV3CLIPreservesFactorIntent(t *testing.T) {
 				}
 			},
 			wantMode:      pcv3operation.ModeReadNormal,
-			wantFactor:    pcv3credential.CredentialModeKeyfilesOnly,
-			wantOrder:     pcv3credential.KeyfileModeOrdered,
-			wantPolicy:    pcv3credential.FactorPolicyKeyfilesOnly,
+			wantFactor:    pcv3operation.CredentialModeKeyfilesOnly,
+			wantOrder:     pcv3operation.KeyfileModeOrdered,
+			wantPolicy:    pcv3operation.FactorPolicyKeyfilesOnly,
 			wantOpenOrder: []string{"second.key", "first.key", "second.key"},
 		},
 		{
@@ -504,9 +502,9 @@ func TestPCV3CLIPreservesFactorIntent(t *testing.T) {
 				}
 			},
 			wantMode:      pcv3operation.ModeReadNormal,
-			wantFactor:    pcv3credential.CredentialModePasswordAndKeyfiles,
-			wantOrder:     pcv3credential.KeyfileModeUnordered,
-			wantPolicy:    pcv3credential.FactorPolicyPasswordAndKeyfiles,
+			wantFactor:    pcv3operation.CredentialModePasswordAndKeyfiles,
+			wantOrder:     pcv3operation.KeyfileModeUnordered,
+			wantPolicy:    pcv3operation.FactorPolicyPasswordAndKeyfiles,
 			wantPassword:  "combined-password",
 			wantOpenOrder: []string{"first.key", "second.key"},
 		},
@@ -534,13 +532,13 @@ func TestPCV3CLIPreservesFactorIntent(t *testing.T) {
 			if got := pcv3operation.Mode(observation.Mode); got != test.wantMode {
 				t.Fatalf("mode = %v; want %v", got, test.wantMode)
 			}
-			if got := pcv3credential.CredentialMode(observation.FactorMode); got != test.wantFactor {
+			if got := pcv3operation.CredentialMode(observation.FactorMode); got != test.wantFactor {
 				t.Fatalf("factor mode = %v; want %v", got, test.wantFactor)
 			}
-			if got := pcv3credential.KeyfileMode(observation.KeyfileMode); got != test.wantOrder {
+			if got := pcv3operation.KeyfileMode(observation.KeyfileMode); got != test.wantOrder {
 				t.Fatalf("keyfile order = %v; want %v", got, test.wantOrder)
 			}
-			if got := pcv3credential.FactorPolicy(observation.ExpectedPolicy); got != test.wantPolicy {
+			if got := pcv3operation.FactorPolicy(observation.ExpectedPolicy); got != test.wantPolicy {
 				t.Fatalf("factor policy = %v; want %v", got, test.wantPolicy)
 			}
 			if observation.Password != test.wantPassword {
@@ -731,7 +729,6 @@ func TestPCV3CLIRequiresExplicitModeAndLiveConsent(t *testing.T) {
 				t.Fatalf("consent callback present = %v; want %v", observation.ConsentPresent, test.wantConsent)
 			}
 			if test.wantOutcome != "" && !strings.Contains(result.stderr, test.wantOutcome) {
-				skipOnPCV3ResourceAdmissionDenial(t, result)
 				t.Fatalf("stderr = %q; want real-core terminal %q", result.stderr, test.wantOutcome)
 			}
 			hasProgress := strings.Contains(result.stderr, "Checking operation…") &&

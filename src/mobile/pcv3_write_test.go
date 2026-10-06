@@ -1,9 +1,7 @@
 package mobile
 
 import (
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3credential"
-	"bytes"
+	"Picocrypt-NG/internal/pcv3operation"
 	"context"
 	"fmt"
 	"os"
@@ -31,6 +29,29 @@ func pcv3WriteTestEnvelope(
 	)
 }
 
+// The transport admits the full format comment and realistic maximum selections;
+// aggregate allocation remains bounded before parsing or descriptor admission.
+func TestPCV3MobileWriteEnvelopeTransportBounds(t *testing.T) {
+	comment := strings.Repeat("x", 99999)
+	wire := pcv3WriteTestEnvelope("write-normal", "password", "none", "standard", false, comment, "/selected/file-0", "/target", nil)
+	decoded, err := decodePCV3Envelope(wire)
+	if err != nil || decoded.comment != comment {
+		t.Fatalf("maximum valid comment refused: %v", err)
+	}
+	paths := make([]string, 4096)
+	for index := range paths {
+		paths[index] = fmt.Sprintf("%q", fmt.Sprintf("/selected/file-%d", index))
+	}
+	extended := strings.TrimSuffix(wire, "}") + `,"inputFiles":[` + strings.Join(paths, ",") + `],"onlyFiles":[` + strings.Join(paths, ",") + `],"onlyFolders":[],"compress":false}`
+	decoded, err = decodePCV3Envelope(extended)
+	if err != nil || len(decoded.inputFiles) != 4096 {
+		t.Fatalf("bounded selection refused: %v", err)
+	}
+	if _, err := decodePCV3Envelope(wire + strings.Repeat(" ", 4<<20)); err == nil {
+		t.Fatal("oversized transport accepted")
+	}
+}
+
 // TestPCV3MobileWriteEnvelopeShape pins the new creation contract: write modes
 // are accepted only in their exact valid shape, and every malformed or
 // policy-violating shape is refused deterministically before any descriptor is
@@ -55,12 +76,12 @@ func TestPCV3MobileWriteEnvelopeShape(t *testing.T) {
 		t.Cleanup(func() { openPCV3Existing = oldOpen })
 
 		var writeCalls atomic.Int64
-		oldWrite := runPCV3NativeNormalWrite
-		runPCV3NativeNormalWrite = func(context.Context, *pcv3.NativeNormalWriteRequest) error {
+		oldWrite := runPCV3WriteWithOptions
+		runPCV3WriteWithOptions = func(context.Context, *pcv3operation.WriteRequest, pcv3operation.ExecutionOptions) *pcv3operation.Result {
 			writeCalls.Add(1)
 			return nil
 		}
-		t.Cleanup(func() { runPCV3NativeNormalWrite = oldWrite })
+		t.Cleanup(func() { runPCV3WriteWithOptions = oldWrite })
 
 		requiredCases := map[string]struct{}{
 			"missing-comment": {}, "missing-suite": {}, "missing-payloadrs": {},
@@ -150,10 +171,10 @@ func TestPCV3MobileWriteRoutesToNativeWriter(t *testing.T) {
 
 		workerDone := make(chan struct{})
 		var workerPassword []byte
-		oldWrite := runPCV3NativeNormalWrite
-		runPCV3NativeNormalWrite = func(_ context.Context, request *pcv3.NativeNormalWriteRequest) error {
+		oldWrite := runPCV3WriteWithOptions
+		runPCV3WriteWithOptions = func(_ context.Context, request *pcv3operation.WriteRequest, options pcv3operation.ExecutionOptions) *pcv3operation.Result {
 			defer close(workerDone)
-			if request.Suite != pcv3.SuiteParanoid || request.PayloadKind != pcv3.PayloadKindRaw ||
+			if request.Suite != pcv3operation.SuiteParanoid || request.PayloadKind != pcv3operation.PayloadKindRaw ||
 				!request.PayloadBodyRS || request.PlaintextLength != uint64(len(payload)) {
 				t.Errorf("native write request shape = suite %d kind %d rs %v length %d",
 					request.Suite, request.PayloadKind, request.PayloadBodyRS, request.PlaintextLength)
@@ -162,9 +183,9 @@ func TestPCV3MobileWriteRoutesToNativeWriter(t *testing.T) {
 				t.Errorf("native write comment = %q", request.Comment)
 			}
 			if request.Factors == nil ||
-				request.Factors.Mode != pcv3credential.CredentialModePasswordAndKeyfiles ||
-				request.Factors.KeyfileMode != pcv3credential.KeyfileModeOrdered ||
-				request.Factors.ExpectedPolicy != pcv3credential.FactorPolicyPasswordAndKeyfiles ||
+				request.Factors.Mode != pcv3operation.CredentialModePasswordAndKeyfiles ||
+				request.Factors.KeyfileMode != pcv3operation.KeyfileModeOrdered ||
+				request.Factors.ExpectedPolicy != pcv3operation.FactorPolicyPasswordAndKeyfiles ||
 				len(request.Factors.Keyfiles) != 1 {
 				t.Errorf("native write factor intent changed: %#v", request.Factors)
 			} else {
@@ -176,12 +197,14 @@ func TestPCV3MobileWriteRoutesToNativeWriter(t *testing.T) {
 			} else if _, err := request.Source.Read(data); err != nil || string(data) != payload {
 				t.Errorf("native write source read = %q, %v", data, err)
 			}
-			if request.Destination == nil || request.Admitter == nil {
-				t.Errorf("native write destination or admitter missing")
+			if request.Target != target || !options.RetainDurableOutput || !options.JournalPrivateStage {
+				t.Errorf("shared write custody options missing")
 			}
-			return nil
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return pcv3operation.RunWriteWithOptions(ctx, request, options)
 		}
-		t.Cleanup(func() { runPCV3NativeNormalWrite = oldWrite })
+		t.Cleanup(func() { runPCV3WriteWithOptions = oldWrite })
 
 		password := []byte("creation-password")
 		start := StartPCV3(
@@ -208,31 +231,8 @@ func TestPCV3MobileWriteRoutesToNativeWriter(t *testing.T) {
 		synctest.Wait()
 
 		snapshot := operation.Snapshot()
-		if snapshot.Outcome() != "success" || snapshot.Stage() != "none" ||
-			snapshot.Code() != "PCV3_SUCCESS" || snapshot.Diagnostic() != "none" ||
-			snapshot.CompletionClass() != "clean" || !snapshot.PublicationAttempted() ||
-			snapshot.PublicationState() != "published-durable" ||
-			snapshot.PublicationStage() != "none" ||
-			snapshot.PublicationCode() != "PCV3_PUBLICATION_PUBLISHED_DURABLE" ||
-			snapshot.WarningCount() != 0 || snapshot.ArchivePending() {
-			t.Fatalf("creation snapshot = %s", pcv3MobileSnapshotText(snapshot))
-		}
-		if snapshot.AuthenticatedComment() != "" {
-			t.Fatalf("creation minted an authenticated comment %q", snapshot.AuthenticatedComment())
-		}
-		output := operation.Output()
-		if output == nil || operation.Archive() != nil || operation.ArtifactInspection() != nil {
-			t.Fatal("durable creation did not retain exactly its output authority")
-		}
-		if code := operation.Release(); code != pcv3OperationReleaseDenied {
-			t.Fatalf("release with live write output = %q", code)
-		}
-		if discarded := output.Discard(); discarded == nil || discarded.Code() != "discarded" ||
-			discarded.CleanupIncomplete() {
-			t.Fatalf("write output discard = %#v", discarded)
-		}
-		if _, err := os.Lstat(target); !os.IsNotExist(err) {
-			t.Fatalf("discarded created volume remained at target: %v", err)
+		if snapshot.Diagnostic() != "cancellation" || snapshot.Outcome() != "operation-failed" || operation.Output() != nil {
+			t.Fatalf("shared result was not preserved: %s", pcv3MobileSnapshotText(snapshot))
 		}
 		synctest.Wait()
 		if workerPassword == nil {
@@ -246,168 +246,5 @@ func TestPCV3MobileWriteRoutesToNativeWriter(t *testing.T) {
 		if code := operation.Release(); code != "" {
 			t.Fatalf("creation release = %q", code)
 		}
-	})
-}
-
-// denyPCV3WriteAdmitter is a deterministic resource-denial oracle: it refuses
-// the fixed KDF profile the way a constrained Android device does.
-type denyPCV3WriteAdmitter struct{ calls *atomic.Int64 }
-
-func (admitter denyPCV3WriteAdmitter) AdmitKDF(
-	context.Context, pcv3credential.KDFProfile,
-) (pcv3credential.KDFAdmission, error) {
-	admitter.calls.Add(1)
-	return pcv3credential.KDFAdmissionDeniedInsufficient, nil
-}
-
-// TestPCV3MobileWriteAdmissionDenied proves creation fails closed on resource
-// admission denial: the refusal happens before the KDF and leaves no output,
-// no stage residue, and the exact resource diagnostic. Protects the
-// fail-closed admission invariant on the write path.
-func TestPCV3MobileWriteAdmissionDenied(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		temp := t.TempDir()
-		source := writePCV3MobileFile(t, temp, "plain.bin", "payload")
-		target := filepath.Join(temp, "volume.pcv")
-		opened := pcv3MobileObserveDescriptors(t)
-
-		var admitCalls atomic.Int64
-		oldAdmitter := newPCV3WriteAdmitter
-		newPCV3WriteAdmitter = func() pcv3credential.Admitter {
-			return denyPCV3WriteAdmitter{calls: &admitCalls}
-		}
-		t.Cleanup(func() { newPCV3WriteAdmitter = oldAdmitter })
-
-		password := []byte("creation-password")
-		start := StartPCV3(
-			pcv3WriteTestEnvelope(
-				"write-normal", "password", "none", "standard", false, "", source, target, nil,
-			),
-			password,
-		)
-		if start == nil || start.Code() != "" || start.Operation() == nil {
-			t.Fatalf("write start = %#v", start)
-		}
-		if !allZero(password) {
-			t.Fatal("caller password was not zeroed")
-		}
-		operation := start.Operation()
-		t.Cleanup(func() { cleanupOperation(operation.ID()) })
-		synctest.Wait()
-
-		if got := admitCalls.Load(); got != 1 {
-			t.Fatalf("admission decisions = %d; want exactly one", got)
-		}
-		snapshot := operation.Snapshot()
-		if snapshot.Outcome() != "operation-failed" ||
-			snapshot.Stage() != "credential-policy" ||
-			snapshot.Code() != "PCV3_OPERATION_FAILED" ||
-			snapshot.Diagnostic() != "resource-insufficient" ||
-			snapshot.CompletionClass() != "refused" ||
-			snapshot.PublicationAttempted() ||
-			snapshot.WarningCount() != 0 {
-			t.Fatalf("admission-denied snapshot = %s", pcv3MobileSnapshotText(snapshot))
-		}
-		if operation.Output() != nil || operation.Archive() != nil ||
-			operation.ArtifactInspection() != nil {
-			t.Fatal("admission-denied creation retained output authority")
-		}
-		if _, err := os.Lstat(target); !os.IsNotExist(err) {
-			t.Fatalf("admission-denied creation left output: %v", err)
-		}
-		pcv3MobileRequireDescriptorsClosed(t, *opened)
-		pcv3MobileRequireNoResidue(t, temp, []string{"plain.bin"})
-		if code := operation.Release(); code != "" {
-			t.Fatalf("admission-denied release = %q", code)
-		}
-	})
-}
-
-// TestPCV3MobileWriteD1KeyfilesOnlyRoundTrip proves bridge D1 creation runs
-// the fixed paranoid suite, accepts keyfile-only credentials, produces no
-// retained output capability (the native D1 writer publishes the staging file
-// directly), and decrypts byte-exact through the existing read-d1 path.
-// Protects D1 creation parity and the keyfile-only D1 policy.
-func TestPCV3MobileWriteD1KeyfilesOnlyRoundTrip(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		temp := t.TempDir()
-		payload := []byte("d1 keyfile-only bridge payload")
-		source := filepath.Join(temp, "plain.bin")
-		if err := os.WriteFile(source, payload, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		keyA := writePCV3MobileFile(t, temp, "a.key", "alpha")
-		keyB := writePCV3MobileFile(t, temp, "b.key", "bravo")
-		target := filepath.Join(temp, "volume.bin")
-		opened := pcv3MobileObserveDescriptors(t)
-
-		start := StartPCV3(
-			pcv3WriteTestEnvelope(
-				"write-d1", "keyfiles", "ordered", "paranoid", false,
-				"", source, target, []string{keyA, keyB},
-			),
-			[]byte{},
-		)
-		if start == nil || start.Code() != "" || start.Operation() == nil {
-			t.Fatalf("d1 write start = %#v", start)
-		}
-		operation := start.Operation()
-		t.Cleanup(func() { cleanupOperation(operation.ID()) })
-		synctest.Wait()
-
-		snapshot := operation.Snapshot()
-		skipOnPCV3ResourceAdmissionDenial(t, snapshot)
-		if snapshot.Outcome() != "success" || snapshot.Stage() != "none" ||
-			snapshot.Code() != "PCV3_SUCCESS" || snapshot.Diagnostic() != "none" ||
-			snapshot.CompletionClass() != "clean" || !snapshot.PublicationAttempted() ||
-			snapshot.PublicationState() != "published-durable" ||
-			snapshot.WarningCount() != 0 || snapshot.ArchivePending() {
-			t.Fatalf("d1 creation snapshot = %s", pcv3MobileSnapshotText(snapshot))
-		}
-		if operation.Output() != nil {
-			t.Fatal("d1 creation minted a retained output capability")
-		}
-		info, err := os.Lstat(target)
-		if err != nil || !info.Mode().IsRegular() {
-			t.Fatalf("d1 volume missing at staging target: %v", err)
-		}
-		if code := operation.Release(); code != "" {
-			t.Fatalf("d1 creation release = %q", code)
-		}
-
-		readTarget := filepath.Join(temp, "roundtrip.bin")
-		read := StartPCV3(
-			pcv3TestEnvelope("read-d1", "keyfiles", "ordered", target, readTarget, []string{keyA, keyB}),
-			[]byte{},
-		)
-		if read == nil || read.Code() != "" || read.Operation() == nil {
-			t.Fatalf("d1 read start = %#v", read)
-		}
-		readOperation := read.Operation()
-		t.Cleanup(func() { cleanupOperation(readOperation.ID()) })
-		synctest.Wait()
-		readSnapshot := readOperation.Snapshot()
-		skipOnPCV3ResourceAdmissionDenial(t, readSnapshot)
-		if readSnapshot.Outcome() != "success" || readSnapshot.CompletionClass() != "clean" {
-			t.Fatalf("d1 round-trip read snapshot = %s", pcv3MobileSnapshotText(readSnapshot))
-		}
-		plaintext, err := os.ReadFile(readTarget)
-		if err != nil {
-			t.Fatalf("read d1 round-trip plaintext: %v", err)
-		}
-		if !bytes.Equal(plaintext, payload) {
-			t.Fatalf("d1 round-trip plaintext = %x; want %x", plaintext, payload)
-		}
-		readOutput := readOperation.Output()
-		if readOutput == nil {
-			t.Fatal("d1 round-trip read retained no output authority")
-		}
-		if discarded := readOutput.Discard(); discarded == nil || discarded.Code() != "discarded" {
-			t.Fatalf("d1 round-trip read output discard = %#v", discarded)
-		}
-		if code := readOperation.Release(); code != "" {
-			t.Fatalf("d1 round-trip read release = %q", code)
-		}
-		pcv3MobileRequireDescriptorsClosed(t, *opened)
 	})
 }

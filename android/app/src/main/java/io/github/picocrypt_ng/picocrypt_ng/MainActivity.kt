@@ -163,7 +163,6 @@ fun MainLayout() {
     val pcv3Busy by operationViewModel.pcv3Busy.collectAsState()
     val pcv3Error by operationViewModel.pcv3Error.collectAsState()
     val pcv3ArtifactDetails by operationViewModel.pcv3ArtifactDetails.collectAsState()
-    val pcv3StagingSaveError by operationViewModel.pcv3StagingSaveError.collectAsState()
     var previousOperationState by remember { mutableStateOf<OperationState?>(null) }
     
     LaunchedEffect(operationState) {
@@ -309,9 +308,6 @@ fun MainLayout() {
             onInspectPcv3Artifact = operationViewModel::inspectPcv3Artifact,
             onLoadPcv3ArtifactPage = operationViewModel::loadPcv3ArtifactPage,
             onClosePcv3ArtifactInspection = operationViewModel::closePcv3ArtifactInspection,
-            onBeginPcv3StagingSave = operationViewModel::beginPcv3StagingSave,
-            onCompletePcv3StagingSave = operationViewModel::completePcv3StagingSave,
-            pcv3StagingSaveError = pcv3StagingSaveError,
         )
         
         // ErrorDialog for non-operation errors (file operations, etc.)
@@ -322,7 +318,8 @@ fun MainLayout() {
         ErrorDialog(
             // A cleanup failure never replaces or obscures the native terminal result.
             // Once that result is dismissed, the retained cleanup error is shown.
-            error = pcv3Error.takeIf { pcv3Presentation == null },
+            // Save failures remain visible while the output awaits another destination.
+            error = pcv3VisibleError(pcv3Error, pcv3Presentation),
             onDismiss = operationViewModel::clearPcv3Error,
         )
     }

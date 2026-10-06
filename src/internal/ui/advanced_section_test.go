@@ -17,22 +17,6 @@ import (
 	ttwidget "github.com/dweymouth/fyne-tooltip/widget"
 )
 
-func tapPCV3RadioOption(t *testing.T, group *widget.RadioGroup, index int) {
-	t.Helper()
-	if group == nil {
-		t.Fatal("PCV3 radio group is nil")
-	}
-	objects := fynetest.WidgetRenderer(group).Objects()
-	if index < 0 || index >= len(objects) {
-		t.Fatalf("radio option index %d outside %d rendered items", index, len(objects))
-	}
-	item, ok := objects[index].(fyne.Tappable)
-	if !ok {
-		t.Fatalf("radio option %d is not tappable: %T", index, objects[index])
-	}
-	fynetest.Tap(item)
-}
-
 func TestPCV3ForceActionsExposeAuthenticatedAndExplicitUnverifiedChoices(t *testing.T) {
 	resetLocalizationForTest(t)
 	fyneApp := newTestFyneApp(t)
@@ -65,22 +49,21 @@ func TestPCV3ForceActionsExposeAuthenticatedAndExplicitUnverifiedChoices(t *test
 		a.updateUIState()
 
 		want := []string{
-			"Decrypt PCV3",
-			"Start recovery",
-			"Start Force recovery",
-			"Start unverified Force recovery",
+			"Decrypt",
+			"Recover",
+			"Force recovery",
+			"Unverified recovery",
 		}
-		if !slices.Equal(a.pcv3ActionGroup.Options, want) {
-			t.Fatalf("PCV3 action choices = %v; want %v", a.pcv3ActionGroup.Options, want)
+		if !slices.Equal(a.pcv3ActionSelect.Options, want) {
+			t.Fatalf("PCV3 action choices = %v; want %v", a.pcv3ActionSelect.Options, want)
 		}
-		a.pcv3FactorGroup.SetSelected("Password only")
 
-		a.pcv3ActionGroup.SetSelected(want[2])
+		a.pcv3ActionSelect.SetSelected(want[2])
 		if snap := a.State.UISnapshot(); snap.PCV3Action != app.PCV3ActionForce || !snap.CanStart() {
 			got := snap.PCV3Action
 			t.Fatalf("authenticated Force action = %v; want %v", got, app.PCV3ActionForce)
 		}
-		a.pcv3ActionGroup.SetSelected(want[3])
+		a.pcv3ActionSelect.SetSelected(want[3])
 		if snap := a.State.UISnapshot(); snap.PCV3Action != app.PCV3ActionForceUnverified || !snap.CanStart() {
 			got := snap.PCV3Action
 			t.Fatalf("unverified Force action = %v; want %v", got, app.PCV3ActionForceUnverified)
@@ -107,32 +90,9 @@ func TestLinuxGUIEncryptsPCV3(t *testing.T) {
 	a.advancedContainer = container.NewVBox()
 	a.updateAdvancedSection()
 
-	var pcv3Check *widget.Check
-	var findCheck func(fyne.CanvasObject)
-	findCheck = func(object fyne.CanvasObject) {
-		switch check := object.(type) {
-		case *widget.Check:
-			if check.Text == "Create PCV3" {
-				pcv3Check = check
-				return
-			}
-		case *ttwidget.Check:
-			if check.Text == "Create PCV3" {
-				pcv3Check = &check.Check
-				return
-			}
-		}
-		if group, ok := object.(*fyne.Container); ok {
-			for _, child := range group.Objects {
-				findCheck(child)
-			}
-		}
+	if !a.State.CreatePCV3 {
+		t.Fatal("new native encryption must default to PCV3")
 	}
-	findCheck(a.advancedDetail)
-	if pcv3Check == nil {
-		t.Fatal("encrypt options do not offer Create PCV3")
-	}
-	pcv3Check.SetChecked(true)
 
 	input, err := a.captureOperationInput(a.State.Snapshot())
 	if err != nil {
@@ -140,7 +100,6 @@ func TestLinuxGUIEncryptsPCV3(t *testing.T) {
 	}
 	result := executeVolumeOperation(context.Background(), input, nil)
 	if result.err != nil || !result.completed {
-		skipOnPCV3ResourceAdmissionDenial(t, result.err)
 		t.Fatalf("GUI PCV3 encryption failed: %+v", result)
 	}
 	encoded, err := os.ReadFile(outputPath)
@@ -162,7 +121,6 @@ func TestLinuxGUIEncryptsPCV3(t *testing.T) {
 	}
 	result = executeVolumeOperation(context.Background(), splitInput, nil)
 	if result.err != nil || !result.completed {
-		skipOnPCV3ResourceAdmissionDenial(t, result.err)
 		t.Fatalf("GUI PCV3 split encryption failed: %+v", result)
 	}
 	if _, err := os.Lstat(splitOutput); !errors.Is(err, os.ErrNotExist) {
@@ -189,7 +147,6 @@ func TestLinuxGUIEncryptsPCV3(t *testing.T) {
 	}
 	result = executeVolumeOperation(context.Background(), d1Input, nil)
 	if result.err != nil || !result.completed {
-		skipOnPCV3ResourceAdmissionDenial(t, result.err)
 		t.Fatalf("GUI PCV3 D1 encryption failed: %+v", result)
 	}
 	encoded, err = os.ReadFile(d1Output)
@@ -201,114 +158,35 @@ func TestLinuxGUIEncryptsPCV3(t *testing.T) {
 	}
 }
 
-// TestPCV3RequiredRadioGroupsKeepUIAndIntentAligned exercises the same tap
-// path as a user. Re-tapping a selected PCV3 choice must not clear only the
-// widget while the closed intent continues to authorize Start.
-func TestPCV3RequiredRadioGroupsKeepUIAndIntentAligned(t *testing.T) {
-	resetLocalizationForTest(t)
-	fyneApp := newTestFyneApp(t)
-	a := createUIReadyDropTestApp(t, fyneApp)
-	directory := t.TempDir()
-	input := filepath.Join(directory, "input.pcv3")
-	if err := os.WriteFile(input, nil, 0o600); err != nil {
-		t.Fatalf("write input: %v", err)
+func TestPCV3PasswordOnlyAfterRemovingKeyfilesClearsOrder(t *testing.T) {
+	a := newPCV3ReadUI(t, app.PCV3FormatNormal)
+	key := filepath.Join(t.TempDir(), "factor.key")
+	if err := os.WriteFile(key, []byte("public factor"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	source, err := os.Open(input)
-	if err != nil {
-		t.Fatalf("open input: %v", err)
-	}
-	t.Cleanup(func() {
-		fyne.DoAndWait(func() { a.State.Reset() })
-	})
-
 	fyne.DoAndWait(func() {
-		if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, filepath.Join(directory, "output"), 0) {
-			t.Fatal("set PCV3 selection")
+		a.passwordEntry.SetText("public password")
+		a.keyfileEditBtn.OnTapped()
+		a.onDrop([]string{key})
+		a.keyfileOrderCheck.SetChecked(true)
+		if snap := a.State.UISnapshot(); snap.PCV3Factor != app.PCV3FactorPolicyCombined || snap.PCV3Order != app.PCV3KeyfileOrderSelected {
+			t.Fatal("combined credentials lost selected keyfile order")
 		}
-		a.passwordEntry.SetText("password-only")
-		a.refreshAdvanced()
-		a.updateUIState()
-
-		tapPCV3RadioOption(t, a.pcv3ActionGroup, 0)
-		tapPCV3RadioOption(t, a.pcv3ActionGroup, 0)
-		if a.pcv3ActionGroup.Selected != "Decrypt PCV3" || a.State.UISnapshot().PCV3Action != app.PCV3ActionDecrypt {
-			t.Fatalf("action re-tap diverged: widget=%q state=%v", a.pcv3ActionGroup.Selected, a.State.UISnapshot().PCV3Action)
+		for _, object := range fynetest.LaidOutObjects(a.Window.Canvas().Overlays().Top()) {
+			if button, ok := object.(*widget.Button); ok && button.Text == tr("action.clear", "Clear") {
+				fynetest.Tap(button)
+				break
+			}
 		}
-
-		tapPCV3RadioOption(t, a.pcv3FactorGroup, 1)
-		tapPCV3RadioOption(t, a.pcv3FactorGroup, 1)
-		if a.pcv3FactorGroup.Selected != "Keyfiles only" || a.State.UISnapshot().PCV3Factor != app.PCV3FactorPolicyKeyfiles {
-			t.Fatalf("keyfile factor re-tap diverged: widget=%q state=%v", a.pcv3FactorGroup.Selected, a.State.UISnapshot().PCV3Factor)
-		}
-		if a.pcv3OrderGroup == nil {
-			t.Fatal("keyfile policy did not render order control")
-		}
-
-		tapPCV3RadioOption(t, a.pcv3OrderGroup, 0)
-		tapPCV3RadioOption(t, a.pcv3OrderGroup, 0)
-		if a.pcv3OrderGroup.Selected != "Use selected order" || a.State.UISnapshot().PCV3Order != app.PCV3KeyfileOrderSelected {
-			t.Fatalf("order re-tap diverged: widget=%q state=%v", a.pcv3OrderGroup.Selected, a.State.UISnapshot().PCV3Order)
-		}
-
-		tapPCV3RadioOption(t, a.pcv3FactorGroup, 0)
-		tapPCV3RadioOption(t, a.pcv3FactorGroup, 0)
 		snap := a.State.UISnapshot()
-		if a.pcv3FactorGroup.Selected != "Password only" {
-			t.Fatalf("password re-tap changed the visible selection: %q", a.pcv3FactorGroup.Selected)
+		if snap.PCV3Factor != app.PCV3FactorPolicyPassword || snap.PCV3Order != app.PCV3KeyfileOrderUnset || !snap.CanStart() {
+			t.Fatal("clearing keyfiles did not restore password-only readiness")
 		}
-		if snap.PCV3Factor != app.PCV3FactorPolicyPassword || snap.PCV3Order != app.PCV3KeyfileOrderUnset ||
-			!snap.CanStart() || a.startButton.Disabled() {
-			t.Fatalf("password re-tap broke PCV3 readiness: widget=%q snapshot=%#v disabled=%v", a.pcv3FactorGroup.Selected, snap, a.startButton.Disabled())
+		a.passwordEntry.SetText("")
+		if snap := a.State.UISnapshot(); snap.PCV3Factor != app.PCV3FactorPolicyUnset || snap.CanStart() || !a.startButton.Disabled() {
+			t.Fatal("clearing every factor left Start enabled")
 		}
 	})
-}
-
-// TestPCV3PasswordPolicySelectionClearsStaleOrder drives the real factor and
-// order RadioGroups. A password-only operation cannot carry an old keyfile
-// ordering, otherwise the shared Start gate rejects a valid password choice.
-func TestPCV3PasswordPolicySelectionClearsStaleOrder(t *testing.T) {
-	resetLocalizationForTest(t)
-	fyneApp := newTestFyneApp(t)
-	a := createUIReadyDropTestApp(t, fyneApp)
-	directory := t.TempDir()
-	input := filepath.Join(directory, "input.pcv3")
-	if err := os.WriteFile(input, nil, 0o600); err != nil {
-		t.Fatalf("write input: %v", err)
-	}
-	source, err := os.Open(input)
-	if err != nil {
-		t.Fatalf("open input: %v", err)
-	}
-	t.Cleanup(func() {
-		fyne.DoAndWait(func() { a.State.Reset() })
-	})
-
-	fyne.DoAndWait(func() {
-		if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, filepath.Join(directory, "output"), 0) {
-			t.Fatal("set PCV3 selection")
-		}
-		a.refreshAdvanced()
-		a.updateUIState()
-		a.pcv3ActionGroup.SetSelected("Decrypt PCV3")
-		a.pcv3FactorGroup.SetSelected("Keyfiles only")
-		if a.pcv3OrderGroup == nil {
-			t.Fatal("keyfile policy did not render ordering control")
-		}
-		a.pcv3OrderGroup.SetSelected("Use selected order")
-		if got := a.State.UISnapshot().PCV3Order; got != app.PCV3KeyfileOrderSelected {
-			t.Fatalf("keyfile policy order = %v; want selected", got)
-		}
-		a.pcv3FactorGroup.SetSelected("Password only")
-		a.passwordEntry.SetText("password-only")
-	})
-
-	snap := a.State.UISnapshot()
-	if snap.PCV3Order != app.PCV3KeyfileOrderUnset {
-		t.Fatalf("password policy retained keyfile order %v", snap.PCV3Order)
-	}
-	if !snap.CanStart() || a.startButton.Disabled() {
-		t.Fatalf("password-only PCV3 operation remained non-startable: snapshot=%#v disabled=%v", snap, a.startButton.Disabled())
-	}
 }
 
 // assertCheckboxWiring verifies a build...Options checkbox is present, labeled
@@ -552,6 +430,12 @@ func TestEncryptAdvancedOptionsNeverSoftLock(t *testing.T) {
 			{"Recursively", a.recursivelyCheck},
 			{"Split:", a.splitCheck},
 		} {
+			if c.name == "Paranoid mode" {
+				if !c.box.Disabled() || !a.State.Paranoid {
+					t.Error("D1 must retain required Paranoid mode")
+				}
+				continue
+			}
 			if c.box.Disabled() {
 				t.Errorf("#56 regression: %q is disabled under Paranoid+Reed-Solomon+Deniability; this combo must not lock any option", c.name)
 			}
@@ -620,7 +504,7 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 		if got, want := a.deleteCheck.ToolTip(), tr("advanced.delete_files.tooltip", "Delete source files after encryption"); got != want {
 			t.Errorf("Delete files tooltip = %q, want %q", got, want)
 		}
-		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.tooltip", "No readable Picocrypt header. Legacy deniability requires a non-empty outer password."); got != want {
+		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection."); got != want {
 			t.Errorf("Deniability tooltip = %q, want %q", got, want)
 		}
 		if got, want := a.recursivelyCheck.ToolTip(), tr("advanced.recursively.tooltip", "Process each file separately"); got != want {
@@ -655,10 +539,10 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 			{"Same level", a.sameLevelCheck},
 		})
 
-		if got := a.autoUnzipCheck.ToolTip(); got != "Extract .zip; may overwrite files" {
-			t.Errorf("Auto unzip tooltip = %q; want rendered .zip overwrite warning", got)
+		if got := a.autoUnzipCheck.ToolTip(); got != "Extract .zip archives; keep existing files" {
+			t.Errorf("Auto unzip tooltip = %q; want rendered no-overwrite policy", got)
 		}
-		if got := a.sameLevelCheck.ToolTip(); got != "Extract .zip beside the volume" {
+		if got := a.sameLevelCheck.ToolTip(); got != "Extract .zip in the output directory, without a subfolder" {
 			t.Errorf("Same level tooltip = %q; want rendered .zip extraction hint", got)
 		}
 	})

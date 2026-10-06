@@ -1,9 +1,9 @@
 package pcv3operation
 
 import (
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3recovery"
 	"Picocrypt-NG/internal/pcv3publication"
-	"Picocrypt-NG/internal/pcv3recovery"
 	"context"
 	"errors"
 	"fmt"
@@ -62,6 +62,7 @@ const (
 	DiagnosticResourceBusy
 	DiagnosticResourceInsufficient
 	DiagnosticResourceUnknown
+	DiagnosticResourceLimit
 )
 
 // ErrInvalidPresentation rejects a malformed authority-free result snapshot.
@@ -153,7 +154,7 @@ func validWarningSlice(warnings []Warning) bool {
 // follow-up state.
 type archiveFollowUpState interface {
 	live() bool
-	extract(context.Context, *os.Root) *Result
+	extract(context.Context, *os.Root, func(ArchiveSummary) error) *Result
 	close() *Result
 }
 
@@ -166,25 +167,29 @@ type ArchiveFollowUp struct {
 // Result is the closed native operation result. Semantic and publication
 // truth remain independent; completion is computed rather than stored.
 type Result struct {
-	outcome               pcv3.Outcome
-	stage                 pcv3.Stage
-	code                  pcv3.Code
-	authenticatedComment  string
-	forceProvenance       pcv3.ForceProvenance
-	d1BootstrapProvenance pcv3.D1BootstrapProvenance
-	detailStage           pcv3.Stage
-	publicationAttempted  bool
-	publicationState      pcv3publication.State
-	publicationStage      pcv3.Stage
-	publicationCode       pcv3publication.Code
-	args                  [maxResultArgs]uint64
-	argCount              uint8
-	warnings              [maxResultWarnings]Warning
-	warningCount          uint8
-	diagnostic            Diagnostic
-	archiveFollowUp       *ArchiveFollowUp
-	outputFollowUp        *OutputFollowUp
-	artifactInspection    *pcv3recovery.ArtifactInspection
+	cancellationDeadline   bool
+	writeOutput            bool
+	writeLifecycleComplete bool
+	splitOutputUncertain   bool
+	outcome                pcv3.Outcome
+	stage                  pcv3.Stage
+	code                   pcv3.Code
+	authenticatedComment   string
+	forceProvenance        pcv3.ForceProvenance
+	d1BootstrapProvenance  pcv3.D1BootstrapProvenance
+	detailStage            pcv3.Stage
+	publicationAttempted   bool
+	publicationState       pcv3publication.State
+	publicationStage       pcv3.Stage
+	publicationCode        pcv3publication.Code
+	args                   [maxResultArgs]uint64
+	argCount               uint8
+	warnings               [maxResultWarnings]Warning
+	warningCount           uint8
+	diagnostic             Diagnostic
+	archiveFollowUp        *ArchiveFollowUp
+	outputFollowUp         *OutputFollowUp
+	artifactInspection     *pcv3recovery.ArtifactInspection
 }
 
 type resultData struct {
@@ -499,12 +504,17 @@ func (result *Result) hasLiveArchiveFollowUp() bool {
 func (result *Result) hasLiveOutputFollowUp() bool {
 	if result == nil || result.outputFollowUp == nil || !result.outputFollowUp.live() ||
 		result.hasActiveArchiveFollowUp() || !result.publicationAttempted ||
-		result.publicationState != pcv3publication.StatePublishedDurable ||
-		result.publicationStage != pcv3.StageNone ||
-		result.publicationCode != pcv3publication.CodePublishedDurable ||
 		!validSemanticPresentation(result.outcome, result.stage, result.code) {
 		return false
 	}
+	durable := result.publicationState == pcv3publication.StatePublishedDurable &&
+		result.publicationStage == pcv3.StageNone && result.publicationCode == pcv3publication.CodePublishedDurable
+	uncertainWrite := result.writeOutput && result.publicationState == pcv3publication.StatePublishedDurabilityUncertain &&
+		result.publicationStage == pcv3.StageDirectorySync && result.publicationCode == pcv3publication.CodeDurabilityUncertain
+	if !durable && !uncertainWrite {
+		return false
+	}
+
 	switch result.outcome {
 	case pcv3.OutcomeSuccess, pcv3.OutcomeAuthenticatedDegraded,
 		pcv3.OutcomeForcePartial, pcv3.OutcomeForceUnverified:
@@ -552,10 +562,10 @@ func (presentation Presentation) CompletionClass() CompletionClass {
 func (presentation Presentation) valid() bool {
 	if presentation.argCount > maxResultArgs ||
 		presentation.warningCount > maxResultWarnings ||
-		presentation.diagnostic > DiagnosticResourceUnknown ||
+		presentation.diagnostic > DiagnosticResourceLimit ||
 		presentation.forceProvenance > pcv3.ForceProvenanceUnverified ||
 		presentation.d1BootstrapProvenance > pcv3.D1BootstrapProvenanceMatching ||
-		presentation.detailStage > pcv3.StageDirectorySync ||
+		presentation.detailStage > pcv3.StageResourceBudget ||
 		!validSemanticPresentation(
 			presentation.outcome, presentation.stage, presentation.code,
 		) || !validDiagnosticPresentation(presentation) ||
@@ -578,6 +588,8 @@ func (presentation Presentation) valid() bool {
 
 func validDiagnosticPresentation(presentation Presentation) bool {
 	switch presentation.diagnostic {
+	case DiagnosticResourceLimit:
+		return presentation.outcome == pcv3.OutcomeOperationFailed && presentation.stage == pcv3.StageResourceBudget && presentation.code == pcv3.CodeOperationFailed && !presentation.publicationAttempted
 	case DiagnosticResourceBusy, DiagnosticResourceInsufficient,
 		DiagnosticResourceUnknown:
 		return presentation.outcome == pcv3.OutcomeOperationFailed &&
@@ -589,8 +601,11 @@ func validDiagnosticPresentation(presentation Presentation) bool {
 }
 
 func validSemanticPresentation(outcome pcv3.Outcome, stage pcv3.Stage, code pcv3.Code) bool {
-	if stage > pcv3.StageDirectorySync ||
+	if stage > pcv3.StageResourceBudget ||
 		(outcome == pcv3.OutcomeSuccess) != (stage == pcv3.StageNone) {
+		return false
+	}
+	if stage == pcv3.StageResourceBudget && outcome != pcv3.OutcomeOperationFailed {
 		return false
 	}
 	var expected pcv3.Code
@@ -724,4 +739,41 @@ func (result *Result) Format(state fmt.State, verb rune) {
 		value = strconv.Quote(value)
 	}
 	_, _ = io.WriteString(state, value)
+}
+
+// SourceDeletionAllowed is derived from the complete runner-owned write lifecycle.
+// Frontend-created presentations and incomplete, warning or retained outputs never
+// authorize deletion of source data.
+func (result *Result) SourceDeletionAllowed() bool {
+	return result != nil && result.writeLifecycleComplete && result.writeOutput &&
+		result.CompletionClass() == CompletionClean && result.warningCount == 0 &&
+		result.outputFollowUp == nil
+}
+
+// WithCleanupWarning can only revoke deletion eligibility. Native lifecycle
+// owners call it when cleanup outside the borrowed-source runner fails.
+func (result *Result) WithCleanupWarning() {
+	if result == nil {
+		return
+	}
+	result.writeLifecycleComplete = false
+	result.appendWarning(WarningCleanupIncomplete)
+}
+
+// Is preserves the cancellation sentinel without retaining or exposing a raw
+// callback, credential, filesystem, or platform error.
+func (result *Result) Is(target error) bool {
+	if result == nil || result.diagnostic != DiagnosticCancellation {
+		return false
+	}
+	if result.cancellationDeadline {
+		return target == context.DeadlineExceeded
+	}
+	return target == context.Canceled
+}
+
+// SplitOutputUncertain reports verified complete chunks kept alongside the full
+// ciphertext because their final directory durability could not be confirmed.
+func (result *Result) SplitOutputUncertain() bool {
+	return result != nil && result.splitOutputUncertain
 }

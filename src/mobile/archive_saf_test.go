@@ -3,10 +3,10 @@
 package mobile
 
 import (
-	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -282,10 +282,10 @@ func TestPCV3MobileArchiveSAFBeginCopiesShareOneClosedVariant(t *testing.T) {
 		t.Fatalf("decode active v1 receipt: %v", err)
 	}
 	if wire.Version != 1 || wire.OperationID != operation.ID() || !validPCV3ReceiptID(wire.ReceiptID) ||
-		wire.Outcome != uint8(pcv3.OutcomeSuccess) || wire.Stage != uint8(pcv3.StageNone) ||
-		wire.Code != uint8(pcv3.CodeSuccess) || !wire.PublicationAttempted ||
+		wire.Outcome != uint8(pcv3operation.OutcomeSuccess) || wire.Stage != uint8(pcv3operation.StageNone) ||
+		wire.Code != uint8(pcv3operation.CodeSuccess) || !wire.PublicationAttempted ||
 		wire.PublicationState != uint8(pcv3publication.StatePublicationIndeterminate) ||
-		wire.PublicationStage != uint8(pcv3.StageOutputPublication) ||
+		wire.PublicationStage != uint8(pcv3operation.StageOutputPublication) ||
 		wire.PublicationCode != uint8(pcv3publication.CodePublicationIndeterminate) {
 		t.Fatalf("active receipt tuple = %#v", wire)
 	}
@@ -930,21 +930,21 @@ func TestPCV3MobileArchiveSAFJournalWrapperUsesOnlyClosedLocalStates(t *testing.
 func TestPCV3MobilePreservesResultAxes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pending := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-			Outcome:        pcv3.OutcomeSuccess,
-			Stage:          pcv3.StageNone,
-			Code:           pcv3.CodeSuccess,
+			Outcome:        pcv3operation.OutcomeSuccess,
+			Stage:          pcv3operation.StageNone,
+			Code:           pcv3operation.CodeSuccess,
 			ArchivePending: true,
 		})
 		uncertain := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-			Outcome:               pcv3.OutcomeSuccess,
-			Stage:                 pcv3.StageNone,
-			Code:                  pcv3.CodeSuccess,
-			ForceProvenance:       pcv3.ForceProvenanceVerified,
-			D1BootstrapProvenance: pcv3.D1BootstrapProvenanceMatching,
-			DetailStage:           pcv3.StageMetadata,
+			Outcome:               pcv3operation.OutcomeSuccess,
+			Stage:                 pcv3operation.StageNone,
+			Code:                  pcv3operation.CodeSuccess,
+			ForceProvenance:       pcv3operation.ForceProvenanceVerified,
+			D1BootstrapProvenance: pcv3operation.D1BootstrapProvenanceMatching,
+			DetailStage:           pcv3operation.StageMetadata,
 			PublicationAttempted:  true,
 			PublicationState:      pcv3publication.StatePublishedDurabilityUncertain,
-			PublicationStage:      pcv3.StageDirectorySync,
+			PublicationStage:      pcv3operation.StageDirectorySync,
 			PublicationCode:       pcv3publication.CodeDurabilityUncertain,
 			Args:                  []uint64{7, 11, 13, 17},
 			Warnings:              []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete},
@@ -1043,9 +1043,9 @@ func TestPCV3MobilePreservesResultAxes(t *testing.T) {
 		}
 
 		clean := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-			Outcome: pcv3.OutcomeSuccess,
-			Stage:   pcv3.StageNone,
-			Code:    pcv3.CodeSuccess,
+			Outcome: pcv3operation.OutcomeSuccess,
+			Stage:   pcv3operation.StageNone,
+			Code:    pcv3operation.CodeSuccess,
 		})
 		mismatchAction := &literalMobileArchiveAction{closeResult: closed}
 		mismatchOperation := startPCV3Operation()
@@ -1129,9 +1129,9 @@ func newMobileArchiveSAFOperation(
 		_ = operation.Release()
 	})
 	pending := mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-		Outcome:        pcv3.OutcomeSuccess,
-		Stage:          pcv3.StageNone,
-		Code:           pcv3.CodeSuccess,
+		Outcome:        pcv3operation.OutcomeSuccess,
+		Stage:          pcv3operation.StageNone,
+		Code:           pcv3operation.CodeSuccess,
 		ArchivePending: true,
 	})
 	completePCV3PresentationWithArchive(operation, pending, action)
@@ -1189,12 +1189,12 @@ func newMobileArchiveSAFSessionProbe(
 func mobileArchiveSAFFinishPresentation(t *testing.T) pcv3operation.Presentation {
 	t.Helper()
 	return mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-		Outcome:              pcv3.OutcomeSuccess,
-		Stage:                pcv3.StageNone,
-		Code:                 pcv3.CodeSuccess,
+		Outcome:              pcv3operation.OutcomeSuccess,
+		Stage:                pcv3operation.StageNone,
+		Code:                 pcv3operation.CodeSuccess,
 		PublicationAttempted: true,
 		PublicationState:     pcv3publication.StatePublishedDurabilityUncertain,
-		PublicationStage:     pcv3.StageDirectorySync,
+		PublicationStage:     pcv3operation.StageDirectorySync,
 		PublicationCode:      pcv3publication.CodeDurabilityUncertain,
 	})
 }
@@ -1202,12 +1202,76 @@ func mobileArchiveSAFFinishPresentation(t *testing.T) pcv3operation.Presentation
 func mobileArchiveSAFAbortPresentation(t *testing.T) pcv3operation.Presentation {
 	t.Helper()
 	return mustPCV3Presentation(t, pcv3operation.PresentationSpec{
-		Outcome:              pcv3.OutcomeSuccess,
-		Stage:                pcv3.StageNone,
-		Code:                 pcv3.CodeSuccess,
+		Outcome:              pcv3operation.OutcomeSuccess,
+		Stage:                pcv3operation.StageNone,
+		Code:                 pcv3operation.CodeSuccess,
 		PublicationAttempted: true,
 		PublicationState:     pcv3publication.StatePublicationIndeterminate,
-		PublicationStage:     pcv3.StageOutputPublication,
+		PublicationStage:     pcv3operation.StageOutputPublication,
 		PublicationCode:      pcv3publication.CodePublicationIndeterminate,
 	})
+}
+
+type cancellableMobileSAFAction struct {
+	mobileArchiveSAFActionProbe
+	entered chan struct{}
+	settled chan struct{}
+}
+
+func (action *cancellableMobileSAFAction) beginSAFWithContext(ctx context.Context) pcv3ArchiveSAFCoreBegin {
+	close(action.entered)
+	<-ctx.Done()
+	<-action.settled
+	return pcv3ArchiveSAFCoreBegin{kind: pcv3ArchiveSAFTerminal, presentation: action.closeResult}
+}
+
+func TestPCV3ArchivePreparationCancellationOwnsPendingBeginUntilSettled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		probe := newMobileArchiveSAFSessionProbe(t, []pcv3ArchiveSAFCoreEntry{{name: "file", parentIndex: -1}})
+		action := &cancellableMobileSAFAction{mobileArchiveSAFActionProbe: mobileArchiveSAFActionProbe{begin: func() pcv3ArchiveSAFCoreBegin {
+			return pcv3ArchiveSAFCoreBegin{kind: pcv3ArchiveSAFSession, session: probe}
+		}, closeResult: probe.abortResult}, entered: make(chan struct{}), settled: make(chan struct{})}
+		operation, archive := newMobileArchiveSAFOperation(t, action)
+		cancellation, ok := any(archive).(interface{ CancelPreparation() })
+		if !ok {
+			t.Fatal("follow-up has no preparation cancellation owner")
+		}
+		done := make(chan *PCV3ArchiveBegin, 1)
+		go func() { done <- archive.BeginSAF() }()
+		<-action.entered
+		cancellation.CancelPreparation()
+		synctest.Wait()
+		if operation.Release() != pcv3OperationReleaseDenied {
+			t.Fatal("Release bypassed pending cancellation settlement")
+		}
+		select {
+		case <-done:
+			t.Fatal("Begin returned before cleanup settled")
+		default:
+		}
+		close(action.settled)
+		if result := <-done; result.Kind() != pcv3ArchiveSAFTerminal || result.Session() != nil {
+			t.Fatal("cancelled begin granted provider authority")
+		}
+		if operation.Release() != "" {
+			t.Fatal("settled preparation did not release operation")
+		}
+	})
+}
+
+func TestPCV3ArchivePreparationCancellationBeforeBeginIsRemembered(t *testing.T) {
+	probe := newMobileArchiveSAFSessionProbe(t, []pcv3ArchiveSAFCoreEntry{{name: "file", parentIndex: -1}})
+	action := &cancellableMobileSAFAction{mobileArchiveSAFActionProbe: mobileArchiveSAFActionProbe{begin: func() pcv3ArchiveSAFCoreBegin {
+		return pcv3ArchiveSAFCoreBegin{kind: pcv3ArchiveSAFSession, session: probe}
+	}, closeResult: probe.abortResult}, entered: make(chan struct{}), settled: make(chan struct{})}
+	_, archive := newMobileArchiveSAFOperation(t, action)
+	cancellation, ok := any(archive).(interface{ CancelPreparation() })
+	if !ok {
+		t.Fatal("no preparation cancellation owner")
+	}
+	cancellation.CancelPreparation()
+	close(action.settled)
+	if begin := archive.BeginSAF(); begin.Kind() != pcv3ArchiveSAFTerminal || begin.Session() != nil {
+		t.Fatal("pre-cancelled follow-up granted authority")
+	}
 }

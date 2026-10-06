@@ -217,8 +217,8 @@ func TestStageReleaseActionKeepsReleaseDraftUntilExactManifestExists(t *testing.
 		t.Fatalf("release preflight FILES = %q, want the exact lane upload set", got)
 	}
 	stage := mustCompositeStepNamed(t, action, "Upload assets to draft release")
-	if stage.Uses != "softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228" {
-		t.Fatalf("draft release action = %q, want reviewed v3.0.2 commit", stage.Uses)
+	if stage.Uses != "softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64" {
+		t.Fatalf("draft release action = %q, want reviewed v3.0.3 commit", stage.Uses)
 	}
 	for key, want := range map[string]any{
 		"body_path":               "${{ inputs.body_path }}",

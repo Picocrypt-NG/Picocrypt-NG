@@ -12,9 +12,47 @@ import org.json.JSONObject
  */
 class GoBridgeTest {
 
+    @Test
+    fun `input publication grants target cleanup only for exact confirmed native outcomes`() {
+        assertEquals(InputCopyPublication.PUBLISHED, publishInputCopy { "published" })
+        assertEquals(InputCopyPublication.PUBLISHED_ERROR, publishInputCopy { "published-error" })
+        assertEquals(InputCopyPublication.NOT_PUBLISHED, publishInputCopy { "not-published" })
+        for (result in listOf("indeterminate", "", "Published", "published ", "future-status")) {
+            assertEquals(InputCopyPublication.INDETERMINATE, publishInputCopy { result })
+        }
+        assertEquals(InputCopyPublication.INDETERMINATE, publishInputCopy { throw java.io.IOException("native failure") })
+        assertEquals(InputCopyPublication.INDETERMINATE, publishInputCopy { throw UnsatisfiedLinkError("stale binding") })
+        val cancelled = kotlin.coroutines.cancellation.CancellationException("cancelled native handoff")
+        try {
+            publishInputCopy { throw cancelled }
+            fail("Cancellation must remain cancellation")
+        } catch (actual: kotlin.coroutines.cancellation.CancellationException) {
+            assertSame(cancelled, actual)
+        }
+    }
+
     // --- Request JSON building: asserts the REAL production builders ------------------
     // These call GoBridge.build*RequestJson (the exact code startEncrypt/startDecrypt
     // send to Go), so they fail if a field is dropped, renamed, or retyped. No AAR needed.
+
+    @Test
+    fun `PCV3 envelope keeps maximum comments and bounded file selections`() {
+        val request = Pcv3WriteRequest("write-normal", "password", "none", "/source", "/target",
+            emptyList(), "x".repeat(99999), "standard", false)
+        assertEquals(99999, JSONObject(requireNotNull(GoBridge.buildPcv3WriteRequestJson(request))).getString("comment").length)
+        val selected = List(4096) { "/selected/file-$it" }
+        assertNotNull(GoBridge.buildPcv3WriteRequestJson(request.copy(source = selected.first(), inputFiles = selected, onlyFiles = selected)))
+        val tooLarge = List(4096) { "/selected/" + "x".repeat(1000) + it }
+        assertNull("aggregate JSON limit must be enforced before JNI", GoBridge.buildPcv3WriteRequestJson(request.copy(source = tooLarge.first(), inputFiles = tooLarge, onlyFiles = tooLarge)))
+        assertNull(GoBridge.buildPcv3WriteRequestJson(request.copy(source = "/" + "x".repeat(4096))))
+        assertNull(GoBridge.buildPcv3WriteRequestJson(request.copy(inputFiles = List(4097) { "/input" })))
+        val escapedPaths = List(4096) { "/selected/" + "\t".repeat(400) + it }
+        assertNull("JSON escaping counts toward the aggregate cap",
+            GoBridge.buildPcv3WriteRequestJson(request.copy(source = escapedPaths.first(), inputFiles = escapedPaths, onlyFiles = escapedPaths)))
+        val multibytePaths = List(4096) { "/selected/" + "界".repeat(200) + it }
+        assertNull("UTF-8 bytes, not UTF-16 character count, bound the aggregate",
+            GoBridge.buildPcv3WriteRequestJson(request.copy(source = multibytePaths.first(), inputFiles = multibytePaths, onlyFiles = multibytePaths)))
+    }
 
     @Test
     fun `buildEncryptRequestJson serializes every option and never the password`() {

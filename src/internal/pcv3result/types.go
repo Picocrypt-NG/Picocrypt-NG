@@ -67,6 +67,7 @@ const (
 	StageRNG
 	StageOutputWrite
 	StageDirectorySync
+	StageResourceBudget
 )
 
 // String returns the exact conformance outcome name.
@@ -162,6 +163,8 @@ func (stage Stage) String() string {
 		return "rng"
 	case StageOutputWrite:
 		return "output-write"
+	case StageResourceBudget:
+		return "resource-budget"
 	case StageDirectorySync:
 		return "directory-sync"
 	default:

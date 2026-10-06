@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3operation"
 	"bytes"
 	"crypto/sha256"
@@ -18,14 +17,14 @@ import (
 func pcv3CLICombinedFixture(t *testing.T) (volume, plaintext []byte) {
 	t.Helper()
 	volume, err := os.ReadFile(filepath.Join(
-		"..", "pcv3", "testdata", "normal", "volumes",
+		"..", "pcv3operation", "internal", "pcv3", "testdata", "normal", "volumes",
 		"normal-standard-combined-ordered-one.pcv",
 	))
 	if err != nil {
 		t.Fatalf("read frozen combined volume: %v", err)
 	}
 	plaintext, err = os.ReadFile(filepath.Join(
-		"..", "pcv3", "testdata", "normal", "plaintext",
+		"..", "pcv3operation", "internal", "pcv3", "testdata", "normal", "plaintext",
 		"normal-standard-combined-ordered-one.bin",
 	))
 	if err != nil {
@@ -93,7 +92,6 @@ func TestPCV3CLIResultAndPrivacyBoundary(t *testing.T) {
 		}, nil)
 		if result.exitCode != 0 || len(result.stdout) != 0 ||
 			result.stderr != "Outcome: success\nPublication: published-durable\nComment: \"TEST ONLY comment\"\n" {
-			skipOnPCV3ResourceAdmissionDenial(t, result)
 			t.Fatalf(
 				"successful terminal = exit %d stdout %q stderr %q; want exit 0, empty stdout, exact quiet contract",
 				result.exitCode, result.stdout, result.stderr,
@@ -111,9 +109,9 @@ func TestPCV3CLIResultAndPrivacyBoundary(t *testing.T) {
 		}
 		if !observation.Called || pcv3operation.Mode(observation.Mode) != pcv3operation.ModeReadNormal ||
 			observation.Password != "mix" || observation.KeyfileCount != 2 ||
-			pcv3credential.CredentialMode(observation.FactorMode) != pcv3credential.CredentialModePasswordAndKeyfiles ||
-			pcv3credential.KeyfileMode(observation.KeyfileMode) != pcv3credential.KeyfileModeOrdered ||
-			pcv3credential.FactorPolicy(observation.ExpectedPolicy) != pcv3credential.FactorPolicyPasswordAndKeyfiles {
+			pcv3operation.CredentialMode(observation.FactorMode) != pcv3operation.CredentialModePasswordAndKeyfiles ||
+			pcv3operation.KeyfileMode(observation.KeyfileMode) != pcv3operation.KeyfileModeOrdered ||
+			pcv3operation.FactorPolicy(observation.ExpectedPolicy) != pcv3operation.FactorPolicyPasswordAndKeyfiles {
 			t.Fatalf("real operation observation = %+v; want the intact explicit combined request at the boundary", observation)
 		}
 		entries, err := os.ReadDir(dir)
@@ -149,7 +147,6 @@ func TestPCV3CLIResultAndPrivacyBoundary(t *testing.T) {
 		}, nil)
 		if result.exitCode != ExitGeneralError || len(result.stdout) != 0 ||
 			result.stderr != "Outcome: credentials-or-damage\nPublication: not-attempted\n" {
-			skipOnPCV3ResourceAdmissionDenial(t, result)
 			t.Fatalf(
 				"privacy terminal = exit %d stdout %q stderr %q; want exit 1, empty stdout, exact credentials-or-damage refusal",
 				result.exitCode, result.stdout, result.stderr,

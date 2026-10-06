@@ -273,7 +273,7 @@
     <string name="pcv3_publication_indeterminate_title">आउटपुट की स्थिति अज्ञात है</string>
     <string name="pcv3_publication_indeterminate_body">ऐप यह निर्धारित नहीं कर सकता कि प्रकाशन दर्ज हुआ या नहीं। सभी स्रोत और गंतव्य को ठीक उसी स्थिति में रखें। इस कार्रवाई को दोबारा न चलाएँ या साफ़ न करें।</string>
     <string name="pcv3_warning_cleanup_title">सफ़ाई की पुष्टि नहीं हो सकी</string>
-    <string name="pcv3_warning_cleanup_body">ऐप यह साबित नहीं कर सका कि कार्रवाई के सभी अस्थायी सादा-पाठ डेटा हट गए हैं। एन्क्रिप्टेड स्रोत रखें और इस परिणाम के आधार पर कोई फ़ाइल न हटाएँ।</string>
+    <string name="pcv3_warning_cleanup_body">ऐप यह पुष्टि नहीं कर सका कि इस कार्रवाई की सभी अस्थायी फ़ाइलें हट गई हैं। स्रोत फ़ाइलें रखें और इस परिणाम के आधार पर कोई फ़ाइल न हटाएँ।</string>
     <string name="pcv3_warning_callback_title">पुनर्प्राप्ति की पुष्टि विफल</string>
     <string name="pcv3_warning_callback_body">सक्रिय पुनर्प्राप्ति पुष्टि पूरी नहीं हो सकी। असत्यापित आउटपुट बनाने का अधिकार नहीं दिया गया।</string>
     <string name="pcv3_warning_unknown_title">कार्रवाई की अतिरिक्त चेतावनी</string>
@@ -287,11 +287,11 @@
     <string name="pcv3_output_saved_title">आउटपुट सहेजा गया</string>
     <string name="pcv3_output_saved_body">चुना गया आउटपुट सहेजा गया। नीचे दिखाई गई प्रमाणीकरण और पुनर्प्राप्ति सूचनाएँ अब भी लागू हैं।</string>
     <string name="pcv3_output_saved_cleanup_title">आउटपुट सहेजा गया; सफ़ाई अधूरी</string>
-    <string name="pcv3_output_saved_cleanup_body">चुना गया आउटपुट सहेजा गया, लेकिन ऐप के स्वामित्व वाले प्लेनटेक्स्ट की सफ़ाई की पुष्टि नहीं हो सकी।</string>
+    <string name="pcv3_output_saved_cleanup_body">चुना गया आउटपुट सहेजा गया, लेकिन ऐप की अस्थायी फ़ाइलों की सफ़ाई की पुष्टि नहीं हो सकी।</string>
     <string name="pcv3_output_save_failed_title">आउटपुट सहेजा नहीं जा सका</string>
-    <string name="pcv3_output_save_failed_body">यह पुष्टि नहीं हुई कि चुने गए गंतव्य में आउटपुट है। एन्क्रिप्ट किया गया स्रोत रखें।</string>
+    <string name="pcv3_output_save_failed_body">यह पुष्टि नहीं हुई कि चुने गए गंतव्य में आउटपुट है। स्रोत फ़ाइलें रखें।</string>
     <string name="pcv3_output_save_failed_cleanup_title">सहेजना विफल; सफ़ाई अधूरी</string>
-    <string name="pcv3_output_save_failed_cleanup_body">यह पुष्टि नहीं हुई कि गंतव्य में आउटपुट है, और ऐप के स्वामित्व वाले प्लेनटेक्स्ट की सफ़ाई की भी पुष्टि नहीं हो सकी।</string>
+    <string name="pcv3_output_save_failed_cleanup_body">यह पुष्टि नहीं हुई कि गंतव्य में आउटपुट है, और ऐप की अस्थायी फ़ाइलों की सफ़ाई की भी पुष्टि नहीं हो सकी।</string>
     <string name="pcv3_output_discarded_title">पुनर्प्राप्ति आर्टिफ़ैक्ट हटाया गया</string>
     <string name="pcv3_output_discarded_body">ऐप के स्वामित्व वाला पुनर्प्राप्ति आर्टिफ़ैक्ट हटा दिया गया। एन्क्रिप्ट किया गया स्रोत रखा गया।</string>
     <string name="pcv3_output_discard_cleanup_title">पुनर्प्राप्ति आर्टिफ़ैक्ट की सफ़ाई अधूरी</string>
@@ -299,7 +299,7 @@
     <string name="pcv3_output_expired_title">आउटपुट कार्रवाई की समय-सीमा समाप्त</string>
     <string name="pcv3_output_expired_body">सहेजने या हटाने की कार्रवाई अब मान्य नहीं थी। किसी नए गंतव्य या हटाने की पुष्टि नहीं हुई।</string>
     <string name="pcv3_output_unknown_title">आउटपुट कार्रवाई का परिणाम अज्ञात है</string>
-    <string name="pcv3_output_unknown_body">एप्लिकेशन सहेजने या हटाने के परिणाम की पुष्टि नहीं कर सका। एन्क्रिप्ट किया गया स्रोत रखें और यह न मानें कि आउटपुट सहेजा या हटाया गया।</string>
+    <string name="pcv3_output_unknown_body">एप्लिकेशन सहेजने या हटाने के परिणाम की पुष्टि नहीं कर सका। स्रोत फ़ाइलें रखें और यह न मानें कि आउटपुट सहेजा या हटाया गया।</string>
     <string name="pcv3_output_saved_close">सहेजे गए आउटपुट का परिणाम बंद करें</string>
     <string name="pcv3_output_save_failed_close">सहेजने की विफलता बंद करें</string>
     <string name="pcv3_output_discarded_close">हटाने का परिणाम बंद करें</string>
@@ -334,4 +334,16 @@
     <string name="pcv3_artifact_row">रिकॉर्ड %1$s, बाइट %2$s से %3$s, %4$s</string>
     <string name="pcv3_artifact_previous_page">पिछली श्रेणियाँ</string>
     <string name="pcv3_artifact_next_page">अगली श्रेणियाँ</string>
+    <string name="pcv3_output_provider_unsupported">यह प्रदाता इस परिणाम को सहेजने का समर्थन नहीं करता है। कोई अन्य स्थान चुनें। परिणाम ऐप में उपलब्ध है।</string>
+
+    <!-- Retained output and bounded creation request feedback. -->
+    <string name="pcv3_request_too_large">चुनी गई फ़ाइलें या टिप्पणी अनुमत सीमा से अधिक हैं। कम फ़ाइलें चुनें या टिप्पणी छोटी करें।</string>
+    <string name="pcv3_discard_retained_title">आउटपुट हटाएँ?</string>
+    <string name="pcv3_discard_retained_body">ऐप में सहेजा गया आउटपुट स्थायी रूप से हटा दिया जाएगा। आपकी मूल फ़ाइलें सुरक्षित रहेंगी।</string>
+    <string name="pcv3_retained_discarded_title">आउटपुट हटा दिया गया</string>
+    <string name="pcv3_retained_discarded_body">ऐप में सहेजा गया आउटपुट हटा दिया गया है। आपकी मूल फ़ाइलें सुरक्षित हैं।</string>
+    <string name="pcv3_retained_discard_cleanup_title">आउटपुट की सफ़ाई अधूरी है</string>
+    <string name="pcv3_retained_discard_cleanup_body">ऐप आउटपुट हटाए जाने की पुष्टि नहीं कर सका। अपनी मूल फ़ाइलें सुरक्षित रखें।</string>
+    <string name="pcv3_resource_limit_title">संसाधन सीमा पूरी हो गई</string>
+    <string name="pcv3_resource_limit_body">प्रक्रिया के लिए तय संसाधन सीमा पूरी होने के कारण कार्य रोक दिया गया।</string>
 </resources>

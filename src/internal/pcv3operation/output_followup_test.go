@@ -1,7 +1,7 @@
 package pcv3operation
 
 import (
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3publication"
 	"context"
 	"errors"
@@ -401,5 +401,36 @@ func requireOperationFileBytes(t *testing.T, path string, want []byte) {
 	}
 	if string(got) != string(want) {
 		t.Fatalf("operation file bytes = %q; want %q", got, want)
+	}
+}
+
+// The failed plaintext save consumes its only follow-up. Even when the caller's
+// destination cannot be cleaned, the independently owned internal plaintext
+// must still be removed. No KDF or fixture is involved in this filesystem test.
+func TestOutputFollowUpCleanupUncertainSaveRemovesInternalPlaintext(t *testing.T) {
+	directory := t.TempDir()
+	payload := []byte("owned plaintext must not be orphaned")
+	retained, retainedPath := newOperationRetainedFile(t, directory, payload)
+	// Retain a test-only cleanup reference so the test itself
+	// cannot strand a descriptor or file beyond t.TempDir's lifetime.
+	t.Cleanup(func() { _ = retained.Close() })
+	followUp := newOutputFollowUp(retained)
+	destination, err := os.OpenFile(retainedPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := followUp.SaveTo(destination)
+	if action.Code() != OutputActionSaveFailedCleanupIncomplete || !action.CleanupIncomplete() {
+		t.Fatalf("action = %v cleanup=%v, want failed save with alias uncertainty", action.Code(), action.CleanupIncomplete())
+	}
+	if followUp.live() {
+		t.Fatal("failed one-shot plaintext save retained follow-up authority")
+	}
+	if _, err := destination.Stat(); err == nil {
+		t.Fatal("SaveTo left its destination descriptor open")
+	}
+	bytes, readErr := os.ReadFile(retainedPath)
+	if !errors.Is(readErr, os.ErrNotExist) {
+		t.Fatalf("consumed plaintext follow-up left private source: readErr=%v payloadIntact=%v rawRetainedLive=%v", readErr, string(bytes) == string(payload), retained.Live())
 	}
 }

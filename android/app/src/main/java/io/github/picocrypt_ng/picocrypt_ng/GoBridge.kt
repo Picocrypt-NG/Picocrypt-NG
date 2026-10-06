@@ -116,6 +116,10 @@ data class Pcv3WriteRequest(
     val comment: String,
     val suite: String,
     val payloadRS: Boolean,
+    val inputFiles: List<String> = emptyList(),
+    val onlyFiles: List<String> = emptyList(),
+    val onlyFolders: List<String> = emptyList(),
+    val compress: Boolean = false,
 ) : Pcv3StartRequest
 
 enum class Pcv3Route {
@@ -162,11 +166,13 @@ data class Pcv3ArchiveBeginData(
 )
 
 interface Pcv3ArchiveCapability {
+    fun cancelPreparation()
     fun close(): Pcv3SnapshotData
     fun beginSaf(): Pcv3ArchiveBeginData
 }
 
 internal interface Pcv3ArchiveNative {
+    fun cancelPreparation()
     fun close(): Pcv3SnapshotData
     fun beginSaf(): Pcv3ArchiveBeginData
 }
@@ -197,6 +203,7 @@ internal fun projectPcv3ArchiveBegin(
 internal class GoPcv3Archive(
     private val native: Pcv3ArchiveNative,
 ) : Pcv3ArchiveCapability {
+    override fun cancelPreparation() = native.cancelPreparation()
     override fun close(): Pcv3SnapshotData = native.close()
     override fun beginSaf(): Pcv3ArchiveBeginData = native.beginSaf()
 }
@@ -245,7 +252,7 @@ data class Pcv3RestoredReceiptData(
 )
 
 /** A bounded PCV3 bridge refusal; raw native diagnostics never cross this boundary. */
-internal class Pcv3BridgeFailure(code: String) : IllegalStateException(code)
+internal class Pcv3BridgeFailure(val code: String) : IllegalStateException(code)
 
 /** Native-only transport; tests inject a stateful contract fake at this seam. */
 internal interface Pcv3Transport {
@@ -340,6 +347,24 @@ internal fun readPcv3AndroidPolicyState(
 
 internal fun interface Pcv3JournalCleanupNative {
     fun cleanup(parentPath: String): String
+}
+
+internal enum class InputCopyPublication { PUBLISHED, PUBLISHED_ERROR, NOT_PUBLISHED, INDETERMINATE }
+
+/** Only confirmed moved outcomes grant ownership of the final pathname. */
+internal fun publishInputCopy(nativePublication: () -> String): InputCopyPublication = try {
+    when (nativePublication()) {
+        "published" -> InputCopyPublication.PUBLISHED
+        "published-error" -> InputCopyPublication.PUBLISHED_ERROR
+        "not-published" -> InputCopyPublication.NOT_PUBLISHED
+        else -> InputCopyPublication.INDETERMINATE
+    }
+} catch (error: CancellationException) {
+    throw error
+} catch (_: Exception) {
+    InputCopyPublication.INDETERMINATE
+} catch (_: LinkageError) {
+    InputCopyPublication.INDETERMINATE
 }
 
 /** Closed projection of the Go-owned exact-stage cleanup boundary. */
@@ -678,6 +703,16 @@ object GoBridge {
     internal fun cleanupPcv3Journal(parentPath: String): Pcv3JournalCleanupState =
         cleanupPcv3Journal(parentPath, Pcv3JournalCleanupNative { Mobile.cleanupPCV3Journal(it) })
 
+    internal fun publishInputCopy(
+        parentPath: String,
+        sourceName: String,
+        targetName: String,
+        device: Long,
+        inode: Long,
+    ): InputCopyPublication = publishInputCopy {
+        Mobile.publishInputCopy(parentPath, sourceName, targetName, device, inode)
+    }
+
     /**
      * One immutable presentation/configuration value for the loaded AAR. Direct
      * StartPCV3 calls still perform their own fresh native admission.
@@ -989,6 +1024,9 @@ object GoBridge {
     /** Mirrors header.MaxCommentLen (D-02 bound source of truth). */
     private const val PCV3_MAX_COMMENT_BYTES = 99999
     private const val PCV3_MAX_KEYFILES = 64
+    internal const val PCV3_MAX_PATH_BYTES = 4096
+    internal const val PCV3_MAX_SELECTION_PATHS = 4096
+    internal const val PCV3_MAX_ENVELOPE_BYTES = 4 * 1024 * 1024
 
     /**
      * Builds the exact write-shaped PCV3 creation envelope, or null when any field
@@ -1008,21 +1046,46 @@ object GoBridge {
         if (request.suite != "standard" && request.suite != "paranoid") return null
         // D1 creation has no suite choice: it always runs the paranoid suite.
         if (request.mode == "write-d1" && request.suite != "paranoid") return null
-        if (request.source.isBlank() || request.target.isBlank()) return null
-        if (request.keyfiles.any { it.isBlank() }) return null
-        if (request.comment.toByteArray(Charsets.UTF_8).size > PCV3_MAX_COMMENT_BYTES) return null
-        return JSONObject().apply {
+        val pathLists = listOf(request.keyfiles, request.inputFiles, request.onlyFiles, request.onlyFolders)
+        if (pathLists.drop(1).any { it.size > PCV3_MAX_SELECTION_PATHS }) return null
+        fun validPath(path: String): Boolean = path.isNotBlank() && '\u0000' !in path &&
+            path.length <= PCV3_MAX_PATH_BYTES && path.toByteArray(Charsets.UTF_8).size <= PCV3_MAX_PATH_BYTES
+        if (!validPath(request.source) || !validPath(request.target) ||
+            pathLists.any { paths -> paths.any { !validPath(it) } }
+        ) return null
+        if (request.comment.length > PCV3_MAX_COMMENT_BYTES ||
+            request.comment.toByteArray(Charsets.UTF_8).size > PCV3_MAX_COMMENT_BYTES
+        ) return null
+        val json = JSONObject().apply {
             put("version", 1)
             put("mode", request.mode)
             put("factorPolicy", request.factorPolicy)
             put("keyfileOrder", request.keyfileOrder)
             put("source", request.source)
             put("target", request.target)
-            put("keyfiles", JSONArray().apply { request.keyfiles.forEach { put(it) } })
+            put("keyfiles", JSONArray())
             put("comment", request.comment)
             put("suite", request.suite)
             put("payloadRS", request.payloadRS)
-        }.toString()
+            put("inputFiles", JSONArray())
+            put("onlyFiles", JSONArray())
+            put("onlyFolders", JSONArray())
+            put("compress", request.compress)
+        }
+        // Count each bounded string before allocating the aggregate JSON. JSON escaping
+        // is significant (e.g. control characters); raw path length is not a wire bound.
+        var remaining = PCV3_MAX_ENVELOPE_BYTES - json.toString().toByteArray(Charsets.UTF_8).size
+        for (paths in pathLists) {
+            for ((index, path) in paths.withIndex()) {
+                remaining -= JSONObject.quote(path).toByteArray(Charsets.UTF_8).size + if (index == 0) 0 else 1
+                if (remaining < 0) return null
+            }
+        }
+        json.put("keyfiles", JSONArray(request.keyfiles))
+        json.put("inputFiles", JSONArray(request.inputFiles))
+        json.put("onlyFiles", JSONArray(request.onlyFiles))
+        json.put("onlyFolders", JSONArray(request.onlyFolders))
+        return json.toString()
     }
 
     private fun PCV3StartResult.toStartData(): Pcv3StartData = Pcv3StartData(code(), operation()?.let(::GoPcv3Operation))
@@ -1078,6 +1141,7 @@ object GoBridge {
     private class GoMobilePcv3Archive(
         private val native: PCV3Archive,
     ) : Pcv3ArchiveNative {
+        override fun cancelPreparation() = native.cancelPreparation()
         override fun close(): Pcv3SnapshotData = native.close().toData()
 
         override fun beginSaf(): Pcv3ArchiveBeginData {
@@ -1095,6 +1159,7 @@ object GoBridge {
     private class GoMobilePcv3ArchiveSession(
         private val native: PCV3ArchiveSession,
     ) : Pcv3ArchiveSessionCapability {
+        override fun hostMemoryBudgetBytes(): Long = native.hostMemoryBudgetBytes()
         override fun entryCount(): Long = native.entryCount()
 
         override fun entry(index: Long): Pcv3ArchiveEntryData? = native.entry(index)?.let {

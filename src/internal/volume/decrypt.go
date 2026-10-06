@@ -7,6 +7,7 @@ import (
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/keyfile"
 	"Picocrypt-NG/internal/log"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"context"
 	"crypto/subtle"
@@ -444,15 +445,21 @@ func decryptVerifyAuth(ctx *OperationContext, req *DecryptRequest) error {
 // a form, so it uses the password exactly as typed (a single attempt, preserving
 // historical behavior).
 func decryptDeriveProcessVerify(ctx *OperationContext, req *DecryptRequest) error {
-	candidates := pwnorm.Candidates(req.Password)
+	var candidates [][]byte
 	if req.ForceDecrypt {
 		// Own a copy so setPasswordBytes adopts an independent slice (it may zero
 		// the predecessor); never alias the caller's req.Password backing array.
 		candidates = [][]byte{append([]byte(nil), req.Password...)}
+	} else {
+		candidates = pwnorm.Candidates(req.Password)
 	}
+	defer crypto.SecureZeroMultiple(candidates...)
 
 	var lastErr error
 	for i, cand := range candidates {
+		// The context owns this candidate through verify-first and RS retries;
+		// untried candidates remain owned by the deferred cleanup above.
+		candidates[i] = nil
 		ctx.setPasswordBytes(cand)
 
 		if err := decryptDeriveKeys(ctx, req); err != nil {
@@ -957,12 +964,36 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 		autoUnzipParentPath string
 		autoUnzipTargetName string
 		autoUnzipRootInfo   os.FileInfo
+		autoUnzipPrepared   *fileops.PreparedZIPUnpack
+		autoUnzipBudget     *fileops.ZIPResourceBudget
+		autoUnzipPrepareErr error
 	)
 	if shouldUnzip {
 		var err error
 		autoUnzipRoot, autoUnzipParentPath, autoUnzipTargetName, autoUnzipRootInfo, err = openStagedOutputParent(ctx.stagedOutput, req.OutputFile)
 		if err != nil {
 			return err
+		}
+		autoUnzipBudget = fileops.NewZIPResourceBudget()
+		if err := pcv3operation.AdmitZIPWorkingMemory(ctx.Ctx, autoUnzipBudget); err != nil {
+			return closePinnedAutoUnzipRoot(autoUnzipRoot, err)
+		}
+		archive, err := ctx.stagedOutputFile()
+		if err != nil {
+			return closePinnedAutoUnzipRoot(autoUnzipRoot, err)
+		}
+		autoUnzipPrepared, autoUnzipPrepareErr = fileops.PrepareZIPUnpack(
+			archive, autoUnzipParentPath,
+			fileops.ZIPReadOptions{Cancel: ctx.IsCancelled, Budget: autoUnzipBudget},
+		)
+		if autoUnzipPrepared != nil {
+			defer autoUnzipPrepared.Close()
+		}
+		if ctx.IsCancelled() {
+			return closePinnedAutoUnzipRoot(autoUnzipRoot, errors.Join(autoUnzipPrepareErr, errors.New("operation cancelled")))
+		}
+		if errors.Is(autoUnzipPrepareErr, fileops.ErrZIPMetadataLimit) {
+			return closePinnedAutoUnzipRoot(autoUnzipRoot, autoUnzipPrepareErr)
 		}
 	}
 
@@ -971,6 +1002,11 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 	}
 
 	if shouldUnzip {
+		if autoUnzipPrepareErr != nil {
+			// Keep the historical recoverable archive on malformed ZIP/input
+			// errors, without reparsing potentially changed metadata after publish.
+			return closePinnedAutoUnzipRoot(autoUnzipRoot, fmt.Errorf("unzip: %w", autoUnzipPrepareErr))
+		}
 		return autoUnzipDecryptedOutput(
 			ctx,
 			req,
@@ -978,6 +1014,8 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 			autoUnzipParentPath,
 			autoUnzipTargetName,
 			autoUnzipRootInfo,
+			autoUnzipPrepared,
+			autoUnzipBudget,
 		)
 	}
 
@@ -985,6 +1023,10 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 }
 
 func autoUnzipUnpublishedOutput(ctx *OperationContext, req *DecryptRequest) error {
+	budget := fileops.NewZIPResourceBudget()
+	if err := pcv3operation.AdmitZIPWorkingMemory(ctx.Ctx, budget); err != nil {
+		return err
+	}
 	archive, err := ctx.stagedOutputFile()
 	if err != nil {
 		return fmt.Errorf("open staged auto-unzip archive: %w", err)
@@ -1004,6 +1046,7 @@ func autoUnzipUnpublishedOutput(ctx *OperationContext, req *DecryptRequest) erro
 
 	ctx.SetStatus("Unzipping...")
 	unpackErr := fileops.Unpack(fileops.UnpackOptions{
+		Budget:              budget,
 		ZipPath:             req.OutputFile,
 		ZipFile:             archive,
 		ExtractDir:          extractDir,
@@ -1049,6 +1092,9 @@ func autoUnzipUnpublishedOutput(ctx *OperationContext, req *DecryptRequest) erro
 	}
 
 	removeErr := ctx.stagedOutput.RemoveSiblingDirectory(extractDir, outputInfo)
+	if errors.Is(unpackErr, fileops.ErrZIPMetadataLimit) {
+		return errors.Join(fmt.Errorf("unzip: %w", unpackErr), removeErr)
+	}
 	if distinctArchivePath {
 		publishErr := ctx.publishStagedOutput()
 		var recoveryErr error
@@ -1152,6 +1198,8 @@ func autoUnzipDecryptedOutput(
 	parentRoot *os.Root,
 	parentPath, targetName string,
 	parentInfo os.FileInfo,
+	prepared *fileops.PreparedZIPUnpack,
+	budget *fileops.ZIPResourceBudget,
 ) (retErr error) {
 	if parentRoot == nil || parentInfo == nil || targetName == "" {
 		return errors.New("pinned output parent is unavailable for same-level auto-unzip")
@@ -1194,6 +1242,8 @@ func autoUnzipDecryptedOutput(
 
 	ctx.SetStatus("Unzipping...")
 	unpackErr := fileops.Unpack(fileops.UnpackOptions{
+		Budget:              budget,
+		Prepared:            prepared,
 		ZipPath:             req.OutputFile,
 		ZipFile:             archive,
 		ExtractDir:          parentPath,

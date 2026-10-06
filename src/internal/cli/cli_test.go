@@ -1,7 +1,6 @@
 package cli
 
 import (
-	perrors "Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/header"
 	"bytes"
 	"context"
@@ -150,7 +149,7 @@ func TestEncryptValidation(t *testing.T) {
 		encSplitUnit = "MiB"
 	})
 
-	t.Run("keyfile writer policy is checked before lookup", func(t *testing.T) {
+	t.Run("explicit legacy writer is rejected before keyfile lookup", func(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "test.txt")
 		if err := os.WriteFile(tmpFile, []byte("test"), 0o644); err != nil {
 			t.Fatal(err)
@@ -158,18 +157,16 @@ func TestEncryptValidation(t *testing.T) {
 
 		encPassword = "test"
 		encKeyfiles = []string{"/nonexistent/keyfile.key"}
+		encPCV3 = false
+		t.Cleanup(func() { encPCV3 = true })
 
 		cmd := encryptCmd
 		err := cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
 			t.Fatal("expected keyfile writer policy error")
 		}
-		var validationErr *perrors.ValidationError
-		if !errors.As(err, &validationErr) {
-			t.Fatalf("error = %v; want *errors.ValidationError", err)
-		}
-		if validationErr.Field != "Keyfiles" || validationErr.Message != perrors.KeyfileWritesDisabledMessage {
-			t.Fatalf("validation error = %#v; want exact keyfile writer policy", validationErr)
+		if err.Error() != "new encryption requires PCV3; --pcv3=false is unsupported" {
+			t.Fatalf("legacy selection error = %v", err)
 		}
 
 		// Reset
@@ -892,13 +889,19 @@ func TestDefaultCompressOutputNameUsesZipSuffix(t *testing.T) {
 
 	resetDecryptFlagsForDirTest()
 	decPassword = "pw"
+	decPCV3Factors = "password"
+	decPCV3Archive = "extract"
+	decPCV3ExtractTo = t.TempDir()
 	decQuiet = true
 	decYes = true
 
 	if err := decryptCmd.RunE(decryptCmd, []string{want}); err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
-	assertZipContainsPlaintext(t, inputFile+".zip", plaintext)
+	got, err := os.ReadFile(filepath.Join(decPCV3ExtractTo, filepath.Base(inputFile)))
+	if err != nil || !bytes.Equal(got, plaintext) {
+		t.Fatalf("extracted compressed payload = %q, %v", got, err)
+	}
 }
 
 func TestDefaultCompressStdinOutputNameUsesZipSuffix(t *testing.T) {
@@ -1081,7 +1084,7 @@ func TestEncryptStdinValidation(t *testing.T) {
 		if err == nil {
 			t.Error("expected error for stdin with --deniability")
 		}
-		if !strings.Contains(err.Error(), "not compatible with --deniability") {
+		if !strings.Contains(err.Error(), "PCV3 D1 requires --paranoid") {
 			t.Errorf("error should mention --deniability incompatibility: %v", err)
 		}
 

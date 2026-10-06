@@ -12,6 +12,22 @@ import org.junit.Test
 
 class OperationStatusTest {
     @Test
+    fun `save error is visible with retained result while cleanup stays deferred`() {
+        val presentation = Pcv3Presentation.Live(
+            snapshot = snapshot(semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
+                publication = durablePublication(), completionClass = "clean"),
+            operationId = "retained", generation = 1,
+            operationHandle = mockk(relaxed = true), consentHandle = null, archiveHandle = null,
+            consent = null, outputHandle = mockk(relaxed = true), outputPending = true,
+        )
+        val saveError = AppError.FileError.SaveFailed()
+        val cleanupError = AppError.FileError.DeleteFailed()
+        assertEquals(saveError, pcv3VisibleError(saveError, presentation))
+        assertEquals(null, pcv3VisibleError(cleanupError, presentation))
+        assertEquals(cleanupError, pcv3VisibleError(cleanupError, null))
+    }
+
+    @Test
     fun `every static status code resolves through its matching resource`() {
         val context = mockk<Context>()
         staticStatusResources.forEach { (code, resourceId) ->
@@ -347,7 +363,7 @@ class OperationStatusTest {
                 snapshot(
                     semantic = Pcv3Semantic(
                         "operation-failed",
-                        "credential-policy",
+                        if (diagnostic == "resource-limit") "resource-budget" else "credential-policy",
                         "PCV3_OPERATION_FAILED",
                     ),
                     diagnostic = diagnostic,
@@ -513,7 +529,7 @@ class OperationStatusTest {
     }
 
     @Test
-    fun `PCV3 decrypted output cannot claim recovery discard and preserves cleanup uncertainty`() {
+    fun `PCV3 decrypted output discard reports ordinary cleanup without recovery copy`() {
         val decrypted = snapshot(
             semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
             publication = durablePublication(),
@@ -539,10 +555,10 @@ class OperationStatusTest {
             ),
         )
 
-        assertEquals(R.string.pcv3_output_unknown_title, discarded.outcome.titleResId)
-        assertEquals(R.string.pcv3_output_unknown_close, discarded.closeActionResId)
+        assertEquals(R.string.pcv3_retained_discarded_title, discarded.outcome.titleResId)
+        assertEquals(R.string.pcv3_output_discarded_close, discarded.closeActionResId)
         assertEquals(emptyList<Pcv3CopyResources>(), discarded.warnings)
-        assertEquals(R.string.pcv3_output_unknown_title, cleanupIncomplete.outcome.titleResId)
+        assertEquals(R.string.pcv3_retained_discard_cleanup_title, cleanupIncomplete.outcome.titleResId)
         assertEquals(R.string.pcv3_warning_cleanup_close, cleanupIncomplete.closeActionResId)
         assertEquals(
             listOf(R.string.pcv3_warning_cleanup_title),
@@ -668,7 +684,7 @@ class OperationStatusTest {
         )
 
         assertEquals(
-            setOf(Pcv3ResultAction.SAVE_DECRYPTED_OUTPUT),
+            setOf(Pcv3ResultAction.SAVE_DECRYPTED_OUTPUT, Pcv3ResultAction.DISCARD_OUTPUT),
             pcv3ResultActions(cleanLive).actions,
         )
         assertEquals(
@@ -738,7 +754,7 @@ class OperationStatusTest {
             isCreation = true,
         )
         assertEquals(
-            setOf(Pcv3ResultAction.SAVE_CREATED_VOLUME),
+            setOf(Pcv3ResultAction.SAVE_CREATED_VOLUME, Pcv3ResultAction.DISCARD_OUTPUT),
             pcv3ResultActions(liveCreation).actions,
         )
         // A creation without a settled output action shows creation copy, never decryption copy.
@@ -747,8 +763,7 @@ class OperationStatusTest {
         assertEquals(R.string.pcv3_create_outcome_body, creationDisplay.outcome.bodyResId)
         assertNull(creationDisplay.publication)
 
-        // A D1 creation has no retained output capability: the terminal Final offers only
-        // the host staging copy-out until it settles.
+        // Scalar terminal success cannot recreate output authority for either codec.
         val d1Final = Pcv3Presentation.Final(
             snapshot = creationSnapshot,
             operationId = "create-d1-final",
@@ -756,7 +771,7 @@ class OperationStatusTest {
             isCreation = true,
         )
         assertEquals(
-            setOf(Pcv3ResultAction.SAVE_CREATED_VOLUME),
+            setOf(Pcv3ResultAction.CLOSE_RESULT),
             pcv3ResultActions(d1Final).actions,
         )
         assertEquals(
@@ -771,6 +786,44 @@ class OperationStatusTest {
             ),
         )
         assertEquals(setOf(Pcv3ResultAction.CLOSE_RESULT), pcv3ResultActions(failedFinal).actions)
+    }
+
+    @Test
+    fun `PCV3 uncertain creation offers capability bound save while retaining its warning and receipt`() {
+        val uncertain = snapshot(
+            semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
+            publication = Pcv3Publication(true, "published-durability-uncertain", "directory-sync", "PCV3_PUBLICATION_DURABILITY_UNCERTAIN"),
+            completionClass = "durability-uncertain",
+            warnings = listOf("durability-uncertain"),
+            restoredReceipt = "terminal-receipt",
+        )
+        val live = Pcv3Presentation.Live(
+            snapshot = uncertain,
+            operationId = "uncertain-creation", generation = 1,
+            operationHandle = mockk(relaxed = true), consentHandle = null, archiveHandle = null, consent = null,
+            outputHandle = mockk(relaxed = true), outputPending = true, isCreation = true,
+        )
+
+        assertEquals(Pcv3OutputActionTarget.CREATED_VOLUME, pcv3OutputActionTarget(uncertain, null, isCreation = true))
+        assertEquals(setOf(Pcv3ResultAction.SAVE_CREATED_VOLUME, Pcv3ResultAction.DISCARD_OUTPUT), pcv3ResultActions(live).actions)
+        val display = pcv3ResultDisplay(live)
+        assertEquals(Pcv3ResultTone.WARNING, display.tone)
+        assertEquals(R.string.pcv3_publication_uncertain_title, display.publication?.titleResId)
+        assertEquals(R.string.pcv3_publication_uncertain_body, display.publication?.bodyResId)
+        assertEquals(R.string.pcv3_publication_uncertain_close, display.closeActionResId)
+        for (denied in listOf(
+            live.copy(isCreation = false),
+            live.copy(outputHandle = null),
+            live.copy(outputActionInFlight = true),
+            live.copy(snapshot = uncertain.copy(restoredReceipt = "")),
+            live.copy(snapshot = uncertain.copy(publication = uncertain.publication.copy(stage = "file-sync"))),
+            live.copy(snapshot = uncertain.copy(forceProvenance = "partial")),
+            live.copy(artifactMetadata = artifactMetadata("partial")),
+        )) {
+            assertEquals(emptySet<Pcv3ResultAction>(), pcv3ResultActions(denied).actions)
+        }
+        val final = Pcv3Presentation.Final(uncertain, "uncertain-creation", 1, isCreation = true)
+        assertEquals(setOf(Pcv3ResultAction.CLOSE_RESULT), pcv3ResultActions(final).actions)
     }
 
     @Test
@@ -820,7 +873,7 @@ class OperationStatusTest {
         )
 
         assertEquals(
-            setOf(Pcv3ResultAction.SAVE_DECRYPTED_OUTPUT),
+            setOf(Pcv3ResultAction.SAVE_DECRYPTED_OUTPUT, Pcv3ResultAction.DISCARD_OUTPUT),
             pcv3ResultActions(degraded).actions,
         )
         assertEquals(recoveryActions, pcv3ResultActions(unverified).actions)
@@ -829,6 +882,7 @@ class OperationStatusTest {
             "resource-busy",
             "resource-insufficient",
             "resource-unknown",
+            "resource-limit",
             "PRIVATE diagnostic",
         ).forEach { diagnostic ->
             val contradictory = unverified.copy(
@@ -1088,6 +1142,7 @@ class OperationStatusTest {
             "resource-busy" to R.string.pcv3_resource_busy_title,
             "resource-insufficient" to R.string.pcv3_resource_insufficient_title,
             "resource-unknown" to R.string.pcv3_resource_unknown_title,
+            "resource-limit" to R.string.pcv3_resource_limit_title,
         )
     }
 }

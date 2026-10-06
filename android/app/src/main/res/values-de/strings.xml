@@ -273,7 +273,7 @@
     <string name="pcv3_publication_indeterminate_title">Ausgabestatus ist unbekannt</string>
     <string name="pcv3_publication_indeterminate_body">Die App kann nicht feststellen, ob die Veröffentlichung festgeschrieben wurde. Lassen Sie alle Quellen und das Ziel genau unverändert. Wiederholen oder bereinigen Sie diesen Vorgang nicht.</string>
     <string name="pcv3_warning_cleanup_title">Bereinigung konnte nicht bestätigt werden</string>
-    <string name="pcv3_warning_cleanup_body">Die App konnte nicht nachweisen, dass alle vorgangseigenen temporären Klartextdaten entfernt wurden. Bewahren Sie die verschlüsselte Quelle auf und löschen Sie aufgrund dieses Ergebnisses keine Dateien.</string>
+    <string name="pcv3_warning_cleanup_body">Die App konnte nicht bestätigen, dass alle für diesen Vorgang erstellten temporären Dateien entfernt wurden. Bewahren Sie die Quelldateien auf und löschen Sie aufgrund dieses Ergebnisses keine Dateien.</string>
     <string name="pcv3_warning_callback_title">Wiederherstellungsbestätigung fehlgeschlagen</string>
     <string name="pcv3_warning_callback_body">Die aktuelle Wiederherstellungsbestätigung konnte nicht abgeschlossen werden. Es wurde keine Berechtigung für nicht verifizierte Ausgabe erteilt.</string>
     <string name="pcv3_warning_unknown_title">Zusätzliche Vorgangswarnung</string>
@@ -287,11 +287,11 @@
     <string name="pcv3_output_saved_title">Ausgabe gespeichert</string>
     <string name="pcv3_output_saved_body">Die ausgewählte Ausgabe wurde gespeichert. Die unten angezeigten Authentifizierungs- und Wiederherstellungshinweise gelten weiterhin.</string>
     <string name="pcv3_output_saved_cleanup_title">Ausgabe gespeichert; Bereinigung unvollständig</string>
-    <string name="pcv3_output_saved_cleanup_body">Die ausgewählte Ausgabe wurde gespeichert, aber die Bereinigung des app-eigenen Klartexts konnte nicht bestätigt werden.</string>
+    <string name="pcv3_output_saved_cleanup_body">Die ausgewählte Ausgabe wurde gespeichert, aber die Bereinigung der temporären App-Dateien konnte nicht bestätigt werden.</string>
     <string name="pcv3_output_save_failed_title">Ausgabe konnte nicht gespeichert werden</string>
-    <string name="pcv3_output_save_failed_body">Es wurde nicht bestätigt, dass das ausgewählte Ziel die Ausgabe enthält. Bewahren Sie die verschlüsselte Quelle auf.</string>
+    <string name="pcv3_output_save_failed_body">Es wurde nicht bestätigt, dass das ausgewählte Ziel die Ausgabe enthält. Bewahren Sie die Quelldateien auf.</string>
     <string name="pcv3_output_save_failed_cleanup_title">Speichern fehlgeschlagen; Bereinigung unvollständig</string>
-    <string name="pcv3_output_save_failed_cleanup_body">Es wurde weder bestätigt, dass das Ziel die Ausgabe enthält, noch dass der app-eigene Klartext bereinigt wurde.</string>
+    <string name="pcv3_output_save_failed_cleanup_body">Es wurde weder bestätigt, dass das Ziel die Ausgabe enthält, noch dass die temporären App-Dateien entfernt wurden.</string>
     <string name="pcv3_output_discarded_title">Wiederherstellungsartefakt verworfen</string>
     <string name="pcv3_output_discarded_body">Das app-eigene Wiederherstellungsartefakt wurde entfernt. Die verschlüsselte Quelle blieb erhalten.</string>
     <string name="pcv3_output_discard_cleanup_title">Bereinigung des Wiederherstellungsartefakts unvollständig</string>
@@ -299,7 +299,7 @@
     <string name="pcv3_output_expired_title">Ausgabeaktion abgelaufen</string>
     <string name="pcv3_output_expired_body">Die Aktion zum Speichern oder Verwerfen war nicht mehr gültig. Weder ein neues Ziel noch eine Entfernung wurde bestätigt.</string>
     <string name="pcv3_output_unknown_title">Ergebnis der Ausgabeaktion ist unbekannt</string>
-    <string name="pcv3_output_unknown_body">Die Anwendung konnte das Ergebnis des Speicherns oder Verwerfens nicht prüfen. Bewahren Sie die verschlüsselte Quelle auf und nehmen Sie nicht an, dass die Ausgabe gespeichert oder entfernt wurde.</string>
+    <string name="pcv3_output_unknown_body">Die Anwendung konnte das Ergebnis des Speicherns oder Verwerfens nicht prüfen. Bewahren Sie die Quelldateien auf und nehmen Sie nicht an, dass die Ausgabe gespeichert oder entfernt wurde.</string>
     <string name="pcv3_output_saved_close">Ergebnis der gespeicherten Ausgabe schließen</string>
     <string name="pcv3_output_save_failed_close">Speicherfehler schließen</string>
     <string name="pcv3_output_discarded_close">Verwerfungsergebnis schließen</string>
@@ -334,4 +334,16 @@
     <string name="pcv3_artifact_row">Datensatz %1$s, Bytes %2$s bis %3$s, %4$s</string>
     <string name="pcv3_artifact_previous_page">Vorherige Bereiche</string>
     <string name="pcv3_artifact_next_page">Nächste Bereiche</string>
+    <string name="pcv3_output_provider_unsupported">Dieser Dokumentanbieter unterstützt das Speichern dieser Ausgabe nicht. Wählen Sie einen anderen Speicherort. Die Ausgabe bleibt in der App verfügbar.</string>
+
+    <!-- Retained output and bounded creation request feedback. -->
+    <string name="pcv3_request_too_large">Die Auswahl oder der Kommentar überschreitet die zulässigen Grenzen. Wählen Sie weniger Elemente oder einen kürzeren Kommentar.</string>
+    <string name="pcv3_discard_retained_title">Ausgabe verwerfen?</string>
+    <string name="pcv3_discard_retained_body">Die Ausgabe im App-Speicher wird unwiderruflich entfernt. Ihre Originaldateien bleiben erhalten.</string>
+    <string name="pcv3_retained_discarded_title">Ausgabe verworfen</string>
+    <string name="pcv3_retained_discarded_body">Die Ausgabe im App-Speicher wurde entfernt. Ihre Originaldateien wurden beibehalten.</string>
+    <string name="pcv3_retained_discard_cleanup_title">Bereinigung der Ausgabe unvollständig</string>
+    <string name="pcv3_retained_discard_cleanup_body">Die App konnte das Entfernen der Ausgabe aus dem App-Speicher nicht bestätigen. Bewahren Sie Ihre Originaldateien auf.</string>
+    <string name="pcv3_resource_limit_title">Ressourcenlimit erreicht</string>
+    <string name="pcv3_resource_limit_body">Der Vorgang wurde gestoppt, weil ein Ressourcenlimit für die Verarbeitung erreicht wurde.</string>
 </resources>

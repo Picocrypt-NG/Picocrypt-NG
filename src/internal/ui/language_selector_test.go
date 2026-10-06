@@ -6,6 +6,7 @@ import (
 	"testing/fstest"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -129,9 +130,9 @@ func TestKoreanEmbeddedCatalogDrivesLanguageSelectionAndRendering(t *testing.T) 
 	}
 	if got := tr(
 		"advanced.auto_unzip.tooltip",
-		"Extract {{.Extension}}; may overwrite files",
+		"Extract {{.Extension}} archives; keep existing files",
 		map[string]any{"Extension": ".zip"},
-	); got != ".zip 파일의 압축을 풉니다. 기존 파일을 덮어쓸 수 있습니다" {
+	); got != ".zip 압축을 풀고 기존 파일을 유지합니다" {
 		t.Errorf("tr(advanced.auto_unzip.tooltip, Korean) = %q; want rendered Korean template", got)
 	}
 }
@@ -504,9 +505,12 @@ func walkCanvasTree(root fyne.CanvasObject, visit func(fyne.CanvasObject)) {
 		return
 	}
 	visit(root)
-	if container, ok := root.(*fyne.Container); ok {
-		for _, child := range container.Objects {
+	switch obj := root.(type) {
+	case *fyne.Container:
+		for _, child := range obj.Objects {
 			walkCanvasTree(child, visit)
 		}
+	case *container.Scroll:
+		walkCanvasTree(obj.Content, visit)
 	}
 }

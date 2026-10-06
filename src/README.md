@@ -17,7 +17,7 @@ brew install glfw glew
 
 ## Install Go
 
-Download from [go.dev/dl](https://go.dev/dl/) or use your package manager. Go 1.26.6 or newer; release builds use exactly Go 1.26.6.
+Download from [go.dev/dl](https://go.dev/dl/) or use your package manager. Use exactly Go 1.27.1 for development and release builds.
 
 ## Build
 
@@ -49,13 +49,16 @@ The browser WASM build supports in-memory single-file encryption and decryption 
 ## Test
 
 ```bash
-# Fast default local suite
-go test -tags migrated_fynedo ./...
+# Default local suite; serialize packages that run the fixed 1 GiB KDF
+go test -p 1 -tags migrated_fynedo ./...
+
+# PCV3 production-KDF vectors and operation checks (run separately)
+go test -count=1 -p 1 -tags pcv3_production_kdf ./internal/pcv3operation/...
 
 # Golden compatibility checks with production KDF
 go test -count=1 -run '^TestGolden' ./internal/volume
 
-# Actual JavaScript/WASM bridge guard (Go 1.26 runtime uses one OS thread)
+# Actual JavaScript/WASM bridge guard (Go 1.27 runtime uses one OS thread)
 GOMAXPROCS=1 GOOS=js GOARCH=wasm go test -count=1 \
   -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
   -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness|TestBridgePCV3UnsupportedBeforeKDF)$' ./cmd/wasm

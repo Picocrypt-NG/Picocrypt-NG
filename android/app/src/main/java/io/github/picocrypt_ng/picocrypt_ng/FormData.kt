@@ -122,7 +122,6 @@ data class FormData(
     val paranoid: Boolean,
     val deniability: Boolean,
     val verifyFirst: Boolean = false,
-    val createPcv3: Boolean = false,
     val keyfileFilenames: List<KeyfileInfo>, // Keyfile info with internal path and display name
     val keyfileOrdered: Boolean,
     val compress: Boolean = false,
@@ -151,13 +150,9 @@ data class FormData(
             )
     val isPcv3Selection: Boolean
         get() = pcv3Intent != null
-    /**
-     * True when the user asked to create a PCV3 volume from a single selected file.
-     * Folder/multi selections stage a tree that the PCV3 creation bridge does not
-     * accept, so creation stays a single-file concept (like PCV3 selections).
-     */
+    /** All native creation uses PCV3; existing legacy volumes remain readable. */
     val isPcv3Creation: Boolean
-        get() = createPcv3 && isEncrypt && selectionKind == SelectionKind.SINGLE_FILE
+        get() = isEncrypt
     // clearPasswords overwrites buffers in place, so allocated length does not imply a credential.
     val hasPassword: Boolean
         get() = passwordInput.any { it != '\u0000' }
@@ -170,7 +165,7 @@ data class FormData(
             passwordInput.contentEquals(confirmPasswordInput)
     val hasKeyfiles: Boolean
         get() = keyfileFilenames.isNotEmpty()
-    // Legacy v2 creation cannot use keyfiles; explicit PCV3 creation can (desktop parity).
+    // Legacy writer validation remains isolated from native PCV3 creation.
     val isKeyfileEncryptionUnsupported: Boolean
         get() = isEncrypt && !isPcv3Creation && hasKeyfiles
     // Legacy deniability requires a non-empty outer password; PCV3 D1 binds the
@@ -263,7 +258,6 @@ data class FormData(
         if (paranoid != other.paranoid) return false
         if (deniability != other.deniability) return false
         if (verifyFirst != other.verifyFirst) return false
-        if (createPcv3 != other.createPcv3) return false
         if (keyfileFilenames != other.keyfileFilenames) return false
         if (keyfileOrdered != other.keyfileOrdered) return false
         if (compress != other.compress) return false
@@ -290,7 +284,6 @@ data class FormData(
         result = 31 * result + paranoid.hashCode()
         result = 31 * result + deniability.hashCode()
         result = 31 * result + verifyFirst.hashCode()
-        result = 31 * result + createPcv3.hashCode()
         result = 31 * result + keyfileFilenames.hashCode()
         result = 31 * result + keyfileOrdered.hashCode()
         result = 31 * result + compress.hashCode()

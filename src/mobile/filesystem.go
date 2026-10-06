@@ -60,6 +60,28 @@ func CleanupPCV3Journal(parentPath string) string {
 	}
 }
 
+// PublishInputCopy atomically moves a complete Android input copy without
+// replacing another owner. Published codes grant target cleanup custody even
+// if a post-move error prevents handoff; all other codes grant none.
+func PublishInputCopy(parentPath, sourceName, targetName string, device, inode int64) string {
+	if device < 0 || inode <= 0 || len(parentPath) > maxPCV3PathBytes || len(sourceName) > 255 || len(targetName) > 255 ||
+		!utf8.ValidString(parentPath) || !utf8.ValidString(sourceName) || !utf8.ValidString(targetName) {
+		return "not-published"
+	}
+	state, err := pcv3publication.MoveExistingNoReplace(parentPath, sourceName, targetName, uint64(device), uint64(inode))
+	switch state {
+	case pcv3publication.ExistingFilePublished:
+		if err != nil {
+			return "published-error"
+		}
+		return "published"
+	case pcv3publication.ExistingFileNotPublished:
+		return "not-published"
+	default:
+		return "indeterminate"
+	}
+}
+
 func removeTreeNoFollow(rootPath, targetPath string) (retErr error) {
 	rootPath, err := filepath.Abs(filepath.Clean(rootPath))
 	if err != nil {

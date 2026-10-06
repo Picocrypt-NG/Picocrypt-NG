@@ -54,7 +54,7 @@ body="$(cat <<EOF
 | **ARM64** (AArch64) | — | [DMG]($BASE/Picocrypt-NG.dmg) · [CLI]($BASE/Picocrypt-NG-cli-macos) | [Binary]($BASE/Picocrypt-NG-arm64) · [CLI]($BASE/Picocrypt-NG-cli-arm64) | [APK]($BASE/Picocrypt-NG-android-arm64-v8a.apk) | |
 
 - 🌐 **Web version** — runs in any modern browser, nothing to install: <https://picocrypt-ng.github.io/>
-- **Android 7.0+ on 64-bit ARM or x86-64 devices** — [universal APK]($BASE/Picocrypt-NG-android-universal.apk)
+- **Android 8.0+ on 64-bit ARM or x86-64 devices** — [universal APK]($BASE/Picocrypt-NG-android-universal.apk)
 - **Windows 7/8 (legacy) CLI** (x86-64): [Download]($BASE/Picocrypt-NG-cli-Legacy.exe)
 - macOS builds are **Apple Silicon (ARM64)** only.
 
@@ -69,6 +69,8 @@ Full changelog: https://github.com/$REPO/blob/main/Changelog.md#$ANCHOR
 ---
 
 ## Verifying your download
+
+Use **cosign 3.1.3 or newer** for verification.
 
 Every artifact is signed with keyless [cosign](https://github.com/sigstore/cosign) (a \`<file>.sigstore.json\` bundle ships next to it) and carries a GitHub build-provenance attestation. No keys to trust — the signature is bound to the exact GitHub Actions run that built the file.
 

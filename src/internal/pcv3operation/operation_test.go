@@ -1,8 +1,8 @@
 package pcv3operation
 
 import (
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3credential"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3publication"
 	"context"
 	"errors"
@@ -358,7 +358,7 @@ func (state *operationTestArchiveState) live() bool {
 	return state != nil && state.active
 }
 
-func (state *operationTestArchiveState) extract(_ context.Context, root *os.Root) *Result {
+func (state *operationTestArchiveState) extract(_ context.Context, root *os.Root, _ func(ArchiveSummary) error) *Result {
 	if state == nil || !state.active {
 		return archiveNoOutput(DiagnosticInvalidRequest, closeExtractionRoot(root))
 	}
@@ -944,7 +944,7 @@ func newOperationObservedKeyfile(t *testing.T, content []byte) *operationObserve
 
 func openOperationNormalFixture(t *testing.T, name string) *os.File {
 	t.Helper()
-	path := filepath.Join("..", "pcv3", "testdata", "normal", "volumes", name)
+	path := filepath.Join("..", "pcv3operation", "internal", "pcv3", "testdata", "normal", "volumes", name)
 	file, err := os.Open(path) // #nosec G304 -- frozen in-repository test fixture
 	if err != nil {
 		t.Fatalf("open frozen normal fixture %s: %v", name, err)

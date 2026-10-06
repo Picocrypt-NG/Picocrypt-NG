@@ -51,6 +51,8 @@ type ProgressReporter interface {
 
 // EncryptRequest contains all parameters needed to encrypt files into a .pcv volume.
 type EncryptRequest struct {
+	// ZIPBudget shares trusted archive admission with frontend custody.
+	ZIPBudget *fileops.ZIPResourceBudget
 	// Input files - use InputFile for single file, InputFiles for multiple (zipped automatically)
 	InputFile   string   // Single file path to encrypt
 	InputFiles  []string // Multiple file paths (will be combined into encrypted zip)
@@ -149,11 +151,9 @@ type OperationContext struct {
 	CipherSuite   *crypto.CipherSuite  // Initialized cipher suite (XChaCha20 + optional Serpent)
 
 	// Operation flags
-	IsLegacyV1   bool                    // True if decrypting a v1.x volume (different HKDF timing)
-	UseKeyfiles  bool                    // True if keyfiles were used/required
-	Padded       bool                    // True if final chunk needs unpadding (RS mode)
-	TempZipInUse bool                    // True if reading from encrypted temp zip
-	TempCiphers  *fileops.TempZipCiphers // Ciphers for encrypted temp zip
+	IsLegacyV1  bool // True if decrypting a v1.x volume (different HKDF timing)
+	UseKeyfiles bool // True if keyfiles were used/required
+	Padded      bool // True if final chunk needs unpadding (RS mode)
 
 	// Reed-Solomon retry state (for corrupt file recovery)
 	TriedFullRSDecode bool // Prevents infinite retry loop when MAC fails
@@ -166,6 +166,7 @@ type OperationContext struct {
 	stagedOutput *fileops.StagedFile
 	ownedTemps   []*fileops.StagedFile
 	tempInput    *fileops.StagedFile
+	tempZip      *fileops.TempZip
 
 	// pinnedLegacyInput is the descriptor classified after preprocessing and
 	// reused by every legacy decrypt step. It is either borrowed from a
@@ -267,12 +268,12 @@ func (ctx *OperationContext) CancellationError() error {
 	return perrors.ErrCancelled
 }
 
-// TempZipReader wraps the input file with decryption if temp zip was used
-func (ctx *OperationContext) TempZipReader(r io.Reader) io.Reader {
-	if ctx.TempZipInUse && ctx.TempCiphers != nil {
-		return fileops.WrapReaderWithCipher(r, ctx.TempCiphers)
+// TempZipReader obtains the one-shot authenticated archive reader, if present.
+func (ctx *OperationContext) TempZipReader(r io.Reader) (io.Reader, error) {
+	if ctx.tempZip != nil {
+		return ctx.tempZip.OpenReader()
 	}
-	return r
+	return r, nil
 }
 
 func (ctx *OperationContext) beginStagedOutput() error {
@@ -357,6 +358,10 @@ func (ctx *OperationContext) cleanupRecombinedFile() error {
 }
 
 func (ctx *OperationContext) openInput() (*os.File, bool, error) {
+	if ctx.tempZip != nil && ctx.InputFile == ctx.tempZip.Path() {
+		return ctx.tempZip.File(), false, nil
+	}
+
 	if ctx.tempInput != nil && ctx.InputFile == ctx.tempInput.Path() {
 		file := ctx.tempInput.File()
 		if file == nil {
@@ -504,10 +509,11 @@ func (ctx *OperationContext) Close() error {
 	// Clear SubkeyReader reference (HKDF state)
 	ctx.SubkeyReader = nil
 
-	// Close temp zip ciphers (zeros ephemeral key material)
-	if ctx.TempCiphers != nil {
-		ctx.TempCiphers.Close()
-		ctx.TempCiphers = nil
+	if ctx.tempZip != nil {
+		if err := ctx.tempZip.Close(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
+		ctx.tempZip = nil
 	}
 	return errors.Join(cleanupErrs...)
 }

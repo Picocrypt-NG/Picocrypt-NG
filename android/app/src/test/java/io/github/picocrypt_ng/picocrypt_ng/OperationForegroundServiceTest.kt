@@ -1,6 +1,8 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
 import io.github.picocrypt_ng.picocrypt_ng.testutils.TestDataBuilders
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -10,6 +12,36 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OperationForegroundServiceTest {
+    @Test
+    fun `timeout stops host before blocked SAF settles while cleanup retains ownership`() = runTest {
+        val settled = CompletableDeferred<Unit>()
+        var stopped = false
+        var cleanupStarted = false
+        var cleanupFinished = false
+        stopTimedOutOperationForegroundHost(
+            cleanupScope = backgroundScope,
+            operation = null,
+            pcv3Busy = true,
+            stopHost = { stopped = true },
+            cancelLegacy = { error("no legacy owner") },
+            cancelPcv3 = {
+                cleanupStarted = true
+                settled.await()
+                cleanupFinished = true
+            },
+        )
+        try {
+            assertTrue("Android grace period cannot depend on provider settlement", stopped)
+            runCurrent()
+            assertTrue(cleanupStarted)
+            assertFalse(cleanupFinished)
+        } finally {
+            settled.complete(Unit)
+            runCurrent()
+        }
+        assertTrue("stopping the host must not abandon cleanup custody", cleanupFinished)
+    }
+
     @Test
     fun `foreground host stops only after both legacy and PCV3 ownership are inactive`() {
         val active = TestDataBuilders.createOperationState(done = false)

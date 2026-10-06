@@ -19,6 +19,22 @@ import (
 
 var errUnsafePCV3OutputFilename = errors.New("unsafe PCV3 output filename")
 
+func (a *App) showStatusDetails() {
+	if a.statusLabel == nil || a.statusLabel.text == "" || a.Window == nil {
+		return
+	}
+	message := widget.NewLabel(a.statusLabel.text)
+	message.Wrapping = fyne.TextWrapBreak
+	message.Selectable = true
+	details := dialog.NewCustom(
+		tr("dialog.status.title", "Status details"), tr("action.close", "Close"),
+		container.NewVScroll(message), a.Window,
+	)
+	size := a.Window.Canvas().Size()
+	details.Resize(fyne.NewSize(min(size.Width*0.9, 600), min(size.Height*0.8, 400)))
+	details.Show()
+}
+
 // showProgressModal shows the progress dialog.
 func (a *App) showProgressModal(session *operationSession) {
 	// Reset bindings for new operation
@@ -133,6 +149,7 @@ func (a *App) showPassgenModal() {
 				return
 			}
 			password := a.State.GenPassword()
+			passwordChanged := a.passwordEntry != nil && a.passwordEntry.Text != password
 			a.State.Password = password
 			a.State.CPassword = password
 			if a.passwordEntry != nil {
@@ -141,7 +158,9 @@ func (a *App) showPassgenModal() {
 			if a.cPasswordEntry != nil {
 				a.cPasswordEntry.SetText(password)
 			}
-			a.updatePasswordStrength()
+			if !passwordChanged {
+				a.updatePasswordStrength()
+			}
 			a.updateValidation()
 		}
 		a.State.ShowPassgen = false

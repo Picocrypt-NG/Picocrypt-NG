@@ -2,17 +2,149 @@ package ui
 
 import (
 	"Picocrypt-NG/internal/app"
+	"Picocrypt-NG/internal/util"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 )
+
+func TestStatusDetailsShowsFullScrollableMessage(t *testing.T) {
+	for _, activation := range []string{"tap", "keyboard"} {
+		t.Run(activation, func(t *testing.T) {
+			fyneApp := newTestFyneApp(t)
+			a := createUIReadyDropTestApp(t, fyneApp)
+			message := "stat /" + strings.Repeat("long-directory/", 80) + "archive.zip: no such file or directory\nKeep the original files."
+			fyne.DoAndWait(func() {
+				a.State.SetStatus(message, util.RED)
+				a.updateUIState()
+				before := a.Window.Canvas().Size()
+				if activation == "tap" {
+					pos := fyneApp.Driver().AbsolutePositionForObject(a.statusLabel.object())
+					test.TapCanvas(a.Window.Canvas(), pos.Add(fyne.NewPos(12, a.statusLabel.object().Size().Height/2)))
+				} else {
+					var link *widget.Hyperlink
+					for _, object := range test.LaidOutObjects(a.statusLabel.object()) {
+						if candidate, ok := object.(*widget.Hyperlink); ok {
+							link = candidate
+							break
+						}
+					}
+					if link == nil {
+						t.Error("status has no keyboard-accessible details action")
+						return
+					}
+					a.Window.Canvas().Focus(link)
+					focused := a.Window.Canvas().Focused()
+					if focused != link {
+						t.Error("status action did not receive keyboard focus")
+						return
+					}
+					focused.TypedKey(&fyne.KeyEvent{Name: fyne.KeySpace})
+				}
+				overlay := a.Window.Canvas().Overlays().Top()
+				if overlay == nil {
+					t.Error("activating status did not open details")
+					return
+				}
+				for _, object := range test.WidgetRenderer(overlay.(fyne.Widget)).Objects() {
+					if popup, ok := object.(*widget.PopUp); ok {
+						pos, size := popup.Position(), popup.Size()
+						if pos.X < 0 || pos.Y < 0 || pos.X+size.Width > before.Width || pos.Y+size.Height > before.Height {
+							t.Errorf("details exceed the window bounds: position %v, size %v, window %v", pos, size, before)
+						}
+					}
+				}
+				var scroll *container.Scroll
+				var closeButton *widget.Button
+				for _, object := range test.LaidOutObjects(overlay) {
+					switch value := object.(type) {
+					case *container.Scroll:
+						scroll = value
+					case *widget.Button:
+						if value.Text == tr("action.close", "Close") {
+							closeButton = value
+						}
+					}
+				}
+				if scroll == nil || closeButton == nil {
+					t.Error("details did not expose scrollable text and Close")
+					return
+				}
+				label, ok := scroll.Content.(*widget.Label)
+				if !ok || label.Text != message || !label.Selectable {
+					t.Error("details did not preserve the full selectable message")
+					return
+				}
+				if scroll.Content.Size().Height <= scroll.Size().Height {
+					t.Error("long message is not constrained to a scrollable viewport")
+				}
+				scroll.Scrolled(&fyne.ScrollEvent{Scrolled: fyne.Delta{DY: -300}})
+				if scroll.Offset.Y <= 0 {
+					t.Error("scroll did not reveal the remainder of the message")
+				}
+				if got := a.Window.Canvas().Size(); got != before {
+					t.Errorf("details resized the main window: before %v, after %v", before, got)
+				}
+				test.Tap(closeButton)
+				if a.Window.Canvas().Overlays().Top() != nil {
+					t.Error("Close did not dismiss status details")
+				}
+			})
+		})
+	}
+}
+
+func TestStatusDetailsBlocksGlobalStartShortcut(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	input := filepath.Join(t.TempDir(), "input.txt")
+	output := input + ".pcv"
+	for _, path := range []string{input, output} {
+		if err := os.WriteFile(path, []byte("keep this file"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.State.InputFile = input
+		a.State.OnlyFiles = []string{input}
+		a.State.AllFiles = []string{input}
+		a.State.OutputFile = output
+		a.State.Password, a.State.CPassword = "test-password", "test-password"
+		a.State.SetStatus("Inspect this error.", util.RED)
+		a.updateUIState()
+		if a.startDisabled(a.State.UISnapshot()) {
+			t.Error("test precondition: Start must be available")
+			return
+		}
+		a.showStatusDetails()
+		for _, key := range []fyne.KeyName{fyne.KeyReturn, fyne.KeyEnter} {
+			a.onDesktopKeyDown(&fyne.KeyEvent{Name: key})
+			if got := a.State.UISnapshot().Status.Text; got != "Inspect this error." {
+				t.Errorf("%s dispatched Start behind the details dialog: %q", key, got)
+			}
+		}
+		for _, object := range test.LaidOutObjects(a.Window.Canvas().Overlays().Top()) {
+			if button, ok := object.(*widget.Button); ok && button.Text == tr("action.close", "Close") {
+				test.Tap(button)
+				break
+			}
+		}
+		a.onDesktopKeyDown(&fyne.KeyEvent{Name: fyne.KeyReturn})
+		want := tr("status.pcv3_output_exists", "PCV3 output already exists. Choose a different name.")
+		if got := a.State.UISnapshot().Status.Text; got != want {
+			t.Errorf("closing details did not restore Start shortcut: status %q, want %q", got, want)
+		}
+	})
+}
 
 // TestAboutModalShowsAppVersion pins the GUI's only version indicator: the
 // window title carries no version (#133), so the About dialog must show it.
@@ -486,4 +618,22 @@ func TestShowFileDialogWithResizeSupportsFyne28Lifecycle(t *testing.T) {
 	if !a.Window.FixedSize() {
 		t.Fatal("parent window was not restored to fixed size after dismiss")
 	}
+}
+
+func TestFileDialogPreservesUserWindowSize(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	fyne.DoAndWait(func() {
+		chosen := fyne.NewSize(800, 720)
+		a.Window.Resize(chosen)
+		saveDialog := dialog.NewFileSave(func(fyne.URIWriteCloser, error) {}, a.Window)
+		a.showFileDialogWithResize(saveDialog, fyne.NewSize(600, 450))
+		if a.Window.Canvas().Size() != chosen {
+			t.Error("opening a file dialog shrank the user's larger window")
+		}
+		saveDialog.Dismiss()
+		if a.Window.Canvas().Size() != chosen || a.Window.FixedSize() {
+			t.Error("closing a file dialog did not preserve the user's resizable window")
+		}
+	})
 }

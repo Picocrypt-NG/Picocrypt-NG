@@ -3,10 +3,9 @@
 package main
 
 import (
-	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/header"
-	"Picocrypt-NG/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3operation"
+	"Picocrypt-NG/internal/secret"
 	"Picocrypt-NG/internal/wasm"
 	"syscall/js"
 )
@@ -169,10 +168,10 @@ func encrypt(this js.Value, args []js.Value) (result any) {
 	deniability := optBool(opts, "deniability")
 
 	passwordBytes := []byte(pw.String())
-	defer crypto.SecureZero(passwordBytes)
-	defer crypto.SecureZero(data)
+	defer secret.SecureZero(passwordBytes)
+	defer secret.SecureZero(data)
 	for _, kf := range keyfiles {
-		defer crypto.SecureZero(kf)
+		defer secret.SecureZero(kf)
 	}
 
 	volumeData, code := wasm.EncryptVolume(data, passwordBytes, wasm.EncryptOptions{
@@ -186,7 +185,7 @@ func encrypt(this js.Value, args []js.Value) (result any) {
 	if code != 0 {
 		return errorResult(code)
 	}
-	defer crypto.SecureZero(volumeData)
+	defer secret.SecureZero(volumeData)
 	return successData(volumeData)
 }
 
@@ -219,7 +218,7 @@ func decrypt(this js.Value, args []js.Value) (result any) {
 		if copyBytesFromJS(prefix[:], dataValue) != len(prefix) {
 			return errorResult(errInvalidArg)
 		}
-		if pcv3.DetectPrefix(prefix[:]) == pcv3.RouteNormalPCV {
+		if pcv3operation.DetectPrefix(prefix[:]) == pcv3operation.RouteNormalPCV {
 			return errorResult(wasm.ErrUnsupported)
 		}
 	}
@@ -235,10 +234,10 @@ func decrypt(this js.Value, args []js.Value) (result any) {
 	}
 
 	passwordBytes := []byte(pw.String())
-	defer crypto.SecureZero(passwordBytes)
-	defer crypto.SecureZero(data)
+	defer secret.SecureZero(passwordBytes)
+	defer secret.SecureZero(data)
 	for _, kf := range keyfiles {
-		defer crypto.SecureZero(kf)
+		defer secret.SecureZero(kf)
 	}
 
 	res, code := wasm.DecryptVolume(data, passwordBytes, wasm.DecryptOptions{
@@ -250,7 +249,7 @@ func decrypt(this js.Value, args []js.Value) (result any) {
 	if code != 0 && code != wasm.ErrModifiedButKept {
 		return errorResult(code)
 	}
-	defer crypto.SecureZero(res.Plaintext)
+	defer secret.SecureZero(res.Plaintext)
 
 	out := js.Global().Get("Uint8Array").New(len(res.Plaintext))
 	js.CopyBytesToJS(out, res.Plaintext)

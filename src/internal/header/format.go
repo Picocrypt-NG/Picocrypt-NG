@@ -2,7 +2,8 @@
 // This is AUDIT-CRITICAL code - changes here directly affect file format compatibility.
 package header
 
-// Version constants
+// Legacy volume-format constants. CurrentVersion remains the v2 wire marker;
+// it is independent of the application version in the root VERSION file.
 const (
 	CurrentVersion = "v2.19"
 	MaxCommentLen  = 99999

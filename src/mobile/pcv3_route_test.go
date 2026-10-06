@@ -16,7 +16,7 @@ import (
 
 func loadMobilePCV3Fixture(t *testing.T) []byte {
 	t.Helper()
-	fixture, err := os.ReadFile(filepath.Join("..", "internal", "pcv3", "testdata", "schema1-minimal.pcv"))
+	fixture, err := os.ReadFile(filepath.Join("..", "internal", "pcv3operation", "internal", "pcv3", "testdata", "schema1-minimal.pcv"))
 	if err != nil {
 		t.Fatalf("read literal PCV3 fixture: %v", err)
 	}

@@ -24,6 +24,8 @@ go.work.sum
 TODO
 
 # Build artifacts
+/src/Picocrypt-NG
+/src/Picocrypt-NG-cli
 src/picocrypt
 src/picocrypt.wasm
 src/picocrypt.wasm.b64
@@ -40,6 +42,7 @@ src/wasm
 
 /docs/*
 !/docs/ONBOARDING.md
+!/docs/SECURITY_CONTRACT.md
 !/docs/localization/
 !/docs/localization/TRANSLATION_GUIDE.md
 

@@ -1,0 +1,69 @@
+{
+  "module": "golang.org/x/text",
+  "version": "v0.41.0",
+  "module_sum": "h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=",
+  "unicode": "15.0.0",
+  "source": "https://proxy.golang.org/golang.org/x/text/@v/v0.41.0.zip",
+  "archive_sha256": "e63f35daaae749d0ffff97a295ad8f4837a662938a46b7a87f18a88e85a5cbf9",
+  "transformations": [
+    "Rename package norm to legacyunicode15 and remove canonical import comment.",
+    "Remove Go-version build constraint from tables15.0.0.go to freeze historical selection.",
+    "Correct package documentation identity and add reviewed, narrowly scoped G115 explanation comments; no algorithm changes."
+  ],
+  "files": [
+    {
+      "file": "composition.go",
+      "sha256": "3d1be52960f2693926472819b747646e7d2371d2bb5f53097cf9d46c913052df",
+      "bytes": 14452,
+      "local_sha256": "7d0dd4b63996eb7035c993bf319f7403cb5fc2d8257a27682842fe04c260c55e"
+    },
+    {
+      "file": "forminfo.go",
+      "sha256": "844dadc7a0dc991a4b87a195699476a90655292d302abe2d2f7ddff5968f74bc",
+      "bytes": 9422,
+      "local_sha256": "aa42d961987b2ec1c2906626a59d9502e9d1c77e9c1ff853d8d6040b475eb109"
+    },
+    {
+      "file": "input.go",
+      "sha256": "965b431790bb139543d71a9c497920ef7d9a15af417456a2bbd0cdb629330e8d",
+      "bytes": 2070,
+      "local_sha256": "15c467bd46b99a4fe242793073c7b72077d5b9c3346964d33e1793e3adc3145b"
+    },
+    {
+      "file": "iter.go",
+      "sha256": "4d580123776d78ff862131bd8c99fa5758f3cb70530619edc80ed4ee173cd83a",
+      "bytes": 11219,
+      "local_sha256": "98717c3971e7bc25e5aee85414b1f2392928c1b9aa85023bb0b5aa339c696bec"
+    },
+    {
+      "file": "normalize.go",
+      "sha256": "9e4fdc543d3b7aabf046ead80f2ef60746f579a7a4691c3c7d6bf69f4c4fa713",
+      "bytes": 15293,
+      "local_sha256": "7ea843d810d5b8c1af5e8cc66c44d74be8b734ed7177da5fb61f93d28483f07d"
+    },
+    {
+      "file": "readwriter.go",
+      "sha256": "d600d1f6cff2536dbb49a0f6bb8c06f6fc05f2754dad2dc05f1d44f9e8e48a35",
+      "bytes": 2957,
+      "local_sha256": "eee5bca1be17940a19e284f2e888fa1ea18abf080bd4f05ae25e8f37fb4c1c29"
+    },
+    {
+      "file": "transform.go",
+      "sha256": "6f8014595643e2acae76d47ed6abe8ace969a0c9070dbfa5a89c86bebcec812d",
+      "bytes": 2422,
+      "local_sha256": "0d640ee98282cc1ff91a68c63ca3c5449a819c0c5f785d8e2d98322ca619ad21"
+    },
+    {
+      "file": "trie.go",
+      "sha256": "d87793d558251ee8824954f0b7bc5564803e4c9d59a8c4eebb4c3c5cfbd19492",
+      "bytes": 1233,
+      "local_sha256": "97a69b2b06637b4bdbad443694dfdbf624c126ae77e1e64eb8e8ca9fd5181517"
+    },
+    {
+      "file": "tables15.0.0.go",
+      "sha256": "49dda94f9429bac8c29efe11e09558d46abfaa3c8e1de59816f2910b99cade04",
+      "bytes": 395028,
+      "local_sha256": "ba98c66173ee8c7f4ab5d20d12ee79dfaa4e2c9f86e454835da04e2d693d3950"
+    }
+  ]
+}

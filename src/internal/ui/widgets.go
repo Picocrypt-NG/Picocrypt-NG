@@ -2,12 +2,11 @@
 package ui
 
 import (
-	"Picocrypt-NG/internal/app"
-	"Picocrypt-NG/internal/pcv3artifact"
 	"Picocrypt-NG/internal/pcv3operation"
-	"Picocrypt-NG/internal/pcv3recovery"
+	"Picocrypt-NG/internal/util"
 	"image/color"
 	"strconv"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -17,8 +16,8 @@ import (
 )
 
 type pcv3ArtifactView interface {
-	Metadata() pcv3recovery.ArtifactInspectionMetadata
-	Page(offset, limit uint64) ([]pcv3artifact.Range, bool)
+	Metadata() pcv3operation.ArtifactInspectionMetadata
+	Page(offset, limit uint64) ([]pcv3operation.ArtifactRange, bool)
 }
 
 type pcv3ArtifactSurfaceState uint8
@@ -33,7 +32,7 @@ type pcv3ArtifactRangeModel struct {
 	view       pcv3ArtifactView
 	rangeCount uint64
 	pageOffset uint64
-	page       []pcv3artifact.Range
+	page       []pcv3operation.ArtifactRange
 }
 
 func (model *pcv3ArtifactRangeModel) length() int {
@@ -47,22 +46,22 @@ func (model *pcv3ArtifactRangeModel) length() int {
 	return int(model.rangeCount)
 }
 
-func (model *pcv3ArtifactRangeModel) at(index int) (pcv3artifact.Range, bool) {
+func (model *pcv3ArtifactRangeModel) at(index int) (pcv3operation.ArtifactRange, bool) {
 	if model == nil || model.view == nil || index < 0 || uint64(index) >= model.rangeCount {
-		return pcv3artifact.Range{}, false
+		return pcv3operation.ArtifactRange{}, false
 	}
 	offset := (uint64(index) / 128) * 128
 	if model.page == nil || model.pageOffset != offset {
 		page, ok := model.view.Page(offset, 128)
 		if !ok || len(page) == 0 {
-			return pcv3artifact.Range{}, false
+			return pcv3operation.ArtifactRange{}, false
 		}
 		model.pageOffset = offset
 		model.page = page
 	}
 	position := uint64(index) - model.pageOffset
 	if position >= uint64(len(model.page)) {
-		return pcv3artifact.Range{}, false
+		return pcv3operation.ArtifactRange{}, false
 	}
 	return model.page[position], true
 }
@@ -129,76 +128,6 @@ func buildPCV3ArtifactSurface(state pcv3ArtifactSurfaceState, view pcv3ArtifactV
 	list.SetItemHeight(0, theme.TextSize()+theme.Padding()*2)
 	list.Resize(fyne.NewSize(desktopContentWidth(), 180))
 	return container.NewBorder(summary, nil, nil, nil, list)
-}
-
-func pcv3FactorPolicyText(policy app.PCV3FactorPolicy) string {
-	switch policy {
-	case app.PCV3FactorPolicyPassword:
-		return tr("pcv3.factor.password", "Password only")
-	case app.PCV3FactorPolicyKeyfiles:
-		return tr("pcv3.factor.keyfiles", "Keyfiles only")
-	case app.PCV3FactorPolicyCombined:
-		return tr("pcv3.factor.combined", "Password + keyfiles")
-	default:
-		return tr("pcv3.factor.unset", "Not selected")
-	}
-}
-
-func pcv3KeyfileOrderText(order app.PCV3KeyfileOrder) string {
-	switch order {
-	case app.PCV3KeyfileOrderSelected:
-		return tr("pcv3.order.ordered", "Use selected order")
-	case app.PCV3KeyfileOrderAny:
-		return tr("pcv3.order.unordered", "Any order")
-	default:
-		return ""
-	}
-}
-
-func buildPCV3IntentSummary(snap app.UISnapshot) fyne.CanvasObject {
-	format := tr("pcv3.format.normal", "Normal PCV3")
-	if snap.PCV3Format == app.PCV3FormatD1 {
-		format = tr("pcv3.format.d1", "PCV3 D1")
-	}
-	action := ""
-	switch snap.PCV3Action {
-	case app.PCV3ActionDecrypt:
-		action = tr("pcv3.action.decrypt", "Decrypt")
-	case app.PCV3ActionRecovery:
-		action = tr("pcv3.action.recovery", "Recovery")
-	case app.PCV3ActionForce:
-		action = tr("pcv3.action.force", "Force recovery")
-	case app.PCV3ActionForceUnverified:
-		action = tr("pcv3.action.force_unverified", "Unverified Force recovery")
-	}
-	lines := []fyne.CanvasObject{
-		wrappedPCV3Label(tr("pcv3.format.label", "Format:") + " " + format),
-		wrappedPCV3Label(tr("pcv3.action.label", "PCV3 operation") + ": " + action),
-		wrappedPCV3Label(tr("pcv3.factor.label", "Credential policy") + ": " + pcv3FactorPolicyText(snap.PCV3Factor)),
-		wrappedPCV3Label(tr("pcv3.intent.keyfiles", "Keyfiles") + ": " + keyfileDisplayLabel(false, snap.KeyfileCount, true)),
-		wrappedPCV3Label(tr("pcv3.intent.destination", "Destination") + ": " + func() string {
-			if snap.OutputFile == "" {
-				return tr("pcv3.factor.unset", "Not selected")
-			}
-			return tr("pcv3.intent.destination", "Destination")
-		}()),
-	}
-	if order := pcv3KeyfileOrderText(snap.PCV3Order); order != "" {
-		lines = append(lines, wrappedPCV3Label(tr("pcv3.order.label", "Keyfile order")+": "+order))
-	}
-	if len(snap.PCV3KeyfileNames) != 0 {
-		items := container.NewVBox()
-		for index, name := range snap.PCV3KeyfileNames {
-			itemText := strconv.Itoa(index+1) + ". " + name
-			label := widget.NewLabel(itemText)
-			label.Truncation = fyne.TextTruncateEllipsis
-			items.Add(label)
-		}
-		list := container.NewVScroll(items)
-		list.SetMinSize(fyne.NewSize(0, 96))
-		lines = append(lines, list)
-	}
-	return container.NewVBox(lines...)
 }
 
 type pcv3ConsentView struct {
@@ -318,8 +247,7 @@ func (p *PasswordStrengthIndicator) CreateRenderer() fyne.WidgetRenderer {
 	// Use canvas.Arc for efficient single-object rendering
 	// CutoutRatio 0.6 creates a ring appearance similar to the original
 	// StartAngle 0 = top (12 o'clock) in Fyne's coordinate system
-	arc := canvas.NewArc(0, 0, 0.6, color.Transparent)
-	arc.SetMinSize(fyne.NewSize(20, 20))
+	arc := newPasswordIndicatorArc(0)
 
 	r := &passwordStrengthRenderer{
 		indicator: p,
@@ -334,15 +262,18 @@ type passwordStrengthRenderer struct {
 	arc       *canvas.Arc
 }
 
-func (r *passwordStrengthRenderer) Layout(size fyne.Size) {
-	// Center the arc in the widget area
+func newPasswordIndicatorArc(endAngle float32) *canvas.Arc {
+	return canvas.NewArc(0, endAngle, 0.6, color.Transparent)
+}
+
+func layoutPasswordIndicator(arc *canvas.Arc, size fyne.Size) {
 	arcSize := fyne.NewSize(18, 18)
-	offset := fyne.NewPos(
-		(size.Width-arcSize.Width)/2,
-		(size.Height-arcSize.Height)/2,
-	)
-	r.arc.Move(offset)
-	r.arc.Resize(arcSize)
+	arc.Move(fyne.NewPos((size.Width-arcSize.Width)/2, (size.Height-arcSize.Height)/2))
+	arc.Resize(arcSize)
+}
+
+func (r *passwordStrengthRenderer) Layout(size fyne.Size) {
+	layoutPasswordIndicator(r.arc, size)
 }
 
 func (r *passwordStrengthRenderer) MinSize() fyne.Size {
@@ -402,7 +333,7 @@ func (r *passwordStrengthRenderer) Objects() []fyne.CanvasObject {
 
 // ValidationIndicator is a custom widget that displays a circular validation indicator.
 // Shows green circle when valid, red circle when invalid, or invisible when not applicable.
-// Uses canvas.Circle for efficient GPU-accelerated rendering.
+// Uses the same ring geometry as the password strength indicator.
 type ValidationIndicator struct {
 	widget.BaseWidget
 	valid   bool // true = green, false = red
@@ -435,29 +366,18 @@ func (v *ValidationIndicator) MinSize() fyne.Size {
 
 // CreateRenderer creates the renderer for the widget.
 func (v *ValidationIndicator) CreateRenderer() fyne.WidgetRenderer {
-	// Use canvas.Circle for efficient single-object rendering
-	circle := canvas.NewCircle(color.Transparent)
-	circle.StrokeWidth = 2
-
-	r := &validationRenderer{indicator: v, circle: circle}
+	r := &validationRenderer{indicator: v, arc: newPasswordIndicatorArc(360)}
 	r.updateColor()
 	return r
 }
 
 type validationRenderer struct {
 	indicator *ValidationIndicator
-	circle    *canvas.Circle
+	arc       *canvas.Arc
 }
 
 func (r *validationRenderer) Layout(size fyne.Size) {
-	// Center the circle in the widget area - same optical size as password strength arc.
-	circleSize := fyne.NewSize(18, 18)
-	offset := fyne.NewPos(
-		(size.Width-circleSize.Width)/2,
-		(size.Height-circleSize.Height)/2,
-	)
-	r.circle.Move(offset)
-	r.circle.Resize(circleSize)
+	layoutPasswordIndicator(r.arc, size)
 }
 
 func (r *validationRenderer) MinSize() fyne.Size {
@@ -466,26 +386,23 @@ func (r *validationRenderer) MinSize() fyne.Size {
 
 func (r *validationRenderer) updateColor() {
 	if !r.indicator.visible {
-		r.circle.StrokeColor = color.Transparent
-		r.circle.FillColor = color.Transparent
+		r.arc.FillColor = color.Transparent
 	} else if r.indicator.valid {
-		r.circle.StrokeColor = color.RGBA{0x4c, 0xc8, 0x4b, 0xff} // Green
-		r.circle.FillColor = color.Transparent
+		r.arc.FillColor = color.RGBA{0x4c, 0xc8, 0x4b, 0xff} // Green
 	} else {
-		r.circle.StrokeColor = color.RGBA{0xc8, 0x4c, 0x4b, 0xff} // Red
-		r.circle.FillColor = color.Transparent
+		r.arc.FillColor = color.RGBA{0xc8, 0x4c, 0x4b, 0xff} // Red
 	}
 }
 
 func (r *validationRenderer) Refresh() {
 	r.updateColor()
-	canvas.Refresh(r.circle)
+	canvas.Refresh(r.arc)
 }
 
 func (r *validationRenderer) Destroy() {}
 
 func (r *validationRenderer) Objects() []fyne.CanvasObject {
-	return []fyne.CanvasObject{r.circle}
+	return []fyne.CanvasObject{r.arc}
 }
 
 // OutputDisplay is a read-only single-line text field used for generated output
@@ -587,7 +504,40 @@ func (r *outputDisplayRenderer) update() {
 // PasswordEntry is an Entry widget that can toggle between password and text mode.
 type PasswordEntry struct {
 	widget.Entry
-	hidden bool
+	hidden            bool
+	viewport          *container.Scroll
+	onViewportChanged func(fromScroll bool)
+}
+
+// formWheelArea forwards vertical wheel input without replacing Entry's native
+// horizontal viewport, caret, selection, or focus handling. It deliberately
+// has no tap, drag, or keyboard handlers.
+type formWheelArea struct {
+	widget.BaseWidget
+	onScrolled func(*fyne.ScrollEvent)
+}
+
+func (w *formWheelArea) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
+}
+
+func (w *formWheelArea) Scrolled(event *fyne.ScrollEvent) {
+	if event.Scrolled.DY != 0 {
+		w.onScrolled(event)
+	}
+}
+
+func (a *App) scrollFormOver(entry fyne.CanvasObject) fyne.CanvasObject {
+	if isMobile() {
+		return entry
+	}
+	wheel := &formWheelArea{onScrolled: func(event *fyne.ScrollEvent) {
+		if a.mainScroll != nil {
+			a.mainScroll.Scrolled(event)
+		}
+	}}
+	wheel.ExtendBaseWidget(wheel)
+	return container.NewStack(entry, wheel)
 }
 
 // NewPasswordEntry creates a new password entry.
@@ -610,97 +560,89 @@ func (e *PasswordEntry) IsHidden() bool {
 	return e.hidden
 }
 
-// ColoredLabel is a label with custom text color.
+// ColoredLabel is a compact status link using the current theme's status colors.
 type ColoredLabel struct {
-	widget.BaseWidget
-	text       string
-	color      color.Color
-	truncation fyne.TextTruncation
+	view  *container.ThemeOverride
+	link  *widget.Hyperlink
+	text  string
+	color color.Color
 }
 
-// NewColoredLabel creates a new label with custom color.
+// NewColoredLabel creates a status link with native text truncation.
 func NewColoredLabel(text string, col color.Color) *ColoredLabel {
-	l := &ColoredLabel{
-		text:       text,
-		color:      col,
-		truncation: fyne.TextTruncateEllipsis, // Default to ellipsis truncation
-	}
-	l.ExtendBaseWidget(l)
+	link := widget.NewHyperlink("", nil)
+	link.Truncation = fyne.TextTruncateEllipsis
+	l := &ColoredLabel{link: link, text: text, color: col}
+	l.view = container.NewThemeOverride(link, statusLinkTheme{label: l})
+	l.SetText(text)
 	return l
+}
+
+func (l *ColoredLabel) object() fyne.CanvasObject {
+	return l.view
 }
 
 // SetText updates the label text.
 func (l *ColoredLabel) SetText(text string) {
 	l.text = text
-	l.Refresh()
+	preview := strings.Join(strings.Fields(text), " ")
+	l.link.SetText(preview)
 }
 
 // SetColor updates the label color.
 func (l *ColoredLabel) SetColor(col color.Color) {
 	l.color = col
-	l.Refresh()
+	l.view.Refresh()
 }
 
 // SetTruncation updates the label truncation mode.
 func (l *ColoredLabel) SetTruncation(truncation fyne.TextTruncation) {
-	l.truncation = truncation
-	l.Refresh()
+	l.link.Truncation = truncation
+	l.link.Refresh()
 }
 
-// MinSize returns the minimum size needed to display the label.
-// When truncation is enabled, limits width to prevent window resizing.
-func (l *ColoredLabel) MinSize() fyne.Size {
-	textSize := fyne.MeasureText(l.text, theme.TextSize(), fyne.TextStyle{})
+// SetOnTapped sets the details action for mouse and keyboard activation.
+func (l *ColoredLabel) SetOnTapped(action func()) {
+	l.link.OnTapped = action
+}
 
-	// If truncation is enabled, don't let the label force window resizing
-	// Use a reasonable maximum width (e.g., 600 pixels)
-	if l.truncation != fyne.TextTruncateOff && textSize.Width > 600 {
-		textSize.Width = 600
+type statusLinkTheme struct {
+	label *ColoredLabel
+}
+
+func (statusLinkTheme) base() fyne.Theme {
+	if current := fyne.CurrentApp(); current != nil && current.Settings().Theme() != nil {
+		return current.Settings().Theme()
 	}
-
-	return textSize
+	return theme.DefaultTheme()
 }
 
-// CreateRenderer creates the renderer for the colored label.
-func (l *ColoredLabel) CreateRenderer() fyne.WidgetRenderer {
-	text := canvas.NewText(l.text, l.color)
-	text.TextSize = theme.TextSize()
-	return &coloredLabelRenderer{label: l, text: text}
-}
-
-type coloredLabelRenderer struct {
-	label         *ColoredLabel
-	text          *canvas.Text
-	availableSize fyne.Size
-}
-
-func (r *coloredLabelRenderer) Layout(size fyne.Size) {
-	r.availableSize = size
-	r.text.Move(fyne.NewPos(0, 0))
-	r.text.Resize(size)
-	r.updateText()
-}
-
-func (r *coloredLabelRenderer) MinSize() fyne.Size {
-	return r.label.MinSize()
-}
-
-func (r *coloredLabelRenderer) Refresh() {
-	r.updateText()
-}
-
-// updateText updates the displayed text with truncation if needed
-func (r *coloredLabelRenderer) updateText() {
-	displayText := r.label.text
-
-	// Apply truncation if needed and we have available size
-	if r.label.truncation != fyne.TextTruncateOff && r.availableSize.Width > 0 {
-		displayText = truncateTextToWidth(displayText, r.availableSize.Width, theme.TextSize())
+func (t statusLinkTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	if name == theme.ColorNameHyperlink {
+		switch t.label.color {
+		case util.RED:
+			name = theme.ColorNameError
+		case util.YELLOW:
+			name = theme.ColorNameWarning
+		case util.GREEN:
+			name = theme.ColorNameSuccess
+		default:
+			name = theme.ColorNameForeground
+		}
 	}
+	return t.base().Color(name, variant)
+}
 
-	r.text.Text = displayText
-	r.text.Color = r.label.color
-	canvas.Refresh(r.text)
+func (t statusLinkTheme) Font(style fyne.TextStyle) fyne.Resource {
+	return t.base().Font(style)
+}
+
+func (t statusLinkTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return t.base().Icon(name)
+}
+
+func (t statusLinkTheme) Size(name fyne.ThemeSizeName) float32 {
+	return t.base().Size(name)
 }
 
 // truncateTextToWidth truncates text with ellipsis if it exceeds maxWidth.
@@ -742,10 +684,4 @@ func truncateTextToWidth(text string, maxWidth float32, textSize float32) string
 		return ellipsis
 	}
 	return string(runes[:low]) + ellipsis
-}
-
-func (r *coloredLabelRenderer) Destroy() {}
-
-func (r *coloredLabelRenderer) Objects() []fyne.CanvasObject {
-	return []fyne.CanvasObject{r.text}
 }

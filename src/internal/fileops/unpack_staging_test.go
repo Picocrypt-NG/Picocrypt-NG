@@ -643,12 +643,17 @@ func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
 		}
 		archivePath := filepath.Join(
 			"..",
+			"pcv3operation",
+			"internal",
 			"pcv3",
 			"testdata",
 			"normal",
 			"plaintext",
 			"normal-standard-combined-ordered-archive-small.zip",
 		)
+		if _, err := os.Stat(archivePath); err != nil {
+			t.Fatalf("required archive fixture unavailable: %v", err)
+		}
 		var synced []string
 		originalSyncDirectory := unpackDirectorySyncFn
 		unpackDirectorySyncFn = func(directory *os.File) error {

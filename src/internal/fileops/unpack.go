@@ -2,8 +2,8 @@ package fileops
 
 import (
 	"Picocrypt-NG/internal/diskspace"
+	"Picocrypt-NG/internal/secret"
 	"Picocrypt-NG/internal/util"
-	"archive/zip"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -20,14 +20,17 @@ import (
 type UnpackOptions struct {
 	ZipPath             string // Path to .zip file
 	ZipFile             *os.File
-	ExtractDir          string // Directory to extract to (empty = same as zip, minus .zip)
+	Prepared            *PreparedZIPUnpack // Optional pre-publication metadata/workspace owner
+	ExtractDir          string             // Directory to extract to (empty = same as zip, minus .zip)
 	ExtractRoot         *os.Root
 	ExpectedExtractRoot os.FileInfo
 	SameLevel           bool // Extract to same directory as zip (not a subdirectory)
 	Progress            ProgressFunc
 	Status              StatusFunc
 	Cancel              CancelFunc                  // Cancellation check callback (optional)
+	Budget              *ZIPResourceBudget          // Shared operation-local archive working budget
 	AvailableSpace      func(string) (int64, error) // Override free-space probe (optional, mainly for tests)
+	Review              func(ZIPSummary) error      // Optional approval of the declared budget instead of the default ratio limit
 }
 
 // UnpackState is the closed publication truth for one typed extraction.
@@ -178,7 +181,7 @@ func (dirs *ownedUnpackDirs) record(dir ownedUnpackDir) {
 }
 
 func (dirs *ownedUnpackDirs) cleanup(root *os.Root) error {
-	var cleanupErrs []error
+	var cleanupErrs zipCleanupErrors
 	for i := len(dirs.entries) - 1; i >= 0; i-- {
 		dir := dirs.entries[i]
 		current, err := root.Lstat(dir.targetName)
@@ -186,32 +189,29 @@ func (dirs *ownedUnpackDirs) cleanup(root *os.Root) error {
 		case errors.Is(err, os.ErrNotExist):
 			continue
 		case err != nil:
-			cleanupErrs = append(
-				cleanupErrs,
+			cleanupErrs.add(
 				fmt.Errorf("inspect extraction directory %s during rollback: %w", dir.outPath, err),
 			)
 		case !current.IsDir() || !os.SameFile(dir.info, current):
-			cleanupErrs = append(
-				cleanupErrs,
+			cleanupErrs.add(
 				fmt.Errorf("extraction directory changed before rollback: %s", dir.outPath),
 			)
 		default:
 			if err := root.Remove(dir.targetName); err != nil {
-				cleanupErrs = append(
-					cleanupErrs,
+				cleanupErrs.add(
 					fmt.Errorf("remove extraction directory %s during rollback: %w", dir.outPath, err),
 				)
 			}
 		}
 	}
-	return errors.Join(cleanupErrs...)
+	return cleanupErrs.err()
 }
 
 var (
 	unpackLinkFn           = (*os.Root).Link
 	unpackCopyFn           = io.Copy
 	unpackStageSyncFn      = (*os.File).Sync
-	unpackDirectorySyncFn  = (*os.File).Sync
+	unpackDirectorySyncFn  = SyncDirectory
 	unpackDirectoryCloseFn = (*os.File).Close
 	unpackCloseRootFn      = (*os.Root).Close
 	unpackRemoveOwnedFn    = ownedUnpackFile.remove
@@ -630,26 +630,26 @@ func syncModifiedUnpackDirectories(
 		return strings.Compare(left, right)
 	})
 
-	var durabilityErrs, cleanupErrs []error
+	var durabilityErrs, cleanupErrs zipCleanupErrors
 	for _, directory := range directories {
 		handle, err := root.Open(directory)
 		if err != nil {
-			durabilityErrs = append(durabilityErrs, fmt.Errorf("open modified extraction directory: %w", err))
+			durabilityErrs.add(fmt.Errorf("open modified extraction directory: %w", err))
 			continue
 		}
 		info, statErr := handle.Stat()
 		if statErr != nil {
-			durabilityErrs = append(durabilityErrs, fmt.Errorf("inspect modified extraction directory: %w", statErr))
+			durabilityErrs.add(fmt.Errorf("inspect modified extraction directory: %w", statErr))
 		} else if !info.IsDir() {
-			durabilityErrs = append(durabilityErrs, errors.New("modified extraction directory changed before sync"))
+			durabilityErrs.add(errors.New("modified extraction directory changed before sync"))
 		} else if syncErr := unpackDirectorySyncFn(handle); syncErr != nil {
-			durabilityErrs = append(durabilityErrs, fmt.Errorf("sync modified extraction directory: %w", syncErr))
+			durabilityErrs.add(fmt.Errorf("sync modified extraction directory: %w", syncErr))
 		}
 		if closeErr := unpackDirectoryCloseFn(handle); closeErr != nil {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("close modified extraction directory: %w", closeErr))
+			cleanupErrs.add(fmt.Errorf("close modified extraction directory: %w", closeErr))
 		}
 	}
-	return errors.Join(durabilityErrs...), errors.Join(cleanupErrs...)
+	return durabilityErrs.err(), cleanupErrs.err()
 }
 
 // Unpack extracts a zip archive to the specified directory.
@@ -671,25 +671,15 @@ func UnpackWithResult(opts UnpackOptions) UnpackResult {
 
 func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (retErr error) {
 	*state = UnpackStateNotPublished
-	var reader *zip.Reader
 	var closeReader func() error
-	var err error
-	if opts.ZipFile != nil {
-		info, err := opts.ZipFile.Stat()
-		if err != nil {
-			return fmt.Errorf("inspect zip: %w", err)
-		}
-		reader, err = zip.NewReader(opts.ZipFile, info.Size())
+	file := opts.ZipFile
+	if file == nil {
+		var err error
+		file, err = os.Open(opts.ZipPath)
 		if err != nil {
 			return fmt.Errorf("open zip: %w", err)
 		}
-	} else {
-		readCloser, err := zip.OpenReader(opts.ZipPath)
-		if err != nil {
-			return fmt.Errorf("open zip: %w", err)
-		}
-		reader = &readCloser.Reader
-		closeReader = readCloser.Close
+		closeReader = file.Close
 	}
 	defer func() {
 		if closeReader != nil {
@@ -698,20 +688,6 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 			}
 		}
 	}()
-
-	// Calculate total uncompressed size with overflow protection
-	var totalSize int64
-	for _, f := range reader.File {
-		size, ok := util.SafeUint64ToInt64(f.UncompressedSize64)
-		if !ok {
-			return fmt.Errorf("file %s: uncompressed size exceeds int64 max", f.Name)
-		}
-		if totalSize > math.MaxInt64-size {
-			return errors.New("total uncompressed size exceeds int64 max")
-		}
-		totalSize += size
-	}
-
 	// Determine extraction directory
 	extractDir := opts.ExtractDir
 	if extractDir == "" {
@@ -723,6 +699,68 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 				strings.TrimSuffix(filepath.Base(opts.ZipPath), ".zip"),
 			)
 		}
+	}
+
+	prepared := opts.Prepared
+	if prepared == nil {
+		var err error
+		prepared, err = PrepareZIPUnpack(file, extractDir, ZIPReadOptions{Cancel: opts.Cancel, Budget: opts.Budget})
+		if err != nil {
+			if errors.Is(err, errZIPCancelled) {
+				return errZIPCancelled
+			}
+			return fmt.Errorf("open zip: %w", err)
+		}
+		opts.Budget = prepared.state.reader.Budget()
+	}
+	defer prepared.Close()
+	reader, err := prepared.use(file, extractDir, opts.Budget)
+	if err != nil {
+		return err
+	}
+
+	// Calculate total uncompressed size with overflow protection
+	var totalSize int64
+	var summary ZIPSummary
+	for _, f := range reader.File {
+		if opts.Cancel != nil && opts.Cancel() {
+			return errors.New("operation cancelled")
+		}
+		size, ok := util.SafeUint64ToInt64(f.UncompressedSize64)
+		if !ok {
+			return fmt.Errorf("file %s: uncompressed size exceeds int64 max", f.Name)
+		}
+		if totalSize > math.MaxInt64-size {
+			return errors.New("total uncompressed size exceeds int64 max")
+		}
+		totalSize += size
+		if f.FileInfo().IsDir() {
+			summary.Directories++
+		} else {
+			summary.Files++
+		}
+	}
+	summary.UnpackedBytes = totalSize
+	reviewed := false
+	if opts.Review != nil {
+		if opts.Cancel != nil && opts.Cancel() {
+			return errors.New("operation cancelled")
+		}
+		reviewErr := func() (err error) {
+			defer func() {
+				if recover() != nil {
+					err = errors.New("archive review callback panicked")
+				}
+			}()
+			return opts.Review(summary)
+		}()
+		if opts.Cancel != nil && opts.Cancel() {
+			return errors.New("operation cancelled")
+		}
+		if reviewErr != nil {
+			return fmt.Errorf("archive review: %w", reviewErr)
+		}
+		reviewed = true
 	}
 
 	var extractRoot *os.Root
@@ -782,6 +820,9 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 	// destinations before extracting any data.
 	seenTargets := make(map[string]struct{})
 	for _, f := range reader.File {
+		if opts.Cancel != nil && opts.Cancel() {
+			return errors.New("operation cancelled")
+		}
 		// Normalize and validate path to prevent zip slip attacks
 		canonicalName, pathErr := ParseZIPEntryPath(
 			f.Name,
@@ -832,21 +873,29 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 	// Note: File handles are closed manually at the end of each iteration (not using defer)
 	// to prevent file descriptor exhaustion when extracting large archives with many files.
 	// Using defer here would accumulate all file handles until function exit.
+	buf := make([]byte, util.MiB)
+	defer secret.SecureZero(buf)
 	var done int64
 	startTime := time.Now()
 	stagedEntries := make([]stagedUnpackEntry, 0, len(reader.File))
 	defer func() {
+		var cleanupErrors zipCleanupErrors
+		cleanupIncomplete := false
 		for i := range stagedEntries {
 			cleanupProven, cleanupErr := stagedEntries[i].cleanup(extractRoot)
 			if cleanupErr != nil {
-				retErr = errors.Join(retErr, cleanupErr)
+				cleanupErrors.add(cleanupErr)
 			}
 			if classifyPublication && (!cleanupProven || cleanupErr != nil) {
-				retErr = errors.Join(retErr, ErrUnpackCleanupIncomplete)
+				cleanupIncomplete = true
 				if !cleanupProven && *state == UnpackStateNotPublished {
 					*state = UnpackStatePublicationIndeterminate
 				}
 			}
+		}
+		retErr = errors.Join(retErr, cleanupErrors.err())
+		if cleanupIncomplete {
+			retErr = errors.Join(retErr, ErrUnpackCleanupIncomplete)
 		}
 	}()
 
@@ -912,15 +961,19 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 		})
 		stagedEntry := &stagedEntries[len(stagedEntries)-1]
 
-		// Decompression bomb protection
-		maxBytes, ok := ZIPDecompressionLimit(f.CompressedSize64)
-		if !ok {
-			_ = fileInArchive.Close()
-			return fmt.Errorf("file %s: compressed size exceeds int64 max", f.Name)
+		// Reviewed entries cannot exceed their declared size. The conversion
+		// was checked while computing the approved summary before any output.
+		maxBytes := int64(f.UncompressedSize64)
+		if !reviewed {
+			var ok bool
+			maxBytes, ok = ZIPDecompressionLimit(f.CompressedSize64)
+			if !ok {
+				_ = fileInArchive.Close()
+				return fmt.Errorf("file %s: compressed size exceeds int64 max", f.Name)
+			}
 		}
 
 		var written int64
-		buf := make([]byte, util.MiB)
 		for {
 			// Check for cancellation during file extraction
 			if opts.Cancel != nil && opts.Cancel() {
@@ -930,19 +983,27 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 
 			n, readErr := fileInArchive.Read(buf)
 			if n > 0 {
-				written += int64(n)
-				if written > maxBytes {
+				count := int64(n)
+				if count > maxBytes-written {
 					_ = fileInArchive.Close()
+					if reviewed {
+						return fmt.Errorf("declared ZIP entry size exceeded: %s", f.Name)
+					}
 					return fmt.Errorf("decompression limit exceeded: %s (ratio >%d:1)",
 						f.Name, util.MaxDecompressRatio)
 				}
+				if reviewed && count > totalSize-done {
+					_ = fileInArchive.Close()
+					return errors.New("approved ZIP extraction budget exceeded")
+				}
+				written += count
 
 				if _, err := stageFile.Write(buf[:n]); err != nil {
 					_ = fileInArchive.Close()
 					return fmt.Errorf("write %s: %w", outPath, err)
 				}
 
-				done += int64(n)
+				done += count
 				if opts.Progress != nil {
 					progress, speed, eta := util.Statify(done, totalSize, startTime)
 					opts.Progress(progress, fmt.Sprintf("%d/%d", i+1, len(reader.File)))
@@ -1006,26 +1067,39 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 	if opts.Cancel != nil && opts.Cancel() {
 		return errors.New("operation cancelled")
 	}
-	published := make([]ownedUnpackFile, 0, len(stagedEntries))
+	publishedCount := 0
+	rollbackPublished := func(cause error, cleanupProven bool) error {
+		var rollbackErrors zipCleanupErrors
+		rollbackErrors.add(cause)
+		cleanupIncomplete := !cleanupProven
+		for _, prior := range stagedEntries[:publishedCount] {
+			output := ownedUnpackFile{targetName: prior.targetName, outPath: prior.outPath, info: prior.info}
+			if rollbackErr := unpackRemoveOwnedFn(output, extractRoot); rollbackErr != nil {
+				rollbackErrors.add(rollbackErr)
+				cleanupIncomplete = true
+			}
+		}
+		if classifyPublication && cleanupIncomplete {
+			*state = UnpackStatePublicationIndeterminate
+		}
+		if classifyPublication && cleanupIncomplete {
+			return errors.Join(rollbackErrors.err(), ErrUnpackCleanupIncomplete)
+		}
+		return rollbackErrors.err()
+	}
 	for i := range stagedEntries {
+		if opts.Cancel != nil && opts.Cancel() {
+			return rollbackPublished(errZIPCancelled, true)
+		}
 		entry := &stagedEntries[i]
 		owned, cleanupProven, err := publishStagedUnpackEntry(extractRoot, entry)
 		if err != nil {
-			rollbackErrors := []error{err}
-			cleanupIncomplete := !cleanupProven
-			for _, output := range published {
-				if rollbackErr := unpackRemoveOwnedFn(output, extractRoot); rollbackErr != nil {
-					rollbackErrors = append(rollbackErrors, rollbackErr)
-					cleanupIncomplete = true
-				}
-			}
-			if classifyPublication && cleanupIncomplete {
-				*state = UnpackStatePublicationIndeterminate
-				rollbackErrors = append(rollbackErrors, ErrUnpackCleanupIncomplete)
-			}
-			return errors.Join(rollbackErrors...)
+			return rollbackPublished(err, cleanupProven)
 		}
-		published = append(published, owned)
+		// Exclusive-copy fallback has a different inode from the stage. Retain
+		// the authoritative published identity in the existing ownership record.
+		entry.info = owned.info
+		publishedCount++
 	}
 
 	keepCreatedDirs = true

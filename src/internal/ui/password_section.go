@@ -4,6 +4,8 @@ package ui
 import (
 	"Picocrypt-NG/internal/app"
 	pwnorm "Picocrypt-NG/internal/password"
+	"context"
+	"strings"
 
 	"github.com/Picocrypt/zxcvbn-go"
 
@@ -55,13 +57,16 @@ func (a *App) buildPasswordSection() fyne.CanvasObject {
 
 	a.pasteBtn = newToolbarButton(tr("action.paste", "Paste"), theme.ContentPasteIcon(), func() {
 		text := a.fyneApp.Clipboard().Content()
+		passwordChanged := a.passwordEntry.Text != text
 		a.State.Password = text
 		a.passwordEntry.SetText(text)
-		if a.State.Mode != "decrypt" {
+		if operationUISnapshot(a.State.UISnapshot()).Mode != "decrypt" {
 			a.State.CPassword = text
 			a.cPasswordEntry.SetText(text)
 		}
-		a.updatePasswordStrength()
+		if !passwordChanged {
+			a.updatePasswordStrength()
+		}
 		a.updateValidation()
 		a.updateUIState()
 	})
@@ -72,6 +77,7 @@ func (a *App) buildPasswordSection() fyne.CanvasObject {
 
 	// Password input with strength indicator
 	a.passwordEntry = NewPasswordEntry()
+	a.passwordEntry.OnSubmitted = a.onDesktopEntrySubmitted
 	a.passwordEntry.SetPlaceHolder(tr("password.placeholder", "Password"))
 	a.passwordEntry.OnChanged = func(text string) {
 		a.State.Password = text
@@ -84,6 +90,7 @@ func (a *App) buildPasswordSection() fyne.CanvasObject {
 
 	// Confirm password
 	a.cPasswordEntry = NewPasswordEntry()
+	a.cPasswordEntry.OnSubmitted = a.onDesktopEntrySubmitted
 	a.cPasswordEntry.SetPlaceHolder(tr("password.confirm_placeholder", "Confirm password"))
 	a.cPasswordEntry.OnChanged = func(text string) {
 		a.State.CPassword = text
@@ -99,7 +106,8 @@ func (a *App) buildPasswordSection() fyne.CanvasObject {
 	a.confirmLabel = widget.NewLabel(tr("password.confirm_label", "Confirm password:"))
 	a.confirmLabel.TextStyle = fyne.TextStyle{Bold: true}
 	confirmTitle := container.NewHBox(a.confirmLabel, a.validIndicator)
-	a.confirmRow = container.NewVBox(confirmTitle, a.cPasswordEntry)
+	a.confirmRow = container.NewVBox(confirmTitle, a.scrollFormOver(a.cPasswordEntry))
+	a.linkPasswordScroll()
 
 	// Subtle advisory shown only while encrypting with a non-ASCII password (#19).
 	a.nonASCIIHint = widget.NewLabel(tr("password.non_ascii_hint",
@@ -133,20 +141,99 @@ func (a *App) rebuildPasswordHeader() {
 	}
 	a.passwordContainer.RemoveAll()
 	a.passwordContainer.Add(a.adaptivePasswordHeader())
-	a.passwordContainer.Add(a.passwordEntry)
+	a.passwordContainer.Add(a.scrollFormOver(a.passwordEntry))
 	a.passwordContainer.Add(a.nonASCIIHint)
 	a.passwordContainer.Add(a.confirmRow)
 }
 
-// updatePasswordStrength updates the password strength indicator.
+// passwordStrengthSample bounds advisory work, never the actual password.
+// Clone the prefix so neither worker nor result callback retains a large paste.
+func passwordStrengthSample(password string) string {
+	count := 0
+	for offset := range password {
+		if count == 100 {
+			return strings.Clone(password[:offset])
+		}
+		count++
+	}
+	return strings.Clone(password)
+}
+
+func (a *App) clearPendingPasswordStrength() {
+	a.passwordStrengthMu.Lock()
+	a.passwordStrengthGeneration++
+	a.passwordStrengthPending = ""
+	a.passwordStrengthMu.Unlock()
+}
+
+// updatePasswordStrength queues only the latest bounded sample. Even a
+// 100-character input can be expensive, so the estimator never runs on Fyne.
 func (a *App) updatePasswordStrength() {
-	a.State.PasswordStrength = zxcvbn.PasswordStrength(a.State.Password, nil).Score
+	a.State.PasswordStrength = 0
 	if a.strengthIndicator != nil {
-		a.strengthIndicator.SetStrength(a.State.PasswordStrength)
-		a.strengthIndicator.SetVisible(a.State.Password != "")
-		a.strengthIndicator.SetDecryptMode(a.State.Mode == "decrypt")
+		a.strengthIndicator.SetStrength(0)
+		a.strengthIndicator.SetVisible(false)
+		a.strengthIndicator.SetDecryptMode(operationUISnapshot(a.State.UISnapshot()).Mode == "decrypt")
 	}
 	a.updateNonASCIIHint()
+	if operationUISnapshot(a.State.UISnapshot()).Mode == "decrypt" || a.State.Password == "" || a.workers.isStopping() {
+		a.clearPendingPasswordStrength()
+		return
+	}
+	sample := passwordStrengthSample(a.State.Password)
+	a.passwordStrengthMu.Lock()
+	a.passwordStrengthGeneration++
+	a.passwordStrengthPending = sample
+	if a.passwordStrengthRunning {
+		a.passwordStrengthMu.Unlock()
+		return
+	}
+	reservation, ok := a.workers.reserve()
+	if !ok {
+		a.passwordStrengthPending = ""
+		a.passwordStrengthMu.Unlock()
+		return
+	}
+	a.passwordStrengthRunning = true
+	a.passwordStrengthMu.Unlock()
+	reservation.launch(a.runPasswordStrengthWorker)
+}
+
+func (a *App) runPasswordStrengthWorker(ctx context.Context) {
+	for {
+		a.passwordStrengthMu.Lock()
+		if ctx.Err() != nil || a.passwordStrengthPending == "" {
+			a.passwordStrengthPending = ""
+			a.passwordStrengthRunning = false
+			a.passwordStrengthMu.Unlock()
+			return
+		}
+		sample := a.passwordStrengthPending
+		generation := a.passwordStrengthGeneration
+		a.passwordStrengthPending = ""
+		a.passwordStrengthMu.Unlock()
+
+		score := zxcvbn.PasswordStrength(sample, nil).Score
+		a.applyPasswordStrengthResult(generation, sample, score)
+	}
+}
+
+func (a *App) applyPasswordStrengthResult(generation uint64, sample string, score int) {
+	fyne.Do(func() {
+		a.passwordStrengthMu.Lock()
+		current := generation == a.passwordStrengthGeneration
+		a.passwordStrengthMu.Unlock()
+		if !current || a.workers.isStopping() || operationUISnapshot(a.State.UISnapshot()).Mode == "decrypt" ||
+			a.State.Password == "" || passwordStrengthSample(a.State.Password) != sample {
+			return
+		}
+		a.State.PasswordStrength = score
+		if a.strengthIndicator != nil {
+			a.strengthIndicator.SetStrength(score)
+			a.strengthIndicator.SetDecryptMode(false)
+			a.strengthIndicator.SetVisible(true)
+		}
+	})
 }
 
 // updateNonASCIIHint shows the non-ASCII advisory only while encrypting with a
@@ -155,7 +242,7 @@ func (a *App) updateNonASCIIHint() {
 	if a.nonASCIIHint == nil {
 		return
 	}
-	shouldShow := a.State.Mode != "decrypt" && pwnorm.ContainsNonASCII([]byte(a.State.Password))
+	shouldShow := operationUISnapshot(a.State.UISnapshot()).Mode != "decrypt" && pwnorm.ContainsNonASCII([]byte(a.State.Password))
 	if a.nonASCIIHint.Visible() == shouldShow {
 		return
 	}
@@ -174,7 +261,7 @@ func (a *App) updateValidation() {
 	if a.validIndicator == nil {
 		return
 	}
-	visible := a.State.Password != "" && a.State.CPassword != "" && a.State.Mode != "decrypt"
+	visible := a.State.Password != "" && a.State.CPassword != "" && operationUISnapshot(a.State.UISnapshot()).Mode != "decrypt"
 	valid := a.State.Password == a.State.CPassword
 	a.validIndicator.SetVisible(visible)
 	a.validIndicator.SetValid(valid)
@@ -182,6 +269,16 @@ func (a *App) updateValidation() {
 
 // updatePasswordUIState updates the enabled/disabled state of password controls.
 func (a *App) updatePasswordUIState(mainDisabled bool, snap app.UISnapshot) {
+	snap = operationUISnapshot(snap)
+	if snap.Mode == "decrypt" || snap.Password == "" {
+		a.clearPendingPasswordStrength()
+		a.State.PasswordStrength = 0
+		if a.strengthIndicator != nil {
+			a.strengthIndicator.SetStrength(0)
+			a.strengthIndicator.SetVisible(false)
+			a.strengthIndicator.SetDecryptMode(snap.Mode == "decrypt")
+		}
+	}
 	// Password section - all buttons/inputs disabled when mainDisabled
 	if a.passwordEntry != nil {
 		if mainDisabled {

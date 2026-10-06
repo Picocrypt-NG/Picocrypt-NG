@@ -35,6 +35,12 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="3.0" type="development" date="2026-10-05">
+      <url type="details">https://github.com/Picocrypt-NG/Picocrypt-NG/blob/main/Changelog.md#v30</url>
+      <description>
+        <p>Unreleased development version. The application version is now 3.0; existing v1 and v2 volumes remain compatible.</p>
+      </description>
+    </release>
     <release version="2.19" date="2026-07-21">
       <url type="details">https://github.com/Picocrypt-NG/Picocrypt-NG/blob/main/Changelog.md#v219</url>
       <description>

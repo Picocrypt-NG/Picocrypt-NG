@@ -1,3 +1,10 @@
+# v3.0
+
+Unreleased development version.
+
+The application and package version is now 3.0. Existing v1 and v2 volume
+compatibility and the legacy writer's `v2.19` header marker are unchanged.
+
 # v2.19
 <ul>
 	<li>✓ <strong>Interface languages</strong>: desktop and Android now bundle application UI catalogs for English, Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean (<code>ko</code>, with contemporary neutral South Korean wording); the desktop selector switches Picocrypt-NG-owned UI while Fyne-owned dialogs and raw backend status text may remain English, Android follows the system or per-app language setting, and the CLI remains English-only</li>

@@ -29,7 +29,7 @@ func keyfileApplicable(mode string, required bool, deniable bool) bool {
 }
 
 func keyfileApplicableForSnapshot(snap app.UISnapshot) bool {
-	return snap.PCV3Route == app.PCV3RouteReady ||
+	return recursiveD1Selected(snap) || snap.PCV3Route == app.PCV3RouteReady ||
 		(snap.Mode == "encrypt" && snap.CreatePCV3) ||
 		keyfileApplicable(snap.Mode, snap.Keyfile, snap.Deniability)
 }
@@ -90,9 +90,10 @@ func (a *App) buildKeyfilesSection() fyne.CanvasObject {
 func (a *App) showKeyfileModal() {
 	// Create order checkbox/label based on mode
 	var orderWidget fyne.CanvasObject
-	if a.State.Mode != "decrypt" {
+	if a.State.Mode != "decrypt" || a.State.UISnapshot().PCV3Route == app.PCV3RouteReady {
 		a.keyfileOrderCheck = widget.NewCheck(tr("keyfiles.require_order", "Use order"), func(checked bool) {
 			a.State.KeyfileOrdered = checked
+			a.updateUIState()
 		})
 		a.keyfileOrderCheck.SetChecked(a.State.KeyfileOrdered)
 		orderWidget = a.keyfileOrderCheck

@@ -92,9 +92,9 @@ func (c *CompactTheme) Size(name fyne.ThemeSizeName) float32 {
 	case theme.SizeNameInlineIcon:
 		return 20 // Increased from 18 (default is 20)
 	case theme.SizeNameScrollBar:
-		return 12 // Default is 16
+		return 16
 	case theme.SizeNameScrollBarSmall:
-		return 3 // Default is 3
+		return 6
 	case theme.SizeNameSeparatorThickness:
 		return 1 // Default is 1
 	case theme.SizeNameInputBorder:

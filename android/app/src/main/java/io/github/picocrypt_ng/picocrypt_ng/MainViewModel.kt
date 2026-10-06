@@ -98,7 +98,6 @@ class MainViewModel(
             paranoid = false,
             deniability = false,
             verifyFirst = false,
-            createPcv3 = false,
             keyfileFilenames = emptyList(),
             keyfileOrdered = false,
             compress = false,
@@ -139,7 +138,6 @@ class MainViewModel(
             paranoid = false,
             deniability = false,
             verifyFirst = false,
-            createPcv3 = false,
             keyfileOrdered = false,
             compress = false,
             suggestedOutputName = "",
@@ -269,28 +267,38 @@ class MainViewModel(
         val factorPolicyCode = intent.factorPolicyCodeOrNull() ?: return null
         val keyfileOrderCode = intent.keyfileOrderCodeOrNull() ?: return null
 
+        // A D1 volume carries no plaintext comment, including stale form values.
+        val request = Pcv3WriteRequest(
+            mode = mode,
+            factorPolicy = factorPolicyCode,
+            keyfileOrder = keyfileOrderCode,
+            source = current.copiedFilePath.ifEmpty { current.inputFiles.firstOrNull() ?: return null },
+            target = target,
+            keyfiles = current.keyfileFilenames.map(KeyfileInfo::internalPath),
+            comment = if (current.deniability) "" else current.comments,
+            suite = if (current.paranoid || current.deniability) "paranoid" else "standard",
+            payloadRS = current.reedSolomon,
+            inputFiles = current.inputFiles, onlyFiles = current.onlyFiles, onlyFolders = current.onlyFolders, compress = current.compress,
+        )
+        // Refuse before clearing either credential buffer or transferring staged paths.
+        if (GoBridge.buildPcv3WriteRequestJson(request) == null) {
+            _errorMessage.value = AppError.OperationError.GenericOperation(
+                userMessage = "",
+                technicalMessage = "PCV3_BRIDGE_INVALID_REQUEST",
+                messageResId = R.string.pcv3_request_too_large,
+            )
+            return null
+        }
         val password = current.passwordInput
         current.confirmPasswordInput.fill('\u0000')
-        // A D1 volume carries no plaintext comment; the field is disabled in the UI,
-        // and it is blanked here as well so a stale value can never cross the bridge.
         val transfer = Pcv3OperationTransfer(
             intent = intent,
-            request = Pcv3WriteRequest(
-                mode = mode,
-                factorPolicy = factorPolicyCode,
-                keyfileOrder = keyfileOrderCode,
-                source = current.copiedFilePath,
-                target = target,
-                keyfiles = current.keyfileFilenames.map(KeyfileInfo::internalPath),
-                comment = if (current.deniability) "" else current.comments,
-                suite = if (current.paranoid || current.deniability) "paranoid" else "standard",
-                payloadRS = current.reedSolomon,
-            ),
+            request = request,
             password = password,
             createName = if (current.deniability) {
                 current.selectedFilename
             } else {
-                "${current.selectedFilename}.pcv"
+                current.suggestedOutputNameFor(OperationType.ENCRYPT)
             },
         )
 
@@ -303,10 +311,13 @@ class MainViewModel(
             reedSolomon = false,
             paranoid = false,
             deniability = false,
-            createPcv3 = false,
             keyfileFilenames = emptyList(),
             keyfileOrdered = false,
             compress = false,
+            inputFiles = emptyList(),
+            onlyFiles = emptyList(),
+            onlyFolders = emptyList(),
+            selectionKind = SelectionKind.SINGLE_FILE,
             suggestedOutputName = "",
             decryptionInfo = null,
         )
@@ -454,7 +465,6 @@ class MainViewModel(
             paranoid = false,
             deniability = false,
             verifyFirst = false,
-            createPcv3 = false,
             keyfileFilenames = emptyList(),
             keyfileOrdered = false,
             inputFiles = emptyList(),

@@ -66,9 +66,10 @@ func (code OutputActionCode) String() string {
 }
 
 type outputFollowUpState struct {
-	mu       sync.Mutex
-	active   bool
-	retained *pcv3publication.RetainedFile
+	mu        sync.Mutex
+	active    bool
+	retryCopy bool
+	retained  *pcv3publication.RetainedFile
 }
 
 // OutputFollowUp is a one-shot Go-minted capability for a retained durable
@@ -84,6 +85,14 @@ func newOutputFollowUp(retained *pcv3publication.RetainedFile) *OutputFollowUp {
 	return &OutputFollowUp{state: &outputFollowUpState{
 		active: true, retained: retained,
 	}}
+}
+
+func newWriteOutputFollowUp(retained *pcv3publication.RetainedFile) *OutputFollowUp {
+	followUp := newOutputFollowUp(retained)
+	if followUp != nil {
+		followUp.state.retryCopy = true
+	}
+	return followUp
 }
 
 func (followUp *OutputFollowUp) live() bool {
@@ -136,6 +145,9 @@ func cleanupRetainedExact(retained **pcv3publication.RetainedFile) bool {
 // A failed transport immediately removes the exact internal owner because the
 // one-shot action cannot safely leave plaintext with no remaining authority.
 func (followUp *OutputFollowUp) SaveTo(destination *os.File) OutputActionResult {
+	if followUp != nil && followUp.state != nil && followUp.state.retryCopy {
+		return followUp.saveWriteTo(destination)
+	}
 	retained := followUp.consume()
 	if retained == nil {
 		if destination != nil {
@@ -145,7 +157,7 @@ func (followUp *OutputFollowUp) SaveTo(destination *os.File) OutputActionResult 
 	}
 	copyResult := retained.CopyTo(destination)
 	if !copyResult.Copied() {
-		cleanupIncomplete := copyResult.CleanupIncomplete() || retained.RemoveExact() != nil
+		cleanupIncomplete := retained.RemoveExact() != nil || copyResult.CleanupIncomplete()
 		code := OutputActionSaveFailed
 		if cleanupIncomplete {
 			code = OutputActionSaveFailedCleanupIncomplete
@@ -216,4 +228,32 @@ func (followUp *OutputFollowUp) Format(state fmt.State, verb rune) {
 		value = strconv.Quote(value)
 	}
 	_, _ = state.Write([]byte(value))
+}
+
+// Failed ciphertext transport retains the exact original for a deliberate retry.
+func (followUp *OutputFollowUp) saveWriteTo(destination *os.File) OutputActionResult {
+	state := followUp.state
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.active || state.retained == nil || !state.retained.Live() {
+		if destination != nil {
+			_ = destination.Close()
+		}
+		return OutputActionResult{code: OutputActionExpired}
+	}
+	copied := state.retained.CopyTo(destination)
+	if !copied.Copied() {
+		code := OutputActionSaveFailed
+		if copied.CleanupIncomplete() {
+			code = OutputActionSaveFailedCleanupIncomplete
+		}
+		return OutputActionResult{code: code, cleanupIncomplete: copied.CleanupIncomplete()}
+	}
+	state.active = false
+	retained := state.retained
+	state.retained = nil
+	if retained.RemoveExact() != nil {
+		return OutputActionResult{code: OutputActionSavedCleanupIncomplete, cleanupIncomplete: true}
+	}
+	return OutputActionResult{code: OutputActionSaved}
 }

@@ -3,6 +3,8 @@ package io.github.picocrypt_ng.picocrypt_ng
 import android.content.Context
 import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -15,13 +17,14 @@ internal enum class Pcv3JournalCleanupState {
 internal object StartupCleanup {
     private sealed interface Evaluation {
         data object Blocked : Evaluation
-        data object Restored : Evaluation
+        data class Restored(val presentation: Pcv3Presentation.Restored) : Evaluation
         data object Cleanable : Evaluation
     }
 
     private val lock = Mutex()
     private var evaluationInThisProcess: Evaluation? = null
     private var retainedCleanupDoneInThisProcess = false
+    private var deferredCleanup: (suspend () -> Boolean)? = null
     @Volatile
     private var startupDoneInThisProcess = false
     @Volatile
@@ -62,24 +65,50 @@ internal object StartupCleanup {
 
         when (evaluation) {
             Evaluation.Blocked -> false
-            Evaluation.Restored -> {
+            is Evaluation.Restored -> {
                 // The restore callback already installed the authority-free Final UI.
                 // Preserve every private object until its explicit dismissal owner runs.
+                val applicationContext = context.applicationContext
+                deferredCleanup = {
+                    cleanupPrivateFiles(applicationContext, cleanupRetainedOutput, cleanupTransient)
+                }
                 dispatchAllowedInThisProcess = false
                 startupDoneInThisProcess = true
                 true
             }
             Evaluation.Cleanable -> {
-                if (!retainedCleanupDoneInThisProcess) {
-                    if (!boundedCleanup(context, cleanupRetainedOutput)) return@withLock false
-                    retainedCleanupDoneInThisProcess = true
-                }
-                if (!boundedCleanup(context, cleanupTransient)) return@withLock false
+                if (!cleanupPrivateFiles(context, cleanupRetainedOutput, cleanupTransient)) return@withLock false
                 dispatchAllowedInThisProcess = true
                 startupDoneInThisProcess = true
                 true
             }
         }
+    }
+
+    /** Called after exact receipt clearing, without holding the lifecycle mutex. */
+    suspend fun completeRestoredDismissal(presentation: Pcv3Presentation.Restored): Boolean = lock.withLock {
+        val evaluation = evaluationInThisProcess as? Evaluation.Restored
+            ?: return@withLock evaluationInThisProcess != Evaluation.Blocked
+        if (evaluation.presentation != presentation) return@withLock false
+        val cleanup = deferredCleanup ?: return@withLock false
+        if (!cleanup()) return@withLock false
+        currentCoroutineContext().ensureActive()
+        deferredCleanup = null
+        evaluationInThisProcess = Evaluation.Cleanable
+        dispatchAllowedInThisProcess = true
+        true
+    }
+
+    private suspend fun cleanupPrivateFiles(
+        context: Context,
+        cleanupRetainedOutput: suspend (Context) -> Boolean,
+        cleanupTransient: suspend (Context) -> Boolean,
+    ): Boolean {
+        if (!retainedCleanupDoneInThisProcess) {
+            if (!boundedCleanup(context, cleanupRetainedOutput)) return false
+            retainedCleanupDoneInThisProcess = true
+        }
+        return boundedCleanup(context, cleanupTransient)
     }
 
     private suspend fun evaluate(
@@ -124,7 +153,7 @@ internal object StartupCleanup {
             is Pcv3ReceiptRestore.Exact -> if (
                 restored.presentation.snapshot.restoredReceipt == restored.custody.receipt
             ) {
-                Evaluation.Restored
+                Evaluation.Restored(restored.presentation)
             } else {
                 Evaluation.Blocked
             }
@@ -148,6 +177,7 @@ internal object StartupCleanup {
     internal fun resetForTests() {
         evaluationInThisProcess = null
         retainedCleanupDoneInThisProcess = false
+        deferredCleanup = null
         startupDoneInThisProcess = false
         dispatchAllowedInThisProcess = false
     }

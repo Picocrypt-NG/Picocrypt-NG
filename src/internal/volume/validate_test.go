@@ -80,6 +80,29 @@ func TestEncryptRequestValidate(t *testing.T) {
 			wantNil: true,
 		},
 		{
+			name: "selected files take precedence over proposed archive name",
+			req: &EncryptRequest{
+				InputFile:  filepath.Join(tmpDir, "not-yet-created.zip"),
+				InputFiles: []string{testFile},
+				OutputFile: filepath.Join(tmpDir, "archive.pcv"),
+				Password:   []byte("test"),
+				PCV3:       true,
+				Compress:   true,
+			},
+			wantNil: true,
+		},
+		{
+			name: "missing selected file is rejected despite existing input file",
+			req: &EncryptRequest{
+				InputFile:  testFile,
+				InputFiles: []string{filepath.Join(tmpDir, "missing-selection.txt")},
+				OutputFile: filepath.Join(tmpDir, "archive.pcv"),
+				Password:   []byte("test"),
+				PCV3:       true,
+			},
+			wantFileNotFound: true,
+		},
+		{
 			name: "keyfile-only writer is disabled",
 			req: &EncryptRequest{
 				InputFile:  testFile,

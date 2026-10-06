@@ -2,7 +2,7 @@ package volume
 
 import (
 	"Picocrypt-NG/internal/encoding"
-	"Picocrypt-NG/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation"
 	"bytes"
 	"errors"
 	"fmt"
@@ -54,7 +54,7 @@ func (reporter *pcv3DispatchReporter) calls() int {
 
 func loadPCV3DispatchFixture(t *testing.T) []byte {
 	t.Helper()
-	fixture, err := os.ReadFile(filepath.Join("..", "pcv3", "testdata", "schema1-minimal.pcv"))
+	fixture, err := os.ReadFile(filepath.Join("..", "pcv3operation", "internal", "pcv3", "testdata", "schema1-minimal.pcv"))
 	if err != nil {
 		t.Fatalf("read literal PCV3 fixture: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestPreflightPCV3(t *testing.T) {
 
 	claimed := filepath.Join(dir, "claimed.pcv")
 	writePCV3DispatchInput(t, claimed, fixture)
-	if err := PreflightPCV3(claimed, false); !errors.Is(err, pcv3.ErrReaderUnavailable) {
+	if err := PreflightPCV3(claimed, false); !errors.Is(err, pcv3operation.ErrReaderUnavailable) {
 		t.Fatalf("PreflightPCV3(admitted PCV3) = %v; want ErrReaderUnavailable", err)
 	}
 
@@ -88,15 +88,15 @@ func TestPreflightPCV3(t *testing.T) {
 	unsupported[5] = 4
 	unsupportedPath := filepath.Join(dir, "unsupported.pcv")
 	writePCV3DispatchInput(t, unsupportedPath, unsupported)
-	var failure pcv3.Failure
-	if err := PreflightPCV3(unsupportedPath, false); !errors.As(err, &failure) || failure.Outcome() != pcv3.OutcomeUnsupportedRoutingPreKDF {
+	var failure pcv3operation.Failure
+	if err := PreflightPCV3(unsupportedPath, false); !errors.As(err, &failure) || failure.Outcome() != pcv3operation.OutcomeUnsupportedRoutingPreKDF {
 		t.Fatalf("PreflightPCV3(unsupported PCV3) = %v; want typed unsupported route", err)
 	}
 
 	base := filepath.Join(dir, "split.pcv")
 	writePCV3DispatchInput(t, base+".0", fixture)
 	writePCV3DispatchInput(t, base+".1", []byte("uninspected tail"))
-	if err := PreflightPCV3(base+".1", true); !errors.Is(err, pcv3.ErrReaderUnavailable) {
+	if err := PreflightPCV3(base+".1", true); !errors.Is(err, pcv3operation.ErrReaderUnavailable) {
 		t.Fatalf("PreflightPCV3(split chunk 1) = %v; want chunk-zero ErrReaderUnavailable", err)
 	}
 	if _, err := os.Stat(base); !errors.Is(err, os.ErrNotExist) {
@@ -135,7 +135,7 @@ func TestOpenLegacyPCVInputPinsClassifiedDescriptor(t *testing.T) {
 	if !bytes.Equal(got, legacy) {
 		t.Fatalf("routed descriptor followed pathname replacement: got %q, want original legacy bytes", got)
 	}
-	if err := PreflightPCV3(input, false); !errors.Is(err, pcv3.ErrReaderUnavailable) {
+	if err := PreflightPCV3(input, false); !errors.Is(err, pcv3operation.ErrReaderUnavailable) {
 		t.Fatalf("replacement pathname route = %v; want ErrReaderUnavailable", err)
 	}
 }
@@ -206,7 +206,7 @@ func TestDecryptPinsClassifiedInputAcrossHeaderAndPayload(t *testing.T) {
 			if routeErr := PreflightPCV3(input, false); routeErr != nil {
 				t.Fatalf("Windows-protected legacy input route = %v", routeErr)
 			}
-			if routeErr := PreflightPCV3(replacement, false); !errors.Is(routeErr, pcv3.ErrReaderUnavailable) {
+			if routeErr := PreflightPCV3(replacement, false); !errors.Is(routeErr, pcv3operation.ErrReaderUnavailable) {
 				t.Fatalf("untouched replacement route = %v; want ErrReaderUnavailable", routeErr)
 			}
 			if _, headerErr := preparedInput.ReadLegacyHeader(codecs); headerErr != nil {
@@ -229,7 +229,7 @@ func TestDecryptPinsClassifiedInputAcrossHeaderAndPayload(t *testing.T) {
 	if !bytes.Equal(got, plaintext) {
 		t.Fatalf("decrypted output = %q; want original descriptor payload %q", got, plaintext)
 	}
-	if err := PreflightPCV3(input, false); !errors.Is(err, pcv3.ErrReaderUnavailable) {
+	if err := PreflightPCV3(input, false); !errors.Is(err, pcv3operation.ErrReaderUnavailable) {
 		t.Fatalf("replacement pathname route = %v; want the PCV3 replacement to remain untouched", err)
 	}
 	if _, err := preparedInput.ReadLegacyHeader(codecs); err != nil {
@@ -406,7 +406,7 @@ func TestDecryptPCV3RoutesBeforeLegacy(t *testing.T) {
 		Reporter:     reporter,
 		RSCodecs:     codecs,
 	})
-	if !errors.Is(err, pcv3.ErrReaderUnavailable) {
+	if !errors.Is(err, pcv3operation.ErrReaderUnavailable) {
 		t.Fatalf("Decrypt(claimed PCV3) = %v; want ErrReaderUnavailable", err)
 	}
 	if volumeKDFCalls != 0 || deniabilityKDFCalls != 0 {
@@ -456,7 +456,7 @@ func TestDecryptSplitPCV3ClaimPrecedesChunkEnumeration(t *testing.T) {
 		Recombine:  true,
 		Reporter:   reporter,
 	})
-	if !errors.Is(err, pcv3.ErrReaderUnavailable) {
+	if !errors.Is(err, pcv3operation.ErrReaderUnavailable) {
 		t.Fatalf("Decrypt(claimed split PCV3 with a chunk gap) = %v; want terminal PCV3 routing before chunk enumeration", err)
 	}
 	if reporter.calls() != 0 {
@@ -482,7 +482,7 @@ func TestDecryptPCV3ClaimPrecedesKeyfileInspection(t *testing.T) {
 		ForceDecrypt: true,
 		Reporter:     reporter,
 	})
-	if !errors.Is(err, pcv3.ErrReaderUnavailable) {
+	if !errors.Is(err, pcv3operation.ErrReaderUnavailable) {
 		t.Fatalf("Decrypt(claimed PCV3 with a missing keyfile) = %v; want terminal PCV3 routing before keyfile inspection", err)
 	}
 	if reporter.calls() != 0 {
@@ -525,7 +525,7 @@ func TestRemoveDeniabilityRejectsBorrowedPCV3BeforeEffects(t *testing.T) {
 		_ = stage.Cleanup()
 		t.Fatal("borrowed PCV3 input created a deniability output stage")
 	}
-	if !errors.Is(err, pcv3.ErrReaderUnavailable) {
+	if !errors.Is(err, pcv3operation.ErrReaderUnavailable) {
 		t.Fatalf("removeDeniability(borrowed PCV3) = %v; want ErrReaderUnavailable", err)
 	}
 	if deniabilityKDFCalls != 0 {
@@ -595,8 +595,8 @@ func TestPCV3TerminalNoFallback(t *testing.T) {
 				Reporter:     reporter,
 				RSCodecs:     codecs,
 			})
-			var failure pcv3.Failure
-			if !errors.Is(err, pcv3.ErrReaderUnavailable) && !errors.As(err, &failure) {
+			var failure pcv3operation.Failure
+			if !errors.Is(err, pcv3operation.ErrReaderUnavailable) && !errors.As(err, &failure) {
 				t.Fatalf("Decrypt(claimed PCV3) = %v; want terminal typed PCV3 result", err)
 			}
 			if reporter.calls() != 0 {
@@ -623,8 +623,8 @@ func TestPCV3TerminalNoFallback(t *testing.T) {
 			Password:   []byte("legacy"),
 			Reporter:   reporter,
 		})
-		var failure pcv3.Failure
-		if errors.Is(err, pcv3.ErrReaderUnavailable) || errors.As(err, &failure) {
+		var failure pcv3operation.Failure
+		if errors.Is(err, pcv3operation.ErrReaderUnavailable) || errors.As(err, &failure) {
 			t.Fatalf("legacy input was claimed as PCV3: %v", err)
 		}
 		if reporter.statusCalls == 0 {
@@ -642,8 +642,8 @@ func TestPCV3TerminalNoFallback(t *testing.T) {
 			OutputFile: output,
 			Recombine:  true,
 		})
-		var failure pcv3.Failure
-		if errors.Is(err, pcv3.ErrReaderUnavailable) || errors.As(err, &failure) {
+		var failure pcv3operation.Failure
+		if errors.Is(err, pcv3operation.ErrReaderUnavailable) || errors.As(err, &failure) {
 			t.Fatalf("missing chunk zero was classified as PCV3: %v", err)
 		}
 		if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {

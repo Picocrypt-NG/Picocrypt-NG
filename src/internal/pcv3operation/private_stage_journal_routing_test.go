@@ -3,7 +3,7 @@
 package pcv3operation
 
 import (
-	"Picocrypt-NG/internal/pcv3credential"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3publication"
 	"bytes"
 	"context"

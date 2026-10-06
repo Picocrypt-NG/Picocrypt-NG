@@ -1,5 +1,9 @@
 # Internals
-If you're wondering about how Picocrypt NG handles cryptography, you've come to the right place! This page contains the technical details about the cryptographic algorithms and parameters used, as well as how cryptographic values are stored in the header format.
+The algorithms, key schedule, header layout, rekeying and Reed-Solomon details
+below describe legacy v1/v2 compatibility. PCV3-specific notes are labelled.
+New native encryption uses PCV3 with a separate format and credential schedule;
+see the [PCV3 security contract](docs/SECURITY_CONTRACT.md) and
+[native architecture](ARCHITECTURE.md).
 
 # Core Cryptography
 Picocrypt NG uses the following cryptographic primitives:
@@ -14,7 +18,9 @@ Picocrypt NG uses the following cryptographic primitives:
     - Normal mode: 4 passes, 1 GiB memory, 4 threads
     - Paranoid mode: 8 passes, 1 GiB memory, 8 threads
 
-All primitives used are from the well-known [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) module.
+Implementations use the Go standard library and dependencies pinned in
+[src/go.mod](src/go.mod), including `golang.org/x/crypto` and the separate
+`github.com/Picocrypt-NG/serpent` module.
 
 # Key Schedule & Subkey Stream
 This section documents the exact key-derivation order so an independent decryptor can be written. Source: `internal/crypto/kdf.go` (`SubkeyReader`) and `internal/volume/decrypt.go` (`decryptVerifyAuth`).
@@ -140,8 +146,8 @@ This feature is available in the decrypt advanced options as "Verify first" chec
 The following algorithm describes the legacy v1/v2 read format. Picocrypt-NG
 2.19 preserves decryption of supported keyfile volumes but rejects every new
 legacy v2 encryption request containing keyfiles. New legacy v2 volumes are
-password-only; explicit PCV3 creation supports password, keyfile, and combined
-credential policies.
+password-only. Native applications now create PCV3 by default with password,
+keyfile, or combined credential policies; every selected keyfile must be non-empty.
 
 If correct order is not required, Picocrypt NG will take the SHA3-256 of each keyfile individually and XOR the hashes together. Finally, the result is XORed with the master key. Because the XOR operation is both commutative and associative, the order in which the keyfile hashes are XORed with each other doesn't matter - the end result is the same.
 
@@ -151,8 +157,8 @@ For v1, keyfile XOR precedes HKDF and contributes to the derived operational
 keys. For legacy v2, HKDF is initialized first: the keyfile changes the
 XChaCha20 key and remains necessary for confidentiality, but it does not bind
 the header MAC, payload MAC, Serpent key, or the HKDF rekey nonce/IV schedule.
-After recovery, create a new password-only legacy volume or explicitly select
-PCV3. PCV3 binds its declared password/keyfile policy through the PCV3
+After recovery, create a new PCV3 volume. PCV3 binds its declared
+password/keyfile policy through the PCV3
 credential transcript; this does not repair an existing legacy v2 volume.
 
 # Reed-Solomon
@@ -206,7 +212,7 @@ For maximum security, prefer interactive prompts or stdin piping.
 
 ## Memory Handling
 
-Picocrypt NG zeros sensitive key material after use via `crypto.SecureZero()`. This uses constant-time operations to prevent compiler optimization from removing the zeroing. However, Go's garbage collector may create copies of sensitive data that cannot be zeroed. This is an inherent limitation of garbage-collected languages. For most threat models, the implemented zeroing significantly reduces the attack window.
+Picocrypt NG overwrites owned sensitive byte buffers after use via `crypto.SecureZero()`, backed by `internal/secret`. The helper uses a non-inlined `clear` followed by `runtime.KeepAlive`, without allocating another buffer. Optimized compiler output must be checked when changing this helper or the toolchain. This is best-effort cleanup: other copies held by the runtime, compiler or dependencies may remain, and complete memory erasure is not guaranteed.
 
 # Code Structure
 
@@ -221,7 +227,7 @@ These packages implement the cryptographic operations and must be modified with 
 - **kdf.go**: Argon2id key derivation and HKDF-SHA3-256 subkey derivation
 - **mac.go**: BLAKE2b-512 (normal mode) and HMAC-SHA3-512 (paranoid mode)
 - **rekey.go**: Cipher rekeying every 60 GiB to prevent nonce overflow
-- **zeroing.go**: Secure memory zeroing using constant-time operations
+- **zeroing.go**: Compatibility facade for shared sensitive-buffer cleanup
 
 ### `internal/header/`
 - **format.go**: Volume header structure and field size constants

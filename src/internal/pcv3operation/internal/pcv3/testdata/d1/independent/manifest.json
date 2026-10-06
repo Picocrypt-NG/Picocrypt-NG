@@ -1,0 +1,45 @@
+{
+  "test_only": true,
+  "generator_sha256": "39626af2e58dea53920dec5300d6f94edf6ed7fb47cda8e02f47ed92614424d4",
+  "libgcrypt_version": "1.12.4",
+  "kdf": {
+    "algorithm": "Argon2id",
+    "version": 19,
+    "time": 8,
+    "memory_kib": 1048576,
+    "parallelism": 8,
+    "output_bytes": 32
+  },
+  "credential_mode": "password-and-keyfiles",
+  "keyfile_mode": "ordered",
+  "files": {
+    "normal.pcv": {
+      "size": 2395,
+      "sha256": "a468f66c81849b03c58312acf7f2f90677e317ad200820e90ec38da5b0459bcb"
+    },
+    "d1.pcv": {
+      "size": 2923,
+      "sha256": "30b62308a0bcda8d56368ac37c8c7424c36e37945401048cbd20b1044773c631"
+    },
+    "plaintext.bin": {
+      "size": 51,
+      "sha256": "42ae995f0c0b4be8883494e43a5ebb425bbd7e70407c6316a2bbc2069299c93b"
+    },
+    "password.bin": {
+      "size": 21,
+      "sha256": "e56cef65373463f9559e0f852b508b4fdb6af16b8a57c73f2a20bcc6f2a5e4f3"
+    },
+    "keyfile-alpha.bin": {
+      "size": 24,
+      "sha256": "2300d62bf2bb24b5cfd294337ce09e851b99f1f1598c17bd3c064c221991e7e1"
+    },
+    "keyfile-beta.bin": {
+      "size": 23,
+      "sha256": "2e2004c7040e3d7e85819090bcfbcd4beb0774772019ef021c5db566b057ae48"
+    },
+    "randomness.json": {
+      "size": 1012,
+      "sha256": "b19d5964dafef5abe2d82f27cc21dc76c97ed4628450cbe7bedf45cc5d285f8e"
+    }
+  }
+}

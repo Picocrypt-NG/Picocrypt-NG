@@ -9,7 +9,11 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,6 +21,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -32,6 +37,7 @@ import io.mockk.mockkObject
 import io.mockk.unmockkObject
 import io.mockk.verify
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.path.createTempDirectory
 
 /**
@@ -86,30 +92,6 @@ class OperationViewModelTest {
         assertEquals(managerState, operationState)
     }
     
-    @Test
-    fun `startEncrypt surfaces a start failure as a terminal error state`() = runTest(mainDispatcherRule.testDispatcher) {
-        // Mock startEncrypt to return failure on the test dispatcher so the
-        // onFailure → surfaceStartFailure path runs deterministically.
-        // surfaceStartFailure must call the real implementation to update _currentOperation.
-        mockkObject(OperationManager)
-        try {
-            val error = AppError.ValidationError.NoFileSelected
-            coEvery { OperationManager.startEncrypt(any(), any()) } returns Result.failure(error)
-            every { OperationManager.surfaceStartFailure(any(), any()) } answers { callOriginal() }
-
-            viewModel.startEncrypt(mockContext, TestDataBuilders.createEncryptFormData())
-            advanceUntilIdle()
-
-            val state = viewModel.operationState.value
-            assertNotNull("A start failure must surface as an error state (not silent null)", state)
-            assertTrue("Error state must be terminal (done=true)", state!!.done)
-            assertNotNull("Error state must carry the error", state.error)
-            assertEquals(OperationType.ENCRYPT, state.type)
-        } finally {
-            unmockkObject(OperationManager)
-        }
-    }
-
     @Test
     fun `startDecrypt surfaces a start failure as a terminal error state`() = runTest(mainDispatcherRule.testDispatcher) {
         // Mirror of the encrypt test on the decrypt path.
@@ -185,6 +167,108 @@ class OperationViewModelTest {
         
         val operationState = viewModel.operationState.first()
         assertNull("Operation should be cleared", operationState)
+    }
+
+    @Test
+    fun `queued legacy clear cannot delete a newer selection or reset its operation`() = runTest(mainDispatcherRule.testDispatcher) {
+        val source = File(testFilesDir, "picocrypt_files/input_file.pcv")
+        val staged = File(testFilesDir, "picocrypt_files/staging/new-selection.txt")
+        val newBytes = "new selection must survive stale cleanup".toByteArray()
+        mockkObject(GoBridge)
+        every { GoBridge.startOperation() } returnsMany listOf(Result.success("old-clear"), Result.success("new-owner"))
+        every { GoBridge.startDecrypt(any(), any(), any(), any(), any()) } returns Result.success(Unit)
+        try {
+            assertTrue(source.parentFile!!.mkdirs())
+            source.writeText("old encrypted input")
+            assertTrue(OperationManager.startDecrypt(
+                mockContext,
+                TestDataBuilders.createDecryptFormData(copiedFilePath = source.absolutePath),
+            ).isSuccess)
+            val existingJobs = viewModel.viewModelScope.coroutineContext[Job]!!.children.toSet()
+            viewModel.clearOperation(mockContext)
+            val queuedClear = viewModel.viewModelScope.coroutineContext[Job]!!.children.single { it !in existingJobs }
+
+            // Another dismissal wins before the queued callback gets its first turn.
+            assertTrue(OperationManager.clearOperation(shouldCleanupFiles = false).isSuccess)
+            source.writeBytes(newBytes)
+            assertTrue(staged.parentFile!!.mkdirs())
+            staged.writeBytes(newBytes)
+            val replacementForm = TestDataBuilders.createDecryptFormData(
+                copiedFilePath = source.absolutePath,
+                password = "new-owner-password",
+            )
+            // Keep the queued Main callback paused while the real IO-backed start completes.
+            assertTrue(runBlocking { OperationManager.startDecrypt(mockContext, replacementForm) }.isSuccess)
+            queuedClear.join()
+
+            assertEquals("Delayed clear must remain bound to old-clear", "new-owner", viewModel.operationState.value?.id)
+            assertArrayEquals("New input must not be deleted by the stale callback", newBytes, source.readBytes())
+            assertArrayEquals("New staging must not be wiped by the stale callback", newBytes, staged.readBytes())
+            assertArrayEquals("A stale reset must not clear newer credentials", "new-owner-password".toCharArray(), replacementForm.passwordInput)
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `delayed legacy save completion cannot clear a replacement operation`() = runTest(mainDispatcherRule.testDispatcher) {
+        val source = File(testFilesDir, "picocrypt_files/input_file.pcv")
+        val newBytes = "replacement selected after the old save began".toByteArray()
+        val saveCompleted = CompletableDeferred<Unit>()
+        mockkObject(GoBridge)
+        every { GoBridge.startOperation() } returnsMany listOf(Result.success("saving-old"), Result.success("replacement"))
+        every { GoBridge.startDecrypt(any(), any(), any(), any(), any()) } returns Result.success(Unit)
+        try {
+            assertTrue(source.parentFile!!.mkdirs())
+            source.writeText("old input")
+            assertTrue(OperationManager.startDecrypt(
+                mockContext,
+                TestDataBuilders.createDecryptFormData(copiedFilePath = source.absolutePath),
+            ).isSuccess)
+            val savedOperation = requireNotNull(viewModel.operationState.value)
+            val delayedCompletion = async(start = CoroutineStart.UNDISPATCHED) {
+                saveCompleted.await()
+                viewModel.clearOperation(mockContext, expectedOperation = savedOperation)
+            }
+            assertTrue(OperationManager.clearOperation(shouldCleanupFiles = false).isSuccess)
+            source.writeBytes(newBytes)
+            assertTrue(OperationManager.startDecrypt(
+                mockContext,
+                TestDataBuilders.createDecryptFormData(copiedFilePath = source.absolutePath),
+            ).isSuccess)
+            saveCompleted.complete(Unit)
+
+            assertFalse("The stale save must not authorize clearing the replacement form", delayedCompletion.await())
+            runCurrent()
+            assertEquals("replacement", viewModel.operationState.value?.id)
+            assertArrayEquals(newBytes, source.readBytes())
+        } finally {
+            saveCompleted.complete(Unit)
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `stale failed start dismissal cannot own a newer failure with no native ID`() = runTest(mainDispatcherRule.testDispatcher) {
+        OperationManager.surfaceStartFailure(OperationType.DECRYPT, AppError.ValidationError.InvalidPassword)
+        val oldFailure = requireNotNull(viewModel.operationState.value)
+        assertTrue(OperationManager.clearOperation(shouldCleanupFiles = false).isSuccess)
+        val staged = File(testFilesDir, "picocrypt_files/staging/replacement.txt")
+        assertTrue(staged.parentFile!!.mkdirs())
+        staged.writeText("new failed selection")
+        OperationManager.surfaceStartFailure(OperationType.DECRYPT, AppError.ValidationError.NoFileSelected)
+        val newFailure = requireNotNull(viewModel.operationState.value)
+
+        assertFalse(
+            "A previous failure dialog must not own a different failure just because both lack native IDs",
+            viewModel.clearOperation(mockContext, expectedOperation = oldFailure),
+        )
+        runCurrent()
+        assertSame(newFailure, viewModel.operationState.value)
+        assertEquals("new failed selection", staged.readText())
+        assertTrue("The current failure must remain dismissible", viewModel.clearOperation(mockContext))
+        viewModel.operationState.first { it == null }
+        assertFalse("The current owner's plaintext must be cleaned", staged.exists())
     }
 
     @Test
@@ -553,6 +637,37 @@ class OperationViewModelTest {
         }
 
     @Test
+    fun `save rejection retains output for retry and preserves deferred input cleanup error`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            mockkObject(FileCopyService)
+            val uri = mockk<Uri>()
+            val live = outputPcv3("save-rejected-with-cleanup", generation = 49).copy(isCreation = true)
+            val route = FakePcv3Operations(startResult = Result.success(live))
+            val viewModel = OperationViewModel(route, RecordingPcv3Cleaner(result = false))
+            try {
+                viewModel.startPcv3(mockContext, pcv3Transfer("password".toCharArray()))
+                runCurrent()
+                assertTrue(viewModel.pcv3Error.value is AppError.FileError.DeleteFailed)
+                coEvery { FileCopyService.openPcv3OutputDescriptor(mockContext, uri) } returns
+                    Result.failure(AppError.FileError.SaveFailed(messageResId = R.string.pcv3_output_provider_unsupported))
+                assertNotNull(viewModel.beginPcv3Save(live.operationId, live.generation))
+                viewModel.completePcv3Save(mockContext, uri)
+                runCurrent()
+                assertTrue(viewModel.pcv3Error.value is AppError.FileError.SaveFailed)
+                assertSame(live, viewModel.pcv3Presentation.value)
+                assertEquals(0, route.saveOutputCalls)
+                assertNotNull("another destination remains available", viewModel.beginPcv3Save(live.operationId, live.generation))
+                viewModel.completePcv3Save(mockContext, null)
+                viewModel.clearPcv3Error()
+                assertTrue("save feedback must not erase sensitive input cleanup uncertainty",
+                    viewModel.pcv3Error.value is AppError.FileError.DeleteFailed)
+            } finally {
+                viewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+                unmockkObject(FileCopyService)
+            }
+        }
+
+    @Test
     fun `PCV3 save picker begins only for an exact live output tuple and uses fixed safe names`() =
         runTest(mainDispatcherRule.testDispatcher) {
             data class Case(
@@ -764,7 +879,7 @@ class OperationViewModelTest {
         }
 
     @Test
-    fun `PCV3 ViewModel reserves Discard for recovery artifacts`() =
+    fun `PCV3 ViewModel permits explicit Discard for retained decrypted output`() =
         runTest(mainDispatcherRule.testDispatcher) {
             val decryptedOutputs = listOf(
                 outputPcv3("op-clean-discard-denied", generation = 430),
@@ -786,8 +901,8 @@ class OperationViewModelTest {
                     decryptedViewModel.discardPcv3Output(live.operationId, live.generation)
                     runCurrent()
                     assertEquals(
-                        "decrypted output must not enter the recovery-artifact Discard path",
-                        0,
+                        "retained plaintext must be explicitly discardable",
+                        1,
                         route.discardOutputCalls,
                     )
                     assertEquals(
@@ -1065,7 +1180,7 @@ class OperationViewModelTest {
                     events,
                 )
                 assertSame(forceDescriptor, forceRoute.savedDestinations.single())
-                coVerify(exactly = 0) { FileCopyService.saveFileToUri(any(), any(), any()) }
+                coVerify(exactly = 0) { FileCopyService.saveFileToUri(any(), any(), any(), any()) }
 
                 val postNativeFailure = outputPcv3("op-save-native-failure", generation = 56)
                 val postNativeFailureRoute = FakePcv3Operations(
@@ -1384,6 +1499,206 @@ class OperationViewModelTest {
         flow.value = state
     }
 
+
+    @Test
+    fun `archive preparation retains input paths until same native owner is terminal`() = runTest {
+        every { mockContext.applicationContext } returns mockContext
+        val live = livePcv3("archive-owner", 501, "preparing-input")
+        val route = FakePcv3Operations(Result.success(live))
+        val cleaner = RecordingPcv3Cleaner()
+        val model = OperationViewModel(route, cleaner, Pcv3ForegroundHost { })
+        val password = "secret".toCharArray()
+        val files = listOf("/private/a", "/private/b")
+        model.startPcv3(mockContext, Pcv3OperationTransfer(
+            intent = Pcv3OperationIntent(Pcv3FormatIntent.NORMAL, action = Pcv3ActionIntent.CREATE),
+            request = Pcv3WriteRequest("write-normal", "password", "none", files[0], "/private/output", emptyList(), "", "standard", false, inputFiles = files),
+            password = password,
+        ))
+        runCurrent()
+        assertTrue("paths must survive asynchronous ZIP reads", cleaner.deletedPaths.isEmpty())
+        assertTrue("input ownership must not prolong password lifetime", password.all { it == '\u0000' })
+        route.publish(outputPcv3("archive-owner", 501))
+        runCurrent()
+        assertEquals(listOf(files), cleaner.deletedPaths)
+        model.pausePolling()
+        model.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+    }
+
+    @Test
+    fun `PCV3 terminal keeps selection busy until transferred plaintext cleanup finishes`() = runTest(mainDispatcherRule.testDispatcher) {
+        every { mockContext.applicationContext } returns mockContext
+        val source = File(testFilesDir, "picocrypt_files/staging/owned.txt")
+        assertTrue(source.parentFile!!.mkdirs())
+        source.writeText("owned plaintext")
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val route = FakePcv3Operations(Result.success(livePcv3("cleanup-owner", 503, "preparing-input")))
+        val cleaner = Pcv3TransferredResourceCleaner { context, paths ->
+            entered.complete(Unit)
+            release.await()
+            var complete = true
+            paths.forEach { if (!FileCopyService.deleteFile(context, it)) complete = false }
+            complete
+        }
+        val model = OperationViewModel(route, cleaner, Pcv3ForegroundHost { })
+        val busyChanges = mutableListOf<Boolean>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            model.pcv3Busy.collect { busyChanges += it }
+        }
+        try {
+            model.startPcv3(mockContext, Pcv3OperationTransfer(
+                intent = Pcv3OperationIntent(Pcv3FormatIntent.NORMAL, action = Pcv3ActionIntent.CREATE),
+                request = Pcv3WriteRequest("write-normal", "password", "none", source.absolutePath,
+                    "/private/output", emptyList(), "", "standard", false, inputFiles = listOf(source.absolutePath)),
+                password = "secret".toCharArray(),
+            ))
+            busyChanges.clear()
+            runCurrent()
+            route.publish(finalPcv3("cleanup-owner", 503))
+            entered.await()
+            runCurrent()
+            assertTrue("Native Final must not enable replacement while old plaintext cleanup is pending", model.pcv3Busy.value)
+            assertTrue("The real source proves cleanup is still pending", source.exists())
+
+            model.dismissPcv3("cleanup-owner", 503)
+            runCurrent()
+            assertTrue("Dismissing Final must not release selection ownership before cleanup", model.pcv3Busy.value)
+            assertFalse("Final and dismissal must never briefly publish an available selection", false in busyChanges)
+            release.complete(Unit)
+            model.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+            assertFalse("Transferred plaintext must be deleted before replacement becomes enabled", source.exists())
+            assertFalse(model.pcv3Busy.value)
+        } finally {
+            release.complete(Unit)
+            model.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `replacement ViewModel cannot acquire inputs while previous host cleanup survives`() = runTest(mainDispatcherRule.testDispatcher) {
+        every { mockContext.applicationContext } returns mockContext
+        val source = File(testFilesDir, "picocrypt_files/staging/shared.txt")
+        assertTrue(source.parentFile!!.mkdirs())
+        source.writeText("old owner plaintext")
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val working = Pcv3SnapshotData(
+            "preparing-input", emptyList(), "unknown-outcome", "none", "PCV3_UNKNOWN",
+            "none", "none", "none", false, "none", "none", "none", "none", "unknown",
+            emptyList(), emptyList(), false,
+        )
+        val terminal = working.copy(
+            statusCode = "none", outcome = "operation-failed", stage = "cancellation",
+            code = "PCV3_OPERATION_FAILED", diagnostic = "cancellation", completionClass = "refused",
+        )
+        val oldSnapshot = AtomicReference(working)
+        val nextSnapshot = AtomicReference(working)
+        fun nativeOperation(id: String, snapshot: AtomicReference<Pcv3SnapshotData>): Pcv3OperationCapability =
+            mockk<Pcv3OperationCapability>().also { operation ->
+                every { operation.id } returns id
+                every { operation.snapshot() } answers { snapshot.get() }
+                every { operation.cancel() } answers { snapshot.set(terminal); terminal }
+                every { operation.release() } returns ""
+                every { operation.consent() } returns null
+                every { operation.archive() } returns null
+                every { operation.output() } returns null
+                every { operation.artifactInspection() } returns null
+                every { operation.resourceChallenge() } returns null
+            }
+        val oldNative = nativeOperation("old-host", oldSnapshot)
+        val nextNative = nativeOperation("replacement-host", nextSnapshot)
+        val bridge = GoBridge.pcv3Bridge
+        mockkObject(bridge, StartupCleanup, FileCopyService, OperationForegroundService.Companion)
+        every { StartupCleanup.allowsPcv3Dispatch() } returns true
+        every { OperationForegroundService.start(any()) } returns Unit
+        every { bridge.start(any(), any()) } returnsMany listOf(
+            Result.success(Pcv3StartData("", oldNative)),
+            Result.success(Pcv3StartData("", nextNative)),
+        )
+        coEvery { FileCopyService.deleteFile(mockContext, source.absolutePath) } coAnswers {
+            entered.complete(Unit)
+            release.await()
+            NoFollowFileTree.delete(testFilesDir, source)
+        }
+        val request = Pcv3WriteRequest("write-normal", "password", "none", source.absolutePath,
+            "/private/output", emptyList(), "", "standard", false, inputFiles = listOf(source.absolutePath))
+        val oldModel = OperationViewModel()
+        var replacement: OperationViewModel? = null
+        try {
+            oldModel.startPcv3(mockContext, Pcv3OperationTransfer(
+                intent = Pcv3OperationIntent(Pcv3FormatIntent.NORMAL, action = Pcv3ActionIntent.CREATE),
+                request = request, password = "old-secret".toCharArray(),
+            ))
+            OperationManager.currentPcv3Presentation.first { it is Pcv3Presentation.Live }
+            oldSnapshot.set(terminal)
+            val final = OperationManager.refreshPcv3().getOrThrow() as Pcv3Presentation.Final
+            entered.await()
+            oldModel.viewModelScope.coroutineContext[Job]!!.cancel()
+            val newModel = OperationViewModel().also { replacement = it }
+            val replacementInitiallyBusy = newModel.pcv3Busy.value
+            assertTrue(OperationManager.dismissPcv3(final.operationId, final.generation))
+            val newRequest = request.copy()
+            val attempted = OperationManager.startPcv3(newRequest, "new-secret".toCharArray(), Pcv3ReceiptStore.receiptFile(mockContext))
+            val rejectedPassword = "rejected-host-secret".toCharArray()
+            newModel.startPcv3(mockContext, Pcv3OperationTransfer(
+                intent = Pcv3OperationIntent(Pcv3FormatIntent.NORMAL, action = Pcv3ActionIntent.CREATE),
+                request = newRequest, password = rejectedPassword,
+            ))
+            assertTrue("A refused host must clear its password without acquiring file custody", rejectedPassword.all { it == '\u0000' })
+            assertEquals("A refused host must not delete the previous owner's input", "old owner plaintext", source.readText())
+            assertTrue("Dismissing native Final must retain process-wide input occupancy", newModel.pcv3Busy.value)
+            release.complete(Unit)
+            oldModel.viewModelScope.coroutineContext[Job]!!.join()
+
+            assertTrue(
+                "A replacement VM exposed selection=$replacementInitiallyBusy, native start accepted=${attempted.isSuccess}, source remains=${source.exists()}",
+                replacementInitiallyBusy,
+            )
+            assertTrue("Process owner must refuse an unowned start while old cleanup is pending", attempted.isFailure)
+            assertNull("No replacement operation may own paths being deleted by the old host", OperationManager.currentPcv3Presentation.value)
+            assertFalse("The old owner must finish deleting its own plaintext", source.exists())
+            runCurrent()
+            assertFalse("A completed cleanup must allow a fresh selection", newModel.pcv3Busy.value)
+
+            val newBytes = "fresh selection after old cleanup".toByteArray()
+            source.writeBytes(newBytes)
+            newModel.startPcv3(mockContext, Pcv3OperationTransfer(
+                intent = Pcv3OperationIntent(Pcv3FormatIntent.NORMAL, action = Pcv3ActionIntent.CREATE),
+                request = newRequest, password = "new-secret".toCharArray(),
+            ))
+            val live = OperationManager.currentPcv3Presentation.first { it is Pcv3Presentation.Live }
+            assertEquals("replacement-host", live?.operationId)
+            assertArrayEquals("Late old cleanup must never delete new owned bytes", newBytes, source.readBytes())
+        } finally {
+            release.complete(Unit)
+            OperationManager.cancelPcv3()
+            OperationManager.refreshPcv3()
+            oldModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+            replacement?.viewModelScope?.coroutineContext?.get(Job)?.cancelAndJoin()
+            OperationManager.currentPcv3Presentation.value?.let {
+                OperationManager.dismissPcv3(it.operationId, it.generation)
+            }
+            unmockkObject(bridge, StartupCleanup, FileCopyService, OperationForegroundService.Companion)
+        }
+    }
+
+    @Test
+    fun `cancelled archive host retains paths when native completion cannot be observed`() = runTest {
+        every { mockContext.applicationContext } returns mockContext
+        val route = FakePcv3Operations(Result.success(livePcv3("archive-uncertain", 502, "preparing-input")))
+        val cleaner = RecordingPcv3Cleaner()
+        val model = OperationViewModel(route, cleaner, Pcv3ForegroundHost { })
+        model.startPcv3(mockContext, Pcv3OperationTransfer(
+            intent = Pcv3OperationIntent(Pcv3FormatIntent.NORMAL, action = Pcv3ActionIntent.CREATE),
+            request = Pcv3WriteRequest("write-normal", "password", "none", "/private/a", "/private/output", emptyList(), "", "standard", false, inputFiles = listOf("/private/a", "/private/b")),
+            password = "secret".toCharArray(),
+        ))
+        runCurrent()
+        model.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+        assertEquals(1, route.cancelCalls)
+        assertTrue("unobserved native worker may still be reading", cleaner.deletedPaths.isEmpty())
+    }
+
     private fun pcv3Transfer(
         password: CharArray,
         keyfiles: List<String> = emptyList(),
@@ -1664,6 +1979,7 @@ class OperationViewModelTest {
             request: Pcv3StartRequest,
             password: CharArray,
             receiptFile: File,
+            inputCustody: Pcv3InputCustody,
         ): Result<Pcv3Presentation> {
             events?.add("native-start")
             receiptFiles += receiptFile

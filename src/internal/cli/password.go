@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"Picocrypt-NG/internal/crypto"
+	"Picocrypt-NG/internal/secret"
 	"bufio"
 	"bytes"
 	"errors"
@@ -114,7 +114,7 @@ func ReadPasswordInteractive(confirm, allowEmpty bool) ([]byte, error) {
 			return nil, err
 		}
 		// Zero the confirmation copy once compared; only `password` is returned.
-		defer crypto.SecureZero(confirmPw)
+		defer secret.SecureZero(confirmPw)
 		if !bytes.Equal(password, confirmPw) {
 			return nil, ErrPasswordMismatch
 		}
@@ -155,7 +155,7 @@ func ReadPasswordFromFD(fd int) (password []byte, retErr error) {
 			retErr = errors.Join(retErr, errors.New("password file descriptor could not be closed"))
 		}
 		if retErr != nil {
-			crypto.SecureZero(password)
+			secret.SecureZero(password)
 			password = nil
 		}
 	}()
@@ -170,7 +170,7 @@ func readPasswordFDLine(reader io.Reader) ([]byte, error) {
 	success := false
 	defer func() {
 		if !success {
-			crypto.SecureZero(password)
+			secret.SecureZero(password)
 		}
 	}()
 
@@ -182,7 +182,7 @@ func readPasswordFDLine(reader io.Reader) ([]byte, error) {
 		complete := false
 		if index := bytes.IndexByte(password[used:used+n], '\n'); index >= 0 {
 			lineEnd := used + index
-			crypto.SecureZero(password[lineEnd : used+n])
+			secret.SecureZero(password[lineEnd : used+n])
 			used = lineEnd
 			complete = true
 		} else {

@@ -20,6 +20,146 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class Pcv3SafLifecycleTest {
+
+    @Test
+    fun `native resource refusal settles directly with its typed no-output snapshot`() = runTest {
+        assertNativePreparationTerminalSettles(resourcePreparationTerminal())
+    }
+
+    @Test
+    fun `native preparation cancellation settles directly with its typed refused snapshot`() = runTest {
+        assertNativePreparationTerminalSettles(cancelledPreparationTerminal())
+    }
+
+    @Test
+    fun `mixed preparation terminal tuples cannot settle custody or release`() = runTest {
+        val resource = resourcePreparationTerminal()
+        val cancellation = cancelledPreparationTerminal()
+        val malformed = listOf(
+            resource.copy(diagnostic = "none"),
+            resource.copy(stage = "output-publication"),
+            resource.copy(completionClass = "refused"),
+            resource.copy(publicationAttempted = true),
+            resource.copy(publicationState = "not-published"),
+            resource.copy(publicationStage = "resource-budget"),
+            resource.copy(warnings = listOf("cleanup-incomplete")),
+            resource.copy(restoredReceipt = "forged"),
+            resource.copy(args = listOf("1")),
+            cancellation.copy(diagnostic = "none"),
+            cancellation.copy(stage = "output-publication"),
+            cancellation.copy(completionClass = "no-output"),
+            cancellation.copy(publicationAttempted = false),
+            cancellation.copy(publicationState = "none"),
+            cancellation.copy(publicationStage = "output-publication"),
+            cancellation.copy(publicationCode = "PCV3_PUBLICATION_NOT_PUBLISHED"),
+            cancellation.copy(warnings = listOf("cleanup-incomplete")),
+            cancellation.copy(restoredReceipt = "forged"),
+            cancellation.copy(forceProvenance = "verified"),
+        )
+        malformed.forEachIndexed { index, terminal ->
+            val events = mutableListOf<String>()
+            val operation = SafOperation("op-mixed-$index", archivePendingSnapshot(), events)
+            val session = SafSession(operation, "unused", terminal, events)
+            operation.archive = SafArchive(operation, session, terminal, events,
+                beginKind = "terminal", beginSession = null)
+            val lifecycle = lifecycle(operation, RecordingCustodian(events))
+            val live = lifecycle.start(request(), "password".toCharArray(), File("receipt")).getOrThrow()
+            val publisher = RecordingPublisher(events)
+            val result = lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueUri(), publisher)
+            assertTrue("malformed terminal $index must fail closed", result.isFailure)
+            assertFalse(events.any { it.startsWith("receipt:") })
+            assertEquals(0, operation.releaseCalls)
+            assertEquals(0, publisher.publishCalls)
+            assertFalse(lifecycle.presentation.value is Pcv3Presentation.Final)
+        }
+    }
+
+    private suspend fun assertNativePreparationTerminalSettles(terminal: Pcv3SnapshotData) {
+        val events = mutableListOf<String>()
+        val operation = SafOperation("op-native-terminal", archivePendingSnapshot(), events)
+        val session = SafSession(operation, "unused", terminal, events)
+        operation.archive = SafArchive(operation, session, terminal, events,
+            beginKind = "terminal", beginSession = null)
+        val lifecycle = lifecycle(operation, RecordingCustodian(events))
+        val live = lifecycle.start(request(), "password".toCharArray(), File("receipt")).getOrThrow()
+        val publisher = RecordingPublisher(events)
+        val result = lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueUri(), publisher)
+        assertTrue("a canonical native terminal must settle: ${result.exceptionOrNull()?.message}", result.isSuccess)
+        assertEquals(0, publisher.publishCalls)
+        assertEquals(0, session.confirmCalls)
+        assertEquals(0, session.cancelCalls)
+        assertEquals(0, session.abortCalls)
+        assertEquals(0, session.finishCalls)
+        assertEquals(1, operation.releaseCalls)
+        assertEquals(listOf("begin", "receipt:none", "release"), events)
+        val final = lifecycle.presentation.value as Pcv3Presentation.Final
+        assertEquals("operation-failed", final.snapshot.semantic.outcome)
+        assertEquals(terminal.stage, final.snapshot.semantic.stage)
+        assertEquals(terminal.diagnostic, final.snapshot.diagnostic)
+        assertEquals(terminal.completionClass, final.snapshot.completionClass)
+        assertEquals(terminal.publicationState, final.snapshot.publication.state)
+    }
+
+    private fun resourcePreparationTerminal() = safNoOutputSnapshot(false, false).copy(
+        stage = "resource-budget", diagnostic = "resource-limit",
+    )
+
+    private fun cancelledPreparationTerminal() = safNoOutputSnapshot(true, false).copy(
+        stage = "cancellation", diagnostic = "cancellation",
+        publicationStage = "cancellation", publicationCode = "PCV3_PUBLICATION_CANCELLED",
+        completionClass = "refused",
+    )
+
+    @Test
+    fun `blocked Begin receives fresh resource observations while the archive action is claimed`() = runTest {
+        val events = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val operation = SafOperation("op-preparation-resources", archivePendingSnapshot(), events)
+        val session = SafSession(operation, "active-receipt", terminalSnapshot("terminal-receipt"), events)
+        val archive = SafArchive(operation, session, activeSnapshot("active-receipt"), events)
+        operation.archive = archive
+        val observed = java.util.concurrent.CountDownLatch(1)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val observations = java.util.concurrent.CopyOnWriteArrayList<Pcv3AndroidResourceObservation>()
+        val fresh = Pcv3AndroidResourceObservation(4L shl 30, 3L shl 30, 64L shl 20, 96L shl 20, true, false)
+        archive.afterBeginPrepared = {
+            operation.challenge = object : Pcv3ResourceChallengeCapability {
+                override fun submit(observation: Pcv3AndroidResourceObservation): Boolean {
+                    observations += observation
+                    operation.challenge = null
+                    observed.countDown()
+                    return true
+                }
+            }
+            entered.countDown()
+            observed.await(3, java.util.concurrent.TimeUnit.SECONDS)
+        }
+        val lifecycle = lifecycle(operation, RecordingCustodian(events))
+        val live = lifecycle.start(request(), "password".toCharArray(), File("receipt")).getOrThrow()
+        assertTrue(lifecycle.installResourceObservationReader(Pcv3ResourceObservationReader { fresh }))
+        val export = async(Dispatchers.Default) { lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueUri(), RecordingPublisher(events)) }
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        export.await().getOrThrow()
+        assertEquals("the claimed action must service its own fresh challenge", listOf(fresh), observations)
+        assertEquals(1, session.finishCalls)
+    }
+
+    @Test
+    fun `native budget exhaustion refuses before active receipt and provider effects`() = runTest {
+        val events = mutableListOf<String>()
+        val operation = SafOperation("op-budget", archivePendingSnapshot(), events)
+        val session = SafSession(operation, "active-receipt", terminalSnapshot("terminal-receipt"), events, hostAllowance = 1024)
+        operation.archive = SafArchive(operation, session, activeSnapshot("active-receipt"), events)
+        val lifecycle = lifecycle(operation, RecordingCustodian(events))
+        val live = lifecycle.start(request(), "password".toCharArray(), File("receipt")).getOrThrow()
+        val publisher = RecordingPublisher(events)
+        val result = lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueUri(), publisher)
+        assertEquals("PCV3_RESOURCE_LIMIT", result.exceptionOrNull()?.message)
+        assertEquals(0, publisher.publishCalls)
+        assertEquals(0, session.confirmCalls)
+        assertFalse(events.contains("receipt:active-receipt"))
+        assertEquals(1, session.abortCalls)
+    }
+
     @Test
     fun `receipt confirmation precedes provider and successful Finish precedes terminal settlement and Release`() = runTest {
         val events = mutableListOf<String>()
@@ -475,6 +615,36 @@ class Pcv3SafLifecycleTest {
     }
 
     @Test
+    fun `cancellation reaches blocked Begin before a session returns`() = runTest {
+        val events = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val operation = SafOperation("op-preparation", archivePendingSnapshot(), events)
+        val session = SafSession(operation, "active-receipt", terminalSnapshot("terminal-receipt"), events)
+        val archive = SafArchive(operation, session, activeSnapshot("active-receipt"), events)
+        operation.archive = archive
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val cancelled = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        archive.afterBeginPrepared = { entered.countDown(); release.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+        archive.preparationCancelled = { cancelled.countDown() }
+        val lifecycle = lifecycle(operation, RecordingCustodian(events))
+        val live = lifecycle.start(request(), "password".toCharArray(), File("receipt")).getOrThrow()
+        val publisher = RecordingPublisher(events)
+        val export = async(Dispatchers.Default) { lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueUri(), publisher) }
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        val cancel = async(Dispatchers.Default) { lifecycle.cancelPcv3() }
+        try {
+            assertTrue("Begin cancellation must reach the archive owner without an exposed session", cancelled.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse(cancel.isCompleted)
+            assertEquals(0, operation.releaseCalls)
+        } finally { release.countDown() }
+        export.await()
+        cancel.await()
+        assertEquals(1, session.abortCalls)
+        assertEquals(0, session.finishCalls)
+        assertFalse(events.any { it.startsWith("publish") || it.startsWith("confirm:") })
+    }
+
+    @Test
     fun `cancellation after Begin prepares a session still Cancels and Aborts it once`() = runTest {
         val events = mutableListOf<String>()
         val operation = SafOperation("op-saf-cancel-after-begin", archivePendingSnapshot(), events)
@@ -602,6 +772,9 @@ class Pcv3SafLifecycleTest {
         @Volatile
         var snapshotData = initial
         @Volatile
+        var challenge: Pcv3ResourceChallengeCapability? = null
+        override fun resourceChallenge(): Pcv3ResourceChallengeCapability? = challenge
+        @Volatile
         var archive: SafArchive? = null
         @Volatile
         var output: Pcv3OutputCapability? = null
@@ -639,6 +812,8 @@ class Pcv3SafLifecycleTest {
         var beginCalls = 0
             private set
         var afterBeginPrepared: (() -> Unit)? = null
+        var preparationCancelled: (() -> Unit)? = null
+        override fun cancelPreparation() { preparationCancelled?.invoke() }
 
         override fun close(): Pcv3SnapshotData {
             consumed = true
@@ -667,6 +842,7 @@ class Pcv3SafLifecycleTest {
         private val finishFailure: Throwable? = null,
         private val finishEntered: CompletableDeferred<Unit>? = null,
         private val finishRelease: CompletableDeferred<Unit>? = null,
+        private val hostAllowance: Long = PCV3_SAF_MAX_WORKING_BYTES,
     ) : Pcv3ArchiveSessionCapability {
         var confirmCalls = 0
             private set
@@ -676,6 +852,8 @@ class Pcv3SafLifecycleTest {
             private set
         var abortCalls = 0
             private set
+
+        override fun hostMemoryBudgetBytes(): Long = hostAllowance
 
         override fun entryCount(): Long {
             events += "entry-count"

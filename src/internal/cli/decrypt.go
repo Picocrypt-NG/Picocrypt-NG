@@ -1,13 +1,11 @@
 package cli
 
 import (
-	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/fileops"
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
+	"Picocrypt-NG/internal/secret"
 	"Picocrypt-NG/internal/volume"
 	"bufio"
 	"context"
@@ -35,37 +33,39 @@ var decryptCmd = &cobra.Command{
 
 If no password is provided, you will be prompted to enter one interactively.
 The password is hidden while typing.
+PCV3 requires an explicit expected factor policy. Legacy v1/v2 remains readable
+without the PCV3 flags. Deniable PCV3 input also requires --pcv3-format=d1.
 
 Pass the volume as a literal operand. Use -- before a volume filename that
 begins with -.
 
 Examples:
   # Decrypt interactively (prompts for password)
-	  Picocrypt-NG decrypt secret.pcv -o secret.txt
+	  Picocrypt-NG decrypt secret.pcv --pcv3-factors=password -o secret.txt
 
   # Decrypt with password on command line (visible in shell history)
-	  Picocrypt-NG decrypt secret.pcv -o secret.txt -p "mypassword"
+	  Picocrypt-NG decrypt secret.pcv --pcv3-factors=password -o secret.txt -p "mypassword"
 
-  # Decrypt with keyfile (prompts for password, press Enter if keyfile-only)
-	  Picocrypt-NG decrypt secret.pcv -k keyfile.key
+  # Decrypt with password and keyfile
+	  Picocrypt-NG decrypt secret.pcv --pcv3-factors=combined --pcv3-keyfile-order=unordered -k keyfile.key
 
   # Decrypt with keyfile only, no password prompt
-	  Picocrypt-NG decrypt secret.pcv -k keyfile.key -p ""
+	  Picocrypt-NG decrypt secret.pcv --pcv3-factors=keyfiles --pcv3-keyfile-order=unordered -k keyfile.key -p ""
 
   # Decrypt and auto-extract zip
-	  Picocrypt-NG decrypt archive.pcv --auto-unzip
+	  Picocrypt-NG decrypt archive.pcv --pcv3-factors=password --pcv3-archive=extract --pcv3-extract-to=./extracted
 
-  # Force decryption despite errors (may produce corrupted output)
+  # Legacy v1/v2 Force decryption (may produce corrupted output)
 	  Picocrypt-NG decrypt damaged.pcv --force
 
   # Read password from stdin (for scripts)
-	  echo "mypassword" | Picocrypt-NG decrypt secret.pcv -P
+	  echo "mypassword" | Picocrypt-NG decrypt secret.pcv --pcv3-factors=password -P
 
   # Decrypt from stdin (use -p since stdin is taken by data)
-	  curl https://example.com/file.pcv | Picocrypt-NG decrypt - -o file.txt -p "pw"
+	  curl https://example.com/file.pcv | Picocrypt-NG decrypt - --pcv3-factors=password -o file.txt -p "pw"
 
   # Decrypt to stdout
-	  Picocrypt-NG decrypt secret.pcv -o - -p "pw" | less`,
+	  Picocrypt-NG decrypt secret.pcv --pcv3-factors=password -o - -p "pw" | less`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("input") {
 			return errors.New("--input/-i was removed; pass the volume path as an argument")
@@ -85,12 +85,12 @@ type pcv3CLIOutputFollowUp interface {
 }
 
 type pcv3CLIResult interface {
-	Outcome() pcv3.Outcome
-	Stage() pcv3.Stage
-	Code() pcv3.Code
+	Outcome() pcv3operation.Outcome
+	Stage() pcv3operation.Stage
+	Code() pcv3operation.Code
 	PublicationAttempted() bool
 	PublicationState() pcv3publication.State
-	PublicationStage() pcv3.Stage
+	PublicationStage() pcv3operation.Stage
 	PublicationCode() pcv3publication.Code
 	Warnings() []pcv3operation.Warning
 	CompletionClass() pcv3operation.CompletionClass
@@ -102,12 +102,17 @@ type pcv3CLIResultAdapter struct {
 	result *pcv3operation.Result
 }
 
-func (adapter pcv3CLIResultAdapter) Outcome() pcv3.Outcome { return adapter.result.Outcome() }
-func (adapter pcv3CLIResultAdapter) Stage() pcv3.Stage     { return adapter.result.Stage() }
-func (adapter pcv3CLIResultAdapter) Code() pcv3.Code       { return adapter.result.Code() }
+func (adapter pcv3CLIResultAdapter) Outcome() pcv3operation.Outcome { return adapter.result.Outcome() }
+
+func (adapter pcv3CLIResultAdapter) Stage() pcv3operation.Stage { return adapter.result.Stage() }
+func (adapter pcv3CLIResultAdapter) Code() pcv3operation.Code   { return adapter.result.Code() }
 
 func (adapter pcv3CLIResultAdapter) AuthenticatedComment() string {
 	return adapter.result.AuthenticatedComment()
+}
+
+func (adapter pcv3CLIResultAdapter) SplitOutputUncertain() bool {
+	return adapter.result.SplitOutputUncertain()
 }
 
 func (adapter pcv3CLIResultAdapter) PublicationAttempted() bool {
@@ -118,7 +123,7 @@ func (adapter pcv3CLIResultAdapter) PublicationState() pcv3publication.State {
 	return adapter.result.PublicationState()
 }
 
-func (adapter pcv3CLIResultAdapter) PublicationStage() pcv3.Stage {
+func (adapter pcv3CLIResultAdapter) PublicationStage() pcv3operation.Stage {
 	return adapter.result.PublicationStage()
 }
 
@@ -205,11 +210,11 @@ func translatePCV3PreflightError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, pcv3.ErrReaderUnavailable) {
+	if errors.Is(err, pcv3operation.ErrReaderUnavailable) {
 		return pcv3UnavailableError{cause: err}
 	}
-	var failure pcv3.Failure
-	if errors.As(err, &failure) && failure.Outcome() != pcv3.OutcomeOperationFailed {
+	var failure pcv3operation.Failure
+	if errors.As(err, &failure) && failure.Outcome() != pcv3operation.OutcomeOperationFailed {
 		return pcv3UnavailableError{cause: err}
 	}
 	return err
@@ -490,8 +495,8 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 			}
 			return nil
 		}
-		route, _, probeErr := pcv3.Probe(pcv3Source, info.Size())
-		if route == pcv3.RouteNormalPCV {
+		route, probeErr := pcv3operation.Probe(pcv3Source, info.Size())
+		if route == pcv3operation.RouteNormalPCV {
 			stdoutPath, outputErr := preparePCV3Target()
 			if outputErr != nil {
 				return outputErr
@@ -519,9 +524,9 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 
 	preparedInput, err := volume.PrepareDecryptInput(inputFile, decRecombine)
 	if err != nil {
-		var failure pcv3.Failure
-		if useStdin && (errors.Is(err, pcv3.ErrReaderUnavailable) ||
-			(errors.As(err, &failure) && failure.Outcome() != pcv3.OutcomeOperationFailed)) {
+		var failure pcv3operation.Failure
+		if useStdin && (errors.Is(err, pcv3operation.ErrReaderUnavailable) ||
+			(errors.As(err, &failure) && failure.Outcome() != pcv3operation.OutcomeOperationFailed)) {
 			return errors.New("PCV3 input from stdin could not be routed safely")
 		}
 		return err
@@ -613,14 +618,14 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	}
 
 	// Get password. Owned []byte from boundary to KDF; zeroed when this returns.
-	// A closure (not `defer crypto.SecureZero(password)`) so the FINAL value is
+	// A closure (not `defer secret.SecureZero(password)`) so the FINAL value is
 	// zeroed — password is reassigned below by the stdin/interactive readers, and
 	// a plain defer would bind the initial []byte(decPassword) at defer time.
 	password := []byte(decPassword)
-	defer func() { crypto.SecureZero(password) }()
+	defer func() { secret.SecureZero(password) }()
 	if passwordFDSet {
 		var err error
-		crypto.SecureZero(password)
+		secret.SecureZero(password)
 		password, err = ReadPasswordFromFD(decPasswordFD)
 		if err != nil {
 			return err
@@ -855,28 +860,28 @@ func runPCV3CLI(
 	}
 	password := []byte(decPassword)
 	decPassword = ""
-	defer func() { crypto.SecureZero(password) }()
+	defer func() { secret.SecureZero(password) }()
 	if decPasswordFD >= 3 {
-		if factorMode == pcv3credential.CredentialModeKeyfilesOnly {
+		if factorMode == pcv3operation.CredentialModeKeyfilesOnly {
 			return errors.New("keyfiles-only PCV3 policy cannot read a password from a file descriptor")
 		}
-		crypto.SecureZero(password)
+		secret.SecureZero(password)
 		password, err = ReadPasswordFromFD(decPasswordFD)
 		if err != nil {
 			return err
 		}
 	} else if decPasswordStdin {
-		if factorMode == pcv3credential.CredentialModeKeyfilesOnly {
+		if factorMode == pcv3operation.CredentialModeKeyfilesOnly {
 			return errors.New("keyfiles-only PCV3 policy cannot read a password from stdin")
 		}
-		crypto.SecureZero(password)
+		secret.SecureZero(password)
 		password, err = ReadPasswordFromStdin()
 		if err != nil {
 			return err
 		}
 	}
-	if (factorMode == pcv3credential.CredentialModePasswordOnly ||
-		factorMode == pcv3credential.CredentialModePasswordAndKeyfiles) && len(password) == 0 {
+	if (factorMode == pcv3operation.CredentialModePasswordOnly ||
+		factorMode == pcv3operation.CredentialModePasswordAndKeyfiles) && len(password) == 0 {
 		password, err = ReadPasswordInteractive(false, false)
 		if err != nil {
 			return fmt.Errorf("password input: %w", err)
@@ -889,12 +894,12 @@ func runPCV3CLI(
 	request.SplitBase = splitBase
 	request.Protected = append([]string(nil), decKeyfiles...)
 
-	request.Factors = &pcv3credential.FactorRequest{
+	request.Factors = &pcv3operation.FactorRequest{
 		Mode:           factorMode,
 		KeyfileMode:    keyfileMode,
 		ExpectedPolicy: policy,
 		Password:       password,
-		Keyfiles:       make([]*pcv3credential.KeyfileReader, 0, len(decKeyfiles)),
+		Keyfiles:       make([]*pcv3operation.KeyfileReader, 0, len(decKeyfiles)),
 	}
 	password = nil
 	for _, path := range decKeyfiles {
@@ -909,7 +914,7 @@ func runPCV3CLI(
 		}
 		request.Factors.Keyfiles = append(
 			request.Factors.Keyfiles,
-			pcv3credential.OwnKeyfileReader(file),
+			pcv3operation.OwnKeyfileReader(file),
 		)
 	}
 	for index := range decKeyfiles {
@@ -1011,37 +1016,37 @@ func pcv3CLIFactorPolicy(
 	orderName string,
 	hasPassword bool,
 	keyfileCount int,
-) (pcv3credential.CredentialMode, pcv3credential.KeyfileMode, pcv3credential.FactorPolicy, error) {
-	var order pcv3credential.KeyfileMode
+) (pcv3operation.CredentialMode, pcv3operation.KeyfileMode, pcv3operation.FactorPolicy, error) {
+	var order pcv3operation.KeyfileMode
 	switch orderName {
 	case "":
-		order = pcv3credential.KeyfileModeNone
+		order = pcv3operation.KeyfileModeNone
 	case "ordered":
-		order = pcv3credential.KeyfileModeOrdered
+		order = pcv3operation.KeyfileModeOrdered
 	case "unordered":
-		order = pcv3credential.KeyfileModeUnordered
+		order = pcv3operation.KeyfileModeUnordered
 	default:
 		return 0, 0, 0, errors.New("invalid --pcv3-keyfile-order; use ordered or unordered")
 	}
 	switch policyName {
 	case "password":
-		if keyfileCount != 0 || order != pcv3credential.KeyfileModeNone {
+		if keyfileCount != 0 || order != pcv3operation.KeyfileModeNone {
 			return 0, 0, 0, errors.New("password-only PCV3 policy cannot include keyfiles or keyfile order")
 		}
-		return pcv3credential.CredentialModePasswordOnly, order,
-			pcv3credential.FactorPolicyPasswordOnly, nil
+		return pcv3operation.CredentialModePasswordOnly, order,
+			pcv3operation.FactorPolicyPasswordOnly, nil
 	case "keyfiles":
-		if hasPassword || keyfileCount == 0 || order == pcv3credential.KeyfileModeNone {
+		if hasPassword || keyfileCount == 0 || order == pcv3operation.KeyfileModeNone {
 			return 0, 0, 0, errors.New("keyfiles-only PCV3 policy requires keyfiles, explicit order, and an empty password")
 		}
-		return pcv3credential.CredentialModeKeyfilesOnly, order,
-			pcv3credential.FactorPolicyKeyfilesOnly, nil
+		return pcv3operation.CredentialModeKeyfilesOnly, order,
+			pcv3operation.FactorPolicyKeyfilesOnly, nil
 	case "combined":
-		if keyfileCount == 0 || order == pcv3credential.KeyfileModeNone {
+		if keyfileCount == 0 || order == pcv3operation.KeyfileModeNone {
 			return 0, 0, 0, errors.New("combined PCV3 policy requires keyfiles and explicit order")
 		}
-		return pcv3credential.CredentialModePasswordAndKeyfiles, order,
-			pcv3credential.FactorPolicyPasswordAndKeyfiles, nil
+		return pcv3operation.CredentialModePasswordAndKeyfiles, order,
+			pcv3operation.FactorPolicyPasswordAndKeyfiles, nil
 	default:
 		return 0, 0, 0, errors.New("invalid --pcv3-factors; use password, keyfiles, or combined")
 	}

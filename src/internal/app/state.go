@@ -38,7 +38,7 @@ import (
 var newRSCodecs = encoding.NewRSCodecs
 
 // Version is the application version string.
-const Version = "v2.19"
+const Version = "v3.0"
 
 // PasswordInputMode represents the visibility state of password inputs.
 type PasswordInputMode int
@@ -144,6 +144,8 @@ type PCV3OperationIntent struct {
 	Target       string
 	Password     []byte
 	Keyfiles     []string
+	AutoUnzip    bool
+	SameLevel    bool
 }
 
 type StatusKind int
@@ -312,6 +314,7 @@ type State struct {
 
 	// Processing options
 	Recursively bool
+	RecursiveD1 bool
 	Delete      bool
 	Recombine   bool
 
@@ -361,6 +364,7 @@ func NewState() (*State, error) {
 
 	return &State{
 		// Defaults
+		CreatePCV3:           true,
 		InputLabel:           "Drop files and folders into this window",
 		InputSummary:         InputSummary{Kind: InputSummaryDropPrompt},
 		StartAction:          StartActionStart,
@@ -489,7 +493,7 @@ func (s *State) resetUILocked() {
 	s.ReedSolomon = false
 	s.Deniability = false
 	s.Compress = false
-	s.CreatePCV3 = false
+	s.CreatePCV3 = true
 
 	s.Keep = false
 	s.Kept = false
@@ -511,6 +515,7 @@ func (s *State) resetUILocked() {
 	s.PassgenCopy = false
 
 	s.Recursively = false
+	s.RecursiveD1 = false
 	s.Delete = false
 	s.Recombine = false
 
@@ -752,6 +757,21 @@ func (s *State) SetPCV3Intent(action PCV3Action, factor PCV3FactorPolicy, order 
 	s.PCV3Order = order
 }
 
+func (s *State) SetAutoUnzip(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.AutoUnzip = enabled
+	if !enabled {
+		s.SameLevel = false
+	}
+}
+
+func (s *State) SetSameLevel(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SameLevel = enabled && s.AutoUnzip
+}
+
 func (s *State) SetPCV3Progress(code pcv3operation.StatusCode) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -833,6 +853,40 @@ func (s *State) TakePCV3OperationIntent() (PCV3OperationIntent, bool) {
 	if s.Working || s.Scanning || !pcv3IntentReadyLocked(s) {
 		return PCV3OperationIntent{}, false
 	}
+	return s.takePCV3OperationIntentLocked(), true
+}
+
+// TakePCV3RecursiveOperationIntent transfers one decrypt selection inside an
+// already-running batch. D1 requires the batch's explicit format selection;
+// neither batch format grants recovery authority.
+func (s *State) TakePCV3RecursiveOperationIntent() (PCV3OperationIntent, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	format := PCV3FormatNormal
+	if s.RecursiveD1 {
+		format = PCV3FormatD1
+	}
+	if !s.Working || !s.Recursively || s.Scanning ||
+		s.PCV3Format != format || s.PCV3Action != PCV3ActionDecrypt ||
+		!pcv3IntentReadyLocked(s) {
+		return PCV3OperationIntent{}, false
+	}
+	return s.takePCV3OperationIntentLocked(), true
+}
+
+// SetRecursiveD1 records explicit format intent for the complete batch. The
+// selection's original mode is unchanged so disabling it restores that choice.
+func (s *State) SetRecursiveD1(enabled bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Working || s.Scanning || (enabled && !s.Recursively) {
+		return false
+	}
+	s.RecursiveD1 = enabled
+	return true
+}
+
+func (s *State) takePCV3OperationIntentLocked() PCV3OperationIntent {
 	intent := PCV3OperationIntent{
 		Format:       s.PCV3Format,
 		Action:       s.PCV3Action,
@@ -842,6 +896,8 @@ func (s *State) TakePCV3OperationIntent() (PCV3OperationIntent, bool) {
 		Target:       s.OutputFile,
 		Password:     []byte(s.Password),
 		Keyfiles:     append([]string(nil), s.Keyfiles...),
+		AutoUnzip:    s.AutoUnzip,
+		SameLevel:    s.SameLevel,
 	}
 	if s.Recombine {
 		intent.SplitBase = s.InputFile
@@ -854,7 +910,7 @@ func (s *State) TakePCV3OperationIntent() (PCV3OperationIntent, bool) {
 		s.Keyfiles[index] = ""
 	}
 	s.Keyfiles = nil
-	return intent, true
+	return intent
 }
 
 // canStart is the single source of truth for the start-gate condition, shared by
@@ -890,6 +946,10 @@ func canStart(mode, password, cpassword string, keyfileCount int, deniability, c
 func (s *State) CanStart() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.Recursively && s.RecursiveD1 {
+		return !s.PCVUnavailable && !s.Working && !s.Scanning &&
+			canStart("decrypt", s.Password, s.CPassword, len(s.Keyfiles), false, true)
+	}
 	if s.PCV3Route != PCV3RouteNone {
 		return !s.PCVUnavailable && !s.Working && !s.Scanning && pcv3IntentReadyLocked(s)
 	}
@@ -900,6 +960,10 @@ func (s *State) CanStart() bool {
 // render-path snapshot. UI code uses this so the start-gate boolean lives in
 // exactly one place (canStart) shared with State.CanStart.
 func (snap UISnapshot) CanStart() bool {
+	if snap.Recursively && snap.RecursiveD1 {
+		return !snap.PCVUnavailable && !snap.Working && !snap.Scanning &&
+			canStart("decrypt", snap.Password, snap.CPassword, snap.KeyfileCount, false, true)
+	}
 	if snap.PCV3Route != PCV3RouteNone {
 		return !snap.PCVUnavailable && !snap.Working && !snap.Scanning && pcv3IntentReady(
 			snap.PCV3Route, snap.PCV3Format, snap.PCV3Action, snap.PCV3Factor, snap.PCV3Order,
@@ -1120,12 +1184,14 @@ type UISnapshot struct {
 	CPassword             string
 	PasswordMode          PasswordInputMode
 	Keyfile               bool
+	KeyfileOrdered        bool
 	Deniability           bool
 	CreatePCV3            bool
 	Comments              string
 	CommentsPreviewState  CommentsPreviewState
 	StartLabel            string
 	Recursively           bool
+	RecursiveD1           bool
 	OutputFile            string
 	InputFile             string
 	Split                 bool
@@ -1138,6 +1204,7 @@ type UISnapshot struct {
 	CanCancel             bool
 	Recombine             bool
 	AutoUnzip             bool
+	SameLevel             bool
 	InputLabel            string
 	InputSummary          InputSummary
 	StartAction           StartAction
@@ -1161,6 +1228,7 @@ type UISnapshot struct {
 // State access (APP-02). It carries credential/option fields only; no
 // progress/widget/display-label fields belong here.
 type RecursiveSnapshot struct {
+	RecursiveD1    bool
 	Password       string
 	Keyfile        bool
 	Keyfiles       []string
@@ -1235,12 +1303,14 @@ func (s *State) UISnapshot() UISnapshot {
 		CPassword:             s.CPassword,
 		PasswordMode:          s.PasswordMode,
 		Keyfile:               s.Keyfile,
+		KeyfileOrdered:        s.KeyfileOrdered,
 		Deniability:           s.Deniability,
 		CreatePCV3:            s.CreatePCV3,
 		Comments:              s.Comments,
 		CommentsPreviewState:  s.CommentsPreviewState,
 		StartLabel:            s.StartLabel,
 		Recursively:           s.Recursively,
+		RecursiveD1:           s.RecursiveD1,
 		OutputFile:            s.OutputFile,
 		InputFile:             s.InputFile,
 		Split:                 s.Split,
@@ -1253,6 +1323,7 @@ func (s *State) UISnapshot() UISnapshot {
 		CanCancel:             s.CanCancel,
 		Recombine:             s.Recombine,
 		AutoUnzip:             s.AutoUnzip,
+		SameLevel:             s.SameLevel,
 		InputLabel:            s.InputLabel,
 		InputSummary:          s.InputSummary,
 		StartAction:           s.StartAction,
@@ -1278,6 +1349,7 @@ func (s *State) RecursiveSnapshot() RecursiveSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return RecursiveSnapshot{
+		RecursiveD1:    s.RecursiveD1,
 		Password:       s.Password,
 		Keyfile:        s.Keyfile,
 		Keyfiles:       append([]string(nil), s.Keyfiles...),
@@ -1304,6 +1376,7 @@ func (s *State) RecursiveSnapshot() RecursiveSnapshot {
 func (s *State) ApplyRecursiveSelection(rs RecursiveSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.RecursiveD1 = rs.RecursiveD1
 	s.Password = rs.Password
 	s.CPassword = rs.Password
 	s.Keyfile = rs.Keyfile
@@ -1314,7 +1387,7 @@ func (s *State) ApplyRecursiveSelection(rs RecursiveSnapshot) {
 	s.ReedSolomon = rs.ReedSolomon
 	if s.Mode != "decrypt" {
 		s.Deniability = rs.Deniability
-		s.CreatePCV3 = rs.CreatePCV3
+		s.CreatePCV3 = true
 	}
 	s.Split = rs.Split
 	s.SplitSize = rs.SplitSize

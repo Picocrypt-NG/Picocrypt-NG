@@ -128,6 +128,7 @@ class Pcv3BridgeTest {
             setOf(
                 "version", "mode", "factorPolicy", "keyfileOrder",
                 "source", "target", "keyfiles", "comment", "suite", "payloadRS",
+                "inputFiles", "onlyFiles", "onlyFolders", "compress",
             ),
             json.names()!!.let { names -> (0 until names.length()).map(names::getString).toSet() },
         )
@@ -276,6 +277,7 @@ class Pcv3BridgeTest {
         var beginCalls = 0
         var closeCalls = 0
         val archive = GoPcv3Archive(object : Pcv3ArchiveNative {
+            override fun cancelPreparation() = Unit
             override fun beginSaf(): Pcv3ArchiveBeginData {
                 beginCalls += 1
                 return begin

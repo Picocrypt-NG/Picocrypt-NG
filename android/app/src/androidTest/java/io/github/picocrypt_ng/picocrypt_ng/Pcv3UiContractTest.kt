@@ -28,6 +28,7 @@ import io.github.picocrypt_ng.picocrypt_ng.ui.components.PCV3_CONSENT_TAG
 import io.github.picocrypt_ng.picocrypt_ng.ui.components.PCV3_PROGRESS_TAG
 import io.github.picocrypt_ng.picocrypt_ng.ui.components.PCV3_RESULT_TAG
 import io.github.picocrypt_ng.picocrypt_ng.ui.components.DecryptOptionsCard
+import io.github.picocrypt_ng.picocrypt_ng.ui.components.ErrorDialog
 import io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCard
 import io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButton
 import org.junit.Assert.assertEquals
@@ -79,6 +80,59 @@ class Pcv3UiContractTest {
 
     private val context: Context
         get() = ApplicationProvider.getApplicationContext()
+
+    @Test
+    fun retainedPlaintextShowsSaveFailureAndExplicitConfirmedDiscard() = retainedOutputDiscard(false)
+
+    @Test
+    fun retainedCiphertextShowsSaveFailureAndExplicitConfirmedDiscard() = retainedOutputDiscard(true)
+
+    private fun retainedOutputDiscard(creation: Boolean) {
+        val initial = live(snapshot = cleanSnapshot(), output = UiOutput(), outputPending = true)
+            .copy(isCreation = creation)
+        val state = mutableStateOf<Pcv3Presentation?>(initial)
+        val saveError = mutableStateOf<AppError?>(AppError.FileError.SaveFailed(
+            messageResId = R.string.pcv3_output_provider_unsupported,
+        ))
+        val mainViewModel = newMainViewModel()
+        val operationViewModel = OperationViewModel()
+        var discardCalls = 0
+        compose.setContent {
+            ProgressCard(
+                mainViewModel = mainViewModel,
+                operationViewModel = operationViewModel,
+                pcv3Presentation = state.value,
+                onBeginPcv3Save = { _, _ -> "output" },
+                onCompletePcv3Save = { _, _ -> },
+                onDiscardPcv3Output = { operationId, generation ->
+                    assertCurrent(state.value, operationId, generation)
+                    discardCalls += 1
+                    state.value = Pcv3Presentation.Final(
+                        snapshot = initial.snapshot, operationId = operationId, generation = generation,
+                        outputAction = Pcv3OutputResultView("discarded", false), isCreation = creation,
+                    )
+                },
+                onClosePcv3Result = { _, _ -> state.value = null },
+            )
+            ErrorDialog(
+                error = pcv3VisibleError(saveError.value, state.value),
+                onDismiss = { saveError.value = null },
+            )
+        }
+        compose.onNodeWithText(text(R.string.pcv3_output_provider_unsupported)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.ok)).performClick()
+        compose.onNodeWithText(text(if (creation) R.string.pcv3_save_created_volume else R.string.pcv3_save_decrypted_output)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.discard_output)).performClick()
+        compose.onNodeWithText(text(R.string.pcv3_discard_retained_body)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.cancel)).performClick()
+        assertEquals(0, discardCalls)
+        compose.onNodeWithText(text(R.string.discard_output)).performClick()
+        compose.onNodeWithText(text(R.string.discard_output)).performClick()
+        assertEquals(1, discardCalls)
+        compose.onNodeWithText(text(R.string.pcv3_retained_discarded_body)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.pcv3_output_discarded_close)).performClick()
+        assertNull(state.value)
+    }
 
     @Test
     fun c11ConsentEmpty() {
@@ -253,9 +307,23 @@ class Pcv3UiContractTest {
     }
 
     @Test
-    fun c16ResourceRefusal() {
+    fun c16ResourceRefusal() = resourceRefusal(
+        resourceSnapshot("resource-insufficient"),
+        R.string.pcv3_resource_insufficient_title, R.string.pcv3_resource_insufficient_body,
+    )
+
+    @Test
+    fun workingMemoryBudgetRefusalHasLocalizedNoticeAndNoCredentialRetry() = resourceRefusal(
+        resourceSnapshot("resource-limit").copy(
+            semantic = Pcv3Semantic("operation-failed", "resource-budget", "PCV3_OPERATION_FAILED"),
+            completionClass = "no-output",
+        ),
+        R.string.pcv3_resource_limit_title, R.string.pcv3_resource_limit_body,
+    )
+
+    private fun resourceRefusal(snapshot: Pcv3SnapshotView, title: Int, body: Int) {
         val state = mutableStateOf<Pcv3Presentation?>(
-            final(resourceSnapshot("resource-insufficient")),
+            final(snapshot),
         )
         val mainViewModel = newMainViewModel()
         val operationViewModel = OperationViewModel()
@@ -276,8 +344,8 @@ class Pcv3UiContractTest {
             }
         }
 
-        compose.onNodeWithText(text(R.string.pcv3_resource_insufficient_title)).assertIsDisplayed()
-        compose.onNodeWithText(text(R.string.pcv3_resource_insufficient_body)).assertIsDisplayed()
+        compose.onNodeWithText(text(title)).assertIsDisplayed()
+        compose.onNodeWithText(text(body)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.retry)).assertDoesNotExist()
         compose.onNodeWithText(text(R.string.force_decrypt)).assertDoesNotExist()
         compose.onNodeWithText(text(R.string.save)).assertDoesNotExist()
@@ -803,6 +871,7 @@ class Pcv3UiContractTest {
     }
 
     private inner class UiArchive(terminal: Pcv3SnapshotView) : Pcv3ArchiveCapability {
+        override fun cancelPreparation() = Unit
         private val terminalData = terminal.toData()
         private var live = true
         var closeCalls = 0

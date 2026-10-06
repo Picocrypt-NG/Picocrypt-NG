@@ -1,10 +1,10 @@
 package pcv3operation
 
 import (
-	"Picocrypt-NG/internal/pcv3"
-	"Picocrypt-NG/internal/pcv3credential"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3resource"
 	"Picocrypt-NG/internal/pcv3publication"
-	"Picocrypt-NG/internal/pcv3resource"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -187,7 +187,7 @@ func pcv3PrivacyCombinedFactors(
 func pcv3FrozenPlaintext(t *testing.T, name, wantSHA256 string) []byte {
 	t.Helper()
 	plaintext, err := os.ReadFile(filepath.Join(
-		"..", "pcv3", "testdata", "normal", "plaintext", name,
+		"..", "pcv3operation", "internal", "pcv3", "testdata", "normal", "plaintext", name,
 	))
 	if err != nil {
 		t.Fatalf("read frozen plaintext %s: %v", name, err)
@@ -552,9 +552,12 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 			outcome:    pcv3.OutcomeOperationFailed,
 			stage:      pcv3.StageCancellation,
 			code:       pcv3.CodeOperationFailed,
-			diagnostic: DiagnosticNone,
+			diagnostic: DiagnosticCancellation,
 			class:      CompletionRefused,
 		})
+		if !errors.Is(result, context.Canceled) {
+			t.Fatal("resource-boundary cancellation lost its cause")
+		}
 		pcv3PrivacyRequireNoCapability(t, result)
 		if !slices.Equal(run.statuses, []StatusCode{
 			StatusCheckingRequest,
@@ -675,15 +678,10 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 		target := run.request.Target
 
 		result, stdout, stderr, logBytes := pcv3PrivacyRun(t, run, admitter)
-		// The real desktop provider reads /proc meminfo, the address-space
-		// limit, the cgroup memory headroom, and the same-snapshot process
-		// footprint. This host runs standard systemd cgroup v2 with no finite
-		// memory limit and ample headroom, so the provider must grant exactly
-		// once for the frozen fixed profile, after which the operation derives
-		// and completes. A host with a finite insufficient cgroup limit must
-		// instead refuse before derivation; that fail-closed path is pinned by
-		// the scripted-admission refusal cases in this matrix.
-		skipOnPCV3ResourceAdmissionDenial(t, result)
+		// This mandatory positive lane requires the real desktop resource
+		// provider to grant the fixed profile and complete the operation.
+		// Resource refusal is a failure here; separate scripted cases verify
+		// fail-closed admission without reinterpreting this observed result.
 		pcv3PrivacyRequireCleanSuccess(t, run, result, admitter, oneBytePlaintext, target)
 		pcv3PrivacyFinish(t, run, result, stdout, stderr, logBytes)
 	})
@@ -797,9 +795,12 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 			outcome:    pcv3.OutcomeOperationFailed,
 			stage:      pcv3.StageCancellation,
 			code:       pcv3.CodeOperationFailed,
-			diagnostic: DiagnosticNone,
+			diagnostic: DiagnosticCancellation,
 			class:      CompletionRefused,
 		})
+		if !errors.Is(result, context.Canceled) {
+			t.Fatal("consent cancellation lost its cause")
+		}
 		pcv3PrivacyRequireNoCapability(t, result)
 		if !slices.Equal(run.statuses, []StatusCode{
 			StatusCheckingRequest,
