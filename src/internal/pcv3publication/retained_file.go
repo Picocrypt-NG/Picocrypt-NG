@@ -183,7 +183,7 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 	defer secret.SecureZero(buffer)
 	preDigest := sha256.New()
 	remaining := sourceInfo.Size()
-	for remaining > 0 {
+	for {
 		if err := ctx.Err(); err != nil {
 			_ = destination.Close()
 			if runtime.GOOS == "windows" {
@@ -192,6 +192,9 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 				cleanupIncomplete = true
 			}
 			return CopyResult{cleanupIncomplete: cleanupIncomplete}
+		}
+		if remaining == 0 {
+			break
 		}
 		want := int64(len(buffer))
 		if remaining < want {
