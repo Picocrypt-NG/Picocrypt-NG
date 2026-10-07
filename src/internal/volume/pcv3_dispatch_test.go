@@ -68,6 +68,44 @@ func writePCV3DispatchInput(t *testing.T, path string, data []byte) {
 	}
 }
 
+func TestPrepareDecryptInputPinsLaterChunkIdentityBeforePathReplacement(t *testing.T) {
+	directory := t.TempDir()
+	base := filepath.Join(directory, "split.pcv")
+	writePCV3DispatchInput(t, base+".0", []byte("legacy chunk zero"))
+	writePCV3DispatchInput(t, base+".1", []byte("selected tail"))
+	selected, err := os.Open(base + ".1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedInfo, statErr := selected.Stat()
+	if err := errors.Join(statErr, selected.Close()); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareDecryptInput(base, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Close()
+	if err := os.Rename(base+".1", base+".1.selected"); err != nil {
+		t.Fatal(err)
+	}
+	writePCV3DispatchInput(t, base+".1", []byte("foreign tail!"))
+	// Compare for the first time only after replacement. Windows os.Stat
+	// snapshots must already contain the identity selected during preparation.
+	if len(prepared.inputInfos) != 2 || !os.SameFile(selectedInfo, prepared.inputInfos[1]) {
+		t.Fatal("prepared later-chunk identity rebound to its replacement pathname")
+	}
+	if err := validatePreparedOutputAliases(base+".1.selected", prepared.inputInfos); err == nil {
+		t.Fatal("prepared output accepted the moved selected chunk as a destination")
+	}
+	if err := validatePreparedOutputAliases(base+".1", prepared.inputInfos); err != nil {
+		t.Fatalf("foreign replacement was mistaken for a selected chunk: %v", err)
+	}
+	if _, err := os.Stat(base); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("preparation created recombined output: %v", err)
+	}
+}
+
 func TestPreflightPCV3(t *testing.T) {
 	fixture := loadPCV3DispatchFixture(t)
 	dir := t.TempDir()

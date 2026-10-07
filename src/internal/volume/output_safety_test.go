@@ -835,6 +835,20 @@ func TestDecryptRecombineDoesNotRemoveReplacementAtTemporaryPath(t *testing.T) {
 		RSCodecs:   newRSCodecsT(t),
 	})
 	if reporter.err != nil {
+		if windowsPreventedOpenHandleRename(reporter.err) {
+			if err != nil {
+				t.Fatalf("decrypt after Windows prevented recombined-input replacement: %v", err)
+			}
+			assertFileBytes(t, outputPath, plaintext)
+			if _, statErr := os.Lstat(ownedBackup); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("blocked replacement moved the owned recombined volume: %v", statErr)
+			}
+			if _, statErr := os.Lstat(volumeBase); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("completed decrypt retained its recombined temporary input: %v", statErr)
+			}
+			assertNoPicocryptStages(t, dir)
+			return
+		}
 		t.Fatalf("replace recombined path before header read: %v", reporter.err)
 	}
 	if err == nil {
@@ -914,6 +928,21 @@ func TestDecryptRecombineRefusesDifferentValidVolumeAtOwnedPath(t *testing.T) {
 		RSCodecs:   newRSCodecsT(t),
 	})
 	if reporter.err != nil {
+		if windowsPreventedOpenHandleRename(reporter.err) {
+			if err != nil {
+				t.Fatalf("decrypt after Windows prevented valid-volume replacement: %v", err)
+			}
+			assertFileBytes(t, outputPath, ownedPlaintext)
+			assertFileBytes(t, foreignVolume, foreignBytes)
+			if _, statErr := os.Lstat(ownedBackup); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("blocked replacement moved the owned recombined volume: %v", statErr)
+			}
+			if _, statErr := os.Lstat(volumeBase); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("completed decrypt retained its recombined temporary input: %v", statErr)
+			}
+			assertNoPicocryptStages(t, dir)
+			return
+		}
 		t.Fatalf("replace recombined path with valid volume: %v", reporter.err)
 	}
 	if err == nil || !strings.Contains(err.Error(), "recombined") {
@@ -1038,6 +1067,9 @@ func TestDecryptPreparedProtectsMovedSplitChunkBeforeRecombine(t *testing.T) {
 	selectedInfo, err := os.Stat(chunkPath)
 	if err != nil {
 		t.Fatalf("inspect selected chunk: %v", err)
+	}
+	if !os.SameFile(selectedInfo, selectedInfo) {
+		t.Fatal("pin selected chunk identity before moving it")
 	}
 	outputPath := filepath.Join(dir, "must-remain-selected-chunk.bin")
 	if err := os.Rename(chunkPath, outputPath); err != nil {

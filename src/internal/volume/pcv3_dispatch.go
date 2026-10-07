@@ -85,6 +85,14 @@ func PrepareDecryptInput(inputPath string, recombine bool) (*PreparedDecryptInpu
 					source.Close(),
 				)
 			}
+			// Windows path Stat defers file identity lookup until SameFile.
+			// Resolve it now, before a later pathname replacement can rebind it.
+			if !os.SameFile(chunkInfo, chunkInfo) {
+				return nil, errors.Join(
+					fmt.Errorf("pin split input %d identity for PCV3 routing", i),
+					source.Close(),
+				)
+			}
 			inputInfos[i] = chunkInfo
 		}
 	}

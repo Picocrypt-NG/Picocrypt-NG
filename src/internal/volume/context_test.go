@@ -114,7 +114,7 @@ func TestOperationContextClosesPinnedDecryptInput(t *testing.T) {
 	if err := ctx.Close(); err != nil {
 		t.Fatalf("Close() = %v", err)
 	}
-	if _, err := fin.Stat(); !errors.Is(err, os.ErrClosed) {
+	if _, err := fin.ReadAt(make([]byte, 1), 0); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("pinned descriptor after Close() = %v; want os.ErrClosed", err)
 	}
 }

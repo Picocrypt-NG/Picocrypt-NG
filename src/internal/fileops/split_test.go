@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -129,6 +130,11 @@ func TestSplitRequiredDirectorySyncFlushesCompleteSet(t *testing.T) {
 			if _, err := os.Stat(inputPath + "." + string(rune('0'+index))); err != nil {
 				t.Fatalf("chunk %d was not published before directory sync: %v", index, err)
 			}
+		}
+		if runtime.GOOS == "windows" {
+			// This test exercises completed-set barrier ordering. Native Windows
+			// directory-flush refusal is covered separately below.
+			return nil
 		}
 		return parent.Sync()
 	}

@@ -155,7 +155,7 @@ func TestRecursiveExplicitD1DoesNotProbePCVPrefixAndCancellationStopsNextFile(t 
 	if calls != 1 || source == nil {
 		t.Fatalf("explicit D1 collision/cancellation calls=%d", calls)
 	}
-	if _, err := source.Stat(); !errors.Is(err, os.ErrClosed) {
+	if _, err := source.ReadAt(make([]byte, 1), 0); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("cancelled D1 source stayed open: %v", err)
 	}
 	for _, path := range []string{first, second} {

@@ -29,7 +29,7 @@ func TestRecombineValidatesAndConsumesSameFirstChunkBeforeOutput(t *testing.T) {
 	if err := os.WriteFile(replacement, replacementFirst, 0o600); err != nil {
 		t.Fatalf("write replacement chunk: %v", err)
 	}
-	firstChunk, err := os.Open(base + ".0")
+	firstChunk, err := OpenExistingNoSymlink(base+".0", os.O_RDONLY)
 	if err != nil {
 		t.Fatalf("open routed chunk zero: %v", err)
 	}
@@ -116,6 +116,9 @@ func TestRecombineExpectedInputsRejectsReplacedLaterChunkBeforeReading(t *testin
 			t.Fatalf("stat expected chunk %d: %v", i, err)
 		}
 		expected[i] = info
+		if !os.SameFile(info, info) {
+			t.Fatalf("pin expected chunk %d identity", i)
+		}
 	}
 	if err := os.Rename(base+".1", originalTailPath); err != nil {
 		t.Fatalf("retain original later chunk: %v", err)

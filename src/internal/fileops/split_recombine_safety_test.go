@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -291,7 +292,8 @@ func TestSplitPinnedKeepsEveryChunkInTheRetainedDirectory(t *testing.T) {
 	expectedDigest := sha256.Sum256(input)
 
 	swaps := 0
-	chunks, err := SplitPinned(SplitOptions{
+	replacementBlocked := false
+	result, err := SplitPinnedWithResult(SplitOptions{
 		InputPath:            inputPath,
 		ExpectedInput:        inputInfo,
 		ExpectedDirectory:    parentInfo,
@@ -300,9 +302,16 @@ func TestSplitPinnedKeepsEveryChunkInTheRetainedDirectory(t *testing.T) {
 		Unit:                 SplitUnitKiB,
 		RequireDirectorySync: true,
 		Progress: func(_ float32, info string) {
+			if replacementBlocked {
+				return
+			}
 			switch {
 			case swaps == 0 && info == "1/3":
 				if err := os.Rename(directory, moved); err != nil {
+					if windowsPreventedOpenHandleRename(err) {
+						replacementBlocked = true
+						return
+					}
 					t.Fatalf("move retained directory: %v", err)
 				}
 				if err := os.Mkdir(directory, 0o700); err != nil {
@@ -319,19 +328,40 @@ func TestSplitPinnedKeepsEveryChunkInTheRetainedDirectory(t *testing.T) {
 				swaps++
 			}
 		},
-	}, inputFile, root, parentFile)
+	}, inputFile, root, parentFile, SyncDirectory)
 	if err != nil {
 		t.Fatalf("split through retained directory: %v", err)
 	}
-	if swaps != 2 || len(chunks) != 3 {
-		t.Fatalf("directory swaps=%d chunks=%d; want 2 and 3", swaps, len(chunks))
+	wantState := SplitCompleteDurable
+	if runtime.GOOS == "windows" {
+		wantState = SplitCompleteDurabilityUncertain
 	}
-	entries, err := os.ReadDir(replacement)
-	if err != nil {
-		t.Fatalf("read replacement directory: %v", err)
+	if result.State != wantState || len(result.Chunks) != 3 {
+		t.Fatalf("split state=%v chunks=%d; want %v and 3", result.State, len(result.Chunks), wantState)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("split wrote outside retained directory: %v", entries)
+	if wantState == SplitCompleteDurabilityUncertain && result.DurabilityError == nil {
+		t.Fatal("Windows split lost its native directory-flush failure")
+	}
+	if replacementBlocked {
+		if swaps != 0 {
+			t.Fatalf("blocked replacement changed retained directory: swaps=%d", swaps)
+		}
+		for _, path := range []string{moved, replacement} {
+			if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("blocked replacement left another directory %q: %v", path, statErr)
+			}
+		}
+	} else {
+		if swaps != 2 {
+			t.Fatalf("directory swaps=%d; want 2", swaps)
+		}
+		entries, err := os.ReadDir(replacement)
+		if err != nil {
+			t.Fatalf("read replacement directory: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("split wrote outside retained directory: %v", entries)
+		}
 	}
 	recombined := filepath.Join(parent, "recombined.pcv")
 	if err := Recombine(RecombineOptions{InputBase: inputPath, OutputPath: recombined}); err != nil {

@@ -129,7 +129,7 @@ func TestPCV3MobileCancellationSettlesConsentRegistration(t *testing.T) {
 					t.Fatalf("opened descriptors = %d", len(opened))
 				}
 				for _, file := range opened {
-					if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
+					if _, err := file.ReadAt(make([]byte, 1), 0); !errors.Is(err, os.ErrClosed) {
 						t.Errorf("owned descriptor remains open: %v", err)
 					}
 				}

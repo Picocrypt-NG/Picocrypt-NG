@@ -81,6 +81,7 @@ func TestSplitTypedFailureRollsBackBeforeDirectoryUncertainty(t *testing.T) {
 			opts := SplitOptions{InputPath: target, ChunkSize: 1, Unit: SplitUnitKiB}
 			moved := directory + "-moved"
 			changed := false
+			replacementBlocked := false
 			barrierCalls := 0
 			switch failure {
 			case "collision":
@@ -106,6 +107,10 @@ func TestSplitTypedFailureRollsBackBeforeDirectoryUncertainty(t *testing.T) {
 				switch failure {
 				case "directory-identity":
 					if err := os.Rename(directory, moved); err != nil {
+						if windowsPreventedOpenHandleRename(err) {
+							replacementBlocked = true
+							return
+						}
 						t.Fatal(err)
 					}
 					t.Cleanup(func() { _ = os.Rename(moved, directory) })
@@ -135,6 +140,30 @@ func TestSplitTypedFailureRollsBackBeforeDirectoryUncertainty(t *testing.T) {
 				}
 			}
 			result, err := SplitPinnedWithResult(opts, input, root, parent, func(*os.File) error { barrierCalls++; return errors.ErrUnsupported })
+			if replacementBlocked {
+				if err != nil || result.State != SplitCompleteDurabilityUncertain || barrierCalls != 1 || !errors.Is(result.DurabilityError, errors.ErrUnsupported) {
+					t.Fatalf("split after blocked directory replacement = %+v, %v, barriers=%d", result, err, barrierCalls)
+				}
+				var reconstructed []byte
+				for _, chunk := range result.Chunks {
+					data, readErr := os.ReadFile(chunk)
+					if readErr != nil || filepath.Dir(chunk) != directory {
+						t.Fatalf("blocked replacement redirected a chunk: %q, %v", chunk, readErr)
+					}
+					reconstructed = append(reconstructed, data...)
+				}
+				if !bytes.Equal(reconstructed, payload) {
+					t.Fatal("blocked replacement corrupted complete chunks")
+				}
+				original, readErr := os.ReadFile(target)
+				if readErr != nil || !bytes.Equal(original, payload) {
+					t.Fatalf("blocked replacement changed complete ciphertext: %v", readErr)
+				}
+				if _, statErr := os.Lstat(moved); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("blocked replacement moved the retained directory: %v", statErr)
+				}
+				return
+			}
 			if err == nil || result.State != SplitFailed || len(result.Chunks) != 0 || barrierCalls != 0 {
 				t.Fatalf("failed split classified as complete: %+v, %v, calls=%d", result, err, barrierCalls)
 			}

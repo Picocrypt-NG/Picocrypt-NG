@@ -136,7 +136,7 @@ func TestRecursivePCV3CancellationConsumesCurrentSourceAndDoesNotOpenNext(t *tes
 	if calls != 1 || len(opened) != 1 {
 		t.Fatalf("cancelled batch facade calls=%d opened=%d", calls, len(opened))
 	}
-	if _, err := opened[0].Stat(); !errors.Is(err, os.ErrClosed) {
+	if _, err := opened[0].ReadAt(make([]byte, 1), 0); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("cancelled batch retained source: %v", err)
 	}
 	requireZeroedPassword(t, password)

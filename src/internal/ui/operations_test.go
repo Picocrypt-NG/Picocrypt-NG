@@ -621,7 +621,7 @@ func TestRecursiveNormalPCV3NeverFallsBackToLegacy(t *testing.T) {
 	if routedSource == nil {
 		t.Fatal("normal PCV3 recursive route did not open its source")
 	}
-	if _, err := routedSource.Stat(); !errors.Is(err, os.ErrClosed) {
+	if _, err := routedSource.ReadAt(make([]byte, 1), 0); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("normal PCV3 recursive rejection left routed source open: %v", err)
 	}
 	snap := a.State.UISnapshot()

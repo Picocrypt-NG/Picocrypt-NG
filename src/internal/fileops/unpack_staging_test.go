@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -678,7 +679,11 @@ func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
 		})
 
 		result := UnpackWithResult(UnpackOptions{ZipPath: archivePath, ExtractDir: extractDir})
-		requireUnpackState(t, result, UnpackStatePublishedDurable)
+		wantState := UnpackStatePublishedDurable
+		if runtime.GOOS == "windows" {
+			wantState = UnpackStatePublishedDurabilityUncertain
+		}
+		requireUnpackState(t, result, wantState)
 		if errors.Is(result, ErrUnpackCleanupIncomplete) {
 			t.Fatalf("durable extraction reported cleanup uncertainty: %v", result)
 		}
@@ -825,7 +830,7 @@ func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
 		requireNoUnpackStages(t, extractDir)
 	})
 
-	t.Run("post-publication root close warning preserves durable truth", func(t *testing.T) {
+	t.Run("post-publication root close warning preserves publication truth", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		zipPath := filepath.Join(tmpDir, "root-close-failure.zip")
 		payload := []byte("durable output survives handle cleanup warning")
@@ -847,7 +852,11 @@ func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
 		})
 
 		result := UnpackWithResult(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir})
-		requireUnpackState(t, result, UnpackStatePublishedDurable)
+		wantState := UnpackStatePublishedDurable
+		if runtime.GOOS == "windows" {
+			wantState = UnpackStatePublishedDurabilityUncertain
+		}
+		requireUnpackState(t, result, wantState)
 		if !errors.Is(result, closeFailure) || !errors.Is(result, ErrUnpackCleanupIncomplete) {
 			t.Fatalf("durable result lost root-close cleanup warning: %v", result)
 		}
