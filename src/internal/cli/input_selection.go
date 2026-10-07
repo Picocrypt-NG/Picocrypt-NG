@@ -32,8 +32,17 @@ func resolveEncryptInputs(literals, patterns []string, followSymlinks bool) (enc
 
 func resolveEncryptInputsWithBudget(ctx context.Context, literals, patterns []string, followSymlinks bool, budget *fileops.ZIPResourceBudget) (encryptInputs, error) {
 	var result encryptInputs
-	if err := pcv3operation.AdmitZIPWorkingMemory(ctx, budget); err != nil {
-		return result, err
+	if ctx == nil || budget == nil {
+		return result, fileops.ErrZIPMetadataLimit
+	}
+	// One literal regular file retains only bounded path metadata. Collections
+	// that can expand need the complete ZIP envelope before discovery; a lone
+	// directory is admitted below before walking its children.
+	expandingSelection := len(literals) != 1 || len(patterns) != 0
+	if expandingSelection {
+		if err := pcv3operation.AdmitZIPWorkingMemory(ctx, budget); err != nil {
+			return result, err
+		}
 	}
 	var retained uint64
 	defer func() { budget.Release(retained) }()
@@ -112,6 +121,11 @@ func resolveEncryptInputsWithBudget(ctx context.Context, literals, patterns []st
 		}
 		result.selections = append(result.selections, path)
 		if info.IsDir() {
+			if !expandingSelection {
+				if err := pcv3operation.AdmitZIPWorkingMemory(ctx, budget); err != nil {
+					return err
+				}
+			}
 			result.onlyFolders = append(result.onlyFolders, path)
 			return fileops.WalkZIPInputs(ctx, path, budget, func(walkPath string, walkInfo os.FileInfo, walkErr error) error {
 				if walkErr != nil {

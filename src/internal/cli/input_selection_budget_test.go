@@ -10,6 +10,28 @@ import (
 	"testing"
 )
 
+func TestEncryptDiscoveryInvalidAdmissionInputsReturnNoPartialSelection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "original")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		ctx    context.Context
+		budget *fileops.ZIPResourceBudget
+	}{
+		{name: "missing context", budget: fileops.NewZIPResourceBudget()},
+		{name: "missing budget", ctx: context.Background()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			inputs, err := resolveEncryptInputsWithBudget(test.ctx, []string{path}, nil, false, test.budget)
+			if !errors.Is(err, fileops.ErrZIPMetadataLimit) || len(inputs.selections) != 0 || len(inputs.inputFiles) != 0 {
+				t.Fatalf("invalid admission input returned selection: %+v, %v", inputs, err)
+			}
+		})
+	}
+}
+
 func TestEncryptDiscoveryBudgetRefusalReturnsNoPartialSelection(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "original")
