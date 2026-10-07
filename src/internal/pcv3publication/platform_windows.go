@@ -68,19 +68,25 @@ func windowsNoReplace(
 		0,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		windows.FILE_OPEN,
-		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT,
+		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
 		0,
 		0,
 	); err != nil {
 		return err
 	}
 
-	renameErr := windows.SetFileInformationByHandle(
+	// Use the NT rename class for a target relative to the pinned directory
+	// handle. ReplaceIfExists remains false; no pathname fallback is permitted.
+	renameErr := windows.NtSetInformationFile(
 		stageHandle,
-		windows.FileRenameInfo,
+		&status,
 		unsafe.SliceData(renameBuffer),
 		uint32(len(renameBuffer)),
+		windows.FileRenameInformation,
 	)
+	if status, ok := renameErr.(windows.NTStatus); ok {
+		renameErr = status.Errno()
+	}
 	closeErr := windows.CloseHandle(stageHandle)
 	return errors.Join(renameErr, closeErr)
 }
@@ -92,8 +98,9 @@ func newWindowsRenameBuffer(targetName string, parent windows.Handle) ([]byte, e
 	}
 	name = name[:len(name)-1]
 	nameBytes := uint64(len(name)) * 2
-	headerBytes := uint64(unsafe.Offsetof(fileRenameInformation{}.fileName))
-	bufferBytes := headerBytes + nameBytes
+	// Include the complete ABI structure (including its trailing alignment),
+	// followed by enough storage for the name. FileNameLength excludes padding.
+	bufferBytes := uint64(unsafe.Sizeof(fileRenameInformation{})) + nameBytes
 	if nameBytes > math.MaxUint32 || bufferBytes > math.MaxUint32 || bufferBytes > uint64(math.MaxInt) {
 		return nil, syscall.EINVAL
 	}

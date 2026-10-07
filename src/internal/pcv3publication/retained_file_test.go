@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -28,14 +29,16 @@ func TestSplitRetainedConsumesExactSourceAfterDurableChunks(t *testing.T) {
 		t.Fatalf("stat caller-selected decoy: %v", err)
 	}
 
-	err = SplitRetained(retained, fileops.SplitOptions{
+	// This custody test uses the retained owner's injected successful barrier;
+	// native Windows directory-durability refusal has its own contract test.
+	completion, err := SplitRetainedWithResult(retained, fileops.SplitOptions{
 		InputPath:     decoy,
 		ExpectedInput: decoyInfo,
 		ChunkSize:     1,
 		Unit:          fileops.SplitUnitKiB,
 	})
-	if err != nil {
-		t.Fatalf("split retained file: %v", err)
+	if err != nil || completion != fileops.SplitCompleteDurable {
+		t.Fatalf("split retained file: state=%v err=%v", completion, err)
 	}
 	if retained.Live() {
 		t.Fatal("successful split left retained authority live")
@@ -124,7 +127,14 @@ func TestSplitRetainedNeverRemovesSourceReplacement(t *testing.T) {
 			replaced = true
 		},
 	})
-	if !errors.Is(err, ErrCleanupIncomplete) {
+	if runtime.GOOS == "windows" {
+		// The strict native split must refuse the unproven directory barrier
+		// before any source deletion; it still must preserve both identities.
+		var syncError *os.PathError
+		if !errors.As(err, &syncError) || syncError.Op != "sync" {
+			t.Fatalf("native Windows split did not refuse its directory sync: %v", err)
+		}
+	} else if !errors.Is(err, ErrCleanupIncomplete) {
 		t.Fatalf("replacement-safe retained split = %v; want ErrCleanupIncomplete", err)
 	}
 	if !replaced {
@@ -135,6 +145,12 @@ func TestSplitRetainedNeverRemovesSourceReplacement(t *testing.T) {
 	}
 	requireFileBytes(t, target, foreign)
 	requireFileBytes(t, moved, payload)
+	if runtime.GOOS == "windows" {
+		if chunks, err := filepath.Glob(target + ".*"); err != nil || len(chunks) != 0 {
+			t.Fatalf("refused native split retained chunks: %v, %v", chunks, err)
+		}
+		return
+	}
 
 	recombined := filepath.Join(directory, "recombined.pcv")
 	if err := fileops.Recombine(fileops.RecombineOptions{
@@ -343,7 +359,7 @@ func TestRetainedFileReportsPostRemoveDirectorySyncUncertainty(t *testing.T) {
 	operations.syncDirectory = func(parent *os.File) error {
 		syncCalls++
 		if syncCalls == 1 {
-			return parent.Sync()
+			return classifierTestDirectorySync(parent)
 		}
 		return errors.New("TEST ONLY post-remove directory sync failure")
 	}
