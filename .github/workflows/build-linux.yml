@@ -4,11 +4,6 @@ permissions:
   contents: read
 
 on:
-  push:
-    paths:
-      - "VERSION"
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       publish_release:
@@ -93,9 +88,9 @@ jobs:
         cd src
         if [ "${{ matrix.arch }}" = "amd64" ]; then
           # Under -race, concurrent Argon2 volume and Fyne package tests exceed the
-          # runner's RAM, so cap package binaries at two. Only the single opt-in CLI
+          # runner's RAM, so run package binaries one at a time. Only the opt-in CLI
           # integration parent runs separately with its non-race product binary.
-          CGO_ENABLED=1 go test -v -tags migrated_fynedo -race -p 2 -timeout 15m ./...
+          CGO_ENABLED=1 go test -v -tags migrated_fynedo -race -p 1 -timeout 15m ./...
           PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -timeout 15m -run '^TestCLIIntegration$' ./internal/cli/...
         else
           PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -tags migrated_fynedo -timeout 15m ./...
@@ -255,7 +250,7 @@ jobs:
 
   release:
     needs: build
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release) }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
     concurrency:
       group: ${{ github.repository }}-release-publication

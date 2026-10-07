@@ -4,11 +4,6 @@ permissions:
   contents: read
 
 on:
-  push:
-    paths:
-      - "VERSION"
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       publish_release:
@@ -115,7 +110,7 @@ jobs:
 
   release:
     needs: build
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release) }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
     concurrency:
       group: ${{ github.repository }}-release-publication

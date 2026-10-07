@@ -4,11 +4,6 @@ permissions:
   contents: read
 
 on:
-  push:
-    paths:
-      - "VERSION"
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       publish_release:
@@ -163,7 +158,7 @@ jobs:
 
   sign:
     needs: build
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}
     runs-on: windows-2022
     timeout-minutes: 75
     environment: release
@@ -250,7 +245,7 @@ jobs:
 
   release:
     needs: [build, sign]
-    if: ${{ github.ref == 'refs/heads/main' && !inputs.signpath_test && !inputs.signpath_release_dry_run && (github.event_name == 'push' || inputs.publish_release) }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && !inputs.signpath_test && !inputs.signpath_release_dry_run && inputs.publish_release }}
     runs-on: ubuntu-24.04
     concurrency:
       group: ${{ github.repository }}-release-publication

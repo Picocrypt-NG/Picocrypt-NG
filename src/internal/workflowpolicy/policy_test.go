@@ -199,8 +199,8 @@ func TestSignAndAttestUsesApprovedCosign(t *testing.T) {
 }
 
 func TestReleaseJobsRequireMainBranchAndReleaseEnvironment(t *testing.T) {
-	const releaseGuard = "${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release) }}"
-	const signPathReleaseGuard = "${{ github.ref == 'refs/heads/main' && !inputs.signpath_test && !inputs.signpath_release_dry_run && (github.event_name == 'push' || inputs.publish_release) }}"
+	const releaseGuard = "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}"
+	const signPathReleaseGuard = "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && !inputs.signpath_test && !inputs.signpath_release_dry_run && inputs.publish_release }}"
 
 	for _, tc := range releaseWorkflowCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -211,7 +211,7 @@ func TestReleaseJobsRequireMainBranchAndReleaseEnvironment(t *testing.T) {
 				wantGuard = signPathReleaseGuard
 			}
 			if releaseJob.If != wantGuard {
-				t.Fatalf("release job if = %q, want guarded push or explicit manual release", releaseJob.If)
+				t.Fatalf("release job if = %q, want explicit manual release on main", releaseJob.If)
 			}
 			if got := releaseEnvironmentName(releaseJob.Environment); got != "release" {
 				t.Fatalf("release job environment = %#v, want release", releaseJob.Environment)
@@ -223,18 +223,19 @@ func TestReleaseJobsRequireMainBranchAndReleaseEnvironment(t *testing.T) {
 	}
 }
 
-func TestMacOSReleaseWorkflowOnlyAutoRunsOnVersionChanges(t *testing.T) {
-	content := mustReadWorkflow(t, ".github/workflows/build-macos.yml")
-
-	mustContainInOrder(t, content,
-		"on:",
-		"push:",
-		"paths:",
-		"- \"VERSION\"",
-		"branches:",
-	)
-	mustNotContain(t, content, "- \".github/workflows/build-macos.yml\"")
-	mustNotContain(t, content, "- \".github/scripts/assert-macos-minos.sh\"")
+func TestReleaseWorkflowsRequireManualDispatchWithoutDefaultPublication(t *testing.T) {
+	for _, tc := range releaseWorkflowCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			workflow := mustReadWorkflowDoc(t, tc.path)
+			if len(workflow.On.OtherEvents) != 0 {
+				t.Fatalf("automatic release workflow triggers = %v; want only workflow_dispatch", workflow.On.OtherEvents)
+			}
+			input, ok := workflow.On.WorkflowDispatch.Inputs["publish_release"]
+			if !ok || input.Type != "boolean" || input.Default != false || input.Required {
+				t.Fatalf("publish_release input = %#v; want optional boolean default false", input)
+			}
+		})
+	}
 }
 
 func releaseWorkflowCases() []struct {
@@ -414,7 +415,7 @@ func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testin
 
 	signJob := mustJob(t, workflow, "sign")
 
-	if signJob.If != "${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}" {
+	if signJob.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}" {
 		t.Fatalf("Windows SignPath job if = %q, want main release, test signing, or release-signing dry-run guard", signJob.If)
 	}
 	if signJob.TimeoutMinutes != 210 {
@@ -577,7 +578,7 @@ func TestWindowsLegacyReleaseUsesSignPathBeforeSigstore(t *testing.T) {
 	}
 
 	signJob := mustJob(t, workflow, "sign")
-	if signJob.If != "${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}" {
+	if signJob.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}" {
 		t.Fatalf("legacy SignPath job if = %q, want main release, test signing, or release-signing dry-run guard", signJob.If)
 	}
 	if signJob.TimeoutMinutes != 75 {
@@ -896,7 +897,7 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 				if strings.Contains(line, "go test") && strings.Contains(line, "-race") {
 					raceLineCount++
 					raceLineIndex = lineIndex
-					for _, required := range []string{"-p 2", "-timeout 15m", "./..."} {
+					for _, required := range []string{"-p 1", "-timeout 15m", "./..."} {
 						if !strings.Contains(line, required) {
 							t.Fatalf("Linux race test line %q is missing %q", strings.TrimSpace(line), required)
 						}
