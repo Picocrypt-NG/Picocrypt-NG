@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -74,7 +75,11 @@ func TestWriteOutputFailedSaveRetainsExactCiphertextForRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	saved := followUp.SaveTo(output)
-	if saved.Code() != OutputActionSaved || followUp.live() {
+	wantCode := OutputActionSaved
+	if runtime.GOOS == "windows" {
+		wantCode = OutputActionSavedCleanupIncomplete
+	}
+	if saved.Code() != wantCode || saved.CleanupIncomplete() != (runtime.GOOS == "windows") || followUp.live() {
 		t.Fatalf("retry = %v", saved)
 	}
 	requireOperationFileBytes(t, target, payload)

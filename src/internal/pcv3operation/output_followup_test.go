@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -19,7 +20,7 @@ func TestOutputFollowUpSaveCopiesThenRemovesExactInternalOwner(t *testing.T) {
 	retained, retainedPath := newOperationRetainedFile(t, directory, payload)
 	followUp := newOutputFollowUp(retained)
 	if followUp == nil || !followUp.live() {
-		t.Fatal("durable retained file did not mint a live output follow-up")
+		t.Fatal("retained transport fixture did not create a live output follow-up")
 	}
 	copiedFollowUp := *followUp
 	destinationPath := filepath.Join(directory, "saved.bin")
@@ -33,10 +34,14 @@ func TestOutputFollowUpSaveCopiesThenRemovesExactInternalOwner(t *testing.T) {
 	}
 
 	action := followUp.SaveTo(destination)
-	if action.Code() != OutputActionSaved || action.CleanupIncomplete() {
+	wantCode := OutputActionSaved
+	if runtime.GOOS == "windows" {
+		wantCode = OutputActionSavedCleanupIncomplete
+	}
+	if action.Code() != wantCode || action.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf(
-			"save action = %v cleanup=%v; want saved/removed/clean",
-			action.Code(), action.CleanupIncomplete(),
+			"save action = %v cleanup=%v; want %v with native removal durability",
+			action.Code(), action.CleanupIncomplete(), wantCode,
 		)
 	}
 	if _, err := destination.Stat(); err == nil {
@@ -80,10 +85,14 @@ func TestOutputFollowUpFailedSaveConsumesAuthorityAndRemovesInternalSource(t *te
 	}
 
 	action := followUp.SaveTo(destination)
-	if action.Code() != OutputActionSaveFailed || action.CleanupIncomplete() {
+	wantCode := OutputActionSaveFailed
+	if runtime.GOOS == "windows" {
+		wantCode = OutputActionSaveFailedCleanupIncomplete
+	}
+	if action.Code() != wantCode || action.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf(
-			"failed save action = %v cleanup=%v; want failed with proven destination and internal cleanup",
-			action.Code(), action.CleanupIncomplete(),
+			"failed save action = %v cleanup=%v; want %v with native removal durability",
+			action.Code(), action.CleanupIncomplete(), wantCode,
 		)
 	}
 	if followUp.live() {
@@ -171,7 +180,11 @@ func TestOutputFollowUpRejectsMutatedRetainedBytesBeforeStreaming(t *testing.T) 
 			if readErr != nil || closeErr != nil {
 				t.Fatalf("read rejected stream: read=%v close=%v", readErr, closeErr)
 			}
-			if action.Code() != OutputActionSaveFailed || action.CleanupIncomplete() || len(streamed) != 0 {
+			wantCode := OutputActionSaveFailed
+			if runtime.GOOS == "windows" {
+				wantCode = OutputActionSaveFailedCleanupIncomplete
+			}
+			if action.Code() != wantCode || action.CleanupIncomplete() != (runtime.GOOS == "windows") || len(streamed) != 0 {
 				t.Fatalf("mutated stream action=%v cleanup=%v bytes=%d", action.Code(), action.CleanupIncomplete(), len(streamed))
 			}
 			if _, err := os.Lstat(retainedPath); !errors.Is(err, os.ErrNotExist) {
@@ -185,7 +198,11 @@ func TestOutputFollowUpNilStreamDestinationStillRemovesPlaintext(t *testing.T) {
 	directory := t.TempDir()
 	retained, retainedPath := newOperationRetainedFile(t, directory, []byte("must be removed"))
 	action := newOutputFollowUp(retained).StreamTo(context.Background(), nil)
-	if action.Code() != OutputActionSaveFailed || action.CleanupIncomplete() {
+	wantCode := OutputActionSaveFailed
+	if runtime.GOOS == "windows" {
+		wantCode = OutputActionSaveFailedCleanupIncomplete
+	}
+	if action.Code() != wantCode || action.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("nil stream action=%v cleanup=%v", action.Code(), action.CleanupIncomplete())
 	}
 	if _, err := os.Lstat(retainedPath); !errors.Is(err, os.ErrNotExist) {
@@ -198,8 +215,12 @@ func TestOutputFollowUpDiscardIsExactIdentityOnly(t *testing.T) {
 		directory := t.TempDir()
 		retained, retainedPath := newOperationRetainedFile(t, directory, []byte("discard me"))
 		action := newOutputFollowUp(retained).Discard()
-		if action.Code() != OutputActionDiscarded || action.CleanupIncomplete() {
-			t.Fatalf("exact discard = %#v; want discarded/clean", action)
+		wantCode := OutputActionDiscarded
+		if runtime.GOOS == "windows" {
+			wantCode = OutputActionDiscardCleanupIncomplete
+		}
+		if action.Code() != wantCode || action.CleanupIncomplete() != (runtime.GOOS == "windows") {
+			t.Fatalf("exact discard = %#v; want %v with native removal durability", action, wantCode)
 		}
 		if _, err := os.Lstat(retainedPath); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("discarded internal output still exists: %v", err)
@@ -331,9 +352,9 @@ func TestReporterFailureRemovesExactOutputBeforeDroppingCapability(t *testing.T)
 	failure := owner.finishReportedResult(result)
 	if failure.Diagnostic() != DiagnosticCallbackFailure ||
 		failure.OutputFollowUp() != nil ||
-		failure.hasWarning(WarningCleanupIncomplete) {
+		failure.hasWarning(WarningCleanupIncomplete) != (runtime.GOOS == "windows") {
 		t.Fatalf(
-			"reporter failure = diagnostic %v output=%v warnings=%v; want cleaned callback failure",
+			"reporter failure = diagnostic %v output=%v warnings=%v; want no follow-up and native cleanup truth",
 			failure.Diagnostic(), failure.OutputFollowUp(), failure.Warnings(),
 		)
 	}
@@ -353,15 +374,27 @@ func newOperationRetainedFile(
 	if err != nil {
 		t.Fatalf("create retained operation stage: %v", err)
 	}
+	t.Cleanup(func() { _ = stage.Cleanup() })
 	if _, err := stage.File().Write(payload); err != nil {
 		_ = stage.Cleanup()
 		t.Fatalf("write retained operation stage: %v", err)
 	}
-	publication, retained := stage.PublishRetained(context.Background())
-	if publication == nil || publication.State() != pcv3publication.StatePublishedDurable ||
+	// These private-constructor tests exercise transport and exact cleanup,
+	// independent of plaintext authority minting. Ciphertext custody preserves
+	// Windows' genuine directory-durability uncertainty; native plaintext
+	// publication refusal is tested separately in pcv3publication.
+	publication, retained := stage.PublishWriteRetained(context.Background())
+	if retained != nil {
+		t.Cleanup(func() { _ = retained.Close() })
+	}
+	wantState := pcv3publication.StatePublishedDurable
+	if runtime.GOOS == "windows" {
+		wantState = pcv3publication.StatePublishedDurabilityUncertain
+	}
+	if publication == nil || publication.State() != wantState ||
 		retained == nil {
 		_ = stage.Cleanup()
-		t.Fatalf("publish retained operation file = %v/%v; want durable capability", publication, retained)
+		t.Fatalf("publish retained transport fixture = %v/%v; want %v custody", publication, retained, wantState)
 	}
 	if err := stage.Cleanup(); err != nil {
 		t.Fatalf("cleanup transferred publication stage: %v", err)

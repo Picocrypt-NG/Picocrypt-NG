@@ -67,7 +67,9 @@ func TestSplitTypedFailureRollsBackBeforeDirectoryUncertainty(t *testing.T) {
 			if err := os.WriteFile(target, payload, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			input, err := os.Open(target)
+			// A borrowed share-delete-capable input permits the replacement
+			// attack on Windows too; the pinned split must reject it itself.
+			input, err := OpenExistingNoSymlink(target, os.O_RDONLY)
 			if err != nil {
 				t.Fatal(err)
 			}

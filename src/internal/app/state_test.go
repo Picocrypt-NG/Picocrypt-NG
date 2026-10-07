@@ -2,6 +2,7 @@ package app
 
 import (
 	"Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"bytes"
@@ -19,16 +20,19 @@ func TestPCV3FynePreservesFactorIntent(t *testing.T) {
 	t.Run("one immutable transfer preserves order and duplicate selection", func(t *testing.T) {
 		state := mustNewState(t)
 		dir := t.TempDir()
+		t.Cleanup(state.Reset)
 		path := filepath.Join(dir, "selected.bin")
 		moved := filepath.Join(dir, "selected-original.bin")
 		original := []byte("descriptor-owned original")
 		if err := os.WriteFile(path, original, 0o600); err != nil {
 			t.Fatalf("write selected input: %v", err)
 		}
-		source, err := os.Open(path)
+		// A valid borrowed handle permits path replacement on Windows too.
+		source, err := fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
 		if err != nil {
 			t.Fatalf("open selected input: %v", err)
 		}
+		t.Cleanup(func() { _ = source.Close() })
 		if !state.SetPCV3Ready(source, PCV3FormatD1, path, filepath.Join(dir, "output.bin"), int64(len(original))) {
 			t.Fatal("SetPCV3Ready refused valid owned descriptor")
 		}
@@ -99,6 +103,7 @@ func TestPCV3FynePreservesFactorIntent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open selected input: %v", err)
 		}
+		t.Cleanup(func() { _ = source.Close() })
 		if !state.SetPCV3Ready(source, PCV3FormatNormal, path, path+".out", 8) {
 			t.Fatal("SetPCV3Ready refused descriptor")
 		}
@@ -268,6 +273,7 @@ func TestSetPCV3IntentClearsOrderOnlyForPasswordPolicy(t *testing.T) {
 func TestPCV3ReadyOutputTicketRejectsStaleSelection(t *testing.T) {
 	state := mustNewState(t)
 	dir := t.TempDir()
+	t.Cleanup(state.Reset)
 	aPath := filepath.Join(dir, "a.pcv3")
 	bPath := filepath.Join(dir, "b.pcv3")
 	if err := os.WriteFile(aPath, []byte("A"), 0o600); err != nil {
@@ -280,6 +286,7 @@ func TestPCV3ReadyOutputTicketRejectsStaleSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open A: %v", err)
 	}
+	t.Cleanup(func() { _ = aSource.Close() })
 	aOutput := filepath.Join(dir, "a-output")
 	if !state.SetPCV3Ready(aSource, PCV3FormatNormal, aPath, aOutput, 1) {
 		t.Fatal("SetPCV3Ready rejected A")
@@ -294,6 +301,7 @@ func TestPCV3ReadyOutputTicketRejectsStaleSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open B: %v", err)
 	}
+	t.Cleanup(func() { _ = bSource.Close() })
 	bOutput := filepath.Join(dir, "b-output")
 	if !state.SetPCV3Ready(bSource, PCV3FormatNormal, bPath, bOutput, 1) {
 		t.Fatal("SetPCV3Ready rejected B")

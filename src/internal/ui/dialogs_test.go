@@ -203,6 +203,7 @@ func TestPCV3ChangeOutputSelectionUsesFolderPickerWithoutTouchingDestination(t *
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	dir := t.TempDir()
+	t.Cleanup(a.State.Reset)
 	input := filepath.Join(dir, "input.pcv3")
 	if err := os.WriteFile(input, []byte("pcv3 input"), 0o600); err != nil {
 		t.Fatalf("write input: %v", err)
@@ -211,6 +212,7 @@ func TestPCV3ChangeOutputSelectionUsesFolderPickerWithoutTouchingDestination(t *
 	if err != nil {
 		t.Fatalf("open input: %v", err)
 	}
+	t.Cleanup(func() { _ = source.Close() })
 	if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, filepath.Join(dir, "suggested-output"), int64(len("pcv3 input"))) {
 		t.Fatal("SetPCV3Ready rejected regular PCV3 input")
 	}
@@ -326,6 +328,7 @@ func TestApplyPCV3OutputSelectionDoesNotTouchDestination(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	dir := t.TempDir()
+	t.Cleanup(a.State.Reset)
 	input := filepath.Join(dir, "input.pcv3")
 	if err := os.WriteFile(input, []byte("pcv3 input"), 0o600); err != nil {
 		t.Fatalf("write input: %v", err)
@@ -334,6 +337,7 @@ func TestApplyPCV3OutputSelectionDoesNotTouchDestination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open input: %v", err)
 	}
+	t.Cleanup(func() { _ = source.Close() })
 	if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, filepath.Join(dir, "suggested-output"), int64(len("pcv3 input"))) {
 		t.Fatal("SetPCV3Ready rejected regular PCV3 input")
 	}
@@ -375,6 +379,7 @@ func TestApplyPCV3OutputSelectionRejectsUnsafeFilename(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	dir := t.TempDir()
+	t.Cleanup(a.State.Reset)
 	input := filepath.Join(dir, "input.pcv3")
 	if err := os.WriteFile(input, []byte("pcv3 input"), 0o600); err != nil {
 		t.Fatalf("write input: %v", err)
@@ -383,6 +388,7 @@ func TestApplyPCV3OutputSelectionRejectsUnsafeFilename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open input: %v", err)
 	}
+	t.Cleanup(func() { _ = source.Close() })
 	originalOutput := filepath.Join(dir, "suggested-output")
 	if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, originalOutput, int64(len("pcv3 input"))) {
 		t.Fatal("SetPCV3Ready rejected regular PCV3 input")
@@ -408,6 +414,7 @@ func TestPCV3OutputFolderSelectionCancellationOrErrorIsNoOp(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	dir := t.TempDir()
+	t.Cleanup(a.State.Reset)
 	input := filepath.Join(dir, "input.pcv3")
 	if err := os.WriteFile(input, []byte("pcv3 input"), 0o600); err != nil {
 		t.Fatalf("write input: %v", err)
@@ -416,6 +423,7 @@ func TestPCV3OutputFolderSelectionCancellationOrErrorIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open input: %v", err)
 	}
+	t.Cleanup(func() { _ = source.Close() })
 	output := filepath.Join(dir, "existing-output")
 	sentinelBytes := []byte("do not modify")
 	if err := os.WriteFile(output, sentinelBytes, 0o600); err != nil {
@@ -445,6 +453,7 @@ func TestPCV3OutputFolderSelectionRejectsNonFileURI(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	dir := t.TempDir()
+	t.Cleanup(a.State.Reset)
 	input := filepath.Join(dir, "input.pcv3")
 	if err := os.WriteFile(input, []byte("pcv3 input"), 0o600); err != nil {
 		t.Fatalf("write input: %v", err)
@@ -453,6 +462,7 @@ func TestPCV3OutputFolderSelectionRejectsNonFileURI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open input: %v", err)
 	}
+	t.Cleanup(func() { _ = source.Close() })
 	originalOutput := filepath.Join(dir, "existing-output")
 	if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, originalOutput, int64(len("pcv3 input"))) {
 		t.Fatal("SetPCV3Ready rejected regular PCV3 input")
@@ -477,6 +487,7 @@ func TestPCV3ChangeOutputSelectionRejectsStaleReadyTicket(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	dir := t.TempDir()
+	t.Cleanup(a.State.Reset)
 	aInput := filepath.Join(dir, "a.pcv3")
 	bInput := filepath.Join(dir, "b.pcv3")
 	if err := os.WriteFile(aInput, []byte("A"), 0o600); err != nil {
@@ -489,6 +500,7 @@ func TestPCV3ChangeOutputSelectionRejectsStaleReadyTicket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open A: %v", err)
 	}
+	t.Cleanup(func() { _ = aSource.Close() })
 	if !a.State.SetPCV3Ready(aSource, app.PCV3FormatNormal, aInput, filepath.Join(dir, "a-output"), 1) {
 		t.Fatal("SetPCV3Ready rejected A")
 	}
@@ -503,6 +515,7 @@ func TestPCV3ChangeOutputSelectionRejectsStaleReadyTicket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open B: %v", err)
 	}
+	t.Cleanup(func() { _ = bSource.Close() })
 	bOutput := filepath.Join(dir, "b-output")
 	if !a.State.SetPCV3Ready(bSource, app.PCV3FormatNormal, bInput, bOutput, 1) {
 		t.Fatal("SetPCV3Ready rejected B")

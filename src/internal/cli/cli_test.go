@@ -13,6 +13,13 @@ import (
 	"testing"
 )
 
+func TestMain(m *testing.M) {
+	// Direct RunE calls bypass Cobra Execute's command-context initialization.
+	encryptCmd.SetContext(context.Background())
+	decryptCmd.SetContext(context.Background())
+	os.Exit(m.Run())
+}
+
 func TestPCV3EncryptHonorsCommandCancellation(t *testing.T) {
 	resetEncryptFlagsForDirTest()
 	t.Cleanup(resetEncryptFlagsForDirTest)
@@ -519,10 +526,13 @@ func TestSplitVolumeDetection(t *testing.T) {
 		}
 		os.Stderr = w
 
-		_ = decryptCmd.RunE(decryptCmd, []string{input})
+		decryptErr := decryptCmd.RunE(decryptCmd, []string{input})
 
 		_ = w.Close()
 		os.Stderr = old
+		if decryptErr == nil {
+			t.Error("malformed split-detection fixture unexpectedly decrypted")
+		}
 
 		var buf bytes.Buffer
 		if _, err := buf.ReadFrom(r); err != nil {
