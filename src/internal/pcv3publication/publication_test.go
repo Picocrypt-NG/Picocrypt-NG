@@ -41,9 +41,18 @@ func realRenameOperations(t *testing.T, directory string) (platformOperations, *
 			if !sameDirectoryHandle(parent, directory) {
 				return errors.New("test sync received wrong directory handle")
 			}
-			return parent.Sync()
+			return classifierTestDirectorySync(parent)
 		},
 	}, counts
+}
+
+// This classifier fixture injects a successful directory barrier on Windows,
+// where native publication separately requires the durability-uncertain result.
+func classifierTestDirectorySync(parent *os.File) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	return parent.Sync()
 }
 
 func sameDirectoryHandle(parent *os.File, directory string) bool {
@@ -492,7 +501,7 @@ func TestPublishCancellationBoundary(t *testing.T) {
 			},
 			syncDirectory: func(parent *os.File) error {
 				counts.sync++
-				return parent.Sync()
+				return classifierTestDirectorySync(parent)
 			},
 		}
 		stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
@@ -658,6 +667,11 @@ func TestCleanupReportsUnprovenOwnedStage(t *testing.T) {
 		if err != nil {
 			_ = stage.Cleanup()
 			t.Fatalf("stat owned stage before rename: %v", err)
+		}
+		// os.Lstat loads Windows file IDs lazily; freeze the expected identity
+		// before its pathname is replaced by the foreign fixture.
+		if !os.SameFile(ownedBefore, stage.stageInfo) {
+			t.Fatal("owned fixture identity did not match its open descriptor")
 		}
 		if err := os.Rename(stagePath, escapedPath); err != nil {
 			stage.Cleanup()

@@ -25,6 +25,7 @@ type platformOperations struct {
 	syncDirectory       func(*os.File) error
 	syncStage           func(*os.File) error
 	closeStage          func(*os.File) error
+	pinStage            func(*os.File) (*os.File, error)
 	statStage           func(*os.File) (os.FileInfo, error)
 	openRetained        func(*os.Root, string) (*os.File, error)
 	removeStage         func(*os.Root, string) error
@@ -44,6 +45,7 @@ const (
 // needed to publish it. It has no source-deletion authority.
 type Stage struct {
 	file                 *os.File
+	identityPin          *os.File
 	root                 *os.Root
 	parent               *os.File
 	rootInfo             os.FileInfo
@@ -101,6 +103,9 @@ func createWithOperations(
 	}
 	if operations.closeStage == nil {
 		operations.closeStage = (*os.File).Close
+	}
+	if operations.pinStage == nil {
+		operations.pinStage = duplicateIdentityFile
 	}
 	if operations.statStage == nil {
 		operations.statStage = (*os.File).Stat
@@ -234,6 +239,22 @@ func createWithOperations(
 		}
 		return nil, result
 	}
+	// Pin identity before File exposes the writable handle: a codec may close
+	// that handle on an I/O failure before Publish is ever called. Keeping an
+	// independent reference prevents reuse of an unlinked inode/file ID.
+	stage.identityPin, err = operations.pinStage(file)
+	pinValid := false
+	if err == nil && stage.identityPin != nil {
+		pinnedInfo, pinErr := stage.identityPin.Stat()
+		pinValid = pinErr == nil && pinnedInfo != nil && pinnedInfo.Mode().IsRegular() && os.SameFile(stage.stageInfo, pinnedInfo)
+	}
+	if err != nil || !pinValid {
+		result := newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
+		if cleanupErr := stage.Cleanup(); cleanupErr != nil {
+			return nil, errors.Join(result, cleanupErr)
+		}
+		return nil, result
+	}
 	return stage, nil
 }
 
@@ -339,6 +360,13 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 		return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
 	}
 	if !stage.retainWriteHandle {
+		if stage.identityPin == nil {
+			return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
+		}
+		pinnedInfo, pinErr := stage.identityPin.Stat()
+		if pinErr != nil || pinnedInfo == nil || !pinnedInfo.Mode().IsRegular() || !os.SameFile(stage.stageInfo, pinnedInfo) {
+			return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
+		}
 		if err := stage.operations.closeStage(stage.file); err != nil {
 			stage.file = nil
 			return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
@@ -552,6 +580,7 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 
 	retained := &RetainedFile{
 		file:          file,
+		identityPin:   stage.identityPin,
 		root:          stage.root,
 		parent:        stage.parent,
 		identity:      info,
@@ -563,6 +592,7 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 		active:        true,
 	}
 	stage.file = nil
+	stage.identityPin = nil
 	stage.root = nil
 	stage.parent = nil
 	stage.rootInfo = nil
@@ -701,6 +731,19 @@ func probeIdentity(root *os.Root, name string, expected os.FileInfo) identityPro
 	}
 }
 
+func (stage *Stage) hasPinnedIdentity() bool {
+	for _, file := range []*os.File{stage.identityPin, stage.file} {
+		if file == nil {
+			continue
+		}
+		info, err := file.Stat()
+		if err == nil && info.Mode().IsRegular() && os.SameFile(stage.stageInfo, info) {
+			return true
+		}
+	}
+	return false
+}
+
 // Cleanup closes retained handles and removes only the exact operation-owned
 // stage when publication state permits it. A missing, replaced, or
 // uninspectable cleanup-required pathname is uncertainty, not proof that the
@@ -716,12 +759,6 @@ func (stage *Stage) Cleanup() error {
 	cleanupFailed := false
 	journaledPublishedCleanup := stage.cleanupDisposition == cleanupPublishedOwned && stage.journaled
 
-	if stage.file != nil {
-		if err := stage.file.Close(); err != nil {
-			cleanupFailed = true
-		}
-		stage.file = nil
-	}
 	if stage.cleanupDisposition == cleanupUncertain && stage.stageName != "" {
 		cleanupFailed = true
 	}
@@ -734,7 +771,7 @@ func (stage *Stage) Cleanup() error {
 		// removing the owned name so cleanup never claims all ciphertext is gone
 		// while a protected alias may still retain it.
 		stage.protectedStageAliasUncertain()
-		if stage.root == nil || stage.stageName == "" || stage.stageInfo == nil ||
+		if stage.root == nil || stage.stageName == "" || stage.stageInfo == nil || !stage.hasPinnedIdentity() ||
 			stage.operations.removeStage == nil {
 			cleanupFailed = true
 		} else {
@@ -749,7 +786,7 @@ func (stage *Stage) Cleanup() error {
 		}
 	}
 	if stage.cleanupDisposition == cleanupPublishedOwned && !journaledPublishedCleanup {
-		if stage.root == nil || stage.targetName == "" || stage.stageInfo == nil ||
+		if stage.root == nil || stage.targetName == "" || stage.stageInfo == nil || !stage.hasPinnedIdentity() ||
 			stage.operations.removeStage == nil || stage.operations.syncDirectory == nil {
 			cleanupFailed = true
 		} else {
@@ -768,6 +805,18 @@ func (stage *Stage) Cleanup() error {
 	}
 	if stage.cleanupMayRemain {
 		cleanupFailed = true
+	}
+	if stage.file != nil {
+		if err := stage.file.Close(); err != nil {
+			cleanupFailed = true
+		}
+		stage.file = nil
+	}
+	if stage.identityPin != nil {
+		if err := stage.identityPin.Close(); err != nil {
+			cleanupFailed = true
+		}
+		stage.identityPin = nil
 	}
 	if stage.parent != nil {
 		if err := stage.parent.Close(); err != nil {

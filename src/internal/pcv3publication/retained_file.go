@@ -43,6 +43,7 @@ type RetainedFile struct {
 	mu sync.Mutex
 
 	file        *os.File
+	identityPin *os.File
 	root        *os.Root
 	parent      *os.File
 	identity    os.FileInfo
@@ -398,11 +399,7 @@ func (file *RetainedFile) removeExactLocked() error {
 		!os.SameFile(file.identity, sourceInfo) ||
 		probeIdentity(file.root, file.targetName, file.identity) != identityExpected {
 		cleanupIncomplete = true
-	} else if err := file.file.Close(); err != nil {
-		file.file = nil
-		cleanupIncomplete = true
 	} else {
-		file.file = nil
 		if probeIdentity(file.root, file.targetName, file.identity) != identityExpected {
 			cleanupIncomplete = true
 		} else if err := file.remove(file.root, file.targetName); err != nil {
@@ -426,6 +423,12 @@ func (file *RetainedFile) closeHandlesLocked() (failed bool) {
 			failed = true
 		}
 		file.file = nil
+	}
+	if file.identityPin != nil {
+		if err := file.identityPin.Close(); err != nil {
+			failed = true
+		}
+		file.identityPin = nil
 	}
 	if file.parent != nil {
 		if err := file.parent.Close(); err != nil {

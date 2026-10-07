@@ -251,7 +251,7 @@ func removeExactJournalEntry(
 
 func (stage *Stage) cleanupJournaledOwned(cleanupFailed *bool) {
 	if stage.root == nil || stage.parent == nil || stage.stageName == "" ||
-		stage.stageInfo == nil || stage.journalInfo == nil ||
+		stage.stageInfo == nil || stage.journalInfo == nil || !stage.hasPinnedIdentity() ||
 		stage.operations.removeStage == nil || stage.operations.syncDirectory == nil {
 		*cleanupFailed = true
 		return
@@ -321,7 +321,7 @@ func (stage *Stage) retireCleanupJournal() bool {
 
 func (stage *Stage) cleanupPublishedJournaledOwned(cleanupFailed *bool) {
 	if stage.root == nil || stage.parent == nil || stage.targetName == "" ||
-		stage.stageInfo == nil || stage.operations.removeStage == nil ||
+		stage.stageInfo == nil || !stage.hasPinnedIdentity() || stage.operations.removeStage == nil ||
 		stage.operations.syncDirectory == nil {
 		*cleanupFailed = true
 		return

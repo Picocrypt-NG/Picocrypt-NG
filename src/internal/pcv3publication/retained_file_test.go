@@ -633,8 +633,8 @@ func TestRetainedStreamFailureAndCancellationConsumeSource(t *testing.T) {
 				t.Errorf("failed stream retained internal plaintext: %v", err)
 			}
 			if cancelled {
-				if _, err := writer.Stat(); !errors.Is(err, os.ErrClosed) {
-					t.Fatalf("cancelled stream left destination open: %v", err)
+				if count, err := writer.Write([]byte{0}); count != 0 || err == nil {
+					t.Fatalf("cancelled stream left destination writable: count=%d err=%v", count, err)
 				}
 				var probe [1]byte
 				count, err := reader.Read(probe[:])

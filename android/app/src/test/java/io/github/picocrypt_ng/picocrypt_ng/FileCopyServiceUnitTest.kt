@@ -33,6 +33,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -301,8 +302,12 @@ class FileCopyServiceUnitTest {
                     publisher = JvmAtomicFilePublisher,
                     afterAcquire = {},
                     afterPublish = {
-                        assertTrue("Test setup should unlink the published owner", fixture.destination.delete())
+                        val originalIdentity = JvmAtomicFilePublisher.identity(fixture.destination)
+                        val escapedOwner = File(fixture.destination.parentFile, "escaped-published-owner")
+                        Files.move(fixture.destination.toPath(), escapedOwner.toPath())
                         fixture.destination.writeBytes(replacementBytes)
+                        assertNotEquals("Replacement must have an independently distinct identity",
+                            originalIdentity, JvmAtomicFilePublisher.identity(fixture.destination))
                         replacementReady.complete(Unit)
                         awaitCancellation()
                     },
@@ -323,6 +328,8 @@ class FileCopyServiceUnitTest {
                 replacementBytes,
                 fixture.destination.readBytes(),
             )
+            assertArrayEquals(byteArrayOf(1, 2, 3),
+                File(fixture.destination.parentFile, "escaped-published-owner").readBytes())
         } finally {
             fixture.filesDir.deleteRecursively()
         }
@@ -1300,8 +1307,12 @@ class FileCopyServiceUnitTest {
             override fun identity(file: File): FileCopyService.FileIdentity? {
                 identityReads++
                 if (identityReads == 2) {
-                    assertTrue("Test replacement should remove the original inode", file.delete())
+                    val originalIdentity = JvmAtomicFilePublisher.identity(file)
+                    val escapedOwner = File(file.parentFile, "escaped-retained-owner")
+                    Files.move(file.toPath(), escapedOwner.toPath())
                     file.writeText("replacement owner")
+                    assertNotEquals("Replacement must have an independently distinct identity",
+                        originalIdentity, JvmAtomicFilePublisher.identity(file))
                 }
                 return JvmAtomicFilePublisher.identity(file)
             }
@@ -1315,6 +1326,7 @@ class FileCopyServiceUnitTest {
                 FileCopyService.cleanupPcv3RetainedOutputAtStartup(context, replacingPublisher),
             )
             assertEquals("replacement owner", retained.readText())
+            assertEquals("initial owner", File(retained.parentFile, "escaped-retained-owner").readText())
         } finally {
             filesDir.deleteRecursively()
         }

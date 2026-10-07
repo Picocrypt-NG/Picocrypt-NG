@@ -893,6 +893,12 @@ func closeStageHandlesWithoutCleanup(t *testing.T, stage *Stage) {
 		}
 		stage.file = nil
 	}
+	if stage.identityPin != nil {
+		if err := stage.identityPin.Close(); err != nil {
+			t.Fatalf("close simulated prior-process identity pin: %v", err)
+		}
+		stage.identityPin = nil
+	}
 	if stage.parent != nil {
 		if err := stage.parent.Close(); err != nil {
 			t.Fatalf("close simulated prior-process parent: %v", err)

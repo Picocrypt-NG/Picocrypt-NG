@@ -51,6 +51,10 @@ func TestPublishBlocksProtectedHardlinkToOwnedStage(t *testing.T) {
 		t.Fatalf("write stage: %v", err)
 	}
 	stagePath := stage.stagePath
+	// Resolve the Windows file ID before its original pathname is replaced.
+	if !os.SameFile(keyfileBefore, keyfileBefore) {
+		t.Fatal("could not freeze original keyfile identity")
+	}
 	if err := os.Rename(keyfile, retainedKeyfile); err != nil {
 		stage.Cleanup()
 		t.Fatalf("retain original protected keyfile: %v", err)
@@ -153,6 +157,9 @@ func TestPublishBlocksProtectedHardlinkToOwnedStage(t *testing.T) {
 			t.Fatalf("write stage: %v", err)
 		}
 		stagePath := stage.stagePath
+		if !os.SameFile(protectedBefore, protectedBefore) {
+			t.Fatal("could not freeze original protected keyfile identity")
+		}
 		if err := os.Rename(protected, retained); err != nil {
 			stage.Cleanup()
 			t.Fatalf("retain protected keyfile: %v", err)

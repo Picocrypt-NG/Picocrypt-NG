@@ -100,6 +100,15 @@ func pcv3RequireNativeFaultPlatform(t *testing.T) {
 	}
 }
 
+func pcv3RequireNativeCommit(t *testing.T, result Result) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		requireResult(t, result, StatePublishedDurabilityUncertain, pcv3result.OutcomeCommittedDurabilityUncertain, pcv3result.StageDirectorySync, CodeDurabilityUncertain)
+		return
+	}
+	requireResult(t, result, StatePublishedDurable, pcv3result.OutcomeSuccess, pcv3result.StageNone, CodePublishedDurable)
+}
+
 // TestPCV3PublicationFaultMatrix runs the integrated native filesystem fault
 // matrix at the real stage/commit boundary: every case compares source,
 // destination, and staging identities and exact bytes, preserves foreign data,
@@ -132,14 +141,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		}
 
 		result := stage.Publish(context.Background())
-		requireResult(
-			t,
-			result,
-			StatePublishedDurable,
-			pcv3result.OutcomeSuccess,
-			pcv3result.StageNone,
-			CodePublishedDurable,
-		)
+		pcv3RequireNativeCommit(t, result)
 		committedInfo, err := os.Lstat(target)
 		if err != nil {
 			t.Fatalf("inspect committed destination: %v", err)
@@ -185,14 +187,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		}
 
 		result := stage.Publish(context.Background())
-		requireResult(
-			t,
-			result,
-			StatePublishedDurable,
-			pcv3result.OutcomeSuccess,
-			pcv3result.StageNone,
-			CodePublishedDurable,
-		)
+		pcv3RequireNativeCommit(t, result)
 		committedInfo, err := os.Lstat(target)
 		if err != nil {
 			t.Fatalf("inspect short destination: %v", err)
@@ -281,7 +276,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("inspect foreign destination: %v", err)
 		}
-		if !foreignInfo.Mode().IsRegular() || foreignInfo.Mode().Perm() != 0o640 {
+		if !foreignInfo.Mode().IsRegular() || (runtime.GOOS != "windows" && foreignInfo.Mode().Perm() != 0o640) {
 			t.Fatalf("foreign destination mode = %v; want regular 0640", foreignInfo.Mode())
 		}
 		requireFileBytes(t, target, foreign)
@@ -443,12 +438,18 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		if counts.atomic != 0 || counts.sync != 0 {
 			t.Fatalf("failed finalization reached commit = atomic %d sync %d", counts.atomic, counts.sync)
 		}
-		if err := os.Remove(stagePath); err != nil {
-			stage.Cleanup()
-			t.Skipf("platform prevents replacing the failed stage: %v", err)
+		// Retain the original inode under another name so the foreign object
+		// cannot accidentally reuse its identity after finalization closes it.
+		escapedPath := filepath.Join(directory, "failed-owned-stage")
+		if err := os.Rename(stagePath, escapedPath); err != nil {
+			t.Fatalf("retain original stage before foreign occupation: %v", err)
 		}
 		if err := os.WriteFile(stagePath, foreign, 0o640); err != nil {
 			t.Fatalf("plant foreign occupation: %v", err)
+		}
+		foreignInfo, err := os.Lstat(stagePath)
+		if err != nil || os.SameFile(stage.stageInfo, foreignInfo) {
+			t.Fatalf("foreign fixture did not establish distinct identity: %v", err)
 		}
 		if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
 			t.Fatalf("cleanup foreign-occupied failed stage = %v; want ErrCleanupIncomplete", err)
@@ -457,6 +458,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 			t.Fatalf("repeated cleanup = %v; want stable ErrCleanupIncomplete", repeated)
 		}
 		requireFileBytes(t, stagePath, foreign)
+		requireFileBytes(t, escapedPath, payload)
 		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("failed finalization created destination: %v", err)
 		}
@@ -484,14 +486,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		}
 
 		result := stage.Publish(context.Background())
-		requireResult(
-			t,
-			result,
-			StatePublishedDurable,
-			pcv3result.OutcomeSuccess,
-			pcv3result.StageNone,
-			CodePublishedDurable,
-		)
+		pcv3RequireNativeCommit(t, result)
 		requireFileBytes(t, target, payload)
 		if err := stage.Cleanup(); err != nil {
 			t.Fatalf("cleanup exact commit: %v", err)
