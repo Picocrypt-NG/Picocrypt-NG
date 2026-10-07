@@ -81,10 +81,17 @@ jobs:
         cd src
         go mod download
 
-    - name: Run tests
+    - name: Verify native test launcher controls
+      shell: pwsh
       run: |
-        cd src
-        go test -v -timeout 15m ./internal/cli ./internal/fileops ./internal/volume
+        & .github/scripts/test-windows-native-tests.ps1
+
+    - name: Run tests
+      shell: pwsh
+      run: |
+        & .github/scripts/run-windows-native-tests.ps1 `
+          -GoExecutable 'C:\go-legacy\go-legacy-win7\bin\go.exe' `
+          -GoArguments @('test', '-v', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume')
       env:
         PICOCRYPT_RUN_CLI_INTEGRATION: 1
 

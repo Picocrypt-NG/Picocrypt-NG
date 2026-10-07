@@ -932,8 +932,8 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 }
 
 func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {
-	const raceCommand = "go test -v -race -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/..."
-	const contractCommand = "go test -v -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/..."
+	const raceCommand = "go test -v -race -p 1 -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/..."
+	const contractCommand = "go test -v -p 1 -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/..."
 
 	for _, tc := range []struct {
 		path string
@@ -951,6 +951,9 @@ func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {
 			cliTestLineCount := 0
 			for lineIndex, line := range strings.Split(testStep.Run, "\n") {
 				line = strings.TrimSpace(line)
+				if strings.Contains(line, "go test") && !strings.Contains(line, "-p 1") {
+					t.Fatalf("macOS KDF-heavy package commands must be serialized: %q", line)
+				}
 				if line == raceCommand {
 					raceLineIndex = lineIndex
 				}
@@ -1195,7 +1198,7 @@ func TestSnapcraftWorkflowSmokeTestsInstalledSnap(t *testing.T) {
 func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 	const (
 		runner    = "ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d"
-		command   = "./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="
+		command   = "bash ../.github/scripts/run-android-device-tests.sh "
 		roundtrip = "io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_retry_save_then_decrypt_recovers_the_original_bytes"
 	)
 
@@ -1214,7 +1217,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "3583",
 			target:   "google_apis",
-			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest",
+			script:   command + "26 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest",
 		},
 		// Activity security and Compose state must work on the target-SDK runtime.
 		36: {
@@ -1222,7 +1225,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "6144",
 			target:   "default",
-			script:   command + roundtrip + ",io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest,io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
+			script:   command + "36 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest",
 		},
 	}
 	seen := make(map[int]struct{}, len(wantByAPI))
