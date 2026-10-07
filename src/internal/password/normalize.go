@@ -43,7 +43,12 @@ func Normalize(pw []byte) []byte {
 // req.Password after the encrypt-path kdfInput has been deferred-zeroed). NFC of
 // an ASCII or already-composed password is byte-equal to the input but a copy.
 func EncodeForKDF(pw []byte) []byte {
-	return append([]byte(nil), Normalize(pw)...)
+	normalized := Normalize(pw)
+	// Keep ownership when normalization allocated; copy only an input alias.
+	if len(normalized) != 0 && &normalized[0] != &pw[0] {
+		return normalized
+	}
+	return append([]byte(nil), normalized...)
 }
 
 // Candidates returns the ordered, de-duplicated password byte forms to try when
