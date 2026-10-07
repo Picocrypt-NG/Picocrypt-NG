@@ -131,6 +131,7 @@ func hashUnordered(readers []io.Reader) ([]byte, error) {
 	for _, r := range readers {
 		hasher := sha3.New256()
 		if err := hashOne(hasher, r, buf); err != nil {
+			crypto.SecureZero(combined)
 			return nil, err
 		}
 		fileHash := hasher.Sum(nil)
@@ -140,6 +141,7 @@ func hashUnordered(readers []io.Reader) ([]byte, error) {
 			for i, b := range fileHash {
 				combined[i] ^= b
 			}
+			crypto.SecureZero(fileHash)
 		}
 	}
 	return combined, nil

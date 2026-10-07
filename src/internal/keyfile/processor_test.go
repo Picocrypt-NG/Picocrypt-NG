@@ -3,6 +3,7 @@ package keyfile
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -194,6 +195,11 @@ func TestProcessUnorderedKAT(t *testing.T) {
 	}
 	if !bytes.Equal(resultAB.Key, want) {
 		t.Errorf("unordered Key = %x; want %s", resultAB.Key, wantHex)
+	}
+	// Frozen independently with hashlib.sha3_256(bytes.fromhex(wantHex)).
+	const wantHashHex = "a6300f32f84be6bdc1fa477f5fa226cdf285bfcb8a20900f2a2944ccd4b23aa2"
+	if got := hex.EncodeToString(resultAB.Hash); got != wantHashHex {
+		t.Errorf("unordered Hash = %s; want %s", got, wantHashHex)
 	}
 
 	// Order-independence: swapping inputs must yield the same Key (XOR commutativity).
@@ -459,5 +465,65 @@ func TestProcessReadersEmptyIsZeroKey(t *testing.T) {
 	}
 	if !bytes.Equal(res.Key, make([]byte, 32)) || !bytes.Equal(res.Hash, make([]byte, 32)) {
 		t.Fatal("empty readers must yield 32 zero bytes for Key and Hash")
+	}
+}
+
+func TestProcessReadersSingleUnorderedKAT(t *testing.T) {
+	// The first digest becomes the caller's key; cleanup must not erase it.
+	// These values are frozen from Python hashlib.sha3_256, independently of
+	// ProcessReaders, and pin both the key and its public verification hash.
+	result, err := ProcessReaders([]io.Reader{bytes.NewReader([]byte("alpha"))}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantKey = "271878f8a927b4566ac951fc815b18dfad8d0302d61d11d80cbe15b7a3a056af"
+	const wantHash = "55a13f9643162423150298637137dac69dca1cec1a3250adf142d8466df37bc6"
+	if got := hex.EncodeToString(result.Key); got != wantKey {
+		t.Errorf("Key = %s; want %s", got, wantKey)
+	}
+	if got := hex.EncodeToString(result.Hash); got != wantHash {
+		t.Errorf("Hash = %s; want %s", got, wantHash)
+	}
+}
+
+type readErrorWithBuffer struct {
+	buf []byte
+	err error
+}
+
+func (r *readErrorWithBuffer) Read(buf []byte) (int, error) {
+	r.buf = buf
+	return copy(buf, "partial keyfile material"), r.err
+}
+
+func TestProcessReadersReadErrorDiscardsKeyAndClearsInputBuffer(t *testing.T) {
+	for _, ordered := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ordered=%v", ordered), func(t *testing.T) {
+			readErr := errors.New("keyfile read failed")
+			failing := &readErrorWithBuffer{err: readErr}
+			trailing := bytes.NewReader([]byte("must remain unread"))
+			result, err := ProcessReaders([]io.Reader{
+				bytes.NewReader([]byte("alpha")),
+				failing,
+				trailing,
+			}, ordered)
+			if !errors.Is(err, readErr) {
+				t.Fatalf("read error = %v; want %v", err, readErr)
+			}
+			if result != nil {
+				t.Fatal("read failure exposed a partial key or verification hash")
+			}
+			if trailing.Len() != len("must remain unread") {
+				t.Fatal("continued reading keyfiles after failure")
+			}
+			if len(failing.buf) == 0 {
+				t.Fatal("failing reader did not receive a scratch buffer")
+			}
+			for _, b := range failing.buf {
+				if b != 0 {
+					t.Fatal("keyfile input remained in the owned scratch buffer after failure")
+				}
+			}
+		})
 	}
 }
