@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -53,6 +55,11 @@ func TestEncryptDiscoveryRequiresZIPHeadroomOnlyForExpandingSelections(t *testin
 	default:
 		t.Fatalf("unknown child mode %q", mode)
 	}
+	// Initialize the collector before measuring address space, then keep its
+	// background allocation outside the narrow admission check under RLIMIT_AS.
+	previousGC := debug.SetGCPercent(-1)
+	defer debug.SetGCPercent(previousGC)
+	runtime.GC()
 	status, err := os.ReadFile("/proc/self/status")
 	if err != nil {
 		t.Fatal(err)
