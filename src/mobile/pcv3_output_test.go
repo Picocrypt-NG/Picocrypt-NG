@@ -345,6 +345,71 @@ func TestPCV3MobileRetainedOutputSaveFDContainsInvalidAndPanic(t *testing.T) {
 	}
 }
 
+func TestPCV3MobileRetryWaitsForRegistrySettlement(t *testing.T) {
+	directory := t.TempDir()
+	payload := []byte("retained output must survive an unsettled retry")
+	retained, retainedPath := publishPCV3MobileRetainedFile(t, directory, "retry.bin", payload)
+	operation := startPCV3Operation()
+	t.Cleanup(func() {
+		_ = retained.RemoveExact()
+		cleanupOperation(operation.ID())
+	})
+	completePCV3PresentationWithOutputAndInspectionComment(operation, durablePCV3MobilePresentation(t), &retainedMobileOutputAction{retained: retained}, nil, "")
+	output := operation.Output()
+	if output == nil {
+		t.Fatal("retained output capability missing")
+	}
+	copied := *output
+
+	// A failed ciphertext save can rearm its shared handle before its deferred
+	// registry settlement. A copied handle must wait for that owner to settle.
+	globalProgressMap.mu.Lock()
+	registered, ok := livePCV3StateLocked(operation)
+	if !ok || registered.output != output.state {
+		globalProgressMap.mu.Unlock()
+		t.Fatal("matching output registry owner missing")
+	}
+	registered.output = nil
+	registered.outputInFlight = true
+	globalProgressMap.mu.Unlock()
+
+	destination, err := os.CreateTemp(directory, "retry-destination")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = destination.Close() })
+	transferredFD := duplicateMobileTransferredFD(t, destination)
+	result := copied.SaveFD(transferredFD)
+	if result.Code() != "expired" || result.CleanupIncomplete() {
+		t.Fatalf("unsettled retry = %s cleanup=%v; want expired without effects", result.Code(), result.CleanupIncomplete())
+	}
+	assertMobileTransferredFDClosed(t, transferredFD)
+	requirePCV3MobileFileBytes(t, destination.Name(), nil)
+	requirePCV3MobileFileBytes(t, retainedPath, payload)
+	if code := operation.Release(); code != pcv3OperationReleaseDenied {
+		t.Fatalf("release before output settlement = %q; want denial", code)
+	}
+
+	settlePCV3Output(output.state)
+	retry := operation.Output()
+	if retry == nil {
+		t.Fatal("settlement lost retry authority")
+	}
+	transferredFD = duplicateMobileTransferredFD(t, destination)
+	result = retry.SaveFD(transferredFD)
+	if result.Code() != "saved" || result.CleanupIncomplete() {
+		t.Fatalf("settled retry = %s cleanup=%v; want saved", result.Code(), result.CleanupIncomplete())
+	}
+	assertMobileTransferredFDClosed(t, transferredFD)
+	requirePCV3MobileFileBytes(t, destination.Name(), payload)
+	if _, err := os.Stat(retainedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful retry retained its internal source: %v", err)
+	}
+	if code := operation.Release(); code != "" {
+		t.Fatalf("release after settled retry = %q; want success", code)
+	}
+}
+
 func TestPCV3MobileRetainedOutputSaveFDClosesExpiredTransferredDescriptor(t *testing.T) {
 	directory := t.TempDir()
 	retained, _ := publishPCV3MobileRetainedFile(t, directory, "expired.bin", []byte("consume before reused SaveFD"))

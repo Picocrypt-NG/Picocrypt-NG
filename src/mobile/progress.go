@@ -776,12 +776,7 @@ func (output *PCV3Output) Discard() (result *PCV3OutputResult) {
 	if state == nil || action == nil {
 		return &PCV3OutputResult{code: "expired"}
 	}
-	inFlight := markPCV3OutputInFlight(state)
-	defer func() {
-		if inFlight {
-			settlePCV3Output(state)
-		}
-	}()
+	defer settlePCV3Output(state)
 	actionResult := discardPCV3OutputAction(action)
 	return &PCV3OutputResult{code: actionResult.code, cleanupIncomplete: actionResult.cleanupIncomplete}
 }
@@ -798,12 +793,7 @@ func (output *PCV3Output) SaveFD(destinationFD int64) (result *PCV3OutputResult)
 	if state == nil || action == nil {
 		return &PCV3OutputResult{code: "expired"}
 	}
-	inFlight := markPCV3OutputInFlight(state)
-	defer func() {
-		if inFlight {
-			settlePCV3Output(state)
-		}
-	}()
+	defer settlePCV3Output(state)
 
 	actionResult := savePCV3OutputAction(action, destination)
 	// Only the shared result can authorize retaining the exact capability.
@@ -829,6 +819,12 @@ func (output *PCV3Output) consume() (*pcv3OutputState, pcv3OutputAction) {
 		return nil, nil
 	}
 	state := output.state
+	globalProgressMap.mu.Lock()
+	defer globalProgressMap.mu.Unlock()
+	registered, ok := livePCV3StateLocked(state.operation)
+	if !ok || registered.output != state {
+		return nil, nil
+	}
 	state.mu.Lock()
 	if !state.live || state.action == nil {
 		state.mu.Unlock()
@@ -837,6 +833,8 @@ func (output *PCV3Output) consume() (*pcv3OutputState, pcv3OutputAction) {
 	state.live = false
 	action := state.action
 	state.action = nil
+	registered.output = nil
+	registered.outputInFlight = true
 	state.mu.Unlock()
 	return state, action
 }
@@ -1316,21 +1314,6 @@ func markPCV3ArchiveInFlight(archive *pcv3ArchiveState) {
 		state.archiveInFlight = true
 	}
 	globalProgressMap.mu.Unlock()
-}
-
-func markPCV3OutputInFlight(output *pcv3OutputState) bool {
-	if output == nil || output.operation == nil {
-		return false
-	}
-	globalProgressMap.mu.Lock()
-	defer globalProgressMap.mu.Unlock()
-	state, ok := livePCV3StateLocked(output.operation)
-	if !ok || state.output != output {
-		return false
-	}
-	state.output = nil
-	state.outputInFlight = true
-	return true
 }
 
 func settlePCV3Output(output *pcv3OutputState) {
