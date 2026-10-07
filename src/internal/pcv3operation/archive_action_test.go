@@ -15,26 +15,37 @@ import (
 // handoff, extractor, and fixed KDF with keyfile-only credentials.
 func archiveActionFixture(t *testing.T, target string, plaintext []byte) *Result {
 	t.Helper()
-	factors := func() *FactorRequest {
-		return &FactorRequest{
-			Mode: CredentialModeKeyfilesOnly, ExpectedPolicy: FactorPolicyKeyfilesOnly, KeyfileMode: KeyfileModeUnordered,
-			Keyfiles: []*KeyfileReader{OwnKeyfileReader(io.NopCloser(bytes.NewReader([]byte("public archive action factor"))))},
-		}
+	return archiveActionReadFixture(t, target, archiveActionCiphertext(t, plaintext))
+}
+
+func archiveActionFactors() *FactorRequest {
+	return &FactorRequest{
+		Mode: CredentialModeKeyfilesOnly, ExpectedPolicy: FactorPolicyKeyfilesOnly, KeyfileMode: KeyfileModeUnordered,
+		Keyfiles: []*KeyfileReader{OwnKeyfileReader(io.NopCloser(bytes.NewReader([]byte("public archive action factor"))))},
 	}
+}
+
+func archiveActionCiphertext(t *testing.T, plaintext []byte) string {
+	t.Helper()
 	ciphertext := filepath.Join(t.TempDir(), "ciphertext.pcv")
 	write := RunWrite(context.Background(), &WriteRequest{
 		Mode: WriteModeNormal, Suite: SuiteStandard, PayloadKind: PayloadKindArchive,
 		Source: bytes.NewReader(plaintext), PlaintextLength: uint64(len(plaintext)),
-		Target: ciphertext, Factors: factors(), Comment: []byte("public archive action comment"),
+		Target: ciphertext, Factors: archiveActionFactors(), Comment: []byte("public archive action comment"),
 	})
 	if write.CompletionClass() != CompletionClean {
 		t.Fatalf("write archive fixture: %v", write)
 	}
+	return ciphertext
+}
+
+func archiveActionReadFixture(t *testing.T, target, ciphertext string) *Result {
+	t.Helper()
 	source, err := os.Open(ciphertext)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := Run(context.Background(), &Request{Mode: ModeReadNormal, Source: source, Target: target, Factors: factors()})
+	result := Run(context.Background(), &Request{Mode: ModeReadNormal, Source: source, Target: target, Factors: archiveActionFactors()})
 	followUp := result.ArchiveFollowUp()
 	if followUp == nil {
 		t.Fatalf("authenticated archive fixture has no authority: %v", result)

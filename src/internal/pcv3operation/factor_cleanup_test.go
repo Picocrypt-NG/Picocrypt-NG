@@ -55,6 +55,7 @@ func TestOperationsRetainKeyfileCleanupTruthWithoutOutput(t *testing.T) {
 				name = "failed-close"
 			}
 			t.Run(test.name+"/"+name, func(t *testing.T) {
+				var probe [1]byte
 				directory := t.TempDir()
 				sourcePath := filepath.Join(directory, "source")
 				sourceBytes := []byte("original source")
@@ -107,7 +108,7 @@ func TestOperationsRetainKeyfileCleanupTruthWithoutOutput(t *testing.T) {
 					}
 					factors.Keyfiles = append(factors.Keyfiles, OwnKeyfileReader(second))
 					defer func() {
-						if _, err := second.Stat(); !errors.Is(err, os.ErrClosed) {
+						if _, err := second.ReadAt(probe[:], 0); !errors.Is(err, os.ErrClosed) {
 							t.Errorf("second real keyfile remains open: %v", err)
 						}
 					}()
@@ -142,14 +143,14 @@ func TestOperationsRetainKeyfileCleanupTruthWithoutOutput(t *testing.T) {
 					}
 				} else {
 					result = Run(ctx, &Request{Mode: test.read, Source: source, Factors: factors, Target: target, Reporter: reporter})
-					if _, err := source.Stat(); !errors.Is(err, os.ErrClosed) {
+					if _, err := source.ReadAt(probe[:], 0); !errors.Is(err, os.ErrClosed) {
 						t.Errorf("owned read source not closed: %v", err)
 					}
 				}
 				if wrapped.calls != 1 {
 					t.Errorf("keyfile close calls = %d; want one", wrapped.calls)
 				}
-				if _, err := key.Stat(); !errors.Is(err, os.ErrClosed) {
+				if _, err := key.ReadAt(probe[:], 0); !errors.Is(err, os.ErrClosed) {
 					t.Errorf("real keyfile descriptor remains open: %v", err)
 				}
 				wantResourceCheck := !fail && !test.early && !test.cancelled && !test.policyMismatch

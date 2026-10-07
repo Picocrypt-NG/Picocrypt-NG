@@ -13,6 +13,32 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// Exercise the real observer on the execution host. The same product process
+// must expose headroom outside jobs and refuse it when an unknown ancestor job
+// can constrain commit. The logged facts distinguish these CI environments.
+func TestWindowsNativeResourceSnapshotMatchesObservedJobBoundary(t *testing.T) {
+	status, statusOK := readWindowsMemoryStatus()
+	privateCommit, privateOK := readWindowsPrivateCommit()
+	outsideJob := windowsProcessOutsideJob()
+	snapshot := newPlatformSnapshotProvider().Snapshot(context.Background())
+	t.Logf("native Windows memory: statusOK=%t privateOK=%t outsideJob=%t physical=%d commit=%d virtual=%d private=%d snapshotState=%d headroom=%d reserve=%d",
+		statusOK, privateOK, outsideJob, status.availablePhysical, status.availableCommit,
+		status.availableVirtual, privateCommit, snapshot.state, snapshot.effectiveAvailable, snapshot.codeOwnedReserve)
+	if snapshot.source != snapshotSourceWindows || snapshot.platformThreshold != 0 ||
+		snapshot.sequence == 0 || snapshot.observedAt.IsZero() {
+		t.Fatalf("native snapshot has invalid source or observation metadata: %+v", snapshot)
+	}
+	if outsideJob && statusOK && privateOK && privateCommit <= status.totalCommit {
+		if snapshot.state != snapshotStateReady || snapshot.effectiveAvailable == 0 || snapshot.codeOwnedReserve == 0 {
+			t.Fatalf("valid native facts outside jobs must supply genuine admission headroom: %+v", snapshot)
+		}
+		return
+	}
+	if snapshot.state != snapshotStateUnknown || snapshot.effectiveAvailable != 0 || snapshot.codeOwnedReserve != 0 {
+		t.Fatalf("uncertain native facts must not supply admission headroom: %+v", snapshot)
+	}
+}
+
 // A child with a roomy immediate job still has an ancestor whose constraints
 // cannot be established by QueryInformationJobObject(NULL). Exercise actual
 // job membership and the production snapshot, without allocating a KDF.

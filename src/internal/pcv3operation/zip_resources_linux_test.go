@@ -17,12 +17,17 @@ import (
 // production archive follow-up. No injected grant/provider can skip the gate.
 func TestArchiveExtractionRefusesInsufficientWorkingMemoryBeforeOutput(t *testing.T) {
 	const child = "PICOCRYPT_ZIP_MEMORY_ADMISSION_CHILD"
+	const fixture = "PICOCRYPT_ZIP_MEMORY_ADMISSION_FIXTURE"
 	mode := os.Getenv(child)
 	if mode == "" {
+		// Prepare ciphertext once before child admission. A race-instrumented
+		// writer retains shadow memory after its KDF; repeating it in each
+		// child can consume the real headroom needed by that child's reader.
+		ciphertext := archiveActionCiphertext(t, archiveActionPayload(t))
 		for _, mode := range []string{"direct", "directory", "saf"} {
 			t.Run(mode, func(t *testing.T) {
 				command := exec.Command(os.Args[0], "-test.run=^TestArchiveExtractionRefusesInsufficientWorkingMemoryBeforeOutput$", "-test.count=1")
-				command.Env = append(os.Environ(), child+"="+mode)
+				command.Env = append(os.Environ(), child+"="+mode, fixture+"="+ciphertext)
 				if output, err := command.CombinedOutput(); err != nil {
 					t.Fatalf("bounded archive subprocess: %v\n%s", err, output)
 				}
@@ -32,7 +37,7 @@ func TestArchiveExtractionRefusesInsufficientWorkingMemoryBeforeOutput(t *testin
 	}
 	stageParent := t.TempDir()
 	target := filepath.Join(stageParent, "saved.zip")
-	read := archiveActionFixture(t, target, archiveActionPayload(t))
+	read := archiveActionReadFixture(t, target, os.Getenv(fixture))
 	rootPath := t.TempDir()
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {

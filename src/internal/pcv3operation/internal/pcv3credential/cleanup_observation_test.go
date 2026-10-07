@@ -66,7 +66,8 @@ func TestCredentialEarlyRejectionPreservesCleanupObservation(t *testing.T) {
 				if closeErr := factors.Close(); closeErr != nil || reader.closeCalls != 1 || factors.CleanupIncomplete() != fail {
 					t.Errorf("idempotent Close lost cleanup truth or reclosed provider: err=%v calls=%d cleanup=%v", closeErr, reader.closeCalls, factors.CleanupIncomplete())
 				}
-				if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
+				var probe [1]byte
+				if _, err := file.ReadAt(probe[:], 0); !errors.Is(err, os.ErrClosed) {
 					t.Errorf("real descriptor remains open: %v", err)
 				}
 				got, err := os.ReadFile(path)
