@@ -544,6 +544,7 @@ than being treated as an outer wrapper.
 ```go
 type ProgressFunc func(progress float32)
 
+// The caller owns the result and clears Key after use.
 type Result struct {
     Key  []byte // 32 bytes — derived key for XOR with password key
     Hash []byte // 32 bytes — SHA3-256(Key) stored in header
@@ -553,9 +554,6 @@ type Result struct {
 //   ordered=true:  SHA3-256(file1 || file2 || ...)
 //   ordered=false: SHA3-256(file1) XOR SHA3-256(file2) XOR ...
 func Process(paths []string, ordered bool, progress ProgressFunc) (*Result, error)
-
-// Close zeros key material.
-func (r *Result) Close()
 
 // XORWithKey XORs the keyfile key with the Argon2-derived password key.
 // Both slices must be exactly 32 bytes.
