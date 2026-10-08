@@ -13,13 +13,72 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pcv3-race:
+    name: macOS ARM64 PCV3 race group ${{ matrix.group }}
+    strategy:
+      fail-fast: true
+      matrix:
+        group: [1, 2, 3, 4]
+    runs-on: macos-26
+    env:
+      CGO_ENABLED: "1"
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      CGO_CFLAGS: "-mmacosx-version-min=15.0"
+      CGO_LDFLAGS: "-mmacosx-version-min=15.0"
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Setup Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: "1.27.1"
+        cache-dependency-path: src/go.sum
+
+    - name: Install dependencies
+      run: |
+        cd src
+        go mod download
+
+    - name: Diagnose native macOS memory APIs
+      run: |
+        set -o pipefail
+        bash .github/scripts/diagnose-macos-memory.sh 2>&1 | tee "$RUNNER_TEMP/macos-memory-before.log"
+        sudo -n /usr/sbin/purge
+        bash .github/scripts/diagnose-macos-memory.sh 2>&1 | tee "$RUNNER_TEMP/macos-memory.log"
+
+    - name: Upload native macOS memory diagnostics
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: pr-macos-race-memory-${{ strategy.job-index }}-${{ github.run_attempt }}
+        path: |
+          ${{ runner.temp }}/macos-memory-before.log
+          ${{ runner.temp }}/macos-memory.log
+        retention-days: 1
+        if-no-files-found: error
+
+    - name: Run PCV3 race group
+      run: bash .github/scripts/test-macos-pcv3-race.sh "$SHARD_INDEX" "$SHARD_COUNT"
+      env:
+        SHARD_INDEX: ${{ strategy.job-index }}
+        SHARD_COUNT: ${{ strategy.job-total }}
+
   pr-test-build-macos:
+    needs: pcv3-race
+    if: ${{ always() }}
     runs-on: macos-26
     env:
       MACOSX_DEPLOYMENT_TARGET: "15.0"
       CGO_CFLAGS: "-mmacosx-version-min=15.0"
       CGO_LDFLAGS: "-mmacosx-version-min=15.0"
     steps:
+    - name: Require all macOS race groups to pass
+      run: |
+        if [ "${{ needs.pcv3-race.result }}" != "success" ]; then
+          echo "macOS race result: ${{ needs.pcv3-race.result }}"
+          exit 1
+        fi
+
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup Go
@@ -62,7 +121,6 @@ jobs:
         go test -v -race -p 1 -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
         go test -v -race -p 1 -timeout 15m ./internal/pcv3publication/...
         GOMAXPROCS=1 go test -v -race -p 1 -timeout 15m ./internal/pcv3operation/internal/pcv3unicode/...
-        go test -v -race -count=1 -p 1 -timeout 60m ./internal/pcv3operation/internal/pcv3/... ./internal/pcv3operation/internal/pcv3credential/... ./internal/pcv3operation/... ./internal/pcv3operation/internal/pcv3recovery/... ./internal/pcv3operation/internal/pcv3artifact/... ./internal/pcv3operation/internal/pcv3resource/... ./internal/app/...
         go test -v -race -p 1 -timeout 15m ./internal/volume/...
         go test -v -p 1 -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...
 
