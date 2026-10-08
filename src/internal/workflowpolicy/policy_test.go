@@ -865,11 +865,36 @@ func TestLinuxUPXDownloadsRemainChecksumGated(t *testing.T) {
 	}
 }
 
-func TestLinuxPRAggregateGateIgnoresCancelledDuplicate(t *testing.T) {
+func TestLinuxPRGatesRequireEveryNativeTestGroup(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-linux.yml")
 	gate := mustJob(t, workflow, "pr-test-build-linux")
 	if gate.If != "${{ always() && !cancelled() }}" {
 		t.Fatalf("Linux aggregate if = %q, want cancellation-aware always gate", gate.If)
+	}
+
+	if gate.Needs != "build" {
+		t.Fatalf("Linux aggregate needs = %#v, want build matrix", gate.Needs)
+	}
+	build := mustJob(t, workflow, "build")
+	if build.Needs != "tests" || build.If != "${{ always() && !cancelled() }}" || build.Name != "pr-test-build-linux-${{ matrix.arch }}" {
+		t.Fatalf("native build must retain its check names and fail explicitly after failed test groups: %+v", build)
+	}
+	buildCheck := mustStepNamed(t, build, "Require all native Linux test groups to pass")
+	if build.Steps[0].Name != buildCheck.Name || buildCheck.If != "" ||
+		(build.ContinueOnError != nil && build.ContinueOnError != false) ||
+		(buildCheck.ContinueOnError != nil && buildCheck.ContinueOnError != false) {
+		t.Fatal("native build must fail immediately when a required test group fails")
+	}
+	mustContainInOrder(t, buildCheck.Run, `if [ "${{ needs.tests.result }}" != "success" ]; then`, "exit 1")
+	tests := mustJob(t, workflow, "tests")
+	if tests.If != "" || tests.Strategy.FailFast == nil || *tests.Strategy.FailFast || (tests.ContinueOnError != nil && tests.ContinueOnError != false) {
+		t.Fatal("all native test groups must execute and propagate failures")
+	}
+	lanes := tests.Strategy.Matrix.Include
+	if len(lanes) != 3 || lanes[0].Arch != "amd64" || lanes[0].Runner != "ubuntu-24.04" || lanes[0].Shard != 0 ||
+		lanes[1].Arch != "amd64" || lanes[1].Runner != "ubuntu-24.04" || lanes[1].Shard != 1 ||
+		lanes[2].Arch != "arm64" || lanes[2].Runner != "ubuntu-24.04-arm" || lanes[2].Shard != 0 {
+		t.Fatalf("native Linux lanes = %+v, want both AMD64 race shards and native ARM64", lanes)
 	}
 
 	check := mustStepNamed(t, gate, "Require all Linux matrix jobs to pass")
@@ -887,17 +912,49 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 	} {
 		t.Run(path, func(t *testing.T) {
 			workflow := mustReadWorkflowDoc(t, path)
-			testStep := mustStepNamed(t, mustJob(t, workflow, "build"), "Run tests")
+			build := mustJob(t, workflow, "build")
+			testStep := mustStepNamed(t, build, "Run tests")
+			testRun := testStep.Run
+			raceSelector := "./..."
+			if path == ".github/workflows/pr-test-build-linux.yml" {
+				raceStep := mustStepNamed(t, mustJob(t, workflow, "tests"), "Run native tests")
+				if raceStep.Env["SHARD_INDEX"] != "${{ matrix.shard }}" {
+					t.Fatal("native race shard selection must follow its matrix index")
+				}
+				if raceStep.If != "" || (raceStep.ContinueOnError != nil && raceStep.ContinueOnError != false) {
+					t.Fatal("native test execution must be unconditional and propagate failures")
+				}
+				if testStep.If != "matrix.arch == 'amd64'" || (testStep.ContinueOnError != nil && testStep.ContinueOnError != false) ||
+					!strings.Contains(testStep.Run, "-count=1") {
+					t.Fatal("the native AMD64 CLI integration must execute uncached and propagate failures")
+				}
+				for _, required := range []string{
+					"set -euo pipefail",
+					"CGO_ENABLED=1 go list -race -tags migrated_fynedo ./... | LC_ALL=C sort",
+					"if [ -z \"$packages\" ]; then",
+					"index % 2 == SHARD_INDEX",
+					"selected+=(\"$package\")",
+					"if (( ${#selected[@]} == 0 )); then",
+					"PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -count=1 -tags migrated_fynedo -p 1 -timeout 15m ./...",
+				} {
+					mustContain(t, raceStep.Run, required)
+				}
+				testRun = raceStep.Run + "\n" + testRun
+				raceSelector = `"${selected[@]}"`
+			}
 
 			raceLineIndex := -1
 			integrationLineIndex := -1
 			raceLineCount := 0
 			integrationLineCount := 0
-			for lineIndex, line := range strings.Split(testStep.Run, "\n") {
+			for lineIndex, line := range strings.Split(testRun, "\n") {
 				if strings.Contains(line, "go test") && strings.Contains(line, "-race") {
+					if path == ".github/workflows/pr-test-build-linux.yml" && !strings.Contains(line, "-count=1") {
+						t.Fatal("native PR race shards must execute against the current runner")
+					}
 					raceLineCount++
 					raceLineIndex = lineIndex
-					for _, required := range []string{"-p 1", "-timeout 15m", "./..."} {
+					for _, required := range []string{"-p 1", "-timeout 15m", raceSelector} {
 						if !strings.Contains(line, required) {
 							t.Fatalf("Linux race test line %q is missing %q", strings.TrimSpace(line), required)
 						}
@@ -1797,7 +1854,10 @@ func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	if got := instrEmulator.With["disk-size"]; got != "2048M" {
 		t.Fatalf("instrumented emulator disk-size = %v, want 2048M", got)
 	}
-	wantScript := `TEST_CLASSES="` + focusedClasses + `"; { [ "${{ inputs.test_scope }}" = "extended" ] && TEST_CLASSES="$TEST_CLASSES,` + extendedClass + `"; } || true; ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$TEST_CLASSES"`
+	wantScript := `case "$PICOCRYPT_TEST_SCOPE" in focused|extended) ;; *) echo "Unsupported test scope" >&2; exit 1 ;; esac; bash ../.github/scripts/run-android-device-tests.sh 36 ` + strings.ReplaceAll(focusedClasses, ",", " ") + ` ${{ inputs.test_scope == 'extended' && '` + extendedClass + `' || '' }}`
+	if got := instrEmulator.Env["PICOCRYPT_TEST_SCOPE"]; got != "${{ inputs.test_scope }}" {
+		t.Fatalf("instrumented scope env = %q, want dispatch input", got)
+	}
 	if got := instrEmulator.With["script"]; got != wantScript {
 		t.Fatalf("instrumented script = %#v, want exact focused and extended selectors %q", got, wantScript)
 	}
@@ -1859,6 +1919,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 		{path: ".github/workflows/pr-static-checks.yml", job: "static-checks"},
 		{path: ".github/workflows/pr-test-build-android.yml", job: "pr-test-build-android"},
 		{path: ".github/workflows/pr-test-build-linux.yml", job: "build"},
+		{path: ".github/workflows/pr-test-build-linux.yml", job: "tests"},
 		{path: ".github/workflows/pr-test-build-macos.yml", job: "pr-test-build-macos"},
 		{path: ".github/workflows/pr-test-build-windows.yml", job: "pr-test-build-windows"},
 	}

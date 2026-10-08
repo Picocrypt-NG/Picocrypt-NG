@@ -43,6 +43,7 @@ type workflowDispatchInput struct {
 }
 
 type workflowJob struct {
+	Name            string              `yaml:"name"`
 	If              string              `yaml:"if"`
 	Needs           any                 `yaml:"needs"`
 	RunsOn          string              `yaml:"runs-on"`
@@ -53,6 +54,16 @@ type workflowJob struct {
 	Permissions     map[string]string   `yaml:"permissions"`
 	Env             map[string]string   `yaml:"env"`
 	Steps           []workflowStep      `yaml:"steps"`
+	Strategy        struct {
+		FailFast *bool `yaml:"fail-fast"`
+		Matrix   struct {
+			Include []struct {
+				Arch   string `yaml:"arch"`
+				Runner string `yaml:"runner"`
+				Shard  int    `yaml:"shard"`
+			} `yaml:"include"`
+		} `yaml:"matrix"`
+	} `yaml:"strategy"`
 }
 
 type workflowConcurrency struct {

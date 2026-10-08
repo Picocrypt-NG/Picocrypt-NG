@@ -13,8 +13,76 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  tests:
+    name: Linux native tests (${{ matrix.arch }}, shard ${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            shard: 0
+          - arch: amd64
+            runner: ubuntu-24.04
+            shard: 1
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            shard: 0
+    runs-on: ${{ matrix.runner }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Setup Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: "1.27.1"
+        cache-dependency-path: src/go.sum
+
+    - name: Install packages
+      run: |
+        sudo apt update
+        sudo apt install -y gcc pkg-config libgl1-mesa-dev xorg-dev libgtk-3-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev
+
+    - name: Install dependencies
+      run: |
+        cd src
+        go mod download
+
+    - name: Run native tests
+      env:
+        SHARD_INDEX: ${{ matrix.shard }}
+      run: |
+        set -euo pipefail
+        cd src
+        if [ "${{ matrix.arch }}" = "amd64" ]; then
+          packages=$(CGO_ENABLED=1 go list -race -tags migrated_fynedo ./... | LC_ALL=C sort)
+          if [ -z "$packages" ]; then
+            echo "No native Linux packages discovered"
+            exit 1
+          fi
+          selected=()
+          index=0
+          while IFS= read -r package; do
+            if (( index % 2 == SHARD_INDEX )); then
+              selected+=("$package")
+            fi
+            index=$((index + 1))
+          done <<< "$packages"
+          if (( ${#selected[@]} == 0 )); then
+            echo "No native Linux packages assigned to shard $SHARD_INDEX/2"
+            exit 1
+          fi
+          printf 'AMD64 race shard %s/2: %s of %s packages\n' "$SHARD_INDEX" "${#selected[@]}" "$index"
+          printf '%s\n' "${selected[@]}"
+          CGO_ENABLED=1 go test -v -count=1 -tags migrated_fynedo -race -p 1 -timeout 15m "${selected[@]}"
+        else
+          PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -count=1 -tags migrated_fynedo -p 1 -timeout 15m ./...
+        fi
+
   build:
     name: pr-test-build-linux-${{ matrix.arch }}
+    needs: tests
+    if: ${{ always() && !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +105,13 @@ jobs:
             build_deb: "false"
     runs-on: ${{ matrix.runner }}
     steps:
+    - name: Require all native Linux test groups to pass
+      run: |
+        if [ "${{ needs.tests.result }}" != "success" ]; then
+          echo "Linux native test result: ${{ needs.tests.result }}"
+          exit 1
+        fi
+
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup Go
@@ -102,17 +177,10 @@ jobs:
           go test -p=1 -count=1 -tags pcv3_unicode_conformance ./internal/pcv3operation/internal/pcv3unicode
 
     - name: Run tests
+      if: matrix.arch == 'amd64'
       run: |
         cd src
-        if [ "${{ matrix.arch }}" = "amd64" ]; then
-          # Under -race, concurrent Argon2 volume and Fyne package tests exceed the
-          # runner's RAM, so run package binaries one at a time. Only the opt-in CLI
-          # integration parent runs separately with its non-race product binary.
-          CGO_ENABLED=1 go test -v -tags migrated_fynedo -race -p 1 -timeout 15m ./...
-          PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -timeout 15m -run '^TestCLIIntegration$' ./internal/cli/...
-        else
-          PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -tags migrated_fynedo -timeout 15m ./...
-        fi
+        PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -count=1 -p 1 -timeout 15m -run '^TestCLIIntegration$' ./internal/cli/...
 
     - name: Build GUI
       run: |

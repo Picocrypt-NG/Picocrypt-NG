@@ -58,17 +58,6 @@ jobs:
         retention-days: 1
         if-no-files-found: error
 
-    - name: Diagnose repeated native archive KDF admission
-      if: matrix.group == 1
-      timeout-minutes: 62
-      run: |
-        cd src
-        test_binary="$RUNNER_TEMP/pcv3-native-archive.test"
-        go test -c -p 1 -o "$test_binary" ./internal/pcv3operation/internal/pcv3
-        sudo -n /usr/sbin/purge
-        cd internal/pcv3operation/internal/pcv3
-        "$test_binary" -test.v -test.count=1 -test.paniconexit0 -test.timeout=60m -test.run '^TestNativePrepareArchiveUsesAuthenticatedPlaintext$'
-
     - name: Run native test group
       run: bash .github/scripts/test-macos-pcv3.sh "$SHARD_INDEX" "$SHARD_COUNT"
       env:

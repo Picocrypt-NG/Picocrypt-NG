@@ -111,6 +111,8 @@ jobs:
         sudo udevadm trigger --name-match=kvm
 
     - name: Run focused instrumented tests
+      env:
+        PICOCRYPT_TEST_SCOPE: ${{ inputs.test_scope }}
       uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
       with:
         # API 36 matches targetSdk and exercises current-runtime UI behavior plus
@@ -128,7 +130,23 @@ jobs:
         # Single-line: the runner executes each script line in its own `sh -c`,
         # so multi-line `cd`/`if`/`fi` constructs do not persist across lines.
         working-directory: android
-        script: TEST_CLASSES="io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.DecryptOptionsCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ErrorDialogTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.FileCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest"; { [ "${{ inputs.test_scope }}" = "extended" ] && TEST_CLASSES="$TEST_CLASSES,io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest"; } || true; ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$TEST_CLASSES"
+        script: >-
+          case "$PICOCRYPT_TEST_SCOPE" in focused|extended) ;; *) echo "Unsupported test scope" >&2; exit 1 ;; esac;
+          bash ../.github/scripts/run-android-device-tests.sh 36
+          io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest
+          io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest
+          io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest
+          io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest
+          io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest
+          io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest
+          io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest
+          io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest
+          io.github.picocrypt_ng.picocrypt_ng.ui.components.DecryptOptionsCardTest
+          io.github.picocrypt_ng.picocrypt_ng.ui.components.ErrorDialogTest
+          io.github.picocrypt_ng.picocrypt_ng.ui.components.FileCardTest
+          io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest
+          io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest
+          ${{ inputs.test_scope == 'extended' && 'io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest' || '' }}
 
     - name: Upload instrumented test report
       if: always()
@@ -136,6 +154,7 @@ jobs:
       with:
         name: instrumented-test-report
         path: |
+          android/app/build/ci-device-tests/
           android/app/build/reports/androidTests/connected/
           android/app/build/outputs/androidTest-results/connected/
         if-no-files-found: warn
