@@ -333,11 +333,11 @@ type d1ForceCandidateAnalysis struct {
 }
 
 type d1ForceSelection struct {
-	analysis             *d1ForceCandidateAnalysis
-	provenance           D1BootstrapProvenance
-	bootstrapHealthy     bool
-	outerHealthy         bool
-	requiresRawAuthority bool
+	analysis         *d1ForceCandidateAnalysis
+	provenance       D1BootstrapProvenance
+	bootstrapHealthy bool
+	outerHealthy     bool
+	outerProvenance  D1OuterProvenance
 }
 
 func analyzeD1ForceCandidate(
@@ -521,7 +521,7 @@ func selectD1ForceCandidateWithPreanalysis(
 			if request.authorizesRawOuter(candidate.role) {
 				selectedIndex = index
 				selection.provenance = d1BootstrapProvenanceForRole(candidate.role)
-				selection.requiresRawAuthority = true
+				selection.outerProvenance = D1OuterProvenanceRawSelected
 				break
 			}
 		}
@@ -613,6 +613,7 @@ func authenticatedD1BootstrapProvenance(
 func mapD1ForceInnerResult(
 	selection d1ForceSelection,
 	innerResult *RecoveryResult,
+	innerRecords recoveryRecordAnalysis,
 ) (*RecoveryResult, error) {
 	if selection.analysis == nil || innerResult == nil ||
 		selection.provenance == D1BootstrapProvenanceNone {
@@ -621,6 +622,17 @@ func mapD1ForceInnerResult(
 
 	if innerResult.outcome == OutcomeOperationFailed && innerResult.stage == StageResourceBudget {
 		return recoveryOperationFailure(StageResourceBudget), nil
+	}
+	if selection.outerProvenance == D1OuterProvenanceRawSelected &&
+		(innerResult.outcome == OutcomeSuccess || innerResult.outcome == OutcomeAuthenticatedDegraded ||
+			innerResult.outcome == OutcomeForcePartial || innerResult.outcome == OutcomeForceUnverified) {
+		stage := StageD1Body
+		if !selection.bootstrapHealthy {
+			stage = StageD1Bootstrap
+		}
+		return newD1RawSelectedRecoveryResult(
+			stage, selection.provenance, innerResult.stage, innerRecords.ranges, innerRecords.final,
+		)
 	}
 	if innerResult.outcome == OutcomeSuccess {
 		switch {

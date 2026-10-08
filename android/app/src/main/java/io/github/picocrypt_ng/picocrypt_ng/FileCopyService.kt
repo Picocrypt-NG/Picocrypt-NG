@@ -17,7 +17,6 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
-import java.io.InputStream
 
 object FileCopyService {
     private const val INTERNAL_FILES_DIR = "picocrypt_files"
@@ -88,6 +87,7 @@ object FileCopyService {
         publisher: AtomicFilePublisher,
         afterAcquire: suspend () -> Unit,
         afterPublish: suspend () -> Unit,
+        source: AndroidStagingSource = AndroidStagingSource(context),
     ): Result<String> {
         inputCopyMutex.lock()
         return try {
@@ -126,13 +126,7 @@ object FileCopyService {
                             ?: throw IOException("Could not identify incomplete input copy")
                         incompleteIdentity = ownedIncompleteIdentity
 
-                        val inputStream: InputStream = context.contentResolver.openInputStream(uri)
-                            ?: throw IOException("Could not open input stream for URI: $uri")
-                        inputStream.use { input ->
-                            FileOutputStream(ownedIncompleteFile).use { output ->
-                                input.copyTo(output)
-                            }
-                        }
+                        copyProviderInput(context, uri, ownedIncompleteFile, source)
                         currentCoroutineContext().ensureActive()
 
                         val publication = publisher.publishNoReplace(ownedIncompleteFile, destFile, ownedIncompleteIdentity)
@@ -197,8 +191,10 @@ object FileCopyService {
         context: Context,
         uri: Uri,
         index: Int,
-        afterAcquire: suspend () -> Unit,
-        afterPublish: suspend () -> Unit,
+        afterAcquire: suspend () -> Unit = {},
+        afterPublish: suspend () -> Unit = {},
+        publisher: AtomicFilePublisher = AndroidAtomicFilePublisher,
+        source: AndroidStagingSource = AndroidStagingSource(context),
     ): Result<String> {
         keyfileCopyMutex.lock()
         return try {
@@ -206,18 +202,21 @@ object FileCopyService {
             val internalDir = File(context.filesDir, INTERNAL_FILES_DIR)
             val destFile = File(internalDir, "keyfile_$index")
             var incompleteFile: File? = null
-            var published = false
+            var incompleteIdentity: FileIdentity? = null
+            var publishedIdentity: FileIdentity? = null
             var resultDelivered = false
 
             try {
                 val result = withContext(Dispatchers.IO) {
-                    val copyResult = try {
-                        if ((!internalDir.exists() && !internalDir.mkdirs()) || !internalDir.isDirectory) {
+                    try {
+                        if ((!internalDir.exists() && !internalDir.mkdirs()) ||
+                            !internalDir.isDirectory ||
+                            internalDir.canonicalFile != File(context.filesDir.canonicalFile, INTERNAL_FILES_DIR)
+                        ) {
                             throw IOException("Could not create internal keyfile directory")
                         }
-                        if (destFile.exists()) {
-                            throw IOException("Keyfile target already exists")
-                        }
+
+                        if (destFile.exists()) throw IOException("Keyfile target already exists")
 
                         val ownedIncompleteFile = File.createTempFile(
                             "keyfile_${index}_",
@@ -225,56 +224,82 @@ object FileCopyService {
                             internalDir,
                         )
                         incompleteFile = ownedIncompleteFile
-                        val inputStream: InputStream = context.contentResolver.openInputStream(uri)
-                            ?: throw IOException("Could not open input stream for URI: $uri")
+                        val ownedIncompleteIdentity = publisher.identity(ownedIncompleteFile)
+                            ?: throw IOException("Could not identify incomplete keyfile copy")
+                        incompleteIdentity = ownedIncompleteIdentity
 
-                        inputStream.use { input ->
-                            FileOutputStream(ownedIncompleteFile).use { output ->
-                                input.copyTo(output)
-                            }
-                        }
+                        copyProviderInput(context, uri, ownedIncompleteFile, source)
                         currentCoroutineContext().ensureActive()
-                        if (destFile.exists()) {
-                            throw IOException("Keyfile target was claimed during copy")
-                        }
 
-                        // Both paths share a directory, so the complete file becomes visible in one rename.
-                        if (!ownedIncompleteFile.renameTo(destFile)) {
-                            throw IOException("Could not publish copied keyfile")
+                        val publication = publisher.publishNoReplace(ownedIncompleteFile, destFile, ownedIncompleteIdentity)
+                        if (publication != InputCopyPublication.PUBLISHED && publication != InputCopyPublication.PUBLISHED_ERROR) {
+                            throw IOException("Keyfile publication was not confirmed")
                         }
-                        published = true
+                        publishedIdentity = ownedIncompleteIdentity
+                        // Confirmed native publication consumed the source name. A new
+                        // file at that name belongs to a different owner.
+                        incompleteIdentity = null
+                        if (publisher.identity(destFile) != ownedIncompleteIdentity) {
+                            throw IOException("Published keyfile identity does not match its complete copy")
+                        }
+                        if (publication == InputCopyPublication.PUBLISHED_ERROR) {
+                            throw IOException("Keyfile publication completed with an error")
+                        }
+                        afterPublish()
                         Result.success(destFile.absolutePath)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         Result.failure(copyFailed(context, e.message))
-                    } finally {
-                        if (!published) {
-                            incompleteFile?.delete()
-                        }
                     }
-
-                    if (copyResult.isSuccess) {
-                        afterPublish()
-                    }
-                    copyResult
                 }
-                resultDelivered = true
+                resultDelivered = result.isSuccess
                 result
             } finally {
                 if (!resultDelivered) {
-                    // Cancellation can arrive after rename while the IO result is dispatched
-                    // back to the caller. Clean up before releasing ownership of this slot.
+                    // Until the successful result reaches KeyfileCard this service remains
+                    // the sole owner. A cancelled dispatcher handoff must not leak either
+                    // name, and an identity mismatch must never delete a replacement.
                     withContext(NonCancellable + Dispatchers.IO) {
-                        incompleteFile?.delete()
-                        if (published) {
-                            destFile.delete()
-                        }
+                        deleteIfOwned(incompleteFile, incompleteIdentity, publisher)
+                        deleteIfOwned(destFile, publishedIdentity, publisher)
                     }
                 }
             }
         } finally {
             keyfileCopyMutex.unlock()
+        }
+    }
+
+    private suspend fun copyProviderInput(
+        context: Context,
+        uri: Uri,
+        destination: File,
+        source: AndroidStagingSource,
+    ) = source.withCancellation {
+        val buffer = ByteArray(64 * 1024)
+        try {
+            val input = source.open(uri)
+            try {
+                FileOutputStream(destination).use { output ->
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val count = input.read(buffer)
+                        currentCoroutineContext().ensureActive()
+                        if (count == -1) break
+                        if (count <= 0 || count > buffer.size) throw IOException("Invalid source read progress")
+                        val usable = context.filesDir.usableSpace
+                        if (usable < StagingService.SPACE_MARGIN_BYTES ||
+                            count.toLong() > usable - StagingService.SPACE_MARGIN_BYTES
+                        ) throw IOException("Insufficient storage for source copy")
+                        output.write(buffer, 0, count)
+                    }
+                }
+            } finally {
+                source.close(input)
+            }
+        } finally {
+            buffer.fill(0)
         }
     }
 

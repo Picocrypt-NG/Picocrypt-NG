@@ -1235,7 +1235,6 @@ func TestPCV3StartRejectsExistingOutputWithoutOverwriteModal(t *testing.T) {
 		a.State.AllFiles = []string{input}
 		a.State.OnlyFiles = []string{input}
 		a.State.OutputFile = output
-		a.State.CreatePCV3 = true
 		a.State.Password = "password"
 		a.State.CPassword = "password"
 		a.State.SetInputSelection(1, 0, int64(len("plaintext")), true)
@@ -1245,8 +1244,8 @@ func TestPCV3StartRejectsExistingOutputWithoutOverwriteModal(t *testing.T) {
 	if calls.Load() != 0 || a.overwriteModal != nil {
 		t.Fatalf("occupied PCV3 output reached executor/modal: calls=%d modal=%v", calls.Load(), a.overwriteModal != nil)
 	}
-	if !strings.Contains(a.State.UISnapshot().MainStatus, "already exists") {
-		t.Fatalf("occupied PCV3 status = %q", a.State.UISnapshot().MainStatus)
+	if !strings.Contains(a.State.UISnapshot().Status.Text, "already exists") {
+		t.Fatalf("occupied PCV3 status = %q", a.State.UISnapshot().Status.Text)
 	}
 	if got, err := os.ReadFile(output); err != nil || !bytes.Equal(got, sentinel) {
 		t.Fatalf("occupied PCV3 start changed output: %q err=%v", got, err)
@@ -1287,8 +1286,8 @@ func TestCreateReporterCallbacksUpdateStateAndCancelButton(t *testing.T) {
 
 	fyne.DoAndWait(func() {})
 
-	if a.State.PopupStatus != "Encrypting..." {
-		t.Fatalf("PopupStatus = %q; want %q", a.State.PopupStatus, "Encrypting...")
+	if a.State.UISnapshot().PopupStatus.Text != "Encrypting..." {
+		t.Fatalf("PopupStatus = %q; want %q", a.State.UISnapshot().PopupStatus.Text, "Encrypting...")
 	}
 	if a.State.Progress != 0.5 {
 		t.Fatalf("Progress = %v; want 0.5", a.State.Progress)

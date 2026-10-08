@@ -877,28 +877,31 @@ func TestRecoveryCredentialConsumesFactorsOnceAcrossTwoTuples(t *testing.T) {
 			probe := newRecoveryCredentialProbe()
 			transfer := bytes.Repeat([]byte{0x5a}, derivedKeyBytes)
 
-			owner, err := newRecoveryCredential(
+			owner, err := newRecoveryCredentialSession(
 				context.Background(),
 				&RecoveryCredentialRequest{
 					Factors: factors,
 					Tuples:  []RecoveryCredentialTuple{first, second},
 				},
 				probe.reader.admit,
-				func(index int, candidate *ReaderCredential) error {
-					probe.callbackOrder = append(probe.callbackOrder, index)
-					if index == 0 {
-						return candidate.AdoptVolumeKey(transfer)
+				func(session *RecoverySession) error {
+					for index := range 2 {
+						probe.callbackOrder = append(probe.callbackOrder, index)
+						if err := session.WithTupleKeys(context.Background(), index,
+							KeyRolePrimary, func(*ReaderKeys) error { return nil }); err != nil {
+							return err
+						}
 					}
-					return candidate.WithKeys(
-						context.Background(),
-						KeyRolePrimary,
-						func(*ReaderKeys) error { return nil },
-					)
+					candidate, err := session.BindCandidate(context.Background(), 0, transfer)
+					if err != nil {
+						return err
+					}
+					return session.Select(candidate)
 				},
 				probe.seams(),
 			)
 			if err != nil {
-				t.Fatalf("newRecoveryCredential: %v", err)
+				t.Fatalf("newRecoveryCredentialSession: %v", err)
 			}
 			if owner == nil {
 				t.Fatal("selected recovery candidate published no owner")
@@ -1006,7 +1009,7 @@ func TestRecoveryAdmissionOccursAtEveryKDFBoundary(t *testing.T) {
 			wantStage:      PipelineStageAdmission,
 			wantAdmission:  2,
 			wantKDF:        1,
-			wantCallbacks:  []int{0},
+			wantCallbacks:  nil,
 			wantBoundaries: []int{0, 1},
 		},
 		{
@@ -1017,7 +1020,7 @@ func TestRecoveryAdmissionOccursAtEveryKDFBoundary(t *testing.T) {
 			wantStage:          PipelineStageKDF,
 			wantAdmission:      1,
 			wantKDF:            1,
-			wantCallbacks:      []int{0},
+			wantCallbacks:      nil,
 			wantBoundaries:     []int{0, 1},
 		},
 		{
@@ -1028,7 +1031,7 @@ func TestRecoveryAdmissionOccursAtEveryKDFBoundary(t *testing.T) {
 			wantStage:          PipelineStageKeyDerivation,
 			wantAdmission:      2,
 			wantKDF:            2,
-			wantCallbacks:      []int{0},
+			wantCallbacks:      nil,
 			wantBoundaries:     []int{0, 1},
 		},
 	}
@@ -1066,23 +1069,27 @@ func TestRecoveryAdmissionOccursAtEveryKDFBoundary(t *testing.T) {
 					cancel()
 				}
 			}
-			transfer := bytes.Repeat([]byte{0x5a}, derivedKeyBytes)
+			var transfer []byte
 			callbacks := make([]int, 0, 2)
 
-			owner, err := newRecoveryCredential(
+			owner, err := newRecoveryCredentialSession(
 				ctx,
 				request,
 				probe.reader.admit,
-				func(index int, candidate *ReaderCredential) error {
-					callbacks = append(callbacks, index)
-					if index == 0 {
-						return candidate.AdoptVolumeKey(transfer)
+				func(session *RecoverySession) error {
+					for index := range 2 {
+						callbacks = append(callbacks, index)
+						if err := session.WithTupleKeys(ctx, index,
+							KeyRolePrimary, func(*ReaderKeys) error { return nil }); err != nil {
+							return err
+						}
 					}
-					return candidate.WithKeys(
-						context.Background(),
-						KeyRolePrimary,
-						func(*ReaderKeys) error { return nil },
-					)
+					transfer = bytes.Repeat([]byte{0x5a}, derivedKeyBytes)
+					candidate, err := session.BindCandidate(ctx, 0, transfer)
+					if err != nil {
+						return err
+					}
+					return session.Select(candidate)
 				},
 				seams,
 			)
@@ -1092,7 +1099,7 @@ func TestRecoveryAdmissionOccursAtEveryKDFBoundary(t *testing.T) {
 					if owner != nil {
 						owner.Close()
 					}
-					t.Fatalf("newRecoveryCredential: %v", err)
+					t.Fatalf("newRecoveryCredentialSession: %v", err)
 				}
 			} else {
 				requirePipelineCode(t, err, test.wantCode, test.wantStage)
@@ -1186,11 +1193,11 @@ func TestRecoveryCredentialRejectsTupleSetBeforeKDF(t *testing.T) {
 			test.edit(request)
 			probe := newRecoveryCredentialProbe()
 			callbackCalls := 0
-			owner, err := newRecoveryCredential(
+			owner, err := newRecoveryCredentialSession(
 				context.Background(),
 				request,
 				probe.reader.admit,
-				func(int, *ReaderCredential) error {
+				func(*RecoverySession) error {
 					callbackCalls++
 					return nil
 				},
@@ -1311,7 +1318,7 @@ func TestRecoveryCredentialCallbackExitClearsCandidateState(t *testing.T) {
 			var recovered any
 			func() {
 				defer func() { recovered = recover() }()
-				owner, err = newRecoveryCredential(
+				owner, err = newRecoveryCredentialSession(
 					ctx,
 					&RecoveryCredentialRequest{
 						Factors: factors,
@@ -1320,9 +1327,13 @@ func TestRecoveryCredentialCallbackExitClearsCandidateState(t *testing.T) {
 						},
 					},
 					probe.reader.admit,
-					func(_ int, candidate *ReaderCredential) error {
-						if adoptErr := candidate.AdoptVolumeKey(transfer); adoptErr != nil {
-							return adoptErr
+					func(session *RecoverySession) error {
+						candidate, bindErr := session.BindCandidate(ctx, 0, transfer)
+						if bindErr != nil {
+							return bindErr
+						}
+						if selectErr := session.Select(candidate); selectErr != nil {
+							return selectErr
 						}
 						return test.callback(cancel)
 					},

@@ -11,7 +11,7 @@ import (
 )
 
 func openPCV3Regular(path string) (*os.File, error) {
-	file, err := openPCV3Existing(path, os.O_RDONLY)
+	file, err := openPCV3Existing(path)
 	if err != nil {
 		return nil, err
 	}

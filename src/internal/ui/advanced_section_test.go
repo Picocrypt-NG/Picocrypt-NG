@@ -91,10 +91,6 @@ func TestNativeGUIEncryptsPCV3(t *testing.T) {
 	a.advancedContainer = container.NewVBox()
 	a.updateAdvancedSection()
 
-	if !a.State.CreatePCV3 {
-		t.Fatal("new native encryption must default to PCV3")
-	}
-
 	input, err := a.captureOperationInput(a.State.Snapshot())
 	if err != nil {
 		t.Fatalf("capture GUI operation: %v", err)
@@ -446,7 +442,6 @@ func TestEncryptAdvancedOptionsNeverSoftLock(t *testing.T) {
 
 	t.Run("PCV3D1KeepsArchiveOptionsAvailable", func(t *testing.T) {
 		a := newEncryptAppWithCredentials(t)
-		a.State.CreatePCV3 = true
 		a.State.Deniability = true
 		a.State.Paranoid = true
 		recompute(a)
@@ -516,7 +511,6 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 
 	t.Run("PCV3 encrypt", func(t *testing.T) {
 		a := createTestApp(t)
-		a.State.CreatePCV3 = true
 		a.advancedContainer = container.NewVBox()
 		a.buildEncryptOptionsInto(a.advancedContainer)
 

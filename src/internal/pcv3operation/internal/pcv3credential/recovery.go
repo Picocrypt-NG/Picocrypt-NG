@@ -26,7 +26,7 @@ type RecoveryCredentialTuple struct {
 }
 
 // RecoveryCredentialRequest transfers one factor request and one or two
-// already-bounded public tuples to WithRecoveryCredential.
+// already-bounded public tuples to WithRecoveryCredentialSession.
 type RecoveryCredentialRequest struct {
 	Factors *FactorRequest
 	Tuples  []RecoveryCredentialTuple
@@ -251,28 +251,6 @@ func (session *RecoverySession) Select(candidate *RecoveryVolumeCandidate) error
 	return nil
 }
 
-// WithRecoveryCredential validates factors once and evaluates the complete
-// bounded tuple set sequentially. At most one adopted Owner may escape after
-// every tuple callback succeeds.
-func WithRecoveryCredential(
-	ctx context.Context,
-	request *RecoveryCredentialRequest,
-	admitter Admitter,
-	callback func(int, *ReaderCredential) error,
-) (*Owner, error) {
-	return newRecoveryCredential(
-		ctx,
-		request,
-		admitter,
-		callback,
-		readerCredentialSeams{
-			derive:  deriveArgon2ID,
-			extract: defaultHKDFExtract,
-			expand:  defaultHKDFExpand,
-		},
-	)
-}
-
 // WithRecoveryCredentialSession derives the complete bounded tuple set before
 // lending one two-step recovery session. Selection is optional; when present,
 // exactly one session-bound candidate becomes the returned Owner.
@@ -319,67 +297,6 @@ func WithD1RecoveryCredentialSession(
 			expand:  defaultHKDFExpand,
 		},
 	)
-}
-
-func newRecoveryCredential(
-	ctx context.Context,
-	request *RecoveryCredentialRequest,
-	admitter Admitter,
-	callback func(int, *ReaderCredential) error,
-	seams readerCredentialSeams,
-) (*Owner, error) {
-	var selected *Owner
-	completed := false
-	defer func() {
-		if !completed && selected != nil {
-			selected.Close()
-		}
-	}()
-
-	var consumer recoveryReaderConsumer
-	if callback != nil {
-		consumer = func(index int, reader *ReaderCredential) (bool, error) {
-			if err := callback(index, reader); err != nil {
-				return false, newPipelineError(
-					PipelineErrorCallback,
-					PipelineStageCallback,
-					reader.state.metadata.Suite,
-				)
-			}
-			if ctx.Err() != nil {
-				return false, newPipelineError(
-					PipelineErrorCancelled,
-					PipelineStageCallback,
-					reader.state.metadata.Suite,
-				)
-			}
-			owner := reader.takeOwner()
-			if owner == nil {
-				return false, nil
-			}
-			if selected != nil {
-				owner.Close()
-				return false, newPipelineError(
-					PipelineErrorOwner,
-					PipelineStageOwner,
-					reader.state.metadata.Suite,
-				)
-			}
-			selected = owner
-			return false, nil
-		}
-	}
-	if err := withRecoveryCredentialReaders(
-		ctx,
-		request,
-		admitter,
-		consumer,
-		seams,
-	); err != nil {
-		return nil, err
-	}
-	completed = true
-	return selected, nil
 }
 
 func newRecoveryCredentialSession(
@@ -547,7 +464,7 @@ func (session *RecoverySession) finish(
 }
 
 // withRecoveryCredentialReaders is the single validation, transcript, KDF,
-// and reader-construction driver used by both recovery entry points.
+// and reader-construction driver for ordinary recovery sessions.
 func withRecoveryCredentialReaders(
 	ctx context.Context,
 	request *RecoveryCredentialRequest,

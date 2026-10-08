@@ -155,6 +155,7 @@ type EncryptRequest struct {
     // Input — use InputFile for single file, InputFiles for multiple (auto-zipped)
     InputFile   string
     InputFiles  []string
+    InputIdentities []fileops.ZIPInputIdentity // optional immutable discovery snapshots
     OnlyFolders []string // folders dropped directly (affects zip paths)
     OnlyFiles   []string // files dropped directly (affects zip paths)
     OutputFile  string
@@ -225,6 +226,7 @@ func Decrypt(ctx context.Context, req *DecryptRequest) error
 type PreparedDecryptInput struct { /* unexported */ }
 
 func PrepareDecryptInput(path string, recombine bool) (*PreparedDecryptInput, error)
+func PrepareDecryptInputContext(ctx context.Context, path string, recombine bool) (*PreparedDecryptInput, error)
 func (input *PreparedDecryptInput) ReadLegacyHeader(rs *encoding.RSCodecs) (*header.VolumeHeader, error)
 func (input *PreparedDecryptInput) ValidateOutputAlias(output string) error
 func (input *PreparedDecryptInput) Close() error
@@ -615,9 +617,17 @@ func Unpad(data []byte) []byte
 
 ### Zip
 
+Discovery snapshots bind each selected regular file to its read identity before
+archive work. Explicit symlink following resolves the target once and preserves
+the original entry name. Writers reopen without following a substituted leaf and
+check the descriptor before reading; snapshots do not freeze same-inode writes.
+GUI source-deletion manifests use the same identities as encryption and reject
+a replaced input before work, rather than capturing a separate deletion target.
+
 ```go
 type ZipOptions struct {
     Files      []string
+    InputIdentities []ZIPInputIdentity // optional snapshots in Files order
     RootDir    string
     EntryNames map[string]string
     OutputPath string
@@ -731,6 +741,7 @@ func ChunkSizeToBytes(chunkSize int, unit SplitUnit) (int64, error)
 
 // CountChunks counts how many chunks exist for a base path.
 func CountChunks(basePath string) (int, int64, error)
+func CountChunksWithCancel(basePath string, cancel CancelFunc) (int, int64, error)
 
 // IsSplitChunkPath reports whether path looks like a chunk path (ends in .N).
 func IsSplitChunkPath(path string) bool
@@ -806,6 +817,10 @@ func CreateSecureNoSymlink(path string) (*os.File, error)
 
 // OpenExistingNoSymlink opens an existing file, refusing to follow symlinks.
 func OpenExistingNoSymlink(path string, flag int) (*os.File, error)
+
+// OpenRegularReadNoSymlink returns an owned read-only regular-file descriptor.
+// It rejects leaf symlinks and closes descriptors rejected by its type check.
+func OpenRegularReadNoSymlink(path string) (*os.File, error)
 ```
 
 ### Callback Types
@@ -977,6 +992,10 @@ publication or deletion. Output and archive follow-ups preserve their one-shot
 Go capability semantics. `ArtifactInspection.Metadata` and `Page` expose only
 summary/range metadata; pages contain at most 128 defensive-copy descriptors.
 Inspection shares immutable evidence and remains readable after operation release.
+Raw-selected D1 recovery stays an unverified forensic artifact even when its inner
+records authenticate. Its range/final statuses retain those authentication facts;
+the physical D1 role records the untrusted selection. The artifact layout stays
+unchanged, but older readers may reject this new combination of trust and evidence.
 Recovery uses an 8 MiB allocation budget across candidates; an absent tail is
 represented without allocating or scanning one entry per missing record. Artifact
 parsing and serialization remain private and preserve the existing

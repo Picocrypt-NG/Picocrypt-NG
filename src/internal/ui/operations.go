@@ -31,12 +31,13 @@ type operationInput struct {
 	mode       string
 	pcv3Intent *app.PCV3OperationIntent
 
-	zipBudget   *fileops.ZIPResourceBudget
-	inputFile   string
-	inputFiles  []string
-	onlyFiles   []string
-	onlyFolders []string
-	outputFile  string
+	zipBudget       *fileops.ZIPResourceBudget
+	inputFile       string
+	inputFiles      []string
+	inputIdentities []fileops.ZIPInputIdentity
+	onlyFiles       []string
+	onlyFolders     []string
+	outputFile      string
 
 	password       []byte
 	keyfiles       []string
@@ -47,7 +48,6 @@ type operationInput struct {
 	reedSolomon bool
 	deniability bool
 	compress    bool
-	createPCV3  bool
 
 	split     bool
 	chunkSize int
@@ -100,10 +100,11 @@ type deletionSource struct {
 }
 
 type operationDeletionManifest struct {
-	budget      *fileops.ZIPResourceBudget
-	charged     uint64
-	files       []deletionSource
-	directories []deletionSource
+	budget          *fileops.ZIPResourceBudget
+	charged         uint64
+	files           []deletionSource
+	directories     []deletionSource
+	inputIdentities []fileops.ZIPInputIdentity
 }
 
 func captureDeletionSource(path string, wantDirectory bool) (deletionSource, error) {
@@ -133,7 +134,7 @@ func captureDeletionSource(path string, wantDirectory bool) (deletionSource, err
 			return deletionSource{}, fmt.Errorf("deletion source is no longer a directory: %s", absolute)
 		}
 	} else {
-		file, err := fileops.OpenExistingNoSymlink(absolute, os.O_RDONLY)
+		file, err := fileops.OpenRegularReadNoSymlink(absolute)
 		if err != nil {
 			return deletionSource{}, fmt.Errorf("open deletion source file %q: %w", absolute, err)
 		}
@@ -204,7 +205,7 @@ func captureOperationDeletionManifestWithBudget(ctx context.Context, input opera
 		if base, ok := fileops.SplitChunkBase(inputBase); ok {
 			inputBase = base
 		}
-		numChunks, _, err := fileops.CountChunks(inputBase)
+		numChunks, _, err := fileops.CountChunksWithCancel(inputBase, func() bool { return ctx.Err() != nil })
 		if err != nil {
 			return nil, fmt.Errorf("enumerate split sources: %w", err)
 		}
@@ -227,14 +228,26 @@ func captureOperationDeletionManifestWithBudget(ctx context.Context, input opera
 		}
 	}
 	manifest := &operationDeletionManifest{budget: budget}
+	if input.mode == "encrypt" {
+		var err error
+		manifest.inputIdentities, err = fileops.CaptureZIPInputs(filePaths, input.inputIdentities)
+		if err != nil {
+			return nil, err
+		}
+	}
 	seenFiles := make(map[string]struct{}, len(filePaths))
-	for _, path := range filePaths {
+	for index, path := range filePaths {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		source, err := captureDeletionSource(path, false)
 		if err != nil {
 			return nil, err
+		}
+		if input.mode == "encrypt" {
+			if err := manifest.inputIdentities[index].CheckInfo(source.info); err != nil {
+				return nil, err
+			}
 		}
 		if _, exists := seenFiles[source.path]; exists {
 			continue
@@ -466,7 +479,7 @@ func (a *App) onClickStart() {
 		return
 	}
 	pcv3Output := uiSnap.PCV3Route == app.PCV3RouteReady ||
-		(uiSnap.Mode == "encrypt" && uiSnap.CreatePCV3)
+		uiSnap.Mode == "encrypt"
 	if pcv3Output {
 		if _, err := os.Lstat(uiSnap.OutputFile); err == nil {
 			a.State.SetStatus(
@@ -522,12 +535,13 @@ func validateOperationInputSafety(input operationInput) error {
 	var err error
 	if input.mode == "encrypt" {
 		err = (&volume.EncryptRequest{
-			InputFile:   input.inputFile,
-			InputFiles:  input.inputFiles,
-			OnlyFiles:   input.onlyFiles,
-			OnlyFolders: input.onlyFolders,
-			OutputFile:  input.outputFile,
-			Keyfiles:    input.keyfiles,
+			InputFile:       input.inputFile,
+			InputFiles:      input.inputFiles,
+			InputIdentities: input.inputIdentities,
+			OnlyFiles:       input.onlyFiles,
+			OnlyFolders:     input.onlyFolders,
+			OutputFile:      input.outputFile,
+			Keyfiles:        input.keyfiles,
 		}).ValidateOutputSafety()
 	} else {
 		err = (&volume.DecryptRequest{
@@ -654,31 +668,31 @@ func (a *App) captureOperationInput(snap app.Snapshot) (operationInput, error) {
 	}
 
 	return operationInput{
-		mode:           snap.Mode,
-		inputFile:      snap.InputFile,
-		inputFiles:     append([]string(nil), snap.InputFiles...),
-		onlyFiles:      append([]string(nil), snap.OnlyFiles...),
-		onlyFolders:    append([]string(nil), snap.OnlyFolders...),
-		outputFile:     snap.OutputFile,
-		password:       []byte(snap.Password),
-		keyfiles:       append([]string(nil), snap.Keyfiles...),
-		keyfileOrdered: snap.KeyfileOrdered,
-		comments:       snap.Comments,
-		paranoid:       snap.Paranoid,
-		reedSolomon:    snap.ReedSolomon,
-		deniability:    snap.Deniability,
-		compress:       snap.Compress,
-		createPCV3:     true,
-		split:          snap.Split,
-		chunkSize:      chunkSize,
-		chunkUnit:      splitUnitFromIndex(snap.SplitSelected),
-		forceDecrypt:   snap.Keep,
-		verifyFirst:    snap.VerifyFirst,
-		autoUnzip:      snap.AutoUnzip,
-		sameLevel:      snap.SameLevel,
-		recombine:      snap.Recombine,
-		delete:         snap.Delete,
-		rsCodecs:       a.rsCodecs,
+		mode:            snap.Mode,
+		inputFile:       snap.InputFile,
+		inputFiles:      append([]string(nil), snap.InputFiles...),
+		inputIdentities: append([]fileops.ZIPInputIdentity(nil), snap.InputIdentities...),
+		onlyFiles:       append([]string(nil), snap.OnlyFiles...),
+		onlyFolders:     append([]string(nil), snap.OnlyFolders...),
+		outputFile:      snap.OutputFile,
+		password:        []byte(snap.Password),
+		keyfiles:        append([]string(nil), snap.Keyfiles...),
+		keyfileOrdered:  snap.KeyfileOrdered,
+		comments:        snap.Comments,
+		paranoid:        snap.Paranoid,
+		reedSolomon:     snap.ReedSolomon,
+		deniability:     snap.Deniability,
+		compress:        snap.Compress,
+		split:           snap.Split,
+		chunkSize:       chunkSize,
+		chunkUnit:       splitUnitFromIndex(snap.SplitSelected),
+		forceDecrypt:    snap.Keep,
+		verifyFirst:     snap.VerifyFirst,
+		autoUnzip:       snap.AutoUnzip,
+		sameLevel:       snap.SameLevel,
+		recombine:       snap.Recombine,
+		delete:          snap.Delete,
+		rsCodecs:        a.rsCodecs,
 	}, nil
 }
 
@@ -1589,9 +1603,15 @@ func (a *App) runCapturedOperation(
 		}
 	}
 	if deletionManifest != nil {
+		if input.mode == "encrypt" {
+			// Reading and deleting must use one snapshot, including direct
+			// callers that had no earlier discovery snapshot.
+			input.inputIdentities = deletionManifest.inputIdentities
+		}
 		defer func() {
 			deletionManifest.files = nil
 			deletionManifest.directories = nil
+			deletionManifest.inputIdentities = nil
 			deletionManifest.budget.Release(deletionManifest.charged)
 		}()
 	}
@@ -1621,26 +1641,27 @@ func executeVolumeOperation(
 ) operationResult {
 	if input.mode == "encrypt" {
 		req := &volume.EncryptRequest{
-			InputFile:      input.inputFile,
-			InputFiles:     input.inputFiles,
-			ZIPBudget:      input.zipBudget,
-			OnlyFolders:    input.onlyFolders,
-			OnlyFiles:      input.onlyFiles,
-			OutputFile:     input.outputFile,
-			Password:       input.password,
-			Keyfiles:       input.keyfiles,
-			KeyfileOrdered: input.keyfileOrdered,
-			Comments:       input.comments,
-			Paranoid:       input.paranoid,
-			ReedSolomon:    input.reedSolomon,
-			Deniability:    input.deniability,
-			Compress:       input.compress,
-			PCV3:           true,
-			Split:          input.split,
-			ChunkSize:      input.chunkSize,
-			ChunkUnit:      input.chunkUnit,
-			Reporter:       reporter,
-			RSCodecs:       input.rsCodecs,
+			InputFile:       input.inputFile,
+			InputFiles:      input.inputFiles,
+			InputIdentities: input.inputIdentities,
+			ZIPBudget:       input.zipBudget,
+			OnlyFolders:     input.onlyFolders,
+			OnlyFiles:       input.onlyFiles,
+			OutputFile:      input.outputFile,
+			Password:        input.password,
+			Keyfiles:        input.keyfiles,
+			KeyfileOrdered:  input.keyfileOrdered,
+			Comments:        input.comments,
+			Paranoid:        input.paranoid,
+			ReedSolomon:     input.reedSolomon,
+			Deniability:     input.deniability,
+			Compress:        input.compress,
+			PCV3:            true,
+			Split:           input.split,
+			ChunkSize:       input.chunkSize,
+			ChunkUnit:       input.chunkUnit,
+			Reporter:        reporter,
+			RSCodecs:        input.rsCodecs,
 		}
 		result, err := volume.EncryptWithResult(ctx, req, pcv3operation.ExecutionOptions{})
 		return operationResult{pcv3: result, err: err, completed: err == nil && result != nil && result.CompletionClass() == pcv3operation.CompletionClean, cancelled: errors.Is(err, context.Canceled)}

@@ -53,16 +53,29 @@ type operationObservedReadCloser struct {
 type splitCleanupFailureContext struct {
 	context.Context
 	directory string
-	calls     int
+	cancelled bool
+	setupErr  error
 }
 
 func (ctx *splitCleanupFailureContext) Err() error {
-	ctx.calls++
-	if ctx.calls == 1 {
-		return nil
+	if ctx.cancelled {
+		return context.Canceled
 	}
-	_ = os.Chmod(ctx.directory, 0o500)
-	return context.Canceled
+	entries, err := os.ReadDir(ctx.directory)
+	if err != nil {
+		ctx.setupErr = err
+		return context.Canceled
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".picocrypt-") {
+			// Cancellation must land after the real private stage exists. The
+			// number of earlier discovery cancellation checks is not a contract.
+			ctx.cancelled = true
+			ctx.setupErr = os.Chmod(ctx.directory, 0o500)
+			return context.Canceled
+		}
+	}
+	return nil
 }
 
 func TestSplitPreparationReportsUnremovedRecombineStage(t *testing.T) {
@@ -107,6 +120,9 @@ func TestSplitPreparationReportsUnremovedRecombineStage(t *testing.T) {
 		Factors:   &pcv3credential.FactorRequest{},
 		Target:    filepath.Join(directory, "output"),
 	}, operationSeams{admitter: &operationTestAdmitter{grant: true}})
+	if ctx.setupErr != nil || !ctx.cancelled {
+		t.Fatalf("did not cancel with an owned stage and refused cleanup: reached=%v, %v", ctx.cancelled, ctx.setupErr)
+	}
 	if result == nil || !result.hasWarning(WarningCleanupIncomplete) {
 		t.Fatalf("split cleanup failure result = %v warnings=%v", result, result.Warnings())
 	}

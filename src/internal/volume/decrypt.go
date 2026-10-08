@@ -35,7 +35,7 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 	if err := req.validateInputPath(); err != nil {
 		return err
 	}
-	preparedInput, err := PrepareDecryptInput(req.InputFile, req.Recombine)
+	preparedInput, err := PrepareDecryptInputContext(ctx, req.InputFile, req.Recombine)
 	if err != nil {
 		return err
 	}

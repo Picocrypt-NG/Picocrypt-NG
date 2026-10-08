@@ -41,38 +41,13 @@ type NativeD1WriteRequest struct {
 	Plaintext           io.Reader
 	DestinationPath     string
 	Protected           []string
-	SplitOptions        *fileops.SplitOptions
 	JournalPrivateStage bool
-}
-
-func RunNativeD1Write(ctx context.Context, request *NativeD1WriteRequest) error {
-	publication, _, err := runNativeD1Write(ctx, request, false, false)
-	if err != nil {
-		return err
-	}
-	if publication == nil {
-		return newD1OuterFailure(StageOutputPublication, errInvalidD1Creation)
-	}
-	if publication.State() != pcv3publication.StatePublishedDurable {
-		return publication
-	}
-	return nil
-}
-
-// RunNativeD1WriteRetained transfers the original published ciphertext descriptor.
-// Source remains borrowed. The operation layer owns publication follow-up policy.
-func RunNativeD1WriteRetained(ctx context.Context, request *NativeD1WriteRequest) (pcv3publication.Result, *pcv3publication.RetainedFile, error) {
-	return RunNativeD1WriteWithPublication(ctx, request, true)
 }
 
 // RunNativeD1WriteWithPublication returns typed publication truth and optionally
 // held-descriptor custody. Ciphertext journaling and capability admission are
 // enforced independently of whether a follow-up descriptor is requested.
 func RunNativeD1WriteWithPublication(ctx context.Context, request *NativeD1WriteRequest, retain bool) (pcv3publication.Result, *pcv3publication.RetainedFile, error) {
-	return runNativeD1Write(ctx, request, retain, true)
-}
-
-func runNativeD1Write(ctx context.Context, request *NativeD1WriteRequest, retain, writePublication bool) (pcv3publication.Result, *pcv3publication.RetainedFile, error) {
 	if request == nil {
 		return nil, nil, newD1OuterFailure(StageCredentialPolicy, errInvalidD1Creation)
 	}
@@ -90,11 +65,6 @@ func runNativeD1Write(ctx context.Context, request *NativeD1WriteRequest, retain
 	destinationPath := request.DestinationPath
 	journalPrivateStage := request.JournalPrivateStage
 	protected := append([]string(nil), request.Protected...)
-	var splitOptions *fileops.SplitOptions
-	if request.SplitOptions != nil {
-		copied := *request.SplitOptions
-		splitOptions = &copied
-	}
 	request.Suite = 0
 	request.PayloadKind = 0
 	request.PayloadBodyRS = false
@@ -111,7 +81,6 @@ func runNativeD1Write(ctx context.Context, request *NativeD1WriteRequest, retain
 		request.Protected[index] = ""
 	}
 	request.Protected = nil
-	request.SplitOptions = nil
 	request.JournalPrivateStage = false
 	defer clear(comment)
 	defer func() {
@@ -138,7 +107,6 @@ func runNativeD1Write(ctx context.Context, request *NativeD1WriteRequest, retain
 	var retainedOutput **pcv3publication.RetainedFile
 	if retain {
 		retainedOutput = &retained
-		splitOptions = nil
 	}
 	result, err := composeD1OuterStage(ctx, &d1CreationRequest{
 		sourcePath:          sourcePath,
@@ -147,10 +115,8 @@ func runNativeD1Write(ctx context.Context, request *NativeD1WriteRequest, retain
 		expectedSource:      info,
 		source:              source,
 		plaintext:           plaintext,
-		splitOptions:        splitOptions,
 		retainedOutput:      retainedOutput,
 		journalPrivateStage: journalPrivateStage,
-		writePublication:    writePublication,
 		normal: normalWriteRequest{
 			suite:           suite,
 			payloadKind:     payloadKind,

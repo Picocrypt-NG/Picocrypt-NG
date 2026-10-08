@@ -27,8 +27,9 @@ const (
 )
 
 type scannedFile struct {
-	path string
-	size int64
+	path     string
+	size     int64
+	identity fileops.ZIPInputIdentity
 }
 
 type scannedFileBatch func(context.Context, []scannedFile) error
@@ -53,11 +54,12 @@ var (
 )
 
 type droppedRouteResult struct {
-	source     *os.File
-	size       int64
-	route      pcv3operation.Route
-	err        error
-	explicitD1 bool
+	source        *os.File
+	size          int64
+	route         pcv3operation.Route
+	err           error
+	explicitD1    bool
+	inputIdentity fileops.ZIPInputIdentity
 }
 
 func openDroppedInput(path string, recombine bool) (*os.File, error) {
@@ -222,6 +224,7 @@ func (a *App) appendScannedFiles(files []scannedFile) {
 
 	for _, file := range files {
 		a.State.AllFiles = append(a.State.AllFiles, file.path)
+		a.State.InputIdentities = append(a.State.InputIdentities, file.identity)
 		a.State.CompressTotal += file.size
 		a.State.RequiredFreeSpace += file.size
 	}
@@ -289,7 +292,11 @@ func scanFoldersWithBudget(ctx context.Context, roots []string, budget *fileops.
 				return err
 			}
 			retained += cost
-			pendingFiles = append(pendingFiles, scannedFile{path: path, size: info.Size()})
+			identity, err := fileops.ZIPInputFromFileInfo(path, info)
+			if err != nil {
+				return err
+			}
+			pendingFiles = append(pendingFiles, scannedFile{path: path, size: info.Size(), identity: identity})
 			if len(pendingFiles) >= dropScanBatchSize || time.Since(lastFlush) >= dropScanFlushInterval {
 				return flushPendingFiles()
 			}
@@ -425,12 +432,25 @@ func (a *App) applyDropSelection(names []string) bool {
 
 	// One item dropped
 	if len(names) == 1 {
-		stat, err := os.Stat(names[0])
+		stat, err := os.Lstat(names[0])
 		if err != nil {
 			a.State.SetStatusMessage(app.StatusDropFailedStatItem, util.RED, app.StatusArgs{})
 			a.State.SetScanning(false)
 			a.refreshUI()
 			return false
+		}
+		if stat.Mode()&os.ModeSymlink != 0 {
+			if !isDecryptVolumePath(names[0]) {
+				a.State.SetScanning(false)
+				a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
+				return false
+			}
+			stat, err = os.Stat(names[0])
+			if err != nil {
+				a.State.SetScanning(false)
+				a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
+				return false
+			}
 		}
 
 		// A folder was dropped
@@ -488,11 +508,21 @@ func (a *App) applyDropSelection(names []string) bool {
 				return accepted
 			}
 			a.State.SetPCV3RoutingChecking(path, stat.Size())
+			identity, err := fileops.ZIPInputFromFileInfo(path, stat)
+			if err != nil {
+				a.State.SetScanning(false)
+				a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
+				return false
+			}
 			a.refreshAdvanced()
 			a.refreshUI()
 			workerLaunched = true
 			reservation.launch(func(ctx context.Context) {
 				result := routeDroppedFile(path, isSplit)
+				if result.err == nil && !isSplit && !isDecryptVolumePath(path) {
+					result.err = identity.CheckFile(result.source)
+					result.inputIdentity = identity
+				}
 				fyne.DoAndWait(func() {
 					a.applyDroppedFileRoute(ctx, generation, path, isSplit, result)
 				})
@@ -567,6 +597,7 @@ func (a *App) prepareRecursiveDropSelection() {
 	a.State.OnlyFiles = nil
 	a.State.OnlyFolders = nil
 	a.State.AllFiles = nil
+	a.State.InputIdentities = nil
 	a.State.Recombine = false
 	a.State.CompressTotal = 0
 	a.State.RequiredFreeSpace = 0
@@ -591,6 +622,16 @@ func (a *App) applyLegacyDroppedFileRoute(path string, isSplit bool, result drop
 	if isDecryptVolumePath(path) {
 		a.handleDecryptDrop(path, isSplit, result.source)
 	} else {
+		if result.inputIdentity.ReadPath() == "" {
+			info, err := result.source.Stat()
+			if err == nil {
+				result.inputIdentity, err = fileops.ZIPInputFromFileInfo(path, info)
+			}
+			if err != nil {
+				_ = result.source.Close()
+				return false
+			}
+		}
 		a.State.Mode = "encrypt"
 		a.State.InputFile = path
 		a.State.SetInputSelection(1, 0, result.size, true)
@@ -598,6 +639,7 @@ func (a *App) applyLegacyDroppedFileRoute(path string, isSplit bool, result drop
 		a.State.OutputFile = path + ".pcv"
 		a.State.OnlyFiles = []string{path}
 		a.State.AllFiles = []string{path}
+		a.State.InputIdentities = []fileops.ZIPInputIdentity{result.inputIdentity}
 		a.State.CompressTotal = result.size
 	}
 	accepted := a.State.Mode != ""
@@ -687,7 +729,7 @@ func (a *App) applyDroppedFileRoute(
 				a.refreshUI()
 				return
 			}
-			_, totalSize, err := fileops.CountChunks(base)
+			_, totalSize, err := fileops.CountChunksWithCancel(base, func() bool { return ctx.Err() != nil })
 			if err != nil || !a.State.SetPCV3Ready(
 				result.source, app.PCV3FormatNormal, base, defaultPCV3Output(base), totalSize,
 			) {
@@ -844,7 +886,7 @@ func (a *App) handleMultipleDrop(names []string) bool {
 
 	// Go through each dropped item and add to corresponding slices
 	for _, name := range names {
-		stat, err := os.Stat(name)
+		stat, err := os.Lstat(name)
 		if err != nil {
 			a.State.SetScanning(false)
 			a.resetUI()
@@ -856,9 +898,16 @@ func (a *App) handleMultipleDrop(names []string) bool {
 			folders++
 			a.State.OnlyFolders = append(a.State.OnlyFolders, name)
 		} else {
+			identity, err := fileops.ZIPInputFromFileInfo(name, stat)
+			if err != nil {
+				a.State.SetScanning(false)
+				a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
+				return false
+			}
 			files++
 			a.State.OnlyFiles = append(a.State.OnlyFiles, name)
 			a.State.AllFiles = append(a.State.AllFiles, name)
+			a.State.InputIdentities = append(a.State.InputIdentities, identity)
 
 			a.State.CompressTotal += stat.Size()
 			a.State.RequiredFreeSpace += stat.Size()

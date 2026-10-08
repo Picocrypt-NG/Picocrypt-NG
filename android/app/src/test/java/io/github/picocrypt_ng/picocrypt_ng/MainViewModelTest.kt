@@ -118,10 +118,25 @@ class MainViewModelTest {
         viewModel.updatePasswords(password, confirmPassword)
         
         val formState = viewModel.formState.first()
-        assertTrue("Password should be updated", formState.passwordInput.contentEquals(password))
-        assertTrue("Confirm password should be updated", formState.confirmPasswordInput.contentEquals(confirmPassword))
+        assertTrue("Password should be updated", formState.passwordInput.contentEquals("newpassword".toCharArray()))
+        assertTrue("Confirm password should be updated", formState.confirmPasswordInput.contentEquals("newpassword".toCharArray()))
     }
     
+    @Test
+    fun `updatePasswords consumes caller arrays and retains independent values`() = runTest {
+        val password = "edited secret".toCharArray()
+        val confirmation = "confirmation secret".toCharArray()
+
+        viewModel.updatePasswords(password, confirmation)
+
+        assertTrue("Transferred password must be wiped", password.all { it == '\u0000' })
+        assertTrue("Transferred confirmation must be wiped", confirmation.all { it == '\u0000' })
+        assertArrayEquals("edited secret".toCharArray(), viewModel.formState.value.passwordInput)
+        assertArrayEquals("confirmation secret".toCharArray(), viewModel.formState.value.confirmPasswordInput)
+        assertNotSame(password, viewModel.formState.value.passwordInput)
+        assertNotSame(confirmation, viewModel.formState.value.confirmPasswordInput)
+    }
+
     @Test
     fun `updatePasswords clears old password arrays`() = runTest {
         val oldPassword = "oldpassword".toCharArray()
@@ -151,7 +166,7 @@ class MainViewModelTest {
         viewModel.updatePasswords(password, null)
         
         val formState = viewModel.formState.first()
-        assertTrue("Password should be updated", formState.passwordInput.contentEquals(password))
+        assertTrue("Password should be updated", formState.passwordInput.contentEquals("password".toCharArray()))
         // Confirm password should remain unchanged (empty in this case)
         assertEquals(0, formState.confirmPasswordInput.size)
     }
@@ -165,7 +180,7 @@ class MainViewModelTest {
         val formState = viewModel.formState.first()
         // Password should remain unchanged (empty in this case)
         assertEquals(0, formState.passwordInput.size)
-        assertTrue("Confirm password should be updated", formState.confirmPasswordInput.contentEquals(confirmPassword))
+        assertTrue("Confirm password should be updated", formState.confirmPasswordInput.contentEquals("confirm".toCharArray()))
     }
 
     @Test
@@ -466,7 +481,8 @@ class MainViewModelTest {
         viewModel.setPcv3Action(Pcv3ActionIntent.DECRYPT)
         viewModel.setPcv3FactorPolicy(Pcv3FactorPolicyIntent.PASSWORD_ONLY)
         val rejectedPassword = "secret".toCharArray()
-        viewModel.updatePasswords(password = rejectedPassword)
+        val rejectedConfirmation = "confirmation".toCharArray()
+        viewModel.updatePasswords(password = rejectedPassword, confirmPassword = rejectedConfirmation)
         viewModel.updateFormData(
             viewModel.formState.value.copy(
                 keyfileFilenames = listOf(KeyfileInfo("/app-private/key", "key")),
@@ -480,6 +496,7 @@ class MainViewModelTest {
         assertNull("an unavailable route must not accept factor intent", refused.pcv3Intent?.factorPolicy)
         assertFalse("an unavailable route must not retain a password", refused.hasPassword)
         assertTrue("a rejected mutable password must be zeroed", rejectedPassword.all { it == '\u0000' })
+        assertTrue("a rejected mutable confirmation must be zeroed", rejectedConfirmation.all { it == '\u0000' })
         assertTrue("an unavailable route must not retain keyfiles", refused.keyfileFilenames.isEmpty())
         assertFalse(refused.isFormValid)
         assertNull(viewModel.takePcv3Operation("/app-private/output"))

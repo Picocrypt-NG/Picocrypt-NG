@@ -141,8 +141,8 @@ func TestMobilePCV3RouteDiscriminatorUsesTheOpenedDescriptor(t *testing.T) {
 	input := writeMobilePCV3Input(t, "selected.pcv", loadMobilePCV3Fixture(t))
 	replacement := []byte{'P', 'C', 'V', 0}
 	originalOpen := openPCV3Existing
-	openPCV3Existing = func(path string, flag int) (*os.File, error) {
-		opened, err := originalOpen(path, flag)
+	openPCV3Existing = func(path string) (*os.File, error) {
+		opened, err := originalOpen(path)
 		if err != nil {
 			return nil, err
 		}

@@ -117,10 +117,8 @@ func TestOutputPathFromDecrypt(t *testing.T) {
 	}
 }
 
-// TestSingleFileLeafSymlinkPreservesLegacyRoutes protects the existing desktop
-// contract that a user-selected symlink may still name a legacy v1/v2 volume or
-// a plaintext file. PCV3 routing must not turn that compatibility path into a
-// blanket no-follow rejection.
+// Legacy decrypt symlinks preserve the reader compatibility contract. New
+// encryption selections require a regular leaf rather than following a link.
 func TestSingleFileLeafSymlinkPreservesLegacyRoutes(t *testing.T) {
 	resetLocalizationForTest(t)
 	fyneApp := newTestFyneApp(t)
@@ -145,22 +143,6 @@ func TestSingleFileLeafSymlinkPreservesLegacyRoutes(t *testing.T) {
 			linkName:   "legacy-link.pcv",
 			wantMode:   "decrypt",
 			wantOutput: trimPCVSuffix,
-		},
-		{
-			name: "plaintext encrypt",
-			makeTarget: func(t *testing.T) string {
-				t.Helper()
-				path := filepath.Join(t.TempDir(), "plaintext.txt")
-				if err := os.WriteFile(path, []byte("legacy plaintext"), 0o600); err != nil {
-					t.Fatalf("write plaintext target: %v", err)
-				}
-				return path
-			},
-			linkName: "plaintext-link.txt",
-			wantMode: "encrypt",
-			wantOutput: func(path string) string {
-				return path + ".pcv"
-			},
 		},
 	}
 
@@ -615,8 +597,13 @@ func TestScanFoldersPreservesWalkOrderAndSkipsNonRegularEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scanFolders: %v", err)
 	}
-	if !reflect.DeepEqual(got, want) {
+	if len(got) != len(want) {
 		t.Fatalf("scanned files = %#v; want filepath.Walk order %#v (directories excluded)", got, want)
+	}
+	for index := range want {
+		if got[index].path != want[index].path || got[index].size != want[index].size {
+			t.Fatalf("scanned file %d = %s/%d; want %s/%d", index, got[index].path, got[index].size, want[index].path, want[index].size)
+		}
 	}
 }
 

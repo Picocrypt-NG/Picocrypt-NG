@@ -178,6 +178,73 @@ class FileCopyServiceUnitTest {
     }
 
     @Test
+    fun providerCopyBuffersAreWipedAfterSuccessAndReadFailure() = runTest {
+        for (keyfile in listOf(false, true)) {
+            for (readFailure in listOf(false, true)) {
+                var bufferOwner: ByteArray? = null
+                val input = object : InputStream() {
+                    var reads = 0
+                    override fun read(): Int = error("bulk read expected")
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                        if (reads++ == 0) {
+                            bufferOwner = buffer
+                            buffer[offset] = 0x51
+                            buffer[offset + 1] = 0x72
+                            return 2
+                        }
+                        if (readFailure) throw IOException("provider read failed")
+                        return -1
+                    }
+                }
+                val fixture = singleFileCopyFixture(input)
+                try {
+                    val result = if (keyfile) FileCopyService.copyKeyfileToInternalStorage(
+                        fixture.context, fixture.uri, 0, publisher = JvmAtomicFilePublisher, source = fixture.source,
+                    ) else FileCopyService.copyFileToInternalStorage(
+                        fixture.context, fixture.uri, "secret.txt", JvmAtomicFilePublisher, {}, {}, fixture.source,
+                    )
+                    assertEquals(readFailure, result.isFailure)
+                    assertTrue("Owned provider buffer must be zero after settlement", requireNotNull(bufferOwner).all { it == 0.toByte() })
+                    if (!readFailure) assertArrayEquals(byteArrayOf(0x51, 0x72), File(result.getOrThrow()).readBytes())
+                    else assertTrue(fixture.destination.parentFile!!.list().isNullOrEmpty())
+                } finally { fixture.filesDir.deleteRecursively() }
+            }
+        }
+    }
+
+    @Test
+    fun failedProviderCopyNeverDeletesForeignReplacementAtItsPartialPath() = runTest {
+        for (keyfile in listOf(false, true)) {
+            lateinit var runtime: File
+            var replacement: File? = null
+            val input = object : InputStream() {
+                override fun read(): Int = error("bulk read expected")
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    val partial = runtime.listFiles()!!.single { it.name.endsWith(".incomplete") }
+                    val retained = File(runtime, "retained-owned-partial")
+                    Files.move(partial.toPath(), retained.toPath())
+                    partial.writeText("foreign partial replacement")
+                    replacement = partial
+                    throw IOException("read failed after pathname replacement")
+                }
+            }
+            val fixture = singleFileCopyFixture(input)
+            runtime = fixture.destination.parentFile!!
+            try {
+                val result = if (keyfile) FileCopyService.copyKeyfileToInternalStorage(
+                    fixture.context, fixture.uri, 0, publisher = JvmAtomicFilePublisher, source = fixture.source,
+                ) else FileCopyService.copyFileToInternalStorage(
+                    fixture.context, fixture.uri, "secret.txt", JvmAtomicFilePublisher, {}, {}, fixture.source,
+                )
+                assertTrue(result.isFailure)
+                assertEquals("foreign partial replacement", requireNotNull(replacement).readText())
+                assertTrue(File(runtime, "retained-owned-partial").exists())
+                assertFalse(File(runtime, if (keyfile) "keyfile_0" else "input_file.txt").exists())
+            } finally { fixture.filesDir.deleteRecursively() }
+        }
+    }
+
+    @Test
     fun copyFileKeepsTheDestinationInvisibleUntilTheCopyIsComplete() = runTest {
         val waitingAfterFirstChunk = CountDownLatch(1)
         val allowInputToFinish = CountDownLatch(1)
@@ -214,6 +281,7 @@ class FileCopyServiceUnitTest {
                     publisher = JvmAtomicFilePublisher,
                     afterAcquire = {},
                     afterPublish = {},
+                    source = fixture.source,
                 )
             }
             assertTrue(
@@ -260,6 +328,7 @@ class FileCopyServiceUnitTest {
                         published.complete(Unit)
                         awaitCancellation()
                     },
+                    source = fixture.source,
                 )
             }
             published.await()
@@ -311,6 +380,7 @@ class FileCopyServiceUnitTest {
                         replacementReady.complete(Unit)
                         awaitCancellation()
                     },
+                    source = fixture.source,
                 )
             }
             replacementReady.await()
@@ -350,6 +420,7 @@ class FileCopyServiceUnitTest {
                 publisher = JvmAtomicFilePublisher,
                 afterAcquire = {},
                 afterPublish = {},
+                source = fixture.source,
             )
 
             assertTrue("A claimed final path must reject a second owner", result.isFailure)
@@ -379,6 +450,7 @@ class FileCopyServiceUnitTest {
             val result = FileCopyService.copyFileToInternalStorage(
                 fixture.context, fixture.uri, "secret.txt", publisher, {},
                 { fail("A publication error must never reach the successful handoff") },
+                source = fixture.source,
             )
             assertTrue(result.exceptionOrNull() is AppError.FileError.CopyFailed)
             assertFalse("A confirmed moved owner must be removed after its publication error", fixture.destination.exists())
@@ -405,6 +477,7 @@ class FileCopyServiceUnitTest {
             try {
                 val result = FileCopyService.copyFileToInternalStorage(
                     fixture.context, fixture.uri, "secret.txt", publisher, {}, {},
+                    source = fixture.source,
                 )
                 assertTrue("$publication cannot authorize a successful handoff", result.isFailure)
                 assertArrayEquals("$publication cannot authorize target deletion", bytes, fixture.destination.readBytes())
@@ -429,6 +502,7 @@ class FileCopyServiceUnitTest {
         try {
             val result = FileCopyService.copyFileToInternalStorage(
                 fixture.context, fixture.uri, "secret.txt", publisher, {}, {},
+                source = fixture.source,
             )
             assertTrue(result.isFailure)
             assertArrayEquals("An exception grants no target deletion custody", bytes, fixture.destination.readBytes())
@@ -467,6 +541,7 @@ class FileCopyServiceUnitTest {
                 publisher = JvmAtomicFilePublisher,
                 afterAcquire = {},
                 afterPublish = {},
+                source = fixture.source,
             )
 
             assertTrue("The provider read failure must fail the real copy", result.isFailure)
@@ -508,6 +583,7 @@ class FileCopyServiceUnitTest {
                     publisher = JvmAtomicFilePublisher,
                     afterAcquire = {},
                     afterPublish = {},
+                    source = fixture.source,
                 )
 
                 assertTrue("An unsafe display-name extension must fall back to a safe internal name", result.isSuccess)
@@ -543,6 +619,7 @@ class FileCopyServiceUnitTest {
                 publisher = JvmAtomicFilePublisher,
                 afterAcquire = {},
                 afterPublish = {},
+                source = fixture.source,
             )
             val expected = File(fixture.destination.parentFile!!, "input_file.PCV3")
 
@@ -588,6 +665,8 @@ class FileCopyServiceUnitTest {
                     fixture.context,
                     fixture.uri,
                     index = 0,
+                    source = fixture.source,
+                    publisher = JvmAtomicFilePublisher,
                 )
             }
             assertTrue(
@@ -643,6 +722,8 @@ class FileCopyServiceUnitTest {
                 fixture.context,
                 fixture.uri,
                 index = 0,
+                source = fixture.source,
+                publisher = JvmAtomicFilePublisher,
             )
 
             assertTrue("The controlled source failure must fail the production copy", result.isFailure)
@@ -693,6 +774,8 @@ class FileCopyServiceUnitTest {
                     fixture.context,
                     fixture.uri,
                     index = 0,
+                    source = fixture.source,
+                    publisher = JvmAtomicFilePublisher,
                 )
             }
             assertTrue(
@@ -741,6 +824,8 @@ class FileCopyServiceUnitTest {
                         published.complete(Unit)
                         awaitCancellation()
                     },
+                    source = fixture.source,
+                    publisher = JvmAtomicFilePublisher,
                 )
             }
             published.await()
@@ -786,6 +871,8 @@ class FileCopyServiceUnitTest {
                 fixture.context,
                 fixture.uri,
                 index = 0,
+                source = fixture.source,
+                publisher = JvmAtomicFilePublisher,
             )
 
             assertTrue("A claimed keyfile slot must reject a second owner", result.isFailure)
@@ -823,6 +910,8 @@ class FileCopyServiceUnitTest {
                     context = context,
                     uri = firstUri,
                     index = 0,
+                    source = stagingSource(firstUri, ByteArrayInputStream(firstBytes)),
+                    publisher = JvmAtomicFilePublisher,
                     afterAcquire = {
                         events.add("first acquired")
                         firstAcquired.complete(Unit)
@@ -837,6 +926,8 @@ class FileCopyServiceUnitTest {
                     context = context,
                     uri = secondUri,
                     index = 0,
+                    source = stagingSource(secondUri, ByteArrayInputStream(secondBytes)),
+                    publisher = JvmAtomicFilePublisher,
                     afterAcquire = { events.add("second acquired") },
                     afterPublish = { events.add("second published") },
                 )
@@ -1795,6 +1886,14 @@ class FileCopyServiceUnitTest {
         }
     }
 
+    private fun stagingSource(uri: Uri, input: InputStream): AndroidStagingSource {
+        val source = mockk<AndroidStagingSource>()
+        every { source.open(uri) } returns input
+        every { source.close(input) } answers { input.close() }
+        every { source.cancel() } answers { input.close() }
+        return source
+    }
+
     private fun keyfileCopyFixture(input: InputStream): KeyfileCopyFixture {
         val filesDir = createTempDirectory("picocrypt-keyfile-copy").toFile()
         val context = mockk<Context>()
@@ -1810,6 +1909,7 @@ class FileCopyServiceUnitTest {
             context = context,
             uri = uri,
             filesDir = filesDir,
+            source = stagingSource(uri, input),
             destination = File(internalDir, "keyfile_0"),
         )
     }
@@ -1829,6 +1929,7 @@ class FileCopyServiceUnitTest {
             context = context,
             uri = uri,
             filesDir = filesDir,
+            source = stagingSource(uri, input),
             destination = File(internalDir, "input_file.txt"),
         )
     }
@@ -1837,6 +1938,7 @@ class FileCopyServiceUnitTest {
         val context: Context,
         val uri: Uri,
         val filesDir: File,
+        val source: AndroidStagingSource,
         val destination: File,
     )
 
@@ -1844,6 +1946,7 @@ class FileCopyServiceUnitTest {
         val context: Context,
         val uri: Uri,
         val filesDir: File,
+        val source: AndroidStagingSource,
         val destination: File,
     )
 

@@ -382,24 +382,25 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Build request
 	req := &volume.EncryptRequest{
-		InputFiles:     allFiles,
-		OnlyFiles:      onlyFiles,
-		OnlyFolders:    onlyFolders,
-		OutputFile:     outputFile,
-		Password:       password,
-		Keyfiles:       encKeyfiles,
-		KeyfileOrdered: encKeyfileOrder,
-		PCV3:           encPCV3,
-		Comments:       encComments,
-		Paranoid:       encParanoid,
-		ReedSolomon:    encReedSolomon,
-		Deniability:    encDeniability,
-		Compress:       encCompress,
-		Split:          encSplit,
-		ChunkSize:      chunkSize,
-		ChunkUnit:      chunkUnit,
-		Reporter:       reporter,
-		RSCodecs:       rsCodecs,
+		InputFiles:      allFiles,
+		InputIdentities: inputs.inputIdentities,
+		OnlyFiles:       onlyFiles,
+		OnlyFolders:     onlyFolders,
+		OutputFile:      outputFile,
+		Password:        password,
+		Keyfiles:        encKeyfiles,
+		KeyfileOrdered:  encKeyfileOrder,
+		PCV3:            encPCV3,
+		Comments:        encComments,
+		Paranoid:        encParanoid,
+		ReedSolomon:     encReedSolomon,
+		Deniability:     encDeniability,
+		Compress:        encCompress,
+		Split:           encSplit,
+		ChunkSize:       chunkSize,
+		ChunkUnit:       chunkUnit,
+		Reporter:        reporter,
+		RSCodecs:        rsCodecs,
 	}
 
 	// Print info
@@ -471,22 +472,9 @@ func finishPCV3Encryption(operationCtx context.Context, result *pcv3operation.Re
 		}
 		return errors.New("PCV3 encryption result is unavailable")
 	}
-	var transportErr error
-	if useStdout {
-		followUp := result.OutputFollowUp()
-		if followUp != nil {
-			action := followUp.StreamTo(operationCtx, os.Stdout)
-			if action.CleanupIncomplete() {
-				result.WithCleanupWarning()
-			}
-			if action.Code() != pcv3operation.OutputActionSaved && action.Code() != pcv3operation.OutputActionSavedCleanupIncomplete {
-				transportErr = errors.New("PCV3 stdout transport failed; source files were preserved")
-			}
-		} else if result.CompletionClass() == pcv3operation.CompletionClean {
-			transportErr = errors.New("PCV3 stdout output capability is unavailable")
-		}
-	}
-	exitCode := renderPCV3CLIResult(os.Stderr, pcv3CLIResultAdapter{result: result})
+	adapter := pcv3CLIResultAdapter{result: result}
+	transportErr := finishPCV3CLIStdout(operationCtx, adapter, useStdout)
+	exitCode := renderPCV3CLIResult(os.Stderr, adapter)
 	if transportErr != nil {
 		return errors.Join(transportErr, operationErr)
 	}

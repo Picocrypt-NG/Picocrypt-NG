@@ -25,16 +25,17 @@ type CancelFunc func() bool
 
 // ZipOptions configures zip file creation
 type ZipOptions struct {
-	Files      []string // Files to include
-	RootDir    string   // Root directory for relative paths
-	EntryNames map[string]string
-	OutputPath string   // Output archive path
-	OutputFile *os.File // Optional caller-owned, exclusively created output
-	Compress   bool     // Use Deflate compression
-	Progress   ProgressFunc
-	Status     StatusFunc
-	Cancel     CancelFunc
-	Budget     *ZIPResourceBudget
+	Files           []string           // Files to include
+	InputIdentities []ZIPInputIdentity // Optional immutable discovery snapshots
+	RootDir         string             // Root directory for relative paths
+	EntryNames      map[string]string
+	OutputPath      string   // Output archive path
+	OutputFile      *os.File // Optional caller-owned, exclusively created output
+	Compress        bool     // Use Deflate compression
+	Progress        ProgressFunc
+	Status          StatusFunc
+	Cancel          CancelFunc
+	Budget          *ZIPResourceBudget
 }
 
 func entryNameForPath(opts ZipOptions, path string) (string, error) {
@@ -73,6 +74,10 @@ func CreateZip(opts ZipOptions) (retErr error) {
 		return err
 	}
 	defer budget.Release(charge)
+	opts.InputIdentities, err = CaptureZIPInputs(opts.Files, opts.InputIdentities)
+	if err != nil {
+		return err
+	}
 	file := opts.OutputFile
 	ownsFile := false
 	var ownedOutput ownedFilePath
@@ -132,12 +137,8 @@ func emitZIP(dst io.Writer, opts ZipOptions) error {
 	writer := zip.NewWriter(&zipCancelWriter{Writer: dst, cancel: opts.Cancel})
 	// Calculate total size for progress
 	var totalSize int64
-	for _, path := range opts.Files {
-		stat, err := os.Stat(path)
-		if err != nil {
-			return fmt.Errorf("stat %s: %w", path, err)
-		}
-		totalSize += stat.Size()
+	for _, identity := range opts.InputIdentities {
+		totalSize += identity.info.Size()
 	}
 
 	buf := make([]byte, util.MiB)
@@ -165,41 +166,37 @@ func emitZIP(dst io.Writer, opts ZipOptions) error {
 
 		report(i)
 
-		stat, err := os.Stat(path)
+		fin, err := opts.InputIdentities[i].Open()
 		if err != nil {
-			return fmt.Errorf("stat %s: %w", path, err)
+			return fmt.Errorf("open selected input %s: %w", path, err)
 		}
-
-		header, err := zip.FileInfoHeader(stat)
-		if err != nil {
-			return fmt.Errorf("create header for %s: %w", path, err)
-		}
-
-		name, err := entryNameForPath(opts, path)
-		if err != nil {
-			return err
-		}
-		header.Name = name
-
-		if opts.Compress {
-			header.Method = zip.Deflate
-		} else {
-			header.Method = zip.Store
-		}
-
-		entry, err := writer.CreateHeader(header)
-		if err != nil {
-			return fmt.Errorf("create entry for %s: %w", path, err)
-		}
-
-		// #nosec G304 -- input paths from user-provided file list
-		fin, err := os.Open(path)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", path, err)
-		}
-
 		err = func() error {
 			defer func() { _ = fin.Close() }()
+			stat, err := fin.Stat()
+			if err != nil {
+				return err
+			}
+			header, err := zip.FileInfoHeader(stat)
+			if err != nil {
+				return fmt.Errorf("create header for %s: %w", path, err)
+			}
+
+			name, err := entryNameForPath(opts, path)
+			if err != nil {
+				return err
+			}
+			header.Name = name
+
+			if opts.Compress {
+				header.Method = zip.Deflate
+			} else {
+				header.Method = zip.Store
+			}
+
+			entry, err := writer.CreateHeader(header)
+			if err != nil {
+				return fmt.Errorf("create entry for %s: %w", path, err)
+			}
 
 			for {
 				if opts.Cancel != nil && opts.Cancel() {

@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -69,7 +68,7 @@ func TestSplitRetainedFailurePreservesFullSourceAndConsumesAuthority(t *testing.
 		t.Fatalf("create occupied chunk: %v", err)
 	}
 
-	err := SplitRetained(retained, fileops.SplitOptions{
+	_, err := SplitRetainedWithResult(retained, fileops.SplitOptions{
 		ChunkSize: 1,
 		Unit:      fileops.SplitUnitKiB,
 	})
@@ -111,7 +110,7 @@ func TestSplitRetainedNeverRemovesSourceReplacement(t *testing.T) {
 	retained := publishRetainedTestFile(t, target, payload)
 	replaced := false
 
-	err := SplitRetained(retained, fileops.SplitOptions{
+	_, err := SplitRetainedWithResult(retained, fileops.SplitOptions{
 		ChunkSize: 1,
 		Unit:      fileops.SplitUnitKiB,
 		Progress: func(_ float32, info string) {
@@ -127,15 +126,8 @@ func TestSplitRetainedNeverRemovesSourceReplacement(t *testing.T) {
 			replaced = true
 		},
 	})
-	if runtime.GOOS == "windows" {
-		// The strict native split must refuse the unproven directory barrier
-		// before any source deletion; it still must preserve both identities.
-		var syncError *os.PathError
-		if !errors.As(err, &syncError) || syncError.Op != "sync" {
-			t.Fatalf("native Windows split did not refuse its directory sync: %v", err)
-		}
-	} else if !errors.Is(err, ErrCleanupIncomplete) {
-		t.Fatalf("replacement-safe retained split = %v; want ErrCleanupIncomplete", err)
+	if err == nil {
+		t.Fatal("split accepted a replacement for its exact retained source")
 	}
 	if !replaced {
 		t.Fatal("test did not replace the retained source")
@@ -145,21 +137,10 @@ func TestSplitRetainedNeverRemovesSourceReplacement(t *testing.T) {
 	}
 	requireFileBytes(t, target, foreign)
 	requireFileBytes(t, moved, payload)
-	if runtime.GOOS == "windows" {
-		if chunks, err := filepath.Glob(target + ".*"); err != nil || len(chunks) != 0 {
-			t.Fatalf("refused native split retained chunks: %v, %v", chunks, err)
-		}
-		return
-	}
 
-	recombined := filepath.Join(directory, "recombined.pcv")
-	if err := fileops.Recombine(fileops.RecombineOptions{
-		InputBase:  target,
-		OutputPath: recombined,
-	}); err != nil {
-		t.Fatalf("recombine chunks after source replacement: %v", err)
+	if chunks, err := filepath.Glob(target + ".*"); err != nil || len(chunks) != 0 {
+		t.Fatalf("identity-refused split retained chunks: %v, %v", chunks, err)
 	}
-	requireFileBytes(t, recombined, payload)
 }
 
 func TestSplitRetainedRejectsContentChangedAfterPrepublicationDigest(t *testing.T) {
@@ -173,7 +154,7 @@ func TestSplitRetainedRejectsContentChangedAfterPrepublicationDigest(t *testing.
 	if err := os.WriteFile(target, mutated, 0o600); err != nil {
 		t.Fatalf("mutate retained source in place: %v", err)
 	}
-	err := SplitRetained(retained, fileops.SplitOptions{
+	_, err := SplitRetainedWithResult(retained, fileops.SplitOptions{
 		ChunkSize: 1,
 		Unit:      fileops.SplitUnitKiB,
 	})
@@ -549,7 +530,7 @@ func TestSplitRetainedDirectoryBarrierFailurePreservesCompleteContainer(t *testi
 	payload := []byte(strings.Repeat("complete ciphertext retained until chunks are durable", 100))
 	retained := publishRetainedTestFile(t, target, payload)
 	closed := false
-	err := SplitRetained(retained, fileops.SplitOptions{
+	_, err := SplitRetainedWithResult(retained, fileops.SplitOptions{
 		ChunkSize: 1,
 		Unit:      fileops.SplitUnitKiB,
 		Progress: func(_ float32, _ string) {

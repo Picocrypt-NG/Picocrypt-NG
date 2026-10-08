@@ -59,6 +59,22 @@ func OpenExistingNoSymlink(path string, flag int) (*os.File, error) {
 	return nil, err
 }
 
+// OpenRegularReadNoSymlink opens an existing regular file read-only without
+// following a leaf symlink. On Unix it opens nonblocking so a substituted FIFO
+// cannot wait for a peer before the descriptor type is checked. The caller owns
+// the returned descriptor; rejected descriptors are closed here.
+func OpenRegularReadNoSymlink(path string) (*os.File, error) {
+	file, err := OpenExistingNoSymlink(path, regularReadFlags)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
+		return nil, errors.Join(errors.New("input is not a regular file"), err, file.Close())
+	}
+	return file, nil
+}
+
 // OpenRootNoSymlink opens one pre-existing directory without accepting a
 // symlink as the selected root and proves that the opened handle has the same
 // identity observed before the open. Callers own the returned root.

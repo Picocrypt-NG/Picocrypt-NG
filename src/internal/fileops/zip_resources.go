@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync"
@@ -223,7 +225,7 @@ func zipWriterWorkingBytes(opts ZipOptions) (uint64, error) {
 		charge = next
 		return nil
 	}
-	for _, path := range opts.Files {
+	for index, path := range opts.Files {
 		nameBytes := uint64(len(path)) + uint64(len(opts.RootDir))
 		if override, ok := opts.EntryNames[path]; ok {
 			nameBytes = uint64(len(override))
@@ -232,11 +234,22 @@ func zipWriterWorkingBytes(opts ZipOptions) (uint64, error) {
 		if !ok {
 			return 0, ErrZIPMetadataLimit
 		}
-		selectionBytes, ok := zipResourceMultiply(uint64(len(path)), 2)
+		readPathBytes := uint64(len(path))
+		if index < len(opts.InputIdentities) {
+			readPathBytes = uint64(len(opts.InputIdentities[index].readPath))
+		} else if !filepath.IsAbs(path) {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return 0, err
+			}
+			readPathBytes += uint64(len(cwd)) + 1
+		}
+		selectionBytes, ok := zipResourceMultiply(uint64(len(path))+readPathBytes, 2)
 		if !ok {
 			return 0, ErrZIPMetadataLimit
 		}
-		cost, ok := zipResourceAdd(576, headerBytes)
+		// Includes immutable FileInfo discovery metadata and slice growth.
+		cost, ok := zipResourceAdd(1024, headerBytes)
 		if !ok {
 			return 0, ErrZIPMetadataLimit
 		}

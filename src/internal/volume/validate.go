@@ -92,6 +92,9 @@ func (req *EncryptRequest) ValidateOutputSafety() error {
 	protected = append(protected, req.OnlyFiles...)
 	protected = append(protected, req.OnlyFolders...)
 	protected = append(protected, req.Keyfiles...)
+	for _, identity := range req.InputIdentities {
+		protected = append(protected, identity.ReadPath())
+	}
 	return validateOutputSafety(req.OutputFile, protected)
 }
 

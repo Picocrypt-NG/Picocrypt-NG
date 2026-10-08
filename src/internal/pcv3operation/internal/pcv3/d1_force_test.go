@@ -341,6 +341,10 @@ func testD1ForceRawOuterEmission(t *testing.T) {
 			t.Fatal("anchored damaged outer produced no recovery evidence")
 		}
 		defer result.Close()
+		if selection.outerProvenance == D1OuterProvenanceRawSelected &&
+			result.D1OuterProvenance() != D1OuterProvenanceRawSelected {
+			t.Fatal("raw outer fallback discarded its selected authority provenance")
+		}
 		ranges := testRecoveryRanges(result.Ranges())
 		if result.Outcome() != wantOutcome || result.ForceProvenance() != wantProvenance ||
 			result.Stage() != StageD1Bootstrap || result.FinalRecordState() != wantFinal ||
@@ -557,7 +561,7 @@ func testD1ForceRawOuterEmission(t *testing.T) {
 		t.Fatalf("ordinary all-damaged raw analysis = result %#v, error %v; want no output authority", result, err)
 	}
 	physical = allPhysical
-	selection.requiresRawAuthority = true
+	selection.outerProvenance = D1OuterProvenanceRawSelected
 	if err := withUnverifiedD1RecoveryRequest(D1BootstrapFront, func(request d1RecoveryRequest) error {
 		assertEmission(
 			t,

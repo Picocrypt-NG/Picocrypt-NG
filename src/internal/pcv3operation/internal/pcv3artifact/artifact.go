@@ -37,7 +37,8 @@ const (
 )
 
 // Role records the explicitly selected physical recovery role when unverified
-// evidence is present. RoleNone is canonical for verified/missing evidence.
+// evidence or raw D1 outer provenance is present. Inner MAC evidence remains
+// independent of that D1 provenance.
 type Role uint8
 
 const (
@@ -719,6 +720,9 @@ func validSemanticState(
 		}
 		return role == RoleNone
 	case StateUnverifiedForensic:
+		if role == RoleD1Front || role == RoleD1Tail {
+			return hasVerified || hasUnverified
+		}
 		return !hasVerified && hasUnverified && validSelectedRole(role)
 	default:
 		return false

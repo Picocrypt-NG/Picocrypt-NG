@@ -257,8 +257,6 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 		return
 	}
 
-	a.State.CreatePCV3 = true
-
 	a.paranoidCheck = ttwidget.NewCheck(tr("advanced.paranoid.label", "Paranoid mode"), func(checked bool) {
 		a.State.Paranoid = checked
 	})
@@ -294,17 +292,13 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 			return
 		}
 		a.State.Deniability = checked
-		if checked && a.State.CreatePCV3 {
+		if checked {
 			a.State.Paranoid = true
 		}
 		a.refreshAdvanced()
 		a.updateUIState()
 	})
-	deniabilityTooltip := tr("advanced.deniability.tooltip", "No readable Picocrypt header. Legacy deniability requires a non-empty outer password.")
-	if a.State.CreatePCV3 {
-		deniabilityTooltip = tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection.")
-	}
-	a.deniabilityCheck.SetToolTip(deniabilityTooltip)
+	a.deniabilityCheck.SetToolTip(tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection."))
 	a.deniabilityCheck.SetChecked(a.State.Deniability)
 
 	a.buildRecursiveControls()
@@ -540,7 +534,7 @@ func (a *App) updateEncryptOptionsState(advancedDisabled bool, snap app.UISnapsh
 	// disabled separately until credentials and required values are ready.
 
 	notEnoughFiles := snap.AllFileCount <= 1 && snap.OnlyFolderCount == 0
-	d1Selected := snap.CreatePCV3 && snap.Deniability
+	d1Selected := snap.Deniability
 
 	setWidgetDisabled(a.compressCheck, advancedDisabled || snap.Recursively)
 	setWidgetDisabled(a.recursivelyCheck, advancedDisabled || notEnoughFiles)

@@ -22,7 +22,8 @@ const (
 )
 
 // ForceProvenance records how Force evidence relates to the semantic outcome.
-// A fully Force-verified result remains OutcomeAuthenticatedDegraded.
+// A fully Force-verified result remains OutcomeAuthenticatedDegraded unless
+// explicitly selected raw D1 outer provenance keeps the operation untrusted.
 type ForceProvenance uint8
 
 const (
@@ -41,6 +42,15 @@ const (
 	D1BootstrapProvenanceFront
 	D1BootstrapProvenanceTail
 	D1BootstrapProvenanceMatching
+)
+
+// D1OuterProvenance records an explicitly selected, unanchored outer context.
+// Inner record authentication cannot remove this operational trust boundary.
+type D1OuterProvenance uint8
+
+const (
+	D1OuterProvenanceNone D1OuterProvenance = iota
+	D1OuterProvenanceRawSelected
 )
 
 // RecoveryRangeState identifies the authentication state of one canonical
@@ -95,10 +105,39 @@ type RecoveryResult struct {
 	provenance            ForceProvenance
 	stage                 Stage
 	d1BootstrapProvenance D1BootstrapProvenance
+	d1OuterProvenance     D1OuterProvenance
 	detailStage           Stage
 	plaintextLength       uint64
 	ranges                *pcv3ranges.Map
 	final                 RecoveryFinalState
+}
+
+func newD1RawSelectedRecoveryResult(
+	stage Stage,
+	d1Provenance D1BootstrapProvenance,
+	detailStage Stage,
+	ranges *pcv3ranges.Map,
+	final RecoveryFinalState,
+) (*RecoveryResult, error) {
+	if (stage != StageD1Bootstrap && stage != StageD1Body) ||
+		!isPhysicalD1BootstrapProvenance(d1Provenance) || ranges == nil ||
+		!validRecoveryFinalState(final) {
+		return nil, errInvalidRecoveryResult
+	}
+	if _, ok := d1RecoveryCodeFor(OutcomeForceUnverified, stage, d1Provenance, detailStage); !ok {
+		return nil, errInvalidRecoveryResult
+	}
+	summary := ranges.Summary()
+	if summary.Verified == 0 && summary.Unverified == 0 &&
+		final != RecoveryFinalVerified && final != RecoveryFinalUnverified {
+		return nil, errInvalidRecoveryResult
+	}
+	return &RecoveryResult{
+		outcome: OutcomeForceUnverified, provenance: ForceProvenanceUnverified,
+		stage: stage, d1BootstrapProvenance: d1Provenance,
+		d1OuterProvenance: D1OuterProvenanceRawSelected, detailStage: detailStage,
+		plaintextLength: ranges.PlaintextLength(), ranges: ranges, final: final,
+	}, nil
 }
 
 func newD1RecoveryResult(
@@ -320,6 +359,13 @@ func (result *RecoveryResult) D1BootstrapProvenance() D1BootstrapProvenance {
 	return result.d1BootstrapProvenance
 }
 
+func (result *RecoveryResult) D1OuterProvenance() D1OuterProvenance {
+	if result == nil {
+		return D1OuterProvenanceNone
+	}
+	return result.d1OuterProvenance
+}
+
 // DetailStage returns the closed inner normal stage reached through D1. When
 // outer damage is also present, Stage retains that earlier D1 boundary.
 func (result *RecoveryResult) DetailStage() Stage {
@@ -408,6 +454,7 @@ func (result *RecoveryResult) Close() {
 	result.provenance = 0
 	result.stage = 0
 	result.d1BootstrapProvenance = 0
+	result.d1OuterProvenance = 0
 	result.detailStage = 0
 	result.plaintextLength = 0
 	result.final = 0

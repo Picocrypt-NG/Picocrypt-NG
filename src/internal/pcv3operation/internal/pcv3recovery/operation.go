@@ -60,15 +60,16 @@ type operationRange struct {
 }
 
 type operationSemantic struct {
-	outcome         pcv3.Outcome
-	provenance      pcv3.ForceProvenance
-	stage           pcv3.Stage
-	code            pcv3.Code
-	d1Provenance    pcv3.D1BootstrapProvenance
-	detailStage     pcv3.Stage
-	plaintextLength uint64
-	ranges          *pcv3ranges.Map
-	final           pcv3.RecoveryFinalState
+	outcome           pcv3.Outcome
+	provenance        pcv3.ForceProvenance
+	stage             pcv3.Stage
+	code              pcv3.Code
+	d1Provenance      pcv3.D1BootstrapProvenance
+	d1OuterProvenance pcv3.D1OuterProvenance
+	detailStage       pcv3.Stage
+	plaintextLength   uint64
+	ranges            *pcv3ranges.Map
+	final             pcv3.RecoveryFinalState
 }
 
 // ArtifactInspectionMetadata is the path-free summary of one durably
@@ -733,6 +734,14 @@ func validOperationClassification(semantic operationSemantic) bool {
 	if semantic.code != operationCodeForOutcome(semantic.outcome) {
 		return false
 	}
+	if semantic.d1OuterProvenance != pcv3.D1OuterProvenanceNone &&
+		(semantic.d1OuterProvenance != pcv3.D1OuterProvenanceRawSelected ||
+			semantic.outcome != pcv3.OutcomeForceUnverified ||
+			semantic.provenance != pcv3.ForceProvenanceUnverified ||
+			!isPhysicalD1Provenance(semantic.d1Provenance) ||
+			(semantic.stage != pcv3.StageD1Bootstrap && semantic.stage != pcv3.StageD1Body)) {
+		return false
+	}
 	if semantic.d1Provenance == pcv3.D1BootstrapProvenanceNone {
 		if semantic.detailStage != pcv3.StageNone || semantic.stage == pcv3.StageD1Bootstrap ||
 			semantic.stage == pcv3.StageD1Body || semantic.stage == pcv3.StageInnerVolume {
@@ -836,6 +845,9 @@ func validOperationEvidence(semantic operationSemantic) bool {
 	case pcv3.ForceProvenancePartial:
 		return semantic.outcome == pcv3.OutcomeForcePartial && hasVerified && hasDamage
 	case pcv3.ForceProvenanceUnverified:
+		if semantic.d1OuterProvenance == pcv3.D1OuterProvenanceRawSelected {
+			return semantic.outcome == pcv3.OutcomeForceUnverified && (hasVerified || hasUnverified)
+		}
 		return semantic.outcome == pcv3.OutcomeForceUnverified && !hasVerified && hasUnverified
 	default:
 		return false
@@ -1073,14 +1085,15 @@ func semanticFromCore(result *pcv3.RecoveryResult) operationSemantic {
 		}
 	}
 	semantic := operationSemantic{
-		outcome:         result.Outcome(),
-		provenance:      result.ForceProvenance(),
-		stage:           result.Stage(),
-		code:            result.Code(),
-		d1Provenance:    result.D1BootstrapProvenance(),
-		detailStage:     result.DetailStage(),
-		plaintextLength: result.PlaintextLength(),
-		final:           result.FinalRecordState(),
+		outcome:           result.Outcome(),
+		provenance:        result.ForceProvenance(),
+		stage:             result.Stage(),
+		code:              result.Code(),
+		d1Provenance:      result.D1BootstrapProvenance(),
+		d1OuterProvenance: result.D1OuterProvenance(),
+		detailStage:       result.DetailStage(),
+		plaintextLength:   result.PlaintextLength(),
+		final:             result.FinalRecordState(),
 	}
 	semantic.ranges = result.Ranges()
 	return semantic
@@ -1103,7 +1116,7 @@ func artifactDescriptor(
 	}
 	descriptor.Ranges = semantic.ranges
 	hasUnverified := semantic.final == pcv3.RecoveryFinalUnverified || semantic.ranges.Summary().Unverified > 0
-	if hasUnverified {
+	if hasUnverified || semantic.d1OuterProvenance == pcv3.D1OuterProvenanceRawSelected {
 		switch role {
 		case operationRoleCapsulePrimary:
 			descriptor.Role = pcv3artifact.RolePrimary

@@ -305,24 +305,10 @@ func closeUnusedDestination(destination *os.File) {
 	}
 }
 
-// SplitRetained consumes one retained capability and splits only its exact
-// published file. A split failure leaves the full source in place. A
-// successful split removes the full source only after the chunk set is durable.
-func SplitRetained(
-	retained *RetainedFile,
-	options fileops.SplitOptions,
-) error {
-	_, err := splitRetained(retained, options, false)
-	return err
-}
-
-// SplitRetainedWithResult preserves both complete chunks and the full ciphertext
-// when only the final chunk directory barrier cannot confirm durability.
+// SplitRetainedWithResult consumes one retained capability and splits only its
+// exact published file. It removes the full source only after durable chunks;
+// an unconfirmed final directory barrier preserves both complete chunks and source.
 func SplitRetainedWithResult(retained *RetainedFile, options fileops.SplitOptions) (fileops.SplitState, error) {
-	return splitRetained(retained, options, true)
-}
-
-func splitRetained(retained *RetainedFile, options fileops.SplitOptions, preserveUncertain bool) (fileops.SplitState, error) {
 	if retained == nil {
 		return fileops.SplitFailed, ErrCleanupIncomplete
 	}
@@ -349,16 +335,7 @@ func splitRetained(retained *RetainedFile, options fileops.SplitOptions, preserv
 	if options.MinimumChunkSize < 4 {
 		options.MinimumChunkSize = 4
 	}
-	var completion fileops.SplitResult
-	var splitErr error
-	if preserveUncertain {
-		completion, splitErr = fileops.SplitPinnedWithResult(options, retained.file, retained.root, retained.parent, retained.syncDirectory)
-	} else {
-		completion.Chunks, splitErr = fileops.SplitPinned(options, retained.file, retained.root, retained.parent)
-		if splitErr == nil {
-			completion.State = fileops.SplitCompleteDurable
-		}
-	}
+	completion, splitErr := fileops.SplitPinnedWithResult(options, retained.file, retained.root, retained.parent, retained.syncDirectory)
 	if splitErr == nil && len(completion.Chunks) == 0 {
 		splitErr = errors.New("pcv3 publication: retained split produced no chunks")
 	}

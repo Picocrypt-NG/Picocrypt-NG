@@ -54,11 +54,12 @@ type EncryptRequest struct {
 	// ZIPBudget shares trusted archive admission with frontend custody.
 	ZIPBudget *fileops.ZIPResourceBudget
 	// Input files - use InputFile for single file, InputFiles for multiple (zipped automatically)
-	InputFile   string   // Single file path to encrypt
-	InputFiles  []string // Multiple file paths (will be combined into encrypted zip)
-	OnlyFolders []string // Folders that were dropped directly (for correct zip path calculation)
-	OnlyFiles   []string // Files that were dropped directly (not from folders)
-	OutputFile  string   // Output path for the .pcv volume
+	InputFile       string                     // Single file path to encrypt
+	InputFiles      []string                   // Multiple file paths (will be combined into encrypted zip)
+	InputIdentities []fileops.ZIPInputIdentity // Immutable frontend discovery snapshots
+	OnlyFolders     []string                   // Folders that were dropped directly (for correct zip path calculation)
+	OnlyFiles       []string                   // Files that were dropped directly (not from folders)
+	OutputFile      string                     // Output path for the .pcv volume
 
 	// Credentials
 	//
@@ -163,10 +164,12 @@ type OperationContext struct {
 	RecombinedFile string // Path to recombined file (separate from TempFile for when deniability changes it)
 	recombinedInfo os.FileInfo
 
-	stagedOutput *fileops.StagedFile
-	ownedTemps   []*fileops.StagedFile
-	tempInput    *fileops.StagedFile
-	tempZip      *fileops.TempZip
+	stagedOutput            *fileops.StagedFile
+	ownedTemps              []*fileops.StagedFile
+	tempInput               *fileops.StagedFile
+	tempZip                 *fileops.TempZip
+	selectedEncryptFile     *os.File
+	ownsSelectedEncryptFile bool
 
 	// pinnedLegacyInput is the descriptor classified after preprocessing and
 	// reused by every legacy decrypt step. It is either borrowed from a
@@ -358,6 +361,9 @@ func (ctx *OperationContext) cleanupRecombinedFile() error {
 }
 
 func (ctx *OperationContext) openInput() (*os.File, bool, error) {
+	if ctx.selectedEncryptFile != nil {
+		return ctx.selectedEncryptFile, false, nil
+	}
 	if ctx.tempZip != nil && ctx.InputFile == ctx.tempZip.Path() {
 		return ctx.tempZip.File(), false, nil
 	}
@@ -462,6 +468,13 @@ func (ctx *OperationContext) Close() error {
 	}
 
 	var cleanupErrs []error
+	if ctx.selectedEncryptFile != nil && ctx.ownsSelectedEncryptFile {
+		if err := ctx.selectedEncryptFile.Close(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
+	}
+	ctx.selectedEncryptFile = nil
+	ctx.ownsSelectedEncryptFile = false
 	if err := ctx.releasePinnedLegacyInput(); err != nil {
 		cleanupErrs = append(cleanupErrs, err)
 	}

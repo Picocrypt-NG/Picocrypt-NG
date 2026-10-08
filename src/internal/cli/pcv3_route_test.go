@@ -86,6 +86,13 @@ func (result *pcv3CLIFixedResult) Warnings() []pcv3operation.Warning {
 	return append([]pcv3operation.Warning(nil), result.warnings...)
 }
 
+func (result *pcv3CLIFixedResult) WithCleanupWarning() {
+	result.warnings = append(result.warnings, pcv3operation.WarningCleanupIncomplete)
+	if result.class == pcv3operation.CompletionClean {
+		result.class = pcv3operation.CompletionWarning
+	}
+}
+
 func (result *pcv3CLIFixedResult) CompletionClass() pcv3operation.CompletionClass {
 	return result.class
 }
@@ -135,7 +142,7 @@ func TestPCV3CLIProcessHelper(t *testing.T) {
 	pcv3CLIReadConsent = func(context.Context) (string, error) { return config.ConsentLine, nil }
 	if config.OpenLog != "" {
 		pcv3CLIOpenKeyfile = func(path string) (*os.File, error) {
-			file, openErr := fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
+			file, openErr := fileops.OpenRegularReadNoSymlink(path)
 			if openErr != nil {
 				return nil, openErr
 			}

@@ -18,8 +18,8 @@ func pcv3MobileObserveDescriptors(t *testing.T) *[]*os.File {
 	t.Helper()
 	var opened []*os.File
 	original := openPCV3Existing
-	openPCV3Existing = func(path string, flag int) (*os.File, error) {
-		file, err := original(path, flag)
+	openPCV3Existing = func(path string) (*os.File, error) {
+		file, err := original(path)
 		if err == nil {
 			opened = append(opened, file)
 		}

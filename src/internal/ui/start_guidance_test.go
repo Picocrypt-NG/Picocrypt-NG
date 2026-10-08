@@ -60,7 +60,6 @@ func TestStartHintOffersPasswordOrKeyfilesForPCV3D1(t *testing.T) {
 	a.State.InputFile = "input.txt"
 	a.State.AllFiles = []string{"input.txt"}
 	a.State.OnlyFiles = []string{"input.txt"}
-	a.State.CreatePCV3 = true
 	a.State.Deniability = true
 	a.State.Paranoid = true
 

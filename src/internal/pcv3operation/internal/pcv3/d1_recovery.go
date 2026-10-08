@@ -497,7 +497,7 @@ func recoverD1Selection(
 			output,
 		)
 	}
-	if !selection.requiresRawAuthority {
+	if selection.outerProvenance != D1OuterProvenanceRawSelected {
 		return invoke()
 	}
 	var result *RecoveryResult
@@ -639,7 +639,7 @@ func recoverD1Inner(
 			return d1OperationResult(ctx, innerErr)
 		}
 		defer innerResult.Close()
-		mapped, mapErr := mapD1ForceInnerResult(selection, innerResult)
+		mapped, mapErr := mapD1ForceInnerResult(selection, innerResult, recoveryRecordAnalysis{})
 		if mapErr != nil {
 			return nil, mapErr
 		}
@@ -734,7 +734,7 @@ func recoverD1Inner(
 			return d1OperationResult(ctx, innerErr)
 		}
 		defer innerResult.Close()
-		mapped, mapErr := mapD1ForceInnerResult(selection, innerResult)
+		mapped, mapErr := mapD1ForceInnerResult(selection, innerResult, recoveryRecordAnalysis{})
 		if mapErr != nil {
 			return nil, mapErr
 		}
@@ -767,7 +767,7 @@ func recoverD1Inner(
 	}
 	innerResult := innerSelection.resolution.result
 	defer innerResult.Close()
-	mapped, err := mapD1ForceInnerResult(selection, innerResult)
+	mapped, err := mapD1ForceInnerResult(selection, innerResult, innerSelection.records)
 	if err != nil {
 		if owner != nil {
 			owner.Close()
@@ -1070,6 +1070,9 @@ func analyzeD1RawOuter(
 	ranges, err := builder.Seal()
 	if err != nil {
 		return nil, err
+	}
+	if selection.outerProvenance == D1OuterProvenanceRawSelected {
+		return newD1RawSelectedRecoveryResult(stage, d1Provenance, StageNone, ranges, final)
 	}
 	return newD1RecoveryResult(
 		outcome,

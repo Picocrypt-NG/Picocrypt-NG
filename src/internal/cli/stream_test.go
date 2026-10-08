@@ -501,27 +501,28 @@ func TestPCV3DecryptStdoutCancelsWithoutPlaintextResidue(t *testing.T) {
 		t.Fatalf("start decrypt: %v", err)
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
-	published := false
-	for time.Now().Before(deadline) {
-		captured, readErr := os.ReadFile(stderrPath)
-		if readErr != nil {
+	// Terminal rendering follows transport so it can include final cleanup
+	// truth. The first real plaintext byte proves durable publication and that
+	// stdout streaming has started; leave the rest unread to block the writer.
+	var prefix [1]byte
+	started := make(chan error, 1)
+	go func() {
+		_, readErr := io.ReadFull(stdout, prefix[:])
+		started <- readErr
+	}()
+	select {
+	case readErr := <-started:
+		if readErr != nil || prefix[0] != plaintext[0] {
 			_ = command.Process.Kill()
 			_ = command.Wait()
 			_ = stderrFile.Close()
-			t.Fatalf("read stderr capture: %v", readErr)
+			t.Fatalf("decrypt did not start streaming authenticated plaintext: byte=%x err=%v", prefix[0], readErr)
 		}
-		if bytes.Contains(captured, []byte("Publication: published-durable")) {
-			published = true
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !published {
+	case <-time.After(10 * time.Second):
 		_ = command.Process.Kill()
 		_ = command.Wait()
 		_ = stderrFile.Close()
-		t.Fatal("decrypt did not reach durable publication")
+		t.Fatal("decrypt did not start streaming after durable publication")
 	}
 	if err := command.Process.Signal(os.Interrupt); err != nil {
 		_ = command.Process.Kill()

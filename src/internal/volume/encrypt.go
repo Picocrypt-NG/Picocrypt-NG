@@ -147,6 +147,9 @@ func encryptPCV3(ctx *OperationContext, req *EncryptRequest, options pcv3operati
 	protected = append(protected, req.OnlyFiles...)
 	protected = append(protected, req.OnlyFolders...)
 	protected = append(protected, req.Keyfiles...)
+	for _, identity := range req.InputIdentities {
+		protected = append(protected, identity.ReadPath())
+	}
 	mode := pcv3operation.WriteModeNormal
 	suite := pcv3operation.SuiteStandard
 	if req.Paranoid {
@@ -209,16 +212,10 @@ func pcv3WriteFactors(req *EncryptRequest) (*pcv3operation.FactorRequest, error)
 		request.ExpectedPolicy = pcv3operation.FactorPolicyPasswordAndKeyfiles
 	}
 	for _, path := range req.Keyfiles {
-		file, err := fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
+		file, err := fileops.OpenRegularReadNoSymlink(path)
 		if err != nil {
 			_ = request.Close()
 			return nil, fmt.Errorf("open PCV3 keyfile: %w", err)
-		}
-		info, err := file.Stat()
-		if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
-			_ = file.Close()
-			_ = request.Close()
-			return nil, errors.New("PCV3 keyfile must be a regular file")
 		}
 		request.Keyfiles = append(request.Keyfiles, pcv3operation.OwnKeyfileReader(file))
 	}
@@ -236,6 +233,10 @@ func preprocessInputFiles(req *EncryptRequest) []string {
 }
 
 func encryptPreprocess(ctx *OperationContext, req *EncryptRequest) error {
+	return encryptPreprocessWithBorrowed(ctx, req, nil)
+}
+
+func encryptPreprocessWithBorrowed(ctx *OperationContext, req *EncryptRequest, borrowed *os.File) error {
 	inputFiles := preprocessInputFiles(req)
 
 	// Create a zip when the selection is anything other than a single bare file:
@@ -257,6 +258,10 @@ func encryptPreprocess(ctx *OperationContext, req *EncryptRequest) error {
 			return err
 		}
 		defer budget.Release(selectionCharge)
+		identities, err := fileops.CaptureZIPInputs(inputFiles, req.InputIdentities)
+		if err != nil {
+			return err
+		}
 		ctx.SetStatus("Compressing files...")
 		zipReq := *req
 		zipReq.InputFiles = inputFiles
@@ -271,7 +276,7 @@ func encryptPreprocess(ctx *OperationContext, req *EncryptRequest) error {
 			return err
 		}
 		tempZip, err := fileops.CreateTempZip(ctx.Ctx, fileops.TempZipOptions{
-			Files: inputFiles, RootDir: commonRoot, EntryNames: entryNames,
+			Files: inputFiles, InputIdentities: identities, RootDir: commonRoot, EntryNames: entryNames,
 			NearPath: req.OutputFile, Compress: req.Compress, MaxPhysicalBytes: maxPhysical,
 			Budget: budget, Progress: ctx.UpdateProgress, Status: ctx.SetStatus, Cancel: ctx.IsCancelled,
 		})
@@ -286,6 +291,31 @@ func encryptPreprocess(ctx *OperationContext, req *EncryptRequest) error {
 		ctx.tempZip = tempZip
 	} else if len(inputFiles) == 1 {
 		ctx.InputFile = inputFiles[0]
+		budget := req.ZIPBudget
+		if budget == nil {
+			budget = fileops.NewZIPResourceBudget()
+		}
+		charge, err := fileops.ReserveZIPInputPath(budget, len(ctx.InputFile))
+		if err != nil {
+			return err
+		}
+		defer budget.Release(charge)
+		identities, err := fileops.CaptureZIPInputs(inputFiles, req.InputIdentities)
+		if err != nil {
+			return err
+		}
+		if borrowed != nil {
+			if err := identities[0].CheckFile(borrowed); err != nil {
+				return err
+			}
+			ctx.selectedEncryptFile = borrowed
+		} else {
+			ctx.selectedEncryptFile, err = identities[0].Open()
+			if err != nil {
+				return err
+			}
+			ctx.ownsSelectedEncryptFile = true
+		}
 	} else {
 		ctx.InputFile = req.InputFile
 	}
@@ -322,7 +352,10 @@ func encryptGenerateValues(ctx *OperationContext, req *EncryptRequest) error {
 	if ctx.tempZip != nil {
 		ctx.Total = int64(ctx.tempZip.Length()) //nolint:gosec // The finalized spool enforces physical extent <= MaxInt64.
 	} else {
-		stat, err := os.Stat(ctx.InputFile)
+		if ctx.selectedEncryptFile == nil {
+			return errors.New("selected input descriptor is unavailable")
+		}
+		stat, err := ctx.selectedEncryptFile.Stat()
 		if err != nil {
 			return fmt.Errorf("stat input: %w", err)
 		}
