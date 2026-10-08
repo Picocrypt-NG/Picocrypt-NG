@@ -112,7 +112,8 @@ public final class CopyBoundaryProvider extends ContentProvider {
     }
 
     @Override public Cursor query(Uri uri, String[] projection, String selection, String[] args, String order) {
-        return query(uri, projection, selection, args, order, null);
+        // Synthetic metadata supports neither filtering nor ordering.
+        return query(uri, projection, null, null, null, null);
     }
 
     @Override public Cursor query(Uri uri, String[] projection, String selection, String[] args, String order, CancellationSignal signal) {

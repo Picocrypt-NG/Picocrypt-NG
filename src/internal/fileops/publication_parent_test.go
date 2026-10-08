@@ -121,7 +121,7 @@ func TestStagedFileCommitParentRelocationPreservesPublishedOutputAndReturnsError
 }
 
 func TestUnpackParentRelocationAfterSyncIsIndeterminate(t *testing.T) {
-	for _, boundary := range []string{"directory sync", "root close"} {
+	for _, boundary := range []string{"directory sync", "directory sync failure", "root close"} {
 		t.Run(boundary, func(t *testing.T) {
 			base := t.TempDir()
 			archive := filepath.Join(base, "source.zip")
@@ -150,14 +150,16 @@ func TestUnpackParentRelocationAfterSyncIsIndeterminate(t *testing.T) {
 			}
 			originalSync := unpackDirectorySyncFn
 			originalClose := unpackCloseRootFn
+			syncFailure := errors.New("TEST ONLY extraction-directory sync failure")
 			unpackDirectorySyncFn = func(parent *os.File) error {
-				if err := originalSync(parent); err != nil {
-					return err
+				err := originalSync(parent)
+				if boundary == "directory sync failure" {
+					err = errors.Join(err, syncFailure)
 				}
-				if boundary == "directory sync" {
+				if boundary == "directory sync" || boundary == "directory sync failure" {
 					relocate()
 				}
-				return nil
+				return err
 			}
 			unpackCloseRootFn = func(root *os.Root) error {
 				err := originalClose(root)
@@ -175,6 +177,9 @@ func TestUnpackParentRelocationAfterSyncIsIndeterminate(t *testing.T) {
 				t.Fatal("extraction did not reach relocation boundary")
 			}
 			requireUnpackState(t, result, UnpackStatePublicationIndeterminate)
+			if boundary == "directory sync failure" && !errors.Is(result, syncFailure) {
+				t.Fatalf("parent relocation discarded directory-sync failure: %v", result)
+			}
 			requireUnpackFileBytes(t, filepath.Join(moved, "payload.txt"), []byte("complete extracted plaintext"))
 			requireUnpackFileBytes(t, filepath.Join(selected, "foreign"), []byte("foreign sentinel"))
 			if _, err := os.Stat(archive); err != nil {

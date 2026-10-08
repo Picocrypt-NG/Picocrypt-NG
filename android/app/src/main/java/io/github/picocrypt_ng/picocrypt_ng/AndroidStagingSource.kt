@@ -26,6 +26,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import mobile.Mobile
 
 internal data class StagingSourceEntry(
     val documentId: String?,
@@ -44,7 +45,7 @@ internal class AndroidStagingSource(private val context: Context) {
         @Volatile var input: InputStream? = null
         private val closed = AtomicBoolean()
 
-        fun close() {
+        @Synchronized fun close() {
             if (!closed.compareAndSet(false, true)) return
             try { input?.close() } finally { descriptor.close() }
         }
@@ -130,8 +131,11 @@ internal class AndroidStagingSource(private val context: Context) {
             val mode = Os.fstat(descriptor.fileDescriptor).st_mode
             val nonblocking = OsConstants.S_ISFIFO(mode) || OsConstants.S_ISSOCK(mode)
             if (nonblocking) {
-                val flags = Os.fcntlInt(descriptor.fileDescriptor, OsConstants.F_GETFL, 0)
-                Os.fcntlInt(descriptor.fileDescriptor, OsConstants.F_SETFL, flags or OsConstants.O_NONBLOCK)
+                // Keep the borrowed number alive across the native call. Closing
+                // concurrently could recycle it into an unrelated descriptor.
+                synchronized(owner) {
+                    Mobile.setInputNonblocking(descriptor.parcelFileDescriptor.fd.toLong())
+                }
             }
             // Framework bounded pipe streams skip offsets in their constructor.
             // Keep that work in the cancellation-aware reader owned above.

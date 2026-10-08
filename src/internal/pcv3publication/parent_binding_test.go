@@ -7,13 +7,18 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 // A pinned directory still accepts publication after its selected pathname is
 // moved. That committed output must survive, but cannot authorize source deletion.
 func TestPublicationParentRelocationIsIndeterminate(t *testing.T) {
-	for _, boundary := range []string{"atomic publication", "directory sync", "journal retirement", "journaled directory sync failure"} {
+	boundaries := []string{"atomic publication", "directory sync"}
+	if runtime.GOOS == "linux" || runtime.GOOS == "android" {
+		boundaries = append(boundaries, "journal retirement", "journaled directory sync failure")
+	}
+	for _, boundary := range boundaries {
 		t.Run(boundary, func(t *testing.T) {
 			base := t.TempDir()
 			selected := filepath.Join(base, "selected")
