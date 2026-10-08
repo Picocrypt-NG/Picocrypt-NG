@@ -17,6 +17,7 @@ import (
 )
 
 func TestArchiveExtractionPreservesCancellationCause(t *testing.T) {
+	ciphertext := archiveActionCiphertext(t, archiveActionPayload(t))
 	for _, deadline := range []bool{false, true} {
 		name := "cancelled"
 		if deadline {
@@ -24,7 +25,7 @@ func TestArchiveExtractionPreservesCancellationCause(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			target := filepath.Join(t.TempDir(), "output.zip")
-			read := archiveActionFixture(t, target, archiveActionPayload(t))
+			read := archiveActionReadFixture(t, target, ciphertext)
 			rootPath := t.TempDir()
 			root, err := os.OpenRoot(rootPath)
 			if err != nil {

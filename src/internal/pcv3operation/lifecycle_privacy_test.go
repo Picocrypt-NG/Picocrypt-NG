@@ -319,6 +319,31 @@ func pcv3PrivacyRequireNativeSuccess(
 	pcv3PrivacyRequireDirNames(t, run.outputDir, []string{filepath.Base(target)})
 }
 
+func TestPCV3OperationNativePlatformAdmission(t *testing.T) {
+	oneBytePlaintext := pcv3FrozenPlaintext(
+		t,
+		"normal-standard-combined-ordered-one.bin",
+		"dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986",
+	)
+	run := pcv3BaseRun(t, "production")
+	admitter := &pcv3PrivacyAdmitter{delegate: pcv3resource.NewPlatformAdmitter()}
+	run.source = openOperationNormalFixture(t, "normal-standard-combined-ordered-one.pcv")
+	run.request.Mode = ModeReadNormal
+	run.request.Source = run.source
+	run.request.Factors = pcv3PrivacyCombinedFactors(t, run, []byte("mix"), "password-production")
+	pcv3WireReporter(run)
+	pcv3PrivacyRequireLive(t, run)
+	target := run.request.Target
+
+	result, stdout, stderr, logBytes := pcv3PrivacyRun(t, run, admitter)
+	// This mandatory positive lane requires the real desktop resource
+	// provider to grant the fixed profile and complete the operation.
+	// Resource refusal is a failure here; separate scripted cases verify
+	// fail-closed admission without reinterpreting this observed result.
+	pcv3PrivacyRequireNativeSuccess(t, run, result, admitter, oneBytePlaintext, target)
+	pcv3PrivacyFinish(t, run, result, stdout, stderr, logBytes)
+}
+
 // TestPCV3OperationLifecyclePrivacyMatrix runs actual completed operations
 // through the production operation/resource/credential/publication composition
 // and pins, per case, the exact closed tuple, status sequence, fixed-profile
@@ -674,26 +699,6 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 		second, secondStdout, secondStderr, secondLog := pcv3PrivacyRun(t, retry, granting)
 		pcv3PrivacyRequireNativeSuccess(t, retry, second, granting, oneBytePlaintext, target)
 		pcv3PrivacyFinish(t, retry, second, secondStdout, secondStderr, secondLog)
-	})
-
-	t.Run("production platform admission records one fixed-profile grant before derivation", func(t *testing.T) {
-		run := pcv3BaseRun(t, "production")
-		admitter := &pcv3PrivacyAdmitter{delegate: pcv3resource.NewPlatformAdmitter()}
-		run.source = openOperationNormalFixture(t, "normal-standard-combined-ordered-one.pcv")
-		run.request.Mode = ModeReadNormal
-		run.request.Source = run.source
-		run.request.Factors = pcv3PrivacyCombinedFactors(t, run, []byte("mix"), "password-production")
-		pcv3WireReporter(run)
-		pcv3PrivacyRequireLive(t, run)
-		target := run.request.Target
-
-		result, stdout, stderr, logBytes := pcv3PrivacyRun(t, run, admitter)
-		// This mandatory positive lane requires the real desktop resource
-		// provider to grant the fixed profile and complete the operation.
-		// Resource refusal is a failure here; separate scripted cases verify
-		// fail-closed admission without reinterpreting this observed result.
-		pcv3PrivacyRequireNativeSuccess(t, run, result, admitter, oneBytePlaintext, target)
-		pcv3PrivacyFinish(t, run, result, stdout, stderr, logBytes)
 	})
 
 	t.Run("expired consent action stays refused after the operation completes", func(t *testing.T) {

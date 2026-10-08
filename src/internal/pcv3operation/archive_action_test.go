@@ -66,6 +66,8 @@ func archiveActionPayload(t *testing.T) []byte {
 }
 
 func TestArchiveActionProductionSaveAndExtract(t *testing.T) {
+	plaintext := archiveActionPayload(t)
+	ciphertext := archiveActionCiphertext(t, plaintext)
 	for _, action := range []ArchiveAction{ArchiveSave, ArchiveExtract, ArchiveExtractSameLevel} {
 		t.Run(map[ArchiveAction]string{ArchiveSave: "save", ArchiveExtract: "new folder", ArchiveExtractSameLevel: "same level"}[action], func(t *testing.T) {
 			directory := t.TempDir()
@@ -75,8 +77,7 @@ func TestArchiveActionProductionSaveAndExtract(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer plan.close()
-			plaintext := archiveActionPayload(t)
-			read := archiveActionFixture(t, target, plaintext)
+			read := archiveActionReadFixture(t, target, ciphertext)
 			result := plan.apply(context.Background(), read)
 			requireNativeOperationPublication(t, result)
 			if result.ArchiveFollowUp() != nil ||
@@ -112,6 +113,7 @@ func TestArchiveActionReviewsAuthenticatedBudgetBeforeExtraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ciphertext := archiveActionCiphertext(t, archive)
 	for _, decision := range []string{"approve", "decline", "panic"} {
 		t.Run(decision, func(t *testing.T) {
 			parent := t.TempDir()
@@ -139,7 +141,7 @@ func TestArchiveActionReviewsAuthenticatedBudgetBeforeExtraction(t *testing.T) {
 				}
 				return nil
 			}
-			read := archiveActionFixture(t, target, archive)
+			read := archiveActionReadFixture(t, target, ciphertext)
 			result := plan.apply(context.Background(), read)
 			if calls != 1 || result.ArchiveFollowUp() != nil || result.SourceDeletionAllowed() {
 				t.Fatalf("review lifecycle mismatch: calls=%d result=%v", calls, result)
@@ -171,6 +173,7 @@ func TestArchiveActionReviewsAuthenticatedBudgetBeforeExtraction(t *testing.T) {
 }
 
 func TestArchiveActionDefaultAndPrepareLeaveOneShotChoice(t *testing.T) {
+	ciphertext := archiveActionCiphertext(t, archiveActionPayload(t))
 	for _, action := range []ArchiveAction{ArchiveDefault, ArchivePrepare} {
 		target := filepath.Join(t.TempDir(), "pending.zip")
 		plan, err := newArchiveReadPlan(action, target)
@@ -178,7 +181,7 @@ func TestArchiveActionDefaultAndPrepareLeaveOneShotChoice(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer plan.close()
-		read := archiveActionFixture(t, target, archiveActionPayload(t))
+		read := archiveActionReadFixture(t, target, ciphertext)
 		if result := plan.apply(context.Background(), read); result != read || result.ArchiveFollowUp() == nil {
 			t.Fatal("nonterminal archive choice was consumed")
 		}
