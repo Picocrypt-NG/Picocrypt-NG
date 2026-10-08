@@ -133,6 +133,7 @@ jobs:
         go clean -testcache
         sudo -n /usr/sbin/purge
         bash ../.github/scripts/diagnose-macos-memory.sh
+        CGO_ENABLED=1 go test -v -count=1 -p 1 -timeout 15m -tags pcv3_production_kdf -run '^TestNativeWorkingMemoryAdmissionAfterProductionKDF$' ./internal/pcv3operation/internal/pcv3resource
         go test -v -p 1 -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...
 
     - name: Build GUI

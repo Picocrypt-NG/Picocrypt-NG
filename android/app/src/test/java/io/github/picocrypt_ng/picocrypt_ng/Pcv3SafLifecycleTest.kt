@@ -6,6 +6,7 @@ import io.mockk.mockk
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -595,6 +596,10 @@ class Pcv3SafLifecycleTest {
             )
             assertFalse("the test has not released the blocked provider", providerRelease.isCompleted)
             assertEquals(1, publisher.cancellation.cancelCalls)
+            assertTrue(
+                "caller cancellation must reach the native session while the provider is still blocked",
+                session.awaitCancellation(),
+            )
             assertEquals(1, session.cancelCalls)
             assertFalse("provider must still be in flight after both cancellation calls", events.contains("provider-return"))
         } finally {
@@ -890,8 +895,10 @@ class Pcv3SafLifecycleTest {
     ) : Pcv3ArchiveSessionCapability {
         var confirmCalls = 0
             private set
-        var cancelCalls = 0
-            private set
+        private val cancellationObserved = CountDownLatch(1)
+        private val cancellationCalls = AtomicInteger()
+        val cancelCalls: Int
+            get() = cancellationCalls.get()
         var finishCalls = 0
             private set
         var abortCalls = 0
@@ -924,10 +931,13 @@ class Pcv3SafLifecycleTest {
         override fun writeFd(index: Long, descriptor: Long) = Pcv3ArchiveStepData("ready", index + 1)
 
         override fun cancel(): Pcv3ArchiveStepData {
-            cancelCalls += 1
+            cancellationCalls.incrementAndGet()
             events += "session-cancel"
+            cancellationObserved.countDown()
             return Pcv3ArchiveStepData("poisoned", -1)
         }
+
+        fun awaitCancellation(): Boolean = cancellationObserved.await(2, TimeUnit.SECONDS)
 
         override fun finish(): Pcv3SnapshotData {
             finishCalls += 1
