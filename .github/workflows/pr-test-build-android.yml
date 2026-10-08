@@ -94,8 +94,18 @@ jobs:
       run: chmod +x gradlew
 
     - name: Run Unit Tests
+      id: unit-tests
       working-directory: android
       run: ./gradlew test
+
+    - name: Upload JVM unit test report
+      if: ${{ always() && (steps.unit-tests.outcome == 'success' || steps.unit-tests.outcome == 'failure') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: pr-jvm-test-report
+        path: android/app/build/test-results/
+        retention-days: 1
+        if-no-files-found: warn
 
     - name: Run Android Lint
       working-directory: android

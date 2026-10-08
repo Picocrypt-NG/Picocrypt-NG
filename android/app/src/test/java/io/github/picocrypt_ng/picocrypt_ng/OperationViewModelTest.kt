@@ -1156,8 +1156,11 @@ class OperationViewModelTest {
                     "decrypted-output",
                     staleAfterViewModel.beginPcv3Save(staleAfter.operationId, staleAfter.generation),
                 )
+                val existingJobs = staleAfterViewModel.viewModelScope.coroutineContext[Job]!!.children.toSet()
                 staleAfterViewModel.completePcv3Save(mockContext, staleAfterUri)
+                val queuedSave = staleAfterViewModel.viewModelScope.coroutineContext[Job]!!.children.single { it !in existingJobs }
                 runCurrent()
+                queuedSave.join()
                 assertEquals(0, staleAfterRoute.saveOutputCalls)
                 verify(exactly = 1) { staleDescriptor.close() }
 
