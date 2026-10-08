@@ -40,6 +40,7 @@ jobs:
         go mod download
 
     - name: Diagnose native macOS memory APIs
+      id: memory-diagnostics
       run: |
         set -o pipefail
         bash .github/scripts/diagnose-macos-memory.sh 2>&1 | tee "$RUNNER_TEMP/macos-memory-before.log"
@@ -47,7 +48,7 @@ jobs:
         bash .github/scripts/diagnose-macos-memory.sh 2>&1 | tee "$RUNNER_TEMP/macos-memory.log"
 
     - name: Upload native macOS memory diagnostics
-      if: always()
+      if: ${{ always() && (steps.memory-diagnostics.outcome == 'success' || steps.memory-diagnostics.outcome == 'failure') }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: pr-macos-race-memory-${{ strategy.job-index }}-${{ github.run_attempt }}
@@ -97,6 +98,7 @@ jobs:
         go mod download
 
     - name: Diagnose native macOS memory APIs
+      id: memory-diagnostics
       run: |
         set -o pipefail
         bash .github/scripts/diagnose-macos-memory.sh 2>&1 | tee "$RUNNER_TEMP/macos-memory-before.log"
@@ -104,7 +106,7 @@ jobs:
         bash .github/scripts/diagnose-macos-memory.sh 2>&1 | tee "$RUNNER_TEMP/macos-memory.log"
 
     - name: Upload native macOS memory diagnostics
-      if: always()
+      if: ${{ always() && (steps.memory-diagnostics.outcome == 'success' || steps.memory-diagnostics.outcome == 'failure') }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: pr-macos-memory-${{ github.run_attempt }}

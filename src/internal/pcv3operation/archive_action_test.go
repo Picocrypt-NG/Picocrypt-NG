@@ -7,8 +7,10 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"testing"
 )
@@ -48,6 +50,17 @@ func archiveActionReadFixture(t *testing.T, target, ciphertext string) *Result {
 	result := Run(context.Background(), &Request{Mode: ModeReadNormal, Source: source, Target: target, Factors: archiveActionFactors()})
 	followUp := result.ArchiveFollowUp()
 	if followUp == nil {
+		if result != nil {
+			t.Logf("actual archive read stage=%v diagnostic=%d", result.Stage(), result.Diagnostic())
+		}
+		if runtime.GOOS == "darwin" {
+			rss, err := exec.Command("/bin/ps", "-o", "rss=", "-p", strconv.Itoa(os.Getpid())).Output()
+			if err != nil {
+				t.Logf("archive read post-failure process RSS unavailable: %v", err)
+			} else {
+				t.Logf("archive read post-failure process RSS (KiB): %s", bytes.TrimSpace(rss))
+			}
+		}
 		t.Fatalf("authenticated archive fixture has no authority: %v", result)
 	}
 	t.Cleanup(func() { followUp.Close() })
