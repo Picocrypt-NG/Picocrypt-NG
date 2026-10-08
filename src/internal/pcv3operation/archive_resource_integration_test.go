@@ -83,9 +83,7 @@ func TestArchiveResourceRefusalReachesValidFrontendPresentation(t *testing.T) {
 			}
 			ciphertext := filepath.Join(directory, "ciphertext.pcv")
 			write := RunWrite(context.Background(), &WriteRequest{Mode: tc.mode, Suite: suite, PayloadKind: PayloadKindArchive, Source: source, SourceFile: source, SourcePath: sourcePath, PlaintextLength: uint64(len(data)), Target: ciphertext, Factors: factors()})
-			if write.CompletionClass() != CompletionClean {
-				t.Fatalf("fixture write: class=%v diagnostic=%v", write.CompletionClass(), write.Diagnostic())
-			}
+			requireNativeOperationPublication(t, write)
 			encrypted, err := os.Open(ciphertext)
 			if err != nil {
 				t.Fatal(err)
@@ -103,9 +101,7 @@ func TestArchiveResourceRefusalReachesValidFrontendPresentation(t *testing.T) {
 			target := filepath.Join(outputParent, "extracted.zip")
 			result := RunWithOptions(context.Background(), &Request{Mode: readMode, Source: encrypted, Target: target, Factors: factors()}, ExecutionOptions{ArchiveAction: ArchiveExtract})
 			if tc.kind == "positive" {
-				if result.CompletionClass() != CompletionClean || result.Diagnostic() != DiagnosticNone {
-					t.Fatalf("positive archive changed: %v %v", result.CompletionClass(), result.Diagnostic())
-				}
+				requireNativeOperationPublication(t, result)
 				body, err := os.ReadFile(filepath.Join(outputParent, "extracted", "payload.txt"))
 				if err != nil || string(body) != "preserved archive payload" {
 					t.Fatalf("positive payload: %q %v", body, err)

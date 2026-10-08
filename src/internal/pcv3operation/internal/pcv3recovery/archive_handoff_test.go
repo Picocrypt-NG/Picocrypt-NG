@@ -77,7 +77,7 @@ func TestD1ArchiveHandoffDefersPlaintextAndExtractsOnlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	extracted := handoff.Extract(context.Background(), root)
-	if extracted == nil || extracted.State() != fileops.UnpackStatePublishedDurable || extracted.CleanupIncomplete() {
+	if extracted == nil || extracted.State() != nativeRecoveryExtractionState() || extracted.CleanupIncomplete() {
 		t.Fatalf("extraction did not complete durably: %v", extracted)
 	}
 	assertFileBytesAndMode(t, filepath.Join(directory, "payload.txt"), []byte("authenticated archive contents\n"), 0o600)
@@ -108,7 +108,7 @@ func TestD1ArchiveHandoffPublishPreservesZIPAndNoReplace(t *testing.T) {
 				}
 			}
 			publication, cleanup := handoff.Publish(context.Background())
-			wantState := pcv3publication.StatePublishedDurable
+			wantState := nativeRecoveryPublicationState()
 			wantBytes := recoveryArchiveBytes(t)
 			if collision {
 				wantState = pcv3publication.StateNotPublished
@@ -245,7 +245,7 @@ func TestD1ArchivePreparationPublishesAuthenticatedNonZIPAfterCoreSuccess(t *tes
 				Target: target, Mode: pcv3.RecoveryModeNormalV3,
 			}, recoveryArchiveCore(data, nil), ExecutionOptions{PrepareArchive: true})
 			if result.TakeArchiveHandoff() != nil || result.Outcome() != pcv3.OutcomeSuccess ||
-				!result.PublicationAttempted() || result.PublicationState() != pcv3publication.StatePublishedDurable {
+				!result.PublicationAttempted() || result.PublicationState() != nativeRecoveryPublicationState() {
 				t.Fatalf("non-ZIP auto-unzip did not preserve ordinary publication: %v", result)
 			}
 			assertFileBytesAndMode(t, target, data, 0o600)
@@ -337,7 +337,7 @@ func TestD1ArchivePreparationNeverGrantsDegradedArchiveAuthority(t *testing.T) {
 		Target: target, Mode: pcv3.RecoveryModeNormalV3,
 	}, runner, ExecutionOptions{PrepareArchive: true})
 	if result.TakeArchiveHandoff() != nil || result.Outcome() != pcv3.OutcomeAuthenticatedDegraded ||
-		result.PublicationState() != pcv3publication.StatePublishedDurable {
+		result.PublicationState() != nativeRecoveryPublicationState() {
 		t.Fatal("archive option altered degraded evidence or granted archive authority")
 	}
 	assertFileBytesAndMode(t, target, data, 0o600)

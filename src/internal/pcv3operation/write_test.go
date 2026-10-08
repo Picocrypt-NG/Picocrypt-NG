@@ -117,7 +117,7 @@ func (admitter *writeJournalAdmitter) AdmitKDF(context.Context, pcv3credential.K
 	return pcv3credential.KDFAdmissionDeniedInsufficient, nil
 }
 
-func TestWriteResourceRefusalJournalsBeforeKDFAndCleansBothModes(t *testing.T) {
+func TestWriteJournalRequiresPlatformSupportBeforeKDFAndCleansBothModes(t *testing.T) {
 	for _, mode := range []WriteMode{WriteModeNormal, WriteModeD1} {
 		t.Run(map[WriteMode]string{WriteModeNormal: "normal", WriteModeD1: "d1"}[mode], func(t *testing.T) {
 			directory := t.TempDir()
@@ -138,8 +138,18 @@ func TestWriteResourceRefusalJournalsBeforeKDFAndCleansBothModes(t *testing.T) {
 			admitter := &writeJournalAdmitter{t: t, directory: directory}
 			request := &WriteRequest{Mode: mode, Suite: suite, PayloadKind: pcv3.PayloadKindRaw, PlaintextLength: 4, Source: source, SourceFile: source, SourcePath: sourcePath, Target: filepath.Join(directory, "output"), Factors: factors}
 			result := runWriteWithSeams(context.Background(), request, ExecutionOptions{JournalPrivateStage: true}, operationSeams{admitter: admitter})
-			if admitter.calls != 1 || result.Diagnostic() != DiagnosticResourceInsufficient || result.SourceDeletionAllowed() {
+			journalSupported := runtime.GOOS == "linux" || runtime.GOOS == "android"
+			if !journalSupported {
+				if admitter.calls != 0 || result.Diagnostic() != DiagnosticCoreFailure ||
+					result.Stage() != pcv3.StageOutputPublication || result.CompletionClass() != CompletionNoOutput ||
+					result.PublicationAttempted() || result.OutputFollowUp() != nil || result.ArchiveFollowUp() != nil {
+					t.Fatalf("unsupported cleanup journal granted work/output authority: %v stage=%v diagnostic=%v calls=%d", result, result.Stage(), result.Diagnostic(), admitter.calls)
+				}
+			} else if admitter.calls != 1 || result.Diagnostic() != DiagnosticResourceInsufficient {
 				t.Fatalf("resource refusal: %v diagnostic=%v calls=%d", result, result.Diagnostic(), admitter.calls)
+			}
+			if result.SourceDeletionAllowed() {
+				t.Fatal("journal/admission refusal granted source deletion")
 			}
 			entries, err := os.ReadDir(directory)
 			if err != nil {
@@ -200,7 +210,7 @@ func TestWriteDeadlinePreservesContextSentinel(t *testing.T) {
 // Exercises the real postpublication lifecycle without re-running an unrelated KDF.
 func TestWritePublishedUncertainStillCreatesRequestedSplit(t *testing.T) {
 	for _, uncertain := range []bool{false, true} {
-		t.Run(map[bool]string{false: "durable", true: "uncertain"}[uncertain], func(t *testing.T) {
+		t.Run(map[bool]string{false: "native publication", true: "uncertain"}[uncertain], func(t *testing.T) {
 			directory := t.TempDir()
 			target := filepath.Join(directory, "ciphertext")
 			payload := []byte(strings.Repeat("complete encrypted volume", 100))
@@ -235,13 +245,22 @@ func TestWritePublishedUncertainStillCreatesRequestedSplit(t *testing.T) {
 				t.Fatalf("requested split omitted: %v", err)
 			}
 			requireOperationFileBytes(t, recombined, payload)
-			if result.SourceDeletionAllowed() == uncertain {
+			wantUncertain := uncertain || runtime.GOOS == "windows"
+			if result.SourceDeletionAllowed() == wantUncertain {
 				t.Fatalf("source deletion authority = %v for uncertain=%v", result.SourceDeletionAllowed(), uncertain)
 			}
-			if uncertain && result.CompletionClass() != CompletionDurabilityUncertain {
+			if result.SplitOutputUncertain() != (runtime.GOOS == "windows") {
+				t.Fatalf("split durability differs from native barrier: uncertain=%v", result.SplitOutputUncertain())
+			}
+			if runtime.GOOS == "windows" {
+				requireOperationFileBytes(t, target, payload)
+			} else if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("durable chunks did not consume the complete ciphertext: %v", err)
+			}
+			if wantUncertain && result.CompletionClass() != CompletionDurabilityUncertain {
 				t.Fatalf("uncertainty lost: %v", result)
 			}
-			if !uncertain && result.CompletionClass() != CompletionClean {
+			if !wantUncertain && result.CompletionClass() != CompletionClean {
 				t.Fatalf("durable completion: %v", result)
 			}
 			if retained.Live() {

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -622,7 +623,7 @@ func TestPCV3TypedExtractionMissingRoot(t *testing.T) {
 		// TestArchiveFollowUpReturnsCommonTerminalResult rollback case.
 	})
 
-	t.Run("existing pinned root extracts durably with exact bytes", func(t *testing.T) {
+	t.Run("existing pinned root extracts with exact publication state and bytes", func(t *testing.T) {
 		extractDir := t.TempDir()
 		result := fileops.UnpackWithResult(fileops.UnpackOptions{
 			ZipPath:    zipPath,
@@ -631,8 +632,12 @@ func TestPCV3TypedExtractionMissingRoot(t *testing.T) {
 		if result == nil {
 			t.Fatal("typed extraction returned no result")
 		}
-		if result.State() != fileops.UnpackStatePublishedDurable || errors.Unwrap(result) != nil {
-			t.Fatalf("existing-root extraction = %v, %v; want durable publication", result.State(), errors.Unwrap(result))
+		wantState := fileops.UnpackStatePublishedDurable
+		if runtime.GOOS == "windows" {
+			wantState = fileops.UnpackStatePublishedDurabilityUncertain
+		}
+		if result.State() != wantState || errors.Is(result, fileops.ErrUnpackCleanupIncomplete) || (errors.Unwrap(result) != nil) != (runtime.GOOS == "windows") {
+			t.Fatalf("existing-root extraction = %v, %v; want %v with exact cleanup", result.State(), errors.Unwrap(result), wantState)
 		}
 		contents, err := os.ReadFile(filepath.Join(extractDir, "payload.txt")) // #nosec G304 -- test-owned extraction root
 		if err != nil || !bytes.Equal(contents, frozenPayload) {

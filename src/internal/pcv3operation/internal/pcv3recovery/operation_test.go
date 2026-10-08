@@ -14,6 +14,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -110,9 +111,7 @@ func TestRunPublishesCompleteRecoveredPlaintextWithoutSemanticRelabelling(t *tes
 		result.Stage() != pcv3.StageWrapAuth {
 		t.Fatalf("semantic result = %v/%v/%v; durable publication must not relabel Force-verified recovery", result.Outcome(), result.ForceProvenance(), result.Stage())
 	}
-	if !result.PublicationAttempted() || result.PublicationState() != pcv3publication.StatePublishedDurable {
-		t.Fatalf("publication = %v/%v; want attempted/durable", result.PublicationAttempted(), result.PublicationState())
-	}
+	requireNativeRecoveryPublication(t, result)
 	assertFileBytesAndMode(t, target, []byte("hello"), 0o600)
 	assertNoRecoveryStageResidue(t, directory)
 	if authority, ok := any(result).(archiveHandoffAuthority); ok && authority.ArchiveHandoffAllowed() {
@@ -182,12 +181,7 @@ func TestRunPublishesOneCanonicalArtifactForPartialEvidence(t *testing.T) {
 		result.Stage() != pcv3.StageRecordAuth || result.Code() != pcv3.CodeForcePartial {
 		t.Fatalf("semantic result = %v/%v/%v/%v; want exact Force-partial classification", result.Outcome(), result.ForceProvenance(), result.Stage(), result.Code())
 	}
-	if !result.PublicationAttempted() ||
-		result.PublicationState() != pcv3publication.StatePublishedDurable ||
-		result.PublicationStage() != pcv3.StageNone ||
-		result.PublicationCode() != pcv3publication.CodePublishedDurable {
-		t.Fatalf("publication result = %v/%v/%v/%v; want attempted durable publication", result.PublicationAttempted(), result.PublicationState(), result.PublicationStage(), result.PublicationCode())
-	}
+	requireNativeRecoveryPublication(t, result)
 	contents, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatalf("read published artifact: %v", err)
@@ -588,7 +582,7 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 		final: pcv3.RecoveryFinalUnverified,
 	}
 
-	t.Run("durable exact-owner artifact", func(t *testing.T) {
+	t.Run("native exact-owner artifact", func(t *testing.T) {
 		directory := t.TempDir()
 		source := filepath.Join(directory, "source.d1")
 		target := filepath.Join(directory, "evidence.pcv3-recovery")
@@ -623,7 +617,7 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 				if statErr != nil {
 					return statErr
 				}
-				if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+				if !recoveryFileModeMatches(info, 0o600) {
 					return fmt.Errorf("TEST ONLY stage mode = %v", info.Mode())
 				}
 				if _, statErr := os.Lstat(target); statErr == nil {
@@ -643,7 +637,7 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 		)
 		if result.Outcome() != pcv3.OutcomeForceUnverified ||
 			result.D1BootstrapProvenance() != pcv3.D1BootstrapProvenanceTail ||
-			result.PublicationState() != pcv3publication.StatePublishedDurable {
+			result.PublicationState() != nativeRecoveryPublicationState() {
 			t.Fatalf("D1 operation = %v/%v/%v; want Force-unverified/tail/durable", result.Outcome(), result.D1BootstrapProvenance(), result.PublicationState())
 		}
 		if observedStage == "" || observedStage == target {
@@ -839,7 +833,7 @@ func TestD1PublicationCannotLaunderOutcome(t *testing.T) {
 	assertNoRecoveryStageResidue(t, directory)
 }
 
-func TestArtifactInspectionPagesDurableForceEvidenceWithoutReopeningArtifact(t *testing.T) {
+func TestArtifactInspectionRequiresDurabilityAndPagesWithoutReopeningArtifact(t *testing.T) {
 	const rangeCount = uint64(260)
 	plaintextLength := rangeCount * recoveryRecordPlaintextMax
 	ranges := make([]operationRange, rangeCount)
@@ -873,10 +867,48 @@ func TestArtifactInspectionPagesDurableForceEvidenceWithoutReopeningArtifact(t *
 			nil,
 		),
 	)
-	if result.PublicationState() != pcv3publication.StatePublishedDurable {
-		t.Fatalf("publication state = %v; want durable before inspection", result.PublicationState())
-	}
+	requireNativeRecoveryPublication(t, result)
 	inspection := result.ArtifactInspection()
+	if runtime.GOOS == "windows" {
+		if inspection != nil {
+			t.Fatal("uncertain Force publication granted durable inspection authority")
+		}
+		contents, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		artifact, err := pcv3artifact.Parse(context.Background(), bytes.NewReader(contents), int64(len(contents)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata := artifact.Metadata()
+		if metadata.State != pcv3artifact.StatePartial || metadata.Role != pcv3artifact.RoleNone || metadata.Final != pcv3artifact.FinalMissing || metadata.PlaintextLength != plaintextLength || metadata.RangeCount != rangeCount || metadata.EmittedSegmentCount != 1 {
+			t.Fatalf("uncertain artifact metadata changed: %+v", metadata)
+		}
+		visits := 0
+		if err := artifact.VisitRanges(context.Background(), func(entry pcv3artifact.Entry, reader io.Reader) error {
+			want := ranges[visits]
+			wantStatus := pcv3artifact.RangeMissing
+			if visits == 0 {
+				wantStatus = pcv3artifact.RangeVerified
+			}
+			if entry.Status != wantStatus || entry.RecordIndex != want.recordIndex || entry.Start != want.start || entry.End != want.end || (reader != nil) != (visits == 0) {
+				t.Fatalf("uncertain artifact range %d changed: %+v", visits, entry)
+			}
+			if reader != nil {
+				data, err := io.ReadAll(reader)
+				if err != nil || !bytes.Equal(data, bytes.Repeat([]byte{0xa5}, int(recoveryRecordPlaintextMax))) {
+					t.Fatalf("uncertain artifact payload changed: %v", err)
+				}
+			}
+			visits++
+			return nil
+		}); err != nil || visits != int(rangeCount) {
+			t.Fatalf("uncertain artifact ranges=%d err=%v", visits, err)
+		}
+		assertNoRecoveryStageResidue(t, directory)
+		return
+	}
 	if inspection == nil {
 		t.Fatal("durable Force-partial result did not expose artifact inspection")
 	}
@@ -976,26 +1008,56 @@ func TestArtifactInspectionRequiresDurableForceResultTuple(t *testing.T) {
 			nil,
 		),
 	)
+	requireNativeRecoveryPublication(t, durable)
+	contents, err := os.ReadFile(filepath.Join(durableDirectory, "unverified.pcv3-recovery"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := pcv3artifact.Parse(context.Background(), bytes.NewReader(contents), int64(len(contents)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactMetadata := artifact.Metadata()
+	if artifactMetadata.State != pcv3artifact.StateUnverifiedForensic || artifactMetadata.Role != pcv3artifact.RoleBackup || artifactMetadata.Final != pcv3artifact.FinalUnverified || artifactMetadata.PlaintextLength != 5 || artifactMetadata.RangeCount != 1 {
+		t.Fatalf("native unverified artifact changed: %+v", artifactMetadata)
+	}
+	visits := 0
+	if err := artifact.VisitRanges(context.Background(), func(entry pcv3artifact.Entry, reader io.Reader) error {
+		visits++
+		if entry.RecordIndex != 0 || entry.Start != 0 || entry.End != 5 || entry.Status != pcv3artifact.RangeUnverified || reader == nil {
+			t.Fatalf("native unverified range changed: %+v", entry)
+		}
+		data, err := io.ReadAll(reader)
+		if err != nil || string(data) != "raw!!" {
+			t.Fatalf("native unverified payload changed: %q %v", data, err)
+		}
+		return nil
+	}); err != nil || visits != 1 {
+		t.Fatalf("native unverified ranges=%d err=%v", visits, err)
+	}
+	assertNoRecoveryStageResidue(t, durableDirectory)
 	inspection := durable.ArtifactInspection()
-	if inspection == nil {
-		t.Fatal("durable Force-unverified result did not expose artifact inspection")
+	if (inspection != nil) != (runtime.GOOS != "windows") {
+		t.Fatal("Force-unverified inspection differs from proven native durability")
 	}
-	metadata := inspection.Metadata()
-	if metadata.Kind != pcv3artifact.StateUnverifiedForensic || metadata.Role != pcv3artifact.RoleBackup ||
-		metadata.PlaintextLength != 5 || metadata.Final != pcv3artifact.FinalUnverified ||
-		metadata.RangeCount != 1 || metadata.VerifiedRangeCount != 0 ||
-		metadata.UnverifiedRangeCount != 1 || metadata.MissingRangeCount != 0 {
-		t.Fatalf("unverified inspection metadata = %#v; want exact backup-role summary", metadata)
-	}
+	if inspection != nil {
+		metadata := inspection.Metadata()
+		if metadata.Kind != pcv3artifact.StateUnverifiedForensic || metadata.Role != pcv3artifact.RoleBackup ||
+			metadata.PlaintextLength != 5 || metadata.Final != pcv3artifact.FinalUnverified ||
+			metadata.RangeCount != 1 || metadata.VerifiedRangeCount != 0 ||
+			metadata.UnverifiedRangeCount != 1 || metadata.MissingRangeCount != 0 {
+			t.Fatalf("unverified inspection metadata = %#v; want exact backup-role summary", metadata)
+		}
 
-	for _, state := range []pcv3publication.State{
-		pcv3publication.StatePublishedDurabilityUncertain,
-		pcv3publication.StatePublicationIndeterminate,
-	} {
-		changed := *durable
-		changed.publicationState = state
-		if changed.ArtifactInspection() != nil {
-			t.Fatalf("publication state %v retained inspection; want fail-closed nil", state)
+		for _, state := range []pcv3publication.State{
+			pcv3publication.StatePublishedDurabilityUncertain,
+			pcv3publication.StatePublicationIndeterminate,
+		} {
+			changed := *durable
+			changed.publicationState = state
+			if changed.ArtifactInspection() != nil {
+				t.Fatalf("publication state %v retained inspection; want fail-closed nil", state)
+			}
 		}
 	}
 
@@ -1033,7 +1095,8 @@ func TestArtifactInspectionRequiresDurableForceResultTuple(t *testing.T) {
 		&Request{Target: filepath.Join(nonForceDirectory, "recovered.bin")},
 		fixedCoreRunner(nonForceSemantic, [][]byte{[]byte("clear")}, nil),
 	)
-	if nonForce.PublicationState() != pcv3publication.StatePublishedDurable ||
+	requireNativeRecoveryPublication(t, nonForce)
+	if nonForce.PublicationState() != nativeRecoveryPublicationState() ||
 		nonForce.ArtifactInspection() != nil {
 		t.Fatalf("durable non-Force result = %v inspection %#v; want durable/nil", nonForce.PublicationState(), nonForce.ArtifactInspection())
 	}
@@ -1101,7 +1164,7 @@ func assertFileBytesAndMode(t *testing.T, path string, want []byte, wantMode os.
 	if err != nil {
 		t.Fatalf("stat %s: %v", filepath.Base(path), err)
 	}
-	if info.Mode().Perm() != wantMode {
+	if !recoveryFileModeMatches(info, wantMode) {
 		t.Fatalf("%s mode = %04o; want %04o", filepath.Base(path), info.Mode().Perm(), wantMode)
 	}
 }

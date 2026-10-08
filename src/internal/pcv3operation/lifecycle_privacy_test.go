@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -67,6 +68,15 @@ type pcv3PrivacyWant struct {
 
 func pcv3PrivacyRequireResult(t *testing.T, result *Result, want pcv3PrivacyWant) {
 	t.Helper()
+	// These expectations describe native filesystem publications. Windows has
+	// no directory durability proof, so it must retain the exact warning tuple.
+	if runtime.GOOS == "windows" && want.publicationState == pcv3publication.StatePublishedDurable {
+		want.class = CompletionDurabilityUncertain
+		want.publicationState = pcv3publication.StatePublishedDurabilityUncertain
+		want.publicationStage = pcv3.StageDirectorySync
+		want.publicationCode = pcv3publication.CodeDurabilityUncertain
+		want.warnings = append(slices.Clone(want.warnings), WarningDurabilityUncertain)
+	}
 	if result == nil {
 		t.Fatal("operation returned no closed result")
 	}
@@ -228,7 +238,7 @@ func pcv3PrivacyRequireTargetBytes(t *testing.T, target string, want []byte) {
 	if err != nil {
 		t.Fatalf("inspect published output: %v", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("published output mode = %v; want regular 0600", info.Mode())
 	}
 }
@@ -262,10 +272,10 @@ func pcv3PrivacyRequireRootClosed(t *testing.T, root *os.Root, name string) {
 	}
 }
 
-// pcv3PrivacyRequireCleanSuccess pins the complete battery for one actual
+// pcv3PrivacyRequireNativeSuccess pins the complete battery for one actual
 // completed normal read over the frozen one-byte production-vector volume. The
 // target path must be captured before ownership transfer clears the request.
-func pcv3PrivacyRequireCleanSuccess(
+func pcv3PrivacyRequireNativeSuccess(
 	t *testing.T,
 	run *pcv3LifecycleRun,
 	result *Result,
@@ -340,7 +350,7 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 		target := run.request.Target
 
 		result, stdout, stderr, logBytes := pcv3PrivacyRun(t, run, admitter)
-		pcv3PrivacyRequireCleanSuccess(t, run, result, admitter, oneBytePlaintext, target)
+		pcv3PrivacyRequireNativeSuccess(t, run, result, admitter, oneBytePlaintext, target)
 		pcv3PrivacyFinish(t, run, result, stdout, stderr, logBytes)
 	})
 
@@ -413,8 +423,8 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 		if result.ForceProvenance() != pcv3.ForceProvenancePartial {
 			t.Fatalf("force provenance = %v; want partial", result.ForceProvenance())
 		}
-		if result.ArtifactInspection() == nil {
-			t.Fatal("verified Force recovery granted no artifact inspection authority")
+		if (result.ArtifactInspection() != nil) != (runtime.GOOS != "windows") {
+			t.Fatal("Force artifact inspection authority differs from proven directory durability")
 		}
 		if result.ArchiveFollowUp() != nil || result.OutputFollowUp() != nil {
 			t.Fatal("verified Force recovery retained archive or output authority")
@@ -432,7 +442,7 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 			t.Fatalf("force admissions = %d; want one fixed-profile admission", admitter.calls)
 		}
 		info, err := os.Lstat(target)
-		if err != nil || info.Size() != 120 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		if err != nil || info.Size() != 120 || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 			t.Fatalf("force artifact = %v size %d mode %v; want 120-byte regular 0600 artifact", err, info.Size(), info.Mode())
 		}
 		pcv3PrivacyRequireDirNames(t, run.outputDir, []string{filepath.Base(target)})
@@ -662,7 +672,7 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 		pcv3PrivacyRequireLive(t, retry)
 
 		second, secondStdout, secondStderr, secondLog := pcv3PrivacyRun(t, retry, granting)
-		pcv3PrivacyRequireCleanSuccess(t, retry, second, granting, oneBytePlaintext, target)
+		pcv3PrivacyRequireNativeSuccess(t, retry, second, granting, oneBytePlaintext, target)
 		pcv3PrivacyFinish(t, retry, second, secondStdout, secondStderr, secondLog)
 	})
 
@@ -682,7 +692,7 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 		// provider to grant the fixed profile and complete the operation.
 		// Resource refusal is a failure here; separate scripted cases verify
 		// fail-closed admission without reinterpreting this observed result.
-		pcv3PrivacyRequireCleanSuccess(t, run, result, admitter, oneBytePlaintext, target)
+		pcv3PrivacyRequireNativeSuccess(t, run, result, admitter, oneBytePlaintext, target)
 		pcv3PrivacyFinish(t, run, result, stdout, stderr, logBytes)
 	})
 
@@ -850,7 +860,7 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 		close(start)
 		wait.Wait()
 		for index := range runs {
-			pcv3PrivacyRequireCleanSuccess(t, runs[index], results[index], admitters[index], oneBytePlaintext, targets[index])
+			pcv3PrivacyRequireNativeSuccess(t, runs[index], results[index], admitters[index], oneBytePlaintext, targets[index])
 			assertOperationRequestTransferred(t, runs[index].request)
 			pcv3AssertZeroed(t, runs[index])
 		}

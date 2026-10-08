@@ -1,19 +1,20 @@
 package pcv3
 
 import (
-	"Picocrypt-NG/internal/pcv3publication"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
-func TestNativeReadOutputTransfersDurableRetainedOwnerOnce(t *testing.T) {
+func TestNativeReadOutputRequiresDurabilityForRetainedOwner(t *testing.T) {
 	directory := t.TempDir()
 	target := filepath.Join(directory, "private-output.bin")
 	payload := []byte("authenticated normal output")
 	sink := &nativeReadSink{target: target}
+	t.Cleanup(sink.abortUncommitted)
 	if err := sink.writeVerifiedRecord(context.Background(), 0, payload); err != nil {
 		sink.abortUncommitted()
 		t.Fatalf("write verified record into production sink: %v", err)
@@ -26,13 +27,15 @@ func TestNativeReadOutputTransfersDurableRetainedOwnerOnce(t *testing.T) {
 	output := &NativeReadOutput{state: state}
 
 	retained := output.PublishRetained(context.Background())
-	if retained == nil || !retained.Live() {
+	if (retained != nil) != (runtime.GOOS != "windows") || (retained != nil && !retained.Live()) {
 		sink.abortUncommitted()
 		t.Fatal("durable normal output did not transfer its exact retained owner")
 	}
 	if output.Publish(context.Background()) != nil || output.PublishRetained(context.Background()) != nil ||
 		output.Archive() != nil {
-		_ = retained.RemoveExact()
+		if retained != nil {
+			_ = retained.RemoveExact()
+		}
 		t.Fatal("consumed native output granted a second publication action")
 	}
 
@@ -44,9 +47,11 @@ func TestNativeReadOutputTransfersDurableRetainedOwnerOnce(t *testing.T) {
 	}
 	sink.snapshot(nativeResult)
 	if !nativeResult.PublicationAttempted() ||
-		nativeResult.PublicationState() != pcv3publication.StatePublishedDurable ||
+		nativeResult.PublicationState() != nativePublicationState() ||
 		nativeResult.CleanupIncomplete() {
-		_ = retained.RemoveExact()
+		if retained != nil {
+			_ = retained.RemoveExact()
+		}
 		t.Fatalf(
 			"retained native result = attempted %v state %v cleanup %v; want durable/clean",
 			nativeResult.PublicationAttempted(), nativeResult.PublicationState(),
@@ -55,13 +60,17 @@ func TestNativeReadOutputTransfersDurableRetainedOwnerOnce(t *testing.T) {
 	}
 	got, err := os.ReadFile(target)
 	if err != nil || string(got) != string(payload) {
-		_ = retained.RemoveExact()
+		if retained != nil {
+			_ = retained.RemoveExact()
+		}
 		t.Fatalf("retained native target = %q, %v; want exact payload", got, err)
 	}
-	if err := retained.RemoveExact(); err != nil {
-		t.Fatalf("remove retained native output: %v", err)
-	}
-	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("retained native output still exists: %v", err)
+	if retained != nil {
+		if err := retained.RemoveExact(); err != nil {
+			t.Fatalf("remove retained native output: %v", err)
+		}
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("retained native output still exists: %v", err)
+		}
 	}
 }

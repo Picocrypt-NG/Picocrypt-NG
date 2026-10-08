@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -195,10 +196,7 @@ func TestD1WriterLiteralCredentialStageIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose D1 stage: %v", err)
 	}
-	if result == nil || result.State() != pcv3publication.StatePublishedDurable ||
-		result.Outcome() != OutcomeSuccess {
-		t.Fatalf("D1 publication result = %T %v", result, result)
-	}
+	requireNativePublication(t, result)
 	if len(events) == 0 || events[0] != d1BoundaryStageCreated {
 		t.Fatalf("first D1 effect = %v; want stage creation", events)
 	}
@@ -423,9 +421,10 @@ func TestD1WriterNeverCreatesClearInnerArtifact(t *testing.T) {
 		return nil
 	})
 	result, err := composeD1OuterStage(context.Background(), fixture.request, seams)
-	if err != nil || result == nil || result.State() != pcv3publication.StatePublishedDurable {
+	if err != nil {
 		t.Fatalf("publish D1 artifact = result %v, error %v", result, err)
 	}
+	requireNativePublication(t, result)
 
 	raw, err := os.ReadFile(fixture.destinationPath)
 	if err != nil {
@@ -502,8 +501,8 @@ func TestD1WriterPublicationOutcome(t *testing.T) {
 		wantCode  pcv3publication.Code
 	}{
 		{
-			name:      "durable",
-			wantState: pcv3publication.StatePublishedDurable,
+			name:      "native publication",
+			wantState: nativePublicationState(),
 			wantCode:  pcv3publication.CodePublishedDurable,
 		},
 		{
@@ -514,6 +513,9 @@ func TestD1WriterPublicationOutcome(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if !test.collision && runtime.GOOS == "windows" {
+				test.wantCode = pcv3publication.CodeDurabilityUncertain
+			}
 			fixture := newD1CreationTestFixture(t)
 			foreign := []byte("TEST ONLY foreign destination")
 			seams := newD1LiteralStageIntegrationSeams(t, func(
@@ -862,7 +864,7 @@ func requireD1LiveStage(
 		t.Fatal("D1 boundary did not expose the live production stage")
 	}
 	openInfo, err := stage.File().Stat()
-	if err != nil || !openInfo.Mode().IsRegular() || openInfo.Mode().Perm() != 0o600 {
+	if err != nil || !openInfo.Mode().IsRegular() || (runtime.GOOS != "windows" && openInfo.Mode().Perm() != 0o600) {
 		t.Fatalf("live D1 stage mode = %v, error %v; want regular 0600", openInfo, err)
 	}
 	entries, err := os.ReadDir(fixture.directory)

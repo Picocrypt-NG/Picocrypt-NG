@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -282,7 +283,7 @@ func buildArchiveSAFZIP(t testing.TB, entries []archiveSAFZIPEntry) []byte {
 func newArchiveSAFHandoffFromZIP(
 	t testing.TB,
 	archive []byte,
-	journal bool,
+	journalWhenSupported bool,
 ) (*NativeArchiveHandoff, string, string) {
 	t.Helper()
 	parent := t.TempDir()
@@ -291,7 +292,10 @@ func newArchiveSAFHandoffFromZIP(
 	if err != nil {
 		t.Fatalf("create archive stage: %v", err)
 	}
-	if journal {
+	// Journal identity is supported only on Linux/Android. Other hosts
+	// execute the same SAF custody/cleanup paths without a crash journal;
+	// unsupported journal requests have a separate fail-closed operation test.
+	if journalWhenSupported && (runtime.GOOS == "linux" || runtime.GOOS == "android") {
 		if err := stage.PersistCleanupJournal(); err != nil {
 			_ = stage.Cleanup()
 			t.Fatalf("persist archive stage journal: %v", err)

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -187,6 +188,9 @@ func TestArchivePublicationPreservesTransportAndCleanupResult(t *testing.T) {
 			}
 			ctx := context.Background()
 			wantCompletion, wantDiagnostic := CompletionClean, DiagnosticNone
+			if runtime.GOOS == "windows" {
+				wantCompletion = CompletionDurabilityUncertain
+			}
 			switch name {
 			case "occupied":
 				if err := os.WriteFile(target, []byte("foreign output"), 0o600); err != nil {
@@ -204,7 +208,9 @@ func TestArchivePublicationPreservesTransportAndCleanupResult(t *testing.T) {
 				defer cancel()
 				wantCompletion, wantDiagnostic = CompletionRefused, DiagnosticCancellation
 			case "cleanup warning":
-				wantCompletion = CompletionWarning
+				if runtime.GOOS != "windows" {
+					wantCompletion = CompletionWarning
+				}
 			}
 			publication := stage.Publish(ctx)
 			// Cleanup is a separate axis from the publisher's durable result.
@@ -258,9 +264,7 @@ func TestArchivePublishSavesAuthenticatedZIPAndComment(t *testing.T) {
 		Source: bytes.NewReader(plaintext), PlaintextLength: uint64(len(plaintext)),
 		Target: ciphertext, Factors: factors(), Comment: []byte(comment),
 	})
-	if write.CompletionClass() != CompletionClean {
-		t.Fatalf("create archive volume: %v", write)
-	}
+	requireNativeOperationPublication(t, write)
 	source, err := os.Open(ciphertext)
 	if err != nil {
 		t.Fatal(err)
@@ -274,7 +278,8 @@ func TestArchivePublishSavesAuthenticatedZIPAndComment(t *testing.T) {
 	defer followUp.Close()
 	copyOfFollowUp := *followUp
 	result := followUp.Publish(context.Background())
-	if result.CompletionClass() != CompletionClean || result.AuthenticatedComment() != comment || result.ArchiveFollowUp() != nil {
+	requireNativeOperationPublication(t, result)
+	if result.AuthenticatedComment() != comment || result.ArchiveFollowUp() != nil {
 		t.Fatalf("archive publication lost authentication or metadata: %v", result)
 	}
 	got, err := os.ReadFile(target)

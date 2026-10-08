@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -25,8 +26,9 @@ func TestRecoveryRetainsOnlyOptInDurableOutputCapability(t *testing.T) {
 		directory := t.TempDir()
 		target := filepath.Join(directory, "recovered.bin")
 		result := runWithCore(context.Background(), &Request{Target: target}, runner)
+		requireNativeRecoveryPublication(t, result)
 		retained := result.TakeRetainedOutput()
-		if result.PublicationState() != pcv3publication.StatePublishedDurable ||
+		if result.PublicationState() != nativeRecoveryPublicationState() ||
 			retained != nil {
 			t.Fatalf(
 				"default recovery = state %v retained=%v; want durable terminal publication",
@@ -46,8 +48,8 @@ func TestRecoveryRetainsOnlyOptInDurableOutputCapability(t *testing.T) {
 			ExecutionOptions{RetainDurableOutput: true},
 		)
 		retained := result.TakeRetainedOutput()
-		if result.PublicationState() != pcv3publication.StatePublishedDurable ||
-			retained == nil || !retained.Live() {
+		if result.PublicationState() != nativeRecoveryPublicationState() ||
+			(retained != nil) != (runtime.GOOS != "windows") || (retained != nil && !retained.Live()) {
 			t.Fatalf(
 				"opt-in recovery = state %v retained=%v; want durable exact capability",
 				result.PublicationState(), retained,
@@ -57,6 +59,11 @@ func TestRecoveryRetainsOnlyOptInDurableOutputCapability(t *testing.T) {
 			t.Fatal("recovery result transferred retained output more than once")
 		}
 		assertFileBytesAndMode(t, target, []byte("hello"), 0o600)
+		requireNativeRecoveryPublication(t, result)
+		if retained == nil {
+			assertNoRecoveryStageResidue(t, directory)
+			return
+		}
 		if err := retained.RemoveExact(); err != nil {
 			t.Fatalf("remove exact retained recovery output: %v", err)
 		}
@@ -105,6 +112,7 @@ func TestRecoveryCleansRetainedOutputIfCoreLaterWithdrawsOutputSemantic(t *testi
 		}}),
 		final: pcv3.RecoveryFinalVerified,
 	}
+	continued := false
 	terminalSemantic := operationSemantic{
 		outcome: pcv3.OutcomeOperationFailed,
 		stage:   pcv3.StageInputIO,
@@ -127,6 +135,7 @@ func TestRecoveryCleansRetainedOutputIfCoreLaterWithdrawsOutputSemantic(t *testi
 		if err != nil {
 			return operationSemantic{}, err
 		}
+		continued = true
 		return terminalSemantic, errors.New("TEST ONLY terminal core failure after output callback")
 	}
 
@@ -137,6 +146,20 @@ func TestRecoveryCleansRetainedOutputIfCoreLaterWithdrawsOutputSemantic(t *testi
 		ExecutionOptions{RetainDurableOutput: true},
 	)
 	retained := result.TakeRetainedOutput()
+	if runtime.GOOS == "windows" {
+		// Uncertain publication returns its warning from the output callback;
+		// the core cannot reach the later withdrawal boundary or gain custody.
+		requireNativeRecoveryPublication(t, result)
+		if continued || retained != nil || result.Outcome() != pcv3.OutcomeAuthenticatedDegraded || result.Stage() != pcv3.StageWrapAuth {
+			t.Fatalf("uncertain callback granted continuation or custody: continued=%v result=%v retained=%v", continued, result, retained)
+		}
+		assertFileBytesAndMode(t, target, []byte("hello"), 0o600)
+		assertNoRecoveryStageResidue(t, directory)
+		return
+	}
+	if !continued {
+		t.Fatal("durable callback did not reach semantic withdrawal")
+	}
 	if result.Outcome() != pcv3.OutcomeOperationFailed ||
 		result.Stage() != pcv3.StageInputIO ||
 		result.PublicationState() != pcv3publication.StateNotPublished ||
@@ -184,15 +207,27 @@ func TestRecoveryPanicAfterRetainedPublicationRemovesInternalPlaintext(t *testin
 	}
 
 	var recovered any
+	var result *Result
 	func() {
 		defer func() { recovered = recover() }()
-		_ = runWithCoreOptions(
+		result = runWithCoreOptions(
 			context.Background(),
 			&Request{Target: target},
 			runner,
 			ExecutionOptions{RetainDurableOutput: true},
 		)
 	}()
+	if runtime.GOOS == "windows" {
+		// The uncertain output callback returns before the deliberately later
+		// panic. Its published file remains, with no durable retained owner.
+		requireNativeRecoveryPublication(t, result)
+		if recovered != nil || result.TakeRetainedOutput() != nil || result.Outcome() != pcv3.OutcomeAuthenticatedDegraded || result.Stage() != pcv3.StageWrapAuth {
+			t.Fatalf("uncertain callback crossed the panic boundary or granted custody: panic=%v result=%v", recovered, result)
+		}
+		assertFileBytesAndMode(t, target, []byte("hello"), 0o600)
+		assertNoRecoveryStageResidue(t, directory)
+		return
+	}
 	if recovered == nil {
 		t.Fatal("core panic was unexpectedly swallowed")
 	}

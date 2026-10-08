@@ -25,7 +25,7 @@ func TestArchiveFollowUpConsumesAuthenticatedArchiveOnce(t *testing.T) {
 
 	extractRoot := openNativeArchiveRoot(t)
 	result := handoff.Extract(context.Background(), extractRoot)
-	if result == nil || result.State() != fileops.UnpackStatePublishedDurable ||
+	if result == nil || result.State() != nativeExtractionState() ||
 		result.CleanupIncomplete() {
 		t.Fatalf("archive extraction result = %#v; want durable with proven cleanup", result)
 	}
@@ -41,7 +41,10 @@ func TestNativeArchivePublishPreservesTargetAndCleanup(t *testing.T) {
 			handoff, parent, target := newNativeArchiveHandoffFixture(t)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			wantState, wantStage, wantCode := pcv3publication.StatePublishedDurable, StageNone, pcv3publication.CodePublishedDurable
+			wantState, wantStage, wantCode := nativePublicationState(), StageNone, pcv3publication.CodePublishedDurable
+			if runtime.GOOS == "windows" {
+				wantStage, wantCode = StageDirectorySync, pcv3publication.CodeDurabilityUncertain
+			}
 			const foreign = "unrelated file must be preserved"
 			var replacement string
 			switch name {
@@ -58,13 +61,22 @@ func TestNativeArchivePublishPreservesTargetAndCleanup(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer identityPin.Close()
+				// Create the foreign identity before releasing the original, so
+				// Windows can close its delete-blocking pin without inode reuse.
+				foreignPath := filepath.Join(parent, "foreign-replacement")
+				if err := os.WriteFile(foreignPath, []byte(foreign), 0o600); err != nil {
+					t.Fatal(err)
+				}
 				if err := stageFile.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := identityPin.Close(); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.Remove(replacement); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(replacement, []byte(foreign), 0o600); err != nil {
+				if err := os.Rename(foreignPath, replacement); err != nil {
 					t.Fatal(err)
 				}
 				fallthrough
@@ -135,14 +147,12 @@ func TestNativeArchivePublishAndExtractShareOneShotAuthority(t *testing.T) {
 		t.Fatal("concurrent publication and extraction did not consume exactly one capability")
 	}
 	if publication != nil {
-		if publication.State() != pcv3publication.StatePublishedDurable {
-			t.Fatalf("winning publication failed: %v", publication)
-		}
+		requireNativePublication(t, publication)
 		if entries, err := os.ReadDir(rootPath); err != nil || len(entries) != 0 {
 			t.Fatalf("losing extraction wrote files: %v, %v", entries, err)
 		}
 	} else {
-		if extraction.State() != fileops.UnpackStatePublishedDurable {
+		if extraction.State() != nativeExtractionState() {
 			t.Fatalf("winning extraction failed: %v", extraction.State())
 		}
 		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
@@ -241,7 +251,7 @@ func TestArchiveFollowUpFrozenTreeContent(t *testing.T) {
 		t.Fatalf("open extraction root: %v", err)
 	}
 	result := handoff.Extract(context.Background(), root)
-	if result == nil || result.State() != fileops.UnpackStatePublishedDurable ||
+	if result == nil || result.State() != nativeExtractionState() ||
 		result.CleanupIncomplete() {
 		t.Fatalf("frozen archive result = %#v; want durable with proven cleanup", result)
 	}

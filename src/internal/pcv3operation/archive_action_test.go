@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"syscall"
 	"testing"
 )
 
@@ -33,9 +35,7 @@ func archiveActionCiphertext(t *testing.T, plaintext []byte) string {
 		Source: bytes.NewReader(plaintext), PlaintextLength: uint64(len(plaintext)),
 		Target: ciphertext, Factors: archiveActionFactors(), Comment: []byte("public archive action comment"),
 	})
-	if write.CompletionClass() != CompletionClean {
-		t.Fatalf("write archive fixture: %v", write)
-	}
+	requireNativeOperationPublication(t, write)
 	return ciphertext
 }
 
@@ -78,7 +78,8 @@ func TestArchiveActionProductionSaveAndExtract(t *testing.T) {
 			plaintext := archiveActionPayload(t)
 			read := archiveActionFixture(t, target, plaintext)
 			result := plan.apply(context.Background(), read)
-			if result.CompletionClass() != CompletionClean || result.ArchiveFollowUp() != nil ||
+			requireNativeOperationPublication(t, result)
+			if result.ArchiveFollowUp() != nil ||
 				result.AuthenticatedComment() != "public archive action comment" || result.SourceDeletionAllowed() {
 				t.Fatalf("archive action completion=%v", result)
 			}
@@ -89,7 +90,7 @@ func TestArchiveActionProductionSaveAndExtract(t *testing.T) {
 				if action == ArchiveExtract {
 					wantPath = filepath.Join(directory, "Restored", "payload.txt")
 					info, err := os.Stat(filepath.Join(directory, "Restored"))
-					if err != nil || info.Mode().Perm() != 0o700 {
+					if err != nil || !info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o700) {
 						t.Fatalf("extraction directory permissions: %v %v", info, err)
 					}
 				}
@@ -144,9 +145,7 @@ func TestArchiveActionReviewsAuthenticatedBudgetBeforeExtraction(t *testing.T) {
 				t.Fatalf("review lifecycle mismatch: calls=%d result=%v", calls, result)
 			}
 			if decision == "approve" {
-				if result.CompletionClass() != CompletionClean {
-					t.Fatalf("approved valid high-ratio archive failed: %v", result)
-				}
+				requireNativeOperationPublication(t, result)
 				entries, err := os.ReadDir(filepath.Join(parent, "result"))
 				if err != nil || len(entries) != 1 {
 					t.Fatalf("approved archive output missing: %v", err)
@@ -233,7 +232,7 @@ func TestArchiveActionCompetingDirectoryCreationPreservesForeignContents(t *test
 	}
 }
 
-func TestArchiveActionParentReplacementPreventsPlaintextPublication(t *testing.T) {
+func TestArchiveActionParentReplacementDoesNotRedirectPlaintext(t *testing.T) {
 	base := t.TempDir()
 	directory := filepath.Join(base, "parent")
 	if err := os.Mkdir(directory, 0o700); err != nil {
@@ -248,7 +247,28 @@ func TestArchiveActionParentReplacementPreventsPlaintextPublication(t *testing.T
 	read := archiveActionFixture(t, target, archiveActionPayload(t))
 	moved := filepath.Join(base, "moved")
 	if err := os.Rename(directory, moved); err != nil {
-		t.Fatal(err)
+		var renameErr *os.LinkError
+		if runtime.GOOS != "windows" || !errors.As(err, &renameErr) ||
+			renameErr.Op != "rename" || renameErr.Old != directory || renameErr.New != moved ||
+			(!errors.Is(renameErr.Err, syscall.Errno(5)) && !errors.Is(renameErr.Err, syscall.Errno(32))) {
+			t.Fatal(err)
+		}
+		// Windows may prevent the attack while the pinned directory is open.
+		// The admitted destination must still receive the exact plaintext.
+		if _, movedErr := os.Lstat(moved); !errors.Is(movedErr, os.ErrNotExist) {
+			t.Fatalf("failed parent replacement moved the original: %v", movedErr)
+		}
+		result := plan.apply(context.Background(), read)
+		requireNativeOperationPublication(t, result)
+		if result.ArchiveFollowUp() != nil || result.SourceDeletionAllowed() {
+			t.Fatalf("blocked parent replacement retained authority: %v", result)
+		}
+		requireOperationFileBytes(t, filepath.Join(directory, "output", "payload.txt"), []byte("archive action authenticated contents\n"))
+		entries, readErr := os.ReadDir(directory)
+		if readErr != nil || len(entries) != 1 || entries[0].Name() != "output" {
+			t.Fatalf("blocked parent replacement left unexpected output: %v %v", entries, readErr)
+		}
+		return
 	}
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)

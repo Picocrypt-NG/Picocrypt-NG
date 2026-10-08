@@ -3,6 +3,7 @@ package mobile
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -92,7 +93,7 @@ func pcv3MobileRequireNoResidue(t *testing.T, directory string, keep []string) {
 // unconfigured Android policy contract. Host-native bridge success is not
 // physical Android execution or Android support evidence.
 func TestPCV3MobileResultAndPrivacyBoundary(t *testing.T) {
-	t.Run("host-native success retains exactly one output capability without Android support evidence", func(t *testing.T) {
+	t.Run("host-native output authority requires supported private-stage journaling", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			temp := t.TempDir()
 			red := writePCV3MobileFile(t, temp, "red.key", "red")
@@ -119,6 +120,41 @@ func TestPCV3MobileResultAndPrivacyBoundary(t *testing.T) {
 			synctest.Wait()
 
 			snapshot := operation.Snapshot()
+			if runtime.GOOS != "linux" && runtime.GOOS != "android" {
+				// The real Android bridge requests a crash-cleanup journal. Other
+				// hosts cannot record that identity and must publish no plaintext.
+				if snapshot.Outcome() != "operation-failed" || snapshot.Stage() != "output-write" ||
+					snapshot.Code() != "PCV3_OPERATION_FAILED" || snapshot.Diagnostic() != "none" ||
+					snapshot.CompletionClass() != "no-output" || snapshot.PublicationAttempted() ||
+					snapshot.PublicationState() != "none" || snapshot.PublicationStage() != "none" ||
+					snapshot.PublicationCode() != "none" || snapshot.WarningCount() != 1 ||
+					snapshot.WarningAt(0) != "cleanup-incomplete" || snapshot.ArchivePending() {
+					t.Fatalf("unsupported journal granted a non-closed result: %s", pcv3MobileSnapshotText(snapshot))
+				}
+				if operation.Output() != nil || operation.Archive() != nil || operation.ArtifactInspection() != nil || operation.ResourceChallenge() != nil {
+					t.Fatal("unsupported journal granted follow-up authority")
+				}
+				pcv3MobileRequireDescriptorsClosed(t, *opened)
+				if _, err := os.Lstat(target); !os.IsNotExist(err) {
+					t.Fatalf("unsupported journal published plaintext: %v", err)
+				}
+				for path, want := range map[string]string{red: "red", blue: "blue"} {
+					if got, err := os.ReadFile(path); err != nil || string(got) != want {
+						t.Fatalf("journal refusal altered keyfile: %q, %v", got, err)
+					}
+				}
+				pcv3MobileRequireNoResidue(t, temp, []string{"blue.key", "red.key"})
+				if got := PCV3AndroidPolicyState(); got != "unconfigured" {
+					t.Fatalf("unsupported host asserted Android support: %q", got)
+				}
+				if code := operation.Release(); code != "" {
+					t.Fatalf("release refused completed no-output operation: %q", code)
+				}
+				if code := operation.Release(); code != pcv3OperationReleaseDenied {
+					t.Fatalf("second refusal release = %q; want release denied", code)
+				}
+				return
+			}
 			if snapshot.Outcome() != "success" ||
 				snapshot.Stage() != "none" ||
 				snapshot.Code() != "PCV3_SUCCESS" ||

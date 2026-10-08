@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 )
@@ -365,19 +366,37 @@ func TestOperationFreezesEvidenceBeforeStageCallbacks(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "artifact")
 	result := runWithCore(context.Background(), &Request{Target: target, stageWriter: func(w io.Writer) io.Writer { *m = pcv3ranges.Map{}; return w }}, runner)
 	inspection := result.ArtifactInspection()
-	if inspection == nil {
-		t.Fatalf("mutated callback invalidated frozen evidence: %v/%v", result.Outcome(), result.PublicationState())
+	requireNativeRecoveryPublication(t, result)
+	if (inspection != nil) != (runtime.GOOS != "windows") {
+		t.Fatalf("mutated callback changed native inspection authority: %v/%v", result.Outcome(), result.PublicationState())
 	}
-	page, ok := inspection.Page(0, 1)
-	if !ok || len(page) != 1 || page[0].End != 5 || page[0].Status != pcv3artifact.RangeVerified {
-		t.Fatalf("evidence changed: %+v", page)
+	if inspection != nil {
+		page, ok := inspection.Page(0, 1)
+		if !ok || len(page) != 1 || page[0].End != 5 || page[0].Status != pcv3artifact.RangeVerified {
+			t.Fatalf("evidence changed: %+v", page)
+		}
 	}
 	contents, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pcv3artifact.Parse(context.Background(), bytes.NewReader(contents), int64(len(contents))); err != nil {
+	artifact, err := pcv3artifact.Parse(context.Background(), bytes.NewReader(contents), int64(len(contents)))
+	if err != nil {
 		t.Fatal(err)
+	}
+	visits := 0
+	if err := artifact.VisitRanges(context.Background(), func(entry pcv3artifact.Entry, reader io.Reader) error {
+		visits++
+		if entry.RecordIndex != 0 || entry.Start != 0 || entry.End != 5 || entry.Status != pcv3artifact.RangeVerified || reader == nil {
+			t.Fatalf("published frozen range changed: %+v", entry)
+		}
+		data, err := io.ReadAll(reader)
+		if err != nil || string(data) != "hello" {
+			t.Fatalf("published frozen payload changed: %q %v", data, err)
+		}
+		return nil
+	}); err != nil || visits != 1 {
+		t.Fatalf("published frozen ranges=%d err=%v", visits, err)
 	}
 }
 

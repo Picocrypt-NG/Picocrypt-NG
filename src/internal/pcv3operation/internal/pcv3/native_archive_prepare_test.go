@@ -4,7 +4,6 @@ import (
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3resource"
-	"Picocrypt-NG/internal/pcv3publication"
 	"bytes"
 	"context"
 	"errors"
@@ -83,9 +82,7 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 				if output.Disposition() == NativePayloadArchive {
 					handoff = output.Archive()
 				} else {
-					if publication := output.Publish(context.Background()); publication == nil || publication.State() != pcv3publication.StatePublishedDurable {
-						t.Fatalf("ordinary publication failed: %v", publication)
-					}
+					requireNativePublication(t, output.Publish(context.Background()))
 				}
 				return nil
 			})
@@ -117,7 +114,8 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 			switch test.action {
 			case "publish":
 				publication, cleanup := handoff.Publish(context.Background())
-				if publication == nil || publication.State() != pcv3publication.StatePublishedDurable || cleanup {
+				requireNativePublication(t, publication)
+				if cleanup {
 					t.Fatalf("prepared ZIP publication failed: %v cleanup=%v", publication, cleanup)
 				}
 				got, err := os.ReadFile(target)
@@ -128,7 +126,7 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 				root := openNativeArchiveRoot(t)
 				path := root.Name()
 				extracted := handoff.Extract(context.Background(), root)
-				if extracted == nil || extracted.State() != fileops.UnpackStatePublishedDurable || extracted.CleanupIncomplete() {
+				if extracted == nil || extracted.State() != nativeExtractionState() || extracted.CleanupIncomplete() {
 					t.Fatalf("prepared ZIP extraction failed: %v", extracted)
 				}
 				assertArchiveHandoffFile(t, filepath.Join(path, "root.txt"), "PCV3 authenticated archive fixture\n")

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -87,7 +88,7 @@ func TestWriteCancellationDuringResourceAdmissionPreservesCause(t *testing.T) {
 					}
 					return nil
 				},
-			}, ExecutionOptions{JournalPrivateStage: true})
+			}, ExecutionOptions{JournalPrivateStage: runtime.GOOS == "linux" || runtime.GOOS == "android"})
 			if !reachedAdmission || deriving || ctx.Err() != context.Canceled {
 				t.Fatalf("repro did not isolate admission cancellation: reached=%v deriving=%v ctx=%v result=%v", reachedAdmission, deriving, ctx.Err(), result)
 			}
