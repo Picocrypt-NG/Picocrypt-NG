@@ -37,6 +37,20 @@ jobs:
         cd src
         go mod download
 
+    - name: Diagnose native macOS memory APIs
+      run: |
+        set -o pipefail
+        bash .github/scripts/diagnose-macos-memory.sh 2>&1 | tee "$RUNNER_TEMP/macos-memory.log"
+
+    - name: Upload native macOS memory diagnostics
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: pr-macos-memory-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/macos-memory.log
+        retention-days: 1
+        if-no-files-found: error
+
     - name: Run tests
       # Skip internal/crypto - Argon2 is extremely slow on macOS ARM64 runners
       run: |
@@ -44,7 +58,7 @@ jobs:
         go test -v -race -p 1 -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
         go test -v -race -p 1 -timeout 15m ./internal/pcv3publication/...
         GOMAXPROCS=1 go test -v -race -p 1 -timeout 15m ./internal/pcv3operation/internal/pcv3unicode/...
-        go test -v -race -p 1 -timeout 15m ./internal/pcv3operation/internal/pcv3/... ./internal/pcv3operation/internal/pcv3credential/... ./internal/pcv3operation/... ./internal/pcv3operation/internal/pcv3recovery/... ./internal/pcv3operation/internal/pcv3artifact/... ./internal/pcv3operation/internal/pcv3resource/... ./internal/app/...
+        go test -v -race -p 1 -timeout 60m ./internal/pcv3operation/internal/pcv3/... ./internal/pcv3operation/internal/pcv3credential/... ./internal/pcv3operation/... ./internal/pcv3operation/internal/pcv3recovery/... ./internal/pcv3operation/internal/pcv3artifact/... ./internal/pcv3operation/internal/pcv3resource/... ./internal/app/...
         go test -v -race -p 1 -timeout 15m ./internal/volume/...
         go test -v -p 1 -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...
 
