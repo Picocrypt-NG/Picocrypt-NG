@@ -21,8 +21,8 @@ class StagingServiceInstrumentedTest {
 
     @Test fun stageTree_preservesStructure() = runBlocking {
         BoundedSafDocumentsProvider.grantAccessForTest(ctx)
-        ctx.contentResolver.call(BoundedSafDocumentsProvider.AUTHORITY, "bounded-test-reset", null, null)
-        ctx.contentResolver.call(BoundedSafDocumentsProvider.AUTHORITY, "bounded-test-seed-source", null, null)
+        ctx.contentResolver.call(BoundedSafDocumentsProvider.tree, "bounded-test-reset", null, null)
+        ctx.contentResolver.call(BoundedSafDocumentsProvider.tree, "bounded-test-seed-source", null, null)
         val tree = BoundedSafDocumentsProvider.tree
         try {
             val sel = StagingService.copyTreeToStaging(ctx, tree).getOrThrow()
@@ -39,7 +39,7 @@ class StagingServiceInstrumentedTest {
             }
         } finally {
             assertTrue(StagingService.wipeStaging(ctx))
-            val cleaned = ctx.contentResolver.call(BoundedSafDocumentsProvider.AUTHORITY, "bounded-test-cleanup", null, null)
+            val cleaned = ctx.contentResolver.call(BoundedSafDocumentsProvider.tree, "bounded-test-cleanup", null, null)
             assertTrue(requireNotNull(cleaned).getBoolean("cleaned"))
         }
     }
