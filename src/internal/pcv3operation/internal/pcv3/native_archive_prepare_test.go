@@ -23,7 +23,7 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 			Keyfiles:    []*pcv3credential.KeyfileReader{pcv3credential.OwnKeyfileReader(io.NopCloser(bytes.NewReader([]byte("public ZIP preparation factor"))))},
 		}
 	}
-	admitter := pcv3resource.NewPlatformAdmitter()
+	admitter := &nativeArchiveObservingAdmitter{t: t, delegate: pcv3resource.NewPlatformAdmitter()}
 	encode := func(kind PayloadKind, plaintext []byte) []byte {
 		t.Helper()
 		var encoded bytes.Buffer
@@ -31,6 +31,14 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 			Suite: SuiteStandard, PayloadKind: kind, PlaintextLength: uint64(len(plaintext)),
 			Source: bytes.NewReader(plaintext), Destination: &encoded, Factors: factors(), Admitter: admitter,
 		}); err != nil {
+			var writeFailure *normalWriteFailure
+			if errors.As(err, &writeFailure) {
+				t.Logf("normal serialization stage=%v", writeFailure.Stage())
+			}
+			var pipelineFailure *pcv3credential.PipelineError
+			if errors.As(err, &pipelineFailure) && pipelineFailure != nil {
+				t.Logf("credential pipeline code=%d stage=%d suite=%d", pipelineFailure.Code, pipelineFailure.Stage, pipelineFailure.Suite)
+			}
 			t.Fatal(err)
 		}
 		return encoded.Bytes()
@@ -148,4 +156,15 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 			}
 		})
 	}
+}
+
+type nativeArchiveObservingAdmitter struct {
+	t        *testing.T
+	delegate pcv3credential.Admitter
+}
+
+func (admitter *nativeArchiveObservingAdmitter) AdmitKDF(ctx context.Context, profile pcv3credential.KDFProfile) (pcv3credential.KDFAdmission, error) {
+	decision, err := admitter.delegate.AdmitKDF(ctx, profile)
+	admitter.t.Logf("actual platform KDF admission=%d (granted=%t)", decision, decision == pcv3credential.KDFAdmissionGranted)
+	return decision, err
 }

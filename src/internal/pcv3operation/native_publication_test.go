@@ -24,6 +24,9 @@ func requireNativeOperationPublication(t *testing.T, result *Result) {
 		result.PublicationStage() != wantStage || result.PublicationCode() != wantCode ||
 		result.CompletionClass() != wantClass || !slices.Equal(result.Warnings(), wantWarnings) ||
 		(runtime.GOOS == "windows" && result.SourceDeletionAllowed()) {
+		if result != nil {
+			t.Logf("actual native publication stage=%v diagnostic=%d", result.Stage(), result.Diagnostic())
+		}
 		t.Fatalf("native publication = %v; want state=%v class=%v warnings=%v", result, wantState, wantClass, wantWarnings)
 	}
 }
