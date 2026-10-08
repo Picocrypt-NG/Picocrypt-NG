@@ -997,18 +997,18 @@ func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {
 	}
 }
 
-func TestMacOSPRAggregateGateRequiresAllRaceShards(t *testing.T) {
+func TestMacOSPRAggregateGateRequiresAllTestGroups(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-macos.yml")
 	gate := mustJob(t, workflow, "pr-test-build-macos")
-	if gate.Needs != "pcv3-race" || gate.If != "${{ always() }}" {
-		t.Fatalf("macOS gate needs=%v if=%q; want all race shards checked even after cancellation", gate.Needs, gate.If)
+	if gate.Needs != "pcv3-tests" || gate.If != "${{ always() }}" {
+		t.Fatalf("macOS gate needs=%v if=%q; want all test groups checked even after cancellation", gate.Needs, gate.If)
 	}
-	check := mustStepNamed(t, gate, "Require all macOS race groups to pass")
+	check := mustStepNamed(t, gate, "Require all macOS test groups to pass")
 	if len(gate.Steps) == 0 || gate.Steps[0].Name != check.Name {
-		t.Fatal("macOS build must check the race result before any other step")
+		t.Fatal("macOS build must check the test result before any other step")
 	}
 	mustContainInOrder(t, check.Run,
-		`if [ "${{ needs.pcv3-race.result }}" != "success" ]; then`,
+		`if [ "${{ needs.pcv3-tests.result }}" != "success" ]; then`,
 		"exit 1",
 	)
 }

@@ -14,13 +14,13 @@ if [[ "$(go env GOOS)/$(go env GOARCH)/$(go env CGO_ENABLED)" != darwin/arm64/1 
 fi
 
 # Discover from this checkout so new packages and parents join the required lane.
-packages=$(go list ./internal/pcv3operation/... ./internal/app/... | LC_ALL=C sort -u)
+packages=$(go list ./internal/pcv3operation/... ./internal/app/... ./internal/volume/... | LC_ALL=C sort -u)
 parent_index=0
 selected=0
 while IFS= read -r package; do
   case "$package" in
-    Picocrypt-NG/internal/pcv3operation|Picocrypt-NG/internal/pcv3operation/internal/pcv3|Picocrypt-NG/internal/pcv3operation/internal/pcv3recovery)
-      parents=$(go test -race -p 1 -list '^(Test|Fuzz|Example)' "$package" \
+    Picocrypt-NG/internal/pcv3operation|Picocrypt-NG/internal/pcv3operation/internal/pcv3|Picocrypt-NG/internal/pcv3operation/internal/pcv3recovery|Picocrypt-NG/internal/volume)
+      parents=$(go test -p 1 -list '^(Test|Fuzz|Example)' "$package" \
         | sed -n -E '/^(Test|Fuzz|Example)/p' | LC_ALL=C sort)
       if [[ -z "$parents" ]]; then
         echo "No test parents discovered in $package" >&2
@@ -32,10 +32,10 @@ while IFS= read -r package; do
       while IFS= read -r parent; do
         if (( parent_index % shard_count == shard_index )); then
           echo "::group::$package/$parent"
-          # A fresh process releases Go and race-detector allocations. Purge
-          # only disk cache; real admission still decides whether RAM suffices.
+          # Keep real KDFs in fresh native processes on the 7 GB runner. Linux
+          # runs the full heavy race suite; pure/platform packages race below.
           sudo -n /usr/sbin/purge
-          go test -v -race -count=1 -p 1 -timeout 60m -run "^${parent}$" "$package"
+          go test -v -count=1 -p 1 -timeout 60m -run "^${parent}$" "$package"
           echo "::endgroup::"
           selected=$((selected + 1))
         fi
