@@ -130,8 +130,8 @@ func TestCLIRoundTrip(t *testing.T) {
 			if tc.name == "verify-first" {
 				// Preserve the legacy verify-first contract using a frozen legacy fixture.
 				copyCLITestFile(t, filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"), encryptedFile)
-			} else if err := encryptCmd.RunE(encryptCmd, []string{inputFile}); err != nil {
-				t.Fatalf("encrypt: %v", err)
+			} else {
+				requireNativePCV3FileError(t, encryptCmd.RunE(encryptCmd, []string{inputFile}))
 			}
 
 			// --- DECRYPT ---
@@ -163,8 +163,12 @@ func TestCLIRoundTrip(t *testing.T) {
 
 				return
 			}
-			if decErr != nil {
-				t.Fatalf("decrypt: %v", decErr)
+			if tc.name == "verify-first" {
+				if decErr != nil {
+					t.Fatalf("legacy verify-first decrypt: %v", decErr)
+				}
+			} else {
+				requireNativePCV3FileError(t, decErr)
 			}
 
 			// Assert recovered bytes == original.
@@ -188,7 +192,7 @@ func TestCLIRoundTrip(t *testing.T) {
 					}
 				}
 				if !bytes.Equal(got, want) {
-					t.Fatalf("roundtrip mismatch: got %q, want %q", got, plaintext)
+					t.Fatalf("roundtrip mismatch: got %q, want %q", got, want)
 				}
 			}
 		})
@@ -230,9 +234,7 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"encrypt", input, "-o", volume, "--pcv3", "-p", "roundtrip-password",
 		"--comments", comment, "--quiet",
 	)
-	if encrypted.exitCode != 0 {
-		t.Fatalf("PCV3 encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
-	}
+	requireNativePCV3Published(t, encrypted, "")
 	encoded, err := os.ReadFile(volume)
 	if err != nil {
 		t.Fatalf("read PCV3 volume: %v", err)
@@ -247,9 +249,7 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"decrypt", volume, "-o", output,
 		"--pcv3-factors=password", "-p", "roundtrip-password", "--quiet",
 	)
-	if decrypted.exitCode != 0 {
-		t.Fatalf("PCV3 decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
-	}
+	requireNativePCV3Published(t, decrypted, comment)
 	if !strings.Contains(decrypted.stderr, "Comment: "+strconv.Quote(comment)+"\n") {
 		t.Fatalf("PCV3 decrypt did not show the authenticated comment: %q", decrypted.stderr)
 	}
@@ -312,9 +312,7 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"encrypt", input, "-o", keyfileVolume, "--pcv3", "--paranoid", "--reed-solomon",
 		"-k", keyfileA, "-k", keyfileB, "-p", "", "--quiet",
 	)
-	if encrypted.exitCode != 0 {
-		t.Fatalf("PCV3 keyfile encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
-	}
+	requireNativePCV3Published(t, encrypted, "")
 	if strings.Contains(encrypted.stderr, "Password:") {
 		t.Fatalf("explicit keyfile-only encryption prompted for a password: %q", encrypted.stderr)
 	}
@@ -325,9 +323,7 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"--pcv3-factors=keyfiles", "--pcv3-keyfile-order=unordered",
 		"-k", keyfileA, "-k", keyfileB, "-p", "", "--quiet",
 	)
-	if decrypted.exitCode != 0 {
-		t.Fatalf("PCV3 keyfile decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
-	}
+	requireNativePCV3Published(t, decrypted, "")
 	got, err = os.ReadFile(keyfileOutput)
 	if err != nil {
 		t.Fatalf("read keyfile-decrypted output: %v", err)
@@ -352,9 +348,7 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"encrypt", archiveInput, "-o", archiveVolume, "--pcv3", "--compress",
 		"-p", "archive-password", "--quiet",
 	)
-	if encrypted.exitCode != 0 {
-		t.Fatalf("PCV3 archive encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
-	}
+	requireNativePCV3Published(t, encrypted, "")
 	decrypted = runCLITestCommand(
 		t,
 		binary,
@@ -362,9 +356,7 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"--pcv3-factors=password", "-p", "archive-password",
 		"--pcv3-archive=extract", "--pcv3-extract-to="+extractRoot, "--quiet",
 	)
-	if decrypted.exitCode != 0 {
-		t.Fatalf("PCV3 archive decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
-	}
+	requireNativePCV3Published(t, decrypted, "")
 	got, err = os.ReadFile(filepath.Join(extractRoot, filepath.Base(archiveInput)))
 	if err != nil {
 		t.Fatalf("read extracted PCV3 archive file: %v", err)
@@ -382,9 +374,7 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"--pcv3", "--deniability", "--paranoid", "--compress",
 		"-p", "d1-archive-password", "--quiet",
 	)
-	if encrypted.exitCode != 0 {
-		t.Fatalf("PCV3 D1 archive encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
-	}
+	requireNativePCV3Published(t, encrypted, "")
 	d1ExtractRoot := filepath.Join(dir, "d1-extract")
 	if err := os.Mkdir(d1ExtractRoot, 0o700); err != nil {
 		t.Fatalf("create D1 extraction root: %v", err)
@@ -405,9 +395,7 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"decrypt", d1ArchiveVolume, "-o", d1ArchiveOutput, "--pcv3-format=d1",
 		"--pcv3-factors=password", "-p", "d1-archive-password", "--quiet",
 	)
-	if decrypted.exitCode != 0 {
-		t.Fatalf("PCV3 D1 archive decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
-	}
+	requireNativePCV3Published(t, decrypted, "")
 	assertZipContainsPlaintext(t, d1ArchiveOutput, archivePlaintext)
 
 	d1Volume := filepath.Join(dir, "deniable.pcv")
@@ -419,18 +407,14 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"encrypt", input, "-o", d1Volume, "--pcv3", "--deniability", "--paranoid",
 		"-p", "d1-password", "--comments", d1Comment, "--quiet",
 	)
-	if encrypted.exitCode != 0 {
-		t.Fatalf("PCV3 D1 encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
-	}
+	requireNativePCV3Published(t, encrypted, "")
 	decrypted = runCLITestCommand(
 		t,
 		binary,
 		"decrypt", d1Volume, "-o", d1Output, "--pcv3-format=d1",
 		"--pcv3-factors=password", "-p", "d1-password", "--quiet",
 	)
-	if decrypted.exitCode != 0 {
-		t.Fatalf("PCV3 D1 decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
-	}
+	requireNativePCV3Published(t, decrypted, d1Comment)
 	if !strings.Contains(decrypted.stderr, "Comment: "+strconv.Quote(d1Comment)+"\n") {
 		t.Fatalf("PCV3 D1 decrypt did not show the authenticated comment: %q", decrypted.stderr)
 	}
@@ -547,9 +531,7 @@ func TestPCV3CLIKeyfileOnlyD1RoundTripAndWrongKeyRefusal(t *testing.T) {
 		"--pcv3", "--deniability", "--paranoid",
 		"-k", keyfile, "-p", "", "--quiet",
 	)
-	if encrypted.exitCode != 0 {
-		t.Fatalf("keyfile-only D1 encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
-	}
+	requireNativePCV3Published(t, encrypted, "")
 	encoded, err := os.ReadFile(volume)
 	if err != nil {
 		t.Fatalf("read D1 volume: %v", err)
@@ -565,9 +547,7 @@ func TestPCV3CLIKeyfileOnlyD1RoundTripAndWrongKeyRefusal(t *testing.T) {
 		"--pcv3-format=d1", "--pcv3-factors=keyfiles",
 		"--pcv3-keyfile-order=unordered", "-k", keyfile, "-p", "", "--quiet",
 	)
-	if decrypted.exitCode != 0 {
-		t.Fatalf("keyfile-only D1 decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
-	}
+	requireNativePCV3Published(t, decrypted, "")
 	got, err := os.ReadFile(output)
 	if err != nil {
 		t.Fatalf("read decrypted output: %v", err)
@@ -606,9 +586,7 @@ func TestPCV3CLIDecryptUsesDefaultOutput(t *testing.T) {
 		binary,
 		"encrypt", input, "-o", volume, "--pcv3", "-p", "default-output-password", "--quiet",
 	)
-	if encrypted.exitCode != 0 {
-		t.Fatalf("PCV3 encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
-	}
+	requireNativePCV3Published(t, encrypted, "")
 	if err := os.Remove(input); err != nil {
 		t.Fatalf("remove original before decrypt: %v", err)
 	}
@@ -618,9 +596,7 @@ func TestPCV3CLIDecryptUsesDefaultOutput(t *testing.T) {
 		binary,
 		"decrypt", volume, "--pcv3-factors=password", "-p", "default-output-password", "--quiet",
 	)
-	if decrypted.exitCode != 0 {
-		t.Fatalf("PCV3 decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
-	}
+	requireNativePCV3Published(t, decrypted, "")
 	got, err := os.ReadFile(input)
 	if err != nil {
 		t.Fatalf("read default output: %v", err)
@@ -643,9 +619,7 @@ func TestPCV3CLIDecryptUsesDefaultOutput(t *testing.T) {
 		binary,
 		"decrypt", hiddenVolume, "--pcv3-factors=password", "-p", "default-output-password", "--quiet",
 	)
-	if decrypted.exitCode != 0 {
-		t.Fatalf(".pcv decrypt exit = %d, stderr = %q", decrypted.exitCode, decrypted.stderr)
-	}
+	requireNativePCV3Published(t, decrypted, "")
 	got, err = os.ReadFile(hiddenOutput)
 	if err != nil {
 		t.Fatalf("read .pcv default output: %v", err)
@@ -689,24 +663,39 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 			}
 			encryptArgs = append(encryptArgs, test.encryptFlags...)
 			encrypted := runCLITestCommand(t, binary, encryptArgs...)
-			if encrypted.exitCode != 0 {
-				t.Fatalf("split encrypt exit = %d, stderr = %q", encrypted.exitCode, encrypted.stderr)
+			if runtime.GOOS == "windows" {
+				const splitNotice = "All parts were created. Write durability could not be confirmed, so the complete encrypted file and source files were kept.\n"
+				if strings.Count(encrypted.stderr, splitNotice) != 1 {
+					t.Fatalf("uncertain split lost retention notice: %q", encrypted.stderr)
+				}
+				encrypted.stderr = strings.Replace(encrypted.stderr, splitNotice, "", 1)
 			}
-			if _, err := os.Lstat(volume); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("unsplit PCV3 remained after chunk publication: %v", err)
-			}
+			requireNativePCV3Published(t, encrypted, "")
 			chunkCount := 0
+			var combined bytes.Buffer
 			for ; ; chunkCount++ {
-				_, err := os.Stat(fmt.Sprintf("%s.%d", volume, chunkCount))
+				chunk, err := os.ReadFile(fmt.Sprintf("%s.%d", volume, chunkCount))
 				if errors.Is(err, os.ErrNotExist) {
 					break
 				}
 				if err != nil {
 					t.Fatalf("inspect chunk %d: %v", chunkCount, err)
 				}
+				combined.Write(chunk)
 			}
 			if chunkCount <= 10 {
 				t.Fatalf("chunk count = %d; want more than 10 to exercise numeric ordering", chunkCount)
+			}
+			if runtime.GOOS == "windows" {
+				retained, err := os.ReadFile(volume)
+				if err != nil || !bytes.Equal(retained, combined.Bytes()) {
+					t.Fatalf("uncertain split did not retain complete ciphertext: %v", err)
+				}
+			} else if _, err := os.Lstat(volume); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unsplit PCV3 remained after durable chunk publication: %v", err)
+			}
+			if source, err := os.ReadFile(input); err != nil || !bytes.Equal(source, plaintext) {
+				t.Fatalf("split changed plaintext source: %v", err)
 			}
 			if test.name == "d1" {
 				chunkZero, err := os.OpenFile(volume+".0", os.O_WRONLY, 0)
@@ -726,12 +715,23 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 			}
 			decryptArgs = append(decryptArgs, test.decryptFlags...)
 			decrypted := runCLITestCommand(t, binary, decryptArgs...)
-			wantExit := 0
+			wantExit := nativePCV3FileExit()
 			if test.name == "d1" {
 				wantExit = ExitPCV3Warning
+				if runtime.GOOS == "windows" {
+					wantExit = ExitPCV3DurabilityUncertain
+				}
 			}
 			if decrypted.exitCode != wantExit {
 				t.Fatalf("split decrypt exit = %d, want %d, stderr = %q", decrypted.exitCode, wantExit, decrypted.stderr)
+			}
+			if test.name == "normal" {
+				requireNativePCV3Published(t, decrypted, "")
+			} else if len(decrypted.stdout) != 0 ||
+				!strings.HasPrefix(decrypted.stderr, "Outcome: authenticated-degraded\nPublication: "+nativePCV3Publication()+"\n") ||
+				!strings.Contains(decrypted.stderr, "Warning: output is authenticated but recovery redundancy is damaged\n") ||
+				(runtime.GOOS == "windows" && !strings.Contains(decrypted.stderr, nativePCV3DurabilityWarning)) {
+				t.Fatalf("degraded D1 split lost authentication/publication warning: %+v", decrypted)
 			}
 			got, err := os.ReadFile(output)
 			if err != nil {
@@ -741,14 +741,13 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 				t.Fatal("split PCV3 round-trip changed plaintext")
 			}
 			if test.name == "normal" {
-				streamed := runCLITestCommand(
-					t, binary,
+				cmd := exec.Command(
+					binary,
 					"decrypt", volume+".7", "-o", "-",
 					"--pcv3-factors=password", "-p", "split-password", "--quiet",
 				)
-				if streamed.exitCode != 0 || !bytes.Equal(streamed.stdout, plaintext) {
-					t.Fatalf("split stdout decrypt exit=%d bytes=%d stderr=%q", streamed.exitCode, len(streamed.stdout), streamed.stderr)
-				}
+				streamed := runStreamIntegrationCommand(t, cmd, plaintext)
+				requireNativePCV3PlaintextStream(t, streamed, plaintext)
 			}
 		})
 	}
@@ -855,14 +854,10 @@ func TestPCV3WriteAfterLegacyReadReclaimsCompletedWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	encOutput, encPassword, encQuiet, encYes = encrypted, "new password", true, true
-	if err := encryptCmd.RunE(encryptCmd, []string{plain}); err != nil {
-		t.Fatalf("PCV3 write after completed legacy KDF: %v", err)
-	}
+	requireNativePCV3FileError(t, encryptCmd.RunE(encryptCmd, []string{plain}))
 	resetDecryptFlagsForDirTest()
 	decOutput, decPassword, decPCV3Factors, decQuiet, decYes = output, "new password", "password", true, true
-	if err := decryptCmd.RunE(decryptCmd, []string{encrypted}); err != nil {
-		t.Fatalf("PCV3 decrypt: %v", err)
-	}
+	requireNativePCV3FileError(t, decryptCmd.RunE(decryptCmd, []string{encrypted}))
 	got, err := os.ReadFile(output)
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("PCV3 recovered plaintext mismatch: %v", err)

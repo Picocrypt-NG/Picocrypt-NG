@@ -49,9 +49,7 @@ func TestEncryptDirectoryProducesZip(t *testing.T) {
 	encPassword = "pw"
 	encQuiet = true
 	encYes = true
-	if err := encryptCmd.RunE(encryptCmd, []string{folder}); err != nil {
-		t.Fatalf("encrypt directory: %v", err)
-	}
+	requireNativePCV3FileError(t, encryptCmd.RunE(encryptCmd, []string{folder}))
 
 	// Authenticate and extract the PCV3 archive through the real CLI follow-up.
 	decOutput = decryptedPath
@@ -61,9 +59,7 @@ func TestEncryptDirectoryProducesZip(t *testing.T) {
 	decPassword = "pw"
 	decQuiet = true
 	decYes = true
-	if err := decryptCmd.RunE(decryptCmd, []string{encryptedPath}); err != nil {
-		t.Fatalf("decrypt: %v", err)
-	}
+	requireNativePCV3FileError(t, decryptCmd.RunE(decryptCmd, []string{encryptedPath}))
 
 	got, err := os.ReadFile(filepath.Join(extracted, "test_dir", "hello.txt"))
 	if err != nil || string(got) != string(innerContent) {

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -960,8 +961,16 @@ func TestPCV3RouteBeforeLegacyPrompts(t *testing.T) {
 				result.exitCode, observation.Called, result.stderr,
 			)
 		}
-		if !strings.Contains(result.stderr, "input source is not a regular file") {
+		wantDiagnostic := "input source is not a regular file"
+		if runtime.GOOS == "windows" {
+			// The safe native open rejects device paths before the regular-file check.
+			wantDiagnostic = "input source could not be opened safely"
+		}
+		if !strings.Contains(result.stderr, wantDiagnostic) {
 			t.Fatalf("non-regular D1 diagnostic = %q", result.stderr)
+		}
+		if _, err := os.Lstat(filepath.Join(dir, "output")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("non-regular D1 source created output: %v", err)
 		}
 	})
 

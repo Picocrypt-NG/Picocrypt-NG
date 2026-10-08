@@ -90,13 +90,7 @@ func TestPCV3CLIResultAndPrivacyBoundary(t *testing.T) {
 			Observation:   filepath.Join(dir, "observation.json"),
 			RealOperation: true,
 		}, nil)
-		if result.exitCode != 0 || len(result.stdout) != 0 ||
-			result.stderr != "Outcome: success\nPublication: published-durable\nComment: \"TEST ONLY comment\"\n" {
-			t.Fatalf(
-				"successful terminal = exit %d stdout %q stderr %q; want exit 0, empty stdout, exact quiet contract",
-				result.exitCode, result.stdout, result.stderr,
-			)
-		}
+		requireNativePCV3Published(t, result, "TEST ONLY comment")
 		plaintext, err := os.ReadFile(output)
 		if err != nil {
 			t.Fatalf("read published plaintext: %v", err)

@@ -611,9 +611,7 @@ func TestOutputAutoGeneration(t *testing.T) {
 		encQuiet = true
 		encYes = true
 
-		if err := encryptCmd.RunE(encryptCmd, []string{inputFile}); err != nil {
-			t.Fatalf("runEncrypt: %v", err)
-		}
+		requireNativePCV3FileError(t, encryptCmd.RunE(encryptCmd, []string{inputFile}))
 
 		wantOut := inputFile + ".pcv"
 		info, err := os.Stat(wantOut)
@@ -885,9 +883,7 @@ func TestDefaultCompressOutputNameUsesZipSuffix(t *testing.T) {
 	encQuiet = true
 	encYes = true
 
-	if err := encryptCmd.RunE(encryptCmd, []string{inputFile}); err != nil {
-		t.Fatalf("encrypt: %v", err)
-	}
+	requireNativePCV3FileError(t, encryptCmd.RunE(encryptCmd, []string{inputFile}))
 
 	want := inputFile + ".zip.pcv"
 	if _, err := os.Stat(want); err != nil {
@@ -905,9 +901,7 @@ func TestDefaultCompressOutputNameUsesZipSuffix(t *testing.T) {
 	decQuiet = true
 	decYes = true
 
-	if err := decryptCmd.RunE(decryptCmd, []string{want}); err != nil {
-		t.Fatalf("decrypt: %v", err)
-	}
+	requireNativePCV3FileError(t, decryptCmd.RunE(decryptCmd, []string{want}))
 	got, err := os.ReadFile(filepath.Join(decPCV3ExtractTo, filepath.Base(inputFile)))
 	if err != nil || !bytes.Equal(got, plaintext) {
 		t.Fatalf("extracted compressed payload = %q, %v", got, err)
@@ -943,9 +937,7 @@ func TestDefaultCompressStdinOutputNameUsesZipSuffix(t *testing.T) {
 	encQuiet = true
 	encYes = true
 
-	if err := encryptCmd.RunE(encryptCmd, []string{"-"}); err != nil {
-		t.Fatalf("encrypt stdin: %v", err)
-	}
+	requireNativePCV3FileError(t, encryptCmd.RunE(encryptCmd, []string{"-"}))
 
 	if _, err := os.Stat("encrypted.zip.pcv"); err != nil {
 		t.Fatalf("compressed stdin default output missing: %v", err)

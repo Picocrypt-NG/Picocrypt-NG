@@ -1,5 +1,6 @@
 src/testdata/golden/*.pcv -text
 src/testdata/golden/*.bin -text
+src/testdata/golden/**/*.txt -text
 src/internal/pcv3operation/internal/pcv3/testdata/**/*.bin binary
 src/internal/pcv3operation/internal/pcv3/testdata/**/*.pcv binary
 src/internal/pcv3operation/internal/pcv3/testdata/*.pcv binary

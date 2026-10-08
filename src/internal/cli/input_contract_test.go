@@ -196,14 +196,10 @@ func TestCLIInputContract(t *testing.T) {
 
 		enc := runCLIInputContractCommand(t, binaryPath, "", "encrypt", literal,
 			"-o", volumePath, "-p", password, "-q", "-y")
-		if enc.exitCode != 0 {
-			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
-		}
+		requireNativePCV3Published(t, enc, "")
 		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password",
 			"-o", recovered, "-p", password, "-q", "-y")
-		if dec.exitCode != 0 {
-			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
-		}
+		requireNativePCV3Published(t, dec, "")
 		got, err := os.ReadFile(recovered)
 		if err != nil {
 			t.Fatal(err)
@@ -222,9 +218,7 @@ func TestCLIInputContract(t *testing.T) {
 
 		enc := runCLIInputContractCommand(t, binaryPath, "", "encrypt", input,
 			"-o", volumePath, "-p", password, "-q", "-y")
-		if enc.exitCode != 0 {
-			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
-		}
+		requireNativePCV3Published(t, enc, "")
 		before, err := os.ReadFile(volumePath)
 		if err != nil {
 			t.Fatalf("read encrypted fixture: %v", err)
@@ -249,9 +243,7 @@ func TestCLIInputContract(t *testing.T) {
 		safeOutput := filepath.Join(dir, "safe-output.txt")
 		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password",
 			"-o", safeOutput, "-p", password, "-q", "-y")
-		if dec.exitCode != 0 {
-			t.Fatalf("safe decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
-		}
+		requireNativePCV3Published(t, dec, "")
 		got, err := os.ReadFile(safeOutput)
 		if err != nil {
 			t.Fatalf("read safe decrypted output: %v", err)
@@ -382,7 +374,7 @@ func TestCLIInputContract(t *testing.T) {
 		if enc.exitCode == 0 {
 			t.Fatal("split unexpectedly replaced an occupied chunk")
 		}
-		if !strings.Contains(enc.stderr, "Outcome: operation-failed") || !strings.Contains(enc.stderr, "Publication: published-durable") {
+		if !strings.Contains(enc.stderr, "Outcome: operation-failed") || !strings.Contains(enc.stderr, "Publication: "+nativePCV3Publication()) {
 			t.Fatalf("split refusal was not explicit: %q", enc.stderr)
 		}
 		gotChunk, err := os.ReadFile(occupiedChunk)
@@ -396,9 +388,7 @@ func TestCLIInputContract(t *testing.T) {
 		recovered := filepath.Join(dir, "recovered.txt")
 		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", output, "--pcv3-factors=password",
 			"-o", recovered, "-p", password, "-q", "-y")
-		if dec.exitCode != 0 {
-			t.Fatalf("published volume was not recoverable after split refusal: exit %d; stderr: %s", dec.exitCode, dec.stderr)
-		}
+		requireNativePCV3Published(t, dec, "")
 		got, err := os.ReadFile(recovered)
 		if err != nil {
 			t.Fatalf("read recovered plaintext: %v", err)
@@ -417,14 +407,10 @@ func TestCLIInputContract(t *testing.T) {
 
 		enc := runCLIInputContractCommand(t, binaryPath, "", "encrypt", literal,
 			"-o", volumePath, "-p", password, "-q", "-y")
-		if enc.exitCode != 0 {
-			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
-		}
+		requireNativePCV3Published(t, enc, "")
 		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password",
 			"-o", recovered, "-p", password, "-q", "-y")
-		if dec.exitCode != 0 {
-			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
-		}
+		requireNativePCV3Published(t, dec, "")
 		got, err := os.ReadFile(recovered)
 		if err != nil {
 			t.Fatal(err)
@@ -445,16 +431,12 @@ func TestCLIInputContract(t *testing.T) {
 		recovered := filepath.Join(dir, "glob.zip")
 
 		enc := runCLIInputContractCommand(t, binaryPath, "", "encrypt", "--glob", filepath.Join(dir, "*.txt"), "-o", volumePath, "-p", password, "-q", "-y")
-		if enc.exitCode != 0 {
-			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
-		}
+		requireNativePCV3Published(t, enc, "")
 		if err := os.Mkdir(recovered, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password", "-o", recovered+".unused", "-p", password, "--pcv3-archive=extract", "--pcv3-extract-to", recovered, "-q", "-y")
-		if dec.exitCode != 0 {
-			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
-		}
+		requireNativePCV3Published(t, dec, "")
 		assertCLIContractTree(t, recovered, map[string][]byte{"alpha.txt": []byte("alpha"), "bravo.txt": []byte("bravo")})
 	})
 
@@ -472,9 +454,7 @@ func TestCLIInputContract(t *testing.T) {
 		recovered := filepath.Join(root, "recovered.zip")
 
 		enc := runCLIInputContractCommand(t, binaryPath, root, "encrypt", dir, "-p", password, "-q", "-y")
-		if enc.exitCode != 0 {
-			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
-		}
+		requireNativePCV3Published(t, enc, "")
 		if _, err := os.Stat(volumePath); err != nil {
 			t.Fatalf("default directory output %q missing: %v", volumePath, err)
 		}
@@ -484,9 +464,7 @@ func TestCLIInputContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password", "-o", recovered+".unused", "-p", password, "--pcv3-archive=extract", "--pcv3-extract-to", recovered, "-q", "-y")
-		if dec.exitCode != 0 {
-			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
-		}
+		requireNativePCV3Published(t, dec, "")
 		assertCLIContractTree(t, recovered, map[string][]byte{
 			"documents/alpha.txt": []byte("alpha directory bytes"),
 			"documents/bravo.bin": {0x00, 0x01, 0xfe, 0xff},
@@ -503,16 +481,12 @@ func TestCLIInputContract(t *testing.T) {
 		recovered := filepath.Join(dir, "overlap.zip")
 
 		enc := runCLIInputContractCommand(t, binaryPath, "", "encrypt", alpha, "--glob", filepath.Join(dir, "*.txt"), "-o", volumePath, "-p", password, "-q", "-y")
-		if enc.exitCode != 0 {
-			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
-		}
+		requireNativePCV3Published(t, enc, "")
 		if err := os.Mkdir(recovered, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password", "-o", recovered+".unused", "-p", password, "--pcv3-archive=extract", "--pcv3-extract-to", recovered, "-q", "-y")
-		if dec.exitCode != 0 {
-			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
-		}
+		requireNativePCV3Published(t, dec, "")
 		assertCLIContractTree(t, recovered, map[string][]byte{"alpha.txt": []byte("alpha"), "bravo.txt": []byte("bravo")})
 	})
 
@@ -662,13 +636,9 @@ func TestCLIInputContract(t *testing.T) {
 		volumePath := filepath.Join(dir, "dash.pcv")
 		recovered := filepath.Join(dir, "recovered.txt")
 		enc := runCLIInputContractCommand(t, binaryPath, dir, "encrypt", "-o", volumePath, "-p", password, "-q", "-y", "--", literal)
-		if enc.exitCode != 0 {
-			t.Fatalf("encrypt exit = %d, want 0; stderr: %s", enc.exitCode, enc.stderr)
-		}
+		requireNativePCV3Published(t, enc, "")
 		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", volumePath, "--pcv3-factors=password", "-o", recovered, "-p", password, "-q", "-y")
-		if dec.exitCode != 0 {
-			t.Fatalf("decrypt exit = %d, want 0; stderr: %s", dec.exitCode, dec.stderr)
-		}
+		requireNativePCV3Published(t, dec, "")
 		got, err := os.ReadFile(recovered)
 		if err != nil || string(got) != "dash path" {
 			t.Fatalf("recovered dash path = %q, err = %v", got, err)
@@ -708,9 +678,7 @@ func TestCLIInputContract(t *testing.T) {
 		inputBytes := []byte("tmp-named source must survive and round trip")
 		mustWriteCLIContractFile(t, input, inputBytes)
 		result := runCLIInputContractCommand(t, binaryPath, "", "encrypt", input, "--compress", "-o", output, "-p", password, "-q", "-y")
-		if result.exitCode != 0 {
-			t.Fatalf("encrypt result = exit %d stderr %q", result.exitCode, result.stderr)
-		}
+		requireNativePCV3Published(t, result, "")
 		got, err := os.ReadFile(input)
 		if err != nil || !bytes.Equal(got, inputBytes) {
 			t.Fatalf("encryption changed input = %q, err = %v", got, err)
@@ -720,9 +688,7 @@ func TestCLIInputContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", output, "--pcv3-factors=password", "-o", recovered+".unused", "-p", password, "--pcv3-archive=extract", "--pcv3-extract-to", recovered, "-q", "-y")
-		if dec.exitCode != 0 {
-			t.Fatalf("decrypt result = exit %d stderr %q", dec.exitCode, dec.stderr)
-		}
+		requireNativePCV3Published(t, dec, "")
 		assertCLIContractTree(t, recovered, map[string][]byte{filepath.Base(input): inputBytes})
 	})
 
@@ -738,9 +704,7 @@ func TestCLIInputContract(t *testing.T) {
 		mustWriteCLIContractFile(t, leaf, leafBytes)
 
 		result := runCLIInputContractCommand(t, binaryPath, "", "encrypt", selection, "-o", output, "-p", password, "-q", "-y")
-		if result.exitCode != 0 {
-			t.Fatalf("directory encrypt result = exit %d stderr %q", result.exitCode, result.stderr)
-		}
+		requireNativePCV3Published(t, result, "")
 		got, err := os.ReadFile(leaf)
 		if err != nil || !bytes.Equal(got, leafBytes) {
 			t.Fatalf("directory encryption changed leaf = %q, err = %v", got, err)
@@ -750,9 +714,7 @@ func TestCLIInputContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		dec := runCLIInputContractCommand(t, binaryPath, "", "decrypt", output, "--pcv3-factors=password", "-o", recovered+".unused", "-p", password, "--pcv3-archive=extract", "--pcv3-extract-to", recovered, "-q", "-y")
-		if dec.exitCode != 0 {
-			t.Fatalf("directory decrypt result = exit %d stderr %q", dec.exitCode, dec.stderr)
-		}
+		requireNativePCV3Published(t, dec, "")
 		assertCLIContractTree(t, recovered, map[string][]byte{filepath.ToSlash(filepath.Join(filepath.Base(selection), filepath.Base(leaf))): leafBytes})
 	})
 

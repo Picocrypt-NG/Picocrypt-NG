@@ -6,8 +6,11 @@ import (
 	"Picocrypt-NG/internal/volume"
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"testing"
 )
 
@@ -32,7 +35,23 @@ func TestEncryptStdoutUsesRetainedDescriptorAfterPathReplacement(t *testing.T) {
 		InputFile: source, InputFiles: []string{source}, OnlyFiles: []string{source}, OutputFile: target,
 		Keyfiles: []string{key}, PCV3: true, RSCodecs: codecs,
 	}, pcv3operation.ExecutionOptions{RetainDurableOutput: true})
-	if err != nil || result.OutputFollowUp() == nil {
+	if result == nil {
+		t.Fatalf("retained encryption returned no result: %v", err)
+	}
+	followUp := result.OutputFollowUp()
+	if followUp != nil {
+		t.Cleanup(func() { followUp.Discard() })
+	}
+	wantClass := pcv3operation.CompletionClean
+	if runtime.GOOS == "windows" {
+		wantClass = pcv3operation.CompletionDurabilityUncertain
+		if !errors.Is(err, result) {
+			t.Fatalf("uncertain encryption lost its result error: %v", err)
+		}
+	} else if err != nil {
+		t.Fatalf("retained encryption failed: %v", err)
+	}
+	if result.CompletionClass() != wantClass || followUp == nil {
 		t.Fatalf("retained encryption: %v / %v", result, err)
 	}
 	expected, err := os.ReadFile(target)
@@ -57,8 +76,18 @@ func TestEncryptStdoutUsesRetainedDescriptorAfterPathReplacement(t *testing.T) {
 	terminalErr := finishPCV3Encryption(context.Background(), result, nil, true)
 	// Exact-owner cleanup cannot remove the replacement. Its uncertainty must
 	// be reported as warning status, while the original descriptor is streamed.
-	if terminalErr == nil || exitCodeForError(terminalErr) != ExitPCV3Warning {
+	wantExit := ExitPCV3Warning
+	if runtime.GOOS == "windows" {
+		wantExit = ExitPCV3DurabilityUncertain
+	}
+	if terminalErr == nil || exitCodeForError(terminalErr) != wantExit {
 		t.Fatalf("stdout result: %v", terminalErr)
+	}
+	if !slices.Contains(result.Warnings(), pcv3operation.WarningCleanupIncomplete) {
+		t.Fatal("foreign pathname replacement lost its cleanup warning")
+	}
+	if result.OutputFollowUp() != nil {
+		t.Fatal("stdout transport left reusable output authority")
 	}
 	if result.SourceDeletionAllowed() {
 		t.Fatal("transport must not authorize source deletion")
