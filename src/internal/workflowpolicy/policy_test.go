@@ -933,7 +933,7 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 
 func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {
 	const raceCommand = "go test -v -race -p 1 -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/..."
-	const contractCommand = "go test -v -p 1 -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/..."
+	const contractCommand = "go test -v -count=1 -p 1 -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/..."
 
 	for _, tc := range []struct {
 		path string
