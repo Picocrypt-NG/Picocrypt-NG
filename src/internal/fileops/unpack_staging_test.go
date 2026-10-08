@@ -7,8 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -39,6 +41,56 @@ func TestUnpackCancellationLeavesNoPartialDestination(t *testing.T) {
 	if _, err := os.Lstat(victimPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Partial destination exists after cancellation: %v", err)
 	}
+	requireEmptyExtractionDir(t, extractDir)
+}
+
+// TestUnpackCancellationAfterStagingPreventsPublication protects the final
+// cancellation boundary: a signal delivered after plaintext staging and sync
+// but before publication must remove every stage and publish no destination.
+func TestUnpackCancellationAfterStagingPreventsPublication(t *testing.T) {
+	tmpDir := t.TempDir()
+	zipPath := filepath.Join(tmpDir, "cancel-before-publish.zip")
+	createStoredZipForUnpackStagingTest(t, zipPath, "victim.txt", []byte("staged plaintext"))
+	extractDir := filepath.Join(tmpDir, "out")
+	if err := os.Mkdir(extractDir, 0o700); err != nil {
+		t.Fatalf("create extraction directory: %v", err)
+	}
+
+	stageSyncEntered := make(chan struct{})
+	releaseStageSync := make(chan struct{})
+	originalStageSync := unpackStageSyncFn
+	unpackStageSyncFn = func(file *os.File) error {
+		close(stageSyncEntered)
+		<-releaseStageSync
+		return originalStageSync(file)
+	}
+	t.Cleanup(func() { unpackStageSyncFn = originalStageSync })
+
+	var cancelled atomic.Bool
+	resultReady := make(chan UnpackResult, 1)
+	go func() {
+		resultReady <- UnpackWithResult(UnpackOptions{
+			ZipPath:    zipPath,
+			ExtractDir: extractDir,
+			Cancel:     cancelled.Load,
+		})
+	}()
+	<-stageSyncEntered
+	cancelled.Store(true)
+	close(releaseStageSync)
+	result := <-resultReady
+
+	if result == nil || result.State() != UnpackStateNotPublished {
+		t.Fatalf("post-stage cancellation result = %#v; want not-published", result)
+	}
+	cause := errors.Unwrap(result)
+	if cause == nil || !strings.Contains(cause.Error(), "operation cancelled") {
+		t.Fatalf("post-stage cancellation cause = %v; want operation cancelled", cause)
+	}
+	if _, err := os.Lstat(filepath.Join(extractDir, "victim.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("post-stage cancellation published destination: %v", err)
+	}
+	requireNoUnpackStages(t, extractDir)
 	requireEmptyExtractionDir(t, extractDir)
 }
 
@@ -568,6 +620,308 @@ func TestUnpackExclusiveCopyFallbackPreservesLateCollision(t *testing.T) {
 		t.Fatalf("Late destination changed: got %q, want %q", got, foreign)
 	}
 	requireOnlyExtractionEntry(t, extractDir, "victim.txt")
+}
+
+func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
+	t.Run("missing extraction root is not created or published", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		zipPath := filepath.Join(tmpDir, "missing-root.zip")
+		payload := []byte("must not be published without a pinned extraction root")
+		createStoredZipForUnpackStagingTest(t, zipPath, "payload.txt", payload)
+		extractDir := filepath.Join(tmpDir, "missing")
+
+		result := UnpackWithResult(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir})
+		requireUnpackState(t, result, UnpackStateNotPublished)
+		if _, err := os.Lstat(extractDir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("typed extraction created an unpinned root: %v", err)
+		}
+	})
+
+	t.Run("published durable after unique containing directories sync bottom-up", func(t *testing.T) {
+		extractDir := filepath.Join(t.TempDir(), "out")
+		if err := os.Mkdir(extractDir, 0o700); err != nil {
+			t.Fatalf("create pinned extraction root: %v", err)
+		}
+		archivePath := filepath.Join(
+			"..",
+			"pcv3operation",
+			"internal",
+			"pcv3",
+			"testdata",
+			"normal",
+			"plaintext",
+			"normal-standard-combined-ordered-archive-small.zip",
+		)
+		if _, err := os.Stat(archivePath); err != nil {
+			t.Fatalf("required archive fixture unavailable: %v", err)
+		}
+		var synced []string
+		originalSyncDirectory := unpackDirectorySyncFn
+		unpackDirectorySyncFn = func(directory *os.File) error {
+			info, err := directory.Stat()
+			if err != nil {
+				t.Fatalf("stat synced directory: %v", err)
+			}
+			docsInfo, docsErr := os.Stat(filepath.Join(extractDir, "docs"))
+			rootInfo, rootErr := os.Stat(extractDir)
+			switch {
+			case docsErr == nil && os.SameFile(info, docsInfo):
+				synced = append(synced, "docs")
+			case rootErr == nil && os.SameFile(info, rootInfo):
+				synced = append(synced, ".")
+			default:
+				t.Fatalf("unexpected directory identity reached durability sync: %v", info)
+			}
+			return directory.Sync()
+		}
+		t.Cleanup(func() {
+			unpackDirectorySyncFn = originalSyncDirectory
+		})
+
+		result := UnpackWithResult(UnpackOptions{ZipPath: archivePath, ExtractDir: extractDir})
+		wantState := UnpackStatePublishedDurable
+		if runtime.GOOS == "windows" {
+			wantState = UnpackStatePublishedDurabilityUncertain
+		}
+		requireUnpackState(t, result, wantState)
+		if errors.Is(result, ErrUnpackCleanupIncomplete) {
+			t.Fatalf("durable extraction reported cleanup uncertainty: %v", result)
+		}
+		if !slices.Equal(synced, []string{"docs", "."}) {
+			t.Fatalf("synced directories = %q; want bottom-up unique [docs .]", synced)
+		}
+		requireUnpackFileBytes(t, filepath.Join(extractDir, "root.txt"), []byte("PCV3 authenticated archive fixture\n"))
+		requireUnpackFileBytes(
+			t,
+			filepath.Join(extractDir, "docs", "readme.txt"),
+			[]byte("Extraction is admitted only after whole-volume authentication.\n"),
+		)
+		requireNoUnpackStages(t, extractDir)
+	})
+
+	t.Run("late second entry collision rolls back to proven not published", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		zipPath := filepath.Join(tmpDir, "late-collision.zip")
+		firstBytes := []byte("first operation-owned plaintext")
+		foreignBytes := []byte("late foreign second destination")
+		createStoredZipEntriesForUnpackStagingTest(t, zipPath, map[string][]byte{
+			"first.txt":  firstBytes,
+			"second.txt": []byte("second operation-owned plaintext"),
+		})
+		extractDir := filepath.Join(tmpDir, "out")
+		if err := os.Mkdir(extractDir, 0o700); err != nil {
+			t.Fatalf("create extraction root: %v", err)
+		}
+		collisionPath := filepath.Join(extractDir, "second.txt")
+		collisionCreated := false
+		originalSyncDirectory := unpackDirectorySyncFn
+		unpackDirectorySyncFn = func(*os.File) error {
+			t.Fatal("rollback case attempted directory durability sync")
+			return nil
+		}
+		t.Cleanup(func() {
+			unpackDirectorySyncFn = originalSyncDirectory
+		})
+
+		result := UnpackWithResult(UnpackOptions{
+			ZipPath:    zipPath,
+			ExtractDir: extractDir,
+			Progress: func(float32, string) {
+				if collisionCreated {
+					return
+				}
+				if err := os.WriteFile(collisionPath, foreignBytes, 0o640); err != nil {
+					t.Fatalf("create late second-entry collision: %v", err)
+				}
+				collisionCreated = true
+			},
+		})
+		requireUnpackState(t, result, UnpackStateNotPublished)
+		if !errors.Is(result, os.ErrExist) {
+			t.Fatalf("late collision result = %v; want os.ErrExist", result)
+		}
+		if errors.Is(result, ErrUnpackCleanupIncomplete) {
+			t.Fatalf("successful rollback reported cleanup uncertainty: %v", result)
+		}
+		if !collisionCreated {
+			t.Fatal("test did not create the late second-entry collision")
+		}
+		if _, err := os.Lstat(filepath.Join(extractDir, "first.txt")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("first published output survived rollback: %v", err)
+		}
+		requireUnpackFileBytes(t, collisionPath, foreignBytes)
+		requireNoUnpackStages(t, extractDir)
+		requireOnlyExtractionEntry(t, extractDir, "second.txt")
+	})
+
+	t.Run("unproven partial-output rollback is publication indeterminate", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		zipPath := filepath.Join(tmpDir, "rollback-failure.zip")
+		payload := []byte("archive plaintext")
+		createStoredZipForUnpackStagingTest(t, zipPath, "payload.txt", payload)
+		extractDir := filepath.Join(tmpDir, "out")
+		if err := os.Mkdir(extractDir, 0o700); err != nil {
+			t.Fatalf("create pinned extraction root: %v", err)
+		}
+		copyFailure := errors.New("TEST ONLY typed copy failure")
+		removeFailure := errors.New("TEST ONLY typed rollback failure")
+
+		originalLink := unpackLinkFn
+		originalCopy := unpackCopyFn
+		originalRemove := unpackRemoveOwnedFn
+		unpackLinkFn = func(*os.Root, string, string) error { return errors.ErrUnsupported }
+		unpackCopyFn = func(destination io.Writer, source io.Reader) (int64, error) {
+			written, err := io.CopyN(destination, source, 1)
+			if err != nil {
+				return written, err
+			}
+			return written, copyFailure
+		}
+		unpackRemoveOwnedFn = func(owned ownedUnpackFile, root *os.Root) error {
+			if _, err := root.Lstat(owned.targetName); err != nil {
+				t.Fatalf("partial output was not created before rollback: %v", err)
+			}
+			return removeFailure
+		}
+		t.Cleanup(func() {
+			unpackLinkFn = originalLink
+			unpackCopyFn = originalCopy
+			unpackRemoveOwnedFn = originalRemove
+		})
+
+		result := UnpackWithResult(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir})
+		requireUnpackState(t, result, UnpackStatePublicationIndeterminate)
+		if !errors.Is(result, copyFailure) || !errors.Is(result, removeFailure) {
+			t.Fatalf("indeterminate result lost primary/rollback errors: %v", result)
+		}
+		if !errors.Is(result, ErrUnpackCleanupIncomplete) {
+			t.Fatalf("indeterminate result hid cleanup uncertainty: %v", result)
+		}
+		requireUnpackFileBytes(t, filepath.Join(extractDir, "payload.txt"), payload[:1])
+		requireNoUnpackStages(t, extractDir)
+		requireOnlyExtractionEntry(t, extractDir, "payload.txt")
+	})
+
+	t.Run("post-publication directory sync failure is durability uncertain", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		zipPath := filepath.Join(tmpDir, "sync-failure.zip")
+		payload := []byte("fully published plaintext")
+		createStoredZipForUnpackStagingTest(t, zipPath, "nested/payload.txt", payload)
+		extractDir := filepath.Join(tmpDir, "out")
+		if err := os.Mkdir(extractDir, 0o700); err != nil {
+			t.Fatalf("create pinned extraction root: %v", err)
+		}
+		syncFailure := errors.New("TEST ONLY containing-directory sync failure")
+		originalSyncDirectory := unpackDirectorySyncFn
+		unpackDirectorySyncFn = func(*os.File) error { return syncFailure }
+		t.Cleanup(func() {
+			unpackDirectorySyncFn = originalSyncDirectory
+		})
+
+		result := UnpackWithResult(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir})
+		requireUnpackState(t, result, UnpackStatePublishedDurabilityUncertain)
+		if !errors.Is(result, syncFailure) {
+			t.Fatalf("durability-uncertain result lost sync failure: %v", result)
+		}
+		if errors.Is(result, ErrUnpackCleanupIncomplete) {
+			t.Fatalf("directory sync failure was mislabeled cleanup uncertainty: %v", result)
+		}
+		requireUnpackFileBytes(t, filepath.Join(extractDir, "nested", "payload.txt"), payload)
+		requireNoUnpackStages(t, extractDir)
+	})
+
+	t.Run("post-publication root close warning preserves publication truth", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		zipPath := filepath.Join(tmpDir, "root-close-failure.zip")
+		payload := []byte("durable output survives handle cleanup warning")
+		createStoredZipForUnpackStagingTest(t, zipPath, "payload.txt", payload)
+		extractDir := filepath.Join(tmpDir, "out")
+		if err := os.Mkdir(extractDir, 0o700); err != nil {
+			t.Fatalf("create pinned extraction root: %v", err)
+		}
+		closeFailure := errors.New("TEST ONLY extraction-root close failure")
+		originalCloseRoot := unpackCloseRootFn
+		unpackCloseRootFn = func(root *os.Root) error {
+			if err := root.Close(); err != nil {
+				return err
+			}
+			return closeFailure
+		}
+		t.Cleanup(func() {
+			unpackCloseRootFn = originalCloseRoot
+		})
+
+		result := UnpackWithResult(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir})
+		wantState := UnpackStatePublishedDurable
+		if runtime.GOOS == "windows" {
+			wantState = UnpackStatePublishedDurabilityUncertain
+		}
+		requireUnpackState(t, result, wantState)
+		if !errors.Is(result, closeFailure) || !errors.Is(result, ErrUnpackCleanupIncomplete) {
+			t.Fatalf("durable result lost root-close cleanup warning: %v", result)
+		}
+		requireUnpackFileBytes(t, filepath.Join(extractDir, "payload.txt"), payload)
+		requireNoUnpackStages(t, extractDir)
+	})
+
+	t.Run("legacy compatibility does not request directory durability", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		zipPath := filepath.Join(tmpDir, "legacy.zip")
+		payload := []byte("legacy extraction payload")
+		createStoredZipForUnpackStagingTest(t, zipPath, "payload.txt", payload)
+		extractDir := filepath.Join(tmpDir, "out")
+		originalSyncDirectory := unpackDirectorySyncFn
+		unpackDirectorySyncFn = func(*os.File) error {
+			t.Fatal("legacy Unpack requested new directory durability behavior")
+			return nil
+		}
+		t.Cleanup(func() {
+			unpackDirectorySyncFn = originalSyncDirectory
+		})
+
+		if err := Unpack(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir}); err != nil {
+			t.Fatalf("legacy Unpack gained a user-visible durability failure: %v", err)
+		}
+		requireUnpackFileBytes(t, filepath.Join(extractDir, "payload.txt"), payload)
+		requireNoUnpackStages(t, extractDir)
+	})
+}
+
+func requireUnpackState(t *testing.T, result UnpackResult, want UnpackState) {
+	t.Helper()
+	if result == nil {
+		t.Fatal("typed unpack returned nil result")
+	}
+	if got := result.State(); got != want {
+		t.Fatalf("typed unpack state = %s; want %s (result: %v)", got, want, result)
+	}
+}
+
+func requireUnpackFileBytes(t *testing.T, path string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read unpack output %s: %v", path, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("unpack output %s = %q; want %q", path, got, want)
+	}
+}
+
+func requireNoUnpackStages(t *testing.T, root string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if strings.HasPrefix(entry.Name(), ".picocrypt-unpack-") {
+			t.Fatalf("operation-owned unpack stage remained at %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("inspect extraction tree for retained stages: %v", err)
+	}
 }
 
 func createStoredZipForUnpackStagingTest(t *testing.T, zipPath, name string, data []byte) {

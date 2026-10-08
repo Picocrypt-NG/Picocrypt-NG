@@ -1,0 +1,18 @@
+{
+  "outer salt 0": "f70affa562c7caca7262ef4853157f23",
+  "outer salt 1": "8d6c83d21cd9b739f8c07b9af8ff2db1",
+  "outer nonce 0": "c9d1405a1247ffc8d4b881348b0e5b5ef349a69c5db14dac",
+  "outer nonce 1": "24bd077ef5f32f27fe5399f49bcc7ee86ff258fa0c9ae33e",
+  "outer iv 0": "d370501dbacc31a6c13b2521ba14ea78",
+  "outer iv 1": "187d8f7bfa291476049f421c788ac52e",
+  "inner salt": "f94b29b4c15a1479c38dd193e83c8466",
+  "volume id": "0e159008ea269e02e8fbd45d1d243b43425365cb4a2d2fdba220c059238250f1",
+  "volume key": "5aaad478bd9b722b17f560253453e16dc9bad18c894e3c8cf30dcbe8915f2770",
+  "outer key": "3d8b699d05f3a8ddc4227abf9612c2a613a0b66f9a85d76f208501fc952dec70",
+  "inner nonce": "ecbe369b5f34550d187934757003acbc",
+  "inner iv": "3bd099d2c54b5b6a",
+  "inner wrap nonce 0": "1b4c27ab2c16e2b23b955c475e47aa54401069cec5061bd4",
+  "inner wrap iv 0": "58c6f1ca5297c5ce9cb46be468e8642a",
+  "inner wrap nonce 1": "f920d590701b99fdc35e3a35185d1611bbbbfac9be634061",
+  "inner wrap iv 1": "e07cc75f8e025deb27c4cdd287357d20"
+}

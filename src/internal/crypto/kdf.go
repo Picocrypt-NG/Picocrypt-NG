@@ -16,23 +16,14 @@ import (
 
 // RandomBytes generates n cryptographically secure random bytes.
 func RandomBytes(n int) ([]byte, error) {
+	if n <= 0 {
+		return nil, errors.New("random byte length must be positive")
+	}
+
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
 		return nil, fmt.Errorf("fatal crypto/rand error: %w", err)
 	}
-
-	// Sanity check: bytes should not be all zeros
-	allZero := true
-	for _, v := range b {
-		if v != 0 {
-			allZero = false
-			break
-		}
-	}
-	if allZero {
-		return nil, errors.New("fatal crypto/rand error: produced zero bytes")
-	}
-
 	return b, nil
 }
 

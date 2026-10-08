@@ -2,14 +2,329 @@ package app
 
 import (
 	"Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/fileops"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
+	"bytes"
 	"errors"
 	"image/color"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestPCV3FynePreservesFactorIntent(t *testing.T) {
+	t.Run("one immutable transfer preserves order and duplicate selection", func(t *testing.T) {
+		state := mustNewState(t)
+		dir := t.TempDir()
+		t.Cleanup(state.Reset)
+		path := filepath.Join(dir, "selected.bin")
+		moved := filepath.Join(dir, "selected-original.bin")
+		original := []byte("descriptor-owned original")
+		if err := os.WriteFile(path, original, 0o600); err != nil {
+			t.Fatalf("write selected input: %v", err)
+		}
+		// A valid borrowed handle permits path replacement on Windows too.
+		source, err := fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
+		if err != nil {
+			t.Fatalf("open selected input: %v", err)
+		}
+		t.Cleanup(func() { _ = source.Close() })
+		if !state.SetPCV3Ready(source, PCV3FormatD1, path, filepath.Join(dir, "output.bin"), int64(len(original))) {
+			t.Fatal("SetPCV3Ready refused valid owned descriptor")
+		}
+		state.SetPCV3Intent(PCV3ActionForce, PCV3FactorPolicyCombined, PCV3KeyfileOrderSelected)
+		state.Password = "operation password"
+		state.Keyfiles = []string{"first.key", "duplicate.key", "duplicate.key", "last.key"}
+
+		if err := os.Rename(path, moved); err != nil {
+			t.Fatalf("move selected pathname after pinning: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
+			t.Fatalf("write path replacement: %v", err)
+		}
+
+		intent, ok := state.TakePCV3OperationIntent()
+		if !ok {
+			t.Fatal("TakePCV3OperationIntent refused complete explicit intent")
+		}
+		defer func() {
+			clear(intent.Password)
+			_ = intent.Source.Close()
+		}()
+		if intent.Format != PCV3FormatD1 || intent.Action != PCV3ActionForce ||
+			intent.FactorPolicy != PCV3FactorPolicyCombined ||
+			intent.KeyfileOrder != PCV3KeyfileOrderSelected {
+			t.Fatalf("closed intent changed: %#v", intent)
+		}
+		wantKeyfiles := []string{"first.key", "duplicate.key", "duplicate.key", "last.key"}
+		if !reflect.DeepEqual(intent.Keyfiles, wantKeyfiles) {
+			t.Fatalf("keyfile order/duplicates = %v; want %v", intent.Keyfiles, wantKeyfiles)
+		}
+		if string(intent.Password) != "operation password" {
+			t.Fatal("owned password bytes changed during capture")
+		}
+		got := make([]byte, len(original))
+		if _, err := intent.Source.ReadAt(got, 0); err != nil || !bytes.Equal(got, original) {
+			t.Fatalf("transferred descriptor followed replacement: got %q err=%v", got, err)
+		}
+		if state.Password != "" || state.CPassword != "" || len(state.Keyfiles) != 0 {
+			t.Fatal("caller credential slots survived ownership transfer")
+		}
+		if _, ok := state.TakePCV3OperationIntent(); ok {
+			t.Fatal("source descriptor transferred more than once")
+		}
+		pending, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
+			Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone,
+			Code: pcv3operation.CodeSuccess, ArchivePending: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.SetPCV3Result(pending)
+		if !state.BeginPCV3ArchiveFollowUp() {
+			t.Fatal("first archive follow-up did not acquire the atomic UI gate")
+		}
+		if state.BeginPCV3ArchiveFollowUp() {
+			t.Fatal("archive follow-up UI gate was acquired more than once")
+		}
+	})
+
+	t.Run("reset closes an untransferred descriptor", func(t *testing.T) {
+		state := mustNewState(t)
+		path := filepath.Join(t.TempDir(), "selected.bin")
+		if err := os.WriteFile(path, []byte("selected"), 0o600); err != nil {
+			t.Fatalf("write selected input: %v", err)
+		}
+		source, err := os.Open(path)
+		if err != nil {
+			t.Fatalf("open selected input: %v", err)
+		}
+		t.Cleanup(func() { _ = source.Close() })
+		if !state.SetPCV3Ready(source, PCV3FormatNormal, path, path+".out", 8) {
+			t.Fatal("SetPCV3Ready refused descriptor")
+		}
+		state.Reset()
+		if _, err := source.Stat(); err == nil {
+			t.Fatal("Reset left the untransferred PCV3 descriptor open")
+		}
+	})
+}
+
+func TestPCV3IncompleteIntentCannotStartOrTransferSource(t *testing.T) {
+	for _, combined := range []bool{false, true} {
+		name := "operation and policy not selected"
+		if combined {
+			name = "combined policy missing password"
+		}
+		t.Run(name, func(t *testing.T) {
+			state := mustNewState(t)
+			path := filepath.Join(t.TempDir(), "selected.bin")
+			if err := os.WriteFile(path, []byte("selected"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			source, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !state.SetPCV3Ready(source, PCV3FormatNormal, path, path+".out", 8) {
+				_ = source.Close()
+				t.Fatal("SetPCV3Ready refused descriptor")
+			}
+			t.Cleanup(state.Reset)
+			factor, order := PCV3FactorPolicyPassword, PCV3KeyfileOrderUnset
+			if combined {
+				factor, order = PCV3FactorPolicyCombined, PCV3KeyfileOrderSelected
+				state.Keyfiles = []string{"factor.key"}
+				state.SetPCV3Intent(PCV3ActionDecrypt, factor, order)
+			} else {
+				state.Password = "public test password"
+			}
+			if state.CanStart() || state.UISnapshot().CanStart() {
+				t.Fatal("incomplete explicit intent enabled Start")
+			}
+			if intent, ok := state.TakePCV3OperationIntent(); ok || intent.Source != nil || len(intent.Password) != 0 || len(intent.Keyfiles) != 0 {
+				clear(intent.Password)
+				if intent.Source != nil {
+					_ = intent.Source.Close()
+				}
+				t.Fatal("incomplete explicit intent transferred source or credentials")
+			}
+			if state.UISnapshot().PCV3Route != PCV3RouteReady {
+				t.Fatal("refused transfer consumed the selection")
+			}
+			if _, err := source.Stat(); err != nil {
+				t.Fatalf("refused transfer closed the held source: %v", err)
+			}
+
+			state.Password = "public test password"
+			state.SetPCV3Intent(PCV3ActionDecrypt, factor, order)
+			if !state.CanStart() || !state.UISnapshot().CanStart() {
+				t.Fatal("completing the intent did not enable Start")
+			}
+			intent, ok := state.TakePCV3OperationIntent()
+			defer clear(intent.Password)
+			if intent.Source != nil {
+				defer intent.Source.Close()
+			}
+			if !ok || intent.Source != source || intent.FactorPolicy != factor || intent.KeyfileOrder != order {
+				t.Fatal("completed intent did not transfer the original source and factor policy")
+			}
+		})
+	}
+}
+
+// TestClosePCV3SourceClosesOnlyTheRetainedDescriptor protects shutdown from
+// leaking a retained PCV3 descriptor while preserving the visible selection
+// and status until the UI lifecycle has finished joining workers.
+func TestClosePCV3SourceClosesOnlyTheRetainedDescriptor(t *testing.T) {
+	state := mustNewState(t)
+	path := filepath.Join(t.TempDir(), "selected.bin")
+	if err := os.WriteFile(path, []byte("selected"), 0o600); err != nil {
+		t.Fatalf("write selected input: %v", err)
+	}
+	source, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open selected input: %v", err)
+	}
+	if !state.SetPCV3Ready(source, PCV3FormatNormal, path, path+".out", 8) {
+		t.Fatal("SetPCV3Ready refused descriptor")
+	}
+	state.SetStatus("visible lifecycle state", util.WHITE)
+	before := state.UISnapshot()
+
+	state.ClosePCV3Source()
+	if _, err := source.Stat(); err == nil {
+		t.Fatal("ClosePCV3Source left retained descriptor open")
+	}
+	if after := state.UISnapshot(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("ClosePCV3Source changed visible snapshot: got %#v; want %#v", after, before)
+	}
+}
+
+// TestPCV3CleanupIncompleteIsStickyAcrossStateResets protects the UI-only
+// cleanup truth: releasing a one-shot archive can lose the capability, but
+// must not make a warning disappear while this State remains alive.
+func TestPCV3CleanupIncompleteIsStickyAcrossStateResets(t *testing.T) {
+	state := mustNewState(t)
+	if state.UISnapshot().PCV3CleanupIncomplete {
+		t.Fatal("new State started with a cleanup warning")
+	}
+
+	state.LatchPCV3CleanupIncomplete()
+	state.Reset()
+	if !state.UISnapshot().PCV3CleanupIncomplete {
+		t.Fatal("full Reset cleared cleanup-incomplete truth")
+	}
+
+	state.SetPCV3RoutingChecking("replacement.pcv", 0)
+	state.ResetUI()
+	if !state.UISnapshot().PCV3CleanupIncomplete {
+		t.Fatal("replacement/reset UI flow cleared cleanup-incomplete truth")
+	}
+}
+
+// TestSetPCV3IntentClearsOrderOnlyForPasswordPolicy prevents a previously
+// selected keyfile ordering from making a password-only PCV3 operation
+// permanently non-startable. Keyfile-bearing policies own their ordering.
+func TestSetPCV3IntentClearsOrderOnlyForPasswordPolicy(t *testing.T) {
+	state := mustNewState(t)
+
+	for _, test := range []struct {
+		name   string
+		factor PCV3FactorPolicy
+		order  PCV3KeyfileOrder
+		want   PCV3KeyfileOrder
+	}{
+		{
+			name:   "password ignores stale keyfile ordering",
+			factor: PCV3FactorPolicyPassword,
+			order:  PCV3KeyfileOrderSelected,
+			want:   PCV3KeyfileOrderUnset,
+		},
+		{
+			name:   "keyfiles preserve selected ordering",
+			factor: PCV3FactorPolicyKeyfiles,
+			order:  PCV3KeyfileOrderSelected,
+			want:   PCV3KeyfileOrderSelected,
+		},
+		{
+			name:   "combined preserves any ordering",
+			factor: PCV3FactorPolicyCombined,
+			order:  PCV3KeyfileOrderAny,
+			want:   PCV3KeyfileOrderAny,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state.SetPCV3Intent(PCV3ActionDecrypt, test.factor, test.order)
+			if got := state.UISnapshot().PCV3Order; got != test.want {
+				t.Fatalf("PCV3Order = %v; want %v for factor %v", got, test.want, test.factor)
+			}
+		})
+	}
+}
+
+// TestPCV3ReadyOutputTicketRejectsStaleSelection protects a UI callback from
+// applying an output chosen for an earlier Ready selection after that selection
+// has been cleared and replaced.
+func TestPCV3ReadyOutputTicketRejectsStaleSelection(t *testing.T) {
+	state := mustNewState(t)
+	dir := t.TempDir()
+	t.Cleanup(state.Reset)
+	aPath := filepath.Join(dir, "a.pcv3")
+	bPath := filepath.Join(dir, "b.pcv3")
+	if err := os.WriteFile(aPath, []byte("A"), 0o600); err != nil {
+		t.Fatalf("write A: %v", err)
+	}
+	if err := os.WriteFile(bPath, []byte("B"), 0o600); err != nil {
+		t.Fatalf("write B: %v", err)
+	}
+	aSource, err := os.Open(aPath)
+	if err != nil {
+		t.Fatalf("open A: %v", err)
+	}
+	t.Cleanup(func() { _ = aSource.Close() })
+	aOutput := filepath.Join(dir, "a-output")
+	if !state.SetPCV3Ready(aSource, PCV3FormatNormal, aPath, aOutput, 1) {
+		t.Fatal("SetPCV3Ready rejected A")
+	}
+	aTicket, _, ok := state.PCV3ReadyOutputSelection()
+	if !ok {
+		t.Fatal("A Ready selection did not expose its ticket")
+	}
+
+	state.Reset()
+	bSource, err := os.Open(bPath)
+	if err != nil {
+		t.Fatalf("open B: %v", err)
+	}
+	t.Cleanup(func() { _ = bSource.Close() })
+	bOutput := filepath.Join(dir, "b-output")
+	if !state.SetPCV3Ready(bSource, PCV3FormatNormal, bPath, bOutput, 1) {
+		t.Fatal("SetPCV3Ready rejected B")
+	}
+	bTicket, _, ok := state.PCV3ReadyOutputSelection()
+	if !ok || bTicket == aTicket {
+		t.Fatalf("replacement Ready selection reused ticket: A=%d B=%d", aTicket, bTicket)
+	}
+
+	if state.SetPCV3OutputForReady(aTicket, filepath.Join(dir, "stale-output")) {
+		t.Fatal("stale A ticket changed replacement B output")
+	}
+	if snap := state.UISnapshot(); snap.OutputFile != bOutput {
+		t.Fatalf("stale ticket changed B output: got %q want %q", snap.OutputFile, bOutput)
+	}
+	selected := filepath.Join(dir, "b-selected-output")
+	if !state.SetPCV3OutputForReady(bTicket, selected) {
+		t.Fatal("current B ticket did not update B output")
+	}
+	if snap := state.UISnapshot(); snap.OutputFile != selected || snap.Status.Kind != StatusReady {
+		t.Fatalf("current ticket did not set ready output: %#v", snap)
+	}
+}
 
 // mustNewState builds a *State for tests, failing the test if RS-codec
 // initialization returns an error. Centralizes the (*State, error) call so the
@@ -26,7 +341,7 @@ func mustNewState(t *testing.T) *State {
 // TestNewStateRSInitFailure proves APP-01/D-05: when the RS-codec constructor
 // fails, NewState returns a non-nil error (wrapping the cause) and a nil *State,
 // and never panics. The newRSCodecs package-level seam is overridden to force
-// the failure, mirroring the Phase 3/4 var-seam override+restore pattern.
+// the failure, mirroring the existing variable-seam override/restore pattern.
 func TestNewStateRSInitFailure(t *testing.T) {
 	orig := newRSCodecs
 	t.Cleanup(func() { newRSCodecs = orig })
@@ -314,18 +629,18 @@ func TestCanStart(t *testing.T) {
 		t.Error("Should be able to start with password")
 	}
 
-	// New v2 encryption with keyfiles is frozen until the reviewed v3 writer.
+	// New native encryption accepts keyfiles through the default PCV3 writer.
 	state.Mode = "encrypt"
 	state.Password = ""
 	state.CPassword = ""
 	state.Keyfiles = []string{"keyfile.bin"}
-	if state.CanStart() {
-		t.Error("Should not be able to start new encryption with keyfiles only")
+	if !state.CanStart() {
+		t.Error("Should be able to start PCV3 encryption with keyfiles only")
 	}
 	state.Password = "secret"
 	state.CPassword = "secret"
-	if state.CanStart() {
-		t.Error("Should not be able to start new encryption with password and keyfiles")
+	if !state.CanStart() {
+		t.Error("Should be able to start PCV3 encryption with password and keyfiles")
 	}
 
 	// Legacy v1/v2 keyfile volumes remain decryptable.
@@ -358,16 +673,16 @@ func TestCanStart(t *testing.T) {
 	}
 }
 
-func TestCanStartPreservesLegacyKeyfileDecryptionButFreezesV2Writer(t *testing.T) {
+func TestCanStartPreservesLegacyKeyfileDecryptionAndDefaultsToPCV3(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		mode string
 		want bool
 	}{
 		{
-			name: "new encryption is rejected",
+			name: "new PCV3 encryption accepts keyfiles",
 			mode: "encrypt",
-			want: false,
+			want: true,
 		},
 		{
 			name: "legacy decryption remains available",
@@ -388,6 +703,33 @@ func TestCanStartPreservesLegacyKeyfileDecryptionButFreezesV2Writer(t *testing.T
 			}
 			if got := state.UISnapshot().CanStart(); got != tc.want {
 				t.Fatalf("UISnapshot.CanStart() = %v; want %v for %s with a legacy keyfile credential", got, tc.want, tc.mode)
+			}
+		})
+	}
+}
+
+func TestCanStartAllowsKeyfileOnlyD1OnlyForPCV3(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		createPCV3 bool
+		want       bool
+	}{
+		{name: "legacy wrapper remains password-required", want: false},
+		{name: "PCV3 D1 accepts keyfile-only", createPCV3: true, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := mustNewState(t)
+			state.Mode = "encrypt"
+			state.Deniability = true
+			state.Paranoid = true
+			state.CreatePCV3 = test.createPCV3
+			state.Keyfiles = []string{"keyfile.bin"}
+
+			if got := state.CanStart(); got != test.want {
+				t.Fatalf("State.CanStart() = %v; want %v", got, test.want)
+			}
+			if got := state.UISnapshot().CanStart(); got != test.want {
+				t.Fatalf("UISnapshot.CanStart() = %v; want %v", got, test.want)
 			}
 		})
 	}

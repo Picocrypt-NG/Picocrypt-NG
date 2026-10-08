@@ -46,13 +46,32 @@ func TestStartHintExplainsMissingCredentials(t *testing.T) {
 	a.State.OnlyFiles = []string{"input.txt"}
 
 	got := a.startReadinessHint(a.State.UISnapshot())
-	want := tr("start.hint.enterPassword", "Enter a password to continue.")
+	want := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
 	if got != want {
 		t.Fatalf("startReadinessHint() = %q; want %q", got, want)
 	}
 }
 
-func TestStartHintExplainsV2KeyfileWriterFreeze(t *testing.T) {
+func TestStartHintOffersPasswordOrKeyfilesForPCV3D1(t *testing.T) {
+	newTestFyneApp(t)
+
+	a := createTestApp(t)
+	a.State.Mode = "encrypt"
+	a.State.InputFile = "input.txt"
+	a.State.AllFiles = []string{"input.txt"}
+	a.State.OnlyFiles = []string{"input.txt"}
+	a.State.CreatePCV3 = true
+	a.State.Deniability = true
+	a.State.Paranoid = true
+
+	got := a.startReadinessHint(a.State.UISnapshot())
+	want := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
+	if got != want {
+		t.Fatalf("startReadinessHint() = %q; want %q", got, want)
+	}
+}
+
+func TestStartHintAcceptsDefaultPCV3Keyfiles(t *testing.T) {
 	newTestFyneApp(t)
 
 	a := createTestApp(t)
@@ -65,10 +84,7 @@ func TestStartHintExplainsV2KeyfileWriterFreeze(t *testing.T) {
 	a.State.CPassword = "secret"
 
 	got := a.startReadinessHint(a.State.UISnapshot())
-	want := tr(
-		"start.hint.keyfileWritesDisabled",
-		"New v2 volumes with keyfiles are disabled pending a reviewed v3 format; existing keyfile volumes remain decryptable.",
-	)
+	want := ""
 	if got != want {
 		t.Fatalf("startReadinessHint() = %q; want %q", got, want)
 	}
@@ -182,7 +198,7 @@ func TestOutputChangeEnabledBeforeCredentialsAfterFileSelection(t *testing.T) {
 	if a.startHintLabel == nil {
 		t.Fatal("startHintLabel was not built")
 	}
-	wantHint := tr("start.hint.enterPassword", "Enter a password to continue.")
+	wantHint := tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
 	if got := a.startHintLabel.Text; got != wantHint {
 		t.Fatalf("startHintLabel.Text = %q; want %q", got, wantHint)
 	}

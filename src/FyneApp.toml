@@ -2,7 +2,7 @@
   Icon = "../images/key.png"
   Name = "Picocrypt NG"
   ID = "io.github.picocryptng.PicocryptNG"
-  Version = "2.19"
+  Version = "3.0"
   Build = 1
 
 [Migrations]

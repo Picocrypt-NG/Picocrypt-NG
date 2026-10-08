@@ -36,7 +36,7 @@ func TestStdinOverwriteGuard(t *testing.T) {
 			t.Fatal("expected overwrite error for stdin encrypt without -y")
 		}
 		if !strings.Contains(err.Error(), "already exists") ||
-			!strings.Contains(err.Error(), "use -y to overwrite") {
+			!strings.Contains(err.Error(), "--yes does not replace PCV3 outputs") {
 			t.Fatalf("expected stdin overwrite guidance, got: %v", err)
 		}
 

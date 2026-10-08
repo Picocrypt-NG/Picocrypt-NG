@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,9 +150,9 @@ func TestUnpackRejectsWindowsTrimDotLikeVariants(t *testing.T) {
 
 func TestUnpackAllowsHighlyCompressedFileBelowFloor(t *testing.T) {
 	tmpDir := t.TempDir()
-	zipPath := filepath.Join(tmpDir, "small.zip")
-	data := bytes.Repeat([]byte("A"), util.MiB/2)
-	createDeflatedZipWithContent(t, zipPath, "small.txt", data)
+	// 768 KiB expands by more than 1000:1 but remains below the 1 MiB floor.
+	data := bytes.Repeat([]byte("A"), 3*util.MiB/4)
+	zipPath := requireHighlyCompressedZIPFixture(t, "unpack_high_ratio_below_floor.zip", "small.txt", data)
 
 	extractDir := filepath.Join(tmpDir, "out")
 	if err := Unpack(UnpackOptions{
@@ -172,13 +173,14 @@ func TestUnpackAllowsHighlyCompressedFileBelowFloor(t *testing.T) {
 
 func TestUnpackRejectsHighlyCompressedFileAboveFloor(t *testing.T) {
 	tmpDir := t.TempDir()
-	zipPath := filepath.Join(tmpDir, "bomb.zip")
+	// 2 MiB exceeds both the 1 MiB floor and the 1000:1 expansion limit.
 	data := bytes.Repeat([]byte("A"), 2*util.MiB)
-	createDeflatedZipWithContent(t, zipPath, "bomb.txt", data)
+	zipPath := requireHighlyCompressedZIPFixture(t, "unpack_high_ratio_above_floor.zip", "bomb.txt", data)
 
+	extractDir := filepath.Join(tmpDir, "out")
 	err := Unpack(UnpackOptions{
 		ZipPath:    zipPath,
-		ExtractDir: filepath.Join(tmpDir, "out"),
+		ExtractDir: extractDir,
 	})
 	if err == nil {
 		t.Fatal("expected decompression limit error")
@@ -186,6 +188,43 @@ func TestUnpackRejectsHighlyCompressedFileAboveFloor(t *testing.T) {
 	if !strings.Contains(err.Error(), "decompression limit exceeded") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// Rejection must leave neither a published destination nor staged plaintext.
+	requireEmptyExtractionDir(t, extractDir)
+}
+
+// These valid ZIPs were frozen with Python zipfile and zlib 1.3.2 at level 9.
+// The payloads compress to 780 and 2050 bytes, respectively. Do not regenerate
+// them with the Go encoder: compression changes must not change the policy cases.
+func requireHighlyCompressedZIPFixture(t *testing.T, fixture, name string, want []byte) string {
+	t.Helper()
+	zipPath := filepath.Join("testdata", fixture)
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("Open high-ratio ZIP fixture: %v", err)
+	}
+	defer r.Close()
+	if len(r.File) != 1 || r.File[0].Name != name {
+		t.Fatalf("ZIP fixture must contain only %q", name)
+	}
+	f := r.File[0]
+	if f.Method != zip.Deflate || f.UncompressedSize64 != uint64(len(want)) ||
+		f.CompressedSize64 == 0 || f.UncompressedSize64 <= 1000*f.CompressedSize64 {
+		t.Fatalf("invalid high-ratio ZIP fixture: method=%d, uncompressed=%d, compressed=%d",
+			f.Method, f.UncompressedSize64, f.CompressedSize64)
+	}
+	entry, err := f.Open()
+	if err != nil {
+		t.Fatalf("Open ZIP fixture entry: %v", err)
+	}
+	defer entry.Close()
+	got, err := io.ReadAll(entry)
+	if err != nil {
+		t.Fatalf("Read ZIP fixture and verify CRC: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("ZIP fixture content mismatch")
+	}
+	return zipPath
 }
 
 func TestUnpackRejectsArchiveWhenDeclaredSizeExceedsAvailableSpace(t *testing.T) {

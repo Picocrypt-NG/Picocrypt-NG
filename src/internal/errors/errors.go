@@ -9,8 +9,8 @@ import (
 
 const (
 	// KeyfileWritesDisabledMessage is the shared v2 writer-containment message.
-	KeyfileWritesDisabledMessage = "creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format"
-	// DeniabilityPasswordRequiredMessage explains the outer-wrapper credential requirement.
+	KeyfileWritesDisabledMessage = "creating new v2 volumes with keyfiles is disabled; use explicit PCV3 creation"
+	// DeniabilityPasswordRequiredMessage explains the legacy outer-wrapper credential requirement.
 	DeniabilityPasswordRequiredMessage = "a non-empty password is required for deniability"
 	// EncryptionPasswordRequiredMessage explains the password-only 2.19 writer requirement.
 	EncryptionPasswordRequiredMessage = "a non-empty password is required for encryption"

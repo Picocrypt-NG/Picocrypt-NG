@@ -154,7 +154,9 @@ func headerFlagsBytesPlausible(b []byte) bool {
 // has no MAC, so the inner-version match is the only key check. Non-winning keys
 // and every candidate buffer are zeroed. Returns ErrWrongPassword if none match.
 func selectDeniabilityKey(password, salt, nonce, probe []byte, rs *encoding.RSCodecs) ([]byte, int) {
-	for _, cand := range pwnorm.Candidates(password) {
+	candidates := pwnorm.Candidates(password)
+	defer crypto.SecureZeroMultiple(candidates...)
+	for _, cand := range candidates {
 		key, err := deriveWASMKey(cand, salt, false)
 		zeroWASMSensitiveBuffer(wasmZeroingDeniabilityKDFInput, cand)
 		if err != nil {

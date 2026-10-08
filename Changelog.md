@@ -1,3 +1,10 @@
+# v3.0
+
+Unreleased development version.
+
+The application and package version is now 3.0. Existing v1 and v2 volume
+compatibility and the legacy writer's `v2.19` header marker are unchanged.
+
 # v2.19
 <ul>
 	<li>✓ <strong>Interface languages</strong>: desktop and Android now bundle application UI catalogs for English, Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean (<code>ko</code>, with contemporary neutral South Korean wording); the desktop selector switches Picocrypt-NG-owned UI while Fyne-owned dialogs and raw backend status text may remain English, Android follows the system or per-app language setting, and the CLI remains English-only</li>
@@ -12,7 +19,7 @@
 	<li>✓ <strong>Security guidance</strong>: aligned application and documentation wording with actual behavior, including plaintext comments and their v2 header-HMAC coverage, legacy v1 and v2 keyfile limitations, Paranoid mode, Reed-Solomon recovery limits, unverified force-decrypt output, and browser constraints</li>
 	<li>✓ <strong>Security — v2 keyfile containment</strong>: the core API, desktop, CLI, repository WASM bridge, and Android/mobile writers now reject every new encryption request containing keyfiles, whether keyfile-only or password-plus-keyfile, and require a non-empty password. Supported legacy v1/v2 keyfile volumes remain decryptable, including keyfile-only deniable v2 volumes made with an empty outer password. In legacy v2, the keyfile remains necessary for XChaCha20 confidentiality but does not bind the header MAC, payload MAC, Serpent key, or HKDF rekey schedule. Recover plaintext and re-encrypt it as password-only, or wait for a reviewed v3 format if keyfile protection is mandatory; v3 is not implemented or scheduled by 2.19</li>
 	<li>✓ <strong>Security — version routing</strong>: syntactically valid unknown major versions now fail closed before flags or KDF inputs are read, including under force decrypt, while v1/v2 read compatibility remains unchanged</li>
-	<li>✓ <strong>Security maintenance</strong>: updated the release toolchain to Go 1.26.5 with standard-library security fixes and refreshed pinned dependencies; volume layout and cryptographic algorithms remain unchanged</li>
+	<li>✓ <strong>Security maintenance</strong>: updated the release toolchain to Go 1.26.6 with standard-library security fixes and refreshed pinned dependencies; volume layout and cryptographic algorithms remain unchanged</li>
 	<li>✓ <strong>Release tooling</strong>: updated Cosign to 3.1.2 and switched Windows Resource Hacker downloads to the official 5.2.8 installer with bounded retries and SHA-256 verification before use</li>
 	<li>✓ <strong>CI integrity</strong>: all active <code>actions/checkout</code> references are pinned to the exact v7.0.1 commit</li>
 	<li>✓ <strong>Release integrity</strong>: platform workflows now stage one source-bound draft and publish only after the exact 17 artifacts and their 17 Sigstore bundles are complete, downloaded, digest-checked, and verified against their expected main-branch workflow identities and build provenance; tag, source, <code>main</code>, or <code>VERSION</code> drift fails closed, and existing release assets are never overwritten. Android publication also verifies the expected signer, version metadata, API floor, native architectures, expected APK set, and JNI contents before upload</li>

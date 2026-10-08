@@ -4,11 +4,6 @@ permissions:
   contents: read
 
 on:
-  push:
-    paths:
-      - "VERSION"
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       publish_release:
@@ -75,7 +70,7 @@ jobs:
 
   release:
     needs: build-snapcraft
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release) }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
     concurrency:
       group: ${{ github.repository }}-release-publication
@@ -97,7 +92,7 @@ jobs:
     - name: Get version tag
       run: |
         VERSION=$(cat VERSION)
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
     - name: Sign and attest artifacts
       uses: ./.github/actions/sign-and-attest

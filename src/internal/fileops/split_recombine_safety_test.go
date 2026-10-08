@@ -2,9 +2,11 @@ package fileops
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -175,6 +177,198 @@ func TestSplitRefusesReplacementOfPreviouslyPublishedChunk(t *testing.T) {
 		if _, err := os.Stat(inputPath + suffix); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("operation-owned chunk %s survived failed split: %v", suffix, err)
 		}
+	}
+}
+
+func TestSplitRejectsConcurrentSourceMutationAndRollsBack(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "truncate",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Truncate(path, 512); err != nil {
+					t.Fatalf("truncate split source: %v", err)
+				}
+			},
+		},
+		{
+			name: "same-size overwrite",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				file, err := os.OpenFile(path, os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatalf("open split source for mutation: %v", err)
+				}
+				_, writeErr := file.WriteAt([]byte{0xff}, 0)
+				closeErr := file.Close()
+				if writeErr != nil || closeErr != nil {
+					t.Fatalf("mutate split source: write=%v close=%v", writeErr, closeErr)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			inputPath := filepath.Join(dir, "archive.pcv")
+			input := bytes.Repeat([]byte("stable split source"), 2048)
+			if err := os.WriteFile(inputPath, input, 0o600); err != nil {
+				t.Fatalf("write split source: %v", err)
+			}
+			mutated := false
+			_, err := Split(SplitOptions{
+				InputPath:            inputPath,
+				ChunkSize:            1,
+				Unit:                 SplitUnitKiB,
+				RequireDirectorySync: true,
+				Progress: func(_ float32, _ string) {
+					if !mutated {
+						test.mutate(t, inputPath)
+						mutated = true
+					}
+				},
+			})
+			if err == nil {
+				t.Fatal("Split accepted a source modified during chunk creation")
+			}
+			if !mutated {
+				t.Fatal("test did not mutate the split source")
+			}
+			if _, statErr := os.Lstat(inputPath); statErr != nil {
+				t.Fatalf("modified full source was removed: %v", statErr)
+			}
+			entries, readErr := os.ReadDir(dir)
+			if readErr != nil {
+				t.Fatalf("inspect split directory: %v", readErr)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), "archive.pcv.") {
+					t.Fatalf("chunk survived rejected source mutation: %s", entry.Name())
+				}
+			}
+		})
+	}
+}
+
+func TestSplitPinnedKeepsEveryChunkInTheRetainedDirectory(t *testing.T) {
+	parent := t.TempDir()
+	directory := filepath.Join(parent, "selected")
+	moved := filepath.Join(parent, "moved")
+	replacement := filepath.Join(parent, "replacement")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatalf("create split directory: %v", err)
+	}
+	inputPath := filepath.Join(directory, "archive.pcv")
+	input := bytes.Repeat([]byte("pinned split source"), 160)
+	if err := os.WriteFile(inputPath, input, 0o600); err != nil {
+		t.Fatalf("write split source: %v", err)
+	}
+
+	root, err := OpenRootNoSymlink(directory)
+	if err != nil {
+		t.Fatalf("open split root: %v", err)
+	}
+	defer func() { _ = root.Close() }()
+	parentFile, err := root.Open(".")
+	if err != nil {
+		t.Fatalf("open split directory: %v", err)
+	}
+	defer func() { _ = parentFile.Close() }()
+	inputFile, err := root.Open(filepath.Base(inputPath))
+	if err != nil {
+		t.Fatalf("open split input: %v", err)
+	}
+	defer func() { _ = inputFile.Close() }()
+	inputInfo, err := inputFile.Stat()
+	if err != nil {
+		t.Fatalf("stat split input: %v", err)
+	}
+	parentInfo, err := parentFile.Stat()
+	if err != nil {
+		t.Fatalf("stat split directory: %v", err)
+	}
+	expectedDigest := sha256.Sum256(input)
+
+	swaps := 0
+	replacementBlocked := false
+	result, err := SplitPinnedWithResult(SplitOptions{
+		InputPath:            inputPath,
+		ExpectedInput:        inputInfo,
+		ExpectedDirectory:    parentInfo,
+		ExpectedSHA256:       &expectedDigest,
+		ChunkSize:            1,
+		Unit:                 SplitUnitKiB,
+		RequireDirectorySync: true,
+		Progress: func(_ float32, info string) {
+			if replacementBlocked {
+				return
+			}
+			switch {
+			case swaps == 0 && info == "1/3":
+				if err := os.Rename(directory, moved); err != nil {
+					if windowsPreventedOpenHandleRename(err) {
+						replacementBlocked = true
+						return
+					}
+					t.Fatalf("move retained directory: %v", err)
+				}
+				if err := os.Mkdir(directory, 0o700); err != nil {
+					t.Fatalf("create replacement directory: %v", err)
+				}
+				swaps++
+			case swaps == 1 && info == "2/3":
+				if err := os.Rename(directory, replacement); err != nil {
+					t.Fatalf("move replacement directory: %v", err)
+				}
+				if err := os.Rename(moved, directory); err != nil {
+					t.Fatalf("restore retained directory: %v", err)
+				}
+				swaps++
+			}
+		},
+	}, inputFile, root, parentFile, SyncDirectory)
+	if err != nil {
+		t.Fatalf("split through retained directory: %v", err)
+	}
+	wantState := SplitCompleteDurable
+	if runtime.GOOS == "windows" {
+		wantState = SplitCompleteDurabilityUncertain
+	}
+	if result.State != wantState || len(result.Chunks) != 3 {
+		t.Fatalf("split state=%v chunks=%d; want %v and 3", result.State, len(result.Chunks), wantState)
+	}
+	if wantState == SplitCompleteDurabilityUncertain && result.DurabilityError == nil {
+		t.Fatal("Windows split lost its native directory-flush failure")
+	}
+	if replacementBlocked {
+		if swaps != 0 {
+			t.Fatalf("blocked replacement changed retained directory: swaps=%d", swaps)
+		}
+		for _, path := range []string{moved, replacement} {
+			if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("blocked replacement left another directory %q: %v", path, statErr)
+			}
+		}
+	} else {
+		if swaps != 2 {
+			t.Fatalf("directory swaps=%d; want 2", swaps)
+		}
+		entries, err := os.ReadDir(replacement)
+		if err != nil {
+			t.Fatalf("read replacement directory: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("split wrote outside retained directory: %v", entries)
+		}
+	}
+	recombined := filepath.Join(parent, "recombined.pcv")
+	if err := Recombine(RecombineOptions{InputBase: inputPath, OutputPath: recombined}); err != nil {
+		t.Fatalf("recombine pinned chunks: %v", err)
+	}
+	if got, err := os.ReadFile(recombined); err != nil || !bytes.Equal(got, input) {
+		t.Fatalf("recombined pinned chunks differ: size=%d err=%v", len(got), err)
 	}
 }
 

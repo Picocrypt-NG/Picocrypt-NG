@@ -86,6 +86,17 @@ sealed class AppError(
             @StringRes messageResId: Int? = R.string.error_file_not_found,
             messageArgs: List<Any> = emptyList(),
         ) : OperationError(userMessage, technicalMessage, messageResId, messageArgs)
+
+        /**
+         * A claimed PCV3 volume that this Android build cannot safely process.
+         * This terminal state deliberately offers neither retry nor force-decrypt.
+         */
+        class PCVUnavailable(
+            userMessage: String = "This PCV volume is not supported by this version. Keep the original file; no output was created.",
+            technicalMessage: String? = null,
+            @StringRes messageResId: Int? = R.string.error_pcv_unavailable,
+            messageArgs: List<Any> = emptyList(),
+        ) : OperationError(userMessage, technicalMessage, messageResId, messageArgs)
         
         /**
          * Generic operation error.
@@ -174,7 +185,7 @@ sealed class AppError(
         )
 
         object KeyfileWritesDisabled : ValidationError(
-            "Creating new v2 volumes with keyfiles is disabled pending a reviewed v3 format",
+            "Creating new v2 volumes with keyfiles is disabled; use explicit PCV3 creation",
             R.string.error_keyfile_writes_disabled,
         )
         
@@ -245,6 +256,11 @@ sealed class AppError(
                     technicalMessage = errorString,
                     messageResId = R.string.error_file_not_found,
                 )
+                "PCV3_UNSUPPORTED", "PCV3_INVALID_STRUCTURE" -> OperationError.PCVUnavailable(
+                    userMessage = "",
+                    technicalMessage = errorString,
+                    messageResId = R.string.error_pcv_unavailable,
+                )
                 "CANCELLED" -> OperationError.GenericOperation(
                     userMessage = "",
                     technicalMessage = errorString,
@@ -260,6 +276,14 @@ sealed class AppError(
          */
         fun fromException(exception: Exception): AppError {
             if (exception is AppError) return exception
+
+            if (exception is Pcv3BridgeFailure && exception.code == "PCV3_RESOURCE_LIMIT") {
+                return OperationError.GenericOperation(
+                    userMessage = "",
+                    technicalMessage = exception.code,
+                    messageResId = R.string.pcv3_resource_limit_body,
+                )
+            }
 
             val technicalDetail = exception.message ?: exception.toString()
             if (failureReasonResId(exception) == R.string.error_reason_file_not_found) {

@@ -22,7 +22,7 @@ integrity, password, keyfile, corruption, and deletion concepts.
 | CLI | Cobra help, prompts, warnings, and errors are hard-coded Go strings. | Do not localize CLI output, command names, flags, or examples. Keep CLI English-only. |
 | Web/WASM | The Go WASM bridge exports functions and numeric error codes; it does not own the hosted web UI copy. | Localize the web frontend separately if/when that source is brought into scope. |
 
-Non-goals for the first localization phase:
+Non-goals for the first localization pass:
 
 - Do not modify `crypto`, `header`, `keyfile`, or `volume` semantics.
 - Do not translate flags, environment variables, file extensions, protocol names,

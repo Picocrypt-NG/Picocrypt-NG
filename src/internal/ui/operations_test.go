@@ -5,11 +5,13 @@ import (
 	"Picocrypt-NG/internal/app"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/volume"
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -351,6 +353,7 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 }
 
 func TestCancelAfterSuccessfulOperationPreservesSource(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 
@@ -358,8 +361,8 @@ func TestCancelAfterSuccessfulOperationPreservesSource(t *testing.T) {
 	if err := os.WriteFile(source, []byte("keep me"), 0o600); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
-	a.operationExecutor = func(context.Context, operationInput, volume.ProgressReporter) operationResult {
-		return operationResult{completed: true}
+	a.operationExecutor = func(ctx context.Context, input operationInput, reporter volume.ProgressReporter) operationResult {
+		return executeDeletionTestEncryption(t, ctx, input, reporter)
 	}
 	type cleanupObservation struct {
 		ctx       context.Context
@@ -388,7 +391,7 @@ func TestCancelAfterSuccessfulOperationPreservesSource(t *testing.T) {
 	var observed cleanupObservation
 	select {
 	case observed = <-cleanupEntered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("successful executor did not reach the production cleanup boundary")
 	}
 	if observed.inputFile != source {
@@ -546,9 +549,6 @@ func TestRecursiveOperationKeepsWorkingAndProcessesEveryFile(t *testing.T) {
 		fyneApp := newTestFyneApp(t)
 		a := createUIReadyDropTestApp(t, fyneApp)
 		file := filepath.Join(t.TempDir(), "disappears.txt")
-		if err := os.WriteFile(file, []byte("payload"), 0o600); err != nil {
-			t.Fatalf("write input: %v", err)
-		}
 		var calls atomic.Int32
 		a.operationExecutor = func(context.Context, operationInput, volume.ProgressReporter) operationResult {
 			calls.Add(1)
@@ -565,9 +565,6 @@ func TestRecursiveOperationKeepsWorkingAndProcessesEveryFile(t *testing.T) {
 			a.State.CPassword = "secret"
 			a.State.Recursively = true
 			a.startWork()
-			if err := os.Remove(file); err != nil {
-				t.Fatalf("remove captured input: %v", err)
-			}
 		})
 		drainOperationFinalizer(t, a)
 		if got := calls.Load(); got != 0 {
@@ -578,6 +575,158 @@ func TestRecursiveOperationKeepsWorkingAndProcessesEveryFile(t *testing.T) {
 			t.Fatalf("selection failure status = %+v; want failed-all count 1", status)
 		}
 	})
+}
+
+func TestRecursiveNormalPCV3NeverFallsBackToLegacy(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	input := filepath.Join("..", "pcv3operation", "internal", "pcv3", "testdata", "schema1-minimal.pcv")
+	output := filepath.Join(t.TempDir(), "legacy-fallback.out")
+	previousOpen := openDroppedPCVInput
+	var routedSource *os.File
+	openDroppedPCVInput = func(path string, split bool) (*os.File, error) {
+		source, err := previousOpen(path, split)
+		if err == nil {
+			routedSource = source
+		}
+		return source, err
+	}
+	defer func() { openDroppedPCVInput = previousOpen }()
+	var legacyCalls atomic.Int32
+	a.operationExecutor = func(_ context.Context, input operationInput, _ volume.ProgressReporter) operationResult {
+		legacyCalls.Add(1)
+		if err := os.WriteFile(input.outputFile, []byte("legacy output"), 0o600); err != nil {
+			t.Fatalf("write legacy fallback output: %v", err)
+		}
+		return operationResult{completed: true}
+	}
+
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.State.InputFile = input
+		a.State.OutputFile = output
+		a.State.OnlyFiles = []string{input}
+		a.State.AllFiles = []string{input}
+		a.State.Password = "recursive-normal-pcv3"
+		a.State.CPassword = "recursive-normal-pcv3"
+		a.State.Recursively = true
+		a.startWork()
+	})
+	drainOperationFinalizer(t, a)
+
+	if got := legacyCalls.Load(); got != 0 {
+		t.Fatalf("normal PCV3 recursive input reached legacy executor %d time(s)", got)
+	}
+	if _, err := os.Lstat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("normal PCV3 recursive input produced legacy output: %v", err)
+	}
+	if routedSource == nil {
+		t.Fatal("normal PCV3 recursive route did not open its source")
+	}
+	if _, err := routedSource.ReadAt(make([]byte, 1), 0); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("normal PCV3 recursive rejection left routed source open: %v", err)
+	}
+	snap := a.State.UISnapshot()
+	if snap.Working {
+		t.Fatal("normal PCV3 recursive rejection left the operation working")
+	}
+	if snap.Status.Kind != app.StatusRecursiveFailedAll || snap.Status.Args.Count != 1 {
+		t.Fatalf("normal PCV3 recursive status = %+v; want failed-all count 1", snap.Status)
+	}
+}
+
+func TestRecursiveLegacyDecryptPreservesVolumeAndSplitSelection(t *testing.T) {
+	golden := filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv")
+	goldenBytes, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read frozen legacy volume: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		selected      func(t *testing.T) string
+		wantInput     func(selected string) string
+		wantOutput    func(selected string) string
+		wantRecombine bool
+	}{
+		{
+			name:     "volume",
+			selected: func(*testing.T) string { return golden },
+			wantInput: func(selected string) string {
+				return selected
+			},
+			wantOutput: trimPCVSuffix,
+		},
+		{
+			name: "split chunk",
+			selected: func(t *testing.T) string {
+				base := filepath.Join(t.TempDir(), "legacy.pcv")
+				if err := os.WriteFile(base+".0", goldenBytes, 0o600); err != nil {
+					t.Fatalf("write split chunk: %v", err)
+				}
+				return base + ".0"
+			},
+			wantInput: func(selected string) string {
+				base, ok := fileops.SplitChunkBase(selected)
+				if !ok {
+					return ""
+				}
+				return base
+			},
+			wantOutput: func(selected string) string {
+				base, ok := fileops.SplitChunkBase(selected)
+				if !ok {
+					return ""
+				}
+				return trimPCVSuffix(base)
+			},
+			wantRecombine: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fyneApp := newTestFyneApp(t)
+			a := createUIReadyDropTestApp(t, fyneApp)
+			selected := tc.selected(t)
+			observed := make(chan operationInput, 1)
+			a.operationExecutor = func(_ context.Context, input operationInput, _ volume.ProgressReporter) operationResult {
+				observed <- input
+				return operationResult{completed: true}
+			}
+
+			fyne.DoAndWait(func() {
+				a.State.Mode = "encrypt"
+				a.State.InputFile = selected
+				a.State.OutputFile = selected + ".pcv"
+				a.State.OnlyFiles = []string{selected}
+				a.State.AllFiles = []string{selected}
+				a.State.Password = "recursive-legacy-decrypt"
+				a.State.CPassword = "recursive-legacy-decrypt"
+				a.State.Recursively = true
+				a.startWork()
+			})
+			drainOperationFinalizer(t, a)
+
+			select {
+			case got := <-observed:
+				if got.mode != "decrypt" {
+					t.Fatalf("recursive mode = %q; want decrypt", got.mode)
+				}
+				if want := tc.wantInput(selected); got.inputFile != want {
+					t.Fatalf("recursive input = %q; want %q", got.inputFile, want)
+				}
+				if want := tc.wantOutput(selected); got.outputFile != want {
+					t.Fatalf("recursive output = %q; want %q", got.outputFile, want)
+				}
+				if got.recombine != tc.wantRecombine {
+					t.Fatalf("recursive recombine = %v; want %v", got.recombine, tc.wantRecombine)
+				}
+			default:
+				t.Fatal("recursive legacy selection did not reach executor")
+			}
+		})
+	}
 }
 
 // TestOnClickStartValidation tests the validation logic in onClickStart.
@@ -797,6 +946,7 @@ func TestSuccessfulRecombineDeletesActualChunkSet(t *testing.T) {
 }
 
 func TestDeleteAfterSuccessPreservesReplacedSource(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
 	a := createTestApp(t)
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.txt")
@@ -818,7 +968,8 @@ func TestDeleteAfterSuccessPreservesReplacedSource(t *testing.T) {
 	}
 	result := a.runCapturedOperation(
 		context.Background(),
-		func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+		func(ctx context.Context, captured operationInput, reporter volume.ProgressReporter) operationResult {
+			encrypted := executeDeletionTestEncryption(t, ctx, captured, reporter)
 			if err := os.Rename(source, backup); err != nil {
 				t.Fatalf("move captured source during executor: %v", err)
 			}
@@ -828,7 +979,7 @@ func TestDeleteAfterSuccessPreservesReplacedSource(t *testing.T) {
 			if err := os.Chtimes(source, originalInfo.ModTime(), originalInfo.ModTime()); err != nil {
 				t.Fatalf("match replacement source timestamp: %v", err)
 			}
-			return operationResult{completed: true}
+			return encrypted
 		},
 		nil,
 		input,
@@ -845,6 +996,7 @@ func TestDeleteAfterSuccessPreservesReplacedSource(t *testing.T) {
 }
 
 func TestDeleteAfterFolderEncryptionPreservesReplacedEmptyRoot(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
 	a := createTestApp(t)
 	dir := t.TempDir()
 	sourceFolder := filepath.Join(dir, "source")
@@ -867,14 +1019,15 @@ func TestDeleteAfterFolderEncryptionPreservesReplacedEmptyRoot(t *testing.T) {
 	}
 	result := a.runCapturedOperation(
 		context.Background(),
-		func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+		func(ctx context.Context, captured operationInput, reporter volume.ProgressReporter) operationResult {
+			encrypted := executeDeletionTestEncryption(t, ctx, captured, reporter)
 			if err := os.Rename(sourceFolder, backup); err != nil {
 				t.Fatalf("move captured source folder during executor: %v", err)
 			}
 			if err := os.Mkdir(sourceFolder, 0o700); err != nil {
 				t.Fatalf("create replacement source folder: %v", err)
 			}
-			return operationResult{completed: true}
+			return encrypted
 		},
 		nil,
 		input,
@@ -896,6 +1049,7 @@ func TestDeleteAfterFolderEncryptionPreservesReplacedEmptyRoot(t *testing.T) {
 }
 
 func TestDeleteAfterFolderEncryptionPreservesNewEntries(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
 	a := createTestApp(t)
 	dir := t.TempDir()
 	sourceFolder := filepath.Join(dir, "source")
@@ -918,11 +1072,12 @@ func TestDeleteAfterFolderEncryptionPreservesNewEntries(t *testing.T) {
 	}
 	result := a.runCapturedOperation(
 		context.Background(),
-		func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+		func(ctx context.Context, captured operationInput, reporter volume.ProgressReporter) operationResult {
+			encrypted := executeDeletionTestEncryption(t, ctx, captured, reporter)
 			if err := os.WriteFile(latePath, lateBytes, 0o600); err != nil {
 				t.Fatalf("write late folder entry: %v", err)
 			}
-			return operationResult{completed: true}
+			return encrypted
 		},
 		nil,
 		input,
@@ -984,6 +1139,7 @@ func TestDeleteAfterRecombineNeverDeletesLateChunk(t *testing.T) {
 }
 
 func TestRecursiveDeleteFailureIsNotOverwrittenByLaterSuccess(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	dir := t.TempDir()
@@ -996,7 +1152,8 @@ func TestRecursiveDeleteFailureIsNotOverwrittenByLaterSuccess(t *testing.T) {
 	firstBackup := files[0] + ".used"
 	firstReplacement := []byte("replacement created during first operation")
 	var call atomic.Int32
-	a.operationExecutor = func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+	a.operationExecutor = func(ctx context.Context, captured operationInput, reporter volume.ProgressReporter) operationResult {
+		encrypted := executeDeletionTestEncryption(t, ctx, captured, reporter)
 		if call.Add(1) == 1 {
 			if err := os.Rename(files[0], firstBackup); err != nil {
 				t.Fatalf("move first recursive source: %v", err)
@@ -1005,7 +1162,7 @@ func TestRecursiveDeleteFailureIsNotOverwrittenByLaterSuccess(t *testing.T) {
 				t.Fatalf("replace first recursive source: %v", err)
 			}
 		}
-		return operationResult{completed: true}
+		return encrypted
 	}
 
 	fyne.DoAndWait(func() {
@@ -1052,6 +1209,47 @@ func TestUpdateOutputFileForCompressClearsDialogConfirmation(t *testing.T) {
 	}
 	if got := a.State.OutputFile; got != filepath.Join(filepath.Dir(a.State.OutputFile), "report.txt.zip.pcv") {
 		t.Fatalf("OutputFile = %q", got)
+	}
+}
+
+func TestPCV3StartRejectsExistingOutputWithoutOverwriteModal(t *testing.T) {
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	dir := t.TempDir()
+	input := filepath.Join(dir, "plain.bin")
+	output := filepath.Join(dir, "existing.bin.pcv")
+	if err := os.WriteFile(input, []byte("plaintext"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	sentinel := []byte("existing output")
+	if err := os.WriteFile(output, sentinel, 0o600); err != nil {
+		t.Fatalf("write existing output: %v", err)
+	}
+	var calls atomic.Int32
+	a.operationExecutor = func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+		calls.Add(1)
+		return operationResult{completed: true}
+	}
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.State.InputFile = input
+		a.State.AllFiles = []string{input}
+		a.State.OnlyFiles = []string{input}
+		a.State.OutputFile = output
+		a.State.CreatePCV3 = true
+		a.State.Password = "password"
+		a.State.CPassword = "password"
+		a.State.SetInputSelection(1, 0, int64(len("plaintext")), true)
+		a.updateUIState()
+		a.onClickStart()
+	})
+	if calls.Load() != 0 || a.overwriteModal != nil {
+		t.Fatalf("occupied PCV3 output reached executor/modal: calls=%d modal=%v", calls.Load(), a.overwriteModal != nil)
+	}
+	if !strings.Contains(a.State.UISnapshot().MainStatus, "already exists") {
+		t.Fatalf("occupied PCV3 status = %q", a.State.UISnapshot().MainStatus)
+	}
+	if got, err := os.ReadFile(output); err != nil || !bytes.Equal(got, sentinel) {
+		t.Fatalf("occupied PCV3 start changed output: %q err=%v", got, err)
 	}
 }
 
@@ -1174,4 +1372,109 @@ func createTestApp(t *testing.T) *App {
 		t.Fatalf("Failed to create test app: %v", err)
 	}
 	return a
+}
+
+// These source-identity race tests run the public writer first. Only the race
+// between its completion and frontend deletion is orchestrated by the test.
+func executeDeletionTestEncryption(t *testing.T, ctx context.Context, input operationInput, reporter volume.ProgressReporter) operationResult {
+	t.Helper()
+	result := executePublicationTestEncryption(t, ctx, input, reporter)
+	if result.err != nil || !result.pcv3.SourceDeletionAllowed() {
+		t.Fatalf("real PCV3 encryption did not authorize deletion: %v / %v", result.err, result.pcv3)
+	}
+	return result
+}
+
+func executePublicationTestEncryption(t *testing.T, ctx context.Context, input operationInput, reporter volume.ProgressReporter) operationResult {
+	t.Helper()
+	key := filepath.Join(t.TempDir(), "factor")
+	if err := os.WriteFile(key, []byte("source deletion regression keyfile"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input.password = nil
+	input.keyfiles = []string{key}
+	state, err := app.NewState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.rsCodecs = state.RSCodecs
+	result := executeVolumeOperation(ctx, input, reporter)
+	requireNativePCV3Operation(t, result)
+	return result
+}
+
+func TestNativePCV3EncryptionDeletesSourceOnlyAfterDurablePublication(t *testing.T) {
+	a := createTestApp(t)
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	plaintext := []byte("delete only after proven native durability")
+	if err := os.WriteFile(source, plaintext, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := operationInput{mode: "encrypt", inputFile: source, onlyFiles: []string{source}, outputFile: source + ".pcv", delete: true}
+	result := a.runCapturedOperation(context.Background(), func(ctx context.Context, captured operationInput, reporter volume.ProgressReporter) operationResult {
+		return executePublicationTestEncryption(t, ctx, captured, reporter)
+	}, nil, input)
+	requireNativePCV3Operation(t, result)
+	if result.cancelled || result.deleteFailed {
+		t.Fatalf("native publication cleanup = %+v", result)
+	}
+	if runtime.GOOS == "windows" {
+		if got, err := os.ReadFile(source); err != nil || !bytes.Equal(got, plaintext) {
+			t.Fatalf("uncertain publication changed its source: %q, %v", got, err)
+		}
+	} else if _, err := os.Lstat(source); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("durable publication did not remove its authorized source: %v", err)
+	}
+	if info, err := os.Stat(input.outputFile); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		t.Fatalf("native ciphertext is unavailable: %v, %v", info, err)
+	}
+}
+
+// A nil Go error is not permission to remove user data: cleanup warnings
+// revoke authority minted by the real writer after its complete lifecycle.
+func TestPCV3EncryptionCleanupWarningPreservesSourceDespiteNilError(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
+	a := createTestApp(t)
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	plaintext := []byte("keep source when encryption cleanup is uncertain")
+	if err := os.WriteFile(source, plaintext, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := operationInput{mode: "encrypt", inputFile: source, inputFiles: []string{source}, onlyFiles: []string{source}, outputFile: filepath.Join(dir, "encrypted.pcv"), delete: true}
+	result := a.runCapturedOperation(context.Background(), func(ctx context.Context, captured operationInput, reporter volume.ProgressReporter) operationResult {
+		result := executeDeletionTestEncryption(t, ctx, captured, reporter)
+		result.pcv3.WithCleanupWarning()
+		return result
+	}, nil, input)
+	if result.err != nil || result.pcv3.SourceDeletionAllowed() {
+		t.Fatalf("cleanup warning authority = %v, %v", result.err, result.pcv3)
+	}
+	if got, err := os.ReadFile(source); err != nil || !bytes.Equal(got, plaintext) {
+		t.Fatalf("source changed despite cleanup warning: %q, %v", got, err)
+	}
+	if _, err := os.Stat(input.outputFile); err != nil {
+		t.Fatalf("published encrypted output unavailable: %v", err)
+	}
+}
+
+func TestEncryptionWithoutCoreDeletionAuthorityPreservesSource(t *testing.T) {
+	a := createTestApp(t)
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	if err := os.WriteFile(source, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := operationInput{mode: "encrypt", inputFile: source, inputFiles: []string{source}, onlyFiles: []string{source}, outputFile: filepath.Join(dir, "out.pcv"), delete: true}
+	// Lifecycle-only stub: a frontend success boolean must never mint core authority.
+	result := a.runCapturedOperation(context.Background(), func(context.Context, operationInput, volume.ProgressReporter) operationResult {
+		return operationResult{completed: true}
+	}, nil, input)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if got, err := os.ReadFile(source); err != nil || string(got) != "source" {
+		t.Fatalf("source changed without core authority: %q, %v", got, err)
+	}
 }

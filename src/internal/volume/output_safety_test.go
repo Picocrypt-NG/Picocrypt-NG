@@ -55,6 +55,19 @@ func (*pathSwapReporter) SetCanCancel(bool)           {}
 func (*pathSwapReporter) Update()                     {}
 func (*pathSwapReporter) IsCancelled() bool           { return false }
 
+func assertNoPicocryptStages(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read output directory for staging artifacts: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".picocrypt-") {
+			t.Fatalf("operation left staging artifact %q", entry.Name())
+		}
+	}
+}
+
 type cleanupPermissionReporter struct {
 	dir       string
 	once      sync.Once
@@ -822,6 +835,20 @@ func TestDecryptRecombineDoesNotRemoveReplacementAtTemporaryPath(t *testing.T) {
 		RSCodecs:   newRSCodecsT(t),
 	})
 	if reporter.err != nil {
+		if windowsPreventedOpenHandleRename(reporter.err) {
+			if err != nil {
+				t.Fatalf("decrypt after Windows prevented recombined-input replacement: %v", err)
+			}
+			assertFileBytes(t, outputPath, plaintext)
+			if _, statErr := os.Lstat(ownedBackup); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("blocked replacement moved the owned recombined volume: %v", statErr)
+			}
+			if _, statErr := os.Lstat(volumeBase); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("completed decrypt retained its recombined temporary input: %v", statErr)
+			}
+			assertNoPicocryptStages(t, dir)
+			return
+		}
 		t.Fatalf("replace recombined path before header read: %v", reporter.err)
 	}
 	if err == nil {
@@ -901,6 +928,21 @@ func TestDecryptRecombineRefusesDifferentValidVolumeAtOwnedPath(t *testing.T) {
 		RSCodecs:   newRSCodecsT(t),
 	})
 	if reporter.err != nil {
+		if windowsPreventedOpenHandleRename(reporter.err) {
+			if err != nil {
+				t.Fatalf("decrypt after Windows prevented valid-volume replacement: %v", err)
+			}
+			assertFileBytes(t, outputPath, ownedPlaintext)
+			assertFileBytes(t, foreignVolume, foreignBytes)
+			if _, statErr := os.Lstat(ownedBackup); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("blocked replacement moved the owned recombined volume: %v", statErr)
+			}
+			if _, statErr := os.Lstat(volumeBase); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("completed decrypt retained its recombined temporary input: %v", statErr)
+			}
+			assertNoPicocryptStages(t, dir)
+			return
+		}
 		t.Fatalf("replace recombined path with valid volume: %v", reporter.err)
 	}
 	if err == nil || !strings.Contains(err.Error(), "recombined") {
@@ -932,6 +974,139 @@ func TestDecryptRecombineRefusesDifferentValidVolumeAtOwnedPath(t *testing.T) {
 		t.Fatalf("decrypt preserved foreign volume: %v", err)
 	}
 	assertFileBytes(t, foreignOutput, foreignPlaintext)
+}
+
+func TestDecryptRecombineDoesNotPublishOverMovedConsumedChunk(t *testing.T) {
+	dir := t.TempDir()
+	password := []byte("protect-every-consumed-split-chunk")
+	plaintext := bytes.Repeat([]byte("split-input-identity"), 4096)
+	inputPath := filepath.Join(dir, "input.bin")
+	if err := os.WriteFile(inputPath, plaintext, 0o600); err != nil {
+		t.Fatalf("write split plaintext: %v", err)
+	}
+	volumeBase := filepath.Join(dir, "split-volume.pcv")
+	if err := Encrypt(context.Background(), &EncryptRequest{
+		InputFile:  inputPath,
+		OutputFile: volumeBase,
+		Password:   password,
+		Split:      true,
+		ChunkSize:  2,
+		ChunkUnit:  fileops.SplitUnitTotal,
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("encrypt split fixture: %v", err)
+	}
+
+	chunkPath := volumeBase + ".1"
+	originalChunk, err := os.ReadFile(chunkPath)
+	if err != nil {
+		t.Fatalf("read consumed chunk: %v", err)
+	}
+	replacementChunk := []byte("replacement chunk must not hide the consumed input identity")
+	outputPath := filepath.Join(dir, "must-remain-ciphertext.bin")
+	reporter := &pathSwapReporter{
+		trigger: "Reading values...",
+		path:    chunkPath,
+		backup:  outputPath,
+		foreign: replacementChunk,
+	}
+
+	err = Decrypt(context.Background(), &DecryptRequest{
+		InputFile:  volumeBase,
+		OutputFile: outputPath,
+		Password:   password,
+		Recombine:  true,
+		Reporter:   reporter,
+		RSCodecs:   newRSCodecsT(t),
+	})
+	if reporter.err != nil {
+		t.Fatalf("move consumed chunk onto output path: %v", reporter.err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "routed encrypted input") {
+		t.Fatalf("Decrypt error = %v, want consumed-chunk output-alias refusal", err)
+	}
+	assertFileBytes(t, outputPath, originalChunk)
+	assertFileBytes(t, chunkPath, replacementChunk)
+	assertNoPicocryptStages(t, dir)
+	if _, statErr := os.Lstat(volumeBase); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed decrypt left the recombined temporary input: %v", statErr)
+	}
+}
+
+func TestDecryptPreparedProtectsMovedSplitChunkBeforeRecombine(t *testing.T) {
+	dir := t.TempDir()
+	password := []byte("protect-the-selected-split-set")
+	inputPath := filepath.Join(dir, "input.bin")
+	if err := os.WriteFile(inputPath, bytes.Repeat([]byte("prepared-split-identity"), 4096), 0o600); err != nil {
+		t.Fatalf("write split plaintext: %v", err)
+	}
+	volumeBase := filepath.Join(dir, "prepared-split.pcv")
+	if err := Encrypt(context.Background(), &EncryptRequest{
+		InputFile:  inputPath,
+		OutputFile: volumeBase,
+		Password:   password,
+		Split:      true,
+		ChunkSize:  2,
+		ChunkUnit:  fileops.SplitUnitTotal,
+		RSCodecs:   newRSCodecsT(t),
+	}); err != nil {
+		t.Fatalf("encrypt split fixture: %v", err)
+	}
+
+	prepared, err := PrepareDecryptInput(volumeBase, true)
+	if err != nil {
+		t.Fatalf("PrepareDecryptInput: %v", err)
+	}
+	t.Cleanup(func() { _ = prepared.Close() })
+
+	chunkPath := volumeBase + ".1"
+	chunkBytes, err := os.ReadFile(chunkPath)
+	if err != nil {
+		t.Fatalf("read selected chunk: %v", err)
+	}
+	selectedInfo, err := os.Stat(chunkPath)
+	if err != nil {
+		t.Fatalf("inspect selected chunk: %v", err)
+	}
+	if !os.SameFile(selectedInfo, selectedInfo) {
+		t.Fatal("pin selected chunk identity before moving it")
+	}
+	outputPath := filepath.Join(dir, "must-remain-selected-chunk.bin")
+	if err := os.Rename(chunkPath, outputPath); err != nil {
+		t.Fatalf("move selected chunk onto output path: %v", err)
+	}
+	if err := os.WriteFile(chunkPath, chunkBytes, 0o600); err != nil {
+		t.Fatalf("replace selected chunk with an identical copy: %v", err)
+	}
+	replacementInfo, err := os.Stat(chunkPath)
+	if err != nil {
+		t.Fatalf("inspect replacement chunk: %v", err)
+	}
+
+	err = DecryptPrepared(context.Background(), &DecryptRequest{
+		InputFile:  volumeBase,
+		OutputFile: outputPath,
+		Password:   password,
+		Recombine:  true,
+		RSCodecs:   newRSCodecsT(t),
+	}, prepared)
+	if err == nil || !strings.Contains(err.Error(), "routed encrypted input") {
+		t.Fatalf("DecryptPrepared error = %v, want selected-chunk output-alias refusal", err)
+	}
+	currentOutput, err := os.Stat(outputPath)
+	if err != nil || !os.SameFile(selectedInfo, currentOutput) {
+		t.Fatalf("selected chunk at output changed identity: %v", err)
+	}
+	currentReplacement, err := os.Stat(chunkPath)
+	if err != nil || !os.SameFile(replacementInfo, currentReplacement) {
+		t.Fatalf("replacement chunk changed identity: %v", err)
+	}
+	assertFileBytes(t, outputPath, chunkBytes)
+	assertFileBytes(t, chunkPath, chunkBytes)
+	if _, statErr := os.Lstat(volumeBase); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("identity refusal created a recombined input: %v", statErr)
+	}
+	assertNoPicocryptStages(t, dir)
 }
 
 // A split input is temporarily recombined at its base path. Publishing

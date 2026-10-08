@@ -28,6 +28,7 @@ type compositeActionRuns struct {
 
 type workflowTriggers struct {
 	WorkflowDispatch workflowDispatch `yaml:"workflow_dispatch"`
+	OtherEvents      map[string]any   `yaml:",inline"`
 }
 
 type workflowDispatch struct {

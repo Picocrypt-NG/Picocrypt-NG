@@ -131,6 +131,9 @@ fun MainLayout() {
     // its saved fields survive process death.
     val mainViewModel: MainViewModel = viewModel()
     val operationViewModel: OperationViewModel = viewModel()
+    // Static for the loaded AAR and intentionally separate from fresh native
+    // admission performed for every operation.
+    val pcv3AndroidPolicyState = GoBridge.pcv3AndroidPolicyState
 
     // Drive the operation polling cadence from the Compose lifecycle: poll at foreground
     // frequency while RESUMED, drop to background frequency on pause/dispose.
@@ -155,6 +158,11 @@ fun MainLayout() {
     
     // Observe operation state to clear sensitive data when operation completes
     val operationState by operationViewModel.operationState.collectAsState()
+    val pcv3Presentation by operationViewModel.pcv3Presentation.collectAsState()
+    val pcv3Intent by operationViewModel.pcv3Intent.collectAsState()
+    val pcv3Busy by operationViewModel.pcv3Busy.collectAsState()
+    val pcv3Error by operationViewModel.pcv3Error.collectAsState()
+    val pcv3ArtifactDetails by operationViewModel.pcv3ArtifactDetails.collectAsState()
     var previousOperationState by remember { mutableStateOf<OperationState?>(null) }
     
     LaunchedEffect(operationState) {
@@ -180,6 +188,7 @@ fun MainLayout() {
 
     // Compute visibility for all cards upfront
     val isFileCardVisible = true // Always visible
+    val isAnyOperationActive = operationState != null || pcv3Busy
     val isCommentsCardVisible = remember(formData) {
         if (!(formData.isEncrypt || formData.isDecrypt)) {
             false
@@ -200,9 +209,13 @@ fun MainLayout() {
     val isAdvancedCardVisible = remember(formData) {
         formData.isEncrypt
     }
-    val isDecryptOptionsCardVisible = remember(formData) {
-        formData.isDecrypt
-    }
+    val isConfiguredPcv3Selection =
+        pcv3AndroidPolicyState == Pcv3AndroidPolicyState.CONFIGURED &&
+            formData.isPcv3Selection && !formData.pcvUnavailable
+    // A live consent projection is an independent lifecycle path; the static
+    // policy flag itself grants neither a request nor operation authority.
+    val isDecryptOptionsCardVisible = formData.isDecrypt || isConfiguredPcv3Selection ||
+        (pcv3Presentation as? Pcv3Presentation.Live)?.consent != null
     val isKeyfileCardVisible = remember(formData) {
         if (!(formData.isEncrypt || formData.isDecrypt)) {
             false
@@ -215,22 +228,44 @@ fun MainLayout() {
         }
     }
     val isWorkButtonVisible = remember(formData) {
-        formData.isEncrypt || formData.isDecrypt
+        formData.isEncrypt || formData.isDecrypt || isConfiguredPcv3Selection
     }
     
     // Collect only the currently visible cards, in render order. Arrangement.spacedBy(24.dp)
     // then yields no gap before the first card and 24.dp between consecutive cards — matching
     // the previous SpacerIf behavior without writing Compose state during composition.
     val visibleCards = buildList<@Composable () -> Unit> {
-        if (isFileCardVisible) add { FileCard(mainViewModel) }
+        if (isFileCardVisible) add {
+            FileCard(
+                viewModel = mainViewModel,
+                enabled = !isAnyOperationActive,
+                pcv3AndroidPolicyState = pcv3AndroidPolicyState,
+            )
+        }
         add { PrivacyCard(enabled = screenshotProtection, onChange = settingsRepository::setScreenshotProtectionEnabled) }
         if (isCommentsCardVisible) add { CommentsCard(mainViewModel) }
         if (isDecryptionInfoCardVisible) add { DecryptionInfoCard(mainViewModel) }
         if (isPasswordCardVisible) add { PasswordCard(mainViewModel) }
-        if (isAdvancedCardVisible) add { AdvancedCard(mainViewModel) }
-        if (isDecryptOptionsCardVisible) add { DecryptOptionsCard(mainViewModel) }
+        if (isAdvancedCardVisible) add {
+            AdvancedCard(mainViewModel, pcv3AndroidPolicyState = pcv3AndroidPolicyState)
+        }
+        if (isDecryptOptionsCardVisible) add {
+            DecryptOptionsCard(
+                viewModel = mainViewModel,
+                pcv3Presentation = pcv3Presentation,
+                onSelectPcv3ConsentRole = operationViewModel::selectPcv3ConsentRole,
+                onConfirmPcv3Consent = operationViewModel::confirmPcv3Consent,
+                onRefusePcv3Consent = operationViewModel::refusePcv3Consent,
+            )
+        }
         if (isKeyfileCardVisible) add { KeyfileCard(mainViewModel) }
-        if (isWorkButtonVisible) add { WorkButton(mainViewModel, operationViewModel) }
+        if (isWorkButtonVisible) add {
+            WorkButton(
+                mainViewModel = mainViewModel,
+                operationViewModel = operationViewModel,
+                pcv3Presentation = pcv3Presentation,
+            )
+        }
     }
 
     Column(
@@ -258,13 +293,34 @@ fun MainLayout() {
         // ProgressCard is now a modal dialog, not part of scrollable content
         ProgressCard(
             mainViewModel = mainViewModel,
-            operationViewModel = operationViewModel
+            operationViewModel = operationViewModel,
+            pcv3Presentation = pcv3Presentation,
+            pcv3Intent = pcv3Intent,
+            onCancelPcv3 = operationViewModel::cancelPcv3,
+            onClosePcv3Result = operationViewModel::dismissPcv3,
+            onClosePcv3Archive = operationViewModel::closePcv3Archive,
+            onBeginPcv3Archive = operationViewModel::beginPcv3Archive,
+            onCompletePcv3Archive = operationViewModel::completePcv3Archive,
+            pcv3ArtifactDetails = pcv3ArtifactDetails,
+            onBeginPcv3Save = operationViewModel::beginPcv3Save,
+            onCompletePcv3Save = operationViewModel::completePcv3Save,
+            onDiscardPcv3Output = operationViewModel::discardPcv3Output,
+            onInspectPcv3Artifact = operationViewModel::inspectPcv3Artifact,
+            onLoadPcv3ArtifactPage = operationViewModel::loadPcv3ArtifactPage,
+            onClosePcv3ArtifactInspection = operationViewModel::closePcv3ArtifactInspection,
         )
         
         // ErrorDialog for non-operation errors (file operations, etc.)
         ErrorDialog(
             error = errorMessage,
             onDismiss = { mainViewModel.clearError() }
+        )
+        ErrorDialog(
+            // A cleanup failure never replaces or obscures the native terminal result.
+            // Once that result is dismissed, the retained cleanup error is shown.
+            // Save failures remain visible while the output awaits another destination.
+            error = pcv3VisibleError(pcv3Error, pcv3Presentation),
+            onDismiss = operationViewModel::clearPcv3Error,
         )
     }
 }

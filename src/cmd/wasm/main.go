@@ -3,8 +3,9 @@
 package main
 
 import (
-	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/header"
+	"Picocrypt-NG/internal/pcv3operation"
+	"Picocrypt-NG/internal/secret"
 	"Picocrypt-NG/internal/wasm"
 	"syscall/js"
 )
@@ -24,6 +25,11 @@ const (
 	maxVolumeBytes = 1 << 30
 )
 
+// copyBytesFromJS is the syscall boundary used by bridge input copies. Tests
+// observe destination sizes to prove claimed PCV3 input is rejected before a
+// whole-volume Go allocation/copy.
+var copyBytesFromJS = js.CopyBytesToGo
+
 // errorResult builds {code: N}.
 func errorResult(code int) any {
 	o := js.Global().Get("Object").New()
@@ -34,13 +40,25 @@ func errorResult(code int) any {
 // readUint8Array copies a real Uint8Array to a Go slice. ok=false for any other
 // shape (undefined, null, wrong typed array, plain object) — checked before any
 // length/byte access so a bad value cannot panic.
-func readUint8Array(v js.Value) ([]byte, bool) {
+func uint8ArrayLength(v js.Value) (int, bool) {
 	if !v.InstanceOf(js.Global().Get("Uint8Array")) {
+		return 0, false
+	}
+	return v.Get("length").Int(), true
+}
+
+func copyUint8Array(v js.Value, n int) []byte {
+	b := make([]byte, n)
+	copyBytesFromJS(b, v)
+	return b
+}
+
+func readUint8Array(v js.Value) ([]byte, bool) {
+	n, ok := uint8ArrayLength(v)
+	if !ok {
 		return nil, false
 	}
-	n := v.Get("length").Int()
-	b := make([]byte, n)
-	js.CopyBytesToGo(b, v)
+	b := copyUint8Array(v, n)
 	return b, true
 }
 
@@ -48,6 +66,27 @@ func readUint8Array(v js.Value) ([]byte, bool) {
 func optBool(obj js.Value, key string) bool {
 	v := obj.Get(key)
 	return v.Type() == js.TypeBoolean && v.Bool()
+}
+
+// explicitPCV3Intent reports whether opts carries a supported operation
+// mode discriminator as a JS number holding one of the closed valid modes.
+// The browser bridge implements no PCV3 operation, so recognized intent is the
+// only property consumed before rejection. A missing, non-numeric, or
+// out-of-registry value is not explicit intent and leaves the legacy path
+// untouched; D1 content is never sniffed.
+func explicitPCV3Intent(opts js.Value) bool {
+	v := opts.Get("pcv3Mode")
+	if v.Type() != js.TypeNumber {
+		return false
+	}
+	switch pcv3operation.Mode(v.Int()) {
+	case pcv3operation.ModeReadNormal, pcv3operation.ModeReadD1,
+		pcv3operation.ModeRecoverNormal, pcv3operation.ModeRecoverD1,
+		pcv3operation.ModeForceNormal, pcv3operation.ModeForceD1,
+		pcv3operation.ModeForceUnverifiedNormal, pcv3operation.ModeForceUnverifiedD1:
+		return true
+	}
+	return false
 }
 
 // optString reads obj[key] as a string, defaulting to "".
@@ -105,10 +144,12 @@ func encrypt(this js.Value, args []js.Value) (result any) {
 	}
 	opts := args[0]
 
-	data, ok := readUint8Array(opts.Get("data"))
-	if !ok || len(data) == 0 || len(data) > maxVolumeBytes {
+	dataValue := opts.Get("data")
+	dataLength, ok := uint8ArrayLength(dataValue)
+	if !ok || dataLength == 0 || dataLength > maxVolumeBytes {
 		return errorResult(errInvalidArg)
 	}
+	data := copyUint8Array(dataValue, dataLength)
 	pw := opts.Get("password")
 	if pw.Type() != js.TypeString {
 		return errorResult(errInvalidArg)
@@ -127,10 +168,10 @@ func encrypt(this js.Value, args []js.Value) (result any) {
 	deniability := optBool(opts, "deniability")
 
 	passwordBytes := []byte(pw.String())
-	defer crypto.SecureZero(passwordBytes)
-	defer crypto.SecureZero(data)
+	defer secret.SecureZero(passwordBytes)
+	defer secret.SecureZero(data)
 	for _, kf := range keyfiles {
-		defer crypto.SecureZero(kf)
+		defer secret.SecureZero(kf)
 	}
 
 	volumeData, code := wasm.EncryptVolume(data, passwordBytes, wasm.EncryptOptions{
@@ -144,7 +185,7 @@ func encrypt(this js.Value, args []js.Value) (result any) {
 	if code != 0 {
 		return errorResult(code)
 	}
-	defer crypto.SecureZero(volumeData)
+	defer secret.SecureZero(volumeData)
 	return successData(volumeData)
 }
 
@@ -160,10 +201,28 @@ func decrypt(this js.Value, args []js.Value) (result any) {
 	}
 	opts := args[0]
 
-	data, ok := readUint8Array(opts.Get("data"))
-	if !ok || len(data) == 0 || len(data) > maxVolumeBytes {
+	// Explicit PCV3 intent is terminal before any data, credential, or option
+	// access; every closed operation mode gets the same stable code-only
+	// unsupported result.
+	if explicitPCV3Intent(opts) {
+		return errorResult(wasm.ErrUnsupported)
+	}
+
+	dataValue := opts.Get("data")
+	dataLength, ok := uint8ArrayLength(dataValue)
+	if !ok || dataLength == 0 || dataLength > maxVolumeBytes {
 		return errorResult(errInvalidArg)
 	}
+	if dataLength >= 4 {
+		var prefix [4]byte
+		if copyBytesFromJS(prefix[:], dataValue) != len(prefix) {
+			return errorResult(errInvalidArg)
+		}
+		if pcv3operation.DetectPrefix(prefix[:]) == pcv3operation.RouteNormalPCV {
+			return errorResult(wasm.ErrUnsupported)
+		}
+	}
+	data := copyUint8Array(dataValue, dataLength)
 	pw := opts.Get("password")
 	if pw.Type() != js.TypeString {
 		return errorResult(errInvalidArg)
@@ -175,10 +234,10 @@ func decrypt(this js.Value, args []js.Value) (result any) {
 	}
 
 	passwordBytes := []byte(pw.String())
-	defer crypto.SecureZero(passwordBytes)
-	defer crypto.SecureZero(data)
+	defer secret.SecureZero(passwordBytes)
+	defer secret.SecureZero(data)
 	for _, kf := range keyfiles {
-		defer crypto.SecureZero(kf)
+		defer secret.SecureZero(kf)
 	}
 
 	res, code := wasm.DecryptVolume(data, passwordBytes, wasm.DecryptOptions{
@@ -190,7 +249,7 @@ func decrypt(this js.Value, args []js.Value) (result any) {
 	if code != 0 && code != wasm.ErrModifiedButKept {
 		return errorResult(code)
 	}
-	defer crypto.SecureZero(res.Plaintext)
+	defer secret.SecureZero(res.Plaintext)
 
 	out := js.Global().Get("Uint8Array").New(len(res.Plaintext))
 	js.CopyBytesToJS(out, res.Plaintext)

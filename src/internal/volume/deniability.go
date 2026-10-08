@@ -203,7 +203,7 @@ func addDeniability(
 // CRITICAL: Must read salt(16) + nonce(24) from the beginning,
 // then decrypt with XChaCha20 using Argon2-derived key.
 func RemoveDeniability(volumePath string, password []byte, reporter ProgressReporter, rs *encoding.RSCodecs) (*fileops.StagedFile, error) {
-	return removeDeniability(volumePath, password, reporter, rs, nil)
+	return removeDeniability(volumePath, password, reporter, rs, nil, nil)
 }
 
 func removeDeniability(
@@ -212,28 +212,42 @@ func removeDeniability(
 	reporter ProgressReporter,
 	rs *encoding.RSCodecs,
 	expectedInput os.FileInfo,
+	preparedInput *os.File,
 ) (retStage *fileops.StagedFile, retErr error) {
+	fin := preparedInput
+	closeInput := false
+	if fin == nil {
+		// #nosec G304 -- volumePath is user-provided .pcv file
+		var err error
+		fin, err = os.Open(volumePath)
+		if err != nil {
+			return nil, fmt.Errorf("open volume: %w", err)
+		}
+		closeInput = true
+	} else if _, err := fin.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind prepared deniability input: %w", err)
+	}
+	if closeInput {
+		defer func() { _ = fin.Close() }()
+	}
+	stat, err := fin.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat volume: %w", err)
+	}
+	if err := rejectClaimedPCV3Size(fin, stat.Size()); err != nil {
+		return nil, err
+	}
+	if expectedInput != nil && !os.SameFile(expectedInput, stat) {
+		return nil, errors.New("recombined input path changed before removing deniability")
+	}
+	total := stat.Size()
+
 	if reporter != nil {
 		reporter.SetStatus("Removing deniability protection...")
 		reporter.SetProgress(0, "")
 		reporter.SetCanCancel(false)
 		reporter.Update()
 	}
-
-	// #nosec G304 -- volumePath is user-provided .pcv file
-	fin, err := os.Open(volumePath)
-	if err != nil {
-		return nil, fmt.Errorf("open volume: %w", err)
-	}
-	defer func() { _ = fin.Close() }()
-	stat, err := fin.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("stat volume: %w", err)
-	}
-	if expectedInput != nil && !os.SameFile(expectedInput, stat) {
-		return nil, errors.New("recombined input path changed before removing deniability")
-	}
-	total := stat.Size()
 
 	stage, err := fileops.CreateSiblingTemp(volumePath)
 	if err != nil {
@@ -332,8 +346,10 @@ func removeDeniability(
 		}
 	}
 
-	if err := fin.Close(); err != nil {
-		return nil, fmt.Errorf("close volume: %w", err)
+	if closeInput {
+		if err := fin.Close(); err != nil {
+			return nil, fmt.Errorf("close volume: %w", err)
+		}
 	}
 
 	// Sync to ensure all data is written before verification
@@ -372,8 +388,11 @@ func removeDeniability(
 // weaken the wrapper: each candidate must still yield a recognizable inner
 // header. ASCII passwords yield a single candidate, so there is no extra work.
 func selectDeniabilityKey(password []byte, salt, nonce, probe []byte, rs *encoding.RSCodecs) ([]byte, error) {
-	for _, cand := range pwnorm.Candidates(password) {
+	candidates := pwnorm.Candidates(password)
+	defer crypto.SecureZeroMultiple(candidates...)
+	for _, cand := range candidates {
 		key := deriveDeniabilityKey(cand, salt)
+		crypto.SecureZero(cand)
 		cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
 		if err != nil {
 			crypto.SecureZero(key)
@@ -397,13 +416,17 @@ func selectDeniabilityKey(password []byte, salt, nonce, probe []byte, rs *encodi
 // that ambiguity by checking whether the following comment-length and flags
 // fields still look like a regular Picocrypt header.
 func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool {
-	// #nosec G304 -- volumePath is user-provided .pcv file
-	fin, err := os.Open(volumePath)
+	fin, err := OpenLegacyPCVInput(volumePath, false)
 	if err != nil {
 		return false
 	}
 	defer func() { _ = fin.Close() }()
+	return IsDeniableFile(fin, rs)
+}
 
+// IsDeniableFile checks deniability on an already opened descriptor without
+// changing its current offset, so a routed descriptor can be reused safely.
+func IsDeniableFile(fin *os.File, rs *encoding.RSCodecs) bool {
 	// QUAL-02 negative pre-guard: a deniability-wrapped volume always wraps a COMPLETE
 	// inner regular volume, so its on-disk size is at least salt(16) + nonce(24) +
 	// header.BaseHeaderSize. A file shorter than that cannot be deniable — it is a
@@ -417,7 +440,7 @@ func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool {
 	}
 
 	versionEnc := make([]byte, 15)
-	if _, err := isDeniableReadVersion(fin, versionEnc); err != nil {
+	if _, err := isDeniableReadVersion(io.NewSectionReader(fin, 0, int64(len(versionEnc))), versionEnc); err != nil {
 		// Size already cleared the minimum above, so a short read here means an I/O
 		// error rather than truncation — treat as non-deniable (cannot confirm).
 		return false

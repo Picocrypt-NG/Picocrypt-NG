@@ -4,32 +4,8 @@ import (
 	"Picocrypt-NG/internal/encoding"
 	"bytes"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 )
-
-// rootVersion reads the canonical root VERSION file by walking up from the test's
-// working directory. The header package cannot import internal/app (app depends on
-// header), so it derives the expected version straight from the single source.
-func rootVersion(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	for {
-		if b, err := os.ReadFile(filepath.Join(dir, "VERSION")); err == nil {
-			return strings.TrimSpace(string(b))
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("VERSION file not found walking up from the test directory")
-		}
-		dir = parent
-	}
-}
 
 func TestHeaderSize(t *testing.T) {
 	// Frozen-format tripwire: BaseHeaderSize is the sum of every RS-encoded
@@ -47,13 +23,27 @@ func TestHeaderSize(t *testing.T) {
 	}
 }
 
-// Version-agnostic: a release bump that edits the root VERSION file but forgets
-// header.CurrentVersion (or vice versa) fails here. No version literal in the name
-// or body, so the test itself never needs editing.
-func TestCurrentVersionMatchesVersionFile(t *testing.T) {
-	want := "v" + rootVersion(t)
-	if CurrentVersion != want {
-		t.Fatalf("CurrentVersion = %q; want %q (derived from root VERSION file)", CurrentVersion, want)
+// Application releases must not turn the legacy writer's five-byte version
+// into an application label or a header the v1/v2 reader refuses.
+func TestDefaultWriterKeepsLegacyV2FormatAcrossApplicationVersions(t *testing.T) {
+	h := NewVolumeHeader(
+		repeatingBytes(0x11, SaltSize), repeatingBytes(0x22, HKDFSaltSize),
+		repeatingBytes(0x33, SerpentIVSize), repeatingBytes(0x44, NonceSize),
+	)
+	encoded, written := writeFormatGuardHeader(t, h)
+	if written != 789 || len(encoded) != 789 {
+		t.Fatalf("default legacy header changed its frozen layout: wrote %d bytes, length %d", written, len(encoded))
+	}
+	rs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := NewReader(bytes.NewReader(encoded), rs).ReadHeader()
+	if err != nil {
+		t.Fatalf("default legacy writer produced an unreadable header: %v", err)
+	}
+	if read.DecodeError != nil || read.Header.Version != "v2.19" || read.BytesRead != 789 {
+		t.Fatalf("default legacy header changed: version=%q bytes=%d decode=%v", read.Header.Version, read.BytesRead, read.DecodeError)
 	}
 }
 

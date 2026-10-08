@@ -1,13 +1,14 @@
 package cli
 
 import (
-	"Picocrypt-NG/internal/crypto"
+	"Picocrypt-NG/internal/secret"
 	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 
 	pwnorm "Picocrypt-NG/internal/password"
 
@@ -18,6 +19,8 @@ var (
 	ErrPasswordMismatch = errors.New("passwords do not match")
 	ErrPasswordEmpty    = errors.New("password cannot be empty")
 )
+
+const maximumCLIPasswordBytes = 1 << 20
 
 // isTerminal returns true if stdin is a terminal (not piped/redirected).
 func isTerminal() bool {
@@ -111,7 +114,7 @@ func ReadPasswordInteractive(confirm, allowEmpty bool) ([]byte, error) {
 			return nil, err
 		}
 		// Zero the confirmation copy once compared; only `password` is returned.
-		defer crypto.SecureZero(confirmPw)
+		defer secret.SecureZero(confirmPw)
 		if !bytes.Equal(password, confirmPw) {
 			return nil, ErrPasswordMismatch
 		}
@@ -132,4 +135,77 @@ func ReadPasswordFromStdin() ([]byte, error) {
 		return nil, fmt.Errorf("reading password from stdin: %w", err)
 	}
 	return pw, nil
+}
+
+// ReadPasswordFromFD reads one bounded password line from an inherited Unix
+// descriptor. The child owns and closes the descriptor after this call.
+func ReadPasswordFromFD(fd int) (password []byte, retErr error) {
+	if runtime.GOOS == "windows" {
+		return nil, errors.New("--password-fd is not supported on Windows")
+	}
+	if fd < 3 {
+		return nil, errors.New("--password-fd must be 3 or higher")
+	}
+	file := os.NewFile(uintptr(fd), "password-fd")
+	if file == nil {
+		return nil, errors.New("password file descriptor is unavailable")
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, errors.New("password file descriptor could not be closed"))
+		}
+		if retErr != nil {
+			secret.SecureZero(password)
+			password = nil
+		}
+	}()
+
+	password, retErr = readPasswordFDLine(file)
+	return password, retErr
+}
+
+func readPasswordFDLine(reader io.Reader) ([]byte, error) {
+	password := make([]byte, maximumCLIPasswordBytes+2)
+	used := 0
+	success := false
+	defer func() {
+		if !success {
+			secret.SecureZero(password)
+		}
+	}()
+
+	for {
+		if used == len(password) {
+			return nil, errors.New("password from file descriptor is too long")
+		}
+		n, err := reader.Read(password[used:])
+		complete := false
+		if index := bytes.IndexByte(password[used:used+n], '\n'); index >= 0 {
+			lineEnd := used + index
+			secret.SecureZero(password[lineEnd : used+n])
+			used = lineEnd
+			complete = true
+		} else {
+			used += n
+		}
+		if complete || errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, errors.New("reading password from file descriptor failed")
+		}
+		if n == 0 {
+			return nil, errors.New("reading password from file descriptor made no progress")
+		}
+	}
+
+	if used > 0 && password[used-1] == '\r' {
+		password[used-1] = 0
+		used--
+	}
+	if used > maximumCLIPasswordBytes {
+		return nil, errors.New("password from file descriptor is too long")
+	}
+	success = true
+	return password[:used], nil
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/xml"
 	"image/png"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -119,24 +118,6 @@ func TestActiveReleaseMetadataVersions(t *testing.T) {
 			})
 		}
 	})
-}
-
-func gitTrackedFiles(t *testing.T) []string {
-	t.Helper()
-	cmd := exec.Command("git", "-C", repoRoot(t), "ls-files", "-z")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git ls-files: %v", err)
-	}
-	parts := bytes.Split(out, []byte{0})
-	files := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if len(part) == 0 {
-			continue
-		}
-		files = append(files, string(part))
-	}
-	return files
 }
 
 type mimeInfo struct {
@@ -373,11 +354,12 @@ func TestLinuxAppIdentityContract(t *testing.T) {
 		t.Fatalf("metainfo launchable desktop-id = %q, want %q", got, want)
 	}
 
-	if got := linuxRuntimeIdentitySourceID(t); got != linuxDesktopAppID {
-		t.Fatalf("Linux runtime app ID = %q, want %q", got, linuxDesktopAppID)
+	runtimeAppID, runtimeX11WMClass := linuxRuntimeIdentitySourceIDs(t)
+	if runtimeAppID != linuxDesktopAppID {
+		t.Fatalf("Linux runtime app ID = %q, want %q", runtimeAppID, linuxDesktopAppID)
 	}
-	if got := linuxRuntimeX11WMClassSourceID(t); got != linuxX11WMClass {
-		t.Fatalf("Linux runtime X11 WM_CLASS = %q, want %q", got, linuxX11WMClass)
+	if runtimeX11WMClass != linuxX11WMClass {
+		t.Fatalf("Linux runtime X11 WM_CLASS = %q, want %q", runtimeX11WMClass, linuxX11WMClass)
 	}
 }
 
@@ -393,69 +375,77 @@ func desktopEntryValue(t *testing.T, data []byte, key string) string {
 	return ""
 }
 
-func linuxRuntimeIdentitySourceID(t *testing.T) string {
+func linuxRuntimeIdentitySourceIDs(t *testing.T) (string, string) {
 	t.Helper()
 
-	var uiSource strings.Builder
-	for _, relPath := range gitTrackedFiles(t) {
-		if strings.HasPrefix(relPath, "src/internal/ui/") && strings.HasSuffix(relPath, ".go") {
-			uiSource.Write(mustReadFile(t, relPath))
-			uiSource.WriteByte('\n')
-		}
-	}
-	source := uiSource.String()
-	const waylandHint = "glfw.WindowHintString(glfw.WaylandAppID, linuxAppID)"
-	if !strings.Contains(source, waylandHint) {
-		t.Fatalf("Linux window identity source missing %q", waylandHint)
-	}
+	const (
+		appRelPath      = "src/internal/ui/app.go"
+		identityRelPath = "src/internal/ui/identity_linux.go"
+		windowRelPath   = "src/internal/ui/window_identity_linux.go"
+	)
+	appSource := string(mustReadFile(t, appRelPath))
+	identitySource := string(mustReadFile(t, identityRelPath))
+	windowSource := string(mustReadFile(t, windowRelPath))
 
-	patterns := []struct {
-		name string
-		re   *regexp.Regexp
+	required := []struct {
+		relPath string
+		source  string
+		name    string
+		re      *regexp.Regexp
 	}{
-		{name: "NewWithID literal", re: regexp.MustCompile(`NewWithID\("([^"]+)"\)`)},
-		{name: "linuxAppID function", re: regexp.MustCompile(`(?s)func\s+linuxAppID\(\)\s+string\s*\{\s*return\s+"([^"]+)"\s*\}`)},
-		{name: "linuxAppID const", re: regexp.MustCompile(`(?m)^\s*const\s+linuxAppID\s*=\s*"([^"]+)"\s*$`)},
-		{name: "linuxAppID grouped const", re: regexp.MustCompile(`(?m)^\s*linuxAppID\s*=\s*"([^"]+)"\s*$`)},
+		{
+			relPath: appRelPath,
+			source:  appSource,
+			name:    "Fyne app ID wiring",
+			re:      regexp.MustCompile(`NewWithID\(\s*runtimeAppID\(\)\s*\)`),
+		},
+		{
+			relPath: appRelPath,
+			source:  appSource,
+			name:    "native window identity wiring",
+			re:      regexp.MustCompile(`prepareWindowIdentity\(\)`),
+		},
+		{
+			relPath: identityRelPath,
+			source:  identitySource,
+			name:    "Linux runtime app ID seam",
+			re:      regexp.MustCompile(`(?s)func\s+runtimeAppID\(\)\s+string\s*\{\s*return\s+linuxAppID\s*\}`),
+		},
+		{
+			relPath: windowRelPath,
+			source:  windowSource,
+			name:    "X11 class hint",
+			re:      regexp.MustCompile(`glfw\.WindowHintString\(\s*glfw\.X11ClassName\s*,\s*linuxX11WMClass\s*\)`),
+		},
+		{
+			relPath: windowRelPath,
+			source:  windowSource,
+			name:    "X11 instance hint",
+			re:      regexp.MustCompile(`glfw\.WindowHintString\(\s*glfw\.X11InstanceName\s*,\s*linuxX11WMClass\s*\)`),
+		},
+		{
+			relPath: windowRelPath,
+			source:  windowSource,
+			name:    "Wayland app ID hint",
+			re:      regexp.MustCompile(`glfw\.WindowHintString\(\s*glfw\.WaylandAppID\s*,\s*linuxAppID\s*\)`),
+		},
 	}
-	for _, pattern := range patterns {
-		matches := pattern.re.FindStringSubmatch(source)
-		if len(matches) == 2 {
-			return matches[1]
+	for _, requirement := range required {
+		if !requirement.re.MatchString(requirement.source) {
+			t.Fatalf("%s missing %s (%s)", requirement.relPath, requirement.name, requirement.re)
 		}
 	}
 
-	t.Fatal("could not find a Fyne NewWithID literal or linuxAppID identity seam in src/internal/ui")
-	return ""
-}
-
-func linuxRuntimeX11WMClassSourceID(t *testing.T) string {
-	t.Helper()
-
-	var uiSource strings.Builder
-	for _, relPath := range gitTrackedFiles(t) {
-		if strings.HasPrefix(relPath, "src/internal/ui/") && strings.HasSuffix(relPath, ".go") {
-			uiSource.Write(mustReadFile(t, relPath))
-			uiSource.WriteByte('\n')
-		}
-	}
-	source := uiSource.String()
-
-	for _, required := range []string{
-		"glfw.WindowHintString(glfw.X11ClassName, linuxX11WMClass)",
-		"glfw.WindowHintString(glfw.X11InstanceName, linuxX11WMClass)",
-	} {
-		if !strings.Contains(source, required) {
-			t.Fatalf("Linux window identity source missing %q", required)
-		}
+	appIDMatches := regexp.MustCompile(`(?m)^\s*(?:const\s+)?linuxAppID\s*=\s*"([^"]+)"\s*$`).FindStringSubmatch(identitySource)
+	if len(appIDMatches) != 2 {
+		t.Fatal("could not find linuxAppID const in src/internal/ui/identity_linux.go")
 	}
 
-	re := regexp.MustCompile(`(?m)^\s*(?:const\s+)?linuxX11WMClass\s*=\s*"([^"]+)"\s*$`)
-	matches := re.FindStringSubmatch(source)
-	if len(matches) != 2 {
-		t.Fatal("could not find linuxX11WMClass const in src/internal/ui")
+	x11ClassMatches := regexp.MustCompile(`(?m)^\s*(?:const\s+)?linuxX11WMClass\s*=\s*"([^"]+)"\s*$`).FindStringSubmatch(identitySource)
+	if len(x11ClassMatches) != 2 {
+		t.Fatal("could not find linuxX11WMClass const in src/internal/ui/identity_linux.go")
 	}
-	return matches[1]
+	return appIDMatches[1], x11ClassMatches[1]
 }
 
 func TestMetainfoContract(t *testing.T) {
@@ -825,16 +815,16 @@ func TestMacOSInfoPlist(t *testing.T) {
 
 	// --- Negative assertion: ensure stale hyphenated bundle ID is gone (D-14 fix) ---
 	if strings.Contains(string(data), "io.github.picocrypt-ng") {
-		t.Errorf("Info.plist still contains pre-Phase-3 stale ID 'io.github.picocrypt-ng' (must be picocryptng — no hyphen)")
+		t.Errorf("Info.plist still contains stale ID 'io.github.picocrypt-ng' (must be picocryptng — no hyphen)")
 	}
 }
 
 // TestWindowsNSISScript validates the canonical NSIS installer script in
-// dist/windows/installer.nsi. Mirrors Phase 2/3 contract test patterns
+// dist/windows/installer.nsi. Mirrors the existing contract test patterns
 // (TestSnapDesktopMimeType + TestMacOSInfoPlist) — regex-based assertions
 // since NSIS has no formal Go grammar (D-32). makensis itself is not invoked
 // here; CI compiles the script on a Windows host (D-33, build-windows.yml
-// Phase 4 step).
+// installer build step).
 func TestWindowsNSISScript(t *testing.T) {
 	data := mustReadFile(t, "dist/windows/installer.nsi")
 	text := string(data)

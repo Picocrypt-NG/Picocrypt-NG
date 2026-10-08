@@ -10,6 +10,102 @@ data class KeyfileInfo(
     val displayName: String     // User-chosen name for display
 ) : Parcelable
 
+enum class Pcv3FormatIntent { NORMAL, D1 }
+
+/**
+ * Explicit user-selected PCV3 operation. The two Force variants stay distinct:
+ * requesting unverified recovery never itself grants the live role-bound consent.
+ */
+enum class Pcv3ActionIntent {
+    DECRYPT,
+    RECOVERY,
+    FORCE_AUTHENTICATED_ONLY,
+    FORCE_WITH_UNVERIFIED_CONSENT,
+    CREATE;
+
+    val isRecovery: Boolean
+        get() = this != DECRYPT
+}
+
+enum class Pcv3FactorPolicyIntent { PASSWORD_ONLY, KEYFILES_ONLY, PASSWORD_AND_KEYFILES }
+
+enum class Pcv3KeyfileOrderIntent { SELECTED, ANY }
+
+/** Operation-local, authority-free intent. Null fields are explicit incomplete state. */
+data class Pcv3OperationIntent(
+    val format: Pcv3FormatIntent,
+    val action: Pcv3ActionIntent? = null,
+    val factorPolicy: Pcv3FactorPolicyIntent? = null,
+    val keyfileOrder: Pcv3KeyfileOrderIntent? = null,
+) {
+    internal fun goModeOrNull(): String? = when (format) {
+        Pcv3FormatIntent.NORMAL -> when (action) {
+            Pcv3ActionIntent.DECRYPT -> "read-normal"
+            Pcv3ActionIntent.RECOVERY -> "recover-normal"
+            Pcv3ActionIntent.FORCE_AUTHENTICATED_ONLY -> "force-normal"
+            Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT -> "force-unverified-normal"
+            Pcv3ActionIntent.CREATE -> "write-normal"
+            null -> null
+        }
+        Pcv3FormatIntent.D1 -> when (action) {
+            Pcv3ActionIntent.DECRYPT -> "read-d1"
+            Pcv3ActionIntent.RECOVERY -> "recover-d1"
+            Pcv3ActionIntent.FORCE_AUTHENTICATED_ONLY -> "force-d1"
+            Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT -> "force-unverified-d1"
+            Pcv3ActionIntent.CREATE -> "write-d1"
+            null -> null
+        }
+    }
+
+    internal fun factorPolicyCodeOrNull(): String? = when (factorPolicy) {
+        Pcv3FactorPolicyIntent.PASSWORD_ONLY -> "password"
+        Pcv3FactorPolicyIntent.KEYFILES_ONLY -> "keyfiles"
+        Pcv3FactorPolicyIntent.PASSWORD_AND_KEYFILES -> "password-and-keyfiles"
+        null -> null
+    }
+
+    internal fun keyfileOrderCodeOrNull(): String? = when (factorPolicy) {
+        Pcv3FactorPolicyIntent.PASSWORD_ONLY -> if (keyfileOrder == null) "none" else null
+        Pcv3FactorPolicyIntent.KEYFILES_ONLY,
+        Pcv3FactorPolicyIntent.PASSWORD_AND_KEYFILES,
+        -> when (keyfileOrder) {
+            Pcv3KeyfileOrderIntent.SELECTED -> "ordered"
+            Pcv3KeyfileOrderIntent.ANY -> "unordered"
+            null -> null
+        }
+        null -> null
+    }
+}
+
+/**
+ * One app-private copied source. Copies of FormData share this owner, so take and
+ * release remain exactly-once even if a stale UI snapshot attempts either again.
+ */
+class Pcv3OwnedSource internal constructor(sourcePath: String) {
+    private var sourcePath: String? = sourcePath.also { require(it.isNotBlank()) }
+
+    @Synchronized
+    internal fun isAvailable(): Boolean = sourcePath != null
+
+    @Synchronized
+    internal fun take(): String? = sourcePath.also { sourcePath = null }
+
+    @Synchronized
+    internal fun release(): String? = take()
+
+    override fun toString(): String = "Pcv3OwnedSource([REDACTED])"
+}
+
+/** The sole Kotlin-to-operation ownership transfer; [password] is mutable and caller-owned. */
+class Pcv3OperationTransfer internal constructor(
+    internal val intent: Pcv3OperationIntent,
+    internal val request: Pcv3StartRequest,
+    internal val password: CharArray,
+    internal val createName: String? = null,
+) {
+    override fun toString(): String = "Pcv3OperationTransfer([REDACTED])"
+}
+
 /**
  * Form data for encryption/decryption operations.
  * 
@@ -37,37 +133,74 @@ data class FormData(
     val onlyFiles: List<String> = emptyList(),
     val selectionKind: SelectionKind = SelectionKind.SINGLE_FILE,
     val suggestedOutputName: String = "",
-    val decryptionInfo: DecryptionInfo? = null
+    val decryptionInfo: DecryptionInfo? = null,
+    val pcvUnavailable: Boolean = false,
+    val pcv3Intent: Pcv3OperationIntent? = null,
+    internal val pcv3OwnedSource: Pcv3OwnedSource? = null,
 ) {
     // A folder/multi selection always encrypts (Go zips it) and is never a decrypt or a
     // split-volume chunk -- those are single-file concepts keyed off the filename.
     val isDecrypt: Boolean
-        get() = selectionKind == SelectionKind.SINGLE_FILE &&
+        get() = !pcvUnavailable && !isPcv3Selection && selectionKind == SelectionKind.SINGLE_FILE &&
             selectedFilename.isNotEmpty() && selectedFilename.endsWith(".pcv")
     val isEncrypt: Boolean
-        get() = selectionKind != SelectionKind.SINGLE_FILE ||
-            (selectedFilename.isNotEmpty() && !selectedFilename.endsWith(".pcv"))
+        get() = !pcvUnavailable && !isPcv3Selection && (
+            selectionKind != SelectionKind.SINGLE_FILE ||
+                (selectedFilename.isNotEmpty() && !selectedFilename.endsWith(".pcv"))
+            )
+    val isPcv3Selection: Boolean
+        get() = pcv3Intent != null
+    /** All native creation uses PCV3; existing legacy volumes remain readable. */
+    val isPcv3Creation: Boolean
+        get() = isEncrypt
     // clearPasswords overwrites buffers in place, so allocated length does not imply a credential.
     val hasPassword: Boolean
         get() = passwordInput.any { it != '\u0000' }
     private val hasConfirmPassword: Boolean
         get() = confirmPasswordInput.any { it != '\u0000' }
+    val hasAnyCredentialInput: Boolean
+        get() = hasPassword || hasConfirmPassword || hasKeyfiles
     val isPasswordsMatch: Boolean
         get() = (!hasPassword && !hasConfirmPassword) ||
             passwordInput.contentEquals(confirmPasswordInput)
     val hasKeyfiles: Boolean
         get() = keyfileFilenames.isNotEmpty()
+    // Legacy writer validation remains isolated from native PCV3 creation.
     val isKeyfileEncryptionUnsupported: Boolean
-        get() = isEncrypt && hasKeyfiles
+        get() = isEncrypt && !isPcv3Creation && hasKeyfiles
+    // Legacy deniability requires a non-empty outer password; PCV3 D1 binds the
+    // complete factor transcript to both layers, so keyfile-only D1 is allowed.
     val isDeniabilityPasswordMissing: Boolean
-        get() = isEncrypt && deniability && !hasPassword
+        get() = isEncrypt && !isPcv3Creation && deniability && !hasPassword
     val isPasswordInputRequired: Boolean
-        get() = !hasPassword && (isEncrypt || !hasKeyfiles)
+        get() = if (pcvUnavailable) {
+            false
+        } else if (isPcv3Selection) {
+            !hasPassword && pcv3Intent?.factorPolicy != Pcv3FactorPolicyIntent.KEYFILES_ONLY
+        } else if (isPcv3Creation) {
+            !hasPassword && !hasKeyfiles
+        } else {
+            !hasPassword && (isEncrypt || !hasKeyfiles)
+        }
     val isPasswordValid: Boolean
         get() = when {
+            pcvUnavailable -> false
+            isPcv3Selection -> isPcv3CredentialIntentValid
+            isPcv3Creation -> isPasswordsMatch && (hasPassword || hasKeyfiles)
             isEncrypt -> hasPassword && !hasKeyfiles && isPasswordsMatch
             isDecrypt -> hasPassword || hasKeyfiles
             else -> false
+        }
+
+    private val isPcv3CredentialIntentValid: Boolean
+        get() = when (pcv3Intent?.factorPolicy) {
+            Pcv3FactorPolicyIntent.PASSWORD_ONLY ->
+                hasPassword && !hasKeyfiles && pcv3Intent.keyfileOrder == null
+            Pcv3FactorPolicyIntent.KEYFILES_ONLY ->
+                !hasPassword && hasKeyfiles && pcv3Intent.keyfileOrder != null
+            Pcv3FactorPolicyIntent.PASSWORD_AND_KEYFILES ->
+                hasPassword && hasKeyfiles && pcv3Intent.keyfileOrder != null
+            null -> false
         }
 
     /**
@@ -76,7 +209,7 @@ data class FormData(
      * folder/multi selections (which have an empty copiedFilePath) are not blocked.
      */
     val hasSelectedInput: Boolean
-        get() = copiedFilePath.isNotEmpty() || inputFiles.isNotEmpty()
+        get() = pcv3OwnedSource?.isAvailable() == true || copiedFilePath.isNotEmpty() || inputFiles.isNotEmpty()
 
     /**
      * True when the selected file is a numbered split-volume chunk (e.g. secret.pcv.0).
@@ -134,6 +267,9 @@ data class FormData(
         if (selectionKind != other.selectionKind) return false
         if (suggestedOutputName != other.suggestedOutputName) return false
         if (decryptionInfo != other.decryptionInfo) return false
+        if (pcvUnavailable != other.pcvUnavailable) return false
+        if (pcv3Intent != other.pcv3Intent) return false
+        if (pcv3OwnedSource !== other.pcv3OwnedSource) return false
 
         return true
     }
@@ -157,6 +293,9 @@ data class FormData(
         result = 31 * result + selectionKind.hashCode()
         result = 31 * result + suggestedOutputName.hashCode()
         result = 31 * result + (decryptionInfo?.hashCode() ?: 0)
+        result = 31 * result + pcvUnavailable.hashCode()
+        result = 31 * result + (pcv3Intent?.hashCode() ?: 0)
+        result = 31 * result + (pcv3OwnedSource?.hashCode() ?: 0)
         return result
     }
     
@@ -173,8 +312,16 @@ data class FormData(
         }
     
     val isFormValid: Boolean
-        get() = selectedFilename.isNotEmpty() && isPasswordValid &&
-            !areKeyfilesRequiredButMissing && !isSplitVolumeChunk
+        get() = if (isPcv3Selection) {
+            !pcvUnavailable && pcv3OwnedSource?.isAvailable() == true &&
+                pcv3Intent?.goModeOrNull() != null &&
+                pcv3Intent.factorPolicyCodeOrNull() != null &&
+                pcv3Intent.keyfileOrderCodeOrNull() != null &&
+                isPcv3CredentialIntentValid
+        } else {
+            selectedFilename.isNotEmpty() && isPasswordValid &&
+                !areKeyfilesRequiredButMissing && !isSplitVolumeChunk
+        }
 
     fun suggestedOutputNameFor(type: OperationType): String {
         suggestedOutputName.takeIf { it.isNotEmpty() }?.let { return it }

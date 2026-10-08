@@ -133,7 +133,8 @@ func DeniabilityRekey(key, oldNonce []byte) (*chacha20.Cipher, []byte, error)
 ### Memory Hygiene
 
 ```go
-// SecureZero overwrites b with zeros (compiler-fence protected).
+// SecureZero overwrites caller-owned bytes without allocating a zero buffer.
+// This is best-effort cleanup, not a guarantee of complete memory erasure.
 func SecureZero(b []byte)
 
 // SecureZeroMultiple zeros several slices in one call.
@@ -158,16 +159,18 @@ type EncryptRequest struct {
     OnlyFiles   []string // files dropped directly (affects zip paths)
     OutputFile  string
 
-    // Credentials — Picocrypt-NG 2.19 writers require a non-empty Password
+    // Credentials — legacy v2 requires Password; PCV3 accepts password,
+    // keyfile, or combined policies
     Password       []byte   // Owned by caller; caller zeros it after the operation
-    Keyfiles       []string // Legacy API field; any non-empty value is rejected on encryption
-    KeyfileOrdered bool     // Legacy API field; no effect without Keyfiles
+    Keyfiles       []string // PCV3 keyfile paths; legacy v2 rejects non-empty values
+    KeyfileOrdered bool     // Preserve keyfile order for PCV3
+    PCV3           bool     // Select PCV3 instead of legacy v2
 
     // Options
     Comments    string // Plaintext header comment (max 99999 chars, NOT encrypted)
     Paranoid    bool   // 8 Argon2 passes, Serpent-CTR + XChaCha20, HMAC-SHA3
     ReedSolomon bool   // Reed-Solomon on payload (~6% size overhead)
-    Deniability bool   // Wrap volume; requires a non-empty Password
+    Deniability bool   // Legacy wrapper or, with PCV3+Paranoid, D1
     Compress    bool   // Deflate compression in temp zip
 
     // Splitting
@@ -215,6 +218,20 @@ func (req *DecryptRequest) ValidateCredentials(keyfilesRequired bool) error
 
 // Decrypt decrypts a .pcv volume.  ctx may be nil (uses Background).
 func Decrypt(ctx context.Context, req *DecryptRequest) error
+
+// PreparedDecryptInput owns the exact descriptor routed before credential
+// collection and records the selected split-chunk identities. Close is
+// idempotent; ReadLegacyHeader does not transfer ownership.
+type PreparedDecryptInput struct { /* unexported */ }
+
+func PrepareDecryptInput(path string, recombine bool) (*PreparedDecryptInput, error)
+func (input *PreparedDecryptInput) ReadLegacyHeader(rs *encoding.RSCodecs) (*header.VolumeHeader, error)
+func (input *PreparedDecryptInput) ValidateOutputAlias(output string) error
+func (input *PreparedDecryptInput) Close() error
+
+// DecryptPrepared borrows input; the caller keeps it open through the call and
+// remains responsible for closing it afterward.
+func DecryptPrepared(ctx context.Context, req *DecryptRequest, input *PreparedDecryptInput) error
 ```
 
 ### Progress
@@ -252,8 +269,6 @@ type OperationContext struct {
     IsLegacyV1   bool
     UseKeyfiles  bool
     Padded       bool
-    TempZipInUse bool
-    TempCiphers  *fileops.TempZipCiphers
     TriedFullRSDecode bool
     Kept              bool
     RecombinedFile    string
@@ -271,7 +286,7 @@ func (ctx *OperationContext) CancellationError() error
 func (ctx *OperationContext) SetCanCancel(can bool)
 func (ctx *OperationContext) SetStatus(status string)
 func (ctx *OperationContext) UpdateProgress(fraction float32, info string)
-func (ctx *OperationContext) TempZipReader(r io.Reader) io.Reader
+func (ctx *OperationContext) TempZipReader(r io.Reader) (io.Reader, error)
 ```
 
 ### Deniability
@@ -292,28 +307,83 @@ func RemoveDeniability(volumePath string, password []byte, reporter ProgressRepo
 func IsDeniable(volumePath string, rs *encoding.RSCodecs) bool
 ```
 
-**Picocrypt-NG 2.19 writer contract.** Every new volume requires a non-empty password.
-`EncryptRequest.Validate` rejects any non-empty `Keyfiles` value with
-`validation: Keyfiles: creating new v2 volumes with keyfiles is disabled pending a reviewed v3
-format`. This applies to keyfile-only and password-plus-keyfile requests, with or without
-deniability. The core pipeline, desktop, CLI, WASM, and mobile writer boundaries enforce the same
-policy before encryption begins. Direct `AddDeniability` additionally returns
-`validation: Password: a non-empty password is required for deniability` before deriving its outer
-key or replacing the input volume.
+**Writer contract.** Native frontends select PCV3 by default and expose no legacy-write
+fallback. The internal compatibility writer (`EncryptRequest.PCV3 == false`) remains
+available for legacy compatibility tests and rejects encryption-side keyfiles.
+`EncryptRequest.PCV3 == true` selects PCV3 and accepts password-only,
+keyfile-only, or combined factors. Normal PCV3 uses the canonical streaming serializer; PCV3 with
+`Deniability` requires `Paranoid` and creates D1. ZIP preprocessing is supported. The desktop
+GUI can save the authenticated ZIP or extract it for either Normal or D1 using `Auto unzip`.
+`Same level` extracts into the output directory; otherwise a new subdirectory is created.
+Existing files are not replaced. The selected credential
+policy applies to both Normal PCV3 and D1.
+Desktop recursive batches route each standalone Normal PCV3 input through
+`ModeReadNormal` with its held source descriptor and a fresh owned factor request.
+Legacy items retain their existing reader. The separate, explicit
+`All selected files are PCV3 D1` option captures D1 intent for the complete batch:
+each standalone input goes directly to `ModeReadD1` without format probing or
+fallback to Normal/legacy. Failed probes and authenticated read failures count as
+individual failures; cancellation ends the batch. PCV3 outputs use no-replace
+publication and PCV3 batch reads retain encrypted originals because the read
+facade does not grant source-deletion authority. Recovery and PCV3 split input
+remain single-file operations. Batch state transfers require an active recursive
+session and permit D1 only with the captured explicit D1 selection; they never
+grant recovery authority. The D1 batch selector resets with the selection or when
+recursive processing is disabled.
+`ExecutionOptions.ArchiveAction` keeps the existing caller behavior at `ArchiveDefault`.
+Ordinary reads can select `ArchiveSave`, `ArchivePrepare`, `ArchiveExtract`, or
+`ArchiveExtractSameLevel`; these actions cannot be combined with retained-output delivery.
+Extraction uses the authenticated private stage and a destination pinned before credential work.
+`ArchiveReview` optionally approves the declared file count and expanded size before
+extraction. Approval replaces the compression-ratio heuristic with per-file and total
+byte limits derived from that archive; structural, CRC, path and no-overwrite checks
+still apply. ZIP work uses one checked memory ledger: at most 256 MiB on 64-bit
+desktop, 192 MiB combined Go/Kotlin on Android, and 64 MiB on 32-bit native builds.
+Fresh platform headroom is checked separately; these are accounting ceilings,
+not process RSS guarantees. Reader snapshots, metadata, path/overlap indexes,
+writer selections and extraction custody are included. Archive review cannot
+override this policy. Ordinary payload decryption can still save a ZIP without
+parsing it. `BeginSAFWithContext` supports preparation cancellation; mobile
+`PCV3Archive.CancelPreparation` reaches a pending begin before a session exists.
+`HostMemoryBudgetBytes` exposes only the remaining host allowance, not policy authority.
+SAF archive extraction requires the Normal native archive handoff. D1 archives
+can use the existing ZIP save or native extraction actions; `BeginSAF` consumes
+and closes their custody with a terminal invalid-request result.
+PCV3 creation publishes through the identity-bound no-replace publisher.
+`EncryptWithResult(ctx, request, options)` returns the common operation result
+after input and preprocessing cleanup. A committed output with uncertain directory
+durability remains available with a warning; it does not authorize source deletion.
+When splitting finishes with verified complete chunks but uncertain final directory
+durability, PCV3 retains both the chunks and the complete ciphertext.
+`Result.SplitOutputUncertain()` identifies this result; its overall publication state is
+`StatePublishedDurabilityUncertain`, and source deletion is forbidden.
+`Result.SourceDeletionAllowed()` accounts for complete durable publication, follow-ups
+and cleanup. A nil Go error or a presentation snapshot does not grant that permission.
+Stdout and Android provider handoff use the operation's retained output capability,
+which holds the original descriptor. Plaintext `SaveTo` consumes that capability
+even on failure and removes its exact internal owner. Ciphertext `SaveTo` failure
+retains the capability for a deliberate retry to another destination; only a live
+`Result.OutputFollowUp()` establishes that authority. `StreamTo` consumes both
+plaintext and ciphertext capabilities, including on failure. A durability-uncertain
+write follow-up never grants source deletion. Successful handoff does not assert
+provider storage durability.
 
-This is a writer restriction, not a format rewrite. Existing v1/v2 keyfile volumes remain readable
-through their legacy branches, including keyfile-only deniable v2 volumes whose outer password was
-empty. In legacy v2, the keyfile is XORed into the XChaCha20 key after the HKDF stream has already
-been initialized: it remains necessary for XChaCha20 confidentiality, but it does not bind the
-header MAC, payload MAC, Serpent key, or HKDF rekey schedule. Recover plaintext and create a new
-password-only 2.19 volume, or wait for a reviewed v3 format if a keyfile factor is mandatory. This
-release neither implements nor schedules v3.
+This does not rewrite or upgrade existing volumes. Existing v1/v2 keyfile volumes remain readable
+through their legacy branches. Recover plaintext before creating PCV3; merely wrapping an affected
+legacy v2 volume does not make its old authentication schedule keyfile-bound. WASM does not expose
+PCV3 creation. The Android gomobile bridge accepts `write-normal` and `write-d1` creation envelopes
+alongside the read, recovery, and force modes; `write-d1` always runs the paranoid suite, and
+creation uses the same runtime resource admission as reads.
 
 ---
 
 ## header *(AUDIT-CRITICAL)*
 
 ### Version Constants
+
+`CurrentVersion` is the frozen legacy v2 on-disk marker, independent of the
+application version in `VERSION`. Application version 3.0 does not change this
+five-byte field or the legacy reader's v1/v2 routing.
 
 ```go
 const (
@@ -474,6 +544,7 @@ than being treated as an outer wrapper.
 ```go
 type ProgressFunc func(progress float32)
 
+// The caller owns the result and clears Key after use.
 type Result struct {
     Key  []byte // 32 bytes — derived key for XOR with password key
     Hash []byte // 32 bytes — SHA3-256(Key) stored in header
@@ -483,9 +554,6 @@ type Result struct {
 //   ordered=true:  SHA3-256(file1 || file2 || ...)
 //   ordered=false: SHA3-256(file1) XOR SHA3-256(file2) XOR ...
 func Process(paths []string, ordered bool, progress ProgressFunc) (*Result, error)
-
-// Close zeros key material.
-func (r *Result) Close()
 
 // XORWithKey XORs the keyfile key with the Argon2-derived password key.
 // Both slices must be exactly 32 bytes.
@@ -555,10 +623,10 @@ type ZipOptions struct {
     OutputPath string
     OutputFile *os.File // optional caller-owned, exclusively created output
     Compress   bool
-    Cipher     *TempZipCiphers // optional encryption for temp file
     Progress   ProgressFunc
     Status     StatusFunc
     Cancel     CancelFunc
+    Budget     *ZIPResourceBudget
 }
 
 func CreateZip(opts ZipOptions) error
@@ -578,10 +646,18 @@ type UnpackOptions struct {
     Status         StatusFunc
     Cancel         CancelFunc
     AvailableSpace func(string) (int64, error) // optional override for tests
+    Budget         *ZIPResourceBudget
+    Prepared       *PreparedZIPUnpack // optional one-shot pre-publication metadata owner
 }
 
 func Unpack(opts UnpackOptions) error
 ```
+
+`PrepareZIPUnpack` retains admitted metadata and working charges for extraction
+after publication. It borrows the file; any replacement descriptor must match
+its original identity and extent. The caller closes the prepared owner after use.
+Legacy auto-unzip keeps its recoverable malformed-ZIP fallback; resource refusal
+does not authorize that fallback.
 
 ### Split / Recombine
 
@@ -597,25 +673,55 @@ const (
 )
 
 type SplitOptions struct {
-    InputPath     string
-    ExpectedInput os.FileInfo // optional identity InputPath must still name
-    ChunkSize     int
-    Unit          SplitUnit
-    Progress      ProgressFunc
-    Status        StatusFunc
-    Cancel        CancelFunc
+    InputPath            string
+    ExpectedInput        os.FileInfo // optional identity InputPath must still name
+    ExpectedDirectory    os.FileInfo // optional pinned split-directory identity
+    ExpectedSHA256       *[32]byte   // optional digest frozen before splitting
+    ChunkSize            int
+    Unit                 SplitUnit
+    MinimumChunkSize     int64
+    RequireDirectorySync bool
+    Progress             ProgressFunc
+    Status               StatusFunc
+    Cancel               CancelFunc
 }
 
 // Split splits a file into chunks.  Returns the list of chunk paths.
 func Split(opts SplitOptions) ([]string, error)
 
+// SplitPinned uses caller-owned input and directory handles for every chunk.
+func SplitPinned(opts SplitOptions, input *os.File, root *os.Root, directory *os.File) ([]string, error)
+
+type SplitState uint8
+
+const (
+    SplitFailed SplitState = iota
+    SplitCompleteDurable
+    SplitCompleteDurabilityUncertain
+)
+
+type SplitResult struct {
+    State           SplitState
+    Chunks          []string
+    DurabilityError error
+}
+
+// SplitPinnedWithResult retains verified complete chunks if only the final directory barrier fails.
+func SplitPinnedWithResult(opts SplitOptions, input *os.File, root *os.Root, directory *os.File,
+    barrier func(*os.File) error) (SplitResult, error)
+
 type RecombineOptions struct {
-    InputBase  string // base path without the .N chunk suffix
-    OutputPath string
-    OutputInfo *os.FileInfo // optional exact identity of completed output
-    Progress   ProgressFunc
-    Status     StatusFunc
-    Cancel     CancelFunc
+    InputBase          string // base path without the .N chunk suffix
+    OutputPath         string
+    Output             *os.File // optional borrowed output descriptor
+    OutputInfo         *os.FileInfo // optional exact identity of completed output
+    InputInfos         *[]os.FileInfo // optional identities of consumed chunks
+    ExpectedInputs     []os.FileInfo // optional pinned identity and size for every chunk
+    FirstChunk         *os.File     // optional borrowed chunk-zero descriptor
+    ValidateFirstChunk func(*os.File) error
+    Progress           ProgressFunc
+    Status             StatusFunc
+    Cancel             CancelFunc
 }
 
 func Recombine(opts RecombineOptions) error
@@ -633,22 +739,64 @@ func IsSplitChunkPath(path string) bool
 func SplitChunkBase(path string) (string, bool)
 ```
 
-### Encrypted Temp-Zip Ciphers
+`SplitPinnedWithResult` returns `SplitCompleteDurabilityUncertain` with a nil error only
+after chunk completion, content verification, and directory identity checks succeed but
+the final directory barrier fails. The PCV3 caller must retain the complete ciphertext as
+well as the chunks and must not delete source files. A non-nil error remains a split
+failure with operation-owned rollback and cleanup-error reporting; it is not a
+durability-only result. The legacy `Split` and `SplitPinned` error contracts remain
+unchanged.
+
+### Authenticated Temporary ZIP
 
 ```go
-// TempZipCiphers holds paired ChaCha20 ciphers for encrypting the temporary
-// zip file written during multi-file encryption.  Call Close() to zero the key.
-type TempZipCiphers struct {
-    Writer *chacha20.Cipher
-    Reader *chacha20.Cipher
+type TempZipOptions struct {
+    Files []string
+    RootDir string
+    EntryNames map[string]string
+    NearPath string
+    Compress bool
+    MaxPhysicalBytes uint64 // trusted admitted physical extent, including tags
+    Progress ProgressFunc
+    Status StatusFunc
+    Cancel CancelFunc
+    Budget *ZIPResourceBudget
 }
-
-func NewTempZipCiphers() (*TempZipCiphers, error)
-func (t *TempZipCiphers) Close()
-
-// WrapReaderWithCipher wraps r with the cipher's XOR stream (in-place decryption).
-func WrapReaderWithCipher(r io.Reader, cipher *TempZipCiphers) io.Reader
+func CreateTempZip(ctx context.Context, opts TempZipOptions) (*TempZip, error)
+func (t *TempZip) OpenReader() (io.Reader, error) // once, after finalization and Sync
+func (t *TempZip) Length() uint64                // logical ZIP bytes, excluding tags
+func (t *TempZip) File() *os.File                // borrowed pinned ciphertext descriptor
+func (t *TempZip) Path() string
+func (t *TempZip) Close() error                  // revoke reader, wipe, close and remove
+func PanicCleanupIncomplete(value any) bool      // safe outer-boundary warning predicate
+func RepanicWithCleanup(value any, cleanupErr error) // never returns; no raw-value accessor
 ```
+
+The private spool uses age v1.1 STREAM payload framing with 64 KiB
+ChaCha20-Poly1305 records and an explicit final-record flag. Each object owns a
+fresh random 256-bit key, never serialized or reused. This is a local
+implementation of published framing, not a full age container or an independently
+audited implementation. A record is authenticated before its plaintext is
+released; missing completion, changed extents, trailing bytes, corruption and
+I/O failures are terminal non-EOF errors. The owner is sequential and cannot
+resume or reopen after process restart.
+
+Preparation admits both its encrypted physical extent and the simultaneous final
+volume/chunk storage from observed filesystem space. This observation is not a
+reservation; actual write and Sync failures still abort. Size remains subject to
+public-volume geometry, ZIP memory budgets, filesystem capacity and signed file
+offsets. Temporary authentication tags never enter legacy padding or PCV3 logical
+payload length. Public encrypted-volume formats are unchanged.
+
+Close wipes controllable key/plaintext buffers and releases primitive references.
+Go, compression and the AEAD's private state do not provide complete-erasure
+guarantees. Cleanup uses retained stage identity and never removes a foreign
+replacement at its former pathname. Callback panics clean owned preparation
+resources before propagating to the established operation boundary. Successful
+cleanup preserves the exact original panic value. Failed cleanup propagates a
+private carrier with fixed redacted formatting and no unwrapping access; outer
+boundaries use `PanicCleanupIncomplete` to retain cleanup-warning truth without
+rendering the original panic or cleanup path.
 
 ### Secure File Helpers
 
@@ -808,3 +956,39 @@ func SafeUint64ToInt64(v uint64) (int64, bool)
 
 const MaxDecompressRatio = 1000
 ```
+
+## PCV3 operation boundary
+
+`internal/pcv3operation` is the native PCV3 application API. Its nested `internal`
+packages are compiler-inaccessible to CLI, desktop, mobile, WASM routing, and
+volume dispatch. Callers transfer `FactorRequest`, password bytes, and owned
+`KeyfileReader` handles to `Run` or `RunWrite`; unused factors must be closed.
+Modes, suites, payload kinds, outcomes, stages, and codes are closed metadata.
+No public facade exposes raw keys, digests, credential/KDF sessions, admission
+grants, random generators, or serializer entry points.
+
+`DetectPrefix` classifies format ownership. `Probe(io.ReaderAt, int64)` returns
+`(Route, error)` after bounded structural inspection; it intentionally omits
+capsules and KDF parameters. Claimed PCV3 input never falls back to legacy reads.
+WASM retains its existing PCV3 refusal behavior.
+
+`Result` is operation-minted. `Presentation` is display-only and cannot authorize
+publication or deletion. Output and archive follow-ups preserve their one-shot
+Go capability semantics. `ArtifactInspection.Metadata` and `Page` expose only
+summary/range metadata; pages contain at most 128 defensive-copy descriptors.
+Inspection shares immutable evidence and remains readable after operation release.
+Recovery uses an 8 MiB allocation budget across candidates; an absent tail is
+represented without allocating or scanning one entry per missing record. Artifact
+parsing and serialization remain private and preserve the existing
+`80 + 40*recordCount + recoveredBytes` layout. Output admission checks exact size,
+disk headroom and unverified-table amplification before writing.
+
+A resource refusal uses `StageResourceBudget` and `DiagnosticResourceLimit`.
+Before publication, all publication fields remain zero; cleanup warnings are
+independent and must survive frontend projection. A presentation is never an
+authority to retry credentials, publish output or delete sources.
+
+`NewAndroidResourceSession`, `WithAndroidResourceSession`, and `Challenge` bind
+fresh platform observations to one live Go operation. A challenge's `Submit`
+consumes bounded facts once; it does not return or select an admission decision.
+The facade has no snapshot provider or platform-admitter constructor.

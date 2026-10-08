@@ -252,19 +252,35 @@ fun KeyfileCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     
     ExpandableCard(title = titleText, modifier = modifier, titleColor = titleColor) {
         if (formData.isEncrypt) {
-            Column(
-                modifier = Modifier
-                    .padding(8.dp)
-            ) {
-                Text(
-                    text = stringResource(R.string.error_keyfile_writes_disabled),
-                    style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
-                    color = androidx.compose.material3.MaterialTheme.colorScheme.primary,
-                )
-                if (formData.keyfileFilenames.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    ClearKeyfiles(viewModel)
-                    KeyfileNames(viewModel)
+            if (formData.isPcv3Creation) {
+                // PCV3 creation binds keyfiles (desktop parity); legacy v2 cannot.
+                Column(
+                    modifier = Modifier
+                        .padding(8.dp)
+                ) {
+                    AddKeyfile(viewModel)
+                    if (formData.keyfileFilenames.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        RequireOrder(viewModel)
+                        ClearKeyfiles(viewModel)
+                        KeyfileNames(viewModel)
+                    }
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .padding(8.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.error_keyfile_writes_disabled),
+                        style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                        color = androidx.compose.material3.MaterialTheme.colorScheme.primary,
+                    )
+                    if (formData.keyfileFilenames.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        ClearKeyfiles(viewModel)
+                        KeyfileNames(viewModel)
+                    }
                 }
             }
         } else {

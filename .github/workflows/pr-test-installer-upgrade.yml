@@ -32,7 +32,7 @@ jobs:
     - name: Install NSIS
       shell: pwsh
       run: |
-        choco install -y --no-progress nsis --version=3.12.0
+        choco install -y --no-progress nsis --version=3.13.0
         & "C:\Program Files (x86)\NSIS\makensis.exe" -VERSION
 
     - name: Runtime upgrade / orphan-sweep / running-instance test

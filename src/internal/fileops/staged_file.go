@@ -42,6 +42,45 @@ func CreateSiblingTemp(targetPath string) (*StagedFile, error) {
 		_ = root.Close()
 		return nil, fmt.Errorf("inspect output directory: %w", err)
 	}
+	return createSiblingTempWithRoot(root, rootInfo, filepath.Base(absoluteTarget), absoluteTarget)
+}
+
+func createSiblingTempInRoot(
+	root *os.Root,
+	rootInfo os.FileInfo,
+	targetName string,
+	targetPath string,
+) (*StagedFile, error) {
+	if root == nil || rootInfo == nil || !rootInfo.IsDir() {
+		return nil, os.ErrInvalid
+	}
+	ownedRoot, err := root.OpenRoot(".")
+	if err != nil {
+		return nil, fmt.Errorf("retain output directory: %w", err)
+	}
+	openedInfo, err := ownedRoot.Stat(".")
+	if err != nil || openedInfo == nil || !os.SameFile(rootInfo, openedInfo) {
+		return nil, errors.Join(
+			errors.New("output directory identity changed while retaining it"),
+			err,
+			ownedRoot.Close(),
+		)
+	}
+	return createSiblingTempWithRoot(ownedRoot, openedInfo, targetName, targetPath)
+}
+
+func createSiblingTempWithRoot(
+	root *os.Root,
+	rootInfo os.FileInfo,
+	targetName string,
+	targetPath string,
+) (*StagedFile, error) {
+	if root == nil || rootInfo == nil || targetName == "" || targetName == "." {
+		if root != nil {
+			_ = root.Close()
+		}
+		return nil, os.ErrInvalid
+	}
 
 	stageName := ".picocrypt-" + rand.Text()
 	file, err := root.OpenFile(stageName, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
@@ -62,9 +101,9 @@ func CreateSiblingTemp(targetPath string) (*StagedFile, error) {
 		rootInfo:   rootInfo,
 		stageInfo:  stageInfo,
 		stageName:  stageName,
-		targetName: filepath.Base(absoluteTarget),
-		path:       filepath.Join(targetDir, stageName),
-		targetPath: absoluteTarget,
+		targetName: targetName,
+		path:       filepath.Join(filepath.Dir(targetPath), stageName),
+		targetPath: targetPath,
 	}, nil
 }
 
@@ -74,6 +113,17 @@ func (s *StagedFile) File() *os.File {
 		return nil
 	}
 	return s.file
+}
+
+// Detach transfers the open staged descriptor to the caller while retaining
+// the pinned pathname identity for exact Cleanup after the caller closes it.
+func (s *StagedFile) Detach() (*os.File, error) {
+	if s == nil || s.file == nil {
+		return nil, os.ErrInvalid
+	}
+	file := s.file
+	s.file = nil
+	return file, nil
 }
 
 // Path returns the random path owned by this staged file.

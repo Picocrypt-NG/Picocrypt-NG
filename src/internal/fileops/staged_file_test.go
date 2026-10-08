@@ -58,6 +58,45 @@ func TestStagedFileKeepsTargetUntouchedUntilCommit(t *testing.T) {
 	}
 }
 
+func TestStagedFileDetachTransfersDescriptorAndRetainsExactCleanup(t *testing.T) {
+	dir := t.TempDir()
+	stage, err := CreateSiblingTemp(filepath.Join(dir, "output.pcv"))
+	if err != nil {
+		t.Fatalf("CreateSiblingTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = stage.Cleanup() })
+	stagePath := stage.Path()
+	stageInfo, err := stage.File().Stat()
+	if err != nil {
+		t.Fatalf("stat staged output: %v", err)
+	}
+
+	detached, err := stage.Detach()
+	if err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+	t.Cleanup(func() { _ = detached.Close() })
+	if stage.File() != nil {
+		t.Fatal("Detach left the descriptor owned by StagedFile")
+	}
+	detachedInfo, err := detached.Stat()
+	if err != nil {
+		t.Fatalf("stat detached output: %v", err)
+	}
+	if !os.SameFile(stageInfo, detachedInfo) {
+		t.Fatal("Detach returned a different filesystem object")
+	}
+	if err := detached.Close(); err != nil {
+		t.Fatalf("close detached output: %v", err)
+	}
+	if err := stage.Cleanup(); err != nil {
+		t.Fatalf("Cleanup after Detach: %v", err)
+	}
+	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("detached staged pathname survived exact cleanup: %v", err)
+	}
+}
+
 func TestStagedFileRejectsChangedOutputDirectoryAndCleansOwnedStage(t *testing.T) {
 	dir := t.TempDir()
 	originalDir := filepath.Join(dir, "original")

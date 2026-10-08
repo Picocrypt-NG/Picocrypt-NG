@@ -34,7 +34,6 @@ linters:
     - misspell # spelling in comments/strings
     - whitespace # leading/trailing whitespace in funcs
     - gocritic # opinionated but high-signal correctness/style checks
-  disable:
     - depguard
   exclusions:
     paths:
@@ -68,6 +67,29 @@ linters:
       - path: internal/ui/macos_open\.go
         linters:
           - unused
+      # Frozen Unicode 17 normalizer support tracks the pinned x/text source
+      # byte-for-byte except for the separately hashed supplementary-key
+      # security guard. Keep security/correctness linters active; suppress only
+      # upstream style/dead-code diagnostics that would require unrelated edits
+      # to the reviewed frozen artifact.
+      - path: internal/pcv3operation/internal/pcv3unicode/norm17/
+        linters:
+          - gocritic
+          - intrange
+          - perfsprint
+          - unconvert
+          - unparam
+          - unused
+      # Historical Unicode 15 is a frozen legacy-decryption compatibility
+      # oracle. Preserve upstream structure; keep security linters active.
+      - path: internal/password/legacyunicode15/
+        linters:
+          - gocritic
+          - intrange
+          - perfsprint
+          - unconvert
+          - unparam
+          - unused
       # Tests legitimately ignore returns, use ad-hoc params, and trip the
       # production security scanner on fixtures (test passwords -> G101,
       # temp-dir perms -> G301/G302, controlled paths -> G703). gosec stays
@@ -79,6 +101,45 @@ linters:
           - unparam
           - gosec
   settings:
+    depguard:
+      rules:
+        native-frontends:
+          list-mode: lax
+          files:
+            - "**/cmd/**/*.go"
+            - "**/internal/ui/**/*.go"
+            - "**/internal/cli/**/*.go"
+            - "**/mobile/**/*.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "Picocrypt-NG/internal/crypto$"
+              desc: "Use the volume or pcv3operation application boundary."
+            - pkg: "Picocrypt-NG/internal/pcv3operation/internal/"
+              desc: "PCV3 implementation is private to pcv3operation."
+            - pkg: "crypto/cipher$"
+              desc: "Cipher operations belong behind the application boundary."
+            - pkg: "crypto/aes$"
+              desc: "Cipher operations belong behind the application boundary."
+            - pkg: "crypto/hmac$"
+              desc: "MAC operations belong behind the application boundary."
+            - pkg: "golang.org/x/crypto/"
+              desc: "KDF and cipher operations belong behind the application boundary."
+            - pkg: "github.com/Picocrypt-NG/serpent$"
+              desc: "Cipher operations belong behind the application boundary."
+        pcv3-stream-engines:
+          list-mode: lax
+          files:
+            - "**/pcv3operation/internal/pcv3/normal_writer.go"
+            - "**/pcv3operation/internal/pcv3/d1_writer.go"
+          deny:
+            - pkg: "os$"
+              desc: "Stream serializers accept readers/writers; filesystem work belongs in native adapters."
+            - pkg: "path/filepath$"
+              desc: "Stream serializers are path-free."
+            - pkg: "Picocrypt-NG/internal/pcv3publication$"
+              desc: "Publication belongs in native adapters."
+            - pkg: "Picocrypt-NG/internal/fileops$"
+              desc: "Filesystem operations belong in native adapters."
     gosec:
       excludes:
         - G304 # File inclusion via variable — expected for a file-encryption tool

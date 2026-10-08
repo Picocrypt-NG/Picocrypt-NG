@@ -1,6 +1,3 @@
-v2.19
-- Added German, French, Spanish, Simplified Chinese, Hindi, and Korean (ko) Android UI catalogs.
-- Localized Android operation status, progress, and errors without showing raw backend diagnostics.
-- Cancelled operations no longer enter the save flow; stale temporary files are removed at startup.
-- Compressed single-file exports use .zip.pcv names.
-- Android 7.0+ remains supported on 64-bit ARM and x86-64 devices.
+v3.0 (unreleased)
+- Development version 3.0; no release artifacts have been published.
+- Existing v1 and v2 volume compatibility is unchanged.

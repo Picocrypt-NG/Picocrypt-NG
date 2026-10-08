@@ -17,8 +17,8 @@ jobs:
     runs-on: windows-2022
     env:
       GOTOOLCHAIN: local
-      GO_LEGACY_SHA256: c9d0c79dc2b408a4ea580b62a3d093a4219f9ff95316ef891dc987827e6900e3
-      UPX_SHA256: b471ebf1b7f20f4a89150264ed9a008a2a5bfd247f3c6d1184a75bb59ca08f5d
+      GO_LEGACY_SHA256: ec8e81ea3babb40c3f5e43309e04196cb12bf292060ac02c0e85fa73d639e9a9
+      UPX_SHA256: eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -33,7 +33,7 @@ jobs:
       if: steps.cache-go-legacy.outputs.cache-hit != 'true'
       shell: pwsh
       run: |
-        # Download go-legacy-win7 (Go 1.26.5 with Windows 7 support)
+        # Download go-legacy-win7 (Go 1.27.1 with Windows 7 support)
         curl.exe `
           --fail `
           --location `
@@ -47,7 +47,7 @@ jobs:
           --retry-max-time 600 `
           --remove-on-error `
           --output go-legacy.zip `
-          https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.5-1/go-legacy-win7-1.26.5-1.windows_amd64.zip
+          https://github.com/thongtech/go-legacy-win7/releases/download/v1.27.1-1/go-legacy-win7-1.27.1-1.windows_amd64.zip
         if ($LASTEXITCODE -ne 0) {
           throw "go-legacy-win7 download failed with exit code $LASTEXITCODE"
         }
@@ -72,7 +72,7 @@ jobs:
         $actualRoot = (go env GOROOT).Trim()
         if ($actualRoot -ne $expectedRoot) { throw "Unexpected GOROOT: $actualRoot; want $expectedRoot" }
         $actualVersion = (go env GOVERSION).Trim()
-        if ($actualVersion -ne 'go1.26.5') { throw "Unexpected Go version: $actualVersion" }
+        if ($actualVersion -ne 'go1.27.1') { throw "Unexpected Go version: $actualVersion" }
         if ((go env GOTOOLCHAIN).Trim() -ne 'local') { throw 'GOTOOLCHAIN must be local' }
         go version
 
@@ -81,10 +81,17 @@ jobs:
         cd src
         go mod download
 
-    - name: Run tests
+    - name: Verify native test launcher controls
+      shell: pwsh
       run: |
-        cd src
-        go test -v -timeout 15m ./internal/cli ./internal/fileops ./internal/volume
+        & .github/scripts/test-windows-native-tests.ps1
+
+    - name: Run tests
+      shell: pwsh
+      run: |
+        & .github/scripts/run-windows-native-tests.ps1 `
+          -GoExecutable 'C:\go-legacy\go-legacy-win7\bin\go.exe' `
+          -GoArguments @('test', '-v', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume')
       env:
         PICOCRYPT_RUN_CLI_INTEGRATION: 1
 
@@ -100,7 +107,7 @@ jobs:
       shell: pwsh
       run: |
         $buildInfo = go version -m src/Picocrypt-NG-cli-Legacy.exe | Out-String
-        if ($buildInfo -notmatch 'go1\.26\.5') { throw "Legacy binary was not built by Go 1.26.5: $buildInfo" }
+        if ($buildInfo -notmatch 'go1\.27\.1') { throw "Legacy binary was not built by Go 1.27.1: $buildInfo" }
         $buildInfo
 
     - name: Compress with upx
@@ -119,7 +126,7 @@ jobs:
           --retry-max-time 600 `
           --remove-on-error `
           --output upx.zip `
-          https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-win64.zip
+          https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip
         if ($LASTEXITCODE -ne 0) {
           throw "UPX download failed with exit code $LASTEXITCODE"
         }
@@ -129,7 +136,7 @@ jobs:
           throw "Checksum mismatch for upx.zip: expected $expectedHash, got $actualHash"
         }
         Expand-Archive -DestinationPath upx upx.zip
-        upx/upx-5.2.0-win64/upx.exe --lzma src/Picocrypt-NG-cli-Legacy.exe
+        upx/upx-5.2.1-win64/upx.exe --lzma src/Picocrypt-NG-cli-Legacy.exe
 
     - name: Upload artifact
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

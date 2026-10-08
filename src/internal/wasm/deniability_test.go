@@ -17,8 +17,8 @@ import (
 func TestDeniabilityWrapDesktopUnwrap(t *testing.T) {
 	useProductionTestWASMKDF(t)
 
-	original := []byte("P4: WASM-wrapped deniable volume, stripped by desktop.")
-	password := []byte("p4-wrap-interop")
+	original := []byte("WASM-wrapped deniable volume, stripped by desktop.")
+	password := []byte("wrap-interop")
 
 	vol, code := EncryptVolume(original, password, EncryptOptions{Deniability: true})
 	if code != 0 {
@@ -64,8 +64,8 @@ func TestDeniabilityWrapDesktopUnwrap(t *testing.T) {
 
 // Full WASM roundtrip: encrypt with deniability, decrypt back byte-exact.
 func TestDeniabilityRoundtrip(t *testing.T) {
-	original := []byte(strings.Repeat("p4-roundtrip-", 400))
-	pw := []byte("p4-roundtrip-pw")
+	original := []byte(strings.Repeat("deniable-roundtrip-", 400))
+	pw := []byte("deniable-roundtrip-pw")
 	vol, code := EncryptVolume(original, pw, EncryptOptions{Deniability: true})
 	if code != 0 {
 		t.Fatalf("encrypt code %d", code)
@@ -83,8 +83,8 @@ func TestDeniabilityRoundtrip(t *testing.T) {
 func TestDeniabilityDesktopWrapWASMUnwrap(t *testing.T) {
 	useProductionTestWASMKDF(t)
 
-	original := []byte("P4: desktop-wrapped deniable volume opens in WASM.")
-	pw := []byte("p4-desktop-wrap")
+	original := []byte("Desktop-wrapped deniable volume opens in WASM.")
+	pw := []byte("desktop-wrap")
 
 	// WASM produces the inner .pcv; desktop wraps it in deniability in place.
 	inner, code := EncryptVolume(original, pw, EncryptOptions{})
@@ -131,8 +131,8 @@ func TestDeniabilityWrongPassword(t *testing.T) {
 
 // Force is ignored for deniable volumes: result is identical with/without Force.
 func TestDeniabilityIgnoresForce(t *testing.T) {
-	original := []byte("p4 force-ignored on deniable")
-	pw := []byte("p4-force-ignored")
+	original := []byte("force-ignored on deniable")
+	pw := []byte("force-ignored")
 	vol, code := EncryptVolume(original, pw, EncryptOptions{Deniability: true})
 	if code != 0 {
 		t.Fatalf("encrypt code %d", code)
@@ -154,8 +154,8 @@ func TestDeniabilityIgnoresForce(t *testing.T) {
 // Deniability composes with every currently writable inner option (the wrapper
 // is outermost). Legacy keyfile-wrapped volumes are covered by frozen fixtures.
 func TestDeniabilityCombos(t *testing.T) {
-	original := []byte(strings.Repeat("p4-combo-", 500))
-	pw := []byte("p4-combo-pw")
+	original := []byte(strings.Repeat("deniable-combo-", 500))
+	pw := []byte("deniable-combo-pw")
 
 	cases := []struct {
 		name string
@@ -188,8 +188,8 @@ func TestDeniabilityCombos(t *testing.T) {
 
 // The deniability key and KDF input must be zeroed on both encrypt and decrypt.
 func TestDeniabilitySecretsZeroed(t *testing.T) {
-	original := []byte("p4 deniability secret zeroing coverage")
-	pw := []byte("p4-zeroing-pw")
+	original := []byte("deniability secret zeroing coverage")
+	pw := []byte("deniability-zeroing-pw")
 
 	var encEvents []wasmZeroingEvent
 	restoreEnc := observeWASMZeroingForTest(func(e wasmZeroingEvent) { encEvents = append(encEvents, e) })
@@ -211,7 +211,7 @@ func TestDeniabilitySecretsZeroed(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		phase  string
+		stage  string
 		events []wasmZeroingEvent
 	}{{"encrypt", encEvents}, {"decrypt", decEvents}} {
 		seen := make(map[wasmZeroingBufferKind]wasmZeroingEvent)
@@ -221,13 +221,13 @@ func TestDeniabilitySecretsZeroed(t *testing.T) {
 		for _, kind := range []wasmZeroingBufferKind{wasmZeroingDeniabilityKey, wasmZeroingDeniabilityKDFInput} {
 			e, ok := seen[kind]
 			if !ok {
-				t.Fatalf("%s: missing zeroing event for %s", tc.phase, kind)
+				t.Fatalf("%s: missing zeroing event for %s", tc.stage, kind)
 			}
 			if !e.Zeroed {
-				t.Fatalf("%s: %s not zeroed after cleanup", tc.phase, kind)
+				t.Fatalf("%s: %s not zeroed after cleanup", tc.stage, kind)
 			}
 			if !e.WasNonZero {
-				t.Fatalf("%s: %s already zero before cleanup; vacuity guard failed", tc.phase, kind)
+				t.Fatalf("%s: %s already zero before cleanup; vacuity guard failed", tc.stage, kind)
 			}
 		}
 	}
@@ -240,7 +240,7 @@ func TestIsDeniableDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRSCodecs: %v", err)
 	}
-	pw := []byte("p4-detect")
+	pw := []byte("deniability-detect")
 	plain := []byte(strings.Repeat("detect-", 300))
 
 	deniable, code := EncryptVolume(plain, pw, EncryptOptions{Deniability: true})

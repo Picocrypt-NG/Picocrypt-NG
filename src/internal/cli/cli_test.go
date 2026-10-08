@@ -1,9 +1,9 @@
 package cli
 
 import (
-	perrors "Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/header"
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -12,6 +12,41 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	// Direct RunE calls bypass Cobra Execute's command-context initialization.
+	encryptCmd.SetContext(context.Background())
+	decryptCmd.SetContext(context.Background())
+	os.Exit(m.Run())
+}
+
+func TestPCV3EncryptHonorsCommandCancellation(t *testing.T) {
+	resetEncryptFlagsForDirTest()
+	t.Cleanup(resetEncryptFlagsForDirTest)
+	t.Cleanup(func() { encryptCmd.SetContext(context.Background()) })
+	dir := t.TempDir()
+	input := filepath.Join(dir, "plain.bin")
+	output := filepath.Join(dir, "encrypted.pcv")
+	if err := os.WriteFile(input, []byte("cancelled PCV3 input"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	encOutput = output
+	encPassword = "password"
+	encPCV3 = true
+	encQuiet = true
+	encYes = true
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	encryptCmd.SetContext(ctx)
+
+	err := encryptCmd.RunE(encryptCmd, []string{input})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled PCV3 encrypt error = %v; want context.Canceled", err)
+	}
+	if _, err := os.Lstat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled PCV3 encrypt created output: %v", err)
+	}
+}
 
 func TestEncryptValidation(t *testing.T) {
 	// Save original args
@@ -121,7 +156,7 @@ func TestEncryptValidation(t *testing.T) {
 		encSplitUnit = "MiB"
 	})
 
-	t.Run("keyfile writer policy is checked before lookup", func(t *testing.T) {
+	t.Run("explicit legacy writer is rejected before keyfile lookup", func(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "test.txt")
 		if err := os.WriteFile(tmpFile, []byte("test"), 0o644); err != nil {
 			t.Fatal(err)
@@ -129,18 +164,16 @@ func TestEncryptValidation(t *testing.T) {
 
 		encPassword = "test"
 		encKeyfiles = []string{"/nonexistent/keyfile.key"}
+		encPCV3 = false
+		t.Cleanup(func() { encPCV3 = true })
 
 		cmd := encryptCmd
 		err := cmd.RunE(cmd, []string{tmpFile})
 		if err == nil {
 			t.Fatal("expected keyfile writer policy error")
 		}
-		var validationErr *perrors.ValidationError
-		if !errors.As(err, &validationErr) {
-			t.Fatalf("error = %v; want *errors.ValidationError", err)
-		}
-		if validationErr.Field != "Keyfiles" || validationErr.Message != perrors.KeyfileWritesDisabledMessage {
-			t.Fatalf("validation error = %#v; want exact keyfile writer policy", validationErr)
+		if err.Error() != "new encryption requires PCV3; --pcv3=false is unsupported" {
+			t.Fatalf("legacy selection error = %v", err)
 		}
 
 		// Reset
@@ -493,10 +526,13 @@ func TestSplitVolumeDetection(t *testing.T) {
 		}
 		os.Stderr = w
 
-		_ = decryptCmd.RunE(decryptCmd, []string{input})
+		decryptErr := decryptCmd.RunE(decryptCmd, []string{input})
 
 		_ = w.Close()
 		os.Stderr = old
+		if decryptErr == nil {
+			t.Error("malformed split-detection fixture unexpectedly decrypted")
+		}
 
 		var buf bytes.Buffer
 		if _, err := buf.ReadFrom(r); err != nil {
@@ -575,9 +611,7 @@ func TestOutputAutoGeneration(t *testing.T) {
 		encQuiet = true
 		encYes = true
 
-		if err := encryptCmd.RunE(encryptCmd, []string{inputFile}); err != nil {
-			t.Fatalf("runEncrypt: %v", err)
-		}
+		requireNativePCV3FileError(t, encryptCmd.RunE(encryptCmd, []string{inputFile}))
 
 		wantOut := inputFile + ".pcv"
 		info, err := os.Stat(wantOut)
@@ -849,9 +883,7 @@ func TestDefaultCompressOutputNameUsesZipSuffix(t *testing.T) {
 	encQuiet = true
 	encYes = true
 
-	if err := encryptCmd.RunE(encryptCmd, []string{inputFile}); err != nil {
-		t.Fatalf("encrypt: %v", err)
-	}
+	requireNativePCV3FileError(t, encryptCmd.RunE(encryptCmd, []string{inputFile}))
 
 	want := inputFile + ".zip.pcv"
 	if _, err := os.Stat(want); err != nil {
@@ -863,13 +895,17 @@ func TestDefaultCompressOutputNameUsesZipSuffix(t *testing.T) {
 
 	resetDecryptFlagsForDirTest()
 	decPassword = "pw"
+	decPCV3Factors = "password"
+	decPCV3Archive = "extract"
+	decPCV3ExtractTo = t.TempDir()
 	decQuiet = true
 	decYes = true
 
-	if err := decryptCmd.RunE(decryptCmd, []string{want}); err != nil {
-		t.Fatalf("decrypt: %v", err)
+	requireNativePCV3FileError(t, decryptCmd.RunE(decryptCmd, []string{want}))
+	got, err := os.ReadFile(filepath.Join(decPCV3ExtractTo, filepath.Base(inputFile)))
+	if err != nil || !bytes.Equal(got, plaintext) {
+		t.Fatalf("extracted compressed payload = %q, %v", got, err)
 	}
-	assertZipContainsPlaintext(t, inputFile+".zip", plaintext)
 }
 
 func TestDefaultCompressStdinOutputNameUsesZipSuffix(t *testing.T) {
@@ -901,9 +937,7 @@ func TestDefaultCompressStdinOutputNameUsesZipSuffix(t *testing.T) {
 	encQuiet = true
 	encYes = true
 
-	if err := encryptCmd.RunE(encryptCmd, []string{"-"}); err != nil {
-		t.Fatalf("encrypt stdin: %v", err)
-	}
+	requireNativePCV3FileError(t, encryptCmd.RunE(encryptCmd, []string{"-"}))
 
 	if _, err := os.Stat("encrypted.zip.pcv"); err != nil {
 		t.Fatalf("compressed stdin default output missing: %v", err)
@@ -1052,7 +1086,7 @@ func TestEncryptStdinValidation(t *testing.T) {
 		if err == nil {
 			t.Error("expected error for stdin with --deniability")
 		}
-		if !strings.Contains(err.Error(), "not compatible with --deniability") {
+		if !strings.Contains(err.Error(), "PCV3 D1 requires --paranoid") {
 			t.Errorf("error should mention --deniability incompatibility: %v", err)
 		}
 

@@ -279,7 +279,7 @@ validate_assets() {
   fi
 
   jq -r '.[].name' "$work/assets.json" | LC_ALL=C sort > "$work/actual-assets.txt"
-  comm -13 "$work/expected-assets.txt" "$work/actual-assets.txt" > "$work/unexpected-assets.txt"
+  LC_ALL=C comm -13 "$work/expected-assets.txt" "$work/actual-assets.txt" > "$work/unexpected-assets.txt"
   if [ -s "$work/unexpected-assets.txt" ]; then
     echo "release gate: unexpected release assets:" >&2
     cat "$work/unexpected-assets.txt" >&2
@@ -411,7 +411,7 @@ if [ "$mode" = "preflight" ]; then
   exit 0
 fi
 
-comm -23 "$work/expected-assets.txt" "$work/actual-assets.txt" > "$work/missing-assets.txt"
+LC_ALL=C comm -23 "$work/expected-assets.txt" "$work/actual-assets.txt" > "$work/missing-assets.txt"
 if [ -s "$work/missing-assets.txt" ]; then
   echo "release gate: draft $version is still missing required assets:"
   cat "$work/missing-assets.txt"
@@ -452,7 +452,7 @@ if [ "$release_id" != "$verified_release_id" ] || [ "$release_draft" != "true" ]
 fi
 load_assets
 validate_assets
-comm -23 "$work/expected-assets.txt" "$work/actual-assets.txt" > "$work/missing-assets.txt"
+LC_ALL=C comm -23 "$work/expected-assets.txt" "$work/actual-assets.txt" > "$work/missing-assets.txt"
 if [ -s "$work/missing-assets.txt" ]; then
   echo "release gate: release assets disappeared during verification" >&2
   exit 1

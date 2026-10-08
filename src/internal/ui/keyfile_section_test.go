@@ -74,7 +74,7 @@ func TestKeyfileDialogKeepsLongNamesWithinFixedWindowWidth(t *testing.T) {
 	}
 }
 
-func TestKeyfileControlsFreezeNewWritesButRemainAvailableForLegacyDecrypt(t *testing.T) {
+func TestKeyfileControlsAllowPCV3WritesAndLegacyDecrypt(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 
@@ -82,11 +82,11 @@ func TestKeyfileControlsFreezeNewWritesButRemainAvailableForLegacyDecrypt(t *tes
 		a.State.Mode = "encrypt"
 		a.updateKeyfileUIState(false, a.State.UISnapshot())
 	})
-	if a.keyfileEditBtn == nil || !a.keyfileEditBtn.Disabled() {
-		t.Fatal("keyfile selection must be disabled while creating a new v2 volume")
+	if a.keyfileEditBtn == nil || a.keyfileEditBtn.Disabled() {
+		t.Fatal("keyfile selection must be available while creating a PCV3 volume")
 	}
-	if a.keyfileCreateBtn == nil || !a.keyfileCreateBtn.Disabled() {
-		t.Fatal("keyfile generation must be disabled while creating a new v2 volume")
+	if a.keyfileCreateBtn == nil || a.keyfileCreateBtn.Disabled() {
+		t.Fatal("keyfile generation must be available while creating a PCV3 volume")
 	}
 
 	fyne.DoAndWait(func() {
@@ -99,5 +99,20 @@ func TestKeyfileControlsFreezeNewWritesButRemainAvailableForLegacyDecrypt(t *tes
 	}
 	if !a.keyfileCreateBtn.Disabled() {
 		t.Fatal("keyfile generation must stay disabled during decryption")
+	}
+}
+
+func TestEncryptKeyfileSectionOffersDefaultPCV3Selection(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+
+	fyne.DoAndWait(func() {
+		a.State.Mode = "encrypt"
+		a.updateUIState()
+	})
+
+	want := tr("keyfiles.none_selected", "None selected")
+	if got := a.keyfileLabel.Text; got != want {
+		t.Fatalf("encrypt keyfile label = %q; want %q for default PCV3 creation", got, want)
 	}
 }

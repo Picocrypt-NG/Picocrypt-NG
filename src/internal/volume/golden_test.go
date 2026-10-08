@@ -1072,8 +1072,8 @@ func goldenFixturePaths(testdataPath string, names []string) []string {
 }
 
 // NewHeaderReaderForTest returns the production header reader so golden tests
-// exercise the real, audited parser (with its D-02 comment-length bound and RS
-// field widths) instead of a hand-rolled copy that could silently drift from it.
+// exercise its comment-length bound and RS field widths instead of a hand-rolled
+// copy that could silently drift from it.
 func NewHeaderReaderForTest(r io.Reader, rs *encoding.RSCodecs) *header.Reader {
 	return header.NewReader(r, rs)
 }

@@ -1,18 +1,144 @@
 package ui
 
 import (
+	"Picocrypt-NG/internal/util"
 	"image/color"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/theme"
 )
 
 const maxDesktopPolishedEncryptHeight = float32(560)
+
+func TestDesktopWindowKeepsUserSizeAcrossEditsAndClear(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := newDesktopEncryptLayoutApp(t, fyneApp)
+	fyne.DoAndWait(func() {
+		chosen := fyne.NewSize(600, 400)
+		a.Window.Resize(chosen)
+		for _, step := range []struct {
+			name string
+			run  func()
+		}{
+			{"password", func() { a.passwordEntry.SetText("public layout fixture") }},
+			{"advanced", func() {
+				a.setAdvancedDisclosureOpen(true)
+				a.mainScroll.ScrollToBottom()
+			}},
+			{"Clear", a.resetUI},
+		} {
+			step.run()
+			if got := a.Window.Canvas().Size(); got != chosen {
+				t.Errorf("%s replaced user-selected size %v with %v", step.name, chosen, got)
+			}
+		}
+		if a.mainScroll.Offset.Y != 0 {
+			t.Error("Clear did not return to the password at the top of the form")
+		}
+	})
+}
+
+func TestDesktopEmptySelectionKeepsFormVisible(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	fyne.DoAndWait(func() { a.initializeDesktopWindow() })
+	assertEmpty := func(stage string) {
+		t.Helper()
+		fyne.DoAndWait(func() {
+			test.LaidOutObjects(a.Window.Content())
+			visible := make(map[fyne.CanvasObject]bool)
+			var collectVisible func(fyne.CanvasObject)
+			collectVisible = func(object fyne.CanvasObject) {
+				if !object.Visible() {
+					return
+				}
+				visible[object] = true
+				switch object := object.(type) {
+				case *fyne.Container:
+					for _, child := range object.Objects {
+						collectVisible(child)
+					}
+				case *container.Scroll:
+					collectVisible(object.Content)
+				}
+			}
+			collectVisible(a.Window.Content())
+			viewport := a.fyneApp.Driver().AbsolutePositionForObject(a.mainScroll)
+			for _, field := range []fyne.CanvasObject{a.passwordEntry, a.cPasswordEntry, a.keyfileLabel, a.commentsEntry, a.outputEntry.(fyne.CanvasObject), a.changeBtn} {
+				if !visible[field] {
+					t.Errorf("empty window hides a familiar form field: %T", field)
+					continue
+				}
+				position := a.fyneApp.Driver().AbsolutePositionForObject(field)
+				if position.Y < viewport.Y || position.Y+field.Size().Height > viewport.Y+a.mainScroll.Size().Height {
+					t.Errorf("%s: empty window clips %T at %v (%v), viewport %v (%v), window %v, mode %q", stage, field, position, field.Size(), viewport, a.mainScroll.Size(), a.Window.Canvas().Size(), a.State.UISnapshot().Mode)
+				}
+			}
+			if a.pcv3Container.Visible() || a.startHintLabel.Visible() {
+				t.Error("empty window duplicates the header's file-selection instruction")
+			}
+			if !a.startButton.Disabled() || !a.passwordEntry.Disabled() || a.inputLabel.Text == "" {
+				t.Error("empty window must explain file selection and keep operation controls disabled")
+			}
+		})
+	}
+	assertEmpty("startup")
+	if t.Failed() {
+		return
+	}
+	path := filepath.Join(t.TempDir(), "message.txt")
+	if err := os.WriteFile(path, []byte("public layout fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fyne.DoAndWait(func() { a.onDrop([]string{path}) })
+	waitForDropProcessing(t, a)
+	fyne.DoAndWait(func() {
+		if a.passwordEntry.Disabled() || !a.startHintLabel.Visible() {
+			t.Error("selecting a file did not restore the credential form and guidance")
+		}
+		position := a.fyneApp.Driver().AbsolutePositionForObject(a.passwordEntry)
+		viewport := a.fyneApp.Driver().AbsolutePositionForObject(a.mainScroll)
+		if position.Y < viewport.Y || position.Y+a.passwordEntry.Size().Height > viewport.Y+a.mainScroll.Size().Height {
+			t.Error("selected file's password field is outside the viewport")
+		}
+		test.Tap(a.clearButton)
+	})
+	assertEmpty("Clear")
+	fyne.DoAndWait(func() {
+		a.State.LatchPCV3CleanupIncomplete()
+		a.updateUIState()
+		if !a.pcv3Container.Visible() {
+			t.Error("empty selection hid an unresolved cleanup warning")
+		}
+		requirePCV3Text(t, a.pcv3Container, "Cleanup could not be confirmed")
+	})
+}
+
+func TestLongStatusDoesNotResizeDesktopWindow(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	fyne.DoAndWait(func() {
+		a.updateUIState()
+		before := a.Window.Canvas().Size()
+		for _, message := range []string{
+			"stat /" + strings.Repeat("long-directory/", 80) + "archive.zip: no such file or directory",
+			"first error\nsecond error\r\nthird error",
+		} {
+			a.State.SetStatus(message, util.RED)
+			a.updateUIState()
+			if after := a.Window.Canvas().Size(); after != before {
+				t.Errorf("status resized desktop window from %v to %v", before, after)
+			}
+		}
+	})
+}
 
 type fixedVariantTheme struct {
 	fyne.Theme
@@ -155,10 +281,10 @@ func TestDesktopUILayoutFitsWindowAfterBuild(t *testing.T) {
 			fyne.DoAndWait(func() {
 				a.Window = fyneApp.NewWindow("layout-test")
 				a.Window.SetFixedSize(true)
-				a.Window.Resize(fyne.NewSize(windowWidth, windowHeightEncrypt))
+				a.Window.Resize(fyne.NewSize(windowWidth, windowHeight))
 				content := a.buildUI()
 				a.Window.SetContent(content)
-				a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+				a.initializeDesktopWindow()
 				min = content.MinSize()
 				size = a.Window.Canvas().Size()
 			})
@@ -226,10 +352,10 @@ func TestDesktopRussianUILayoutKeepsCompactWidth(t *testing.T) {
 			fyne.DoAndWait(func() {
 				a.Window = fyneApp.NewWindow("russian-layout-test")
 				a.Window.SetFixedSize(true)
-				a.Window.Resize(fyne.NewSize(windowWidth, windowHeightEncrypt))
+				a.Window.Resize(fyne.NewSize(windowWidth, windowHeight))
 				content := a.buildUI()
 				a.Window.SetContent(content)
-				a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+				a.initializeDesktopWindow()
 				min = content.MinSize()
 				size = a.Window.Canvas().Size()
 			})
@@ -289,10 +415,10 @@ func TestDesktopUILayoutKeepsCompactWidthAfterLanguageSwitch(t *testing.T) {
 			fyne.DoAndWait(func() {
 				a.Window = fyneApp.NewWindow("language-switch-layout-test")
 				a.Window.SetFixedSize(true)
-				a.Window.Resize(fyne.NewSize(windowWidth, windowHeightEncrypt))
+				a.Window.Resize(fyne.NewSize(windowWidth, windowHeight))
 				content := a.buildUI()
 				a.Window.SetContent(content)
-				a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+				a.initializeDesktopWindow()
 				if err := a.SwitchLanguage("ru"); err != nil {
 					t.Fatalf("SwitchLanguage(ru) returned error: %v", err)
 				}
@@ -390,10 +516,10 @@ func TestDesktopUILayoutFitsWindowAfterModeChange(t *testing.T) {
 	fyne.DoAndWait(func() {
 		a.Window = fyneApp.NewWindow("layout-test")
 		a.Window.SetFixedSize(true)
-		a.Window.Resize(fyne.NewSize(windowWidth, windowHeightEncrypt))
+		a.Window.Resize(fyne.NewSize(windowWidth, windowHeight))
 		content := a.buildUI()
 		a.Window.SetContent(content)
-		a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+		a.initializeDesktopWindow()
 	})
 	assertWindowFitsContent(t, a)
 
@@ -426,10 +552,10 @@ func TestOutputLongNameDoesNotWidenDesktopLayout(t *testing.T) {
 	fyne.DoAndWait(func() {
 		a.Window = fyneApp.NewWindow("layout-test")
 		a.Window.SetFixedSize(true)
-		a.Window.Resize(fyne.NewSize(windowWidth, windowHeightEncrypt))
+		a.Window.Resize(fyne.NewSize(windowWidth, windowHeight))
 		content := a.buildUI()
 		a.Window.SetContent(content)
-		a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+		a.initializeDesktopWindow()
 		min = content.MinSize()
 		size = a.Window.Canvas().Size()
 	})
@@ -542,29 +668,33 @@ func TestDesktopEncryptLayoutExpandedAdvancedKeepsCompactWidthForAllBundledLangu
 	}
 }
 
-func TestDesktopAdvancedDisclosureShrinksWindowAfterClose(t *testing.T) {
+func TestDesktopAdvancedDisclosureKeepsWindowBounds(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 	fyneApp.Settings().SetTheme(fixedVariantTheme{Theme: NewCompactTheme(), variant: theme.VariantLight})
 
 	a := newDesktopEncryptLayoutApp(t, fyneApp)
 
 	var collapsed, expanded, recollapsed fyne.Size
+	var collapsedRange, expandedRange, recollapsedRange float32
 	fyne.DoAndWait(func() {
 		collapsed = a.Window.Canvas().Size()
+		collapsedRange = a.mainScroll.Content.Size().Height - a.mainScroll.Size().Height
 		if a.advancedToggleBtn == nil {
 			t.Fatal("advanced disclosure button was not built")
 		}
 		a.advancedToggleBtn.OnTapped()
 		expanded = a.Window.Canvas().Size()
+		expandedRange = a.mainScroll.Content.Size().Height - a.mainScroll.Size().Height
 		a.advancedToggleBtn.OnTapped()
 		recollapsed = a.Window.Canvas().Size()
+		recollapsedRange = a.mainScroll.Content.Size().Height - a.mainScroll.Size().Height
 	})
 
-	if expanded.Height <= collapsed.Height {
-		t.Fatalf("opening advanced did not grow the window: collapsed %.1f expanded %.1f", collapsed.Height, expanded.Height)
+	if expanded != collapsed || recollapsed != collapsed {
+		t.Fatalf("advanced disclosure changed window bounds: %v → %v → %v", collapsed, expanded, recollapsed)
 	}
-	if recollapsed.Height > collapsed.Height+1 {
-		t.Fatalf("closing advanced left extra window height: collapsed %.1f recollapsed %.1f", collapsed.Height, recollapsed.Height)
+	if expandedRange <= collapsedRange || recollapsedRange > collapsedRange+1 {
+		t.Fatalf("scroll range did not follow advanced content: %.1f → %.1f → %.1f", collapsedRange, expandedRange, recollapsedRange)
 	}
 }
 
@@ -754,10 +884,10 @@ func newDesktopEncryptLayoutApp(t *testing.T, fyneApp fyne.App) *App {
 	fyne.DoAndWait(func() {
 		a.Window = fyneApp.NewWindow("encrypt-layout-test")
 		a.Window.SetFixedSize(true)
-		a.Window.Resize(fyne.NewSize(windowWidth, windowHeightEncrypt))
+		a.Window.Resize(fyne.NewSize(windowWidth, windowHeight))
 		content := a.buildUI()
 		a.Window.SetContent(content)
-		a.resizeDesktopWindowForContent(content, preferredDesktopWindowHeight(a.State.Mode))
+		a.initializeDesktopWindow()
 	})
 
 	return a

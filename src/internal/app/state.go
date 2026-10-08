@@ -19,9 +19,12 @@ package app
 
 import (
 	"Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"fmt"
 	"image/color"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -29,13 +32,13 @@ import (
 )
 
 // newRSCodecs is the Reed-Solomon codec constructor used by NewState. It is a
-// package-level seam (mirroring the Phase 3/4 RekeyThreshold / deriveVolumeKey
+// package-level seam (mirroring the RekeyThreshold / deriveVolumeKey
 // pattern) so tests can inject a failing constructor to exercise the RS-init
 // error path without a real failure (see TestNewStateRSInitFailure).
 var newRSCodecs = encoding.NewRSCodecs
 
 // Version is the application version string.
-const Version = "v2.19"
+const Version = "v3.0"
 
 // PasswordInputMode represents the visibility state of password inputs.
 type PasswordInputMode int
@@ -80,6 +83,71 @@ const (
 	StartActionDecrypt
 )
 
+// PCV3RouteState is the closed state of content routing for one selected file.
+// D1 is never inferred by this state; it is selected explicitly through
+// SelectPCV3D1.
+type PCV3RouteState uint8
+
+const (
+	PCV3RouteNone PCV3RouteState = iota
+	PCV3RouteChecking
+	PCV3RouteReady
+	PCV3RouteTransferred
+	PCV3RouteFailed
+)
+
+type PCV3Format uint8
+
+const (
+	PCV3FormatNone PCV3Format = iota
+	PCV3FormatNormal
+	PCV3FormatD1
+)
+
+type PCV3Action uint8
+
+const (
+	PCV3ActionNone PCV3Action = iota
+	PCV3ActionDecrypt
+	PCV3ActionRecovery
+	PCV3ActionForce
+	PCV3ActionForceUnverified
+)
+
+type PCV3FactorPolicy uint8
+
+const (
+	PCV3FactorPolicyUnset PCV3FactorPolicy = iota
+	PCV3FactorPolicyPassword
+	PCV3FactorPolicyKeyfiles
+	PCV3FactorPolicyCombined
+)
+
+type PCV3KeyfileOrder uint8
+
+const (
+	PCV3KeyfileOrderUnset PCV3KeyfileOrder = iota
+	PCV3KeyfileOrderSelected
+	PCV3KeyfileOrderAny
+)
+
+// PCV3OperationIntent is the single mutable-to-owned handoff from application
+// state to the native operation boundary. Source and Password transfer exactly
+// once; Keyfiles preserves the user's selection order and duplicates.
+type PCV3OperationIntent struct {
+	Format       PCV3Format
+	Action       PCV3Action
+	FactorPolicy PCV3FactorPolicy
+	KeyfileOrder PCV3KeyfileOrder
+	Source       *os.File
+	SplitBase    string
+	Target       string
+	Password     []byte
+	Keyfiles     []string
+	AutoUnzip    bool
+	SameLevel    bool
+}
+
 type StatusKind int
 
 const (
@@ -116,6 +184,7 @@ const (
 	StatusMobileAppStorageNoFiles
 	StatusMobileFileAccessFailed
 	StatusMobileFileAccessUnsafeName
+	StatusPCVUnavailable
 )
 
 type StatusArgs struct {
@@ -154,9 +223,23 @@ type State struct {
 	DPI float32
 
 	// Operation mode
-	Mode     string // "encrypt" or "decrypt"
-	Working  bool   // Operation in progress
-	Scanning bool   // Scanning files
+	Mode           string // "encrypt" or "decrypt"
+	PCVUnavailable bool   // Selected PCV content is terminal until clear/replacement
+	Working        bool   // Operation in progress
+	Scanning       bool   // Scanning files
+	PCV3Route      PCV3RouteState
+	PCV3Format     PCV3Format
+	PCV3Action     PCV3Action
+	PCV3Factor     PCV3FactorPolicy
+	PCV3Order      PCV3KeyfileOrder
+	PCV3Result     pcv3operation.Presentation
+	PCV3Progress   pcv3operation.StatusCode
+	// PCV3CleanupIncomplete is UI-only process-lifetime truth. It records that
+	// a released archive follow-up could not confirm cleanup; it never carries
+	// a capability, path, plaintext, or raw error.
+	PCV3CleanupIncomplete bool
+	pcv3Source            *os.File
+	pcv3ReadyTicket       uint64
 
 	// Modal state
 	ModalID       int
@@ -184,10 +267,8 @@ type State struct {
 	// layer no longer carries the password as a string: volume.EncryptRequest/
 	// DecryptRequest.Password are owned []byte, and ui/operations.go converts this
 	// string to an owned []byte at request-build and zeros that copy. This one GUI
-	// string is the documented residual — guaranteed zeroing of it is intentionally
-	// out of scope (CONCERNS 3.1; ROADMAP "Out of Scope: Guaranteed password
-	// zeroing"); all []byte key material derived from it is zeroed (see
-	// OperationContext.Close).
+	// string is the documented residual; all []byte key material derived from it
+	// is zeroed (see OperationContext.Close).
 	Password  string
 	CPassword string // Confirm password
 
@@ -216,6 +297,7 @@ type State struct {
 	ReedSolomon bool
 	Deniability bool
 	Compress    bool
+	CreatePCV3  bool
 
 	// Decryption options
 	Keep        bool // Force decrypt despite errors
@@ -232,6 +314,7 @@ type State struct {
 
 	// Processing options
 	Recursively bool
+	RecursiveD1 bool
 	Delete      bool
 	Recombine   bool
 
@@ -281,6 +364,7 @@ func NewState() (*State, error) {
 
 	return &State{
 		// Defaults
+		CreatePCV3:           true,
 		InputLabel:           "Drop files and folders into this window",
 		InputSummary:         InputSummary{Kind: InputSummaryDropPrompt},
 		StartAction:          StartActionStart,
@@ -322,7 +406,8 @@ func NewState() (*State, error) {
 // This resets EVERYTHING including progress state.
 func (s *State) Reset() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	source := s.pcv3Source
+	s.pcv3Source = nil
 
 	// Reset progress-related state (NOT reset by original resetUI)
 	s.Working = false
@@ -332,6 +417,10 @@ func (s *State) Reset() {
 
 	// Reset everything else (same as ResetUI)
 	s.resetUILocked()
+	s.mu.Unlock()
+	if source != nil {
+		_ = source.Close()
+	}
 }
 
 // ResetUI resets UI state but preserves progress-related flags.
@@ -339,14 +428,40 @@ func (s *State) Reset() {
 // It does NOT reset: Working, ShowProgress, CanCancel, Scanning, ModalID
 func (s *State) ResetUI() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	source := s.pcv3Source
+	s.pcv3Source = nil
 	s.resetUILocked()
+	s.mu.Unlock()
+	if source != nil {
+		_ = source.Close()
+	}
+}
+
+// ClosePCV3Source releases only the retained PCV3 input descriptor. Shutdown
+// uses it while workers drain so the visible selection and status remain
+// stable until the window closes.
+func (s *State) ClosePCV3Source() {
+	s.mu.Lock()
+	source := s.pcv3Source
+	s.pcv3Source = nil
+	s.mu.Unlock()
+	if source != nil {
+		_ = source.Close()
+	}
 }
 
 // resetUILocked performs the actual reset (must be called with lock held).
 // Matches original resetUI() - does NOT reset progress-related fields.
 func (s *State) resetUILocked() {
 	s.Mode = ""
+	s.PCVUnavailable = false
+	s.PCV3Route = PCV3RouteNone
+	s.PCV3Format = PCV3FormatNone
+	s.PCV3Action = PCV3ActionNone
+	s.PCV3Factor = PCV3FactorPolicyUnset
+	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.PCV3Result = pcv3operation.Presentation{}
+	s.PCV3Progress = 0
 
 	s.ShowPassgen = false
 	s.ShowKeyfile = false
@@ -378,6 +493,7 @@ func (s *State) resetUILocked() {
 	s.ReedSolomon = false
 	s.Deniability = false
 	s.Compress = false
+	s.CreatePCV3 = true
 
 	s.Keep = false
 	s.Kept = false
@@ -399,6 +515,7 @@ func (s *State) resetUILocked() {
 	s.PassgenCopy = false
 
 	s.Recursively = false
+	s.RecursiveD1 = false
 	s.Delete = false
 	s.Recombine = false
 
@@ -465,13 +582,342 @@ func (s *State) SetScanning(scanning bool) {
 	s.Scanning = scanning
 }
 
+// SetPCV3RoutingChecking replaces the previous selection and records the only
+// in-flight route state. The caller remains responsible for the newly opened
+// descriptor until SetPCV3Ready transfers it.
+func (s *State) SetPCV3RoutingChecking(path string, size int64) {
+	s.mu.Lock()
+	old := s.pcv3Source
+	s.pcv3Source = nil
+	s.Mode = "decrypt"
+	s.PCVUnavailable = false
+	s.PCV3Route = PCV3RouteChecking
+	s.PCV3Format = PCV3FormatNone
+	s.PCV3Action = PCV3ActionNone
+	s.PCV3Factor = PCV3FactorPolicyUnset
+	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.PCV3Result = pcv3operation.Presentation{}
+	s.PCV3Progress = 0
+	s.InputFile = path
+	s.OutputFile = ""
+	s.InputSummary = InputSummary{Kind: InputSummarySelection, Files: 1, SizeBytes: size, ShowSize: true}
+	s.Scanning = true
+	s.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+}
+
+// SetPCV3RoutingFailed records a bounded terminal route failure. Raw detector
+// errors never enter State.
+func (s *State) SetPCV3RoutingFailed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PCV3Route = PCV3RouteFailed
+	s.PCV3Format = PCV3FormatNone
+	s.PCV3Action = PCV3ActionNone
+	s.PCV3Factor = PCV3FactorPolicyUnset
+	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.Scanning = false
+}
+
+// SetPCV3LegacyEligible completes content routing without selecting PCV3.
+// The retained descriptor, if any, is only a candidate for a later explicit
+// SelectPCV3D1 call.
+func (s *State) SetPCV3LegacyEligible() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PCV3Route = PCV3RouteNone
+	s.PCV3Format = PCV3FormatNone
+	s.PCV3Action = PCV3ActionNone
+	s.PCV3Factor = PCV3FactorPolicyUnset
+	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.PCV3Result = pcv3operation.Presentation{}
+	s.PCV3Progress = 0
+	s.Scanning = false
+}
+
+// SetPCV3Ready transfers one already-opened regular-file descriptor to State.
+// Only the content detector may select Normal; D1 uses SelectPCV3D1.
+func (s *State) SetPCV3Ready(source *os.File, format PCV3Format, path, target string, size int64) bool {
+	if source == nil || (format != PCV3FormatNormal && format != PCV3FormatD1) {
+		return false
+	}
+	s.mu.Lock()
+	old := s.pcv3Source
+	s.pcv3Source = source
+	s.Mode = "decrypt"
+	s.PCVUnavailable = false
+	s.PCV3Route = PCV3RouteReady
+	s.pcv3ReadyTicket++
+	s.PCV3Format = format
+	s.PCV3Action = PCV3ActionNone
+	s.PCV3Factor = PCV3FactorPolicyUnset
+	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.PCV3Result = pcv3operation.Presentation{}
+	s.PCV3Progress = 0
+	s.InputFile = path
+	s.OutputFile = target
+	s.OnlyFiles = []string{path}
+	s.AllFiles = nil
+	s.InputSummary = InputSummary{Kind: InputSummarySelection, Files: 1, SizeBytes: size, ShowSize: true}
+	s.StartAction = StartActionStart
+	s.Scanning = false
+	s.mu.Unlock()
+	if old != nil && old != source {
+		_ = old.Close()
+	}
+	return true
+}
+
+// RetainPCV3D1Candidate pins the descriptor of one legacy-eligible regular
+// selection. It does not select D1 and leaves the legacy UI unchanged.
+func (s *State) RetainPCV3D1Candidate(source *os.File) bool {
+	if source == nil {
+		return false
+	}
+	s.mu.Lock()
+	old := s.pcv3Source
+	s.pcv3Source = source
+	s.mu.Unlock()
+	if old != nil && old != source {
+		_ = old.Close()
+	}
+	return true
+}
+
+// SelectPCV3D1 explicitly switches the retained regular selection to D1.
+func (s *State) SelectPCV3D1() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pcv3Source == nil || s.Working || s.Scanning {
+		return false
+	}
+	s.Mode = "decrypt"
+	s.PCVUnavailable = false
+	s.PCV3Route = PCV3RouteReady
+	s.pcv3ReadyTicket++
+	s.PCV3Format = PCV3FormatD1
+	s.PCV3Action = PCV3ActionNone
+	s.PCV3Factor = PCV3FactorPolicyUnset
+	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.PCV3Result = pcv3operation.Presentation{}
+	s.PCV3Progress = 0
+	s.Comments = ""
+	s.CommentsPreviewState = CommentsPreviewUnavailable
+	s.StartAction = StartActionStart
+	return true
+}
+
+// PCV3ReadyOutputSelection returns the ticket and output for one current Ready
+// selection. Callers must present this ticket back to SetPCV3OutputForReady;
+// that setter rejects callbacks from an earlier selection atomically.
+func (s *State) PCV3ReadyOutputSelection() (uint64, string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.PCV3Route != PCV3RouteReady {
+		return 0, "", false
+	}
+	return s.pcv3ReadyTicket, s.OutputFile, true
+}
+
+// IsPCV3ReadyOutputSelection reports whether ticket still names the current
+// Ready selection. It lets UI callbacks avoid displaying an obsolete form;
+// SetPCV3OutputForReady remains the atomic authority for any state mutation.
+func (s *State) IsPCV3ReadyOutputSelection(ticket uint64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.PCV3Route == PCV3RouteReady && s.pcv3ReadyTicket == ticket
+}
+
+// SetPCV3OutputForReady atomically updates the output and Ready status only
+// when ticket still identifies the same Ready selection.
+func (s *State) SetPCV3OutputForReady(ticket uint64, path string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.PCV3Route != PCV3RouteReady || s.pcv3ReadyTicket != ticket {
+		return false
+	}
+	s.OutputFile = path
+	s.Status = StatusMessage{Kind: StatusReady, Color: util.WHITE}
+	s.MainStatus = "Ready"
+	s.MainStatusKind = MainStatusReady
+	s.MainStatusColor = util.WHITE
+	return true
+}
+
+func (s *State) SetPCV3Intent(action PCV3Action, factor PCV3FactorPolicy, order PCV3KeyfileOrder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PCV3Action = action
+	s.PCV3Factor = factor
+	if factor == PCV3FactorPolicyPassword {
+		order = PCV3KeyfileOrderUnset
+	}
+	s.PCV3Order = order
+}
+
+func (s *State) SetAutoUnzip(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.AutoUnzip = enabled
+	if !enabled {
+		s.SameLevel = false
+	}
+}
+
+func (s *State) SetSameLevel(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SameLevel = enabled && s.AutoUnzip
+}
+
+func (s *State) SetPCV3Progress(code pcv3operation.StatusCode) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PCV3Progress = code
+}
+
+func (s *State) SetPCV3Result(presentation pcv3operation.Presentation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PCV3Result = presentation
+	s.PCV3Progress = 0
+}
+
+// LatchPCV3CleanupIncomplete retains bounded cleanup uncertainty for this
+// State lifetime. Reset and selection replacement deliberately do not clear it.
+func (s *State) LatchPCV3CleanupIncomplete() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PCV3CleanupIncomplete = true
+}
+
+func pcv3IntentReady(
+	route PCV3RouteState,
+	format PCV3Format,
+	action PCV3Action,
+	factor PCV3FactorPolicy,
+	order PCV3KeyfileOrder,
+	password, output string,
+	keyfileCount int,
+) bool {
+	if route != PCV3RouteReady ||
+		(format != PCV3FormatNormal && format != PCV3FormatD1) ||
+		(action != PCV3ActionDecrypt && action != PCV3ActionRecovery &&
+			action != PCV3ActionForce && action != PCV3ActionForceUnverified) || output == "" {
+		return false
+	}
+	hasPassword := password != ""
+	hasKeyfiles := keyfileCount != 0
+	switch factor {
+	case PCV3FactorPolicyPassword:
+		return hasPassword && !hasKeyfiles && order == PCV3KeyfileOrderUnset
+	case PCV3FactorPolicyKeyfiles:
+		return !hasPassword && hasKeyfiles &&
+			(order == PCV3KeyfileOrderSelected || order == PCV3KeyfileOrderAny)
+	case PCV3FactorPolicyCombined:
+		return hasPassword && hasKeyfiles &&
+			(order == PCV3KeyfileOrderSelected || order == PCV3KeyfileOrderAny)
+	default:
+		return false
+	}
+}
+
+func pcv3IntentReadyLocked(s *State) bool {
+	return s.pcv3Source != nil && pcv3IntentReady(
+		s.PCV3Route, s.PCV3Format, s.PCV3Action, s.PCV3Factor, s.PCV3Order,
+		s.Password, s.OutputFile, len(s.Keyfiles),
+	)
+}
+
+// BeginPCV3ArchiveFollowUp atomically consumes the UI start gate for one
+// archive follow-up. The Go-owned ArchiveFollowUp remains the effect authority.
+func (s *State) BeginPCV3ArchiveFollowUp() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Working || s.PCV3Route != PCV3RouteTransferred ||
+		!s.PCV3Result.ArchivePending() {
+		return false
+	}
+	s.Working = true
+	return true
+}
+
+// TakePCV3OperationIntent atomically validates and transfers the operation-local
+// intent. Credentials are cleared at the caller boundary even if subsequent
+// descriptor preparation fails.
+func (s *State) TakePCV3OperationIntent() (PCV3OperationIntent, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Working || s.Scanning || !pcv3IntentReadyLocked(s) {
+		return PCV3OperationIntent{}, false
+	}
+	return s.takePCV3OperationIntentLocked(), true
+}
+
+// TakePCV3RecursiveOperationIntent transfers one decrypt selection inside an
+// already-running batch. D1 requires the batch's explicit format selection;
+// neither batch format grants recovery authority.
+func (s *State) TakePCV3RecursiveOperationIntent() (PCV3OperationIntent, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	format := PCV3FormatNormal
+	if s.RecursiveD1 {
+		format = PCV3FormatD1
+	}
+	if !s.Working || !s.Recursively || s.Scanning ||
+		s.PCV3Format != format || s.PCV3Action != PCV3ActionDecrypt ||
+		!pcv3IntentReadyLocked(s) {
+		return PCV3OperationIntent{}, false
+	}
+	return s.takePCV3OperationIntentLocked(), true
+}
+
+// SetRecursiveD1 records explicit format intent for the complete batch. The
+// selection's original mode is unchanged so disabling it restores that choice.
+func (s *State) SetRecursiveD1(enabled bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Working || s.Scanning || (enabled && !s.Recursively) {
+		return false
+	}
+	s.RecursiveD1 = enabled
+	return true
+}
+
+func (s *State) takePCV3OperationIntentLocked() PCV3OperationIntent {
+	intent := PCV3OperationIntent{
+		Format:       s.PCV3Format,
+		Action:       s.PCV3Action,
+		FactorPolicy: s.PCV3Factor,
+		KeyfileOrder: s.PCV3Order,
+		Source:       s.pcv3Source,
+		Target:       s.OutputFile,
+		Password:     []byte(s.Password),
+		Keyfiles:     append([]string(nil), s.Keyfiles...),
+		AutoUnzip:    s.AutoUnzip,
+		SameLevel:    s.SameLevel,
+	}
+	if s.Recombine {
+		intent.SplitBase = s.InputFile
+	}
+	s.pcv3Source = nil
+	s.PCV3Route = PCV3RouteTransferred
+	s.Password = ""
+	s.CPassword = ""
+	for index := range s.Keyfiles {
+		s.Keyfiles[index] = ""
+	}
+	s.Keyfiles = nil
+	return intent
+}
+
 // canStart is the single source of truth for the start-gate condition, shared by
 // the live State.CanStart() and the render-path UISnapshot.CanStart() (DRY).
-func canStart(mode, password, cpassword string, keyfileCount int, deniability bool) bool {
-	// New v2 writes with keyfiles are frozen until the reviewed v3 format binds
-	// keyfiles to every secret operational key. Legacy v1/v2 decryption remains
-	// available below.
-	if mode == "encrypt" && keyfileCount > 0 {
+func canStart(mode, password, cpassword string, keyfileCount int, deniability, createPCV3 bool) bool {
+	// Legacy v2 creation cannot use keyfiles; explicit PCV3 creation can.
+	if mode == "encrypt" && keyfileCount > 0 && !createPCV3 {
 		return false
 	}
 
@@ -481,9 +927,10 @@ func canStart(mode, password, cpassword string, keyfileCount int, deniability bo
 		return false
 	}
 
-	// Keyfiles protect the inner volume, not the password-derived deniability
-	// wrapper. Legacy keyfile-only deniable volumes remain decryptable.
-	if mode == "encrypt" && deniability && password == "" {
+	// In the legacy format, keyfiles protect the inner volume but not the
+	// password-derived deniability wrapper. PCV3 D1 binds the complete factor
+	// transcript to both layers.
+	if mode == "encrypt" && deniability && !createPCV3 && password == "" {
 		return false
 	}
 
@@ -499,14 +946,31 @@ func canStart(mode, password, cpassword string, keyfileCount int, deniability bo
 func (s *State) CanStart() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return canStart(s.Mode, s.Password, s.CPassword, len(s.Keyfiles), s.Deniability)
+	if s.Recursively && s.RecursiveD1 {
+		return !s.PCVUnavailable && !s.Working && !s.Scanning &&
+			canStart("decrypt", s.Password, s.CPassword, len(s.Keyfiles), false, true)
+	}
+	if s.PCV3Route != PCV3RouteNone {
+		return !s.PCVUnavailable && !s.Working && !s.Scanning && pcv3IntentReadyLocked(s)
+	}
+	return !s.PCVUnavailable && canStart(s.Mode, s.Password, s.CPassword, len(s.Keyfiles), s.Deniability, s.CreatePCV3)
 }
 
 // CanStart returns true if the operation can be started, evaluated against this
 // render-path snapshot. UI code uses this so the start-gate boolean lives in
 // exactly one place (canStart) shared with State.CanStart.
 func (snap UISnapshot) CanStart() bool {
-	return canStart(snap.Mode, snap.Password, snap.CPassword, snap.KeyfileCount, snap.Deniability)
+	if snap.Recursively && snap.RecursiveD1 {
+		return !snap.PCVUnavailable && !snap.Working && !snap.Scanning &&
+			canStart("decrypt", snap.Password, snap.CPassword, snap.KeyfileCount, false, true)
+	}
+	if snap.PCV3Route != PCV3RouteNone {
+		return !snap.PCVUnavailable && !snap.Working && !snap.Scanning && pcv3IntentReady(
+			snap.PCV3Route, snap.PCV3Format, snap.PCV3Action, snap.PCV3Factor, snap.PCV3Order,
+			snap.Password, snap.OutputFile, snap.KeyfileCount,
+		)
+	}
+	return !snap.PCVUnavailable && canStart(snap.Mode, snap.Password, snap.CPassword, snap.KeyfileCount, snap.Deniability, snap.CreatePCV3)
 }
 
 // TogglePasswordVisibility toggles password show/hide.
@@ -570,6 +1034,34 @@ func (s *State) SetInputDecryptVolume() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.InputSummary = InputSummary{Kind: InputSummaryDecryptVolume}
+}
+
+// SetPCVUnavailable atomically replaces the current selection with a terminal,
+// non-startable PCV selection while retaining only its path and input summary.
+func (s *State) SetPCVUnavailable(path string, sizeBytes int64) {
+	s.mu.Lock()
+	source := s.pcv3Source
+	s.pcv3Source = nil
+	s.resetUILocked()
+	s.Working = false
+	s.Scanning = false
+	s.ShowProgress = false
+	s.CanCancel = false
+	s.PCVUnavailable = true
+	s.InputFile = path
+	s.InputSummary = InputSummary{
+		Kind:      InputSummarySelection,
+		Files:     1,
+		SizeBytes: sizeBytes,
+		ShowSize:  true,
+	}
+	s.Status = StatusMessage{Kind: StatusPCVUnavailable, Color: util.RED}
+	s.MainStatusKind = MainStatusCustom
+	s.MainStatusColor = util.RED
+	s.mu.Unlock()
+	if source != nil {
+		_ = source.Close()
+	}
 }
 
 func (s *State) SetStartAction(action StartAction) {
@@ -656,6 +1148,7 @@ type Snapshot struct {
 	ReedSolomon bool
 	Deniability bool
 	Compress    bool
+	CreatePCV3  bool
 
 	// Decryption options
 	Keep        bool
@@ -677,41 +1170,56 @@ type Snapshot struct {
 // enabling/disabling widgets and refreshing labels. It deliberately contains no
 // widget references, so callers can release State.mu before touching Fyne.
 type UISnapshot struct {
-	Mode     string
-	Scanning bool
-	Working  bool
+	Mode           string
+	PCVUnavailable bool
+	Scanning       bool
+	Working        bool
 
 	AllFileCount    int
 	OnlyFileCount   int
 	OnlyFolderCount int
 	KeyfileCount    int
 
-	Password             string
-	CPassword            string
-	PasswordMode         PasswordInputMode
-	Keyfile              bool
-	Deniability          bool
-	Comments             string
-	CommentsPreviewState CommentsPreviewState
-	StartLabel           string
-	Recursively          bool
-	OutputFile           string
-	InputFile            string
-	Split                bool
-	SplitSize            string
-	MainStatus           string
-	MainStatusKind       MainStatusKind
-	MainStatusColor      color.RGBA
-	RequiredFreeSpace    int64
-	ShowProgress         bool
-	Recombine            bool
-	AutoUnzip            bool
-	InputLabel           string
-	InputSummary         InputSummary
-	StartAction          StartAction
-	Status               StatusMessage
-	PopupStatus          StatusMessage
-	PopupStatusMessage   StatusMessage
+	Password              string
+	CPassword             string
+	PasswordMode          PasswordInputMode
+	Keyfile               bool
+	KeyfileOrdered        bool
+	Deniability           bool
+	CreatePCV3            bool
+	Comments              string
+	CommentsPreviewState  CommentsPreviewState
+	StartLabel            string
+	Recursively           bool
+	RecursiveD1           bool
+	OutputFile            string
+	InputFile             string
+	Split                 bool
+	SplitSize             string
+	MainStatus            string
+	MainStatusKind        MainStatusKind
+	MainStatusColor       color.RGBA
+	RequiredFreeSpace     int64
+	ShowProgress          bool
+	CanCancel             bool
+	Recombine             bool
+	AutoUnzip             bool
+	SameLevel             bool
+	InputLabel            string
+	InputSummary          InputSummary
+	StartAction           StartAction
+	Status                StatusMessage
+	PopupStatus           StatusMessage
+	PopupStatusMessage    StatusMessage
+	PCV3Route             PCV3RouteState
+	PCV3Format            PCV3Format
+	PCV3Action            PCV3Action
+	PCV3Factor            PCV3FactorPolicy
+	PCV3Order             PCV3KeyfileOrder
+	PCV3Result            pcv3operation.Presentation
+	PCV3Progress          pcv3operation.StatusCode
+	PCV3CleanupIncomplete bool
+	PCV3KeyfileNames      []string
 }
 
 // RecursiveSnapshot is a value-copy of the State fields the recursive (batch)
@@ -720,6 +1228,7 @@ type UISnapshot struct {
 // State access (APP-02). It carries credential/option fields only; no
 // progress/widget/display-label fields belong here.
 type RecursiveSnapshot struct {
+	RecursiveD1    bool
 	Password       string
 	Keyfile        bool
 	Keyfiles       []string
@@ -728,6 +1237,7 @@ type RecursiveSnapshot struct {
 	Paranoid       bool
 	ReedSolomon    bool
 	Deniability    bool
+	CreatePCV3     bool
 	Split          bool
 	SplitSize      string
 	SplitSelected  int32
@@ -754,6 +1264,7 @@ func (s *State) Snapshot() Snapshot {
 		Paranoid:       s.Paranoid,
 		ReedSolomon:    s.ReedSolomon,
 		Deniability:    s.Deniability,
+		CreatePCV3:     s.CreatePCV3,
 		Compress:       s.Compress,
 		Keep:           s.Keep,
 		VerifyFirst:    s.VerifyFirst,
@@ -772,40 +1283,62 @@ func (s *State) Snapshot() Snapshot {
 func (s *State) UISnapshot() UISnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	var pcv3KeyfileNames []string
+	if s.PCV3Route == PCV3RouteReady || s.PCV3Route == PCV3RouteTransferred {
+		pcv3KeyfileNames = make([]string, len(s.Keyfiles))
+		for index, path := range s.Keyfiles {
+			pcv3KeyfileNames[index] = filepath.Base(path)
+		}
+	}
 	return UISnapshot{
-		Mode:                 s.Mode,
-		Scanning:             s.Scanning,
-		Working:              s.Working,
-		AllFileCount:         len(s.AllFiles),
-		OnlyFileCount:        len(s.OnlyFiles),
-		OnlyFolderCount:      len(s.OnlyFolders),
-		KeyfileCount:         len(s.Keyfiles),
-		Password:             s.Password,
-		CPassword:            s.CPassword,
-		PasswordMode:         s.PasswordMode,
-		Keyfile:              s.Keyfile,
-		Deniability:          s.Deniability,
-		Comments:             s.Comments,
-		CommentsPreviewState: s.CommentsPreviewState,
-		StartLabel:           s.StartLabel,
-		Recursively:          s.Recursively,
-		OutputFile:           s.OutputFile,
-		InputFile:            s.InputFile,
-		Split:                s.Split,
-		SplitSize:            s.SplitSize,
-		MainStatus:           s.MainStatus,
-		MainStatusKind:       s.MainStatusKind,
-		MainStatusColor:      s.MainStatusColor,
-		RequiredFreeSpace:    s.RequiredFreeSpace,
-		ShowProgress:         s.ShowProgress,
-		Recombine:            s.Recombine,
-		AutoUnzip:            s.AutoUnzip,
-		InputLabel:           s.InputLabel,
-		InputSummary:         s.InputSummary,
-		StartAction:          s.StartAction,
-		Status:               s.Status,
-		PopupStatus:          s.Popup,
-		PopupStatusMessage:   s.Popup,
+		Mode:                  s.Mode,
+		PCVUnavailable:        s.PCVUnavailable,
+		Scanning:              s.Scanning,
+		Working:               s.Working,
+		AllFileCount:          len(s.AllFiles),
+		OnlyFileCount:         len(s.OnlyFiles),
+		OnlyFolderCount:       len(s.OnlyFolders),
+		KeyfileCount:          len(s.Keyfiles),
+		Password:              s.Password,
+		CPassword:             s.CPassword,
+		PasswordMode:          s.PasswordMode,
+		Keyfile:               s.Keyfile,
+		KeyfileOrdered:        s.KeyfileOrdered,
+		Deniability:           s.Deniability,
+		CreatePCV3:            s.CreatePCV3,
+		Comments:              s.Comments,
+		CommentsPreviewState:  s.CommentsPreviewState,
+		StartLabel:            s.StartLabel,
+		Recursively:           s.Recursively,
+		RecursiveD1:           s.RecursiveD1,
+		OutputFile:            s.OutputFile,
+		InputFile:             s.InputFile,
+		Split:                 s.Split,
+		SplitSize:             s.SplitSize,
+		MainStatus:            s.MainStatus,
+		MainStatusKind:        s.MainStatusKind,
+		MainStatusColor:       s.MainStatusColor,
+		RequiredFreeSpace:     s.RequiredFreeSpace,
+		ShowProgress:          s.ShowProgress,
+		CanCancel:             s.CanCancel,
+		Recombine:             s.Recombine,
+		AutoUnzip:             s.AutoUnzip,
+		SameLevel:             s.SameLevel,
+		InputLabel:            s.InputLabel,
+		InputSummary:          s.InputSummary,
+		StartAction:           s.StartAction,
+		Status:                s.Status,
+		PopupStatus:           s.Popup,
+		PopupStatusMessage:    s.Popup,
+		PCV3Route:             s.PCV3Route,
+		PCV3Format:            s.PCV3Format,
+		PCV3Action:            s.PCV3Action,
+		PCV3Factor:            s.PCV3Factor,
+		PCV3Order:             s.PCV3Order,
+		PCV3Result:            s.PCV3Result,
+		PCV3Progress:          s.PCV3Progress,
+		PCV3CleanupIncomplete: s.PCV3CleanupIncomplete,
+		PCV3KeyfileNames:      pcv3KeyfileNames,
 	}
 }
 
@@ -816,6 +1349,7 @@ func (s *State) RecursiveSnapshot() RecursiveSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return RecursiveSnapshot{
+		RecursiveD1:    s.RecursiveD1,
 		Password:       s.Password,
 		Keyfile:        s.Keyfile,
 		Keyfiles:       append([]string(nil), s.Keyfiles...),
@@ -824,6 +1358,7 @@ func (s *State) RecursiveSnapshot() RecursiveSnapshot {
 		Paranoid:       s.Paranoid,
 		ReedSolomon:    s.ReedSolomon,
 		Deniability:    s.Deniability,
+		CreatePCV3:     s.CreatePCV3,
 		Split:          s.Split,
 		SplitSize:      s.SplitSize,
 		SplitSelected:  s.SplitSelected,
@@ -841,6 +1376,7 @@ func (s *State) RecursiveSnapshot() RecursiveSnapshot {
 func (s *State) ApplyRecursiveSelection(rs RecursiveSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.RecursiveD1 = rs.RecursiveD1
 	s.Password = rs.Password
 	s.CPassword = rs.Password
 	s.Keyfile = rs.Keyfile
@@ -851,6 +1387,7 @@ func (s *State) ApplyRecursiveSelection(rs RecursiveSnapshot) {
 	s.ReedSolomon = rs.ReedSolomon
 	if s.Mode != "decrypt" {
 		s.Deniability = rs.Deniability
+		s.CreatePCV3 = true
 	}
 	s.Split = rs.Split
 	s.SplitSize = rs.SplitSize

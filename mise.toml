@@ -1,13 +1,13 @@
-# Keep this file aligned with src/go.mod, android/README.md, and CI workflows.
-min_version = "2026.6.14"
+# Desktop development tools; Android keeps its release toolchain below.
+min_version = "2026.10.0"
 
 [tools]
-go = "1.26.5"
+go = "1.27.1"
 java = "temurin-21"
-golangci-lint = "2.12.2"
-"go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20260709172247-6129f5bee9d5"
-"go:golang.org/x/mobile/cmd/gomobile" = "v0.0.0-20260709172247-6129f5bee9d5"
-"go:golang.org/x/vuln/cmd/govulncheck" = "1.6.0"
+golangci-lint = "2.14.0"
+"go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20260908204917-8b95e45f8d3e"
+"go:golang.org/x/mobile/cmd/gomobile" = "v0.0.0-20260908204917-8b95e45f8d3e"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.8.0"
 
 [env]
 # Preserve user/CI Android SDK settings; this default matches Android Studio on Linux.
@@ -123,13 +123,16 @@ run = [
 [tasks."android:gomobile"]
 description = "Build the Android gomobile AAR"
 dir = "android"
+tools.go = "1.27.1"
+tools."go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20260908204917-8b95e45f8d3e"
+tools."go:golang.org/x/mobile/cmd/gomobile" = "v0.0.0-20260908204917-8b95e45f8d3e"
 run = "./build-gomobile.sh"
 
 [tasks."android:test"]
 description = "Run Android JVM tests after rebuilding the gomobile AAR"
 depends = ["android:gomobile"]
 dir = "android"
-run = "./gradlew test"
+run = "./gradlew --no-daemon test"
 
 [tasks."android:assemble-debug"]
 description = "Assemble the Android debug APK after rebuilding the gomobile AAR"
@@ -155,7 +158,7 @@ description = "Run local non-emulator CI gates"
 run = [
   "mise run check",
   "mise run android:gomobile",
-  "cd android && ./gradlew test assembleDebug",
+  "cd android && ./gradlew --no-daemon test assembleDebug",
 ]
 
 [tasks.default]

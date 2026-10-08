@@ -29,7 +29,9 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import io.github.picocrypt_ng.picocrypt_ng.MainViewModel
+import io.github.picocrypt_ng.picocrypt_ng.Pcv3AndroidPolicyState
 import io.github.picocrypt_ng.picocrypt_ng.R
+import io.github.picocrypt_ng.picocrypt_ng.SelectionKind
 import androidx.compose.runtime.collectAsState
 
 
@@ -83,23 +85,33 @@ fun LabeledCheckbox(label: String, value: Boolean, onChange: (Boolean) -> Unit) 
 
 
 @Composable
-fun AdvancedCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
+fun AdvancedCard(
+    viewModel: MainViewModel,
+    modifier: Modifier = Modifier,
+    pcv3AndroidPolicyState: Pcv3AndroidPolicyState = Pcv3AndroidPolicyState.UNCONFIGURED,
+) {
     val formData by viewModel.formState.collectAsState()
     if (!formData.isEncrypt) {
         return
     }
     val count =
-        (if (formData.reedSolomon) 1 else 0) + (if (formData.deniability) 1 else 0) + (if (formData.paranoid) 1 else 0)
+        (if (formData.reedSolomon) 1 else 0) + (if (formData.deniability) 1 else 0) +
+            (if (formData.paranoid) 1 else 0)
     ExpandableCard(title = stringResource(R.string.advanced_settings, count), modifier = modifier) {
         Column(modifier = Modifier.padding(16.dp)) {
             LabeledCheckbox(stringResource(R.string.reed_solomon), formData.reedSolomon) {
                 viewModel.updateFormData(formData.copy(reedSolomon = it))
             }
             LabeledCheckbox(stringResource(R.string.paranoid), formData.paranoid) {
-                viewModel.updateFormData(formData.copy(paranoid = it))
+                viewModel.updateFormData(formData.copy(paranoid = it || (formData.isPcv3Creation && formData.deniability)))
             }
             LabeledCheckbox(stringResource(R.string.deniability), formData.deniability) {
-                viewModel.updateFormData(formData.copy(deniability = it))
+                viewModel.updateFormData(
+                    formData.copy(
+                        deniability = it,
+                        paranoid = formData.paranoid || (it && formData.isPcv3Creation),
+                    )
+                )
             }
             LabeledCheckbox(stringResource(R.string.compress), formData.compress) {
                 viewModel.updateFormData(formData.copy(compress = it))

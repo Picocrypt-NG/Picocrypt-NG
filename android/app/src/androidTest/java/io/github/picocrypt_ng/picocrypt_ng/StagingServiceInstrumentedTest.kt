@@ -3,7 +3,7 @@ package io.github.picocrypt_ng.picocrypt_ng
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
-import androidx.documentfile.provider.DocumentFile
+import android.provider.DocumentsContract
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.runBlocking
@@ -20,21 +20,28 @@ class StagingServiceInstrumentedTest {
     private val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
 
     @Test fun stageTree_preservesStructure() = runBlocking {
-        val src = File(ctx.cacheDir, "srctree").apply { deleteRecursively(); mkdirs() }
-        File(src, "sub").mkdirs()
-        File(src, "a.txt").writeText("a")
-        File(src, "sub/b.txt").writeText("b")
-
-        val tree = DocumentFile.fromFile(src)
-        val sel = StagingService.stageTree(ctx, tree).getOrThrow()
-        assertEquals(SelectionKind.FOLDER, sel.kind)
-        assertEquals("srctree.zip.pcv", sel.suggestedOutputName)
-        assertEquals(2, sel.inputFiles.size)
-        assertTrue(sel.inputFiles.any { it.endsWith("/srctree/a.txt") })
-        assertTrue(sel.inputFiles.any { it.endsWith("/srctree/sub/b.txt") })
-        assertEquals(1, sel.onlyFolders.size)
-        assertTrue(sel.onlyFolders[0].endsWith("/staging/srctree"))
-        assertTrue(StagingService.wipeStaging(ctx))
+        BoundedSafDocumentsProvider.grantAccessForTest(ctx)
+        ctx.contentResolver.call(BoundedSafDocumentsProvider.tree, "bounded-test-reset", null, null)
+        ctx.contentResolver.call(BoundedSafDocumentsProvider.tree, "bounded-test-seed-source", null, null)
+        val tree = BoundedSafDocumentsProvider.tree
+        try {
+            val sel = StagingService.copyTreeToStaging(ctx, tree).getOrThrow()
+            assertEquals(SelectionKind.FOLDER, sel.kind)
+            assertEquals("bounded-saf-provider.zip.pcv", sel.suggestedOutputName)
+            assertEquals(2, sel.inputFiles.size)
+            assertEquals("a", File(sel.stagingRoot, "bounded-saf-provider/a.txt").readText())
+            assertEquals("b", File(sel.stagingRoot, "bounded-saf-provider/sub/b.txt").readText())
+            assertEquals(listOf(File(sel.stagingRoot, "bounded-saf-provider").path), sel.onlyFolders)
+            assertTrue(StagingService.wipeStaging(ctx))
+            for ((id, body) in mapOf("root/a.txt" to "a", "root/sub/b.txt" to "b")) {
+                val uri = DocumentsContract.buildDocumentUriUsingTree(tree, id)
+                assertEquals(body, requireNotNull(ctx.contentResolver.openInputStream(uri)).bufferedReader().use { it.readText() })
+            }
+        } finally {
+            assertTrue(StagingService.wipeStaging(ctx))
+            val cleaned = ctx.contentResolver.call(BoundedSafDocumentsProvider.tree, "bounded-test-cleanup", null, null)
+            assertTrue(requireNotNull(cleaned).getBoolean("cleaned"))
+        }
     }
 
     @Test

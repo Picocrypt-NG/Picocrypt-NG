@@ -2,51 +2,39 @@ package crypto
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
 	"encoding/hex"
 	"testing"
 )
 
-func TestRandomBytes(t *testing.T) {
-	// Test various lengths
-	lengths := []int{1, 16, 32, 64, 128, 1024}
+func TestRandomBytesAcceptsSuccessfulCryptoRandOutput(t *testing.T) {
+	// Do not parallelize this test: crypto/rand.Reader is process-global.
+	want := make([]byte, 16)
+	originalReader := cryptorand.Reader
+	cryptorand.Reader = bytes.NewReader(want)
+	t.Cleanup(func() {
+		cryptorand.Reader = originalReader
+	})
 
-	for _, length := range lengths {
-		data, err := RandomBytes(length)
-		if err != nil {
-			t.Fatalf("RandomBytes(%d) failed: %v", length, err)
-		}
-
-		if len(data) != length {
-			t.Errorf("RandomBytes(%d) returned %d bytes", length, len(data))
-		}
+	data, err := RandomBytes(len(want))
+	if err != nil {
+		t.Fatalf("RandomBytes rejected successful crypto/rand output: %v", err)
+	}
+	if !bytes.Equal(data, want) {
+		t.Fatalf("RandomBytes returned %x, want exact crypto/rand output %x", data, want)
 	}
 }
 
-func TestRandomBytesUniqueness(t *testing.T) {
-	// Two calls should produce different results
-	data1, err := RandomBytes(32)
-	if err != nil {
-		t.Fatalf("RandomBytes(32) failed: %v", err)
+func TestRandomBytesRejectsInvalidLength(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		data, err := RandomBytes(n)
+		if err == nil {
+			t.Errorf("RandomBytes(%d) returned no error", n)
+		}
+		if data != nil {
+			t.Errorf("RandomBytes(%d) returned %x, want nil", n, data)
+		}
 	}
-
-	data2, err := RandomBytes(32)
-	if err != nil {
-		t.Fatalf("RandomBytes(32) failed: %v", err)
-	}
-
-	if bytes.Equal(data1, data2) {
-		t.Error("Two RandomBytes calls should produce different results")
-	}
-}
-
-func TestRandomBytesZeroLength(t *testing.T) {
-	// Zero length returns error because allZero check triggers on empty slice
-	_, err := RandomBytes(0)
-	if err == nil {
-		t.Error("RandomBytes(0) should return error")
-	}
-	// Note: RandomBytes with negative length will panic from make()
-	// This is Go's standard behavior and we don't test it
 }
 
 func TestDeriveKey(t *testing.T) {

@@ -4,11 +4,6 @@ permissions:
   contents: read
 
 on:
-  push:
-    paths:
-      - "VERSION"
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       publish_release:
@@ -29,16 +24,16 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-24.04
-            upx_pkg: upx-5.2.0-amd64_linux
-            upx_sha256: 3db5d3294707439db97866feab8d75d800f028f48481a40547411824da4288a1
+            upx_pkg: upx-5.2.1-amd64_linux
+            upx_sha256: 402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657
             gui_binary: Picocrypt-NG
             cli_binary: Picocrypt-NG-cli
             artifact_name: build-linux-amd64
             build_deb: "true"
           - arch: arm64
             runner: ubuntu-24.04-arm
-            upx_pkg: upx-5.2.0-arm64_linux
-            upx_sha256: 55d48a61e8ffd17152db871c855376cba7f08e830b37799d0947a16dff8ec36c
+            upx_pkg: upx-5.2.1-arm64_linux
+            upx_sha256: a72d112c5970a904a31da0b9c84f919bc16b9a311787c12245508544a78c7d36
             gui_binary: Picocrypt-NG-arm64
             cli_binary: Picocrypt-NG-cli-arm64
             artifact_name: build-linux-arm64
@@ -50,7 +45,7 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.26.5"
+        go-version: "1.27.1"
         cache-dependency-path: src/go.sum
 
     - name: Update repository
@@ -86,16 +81,16 @@ jobs:
         cd src
         GOMAXPROCS=1 GOOS=js GOARCH=wasm go test -count=1 \
           -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-          -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness)$' ./cmd/wasm
+          -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness|TestBridgePCV3UnsupportedBeforeKDF)$' ./cmd/wasm
 
     - name: Run tests
       run: |
         cd src
         if [ "${{ matrix.arch }}" = "amd64" ]; then
           # Under -race, concurrent Argon2 volume and Fyne package tests exceed the
-          # runner's RAM, so cap package binaries at two. Only the single opt-in CLI
+          # runner's RAM, so run package binaries one at a time. Only the opt-in CLI
           # integration parent runs separately with its non-race product binary.
-          CGO_ENABLED=1 go test -v -tags migrated_fynedo -race -p 2 -timeout 15m ./...
+          CGO_ENABLED=1 go test -v -tags migrated_fynedo -race -p 1 -timeout 15m ./...
           PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -timeout 15m -run '^TestCLIIntegration$' ./internal/cli/...
         else
           PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -tags migrated_fynedo -timeout 15m ./...
@@ -123,7 +118,7 @@ jobs:
 
     - name: Compress with upx
       run: |
-        wget -O upx.tar.xz https://github.com/upx/upx/releases/download/v5.2.0/${{ matrix.upx_pkg }}.tar.xz
+        wget -O upx.tar.xz https://github.com/upx/upx/releases/download/v5.2.1/${{ matrix.upx_pkg }}.tar.xz
         echo "${{ matrix.upx_sha256 }}  upx.tar.xz" | sha256sum --check --strict --status
         tar -xf upx.tar.xz
         ${{ matrix.upx_pkg }}/upx --lzma "src/${{ matrix.gui_binary }}"
@@ -255,7 +250,7 @@ jobs:
 
   release:
     needs: build
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_release) }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
     concurrency:
       group: ${{ github.repository }}-release-publication
@@ -276,7 +271,7 @@ jobs:
     - name: Get version tag
       run: |
         VERSION=$(cat VERSION)
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
     - name: Sign and attest artifacts
       uses: ./.github/actions/sign-and-attest

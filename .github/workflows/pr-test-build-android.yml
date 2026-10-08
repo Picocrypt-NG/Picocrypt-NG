@@ -19,25 +19,25 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Validate Gradle Wrapper
-      uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+      uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
     - name: Set up Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.26.5"
+        go-version: "1.27.1"
         cache-dependency-path: src/go.sum
 
     - name: Install gomobile
       run: |
-        go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260709172247-6129f5bee9d5
-        go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260709172247-6129f5bee9d5
+        go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
+        go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
         mkdir -p "$(go env GOPATH | cut -d: -f1)/pkg/gomobile"
 
     - name: Set up Android SDK
-      uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
 
     - name: Set up JDK 21
-      uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
       with:
         distribution: "temurin"
         java-version: "21"
@@ -81,13 +81,31 @@ jobs:
         chmod +x build-gomobile.sh
         ./build-gomobile.sh
 
+    - name: Compile PCV3 Go packages for Android
+      run: |
+        cd src
+        for arch in arm64 amd64; do
+          GOMAXPROCS=1 CGO_ENABLED=0 GOOS=android GOARCH="$arch" go build \
+            ./internal/pcv3operation/internal/pcv3unicode
+        done
+
     - name: Make gradlew executable
       working-directory: android
       run: chmod +x gradlew
 
     - name: Run Unit Tests
+      id: unit-tests
       working-directory: android
       run: ./gradlew test
+
+    - name: Upload JVM unit test report
+      if: ${{ always() && (steps.unit-tests.outcome == 'success' || steps.unit-tests.outcome == 'failure') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: pr-jvm-test-report
+        path: android/app/build/test-results/
+        retention-days: 1
+        if-no-files-found: warn
 
     - name: Run Android Lint
       working-directory: android
@@ -121,13 +139,13 @@ jobs:
         sudo udevadm control --reload-rules
         sudo udevadm trigger --name-match=kvm
 
-    - name: Run Android 7 crypto and filesystem suites (API 24)
+    - name: Run Android 8 crypto and filesystem suites (API 26)
       uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
       timeout-minutes: 15
       with:
-        # API 24 is the documented compatibility floor. x86_64 is one of the
+        # API 26 is the documented compatibility floor. x86_64 is one of the
         # two supported release ABIs and is hardware-accelerated on this runner.
-        api-level: 24
+        api-level: 26
         target: google_apis
         arch: x86_64
         # Bound the writable AVD partition. The emulator default exceeds the
@@ -141,7 +159,7 @@ jobs:
         # maximum headroom for the fixed 1 GiB Argon2id allocation.
         emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -memory 3583 -cores 4 -camera-back none -camera-front none
         working-directory: android
-        script: ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_then_decrypt_recovers_the_original_bytes,io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest
+        script: bash ../.github/scripts/run-android-device-tests.sh 26 io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_retry_save_then_decrypt_recovers_the_original_bytes io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest
 
     - name: Run target SDK crypto and UI suites (API 36)
       uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
@@ -153,7 +171,7 @@ jobs:
         target: default
         arch: x86_64
         # Keep the target-SDK gate bootable under the same hosted-runner disk
-        # budget as the Android 7 compatibility gate above.
+        # budget as the Android 8/API 26 compatibility gate above.
         disk-size: 2048M
         disable-animations: true
         # -memory 6144: the Argon2id KDF allocates 1 GiB per operation
@@ -161,7 +179,7 @@ jobs:
         # (lowmemorykiller kills the test process) mid crypto roundtrip.
         emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -memory 6144 -cores 4 -camera-back none -camera-front none
         working-directory: android
-        script: ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_then_decrypt_recovers_the_original_bytes,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest
+        script: bash ../.github/scripts/run-android-device-tests.sh 36 io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_retry_save_then_decrypt_recovers_the_original_bytes io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest
 
     - name: Upload instrumented test report
       if: always()
@@ -169,6 +187,7 @@ jobs:
       with:
         name: pr-instrumented-test-report
         path: |
+          android/app/build/ci-device-tests/
           android/app/build/reports/androidTests/connected/
           android/app/build/outputs/androidTest-results/connected/
         if-no-files-found: warn

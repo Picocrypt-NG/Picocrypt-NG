@@ -428,15 +428,15 @@ func TestVerifyFirstParanoidReedSolomon(t *testing.T) {
 
 // TestTempZipReaderNoTempZip tests TempZipReader when no temp zip is in use
 func TestTempZipReaderNoTempZip(t *testing.T) {
-	ctx := &OperationContext{
-		TempZipInUse: false,
-		TempCiphers:  nil,
-	}
+	ctx := &OperationContext{}
 
 	testData := []byte("test data for reader")
 	reader := bytes.NewReader(testData)
 
-	wrapped := ctx.TempZipReader(reader)
+	wrapped, err := ctx.TempZipReader(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// When TempZipInUse is false, should return the same reader
 	if wrapped != reader {
@@ -934,7 +934,6 @@ func TestOperationContextClose(t *testing.T) {
 		KeyfileHash: nil,
 		CipherSuite: nil,
 		Header:      nil,
-		TempCiphers: nil,
 	}
 	ctx.Close() // Should not panic
 }

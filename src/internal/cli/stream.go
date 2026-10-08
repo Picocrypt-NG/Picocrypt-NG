@@ -1,21 +1,46 @@
 package cli
 
 import (
+	"Picocrypt-NG/internal/fileops"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
+	"sync/atomic"
 )
 
-// cleanupTempFiles best-effort removes the stdin/stdout staging temps created
-// for a CLI encrypt/decrypt run. Empty paths are skipped (no temp was created
-// for that direction). Errors are intentionally ignored: cleanup is best-effort
-// and must never mask the operation's real result.
-func cleanupTempFiles(paths ...string) {
+var activeStdinTempPath atomic.Pointer[string]
+
+// cleanupTempFiles removes every stdin/stdout staging temp. It attempts all
+// paths and reports a generic error without disclosing temporary pathnames.
+func cleanupTempFiles(paths ...string) error {
+	failed := false
 	for _, p := range paths {
 		if p != "" {
-			_ = os.Remove(p)
+			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+				failed = true
+				continue
+			}
+			if active := activeStdinTempPath.Load(); active != nil && *active == p {
+				activeStdinTempPath.CompareAndSwap(active, nil)
+			}
 		}
 	}
+	if failed {
+		return errors.New("temporary file cleanup failed")
+	}
+	return nil
+}
+
+func cleanupActiveStdinTemp() error {
+	active := activeStdinTempPath.Swap(nil)
+	if active == nil {
+		return nil
+	}
+	return cleanupTempFiles(*active)
 }
 
 // IsStdin returns true if the path indicates stdin ("-")
@@ -43,45 +68,117 @@ func BufferStdinToTemp(outputPath string) (string, error) {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
+	if !activeStdinTempPath.CompareAndSwap(nil, &tmpPath) {
+		_ = tmp.Close()
+		return "", errors.Join(
+			errors.New("another stdin temporary file is already active"),
+			cleanupTempFiles(tmpPath),
+		)
+	}
 
 	// Set restrictive permissions
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("setting temp file permissions: %w", err)
+		return "", errors.Join(
+			fmt.Errorf("setting temp file permissions: %w", err),
+			cleanupTempFiles(tmpPath),
+		)
 	}
 
 	_, err = io.Copy(tmp, os.Stdin)
 	if err != nil {
 		_ = tmp.Close()
-		// This error path returns "", so the caller cannot clean up the buffered
-		// stdin bytes; remove them here.
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("buffering stdin: %w", err)
+		return "", errors.Join(
+			fmt.Errorf("buffering stdin: %w", err),
+			cleanupTempFiles(tmpPath),
+		)
 	}
 
 	if err := tmp.Close(); err != nil {
-		// The buffered stdin bytes are on disk and the caller cannot reach this
-		// path; remove them here.
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("closing temp file: %w", err)
+		return "", errors.Join(
+			fmt.Errorf("closing temp file: %w", err),
+			cleanupTempFiles(tmpPath),
+		)
 	}
 
 	return tmpPath, nil
 }
 
-// StreamFileToStdout copies a file to stdout.
-func StreamFileToStdout(path string) error {
-	// #nosec G304 -- path is temp file created by this package
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("opening file for stdout: %w", err)
+// StreamFileToStdout consumes a temporary file while copying it to stdout.
+// Unix unlinks it before the first write, so an interrupted process cannot
+// leave plaintext at the temporary pathname. Windows removes it after close.
+func StreamFileToStdout(ctx context.Context, path string) (retErr error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	defer func() { _ = f.Close() }()
-
-	_, err = io.Copy(os.Stdout, f)
+	absolutePath, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
-		return fmt.Errorf("streaming to stdout: %w", err)
+		return fmt.Errorf("resolving file for stdout: %w", err)
+	}
+	root, err := fileops.OpenRootNoSymlink(filepath.Dir(absolutePath))
+	if err != nil {
+		return fmt.Errorf("opening directory for stdout: %w", err)
+	}
+	name := filepath.Base(absolutePath)
+	f, err := root.Open(name)
+	if err != nil {
+		return errors.Join(fmt.Errorf("opening file for stdout: %w", err), root.Close())
+	}
+	identity, statErr := f.Stat()
+	current, pathErr := root.Lstat(name)
+	if statErr != nil || pathErr != nil || identity == nil || current == nil ||
+		!identity.Mode().IsRegular() || !current.Mode().IsRegular() ||
+		current.Mode()&os.ModeSymlink != 0 || !os.SameFile(identity, current) {
+		return errors.Join(
+			errors.New("temporary stdout file identity changed"),
+			statErr,
+			pathErr,
+			f.Close(),
+			root.Close(),
+		)
+	}
+	unlinked := false
+	if runtime.GOOS != "windows" {
+		current, err := root.Lstat(name)
+		if err != nil || current == nil || !current.Mode().IsRegular() ||
+			!os.SameFile(identity, current) || root.Remove(name) != nil {
+			return errors.Join(
+				errors.New("temporary stdout file cleanup failed"),
+				err,
+				f.Close(),
+				root.Close(),
+			)
+		}
+		unlinked = true
+	}
+	defer func() {
+		if err := f.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			retErr = errors.Join(retErr, err)
+		}
+		if !unlinked {
+			current, err := root.Lstat(name)
+			if err != nil || current == nil || !current.Mode().IsRegular() ||
+				!os.SameFile(identity, current) || root.Remove(name) != nil {
+				retErr = errors.Join(retErr, errors.New("temporary stdout file cleanup failed"), err)
+			}
+		}
+		retErr = errors.Join(retErr, root.Close())
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(os.Stdout, f)
+		done <- copyErr
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("streaming to stdout: %w", err)
+		}
+	case <-ctx.Done():
+		_ = f.Close()
+		_ = os.Stdout.Close()
+		return ctx.Err()
 	}
 
 	return nil
@@ -106,14 +203,18 @@ func CreateTempOutput(estimatedSize int64) (string, error) {
 	// Set restrictive permissions
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("setting temp file permissions: %w", err)
+		return "", errors.Join(
+			fmt.Errorf("setting temp file permissions: %w", err),
+			cleanupTempFiles(tmpPath),
+		)
 	}
 
 	// Close immediately - volume package will reopen
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("closing temp file: %w", err)
+		return "", errors.Join(
+			fmt.Errorf("closing temp file: %w", err),
+			cleanupTempFiles(tmpPath),
+		)
 	}
 
 	return tmpPath, nil

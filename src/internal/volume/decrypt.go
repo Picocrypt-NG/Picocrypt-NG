@@ -7,6 +7,7 @@ import (
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/keyfile"
 	"Picocrypt-NG/internal/log"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"context"
 	"crypto/subtle"
@@ -31,31 +32,50 @@ var newPayloadReader = func(r io.Reader) io.Reader { return r }
 // This is the main entry point for decryption.
 // If ctx is nil, a background context is used.
 func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
-	if err := req.Validate(); err != nil {
+	if err := req.validateInputPath(); err != nil {
 		return err
 	}
+	preparedInput, err := PrepareDecryptInput(req.InputFile, req.Recombine)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, preparedInput.Close()) }()
+	return DecryptPrepared(ctx, req, preparedInput)
+}
 
+// DecryptPrepared decrypts using the exact descriptor routed before a caller
+// collected credentials. The input is borrowed and must remain open until this
+// function returns.
+func DecryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *PreparedDecryptInput) error {
+	if err := req.validatePrepared(preparedInput); err != nil {
+		return err
+	}
+	return decryptPrepared(ctx, req, preparedInput)
+}
+
+func decryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *PreparedDecryptInput) (retErr error) {
 	opCtx := NewDecryptContext(ctx, req)
+	opCtx.protectedInputInfos = append([]os.FileInfo(nil), preparedInput.inputInfos...)
 	defer func() {
+		retErr = errors.Join(retErr, opCtx.Close())
 		if err := opCtx.cleanupRecombinedFile(); err != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("cleanup recombined input: %w", err))
 		}
-		retErr = errors.Join(retErr, opCtx.Close())
 	}() // Secure zeroing of key material and fail-loud temporary-file cleanup
 
 	log.Info("starting decryption", log.String("input", req.InputFile))
 
-	// Phase 1: Preprocess (recombine if split, remove deniability)
-	if err := decryptPreprocess(opCtx, req); err != nil {
+	// Preprocess (recombine split input and remove deniability).
+	if err := decryptPreprocess(opCtx, req, preparedInput); err != nil {
 		return err
 	}
 
-	// Phase 2: Read header
+	// Read the header.
 	if err := decryptReadHeader(opCtx, req); err != nil {
 		return err
 	}
 
-	// Phases 3-5: derive keys, process keyfiles, and verify authentication,
+	// Derive keys, process keyfiles, and verify authentication,
 	// trying each password normalization form (NFC/NFD/raw) until one
 	// authenticates (#19). On success the winning form is left on the context so
 	// the verify-first and RS-retry re-derivations reuse it.
@@ -63,7 +83,7 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 		return err
 	}
 
-	// Phase 5.5 (optional): Two-pass verification - verify MAC BEFORE decryption
+	// Optionally verify the MAC before decryption.
 	// This addresses security audit recommendation PCC-004: authenticate ciphertext
 	// before decrypting. Slower but ensures we never decrypt attacker-controlled data.
 	if req.VerifyFirst {
@@ -83,12 +103,12 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 		}
 	}
 
-	// Phase 6: Decrypt payload
+	// Decrypt the payload.
 	if err := decryptPayload(opCtx, req); err != nil {
 		return err
 	}
 
-	// Phase 7: Finalize (verify MAC, cleanup, auto-unzip)
+	// Finalize (verify MAC, clean up, auto-unzip).
 	if err := decryptFinalize(opCtx, req); err != nil {
 		return err
 	}
@@ -97,24 +117,39 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 	return nil
 }
 
-func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
+func decryptPreprocess(ctx *OperationContext, req *DecryptRequest, preparedInput *PreparedDecryptInput) error {
 	inputFile := req.InputFile
+	var (
+		input      *os.File
+		inputOwned bool
+	)
 
 	// Recombine split chunks if needed
 	if req.Recombine {
-		ctx.SetStatus("Recombining chunks...")
-
+		firstChunk, err := preparedInput.rewindRouted()
+		if err != nil {
+			return fmt.Errorf("open prepared chunk zero: %w", err)
+		}
 		inputBase := inputFile
 		if base, ok := fileops.SplitChunkBase(inputFile); ok {
 			inputBase = base
 		}
 
 		outputPath := inputBase
-		var recombinedInfo os.FileInfo
-		err := fileops.Recombine(fileops.RecombineOptions{
+		var (
+			recombinedInfo os.FileInfo
+			chunkInfos     []os.FileInfo
+		)
+		err = fileops.Recombine(fileops.RecombineOptions{
 			InputBase:  inputBase,
 			OutputPath: outputPath,
 			OutputInfo: &recombinedInfo,
+			InputInfos: &chunkInfos,
+			FirstChunk: firstChunk,
+			ValidateFirstChunk: func(*os.File) error {
+				ctx.SetStatus("Recombining chunks...")
+				return nil
+			},
 			Progress: func(p float32, info string) {
 				ctx.UpdateProgress(p, info)
 			},
@@ -128,14 +163,40 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 		if err != nil {
 			return err
 		}
-
 		// Retain the recombined file identity so cleanup cannot unlink a
 		// replacement planted at the same pathname.
 		if err := ctx.rememberRecombinedFile(outputPath, recombinedInfo); err != nil {
 			return err
 		}
+		if len(chunkInfos) == 0 || !os.SameFile(preparedInput.info, chunkInfos[0]) {
+			return errors.New("recombined input identities do not include prepared chunk zero")
+		}
+		ctx.protectedInputInfos = append(ctx.protectedInputInfos, chunkInfos...)
 		ctx.TempFile = outputPath
 		inputFile = outputPath
+
+		// Open the completed operation-owned volume once and retain this exact
+		// descriptor through deniability removal or legacy payload processing.
+		input, err = os.Open(outputPath) // #nosec G304 -- operation-owned path
+		if err != nil {
+			return fmt.Errorf("open recombined input: %w", err)
+		}
+		inputOwned = true
+		currentInfo, err := input.Stat()
+		if err != nil {
+			_ = input.Close()
+			return fmt.Errorf("inspect recombined input: %w", err)
+		}
+		if !os.SameFile(recombinedInfo, currentInfo) {
+			_ = input.Close()
+			return errors.New("recombined input path changed before use")
+		}
+	} else {
+		var err error
+		input, err = preparedInput.rewindRouted()
+		if err != nil {
+			return fmt.Errorf("open prepared input: %w", err)
+		}
 	}
 
 	// Remove deniability wrapper if present
@@ -150,7 +211,22 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 			ctx.Reporter,
 			req.RSCodecs,
 			expectedInput,
+			input,
 		)
+		if inputOwned {
+			closeErr := input.Close()
+			input = nil
+			inputOwned = false
+			if err == nil && closeErr != nil {
+				return errors.Join(
+					fmt.Errorf("close recombined deniability input: %w", closeErr),
+					decrypted.Cleanup(),
+				)
+			}
+			if err != nil {
+				err = errors.Join(err, closeErr)
+			}
+		}
 		if err != nil {
 			return err
 		}
@@ -160,12 +236,21 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 
 		ctx.adoptTempInput(decrypted)
 		inputFile = decrypted.Path()
+		input = decrypted.File()
 	}
 
 	ctx.InputFile = inputFile
 
-	// Get file size
-	stat, err := os.Stat(inputFile)
+	// Pin and classify the final post-processed descriptor before header parsing,
+	// KDF work, or any output allocation. Every later decrypt step reuses it.
+	if err := ctx.pinLegacyDecryptInput(input, inputOwned); err != nil {
+		if inputOwned {
+			err = errors.Join(err, input.Close())
+		}
+		return fmt.Errorf("open final input: %w", err)
+	}
+	fin := input
+	stat, err := fin.Stat()
 	if err != nil {
 		return fmt.Errorf("stat input: %w", err)
 	}
@@ -175,15 +260,11 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest) error {
 }
 
 func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
-	ctx.SetStatus("Reading values...")
-
-	fin, closeInput, err := ctx.openInput()
+	fin, err := ctx.openLegacyDecryptInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
 	}
-	if closeInput {
-		defer func() { _ = fin.Close() }()
-	}
+	ctx.SetStatus("Reading values...")
 
 	reader := header.NewReader(fin, req.RSCodecs)
 	result, err := reader.ReadHeader()
@@ -214,7 +295,7 @@ func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
 	return nil
 }
 
-func decryptDeriveKeys(ctx *OperationContext, req *DecryptRequest) error { //nolint:unparam // (ctx, req) signature shared by all decrypt phases; req unused here by design
+func decryptDeriveKeys(ctx *OperationContext, req *DecryptRequest) error { //nolint:unparam // (ctx, req) signature shared by decrypt steps; req unused here by design
 	ctx.SetStatus("Deriving key...")
 
 	key, err := deriveVolumeKey(ctx.passwordBytes.Bytes(), ctx.Header.Salt, ctx.Header.Flags.Paranoid)
@@ -364,15 +445,21 @@ func decryptVerifyAuth(ctx *OperationContext, req *DecryptRequest) error {
 // a form, so it uses the password exactly as typed (a single attempt, preserving
 // historical behavior).
 func decryptDeriveProcessVerify(ctx *OperationContext, req *DecryptRequest) error {
-	candidates := pwnorm.Candidates(req.Password)
+	var candidates [][]byte
 	if req.ForceDecrypt {
 		// Own a copy so setPasswordBytes adopts an independent slice (it may zero
 		// the predecessor); never alias the caller's req.Password backing array.
 		candidates = [][]byte{append([]byte(nil), req.Password...)}
+	} else {
+		candidates = pwnorm.Candidates(req.Password)
 	}
+	defer crypto.SecureZeroMultiple(candidates...)
 
 	var lastErr error
 	for i, cand := range candidates {
+		// The context owns this candidate through verify-first and RS retries;
+		// untried candidates remain owned by the deferred cleanup above.
+		candidates[i] = nil
 		ctx.setPasswordBytes(cand)
 
 		if err := decryptDeriveKeys(ctx, req); err != nil {
@@ -481,12 +568,9 @@ func decryptVerifyMACFirstWithDecode(ctx *OperationContext, req *DecryptRequest,
 	}
 
 	// Open input file
-	fin, closeInput, err := ctx.openInput()
+	fin, err := ctx.openLegacyDecryptInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
-	}
-	if closeInput {
-		defer func() { _ = fin.Close() }()
 	}
 
 	// Skip past header
@@ -661,12 +745,9 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 	ctx.CipherSuite = cipherSuite
 
 	// Open files
-	fin, closeInput, err := ctx.openInput()
+	fin, err := ctx.openLegacyDecryptInput()
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
-	}
-	if closeInput {
-		defer func() { _ = fin.Close() }()
 	}
 
 	// Skip past header
@@ -682,7 +763,7 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 	} else if err := ctx.resetStagedOutput(); err != nil {
 		return fmt.Errorf("reset output: %w", err)
 	}
-	fout, err := ctx.stagedOutputFile()
+	stagedOutput, err := ctx.stagedOutputFile()
 	if err != nil {
 		return err
 	}
@@ -736,8 +817,12 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 			// Decrypt: MAC -> XChaCha20 -> Serpent
 			ctx.CipherSuite.Decrypt(dstData, data)
 
-			if _, err := fout.Write(dstData); err != nil {
+			written, err := stagedOutput.Write(dstData)
+			if err != nil {
 				return fmt.Errorf("write plaintext: %w", err)
+			}
+			if written != len(dstData) {
+				return fmt.Errorf("write plaintext: %w", io.ErrShortWrite)
 			}
 
 			if reedsolo {
@@ -772,8 +857,9 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 		}
 	}
 
-	// Sync before verifying MAC to ensure all data is written
-	if err := fout.Sync(); err != nil {
+	// Preserve the ordinary legacy guarantee: staged plaintext reaches the
+	// filesystem before the final MAC/publication decision.
+	if err := stagedOutput.Sync(); err != nil {
 		return fmt.Errorf("sync output: %w", err)
 	}
 
@@ -801,7 +887,8 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 			//   - ctx.CipherSuite: freshly built in decryptPayloadWithFastDecode;
 			//                      the previous suite is now Close()'d (key zeroed)
 			//                      before reassignment (see that function).
-			//   - input offset:    fresh os.Open + Seek(headerSize) per call.
+			//   - input offset:    the pinned descriptor is rewound and then seeks
+			//                      to the payload for each pass.
 			//   - output:          the same operation-owned stage is truncated and
 			//                      rewound through its retained handle.
 			// The Argon2id re-derivation is intentionally KEPT (D-07); reducing
@@ -837,6 +924,20 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 	if err := req.ValidateOutputSafety(); err != nil {
 		return err
 	}
+	if err := validatePreparedOutputAliases(req.OutputFile, ctx.protectedInputInfos); err != nil {
+		return err
+	}
+
+	// No plaintext may be published until the operation-owned recombined
+	// ciphertext has been closed, its path ownership revalidated, and the file
+	// removed. This ordering is also required on Windows, where an open handle
+	// prevents deletion.
+	if err := ctx.releasePinnedLegacyInput(); err != nil {
+		return err
+	}
+	if err := ctx.cleanupRecombinedFile(); err != nil {
+		return fmt.Errorf("cleanup recombined input: %w", err)
+	}
 
 	shouldUnzip := false
 	if req.AutoUnzip {
@@ -855,9 +956,6 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 		if err := autoUnzipUnpublishedOutput(ctx, req); err != nil {
 			return err
 		}
-		if err := ctx.cleanupRecombinedFile(); err != nil {
-			return fmt.Errorf("cleanup recombined input: %w", err)
-		}
 		return nil
 	}
 
@@ -866,6 +964,9 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 		autoUnzipParentPath string
 		autoUnzipTargetName string
 		autoUnzipRootInfo   os.FileInfo
+		autoUnzipPrepared   *fileops.PreparedZIPUnpack
+		autoUnzipBudget     *fileops.ZIPResourceBudget
+		autoUnzipPrepareErr error
 	)
 	if shouldUnzip {
 		var err error
@@ -873,20 +974,39 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 		if err != nil {
 			return err
 		}
+		autoUnzipBudget = fileops.NewZIPResourceBudget()
+		if err := pcv3operation.AdmitZIPWorkingMemory(ctx.Ctx, autoUnzipBudget); err != nil {
+			return closePinnedAutoUnzipRoot(autoUnzipRoot, err)
+		}
+		archive, err := ctx.stagedOutputFile()
+		if err != nil {
+			return closePinnedAutoUnzipRoot(autoUnzipRoot, err)
+		}
+		autoUnzipPrepared, autoUnzipPrepareErr = fileops.PrepareZIPUnpack(
+			archive, autoUnzipParentPath,
+			fileops.ZIPReadOptions{Cancel: ctx.IsCancelled, Budget: autoUnzipBudget},
+		)
+		if autoUnzipPrepared != nil {
+			defer autoUnzipPrepared.Close()
+		}
+		if ctx.IsCancelled() {
+			return closePinnedAutoUnzipRoot(autoUnzipRoot, errors.Join(autoUnzipPrepareErr, errors.New("operation cancelled")))
+		}
+		if errors.Is(autoUnzipPrepareErr, fileops.ErrZIPMetadataLimit) {
+			return closePinnedAutoUnzipRoot(autoUnzipRoot, autoUnzipPrepareErr)
+		}
 	}
 
 	if err := ctx.publishStagedOutput(); err != nil {
 		return closePinnedAutoUnzipRoot(autoUnzipRoot, fmt.Errorf("publish output: %w", err))
 	}
 
-	if err := ctx.cleanupRecombinedFile(); err != nil {
-		return closePinnedAutoUnzipRoot(
-			autoUnzipRoot,
-			fmt.Errorf("cleanup recombined input: %w", err),
-		)
-	}
-
 	if shouldUnzip {
+		if autoUnzipPrepareErr != nil {
+			// Keep the historical recoverable archive on malformed ZIP/input
+			// errors, without reparsing potentially changed metadata after publish.
+			return closePinnedAutoUnzipRoot(autoUnzipRoot, fmt.Errorf("unzip: %w", autoUnzipPrepareErr))
+		}
 		return autoUnzipDecryptedOutput(
 			ctx,
 			req,
@@ -894,6 +1014,8 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 			autoUnzipParentPath,
 			autoUnzipTargetName,
 			autoUnzipRootInfo,
+			autoUnzipPrepared,
+			autoUnzipBudget,
 		)
 	}
 
@@ -901,6 +1023,10 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 }
 
 func autoUnzipUnpublishedOutput(ctx *OperationContext, req *DecryptRequest) error {
+	budget := fileops.NewZIPResourceBudget()
+	if err := pcv3operation.AdmitZIPWorkingMemory(ctx.Ctx, budget); err != nil {
+		return err
+	}
 	archive, err := ctx.stagedOutputFile()
 	if err != nil {
 		return fmt.Errorf("open staged auto-unzip archive: %w", err)
@@ -920,6 +1046,7 @@ func autoUnzipUnpublishedOutput(ctx *OperationContext, req *DecryptRequest) erro
 
 	ctx.SetStatus("Unzipping...")
 	unpackErr := fileops.Unpack(fileops.UnpackOptions{
+		Budget:              budget,
 		ZipPath:             req.OutputFile,
 		ZipFile:             archive,
 		ExtractDir:          extractDir,
@@ -965,6 +1092,9 @@ func autoUnzipUnpublishedOutput(ctx *OperationContext, req *DecryptRequest) erro
 	}
 
 	removeErr := ctx.stagedOutput.RemoveSiblingDirectory(extractDir, outputInfo)
+	if errors.Is(unpackErr, fileops.ErrZIPMetadataLimit) {
+		return errors.Join(fmt.Errorf("unzip: %w", unpackErr), removeErr)
+	}
 	if distinctArchivePath {
 		publishErr := ctx.publishStagedOutput()
 		var recoveryErr error
@@ -1068,6 +1198,8 @@ func autoUnzipDecryptedOutput(
 	parentRoot *os.Root,
 	parentPath, targetName string,
 	parentInfo os.FileInfo,
+	prepared *fileops.PreparedZIPUnpack,
+	budget *fileops.ZIPResourceBudget,
 ) (retErr error) {
 	if parentRoot == nil || parentInfo == nil || targetName == "" {
 		return errors.New("pinned output parent is unavailable for same-level auto-unzip")
@@ -1110,6 +1242,8 @@ func autoUnzipDecryptedOutput(
 
 	ctx.SetStatus("Unzipping...")
 	unpackErr := fileops.Unpack(fileops.UnpackOptions{
+		Budget:              budget,
+		Prepared:            prepared,
 		ZipPath:             req.OutputFile,
 		ZipFile:             archive,
 		ExtractDir:          parentPath,

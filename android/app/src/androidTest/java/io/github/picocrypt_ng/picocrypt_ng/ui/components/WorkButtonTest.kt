@@ -175,7 +175,7 @@ class WorkButtonTest {
     }
 
     @Test
-    fun workButton_disables_new_v2_password_and_keyfile_encryption() {
+    fun workButton_enables_default_pcv3_password_and_keyfile_encryption() {
         val application = ApplicationProvider.getApplicationContext<android.app.Application>()
         val mainViewModel = MainViewModel(application, androidx.lifecycle.SavedStateHandle())
         val operationViewModel = OperationViewModel()
@@ -205,6 +205,6 @@ class WorkButtonTest {
 
         composeTestRule
             .onNodeWithText(application.getString(R.string.encrypt_file))
-            .assertIsNotEnabled()
+            .assertIsEnabled()
     }
 }

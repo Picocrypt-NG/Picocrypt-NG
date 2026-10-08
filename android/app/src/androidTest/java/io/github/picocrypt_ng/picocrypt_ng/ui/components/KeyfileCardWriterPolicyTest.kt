@@ -24,7 +24,7 @@ class KeyfileCardWriterPolicyTest {
     val composeTestRule = createComposeRule()
 
     @Test
-    fun encryptModeExplainsWriterFreezeAndDoesNotOfferKeyfileCreation() {
+    fun defaultPcv3CreationOffersKeyfilesWithoutLegacyWriterFreeze() {
         val application = ApplicationProvider.getApplicationContext<Application>()
         val viewModel = MainViewModel(application, SavedStateHandle())
         viewModel.updateFormData(
@@ -42,9 +42,9 @@ class KeyfileCardWriterPolicyTest {
         val title = application.resources.getQuantityString(R.plurals.keyfiles_count, 0, 0)
         composeTestRule.onNodeWithText(title).performClick()
         composeTestRule
-            .onNodeWithText(application.getString(R.string.error_keyfile_writes_disabled))
-            .assertIsDisplayed()
-        composeTestRule.onAllNodesWithText(application.getString(R.string.add)).assertCountEquals(0)
+            .onAllNodesWithText(application.getString(R.string.error_keyfile_writes_disabled))
+            .assertCountEquals(0)
+        composeTestRule.onNodeWithText(application.getString(R.string.add)).assertIsDisplayed()
         composeTestRule
             .onAllNodesWithText(application.getString(R.string.require_this_order))
             .assertCountEquals(0)

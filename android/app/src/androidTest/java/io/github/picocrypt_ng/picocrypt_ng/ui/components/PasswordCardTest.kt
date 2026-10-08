@@ -77,7 +77,7 @@ class PasswordCardTest {
     }
 
     @Test
-    fun keyfileEncryption_doesNotSuggestThatAddingAPasswordCanEnableTheWriter() {
+    fun pcv3KeyfileOnlyEncryptionDoesNotRequireAPassword() {
         val application = ApplicationProvider.getApplicationContext<Application>()
         val viewModel = MainViewModel(application, SavedStateHandle())
 
@@ -100,7 +100,7 @@ class PasswordCardTest {
     }
 
     @Test
-    fun keyfileOnlyDeniability_doesNotHideTheWriterPolicyBehindAPasswordHint() {
+    fun pcv3KeyfileOnlyDeniabilityDoesNotRequireAnOuterPassword() {
         val application = ApplicationProvider.getApplicationContext<Application>()
         val viewModel = MainViewModel(application, SavedStateHandle())
 

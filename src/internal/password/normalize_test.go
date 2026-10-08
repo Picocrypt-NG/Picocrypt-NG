@@ -95,10 +95,32 @@ func TestEncodeForKDFReturnsIndependentCopy(t *testing.T) {
 	// result aliased req.Password's backing array, the defer would wipe the
 	// password BEFORE AddDeniability reads it later in the pipeline (silently
 	// breaking deniability). EncodeForKDF must therefore return a fresh copy.
-	pw := []byte("café") // non-ASCII so NFC may differ; still must be a copy
-	out := EncodeForKDF(pw)
-	if len(out) > 0 && len(pw) > 0 && &out[0] == &pw[0] {
-		t.Fatal("EncodeForKDF must return a copy, not alias the input (caller zeros it independently)")
+	cases := []struct {
+		name string
+		in   string
+		want []byte
+	}{
+		{"ascii", "password123", []byte("password123")},
+		{"composed", eComposed, eNFCBytes},
+		{"decomposed", eDecomposed, eNFCBytes},
+		{"hangul decomposed", gaDecomposed, gaNFCBytes},
+		{"empty", "", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pw := []byte(tc.in)
+			out := EncodeForKDF(pw)
+			if !bytes.Equal(out, tc.want) {
+				t.Fatalf("EncodeForKDF = % x, want NFC % x", out, tc.want)
+			}
+			if !bytes.Equal(pw, []byte(tc.in)) {
+				t.Fatal("normalizing KDF input changed the caller's password")
+			}
+			clear(out)
+			if !bytes.Equal(pw, []byte(tc.in)) {
+				t.Fatal("clearing KDF input changed the caller's password")
+			}
+		})
 	}
 }
 

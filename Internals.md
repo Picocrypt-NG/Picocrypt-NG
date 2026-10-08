@@ -1,5 +1,9 @@
 # Internals
-If you're wondering about how Picocrypt NG handles cryptography, you've come to the right place! This page contains the technical details about the cryptographic algorithms and parameters used, as well as how cryptographic values are stored in the header format.
+The algorithms, key schedule, header layout, rekeying and Reed-Solomon details
+below describe legacy v1/v2 compatibility. PCV3-specific notes are labelled.
+New native encryption uses PCV3 with a separate format and credential schedule;
+see the [PCV3 security contract](docs/SECURITY_CONTRACT.md) and
+[native architecture](ARCHITECTURE.md).
 
 # Core Cryptography
 Picocrypt NG uses the following cryptographic primitives:
@@ -14,7 +18,9 @@ Picocrypt NG uses the following cryptographic primitives:
     - Normal mode: 4 passes, 1 GiB memory, 4 threads
     - Paranoid mode: 8 passes, 1 GiB memory, 8 threads
 
-All primitives used are from the well-known [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) module.
+Implementations use the Go standard library and dependencies pinned in
+[src/go.mod](src/go.mod), including `golang.org/x/crypto` and the separate
+`github.com/Picocrypt-NG/serpent` module.
 
 # Key Schedule & Subkey Stream
 This section documents the exact key-derivation order so an independent decryptor can be written. Source: `internal/crypto/kdf.go` (`SubkeyReader`) and `internal/volume/decrypt.go` (`decryptVerifyAuth`).
@@ -139,8 +145,9 @@ This feature is available in the decrypt advanced options as "Verify first" chec
 
 The following algorithm describes the legacy v1/v2 read format. Picocrypt-NG
 2.19 preserves decryption of supported keyfile volumes but rejects every new
-encryption request containing keyfiles, whether keyfile-only or
-password-plus-keyfile. New 2.19 volumes are password-only.
+legacy v2 encryption request containing keyfiles. New legacy v2 volumes are
+password-only. Native applications now create PCV3 by default with password,
+keyfile, or combined credential policies; every selected keyfile must be non-empty.
 
 If correct order is not required, Picocrypt NG will take the SHA3-256 of each keyfile individually and XOR the hashes together. Finally, the result is XORed with the master key. Because the XOR operation is both commutative and associative, the order in which the keyfile hashes are XORed with each other doesn't matter - the end result is the same.
 
@@ -150,9 +157,9 @@ For v1, keyfile XOR precedes HKDF and contributes to the derived operational
 keys. For legacy v2, HKDF is initialized first: the keyfile changes the
 XChaCha20 key and remains necessary for confidentiality, but it does not bind
 the header MAC, payload MAC, Serpent key, or the HKDF rekey nonce/IV schedule.
-After recovery, create a new password-only 2.19 volume. If a keyfile factor is
-mandatory, wait for a reviewed v3 format rather than treating another v2 volume
-as factor-bound; v3 is not implemented or scheduled here.
+After recovery, create a new PCV3 volume. PCV3 binds its declared
+password/keyfile policy through the PCV3
+credential transcript; this does not repair an existing legacy v2 volume.
 
 # Reed-Solomon
 By default, all Picocrypt NG volume headers are encoded with Reed-Solomon to improve resiliency against bit rot. The header uses N+2N encoding, where N is the size of a particular header field such as the version number, and 2N is the number of parity bytes added. Using the Berlekamp-Welch algorithm, Picocrypt NG is able to automatically detect and correct up to 2N/2=N broken bytes.
@@ -179,7 +186,9 @@ Neither field is Reed-Solomon encoded. The raw random salt and nonce avoid addin
 
 **Key derivation.** The deniability key is `Argon2id(NFC(password), salt)` using **normal-mode** parameters regardless of the inner volume's mode: 4 passes, 1 GiB memory, 4 threads, 32-byte output. (The inner volume keeps its own independent salt/key in its header.)
 
-**Credential boundary (Picocrypt-NG 2.19 writers).** Every new volume requires a non-empty password, and every encryption request containing keyfiles is rejected before encryption begins. This applies with or without deniability. Direct `AddDeniability` also rejects an empty password before deriving the outer key or replacing its input. Keyfile material is never an input to the outer Argon2id derivation.
+**Legacy credential boundary.** Every new legacy v2 volume requires a non-empty password, and every legacy encryption request containing keyfiles is rejected before encryption begins. Direct legacy `AddDeniability` also rejects an empty password before deriving the outer key or replacing its input. Keyfile material is never an input to this legacy outer Argon2id derivation.
+
+**PCV3 D1 credential boundary.** D1 accepts password-only, keyfile-only, or combined factors. The complete credential transcript is domain-separated into outer and inner Argon2id inputs, so keyfiles protect both D1 layers; there is no independently derivable empty-password wrapper. Keyfiles must still be secret and sufficiently unpredictable: a known or guessable file permits offline candidate testing.
 
 **Legacy read compatibility.** Readers continue to accept supported v1/v2 keyfile volumes, including keyfile-only deniable v2 volumes historically created with an empty outer password. Decrypt such a volume with its original credentials, then create a new password-only volume. Merely rewrapping the affected inner v2 volume with a non-empty outer password fixes the empty-wrapper problem but does not add keyfile binding to the inner header MAC, payload MAC, Serpent key, or rekey schedule.
 
@@ -203,7 +212,7 @@ For maximum security, prefer interactive prompts or stdin piping.
 
 ## Memory Handling
 
-Picocrypt NG zeros sensitive key material after use via `crypto.SecureZero()`. This uses constant-time operations to prevent compiler optimization from removing the zeroing. However, Go's garbage collector may create copies of sensitive data that cannot be zeroed. This is an inherent limitation of garbage-collected languages. For most threat models, the implemented zeroing significantly reduces the attack window.
+Picocrypt NG overwrites owned sensitive byte buffers after use via `crypto.SecureZero()`, backed by `internal/secret`. The helper uses a non-inlined `clear` followed by `runtime.KeepAlive`, without allocating another buffer. Optimized compiler output must be checked when changing this helper or the toolchain. This is best-effort cleanup: other copies held by the runtime, compiler or dependencies may remain, and complete memory erasure is not guaranteed.
 
 # Code Structure
 
@@ -218,7 +227,7 @@ These packages implement the cryptographic operations and must be modified with 
 - **kdf.go**: Argon2id key derivation and HKDF-SHA3-256 subkey derivation
 - **mac.go**: BLAKE2b-512 (normal mode) and HMAC-SHA3-512 (paranoid mode)
 - **rekey.go**: Cipher rekeying every 60 GiB to prevent nonce overflow
-- **zeroing.go**: Secure memory zeroing using constant-time operations
+- **zeroing.go**: Compatibility facade for shared sensitive-buffer cleanup
 
 ### `internal/header/`
 - **format.go**: Volume header structure and field size constants
@@ -232,8 +241,8 @@ These packages implement the cryptographic operations and must be modified with 
   - Unordered: `SHA3-256(file1) XOR SHA3-256(file2) XOR ...`
 
 ### `internal/volume/`
-- **encrypt.go**: 8-phase encryption pipeline orchestration
-- **decrypt.go**: 7-phase decryption pipeline with v1/v2 compatibility (optional two-pass verify-first mode)
+- **encrypt.go**: encryption pipeline orchestration
+- **decrypt.go**: decryption pipeline with v1/v2 compatibility (optional two-pass verify-first mode)
 - **context.go**: Operation context with automatic key material cleanup
 - **deniability.go**: Plausible deniability wrapper (random-looking header)
 

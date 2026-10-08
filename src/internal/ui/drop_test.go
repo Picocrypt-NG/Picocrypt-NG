@@ -6,6 +6,7 @@ import (
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"bytes"
 	"context"
@@ -20,7 +21,6 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
 )
 
 // TestFileTypeDetection tests detection of encrypted vs plain files.
@@ -117,6 +117,117 @@ func TestOutputPathFromDecrypt(t *testing.T) {
 	}
 }
 
+// TestSingleFileLeafSymlinkPreservesLegacyRoutes protects the existing desktop
+// contract that a user-selected symlink may still name a legacy v1/v2 volume or
+// a plaintext file. PCV3 routing must not turn that compatibility path into a
+// blanket no-follow rejection.
+func TestSingleFileLeafSymlinkPreservesLegacyRoutes(t *testing.T) {
+	resetLocalizationForTest(t)
+	fyneApp := newTestFyneApp(t)
+
+	tests := []struct {
+		name       string
+		makeTarget func(t *testing.T) string
+		linkName   string
+		wantMode   string
+		wantOutput func(string) string
+	}{
+		{
+			name: "legacy v2 decrypt",
+			makeTarget: func(t *testing.T) string {
+				t.Helper()
+				path, err := filepath.Abs(filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"))
+				if err != nil {
+					t.Fatalf("resolve frozen legacy volume: %v", err)
+				}
+				return path
+			},
+			linkName:   "legacy-link.pcv",
+			wantMode:   "decrypt",
+			wantOutput: trimPCVSuffix,
+		},
+		{
+			name: "plaintext encrypt",
+			makeTarget: func(t *testing.T) string {
+				t.Helper()
+				path := filepath.Join(t.TempDir(), "plaintext.txt")
+				if err := os.WriteFile(path, []byte("legacy plaintext"), 0o600); err != nil {
+					t.Fatalf("write plaintext target: %v", err)
+				}
+				return path
+			},
+			linkName: "plaintext-link.txt",
+			wantMode: "encrypt",
+			wantOutput: func(path string) string {
+				return path + ".pcv"
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			link := filepath.Join(dir, tc.linkName)
+			if err := os.Symlink(tc.makeTarget(t), link); err != nil {
+				t.Skipf("leaf symlinks unavailable: %v", err)
+			}
+			a := createUIReadyDropTestApp(t, fyneApp)
+			t.Cleanup(func() { a.State.Reset() })
+
+			fyne.DoAndWait(func() { a.onDrop([]string{link}) })
+			waitForDropProcessing(t, a)
+			state := snapshotDropState(t, a)
+			if state.Mode != tc.wantMode {
+				t.Fatalf("leaf symlink mode = %q; want %q", state.Mode, tc.wantMode)
+			}
+			if state.InputFile != link {
+				t.Fatalf("leaf symlink input = %q; want %q", state.InputFile, link)
+			}
+			if want := tc.wantOutput(link); state.OutputFile != want {
+				t.Fatalf("leaf symlink output = %q; want %q", state.OutputFile, want)
+			}
+			if !reflect.DeepEqual(state.OnlyFiles, []string{link}) {
+				t.Fatalf("leaf symlink files = %#v; want exact selected path", state.OnlyFiles)
+			}
+			if a.State.SelectPCV3D1() {
+				t.Fatal("legacy-compatible leaf symlink retained explicit D1 authority")
+			}
+		})
+	}
+}
+
+// TestSingleFileLeafSymlinkToPCV3FailsClosed protects the security side of the
+// compatibility split: following a legacy-compatible leaf symlink must not let
+// a normal PCV3 volume fall through to the legacy UI or mint Start authority.
+func TestSingleFileLeafSymlinkToPCV3FailsClosed(t *testing.T) {
+	resetLocalizationForTest(t)
+	target, err := filepath.Abs(filepath.Join("..", "pcv3operation", "internal", "pcv3", "testdata", "schema1-minimal.pcv"))
+	if err != nil {
+		t.Fatalf("resolve PCV3 fixture: %v", err)
+	}
+	dir := t.TempDir()
+	link := filepath.Join(dir, "claimed.pcv")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("leaf symlinks unavailable: %v", err)
+	}
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+
+	fyne.DoAndWait(func() { a.onDrop([]string{link}) })
+	waitForDropProcessing(t, a)
+	fyne.DoAndWait(func() {
+		snap := a.State.UISnapshot()
+		if !snap.PCVUnavailable || snap.PCV3Route != app.PCV3RouteNone || snap.Mode != "" {
+			t.Fatalf("PCV3 symlink did not fail closed: %#v", snap)
+		}
+		if !a.startButton.Disabled() {
+			t.Fatal("PCV3 symlink restored Start authority")
+		}
+	})
+	if _, err := os.Lstat(trimPCVSuffix(link)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("PCV3 symlink created an output: %v", err)
+	}
+}
+
 // TestMultipleDropLabels drives the real handleMultipleDrop (via onDrop) with
 // actual files/folders on disk and asserts the rendered input label it produces.
 // The label grammar (singular/plural, "and") is production logic in drop.go and
@@ -181,43 +292,6 @@ func TestMultipleDropLabels(t *testing.T) {
 	}
 }
 
-func TestApplyDropErrorPreservesStatusAfterReset(t *testing.T) {
-	newTestFyneApp(t)
-
-	testCases := []struct {
-		name              string
-		status            string
-		closeKeyfileModal bool
-	}{
-		{name: "DecryptDrop", status: "Read access denied", closeKeyfileModal: false},
-		{name: "KeyfileDrop", status: "Cannot read keyfile", closeKeyfileModal: true},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			a := &App{
-				State:             mustNewState(t),
-				advancedContainer: container.NewVBox(),
-			}
-			a.State.SetStartAction(app.StartActionDecrypt)
-			a.State.SetStatus("Old status", util.GREEN)
-
-			a.applyDropError(tc.status, tc.closeKeyfileModal)
-
-			snap := a.State.UISnapshot()
-			if snap.StartAction != app.StartActionStart {
-				t.Fatalf("expected resetUI() to run, StartAction = %v", snap.StartAction)
-			}
-			if snap.Status.Kind != app.StatusCustom || snap.Status.Text != tc.status {
-				t.Fatalf("Status = %#v, want custom %q", snap.Status, tc.status)
-			}
-			if snap.Status.Color != util.RED {
-				t.Fatalf("Status.Color = %#v, want %#v", snap.Status.Color, util.RED)
-			}
-		})
-	}
-}
-
 func TestApplyStartupPathsLoadsInitialFiles(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 
@@ -259,6 +333,7 @@ func TestApplyStartupPathsLoadsDecryptVolume(t *testing.T) {
 	fyne.DoAndWait(func() {
 		a.applyStartupPaths([]string{inputFile})
 	})
+	waitForDropProcessing(t, a)
 	state := snapshotDropState(t, a)
 
 	if state.Mode != "decrypt" {
@@ -312,6 +387,7 @@ func TestApplyStartupPathsTreatsUppercaseVolumeExtensionAsDecrypt(t *testing.T) 
 	fyne.DoAndWait(func() {
 		a.applyStartupPaths([]string{inputFile})
 	})
+	waitForDropProcessing(t, a)
 	state := snapshotDropState(t, a)
 
 	if state.Mode != "decrypt" {
@@ -630,7 +706,7 @@ func TestScheduleStartupPathsDefersUntilLifecycleStart(t *testing.T) {
 		t.Fatal("expected startup hook to be registered")
 	}
 
-	fake.started()
+	fyne.DoAndWait(fake.started)
 	waitForInputFile(t, a, inputFile)
 	state = snapshotDropState(t, a)
 
@@ -659,7 +735,7 @@ func TestScheduleStartupPathsSkipsMissingArgvWhenValidPathsRemain(t *testing.T) 
 		t.Fatal("expected startup hook to be registered")
 	}
 
-	fake.started()
+	fyne.DoAndWait(fake.started)
 	waitForInputFile(t, a, inputFile)
 	state := snapshotDropState(t, a)
 	if state.InputFile != inputFile {
@@ -696,7 +772,7 @@ func TestScheduleStartupPathsPreservesPartialAccessWarningForArgv(t *testing.T) 
 		t.Fatal("expected startup hook to be registered")
 	}
 
-	fake.started()
+	fyne.DoAndWait(fake.started)
 	waitForInputFile(t, a, inputFile)
 	state := snapshotDropState(t, a)
 	if state.InputFile != inputFile {
@@ -713,7 +789,7 @@ func TestScheduleStartupPathsPreservesPartialAccessWarningForArgv(t *testing.T) 
 // Apple-Event-buffered paths from a Finder cold launch may be the only source
 // of startup paths and are drained inside the OnStarted closure via
 // drainOpenedPaths(). Removing the wiring on empty input would silently lose
-// those events. (FA-MAC-03 / Plan 03-03)
+// those events. (FA-MAC-03)
 func TestScheduleStartupPathsAlwaysWiresStartHook(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 
@@ -730,7 +806,7 @@ func TestScheduleStartupPathsAlwaysWiresStartHook(t *testing.T) {
 
 	// Firing the hook with empty CLI args + nil drain (non-darwin stub returns nil)
 	// must be a safe no-op: no panic, no state mutation.
-	fake.started()
+	fyne.DoAndWait(fake.started)
 	waitForDropProcessing(t, a)
 	state := snapshotDropState(t, a)
 	if state.InputFile != "" {
@@ -773,7 +849,7 @@ func TestScheduleStartupPathsAppliesWarmOpenedPaths(t *testing.T) {
 	}
 
 	// Fire the start hook with nothing buffered: still no input applied.
-	fake.started()
+	fyne.DoAndWait(fake.started)
 	waitForDropProcessing(t, a)
 	if state := snapshotDropState(t, a); state.InputFile != "" {
 		t.Fatalf("InputFile = %q before any opened path; want empty", state.InputFile)
@@ -813,15 +889,15 @@ func TestSeparateWarmOpenedPathReplacesSelectionAfterFirstSessionApplied(t *test
 	fake := newLifecycleCaptureApp(fyne.CurrentApp())
 	a.fyneApp = fake
 	a.scheduleStartupPaths(nil)
-	fake.started()
+	fyne.DoAndWait(fake.started)
 
 	appendOpenedPath(first)
 	flushOpenedPaths()
-	waitForInputFile(t, a, first)
+	waitForAllFiles(t, a, []string{first})
 
 	appendOpenedPath(second)
 	flushOpenedPaths()
-	waitForInputFile(t, a, second)
+	waitForAllFiles(t, a, []string{second})
 
 	state := snapshotDropState(t, a)
 	if !reflect.DeepEqual(state.AllFiles, []string{second}) {
@@ -863,7 +939,7 @@ func TestScheduleStartupPathsCoalescesColdAndLateOpenedBatches(t *testing.T) {
 	if fake.started == nil {
 		t.Fatal("expected startup hook to be registered")
 	}
-	fake.started()
+	fyne.DoAndWait(fake.started)
 
 	appendOpenedPath(paths[2])
 	flushOpenedPaths()
@@ -901,7 +977,7 @@ func TestOpenedPathsWaitForReadinessBeforeApply(t *testing.T) {
 	fake := newLifecycleCaptureApp(fyne.CurrentApp())
 	a.fyneApp = fake
 	a.scheduleStartupPaths(nil)
-	fake.started()
+	fyne.DoAndWait(fake.started)
 	appendOpenedPath(inputFile)
 	flushOpenedPaths()
 
@@ -1979,6 +2055,11 @@ func TestKeyfileDropHandling(t *testing.T) {
 	// be skipped by the !duplicate && !stat.IsDir() guard in handleKeyfileDrop.
 	var handled bool
 	fyne.DoAndWait(func() {
+		// Keyfile selection is intentionally available only while decrypting a
+		// legacy volume that declares keyfiles. Model that real UI state so this
+		// test does not imply that new v2 volumes can accept keyfiles.
+		a.State.Mode = "decrypt"
+		a.State.Keyfile = true
 		a.State.ShowKeyfile = true
 		handled = a.handleKeyfileDrop([]string{key1, key2, key1, subdir})
 	})
@@ -2002,6 +2083,87 @@ func TestKeyfileDropHandling(t *testing.T) {
 	wantLabel := trn("keyfiles.count", "{{.Count}} keyfiles", 2, map[string]any{"Count": 2})
 	if label != wantLabel {
 		t.Fatalf("rendered keyfile label = %q; want %q", label, wantLabel)
+	}
+}
+
+// TestPCV3KeyfileModalDropPreservesSelectedOrderAndDuplicates drives the
+// visible PCV3 action, factor, order, Edit modal, and drop path. PCV3 factors
+// bind every selected keyfile occurrence, unlike legacy keyfile management.
+func TestPCV3KeyfileModalDropPreservesSelectedOrderAndDuplicates(t *testing.T) {
+	resetLocalizationForTest(t)
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	directory := t.TempDir()
+	input := filepath.Join(directory, "input.pcv3")
+	key1 := filepath.Join(directory, "key1.bin")
+	key2 := filepath.Join(directory, "key2.bin")
+	for path, contents := range map[string][]byte{
+		input: []byte("input"),
+		key1:  []byte("first"),
+		key2:  []byte("second"),
+	} {
+		if err := os.WriteFile(path, contents, 0o600); err != nil {
+			t.Fatalf("write %q: %v", path, err)
+		}
+	}
+	source, err := os.Open(input)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	t.Cleanup(func() {
+		fyne.DoAndWait(func() { a.State.Reset() })
+	})
+
+	type requestObservation struct {
+		readers   int
+		protected []string
+	}
+	observed := make(chan requestObservation, 1)
+	a.pcv3OperationExecutor = func(_ context.Context, request *pcv3operation.Request) *pcv3operation.Result {
+		observed <- requestObservation{
+			readers:   len(request.Factors.Keyfiles),
+			protected: append([]string(nil), request.Protected...),
+		}
+		_ = request.Source.Close()
+		_ = request.Factors.Close()
+		return pcv3operation.Run(context.Background(), &pcv3operation.Request{})
+	}
+
+	fyne.DoAndWait(func() {
+		if !a.State.SetPCV3Ready(source, app.PCV3FormatNormal, input, filepath.Join(directory, "output"), 5) {
+			t.Fatal("set PCV3 selection")
+		}
+		a.State.SetPCV3Intent(app.PCV3ActionDecrypt, app.PCV3FactorPolicyUnset, app.PCV3KeyfileOrderUnset)
+		a.refreshAdvanced()
+		a.updateUIState()
+		if a.keyfileEditBtn.Disabled() {
+			t.Fatal("PCV3 keyfile policy disabled the real Edit control")
+		}
+		a.keyfileEditBtn.OnTapped()
+		if !a.State.ShowKeyfile || a.keyfileModal == nil {
+			t.Fatal("enabled Edit control did not open the keyfile modal")
+		}
+		a.onDrop([]string{key1, key2, key1})
+		a.keyfileOrderCheck.SetChecked(true)
+		if !a.State.CanStart() || a.startButton.Disabled() {
+			t.Fatal("complete PCV3 keyfile intent did not enable Start")
+		}
+		a.keyfileModal.Hide()
+		a.State.ShowKeyfile = false
+		a.onClickStart()
+	})
+
+	select {
+	case got := <-observed:
+		want := []string{key1, key2, key1}
+		if got.readers != len(want) {
+			t.Fatalf("PCV3 request keyfile readers = %d; want %d", got.readers, len(want))
+		}
+		if !reflect.DeepEqual(got.protected, want) {
+			t.Fatalf("PCV3 request Protected = %v; want %v", got.protected, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("PCV3 executor did not receive the dropped keyfile request")
 	}
 }
 
@@ -2110,6 +2272,7 @@ func createUIReadyDropTestApp(t *testing.T, fyneApp fyne.App) *App {
 	fyne.DoAndWait(func() {
 		a.Window = fyneApp.NewWindow("drop-test")
 		a.Window.SetContent(a.buildUI())
+		a.initializeDesktopWindow()
 	})
 	return a
 }
@@ -2445,7 +2608,9 @@ func (a *lifecycleCaptureApp) Driver() fyne.Driver                 { return a.dr
 func (a *lifecycleCaptureApp) UniqueID() string                    { return "lifecycle-capture-app" }
 func (a *lifecycleCaptureApp) SendNotification(*fyne.Notification) {}
 func (a *lifecycleCaptureApp) Settings() fyne.Settings             { return fyne.CurrentApp().Settings() }
-func (a *lifecycleCaptureApp) Preferences() fyne.Preferences       { return fyne.CurrentApp().Preferences() }
+
+func (a *lifecycleCaptureApp) Preferences() fyne.Preferences { return fyne.CurrentApp().Preferences() }
+
 func (a *lifecycleCaptureApp) Storage() fyne.Storage               { return fyne.CurrentApp().Storage() }
 func (a *lifecycleCaptureApp) Lifecycle() fyne.Lifecycle           { return a }
 func (a *lifecycleCaptureApp) Metadata() fyne.AppMetadata          { return fyne.AppMetadata{} }

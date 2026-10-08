@@ -1,12 +1,27 @@
 package mobile
 
 import (
+	"Picocrypt-NG/internal/pcv3publication"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
+
+func openPCV3Regular(path string) (*os.File, error) {
+	file, err := openPCV3Existing(path, os.O_RDONLY)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
+		_ = file.Close()
+		return nil, errors.New("PCV3 input is not a regular file")
+	}
+	return file, nil
+}
 
 // RemoveTreeNoFollow removes targetPath without following any directory
 // symlink between rootPath and the target. The empty string means success.
@@ -19,6 +34,52 @@ func RemoveTreeNoFollow(rootPath, targetPath string) string {
 		return err.Error()
 	}
 	return ""
+}
+
+// CleanupPCV3Journal performs deny-by-default startup cleanup for one local
+// parent directory. It exposes only the closed cleanup state, never a path or
+// raw filesystem error.
+func CleanupPCV3Journal(parentPath string) string {
+	if parentPath == "" || len(parentPath) > maxPCV3PathBytes ||
+		!utf8.ValidString(parentPath) || strings.ContainsRune(parentPath, '\x00') ||
+		strings.Contains(parentPath, "://") || !filepath.IsAbs(parentPath) ||
+		filepath.Clean(parentPath) != parentPath {
+		return "incomplete"
+	}
+	state, err := pcv3publication.CleanupJournaledStage(parentPath)
+	if err != nil {
+		return "incomplete"
+	}
+	switch state {
+	case pcv3publication.CleanupJournalAbsent:
+		return "absent"
+	case pcv3publication.CleanupJournalCleaned:
+		return "cleaned"
+	default:
+		return "incomplete"
+	}
+}
+
+// PublishInputCopy atomically moves a complete Android input copy without
+// replacing another owner. Published codes grant target cleanup custody even
+// if a post-move error prevents handoff; all other codes grant none.
+func PublishInputCopy(parentPath, sourceName, targetName string, device, inode int64) string {
+	if device < 0 || inode <= 0 || len(parentPath) > maxPCV3PathBytes || len(sourceName) > 255 || len(targetName) > 255 ||
+		!utf8.ValidString(parentPath) || !utf8.ValidString(sourceName) || !utf8.ValidString(targetName) {
+		return "not-published"
+	}
+	state, err := pcv3publication.MoveExistingNoReplace(parentPath, sourceName, targetName, uint64(device), uint64(inode))
+	switch state {
+	case pcv3publication.ExistingFilePublished:
+		if err != nil {
+			return "published-error"
+		}
+		return "published"
+	case pcv3publication.ExistingFileNotPublished:
+		return "not-published"
+	default:
+		return "indeterminate"
+	}
 }
 
 func removeTreeNoFollow(rootPath, targetPath string) (retErr error) {

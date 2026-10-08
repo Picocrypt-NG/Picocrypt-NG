@@ -40,8 +40,8 @@ func (r *repairingReporter) IsCancelled() bool {
 // encryptRSVolume encrypts plaintext into a Reed-Solomon-enabled .pcv and returns
 // its path. Mirrors the TestRoundTripReedSolomon encrypt setup.
 //
-// SHARED with Phase 3 DATA-01 (TestVerifyFirstCorrectableRS): keep this helper
-// and corruptOneRSBlock reusable — Phase 3 reuses both to build a .pcv with
+// Shared with TestVerifyFirstCorrectableRS: keep this helper
+// and corruptOneRSBlock reusable to build a .pcv with
 // correctable RS128 damage. Do not specialize them to a single test.
 func encryptRSVolume(t *testing.T, plaintext []byte, password string) string {
 	t.Helper()
@@ -80,7 +80,7 @@ func encryptRSVolume(t *testing.T, plaintext []byte, password string) string {
 // but visible to (and unrepaired by) the FAST pass — which is exactly what forces
 // the full-RS-decode retry to fire AND succeed.
 //
-// SHARED with Phase 3 DATA-01 — see encryptRSVolume.
+// Shared with TestVerifyFirstCorrectableRS — see encryptRSVolume.
 func corruptOneRSBlock(t *testing.T, pcvPath string, blockIndex, nFlips int) {
 	t.Helper()
 	if nFlips < 1 || nFlips > 4 {

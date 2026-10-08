@@ -62,6 +62,7 @@ func (a *App) buildMobileUI() fyne.CanvasObject {
 	a.startButton.Importance = widget.HighImportance
 
 	a.statusLabel = NewColoredLabel(renderStatus(snap.Status, snap), snap.Status.Color)
+	a.statusLabel.SetOnTapped(a.showStatusDetails)
 
 	// Main content in a vertical box
 	a.mainContent = container.NewVBox(
@@ -77,7 +78,7 @@ func (a *App) buildMobileUI() fyne.CanvasObject {
 		outputSection,
 		widget.NewSeparator(),
 		a.startButton,
-		a.statusLabel,
+		a.statusLabel.object(),
 	)
 
 	// Wrap in scroll container for small screens
@@ -507,13 +508,16 @@ func (a *App) buildMobilePasswordSection() fyne.CanvasObject {
 
 	a.pasteBtn = newToolbarButton(tr("action.paste", "Paste"), theme.ContentPasteIcon(), func() {
 		text := a.fyneApp.Clipboard().Content()
+		passwordChanged := a.passwordEntry.Text != text
 		a.State.Password = text
 		a.passwordEntry.SetText(text)
 		if a.State.Mode != "decrypt" {
 			a.State.CPassword = text
 			a.cPasswordEntry.SetText(text)
 		}
-		a.updatePasswordStrength()
+		if !passwordChanged {
+			a.updatePasswordStrength()
+		}
 		a.updateValidation()
 		a.updateUIState()
 	})
@@ -554,6 +558,7 @@ func (a *App) buildMobilePasswordSection() fyne.CanvasObject {
 	passwordTitle := container.NewHBox(a.passwordLabel, a.strengthIndicator)
 	confirmTitle := container.NewHBox(a.confirmLabel, a.validIndicator)
 	a.confirmRow = container.NewVBox(confirmTitle, a.cPasswordEntry)
+	a.linkPasswordScroll()
 
 	return container.NewVBox(
 		passwordTitle,
@@ -659,6 +664,10 @@ func (a *App) buildMobileEncryptOptions() {
 
 	a.deniabilityCheck = ttwidget.NewCheck(tr("advanced.deniability.label", "Deniability"), func(checked bool) {
 		a.State.Deniability = checked
+		if checked {
+			a.State.Paranoid = true
+			a.paranoidCheck.SetChecked(true)
+		}
 		a.updateUIState()
 	})
 	a.deniabilityCheck.SetChecked(a.State.Deniability)

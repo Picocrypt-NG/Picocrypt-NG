@@ -34,7 +34,9 @@ internal object NoFollowFileTree {
         val normalizedRoot = root.absoluteFile.normalize()
         val normalizedPath = path.absoluteFile.normalize()
         val relative = normalizedPath.relativeToOrNull(normalizedRoot) ?: return false
-        if (relative.path.isEmpty()) {
+        if (relative.path.isEmpty() ||
+            relative.invariantSeparatorsPath.split('/').firstOrNull() == ".."
+        ) {
             return false
         }
 

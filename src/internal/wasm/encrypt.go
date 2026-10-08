@@ -36,6 +36,8 @@ const (
 	wasmZeroingDecryptMACSubkey      wasmZeroingBufferKind = "decrypt mac subkey"
 	wasmZeroingDecryptSerpentKey     wasmZeroingBufferKind = "decrypt serpent key"
 	wasmZeroingDecryptPlaintextChunk wasmZeroingBufferKind = "decrypt plaintext chunk"
+	wasmZeroingDecryptAggregate      wasmZeroingBufferKind = "decrypt plaintext buffer"
+	wasmZeroingDecryptStaging        wasmZeroingBufferKind = "decrypt owned staging"
 	wasmZeroingDecryptComputedMAC    wasmZeroingBufferKind = "decrypt computed mac"
 	wasmZeroingKeyfileKey            wasmZeroingBufferKind = "keyfile key"
 	wasmZeroingCipherKey             wasmZeroingBufferKind = "keyfile cipher key"
@@ -99,7 +101,7 @@ func (w byteSliceWriterAt) WriteAt(p []byte, off int64) (int, error) {
 }
 
 // EncryptOptions configures an in-memory encryption. Zero value = normal,
-// no-comment volume (the pre-P0 behavior).
+// no-comment volume (the behavior before comment support).
 type EncryptOptions struct {
 	Paranoid       bool     // 8 Argon2 passes, Serpent-CTR + XChaCha20, HMAC-SHA3
 	Comments       string   // plaintext header comments (NOT encrypted); len <= header.MaxCommentLen

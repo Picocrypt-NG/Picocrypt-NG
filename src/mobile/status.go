@@ -1,10 +1,95 @@
 package mobile
 
 import (
+	"Picocrypt-NG/internal/pcv3operation"
 	"math"
 	"regexp"
 	"strconv"
 )
+
+func pcv3StatusCode(code pcv3operation.StatusCode) string {
+	switch code {
+	case pcv3operation.StatusCheckingRequest:
+		return "checking-request"
+	case pcv3operation.StatusCheckingFactors:
+		return "checking-factors"
+	case pcv3operation.StatusCheckingResources:
+		return "checking-resources"
+	case pcv3operation.StatusPreparingInput:
+		return "preparing-input"
+	case pcv3operation.StatusEncrypting:
+		return "encrypting"
+	case pcv3operation.StatusSplitting:
+		return "splitting"
+	case pcv3operation.StatusDerivingKey:
+		return "deriving-key"
+	case pcv3operation.StatusAuthenticating:
+		return "authenticating"
+	case pcv3operation.StatusRecovering:
+		return "recovering"
+	case pcv3operation.StatusPreparingArtifact:
+		return "preparing-artifact"
+	case pcv3operation.StatusPublishing:
+		return "publishing"
+	case pcv3operation.StatusConfirmingDurability:
+		return "confirming-durability"
+	default:
+		return "none"
+	}
+}
+
+func pcv3ModeCode(mode pcv3operation.Mode) string {
+	switch mode {
+	case pcv3operation.ModeReadNormal:
+		return "read-normal"
+	case pcv3operation.ModeReadD1:
+		return "read-d1"
+	case pcv3operation.ModeRecoverNormal:
+		return "recover-normal"
+	case pcv3operation.ModeRecoverD1:
+		return "recover-d1"
+	case pcv3operation.ModeForceNormal:
+		return "force-normal"
+	case pcv3operation.ModeForceD1:
+		return "force-d1"
+	case pcv3operation.ModeForceUnverifiedNormal:
+		return "force-unverified-normal"
+	case pcv3operation.ModeForceUnverifiedD1:
+		return "force-unverified-d1"
+	default:
+		return "none"
+	}
+}
+
+func pcv3RoleCode(role pcv3operation.PhysicalRole) string {
+	switch role {
+	case pcv3operation.RolePrimary:
+		return "primary"
+	case pcv3operation.RoleBackup:
+		return "backup"
+	case pcv3operation.RoleD1Front:
+		return "d1-front"
+	case pcv3operation.RoleD1Tail:
+		return "d1-tail"
+	default:
+		return "none"
+	}
+}
+
+func pcv3Role(role string) pcv3operation.PhysicalRole {
+	switch role {
+	case "primary":
+		return pcv3operation.RolePrimary
+	case "backup":
+		return pcv3operation.RoleBackup
+	case "d1-front":
+		return pcv3operation.RoleD1Front
+	case "d1-tail":
+		return pcv3operation.RoleD1Tail
+	default:
+		return pcv3operation.RoleNone
+	}
+}
 
 type classifiedStatus struct {
 	Code              string

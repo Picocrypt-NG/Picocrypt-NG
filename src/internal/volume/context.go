@@ -50,8 +50,9 @@ type ProgressReporter interface {
 }
 
 // EncryptRequest contains all parameters needed to encrypt files into a .pcv volume.
-// Picocrypt-NG 2.19 requires Password and rejects new v2 writes with Keyfiles.
 type EncryptRequest struct {
+	// ZIPBudget shares trusted archive admission with frontend custody.
+	ZIPBudget *fileops.ZIPResourceBudget
 	// Input files - use InputFile for single file, InputFiles for multiple (zipped automatically)
 	InputFile   string   // Single file path to encrypt
 	InputFiles  []string // Multiple file paths (will be combined into encrypted zip)
@@ -67,17 +68,17 @@ type EncryptRequest struct {
 	// intermediate immutable string copy on those paths. Residual: the Fyne GUI's
 	// widget.Entry yields a Go string in app.State.Password; ui/operations.go
 	// converts it to an owned []byte here and zeros that copy, but the original
-	// string still lingers until GC (intentionally out of scope — CONCERNS 3.1;
-	// ROADMAP "Out of Scope: Guaranteed password zeroing").
+	// string can linger until GC because Go strings cannot be zeroed in place.
 	Password       []byte   // User password (processed through Argon2id) — see SECURITY note above
-	Keyfiles       []string // Legacy API field; non-empty is rejected by the v2 writer
-	KeyfileOrdered bool     // Legacy keyfile-order option; only relevant to legacy volume reads
+	Keyfiles       []string // PCV3 keyfile paths; the legacy v2 writer rejects non-empty values
+	KeyfileOrdered bool     // Preserve keyfile order when creating PCV3
+	PCV3           bool     // Create a Normal PCV3 volume instead of a legacy volume
 
 	// Security options
 	Comments    string // Plaintext comments stored in header (NOT encrypted!)
 	Paranoid    bool   // Enable paranoid mode: 8 Argon2 passes, Serpent-CTR + XChaCha20, HMAC-SHA3
 	ReedSolomon bool   // Enable Reed-Solomon error correction on payload (6% size overhead)
-	Deniability bool   // Wrap volume in additional encryption layer for plausible deniability
+	Deniability bool   // Create a legacy wrapper or, with PCV3+Paranoid, D1
 	Compress    bool   // Use Deflate compression when creating zip archive
 
 	// Output splitting - useful for storage on FAT32 or cloud services with file size limits
@@ -102,8 +103,7 @@ type DecryptRequest struct {
 	// Credentials - must match encryption parameters
 	//
 	// SECURITY (SEC-05): owned []byte zeroed by the caller after use — same
-	// ownership model and GUI residual as EncryptRequest.Password above (CONCERNS
-	// 3.1; ROADMAP "Out of Scope: Guaranteed password zeroing").
+	// ownership model and GUI residual as EncryptRequest.Password above.
 	Password []byte   // User password — see SECURITY note above
 	Keyfiles []string // Keyfile paths (validated against hash stored in header)
 
@@ -128,7 +128,7 @@ type DecryptRequest struct {
 }
 
 // OperationContext holds mutable state during encryption/decryption operations.
-// This is created at the start of Encrypt()/Decrypt() and passed through all phases.
+// This is created at the start of Encrypt()/Decrypt() and passed through the operation.
 type OperationContext struct {
 	// Context for cancellation and timeouts
 	Ctx context.Context
@@ -151,11 +151,9 @@ type OperationContext struct {
 	CipherSuite   *crypto.CipherSuite  // Initialized cipher suite (XChaCha20 + optional Serpent)
 
 	// Operation flags
-	IsLegacyV1   bool                    // True if decrypting a v1.x volume (different HKDF timing)
-	UseKeyfiles  bool                    // True if keyfiles were used/required
-	Padded       bool                    // True if final chunk needs unpadding (RS mode)
-	TempZipInUse bool                    // True if reading from encrypted temp zip
-	TempCiphers  *fileops.TempZipCiphers // Ciphers for encrypted temp zip
+	IsLegacyV1  bool // True if decrypting a v1.x volume (different HKDF timing)
+	UseKeyfiles bool // True if keyfiles were used/required
+	Padded      bool // True if final chunk needs unpadding (RS mode)
 
 	// Reed-Solomon retry state (for corrupt file recovery)
 	TriedFullRSDecode bool // Prevents infinite retry loop when MAC fails
@@ -168,6 +166,16 @@ type OperationContext struct {
 	stagedOutput *fileops.StagedFile
 	ownedTemps   []*fileops.StagedFile
 	tempInput    *fileops.StagedFile
+	tempZip      *fileops.TempZip
+
+	// pinnedLegacyInput is the descriptor classified after preprocessing and
+	// reused by every legacy decrypt step. It is either borrowed from a
+	// PreparedDecryptInput/staged file or owned by this context.
+	pinnedLegacyInput     *os.File
+	ownsPinnedLegacyInput bool
+	pinnedLegacyInputInfo os.FileInfo
+	pinnedLegacyInputSize int64
+	protectedInputInfos   []os.FileInfo
 
 	publishedOutputInfo os.FileInfo
 
@@ -260,12 +268,12 @@ func (ctx *OperationContext) CancellationError() error {
 	return perrors.ErrCancelled
 }
 
-// TempZipReader wraps the input file with decryption if temp zip was used
-func (ctx *OperationContext) TempZipReader(r io.Reader) io.Reader {
-	if ctx.TempZipInUse && ctx.TempCiphers != nil {
-		return fileops.WrapReaderWithCipher(r, ctx.TempCiphers)
+// TempZipReader obtains the one-shot authenticated archive reader, if present.
+func (ctx *OperationContext) TempZipReader(r io.Reader) (io.Reader, error) {
+	if ctx.tempZip != nil {
+		return ctx.tempZip.OpenReader()
 	}
-	return r
+	return r, nil
 }
 
 func (ctx *OperationContext) beginStagedOutput() error {
@@ -350,6 +358,10 @@ func (ctx *OperationContext) cleanupRecombinedFile() error {
 }
 
 func (ctx *OperationContext) openInput() (*os.File, bool, error) {
+	if ctx.tempZip != nil && ctx.InputFile == ctx.tempZip.Path() {
+		return ctx.tempZip.File(), false, nil
+	}
+
 	if ctx.tempInput != nil && ctx.InputFile == ctx.tempInput.Path() {
 		file := ctx.tempInput.File()
 		if file == nil {
@@ -442,15 +454,17 @@ func (ctx *OperationContext) setPasswordBytes(b []byte) {
 // stores the typed password as a Go string in app.State.Password, which is
 // immutable and freely copied/relocated by the GC, so that one copy cannot be
 // zeroed in place — ui/operations.go converts it to an owned []byte for the
-// request and zeros that, but the string lingers until GC. This is intentionally
-// out of scope (CONCERNS 3.1; ROADMAP "Out of Scope: Guaranteed password
-// zeroing"), mirroring crypto.SecureZero's own GC/optimization caveat.
+// request and zeros that, but the string can linger until GC, mirroring
+// crypto.SecureZero's own GC/optimization caveat.
 func (ctx *OperationContext) Close() error {
 	if ctx == nil {
 		return nil
 	}
 
 	var cleanupErrs []error
+	if err := ctx.releasePinnedLegacyInput(); err != nil {
+		cleanupErrs = append(cleanupErrs, err)
+	}
 	if ctx.stagedOutput != nil {
 		if err := ctx.stagedOutput.Cleanup(); err != nil {
 			cleanupErrs = append(cleanupErrs, err)
@@ -495,10 +509,11 @@ func (ctx *OperationContext) Close() error {
 	// Clear SubkeyReader reference (HKDF state)
 	ctx.SubkeyReader = nil
 
-	// Close temp zip ciphers (zeros ephemeral key material)
-	if ctx.TempCiphers != nil {
-		ctx.TempCiphers.Close()
-		ctx.TempCiphers = nil
+	if ctx.tempZip != nil {
+		if err := ctx.tempZip.Close(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
+		ctx.tempZip = nil
 	}
 	return errors.Join(cleanupErrs...)
 }

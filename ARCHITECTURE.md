@@ -24,7 +24,6 @@ src/
 │   │
 │   ├── diskspace/         # Available disk space checks
 │   ├── distmeta/          # Distribution metadata (version strings)
-│   ├── docs/              # Embedded documentation
 │   │
 │   ├── encoding/          # Reed-Solomon and padding
 │   │   ├── rs.go          # Error correction
@@ -49,6 +48,18 @@ src/
 │   │
 │   ├── log/               # Logging seam (null logger by default)
 │   ├── password/          # Password normalization (Unicode NFC)
+│   │
+│   ├── pcv3operation/     # Closed native PCV3 application API
+│   │   └── internal/     # Go compiler-enforced private implementation
+│   │       ├── pcv3/          # Streaming format engines and native adapters
+│   │       ├── pcv3artifact/  # Recovery artifact parser/serializer
+│   │       ├── pcv3credential/# Credential transcript and key ownership
+│   │       ├── pcv3crypto/    # PCV3-only stream primitives
+│   │       ├── pcv3recovery/  # Recovery and unverified Force execution
+│   │       ├── pcv3resource/  # Resource admission and platform observations
+│   │       └── pcv3unicode/   # Frozen Unicode credential normalization
+│   ├── pcv3publication/   # Separate staging and atomic publication infrastructure
+│   ├── pcv3result/        # Shared outcome/stage leaf types
 │   │
 │   ├── ui/                # Fyne GUI
 │   │   ├── app.go         # Main window
@@ -78,42 +89,33 @@ src/
 
 ## Data Flow
 
-### Encryption
+### Native PCV3 encryption
 
 ```
-User drops files -> ui/drop.go
-         ↓
-Password/options -> app/state.go
-         ↓
-Click "Encrypt" -> volume.Encrypt():
-  1. Validate non-empty password; reject every keyfile write
-  2. Zip multiple files (fileops/zip.go)
-  3. Generate salts, nonces, IVs (crypto/kdf.go)
-  4. Write RS-encoded header (header/writer.go)
-  5. Argon2id key derivation (crypto/kdf.go)
-  6. Compute header HMAC (header/auth.go)
-  7. Encrypt: [Serpent] -> XChaCha20 -> MAC (crypto/cipher.go)
-  8. Write auth tag, add optional deniability, split chunks (fileops/split.go)
+Desktop/CLI: volume.EncryptWithResult -> pcv3operation.RunWriteWithOptions
+Android: StartPCV3 -> pcv3operation.RunWriteWithOptions
+  1. Prepare a single input or an encrypted temporary ZIP for folders/multiple files
+  2. Validate declared factors and admit the fixed KDF resource profile
+  3. Derive credentials and serialize Normal PCV3 or D1
+  4. Publish through the identity-bound no-replace publisher
+  5. Complete optional splitting and cleanup, then return the shared Result
 ```
+
+Native desktop, CLI and Android creation use PCV3 by default, with a password,
+keyfiles, or both. Source deletion requires the shared result's explicit authority.
+The internal legacy writer remains for compatibility and the existing WASM path;
+native frontends provide no legacy-creation fallback.
 
 ### Decryption
 
-```
-User drops .pcv -> detect decrypt mode
-         ↓
-volume.Decrypt():
-  1. Recombine chunks, strip deniability
-  2. RS-decode header; reject unsupported major before flags/KDF (header/reader.go)
-  3. Argon2id with params from header
-  4. Validate keyfile hash
-  5. Verify header MAC (v2) or key hash (v1)
-  6. Decrypt: MAC -> XChaCha20 -> [Serpent]
-  7. Verify final MAC, auto-unzip
-```
+Normal PCV3 is routed by content; random-looking D1 requires explicit selection.
+The shared operation boundary authenticates, publishes and returns the common
+result, including archive and retained-output follow-ups where supported.
 
-Picocrypt-NG 2.19 writes password-only v2 volumes. Keyfile processing remains on
-the legacy v1/v2 read path so existing data is recoverable; it is not an active
-writer feature. Unknown major versions fail closed even under force decrypt.
+Legacy v1/v2 reads remain available through `volume.Decrypt`: recombine chunks,
+remove the legacy deniability wrapper when selected, read the header, derive keys,
+verify header and payload authentication, then complete requested unpacking.
+Unknown major versions fail closed even under force decrypt.
 
 ### Android mobile status and error boundary
 
@@ -167,11 +169,19 @@ changes the XChaCha20 key but does not bind the header MAC, payload MAC, Serpent
 key, or rekey values. This is why all new v2 keyfile writes are disabled in
 2.19 while legacy reads remain available.
 
+`EncryptRequest.PCV3` selects the canonical PCV3 serializer and is enabled by
+native frontends. Its zero value preserves the internal legacy compatibility
+writer. Android supports files, folders, multiple inputs and compression through
+the shared writer; WASM does not expose PCV3 creation. Normal PCV3 and PCV3 D1
+support password, keyfile, and combined credentials. D1 is the
+random-looking Paranoid-mode path; its complete credential transcript protects
+both outer and inner key wrapping.
+
 ## Security
 
 ### Audit-Critical Code
 
-Packages `crypto/`, `header/`, `keyfile/`, `volume/` contain audited code. Changes require:
+The legacy paths in `crypto/`, `header/`, `keyfile/`, and `volume/` descend from audited code. PCV3 has not received an independent audit. Changes require:
 
 1. Running the complete golden corpus: `go test -count=1 -run '^TestGolden' ./internal/volume`
 2. Verifying v1.x backward compatibility
@@ -226,3 +236,26 @@ v2 decrypts v1.x volumes. Key differences handled:
 - v1: SHA3-512(key) for auth, v2: HMAC-SHA3-512(header)
 - v1: XORs keyfile before HKDF, v2: XORs after
 - v1: Different HKDF stream offsets (no header subkey)
+
+### PCV3 dependency boundary
+
+Native CLI, desktop, mobile, and volume dispatch use `pcv3operation`. The Go
+`internal` rule prevents those packages from importing its private codecs,
+credential/key owners, recovery engines, resource admission, or frozen Unicode
+implementation. Production frontend depguard rules additionally reject direct
+cryptographic dependencies. These are compilation and architecture-policy gates,
+not substitutes for behavioral compatibility and security tests.
+
+The operation facade accepts owned factors and explicit modes, returns closed
+presentation metadata and Go-minted follow-up capabilities, and offers bounded
+artifact inspection. Android can submit fresh observations only through the
+operation-scoped resource challenge; it cannot choose admission policy. Routing
+probes return ownership and coarse errors without exposing parsed capsule state.
+
+Normal and D1 stream serializers accept readers/writers and contain no filesystem
+publication steps. D1 filesystem staging lives in `d1_native_writer.go`; stream
+encoding lives in `d1_writer.go`. Native adapters remain in the same private codec
+package to preserve unexported authenticated capabilities. This source-layer
+separation is deliberate; it is not a compiler-enforced codec/native package split.
+Publication remains separate infrastructure, including startup stage-journal
+cleanup. The original v1/v2 format and compatibility writer remain unchanged.

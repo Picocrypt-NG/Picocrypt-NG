@@ -385,8 +385,9 @@ class LocalizationResourcesTest {
             "error_keyfile_writes_disabled",
             "new v2 volumes",
             "keyfiles",
-            "disabled",
-            "reviewed v3 format",
+            "cannot",
+            "pcv3",
+            "instead",
             "existing",
             "decrypted",
         )
@@ -412,7 +413,7 @@ class LocalizationResourcesTest {
     }
 
     @Test
-    fun `status resources keep invariant units and phase digits in every catalog`() {
+    fun `status resources keep invariant units and pass digits in every catalog`() {
         catalogs.forEach { catalog ->
             rateStatusResourceNames.forEach { name ->
                 val text = stringElement(catalog.document, name).textContent
@@ -426,7 +427,7 @@ class LocalizationResourcesTest {
                 .toList()
                 .sorted()
             assertEquals(
-                "${catalog.spec.displayName} verify-first status must preserve both phase digits",
+                "${catalog.spec.displayName} verify-first status must preserve both pass digits",
                 listOf("1", "2"),
                 verificationDigits,
             )
@@ -449,7 +450,7 @@ class LocalizationResourcesTest {
         }
 
         assertTrue(
-            "P0/P1 resources must not silently fall back to English: $untranslated",
+            "Required resources must not silently fall back to English: $untranslated",
             untranslated.isEmpty(),
         )
     }
@@ -708,7 +709,7 @@ class LocalizationResourcesTest {
                 "error_decrypt_retry_only" to listOf("только", "расшифр", "принуд"),
                 "deniability_note" to listOf("правдоподоб", "метадан", "до расшифров", "неизвест"),
                 "deniability_password_required" to listOf("правдоподоб", "непуст", "парол"),
-                "error_keyfile_writes_disabled" to listOf("нов", "v2", "ключев", "отключ", "v3", "существ", "расшифр"),
+                "error_keyfile_writes_disabled" to listOf("нов", "v2", "ключ-файл", "pcv3", "явное", "существ", "расшифр"),
                 "prevent_screenshots_description" to listOf("сним", "запис", "недавн"),
             ),
             "de" to mapOf(
@@ -720,7 +721,7 @@ class LocalizationResourcesTest {
                 "error_decrypt_retry_only" to listOf("Nur", "Entschlüsselung", "erzwungener"),
                 "deniability_note" to listOf("Abstreitbarkeitsmodus", "Header-Metadaten", "vor der Entschlüsselung", "unbekannt"),
                 "deniability_password_required" to listOf("Abstreitbarkeit", "nicht leeres Passwort"),
-                "error_keyfile_writes_disabled" to listOf("Neue", "v2", "Schlüsseldateien", "deaktiviert", "v3", "Vorhandene", "entschlüsselt"),
+                "error_keyfile_writes_disabled" to listOf("Neue", "v2", "Schlüsseldateien", "PCV3", "stattdessen", "Vorhandene", "entschlüsselt"),
                 "prevent_screenshots_description" to listOf("Screenshots", "Bildschirmaufnahmen", "zuletzt verwendeten Apps"),
             ),
             "fr" to mapOf(
@@ -732,7 +733,7 @@ class LocalizationResourcesTest {
                 "error_decrypt_retry_only" to listOf("Seules", "déchiffrement", "forcé"),
                 "deniability_note" to listOf("déni plausible", "métadonnées de l’en-tête", "avant le déchiffrement", "inconnus"),
                 "deniability_password_required" to listOf("déni plausible", "mot de passe non vide"),
-                "error_keyfile_writes_disabled" to listOf("nouveaux volumes v2", "fichiers-clés", "désactivée", "format v3", "existants", "déchiffrables"),
+                "error_keyfile_writes_disabled" to listOf("nouveaux volumes v2", "fichiers-clés", "PCV3", "explicitement", "existants", "déchiffrables"),
                 "prevent_screenshots_description" to listOf("captures", "enregistrements", "applications récentes"),
             ),
             "es" to mapOf(
@@ -744,7 +745,7 @@ class LocalizationResourcesTest {
                 "error_decrypt_retry_only" to listOf("Solo", "descifrado", "forzado"),
                 "deniability_note" to listOf("negación plausible", "metadatos del encabezado", "antes del descifrado", "desconocen"),
                 "deniability_password_required" to listOf("negación plausible", "contraseña no vacía"),
-                "error_keyfile_writes_disabled" to listOf("nuevos volúmenes v2", "archivos de clave", "deshabilitada", "formato v3", "existentes", "descifrar"),
+                "error_keyfile_writes_disabled" to listOf("volúmenes v2 nuevos", "archivos de clave", "PCV3", "en su lugar", "existentes", "descifrar"),
                 "prevent_screenshots_description" to listOf("capturas", "grabación", "aplicaciones recientes"),
             ),
             "zh-Hans" to mapOf(
@@ -756,7 +757,7 @@ class LocalizationResourcesTest {
                 "error_decrypt_retry_only" to listOf("只有", "解密", "强制"),
                 "deniability_note" to listOf("可否认性", "标头元数据", "解密前", "未知"),
                 "deniability_password_required" to listOf("可否认性", "非空密码"),
-                "error_keyfile_writes_disabled" to listOf("新", "v2", "密钥文件", "禁用", "v3", "现有", "解密"),
+                "error_keyfile_writes_disabled" to listOf("新", "v2", "密钥文件", "PCV3", "改用", "现有", "解密"),
                 "prevent_screenshots_description" to listOf("截屏", "屏幕录制", "最近使用的应用"),
             ),
             "hi" to mapOf(
@@ -768,7 +769,7 @@ class LocalizationResourcesTest {
                 "error_decrypt_retry_only" to listOf("केवल", "डिक्रिप्शन", "बलपूर्वक"),
                 "deniability_note" to listOf("विश्वसनीय इनकार", "हेडर मेटाडेटा", "डिक्रिप्ट करने से पहले", "अज्ञात"),
                 "deniability_password_required" to listOf("विश्वसनीय इनकार", "खाली न होने वाला पासवर्ड"),
-                "error_keyfile_writes_disabled" to listOf("नए", "v2", "कुंजी फ़ाइल", "बंद", "v3", "मौजूदा", "डिक्रिप्ट"),
+                "error_keyfile_writes_disabled" to listOf("नए", "v2", "कुंजी फ़ाइल", "PCV3", "इसके बजाय", "मौजूदा", "डिक्रिप्ट"),
                 "prevent_screenshots_description" to listOf("स्क्रीनशॉट", "स्क्रीन रिकॉर्डिंग", "हाल के ऐप्स"),
             ),
             "ko" to mapOf(
@@ -780,7 +781,7 @@ class LocalizationResourcesTest {
                 "error_decrypt_retry_only" to listOf("복호화", "강제 복호화"),
                 "deniability_note" to listOf("부인 가능", "헤더 메타데이터", "복호화 전", "알 수"),
                 "deniability_password_required" to listOf("부인 가능", "빈 비밀번호", "사용할 수 없습니다"),
-                "error_keyfile_writes_disabled" to listOf("새", "v2", "키 파일", "만들 수 없습니다", "v3", "기존", "복호화"),
+                "error_keyfile_writes_disabled" to listOf("새", "v2", "키 파일", "PCV3", "대신", "기존", "복호화"),
                 "prevent_screenshots_description" to listOf("스크린샷", "화면 녹화", "최근 앱"),
             ),
         )
@@ -901,9 +902,34 @@ class LocalizationResourcesTest {
             "require_this_order",
             "deniability_password_required",
             "error_keyfile_writes_disabled",
+            "pcv3_output_saved_title",
+            "pcv3_output_saved_body",
+            "pcv3_output_saved_cleanup_title",
+            "pcv3_output_saved_cleanup_body",
+            "pcv3_output_save_failed_title",
+            "pcv3_output_save_failed_body",
+            "pcv3_output_save_failed_cleanup_title",
+            "pcv3_output_save_failed_cleanup_body",
+            "pcv3_output_discarded_title",
+            "pcv3_output_discarded_body",
+            "pcv3_output_discard_cleanup_title",
+            "pcv3_output_discard_cleanup_body",
+            "pcv3_output_expired_title",
+            "pcv3_output_expired_body",
+            "pcv3_output_unknown_title",
+            "pcv3_output_unknown_body",
         )
         private val intentionallyInvariantHighRiskResources = emptySet<String>()
-        private val invariantTechnicalTokens = listOf("MiB", "ETA", "MAC", "Android", "Reed-Solomon", "ZIP")
+        private val invariantTechnicalTokens = listOf(
+            "MiB",
+            "ETA",
+            "MAC",
+            "Android",
+            "Reed-Solomon",
+            "ZIP",
+            "PCV3",
+            "D1",
+        )
         private val literalPercent = Regex("""%%""")
         private val literalDigits = Regex("""\d+""")
         private val technicalExtension = Regex("""(?<![\w.])\.[A-Za-z0-9][A-Za-z0-9_-]*""")
@@ -944,7 +970,57 @@ class LocalizationResourcesTest {
             "status_adding_plausible_deniability",
             "status_removing_deniability_protection",
             "progress_percent",
-        ) + rateStatusResourceNames
+        ) + rateStatusResourceNames + listOf(
+            "pcv3_output_saved_title",
+            "pcv3_output_saved_body",
+            "pcv3_output_saved_cleanup_title",
+            "pcv3_output_saved_cleanup_body",
+            "pcv3_output_save_failed_title",
+            "pcv3_output_save_failed_body",
+            "pcv3_output_save_failed_cleanup_title",
+            "pcv3_output_save_failed_cleanup_body",
+            "pcv3_output_discarded_title",
+            "pcv3_output_discarded_body",
+            "pcv3_output_discard_cleanup_title",
+            "pcv3_output_discard_cleanup_body",
+            "pcv3_output_expired_title",
+            "pcv3_output_expired_body",
+            "pcv3_output_unknown_title",
+            "pcv3_output_unknown_body",
+            "pcv3_output_saved_close",
+            "pcv3_output_save_failed_close",
+            "pcv3_output_discarded_close",
+            "pcv3_output_expired_close",
+            "pcv3_output_unknown_close",
+            "pcv3_save_decrypted_output",
+            "pcv3_save_recovery_artifact",
+            "pcv3_inspect_recovery_artifact",
+            "pcv3_discard_artifact_title",
+            "pcv3_discard_artifact_body",
+            "pcv3_discard_recovery_artifact",
+            "pcv3_keep_recovery_artifact",
+            "pcv3_artifact_details_title",
+            "pcv3_artifact_details_close",
+            "pcv3_artifact_loading",
+            "pcv3_artifact_load_failed",
+            "pcv3_artifact_no_ranges",
+            "pcv3_artifact_kind",
+            "pcv3_artifact_kind_partial",
+            "pcv3_artifact_kind_unverified_forensic",
+            "pcv3_artifact_role",
+            "pcv3_artifact_role_none",
+            "pcv3_artifact_plaintext_length",
+            "pcv3_artifact_final_status",
+            "pcv3_artifact_verified_count",
+            "pcv3_artifact_unverified_count",
+            "pcv3_artifact_missing_count",
+            "pcv3_artifact_status_verified",
+            "pcv3_artifact_status_unverified",
+            "pcv3_artifact_status_missing",
+            "pcv3_artifact_row",
+            "pcv3_artifact_previous_page",
+            "pcv3_artifact_next_page",
+        )
         private val requiredRendererPlurals = listOf("progress_item_count")
         private val requiredErrorBoundaryStrings = listOf(
             "error_auth_failed",
@@ -968,6 +1044,14 @@ class LocalizationResourcesTest {
                 "error_copy_files_failed" to listOf("%1\$s"),
                 "error_split_volume_not_supported" to listOf("%1\$s"),
                 "error_insufficient_storage" to listOf("%1\$d", "%2\$d"),
+                "pcv3_artifact_kind" to listOf("%1\$s"),
+                "pcv3_artifact_role" to listOf("%1\$s"),
+                "pcv3_artifact_plaintext_length" to listOf("%1\$s"),
+                "pcv3_artifact_final_status" to listOf("%1\$s"),
+                "pcv3_artifact_verified_count" to listOf("%1\$s"),
+                "pcv3_artifact_unverified_count" to listOf("%1\$s"),
+                "pcv3_artifact_missing_count" to listOf("%1\$s"),
+                "pcv3_artifact_row" to listOf("%1\$s", "%2\$s", "%3\$s", "%4\$s"),
             )
         private val exactPluralFormatContracts = mapOf(
             "progress_item_count" to listOf("%1\$d", "%2\$d"),

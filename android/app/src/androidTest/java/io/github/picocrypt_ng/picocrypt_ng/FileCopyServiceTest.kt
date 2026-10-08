@@ -21,6 +21,51 @@ class FileCopyServiceTest {
     
     private lateinit var context: Context
     
+    @Test
+    fun pcv3OwnedDeletionUsesNativeNoFollowTreeAndTruthfulRetry() = runTest {
+        val root = File(context.filesDir, "pcv3-cleanup-regression").apply { mkdirs() }
+        val nested = File(root, "nested/plaintext").apply { parentFile!!.mkdirs(); writeText("private") }
+        val outside = File(context.cacheDir, "pcv3-cleanup-unowned").apply { mkdirs() }
+        val preserved = File(outside, "keep").apply { writeText("keep") }
+        val link = File(root, "link")
+        java.nio.file.Files.createSymbolicLink(link.toPath(), outside.toPath())
+        try {
+            assertFalse(FileCopyService.deleteFile(context, preserved.path))
+            assertFalse(FileCopyService.deleteFile(context, File(link, "keep").path))
+            assertTrue(nested.parentFile!!.setWritable(false, false))
+            assertFalse(FileCopyService.deleteFile(context, nested.path))
+            assertTrue(nested.exists())
+            assertTrue(nested.parentFile!!.setWritable(true, true))
+            assertTrue(FileCopyService.deleteFile(context, root.path))
+            assertFalse(root.exists())
+            assertEquals("keep", preserved.readText())
+            assertTrue(FileCopyService.deleteFile(context, root.path))
+        } finally {
+            nested.parentFile!!.setWritable(true, true)
+            java.nio.file.Files.deleteIfExists(link.toPath())
+            root.deleteRecursively()
+            outside.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun pcv3OutputRequiresSeekableRegularDescriptor() {
+        val file = File(context.cacheDir, "pcv3-descriptor-test")
+        file.writeBytes(byteArrayOf(1))
+        try {
+            android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_WRITE).use {
+                assertTrue(FileCopyService.supportsPcv3OutputDescriptor(it))
+            }
+            val pipe = android.os.ParcelFileDescriptor.createPipe()
+            pipe[0].use { read ->
+                pipe[1].use { write ->
+                    assertFalse(FileCopyService.supportsPcv3OutputDescriptor(read))
+                    assertFalse(FileCopyService.supportsPcv3OutputDescriptor(write))
+                }
+            }
+        } finally { file.delete() }
+    }
+
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()

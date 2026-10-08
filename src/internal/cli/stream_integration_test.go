@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -48,6 +49,78 @@ func stdinFile(t *testing.T, data []byte) *os.File {
 	return f
 }
 
+// Run the real CLI with isolated staging so payload transport and cleanup are
+// observable independently of its terminal status. Native Windows cannot grant
+// the durable plaintext owner required for stdout; that committed temp is kept.
+func runStreamIntegrationCommand(t *testing.T, cmd *exec.Cmd, retainedPlaintext []byte) cliTestResult {
+	t.Helper()
+	stagingDir := t.TempDir()
+	cmd.Args = append(cmd.Args, "-q", "--temp-dir", stagingDir)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("running CLI: %v", err)
+		}
+		exitCode = exitErr.ExitCode()
+	}
+	entries, err := os.ReadDir(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" && retainedPlaintext != nil {
+		if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "picocrypt-out-") {
+			t.Fatalf("uncertain plaintext stdout staging = %v; want only retained output", entries)
+		}
+		retained, err := os.ReadFile(filepath.Join(stagingDir, entries[0].Name()))
+		if err != nil || !bytes.Equal(retained, retainedPlaintext) {
+			t.Fatalf("retained plaintext mismatch: got %d bytes, want %d; read error: %v", len(retained), len(retainedPlaintext), err)
+		}
+	} else if len(entries) != 0 {
+		t.Fatalf("CLI left stdin/stdout staging files: %v", entries)
+	}
+	return cliTestResult{exitCode: exitCode, stdout: stdout.Bytes(), stderr: stderr.String()}
+}
+
+func requireNativePCV3CiphertextStream(t *testing.T, result cliTestResult) {
+	t.Helper()
+	terminal := result
+	terminal.stdout = nil
+	if runtime.GOOS == "windows" {
+		const cleanupWarning = "Warning: cleanup of operation-owned temporary files could not be confirmed\n"
+		if !strings.HasSuffix(terminal.stderr, cleanupWarning) {
+			t.Fatalf("native ciphertext stream lost cleanup uncertainty: %q", terminal.stderr)
+		}
+		terminal.stderr = strings.TrimSuffix(terminal.stderr, cleanupWarning)
+	}
+	requireNativePCV3Published(t, terminal, "")
+}
+
+func requireNativePCV3PlaintextStream(t *testing.T, result cliTestResult, plaintext []byte) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		// Authentication/publication succeeded, but no durable retained owner
+		// exists. The refused callback must never publish plaintext to stdout.
+		wantStderr := "Outcome: success\nPublication: published-durability-uncertain\n" +
+			nativePCV3DurabilityWarning +
+			"Warning: an operation callback failed; clean completion was not confirmed\n"
+		if result.exitCode != ExitPCV3DurabilityUncertain || len(result.stdout) != 0 || result.stderr != wantStderr {
+			t.Fatalf("native plaintext stdout = exit %d stdout %q stderr %q; want exit 3, no stdout and %q", result.exitCode, result.stdout, result.stderr, wantStderr)
+		}
+		return
+	}
+	terminal := result
+	terminal.stdout = nil
+	requireNativePCV3Published(t, terminal, "")
+	if !bytes.Equal(result.stdout, plaintext) {
+		t.Fatalf("plaintext stdout mismatch: got %d bytes, want %d", len(result.stdout), len(plaintext))
+	}
+}
+
 func testStdinStdoutIntegration(t *testing.T) {
 	// Build CLI binary
 	tmpDir := t.TempDir()
@@ -77,7 +150,8 @@ func testStdinStdoutIntegration(t *testing.T) {
 		inputData := []byte("secret data for stdin encryption test")
 		outputFile := filepath.Join(tmpDir, "stdin-encrypt.pcv")
 
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			"-",
 			"-o", outputFile,
 			"-p", testPassword,
@@ -85,10 +159,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 		)
 		cmd.Stdin = stdinFile(t, inputData)
 
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("stdin encrypt failed: %v\nOutput: %s", err, output)
-		}
+		requireNativePCV3Published(t, runStreamIntegrationCommand(t, cmd, nil), "")
 
 		// Verify output file exists and has content
 		info, err := os.Stat(outputFile)
@@ -104,15 +175,14 @@ func testStdinStdoutIntegration(t *testing.T) {
 
 		// Decrypt and verify
 		decryptedFile := filepath.Join(tmpDir, "stdin-decrypted")
-		cmd = exec.Command(binaryPath, "decrypt",
+		cmd = exec.Command(
+			binaryPath, "decrypt", "--pcv3-factors=password",
 			outputFile,
 			"-o", decryptedFile,
 			"-p", testPassword,
 			"-y",
 		)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("decrypt verification failed: %v\nOutput: %s", err, output)
-		}
+		requireNativePCV3Published(t, runStreamIntegrationCommand(t, cmd, nil), "")
 
 		decrypted, err := os.ReadFile(decryptedFile)
 		if err != nil {
@@ -123,26 +193,31 @@ func testStdinStdoutIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("stdin encrypt existing output requires --yes", func(t *testing.T) {
+	t.Run("stdin encrypt preserves existing output even with --yes", func(t *testing.T) {
 		inputData := []byte("stdin overwrite check")
 		outputFile := filepath.Join(tmpDir, "stdin-overwrite-encrypt.pcv")
 		if err := os.WriteFile(outputFile, []byte("existing"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			"-",
 			"-o", outputFile,
-			"-p", testPassword,
+			"-p", testPassword, "--yes",
 		)
 		cmd.Stdin = stdinFile(t, inputData)
 
-		output, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Fatal("expected overwrite error for stdin encrypt without -y")
+		result := runStreamIntegrationCommand(t, cmd, nil)
+		if result.exitCode != ExitGeneralError || len(result.stdout) != 0 {
+			t.Fatalf("stdin encrypt no-replace refusal = %+v", result)
 		}
-		if !bytes.Contains(output, []byte("use -y to overwrite")) {
-			t.Fatalf("expected explicit -y guidance, got: %s", output)
+		if !strings.Contains(result.stderr, "--yes does not replace PCV3 outputs") {
+			t.Fatalf("expected no-replace guidance, got: %s", result.stderr)
+		}
+		got, readErr := os.ReadFile(outputFile)
+		if readErr != nil || string(got) != "existing" {
+			t.Fatalf("occupied output changed: %q, %v", got, readErr)
 		}
 	})
 
@@ -153,19 +228,18 @@ func testStdinStdoutIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			inputFile,
 			"-o", "-",
 			"-p", testPassword,
 		)
 
-		encrypted, err := cmd.Output()
-		if err != nil {
-			exitErr := &exec.ExitError{}
-			if errors.As(err, &exitErr) {
-				t.Fatalf("stdout encrypt failed: %v\nStderr: %s", err, exitErr.Stderr)
-			}
-			t.Fatalf("stdout encrypt failed: %v", err)
+		result := runStreamIntegrationCommand(t, cmd, nil)
+		requireNativePCV3CiphertextStream(t, result)
+		encrypted := result.stdout
+		if source, err := os.ReadFile(inputFile); err != nil || !bytes.Equal(source, inputData) {
+			t.Fatalf("stdout encryption changed source: %q, %v", source, err)
 		}
 
 		if len(encrypted) == 0 {
@@ -182,15 +256,14 @@ func testStdinStdoutIntegration(t *testing.T) {
 		}
 
 		decryptedFile := filepath.Join(tmpDir, "stdout-decrypted")
-		cmd = exec.Command(binaryPath, "decrypt",
+		cmd = exec.Command(
+			binaryPath, "decrypt", "--pcv3-factors=password",
 			encryptedFile,
 			"-o", decryptedFile,
 			"-p", testPassword,
 			"-y",
 		)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("decrypt verification failed: %v\nOutput: %s", err, output)
-		}
+		requireNativePCV3Published(t, runStreamIntegrationCommand(t, cmd, nil), "")
 
 		decrypted, err := os.ReadFile(decryptedFile)
 		if err != nil {
@@ -204,46 +277,33 @@ func testStdinStdoutIntegration(t *testing.T) {
 	t.Run("stdin to stdout full pipeline", func(t *testing.T) {
 		inputData := []byte("full pipeline test data through stdin to stdout")
 
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			"-",
 			"-o", "-",
 			"-p", testPassword,
 		)
 		cmd.Stdin = stdinFile(t, inputData)
 
-		encrypted, err := cmd.Output()
-		if err != nil {
-			exitErr := &exec.ExitError{}
-			if errors.As(err, &exitErr) {
-				t.Fatalf("stdin->stdout encrypt failed: %v\nStderr: %s", err, exitErr.Stderr)
-			}
-			t.Fatalf("stdin->stdout encrypt failed: %v", err)
-		}
+		result := runStreamIntegrationCommand(t, cmd, nil)
+		requireNativePCV3CiphertextStream(t, result)
+		encrypted := result.stdout
 
 		if len(encrypted) == 0 {
 			t.Fatal("no encrypted data produced")
 		}
 
 		// Decrypt via stdin->stdout
-		cmd = exec.Command(binaryPath, "decrypt",
+		cmd = exec.Command(
+			binaryPath, "decrypt", "--pcv3-factors=password",
 			"-",
 			"-o", "-",
 			"-p", testPassword,
 		)
 		cmd.Stdin = stdinFile(t, encrypted)
 
-		decrypted, err := cmd.Output()
-		if err != nil {
-			exitErr := &exec.ExitError{}
-			if errors.As(err, &exitErr) {
-				t.Fatalf("stdin->stdout decrypt failed: %v\nStderr: %s", err, exitErr.Stderr)
-			}
-			t.Fatalf("stdin->stdout decrypt failed: %v", err)
-		}
-
-		if !bytes.Equal(decrypted, inputData) {
-			t.Errorf("round-trip content mismatch\ngot:  %q\nwant: %q", decrypted, inputData)
-		}
+		result = runStreamIntegrationCommand(t, cmd, inputData)
+		requireNativePCV3PlaintextStream(t, result, inputData)
 	})
 
 	t.Run("stdin decrypt from file", func(t *testing.T) {
@@ -251,16 +311,15 @@ func testStdinStdoutIntegration(t *testing.T) {
 		encryptedFile := filepath.Join(tmpDir, "for-stdin-decrypt.pcv")
 
 		// Create encrypted file first
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			"-",
 			"-o", encryptedFile,
 			"-p", testPassword,
 			"-y",
 		)
 		cmd.Stdin = stdinFile(t, inputData)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("encryption failed: %v\nOutput: %s", err, output)
-		}
+		requireNativePCV3Published(t, runStreamIntegrationCommand(t, cmd, nil), "")
 
 		// Read encrypted file to feed via stdin
 		encrypted, err := os.ReadFile(encryptedFile)
@@ -269,7 +328,8 @@ func testStdinStdoutIntegration(t *testing.T) {
 		}
 
 		decryptedFile := filepath.Join(tmpDir, "stdin-decrypt-output")
-		cmd = exec.Command(binaryPath, "decrypt",
+		cmd = exec.Command(
+			binaryPath, "decrypt", "--pcv3-factors=password",
 			"-",
 			"-o", decryptedFile,
 			"-p", testPassword,
@@ -277,9 +337,7 @@ func testStdinStdoutIntegration(t *testing.T) {
 		)
 		cmd.Stdin = stdinFile(t, encrypted)
 
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("stdin decrypt failed: %v\nOutput: %s", err, output)
-		}
+		requireNativePCV3Published(t, runStreamIntegrationCommand(t, cmd, nil), "")
 
 		decrypted, err := os.ReadFile(decryptedFile)
 		if err != nil {
@@ -302,19 +360,23 @@ func testStdinStdoutIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		cmd := exec.Command(binaryPath, "decrypt",
+		cmd := exec.Command(
+			binaryPath, "decrypt",
 			"-",
 			"-o", existingOutput,
 			"-p", testPassword,
 		)
 		cmd.Stdin = stdinFile(t, inputData)
 
-		output, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Fatal("expected overwrite error for stdin decrypt without -y")
+		result := runStreamIntegrationCommand(t, cmd, nil)
+		if result.exitCode != ExitGeneralError || len(result.stdout) != 0 {
+			t.Fatalf("stdin decrypt overwrite refusal = %+v", result)
 		}
-		if !bytes.Contains(output, []byte("use -y to overwrite")) {
-			t.Fatalf("expected explicit -y guidance, got: %s", output)
+		if !strings.Contains(result.stderr, "use -y to overwrite") {
+			t.Fatalf("expected explicit -y guidance, got: %s", result.stderr)
+		}
+		if existing, err := os.ReadFile(existingOutput); err != nil || string(existing) != "existing" {
+			t.Fatalf("stdin decrypt changed existing output: %q, %v", existing, err)
 		}
 	})
 
@@ -323,35 +385,32 @@ func testStdinStdoutIntegration(t *testing.T) {
 		encryptedFile := filepath.Join(tmpDir, "for-stdout-decrypt.pcv")
 
 		// Create encrypted file
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			"-",
 			"-o", encryptedFile,
 			"-p", testPassword,
 			"-y",
 		)
 		cmd.Stdin = stdinFile(t, inputData)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("encryption failed: %v\nOutput: %s", err, output)
+		requireNativePCV3Published(t, runStreamIntegrationCommand(t, cmd, nil), "")
+		encrypted, err := os.ReadFile(encryptedFile)
+		if err != nil {
+			t.Fatal(err)
 		}
 
 		// Decrypt to stdout
-		cmd = exec.Command(binaryPath, "decrypt",
+		cmd = exec.Command(
+			binaryPath, "decrypt", "--pcv3-factors=password",
 			encryptedFile,
 			"-o", "-",
 			"-p", testPassword,
 		)
 
-		decrypted, err := cmd.Output()
-		if err != nil {
-			exitErr := &exec.ExitError{}
-			if errors.As(err, &exitErr) {
-				t.Fatalf("stdout decrypt failed: %v\nStderr: %s", err, exitErr.Stderr)
-			}
-			t.Fatalf("stdout decrypt failed: %v", err)
-		}
-
-		if !bytes.Equal(decrypted, inputData) {
-			t.Errorf("decrypted content mismatch\ngot:  %q\nwant: %q", decrypted, inputData)
+		result := runStreamIntegrationCommand(t, cmd, inputData)
+		requireNativePCV3PlaintextStream(t, result, inputData)
+		if source, err := os.ReadFile(encryptedFile); err != nil || !bytes.Equal(source, encrypted) {
+			t.Fatalf("stdout decrypt changed encrypted source: %q, %v", source, err)
 		}
 	})
 
@@ -362,44 +421,34 @@ func testStdinStdoutIntegration(t *testing.T) {
 			inputData[i] = byte(i % 256)
 		}
 
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			"-",
 			"-o", "-",
 			"-p", testPassword,
 		)
 		cmd.Stdin = stdinFile(t, inputData)
 
-		encrypted, err := cmd.Output()
-		if err != nil {
-			exitErr := &exec.ExitError{}
-			if errors.As(err, &exitErr) {
-				t.Fatalf("large data encrypt failed: %v\nStderr: %s", err, exitErr.Stderr)
-			}
-			t.Fatalf("large data encrypt failed: %v", err)
+		result := runStreamIntegrationCommand(t, cmd, nil)
+		requireNativePCV3CiphertextStream(t, result)
+		encrypted := result.stdout
+		if len(encrypted) <= len(inputData) {
+			t.Fatal("large-data stdout output must contain ciphertext and header")
 		}
 
-		cmd = exec.Command(binaryPath, "decrypt",
+		cmd = exec.Command(
+			binaryPath, "decrypt", "--pcv3-factors=password",
 			"-",
 			"-o", "-",
 			"-p", testPassword,
 		)
 		cmd.Stdin = stdinFile(t, encrypted)
 
-		decrypted, err := cmd.Output()
-		if err != nil {
-			exitErr := &exec.ExitError{}
-			if errors.As(err, &exitErr) {
-				t.Fatalf("large data decrypt failed: %v\nStderr: %s", err, exitErr.Stderr)
-			}
-			t.Fatalf("large data decrypt failed: %v", err)
-		}
-
-		if !bytes.Equal(decrypted, inputData) {
-			t.Error("large data round-trip content mismatch")
-		}
+		result = runStreamIntegrationCommand(t, cmd, inputData)
+		requireNativePCV3PlaintextStream(t, result, inputData)
 	})
 
-	t.Run("auto-unzip works with auto-generated output path", func(t *testing.T) {
+	t.Run("PCV3 archive extraction works with auto-generated output path", func(t *testing.T) {
 		inputA := filepath.Join(tmpDir, "auto-unzip-a.txt")
 		inputB := filepath.Join(tmpDir, "auto-unzip-b.txt")
 		if err := os.WriteFile(inputA, []byte("alpha"), 0o644); err != nil {
@@ -410,27 +459,32 @@ func testStdinStdoutIntegration(t *testing.T) {
 		}
 
 		volumePath := filepath.Join(tmpDir, "auto-unzip.pcv")
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			inputA, inputB,
 			"-o", volumePath,
 			"-p", testPassword,
 			"-y",
 		)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("multi-file encrypt failed: %v\nOutput: %s", err, output)
+		requireNativePCV3Published(t, runStreamIntegrationCommand(t, cmd, nil), "")
+		encrypted, err := os.ReadFile(volumePath)
+		if err != nil {
+			t.Fatal(err)
 		}
 
-		cmd = exec.Command(binaryPath, "decrypt",
+		extractedDir := filepath.Join(tmpDir, "extracted")
+		if err := os.Mkdir(extractedDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cmd = exec.Command(
+			binaryPath, "decrypt", "--pcv3-factors=password",
 			volumePath,
 			"-p", testPassword,
 			"-y",
-			"--auto-unzip",
+			"--pcv3-archive=extract", "--pcv3-extract-to", extractedDir,
 		)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("auto-unzip decrypt failed: %v\nOutput: %s", err, output)
-		}
+		requireNativePCV3Published(t, runStreamIntegrationCommand(t, cmd, nil), "")
 
-		extractedDir := filepath.Join(tmpDir, "auto-unzip")
 		info, err := os.Stat(extractedDir)
 		if err != nil {
 			t.Fatalf("expected extracted directory %q: %v", extractedDir, err)
@@ -439,11 +493,15 @@ func testStdinStdoutIntegration(t *testing.T) {
 			t.Fatalf("expected %q to be a directory after auto-unzip", extractedDir)
 		}
 
-		if _, err := os.Stat(filepath.Join(extractedDir, filepath.Base(inputA))); err != nil {
-			t.Fatalf("missing extracted file %q: %v", filepath.Base(inputA), err)
+		for path, want := range map[string]string{inputA: "alpha", inputB: "bravo"} {
+			for _, candidate := range []string{path, filepath.Join(extractedDir, filepath.Base(path))} {
+				if got, err := os.ReadFile(candidate); err != nil || string(got) != want {
+					t.Fatalf("archive/source %q = %q, %v; want %q", candidate, got, err, want)
+				}
+			}
 		}
-		if _, err := os.Stat(filepath.Join(extractedDir, filepath.Base(inputB))); err != nil {
-			t.Fatalf("missing extracted file %q: %v", filepath.Base(inputB), err)
+		if source, err := os.ReadFile(volumePath); err != nil || !bytes.Equal(source, encrypted) {
+			t.Fatalf("archive extraction changed encrypted source: %q, %v", source, err)
 		}
 	})
 }
@@ -471,7 +529,8 @@ func testStdinStdoutErrorCases(t *testing.T) {
 	}
 
 	t.Run("stdin with -P conflicts", func(t *testing.T) {
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			"-",
 			"-o", filepath.Join(tmpDir, "out.pcv"),
 			"-P",
@@ -493,7 +552,8 @@ func testStdinStdoutErrorCases(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			inputFile,
 			"-o", "-",
 			"-p", "test",
@@ -518,17 +578,17 @@ func testStdinStdoutErrorCases(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			inputFile,
 			"-o", encFile,
 			"-p", "test",
 			"-y",
 		)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("setup encrypt failed: %v\nOutput: %s", err, output)
-		}
+		requireNativePCV3Published(t, runStreamIntegrationCommand(t, cmd, nil), "")
 
-		cmd = exec.Command(binaryPath, "decrypt",
+		cmd = exec.Command(
+			binaryPath, "decrypt", "--pcv3-factors=password",
 			encFile,
 			"-o", "-",
 			"-p", "test",
@@ -549,46 +609,36 @@ func testStdinStdoutErrorCases(t *testing.T) {
 		encFile := filepath.Join(tmpDir, "wrong-pw.pcv")
 
 		// Encrypt with correct password.
-		cmd := exec.Command(binaryPath, "encrypt",
+		cmd := exec.Command(
+			binaryPath, "encrypt",
 			"-",
 			"-o", encFile,
 			"-p", "correctpassword",
 			"-y",
 		)
 		cmd.Stdin = stdinFile(t, inputData)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("encrypt failed: %v\nOutput: %s", err, output)
-		}
+		requireNativePCV3Published(t, runStreamIntegrationCommand(t, cmd, nil), "")
 
-		// Try decrypt with wrong password — must fail with the auth sentinel text
-		// ("authentication failed" from perrors.ErrAuthFailed). A generic non-nil
-		// check passes even if the binary crashes or prints a different error.
+		// Authentication refusal must not release plaintext or leave staging files.
 		encrypted, err := os.ReadFile(encFile)
 		if err != nil {
 			t.Fatalf("reading encrypted file: %v", err)
 		}
-		cmd = exec.Command(binaryPath, "decrypt",
+		cmd = exec.Command(
+			binaryPath, "decrypt", "--pcv3-factors=password",
 			"-",
 			"-o", "-",
 			"-p", "wrongpassword",
 		)
 		cmd.Stdin = stdinFile(t, encrypted)
 
-		output, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Fatal("expected error for wrong password, got nil")
+		result := runStreamIntegrationCommand(t, cmd, nil)
+		if result.exitCode != ExitGeneralError || len(result.stdout) != 0 ||
+			result.stderr != "Outcome: credentials-or-damage\nPublication: not-attempted\n" {
+			t.Fatalf("stdin authentication refusal = %+v", result)
 		}
-		// For v2 volumes (the default), a wrong password is caught at the
-		// header-auth phase before the MAC tail is ever reached. The decrypt
-		// pipeline returns *header.AuthError (NewV2PasswordOrTamperError),
-		// whose message is "The password is incorrect or header is tampered".
-		// The CLI prints that verbatim via reporter.PrintError("%v", err).
-		// Asserting this specific substring ensures a crash or unrelated error
-		// doesn't silently pass (bare non-nil check would not be falsifiable).
-		const wantMsg = "password is incorrect"
-		if !bytes.Contains(output, []byte(wantMsg)) {
-			t.Errorf("wrong-password error must contain %q; got: %s",
-				wantMsg, output)
+		if source, err := os.ReadFile(encFile); err != nil || !bytes.Equal(source, encrypted) {
+			t.Fatalf("authentication refusal changed encrypted source: %v", err)
 		}
 	})
 }

@@ -402,13 +402,6 @@ func productionStatusForwardings() map[statusForwarding]struct{} {
 		}: {},
 		{
 			File:     "internal/volume/encrypt.go",
-			Function: "encryptPreprocess",
-			Receiver: "ctx",
-			Method:   "SetStatus",
-			Argument: "s",
-		}: {},
-		{
-			File:     "internal/volume/encrypt.go",
 			Function: "encryptFinalize",
 			Receiver: "ctx",
 			Method:   "SetStatus",

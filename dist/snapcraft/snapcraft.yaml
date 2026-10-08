@@ -1,7 +1,7 @@
 name: picocrypt-ng
 summary: A very small, very simple, yet very secure encryption tool.
 description: Picocrypt NG is a very small, very simple, yet very secure encryption tool that you can use to protect your files. It's designed to be the go-to tool for encryption, with a focus on security, simplicity, and reliability. Picocrypt NG uses the secure XChaCha20 cipher and the Argon2id key derivation function to provide a high level of security.
-version: "2.19"
+version: "3.0"
 confinement: strict
 base: core22
 grade: stable
@@ -20,9 +20,9 @@ apps:
 parts:
   go-deps:
     plugin: dump
-    source: https://go.dev/dl/go1.26.5.linux-amd64.tar.gz
+    source: https://go.dev/dl/go1.27.1.linux-amd64.tar.gz
     source-type: tar
-    source-checksum: sha256/5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
+    source-checksum: sha256/63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
     organize:
       '*': go/
     prime:
@@ -37,7 +37,7 @@ parts:
       - GOROOT: "${CRAFT_STAGE}/go"
       - GOTOOLCHAIN: local
     override-build: |
-      test "$(go env GOVERSION)" = "go1.26.5"
+      test "$(go env GOVERSION)" = "go1.27.1"
       test "$(go env GOROOT)" = "$CRAFT_STAGE/go"
       export GOFLAGS="-tags=migrated_fynedo"
       craftctl default

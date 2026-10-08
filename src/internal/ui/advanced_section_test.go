@@ -1,14 +1,195 @@
 package ui
 
 import (
+	"Picocrypt-NG/internal/app"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
 	"testing"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	fynetest "fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 
 	ttwidget "github.com/dweymouth/fyne-tooltip/widget"
 )
+
+func TestPCV3ForceActionsExposeAuthenticatedAndExplicitUnverifiedChoices(t *testing.T) {
+	resetLocalizationForTest(t)
+	fyneApp := newTestFyneApp(t)
+	a := createUIReadyDropTestApp(t, fyneApp)
+	directory := t.TempDir()
+	input := filepath.Join(directory, "input.pcv")
+	if err := os.WriteFile(input, nil, 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	source, err := os.Open(input)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	t.Cleanup(func() {
+		fyne.DoAndWait(func() { a.State.Reset() })
+	})
+
+	fyne.DoAndWait(func() {
+		if !a.State.SetPCV3Ready(
+			source,
+			app.PCV3FormatNormal,
+			input,
+			filepath.Join(directory, "output"),
+			0,
+		) {
+			t.Fatal("set PCV3 selection")
+		}
+		a.passwordEntry.SetText("password-only")
+		a.refreshAdvanced()
+		a.updateUIState()
+
+		want := []string{
+			"Decrypt",
+			"Recover",
+			"Force recovery",
+			"Unverified recovery",
+		}
+		if !slices.Equal(a.pcv3ActionSelect.Options, want) {
+			t.Fatalf("PCV3 action choices = %v; want %v", a.pcv3ActionSelect.Options, want)
+		}
+
+		a.pcv3ActionSelect.SetSelected(want[2])
+		if snap := a.State.UISnapshot(); snap.PCV3Action != app.PCV3ActionForce || !snap.CanStart() {
+			got := snap.PCV3Action
+			t.Fatalf("authenticated Force action = %v; want %v", got, app.PCV3ActionForce)
+		}
+		a.pcv3ActionSelect.SetSelected(want[3])
+		if snap := a.State.UISnapshot(); snap.PCV3Action != app.PCV3ActionForceUnverified || !snap.CanStart() {
+			got := snap.PCV3Action
+			t.Fatalf("unverified Force action = %v; want %v", got, app.PCV3ActionForceUnverified)
+		}
+	})
+}
+
+func TestNativeGUIEncryptsPCV3(t *testing.T) {
+	newTestFyneApp(t)
+	a := createTestApp(t)
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "plain.bin")
+	outputPath := filepath.Join(dir, "encrypted.pcv")
+	if err := os.WriteFile(inputPath, []byte("PCV3 Linux GUI round-trip\n"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	a.State.Mode = "encrypt"
+	a.State.InputFile = inputPath
+	a.State.AllFiles = []string{inputPath}
+	a.State.OnlyFiles = []string{inputPath}
+	a.State.OutputFile = outputPath
+	a.State.Password = "roundtrip-password"
+	a.State.CPassword = "roundtrip-password"
+	a.advancedContainer = container.NewVBox()
+	a.updateAdvancedSection()
+
+	if !a.State.CreatePCV3 {
+		t.Fatal("new native encryption must default to PCV3")
+	}
+
+	input, err := a.captureOperationInput(a.State.Snapshot())
+	if err != nil {
+		t.Fatalf("capture GUI operation: %v", err)
+	}
+	result := executeVolumeOperation(context.Background(), input, nil)
+	requireNativePCV3Operation(t, result)
+	encoded, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read GUI PCV3 output: %v", err)
+	}
+	if len(encoded) < 4 || string(encoded[:4]) != "PCV\x00" {
+		t.Fatalf("GUI output does not have the PCV3 discriminator: %x", encoded)
+	}
+
+	splitOutput := filepath.Join(dir, "split.pcv")
+	a.State.OutputFile = splitOutput
+	a.State.Split = true
+	a.State.SplitSize = "1"
+	a.State.SplitSelected = 0
+	splitInput, err := a.captureOperationInput(a.State.Snapshot())
+	if err != nil {
+		t.Fatalf("capture GUI split operation: %v", err)
+	}
+	result = executeVolumeOperation(context.Background(), splitInput, nil)
+	requireNativePCV3Operation(t, result)
+	if runtime.GOOS == "windows" {
+		if !result.pcv3.SplitOutputUncertain() {
+			t.Fatal("native split warning lost retained complete ciphertext")
+		}
+		if info, err := os.Stat(splitOutput); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+			t.Fatalf("uncertain GUI split lost complete ciphertext: %v, %v", info, err)
+		}
+	} else if _, err := os.Lstat(splitOutput); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("GUI PCV3 split retained the complete volume: %v", err)
+	}
+	if _, err := os.Stat(splitOutput + ".0"); err != nil {
+		t.Fatalf("GUI PCV3 split did not publish chunk zero: %v", err)
+	}
+	a.State.Split = false
+	a.State.SplitSize = ""
+
+	d1Output := filepath.Join(dir, "deniable.pcv")
+	a.State.OutputFile = d1Output
+	if a.deniabilityCheck == nil {
+		t.Fatal("PCV3 GUI did not retain the deniability control")
+	}
+	a.deniabilityCheck.SetChecked(true)
+	if !a.State.Deniability || !a.State.Paranoid {
+		t.Fatal("PCV3 D1 selection did not enable deniability and paranoid mode")
+	}
+	d1Input, err := a.captureOperationInput(a.State.Snapshot())
+	if err != nil {
+		t.Fatalf("capture GUI D1 operation: %v", err)
+	}
+	result = executeVolumeOperation(context.Background(), d1Input, nil)
+	requireNativePCV3Operation(t, result)
+	encoded, err = os.ReadFile(d1Output)
+	if err != nil {
+		t.Fatalf("read GUI PCV3 D1 output: %v", err)
+	}
+	if len(encoded) < 4 || string(encoded[:4]) == "PCV\x00" {
+		t.Fatalf("GUI D1 output is not random-looking: %x", encoded)
+	}
+}
+
+func TestPCV3PasswordOnlyAfterRemovingKeyfilesClearsOrder(t *testing.T) {
+	a := newPCV3ReadUI(t, app.PCV3FormatNormal)
+	key := filepath.Join(t.TempDir(), "factor.key")
+	if err := os.WriteFile(key, []byte("public factor"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fyne.DoAndWait(func() {
+		a.passwordEntry.SetText("public password")
+		a.keyfileEditBtn.OnTapped()
+		a.onDrop([]string{key})
+		a.keyfileOrderCheck.SetChecked(true)
+		if snap := a.State.UISnapshot(); snap.PCV3Factor != app.PCV3FactorPolicyCombined || snap.PCV3Order != app.PCV3KeyfileOrderSelected {
+			t.Fatal("combined credentials lost selected keyfile order")
+		}
+		for _, object := range fynetest.LaidOutObjects(a.Window.Canvas().Overlays().Top()) {
+			if button, ok := object.(*widget.Button); ok && button.Text == tr("action.clear", "Clear") {
+				fynetest.Tap(button)
+				break
+			}
+		}
+		snap := a.State.UISnapshot()
+		if snap.PCV3Factor != app.PCV3FactorPolicyPassword || snap.PCV3Order != app.PCV3KeyfileOrderUnset || !snap.CanStart() {
+			t.Fatal("clearing keyfiles did not restore password-only readiness")
+		}
+		a.passwordEntry.SetText("")
+		if snap := a.State.UISnapshot(); snap.PCV3Factor != app.PCV3FactorPolicyUnset || snap.CanStart() || !a.startButton.Disabled() {
+			t.Fatal("clearing every factor left Start enabled")
+		}
+	})
+}
 
 // assertCheckboxWiring verifies a build...Options checkbox is present, labeled
 // (non-empty), and that its OnChanged closure drives the mapped State field in
@@ -46,7 +227,7 @@ func TestBuildEncryptOptionsWireCheckboxesToState(t *testing.T) {
 	a.advancedContainer = container.NewVBox()
 
 	fyne.DoAndWait(func() {
-		a.buildEncryptOptions()
+		a.buildEncryptOptionsInto(a.advancedContainer)
 
 		assertCheckboxWiring(t, a.paranoidCheck, "Paranoid mode", func() bool { return a.State.Paranoid })
 		assertCheckboxWiring(t, a.compressCheck, "Compress files", func() bool { return a.State.Compress })
@@ -67,7 +248,7 @@ func TestBuildDecryptOptionsWireCheckboxesToState(t *testing.T) {
 	a.State.AutoUnzip = true
 
 	fyne.DoAndWait(func() {
-		a.buildDecryptOptions()
+		a.buildDecryptOptionsInto(a.advancedContainer)
 
 		assertCheckboxWiring(t, a.forceDecryptCheck, "Force decrypt", func() bool { return a.State.Keep })
 		assertCheckboxWiring(t, a.verifyFirstCheck, "Verify first", func() bool { return a.State.VerifyFirst })
@@ -117,7 +298,7 @@ func TestBuildDecryptOptionsDisableGuards(t *testing.T) {
 			a.State.Deniability = tc.deniability
 
 			fyne.DoAndWait(func() {
-				a.buildDecryptOptions()
+				a.buildDecryptOptionsInto(a.advancedContainer)
 			})
 
 			if got := a.autoUnzipCheck.Disabled(); got != tc.wantAutoUnzipOff {
@@ -189,7 +370,7 @@ func TestEncryptAdvancedOptionsNeverSoftLock(t *testing.T) {
 		a.State.Password = "correct horse"
 		a.State.CPassword = "correct horse"
 		a.State.AllFiles = []string{"a.txt", "b.txt"}
-		fyne.DoAndWait(func() { a.buildEncryptOptions() })
+		fyne.DoAndWait(func() { a.buildEncryptOptionsInto(a.advancedContainer) })
 		return a
 	}
 
@@ -251,9 +432,28 @@ func TestEncryptAdvancedOptionsNeverSoftLock(t *testing.T) {
 			{"Recursively", a.recursivelyCheck},
 			{"Split:", a.splitCheck},
 		} {
+			if c.name == "Paranoid mode" {
+				if !c.box.Disabled() || !a.State.Paranoid {
+					t.Error("D1 must retain required Paranoid mode")
+				}
+				continue
+			}
 			if c.box.Disabled() {
 				t.Errorf("#56 regression: %q is disabled under Paranoid+Reed-Solomon+Deniability; this combo must not lock any option", c.name)
 			}
+		}
+	})
+
+	t.Run("PCV3D1KeepsArchiveOptionsAvailable", func(t *testing.T) {
+		a := newEncryptAppWithCredentials(t)
+		a.State.CreatePCV3 = true
+		a.State.Deniability = true
+		a.State.Paranoid = true
+		recompute(a)
+
+		if a.compressCheck.Disabled() || a.recursivelyCheck.Disabled() ||
+			a.deniabilityCheck.Disabled() || a.splitCheck.Disabled() {
+			t.Fatal("PCV3 D1 disabled a valid archive or split option")
 		}
 	})
 }
@@ -288,7 +488,7 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 	t.Run("encrypt", func(t *testing.T) {
 		a := createTestApp(t)
 		a.advancedContainer = container.NewVBox()
-		a.buildEncryptOptions()
+		a.buildEncryptOptionsInto(a.advancedContainer)
 
 		assertTooltipsPresentAndDistinct(t, []struct {
 			name string
@@ -306,7 +506,7 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 		if got, want := a.deleteCheck.ToolTip(), tr("advanced.delete_files.tooltip", "Delete source files after encryption"); got != want {
 			t.Errorf("Delete files tooltip = %q, want %q", got, want)
 		}
-		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.tooltip", "No readable Picocrypt header. A non-empty password protects the outer wrapper; keyfiles protect only the inner volume."); got != want {
+		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection."); got != want {
 			t.Errorf("Deniability tooltip = %q, want %q", got, want)
 		}
 		if got, want := a.recursivelyCheck.ToolTip(), tr("advanced.recursively.tooltip", "Process each file separately"); got != want {
@@ -314,10 +514,21 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 		}
 	})
 
+	t.Run("PCV3 encrypt", func(t *testing.T) {
+		a := createTestApp(t)
+		a.State.CreatePCV3 = true
+		a.advancedContainer = container.NewVBox()
+		a.buildEncryptOptionsInto(a.advancedContainer)
+
+		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection."); got != want {
+			t.Errorf("PCV3 D1 tooltip = %q, want %q", got, want)
+		}
+	})
+
 	t.Run("decrypt", func(t *testing.T) {
 		a := createTestApp(t)
 		a.advancedContainer = container.NewVBox()
-		a.buildDecryptOptions()
+		a.buildDecryptOptionsInto(a.advancedContainer)
 
 		assertTooltipsPresentAndDistinct(t, []struct {
 			name string
@@ -330,10 +541,10 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 			{"Same level", a.sameLevelCheck},
 		})
 
-		if got := a.autoUnzipCheck.ToolTip(); got != "Extract .zip; may overwrite files" {
-			t.Errorf("Auto unzip tooltip = %q; want rendered .zip overwrite warning", got)
+		if got := a.autoUnzipCheck.ToolTip(); got != "Extract .zip archives; keep existing files" {
+			t.Errorf("Auto unzip tooltip = %q; want rendered no-overwrite policy", got)
 		}
-		if got := a.sameLevelCheck.ToolTip(); got != "Extract .zip beside the volume" {
+		if got := a.sameLevelCheck.ToolTip(); got != "Extract .zip in the output directory, without a subfolder" {
 			t.Errorf("Same level tooltip = %q; want rendered .zip extraction hint", got)
 		}
 	})

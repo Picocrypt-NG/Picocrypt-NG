@@ -1,4 +1,4 @@
-// Picocrypt NG v2.19
+// Picocrypt NG v3.0
 // Copyright (c) Picocrypt NG developers
 // Released under GPL-3.0-only
 // https://github.com/Picocrypt-NG/Picocrypt-NG
@@ -11,7 +11,7 @@
 //   - Reed-Solomon error correction for data recovery
 //   - Plausible deniability through nested encryption
 //
-// The cryptographic implementation was audited in August 2024.
+// The upstream Picocrypt revision 7e403a2 was audited in 2024.
 //
 // Build modes:
 //   - Default build: GUI + CLI (requires graphics libraries)
@@ -19,9 +19,9 @@
 
 package main
 
-// version is the application version displayed in the window title.
-// Format: "vMAJOR.MINOR" (e.g., "v2.19")
-const version = "v2.19"
+// version is the application version displayed in About and CLI version output.
+// Format: "vMAJOR.MINOR" (e.g., "v3.0")
+const version = "v3.0"
 
 func main() {
 	run()

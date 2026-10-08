@@ -113,7 +113,7 @@ func roundTripVolume(t *testing.T, encPW, decPW string, deniability bool) error 
 	return nil
 }
 
-// --- Phase 2: encrypt-side normalization ---
+// --- Encrypt-side normalization ---
 
 // TestEncryptNormalizesPasswordToNFC asserts the encrypt path feeds the KDF the
 // NFC form, so a volume created from a decomposed password is byte-identical to
@@ -170,7 +170,7 @@ func TestEncryptDeniabilityNormalizesPasswordToNFC(t *testing.T) {
 	}
 }
 
-// --- Phase 3: decrypt-side try-both ---
+// --- Decrypt-side try-both ---
 
 // TestDecryptTriesNormalizationFormsRoundTrip is the core #19 fix: a volume
 // encrypted from either composed or decomposed input must decrypt from either

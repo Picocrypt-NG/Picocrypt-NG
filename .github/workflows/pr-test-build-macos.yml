@@ -13,9 +13,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pr-test-build-macos:
+  pcv3-tests:
+    name: macOS ARM64 test group ${{ matrix.group }}
+    strategy:
+      fail-fast: true
+      matrix:
+        group: [1, 2, 3, 4]
     runs-on: macos-26
     env:
+      CGO_ENABLED: "1"
       MACOSX_DEPLOYMENT_TARGET: "15.0"
       CGO_CFLAGS: "-mmacosx-version-min=15.0"
       CGO_LDFLAGS: "-mmacosx-version-min=15.0"
@@ -25,7 +31,68 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.26.5"
+        go-version: "1.27.1"
+        cache-dependency-path: src/go.sum
+
+    - name: Install dependencies
+      run: |
+        cd src
+        go mod download
+
+    - name: Diagnose native macOS memory APIs
+      id: memory-diagnostics
+      run: |
+        set -o pipefail
+        bash .github/scripts/diagnose-macos-memory.sh 2>&1 | tee "$RUNNER_TEMP/macos-memory-before.log"
+        sudo -n /usr/sbin/purge
+        bash .github/scripts/diagnose-macos-memory.sh 2>&1 | tee "$RUNNER_TEMP/macos-memory.log"
+
+    - name: Upload native macOS memory diagnostics
+      if: ${{ always() && (steps.memory-diagnostics.outcome == 'success' || steps.memory-diagnostics.outcome == 'failure') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: pr-macos-test-memory-${{ strategy.job-index }}-${{ github.run_attempt }}
+        path: |
+          ${{ runner.temp }}/macos-memory-before.log
+          ${{ runner.temp }}/macos-memory.log
+        retention-days: 1
+        if-no-files-found: error
+
+    - name: Diagnose repeated native archive KDF admission
+      if: matrix.group == 1
+      run: |
+        cd src
+        sudo -n /usr/sbin/purge
+        go test -v -count=1 -p 1 -timeout 60m -run '^TestNativePrepareArchiveUsesAuthenticatedPlaintext$' ./internal/pcv3operation/internal/pcv3
+
+    - name: Run native test group
+      run: bash .github/scripts/test-macos-pcv3.sh "$SHARD_INDEX" "$SHARD_COUNT"
+      env:
+        SHARD_INDEX: ${{ strategy.job-index }}
+        SHARD_COUNT: ${{ strategy.job-total }}
+
+  pr-test-build-macos:
+    needs: pcv3-tests
+    if: ${{ always() }}
+    runs-on: macos-26
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      CGO_CFLAGS: "-mmacosx-version-min=15.0"
+      CGO_LDFLAGS: "-mmacosx-version-min=15.0"
+    steps:
+    - name: Require all macOS test groups to pass
+      run: |
+        if [ "${{ needs.pcv3-tests.result }}" != "success" ]; then
+          echo "macOS test result: ${{ needs.pcv3-tests.result }}"
+          exit 1
+        fi
+
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Setup Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: "1.27.1"
         cache-dependency-path: src/go.sum
 
     - name: Install packages
@@ -37,12 +104,33 @@ jobs:
         cd src
         go mod download
 
+    - name: Diagnose native macOS memory APIs
+      id: memory-diagnostics
+      run: |
+        set -o pipefail
+        bash .github/scripts/diagnose-macos-memory.sh 2>&1 | tee "$RUNNER_TEMP/macos-memory-before.log"
+        sudo -n /usr/sbin/purge
+        bash .github/scripts/diagnose-macos-memory.sh 2>&1 | tee "$RUNNER_TEMP/macos-memory.log"
+
+    - name: Upload native macOS memory diagnostics
+      if: ${{ always() && (steps.memory-diagnostics.outcome == 'success' || steps.memory-diagnostics.outcome == 'failure') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: pr-macos-memory-${{ github.run_attempt }}
+        path: |
+          ${{ runner.temp }}/macos-memory-before.log
+          ${{ runner.temp }}/macos-memory.log
+        retention-days: 1
+        if-no-files-found: error
+
     - name: Run tests
-      # Skip internal/crypto and internal/volume - Argon2 is extremely slow on macOS ARM64 runners
+      # Native volume/PCV3 KDFs run in the groups above; Linux runs the full race suite.
       run: |
         cd src
-        go test -v -race -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
-        go test -v -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...
+        go test -v -race -p 1 -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
+        go test -v -race -p 1 -timeout 15m ./internal/pcv3publication/...
+        GOMAXPROCS=1 go test -v -race -p 1 -timeout 15m ./internal/pcv3operation/internal/pcv3unicode/...
+        go test -v -p 1 -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...
 
     - name: Build GUI
       run: |
@@ -70,7 +158,7 @@ jobs:
         mv src/Picocrypt-NG Picocrypt-NG.app/Contents/MacOS/Picocrypt-NG
         rm Picocrypt-NG.app/Contents/Resources/icon.icns
         mv dist/macos/iconSmall.icns Picocrypt-NG.app/Contents/Resources/icon.icns
-        # === Phase 3 (FA-MAC-04): inject canonical Info.plist ===
+        # Inject canonical Info.plist.
         cp dist/macos/Info.plist Picocrypt-NG.app/Contents/Info.plist
         plutil -replace CFBundleShortVersionString -string "$(cat VERSION)" \
             Picocrypt-NG.app/Contents/Info.plist
@@ -84,7 +172,6 @@ jobs:
         plutil -extract UTExportedTypeDeclarations json -o - \
             Picocrypt-NG.app/Contents/Info.plist | grep -q 'io.github.picocryptng.pcv' \
             || (echo "::error::UTExportedTypeDeclarations lost UTI"; exit 1)
-        # === end Phase 3 ===
         mkdir out
         cp -R Picocrypt-NG.app out
         hdiutil create Picocrypt-NG.dmg -volname Picocrypt-NG -fs APFS -format UDZO -srcfolder out

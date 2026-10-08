@@ -3,6 +3,7 @@ package ui
 
 import (
 	"Picocrypt-NG/internal/log"
+	"errors"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -15,6 +16,24 @@ import (
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/widget"
 )
+
+var errUnsafePCV3OutputFilename = errors.New("unsafe PCV3 output filename")
+
+func (a *App) showStatusDetails() {
+	if a.statusLabel == nil || a.statusLabel.text == "" || a.Window == nil {
+		return
+	}
+	message := widget.NewLabel(a.statusLabel.text)
+	message.Wrapping = fyne.TextWrapBreak
+	message.Selectable = true
+	details := dialog.NewCustom(
+		tr("dialog.status.title", "Status details"), tr("action.close", "Close"),
+		container.NewVScroll(message), a.Window,
+	)
+	size := a.Window.Canvas().Size()
+	details.Resize(fyne.NewSize(min(size.Width*0.9, 600), min(size.Height*0.8, 400)))
+	details.Show()
+}
 
 // showProgressModal shows the progress dialog.
 func (a *App) showProgressModal(session *operationSession) {
@@ -130,6 +149,7 @@ func (a *App) showPassgenModal() {
 				return
 			}
 			password := a.State.GenPassword()
+			passwordChanged := a.passwordEntry != nil && a.passwordEntry.Text != password
 			a.State.Password = password
 			a.State.CPassword = password
 			if a.passwordEntry != nil {
@@ -138,7 +158,9 @@ func (a *App) showPassgenModal() {
 			if a.cPasswordEntry != nil {
 				a.cPasswordEntry.SetText(password)
 			}
-			a.updatePasswordStrength()
+			if !passwordChanged {
+				a.updatePasswordStrength()
+			}
 			a.updateValidation()
 		}
 		a.State.ShowPassgen = false
@@ -178,6 +200,150 @@ func normalizeSelectedOutputPath(filePath, mode, inputFile string, multiInput, c
 	}
 	tmp := strings.TrimSuffix(filepath.Base(inputFile), ".pcv")
 	return file + filepath.Ext(tmp)
+}
+
+// changePCV3CreationOutputFile selects only a path. The PCV3 publisher must be
+// the first code that opens or creates the destination.
+func (a *App) changePCV3CreationOutputFile() {
+	selected := a.State.UISnapshot()
+	if selected.Mode != "encrypt" || !selected.CreatePCV3 || selected.InputFile == "" ||
+		selected.OutputFile == "" || selected.Working || selected.Scanning {
+		return
+	}
+	selectionGeneration := a.operationGeneration.Load()
+	selectionCurrent := func() bool {
+		current := a.State.UISnapshot()
+		return a.operationGeneration.Load() == selectionGeneration &&
+			current.Mode == "encrypt" && current.CreatePCV3 && !current.Working &&
+			!current.Scanning && current.InputFile == selected.InputFile &&
+			current.OutputFile == selected.OutputFile
+	}
+	picker := dialog.NewFolderOpen(func(folder fyne.ListableURI, err error) {
+		if err != nil || folder == nil || folder.Scheme() != "file" || !selectionCurrent() {
+			return
+		}
+		filename := widget.NewEntry()
+		tmp := strings.TrimSuffix(filepath.Base(selected.OutputFile), ".pcv")
+		filename.SetText(strings.TrimSuffix(tmp, filepath.Ext(tmp)))
+		filename.Validator = validatePCV3OutputFilename
+		form := dialog.NewForm(
+			tr("output.label", "Save output as:"),
+			tr("action.change", "Change"),
+			tr("action.cancel", "Cancel"),
+			[]*widget.FormItem{widget.NewFormItem(tr("output.label", "Save output as:"), filename)},
+			func(confirm bool) {
+				if !confirm || !selectionCurrent() || validatePCV3OutputFilename(filename.Text) != nil {
+					return
+				}
+				current := a.State.Snapshot()
+				a.State.OutputFile = normalizeSelectedOutputPath(
+					filepath.Join(folder.Path(), filename.Text),
+					"encrypt",
+					current.InputFile,
+					len(current.InputFiles) > 1 || len(current.OnlyFolders) > 0,
+					current.Compress,
+				)
+				a.State.OutputChosenViaSaveDialog = false
+				a.State.SetReadyStatus()
+				a.updateUIState()
+			},
+			a.Window,
+		)
+		form.Show()
+	}, a.Window)
+
+	startDir := ""
+	if len(a.State.OnlyFiles) > 0 {
+		startDir = filepath.Dir(a.State.OnlyFiles[0])
+	} else if len(a.State.OnlyFolders) > 0 {
+		startDir = filepath.Dir(a.State.OnlyFolders[0])
+	}
+	if startDir != "" {
+		if folder, err := storage.ListerForURI(storage.NewFileURI(startDir)); err == nil {
+			picker.SetLocation(folder)
+		}
+	}
+	picker.Show()
+}
+
+// changePCV3OutputFile chooses a destination without asking Fyne to open a
+// writer. PCV3 publication is no-replace, so only its executor may create the
+// selected path.
+func (a *App) changePCV3OutputFile() {
+	ticket, _, ok := a.State.PCV3ReadyOutputSelection()
+	if !ok {
+		return
+	}
+	picker := dialog.NewFolderOpen(func(folder fyne.ListableURI, err error) {
+		a.handlePCV3OutputFolderSelection(ticket, folder, err)
+	}, a.Window)
+
+	startDir := ""
+	if len(a.State.OnlyFiles) > 0 {
+		startDir = filepath.Dir(a.State.OnlyFiles[0])
+	} else if len(a.State.OnlyFolders) > 0 {
+		startDir = filepath.Dir(a.State.OnlyFolders[0])
+	}
+	if startDir != "" {
+		if folder, err := storage.ListerForURI(storage.NewFileURI(startDir)); err == nil {
+			picker.SetLocation(folder)
+		}
+	}
+	picker.Show()
+}
+
+func (a *App) handlePCV3OutputFolderSelection(ticket uint64, folder fyne.ListableURI, err error) {
+	if err != nil || folder == nil || folder.Scheme() != "file" ||
+		!a.State.IsPCV3ReadyOutputSelection(ticket) {
+		return
+	}
+	a.showPCV3OutputFilenameForm(ticket, folder.Path())
+}
+
+func (a *App) showPCV3OutputFilenameForm(ticket uint64, folder string) {
+	currentTicket, output, ok := a.State.PCV3ReadyOutputSelection()
+	if !ok || currentTicket != ticket {
+		return
+	}
+	filename := widget.NewEntry()
+	filename.SetText(filepath.Base(output))
+	filename.Validator = validatePCV3OutputFilename
+	form := dialog.NewForm(
+		tr("output.label", "Save output as:"),
+		tr("action.change", "Change"),
+		tr("action.cancel", "Cancel"),
+		[]*widget.FormItem{widget.NewFormItem(tr("output.label", "Save output as:"), filename)},
+		func(confirm bool) {
+			if !confirm {
+				return
+			}
+			_ = a.applyPCV3OutputSelection(ticket, folder, filename.Text)
+		},
+		a.Window,
+	)
+	form.Show()
+}
+
+func validatePCV3OutputFilename(filename string) error {
+	if filename == "" || filename == "." || filename == ".." ||
+		filepath.Base(filename) != filename || strings.ContainsAny(filename, "/\\\x00") {
+		return errUnsafePCV3OutputFilename
+	}
+	return nil
+}
+
+func (a *App) applyPCV3OutputSelection(ticket uint64, folder, filename string) error {
+	if folder == "" {
+		return errUnsafePCV3OutputFilename
+	}
+	if err := validatePCV3OutputFilename(filename); err != nil {
+		return err
+	}
+	if !a.State.SetPCV3OutputForReady(ticket, filepath.Join(folder, filename)) {
+		return errors.New("PCV3 output selection is no longer available")
+	}
+	a.updateUIState()
+	return nil
 }
 
 // changeOutputFile opens a dialog to change the output file path.
