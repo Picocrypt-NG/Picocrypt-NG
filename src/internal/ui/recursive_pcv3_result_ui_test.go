@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -36,8 +37,8 @@ func TestRecursivePCV3TransferredResultSurfacePreservesBatchOutcome(t *testing.T
 				t.Fatal(err)
 			}
 			input := operationInput{mode: "encrypt", inputFile: source, outputFile: source + ".pcv"}
-			// A real keyfile-only publication supplies the earlier clean result.
-			result := executeDeletionTestEncryption(t, context.Background(), input, nil)
+			// A real keyfile-only publication supplies the earlier file result.
+			result := executePublicationTestEncryption(t, context.Background(), input, nil)
 			result.completed = false
 			result.succeeded, result.failed = 1, 1
 			result.err = errors.New("later batch member refused")
@@ -60,23 +61,36 @@ func TestRecursivePCV3TransferredResultSurfacePreservesBatchOutcome(t *testing.T
 				a.setOperationSession(session)
 				a.finalizeOperation(session, operationInput{mode: "decrypt"}, result, true)
 				snap := a.State.UISnapshot()
-				if snap.Status.Kind != test.wantStatus {
-					t.Errorf("finalized batch status=%v want=%v", snap.Status.Kind, test.wantStatus)
+				wantStatus, want := test.wantStatus, test.want
+				if runtime.GOOS == "windows" && !test.cancelled {
+					wantStatus = app.StatusCustom
 				}
-				if !test.cancelled && !test.warning && (snap.Status.Args.OK != 1 || snap.Status.Args.Failed != 1) {
+				if snap.Status.Kind != wantStatus {
+					t.Errorf("finalized batch status=%v want=%v", snap.Status.Kind, wantStatus)
+				}
+				if runtime.GOOS != "windows" && !test.cancelled && !test.warning && (snap.Status.Args.OK != 1 || snap.Status.Args.Failed != 1) {
 					t.Errorf("batch counts=%+v want one success and one failure", snap.Status.Args)
 				}
 				if a.operationFooter.Visible() || !a.pcv3Container.Visible() {
 					t.Fatal("test must inspect the sole visible result surface")
 				}
 				text := pcv3RenderedText(a.pcv3Container)
-				if !strings.Contains(text, test.want) {
-					t.Errorf("visible result lost batch outcome %q: %q", test.want, text)
+				if !strings.Contains(text, want) || (test.warning && !strings.Contains(text, "Cleanup could not be confirmed")) {
+					t.Errorf("visible result lost batch outcome %q: %q", want, text)
 				}
-				if !test.warning && strings.Contains(text, "Operation complete") {
+				if test.warning && (!strings.Contains(text, "The application could not confirm removal of all temporary files created by this operation. Keep the source files and do not delete files based on this result.") || findPCV3Button(a.pcv3Container, "Close cleanup warning") == nil) {
+					t.Errorf("batch summary concealed cleanup guidance or its close action: %q", text)
+				}
+				if !test.cancelled && !strings.Contains(text, "Completed (1 ok, 1 failed)") {
+					t.Errorf("publication warning hid the later batch failure: %q", text)
+				}
+				if strings.Contains(text, "Operation complete") {
 					t.Errorf("visible result still claims earlier file success for the batch: %q", text)
 				}
-				if test.cancelled && !strings.Contains(text, "File saved.") {
+				if runtime.GOOS == "windows" && (!strings.Contains(text, nativePCV3UncertainBody) || !strings.Contains(text, nativePCV3DurabilityWarningText) || strings.Contains(text, "File saved.")) {
+					t.Errorf("batch finalization concealed native uncertainty: %q", text)
+				}
+				if runtime.GOOS != "windows" && test.cancelled && !strings.Contains(text, "File saved.") {
 					t.Errorf("cancellation erased already-published output evidence: %q", text)
 				}
 			})

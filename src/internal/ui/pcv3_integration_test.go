@@ -7,6 +7,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -172,16 +174,28 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 			presentation.ArchivePending() != core.ArchivePending() {
 			t.Fatal("State presentation drifted from the operation's closed presentation")
 		}
+		wantClass := pcv3operation.CompletionWarning
+		wantState := pcv3publication.StatePublishedDurable
+		wantStage := pcv3operation.StageNone
+		wantCode := pcv3publication.CodePublishedDurable
+		wantWarnings := []pcv3operation.Warning{pcv3operation.WarningForceUnverified}
+		if runtime.GOOS == "windows" {
+			wantClass = pcv3operation.CompletionDurabilityUncertain
+			wantState = pcv3publication.StatePublishedDurabilityUncertain
+			wantStage = pcv3operation.StageDirectorySync
+			wantCode = pcv3publication.CodeDurabilityUncertain
+			wantWarnings = append(wantWarnings, pcv3operation.WarningDurabilityUncertain)
+		}
 		if presentation.Outcome() != pcv3operation.OutcomeForceUnverified ||
 			presentation.Stage() != pcv3operation.StageWrapAuth ||
 			presentation.Code() != pcv3operation.CodeForceUnverified ||
 			presentation.Diagnostic() != pcv3operation.DiagnosticNone ||
-			presentation.CompletionClass() != pcv3operation.CompletionWarning ||
+			presentation.CompletionClass() != wantClass ||
 			!presentation.PublicationAttempted() ||
-			presentation.PublicationState() != pcv3publication.StatePublishedDurable ||
-			presentation.PublicationCode() != pcv3publication.CodePublishedDurable ||
-			len(presentation.Warnings()) != 1 ||
-			presentation.Warnings()[0] != pcv3operation.WarningForceUnverified ||
+			presentation.PublicationState() != wantState ||
+			presentation.PublicationStage() != wantStage ||
+			presentation.PublicationCode() != wantCode ||
+			!slices.Equal(presentation.Warnings(), wantWarnings) ||
 			presentation.ArchivePending() {
 			t.Fatalf(
 				"real desktop presentation = %v/%v/%v diagnostic=%v class=%v publication=%v/%v warnings=%v pending=%v; want the exact consented unverified-force emission",
@@ -192,13 +206,19 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 			)
 		}
 		text := pcv3RenderedText(a.pcv3Container)
-		for _, fragment := range []string{
+		fragments := []string{
 			"Unverified recovery artifact created",
 			"Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content.",
-			"File saved.",
-			"Inspect recovery artifact",
-			"Close",
-		} {
+		}
+		if runtime.GOOS == "windows" {
+			fragments = append(fragments, "Output durability not confirmed", nativePCV3UncertainBody, nativePCV3DurabilityWarningText, "Close durability warning")
+			if strings.Contains(text, "File saved.") || strings.Contains(text, "Inspect recovery artifact") || executed.ArtifactInspection() != nil {
+				t.Fatalf("uncertain native artifact gained durable publication authority: %q", text)
+			}
+		} else {
+			fragments = append(fragments, "File saved.", "Inspect recovery artifact", "Close")
+		}
+		for _, fragment := range fragments {
 			if !strings.Contains(text, fragment) {
 				t.Fatalf("rendered result view %q lacks exact fragment %q", text, fragment)
 			}
@@ -228,7 +248,7 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		if err != nil {
 			t.Fatalf("consented unverified operation left no artifact: %v", err)
 		}
-		if !artifact.Mode().IsRegular() || artifact.Mode().Perm() != 0o600 || artifact.Size() != 121 {
+		if !artifact.Mode().IsRegular() || (runtime.GOOS != "windows" && artifact.Mode().Perm() != 0o600) || artifact.Size() != 121 {
 			t.Fatalf(
 				"unverified artifact = mode %v size %d; want one regular 0600 file with the exact bounded candidate",
 				artifact.Mode(), artifact.Size(),
@@ -351,17 +371,13 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 			presentation.ArchivePending() != core.ArchivePending() {
 			t.Fatal("State presentation drifted from the normal operation's closed presentation")
 		}
-		if presentation.Outcome() != pcv3operation.OutcomeSuccess || presentation.Stage() != pcv3operation.StageNone ||
-			presentation.Code() != pcv3operation.CodeSuccess || presentation.Diagnostic() != pcv3operation.DiagnosticNone ||
-			presentation.CompletionClass() != pcv3operation.CompletionClean || !presentation.PublicationAttempted() ||
-			presentation.PublicationState() != pcv3publication.StatePublishedDurable ||
-			presentation.PublicationStage() != pcv3operation.StageNone ||
-			presentation.PublicationCode() != pcv3publication.CodePublishedDurable ||
-			len(presentation.Warnings()) != 0 || presentation.ArchivePending() {
-			t.Fatalf("normal desktop presentation = %v/%v/%v diagnostic=%v class=%v publication=%v/%v warnings=%v pending=%v; want exact durable success", presentation.Outcome(), presentation.Stage(), presentation.Code(), presentation.Diagnostic(), presentation.CompletionClass(), presentation.PublicationState(), presentation.PublicationCode(), presentation.Warnings(), presentation.ArchivePending())
-		}
+		requireNativePCV3Publication(t, executed)
 		text := pcv3RenderedText(a.pcv3Container)
-		if text != "Operation complete\nThe output is fully authenticated.\nComments:\nTEST ONLY comment\nFile saved.\nClose" {
+		wantText := "Operation complete\nThe output is fully authenticated.\nComments:\nTEST ONLY comment\nFile saved.\nClose"
+		if runtime.GOOS == "windows" {
+			wantText = "Operation complete\nThe output is fully authenticated.\nComments:\nTEST ONLY comment\nOutput durability not confirmed\n" + nativePCV3UncertainBody + "\n" + nativePCV3DurabilityWarningText + "\nClose durability warning"
+		}
+		if text != wantText {
 			t.Fatalf("normal result view = %q; want exact bounded success rendering", text)
 		}
 		for _, sentinel := range []string{

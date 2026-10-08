@@ -1349,6 +1349,12 @@ func (a *App) buildPCV3ResultView(
 				outcome.Body = ""
 				publication.Title = ""
 				publication.Body = ""
+			case app.StatusCustom:
+				if snap.Recursively && presentation.CompletionClass() != pcv3operation.CompletionClean {
+					outcome.Title = renderStatus(snap.Status, snap)
+					outcome.Body = ""
+					publication.Title = ""
+				}
 			}
 		}
 	}
@@ -1977,6 +1983,23 @@ func (a *App) applyCompletedOperation(input operationInput, result operationResu
 	a.State.SetStatusMessage(app.StatusCompleted, util.GREEN, app.StatusArgs{})
 }
 
+func recursiveOperationStatus(input operationInput, result operationResult) app.StatusMessage {
+	switch {
+	case result.failed == 0 && result.deleteFailed:
+		kind := app.StatusCompletedVolumeDeleteFailed
+		if input.mode == "encrypt" {
+			kind = app.StatusCompletedSomeDeleteFailed
+		}
+		return app.StatusMessage{Kind: kind, Color: util.YELLOW}
+	case result.failed == 0:
+		return app.StatusMessage{Kind: app.StatusRecursiveCompleted, Color: util.GREEN, Args: app.StatusArgs{Count: result.succeeded}}
+	case result.succeeded == 0:
+		return app.StatusMessage{Kind: app.StatusRecursiveFailedAll, Color: util.RED, Args: app.StatusArgs{Count: result.failed}}
+	default:
+		return app.StatusMessage{Kind: app.StatusRecursiveCompletedFailed, Color: util.YELLOW, Args: app.StatusArgs{OK: result.succeeded, Failed: result.failed}}
+	}
+}
+
 func (a *App) finalizeOperation(
 	session *operationSession,
 	lastInput operationInput,
@@ -2008,26 +2031,20 @@ func (a *App) finalizeOperation(
 		case pcv3operation.CompletionRefused, pcv3operation.CompletionNoOutput:
 			color = util.RED
 		}
+		if recursive {
+			if presentation.CompletionClass() == pcv3operation.CompletionWarning && pcv3CleanupIncomplete(presentation) {
+				title = tr("pcv3.warning.cleanup_title", "Cleanup could not be confirmed")
+			}
+			title += "\n" + renderStatus(recursiveOperationStatus(lastInput, result), a.State.UISnapshot())
+		}
 		a.State.SetStatus(title, color)
 	case recursive:
 		if result.completed && result.err == nil {
 			a.applyCompletedOperation(lastInput, result)
 			clearCredentials = true
 		}
-		switch {
-		case result.failed == 0 && result.deleteFailed:
-			if lastInput.mode == "encrypt" {
-				a.State.SetStatusMessage(app.StatusCompletedSomeDeleteFailed, util.YELLOW, app.StatusArgs{})
-			} else {
-				a.State.SetStatusMessage(app.StatusCompletedVolumeDeleteFailed, util.YELLOW, app.StatusArgs{})
-			}
-		case result.failed == 0:
-			a.State.SetStatusMessage(app.StatusRecursiveCompleted, util.GREEN, app.StatusArgs{Count: result.succeeded})
-		case result.succeeded == 0:
-			a.State.SetStatusMessage(app.StatusRecursiveFailedAll, util.RED, app.StatusArgs{Count: result.failed})
-		default:
-			a.State.SetStatusMessage(app.StatusRecursiveCompletedFailed, util.YELLOW, app.StatusArgs{OK: result.succeeded, Failed: result.failed})
-		}
+		status := recursiveOperationStatus(lastInput, result)
+		a.State.SetStatusMessage(status.Kind, status.Color, status.Args)
 	case result.err != nil:
 		a.State.SetStatus(result.err.Error(), util.RED)
 	case result.completed:

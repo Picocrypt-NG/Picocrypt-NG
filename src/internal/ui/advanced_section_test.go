@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -71,7 +72,7 @@ func TestPCV3ForceActionsExposeAuthenticatedAndExplicitUnverifiedChoices(t *test
 	})
 }
 
-func TestLinuxGUIEncryptsPCV3(t *testing.T) {
+func TestNativeGUIEncryptsPCV3(t *testing.T) {
 	newTestFyneApp(t)
 	a := createTestApp(t)
 	dir := t.TempDir()
@@ -99,9 +100,7 @@ func TestLinuxGUIEncryptsPCV3(t *testing.T) {
 		t.Fatalf("capture GUI operation: %v", err)
 	}
 	result := executeVolumeOperation(context.Background(), input, nil)
-	if result.err != nil || !result.completed {
-		t.Fatalf("GUI PCV3 encryption failed: %+v", result)
-	}
+	requireNativePCV3Operation(t, result)
 	encoded, err := os.ReadFile(outputPath)
 	if err != nil {
 		t.Fatalf("read GUI PCV3 output: %v", err)
@@ -120,10 +119,15 @@ func TestLinuxGUIEncryptsPCV3(t *testing.T) {
 		t.Fatalf("capture GUI split operation: %v", err)
 	}
 	result = executeVolumeOperation(context.Background(), splitInput, nil)
-	if result.err != nil || !result.completed {
-		t.Fatalf("GUI PCV3 split encryption failed: %+v", result)
-	}
-	if _, err := os.Lstat(splitOutput); !errors.Is(err, os.ErrNotExist) {
+	requireNativePCV3Operation(t, result)
+	if runtime.GOOS == "windows" {
+		if !result.pcv3.SplitOutputUncertain() {
+			t.Fatal("native split warning lost retained complete ciphertext")
+		}
+		if info, err := os.Stat(splitOutput); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+			t.Fatalf("uncertain GUI split lost complete ciphertext: %v, %v", info, err)
+		}
+	} else if _, err := os.Lstat(splitOutput); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("GUI PCV3 split retained the complete volume: %v", err)
 	}
 	if _, err := os.Stat(splitOutput + ".0"); err != nil {
@@ -146,9 +150,7 @@ func TestLinuxGUIEncryptsPCV3(t *testing.T) {
 		t.Fatalf("capture GUI D1 operation: %v", err)
 	}
 	result = executeVolumeOperation(context.Background(), d1Input, nil)
-	if result.err != nil || !result.completed {
-		t.Fatalf("GUI PCV3 D1 encryption failed: %+v", result)
-	}
+	requireNativePCV3Operation(t, result)
 	encoded, err = os.ReadFile(d1Output)
 	if err != nil {
 		t.Fatalf("read GUI PCV3 D1 output: %v", err)

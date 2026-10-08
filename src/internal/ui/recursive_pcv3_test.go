@@ -9,12 +9,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"fyne.io/fyne/v2"
 )
 
 func TestRecursivePCV3DecryptsNestedMixedFolderAndRetainsDamagedInput(t *testing.T) {
+	resetLocalizationForTest(t)
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	dir := t.TempDir()
@@ -29,9 +31,7 @@ func TestRecursivePCV3DecryptsNestedMixedFolderAndRetainsDamagedInput(t *testing
 	if err := os.WriteFile(plainPath, plain, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := volume.Encrypt(context.Background(), &volume.EncryptRequest{InputFile: plainPath, OutputFile: first, Password: []byte("mix"), PCV3: true}); err != nil {
-		t.Fatal(err)
-	}
+	requireNativePCV3EncryptionError(t, volume.Encrypt(context.Background(), &volume.EncryptRequest{InputFile: plainPath, OutputFile: first, Password: []byte("mix"), PCV3: true}))
 	encoded, err := os.ReadFile(first)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,12 @@ func TestRecursivePCV3DecryptsNestedMixedFolderAndRetainsDamagedInput(t *testing
 		t.Fatalf("damaged input produced output: %v", err)
 	}
 	snap := a.State.UISnapshot()
-	if snap.Working || snap.Status.Kind != app.StatusRecursiveCompletedFailed || snap.Status.Args.OK != 3 || snap.Status.Args.Failed != 1 {
+	if runtime.GOOS == "windows" {
+		requireNativePCV3Publication(t, a.pcv3Result)
+		if snap.Working || snap.Status.Kind != app.StatusCustom || snap.Status.Text != "Output durability not confirmed\nCompleted (1 ok, 3 failed)" {
+			t.Fatalf("uncertain native batch summary = %+v working=%v", snap.Status, snap.Working)
+		}
+	} else if snap.Working || snap.Status.Kind != app.StatusRecursiveCompletedFailed || snap.Status.Args.OK != 3 || snap.Status.Args.Failed != 1 {
 		t.Fatalf("batch terminal summary = %+v working=%v", snap.Status, snap.Working)
 	}
 }
@@ -191,10 +196,8 @@ func TestRecursivePCV3EarlyRefusalCannotHideLaterPublishedCleanupWarning(t *test
 			return refused
 		}
 		published = pcv3operation.Run(ctx, request)
-		if published.CompletionClass() != pcv3operation.CompletionClean {
-			t.Errorf("real publication failed: %v", published)
-		}
-		// Model a caller-owned cleanup failure after a real durable publication.
+		requireNativePCV3Publication(t, published)
+		// Model a caller-owned cleanup failure after a real publication.
 		// This public operation can only revoke success/deletion authority.
 		published.WithCleanupWarning()
 		return published
@@ -211,7 +214,11 @@ func TestRecursivePCV3EarlyRefusalCannotHideLaterPublishedCleanupWarning(t *test
 		a.startWork()
 	})
 	drainOperationFinalizer(t, a)
-	if calls != 2 || published == nil || a.pcv3Result != published || !published.PublicationAttempted() || published.CompletionClass() != pcv3operation.CompletionWarning {
+	wantClass := pcv3operation.CompletionWarning
+	if runtime.GOOS == "windows" {
+		wantClass = pcv3operation.CompletionDurabilityUncertain
+	}
+	if calls != 2 || published == nil || a.pcv3Result != published || !published.PublicationAttempted() || published.CompletionClass() != wantClass {
 		t.Fatalf("published warning lost to earlier refusal: calls=%d retained=%v published=%v", calls, a.pcv3Result, published)
 	}
 	if !a.State.UISnapshot().PCV3CleanupIncomplete {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -352,6 +353,7 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 }
 
 func TestCancelAfterSuccessfulOperationPreservesSource(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 
@@ -944,6 +946,7 @@ func TestSuccessfulRecombineDeletesActualChunkSet(t *testing.T) {
 }
 
 func TestDeleteAfterSuccessPreservesReplacedSource(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
 	a := createTestApp(t)
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.txt")
@@ -993,6 +996,7 @@ func TestDeleteAfterSuccessPreservesReplacedSource(t *testing.T) {
 }
 
 func TestDeleteAfterFolderEncryptionPreservesReplacedEmptyRoot(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
 	a := createTestApp(t)
 	dir := t.TempDir()
 	sourceFolder := filepath.Join(dir, "source")
@@ -1045,6 +1049,7 @@ func TestDeleteAfterFolderEncryptionPreservesReplacedEmptyRoot(t *testing.T) {
 }
 
 func TestDeleteAfterFolderEncryptionPreservesNewEntries(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
 	a := createTestApp(t)
 	dir := t.TempDir()
 	sourceFolder := filepath.Join(dir, "source")
@@ -1134,6 +1139,7 @@ func TestDeleteAfterRecombineNeverDeletesLateChunk(t *testing.T) {
 }
 
 func TestRecursiveDeleteFailureIsNotOverwrittenByLaterSuccess(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	dir := t.TempDir()
@@ -1372,6 +1378,15 @@ func createTestApp(t *testing.T) *App {
 // between its completion and frontend deletion is orchestrated by the test.
 func executeDeletionTestEncryption(t *testing.T, ctx context.Context, input operationInput, reporter volume.ProgressReporter) operationResult {
 	t.Helper()
+	result := executePublicationTestEncryption(t, ctx, input, reporter)
+	if result.err != nil || !result.pcv3.SourceDeletionAllowed() {
+		t.Fatalf("real PCV3 encryption did not authorize deletion: %v / %v", result.err, result.pcv3)
+	}
+	return result
+}
+
+func executePublicationTestEncryption(t *testing.T, ctx context.Context, input operationInput, reporter volume.ProgressReporter) operationResult {
+	t.Helper()
 	key := filepath.Join(t.TempDir(), "factor")
 	if err := os.WriteFile(key, []byte("source deletion regression keyfile"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1384,15 +1399,42 @@ func executeDeletionTestEncryption(t *testing.T, ctx context.Context, input oper
 	}
 	input.rsCodecs = state.RSCodecs
 	result := executeVolumeOperation(ctx, input, reporter)
-	if result.err != nil || !result.pcv3.SourceDeletionAllowed() {
-		t.Fatalf("real PCV3 encryption did not authorize deletion: %v / %v", result.err, result.pcv3)
-	}
+	requireNativePCV3Operation(t, result)
 	return result
+}
+
+func TestNativePCV3EncryptionDeletesSourceOnlyAfterDurablePublication(t *testing.T) {
+	a := createTestApp(t)
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	plaintext := []byte("delete only after proven native durability")
+	if err := os.WriteFile(source, plaintext, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := operationInput{mode: "encrypt", inputFile: source, onlyFiles: []string{source}, outputFile: source + ".pcv", delete: true}
+	result := a.runCapturedOperation(context.Background(), func(ctx context.Context, captured operationInput, reporter volume.ProgressReporter) operationResult {
+		return executePublicationTestEncryption(t, ctx, captured, reporter)
+	}, nil, input)
+	requireNativePCV3Operation(t, result)
+	if result.cancelled || result.deleteFailed {
+		t.Fatalf("native publication cleanup = %+v", result)
+	}
+	if runtime.GOOS == "windows" {
+		if got, err := os.ReadFile(source); err != nil || !bytes.Equal(got, plaintext) {
+			t.Fatalf("uncertain publication changed its source: %q, %v", got, err)
+		}
+	} else if _, err := os.Lstat(source); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("durable publication did not remove its authorized source: %v", err)
+	}
+	if info, err := os.Stat(input.outputFile); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		t.Fatalf("native ciphertext is unavailable: %v, %v", info, err)
+	}
 }
 
 // A nil Go error is not permission to remove user data: cleanup warnings
 // revoke authority minted by the real writer after its complete lifecycle.
 func TestPCV3EncryptionCleanupWarningPreservesSourceDespiteNilError(t *testing.T) {
+	requireNativePCV3DeletionSupport(t)
 	a := createTestApp(t)
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

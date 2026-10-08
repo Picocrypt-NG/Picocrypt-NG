@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -31,7 +32,7 @@ func TestPCV3ResultSurfacePreservesFrontendFinalization(t *testing.T) {
 			input := operationInput{mode: "encrypt", inputFile: source, outputFile: source + ".pcv"}
 			// A real keyfile-only writer provides the published result. These
 			// tuples represent frontend work after publication, not crypto results.
-			result := executeDeletionTestEncryption(t, context.Background(), input, nil)
+			result := executePublicationTestEncryption(t, context.Background(), input, nil)
 			if test.recursive {
 				result.completed = false
 				result.succeeded, result.failed = 1, 1
@@ -41,6 +42,7 @@ func TestPCV3ResultSurfacePreservesFrontendFinalization(t *testing.T) {
 			}
 			fyne.DoAndWait(func() {
 				a.State.Mode = "encrypt"
+				a.State.Recursively = test.recursive
 				a.State.InputFile = source
 				a.State.OutputFile = input.outputFile
 				a.State.AllFiles = []string{source}
@@ -59,7 +61,10 @@ func TestPCV3ResultSurfacePreservesFrontendFinalization(t *testing.T) {
 				if strings.Contains(text, "Operation complete") {
 					t.Errorf("result surface still presents the previous file's success as the final outcome: %q", text)
 				}
-				if !test.recursive && !strings.Contains(text, "File saved.") {
+				if runtime.GOOS == "windows" && (!strings.Contains(text, nativePCV3UncertainBody) || !strings.Contains(text, nativePCV3DurabilityWarningText) || strings.Contains(text, "File saved.")) {
+					t.Errorf("frontend finalization concealed native uncertainty: %q", text)
+				}
+				if runtime.GOOS != "windows" && !test.recursive && !strings.Contains(text, "File saved.") {
 					t.Errorf("cancellation hid the already-published output: %q", text)
 				}
 			})

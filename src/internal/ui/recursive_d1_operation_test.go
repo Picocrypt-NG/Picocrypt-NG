@@ -10,12 +10,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"fyne.io/fyne/v2"
 )
 
 func TestRecursiveExplicitD1ReadsNestedFilesAndWrongPasswordLeavesNoOutput(t *testing.T) {
+	resetLocalizationForTest(t)
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	plain := []byte("explicit D1 batch plaintext")
@@ -24,9 +26,7 @@ func TestRecursiveExplicitD1ReadsNestedFilesAndWrongPasswordLeavesNoOutput(t *te
 		t.Fatal(err)
 	}
 	encodedPath := filepath.Join(t.TempDir(), "D1.pcv")
-	if err := volume.Encrypt(context.Background(), &volume.EncryptRequest{InputFile: input, OutputFile: encodedPath, Password: []byte("D1 batch password"), PCV3: true, Paranoid: true, Deniability: true, RSCodecs: a.rsCodecs}); err != nil {
-		t.Fatal(err)
-	}
+	requireNativePCV3EncryptionError(t, volume.Encrypt(context.Background(), &volume.EncryptRequest{InputFile: input, OutputFile: encodedPath, Password: []byte("D1 batch password"), PCV3: true, Paranoid: true, Deniability: true, RSCodecs: a.rsCodecs}))
 	encoded, err := os.ReadFile(encodedPath)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,16 @@ func TestRecursiveExplicitD1ReadsNestedFilesAndWrongPasswordLeavesNoOutput(t *te
 			if wrong {
 				want = app.StatusRecursiveFailedAll
 			}
-			if snap.Working || snap.Status.Kind != want || snap.Status.Args.Count != 2 {
+			if runtime.GOOS == "windows" && !wrong {
+				requireNativePCV3Publication(t, a.pcv3Result)
+				want = app.StatusCustom
+				if snap.Status.Text != "Output durability not confirmed\nFailed (all 2 files)" {
+					t.Fatalf("uncertain native D1 batch terminal=%+v", snap.Status)
+				}
+			} else if snap.Status.Args.Count != 2 {
+				t.Fatalf("D1 batch count=%+v; want exactly two completed or failed files", snap.Status)
+			}
+			if snap.Working || snap.Status.Kind != want {
 				t.Fatalf("D1 batch terminal=%+v", snap.Status)
 			}
 		})

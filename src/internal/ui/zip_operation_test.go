@@ -2,7 +2,6 @@ package ui
 
 import (
 	"Picocrypt-NG/internal/app"
-	"Picocrypt-NG/internal/pcv3operation"
 	"archive/zip"
 	"bytes"
 	"context"
@@ -69,9 +68,7 @@ func testZipAndEncryptDroppedSelectionRoundTrip(t *testing.T, deniable bool) {
 		t.Fatal(captureErr)
 	}
 	result := a.runCapturedOperation(context.Background(), executeVolumeOperation, nil, input)
-	if result.err != nil || !result.completed || result.pcv3 == nil || result.pcv3.CompletionClass() != pcv3operation.CompletionClean {
-		t.Fatalf("Zip and Encrypt from the dropped selection failed: %v", result.err)
-	}
+	requireNativePCV3Operation(t, result)
 
 	ciphertext, err := os.ReadFile(input.outputFile)
 	if err != nil {
@@ -170,9 +167,7 @@ func testZipAndEncryptDroppedSelectionRoundTrip(t *testing.T, deniable bool) {
 			a.workers.wait()
 			fyne.DoAndWait(func() {})
 			read := a.pcv3Result
-			if read == nil || read.CompletionClass() != pcv3operation.CompletionClean || read.ArchiveFollowUp() != nil {
-				t.Fatalf("real GUI decryption did not complete the chosen archive action: %v", read)
-			}
+			requireNativePCV3Publication(t, read)
 			fyne.DoAndWait(func() {
 				if !a.pcv3Container.Visible() || a.configurationForm.Visible() || a.operationFooter.Visible() {
 					t.Fatal("PCV3 result still shows inactive inputs or the stale preflight error footer")
