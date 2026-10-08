@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -486,17 +487,62 @@ func TestArchiveSAFSessionAliasesAndOutOfOrderActionsCannotAdvanceAuthority(t *t
 }
 
 func TestArchiveSAFSessionCleanupUncertaintyIsIndeterminateWithoutProviderAttempt(t *testing.T) {
-	archive := buildArchiveSAFZIP(t, []archiveSAFZIPEntry{{name: "file", data: []byte("body")}})
-	handoff, parent, _ := newArchiveSAFHandoffFromZIP(t, archive, true)
-	begin := handoff.BeginSAF()
-	stagePath := findArchiveSAFStagePath(t, parent)
-	if err := os.Link(stagePath, filepath.Join(parent, "unexpected-plaintext-link")); err != nil {
-		t.Fatalf("create unexpected stage hardlink: %v", err)
-	}
-	result := begin.Session().Abort()
-	if result == nil || result.State() != fileops.UnpackStatePublicationIndeterminate ||
-		result.AttemptedEver() || !result.CleanupIncomplete() {
-		t.Fatalf("cleanup-uncertain abort = %#v; want unattempted indeterminate", result)
+	for _, fault := range []string{"stage pathname replacement", "journal hardlink"} {
+		t.Run(fault, func(t *testing.T) {
+			if fault == "journal hardlink" && runtime.GOOS != "linux" && runtime.GOOS != "android" {
+				t.Skip("extra-link cleanup identity requires supported journal metadata; pathname replacement is tested on every host")
+			}
+			archive := buildArchiveSAFZIP(t, []archiveSAFZIPEntry{{name: "file", data: []byte("body")}})
+			handoff, parent, target := newArchiveSAFHandoffFromZIP(t, archive, true)
+			copiedHandoff := *handoff
+			begin := handoff.BeginSAF()
+			if begin.Kind() != NativeArchiveSAFBeginSession || begin.Session() == nil {
+				t.Fatalf("cleanup fixture did not reach a real SAF session: %#v", begin)
+			}
+			session := begin.Session()
+			t.Cleanup(func() { _ = session.Abort() })
+			stagePath := findArchiveSAFStagePath(t, parent)
+			foreign := []byte("foreign stage pathname must survive")
+			var retainedPath string
+			if fault == "journal hardlink" {
+				retainedPath = filepath.Join(parent, "unexpected-plaintext-link")
+				if err := os.Link(stagePath, retainedPath); err != nil {
+					t.Fatalf("create unexpected stage hardlink: %v", err)
+				}
+			} else {
+				retainedPath = filepath.Join(parent, "moved-private-stage")
+				if err := os.Rename(stagePath, retainedPath); err != nil {
+					t.Fatalf("move exact stage before pathname replacement: %v", err)
+				}
+				if err := os.WriteFile(stagePath, foreign, 0o600); err != nil {
+					t.Fatalf("replace stage pathname with a foreign file: %v", err)
+				}
+			}
+			result := session.Abort()
+			if result == nil || result.State() != fileops.UnpackStatePublicationIndeterminate ||
+				result.AttemptedEver() || !result.CleanupIncomplete() {
+				t.Fatalf("cleanup-uncertain abort = %#v; want unattempted indeterminate", result)
+			}
+			if handoff.Live() || copiedHandoff.Live() || copiedHandoff.BeginSAF().Kind() != NativeArchiveSAFBeginExpired ||
+				session.Abort() != result || session.Finish() != result {
+				t.Fatal("uncertain cleanup retained or replaced one-shot authority")
+			}
+			if step := session.Attempt(0); step.Kind() != NativeArchiveSAFStepRejected || session.AttemptedEver() {
+				t.Fatal("terminal cleanup uncertainty granted provider-effect authority")
+			}
+			wantStage := archive
+			if fault == "stage pathname replacement" {
+				wantStage = foreign
+			}
+			for path, want := range map[string][]byte{stagePath: wantStage, retainedPath: archive} {
+				if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("uncertain cleanup changed preserved file %q: %v", filepath.Base(path), err)
+				}
+			}
+			if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unattempted cleanup published archive plaintext: %v", err)
+			}
+		})
 	}
 }
 

@@ -31,6 +31,9 @@ func TestRecursiveExplicitD1ReadsNestedFilesAndWrongPasswordLeavesNoOutput(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(encoded) == 0 {
+		t.Fatal("D1 closure fixture must be nonempty")
+	}
 	for _, wrong := range []bool{false, true} {
 		name := "matching factors"
 		if wrong {
@@ -53,6 +56,10 @@ func TestRecursiveExplicitD1ReadsNestedFilesAndWrongPasswordLeavesNoOutput(t *te
 				calls++
 				if request.Mode != pcv3operation.ModeReadD1 || request.Consent != nil || request.SplitBase != "" {
 					t.Error("explicit D1 batch chose another format/action")
+				}
+				var first [1]byte
+				if n, err := request.Source.ReadAt(first[:], 0); n != 1 || err != nil || first[0] != encoded[0] {
+					t.Errorf("D1 source must be live and readable before transfer: read=%d error=%v", n, err)
 				}
 				sources = append(sources, request.Source)
 				return pcv3operation.RunWithOptions(ctx, request, pcv3operation.ExecutionOptions{ArchiveAction: pcv3operation.ArchiveSave})
@@ -99,8 +106,9 @@ func TestRecursiveExplicitD1ReadsNestedFilesAndWrongPasswordLeavesNoOutput(t *te
 				}
 			}
 			for _, source := range sources {
-				if _, err := source.Stat(); !errors.Is(err, os.ErrClosed) {
-					t.Error("D1 batch retained consumed source")
+				var first [1]byte
+				if _, err := source.ReadAt(first[:], 0); !errors.Is(err, os.ErrClosed) {
+					t.Errorf("D1 batch retained consumed source: %v", err)
 				}
 			}
 			snap := a.State.UISnapshot()
