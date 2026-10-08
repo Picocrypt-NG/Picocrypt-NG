@@ -9,8 +9,12 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"testing"
+	"time"
 )
 
 func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
@@ -49,6 +53,7 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 	rawZIP := encode(PayloadKindRaw, zipBytes)
 	rawOrdinary := encode(PayloadKindRaw, ordinaryBytes)
 	declaredArchive := encode(PayloadKindArchive, zipBytes)
+	t.Logf("retained serialized fixture lengths: raw ZIP=%d raw ordinary=%d declared archive=%d total=%d", len(rawZIP), len(rawOrdinary), len(declaredArchive), len(rawZIP)+len(rawOrdinary)+len(declaredArchive))
 	for _, test := range []struct {
 		name       string
 		kind       PayloadKind
@@ -165,6 +170,25 @@ type nativeArchiveObservingAdmitter struct {
 
 func (admitter *nativeArchiveObservingAdmitter) AdmitKDF(ctx context.Context, profile pcv3credential.KDFProfile) (pcv3credential.KDFAdmission, error) {
 	decision, err := admitter.delegate.AdmitKDF(ctx, profile)
-	admitter.t.Logf("actual platform KDF admission=%d (granted=%t)", decision, decision == pcv3credential.KDFAdmissionGranted)
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	admitter.t.Logf("post-decision actual platform KDF admission=%d (granted=%t); Go memory bytes: HeapAlloc=%d HeapInuse=%d HeapIdle=%d HeapReleased=%d Sys=%d NumGC=%d", decision, decision == pcv3credential.KDFAdmissionGranted, memory.HeapAlloc, memory.HeapInuse, memory.HeapIdle, memory.HeapReleased, memory.Sys, memory.NumGC)
+	if runtime.GOOS == "darwin" && decision == pcv3credential.KDFAdmissionDeniedInsufficient {
+		probeContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for _, probe := range []struct {
+			label string
+			path  string
+			args  []string
+		}{
+			{label: "system vm_stat", path: "/usr/bin/vm_stat"},
+			{label: "own-process top MEM (physical footprint)", path: "/usr/bin/top", args: []string{"-l", "1", "-pid", strconv.Itoa(os.Getpid()), "-stats", "pid,mem"}},
+		} {
+			command := exec.CommandContext(probeContext, probe.path, probe.args...)
+			command.WaitDelay = time.Second
+			output, probeErr := command.CombinedOutput()
+			admitter.t.Logf("post-decision Darwin %s (not provider snapshot; truncated=%t): err=%v\n%s", probe.label, len(output) > 8192, probeErr, output[:min(len(output), 8192)])
+		}
+	}
 	return decision, err
 }

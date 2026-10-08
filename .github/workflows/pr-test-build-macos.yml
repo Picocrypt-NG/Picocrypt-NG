@@ -58,6 +58,13 @@ jobs:
         retention-days: 1
         if-no-files-found: error
 
+    - name: Diagnose repeated native archive KDF admission
+      if: matrix.group == 1
+      run: |
+        cd src
+        sudo -n /usr/sbin/purge
+        go test -v -count=1 -p 1 -timeout 60m -run '^TestNativePrepareArchiveUsesAuthenticatedPlaintext$' ./internal/pcv3operation/internal/pcv3
+
     - name: Run native test group
       run: bash .github/scripts/test-macos-pcv3.sh "$SHARD_INDEX" "$SHARD_COUNT"
       env:
