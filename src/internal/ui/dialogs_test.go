@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/app"
 	"Picocrypt-NG/internal/util"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -186,12 +187,261 @@ func TestNormalizeSelectedOutputPathPreservesDots(t *testing.T) {
 	}
 }
 
-func TestShouldShowOverwriteModalSkipsDialogConfirmedOutput(t *testing.T) {
-	if showOverwriteModalForOutput(true, false, true) {
-		t.Fatal("dialog-confirmed output should not trigger a second overwrite modal")
+func TestShouldShowOverwriteModalRequiresStartConsent(t *testing.T) {
+	if !showOverwriteModalForOutput(true, false) {
+		t.Fatal("existing output requires Start-time overwrite consent")
 	}
-	if !showOverwriteModalForOutput(true, false, false) {
-		t.Fatal("plain existing output should still trigger overwrite modal")
+	if showOverwriteModalForOutput(false, false) {
+		t.Fatal("absent output does not require replacement consent")
+	}
+}
+
+func legacyOutputPickerApp(t *testing.T) (*App, string, []byte) {
+	t.Helper()
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	input := filepath.Join(t.TempDir(), "input.txt.pcv")
+	data, err := os.ReadFile("../../testdata/golden/pico_test_v2.txt.pcv")
+	if err != nil {
+		t.Fatalf("read frozen legacy volume: %v", err)
+	}
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatalf("write legacy input: %v", err)
+	}
+	fyne.DoAndWait(func() {
+		a.onDrop([]string{input})
+	})
+	drainOperationFinalizer(t, a)
+	fyne.DoAndWait(func() {
+		a.State.Password = "test"
+		a.updateUIState()
+	})
+	if snap := a.State.UISnapshot(); snap.Mode != "decrypt" || snap.PCV3Route == app.PCV3RouteReady {
+		t.Fatalf("frozen volume did not select legacy decryption: %#v", snap)
+	}
+	if a.changeBtn.Disabled() || a.State.UISnapshot().OutputFile == "" {
+		t.Fatal("legacy output selection was not ready for a user Change action")
+	}
+	return a, input, data
+}
+
+// Drive both the defective save picker and the path-only picker so the RED
+// oracle is actual file preservation, rather than the kind of dialog shown.
+func selectLegacyOutputDestination(t *testing.T, a *App, filename string) {
+	t.Helper()
+	entry, buttons := outputPickerControls(t, a)
+	if open := buttons["Open"]; open != nil {
+		test.Tap(open)
+		entry, confirm := pcv3OutputFilenameFormControls(t, a)
+		entry.SetText(filename)
+		test.Tap(confirm)
+		return
+	}
+	if entry == nil || buttons["Save"] == nil {
+		t.Fatal("output picker has no filename action")
+	}
+	entry.SetText(filename)
+	test.Tap(buttons["Save"])
+	if a.Window.Canvas().Overlays().Top() != nil {
+		_, buttons = outputPickerControls(t, a)
+		if yes := buttons["Yes"]; yes != nil {
+			test.Tap(yes)
+		}
+	}
+}
+
+func TestLegacyChangePreservesRawChoiceInputAndKeyfileBeforeStart(t *testing.T) {
+	for _, choice := range []string{"existing", "input", "keyfile", "new"} {
+		t.Run(choice, func(t *testing.T) {
+			a, input, inputBytes := legacyOutputPickerApp(t)
+			dir := filepath.Dir(input)
+			raw := filepath.Join(dir, "chosen.backup")
+			keyfile := filepath.Join(dir, "secret.key")
+			keyBytes := []byte("key material must survive output selection")
+			if err := os.WriteFile(keyfile, keyBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			rawBytes := []byte("raw choice must not be opened")
+			switch choice {
+			case "input":
+				raw, rawBytes = input, inputBytes
+			case "keyfile":
+				raw, rawBytes = keyfile, keyBytes
+				a.State.Keyfile = true
+				a.State.Keyfiles = []string{keyfile}
+			case "new":
+				rawBytes = nil
+			default:
+				if err := os.WriteFile(raw, rawBytes, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fyne.DoAndWait(a.changeBtn.OnTapped)
+			selectLegacyOutputDestination(t, a, filepath.Base(raw))
+			for path, want := range map[string][]byte{input: inputBytes, keyfile: keyBytes, raw: rawBytes} {
+				got, err := os.ReadFile(path)
+				if want == nil {
+					if !os.IsNotExist(err) {
+						t.Fatalf("Change created raw choice %q before Start: %v", path, err)
+					}
+				} else if err != nil || string(got) != string(want) {
+					t.Fatalf("Change modified %q before Start: bytes=%q err=%v", path, got, err)
+				}
+			}
+			output := a.State.UISnapshot().OutputFile
+			if _, err := os.Lstat(output); !os.IsNotExist(err) {
+				t.Fatalf("Change created normalized output before Start: %q: %v", output, err)
+			}
+		})
+	}
+}
+
+func TestLegacyChangeCancelPreservesSelectionAndDestination(t *testing.T) {
+	a, input, inputBytes := legacyOutputPickerApp(t)
+	before := a.State.UISnapshot().OutputFile
+	sentinel := []byte("existing output")
+	if err := os.WriteFile(before, sentinel, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fyne.DoAndWait(a.changeBtn.OnTapped)
+	_, buttons := outputPickerControls(t, a)
+	if buttons["Open"] != nil {
+		test.Tap(buttons["Open"])
+		_, buttons = outputPickerControls(t, a)
+	}
+	cancel := buttons[tr("action.cancel", "Cancel")]
+	if cancel == nil {
+		t.Fatal("output selection has no cancel action")
+	}
+	test.Tap(cancel)
+	if got := a.State.UISnapshot().OutputFile; got != before {
+		t.Fatalf("cancel changed selection: %q", got)
+	}
+	for path, want := range map[string][]byte{input: inputBytes, before: sentinel} {
+		if got, err := os.ReadFile(path); err != nil || string(got) != string(want) {
+			t.Fatalf("cancel modified %q: %q, %v", path, got, err)
+		}
+	}
+}
+
+func TestLegacyNormalizedOutputNeedsStartConsentAndStillDecrypts(t *testing.T) {
+	// A real legacy decrypt allocates the fixed 1 GiB KDF workspace. Isolate
+	// that workspace (and race shadow memory) from unrelated UI admission tests.
+	const child = "PICOCRYPT_TEST_LEGACY_UI_DECRYPT_CHILD"
+	if os.Getenv(child) != "1" {
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command(executable, "-test.run=^TestLegacyNormalizedOutputNeedsStartConsentAndStillDecrypts$", "-test.timeout=5m")
+		command.Env = append(os.Environ(), child+"=1")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("isolated legacy UI decryption: %v\n%s", err, output)
+		}
+		return
+	}
+	a, input, inputBytes := legacyOutputPickerApp(t)
+	dir := filepath.Dir(input)
+	raw := filepath.Join(dir, "chosen.backup")
+	output := filepath.Join(dir, "chosen.txt")
+	sentinel := []byte("normalized destination must survive until consent")
+	if err := os.WriteFile(output, sentinel, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fyne.DoAndWait(a.changeBtn.OnTapped)
+	selectLegacyOutputDestination(t, a, filepath.Base(raw))
+	fyne.DoAndWait(a.onClickStart)
+	if a.overwriteModal == nil {
+		drainOperationFinalizer(t, a)
+		t.Fatal("normalized existing target reached decryption without Start-time overwrite consent")
+	}
+	a.overwriteModal.Hide()
+	if got, err := os.ReadFile(output); err != nil || string(got) != string(sentinel) {
+		t.Fatalf("cancelled overwrite changed normalized destination: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(raw); !os.IsNotExist(err) {
+		t.Fatalf("raw choice created: %v", err)
+	}
+	fyne.DoAndWait(a.onClickStart)
+	fyne.DoAndWait(a.overwriteModal.(*dialog.ConfirmDialog).Confirm)
+	drainOperationFinalizer(t, a)
+	plaintext, err := os.ReadFile("../../testdata/golden/pico_test.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(output); err != nil || string(got) != string(plaintext) {
+		t.Fatalf("explicitly authorized legacy decrypt: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(input); err != nil || string(got) != string(inputBytes) {
+		t.Fatalf("legacy decrypt changed input: %q, %v", got, err)
+	}
+}
+
+func TestLegacyOverwriteConsentCannotAuthorizeChangedDestination(t *testing.T) {
+	a, input, inputBytes := legacyOutputPickerApp(t)
+	first := a.State.UISnapshot().OutputFile
+	second := filepath.Join(filepath.Dir(input), "unconfirmed.txt")
+	sentinel := []byte("not authorized for replacement")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, sentinel, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fyne.DoAndWait(a.onClickStart)
+	if a.overwriteModal == nil {
+		t.Fatal("existing legacy output did not ask for consent")
+	}
+	fyne.DoAndWait(func() {
+		a.State.OutputFile = second
+		a.overwriteModal.(*dialog.ConfirmDialog).Confirm()
+	})
+	drainOperationFinalizer(t, a)
+	for path, want := range map[string][]byte{input: inputBytes, first: sentinel, second: sentinel} {
+		if got, err := os.ReadFile(path); err != nil || string(got) != string(want) {
+			t.Fatalf("stale overwrite consent modified %q: %q, %v", path, got, err)
+		}
+	}
+}
+
+func TestChangeHiddenFilenameStaysInsideChosenFolder(t *testing.T) {
+	for _, mode := range []string{"encrypt", "decrypt"} {
+		t.Run(mode, func(t *testing.T) {
+			var a *App
+			var input string
+			extension := ".txt"
+			if mode == "decrypt" {
+				a, input, _ = legacyOutputPickerApp(t)
+			} else {
+				a = createUIReadyDropTestApp(t, newTestFyneApp(t))
+				input = filepath.Join(t.TempDir(), "plain.bin")
+				if err := os.WriteFile(input, []byte("source must survive"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				fyne.DoAndWait(func() {
+					a.onDrop([]string{input})
+				})
+				drainOperationFinalizer(t, a)
+				extension = ".bin.pcv"
+			}
+			dir := filepath.Dir(input)
+			outside := dir + extension
+			sentinel := []byte("outside the chosen folder")
+			if err := os.WriteFile(outside, sentinel, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Remove(outside) })
+			fyne.DoAndWait(a.changeBtn.OnTapped)
+			selectPCV3FolderOutputDestination(t, a, ".txt")
+			want := filepath.Join(dir, ".txt"+extension)
+			if got := a.State.UISnapshot().OutputFile; got != want {
+				t.Fatalf("hidden filename escaped selected folder: got=%q want=%q", got, want)
+			}
+			if _, err := os.Lstat(want); !os.IsNotExist(err) {
+				t.Fatalf("Change created output before Start: %v", err)
+			}
+			if got, err := os.ReadFile(outside); err != nil || string(got) != string(sentinel) {
+				t.Fatalf("outside sentinel changed: %q, %v", got, err)
+			}
+		})
 	}
 }
 

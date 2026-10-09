@@ -1378,8 +1378,8 @@ func TestOpenedPathsMergeSecondBatchDuringFirstReadinessCheck(t *testing.T) {
 
 // TestLateICloudBatchAfterReadyApplyExtendsSameSelection covers the #127 loss
 // window after apply: when a cloud-backed opened selection was already applied
-// and Finder delivers another batch of the same gesture, the late batch must
-// extend the applied selection instead of replacing it.
+// and Finder delivers another batch, choosing Add must extend the applied
+// selection without losing the already selected file.
 func TestLateICloudBatchAfterReadyApplyExtendsSameSelection(t *testing.T) {
 	resetOpenedPathsForTest(t)
 	oldCheck := checkOpenedPathReadiness
@@ -1416,13 +1416,14 @@ func TestLateICloudBatchAfterReadyApplyExtendsSameSelection(t *testing.T) {
 	waitForAllFiles(t, a, []string{first})
 
 	a.applyOpenedPaths([]string{second})
+	chooseCloudFollowup(t, a, "Add files")
 	waitForAllFiles(t, a, []string{first, second})
 }
 
 // TestLateICloudFileBatchAfterFolderApplyExtendsSameSelection covers the #127
 // folder variant: an iCloud folder applies immediately (it never enables late
-// collection), so a file batch from the same gesture lands after apply and must
-// extend the folder selection instead of replacing it.
+// collection), so a later file batch must remain available for an explicit Add
+// choice that preserves the folder selection.
 func TestLateICloudFileBatchAfterFolderApplyExtendsSameSelection(t *testing.T) {
 	resetOpenedPathsForTest(t)
 	oldCheck := checkOpenedPathReadiness
@@ -1469,6 +1470,7 @@ func TestLateICloudFileBatchAfterFolderApplyExtendsSameSelection(t *testing.T) {
 	waitForOnlyFolders(t, a, []string{folder})
 
 	a.applyOpenedPaths([]string{file})
+	chooseCloudFollowup(t, a, "Add files")
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -1645,11 +1647,9 @@ func TestForeignScanFinishesOpenedPathReadinessSession(t *testing.T) {
 	assertInputFileDoesNotBecome(t, a, cloudFile, 200*time.Millisecond)
 }
 
-// TestOpenedPathSessionSurvivesOwnGestureScan pins the opposite case: while a
-// scan from an earlier apply of the SAME gesture runs (fresh cloud apply
-// record), the late-batch session must stay alive and apply the union once the
-// scan settles.
-func TestOpenedPathSessionSurvivesOwnGestureScan(t *testing.T) {
+// An earlier cloud selection may still be scanning. Keep the incoming paths
+// alive, then offer an explicit Add choice once that scan settles.
+func TestOpenedPathSessionWaitsForCloudSelectionScanBeforeChoice(t *testing.T) {
 	resetOpenedPathsForTest(t)
 	oldCheck := checkOpenedPathReadiness
 	oldPoll := openedPathPollInterval
@@ -1693,6 +1693,7 @@ func TestOpenedPathSessionSurvivesOwnGestureScan(t *testing.T) {
 		a.State.SetScanning(false)
 	})
 
+	chooseCloudFollowup(t, a, "Add files")
 	waitForAllFiles(t, a, []string{first, late})
 }
 
@@ -2322,7 +2323,7 @@ func waitForAllFiles(t *testing.T, a *App, want []string) {
 	}
 
 	state := snapshotDropState(t, a)
-	t.Fatalf("AllFiles = %#v; want %#v", state.AllFiles, want)
+	t.Fatalf("AllFiles = %#v; want %#v; status=%#v", state.AllFiles, want, a.State.UISnapshot().Status)
 }
 
 func waitForOpenedPathLateCollection(t *testing.T, a *App) {

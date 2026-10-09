@@ -417,8 +417,8 @@ const (
 	recursiveSelectionApplied
 )
 
-func showOverwriteModalForOutput(outputExists, recursively, chosenViaDialog bool) bool {
-	return outputExists && !recursively && !chosenViaDialog
+func showOverwriteModalForOutput(outputExists, recursively bool) bool {
+	return outputExists && !recursively
 }
 
 func recursiveStatusCompleted(count int) string {
@@ -473,6 +473,7 @@ func (a *App) onClickStart() {
 		return
 	}
 	a.cancelOpenedPathReadiness()
+	a.hideOpenedPathSelectionChoice()
 
 	uiSnap := a.State.UISnapshot()
 	if uiSnap.Mode == "" || a.startDisabled(uiSnap) {
@@ -511,7 +512,7 @@ func (a *App) onClickStart() {
 	}
 
 	_, outputExists := os.Stat(a.State.OutputFile)
-	if showOverwriteModalForOutput(outputExists == nil, a.State.Recursively, a.State.OutputChosenViaSaveDialog) {
+	if showOverwriteModalForOutput(outputExists == nil, a.State.Recursively) {
 		a.showOverwriteModal()
 		return
 	}
@@ -882,6 +883,9 @@ var openPCV3Keyfile = openPCV3InputFile
 func pcv3FactorsForIntent(intent *app.PCV3OperationIntent) (*pcv3operation.FactorRequest, error) {
 	if intent == nil {
 		return nil, errors.New("invalid PCV3 intent")
+	}
+	if len(intent.Keyfiles) > pcv3operation.MaxKeyfiles {
+		return nil, fmt.Errorf("PCV3 supports at most %d keyfiles", pcv3operation.MaxKeyfiles)
 	}
 	factors := &pcv3operation.FactorRequest{Password: intent.Password}
 	intent.Password = nil

@@ -6,9 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -172,9 +170,15 @@ func (a *App) showPassgenModal() {
 
 // showOverwriteModal shows the overwrite confirmation dialog.
 func (a *App) showOverwriteModal() {
-	a.overwriteModal = dialog.NewConfirm(tr("dialog.overwrite.title", "Warning:"), tr("dialog.overwrite.message", "Output already exists. Overwrite?"), func(overwrite bool) {
+	selected := a.State.UISnapshot()
+	generation := a.operationGeneration.Load()
+	message := tr("dialog.overwrite.message", "Output already exists. Overwrite?") + "\n" + selected.OutputFile
+	a.overwriteModal = dialog.NewConfirm(tr("dialog.overwrite.title", "Warning:"), message, func(overwrite bool) {
 		a.State.ShowOverwrite = false
-		if overwrite {
+		current := a.State.UISnapshot()
+		if overwrite && a.operationGeneration.Load() == generation &&
+			current.Mode == selected.Mode && current.InputFile == selected.InputFile &&
+			current.OutputFile == selected.OutputFile && !current.Working && !current.Scanning {
 			a.startWork()
 		}
 	}, a.Window)
@@ -185,7 +189,9 @@ func (a *App) showOverwriteModal() {
 
 func normalizeSelectedOutputPath(filePath, mode, inputFile string, multiInput, compress bool) string {
 	base := filepath.Base(filePath)
-	base = strings.TrimSuffix(base, filepath.Ext(base))
+	if extension := filepath.Ext(base); base != extension {
+		base = strings.TrimSuffix(base, extension)
+	}
 	file := filepath.Join(filepath.Dir(filePath), base)
 
 	if mode == "encrypt" {
@@ -202,11 +208,11 @@ func normalizeSelectedOutputPath(filePath, mode, inputFile string, multiInput, c
 	return file + filepath.Ext(tmp)
 }
 
-// changePCV3CreationOutputFile selects only a path. The PCV3 publisher must be
-// the first code that opens or creates the destination.
-func (a *App) changePCV3CreationOutputFile() {
+// changeOutputFile selects only a path. The operation must be the first code
+// that opens or creates the destination; legacy replacement asks at Start.
+func (a *App) changeOutputFile() {
 	selected := a.State.UISnapshot()
-	if selected.Mode != "encrypt" || selected.InputFile == "" ||
+	if (selected.Mode != "encrypt" && selected.Mode != "decrypt") || selected.InputFile == "" ||
 		selected.OutputFile == "" || selected.Working || selected.Scanning {
 		return
 	}
@@ -214,7 +220,7 @@ func (a *App) changePCV3CreationOutputFile() {
 	selectionCurrent := func() bool {
 		current := a.State.UISnapshot()
 		return a.operationGeneration.Load() == selectionGeneration &&
-			current.Mode == "encrypt" && !current.Working &&
+			current.Mode == selected.Mode && !current.Working &&
 			!current.Scanning && current.InputFile == selected.InputFile &&
 			current.OutputFile == selected.OutputFile
 	}
@@ -238,7 +244,7 @@ func (a *App) changePCV3CreationOutputFile() {
 				current := a.State.Snapshot()
 				a.State.OutputFile = normalizeSelectedOutputPath(
 					filepath.Join(folder.Path(), filename.Text),
-					"encrypt",
+					current.Mode,
 					current.InputFile,
 					len(current.InputFiles) > 1 || len(current.OnlyFolders) > 0,
 					current.Compress,
@@ -344,54 +350,4 @@ func (a *App) applyPCV3OutputSelection(ticket uint64, folder, filename string) e
 	}
 	a.updateUIState()
 	return nil
-}
-
-// changeOutputFile opens a dialog to change the output file path.
-func (a *App) changeOutputFile() {
-	saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
-		if err != nil || writer == nil {
-			return
-		}
-
-		filePath := writer.URI().Path()
-		_ = writer.Close()
-		a.State.OutputFile = normalizeSelectedOutputPath(
-			filePath,
-			a.State.Mode,
-			a.State.InputFile,
-			len(a.State.AllFiles) > 1 || len(a.State.OnlyFolders) > 0,
-			a.State.Compress,
-		)
-		a.State.OutputChosenViaSaveDialog = true
-		a.State.SetReadyStatus()
-		a.updateUIState()
-	}, a.Window)
-
-	// Prefill filename - preserve user's choice, only generate random name if needed
-	tmp := strings.TrimSuffix(filepath.Base(a.State.OutputFile), ".pcv")
-	defaultName := strings.TrimSuffix(tmp, filepath.Ext(tmp))
-	// Only generate a new random name if there isn't already a meaningful filename,
-	// or if the current name is auto-generated (starts with "encrypted-")
-	if a.State.Mode == "encrypt" && (len(a.State.AllFiles) > 1 || len(a.State.OnlyFolders) > 0 || a.State.Compress) {
-		if defaultName == "" || strings.HasPrefix(defaultName, "encrypted-") {
-			defaultName = "encrypted-" + strconv.Itoa(int(time.Now().Unix()))
-		}
-	}
-	saveDialog.SetFileName(defaultName)
-
-	// Set start directory
-	startDir := ""
-	if len(a.State.OnlyFiles) > 0 {
-		startDir = filepath.Dir(a.State.OnlyFiles[0])
-	} else if len(a.State.OnlyFolders) > 0 {
-		startDir = filepath.Dir(a.State.OnlyFolders[0])
-	}
-	if startDir != "" {
-		uri := storage.NewFileURI(startDir)
-		if listable, err := storage.ListerForURI(uri); err == nil {
-			saveDialog.SetLocation(listable)
-		}
-	}
-
-	a.showFileDialogWithResize(saveDialog, fyne.NewSize(600, 450))
 }

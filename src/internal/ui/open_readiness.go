@@ -5,9 +5,13 @@ import (
 	"Picocrypt-NG/internal/util"
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/widget"
 )
 
 const (
@@ -103,10 +107,8 @@ func (r openedPathReadinessResult) hasUbiquitousFile() bool {
 	return false
 }
 
-// hasUbiquitousItem reports whether any opened item (file or folder) lives in
-// iCloud. Cloud-backed gestures are the ones Finder/AppKit may split into
-// several openURLs: batches, so applying them keeps a merge window open for
-// late batches of the same gesture (issue #127).
+// hasUbiquitousItem reports whether any opened item lives in iCloud. Finder
+// may split its delivery, so a later batch needs an explicit selection choice.
 func (r openedPathReadinessResult) hasUbiquitousItem() bool {
 	for _, item := range r {
 		if item.IsUbiquitous {
@@ -138,6 +140,7 @@ func (a *App) cancelOpenedPathReadiness() {
 	a.openReadinessPaths = nil
 	a.openReadinessCollectLate = false
 	a.openReadinessLastAppend = time.Time{}
+	a.openReadinessChoicePaths = nil
 	a.clearCloudApplyRecordLocked()
 	if (cancel != nil && activePaths) || freshCloudApply {
 		until := time.Now().Add(openedPathCloudCancelSuppressDelay)
@@ -200,11 +203,13 @@ func (a *App) isOpenedPathReadinessCurrent(generation uint64) bool {
 func (a *App) finishOpenedPathReadiness(generation uint64) {
 	a.openReadinessMu.Lock()
 	cancel := a.openReadinessCancel
-	if a.openReadinessGeneration == generation {
+	current := a.openReadinessGeneration == generation
+	if current {
 		a.openReadinessCancel = nil
 		a.openReadinessPaths = nil
 		a.openReadinessCollectLate = false
 		a.openReadinessLastAppend = time.Time{}
+		a.openReadinessChoicePaths = nil
 	} else {
 		cancel = nil
 	}
@@ -213,14 +218,17 @@ func (a *App) finishOpenedPathReadiness(generation uint64) {
 	if cancel != nil {
 		cancel()
 	}
+	if current {
+		a.hideOpenedPathSelectionChoice()
+	}
 }
 
 // openedPathReadinessUIGuard reports whether the readiness session may touch
 // the UI right now. Working always finishes the session: the user started an
 // operation and opened paths must not interfere. Scanning finishes it too,
-// unless a recent cloud apply marks the scan as belonging to an earlier batch
-// of the same open gesture — then the session stays alive so the caller can
-// retry after the scan settles. A manual drop, Clear, or Start clears that
+// unless a recent cloud selection is still scanning — then the session stays
+// alive so it can present the incoming selection after the scan settles.
+// A manual drop, Clear, or Start clears that
 // record via cancelOpenedPathReadiness, so foreign scans always finish the
 // session, preserving the user's selection.
 func (a *App) openedPathReadinessUIGuard(generation uint64) bool {
@@ -309,14 +317,15 @@ func (a *App) mergeLateOpenedPaths(paths []string) bool {
 	return true
 }
 
-// cloudApplyMergeableLocked reports whether a cloud-backed opened selection was
-// applied recently enough that a late batch of the same gesture must extend it.
+// cloudApplyMergeableLocked reports whether a later batch could belong to the
+// applied cloud selection. It does not establish that they are the same gesture.
 // Callers must hold openReadinessMu.
 func (a *App) cloudApplyMergeableLocked() bool {
 	if len(a.openReadinessAppliedPaths) == 0 {
 		return false
 	}
-	return time.Since(a.openReadinessAppliedAt) <= openedPathCloudPostApplyMergeDelay
+	return len(a.openReadinessChoicePaths) > 0 ||
+		time.Since(a.openReadinessAppliedAt) <= openedPathCloudPostApplyMergeDelay
 }
 
 // clearCloudApplyRecordLocked drops the post-apply merge record. Callers must
@@ -333,58 +342,43 @@ func (a *App) hasRecentCloudApply() bool {
 	return a.cloudApplyMergeableLocked()
 }
 
-// mergeWithRecentCloudApply prepends the recently applied cloud selection to a
-// late batch of the same open gesture (issue #127: Finder/AppKit can deliver
-// one gesture as several openURLs: batches, some of them after the first batch
-// was already applied). It returns nil when the batch carries nothing new.
-// Outside the merge window the record is dropped and the batch is a separate
-// gesture that replaces the selection as usual.
-func (a *App) mergeWithRecentCloudApply(paths []string) []string {
+// retainPendingOpenedPaths keeps every incoming URL while an explicit choice
+// is pending. The applied selection stays separate until the user chooses Add.
+func (a *App) retainPendingOpenedPaths(paths []string) []string {
 	a.openReadinessMu.Lock()
 	defer a.openReadinessMu.Unlock()
 	if !a.cloudApplyMergeableLocked() {
 		a.clearCloudApplyRecordLocked()
 		return paths
 	}
-
-	seen := make(map[string]struct{}, len(a.openReadinessAppliedPaths)+len(paths))
-	merged := make([]string, 0, len(a.openReadinessAppliedPaths)+len(paths))
-	for _, path := range a.openReadinessAppliedPaths {
-		seen[path] = struct{}{}
-		merged = append(merged, path)
-	}
-	for _, path := range paths {
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		merged = append(merged, path)
-	}
-	if len(merged) == len(a.openReadinessAppliedPaths) {
-		return nil
-	}
-	return merged
+	return normalizeOpenedPaths(append(append([]string(nil), a.openReadinessChoicePaths...), paths...))
 }
 
-func (a *App) finishOpenedPathReadinessIfPathsCurrent(generation uint64, paths []string, hadCloudItem bool) bool {
+func (a *App) finishOpenedPathReadinessIfPathsCurrent(generation uint64, paths []string, hadCloudItem bool) (bool, []string) {
 	if a.workers.isStopping() {
-		return false
+		return false, nil
 	}
 	a.openReadinessMu.Lock()
 	if a.workers.isStopping() || a.openReadinessGeneration != generation || a.openReadinessCancel == nil {
 		a.openReadinessMu.Unlock()
-		return false
+		return false, nil
 	}
 	if !sameStringSlices(a.openReadinessPaths, paths) {
 		a.openReadinessMu.Unlock()
-		return false
+		return false, nil
+	}
+	var previous []string
+	if a.cloudApplyMergeableLocked() {
+		previous = append([]string(nil), a.openReadinessAppliedPaths...)
 	}
 	cancel := a.openReadinessCancel
 	a.openReadinessCancel = nil
 	a.openReadinessPaths = nil
 	a.openReadinessCollectLate = false
 	a.openReadinessLastAppend = time.Time{}
-	if hadCloudItem {
+	if len(previous) > 0 {
+		a.openReadinessChoicePaths = append([]string(nil), paths...)
+	} else if hadCloudItem {
 		a.openReadinessAppliedPaths = append([]string(nil), paths...)
 		a.openReadinessAppliedAt = time.Now()
 	} else {
@@ -395,7 +389,7 @@ func (a *App) finishOpenedPathReadinessIfPathsCurrent(generation uint64, paths [
 	if cancel != nil {
 		cancel()
 	}
-	return true
+	return true, previous
 }
 
 func (a *App) suppressesOpenedPaths() bool {
@@ -464,10 +458,7 @@ func (a *App) applyOpenedPaths(paths []string) {
 	if a.mergeLateOpenedPaths(normalized) {
 		return
 	}
-	normalized = a.mergeWithRecentCloudApply(normalized)
-	if len(normalized) == 0 {
-		return
-	}
+	normalized = a.retainPendingOpenedPaths(normalized)
 
 	ctx, generation, reservation, ok := a.beginOpenedPathReadiness(normalized)
 	if !ok {
@@ -494,7 +485,7 @@ func (a *App) waitForOpenedPathsAndApply(ctx context.Context, generation uint64)
 		}
 
 		if a.State.IsScanning() && a.hasRecentCloudApply() {
-			// A folder scan from an earlier apply of the same gesture is
+			// A folder scan from the earlier cloud selection is
 			// running; skip the readiness checks (cgo per-path queries on
 			// darwin) and the UI round-trip until it settles.
 			if sleepOrCancel(ctx, openedPathPollInterval) {
@@ -594,14 +585,107 @@ func (a *App) applyReadyOpenedPaths(generation uint64, paths []string, hadCloudI
 		if !a.openedPathReadinessUIGuard(generation) {
 			return
 		}
-		if !a.finishOpenedPathReadinessIfPathsCurrent(generation, paths, hadCloudItem) {
+		finished, previous := a.finishOpenedPathReadinessIfPathsCurrent(generation, paths, hadCloudItem)
+		if !finished {
 			return
 		}
-
-		a.applyStartupPaths(paths)
+		if len(previous) > 0 {
+			a.showOpenedPathSelectionChoice(generation, previous, paths, hadCloudItem)
+		} else {
+			a.applyStartupPaths(paths)
+		}
 		applied = true
 	})
 	return applied
+}
+
+func (a *App) showOpenedPathSelectionChoice(generation uint64, previous, incoming []string, incomingHadCloud bool) {
+	a.hideOpenedPathSelectionChoice()
+	selectionGeneration := a.operationGeneration.Load()
+	takeChoice := func(consume bool) bool {
+		current := a.State.UISnapshot()
+		if a.workers.isStopping() || a.operationGeneration.Load() != selectionGeneration || current.Working || current.Scanning {
+			return false
+		}
+		a.openReadinessMu.Lock()
+		defer a.openReadinessMu.Unlock()
+		if a.openReadinessGeneration != generation ||
+			!sameStringSlices(a.openReadinessChoicePaths, incoming) {
+			return false
+		}
+		if consume {
+			a.openReadinessChoicePaths = nil
+			a.clearCloudApplyRecordLocked()
+		}
+		return true
+	}
+	var choice dialog.Dialog
+	selectPaths := func(add bool) {
+		if !takeChoice(true) {
+			return
+		}
+		paths := incoming
+		if add {
+			paths = normalizeOpenedPaths(append(append([]string(nil), previous...), incoming...))
+		}
+		choice.Hide()
+		applied := a.applyStartupPaths(paths)
+		if (add || incomingHadCloud) && len(applied) > 0 {
+			a.openReadinessMu.Lock()
+			if !a.workers.isStopping() && a.openReadinessGeneration == generation && len(applied) > 0 {
+				a.openReadinessAppliedPaths = applied
+				a.openReadinessAppliedAt = time.Now()
+			}
+			a.openReadinessMu.Unlock()
+		}
+	}
+	previousList := strings.Join(previous, "\n")
+	incomingList := strings.Join(incoming, "\n")
+	message := widget.NewLabel(tr("opened_paths.choice_message", "Replace the current selection or add the new files?"))
+	message.Wrapping = fyne.TextWrapWord
+	previousLabel := widget.NewLabel(previousList)
+	previousLabel.Wrapping = fyne.TextWrapBreak
+	previousLabel.Selectable = true
+	incomingLabel := widget.NewLabel(incomingList)
+	incomingLabel.Wrapping = fyne.TextWrapBreak
+	incomingLabel.Selectable = true
+	content := container.NewVBox(
+		message,
+		widget.NewLabel(tr("opened_paths.current_selection", "Current selection:")),
+		previousLabel,
+		widget.NewLabel(tr("opened_paths.incoming_selection", "New files:")),
+		incomingLabel,
+	)
+	actions := container.NewVBox(
+		container.NewGridWithColumns(2,
+			widget.NewButton(tr("opened_paths.replace_selection", "Replace selection"), func() { selectPaths(false) }),
+			widget.NewButton(tr("opened_paths.add_files", "Add files"), func() { selectPaths(true) }),
+		),
+		widget.NewButton(tr("action.cancel", "Cancel"), func() { choice.Hide() }),
+	)
+	choice = dialog.NewCustomWithoutButtons(tr("opened_paths.choice_title", "New files opened"), container.NewBorder(nil, actions, nil, nil, container.NewVScroll(content)), a.Window)
+	choice.SetOnClosed(func() {
+		if takeChoice(false) {
+			a.cancelOpenedPathReadiness()
+		}
+		if a.openedPathChoice == choice {
+			a.openedPathChoice = nil
+		}
+	})
+	a.openedPathChoice = choice
+	size := a.Window.Canvas().Size()
+	choice.Resize(fyne.NewSize(min(size.Width*0.9, 600), min(size.Height*0.8, 400)))
+	choice.Show()
+}
+
+// hideOpenedPathSelectionChoice is called only on the Fyne thread. The caller
+// first invalidates or consumes the choice so dismissal cannot authorize it.
+func (a *App) hideOpenedPathSelectionChoice() {
+	choice := a.openedPathChoice
+	a.openedPathChoice = nil
+	if choice != nil {
+		choice.Hide()
+	}
 }
 
 func (a *App) applyOpenedPathReadinessError(generation uint64) {
