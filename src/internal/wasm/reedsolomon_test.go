@@ -243,6 +243,40 @@ func TestWASMReedSolomonRepairsLegacyKeyfileVolume(t *testing.T) {
 	}
 }
 
+func TestWASMReedSolomonLegacyFixtureRejectsAppendedTail(t *testing.T) {
+	useProductionTestWASMKDF(t)
+	fixture := readWASMLegacyKeyfileRSFixture(t)
+	password := []byte("test")
+	options := DecryptOptions{Keyfiles: [][]byte{readWASMGoldenFixture(t, "keyfile_alpha.bin")}}
+	expected := legacyWASMKeyfileRSPlaintext()
+	baseline, code := DecryptVolume(fixture, password, options)
+	if code != 0 || baseline.Kept || !bytes.Equal(baseline.Plaintext, expected) {
+		t.Fatalf("frozen legacy fixture no longer reads: code=%d kept=%v", code, baseline.Kept)
+	}
+	for _, tail := range []int{1, 135} {
+		t.Run(fmt.Sprintf("tail=%d", tail), func(t *testing.T) {
+			malformed := append(append([]byte(nil), fixture...), bytes.Repeat([]byte{0xA5}, tail)...)
+			original := bytes.Clone(malformed)
+			result, code := DecryptVolume(malformed, password, options)
+			if code != ErrModifiedData || result.Plaintext != nil || result.Kept {
+				t.Fatalf("incomplete RS tail authenticated: code=%d kept=%v bytes=%d", code, result.Kept, len(result.Plaintext))
+			}
+			if !bytes.Equal(malformed, original) {
+				t.Fatal("rejected decrypt changed caller-owned ciphertext")
+			}
+			forced := options
+			forced.Force = true
+			result, code = DecryptVolume(malformed, password, forced)
+			if code != ErrModifiedButKept || !result.Kept || !bytes.Equal(result.Plaintext, expected) {
+				t.Fatalf("explicit Force salvage lost its warning/prefix: code=%d kept=%v bytes=%d", code, result.Kept, len(result.Plaintext))
+			}
+			if !bytes.Equal(malformed, original) {
+				t.Fatal("Force changed caller-owned ciphertext")
+			}
+		})
+	}
+}
+
 // TestWASMReedSolomonRepairsMultiBlockDamage proves that RS repair works when
 // damage falls in the SECOND on-disk RS block (i.e. > 1 MiB of plaintext so
 // at least two full RS blocks exist). This forces the full-RS retry (Pass-2)

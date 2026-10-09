@@ -31,12 +31,15 @@ If no password is provided, you will be prompted to enter one interactively
 New volumes use PCV3. Deniability uses PCV3 D1 and requires --paranoid.
 Legacy v1/v2 volumes remain readable.
 
+Script examples use a password file readable only by its owner or a secret provider
+that writes one password line. Unix stream examples open descriptor 3 afresh.
+
 Examples:
   # Encrypt interactively (prompts for password)
 	  Picocrypt-NG encrypt secret.txt -o secret.pcv
 
-  # Encrypt with password on command line (visible in shell history)
-	  Picocrypt-NG encrypt secret.txt -o secret.pcv -p "mypassword"
+  # Encrypt with password from a protected file
+	  Picocrypt-NG encrypt secret.txt -o secret.pcv -P < /path/to/password-file
 
   # Encrypt multiple files (creates zip archive internally)
 	  Picocrypt-NG encrypt file1.txt file2.txt -o archive.pcv
@@ -48,13 +51,13 @@ Examples:
 	  Picocrypt-NG encrypt data.db -o data.pcv --paranoid --reed-solomon
 
   # Read password from stdin (for scripts)
-	  echo "mypassword" | Picocrypt-NG encrypt secret.txt -o secret.pcv -P
+	  secret-command | Picocrypt-NG encrypt secret.txt -o secret.pcv -P
 
-  # Encrypt from stdin to stdout with a separate password descriptor
+  # Encrypt from stdin to stdout with a separate password descriptor (Unix)
 	  cat data.txt | Picocrypt-NG encrypt - -o - --password-fd=3 3< /path/to/password-file > data.pcv
 
   # Encrypt to stdout
-	  Picocrypt-NG encrypt secret.txt -o - -p "pw" > secret.pcv`,
+	  secret-command | Picocrypt-NG encrypt secret.txt -o - -P > secret.pcv`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("input") {
 			return errors.New("--input/-i was removed; pass literal paths as arguments or use --glob for patterns")

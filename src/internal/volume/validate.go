@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
+	"Picocrypt-NG/internal/pcv3operation"
 	"fmt"
 	"os"
 )
@@ -24,6 +25,9 @@ func (req *EncryptRequest) Validate() error {
 	}
 
 	if req.PCV3 {
+		if len(req.Keyfiles) > pcv3operation.MaxKeyfiles {
+			return errors.NewValidationError("Keyfiles", fmt.Sprintf("at most %d keyfiles are supported", pcv3operation.MaxKeyfiles))
+		}
 		if req.Deniability {
 			if !req.Paranoid {
 				return errors.NewValidationError("Paranoid", "PCV3 D1 creation requires paranoid mode")

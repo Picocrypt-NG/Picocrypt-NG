@@ -3,6 +3,7 @@ package encoding
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -13,6 +14,33 @@ func mustCodecs(t *testing.T) *RSCodecs {
 		t.Fatalf("NewRSCodecs: %v", err)
 	}
 	return rs
+}
+
+func TestRSPayloadBlockRejectsIncompleteEncodedTail(t *testing.T) {
+	rs := mustCodecs(t)
+	data := []byte("authenticated ciphertext must not ignore an encoded suffix")
+	encoded, err := EncodeRSPayloadBlock(data, rs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tail := range []int{1, 135} {
+		for _, fast := range []bool{false, true} {
+			t.Run(fmt.Sprintf("tail=%d/fast=%v", tail, fast), func(t *testing.T) {
+				malformed := append(append([]byte(nil), encoded...), make([]byte, tail)...)
+				got, err := DecodeRSPayloadBlock(malformed, rs, true, false, false, fast)
+				if !errors.Is(err, ErrCorruptData) || got != nil {
+					t.Fatalf("incomplete tail accepted: decoded=%x error=%v", got, err)
+				}
+			})
+		}
+	}
+	// Force deliberately salvages a truncated encoded chunk, including lengths
+	// that cannot have originated from an intact writer.
+	short := encoded[:len(data)]
+	got, err := DecodeRSPayloadBlock(short, rs, true, false, true, true)
+	if err != nil || !bytes.Equal(got, short) {
+		t.Fatalf("Force short-tail salvage changed: decoded=%x error=%v", got, err)
+	}
 }
 
 func TestRSPayloadBlockRoundtrip(t *testing.T) {

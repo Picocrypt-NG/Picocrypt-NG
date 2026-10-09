@@ -2,6 +2,8 @@ package wasm
 
 import (
 	picoencoding "Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/header"
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -59,4 +61,57 @@ func legacyWASMKeyfileRSPlaintext() []byte {
 		plaintext[i] = byte(i*13 + 7)
 	}
 	return plaintext
+}
+
+func TestWASMLegacyV2AuthenticatesHeaderBeforeKeyfileErrors(t *testing.T) {
+	useProductionTestWASMKDF(t)
+	fixture := readWASMGoldenFixture(t, "pico_test_v2_keyfile_single.txt.pcv")
+	keyfile := readWASMGoldenFixture(t, "keyfile_alpha.bin")
+	rs, err := picoencoding.NewRSCodecs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	modifiedHash := bytes.Clone(fixture)
+	hdr := readHeaderForTest(t, fixture)
+	hashBytes := bytes.Clone(hdr.KeyfileHash)
+	hashBytes[0] ^= 1
+	encoded, err := picoencoding.Encode(rs.RS32, hashBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashOffset := header.HeaderSize(len(hdr.Comments)) - header.AuthTagEncSize - header.KeyfileHashEncSize
+	copy(modifiedHash[hashOffset:hashOffset+header.KeyfileHashEncSize], encoded)
+
+	for _, test := range []struct {
+		name     string
+		volume   []byte
+		password string
+		keyfiles [][]byte
+		code     int
+	}{
+		{"wrong password missing keyfile", fixture, "wrong public password", nil, ErrWrongPassword},
+		{"wrong password incorrect keyfile", fixture, "wrong public password", [][]byte{[]byte("incorrect public factor")}, ErrWrongPassword},
+		{"modified public keyfile hash", modifiedHash, "test", [][]byte{keyfile}, ErrWrongPassword},
+		{"authenticated missing keyfile", fixture, "test", nil, ErrKeyfilesRequired},
+		{"authenticated incorrect keyfile", fixture, "test", [][]byte{[]byte("incorrect public factor")}, ErrKeyfilesIncorrect},
+		{"authenticated correct keyfile", fixture, "test", [][]byte{keyfile}, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := bytes.Clone(test.volume)
+			result, code := DecryptVolume(test.volume, []byte(test.password), DecryptOptions{Keyfiles: test.keyfiles})
+			if code != test.code {
+				t.Fatalf("code=%d; want %d", code, test.code)
+			}
+			if code == 0 {
+				if result.Kept || string(result.Plaintext) != wasmGoldenPlaintext {
+					t.Fatalf("frozen legacy plaintext changed: kept=%v plaintext=%q", result.Kept, result.Plaintext)
+				}
+			} else if result.Plaintext != nil || result.Kept {
+				t.Fatalf("failed header/factor check returned plaintext: kept=%v bytes=%d", result.Kept, len(result.Plaintext))
+			}
+			if !bytes.Equal(test.volume, original) {
+				t.Fatal("header/factor check changed caller-owned ciphertext")
+			}
+		})
+	}
 }

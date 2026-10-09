@@ -202,13 +202,12 @@ Neither field is Reed-Solomon encoded. The raw random salt and nonce avoid addin
 
 ## CLI Password Input
 
-The CLI provides three methods for password input:
+The CLI provides four methods for password input:
 
-1. **Interactive (recommended)**: Omit `-p` and `-P` flags. The password is entered without echo and won't appear in shell history.
-2. **Stdin (`-P`)**: For scripted use. Pipe password via stdin: `echo "pw" | picocrypt -P ...`
-3. **Command-line (`-p`)**: **Warning**: The password will be visible in shell history, process listings (`ps`), and potentially system logs. Only use in environments where shell history is disabled or for testing.
-
-For maximum security, prefer interactive prompts or stdin piping.
+1. **Interactive (recommended)**: Omit `-p`, `-P`, and `--password-fd`; the terminal prompt disables echo.
+2. **Stdin (`-P`)**: Read one password line from a secret provider or an owner-only password file when stdin is free.
+3. **Inherited descriptor (`--password-fd`)**: On Unix, use descriptor 3 or higher to keep credentials separate from payload stdin; open it afresh for each invocation.
+4. **Command-line (`-p`)**: Real passwords can appear in process listings, shell history, and logs. Disabling shell history does not remove the process-list risk; reserve this option for non-secret test values or deliberate empty-password keyfile-only use.
 
 ## Memory Handling
 

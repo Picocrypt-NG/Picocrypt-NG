@@ -109,36 +109,15 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 		return DecryptResult{}, ErrUnsupported
 	}
 
-	// Keyfiles: required iff the header says so. Computed once (password-independent).
+	isLegacyV1 := hdr.IsLegacyV1()
+	// v1 keyfile XOR precedes HKDF, which this reader does not implement.
+	if isLegacyV1 && hdr.Flags.UseKeyfiles {
+		return DecryptResult{}, ErrUnsupported
+	}
+
 	keyfileHash := make([]byte, 32)
 	defer zeroWASMSensitiveBuffer(wasmZeroingDecryptKeyfileHash, keyfileHash)
 	var keyfileKey []byte
-	if hdr.Flags.UseKeyfiles {
-		// v1-legacy keyfile volumes use a different key timing (HKDF AFTER the
-		// keyfile XOR) that the WASM path does not implement; fail closed rather
-		// than silently produce wrong plaintext. Rare combo → direct to desktop.
-		if hdr.IsLegacyV1() {
-			return DecryptResult{}, ErrUnsupported
-		}
-		if len(opts.Keyfiles) == 0 {
-			return DecryptResult{}, ErrKeyfilesRequired
-		}
-		res, code := processWASMKeyfiles(opts.Keyfiles, hdr.Flags.KeyfileOrdered)
-		if code != 0 {
-			return DecryptResult{}, code
-		}
-		// Constant-time check against the stored hash before trying passwords,
-		// so wrong keyfiles report distinctly from a wrong password.
-		if !header.VerifyKeyfileHash(res.Hash, hdr.KeyfileHash) {
-			crypto.SecureZero(res.Key)
-			return DecryptResult{}, ErrKeyfilesIncorrect
-		}
-		keyfileKey = res.Key
-		copy(keyfileHash, res.Hash)
-		defer zeroWASMSensitiveBuffer(wasmZeroingDecryptKeyfileKey, keyfileKey)
-	}
-
-	isLegacyV1 := hdr.IsLegacyV1()
 
 	// Derive the key, trying each password normalization form (NFC/NFD/raw) until
 	// one authenticates against the header (#19). ASCII passwords yield a single
@@ -153,7 +132,9 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 		if err != nil {
 			return DecryptResult{}, ErrCorruptedHeader
 		}
-		valid, sr, errCode := verifyWASMHeader(k, hdr, keyfileHash, isLegacyV1)
+		// The stored public hash is part of the v2 authenticated header. Supplied
+		// keyfiles are checked only after that header authenticates.
+		valid, sr, errCode := verifyWASMHeader(k, hdr, hdr.KeyfileHash, isLegacyV1)
 		if errCode != 0 {
 			crypto.SecureZero(k)
 			return DecryptResult{}, errCode
@@ -169,6 +150,22 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 		return DecryptResult{}, ErrWrongPassword
 	}
 	defer crypto.SecureZero(key)
+
+	if hdr.Flags.UseKeyfiles {
+		if len(opts.Keyfiles) == 0 {
+			return DecryptResult{}, ErrKeyfilesRequired
+		}
+		res, code := processWASMKeyfiles(opts.Keyfiles, hdr.Flags.KeyfileOrdered)
+		if code != 0 {
+			return DecryptResult{}, code
+		}
+		keyfileKey = res.Key
+		defer zeroWASMSensitiveBuffer(wasmZeroingDecryptKeyfileKey, keyfileKey)
+		if !header.VerifyKeyfileHash(res.Hash, hdr.KeyfileHash) {
+			return DecryptResult{}, ErrKeyfilesIncorrect
+		}
+		copy(keyfileHash, res.Hash)
+	}
 
 	// Read remaining subkeys
 	macSubkey, err := subkeyReader.MACSubkey()
