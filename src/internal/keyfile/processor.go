@@ -6,6 +6,7 @@ import (
 	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/util"
 	"crypto/sha3"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,26 +46,49 @@ func Process(paths []string, ordered bool, progress ProgressFunc) (*Result, erro
 		totalSize += stat.Size()
 	}
 
-	files := make([]*os.File, 0, len(paths))
-	readers := make([]io.Reader, 0, len(paths))
+	key := make([]byte, 32)
+	transferred := false
 	defer func() {
-		for _, f := range files {
-			_ = f.Close()
+		if !transferred {
+			crypto.SecureZero(key)
 		}
 	}()
+	hasher := sha3.New256()
+	buf := make([]byte, util.MiB)
+	defer crypto.SecureZero(buf)
 
 	var done int64
 	for _, path := range paths {
-		// #nosec G304 -- keyfile paths validated by caller
-		f, err := os.Open(path)
+		if !ordered {
+			hasher.Reset()
+		}
+		err := func() (retErr error) {
+			// #nosec G304 -- keyfile paths validated by caller
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer func() { retErr = errors.Join(retErr, file.Close()) }()
+			return hashOne(hasher, &progressReader{r: file, done: &done, total: totalSize, progress: progress}, buf)
+		}()
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, f)
-		readers = append(readers, &progressReader{r: f, done: &done, total: totalSize, progress: progress})
+		if !ordered {
+			digest := hasher.Sum(nil)
+			for i, b := range digest {
+				key[i] ^= b
+			}
+			crypto.SecureZero(digest)
+		}
 	}
-
-	return ProcessReaders(readers, ordered)
+	if ordered {
+		key = hasher.Sum(key[:0])
+	}
+	sum := sha3.Sum256(key)
+	result := &Result{Key: key, Hash: append([]byte(nil), sum[:]...)}
+	transferred = true
+	return result, nil
 }
 
 // progressReader reports cumulative read progress across all keyfiles.

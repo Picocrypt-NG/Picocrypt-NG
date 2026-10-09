@@ -12,9 +12,12 @@ import (
 	"sort"
 )
 
+// MaxKeyfiles bounds factor acquisition in frontends before they open readers.
+const MaxKeyfiles = 64
+
 const (
 	maxPasswordBytes         = 1 << 20
-	maxKeyfiles              = 64
+	maxKeyfiles              = MaxKeyfiles
 	keyfileScratchBytes      = 32 << 10
 	maxConsecutiveEmptyReads = 100
 	keyfileDomain            = "Picocrypt-NG/PCV3/keyfile\x00"

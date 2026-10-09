@@ -17,7 +17,7 @@ brew install glfw glew
 
 ## Install Go
 
-Download from [go.dev/dl](https://go.dev/dl/) or use your package manager. Use exactly Go 1.27.1 for development and release builds.
+Download from [go.dev/dl](https://go.dev/dl/) or use your package manager. Use exactly Go 1.27.2 for development and release builds.
 
 ## Build
 

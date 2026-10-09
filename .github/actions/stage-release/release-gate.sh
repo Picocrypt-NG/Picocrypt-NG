@@ -32,6 +32,27 @@ if [[ "$workspace" != /* ]] || [ ! -d "$workspace" ]; then
   exit 2
 fi
 
+if [ "$repo" != "Picocrypt-NG/Picocrypt-NG" ]; then
+  echo "release gate: unexpected repository '$repo'" >&2
+  exit 2
+fi
+source_version="$(<"$workspace/VERSION")"
+source_version="${source_version%$'\r'}"
+if [ "$source_version" != "$version" ]; then
+  echo "release gate: root VERSION '$source_version' does not match '$version'" >&2
+  exit 2
+fi
+checkout_sha="$(git -C "$workspace" rev-parse HEAD)"
+if [ "$checkout_sha" != "$source_sha" ]; then
+  echo "release gate: checkout commit '$checkout_sha' does not match '$source_sha'" >&2
+  exit 2
+fi
+workflow_ref="${GITHUB_WORKFLOW_REF:?GITHUB_WORKFLOW_REF is required}"
+case "$workflow_ref" in
+  "$repo"/.github/workflows/*@refs/heads/main) ;;
+  *) echo "release gate: workflow must run from the trusted repository main branch" >&2; exit 2 ;;
+esac
+
 for command in awk cat cmp comm cosign gh grep jq mkdir mktemp realpath sha256sum sort wc; do
   command -v "$command" >/dev/null || {
     echo "release gate: required command '$command' is unavailable" >&2
@@ -44,25 +65,7 @@ trap 'rm -rf "$work"' EXIT
 canonical_workspace="$(realpath -- "$workspace")"
 cd "$workspace"
 
-cat > "$work/primary-assets.txt" <<EOF
-Picocrypt-NG build-linux.yml artifacts/build-linux-amd64/Picocrypt-NG
-Picocrypt-NG-cli build-linux.yml artifacts/build-linux-amd64/Picocrypt-NG-cli
-Picocrypt-NG.deb build-linux.yml artifacts/build-linux-amd64/Picocrypt-NG.deb
-Picocrypt-NG-arm64 build-linux.yml artifacts/build-linux-arm64/Picocrypt-NG-arm64
-Picocrypt-NG-cli-arm64 build-linux.yml artifacts/build-linux-arm64/Picocrypt-NG-cli-arm64
-Picocrypt-NG.dmg build-macos.yml artifacts/build-macos/Picocrypt-NG.dmg
-Picocrypt-NG-cli-macos build-macos.yml artifacts/build-macos/Picocrypt-NG-cli-macos
-Picocrypt-NG-portable.exe build-windows.yml artifacts/build-windows/Picocrypt-NG-portable.exe
-Picocrypt-NG-cli.exe build-windows.yml artifacts/build-windows/Picocrypt-NG-cli.exe
-Picocrypt-NG-Setup.exe build-windows.yml artifacts/build-windows/Picocrypt-NG-Setup.exe
-Picocrypt-NG-cli-Legacy.exe build-windows-legacy.yml artifacts/build-windows-legacy/Picocrypt-NG-cli-Legacy.exe
-Picocrypt-NG-android-arm64-v8a.apk build-android.yml out/Picocrypt-NG-android-arm64-v8a.apk
-Picocrypt-NG-android-x86_64.apk build-android.yml out/Picocrypt-NG-android-x86_64.apk
-Picocrypt-NG-android-universal.apk build-android.yml out/Picocrypt-NG-android-universal.apk
-Picocrypt-NG-${version}-x86_64.AppImage build-appimage.yml artifacts/Picocrypt-NG-${version}-x86_64.AppImage
-Picocrypt-NG-${version}-x86_64.AppImage.zsync build-appimage.yml artifacts/Picocrypt-NG-${version}-x86_64.AppImage.zsync
-picocrypt-ng_${version}_amd64.snap build-snapcraft.yml out/picocrypt-ng_${version}_amd64.snap
-EOF
+bash "$(dirname -- "${BASH_SOURCE[0]}")/release-manifest.sh" "$version" > "$work/primary-assets.txt"
 
 if [ "$(wc -l < "$work/primary-assets.txt")" -ne 17 ]; then
   echo "release gate: internal primary manifest must contain exactly 17 assets" >&2
@@ -88,7 +91,6 @@ fi
 declare -A local_paths=()
 if [ "$mode" = "preflight" ]; then
   files="${FILES:?FILES is required during preflight}"
-  workflow_ref="${GITHUB_WORKFLOW_REF:?GITHUB_WORKFLOW_REF is required during preflight}"
   while IFS= read -r path || [ -n "$path" ]; do
     path="${path%$'\r'}"
     [ -z "$path" ] && continue
@@ -144,6 +146,26 @@ if [ "$mode" = "preflight" ]; then
       exit 1
     fi
   done
+fi
+
+if [ "$mode" = "publish" ]; then
+  body_path="${BODY_PATH:?BODY_PATH is required during publication}"
+  expected_body_path="$workspace/release-body.md"
+  canonical_body_path="$canonical_workspace/release-body.md"
+  if [ "$body_path" != "$expected_body_path" ] \
+    || [ ! -f "$body_path" ] \
+    || [ -L "$body_path" ] \
+    || [ ! -s "$body_path" ] \
+    || [ "$(realpath -- "$body_path")" != "$canonical_body_path" ]; then
+    echo "release gate: release body must be the non-empty regular file '$expected_body_path'" >&2
+    exit 1
+  fi
+  GITHUB_SHA="$source_sha" bash "$(dirname -- "${BASH_SOURCE[0]}")/../release-body/gen-release-body.sh" \
+    "$version" "$workspace/Changelog.md" "$work/expected-release-body.md"
+  if ! cmp -s "$body_path" "$work/expected-release-body.md"; then
+    echo "release gate: release body does not match the source-bound deterministic release notes" >&2
+    exit 1
+  fi
 fi
 
 tag_present=false
@@ -428,17 +450,6 @@ while read -r name workflow _; do
   verify_primary "$name" "$workflow"
 done < "$work/primary-assets.txt"
 
-body_path="${BODY_PATH:?BODY_PATH is required during publication}"
-expected_body_path="$workspace/release-body.md"
-canonical_body_path="$canonical_workspace/release-body.md"
-if [ "$body_path" != "$expected_body_path" ] \
-  || [ ! -f "$body_path" ] \
-  || [ -L "$body_path" ] \
-  || [ ! -s "$body_path" ] \
-  || [ "$(realpath -- "$body_path")" != "$canonical_body_path" ]; then
-  echo "release gate: release body must be the non-empty regular file '$expected_body_path'" >&2
-  exit 1
-fi
 
 ensure_tag
 verified_release_id="$release_id"

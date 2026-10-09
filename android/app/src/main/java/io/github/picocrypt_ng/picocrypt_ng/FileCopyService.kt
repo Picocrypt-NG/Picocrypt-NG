@@ -501,6 +501,21 @@ object FileCopyService {
         return File(context.filesDir, "$INTERNAL_FILES_DIR/$PCV3_RETAINED_OUTPUT_NAME").absolutePath
     }
 
+    internal fun isOwnedLegacyInput(context: Context, path: String): Boolean = try {
+        val file = File(path)
+        isOwnedLegacyPath(context, file, startupInputName::matches) && file.isFile
+    } catch (_: Exception) { false }
+
+    private fun isOwnedLegacyPath(context: Context, file: File, admittedName: (String) -> Boolean): Boolean {
+        val root = File(context.filesDir, INTERNAL_FILES_DIR).absoluteFile
+        val expected = File(context.filesDir.canonicalFile, INTERNAL_FILES_DIR)
+        if (root.name in (context.filesDir.list() ?: return false) && !root.isDirectory) return false
+        val entries = if (root.isDirectory) root.list() ?: return false else emptyArray()
+        return admittedName(file.name) && file.isAbsolute && file.absoluteFile.parentFile == root &&
+            root.canonicalFile == expected && file.canonicalFile == File(expected, file.name) &&
+            (file.name !in entries || file.isFile)
+    }
+
     /**
      * Cleans up files from a specific operation (input, output, and keyfiles).
      * Returns true if all deletions succeeded or files didn't exist.
@@ -514,42 +529,15 @@ object FileCopyService {
         try {
             var allSuccess = true
             
-            // Delete input file if provided
-            inputFilePath?.let { path ->
-                if (path.isNotEmpty()) {
-                    val file = File(path)
-                    if (file.exists()) {
-                        if (!file.delete()) {
-                            allSuccess = false
-                        }
-                    }
-                }
+            fun deleteOwned(path: String?, admittedName: (String) -> Boolean) {
+                if (path.isNullOrEmpty()) return
+                val file = File(path)
+                if (!isOwnedLegacyPath(context, file, admittedName) ||
+                    (file.exists() && (!file.delete() || file.exists()))) allSuccess = false
             }
-            
-            // Delete output file if provided
-            outputFilePath?.let { path ->
-                if (path.isNotEmpty()) {
-                    val file = File(path)
-                    if (file.exists()) {
-                        if (!file.delete()) {
-                            allSuccess = false
-                        }
-                    }
-                }
-            }
-            
-            // Delete all keyfiles
-            keyfilePaths.forEach { path ->
-                if (path.isNotEmpty()) {
-                    val file = File(path)
-                    if (file.exists()) {
-                        if (!file.delete()) {
-                            allSuccess = false
-                        }
-                    }
-                }
-            }
-            
+            deleteOwned(inputFilePath, startupInputName::matches)
+            deleteOwned(outputFilePath) { it == "output_file" || it == "output_file.pcv" }
+            keyfilePaths.forEach { deleteOwned(it, startupKeyfileName::matches) }
             allSuccess
         } catch (e: CancellationException) {
             throw e

@@ -2,6 +2,7 @@ package workflowpolicy
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -97,8 +98,10 @@ func TestWorkflowAndCompositeYAMLContainNoDirectReleaseMutation(t *testing.T) {
 	}
 }
 
+var externalActionSHARefPattern = regexp.MustCompile(`^[^@\s]+@[0-9a-f]{40}$`)
+
 func TestExternalGitHubActionsPinnedToFullSHAWithVersionComment(t *testing.T) {
-	actionRef := regexp.MustCompile(`uses:\s*([^@\s]+)@([0-9a-f]{40})(?:\s+#\s+v[0-9][^\s]*)?$`)
+	actionRef := regexp.MustCompile(`^(?:-\s+)?uses:\s*([^@\s]+)@([0-9a-f]{40})(?:\s+#\s+v[0-9][^\s]*)?$`)
 	const checkoutUses = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 	const checkoutRef = checkoutUses + " # v7.0.1"
 	checkoutCount := 0
@@ -106,6 +109,9 @@ func TestExternalGitHubActionsPinnedToFullSHAWithVersionComment(t *testing.T) {
 		t.Helper()
 		count := 0
 		for _, step := range steps {
+			if step.Uses != "" && !strings.HasPrefix(step.Uses, "./") && !externalActionSHARefPattern.MatchString(step.Uses) {
+				t.Fatalf("%s parsed external uses = %q; want exactly a 40-hex immutable SHA", owner, step.Uses)
+			}
 			if !strings.HasPrefix(step.Uses, "actions/checkout@") {
 				continue
 			}
@@ -137,6 +143,9 @@ func TestExternalGitHubActionsPinnedToFullSHAWithVersionComment(t *testing.T) {
 		if strings.HasPrefix(relPath, filepath.Join(".github", "workflows")+string(filepath.Separator)) {
 			workflow := mustReadWorkflowDoc(t, relPath)
 			for jobName, job := range workflow.Jobs {
+				if job.Uses != "" && !strings.HasPrefix(job.Uses, "./") && !externalActionSHARefPattern.MatchString(job.Uses) {
+					t.Fatalf("%s job %s parsed reusable workflow uses = %q; want an immutable full SHA", relPath, jobName, job.Uses)
+				}
 				activeCheckoutCount += checkSteps(relPath+" job "+jobName, job.Steps)
 			}
 		} else {
@@ -196,6 +205,21 @@ func TestSignAndAttestUsesApprovedCosign(t *testing.T) {
 		t.Fatalf("cosign installer line count = %d, want exactly 1", got)
 	}
 	mustNotContain(t, content, "cosign-release: 'v3.1.1'")
+	ownership := mustCompositeStepNamed(t, action, "Validate exact release artifact ownership")
+	for _, required := range []string{"release-manifest.sh", `test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`, `test "$WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/$owner@refs/heads/main"`, `[ ! -L "$file" ]`, `[ -s "$file" ]`} {
+		mustContain(t, ownership.Run, required)
+	}
+	provenance := mustCompositeStepNamed(t, action, "Generate build-provenance attestation")
+	if provenance.With["subject-path"] != "${{ steps.files.outputs.paths }}" {
+		t.Fatal("provenance must attest exactly the artifact paths validated for this workflow owner")
+	}
+	verify := mustCompositeStepNamed(t, action, "Fail-loud verify (cosign + provenance)")
+	if verify.Env["SOURCE_SHA"] != "${{ github.sha }}" || verify.Env["IDENTITY"] != "https://github.com/${{ github.workflow_ref }}" {
+		t.Fatal("signature and provenance must bind the current source and exact workflow identity")
+	}
+	for _, restriction := range []string{`--certificate-identity "$IDENTITY"`, `--certificate-github-workflow-sha "$SOURCE_SHA"`, "--certificate-github-workflow-ref refs/heads/main", `--certificate-github-workflow-repository "$REPO"`, `--cert-identity "$IDENTITY"`, `--signer-digest "$SOURCE_SHA"`, "--source-ref refs/heads/main", `--source-digest "$SOURCE_SHA"`, "--predicate-type https://slsa.dev/provenance/v1", "--deny-self-hosted-runners"} {
+		mustContain(t, verify.Run, restriction)
+	}
 }
 
 func TestReleaseJobsRequireMainBranchAndReleaseEnvironment(t *testing.T) {
@@ -1110,7 +1134,6 @@ func TestWindowsDownloadsAreBoundedAndChecksumGated(t *testing.T) {
 	const (
 		resourceHackerURL = "https://www.angusj.com/resourcehacker/reshacker_setup.exe"
 		upxURL            = "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip"
-		legacyGoURL       = "https://github.com/thongtech/go-legacy-win7/releases/download/v1.27.1-1/go-legacy-win7-1.27.1-1.windows_amd64.zip"
 	)
 	cases := []struct {
 		name     string
@@ -1145,18 +1168,6 @@ func TestWindowsDownloadsAreBoundedAndChecksumGated(t *testing.T) {
 			job: "pr-test-build-windows", step: "Compress with upx",
 			output: "upx.zip", url: upxURL,
 			hashEnv: "UPX_SHA256", consumer: "Expand-Archive -DestinationPath upx upx.zip",
-		},
-		{
-			name: "legacy-release-go", path: ".github/workflows/build-windows-legacy.yml",
-			job: "build", step: "Download go-legacy-win7",
-			output: "go-legacy.zip", url: legacyGoURL,
-			hashEnv: "GO_LEGACY_SHA256", consumer: `Expand-Archive -DestinationPath C:\go-legacy go-legacy.zip`,
-		},
-		{
-			name: "legacy-pr-go", path: ".github/workflows/pr-test-build-windows-legacy.yml",
-			job: "pr-test-build-windows-legacy", step: "Download go-legacy-win7",
-			output: "go-legacy.zip", url: legacyGoURL,
-			hashEnv: "GO_LEGACY_SHA256", consumer: `Expand-Archive -DestinationPath C:\go-legacy go-legacy.zip`,
 		},
 		{
 			name: "legacy-release-upx", path: ".github/workflows/build-windows-legacy.yml",
@@ -1290,7 +1301,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "3583",
 			target:   "google_apis",
-			script:   command + "26 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest",
+			script:   command + "26 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest",
 		},
 		// Activity security and Compose state must work on the target-SDK runtime.
 		36: {
@@ -1298,7 +1309,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "6144",
 			target:   "default",
-			script:   command + "36 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest",
+			script:   command + "36 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest",
 		},
 	}
 	seen := make(map[int]struct{}, len(wantByAPI))
@@ -1422,60 +1433,115 @@ func TestAndroidBuildWorkflowsRunFullLint(t *testing.T) {
 }
 
 func TestAndroidReleaseWorkflowKeepsSigningSecretsOutOfBuildJob(t *testing.T) {
-	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-android.yml")
+	const path = ".github/workflows/build-android.yml"
+	workflow := mustReadWorkflowDoc(t, path)
 	buildJob := mustJob(t, workflow, "build")
+	signJob := mustJob(t, workflow, "sign")
 	releaseJob := mustJob(t, workflow, "release")
-
 	mustStepNamed(t, buildJob, "Build Go Mobile AAR")
 	mustStepNamed(t, buildJob, "Run Unit Tests")
-	mustNotHaveStepNamed(t, buildJob, "Decode Android signing keystore")
-	mustNotHaveStepNamed(t, buildJob, "Build Signed Release APK")
-
-	mustNotHaveStepNamed(t, releaseJob, "Decode Android signing keystore")
-	buildSignedStep := mustStepNamed(t, releaseJob, "Build Signed Release APK")
-	for _, key := range []string{
-		"ANDROID_KEYSTORE_BASE64",
-		"ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PASSWORD",
-		"ORG_GRADLE_PROJECT_PICOCRYPT_KEY_ALIAS",
-		"ORG_GRADLE_PROJECT_PICOCRYPT_KEY_PASSWORD",
-	} {
-		value, ok := buildSignedStep.Env[key]
-		if !ok {
-			t.Fatalf("signed build step missing scoped env %q", key)
-		}
-		if !strings.Contains(value, "secrets.ANDROID_") {
-			t.Fatalf("signed build env %q = %q, want an Android repository secret", key, value)
-		}
+	mustStepNamed(t, buildJob, "Build unsigned release APKs")
+	if signJob.Needs != "build" || fmt.Sprint(releaseJob.Needs) != "[build sign]" {
+		t.Fatalf("Android signing/publication dependencies = %#v/%#v, want build then [build sign]", signJob.Needs, releaseJob.Needs)
 	}
-	for _, key := range []string{
-		"ANDROID_KEYSTORE_PASSWORD",
-		"ANDROID_KEY_ALIAS",
-		"ANDROID_KEY_PASSWORD",
-	} {
-		if _, ok := buildSignedStep.Env[key]; ok {
-			t.Fatalf("signed build step must use Gradle-scoped env instead of %q", key)
-		}
+	if signJob.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}" || releaseEnvironmentName(signJob.Environment) != "release" {
+		t.Fatal("Android key use must require explicit release dispatch on main and the release environment")
 	}
-	mustContainInOrder(
-		t,
-		buildSignedStep.Run,
-		`KEYSTORE_PATH=$(mktemp "$RUNNER_TEMP/picocrypt-release.XXXXXX.keystore")`,
-		`trap 'rm -f -- "$KEYSTORE_PATH"' EXIT`,
-		`printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"`,
-		`export ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH="$KEYSTORE_PATH"`,
-		"./gradlew --no-daemon :app:assembleRelease",
-	)
-	mustNotContain(t, buildSignedStep.Run, "$GITHUB_ENV")
-	mustNotContain(t, buildSignedStep.Run, "$GITHUB_OUTPUT")
-	for _, step := range releaseJob.Steps {
-		for _, value := range step.Env {
-			if step.Name != "Build Signed Release APK" && strings.Contains(value, "secrets.ANDROID_") {
-				t.Fatalf("Android signing secret is exposed to later step %q", step.Name)
+	for name, job := range workflow.Jobs {
+		if name != "build" && name != "sign" && name != "release" {
+			t.Fatalf("unreviewed Android release job %q", name)
+		}
+		if job.Permissions == nil {
+			t.Fatalf("Android %s job must declare its permissions explicitly", name)
+		}
+		wantPermissions := map[string]string{"contents": "read"}
+		if name == "release" {
+			wantPermissions = map[string]string{"contents": "write", "id-token": "write", "attestations": "write"}
+		}
+		if len(job.Permissions) != len(wantPermissions) {
+			t.Fatalf("Android %s has permissions outside its reviewed role: %#v", name, job.Permissions)
+		}
+		for key, value := range wantPermissions {
+			mustEffectivePermission(t, workflow, job, key, value)
+		}
+		if name != "release" {
+			mustEffectivePermission(t, workflow, job, "contents", "read")
+			for _, permission := range []string{"id-token", "attestations", "actions", "packages"} {
+				mustEffectivePermission(t, workflow, job, permission, "none")
+			}
+		} else {
+			for _, permission := range []string{"contents", "id-token", "attestations"} {
+				mustEffectivePermission(t, workflow, job, permission, "write")
+			}
+			mustEffectivePermission(t, workflow, job, "packages", "none")
+		}
+		for _, step := range job.Steps {
+			if strings.HasPrefix(step.Uses, "actions/checkout@") && step.With["persist-credentials"] != false {
+				t.Fatalf("Android %s checkout must not retain Git credentials", name)
+			}
+			if name == "sign" || name == "release" {
+				if strings.HasPrefix(step.Uses, "actions/cache@") || strings.Contains(step.Run, "gradlew") || strings.Contains(step.Uses, "gradle/actions/") {
+					t.Fatalf("Android %s must not execute Gradle/plugins or restore a build cache", name)
+				}
 			}
 		}
 	}
-	downloadStep := mustHaveStepUsingPrefix(t, releaseJob, "actions/download-artifact@")
-	mustMatch(t, downloadStep.Uses, `actions/download-artifact@[0-9a-f]{40}`)
+	signing := mustStepNamed(t, signJob, "Sign verified APKs with the offline SDK")
+	expectedSecrets := map[string]string{
+		"ANDROID_KEYSTORE_BASE64":   "${{ secrets.ANDROID_KEYSTORE_BASE64 }}",
+		"ANDROID_KEYSTORE_PASSWORD": "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}",
+		"ANDROID_KEY_PASSWORD":      "${{ secrets.ANDROID_KEY_PASSWORD }}",
+		"ANDROID_KEY_ALIAS":         "${{ secrets.ANDROID_KEY_ALIAS }}",
+	}
+	if len(signing.Env) != len(expectedSecrets) {
+		t.Fatal("SDK signing must receive only the four scoped Android credentials")
+	}
+	for key, value := range expectedSecrets {
+		if signing.Env[key] != value {
+			t.Fatalf("SDK signing env %s = %q, want exact scoped secret", key, signing.Env[key])
+		}
+	}
+	// Count all secret expressions, including bracket notation and unknown YAML
+	// fields: the four explicit SDK env entries are the only permitted uses.
+	if got := len(regexp.MustCompile(`\bsecrets\s*(?:\.|\[)`).FindAllString(mustReadWorkflow(t, path), -1)); got != len(expectedSecrets) {
+		t.Fatalf("Android release contains %d secret references; only the four SDK env entries are permitted", got)
+	}
+	mustContainInOrder(t, signing.Run,
+		"umask 077", `signing_temp=$(mktemp -d "$RUNNER_TEMP/android-signing.XXXXXX")`,
+		"trap cleanup EXIT", `printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode`,
+		"unset ANDROID_KEYSTORE_BASE64", "java --enable-native-access=ALL-UNNAMED", "AndroidApkSigner")
+	mustContain(t, signing.Run, `rm -rf -- "$signing_temp"`)
+	mustContain(t, signing.Run, `if [ "$result" -ne 0 ]; then rm -rf -- signed-apks; fi`)
+	mustContain(t, signing.Run, "private signing diagnostics withheld")
+	for _, forbidden := range []string{"$GITHUB_ENV", "$GITHUB_OUTPUT", "$ANDROID_KEY_ALIAS\"", "gradlew", "curl", "sdkmanager", "javac"} {
+		mustNotContain(t, signing.Run, forbidden)
+	}
+	compile := mustStepNamed(t, signJob, "Compile the SDK signing launcher before loading secrets")
+	mustContain(t, compile.Run, `.github/scripts/AndroidApkSigner.java`)
+	launcher := mustReadRepoFile(t, ".github/scripts/AndroidApkSigner.java")
+	for _, required := range []string{`System.getenv("ANDROID_KEY_ALIAS")`, "ApkSignerTool.main", `"env:ANDROID_KEYSTORE_PASSWORD"`, `"env:ANDROID_KEY_PASSWORD"`, `"--alignment-preserved", "true"`, `"--v1-signing-enabled", "false"`, `"--v4-signing-enabled", "false"`} {
+		mustContain(t, launcher, required)
+	}
+	download := mustStepNamed(t, signJob, "Download source-bound unsigned APKs")
+	if download.With["artifact-ids"] != "${{ needs.build.outputs.artifact-id }}" || download.With["merge-multiple"] != true || download.With["path"] != "unsigned-release" {
+		t.Fatal("Android signer must download only the immutable build-job artifact ID")
+	}
+	if buildJob.Outputs["artifact-id"] != "${{ steps.upload-unsigned.outputs.artifact-id }}" || signJob.Outputs["artifact-id"] != "${{ steps.upload-signed.outputs.artifact-id }}" {
+		t.Fatal("Android artifact IDs must come directly from their own upload actions")
+	}
+	validate := mustStepNamed(t, signJob, "Validate unsigned signing inputs before loading secrets")
+	for key, value := range map[string]string{"MANIFEST_SHA256": "${{ needs.build.outputs.manifest-sha256 }}", "AAR_SHA256": "${{ needs.build.outputs.aar-sha256 }}", "VERSION": "${{ needs.build.outputs.version }}", "VERSION_CODE": "${{ needs.build.outputs.version-code }}"} {
+		if validate.Env[key] != value {
+			t.Fatalf("unsigned signing input %s is not bound to the build-job output", key)
+		}
+	}
+	for _, oracle := range []string{`test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`, `test "$(<VERSION)" = "$VERSION"`, `"$MANIFEST_SHA256"`, ".source == $source", ".aarSha256 == $aar", `"$digest"`, "zipalign\" -c -P 16", "io.github.picocrypt_ng.picocrypt_ng unsigned"} {
+		mustContain(t, validate.Run, oracle)
+	}
+	signedDownload := mustStepNamed(t, releaseJob, "Download verified signed APKs")
+	if signedDownload.With["artifact-ids"] != "${{ needs.sign.outputs.artifact-id }}" || signedDownload.With["path"] != "out" || signedDownload.With["merge-multiple"] != true {
+		t.Fatal("Android publication must use only the verified signer-job artifact ID")
+	}
 }
 
 func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
@@ -1499,8 +1565,12 @@ func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
 					t.Fatalf("%s job %s setup-java java-version = %#v, want 21", path, jobName, got)
 				}
 			}
-			if setupSteps == 0 {
-				t.Fatalf("%s job %s has no actions/setup-java step", path, jobName)
+			if path == ".github/workflows/build-android.yml" && jobName == "release" {
+				if setupSteps != 0 {
+					t.Fatal("Android publisher must not set up or execute the JVM build/signing toolchain")
+				}
+			} else if setupSteps != 1 {
+				t.Fatalf("%s job %s has %d setup-java steps, want exactly one", path, jobName, setupSteps)
 			}
 		}
 	}
@@ -1513,7 +1583,7 @@ func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
 
 func TestAndroidReleasePublishesOnly64BitAPKNames(t *testing.T) {
 	releaseWorkflow := mustReadWorkflowDoc(t, ".github/workflows/build-android.yml")
-	prepare := mustStepNamed(t, mustJob(t, releaseWorkflow, "release"), "Prepare artifacts")
+	prepare := mustStepNamed(t, mustJob(t, releaseWorkflow, "sign"), "Verify exact signed release APK contract")
 	for _, artifact := range []string{
 		"Picocrypt-NG-android-arm64-v8a.apk",
 		"Picocrypt-NG-android-x86_64.apk",
@@ -1545,44 +1615,38 @@ func TestAndroidReleaseWorkflowsRunExactArtifactVerifier(t *testing.T) {
 	mustContain(t, verifier, `"${apksigner_command[@]}" verify --Werr --verbose --print-certs "$apk"`)
 
 	for _, tc := range []struct {
-		name string
-		path string
-		job  string
-		kind string
+		name, path, job, step, kind, directory string
 	}{
-		{name: "unsigned PR build", path: ".github/workflows/pr-test-build-android.yml", job: "pr-test-build-android", kind: "unsigned"},
-		{name: "signed release", path: ".github/workflows/build-android.yml", job: "release", kind: "signed"},
+		{"unsigned PR build", ".github/workflows/pr-test-build-android.yml", "pr-test-build-android", "Verify exact release APK contract", "unsigned", "android"},
+		{"unsigned release build", ".github/workflows/build-android.yml", "build", "Verify exact unsigned release APK contract", "unsigned", "android"},
+		{"signed release", ".github/workflows/build-android.yml", "sign", "Verify exact signed release APK contract", "signed", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			workflow := mustReadWorkflowDoc(t, tc.path)
-			step := mustStepNamed(t, mustJob(t, workflow, tc.job), "Verify exact release APK contract")
-			if step.WorkingDirectory != "android" {
-				t.Fatalf("verifier working-directory = %q, want android", step.WorkingDirectory)
+			step := mustStepNamed(t, mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job), tc.step)
+			if step.WorkingDirectory != tc.directory {
+				t.Fatalf("verifier working-directory = %q, want %q", step.WorkingDirectory, tc.directory)
 			}
-			wantRun := strings.Join([]string{
-				`./verify-release-apks.sh \`,
-				`  app/build/outputs/apk/release \`,
-				`  "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_NAME" \`,
-				`  "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE" \`,
-				`  io.github.picocrypt_ng.picocrypt_ng \`,
-				`  ` + tc.kind,
-			}, "\n")
-			if got := strings.TrimSpace(step.Run); got != wantRun {
-				t.Fatalf("verifier run = %q, want %q", got, wantRun)
-			}
-			if step.If != "" {
-				t.Fatalf("verifier if = %q, want unconditional step", step.If)
-			}
-			if step.ContinueOnError != nil && step.ContinueOnError != false {
-				t.Fatalf("verifier continue-on-error = %#v, want absent or false", step.ContinueOnError)
-			}
-			trustAnchor, hasTrustAnchor := step.Env["PICOCRYPT_ANDROID_SIGNING_CERT_SHA256_FILE"]
 			if tc.kind == "signed" {
-				if !hasTrustAnchor || trustAnchor != "release-signing-cert-sha256.txt" {
-					t.Fatalf("signed verifier trust anchor = %q, present %v; want release-signing-cert-sha256.txt", trustAnchor, hasTrustAnchor)
+				mustContainInOrder(t, step.Run, `android/verify-release-apks.sh signed-apks "$VERSION" "$VERSION_CODE" io.github.picocrypt_ng.picocrypt_ng signed`, "mkdir out", "cp signed-apks/app-arm64-v8a-release.apk", "cp signed-apks/app-x86_64-release.apk", "cp signed-apks/app-universal-release.apk")
+				if step.Env["VERSION"] != "${{ needs.build.outputs.version }}" || step.Env["VERSION_CODE"] != "${{ needs.build.outputs.version-code }}" {
+					t.Fatal("signed verifier must check source-bound build version metadata")
 				}
-			} else if hasTrustAnchor {
-				t.Fatalf("unsigned verifier unexpectedly sets signing trust anchor %q", trustAnchor)
+			} else {
+				wantRun := strings.Join([]string{`./verify-release-apks.sh \`, `  app/build/outputs/apk/release \`, `  "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_NAME" \`, `  "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE" \`, `  io.github.picocrypt_ng.picocrypt_ng \`, `  unsigned`}, "\n")
+				if strings.TrimSpace(step.Run) != wantRun {
+					t.Fatalf("unsigned verifier = %q, want %q", step.Run, wantRun)
+				}
+			}
+			if step.If != "" || (step.ContinueOnError != nil && step.ContinueOnError != false) {
+				t.Fatal("APK contract verification must be unconditional and blocking")
+			}
+			anchor, present := step.Env["PICOCRYPT_ANDROID_SIGNING_CERT_SHA256_FILE"]
+			if tc.kind == "signed" {
+				if !present || anchor != "android/release-signing-cert-sha256.txt" {
+					t.Fatal("signed verifier must use the tracked production certificate fingerprint")
+				}
+			} else if present {
+				t.Fatal("unsigned verifier must not have a signing trust override")
 			}
 		})
 	}
@@ -1590,35 +1654,36 @@ func TestAndroidReleaseWorkflowsRunExactArtifactVerifier(t *testing.T) {
 
 func TestAndroidReleaseSigningTrustAnchorAndPublicationOrder(t *testing.T) {
 	const trustedDigest = "e2f2a971231aa0b86882c63b87b689c71632c6d55168b1ce856952d07f6172b7"
-	anchor := mustReadRepoFile(t, "android/release-signing-cert-sha256.txt")
-	if anchor != trustedDigest+"\n" {
-		t.Fatalf("Android release signing trust anchor = %q, want one exact lowercase SHA-256 digest", anchor)
+	if anchor := mustReadRepoFile(t, "android/release-signing-cert-sha256.txt"); anchor != trustedDigest+"\n" {
+		t.Fatalf("Android signing trust anchor = %q, want exact production certificate SHA-256", anchor)
 	}
-
-	job := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/build-android.yml"), "release")
-	orderedSteps := []string{
-		"Build Signed Release APK",
-		"Verify exact release APK contract",
-		"Prepare artifacts",
-		"Sign and attest artifacts",
-		"Stage release assets",
-	}
-	lastIndex := -1
-	for _, name := range orderedSteps {
-		index := -1
-		for candidateIndex, step := range job.Steps {
-			if step.Name == name {
-				index = candidateIndex
-				break
+	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-android.yml")
+	for _, tc := range []struct {
+		job   string
+		steps []string
+	}{
+		{"build", []string{"Build Go Mobile AAR", "Run Unit Tests", "Run Android Lint", "Build unsigned release APKs", "Verify exact unsigned release APK contract", "Bind unsigned APKs to the source and AAR", "Upload unsigned release APKs"}},
+		{"sign", []string{"Download source-bound unsigned APKs", "Validate unsigned signing inputs before loading secrets", "Compile the SDK signing launcher before loading secrets", "Sign verified APKs with the offline SDK", "Verify exact signed release APK contract", "Upload signed release APKs"}},
+		{"release", []string{"Download verified signed APKs", "Get version tag", "Sign and attest artifacts", "Generate release notes", "Stage release assets"}},
+	} {
+		job := mustJob(t, workflow, tc.job)
+		last := -1
+		for _, name := range tc.steps {
+			index := -1
+			for i, step := range job.Steps {
+				if step.Name == name {
+					index = i
+					if step.If != "" || (step.ContinueOnError != nil && step.ContinueOnError != false) {
+						t.Fatalf("Android %s step %s must run unconditionally and block on failure", tc.job, name)
+					}
+					break
+				}
 			}
+			if index <= last {
+				t.Fatalf("Android %s step %s missing/out of order", tc.job, name)
+			}
+			last = index
 		}
-		if index < 0 {
-			t.Fatalf("release job is missing step %q", name)
-		}
-		if index <= lastIndex {
-			t.Fatalf("release step %q is out of order; want %s", name, strings.Join(orderedSteps, " < "))
-		}
-		lastIndex = index
 	}
 }
 
@@ -1632,6 +1697,8 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 		filepath.Join(root, "Changelog.md"),
 		"-",
 	)
+	const sourceSHA = "0123456789abcdef0123456789abcdef01234567"
+	command.Env = append(os.Environ(), "GITHUB_SHA="+sourceSHA)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("generate release body: %v\n%s", err, output)
@@ -1639,6 +1706,25 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 
 	body := string(output)
 	mustContain(t, body, "## What's new in "+version)
+	mustContain(t, body, "source_commit="+sourceSHA)
+	for artifact, owner := range map[string]string{
+		"Picocrypt-NG": "build-linux.yml", "Picocrypt-NG-cli": "build-linux.yml", "Picocrypt-NG.deb": "build-linux.yml",
+		"Picocrypt-NG-arm64": "build-linux.yml", "Picocrypt-NG-cli-arm64": "build-linux.yml",
+		"Picocrypt-NG.dmg": "build-macos.yml", "Picocrypt-NG-cli-macos": "build-macos.yml",
+		"Picocrypt-NG-portable.exe": "build-windows.yml", "Picocrypt-NG-cli.exe": "build-windows.yml", "Picocrypt-NG-Setup.exe": "build-windows.yml",
+		"Picocrypt-NG-cli-Legacy.exe":        "build-windows-legacy.yml",
+		"Picocrypt-NG-android-arm64-v8a.apk": "build-android.yml", "Picocrypt-NG-android-x86_64.apk": "build-android.yml", "Picocrypt-NG-android-universal.apk": "build-android.yml",
+		"Picocrypt-NG-" + version + "-x86_64.AppImage": "build-appimage.yml", "Picocrypt-NG-" + version + "-x86_64.AppImage.zsync": "build-appimage.yml",
+		"picocrypt-ng_" + version + "_amd64.snap": "build-snapcraft.yml",
+	} {
+		mustContain(t, body, "  "+artifact+") workflow="+owner+" ;;")
+	}
+	mustContain(t, body, `identity="https://github.com/Picocrypt-NG/Picocrypt-NG/.github/workflows/$workflow@refs/heads/main"`)
+	for _, restriction := range []string{`--certificate-identity "$identity"`, `--certificate-github-workflow-sha "$source_commit"`, "--certificate-github-workflow-ref refs/heads/main", "--certificate-github-workflow-repository Picocrypt-NG/Picocrypt-NG", `--cert-identity "$identity"`, `--signer-digest "$source_commit"`, "--source-ref refs/heads/main", `--source-digest "$source_commit"`, "--predicate-type https://slsa.dev/provenance/v1", "--deny-self-hosted-runners"} {
+		mustContain(t, body, restriction)
+	}
+	mustNotContain(t, body, "--certificate-identity-regexp")
+
 	for _, rawHTML := range []string{"<ul", "</ul>", "<li", "</li>", "<strong", "</strong>", "<code", "</code>"} {
 		mustNotContain(t, body, rawHTML)
 	}
@@ -1825,14 +1911,14 @@ func TestPrereleaseVersionPatternCoversCommonMarkers(t *testing.T) {
 func TestAndroidGomobileBuildUsesReproducibleLinkerFlags(t *testing.T) {
 	content := mustReadRepoFile(t, "android/build-gomobile.sh")
 
-	mustContain(t, content, `REQUIRED_GO_VERSION="go1.27.1"`)
+	mustContain(t, content, `REQUIRED_GO_VERSION="go1.27.2"`)
 	mustContain(t, content, `-ldflags="$GOMOBILE_LDFLAGS"`)
 	mustContain(t, content, `-s -w -buildid=`)
 }
 
 func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	const (
-		focusedClasses = "io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.DecryptOptionsCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ErrorDialogTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.FileCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest"
+		focusedClasses = "io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.DecryptOptionsCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ErrorDialogTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.FileCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest"
 		extendedClass  = "io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest"
 	)
 
@@ -1881,27 +1967,32 @@ func TestWindowsLegacyReleaseWorkflowIsCLIOnly(t *testing.T) {
 	mustNotContain(t, content, "Mesa3D")
 }
 
-func TestWindowsLegacyWorkflowsCacheLegacyGo(t *testing.T) {
-	testCases := []struct {
-		path string
-		job  string
-	}{
-		{path: ".github/workflows/pr-test-build-windows-legacy.yml", job: "pr-test-build-windows-legacy"},
-		{path: ".github/workflows/build-windows-legacy.yml", job: "build"},
-	}
-
-	for _, tc := range testCases {
-		workflow := mustReadWorkflowDoc(t, tc.path)
-		job := mustJob(t, workflow, tc.job)
-		cacheStep := mustStepNamed(t, job, "Cache go-legacy-win7")
-		// actions/cache must be SHA-pinned for supply-chain safety, not floated on
-		// a mutable major tag. Assert the 40-hex pin, not a specific version, so a
-		// cache bump (e.g. the v4->v5 unification) does not churn this test.
-		mustMatch(t, cacheStep.Uses, `actions/cache@[0-9a-f]{40}`)
-		if cacheStep.With["path"] != `C:\go-legacy` {
-			t.Fatalf("cache step path = %#v, want C:\\go-legacy", cacheStep.With["path"])
+func TestWindowsLegacyWorkflowsBuildFreshSourceToolchain(t *testing.T) {
+	for _, tc := range []struct{ path, job string }{
+		{".github/workflows/pr-test-build-windows-legacy.yml", "pr-test-build-windows-legacy"},
+		{".github/workflows/build-windows-legacy.yml", "build"},
+	} {
+		job := mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job)
+		mustNotHaveStepNamed(t, job, "Cache go-legacy-win7")
+		for _, step := range job.Steps {
+			if strings.HasPrefix(step.Uses, "actions/cache@") && strings.Contains(fmt.Sprint(step.With["path"]), "go-legacy") {
+				t.Fatalf("%s must not restore executable legacy toolchains from cache", tc.path)
+			}
 		}
+		build := mustStepNamed(t, job, "Build patched Go 1.27.2 for Windows 7/8")
+		if build.Shell != "pwsh" || build.If != "" || build.ContinueOnError != nil {
+			t.Fatal("legacy compiler source build must run unconditionally and fail closed")
+		}
+		mustContainInOrder(t, build.Run, ".github/scripts/build-legacy-go.ps1", "-ManifestPath '.github/toolchains/legacy-go/manifest.json'", `-OutputRoot 'C:\go-legacy'`)
 	}
+	builder := mustReadRepoFile(t, ".github/scripts/build-legacy-go.ps1")
+	mustContainInOrder(t, builder, "if (Test-Path -LiteralPath $OutputRoot)", "Refusing to reuse an existing toolchain directory", "New-Item -ItemType Directory -Path $OutputRoot")
+	for _, flag := range []string{"--fail", "--location", "--proto '=https'", "--proto-redir '=https'", "--connect-timeout 30", "--max-time 300", "--retry-max-time 600", "--remove-on-error"} {
+		mustContain(t, builder, flag)
+	}
+	mustContainInOrder(t, builder, "Get-VerifiedSource $manifest.bootstrap_windows_amd64.url", "Get-VerifiedSource $manifest.source.url", "Expand-Archive -LiteralPath $bootstrapArchive")
+	mustContainInOrder(t, builder, "Get-VerifiedSource $patch.url $patch.sha256", "git -C $goRoot apply --check", "git -C $goRoot apply --")
+	mustContainInOrder(t, builder, "$env:GOROOT_BOOTSTRAP = Join-Path $bootstrapRoot 'go'", "$env:GOAMD64 = 'v1'", "cmd.exe /d /c make.bat", "assert-windows-legacy-pe.ps1")
 }
 
 func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
@@ -1944,8 +2035,8 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 					continue
 				}
 				setupGoSteps[lane]++
-				if got := step.With["go-version"]; got != "1.27.1" {
-					t.Fatalf("%s job %s go-version = %#v, want 1.27.1", relPath, jobName, got)
+				if got := step.With["go-version"]; got != "1.27.2" {
+					t.Fatalf("%s job %s go-version = %#v, want 1.27.2", relPath, jobName, got)
 				}
 			}
 		}
@@ -1965,7 +2056,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 		t.Fatalf("decode mise toolchain configuration: %v", err)
 	}
 	for tool, want := range map[string]string{
-		"go":                                   "1.27.1",
+		"go":                                   "1.27.2",
 		"go:golang.org/x/vuln/cmd/govulncheck": "1.8.0",
 	} {
 		if got := config.Tools[tool]; got != want {
@@ -1975,7 +2066,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	// Android bindings retain the toolchain required by build-gomobile.sh,
 	// even when the desktop development tools are upgraded.
 	for tool, want := range map[string]string{
-		"go":                                  "1.27.1",
+		"go":                                  "1.27.2",
 		"go:golang.org/x/mobile/cmd/gobind":   "v0.0.0-20260908204917-8b95e45f8d3e",
 		"go:golang.org/x/mobile/cmd/gomobile": "v0.0.0-20260908204917-8b95e45f8d3e",
 	} {
@@ -1985,7 +2076,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	}
 
 	goMod := mustReadRepoFile(t, "src/go.mod")
-	mustMatch(t, goMod, `(?m)^go 1\.27\.1$`)
+	mustMatch(t, goMod, `(?m)^go 1\.27\.2$`)
 	mustNotContain(t, goMod, "\ntoolchain ")
 
 	staticChecks := mustReadWorkflow(t, ".github/workflows/pr-static-checks.yml")
@@ -1995,44 +2086,144 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 
 func TestSnapcraftBuildUsesExactGoToolchain(t *testing.T) {
 	content := mustReadRepoFile(t, "dist/snapcraft/snapcraft.yaml")
-	mustContain(t, content, "https://go.dev/dl/go1.27.1.linux-amd64.tar.gz")
-	mustContain(t, content, "sha256/63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445")
+	mustContain(t, content, "https://go.dev/dl/go1.27.2.linux-amd64.tar.gz")
+	mustContain(t, content, "sha256/ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5")
 	mustContain(t, content, `PATH: "${CRAFT_STAGE}/go/bin:${PATH}"`)
 	mustContain(t, content, `GOROOT: "${CRAFT_STAGE}/go"`)
 	mustContain(t, content, "GOTOOLCHAIN: local")
-	mustContain(t, content, `test "$(go env GOVERSION)" = "go1.27.1"`)
+	mustContain(t, content, `test "$(go env GOVERSION)" = "go1.27.2"`)
 	mustNotContain(t, content, "source-subdir: go")
 	mustNotContain(t, content, "build-snaps:\n      - go")
 }
 
 func TestWindowsLegacyWorkflowsUsePinnedLocalFork(t *testing.T) {
-	cases := []struct {
-		path string
-		job  string
-	}{
-		{path: ".github/workflows/build-windows-legacy.yml", job: "build"},
-		{path: ".github/workflows/pr-test-build-windows-legacy.yml", job: "pr-test-build-windows-legacy"},
+	for _, tc := range []struct{ path, job string }{
+		{".github/workflows/build-windows-legacy.yml", "build"},
+		{".github/workflows/pr-test-build-windows-legacy.yml", "pr-test-build-windows-legacy"},
+	} {
+		job := mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job)
+		if job.Env["GOTOOLCHAIN"] != "local" || job.Env["GOAMD64"] != "v1" || job.Env["GOEXPERIMENT"] != "" {
+			t.Fatalf("%s must pin local toolchain and baseline x86-64 CPU settings", tc.path)
+		}
+		inspect := mustStepNamed(t, job, "Verify Go installation")
+		for _, required := range []string{`C:\go-legacy\go\bin\go.exe`, `C:\go-legacy\go`, "Get-Command go -CommandType Application | Select-Object -First 1", "go env -json GOROOT GOVERSION GOTOOLCHAIN GOOS GOARCH GOAMD64 GOEXPERIMENT", "$actualGo -ne $expectedGo", "$goEnvironment.GOROOT -ne $expectedRoot", "go1.27.2", "$goEnvironment.GOAMD64 -ne 'v1'", "$goEnvironment.GOTOOLCHAIN -ne 'local'"} {
+			mustContain(t, inspect.Run, required)
+		}
+		regression := mustStepNamed(t, job, "Run native legacy toolchain regressions")
+		if regression.Shell != "pwsh" || regression.If != "" || regression.ContinueOnError != nil {
+			t.Fatal("native compatibility/random-source regressions must block the legacy build")
+		}
+		for _, required := range []string{"run-windows-native-tests.ps1", `-GoExecutable 'C:\go-legacy\go\bin\go.exe'`, "'-count=1', '-p', '1'", "'os', 'internal/syscall/windows', 'crypto/internal/sysrand'", "'^TestReadRandomFromRtlGenRandom$', 'runtime'", "if ($LASTEXITCODE -ne 0)"} {
+			mustContain(t, regression.Run, required)
+		}
+		verify := mustStepNamed(t, job, "Verify legacy binary toolchain")
+		mustContain(t, verify.Run, "go version -m")
+		mustContain(t, verify.Run, `go1\.27\.2`)
+		mustContain(t, verify.Run, `GOAMD64=v1`)
+		mustContain(t, verify.Run, ".github/scripts/assert-windows-legacy-pe.ps1")
+		mustContainInOrder(t, mustReadWorkflow(t, tc.path), "name: Build patched Go 1.27.2 for Windows 7/8", "name: Verify Go installation", "name: Run native legacy toolchain regressions", "name: Run tests", "name: Build CLI-only legacy binary", "name: Verify legacy binary toolchain", "name: Compress with upx")
 	}
-	for _, tc := range cases {
-		workflow := mustReadWorkflowDoc(t, tc.path)
-		job := mustJob(t, workflow, tc.job)
-		if job.Env["GOTOOLCHAIN"] != "local" {
-			t.Fatalf("%s GOTOOLCHAIN = %q, want local", tc.path, job.Env["GOTOOLCHAIN"])
+}
+
+func TestWindowsLegacyToolchainInputsHaveApprovedDigests(t *testing.T) {
+	var manifest struct {
+		Version string `json:"version"`
+		Source  struct {
+			URL    string `json:"url"`
+			SHA256 string `json:"sha256"`
+		} `json:"source"`
+		Bootstrap struct {
+			URL    string `json:"url"`
+			SHA256 string `json:"sha256"`
+		} `json:"bootstrap_windows_amd64"`
+		Vendor  string `json:"vendor_commit"`
+		Patches []struct {
+			Path   string `json:"path"`
+			URL    string `json:"url"`
+			SHA256 string `json:"sha256"`
+			Local  string `json:"local"`
+		} `json:"patches"`
+	}
+	if err := json.Unmarshal([]byte(mustReadRepoFile(t, ".github/toolchains/legacy-go/manifest.json")), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Version != "go1.27.2" || manifest.Source.URL != "https://go.dev/dl/go1.27.2.src.tar.gz" || manifest.Source.SHA256 != "03495da2ba64894d40f5c4992e49454fa78b50690604ff92b6afff5081b76e62" || manifest.Bootstrap.URL != "https://go.dev/dl/go1.27.2.windows-amd64.zip" || manifest.Bootstrap.SHA256 != "1314008898bd40df77af4b014f777f08873dbdfbcd3d92308728ee03304fe04f" || manifest.Vendor != "2f6cdc24e8e5c029eafebe42fcbe966cc0589f97" {
+		t.Fatal("legacy source/bootstrap must retain the approved official Go release digests and compatibility source commit")
+	}
+	expected := map[string]string{
+		"0001-cmd-link-syscall-set-pe-minimum-target-version-to-windows-7.patch":                          "570e24cd21fdf4b78acba041a1046e4ea96670fd3c306e39a469430ff60d799f",
+		"0002-runtime-syscall-fall-back-to-loading-system-dlls-by-absolute-path.patch":                    "77c2c38b61a515771e056a8f33e9df3f63573d3984ea9ef22338161b61a4d143",
+		"0003-runtime-crypto-internal-sysrand-fall-back-to-rtlgenrandom-when-processprng-is-absent.patch": "c205f48a3c2320fca53b382ec938f45ba0d91792824ab52b0ab29ccf0d2c6d1c",
+		"0004-syscall-restore-windows-7-console-handle-handling-in-startprocess.patch":                    "3c532ff58c8eea2d99fde2cef76e32ee385ea46595ecd4a2962fe653f7e2376d",
+		"0005-os-fall-back-to-file-id-both-dir-info-when-reading-directories.patch":                       "65e6094182fe38840e0cf6d115bd255d93d2612d60ee376add5ed88666493ea5",
+		"0006-os-open-the-console-devices-by-the-names-windows-7-accepts.patch":                           "1c49ba65ee707641b523ceac484abb159141d62c691ffb9763c80e267c74d0fc",
+		"0007-net-fall-back-when-wsa-flag-no-handle-inherit-is-rejected.patch":                            "18708da2f6ee2684c9a066d476d561bdde2f2facdb9d045390c66637c321de57",
+		"0008-internal-poll-keep-a-handle-that-cannot-leave-its-completion-port.patch":                    "be08ba5bf402e73b4f920eb999e33515cbdc68075ad7e8166be0c0c4ff4803ca",
+		"0009-internal-poll-do-not-skip-the-completion-port-for-datagram-sockets.patch":                   "2798fe0c8d4f3e2ad1daa0978044db22457bdbbe948adc51636d3defb3ae15e8",
+		"0010-internal-poll-keep-file-handles-off-a-completion-port-they-cannot-leave.patch":              "128437a47db907b20b20944849a5b950b436e1d119c4c983eacd708bc529a66f",
+		"0012-internal-syscall-windows-clear-the-read-only-attribute-on-a-directory.patch":                "def59f1e865fc30b017fe433a68a0a065545f1d2597bb5c169dec950eae4c93a",
+		"0013-internal-syscall-windows-os-free-the-name-before-a-delete-completes.patch":                  "6adae4030f50e5a1b9280a65f04374ddff0a2e2bf1dc4431ca45a50e54a97d66",
+		"0014-internal-syscall-windows-replace-a-rename-target-where-posix-rename-is-missing.patch":       "d51589b85ae5b5c0e1fc30d2eb99ff5eaf6d9a8900722398d50f097cfcbd897d",
+		"0015-runtime-race-cmd-link-let-race-binaries-start-on-windows-7.patch":                           "be4f7ff668455394a845040695fdacec81eaaffe555496dd642695b7de4d7138",
+	}
+	if len(manifest.Patches) != len(expected) {
+		t.Fatal("legacy compatibility patch catalog must contain the complete reviewed set")
+	}
+	previous := ""
+	for _, patch := range manifest.Patches {
+		if expected[patch.Path] != patch.SHA256 || patch.Path <= previous {
+			t.Fatalf("unreviewed, duplicate, or misordered compatibility patch %s", patch.Path)
 		}
-		cache := mustStepNamed(t, job, "Cache go-legacy-win7")
-		if _, ok := cache.With["restore-keys"]; ok {
-			t.Fatalf("%s legacy cache must not restore an older checksum", tc.path)
+		previous = patch.Path
+		if strings.HasPrefix(patch.Path, "0010-") || strings.HasPrefix(patch.Path, "0013-") {
+			if patch.Local != "patches/"+patch.Path || patch.URL != "" {
+				t.Fatal("reviewed local compatibility fix must use its exact catalog path")
+			}
+			content, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/toolchains/legacy-go", patch.Local))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fmt.Sprintf("%x", sha256.Sum256(content)) != patch.SHA256 {
+				t.Fatal("local compatibility patch bytes differ from their reviewed digest")
+			}
+		} else if patch.Local != "" || patch.URL != "https://raw.githubusercontent.com/thongtech/go-legacy-win7/"+manifest.Vendor+"/patches/"+patch.Path {
+			t.Fatal("vendor compatibility patches must use the exact immutable source URL")
 		}
-		content := mustReadWorkflow(t, tc.path)
-		mustContain(t, content, "ec8e81ea3babb40c3f5e43309e04196cb12bf292060ac02c0e85fa73d639e9a9")
-		mustContain(t, content, "v1.27.1-1/go-legacy-win7-1.27.1-1.windows_amd64.zip")
-		mustContain(t, content, `C:\go-legacy\go-legacy-win7\bin`)
-		mustNotContain(t, content, `C:\go-legacy\go\bin`)
-		mustContain(t, content, "Get-Command go")
-		mustContain(t, content, "Get-Command go -CommandType Application | Select-Object -First 1")
-		mustContain(t, content, "go env GOROOT")
-		mustContain(t, content, "go env GOVERSION")
-		mustContain(t, content, "go1.27.1")
-		mustContain(t, content, "go version -m")
+	}
+	pe := mustReadRepoFile(t, ".github/scripts/assert-windows-legacy-pe.ps1")
+	for _, required := range []string{"0x8664", "0x20B", "$stream.Position = $peOffset + 64", "$stream.Position = $peOffset + 72", "$reader.ReadUInt16() -ne 6 -or $reader.ReadUInt16() -ne 1"} {
+		mustContain(t, pe, required)
+	}
+}
+
+func TestJobPermissionMapDisablesUnspecifiedWorkflowPermissions(t *testing.T) {
+	workflow := workflowDoc{Permissions: map[string]string{"contents": "write", "id-token": "write"}}
+	mustEffectivePermission(t, workflow, workflowJob{}, "id-token", "write")
+	job := workflowJob{Permissions: map[string]string{"contents": "read"}}
+	mustEffectivePermission(t, workflow, job, "contents", "read")
+	mustEffectivePermission(t, workflow, job, "id-token", "none")
+	mustEffectivePermission(t, workflow, workflowJob{Permissions: map[string]string{}}, "contents", "none")
+}
+
+func TestExternalActionSHARejectsMutableValueHiddenByYAMLComment(t *testing.T) {
+	const digest = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+	for _, tc := range []struct {
+		name, source string
+		pinned       bool
+	}{
+		{"immutable", "uses: actions/cache@" + digest + " # v6.1.0", true},
+		{"mutable comment spoof", "uses: actions/cache@" + digest + "-mutable # uses: actions/cache@" + digest + " # v6.1.0", false},
+		{"mutable quoted ref", "uses: 'actions/cache@" + digest + "-mutable' # v6.1.0", false},
+		{"major version", "uses: actions/cache@v6 # v6.1.0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var step workflowStep
+			if err := yaml.Unmarshal([]byte(tc.source), &step); err != nil {
+				t.Fatal(err)
+			}
+			if got := externalActionSHARefPattern.MatchString(step.Uses); got != tc.pinned {
+				t.Fatalf("parsed ref %q immutable = %v, want %v", step.Uses, got, tc.pinned)
+			}
+		})
 	}
 }

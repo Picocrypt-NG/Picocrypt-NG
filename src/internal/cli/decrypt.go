@@ -39,12 +39,15 @@ without the PCV3 flags. Deniable PCV3 input also requires --pcv3-format=d1.
 Pass the volume as a literal operand. Use -- before a volume filename that
 begins with -.
 
+Script examples use a password file readable only by its owner or a secret provider
+that writes one password line. Unix stream examples open descriptor 3 afresh.
+
 Examples:
   # Decrypt interactively (prompts for password)
 	  Picocrypt-NG decrypt secret.pcv --pcv3-factors=password -o secret.txt
 
-  # Decrypt with password on command line (visible in shell history)
-	  Picocrypt-NG decrypt secret.pcv --pcv3-factors=password -o secret.txt -p "mypassword"
+  # Decrypt with password from a protected file
+	  Picocrypt-NG decrypt secret.pcv --pcv3-factors=password -o secret.txt -P < /path/to/password-file
 
   # Decrypt with password and keyfile
 	  Picocrypt-NG decrypt secret.pcv --pcv3-factors=combined --pcv3-keyfile-order=unordered -k keyfile.key
@@ -59,13 +62,13 @@ Examples:
 	  Picocrypt-NG decrypt damaged.pcv --force
 
   # Read password from stdin (for scripts)
-	  echo "mypassword" | Picocrypt-NG decrypt secret.pcv --pcv3-factors=password -P
+	  secret-command | Picocrypt-NG decrypt secret.pcv --pcv3-factors=password -P
 
-  # Decrypt from stdin (use -p since stdin is taken by data)
-	  curl https://example.com/file.pcv | Picocrypt-NG decrypt - --pcv3-factors=password -o file.txt -p "pw"
+  # Decrypt from stdin with a separate password descriptor (Unix)
+	  curl https://example.com/file.pcv | Picocrypt-NG decrypt - --pcv3-factors=password -o file.txt --password-fd=3 3< /path/to/password-file
 
   # Decrypt to stdout
-	  Picocrypt-NG decrypt secret.pcv --pcv3-factors=password -o - -p "pw" | less`,
+	  secret-command | Picocrypt-NG decrypt secret.pcv --pcv3-factors=password -o - -P | less`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("input") {
 			return errors.New("--input/-i was removed; pass the volume path as an argument")
@@ -1012,6 +1015,9 @@ func pcv3CLIFactorPolicy(
 	hasPassword bool,
 	keyfileCount int,
 ) (pcv3operation.CredentialMode, pcv3operation.KeyfileMode, pcv3operation.FactorPolicy, error) {
+	if keyfileCount > pcv3operation.MaxKeyfiles {
+		return 0, 0, 0, fmt.Errorf("PCV3 supports at most %d keyfiles", pcv3operation.MaxKeyfiles)
+	}
 	var order pcv3operation.KeyfileMode
 	switch orderName {
 	case "":

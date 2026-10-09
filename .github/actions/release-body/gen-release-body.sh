@@ -3,7 +3,7 @@
 #
 #   gen-release-body.sh <version> [changelog] [output]
 #
-# The body is fully deterministic from <version> and the changelog, so every
+# The body is fully deterministic from <version>, the source commit, and the changelog, so every
 # platform lane supplies identical text to the shared staged-publication gate.
 #
 #   - Downloads table: a static artifact matrix; only the URL base and the two
@@ -17,6 +17,18 @@ set -euo pipefail
 VERSION="${1:?usage: gen-release-body.sh <version> [changelog] [output]}"
 CHANGELOG="${2:-Changelog.md}"
 OUTPUT="${3:--}"
+
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "release-body: invalid version" >&2
+  exit 2
+fi
+SOURCE_SHA="${GITHUB_SHA:-$(git rev-parse HEAD)}"
+if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "release-body: invalid source commit" >&2
+  exit 2
+fi
+manifest="$(bash "$(dirname -- "${BASH_SOURCE[0]}")/../stage-release/release-manifest.sh" "$VERSION")"
+verification_cases="$(awk '{ printf "  %s) workflow=%s ;;\n", $1, $2 }' <<< "$manifest")"
 
 REPO="Picocrypt-NG/Picocrypt-NG"
 BASE="https://github.com/$REPO/releases/download/$VERSION"
@@ -72,21 +84,34 @@ Full changelog: https://github.com/$REPO/blob/main/Changelog.md#$ANCHOR
 
 Use **cosign 3.1.3 or newer** for verification.
 
-Every artifact is signed with keyless [cosign](https://github.com/sigstore/cosign) (a \`<file>.sigstore.json\` bundle ships next to it) and carries a GitHub build-provenance attestation. No keys to trust — the signature is bound to the exact GitHub Actions run that built the file.
+Every artifact has a keyless [cosign](https://github.com/sigstore/cosign) signature (download the matching \`<file>.sigstore.json\` bundle) and a GitHub build-provenance attestation. Verification below binds the filename to its owning release workflow, the \`main\` branch, and source commit \`$SOURCE_SHA\`.
 
-Build provenance (easiest, needs the [\`gh\`](https://cli.github.com/) CLI):
-
-\`\`\`sh
-gh attestation verify <file> --repo $REPO
-\`\`\`
-
-Cosign bundle (download the matching \`<file>.sigstore.json\` too):
+Set \`file\` to the downloaded artifact's filename, then run:
 
 \`\`\`sh
-cosign verify-blob <file> \\
-  --bundle <file>.sigstore.json \\
+file=Picocrypt-NG-android-arm64-v8a.apk
+case "\$file" in
+$verification_cases
+  *) echo "Unknown release artifact" >&2; exit 1 ;;
+esac
+identity="https://github.com/$REPO/.github/workflows/\$workflow@refs/heads/main"
+source_commit=$SOURCE_SHA
+cosign verify-blob "\$file" \\
+  --bundle "\$file.sigstore.json" \\
+  --certificate-identity "\$identity" \\
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
-  --certificate-identity-regexp '^https://github.com/$REPO/\.github/workflows/'
+  --certificate-github-workflow-sha "\$source_commit" \\
+  --certificate-github-workflow-ref refs/heads/main \\
+  --certificate-github-workflow-repository $REPO
+gh attestation verify "\$file" \\
+  --repo $REPO \\
+  --cert-identity "\$identity" \\
+  --cert-oidc-issuer https://token.actions.githubusercontent.com \\
+  --signer-digest "\$source_commit" \\
+  --source-ref refs/heads/main \\
+  --source-digest "\$source_commit" \\
+  --predicate-type https://slsa.dev/provenance/v1 \\
+  --deny-self-hosted-runners
 \`\`\`
 EOF
 )"

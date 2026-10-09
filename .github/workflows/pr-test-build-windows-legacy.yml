@@ -17,64 +17,53 @@ jobs:
     runs-on: windows-2022
     env:
       GOTOOLCHAIN: local
-      GO_LEGACY_SHA256: ec8e81ea3babb40c3f5e43309e04196cb12bf292060ac02c0e85fa73d639e9a9
+      GOAMD64: v1
+      GOEXPERIMENT: ""
       UPX_SHA256: eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: Cache go-legacy-win7
-      id: cache-go-legacy
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: C:\go-legacy
-        key: ${{ runner.os }}-go-legacy-${{ env.GO_LEGACY_SHA256 }}
-
-    - name: Download go-legacy-win7
-      if: steps.cache-go-legacy.outputs.cache-hit != 'true'
+    - name: Build patched Go 1.27.2 for Windows 7/8
       shell: pwsh
       run: |
-        # Download go-legacy-win7 (Go 1.27.1 with Windows 7 support)
-        curl.exe `
-          --fail `
-          --location `
-          --silent `
-          --show-error `
-          --retry 3 `
-          --retry-all-errors `
-          --retry-delay 2 `
-          --connect-timeout 30 `
-          --max-time 300 `
-          --retry-max-time 600 `
-          --remove-on-error `
-          --output go-legacy.zip `
-          https://github.com/thongtech/go-legacy-win7/releases/download/v1.27.1-1/go-legacy-win7-1.27.1-1.windows_amd64.zip
-        if ($LASTEXITCODE -ne 0) {
-          throw "go-legacy-win7 download failed with exit code $LASTEXITCODE"
-        }
-        $expectedHash = $env:GO_LEGACY_SHA256
-        $actualHash = (Get-FileHash go-legacy.zip -Algorithm SHA256).Hash.ToLower()
-        if ($actualHash -ne $expectedHash) {
-          throw "Checksum mismatch for go-legacy.zip: expected $expectedHash, got $actualHash"
-        }
-        Expand-Archive -DestinationPath C:\go-legacy go-legacy.zip
+        & .github/scripts/build-legacy-go.ps1 `
+          -ManifestPath '.github/toolchains/legacy-go/manifest.json' `
+          -OutputRoot 'C:\go-legacy'
 
     - name: Add go-legacy-win7 to PATH
       shell: pwsh
       run: |
-        echo "C:\go-legacy\go-legacy-win7\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        echo "C:\go-legacy\go\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
     - name: Verify Go installation
+      shell: pwsh
       run: |
-        $expectedGo = (Resolve-Path 'C:\go-legacy\go-legacy-win7\bin\go.exe').Path
+        $expectedGo = (Resolve-Path 'C:\go-legacy\go\bin\go.exe').Path
         $actualGo = (Get-Command go -CommandType Application | Select-Object -First 1).Source
         if ($actualGo -ne $expectedGo) { throw "Unexpected go.exe: $actualGo; want $expectedGo" }
-        $expectedRoot = (Resolve-Path 'C:\go-legacy\go-legacy-win7').Path
-        $actualRoot = (go env GOROOT).Trim()
-        if ($actualRoot -ne $expectedRoot) { throw "Unexpected GOROOT: $actualRoot; want $expectedRoot" }
-        $actualVersion = (go env GOVERSION).Trim()
-        if ($actualVersion -ne 'go1.27.1') { throw "Unexpected Go version: $actualVersion" }
-        if ((go env GOTOOLCHAIN).Trim() -ne 'local') { throw 'GOTOOLCHAIN must be local' }
+        $expectedRoot = (Resolve-Path 'C:\go-legacy\go').Path
+        $goEnvironment = go env -json GOROOT GOVERSION GOTOOLCHAIN GOOS GOARCH GOAMD64 GOEXPERIMENT
+        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect legacy Go installation' }
+        $goEnvironment = $goEnvironment | ConvertFrom-Json
+        if ($goEnvironment.GOROOT -ne $expectedRoot) { throw 'Unexpected legacy GOROOT' }
+        if ($goEnvironment.GOVERSION -ne 'go1.27.2') { throw 'Unexpected legacy Go version' }
+        if ($goEnvironment.GOTOOLCHAIN -ne 'local') { throw 'GOTOOLCHAIN must be local' }
+        if ($goEnvironment.GOOS -ne 'windows' -or $goEnvironment.GOARCH -ne 'amd64' -or
+            $goEnvironment.GOAMD64 -ne 'v1' -or $goEnvironment.GOEXPERIMENT -ne '') { throw 'Unexpected legacy Go build settings' }
         go version
+        if ($LASTEXITCODE -ne 0) { throw 'Legacy Go compiler failed to execute' }
+
+    - name: Run native legacy toolchain regressions
+      shell: pwsh
+      run: |
+        & .github/scripts/run-windows-native-tests.ps1 `
+          -GoExecutable 'C:\go-legacy\go\bin\go.exe' `
+          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', 'os', 'internal/syscall/windows', 'crypto/internal/sysrand')
+        if ($LASTEXITCODE -ne 0) { throw 'Native legacy filesystem and random-source regressions failed' }
+        & .github/scripts/run-windows-native-tests.ps1 `
+          -GoExecutable 'C:\go-legacy\go\bin\go.exe' `
+          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', '-run', '^TestReadRandomFromRtlGenRandom$', 'runtime')
+        if ($LASTEXITCODE -ne 0) { throw 'Native legacy runtime random-source regression failed' }
 
     - name: Install dependencies
       run: |
@@ -90,8 +79,8 @@ jobs:
       shell: pwsh
       run: |
         & .github/scripts/run-windows-native-tests.ps1 `
-          -GoExecutable 'C:\go-legacy\go-legacy-win7\bin\go.exe' `
-          -GoArguments @('test', '-v', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume')
+          -GoExecutable 'C:\go-legacy\go\bin\go.exe' `
+          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume')
       env:
         PICOCRYPT_RUN_CLI_INTEGRATION: 1
 
@@ -107,7 +96,10 @@ jobs:
       shell: pwsh
       run: |
         $buildInfo = go version -m src/Picocrypt-NG-cli-Legacy.exe | Out-String
-        if ($buildInfo -notmatch 'go1\.27\.1') { throw "Legacy binary was not built by Go 1.27.1: $buildInfo" }
+        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect legacy CLI build metadata' }
+        if ($buildInfo -notmatch '(?m)^[^\r\n]*: go1\.27\.2\r?$') { throw 'Legacy CLI was not built by Go 1.27.2' }
+        if ($buildInfo -notmatch '(?m)^\tbuild\tGOAMD64=v1\r?$') { throw 'Legacy CLI requires unsupported CPU instructions' }
+        & .github/scripts/assert-windows-legacy-pe.ps1 -Path 'src/Picocrypt-NG-cli-Legacy.exe'
         $buildInfo
 
     - name: Compress with upx

@@ -367,11 +367,11 @@ func removeDeniability(
 
 	versionDec, err := encoding.Decode(rs.RS5, versionEnc, false)
 	if err != nil {
-		return nil, errors.New("password is incorrect or the file is not a volume")
+		return nil, &header.AuthError{PasswordIncorrect: true, Message: "password is incorrect or the file is not a volume"}
 	}
 
 	if !header.MatchVersion(versionDec) {
-		return nil, errors.New("password is incorrect or the file is not a volume")
+		return nil, &header.AuthError{PasswordIncorrect: true, Message: "password is incorrect or the file is not a volume"}
 	}
 
 	if _, err := fout.Seek(0, io.SeekStart); err != nil {
@@ -405,7 +405,7 @@ func selectDeniabilityKey(password []byte, salt, nonce, probe []byte, rs *encodi
 		}
 		crypto.SecureZero(key)
 	}
-	return nil, errors.New("password is incorrect or the file is not a volume")
+	return nil, &header.AuthError{PasswordIncorrect: true, Message: "password is incorrect or the file is not a volume"}
 }
 
 // IsDeniable checks if a volume appears to have deniability protection.

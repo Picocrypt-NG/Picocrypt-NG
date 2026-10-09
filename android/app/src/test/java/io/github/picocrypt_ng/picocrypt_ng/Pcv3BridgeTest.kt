@@ -11,6 +11,7 @@ import io.mockk.verify
 import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
 import org.json.JSONObject
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -225,6 +226,24 @@ class Pcv3BridgeTest {
         assertEquals("PCV3_BRIDGE_INPUT_UNAVAILABLE", result.getOrThrow().code)
         assertTrue("the caller-owned CharArray is zeroed on every exit", callerPassword.all { it == '\u0000' })
         assertTrue("the bridge-owned UTF-8 bytes are zeroed on every exit", transport.observedPassword!!.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `PCV3 encodes the complete large password before the native size refusal and wipes both owners`() {
+        var encodedSize = 0
+        var encodedTail = ByteArray(0)
+        val transport = RecordingTransport { _, password ->
+            encodedSize = password.size
+            encodedTail = password.takeLast(3).toByteArray()
+            Pcv3StartData("PCV3_BRIDGE_INVALID_REQUEST", null)
+        }
+        val callerPassword = CharArray(5_592_407) { '\u0800' }.also { it[it.lastIndex] = '\u0801' }
+        val result = Pcv3Bridge(transport).start(validRequest(), callerPassword)
+        assertEquals("PCV3_BRIDGE_INVALID_REQUEST", result.getOrThrow().code)
+        assertEquals(16_777_221, encodedSize)
+        assertArrayEquals(byteArrayOf(0xe0.toByte(), 0xa0.toByte(), 0x81.toByte()), encodedTail)
+        assertTrue(callerPassword.all { it == '\u0000' })
+        assertTrue(transport.observedPassword!!.all { it == 0.toByte() })
     }
 
     @Test

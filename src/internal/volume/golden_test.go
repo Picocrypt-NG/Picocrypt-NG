@@ -2,6 +2,7 @@ package volume
 
 import (
 	"Picocrypt-NG/internal/encoding"
+	perrors "Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/header"
 	"archive/zip"
 	"bytes"
@@ -10,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -524,6 +526,42 @@ func TestGoldenLegacyKeyfileRSDecryption(t *testing.T) {
 	}
 	if !bytes.Equal(got, legacyKeyfileRSPlaintext()) {
 		t.Fatal("pre-containment keyfile+RS fixture plaintext mismatch")
+	}
+}
+
+func TestGoldenLegacyRSRejectsIncompleteTailWithoutPublishingPlaintext(t *testing.T) {
+	defer useProductionTestKDF()()
+	fixture := readGoldenBase64Fixture(t, goldenLegacyKeyfileRSFixture, goldenLegacyKeyfileRSSHA256)
+	rs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, verifyFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("verify-first=%v", verifyFirst), func(t *testing.T) {
+			directory := t.TempDir()
+			input := filepath.Join(directory, "malformed.pcv")
+			output := filepath.Join(directory, "plaintext")
+			malformed := append(bytes.Clone(fixture), 0xA5)
+			if err := os.WriteFile(input, malformed, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := Decrypt(context.Background(), &DecryptRequest{
+				InputFile: input, OutputFile: output, Password: []byte("test"),
+				Keyfiles: []string{filepath.Join(findTestdata(t), "keyfile_alpha.bin")},
+				RSCodecs: rs, VerifyFirst: verifyFirst,
+			})
+			if !errors.Is(err, perrors.ErrCorruptData) {
+				t.Fatalf("incomplete RS tail accepted: %v", err)
+			}
+			after, readErr := os.ReadFile(input)
+			if readErr != nil || !bytes.Equal(after, malformed) {
+				t.Fatalf("refused decrypt changed source: %v", readErr)
+			}
+			entries, readErr := os.ReadDir(directory)
+			if readErr != nil || len(entries) != 1 || entries[0].Name() != "malformed.pcv" {
+				t.Fatalf("refused decrypt published/leaked plaintext stage: entries=%v error=%v", entries, readErr)
+			}
+		})
 	}
 }
 

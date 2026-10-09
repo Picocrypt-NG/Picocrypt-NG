@@ -46,7 +46,7 @@ const (
 	// Kotlin preflights this same bound before transferring form ownership.
 	maxPCV3EnvelopeBytes           = 4 << 20
 	maxPCV3PathBytes               = 4096
-	maxPCV3Keyfiles                = 64
+	maxPCV3Keyfiles                = pcv3operation.MaxKeyfiles
 	maxPCV3PasswordBytes           = 1 << 20
 	pcv3BridgeInvalidRequest       = "PCV3_BRIDGE_INVALID_REQUEST"
 	pcv3BridgeInputUnavailable     = "PCV3_BRIDGE_INPUT_UNAVAILABLE"
