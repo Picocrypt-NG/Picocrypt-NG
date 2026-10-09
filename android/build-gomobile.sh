@@ -9,7 +9,7 @@ GO_SRC_DIR="$(cd "$SCRIPT_DIR/../src" && pwd -P)"
 OUTPUT_DIR="$SCRIPT_DIR/app/libs"
 GOMOBILE_LDFLAGS="${GOMOBILE_LDFLAGS:--s -w -buildid=}"
 NDK_VERSION_FILE="$SCRIPT_DIR/ndk-version.txt"
-REQUIRED_GO_VERSION="go1.27.1"
+REQUIRED_GO_VERSION="go1.27.2"
 
 # Set Android SDK/NDK paths
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
