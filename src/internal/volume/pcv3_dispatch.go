@@ -5,6 +5,7 @@ import (
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/pcv3operation"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,17 @@ type PreparedDecryptInput struct {
 // decrypt. Split inputs are represented by chunk zero, which owns the format
 // discriminator for the complete recombined volume.
 func PrepareDecryptInput(inputPath string, recombine bool) (*PreparedDecryptInput, error) {
+	return PrepareDecryptInputContext(context.Background(), inputPath, recombine)
+}
+
+// PrepareDecryptInputContext also cancels split discovery before any staging.
+func PrepareDecryptInputContext(ctx context.Context, inputPath string, recombine bool) (*PreparedDecryptInput, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	sourcePath := inputPath
 	if recombine {
 		sourcePath = recombineInputBase(inputPath) + ".0"
@@ -66,7 +78,7 @@ func PrepareDecryptInput(inputPath string, recombine bool) (*PreparedDecryptInpu
 	inputInfos := []os.FileInfo{info}
 	if recombine && route != pcv3operation.RouteNormalPCV {
 		inputBase := recombineInputBase(inputPath)
-		numChunks, _, err := fileops.CountChunks(inputBase)
+		numChunks, _, err := fileops.CountChunksWithCancel(inputBase, func() bool { return ctx.Err() != nil })
 		if err != nil {
 			return nil, errors.Join(
 				fmt.Errorf("inspect split inputs for PCV3 routing: %w", err),
@@ -76,6 +88,9 @@ func PrepareDecryptInput(inputPath string, recombine bool) (*PreparedDecryptInpu
 		inputInfos = make([]os.FileInfo, numChunks)
 		inputInfos[0] = info
 		for i := 1; i < numChunks; i++ {
+			if err := ctx.Err(); err != nil {
+				return nil, errors.Join(err, source.Close())
+			}
 			chunkPath := fmt.Sprintf("%s.%d", inputBase, i)
 			chunkInfo, statErr := os.Stat(chunkPath)
 			if statErr != nil || chunkInfo == nil || !chunkInfo.Mode().IsRegular() {

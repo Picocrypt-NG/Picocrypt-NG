@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -45,10 +46,14 @@ func TestTempZipOwnerRevokesReaderWipesAndPreservesReplacement(t *testing.T) {
 		t.Fatal(e)
 	}
 	if e = owner.Close(); e != nil {
-		t.Fatal(e)
+		if !strings.Contains(e.Error(), stage) {
+			t.Fatalf("cleanup uncertainty lost retained stage path: %v", e)
+		}
+	} else {
+		t.Fatal("replaced owned stage was reported cleaned")
 	}
-	if e = owner.Close(); e != nil {
-		t.Fatal(e)
+	if repeated := owner.Close(); !errors.Is(repeated, e) {
+		t.Fatalf("repeated close lost cleanup uncertainty: %v; want %v", repeated, e)
 	}
 	if _, e = r.Read(make([]byte, 1)); e == nil || errors.Is(e, io.EOF) {
 		t.Fatal("closed reader usable")

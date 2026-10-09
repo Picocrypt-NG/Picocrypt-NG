@@ -107,8 +107,11 @@ type stagedUnpackEntry struct {
 }
 
 func (entry *stagedUnpackEntry) cleanup(root *os.Root) (bool, error) {
-	if entry == nil || root == nil || entry.stageName == "" {
+	if entry == nil || entry.stageName == "" {
 		return true, nil
+	}
+	if root == nil {
+		return false, ErrUnpackCleanupIncomplete
 	}
 	var closeErr error
 	if entry.file != nil {
@@ -119,13 +122,13 @@ func (entry *stagedUnpackEntry) cleanup(root *os.Root) (bool, error) {
 	}
 	current, err := root.Lstat(entry.stageName)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, closeErr
+		return false, errors.Join(closeErr, fmt.Errorf("%w: staged extraction output missing during cleanup: %s", ErrUnpackCleanupIncomplete, entry.outPath))
 	}
 	if err != nil {
 		return false, errors.Join(closeErr, fmt.Errorf("inspect staged extraction output %s during cleanup: %w", entry.outPath, err))
 	}
 	if !current.Mode().IsRegular() || !os.SameFile(entry.info, current) {
-		return false, closeErr
+		return false, errors.Join(closeErr, fmt.Errorf("%w: staged extraction output changed during cleanup: %s", ErrUnpackCleanupIncomplete, entry.outPath))
 	}
 	if err := root.Remove(entry.stageName); err != nil {
 		return false, errors.Join(closeErr, fmt.Errorf("remove staged extraction output %s: %w", entry.outPath, err))
@@ -783,6 +786,7 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 		}
 		closeExtractRoot = true
 	}
+	var extractRootInfo os.FileInfo
 	defer func() {
 		if closeExtractRoot {
 			if err := unpackCloseRootFn(extractRoot); err != nil {
@@ -792,8 +796,16 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 				}
 			}
 		}
+		if classifyPublication && (*state == UnpackStatePublishedDurable || *state == UnpackStatePublishedDurabilityUncertain) {
+			// Keep the published files when their pinned directory has moved;
+			// the selected destination no longer proves ordinary completion.
+			if err := verifyExtractionRootPath(extractDir, extractRootInfo); err != nil {
+				*state = UnpackStatePublicationIndeterminate
+				retErr = errors.Join(retErr, fmt.Errorf("verify extraction directory after publication: %w", err))
+			}
+		}
 	}()
-	extractRootInfo, err := extractRoot.Stat(".")
+	extractRootInfo, err = extractRoot.Stat(".")
 	if err != nil {
 		return fmt.Errorf("inspect extraction root %s: %w", extractDir, err)
 	}

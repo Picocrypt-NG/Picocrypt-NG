@@ -20,6 +20,7 @@ var ErrTempZipCleanupIncomplete = errors.New("fileops: temporary ZIP cleanup inc
 // trusted disk extent allowance, including tags, and must be nonzero.
 type TempZipOptions struct {
 	Files            []string
+	InputIdentities  []ZIPInputIdentity
 	RootDir          string
 	EntryNames       map[string]string
 	NearPath         string
@@ -63,7 +64,7 @@ func createTempZip(ctx context.Context, opts TempZipOptions, syncFile func(*os.F
 	if cancel() {
 		return nil, errZIPCancelled
 	}
-	zipOpts := ZipOptions{Files: opts.Files, RootDir: opts.RootDir, EntryNames: opts.EntryNames, Compress: opts.Compress, Progress: opts.Progress, Status: opts.Status, Cancel: cancel, Budget: opts.Budget}
+	zipOpts := ZipOptions{Files: opts.Files, InputIdentities: opts.InputIdentities, RootDir: opts.RootDir, EntryNames: opts.EntryNames, Compress: opts.Compress, Progress: opts.Progress, Status: opts.Status, Cancel: cancel, Budget: opts.Budget}
 	budget := opts.Budget
 	if budget == nil {
 		budget = NewZIPResourceBudget()
@@ -76,6 +77,10 @@ func createTempZip(ctx context.Context, opts TempZipOptions, syncFile func(*os.F
 		return nil, e
 	}
 	defer budget.Release(charge)
+	zipOpts.InputIdentities, e = CaptureZIPInputs(opts.Files, opts.InputIdentities)
+	if e != nil {
+		return nil, e
+	}
 	owner := &TempZip{cancel: cancel}
 	owner.self = owner
 	transferred := false

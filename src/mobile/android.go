@@ -28,7 +28,7 @@ var (
 	openDecryptionInfoPCVInput  = volume.OpenLegacyPCVInput
 	runPCV3OperationWithOptions = pcv3operation.RunWithOptions
 	runPCV3Operation            = runAndroidPCV3Operation
-	openPCV3Existing            = fileops.OpenExistingNoSymlink
+	openPCV3Existing            = fileops.OpenRegularReadNoSymlink
 )
 
 func runAndroidPCV3Operation(
@@ -102,6 +102,38 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 			_ = source.Close()
 		}
 	}()
+	var inputIdentities []fileops.ZIPInputIdentity
+	var inputBudget *fileops.ZIPResourceBudget
+	if envelope.create {
+		inputBudget = fileops.NewZIPResourceBudget()
+		paths := envelope.inputFiles
+		if len(paths) == 0 {
+			paths = []string{envelope.source}
+		}
+		var retained uint64
+		defer func() { inputBudget.Release(retained) }()
+		for index, path := range paths {
+			charge, err := fileops.ReserveZIPInputPath(inputBudget, len(path))
+			if err != nil {
+				return newPCV3StartResult(pcv3BridgeInputUnavailable, nil)
+			}
+			retained += charge
+			var identity fileops.ZIPInputIdentity
+			if index == 0 {
+				info, statErr := source.Stat()
+				if statErr != nil {
+					return newPCV3StartResult(pcv3BridgeInputUnavailable, nil)
+				}
+				identity, err = fileops.ZIPInputFromFileInfo(path, info)
+			} else {
+				identity, err = fileops.CaptureZIPInput(path, false)
+			}
+			if err != nil {
+				return newPCV3StartResult(pcv3BridgeInputUnavailable, nil)
+			}
+			inputIdentities = append(inputIdentities, identity)
+		}
+	}
 
 	keyfiles := make([]*os.File, 0, len(envelope.keyfiles))
 	for _, path := range envelope.keyfiles {
@@ -147,6 +179,7 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 		go executePCV3WriteOperation(operation, &pcv3WriteRequest{
 			input: volume.EncryptInputRequest{
 				InputFile: envelope.source, InputFiles: envelope.inputFiles,
+				InputIdentities: inputIdentities, ZIPBudget: inputBudget,
 				OnlyFiles: envelope.onlyFiles, OnlyFolders: envelope.onlyFolders,
 				OutputFile: envelope.target, Compress: envelope.compress, BorrowedSource: source,
 				PCV3: true, Paranoid: envelope.suite == pcv3operation.SuiteParanoid,

@@ -19,6 +19,7 @@ package app
 
 import (
 	"Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"fmt"
@@ -27,8 +28,6 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
-	"github.com/Picocrypt/infectious"
 )
 
 // newRSCodecs is the Reed-Solomon codec constructor used by NewState. It is a
@@ -46,15 +45,6 @@ type PasswordInputMode int
 const (
 	PasswordModeHidden PasswordInputMode = iota
 	PasswordModeVisible
-)
-
-// MainStatusKind identifies whether MainStatus is the UI-owned ready state or a
-// caller-provided status message. Render logic must not infer this from text.
-type MainStatusKind int
-
-const (
-	MainStatusCustom MainStatusKind = iota
-	MainStatusReady
 )
 
 type InputSummaryKind int
@@ -256,7 +246,7 @@ type State struct {
 	OnlyFiles                 []string
 	OnlyFolders               []string
 	AllFiles                  []string
-	InputLabel                string
+	InputIdentities           []fileops.ZIPInputIdentity
 
 	// Credentials
 	//
@@ -297,7 +287,6 @@ type State struct {
 	ReedSolomon bool
 	Deniability bool
 	Compress    bool
-	CreatePCV3  bool
 
 	// Decryption options
 	Keep        bool // Force decrypt despite errors
@@ -319,27 +308,19 @@ type State struct {
 	Recombine   bool
 
 	// Status
-	InputSummary    InputSummary
-	StartAction     StartAction
-	Status          StatusMessage
-	Popup           StatusMessage
-	StartLabel      string
-	MainStatus      string
-	MainStatusKind  MainStatusKind
-	MainStatusColor color.RGBA
-	PopupStatus     string
+	InputSummary InputSummary
+	StartAction  StartAction
+	Status       StatusMessage
+	Popup        StatusMessage
 
 	// Progress
 	Progress     float32
 	ProgressInfo string
-	Speed        float64
-	ETA          string
 	CanCancel    bool
 	FastDecode   bool
 
 	// Reed-Solomon codecs
-	RSCodecs                                *encoding.RSCodecs
-	RS1, RS5, RS16, RS24, RS32, RS64, RS128 *infectious.FEC
+	RSCodecs *encoding.RSCodecs
 
 	// Size tracking
 	RequiredFreeSpace int64
@@ -364,16 +345,10 @@ func NewState() (*State, error) {
 
 	return &State{
 		// Defaults
-		CreatePCV3:           true,
-		InputLabel:           "Drop files and folders into this window",
 		InputSummary:         InputSummary{Kind: InputSummaryDropPrompt},
 		StartAction:          StartActionStart,
 		Status:               StatusMessage{Kind: StatusReady, Color: util.WHITE},
 		Popup:                StatusMessage{Kind: StatusCustom},
-		StartLabel:           "Start",
-		MainStatus:           "Ready",
-		MainStatusKind:       MainStatusReady,
-		MainStatusColor:      util.WHITE,
 		PasswordMode:         PasswordModeHidden,
 		CommentsPreviewState: CommentsPreviewNormal,
 		// Password generator defaults must match resetUILocked(): all character
@@ -392,13 +367,6 @@ func NewState() (*State, error) {
 
 		// Reed-Solomon codecs
 		RSCodecs: rs,
-		RS1:      rs.RS1,
-		RS5:      rs.RS5,
-		RS16:     rs.RS16,
-		RS24:     rs.RS24,
-		RS32:     rs.RS32,
-		RS64:     rs.RS64,
-		RS128:    rs.RS128,
 	}, nil
 }
 
@@ -475,7 +443,7 @@ func (s *State) resetUILocked() {
 	s.OnlyFiles = nil
 	s.OnlyFolders = nil
 	s.AllFiles = nil
-	s.InputLabel = "Drop files and folders into this window"
+	s.InputIdentities = nil
 
 	s.Password = ""
 	s.CPassword = ""
@@ -493,7 +461,6 @@ func (s *State) resetUILocked() {
 	s.ReedSolomon = false
 	s.Deniability = false
 	s.Compress = false
-	s.CreatePCV3 = true
 
 	s.Keep = false
 	s.Kept = false
@@ -523,17 +490,10 @@ func (s *State) resetUILocked() {
 	s.StartAction = StartActionStart
 	s.Status = StatusMessage{Kind: StatusReady, Color: util.WHITE}
 	s.Popup = StatusMessage{Kind: StatusCustom}
-	s.StartLabel = "Start"
-	s.MainStatus = "Ready"
-	s.MainStatusKind = MainStatusReady
-	s.MainStatusColor = util.WHITE
-	s.PopupStatus = ""
 
 	// Progress values are reset, but not the progress FLAGS
 	s.Progress = 0
 	s.ProgressInfo = ""
-	s.Speed = 0
-	s.ETA = ""
 	// NOTE: CanCancel is NOT reset here (matches original)
 	s.FastDecode = true
 
@@ -660,6 +620,7 @@ func (s *State) SetPCV3Ready(source *os.File, format PCV3Format, path, target st
 	s.OutputFile = target
 	s.OnlyFiles = []string{path}
 	s.AllFiles = nil
+	s.InputIdentities = nil
 	s.InputSummary = InputSummary{Kind: InputSummarySelection, Files: 1, SizeBytes: size, ShowSize: true}
 	s.StartAction = StartActionStart
 	s.Scanning = false
@@ -740,9 +701,6 @@ func (s *State) SetPCV3OutputForReady(ticket uint64, path string) bool {
 	}
 	s.OutputFile = path
 	s.Status = StatusMessage{Kind: StatusReady, Color: util.WHITE}
-	s.MainStatus = "Ready"
-	s.MainStatusKind = MainStatusReady
-	s.MainStatusColor = util.WHITE
 	return true
 }
 
@@ -915,22 +873,10 @@ func (s *State) takePCV3OperationIntentLocked() PCV3OperationIntent {
 
 // canStart is the single source of truth for the start-gate condition, shared by
 // the live State.CanStart() and the render-path UISnapshot.CanStart() (DRY).
-func canStart(mode, password, cpassword string, keyfileCount int, deniability, createPCV3 bool) bool {
-	// Legacy v2 creation cannot use keyfiles; explicit PCV3 creation can.
-	if mode == "encrypt" && keyfileCount > 0 && !createPCV3 {
-		return false
-	}
-
+func canStart(mode, password, cpassword string, keyfileCount int) bool {
 	// Need either password or keyfiles
 	hasCredentials := keyfileCount > 0 || password != ""
 	if !hasCredentials {
-		return false
-	}
-
-	// In the legacy format, keyfiles protect the inner volume but not the
-	// password-derived deniability wrapper. PCV3 D1 binds the complete factor
-	// transcript to both layers.
-	if mode == "encrypt" && deniability && !createPCV3 && password == "" {
 		return false
 	}
 
@@ -948,12 +894,12 @@ func (s *State) CanStart() bool {
 	defer s.mu.RUnlock()
 	if s.Recursively && s.RecursiveD1 {
 		return !s.PCVUnavailable && !s.Working && !s.Scanning &&
-			canStart("decrypt", s.Password, s.CPassword, len(s.Keyfiles), false, true)
+			canStart("decrypt", s.Password, s.CPassword, len(s.Keyfiles))
 	}
 	if s.PCV3Route != PCV3RouteNone {
 		return !s.PCVUnavailable && !s.Working && !s.Scanning && pcv3IntentReadyLocked(s)
 	}
-	return !s.PCVUnavailable && canStart(s.Mode, s.Password, s.CPassword, len(s.Keyfiles), s.Deniability, s.CreatePCV3)
+	return !s.PCVUnavailable && canStart(s.Mode, s.Password, s.CPassword, len(s.Keyfiles))
 }
 
 // CanStart returns true if the operation can be started, evaluated against this
@@ -962,7 +908,7 @@ func (s *State) CanStart() bool {
 func (snap UISnapshot) CanStart() bool {
 	if snap.Recursively && snap.RecursiveD1 {
 		return !snap.PCVUnavailable && !snap.Working && !snap.Scanning &&
-			canStart("decrypt", snap.Password, snap.CPassword, snap.KeyfileCount, false, true)
+			canStart("decrypt", snap.Password, snap.CPassword, snap.KeyfileCount)
 	}
 	if snap.PCV3Route != PCV3RouteNone {
 		return !snap.PCVUnavailable && !snap.Working && !snap.Scanning && pcv3IntentReady(
@@ -970,7 +916,7 @@ func (snap UISnapshot) CanStart() bool {
 			snap.Password, snap.OutputFile, snap.KeyfileCount,
 		)
 	}
-	return !snap.PCVUnavailable && canStart(snap.Mode, snap.Password, snap.CPassword, snap.KeyfileCount, snap.Deniability, snap.CreatePCV3)
+	return !snap.PCVUnavailable && canStart(snap.Mode, snap.Password, snap.CPassword, snap.KeyfileCount)
 }
 
 // TogglePasswordVisibility toggles password show/hide.
@@ -1001,9 +947,6 @@ func (s *State) SetReadyStatus() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Status = StatusMessage{Kind: StatusReady, Color: util.WHITE}
-	s.MainStatus = "Ready"
-	s.MainStatusKind = MainStatusReady
-	s.MainStatusColor = util.WHITE
 }
 
 func (s *State) SetInputPrompt() {
@@ -1056,8 +999,6 @@ func (s *State) SetPCVUnavailable(path string, sizeBytes int64) {
 		ShowSize:  true,
 	}
 	s.Status = StatusMessage{Kind: StatusPCVUnavailable, Color: util.RED}
-	s.MainStatusKind = MainStatusCustom
-	s.MainStatusColor = util.RED
 	s.mu.Unlock()
 	if source != nil {
 		_ = source.Close()
@@ -1074,17 +1015,12 @@ func (s *State) SetStatusMessage(kind StatusKind, c color.RGBA, args StatusArgs)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Status = StatusMessage{Kind: kind, Args: args, Color: c}
-	s.MainStatusKind = MainStatusCustom
-	s.MainStatusColor = c
 }
 
 func (s *State) SetCustomStatus(text string, c color.RGBA) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Status = StatusMessage{Kind: StatusCustom, Text: text, Color: c}
-	s.MainStatus = text
-	s.MainStatusKind = MainStatusCustom
-	s.MainStatusColor = c
 }
 
 func (s *State) SetPopupStatusMessage(kind StatusKind, args StatusArgs) {
@@ -1097,7 +1033,6 @@ func (s *State) SetPopupStatusText(text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Popup = StatusMessage{Kind: StatusCustom, Text: text}
-	s.PopupStatus = text
 }
 
 // SetPopupStatus updates the popup status display.
@@ -1131,11 +1066,12 @@ type Snapshot struct {
 	Mode string
 
 	// Inputs / outputs
-	InputFile   string
-	InputFiles  []string // mirrors State.AllFiles
-	OnlyFiles   []string
-	OnlyFolders []string
-	OutputFile  string
+	InputFile       string
+	InputFiles      []string // mirrors State.AllFiles
+	InputIdentities []fileops.ZIPInputIdentity
+	OnlyFiles       []string
+	OnlyFolders     []string
+	OutputFile      string
 
 	// Credentials
 	Password       string
@@ -1148,7 +1084,6 @@ type Snapshot struct {
 	ReedSolomon bool
 	Deniability bool
 	Compress    bool
-	CreatePCV3  bool
 
 	// Decryption options
 	Keep        bool
@@ -1186,31 +1121,24 @@ type UISnapshot struct {
 	Keyfile               bool
 	KeyfileOrdered        bool
 	Deniability           bool
-	CreatePCV3            bool
 	Comments              string
 	CommentsPreviewState  CommentsPreviewState
-	StartLabel            string
 	Recursively           bool
 	RecursiveD1           bool
 	OutputFile            string
 	InputFile             string
 	Split                 bool
 	SplitSize             string
-	MainStatus            string
-	MainStatusKind        MainStatusKind
-	MainStatusColor       color.RGBA
 	RequiredFreeSpace     int64
 	ShowProgress          bool
 	CanCancel             bool
 	Recombine             bool
 	AutoUnzip             bool
 	SameLevel             bool
-	InputLabel            string
 	InputSummary          InputSummary
 	StartAction           StartAction
 	Status                StatusMessage
 	PopupStatus           StatusMessage
-	PopupStatusMessage    StatusMessage
 	PCV3Route             PCV3RouteState
 	PCV3Format            PCV3Format
 	PCV3Action            PCV3Action
@@ -1237,7 +1165,6 @@ type RecursiveSnapshot struct {
 	Paranoid       bool
 	ReedSolomon    bool
 	Deniability    bool
-	CreatePCV3     bool
 	Split          bool
 	SplitSize      string
 	SplitSelected  int32
@@ -1251,30 +1178,30 @@ func (s *State) Snapshot() Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return Snapshot{
-		Mode:           s.Mode,
-		InputFile:      s.InputFile,
-		InputFiles:     append([]string(nil), s.AllFiles...),
-		OnlyFiles:      append([]string(nil), s.OnlyFiles...),
-		OnlyFolders:    append([]string(nil), s.OnlyFolders...),
-		OutputFile:     s.OutputFile,
-		Password:       s.Password,
-		Keyfiles:       append([]string(nil), s.Keyfiles...),
-		KeyfileOrdered: s.KeyfileOrdered,
-		Comments:       s.Comments,
-		Paranoid:       s.Paranoid,
-		ReedSolomon:    s.ReedSolomon,
-		Deniability:    s.Deniability,
-		CreatePCV3:     s.CreatePCV3,
-		Compress:       s.Compress,
-		Keep:           s.Keep,
-		VerifyFirst:    s.VerifyFirst,
-		AutoUnzip:      s.AutoUnzip,
-		SameLevel:      s.SameLevel,
-		Recombine:      s.Recombine,
-		Split:          s.Split,
-		SplitSize:      s.SplitSize,
-		SplitSelected:  s.SplitSelected,
-		Delete:         s.Delete,
+		Mode:            s.Mode,
+		InputFile:       s.InputFile,
+		InputFiles:      append([]string(nil), s.AllFiles...),
+		InputIdentities: append([]fileops.ZIPInputIdentity(nil), s.InputIdentities...),
+		OnlyFiles:       append([]string(nil), s.OnlyFiles...),
+		OnlyFolders:     append([]string(nil), s.OnlyFolders...),
+		OutputFile:      s.OutputFile,
+		Password:        s.Password,
+		Keyfiles:        append([]string(nil), s.Keyfiles...),
+		KeyfileOrdered:  s.KeyfileOrdered,
+		Comments:        s.Comments,
+		Paranoid:        s.Paranoid,
+		ReedSolomon:     s.ReedSolomon,
+		Deniability:     s.Deniability,
+		Compress:        s.Compress,
+		Keep:            s.Keep,
+		VerifyFirst:     s.VerifyFirst,
+		AutoUnzip:       s.AutoUnzip,
+		SameLevel:       s.SameLevel,
+		Recombine:       s.Recombine,
+		Split:           s.Split,
+		SplitSize:       s.SplitSize,
+		SplitSelected:   s.SplitSelected,
+		Delete:          s.Delete,
 	}
 }
 
@@ -1305,31 +1232,24 @@ func (s *State) UISnapshot() UISnapshot {
 		Keyfile:               s.Keyfile,
 		KeyfileOrdered:        s.KeyfileOrdered,
 		Deniability:           s.Deniability,
-		CreatePCV3:            s.CreatePCV3,
 		Comments:              s.Comments,
 		CommentsPreviewState:  s.CommentsPreviewState,
-		StartLabel:            s.StartLabel,
 		Recursively:           s.Recursively,
 		RecursiveD1:           s.RecursiveD1,
 		OutputFile:            s.OutputFile,
 		InputFile:             s.InputFile,
 		Split:                 s.Split,
 		SplitSize:             s.SplitSize,
-		MainStatus:            s.MainStatus,
-		MainStatusKind:        s.MainStatusKind,
-		MainStatusColor:       s.MainStatusColor,
 		RequiredFreeSpace:     s.RequiredFreeSpace,
 		ShowProgress:          s.ShowProgress,
 		CanCancel:             s.CanCancel,
 		Recombine:             s.Recombine,
 		AutoUnzip:             s.AutoUnzip,
 		SameLevel:             s.SameLevel,
-		InputLabel:            s.InputLabel,
 		InputSummary:          s.InputSummary,
 		StartAction:           s.StartAction,
 		Status:                s.Status,
 		PopupStatus:           s.Popup,
-		PopupStatusMessage:    s.Popup,
 		PCV3Route:             s.PCV3Route,
 		PCV3Format:            s.PCV3Format,
 		PCV3Action:            s.PCV3Action,
@@ -1358,7 +1278,6 @@ func (s *State) RecursiveSnapshot() RecursiveSnapshot {
 		Paranoid:       s.Paranoid,
 		ReedSolomon:    s.ReedSolomon,
 		Deniability:    s.Deniability,
-		CreatePCV3:     s.CreatePCV3,
 		Split:          s.Split,
 		SplitSize:      s.SplitSize,
 		SplitSelected:  s.SplitSelected,
@@ -1387,7 +1306,6 @@ func (s *State) ApplyRecursiveSelection(rs RecursiveSnapshot) {
 	s.ReedSolomon = rs.ReedSolomon
 	if s.Mode != "decrypt" {
 		s.Deniability = rs.Deniability
-		s.CreatePCV3 = true
 	}
 	s.Split = rs.Split
 	s.SplitSize = rs.SplitSize

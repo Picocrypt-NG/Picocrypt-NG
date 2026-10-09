@@ -254,7 +254,6 @@ func TestPCV3CreationChangeUsesPathOnlyPickerWithoutTouchingDestination(t *testi
 	a.State.AllFiles = []string{input}
 	a.State.OnlyFiles = []string{input}
 	a.State.OutputFile = filepath.Join(dir, "suggested.bin.pcv")
-	a.State.CreatePCV3 = true
 	a.State.SetInputSelection(1, 0, int64(len("plaintext")), true)
 	fyne.DoAndWait(a.updateUIState)
 
@@ -295,7 +294,6 @@ func TestPCV3CreationChangeRejectsStaleSelectionWithIdenticalPaths(t *testing.T)
 		a.State.AllFiles = []string{input}
 		a.State.OnlyFiles = []string{input}
 		a.State.OutputFile = filepath.Join(dir, "same.bin.pcv")
-		a.State.CreatePCV3 = true
 		a.State.SetInputSelection(1, 0, int64(len("plaintext")), true)
 		a.updateUIState()
 	}

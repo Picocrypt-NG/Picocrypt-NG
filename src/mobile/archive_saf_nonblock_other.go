@@ -2,6 +2,8 @@
 
 package mobile
 
-func preparePCV3ArchiveSAFNonblocking(int64) bool {
-	return false
+import "errors"
+
+func setDescriptorNonblocking(int) error {
+	return errors.New("nonblocking input descriptors unsupported on this platform")
 }

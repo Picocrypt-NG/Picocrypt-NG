@@ -3,7 +3,6 @@ package io.github.picocrypt_ng.picocrypt_ng.ui.components
 
 import android.content.Context
 import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -39,6 +38,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
+import io.github.picocrypt_ng.picocrypt_ng.readKeyfileDisplayName
 import io.github.picocrypt_ng.picocrypt_ng.R
 
 
@@ -60,7 +60,6 @@ fun AddKeyfile(viewModel: MainViewModel) {
     val unknownErrorMsg = stringResource(R.string.error_unknown)
     var isCopying by remember { mutableStateOf(false) }
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
-    var selectedFileName by remember { mutableStateOf("") }
     
     // Handle file copying when URI is selected
     LaunchedEffect(selectedUri) {
@@ -72,13 +71,13 @@ fun AddKeyfile(viewModel: MainViewModel) {
                 // Use current list size as index for fixed filename
                 val currentFormData = viewModel.formState.value
                 val keyfileIndex = currentFormData.keyfileFilenames.size
+                val displayName = readKeyfileDisplayName(context, uri) ?: "keyfile_$keyfileIndex"
 
                 val copyResult = FileCopyService.copyKeyfileToInternalStorage(context, uri, keyfileIndex)
 
                 copyResult.onSuccess { copiedPath ->
                     // Add KeyfileInfo with internal path and display name
                     val updatedFormData = viewModel.formState.value
-                    val displayName = if (selectedFileName.isNotEmpty()) selectedFileName else "keyfile_$keyfileIndex"
                     val keyfileInfo = KeyfileInfo(internalPath = copiedPath, displayName = displayName)
                     val keyfileInfos = updatedFormData.keyfileFilenames + keyfileInfo
                     viewModel.updateFormData(updatedFormData.copy(keyfileFilenames = keyfileInfos))
@@ -101,22 +100,7 @@ fun AddKeyfile(viewModel: MainViewModel) {
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        uri?.let {
-            // Get filename from URI
-            val contentResolver = context.contentResolver
-            val cursor = contentResolver.query(it, null, null, null, null)
-            var fileName = ""
-            cursor?.use { c ->
-                if (c.moveToFirst()) {
-                    val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (nameIndex != -1) {
-                        fileName = c.getString(nameIndex)
-                    }
-                }
-            }
-            selectedFileName = fileName
-            selectedUri = it // Trigger LaunchedEffect
-        }
+        selectedUri = uri // Provider work belongs to the cancellable IO lifecycle above.
     }
     
     Button(

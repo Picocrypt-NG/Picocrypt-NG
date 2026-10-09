@@ -385,26 +385,28 @@ func TestPCV3MobileArchiveSAFTerminalCallersCaptureSnapshotBeforeRelease(t *test
 			<-generatorEntered
 
 			locked := true
-			globalProgressMap.mu.Lock()
+			// The held reader lets terminal replacement own the writer gate before
+			// Release queues; two waiting writers alone do not acquire in FIFO order.
+			globalProgressMap.mu.RLock()
 			defer func() {
 				if locked {
-					globalProgressMap.mu.Unlock()
+					globalProgressMap.mu.RUnlock()
 				}
 			}()
 			close(generatorProceed)
 			if !mobileArchiveSAFWriterBlockedOnProgressMap("replacePCV3ArchivePresentationWithReceipt") {
-				globalProgressMap.mu.Unlock()
+				globalProgressMap.mu.RUnlock()
 				locked = false
 				t.Fatal("terminal replacement did not queue on the held progress lock")
 			}
 			releaseResult := make(chan string, 1)
 			go func() { releaseResult <- operation.Release() }()
 			if !mobileArchiveSAFWriterBlockedOnProgressMap("(*PCV3Operation).Release") {
-				globalProgressMap.mu.Unlock()
+				globalProgressMap.mu.RUnlock()
 				locked = false
 				t.Fatal("Release did not queue behind terminal replacement")
 			}
-			globalProgressMap.mu.Unlock()
+			globalProgressMap.mu.RUnlock()
 			locked = false
 
 			if code := <-releaseResult; code != "" {

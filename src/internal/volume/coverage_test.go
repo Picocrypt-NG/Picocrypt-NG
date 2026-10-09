@@ -8,7 +8,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	perrors "Picocrypt-NG/internal/errors"
@@ -547,42 +546,6 @@ func (r *CancellableReporter) SetCanCancel(can bool)                     {}
 func (r *CancellableReporter) Update()                                   {}
 func (r *CancellableReporter) IsCancelled() bool {
 	return r.progressCalls > r.cancelAfter
-}
-
-// TestEncryptCommentsTooLong tests that comments exceeding max length are rejected
-func TestEncryptCommentsTooLong(t *testing.T) {
-	rsCodecs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("Failed to create RS codecs: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-
-	inputPath := filepath.Join(tmpDir, "long_comments.txt")
-	if err := os.WriteFile(inputPath, []byte("test"), 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	encryptedPath := filepath.Join(tmpDir, "long_comments.txt.pcv")
-
-	// Create comments that exceed MaxCommentLen
-	longComments := strings.Repeat("X", header.MaxCommentLen+1)
-
-	encReq := &EncryptRequest{
-		InputFile:  inputPath,
-		OutputFile: encryptedPath,
-		Password:   []byte("long_comments_password"),
-		Comments:   longComments,
-		Reporter:   &GoldenTestReporter{},
-		RSCodecs:   rsCodecs,
-	}
-
-	err = Encrypt(context.Background(), encReq)
-	if err == nil {
-		t.Error("Encrypt should fail when comments exceed max length")
-	} else {
-		t.Logf("Expected error (comments too long): %v", err)
-	}
 }
 
 // TestDecryptNonExistentFile tests decryption of a non-existent file

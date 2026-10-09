@@ -4,6 +4,8 @@ import (
 	"Picocrypt-NG/internal/errors"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -171,21 +173,14 @@ func TestValidateRejectsOverflowingChunkSize(t *testing.T) {
 	}
 }
 
-// TestValidateRejectsLongCommentEarly proves QUAL-05: an over-long comment is
-// rejected by EncryptRequest.Validate() with errors.ErrCommentTooLong BEFORE any
-// Argon2id key derivation runs. A counting spy wraps the deriveVolumeKey seam
-// (the Argon2id entry the encrypt pipeline routes through at encrypt.go:220,
-// AFTER Validate); the counter must stay 0 because Validate rejects first.
-func TestValidateRejectsLongCommentEarly(t *testing.T) {
+func TestEncryptRejectsLongCommentBeforeKDFOrOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("test content"), 0o644); err != nil {
+	plaintext := []byte("test content")
+	if err := os.WriteFile(testFile, plaintext, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// Install a counting spy over the deriveVolumeKey seam (override+restore).
-	// TestMain already swaps deriveVolumeKey to the fast stub; we wrap that so the
-	// counter proves no key derivation happens when Validate rejects early.
 	var deriveCalls int
 	prevVolumeKey := deriveVolumeKey
 	deriveVolumeKey = func(password, salt []byte, paranoid bool) ([]byte, error) {
@@ -198,15 +193,26 @@ func TestValidateRejectsLongCommentEarly(t *testing.T) {
 		InputFile:  testFile,
 		OutputFile: filepath.Join(tmpDir, "out.pcv"),
 		Password:   []byte("test"),
-		Comments:   string(make([]byte, header.MaxCommentLen+1)), // 1 over the bound
+		Comments:   string(make([]byte, header.MaxCommentLen+1)),
 	}
 
-	err := req.Validate()
+	err := Encrypt(context.Background(), req)
 	if !errors.Is(err, errors.ErrCommentTooLong) {
-		t.Fatalf("Validate() error = %v, want errors.ErrCommentTooLong", err)
+		t.Errorf("Encrypt() error = %v, want errors.ErrCommentTooLong", err)
 	}
 	if deriveCalls != 0 {
-		t.Errorf("deriveVolumeKey called %d times during Validate; want 0 (no Argon2id before rejection)", deriveCalls)
+		t.Errorf("deriveVolumeKey called %d times; want rejection before KDF", deriveCalls)
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(testFile) {
+		t.Errorf("invalid request left output or staging files: %v", entries)
+	}
+	got, err := os.ReadFile(testFile)
+	if err != nil || !bytes.Equal(got, plaintext) {
+		t.Errorf("source changed after refusal: %q, %v", got, err)
 	}
 }
 

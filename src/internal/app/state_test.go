@@ -377,20 +377,17 @@ func TestNewState(t *testing.T) {
 	state := mustNewState(t)
 
 	// Check defaults
-	if state.InputLabel != "Drop files and folders into this window" {
-		t.Errorf("InputLabel = %q; want default", state.InputLabel)
+	if state.InputSummary.Kind != InputSummaryDropPrompt {
+		t.Errorf("InputSummary = %+v; want drop prompt", state.InputSummary)
 	}
-	if state.StartLabel != "Start" {
-		t.Errorf("StartLabel = %q; want 'Start'", state.StartLabel)
+	if state.StartAction != StartActionStart {
+		t.Errorf("StartAction = %v; want StartActionStart", state.StartAction)
 	}
-	if state.MainStatus != "Ready" {
-		t.Errorf("MainStatus = %q; want 'Ready'", state.MainStatus)
+	if state.Status.Kind != StatusReady {
+		t.Errorf("Status.Kind = %v; want StatusReady", state.Status.Kind)
 	}
-	if state.MainStatusKind != MainStatusReady {
-		t.Errorf("MainStatusKind = %v; want MainStatusReady", state.MainStatusKind)
-	}
-	if state.MainStatusColor != util.WHITE {
-		t.Error("MainStatusColor should be WHITE")
+	if state.Status.Color != util.WHITE {
+		t.Error("Status.Color should be WHITE")
 	}
 	if state.PasswordMode != PasswordModeHidden {
 		t.Error("PasswordMode should be Hidden")
@@ -413,9 +410,9 @@ func TestNewState(t *testing.T) {
 
 	// Check RS codecs are initialized
 	if state.RSCodecs == nil {
-		t.Error("RSCodecs should be initialized")
+		t.Fatal("RSCodecs should be initialized")
 	}
-	if state.RS1 == nil || state.RS128 == nil {
+	if state.RSCodecs.RS1 == nil || state.RSCodecs.RS128 == nil {
 		t.Error("RS codecs should be initialized")
 	}
 }
@@ -455,11 +452,8 @@ func TestStateReset(t *testing.T) {
 	}
 
 	// Check defaults are restored
-	if state.MainStatus != "Ready" {
-		t.Errorf("MainStatus = %q; want 'Ready'", state.MainStatus)
-	}
-	if state.MainStatusKind != MainStatusReady {
-		t.Errorf("MainStatusKind = %v; want MainStatusReady", state.MainStatusKind)
+	if state.Status.Kind != StatusReady {
+		t.Errorf("Status.Kind = %v; want StatusReady", state.Status.Kind)
 	}
 	if state.CommentsPreviewState != CommentsPreviewNormal {
 		t.Errorf("CommentsPreviewState = %v; want CommentsPreviewNormal", state.CommentsPreviewState)
@@ -708,22 +702,28 @@ func TestCanStartPreservesLegacyKeyfileDecryptionAndDefaultsToPCV3(t *testing.T)
 	}
 }
 
-func TestCanStartAllowsKeyfileOnlyD1OnlyForPCV3(t *testing.T) {
+func TestCanStartPCV3D1RequiresCredentialsAndMatchingPasswords(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		createPCV3 bool
-		want       bool
+		name     string
+		password string
+		confirm  string
+		keyfiles []string
+		want     bool
 	}{
-		{name: "legacy wrapper remains password-required", want: false},
-		{name: "PCV3 D1 accepts keyfile-only", createPCV3: true, want: true},
+		{name: "keyfile-only", keyfiles: []string{"keyfile.bin"}, want: true},
+		{name: "password-only", password: "secret", confirm: "secret", want: true},
+		{name: "combined", password: "secret", confirm: "secret", keyfiles: []string{"keyfile.bin"}, want: true},
+		{name: "missing credentials", want: false},
+		{name: "mismatched confirmation", password: "secret", confirm: "different", keyfiles: []string{"keyfile.bin"}, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := mustNewState(t)
 			state.Mode = "encrypt"
 			state.Deniability = true
 			state.Paranoid = true
-			state.CreatePCV3 = test.createPCV3
-			state.Keyfiles = []string{"keyfile.bin"}
+			state.Password = test.password
+			state.CPassword = test.confirm
+			state.Keyfiles = test.keyfiles
 
 			if got := state.CanStart(); got != test.want {
 				t.Fatalf("State.CanStart() = %v; want %v", got, test.want)
@@ -814,8 +814,8 @@ func TestKeyfileSemanticState(t *testing.T) {
 	}
 }
 
-// TestSetStatus pins the binding between SetStatus's two args and the two fields it
-// writes. Two DISTINCT non-default rows ({text, color} pairs that differ in BOTH
+// TestSetStatus protects custom status text and color used by UI rendering.
+// Two DISTINCT non-default rows ({text, color} pairs that differ in BOTH
 // components) are required so the test fails if SetStatus ignores an arg, writes a
 // constant, or swaps text↔color (a single row that happened to match a default could
 // not catch a no-op). Both fields are asserted independently per row.
@@ -834,14 +834,14 @@ func TestSetStatus(t *testing.T) {
 			state := mustNewState(t)
 			state.SetStatus(tt.text, tt.color)
 
-			if state.MainStatus != tt.text {
-				t.Errorf("MainStatus = %q; want %q", state.MainStatus, tt.text)
+			if state.Status.Text != tt.text {
+				t.Errorf("Status.Text = %q; want %q", state.Status.Text, tt.text)
 			}
-			if state.MainStatusKind != MainStatusCustom {
-				t.Errorf("MainStatusKind = %v; want MainStatusCustom after SetStatus", state.MainStatusKind)
+			if state.Status.Kind != StatusCustom {
+				t.Errorf("Status.Kind = %v; want StatusCustom after SetStatus", state.Status.Kind)
 			}
-			if state.MainStatusColor != tt.color {
-				t.Errorf("MainStatusColor = %v; want %v", state.MainStatusColor, tt.color)
+			if state.Status.Color != tt.color {
+				t.Errorf("Status.Color = %v; want %v", state.Status.Color, tt.color)
 			}
 		})
 	}
@@ -853,14 +853,11 @@ func TestSetReadyStatusMarksReadySemanticKind(t *testing.T) {
 
 	state.SetReadyStatus()
 
-	if state.MainStatusKind != MainStatusReady {
-		t.Fatalf("MainStatusKind = %v; want MainStatusReady", state.MainStatusKind)
+	if state.Status.Kind != StatusReady {
+		t.Fatalf("Status.Kind = %v; want StatusReady", state.Status.Kind)
 	}
-	if state.MainStatus != "Ready" {
-		t.Fatalf("MainStatus = %q; want Ready display fallback", state.MainStatus)
-	}
-	if state.MainStatusColor != util.WHITE {
-		t.Fatalf("MainStatusColor = %v; want WHITE", state.MainStatusColor)
+	if state.Status.Color != util.WHITE {
+		t.Fatalf("Status.Color = %v; want WHITE", state.Status.Color)
 	}
 }
 
@@ -873,13 +870,13 @@ func TestSetPopupStatus(t *testing.T) {
 	state := mustNewState(t)
 
 	state.SetPopupStatus("A")
-	if state.PopupStatus != "A" {
-		t.Errorf("PopupStatus = %q; want %q", state.PopupStatus, "A")
+	if state.UISnapshot().PopupStatus.Text != "A" {
+		t.Errorf("PopupStatus = %q; want %q", state.UISnapshot().PopupStatus.Text, "A")
 	}
 
 	state.SetPopupStatus("B")
-	if state.PopupStatus != "B" {
-		t.Errorf("PopupStatus = %q after second write; want %q (the setter must overwrite, not set-once)", state.PopupStatus, "B")
+	if state.UISnapshot().PopupStatus.Text != "B" {
+		t.Errorf("PopupStatus = %q after second write; want %q (the setter must overwrite, not set-once)", state.UISnapshot().PopupStatus.Text, "B")
 	}
 }
 

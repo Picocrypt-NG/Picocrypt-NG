@@ -33,8 +33,8 @@ func TestPCV3MobileCancellationSettlesConsentRegistration(t *testing.T) {
 				target := filepath.Join(directory, "plain")
 				var opened []*os.File
 				oldOpen := openPCV3Existing
-				openPCV3Existing = func(path string, flag int) (*os.File, error) {
-					file, err := fileops.OpenExistingNoSymlink(path, flag)
+				openPCV3Existing = func(path string) (*os.File, error) {
+					file, err := fileops.OpenRegularReadNoSymlink(path)
 					if file != nil {
 						opened = append(opened, file)
 					}

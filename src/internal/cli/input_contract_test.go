@@ -1,11 +1,8 @@
 package cli
 
 import (
-	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/pcv3operation"
-	"Picocrypt-NG/internal/volume"
 	"bytes"
-	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -255,24 +252,10 @@ func TestCLIInputContract(t *testing.T) {
 
 	t.Run("decrypt yes never authorizes an existing auto-unzip extraction root", func(t *testing.T) {
 		dir := t.TempDir()
-		inputA := filepath.Join(dir, "input-a.txt")
-		inputB := filepath.Join(dir, "input-b.txt")
 		volumePath := filepath.Join(dir, "archive.pcv")
-		mustWriteCLIContractFile(t, inputA, []byte("first real ZIP payload"))
-		mustWriteCLIContractFile(t, inputB, []byte("second real ZIP payload"))
-
-		// Keep this legacy auto-unzip regression on an actual legacy archive;
-		// native CLI creation now selects PCV3, whose extraction is explicit.
-		codecs, err := encoding.NewRSCodecs()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := volume.Encrypt(context.Background(), &volume.EncryptRequest{
-			InputFiles: []string{inputA, inputB}, OnlyFiles: []string{inputA, inputB},
-			OutputFile: volumePath, Password: []byte(password), RSCodecs: codecs,
-		}); err != nil {
-			t.Fatalf("prepare legacy archive: %v", err)
-		}
+		// Use a frozen legacy ZIP without retaining a fixture KDF's 1 GiB
+		// workspace in the parent of subsequent native CLI processes.
+		copyCLITestFile(t, filepath.Join("..", "..", "testdata", "golden", "pico_test_v2_compress.zip.pcv"), volumePath)
 
 		for _, tc := range []struct {
 			name       string

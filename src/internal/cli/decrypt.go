@@ -93,6 +93,7 @@ type pcv3CLIResult interface {
 	PublicationStage() pcv3operation.Stage
 	PublicationCode() pcv3publication.Code
 	Warnings() []pcv3operation.Warning
+	WithCleanupWarning()
 	CompletionClass() pcv3operation.CompletionClass
 	ArchiveFollowUp() pcv3CLIArchiveFollowUp
 	OutputFollowUp() pcv3CLIOutputFollowUp
@@ -133,6 +134,10 @@ func (adapter pcv3CLIResultAdapter) PublicationCode() pcv3publication.Code {
 
 func (adapter pcv3CLIResultAdapter) Warnings() []pcv3operation.Warning {
 	return adapter.result.Warnings()
+}
+
+func (adapter pcv3CLIResultAdapter) WithCleanupWarning() {
+	adapter.result.WithCleanupWarning()
 }
 
 func (adapter pcv3CLIResultAdapter) CompletionClass() pcv3operation.CompletionClass {
@@ -179,9 +184,7 @@ var (
 			pcv3operation.ExecutionOptions{RetainDurableOutput: retainOutput},
 		)}
 	}
-	pcv3CLIOpenKeyfile = func(path string) (*os.File, error) {
-		return fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
-	}
+	pcv3CLIOpenKeyfile   = fileops.OpenRegularReadNoSymlink
 	pcv3CLIIsInteractive = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 	pcv3CLIReadConsent   = readConsentLine
 )
@@ -416,7 +419,7 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 		return path, nil
 	}
 	if !useStdin && !leafIsSymlink && decRecombine {
-		prepared, err := volume.PrepareDecryptInput(inputFile, true)
+		prepared, err := volume.PrepareDecryptInputContext(cmd.Context(), inputFile, true)
 		if err != nil {
 			return err
 		}
@@ -516,7 +519,7 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 		pcv3SourceTransferred = true
 	}
 
-	preparedInput, err := volume.PrepareDecryptInput(inputFile, decRecombine)
+	preparedInput, err := volume.PrepareDecryptInputContext(cmd.Context(), inputFile, decRecombine)
 	if err != nil {
 		var failure pcv3operation.Failure
 		if useStdin && (errors.Is(err, pcv3operation.ErrReaderUnavailable) ||
@@ -941,17 +944,10 @@ func runPCV3CLI(
 	transferred = true
 	result := pcv3CLIRunOperation(operationCtx, request, stdoutPath != "")
 	result = finishPCV3CLIArchive(operationCtx, result, decPCV3Archive, decPCV3ExtractTo)
+	transportErr := finishPCV3CLIStdout(operationCtx, result, stdoutPath != "")
 	exitCode := renderPCV3CLIResult(os.Stderr, result)
-	if stdoutPath != "" && result != nil {
-		followUp := result.OutputFollowUp()
-		if followUp != nil {
-			action := followUp.StreamTo(operationCtx, os.Stdout)
-			if action.Code() != pcv3operation.OutputActionSaved || action.CleanupIncomplete() {
-				return errors.New("PCV3 stdout transport or temporary plaintext cleanup failed")
-			}
-		} else if exitCode == 0 {
-			return errors.New("PCV3 stdout output capability is unavailable")
-		}
+	if transportErr != nil {
+		return transportErr
 	}
 	if exitCode != 0 {
 		return newExitCodeError(exitCode, "PCV3 operation did not complete cleanly")

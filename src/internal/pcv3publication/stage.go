@@ -416,6 +416,9 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 	case atomicCommitted:
 		stage.cleanupDisposition = cleanupNotRequired
 		if err := stage.operations.syncDirectory(stage.parent); err != nil {
+			if !stage.parentIdentityCurrent() {
+				return stage.finish(StatePublicationIndeterminate, pcv3.StageOutputPublication, CodePublicationIndeterminate)
+			}
 			if stage.journaled {
 				return stage.finishJournaledCommitFailure()
 			}
@@ -426,7 +429,17 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 			)
 		}
 		if stage.journaled && !stage.retireCleanupJournal() {
+			if !stage.parentIdentityCurrent() {
+				return stage.finish(StatePublicationIndeterminate, pcv3.StageOutputPublication, CodePublicationIndeterminate)
+			}
 			return stage.finishJournaledCommitFailure()
+		}
+		// Publication uses the pinned directory even if its selected pathname
+		// moves. Preserve the committed object, but do not report success at a
+		// destination that no longer names that directory. This final pathname
+		// check narrows the race window; it cannot freeze the namespace.
+		if !stage.parentIdentityCurrent() {
+			return stage.finish(StatePublicationIndeterminate, pcv3.StageOutputPublication, CodePublicationIndeterminate)
 		}
 		return stage.finish(StatePublishedDurable, pcv3.StageNone, CodePublishedDurable)
 	case atomicNotCommitted:

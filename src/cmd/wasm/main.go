@@ -30,6 +30,19 @@ const (
 // whole-volume Go allocation/copy.
 var copyBytesFromJS = js.CopyBytesToGo
 
+// External getters can throw. Value.Get/Index let JavaScript exceptions escape
+// the Go runtime, while Call converts them into panics handled by the bridge.
+func readProperty(obj js.Value, key any) js.Value {
+	return js.Global().Get("Reflect").Call("get", obj, key)
+}
+
+func typedArrayProperty(v js.Value, key any) js.Value {
+	object := js.Global().Get("Object")
+	prototype := object.Call("getPrototypeOf", js.Global().Get("Uint8Array").Get("prototype"))
+	getter := object.Call("getOwnPropertyDescriptor", prototype, key).Get("get")
+	return getter.Call("call", v)
+}
+
 // errorResult builds {code: N}.
 func errorResult(code int) any {
 	o := js.Global().Get("Object").New()
@@ -41,15 +54,32 @@ func errorResult(code int) any {
 // shape (undefined, null, wrong typed array, plain object) — checked before any
 // length/byte access so a bad value cannot panic.
 func uint8ArrayLength(v js.Value) (int, bool) {
-	if !v.InstanceOf(js.Global().Get("Uint8Array")) {
+	// Intrinsic brand/length access cannot invoke input-owned prototype traps
+	// or storage getters. Other typed-array brands remain malformed input.
+	brand := typedArrayProperty(v, js.Global().Get("Symbol").Get("toStringTag"))
+	if brand.Type() != js.TypeString || brand.String() != "Uint8Array" {
 		return 0, false
 	}
-	return v.Get("length").Int(), true
+	return typedArrayProperty(v, "length").Int(), true
+}
+
+func copyArrayBytes(dst []byte, v js.Value) int {
+	// The runtime copy import invokes src.subarray without catching JavaScript
+	// exceptions. A fresh view avoids input-owned methods without copying data.
+	view := js.Global().Get("Uint8Array").New(typedArrayProperty(v, "buffer"), typedArrayProperty(v, "byteOffset"), len(dst))
+	return copyBytesFromJS(dst, view)
 }
 
 func copyUint8Array(v js.Value, n int) []byte {
 	b := make([]byte, n)
-	copyBytesFromJS(b, v)
+	complete := false
+	defer func() {
+		if !complete {
+			secret.SecureZero(b)
+		}
+	}()
+	copyArrayBytes(b, v)
+	complete = true
 	return b
 }
 
@@ -64,7 +94,7 @@ func readUint8Array(v js.Value) ([]byte, bool) {
 
 // optBool reads obj[key] as a boolean, defaulting to false.
 func optBool(obj js.Value, key string) bool {
-	v := obj.Get(key)
+	v := readProperty(obj, key)
 	return v.Type() == js.TypeBoolean && v.Bool()
 }
 
@@ -75,15 +105,15 @@ func optBool(obj js.Value, key string) bool {
 // out-of-registry value is not explicit intent and leaves the legacy path
 // untouched; D1 content is never sniffed.
 func explicitPCV3Intent(opts js.Value) bool {
-	v := opts.Get("pcv3Mode")
+	v := readProperty(opts, "pcv3Mode")
 	if v.Type() != js.TypeNumber {
 		return false
 	}
-	switch pcv3operation.Mode(v.Int()) {
-	case pcv3operation.ModeReadNormal, pcv3operation.ModeReadD1,
-		pcv3operation.ModeRecoverNormal, pcv3operation.ModeRecoverD1,
-		pcv3operation.ModeForceNormal, pcv3operation.ModeForceD1,
-		pcv3operation.ModeForceUnverifiedNormal, pcv3operation.ModeForceUnverifiedD1:
+	switch v.Float() {
+	case float64(pcv3operation.ModeReadNormal), float64(pcv3operation.ModeReadD1),
+		float64(pcv3operation.ModeRecoverNormal), float64(pcv3operation.ModeRecoverD1),
+		float64(pcv3operation.ModeForceNormal), float64(pcv3operation.ModeForceD1),
+		float64(pcv3operation.ModeForceUnverifiedNormal), float64(pcv3operation.ModeForceUnverifiedD1):
 		return true
 	}
 	return false
@@ -91,7 +121,7 @@ func explicitPCV3Intent(opts js.Value) bool {
 
 // optString reads obj[key] as a string, defaulting to "".
 func optString(obj js.Value, key string) string {
-	v := obj.Get(key)
+	v := readProperty(obj, key)
 	if v.Type() == js.TypeString {
 		return v.String()
 	}
@@ -105,18 +135,27 @@ func readKeyfiles(v js.Value) ([][]byte, bool) {
 	if v.IsUndefined() || v.IsNull() {
 		return nil, true
 	}
-	if !v.InstanceOf(js.Global().Get("Array")) {
+	if !js.Global().Get("Array").Call("isArray", v).Bool() {
 		return nil, false
 	}
-	n := v.Length()
+	n := readProperty(v, "length").Int()
 	out := make([][]byte, 0, n)
+	complete := false
+	defer func() {
+		if !complete {
+			for _, b := range out {
+				secret.SecureZero(b)
+			}
+		}
+	}()
 	for i := range n {
-		b, ok := readUint8Array(v.Index(i))
+		b, ok := readUint8Array(readProperty(v, i))
 		if !ok {
 			return nil, false
 		}
 		out = append(out, b)
 	}
+	complete = true
 	return out, true
 }
 
@@ -144,13 +183,14 @@ func encrypt(this js.Value, args []js.Value) (result any) {
 	}
 	opts := args[0]
 
-	dataValue := opts.Get("data")
+	dataValue := readProperty(opts, "data")
 	dataLength, ok := uint8ArrayLength(dataValue)
 	if !ok || dataLength == 0 || dataLength > maxVolumeBytes {
 		return errorResult(errInvalidArg)
 	}
 	data := copyUint8Array(dataValue, dataLength)
-	pw := opts.Get("password")
+	defer secret.SecureZero(data)
+	pw := readProperty(opts, "password")
 	if pw.Type() != js.TypeString {
 		return errorResult(errInvalidArg)
 	}
@@ -159,9 +199,12 @@ func encrypt(this js.Value, args []js.Value) (result any) {
 		return errorResult(errInvalidArg)
 	}
 	paranoid := optBool(opts, "paranoid")
-	keyfiles, ok := readKeyfiles(opts.Get("keyfiles"))
+	keyfiles, ok := readKeyfiles(readProperty(opts, "keyfiles"))
 	if !ok {
 		return errorResult(errInvalidArg)
+	}
+	for _, kf := range keyfiles {
+		defer secret.SecureZero(kf)
 	}
 	keyfileOrdered := optBool(opts, "keyfileOrdered")
 	reedSolomon := optBool(opts, "reedSolomon")
@@ -169,10 +212,6 @@ func encrypt(this js.Value, args []js.Value) (result any) {
 
 	passwordBytes := []byte(pw.String())
 	defer secret.SecureZero(passwordBytes)
-	defer secret.SecureZero(data)
-	for _, kf := range keyfiles {
-		defer secret.SecureZero(kf)
-	}
 
 	volumeData, code := wasm.EncryptVolume(data, passwordBytes, wasm.EncryptOptions{
 		Paranoid:       paranoid,
@@ -208,14 +247,15 @@ func decrypt(this js.Value, args []js.Value) (result any) {
 		return errorResult(wasm.ErrUnsupported)
 	}
 
-	dataValue := opts.Get("data")
+	dataValue := readProperty(opts, "data")
 	dataLength, ok := uint8ArrayLength(dataValue)
 	if !ok || dataLength == 0 || dataLength > maxVolumeBytes {
 		return errorResult(errInvalidArg)
 	}
 	if dataLength >= 4 {
 		var prefix [4]byte
-		if copyBytesFromJS(prefix[:], dataValue) != len(prefix) {
+		defer secret.SecureZero(prefix[:])
+		if copyArrayBytes(prefix[:], dataValue) != len(prefix) {
 			return errorResult(errInvalidArg)
 		}
 		if pcv3operation.DetectPrefix(prefix[:]) == pcv3operation.RouteNormalPCV {
@@ -223,22 +263,22 @@ func decrypt(this js.Value, args []js.Value) (result any) {
 		}
 	}
 	data := copyUint8Array(dataValue, dataLength)
-	pw := opts.Get("password")
+	defer secret.SecureZero(data)
+	pw := readProperty(opts, "password")
 	if pw.Type() != js.TypeString {
 		return errorResult(errInvalidArg)
 	}
 
-	keyfiles, ok := readKeyfiles(opts.Get("keyfiles"))
+	keyfiles, ok := readKeyfiles(readProperty(opts, "keyfiles"))
 	if !ok {
 		return errorResult(errInvalidArg)
+	}
+	for _, kf := range keyfiles {
+		defer secret.SecureZero(kf)
 	}
 
 	passwordBytes := []byte(pw.String())
 	defer secret.SecureZero(passwordBytes)
-	defer secret.SecureZero(data)
-	for _, kf := range keyfiles {
-		defer secret.SecureZero(kf)
-	}
 
 	res, code := wasm.DecryptVolume(data, passwordBytes, wasm.DecryptOptions{
 		Keyfiles: keyfiles,

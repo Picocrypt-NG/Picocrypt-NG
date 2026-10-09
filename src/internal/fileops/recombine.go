@@ -54,47 +54,92 @@ type RecombineOptions struct {
 
 // CountChunks returns the number of split chunks for a given base path
 func CountChunks(basePath string) (int, int64, error) {
-	return countChunks(basePath, nil)
+	return CountChunksWithCancel(basePath, nil)
 }
 
-func countChunks(basePath string, firstChunkInfo os.FileInfo) (int, int64, error) {
+// CountChunksWithCancel bounds retained matching metadata under the native
+// archive working-memory policy, independently of unrelated directory entries.
+func CountChunksWithCancel(basePath string, cancel CancelFunc) (int, int64, error) {
+	return countChunks(basePath, nil, cancel, NewZIPResourceBudget())
+}
+
+// ErrChunkMetadataLimit refuses matching chunk metadata beyond the native policy.
+var ErrChunkMetadataLimit = errors.New("fileops: split chunk metadata limit exceeded")
+
+func countChunks(basePath string, firstChunkInfo os.FileInfo, cancel CancelFunc, budget *ZIPResourceBudget) (count int, total int64, retErr error) {
+	if cancel != nil && cancel() {
+		return 0, 0, errors.New("operation cancelled")
+	}
 	dir := filepath.Dir(basePath)
 	if dir == "" {
 		dir = "."
 	}
 	prefix := filepath.Base(basePath) + "."
 
-	entries, err := os.ReadDir(dir)
+	// One fixed directory batch plus matching indexes and downstream pinned
+	// identities/paths. Admission precedes retention and slice growth.
+	const workspace = 128 << 10
+	if err := budget.Reserve(workspace); err != nil {
+		return 0, 0, ErrChunkMetadataLimit
+	}
+	charged := uint64(workspace)
+	defer func() { budget.Release(charged) }()
+	directory, err := os.Open(dir) // #nosec G304 -- directory comes from the selected chunk base
 	if err != nil {
 		return 0, 0, fmt.Errorf("read chunk dir: %w", err)
 	}
+	defer func() {
+		retErr = errors.Join(retErr, directory.Close())
+		if retErr != nil {
+			count, total = 0, 0
+		}
+	}()
 
-	indexes := make([]int, 0, len(entries))
+	var indexes []int
 	var totalSize int64
 
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasPrefix(name, prefix) {
-			continue
+	for {
+		if cancel != nil && cancel() {
+			return 0, 0, errors.New("operation cancelled")
 		}
-
-		suffix := strings.TrimPrefix(name, prefix)
-		index, ok := parseUnsignedChunkIndex(suffix)
-		if !ok {
-			continue
-		}
-
-		if index == 0 && firstChunkInfo != nil {
-			totalSize += firstChunkInfo.Size()
-		} else {
-			stat, err := entry.Info()
-			if err != nil {
-				return 0, 0, fmt.Errorf("stat chunk %s: %w", filepath.Join(dir, name), err)
+		entries, readErr := directory.Readdirnames(128)
+		for _, name := range entries {
+			if !strings.HasPrefix(name, prefix) {
+				continue
 			}
-			totalSize += stat.Size()
-		}
 
-		indexes = append(indexes, index)
+			suffix := strings.TrimPrefix(name, prefix)
+			index, ok := parseUnsignedChunkIndex(suffix)
+			if !ok {
+				continue
+			}
+			cost := uint64(1024) + 8*(uint64(len(basePath))+uint64(len(name)))
+			if err := budget.Reserve(cost); err != nil {
+				return 0, 0, ErrChunkMetadataLimit
+			}
+			charged += cost
+
+			if index == 0 && firstChunkInfo != nil {
+				totalSize += firstChunkInfo.Size()
+			} else {
+				stat, err := os.Lstat(filepath.Join(dir, name))
+				if err != nil {
+					return 0, 0, fmt.Errorf("stat chunk %s: %w", filepath.Join(dir, name), err)
+				}
+				totalSize += stat.Size()
+			}
+
+			indexes = append(indexes, index)
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return 0, 0, fmt.Errorf("read chunk dir: %w", readErr)
+			}
+			break
+		}
+	}
+	if cancel != nil && cancel() {
+		return 0, 0, errors.New("operation cancelled")
 	}
 
 	if len(indexes) == 0 {
@@ -158,7 +203,7 @@ func Recombine(opts RecombineOptions) (retErr error) {
 		}
 	}
 
-	numChunks, totalSize, err := countChunks(opts.InputBase, firstChunkInfo)
+	numChunks, totalSize, err := countChunks(opts.InputBase, firstChunkInfo, opts.Cancel, NewZIPResourceBudget())
 	if err != nil {
 		return err
 	}

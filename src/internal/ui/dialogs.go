@@ -206,7 +206,7 @@ func normalizeSelectedOutputPath(filePath, mode, inputFile string, multiInput, c
 // the first code that opens or creates the destination.
 func (a *App) changePCV3CreationOutputFile() {
 	selected := a.State.UISnapshot()
-	if selected.Mode != "encrypt" || !selected.CreatePCV3 || selected.InputFile == "" ||
+	if selected.Mode != "encrypt" || selected.InputFile == "" ||
 		selected.OutputFile == "" || selected.Working || selected.Scanning {
 		return
 	}
@@ -214,7 +214,7 @@ func (a *App) changePCV3CreationOutputFile() {
 	selectionCurrent := func() bool {
 		current := a.State.UISnapshot()
 		return a.operationGeneration.Load() == selectionGeneration &&
-			current.Mode == "encrypt" && current.CreatePCV3 && !current.Working &&
+			current.Mode == "encrypt" && !current.Working &&
 			!current.Scanning && current.InputFile == selected.InputFile &&
 			current.OutputFile == selected.OutputFile
 	}

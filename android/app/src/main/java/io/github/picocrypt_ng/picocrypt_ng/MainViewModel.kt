@@ -359,41 +359,42 @@ class MainViewModel(
      * Updates password fields atomically to prevent race conditions.
      * Uses StateFlow.update() to ensure thread-safe updates.
      * 
-     * @param password New password as CharArray, or null to keep current
-     * @param confirmPassword New confirm password as CharArray, or null to keep current
+     * @param password Fresh caller-owned password, consumed and wiped, or null to keep current
+     * @param confirmPassword Fresh caller-owned confirmation, consumed and wiped, or null to keep current
      */
     @Synchronized
     fun updatePasswords(password: CharArray? = null, confirmPassword: CharArray? = null) {
-        if (_formState.value.isPcv3Selection && _formState.value.pcvUnavailable) {
+        try {
+            if (_formState.value.isPcv3Selection && _formState.value.pcvUnavailable) return
+            _formState.update { current ->
+                // Store references to old password arrays for clearing
+                val oldPassword = current.passwordInput
+                val oldConfirm = current.confirmPasswordInput
+            
+                // Create new FormData with updated passwords (using copyOf to create new arrays)
+                val updated = current.copy(
+                    passwordInput = password?.copyOf() ?: current.passwordInput,
+                    confirmPasswordInput = confirmPassword?.copyOf() ?: current.confirmPasswordInput
+                )
+            
+                // Clear old password arrays if they're being replaced
+                // We clear the old arrays since we've created new copies
+                if (password != null) {
+                    oldPassword.fill('\u0000')
+                }
+                if (confirmPassword != null) {
+                    oldConfirm.fill('\u0000')
+                }
+            
+                updated
+            }
+        
+            // Update SavedStateHandle (passwords are not saved, but other fields might have changed)
+            persistFormData(_formState.value)
+        } finally {
             password?.fill('\u0000')
             confirmPassword?.fill('\u0000')
-            return
         }
-        _formState.update { current ->
-            // Store references to old password arrays for clearing
-            val oldPassword = current.passwordInput
-            val oldConfirm = current.confirmPasswordInput
-            
-            // Create new FormData with updated passwords (using copyOf to create new arrays)
-            val updated = current.copy(
-                passwordInput = password?.copyOf() ?: current.passwordInput,
-                confirmPasswordInput = confirmPassword?.copyOf() ?: current.confirmPasswordInput
-            )
-            
-            // Clear old password arrays if they're being replaced
-            // We clear the old arrays since we've created new copies
-            if (password != null) {
-                oldPassword.fill('\u0000')
-            }
-            if (confirmPassword != null) {
-                oldConfirm.fill('\u0000')
-            }
-            
-            updated
-        }
-        
-        // Update SavedStateHandle (passwords are not saved, but other fields might have changed)
-        persistFormData(_formState.value)
     }
     
     /**

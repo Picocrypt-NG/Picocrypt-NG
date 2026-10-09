@@ -19,6 +19,7 @@ type EncryptInputRequest struct {
 	ZIPBudget                          *fileops.ZIPResourceBudget
 	InputFile                          string
 	InputFiles, OnlyFiles, OnlyFolders []string
+	InputIdentities                    []fileops.ZIPInputIdentity
 	OutputFile                         string
 	Compress                           bool
 	// Final-output geometry used only for temporary-disk admission.
@@ -43,7 +44,8 @@ func PrepareEncryptInput(ctx context.Context, input EncryptInputRequest) (*Prepa
 	req := &EncryptRequest{
 		ZIPBudget: input.ZIPBudget,
 		InputFile: input.InputFile, InputFiles: input.InputFiles,
-		OnlyFiles: input.OnlyFiles, OnlyFolders: input.OnlyFolders, OutputFile: input.OutputFile,
+		InputIdentities: input.InputIdentities,
+		OnlyFiles:       input.OnlyFiles, OnlyFolders: input.OnlyFolders, OutputFile: input.OutputFile,
 		Compress: input.Compress, Reporter: input.Reporter,
 		PCV3: input.PCV3, Paranoid: input.Paranoid, Deniability: input.Deniability, ReedSolomon: input.ReedSolomon, Split: input.Split, Comments: input.Comments,
 	}
@@ -68,10 +70,10 @@ func prepareEncryptInput(ctx *OperationContext, req *EncryptRequest, borrowed *o
 		}
 	}()
 
-	if err = encryptPreprocess(ctx, req); err != nil {
+	if err = encryptPreprocessWithBorrowed(ctx, req, borrowed); err != nil {
 		return prepared, err
 	}
-	if ctx.tempZip != nil || (ctx.tempInput != nil && ctx.InputFile == ctx.tempInput.Path()) {
+	if ctx.tempZip != nil || ctx.selectedEncryptFile != nil || (ctx.tempInput != nil && ctx.InputFile == ctx.tempInput.Path()) {
 		prepared.file, _, err = ctx.openInput()
 	} else if borrowed != nil {
 		prepared.file = borrowed

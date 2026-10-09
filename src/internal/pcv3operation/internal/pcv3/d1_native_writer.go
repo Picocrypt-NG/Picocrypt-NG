@@ -21,10 +21,8 @@ type d1CreationRequest struct {
 	expectedSource      os.FileInfo
 	source              *os.File
 	plaintext           io.Reader
-	splitOptions        *fileops.SplitOptions
 	retainedOutput      **pcv3publication.RetainedFile
 	journalPrivateStage bool
-	writePublication    bool
 	normal              normalWriteRequest
 	factors             *pcv3credential.FactorRequest
 	admitter            pcv3credential.Admitter
@@ -108,10 +106,8 @@ func composeD1OuterStage(
 			)
 		}
 	}()
-	if request.writePublication {
-		if err := stage.CheckCapability(); err != nil {
-			return nil, newD1OuterFailure(StageOutputPublication, err)
-		}
+	if err := stage.CheckCapability(); err != nil {
+		return nil, newD1OuterFailure(StageOutputPublication, err)
 	}
 	if request.journalPrivateStage {
 		if err := stage.PersistCleanupJournal(); err != nil {
@@ -242,30 +238,7 @@ func composeD1OuterStage(
 		*request.retainedOutput = retained
 		return publication, nil
 	}
-	if request.writePublication {
-		return stage.PublishWrite(ctx), nil
-	}
-	if request.splitOptions == nil {
-		return stage.Publish(ctx), nil
-	}
-	publication, retained := stage.PublishRetained(ctx)
-	if publication == nil || publication.State() != pcv3publication.StatePublishedDurable || retained == nil {
-		if retained != nil {
-			_ = retained.RemoveExact()
-		}
-		if publication != nil {
-			return publication, newD1OuterFailure(StageOutputPublication, publication)
-		}
-		return nil, newD1OuterFailure(StageOutputPublication, errInvalidD1Creation)
-	}
-	if err := pcv3publication.SplitRetained(retained, *request.splitOptions); err != nil {
-		stage := StageOutputPublication
-		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-			stage = StageCancellation
-		}
-		return publication, newD1OuterFailure(stage, err)
-	}
-	return publication, nil
+	return stage.PublishWrite(ctx), nil
 }
 
 func validD1CreationSeams(seams d1CreationSeams) bool {

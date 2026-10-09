@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
+        <provider
+            android:name="io.github.picocrypt_ng.picocrypt_ng.CopyBoundaryProvider"
+            android:authorities="io.github.picocrypt_ng.picocrypt_ng.test.copy"
+            android:exported="true"
+            android:process=":copy_provider" />
         <receiver
             android:name="io.github.picocrypt_ng.picocrypt_ng.BoundedSafGrantReceiver"
             android:exported="true"

@@ -69,9 +69,9 @@ func TestPCV3MobileWriteEnvelopeShape(t *testing.T) {
 
 		var openCalls atomic.Int64
 		oldOpen := openPCV3Existing
-		openPCV3Existing = func(path string, flag int) (*os.File, error) {
+		openPCV3Existing = func(path string) (*os.File, error) {
 			openCalls.Add(1)
-			return oldOpen(path, flag)
+			return oldOpen(path)
 		}
 		t.Cleanup(func() { openPCV3Existing = oldOpen })
 

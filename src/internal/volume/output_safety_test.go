@@ -647,8 +647,17 @@ func TestZipDetectionUsesRetainedStageAfterPathReplacement(t *testing.T) {
 	if err := ctx.beginStagedOutput(); err != nil {
 		t.Fatalf("begin staged output: %v", err)
 	}
+	var stagePath string
+	replaced := false
+	foreign := []byte("foreign replacement is not a ZIP")
 	defer func() {
-		if err := ctx.Close(); err != nil {
+		err := ctx.Close()
+		if replaced {
+			if err == nil || !strings.Contains(err.Error(), stagePath) {
+				t.Errorf("replaced stage lost cleanup uncertainty/path: %v", err)
+			}
+			assertFileBytes(t, stagePath, foreign)
+		} else if err != nil {
 			t.Errorf("close operation context: %v", err)
 		}
 	}()
@@ -656,14 +665,14 @@ func TestZipDetectionUsesRetainedStageAfterPathReplacement(t *testing.T) {
 		t.Fatalf("write retained ZIP stage: %v", err)
 	}
 
-	stagePath := ctx.stagedOutput.Path()
+	stagePath = ctx.stagedOutput.Path()
 	if err := os.Remove(stagePath); err != nil {
 		t.Skipf("platform prevents replacing an open staged file: %v", err)
 	}
-	foreign := []byte("foreign replacement is not a ZIP")
 	if err := os.WriteFile(stagePath, foreign, 0o600); err != nil {
 		t.Fatalf("write replacement at staged path: %v", err)
 	}
+	replaced = true
 
 	isZip, err := isStagedOutputZip(ctx)
 	if err != nil {

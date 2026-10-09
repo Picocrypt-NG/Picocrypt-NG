@@ -38,7 +38,7 @@ func (owner *operationOwner) prepareSplitInput(ctx context.Context) error {
 		return err
 	}
 
-	numChunks, _, err := fileops.CountChunks(owner.splitBase)
+	numChunks, _, err := fileops.CountChunksWithCancel(owner.splitBase, func() bool { return ctx.Err() != nil })
 	if err != nil {
 		return err
 	}

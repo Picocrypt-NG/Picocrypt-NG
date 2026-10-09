@@ -43,9 +43,9 @@ func testPCV3MobileStrictEnvelope(t *testing.T) {
 
 	var openCalls atomic.Int64
 	oldOpen := openPCV3Existing
-	openPCV3Existing = func(path string, flag int) (*os.File, error) {
+	openPCV3Existing = func(path string) (*os.File, error) {
 		openCalls.Add(1)
-		return fileops.OpenExistingNoSymlink(path, flag)
+		return fileops.OpenRegularReadNoSymlink(path)
 	}
 	t.Cleanup(func() { openPCV3Existing = oldOpen })
 
@@ -149,11 +149,11 @@ func testPCV3MobilePreservesFactorIntent(t *testing.T) {
 	var mu sync.Mutex
 	var opened []string
 	oldOpen := openPCV3Existing
-	openPCV3Existing = func(path string, flag int) (*os.File, error) {
+	openPCV3Existing = func(path string) (*os.File, error) {
 		mu.Lock()
 		opened = append(opened, path)
 		mu.Unlock()
-		return fileops.OpenExistingNoSymlink(path, flag)
+		return fileops.OpenRegularReadNoSymlink(path)
 	}
 	t.Cleanup(func() { openPCV3Existing = oldOpen })
 
@@ -218,8 +218,8 @@ func testPCV3MobileOwnsPasswordAndDescriptors(t *testing.T) {
 
 	var opened []*os.File
 	oldOpen := openPCV3Existing
-	openPCV3Existing = func(path string, flag int) (*os.File, error) {
-		file, err := fileops.OpenExistingNoSymlink(path, flag)
+	openPCV3Existing = func(path string) (*os.File, error) {
+		file, err := fileops.OpenRegularReadNoSymlink(path)
 		if err != nil {
 			return nil, err
 		}

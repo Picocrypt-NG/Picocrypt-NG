@@ -9,19 +9,23 @@ import (
 	"path/filepath"
 )
 
+var stagedFileRenameFn = (*os.Root).Rename
+
 // StagedFile is a temporary file owned by the current operation. It is created
 // with a random name beside its eventual destination so publication stays on
 // the same filesystem. Call Cleanup on every exit path; after Commit it is a
 // no-op.
 type StagedFile struct {
-	file       *os.File
-	root       *os.Root
-	rootInfo   os.FileInfo
-	stageInfo  os.FileInfo
-	stageName  string
-	targetName string
-	path       string
-	targetPath string
+	file        *os.File
+	root        *os.Root
+	rootInfo    os.FileInfo
+	stageInfo   os.FileInfo
+	stageName   string
+	targetName  string
+	path        string
+	targetPath  string
+	cleanupDone bool
+	cleanupErr  error
 }
 
 // CreateSiblingTemp creates an exclusively owned, mode-0600 temporary file in
@@ -305,7 +309,7 @@ func (s *StagedFile) Commit() error {
 		return errors.New("staged output path changed before publish")
 	}
 
-	if err := s.root.Rename(s.stageName, s.targetName); err != nil {
+	if err := stagedFileRenameFn(s.root, s.stageName, s.targetName); err != nil {
 		return fmt.Errorf("publish staged output: %w", err)
 	}
 	s.stageName = ""
@@ -315,6 +319,13 @@ func (s *StagedFile) Commit() error {
 		return fmt.Errorf("close output directory: %w", err)
 	}
 	s.root = nil
+	// Legacy staging permits a stable symlink-selected parent. Follow it as
+	// the pre-publication check does, and preserve the committed output on a
+	// mismatch rather than granting callers ordinary success.
+	currentDir, err = os.Stat(filepath.Dir(s.targetPath))
+	if err != nil || !os.SameFile(s.rootInfo, currentDir) {
+		return errors.Join(errors.New("output directory changed after publish; committed output preserved"), err)
+	}
 	s.rootInfo = nil
 	s.stageInfo = nil
 	return nil
@@ -327,6 +338,10 @@ func (s *StagedFile) Cleanup() error {
 	if s == nil {
 		return nil
 	}
+	if s.cleanupDone {
+		return s.cleanupErr
+	}
+	s.cleanupDone = true
 	var cleanupErrs []error
 	if s.file != nil {
 		if err := s.file.Close(); err != nil {
@@ -339,13 +354,11 @@ func (s *StagedFile) Cleanup() error {
 		current, err := s.root.Lstat(s.stageName)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
-			stageRemoved = true
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("staged output %s missing during cleanup; owned data absence unproven", s.path))
 		case err != nil:
 			cleanupErrs = append(cleanupErrs, fmt.Errorf("inspect staged output %s during cleanup: %w", s.path, err))
 		case !current.Mode().IsRegular() || !os.SameFile(s.stageInfo, current):
-			// The operation-owned inode is no longer reachable through the
-			// stage pathname. Never delete a replacement found there.
-			stageRemoved = true
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("staged output %s changed during cleanup; refusing to remove replacement", s.path))
 		default:
 			if err := s.root.Remove(s.stageName); err != nil {
 				cleanupErrs = append(cleanupErrs, fmt.Errorf("remove staged output %s: %w", s.path, err))
@@ -360,13 +373,14 @@ func (s *StagedFile) Cleanup() error {
 		}
 		s.root = nil
 	}
-	s.rootInfo = nil
-	s.stageInfo = nil
 	if stageRemoved {
+		s.rootInfo = nil
+		s.stageInfo = nil
 		s.stageName = ""
 		s.path = ""
+		s.targetName = ""
+		s.targetPath = ""
 	}
-	s.targetName = ""
-	s.targetPath = ""
-	return errors.Join(cleanupErrs...)
+	s.cleanupErr = errors.Join(cleanupErrs...)
+	return s.cleanupErr
 }

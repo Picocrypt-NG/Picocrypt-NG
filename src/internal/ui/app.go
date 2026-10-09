@@ -384,11 +384,7 @@ func (a *App) refreshAdvancedLocalizedText() {
 		setCheckTooltip(a.deleteCheck, tr("advanced.delete_files.tooltip", "Delete source files after encryption"))
 	}
 	setCheckText(a.deniabilityCheck, tr("advanced.deniability.label", "Deniability"))
-	deniabilityTooltip := tr("advanced.deniability.tooltip", "No readable Picocrypt header. Legacy deniability requires a non-empty outer password.")
-	if a.State != nil && a.State.CreatePCV3 {
-		deniabilityTooltip = tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection.")
-	}
-	setCheckTooltip(a.deniabilityCheck, deniabilityTooltip)
+	setCheckTooltip(a.deniabilityCheck, tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection."))
 	setCheckText(a.recursivelyCheck, tr("advanced.recursively.label", "Recursively"))
 	setCheckText(a.recursiveD1Check, tr("advanced.recursive_d1.label", "All selected files are PCV3 D1"))
 	setCheckTooltip(a.recursivelyCheck, tr("advanced.recursively.tooltip", "Process each file separately"))
@@ -861,21 +857,6 @@ func (a *App) startReadinessHint(snap app.UISnapshot) string {
 	if snap.Scanning {
 		return tr("start.hint.scanning", "Scanning files; wait before starting.")
 	}
-	if snap.Mode == "encrypt" && snap.KeyfileCount > 0 && !snap.CreatePCV3 {
-		return tr(
-			"start.hint.keyfileWritesDisabled",
-			"Legacy v2 cannot create new volumes with keyfiles. Enable Create PCV3 or remove the keyfiles.",
-		)
-	}
-	if snap.Mode == "encrypt" && snap.Deniability && !snap.CreatePCV3 && snap.Password == "" {
-		return tr(
-			"start.hint.deniabilityPasswordRequired",
-			"Deniability requires a non-empty password.",
-		)
-	}
-	if snap.Mode == "encrypt" && snap.Password == "" && !snap.CreatePCV3 {
-		return tr("start.hint.enterPassword", "Enter a password to continue.")
-	}
 	if snap.KeyfileCount == 0 && snap.Password == "" {
 		return tr("start.hint.enterPasswordOrKeyfiles", "Enter a password or add keyfiles.")
 	}
@@ -1036,7 +1017,7 @@ func (a *App) buildOutputSection() fyne.CanvasObject {
 			a.changePCV3OutputFile()
 			return
 		}
-		if snap.Mode == "encrypt" && snap.CreatePCV3 {
+		if snap.Mode == "encrypt" {
 			a.changePCV3CreationOutputFile()
 			return
 		}

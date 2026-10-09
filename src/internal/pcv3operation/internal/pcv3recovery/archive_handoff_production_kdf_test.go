@@ -37,13 +37,17 @@ func TestD1ArchiveProductionKDFRawZIPRequiresExplicitPreparation(t *testing.T) {
 		}
 	}
 	ciphertext := filepath.Join(directory, "d1-ciphertext")
-	if err := pcv3.RunNativeD1Write(context.Background(), &pcv3.NativeD1WriteRequest{
+	publication, retained, err := pcv3.RunNativeD1WriteWithPublication(context.Background(), &pcv3.NativeD1WriteRequest{
 		Suite: pcv3.SuiteParanoid, PayloadKind: pcv3.PayloadKindRaw,
 		PlaintextLength: uint64(len(plaintext)), SourcePath: sourcePath, Source: source,
 		Plaintext: source, DestinationPath: ciphertext, Protected: []string{sourcePath},
 		Factors: factors(), Admitter: recoveryOperationAdmitter{},
-	}); err != nil {
-		t.Fatal(err)
+	}, false)
+	if err != nil || publication == nil || publication.State() != pcv3publication.StatePublishedDurable || retained != nil {
+		if retained != nil {
+			_ = retained.Close()
+		}
+		t.Fatalf("D1 archive creation publication=%v retained=%v err=%v", publication, retained, err)
 	}
 	for _, prepare := range []bool{false, true} {
 		t.Run(map[bool]string{false: "default durable ZIP", true: "explicit extraction"}[prepare], func(t *testing.T) {

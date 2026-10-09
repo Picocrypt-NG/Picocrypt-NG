@@ -92,7 +92,7 @@ func TestWindowsNativePlaintextPublicationNeverGrantsDurableRetainedAuthority(t 
 	requireFileBytes(t, target, []byte("authenticated plaintext"))
 }
 
-func TestWindowsNativeRetainedSplitRefusesUnprovenDirectoryDurability(t *testing.T) {
+func TestWindowsNativeRetainedSplitPreservesCompleteUncertainCiphertext(t *testing.T) {
 	directory := t.TempDir()
 	target := filepath.Join(directory, "ciphertext")
 	stage, err := Create(target, nil, PolicyNoReplace)
@@ -112,16 +112,17 @@ func TestWindowsNativeRetainedSplitRefusesUnprovenDirectoryDurability(t *testing
 		t.Fatalf("native Windows ciphertext lost retained custody: %v, %v", result, retained)
 	}
 	defer retained.Close()
-	splitErr := SplitRetained(retained, fileops.SplitOptions{ChunkSize: 1, Unit: fileops.SplitUnitKiB})
-	var syncError *os.PathError
-	if !errors.As(splitErr, &syncError) || syncError.Op != "sync" || filepath.Clean(syncError.Path) != filepath.Clean(directory) {
-		t.Fatalf("native split did not refuse the actual output directory sync: %v", splitErr)
+	state, splitErr := SplitRetainedWithResult(retained, fileops.SplitOptions{ChunkSize: 1, Unit: fileops.SplitUnitKiB})
+	if splitErr != nil || state != fileops.SplitCompleteDurabilityUncertain {
+		t.Fatalf("native split completion = %v/%v; want complete durability uncertain", state, splitErr)
 	}
 	if retained.Live() {
 		t.Fatal("refused native split retained follow-up authority")
 	}
 	requireFileBytes(t, target, payload)
-	if chunks, err := filepath.Glob(target + ".*"); err != nil || len(chunks) != 0 {
-		t.Fatalf("refused native split retained partial chunks: %v, %v", chunks, err)
+	recombined := filepath.Join(directory, "recombined.pcv")
+	if err := fileops.Recombine(fileops.RecombineOptions{InputBase: target, OutputPath: recombined}); err != nil {
+		t.Fatalf("recombine complete uncertain native chunks: %v", err)
 	}
+	requireFileBytes(t, recombined, payload)
 }

@@ -283,30 +283,6 @@ func TestGoldenKeyfileCorpusPresent(t *testing.T) {
 	}
 }
 
-// TestGoldenBasicCorpusPresent hard-fails if ANY fixture decrypted by
-// TestGoldenDecryption / TestGoldenCompressedDecryption is missing. Those suites
-// per-case t.Skipf on a missing file, so a deleted/renamed golden would silently
-// stop being exercised (a frozen-format regression could pass unnoticed, Rule 12).
-// This guard makes their absence a hard CI failure instead.
-func TestGoldenBasicCorpusPresent(t *testing.T) {
-	testdataPath := findTestdata(t)
-
-	required := make([]string, 0, len(goldenTestCases)+len(goldenCompressedTestCases))
-	for _, tc := range goldenTestCases {
-		required = append(required, tc.file)
-	}
-	for _, tc := range goldenCompressedTestCases {
-		required = append(required, tc.file)
-	}
-
-	for _, name := range required {
-		path := filepath.Join(testdataPath, name)
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("required golden asset missing: %s (%v)", path, err)
-		}
-	}
-}
-
 func TestGoldenDecryption(t *testing.T) {
 	restore := useProductionTestKDF()
 	defer restore()
@@ -324,7 +300,7 @@ func TestGoldenDecryption(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			inputPath := filepath.Join(testdataPath, tc.file)
 
-			// Required corpus (TestGoldenBasicCorpusPresent); fail-loud if missing.
+			// A missing required fixture must fail even when this case runs alone.
 			if _, err := os.Stat(inputPath); err != nil {
 				t.Fatalf("required golden file missing: %s (%v)", inputPath, err)
 			}
@@ -396,7 +372,7 @@ func TestGoldenCompressedDecryption(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			inputPath := filepath.Join(testdataPath, tc.file)
 
-			// Required corpus (TestGoldenBasicCorpusPresent); fail-loud if missing.
+			// A missing required fixture must fail even when this case runs alone.
 			if _, err := os.Stat(inputPath); err != nil {
 				t.Fatalf("required golden file missing: %s (%v)", inputPath, err)
 			}
@@ -841,8 +817,8 @@ func TestGoldenDeniabilityDetection(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.file, func(t *testing.T) {
 			path := filepath.Join(testdataPath, tc.file)
-			if _, err := os.Stat(path); os.IsNotExist(err) {
-				t.Skipf("File not found: %s", path)
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("required golden file missing: %s (%v)", path, err)
 			}
 
 			isDeniable := IsDeniable(path, rsCodecs)
@@ -865,8 +841,8 @@ func TestGoldenWrongPassword(t *testing.T) {
 	}
 
 	v2Path := filepath.Join(testdataPath, "pico_test_v2.txt.pcv")
-	if _, err := os.Stat(v2Path); os.IsNotExist(err) {
-		t.Skip("v2 golden file not found")
+	if _, err := os.Stat(v2Path); err != nil {
+		t.Fatalf("required v2 golden file missing: %s (%v)", v2Path, err)
 	}
 
 	tmpDir := t.TempDir()
@@ -909,8 +885,8 @@ func TestGoldenV1WrongPassword(t *testing.T) {
 	}
 
 	v1Path := filepath.Join(testdataPath, "pico_test_v1.txt.pcv")
-	if _, err := os.Stat(v1Path); os.IsNotExist(err) {
-		t.Skip("v1 golden file not found")
+	if _, err := os.Stat(v1Path); err != nil {
+		t.Fatalf("required v1 golden file missing: %s (%v)", v1Path, err)
 	}
 
 	tmpDir := t.TempDir()
@@ -964,8 +940,8 @@ func TestGoldenHeaderParsing(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {
 			path := filepath.Join(testdataPath, tc.file)
-			if _, err := os.Stat(path); os.IsNotExist(err) {
-				t.Skipf("File not found: %s", path)
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("required golden file missing: %s (%v)", path, err)
 			}
 
 			fin, err := os.Open(path)
