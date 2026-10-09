@@ -235,9 +235,9 @@ class FileCopyServiceTest {
     fun cleanupOperationFiles_handles_non_existent_files_gracefully() = runTest {
         val result = FileCopyService.cleanupOperationFiles(
             context = context,
-            inputFilePath = "/nonexistent/input.txt",
-            outputFilePath = "/nonexistent/output.pcv",
-            keyfilePaths = listOf("/nonexistent/keyfile.txt")
+            inputFilePath = File(context.filesDir, "picocrypt_files/input_file.absent").path,
+            outputFilePath = File(context.filesDir, "picocrypt_files/output_file").path,
+            keyfilePaths = listOf(File(context.filesDir, "picocrypt_files/keyfile_999").path)
         )
         
         // Should return true even if files don't exist

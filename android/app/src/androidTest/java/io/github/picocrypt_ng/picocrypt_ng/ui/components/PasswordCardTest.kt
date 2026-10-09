@@ -6,7 +6,10 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.lifecycle.SavedStateHandle
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -26,6 +29,31 @@ class PasswordCardTest {
 
     @get:Rule
     val composeTestRule = createComposeRule()
+
+    @Test
+    fun passwordResetClearsMountedFieldsAndHidesThemWithTheSameFileSelected() {
+        val application = ApplicationProvider.getApplicationContext<Application>()
+        val viewModel = MainViewModel(application, SavedStateHandle())
+        viewModel.updateFormData(TestDataBuilders.createEncryptFormData(password = "", confirmPassword = ""))
+        val selectedPath = viewModel.formState.value.copiedFilePath
+        composeTestRule.setContent { PasswordCard(viewModel) }
+        val password = composeTestRule.onNodeWithText(application.getString(R.string.password))
+        val confirm = composeTestRule.onNodeWithText(application.getString(R.string.confirm_password))
+        password.performTextInput("old secret")
+        confirm.performTextInput("old secret")
+        composeTestRule.onAllNodesWithContentDescription(application.getString(R.string.show_password))[0].performClick()
+        composeTestRule.waitForIdle()
+        assertEquals("old secret", password.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+        composeTestRule.runOnIdle { viewModel.clearSensitiveData(clearFiles = false) }
+        composeTestRule.waitForIdle()
+        assertEquals(selectedPath, viewModel.formState.value.copiedFilePath)
+        assertEquals("", password.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+        assertEquals("", confirm.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+        composeTestRule.onAllNodesWithContentDescription(application.getString(R.string.show_password)).assertCountEquals(2)
+        password.performTextInput("new")
+        composeTestRule.waitForIdle()
+        assertEquals("new", String(viewModel.formState.value.passwordInput))
+    }
 
     @Test
     fun passwordCard_displays_for_encryption() {

@@ -11,6 +11,9 @@ import org.junit.Rule
 import org.junit.Test
 import io.github.picocrypt_ng.picocrypt_ng.testutils.TestDataBuilders
 import io.mockk.mockk
+import io.mockk.every
+import java.io.File
+import kotlin.io.path.createTempDirectory
 
 /**
  * Unit tests for MainViewModel.
@@ -50,19 +53,23 @@ class MainViewModelTest {
     
     @Test
     fun `formState restores from SavedStateHandle`() = runTest {
+        val root = createTempDirectory("viewmodel-restore-").toFile()
+        val input = File(root, "picocrypt_files/input_file.txt").apply {
+            parentFile!!.mkdirs(); writeText("owned copied input")
+        }
+        every { mockApplication.filesDir } returns root
         savedStateHandle["selected_filename"] = "test.txt"
-        savedStateHandle["copied_file_path"] = "/path/to/file.txt"
+        savedStateHandle["copied_file_path"] = input.path
         savedStateHandle["comments"] = "Test comments"
-        
-        val restoredViewModel = MainViewModel(mockApplication, savedStateHandle)
-        val formState = restoredViewModel.formState.first()
-        
-        assertEquals("test.txt", formState.selectedFilename)
-        assertEquals("/path/to/file.txt", formState.copiedFilePath)
-        assertEquals("Test comments", formState.comments)
-        // Passwords should not be restored
-        assertEquals(0, formState.passwordInput.size)
-        assertEquals(0, formState.confirmPasswordInput.size)
+        try {
+            val restoredViewModel = MainViewModel(mockApplication, savedStateHandle)
+            val formState = restoredViewModel.formState.first()
+            assertEquals("test.txt", formState.selectedFilename)
+            assertEquals(input.path, formState.copiedFilePath)
+            assertEquals("Test comments", formState.comments)
+            assertEquals(0, formState.passwordInput.size)
+            assertEquals(0, formState.confirmPasswordInput.size)
+        } finally { root.deleteRecursively() }
     }
     
     @Test

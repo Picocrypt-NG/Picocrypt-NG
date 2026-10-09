@@ -1,9 +1,26 @@
 package io.github.picocrypt_ng.picocrypt_ng
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SecureBytesTest {
+    @Test
+    fun `large three-byte password retains the final character instead of a float-rounded prefix`() {
+        val password = CharArray(5_592_407) { '\u0800' }
+        password[password.lastIndex] = '\u0801'
+        val encoded = password.toUtf8BytesSecure()
+        try {
+            assertEquals(16_777_221, encoded.size)
+            assertArrayEquals(byteArrayOf(0xe0.toByte(), 0xa0.toByte(), 0x81.toByte()), encoded.takeLast(3).toByteArray())
+        } finally { encoded.fill(0); password.fill('\u0000') }
+    }
+
+    @Test
+    fun `malformed surrogate uses the historical replacement byte`() {
+        assertArrayEquals(byteArrayOf(0x41, 0x3f, 0x42), charArrayOf('A', '\ud800', 'B').toUtf8BytesSecure())
+    }
+
     @Test
     fun `ascii password encodes to UTF-8 matching String getBytes`() {
         val pw = "hunter2".toCharArray()
