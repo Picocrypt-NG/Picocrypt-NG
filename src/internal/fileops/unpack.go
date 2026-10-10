@@ -874,7 +874,11 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 	if probe == nil {
 		probe = diskspace.Available
 	}
-	if available, err := probe(extractDir); err == nil && totalSize > available {
+	available, err := probe(extractDir)
+	if err != nil {
+		return fmt.Errorf("check available disk space for extraction: %w", err)
+	}
+	if totalSize > available {
 		return fmt.Errorf("insufficient disk space for extraction: need %d bytes, have %d", totalSize, available)
 	}
 	if err := verifyExtractionRootPath(extractDir, extractRootInfo); err != nil {

@@ -670,6 +670,8 @@ after publication. It borrows the file; any replacement descriptor must match
 its original identity and extent. The caller closes the prepared owner after use.
 Legacy auto-unzip keeps its recoverable malformed-ZIP fallback; resource refusal
 does not authorize that fallback.
+Extraction refuses before opening entry payloads if the free-space probe fails
+or the declared total exceeds available space.
 
 ### Split / Recombine
 
