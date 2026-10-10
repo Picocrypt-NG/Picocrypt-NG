@@ -421,7 +421,7 @@ func TestWindowsReleaseWorkflowPassesRootVersionToNSIS(t *testing.T) {
 
 	mustContainInOrder(t, nsisStep.Run,
 		`$version = (Get-Content -Path "VERSION" -Raw).Trim()`,
-		`makensis.exe`,
+		`& $env:NSIS_EXE`,
 		`"-DVERSION=$version"`,
 	)
 }

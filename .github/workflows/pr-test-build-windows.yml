@@ -169,12 +169,7 @@ jobs:
         upx/upx-5.2.1-win64/upx.exe --lzma -o src/Picocrypt-NG.exe src/5.exe
         upx/upx-5.2.1-win64/upx.exe --lzma src/Picocrypt-NG-cli.exe
 
-    # Build the NSIS installer.
-    # NSIS is NOT pre-installed on windows-2025 [actions/runner-images#11754,
-    # verified 2026-05-01]; CONTEXT D-04 assumed pre-install based on
-    # windows-2022 precedent — invalidated. We install via choco; choco itself
-    # is part of the runner baseline (no SHA pinning required for choco-managed
-    # packages — choco verifies its own signatures).
+    # Build with the verified portable NSIS archive.
     - name: Rename portable artifact
       shell: pwsh
       run: |
@@ -183,8 +178,10 @@ jobs:
     - name: Install NSIS
       shell: pwsh
       run: |
-        choco install -y --no-progress nsis --version=3.13.0
-        & "C:\Program Files (x86)\NSIS\makensis.exe" -VERSION
+        $makensis = & .github/scripts/install-nsis.ps1
+        "NSIS_EXE=$makensis" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        & $makensis -VERSION
+        if ($LASTEXITCODE -ne 0) { throw "NSIS version check failed ($LASTEXITCODE)" }
 
     - name: Build NSIS installer
       shell: pwsh
@@ -196,7 +193,7 @@ jobs:
         # resolution to a relative ${__FILEDIR__}, doubling the path
         # (D:\...\dist\windows\dist\windows\..\..\images\key.ico — file not found).
         $scriptPath = (Resolve-Path "dist\windows\installer.nsi").Path
-        & "C:\Program Files (x86)\NSIS\makensis.exe" `
+        & $env:NSIS_EXE `
           -WX `
           -V4 `
           "-DVERSION=$version" `
