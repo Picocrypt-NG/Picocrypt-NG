@@ -954,6 +954,7 @@ func TestWindowsNSISScript(t *testing.T) {
 		needle string
 		why    string
 	}{
+		{name: "no_elevated_finish_page_launch", needle: "!define MUI_FINISHPAGE_RUN", why: "the per-machine installer runs elevated; its finish page must not launch the encryption app with the installer token"},
 		{name: "no_wow6432node_literal", needle: "WOW6432Node", why: "SetRegView 64 must handle redirection (Pitfall 4); manual WOW6432 paths indicate missing SetRegView"},
 		{name: "no_pct_cd_path", needle: "$%CD%", why: "$%CD% is brittle across CWDs; use ${__FILEDIR__} (Pitfall 5)"},
 		{name: "no_hkcr_writeregstr", needle: `WriteRegStr HKCR`, why: "HKCR is a virtual merged view; write to HKLM\\Software\\Classes\\... per Microsoft Default Programs spec"},

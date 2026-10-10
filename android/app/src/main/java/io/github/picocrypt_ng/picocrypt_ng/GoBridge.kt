@@ -2,8 +2,6 @@ package io.github.picocrypt_ng.picocrypt_ng
 
 import android.os.Parcelable
 import android.os.ParcelFileDescriptor
-import java.nio.ByteBuffer
-import java.nio.CharBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 import kotlin.coroutines.cancellation.CancellationException
@@ -301,24 +299,8 @@ internal class Pcv3Bridge(private val transport: Pcv3Transport) {
     }
 }
 
-private fun encodePcv3Password(password: CharArray): ByteArray {
-    val input = CharBuffer.wrap(password)
-    val encoder = Charsets.UTF_8.newEncoder()
-        .onMalformedInput(CodingErrorAction.REPORT)
-        .onUnmappableCharacter(CodingErrorAction.REPORT)
-    val capacity = (input.remaining() * encoder.maxBytesPerChar()).toInt()
-    val buffer = ByteBuffer.allocate(capacity)
-    try {
-        val encoded = encoder.encode(input, buffer, true)
-        if (encoded.isError) encoded.throwException()
-        val flushed = encoder.flush(buffer)
-        if (flushed.isError) flushed.throwException()
-        buffer.flip()
-        return ByteArray(buffer.remaining()).also(buffer::get)
-    } finally {
-        buffer.array().fill(0)
-    }
-}
+private fun encodePcv3Password(password: CharArray): ByteArray =
+    password.toUtf8BytesSecure(CodingErrorAction.REPORT)
 
 internal fun pcv3BridgeCode(code: String): String = when (code) {
     "PCV3_BRIDGE_INVALID_REQUEST",

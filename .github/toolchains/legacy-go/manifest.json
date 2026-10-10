@@ -1,0 +1,86 @@
+{
+  "version": "go1.27.2",
+  "source": {
+    "url": "https://go.dev/dl/go1.27.2.src.tar.gz",
+    "sha256": "03495da2ba64894d40f5c4992e49454fa78b50690604ff92b6afff5081b76e62"
+  },
+  "bootstrap_windows_amd64": {
+    "url": "https://go.dev/dl/go1.27.2.windows-amd64.zip",
+    "sha256": "1314008898bd40df77af4b014f777f08873dbdfbcd3d92308728ee03304fe04f"
+  },
+  "vendor_commit": "2f6cdc24e8e5c029eafebe42fcbe966cc0589f97",
+  "patches": [
+    {
+      "path": "0001-cmd-link-syscall-set-pe-minimum-target-version-to-windows-7.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0001-cmd-link-syscall-set-pe-minimum-target-version-to-windows-7.patch",
+      "sha256": "570e24cd21fdf4b78acba041a1046e4ea96670fd3c306e39a469430ff60d799f"
+    },
+    {
+      "path": "0002-runtime-syscall-fall-back-to-loading-system-dlls-by-absolute-path.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0002-runtime-syscall-fall-back-to-loading-system-dlls-by-absolute-path.patch",
+      "sha256": "77c2c38b61a515771e056a8f33e9df3f63573d3984ea9ef22338161b61a4d143"
+    },
+    {
+      "path": "0003-runtime-crypto-internal-sysrand-fall-back-to-rtlgenrandom-when-processprng-is-absent.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0003-runtime-crypto-internal-sysrand-fall-back-to-rtlgenrandom-when-processprng-is-absent.patch",
+      "sha256": "c205f48a3c2320fca53b382ec938f45ba0d91792824ab52b0ab29ccf0d2c6d1c"
+    },
+    {
+      "path": "0004-syscall-restore-windows-7-console-handle-handling-in-startprocess.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0004-syscall-restore-windows-7-console-handle-handling-in-startprocess.patch",
+      "sha256": "3c532ff58c8eea2d99fde2cef76e32ee385ea46595ecd4a2962fe653f7e2376d"
+    },
+    {
+      "path": "0005-os-fall-back-to-file-id-both-dir-info-when-reading-directories.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0005-os-fall-back-to-file-id-both-dir-info-when-reading-directories.patch",
+      "sha256": "65e6094182fe38840e0cf6d115bd255d93d2612d60ee376add5ed88666493ea5"
+    },
+    {
+      "path": "0006-os-open-the-console-devices-by-the-names-windows-7-accepts.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0006-os-open-the-console-devices-by-the-names-windows-7-accepts.patch",
+      "sha256": "1c49ba65ee707641b523ceac484abb159141d62c691ffb9763c80e267c74d0fc"
+    },
+    {
+      "path": "0007-net-fall-back-when-wsa-flag-no-handle-inherit-is-rejected.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0007-net-fall-back-when-wsa-flag-no-handle-inherit-is-rejected.patch",
+      "sha256": "18708da2f6ee2684c9a066d476d561bdde2f2facdb9d045390c66637c321de57"
+    },
+    {
+      "path": "0008-internal-poll-keep-a-handle-that-cannot-leave-its-completion-port.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0008-internal-poll-keep-a-handle-that-cannot-leave-its-completion-port.patch",
+      "sha256": "be08ba5bf402e73b4f920eb999e33515cbdc68075ad7e8166be0c0c4ff4803ca"
+    },
+    {
+      "path": "0009-internal-poll-do-not-skip-the-completion-port-for-datagram-sockets.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0009-internal-poll-do-not-skip-the-completion-port-for-datagram-sockets.patch",
+      "sha256": "2798fe0c8d4f3e2ad1daa0978044db22457bdbbe948adc51636d3defb3ae15e8"
+    },
+    {
+      "path": "0010-internal-poll-keep-file-handles-off-a-completion-port-they-cannot-leave.patch",
+      "sha256": "128437a47db907b20b20944849a5b950b436e1d119c4c983eacd708bc529a66f",
+      "vendor_sha256": "97f77e71dcb1fb92a2b4b89a878a215d72d6bf67b57b2520dd4b4c14881ea64a",
+      "local": "patches/0010-internal-poll-keep-file-handles-off-a-completion-port-they-cannot-leave.patch"
+    },
+    {
+      "path": "0012-internal-syscall-windows-clear-the-read-only-attribute-on-a-directory.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0012-internal-syscall-windows-clear-the-read-only-attribute-on-a-directory.patch",
+      "sha256": "def59f1e865fc30b017fe433a68a0a065545f1d2597bb5c169dec950eae4c93a"
+    },
+    {
+      "path": "0013-internal-syscall-windows-os-free-the-name-before-a-delete-completes.patch",
+      "sha256": "6adae4030f50e5a1b9280a65f04374ddff0a2e2bf1dc4431ca45a50e54a97d66",
+      "vendor_sha256": "e6eb307330c2913836617bb72b13a0a6b57f55ec8a732615bdf81703b9b2253a",
+      "local": "patches/0013-internal-syscall-windows-os-free-the-name-before-a-delete-completes.patch"
+    },
+    {
+      "path": "0014-internal-syscall-windows-replace-a-rename-target-where-posix-rename-is-missing.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0014-internal-syscall-windows-replace-a-rename-target-where-posix-rename-is-missing.patch",
+      "sha256": "d51589b85ae5b5c0e1fc30d2eb99ff5eaf6d9a8900722398d50f097cfcbd897d"
+    },
+    {
+      "path": "0015-runtime-race-cmd-link-let-race-binaries-start-on-windows-7.patch",
+      "url": "https://raw.githubusercontent.com/thongtech/go-legacy-win7/2f6cdc24e8e5c029eafebe42fcbe966cc0589f97/patches/0015-runtime-race-cmd-link-let-race-binaries-start-on-windows-7.patch",
+      "sha256": "be4f7ff668455394a845040695fdacec81eaaffe555496dd642695b7de4d7138"
+    }
+  ]
+}

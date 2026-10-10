@@ -21,11 +21,16 @@ class MainViewModel(
     private val KEY_COPIED_FILE_PATH = "copied_file_path"
     private val KEY_COMMENTS = "comments"
     
-    // Restore saved state or use defaults (no persistence between app runs)
+    private val restoredInputPath = (savedStateHandle.get<Any?>(KEY_COPIED_FILE_PATH) as? String)
+        ?.takeIf { FileCopyService.isOwnedLegacyInput(application, it) }.orEmpty()
+
+    // Restore only an existing regular copy in the app's input slot.
     private val initialFormData = FormData(
-        selectedFilename = savedStateHandle.get<String>(KEY_SELECTED_FILENAME) ?: "",
-        copiedFilePath = savedStateHandle.get<String>(KEY_COPIED_FILE_PATH) ?: "",
-        comments = savedStateHandle.get<String>(KEY_COMMENTS) ?: "",
+        selectedFilename = if (restoredInputPath.isNotEmpty())
+            savedStateHandle.get<Any?>(KEY_SELECTED_FILENAME) as? String ?: "" else "",
+        copiedFilePath = restoredInputPath,
+        comments = if (restoredInputPath.isNotEmpty())
+            savedStateHandle.get<Any?>(KEY_COMMENTS) as? String ?: "" else "",
         passwordInput = CharArray(0), // Never save passwords - use empty CharArray
         confirmPasswordInput = CharArray(0), // Never save passwords - use empty CharArray
         reedSolomon = false, // Always default, no persistence
@@ -40,6 +45,8 @@ class MainViewModel(
     private val _formState = MutableStateFlow(initialFormData)
     
     val formState: StateFlow<FormData> = _formState.asStateFlow()
+    private val _sensitiveInputReset = MutableStateFlow(0L)
+    internal val sensitiveInputReset = _sensitiveInputReset.asStateFlow()
     
     // Error state for non-operation errors (file operations, etc.)
     private val _errorMessage = MutableStateFlow<AppError?>(null)
@@ -436,6 +443,7 @@ class MainViewModel(
         }
         
         _formState.value = cleared
+        _sensitiveInputReset.value += 1
         persistFormData(cleared)
         return releasedSource
     }
@@ -479,6 +487,7 @@ class MainViewModel(
             pcv3OwnedSource = null,
         )
         _formState.value = reset
+        _sensitiveInputReset.value += 1
         persistFormData(reset)
         return releasedSources
     }

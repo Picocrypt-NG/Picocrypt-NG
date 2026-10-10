@@ -193,21 +193,25 @@ func collectStartupPaths(paths []string, statFn func(string) (os.FileInfo, error
 }
 
 // applyStartupPaths reuses drag-and-drop handling for files passed at GUI startup.
-func (a *App) applyStartupPaths(paths []string) {
+func (a *App) applyStartupPaths(paths []string) []string {
 	validPaths, err := collectStartupPaths(paths, startupPathStat)
 	if len(validPaths) == 0 {
 		if err != nil {
 			a.State.SetStatusMessage(app.StatusStartupPathAccessFailed, util.RED, app.StatusArgs{})
 			a.refreshUI()
 		}
-		return
+		return nil
 	}
 
-	a.onDrop(validPaths)
+	accepted := a.onDrop(validPaths)
 	if err != nil {
 		a.State.SetStatusMessage(app.StatusStartupPathPartialAccessFailed, util.YELLOW, app.StatusArgs{})
 		a.refreshUI()
 	}
+	if accepted {
+		return validPaths
+	}
+	return nil
 }
 
 func (a *App) applyFolderWalkError() {
@@ -368,24 +372,24 @@ func (a *App) runFolderScan(ctx context.Context, job folderScanJob, emit scanned
 }
 
 // onDrop handles files and folders dropped onto the window.
-func (a *App) onDrop(names []string) {
+func (a *App) onDrop(names []string) bool {
 	if a.mobileImportActive {
-		return
+		return false
 	}
 
 	// If keyfile modal is open, handle as keyfiles
 	if a.State.ShowKeyfile {
 		a.handleKeyfileDrop(names)
-		return
+		return false
 	}
 
 	// Prevent race condition: ignore new drops while scanning or working
 	// This prevents multiple goroutines from simultaneously modifying AllFiles
 	if a.State.IsScanning() || a.State.IsWorking() {
-		return
+		return false
 	}
 
-	a.applyDropSelection(names)
+	return a.applyDropSelection(names)
 }
 
 // applyDropSelection applies one already-accepted UI selection. It is UI-only.

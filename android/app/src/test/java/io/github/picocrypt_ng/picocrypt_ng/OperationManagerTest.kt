@@ -50,6 +50,7 @@ class OperationManagerTest {
     fun setUp() = runTest {
         mockContext = mockk<Context>(relaxed = true)
         pcv3ReceiptDirectory = createTempDirectory(prefix = "pcv3_receipt").toFile()
+        every { mockContext.filesDir } returns pcv3ReceiptDirectory
         pcv3ReceiptFile = File(pcv3ReceiptDirectory, "deny-only.receipt")
         // Clear any existing operation state
         OperationManager.clearOperation(shouldCleanupFiles = false)
@@ -64,7 +65,7 @@ class OperationManagerTest {
     
     @Test
     fun `startDecrypt returns error when no file selected`() = runTest {
-        val formData = TestDataBuilders.createDecryptFormData(
+        val formData = createOwnedDecryptFormData(
             copiedFilePath = "" // Empty file path
         )
         
@@ -124,7 +125,7 @@ class OperationManagerTest {
             )
             val result = OperationManager.startDecrypt(
                 mockContext,
-                TestDataBuilders.createDecryptFormData(
+                createOwnedDecryptFormData(
                     password = "",
                     keyfiles = listOf(keyfile),
                     decryptionInfo = TestDataBuilders.createDecryptionInfo(
@@ -163,7 +164,7 @@ class OperationManagerTest {
 
             val result = OperationManager.startDecrypt(
                 mockContext,
-                TestDataBuilders.createDecryptFormData(),
+                createOwnedDecryptFormData(),
             )
 
             verify(exactly = 0) { GoBridge.startOperation() }
@@ -432,7 +433,7 @@ class OperationManagerTest {
             // Establish an active (non-done) operation.
             val started = OperationManager.startDecrypt(
                 mockContext,
-                TestDataBuilders.createDecryptFormData()
+                createOwnedDecryptFormData()
             )
             assertTrue("startDecrypt should succeed", started.isSuccess)
 
@@ -515,7 +516,7 @@ class OperationManagerTest {
             // Establish an active (non-done) operation through the public seam.
             val started = OperationManager.startDecrypt(
                 mockContext,
-                TestDataBuilders.createDecryptFormData()
+                createOwnedDecryptFormData()
             )
             assertTrue("startDecrypt should succeed", started.isSuccess)
             assertNotNull("operation should be active", OperationManager.currentOperation.value)
@@ -572,7 +573,7 @@ class OperationManagerTest {
 
             val started = OperationManager.startDecrypt(
                 mockContext,
-                TestDataBuilders.createDecryptFormData()
+                createOwnedDecryptFormData()
             )
             assertTrue("startDecrypt should succeed", started.isSuccess)
 
@@ -664,7 +665,7 @@ class OperationManagerTest {
             source.writeText("old encrypted input")
             assertTrue(OperationManager.startDecrypt(
                 mockContext,
-                TestDataBuilders.createDecryptFormData(copiedFilePath = source.absolutePath),
+                createOwnedDecryptFormData(copiedFilePath = source.absolutePath),
             ).isSuccess)
             assertTrue(staged.parentFile!!.mkdirs())
             staged.writeText("old staged plaintext")
@@ -699,8 +700,8 @@ class OperationManagerTest {
     @Test
     fun `clearOperation retains failed state and still wipes staging when an operation file cannot be deleted`() = runTest {
         val filesDir = createTempDirectory(prefix = "opmgr_clear_file_failure").toFile()
-        val sourceDir = java.io.File(filesDir, "source")
-        val inputFile = java.io.File(sourceDir, "plaintext.txt")
+        val sourceDir = java.io.File(filesDir, "picocrypt_files")
+        val inputFile = java.io.File(sourceDir, "input_file.pcv")
         val stagedFile = java.io.File(filesDir, "picocrypt_files/staging/copy.txt")
         val formData = TestDataBuilders.createEncryptFormData(
             copiedFilePath = inputFile.absolutePath,
@@ -709,6 +710,7 @@ class OperationManagerTest {
         )
         val operationState = TestDataBuilders.createOperationState(
             inputFile = inputFile.absolutePath,
+            outputFile = java.io.File(sourceDir, "output_file").path,
             formData = formData,
         )
         every { mockContext.filesDir } returns filesDir
@@ -744,8 +746,8 @@ class OperationManagerTest {
             )
             assertTrue("The undeletable operation input must remain", inputFile.exists())
             assertFalse(
-                "Staging cleanup must still run even when operation-file cleanup fails",
-                java.io.File(filesDir, "picocrypt_files/staging").exists(),
+                "Staged plaintext must still be wiped when its shared parent blocks final directory unlink",
+                stagedFile.exists(),
             )
             assertTrue("Passwords must still be zeroed on cleanup failure", formData.passwordInput.all { it == '\u0000' })
 
@@ -770,7 +772,11 @@ class OperationManagerTest {
             password = "testpassword",
             confirmPassword = "testpassword",
         )
-        val operationState = TestDataBuilders.createOperationState(formData = formData)
+        val operationState = TestDataBuilders.createOperationState(
+            inputFile = java.io.File(internalDir, "input_file.pcv").path,
+            outputFile = java.io.File(internalDir, "output_file").path,
+            formData = formData,
+        )
         every { mockContext.filesDir } returns filesDir
 
         val stateField = OperationManager::class.java.getDeclaredField("_currentOperation")
@@ -858,7 +864,7 @@ class OperationManagerTest {
             // Establish an active DECRYPT operation with a valid password.
             val started = OperationManager.startDecrypt(
                 mockContext,
-                TestDataBuilders.createDecryptFormData()
+                createOwnedDecryptFormData()
             )
             assertTrue("startDecrypt should succeed", started.isSuccess)
 
@@ -914,10 +920,10 @@ class OperationManagerTest {
                 "A valid decrypt must establish the failed operation being retried",
                 OperationManager.startDecrypt(
                     mockContext,
-                    TestDataBuilders.createDecryptFormData(),
+                    createOwnedDecryptFormData(),
                 ).isSuccess,
             )
-            assertTrue("Test setup should create the runtime directory", internalDir.mkdirs())
+            assertTrue("Owned input already created the runtime directory", internalDir.isDirectory)
             staleIncomplete.writeBytes(byteArrayOf(1))
             assertTrue(
                 "Test setup should make the runtime directory read-only",
@@ -1037,7 +1043,7 @@ class OperationManagerTest {
                 GoBridge.startDecrypt(any(), any(), any(), any(), capture(optionsSlot))
             } returns Result.success(Unit)
 
-            val formData = TestDataBuilders.createDecryptFormData().copy(verifyFirst = true)
+            val formData = createOwnedDecryptFormData().copy(verifyFirst = true)
             val result = OperationManager.startDecrypt(mockContext, formData)
 
             assertTrue("startDecrypt should succeed", result.isSuccess)
@@ -1074,7 +1080,7 @@ class OperationManagerTest {
 
             val result = OperationManager.startDecrypt(
                 mockContext,
-                TestDataBuilders.createDecryptFormData()
+                createOwnedDecryptFormData()
             )
 
             assertTrue("startDecrypt should succeed", result.isSuccess)
@@ -1110,7 +1116,7 @@ class OperationManagerTest {
                 "startDecrypt setup should succeed",
                 OperationManager.startDecrypt(
                     mockContext,
-                    TestDataBuilders.createDecryptFormData()
+                    createOwnedDecryptFormData()
                 ).isSuccess
             )
             val retry = OperationManager.retryDecryptWithForce(mockContext)
@@ -1135,7 +1141,7 @@ class OperationManagerTest {
         // Fail loud instead of running the Go op on one chunk (confusing corrupt error).
         mockkObject(GoBridge)
         try {
-            val formData = TestDataBuilders.createDecryptFormData(
+            val formData = createOwnedDecryptFormData(
                 selectedFilename = "secret.pcv.0",
                 copiedFilePath = "/data/test/input_file"
             )
@@ -3509,6 +3515,21 @@ class OperationManagerTest {
                 operation.finishArchiveAction()
             }
         }
+    }
+
+    private fun createOwnedDecryptFormData(
+        selectedFilename: String = "test.pcv",
+        copiedFilePath: String? = null,
+        password: String = "testpassword",
+        keyfiles: List<KeyfileInfo> = emptyList(),
+        decryptionInfo: DecryptionInfo? = null,
+    ): FormData {
+        val inputPath = copiedFilePath ?: java.io.File(mockContext.filesDir, "picocrypt_files/input_file.pcv").let {
+            it.parentFile!!.mkdirs()
+            if (!it.exists()) it.writeText("owned copied legacy ciphertext; JNI is mocked")
+            it.path
+        }
+        return TestDataBuilders.createDecryptFormData(selectedFilename, inputPath, password, keyfiles, decryptionInfo)
     }
 
     private fun setCurrentOperationForTest(state: OperationState?) {

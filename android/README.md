@@ -6,7 +6,7 @@ This directory contains the Android app that integrates with the Go encryption b
 
 ### Prerequisites
 
-1. **Go Mobile**: Use exactly Go 1.27.1 and install Go mobile bindings
+1. **Go Mobile**: Use exactly Go 1.27.2 and install Go mobile bindings
    ```bash
    go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
    go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
@@ -35,9 +35,9 @@ This directory contains the Android app that integrates with the Go encryption b
    ```bash
    ./android/build-gomobile.sh
    ```
-   The script requires exactly Go 1.27.1 and the exact NDK revision in `ndk-version.txt`. It verifies
+   The script requires exactly Go 1.27.2 and the exact NDK revision in `ndk-version.txt`. It verifies
    that `gomobile` and `gobind` match the `golang.org/x/mobile` version in `src/go.mod` and were built
-   with Go 1.27.1 before generating `app/libs/picocrypt-mobile.aar`.
+   with Go 1.27.2 before generating `app/libs/picocrypt-mobile.aar`.
    The mise task selects these versions independently of the desktop development tools.
 
 2. **Build Android App**:
@@ -159,14 +159,15 @@ before release admission.
   or tracking — relevant for F-Droid/IzzyOnDroid inclusion (#155)
 - Release artifacts disable Google's dependency-metadata blob via `dependenciesInfo { includeInApk =
   false; includeInBundle = false }` (transparency requirement for F-Droid/IzzyOnDroid)
-- Release signing in GitHub Actions expects these repository secrets: `ANDROID_KEYSTORE_BASE64`,
-  `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. The workflow decodes the
-  keystore and maps them to the Gradle properties the build reads
-  (`ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH`, `…_KEYSTORE_PASSWORD`, `…_KEY_ALIAS`, `…_KEY_PASSWORD`)
-- F-Droid builds should run release Gradle tasks without maintainer signing properties; AGP then
-  emits unsigned release APKs for F-Droid to sign. GitHub release CI sets
-  `PICOCRYPT_REQUIRE_RELEASE_SIGNING=true` so official GitHub release builds still fail if signing
-  secrets are missing.
+- GitHub Actions builds and verifies unsigned release APKs without signing credentials.
+  A separate job with a read-only GitHub token validates the exact source-bound artifact,
+  then signs it offline with Android SDK tools using `ANDROID_KEYSTORE_BASE64`,
+  `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`.
+  Gradle never receives these secrets; signed APKs must match the pinned certificate
+  before publication.
+- F-Droid builds run release Gradle tasks without maintainer signing properties.
+  Reproducible builds must match the official signed APKs after signature copying;
+  an F-Droid 3.0 update requires those checks.
 - Release builds produce **64-bit per-ABI APKs** for `arm64-v8a` and `x86_64`
   plus a **64-bit universal** fallback APK. Android 8.0/API 26 remains the OS
   floor, but the device must support one of those 64-bit ABIs. Stable split

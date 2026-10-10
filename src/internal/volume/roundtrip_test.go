@@ -2788,6 +2788,17 @@ func TestDeniabilityWrongPasswordFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("Decrypt should have failed with wrong deniability password")
 	}
+	var authErr *header.AuthError
+	if !errors.As(err, &authErr) || !authErr.PasswordIncorrect {
+		t.Fatalf("deniability failure must offer password retry, never Force: %T %v", err, err)
+	}
+	if _, err := os.Stat(decryptedPath); !os.IsNotExist(err) {
+		t.Fatalf("wrong deniability password published plaintext: %v", err)
+	}
+	entries, directoryErr := os.ReadDir(tmpDir)
+	if directoryErr != nil || len(entries) != 2 {
+		t.Fatalf("wrong deniability password left a temporary output: %v, %v", entries, directoryErr)
+	}
 
 	// Error should indicate password issue (version decode fails)
 	t.Logf("Deniability wrong password correctly rejected: %v", err)

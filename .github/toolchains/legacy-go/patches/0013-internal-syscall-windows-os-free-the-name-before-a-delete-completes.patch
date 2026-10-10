@@ -1,0 +1,577 @@
+From: Vorapol Rinsatitnon <vorapol.r@pm.me>
+Date: Fri, 04 Sep 2026 17:22:25 +1200
+Subject: [PATCH] internal/syscall/windows, os: free the name before a delete completes
+
+Deleteat (CL 713480, Go 1.26) uses FILE_DISPOSITION_INFORMATION_EX, whose POSIX
+semantics remove the name immediately. That class was added in Windows 10,
+version 1607, and a file system can lack it on any Windows version. The
+fallback is FILE_DISPOSITION_INFO, which only marks the file for deletion, so
+the name stays in the directory until the last handle to the file is closed.
+os.Remove, which deletes through DeleteFileW, has the same problem on those
+kernels.
+
+	delete a file someone holds open  ->  the name stays
+	                                  ->  Stat still finds it
+	                                  ->  the name cannot be reused
+	                                  ->  RemoveAll: directory not empty
+
+Rename the file out of the way before marking it for deletion. The name is then
+free immediately, and the file is removed when the last handle closes, even if
+the process exits first. The file goes to the temporary directory when that is
+on the same volume. Otherwise it is renamed within its own directory, and
+RemoveAll of that directory still fails as before.
+
+os.Remove deletes a file from its parent directory through Deleteat first, and
+lets the old calls decide the result when that fails, so that every error
+stays the one they report. Windows 10, version 1607 and later take the POSIX
+path there, as DeleteFileW does. Measured on Windows 7 RTM and Windows 11.
+
+Local security adjustment: never replace an existing staging entry. Exercise
+Deleteat fallback with an occupied staging name and an unoccupied control.
+
+diff --git a/src/internal/syscall/windows/at_windows.go b/src/internal/syscall/windows/at_windows.go
+--- a/src/internal/syscall/windows/at_windows.go
++++ b/src/internal/syscall/windows/at_windows.go
+@@ -9,6 +9,7 @@
+ 	"internal/stringslite"
+ 	"runtime"
+ 	"structs"
++	"sync"
+ 	"syscall"
+ 	"unsafe"
+ )
+@@ -351,7 +352,7 @@
+ 	defer syscall.CloseHandle(h)
+ 
+ 	if TestDeleteatFallback {
+-		return deleteatFallback(h, objAttrs)
++		return deleteatFallback(h, objAttrs, name)
+ 	}
+ 
+ 	const FileDispositionInformationEx = 64
+@@ -386,7 +387,7 @@
+ 	case STATUS_INVALID_INFO_CLASS, // the operating system doesn't support FileDispositionInformationEx
+ 		STATUS_INVALID_PARAMETER, // the operating system doesn't support one of the flags
+ 		STATUS_NOT_SUPPORTED:     // the file system doesn't support FILE_DISPOSITION_INFORMATION_EX or one of the flags
+-		return deleteatFallback(h, objAttrs)
++		return deleteatFallback(h, objAttrs, name)
+ 	default:
+ 		return err.(NTStatus).Errno()
+ 	}
+@@ -404,9 +405,10 @@
+ // deleteatFallback is a deleteat implementation that strives
+ // for compatibility with older Windows versions and file systems
+ // over performance.
+-func deleteatFallback(h syscall.Handle, objAttrs *OBJECT_ATTRIBUTES) error {
++func deleteatFallback(h syscall.Handle, objAttrs *OBJECT_ATTRIBUTES, name string) error {
+ 	var data syscall.ByHandleFileInformation
+-	if err := syscall.GetFileInformationByHandle(h, &data); err == nil && data.FileAttributes&syscall.FILE_ATTRIBUTE_READONLY != 0 {
++	haveData := syscall.GetFileInformationByHandle(h, &data) == nil
++	if haveData && data.FileAttributes&syscall.FILE_ATTRIBUTE_READONLY != 0 {
+ 		// Remove read-only attribute. Open the name again, as it was previously open without FILE_WRITE_ATTRIBUTES
+ 		// access in order to maximize compatibility in the happy path. ReOpenFile would serve for a file, but it
+ 		// refuses a directory with ERROR_ACCESS_DENIED, and a read-only directory has to be cleared like any other.
+@@ -446,13 +448,128 @@
+ 		}
+ 	}
+ 
+-	return SetFileInformationByHandle(
++	// Without POSIX semantics the name lives on until the last handle to the
++	// file closes. A caller still holding the file open would go on seeing
++	// the name, and the directory holding it could not be removed. Move the
++	// file aside first, so that the name goes now and the file itself goes
++	// when the last handle does. Leave directories where they are, since
++	// deleting one has to fail while it still has entries and moving it
++	// first would scatter the tree.
++	aside := haveData &&
++		data.FileAttributes&syscall.FILE_ATTRIBUTE_DIRECTORY == 0 &&
++		setAsideForDelete(h, objAttrs, &data)
++
++	err := SetFileInformationByHandle(
+ 		h,
+ 		FileDispositionInfo,
+ 		unsafe.Pointer(&FILE_DISPOSITION_INFO{
+ 			DeleteFile: 1,
+ 		}),
+ 		uint32(unsafe.Sizeof(FILE_DISPOSITION_INFO{})),
++	)
++	if err != nil && aside {
++		// The file is staying. Put the name back unless something else has
++		// taken it since. The file is better off a stray in the staging
++		// directory than in the place of that.
++		if p16, err := syscall.UTF16FromString(name); err == nil {
++			renameTo(h, objAttrs.RootDirectory, p16[:len(p16)-1], false)
++		}
++	}
++	return err
++}
++
++// deleteStagingDir is a directory to park a file that cannot go away at once,
++// with the volume it sits on. Parking a file there takes it out of the tree a
++// caller is removing.
++type deleteStagingDir struct {
++	h      syscall.Handle
++	volume uint32
++	ok     bool
++}
++
++var deleteStaging = sync.OnceValue(func() (s deleteStagingDir) {
++	var buf []uint16
++	n := uint32(syscall.MAX_PATH)
++	for {
++		buf = make([]uint16, n)
++		var err error
++		n, err = syscall.GetTempPath(uint32(len(buf)), &buf[0])
++		if err != nil || n == 0 {
++			return
++		}
++		if n <= uint32(len(buf)) {
++			break
++		}
++	}
++	h, err := syscall.CreateFile(
++		&buf[0],
++		syscall.GENERIC_READ,
++		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
++		nil,
++		syscall.OPEN_EXISTING,
++		syscall.FILE_FLAG_BACKUP_SEMANTICS,
++		0,
++	)
++	if err != nil {
++		return
++	}
++	var data syscall.ByHandleFileInformation
++	if err := syscall.GetFileInformationByHandle(h, &data); err != nil {
++		syscall.CloseHandle(h)
++		return
++	}
++	return deleteStagingDir{h: h, volume: data.VolumeSerialNumber, ok: true}
++})
++
++// setAsideForDelete moves the file open on h off the name it was reached by,
++// preferring the staging directory so that the file leaves the tree entirely.
++// A rename cannot cross volumes, and it needs every other handle to the file
++// to share deletion, so this reports whether it happened.
++func setAsideForDelete(h syscall.Handle, objAttrs *OBJECT_ATTRIBUTES, data *syscall.ByHandleFileInformation) bool {
++	dir := objAttrs.RootDirectory
++	if s := deleteStaging(); s.ok && s.volume == data.VolumeSerialNumber {
++		dir = s.h
++	}
++	if dir == 0 {
++		return false
++	}
++	// The volume already keeps an identifier unique to the file, so two
++	// files set aside at the same time cannot land on the same name.
++	const hex = "0123456789abcdef"
++	name := make([]uint16, 0, len(".go-deleted-")+16)
++	for _, c := range ".go-deleted-" {
++		name = append(name, uint16(c))
++	}
++	for _, v := range [2]uint32{data.FileIndexHigh, data.FileIndexLow} {
++		for shift := 28; shift >= 0; shift -= 4 {
++			name = append(name, uint16(hex[(v>>uint(shift))&0xf]))
++		}
++	}
++	return renameTo(h, dir, name, false) == nil
++}
++
++// renameTo renames the file open on h to name within dir, which has to be on
++// the volume the file is already on. Whatever holds the name already is
++// replaced only if replace is set.
++func renameTo(h syscall.Handle, dir syscall.Handle, name []uint16, replace bool) error {
++	info := FILE_RENAME_INFORMATION{
++		RootDirectory: dir,
++	}
++	if replace {
++		info.ReplaceIfExists = 1
++	}
++	if len(name) > len(info.FileName) {
++		return syscall.EINVAL
++	}
++	copy(info.FileName[:], name)
++	info.FileNameLength = uint32(len(name) * 2)
++	const FileRenameInformation = 10
++	return NtSetInformationFile(
++		h,
++		&IO_STATUS_BLOCK{},
++		unsafe.Pointer(&info),
++		uint32(unsafe.Sizeof(info)),
++		FileRenameInformation,
+ 	)
+ }
+ 
+diff --git a/src/internal/syscall/windows/at_windows_test.go b/src/internal/syscall/windows/at_windows_test.go
+--- a/src/internal/syscall/windows/at_windows_test.go
++++ b/src/internal/syscall/windows/at_windows_test.go
+@@ -5,6 +5,7 @@
+ package windows_test
+ 
+ import (
++	"fmt"
+ 	"internal/syscall/windows"
+ 	"os"
+ 	"path/filepath"
+@@ -165,3 +166,179 @@
+ 		t.Fatal(err)
+ 	}
+ }
++
++// TestRenameToKeepsExisting checks that renameTo replaces what holds the name
++// only when told to. The caller that relies on this is a delete putting a name
++// back after moving the file aside, which needs the delete of a file that was
++// just renamed to fail, and nothing can arrange that, so the primitive is
++// tested instead.
++func TestRenameToKeepsExisting(t *testing.T) {
++	dir := t.TempDir()
++	for _, name := range []string{"a", "b"} {
++		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0600); err != nil {
++			t.Fatal(err)
++		}
++	}
++	open := func(name string, access uint32, flags uint32) syscall.Handle {
++		p, err := syscall.UTF16PtrFromString(filepath.Join(dir, name))
++		if err != nil {
++			t.Fatal(err)
++		}
++		h, err := syscall.CreateFile(p, access,
++			syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
++			nil, syscall.OPEN_EXISTING, flags, 0)
++		if err != nil {
++			t.Fatal(err)
++		}
++		return h
++	}
++	dh := open(".", syscall.GENERIC_READ, syscall.FILE_FLAG_BACKUP_SEMANTICS)
++	defer syscall.CloseHandle(dh)
++	// h holds DELETE access, which a reader that does not share deletion
++	// cannot coexist with, so it is closed before the file is read back.
++	h := open("a", windows.DELETE|windows.SYNCHRONIZE, 0)
++	closed := false
++	defer func() {
++		if !closed {
++			syscall.CloseHandle(h)
++		}
++	}()
++	b16, err := syscall.UTF16FromString("b")
++	if err != nil {
++		t.Fatal(err)
++	}
++	b16 = b16[:len(b16)-1]
++
++	if err := windows.RenameTo(h, dh, b16, false); err == nil {
++		t.Fatal("renameTo replaced b without being asked to")
++	}
++	if data, err := os.ReadFile(filepath.Join(dir, "b")); err != nil || string(data) != "b" {
++		t.Fatalf("after the refused rename, b holds %q, %v; want %q", data, err, "b")
++	}
++	if err := windows.RenameTo(h, dh, b16, true); err != nil {
++		t.Fatal(err)
++	}
++	syscall.CloseHandle(h)
++	closed = true
++	if data, err := os.ReadFile(filepath.Join(dir, "b")); err != nil || string(data) != "a" {
++		t.Fatalf("after the rename, b holds %q, %v; want %q", data, err, "a")
++	}
++}
++
++// A deletion may give up immediate name reuse when the staging name is taken,
++// but must never replace an unrelated file to obtain it.
++func TestDeleteatFallbackKeepsExistingStagingFile(t *testing.T) {
++	windows.TestDeleteatFallback = true
++	t.Cleanup(func() { windows.TestDeleteatFallback = false })
++
++	// The staging code uses GetTempPath, whereas os.TempDir may use
++	// GetTempPath2. Create the source on the staging directory's volume.
++	n := uint32(syscall.MAX_PATH)
++	var stagingDir string
++	for {
++		buf := make([]uint16, n)
++		var err error
++		n, err = syscall.GetTempPath(uint32(len(buf)), &buf[0])
++		if err != nil || n == 0 {
++			t.Fatalf("GetTempPath: %v, length %d", err, n)
++		}
++		if n <= uint32(len(buf)) {
++			stagingDir = syscall.UTF16ToString(buf[:n])
++			break
++		}
++	}
++	for _, occupied := range []bool{true, false} {
++		t.Run(fmt.Sprintf("occupied=%t", occupied), func(t *testing.T) {
++			dir, err := os.MkdirTemp(stagingDir, "TestDeleteatFallback-")
++			if err != nil {
++				t.Fatal(err)
++			}
++			t.Cleanup(func() { os.RemoveAll(dir) })
++			source := filepath.Join(dir, "source")
++			if err := os.WriteFile(source, []byte("source"), 0600); err != nil {
++				t.Fatal(err)
++			}
++			p, err := syscall.UTF16PtrFromString(source)
++			if err != nil {
++				t.Fatal(err)
++			}
++			h, err := syscall.CreateFile(p, syscall.GENERIC_READ,
++				syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
++				nil, syscall.OPEN_EXISTING, 0, 0)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer func() {
++				if h != syscall.InvalidHandle {
++					syscall.CloseHandle(h)
++				}
++			}()
++			var info syscall.ByHandleFileInformation
++			if err := syscall.GetFileInformationByHandle(h, &info); err != nil {
++				t.Fatal(err)
++			}
++			stagedName := fmt.Sprintf(".go-deleted-%08x%08x", info.FileIndexHigh, info.FileIndexLow)
++			stagedPath := filepath.Join(stagingDir, stagedName)
++			var foreignInfo os.FileInfo
++			if occupied {
++				foreign, err := os.OpenFile(stagedPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
++				if err != nil {
++					t.Fatal(err)
++				}
++				t.Cleanup(func() { os.Remove(stagedPath) })
++				_, writeErr := foreign.WriteString("foreign")
++				// File.Stat captures the ID now; os.Stat loads it lazily by name.
++				foreignInfo, err = foreign.Stat()
++				closeErr := foreign.Close()
++				if writeErr != nil || err != nil || closeErr != nil {
++					t.Fatalf("write foreign file: %v; stat: %v; close: %v", writeErr, err, closeErr)
++				}
++			} else if _, err := os.Lstat(stagedPath); !os.IsNotExist(err) {
++				t.Fatalf("staging name is not free: %v", err)
++			}
++			dirfd, err := syscall.Open(dir, syscall.O_RDONLY, 0)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer syscall.CloseHandle(dirfd)
++			if err := windows.Deleteat(dirfd, "source", 0); err != nil {
++				t.Fatal(err)
++			}
++			if !occupied {
++				if _, err := os.Stat(source); !os.IsNotExist(err) {
++					t.Fatalf("source name not freed while its handle remains open: %v", err)
++				}
++				entries, err := os.ReadDir(stagingDir)
++				if err != nil {
++					t.Fatal(err)
++				}
++				found := false
++				for _, entry := range entries {
++					found = found || entry.Name() == stagedName
++				}
++				if !found {
++					t.Fatal("removed file was not moved into staging")
++				}
++			}
++			if err := syscall.CloseHandle(h); err != nil {
++				t.Fatal(err)
++			}
++			h = syscall.InvalidHandle
++			if _, err := os.Stat(source); !os.IsNotExist(err) {
++				t.Fatalf("source remains after its last handle closed: %v", err)
++			}
++			if occupied {
++				data, err := os.ReadFile(stagedPath)
++				if err != nil || string(data) != "foreign" {
++					t.Fatalf("foreign staging file holds %q, %v; want %q", data, err, "foreign")
++				}
++				after, err := os.Stat(stagedPath)
++				if err != nil || !os.SameFile(foreignInfo, after) {
++					t.Fatalf("foreign staging file identity changed: %v", err)
++				}
++			} else if _, err := os.Stat(stagedPath); !os.IsNotExist(err) {
++				t.Fatalf("staged source remains after its last handle closed: %v", err)
++			}
++		})
++	}
++}
+diff --git a/src/internal/syscall/windows/export_windows_test.go b/src/internal/syscall/windows/export_windows_test.go
+new file mode 100644
+--- /dev/null
++++ b/src/internal/syscall/windows/export_windows_test.go
+@@ -0,0 +1,7 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package windows
++
++var RenameTo = renameTo
+diff --git a/src/os/file_windows.go b/src/os/file_windows.go
+--- a/src/os/file_windows.go
++++ b/src/os/file_windows.go
+@@ -228,6 +228,16 @@
+ // Remove removes the named file or directory.
+ // If there is an error, it will be of type [*PathError].
+ func Remove(name string) error {
++	// A file is first deleted by name from its parent directory, the way
++	// Root.Remove and RemoveAll delete, so that a file another handle holds
++	// open gives its name up at once on a kernel without POSIX delete
++	// semantics. DeleteFileW keeps the name there until the last handle
++	// closes. Whatever makes that fail, the calls below decide the result, so
++	// that every error is the one they have always reported. A name ending in
++	// a separator is left to them as well, since they refuse it.
++	if len(name) > 0 && !IsPathSeparator(name[len(name)-1]) && removeFileAt(name) == nil {
++		return nil
++	}
+ 	p, e := syscall.UTF16PtrFromString(fixLongPath(name))
+ 	if e != nil {
+ 		return &PathError{Op: "remove", Path: name, Err: e}
+@@ -264,6 +274,19 @@
+ 	return &PathError{Op: "remove", Path: name, Err: e}
+ }
+ 
++// removeFileAt deletes name, which must not be a directory, from its parent
++// directory through Deleteat. Reading the parent's attributes is all the
++// access that takes, as in RemoveAll.
++func removeFileAt(name string) error {
++	parentDir, base := splitPath(name)
++	parent, err := OpenFile(parentDir, O_WRONLY|O_RDWR, 0)
++	if err != nil {
++		return err
++	}
++	defer parent.Close()
++	return removefileat(syscall.Handle(parent.Fd()), base)
++}
++
+ func rename(oldname, newname string) error {
+ 	e := windows.Rename(fixLongPath(oldname), fixLongPath(newname))
+ 	if e != nil {
+diff --git a/src/os/path_windows_test.go b/src/os/path_windows_test.go
+--- a/src/os/path_windows_test.go
++++ b/src/os/path_windows_test.go
+@@ -266,6 +266,127 @@
+ 	}
+ }
+ 
++// TestRemoveFallbackOpenFile checks that a file removed while it is still open
++// gives its name up at once, through Root.Remove and through os.Remove. Only
++// the fallback is covered. Windows 10, version 1607 and later ask the kernel
++// for POSIX semantics and never reach it, and there is no way to ask a kernel
++// that lacks them to behave as though it had them. DeleteFileW frees the name
++// on its own there as well, so the staging directory is also checked for the
++// moved copy, which is what shows that the fallback ran at all.
++func TestRemoveFallbackOpenFile(t *testing.T) {
++	windows.TestDeleteatFallback = true
++	t.Cleanup(func() { windows.TestDeleteatFallback = false })
++
++	// movedCopy reports whether the staging directory, the temporary
++	// directory on the same volume as t.TempDir, lists the copy of the file
++	// open on f, which the fallback names after the file's identifier. The
++	// directory is listed rather than the copy looked up, because a file
++	// marked for deletion can still be listed where it cannot be opened.
++	movedCopy := func(f *os.File) bool {
++		var info syscall.ByHandleFileInformation
++		if err := syscall.GetFileInformationByHandle(syscall.Handle(f.Fd()), &info); err != nil {
++			t.Fatal(err)
++		}
++		want := fmt.Sprintf(".go-deleted-%08x%08x", info.FileIndexHigh, info.FileIndexLow)
++		entries, err := os.ReadDir(os.TempDir())
++		if err != nil {
++			t.Fatal(err)
++		}
++		for _, e := range entries {
++			if e.Name() == want {
++				return true
++			}
++		}
++		return false
++	}
++
++	for _, tt := range []struct {
++		name   string
++		remove func(root *os.Root, path string) error
++	}{
++		{"Root", func(root *os.Root, path string) error { return root.Remove(filepath.Base(path)) }},
++		{"os", func(root *os.Root, path string) error { return os.Remove(path) }},
++	} {
++		t.Run(tt.name, func(t *testing.T) {
++			dir := t.TempDir()
++			name := filepath.Join(dir, "file")
++			if err := os.WriteFile(name, []byte("old"), 0600); err != nil {
++				t.Fatal(err)
++			}
++
++			// Hold the file open across the removal, the way a leaked handle
++			// would. Root.Open shares deletion, which is what lets the file
++			// be removed while the handle is still there.
++			root, err := os.OpenRoot(dir)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer root.Close()
++			f, err := root.Open("file")
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer f.Close()
++
++			if err := tt.remove(root, name); err != nil {
++				t.Fatal(err)
++			}
++			if _, err := os.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
++				t.Errorf("Lstat after Remove = %v, want ErrNotExist", err)
++			}
++			if !movedCopy(f) {
++				t.Error("the moved copy is not in the staging directory, so the fallback did not run")
++			}
++			// The name is free, so it can be taken again.
++			if err := os.WriteFile(name, []byte("new"), 0600); err != nil {
++				t.Fatal(err)
++			}
++			b, err := os.ReadFile(name)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if string(b) != "new" {
++				t.Errorf("read %q, want %q", b, "new")
++			}
++		})
++	}
++}
++
++// TestRemoveAllFallbackOpenFile checks that a tree comes down while a file in
++// it is still open. See TestRemoveFallbackOpenFile on why only the fallback is
++// covered.
++func TestRemoveAllFallbackOpenFile(t *testing.T) {
++	windows.TestDeleteatFallback = true
++	t.Cleanup(func() { windows.TestDeleteatFallback = false })
++
++	dir := t.TempDir()
++	sub := filepath.Join(dir, "sub")
++	if err := os.Mkdir(sub, 0777); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(sub, "file"), []byte("data"), 0600); err != nil {
++		t.Fatal(err)
++	}
++
++	root, err := os.OpenRoot(dir)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer root.Close()
++	f, err := root.Open("sub/file")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer f.Close()
++
++	if err := os.RemoveAll(sub); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := os.Stat(sub); !errors.Is(err, fs.ErrNotExist) {
++		t.Errorf("Stat after RemoveAll = %v, want ErrNotExist", err)
++	}
++}
++
+ func testLongPathAbs(t *testing.T, target string) {
+ 	t.Helper()
+ 	testWalkFn := func(path string, info os.FileInfo, err error) error {

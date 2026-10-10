@@ -44,6 +44,7 @@ type workflowDispatchInput struct {
 
 type workflowJob struct {
 	Name            string              `yaml:"name"`
+	Uses            string              `yaml:"uses"`
 	If              string              `yaml:"if"`
 	Needs           any                 `yaml:"needs"`
 	RunsOn          string              `yaml:"runs-on"`
@@ -53,6 +54,7 @@ type workflowJob struct {
 	Environment     any                 `yaml:"environment"`
 	Permissions     map[string]string   `yaml:"permissions"`
 	Env             map[string]string   `yaml:"env"`
+	Outputs         map[string]string   `yaml:"outputs"`
 	Steps           []workflowStep      `yaml:"steps"`
 	Strategy        struct {
 		FailFast *bool `yaml:"fail-fast"`
@@ -163,12 +165,14 @@ func mustEffectivePermission(t *testing.T, workflow workflowDoc, job workflowJob
 	t.Helper()
 
 	if job.Permissions != nil {
-		if got, ok := job.Permissions[key]; ok {
-			if got != want {
-				t.Fatalf("job permission %q = %q, want %q", key, got, want)
-			}
-			return
+		got := job.Permissions[key]
+		if got == "" {
+			got = "none"
 		}
+		if got != want {
+			t.Fatalf("job permission %q = %q, want %q", key, got, want)
+		}
+		return
 	}
 
 	mustPermission(t, workflow.Permissions, key, want)

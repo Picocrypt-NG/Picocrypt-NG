@@ -1,6 +1,6 @@
 module Picocrypt-NG
 
-go 1.27.1
+go 1.27.2
 
 require (
 	fyne.io/fyne/v2 v2.8.1
@@ -52,7 +52,7 @@ require (
 	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/mobile v0.0.0-20260908204917-8b95e45f8d3e // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/tools v0.51.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect

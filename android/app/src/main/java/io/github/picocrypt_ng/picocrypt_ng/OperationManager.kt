@@ -2318,7 +2318,7 @@ object OperationManager {
         }
 
     private fun FormData.passwordBytesForGo(): ByteArray =
-        if (hasPassword) passwordInput.toUtf8BytesSecure() else ByteArray(0)
+        if (hasPassword) passwordInput.toLegacyUtf8BytesSecure() else ByteArray(0)
 
     private fun progressError(progressState: ProgressState, type: OperationType): AppError? =
         if (progressState.done && progressState.status.code == OperationStatus.ERROR) {
@@ -2448,7 +2448,17 @@ object OperationManager {
         context: Context,
         formData: FormData
     ): Result<String> = legacyOperationMutex.withLock {
-        startDecryptLocked(context, formData)
+        val ownedForm = formData.copy(
+            passwordInput = formData.passwordInput.copyOf(),
+            confirmPasswordInput = formData.confirmPasswordInput.copyOf(),
+            keyfileFilenames = formData.keyfileFilenames.toList(),
+        )
+        try {
+            startDecryptLocked(context, ownedForm)
+        } finally {
+            // IO result delivery can be cancelled after native acceptance transfers ownership.
+            if (_currentOperation.value?.formData !== ownedForm) ownedForm.clearPasswords()
+        }
     }
 
     private suspend fun startDecryptLocked(
@@ -2468,6 +2478,12 @@ object OperationManager {
 
         if (!formData.isPasswordValid) {
             return@withContext Result.failure(AppError.ValidationError.InvalidPassword)
+        }
+
+        if (!FileCopyService.isOwnedLegacyInput(context, formData.copiedFilePath)) {
+            return@withContext Result.failure(AppError.OperationError.FileNotFound(
+                technicalMessage = "Legacy input is not an owned regular copy",
+            ))
         }
 
         // Clean up old files before starting new operation to prevent contamination
@@ -2757,14 +2773,17 @@ object OperationManager {
             return@withContext Result.failure(AppError.ValidationError.InvalidPassword)
         }
 
+        if (!FileCopyService.isOwnedLegacyInput(context, operation.inputFile)) {
+            return@withContext Result.failure(AppError.OperationError.FileNotFound(
+                technicalMessage = "Legacy retry input is not an owned regular copy",
+            ))
+        }
+
         if (!FileCopyService.cleanupOperationFilesBeforeStart(context)) {
             return@withContext Result.failure(AppError.FileError.DeleteFailed())
         }
 
-        // Clear the current operation state
-        _currentOperation.value = null
-
-        // Start new operation with force decrypt enabled
+        // Keep the credential owner until the replacement start is confirmed.
         val operationID = GoBridge.startOperation().getOrElse { return@withContext Result.failure(it) }
         
         val options = DecryptOptions(

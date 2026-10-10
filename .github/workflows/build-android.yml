@@ -21,8 +21,16 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+      manifest-sha256: ${{ steps.prepare-unsigned.outputs.manifest-sha256 }}
+      aar-sha256: ${{ steps.prepare-unsigned.outputs.aar-sha256 }}
+      version: ${{ steps.version.outputs.version }}
+      version-code: ${{ steps.version.outputs.version-code }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Validate Gradle Wrapper
       uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
@@ -30,7 +38,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.27.1"
+        go-version: "1.27.2"
         cache-dependency-path: src/go.sum
 
     - name: Install gomobile
@@ -71,16 +79,25 @@ jobs:
           ${{ runner.os }}-gradle-
 
     - name: Compute Android version metadata
+      id: version
       run: |
+        set -euo pipefail
         VERSION=$(cat VERSION)
+        [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || exit 1
         IFS='.' read -r major minor patch <<< "$VERSION"
         major=${major:-0}
         minor=${minor:-0}
         patch=${patch:-0}
         VERSION_CODE=$((10#$major * 10000 + 10#$minor * 100 + 10#$patch))
-        echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-        echo "ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_NAME=$VERSION" >> "$GITHUB_ENV"
-        echo "ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+        {
+          echo "version=$VERSION"
+          echo "version-code=$VERSION_CODE"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo "VERSION=$VERSION"
+          echo "ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_NAME=$VERSION"
+          echo "ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE=$VERSION_CODE"
+        } >> "$GITHUB_ENV"
 
     - name: Build Go Mobile AAR
       working-directory: android
@@ -108,8 +125,185 @@ jobs:
         if-no-files-found: error
         compression-level: 9
 
-  release:
+    - name: Build unsigned release APKs
+      working-directory: android
+      run: ./gradlew --no-daemon :app:assembleRelease
+
+    - name: Verify exact unsigned release APK contract
+      working-directory: android
+      run: |
+        ./verify-release-apks.sh \
+          app/build/outputs/apk/release \
+          "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_NAME" \
+          "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE" \
+          io.github.picocrypt_ng.picocrypt_ng \
+          unsigned
+
+    - name: Bind unsigned APKs to the source and AAR
+      id: prepare-unsigned
+      run: |
+        set -euo pipefail
+        mkdir unsigned-release
+        cp android/app/build/outputs/apk/release/app-*-release-unsigned.apk unsigned-release/
+        aar_sha256="$(sha256sum android/app/libs/picocrypt-mobile.aar | cut -d' ' -f1)"
+        for file in unsigned-release/*.apk; do
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 "$file"
+        done
+        jq -n \
+          --arg source "$GITHUB_SHA" \
+          --arg version "$VERSION" \
+          --arg code "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE" \
+          --arg aar "$aar_sha256" \
+          --arg arm64 "$(sha256sum unsigned-release/app-arm64-v8a-release-unsigned.apk | cut -d' ' -f1)" \
+          --arg x86_64 "$(sha256sum unsigned-release/app-x86_64-release-unsigned.apk | cut -d' ' -f1)" \
+          --arg universal "$(sha256sum unsigned-release/app-universal-release-unsigned.apk | cut -d' ' -f1)" \
+          '{source: $source, version: $version, baseVersionCode: $code, aarSha256: $aar,
+            apks: {"app-arm64-v8a-release-unsigned.apk": $arm64,
+                   "app-x86_64-release-unsigned.apk": $x86_64,
+                   "app-universal-release-unsigned.apk": $universal}}' \
+          > unsigned-release/build-inputs.json
+        {
+          echo "aar-sha256=$aar_sha256"
+          echo "manifest-sha256=$(sha256sum unsigned-release/build-inputs.json | cut -d' ' -f1)"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Upload unsigned release APKs
+      id: upload-unsigned
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: unsigned-android
+        path: unsigned-release/
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 1
+
+  sign:
     needs: build
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload-signed.outputs.artifact-id }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Download source-bound unsigned APKs
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        artifact-ids: ${{ needs.build.outputs.artifact-id }}
+        path: unsigned-release
+        merge-multiple: true
+
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      with:
+        distribution: "temurin"
+        java-version: "21"
+
+    - name: Install offline APK signing tools
+      run: |
+        yes | sdkmanager --licenses || true
+        sdkmanager "build-tools;36.0.0"
+
+    - name: Validate unsigned signing inputs before loading secrets
+      env:
+        MANIFEST_SHA256: ${{ needs.build.outputs.manifest-sha256 }}
+        AAR_SHA256: ${{ needs.build.outputs.aar-sha256 }}
+        VERSION: ${{ needs.build.outputs.version }}
+        VERSION_CODE: ${{ needs.build.outputs.version-code }}
+      run: |
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+        test "$(<VERSION)" = "$VERSION"
+        test "$(sha256sum unsigned-release/build-inputs.json | cut -d' ' -f1)" = "$MANIFEST_SHA256"
+        jq -e --arg source "$GITHUB_SHA" --arg version "$VERSION" --arg code "$VERSION_CODE" --arg aar "$AAR_SHA256" '
+          .source == $source and .version == $version and .baseVersionCode == $code and
+          .aarSha256 == $aar and ($aar | test("^[0-9a-f]{64}$")) and
+          (.apks | keys) == ["app-arm64-v8a-release-unsigned.apk", "app-universal-release-unsigned.apk", "app-x86_64-release-unsigned.apk"] and
+          (.apks | to_entries | all(.value | test("^[0-9a-f]{64}$")))
+        ' unsigned-release/build-inputs.json > /dev/null
+        expected_files=$(printf '%s\n' app-arm64-v8a-release-unsigned.apk app-universal-release-unsigned.apk app-x86_64-release-unsigned.apk build-inputs.json)
+        test "$(find unsigned-release -mindepth 1 -printf '%f\n' | LC_ALL=C sort)" = "$expected_files"
+        while IFS=$'\t' read -r filename digest; do
+          test -f "unsigned-release/$filename"
+          test ! -L "unsigned-release/$filename"
+          test "$(sha256sum "unsigned-release/$filename" | cut -d' ' -f1)" = "$digest"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 "unsigned-release/$filename"
+        done < <(jq -r '.apks | to_entries[] | [.key, .value] | @tsv' unsigned-release/build-inputs.json)
+        android/verify-release-apks.sh unsigned-release "$VERSION" "$VERSION_CODE" io.github.picocrypt_ng.picocrypt_ng unsigned
+
+    - name: Compile the SDK signing launcher before loading secrets
+      run: |
+        javac -cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" \
+          -d "$RUNNER_TEMP/android-signing-tool" .github/scripts/AndroidApkSigner.java
+
+    - name: Sign verified APKs with the offline SDK
+      env:
+        ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      run: |
+        set -euo pipefail
+        umask 077
+        : "${ANDROID_KEYSTORE_BASE64:?Missing Android keystore}"
+        : "${ANDROID_KEYSTORE_PASSWORD:?Missing Android keystore password}"
+        : "${ANDROID_KEY_PASSWORD:?Missing Android key password}"
+        : "${ANDROID_KEY_ALIAS:?Missing Android key alias}"
+        signing_temp=$(mktemp -d "$RUNNER_TEMP/android-signing.XXXXXX")
+        cleanup() {
+          result=$?
+          rm -rf -- "$signing_temp"
+          if [ "$result" -ne 0 ]; then rm -rf -- signed-apks; fi
+        }
+        trap cleanup EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$signing_temp/release.keystore"
+        unset ANDROID_KEYSTORE_BASE64
+        mkdir signed-apks
+        for abi in arm64-v8a x86_64 universal; do
+          if ! java --enable-native-access=ALL-UNNAMED -Xmx1024M \
+            -cp "$RUNNER_TEMP/android-signing-tool:$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" \
+            AndroidApkSigner "$signing_temp/release.keystore" \
+            "signed-apks/app-$abi-release.apk" \
+            "unsigned-release/app-$abi-release-unsigned.apk" > "$signing_temp/signing.log" 2>&1; then
+            echo "::error::APK signing failed; private signing diagnostics withheld" >&2
+            exit 1
+          fi
+        done
+
+    - name: Verify exact signed release APK contract
+      env:
+        VERSION: ${{ needs.build.outputs.version }}
+        VERSION_CODE: ${{ needs.build.outputs.version-code }}
+        PICOCRYPT_ANDROID_SIGNING_CERT_SHA256_FILE: android/release-signing-cert-sha256.txt
+      run: |
+        android/verify-release-apks.sh signed-apks "$VERSION" "$VERSION_CODE" io.github.picocrypt_ng.picocrypt_ng signed
+        mkdir out
+        cp signed-apks/app-arm64-v8a-release.apk out/Picocrypt-NG-android-arm64-v8a.apk
+        cp signed-apks/app-x86_64-release.apk out/Picocrypt-NG-android-x86_64.apk
+        cp signed-apks/app-universal-release.apk out/Picocrypt-NG-android-universal.apk
+
+    - name: Upload signed release APKs
+      id: upload-signed
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: signed-android
+        path: out/
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 1
+
+  release:
+    needs: [build, sign]
     if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
     concurrency:
@@ -122,101 +316,32 @@ jobs:
       attestations: write
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
-    - name: Validate Gradle Wrapper
-      uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
-
-    - name: Download artifact
+    - name: Download verified signed APKs
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
-        name: build-android-gomobile
-        path: android/app/libs
-
-    - name: Set up Android SDK
-      uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
-
-    - name: Install Android SDK packages
-      run: |
-        yes | sdkmanager --licenses || true
-        sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
-
-    - name: Set up JDK 21
-      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-      with:
-        distribution: "temurin"
-        java-version: "21"
-
-    - name: Cache Gradle dependencies
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-          android/.gradle
-        key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-
+        artifact-ids: ${{ needs.sign.outputs.artifact-id }}
+        path: out
+        merge-multiple: true
 
     - name: Get version tag
-      run: |
-        VERSION=$(cat VERSION)
-        echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-        IFS='.' read -r major minor patch <<< "$VERSION"
-        major=${major:-0}
-        minor=${minor:-0}
-        patch=${patch:-0}
-        VERSION_CODE=$((10#$major * 10000 + 10#$minor * 100 + 10#$patch))
-        echo "ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_NAME=$VERSION" >> "$GITHUB_ENV"
-        echo "ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
-
-    - name: Build Signed Release APK
-      working-directory: android
       env:
-        ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-        ORG_GRADLE_PROJECT_PICOCRYPT_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-        ORG_GRADLE_PROJECT_PICOCRYPT_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        EXPECTED_VERSION: ${{ needs.build.outputs.version }}
       run: |
         set -euo pipefail
-        : "${ANDROID_KEYSTORE_BASE64:?Missing ANDROID_KEYSTORE_BASE64 secret}"
-        : "${ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PASSWORD:?Missing ANDROID_KEYSTORE_PASSWORD secret}"
-        : "${ORG_GRADLE_PROJECT_PICOCRYPT_KEY_ALIAS:?Missing ANDROID_KEY_ALIAS secret}"
-        : "${ORG_GRADLE_PROJECT_PICOCRYPT_KEY_PASSWORD:?Missing ANDROID_KEY_PASSWORD secret}"
-        KEYSTORE_PATH=$(mktemp "$RUNNER_TEMP/picocrypt-release.XXXXXX.keystore")
-        trap 'rm -f -- "$KEYSTORE_PATH"' EXIT
-        printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
-        chmod 600 "$KEYSTORE_PATH"
-        export ORG_GRADLE_PROJECT_PICOCRYPT_KEYSTORE_PATH="$KEYSTORE_PATH"
-        chmod +x gradlew
-        ./gradlew --no-daemon :app:assembleRelease \
-          -PPICOCRYPT_REQUIRE_RELEASE_SIGNING=true
-
-    - name: Verify exact release APK contract
-      working-directory: android
-      env:
-        PICOCRYPT_ANDROID_SIGNING_CERT_SHA256_FILE: release-signing-cert-sha256.txt
-      run: |
-        ./verify-release-apks.sh \
-          app/build/outputs/apk/release \
-          "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_NAME" \
-          "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE" \
-          io.github.picocrypt_ng.picocrypt_ng \
-          signed
-
-    - name: Prepare artifacts
-      run: |
-        mkdir -p out
-        src=android/app/build/outputs/apk/release
-        # Release builds contain only the supported 64-bit ABIs plus a universal fallback.
-        cp "$src/app-arm64-v8a-release.apk" out/Picocrypt-NG-android-arm64-v8a.apk
-        cp "$src/app-x86_64-release.apk"    out/Picocrypt-NG-android-x86_64.apk
-        cp "$src/app-universal-release.apk" out/Picocrypt-NG-android-universal.apk
+        VERSION=$(cat VERSION)
+        test "$VERSION" = "$EXPECTED_VERSION"
+        echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
     - name: Sign and attest artifacts
       uses: ./.github/actions/sign-and-attest
       with:
         paths: |
-          out/*.apk
+          out/Picocrypt-NG-android-arm64-v8a.apk
+          out/Picocrypt-NG-android-x86_64.apk
+          out/Picocrypt-NG-android-universal.apk
 
     - name: Generate release notes
       uses: ./.github/actions/release-body

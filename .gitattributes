@@ -34,3 +34,9 @@ dist/snapcraft/snapcraft.yaml       text eol=lf
 dist/windows/installer.nsi          text eol=lf
 dist/windows/manifest.xml           text eol=lf
 dist/windows/versioninfo.rc         text eol=lf
+
+# Compatibility patches have independently pinned SHA-256 digests.
+.github/toolchains/legacy-go/patches/*.patch text eol=lf
+
+# Shared POSIX release manifest is sourced by native Windows policy checks.
+.github/actions/stage-release/release-manifest.sh text eol=lf

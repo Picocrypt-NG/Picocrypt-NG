@@ -18,6 +18,19 @@ import (
 )
 
 func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
+	worker := os.Getenv("PICOCRYPT_TEST_NATIVE_ARCHIVE_WORKER")
+	fixtureDirectory := os.Getenv("PICOCRYPT_TEST_NATIVE_ARCHIVE_FIXTURES")
+	if worker == "" {
+		fixtureDirectory = ""
+	}
+	isolated := runtime.GOOS == "darwin" && worker == ""
+	if isolated {
+		fixtureDirectory = t.TempDir()
+		runNativeArchiveWorker(t, "fixtures", fixtureDirectory)
+	}
+	if worker != "" && fixtureDirectory == "" {
+		t.Fatal("native archive worker requires its fixture directory")
+	}
 	fixture := requireNormalFixture(t, loadNormalFixtureManifest(t).FixturesByID(), normalArchiveFixtureID)
 	zipBytes := readNormalFixturePlaintext(t, fixture.Plaintext)
 	factors := func() *pcv3credential.FactorRequest {
@@ -47,14 +60,41 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 		}
 		return encoded.Bytes()
 	}
-	// Keyfile-only credentials still run the fixed production KDF. Reuse each
-	// serialized fixture while each read performs its own credential derivation.
+	// Keyfile-only credentials still run the fixed production KDF. On Darwin,
+	// separate fixture setup from the independent archive cases: released Go
+	// heap pages need not immediately rejoin the OS free-page pool. Mandatory
+	// facade tests separately exercise sequential writes and reads in one process.
 	ordinaryBytes := []byte("ordinary authenticated file")
-	rawZIP := encode(PayloadKindRaw, zipBytes)
-	rawOrdinary := encode(PayloadKindRaw, ordinaryBytes)
-	declaredArchive := encode(PayloadKindArchive, zipBytes)
+	var rawZIP, rawOrdinary, declaredArchive []byte
+	if fixtureDirectory == "" || worker == "fixtures" {
+		rawZIP = encode(PayloadKindRaw, zipBytes)
+		rawOrdinary = encode(PayloadKindRaw, ordinaryBytes)
+		declaredArchive = encode(PayloadKindArchive, zipBytes)
+		if worker == "fixtures" {
+			for name, encoded := range map[string][]byte{
+				"raw-zip": rawZIP, "raw-ordinary": rawOrdinary, "declared-archive": declaredArchive,
+			} {
+				if err := os.WriteFile(filepath.Join(fixtureDirectory, name), encoded, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Log("native archive worker completed: fixtures")
+			return
+		}
+	} else {
+		for name, encoded := range map[string]*[]byte{
+			"raw-zip": &rawZIP, "raw-ordinary": &rawOrdinary, "declared-archive": &declaredArchive,
+		} {
+			var err error
+			*encoded, err = os.ReadFile(filepath.Join(fixtureDirectory, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	t.Logf("retained serialized fixture lengths: raw ZIP=%d raw ordinary=%d declared archive=%d total=%d", len(rawZIP), len(rawOrdinary), len(declaredArchive), len(rawZIP)+len(rawOrdinary)+len(declaredArchive))
-	for _, test := range []struct {
+	selected := false
+	for index, test := range []struct {
 		name       string
 		kind       PayloadKind
 		prepare    bool
@@ -72,7 +112,23 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 		{"damaged raw ZIP grants no handoff", PayloadKindRaw, true, zipBytes, rawZIP, false, "", true},
 		{"raw ZIP SAF refusal consumes and cleans", PayloadKindRaw, true, zipBytes, rawZIP, true, "saf", false},
 	} {
+		selector := strconv.Itoa(index)
+		if worker != "" && worker != selector {
+			continue
+		}
+		selected = true
 		t.Run(test.name, func(t *testing.T) {
+			if isolated {
+				runNativeArchiveWorker(t, selector, fixtureDirectory)
+				return
+			}
+			if worker != "" {
+				t.Cleanup(func() {
+					if !t.Failed() && !t.Skipped() {
+						t.Logf("native archive worker completed: %s", worker)
+					}
+				})
+			}
 			encoded := bytes.Clone(test.encoded)
 			if test.corruptTag {
 				_, structure, err := Probe(bytes.NewReader(encoded), int64(len(encoded)))
@@ -104,13 +160,13 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 			}
 			if test.corruptTag {
 				if result.Outcome() != OutcomeAuthenticationFailed || callbacks != 0 || handoff != nil {
-					t.Fatalf("damaged payload reached an output action: %v callbacks=%d", result.Outcome(), callbacks)
+					t.Fatalf("damaged payload result: outcome=%v stage=%v code=%v callbacks=%d handoff=%v; want authentication failure without output authority", result.Outcome(), result.Stage(), result.Code(), callbacks, handoff)
 				}
 				assertNativeArchiveStage(t, parent, target, 0)
 				return
 			}
 			if result.Outcome() != OutcomeSuccess || callbacks != 1 || (handoff != nil) != test.archive {
-				t.Fatalf("archive disposition mismatch: %v callbacks=%d handoff=%v", result.Outcome(), callbacks, handoff)
+				t.Fatalf("archive disposition mismatch: outcome=%v stage=%v code=%v callbacks=%d handoff=%v", result.Outcome(), result.Stage(), result.Code(), callbacks, handoff)
 			}
 			if !test.archive {
 				got, err := os.ReadFile(target)
@@ -160,6 +216,36 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 				}
 			}
 		})
+	}
+	if worker != "" && !selected {
+		t.Fatalf("unknown native archive worker: %q", worker)
+	}
+}
+
+func runNativeArchiveWorker(t *testing.T, selector, directory string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Minute)
+	if testDeadline, ok := t.Deadline(); ok {
+		deadline = testDeadline
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0],
+		"-test.run=^TestNativePrepareArchiveUsesAuthenticatedPlaintext$",
+		"-test.v", "-test.timeout="+time.Until(deadline).String())
+	command.Env = append(os.Environ(),
+		"PICOCRYPT_TEST_NATIVE_ARCHIVE_WORKER="+selector,
+		"PICOCRYPT_TEST_NATIVE_ARCHIVE_FIXTURES="+directory)
+	command.WaitDelay = time.Second
+	output, err := command.CombinedOutput()
+	t.Logf("native archive worker %s:\n%s", selector, output)
+	if err != nil {
+		t.Fatalf("native archive worker %s failed: %v", selector, err)
+	}
+	// A Go test binary can exit successfully without matching any test. Require
+	// completion from the selected fixture setup or non-skipped archive body.
+	if !bytes.Contains(output, []byte("native archive worker completed: "+selector+"\n")) {
+		t.Fatalf("native archive worker %s did not complete its selected body", selector)
 	}
 }
 

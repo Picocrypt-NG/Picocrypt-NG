@@ -158,6 +158,7 @@ fun PasswordCard(
     modifier: Modifier = Modifier
 ) {
     val formData by viewModel.formState.collectAsState()
+    val sensitiveInputReset by viewModel.sensitiveInputReset.collectAsState()
     if (!(formData.isEncrypt || formData.isDecrypt)) {
         return
     }
@@ -177,8 +178,12 @@ fun PasswordCard(
             val passwordState = remember { TextFieldState() }
             val confirmPasswordState = remember { TextFieldState() }
 
-            // Reset the secure buffers when the selected file changes.
-            DisposableEffect(formData.copiedFilePath) {
+            LaunchedEffect(formData.copiedFilePath, sensitiveInputReset) {
+                passwordState.clearText()
+                confirmPasswordState.clearText()
+                visible = false
+            }
+            DisposableEffect(Unit) {
                 onDispose {
                     passwordState.clearText()
                     confirmPasswordState.clearText()

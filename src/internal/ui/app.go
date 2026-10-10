@@ -115,6 +115,8 @@ type App struct {
 	openReadinessSuppressUntil time.Time
 	openReadinessAppliedPaths  []string
 	openReadinessAppliedAt     time.Time
+	openReadinessChoicePaths   []string
+	openedPathChoice           dialog.Dialog
 
 	// UI widgets that need to be updated
 	inputLabel         *widget.Label
@@ -1017,10 +1019,6 @@ func (a *App) buildOutputSection() fyne.CanvasObject {
 			a.changePCV3OutputFile()
 			return
 		}
-		if snap.Mode == "encrypt" {
-			a.changePCV3CreationOutputFile()
-			return
-		}
 		a.changeOutputFile()
 	})
 
@@ -1204,6 +1202,7 @@ func (a *App) updateUIState() {
 func (a *App) resetUI() {
 	a.stopCurrentOperation()
 	a.operationGeneration.Add(1)
+	a.hideOpenedPathSelectionChoice()
 	a.releasePCV3Result()
 	a.State.ResetUI()
 	if a.passwordEntry != nil {

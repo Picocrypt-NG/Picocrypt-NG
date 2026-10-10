@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -159,6 +160,49 @@ func TestPCV3FynePreservesFactorIntent(t *testing.T) {
 			if intent.Source != nil || intent.Password != nil || intent.Keyfiles != nil || intent.Target != "" {
 				t.Fatalf("caller retained transferred fields: %#v", intent)
 			}
+		})
+	}
+}
+
+func TestPCV3FyneRejectsExcessKeyfilesBeforeTakingPassword(t *testing.T) {
+	keyfile := filepath.Join(t.TempDir(), "factor.key")
+	if err := os.WriteFile(keyfile, []byte("public test factor"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The frozen PCV3 credential contract allows 64 keyfiles. UI admission must
+	// reject 65 before transferring the caller's password or opening readers.
+	for _, count := range []int{64, 65} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			paths := make([]string, count)
+			for i := range paths {
+				paths[i] = keyfile
+			}
+			password := []byte("still caller-owned")
+			intent := app.PCV3OperationIntent{
+				FactorPolicy: app.PCV3FactorPolicyCombined,
+				KeyfileOrder: app.PCV3KeyfileOrderSelected,
+				Password:     password, Keyfiles: paths,
+			}
+			factors, err := pcv3FactorsForIntent(&intent)
+			if factors != nil {
+				defer func() { _ = factors.Close() }()
+			}
+			if count == 65 {
+				if err == nil || factors != nil {
+					t.Fatalf("excess keyfiles admitted: factors=%v, err=%v", factors != nil, err)
+				}
+				if string(intent.Password) != "still caller-owned" || string(password) != "still caller-owned" {
+					t.Fatal("count rejection consumed or cleared the caller's password")
+				}
+				return
+			}
+			if err != nil || factors == nil || len(factors.Keyfiles) != 64 || intent.Password != nil {
+				t.Fatalf("allowed keyfile boundary rejected: factors=%v, err=%v", factors != nil, err)
+			}
+			if err := factors.Close(); err != nil {
+				t.Fatalf("close accepted readers: %v", err)
+			}
+			requireZeroedPassword(t, password)
 		})
 	}
 }

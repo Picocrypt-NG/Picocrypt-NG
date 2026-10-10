@@ -15,9 +15,11 @@ import (
 )
 
 const (
-	releaseGateActionPath = ".github/actions/stage-release/action.yml"
-	releaseGateScriptPath = ".github/actions/stage-release/release-gate.sh"
-	releaseTestSHA        = "0123456789abcdef0123456789abcdef01234567"
+	releaseGateActionPath     = ".github/actions/stage-release/action.yml"
+	releaseGateScriptPath     = ".github/actions/stage-release/release-gate.sh"
+	releaseManifestScriptPath = ".github/actions/stage-release/release-manifest.sh"
+	releaseBodyScriptPath     = ".github/actions/release-body/gen-release-body.sh"
+	releaseTestSHA            = "0123456789abcdef0123456789abcdef01234567"
 )
 
 type releaseGateFixture struct {
@@ -63,6 +65,9 @@ type releaseGateOptions struct {
 	bodyOutsideWorkspace    bool
 	symlinkLocalParent      bool
 	invalidPatchResponse    bool
+	rootVersion             string
+	checkoutHEAD            string
+	modifiedBody            bool
 }
 
 func TestReleaseWorkflowsStageAssetsBehindOnePublicationGate(t *testing.T) {
@@ -252,10 +257,63 @@ func TestStageReleaseActionKeepsReleaseDraftUntilExactManifestExists(t *testing.
 }
 
 func TestReleaseGateRuntimeManifestMatchesWorkflowPolicy(t *testing.T) {
-	script := mustReadRepoFile(t, releaseGateScriptPath)
-	for _, primary := range releasePrimaryAssets("${version}") {
-		want := primary.Name + " " + primary.Workflow + " " + primary.Path
-		mustContain(t, script, want)
+	for _, version := range []string{"2.19", "3.0"} {
+		t.Run(version, func(t *testing.T) {
+			command := exec.Command("bash", filepath.Join(repoRoot(t), releaseManifestScriptPath), version)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("generate runtime release manifest: %v\n%s", err, output)
+			}
+			expected := make(map[string]releasePrimaryFixture)
+			for _, primary := range releasePrimaryAssets(version) {
+				expected[primary.Name] = primary
+			}
+			seen := make(map[string]bool)
+			for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) != 3 {
+					t.Fatalf("invalid release manifest row %q", line)
+				}
+				if seen[fields[0]] {
+					t.Fatalf("duplicate runtime release asset %q", fields[0])
+				}
+				seen[fields[0]] = true
+				actual := releasePrimaryFixture{Name: fields[0], Workflow: fields[1], Path: fields[2]}
+				if want, exists := expected[actual.Name]; !exists || actual != want {
+					t.Fatalf("runtime release mapping = %#v, want independent frozen mapping %#v", actual, want)
+				}
+				delete(expected, actual.Name)
+			}
+			if len(expected) != 0 {
+				t.Fatalf("runtime manifest omitted release artifacts: %#v", expected)
+			}
+		})
+	}
+}
+
+func TestReleaseGateRejectsMismatchedSourceBeforeGitHubAPI(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mode    string
+		options releaseGateOptions
+		message string
+	}{
+		{"preflight root VERSION", "preflight", releaseGateOptions{rootVersion: "2.18"}, "root VERSION"},
+		{"publish root VERSION", "publish", releaseGateOptions{rootVersion: "2.18"}, "root VERSION"},
+		{"preflight checkout HEAD", "preflight", releaseGateOptions{checkoutHEAD: "fedcba9876543210fedcba9876543210fedcba98"}, "checkout commit"},
+		{"publish checkout HEAD", "publish", releaseGateOptions{checkoutHEAD: "fedcba9876543210fedcba9876543210fedcba98"}, "checkout commit"},
+		{"modified release verification notes", "publish", releaseGateOptions{modifiedBody: true}, "source-bound deterministic release notes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, tc.mode, nil, nil, tc.options)
+			if result.err == nil {
+				t.Fatal("release gate accepted mismatched source or modified verification instructions")
+			}
+			mustContain(t, result.output, tc.message)
+			if result.calls != "" {
+				t.Fatalf("source mismatch must fail before any GitHub API/signature invocation, got:\n%s", result.calls)
+			}
+		})
 	}
 }
 
@@ -532,7 +590,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 		if patch["draft"] != false || patch["make_latest"] != "true" {
 			t.Fatalf("final release PATCH = %#v, want draft=false and make_latest=true", patch)
 		}
-		if patch["body"] != "# Picocrypt-NG 2.19\n\nVerified release notes.\n" {
+		if patch["body"] != result.expectedBody {
 			t.Fatalf("final release body = %#v, want exact deterministic body", patch["body"])
 		}
 		if len(patch) != 3 {
@@ -851,6 +909,7 @@ type releaseGateResult struct {
 	patchInput     string
 	tagCreateInput string
 	err            error
+	expectedBody   string
 }
 
 func runReleaseGate(
@@ -873,11 +932,6 @@ func runReleaseGateWithOptions(
 	t.Helper()
 
 	root := repoRoot(t)
-	script := filepath.Join(root, releaseGateScriptPath)
-	if _, err := os.Stat(script); err != nil {
-		t.Fatalf("release gate script is missing: %v", err)
-	}
-
 	temp := t.TempDir()
 	releasesPath := filepath.Join(temp, "releases.json")
 	assetsPath := filepath.Join(temp, "assets.json")
@@ -996,6 +1050,32 @@ func runReleaseGateWithOptions(
 	if err := os.MkdirAll(localDir, 0o700); err != nil {
 		t.Fatalf("create local fixture directory: %v", err)
 	}
+	for _, path := range []string{releaseGateScriptPath, releaseManifestScriptPath, releaseBodyScriptPath} {
+		content, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatalf("read frozen release helper %s: %v", path, err)
+		}
+		destination := filepath.Join(workspace, path)
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			t.Fatalf("create release helper fixture directory: %v", err)
+		}
+		if err := os.WriteFile(destination, content, 0o600); err != nil {
+			t.Fatalf("copy release helper fixture %s: %v", path, err)
+		}
+	}
+	script := filepath.Join(workspace, releaseGateScriptPath)
+	rootVersion := options.rootVersion
+	if rootVersion == "" {
+		rootVersion = "2.19"
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "VERSION"), []byte(rootVersion+"\n"), 0o600); err != nil {
+		t.Fatalf("write root VERSION fixture: %v", err)
+	}
+	const changelogFixture = "# v2.19\n<ul>\n<li>✓ Release policy fixture: source-bound verification instructions.</li>\n</ul>\n"
+	changelogPath := filepath.Join(workspace, "Changelog.md")
+	if err := os.WriteFile(changelogPath, []byte(changelogFixture), 0o600); err != nil {
+		t.Fatalf("write changelog fixture: %v", err)
+	}
 	if options.symlinkLocalParent {
 		outsideParent := filepath.Join(temp, "confidential-build-linux-amd64")
 		if err := os.Mkdir(outsideParent, 0o700); err != nil {
@@ -1029,8 +1109,17 @@ func runReleaseGateWithOptions(
 		localPaths = append(localPaths, relativePath)
 	}
 	bodyPath := filepath.Join(workspace, "release-body.md")
-	if err := os.WriteFile(bodyPath, []byte("# Picocrypt-NG 2.19\n\nVerified release notes.\n"), 0o600); err != nil {
-		t.Fatalf("write release body fixture: %v", err)
+	bodyCommand := exec.Command("bash", filepath.Join(workspace, releaseBodyScriptPath), "2.19", changelogPath, bodyPath)
+	bodyCommand.Dir = workspace
+	bodyCommand.Env = append(os.Environ(), "GITHUB_SHA="+releaseTestSHA)
+	if output, err := bodyCommand.CombinedOutput(); err != nil {
+		t.Fatalf("generate source-bound release body fixture: %v\n%s", err, output)
+	}
+	expectedBody := readOptionalFile(t, bodyPath)
+	if options.modifiedBody {
+		if err := os.WriteFile(bodyPath, []byte(expectedBody+"\nUnverified replacement instructions.\n"), 0o600); err != nil {
+			t.Fatalf("modify release body fixture: %v", err)
+		}
 	}
 	if options.bodyOutsideWorkspace {
 		bodyPath = filepath.Join(temp, "confidential-release-notes.md")
@@ -1166,6 +1255,22 @@ fi
 		t.Fatalf("write fake cosign: %v", err)
 	}
 
+	const fakeGit = `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -ne 4 ] || [ "$1" != "-C" ] || [ "$2" != "$EXPECTED_WORKSPACE" ] || [ "$3" != "rev-parse" ] || [ "$4" != "HEAD" ]; then
+  echo "unexpected git invocation" >&2
+  exit 64
+fi
+printf '%s\n' "$EXPECTED_HEAD"
+`
+	if err := os.WriteFile(filepath.Join(temp, "git"), []byte(fakeGit), 0o700); err != nil {
+		t.Fatalf("write controlled checkout HEAD fixture: %v", err)
+	}
+	checkoutHEAD := options.checkoutHEAD
+	if checkoutHEAD == "" {
+		checkoutHEAD = releaseTestSHA
+	}
+
 	command := exec.Command("bash", script, mode, "2.19")
 	command.Dir = workspace
 	command.Env = append(os.Environ(),
@@ -1200,6 +1305,8 @@ fi
 		"GITHUB_WORKFLOW_REF=Picocrypt-NG/Picocrypt-NG/.github/workflows/build-linux.yml@refs/heads/main",
 		"GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG",
 		"GITHUB_SHA="+releaseTestSHA,
+		"EXPECTED_HEAD="+checkoutHEAD,
+		"EXPECTED_WORKSPACE="+workspace,
 	)
 	output, runErr := command.CombinedOutput()
 
@@ -1209,6 +1316,7 @@ fi
 		patchInput:     readOptionalFile(t, patchCapturePath),
 		tagCreateInput: readOptionalFile(t, tagCreateCapturePath),
 		err:            runErr,
+		expectedBody:   expectedBody,
 	}
 }
 

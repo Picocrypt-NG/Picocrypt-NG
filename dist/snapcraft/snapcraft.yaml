@@ -20,9 +20,9 @@ apps:
 parts:
   go-deps:
     plugin: dump
-    source: https://go.dev/dl/go1.27.1.linux-amd64.tar.gz
+    source: https://go.dev/dl/go1.27.2.linux-amd64.tar.gz
     source-type: tar
-    source-checksum: sha256/63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+    source-checksum: sha256/ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
     organize:
       '*': go/
     prime:
@@ -37,7 +37,7 @@ parts:
       - GOROOT: "${CRAFT_STAGE}/go"
       - GOTOOLCHAIN: local
     override-build: |
-      test "$(go env GOVERSION)" = "go1.27.1"
+      test "$(go env GOVERSION)" = "go1.27.2"
       test "$(go env GOROOT)" = "$CRAFT_STAGE/go"
       export GOFLAGS="-tags=migrated_fynedo"
       craftctl default

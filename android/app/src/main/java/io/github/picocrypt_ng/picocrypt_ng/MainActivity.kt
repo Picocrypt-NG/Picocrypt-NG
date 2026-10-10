@@ -28,6 +28,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.DEFAULT_ARGS_KEY
+import androidx.lifecycle.viewmodel.CreationExtras
+import androidx.lifecycle.viewmodel.MutableCreationExtras
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -53,6 +56,12 @@ import io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButton
 import io.github.picocrypt_ng.picocrypt_ng.ui.theme.PicocryptNGTheme
 
 class MainActivity : ComponentActivity() {
+    // Exported launch extras are not process-restoration authority.
+    override val defaultViewModelCreationExtras: CreationExtras
+        get() = MutableCreationExtras(super.defaultViewModelCreationExtras).apply {
+            this[DEFAULT_ARGS_KEY] = Bundle.EMPTY
+        }
+
     // Permission launcher for notification permission (Android 13+)
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()

@@ -462,6 +462,48 @@ func writePCV3CLIFixture(t *testing.T, dir, name string, contents []byte) string
 	return path
 }
 
+func TestPCV3CLIRejectsExcessKeyfilesBeforeOpeningFactors(t *testing.T) {
+	dir := t.TempDir()
+	fixture := loadPCV3CLIFixture(t)
+	input := writePCV3CLIFixture(t, dir, "input.pcv", fixture)
+	output := filepath.Join(dir, "output")
+	openLog := filepath.Join(dir, "opens.log")
+	args := []string{"decrypt", input, "-o", output, "--pcv3-factors=keyfiles", "--pcv3-keyfile-order=ordered", "-p", ""}
+	for index := range 65 {
+		keyfile := writePCV3CLIFixture(t, dir, fmt.Sprintf("key-%02d", index), []byte(fmt.Sprintf("public-keyfile-%02d", index)))
+		args = append(args, "-k", keyfile)
+	}
+	result, observation := runPCV3CLIHelper(t, dir, pcv3CLIHelperConfig{
+		Args: args, Observation: filepath.Join(dir, "observation.json"), OpenLog: openLog, RealOperation: true,
+	}, nil)
+	if result.exitCode != ExitGeneralError || !strings.Contains(result.stderr, "at most 64 keyfiles") {
+		t.Fatalf("excess factors: exit=%d stderr=%q", result.exitCode, result.stderr)
+	}
+	if observation.Called || len(result.stdout) != 0 {
+		t.Fatalf("excess factors reached operation or output: called=%v stdout=%q", observation.Called, result.stdout)
+	}
+	if opened, err := os.ReadFile(openLog); err == nil && len(opened) != 0 {
+		t.Fatalf("excess factors opened keyfile descriptors: %s", opened)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("excess factors created output: %v", err)
+	}
+	if after, err := os.ReadFile(input); err != nil || !bytes.Equal(after, fixture) {
+		t.Fatalf("excess factors changed input: %v", err)
+	}
+}
+
+func TestPCV3CLIFactorPolicyAcceptsMaximumKeyfileCount(t *testing.T) {
+	for _, order := range []string{"ordered", "unordered"} {
+		mode, _, policy, err := pcv3CLIFactorPolicy("keyfiles", order, false, 64)
+		if err != nil || mode != pcv3operation.CredentialModeKeyfilesOnly || policy != pcv3operation.FactorPolicyKeyfilesOnly {
+			t.Fatalf("64 %s factors: mode=%v policy=%v err=%v", order, mode, policy, err)
+		}
+	}
+}
+
 func TestPCV3CLIPreservesFactorIntent(t *testing.T) {
 	fixture := loadPCV3CLIFixture(t)
 	tests := []struct {

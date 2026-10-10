@@ -108,6 +108,7 @@ const (
 	KeyfileModeNone                   = pcv3credential.KeyfileModeNone
 	KeyfileModeOrdered                = pcv3credential.KeyfileModeOrdered
 	KeyfileModeUnordered              = pcv3credential.KeyfileModeUnordered
+	MaxKeyfiles                       = pcv3credential.MaxKeyfiles
 )
 
 type (

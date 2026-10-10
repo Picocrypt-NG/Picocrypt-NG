@@ -69,10 +69,7 @@ VIAddVersionKey   "LegalCopyright"  "(c) ${COMPANYNAME}"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 
-; Pitfall 11: MUI_FINISHPAGE_RUN inherits installer's admin token. Acceptable
-; quirk for v2.09; UAC plug-in deferred (post-milestone polish).
-!define MUI_FINISHPAGE_RUN "$INSTDIR\Picocrypt-NG.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "Run Picocrypt-NG"
+; The per-machine installer is elevated; launch the app separately as the user.
 !insertmacro MUI_PAGE_FINISH
 
 !ifndef IMPORT_UNINST

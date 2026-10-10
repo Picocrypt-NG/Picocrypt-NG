@@ -170,6 +170,9 @@ func EncodeRSPayloadBlock(data []byte, rs *RSCodecs) ([]byte, error) {
 // forceDecode=true returns raw bytes on uncorrectable input (desktop ForceDecrypt);
 // false returns ErrCorruptData. isLast+padded control unpadding of the final chunk.
 func DecodeRSPayloadBlock(data []byte, rs *RSCodecs, isLast, padded, forceDecode, fastDecode bool) ([]byte, error) {
+	if !forceDecode && len(data)%RS128EncodedSize != 0 {
+		return nil, ErrCorruptData
+	}
 	result := make([]byte, 0, len(data)/RS128EncodedSize*RS128DataSize)
 	fullBlockEncodedSize := RSEncodedBlockSize
 

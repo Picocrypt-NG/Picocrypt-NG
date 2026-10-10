@@ -1,6 +1,6 @@
 Picocrypt-NG encrypts files locally — a community-maintained continuation of Picocrypt. No accounts, no cloud, no telemetry, no network access (the app does not request the INTERNET permission).
 
-XChaCha20 for encryption, with the key derived from your password by Argon2id. Every volume is authenticated, so tampering or corruption is detected on decryption.
+New encryption uses PCV3 with XChaCha20, Argon2id and authenticated records. Use a password, keyfiles, or both. Normal PCV3 decryption verifies authentication before publishing plaintext. Supported legacy v1/v2 volumes remain readable; recover legacy keyfile volumes and re-encrypt them as PCV3. Force recovery may produce unverified output.
 
 Features:
 
@@ -8,12 +8,13 @@ Features:
 - Optional keyfiles, with an option to require them in a fixed order
 - Paranoid mode: extra cipher cascade and harder key derivation
 - Reed-Solomon error correction to recover volumes from limited corruption
-- Deniability mode: the encrypted volume appears as random data
+- Deniability mode (requires Paranoid): the encrypted volume appears as random data
 - Optional compression
-- Comments stored with the volume
-- Optional verify-before-write integrity check
+- Comments stored in plaintext; never put secrets in comments
 - Long operations continue in a foreground service when the app is backgrounded
 
-Volumes are cross-platform with the desktop app (Windows, macOS, Linux). A multi-file or compressed volume contains a single .zip inside; Android saves it without extracting.
+PCV3 volumes work with the desktop and CLI apps (Windows, macOS, Linux). New PCV3 volumes require Picocrypt-NG 3.0 or newer. PCV3 multi-file and compressed payloads can be saved as ZIP or extracted to a selected folder. A failed ciphertext save keeps the encrypted result available for retry.
+
+Requires Android 8.0 or newer on a 64-bit ARM or x86-64 device.
 
 Free software under GPLv3. The Android app is built from source: the native library is compiled from the Go sources in this repository, with no prebuilt binaries committed.
