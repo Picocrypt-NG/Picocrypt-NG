@@ -273,6 +273,10 @@ func TestUnpackSpaceProbeControlsPayloadAdmission(t *testing.T) {
 			if err := os.Mkdir(extractDir, 0o700); err != nil {
 				t.Fatal(err)
 			}
+			probeDir, err := filepath.EvalSymlinks(extractDir)
+			if err != nil {
+				t.Fatal(err)
+			}
 			archive, err := os.Open(zipPath)
 			if err != nil {
 				t.Fatal(err)
@@ -296,8 +300,8 @@ func TestUnpackSpaceProbeControlsPayloadAdmission(t *testing.T) {
 				Prepared:   prepared,
 				Budget:     budget,
 				AvailableSpace: func(path string) (int64, error) {
-					if path != extractDir {
-						t.Fatalf("space probe path = %q, want %q", path, extractDir)
+					if path != probeDir {
+						t.Fatalf("space probe path = %q, want selected directory %q", path, probeDir)
 					}
 					if tc.unavailable {
 						return 0, probeErr
