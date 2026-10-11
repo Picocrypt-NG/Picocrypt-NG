@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -31,6 +32,26 @@ func TestLegacyV2ForceWrongKeyfilePreservesEncryptedSource(t *testing.T) {
 		{"correct_keyfile_normal", "keyfile_alpha.bin", false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Isolate the fixed 1 GiB KDF and race shadow memory from other cases
+			// and subsequent desktop resource-admission checks.
+			const child = "PICOCRYPT_TEST_LEGACY_FORCE_UI_CHILD"
+			if os.Getenv(child) != "1" {
+				executable, err := os.Executable()
+				if err != nil {
+					t.Fatal(err)
+				}
+				command := exec.Command(executable, "-test.run=^TestLegacyV2ForceWrongKeyfilePreservesEncryptedSource$/^"+tc.name+"$", "-test.timeout=5m", "-test.v")
+				command.Env = append(os.Environ(), child+"=1")
+				output, err := command.CombinedOutput()
+				if err != nil {
+					t.Fatalf("isolated legacy Force UI recovery: %v\n%s", err, output)
+				}
+				if !bytes.Contains(output, []byte("--- PASS: "+t.Name()+" (")) {
+					t.Fatalf("isolated legacy Force UI recovery did not execute and pass %s\n%s", t.Name(), output)
+				}
+				t.Logf("%s", output)
+				return
+			}
 			state, err := app.NewState()
 			if err != nil {
 				t.Fatal(err)
@@ -48,7 +69,7 @@ func TestLegacyV2ForceWrongKeyfilePreservesEncryptedSource(t *testing.T) {
 			// Use the real legacy reader and the same deletion lifecycle as desktop work.
 			result := a.runCapturedOperation(context.Background(), executeVolumeOperation, nil, input)
 			if result.err != nil || !result.completed || result.cancelled || result.deleteFailed {
-				t.Fatalf("legacy recovery did not reach terminal publication and cleanup: %+v", result)
+				t.Fatalf("legacy recovery did not reach terminal publication and cleanup: err=%v result=%+v", result.err, result)
 			}
 			if result.kept != tc.wantUntrusted {
 				t.Errorf("legacy result kept = %v, want %v", result.kept, tc.wantUntrusted)

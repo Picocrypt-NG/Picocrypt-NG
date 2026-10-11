@@ -36,6 +36,9 @@ func requireNativePCV3Publication(t *testing.T, result *pcv3operation.Result) {
 		!result.PublicationAttempted() || result.PublicationState() != state ||
 		result.PublicationStage() != stage || result.PublicationCode() != code ||
 		!slices.Equal(result.Warnings(), warnings) || result.ArchiveFollowUp() != nil || result.OutputFollowUp() != nil {
+		if result != nil {
+			t.Logf("closed failure tuple: outcome=%v stage=%v code=%v diagnostic=%v completion=%v publicationAttempted=%v publicationState=%v publicationStage=%v publicationCode=%v", result.Outcome(), result.Stage(), result.Code(), result.Diagnostic(), result.CompletionClass(), result.PublicationAttempted(), result.PublicationState(), result.PublicationStage(), result.PublicationCode())
+		}
 		t.Fatalf("native PCV3 publication = %v; want exact %v/%v/%v warnings %v", result, class, state, code, warnings)
 	}
 	if runtime.GOOS == "windows" && result.SourceDeletionAllowed() {
