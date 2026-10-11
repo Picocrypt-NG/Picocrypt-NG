@@ -509,7 +509,7 @@ For legacy v2 keyfile volumes, `subkeyHeader` is derived from the password befor
 Including the public `keyfileHash` in the HMAC message therefore checks consistency but does not
 make the HMAC key depend on the keyfile.
 WASM v2 decryption authenticates the header using the stored public `KeyfileHash` before reporting missing or incorrect supplied keyfiles.
-Unsupported feature flags and v1 keyfile volumes still return `ErrUnsupported` before that volume's KDF.
+The legacy `Padded` flag affects only Reed-Solomon payloads; non-RS volumes ignore it after header verification. Unsupported versions and v1 keyfile volumes still return `ErrUnsupported` before that volume's KDF.
 
 ### Utility
 

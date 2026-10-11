@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"Picocrypt-NG/internal/pcv3operation"
+	"errors"
 	"runtime"
 	"strconv"
 	"testing"
@@ -31,6 +33,10 @@ func requireNativePCV3FileError(t *testing.T, err error) {
 			t.Fatalf("native file result = %v; want typed durability-uncertain exit 3", err)
 		}
 	} else if err != nil {
+		var result *pcv3operation.Result
+		if errors.As(err, &result) && result != nil {
+			t.Logf("PCV3 failure: stage=%s diagnostic=%d", result.Stage(), result.Diagnostic())
+		}
 		t.Fatalf("native durable file operation failed: %v", err)
 	}
 }
