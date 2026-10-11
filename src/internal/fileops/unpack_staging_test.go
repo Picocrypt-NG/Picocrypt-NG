@@ -345,15 +345,16 @@ func TestUnpackRejectsOrPreventsChangedExtractionDirectory(t *testing.T) {
 		ExtractDir: extractDir,
 		AvailableSpace: func(string) (int64, error) {
 			renameErr = os.Rename(extractDir, movedDir)
-			if renameErr != nil {
-				return 0, renameErr
+			if renameErr == nil {
+				if err := os.Mkdir(extractDir, 0o700); err != nil {
+					t.Fatalf("Replace extraction directory: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(extractDir, "foreign.txt"), foreign, 0o600); err != nil {
+					t.Fatalf("Write foreign replacement directory entry: %v", err)
+				}
 			}
-			if err := os.Mkdir(extractDir, 0o700); err != nil {
-				t.Fatalf("Replace extraction directory: %v", err)
-			}
-			if err := os.WriteFile(filepath.Join(extractDir, "foreign.txt"), foreign, 0o600); err != nil {
-				t.Fatalf("Write foreign replacement directory entry: %v", err)
-			}
+			// The namespace outcome is asserted below, independently of
+			// this fixture's known, sufficient capacity reading.
 			return int64(len(payload)), nil
 		},
 	})

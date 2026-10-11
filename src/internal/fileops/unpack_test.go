@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/util"
 	"archive/zip"
 	"bytes"
+	"compress/flate"
 	"errors"
 	"io"
 	"os"
@@ -246,31 +247,107 @@ func TestUnpackRejectsArchiveWhenDeclaredSizeExceedsAvailableSpace(t *testing.T)
 	if !strings.Contains(err.Error(), "insufficient disk space") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	requireEmptyExtractionDir(t, filepath.Join(tmpDir, "out"))
 }
 
-func TestUnpackSkipsDiskSpaceGuardWhenSpaceCheckUnavailable(t *testing.T) {
-	tmpDir := t.TempDir()
-	zipPath := filepath.Join(tmpDir, "space-check-fallback.zip")
-	data := []byte("payload requiring fallback")
-	createDeflatedZipWithContent(t, zipPath, "payload.txt", data)
-
-	extractDir := filepath.Join(tmpDir, "out")
-	if err := Unpack(UnpackOptions{
-		ZipPath:    zipPath,
-		ExtractDir: extractDir,
-		AvailableSpace: func(path string) (int64, error) {
-			return 0, errors.New("statfs unavailable")
-		},
-	}); err != nil {
-		t.Fatalf("Unpack should fall back to existing ratio guard when disk space is unavailable: %v", err)
-	}
-
-	content, err := os.ReadFile(filepath.Join(extractDir, "payload.txt"))
-	if err != nil {
-		t.Fatalf("Read unpacked file: %v", err)
-	}
-	if !bytes.Equal(content, data) {
-		t.Fatal("unpacked content mismatch")
+func TestUnpackSpaceProbeControlsPayloadAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		typed       bool
+		unavailable bool
+	}{
+		{name: "unavailable_legacy", unavailable: true},
+		{name: "unavailable_typed", typed: true, unavailable: true},
+		{name: "exact_available_limit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			zipPath := filepath.Join(tmpDir, "space-check.zip")
+			data := []byte("private payload")
+			createDeflatedZipWithContent(t, zipPath, "nested/deeper/payload.txt", data)
+			originalZIP, err := os.ReadFile(zipPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			extractDir := filepath.Join(tmpDir, "out")
+			if err := os.Mkdir(extractDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			probeDirInfo, err := os.Stat(extractDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			archive, err := os.Open(zipPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer archive.Close()
+			budget := NewZIPResourceBudget()
+			prepared, err := PrepareZIPUnpack(archive, extractDir, ZIPReadOptions{Budget: budget})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer prepared.Close()
+			payloadsOpened := 0
+			prepared.state.reader.RegisterDecompressor(zip.Deflate, func(reader io.Reader) io.ReadCloser {
+				payloadsOpened++
+				return flate.NewReader(reader)
+			})
+			probeErr := errors.New("statfs unavailable")
+			opts := UnpackOptions{
+				ZipFile:    archive,
+				ExtractDir: extractDir,
+				Prepared:   prepared,
+				Budget:     budget,
+				AvailableSpace: func(path string) (int64, error) {
+					probeInfo, err := os.Stat(path)
+					if err != nil {
+						t.Fatalf("inspect space probe directory %q: %v", path, err)
+					}
+					if !probeInfo.IsDir() || !os.SameFile(probeDirInfo, probeInfo) {
+						t.Fatalf("space probe path = %q, want selected directory %q", path, extractDir)
+					}
+					if tc.unavailable {
+						return 0, probeErr
+					}
+					return int64(len(data)), nil
+				},
+			}
+			if tc.typed {
+				result := UnpackWithResult(opts)
+				if result.State() != UnpackStateNotPublished {
+					t.Errorf("space refusal state = %v, want not-published", result.State())
+				}
+				err = result
+			} else {
+				err = Unpack(opts)
+			}
+			if tc.unavailable {
+				if !errors.Is(err, probeErr) {
+					t.Errorf("Unpack error = %v, want wrapped space-probe error", err)
+				}
+				if payloadsOpened != 0 {
+					t.Errorf("space refusal opened %d entry payloads", payloadsOpened)
+				}
+				requireEmptyExtractionDir(t, extractDir)
+			} else {
+				if err != nil {
+					t.Fatalf("Unpack at available-space limit: %v", err)
+				}
+				content, readErr := os.ReadFile(filepath.Join(extractDir, "nested", "deeper", "payload.txt"))
+				if readErr != nil || !bytes.Equal(content, data) || payloadsOpened != 1 {
+					t.Fatalf("valid extraction = %q, err %v, payloads opened %d; want %q and one open",
+						content, readErr, payloadsOpened, data)
+				}
+			}
+			if budget.CurrentBytes() != 0 {
+				t.Error("Unpack retained archive workspace")
+			}
+			preservedZIP, readErr := os.ReadFile(zipPath)
+			if readErr != nil || !bytes.Equal(preservedZIP, originalZIP) {
+				t.Fatalf("Unpack changed the source archive: %v", readErr)
+			}
+		})
 	}
 }
 
