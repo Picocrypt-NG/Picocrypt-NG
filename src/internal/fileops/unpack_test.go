@@ -273,7 +273,7 @@ func TestUnpackSpaceProbeControlsPayloadAdmission(t *testing.T) {
 			if err := os.Mkdir(extractDir, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			probeDir, err := filepath.EvalSymlinks(extractDir)
+			probeDirInfo, err := os.Stat(extractDir)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -300,8 +300,12 @@ func TestUnpackSpaceProbeControlsPayloadAdmission(t *testing.T) {
 				Prepared:   prepared,
 				Budget:     budget,
 				AvailableSpace: func(path string) (int64, error) {
-					if path != probeDir {
-						t.Fatalf("space probe path = %q, want selected directory %q", path, probeDir)
+					probeInfo, err := os.Stat(path)
+					if err != nil {
+						t.Fatalf("inspect space probe directory %q: %v", path, err)
+					}
+					if !probeInfo.IsDir() || !os.SameFile(probeDirInfo, probeInfo) {
+						t.Fatalf("space probe path = %q, want selected directory %q", path, extractDir)
 					}
 					if tc.unavailable {
 						return 0, probeErr
