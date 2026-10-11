@@ -939,7 +939,7 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 			build := mustJob(t, workflow, "build")
 			testStep := mustStepNamed(t, build, "Run tests")
 			testRun := testStep.Run
-			raceSelector := "./..."
+			raceSelectors := []string{"./..."}
 			if path == ".github/workflows/pr-test-build-linux.yml" {
 				raceStep := mustStepNamed(t, mustJob(t, workflow, "tests"), "Run native tests")
 				if raceStep.Env["SHARD_INDEX"] != "${{ matrix.shard }}" {
@@ -964,7 +964,18 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 					mustContain(t, raceStep.Run, required)
 				}
 				testRun = raceStep.Run + "\n" + testRun
-				raceSelector = `"${selected[@]}"`
+				raceSelectors = []string{`"${other[@]}"`, "./internal/cli", "./internal/cli"}
+				mustContainInOrder(t, raceStep.Run,
+					`for package in "${selected[@]}"; do`,
+					`if [ "$package" = "Picocrypt-NG/internal/cli" ]; then`,
+					`cli_assigned=true`,
+					`other+=("$package")`,
+					`if (( ${#other[@]} > 0 )); then`,
+					`if [ "$cli_assigned" = true ]; then`,
+					`-skip '^TestCLIRoundTrip$' ./internal/cli`,
+					`PICOCRYPT_TEST_CLI_ROUNDTRIP_ISOLATE=1 CGO_ENABLED=1 go test`,
+					`-run '^TestCLIRoundTrip$' ./internal/cli`,
+				)
 			}
 
 			raceLineIndex := -1
@@ -976,6 +987,10 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 					if path == ".github/workflows/pr-test-build-linux.yml" && !strings.Contains(line, "-count=1") {
 						t.Fatal("native PR race shards must execute against the current runner")
 					}
+					if raceLineCount >= len(raceSelectors) {
+						t.Fatalf("unexpected Linux race invocation: %q", strings.TrimSpace(line))
+					}
+					raceSelector := raceSelectors[raceLineCount]
 					raceLineCount++
 					raceLineIndex = lineIndex
 					for _, required := range []string{"-p 1", "-timeout 15m", raceSelector} {
@@ -999,8 +1014,8 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 					}
 				}
 			}
-			if raceLineCount != 1 {
-				t.Fatalf("Linux Run tests race line count = %d, want exactly 1", raceLineCount)
+			if raceLineCount != len(raceSelectors) {
+				t.Fatalf("Linux Run tests race invocation count = %d, want %d", raceLineCount, len(raceSelectors))
 			}
 			if integrationLineCount != 1 {
 				t.Fatalf("Linux Run tests CLI integration line count = %d, want exactly 1", integrationLineCount)

@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"Picocrypt-NG/internal/pcv3operation"
 	"archive/zip"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCLIRoundTrip encrypts a fixed plaintext then decrypts it using the real
@@ -104,8 +107,39 @@ func TestCLIRoundTrip(t *testing.T) {
 		},
 	}
 
-	for _, tc := range tests {
+	// Race instrumentation retains memory across KDFs. The Linux race lane runs
+	// this table in a fresh process, then isolates each real write/read pair.
+	isolate := os.Getenv("PICOCRYPT_TEST_CLI_ROUNDTRIP_ISOLATE")
+	worker := os.Getenv("PICOCRYPT_TEST_CLI_ROUNDTRIP_WORKER")
+	workerIndex := -1
+	if isolate != "" && isolate != "1" {
+		t.Fatalf("invalid CLI round-trip isolation mode: %q", isolate)
+	}
+	if worker != "" {
+		var err error
+		workerIndex, err = strconv.Atoi(worker)
+		if isolate != "1" || err != nil || workerIndex < 0 || workerIndex >= len(tests) {
+			t.Fatalf("invalid CLI round-trip worker: %q", worker)
+		}
+	}
+
+	for index, tc := range tests {
+		if workerIndex >= 0 && index != workerIndex {
+			continue
+		}
 		t.Run(tc.name, func(t *testing.T) {
+			if isolate == "1" && workerIndex < 0 {
+				runCLIRoundTripWorker(t, index)
+				return
+			}
+			if workerIndex >= 0 {
+				// Registered first so completion follows every other cleanup.
+				t.Cleanup(func() {
+					if !t.Failed() && !t.Skipped() {
+						t.Logf("CLI round-trip worker completed: %d", workerIndex)
+					}
+				})
+			}
 			// Reset all flags before and after each sub-test to prevent bleed.
 			resetEncryptFlagsForDirTest()
 			resetDecryptFlagsForDirTest()
@@ -149,8 +183,21 @@ func TestCLIRoundTrip(t *testing.T) {
 				decPCV3ExtractTo = t.TempDir()
 			}
 
+			var actualDecrypt pcv3CLIResult
+			if tc.wantErr {
+				realRun := pcv3CLIRunOperation
+				t.Cleanup(func() { pcv3CLIRunOperation = realRun })
+				pcv3CLIRunOperation = func(ctx context.Context, request *pcv3operation.Request, retain bool) pcv3CLIResult {
+					actualDecrypt = realRun(ctx, request, retain)
+					return actualDecrypt
+				}
+			}
 			decErr := decryptCmd.RunE(decryptCmd, []string{encryptedFile})
 			if tc.wantErr {
+				// A resource refusal is not evidence of password authentication.
+				if actualDecrypt == nil || actualDecrypt.Outcome() != pcv3operation.OutcomeCredentialsOrDamage {
+					t.Fatalf("wrong password did not reach authentication rejection: result=%v error=%v", actualDecrypt, decErr)
+				}
 				if decErr == nil {
 					t.Fatal("expected decrypt error (wrong password), got nil")
 				}
@@ -196,6 +243,29 @@ func TestCLIRoundTrip(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func runCLIRoundTripWorker(t *testing.T, index int) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Minute)
+	if testDeadline, ok := t.Deadline(); ok {
+		deadline = testDeadline
+	}
+	ctx, cancel := context.WithDeadline(t.Context(), deadline)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCLIRoundTrip$",
+		"-test.v", "-test.timeout="+time.Until(deadline).String())
+	command.Env = append(os.Environ(), "PICOCRYPT_TEST_CLI_ROUNDTRIP_WORKER="+strconv.Itoa(index))
+	command.WaitDelay = time.Second
+	output, err := command.CombinedOutput()
+	t.Logf("CLI round-trip worker %d:\n%s", index, output)
+	if err != nil {
+		t.Fatalf("CLI round-trip worker %d failed: %v", index, err)
+	}
+	// Exit zero alone also permits a missing or skipped test body.
+	if !bytes.Contains(output, []byte(fmt.Sprintf("CLI round-trip worker completed: %d\n", index))) {
+		t.Fatalf("CLI round-trip worker %d did not complete its selected body", index)
 	}
 }
 
