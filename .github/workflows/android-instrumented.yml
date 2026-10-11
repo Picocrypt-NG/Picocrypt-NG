@@ -147,7 +147,7 @@ jobs:
           io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest
           io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest
           io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest
-          ${{ inputs.test_scope == 'extended' && 'io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest' || '' }}
+          ${{ inputs.test_scope == 'extended' && 'io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest' || '' }}
 
     - name: Upload instrumented test report
       if: always()

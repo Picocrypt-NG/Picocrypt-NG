@@ -365,7 +365,9 @@ fun ProgressCard(
                 },
                 title = {
                     Text(
-                        text = if (ui.type == OperationType.ENCRYPT) {
+                        text = if (ui.unverified) {
+                            stringResource(R.string.pcv3_artifact_status_unverified)
+                        } else if (ui.type == OperationType.ENCRYPT) {
                             stringResource(R.string.encryption_complete)
                         } else {
                             stringResource(R.string.decryption_complete)
@@ -376,7 +378,10 @@ fun ProgressCard(
                     Column(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(stringResource(R.string.operation_completed_successfully))
+                        Text(stringResource(
+                            if (ui.unverified) R.string.force_decrypt_warning
+                            else R.string.operation_completed_successfully
+                        ))
                         saveError?.let { error ->
                             Text(
                                 text = stringResource(

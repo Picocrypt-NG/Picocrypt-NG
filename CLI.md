@@ -326,7 +326,7 @@ picocrypt decrypt damaged.pcv --force
 picocrypt decrypt innocent.pcv --deniability
 ```
 
-If `--force` keeps output after MAC verification failed, Picocrypt NG writes `Warning: Force decrypt kept output...` to stderr and exits with exit code 2. The recovered file or stdout bytes are not fully verified; scripts must not treat exit code 2 as clean success.
+If `--force` keeps output after an integrity or authentication check failed, Picocrypt NG writes `Warning: Force decrypt kept output...` to stderr and exits with exit code 2. The recovered file or stdout bytes are not fully verified; scripts must not treat exit code 2 as clean success.
 
 ## Stdin/Stdout Streaming
 
@@ -390,7 +390,7 @@ Stdin/stdout streaming has the following limitations:
 
 **Note:** When using `-o -`, progress output is automatically suppressed (quiet mode) to avoid mixing progress with encrypted data.
 
-If `picocrypt decrypt VOLUME -o - --force` keeps recovered output after MAC verification failed, recovered bytes are written to stdout before the process returns exit code 2. The kept-output warning is written to stderr, so stdout remains parseable by scripts.
+If `picocrypt decrypt VOLUME -o - --force` keeps recovered output after an integrity or authentication check failed, recovered bytes are written to stdout before the process returns exit code 2. The kept-output warning is written to stderr, so stdout remains parseable by scripts.
 
 ## Scripting Guide
 

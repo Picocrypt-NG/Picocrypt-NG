@@ -125,7 +125,7 @@ type DecryptRequest struct {
 	RSCodecs *encoding.RSCodecs // Pre-initialized Reed-Solomon codecs
 
 	// Output - set by Decrypt() after completion
-	Kept *bool // If non-nil and ForceDecrypt was used, set to true if file was kept despite MAC failure
+	Kept *bool // If non-nil, set true when ForceDecrypt bypasses an integrity or authentication failure
 }
 
 // OperationContext holds mutable state during encryption/decryption operations.
@@ -158,7 +158,7 @@ type OperationContext struct {
 
 	// Reed-Solomon retry state (for corrupt file recovery)
 	TriedFullRSDecode bool // Prevents infinite retry loop when MAC fails
-	Kept              bool // True if ForceDecrypt was used and MAC failed
+	Kept              bool // Sticky after ForceDecrypt bypasses an integrity or authentication failure
 
 	// Recombine state - for proper cleanup
 	RecombinedFile string // Path to recombined file (separate from TempFile for when deniability changes it)

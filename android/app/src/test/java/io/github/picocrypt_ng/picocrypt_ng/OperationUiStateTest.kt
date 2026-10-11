@@ -2,10 +2,27 @@ package io.github.picocrypt_ng.picocrypt_ng
 
 import io.github.picocrypt_ng.picocrypt_ng.testutils.TestDataBuilders
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OperationUiStateTest {
+    @Test
+    fun `forced unverified completion remains saveable without becoming clean success`() {
+        val state = TestDataBuilders.createOperationState(
+            type = OperationType.DECRYPT,
+            status = OperationStatusData("COMPLETED_UNVERIFIED"),
+            done = true,
+            error = null,
+        )
+
+        val projected = state.toUiState()
+        assertTrue("Recovery must retain the Save presentation", projected is OperationUiState.Success)
+        assertEquals(OperationType.DECRYPT, (projected as OperationUiState.Success).type)
+        assertNotEquals("Unverified output must not use clean-success copy",
+            OperationUiState.Success(OperationType.DECRYPT), projected)
+    }
+
     @Test
     fun `cancelled done operation maps to cancelled instead of success`() {
         val state = TestDataBuilders.createOperationState(

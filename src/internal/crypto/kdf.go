@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime/debug"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/hkdf"
@@ -69,6 +70,10 @@ func DeriveKey(password, salt []byte, paranoid bool) ([]byte, error) {
 			Argon2KeySize,
 		)
 	}
+
+	// Reclaim the completed workspace before another legacy derivation.
+	// IDKey's returned key does not retain the workspace.
+	debug.FreeOSMemory()
 
 	// Sanity check: key should not be all zeros
 	if bytes.Equal(key, make([]byte, Argon2KeySize)) {

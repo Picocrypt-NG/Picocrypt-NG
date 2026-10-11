@@ -87,6 +87,7 @@ data class Pcv3ArtifactMetadataDisplay(
 object OperationStatus {
     const val STARTING = "STARTING"
     const val COMPLETED = "COMPLETED"
+    const val COMPLETED_UNVERIFIED = "COMPLETED_UNVERIFIED"
     const val CANCELLED = "CANCELLED"
     const val ERROR = "ERROR"
     const val COMPRESSING_FILES = "COMPRESSING_FILES"
@@ -847,6 +848,7 @@ fun renderOperationStatus(
 private fun staticStatusResource(code: String): Int? = when (code) {
     OperationStatus.STARTING -> R.string.status_starting
     OperationStatus.COMPLETED -> R.string.status_completed
+    OperationStatus.COMPLETED_UNVERIFIED -> R.string.pcv3_artifact_status_unverified
     OperationStatus.CANCELLED -> R.string.status_cancelled
     OperationStatus.ERROR -> R.string.status_error
     OperationStatus.COMPRESSING_FILES -> R.string.status_compressing_files

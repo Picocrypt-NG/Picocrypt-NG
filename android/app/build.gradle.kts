@@ -68,6 +68,7 @@ android {
     sourceSets.getByName("androidTest").assets.srcDir(
         "../../src/internal/pcv3operation/internal/pcv3/testdata/d1/independent",
     )
+    sourceSets.getByName("androidTest").assets.srcDir("../../src/testdata/golden")
 
     signingConfigs {
         if (releaseSigningConfigured) {

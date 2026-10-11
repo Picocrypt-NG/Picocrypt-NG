@@ -771,8 +771,8 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 }
 
 func forceDecryptKeptResult(destination string) error {
-	fmt.Fprintf(os.Stderr, "Warning: Force decrypt kept output after MAC verification failed; recovered data is untrusted: %s\n", destination)
-	return newExitCodeError(ExitForceDecryptKept, "force decrypt kept output after MAC verification failed")
+	fmt.Fprintf(os.Stderr, "Warning: Force decrypt kept output after integrity verification failed; recovered data is untrusted: %s\n", destination)
+	return newExitCodeError(ExitForceDecryptKept, "force decrypt kept output after integrity verification failed")
 }
 
 func runPCV3CLI(
