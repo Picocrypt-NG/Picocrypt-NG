@@ -289,7 +289,7 @@ func TestForceDecryptKeptExitCode(t *testing.T) {
 		if result.exitCode != 0 {
 			t.Fatalf("exit code = %d, want 0\nstderr:\n%s", result.exitCode, result.stderr)
 		}
-		if strings.Contains(result.stderr, "kept") || strings.Contains(result.stderr, "MAC verification failed") {
+		if strings.Contains(result.stderr, "kept") || strings.Contains(result.stderr, "integrity verification failed") {
 			t.Fatalf("clean decrypt emitted kept-output warning:\n%s", result.stderr)
 		}
 		if _, err := os.Stat(outputPath); err != nil {
@@ -316,7 +316,7 @@ func TestForceDecryptKeptExitCode(t *testing.T) {
 		if result.exitCode != 2 {
 			t.Fatalf("exit code = %d, want 2\nstderr:\n%s", result.exitCode, result.stderr)
 		}
-		if !strings.Contains(result.stderr, "Warning:") || !strings.Contains(result.stderr, "MAC verification failed") {
+		if !strings.Contains(result.stderr, "Warning:") || !strings.Contains(result.stderr, "integrity verification failed") {
 			t.Fatalf("kept-output warning missing from stderr:\n%s", result.stderr)
 		}
 		if _, err := os.Stat(outputPath); err != nil {
@@ -374,7 +374,7 @@ func TestForceDecryptKeptStdoutOrdering(t *testing.T) {
 		if len(result.stdout) == 0 {
 			t.Fatal("expected clean plaintext on stdout")
 		}
-		if strings.Contains(result.stderr, "Warning:") || strings.Contains(result.stderr, "MAC verification failed") {
+		if strings.Contains(result.stderr, "Warning:") || strings.Contains(result.stderr, "integrity verification failed") {
 			t.Fatalf("clean stdout decrypt emitted warning:\n%s", result.stderr)
 		}
 	})
@@ -399,10 +399,10 @@ func TestForceDecryptKeptStdoutOrdering(t *testing.T) {
 		if len(result.stdout) == 0 {
 			t.Fatal("expected recovered bytes on stdout before non-clean exit")
 		}
-		if !strings.Contains(result.stderr, "Warning:") || !strings.Contains(result.stderr, "MAC verification failed") {
+		if !strings.Contains(result.stderr, "Warning:") || !strings.Contains(result.stderr, "integrity verification failed") {
 			t.Fatalf("kept-output warning missing from stderr:\n%s", result.stderr)
 		}
-		if bytes.Contains(result.stdout, []byte("Warning:")) || bytes.Contains(result.stdout, []byte("MAC verification failed")) {
+		if bytes.Contains(result.stdout, []byte("Warning:")) || bytes.Contains(result.stdout, []byte("integrity verification failed")) {
 			t.Fatalf("stdout contains warning text: %q", result.stdout)
 		}
 	})

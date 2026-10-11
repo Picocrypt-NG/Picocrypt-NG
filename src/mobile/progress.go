@@ -1686,6 +1686,10 @@ func decodePCV3ObjectFields(
 
 // completeOperation marks an operation as done
 func completeOperation(id string, err error) {
+	completeOperationWithKept(id, err, false)
+}
+
+func completeOperationWithKept(id string, err error, kept bool) {
 	globalProgressMap.mu.Lock()
 	defer globalProgressMap.mu.Unlock()
 
@@ -1703,8 +1707,12 @@ func completeOperation(id string, err error) {
 			op.StatusSpeedMiBPerSecond = status.SpeedMiBPerSecond
 			op.StatusETA = status.ETA
 		} else {
-			status := classifyStatus("Completed")
-			op.Status = "Completed"
+			text := "Completed"
+			if kept {
+				text = "Completed (unverified)"
+			}
+			status := classifyStatus(text)
+			op.Status = text
 			op.StatusCode = status.Code
 			op.StatusSpeedMiBPerSecond = status.SpeedMiBPerSecond
 			op.StatusETA = status.ETA

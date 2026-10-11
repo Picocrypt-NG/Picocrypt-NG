@@ -755,6 +755,7 @@ func StartDecrypt(requestJSON string, password []byte) string {
 		reporter := &androidProgressReporter{opID: req.OperationID}
 
 		// Build decrypt request
+		var kept bool
 		decryptReq := &volume.DecryptRequest{
 			InputFile:    req.InputFile,
 			OutputFile:   req.OutputFile,
@@ -768,6 +769,7 @@ func StartDecrypt(requestJSON string, password []byte) string {
 			Deniability:  req.Deniability,
 			Reporter:     reporter,
 			RSCodecs:     rsCodecs,
+			Kept:         &kept,
 		}
 
 		// Get cancellation context
@@ -779,12 +781,7 @@ func StartDecrypt(requestJSON string, password []byte) string {
 
 		// Perform decryption
 		err = runDecrypt(opCtx, decryptReq)
-		if err != nil {
-			completeOperation(req.OperationID, err)
-			return
-		}
-
-		completeOperation(req.OperationID, nil)
+		completeOperationWithKept(req.OperationID, err, kept)
 	}()
 
 	return "" // Success - operation started

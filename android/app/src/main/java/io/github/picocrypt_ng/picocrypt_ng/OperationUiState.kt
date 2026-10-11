@@ -11,7 +11,7 @@ sealed interface OperationUiState {
         val detail: OperationProgressDetail,
     ) : OperationUiState
     data class Cancelled(val type: OperationType) : OperationUiState
-    data class Success(val type: OperationType) : OperationUiState
+    data class Success(val type: OperationType, val unverified: Boolean = false) : OperationUiState
     data class Failed(val type: OperationType, val error: AppError) : OperationUiState
 }
 
@@ -212,5 +212,5 @@ fun OperationState?.toUiState(): OperationUiState = when {
     !done -> OperationUiState.Running(type, progress, status, detail)
     error != null -> OperationUiState.Failed(type, error)
     status.code == OperationStatus.CANCELLED -> OperationUiState.Cancelled(type)
-    else -> OperationUiState.Success(type)
+    else -> OperationUiState.Success(type, status.code == OperationStatus.COMPLETED_UNVERIFIED)
 }

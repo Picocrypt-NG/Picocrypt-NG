@@ -1,6 +1,7 @@
 package io.github.picocrypt_ng.picocrypt_ng.ui.components
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.core.app.ApplicationProvider
@@ -28,6 +29,29 @@ class ProgressCardTest {
 
     @get:Rule
     val composeTestRule = createComposeRule()
+
+    @Test
+    fun progressCard_warnsAboutUnverifiedCompletionAndKeepsSaveEnabled() {
+        val application = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val mainViewModel = MainViewModel(application, androidx.lifecycle.SavedStateHandle())
+        val operationViewModel = OperationViewModel()
+        val original = swapOperationState(TestDataBuilders.createOperationState(
+            type = OperationType.DECRYPT,
+            status = OperationStatusData("COMPLETED_UNVERIFIED"),
+            done = true,
+            error = null,
+        ))
+        try {
+            composeTestRule.setContent {
+                ProgressCard(mainViewModel = mainViewModel, operationViewModel = operationViewModel)
+            }
+            composeTestRule.onNodeWithText(application.getString(R.string.force_decrypt_warning)).assertIsDisplayed()
+            composeTestRule.onNodeWithText(application.getString(R.string.operation_completed_successfully)).assertDoesNotExist()
+            composeTestRule.onNodeWithText(application.getString(R.string.save)).assertIsEnabled()
+        } finally {
+            restoreOperationState(original)
+        }
+    }
 
     @Test
     fun progressCard_composes_with_no_active_operation() {

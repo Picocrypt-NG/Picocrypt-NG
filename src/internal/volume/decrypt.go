@@ -277,7 +277,7 @@ func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
 	// Handle decode errors
 	if result.DecodeError != nil {
 		if req.ForceDecrypt {
-			// Continue but mark as damaged
+			markForcedOutputUntrusted(ctx, req)
 		} else {
 			return fmt.Errorf("header damaged: %w", result.DecodeError)
 		}
@@ -346,7 +346,7 @@ func decryptVerifyAuth(ctx *OperationContext, req *DecryptRequest) error {
 
 		if !authResult.Valid {
 			if req.ForceDecrypt {
-				// Continue anyway
+				markForcedOutputUntrusted(ctx, req)
 			} else {
 				return header.NewPasswordError()
 			}
@@ -356,7 +356,7 @@ func decryptVerifyAuth(ctx *OperationContext, req *DecryptRequest) error {
 		if ctx.UseKeyfiles {
 			if !header.VerifyKeyfileHash(ctx.KeyfileHash, ctx.Header.KeyfileHash) {
 				if req.ForceDecrypt {
-					// Continue anyway
+					markForcedOutputUntrusted(ctx, req)
 				} else {
 					return header.NewKeyfileError(ctx.Header.Flags.KeyfileOrdered)
 				}
@@ -403,7 +403,7 @@ func decryptVerifyAuth(ctx *OperationContext, req *DecryptRequest) error {
 
 		if !authResult.Valid {
 			if req.ForceDecrypt {
-				// Continue anyway
+				markForcedOutputUntrusted(ctx, req)
 			} else {
 				// Could be password or tampered header
 				return header.NewV2PasswordOrTamperError()
@@ -414,7 +414,7 @@ func decryptVerifyAuth(ctx *OperationContext, req *DecryptRequest) error {
 		if ctx.UseKeyfiles {
 			if !header.VerifyKeyfileHash(ctx.KeyfileHash, ctx.Header.KeyfileHash) {
 				if req.ForceDecrypt {
-					// Continue anyway
+					markForcedOutputUntrusted(ctx, req)
 				} else {
 					return header.NewKeyfileError(ctx.Header.Flags.KeyfileOrdered)
 				}
@@ -433,6 +433,14 @@ func decryptVerifyAuth(ctx *OperationContext, req *DecryptRequest) error {
 	}
 
 	return nil
+}
+
+// A valid ciphertext MAC cannot undo an earlier forced authentication bypass.
+func markForcedOutputUntrusted(ctx *OperationContext, req *DecryptRequest) {
+	ctx.Kept = true
+	if req.Kept != nil {
+		*req.Kept = true
+	}
 }
 
 // decryptDeriveProcessVerify runs the derive-keys -> process-keyfiles ->
@@ -911,11 +919,7 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 		}
 
 		if req.ForceDecrypt {
-			// Continue but mark as kept
-			ctx.Kept = true
-			if req.Kept != nil {
-				*req.Kept = true
-			}
+			markForcedOutputUntrusted(ctx, req)
 		} else {
 			return perrors.ErrCorruptData
 		}

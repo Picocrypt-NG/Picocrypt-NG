@@ -199,7 +199,7 @@ type DecryptRequest struct {
     Password []byte   // Owned by caller; caller zeros it after the operation
     Keyfiles []string
 
-    ForceDecrypt bool // continue despite MAC failure (may produce corrupt output)
+    ForceDecrypt bool // continue despite failed integrity checks (may produce corrupt output)
     VerifyFirst  bool // two-pass: verify MAC before writing (slower)
     AutoUnzip    bool // extract if output is a .zip
     SameLevel    bool // extract to same dir as volume
@@ -211,7 +211,7 @@ type DecryptRequest struct {
     RSCodecs *encoding.RSCodecs
 
     // Output — set by Decrypt after completion
-    Kept *bool // non-nil + true if ForceDecrypt kept file despite MAC failure
+    Kept *bool // non-nil + true if ForceDecrypt bypassed an integrity/authentication failure
 }
 
 func (req *DecryptRequest) Validate() error
