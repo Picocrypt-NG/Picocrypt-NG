@@ -10,9 +10,12 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These independent fixtures are separate parents so the native macOS lane
@@ -42,6 +45,18 @@ func TestArchiveResourceD1ExtractionReachesValidFrontendPresentation(t *testing.
 // cannot; refusal must survive both opaque handoff projections to the frontend.
 func testArchiveResourceFrontendPresentation(t *testing.T, mode WriteMode, kind string) {
 	t.Helper()
+	fixtureDirectory := os.Getenv("PICOCRYPT_TEST_ARCHIVE_RESOURCE_FIXTURE")
+	fixtureWorker := fixtureDirectory != ""
+	if fixtureWorker {
+		if mode != WriteModeD1 || kind != "metadata" {
+			t.Fatal("archive resource fixture worker requires the D1 metadata case")
+		}
+		t.Cleanup(func() {
+			if !t.Failed() && !t.Skipped() {
+				t.Log("archive resource fixture writer completed")
+			}
+		})
+	}
 	var archive bytes.Buffer
 	writer := zip.NewWriter(&archive)
 	name := "payload.txt"
@@ -70,9 +85,14 @@ func testArchiveResourceFrontendPresentation(t *testing.T, mode WriteMode, kind 
 		reader.Close()
 	}
 	directory := t.TempDir()
+	if fixtureWorker {
+		directory = fixtureDirectory
+	}
 	sourcePath := filepath.Join(directory, "source.zip")
-	if err := os.WriteFile(sourcePath, data, 0o600); err != nil {
-		t.Fatal(err)
+	if !fixtureWorker {
+		if err := os.WriteFile(sourcePath, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	source, err := os.Open(sourcePath)
 	if err != nil {
@@ -93,8 +113,17 @@ func testArchiveResourceFrontendPresentation(t *testing.T, mode WriteMode, kind 
 		readMode = ModeReadD1
 	}
 	ciphertext := filepath.Join(directory, "ciphertext.pcv")
-	write := RunWrite(context.Background(), &WriteRequest{Mode: mode, Suite: suite, PayloadKind: PayloadKindArchive, Source: source, SourceFile: source, SourcePath: sourcePath, PlaintextLength: uint64(len(data)), Target: ciphertext, Factors: factors()})
-	requireNativeOperationPublication(t, write)
+	if runtime.GOOS == "darwin" && mode == WriteModeD1 && kind == "metadata" && !fixtureWorker {
+		// This malformed-metadata reader case must not inherit the synthetic
+		// writer's reusable Go heap. Other D1 cases retain warm write/read coverage.
+		runArchiveResourceFixtureWriter(t, directory)
+	} else {
+		write := RunWrite(context.Background(), &WriteRequest{Mode: mode, Suite: suite, PayloadKind: PayloadKindArchive, Source: source, SourceFile: source, SourcePath: sourcePath, PlaintextLength: uint64(len(data)), Target: ciphertext, Factors: factors()})
+		requireNativeOperationPublication(t, write)
+	}
+	if fixtureWorker {
+		return
+	}
 	encrypted, err := os.Open(ciphertext)
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +183,29 @@ func testArchiveResourceFrontendPresentation(t *testing.T, mode WriteMode, kind 
 	entries, err := os.ReadDir(directory)
 	if err != nil || len(entries) != 2 {
 		t.Errorf("source directory retained stage: %v %v", entries, err)
+	}
+}
+
+func runArchiveResourceFixtureWriter(t *testing.T, directory string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Minute)
+	if testDeadline, ok := t.Deadline(); ok {
+		deadline = testDeadline
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0],
+		"-test.run=^TestArchiveResourceD1MetadataRefusalReachesValidFrontendPresentation$",
+		"-test.v", "-test.timeout="+time.Until(deadline).String())
+	command.Env = append(os.Environ(), "PICOCRYPT_TEST_ARCHIVE_RESOURCE_FIXTURE="+directory)
+	command.WaitDelay = time.Second
+	output, err := command.CombinedOutput()
+	t.Logf("archive resource fixture writer:\n%s", output)
+	if err != nil {
+		t.Fatalf("archive resource fixture writer failed: %v", err)
+	}
+	if !bytes.Contains(output, []byte("archive resource fixture writer completed\n")) {
+		t.Fatal("archive resource fixture writer did not complete its selected body")
 	}
 }
 
