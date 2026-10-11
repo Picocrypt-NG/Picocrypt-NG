@@ -104,11 +104,6 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 	}
 	hdr := result.Header
 
-	// Check for unsupported features
-	if hasUnsupportedWASMFeature(hdr.Flags) {
-		return DecryptResult{}, ErrUnsupported
-	}
-
 	isLegacyV1 := hdr.IsLegacyV1()
 	// v1 keyfile XOR precedes HKDF, which this reader does not implement.
 	if isLegacyV1 && hdr.Flags.UseKeyfiles {
@@ -325,13 +320,6 @@ func verifyWASMHeader(key []byte, hdr *header.VolumeHeader, keyfileHash []byte, 
 		return false, nil, 0
 	}
 	return true, reader, 0
-}
-
-// hasUnsupportedWASMFeature flags header combinations the WASM path cannot handle.
-// Reed-Solomon (and its companion Padded flag) are now supported. A Padded flag
-// WITHOUT ReedSolomon is a combination desktop never emits -> treat as corrupt.
-func hasUnsupportedWASMFeature(flags header.Flags) bool {
-	return flags.Padded && !flags.ReedSolomon
 }
 
 // decryptRSPayload decrypts an RS128-framed payload block-by-block. fastDecode=true

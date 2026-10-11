@@ -284,26 +284,21 @@ func TestWASMBuffersZeroed(t *testing.T) {
 	}
 }
 
-func TestWASMUnsupportedFeatureFlagsReturnUnsupported(t *testing.T) {
-	// Padded-without-ReedSolomon is a combination desktop never emits; treated as corrupt.
-	// ReedSolomon (with or without Padded) is now supported and is no longer in this list.
-	cases := []struct {
+func TestWASMTamperedPaddingFlagFailsHeaderAuthentication(t *testing.T) {
+	volumeData := wasmVolumeWithFlags(t, header.Flags{Padded: true})
+	originalCiphertext := bytes.Clone(volumeData)
+	password := []byte("wasm-unsupported-flags")
+	for _, tc := range []struct {
 		name  string
-		flags header.Flags
-	}{
-		{
-			name:  "reed_solomon_padding",
-			flags: header.Flags{Padded: true},
-		},
-	}
-
-	for _, tc := range cases {
+		force bool
+	}{{"normal", false}, {"force", true}} {
 		t.Run(tc.name, func(t *testing.T) {
-			volumeData := wasmVolumeWithFlags(t, tc.flags)
-
-			_, errCode := DecryptVolume(volumeData, []byte("wasm-unsupported-flags"), DecryptOptions{})
-			if errCode != ErrUnsupported {
-				t.Fatalf("DecryptVolume error code = %d; want ErrUnsupported", errCode)
+			result, errCode := DecryptVolume(volumeData, password, DecryptOptions{Force: tc.force})
+			if errCode != ErrWrongPassword || result.Plaintext != nil || result.Comments != "" || result.Kept {
+				t.Errorf("tampered header must fail authentication without output: code=%d result=%+v", errCode, result)
+			}
+			if !bytes.Equal(volumeData, originalCiphertext) || !bytes.Equal(password, []byte("wasm-unsupported-flags")) {
+				t.Error("header refusal changed caller-owned ciphertext or password")
 			}
 		})
 	}
@@ -677,9 +672,15 @@ func TestWASMDecryptKeyfileCipherKeyZeroedOnCipherError(t *testing.T) {
 func wasmVolumeWithFlags(t *testing.T, flags header.Flags) []byte {
 	t.Helper()
 
-	volumeData, errCode := EncryptVolume([]byte("unsupported wasm feature flags"), []byte("wasm-unsupported-flags"), EncryptOptions{})
+	plaintext := []byte("header flag authentication payload")
+	comments := "authenticated header comment"
+	volumeData, errCode := EncryptVolume(plaintext, []byte("wasm-unsupported-flags"), EncryptOptions{Comments: comments})
 	if errCode != 0 {
 		t.Fatalf("EncryptVolume returned error code %d", errCode)
+	}
+	control, errCode := DecryptVolume(volumeData, []byte("wasm-unsupported-flags"), DecryptOptions{})
+	if errCode != 0 || !bytes.Equal(control.Plaintext, plaintext) || control.Comments != comments || control.Kept {
+		t.Fatalf("authentic control failed: code=%d result=%+v", errCode, control)
 	}
 
 	rs, err := encoding.NewRSCodecs()
@@ -692,7 +693,7 @@ func wasmVolumeWithFlags(t *testing.T, flags header.Flags) []byte {
 	}
 
 	patched := append([]byte(nil), volumeData...)
-	flagsOffset := header.VersionEncSize + header.CommentLenEncSize
+	flagsOffset := header.VersionEncSize + header.CommentLenEncSize + 3*len(comments)
 	copy(patched[flagsOffset:flagsOffset+header.FlagsEncSize], flagsEnc)
 	return patched
 }
