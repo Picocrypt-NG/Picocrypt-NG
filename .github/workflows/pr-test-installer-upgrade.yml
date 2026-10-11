@@ -32,15 +32,22 @@ jobs:
     - name: Install NSIS
       shell: pwsh
       run: |
-        choco install -y --no-progress nsis --version=3.13.0
-        & "C:\Program Files (x86)\NSIS\makensis.exe" -VERSION
+        $makensis = & .github/scripts/install-nsis.ps1
+        "NSIS_EXE=$makensis" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        & $makensis -VERSION
+        if ($LASTEXITCODE -ne 0) { throw "NSIS version check failed ($LASTEXITCODE)" }
+
+    - name: Verify NSIS archive controls
+      shell: pwsh
+      run: |
+        & .github/scripts/test-install-nsis.ps1 -ArchivePath (Join-Path $env:RUNNER_TEMP 'nsis-3.13.zip')
 
     - name: Runtime upgrade / orphan-sweep / running-instance test
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
 
-        $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
+        $makensis = $env:NSIS_EXE
         $script   = (Resolve-Path "dist\windows\installer.nsi").Path
         $outDir   = (Resolve-Path "dist\windows").Path
         $built    = Join-Path $outDir "Picocrypt-NG-Setup.exe"
