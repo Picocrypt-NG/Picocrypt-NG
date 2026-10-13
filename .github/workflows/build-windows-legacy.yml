@@ -142,7 +142,7 @@ jobs:
         upx/upx-5.2.1-win64/upx.exe --lzma src/Picocrypt-NG-cli-Legacy.exe
 
     - name: Upload artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: unsigned-windows-legacy
         path: src/Picocrypt-NG-cli-Legacy.exe
@@ -177,7 +177,7 @@ jobs:
 
     - name: Upload unsigned legacy CLI for SignPath
       id: upload-signpath-legacy
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: signpath-windows-legacy
         path: unsigned-legacy/Picocrypt-NG-cli-Legacy.exe
@@ -229,7 +229,7 @@ jobs:
 
     - name: Upload signed Windows legacy artifact
       if: ${{ !inputs.signpath_release_dry_run }}
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ inputs.signpath_test && 'signed-windows-legacy-TEST-DO-NOT-PUBLISH' || 'signed-windows-legacy' }}
         path: signpath-signed-legacy/Picocrypt-NG-cli-Legacy.exe

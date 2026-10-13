@@ -243,7 +243,7 @@ jobs:
         Copy-Item dist/windows/Picocrypt-NG-Setup.exe release-staging/
 
     - name: Upload artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: unsigned-windows
         path: release-staging/
@@ -295,7 +295,7 @@ jobs:
 
     - name: Upload unsigned binaries for SignPath
       id: upload-signpath-binaries
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: signpath-windows-binaries
         path: signpath-input-binaries/
@@ -378,7 +378,7 @@ jobs:
 
     - name: Upload unsigned uninstaller for SignPath
       id: upload-signpath-uninstaller
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: signpath-windows-uninstaller
         path: dist/windows/Uninstall.exe
@@ -442,7 +442,7 @@ jobs:
 
     - name: Upload unsigned installer for SignPath
       id: upload-signpath-installer
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: signpath-windows-installer
         path: dist/windows/Picocrypt-NG-Setup.exe
@@ -554,7 +554,7 @@ jobs:
 
     - name: Upload signed Windows artifacts
       if: ${{ !inputs.signpath_release_dry_run }}
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ inputs.signpath_test && 'signed-windows-TEST-DO-NOT-PUBLISH' || 'signed-windows' }}
         path: signed-release/

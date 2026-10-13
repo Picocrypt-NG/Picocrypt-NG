@@ -100,7 +100,7 @@ jobs:
 
     - name: Upload JVM unit test report
       if: ${{ always() && (steps.unit-tests.outcome == 'success' || steps.unit-tests.outcome == 'failure') }}
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: pr-jvm-test-report
         path: android/app/build/test-results/
@@ -183,7 +183,7 @@ jobs:
 
     - name: Upload instrumented test report
       if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: pr-instrumented-test-report
         path: |
@@ -198,7 +198,7 @@ jobs:
         cp android/app/build/outputs/apk/debug/app-debug.apk out/Picocrypt-NG-android-debug.apk
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: pr-test-build-android-ONLY-FOR-TESTING
         path: out/*.apk
