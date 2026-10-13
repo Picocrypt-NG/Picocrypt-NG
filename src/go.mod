@@ -3,13 +3,13 @@ module Picocrypt-NG
 go 1.27.2
 
 require (
-	fyne.io/fyne/v2 v2.8.1
+	fyne.io/fyne/v2 v2.8.2
 	github.com/BurntSushi/toml v1.6.0
 	github.com/Picocrypt-NG/serpent v0.1.0
 	github.com/Picocrypt/infectious v0.0.0-20250713161924-ae9b3ccb49d7
 	github.com/Picocrypt/zxcvbn-go v0.0.0-20250412183938-d59695960527
 	github.com/dweymouth/fyne-tooltip v0.4.0
-	github.com/go-gl/glfw/v3.4/glfw v0.1.0-pre.1.0.20260707082822-2a407d02d01a
+	github.com/go-gl/glfw/v3.4/glfw v0.1.0-pre.2
 	github.com/nicksnyder/go-i18n/v2 v2.6.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
@@ -29,7 +29,7 @@ require (
 	github.com/fyne-io/gl-js v0.2.1-0.20260315212741-029c47fd27e8 // indirect
 	github.com/fyne-io/glfw-js v0.4.0 // indirect
 	github.com/fyne-io/image v0.1.1 // indirect
-	github.com/fyne-io/oksvg v0.2.0 // indirect
+	github.com/fyne-io/oksvg v0.2.1-0.20260918172519-a9af55fa95d9 // indirect
 	github.com/go-gl/gl v0.0.0-20260331235117-4566fea9a276 // indirect
 	github.com/go-text/render v0.2.1 // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect
