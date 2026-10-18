@@ -37,13 +37,13 @@ func TestWriteRetainedKeepsOriginalDescriptorAndUncertainPublishedOutput(t *test
 			if result.State() != want || held == nil || held.file != original {
 				t.Fatalf("state=%v held=%v", result, held)
 			}
-			if err := stage.Cleanup(); err != nil {
+			if err := stage.Cleanup(); errors.Is(err, ErrCleanupIncomplete) != uncertain {
 				t.Fatal(err)
 			}
 			if _, err := original.Stat(); err != nil {
 				t.Fatalf("held descriptor closed: %v", err)
 			}
-			if err := held.Close(); err != nil {
+			if err := held.Close(); errors.Is(err, ErrCleanupIncomplete) != uncertain {
 				t.Fatal(err)
 			}
 			if data, err := os.ReadFile(target); err != nil || string(data) != "ciphertext" {

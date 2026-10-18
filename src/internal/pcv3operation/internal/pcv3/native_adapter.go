@@ -912,6 +912,9 @@ func (sink *nativeReadSink) publishRetained(
 	publication, retained := sink.stage.PublishRetained(ctx)
 	sink.retainPublication(publication)
 	if retained != nil {
+		if sink.stage.Cleanup() != nil {
+			sink.cleanupIncomplete = true
+		}
 		sink.stage = nil
 	}
 	return retained

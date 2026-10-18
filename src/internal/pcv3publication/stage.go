@@ -21,7 +21,7 @@ const stageNamePrefix = ".picocrypt-pcv3-"
 var ErrCleanupIncomplete = errors.New("pcv3 publication: cleanup incomplete")
 
 type platformOperations struct {
-	atomicPublish       func(*os.File, string, string, Policy) error
+	atomicPublish       func(*os.File, *os.File, *os.File, string, string, Policy) error
 	syncDirectory       func(*os.File) error
 	syncStage           func(*os.File) error
 	closeStage          func(*os.File) error
@@ -47,6 +47,10 @@ type Stage struct {
 	file                 *os.File
 	identityPin          *os.File
 	root                 *os.Root
+	sourceRoot           *os.Root
+	sourceParent         *os.File
+	sourceInfo           os.FileInfo
+	sourceName           string
 	parent               *os.File
 	rootInfo             os.FileInfo
 	stageInfo            os.FileInfo
@@ -95,7 +99,7 @@ func createWithOperations(
 	if policy != PolicyNoReplace && policy != PolicySafeReplace {
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeInvalidRequest)
 	}
-	if operations.atomicPublish == nil || operations.syncDirectory == nil {
+	if !privateDirectoryBackendAvailable() || operations.atomicPublish == nil || operations.syncDirectory == nil {
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodePolicyUnsupported)
 	}
 	if operations.syncStage == nil {
@@ -168,12 +172,18 @@ func createWithOperations(
 		_ = root.Close()
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
 	}
-	currentParent, err := os.Lstat(parentPath)
+	currentParent, err := os.Lstat(parentPath) //nolint:gosec // G703: metadata-only check of the normalized requested parent against its pinned root; no payload access.
 	if err != nil || currentParent == nil || !currentParent.IsDir() ||
 		currentParent.Mode()&os.ModeSymlink != 0 || !os.SameFile(rootInfo, currentParent) {
 		_ = parent.Close()
 		_ = root.Close()
 		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeIdentityChanged)
+	}
+
+	if !privateDirectoryParentTrusted(parent) {
+		_ = parent.Close()
+		_ = root.Close()
+		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodePolicyUnsupported)
 	}
 
 	targetInfo, targetErr := root.Lstat(targetName)
@@ -198,15 +208,26 @@ func createWithOperations(
 		}
 	}
 
-	stageName := stageNamePrefix + rand.Text()
-	file, err := root.OpenFile(stageName, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	sourceName := stageNamePrefix + "private-" + rand.Text()
+	sourceRoot, sourceParent, sourceInfo, err := createPrivateDirectory(root, parent, sourceName)
 	if err != nil {
 		_ = parent.Close()
 		_ = root.Close()
-		return nil, newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
+		return nil, errors.Join(newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure), ErrCleanupIncomplete)
+	}
+	stageName := stageNamePrefix + rand.Text()
+	file, err := createPrivateStage(sourceRoot, sourceParent, stageName)
+	if err != nil {
+		_ = sourceParent.Close()
+		_ = sourceRoot.Close()
+		_ = parent.Close()
+		_ = root.Close()
+		return nil, errors.Join(newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure), ErrCleanupIncomplete)
 	}
 	stageInfo, err := operations.statStage(file)
 	if err != nil || stageInfo == nil || !stageInfo.Mode().IsRegular() {
+		_ = sourceRoot.Close()
+		_ = sourceParent.Close()
 		_ = file.Close()
 		_ = parent.Close()
 		_ = root.Close()
@@ -219,12 +240,16 @@ func createWithOperations(
 	stage := &Stage{
 		file:               file,
 		root:               root,
+		sourceRoot:         sourceRoot,
+		sourceParent:       sourceParent,
+		sourceInfo:         sourceInfo,
+		sourceName:         sourceName,
 		parent:             parent,
 		rootInfo:           rootInfo,
 		stageInfo:          stageInfo,
 		targetInfo:         targetInfo,
 		parentPath:         parentPath,
-		stagePath:          filepath.Join(parentPath, stageName),
+		stagePath:          filepath.Join(parentPath, sourceName, stageName),
 		stageName:          stageName,
 		targetName:         targetName,
 		protected:          protectedPaths,
@@ -277,7 +302,7 @@ func (stage *Stage) freezeRetainedDigest(ctx context.Context) error {
 	info, err := stage.file.Stat()
 	if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 ||
 		!os.SameFile(stage.stageInfo, info) ||
-		probeIdentity(stage.root, stage.stageName, stage.stageInfo) != identityExpected {
+		probeIdentity(stage.sourceRoot, stage.stageName, stage.stageInfo) != identityExpected {
 		return errors.Join(errors.New("inspect stage before digest"), err)
 	}
 	offset, err := stage.file.Seek(0, io.SeekCurrent)
@@ -311,7 +336,7 @@ func (stage *Stage) freezeRetainedDigest(ctx context.Context) error {
 	verified, err := stage.file.Stat()
 	if err != nil || verified == nil || !verified.Mode().IsRegular() ||
 		verified.Size() != info.Size() || !os.SameFile(info, verified) ||
-		probeIdentity(stage.root, stage.stageName, stage.stageInfo) != identityExpected {
+		probeIdentity(stage.sourceRoot, stage.stageName, stage.stageInfo) != identityExpected {
 		_, _ = stage.file.Seek(offset, io.SeekStart)
 		return errors.Join(errors.New("stage changed while computing digest"), err)
 	}
@@ -393,7 +418,9 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 	}
 
 	atomicErr := stage.operations.atomicPublish(
+		stage.sourceParent,
 		stage.parent,
+		stage.identityPin,
 		stage.stageName,
 		stage.targetName,
 		stage.policy,
@@ -415,7 +442,7 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 	switch classification {
 	case atomicCommitted:
 		stage.cleanupDisposition = cleanupNotRequired
-		if err := stage.operations.syncDirectory(stage.parent); err != nil {
+		if err := errors.Join(stage.operations.syncDirectory(stage.sourceParent), stage.operations.syncDirectory(stage.parent)); err != nil {
 			if !stage.parentIdentityCurrent() {
 				return stage.finish(StatePublicationIndeterminate, pcv3.StageOutputPublication, CodePublicationIndeterminate)
 			}
@@ -591,18 +618,23 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 		return nil
 	}
 
+	privateCleanupIncomplete := !stage.retirePrivateDirectory()
+	if privateCleanupIncomplete {
+		stage.cleanupErr = ErrCleanupIncomplete
+	}
 	retained := &RetainedFile{
-		file:          file,
-		identityPin:   stage.identityPin,
-		root:          stage.root,
-		parent:        stage.parent,
-		identity:      info,
-		sha256:        stage.retainedSHA256,
-		digestReady:   true,
-		targetName:    stage.targetName,
-		remove:        stage.operations.removeStage,
-		syncDirectory: stage.operations.syncDirectory,
-		active:        true,
+		file:              file,
+		identityPin:       stage.identityPin,
+		root:              stage.root,
+		parent:            stage.parent,
+		identity:          info,
+		sha256:            stage.retainedSHA256,
+		digestReady:       true,
+		targetName:        stage.targetName,
+		remove:            stage.operations.removeStage,
+		syncDirectory:     stage.operations.syncDirectory,
+		active:            true,
+		cleanupIncomplete: privateCleanupIncomplete,
 	}
 	stage.file = nil
 	stage.identityPin = nil
@@ -637,16 +669,16 @@ func (stage *Stage) parentIdentityCurrent() bool {
 	if err != nil || !os.SameFile(stage.rootInfo, pinned) {
 		return false
 	}
-	current, err := os.Lstat(stage.parentPath)
+	current, err := os.Lstat(stage.parentPath) //nolint:gosec // G703: inspect the normalized user-selected path only to compare with the pinned directory; no payload access or mutation.
 	return err == nil && current != nil && current.IsDir() &&
 		current.Mode()&os.ModeSymlink == 0 && os.SameFile(stage.rootInfo, current)
 }
 
 func (stage *Stage) stageIdentityCurrent() bool {
-	if stage == nil || stage.root == nil || stage.stageInfo == nil || stage.stageName == "" {
+	if stage == nil || stage.sourceRoot == nil || stage.stageInfo == nil || stage.stageName == "" {
 		return false
 	}
-	current, err := stage.root.Lstat(stage.stageName)
+	current, err := stage.sourceRoot.Lstat(stage.stageName)
 	if err != nil || !current.Mode().IsRegular() || !os.SameFile(stage.stageInfo, current) {
 		return false
 	}
@@ -683,15 +715,16 @@ func (stage *Stage) protectedStageAliasUncertain() bool {
 		return true
 	}
 	for _, protectedPath := range stage.protected {
-		alias, err := fileops.SamePathOrFile(stage.stagePath, protectedPath)
-		if err != nil || alias {
-			// Cleanup may remove only the operation-owned stage name. An alias or
-			// an uninspectable protected name prevents proving that no ciphertext
-			// remains reachable elsewhere.
+		info, err := os.Stat(protectedPath) //nolint:gosec // G703: read metadata of the normalized caller-protected path solely to reject aliases of the pinned stage.
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || os.SameFile(stage.stageInfo, info) {
 			stage.cleanupMayRemain = true
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -713,7 +746,7 @@ const (
 )
 
 func (stage *Stage) classifyAfterAtomic() (atomicClassification, bool) {
-	stageProbe := probeIdentity(stage.root, stage.stageName, stage.stageInfo)
+	stageProbe := probeIdentity(stage.sourceRoot, stage.stageName, stage.stageInfo)
 	targetProbe := probeIdentity(stage.root, stage.targetName, stage.stageInfo)
 	stageStillOwned := stageProbe == identityExpected
 
@@ -744,17 +777,19 @@ func probeIdentity(root *os.Root, name string, expected os.FileInfo) identityPro
 	}
 }
 
-func (stage *Stage) hasPinnedIdentity() bool {
+func (stage *Stage) hasPinnedIdentity() bool { return stage.pinnedIdentityFile() != nil }
+
+func (stage *Stage) pinnedIdentityFile() *os.File {
 	for _, file := range []*os.File{stage.identityPin, stage.file} {
 		if file == nil {
 			continue
 		}
 		info, err := file.Stat()
 		if err == nil && info.Mode().IsRegular() && os.SameFile(stage.stageInfo, info) {
-			return true
+			return file
 		}
 	}
-	return false
+	return nil
 }
 
 // Cleanup closes retained handles and removes only the exact operation-owned
@@ -788,9 +823,11 @@ func (stage *Stage) Cleanup() error {
 			stage.operations.removeStage == nil {
 			cleanupFailed = true
 		} else {
-			switch probeIdentity(stage.root, stage.stageName, stage.stageInfo) {
+			switch probeIdentity(stage.sourceRoot, stage.stageName, stage.stageInfo) {
 			case identityExpected:
-				if err := stage.operations.removeStage(stage.root, stage.stageName); err != nil {
+				if err := removeOwnedFile(stage.sourceRoot, stage.stageName, stage.pinnedIdentityFile(), stage.operations.removeStage); err != nil {
+					cleanupFailed = true
+				} else if stage.operations.syncDirectory(stage.sourceParent) != nil {
 					cleanupFailed = true
 				}
 			case identityMissing, identityOther, identityUnknown:
@@ -799,13 +836,13 @@ func (stage *Stage) Cleanup() error {
 		}
 	}
 	if stage.cleanupDisposition == cleanupPublishedOwned && !journaledPublishedCleanup {
-		if stage.root == nil || stage.targetName == "" || stage.stageInfo == nil || !stage.hasPinnedIdentity() ||
+		if !safePublishedRemoval(stage.parent, stage.identityPin) || stage.root == nil || stage.targetName == "" || stage.stageInfo == nil || !stage.hasPinnedIdentity() ||
 			stage.operations.removeStage == nil || stage.operations.syncDirectory == nil {
 			cleanupFailed = true
 		} else {
 			switch probeIdentity(stage.root, stage.targetName, stage.stageInfo) {
 			case identityExpected:
-				if err := stage.operations.removeStage(stage.root, stage.targetName); err != nil {
+				if err := removeOwnedFile(stage.root, stage.targetName, stage.pinnedIdentityFile(), stage.operations.removeStage); err != nil {
 					cleanupFailed = true
 				} else if stage.parent == nil ||
 					stage.operations.syncDirectory(stage.parent) != nil {
@@ -830,6 +867,9 @@ func (stage *Stage) Cleanup() error {
 			cleanupFailed = true
 		}
 		stage.identityPin = nil
+	}
+	if !stage.retirePrivateDirectory() {
+		cleanupFailed = true
 	}
 	if stage.parent != nil {
 		if err := stage.parent.Close(); err != nil {

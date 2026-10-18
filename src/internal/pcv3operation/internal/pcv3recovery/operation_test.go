@@ -607,7 +607,15 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 						if observedStage != "" {
 							return errors.New("TEST ONLY multiple recovery stages")
 						}
-						observedStage = filepath.Join(directory, entry.Name())
+						privateDirectory := filepath.Join(directory, entry.Name())
+						children, childErr := os.ReadDir(privateDirectory)
+						if childErr != nil {
+							return fmt.Errorf("TEST ONLY private stage contents: %w", childErr)
+						}
+						if len(children) != 1 {
+							return fmt.Errorf("TEST ONLY private stage count = %d", len(children))
+						}
+						observedStage = filepath.Join(privateDirectory, children[0].Name())
 					}
 				}
 				if observedStage == "" {
@@ -641,7 +649,7 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 			t.Fatalf("D1 operation = %v/%v/%v; want Force-unverified/tail/durable", result.Outcome(), result.D1BootstrapProvenance(), result.PublicationState())
 		}
 		if observedStage == "" || observedStage == target {
-			t.Fatalf("observed stage = %q; want distinct private sibling", observedStage)
+			t.Fatalf("observed stage = %q; want distinct privately held stage", observedStage)
 		}
 		contents, err := os.ReadFile(target)
 		if err != nil {

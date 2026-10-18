@@ -80,7 +80,7 @@ jobs:
       run: |
         & .github/scripts/run-windows-native-tests.ps1 `
           -GoExecutable 'C:\go-legacy\go\bin\go.exe' `
-          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume')
+          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume', './internal/pcv3publication')
       env:
         PICOCRYPT_RUN_CLI_INTEGRATION: 1
 

@@ -111,9 +111,7 @@ type writeJournalAdmitter struct {
 
 func (admitter *writeJournalAdmitter) AdmitKDF(context.Context, pcv3credential.KDFProfile) (pcv3credential.KDFAdmission, error) {
 	admitter.calls++
-	if _, err := os.Stat(filepath.Join(admitter.directory, ".picocrypt-pcv3-stage.journal")); err != nil {
-		admitter.t.Fatalf("KDF reached before durable cleanup journal: %v", err)
-	}
+	requireWriteJournalBeforeKDF(admitter.t, admitter.directory)
 	return pcv3credential.KDFAdmissionDeniedInsufficient, nil
 }
 

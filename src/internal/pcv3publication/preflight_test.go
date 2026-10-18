@@ -19,7 +19,7 @@ func TestCapabilityProbeRefusesUnsupportedWithoutOutputOrResidue(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer parent.Close()
-	err = checkCapability(root, parent, platformOperations{atomicPublish: func(*os.File, string, string, Policy) error { return errors.ErrUnsupported }})
+	err = checkCapability(root, parent, platformOperations{atomicPublish: func(*os.File, *os.File, *os.File, string, string, Policy) error { return errors.ErrUnsupported }})
 	if !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatalf("probe = %v", err)
 	}
@@ -65,7 +65,7 @@ func TestCapabilityProbeRejectsReplacingPrimitive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer parent.Close()
-	err = checkCapability(root, parent, platformOperations{atomicPublish: func(_ *os.File, source, target string, _ Policy) error { return root.Rename(source, target) }})
+	err = checkCapability(root, parent, platformOperations{atomicPublish: func(_, _, _ *os.File, source, target string, _ Policy) error { return root.Rename(source, target) }})
 	if !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatalf("unsafe replace accepted: %v", err)
 	}

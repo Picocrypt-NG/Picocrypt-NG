@@ -56,7 +56,7 @@ func TestMoveExistingNoReplacePreservesLateCollision(t *testing.T) {
 	ops := nativeOperations()
 	native := ops.atomicPublish
 	var targetInfo os.FileInfo
-	ops.atomicPublish = func(parent *os.File, oldName, newName string, policy Policy) error {
+	ops.atomicPublish = func(sourceDir, parent, original *os.File, oldName, newName string, policy Policy) error {
 		if err := os.WriteFile(target, []byte("late foreign input"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -65,7 +65,7 @@ func TestMoveExistingNoReplacePreservesLateCollision(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return native(parent, oldName, newName, policy)
+		return native(sourceDir, parent, original, oldName, newName, policy)
 	}
 	state, err := moveExistingNoReplace(dir, "input.incomplete", "input_file.pcv", device, inode, ops)
 	if state != ExistingFileNotPublished || !errors.Is(err, os.ErrExist) {
@@ -83,8 +83,8 @@ func TestMoveExistingNoReplaceRetainsPublishedCustodyOnErrors(t *testing.T) {
 			ops := nativeOperations()
 			if phase == "syscall-after-move" {
 				native := ops.atomicPublish
-				ops.atomicPublish = func(parent *os.File, oldName, newName string, policy Policy) error {
-					if err := native(parent, oldName, newName, policy); err != nil {
+				ops.atomicPublish = func(sourceDir, parent, original *os.File, oldName, newName string, policy Policy) error {
+					if err := native(sourceDir, parent, original, oldName, newName, policy); err != nil {
 						return err
 					}
 					return failure
@@ -140,7 +140,7 @@ func TestMoveExistingNoReplaceRefusesChangedIdentityAndSymlinks(t *testing.T) {
 func TestMoveExistingNoReplaceDenialNeverGrantsCleanup(t *testing.T) {
 	dir, source, info, device, inode := existingMoveFixture(t)
 	ops := nativeOperations()
-	ops.atomicPublish = func(*os.File, string, string, Policy) error { return syscall.ENOSYS }
+	ops.atomicPublish = func(*os.File, *os.File, *os.File, string, string, Policy) error { return syscall.ENOSYS }
 	state, err := moveExistingNoReplace(dir, "input.incomplete", "input_file.pcv", device, inode, ops)
 	if state != ExistingFileNotPublished || !errors.Is(err, syscall.ENOSYS) {
 		t.Fatalf("unsupported move = %v, %v", state, err)
@@ -153,8 +153,8 @@ func TestMoveExistingNoReplacePreservesReusedSourceName(t *testing.T) {
 	ops := nativeOperations()
 	native := ops.atomicPublish
 	var replacement os.FileInfo
-	ops.atomicPublish = func(parent *os.File, oldName, newName string, policy Policy) error {
-		if err := native(parent, oldName, newName, policy); err != nil {
+	ops.atomicPublish = func(sourceDir, parent, original *os.File, oldName, newName string, policy Policy) error {
+		if err := native(sourceDir, parent, original, oldName, newName, policy); err != nil {
 			return err
 		}
 		if err := os.WriteFile(source, []byte("new source owner"), 0o600); err != nil {
@@ -179,8 +179,8 @@ func TestMoveExistingNoReplaceDoesNotGrantReplacedTargetCustody(t *testing.T) {
 	var replacement os.FileInfo
 	ops := nativeOperations()
 	native := ops.atomicPublish
-	ops.atomicPublish = func(parent *os.File, oldName, newName string, policy Policy) error {
-		if err := native(parent, oldName, newName, policy); err != nil {
+	ops.atomicPublish = func(sourceDir, parent, original *os.File, oldName, newName string, policy Policy) error {
+		if err := native(sourceDir, parent, original, oldName, newName, policy); err != nil {
 			return err
 		}
 		if err := os.Rename(target, saved); err != nil {

@@ -32,7 +32,7 @@ func nativeOperations() platformOperations {
 }
 
 func windowsNoReplace(
-	parent *os.File,
+	source, parent, original *os.File,
 	stageName string,
 	targetName string,
 	policy Policy,
@@ -45,50 +45,25 @@ func windowsNoReplace(
 		return err
 	}
 
-	objectName, err := windows.NewNTUnicodeString(stageName)
-	if err != nil {
-		return err
+	if original == nil {
+		return os.ErrInvalid
 	}
-	objectAttributes := windows.OBJECT_ATTRIBUTES{
-		Length:        uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
-		RootDirectory: windows.Handle(parent.Fd()),
-		ObjectName:    objectName,
-		Attributes:    windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE,
-	}
-	var (
-		stageHandle windows.Handle
-		status      windows.IO_STATUS_BLOCK
-	)
-	if err := windows.NtCreateFile(
-		&stageHandle,
-		windows.DELETE|windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE,
-		&objectAttributes,
-		&status,
-		nil,
-		0,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		windows.FILE_OPEN,
-		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
-		0,
-		0,
-	); err != nil {
-		return err
-	}
+	var status windows.IO_STATUS_BLOCK
 
 	// Use the NT rename class for a target relative to the pinned directory
 	// handle. ReplaceIfExists remains false; no pathname fallback is permitted.
 	renameErr := windows.NtSetInformationFile(
-		stageHandle,
+		windows.Handle(original.Fd()),
 		&status,
-		unsafe.SliceData(renameBuffer),
-		uint32(len(renameBuffer)),
+		unsafe.SliceData(renameBuffer), //nolint:gosec // G103: native FileRenameInformation buffer is sized and populated by newWindowsRenameBuffer.
+		uint32(len(renameBuffer)),      //nolint:gosec // G115: newWindowsRenameBuffer rejects buffer sizes above MaxUint32.
 		windows.FileRenameInformation,
 	)
-	if status, ok := renameErr.(windows.NTStatus); ok {
-		renameErr = status.Errno()
+	var statusError windows.NTStatus
+	if errors.As(renameErr, &statusError) {
+		renameErr = statusError.Errno()
 	}
-	closeErr := windows.CloseHandle(stageHandle)
-	return errors.Join(renameErr, closeErr)
+	return renameErr
 }
 
 func newWindowsRenameBuffer(targetName string, parent windows.Handle) ([]byte, error) {
@@ -106,9 +81,9 @@ func newWindowsRenameBuffer(targetName string, parent windows.Handle) ([]byte, e
 	}
 
 	buffer := make([]byte, int(bufferBytes))
-	information := (*fileRenameInformation)(unsafe.Pointer(unsafe.SliceData(buffer)))
+	information := (*fileRenameInformation)(unsafe.Pointer(unsafe.SliceData(buffer))) //nolint:gosec // G103: buffer includes the complete native ABI structure and checked trailing UTF-16 storage.
 	information.rootDirectory = parent
 	information.fileNameLength = uint32(nameBytes)
-	copy(unsafe.Slice(&information.fileName[0], len(name)), name)
+	copy(unsafe.Slice(&information.fileName[0], len(name)), name) //nolint:gosec // G103: nameBytes and bufferBytes above reserve this exact trailing UTF-16 extent.
 	return buffer, nil
 }

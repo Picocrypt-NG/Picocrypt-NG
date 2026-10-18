@@ -5,6 +5,7 @@ package pcv3publication
 import (
 	"Picocrypt-NG/internal/pcv3result"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,8 +33,8 @@ func TestDarwinDirectoryBarrierFailurePreservesCommittedOutput(t *testing.T) {
 			requireResult(t, result, StatePublishedDurabilityUncertain,
 				pcv3result.OutcomeCommittedDurabilityUncertain,
 				pcv3result.StageDirectorySync, CodeDurabilityUncertain)
-			if err := stage.Cleanup(); err != nil {
-				t.Fatal(err)
+			if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
+				t.Fatalf("cleanup without a durable private-directory retirement = %v; want ErrCleanupIncomplete", err)
 			}
 			requireFileBytes(t, target, payload)
 			requireNoStageEntries(t, directory)

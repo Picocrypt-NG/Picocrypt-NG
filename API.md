@@ -352,6 +352,22 @@ SAF archive extraction requires the Normal native archive handoff. D1 archives
 can use the existing ZIP save or native extraction actions; `BeginSAF` consumes
 and closes their custody with a terminal invalid-request result.
 PCV3 creation publishes through the identity-bound no-replace publisher.
+Temporary files and v2 cleanup journals live in a pinned private operation directory
+on the destination filesystem. POSIX directories require verified current-user 0700
+ownership. macOS additionally removes and verifies inherited ACLs using its native
+fd API, so PCV3 publication on macOS requires a CGO build; pure-Go builds report
+unsupported before creating staging. macOS cleanup trusts only absent, empty or
+deny-only parent ACLs and safe parent ownership/mode. Other macOS parents are
+refused before staging creation, including inheritable allow/write-security ACLs.
+Windows uses a protected owner-only DACL and the original DELETE-capable
+file handle. Publication synchronizes both directory namespaces before durable success.
+POSIX writer preflight refuses a public parent that other users can mutate; a sticky
+parent owned by the current user or root remains supported. Cleanup uncertainty,
+including an empty private directory that cannot safely be retired, retains source data.
+Startup cleanup journals and recovery are supported on Linux/Android; macOS and
+Windows reject journal persistence as unsupported. Recovery discovers verified
+private directories beneath the selected parent; it cannot find an operation
+directory moved elsewhere after the process dies.
 `EncryptWithResult(ctx, request, options)` returns the common operation result
 after input and preprocessing cleanup. A committed output with uncertain directory
 durability remains available with a warning; it does not authorize source deletion.

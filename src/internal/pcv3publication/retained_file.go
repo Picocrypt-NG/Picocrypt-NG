@@ -51,9 +51,10 @@ type RetainedFile struct {
 	digestReady bool
 	targetName  string
 
-	remove        func(*os.Root, string) error
-	syncDirectory func(*os.File) error
-	active        bool
+	remove            func(*os.Root, string) error
+	syncDirectory     func(*os.File) error
+	active            bool
+	cleanupIncomplete bool
 }
 
 // Live reports whether this exact capability can still copy or remove its
@@ -165,8 +166,8 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 	}
 	cleanupIncomplete := false
 	if runtime.GOOS != "windows" {
-		if probeIdentity(file.root, file.targetName, file.identity) != identityExpected ||
-			file.remove(file.root, file.targetName) != nil {
+		if !safePublishedRemoval(file.parent, file.identityPin) || probeIdentity(file.root, file.targetName, file.identity) != identityExpected ||
+			removeOwnedFile(file.root, file.targetName, file.identityPin, file.remove) != nil {
 			cleanupIncomplete = true
 		} else if file.syncDirectory(file.parent) != nil {
 			cleanupIncomplete = true
@@ -372,14 +373,14 @@ func (file *RetainedFile) RemoveExact() error {
 func (file *RetainedFile) removeExactLocked() error {
 	cleanupIncomplete := false
 	sourceInfo, err := file.file.Stat()
-	if err != nil || sourceInfo == nil || !sourceInfo.Mode().IsRegular() ||
+	if !safePublishedRemoval(file.parent, file.identityPin) || err != nil || sourceInfo == nil || !sourceInfo.Mode().IsRegular() ||
 		!os.SameFile(file.identity, sourceInfo) ||
 		probeIdentity(file.root, file.targetName, file.identity) != identityExpected {
 		cleanupIncomplete = true
 	} else {
 		if probeIdentity(file.root, file.targetName, file.identity) != identityExpected {
 			cleanupIncomplete = true
-		} else if err := file.remove(file.root, file.targetName); err != nil {
+		} else if err := removeOwnedFile(file.root, file.targetName, file.identityPin, file.remove); err != nil {
 			cleanupIncomplete = true
 		} else if err := file.syncDirectory(file.parent); err != nil {
 			cleanupIncomplete = true
@@ -395,6 +396,7 @@ func (file *RetainedFile) removeExactLocked() error {
 }
 
 func (file *RetainedFile) closeHandlesLocked() (failed bool) {
+	failed = file.cleanupIncomplete
 	if file.file != nil {
 		if err := file.file.Close(); err != nil {
 			failed = true

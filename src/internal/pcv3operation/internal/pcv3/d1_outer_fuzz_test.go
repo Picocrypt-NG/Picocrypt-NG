@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -529,19 +530,37 @@ func requireD1FuzzOnlyLiveStage(
 	oracle string,
 ) {
 	t.Helper()
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		t.Fatal("list TEST ONLY live D1 fuzz stage directory")
+	privateDirectory := filepath.Dir(stagePath)
+	if privateDirectory == directory || filepath.Dir(privateDirectory) != directory {
+		t.Fatalf("%s: live stage is outside its private child directory; oracle: %s", risk, oracle)
 	}
-	sourceName := filepath.Base(sourcePath)
-	stageName := filepath.Base(stagePath)
-	if len(entries) != 2 {
-		t.Fatalf("%s: live composer has a second stage or clear-inner file; oracle: %s", risk, oracle)
-	}
-	for _, entry := range entries {
-		if entry.Name() != sourceName && entry.Name() != stageName {
-			t.Fatalf("%s: live composer has a second stage or clear-inner file; oracle: %s", risk, oracle)
+	seenSource, seenStage := false, false
+	err := filepath.WalkDir(directory, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		switch path {
+		case directory, privateDirectory:
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("TEST ONLY unexpected directory identity")
+			}
+		case sourcePath, stagePath:
+			if !info.Mode().IsRegular() {
+				return errors.New("TEST ONLY source/stage is not regular")
+			}
+			seenSource = seenSource || path == sourcePath
+			seenStage = seenStage || path == stagePath
+		default:
+			return errors.New("TEST ONLY unexpected second stage or clear-inner artifact")
+		}
+		return nil
+	})
+	if err != nil || !seenSource || !seenStage {
+		t.Fatalf("%s: live composer must contain only source and exact owned stage in its private directory: %v; oracle: %s", risk, err, oracle)
 	}
 }
 

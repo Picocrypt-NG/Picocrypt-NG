@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"syscall"
 	"testing"
 )
 
@@ -56,7 +58,7 @@ func TestNativeArchivePublishPreservesTargetAndCleanup(t *testing.T) {
 			case "cleanup replacement":
 				stageFile := handoff.state.stage.File()
 				replacement = stageFile.Name()
-				identityPin, err := os.Open(replacement)
+				identityPin, err := openArchiveCustodyTestFile(replacement)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -74,9 +76,16 @@ func TestNativeArchivePublishPreservesTargetAndCleanup(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.Remove(replacement); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Rename(foreignPath, replacement); err != nil {
+					if runtime.GOOS != "windows" || !errors.Is(err, syscall.Errno(32)) {
+						t.Fatalf("stage removal failed for an unexpected reason: %v", err)
+					}
+					fixture := requireNormalFixture(t, loadNormalFixtureManifest(t).FixturesByID(), normalArchiveFixtureID)
+					want := readNormalFixturePlaintext(t, fixture.Plaintext)
+					if got, err := readArchiveCustodyTestFile(replacement); err != nil || !bytes.Equal(got, want) {
+						t.Fatalf("blocked replacement changed the original archive: %v", err)
+					}
+					replacement = foreignPath
+				} else if err := os.Rename(foreignPath, replacement); err != nil {
 					t.Fatal(err)
 				}
 				fallthrough
@@ -85,7 +94,7 @@ func TestNativeArchivePublishPreservesTargetAndCleanup(t *testing.T) {
 				wantState, wantStage, wantCode = pcv3publication.StateNotPublished, StageCancellation, pcv3publication.CodeCancelled
 			}
 			publication, cleanup := handoff.Publish(ctx)
-			if publication == nil || publication.State() != wantState || publication.Stage() != wantStage || publication.Code() != wantCode || cleanup != (name == "cleanup replacement") {
+			if publication == nil || publication.State() != wantState || publication.Stage() != wantStage || publication.Code() != wantCode || cleanup != (name == "cleanup replacement" || runtime.GOOS == "windows") {
 				t.Fatalf("Publish = %v cleanup=%v; want %v/%v/%v", publication, cleanup, wantState, wantStage, wantCode)
 			}
 			if handoff.Live() {
@@ -319,7 +328,11 @@ func newNativeArchiveHandoffFixture(
 		_ = handoff.Close()
 		t.Fatalf("private archive stage entries = %v, error %v; want one", entries, err)
 	}
-	info, err := entries[0].Info()
+	privateEntries, err := os.ReadDir(filepath.Join(stageParent, entries[0].Name()))
+	if err != nil || len(privateEntries) != 1 {
+		t.Fatalf("private archive contents: %v %v", privateEntries, err)
+	}
+	info, err := privateEntries[0].Info()
 	if err != nil || !info.Mode().IsRegular() {
 		_ = handoff.Close()
 		t.Fatalf("private archive stage identity = %v, error %v", info, err)
@@ -426,4 +439,33 @@ func assertArchiveHandoffFile(t *testing.T, path, want string) {
 	if string(got) != want {
 		t.Fatalf("extracted file %q = %q; want %q", path, got, want)
 	}
+}
+
+// Root.Open keeps Windows DELETE sharing compatible with live stage custody.
+// The observer still reads the real pathname and bytes; it never changes ACLs.
+func readArchiveCustodyTestFile(path string) ([]byte, error) {
+	file, err := openArchiveCustodyTestFile(path)
+	if err != nil {
+		return nil, err
+	}
+	data, readErr := io.ReadAll(file)
+	return data, errors.Join(readErr, file.Close())
+}
+
+func openArchiveCustodyTestFile(path string) (*os.File, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	volumeRoot := filepath.VolumeName(absolute) + string(filepath.Separator)
+	relative, err := filepath.Rel(volumeRoot, absolute)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(volumeRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.Open(relative)
 }

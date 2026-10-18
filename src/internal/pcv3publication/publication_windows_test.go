@@ -35,7 +35,7 @@ func testWindowsNativeRenamePreservesCollision(t *testing.T, name string) {
 	if err := os.WriteFile(target, foreign, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err = windowsNoReplace(stage.parent, stage.stageName, stage.targetName, PolicyNoReplace)
+	err = windowsNoReplace(stage.sourceParent, stage.parent, stage.identityPin, stage.stageName, stage.targetName, PolicyNoReplace)
 	if !errors.Is(err, os.ErrExist) {
 		t.Fatalf("native collision error: %[1]T %[1]v (%#[1]v); want os.ErrExist", err)
 	}
@@ -44,7 +44,7 @@ func testWindowsNativeRenamePreservesCollision(t *testing.T, name string) {
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}
-	if err := windowsNoReplace(stage.parent, stage.stageName, stage.targetName, PolicyNoReplace); err != nil {
+	if err := windowsNoReplace(stage.sourceParent, stage.parent, stage.identityPin, stage.stageName, stage.targetName, PolicyNoReplace); err != nil {
 		t.Fatalf("native pinned sibling rename: %[1]T %[1]v (%#[1]v)", err)
 	}
 	stage.cleanupDisposition = cleanupNotRequired
@@ -86,7 +86,7 @@ func TestWindowsNativePlaintextPublicationNeverGrantsDurableRetainedAuthority(t 
 	if result.State() != StatePublishedDurabilityUncertain || retained != nil {
 		t.Fatalf("native Windows plaintext gained durable retained authority: %v, %v", result, retained)
 	}
-	if err := stage.Cleanup(); err != nil {
+	if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
 		t.Fatal(err)
 	}
 	requireFileBytes(t, target, []byte("authenticated plaintext"))
@@ -113,7 +113,7 @@ func TestWindowsNativeRetainedSplitPreservesCompleteUncertainCiphertext(t *testi
 	}
 	defer retained.Close()
 	state, splitErr := SplitRetainedWithResult(retained, fileops.SplitOptions{ChunkSize: 1, Unit: fileops.SplitUnitKiB})
-	if splitErr != nil || state != fileops.SplitCompleteDurabilityUncertain {
+	if !errors.Is(splitErr, ErrCleanupIncomplete) || state != fileops.SplitCompleteDurabilityUncertain {
 		t.Fatalf("native split completion = %v/%v; want complete durability uncertain", state, splitErr)
 	}
 	if retained.Live() {
@@ -125,4 +125,33 @@ func TestWindowsNativeRetainedSplitPreservesCompleteUncertainCiphertext(t *testi
 		t.Fatalf("recombine complete uncertain native chunks: %v", err)
 	}
 	requireFileBytes(t, recombined, payload)
+}
+
+func TestWindowsPrivateStageKeepsOriginalDeleteAuthorityAcrossPublication(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "output")
+	stage, err := Create(target, nil, PolicyNoReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stage.Cleanup()
+	if !privateWindowsHandle(stage.sourceParent) || !privateWindowsHandle(stage.File()) {
+		t.Fatal("protected current-owner DACL was not established on directory and file")
+	}
+	if _, err := stage.File().Write([]byte("original object")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(stage.stagePath, filepath.Join(directory, "stolen")); !windowsSharingRefusal(err) {
+		t.Fatal("ordinary pathname rename did not report the expected sharing restriction")
+	}
+	result := stage.Publish(context.Background())
+	if result.State() != StatePublishedDurabilityUncertain {
+		t.Fatalf("original handle publication: %v", result)
+	}
+	requireFileBytes(t, target, []byte("original object"))
+	if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("unproven directory retirement durability: %v", err)
+	}
+	requireNoStageEntries(t, directory)
+	requireFileBytes(t, target, []byte("original object"))
 }

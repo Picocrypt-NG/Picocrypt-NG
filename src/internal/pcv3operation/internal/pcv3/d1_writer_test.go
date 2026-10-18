@@ -874,11 +874,18 @@ func requireD1LiveStage(
 	var stagePaths []string
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".picocrypt-pcv3-") {
-			stagePaths = append(stagePaths, filepath.Join(fixture.directory, entry.Name()))
+			privatePath := filepath.Join(fixture.directory, entry.Name())
+			children, err := os.ReadDir(privatePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, child := range children {
+				stagePaths = append(stagePaths, filepath.Join(privatePath, child.Name()))
+			}
 		}
 	}
 	if len(stagePaths) != 1 {
-		t.Fatalf("live D1 stage count = %d; want exactly one unpredictable sibling", len(stagePaths))
+		t.Fatalf("live D1 stage count = %d; want exactly one stage inside its private directory", len(stagePaths))
 	}
 	pathInfo, err := os.Lstat(stagePaths[0])
 	if err != nil || !os.SameFile(openInfo, pathInfo) {
