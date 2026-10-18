@@ -832,7 +832,6 @@ private fun Pcv3DiscardConfirmationDialog(
 ) {
     val keepFocus = remember(operationId, generation) { FocusRequester() }
     var consumed by remember(operationId, generation) { mutableStateOf(false) }
-    SafeDefaultDialogFocus(keepFocus)
 
     AlertDialog(
         modifier = modifier,
@@ -853,6 +852,7 @@ private fun Pcv3DiscardConfirmationDialog(
             }
         },
         dismissButton = {
+            SafeDefaultDialogFocus(keepFocus)
             TextButton(
                 onClick = onKeep,
                 modifier = Modifier.focusRequester(keepFocus),

@@ -2,6 +2,7 @@ package io.github.picocrypt_ng.picocrypt_ng
 
 import android.app.Application
 import android.content.Context
+import android.view.KeyEvent
 import androidx.lifecycle.SavedStateHandle
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
@@ -53,20 +54,17 @@ class Pcv3UiContractTest {
     }
 
     /**
-     * Focus navigation does not exist in touch mode — the default state of
-     * every phone and emulator until a key is pressed — and a dialog cannot
-     * grant focus there. The safe-default focus contract protects keyboard
-     * and DPAD users, so it is exercised in that environment; [restoreTouchMode]
-     * returns the device to its natural state afterwards.
+     * A navigation key updates the focused window's local input mode.
+     * Instrumentation.setInTouchMode alone only changes the global flag on
+     * API 26, so it cannot exercise the safe-default keyboard focus contract.
      */
     private fun leaveTouchMode() {
-        InstrumentationRegistry.getInstrumentation().setInTouchMode(false)
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN)
     }
 
     /**
-     * Leaving touch mode reaches the dialog through several window-manager
-     * hops, so the safe-default focus grant lands after the next idle sync;
-     * wait for the grant instead of racing it, then keep the exact assertion.
+     * Keyboard input and window focus are delivered asynchronously; wait for
+     * the safe-default focus grant, then keep the exact assertion.
      */
     private fun assertEventuallyFocused(content: String) {
         compose.waitUntil(FOCUS_TIMEOUT_MILLIS) {
@@ -138,21 +136,31 @@ class Pcv3UiContractTest {
     fun c11ConsentEmpty() {
         val consent = UiConsent("force-unverified-normal", listOf("primary", "backup"))
         val presentation = live(consent = consent)
+        val state = mutableStateOf<Pcv3Presentation?>(presentation)
         val mainViewModel = newMainViewModel()
 
         compose.setContent {
             DecryptOptionsCard(
                 viewModel = mainViewModel,
-                pcv3Presentation = presentation,
+                pcv3Presentation = state.value,
                 onSelectPcv3ConsentRole = { _, _, _ -> error("no role should be chosen") },
                 onConfirmPcv3Consent = { _, _ -> error("disabled confirmation invoked") },
-                onRefusePcv3Consent = { _, _ -> },
+                onRefusePcv3Consent = { _, _ -> error("focus must not refuse consent") },
             )
         }
 
         compose.onNodeWithTag(PCV3_CONSENT_TAG).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.pcv3_consent_confirm)).assertIsNotEnabled()
         leaveTouchMode()
+        assertEventuallyFocused(text(R.string.pcv3_consent_cancel))
+
+        // Reopen without further input: keyboard mode now precedes the new
+        // dialog, so focus must wait for that window to become ready.
+        compose.runOnIdle { state.value = null }
+        compose.onNodeWithTag(PCV3_CONSENT_TAG).assertDoesNotExist()
+        compose.runOnIdle { state.value = presentation }
+        compose.onNodeWithTag(PCV3_CONSENT_TAG).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.pcv3_consent_confirm)).assertIsNotEnabled()
         assertEventuallyFocused(text(R.string.pcv3_consent_cancel))
         assertNull(presentation.consent?.selectedRole)
         assertTrue(consent.live)
