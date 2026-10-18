@@ -1316,7 +1316,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "3583",
 			target:   "google_apis",
-			script:   command + "26 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest",
+			script:   command + "26 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest && bash ../.github/scripts/run-android-journal-restart-test.sh 26",
 		},
 		// Activity security and Compose state must work on the target-SDK runtime.
 		36: {
@@ -1324,7 +1324,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "6144",
 			target:   "default",
-			script:   command + "36 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest",
+			script:   command + "36 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest && bash ../.github/scripts/run-android-journal-restart-test.sh 36",
 		},
 	}
 	seen := make(map[int]struct{}, len(wantByAPI))
@@ -1364,8 +1364,15 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			t.Fatalf("API %d emulator-options = %#v, want string", apiLevel, step.With["emulator-options"])
 		}
 		mustMatch(t, emulatorOptions, `(?:^|\s)-memory\s+`+want.memory+`(?:\s|$)`)
-		if step.TimeoutMinutes != 15 {
-			t.Errorf("API %d timeout-minutes = %d, want 15", apiLevel, step.TimeoutMinutes)
+		if step.TimeoutMinutes != 22 {
+			t.Errorf("API %d timeout-minutes = %d, want 22", apiLevel, step.TimeoutMinutes)
+		}
+		wantAVD := fmt.Sprintf("picocrypt-ci-api%d", apiLevel)
+		if got := step.With["avd-name"]; got != wantAVD || step.Env["PICOCRYPT_EXPECTED_AVD"] != wantAVD {
+			t.Errorf("API %d restart gate AVD = %#v/%q, want %s", apiLevel, got, step.Env["PICOCRYPT_EXPECTED_AVD"], wantAVD)
+		}
+		if got := step.With["emulator-port"]; got != 5554 || step.Env["ANDROID_SERIAL"] != "emulator-5554" {
+			t.Errorf("API %d restart gate emulator = %#v/%q, want 5554/emulator-5554", apiLevel, got, step.Env["ANDROID_SERIAL"])
 		}
 		if got := step.With["working-directory"]; got != "android" {
 			t.Errorf("API %d working-directory = %#v, want android", apiLevel, got)
@@ -1955,7 +1962,13 @@ func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	if got := instrEmulator.With["disk-size"]; got != "2048M" {
 		t.Fatalf("instrumented emulator disk-size = %v, want 2048M", got)
 	}
-	wantScript := `case "$PICOCRYPT_TEST_SCOPE" in focused|extended) ;; *) echo "Unsupported test scope" >&2; exit 1 ;; esac; bash ../.github/scripts/run-android-device-tests.sh 36 ` + strings.ReplaceAll(focusedClasses, ",", " ") + ` ${{ inputs.test_scope == 'extended' && '` + extendedClasses + `' || '' }}`
+	if got := instrEmulator.With["avd-name"]; got != "picocrypt-ci-api36" || instrEmulator.Env["PICOCRYPT_EXPECTED_AVD"] != "picocrypt-ci-api36" {
+		t.Fatalf("instrumented restart gate AVD = %#v/%q, want picocrypt-ci-api36", got, instrEmulator.Env["PICOCRYPT_EXPECTED_AVD"])
+	}
+	if got := instrEmulator.With["emulator-port"]; got != 5554 || instrEmulator.Env["ANDROID_SERIAL"] != "emulator-5554" {
+		t.Fatalf("instrumented restart gate emulator = %#v/%q, want 5554/emulator-5554", got, instrEmulator.Env["ANDROID_SERIAL"])
+	}
+	wantScript := `case "$PICOCRYPT_TEST_SCOPE" in focused|extended) ;; *) echo "Unsupported test scope" >&2; exit 1 ;; esac; bash ../.github/scripts/run-android-device-tests.sh 36 ` + strings.ReplaceAll(focusedClasses, ",", " ") + ` ${{ inputs.test_scope == 'extended' && '` + extendedClasses + `' || '' }} && bash ../.github/scripts/run-android-journal-restart-test.sh 36`
 	if got := instrEmulator.Env["PICOCRYPT_TEST_SCOPE"]; got != "${{ inputs.test_scope }}" {
 		t.Fatalf("instrumented scope env = %q, want dispatch input", got)
 	}

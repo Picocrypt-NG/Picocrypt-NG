@@ -113,11 +113,15 @@ jobs:
     - name: Run focused instrumented tests
       env:
         PICOCRYPT_TEST_SCOPE: ${{ inputs.test_scope }}
+        ANDROID_SERIAL: emulator-5554
+        PICOCRYPT_EXPECTED_AVD: picocrypt-ci-api36
       uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
       with:
         # API 36 matches targetSdk and exercises current-runtime UI behavior plus
         # the 64-bit x86_64 gomobile/JNI library in the extended crypto scope.
         api-level: 36
+        avd-name: picocrypt-ci-api36
+        emulator-port: 5554
         arch: x86_64
         # Keep the manual target-SDK suite within the same hosted-runner AVD
         # disk budget as the mandatory pull-request gate.
@@ -148,6 +152,7 @@ jobs:
           io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest
           io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest
           ${{ inputs.test_scope == 'extended' && 'io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest' || '' }}
+          && bash ../.github/scripts/run-android-journal-restart-test.sh 36
 
     - name: Upload instrumented test report
       if: always()

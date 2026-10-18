@@ -141,11 +141,16 @@ jobs:
 
     - name: Run Android 8 crypto and filesystem suites (API 26)
       uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
-      timeout-minutes: 15
+      timeout-minutes: 22
+      env:
+        ANDROID_SERIAL: emulator-5554
+        PICOCRYPT_EXPECTED_AVD: picocrypt-ci-api26
       with:
         # API 26 is the documented compatibility floor. x86_64 is one of the
         # two supported release ABIs and is hardware-accelerated on this runner.
         api-level: 26
+        avd-name: picocrypt-ci-api26
+        emulator-port: 5554
         target: google_apis
         arch: x86_64
         # Bound the writable AVD partition. The emulator default exceeds the
@@ -159,15 +164,20 @@ jobs:
         # maximum headroom for the fixed 1 GiB Argon2id allocation.
         emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -memory 3583 -cores 4 -camera-back none -camera-front none
         working-directory: android
-        script: bash ../.github/scripts/run-android-device-tests.sh 26 io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_retry_save_then_decrypt_recovers_the_original_bytes io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest
+        script: bash ../.github/scripts/run-android-device-tests.sh 26 io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_retry_save_then_decrypt_recovers_the_original_bytes io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest && bash ../.github/scripts/run-android-journal-restart-test.sh 26
 
     - name: Run target SDK crypto and UI suites (API 36)
       uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
-      timeout-minutes: 15
+      timeout-minutes: 22
+      env:
+        ANDROID_SERIAL: emulator-5554
+        PICOCRYPT_EXPECTED_AVD: picocrypt-ci-api36
       with:
         # API 36 matches targetSdk and exercises the current Android runtime plus
         # the 64-bit x86_64 gomobile/JNI library.
         api-level: 36
+        avd-name: picocrypt-ci-api36
+        emulator-port: 5554
         target: default
         arch: x86_64
         # Keep the target-SDK gate bootable under the same hosted-runner disk
@@ -179,7 +189,7 @@ jobs:
         # (lowmemorykiller kills the test process) mid crypto roundtrip.
         emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -memory 6144 -cores 4 -camera-back none -camera-front none
         working-directory: android
-        script: bash ../.github/scripts/run-android-device-tests.sh 36 io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_retry_save_then_decrypt_recovers_the_original_bytes io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest
+        script: bash ../.github/scripts/run-android-device-tests.sh 36 io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest#encrypt_retry_save_then_decrypt_recovers_the_original_bytes io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest && bash ../.github/scripts/run-android-journal-restart-test.sh 36
 
     - name: Upload instrumented test report
       if: always()
