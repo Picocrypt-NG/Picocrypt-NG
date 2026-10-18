@@ -103,13 +103,12 @@ fun AdvancedCard(
                 viewModel.updateFormData(formData.copy(reedSolomon = it))
             }
             LabeledCheckbox(stringResource(R.string.paranoid), formData.paranoid) {
-                viewModel.updateFormData(formData.copy(paranoid = it || (formData.isPcv3Creation && formData.deniability)))
+                viewModel.updateFormData(formData.copy(paranoid = it))
             }
             LabeledCheckbox(stringResource(R.string.deniability), formData.deniability) {
                 viewModel.updateFormData(
                     formData.copy(
                         deniability = it,
-                        paranoid = formData.paranoid || (it && formData.isPcv3Creation),
                     )
                 )
             }

@@ -4,10 +4,62 @@ import (
 	pcsecret "Picocrypt-NG/internal/secret"
 	"context"
 	"crypto/sha3"
+	"encoding/binary"
 	"sync"
 )
 
-const d1OuterRootDomain = "Picocrypt-NG/PCV3/outer/root\x00"
+const d1OuterRootDomain = "Picocrypt-NG/PCV3/D1C/outer/root\x00"
+
+// D1Profile binds the hidden payload suite to the D1C format. Both profiles
+// use the same fixed Argon2id cost, independent of their stream/MAC choice.
+type D1Profile uint16
+
+const (
+	D1ProfileStandard D1Profile = 0x0101
+	D1ProfileParanoid D1Profile = 0x0102
+	// Argon profile IDs and inner root markers occupy separate namespaces;
+	// the derived-root marker never invokes the KDF runner.
+	D1FixedKDFProfileID    uint8 = 0x03
+	D1DerivedRootProfileID uint8 = 0x03
+)
+
+func (profile D1Profile) Suite() Suite {
+	switch profile {
+	case D1ProfileStandard:
+		return SuiteStandard1
+	case D1ProfileParanoid:
+		return SuiteParanoid1
+	default:
+		return 0
+	}
+}
+
+func D1ProfileForSuite(suite Suite) D1Profile {
+	if suite == SuiteStandard1 {
+		return D1ProfileStandard
+	}
+	if suite == SuiteParanoid1 {
+		return D1ProfileParanoid
+	}
+	return 0
+}
+
+func fixedD1Profile() KDFProfile {
+	return KDFProfile{ID: D1FixedKDFProfileID, Argon2Version: 0x13, Time: 8, MemoryKiB: 1048576, Parallelism: 8, SaltBytes: 16, OutputBytes: 32}
+}
+
+func d1ScheduleInfo(label string, profile D1Profile, role KeyRole) string {
+	info := []byte("Picocrypt-NG/PCV3/D1C/HKDF\x00")
+	var encoded [2]byte
+	for _, value := range []uint16{3, 1, uint16(profile)} {
+		binary.BigEndian.PutUint16(encoded[:], value)
+		info = append(info, encoded[:]...)
+	}
+	info = append(info, byte(role))
+	binary.BigEndian.PutUint16(encoded[:], uint16(len(label))) //nolint:gosec // Closed protocol label registry.
+	info = append(info, encoded[:]...)
+	return string(append(info, label...))
+}
 
 // D1OuterCredentialLabel is one immutable D1 bootstrap-wrap key purpose.
 // Its distinct type prevents substitution into the normal-volume schedule.
@@ -17,6 +69,9 @@ const (
 	D1OuterCredentialWrapXChaCha20 D1OuterCredentialLabel = "outer/wrap/xchacha20" //nolint:gosec //gitleaks:allow // Public protocol label, not a credential.
 	D1OuterCredentialWrapSerpent   D1OuterCredentialLabel = "outer/wrap/serpent"   //nolint:gosec // Public protocol label, not a credential.
 	D1OuterCredentialWrapMAC       D1OuterCredentialLabel = "outer/wrap/mac"       //nolint:gosec // Public protocol label, not a credential.
+	D1InnerCredentialWrapXChaCha20 D1OuterCredentialLabel = "inner/wrap/xchacha20" //nolint:gosec // Public protocol label.
+	D1InnerCredentialWrapSerpent   D1OuterCredentialLabel = "inner/wrap/serpent"   //nolint:gosec // Public protocol label.
+	D1InnerCredentialWrapMAC       D1OuterCredentialLabel = "inner/wrap/mac"       //nolint:gosec // Public protocol label.
 )
 
 // D1OuterKeyLabel is one immutable D1 replica or body key purpose.
@@ -38,12 +93,6 @@ type D1CreationSalts struct {
 }
 
 type d1OuterDerivationSeams struct {
-	derive  kdfDeriver
-	extract hkdfExtractor
-	expand  hkdfExpander
-}
-
-type d1NormalOwnerSeams struct {
 	derive  kdfDeriver
 	extract hkdfExtractor
 	expand  hkdfExpander
@@ -90,8 +139,9 @@ func (prk *d1OuterCredentialPRK) close() {
 }
 
 type d1OuterCredentialKey struct {
-	label  D1OuterCredentialLabel
-	secret *pcsecret.Secret
+	label   D1OuterCredentialLabel
+	profile D1Profile
+	secret  *pcsecret.Secret
 }
 
 func (d1OuterCredentialKey) String() string {
@@ -197,9 +247,11 @@ func (d1OuterDerivedKey) GoString() string {
 }
 
 type d1OuterKeyMaterial struct {
-	key  *d1OuterKey
-	prk  *d1OuterPRK
-	keys []d1OuterDerivedKey
+	key     *d1OuterKey
+	inner   *pcsecret.Secret
+	profile D1Profile
+	prk     *d1OuterPRK
+	keys    []d1OuterDerivedKey
 }
 
 func (d1OuterKeyMaterial) String() string {
@@ -217,6 +269,10 @@ func (material *d1OuterKeyMaterial) close() {
 	if material.key != nil {
 		material.key.close()
 		material.key = nil
+	}
+	if material.inner != nil {
+		material.inner.Close()
+		material.inner = nil
 	}
 	if material.prk != nil {
 		material.prk.close()
@@ -248,8 +304,8 @@ type d1BorrowState[T any] struct {
 	active   bool
 }
 
-// D1OuterCredentialOwner is the cleanup authority for one physical
-// bootstrap's outer credential root, PRK, and wrap keys.
+// D1OuterCredentialOwner owns one physical bootstrap's purpose- and profile-
+// separated wrap keys. Its Argon root and PRK are cleared before publication.
 type D1OuterCredentialOwner struct {
 	role  KeyRole
 	state *d1OwnerState[d1OuterCredentialMaterial]
@@ -284,7 +340,7 @@ func (owner *D1OuterCredentialOwner) Role() KeyRole {
 	return owner.role
 }
 
-// WithKeys lends the fixed three-key outer credential schedule. The callback
+// WithKeys lends the fixed two-purpose, two-profile wrap schedule. The callback
 // must not call Close synchronously; Close waits for active callbacks.
 func (owner *D1OuterCredentialOwner) WithKeys(
 	ctx context.Context,
@@ -315,6 +371,10 @@ func (keys *BorrowedD1OuterCredentialKeys) CopyKey(
 	label D1OuterCredentialLabel,
 	destination []byte,
 ) error {
+	return keys.CopyKeyForProfile(D1ProfileParanoid, label, destination)
+}
+
+func (keys *BorrowedD1OuterCredentialKeys) CopyKeyForProfile(profile D1Profile, label D1OuterCredentialLabel, destination []byte) error {
 	if keys == nil || keys.state == nil {
 		return newOwnerError(OwnerErrorBorrowExpired)
 	}
@@ -329,7 +389,7 @@ func (keys *BorrowedD1OuterCredentialKeys) CopyKey(
 	}
 	for index := range state.material.keys {
 		key := &state.material.keys[index]
-		if key.label == label && key.secret != nil {
+		if key.label == label && key.profile == profile && key.secret != nil {
 			copy(destination, key.secret.Bytes())
 			return nil
 		}
@@ -364,14 +424,43 @@ func (*BorrowedD1OuterKeys) GoString() string {
 	return "pcv3credential.BorrowedD1OuterKeys([REDACTED])"
 }
 
-// NewD1OuterKeyOwner takes ownership of outerKey and derives the complete
-// fixed D1 schedule.
-func NewD1OuterKeyOwner(outerKey []byte) (*D1OuterKeyOwner, error) {
-	return newD1OuterKeyOwnerWith(
-		outerKey,
-		defaultHKDFExtract,
-		defaultHKDFExpand,
-	)
+// NewD1RootsOwner transfers two independently generated random roots. It is
+// the production bootstrap entry; missing roots or unknown profiles fail closed.
+func NewD1RootsOwner(outerKey, innerRoot []byte, profile D1Profile) (*D1OuterKeyOwner, error) {
+	if len(innerRoot) != derivedKeyBytes || profile.Suite() == 0 {
+		pcsecret.SecureZero(outerKey)
+		pcsecret.SecureZero(innerRoot)
+		return nil, newOwnerError(OwnerErrorInvalidRequest)
+	}
+	return newD1RootsOwnerWith(outerKey, innerRoot, profile, defaultHKDFExtract, defaultHKDFExpand)
+}
+
+func (keys *BorrowedD1OuterKeys) Profile() D1Profile {
+	if keys == nil || keys.state == nil {
+		return 0
+	}
+	keys.state.mu.RLock()
+	defer keys.state.mu.RUnlock()
+	if !keys.state.active || keys.state.material == nil {
+		return 0
+	}
+	return keys.state.material.profile
+}
+
+func (keys *BorrowedD1OuterKeys) CopyInnerRoot(destination []byte) error {
+	if keys == nil || keys.state == nil {
+		return newOwnerError(OwnerErrorBorrowExpired)
+	}
+	keys.state.mu.RLock()
+	defer keys.state.mu.RUnlock()
+	if !keys.state.active || keys.state.material == nil || keys.state.material.inner == nil {
+		return newOwnerError(OwnerErrorBorrowExpired)
+	}
+	if len(destination) != derivedKeyBytes {
+		return newOwnerError(OwnerErrorDestination)
+	}
+	copy(destination, keys.state.material.inner.Bytes())
+	return nil
 }
 
 // WithKeys lends the OuterKey and its fixed derived schedule. The callback
@@ -452,8 +541,8 @@ func (keys *BorrowedD1OuterKeys) CopyKey(
 	return newOwnerError(OwnerErrorUnknownKey)
 }
 
-// WithD1OuterCredentialOwner performs one fixed Paranoid-1 outer derivation
-// and keeps its owner valid only for callback duration.
+// WithD1OuterCredentialOwner performs one fixed D1C Argon2id derivation and
+// keeps both hidden-suite wrap schedules valid only for callback duration.
 func WithD1OuterCredentialOwner(
 	ctx context.Context,
 	input *CredentialInputOuter,
@@ -477,23 +566,20 @@ func WithD1OuterCredentialOwner(
 	)
 }
 
-// WithD1CreationCredentialRoots fixes the creation order as front outer, tail
-// outer, then a callback-owned normal input for the inner derivation.
+// WithD1CreationCredentialRoots derives the independent front and tail
+// credentials sequentially and expires both owners after the callback.
 func WithD1CreationCredentialRoots(
 	ctx context.Context,
-	normal *CredentialInputNormal,
 	outer *CredentialInputOuter,
 	salts D1CreationSalts,
 	admitter Admitter,
 	callback func(
 		front *D1OuterCredentialOwner,
 		tail *D1OuterCredentialOwner,
-		inner *CredentialInputNormal,
 	) error,
 ) error {
 	return withD1CreationCredentialRoots(
 		ctx,
-		normal,
 		outer,
 		salts,
 		admitter,
@@ -506,120 +592,8 @@ func WithD1CreationCredentialRoots(
 	)
 }
 
-// WithD1NormalCredentialOwner consumes the normal D1 credential input and a
-// transferred VolumeKey, derives the fixed full Paranoid-1 schedule, and keeps
-// the resulting owner valid only for callback duration.
-func WithD1NormalCredentialOwner(
-	ctx context.Context,
-	input *CredentialInputNormal,
-	factors *ValidatedFactors,
-	argonSalt [kdfSaltBytes]byte,
-	volumeID [scheduleVolumeIDBytes]byte,
-	volumeKeyTransfer []byte,
-	admitter Admitter,
-	callback func(*Owner) error,
-) error {
-	return withD1NormalCredentialOwner(
-		ctx,
-		input,
-		factors,
-		argonSalt,
-		volumeID,
-		volumeKeyTransfer,
-		admitter,
-		d1NormalOwnerSeams{
-			derive:  deriveArgon2ID,
-			extract: defaultHKDFExtract,
-			expand:  defaultHKDFExpand,
-		},
-		callback,
-	)
-}
-
-func withD1NormalCredentialOwner(
-	ctx context.Context,
-	input *CredentialInputNormal,
-	factors *ValidatedFactors,
-	argonSalt [kdfSaltBytes]byte,
-	volumeID [scheduleVolumeIDBytes]byte,
-	volumeKeyTransfer []byte,
-	admitter Admitter,
-	seams d1NormalOwnerSeams,
-	callback func(*Owner) error,
-) error {
-	defer input.Close()
-	defer pcsecret.SecureZero(volumeKeyTransfer)
-
-	if ctx == nil || input == nil || factors == nil || admitter == nil ||
-		callback == nil || len(volumeKeyTransfer) != derivedKeyBytes ||
-		!validD1NormalOwnerSeams(seams) {
-		return newOwnerError(OwnerErrorInvalidRequest)
-	}
-	metadata := OwnerMetadata{
-		Suite:          SuiteParanoid1,
-		ExpectedPolicy: factors.expectedPolicy,
-		CredentialMode: factors.mode,
-		KeyfileMode:    factors.keyfileMode,
-		KeyfileCount:   uint16(len(factors.descriptors)), //nolint:gosec // Validated factors are bounded to 64 keyfiles.
-		ArgonSalt:      argonSalt,
-		VolumeID:       volumeID,
-	}
-	if !validOwnerMetadata(metadata) {
-		return newOwnerError(OwnerErrorInvalidRequest)
-	}
-	if ctx.Err() != nil {
-		return newKDFError(KDFErrorCancelled, SuiteParanoid1)
-	}
-
-	schedule, err := fullReaderSchedule(SuiteParanoid1)
-	if err != nil {
-		return err
-	}
-	root, err := runCredentialKDF(
-		ctx,
-		input,
-		argonSalt[:],
-		SuiteParanoid1,
-		admitter,
-		seams.derive,
-	)
-	if err != nil {
-		return err
-	}
-	defer root.close()
-	if ctx.Err() != nil {
-		return newKDFError(KDFErrorCancelled, SuiteParanoid1)
-	}
-
-	material, err := deriveKeyMaterialWith(
-		schedule,
-		root,
-		&volumeKey{secret: pcsecret.SecretFrom(volumeKeyTransfer)},
-		volumeID[:],
-		seams.extract,
-		seams.expand,
-	)
-	if err != nil {
-		return err
-	}
-	owner, err := newOwner(metadata, material)
-	if err != nil {
-		return err
-	}
-	defer owner.Close()
-	if ctx.Err() != nil {
-		return newOwnerError(OwnerErrorCancelled)
-	}
-	return callback(owner)
-}
-
-func validD1NormalOwnerSeams(seams d1NormalOwnerSeams) bool {
-	return seams.derive != nil && seams.extract != nil && seams.expand != nil
-}
-
 func withD1CreationCredentialRoots(
 	ctx context.Context,
-	normal *CredentialInputNormal,
 	outer *CredentialInputOuter,
 	salts D1CreationSalts,
 	admitter Admitter,
@@ -627,12 +601,10 @@ func withD1CreationCredentialRoots(
 	callback func(
 		front *D1OuterCredentialOwner,
 		tail *D1OuterCredentialOwner,
-		inner *CredentialInputNormal,
 	) error,
 ) error {
-	defer normal.Close()
 	defer outer.Close()
-	if ctx == nil || normal == nil || outer == nil || admitter == nil ||
+	if ctx == nil || outer == nil || admitter == nil ||
 		callback == nil || !validD1OuterDerivationSeams(seams) {
 		return newKDFError(KDFErrorInvalidRequest, SuiteParanoid1)
 	}
@@ -668,7 +640,7 @@ func withD1CreationCredentialRoots(
 	if ctx.Err() != nil {
 		return newKDFError(KDFErrorCancelled, SuiteParanoid1)
 	}
-	return callback(front, tail, normal)
+	return callback(front, tail)
 }
 
 func withD1OuterCredentialOwner(
@@ -714,11 +686,12 @@ func deriveD1OuterCredentialOwner(
 
 	var owner *D1OuterCredentialOwner
 	err := input.withInput(func(outerInput []byte) error {
-		secret, err := runFixedProfileKDFBorrowed(
+		secret, err := runProfileKDFBorrowed(
 			ctx,
 			outerInput,
 			salt,
 			SuiteParanoid1,
+			fixedD1Profile(),
 			admitter,
 			seams.derive,
 		)
@@ -785,28 +758,35 @@ func newD1OuterCredentialOwnerWith(
 	material.prk = &d1OuterCredentialPRK{secret: secret}
 
 	labels := fixedD1OuterCredentialLabels()
-	material.keys = make([]d1OuterCredentialKey, len(labels))
-	for index, label := range labels {
-		returned, err = expand(
-			material.prk.secret.Bytes(),
-			scheduleInfoFor(string(label), SuiteParanoid1, role),
-			derivedKeyBytes,
-		)
-		secret, err = ownProviderResult(
-			returned,
-			err,
-			SuiteParanoid1,
-			index,
-			ScheduleErrorExpand,
-		)
-		if err != nil {
-			return nil, err
-		}
-		material.keys[index] = d1OuterCredentialKey{
-			label:  label,
-			secret: secret,
+	material.keys = make([]d1OuterCredentialKey, 0, 2*len(labels))
+	for _, profile := range []D1Profile{D1ProfileStandard, D1ProfileParanoid} {
+		for index, label := range labels {
+			returned, err = expand(
+				material.prk.secret.Bytes(),
+				d1ScheduleInfo(string(label), profile, role),
+				derivedKeyBytes,
+			)
+			secret, err = ownProviderResult(
+				returned,
+				err,
+				SuiteParanoid1,
+				index,
+				ScheduleErrorExpand,
+			)
+			if err != nil {
+				return nil, err
+			}
+			material.keys = append(material.keys, d1OuterCredentialKey{
+				label:   label,
+				profile: profile,
+				secret:  secret,
+			})
 		}
 	}
+	material.root.close()
+	material.root = nil
+	material.prk.close()
+	material.prk = nil
 
 	owner := &D1OuterCredentialOwner{
 		role: role,
@@ -819,13 +799,18 @@ func newD1OuterCredentialOwnerWith(
 	return owner, nil
 }
 
-func newD1OuterKeyOwnerWith(
-	outerKey []byte,
+func newD1RootsOwnerWith(
+	outerKey, innerRoot []byte,
+	profile D1Profile,
 	extract hkdfExtractor,
 	expand hkdfExpander,
 ) (*D1OuterKeyOwner, error) {
 	material := &d1OuterKeyMaterial{
-		key: &d1OuterKey{secret: pcsecret.SecretFrom(outerKey)},
+		key:     &d1OuterKey{secret: pcsecret.SecretFrom(outerKey)},
+		profile: profile,
+	}
+	if innerRoot != nil {
+		material.inner = pcsecret.SecretFrom(innerRoot)
 	}
 	success := false
 	defer func() {
@@ -834,8 +819,9 @@ func newD1OuterKeyOwnerWith(
 		}
 	}()
 
-	if extract == nil || expand == nil ||
-		material.key.secret.Len() != derivedKeyBytes {
+	if extract == nil || expand == nil || profile.Suite() == 0 ||
+		material.key.secret.Len() != derivedKeyBytes ||
+		material.inner == nil || material.inner.Len() != derivedKeyBytes {
 		return nil, newScheduleError(
 			ScheduleErrorInvalidRequest,
 			SuiteParanoid1,
@@ -843,7 +829,8 @@ func newD1OuterKeyOwnerWith(
 		)
 	}
 
-	rootSalt := sha3.Sum256([]byte(d1OuterRootDomain))
+	rootContext := binary.BigEndian.AppendUint16([]byte(d1OuterRootDomain), uint16(profile))
+	rootSalt := sha3.Sum256(rootContext)
 	returned, err := extract(material.key.secret.Bytes(), rootSalt[:])
 	secret, err := ownProviderResult(
 		returned,
@@ -862,9 +849,9 @@ func newD1OuterKeyOwnerWith(
 	for index, request := range requests {
 		returned, err = expand(
 			material.prk.secret.Bytes(),
-			scheduleInfoFor(
+			d1ScheduleInfo(
 				string(request.label),
-				SuiteParanoid1,
+				profile,
 				request.role,
 			),
 			request.outputBytes,
@@ -886,6 +873,8 @@ func newD1OuterKeyOwnerWith(
 		}
 	}
 
+	material.prk.close()
+	material.prk = nil
 	owner := &D1OuterKeyOwner{
 		state: newD1OwnerState(
 			material,
@@ -896,11 +885,14 @@ func newD1OuterKeyOwnerWith(
 	return owner, nil
 }
 
-func fixedD1OuterCredentialLabels() [3]D1OuterCredentialLabel {
+func fixedD1OuterCredentialLabels() [6]D1OuterCredentialLabel {
 	return [...]D1OuterCredentialLabel{
 		D1OuterCredentialWrapXChaCha20,
 		D1OuterCredentialWrapSerpent,
 		D1OuterCredentialWrapMAC,
+		D1InnerCredentialWrapXChaCha20,
+		D1InnerCredentialWrapSerpent,
+		D1InnerCredentialWrapMAC,
 	}
 }
 

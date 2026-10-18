@@ -16,6 +16,7 @@ const (
 	cleanupJournalName       = ".picocrypt-pcv3-stage.journal"
 	cleanupJournalTempPrefix = ".picocrypt-pcv3-journal-tmp-"
 	cleanupJournalVersion    = 2
+	cleanupLeasedVersion     = 3
 	cleanupJournalMaxBytes   = 2048
 	cleanupJournalMaxName    = 128
 )
@@ -42,6 +43,9 @@ const (
 	CleanupJournalIncomplete CleanupJournalState = iota
 	CleanupJournalAbsent
 	CleanupJournalCleaned
+	// CleanupJournalActive reports that at least one proven live operation was
+	// preserved, including when other orphaned stages were cleaned.
+	CleanupJournalActive
 )
 
 // PersistCleanupJournal durably records the exact existing stage object so a
@@ -49,13 +53,35 @@ const (
 // safe to call before the first plaintext write because only immutable identity
 // metadata is recorded.
 func (stage *Stage) PersistCleanupJournal() error {
+	return stage.persistCleanupJournal(cleanupJournalVersion)
+}
+
+// PersistLeasedCleanupJournal records the Linux desktop recovery contract.
+// Recovery may retire only private operation data; a published target is user
+// data and is always preserved. The kernel lease remains owned through cleanup
+// or retained output custody.
+func (stage *Stage) PersistLeasedCleanupJournal() error {
+	if !leasedCleanupAvailable() {
+		return errors.Join(errCleanupJournalPersist, errors.ErrUnsupported)
+	}
+	if stage == nil || stage.lease == nil || stage.sourceInfo == nil {
+		return errCleanupJournalPersist
+	}
+	info, err := stage.lease.Stat()
+	if err != nil || !os.SameFile(stage.sourceInfo, info) {
+		return errCleanupJournalPersist
+	}
+	return stage.persistCleanupJournal(cleanupLeasedVersion)
+}
+
+func (stage *Stage) persistCleanupJournal(version int) error {
 	if stage == nil || stage.journaled || stage.cleanupDone ||
 		stage.cleanupDisposition != cleanupOwned || stage.file == nil ||
 		stage.sourceRoot == nil || stage.parent == nil || stage.stageInfo == nil ||
 		stage.stageName == "" || stage.operations.syncStage == nil ||
 		stage.operations.closeStage == nil || stage.operations.removeStage == nil ||
 		stage.operations.syncDirectory == nil {
-		if stage != nil && stage.journaled && !stage.cleanupDone {
+		if stage != nil && stage.journaled && !stage.cleanupDone && stage.leasedJournal == (version == cleanupLeasedVersion) {
 			return nil
 		}
 		return errCleanupJournalPersist
@@ -104,7 +130,7 @@ func (stage *Stage) PersistCleanupJournal() error {
 		return errCleanupJournalPersist
 	}
 	record := cleanupJournal{
-		Version:     cleanupJournalVersion,
+		Version:     version,
 		Stage:       stage.stageName,
 		Parent:      parentIdentity,
 		File:        fileIdentity,
@@ -204,6 +230,7 @@ func (stage *Stage) PersistCleanupJournal() error {
 	stage.journalInfo = journalInfo
 	stage.journalStageIdentity = fileIdentity
 	stage.journaled = true
+	stage.leasedJournal = version == cleanupLeasedVersion
 	return nil
 }
 
@@ -539,7 +566,7 @@ func cleanupPinnedJournal(root *os.Root, parent *os.File, rootInfo os.FileInfo, 
 		return CleanupJournalIncomplete, ErrCleanupIncomplete
 	}
 	record, err := decodeCleanupJournal(data)
-	if err != nil || !validCleanupStageName(record.Stage) ||
+	if err != nil || record.Version == cleanupLeasedVersion || !validCleanupStageName(record.Stage) ||
 		!record.Parent.matches(rootInfo) || (record.Version == 1 && !trustedLegacyJournalParent(parent)) || (record.Version == 2 && (destination == nil || record.Destination == nil || !record.Destination.matches(destinationInfo) || !validTargetName(record.Target))) {
 		return CleanupJournalIncomplete, ErrCleanupIncomplete
 	}
@@ -632,7 +659,7 @@ func decodeCleanupJournal(data []byte) (cleanupJournal, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return cleanupJournal{}, errors.New("cleanup journal has trailing data")
 	}
-	if record.Version != 1 && record.Version != cleanupJournalVersion {
+	if record.Version != 1 && record.Version != cleanupJournalVersion && record.Version != cleanupLeasedVersion {
 		return cleanupJournal{}, errors.New("unsupported cleanup journal version")
 	}
 	canonical, err := json.Marshal(record)

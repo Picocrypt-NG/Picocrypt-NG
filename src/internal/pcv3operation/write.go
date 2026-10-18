@@ -82,6 +82,7 @@ func runWriteWithSeams(ctx context.Context, request *WriteRequest, options Execu
 	owner := &operationOwner{reporter: owned.Reporter}
 	var stage *pcv3publication.Stage
 	var retained *pcv3publication.RetainedFile
+	var desktopProtected []*os.File
 	defer func() {
 		if recover() != nil {
 			result = writeFailure(pcv3.StageCredentialPolicy, DiagnosticCallbackPanic)
@@ -102,6 +103,11 @@ func runWriteWithSeams(ctx context.Context, request *WriteRequest, options Execu
 		if retained != nil && retained.Close() != nil {
 			result.appendWarning(WarningCleanupIncomplete)
 		}
+		for _, file := range desktopProtected {
+			if safeCloseSource(file) {
+				result.appendWarning(WarningCleanupIncomplete)
+			}
+		}
 		if owner.reporterFailed || owner.reporterPanicked {
 			result.appendWarning(WarningCallbackFailure)
 			result.diagnostic = DiagnosticCallbackFailure
@@ -114,7 +120,8 @@ func runWriteWithSeams(ctx context.Context, request *WriteRequest, options Execu
 			result.writeLifecycleComplete = false
 		}
 	}()
-	if ctx == nil || request == nil || options.ArchiveAction != ArchiveDefault || options.ArchiveReview != nil {
+	if ctx == nil || request == nil || options.ArchiveAction != ArchiveDefault || options.ArchiveReview != nil ||
+		(options.LinuxDesktopCleanup && options.JournalPrivateStage) {
 		return writeFailure(pcv3.StageCredentialPolicy, DiagnosticInvalidRequest)
 	}
 	if ctx.Err() != nil {
@@ -124,7 +131,7 @@ func runWriteWithSeams(ctx context.Context, request *WriteRequest, options Execu
 		return owner.reportFailure()
 	}
 	if (owned.Mode != WriteModeNormal && owned.Mode != WriteModeD1) || owned.Source == nil || owned.Factors == nil || owned.Target == "" || seams.admitter == nil ||
-		(owned.Mode == WriteModeD1 && (owned.Suite != pcv3.SuiteParanoid || owned.SourceFile == nil || owned.SourcePath == "")) ||
+		(owned.Mode == WriteModeD1 && (owned.SourceFile == nil || owned.SourcePath == "")) ||
 		(options.RetainDurableOutput && owned.Split != nil) {
 		return writeFailure(pcv3.StageCredentialPolicy, DiagnosticInvalidRequest)
 	}
@@ -138,6 +145,26 @@ func runWriteWithSeams(ctx context.Context, request *WriteRequest, options Execu
 	}
 	admitter := reportingAdmitter{owner: owner, next: seams.admitter}
 	retainOutput := options.RetainDurableOutput || owned.Split != nil
+	leasable := options.LinuxDesktopCleanup && linuxDesktopCleanupSupported()
+	if leasable {
+		protected := append([]string(nil), owned.Protected...)
+		if owned.SourcePath != "" {
+			protected = append(protected, owned.SourcePath)
+		}
+		// SourceFile can pin metadata for a logical reader. A direct file reader
+		// is also an original input even when that pin is absent or different.
+		protectedFiles := append([]*os.File(nil), options.DesktopProtectedFiles...)
+		if source, ok := owned.Source.(*os.File); ok {
+			protectedFiles = append(protectedFiles, source)
+		}
+		var cleanupErr error
+		desktopProtected, cleanupErr = prepareDesktopOperationCleanup(owned.Target, owned.SourceFile, owned.Factors, protected, protectedFiles)
+		if cleanupErr != nil {
+			result = writeFailure(pcv3.StageOutputPublication, DiagnosticCoreFailure)
+			result.appendWarning(WarningCleanupIncomplete)
+			return result
+		}
+	}
 	source := &writeProgressReader{reader: owned.Source, owner: owner, total: owned.PlaintextLength}
 	var publication pcv3publication.Result
 	var err error
@@ -152,6 +179,9 @@ func runWriteWithSeams(ctx context.Context, request *WriteRequest, options Execu
 		}
 		if err == nil && options.JournalPrivateStage {
 			err = stage.PersistCleanupJournal()
+		}
+		if err == nil && leasable {
+			err = stage.PersistLeasedCleanupJournal()
 		}
 		if err == nil {
 			native := &pcv3.NativeNormalWriteRequest{
@@ -192,6 +222,7 @@ func runWriteWithSeams(ctx context.Context, request *WriteRequest, options Execu
 			DestinationPath:     owned.Target,
 			Protected:           owned.Protected,
 			JournalPrivateStage: options.JournalPrivateStage,
+			LeasedPrivateStage:  leasable,
 		}
 		publication, retained, err = pcv3.RunNativeD1WriteWithPublication(ctx, native, retainOutput)
 	}

@@ -28,11 +28,6 @@ func (req *EncryptRequest) Validate() error {
 		if len(req.Keyfiles) > pcv3operation.MaxKeyfiles {
 			return errors.NewValidationError("Keyfiles", fmt.Sprintf("at most %d keyfiles are supported", pcv3operation.MaxKeyfiles))
 		}
-		if req.Deniability {
-			if !req.Paranoid {
-				return errors.NewValidationError("Paranoid", "PCV3 D1 creation requires paranoid mode")
-			}
-		}
 		if len(req.Password) == 0 && len(req.Keyfiles) == 0 {
 			return errors.NewEncryptionPasswordRequiredError()
 		}

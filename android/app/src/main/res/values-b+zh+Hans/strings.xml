@@ -342,4 +342,9 @@
     <string name="pcv3_retained_discard_cleanup_body">应用无法确认已删除所保存的输出。请保留原始文件。</string>
     <string name="pcv3_resource_limit_title">资源用量达到上限</string>
     <string name="pcv3_resource_limit_body">处理所需的资源用量已达到限制，操作已停止。</string>
+    <string name="pcv3_d1_profile_heading">恢复配置</string>
+    <string name="pcv3_d1_profile_auto">自动</string>
+    <string name="pcv3_d1_profile_standard">标准</string>
+    <string name="pcv3_outcome_d1_profile_required_title">请选择恢复配置</string>
+    <string name="pcv3_outcome_d1_profile_required_body">请选择创建此卷时使用的标准或偏执配置，然后重试。未发布任何输出。</string>
 </resources>

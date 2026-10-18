@@ -31,6 +31,7 @@ const (
 type ExecutionOptions struct {
 	RetainDurableOutput bool
 	JournalPrivateStage bool
+	LeasedPrivateStage  bool
 	PrepareArchive      bool
 }
 
@@ -44,6 +45,7 @@ type Request struct {
 	Factors        *pcv3credential.FactorRequest
 	Admitter       pcv3credential.Admitter
 	Mode           pcv3.RecoveryMode
+	D1SuiteHint    pcv3.Suite
 	SelectedRole   pcv3.CapsuleRole
 	Target         string
 	Protected      []string
@@ -60,6 +62,7 @@ type operationRange struct {
 }
 
 type operationSemantic struct {
+	d1ProfileRequired bool
 	outcome           pcv3.Outcome
 	provenance        pcv3.ForceProvenance
 	stage             pcv3.Stage
@@ -246,6 +249,12 @@ type Result struct {
 	artifactInspection   *ArtifactInspection
 	retainedOutput       *pcv3publication.RetainedFile
 	archiveHandoff       *ArchiveHandoff
+}
+
+// D1ProfileRequired reports the closed no-output refusal for selected raw D1
+// input whose hidden profile has no surviving authenticated evidence.
+func (result *Result) D1ProfileRequired() bool {
+	return result != nil && result.semantic.d1ProfileRequired
 }
 
 func (result *Result) Outcome() pcv3.Outcome {
@@ -476,6 +485,13 @@ func runWithCoreOptions(
 				result.retainCleanupError(stage.Cleanup())
 			}
 		}()
+		if options.LeasedPrivateStage {
+			if err := stage.PersistLeasedCleanupJournal(); err != nil {
+				err = errors.Join(err, pcv3publication.ErrCleanupIncomplete)
+				result.retainPublicationError(err)
+				return err
+			}
+		}
 		if options.JournalPrivateStage {
 			if err := stage.PersistCleanupJournal(); err != nil {
 				err = errors.Join(err, pcv3publication.ErrCleanupIncomplete)
@@ -936,6 +952,12 @@ func runProductionCore(
 	}
 	factors := request.Factors
 	request.Factors = nil
+	if request.D1SuiteHint != 0 {
+		if factors != nil {
+			_ = factors.Close()
+		}
+		return operationSemantic{outcome: pcv3.OutcomeOperationFailed, stage: pcv3.StageCredentialPolicy, code: pcv3.CodeOperationFailed}, errors.New("pcv3 recovery operation: D1 suite choice requires selected raw D1 recovery")
+	}
 	coreOutput := func(
 		result *pcv3.RecoveryResult,
 		role pcv3.CapsuleRole,
@@ -1012,7 +1034,8 @@ func runD1ProductionCoreWithRole(
 	}
 	factors := request.Factors
 	request.Factors = nil
-	if (request.Mode == pcv3.RecoveryModeForceUnverified) != (selectedRole != nil) {
+	if (request.Mode == pcv3.RecoveryModeForceUnverified) != (selectedRole != nil) ||
+		(request.D1SuiteHint != 0 && (selectedRole == nil || (request.D1SuiteHint != pcv3.SuiteStandard && request.D1SuiteHint != pcv3.SuiteParanoid))) {
 		if factors != nil {
 			_ = factors.Close()
 		}
@@ -1049,13 +1072,14 @@ func runD1ProductionCoreWithRole(
 	var result *pcv3.RecoveryResult
 	var err error
 	if selectedRole != nil {
-		result, err = pcv3.RecoverD1Unverified(
+		result, err = pcv3.RecoverD1UnverifiedWithSuite(
 			ctx,
 			request.Source,
 			request.SourceSize,
 			factors,
 			request.Admitter,
 			*selectedRole,
+			request.D1SuiteHint,
 			coreOutput,
 		)
 	} else {
@@ -1070,6 +1094,7 @@ func runD1ProductionCoreWithRole(
 		)
 	}
 	semantic := semanticFromCore(result)
+	semantic.d1ProfileRequired = errors.Is(err, pcv3.ErrD1ProfileRequired)
 	if result != nil {
 		result.Close()
 	}

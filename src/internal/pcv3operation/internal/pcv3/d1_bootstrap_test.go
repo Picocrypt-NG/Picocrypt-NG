@@ -60,7 +60,7 @@ func TestD1BootstrapRejectsDecryptBeforeWrapTag(t *testing.T) {
 		4096,
 	)
 	replicaRaw[d1BootstrapReplicaTagOffset] ^= 0x01
-	recomputeD1BootstrapWrapTag(t, replicaRaw, D1BootstrapFront, replicaAccess.keys.mac[:])
+	recomputeD1BootstrapWrapTag(t, replicaRaw, D1BootstrapFront, replicaAccess.keys.mac[:], replicaAccess.keys.innerMAC[:])
 	replicaCandidate, err := parseD1Bootstrap(replicaRaw, D1BootstrapFront)
 	if err != nil {
 		t.Fatalf("parse replica-tag fixture: %v", err)
@@ -70,7 +70,9 @@ func TestD1BootstrapRejectsDecryptBeforeWrapTag(t *testing.T) {
 	productionUnwrap := seams.unwrapParanoid
 	seams.unwrapParanoid = func(destination, source, xKey, nonce, serpentKey, iv []byte) error {
 		decryptCalls++
-		decryptedAlias = destination
+		if len(destination) == d1OuterSecretLength {
+			decryptedAlias = destination
+		}
 		return productionUnwrap(destination, source, xKey, nonce, serpentKey, iv)
 	}
 	replicaFailure := authenticateD1BootstrapWithAccess(
@@ -85,8 +87,8 @@ func TestD1BootstrapRejectsDecryptBeforeWrapTag(t *testing.T) {
 		replicaFailure.authenticated != nil {
 		t.Fatalf("replica failure = outcome %d stage %d authenticated=%v", replicaFailure.Outcome(), replicaFailure.Stage(), replicaFailure.authenticated != nil)
 	}
-	if decryptCalls != 1 {
-		t.Fatalf("authenticated wrap invoked decrypt count %d, want 1", decryptCalls)
+	if decryptCalls != 2 {
+		t.Fatalf("authenticated wrap invoked decrypt count %d, want 2", decryptCalls)
 	}
 	if len(decryptedAlias) != d1OuterSecretLength || !allZero(decryptedAlias) {
 		t.Fatal("failed replica authentication retained decrypted OuterSecret scratch")
@@ -137,7 +139,7 @@ func TestD1ForceBootstrapBinderRetainsCompleteSecretAndExactValidity(t *testing.
 			name: "replica damage",
 			mutate: func(t *testing.T, raw []byte, access *d1TestBootstrapCredentialAccess) {
 				raw[d1BootstrapReplicaTagOffset] ^= 0x01
-				recomputeD1BootstrapWrapTag(t, raw, D1BootstrapFront, access.keys.mac[:])
+				recomputeD1BootstrapWrapTag(t, raw, D1BootstrapFront, access.keys.mac[:], access.keys.innerMAC[:])
 			},
 			wantWrapVerified:    true,
 			wantReplicaVerified: false,
@@ -165,7 +167,9 @@ func TestD1ForceBootstrapBinderRetainsCompleteSecretAndExactValidity(t *testing.
 			realUnwrap := seams.unwrapParanoid
 			var unwrapAlias []byte
 			seams.unwrapParanoid = func(destination, source, xKey, nonce, serpentKey, iv []byte) error {
-				unwrapAlias = destination
+				if len(destination) == d1OuterSecretLength {
+					unwrapAlias = destination
+				}
 				return realUnwrap(destination, source, xKey, nonce, serpentKey, iv)
 			}
 			var retained *d1BootstrapBinding
@@ -299,7 +303,9 @@ func TestD1ForceBootstrapBinderClosesEveryCallbackExit(t *testing.T) {
 			realUnwrap := seams.unwrapParanoid
 			var unwrapAlias []byte
 			seams.unwrapParanoid = func(destination, source, xKey, nonce, serpentKey, iv []byte) error {
-				unwrapAlias = destination
+				if len(destination) == d1OuterSecretLength {
+					unwrapAlias = destination
+				}
 				return realUnwrap(destination, source, xKey, nonce, serpentKey, iv)
 			}
 			var retained *d1BootstrapBinding
@@ -358,7 +364,9 @@ func TestD1ForceBootstrapBinderClosesPanicExit(t *testing.T) {
 	realUnwrap := seams.unwrapParanoid
 	var unwrapAlias []byte
 	seams.unwrapParanoid = func(destination, source, xKey, nonce, serpentKey, iv []byte) error {
-		unwrapAlias = destination
+		if len(destination) == d1OuterSecretLength {
+			unwrapAlias = destination
+		}
 		return realUnwrap(destination, source, xKey, nonce, serpentKey, iv)
 	}
 	panicValue := &struct{ label string }{label: "TEST ONLY D1 Force binder panic"}
@@ -499,6 +507,9 @@ func newD1BootstrapTestFixture(
 	fillD1TestBytes(access.keys.xChaCha20[:], seed+0x60)
 	fillD1TestBytes(access.keys.serpent[:], seed+0x80)
 	fillD1TestBytes(access.keys.mac[:], seed+0xa0)
+	fillD1TestBytes(access.keys.innerXChaCha20[:], seed+0xc0)
+	fillD1TestBytes(access.keys.innerSerpent[:], seed+0xe0)
+	fillD1TestBytes(access.keys.innerMAC[:], seed+1)
 
 	var plaintext [d1OuterSecretLength]byte
 	defer pcv3crypto.SecureZero(plaintext[:])
@@ -515,17 +526,20 @@ func newD1BootstrapTestFixture(
 		t.Fatalf("wrap TEST ONLY OuterSecret: %v", err)
 	}
 
+	if err := pcv3stream.PCV3WrapParanoid1(raw[96:128], d1TestInnerRoot(), access.keys.innerXChaCha20[:], raw[16:40], access.keys.innerSerpent[:], raw[40:56]); err != nil {
+		t.Fatal(err)
+	}
 	replicaKey := independentD1OuterReplicaKey(t, outerKey, role)
 	defer pcv3crypto.SecureZero(replicaKey[:])
 	replicaTag := independentD1HMAC(
 		replicaKey[:],
-		[]byte("Picocrypt-NG/PCV3/outer/replica\x00"),
-		[]byte{byte(role)},
+		[]byte("Picocrypt-NG/PCV3/D1C/replica\x00"),
+		[]byte{0x01, 0x02, byte(role)},
 		raw[:d1BootstrapPrefixLength],
 	)
 	copy(raw[d1BootstrapReplicaTagOffset:d1BootstrapWrapTagOffset], replicaTag[:])
 	pcv3crypto.SecureZero(replicaTag[:])
-	recomputeD1BootstrapWrapTag(t, raw, role, access.keys.mac[:])
+	recomputeD1BootstrapWrapTag(t, raw, role, access.keys.mac[:], access.keys.innerMAC[:])
 	return raw, access
 }
 
@@ -533,7 +547,7 @@ func recomputeD1BootstrapWrapTag(
 	t *testing.T,
 	raw []byte,
 	role D1BootstrapRole,
-	wrapMAC []byte,
+	wrapMAC, innerMAC []byte,
 ) {
 	t.Helper()
 	if len(raw) != d1BootstrapLength {
@@ -541,12 +555,15 @@ func recomputeD1BootstrapWrapTag(
 	}
 	tag := independentD1HMAC(
 		wrapMAC,
-		[]byte("Picocrypt-NG/PCV3/outer/wrap\x00"),
-		[]byte{byte(role)},
+		[]byte("Picocrypt-NG/PCV3/D1C/outer/wrap\x00"),
+		[]byte{0x01, 0x02, byte(role)},
 		raw[:d1BootstrapPrefixLength],
 		raw[d1BootstrapReplicaTagOffset:d1BootstrapWrapTagOffset],
 	)
-	copy(raw[d1BootstrapWrapTagOffset:], tag[:])
+	copy(raw[d1BootstrapWrapTagOffset:d1BootstrapInnerWrapTagOffset], tag[:])
+	innerTag := independentD1HMAC(innerMAC, []byte("Picocrypt-NG/PCV3/D1C/inner/wrap\x00"), []byte{0x01, 0x02, byte(role)}, raw[:d1BootstrapPrefixLength], raw[d1BootstrapReplicaTagOffset:d1BootstrapWrapTagOffset])
+	copy(raw[d1BootstrapInnerWrapTagOffset:], innerTag[:])
+	pcv3crypto.SecureZero(innerTag[:])
 	pcv3crypto.SecureZero(tag[:])
 }
 
@@ -556,7 +573,7 @@ func independentD1OuterReplicaKey(
 	role D1BootstrapRole,
 ) [32]byte {
 	t.Helper()
-	rootSalt := sha3.Sum256([]byte("Picocrypt-NG/PCV3/outer/root\x00"))
+	rootSalt := sha3.Sum256([]byte("Picocrypt-NG/PCV3/D1C/outer/root\x00\x01\x02"))
 	prk, err := hkdf.Extract(sha3.New256, outerKey, rootSalt[:])
 	if err != nil {
 		t.Fatalf("extract TEST ONLY OuterPRK: %v", err)
@@ -574,7 +591,7 @@ func independentD1OuterReplicaKey(
 }
 
 func independentD1ScheduleInfo(label string, role D1BootstrapRole) string {
-	const domain = "Picocrypt-NG/PCV3/HKDF\x00"
+	const domain = "Picocrypt-NG/PCV3/D1C/HKDF\x00"
 	info := make([]byte, 0, len(domain)+9+len(label))
 	info = append(info, domain...)
 	var encoded [2]byte
@@ -582,7 +599,7 @@ func independentD1ScheduleInfo(label string, role D1BootstrapRole) string {
 	info = append(info, encoded[:]...)
 	binary.BigEndian.PutUint16(encoded[:], 0x0001)
 	info = append(info, encoded[:]...)
-	binary.BigEndian.PutUint16(encoded[:], uint16(SuiteParanoid))
+	binary.BigEndian.PutUint16(encoded[:], 0x0102)
 	info = append(info, encoded[:]...)
 	info = append(info, byte(role))
 	binary.BigEndian.PutUint16(encoded[:], uint16(len(label)))

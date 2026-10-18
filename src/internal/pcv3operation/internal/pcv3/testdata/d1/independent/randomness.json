@@ -9,6 +9,7 @@
   "volume id": "0e159008ea269e02e8fbd45d1d243b43425365cb4a2d2fdba220c059238250f1",
   "volume key": "5aaad478bd9b722b17f560253453e16dc9bad18c894e3c8cf30dcbe8915f2770",
   "outer key": "3d8b699d05f3a8ddc4227abf9612c2a613a0b66f9a85d76f208501fc952dec70",
+  "inner credential root": "1c65668f1cfd13a9731e3fb94c3891a264b8077eb6131e655c63d9d45e1edf79",
   "inner nonce": "ecbe369b5f34550d187934757003acbc",
   "inner iv": "3bd099d2c54b5b6a",
   "inner wrap nonce 0": "1b4c27ab2c16e2b23b955c475e47aa54401069cec5061bd4",

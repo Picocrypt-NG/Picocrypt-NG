@@ -12,16 +12,24 @@ import (
 )
 
 const (
-	d1BootstrapLength           = 224
-	d1BootstrapPrefixLength     = 96
-	d1BootstrapReplicaTagOffset = 96
-	d1BootstrapWrapTagOffset    = 160
-	d1OuterSecretLength         = 40
-	d1OuterReplicaDomain        = "Picocrypt-NG/PCV3/outer/replica\x00"
-	d1OuterWrapDomain           = "Picocrypt-NG/PCV3/outer/wrap\x00"
+	d1BootstrapLength             = 320
+	d1BootstrapPrefixLength       = 128
+	d1BootstrapReplicaTagOffset   = 128
+	d1BootstrapWrapTagOffset      = 192
+	d1BootstrapInnerWrapTagOffset = 256
+	d1OuterSecretLength           = 40
+	d1OuterReplicaDomain          = "Picocrypt-NG/PCV3/D1C/replica\x00"
+	d1OuterWrapDomain             = "Picocrypt-NG/PCV3/D1C/outer/wrap\x00"
+	d1InnerWrapDomain             = "Picocrypt-NG/PCV3/D1C/inner/wrap\x00"
 )
 
 var errInvalidD1Bootstrap = errors.New("pcv3: invalid outer bootstrap request")
+
+// ErrD1ProfileRequired is a closed refusal: selected raw D1 data has no
+// authenticated hidden profile and requires an explicit payload suite choice.
+var ErrD1ProfileRequired = errors.New("pcv3: raw D1 recovery requires an explicit Standard or Paranoid suite")
+
+var errD1ProfileMismatch = errors.New("pcv3: D1 suite choice contradicts authenticated profile")
 
 // D1BootstrapRole identifies the physical front or tail outer bootstrap.
 type D1BootstrapRole uint8
@@ -32,13 +40,15 @@ const (
 )
 
 type d1BootstrapCandidate struct {
-	role          D1BootstrapRole
-	argonSalt     [16]byte
-	wrapNonce     [24]byte
-	wrapSerpentIV [16]byte
-	wrappedSecret [d1OuterSecretLength]byte
-	replicaTag    [64]byte
-	wrapTag       [64]byte
+	role             D1BootstrapRole
+	argonSalt        [16]byte
+	wrapNonce        [24]byte
+	wrapSerpentIV    [16]byte
+	wrappedSecret    [d1OuterSecretLength]byte
+	wrappedInnerRoot [32]byte
+	replicaTag       [64]byte
+	wrapTag          [64]byte
+	innerWrapTag     [64]byte
 }
 
 func (d1BootstrapCandidate) String() string {
@@ -66,8 +76,10 @@ func parseD1Bootstrap(
 	copy(candidate.wrapNonce[:], raw[16:40])
 	copy(candidate.wrapSerpentIV[:], raw[40:56])
 	copy(candidate.wrappedSecret[:], raw[56:96])
-	copy(candidate.replicaTag[:], raw[96:160])
-	copy(candidate.wrapTag[:], raw[160:224])
+	copy(candidate.wrappedInnerRoot[:], raw[96:128])
+	copy(candidate.replicaTag[:], raw[128:192])
+	copy(candidate.wrapTag[:], raw[192:256])
+	copy(candidate.innerWrapTag[:], raw[256:320])
 	return candidate, nil
 }
 
@@ -77,13 +89,17 @@ func (candidate d1BootstrapCandidate) prefix() [d1BootstrapPrefixLength]byte {
 	copy(prefix[16:40], candidate.wrapNonce[:])
 	copy(prefix[40:56], candidate.wrapSerpentIV[:])
 	copy(prefix[56:96], candidate.wrappedSecret[:])
+	copy(prefix[96:128], candidate.wrappedInnerRoot[:])
 	return prefix
 }
 
 type d1BootstrapWrapKeys struct {
-	xChaCha20 [32]byte
-	serpent   [32]byte
-	mac       [32]byte
+	xChaCha20      [32]byte
+	serpent        [32]byte
+	mac            [32]byte
+	innerXChaCha20 [32]byte
+	innerSerpent   [32]byte
+	innerMAC       [32]byte
 }
 
 func (keys *d1BootstrapWrapKeys) close() {
@@ -93,6 +109,9 @@ func (keys *d1BootstrapWrapKeys) close() {
 	pcv3crypto.SecureZero(keys.xChaCha20[:])
 	pcv3crypto.SecureZero(keys.serpent[:])
 	pcv3crypto.SecureZero(keys.mac[:])
+	pcv3crypto.SecureZero(keys.innerXChaCha20[:])
+	pcv3crypto.SecureZero(keys.innerSerpent[:])
+	pcv3crypto.SecureZero(keys.innerMAC[:])
 }
 
 type d1BootstrapCredentialAccess interface {
@@ -119,6 +138,10 @@ func (access *d1BootstrapOwnerAccess) withWrapKeys(
 	ctx context.Context,
 	callback func(*d1BootstrapWrapKeys) error,
 ) error {
+	return access.withProfileWrapKeys(ctx, pcv3credential.D1ProfileParanoid, callback)
+}
+
+func (access *d1BootstrapOwnerAccess) withProfileWrapKeys(ctx context.Context, profile pcv3credential.D1Profile, callback func(*d1BootstrapWrapKeys) error) error {
 	if access == nil || access.owner == nil || ctx == nil || callback == nil {
 		return errInvalidD1Bootstrap
 	}
@@ -135,8 +158,11 @@ func (access *d1BootstrapOwnerAccess) withWrapKeys(
 				{pcv3credential.D1OuterCredentialWrapXChaCha20, keys.xChaCha20[:]},
 				{pcv3credential.D1OuterCredentialWrapSerpent, keys.serpent[:]},
 				{pcv3credential.D1OuterCredentialWrapMAC, keys.mac[:]},
+				{pcv3credential.D1InnerCredentialWrapXChaCha20, keys.innerXChaCha20[:]},
+				{pcv3credential.D1InnerCredentialWrapSerpent, keys.innerSerpent[:]},
+				{pcv3credential.D1InnerCredentialWrapMAC, keys.innerMAC[:]},
 			} {
-				if err := borrowed.CopyKey(request.label, request.destination); err != nil {
+				if err := borrowed.CopyKeyForProfile(profile, request.label, request.destination); err != nil {
 					callbackErr = err
 					return err
 				}
@@ -315,9 +341,11 @@ func (attempt *d1BootstrapAttempt) Close() {
 }
 
 type d1BootstrapEvaluation struct {
-	secret          *d1OuterSecretOwner
-	wrapVerified    bool
-	replicaVerified bool
+	secret               *d1OuterSecretOwner
+	wrapVerified         bool
+	replicaVerified      bool
+	profileHinted        bool
+	profileAuthenticated bool
 }
 
 func (evaluation *d1BootstrapEvaluation) Close() {
@@ -330,6 +358,8 @@ func (evaluation *d1BootstrapEvaluation) Close() {
 	}
 	evaluation.wrapVerified = false
 	evaluation.replicaVerified = false
+	evaluation.profileHinted = false
+	evaluation.profileAuthenticated = false
 }
 
 func (evaluation *d1BootstrapEvaluation) takeSecret() *d1OuterSecretOwner {
@@ -342,10 +372,12 @@ func (evaluation *d1BootstrapEvaluation) takeSecret() *d1OuterSecretOwner {
 }
 
 type d1BootstrapBinding struct {
-	bodyLength      uint64
-	wrapVerified    bool
-	replicaVerified bool
-	borrowOuterKeys func(
+	bodyLength           uint64
+	wrapVerified         bool
+	replicaVerified      bool
+	profileHinted        bool
+	profileAuthenticated bool
+	borrowOuterKeys      func(
 		context.Context,
 		func(*pcv3credential.BorrowedD1OuterKeys) error,
 	) error
@@ -368,19 +400,8 @@ func (binding *d1BootstrapBinding) expire() {
 	binding.bodyLength = 0
 	binding.wrapVerified = false
 	binding.replicaVerified = false
-}
-
-func authenticateD1Bootstrap(
-	ctx context.Context,
-	candidate d1BootstrapCandidate,
-	owner *pcv3credential.D1OuterCredentialOwner,
-) *d1BootstrapAttempt {
-	return authenticateD1BootstrapWithAccess(
-		ctx,
-		candidate,
-		&d1BootstrapOwnerAccess{owner: owner},
-		defaultD1BootstrapAuthSeams(),
-	)
+	binding.profileHinted = false
+	binding.profileAuthenticated = false
 }
 
 func authenticateD1BootstrapWithAccess(
@@ -431,15 +452,21 @@ func bindD1BootstrapWithAccess(
 	seams d1BootstrapAuthSeams,
 	callback func(*d1BootstrapBinding) error,
 ) error {
+	return bindD1BootstrapWithHint(ctx, candidate, access, seams, 0, false, callback)
+}
+
+func bindD1BootstrapWithHint(ctx context.Context, candidate d1BootstrapCandidate, access d1BootstrapCredentialAccess, seams d1BootstrapAuthSeams, hint Suite, requireProfile bool, callback func(*d1BootstrapBinding) error) error {
 	if callback == nil {
 		return errInvalidD1Bootstrap
 	}
-	evaluation, _, err := evaluateD1BootstrapWithAccess(
+	evaluation, _, err := evaluateD1BootstrapWithHint(
 		ctx,
 		candidate,
 		access,
 		seams,
 		d1BootstrapAllowRawUnwrap,
+		hint,
+		requireProfile,
 	)
 	if err != nil {
 		return err
@@ -449,13 +476,15 @@ func bindD1BootstrapWithAccess(
 		return ctx.Err()
 	}
 	if evaluation.secret == nil || evaluation.secret.keys == nil {
-		return errInvalidD1Bootstrap
+		return callback(nil)
 	}
 	keyOwner := evaluation.secret.keys
 	binding := &d1BootstrapBinding{
-		bodyLength:      evaluation.secret.bodyLength,
-		wrapVerified:    evaluation.wrapVerified,
-		replicaVerified: evaluation.replicaVerified,
+		bodyLength:           evaluation.secret.bodyLength,
+		profileHinted:        evaluation.profileHinted,
+		profileAuthenticated: evaluation.profileAuthenticated,
+		wrapVerified:         evaluation.wrapVerified,
+		replicaVerified:      evaluation.replicaVerified,
 		borrowOuterKeys: func(
 			ctx context.Context,
 			callback func(*pcv3credential.BorrowedD1OuterKeys) error,
@@ -477,131 +506,170 @@ func evaluateD1BootstrapWithAccess(
 	seams d1BootstrapAuthSeams,
 	policy d1BootstrapEvaluationPolicy,
 ) (*d1BootstrapEvaluation, Stage, error) {
+	return evaluateD1BootstrapWithHint(ctx, candidate, access, seams, policy, 0, false)
+}
+
+func evaluateD1BootstrapWithHint(ctx context.Context, candidate d1BootstrapCandidate, access d1BootstrapCredentialAccess, seams d1BootstrapAuthSeams, policy d1BootstrapEvaluationPolicy, hint Suite, requireProfile bool) (*d1BootstrapEvaluation, Stage, error) {
 	if ctx == nil || access == nil || seams.unwrapParanoid == nil ||
 		!validD1BootstrapRole(candidate.role) || access.role() != candidate.role ||
-		(policy != d1BootstrapVerifyBeforeUnwrap && policy != d1BootstrapAllowRawUnwrap) {
+		(policy != d1BootstrapVerifyBeforeUnwrap && policy != d1BootstrapAllowRawUnwrap) ||
+		(hint != 0 && (!isSupportedSuite(hint) || policy != d1BootstrapAllowRawUnwrap || !requireProfile)) {
 		return nil, StageCredentialPolicy, errInvalidD1Bootstrap
 	}
 	if ctx.Err() != nil {
 		return nil, StageCancellation, ctx.Err()
 	}
 
-	evaluation := &d1BootstrapEvaluation{}
-	complete := false
+	profiles := []pcv3credential.D1Profile{pcv3credential.D1ProfileParanoid}
+	profileAccess, bothProfiles := access.(interface {
+		withProfileWrapKeys(context.Context, pcv3credential.D1Profile, func(*d1BootstrapWrapKeys) error) error
+	})
+	if bothProfiles {
+		profiles = []pcv3credential.D1Profile{pcv3credential.D1ProfileStandard, pcv3credential.D1ProfileParanoid}
+	}
+	var selected *d1BootstrapEvaluation
+	var hinted *d1BootstrapEvaluation
+	var selectedProfile pcv3credential.D1Profile
 	defer func() {
-		if !complete {
-			evaluation.Close()
+		if selected != nil {
+			selected.Close()
+		}
+		if hinted != nil {
+			hinted.Close()
 		}
 	}()
-	var unwrapped [d1OuterSecretLength]byte
-	defer pcv3crypto.SecureZero(unwrapped[:])
-	unwrapAttempted := false
-	err := access.withWrapKeys(ctx, func(keys *d1BootstrapWrapKeys) error {
-		message := d1BootstrapWrapMessage(candidate)
-		defer pcv3crypto.SecureZero(message)
-		valid, err := verifySuiteMAC(
-			SuiteParanoid,
-			keys.mac[:],
-			message,
-			candidate.wrapTag[:],
-		)
-		if err != nil {
-			return err
+	for _, profile := range profiles {
+		evaluation := &d1BootstrapEvaluation{}
+		unwrapAttempted := false
+		profileAuthenticated := false
+		var unwrapped [d1OuterSecretLength]byte
+		var innerRoot [32]byte
+		withKeys := func(callback func(*d1BootstrapWrapKeys) error) error {
+			if bothProfiles {
+				return profileAccess.withProfileWrapKeys(ctx, profile, callback)
+			}
+			return access.withWrapKeys(ctx, callback)
 		}
-		evaluation.wrapVerified = valid
-		if !valid && policy == d1BootstrapVerifyBeforeUnwrap {
-			return nil
-		}
-		unwrapAttempted = true
-		return seams.unwrapParanoid(
-			unwrapped[:],
-			candidate.wrappedSecret[:],
-			keys.xChaCha20[:],
-			candidate.wrapNonce[:],
-			keys.serpent[:],
-			candidate.wrapSerpentIV[:],
-		)
-	})
-	if err != nil {
-		stage := StageCredentialPolicy
-		if ctx.Err() != nil {
-			stage = StageCancellation
-		} else if unwrapAttempted {
-			stage = StageUnwrap
-		}
-		return nil, stage, err
-	}
-	if !unwrapAttempted {
-		complete = true
-		return evaluation, StageWrapAuth, nil
-	}
-
-	outerKey := make([]byte, 32)
-	copy(outerKey, unwrapped[0:32])
-	keyOwner, err := pcv3credential.NewD1OuterKeyOwner(outerKey)
-	if err != nil {
-		return nil, StageUnwrap, err
-	}
-	evaluation.secret = &d1OuterSecretOwner{
-		bodyLength: binary.BigEndian.Uint64(unwrapped[32:40]),
-		keys:       keyOwner,
-	}
-	err = evaluation.secret.withOuterKeys(
-		ctx,
-		func(keys *pcv3credential.BorrowedD1OuterKeys) error {
-			var replicaKey [32]byte
-			defer pcv3crypto.SecureZero(replicaKey[:])
-			if err := keys.CopyKey(
-				pcv3credential.D1OuterReplicaMAC,
-				keyRoleForD1Bootstrap(candidate.role),
-				replicaKey[:],
-			); err != nil {
+		err := func() error {
+			defer pcv3crypto.SecureZero(unwrapped[:])
+			defer pcv3crypto.SecureZero(innerRoot[:])
+			err := withKeys(func(keys *d1BootstrapWrapKeys) error {
+				outerMessage := d1BootstrapProfileWrapMessage(candidate, profile, false)
+				innerMessage := d1BootstrapProfileWrapMessage(candidate, profile, true)
+				defer pcv3crypto.SecureZero(outerMessage)
+				defer pcv3crypto.SecureZero(innerMessage)
+				outerValid, err := verifySuiteMAC(Suite(profile.Suite()), keys.mac[:], outerMessage, candidate.wrapTag[:])
+				if err != nil {
+					return err
+				}
+				innerValid, err := verifySuiteMAC(Suite(profile.Suite()), keys.innerMAC[:], innerMessage, candidate.innerWrapTag[:])
+				if err != nil {
+					return err
+				}
+				profileAuthenticated = outerValid || innerValid
+				evaluation.profileAuthenticated = profileAuthenticated
+				evaluation.wrapVerified = outerValid && innerValid
+				if !evaluation.wrapVerified && policy == d1BootstrapVerifyBeforeUnwrap {
+					return nil
+				}
+				unwrapAttempted = true
+				if err := unwrapD1BootstrapBranch(profile, seams, unwrapped[:], candidate.wrappedSecret[:], keys.xChaCha20[:], candidate.wrapNonce[:], keys.serpent[:], candidate.wrapSerpentIV[:]); err != nil {
+					return err
+				}
+				return unwrapD1BootstrapBranch(profile, seams, innerRoot[:], candidate.wrappedInnerRoot[:], keys.innerXChaCha20[:], candidate.wrapNonce[:], keys.innerSerpent[:], candidate.wrapSerpentIV[:])
+			})
+			if err != nil || !unwrapAttempted {
 				return err
 			}
-			message := d1BootstrapReplicaMessage(candidate)
-			defer pcv3crypto.SecureZero(message)
-			valid, err := verifySuiteMAC(
-				SuiteParanoid,
-				replicaKey[:],
-				message,
-				candidate.replicaTag[:],
-			)
-			evaluation.replicaVerified = valid
-			return err
-		},
-	)
-	if err != nil {
-		stage := StageCredentialPolicy
-		if ctx.Err() != nil {
-			stage = StageCancellation
+			keyOwner, err := pcv3credential.NewD1RootsOwner(append([]byte(nil), unwrapped[:32]...), append([]byte(nil), innerRoot[:]...), profile)
+			if err != nil {
+				return err
+			}
+			evaluation.secret = &d1OuterSecretOwner{bodyLength: binary.BigEndian.Uint64(unwrapped[32:40]), keys: keyOwner}
+			return evaluation.secret.withOuterKeys(ctx, func(keys *pcv3credential.BorrowedD1OuterKeys) error {
+				var replicaKey [32]byte
+				defer pcv3crypto.SecureZero(replicaKey[:])
+				if err := keys.CopyKey(pcv3credential.D1OuterReplicaMAC, keyRoleForD1Bootstrap(candidate.role), replicaKey[:]); err != nil {
+					return err
+				}
+				message := d1BootstrapProfileReplicaMessage(candidate, profile)
+				defer pcv3crypto.SecureZero(message)
+				valid, err := verifySuiteMAC(Suite(profile.Suite()), replicaKey[:], message, candidate.replicaTag[:])
+				evaluation.replicaVerified = valid
+				evaluation.profileAuthenticated = evaluation.profileAuthenticated || valid
+				return err
+			})
+		}()
+		if err != nil {
+			evaluation.Close()
+			stage := StageCredentialPolicy
+			if ctx.Err() != nil {
+				stage = StageCancellation
+			} else if unwrapAttempted {
+				stage = StageUnwrap
+			}
+			return nil, stage, err
 		}
-		return nil, stage, err
+		// A valid wrap pair or replica MAC authenticates the hidden profile.
+		// Raw Force can therefore recover two damaged wrap tags when the
+		// independently derived replica tag still authenticates the roots.
+		if evaluation.wrapVerified || evaluation.replicaVerified || (policy == d1BootstrapAllowRawUnwrap && (profileAuthenticated || !bothProfiles)) {
+			if selected != nil {
+				evaluation.Close()
+				return nil, StageCredentialPolicy, errInvalidD1Bootstrap
+			}
+			selected = evaluation
+			selectedProfile = profile
+		} else if policy == d1BootstrapAllowRawUnwrap && hint != 0 && Suite(profile.Suite()) == hint {
+			evaluation.profileHinted = true
+			hinted = evaluation
+		} else {
+			evaluation.Close()
+		}
 	}
-	complete = true
-	return evaluation, StageNone, nil
+	if selected == nil {
+		if hinted != nil {
+			result := hinted
+			hinted = nil
+			return result, StageNone, nil
+		}
+		if requireProfile {
+			return nil, StageCredentialPolicy, ErrD1ProfileRequired
+		}
+		return &d1BootstrapEvaluation{}, StageWrapAuth, nil
+	}
+	if hint != 0 && Suite(selectedProfile.Suite()) != hint {
+		return nil, StageCredentialPolicy, errD1ProfileMismatch
+	}
+	result := selected
+	selected = nil
+	return result, StageNone, nil
 }
 
-func d1BootstrapReplicaMessage(candidate d1BootstrapCandidate) []byte {
-	prefix := candidate.prefix()
-	message := make([]byte, 0, len(d1OuterReplicaDomain)+1+len(prefix))
-	message = append(message, d1OuterReplicaDomain...)
-	message = append(message, byte(candidate.role))
-	message = append(message, prefix[:]...)
-	return message
+func unwrapD1BootstrapBranch(profile pcv3credential.D1Profile, seams d1BootstrapAuthSeams, destination, source, xkey, nonce, serpent, iv []byte) error {
+	if profile == pcv3credential.D1ProfileStandard {
+		return pcv3stream.PCV3UnwrapStandard1(destination, source, xkey, nonce)
+	}
+	return seams.unwrapParanoid(destination, source, xkey, nonce, serpent, iv)
 }
 
-func d1BootstrapWrapMessage(candidate d1BootstrapCandidate) []byte {
+func d1BootstrapProfileReplicaMessage(candidate d1BootstrapCandidate, profile pcv3credential.D1Profile) []byte {
 	prefix := candidate.prefix()
-	message := make(
-		[]byte,
-		0,
-		len(d1OuterWrapDomain)+1+len(prefix)+len(candidate.replicaTag),
-	)
-	message = append(message, d1OuterWrapDomain...)
+	message := binary.BigEndian.AppendUint16([]byte(d1OuterReplicaDomain), uint16(profile))
+	message = append(message, byte(candidate.role))
+	return append(message, prefix[:]...)
+}
+
+func d1BootstrapProfileWrapMessage(candidate d1BootstrapCandidate, profile pcv3credential.D1Profile, inner bool) []byte {
+	domain := d1OuterWrapDomain
+	if inner {
+		domain = d1InnerWrapDomain
+	}
+	prefix := candidate.prefix()
+	message := binary.BigEndian.AppendUint16([]byte(domain), uint16(profile))
 	message = append(message, byte(candidate.role))
 	message = append(message, prefix[:]...)
-	message = append(message, candidate.replicaTag[:]...)
-	return message
+	return append(message, candidate.replicaTag[:]...)
 }
 
 func sameD1OuterSecretAccess(
@@ -617,25 +685,32 @@ func sameD1OuterSecretAccess(
 	if leftLength != rightLength {
 		return false, nil
 	}
-	var leftSecret, rightSecret [d1OuterSecretLength]byte
+	var leftSecret, rightSecret [74]byte
 	defer pcv3crypto.SecureZero(leftSecret[:])
 	defer pcv3crypto.SecureZero(rightSecret[:])
 	copyOuterKey := func(access d1OuterKeyAccess, destination []byte) error {
 		return access.withOuterKeys(
 			ctx,
 			func(keys *pcv3credential.BorrowedD1OuterKeys) error {
-				return keys.CopyOuterKey(destination)
+				if err := keys.CopyOuterKey(destination[:32]); err != nil {
+					return err
+				}
+				if err := keys.CopyInnerRoot(destination[32:64]); err != nil {
+					return err
+				}
+				binary.BigEndian.PutUint16(destination[64:66], uint16(keys.Profile()))
+				return nil
 			},
 		)
 	}
-	if err := copyOuterKey(left, leftSecret[:32]); err != nil {
+	if err := copyOuterKey(left, leftSecret[:]); err != nil {
 		return false, err
 	}
-	if err := copyOuterKey(right, rightSecret[:32]); err != nil {
+	if err := copyOuterKey(right, rightSecret[:]); err != nil {
 		return false, err
 	}
-	binary.BigEndian.PutUint64(leftSecret[32:], leftLength)
-	binary.BigEndian.PutUint64(rightSecret[32:], rightLength)
+	binary.BigEndian.PutUint64(leftSecret[66:], leftLength)
+	binary.BigEndian.PutUint64(rightSecret[66:], rightLength)
 	return subtle.ConstantTimeCompare(leftSecret[:], rightSecret[:]) == 1, nil
 }
 

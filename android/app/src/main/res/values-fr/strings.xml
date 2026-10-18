@@ -350,4 +350,9 @@
     <string name="pcv3_retained_discard_cleanup_body">L’application ne peut pas confirmer la suppression du résultat. Conservez vos fichiers originaux.</string>
     <string name="pcv3_resource_limit_title">Limite de ressources atteinte</string>
     <string name="pcv3_resource_limit_body">L’opération a été arrêtée, car une limite de ressources de traitement a été atteinte.</string>
+    <string name="pcv3_d1_profile_heading">Profil de récupération</string>
+    <string name="pcv3_d1_profile_auto">Automatique</string>
+    <string name="pcv3_d1_profile_standard">Standard</string>
+    <string name="pcv3_outcome_d1_profile_required_title">Choisissez le profil de récupération</string>
+    <string name="pcv3_outcome_d1_profile_required_body">Sélectionnez le profil Standard ou Paranoïaque utilisé pour créer ce volume, puis réessayez. Aucune sortie n’a été publiée.</string>
 </resources>

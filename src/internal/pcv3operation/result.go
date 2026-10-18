@@ -63,6 +63,7 @@ const (
 	DiagnosticResourceInsufficient
 	DiagnosticResourceUnknown
 	DiagnosticResourceLimit
+	DiagnosticD1ProfileRequired
 )
 
 // ErrInvalidPresentation rejects a malformed authority-free result snapshot.
@@ -564,7 +565,7 @@ func (presentation Presentation) CompletionClass() CompletionClass {
 func (presentation Presentation) valid() bool {
 	if presentation.argCount > maxResultArgs ||
 		presentation.warningCount > maxResultWarnings ||
-		presentation.diagnostic > DiagnosticResourceLimit ||
+		presentation.diagnostic > DiagnosticD1ProfileRequired ||
 		presentation.forceProvenance > pcv3.ForceProvenanceUnverified ||
 		presentation.d1BootstrapProvenance > pcv3.D1BootstrapProvenanceMatching ||
 		presentation.detailStage > pcv3.StageResourceBudget ||
@@ -590,6 +591,8 @@ func (presentation Presentation) valid() bool {
 
 func validDiagnosticPresentation(presentation Presentation) bool {
 	switch presentation.diagnostic {
+	case DiagnosticD1ProfileRequired:
+		return presentation.outcome == pcv3.OutcomeOperationFailed && presentation.stage == pcv3.StageD1Bootstrap && presentation.code == pcv3.CodeOperationFailed && !presentation.publicationAttempted
 	case DiagnosticResourceLimit:
 		return presentation.outcome == pcv3.OutcomeOperationFailed && presentation.stage == pcv3.StageResourceBudget && presentation.code == pcv3.CodeOperationFailed && !presentation.publicationAttempted
 	case DiagnosticResourceBusy, DiagnosticResourceInsufficient,

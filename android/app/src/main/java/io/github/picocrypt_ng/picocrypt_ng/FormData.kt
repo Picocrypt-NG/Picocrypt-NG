@@ -31,13 +31,26 @@ enum class Pcv3FactorPolicyIntent { PASSWORD_ONLY, KEYFILES_ONLY, PASSWORD_AND_K
 
 enum class Pcv3KeyfileOrderIntent { SELECTED, ANY }
 
+enum class Pcv3D1SuiteHintIntent { STANDARD, PARANOID }
+
 /** Operation-local, authority-free intent. Null fields are explicit incomplete state. */
 data class Pcv3OperationIntent(
     val format: Pcv3FormatIntent,
     val action: Pcv3ActionIntent? = null,
     val factorPolicy: Pcv3FactorPolicyIntent? = null,
     val keyfileOrder: Pcv3KeyfileOrderIntent? = null,
+    val d1SuiteHint: Pcv3D1SuiteHintIntent? = null,
 ) {
+    val allowsD1SuiteHint: Boolean
+        get() = format == Pcv3FormatIntent.D1 &&
+            action == Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT
+
+    internal fun d1SuiteHintCodeOrNull(): String? = when (d1SuiteHint) {
+        Pcv3D1SuiteHintIntent.STANDARD -> "standard"
+        Pcv3D1SuiteHintIntent.PARANOID -> "paranoid"
+        null -> null
+    }
+
     internal fun goModeOrNull(): String? = when (format) {
         Pcv3FormatIntent.NORMAL -> when (action) {
             Pcv3ActionIntent.DECRYPT -> "read-normal"
@@ -317,6 +330,7 @@ data class FormData(
                 pcv3Intent?.goModeOrNull() != null &&
                 pcv3Intent.factorPolicyCodeOrNull() != null &&
                 pcv3Intent.keyfileOrderCodeOrNull() != null &&
+                (pcv3Intent.d1SuiteHint == null || pcv3Intent.allowsD1SuiteHint) &&
                 isPcv3CredentialIntentValid
         } else {
             selectedFilename.isNotEmpty() && isPasswordValid &&

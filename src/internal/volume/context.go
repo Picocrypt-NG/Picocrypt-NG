@@ -77,9 +77,9 @@ type EncryptRequest struct {
 
 	// Security options
 	Comments    string // Plaintext comments stored in header (NOT encrypted!)
-	Paranoid    bool   // Enable paranoid mode: 8 Argon2 passes, Serpent-CTR + XChaCha20, HMAC-SHA3
+	Paranoid    bool   // Serpent-CTR + XChaCha20 and HMAC-SHA3; Normal/legacy also select 8 Argon2 passes
 	ReedSolomon bool   // Enable Reed-Solomon error correction on payload (6% size overhead)
-	Deniability bool   // Create a legacy wrapper or, with PCV3+Paranoid, D1
+	Deniability bool   // Create a legacy wrapper or, with PCV3, D1 (fixed strong KDF)
 	Compress    bool   // Use Deflate compression when creating zip archive
 
 	// Output splitting - useful for storage on FAT32 or cloud services with file size limits

@@ -8,6 +8,7 @@ import (
 	"crypto/sha3"
 	"errors"
 	"io"
+	"os"
 	"reflect"
 	"sort"
 )
@@ -87,6 +88,17 @@ func (reader *KeyfileReader) Close() error {
 		return newFactorError(FactorErrorClose, -1, 0)
 	}
 	return nil
+}
+
+// BorrowFile lends a directly owned file only until factor consumption or
+// Close. The borrower must not close it or change its offset. Wrapped providers
+// deliberately expose no file identity.
+func (reader *KeyfileReader) BorrowFile() *os.File {
+	if reader == nil || reader.state == nil || reader.state.closed {
+		return nil
+	}
+	file, _ := reader.state.reader.(*os.File)
+	return file
 }
 
 // FactorRequest transfers ownership of Password, the Keyfiles slice, and every

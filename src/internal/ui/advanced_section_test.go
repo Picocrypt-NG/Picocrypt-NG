@@ -138,8 +138,8 @@ func TestNativeGUIEncryptsPCV3(t *testing.T) {
 		t.Fatal("PCV3 GUI did not retain the deniability control")
 	}
 	a.deniabilityCheck.SetChecked(true)
-	if !a.State.Deniability || !a.State.Paranoid {
-		t.Fatal("PCV3 D1 selection did not enable deniability and paranoid mode")
+	if !a.State.Deniability || a.State.Paranoid {
+		t.Fatal("PCV3 D1 selection changed the captured paranoid choice")
 	}
 	d1Input, err := a.captureOperationInput(a.State.Snapshot())
 	if err != nil {
@@ -344,6 +344,36 @@ func TestBuildMobileDecryptOptionsWireCheckboxesToState(t *testing.T) {
 	})
 }
 
+func TestD1ParanoidChoiceRemainsIndependentInNativeControls(t *testing.T) {
+	newTestFyneApp(t)
+	for _, mobile := range []bool{false, true} {
+		t.Run(map[bool]string{false: "desktop", true: "mobile-layout"}[mobile], func(t *testing.T) {
+			a := createTestApp(t)
+			a.State.Mode = "encrypt"
+			a.State.Password = "password"
+			a.State.CPassword = "password"
+			a.State.AllFiles = []string{"source"}
+			a.advancedContainer = container.NewVBox()
+			fyne.DoAndWait(func() {
+				if mobile {
+					a.buildMobileEncryptOptions()
+				} else {
+					a.buildEncryptOptionsInto(a.advancedContainer)
+				}
+				a.deniabilityCheck.SetChecked(true)
+				if !a.State.Deniability || a.State.Paranoid || a.paranoidCheck.Disabled() {
+					t.Fatal("selecting D1 forced or disabled the separate paranoid choice")
+				}
+				a.paranoidCheck.SetChecked(true)
+				a.paranoidCheck.SetChecked(false)
+				if a.State.Paranoid || !a.State.Deniability {
+					t.Fatal("changing the paranoid choice changed D1 intent")
+				}
+			})
+		})
+	}
+}
+
 // TestEncryptAdvancedOptionsNeverSoftLock guards against issue #56, where certain
 // advanced-option combinations left the encrypt checkboxes permanently disabled,
 // forcing the user to restart the app to recover. The fix makes every disabled
@@ -428,12 +458,6 @@ func TestEncryptAdvancedOptionsNeverSoftLock(t *testing.T) {
 			{"Recursively", a.recursivelyCheck},
 			{"Split:", a.splitCheck},
 		} {
-			if c.name == "Paranoid mode" {
-				if !c.box.Disabled() || !a.State.Paranoid {
-					t.Error("D1 must retain required Paranoid mode")
-				}
-				continue
-			}
 			if c.box.Disabled() {
 				t.Errorf("#56 regression: %q is disabled under Paranoid+Reed-Solomon+Deniability; this combo must not lock any option", c.name)
 			}

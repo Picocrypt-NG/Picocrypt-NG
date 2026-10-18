@@ -1,6 +1,7 @@
 package pcv3
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -75,6 +76,10 @@ func (structure *RecoveryStructure) addCandidate(candidate Candidate, geometry G
 // read set is fixed: one raw 16-byte preamble, the primary capsule, and the 49
 // specification tail intervals. It never calls Probe and never scans.
 func InspectRecovery(source io.ReaderAt, sourceSize int64) (RecoveryStructure, error) {
+	return inspectRecovery(source, sourceSize, false)
+}
+
+func inspectRecovery(source io.ReaderAt, sourceSize int64, derivedRoot bool) (RecoveryStructure, error) {
 	structure := RecoveryStructure{
 		observedSize:  sourceSize,
 		suffixDamaged: true,
@@ -90,6 +95,14 @@ func InspectRecovery(source io.ReaderAt, sourceSize int64) (RecoveryStructure, e
 	var discriminator [discriminatorLength]byte
 	copy(discriminator[:], rawPreamble[:discriminatorLength])
 	preamble, err := ParsePreamble(discriminator, rawPreamble[discriminatorLength:])
+	if derivedRoot && string(discriminator[:]) == normalDiscriminator {
+		flags := binary.BigEndian.Uint16(rawPreamble[10:12])
+		if flags&d1DerivedRootFeatureMask != 0 {
+			binary.BigEndian.PutUint16(rawPreamble[10:12], flags&^d1DerivedRootFeatureMask)
+			preamble, err = ParsePreamble(discriminator, rawPreamble[discriminatorLength:])
+			preamble.featureFlags = flags
+		}
+	}
 	if err != nil {
 		structure.preambleDamaged = true
 	} else {
@@ -108,7 +121,11 @@ func InspectRecovery(source io.ReaderAt, sourceSize int64) (RecoveryStructure, e
 			return structure, terminal
 		}
 	} else {
-		candidate, geometry, inspectErr := inspectPrimaryCapsule(codecs, primary[:])
+		candidate, inspectErr := inspectCapsuleCandidateMode(codecs, primary[:], CapsuleRolePrimary, derivedRoot)
+		geometry, geometryErr := deriveCanonicalGeometry(candidate)
+		if inspectErr == nil {
+			inspectErr = geometryErr
+		}
 		if inspectErr != nil {
 			if terminal := retainRecoveryStructuralFailure(inspectErr, &structure.primaryDamage); terminal != nil {
 				return structure, terminal
@@ -135,7 +152,7 @@ func InspectRecovery(source io.ReaderAt, sourceSize int64) (RecoveryStructure, e
 		if truncation == 0 {
 			copy(observedTrailer[:], tailScratch[len(tailScratch)-len(observedTrailer):])
 		}
-		candidate, inspectErr := inspectCapsuleCandidate(codecs, tailScratch[:], CapsuleRoleBackup)
+		candidate, inspectErr := inspectCapsuleCandidateMode(codecs, tailScratch[:], CapsuleRoleBackup, derivedRoot)
 		if inspectErr != nil {
 			if terminal := retainRecoveryStructuralFailure(inspectErr, &earliest); terminal != nil {
 				return structure, terminal

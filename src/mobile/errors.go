@@ -33,6 +33,8 @@ func pcv3DiagnosticCode(diagnostic pcv3operation.Diagnostic) string {
 		return "resource-unknown"
 	case pcv3operation.DiagnosticResourceLimit:
 		return "resource-limit"
+	case pcv3operation.DiagnosticD1ProfileRequired:
+		return "d1-profile-required"
 	default:
 		return "unknown"
 	}

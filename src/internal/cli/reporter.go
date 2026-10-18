@@ -202,8 +202,25 @@ func renderPCV3CLIResult(output io.Writer, result pcv3CLIResult) int {
 	if _, err := fmt.Fprintf(output, "Outcome: %s\nPublication: %s\n", outcome, publication); err != nil {
 		return ExitGeneralError
 	}
-	if result != nil && result.Stage() == pcv3operation.StageResourceBudget {
-		if _, err := fmt.Fprintln(output, "Resource limit reached: the operation exceeded its processing resource budget."); err != nil {
+	resourceNotice := ""
+	if result != nil {
+		switch result.Diagnostic() {
+		case pcv3operation.DiagnosticD1ProfileRequired:
+			resourceNotice = "The hidden D1 cipher suite could not be authenticated. Unverified recovery requires an explicit --pcv3-d1-suite=standard|paranoid and --pcv3-role=front|tail choice. No output was created."
+		case pcv3operation.DiagnosticResourceBusy:
+			resourceNotice = "Another secure operation is running. Wait for it to finish; no output was created."
+		case pcv3operation.DiagnosticResourceInsufficient:
+			resourceNotice = "Required resources are unavailable: this device cannot safely run the fixed security profile right now. Security settings were not reduced, and no output was created."
+		case pcv3operation.DiagnosticResourceUnknown:
+			resourceNotice = "Device resources could not be verified. No output was created."
+		default:
+			if result.Stage() == pcv3operation.StageResourceBudget {
+				resourceNotice = "Resource limit reached: the operation exceeded its processing resource budget."
+			}
+		}
+	}
+	if resourceNotice != "" {
+		if _, err := fmt.Fprintln(output, resourceNotice); err != nil {
 			return ExitGeneralError
 		}
 	}

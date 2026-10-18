@@ -362,4 +362,9 @@
     <string name="pcv3_retained_discard_cleanup_body">The application could not confirm that the app-owned output was removed. Keep your original files.</string>
     <string name="pcv3_resource_limit_title">Resource limit reached</string>
     <string name="pcv3_resource_limit_body">The operation stopped because a processing resource limit was reached.</string>
+    <string name="pcv3_d1_profile_heading">Recovery profile</string>
+    <string name="pcv3_d1_profile_auto">Automatic</string>
+    <string name="pcv3_d1_profile_standard">Standard</string>
+    <string name="pcv3_outcome_d1_profile_required_title">Choose the recovery profile</string>
+    <string name="pcv3_outcome_d1_profile_required_body">Select the Standard or Paranoid profile used when creating this volume, then try again. No output was published.</string>
 </resources>

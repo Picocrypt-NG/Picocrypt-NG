@@ -23,6 +23,7 @@ type d1CreationRequest struct {
 	plaintext           io.Reader
 	retainedOutput      **pcv3publication.RetainedFile
 	journalPrivateStage bool
+	leasedPrivateStage  bool
 	normal              normalWriteRequest
 	factors             *pcv3credential.FactorRequest
 	admitter            pcv3credential.Admitter
@@ -60,7 +61,7 @@ func composeD1OuterStage(
 ) (result pcv3publication.Result, returnErr error) {
 	if ctx == nil || request == nil || request.sourcePath == "" || request.destinationPath == "" ||
 		request.source == nil || request.plaintext == nil ||
-		request.normal.suite != SuiteParanoid || request.factors == nil ||
+		!isSupportedSuite(request.normal.suite) || request.factors == nil ||
 		request.admitter == nil {
 		return nil, newD1OuterFailure(StageCredentialPolicy, errInvalidD1Creation)
 	}
@@ -109,6 +110,11 @@ func composeD1OuterStage(
 	if err := stage.CheckCapability(); err != nil {
 		return nil, newD1OuterFailure(StageOutputPublication, err)
 	}
+	if request.leasedPrivateStage {
+		if err := stage.PersistLeasedCleanupJournal(); err != nil {
+			return nil, newD1OuterFailure(StageOutputPublication, err)
+		}
+	}
 	if request.journalPrivateStage {
 		if err := stage.PersistCleanupJournal(); err != nil {
 			return nil, newD1OuterFailure(StageOutputPublication, err)
@@ -143,6 +149,7 @@ func composeD1OuterStage(
 		return nil, err
 	}
 	defer secrets.close()
+	secrets.profile = pcv3credential.D1ProfileForSuite(credentialSuite(request.normal.suite))
 	buffered := bufio.NewWriterSize(stage.File(), 64<<10)
 	err = seams.credentials(
 		ctx,

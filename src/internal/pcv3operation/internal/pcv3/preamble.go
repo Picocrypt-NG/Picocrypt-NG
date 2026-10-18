@@ -6,6 +6,7 @@ const (
 	formatMajor              uint16 = 3
 	formatSchema             uint16 = 1
 	payloadBodyRSFeatureMask uint16 = 1
+	d1DerivedRootFeatureMask uint16 = 2
 	supportedFeatureMask            = payloadBodyRSFeatureMask
 
 	frontHeaderBase         uint64 = 976

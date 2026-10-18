@@ -3,6 +3,7 @@ package ui
 
 import (
 	"Picocrypt-NG/internal/app"
+	"Picocrypt-NG/internal/pcv3operation"
 	"reflect"
 	"strings"
 
@@ -185,6 +186,40 @@ func (a *App) buildPCV3Options(snap app.UISnapshot) fyne.CanvasObject {
 		a.pcv3ActionSelect,
 		a.buildArchiveOptions(),
 	)
+	profiles := []struct {
+		label string
+		value pcv3operation.Suite
+	}{
+		{tr("pcv3.d1_suite.auto", "Detect automatically"), 0},
+		{tr("pcv3.d1_suite.standard", "Standard"), pcv3operation.SuiteStandard},
+		{tr("advanced.paranoid.label", "Paranoid mode"), pcv3operation.SuiteParanoid},
+	}
+	profileLabels := make([]string, len(profiles))
+	for index, profile := range profiles {
+		profileLabels[index] = profile.label
+	}
+	a.pcv3D1SuiteSelect = widget.NewSelect(profileLabels, func(selected string) {
+		for _, profile := range profiles {
+			if profile.label == selected {
+				a.State.SetPCV3D1SuiteHint(profile.value)
+				return
+			}
+		}
+	})
+	a.pcv3D1SuiteSelect.Selected = profileLabels[0]
+	for _, profile := range profiles {
+		if profile.value == snap.PCV3D1SuiteHint {
+			a.pcv3D1SuiteSelect.Selected = profile.label
+		}
+	}
+	a.pcv3D1SuiteControl = container.NewVBox(
+		widget.NewLabel(tr("pcv3.d1_suite.label", "D1 recovery profile")),
+		a.pcv3D1SuiteSelect,
+	)
+	if snap.PCV3Format != app.PCV3FormatD1 || snap.PCV3Action != app.PCV3ActionForceUnverified {
+		a.pcv3D1SuiteControl.Hide()
+	}
+	content.Add(a.pcv3D1SuiteControl)
 	return content
 }
 
@@ -292,9 +327,6 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 			return
 		}
 		a.State.Deniability = checked
-		if checked {
-			a.State.Paranoid = true
-		}
 		a.refreshAdvanced()
 		a.updateUIState()
 	})
@@ -486,6 +518,28 @@ func (a *App) updateAdvancedDisableState() {
 
 func (a *App) updateAdvancedDisableStateFromSnapshot(snap app.UISnapshot, configureDisabled bool) {
 	advancedDisabled := configureDisabled
+	rawD1 := snap.PCV3Route == app.PCV3RouteReady && snap.PCV3Format == app.PCV3FormatD1 && snap.PCV3Action == app.PCV3ActionForceUnverified
+	if a.pcv3D1SuiteControl != nil {
+		if rawD1 {
+			a.pcv3D1SuiteControl.Show()
+		} else {
+			a.pcv3D1SuiteControl.Hide()
+		}
+	}
+	if a.pcv3D1SuiteSelect != nil {
+		index := 0
+		switch snap.PCV3D1SuiteHint {
+		case pcv3operation.SuiteStandard:
+			index = 1
+		case pcv3operation.SuiteParanoid:
+			index = 2
+		}
+		if index < len(a.pcv3D1SuiteSelect.Options) && a.pcv3D1SuiteSelect.Selected != a.pcv3D1SuiteSelect.Options[index] {
+			a.pcv3D1SuiteSelect.Selected = a.pcv3D1SuiteSelect.Options[index]
+			a.pcv3D1SuiteSelect.Refresh()
+		}
+	}
+	setWidgetDisabled(a.pcv3D1SuiteSelect, advancedDisabled || snap.Working || !rawD1)
 	setWidgetDisabled(a.recursiveD1Check, advancedDisabled || snap.Working || snap.Scanning || !snap.Recursively)
 	if recursiveD1Selected(snap) {
 		setWidgetDisabled(a.recursivelyCheck, advancedDisabled || snap.Working || snap.Scanning)
@@ -534,11 +588,10 @@ func (a *App) updateEncryptOptionsState(advancedDisabled bool, snap app.UISnapsh
 	// disabled separately until credentials and required values are ready.
 
 	notEnoughFiles := snap.AllFileCount <= 1 && snap.OnlyFolderCount == 0
-	d1Selected := snap.Deniability
 
 	setWidgetDisabled(a.compressCheck, advancedDisabled || snap.Recursively)
 	setWidgetDisabled(a.recursivelyCheck, advancedDisabled || notEnoughFiles)
-	setWidgetDisabled(a.paranoidCheck, advancedDisabled || d1Selected)
+	setWidgetDisabled(a.paranoidCheck, advancedDisabled)
 	setWidgetDisabled(a.reedSolomonCheck, advancedDisabled)
 	setWidgetDisabled(a.deleteCheck, advancedDisabled)
 	setWidgetDisabled(a.deniabilityCheck, advancedDisabled)

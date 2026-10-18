@@ -85,7 +85,7 @@ func TestD1OuterCodecMatchesIndependentRecordLayout(t *testing.T) {
 	}
 
 	mac := hmac.New(func() hash.Hash { return sha3.New512() }, keys.mac[:])
-	_, _ = mac.Write([]byte("Picocrypt-NG/PCV3/outer/record\x00"))
+	_, _ = mac.Write([]byte("Picocrypt-NG/PCV3/D1C/outer/record\x00\x01\x02"))
 	var index [8]byte
 	binary.BigEndian.PutUint64(index[:], 7)
 	_, _ = mac.Write(index[:])
@@ -161,7 +161,7 @@ func newD1TestOuterAccess(
 ) (*d1OuterOwnerAccess, *pcv3credential.D1OuterKeyOwner) {
 	t.Helper()
 	outerKey := bytes.Repeat([]byte{fill}, 32)
-	owner, err := pcv3credential.NewD1OuterKeyOwner(outerKey)
+	owner, err := pcv3credential.NewD1RootsOwner(outerKey, d1TestInnerRoot(), pcv3credential.D1ProfileParanoid)
 	if err != nil {
 		t.Fatalf("create test outer-key owner: %v", err)
 	}
@@ -202,3 +202,5 @@ func mutateD1TestByte(source []byte, index int) []byte {
 	mutated[index] ^= 0x80
 	return mutated
 }
+
+func d1TestInnerRoot() []byte { return bytes.Repeat([]byte{0xb7}, 32) }

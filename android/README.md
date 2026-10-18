@@ -196,6 +196,10 @@ publication likewise reports durability uncertainty rather than durable storage.
 
 ### PCV3 request and retained-output limits
 
+D1 creation preserves the separately selected Paranoid option. Both payload suites
+use the fixed D1 Argon2id profile: 1 GiB, eight passes and eight lanes. The suite
+choice changes the cipher cascade and authentication, not this KDF cost.
+
 Android uses a bounded 4 MiB UTF-8 JSON request, including JSON escaping and all path
 lists. This aggregate transport limit is separate from the 99,999-byte UTF-8 comment,
 4,096-byte path, 64-keyfile and 4,096-path-per-selection-list limits. Creation checks

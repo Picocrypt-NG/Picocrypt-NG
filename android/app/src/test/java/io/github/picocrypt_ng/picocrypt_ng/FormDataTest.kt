@@ -500,6 +500,27 @@ class FormDataTest {
     }
 
     @Test
+    fun `raw D1 profile hint is invalid form intent outside unverified D1 recovery`() {
+        val base = TestDataBuilders.createDecryptFormData(
+            selectedFilename = "hidden.bin", copiedFilePath = "", password = "credential",
+        ).copy(pcv3OwnedSource = Pcv3OwnedSource("/private/hidden"))
+        Pcv3FormatIntent.entries.forEach { format ->
+            Pcv3ActionIntent.entries.forEach { action ->
+                val intent = Pcv3OperationIntent(
+                    format = format, action = action,
+                    factorPolicy = Pcv3FactorPolicyIntent.PASSWORD_ONLY,
+                    d1SuiteHint = Pcv3D1SuiteHintIntent.STANDARD,
+                )
+                assertEquals(
+                    "$format/$action must not silently ignore a profile choice",
+                    format == Pcv3FormatIntent.D1 && action == Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT,
+                    base.copy(pcv3Intent = intent).isFormValid,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `PCV3 factor policy rejects ignored factors and requires explicit keyfile order`() {
         val source = Pcv3OwnedSource("/app-private/claimed-input")
         val base = TestDataBuilders.createDecryptFormData(

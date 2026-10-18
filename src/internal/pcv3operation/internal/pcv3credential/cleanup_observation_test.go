@@ -1,14 +1,45 @@
 package pcv3credential
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestKeyfileBorrowFileExpiresWhenOwnershipCloses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "factor")
+	if err := os.WriteFile(path, []byte("original factor"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := OwnKeyfileReader(file)
+	if reader.BorrowFile() != file {
+		t.Fatal("direct keyfile identity unavailable before consumption")
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if reader.BorrowFile() != nil {
+		t.Fatal("closed keyfile still lends its descriptor")
+	}
+	if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("file ownership not closed: %v", err)
+	}
+	wrapped := OwnKeyfileReader(io.NopCloser(bytes.NewReader([]byte("factor"))))
+	defer wrapped.Close()
+	if wrapped.BorrowFile() != nil {
+		t.Fatal("opaque provider acquired file authority")
+	}
+}
 
 // Early credential rejection consumes and closes factors before returning its
 // normative error. The operation owner still needs the independent cleanup fact.

@@ -474,7 +474,7 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 	encrypted = runCLITestCommand(
 		t,
 		binary,
-		"encrypt", input, "-o", d1Volume, "--pcv3", "--deniability", "--paranoid",
+		"encrypt", input, "-o", d1Volume, "--pcv3", "--deniability",
 		"-p", "d1-password", "--comments", d1Comment, "--quiet",
 	)
 	requireNativePCV3Published(t, encrypted, "")

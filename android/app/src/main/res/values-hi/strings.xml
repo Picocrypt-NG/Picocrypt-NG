@@ -346,4 +346,9 @@
     <string name="pcv3_retained_discard_cleanup_body">ऐप आउटपुट हटाए जाने की पुष्टि नहीं कर सका। अपनी मूल फ़ाइलें सुरक्षित रखें।</string>
     <string name="pcv3_resource_limit_title">संसाधन सीमा पूरी हो गई</string>
     <string name="pcv3_resource_limit_body">प्रक्रिया के लिए तय संसाधन सीमा पूरी होने के कारण कार्य रोक दिया गया।</string>
+    <string name="pcv3_d1_profile_heading">पुनर्प्राप्ति प्रोफ़ाइल</string>
+    <string name="pcv3_d1_profile_auto">स्वचालित</string>
+    <string name="pcv3_d1_profile_standard">मानक</string>
+    <string name="pcv3_outcome_d1_profile_required_title">पुनर्प्राप्ति प्रोफ़ाइल चुनें</string>
+    <string name="pcv3_outcome_d1_profile_required_body">यह वॉल्यूम बनाते समय उपयोग की गई मानक या पैरानॉइड प्रोफ़ाइल चुनें, फिर दोबारा प्रयास करें। कोई आउटपुट प्रकाशित नहीं हुआ।</string>
 </resources>

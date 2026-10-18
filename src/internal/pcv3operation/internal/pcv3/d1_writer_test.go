@@ -29,13 +29,14 @@ func TestD1WritePlanReusesCanonicalNormalGeometry(t *testing.T) {
 	const wantNormalLength = int64(2232)
 	const wantOuterPlaintextLength = uint64(2248)
 	const wantOuterBodyLength = uint64(2312)
-	const wantD1Length = uint64(2760)
+	const wantD1Length = uint64(2952)
 	if plan.normal.geometry.fileSize != wantNormalLength ||
 		plan.outer.plaintextLength != wantOuterPlaintextLength ||
 		plan.outer.bodyLength != wantOuterBodyLength ||
 		plan.fileSize != wantD1Length {
 		t.Fatalf("empty D1 plan = %+v; want normal=%d plaintext=%d body=%d file=%d", plan, wantNormalLength, wantOuterPlaintextLength, wantOuterBodyLength, wantD1Length)
 	}
+	request.derivedRoot = true
 	if direct, err := planNormalWrite(request); err != nil || direct != plan.normal {
 		t.Fatalf("D1 normal plan diverged from serializer plan: direct=%+v err=%v D1=%+v", direct, err, plan.normal)
 	}
@@ -50,6 +51,41 @@ func TestD1PureGeometryRejectsOverflowWithoutDependencies(t *testing.T) {
 	}
 	if _, err := planD1Write(request); err == nil {
 		t.Fatal("overflowing normal/D1 geometry was accepted")
+	}
+}
+
+// D1 keeps its full fixed KDF strength when the user selects the Standard
+// payload suite. Admission refusal must happen at the KDF boundary and leave
+// neither output nor private stage, rather than rejecting the suite itself.
+func TestD1StandardCreationReachesFixedKDFAdmissionAndCleansRefusal(t *testing.T) {
+	fixture := newD1CreationTestFixture(t)
+	fixture.request.normal.suite = SuiteStandard
+	admitter := &d1CountingAdmitter{admission: pcv3credential.KDFAdmissionDenied}
+	fixture.request.admitter = admitter
+	entropy := newD1TrackingEntropy(-1)
+	err := runD1ComposerFailure(t, context.Background(), fixture, newD1ObservedProductionSeams(t, fixture, entropy), entropy)
+	var kdfErr *pcv3credential.KDFError
+	if !errors.As(err, &kdfErr) || kdfErr.Code != pcv3credential.KDFErrorAdmission || admitter.calls != 1 {
+		t.Fatalf("Standard D1 refused outside fixed KDF admission: err=%v calls=%d", err, admitter.calls)
+	}
+}
+
+func TestD1WriterRejectsMissingInnerMaterialBeforeStreaming(t *testing.T) {
+	access, owner := newD1TestOuterAccess(t, 0x37)
+	defer owner.Close()
+	codecs, err := pcencoding.NewRSCodecs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var destination bytes.Buffer
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("missing material panicked after entering D1 stream: %v", recovered)
+		}
+	}()
+	completion, err := writeD1NormalBody(context.Background(), normalWriteRequest{suite: SuiteStandard, payloadKind: PayloadKindRaw}, bytes.NewReader(nil), &destination, nil, normalWriteSeams{entropy: bytes.NewReader(make([]byte, 256)), codecs: codecs}, access)
+	if err == nil || completion != nil || destination.Len() != 0 {
+		t.Fatal("missing inner material reached D1 output")
 	}
 }
 
@@ -107,8 +143,11 @@ func TestD1WriterUsesCanonicalNormalSerializerSynchronously(t *testing.T) {
 		t.Fatalf("emitted normal length = %d, plan=%+v err=%v", len(inner), plan, err)
 	}
 	route, _, err := Probe(bytes.NewReader(inner), int64(len(inner)))
-	if err != nil || route != RouteNormalPCV {
-		t.Fatalf("emitted inner probe = route %v err %v; want canonical normal PCV", route, err)
+	if err == nil || route != RouteNormalPCV {
+		t.Fatalf("standalone Normal accepted D1 derived-root inner: route=%v err=%v", route, err)
+	}
+	if structure, err := inspectRecovery(bytes.NewReader(inner), int64(len(inner)), true); err != nil || structure.CandidateCount() != 2 {
+		t.Fatalf("D1 inner structure failed: %v", err)
 	}
 }
 
@@ -488,8 +527,11 @@ func TestD1WriterNeverCreatesClearInnerArtifact(t *testing.T) {
 		t.Fatalf("read composed D1 inner = %d, %v; want %d", count, readErr, len(inner))
 	}
 	route, _, err := Probe(bytes.NewReader(inner), int64(len(inner)))
-	if err != nil || route != RouteNormalPCV {
-		t.Fatalf("composed D1 inner probe = route %v, error %v", route, err)
+	if err == nil || route != RouteNormalPCV {
+		t.Fatalf("standalone Normal accepted composed derived-root inner: route=%v err=%v", route, err)
+	}
+	if structure, err := inspectRecovery(bytes.NewReader(inner), int64(len(inner)), true); err != nil || structure.CandidateCount() != 2 {
+		t.Fatalf("D1 inner admission failed: %v", err)
 	}
 }
 
@@ -601,7 +643,7 @@ func TestD1WriterCreateCleanupWarningPreservesSealedPublicationResult(t *testing
 
 const (
 	d1CreationTestOuterKeySeed  = 0x85
-	d1CreationOuterEntropyBytes = 224
+	d1CreationOuterEntropyBytes = 256
 )
 
 type d1CreationTestFixture struct {
@@ -851,6 +893,9 @@ func newD1CreationTestBootstrapAccess(
 	fillD1TestBytes(access.keys.xChaCha20[:], seed)
 	fillD1TestBytes(access.keys.serpent[:], seed+0x20)
 	fillD1TestBytes(access.keys.mac[:], seed+0x40)
+	fillD1TestBytes(access.keys.innerXChaCha20[:], seed+0x60)
+	fillD1TestBytes(access.keys.innerSerpent[:], seed+0x80)
+	fillD1TestBytes(access.keys.innerMAC[:], seed+0xa0)
 	return access
 }
 

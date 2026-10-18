@@ -346,4 +346,9 @@
     <string name="pcv3_retained_discard_cleanup_body">Die App konnte das Entfernen der Ausgabe aus dem App-Speicher nicht bestätigen. Bewahren Sie Ihre Originaldateien auf.</string>
     <string name="pcv3_resource_limit_title">Ressourcenlimit erreicht</string>
     <string name="pcv3_resource_limit_body">Der Vorgang wurde gestoppt, weil ein Ressourcenlimit für die Verarbeitung erreicht wurde.</string>
+    <string name="pcv3_d1_profile_heading">Wiederherstellungsprofil</string>
+    <string name="pcv3_d1_profile_auto">Automatisch</string>
+    <string name="pcv3_d1_profile_standard">Standard</string>
+    <string name="pcv3_outcome_d1_profile_required_title">Wiederherstellungsprofil auswählen</string>
+    <string name="pcv3_outcome_d1_profile_required_body">Wähle das Standard- oder Paranoid-Profil, mit dem dieses Volume erstellt wurde, und versuche es erneut. Es wurde keine Ausgabe veröffentlicht.</string>
 </resources>

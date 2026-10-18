@@ -13,6 +13,7 @@ import (
 
 // Literal format dimensions catch undercounting at the ceil boundaries used by
 // temporary-ZIP disk admission. They are independent of production helpers.
+// D1C stores two 320-byte bootstraps; frozen Normal dimensions stay unchanged.
 func TestWriteCiphertextLengthCanonicalCeilBoundaries(t *testing.T) {
 	for _, test := range []struct {
 		plain      uint64
@@ -20,28 +21,28 @@ func TestWriteCiphertextLengthCanonicalCeilBoundaries(t *testing.T) {
 		rs         bool
 		normal, d1 uint64
 	}{
-		{0, 0, false, 2232, 2760},
-		{0, 0, true, 2304, 2832},
-		{1, 0, false, 2345, 2873},
-		{1, 0, true, 2488, 3016},
-		{64, 0, true, 2488, 3016},
-		{65, 0, true, 2624, 3152},
-		{0, 48, false, 2232, 2760},
-		{0, 49, false, 2368, 2896},
-		{0, 99999, false, 108448, 108976},
-		{1048575, 0, false, 1050919, 1051511},
-		{1048576, 0, false, 1050920, 1051512},
-		{1048577, 0, false, 1051033, 1051625},
-		{1048575, 0, true, 1116600, 1117192},
-		{1048576, 0, true, 1116600, 1117192},
-		{1048577, 0, true, 1116784, 1117376},
+		{0, 0, false, 2232, 2952},
+		{0, 0, true, 2304, 3024},
+		{1, 0, false, 2345, 3065},
+		{1, 0, true, 2488, 3208},
+		{64, 0, true, 2488, 3208},
+		{65, 0, true, 2624, 3344},
+		{0, 48, false, 2232, 2952},
+		{0, 49, false, 2368, 3088},
+		{0, 99999, false, 108448, 109168},
+		{1048575, 0, false, 1050919, 1051703},
+		{1048576, 0, false, 1050920, 1051704},
+		{1048577, 0, false, 1051033, 1051817},
+		{1048575, 0, true, 1116600, 1117384},
+		{1048576, 0, true, 1116600, 1117384},
+		{1048577, 0, true, 1116784, 1117568},
 		// The outer D1 stream emits an extra final tag at exact-full boundaries.
-		{1046215, 0, false, 1048559, 1049087},
-		{1046216, 0, false, 1048560, 1049152},
-		{1046217, 0, false, 1048561, 1049153},
+		{1046215, 0, false, 1048559, 1049279},
+		{1046216, 0, false, 1048560, 1049344},
+		{1046217, 0, false, 1048561, 1049345},
 		// Large logical sizes stay O(1); outputs below MaxInt64 remain admissible.
-		{4611686018427387904, 0, false, 4612178599636633784, 4612460104678116040},
-		{4611686018427387904, 0, true, 4900725635137145088, 4901024751692024592},
+		{4611686018427387904, 0, false, 4612178599636633784, 4612460104678116232},
+		{4611686018427387904, 0, true, 4900725635137145088, 4901024751692024784},
 	} {
 		t.Run(fmt.Sprintf("%d/%d/%t", test.plain, test.comment, test.rs), func(t *testing.T) {
 			for _, mode := range []WriteSizeMode{WriteSizeNormal, WriteSizeD1} {
@@ -83,7 +84,8 @@ func TestWriteCiphertextLengthMatchesIndependentWholeContainers(t *testing.T) {
 		digest string
 	}{
 		{WriteSizeNormal, "normal.pcv", 2395, "a468f66c81849b03c58312acf7f2f90677e317ad200820e90ec38da5b0459bcb"},
-		{WriteSizeD1, "d1.pcv", 2923, "30b62308a0bcda8d56368ac37c8c7424c36e37945401048cbd20b1044773c631"},
+		{WriteSizeD1, "d1.pcv", 3115, "487a18056597d97e36ebcaf70aed25ec9cdbd306803ebaf618eba186e05d00bd"},
+		{WriteSizeD1, "d1-standard.pcv", 3115, "22fda4fbe068d85f41d8fe22857320172c67fc5ba806823ce57bdd1072b113bf"},
 	} {
 		volume, err := os.ReadFile("testdata/d1/independent/" + test.file)
 		if err != nil {

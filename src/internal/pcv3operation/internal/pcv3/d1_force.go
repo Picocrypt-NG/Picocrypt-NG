@@ -24,8 +24,10 @@ type d1ForceCandidate struct {
 		context.Context,
 		func(*pcv3credential.BorrowedD1OuterKeys) error,
 	) error
-	wrapVerified    bool
-	replicaVerified bool
+	wrapVerified         bool
+	replicaVerified      bool
+	profileHinted        bool
+	profileAuthenticated bool
 }
 
 func (*d1ForceCandidate) String() string { return "pcv3: D1 Force candidate" }
@@ -69,6 +71,8 @@ func (candidate *d1ForceCandidate) Close() {
 	candidate.bodyLength = 0
 	candidate.wrapVerified = false
 	candidate.replicaVerified = false
+	candidate.profileHinted = false
+	candidate.profileAuthenticated = false
 }
 
 func (candidate *d1ForceCandidate) valid() bool {
@@ -86,26 +90,37 @@ func bindD1ForceCandidateWithAccess(
 	seams d1BootstrapAuthSeams,
 	callback func(*d1ForceCandidate) error,
 ) error {
+	return bindD1ForceCandidateWithHint(ctx, bootstrap, access, seams, 0, false, callback)
+}
+
+func bindD1ForceCandidateWithHint(ctx context.Context, bootstrap d1BootstrapCandidate, access d1BootstrapCredentialAccess, seams d1BootstrapAuthSeams, hint Suite, requireProfile bool, callback func(*d1ForceCandidate) error) error {
 	if callback == nil {
 		return errInvalidD1Force
 	}
-	return bindD1BootstrapWithAccess(
+	return bindD1BootstrapWithHint(
 		ctx,
 		bootstrap,
 		access,
 		seams,
+		hint,
+		requireProfile,
 		func(binding *d1BootstrapBinding) error {
-			if binding == nil || binding.bodyLength == 0 {
+			if binding == nil {
+				return callback(nil)
+			}
+			if binding.bodyLength == 0 {
 				return errInvalidD1Force
 			}
 			candidate := &d1ForceCandidate{
-				role:            bootstrap.role,
-				bootstrap:       bootstrap,
-				bootstrapKnown:  true,
-				bodyLength:      binding.bodyLength,
-				borrowOuterKeys: binding.withOuterKeys,
-				wrapVerified:    binding.wrapVerified,
-				replicaVerified: binding.replicaVerified,
+				role:                 bootstrap.role,
+				bootstrap:            bootstrap,
+				bootstrapKnown:       true,
+				bodyLength:           binding.bodyLength,
+				profileHinted:        binding.profileHinted,
+				profileAuthenticated: binding.profileAuthenticated,
+				borrowOuterKeys:      binding.withOuterKeys,
+				wrapVerified:         binding.wrapVerified,
+				replicaVerified:      binding.replicaVerified,
 			}
 			defer candidate.Close()
 			return callback(candidate)
@@ -178,9 +193,10 @@ func (state *d1ForceConsentState) expire() {
 // d1RecoveryRequest is private D1 policy authority. Raw outer access exists
 // only while withUnverifiedD1RecoveryRequest owns its callback.
 type d1RecoveryRequest struct {
-	budget  *pcv3ranges.Budget
-	mode    RecoveryMode
-	consent *d1ForceConsentState
+	budget    *pcv3ranges.Budget
+	mode      RecoveryMode
+	consent   *d1ForceConsentState
+	suiteHint Suite
 }
 
 func newD1RecoveryRequest(mode RecoveryMode) (d1RecoveryRequest, error) {
@@ -194,25 +210,30 @@ func withUnverifiedD1RecoveryRequest(
 	role D1BootstrapRole,
 	callback func(d1RecoveryRequest) error,
 ) error {
-	if !validD1BootstrapRole(role) || callback == nil {
+	return withUnverifiedD1RecoveryRequestAndSuite(role, 0, callback)
+}
+
+func withUnverifiedD1RecoveryRequestAndSuite(role D1BootstrapRole, suiteHint Suite, callback func(d1RecoveryRequest) error) error {
+	if !validD1BootstrapRole(role) || callback == nil || (suiteHint != 0 && !isSupportedSuite(suiteHint)) {
 		return errInvalidRecoveryRequest
 	}
 	state := &d1ForceConsentState{active: true, role: role}
 	state.condition = sync.NewCond(&state.mu)
 	defer state.expire()
 	return callback(d1RecoveryRequest{
-		budget:  pcv3ranges.NewBudget(pcv3ranges.DefaultBudgetBytes),
-		mode:    RecoveryModeForceUnverified,
-		consent: state,
+		budget:    pcv3ranges.NewBudget(pcv3ranges.DefaultBudgetBytes),
+		mode:      RecoveryModeForceUnverified,
+		consent:   state,
+		suiteHint: suiteHint,
 	})
 }
 
 func (request d1RecoveryRequest) valid() bool {
 	switch request.mode {
 	case RecoveryModeNormalV3, RecoveryModeForce:
-		return request.consent == nil
+		return request.consent == nil && request.suiteHint == 0
 	case RecoveryModeForceUnverified:
-		return request.consent != nil && request.consent.valid()
+		return request.consent != nil && request.consent.valid() && (request.suiteHint == 0 || isSupportedSuite(request.suiteHint))
 	default:
 		return false
 	}
@@ -577,6 +598,12 @@ func selectD1ForceCandidateWithPreanalysis(
 	}
 
 	selection.analysis = analyses[selectedIndex]
+	if candidates[selectedIndex].profileHinted {
+		if !request.authorizesRawOuter(candidates[selectedIndex].role) {
+			return selection, nil, errInvalidD1Force
+		}
+		selection.outerProvenance = D1OuterProvenanceRawSelected
+	}
 	selection.bootstrapHealthy = pairBootstrapHealthy
 	selection.outerHealthy = analyses[selectedIndex].outerFullyAuthenticated
 	if selection.bootstrapHealthy {

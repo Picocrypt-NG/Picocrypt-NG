@@ -11,7 +11,7 @@ func TestWriteCiphertextLengthFacadeClosedModesAndSafeFailure(t *testing.T) {
 	for _, test := range []struct {
 		mode WriteMode
 		want uint64
-	}{{WriteModeNormal, 2232}, {WriteModeD1, 2760}} {
+	}{{WriteModeNormal, 2232}, {WriteModeD1, 2952}} {
 		got, err := WriteCiphertextLength(test.mode, 0, 0, false)
 		if err != nil || got != test.want {
 			t.Fatalf("mode %d: length=%d err=%v; want %d", test.mode, got, err, test.want)

@@ -105,6 +105,14 @@ func TestEncryptRequestValidate(t *testing.T) {
 			wantFileNotFound: true,
 		},
 		{
+			name: "PCV3 D1 permits the standard payload suite",
+			req: &EncryptRequest{
+				InputFile: testFile, OutputFile: filepath.Join(tmpDir, "d1-standard.pcv"),
+				Password: []byte("test"), PCV3: true, Deniability: true,
+			},
+			wantNil: true,
+		},
+		{
 			name: "keyfile-only writer is disabled",
 			req: &EncryptRequest{
 				InputFile:  testFile,

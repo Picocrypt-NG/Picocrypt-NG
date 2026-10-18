@@ -28,7 +28,7 @@ var encryptCmd = &cobra.Command{
 
 If no password is provided, you will be prompted to enter one interactively
 (with confirmation). The password is hidden while typing.
-New volumes use PCV3. Deniability uses PCV3 D1 and requires --paranoid.
+New volumes use PCV3. Deniability uses PCV3 D1; --paranoid is optional.
 Legacy v1/v2 volumes remain readable.
 
 Script examples use a password file readable only by its owner or a secret provider
@@ -115,7 +115,7 @@ func init() {
 	encryptCmd.Flags().StringVarP(&encComments, "comments", "c", "", "Comments to store in header (NOT encrypted)")
 	encryptCmd.Flags().BoolVar(&encParanoid, "paranoid", false, "Enable paranoid mode (Serpent + XChaCha20)")
 	encryptCmd.Flags().BoolVar(&encReedSolomon, "reed-solomon", false, "Enable Reed-Solomon error correction")
-	encryptCmd.Flags().BoolVar(&encDeniability, "deniability", false, "Create PCV3 D1 (requires --paranoid)")
+	encryptCmd.Flags().BoolVar(&encDeniability, "deniability", false, "Create PCV3 D1 (optional --paranoid)")
 	encryptCmd.Flags().BoolVar(&encCompress, "compress", false, "Compress files before encryption")
 
 	// Split options
@@ -154,9 +154,6 @@ func defaultEncryptOutput(rawInput string, allFiles []string, onlyFolders []stri
 func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 	if !encPCV3 {
 		return errors.New("new encryption requires PCV3; --pcv3=false is unsupported")
-	}
-	if encDeniability && !encParanoid {
-		return errors.New("PCV3 D1 requires --paranoid")
 	}
 	if cmd.Flags().Changed("input") || len(encLegacyInputs) > 0 {
 		return errors.New("--input/-i was removed; pass literal paths as arguments or use --glob for patterns")
@@ -451,7 +448,7 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 		// Never delete a later pathname replacement from the CLI defer.
 		stdoutTempFile = ""
 	}
-	result, operationErr := volume.EncryptWithResult(operationCtx, req, pcv3operation.ExecutionOptions{RetainDurableOutput: useStdout})
+	result, operationErr := volume.EncryptWithResult(operationCtx, req, pcv3operation.ExecutionOptions{RetainDurableOutput: useStdout, LinuxDesktopCleanup: true})
 	reporter.Finish()
 	if stdinTempFile != "" {
 		cleanupErr := cleanupTempFiles(stdinTempFile)

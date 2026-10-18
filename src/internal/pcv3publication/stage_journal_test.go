@@ -887,6 +887,10 @@ func requireNoJournalTemps(t *testing.T, directory string) {
 }
 
 func closeStageHandlesWithoutCleanup(t *testing.T, stage *Stage) {
+	if stage.lease != nil {
+		_ = stage.lease.Close()
+		stage.lease = nil
+	}
 	if stage.sourceParent != nil {
 		_ = stage.sourceParent.Close()
 		stage.sourceParent = nil

@@ -30,6 +30,7 @@ var (
 // codec. Filesystem paths, staging, publication, archive construction, source
 // deletion, and frontend state deliberately do not cross this boundary.
 type normalWriteRequest struct {
+	derivedRoot     bool
 	suite           Suite
 	payloadKind     PayloadKind
 	payloadBodyRS   bool
@@ -170,6 +171,14 @@ func (failure *normalWriteFailure) Stage() Stage {
 
 type ownerNormalWriteMaterial struct {
 	owner *pcv3credential.Owner
+}
+
+type d1InnerWriteMaterial struct{ normalWriteMaterial }
+
+func (material d1InnerWriteMaterial) credentialMetadata() (normalWriteCredentialMetadata, error) {
+	metadata, err := material.normalWriteMaterial.credentialMetadata()
+	metadata.kdfProfile = KDFProfileD1DerivedRoot
+	return metadata, err
 }
 
 func (material ownerNormalWriteMaterial) credentialMetadata() (
@@ -351,7 +360,8 @@ func serializeNormalVolume(
 		return nil, err
 	}
 	metadata, err := material.credentialMetadata()
-	if err != nil || !validNormalWriteCredentialMetadata(metadata) || metadata.suite != request.suite {
+	if err != nil || !validNormalWriteCredentialMetadata(metadata) || metadata.suite != request.suite ||
+		request.derivedRoot != (metadata.kdfProfile == KDFProfileD1DerivedRoot) {
 		return nil, newNormalWriteFailure(StageCredentialPolicy, errInvalidNormalWriteRequest)
 	}
 
@@ -440,6 +450,9 @@ func planNormalWrite(request normalWriteRequest) (normalWritePlan, error) {
 	if request.payloadBodyRS {
 		core.featureFlags = payloadBodyRSFeatureMask
 	}
+	if request.derivedRoot {
+		core.featureFlags |= d1DerivedRootFeatureMask
+	}
 	core.frontHeaderLength = uint32(frontHeaderLength) //nolint:gosec // Checked against MaxUint32 above.
 	core.payloadKind = request.payloadKind
 	core.recordProfile = 1
@@ -460,7 +473,7 @@ func planNormalWrite(request normalWriteRequest) (normalWritePlan, error) {
 
 func validNormalWriteCredentialMetadata(metadata normalWriteCredentialMetadata) bool {
 	return isSupportedSuite(metadata.suite) &&
-		metadata.kdfProfile == kdfProfileForSuite(metadata.suite) &&
+		(metadata.kdfProfile == kdfProfileForSuite(metadata.suite) || metadata.kdfProfile == KDFProfileD1DerivedRoot) &&
 		validCredentialTuple(metadata.credentialMode, metadata.keyfileMode, metadata.keyfileCount)
 }
 

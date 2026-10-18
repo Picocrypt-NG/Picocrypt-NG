@@ -1,6 +1,6 @@
 {
   "test_only": true,
-  "generator_sha256": "39626af2e58dea53920dec5300d6f94edf6ed7fb47cda8e02f47ed92614424d4",
+  "generator_sha256": "08e353c7d7a07e08fde5134d8850b2ce39aad30f07106b3241af5758b3efd40d",
   "libgcrypt_version": "1.12.4",
   "kdf": {
     "algorithm": "Argon2id",
@@ -12,14 +12,23 @@
   },
   "credential_mode": "password-and-keyfiles",
   "keyfile_mode": "ordered",
+  "d1_profiles": {
+    "standard": 257,
+    "paranoid": 258
+  },
+  "d1_bootstrap_bytes": 320,
   "files": {
     "normal.pcv": {
       "size": 2395,
       "sha256": "a468f66c81849b03c58312acf7f2f90677e317ad200820e90ec38da5b0459bcb"
     },
     "d1.pcv": {
-      "size": 2923,
-      "sha256": "30b62308a0bcda8d56368ac37c8c7424c36e37945401048cbd20b1044773c631"
+      "size": 3115,
+      "sha256": "487a18056597d97e36ebcaf70aed25ec9cdbd306803ebaf618eba186e05d00bd"
+    },
+    "d1-standard.pcv": {
+      "size": 3115,
+      "sha256": "22fda4fbe068d85f41d8fe22857320172c67fc5ba806823ce57bdd1072b113bf"
     },
     "plaintext.bin": {
       "size": 51,
@@ -38,8 +47,8 @@
       "sha256": "2e2004c7040e3d7e85819090bcfbcd4beb0774772019ef021c5db566b057ae48"
     },
     "randomness.json": {
-      "size": 1012,
-      "sha256": "b19d5964dafef5abe2d82f27cc21dc76c97ed4628450cbe7bedf45cc5d285f8e"
+      "size": 1107,
+      "sha256": "8b38cbba25326fb53d0816bf6c6c6e9e33d39e587b2d59db546473a63f76ad2e"
     }
   }
 }

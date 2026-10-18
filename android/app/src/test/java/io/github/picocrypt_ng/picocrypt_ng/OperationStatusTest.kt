@@ -379,6 +379,29 @@ class OperationStatusTest {
     }
 
     @Test
+    fun `raw D1 missing profile gives bounded retry guidance without output actions`() {
+        val profileRequired = snapshot(
+            semantic = Pcv3Semantic("operation-failed", "d1-bootstrap", "PCV3_OPERATION_FAILED"),
+            diagnostic = "d1-profile-required", completionClass = "no-output",
+        )
+        val display = pcv3ResultDisplay(profileRequired)
+
+        assertEquals(R.string.pcv3_outcome_d1_profile_required_title, display.outcome.titleResId)
+        assertEquals(R.string.pcv3_outcome_d1_profile_required_body, display.outcome.bodyResId)
+        assertNull(display.publication)
+        assertEquals(
+            setOf(Pcv3ResultAction.CLOSE_RESULT),
+            pcv3ResultActions(Pcv3Presentation.Final(profileRequired, "profile-required", 1)).actions,
+        )
+        assertEquals(
+            R.string.pcv3_outcome_generic_title,
+            pcv3ResultDisplay(profileRequired.copy(
+                semantic = profileRequired.semantic.copy(stage = "record-auth"),
+            )).outcome.titleResId,
+        )
+    }
+
+    @Test
     fun `PCV3 unknown result values never become displayed attacker text`() {
         val display = pcv3ResultDisplay(
             snapshot(

@@ -239,6 +239,28 @@ func TestFixedProfileAdmissionCheckedArithmetic(t *testing.T) {
 	}
 }
 
+// This uses the production admission policy with platform-shaped observations,
+// not a grant-only fake admitter. Profile 3 must retain the same 1-GiB boundary
+// on every provider path; this does not claim native-platform observations.
+func TestD1FixedProfileAdmissionUsesSameMemoryBoundaryOnAllProviderSources(t *testing.T) {
+	profile := pcv3credential.KDFProfile{ID: pcv3credential.D1FixedKDFProfileID, Argon2Version: 0x13, Time: 8, MemoryKiB: 1048576, Parallelism: 8, SaltBytes: 16, OutputBytes: 32}
+	for _, source := range []snapshotSource{snapshotSourceLinux, snapshotSourceDarwin, snapshotSourceWindows, snapshotSourceAndroid} {
+		for _, short := range []bool{false, true} {
+			available := uint64(1<<30) + 32<<20
+			want := pcv3credential.KDFAdmissionGranted
+			if short {
+				available--
+				want = pcv3credential.KDFAdmissionDeniedInsufficient
+			}
+			provider := &scriptedSnapshotProvider{snapshots: []Snapshot{{version: currentSnapshotVersion, source: source, state: snapshotStateReady, sequence: 1, observedAt: time.Now(), effectiveAvailable: available, codeOwnedReserve: 32 << 20}}}
+			decision, err := newAdmitter(provider).AdmitKDF(context.Background(), profile)
+			if err != nil || decision != want || provider.calls != 1 {
+				t.Fatalf("source=%v short=%v decision=%v want=%v calls=%d err=%v", source, short, decision, want, provider.calls, err)
+			}
+		}
+	}
+}
+
 func TestResourceAdmitterObtainsFreshSnapshot(t *testing.T) {
 	profile := pcv3credential.KDFProfile{MemoryKiB: 1048576}
 	now := time.Now()

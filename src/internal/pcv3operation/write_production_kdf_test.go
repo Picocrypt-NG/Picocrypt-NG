@@ -21,8 +21,17 @@ import (
 // The admission seam only grants the fixed production profile; all KDF, codec,
 // real-file publication, retained transport and reader paths execute unchanged.
 func TestWriteProductionKDFNormalAndD1PublishReadableVolumes(t *testing.T) {
-	for _, mode := range []WriteMode{WriteModeNormal, WriteModeD1} {
-		t.Run(map[WriteMode]string{WriteModeNormal: "normal", WriteModeD1: "d1"}[mode], func(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		mode     WriteMode
+		suite    pcv3.Suite
+		readMode Mode
+	}{
+		{"normal", WriteModeNormal, pcv3.SuiteStandard, ModeReadNormal},
+		{"d1-standard", WriteModeD1, pcv3.SuiteStandard, ModeReadD1},
+		{"d1-paranoid", WriteModeD1, pcv3.SuiteParanoid, ModeReadD1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			directory := t.TempDir()
 			sourcePath := filepath.Join(directory, "source")
 			plaintext := []byte("borrowed logical plaintext survives exact ciphertext publication")
@@ -35,12 +44,6 @@ func TestWriteProductionKDFNormalAndD1PublishReadableVolumes(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer source.Close()
-			suite := pcv3.SuiteStandard
-			readMode := ModeReadNormal
-			if mode == WriteModeD1 {
-				suite = pcv3.SuiteParanoid
-				readMode = ModeReadD1
-			}
 			factors := func() *pcv3credential.FactorRequest {
 				return &pcv3credential.FactorRequest{Mode: pcv3credential.CredentialModePasswordOnly, KeyfileMode: pcv3credential.KeyfileModeNone, ExpectedPolicy: pcv3credential.FactorPolicyPasswordOnly, Password: []byte("production writer regression password")}
 			}
@@ -53,8 +56,8 @@ func TestWriteProductionKDFNormalAndD1PublishReadableVolumes(t *testing.T) {
 					lastProgress = status.Args()
 				}
 				return nil
-			}, Mode: mode, Suite: suite, PayloadKind: pcv3.PayloadKindRaw, PlaintextLength: uint64(len(plaintext)), Source: &writeFinalEOFReader{Reader: strings.NewReader(string(plaintext))}, SourceFile: source, SourcePath: sourcePath, Target: target, Factors: factors()}
-			result := runWriteWithSeams(context.Background(), request, ExecutionOptions{JournalPrivateStage: true}, operationSeams{admitter: &operationTestAdmitter{grant: true}})
+			}, Mode: test.mode, Suite: test.suite, PayloadKind: pcv3.PayloadKindRaw, PlaintextLength: uint64(len(plaintext)), Source: &writeFinalEOFReader{Reader: strings.NewReader(string(plaintext))}, SourceFile: source, SourcePath: sourcePath, Target: target, Factors: factors()}
+			result := runWriteWithSeams(context.Background(), request, ExecutionOptions{LinuxDesktopCleanup: true}, operationSeams{admitter: &operationTestAdmitter{grant: true}})
 			if result.CompletionClass() != CompletionClean || !result.SourceDeletionAllowed() {
 				t.Fatalf("write result=%v diagnostic=%v", result, result.Diagnostic())
 			}
@@ -69,7 +72,7 @@ func TestWriteProductionKDFNormalAndD1PublishReadableVolumes(t *testing.T) {
 				t.Fatal(err)
 			}
 			recovered := filepath.Join(directory, "recovered")
-			read := runWithSeams(context.Background(), &Request{Mode: readMode, Source: encrypted, Target: recovered, Factors: factors()}, operationSeams{admitter: &operationTestAdmitter{grant: true}})
+			read := runWithSeamsAndOptions(context.Background(), &Request{Mode: test.readMode, Source: encrypted, Target: recovered, Factors: factors()}, operationSeams{admitter: &operationTestAdmitter{grant: true}}, ExecutionOptions{LinuxDesktopCleanup: true})
 			if read.CompletionClass() != CompletionClean {
 				t.Fatalf("read result=%v", read)
 			}

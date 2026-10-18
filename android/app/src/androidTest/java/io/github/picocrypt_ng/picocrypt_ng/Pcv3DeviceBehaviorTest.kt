@@ -381,14 +381,17 @@ class Pcv3DeviceBehaviorTest {
     }
 
     @Test
-    fun v11WriteNormalCreationRoundTrip() = creationRoundTrip("normal")
+    fun v11WriteNormalCreationRoundTrip() = creationRoundTrip("normal", "standard")
 
     @Test
-    fun v12WriteD1CreationRoundTrip() = creationRoundTrip("d1")
+    fun v12WriteD1CreationRoundTrip() = creationRoundTrip("d1", "paranoid")
 
-    private fun creationRoundTrip(mode: String) {
+    @Test
+    fun v15WriteStandardD1CreationRoundTrip() = creationRoundTrip("d1", "standard")
+
+    private fun creationRoundTrip(mode: String, suite: String) {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        val directory = File(context.cacheDir, "pcv3-creation-$mode")
+        val directory = File(context.cacheDir, "pcv3-creation-$mode-$suite")
         assertFalse("$mode creation workspace residue from an earlier attempt", directory.exists())
         if (!directory.mkdir()) {
             throw AssertionError("$mode creation workspace must be newly owned")
@@ -403,7 +406,7 @@ class Pcv3DeviceBehaviorTest {
 
             val password = CALLER_PASSWORD.copyOf()
             val start = Mobile.startPCV3(
-                writeEnvelope("write-$mode", source, target),
+                writeEnvelope("write-$mode", source, target, suite),
                 password,
             )
             val operation = start.operation()
@@ -504,7 +507,7 @@ class Pcv3DeviceBehaviorTest {
                 val exported = JSONObject()
                     .put("test_only", true)
                     .put("mode", mode)
-                    .put("suite", if (mode == "d1") "paranoid" else "standard")
+                    .put("suite", suite)
                     .put("factorPolicy", "password")
                     .put("keyfileOrder", "none")
                     .put("keyfilesBase64", JSONArray())
@@ -544,13 +547,17 @@ class Pcv3DeviceBehaviorTest {
     @Test
     fun v14IndependentD1FixtureDecryptsByteExactly() = readIndependentFixture("d1")
 
-    private fun readIndependentFixture(mode: String) {
+    @Test
+    fun v16IndependentStandardD1FixtureDecryptsByteExactly() =
+        readIndependentFixture("d1", "d1-standard.pcv")
+
+    private fun readIndependentFixture(mode: String, fixtureName: String = "$mode.pcv") {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val assets = InstrumentationRegistry.getInstrumentation().context.assets
-        val directory = File(context.cacheDir, "pcv3-independent-$mode")
+        val directory = File(context.cacheDir, "pcv3-independent-${fixtureName.removeSuffix(".pcv")}")
         assertFalse("independent fixture workspace residue", directory.exists())
         assertTrue("independent fixture workspace must be newly owned", directory.mkdir())
-        val source = File(directory, "$mode.pcv")
+        val source = File(directory, fixtureName)
         val target = File(directory, "plaintext.bin")
         val keyfiles = listOf("keyfile-alpha.bin", "keyfile-beta.bin").map { File(directory, it) }
         var primaryFailure: Throwable? = null
@@ -601,6 +608,147 @@ class Pcv3DeviceBehaviorTest {
                     keyfiles[0] to "independent alpha factor",
                     keyfiles[1] to "independent beta factor",
                     directory to "independent workspace",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun v17RawStandardD1RequiresProfileAndRetainsUnverifiedArtifact() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val assets = InstrumentationRegistry.getInstrumentation().context.assets
+        val directory = File(context.cacheDir, "pcv3-raw-d1-profile")
+        assertFalse("raw D1 workspace residue", directory.exists())
+        assertTrue("raw D1 workspace must be newly owned", directory.mkdir())
+        val source = File(directory, "d1-standard.pcv")
+        val targets = listOf(File(directory, "without-hint"), File(directory, "standard-artifact"))
+        val keyfiles = listOf("keyfile-alpha.bin", "keyfile-beta.bin").map { File(directory, it) }
+        var primaryFailure: Throwable? = null
+        try {
+            val damaged = assets.open("d1-standard.pcv").use { it.readBytes() }
+            assertEquals("frozen Standard D1 fixture size", 3115, damaged.size)
+            // Frozen reference layout: each 320-byte bootstrap contains three
+            // independent 64-byte MACs after its 128-byte wrapped-root prefix.
+            // Damage only their first bytes; both wrapped roots and body stay intact.
+            for (start in listOf(0, damaged.size - 320)) {
+                for (tagOffset in listOf(128, 192, 256)) {
+                    val index = start + tagOffset
+                    damaged[index] = (damaged[index].toInt() xor 1).toByte()
+                }
+            }
+            source.writeBytes(damaged)
+            keyfiles.forEach { file ->
+                assets.open(file.name).use { file.writeBytes(it.readBytes()) }
+            }
+            val expectedPlaintext = assets.open("plaintext.bin").use { it.readBytes() }
+            for ((index, hint) in listOf<String?>(null, "standard").withIndex()) {
+                val label = if (hint == null) "without profile" else "with Standard profile"
+                val target = targets[index]
+                val request = Pcv3Request(
+                    "force-unverified-d1", "password-and-keyfiles", "ordered",
+                    source.absolutePath, target.absolutePath, keyfiles.map { it.absolutePath }, hint,
+                )
+                val password = assets.open("password.bin").use { it.readBytes() }
+                val start = Mobile.startPCV3(requireNotNull(GoBridge.buildPcv3RequestJson(request)), password)
+                val operation = start.operation()
+                var released = false
+                var operationFailure: Throwable? = null
+                try {
+                    assertEquals("raw D1 $label start", "", start.code())
+                    assertTrue("raw D1 caller password must be zeroed", password.all { it == 0.toByte() })
+                    val live = operation ?: throw AssertionError("raw D1 returned no operation")
+                    var consent = live.consent()
+                    val consentDeadline = SystemClock.elapsedRealtime() + 10_000L
+                    while (consent == null && SystemClock.elapsedRealtime() < consentDeadline) {
+                        live.resourceChallenge()?.let { submitDeviceFacts(context, it) }
+                        assertEquals("raw D1 must await actual consent", "unknown", live.snapshot().completionClass())
+                        SystemClock.sleep(POLL_MILLIS)
+                        consent = live.consent()
+                    }
+                    val liveConsent = consent ?: throw AssertionError("raw D1 returned no live consent")
+                    assertEquals("force-unverified-d1", liveConsent.mode())
+                    assertEquals(2L, liveConsent.roleCount())
+                    assertEquals("d1-front", liveConsent.roleAt(0))
+                    assertEquals("d1-tail", liveConsent.roleAt(1))
+                    assertFalse("a profile hint must not publish before consent", target.exists())
+                    assertNull(live.output())
+                    assertNull(live.artifactInspection())
+                    assertEquals("physical front role must be explicitly chosen", "", liveConsent.choose("d1-front"))
+                    assertNull("the chosen consent must be consumed", live.consent())
+
+                    val terminal = awaitTerminalPumping(context, live)
+                    assertNull("raw D1 fixture is not an archive", live.archive())
+                    if (hint == null) {
+                        assertEquals("operation-failed", terminal.outcome())
+                        assertEquals("d1-bootstrap", terminal.stage())
+                        assertEquals("PCV3_OPERATION_FAILED", terminal.code())
+                        assertEquals("d1-profile-required", terminal.diagnostic())
+                        assertEquals("no-output", terminal.completionClass())
+                        assertFalse(terminal.publicationAttempted())
+                        assertEquals("none", terminal.publicationState())
+                        assertNull(live.output())
+                        assertNull(live.artifactInspection())
+                        assertFalse("missing profile must publish no output", target.exists())
+                    } else {
+                        assertEquals("force-unverified", terminal.outcome())
+                        assertEquals("PCV3_FORCE_UNVERIFIED", terminal.code())
+                        assertEquals("unverified", terminal.forceProvenance())
+                        assertEquals("none", terminal.diagnostic())
+                        assertEquals("warning", terminal.completionClass())
+                        assertTrue(terminal.publicationAttempted())
+                        assertEquals("published-durable", terminal.publicationState())
+                        val inspection = live.artifactInspection()
+                            ?: throw AssertionError("raw D1 retained no forensic artifact view")
+                        assertEquals("unverified-forensic", inspection.kind())
+                        assertEquals("d1-front", inspection.role())
+                        assertEquals(expectedPlaintext.size.toString(), inspection.plaintextLength())
+                        assertTrue("public fixture artifact must stay bounded", target.length() in 16L..16384L)
+                        val artifact = target.readBytes()
+                        val marker = "PICO-RECOVERY-3\u0000".toByteArray(Charsets.UTF_8)
+                        assertTrue("raw recovery must encode a recovery container", artifact.copyOfRange(0, marker.size).contentEquals(marker))
+                        assertFalse("raw recovery must never publish ordinary plaintext", expectedPlaintext.contentEquals(artifact))
+                        val output = live.output() ?: throw AssertionError("raw D1 retained no artifact output")
+                        val discarded = output.discard()
+                        assertEquals("discarded", discarded.code())
+                        assertFalse("artifact discard must complete cleanup", discarded.cleanupIncomplete())
+                        assertFalse("artifact discard must remove staging", target.exists())
+                    }
+                    assertTrue("raw recovery must preserve the damaged source", damaged.contentEquals(source.readBytes()))
+                    assertEquals("raw D1 $label release", "", live.release())
+                    released = true
+                } catch (failure: Throwable) {
+                    operationFailure = failure
+                    throw failure
+                } finally {
+                    password.fill(0)
+                    if (operation != null) {
+                        if (!released) {
+                            attachCleanupFailure(operationFailure) {
+                                operation.output()?.let { output ->
+                                    val discarded = output.discard()
+                                    assertEquals("failure cleanup must discard held artifact", "discarded", discarded.code())
+                                    assertFalse("failure cleanup must retire held artifact", discarded.cleanupIncomplete())
+                                }
+                            }
+                        }
+                        attachCleanupFailure(operationFailure) {
+                            release(operation, "raw D1 $label", released)
+                        }
+                    }
+                }
+            }
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            attachCleanupFailure(primaryFailure) {
+                cleanupFiles(
+                    targets[0] to "raw D1 no-profile output",
+                    targets[1] to "raw D1 forensic artifact",
+                    keyfiles[0] to "raw D1 alpha factor",
+                    keyfiles[1] to "raw D1 beta factor",
+                    source to "raw D1 damaged ciphertext",
+                    directory to "raw D1 workspace",
                 )
             }
         }
@@ -778,8 +926,8 @@ class Pcv3DeviceBehaviorTest {
         return """{"version":1,"mode":${jsonString(mode)},"factorPolicy":${jsonString(factorPolicy)},"keyfileOrder":${jsonString(keyfileOrder)},"source":${jsonString(source.absolutePath)},"target":${jsonString(target.absolutePath)},"keyfiles":[$keys]}"""
     }
 
-    private fun writeEnvelope(mode: String, source: File, target: File): String =
-        """{"version":1,"mode":${jsonString(mode)},"factorPolicy":"password","keyfileOrder":"none","source":${jsonString(source.absolutePath)},"target":${jsonString(target.absolutePath)},"keyfiles":[],"comment":"","suite":${jsonString(if (mode == "write-d1") "paranoid" else "standard")},"payloadRS":false}"""
+    private fun writeEnvelope(mode: String, source: File, target: File, suite: String): String =
+        """{"version":1,"mode":${jsonString(mode)},"factorPolicy":"password","keyfileOrder":"none","source":${jsonString(source.absolutePath)},"target":${jsonString(target.absolutePath)},"keyfiles":[],"comment":"","suite":${jsonString(suite)},"payloadRS":false}"""
 
     private fun deleteExactly(file: File, label: String) {
         if (file.exists() && !file.delete()) {

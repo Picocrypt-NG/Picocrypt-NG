@@ -174,8 +174,9 @@ native frontends. Its zero value preserves the internal legacy compatibility
 writer. Android supports files, folders, multiple inputs and compression through
 the shared writer; WASM does not expose PCV3 creation. Normal PCV3 and PCV3 D1
 support password, keyfile, and combined credentials. D1 is the
-random-looking Paranoid-mode path; its complete credential transcript protects
-both outer and inner key wrapping.
+random-looking path with optional Paranoid ciphers and a fixed strong D1 KDF.
+Its complete credential transcript protects separate outer and inner key wraps;
+creation performs two KDFs, and a healthy front-bootstrap read performs one.
 
 ## Security
 

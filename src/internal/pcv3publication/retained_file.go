@@ -44,6 +44,7 @@ type RetainedFile struct {
 
 	file        *os.File
 	identityPin *os.File
+	lease       *os.File
 	root        *os.Root
 	parent      *os.File
 	identity    os.FileInfo
@@ -420,6 +421,12 @@ func (file *RetainedFile) closeHandlesLocked() (failed bool) {
 			failed = true
 		}
 		file.root = nil
+	}
+	if file.lease != nil {
+		if err := file.lease.Close(); err != nil {
+			failed = true
+		}
+		file.lease = nil
 	}
 	file.identity = nil
 	clear(file.sha256[:])

@@ -10,6 +10,7 @@ import (
 	"Picocrypt-NG/internal/pcv3publication"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -129,14 +130,17 @@ var (
 // admission policy, factor identity, digest, snapshot callback, or writer
 // capability.
 type Request struct {
-	Mode      Mode
-	Source    *os.File
-	SplitBase string
-	Factors   *pcv3credential.FactorRequest
-	Target    string
-	Protected []string
-	Reporter  Reporter
-	Consent   Consent
+	Mode Mode
+	// D1SuiteHint selects only the cipher suite for explicitly unverified D1
+	// physical recovery when its hidden suite cannot be authenticated.
+	D1SuiteHint Suite
+	Source      *os.File
+	SplitBase   string
+	Factors     *pcv3credential.FactorRequest
+	Target      string
+	Protected   []string
+	Reporter    Reporter
+	Consent     Consent
 }
 
 // ExecutionOptions selects internal output custody and crash cleanup without
@@ -145,7 +149,12 @@ type Request struct {
 type ExecutionOptions struct {
 	RetainDurableOutput bool
 	JournalPrivateStage bool
-	ArchiveAction       ArchiveAction
+	// LinuxDesktopCleanup recovers only the selected destination parent and uses
+	// leased journals there. DesktopProtectedFiles are borrowed original inputs;
+	// their owner must keep them open until this operation returns.
+	LinuxDesktopCleanup   bool
+	DesktopProtectedFiles []*os.File
+	ArchiveAction         ArchiveAction
 	// ArchiveReview approves the declared extraction budget after authentication.
 	// It is valid only with ArchiveExtract or ArchiveExtractSameLevel.
 	ArchiveReview func(context.Context, ArchiveSummary) error
@@ -233,6 +242,7 @@ func runWithSeamsAndOptions(
 	// a keyfile close failure recorded by that same factor owner.
 	factorCleanup := owner.factors
 	var archivePlan *archiveReadPlan
+	var desktopProtected []*os.File
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			cleanupIncomplete := panicCleanupIncomplete(recovered)
@@ -253,6 +263,9 @@ func runWithSeamsAndOptions(
 			}
 		}
 		cleanupIncomplete := owner.close()
+		for _, file := range desktopProtected {
+			cleanupIncomplete = safeCloseSource(file) || cleanupIncomplete
+		}
 		if factorCleanup.CleanupIncomplete() {
 			cleanupIncomplete = true
 		}
@@ -293,8 +306,11 @@ func runWithSeamsAndOptions(
 	}
 	if ctx == nil || owner.source == nil || owner.factors == nil ||
 		owner.target == "" || !owner.validProtected() || !owner.validRoleAndConsent() ||
+		(owner.d1SuiteHint != 0 && (owner.mode != ModeForceUnverifiedD1 ||
+			(owner.d1SuiteHint != SuiteStandard && owner.d1SuiteHint != SuiteParanoid))) ||
 		options.ArchiveAction > ArchiveExtractSameLevel ||
 		(options.ArchiveReview != nil && options.ArchiveAction != ArchiveExtract && options.ArchiveAction != ArchiveExtractSameLevel) ||
+		(options.LinuxDesktopCleanup && options.JournalPrivateStage) ||
 		(options.ArchiveAction != ArchiveDefault && (options.RetainDurableOutput ||
 			(owner.mode != ModeReadNormal && owner.mode != ModeReadD1))) {
 		return closedFailure(
@@ -311,6 +327,23 @@ func runWithSeamsAndOptions(
 			pcv3.CodeOperationFailed,
 			DiagnosticCancellation,
 		)
+	}
+	if options.LinuxDesktopCleanup && linuxDesktopCleanupSupported() {
+		protected := append([]string(nil), owner.protected...)
+		if owner.splitBase != "" {
+			count, _, err := fileops.CountChunksWithCancel(owner.splitBase, func() bool { return ctx.Err() != nil })
+			if err != nil {
+				return desktopCleanupFailure()
+			}
+			for index := range count {
+				protected = append(protected, fmt.Sprintf("%s.%d", owner.splitBase, index))
+			}
+		}
+		var cleanupErr error
+		desktopProtected, cleanupErr = prepareDesktopOperationCleanup(owner.target, owner.source, owner.factors, protected, options.DesktopProtectedFiles)
+		if cleanupErr != nil {
+			return desktopCleanupFailure()
+		}
 	}
 	var archiveErr error
 	archivePlan, archiveErr = newArchiveReadPlan(options.ArchiveAction, owner.target)
@@ -408,6 +441,7 @@ func runNormalRead(
 		Target:              owner.target,
 		Protected:           owner.outputProtected(),
 		JournalPrivateStage: options.JournalPrivateStage,
+		LeasedPrivateStage:  options.LinuxDesktopCleanup && linuxDesktopCleanupSupported(),
 		PrepareArchive:      preparesArchive(options.ArchiveAction),
 	}
 	var archive *pcv3.NativeArchiveHandoff
@@ -507,13 +541,14 @@ func runRecovery(
 		return owner.reportFailure()
 	}
 	request := &pcv3recovery.Request{
-		Source:     owner.source,
-		SourceSize: sourceSize,
-		Factors:    owner.takeFactors(),
-		Admitter:   seams.admitter,
-		Mode:       mode,
-		Target:     owner.target,
-		Protected:  owner.outputProtected(),
+		D1SuiteHint: owner.d1SuiteHint,
+		Source:      owner.source,
+		SourceSize:  sourceSize,
+		Factors:     owner.takeFactors(),
+		Admitter:    seams.admitter,
+		Mode:        mode,
+		Target:      owner.target,
+		Protected:   owner.outputProtected(),
 	}
 	defer func() {
 		if request.Factors != nil {
@@ -525,6 +560,7 @@ func runRecovery(
 	recoveryOptions := pcv3recovery.ExecutionOptions{
 		RetainDurableOutput: options.RetainDurableOutput,
 		JournalPrivateStage: options.JournalPrivateStage,
+		LeasedPrivateStage:  options.LinuxDesktopCleanup && linuxDesktopCleanupSupported(),
 		PrepareArchive:      preparesArchive(options.ArchiveAction),
 	}
 	if d1Role != nil {
@@ -536,7 +572,13 @@ func runRecovery(
 	} else {
 		recoveryResult = pcv3recovery.RunWithOptions(ctx, request, recoveryOptions)
 	}
-	return owner.finishReportedResult(resultFromRecovery(recoveryResult))
+	result := resultFromRecovery(recoveryResult)
+	if recoveryResult != nil && recoveryResult.D1ProfileRequired() && !result.publicationAttempted &&
+		result.outcome == pcv3.OutcomeOperationFailed && result.stage != pcv3.StageCancellation {
+		result.outcome, result.stage, result.code = pcv3.OutcomeOperationFailed, pcv3.StageD1Bootstrap, pcv3.CodeOperationFailed
+		result.diagnostic = DiagnosticD1ProfileRequired
+	}
+	return owner.finishReportedResult(result)
 }
 
 type consentWindow struct {
@@ -598,6 +640,7 @@ func runUnverified(
 			pcv3recovery.ExecutionOptions{
 				RetainDurableOutput: options.RetainDurableOutput,
 				JournalPrivateStage: options.JournalPrivateStage,
+				LeasedPrivateStage:  options.LinuxDesktopCleanup && linuxDesktopCleanupSupported(),
 			},
 		)))
 	}
@@ -894,6 +937,7 @@ func closedFailure(
 
 type operationOwner struct {
 	mode               Mode
+	d1SuiteHint        Suite
 	source             *os.File
 	splitBase          string
 	splitStage         *fileops.StagedFile
@@ -914,6 +958,7 @@ func takeOperationRequest(request *Request) *operationOwner {
 		return owner
 	}
 	owner.mode = request.Mode
+	owner.d1SuiteHint = request.D1SuiteHint
 	owner.source = request.Source
 	owner.splitBase = request.SplitBase
 	owner.factors = request.Factors
@@ -923,6 +968,7 @@ func takeOperationRequest(request *Request) *operationOwner {
 	owner.consent = request.Consent
 
 	request.Mode = 0
+	request.D1SuiteHint = 0
 	request.Source = nil
 	request.SplitBase = ""
 	request.Factors = nil
@@ -1073,6 +1119,7 @@ func (owner *operationOwner) close() bool {
 	owner.consent = nil
 	owner.resourceDiagnostic = DiagnosticNone
 	owner.mode = 0
+	owner.d1SuiteHint = 0
 	owner.splitBase = ""
 	owner.target = ""
 	for index := range owner.protected {

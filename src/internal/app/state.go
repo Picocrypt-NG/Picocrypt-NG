@@ -129,6 +129,7 @@ type PCV3OperationIntent struct {
 	Action       PCV3Action
 	FactorPolicy PCV3FactorPolicy
 	KeyfileOrder PCV3KeyfileOrder
+	D1SuiteHint  pcv3operation.Suite
 	Source       *os.File
 	SplitBase    string
 	Target       string
@@ -213,17 +214,18 @@ type State struct {
 	DPI float32
 
 	// Operation mode
-	Mode           string // "encrypt" or "decrypt"
-	PCVUnavailable bool   // Selected PCV content is terminal until clear/replacement
-	Working        bool   // Operation in progress
-	Scanning       bool   // Scanning files
-	PCV3Route      PCV3RouteState
-	PCV3Format     PCV3Format
-	PCV3Action     PCV3Action
-	PCV3Factor     PCV3FactorPolicy
-	PCV3Order      PCV3KeyfileOrder
-	PCV3Result     pcv3operation.Presentation
-	PCV3Progress   pcv3operation.StatusCode
+	Mode            string // "encrypt" or "decrypt"
+	PCVUnavailable  bool   // Selected PCV content is terminal until clear/replacement
+	Working         bool   // Operation in progress
+	Scanning        bool   // Scanning files
+	PCV3Route       PCV3RouteState
+	PCV3Format      PCV3Format
+	PCV3Action      PCV3Action
+	PCV3Factor      PCV3FactorPolicy
+	PCV3Order       PCV3KeyfileOrder
+	PCV3D1SuiteHint pcv3operation.Suite
+	PCV3Result      pcv3operation.Presentation
+	PCV3Progress    pcv3operation.StatusCode
 	// PCV3CleanupIncomplete is UI-only process-lifetime truth. It records that
 	// a released archive follow-up could not confirm cleanup; it never carries
 	// a capability, path, plaintext, or raw error.
@@ -428,6 +430,7 @@ func (s *State) resetUILocked() {
 	s.PCV3Action = PCV3ActionNone
 	s.PCV3Factor = PCV3FactorPolicyUnset
 	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.PCV3D1SuiteHint = 0
 	s.PCV3Result = pcv3operation.Presentation{}
 	s.PCV3Progress = 0
 
@@ -556,6 +559,7 @@ func (s *State) SetPCV3RoutingChecking(path string, size int64) {
 	s.PCV3Action = PCV3ActionNone
 	s.PCV3Factor = PCV3FactorPolicyUnset
 	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.PCV3D1SuiteHint = 0
 	s.PCV3Result = pcv3operation.Presentation{}
 	s.PCV3Progress = 0
 	s.InputFile = path
@@ -578,6 +582,7 @@ func (s *State) SetPCV3RoutingFailed() {
 	s.PCV3Action = PCV3ActionNone
 	s.PCV3Factor = PCV3FactorPolicyUnset
 	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.PCV3D1SuiteHint = 0
 	s.Scanning = false
 }
 
@@ -592,6 +597,7 @@ func (s *State) SetPCV3LegacyEligible() {
 	s.PCV3Action = PCV3ActionNone
 	s.PCV3Factor = PCV3FactorPolicyUnset
 	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.PCV3D1SuiteHint = 0
 	s.PCV3Result = pcv3operation.Presentation{}
 	s.PCV3Progress = 0
 	s.Scanning = false
@@ -614,6 +620,7 @@ func (s *State) SetPCV3Ready(source *os.File, format PCV3Format, path, target st
 	s.PCV3Action = PCV3ActionNone
 	s.PCV3Factor = PCV3FactorPolicyUnset
 	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.PCV3D1SuiteHint = 0
 	s.PCV3Result = pcv3operation.Presentation{}
 	s.PCV3Progress = 0
 	s.InputFile = path
@@ -662,6 +669,7 @@ func (s *State) SelectPCV3D1() bool {
 	s.PCV3Action = PCV3ActionNone
 	s.PCV3Factor = PCV3FactorPolicyUnset
 	s.PCV3Order = PCV3KeyfileOrderUnset
+	s.PCV3D1SuiteHint = 0
 	s.PCV3Result = pcv3operation.Presentation{}
 	s.PCV3Progress = 0
 	s.Comments = ""
@@ -708,11 +716,28 @@ func (s *State) SetPCV3Intent(action PCV3Action, factor PCV3FactorPolicy, order 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.PCV3Action = action
+	if s.PCV3Format != PCV3FormatD1 || action != PCV3ActionForceUnverified {
+		s.PCV3D1SuiteHint = 0
+	}
 	s.PCV3Factor = factor
 	if factor == PCV3FactorPolicyPassword {
 		order = PCV3KeyfileOrderUnset
 	}
 	s.PCV3Order = order
+}
+
+// SetPCV3D1SuiteHint captures an optional recovery-only cipher choice. It never
+// grants unverified recovery consent or applies to an authenticated read.
+func (s *State) SetPCV3D1SuiteHint(suite pcv3operation.Suite) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Working || s.Scanning || s.PCV3Route != PCV3RouteReady ||
+		s.PCV3Format != PCV3FormatD1 || s.PCV3Action != PCV3ActionForceUnverified ||
+		(suite != 0 && suite != pcv3operation.SuiteStandard && suite != pcv3operation.SuiteParanoid) {
+		return false
+	}
+	s.PCV3D1SuiteHint = suite
+	return true
 }
 
 func (s *State) SetAutoUnzip(enabled bool) {
@@ -850,6 +875,7 @@ func (s *State) takePCV3OperationIntentLocked() PCV3OperationIntent {
 		Action:       s.PCV3Action,
 		FactorPolicy: s.PCV3Factor,
 		KeyfileOrder: s.PCV3Order,
+		D1SuiteHint:  s.PCV3D1SuiteHint,
 		Source:       s.pcv3Source,
 		Target:       s.OutputFile,
 		Password:     []byte(s.Password),
@@ -1144,6 +1170,7 @@ type UISnapshot struct {
 	PCV3Action            PCV3Action
 	PCV3Factor            PCV3FactorPolicy
 	PCV3Order             PCV3KeyfileOrder
+	PCV3D1SuiteHint       pcv3operation.Suite
 	PCV3Result            pcv3operation.Presentation
 	PCV3Progress          pcv3operation.StatusCode
 	PCV3CleanupIncomplete bool
@@ -1255,6 +1282,7 @@ func (s *State) UISnapshot() UISnapshot {
 		PCV3Action:            s.PCV3Action,
 		PCV3Factor:            s.PCV3Factor,
 		PCV3Order:             s.PCV3Order,
+		PCV3D1SuiteHint:       s.PCV3D1SuiteHint,
 		PCV3Result:            s.PCV3Result,
 		PCV3Progress:          s.PCV3Progress,
 		PCV3CleanupIncomplete: s.PCV3CleanupIncomplete,

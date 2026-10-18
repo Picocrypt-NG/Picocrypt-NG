@@ -34,6 +34,7 @@ type pcv3CLIHelperConfig struct {
 type pcv3CLIObservation struct {
 	Called         bool     `json:"called"`
 	Mode           uint8    `json:"mode"`
+	D1SuiteHint    uint16   `json:"d1_suite_hint"`
 	FactorMode     uint8    `json:"factor_mode"`
 	KeyfileMode    uint8    `json:"keyfile_mode"`
 	ExpectedPolicy uint8    `json:"expected_policy"`
@@ -58,6 +59,7 @@ type pcv3CLIFixedResult struct {
 	archive              pcv3CLIArchiveFollowUp
 	output               pcv3CLIOutputFollowUp
 	diagnostic           string
+	diagnosticCode       pcv3operation.Diagnostic
 }
 
 func (result *pcv3CLIFixedResult) Outcome() pcv3operation.Outcome { return result.outcome }
@@ -65,6 +67,10 @@ func (result *pcv3CLIFixedResult) Outcome() pcv3operation.Outcome { return resul
 func (result *pcv3CLIFixedResult) Stage() pcv3operation.Stage { return result.stage }
 
 func (result *pcv3CLIFixedResult) Code() pcv3operation.Code { return result.code }
+
+func (result *pcv3CLIFixedResult) Diagnostic() pcv3operation.Diagnostic {
+	return result.diagnosticCode
+}
 
 func (result *pcv3CLIFixedResult) PublicationAttempted() bool {
 	return result.publicationAttempted
@@ -195,6 +201,7 @@ func observePCV3CLIRequest(request *pcv3operation.Request) pcv3CLIObservation {
 		return observation
 	}
 	observation.Mode = uint8(request.Mode)
+	observation.D1SuiteHint = uint16(request.D1SuiteHint)
 	observation.Target = request.Target
 	observation.Protected = append([]string(nil), request.Protected...)
 	observation.ConsentPresent = request.Consent != nil

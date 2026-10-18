@@ -46,6 +46,7 @@ const (
 type Stage struct {
 	file                 *os.File
 	identityPin          *os.File
+	lease                *os.File
 	root                 *os.Root
 	sourceRoot           *os.Root
 	sourceParent         *os.File
@@ -70,6 +71,7 @@ type Stage struct {
 
 	cleanupDisposition  cleanupDisposition
 	journaled           bool
+	leasedJournal       bool
 	journalRemoved      bool
 	targetRemoved       bool
 	targetRemovalSynced bool
@@ -215,9 +217,20 @@ func createWithOperations(
 		_ = root.Close()
 		return nil, errors.Join(newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure), ErrCleanupIncomplete)
 	}
+	lease, err := acquireStageLease(sourceParent)
+	if err != nil {
+		_ = sourceParent.Close()
+		_ = sourceRoot.Close()
+		_ = parent.Close()
+		_ = root.Close()
+		return nil, errors.Join(newResult(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure), ErrCleanupIncomplete)
+	}
 	stageName := stageNamePrefix + rand.Text()
 	file, err := createPrivateStage(sourceRoot, sourceParent, stageName)
 	if err != nil {
+		if lease != nil {
+			_ = lease.Close()
+		}
 		_ = sourceParent.Close()
 		_ = sourceRoot.Close()
 		_ = parent.Close()
@@ -226,6 +239,9 @@ func createWithOperations(
 	}
 	stageInfo, err := operations.statStage(file)
 	if err != nil || stageInfo == nil || !stageInfo.Mode().IsRegular() {
+		if lease != nil {
+			_ = lease.Close()
+		}
 		_ = sourceRoot.Close()
 		_ = sourceParent.Close()
 		_ = file.Close()
@@ -239,6 +255,7 @@ func createWithOperations(
 
 	stage := &Stage{
 		file:               file,
+		lease:              lease,
 		root:               root,
 		sourceRoot:         sourceRoot,
 		sourceParent:       sourceParent,
@@ -381,7 +398,7 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 	if ctx.Err() != nil {
 		return stage.finish(StateNotPublished, pcv3.StageCancellation, CodeCancelled)
 	}
-	if stage.writePublication && stage.journaled && !stage.retireCleanupJournal() {
+	if stage.writePublication && stage.journaled && !stage.leasedJournal && !stage.retireCleanupJournal() {
 		return stage.finish(StateNotPublished, pcv3.StageOutputPublication, CodeStageFailure)
 	}
 	if !stage.retainWriteHandle {
@@ -487,6 +504,13 @@ func (stage *Stage) Publish(ctx context.Context) Result {
 }
 
 func (stage *Stage) finishJournaledCommitFailure() Result {
+	if stage.leasedJournal {
+		// A desktop target is requested user data once the atomic move commits.
+		// Keep the journal as private recovery authority without converting a
+		// directory durability failure into authority to remove that output.
+		stage.cleanupDisposition = cleanupNotRequired
+		return stage.finish(StatePublishedDurabilityUncertain, pcv3.StageDirectorySync, CodeDurabilityUncertain)
+	}
 	if stage.journalRemoved {
 		// Retirement already unlinked the journal but did not prove that unlink
 		// durable. Deleting the target now would invert the required barriers: a
@@ -625,6 +649,7 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 	retained := &RetainedFile{
 		file:              file,
 		identityPin:       stage.identityPin,
+		lease:             stage.lease,
 		root:              stage.root,
 		parent:            stage.parent,
 		identity:          info,
@@ -638,6 +663,7 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 	}
 	stage.file = nil
 	stage.identityPin = nil
+	stage.lease = nil
 	stage.root = nil
 	stage.parent = nil
 	stage.rootInfo = nil
@@ -882,6 +908,12 @@ func (stage *Stage) Cleanup() error {
 			cleanupFailed = true
 		}
 		stage.root = nil
+	}
+	if stage.lease != nil {
+		if err := stage.lease.Close(); err != nil {
+			cleanupFailed = true
+		}
+		stage.lease = nil
 	}
 	stage.rootInfo = nil
 	stage.stageInfo = nil

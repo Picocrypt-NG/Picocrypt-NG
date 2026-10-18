@@ -42,6 +42,7 @@ type NativeD1WriteRequest struct {
 	DestinationPath     string
 	Protected           []string
 	JournalPrivateStage bool
+	LeasedPrivateStage  bool
 }
 
 // RunNativeD1WriteWithPublication returns typed publication truth and optionally
@@ -64,6 +65,7 @@ func RunNativeD1WriteWithPublication(ctx context.Context, request *NativeD1Write
 	plaintext := request.Plaintext
 	destinationPath := request.DestinationPath
 	journalPrivateStage := request.JournalPrivateStage
+	leasedPrivateStage := request.LeasedPrivateStage
 	protected := append([]string(nil), request.Protected...)
 	request.Suite = 0
 	request.PayloadKind = 0
@@ -82,6 +84,7 @@ func RunNativeD1WriteWithPublication(ctx context.Context, request *NativeD1Write
 	}
 	request.Protected = nil
 	request.JournalPrivateStage = false
+	request.LeasedPrivateStage = false
 	defer clear(comment)
 	defer func() {
 		if factors != nil {
@@ -89,7 +92,7 @@ func RunNativeD1WriteWithPublication(ctx context.Context, request *NativeD1Write
 		}
 	}()
 
-	if ctx == nil || suite != SuiteParanoid || factors == nil ||
+	if ctx == nil || !isSupportedSuite(suite) || factors == nil ||
 		admitter == nil || sourcePath == "" || source == nil || plaintext == nil ||
 		destinationPath == "" {
 		return nil, nil, newD1OuterFailure(StageCredentialPolicy, errInvalidD1Creation)
@@ -117,6 +120,7 @@ func RunNativeD1WriteWithPublication(ctx context.Context, request *NativeD1Write
 		plaintext:           plaintext,
 		retainedOutput:      retainedOutput,
 		journalPrivateStage: journalPrivateStage,
+		leasedPrivateStage:  leasedPrivateStage,
 		normal: normalWriteRequest{
 			suite:           suite,
 			payloadKind:     payloadKind,
@@ -223,6 +227,7 @@ type NativeReadRequest struct {
 	Target              string
 	Protected           []string
 	JournalPrivateStage bool
+	LeasedPrivateStage  bool
 	PrepareArchive      bool
 }
 
@@ -591,6 +596,7 @@ func RunNativeRead(
 	target := request.Target
 	protected := append([]string(nil), request.Protected...)
 	journalPrivateStage := request.JournalPrivateStage
+	leasedPrivateStage := request.LeasedPrivateStage
 	prepareArchive := request.PrepareArchive
 	request.Source = nil
 	request.SourceSize = 0
@@ -598,6 +604,7 @@ func RunNativeRead(
 	request.Admitter = nil
 	request.Target = ""
 	request.JournalPrivateStage = false
+	request.LeasedPrivateStage = false
 	request.PrepareArchive = false
 	for index := range request.Protected {
 		request.Protected[index] = ""
@@ -640,6 +647,7 @@ func RunNativeRead(
 		target:              target,
 		protected:           protected,
 		journalPrivateStage: journalPrivateStage,
+		leasedPrivateStage:  leasedPrivateStage,
 		prepareArchive:      prepareArchive,
 	}
 	provider := &nativeCredentialProvider{readerCredentialProvider: readerCredentialProvider{
@@ -803,6 +811,7 @@ type nativeReadSink struct {
 	target              string
 	protected           []string
 	journalPrivateStage bool
+	leasedPrivateStage  bool
 	prepareArchive      bool
 	preparedZIP         bool
 	stage               *pcv3publication.Stage
@@ -830,6 +839,12 @@ func (sink *nativeReadSink) ensureStage() error {
 		append([]string(nil), sink.protected...),
 		pcv3publication.PolicyNoReplace,
 	)
+	if err == nil && sink.leasedPrivateStage {
+		if journalErr := stage.PersistLeasedCleanupJournal(); journalErr != nil {
+			err = errors.Join(journalErr, pcv3publication.ErrCleanupIncomplete, stage.Cleanup())
+			stage = nil
+		}
+	}
 	if err == nil && sink.journalPrivateStage {
 		if journalErr := stage.PersistCleanupJournal(); journalErr != nil {
 			err = errors.Join(
@@ -981,6 +996,7 @@ func (sink *nativeReadSink) abortUncommitted() {
 	sink.protected = nil
 	sink.target = ""
 	sink.journalPrivateStage = false
+	sink.leasedPrivateStage = false
 	sink.stageWriter = nil
 }
 

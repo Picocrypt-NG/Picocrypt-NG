@@ -1,0 +1,14 @@
+{
+  "test_only": true,
+  "purpose": "Rejection fixture for the superseded experimental D1 profile; no read-compatibility promise.",
+  "source_commit": "37b821ac2a5b748758ea4922f6e80f6bf29327b5",
+  "source_path": "src/internal/pcv3operation/internal/pcv3/testdata/d1/independent/d1.pcv",
+  "generator_sha256": "39626af2e58dea53920dec5300d6f94edf6ed7fb47cda8e02f47ed92614424d4",
+  "bootstrap_bytes": 224,
+  "creation_argon2id_calls": 3,
+  "file": {
+    "name": "d1-pre-c.pcv",
+    "size": 2923,
+    "sha256": "30b62308a0bcda8d56368ac37c8c7424c36e37945401048cbd20b1044773c631"
+  }
+}

@@ -238,6 +238,12 @@ func pcv3PhysicalRoleText(role pcv3operation.PhysicalRole) string {
 
 func pcv3OutcomeCopy(presentation pcv3operation.Presentation) pcv3LocalizedCopy {
 	switch presentation.Diagnostic() {
+	case pcv3operation.DiagnosticD1ProfileRequired:
+		return pcv3LocalizedCopy{
+			Title:  tr("pcv3.d1_suite.required.title", "Choose the D1 recovery profile"),
+			Body:   tr("pcv3.d1_suite.required.body", "Choose the profile used to create this D1 volume, then retry unverified recovery. No output was created."),
+			Action: tr("pcv3.publication.close", "Close"),
+		}
 	case pcv3operation.DiagnosticResourceLimit:
 		return resourceLimitCopy()
 	case pcv3operation.DiagnosticResourceBusy:
@@ -255,7 +261,7 @@ func pcv3OutcomeCopy(presentation pcv3operation.Presentation) pcv3LocalizedCopy 
 	case pcv3operation.DiagnosticResourceUnknown:
 		return pcv3LocalizedCopy{
 			Title:  tr("pcv3.resource.unknown.title", "Device resources could not be verified"),
-			Body:   tr("pcv3.resource.unknown.body", "The operation stopped before key derivation. No output was created."),
+			Body:   tr("pcv3.resource.unknown.body", "No output was created."),
 			Action: tr("pcv3.resource.close", "Close resource notice"),
 		}
 	}

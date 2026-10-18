@@ -171,7 +171,7 @@ type EncryptRequest struct {
     Comments    string // Plaintext header comment (max 99999 chars, NOT encrypted)
     Paranoid    bool   // 8 Argon2 passes, Serpent-CTR + XChaCha20, HMAC-SHA3
     ReedSolomon bool   // Reed-Solomon on payload (~6% size overhead)
-    Deniability bool   // Legacy wrapper or, with PCV3+Paranoid, D1
+    Deniability bool   // Legacy wrapper or, with PCV3, D1
     Compress    bool   // Deflate compression in temp zip
 
     // Splitting
@@ -314,7 +314,8 @@ fallback. The internal compatibility writer (`EncryptRequest.PCV3 == false`) rem
 available for legacy compatibility tests and rejects encryption-side keyfiles.
 `EncryptRequest.PCV3 == true` selects PCV3 and accepts password-only,
 keyfile-only, or combined factors. Normal PCV3 uses the canonical streaming serializer; PCV3 with
-`Deniability` requires `Paranoid` and creates D1. ZIP preprocessing is supported. The desktop
+`Deniability` creates D1 with an independent optional `Paranoid` payload-suite choice.
+D1 always uses the fixed 1 GiB, eight-pass, eight-lane Argon2id profile. ZIP preprocessing is supported. The desktop
 GUI can save the authenticated ZIP or extract it for either Normal or D1 using `Auto unzip`.
 `Same level` extracts into the output directory; otherwise a new subdirectory is created.
 Existing files are not replaced. The selected credential
@@ -352,7 +353,7 @@ SAF archive extraction requires the Normal native archive handoff. D1 archives
 can use the existing ZIP save or native extraction actions; `BeginSAF` consumes
 and closes their custody with a terminal invalid-request result.
 PCV3 creation publishes through the identity-bound no-replace publisher.
-Temporary files and v2 cleanup journals live in a pinned private operation directory
+Temporary files and cleanup journals live in a pinned private operation directory
 on the destination filesystem. POSIX directories require verified current-user 0700
 ownership. macOS additionally removes and verifies inherited ACLs using its native
 fd API, so PCV3 publication on macOS requires a CGO build; pure-Go builds report
@@ -364,10 +365,18 @@ file handle. Publication synchronizes both directory namespaces before durable s
 POSIX writer preflight refuses a public parent that other users can mutate; a sticky
 parent owned by the current user or root remains supported. Cleanup uncertainty,
 including an empty private directory that cannot safely be retired, retains source data.
-Startup cleanup journals and recovery are supported on Linux/Android; macOS and
-Windows reject journal persistence as unsupported. Recovery discovers verified
-private directories beneath the selected parent; it cannot find an operation
-directory moved elsewhere after the process dies.
+Linux desktop/CLI operations recover leased private stages only beneath the selected
+destination parent, after pinning the original inputs and keyfiles. Live operations
+and every already-published target are preserved. Unproven or legacy cleanup records
+block the operation without deletion. Android retains its controlled startup cleanup
+contract. macOS and Windows retain their existing cleanup behavior without journals.
+Recovery cannot find an operation directory moved elsewhere after the process dies.
+For stdout, this covers the selected temporary output parent; raw stdin buffering is
+outside private PCV3 stage recovery. After publication and retirement of the private
+journal/directory, retained stdout output remains named `picocrypt-out-*` until
+`StreamTo` removes it. A process crash in that retained-output window can leave the
+named file; private-stage recovery does not cover that window or remove published
+targets.
 `EncryptWithResult(ctx, request, options)` returns the common operation result
 after input and preprocessing cleanup. A committed output with uncertain directory
 durability remains available with a warning; it does not authorize source deletion.
@@ -390,7 +399,7 @@ This does not rewrite or upgrade existing volumes. Existing v1/v2 keyfile volume
 through their legacy branches. Recover plaintext before creating PCV3; merely wrapping an affected
 legacy v2 volume does not make its old authentication schedule keyfile-bound. WASM does not expose
 PCV3 creation. The Android gomobile bridge accepts `write-normal` and `write-d1` creation envelopes
-alongside the read, recovery, and force modes; `write-d1` always runs the paranoid suite, and
+alongside the read, recovery, and force modes; `write-d1` preserves the selected standard or paranoid payload suite, and
 creation uses the same runtime resource admission as reads.
 
 ---
@@ -1016,6 +1025,13 @@ Raw-selected D1 recovery stays an unverified forensic artifact even when its inn
 records authenticate. Its range/final statuses retain those authentication facts;
 the physical D1 role records the untrusted selection. The artifact layout stays
 unchanged, but older readers may reject this new combination of trust and evidence.
+`Request.D1SuiteHint` is optional and accepts only `SuiteStandard` or `SuiteParanoid`
+for `ModeForceUnverifiedD1` with live physical-role consent. When the hidden profile
+cannot be authenticated, an absent hint returns `DiagnosticD1ProfileRequired` with
+no output. A contradictory authenticated profile is refused. The hint selects no
+KDF parameters and never grants authenticated-output authority. Mobile JSON uses
+the optional string `d1SuiteHint` (`standard` or `paranoid`) only in the matching
+`force-unverified-d1` read envelope.
 Recovery uses an 8 MiB allocation budget across candidates; an absent tail is
 represented without allocating or scanning one entry per missing record. Artifact
 parsing and serialization remain private and preserve the existing

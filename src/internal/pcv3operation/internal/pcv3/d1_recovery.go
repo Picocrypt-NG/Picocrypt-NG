@@ -53,7 +53,11 @@ func RecoverD1Unverified(
 	role D1BootstrapRole,
 	output D1RecoveryOutput,
 ) (result *RecoveryResult, resultErr error) {
-	err := withUnverifiedD1RecoveryRequest(role, func(request d1RecoveryRequest) error {
+	return RecoverD1UnverifiedWithSuite(ctx, source, sourceSize, factors, admitter, role, 0, output)
+}
+
+func RecoverD1UnverifiedWithSuite(ctx context.Context, source io.ReaderAt, sourceSize int64, factors *pcv3credential.FactorRequest, admitter pcv3credential.Admitter, role D1BootstrapRole, suiteHint Suite, output D1RecoveryOutput) (result *RecoveryResult, resultErr error) {
+	err := withUnverifiedD1RecoveryRequestAndSuite(role, suiteHint, func(request d1RecoveryRequest) error {
 		result, resultErr = recoverD1WithRequest(
 			ctx,
 			source,
@@ -143,11 +147,10 @@ func recoverD1WithRequest(
 				return err
 			}
 			defer transcript.Close()
-			normalInput, outerInput, err := pcv3credential.NewD1CredentialInputs(transcript)
+			outerInput, err := pcv3credential.NewD1CredentialInput(transcript)
 			if err != nil {
 				return err
 			}
-			defer normalInput.Close()
 			defer outerInput.Close()
 
 			return withD1RecoveryCredentialCandidate(
@@ -177,8 +180,6 @@ func recoverD1WithRequest(
 								source,
 								sourceSize,
 								validated,
-								normalInput,
-								admitter,
 								request,
 								selection,
 								defaultD1ForceSeams(),
@@ -217,6 +218,9 @@ func recoverD1WithRequest(
 								tailCandidate,
 							)
 							if len(candidates) == 0 {
+								if request.mode == RecoveryModeForceUnverified && request.suiteHint == 0 {
+									return ErrD1ProfileRequired
+								}
 								result, resultErr = newD1ForceTerminalResult(
 									OutcomeCredentialsOrDamage,
 									StageD1Bootstrap,
@@ -228,8 +232,6 @@ func recoverD1WithRequest(
 								source,
 								sourceSize,
 								validated,
-								normalInput,
-								admitter,
 								request,
 								candidates,
 								frontAnalysis,
@@ -250,6 +252,9 @@ func recoverD1WithRequest(
 			result.Close()
 		}
 		stage := d1CredentialFailureStage(ctx, factorErr)
+		if errors.Is(factorErr, ErrD1ProfileRequired) {
+			return recoveryOperationFailure(stage), ErrD1ProfileRequired
+		}
 		return recoveryOperationFailure(stage), &recoveryEngineError{stage: stage}
 	}
 	if result == nil {
@@ -270,23 +275,50 @@ func d1BootstrapReadResult(err error) (*RecoveryResult, error) {
 func withD1RecoveryCandidate(
 	ctx context.Context,
 	bootstrap d1BootstrapCandidate,
-	owner *pcv3credential.D1OuterCredentialOwner,
+	access d1BootstrapCredentialAccess,
 	request d1RecoveryRequest,
 	callback func(*d1ForceCandidate) error,
 ) error {
-	if ctx == nil || owner == nil || !request.valid() || callback == nil {
+	if ctx == nil || access == nil || !request.valid() || callback == nil {
 		return errInvalidD1Force
 	}
+	checkedCallback := func(candidate *d1ForceCandidate) error {
+		if candidate != nil && request.suiteHint != 0 && (candidate.profileAuthenticated || candidate.wrapVerified || candidate.replicaVerified) {
+			if err := candidate.withOuterKeys(ctx, func(keys *pcv3credential.BorrowedD1OuterKeys) error {
+				if Suite(keys.Profile().Suite()) != request.suiteHint {
+					return errD1ProfileMismatch
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return callback(candidate)
+	}
 	if request.mode != RecoveryModeNormalV3 {
-		return bindD1ForceCandidateWithAccess(
+		hint, requireProfile := Suite(0), false
+		if request.authorizesRawOuter(bootstrap.role) {
+			hint, requireProfile = request.suiteHint, true
+		}
+		callbackInvoked := false
+		err := bindD1ForceCandidateWithHint(
 			ctx,
 			bootstrap,
-			&d1BootstrapOwnerAccess{owner: owner},
+			access,
 			defaultD1BootstrapAuthSeams(),
-			callback,
+			hint,
+			requireProfile,
+			func(candidate *d1ForceCandidate) error {
+				callbackInvoked = true
+				return checkedCallback(candidate)
+			},
 		)
+		if !callbackInvoked && errors.Is(err, ErrD1ProfileRequired) {
+			return checkedCallback(nil)
+		}
+		return err
 	}
-	attempt := authenticateD1Bootstrap(ctx, bootstrap, owner)
+	attempt := authenticateD1BootstrapWithAccess(ctx, bootstrap, access, defaultD1BootstrapAuthSeams())
 	if attempt == nil {
 		return errInvalidD1Force
 	}
@@ -339,7 +371,7 @@ func withD1RecoveryCredentialCandidate(
 		role,
 		admitter,
 		func(owner *pcv3credential.D1OuterCredentialOwner) error {
-			return withD1RecoveryCandidate(ctx, bootstrap, owner, request, callback)
+			return withD1RecoveryCandidate(ctx, bootstrap, &d1BootstrapOwnerAccess{owner: owner}, request, callback)
 		},
 	)
 }
@@ -415,8 +447,6 @@ func recoverD1Candidates(
 	source io.ReaderAt,
 	sourceSize int64,
 	validated *pcv3credential.ValidatedFactors,
-	normalInput *pcv3credential.CredentialInputNormal,
-	admitter pcv3credential.Admitter,
 	request d1RecoveryRequest,
 	candidates []*d1ForceCandidate,
 	preanalyzed *d1ForceCandidateAnalysis,
@@ -443,8 +473,6 @@ func recoverD1Candidates(
 		source,
 		sourceSize,
 		validated,
-		normalInput,
-		admitter,
 		request,
 		selection,
 		seams,
@@ -457,8 +485,6 @@ func recoverD1Selection(
 	source io.ReaderAt,
 	sourceSize int64,
 	validated *pcv3credential.ValidatedFactors,
-	normalInput *pcv3credential.CredentialInputNormal,
-	admitter pcv3credential.Admitter,
 	request d1RecoveryRequest,
 	selection d1ForceSelection,
 	seams d1ForceSeams,
@@ -489,8 +515,6 @@ func recoverD1Selection(
 			source,
 			sourceSize,
 			validated,
-			normalInput,
-			admitter,
 			request,
 			selection,
 			seams,
@@ -601,8 +625,6 @@ func recoverD1Inner(
 	source io.ReaderAt,
 	sourceSize int64,
 	validated *pcv3credential.ValidatedFactors,
-	normalInput *pcv3credential.CredentialInputNormal,
-	admitter pcv3credential.Admitter,
 	request d1RecoveryRequest,
 	selection d1ForceSelection,
 	seams d1ForceSeams,
@@ -621,7 +643,7 @@ func recoverD1Inner(
 		)
 	}
 	defer inner.Close()
-	structure, err := InspectRecovery(inner, inner.Size())
+	structure, err := inspectRecovery(inner, inner.Size(), true)
 	if err != nil {
 		if d1InnerOuterAuthenticationUnavailable(request, err) {
 			return d1InnerUnavailableResult(
@@ -668,12 +690,21 @@ func recoverD1Inner(
 	innerRequest.budget = request.budget
 	var innerSelection recoverySelection
 	var selectionErr error
-	owner, credentialErr := pcv3credential.WithD1RecoveryCredentialSession(
+	var innerRoot [32]byte
+	defer pcv3crypto.SecureZero(innerRoot[:])
+	var profile pcv3credential.D1Profile
+	if err := selection.analysis.candidate.withOuterKeys(ctx, func(keys *pcv3credential.BorrowedD1OuterKeys) error {
+		profile = keys.Profile()
+		return keys.CopyInnerRoot(innerRoot[:])
+	}); err != nil {
+		return d1OperationResult(ctx, err)
+	}
+	owner, credentialErr := pcv3credential.WithD1DerivedRecoveryCredentialSession(
 		ctx,
-		normalInput,
+		append([]byte(nil), innerRoot[:]...),
+		profile,
 		validated,
 		tuples,
-		admitter,
 		func(session *pcv3credential.RecoverySession) error {
 			if request.mode == RecoveryModeNormalV3 {
 				innerSelection, selectionErr = selectRecoveryWithSession(

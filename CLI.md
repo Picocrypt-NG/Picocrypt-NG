@@ -105,11 +105,13 @@ Do not pass real passwords with `-p` in routine use: the value can remain in she
 | `--comments` | string | | Comments to store in header (NOT encrypted) |
 | `--paranoid` | bool | false | Enable Serpent-CTR + XChaCha20 cascade |
 | `--reed-solomon` | bool | false | Enable Reed-Solomon error correction |
-| `--deniability` | bool | false | Create PCV3 D1; requires `--paranoid` |
+| `--deniability` | bool | false | Create PCV3 D1; `--paranoid` is optional |
 | `--compress` | bool | false | Compress files before encryption |
 
 Normal PCV3 supports regular files, folders/ZIP payloads, Reed-Solomon, splitting, and
-stdin/stdout. `--pcv3 --deniability --paranoid` creates random-looking PCV3 D1. D1 accepts files,
+stdin/stdout. `--deniability` creates random-looking PCV3 D1; add `--paranoid` for the
+Serpent cascade. D1 always uses Argon2id with 1 GiB, eight passes and eight lanes,
+independently of that cipher choice. D1 accepts files,
 folders/multiple inputs, compression, splitting, raw stdin/stdout, and the same password-only,
 keyfile-only, or combined credential policies as Normal PCV3. Normal archive payloads use the explicit `--pcv3-archive=extract` action.
 D1 archive payloads decrypt to a durable `.zip` in the CLI. Optional automatic extraction
@@ -215,6 +217,7 @@ as quoted UTF-8 on stderr; failed authentication never releases the comment.
 | `--pcv3-keyfile-order=ordered\|unordered` | Pin keyfile ordering when keyfiles are used |
 | `--pcv3-action=recovery\|force` | Select authenticated recovery or Force recovery |
 | `--pcv3-role=primary\|backup\|front\|tail` | Select an explicit physical role for unverified Force |
+| `--pcv3-d1-suite=standard\|paranoid` | Hint the cipher suite only for explicitly selected unverified D1 Force |
 | `--pcv3-archive=extract\|close` | Extract or discard an authenticated archive payload |
 | `--pcv3-extract-to=DIR` | Existing extraction directory used with `extract` |
 
@@ -232,6 +235,12 @@ one object per record. Before output, recovery checks the exact result size and
 available disk space with a 64 MiB reserve. Unverified Force additionally limits
 its evidence table to the larger of 64 MiB or the input's readable file length.
 Ordinary encryption and decryption do not use the recovery-map budget.
+
+If corruption prevents authenticating D1's hidden cipher suite, unverified Force
+requires an explicit `--pcv3-d1-suite` choice together with `--pcv3-role=front|tail`.
+This choice does not authenticate recovered data or reduce D1's fixed KDF cost.
+A hint that contradicts an authenticated suite is refused. Ordinary reads and
+authenticated recovery select the suite from authenticated metadata.
 
 ## Usage Examples
 
@@ -529,9 +538,6 @@ PCV3 requires a password, keyfiles, or both.
 
 **"new encryption requires PCV3; --pcv3=false is unsupported"**
 Remove `--pcv3=false`. New native encryption uses PCV3; legacy volumes remain readable.
-
-**"PCV3 D1 requires --paranoid"**
-Add `--paranoid` when creating a deniable volume with `--deniability`.
 
 **"invalid glob pattern"**
 Ensure explicit glob patterns are quoted to prevent shell expansion: `--glob "*.txt"`

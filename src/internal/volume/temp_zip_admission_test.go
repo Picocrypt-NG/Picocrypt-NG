@@ -12,7 +12,8 @@ func TestTemporaryZIPAdmissionCountsSimultaneousStorage(t *testing.T) {
 	}{
 		{"normal", EncryptRequest{PCV3: true}, 2362, 17},
 		{"normal split", EncryptRequest{PCV3: true, Split: true}, 4707, 17},
-		{"d1", EncryptRequest{PCV3: true, Deniability: true, Paranoid: true}, 2890, 17},
+		{"d1 standard", EncryptRequest{PCV3: true, Deniability: true}, 3082, 17},
+		{"d1 paranoid", EncryptRequest{PCV3: true, Deniability: true, Paranoid: true}, 3082, 17},
 		{"legacy", EncryptRequest{}, 807, 17},
 		{"legacy wrapper", EncryptRequest{Deniability: true}, 1677, 17},
 	} {

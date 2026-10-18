@@ -22,6 +22,9 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -78,6 +81,45 @@ class Pcv3UiContractTest {
 
     private val context: Context
         get() = ApplicationProvider.getApplicationContext()
+
+    @Test
+    fun rawD1ProfileChoicesAreScopedToUnverifiedRecoveryAndDoNotGrantConsent() {
+        val mainViewModel = newMainViewModel()
+        mainViewModel.updateFormData(mainViewModel.formState.value.copy(
+            selectedFilename = "hidden.bin", copiedFilePath = "/private/hidden",
+        ))
+        assertTrue(mainViewModel.selectPcv3D1())
+        mainViewModel.setPcv3Action(Pcv3ActionIntent.DECRYPT)
+        compose.setContent {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                DecryptOptionsCard(viewModel = mainViewModel)
+            }
+        }
+
+        compose.onNodeWithText(text(R.string.pcv3_decrypt_options)).performClick()
+        compose.onNodeWithText(text(R.string.pcv3_d1_profile_heading)).assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.pcv3_action_force_recovery)).performClick()
+        compose.onNodeWithText(text(R.string.pcv3_d1_profile_heading)).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.pcv3_d1_profile_standard)).performScrollTo().performClick()
+        compose.runOnIdle {
+            assertEquals(Pcv3D1SuiteHintIntent.STANDARD, mainViewModel.formState.value.pcv3Intent?.d1SuiteHint)
+        }
+        compose.onNodeWithText(text(R.string.paranoid)).performScrollTo().performClick()
+        compose.runOnIdle {
+            assertEquals(Pcv3D1SuiteHintIntent.PARANOID, mainViewModel.formState.value.pcv3Intent?.d1SuiteHint)
+        }
+        compose.onNodeWithText(text(R.string.pcv3_d1_profile_auto)).performScrollTo().performClick()
+        compose.runOnIdle { assertNull(mainViewModel.formState.value.pcv3Intent?.d1SuiteHint) }
+        compose.onNodeWithTag(PCV3_CONSENT_TAG).assertDoesNotExist()
+
+        compose.onNodeWithText(text(R.string.pcv3_action_recovery)).performScrollTo().performClick()
+        compose.onNodeWithText(text(R.string.pcv3_d1_profile_heading)).assertDoesNotExist()
+        compose.runOnIdle {
+            mainViewModel.claimPcv3Normal("normal.pcv", "/private/normal")
+            mainViewModel.setPcv3Action(Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT)
+        }
+        compose.onNodeWithText(text(R.string.pcv3_d1_profile_heading)).assertDoesNotExist()
+    }
 
     @Test
     fun retainedPlaintextShowsSaveFailureAndExplicitConfirmedDiscard() = retainedOutputDiscard(false)

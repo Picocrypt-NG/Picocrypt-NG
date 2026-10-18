@@ -151,6 +151,8 @@ type App struct {
 	statusLabel        *ColoredLabel
 	pcv3Container      *fyne.Container
 	pcv3ActionSelect   *widget.Select
+	pcv3D1SuiteSelect  *widget.Select
+	pcv3D1SuiteControl *fyne.Container
 	pcv3FormatButton   *widget.Button
 	pcv3CancelButton   *widget.Button
 	pcv3ArchiveSummary *pcv3operation.ArchiveSummary

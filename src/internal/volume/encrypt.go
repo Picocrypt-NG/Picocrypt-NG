@@ -122,6 +122,33 @@ func encryptLegacy(ctx context.Context, req *EncryptRequest) (retErr error) {
 func encryptPCV3(ctx *OperationContext, req *EncryptRequest, options pcv3operation.ExecutionOptions) (result *pcv3operation.Result, retErr error) {
 	ctx.SetStatus("Generating values...")
 	ctx.SetCanCancel(true)
+	if ctx.IsCancelled() {
+		return nil, ctx.CancellationError()
+	}
+	factors, desktopHeld, err := prepareDesktopEncryptCleanup(req, options)
+	defer func() {
+		panicValue := recover()
+		var cleanupErr error
+		if factors != nil {
+			cleanupErr = factors.Close()
+		}
+		for _, file := range desktopHeld {
+			cleanupErr = errors.Join(cleanupErr, file.Close())
+		}
+		if cleanupErr != nil {
+			if result != nil {
+				result.WithCleanupWarning()
+			}
+			retErr = errors.Join(retErr, ErrEncryptInputCleanupIncomplete, cleanupErr)
+		}
+		if panicValue != nil {
+			fileops.RepanicWithCleanup(panicValue, cleanupErr)
+		}
+	}()
+	if err != nil {
+		return nil, err
+	}
+	options.DesktopProtectedFiles = append(append([]*os.File(nil), options.DesktopProtectedFiles...), desktopHeld...)
 	prepared, err := prepareEncryptInput(ctx, req, nil)
 	if err != nil {
 		return nil, err
@@ -139,9 +166,11 @@ func encryptPCV3(ctx *OperationContext, req *EncryptRequest, options pcv3operati
 			fileops.RepanicWithCleanup(panicValue, cleanupErr)
 		}
 	}()
-	factors, err := pcv3WriteFactors(req)
-	if err != nil {
-		return nil, err
+	if factors == nil {
+		factors, err = pcv3WriteFactors(req)
+		if err != nil {
+			return nil, err
+		}
 	}
 	protected := append([]string{ctx.InputFile}, req.InputFiles...)
 	protected = append(protected, req.OnlyFiles...)
