@@ -141,6 +141,19 @@ tasks.withType<Test>().matching { it.name == "testDebugUnitTest" }.configureEach
     )
 }
 
+if (
+    providers.gradleProperty("android.injected.androidTest.leaveApksInstalledAfterRun")
+        .map(String::toBoolean).getOrElse(false)
+) {
+    // AGP's Android test engine installs APKs from the forked Test JVM.
+    tasks.withType<Test>().matching { it.name == "connectedDebugAndroidTest" }.configureEach {
+        systemProperty("android-test.apk-install-options", "-r")
+        // Device validation must execute instead of reusing host-side results.
+        outputs.upToDateWhen { false }
+        outputs.cacheIf { false }
+    }
+}
+
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_11)

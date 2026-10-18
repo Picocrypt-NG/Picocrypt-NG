@@ -24,8 +24,13 @@ for selector in "$@"; do
   mkdir "$destination"
   # AGP 9.4's test engine serializes runner arguments with commas, so a
   # comma-separated class value silently loses every class after the first.
+  # Keep test providers registered while DocumentsUI refreshes its roots.
+  # The built-in worker avoids AGP 9.4's legacy install-option bridge.
   status=0
-  ./gradlew connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=$selector" || status=$?
+  ./gradlew connectedDebugAndroidTest \
+    -Pandroid.experimental.androidTest.builtin_test_platform=true \
+    -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true \
+    "-Pandroid.testInstrumentationRunnerArguments.class=$selector" || status=$?
 
   for path in outputs/androidTest-results/connected reports/androidTests/connected; do
     if [[ -d "app/build/$path" ]]; then
