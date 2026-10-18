@@ -104,10 +104,11 @@ func EncodeInto(dst []byte, rs *infectious.FEC, data []byte) error {
 	if len(dst) != rs.Total() {
 		return fmt.Errorf("rs encode: dst size %d != total %d", len(dst), rs.Total())
 	}
-	if err := rs.Encode(data, func(s infectious.Share) {
-		dst[s.Number] = s.Data[0]
-	}); err != nil {
-		return fmt.Errorf("rs encode: %w", err)
+	copy(dst[:rs.Required()], data)
+	for number := rs.Required(); number < rs.Total(); number++ {
+		if err := rs.EncodeSingle(data, dst[number:number+1], number); err != nil {
+			return fmt.Errorf("rs encode: %w", err)
+		}
 	}
 	return nil
 }
@@ -253,16 +254,14 @@ func Decode(rs *infectious.FEC, data []byte, fastDecode bool) ([]byte, error) {
 		return data[:128], nil //nolint:gosec // G602: len(data)==rs.Total() guaranteed by precondition above; 128<=Total
 	}
 
-	tmp := make([]infectious.Share, rs.Total())
-	for i := range rs.Total() {
-		tmp[i].Number = i
-		tmp[i].Data = append(tmp[i].Data, data[i])
-	}
-	res, err := rs.Decode(nil, tmp)
-	// Force decode the data but return the error as well
-	if err != nil {
-		if rs.Total() == 136 {
-			return data[:128], err //nolint:gosec // G602: len(data)==rs.Total() guaranteed by precondition above; 128<=Total
+	decoder := NewRSDecoder(rs)
+	defer decoder.Close()
+	res := make([]byte, rs.Required())
+	if err := decoder.DecodeInto(res, data); err != nil {
+		// Preserve the original Force salvage contract: failed correction lends
+		// the unmodified systematic bytes and returns the correction error.
+		if rs.Total() == RS128EncodedSize {
+			return data[:RS128DataSize], err //nolint:gosec // G602: len(data)==rs.Total()==136 by the precondition and branch; RS128DataSize==128
 		}
 		return data[:rs.Total()/3], err
 	}

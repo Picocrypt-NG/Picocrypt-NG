@@ -763,9 +763,9 @@ func writeNormalRecords(
 	commitment := coreCommitment(core)
 	defer pcv3crypto.SecureZero(commitment[:])
 	var descriptor [48]byte
-	var encodedBlock [136]byte
+	var encodedBatch [256 * 136]byte
 	defer pcv3crypto.SecureZero(descriptor[:])
-	defer pcv3crypto.SecureZero(encodedBlock[:])
+	defer pcv3crypto.SecureZero(encodedBatch[:])
 
 	for index := uint64(0); ; index++ {
 		if err := ctx.Err(); err != nil {
@@ -849,16 +849,24 @@ func writeNormalRecords(
 			if !ok || decodedLength > len(semantic) || decodedLength%128 != 0 {
 				return newNormalWriteFailure(stage, errNormalWriteGeometry)
 			}
-			for block := range decodedLength / 128 {
-				pcv3crypto.SecureZero(encodedBlock[:])
-				if err := pcencoding.EncodeInto(
-					encodedBlock[:],
-					codecs.RS128,
-					semantic[block*128:(block+1)*128],
-				); err != nil {
-					return newNormalWriteFailure(stage, errNormalWriteRS)
+			blocks := decodedLength / 128
+			for first := 0; first < blocks; first += 256 {
+				count := min(256, blocks-first)
+				pcv3crypto.SecureZero(encodedBatch[:])
+				for word := range count {
+					if err := ctx.Err(); err != nil {
+						return newNormalWriteFailure(StageCancellation, err)
+					}
+					block := first + word
+					if err := pcencoding.EncodeInto(
+						encodedBatch[word*136:(word+1)*136],
+						codecs.RS128,
+						semantic[block*128:(block+1)*128],
+					); err != nil {
+						return newNormalWriteFailure(stage, errNormalWriteRS)
+					}
 				}
-				if err := writer.write(encodedBlock[:]); err != nil {
+				if err := writer.write(encodedBatch[:count*136]); err != nil {
 					return err
 				}
 			}
