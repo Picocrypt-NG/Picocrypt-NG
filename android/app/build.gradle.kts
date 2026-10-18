@@ -36,6 +36,8 @@ val releaseSigningRequired = providers
 android {
     namespace = "io.github.picocrypt_ng.picocrypt_ng"
     compileSdk = 37
+    ndkVersion = providers.fileContents(rootProject.layout.projectDirectory.file("ndk-version.txt"))
+        .asText.get().trim()
 
     androidResources {
         generateLocaleConfig = true

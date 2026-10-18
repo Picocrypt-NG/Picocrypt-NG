@@ -36,15 +36,15 @@ jobs:
 
     - name: Install gomobile
       run: |
-        go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
-        go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
+        go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20261011034528-197770444867
+        go install golang.org/x/mobile/cmd/gobind@v0.0.0-20261011034528-197770444867
         mkdir -p "$(go env GOPATH | cut -d: -f1)/pkg/gomobile"
 
     - name: Set up Android SDK
       uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
 
     - name: Set up JDK 21
-      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
       with:
         distribution: "temurin"
         java-version: "21"
@@ -156,7 +156,7 @@ jobs:
 
     - name: Upload instrumented test report
       if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: instrumented-test-report
         path: |
@@ -171,7 +171,7 @@ jobs:
         cp android/app/build/outputs/apk/debug/app-debug.apk out/Picocrypt-NG-android-debug.apk
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: android-instrumented-ONLY-FOR-TESTING
         path: out/*.apk

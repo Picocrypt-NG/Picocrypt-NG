@@ -1770,13 +1770,13 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 
 func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {
 	const (
-		gradle980Sha256        = "bafd5ce9cfaea0fbccfdc8439a1ac42fbd4cd9c89dc9a988228d8a2639a58e6c"
-		gradleWrapperJarSha256 = "238e777fcddd7e34f9708186085def2abd6e08e658505b38718d79d74c21abd5"
+		gradle981Sha256        = "dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f"
+		gradleWrapperJarSha256 = "3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98"
 	)
 
 	wrapper := mustReadRepoFile(t, "android/gradle/wrapper/gradle-wrapper.properties")
-	mustContain(t, wrapper, "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.8.0-bin.zip")
-	mustMatch(t, wrapper, `(?m)^distributionSha256Sum=`+gradle980Sha256+`$`)
+	mustContain(t, wrapper, "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.8.1-bin.zip")
+	mustMatch(t, wrapper, `(?m)^distributionSha256Sum=`+gradle981Sha256+`$`)
 	mustMatch(t, wrapper, `(?m)^validateDistributionUrl=true$`)
 	mustMatch(t, wrapper, `(?m)^networkTimeout=60000$`)
 
@@ -1785,7 +1785,7 @@ func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {
 		t.Fatalf("read Gradle wrapper JAR: %v", err)
 	}
 	if got := fmt.Sprintf("%x", sha256.Sum256(wrapperJar)); got != gradleWrapperJarSha256 {
-		t.Fatalf("Gradle wrapper JAR SHA-256 = %s, want official Gradle 9.8.0 checksum %s", got, gradleWrapperJarSha256)
+		t.Fatalf("Gradle wrapper JAR SHA-256 = %s, want official Gradle 9.8.1 checksum %s", got, gradleWrapperJarSha256)
 	}
 
 	metadata := mustReadRepoFile(t, "android/gradle/verification-metadata.xml")
@@ -2085,7 +2085,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	}
 	for tool, want := range map[string]string{
 		"go":                                   "1.27.2",
-		"go:golang.org/x/vuln/cmd/govulncheck": "1.8.0",
+		"go:golang.org/x/vuln/cmd/govulncheck": "1.9.0",
 	} {
 		if got := config.Tools[tool]; got != want {
 			t.Errorf("desktop %s = %q, want %q", tool, got, want)
@@ -2095,8 +2095,8 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	// even when the desktop development tools are upgraded.
 	for tool, want := range map[string]string{
 		"go":                                  "1.27.2",
-		"go:golang.org/x/mobile/cmd/gobind":   "v0.0.0-20260908204917-8b95e45f8d3e",
-		"go:golang.org/x/mobile/cmd/gomobile": "v0.0.0-20260908204917-8b95e45f8d3e",
+		"go:golang.org/x/mobile/cmd/gobind":   "v0.0.0-20261011034528-197770444867",
+		"go:golang.org/x/mobile/cmd/gomobile": "v0.0.0-20261011034528-197770444867",
 	} {
 		if got := config.Tasks["android:gomobile"].Tools[tool]; got != want {
 			t.Errorf("Android %s = %q, want %q", tool, got, want)
@@ -2108,7 +2108,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	mustNotContain(t, goMod, "\ntoolchain ")
 
 	staticChecks := mustReadWorkflow(t, ".github/workflows/pr-static-checks.yml")
-	mustContain(t, staticChecks, "golang.org/x/vuln/cmd/govulncheck@v1.8.0")
+	mustContain(t, staticChecks, "golang.org/x/vuln/cmd/govulncheck@v1.9.0")
 	mustNotContain(t, staticChecks, "golang.org/x/vuln/cmd/govulncheck@latest")
 }
 

@@ -8,8 +8,8 @@ This directory contains the Android app that integrates with the Go encryption b
 
 1. **Go Mobile**: Use exactly Go 1.27.2 and install Go mobile bindings
    ```bash
-   go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
-   go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
+   go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20261011034528-197770444867
+   go install golang.org/x/mobile/cmd/gobind@v0.0.0-20261011034528-197770444867
    mkdir -p "$(go env GOPATH | cut -d: -f1)/pkg/gomobile"
    ```
 
