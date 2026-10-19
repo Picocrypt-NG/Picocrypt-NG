@@ -1583,8 +1583,8 @@ func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
 				if got := step.With["distribution"]; got != "temurin" {
 					t.Fatalf("%s job %s setup-java distribution = %#v, want temurin", path, jobName, got)
 				}
-				if got := step.With["java-version"]; got != "21" {
-					t.Fatalf("%s job %s setup-java java-version = %#v, want 21", path, jobName, got)
+				if got := step.With["java-version"]; got != "21.0.12+101.0.LTS" {
+					t.Fatalf("%s job %s setup-java java-version = %#v, want 21.0.12+101.0.LTS", path, jobName, got)
 				}
 			}
 			if path == ".github/workflows/build-android.yml" && jobName == "release" {
@@ -1597,7 +1597,7 @@ func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
 		}
 	}
 
-	mustContain(t, mustReadRepoFile(t, "mise.toml"), `java = "temurin-21"`)
+	mustContain(t, mustReadRepoFile(t, "mise.toml"), `java = "temurin-21.0.12+101.0.LTS"`)
 
 	buildScript := mustReadRepoFile(t, "android/build-app")
 	mustContain(t, buildScript, `"$JAVA_MAJOR" != "21"`)
