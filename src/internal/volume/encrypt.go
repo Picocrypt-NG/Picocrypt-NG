@@ -268,6 +268,22 @@ func encryptPreprocess(ctx *OperationContext, req *EncryptRequest) error {
 func encryptPreprocessWithBorrowed(ctx *OperationContext, req *EncryptRequest, borrowed *os.File) error {
 	inputFiles := preprocessInputFiles(req)
 
+	var spoolSource *fileops.ZIPSequentialSource
+	if req.BorrowedSpool != nil {
+		if borrowed != nil || len(inputFiles) != 1 || inputFiles[0] != req.BorrowedSpool.Path() || len(req.OnlyFolders) > 0 {
+			return errors.New("encrypted spool does not match a single input")
+		}
+		borrowed = req.BorrowedSpool.File()
+		if borrowed == nil {
+			return errors.New("encrypted spool source is closed")
+		}
+		info, err := borrowed.Stat()
+		if err != nil {
+			return err
+		}
+		spoolSource = &fileops.ZIPSequentialSource{Info: spoolInputInfo{FileInfo: info, length: int64(req.BorrowedSpool.Length())}, Open: req.BorrowedSpool.OpenReader} //nolint:gosec // Sealed spool lengths fit in signed file extents.
+	}
+
 	// Create a zip when the selection is anything other than a single bare file:
 	// multiple files, a single file with compression requested, or any folder
 	// selection (even one containing a single file). A dropped folder is labelled
@@ -291,6 +307,12 @@ func encryptPreprocessWithBorrowed(ctx *OperationContext, req *EncryptRequest, b
 		if err != nil {
 			return err
 		}
+		if req.BorrowedSpool != nil {
+			if err := identities[0].CheckFile(borrowed); err != nil {
+				return err
+			}
+		}
+
 		ctx.SetStatus("Compressing files...")
 		zipReq := *req
 		zipReq.InputFiles = inputFiles
@@ -299,13 +321,16 @@ func encryptPreprocessWithBorrowed(ctx *OperationContext, req *EncryptRequest, b
 		if err != nil {
 			return err
 		}
+		if req.BorrowedSpool != nil {
+			entryNames[inputFiles[0]] = "stdin"
+		}
 
 		maxPhysical, err := admitTemporaryZIP(req)
 		if err != nil {
 			return err
 		}
 		tempZip, err := fileops.CreateTempZip(ctx.Ctx, fileops.TempZipOptions{
-			Files: inputFiles, InputIdentities: identities, RootDir: commonRoot, EntryNames: entryNames,
+			Files: inputFiles, InputIdentities: identities, RootDir: commonRoot, EntryNames: entryNames, SingleSource: spoolSource,
 			NearPath: req.OutputFile, Compress: req.Compress, MaxPhysicalBytes: maxPhysical,
 			Budget: budget, Progress: ctx.UpdateProgress, Status: ctx.SetStatus, Cancel: ctx.IsCancelled,
 		})
@@ -715,3 +740,11 @@ func encryptFinalize(ctx *OperationContext, req *EncryptRequest) error {
 	}
 	return nil
 }
+
+// spoolInputInfo preserves archive metadata while excluding private AEAD tags.
+type spoolInputInfo struct {
+	os.FileInfo
+	length int64
+}
+
+func (info spoolInputInfo) Size() int64 { return info.length }

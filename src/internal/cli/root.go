@@ -118,17 +118,20 @@ var (
 	restoreTerminalFn = func(s *term.State) { _ = term.Restore(int(os.Stdin.Fd()), s) }
 )
 
-// handleSignal runs when SIGINT/SIGTERM arrives. If an operation is in flight
-// (reporter stored), it cancels cooperatively. Otherwise (typically during the
-// interactive password prompt, before the reporter is stored) it restores the
-// terminal mode and exits, so the shell is not left with echo disabled.
+// handleSignal cancels active stdin accumulation or an operation cooperatively.
+// Otherwise, typically during the password prompt, it restores the terminal
+// mode before exiting so the shell is not left with echo disabled.
 func handleSignal() {
+	if cancelActiveEncryptedStdinCopy() {
+		return
+	}
 	if r := globalReporter.Load(); r != nil {
 		r.Cancel()
 		return
 	}
 	restoreTerminalState()
 	_ = cleanupActiveStdinTemp()
+	_ = cleanupActiveEncryptedStdin()
 	exitFn(1)
 }
 
@@ -171,10 +174,9 @@ func executeCLICommand() int {
 				return
 			case <-signals:
 				if interrupted.Swap(true) {
-					// A repeated interrupt explicitly abandons cooperative cleanup. Restore
-					// tty first; never wait for a reporter lock or claim cleanup completed.
+					// A repeated interrupt abandons cooperative cleanup. Restore the tty
+					// and exit without waiting on filesystem I/O or an encrypted owner lock.
 					restoreTerminalState()
-					_ = cleanupActiveStdinTemp()
 					exitFn(1)
 					return
 				}
@@ -232,14 +234,14 @@ func detectCLIMode(args []string) bool {
 		}
 
 		if flag.NoOptDefVal == "" && !hasInlineValue {
-			nextIndex := index + 1
-			if nextIndex >= len(args) {
+			remaining := args[index:]
+			if len(remaining) < 2 {
 				return true
 			}
-			if isKnownRootCommand(args[nextIndex]) {
+			if isKnownRootCommand(remaining[1]) {
 				return true
 			}
-			index = nextIndex
+			index++
 		}
 
 		index++

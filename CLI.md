@@ -10,6 +10,7 @@ This document provides comprehensive usage instructions for the Picocrypt NG com
 - [Commands](#commands)
   - [Encrypt Command](#encrypt-command)
   - [Decrypt Command](#decrypt-command)
+  - [Verify Command](#verify-command)
 - [Usage Examples](#usage-examples)
 - [Stdin/Stdout Streaming](#stdinstdout-streaming)
 - [Scripting Guide](#scripting-guide)
@@ -242,6 +243,29 @@ This choice does not authenticate recovered data or reduce D1's fixed KDF cost.
 A hint that contradicts an authenticated suite is refused. Ordinary reads and
 authenticated recovery select the suite from authenticated metadata.
 
+### Verify Command
+
+`verify --deniability VOLUME` fully verifies PCV3 D1 without creating an output
+file or modifying the source. It requires a regular file path and an explicit
+`--pcv3-factors=password|keyfiles|combined` policy. Password input (`-p`, `-P`,
+`--password-fd`) and keyfile/order flags follow the decrypt credential contract.
+
+```bash
+Picocrypt-NG verify --deniability hidden.pcv --pcv3-factors=password -P < /path/to/password-file
+```
+
+Both physical bootstraps must authenticate and agree on roots, profile and body
+length, with independent bootstrap parameters and canonical geometry. Verification
+then authenticates the complete outer and inner payload through the final record.
+A healthy run performs two sequential fixed 1 GiB, eight-pass, eight-lane Argon2id
+derivations; ordinary healthy D1 decryption continues to perform one.
+
+The report on stderr shows front, tail, pair and payload checks. Exit 0 means a
+complete clean verification; any incomplete, degraded, cancelled or failed run
+returns exit 1. Wrong credentials and unauthenticatable damage are not distinguished.
+Resource refusal, cancellation and I/O failures are operational failures.
+There are no output, Force, suite-hint, extraction or source-deletion options.
+
 ## Usage Examples
 
 ### Basic Encryption
@@ -339,7 +363,12 @@ If `--force` keeps output after an integrity or authentication check failed, Pic
 
 ## Stdin/Stdout Streaming
 
-Use `-` as the filename for stdin/stdout to enable pipeline automation. Because the volume formats require known sizes and safe publication, the CLI uses mode-`0600` temporary staging; failure to remove a staging file is an operation error.
+Use `-` as the filename for stdin/stdout to enable pipeline automation. The formats
+require known sizes, so plaintext stdin and decrypted stdout use private encrypted
+temporary staging with a fresh per-operation key. Ordinary decryption authenticates
+the volume and the complete temporary stream before writing stdout. A hard crash
+can leave ciphertext, and cleanup uncertainty is reported. A successful plaintext
+stdout transfer reports `Publication: not-attempted`: no destination file was published.
 
 ### Basic Streaming
 

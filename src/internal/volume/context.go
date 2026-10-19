@@ -53,6 +53,9 @@ type ProgressReporter interface {
 type EncryptRequest struct {
 	// ZIPBudget shares trusted archive admission with frontend custody.
 	ZIPBudget *fileops.ZIPResourceBudget
+	// BorrowedSpool supplies PCV3 logical plaintext while its file pins ciphertext identity.
+	// The caller retains ownership and must close it after the operation.
+	BorrowedSpool *fileops.EncryptedSpool
 	// Input files - use InputFile for single file, InputFiles for multiple (zipped automatically)
 	InputFile       string                     // Single file path to encrypt
 	InputFiles      []string                   // Multiple file paths (will be combined into encrypted zip)
@@ -126,6 +129,11 @@ type DecryptRequest struct {
 
 	// Output - set by Decrypt() after completion
 	Kept *bool // If non-nil, set true when ForceDecrypt bypasses an integrity or authentication failure
+	// EncryptedOutput requests encrypted stdout staging instead of a published
+	// plaintext file. OutputFile selects its parent and remains alias-protected.
+	// On success the caller owns the sealed spool and must Close it. AutoUnzip
+	// is incompatible; a failed operation never transfers the spool.
+	EncryptedOutput **fileops.EncryptedSpool
 }
 
 // OperationContext holds mutable state during encryption/decryption operations.
@@ -165,6 +173,7 @@ type OperationContext struct {
 	recombinedInfo os.FileInfo
 
 	stagedOutput            *fileops.StagedFile
+	encryptedOutput         *fileops.EncryptedSpool
 	ownedTemps              []*fileops.StagedFile
 	tempInput               *fileops.StagedFile
 	tempZip                 *fileops.TempZip
@@ -483,6 +492,12 @@ func (ctx *OperationContext) Close() error {
 			cleanupErrs = append(cleanupErrs, err)
 		}
 		ctx.stagedOutput = nil
+	}
+	if ctx.encryptedOutput != nil {
+		if err := ctx.encryptedOutput.Close(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
+		ctx.encryptedOutput = nil
 	}
 	for _, stage := range ctx.ownedTemps {
 		if err := stage.Cleanup(); err != nil {

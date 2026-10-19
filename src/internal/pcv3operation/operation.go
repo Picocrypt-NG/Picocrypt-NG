@@ -148,6 +148,9 @@ type Request struct {
 // preserves Run.
 type ExecutionOptions struct {
 	RetainDurableOutput bool
+	// EncryptedStream retains a sealed, one-shot stdout transport without
+	// filesystem publication. It is incompatible with archive follow-ups.
+	EncryptedStream     bool
 	JournalPrivateStage bool
 	// LinuxDesktopCleanup recovers only the selected destination parent and uses
 	// leased journals there. DesktopProtectedFiles are borrowed original inputs;
@@ -262,38 +265,7 @@ func runWithSeamsAndOptions(
 				result.appendWarning(WarningCleanupIncomplete)
 			}
 		}
-		cleanupIncomplete := owner.close()
-		for _, file := range desktopProtected {
-			cleanupIncomplete = safeCloseSource(file) || cleanupIncomplete
-		}
-		if factorCleanup.CleanupIncomplete() {
-			cleanupIncomplete = true
-		}
-		if archivePlan.close() {
-			cleanupIncomplete = true
-		}
-		if cleanupIncomplete {
-			if result == nil {
-				result = closedFailure(
-					pcv3.OutcomeOperationFailed,
-					pcv3.StageCredentialPolicy,
-					pcv3.CodeOperationFailed,
-					DiagnosticCoreFailure,
-				)
-			}
-			result.appendWarning(WarningCleanupIncomplete)
-		}
-		if result != nil && result.archiveFollowUp != nil && result.ArchiveFollowUp() == nil {
-			if cleanupArchiveExact(result) {
-				result.appendWarning(WarningCleanupIncomplete)
-			}
-		}
-		if result != nil && result.stage == pcv3.StageCancellation && result.diagnostic == DiagnosticNone {
-			result.diagnostic = DiagnosticCancellation
-		}
-		if result != nil && result.diagnostic == DiagnosticCancellation && ctx != nil {
-			result.cancellationDeadline = errors.Is(ctx.Err(), context.DeadlineExceeded)
-		}
+		result = finalizeOperationResult(ctx, result, owner, factorCleanup, archivePlan, desktopProtected)
 	}()
 
 	if !validMode(owner.mode) {
@@ -311,6 +283,7 @@ func runWithSeamsAndOptions(
 		options.ArchiveAction > ArchiveExtractSameLevel ||
 		(options.ArchiveReview != nil && options.ArchiveAction != ArchiveExtract && options.ArchiveAction != ArchiveExtractSameLevel) ||
 		(options.LinuxDesktopCleanup && options.JournalPrivateStage) ||
+		(options.EncryptedStream && (options.RetainDurableOutput || options.ArchiveAction != ArchiveDefault)) ||
 		(options.ArchiveAction != ArchiveDefault && (options.RetainDurableOutput ||
 			(owner.mode != ModeReadNormal && owner.mode != ModeReadD1))) {
 		return closedFailure(
@@ -412,6 +385,54 @@ func runWithSeamsAndOptions(
 	return archivePlan.apply(ctx, result)
 }
 
+// finalizeOperationResult releases operation inputs before a result escapes.
+func finalizeOperationResult(
+	ctx context.Context,
+	result *Result,
+	owner *operationOwner,
+	factorCleanup *pcv3credential.FactorRequest,
+	archivePlan *archiveReadPlan,
+	desktopProtected []*os.File,
+) *Result {
+	cleanupIncomplete := owner.close()
+	for _, file := range desktopProtected {
+		cleanupIncomplete = safeCloseSource(file) || cleanupIncomplete
+	}
+	if factorCleanup.CleanupIncomplete() {
+		cleanupIncomplete = true
+	}
+	if archivePlan.close() {
+		cleanupIncomplete = true
+	}
+	if cleanupIncomplete {
+		if result == nil {
+			result = closedFailure(
+				pcv3.OutcomeOperationFailed,
+				pcv3.StageCredentialPolicy,
+				pcv3.CodeOperationFailed,
+				DiagnosticCoreFailure,
+			)
+		}
+		result.appendWarning(WarningCleanupIncomplete)
+	}
+	if result != nil && result.encryptedOutput != nil &&
+		(result.hasWarning(WarningCleanupIncomplete) || (ctx != nil && ctx.Err() != nil)) {
+		failEncryptedOutput(ctx, result)
+	}
+	if result != nil && result.archiveFollowUp != nil && result.ArchiveFollowUp() == nil {
+		if cleanupArchiveExact(result) {
+			result.appendWarning(WarningCleanupIncomplete)
+		}
+	}
+	if result != nil && result.stage == pcv3.StageCancellation && result.diagnostic == DiagnosticNone {
+		result.diagnostic = DiagnosticCancellation
+	}
+	if result != nil && result.diagnostic == DiagnosticCancellation && ctx != nil {
+		result.cancellationDeadline = errors.Is(ctx.Err(), context.DeadlineExceeded)
+	}
+	return result
+}
+
 func validMode(mode Mode) bool {
 	switch mode {
 	case ModeReadNormal, ModeReadD1, ModeRecoverNormal, ModeRecoverD1,
@@ -443,12 +464,17 @@ func runNormalRead(
 		JournalPrivateStage: options.JournalPrivateStage,
 		LeasedPrivateStage:  options.LinuxDesktopCleanup && linuxDesktopCleanupSupported(),
 		PrepareArchive:      preparesArchive(options.ArchiveAction),
+		EncryptedStream:     options.EncryptedStream,
 	}
 	var archive *pcv3.NativeArchiveHandoff
 	var retainedOutput *pcv3publication.RetainedFile
+	var encryptedOutput *fileops.EncryptedSpool
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			cleanupIncomplete := cleanupRetainedExact(&retainedOutput)
+			if encryptedOutput != nil && encryptedOutput.Close() != nil {
+				cleanupIncomplete = true
+			}
 			if cleanupOutputExact(result) {
 				cleanupIncomplete = true
 			}
@@ -466,6 +492,11 @@ func runNormalRead(
 		request,
 		func(output *pcv3.NativeReadOutput) error {
 			switch output.Disposition() {
+			case pcv3.NativePayloadStream:
+				encryptedOutput = output.TakeEncryptedStream()
+				if encryptedOutput == nil {
+					return errNativeOutputUnavailable
+				}
 			case pcv3.NativePayloadPublish:
 				if options.RetainDurableOutput {
 					retainedOutput = output.PublishRetained(ctx)
@@ -486,6 +517,12 @@ func runNormalRead(
 			return nil
 		},
 	)
+	if encryptedOutput != nil {
+		result = resultFromNativeRead(nativeResult)
+		adoptEncryptedOutput(ctx, result, encryptedOutput)
+		encryptedOutput = nil
+		return owner.finishReportedResult(result)
+	}
 	result = owner.finishReportedResult(resultFromNativeRead(nativeResult))
 	if owner.reporterFailed || owner.reporterPanicked {
 		if cleanupRetainedExact(&retainedOutput) {
@@ -559,6 +596,7 @@ func runRecovery(
 	var recoveryResult *pcv3recovery.Result
 	recoveryOptions := pcv3recovery.ExecutionOptions{
 		RetainDurableOutput: options.RetainDurableOutput,
+		EncryptedStream:     options.EncryptedStream,
 		JournalPrivateStage: options.JournalPrivateStage,
 		LeasedPrivateStage:  options.LinuxDesktopCleanup && linuxDesktopCleanupSupported(),
 		PrepareArchive:      preparesArchive(options.ArchiveAction),
@@ -572,7 +610,7 @@ func runRecovery(
 	} else {
 		recoveryResult = pcv3recovery.RunWithOptions(ctx, request, recoveryOptions)
 	}
-	result := resultFromRecovery(recoveryResult)
+	result := resultFromRecovery(ctx, recoveryResult)
 	if recoveryResult != nil && recoveryResult.D1ProfileRequired() && !result.publicationAttempted &&
 		result.outcome == pcv3.OutcomeOperationFailed && result.stage != pcv3.StageCancellation {
 		result.outcome, result.stage, result.code = pcv3.OutcomeOperationFailed, pcv3.StageD1Bootstrap, pcv3.CodeOperationFailed
@@ -634,11 +672,12 @@ func runUnverified(
 				request.Factors = nil
 			}
 		}()
-		return owner.finishReportedResult(resultFromRecovery(pcv3recovery.RunWithOptions(
+		return owner.finishReportedResult(resultFromRecovery(ctx, pcv3recovery.RunWithOptions(
 			ctx,
 			request,
 			pcv3recovery.ExecutionOptions{
 				RetainDurableOutput: options.RetainDurableOutput,
+				EncryptedStream:     options.EncryptedStream,
 				JournalPrivateStage: options.JournalPrivateStage,
 				LeasedPrivateStage:  options.LinuxDesktopCleanup && linuxDesktopCleanupSupported(),
 			},
@@ -834,7 +873,7 @@ func resultFromNativeRead(native *pcv3.NativeReadResult) *Result {
 	return result
 }
 
-func resultFromRecovery(recovery *pcv3recovery.Result) (result *Result) {
+func resultFromRecovery(ctx context.Context, recovery *pcv3recovery.Result) (result *Result) {
 	var retained *pcv3publication.RetainedFile
 	var archive *pcv3recovery.ArchiveHandoff
 	defer func() {
@@ -883,6 +922,10 @@ func resultFromRecovery(recovery *pcv3recovery.Result) (result *Result) {
 		result.appendWarning(WarningCleanupIncomplete)
 	}
 	result.artifactInspection = recovery.ArtifactInspection()
+	if encrypted := recovery.TakeEncryptedStream(); encrypted != nil {
+		adoptEncryptedOutput(ctx, result, encrypted)
+		return result
+	}
 	archive = recovery.TakeArchiveHandoff()
 	if archive != nil {
 		followUp := newArchiveFollowUp(archive, result.AuthenticatedComment())

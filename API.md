@@ -371,12 +371,14 @@ and every already-published target are preserved. Unproven or legacy cleanup rec
 block the operation without deletion. Android retains its controlled startup cleanup
 contract. macOS and Windows retain their existing cleanup behavior without journals.
 Recovery cannot find an operation directory moved elsewhere after the process dies.
-For stdout, this covers the selected temporary output parent; raw stdin buffering is
-outside private PCV3 stage recovery. After publication and retirement of the private
-journal/directory, retained stdout output remains named `picocrypt-out-*` until
-`StreamTo` removes it. A process crash in that retained-output window can leave the
-named file; private-stage recovery does not cover that window or remove published
-targets.
+CLI plaintext stdin and decrypted stdout use a private authenticated encrypted spool
+from their first write. Each spool has a fresh random key, bounded record buffers,
+and a sealed logical length separate from its physical ciphertext extent. A crash
+can leave ciphertext; spool keys are not stored in files or cleanup journals. This
+does not guarantee erasure of key copies in swap, dumps, or runtime memory.
+Decrypt stdin and encrypt stdout already carry volume ciphertext. Retained ciphertext
+stdout can remain named `picocrypt-out-*` between publication and `StreamTo`;
+private-stage recovery does not remove already-published targets.
 `EncryptWithResult(ctx, request, options)` returns the common operation result
 after input and preprocessing cleanup. A committed output with uncertain directory
 durability remains available with a warning; it does not authorize source deletion.
@@ -386,8 +388,16 @@ durability, PCV3 retains both the chunks and the complete ciphertext.
 `StatePublishedDurabilityUncertain`, and source deletion is forbidden.
 `Result.SourceDeletionAllowed()` accounts for complete durable publication, follow-ups
 and cleanup. A nil Go error or a presentation snapshot does not grant that permission.
-Stdout and Android provider handoff use the operation's retained output capability,
-which holds the original descriptor. Plaintext `SaveTo` consumes that capability
+`ExecutionOptions.EncryptedStream` selects decrypted stdout without filesystem
+publication or archive follow-ups. `Result.StreamFollowUp()` exposes one live
+transport capability after the required volume checks and spool sealing. It
+authenticates the complete spool before stdout, then each record during transfer;
+Force retains its consent policy and forensic artifact encoding. `StreamState`
+distinguishes pending, complete, and failed transport. Successful stdout does not
+set `PublicationAttempted` or grant source deletion. Legacy RS retries create a
+new spool/key instead of restarting a nonce session.
+Android provider handoff uses the retained-file capability, which holds the
+original descriptor. Plaintext `SaveTo` consumes that capability
 even on failure and removes its exact internal owner. Ciphertext `SaveTo` failure
 retains the capability for a deliberate retry to another destination; only a live
 `Result.OutputFollowUp()` establishes that authority. `StreamTo` consumes both
@@ -803,7 +813,7 @@ type TempZipOptions struct {
     Budget *ZIPResourceBudget
 }
 func CreateTempZip(ctx context.Context, opts TempZipOptions) (*TempZip, error)
-func (t *TempZip) OpenReader() (io.Reader, error) // once, after finalization and Sync
+func (t *TempZip) OpenReader() (io.Reader, error) // exclusive reader after finalization and Sync
 func (t *TempZip) Length() uint64                // logical ZIP bytes, excluding tags
 func (t *TempZip) File() *os.File                // borrowed pinned ciphertext descriptor
 func (t *TempZip) Path() string
@@ -811,6 +821,8 @@ func (t *TempZip) Close() error                  // revoke reader, wipe, close a
 func PanicCleanupIncomplete(value any) bool      // safe outer-boundary warning predicate
 func RepanicWithCleanup(value any, cleanupErr error) // never returns; no raw-value accessor
 ```
+
+Close each reader through `io.Closer` before opening another sequential reader.
 
 The private spool uses age v1.1 STREAM payload framing with 64 KiB
 ChaCha20-Poly1305 records and an explicit final-record flag. Each object owns a
@@ -1010,6 +1022,22 @@ volume dispatch. Callers transfer `FactorRequest`, password bytes, and owned
 Modes, suites, payload kinds, outcomes, stages, and codes are closed metadata.
 No public facade exposes raw keys, digests, credential/KDF sessions, admission
 grants, random generators, or serializer entry points.
+
+`VerifyD1(ctx, *D1VerifyRequest) D1VerifyReport` is a separate strict D1 verifier.
+The request contains only an already-opened `Source`, owned `Factors` and
+`Reporter`. Like `Run`, it consumes them immediately on every path; callers
+establish no-follow descriptor provenance before transfer. The closed report
+exposes front, tail, pair and payload check states, outcome, stage, diagnostic and
+cleanup status. It has no output, archive, recovery or deletion capability.
+
+Full verification requires two ordinary credential-authenticated bootstraps with
+matching outer/inner roots, profile and body length, independent salt/nonce/IV,
+canonical geometry, and complete outer/inner authentication. The private core
+fully executes its emitter into a discard sink and checks its final errors; it
+does not create a plaintext stage or perform a third KDF. `Verified()` is true
+only for a clean complete result with confirmed cleanup. Operational failures
+remain separate from unauthenticated credentials-or-damage. Ordinary D1 opening
+and the on-disk format are unchanged.
 
 `DetectPrefix` classifies format ownership. `Probe(io.ReaderAt, int64)` returns
 `(Route, error)` after bounded structural inspection; it intentionally omits

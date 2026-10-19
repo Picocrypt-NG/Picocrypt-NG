@@ -235,12 +235,11 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 		encQuiet = true
 	}
 
-	// Track temp files for cleanup. The stdin temp holds raw piped plaintext and
-	// the stdout temp holds the .pcv output; both are removed when the run ends.
-	var stdinTempFile string
+	// Stdin owns encrypted staging; stdout staging already contains ciphertext.
+	var stdinSpool *fileops.EncryptedSpool
 	var stdoutTempFile string
 	defer func() {
-		retErr = errors.Join(retErr, cleanupTempFiles(stdinTempFile, stdoutTempFile))
+		retErr = errors.Join(retErr, closeEncryptedStdin(stdinSpool), cleanupTempFiles(stdoutTempFile))
 	}()
 
 	outputFile := encOutput
@@ -277,12 +276,12 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Handle stdin input
 	if useStdin {
-		stdinTempFile, err = BufferStdinToTemp(encOutput)
+		stdinSpool, err = bufferEncryptionStdin(cmd.Context(), encOutput)
 		if err != nil {
 			return fmt.Errorf("buffering stdin: %w", err)
 		}
-		inputs.inputFiles = []string{stdinTempFile}
-		inputs.onlyFiles = []string{stdinTempFile}
+		inputs.inputFiles = []string{stdinSpool.Path()}
+		inputs.onlyFiles = []string{stdinSpool.Path()}
 	} else {
 		inputs, err = resolveEncryptInputsWithBudget(cmd.Context(), args, encGlob, encFollowSymlinks, fileops.NewZIPResourceBudget())
 		if err != nil {
@@ -383,6 +382,7 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 	// Build request
 	req := &volume.EncryptRequest{
 		InputFiles:      allFiles,
+		BorrowedSpool:   stdinSpool,
 		InputIdentities: inputs.inputIdentities,
 		OnlyFiles:       onlyFiles,
 		OnlyFolders:     onlyFolders,
@@ -450,9 +450,9 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 	}
 	result, operationErr := volume.EncryptWithResult(operationCtx, req, pcv3operation.ExecutionOptions{RetainDurableOutput: useStdout, LinuxDesktopCleanup: true})
 	reporter.Finish()
-	if stdinTempFile != "" {
-		cleanupErr := cleanupTempFiles(stdinTempFile)
-		stdinTempFile = ""
+	if stdinSpool != nil {
+		cleanupErr := closeEncryptedStdin(stdinSpool)
+		stdinSpool = nil
 		if cleanupErr != nil {
 			if result != nil {
 				result.WithCleanupWarning()

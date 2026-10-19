@@ -161,6 +161,9 @@ func (adapter pcv3CLIResultAdapter) ArchiveFollowUp() pcv3CLIArchiveFollowUp {
 }
 
 func (adapter pcv3CLIResultAdapter) OutputFollowUp() pcv3CLIOutputFollowUp {
+	if followUp := adapter.result.StreamFollowUp(); followUp != nil {
+		return followUp
+	}
 	followUp := adapter.result.OutputFollowUp()
 	if followUp == nil {
 		return nil
@@ -189,7 +192,7 @@ var (
 		return pcv3CLIResultAdapter{result: pcv3operation.RunWithOptions(
 			ctx,
 			request,
-			pcv3operation.ExecutionOptions{RetainDurableOutput: retainOutput, LinuxDesktopCleanup: true},
+			pcv3operation.ExecutionOptions{EncryptedStream: retainOutput, LinuxDesktopCleanup: !retainOutput},
 		)}
 	}
 	pcv3CLIOpenKeyfile   = fileops.OpenRegularReadNoSymlink
@@ -359,8 +362,9 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	// the stdin temp holds the .pcv input; both are removed when the run ends.
 	var stdinTempFile string
 	var stdoutTempFile string
+	var encryptedOutput *fileops.EncryptedSpool
 	defer func() {
-		retErr = errors.Join(retErr, cleanupTempFiles(stdinTempFile, stdoutTempFile))
+		retErr = errors.Join(retErr, encryptedOutput.Close(), cleanupTempFiles(stdinTempFile, stdoutTempFile))
 	}()
 
 	outputFile := decOutput
@@ -734,6 +738,9 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 		RSCodecs:     rsCodecs,
 		Kept:         &kept,
 	}
+	if useStdout {
+		req.EncryptedOutput = &encryptedOutput
+	}
 
 	// Print info
 	if !decQuiet {
@@ -763,9 +770,15 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Stream to stdout if requested
 	if useStdout {
-		stdoutTempFile = ""
-		if err := StreamFileToStdout(operationCtx, outputFile); err != nil {
-			return fmt.Errorf("streaming to stdout: %w", err)
+		output, err := pcv3operation.OwnEncryptedOutput(encryptedOutput)
+		encryptedOutput = nil // Ownership transfers even when construction fails.
+		if err != nil {
+			return errors.New("encrypted stdout output is unavailable")
+		}
+		defer output.Discard()
+		action := output.StreamTo(operationCtx, os.Stdout)
+		if action.Code() != pcv3operation.OutputActionSaved || action.CleanupIncomplete() {
+			return errors.New("stdout transport or temporary cleanup failed; source files were preserved")
 		}
 		if kept {
 			return forceDecryptKeptResult("stdout")
@@ -847,6 +860,9 @@ func runPCV3CLI(
 	}
 	if err := requireVacantPCV3Output(decOutput); err != nil {
 		return err
+	}
+	if stdoutPath != "" && (decPCV3Archive != "" || decPCV3ExtractTo != "") {
+		return errors.New("stdout output cannot perform an archive follow-up")
 	}
 	if !normal && (decPCV3Archive != "" || decPCV3ExtractTo != "") {
 		return errors.New("D1 archive payload is returned as a .zip file; D1 automatic extraction is not available")

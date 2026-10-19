@@ -2,11 +2,12 @@
 # requires-python = ">=3.11"
 # dependencies = ["argon2-cffi==25.1.0", "pycryptodome==3.23.0", "zfec==1.6.0.0"]
 # ///
-"""TEST ONLY independent small PCV3 Normal and D1C encoder.
+"""TEST ONLY independent PCV3 Normal and D1C encoder.
 
-No Picocrypt NG code or existing volume bytes are imported. Five sequential
-1-GiB Argon2id calls produce the unchanged Paranoid Normal fixture and both
-D1C suites. Requires the system libgcrypt for Serpent.
+No Picocrypt NG code or existing volume bytes are imported. Three sequential
+1-GiB Argon2id calls produce the unchanged short fixtures and D1C composition
+vectors. Identical public credential/salt derivations are cached across suites
+and vectors. Requires the system libgcrypt for Serpent.
 Run: uv run generate.py OUTPUT_DIRECTORY (directory must not exist).
 Deterministic keys/passwords here are public fixtures, never operational keys.
 """
@@ -19,12 +20,14 @@ import json
 import pathlib
 import struct
 import sys
+from functools import cache
 
 from argon2.low_level import Type, hash_secret_raw
 from Crypto.Cipher import ChaCha20
 from zfec import Encoder
 
 D = b"Picocrypt-NG/PCV3/"
+CHUNK = 1048576
 
 
 def u16(n):
@@ -129,16 +132,17 @@ def rs(data, k, n):
     )
 
 
+@cache
 def kdf(value, salt):
+    print("Argon2id fixed test profile (distinct credential/salt pair)", flush=True)
     return hash_secret_raw(value, salt, 8, 1048576, 8, 32, Type.ID, version=19)
 
 
-def make_normal(normal_input, plaintext, suite=2, inner_root=None):
+def make_normal(normal_input, plaintext, suite=2, inner_root=None, payload_rs=False):
     salt = literal("inner salt", 16)
     volume_id = literal("volume id", 32)
     volume_key = literal("volume key", 32)
     if inner_root is None:
-        print("Argon2id standalone Normal (1/5)", flush=True)
         credential_root = kdf(normal_input, salt)
     else:
         credential_root = extract(
@@ -149,14 +153,15 @@ def make_normal(normal_input, plaintext, suite=2, inner_root=None):
     volume_prk = extract(volume_key, volume_id)
     xprefix = literal("inner nonce", 16)
     sprefix = literal("inner iv", 8) if suite == 2 else bytes(8)
-    flags = 0 if inner_root is None else 2
+    flags = (0 if inner_root is None else 2) | int(payload_rs)
+    record_count = (len(plaintext) + CHUNK - 1) // CHUNK
     profile_id = suite if inner_root is None else 3
     core = b"PCV\0" + u16(3) + u16(1) + u16(suite) + u16(flags) + u32(1112)
     core += (
         volume_id
         + bytes([1, 1, 1, 0])
         + u64(len(plaintext))
-        + u64(1)
+        + u64(record_count)
         + xprefix
         + sprefix
         + u32(0)
@@ -213,38 +218,42 @@ def make_normal(normal_input, plaintext, suite=2, inner_root=None):
         suite=suite,
     )
     metadata = rs(metadata.ljust(128, b"\0"), 128, 136)
-    ciphertext = wrap(
-        plaintext,
-        expand(volume_prk, "volume/payload/xchacha20", suite=suite),
-        xprefix + u64(0),
-        expand(volume_prk, "volume/payload/serpent", suite=suite)
-        if suite == 2
-        else None,
-        sprefix + u64(0),
-    )
     records = b""
-    for index, data in enumerate([ciphertext, b""]):
-        descriptor = u64(index) + u32(len(data)) + bytes([index, 0, 0, 0])
-        records += (
-            rs(descriptor, 16, 48)
-            + data
-            + mac(
-                expand(volume_prk, "volume/payload/mac", suite=suite),
-                D + b"record\0",
-                commitment,
-                descriptor,
+    for index in range(record_count + 1):
+        final = index == record_count
+        data = plaintext[index * CHUNK : (index + 1) * CHUNK] if not final else b""
+        if data:
+            data = wrap(
                 data,
-                suite=suite,
+                expand(volume_prk, "volume/payload/xchacha20", suite=suite),
+                xprefix + u64(index),
+                expand(volume_prk, "volume/payload/serpent", suite=suite)
+                if suite == 2
+                else None,
+                sprefix + u64(index << 16),
             )
+        descriptor = u64(index) + u32(len(data)) + bytes([int(final), 0, 0, 0])
+        body = data + mac(
+            expand(volume_prk, "volume/payload/mac", suite=suite),
+            D + b"record\0",
+            commitment,
+            descriptor,
+            data,
+            suite=suite,
         )
+        if payload_rs:
+            body = rs(body.ljust((len(body) + 127) // 128 * 128, b"\0"), 128, 136)
+        records += rs(descriptor, 16, 48) + body
     trailer = rs(b"PCVT" + u16(3) + u16(1) + u32(960) + u16(1) + bytes(2), 16, 48)
     return core[:16] + capsule(0) + metadata + records + capsule(1) + trailer
 
 
-def make_d1(outer_input, plaintext, suite):
+def make_d1(outer_input, plaintext, suite, payload_rs=False):
     profile = 0x0100 + suite
     inner_root = literal("inner credential root", 32)
-    inner = make_normal(None, plaintext, suite=suite, inner_root=inner_root)
+    inner = make_normal(
+        None, plaintext, suite=suite, inner_root=inner_root, payload_rs=payload_rs
+    )
     outer_key = literal("outer key", 32)
     outer_prk = extract(
         outer_key, hashlib.sha3_256(D + b"D1C/outer/root\0" + u16(profile)).digest()
@@ -254,24 +263,30 @@ def make_d1(outer_input, plaintext, suite):
         return expand(prk, label, role=role, size=size, profile=profile)
 
     clear = b"PCVOUT3\0" + u64(len(inner)) + inner
-    assert len(clear) < 1048576
-    body = wrap(
-        clear,
-        outer_expand(outer_prk, "outer/payload/xchacha20"),
-        outer_expand(outer_prk, "outer/payload/xnonce-prefix", size=16) + u64(0),
-        outer_expand(outer_prk, "outer/payload/serpent") if suite == 2 else None,
-        outer_expand(outer_prk, "outer/payload/serpent-prefix", size=8) + u64(0),
-    )
-    body += mac(
-        outer_expand(outer_prk, "outer/payload/mac"),
-        D + b"D1C/outer/record\0",
-        u16(profile),
-        u64(0),
-        u32(len(body)),
-        b"\x01",
-        body,
-        suite=suite,
-    )
+    body = b""
+    full_records = len(clear) // CHUNK
+    for index in range(full_records + 1):
+        data = clear[index * CHUNK : (index + 1) * CHUNK]
+        if data:
+            data = wrap(
+                data,
+                outer_expand(outer_prk, "outer/payload/xchacha20"),
+                outer_expand(outer_prk, "outer/payload/xnonce-prefix", size=16)
+                + u64(index),
+                outer_expand(outer_prk, "outer/payload/serpent") if suite == 2 else None,
+                outer_expand(outer_prk, "outer/payload/serpent-prefix", size=8)
+                + u64(index << 16),
+            )
+        body += data + mac(
+            outer_expand(outer_prk, "outer/payload/mac"),
+            D + b"D1C/outer/record\0",
+            u16(profile),
+            u64(index),
+            u32(len(data)),
+            bytes([int(index == full_records)]),
+            data,
+            suite=suite,
+        )
     bootstraps = []
     for role in range(2):
         salt, nonce, iv = (
@@ -279,7 +294,6 @@ def make_d1(outer_input, plaintext, suite):
             literal(f"outer nonce {role}", 24),
             literal(f"outer iv {role}", 16),
         )
-        print(f"Argon2id D1C suite {suite} role {role}", flush=True)
         prk = extract(kdf(outer_input, salt), salt)
         encrypted = wrap(
             outer_key + u64(len(body)),
@@ -353,6 +367,30 @@ def main():
         "keyfile-alpha.bin": factors[0],
         "keyfile-beta.bin": factors[1],
     }
+    composition = []
+    for name, suite, length, payload_rs in [
+        ("d1-empty-standard.pcv", 1, 0, False),
+        ("d1-exact-mib-paranoid.pcv", 2, 1048576, False),
+        ("d1-multi-standard.pcv", 1, 1048641, False),
+        ("d1-multi-paranoid.pcv", 2, 1048641, False),
+        ("d1-multi-rs-standard.pcv", 1, 1048641, True),
+        ("d1-multi-rs-paranoid.pcv", 2, 1048641, True),
+        ("d1-outer-exact-standard.pcv", 1, 1046216, False),
+    ]:
+        source = bytes((index * 29 + 7) % 256 for index in range(length))
+        files[name] = make_d1(outer_input, source, suite, payload_rs=payload_rs)
+        composition.append(
+            {
+                "file": name,
+                "suite": suite,
+                "payload_body_rs": payload_rs,
+                "plaintext": {
+                    "recipe": "byte((index * 29 + 7) % 256), index starts at zero",
+                    "size": length,
+                    "sha256": hashlib.sha256(source).hexdigest(),
+                },
+            }
+        )
     # Public deterministic entropy inputs, named independently of writer call order.
     randomness = {
         label: literal(label, size).hex()
@@ -395,6 +433,7 @@ def main():
         "keyfile_mode": "ordered",
         "d1_profiles": {"standard": 0x0101, "paranoid": 0x0102},
         "d1_bootstrap_bytes": 320,
+        "composition": composition,
         "files": {},
     }
     for name, content in files.items():

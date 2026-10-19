@@ -33,6 +33,7 @@ type ExecutionOptions struct {
 	JournalPrivateStage bool
 	LeasedPrivateStage  bool
 	PrepareArchive      bool
+	EncryptedStream     bool
 }
 
 var errInvalidRecoveryWriteProgress = errors.New("pcv3 recovery operation: invalid write progress")
@@ -249,6 +250,7 @@ type Result struct {
 	artifactInspection   *ArtifactInspection
 	retainedOutput       *pcv3publication.RetainedFile
 	archiveHandoff       *ArchiveHandoff
+	encryptedStream      *fileops.EncryptedSpool
 }
 
 // D1ProfileRequired reports the closed no-output refusal for selected raw D1
@@ -372,6 +374,18 @@ func (result *Result) TakeArchiveHandoff() *ArchiveHandoff {
 	return handoff
 }
 
+// TakeEncryptedStream transfers sealed sequential output only after the entire
+// recovery core has accepted its final result. It grants no publication rights.
+func (result *Result) TakeEncryptedStream() *fileops.EncryptedSpool {
+	if result == nil || result.publicationAttempted || result.cleanupIncomplete ||
+		!validOperationSemantic(result.semantic) {
+		return nil
+	}
+	owner := result.encryptedStream
+	result.encryptedStream = nil
+	return owner
+}
+
 func (result *Result) Error() string {
 	if result == nil {
 		return "pcv3 recovery operation: unavailable"
@@ -416,6 +430,10 @@ func runWithCoreOptions(
 				cleanupIncomplete = result.retainedOutput.RemoveExact() != nil || cleanupIncomplete
 				result.retainedOutput = nil
 			}
+			if result.encryptedStream != nil {
+				cleanupIncomplete = result.encryptedStream.Close() != nil || cleanupIncomplete
+				result.encryptedStream = nil
+			}
 			if cleanupIncomplete {
 				panic(pcv3publication.ErrCleanupIncomplete)
 			}
@@ -423,6 +441,7 @@ func runWithCoreOptions(
 		}
 	}()
 	if ctx == nil || request == nil || run == nil ||
+		(options.EncryptedStream && (options.PrepareArchive || options.RetainDurableOutput)) ||
 		(options.PrepareArchive && (request.Mode != pcv3.RecoveryModeNormalV3 || options.RetainDurableOutput)) {
 		if request != nil && request.Factors != nil {
 			_ = request.Factors.Close()
@@ -438,7 +457,11 @@ func runWithCoreOptions(
 
 	outputCalls := 0
 	var pendingStage *pcv3publication.Stage
+	var pendingStream *fileops.EncryptedSpool
 	defer func() {
+		if pendingStream != nil && pendingStream.Close() != nil {
+			result.cleanupIncomplete = true
+		}
 		if pendingStage != nil {
 			result.retainCleanupError(pendingStage.Cleanup())
 		}
@@ -465,6 +488,11 @@ func runWithCoreOptions(
 		semantic = cloneOperationSemantic(semantic)
 		result.semantic = cloneOperationSemantic(semantic)
 		result.authenticatedComment = authenticatedComment
+		if options.EncryptedStream {
+			var err error
+			pendingStream, err = writeEncryptedRecoveryOutput(ctx, request, semantic, role, outputLength, emit, result)
+			return err
+		}
 		result.publicationAttempted = true
 
 		createStage := request.createStage
@@ -568,6 +596,22 @@ func runWithCoreOptions(
 	}
 
 	semantic, coreErr := run(ctx, request, output)
+	if options.EncryptedStream {
+		if outputCalls != 1 || pendingStream == nil || coreErr != nil || ctx.Err() != nil ||
+			result.cleanupIncomplete || !validOperationSemantic(semantic) ||
+			!sameOperationSemantic(semantic, result.semantic) {
+			result.semantic = operationSemantic{outcome: pcv3.OutcomeOperationFailed, stage: pcv3.StageOutputWrite, code: pcv3.CodeOperationFailed}
+			if semantic.outcome != 0 && !semantic.outputCapable() {
+				result.semantic = cloneOperationSemantic(semantic)
+			} else if ctx.Err() != nil {
+				result.semantic.stage = pcv3.StageCancellation
+			}
+			return result
+		}
+		result.encryptedStream = pendingStream
+		pendingStream = nil
+		return result
+	}
 	if pendingStage != nil {
 		// The core's nil return proves its one-shot emitter completed, including
 		// final-record verification. Non-Force results intentionally carry no
@@ -691,6 +735,99 @@ func runWithCoreOptions(
 	return result
 }
 
+func writeEncryptedRecoveryOutput(
+	ctx context.Context, request *Request, semantic operationSemantic,
+	role operationPhysicalRole, outputLength uint64, emit operationEmitter, result *Result,
+) (owner *fileops.EncryptedSpool, retErr error) {
+	var plan *pcv3artifact.Plan
+	forceArtifact := semantic.outcome == pcv3.OutcomeForcePartial || semantic.outcome == pcv3.OutcomeForceUnverified
+	if forceArtifact {
+		descriptor, err := artifactDescriptor(semantic, role)
+		if err != nil {
+			return nil, pcv3.NewOutputWriteError(err)
+		}
+		plan, err = pcv3artifact.Prepare(descriptor)
+		if err != nil {
+			return nil, pcv3.NewOutputWriteError(err)
+		}
+		outputLength = plan.Metadata().TotalLength
+	}
+	physical, err := fileops.EncryptedSpoolPhysicalSize(outputLength)
+	if err != nil {
+		return nil, pcv3.NewOutputWriteError(err)
+	}
+	owner, err = fileops.CreateEncryptedSpool(ctx, fileops.EncryptedSpoolOptions{
+		NearPath: request.Target, MaxPhysicalBytes: physical, Cancel: func() bool { return ctx.Err() != nil },
+	})
+	if err != nil {
+		result.retainCleanupError(err)
+		return nil, pcv3.NewOutputWriteError(err)
+	}
+	transferred := false
+	defer func() {
+		if transferred {
+			return
+		}
+		panicValue := recover()
+		cleanupErr := owner.Close()
+		owner = nil
+		if cleanupErr != nil {
+			result.cleanupIncomplete = true
+		}
+		if panicValue != nil {
+			fileops.RepanicWithCleanup(panicValue, cleanupErr)
+		}
+		retErr = errors.Join(retErr, cleanupErr)
+	}()
+	if err := admitOutput(ctx, request, owner.File(), semantic, plan, physical); err != nil {
+		return owner, pcv3.NewOutputWriteError(err)
+	}
+	destination := io.Writer(owner)
+	if request.stageWriter != nil {
+		destination = request.stageWriter(destination)
+		if destination == nil {
+			return owner, pcv3.NewOutputWriteError(errors.New("pcv3 recovery operation: stream writer unavailable"))
+		}
+	}
+	destination = recoveryOutputWriter{destination: destination}
+	if forceArtifact {
+		err = pcv3artifact.Encode(ctx, destination, plan, func(yield func(uint64, io.Reader) error) error {
+			return emit(func(r operationRange, plaintext []byte) error {
+				return yield(r.recordIndex, bytes.NewReader(plaintext))
+			})
+		})
+	} else {
+		err = emit(func(_ operationRange, plaintext []byte) error { return writeAll(destination, plaintext) })
+	}
+	if err == nil {
+		err = owner.Seal()
+	}
+	if err == nil && owner.Length() != outputLength {
+		err = errors.New("pcv3 recovery operation: stream length mismatch")
+	}
+	if err != nil {
+		return owner, pcv3.NewOutputWriteError(err)
+	}
+	transferred = true
+	return owner, nil
+}
+
+func sameOperationSemantic(left, right operationSemantic) bool {
+	leftRanges, rightRanges := left.ranges, right.ranges
+	left.ranges, right.ranges = nil, nil
+	if left != right || leftRanges.Count() != rightRanges.Count() {
+		return false
+	}
+	for index := range leftRanges.Count() {
+		leftRange, leftOK := leftRanges.At(index)
+		rightRange, rightOK := rightRanges.At(index)
+		if !leftOK || !rightOK || leftRange != rightRange {
+			return false
+		}
+	}
+	return true
+}
+
 func (result *Result) retainPublication(publication pcv3publication.Result) {
 	if result == nil || publication == nil {
 		return
@@ -711,7 +848,8 @@ func (result *Result) retainPublicationError(err error) {
 }
 
 func (result *Result) retainCleanupError(err error) {
-	if result != nil && errors.Is(err, pcv3publication.ErrCleanupIncomplete) {
+	if result != nil && (errors.Is(err, pcv3publication.ErrCleanupIncomplete) ||
+		errors.Is(err, fileops.ErrEncryptedSpoolCleanupIncomplete)) {
 		result.cleanupIncomplete = true
 	}
 }

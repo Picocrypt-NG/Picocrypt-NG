@@ -19,6 +19,9 @@ func requireDeniabilityPassword(password []byte) error {
 // Validate checks that the EncryptRequest has all required fields and valid configuration.
 // Returns nil if valid, or an error describing the validation failure.
 func (req *EncryptRequest) Validate() error {
+	if err := req.validateBorrowedSpoolMode(); err != nil {
+		return err
+	}
 	// Check for input files
 	if req.InputFile == "" && len(req.InputFiles) == 0 {
 		return errors.ErrNoInputFiles
@@ -78,6 +81,14 @@ func (req *EncryptRequest) Validate() error {
 	}
 
 	return req.ValidateOutputSafety()
+}
+
+// BorrowedSpool is a PCV3 logical-reader input, never a legacy file source.
+func (req *EncryptRequest) validateBorrowedSpoolMode() error {
+	if req.BorrowedSpool != nil && !req.PCV3 {
+		return errors.NewValidationError("BorrowedSpool", "encrypted spool input requires PCV3")
+	}
+	return nil
 }
 
 // ValidateOutputSafety rejects destinations that alias an input or keyfile.

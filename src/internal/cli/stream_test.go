@@ -403,7 +403,7 @@ func TestCLIReportsStdinTempCleanupFailure(t *testing.T) {
 			t.Fatalf("inspect temp directory: %v", err)
 		}
 		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), "picocrypt-stdin-") {
+			if strings.HasPrefix(entry.Name(), ".picocrypt-") {
 				found = true
 				break
 			}
@@ -433,7 +433,7 @@ func TestCLIReportsStdinTempCleanupFailure(t *testing.T) {
 		}
 		_ = command.Process.Kill()
 		<-waited
-		t.Fatal("CLI did not create the stdin plaintext temp")
+		t.Fatal("CLI did not create encrypted stdin staging")
 	}
 	if err := os.Chmod(tempDir, 0o500); err != nil {
 		_ = command.Process.Kill()
@@ -557,12 +557,12 @@ func TestPCV3DecryptStdoutCancelsWithoutPlaintextResidue(t *testing.T) {
 	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), "picocrypt-out-") {
-			t.Fatalf("plaintext temp remained after SIGINT: %s", entry.Name())
+			t.Fatalf("encrypted stdin stage remained after SIGINT: %s", entry.Name())
 		}
 	}
 }
 
-func TestCLIInterruptDuringStdinBufferingRemovesPlaintextTemp(t *testing.T) {
+func TestCLIInterruptDuringStdinBufferingRemovesEncryptedTemp(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process interrupt and open-file unlink semantics are platform-specific")
 	}
@@ -603,7 +603,7 @@ func TestCLIInterruptDuringStdinBufferingRemovesPlaintextTemp(t *testing.T) {
 			t.Fatalf("inspect temp directory: %v", readErr)
 		}
 		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), "picocrypt-stdin-") {
+			if strings.HasPrefix(entry.Name(), ".picocrypt-") {
 				found = true
 				break
 			}
@@ -616,7 +616,7 @@ func TestCLIInterruptDuringStdinBufferingRemovesPlaintextTemp(t *testing.T) {
 	if !found {
 		_ = command.Process.Kill()
 		_ = command.Wait()
-		t.Fatal("CLI did not create the stdin plaintext temp")
+		t.Fatal("CLI did not create encrypted stdin staging")
 	}
 	if err := command.Process.Signal(os.Interrupt); err != nil {
 		_ = command.Process.Kill()
@@ -638,8 +638,8 @@ func TestCLIInterruptDuringStdinBufferingRemovesPlaintextTemp(t *testing.T) {
 		t.Fatalf("inspect final temp directory: %v", err)
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "picocrypt-stdin-") {
-			t.Fatalf("plaintext temp remained after SIGINT: %s", entry.Name())
+		if strings.HasPrefix(entry.Name(), ".picocrypt-") {
+			t.Fatalf("encrypted stdin stage remained after SIGINT: %s", entry.Name())
 		}
 	}
 }
