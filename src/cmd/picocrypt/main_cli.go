@@ -11,8 +11,8 @@ import (
 // run is the CLI-only entry point.
 // This build excludes all GUI dependencies (Fyne, OpenGL, etc.) and can run
 // on headless systems without graphics hardware.
-func run() {
-	if !cli.Execute(version) {
+func run(startupErr error) {
+	if !cli.ExecuteWithStartupError(version, startupErr) {
 		fmt.Fprintf(os.Stderr, "Picocrypt-NG %s (CLI-only build)\n", version)
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Usage: Picocrypt-NG <command> [options]")

@@ -145,6 +145,14 @@ func restoreTerminalState() {
 // Execute runs the CLI application.
 // Returns true if CLI mode was activated, false if GUI should run instead.
 func Execute(version string) bool {
+	return ExecuteWithStartupError(version, nil)
+}
+
+// ExecuteWithStartupError preserves help/version and syntax errors when the
+// executable's startup policy failed, but refuses operations before their
+// Run/RunE functions can read plaintext, credentials, or create output. Embedded
+// callers of Execute keep responsibility for their own host process policy.
+func ExecuteWithStartupError(version string, startupErr error) bool {
 	Version = version
 	rootCmd.Version = version
 
@@ -152,7 +160,7 @@ func Execute(version string) bool {
 		return false
 	}
 
-	if code := executeCLICommand(); code != 0 {
+	if code := executeCLICommandWithStartupError(startupErr); code != 0 {
 		os.Exit(code)
 	}
 	return true
@@ -161,6 +169,23 @@ func Execute(version string) bool {
 // executeCLICommand owns signal registration until command cleanup and result
 // reporting finish. The signal loop never writes to possibly stalled stderr.
 func executeCLICommand() int {
+	return executeCLICommandWithStartupError(nil)
+}
+
+func executeCLICommandWithStartupError(startupErr error) int {
+	if startupErr != nil {
+		previous := rootCmd.PersistentPreRunE
+		rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+			if cmd.Name() == "help" && cmd.Parent() == rootCmd {
+				if previous != nil {
+					return previous(cmd, args)
+				}
+				return nil
+			}
+			return startupErr
+		}
+		defer func() { rootCmd.PersistentPreRunE = previous }()
+	}
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	stop := make(chan struct{})

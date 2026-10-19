@@ -98,6 +98,8 @@ Legacy v1/v2 volumes remain readable.
 
 Do not pass real passwords with `-p` in routine use: the value can remain in shell history and process listings. Prefer an interactive prompt, `--password-stdin` when fd 0 is free, or `--password-fd` when stdin carries payload data.
 
+Direct Linux executables disable kernel core dumps and ordinary peer debugger attachment before reading application input. If this startup protection fails, operations are refused; help and version remain available. Flatpak and the packaged Snap executable retain their existing process policy to preserve desktop portal access. This protection does not erase argv, swap, hibernation images, or existing dumps, and does not prevent privileged or in-process access.
+
 #### Security Flags
 
 | Flag | Type | Default | Description |

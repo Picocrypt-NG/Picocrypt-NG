@@ -63,6 +63,8 @@ src/
 │   ├── pcv3publication/   # Separate staging and atomic publication infrastructure
 │   ├── pcv3result/        # Shared outcome/stage leaf types
 │   │
+│   ├── processsecurity/   # Executable-only Linux dump policy and portal-package scope
+│   │
 │   ├── ui/                # Fyne GUI
 │   │   ├── app.go         # Main window
 │   │   ├── drop.go        # Drag-and-drop
