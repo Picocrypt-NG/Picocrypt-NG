@@ -32,7 +32,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -359,9 +358,8 @@ internal fun Pcv3ConsentDialog(
             }
         },
         dismissButton = {
-            SafeDefaultDialogFocus(cancelFocus)
             TextButton(
-                modifier = Modifier.focusRequester(cancelFocus),
+                modifier = Modifier.safeDefaultDialogFocus(cancelFocus),
                 onClick = { onRefuse(live.operationId, live.generation) },
             ) {
                 Text(stringResource(R.string.pcv3_consent_cancel))

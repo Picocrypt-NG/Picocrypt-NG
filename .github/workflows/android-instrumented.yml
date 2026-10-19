@@ -141,6 +141,7 @@ jobs:
           io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest
           io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest
           io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest
+          io.github.picocrypt_ng.picocrypt_ng.DialogFocusTest
           io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest
           io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest
           io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest
