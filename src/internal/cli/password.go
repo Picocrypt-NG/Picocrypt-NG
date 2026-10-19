@@ -36,15 +36,30 @@ func captureTerminalState() {
 	}
 }
 
-func readPasswordLine(reader *bufio.Reader) ([]byte, error) {
-	pw, err := reader.ReadBytes('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
+// read must return a wholly owned allocation starting at offset zero. Clear
+// partial failures and unused capacity before transferring successful input;
+// terminal backspaces can leave deleted bytes beyond the returned length.
+func readOwnedPassword(read func() ([]byte, error)) ([]byte, error) {
+	password, err := read()
+	if err != nil {
+		secret.SecureZero(password[:cap(password)])
 		return nil, err
 	}
+	secret.SecureZero(password[len(password):cap(password)])
+	return password, nil
+}
 
-	pw = bytes.TrimSuffix(pw, []byte("\n"))
-	pw = bytes.TrimSuffix(pw, []byte("\r"))
-	return pw, nil
+func readPasswordLine(reader *bufio.Reader) ([]byte, error) {
+	return readOwnedPassword(func() ([]byte, error) {
+		pw, err := reader.ReadBytes('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return pw, err
+		}
+
+		pw = bytes.TrimSuffix(pw, []byte("\n"))
+		pw = bytes.TrimSuffix(pw, []byte("\r"))
+		return pw, nil
+	})
 }
 
 // readPasswordSecure reads a password from stdin without echo, returning owned
@@ -69,7 +84,9 @@ func readPasswordSecure(prompt string) ([]byte, error) {
 	captureTerminalState()
 
 	// Terminal mode: disable echo. term.ReadPassword returns an owned []byte.
-	pw, err := term.ReadPassword(int(os.Stdin.Fd()))
+	pw, err := readOwnedPassword(func() ([]byte, error) {
+		return term.ReadPassword(int(os.Stdin.Fd()))
+	})
 	fmt.Fprintln(os.Stderr) // newline after hidden input
 	if err != nil {
 		return nil, fmt.Errorf("reading password: %w", err)
@@ -98,8 +115,19 @@ func ReadPasswordInteractive(confirm, allowEmpty bool) ([]byte, error) {
 	// Once the prompt(s) have returned normally, clear the saved tty state so a
 	// later unrelated signal does not re-poke the terminal.
 	defer savedTerminalState.Store(nil)
+	return readPasswordInteractive(confirm, allowEmpty, readPasswordSecure)
+}
 
-	password, err := readPasswordSecure("Password: ")
+// read must transfer independent, wholly owned buffers starting at allocation
+// offset zero, including any partial result returned with an error.
+func readPasswordInteractive(confirm, allowEmpty bool, read func(string) ([]byte, error)) ([]byte, error) {
+	password, err := read("Password: ")
+	transferred := false
+	defer func() {
+		if !transferred {
+			secret.SecureZero(password[:cap(password)])
+		}
+	}()
 	if err != nil {
 		return nil, err
 	}
@@ -109,12 +137,12 @@ func ReadPasswordInteractive(confirm, allowEmpty bool) ([]byte, error) {
 	}
 
 	if confirm && len(password) > 0 {
-		confirmPw, err := readPasswordSecure("Confirm password: ")
+		confirmPw, err := read("Confirm password: ")
+		// Only the primary is transferred; confirmation is always discarded.
+		defer secret.SecureZero(confirmPw[:cap(confirmPw)])
 		if err != nil {
 			return nil, err
 		}
-		// Zero the confirmation copy once compared; only `password` is returned.
-		defer secret.SecureZero(confirmPw)
 		if !bytes.Equal(password, confirmPw) {
 			return nil, ErrPasswordMismatch
 		}
@@ -124,6 +152,7 @@ func ReadPasswordInteractive(confirm, allowEmpty bool) ([]byte, error) {
 		fmt.Fprintln(os.Stderr, note)
 	}
 
+	transferred = true
 	return password, nil
 }
 

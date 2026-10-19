@@ -33,6 +33,7 @@ func wrapDeniability(inner, password []byte) ([]byte, int) {
 	}
 
 	kdfInput := pwnorm.EncodeForKDF(password)
+	defer crypto.SecureZero(kdfInput)
 	key, err := deriveWASMKey(kdfInput, salt, false)
 	zeroWASMSensitiveBuffer(wasmZeroingDeniabilityKDFInput, kdfInput)
 	if err != nil {

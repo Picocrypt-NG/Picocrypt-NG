@@ -78,6 +78,11 @@ func TestReadPasswordLine(t *testing.T) {
 			if string(got) != tc.want {
 				t.Fatalf("readPasswordLine() = %q, want %q", got, tc.want)
 			}
+			for i, b := range got[len(got):cap(got)] {
+				if b != 0 {
+					t.Fatalf("trimmed password byte %d remains in owned backing storage", len(got)+i)
+				}
+			}
 		})
 	}
 }

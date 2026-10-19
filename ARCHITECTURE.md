@@ -15,6 +15,8 @@ src/
 │   │
 │   ├── cli/               # Cobra CLI commands (encrypt/decrypt)
 │   │
+│   ├── argon2/            # Pinned Argon2 implementation with workspace cleanup (AUDIT-CRITICAL)
+│   │
 │   ├── crypto/            # Cryptographic primitives (AUDIT-CRITICAL)
 │   │   ├── cipher.go      # XChaCha20, Serpent
 │   │   ├── kdf.go         # Argon2id, HKDF
@@ -194,7 +196,7 @@ The legacy paths in `crypto/`, `header/`, `keyfile/`, and `volume/` descend from
 ```go
 // Pattern used throughout
 ctx := NewOperationContext(req)
-defer ctx.Close()  // Zeros all sensitive data
+defer ctx.Close()  // Wipes owned secret buffers
 
 // Explicit zeroing
 crypto.SecureZero(key)

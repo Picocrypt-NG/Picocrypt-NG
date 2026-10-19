@@ -213,6 +213,8 @@ The CLI provides four methods for password input:
 
 Picocrypt NG overwrites owned sensitive byte buffers after use via `crypto.SecureZero()`, backed by `internal/secret`. The helper uses a non-inlined `clear` followed by `runtime.KeepAlive`, without allocating another buffer. Optimized compiler output must be checked when changing this helper or the toolchain. This is best-effort cleanup: other copies held by the runtime, compiler or dependencies may remain, and complete memory erasure is not guaranteed.
 
+Production Argon2 calls use `internal/argon2`, maintained from `golang.org/x/crypto` v0.58.0 with explicit cleanup of its workspace and selected intermediate buffers. Cleanup follows worker completion and extraction of the independent output key; algorithm parameters and derived bytes are unchanged. The existing `FreeOSMemory` calls reclaim memory but do not provide a secure-erasure contract. Internal hash state, assembly/register copies, and earlier swap or dump contents remain outside this cleanup guarantee.
+
 # Code Structure
 
 Picocrypt NG v2.00+ has been refactored into a modular architecture. The codebase is organized as follows:

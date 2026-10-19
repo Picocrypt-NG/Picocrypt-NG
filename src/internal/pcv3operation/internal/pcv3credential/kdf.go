@@ -1,12 +1,11 @@
 package pcv3credential
 
 import (
+	"Picocrypt-NG/internal/argon2"
 	pcsecret "Picocrypt-NG/internal/secret"
 	"context"
 	"errors"
 	"runtime/debug"
-
-	"golang.org/x/crypto/argon2"
 )
 
 const (
