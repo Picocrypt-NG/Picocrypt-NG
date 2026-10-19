@@ -4,6 +4,7 @@ package pcv3resource
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -124,6 +125,72 @@ func TestLinuxSnapshotProviderUsesMinimumApplicableHeadroom(t *testing.T) {
 	}
 	if snapshot.platformThreshold != 0 {
 		t.Fatalf("platform threshold = %d; want zero for conservative desktop headroom", snapshot.platformThreshold)
+	}
+}
+
+func TestLinuxWorkingMemoryPreflightRequiresAddressSpaceFacts(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		bytes  uint64
+		change func(*linuxSnapshotFixture)
+		want   error
+	}{
+		{name: "exact virtual headroom", bytes: 1 << 20},
+		{name: "one byte beyond virtual headroom", bytes: (1 << 20) + 1, want: errWorkingMemoryInsufficient},
+		{name: "unlimited needs no process facts", bytes: 1 << 30, change: func(f *linuxSnapshotFixture) {
+			f.limits = "Max address space unlimited unlimited bytes\n"
+			f.status = "unavailable"
+		}},
+		{name: "missing address limit", bytes: 1 << 20, change: func(f *linuxSnapshotFixture) {
+			f.limits = "unavailable"
+		}, want: errWorkingMemoryUnknown},
+		{name: "finite limit needs process facts", bytes: 1 << 20, change: func(f *linuxSnapshotFixture) {
+			f.status = "unavailable"
+		}, want: errWorkingMemoryUnknown},
+		{name: "exhausted address space", bytes: 1 << 20, change: func(f *linuxSnapshotFixture) {
+			f.limits = "Max address space 1048576 1048576 bytes\n"
+		}, want: errWorkingMemoryUnknown},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLinuxSnapshotFixture()
+			if test.change != nil {
+				test.change(&fixture)
+			}
+			if err := fixture.provider(t).preflightAddressSpace(context.Background(), test.bytes); !errors.Is(err, test.want) {
+				t.Fatalf("preflight = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLinuxWorkingMemoryPreflightDoesNotReplaceFreshPhysicalAdmission(t *testing.T) {
+	fixture := newLinuxSnapshotFixture()
+	fixture.limits = "Max address space unlimited unlimited bytes\n"
+	provider := fixture.provider(t)
+	admitter := newAdmitter(provider)
+	if err := admitter.admitWorkingMemory(context.Background(), 1<<20); err != nil {
+		t.Fatal("fitting working memory refused:", err)
+	}
+	firstSequence := admitter.lastSequence
+	// The unchanged unlimited virtual limit cannot conceal newly occupied RAM.
+	current := filepath.Join(provider.filesystemRootPath, "sys/fs/cgroup/tenant/job/memory.current")
+	if err := os.WriteFile(current, []byte("2621440\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := admitter.admitWorkingMemory(context.Background(), 1<<20); !errors.Is(err, errWorkingMemoryInsufficient) {
+		t.Fatalf("new cgroup pressure bypassed full fresh admission: %v", err)
+	}
+	if firstSequence == 0 || admitter.lastSequence <= firstSequence {
+		t.Fatal("working-memory admission reused its earlier physical snapshot")
+	}
+}
+
+func TestLinuxWorkingMemoryPreflightPreservesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	provider := linuxSnapshotProvider{procRootPath: filepath.Join(t.TempDir(), "absent")}
+	if err := provider.preflightAddressSpace(ctx, 1<<20); !errors.Is(err, context.Canceled) {
+		t.Fatal("cancelled preflight attempted to obtain native facts:", err)
 	}
 }
 

@@ -4,6 +4,7 @@ package pcv3resource
 import (
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"context"
+	"errors"
 	"math"
 	"runtime/debug"
 	"sync"
@@ -59,6 +60,10 @@ type snapshotProvider interface {
 // resourceAdmitter decision and arithmetic path for every platform.
 type kdfSnapshotProvider interface {
 	snapshotForKDF(context.Context, pcv3credential.KDFProfile) Snapshot
+}
+
+type addressSpacePreflightProvider interface {
+	preflightAddressSpace(context.Context, uint64) error
 }
 
 type resourceAdmitter struct {
@@ -138,6 +143,19 @@ func (admitter *resourceAdmitter) AdmitKDF(
 	if ctx.Err() != nil {
 		return pcv3credential.KDFAdmissionDeniedUnknown, nil
 	}
+	kdfKiB := uint64(profile.MemoryKiB)
+	if kdfKiB > math.MaxUint64/1024 {
+		return pcv3credential.KDFAdmissionDeniedUnknown, nil
+	}
+	kdfBytes := kdfKiB * 1024
+	if provider, ok := admitter.provider.(addressSpacePreflightProvider); ok {
+		if err := provider.preflightAddressSpace(ctx, kdfBytes); err != nil {
+			if ctx.Err() == nil && errors.Is(err, errWorkingMemoryInsufficient) {
+				return pcv3credential.KDFAdmissionDeniedInsufficient, nil
+			}
+			return pcv3credential.KDFAdmissionDeniedUnknown, nil
+		}
+	}
 	// Earlier legacy operations can leave an unreachable Argon2 workspace in
 	// the Go heap. Return it to the OS before observing headroom and resident
 	// memory. Admission still uses one fresh snapshot and the unchanged fixed
@@ -161,11 +179,6 @@ func (admitter *resourceAdmitter) AdmitKDF(
 		return pcv3credential.KDFAdmissionDeniedInsufficient, nil
 	}
 
-	kdfKiB := uint64(profile.MemoryKiB)
-	if kdfKiB > math.MaxUint64/1024 {
-		return pcv3credential.KDFAdmissionDeniedUnknown, nil
-	}
-	kdfBytes := kdfKiB * 1024
 	required, ok := checkedAdd(kdfBytes, snapshot.platformThreshold)
 	if !ok {
 		return pcv3credential.KDFAdmissionDeniedUnknown, nil

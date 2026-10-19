@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,7 +22,9 @@ func TestDeletionManifestRefusesLowFreshMemory(t *testing.T) {
 	const child = "PICOCRYPT_DELETION_LOW_MEMORY"
 	if os.Getenv(child) == "" {
 		c := exec.Command(os.Args[0], "-test.run=^TestDeletionManifestRefusesLowFreshMemory$", "-test.count=1")
-		c.Env = append(os.Environ(), child+"=1")
+		// A high CPU count can make GC grow cgo thread stacks after RLIMIT_AS
+		// is narrowed. Admission must refuse without starting that collector.
+		c.Env = append(os.Environ(), child+"=1", "GOMAXPROCS=32")
 		if out, err := c.CombinedOutput(); err != nil {
 			t.Fatalf("child: %v\n%s", err, out)
 		}
@@ -31,6 +35,12 @@ func TestDeletionManifestRefusesLowFreshMemory(t *testing.T) {
 	if err := os.WriteFile(source, []byte("preserve"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Isolate explicit collection by admission from automatic collection. A
+	// forced GC under the already-insufficient address limit can abort in cgo.
+	previousGC := debug.SetGCPercent(-1)
+	defer debug.SetGCPercent(previousGC)
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
 	status, err := os.ReadFile("/proc/self/status")
 	if err != nil {
 		t.Fatal(err)
@@ -82,5 +92,10 @@ func TestDeletionManifestRefusesLowFreshMemory(t *testing.T) {
 	manifest, err = captureOperationDeletionManifestWithBudget(ctx, operationInput{delete: false}, budget)
 	if manifest != nil || err != nil {
 		t.Fatalf("no-delete no-op: %v %v", manifest, err)
+	}
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	if after.NumGC != before.NumGC {
+		t.Fatalf("insufficient address space triggered forced GC: before=%d after=%d", before.NumGC, after.NumGC)
 	}
 }

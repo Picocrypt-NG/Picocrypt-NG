@@ -38,6 +38,11 @@ func (admitter *resourceAdmitter) admitWorkingMemory(ctx context.Context, bytes 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if provider, ok := admitter.provider.(addressSpacePreflightProvider); ok {
+		if err := provider.preflightAddressSpace(ctx, bytes); err != nil {
+			return err
+		}
+	}
 	// Retired parse/KDF workspaces may still occupy the Go heap. Collect before
 	// observing rather than discounting live allocations or tuning GC globally.
 	debug.FreeOSMemory()
