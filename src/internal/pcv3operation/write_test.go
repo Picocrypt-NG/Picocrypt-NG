@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -269,6 +270,7 @@ func TestWritePublishedUncertainStillCreatesRequestedSplit(t *testing.T) {
 			if _, err := stage.File().Write(payload); err != nil {
 				t.Fatal(err)
 			}
+			privateDirectory := filepath.Dir(stage.File().Name())
 			publication, retained := stage.PublishWriteRetained(context.Background())
 			if retained == nil {
 				t.Fatalf("publication did not retain file: %v", publication)
@@ -284,7 +286,16 @@ func TestWritePublishedUncertainStillCreatesRequestedSplit(t *testing.T) {
 			}
 			owner := &operationOwner{}
 			result = owner.finishWriteOutput(context.Background(), result, retained, &WriteSplitOptions{ChunkSize: 1, Unit: fileops.SplitUnitKiB}, false)
-			if result.Outcome() != pcv3.OutcomeSuccess {
+			if _, err := os.Lstat(privateDirectory); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("split retained private staging: %v", err)
+			}
+			if runtime.GOOS == "windows" {
+				if result.Outcome() != pcv3.OutcomeOperationFailed || result.Stage() != pcv3.StageOutputPublication ||
+					result.Code() != pcv3.CodeOperationFailed || result.Diagnostic() != DiagnosticCoreFailure ||
+					!slices.Equal(result.Warnings(), []Warning{WarningDurabilityUncertain, WarningCleanupIncomplete}) {
+					t.Fatalf("uncertain native split lost its exact failed/cleanup tuple: %v warnings=%v", result, result.Warnings())
+				}
+			} else if result.Outcome() != pcv3.OutcomeSuccess {
 				t.Fatalf("split failed: %v", result)
 			}
 			recombined := filepath.Join(directory, "recombined")

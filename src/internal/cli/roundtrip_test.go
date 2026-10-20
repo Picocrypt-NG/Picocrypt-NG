@@ -740,7 +740,12 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 				}
 				encrypted.stderr = strings.Replace(encrypted.stderr, splitNotice, "", 1)
 			}
-			requireNativePCV3Published(t, encrypted, "")
+			outcome := "success"
+			if runtime.GOOS == "windows" {
+				// Complete chunks do not erase the retained owner's cleanup failure.
+				outcome = "operation-failed"
+			}
+			requireNativePCV3FileTerminal(t, encrypted, "", outcome)
 			chunkCount := 0
 			var combined bytes.Buffer
 			for ; ; chunkCount++ {

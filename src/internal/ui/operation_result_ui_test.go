@@ -64,6 +64,9 @@ func TestPCV3ResultSurfacePreservesFrontendFinalization(t *testing.T) {
 				if runtime.GOOS == "windows" && (!strings.Contains(text, nativePCV3UncertainBody) || !strings.Contains(text, nativePCV3DurabilityWarningText) || strings.Contains(text, "File saved.")) {
 					t.Errorf("frontend finalization concealed native uncertainty: %q", text)
 				}
+				if runtime.GOOS == "windows" && (!strings.Contains(text, nativePCV3CleanupWarningTitle) || !strings.Contains(text, nativePCV3CleanupWarningText) || findPCV3Button(a.pcv3Container, "Close cleanup warning") == nil) {
+					t.Errorf("frontend finalization concealed native cleanup uncertainty: %q", text)
+				}
 				if runtime.GOOS != "windows" && !test.recursive && !strings.Contains(text, "File saved.") {
 					t.Errorf("cancellation hid the already-published output: %q", text)
 				}

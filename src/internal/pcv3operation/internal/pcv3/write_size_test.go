@@ -141,9 +141,9 @@ func TestWriteCiphertextLengthMatchesSmallPublishedD1(t *testing.T) {
 			}
 			result, err := composeD1OuterStage(context.Background(), fixture.request,
 				newD1LiteralStageIntegrationSeams(t, defaultD1CreationSeams().observe))
-			if err != nil || result == nil {
-				t.Fatalf("D1 serializer: %v", err)
-			}
+			requireD1NativeCleanupResult(t, err)
+			requireNativePublication(t, result)
+			requireD1NoStageResidue(t, fixture.directory)
 			info, err := os.Stat(fixture.destinationPath)
 			if err != nil || uint64(info.Size()) != got {
 				t.Fatalf("D1 output plain=%d rs=%t length=%d stat=%v err=%v", plain, rs, got, info, err)

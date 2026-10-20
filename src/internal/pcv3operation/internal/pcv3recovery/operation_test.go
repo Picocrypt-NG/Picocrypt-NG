@@ -608,7 +608,7 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 							return errors.New("TEST ONLY multiple recovery stages")
 						}
 						privateDirectory := filepath.Join(directory, entry.Name())
-						children, childErr := os.ReadDir(privateDirectory)
+						children, childErr := readRecoveryCustodyDirectory(privateDirectory)
 						if childErr != nil {
 							return fmt.Errorf("TEST ONLY private stage contents: %w", childErr)
 						}

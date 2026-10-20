@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -99,7 +100,7 @@ func TestArchiveSAFEntryScratchIsWipedAfterSuccessFailureAndPanic(t *testing.T) 
 					t.Fatal("failed stream remained actionable")
 				}
 				result := session.Abort()
-				if result.State() != fileops.UnpackStatePublicationIndeterminate || result.CleanupIncomplete() {
+				if result.State() != fileops.UnpackStatePublicationIndeterminate || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 					t.Fatalf("failure cleanup/result = %#v", result)
 				}
 			}
@@ -146,7 +147,7 @@ func TestArchiveSAFEntryScratchReusePreservesDifferentSizedPayloads(t *testing.T
 			t.Fatal("scratch reuse changed provider bytes")
 		}
 	}
-	if session.Finish().CleanupIncomplete() {
+	if session.Finish().CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatal("stage cleanup failed")
 	}
 	assertNativeArchiveStage(t, parent, target, 0)
@@ -230,7 +231,7 @@ func TestArchiveSAFEntryScratchCancellationWaitsForBorrowerBeforeWiping(t *testi
 		}
 	}
 	result := session.Abort()
-	if result.State() != fileops.UnpackStatePublicationIndeterminate || result.CleanupIncomplete() {
+	if result.State() != fileops.UnpackStatePublicationIndeterminate || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("cancel result = %#v", result)
 	}
 	assertNativeArchiveStage(t, parent, target, 0)
@@ -268,7 +269,7 @@ func BenchmarkArchiveSAFSessionEntryAllocations(b *testing.B) {
 				if writer.bytes != int64(count)*int64(len(entries[0].data)) {
 					b.Fatal("entry bytes missing")
 				}
-				if result := session.Finish(); result.State() != fileops.UnpackStatePublishedDurabilityUncertain || result.CleanupIncomplete() {
+				if result := session.Finish(); result.State() != fileops.UnpackStatePublishedDurabilityUncertain || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 					b.Fatal("session failed")
 				}
 			}

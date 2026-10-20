@@ -213,7 +213,8 @@ func TestLegacyStdoutNewAttemptRevokesOldOwnerAndUsesFreshEncryption(t *testing.
 	if _, err := old.Write([]byte("must be revoked")); err == nil {
 		t.Fatal("new attempt retained a writable old key/nonce session")
 	}
-	if _, err := oldFile.Stat(); !errors.Is(err, os.ErrClosed) {
+	var probe [1]byte
+	if _, err := oldFile.ReadAt(probe[:], 0); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("old attempt descriptor is live: %v", err)
 	}
 	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
@@ -376,7 +377,8 @@ func TestLegacyStdoutPreprocessPanicClosesUnpinnedRecombinedDeniabilityInput(t *
 	if localInput == nil {
 		t.Fatal("panic did not interrupt the real deniability input before pinning")
 	}
-	if _, err := localInput.Stat(); !errors.Is(err, os.ErrClosed) {
+	var probe [1]byte
+	if _, err := localInput.ReadAt(probe[:], 0); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("pre-pin recombined descriptor leaked after panic: %v", err)
 	}
 	if output != nil {

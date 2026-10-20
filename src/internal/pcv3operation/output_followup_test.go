@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -110,10 +111,12 @@ func TestOutputFollowUpStreamsTheRetainedFileAcrossPathReplacement(t *testing.T)
 	foreign := []byte("foreign pathname replacement")
 	retained, retainedPath := newOperationRetainedFile(t, directory, payload)
 	moved := filepath.Join(directory, "moved-private-output.bin")
-	if err := os.Rename(retainedPath, moved); err != nil {
-		t.Fatalf("move retained output: %v", err)
+	replaced := replaceOperationRetainedPath(t, retainedPath, moved, payload)
+	foreignPath := retainedPath
+	if !replaced {
+		foreignPath = moved
 	}
-	if err := os.WriteFile(retainedPath, foreign, 0o600); err != nil {
+	if err := os.WriteFile(foreignPath, foreign, 0o600); err != nil {
 		t.Fatalf("write foreign replacement: %v", err)
 	}
 	reader, writer, err := os.Pipe()
@@ -121,7 +124,8 @@ func TestOutputFollowUpStreamsTheRetainedFileAcrossPathReplacement(t *testing.T)
 		t.Fatalf("create output pipe: %v", err)
 	}
 
-	action := newOutputFollowUp(retained).StreamTo(context.Background(), writer)
+	followUp := newOutputFollowUp(retained)
+	action := followUp.StreamTo(context.Background(), writer)
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close output pipe writer: %v", err)
 	}
@@ -136,8 +140,15 @@ func TestOutputFollowUpStreamsTheRetainedFileAcrossPathReplacement(t *testing.T)
 	if string(streamed) != string(payload) {
 		t.Fatalf("streamed replacement bytes = %q; want retained plaintext", streamed)
 	}
-	requireOperationFileBytes(t, retainedPath, foreign)
-	requireOperationFileBytes(t, moved, payload)
+	if followUp.live() || retained.Live() {
+		t.Fatal("stream left consumed output authority live")
+	}
+	requireOperationFileBytes(t, foreignPath, foreign)
+	if replaced {
+		requireOperationFileBytes(t, moved, payload)
+	} else if _, err := os.Lstat(retainedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blocked replacement left the streamed internal owner: %v", err)
+	}
 }
 
 func TestOutputFollowUpRejectsMutatedRetainedBytesBeforeStreaming(t *testing.T) {
@@ -164,7 +175,9 @@ func TestOutputFollowUpRejectsMutatedRetainedBytesBeforeStreaming(t *testing.T) 
 			directory := t.TempDir()
 			payload := []byte("authenticated plaintext must be unchanged before stdout")
 			retained, retainedPath := newOperationRetainedFile(t, directory, payload)
-			if err := os.WriteFile(retainedPath, test.mutate(payload), 0o600); err != nil {
+			mutator := openOperationRetainedFile(t, retainedPath, os.O_WRONLY|os.O_TRUNC)
+			_, writeErr := mutator.Write(test.mutate(payload))
+			if err := errors.Join(writeErr, mutator.Close()); err != nil {
 				t.Fatalf("mutate retained output: %v", err)
 			}
 			reader, writer, err := os.Pipe()
@@ -233,10 +246,12 @@ func TestOutputFollowUpDiscardIsExactIdentityOnly(t *testing.T) {
 		foreign := []byte("foreign replacement")
 		retained, retainedPath := newOperationRetainedFile(t, directory, payload)
 		moved := filepath.Join(directory, "moved-owner.bin")
-		if err := os.Rename(retainedPath, moved); err != nil {
-			t.Fatalf("move retained owner: %v", err)
+		replaced := replaceOperationRetainedPath(t, retainedPath, moved, payload)
+		foreignPath := retainedPath
+		if !replaced {
+			foreignPath = moved
 		}
-		if err := os.WriteFile(retainedPath, foreign, 0o600); err != nil {
+		if err := os.WriteFile(foreignPath, foreign, 0o600); err != nil {
 			t.Fatalf("write foreign replacement: %v", err)
 		}
 		followUp := newOutputFollowUp(retained)
@@ -252,8 +267,12 @@ func TestOutputFollowUpDiscardIsExactIdentityOnly(t *testing.T) {
 		if followUp.live() {
 			t.Fatal("identity-loss discard left deletion authority live")
 		}
-		requireOperationFileBytes(t, retainedPath, foreign)
-		requireOperationFileBytes(t, moved, payload)
+		requireOperationFileBytes(t, foreignPath, foreign)
+		if replaced {
+			requireOperationFileBytes(t, moved, payload)
+		} else if _, err := os.Lstat(retainedPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("blocked replacement left the discarded internal owner: %v", err)
+		}
 	})
 }
 
@@ -383,6 +402,7 @@ func newOperationRetainedFile(
 	// independent of plaintext authority minting. Ciphertext custody preserves
 	// Windows' genuine directory-durability uncertainty; native plaintext
 	// publication refusal is tested separately in pcv3publication.
+	privateDirectory := filepath.Dir(stage.File().Name())
 	publication, retained := stage.PublishWriteRetained(context.Background())
 	if retained != nil {
 		t.Cleanup(func() { _ = retained.Close() })
@@ -396,8 +416,11 @@ func newOperationRetainedFile(
 		_ = stage.Cleanup()
 		t.Fatalf("publish retained transport fixture = %v/%v; want %v custody", publication, retained, wantState)
 	}
-	if err := stage.Cleanup(); err != nil {
+	if err := stage.Cleanup(); (runtime.GOOS == "windows" && !errors.Is(err, pcv3publication.ErrCleanupIncomplete)) || (runtime.GOOS != "windows" && err != nil) {
 		t.Fatalf("cleanup transferred publication stage: %v", err)
+	}
+	if _, err := os.Lstat(privateDirectory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("transferred publication retained private staging: %v", err)
 	}
 	return retained, target
 }
@@ -437,6 +460,47 @@ func requireOperationFileBytes(t *testing.T, path string, want []byte) {
 	}
 }
 
+// Windows prevents relocating its DELETE-pinned owner. Exercise that protection
+// instead of skipping the follow-up; Unix still exercises a real replacement.
+func replaceOperationRetainedPath(t *testing.T, path, moved string, payload []byte) bool {
+	t.Helper()
+	err := os.Rename(path, moved)
+	if runtime.GOOS != "windows" {
+		if err != nil {
+			t.Fatalf("move retained owner: %v", err)
+		}
+		return true
+	}
+	if !errors.Is(err, syscall.Errno(32)) {
+		t.Fatalf("retained Windows owner must refuse relocation with a sharing violation: %v", err)
+	}
+	file := openOperationRetainedFile(t, path, os.O_RDONLY)
+	got, readErr := io.ReadAll(file)
+	if err := errors.Join(readErr, file.Close()); err != nil || string(got) != string(payload) {
+		t.Fatalf("blocked relocation changed the retained bytes: %v", err)
+	}
+	if _, err := os.Lstat(moved); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blocked relocation created a second pathname: %v", err)
+	}
+	return false
+}
+
+// Root.OpenFile supplies DELETE sharing to observe or mutate the real live
+// owner without weakening the production handle's namespace protection.
+func openOperationRetainedFile(t *testing.T, path string, flag int) *os.File {
+	t.Helper()
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	file, err := root.OpenFile(filepath.Base(path), flag, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
 // The failed plaintext save consumes its only follow-up. Even when the caller's
 // destination cannot be cleaned, the independently owned internal plaintext
 // must still be removed. No KDF or fixture is involved in this filesystem test.
@@ -448,10 +512,7 @@ func TestOutputFollowUpCleanupUncertainSaveRemovesInternalPlaintext(t *testing.T
 	// cannot strand a descriptor or file beyond t.TempDir's lifetime.
 	t.Cleanup(func() { _ = retained.Close() })
 	followUp := newOutputFollowUp(retained)
-	destination, err := os.OpenFile(retainedPath, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	destination := openOperationRetainedFile(t, retainedPath, os.O_RDWR)
 	action := followUp.SaveTo(destination)
 	if action.Code() != OutputActionSaveFailedCleanupIncomplete || !action.CleanupIncomplete() {
 		t.Fatalf("action = %v cleanup=%v, want failed save with alias uncertainty", action.Code(), action.CleanupIncomplete())

@@ -232,9 +232,7 @@ func TestD1WriterLiteralCredentialStageIntegration(t *testing.T) {
 	})
 
 	result, err := composeD1OuterStage(context.Background(), fixture.request, seams)
-	if err != nil {
-		t.Fatalf("compose D1 stage: %v", err)
-	}
+	requireD1NativeCleanupResult(t, err)
 	requireNativePublication(t, result)
 	if len(events) == 0 || events[0] != d1BoundaryStageCreated {
 		t.Fatalf("first D1 effect = %v; want stage creation", events)
@@ -449,7 +447,7 @@ func TestD1WriterNeverCreatesClearInnerArtifact(t *testing.T) {
 		stage *pcv3publication.Stage,
 	) error {
 		stagePath := requireD1LiveStage(t, fixture, stage)
-		raw, err := os.ReadFile(stagePath)
+		raw, err := readArchiveCustodyTestFile(stagePath)
 		if err != nil {
 			t.Fatalf("read live D1 stage: %v", err)
 		}
@@ -460,9 +458,7 @@ func TestD1WriterNeverCreatesClearInnerArtifact(t *testing.T) {
 		return nil
 	})
 	result, err := composeD1OuterStage(context.Background(), fixture.request, seams)
-	if err != nil {
-		t.Fatalf("publish D1 artifact = result %v, error %v", result, err)
-	}
+	requireD1NativeCleanupResult(t, err)
 	requireNativePublication(t, result)
 
 	raw, err := os.ReadFile(fixture.destinationPath)
@@ -574,9 +570,7 @@ func TestD1WriterPublicationOutcome(t *testing.T) {
 			})
 
 			result, err := composeD1OuterStage(context.Background(), fixture.request, seams)
-			if err != nil {
-				t.Fatalf("compose D1 publication outcome: %v", err)
-			}
+			requireD1NativeCleanupResult(t, err)
 			if result == nil || result.State() != test.wantState || result.Code() != test.wantCode {
 				t.Fatalf("D1 sealed result = %T %v; want %v/%v", result, result, test.wantState, test.wantCode)
 			}
@@ -920,7 +914,7 @@ func requireD1LiveStage(
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".picocrypt-pcv3-") {
 			privatePath := filepath.Join(fixture.directory, entry.Name())
-			children, err := os.ReadDir(privatePath)
+			children, err := readArchiveCustodyTestDirectory(privatePath)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1022,4 +1016,17 @@ func fillD1TestNormalKeys(keys *normalWriteKeys, seed byte) {
 	fill(keys.payloadXChaCha20[:], seed+10)
 	fill(keys.payloadSerpent[:], seed+11)
 	fill(keys.payloadMAC[:], seed+12)
+}
+
+func requireD1NativeCleanupResult(t *testing.T, err error) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		var failure *d1OuterFailure
+		if !errors.As(err, &failure) || failure.stage != StageOutputPublication ||
+			!errors.Is(failure.cause, pcv3publication.ErrCleanupIncomplete) {
+			t.Fatalf("D1 native cleanup = %v; want directory-durability cleanup warning", err)
+		}
+	} else if err != nil {
+		t.Fatalf("D1 native cleanup: %v", err)
+	}
 }

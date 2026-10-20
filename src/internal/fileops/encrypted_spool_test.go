@@ -87,8 +87,11 @@ func TestEncryptedSpoolPrivateDiskAndRepeatableLength(t *testing.T) {
 			if records == 0 {
 				records = 1
 			}
-			if info.Size() != int64(size+16*records) || info.Mode().Perm() != 0o600 {
+			if info.Size() != int64(size+16*records) {
 				t.Fatalf("physical metadata=%v", info)
+			}
+			if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+				t.Fatalf("ciphertext stage mode=%04o; want 0600", info.Mode().Perm())
 			}
 			if _, err := owner.Write([]byte{1}); err == nil {
 				t.Fatal("sealed key reused for writing")

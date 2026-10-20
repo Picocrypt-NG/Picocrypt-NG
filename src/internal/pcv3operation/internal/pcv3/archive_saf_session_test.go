@@ -69,7 +69,7 @@ func TestArchiveSAFSessionStreamsExactFilesAndFinishesDurabilityUncertain(t *tes
 
 	finished := session.Finish()
 	if finished == nil || finished.State() != fileops.UnpackStatePublishedDurabilityUncertain ||
-		!finished.AttemptedEver() || finished.CleanupIncomplete() {
+		!finished.AttemptedEver() || finished.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("finished SAF result = %#v; want attempted durability-uncertain with exact cleanup", finished)
 	}
 	if repeated := session.Finish(); repeated != finished {
@@ -158,7 +158,7 @@ func TestArchiveSAFSessionFrozenAuthenticatedArchiveStreamsToRealDescriptors(t *
 
 	result := session.Finish()
 	if result == nil || result.State() != fileops.UnpackStatePublishedDurabilityUncertain ||
-		!result.AttemptedEver() || result.CleanupIncomplete() {
+		!result.AttemptedEver() || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("authenticated SAF finish = %#v; want attempted durability-uncertain", result)
 	}
 	assertNativeArchiveStage(t, stageParent, rawTarget, 0)
@@ -481,8 +481,8 @@ func TestArchiveSAFSessionAliasesAndOutOfOrderActionsCannotAdvanceAuthority(t *t
 		second.AttemptedEver() {
 		t.Fatalf("out-of-order attempt = %#v attempted-ever=%v; want no provider authority", step, second.AttemptedEver())
 	}
-	if result := second.Abort(); result.State() != fileops.UnpackStateNotPublished ||
-		result.AttemptedEver() {
+	if result := second.Abort(); result.State() != nativeArchiveSAFUnattemptedState() ||
+		result.AttemptedEver() || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("out-of-order abort = %#v", result)
 	}
 }
@@ -834,7 +834,7 @@ func (writer *archiveSAFSettlementWriter) release() {
 
 func findArchiveSAFStagePath(t *testing.T, parent string) string {
 	t.Helper()
-	entries, err := os.ReadDir(parent)
+	entries, err := readArchiveCustodyTestDirectory(parent)
 	if err != nil {
 		t.Fatalf("read stage parent: %v", err)
 	}
@@ -849,4 +849,13 @@ func findArchiveSAFStagePath(t *testing.T, parent string) string {
 	}
 	t.Fatal("journaled archive stage not found")
 	return ""
+}
+
+// A live stage is removed on every platform. Windows cannot confirm the
+// directory barrier, so even an unattempted session retains cleanup uncertainty.
+func nativeArchiveSAFUnattemptedState() fileops.UnpackState {
+	if runtime.GOOS == "windows" {
+		return fileops.UnpackStatePublicationIndeterminate
+	}
+	return fileops.UnpackStateNotPublished
 }

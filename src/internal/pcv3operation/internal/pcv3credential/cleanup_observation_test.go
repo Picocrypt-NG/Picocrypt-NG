@@ -31,7 +31,8 @@ func TestKeyfileBorrowFileExpiresWhenOwnershipCloses(t *testing.T) {
 	if reader.BorrowFile() != nil {
 		t.Fatal("closed keyfile still lends its descriptor")
 	}
-	if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
+	var probe [1]byte
+	if _, err := file.ReadAt(probe[:], 0); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("file ownership not closed: %v", err)
 	}
 	wrapped := OwnKeyfileReader(io.NopCloser(bytes.NewReader([]byte("factor"))))

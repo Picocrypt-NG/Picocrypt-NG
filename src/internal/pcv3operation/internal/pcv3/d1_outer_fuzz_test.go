@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -535,32 +534,39 @@ func requireD1FuzzOnlyLiveStage(
 		t.Fatalf("%s: live stage is outside its private child directory; oracle: %s", risk, oracle)
 	}
 	seenSource, seenStage := false, false
-	err := filepath.WalkDir(directory, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	for _, parent := range []string{directory, privateDirectory} {
+		info, err := os.Lstat(parent)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("%s: unexpected directory identity: %v; oracle: %s", risk, err, oracle)
 		}
-		info, err := entry.Info()
+		entries, err := readArchiveCustodyTestDirectory(parent)
 		if err != nil {
-			return err
+			t.Fatalf("%s: inspect live custody: %v; oracle: %s", risk, err, oracle)
 		}
-		switch path {
-		case directory, privateDirectory:
-			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-				return errors.New("TEST ONLY unexpected directory identity")
+		for _, entry := range entries {
+			path := filepath.Join(parent, entry.Name())
+			info, err := entry.Info()
+			if err != nil {
+				t.Fatal(err)
 			}
-		case sourcePath, stagePath:
-			if !info.Mode().IsRegular() {
-				return errors.New("TEST ONLY source/stage is not regular")
+			switch path {
+			case privateDirectory:
+				if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+					t.Fatal("TEST ONLY unexpected directory identity")
+				}
+			case sourcePath, stagePath:
+				if !info.Mode().IsRegular() {
+					t.Fatal("TEST ONLY source/stage is not regular")
+				}
+				seenSource = seenSource || path == sourcePath
+				seenStage = seenStage || path == stagePath
+			default:
+				t.Fatal("TEST ONLY unexpected second stage or clear-inner artifact")
 			}
-			seenSource = seenSource || path == sourcePath
-			seenStage = seenStage || path == stagePath
-		default:
-			return errors.New("TEST ONLY unexpected second stage or clear-inner artifact")
 		}
-		return nil
-	})
-	if err != nil || !seenSource || !seenStage {
-		t.Fatalf("%s: live composer must contain only source and exact owned stage in its private directory: %v; oracle: %s", risk, err, oracle)
+	}
+	if !seenSource || !seenStage {
+		t.Fatalf("%s: live composer must contain only source and exact owned stage in its private directory; oracle: %s", risk, oracle)
 	}
 }
 

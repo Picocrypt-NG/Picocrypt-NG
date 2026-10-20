@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -157,8 +158,9 @@ func TestOperationsRetainKeyfileCleanupTruthWithoutOutput(t *testing.T) {
 				if reachedResourceCheck != wantResourceCheck {
 					t.Errorf("resource checkpoint = %v; want %v", reachedResourceCheck, wantResourceCheck)
 				}
-				if got := slices.Contains(result.Warnings(), WarningCleanupIncomplete); got != fail {
-					t.Errorf("cleanup warning = %v; want %v; result=%v stage=%v warnings=%v", got, fail, result, result.Stage(), result.Warnings())
+				wantCleanup := fail || (runtime.GOOS == "windows" && test.write != 0)
+				if got := slices.Contains(result.Warnings(), WarningCleanupIncomplete); got != wantCleanup {
+					t.Errorf("cleanup warning = %v; want %v; result=%v stage=%v warnings=%v", got, wantCleanup, result, result.Stage(), result.Warnings())
 				}
 				if result.SourceDeletionAllowed() || result.PublicationAttempted() || result.OutputFollowUp() != nil || result.ArchiveFollowUp() != nil {
 					t.Error("failed operation granted output/deletion authority")

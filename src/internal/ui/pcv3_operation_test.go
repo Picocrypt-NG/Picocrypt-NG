@@ -413,6 +413,51 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 			forbidActions: []string{"Close"},
 		},
 		{
+			name: "durability and cleanup uncertainty both remain visible",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3operation.OutcomeSuccess, Stage: pcv3operation.StageNone, Code: pcv3operation.CodeSuccess,
+				PublicationAttempted: true,
+				PublicationState:     pcv3publication.StatePublishedDurabilityUncertain,
+				PublicationStage:     pcv3operation.StageDirectorySync,
+				PublicationCode:      pcv3publication.CodeDurabilityUncertain,
+				Warnings: []pcv3operation.Warning{
+					pcv3operation.WarningDurabilityUncertain, pcv3operation.WarningCleanupIncomplete,
+				},
+			},
+			wantCompletion: pcv3operation.CompletionDurabilityUncertain,
+			wantText: []string{
+				"Operation complete", "The output is fully authenticated.", "Output durability not confirmed",
+				nativePCV3UncertainBody, nativePCV3DurabilityWarningText,
+				nativePCV3CleanupWarningTitle, nativePCV3CleanupWarningText,
+			},
+			forbidText:    []string{"File saved."},
+			wantAction:    "Close cleanup warning",
+			forbidActions: []string{"Close", "Close durability warning", "Inspect recovery artifact"},
+		},
+		{
+			name: "unverified force retains durability and cleanup uncertainty",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3operation.OutcomeForceUnverified, Stage: pcv3operation.StageWrapAuth, Code: pcv3operation.CodeForceUnverified,
+				PublicationAttempted: true,
+				PublicationState:     pcv3publication.StatePublishedDurabilityUncertain,
+				PublicationStage:     pcv3operation.StageDirectorySync,
+				PublicationCode:      pcv3publication.CodeDurabilityUncertain,
+				Warnings: []pcv3operation.Warning{
+					pcv3operation.WarningForceUnverified, pcv3operation.WarningDurabilityUncertain, pcv3operation.WarningCleanupIncomplete,
+				},
+			},
+			wantCompletion: pcv3operation.CompletionDurabilityUncertain,
+			wantText: []string{
+				"Unverified recovery artifact created",
+				"Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content.",
+				"Output durability not confirmed", nativePCV3UncertainBody, nativePCV3DurabilityWarningText,
+				nativePCV3CleanupWarningTitle, nativePCV3CleanupWarningText,
+			},
+			forbidText:    []string{"Operation complete", "The output is fully authenticated.", "File saved."},
+			wantAction:    "Close cleanup warning",
+			forbidActions: []string{"Close", "Close durability warning", "Inspect recovery artifact"},
+		},
+		{
 			name: "publication indeterminate overrides force",
 			spec: pcv3operation.PresentationSpec{
 				Outcome: pcv3operation.OutcomeForcePartial, Stage: pcv3operation.StageRecordAuth, Code: pcv3operation.CodeForcePartial,

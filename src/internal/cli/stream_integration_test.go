@@ -82,13 +82,6 @@ func requireNativePCV3CiphertextStream(t *testing.T, result cliTestResult) {
 	t.Helper()
 	terminal := result
 	terminal.stdout = nil
-	if runtime.GOOS == "windows" {
-		const cleanupWarning = "Warning: cleanup of operation-owned temporary files could not be confirmed\n"
-		if !strings.HasSuffix(terminal.stderr, cleanupWarning) {
-			t.Fatalf("native ciphertext stream lost cleanup uncertainty: %q", terminal.stderr)
-		}
-		terminal.stderr = strings.TrimSuffix(terminal.stderr, cleanupWarning)
-	}
 	requireNativePCV3Published(t, terminal, "")
 }
 

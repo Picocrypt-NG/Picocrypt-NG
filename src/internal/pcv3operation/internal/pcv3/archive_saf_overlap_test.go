@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -24,8 +25,8 @@ func TestArchiveSAFRejectsOverlappingZIPPayloadsBeforeAttempt(t *testing.T) {
 		t.Fatalf("overlapping ZIP begin kind = %v; want terminal rejection before provider attempt", begin.Kind())
 	}
 	result := begin.Result()
-	if result == nil || result.State() != fileops.UnpackStateNotPublished ||
-		result.AttemptedEver() || result.CleanupIncomplete() || handoff.Live() {
+	if result == nil || result.State() != nativeArchiveSAFUnattemptedState() ||
+		result.AttemptedEver() || result.CleanupIncomplete() != (runtime.GOOS == "windows") || handoff.Live() {
 		t.Fatalf("overlap rejection lost no-output/cleanup truth: %#v", result)
 	}
 	assertNativeArchiveStage(t, parent, target, 0)
@@ -64,7 +65,7 @@ func TestArchiveSAFAllowsDisjointZIPPayloadsInReversedOrderAndEmptyFile(t *testi
 	}
 	result := session.Finish()
 	if result == nil || result.State() != fileops.UnpackStatePublishedDurabilityUncertain ||
-		!result.AttemptedEver() || result.CleanupIncomplete() {
+		!result.AttemptedEver() || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("disjoint ZIP SAF completion = %#v", result)
 	}
 	assertNativeArchiveStage(t, parent, target, 0)

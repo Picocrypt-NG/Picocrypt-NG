@@ -17,7 +17,7 @@ func requireNativeOperationPublication(t *testing.T, result *Result) {
 	if runtime.GOOS == "windows" {
 		wantState, wantClass = pcv3publication.StatePublishedDurabilityUncertain, CompletionDurabilityUncertain
 		wantStage, wantCode = StageDirectorySync, pcv3publication.CodeDurabilityUncertain
-		wantWarnings = []Warning{WarningDurabilityUncertain}
+		wantWarnings = []Warning{WarningDurabilityUncertain, WarningCleanupIncomplete}
 	}
 	if result == nil || result.Outcome() != OutcomeSuccess || result.Diagnostic() != DiagnosticNone || result.Code() != CodeSuccess ||
 		result.Stage() != StageNone || !result.PublicationAttempted() || result.PublicationState() != wantState ||

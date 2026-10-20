@@ -19,6 +19,7 @@ func TestNativeReadOutputRequiresDurabilityForRetainedOwner(t *testing.T) {
 		sink.abortUncommitted()
 		t.Fatalf("write verified record into production sink: %v", err)
 	}
+	privateDirectory := filepath.Dir(sink.stage.File().Name())
 	state := &nativeReadOutputState{
 		active:      true,
 		disposition: NativePayloadPublish,
@@ -40,6 +41,9 @@ func TestNativeReadOutputRequiresDurabilityForRetainedOwner(t *testing.T) {
 	}
 
 	sink.abortUncommitted()
+	if _, err := os.Lstat(privateDirectory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("native publication retained private staging: %v", err)
+	}
 	nativeResult := &NativeReadResult{
 		outcome: OutcomeSuccess,
 		stage:   StageNone,
@@ -48,7 +52,7 @@ func TestNativeReadOutputRequiresDurabilityForRetainedOwner(t *testing.T) {
 	sink.snapshot(nativeResult)
 	if !nativeResult.PublicationAttempted() ||
 		nativeResult.PublicationState() != nativePublicationState() ||
-		nativeResult.CleanupIncomplete() {
+		nativeResult.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		if retained != nil {
 			_ = retained.RemoveExact()
 		}

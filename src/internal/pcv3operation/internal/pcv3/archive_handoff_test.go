@@ -28,7 +28,7 @@ func TestArchiveFollowUpConsumesAuthenticatedArchiveOnce(t *testing.T) {
 	extractRoot := openNativeArchiveRoot(t)
 	result := handoff.Extract(context.Background(), extractRoot)
 	if result == nil || result.State() != nativeExtractionState() ||
-		result.CleanupIncomplete() {
+		result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("archive extraction result = %#v; want durable with proven cleanup", result)
 	}
 	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() {
@@ -185,7 +185,7 @@ func TestArchiveFollowUpCancelledContextConsumesAndCleansWithoutPublication(t *t
 	result := handoff.Extract(ctx, extractRoot)
 
 	if result == nil || result.State() != fileops.UnpackStateNotPublished ||
-		result.CleanupIncomplete() {
+		result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("cancelled archive extraction result = %#v; want not-published with proven cleanup", result)
 	}
 	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() {
@@ -261,7 +261,7 @@ func TestArchiveFollowUpFrozenTreeContent(t *testing.T) {
 	}
 	result := handoff.Extract(context.Background(), root)
 	if result == nil || result.State() != nativeExtractionState() ||
-		result.CleanupIncomplete() {
+		result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("frozen archive result = %#v; want durable with proven cleanup", result)
 	}
 	assertArchiveHandoffFile(t, filepath.Join(extractRootPath, "root.txt"), "PCV3 authenticated archive fixture\n")
@@ -323,12 +323,13 @@ func newNativeArchiveHandoffFixture(
 			result.Outcome(), result.Stage(), result.PublicationAttempted(), result.CallbackFailed(), handoff,
 		)
 	}
+	t.Cleanup(func() { _ = handoff.Close() })
 	entries, err := os.ReadDir(stageParent)
 	if err != nil || len(entries) != 1 {
 		_ = handoff.Close()
 		t.Fatalf("private archive stage entries = %v, error %v; want one", entries, err)
 	}
-	privateEntries, err := os.ReadDir(filepath.Join(stageParent, entries[0].Name()))
+	privateEntries, err := readArchiveCustodyTestDirectory(filepath.Join(stageParent, entries[0].Name()))
 	if err != nil || len(privateEntries) != 1 {
 		t.Fatalf("private archive contents: %v %v", privateEntries, err)
 	}
@@ -341,7 +342,6 @@ func newNativeArchiveHandoffFixture(
 		_ = handoff.Close()
 		t.Fatalf("private archive stage mode = %o; want 0600", info.Mode().Perm())
 	}
-	t.Cleanup(func() { _ = handoff.Close() })
 	return handoff, stageParent, rawTarget
 }
 
@@ -468,4 +468,15 @@ func openArchiveCustodyTestFile(path string) (*os.File, error) {
 	}
 	defer root.Close()
 	return root.Open(relative)
+}
+
+// The production directory keeps DELETE authority; ordinary os.ReadDir omits
+// FILE_SHARE_DELETE on Windows and cannot observe this intentionally live owner.
+func readArchiveCustodyTestDirectory(path string) ([]os.DirEntry, error) {
+	file, err := openArchiveCustodyTestFile(path)
+	if err != nil {
+		return nil, err
+	}
+	entries, readErr := file.ReadDir(-1)
+	return entries, errors.Join(readErr, file.Close())
 }
