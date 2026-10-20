@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"syscall"
 	"testing"
@@ -171,16 +172,11 @@ func TestArchiveActionReviewsAuthenticatedBudgetBeforeExtraction(t *testing.T) {
 				}
 				return
 			}
-			if result.PublicationState() != pcv3publication.StateNotPublished || len(result.Warnings()) != 0 {
-				t.Fatalf("declined review did not cleanly refuse: %v", result)
-			}
+			requireArchiveActionRefusal(t, result, decision == "decline")
 			if decision == "decline" && !errors.Is(result, context.Canceled) {
 				t.Fatalf("declining review lost cancellation: %v", result)
 			}
-			entries, err := os.ReadDir(parent)
-			if err != nil || len(entries) != 0 {
-				t.Fatalf("declined review left plaintext or temporary files: %v", err)
-			}
+			requireArchiveRefusalDirectory(t, parent, "result", runtime.GOOS == "windows")
 		})
 	}
 }
@@ -311,12 +307,51 @@ func TestArchiveActionFailedExtractionRemovesOnlyItsEmptyDirectory(t *testing.T)
 	defer plan.close()
 	read := archiveActionFixture(t, target, []byte("authenticated but invalid ZIP"))
 	result := plan.apply(context.Background(), read)
-	if result.CompletionClass() != CompletionNoOutput || len(result.Warnings()) != 0 {
-		t.Fatalf("malformed ZIP failure=%v", result)
+	requireArchiveActionRefusal(t, result, false)
+	requireArchiveRefusalDirectory(t, directory, "output", runtime.GOOS == "windows")
+}
+
+func requireArchiveActionRefusal(t *testing.T, result *Result, cancelled bool) {
+	t.Helper()
+	stage, diagnostic, code, completion := StageOutputPublication, DiagnosticNone, pcv3publication.CodeAtomicFailed, CompletionNoOutput
+	if cancelled {
+		stage, diagnostic, code, completion = StageCancellation, DiagnosticCancellation, pcv3publication.CodeCancelled, CompletionRefused
 	}
-	entries, err := os.ReadDir(directory)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("failed extraction retained its directory or ZIP: %v %v", entries, err)
+	var warnings []Warning
+	if runtime.GOOS == "windows" {
+		warnings = []Warning{WarningCleanupIncomplete}
+	}
+	if result == nil || result.Outcome() != OutcomeOperationFailed || result.Stage() != stage ||
+		result.Code() != CodeOperationFailed || result.Diagnostic() != diagnostic || result.CompletionClass() != completion ||
+		!result.PublicationAttempted() || result.PublicationState() != pcv3publication.StateNotPublished ||
+		result.PublicationStage() != stage || result.PublicationCode() != code || !slices.Equal(result.Warnings(), warnings) {
+		t.Fatalf("archive refusal lost its exact failure/publication/cleanup tuple: %v", result)
+	}
+	if result.ArchiveFollowUp() != nil || result.OutputFollowUp() != nil || result.StreamFollowUp() != nil || result.SourceDeletionAllowed() {
+		t.Fatal("archive refusal retained output or deletion authority")
+	}
+}
+
+// A warning-bearing refusal preserves its reserved extraction directory. It
+// must contain no plaintext, private stage, or other residue anywhere inside.
+func requireArchiveRefusalDirectory(t *testing.T, parent, name string, retainEmpty bool) {
+	t.Helper()
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retainEmpty {
+		if len(entries) != 0 {
+			t.Fatalf("archive refusal left output or temporary files: %v", entries)
+		}
+		return
+	}
+	if len(entries) != 1 || entries[0].Name() != name || !entries[0].IsDir() {
+		t.Fatalf("uncertain archive refusal must retain only its empty extraction directory: %v", entries)
+	}
+	children, err := os.ReadDir(filepath.Join(parent, name))
+	if err != nil || len(children) != 0 {
+		t.Fatalf("refused extraction directory contains plaintext or temporary files: %v %v", children, err)
 	}
 }
 

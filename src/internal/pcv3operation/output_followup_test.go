@@ -451,8 +451,9 @@ func outputPublicationCode(state pcv3publication.State) pcv3publication.Code {
 
 func requireOperationFileBytes(t *testing.T, path string, want []byte) {
 	t.Helper()
-	got, err := os.ReadFile(path)
-	if err != nil {
+	file := openOperationRetainedFile(t, path, os.O_RDONLY)
+	got, readErr := io.ReadAll(file)
+	if err := errors.Join(readErr, file.Close()); err != nil {
 		t.Fatalf("read operation test file: %v", err)
 	}
 	if string(got) != string(want) {

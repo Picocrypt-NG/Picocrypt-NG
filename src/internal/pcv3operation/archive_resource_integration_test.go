@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -150,10 +151,15 @@ func testArchiveResourceFrontendPresentation(t *testing.T, mode WriteMode, kind 
 		if result.Diagnostic() != DiagnosticResourceLimit || result.Stage() != StageResourceBudget || result.CompletionClass() != CompletionNoOutput || result.PublicationAttempted() {
 			t.Errorf("resource projection: diagnostic=%v stage=%v class=%v attempted=%v", result.Diagnostic(), result.Stage(), result.CompletionClass(), result.PublicationAttempted())
 		}
-		entries, err := os.ReadDir(outputParent)
-		if err != nil || len(entries) != 0 {
-			t.Errorf("refusal retained plaintext: %v %v", entries, err)
+		retainedEmptyDirectory := runtime.GOOS == "windows" && kind == "workspace"
+		var warnings []Warning
+		if runtime.GOOS == "windows" {
+			warnings = []Warning{WarningCleanupIncomplete}
 		}
+		if !slices.Equal(result.Warnings(), warnings) {
+			t.Errorf("resource refusal warnings=%v; want %v", result.Warnings(), warnings)
+		}
+		requireArchiveRefusalDirectory(t, outputParent, "extracted", retainedEmptyDirectory)
 	}
 	p := result.Presentation()
 	rebuilt, err := NewPresentation(PresentationSpec{Outcome: p.Outcome(), Stage: p.Stage(), Code: p.Code(), ForceProvenance: p.ForceProvenance(), D1BootstrapProvenance: p.D1BootstrapProvenance(), DetailStage: p.DetailStage(), PublicationAttempted: p.PublicationAttempted(), PublicationState: p.PublicationState(), PublicationStage: p.PublicationStage(), PublicationCode: p.PublicationCode(), Args: p.Args(), Warnings: p.Warnings(), Diagnostic: p.Diagnostic(), ArchivePending: p.ArchivePending()})
