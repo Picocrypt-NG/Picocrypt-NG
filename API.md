@@ -367,7 +367,9 @@ parent owned by the current user or root remains supported. Cleanup uncertainty,
 including an empty private directory that cannot safely be retired, retains source data.
 Linux desktop/CLI operations recover leased private stages only beneath the selected
 destination parent, after pinning the original inputs and keyfiles. Live operations
-and every already-published target are preserved. Unproven or legacy cleanup records
+and every already-published target are preserved. Entries with a verified different
+owner are left untouched and do not block recovery. Unproven or legacy cleanup
+records owned by the current user, or entries whose ownership cannot be established,
 block the operation without deletion. Android retains its controlled startup cleanup
 contract. macOS and Windows retain their existing cleanup behavior without journals.
 Recovery cannot find an operation directory moved elsewhere after the process dies.

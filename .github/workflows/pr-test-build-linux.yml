@@ -48,6 +48,24 @@ jobs:
         cd src
         go mod download
 
+    - name: Verify custody across real Linux user identities
+      if: matrix.arch == 'amd64' && matrix.shard == 0
+      run: |
+        set -euo pipefail
+        test_binary=$(mktemp)
+        trap 'rm -f "$test_binary"' EXIT
+        (cd src && CGO_ENABLED=0 go test -c -o "$test_binary" ./internal/pcv3publication)
+        chmod 0555 "$test_binary"
+        docker run --rm --network none --read-only \
+          --cap-drop ALL --cap-add SETUID --cap-add SETGID \
+          --security-opt no-new-privileges --memory 256m --cpus 1 --pids-limit 64 \
+          --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 \
+          --mount "type=bind,src=$test_binary,dst=/publication.test,readonly" \
+          --env PICOCRYPT_RUN_CUSTODY_UID=1 \
+          debian@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858 \
+          /publication.test -test.v -test.timeout=2m \
+          '-test.run=^(TestDesktopRecoveryDifferentUID|TestPrivateCustodyDifferentUID)$'
+
     - name: Run native tests
       env:
         SHARD_INDEX: ${{ matrix.shard }}
