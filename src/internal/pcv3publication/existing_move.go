@@ -83,7 +83,7 @@ func moveExistingNoReplace(parentPath, sourceName, targetName string, device, in
 		}
 		return ExistingFileNotPublished, err
 	}
-	atomicErr := operations.atomicPublish(parent, sourceName, targetName, PolicyNoReplace)
+	atomicErr := operations.atomicPublish(parent, parent, source, sourceName, targetName, PolicyNoReplace)
 	// A refused collision grants no target ownership, even if the target is an
 	// alias of our source. Identity alone must not authorize deleting that name.
 	if errors.Is(atomicErr, os.ErrExist) {

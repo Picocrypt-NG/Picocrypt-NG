@@ -3,7 +3,6 @@ package pcv3
 import (
 	pcv3crypto "Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
-	pcv3stream "Picocrypt-NG/internal/pcv3operation/internal/pcv3crypto"
 	"context"
 	"crypto/subtle"
 	"encoding/binary"
@@ -18,7 +17,7 @@ const (
 	d1OuterTagSize      = 64
 	d1OuterPrefixLength = 16
 	d1OuterRecordLimit  = uint64(1) << 48
-	d1OuterRecordDomain = "Picocrypt-NG/PCV3/outer/record\x00"
+	d1OuterRecordDomain = "Picocrypt-NG/PCV3/D1C/outer/record\x00"
 )
 
 var (
@@ -176,8 +175,9 @@ func (keys *d1OuterKeys) close() {
 }
 
 type d1OuterCodec struct {
-	keys   d1OuterKeys
-	closed bool
+	keys    d1OuterKeys
+	profile pcv3credential.D1Profile
+	closed  bool
 }
 
 func newD1OuterCodec(ctx context.Context, access d1OuterKeyAccess) (*d1OuterCodec, error) {
@@ -195,6 +195,10 @@ func newD1OuterCodec(ctx context.Context, access d1OuterKeyAccess) (*d1OuterCode
 		}
 	}()
 	err := access.withOuterKeys(ctx, func(keys *pcv3credential.BorrowedD1OuterKeys) error {
+		codec.profile = keys.Profile()
+		if codec.profile.Suite() == 0 {
+			return errInvalidD1OuterRecord
+		}
 		for _, request := range []struct {
 			label       pcv3credential.D1OuterKeyLabel
 			destination []byte
@@ -246,7 +250,7 @@ func (codec *d1OuterCodec) sealRecord(
 	nonce, serpentIV := codec.recordParameters(index)
 	defer pcv3crypto.SecureZero(nonce[:])
 	defer pcv3crypto.SecureZero(serpentIV[:])
-	if err := pcv3stream.PCV3WrapParanoid1(
+	if err := wrapD1BootstrapBranch(codec.profile,
 		ciphertext,
 		plaintext,
 		codec.keys.xChaCha20[:],
@@ -319,7 +323,7 @@ func (codec *d1OuterCodec) decryptRecord(
 	nonce, serpentIV := codec.recordParameters(index)
 	defer pcv3crypto.SecureZero(nonce[:])
 	defer pcv3crypto.SecureZero(serpentIV[:])
-	if err := pcv3stream.PCV3UnwrapParanoid1(
+	if err := unwrapD1BootstrapBranch(codec.profile, defaultD1BootstrapAuthSeams(),
 		plaintext,
 		ciphertext,
 		codec.keys.xChaCha20[:],
@@ -547,15 +551,18 @@ func (codec *d1OuterCodec) recordTag(
 	var indexBytes [8]byte
 	var lengthBytes [4]byte
 	var finalByte [1]byte
+	var profileBytes [2]byte
+	binary.BigEndian.PutUint16(profileBytes[:], uint16(codec.profile))
 	binary.BigEndian.PutUint64(indexBytes[:], index)
 	binary.BigEndian.PutUint32(lengthBytes[:], uint32(len(ciphertext))) //nolint:gosec // Record length is at most 1 MiB.
 	if final {
 		finalByte[0] = 1
 	}
 	tag, err := suiteMACTag(
-		SuiteParanoid,
+		Suite(codec.profile.Suite()),
 		codec.keys.mac[:],
 		[]byte(d1OuterRecordDomain),
+		profileBytes[:],
 		indexBytes[:],
 		lengthBytes[:],
 		finalByte[:],

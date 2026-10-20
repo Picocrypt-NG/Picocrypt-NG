@@ -940,20 +940,27 @@ func buildPCV3Request(intent *app.PCV3OperationIntent) (*pcv3operation.Request, 
 	if !ok {
 		return nil, errors.New("invalid PCV3 operation mode")
 	}
+	if intent.D1SuiteHint != 0 &&
+		(mode != pcv3operation.ModeForceUnverifiedD1 ||
+			(intent.D1SuiteHint != pcv3operation.SuiteStandard && intent.D1SuiteHint != pcv3operation.SuiteParanoid)) {
+		return nil, errors.New("D1 recovery profile requires unverified D1 recovery")
+	}
 	factors, err := pcv3FactorsForIntent(intent)
 	if err != nil {
 		return nil, err
 	}
 	request := &pcv3operation.Request{
-		Mode:      mode,
-		Source:    intent.Source,
-		SplitBase: intent.SplitBase,
-		Factors:   factors,
-		Target:    intent.Target,
-		Protected: append([]string(nil), intent.Keyfiles...),
+		Mode:        mode,
+		D1SuiteHint: intent.D1SuiteHint,
+		Source:      intent.Source,
+		SplitBase:   intent.SplitBase,
+		Factors:     factors,
+		Target:      intent.Target,
+		Protected:   append([]string(nil), intent.Keyfiles...),
 	}
 	intent.Source = nil
 	intent.SplitBase = ""
+	intent.D1SuiteHint = 0
 	for index := range intent.Keyfiles {
 		intent.Keyfiles[index] = ""
 	}
@@ -973,6 +980,7 @@ func closePCV3Intent(intent *app.PCV3OperationIntent) {
 		intent.Source = nil
 	}
 	intent.SplitBase = ""
+	intent.D1SuiteHint = 0
 	for index := range intent.Keyfiles {
 		intent.Keyfiles[index] = ""
 	}
@@ -1049,7 +1057,7 @@ func (a *App) startPCV3Work() {
 	}
 	executor := a.pcv3OperationExecutor
 	if executor == nil {
-		options := pcv3operation.ExecutionOptions{}
+		options := pcv3operation.ExecutionOptions{LinuxDesktopCleanup: true}
 		if intent.Action == app.PCV3ActionDecrypt {
 			options.ArchiveAction = pcv3operation.ArchiveSave
 			if intent.AutoUnzip {
@@ -1667,7 +1675,7 @@ func executeVolumeOperation(
 			Reporter:        reporter,
 			RSCodecs:        input.rsCodecs,
 		}
-		result, err := volume.EncryptWithResult(ctx, req, pcv3operation.ExecutionOptions{})
+		result, err := volume.EncryptWithResult(ctx, req, pcv3operation.ExecutionOptions{LinuxDesktopCleanup: true})
 		return operationResult{pcv3: result, err: err, completed: err == nil && result != nil && result.CompletionClass() == pcv3operation.CompletionClean, cancelled: errors.Is(err, context.Canceled)}
 	}
 
@@ -1848,7 +1856,7 @@ func recursivePCV3ResultPriority(result *pcv3operation.Result) int {
 }
 
 func (a *App) executeRecursivePCV3(ctx context.Context, session *operationSession, intent *app.PCV3OperationIntent) operationResult {
-	options := pcv3operation.ExecutionOptions{ArchiveAction: pcv3operation.ArchiveSave}
+	options := pcv3operation.ExecutionOptions{ArchiveAction: pcv3operation.ArchiveSave, LinuxDesktopCleanup: true}
 	if intent.AutoUnzip {
 		options.ArchiveAction = pcv3operation.ArchiveExtract
 		options.ArchiveReview = a.pcv3ArchiveReview(session)

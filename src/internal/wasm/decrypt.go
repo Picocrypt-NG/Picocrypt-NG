@@ -172,6 +172,7 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 	if err != nil {
 		return DecryptResult{}, ErrCorruptedHeader
 	}
+	defer crypto.SecureZero(serpentKey)
 
 	// Create MAC
 	mac, err := crypto.NewMAC(macSubkey, hdr.Flags.Paranoid)
@@ -396,6 +397,7 @@ func buildDecryptCipherSuite(key, cipherKey []byte, hdr *header.VolumeHeader, is
 		zeroWASMSensitiveBuffer(wasmZeroingDecryptMACSubkey, macSubkey)
 		return nil, ErrCorruptedHeader
 	}
+	defer crypto.SecureZero(serpentKey)
 	mac, err := crypto.NewMAC(macSubkey, hdr.Flags.Paranoid)
 	zeroWASMSensitiveBuffer(wasmZeroingDecryptMACSubkey, macSubkey)
 	if err != nil {

@@ -75,7 +75,7 @@ func pcv3PrivacyRequireResult(t *testing.T, result *Result, want pcv3PrivacyWant
 		want.publicationState = pcv3publication.StatePublishedDurabilityUncertain
 		want.publicationStage = pcv3.StageDirectorySync
 		want.publicationCode = pcv3publication.CodeDurabilityUncertain
-		want.warnings = append(slices.Clone(want.warnings), WarningDurabilityUncertain)
+		want.warnings = append(slices.Clone(want.warnings), WarningDurabilityUncertain, WarningCleanupIncomplete)
 	}
 	if result == nil {
 		t.Fatal("operation returned no closed result")

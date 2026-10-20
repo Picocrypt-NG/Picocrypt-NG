@@ -23,7 +23,7 @@ func TestUnsupportedJournalFailsBeforeCreatingCleanupAuthority(t *testing.T) {
 		t.Fatal("unsupported journal granted cleanup authority")
 	}
 	entries, err := os.ReadDir(directory)
-	if err != nil || len(entries) != 1 || entries[0].Name() != stage.stageName {
+	if err != nil || len(entries) != 1 || entries[0].Name() != stage.sourceName {
 		t.Fatalf("unsupported journal created residue: %v, %v", entries, err)
 	}
 	if err := stage.Cleanup(); err != nil {

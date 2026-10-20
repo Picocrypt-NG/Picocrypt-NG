@@ -75,10 +75,11 @@ func TestRecursivePCV3TransferredResultSurfacePreservesBatchOutcome(t *testing.T
 					t.Fatal("test must inspect the sole visible result surface")
 				}
 				text := pcv3RenderedText(a.pcv3Container)
-				if !strings.Contains(text, want) || (test.warning && !strings.Contains(text, "Cleanup could not be confirmed")) {
+				cleanupWarning := test.warning || runtime.GOOS == "windows"
+				if !strings.Contains(text, want) || (cleanupWarning && !strings.Contains(text, nativePCV3CleanupWarningTitle)) {
 					t.Errorf("visible result lost batch outcome %q: %q", want, text)
 				}
-				if test.warning && (!strings.Contains(text, "The application could not confirm removal of all temporary files created by this operation. Keep the source files and do not delete files based on this result.") || findPCV3Button(a.pcv3Container, "Close cleanup warning") == nil) {
+				if cleanupWarning && (!strings.Contains(text, nativePCV3CleanupWarningText) || findPCV3Button(a.pcv3Container, "Close cleanup warning") == nil) {
 					t.Errorf("batch summary concealed cleanup guidance or its close action: %q", text)
 				}
 				if !test.cancelled && !strings.Contains(text, "Completed (1 ok, 1 failed)") {

@@ -7,16 +7,19 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"syscall"
 	"testing"
 )
 
 // Exercise the real public writer and CLI terminal path: replacement of the
 // output pathname after publication must neither substitute stdout bytes nor
-// remove the replacement. No KDF, writer, or descriptor behavior is mocked.
+// remove the replacement. Windows instead denies replacement while the retained
+// descriptor is live. No KDF, writer, or descriptor behavior is mocked.
 func TestEncryptStdoutUsesRetainedDescriptorAfterPathReplacement(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -54,16 +57,38 @@ func TestEncryptStdoutUsesRetainedDescriptorAfterPathReplacement(t *testing.T) {
 	if result.CompletionClass() != wantClass || followUp == nil {
 		t.Fatalf("retained encryption: %v / %v", result, err)
 	}
-	expected, err := os.ReadFile(target)
+	// Root.Open shares DELETE on Windows, as required when the original
+	// publication descriptor retains exact cleanup authority.
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(target, target+".original"); err != nil {
+	t.Cleanup(func() { _ = root.Close() })
+	published, err := root.Open(filepath.Base(target))
+	if err != nil {
 		t.Fatal(err)
 	}
+	expected, err := io.ReadAll(published)
+	closeErr := published.Close()
+	if err != nil || closeErr != nil {
+		t.Fatalf("read published ciphertext: %v / %v", err, closeErr)
+	}
+	renameErr := os.Rename(target, target+".original")
 	replacement := []byte("foreign replacement must survive")
-	if err := os.WriteFile(target, replacement, 0o600); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		if !errors.Is(renameErr, syscall.Errno(32)) {
+			t.Fatalf("retained descriptor must deny pathname replacement with a sharing violation: %v", renameErr)
+		}
+		if _, err := os.Lstat(target + ".original"); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("refused replacement relocated ciphertext: %v", err)
+		}
+	} else {
+		if renameErr != nil {
+			t.Fatal(renameErr)
+		}
+		if err := os.WriteFile(target, replacement, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	stdout, err := os.Create(filepath.Join(dir, "stdout"))
 	if err != nil {
@@ -96,9 +121,15 @@ func TestEncryptStdoutUsesRetainedDescriptorAfterPathReplacement(t *testing.T) {
 	if err != nil || !bytes.Equal(got, expected) {
 		t.Fatalf("stdout differs from retained ciphertext: got %d want %d, %v", len(got), len(expected), err)
 	}
-	got, err = os.ReadFile(target)
-	if err != nil || !bytes.Equal(got, replacement) {
-		t.Fatalf("replacement changed: %q, %v", got, err)
+	if runtime.GOOS == "windows" {
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stdout left the exact retained ciphertext: %v", err)
+		}
+	} else {
+		got, err = os.ReadFile(target)
+		if err != nil || !bytes.Equal(got, replacement) {
+			t.Fatalf("replacement changed: %q, %v", got, err)
+		}
 	}
 	if _, err := os.Stat(source); err != nil {
 		t.Fatalf("source unavailable: %v", err)

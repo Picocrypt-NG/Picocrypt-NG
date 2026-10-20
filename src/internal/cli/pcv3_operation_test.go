@@ -194,6 +194,52 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 	}
 }
 
+func TestPCV3CLIResourceRefusalExplainsCauseWithoutExposingBackendError(t *testing.T) {
+	tests := []struct {
+		name       string
+		diagnostic pcv3operation.Diagnostic
+		wantNotice string
+	}{
+		{
+			name:       "another secure operation is running",
+			diagnostic: pcv3operation.DiagnosticResourceBusy,
+			wantNotice: "Another secure operation is running. Wait for it to finish; no output was created.\n",
+		},
+		{
+			name:       "fixed profile has insufficient resources",
+			diagnostic: pcv3operation.DiagnosticResourceInsufficient,
+			wantNotice: "Required resources are unavailable: this device cannot safely run the fixed security profile right now. Security settings were not reduced, and no output was created.\n",
+		},
+		{
+			name:       "resource state cannot be verified",
+			diagnostic: pcv3operation.DiagnosticResourceUnknown,
+			wantNotice: "Device resources could not be verified. No output was created.\n",
+		},
+		{
+			name:       "unrecognized diagnostic remains neutral",
+			diagnostic: pcv3operation.Diagnostic(255),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := &pcv3CLIFixedResult{
+				outcome: pcv3operation.OutcomeOperationFailed, stage: pcv3operation.StageCredentialPolicy, code: pcv3operation.CodeOperationFailed,
+				diagnosticCode: test.diagnostic,
+				diagnostic:     "private backend error, credential and /private/path",
+				warnings:       []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete},
+				class:          pcv3operation.CompletionRefused,
+			}
+			var output strings.Builder
+			exit := renderPCV3CLIResult(&output, result)
+			want := "Outcome: operation-failed\nPublication: not-attempted\n" + test.wantNotice +
+				"Warning: cleanup of operation-owned temporary files could not be confirmed\n"
+			if exit != ExitGeneralError || output.String() != want {
+				t.Fatalf("resource refusal = exit %d stderr %q; want exit 1 stderr %q", exit, output.String(), want)
+			}
+		})
+	}
+}
+
 type pcv3CLIFakeArchive struct {
 	extract func(context.Context, *os.Root) pcv3CLIResult
 	close   func() pcv3CLIResult

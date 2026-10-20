@@ -26,6 +26,7 @@ type EncryptInputRequest struct {
 	PCV3, Paranoid, Deniability, ReedSolomon, Split bool
 	Comments                                        string
 	BorrowedSource                                  *os.File
+	BorrowedSpool                                   *fileops.EncryptedSpool // PCV3-only; remains owned by the caller.
 	Reporter                                        ProgressReporter
 }
 
@@ -33,21 +34,25 @@ type EncryptInputRequest struct {
 // Reader decrypts that temporary file as it is read; File pins its identity.
 // All accessors are borrowed and become invalid after Close.
 type PreparedEncryptInput struct {
-	operation *OperationContext
-	file      *os.File
-	reader    io.Reader
-	length    uint64
-	closeFile bool
+	operation   *OperationContext
+	file        *os.File
+	reader      io.Reader
+	length      uint64
+	closeFile   bool
+	closeReader io.Closer
 }
 
 func PrepareEncryptInput(ctx context.Context, input EncryptInputRequest) (*PreparedEncryptInput, error) {
 	req := &EncryptRequest{
-		ZIPBudget: input.ZIPBudget,
+		ZIPBudget: input.ZIPBudget, BorrowedSpool: input.BorrowedSpool,
 		InputFile: input.InputFile, InputFiles: input.InputFiles,
 		InputIdentities: input.InputIdentities,
 		OnlyFiles:       input.OnlyFiles, OnlyFolders: input.OnlyFolders, OutputFile: input.OutputFile,
 		Compress: input.Compress, Reporter: input.Reporter,
 		PCV3: input.PCV3, Paranoid: input.Paranoid, Deniability: input.Deniability, ReedSolomon: input.ReedSolomon, Split: input.Split, Comments: input.Comments,
+	}
+	if err := req.validateBorrowedSpoolMode(); err != nil {
+		return nil, err
 	}
 	return prepareEncryptInput(NewEncryptContext(ctx, req), req, input.BorrowedSource)
 }
@@ -91,14 +96,23 @@ func prepareEncryptInput(ctx *OperationContext, req *EncryptRequest, borrowed *o
 	if !info.Mode().IsRegular() || info.Size() < 0 {
 		return prepared, errors.New("encryption input must be regular")
 	}
-	prepared.length = uint64(info.Size()) //nolint:gosec // non-negative above
-	if ctx.tempZip != nil {
-		prepared.length = ctx.tempZip.Length()
+	prepared.length = uint64(info.Size()) //nolint:gosec // Nonnegative size checked above.
+	if req.BorrowedSpool != nil && ctx.tempZip == nil {
+		prepared.length = req.BorrowedSpool.Length()
+		var reader io.ReadCloser
+		reader, err = req.BorrowedSpool.OpenReader()
+		prepared.reader = reader
+		prepared.closeReader = reader
+	} else {
+		if ctx.tempZip != nil {
+			prepared.length = ctx.tempZip.Length()
+		}
+		prepared.reader, err = ctx.TempZipReader(prepared.file)
 	}
-	prepared.reader, err = ctx.TempZipReader(prepared.file)
 	if err != nil {
 		return prepared, err
 	}
+
 	transferred = true
 	return prepared, nil
 }
@@ -119,8 +133,12 @@ func (input *PreparedEncryptInput) Close() error {
 		return nil
 	}
 	var err error
+	if input.closeReader != nil {
+		err = input.closeReader.Close()
+		input.closeReader = nil
+	}
 	if input.closeFile && input.file != nil {
-		err = input.file.Close()
+		err = errors.Join(err, input.file.Close())
 	}
 	input.file = nil
 	input.reader = nil

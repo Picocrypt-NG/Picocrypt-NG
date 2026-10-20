@@ -16,7 +16,7 @@ func TestWindowsPRWorkflowsSelectNativeJobCheckedSerialTests(t *testing.T) {
 		{
 			path: ".github/workflows/pr-test-build-windows-legacy.yml", job: "pr-test-build-windows-legacy",
 			toolchain: "-GoExecutable 'C:\\go-legacy\\go\\bin\\go.exe'",
-			arguments: "@('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume')",
+			arguments: "@('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume', './internal/pcv3publication')",
 		},
 	} {
 		t.Run(test.path, func(t *testing.T) {

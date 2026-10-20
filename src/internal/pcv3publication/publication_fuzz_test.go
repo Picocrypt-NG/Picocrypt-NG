@@ -42,6 +42,7 @@ func FuzzPublicationStateMachine(f *testing.F) {
 		ctx := context.Background()
 		recovery := filepath.Join(directory, "recovery.pcv")
 
+		var attackErr error
 		wantState := StateNotPublished
 		wantOutcome := pcv3result.OutcomeOperationFailed
 		wantStage := pcv3result.StageOutputPublication
@@ -59,12 +60,12 @@ func FuzzPublicationStateMachine(f *testing.F) {
 				wantCode = CodeDurabilityUncertain
 			}
 		case 1:
-			operations.atomicPublish = func(*os.File, string, string, Policy) error {
+			operations.atomicPublish = func(*os.File, *os.File, *os.File, string, string, Policy) error {
 				return errors.New("TEST ONLY definite non-commit")
 			}
 		case 2:
-			operations.atomicPublish = func(parent *os.File, stageName, targetName string, policy Policy) error {
-				if err := nativeAtomic(parent, stageName, targetName, policy); err != nil {
+			operations.atomicPublish = func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
+				if err := nativeAtomic(source, parent, original, stageName, targetName, policy); err != nil {
 					return err
 				}
 				return errors.New("TEST ONLY error after real commit")
@@ -80,9 +81,10 @@ func FuzzPublicationStateMachine(f *testing.F) {
 				wantCode = CodeDurabilityUncertain
 			}
 		case 3:
-			operations.atomicPublish = func(_ *os.File, stageName, targetName string, _ Policy) error {
-				stagePath := filepath.Join(directory, stageName)
+			operations.atomicPublish = func(source, _, original *os.File, stageName, targetName string, _ Policy) error {
+				stagePath := filepath.Join(source.Name(), stageName)
 				if err := os.Rename(stagePath, recovery); err != nil {
+					attackErr = err
 					return err
 				}
 				if err := os.WriteFile(stagePath, foreignStage, 0o640); err != nil {
@@ -97,11 +99,11 @@ func FuzzPublicationStateMachine(f *testing.F) {
 			wantOutcome = pcv3result.OutcomePublicationIndeterminate
 			wantCode = CodePublicationIndeterminate
 		case 4:
-			operations.atomicPublish = func(parent *os.File, stageName, targetName string, policy Policy) error {
+			operations.atomicPublish = func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 				if err := os.WriteFile(filepath.Join(directory, targetName), foreignTarget, 0o640); err != nil {
 					return err
 				}
-				return nativeAtomic(parent, stageName, targetName, policy)
+				return nativeAtomic(source, parent, original, stageName, targetName, policy)
 			}
 		case 5:
 			policy = PolicySafeReplace
@@ -152,13 +154,23 @@ func FuzzPublicationStateMachine(f *testing.F) {
 		}
 
 		result := stage.Publish(ctx)
+		if attackErr != nil {
+			if !windowsSharingRefusal(attackErr) {
+				t.Fatalf("stage relocation failed for an unexpected reason: %v", attackErr)
+			}
+			wantState, wantOutcome, wantStage, wantCode = StateNotPublished, pcv3result.OutcomeOperationFailed, pcv3result.StageOutputPublication, CodeAtomicFailed
+			requireFileBytes(t, stagePath, payload)
+			if !stage.stageIdentityCurrent() {
+				t.Fatal("blocked relocation changed original stage identity")
+			}
+		}
 		requireResult(t, result, wantState, wantOutcome, wantStage, wantCode)
 		if again := stage.Publish(context.Background()); again != result {
 			stage.Cleanup()
 			t.Fatal("terminal publication repeated or changed its result")
 		}
 		cleanupErr := stage.Cleanup()
-		if mode == 3 {
+		if (mode == 3 && attackErr == nil) || mode == 6 || runtime.GOOS == "windows" {
 			if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
 				t.Fatalf("indeterminate cleanup = %v; want ErrCleanupIncomplete", cleanupErr)
 			}
@@ -184,6 +196,14 @@ func FuzzPublicationStateMachine(f *testing.F) {
 				t.Fatalf("owned uncommitted stage remains: %v", err)
 			}
 		case 3:
+			if attackErr != nil {
+				for _, absent := range []string{target, stagePath, recovery} {
+					if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("blocked relocation left an unexpected output: %v", err)
+					}
+				}
+				break
+			}
 			requireFileBytes(t, target, foreignTarget)
 			requireFileBytes(t, stagePath, foreignStage)
 			requireFileBytes(t, recovery, payload)

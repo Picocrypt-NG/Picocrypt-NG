@@ -28,7 +28,7 @@ var encryptCmd = &cobra.Command{
 
 If no password is provided, you will be prompted to enter one interactively
 (with confirmation). The password is hidden while typing.
-New volumes use PCV3. Deniability uses PCV3 D1 and requires --paranoid.
+New volumes use PCV3. Deniability uses PCV3 D1; --paranoid is optional.
 Legacy v1/v2 volumes remain readable.
 
 Script examples use a password file readable only by its owner or a secret provider
@@ -115,7 +115,7 @@ func init() {
 	encryptCmd.Flags().StringVarP(&encComments, "comments", "c", "", "Comments to store in header (NOT encrypted)")
 	encryptCmd.Flags().BoolVar(&encParanoid, "paranoid", false, "Enable paranoid mode (Serpent + XChaCha20)")
 	encryptCmd.Flags().BoolVar(&encReedSolomon, "reed-solomon", false, "Enable Reed-Solomon error correction")
-	encryptCmd.Flags().BoolVar(&encDeniability, "deniability", false, "Create PCV3 D1 (requires --paranoid)")
+	encryptCmd.Flags().BoolVar(&encDeniability, "deniability", false, "Create PCV3 D1 (optional --paranoid)")
 	encryptCmd.Flags().BoolVar(&encCompress, "compress", false, "Compress files before encryption")
 
 	// Split options
@@ -154,9 +154,6 @@ func defaultEncryptOutput(rawInput string, allFiles []string, onlyFolders []stri
 func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 	if !encPCV3 {
 		return errors.New("new encryption requires PCV3; --pcv3=false is unsupported")
-	}
-	if encDeniability && !encParanoid {
-		return errors.New("PCV3 D1 requires --paranoid")
 	}
 	if cmd.Flags().Changed("input") || len(encLegacyInputs) > 0 {
 		return errors.New("--input/-i was removed; pass literal paths as arguments or use --glob for patterns")
@@ -238,12 +235,11 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 		encQuiet = true
 	}
 
-	// Track temp files for cleanup. The stdin temp holds raw piped plaintext and
-	// the stdout temp holds the .pcv output; both are removed when the run ends.
-	var stdinTempFile string
+	// Stdin owns encrypted staging; stdout staging already contains ciphertext.
+	var stdinSpool *fileops.EncryptedSpool
 	var stdoutTempFile string
 	defer func() {
-		retErr = errors.Join(retErr, cleanupTempFiles(stdinTempFile, stdoutTempFile))
+		retErr = errors.Join(retErr, closeEncryptedStdin(stdinSpool), cleanupTempFiles(stdoutTempFile))
 	}()
 
 	outputFile := encOutput
@@ -280,12 +276,12 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Handle stdin input
 	if useStdin {
-		stdinTempFile, err = BufferStdinToTemp(encOutput)
+		stdinSpool, err = bufferEncryptionStdin(cmd.Context(), encOutput)
 		if err != nil {
 			return fmt.Errorf("buffering stdin: %w", err)
 		}
-		inputs.inputFiles = []string{stdinTempFile}
-		inputs.onlyFiles = []string{stdinTempFile}
+		inputs.inputFiles = []string{stdinSpool.Path()}
+		inputs.onlyFiles = []string{stdinSpool.Path()}
 	} else {
 		inputs, err = resolveEncryptInputsWithBudget(cmd.Context(), args, encGlob, encFollowSymlinks, fileops.NewZIPResourceBudget())
 		if err != nil {
@@ -386,6 +382,7 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 	// Build request
 	req := &volume.EncryptRequest{
 		InputFiles:      allFiles,
+		BorrowedSpool:   stdinSpool,
 		InputIdentities: inputs.inputIdentities,
 		OnlyFiles:       onlyFiles,
 		OnlyFolders:     onlyFolders,
@@ -451,11 +448,11 @@ func runEncrypt(cmd *cobra.Command, args []string) (retErr error) {
 		// Never delete a later pathname replacement from the CLI defer.
 		stdoutTempFile = ""
 	}
-	result, operationErr := volume.EncryptWithResult(operationCtx, req, pcv3operation.ExecutionOptions{RetainDurableOutput: useStdout})
+	result, operationErr := volume.EncryptWithResult(operationCtx, req, pcv3operation.ExecutionOptions{RetainDurableOutput: useStdout, LinuxDesktopCleanup: true})
 	reporter.Finish()
-	if stdinTempFile != "" {
-		cleanupErr := cleanupTempFiles(stdinTempFile)
-		stdinTempFile = ""
+	if stdinSpool != nil {
+		cleanupErr := closeEncryptedStdin(stdinSpool)
+		stdinSpool = nil
 		if cleanupErr != nil {
 			if result != nil {
 				result.WithCleanupWarning()

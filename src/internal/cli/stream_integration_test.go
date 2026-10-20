@@ -49,9 +49,9 @@ func stdinFile(t *testing.T, data []byte) *os.File {
 	return f
 }
 
-// Run the real CLI with isolated staging so payload transport and cleanup are
-// observable independently of its terminal status. Native Windows cannot grant
-// the durable plaintext owner required for stdout; that committed temp is kept.
+// Run the real CLI with isolated staging so transport and cleanup are observed
+// independently of terminal status. Stdout plaintext never requires publishing
+// a durable filesystem target, including on Windows.
 func runStreamIntegrationCommand(t *testing.T, cmd *exec.Cmd, retainedPlaintext []byte) cliTestResult {
 	t.Helper()
 	stagingDir := t.TempDir()
@@ -72,16 +72,8 @@ func runStreamIntegrationCommand(t *testing.T, cmd *exec.Cmd, retainedPlaintext 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime.GOOS == "windows" && retainedPlaintext != nil {
-		if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "picocrypt-out-") {
-			t.Fatalf("uncertain plaintext stdout staging = %v; want only retained output", entries)
-		}
-		retained, err := os.ReadFile(filepath.Join(stagingDir, entries[0].Name()))
-		if err != nil || !bytes.Equal(retained, retainedPlaintext) {
-			t.Fatalf("retained plaintext mismatch: got %d bytes, want %d; read error: %v", len(retained), len(retainedPlaintext), err)
-		}
-	} else if len(entries) != 0 {
-		t.Fatalf("CLI left stdin/stdout staging files: %v", entries)
+	if len(entries) != 0 {
+		t.Fatalf("CLI left stdin/stdout staging files (plaintext stream=%t): %v", retainedPlaintext != nil, entries)
 	}
 	return cliTestResult{exitCode: exitCode, stdout: stdout.Bytes(), stderr: stderr.String()}
 }
@@ -90,32 +82,15 @@ func requireNativePCV3CiphertextStream(t *testing.T, result cliTestResult) {
 	t.Helper()
 	terminal := result
 	terminal.stdout = nil
-	if runtime.GOOS == "windows" {
-		const cleanupWarning = "Warning: cleanup of operation-owned temporary files could not be confirmed\n"
-		if !strings.HasSuffix(terminal.stderr, cleanupWarning) {
-			t.Fatalf("native ciphertext stream lost cleanup uncertainty: %q", terminal.stderr)
-		}
-		terminal.stderr = strings.TrimSuffix(terminal.stderr, cleanupWarning)
-	}
 	requireNativePCV3Published(t, terminal, "")
 }
 
 func requireNativePCV3PlaintextStream(t *testing.T, result cliTestResult, plaintext []byte) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		// Authentication/publication succeeded, but no durable retained owner
-		// exists. The refused callback must never publish plaintext to stdout.
-		wantStderr := "Outcome: success\nPublication: published-durability-uncertain\n" +
-			nativePCV3DurabilityWarning +
-			"Warning: an operation callback failed; clean completion was not confirmed\n"
-		if result.exitCode != ExitPCV3DurabilityUncertain || len(result.stdout) != 0 || result.stderr != wantStderr {
-			t.Fatalf("native plaintext stdout = exit %d stdout %q stderr %q; want exit 3, no stdout and %q", result.exitCode, result.stdout, result.stderr, wantStderr)
-		}
-		return
+	const wantStderr = "Outcome: success\nPublication: not-attempted\n"
+	if result.exitCode != 0 || result.stderr != wantStderr {
+		t.Fatalf("stdout transport = exit %d stderr %q; want completed stream without file publication", result.exitCode, result.stderr)
 	}
-	terminal := result
-	terminal.stdout = nil
-	requireNativePCV3Published(t, terminal, "")
 	if !bytes.Equal(result.stdout, plaintext) {
 		t.Fatalf("plaintext stdout mismatch: got %d bytes, want %d", len(result.stdout), len(plaintext))
 	}

@@ -1,10 +1,10 @@
 package pcv3
 
 import (
-	"Picocrypt-NG/internal/fileops"
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"runtime"
 	"testing"
 )
 
@@ -33,7 +33,7 @@ func TestArchiveSAFMetadataBudgetRefusesBeforeSessionAndCleansStage(t *testing.T
 	handoff, parent, target := newArchiveSAFHandoffFromZIP(t, data.Bytes(), true)
 	begin := handoff.BeginSAF()
 	if begin.Kind() != NativeArchiveSAFBeginTerminal || begin.Session() != nil || begin.Result() == nil ||
-		begin.Result().State() != fileops.UnpackStateNotPublished || begin.Result().AttemptedEver() || begin.Result().CleanupIncomplete() {
+		begin.Result().State() != nativeArchiveSAFUnattemptedState() || begin.Result().AttemptedEver() || begin.Result().CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("oversized metadata granted provider authority or lost cleanup: %#v", begin)
 	}
 	classification, ok := any(begin.Result()).(interface{ ResourceLimited() bool })

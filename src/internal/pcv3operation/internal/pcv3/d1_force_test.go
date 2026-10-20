@@ -34,7 +34,7 @@ func TestD1ForceCandidatesBootstrapBinderPreservesPolicyEvidenceAndSecretScope(t
 			name: "replica damage preserves wrap evidence",
 			mutate: func(t *testing.T, raw []byte, access *d1TestBootstrapCredentialAccess) {
 				raw[d1BootstrapReplicaTagOffset] ^= 0x01
-				recomputeD1BootstrapWrapTag(t, raw, D1BootstrapFront, access.keys.mac[:])
+				recomputeD1BootstrapWrapTag(t, raw, D1BootstrapFront, access.keys.mac[:], access.keys.innerMAC[:])
 			},
 			evidence: d1ForceTestBootstrapEvidence{wrapVerified: true},
 		},
@@ -591,8 +591,6 @@ func testD1ForceRawOuterEmission(t *testing.T) {
 				context.Background(),
 				bytes.NewReader(physical),
 				int64(len(physical)),
-				nil,
-				nil,
 				nil,
 				request,
 				selection,

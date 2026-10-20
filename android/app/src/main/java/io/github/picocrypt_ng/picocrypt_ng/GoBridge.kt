@@ -96,6 +96,7 @@ data class Pcv3Request(
     override val source: String,
     override val target: String,
     override val keyfiles: List<String>,
+    val d1SuiteHint: String? = null,
 ) : Pcv3StartRequest
 
 /**
@@ -270,7 +271,7 @@ internal class Pcv3Bridge(private val transport: Pcv3Transport) {
             is Pcv3WriteRequest -> GoBridge.buildPcv3WriteRequestJson(request)
         }
         if (requestJson == null) {
-            // A locally refused write envelope still zeroes the caller credential.
+            // A locally refused envelope still zeroes the caller credential.
             password.fill('\u0000')
             return Result.failure(Pcv3BridgeFailure("PCV3_BRIDGE_INVALID_REQUEST"))
         }
@@ -993,15 +994,22 @@ object GoBridge {
     }.toString()
 
     /** Builds the exact Go-owned PCV3 envelope; credential bytes never enter JSON. */
-    internal fun buildPcv3RequestJson(request: Pcv3Request): String = JSONObject().apply {
-        put("version", 1)
-        put("mode", request.mode)
-        put("factorPolicy", request.factorPolicy)
-        put("keyfileOrder", request.keyfileOrder)
-        put("source", request.source)
-        put("target", request.target)
-        put("keyfiles", JSONArray().apply { request.keyfiles.forEach { put(it) } })
-    }.toString()
+    internal fun buildPcv3RequestJson(request: Pcv3Request): String? {
+        if (request.d1SuiteHint != null &&
+            (request.mode != "force-unverified-d1" ||
+                request.d1SuiteHint !in setOf("standard", "paranoid"))
+        ) return null
+        return JSONObject().apply {
+            put("version", 1)
+            put("mode", request.mode)
+            put("factorPolicy", request.factorPolicy)
+            put("keyfileOrder", request.keyfileOrder)
+            put("source", request.source)
+            put("target", request.target)
+            put("keyfiles", JSONArray().apply { request.keyfiles.forEach { put(it) } })
+            request.d1SuiteHint?.let { put("d1SuiteHint", it) }
+        }.toString()
+    }
 
     /** Mirrors header.MaxCommentLen (D-02 bound source of truth). */
     private const val PCV3_MAX_COMMENT_BYTES = 99999
@@ -1026,8 +1034,6 @@ object GoBridge {
         }
         if (!factorShapeValid) return null
         if (request.suite != "standard" && request.suite != "paranoid") return null
-        // D1 creation has no suite choice: it always runs the paranoid suite.
-        if (request.mode == "write-d1" && request.suite != "paranoid") return null
         val pathLists = listOf(request.keyfiles, request.inputFiles, request.onlyFiles, request.onlyFolders)
         if (pathLists.drop(1).any { it.size > PCV3_MAX_SELECTION_PATHS }) return null
         fun validPath(path: String): Boolean = path.isNotBlank() && '\u0000' !in path &&

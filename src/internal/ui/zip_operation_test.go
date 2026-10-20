@@ -2,6 +2,7 @@ package ui
 
 import (
 	"Picocrypt-NG/internal/app"
+	"Picocrypt-NG/internal/pcv3operation"
 	"archive/zip"
 	"bytes"
 	"context"
@@ -10,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -269,8 +271,19 @@ func testZipAndEncryptDroppedSelectionRoundTrip(t *testing.T, deniable bool) {
 			}
 			fyne.DoAndWait(func() {
 				a.resetUI()
-				if !a.configurationForm.Visible() || !a.operationFooter.Visible() || a.pcv3Container.Visible() {
+				snap := a.State.UISnapshot()
+				if !a.configurationForm.Visible() || !a.operationFooter.Visible() || a.pcv3Result != nil || snap.PCV3Result.CompletionClass() != pcv3operation.CompletionUnknown {
 					t.Fatal("reset did not restore the operation form and footer")
+				}
+				if runtime.GOOS == "windows" {
+					// Reset releases the result; it must retain the process-lifetime
+					// cleanup warning without retaining the old completion surface.
+					wantText := nativePCV3CleanupWarningTitle + "\n" + nativePCV3CleanupWarningText
+					if !snap.PCV3CleanupIncomplete || !a.pcv3Container.Visible() || pcv3RenderedText(a.pcv3Container) != wantText {
+						t.Fatal("reset lost the persistent native cleanup warning or retained the old result")
+					}
+				} else if snap.PCV3CleanupIncomplete || a.pcv3Container.Visible() {
+					t.Fatal("reset retained a warning after proven cleanup")
 				}
 			})
 		})

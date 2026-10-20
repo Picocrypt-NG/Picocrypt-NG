@@ -30,6 +30,7 @@ var (
 // codec. Filesystem paths, staging, publication, archive construction, source
 // deletion, and frontend state deliberately do not cross this boundary.
 type normalWriteRequest struct {
+	derivedRoot     bool
 	suite           Suite
 	payloadKind     PayloadKind
 	payloadBodyRS   bool
@@ -170,6 +171,14 @@ func (failure *normalWriteFailure) Stage() Stage {
 
 type ownerNormalWriteMaterial struct {
 	owner *pcv3credential.Owner
+}
+
+type d1InnerWriteMaterial struct{ normalWriteMaterial }
+
+func (material d1InnerWriteMaterial) credentialMetadata() (normalWriteCredentialMetadata, error) {
+	metadata, err := material.normalWriteMaterial.credentialMetadata()
+	metadata.kdfProfile = KDFProfileD1DerivedRoot
+	return metadata, err
 }
 
 func (material ownerNormalWriteMaterial) credentialMetadata() (
@@ -351,7 +360,8 @@ func serializeNormalVolume(
 		return nil, err
 	}
 	metadata, err := material.credentialMetadata()
-	if err != nil || !validNormalWriteCredentialMetadata(metadata) || metadata.suite != request.suite {
+	if err != nil || !validNormalWriteCredentialMetadata(metadata) || metadata.suite != request.suite ||
+		request.derivedRoot != (metadata.kdfProfile == KDFProfileD1DerivedRoot) {
 		return nil, newNormalWriteFailure(StageCredentialPolicy, errInvalidNormalWriteRequest)
 	}
 
@@ -440,6 +450,9 @@ func planNormalWrite(request normalWriteRequest) (normalWritePlan, error) {
 	if request.payloadBodyRS {
 		core.featureFlags = payloadBodyRSFeatureMask
 	}
+	if request.derivedRoot {
+		core.featureFlags |= d1DerivedRootFeatureMask
+	}
 	core.frontHeaderLength = uint32(frontHeaderLength) //nolint:gosec // Checked against MaxUint32 above.
 	core.payloadKind = request.payloadKind
 	core.recordProfile = 1
@@ -460,7 +473,7 @@ func planNormalWrite(request normalWriteRequest) (normalWritePlan, error) {
 
 func validNormalWriteCredentialMetadata(metadata normalWriteCredentialMetadata) bool {
 	return isSupportedSuite(metadata.suite) &&
-		metadata.kdfProfile == kdfProfileForSuite(metadata.suite) &&
+		(metadata.kdfProfile == kdfProfileForSuite(metadata.suite) || metadata.kdfProfile == KDFProfileD1DerivedRoot) &&
 		validCredentialTuple(metadata.credentialMode, metadata.keyfileMode, metadata.keyfileCount)
 }
 
@@ -763,9 +776,9 @@ func writeNormalRecords(
 	commitment := coreCommitment(core)
 	defer pcv3crypto.SecureZero(commitment[:])
 	var descriptor [48]byte
-	var encodedBlock [136]byte
+	var encodedBatch [256 * 136]byte
 	defer pcv3crypto.SecureZero(descriptor[:])
-	defer pcv3crypto.SecureZero(encodedBlock[:])
+	defer pcv3crypto.SecureZero(encodedBatch[:])
 
 	for index := uint64(0); ; index++ {
 		if err := ctx.Err(); err != nil {
@@ -849,16 +862,24 @@ func writeNormalRecords(
 			if !ok || decodedLength > len(semantic) || decodedLength%128 != 0 {
 				return newNormalWriteFailure(stage, errNormalWriteGeometry)
 			}
-			for block := range decodedLength / 128 {
-				pcv3crypto.SecureZero(encodedBlock[:])
-				if err := pcencoding.EncodeInto(
-					encodedBlock[:],
-					codecs.RS128,
-					semantic[block*128:(block+1)*128],
-				); err != nil {
-					return newNormalWriteFailure(stage, errNormalWriteRS)
+			blocks := decodedLength / 128
+			for first := 0; first < blocks; first += 256 {
+				count := min(256, blocks-first)
+				pcv3crypto.SecureZero(encodedBatch[:])
+				for word := range count {
+					if err := ctx.Err(); err != nil {
+						return newNormalWriteFailure(StageCancellation, err)
+					}
+					block := first + word
+					if err := pcencoding.EncodeInto(
+						encodedBatch[word*136:(word+1)*136],
+						codecs.RS128,
+						semantic[block*128:(block+1)*128],
+					); err != nil {
+						return newNormalWriteFailure(stage, errNormalWriteRS)
+					}
 				}
-				if err := writer.write(encodedBlock[:]); err != nil {
+				if err := writer.write(encodedBatch[:count*136]); err != nil {
 					return err
 				}
 			}

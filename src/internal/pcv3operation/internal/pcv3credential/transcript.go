@@ -18,7 +18,7 @@ const (
 	credentialInputBytes        = 64
 	credentialInputNormalBytes  = credentialInputBytes
 	normalInputDomain           = "Picocrypt-NG/PCV3/credential/normal\x00"
-	outerInputDomain            = "Picocrypt-NG/PCV3/credential/outer\x00"
+	outerInputDomain            = "Picocrypt-NG/PCV3/D1C/credential/full\x00"
 	maxCredentialTranscript     = credentialTranscriptFixed +
 		maxPasswordBytes +
 		(maxKeyfiles * keyfileDigestBytes)
@@ -263,39 +263,25 @@ func (*CredentialInputOuter) GoString() string {
 	return "pcv3credential.CredentialInputOuter([REDACTED])"
 }
 
-// NewD1CredentialInputs consumes one transcript and derives both protocol
-// inputs without reopening or rehashing any factor source.
-func NewD1CredentialInputs(
-	transcript *CanonicalTranscript,
-) (*CredentialInputNormal, *CredentialInputOuter, error) {
-	var normal *CredentialInputNormal
+// NewD1CredentialInput consumes the complete factor transcript once. The
+// independently random inner root is protected by the D1C bootstraps, so no
+// separate Normal credential digest or inner Argon input is created.
+func NewD1CredentialInput(transcript *CanonicalTranscript) (*CredentialInputOuter, error) {
 	var outer *CredentialInputOuter
 	err := consumeCanonicalTranscript(transcript, func(serialized []byte) error {
-		normal = &CredentialInputNormal{
-			secret: credentialInputDigest(normalInputDomain, serialized),
-		}
-		outerSecret := credentialInputDigest(outerInputDomain, serialized)
-		state := &credentialInputBorrowState{
-			input:  outerSecret.Bytes(),
-			active: true,
-		}
+		secret := credentialInputDigest(outerInputDomain, serialized)
+		state := &credentialInputBorrowState{input: secret.Bytes(), active: true}
 		state.idle = sync.NewCond(&state.mu)
-		outer = &CredentialInputOuter{
-			secret: outerSecret,
-			state:  state,
-		}
+		outer = &CredentialInputOuter{secret: secret, state: state}
 		return nil
 	})
 	if err != nil {
-		if normal != nil {
-			normal.Close()
-		}
 		if outer != nil {
 			outer.Close()
 		}
-		return nil, nil, err
+		return nil, err
 	}
-	return normal, outer, nil
+	return outer, nil
 }
 
 // Close clears the owned outer credential input after any active borrow

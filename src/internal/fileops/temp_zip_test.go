@@ -37,7 +37,7 @@ func TestTempZipOwnerRevokesReaderWipesAndPreservesReplacement(t *testing.T) {
 	if _, e = r.Read(make([]byte, 1)); e != nil {
 		t.Fatal(e)
 	}
-	alias := owner.reader.buf[:]
+	alias := owner.spool.reader.buf[:]
 	stage := owner.Path()
 	if e = os.Remove(stage); e != nil {
 		t.Fatal(e)

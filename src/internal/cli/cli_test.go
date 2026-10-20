@@ -1076,22 +1076,24 @@ func TestEncryptStdinValidation(t *testing.T) {
 		encSplitSize = 0
 	})
 
-	t.Run("stdin with deniability conflict", func(t *testing.T) {
+	t.Run("D1 stdin retains separate password stream validation", func(t *testing.T) {
 		encOutput = "test.pcv"
 		encPassword = "test"
 		encDeniability = true
+		encPasswordStdin = true
 
 		cmd := encryptCmd
 		err := cmd.RunE(cmd, []string{"-"})
 		if err == nil {
-			t.Error("expected error for stdin with --deniability")
+			t.Error("expected error for shared input and password stdin")
 		}
-		if !strings.Contains(err.Error(), "PCV3 D1 requires --paranoid") {
-			t.Errorf("error should mention --deniability incompatibility: %v", err)
+		if !strings.Contains(err.Error(), "cannot use -P") {
+			t.Errorf("D1 must reach the ordinary stdin credential validation: %v", err)
 		}
 
 		// Reset
 		encDeniability = false
+		encPasswordStdin = false
 	})
 }
 

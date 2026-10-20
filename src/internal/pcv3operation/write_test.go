@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -109,11 +110,58 @@ type writeJournalAdmitter struct {
 	calls     int
 }
 
+type d1ProfileRefusal struct {
+	profiles []pcv3credential.KDFProfile
+}
+
+func (admitter *d1ProfileRefusal) AdmitKDF(_ context.Context, profile pcv3credential.KDFProfile) (pcv3credential.KDFAdmission, error) {
+	admitter.profiles = append(admitter.profiles, profile)
+	return pcv3credential.KDFAdmissionDeniedInsufficient, nil
+}
+
+// Selecting the standard payload cipher must never select Normal's weaker KDF.
+// Refusing the real admission boundary avoids running Argon2 or publishing data.
+func TestD1PayloadSuiteDoesNotLowerKDFAdmissionProfile(t *testing.T) {
+	for _, suite := range []pcv3.Suite{pcv3.SuiteStandard, pcv3.SuiteParanoid} {
+		t.Run(map[pcv3.Suite]string{pcv3.SuiteStandard: "standard", pcv3.SuiteParanoid: "paranoid"}[suite], func(t *testing.T) {
+			directory := t.TempDir()
+			sourcePath := filepath.Join(directory, "source")
+			if err := os.WriteFile(sourcePath, []byte("data"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			source, err := os.Open(sourcePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer source.Close()
+			admitter := &d1ProfileRefusal{}
+			request := &WriteRequest{
+				Mode: WriteModeD1, Suite: suite, PayloadKind: pcv3.PayloadKindRaw,
+				PlaintextLength: 4, Source: source, SourceFile: source, SourcePath: sourcePath,
+				Target: filepath.Join(directory, "ciphertext"), Factors: operationPasswordFactors([]byte("password")),
+			}
+			result := runWriteWithSeams(context.Background(), request, ExecutionOptions{}, operationSeams{admitter: admitter})
+			if len(admitter.profiles) != 1 || result.Diagnostic() != DiagnosticResourceInsufficient {
+				t.Fatalf("D1 did not reach the fixed-profile resource refusal: profiles=%v diagnostic=%v", admitter.profiles, result.Diagnostic())
+			}
+			profile := admitter.profiles[0]
+			if profile.Time != 8 || profile.MemoryKiB != 1048576 || profile.Parallelism != 8 {
+				t.Fatalf("D1 payload suite changed the fixed strong KDF: %+v", profile)
+			}
+			if result.SourceDeletionAllowed() || result.PublicationAttempted() || result.OutputFollowUp() != nil {
+				t.Fatal("resource refusal granted output or source deletion")
+			}
+			entries, err := os.ReadDir(directory)
+			if err != nil || len(entries) != 1 || entries[0].Name() != "source" {
+				t.Fatalf("resource refusal retained private output: %v %v", entries, err)
+			}
+		})
+	}
+}
+
 func (admitter *writeJournalAdmitter) AdmitKDF(context.Context, pcv3credential.KDFProfile) (pcv3credential.KDFAdmission, error) {
 	admitter.calls++
-	if _, err := os.Stat(filepath.Join(admitter.directory, ".picocrypt-pcv3-stage.journal")); err != nil {
-		admitter.t.Fatalf("KDF reached before durable cleanup journal: %v", err)
-	}
+	requireWriteJournalBeforeKDF(admitter.t, admitter.directory)
 	return pcv3credential.KDFAdmissionDeniedInsufficient, nil
 }
 
@@ -222,6 +270,7 @@ func TestWritePublishedUncertainStillCreatesRequestedSplit(t *testing.T) {
 			if _, err := stage.File().Write(payload); err != nil {
 				t.Fatal(err)
 			}
+			privateDirectory := filepath.Dir(stage.File().Name())
 			publication, retained := stage.PublishWriteRetained(context.Background())
 			if retained == nil {
 				t.Fatalf("publication did not retain file: %v", publication)
@@ -237,7 +286,16 @@ func TestWritePublishedUncertainStillCreatesRequestedSplit(t *testing.T) {
 			}
 			owner := &operationOwner{}
 			result = owner.finishWriteOutput(context.Background(), result, retained, &WriteSplitOptions{ChunkSize: 1, Unit: fileops.SplitUnitKiB}, false)
-			if result.Outcome() != pcv3.OutcomeSuccess {
+			if _, err := os.Lstat(privateDirectory); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("split retained private staging: %v", err)
+			}
+			if runtime.GOOS == "windows" {
+				if result.Outcome() != pcv3.OutcomeOperationFailed || result.Stage() != pcv3.StageOutputPublication ||
+					result.Code() != pcv3.CodeOperationFailed || result.Diagnostic() != DiagnosticCoreFailure ||
+					!slices.Equal(result.Warnings(), []Warning{WarningDurabilityUncertain, WarningCleanupIncomplete}) {
+					t.Fatalf("uncertain native split lost its exact failed/cleanup tuple: %v warnings=%v", result, result.Warnings())
+				}
+			} else if result.Outcome() != pcv3.OutcomeSuccess {
 				t.Fatalf("split failed: %v", result)
 			}
 			recombined := filepath.Join(directory, "recombined")

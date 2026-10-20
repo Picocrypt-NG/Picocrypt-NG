@@ -15,10 +15,14 @@ import (
 
 // run is the GUI+CLI entry point.
 // It first checks for CLI subcommands, and if none are found, launches the GUI.
-func run() {
+func run(startupErr error) {
 	// Check for CLI mode first (encrypt/decrypt subcommands)
-	if cli.Execute(version) {
+	if cli.ExecuteWithStartupError(version, startupErr) {
 		return
+	}
+	if startupErr != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize: %v\n", startupErr)
+		os.Exit(1)
 	}
 
 	// Initialize and run the graphical user interface.

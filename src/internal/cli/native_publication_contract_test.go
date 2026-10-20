@@ -8,7 +8,10 @@ import (
 	"testing"
 )
 
-const nativePCV3DurabilityWarning = "Warning: output durability was not confirmed; keep source and destination unchanged\n"
+const (
+	nativePCV3DurabilityWarning = "Warning: output durability was not confirmed; keep source and destination unchanged\n"
+	nativePCV3CleanupWarning    = "Warning: cleanup of operation-owned temporary files could not be confirmed\n"
+)
 
 // File publication and byte recovery remain observable on Windows, while its
 // native directory barrier cannot assert durability or authorize source deletion.
@@ -43,12 +46,17 @@ func requireNativePCV3FileError(t *testing.T, err error) {
 
 func requireNativePCV3Published(t *testing.T, result cliTestResult, comment string) {
 	t.Helper()
-	wantStderr := "Outcome: success\nPublication: " + nativePCV3Publication() + "\n"
+	requireNativePCV3FileTerminal(t, result, comment, "success")
+}
+
+func requireNativePCV3FileTerminal(t *testing.T, result cliTestResult, comment, outcome string) {
+	t.Helper()
+	wantStderr := "Outcome: " + outcome + "\nPublication: " + nativePCV3Publication() + "\n"
 	if comment != "" {
 		wantStderr += "Comment: " + strconv.Quote(comment) + "\n"
 	}
 	if runtime.GOOS == "windows" {
-		wantStderr += nativePCV3DurabilityWarning
+		wantStderr += nativePCV3DurabilityWarning + nativePCV3CleanupWarning
 	}
 	if result.exitCode != nativePCV3FileExit() || len(result.stdout) != 0 || result.stderr != wantStderr {
 		t.Fatalf("native file terminal = exit %d stdout %q stderr %q; want exit %d, empty stdout, stderr %q", result.exitCode, result.stdout, result.stderr, nativePCV3FileExit(), wantStderr)

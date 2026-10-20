@@ -1,0 +1,24 @@
+{
+  "module": "golang.org/x/crypto",
+  "version": "v0.58.0",
+  "package": "argon2",
+  "source": "https://github.com/golang/crypto/tree/v0.58.0/argon2",
+  "module_sum": "h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54=",
+  "original_sha256": {
+    "LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+    "argon2/argon2.go": "3675c69f8a2efbd5ae4d35d00f5679113b50ec32f3fe6482c669ef7b401a38d5",
+    "argon2/argon2_test.go": "3c5d683e91556a09a1cfc5874134dd377fab6bc06621f1a55ebb1f4847b43e45",
+    "argon2/blake2b.go": "00b7ed36b3569e067ce4e34c92b44914e98a26f3666a2cf01b6785cc4b8201e6",
+    "argon2/blamka_amd64.go": "3f579a886e71b212df75178fef7876aa2b3ea059db0baab44cd3fb4239edca12",
+    "argon2/blamka_amd64.s": "34956c458ac293db0748178d62e110ac45837063e535a813c8a253c3fe50729f",
+    "argon2/blamka_generic.go": "168ed535967c760875407a802f810d76cf527f6c1bb111612dbc81c66fcaf34c",
+    "argon2/blamka_loong64.go": "f656d6f7de87592eff8e9502f395e947d6b3e103ffcb820d34c0dcf5a22c3c96",
+    "argon2/blamka_loong64.s": "36c96607033dd21fbff85ff1ef4b473825d944e7043738f799f2584993d2c6b4",
+    "argon2/blamka_ref.go": "5ee521fdb6238d46888482d6cac64f825816d52a649b894447890c80450c657a"
+  },
+  "modified_copied_files": [
+    "argon2.go",
+    "blake2b.go",
+    "argon2_test.go"
+  ]
+}

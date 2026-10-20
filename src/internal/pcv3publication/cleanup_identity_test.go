@@ -71,14 +71,21 @@ func TestStageCleanupAfterWritableDescriptorFaultKeepsIdentityAndPreservesForeig
 			escaped := filepath.Join(directory, "failed-original")
 			if replace {
 				if err := os.Rename(stage.stagePath, escaped); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(stage.stagePath, foreign, 0o600); err != nil {
-					t.Fatal(err)
-				}
-				foreignInfo, err := os.Stat(stage.stagePath)
-				if err != nil || os.SameFile(ownedInfo, foreignInfo) {
-					t.Fatalf("foreign replacement did not establish independent identity: %v", err)
+					if !windowsSharingRefusal(err) {
+						t.Fatal(err)
+					}
+					requireFileBytes(t, stage.stagePath, []byte("owned output"))
+					// The closed writer remains a real cleanup warning even though
+					// its independent identity pin prevented pathname replacement.
+					replace = false
+				} else {
+					if err := os.WriteFile(stage.stagePath, foreign, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					foreignInfo, err := os.Stat(stage.stagePath)
+					if err != nil || os.SameFile(ownedInfo, foreignInfo) {
+						t.Fatalf("foreign replacement did not establish independent identity: %v", err)
+					}
 				}
 			}
 			if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {

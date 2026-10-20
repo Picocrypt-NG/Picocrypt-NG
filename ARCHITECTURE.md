@@ -15,6 +15,8 @@ src/
 │   │
 │   ├── cli/               # Cobra CLI commands (encrypt/decrypt)
 │   │
+│   ├── argon2/            # Pinned Argon2 implementation with workspace cleanup (AUDIT-CRITICAL)
+│   │
 │   ├── crypto/            # Cryptographic primitives (AUDIT-CRITICAL)
 │   │   ├── cipher.go      # XChaCha20, Serpent
 │   │   ├── kdf.go         # Argon2id, HKDF
@@ -60,6 +62,8 @@ src/
 │   │       └── pcv3unicode/   # Frozen Unicode credential normalization
 │   ├── pcv3publication/   # Separate staging and atomic publication infrastructure
 │   ├── pcv3result/        # Shared outcome/stage leaf types
+│   │
+│   ├── processsecurity/   # Executable-only Linux dump policy and portal-package scope
 │   │
 │   ├── ui/                # Fyne GUI
 │   │   ├── app.go         # Main window
@@ -174,8 +178,9 @@ native frontends. Its zero value preserves the internal legacy compatibility
 writer. Android supports files, folders, multiple inputs and compression through
 the shared writer; WASM does not expose PCV3 creation. Normal PCV3 and PCV3 D1
 support password, keyfile, and combined credentials. D1 is the
-random-looking Paranoid-mode path; its complete credential transcript protects
-both outer and inner key wrapping.
+random-looking path with optional Paranoid ciphers and a fixed strong D1 KDF.
+Its complete credential transcript protects separate outer and inner key wraps;
+creation performs two KDFs, and a healthy front-bootstrap read performs one.
 
 ## Security
 
@@ -193,7 +198,7 @@ The legacy paths in `crypto/`, `header/`, `keyfile/`, and `volume/` descend from
 ```go
 // Pattern used throughout
 ctx := NewOperationContext(req)
-defer ctx.Close()  // Zeros all sensitive data
+defer ctx.Close()  // Wipes owned secret buffers
 
 // Explicit zeroing
 crypto.SecureZero(key)

@@ -68,8 +68,8 @@ func TestArchiveSAFManifestFromAuthenticatedArchiveIsCanonicalAndOneShot(t *test
 	}
 
 	terminal := session.Abort()
-	if terminal == nil || terminal.State() != fileops.UnpackStateNotPublished ||
-		terminal.AttemptedEver() || terminal.CleanupIncomplete() {
+	if terminal == nil || terminal.State() != nativeArchiveSAFUnattemptedState() ||
+		terminal.AttemptedEver() || terminal.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("unattempted abort = %#v; want exact not-published cleanup", terminal)
 	}
 	assertNativeArchiveStage(t, stageParent, rawTarget, 0)
@@ -205,8 +205,8 @@ func TestArchiveSAFManifestRejectsSlashSuffixedSpecialZIPKindsBeforeSession(t *t
 				begin.Session() != nil || begin.ReceiptArm() != nil || begin.Result() == nil {
 				t.Fatalf("slash-suffixed special begin = %#v; want terminal without authority", begin)
 			}
-			if result := begin.Result(); result.State() != fileops.UnpackStateNotPublished ||
-				result.AttemptedEver() || result.CleanupIncomplete() {
+			if result := begin.Result(); result.State() != nativeArchiveSAFUnattemptedState() ||
+				result.AttemptedEver() || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 				t.Fatalf("slash-suffixed special result = %#v; want exact pre-attempt rejection", result)
 			}
 			assertNativeArchiveStage(t, stageParent, rawTarget, 0)

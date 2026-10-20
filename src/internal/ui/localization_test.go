@@ -270,7 +270,7 @@ func TestPCV3LocalizationContract(t *testing.T) {
 				pcv3operation.DiagnosticResourceUnknown,
 				pcv3LocalizedCopy{
 					Title:  "Device resources could not be verified",
-					Body:   "The operation stopped before key derivation. No output was created.",
+					Body:   "No output was created.",
 					Action: "Close resource notice",
 				},
 			},
@@ -469,6 +469,13 @@ func TestPCV3LocalizationContract(t *testing.T) {
 		}
 		if got := pcv3ProgressText(pcv3operation.StatusAuthenticating); got != "Authenticating volume…" {
 			t.Fatalf("untranslated PCV3 fallback = %q; want bounded English fallback", got)
+		}
+		resourceRefusal := mustPresentation(pcv3operation.PresentationSpec{
+			Outcome: pcv3operation.OutcomeOperationFailed, Stage: pcv3operation.StageCredentialPolicy,
+			Code: pcv3operation.CodeOperationFailed, Diagnostic: pcv3operation.DiagnosticResourceUnknown,
+		})
+		if got := pcv3OutcomeCopy(resourceRefusal).Body; got != "No output was created." {
+			t.Fatalf("resource refusal fallback = %q; must not claim no earlier KDF ran", got)
 		}
 		if got := pcv3OutcomeCopy(pcv3operation.Presentation{}); got != (pcv3LocalizedCopy{
 			Title: "Operation failed",

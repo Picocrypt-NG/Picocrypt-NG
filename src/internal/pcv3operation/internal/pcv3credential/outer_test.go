@@ -64,7 +64,6 @@ func TestD1TranscriptConsumesFactorsOnceAndSeparatesDomains(t *testing.T) {
 				test.password,
 				test.keyfiles...,
 			)
-			var normal *CredentialInputNormal
 			var outer *CredentialInputOuter
 			var wantNormal, wantOuter [64]byte
 			err := WithValidatedFactors(context.Background(), request, func(factors *ValidatedFactors) error {
@@ -79,8 +78,8 @@ func TestD1TranscriptConsumesFactorsOnceAndSeparatesDomains(t *testing.T) {
 					}
 				}()
 				wantNormal = d1TestInputDigest("Picocrypt-NG/PCV3/credential/normal\x00", serialized)
-				wantOuter = d1TestInputDigest("Picocrypt-NG/PCV3/credential/outer\x00", serialized)
-				normal, outer, err = NewD1CredentialInputs(transcript)
+				wantOuter = d1TestInputDigest("Picocrypt-NG/PCV3/D1C/credential/full\x00", serialized)
+				outer, err = NewD1CredentialInput(transcript)
 				return err
 			})
 			if err != nil {
@@ -92,27 +91,24 @@ func TestD1TranscriptConsumesFactorsOnceAndSeparatesDomains(t *testing.T) {
 					t.Fatalf("keyfile %d bytes read = %d, want %d", index, reader.bytesRead, len(test.keyfiles[index]))
 				}
 			}
-			if normal == nil || normal.secret == nil || outer == nil || outer.secret == nil {
-				t.Fatal("D1 transcript fan-out did not publish both typed owners")
+			if outer == nil || outer.secret == nil {
+				t.Fatal("D1 transcript did not publish its typed owner")
 			}
-			defer normal.Close()
 			defer outer.Close()
-			normalAlias := normal.secret.Bytes()
 			outerAlias := outer.secret.Bytes()
-			if !bytes.Equal(normalAlias, wantNormal[:]) || !bytes.Equal(outerAlias, wantOuter[:]) {
+			if !bytes.Equal(outerAlias, wantOuter[:]) {
 				t.Fatal("D1 transcript fan-out did not use the two literal protocol domains")
 			}
-			if bytes.Equal(normalAlias, outerAlias) {
+			if bytes.Equal(wantNormal[:], outerAlias) {
 				t.Fatal("normal and outer credential inputs were interchangeable")
 			}
-			formatted := fmt.Sprintf("%v|%+v|%#v|%v|%+v|%#v", normal, normal, normal, outer, outer, outer)
-			const wantFormatted = "pcv3credential.CredentialInputNormal([REDACTED])|pcv3credential.CredentialInputNormal([REDACTED])|pcv3credential.CredentialInputNormal([REDACTED])|pcv3credential.CredentialInputOuter([REDACTED])|pcv3credential.CredentialInputOuter([REDACTED])|pcv3credential.CredentialInputOuter([REDACTED])"
+			formatted := fmt.Sprintf("%v|%+v|%#v", outer, outer, outer)
+			const wantFormatted = "pcv3credential.CredentialInputOuter([REDACTED])|pcv3credential.CredentialInputOuter([REDACTED])|pcv3credential.CredentialInputOuter([REDACTED])"
 			if formatted != wantFormatted {
 				t.Fatalf("D1 credential input formatting was not fixed and redacted: %q", formatted)
 			}
-			normal.Close()
 			outer.Close()
-			if !allZero(normalAlias) || !allZero(outerAlias) {
+			if !allZero(outerAlias) {
 				t.Fatal("D1 credential input owners retained bytes after Close")
 			}
 		})
@@ -120,7 +116,7 @@ func TestD1TranscriptConsumesFactorsOnceAndSeparatesDomains(t *testing.T) {
 }
 
 func TestD1OuterDerivationIsSequentialAndBounded(t *testing.T) {
-	normal, outer := newD1TestInputs(t)
+	outer := newD1TestInputs(t)
 	var salts D1CreationSalts
 	for index := range salts.Front {
 		salts.Front[index] = byte(0x10 + index)
@@ -157,8 +153,8 @@ func TestD1OuterDerivationIsSequentialAndBounded(t *testing.T) {
 		if active > maxActive {
 			maxActive = active
 		}
-		if profile != mustD1TestProfile(t) {
-			t.Fatal("D1 derivation did not use the fixed Paranoid-1 profile")
+		if profile != fixedD1Profile() {
+			t.Fatal("D1 derivation did not use the fixed independent D1 profile")
 		}
 		switch {
 		case bytes.Equal(salt, salts.Front[:]):
@@ -193,7 +189,6 @@ func TestD1OuterDerivationIsSequentialAndBounded(t *testing.T) {
 
 	err := withD1CreationCredentialRoots(
 		ctx,
-		normal,
 		outer,
 		salts,
 		grantKDFAdmission(),
@@ -202,7 +197,7 @@ func TestD1OuterDerivationIsSequentialAndBounded(t *testing.T) {
 			extract: extract,
 			expand:  expand,
 		},
-		func(front, tail *D1OuterCredentialOwner, inner *CredentialInputNormal) error {
+		func(front, tail *D1OuterCredentialOwner) error {
 			if front.Role() != KeyRolePrimary || tail.Role() != KeyRoleBackup {
 				t.Fatal("D1 creation roots lost physical bootstrap roles")
 			}
@@ -230,19 +225,14 @@ func TestD1OuterDerivationIsSequentialAndBounded(t *testing.T) {
 					return err
 				}
 			}
-			return withD1NormalCredentialOwner(
+			return WithD1InnerCredentialOwner(
 				ctx,
-				inner,
+				bytes.Repeat([]byte{0xb7}, derivedKeyBytes),
+				D1ProfileParanoid,
 				factors,
 				innerSalt,
 				volumeID,
 				volumeKeyTransfer,
-				grantKDFAdmission(),
-				d1NormalOwnerSeams{
-					derive:  derive,
-					extract: defaultHKDFExtract,
-					expand:  defaultHKDFExpand,
-				},
 				func(owner *Owner) error {
 					expiredNormalOwner = owner
 					for _, alias := range d1NormalOwnerAliases(owner) {
@@ -264,7 +254,7 @@ func TestD1OuterDerivationIsSequentialAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive D1 creation credentials: %v", err)
 	}
-	if !slices.Equal(order, []string{"front-outer", "tail-outer", "inner-normal"}) {
+	if !slices.Equal(order, []string{"front-outer", "tail-outer"}) {
 		t.Fatalf("D1 derivation order = %v", order)
 	}
 	if maxActive != 1 {
@@ -273,13 +263,13 @@ func TestD1OuterDerivationIsSequentialAndBounded(t *testing.T) {
 	if !allZero(volumeKeyTransfer) {
 		t.Fatal("D1 normal owner retained the transferred VolumeKey")
 	}
-	wantCredentialInfos := []string{
-		d1TestScheduleInfo("outer/wrap/xchacha20", KeyRolePrimary),
-		d1TestScheduleInfo("outer/wrap/serpent", KeyRolePrimary),
-		d1TestScheduleInfo("outer/wrap/mac", KeyRolePrimary),
-		d1TestScheduleInfo("outer/wrap/xchacha20", KeyRoleBackup),
-		d1TestScheduleInfo("outer/wrap/serpent", KeyRoleBackup),
-		d1TestScheduleInfo("outer/wrap/mac", KeyRoleBackup),
+	var wantCredentialInfos []string
+	for _, role := range []KeyRole{KeyRolePrimary, KeyRoleBackup} {
+		for _, profile := range []uint16{0x0101, 0x0102} {
+			for _, label := range []string{"outer/wrap/xchacha20", "outer/wrap/serpent", "outer/wrap/mac", "inner/wrap/xchacha20", "inner/wrap/serpent", "inner/wrap/mac"} {
+				wantCredentialInfos = append(wantCredentialInfos, d1TestProfileScheduleInfo(label, role, profile))
+			}
+		}
 	}
 	if !slices.Equal(credentialInfos, wantCredentialInfos) {
 		t.Fatalf("D1 outer credential schedule infos = %q, want %q", credentialInfos, wantCredentialInfos)
@@ -314,273 +304,15 @@ func TestD1OuterDerivationIsSequentialAndBounded(t *testing.T) {
 	}
 }
 
-func TestD1NormalCredentialOwnerUsesFixedScheduleAndCallbackLifetime(t *testing.T) {
-	ctx := context.Background()
-	var salt [kdfSaltBytes]byte
-	var volumeID [scheduleVolumeIDBytes]byte
-	for index := range salt {
-		salt[index] = byte(0x20 + index)
-	}
-	for index := range volumeID {
-		volumeID[index] = byte(0x70 + index)
-	}
-	wantVolumeKey := bytes.Repeat([]byte{0xb1}, derivedKeyBytes)
-	volumeKeyTransfer := append([]byte(nil), wantVolumeKey...)
-	var inputAlias []byte
-	var providerAliases [][]byte
-	var ownedAliases map[string][]byte
-	var retainedInput *CredentialInputNormal
-	var retainedOwner *Owner
-	var retainedBorrow *BorrowedKeys
-	deriveCalls := 0
-	callbackCalls := 0
-	seams := d1NormalOwnerSeams{
-		derive: func(input, gotSalt []byte, profile KDFProfile) ([]byte, error) {
-			deriveCalls++
-			if len(input) != credentialInputNormalBytes || allZero(input) {
-				t.Fatal("D1 normal KDF did not receive the live normal credential input")
-			}
-			if !bytes.Equal(gotSalt, salt[:]) || profile != mustD1TestProfile(t) {
-				t.Fatal("D1 normal KDF did not use the fixed Paranoid-1 profile and supplied salt")
-			}
-			returned := bytes.Repeat([]byte{0xc1}, credentialRootBytes)
-			providerAliases = append(providerAliases, returned)
-			return returned, nil
-		},
-		extract: func([]byte, []byte) ([]byte, error) {
-			returned := bytes.Repeat([]byte{byte(0xd0 + len(providerAliases))}, derivedKeyBytes)
-			providerAliases = append(providerAliases, returned)
-			return returned, nil
-		},
-		expand: func([]byte, string, int) ([]byte, error) {
-			returned := bytes.Repeat([]byte{byte(0xe0 + len(providerAliases))}, derivedKeyBytes)
-			providerAliases = append(providerAliases, returned)
-			return returned, nil
-		},
-	}
-
-	err := withD1NormalTestInput(t, func(
-		normal *CredentialInputNormal,
-		factors *ValidatedFactors,
-	) error {
-		retainedInput = normal
-		inputAlias = normal.secret.Bytes()
-		return withD1NormalCredentialOwner(
-			ctx,
-			normal,
-			factors,
-			salt,
-			volumeID,
-			volumeKeyTransfer,
-			grantKDFAdmission(),
-			seams,
-			func(owner *Owner) error {
-				callbackCalls++
-				retainedOwner = owner
-				ownedAliases = d1NormalOwnerAliases(owner)
-				metadata := owner.Metadata()
-				if metadata.Suite != SuiteParanoid1 ||
-					metadata.ExpectedPolicy != FactorPolicyPasswordOnly ||
-					metadata.CredentialMode != CredentialModePasswordOnly ||
-					metadata.KeyfileMode != KeyfileModeNone ||
-					metadata.KeyfileCount != 0 ||
-					metadata.ArgonSalt != salt || metadata.VolumeID != volumeID {
-					t.Fatalf("D1 normal owner metadata = %#v", metadata)
-				}
-				if owner.state == nil || owner.state.material == nil ||
-					len(owner.state.material.keys) != len(literalRequestsForSuite(t, SuiteParanoid1)) {
-					t.Fatal("D1 normal owner did not publish the exact full Paranoid-1 schedule")
-				}
-				return owner.WithKeys(ctx, func(keys *BorrowedKeys) error {
-					retainedBorrow = keys
-					copiedVolumeKey := make([]byte, derivedKeyBytes)
-					defer func() {
-						for index := range copiedVolumeKey {
-							copiedVolumeKey[index] = 0
-						}
-					}()
-					if err := keys.CopyVolumeKey(copiedVolumeKey); err != nil {
-						return err
-					}
-					if !bytes.Equal(copiedVolumeKey, wantVolumeKey) {
-						t.Fatal("D1 normal owner did not lend the transferred VolumeKey")
-					}
-					for _, request := range literalRequestsForSuite(t, SuiteParanoid1) {
-						copiedKey := make([]byte, derivedKeyBytes)
-						if err := keys.CopyKey(request, copiedKey); err != nil {
-							return err
-						}
-						if allZero(copiedKey) {
-							t.Fatalf("D1 normal owner returned an empty key for %#v", request)
-						}
-						for index := range copiedKey {
-							copiedKey[index] = 0
-						}
-					}
-					return nil
-				})
-			},
-		)
-	})
-	if err != nil {
-		t.Fatalf("derive D1 normal owner: %v", err)
-	}
-	if deriveCalls != 1 || callbackCalls != 1 {
-		t.Fatalf("D1 normal owner calls = derive %d, callback %d; want 1 each", deriveCalls, callbackCalls)
-	}
-	if !allZero(inputAlias) || !allZero(volumeKeyTransfer) {
-		t.Fatal("D1 normal owner retained transferred input or VolumeKey bytes")
-	}
-	for _, alias := range providerAliases {
-		if !allZero(alias) {
-			t.Fatal("D1 normal owner retained a KDF or HKDF provider return")
-		}
-	}
-	requireOwnerAliasesZero(t, ownedAliases)
-	if err := retainedBorrow.CopyVolumeKey(make([]byte, derivedKeyBytes)); err == nil {
-		t.Fatal("D1 normal owner borrow survived its WithKeys callback")
-	}
-	var ownerErr *OwnerError
-	if err := retainedOwner.WithKeys(ctx, func(*BorrowedKeys) error { return nil }); !errors.As(err, &ownerErr) || ownerErr.Code != OwnerErrorClosed {
-		t.Fatalf("D1 normal owner survived its callback: %T %v", err, err)
-	}
-
-	secondVolumeKey := bytes.Repeat([]byte{0xf1}, derivedKeyBytes)
-	secondDeriveCalls := 0
-	secondCallbackCalls := 0
-	err = withD1NormalCredentialOwner(
-		ctx,
-		retainedInput,
-		&ValidatedFactors{
-			mode:           CredentialModePasswordOnly,
-			keyfileMode:    KeyfileModeNone,
-			expectedPolicy: FactorPolicyPasswordOnly,
-		},
-		salt,
-		volumeID,
-		secondVolumeKey,
-		grantKDFAdmission(),
-		d1NormalOwnerSeams{
-			derive: func([]byte, []byte, KDFProfile) ([]byte, error) {
-				secondDeriveCalls++
-				return bytes.Repeat([]byte{0x11}, credentialRootBytes), nil
-			},
-			extract: defaultHKDFExtract,
-			expand:  defaultHKDFExpand,
-		},
-		func(*Owner) error {
-			secondCallbackCalls++
-			return nil
-		},
-	)
-	if err == nil || secondDeriveCalls != 0 || secondCallbackCalls != 0 || !allZero(secondVolumeKey) {
-		t.Fatal("closed D1 normal input was reused or did not consume the replacement VolumeKey")
-	}
-}
-
-func TestD1NormalCredentialOwnerCleansCallbackFailureCancellationAndPanic(t *testing.T) {
-	tests := []struct {
-		name        string
-		cancelFirst bool
-		panic       bool
-	}{
-		{name: "callback failure"},
-		{name: "cancelled before KDF", cancelFirst: true},
-		{name: "callback panic", panic: true},
-	}
-	callbackFailure := errors.New("TEST ONLY D1 callback failure")
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			if test.cancelFirst {
-				cancel()
-			}
-			var salt [kdfSaltBytes]byte
-			var volumeID [scheduleVolumeIDBytes]byte
-			volumeKeyTransfer := bytes.Repeat([]byte{0x35}, derivedKeyBytes)
-			var inputAlias []byte
-			var providerAliases [][]byte
-			var ownedAliases map[string][]byte
-			deriveCalls := 0
-			callbackCalls := 0
-			seams := d1NormalOwnerSeams{
-				derive: func([]byte, []byte, KDFProfile) ([]byte, error) {
-					deriveCalls++
-					returned := bytes.Repeat([]byte{0x45}, credentialRootBytes)
-					providerAliases = append(providerAliases, returned)
-					return returned, nil
-				},
-				extract: defaultHKDFExtract,
-				expand:  defaultHKDFExpand,
-			}
-
-			var returnedErr error
-			var recovered any
-			func() {
-				defer func() { recovered = recover() }()
-				returnedErr = withD1NormalTestInput(t, func(
-					normal *CredentialInputNormal,
-					factors *ValidatedFactors,
-				) error {
-					inputAlias = normal.secret.Bytes()
-					return withD1NormalCredentialOwner(
-						ctx,
-						normal,
-						factors,
-						salt,
-						volumeID,
-						volumeKeyTransfer,
-						grantKDFAdmission(),
-						seams,
-						func(owner *Owner) error {
-							callbackCalls++
-							ownedAliases = d1NormalOwnerAliases(owner)
-							if test.panic {
-								panic("TEST ONLY D1 callback panic")
-							}
-							return callbackFailure
-						},
-					)
-				})
-			}()
-
-			if test.panic {
-				if recovered == nil {
-					t.Fatal("D1 normal callback panic was swallowed")
-				}
-			} else if recovered != nil {
-				t.Fatalf("unexpected panic: %v", recovered)
-			}
-			if test.cancelFirst {
-				if returnedErr == nil || deriveCalls != 0 || callbackCalls != 0 {
-					t.Fatalf("cancelled D1 normal calls = derive %d, callback %d, error %v", deriveCalls, callbackCalls, returnedErr)
-				}
-			} else if !test.panic && !errors.Is(returnedErr, callbackFailure) {
-				t.Fatalf("D1 normal callback error = %T %v", returnedErr, returnedErr)
-			}
-			if !allZero(inputAlias) || !allZero(volumeKeyTransfer) {
-				t.Fatal("D1 normal failure retained transferred input or VolumeKey bytes")
-			}
-			for _, alias := range providerAliases {
-				if !allZero(alias) {
-					t.Fatal("D1 normal failure retained a KDF provider return")
-				}
-			}
-			if ownedAliases != nil {
-				requireOwnerAliasesZero(t, ownedAliases)
-			}
-		})
-	}
-}
-
 func TestD1OuterKeyOwnerUsesClosedScheduleAndZeroes(t *testing.T) {
 	keyAlias := bytes.Repeat([]byte{0x5c}, derivedKeyBytes)
 	var infos []string
 	var providerAliases [][]byte
-	wantRootSalt := sha3.Sum256([]byte("Picocrypt-NG/PCV3/outer/root\x00"))
-	owner, err := newD1OuterKeyOwnerWith(
+	wantRootSalt := sha3.Sum256([]byte("Picocrypt-NG/PCV3/D1C/outer/root\x00\x01\x02"))
+	owner, err := newD1RootsOwnerWith(
 		keyAlias,
+		bytes.Repeat([]byte{0x6d}, derivedKeyBytes),
+		D1ProfileParanoid,
 		func(key, salt []byte) ([]byte, error) {
 			if !bytes.Equal(key, keyAlias) || !bytes.Equal(salt, wantRootSalt[:]) {
 				t.Fatal("D1 OuterKey extraction used the wrong key or literal root domain")
@@ -662,8 +394,7 @@ func TestD1OuterKeyOwnerUsesClosedScheduleAndZeroes(t *testing.T) {
 }
 
 func TestD1OuterCancellationAndClosedOwnersFailBeforeNextDerivation(t *testing.T) {
-	normal, outer := newD1TestInputs(t)
-	normalAlias := normal.secret.Bytes()
+	outer := newD1TestInputs(t)
 	outerAlias := outer.secret.Bytes()
 	var salts D1CreationSalts
 	for index := range salts.Front {
@@ -675,7 +406,6 @@ func TestD1OuterCancellationAndClosedOwnersFailBeforeNextDerivation(t *testing.T
 	var returnedAlias []byte
 	err := withD1CreationCredentialRoots(
 		ctx,
-		normal,
 		outer,
 		salts,
 		grantKDFAdmission(),
@@ -689,7 +419,7 @@ func TestD1OuterCancellationAndClosedOwnersFailBeforeNextDerivation(t *testing.T
 			extract: defaultHKDFExtract,
 			expand:  defaultHKDFExpand,
 		},
-		func(*D1OuterCredentialOwner, *D1OuterCredentialOwner, *CredentialInputNormal) error {
+		func(*D1OuterCredentialOwner, *D1OuterCredentialOwner) error {
 			t.Fatal("cancelled D1 derivation invoked the creation callback")
 			return nil
 		},
@@ -701,14 +431,13 @@ func TestD1OuterCancellationAndClosedOwnersFailBeforeNextDerivation(t *testing.T
 	if calls != 1 {
 		t.Fatalf("cancelled D1 derivation calls = %d, want 1", calls)
 	}
-	for _, alias := range [][]byte{normalAlias, outerAlias, returnedAlias} {
+	for _, alias := range [][]byte{outerAlias, returnedAlias} {
 		if !allZero(alias) {
 			t.Fatal("cancelled D1 derivation retained secret bytes")
 		}
 	}
 
-	unusedNormal, closedOuter := newD1TestInputs(t)
-	unusedNormal.Close()
+	closedOuter := newD1TestInputs(t)
 	closedOuter.Close()
 	called := false
 	err = closedOuter.withInput(func([]byte) error {
@@ -720,7 +449,7 @@ func TestD1OuterCancellationAndClosedOwnersFailBeforeNextDerivation(t *testing.T
 	}
 }
 
-func newD1TestInputs(t *testing.T) (*CredentialInputNormal, *CredentialInputOuter) {
+func newD1TestInputs(t *testing.T) *CredentialInputOuter {
 	t.Helper()
 	request, passwordAlias, readers := newRealTranscriptRequest(
 		CredentialModePasswordOnly,
@@ -733,37 +462,11 @@ func newD1TestInputs(t *testing.T) (*CredentialInputNormal, *CredentialInputOute
 		t.Fatalf("build D1 test transcript: %v", err)
 	}
 	requireRealInputsReleased(t, request, passwordAlias, readers)
-	normal, outer, err := NewD1CredentialInputs(transcript)
+	outer, err := NewD1CredentialInput(transcript)
 	if err != nil {
 		t.Fatalf("fan out D1 test transcript: %v", err)
 	}
-	return normal, outer
-}
-
-func withD1NormalTestInput(
-	t *testing.T,
-	callback func(*CredentialInputNormal, *ValidatedFactors) error,
-) error {
-	t.Helper()
-	request, passwordAlias, readers := newRealTranscriptRequest(
-		CredentialModePasswordOnly,
-		KeyfileModeNone,
-		FactorPolicyPasswordOnly,
-		[]byte("TEST ONLY D1 normal-owner password"),
-	)
-	err := WithValidatedFactors(context.Background(), request, func(factors *ValidatedFactors) error {
-		transcript, err := NewCanonicalTranscript(factors)
-		if err != nil {
-			return err
-		}
-		normal, err := NewCredentialInputNormal(transcript)
-		if err != nil {
-			return err
-		}
-		return callback(normal, factors)
-	})
-	requireRealInputsReleased(t, request, passwordAlias, readers)
-	return err
+	return outer
 }
 
 func d1TestInputDigest(domain string, transcript []byte) [64]byte {
@@ -775,17 +478,12 @@ func d1TestInputDigest(domain string, transcript []byte) [64]byte {
 	return digest
 }
 
-func mustD1TestProfile(t *testing.T) KDFProfile {
-	t.Helper()
-	profile, err := fixedProfileForSuite(SuiteParanoid1)
-	if err != nil {
-		t.Fatalf("load Paranoid-1 profile: %v", err)
-	}
-	return profile
+func d1TestScheduleInfo(label string, role KeyRole) string {
+	return d1TestProfileScheduleInfo(label, role, 0x0102)
 }
 
-func d1TestScheduleInfo(label string, role KeyRole) string {
-	const domain = "Picocrypt-NG/PCV3/HKDF\x00"
+func d1TestProfileScheduleInfo(label string, role KeyRole, profile uint16) string {
+	const domain = "Picocrypt-NG/PCV3/D1C/HKDF\x00"
 	info := make([]byte, 0, len(domain)+9+len(label))
 	info = append(info, domain...)
 	var encoded [2]byte
@@ -793,7 +491,7 @@ func d1TestScheduleInfo(label string, role KeyRole) string {
 	info = append(info, encoded[:]...)
 	binary.BigEndian.PutUint16(encoded[:], 0x0001)
 	info = append(info, encoded[:]...)
-	binary.BigEndian.PutUint16(encoded[:], uint16(SuiteParanoid1))
+	binary.BigEndian.PutUint16(encoded[:], profile)
 	info = append(info, encoded[:]...)
 	info = append(info, byte(role))
 	binary.BigEndian.PutUint16(encoded[:], uint16(len(label)))
@@ -868,7 +566,10 @@ func d1OuterKeyOwnerAliases(owner *D1OuterKeyOwner) [][]byte {
 	if material == nil {
 		return nil
 	}
-	aliases := make([][]byte, 0, 2+len(material.keys))
+	aliases := make([][]byte, 0, 3+len(material.keys))
+	if material.inner != nil {
+		aliases = append(aliases, material.inner.Bytes())
+	}
 	if material.key != nil && material.key.secret != nil {
 		aliases = append(aliases, material.key.secret.Bytes())
 	}

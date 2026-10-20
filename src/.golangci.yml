@@ -43,6 +43,65 @@ linters:
     presets:
       - std-error-handling
     rules:
+      # Preserve the pinned Argon2 primitive's arithmetic and source structure.
+      # These rules match only reviewed upstream expressions; local cleanup and
+      # tests retain existing checks. Private mode values are the constants 0..2.
+      - path: '^internal/argon2/argon2\.go$'
+        linters: [gosec]
+        text: '^G115: integer overflow conversion int -> uint(32|64)$'
+        source: '^\s*(binary\.LittleEndian\.PutUint32\(params\[20:24\], uint32\(mode\)\)|in\[5\] = uint64\(mode\))$'
+      # Argon2 encodes lengths as uint32. The valid protocol domain fits this
+      # field; legacy callers do not independently reject larger inputs. Keep
+      # that inherited out-of-domain behavior outside this cleanup-only patch.
+      - path: '^internal/argon2/argon2\.go$'
+        linters: [gosec]
+        text: '^G115: integer overflow conversion int -> uint32$'
+        source: '^\s*binary\.LittleEndian\.PutUint32\(tmp\[:\], uint32\(len\((password|salt|key|data)\)\)\)$'
+      # Expansion outputs are uint32-sized keys or fixed initialization blocks.
+      - path: '^internal/argon2/blake2b\.go$'
+        linters: [gosec]
+        text: '^G115: integer overflow conversion int -> uint32$'
+        source: '^\s*binary\.LittleEndian\.PutUint32\(buffer\[:4\], uint32\(len\(out\)\)\)$'
+      # The remainder is smaller than the nonzero uint32 lane length.
+      - path: '^internal/argon2/argon2\.go$'
+        linters: [gosec]
+        text: '^G115: integer overflow conversion uint64 -> uint32$'
+        source: '^\s*return lane\*lanes \+ uint32\(\(s\+m-\(p\+1\)\)%uint64\(lanes\)\)$'
+      # BlaMka deliberately multiplies the low 32-bit limbs modulo 2^64.
+      - path: '^internal/argon2/blamka_generic\.go$'
+        linters: [gosec]
+        text: '^G115: integer overflow conversion uint64 -> uint32$'
+        source: '^\s*v[0-9]{2} \+= v[0-9]{2} \+ 2\*uint64\(uint32\(v[0-9]{2}\)\)\*uint64\(uint32\(v[0-9]{2}\)\)$'
+      # Fixed 128-element blocks: row i<=112, column i<=14; max index 127.
+      - path: '^internal/argon2/blamka_(amd64|generic)\.go$'
+        linters: [gosec]
+        text: '^G602: slice index out of range$'
+        source: '^\s*&t\[i\+(0|4|8|12)\], &t\[i\+(1|5|9|13)\], &t\[i\+(2|6|10|14)\], &t\[i\+(3|7|11|15)\],$'
+      - path: '^internal/argon2/blamka_(amd64|generic)\.go$'
+        linters: [gosec]
+        text: '^G602: slice index out of range$'
+        source: '^\s*&t\[96\+i\], &t\[96\+i\+1\], &t\[112\+i\], &t\[112\+i\+1\],$'
+      - path: '^internal/argon2/argon2\.go$'
+        linters: [gocritic]
+        text: '^captLocal:'
+        source: '^func (processBlocks|extractKey)\(B \[\]block,'
+      - path: '^internal/argon2/argon2\.go$'
+        linters: [intrange]
+        text: '^for loop can be changed to use an integer range'
+        source: '^\s*for (lane := uint32\(0\); lane < threads(-1)?; lane\+\+|n := uint32\(0\); n < time; n\+\+|slice := uint32\(0\); slice < syncPoints; slice\+\+) \{$'
+      - path: '^internal/argon2/argon2_test\.go$'
+        linters: [intrange]
+        text: '^for loop can be changed to use an integer range'
+        source: '^\s*for i := 0; i < b\.N; i\+\+ \{$'
+      - path: '^internal/argon2/argon2\.go$'
+        linters: [staticcheck]
+        text: '^ST1022:'
+        source: '^// The Argon2 version implemented by this package\.$'
+      # This fallback is used by purego/reference and Loong64 without LSX.
+      - path: '^internal/argon2/blamka_generic\.go$'
+        linters: [unused]
+        text: '^func processBlockGeneric is unused$'
+        source: '^func processBlockGeneric\(out, in1, in2 \*block, xor bool\) \{$'
       - path: internal/ui/
         linters:
           - typecheck
@@ -112,6 +171,8 @@ linters:
             - "**/mobile/**/*.go"
             - "!**/*_test.go"
           deny:
+            - pkg: "Picocrypt-NG/internal/argon2$"
+              desc: "KDF operations belong behind the application boundary."
             - pkg: "Picocrypt-NG/internal/crypto$"
               desc: "Use the volume or pcv3operation application boundary."
             - pkg: "Picocrypt-NG/internal/pcv3operation/internal/"

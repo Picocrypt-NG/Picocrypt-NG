@@ -664,10 +664,6 @@ func (a *App) buildMobileEncryptOptions() {
 
 	a.deniabilityCheck = ttwidget.NewCheck(tr("advanced.deniability.label", "Deniability"), func(checked bool) {
 		a.State.Deniability = checked
-		if checked {
-			a.State.Paranoid = true
-			a.paranoidCheck.SetChecked(true)
-		}
 		a.updateUIState()
 	})
 	a.deniabilityCheck.SetChecked(a.State.Deniability)

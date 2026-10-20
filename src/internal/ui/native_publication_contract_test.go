@@ -12,9 +12,12 @@ import (
 const (
 	nativePCV3DurabilityWarningText = "Output durability was not confirmed. Keep every source and the destination."
 	nativePCV3UncertainBody         = "The destination may contain the output, but filesystem durability could not be confirmed. Keep every source and the destination. Do not retry, replace, delete, or clean up this operation."
+	nativePCV3CleanupWarningTitle   = "Cleanup could not be confirmed"
+	nativePCV3CleanupWarningText    = "The application could not confirm removal of all temporary files created by this operation. Keep the source files and do not delete files based on this result."
 )
 
-// Windows commits the file but has no supported directory durability barrier.
+// Windows commits the file but cannot prove publication or private-directory
+// retirement durability with its native directory sync implementation.
 // A warning must never be treated as clean completion or deletion authority.
 func requireNativePCV3Publication(t *testing.T, result *pcv3operation.Result) {
 	t.Helper()
@@ -28,7 +31,7 @@ func requireNativePCV3Publication(t *testing.T, result *pcv3operation.Result) {
 		state = pcv3publication.StatePublishedDurabilityUncertain
 		stage = pcv3operation.StageDirectorySync
 		code = pcv3publication.CodeDurabilityUncertain
-		warnings = []pcv3operation.Warning{pcv3operation.WarningDurabilityUncertain}
+		warnings = []pcv3operation.Warning{pcv3operation.WarningDurabilityUncertain, pcv3operation.WarningCleanupIncomplete}
 	}
 	if result == nil || result.Outcome() != pcv3operation.OutcomeSuccess ||
 		result.Stage() != pcv3operation.StageNone || result.Code() != pcv3operation.CodeSuccess ||

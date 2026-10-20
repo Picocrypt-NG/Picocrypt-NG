@@ -26,6 +26,7 @@ type d1WritePlan struct {
 }
 
 func planD1Write(request normalWriteRequest) (d1WritePlan, error) {
+	request.derivedRoot = true
 	normal, err := planNormalWrite(request)
 	if err != nil || normal.geometry.fileSize < 0 {
 		return d1WritePlan{}, newD1OuterFailure(StageD1Body, errInvalidD1WritePlan)
@@ -87,12 +88,14 @@ type d1BootstrapWriteParameters struct {
 }
 
 type d1CreationSecrets struct {
+	profile   pcv3credential.D1Profile
 	front     d1BootstrapWriteParameters
 	tail      d1BootstrapWriteParameters
 	innerSalt [16]byte
 	volumeID  [32]byte
 	volumeKey []byte
 	outerKey  []byte
+	innerRoot []byte
 }
 
 func (secrets *d1CreationSecrets) close() {
@@ -109,8 +112,10 @@ func (secrets *d1CreationSecrets) close() {
 	pcv3crypto.SecureZero(secrets.volumeID[:])
 	pcv3crypto.SecureZero(secrets.volumeKey)
 	pcv3crypto.SecureZero(secrets.outerKey)
+	pcv3crypto.SecureZero(secrets.innerRoot)
 	secrets.volumeKey = nil
 	secrets.outerKey = nil
+	secrets.innerRoot = nil
 }
 
 type d1CreationCredentialSession func(
@@ -136,8 +141,10 @@ func newD1CreationSecrets(
 		return nil, newD1OuterFailure(StageRNG, errInvalidD1Creation)
 	}
 	secrets := &d1CreationSecrets{
+		profile:   pcv3credential.D1ProfileParanoid,
 		volumeKey: make([]byte, 32),
 		outerKey:  make([]byte, 32),
+		innerRoot: make([]byte, 32),
 	}
 	success := false
 	defer func() {
@@ -156,6 +163,7 @@ func newD1CreationSecrets(
 		secrets.volumeID[:],
 		secrets.volumeKey,
 		secrets.outerKey,
+		secrets.innerRoot,
 	} {
 		if err := observe(d1BoundaryOuterEntropy); err != nil {
 			return nil, err
@@ -249,23 +257,21 @@ func withD1ProductionCredentialSession(
 				return err
 			}
 			defer transcript.Close()
-			normalInput, outerInput, err := pcv3credential.NewD1CredentialInputs(transcript)
+			outerInput, err := pcv3credential.NewD1CredentialInput(transcript)
 			if err != nil {
 				return err
 			}
-			defer normalInput.Close()
 			defer outerInput.Close()
 
 			outerKeyTransfer := secrets.outerKey
 			secrets.outerKey = nil
-			outerOwner, err := pcv3credential.NewD1OuterKeyOwner(outerKeyTransfer)
+			outerOwner, err := pcv3credential.NewD1RootsOwner(outerKeyTransfer, append([]byte(nil), secrets.innerRoot...), secrets.profile)
 			if err != nil {
 				return err
 			}
 			defer outerOwner.Close()
 			return pcv3credential.WithD1CreationCredentialRoots(
 				ctx,
-				normalInput,
 				outerInput,
 				pcv3credential.D1CreationSalts{
 					Front: secrets.front.argonSalt,
@@ -275,18 +281,19 @@ func withD1ProductionCredentialSession(
 				func(
 					front *pcv3credential.D1OuterCredentialOwner,
 					tail *pcv3credential.D1OuterCredentialOwner,
-					innerInput *pcv3credential.CredentialInputNormal,
 				) error {
 					volumeKeyTransfer := secrets.volumeKey
 					secrets.volumeKey = nil
-					return pcv3credential.WithD1NormalCredentialOwner(
+					innerTransfer := secrets.innerRoot
+					secrets.innerRoot = nil
+					return pcv3credential.WithD1InnerCredentialOwner(
 						ctx,
-						innerInput,
+						innerTransfer,
+						secrets.profile,
 						factors,
 						secrets.innerSalt,
 						secrets.volumeID,
 						volumeKeyTransfer,
-						admitter,
 						func(normal *pcv3credential.Owner) error {
 							return callback(
 								&d1BootstrapOwnerAccess{owner: front},
@@ -325,8 +332,11 @@ func encodeD1Bootstrap(
 	}
 	defer clearD1BootstrapCandidate(&candidate)
 	var outerSecret [d1OuterSecretLength]byte
+	var innerRoot [32]byte
+	var profile pcv3credential.D1Profile
 	var replicaKey [32]byte
 	defer pcv3crypto.SecureZero(outerSecret[:])
+	defer pcv3crypto.SecureZero(innerRoot[:])
 	defer pcv3crypto.SecureZero(replicaKey[:])
 	binary.BigEndian.PutUint64(outerSecret[32:], bodyLength)
 	if err := outer.withOuterKeys(
@@ -338,6 +348,10 @@ func encodeD1Bootstrap(
 			if err := keys.CopyOuterKey(outerSecret[:32]); err != nil {
 				return err
 			}
+			profile = keys.Profile()
+			if err := keys.CopyInnerRoot(innerRoot[:]); err != nil {
+				return err
+			}
 			return keys.CopyKey(
 				pcv3credential.D1OuterReplicaMAC,
 				keyRoleForD1Bootstrap(role),
@@ -347,11 +361,22 @@ func encodeD1Bootstrap(
 	); err != nil {
 		return encoded, newD1OuterFailure(StageD1Bootstrap, err)
 	}
-	if err := credentials.withWrapKeys(ctx, func(keys *d1BootstrapWrapKeys) error {
+	withKeys := func(callback func(*d1BootstrapWrapKeys) error) error {
+		if access, ok := credentials.(interface {
+			withProfileWrapKeys(context.Context, pcv3credential.D1Profile, func(*d1BootstrapWrapKeys) error) error
+		}); ok {
+			return access.withProfileWrapKeys(ctx, profile, callback)
+		}
+		if profile != pcv3credential.D1ProfileParanoid {
+			return errInvalidD1Creation
+		}
+		return credentials.withWrapKeys(ctx, callback)
+	}
+	if err := withKeys(func(keys *d1BootstrapWrapKeys) error {
 		if keys == nil {
 			return errInvalidD1Creation
 		}
-		if err := pcv3stream.PCV3WrapParanoid1(
+		if err := wrapD1BootstrapBranch(profile,
 			candidate.wrappedSecret[:],
 			outerSecret[:],
 			keys.xChaCha20[:],
@@ -361,22 +386,33 @@ func encodeD1Bootstrap(
 		); err != nil {
 			return err
 		}
-		replicaMessage := d1BootstrapReplicaMessage(candidate)
+		if err := wrapD1BootstrapBranch(profile, candidate.wrappedInnerRoot[:], innerRoot[:], keys.innerXChaCha20[:], candidate.wrapNonce[:], keys.innerSerpent[:], candidate.wrapSerpentIV[:]); err != nil {
+			return err
+		}
+		replicaMessage := d1BootstrapProfileReplicaMessage(candidate, profile)
 		defer pcv3crypto.SecureZero(replicaMessage)
-		replicaTag, err := suiteMACTag(SuiteParanoid, replicaKey[:], replicaMessage)
+		replicaTag, err := suiteMACTag(Suite(profile.Suite()), replicaKey[:], replicaMessage)
 		if err != nil {
 			return err
 		}
 		candidate.replicaTag = replicaTag
 		pcv3crypto.SecureZero(replicaTag[:])
-		wrapMessage := d1BootstrapWrapMessage(candidate)
+		wrapMessage := d1BootstrapProfileWrapMessage(candidate, profile, false)
 		defer pcv3crypto.SecureZero(wrapMessage)
-		wrapTag, err := suiteMACTag(SuiteParanoid, keys.mac[:], wrapMessage)
+		wrapTag, err := suiteMACTag(Suite(profile.Suite()), keys.mac[:], wrapMessage)
 		if err != nil {
 			return err
 		}
 		candidate.wrapTag = wrapTag
 		pcv3crypto.SecureZero(wrapTag[:])
+		innerMessage := d1BootstrapProfileWrapMessage(candidate, profile, true)
+		defer pcv3crypto.SecureZero(innerMessage)
+		innerTag, err := suiteMACTag(Suite(profile.Suite()), keys.innerMAC[:], innerMessage)
+		if err != nil {
+			return err
+		}
+		candidate.innerWrapTag = innerTag
+		pcv3crypto.SecureZero(innerTag[:])
 		return nil
 	}); err != nil {
 		return encoded, newD1OuterFailure(StageD1Bootstrap, err)
@@ -385,9 +421,21 @@ func encodeD1Bootstrap(
 	copy(encoded[16:40], candidate.wrapNonce[:])
 	copy(encoded[40:56], candidate.wrapSerpentIV[:])
 	copy(encoded[56:96], candidate.wrappedSecret[:])
-	copy(encoded[96:160], candidate.replicaTag[:])
-	copy(encoded[160:224], candidate.wrapTag[:])
+	copy(encoded[96:128], candidate.wrappedInnerRoot[:])
+	copy(encoded[128:192], candidate.replicaTag[:])
+	copy(encoded[192:256], candidate.wrapTag[:])
+	copy(encoded[256:320], candidate.innerWrapTag[:])
 	return encoded, nil
+}
+
+func wrapD1BootstrapBranch(profile pcv3credential.D1Profile, destination, source, xkey, nonce, serpent, iv []byte) error {
+	if profile == pcv3credential.D1ProfileStandard {
+		return pcv3stream.PCV3WrapStandard1(destination, source, xkey, nonce)
+	}
+	if profile != pcv3credential.D1ProfileParanoid {
+		return errInvalidD1Creation
+	}
+	return pcv3stream.PCV3WrapParanoid1(destination, source, xkey, nonce, serpent, iv)
 }
 
 func clearD1BootstrapCandidate(candidate *d1BootstrapCandidate) {
@@ -398,8 +446,10 @@ func clearD1BootstrapCandidate(candidate *d1BootstrapCandidate) {
 	pcv3crypto.SecureZero(candidate.wrapNonce[:])
 	pcv3crypto.SecureZero(candidate.wrapSerpentIV[:])
 	pcv3crypto.SecureZero(candidate.wrappedSecret[:])
+	pcv3crypto.SecureZero(candidate.wrappedInnerRoot[:])
 	pcv3crypto.SecureZero(candidate.replicaTag[:])
 	pcv3crypto.SecureZero(candidate.wrapTag[:])
+	pcv3crypto.SecureZero(candidate.innerWrapTag[:])
 	candidate.role = 0
 }
 
@@ -593,9 +643,11 @@ func writeD1NormalBody(
 	seams normalWriteSeams,
 	outerKeys d1OuterKeyAccess,
 ) (*d1BodyWriteCompletion, error) {
+	request.derivedRoot = true
 	if ctx == nil || source == nil || destination == nil || material == nil || outerKeys == nil {
 		return nil, newD1OuterFailure(StageCredentialPolicy, errD1WriterProgress)
 	}
+	material = d1InnerWriteMaterial{normalWriteMaterial: material}
 	plan, err := planD1Write(request)
 	if err != nil {
 		return nil, err

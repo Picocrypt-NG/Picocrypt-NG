@@ -30,6 +30,7 @@ const (
 	CompletionArchivePending
 	CompletionDurabilityUncertain
 	CompletionPublicationIndeterminate
+	CompletionStreamPending
 )
 
 // Warning is a bounded, non-sensitive operation warning.
@@ -63,6 +64,7 @@ const (
 	DiagnosticResourceInsufficient
 	DiagnosticResourceUnknown
 	DiagnosticResourceLimit
+	DiagnosticD1ProfileRequired
 )
 
 // ErrInvalidPresentation rejects a malformed authority-free result snapshot.
@@ -87,6 +89,7 @@ type PresentationSpec struct {
 	Warnings              []Warning
 	Diagnostic            Diagnostic
 	ArchivePending        bool
+	StreamState           StreamState
 }
 
 // Presentation is an authority-free, defensively owned result snapshot for
@@ -108,6 +111,7 @@ type Presentation struct {
 	warningCount          uint8
 	diagnostic            Diagnostic
 	archivePending        bool
+	streamState           StreamState
 }
 
 // NewPresentation validates and owns one authority-free presentation tuple.
@@ -132,6 +136,7 @@ func NewPresentation(spec PresentationSpec) (Presentation, error) {
 		diagnostic:            spec.Diagnostic,
 	})
 	presentation := presentationFromResult(result, spec.ArchivePending)
+	presentation.streamState = spec.StreamState
 	if presentation.CompletionClass() == CompletionUnknown {
 		return Presentation{}, ErrInvalidPresentation
 	}
@@ -189,6 +194,7 @@ type Result struct {
 	diagnostic             Diagnostic
 	archiveFollowUp        *ArchiveFollowUp
 	outputFollowUp         *OutputFollowUp
+	encryptedOutput        *EncryptedOutput
 	artifactInspection     *pcv3recovery.ArtifactInspection
 }
 
@@ -412,6 +418,7 @@ func presentationFromResult(result *Result, archivePending bool) Presentation {
 		warningCount:          result.warningCount,
 		diagnostic:            result.diagnostic,
 		archivePending:        archivePending,
+		streamState:           result.encryptedOutput.State(),
 	}
 }
 
@@ -540,6 +547,17 @@ func (presentation Presentation) CompletionClass() CompletionClass {
 	if presentation.archivePending {
 		return CompletionArchivePending
 	}
+	switch presentation.streamState {
+	case StreamPending:
+		return CompletionStreamPending
+	case StreamComplete:
+		if presentation.outcome == pcv3.OutcomeSuccess && presentation.warningCount == 0 {
+			return CompletionClean
+		}
+		return CompletionWarning
+	case StreamFailed:
+		return CompletionNoOutput
+	}
 	switch presentation.publicationState {
 	case pcv3publication.StatePublicationIndeterminate:
 		return CompletionPublicationIndeterminate
@@ -564,7 +582,7 @@ func (presentation Presentation) CompletionClass() CompletionClass {
 func (presentation Presentation) valid() bool {
 	if presentation.argCount > maxResultArgs ||
 		presentation.warningCount > maxResultWarnings ||
-		presentation.diagnostic > DiagnosticResourceLimit ||
+		presentation.diagnostic > DiagnosticD1ProfileRequired ||
 		presentation.forceProvenance > pcv3.ForceProvenanceUnverified ||
 		presentation.d1BootstrapProvenance > pcv3.D1BootstrapProvenanceMatching ||
 		presentation.detailStage > pcv3.StageResourceBudget ||
@@ -574,6 +592,20 @@ func (presentation Presentation) valid() bool {
 		!validPresentationWarnings(presentation) ||
 		!validPublicationPresentation(presentation) {
 		return false
+	}
+	if presentation.streamState != StreamNone {
+		if presentation.streamState > StreamFailed || presentation.archivePending ||
+			presentation.publicationAttempted || presentation.publicationState != 0 ||
+			presentation.publicationStage != pcv3.StageNone || presentation.publicationCode != 0 {
+			return false
+		}
+		switch presentation.outcome {
+		case pcv3.OutcomeSuccess, pcv3.OutcomeAuthenticatedDegraded,
+			pcv3.OutcomeForcePartial, pcv3.OutcomeForceUnverified:
+			return true
+		default:
+			return false
+		}
 	}
 	if !presentation.archivePending {
 		return true
@@ -590,6 +622,8 @@ func (presentation Presentation) valid() bool {
 
 func validDiagnosticPresentation(presentation Presentation) bool {
 	switch presentation.diagnostic {
+	case DiagnosticD1ProfileRequired:
+		return presentation.outcome == pcv3.OutcomeOperationFailed && presentation.stage == pcv3.StageD1Bootstrap && presentation.code == pcv3.CodeOperationFailed && !presentation.publicationAttempted
 	case DiagnosticResourceLimit:
 		return presentation.outcome == pcv3.OutcomeOperationFailed && presentation.stage == pcv3.StageResourceBudget && presentation.code == pcv3.CodeOperationFailed && !presentation.publicationAttempted
 	case DiagnosticResourceBusy, DiagnosticResourceInsufficient,
@@ -713,9 +747,17 @@ func (result *Result) Error() string {
 	}
 	switch result.CompletionClass() {
 	case CompletionClean:
+		if result.encryptedOutput != nil {
+			return "pcv3 operation: stream completed"
+		}
 		return "pcv3 operation: published durable"
 	case CompletionWarning:
+		if result.encryptedOutput != nil {
+			return "pcv3 operation: stream completed with warning"
+		}
 		return "pcv3 operation: published with warning"
+	case CompletionStreamPending:
+		return "pcv3 operation: stream pending"
 	case CompletionArchivePending:
 		return "pcv3 operation: archive follow-up pending"
 	case CompletionDurabilityUncertain:

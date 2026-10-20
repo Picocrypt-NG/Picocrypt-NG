@@ -273,32 +273,6 @@ func WithRecoveryCredentialSession(
 	)
 }
 
-// WithD1RecoveryCredentialSession consumes one D1 normal input and lends the
-// complete Paranoid-1 tuple set through the shared recovery session lifecycle.
-// Factors are borrowed synchronously and remain owned by the caller.
-func WithD1RecoveryCredentialSession(
-	ctx context.Context,
-	input *CredentialInputNormal,
-	factors *ValidatedFactors,
-	tuples []RecoveryCredentialTuple,
-	admitter Admitter,
-	callback func(*RecoverySession) error,
-) (*Owner, error) {
-	return newD1RecoveryCredentialSession(
-		ctx,
-		input,
-		factors,
-		tuples,
-		admitter,
-		callback,
-		readerCredentialSeams{
-			derive:  deriveArgon2ID,
-			extract: defaultHKDFExtract,
-			expand:  defaultHKDFExpand,
-		},
-	)
-}
-
 func newRecoveryCredentialSession(
 	ctx context.Context,
 	request *RecoveryCredentialRequest,
@@ -321,82 +295,6 @@ func newRecoveryCredentialSession(
 		seams,
 	); err != nil {
 		return nil, err
-	}
-	return session.finish(ctx, callback)
-}
-
-func newD1RecoveryCredentialSession(
-	ctx context.Context,
-	input *CredentialInputNormal,
-	factors *ValidatedFactors,
-	tuples []RecoveryCredentialTuple,
-	admitter Admitter,
-	callback func(*RecoverySession) error,
-	seams readerCredentialSeams,
-) (*Owner, error) {
-	defer input.Close()
-
-	snapshots, ok := snapshotRecoveryCredentialTuples(tuples)
-	if !ok {
-		return nil, newPipelineError(
-			PipelineErrorSchedule,
-			PipelineStageSchedule,
-			0,
-		)
-	}
-	suite := snapshots[0].suite
-	if !validD1RecoveryCredentialTuples(snapshots) {
-		return nil, newPipelineError(
-			PipelineErrorSchedule,
-			PipelineStageSchedule,
-			suite,
-		)
-	}
-	if ctx == nil || input == nil || factors == nil || admitter == nil || callback == nil ||
-		seams.derive == nil || seams.extract == nil || seams.expand == nil {
-		return nil, newPipelineError(
-			PipelineErrorInvalidRequest,
-			PipelineStageRequest,
-			suite,
-		)
-	}
-	if ctx.Err() != nil {
-		return nil, newPipelineError(
-			PipelineErrorCancelled,
-			PipelineStageRequest,
-			suite,
-		)
-	}
-	if err := validateRecoveryTupleFactors(snapshots, factors); err != nil {
-		return nil, err
-	}
-
-	session := newRecoverySession(ctx)
-	defer session.close()
-	err := withCredentialInputNormalBorrow(
-		input,
-		func(borrow *credentialInputBorrow) error {
-			return withRecoveryCredentialReadersFromInput(
-				ctx,
-				snapshots,
-				factors,
-				borrow,
-				admitter,
-				session.retainReader,
-				seams,
-			)
-		},
-	)
-	if err != nil {
-		var pipelineErr *PipelineError
-		if errors.As(err, &pipelineErr) {
-			return nil, pipelineErr
-		}
-		return nil, newPipelineError(
-			PipelineErrorTranscript,
-			PipelineStageTranscript,
-			suite,
-		)
 	}
 	return session.finish(ctx, callback)
 }
@@ -874,19 +772,6 @@ func snapshotRecoveryCredentialTuples(
 		snapshots[index] = snapshot
 	}
 	return snapshots, true
-}
-
-func validD1RecoveryCredentialTuples(snapshots []recoveryCredentialTupleSnapshot) bool {
-	profile, err := fixedProfileForSuite(SuiteParanoid1)
-	if err != nil {
-		return false
-	}
-	for _, tuple := range snapshots {
-		if tuple.suite != SuiteParanoid1 || tuple.profileID != profile.ID {
-			return false
-		}
-	}
-	return true
 }
 
 func recoveryTupleMatchesFactors(

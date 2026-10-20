@@ -1,16 +1,10 @@
 package fileops
 
 import (
-	"Picocrypt-NG/internal/secret"
 	"context"
-	"crypto/cipher"
-	"crypto/rand"
 	"errors"
-	"fmt"
 	"io"
 	"os"
-
-	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // ErrTempZipCleanupIncomplete marks an owned stage cleanup failure.
@@ -19,8 +13,10 @@ var ErrTempZipCleanupIncomplete = errors.New("fileops: temporary ZIP cleanup inc
 // TempZipOptions admits a private sequential archive. MaxPhysicalBytes is a
 // trusted disk extent allowance, including tags, and must be nonzero.
 type TempZipOptions struct {
-	Files            []string
-	InputIdentities  []ZIPInputIdentity
+	Files           []string
+	InputIdentities []ZIPInputIdentity
+	// SingleSource replaces the byte source for exactly one identity-pinned entry.
+	SingleSource     *ZIPSequentialSource
 	RootDir          string
 	EntryNames       map[string]string
 	NearPath         string
@@ -32,20 +28,13 @@ type TempZipOptions struct {
 	Budget           *ZIPResourceBudget
 }
 
-// TempZip owns its stage and one fresh AEAD key for one write/read session.
+// TempZip owns its stage and one fresh AEAD key for one finalized archive.
 // Controllable buffers are wiped. Go and the AEAD/compressor implementation
 // retain private state with no supported zeroing API; no complete-erasure claim
 // is made. Call Close on every exit. Borrowed handles do not outlive this owner.
 type TempZip struct {
-	self           *TempZip // copied handles do not acquire read or cleanup authority
-	stage          *StagedFile
-	a              cipher.AEAD
-	reader         *tempStreamReader
-	length, extent uint64
-	info           os.FileInfo
-	cancel         CancelFunc
-	opened, closed bool
-	closeErr       error
+	self  *TempZip
+	spool *EncryptedSpool
 }
 
 func CreateTempZip(ctx context.Context, opts TempZipOptions) (*TempZip, error) {
@@ -64,7 +53,7 @@ func createTempZip(ctx context.Context, opts TempZipOptions, syncFile func(*os.F
 	if cancel() {
 		return nil, errZIPCancelled
 	}
-	zipOpts := ZipOptions{Files: opts.Files, InputIdentities: opts.InputIdentities, RootDir: opts.RootDir, EntryNames: opts.EntryNames, Compress: opts.Compress, Progress: opts.Progress, Status: opts.Status, Cancel: cancel, Budget: opts.Budget}
+	zipOpts := ZipOptions{Files: opts.Files, InputIdentities: opts.InputIdentities, RootDir: opts.RootDir, EntryNames: opts.EntryNames, Compress: opts.Compress, Progress: opts.Progress, Status: opts.Status, Cancel: cancel, Budget: opts.Budget, singleSource: opts.SingleSource}
 	budget := opts.Budget
 	if budget == nil {
 		budget = NewZIPResourceBudget()
@@ -81,7 +70,7 @@ func createTempZip(ctx context.Context, opts TempZipOptions, syncFile func(*os.F
 	if e != nil {
 		return nil, e
 	}
-	owner := &TempZip{cancel: cancel}
+	owner := &TempZip{}
 	owner.self = owner
 	transferred := false
 	defer func() {
@@ -97,100 +86,49 @@ func createTempZip(ctx context.Context, opts TempZipOptions, syncFile func(*os.F
 			retErr = errors.Join(retErr, ErrTempZipCleanupIncomplete, cleanupErr)
 		}
 	}()
-
-	owner.stage, e = CreateSiblingTemp(opts.NearPath)
+	owner.spool, e = createEncryptedSpool(ctx, EncryptedSpoolOptions{NearPath: opts.NearPath, MaxPhysicalBytes: opts.MaxPhysicalBytes, Cancel: cancel}, syncFile)
 	if e != nil {
+		if errors.Is(e, ErrEncryptedSpoolCleanupIncomplete) {
+			e = errors.Join(e, ErrTempZipCleanupIncomplete)
+		}
 		return nil, e
 	}
-	var key [32]byte
-	defer secret.SecureZero(key[:])
-	if _, e = rand.Read(key[:]); e != nil {
+	if e = emitZIP(owner.spool, zipOpts); e != nil {
 		return nil, e
 	}
-	owner.a, e = chacha20poly1305.New(key[:])
-	secret.SecureZero(key[:])
-	if e != nil {
+	if e = owner.spool.Seal(); e != nil {
 		return nil, e
-	}
-	writer := newTempStreamWriter(owner.stage.File(), owner.a, opts.MaxPhysicalBytes, cancel)
-	defer writer.close()
-	if e = emitZIP(writer, zipOpts); e != nil {
-		return nil, e
-	}
-	if cancel() {
-		return nil, errZIPCancelled
-	}
-	if e = writer.finish(); e != nil {
-		return nil, e
-	}
-	owner.length = writer.length
-	owner.extent, e = tempStreamExtent(owner.length)
-	if e != nil {
-		return nil, e
-	}
-	owner.info, e = owner.stage.File().Stat()
-	if e != nil {
-		return nil, e
-	}
-	if owner.info.Size() < 0 || uint64(owner.info.Size()) != owner.extent {
-		return nil, errTempStream
-	}
-	if cancel() {
-		return nil, errZIPCancelled
-	}
-	if e = syncFile(owner.stage.File()); e != nil {
-		return nil, e
-	}
-	if cancel() {
-		return nil, errZIPCancelled
 	}
 	transferred = true
 	return owner, nil
 }
 
 func (t *TempZip) OpenReader() (io.Reader, error) {
-	if t == nil || t.self != t || t.closed || t.opened {
+	if t == nil || t.self != t {
 		return nil, errTempStreamClosed
 	}
-	t.opened = true
-	if e := t.checkExtent(); e != nil {
-		return nil, e
-	}
-	t.reader = newTempStreamReader(t.stage.File(), t.a, t.length, t.cancel)
-	t.reader.checkExtent = t.checkExtent
-	return t.reader, nil
-}
-
-func (t *TempZip) checkExtent() error {
-	info, e := t.stage.File().Stat()
-	if e != nil {
-		return e
-	}
-	if !info.Mode().IsRegular() || !os.SameFile(t.info, info) || info.Size() < 0 || uint64(info.Size()) != t.extent {
-		return fmt.Errorf("%w: extent changed", errTempStream)
-	}
-	return nil
+	return t.spool.OpenReader()
 }
 
 func (t *TempZip) Length() uint64 {
-	if t == nil || t.self != t || t.closed {
+	if t == nil || t.self != t {
 		return 0
 	}
-	return t.length
+	return t.spool.Length()
 }
 
 func (t *TempZip) File() *os.File {
-	if t == nil || t.self != t || t.closed {
+	if t == nil || t.self != t {
 		return nil
 	}
-	return t.stage.File()
+	return t.spool.File()
 }
 
 func (t *TempZip) Path() string {
-	if t == nil || t.self != t || t.closed {
+	if t == nil || t.self != t {
 		return ""
 	}
-	return t.stage.Path()
+	return t.spool.Path()
 }
 
 func (t *TempZip) Close() error {
@@ -200,20 +138,5 @@ func (t *TempZip) Close() error {
 	if t.self != t {
 		return errTempStreamClosed
 	}
-	if t.closed {
-		return t.closeErr
-	}
-	t.closed = true
-	if t.reader != nil {
-		t.reader.close()
-	}
-	t.reader = nil
-	t.a = nil
-	t.cancel = nil
-	t.info = nil
-	if t.stage != nil {
-		t.closeErr = t.stage.Cleanup()
-		t.stage = nil
-	}
-	return t.closeErr
+	return t.spool.Close()
 }

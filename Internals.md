@@ -188,9 +188,9 @@ Neither field is Reed-Solomon encoded. The raw random salt and nonce avoid addin
 
 **Legacy credential boundary.** Every new legacy v2 volume requires a non-empty password, and every legacy encryption request containing keyfiles is rejected before encryption begins. Direct legacy `AddDeniability` also rejects an empty password before deriving the outer key or replacing its input. Keyfile material is never an input to this legacy outer Argon2id derivation.
 
-**PCV3 D1 credential boundary.** D1 accepts password-only, keyfile-only, or combined factors. The complete credential transcript is domain-separated into outer and inner Argon2id inputs, so keyfiles protect both D1 layers; there is no independently derivable empty-password wrapper. Keyfiles must still be secret and sufficiently unpredictable: a known or guessable file permits offline candidate testing.
+**PCV3 D1 credential boundary.** D1 accepts password-only, keyfile-only, or combined factors. The complete credential transcript protects independently recoverable front and tail bootstraps, each with its own salt and authenticated wrapping of independent random outer and inner credential roots. D1 always uses Argon2id with 1 GiB, eight passes and eight lanes, independently of the optional Paranoid cipher suite. Creation performs two KDFs; a healthy read performs one, while fallback to the other bootstrap can require a second. Inner credential processing adds no further Argon2id call; the inner salt remains authenticated metadata rather than an Argon2 input. Keyfiles protect both layers; there is no independently derivable empty-password wrapper. Keyfiles must still be secret and sufficiently unpredictable: a known or guessable file permits offline candidate testing.
 
-**Legacy read compatibility.** Readers continue to accept supported v1/v2 keyfile volumes, including keyfile-only deniable v2 volumes historically created with an empty outer password. Decrypt such a volume with its original credentials, then create a new password-only volume. Merely rewrapping the affected inner v2 volume with a non-empty outer password fixes the empty-wrapper problem but does not add keyfile binding to the inner header MAC, payload MAC, Serpent key, or rekey schedule.
+**Legacy read compatibility.** Readers continue to accept supported v1/v2 keyfile volumes, including keyfile-only deniable v2 volumes historically created with an empty outer password. Decrypt such a volume with its original credentials, then create a native PCV3 volume with the required password and keyfile factors. Merely rewrapping the affected inner v2 volume with a non-empty outer password fixes the empty-wrapper problem but does not add keyfile binding to the inner header MAC, payload MAC, Serpent key, or rekey schedule.
 
 **Rekeying.** The deniability layer rekeys every 60 GiB, but unlike the inner volume it does **not** use an HKDF stream. The new nonce is `nonce = SHA3-256(old_nonce)[:24]` (`crypto.DeniabilityRekey`); the Argon2 key is unchanged.
 
@@ -212,6 +212,8 @@ The CLI provides four methods for password input:
 ## Memory Handling
 
 Picocrypt NG overwrites owned sensitive byte buffers after use via `crypto.SecureZero()`, backed by `internal/secret`. The helper uses a non-inlined `clear` followed by `runtime.KeepAlive`, without allocating another buffer. Optimized compiler output must be checked when changing this helper or the toolchain. This is best-effort cleanup: other copies held by the runtime, compiler or dependencies may remain, and complete memory erasure is not guaranteed.
+
+Production Argon2 calls use `internal/argon2`, maintained from `golang.org/x/crypto` v0.58.0 with explicit cleanup of its workspace and selected intermediate buffers. Cleanup follows worker completion and extraction of the independent output key; algorithm parameters and derived bytes are unchanged. The existing `FreeOSMemory` calls reclaim memory but do not provide a secure-erasure contract. Internal hash state, assembly/register copies, and earlier swap or dump contents remain outside this cleanup guarantee.
 
 # Code Structure
 

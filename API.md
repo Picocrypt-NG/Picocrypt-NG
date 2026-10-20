@@ -171,7 +171,7 @@ type EncryptRequest struct {
     Comments    string // Plaintext header comment (max 99999 chars, NOT encrypted)
     Paranoid    bool   // 8 Argon2 passes, Serpent-CTR + XChaCha20, HMAC-SHA3
     ReedSolomon bool   // Reed-Solomon on payload (~6% size overhead)
-    Deniability bool   // Legacy wrapper or, with PCV3+Paranoid, D1
+    Deniability bool   // Legacy wrapper or, with PCV3, D1
     Compress    bool   // Deflate compression in temp zip
 
     // Splitting
@@ -314,7 +314,8 @@ fallback. The internal compatibility writer (`EncryptRequest.PCV3 == false`) rem
 available for legacy compatibility tests and rejects encryption-side keyfiles.
 `EncryptRequest.PCV3 == true` selects PCV3 and accepts password-only,
 keyfile-only, or combined factors. Normal PCV3 uses the canonical streaming serializer; PCV3 with
-`Deniability` requires `Paranoid` and creates D1. ZIP preprocessing is supported. The desktop
+`Deniability` creates D1 with an independent optional `Paranoid` payload-suite choice.
+D1 always uses the fixed 1 GiB, eight-pass, eight-lane Argon2id profile. ZIP preprocessing is supported. The desktop
 GUI can save the authenticated ZIP or extract it for either Normal or D1 using `Auto unzip`.
 `Same level` extracts into the output directory; otherwise a new subdirectory is created.
 Existing files are not replaced. The selected credential
@@ -352,6 +353,32 @@ SAF archive extraction requires the Normal native archive handoff. D1 archives
 can use the existing ZIP save or native extraction actions; `BeginSAF` consumes
 and closes their custody with a terminal invalid-request result.
 PCV3 creation publishes through the identity-bound no-replace publisher.
+Temporary files and cleanup journals live in a pinned private operation directory
+on the destination filesystem. POSIX directories require verified current-user 0700
+ownership. macOS additionally removes and verifies inherited ACLs using its native
+fd API, so PCV3 publication on macOS requires a CGO build; pure-Go builds report
+unsupported before creating staging. macOS cleanup trusts only absent, empty or
+deny-only parent ACLs and safe parent ownership/mode. Other macOS parents are
+refused before staging creation, including inheritable allow/write-security ACLs.
+Windows uses a protected owner-only DACL and the original DELETE-capable
+file handle. Publication synchronizes both directory namespaces before durable success.
+POSIX writer preflight refuses a public parent that other users can mutate; a sticky
+parent owned by the current user or root remains supported. Cleanup uncertainty,
+including an empty private directory that cannot safely be retired, retains source data.
+Linux desktop/CLI operations recover leased private stages only beneath the selected
+destination parent, after pinning the original inputs and keyfiles. Live operations
+and every already-published target are preserved. Unproven or legacy cleanup records
+block the operation without deletion. Android retains its controlled startup cleanup
+contract. macOS and Windows retain their existing cleanup behavior without journals.
+Recovery cannot find an operation directory moved elsewhere after the process dies.
+CLI plaintext stdin and decrypted stdout use a private authenticated encrypted spool
+from their first write. Each spool has a fresh random key, bounded record buffers,
+and a sealed logical length separate from its physical ciphertext extent. A crash
+can leave ciphertext; spool keys are not stored in files or cleanup journals. This
+does not guarantee erasure of key copies in swap, dumps, or runtime memory.
+Decrypt stdin and encrypt stdout already carry volume ciphertext. Retained ciphertext
+stdout can remain named `picocrypt-out-*` between publication and `StreamTo`;
+private-stage recovery does not remove already-published targets.
 `EncryptWithResult(ctx, request, options)` returns the common operation result
 after input and preprocessing cleanup. A committed output with uncertain directory
 durability remains available with a warning; it does not authorize source deletion.
@@ -361,8 +388,16 @@ durability, PCV3 retains both the chunks and the complete ciphertext.
 `StatePublishedDurabilityUncertain`, and source deletion is forbidden.
 `Result.SourceDeletionAllowed()` accounts for complete durable publication, follow-ups
 and cleanup. A nil Go error or a presentation snapshot does not grant that permission.
-Stdout and Android provider handoff use the operation's retained output capability,
-which holds the original descriptor. Plaintext `SaveTo` consumes that capability
+`ExecutionOptions.EncryptedStream` selects decrypted stdout without filesystem
+publication or archive follow-ups. `Result.StreamFollowUp()` exposes one live
+transport capability after the required volume checks and spool sealing. It
+authenticates the complete spool before stdout, then each record during transfer;
+Force retains its consent policy and forensic artifact encoding. `StreamState`
+distinguishes pending, complete, and failed transport. Successful stdout does not
+set `PublicationAttempted` or grant source deletion. Legacy RS retries create a
+new spool/key instead of restarting a nonce session.
+Android provider handoff uses the retained-file capability, which holds the
+original descriptor. Plaintext `SaveTo` consumes that capability
 even on failure and removes its exact internal owner. Ciphertext `SaveTo` failure
 retains the capability for a deliberate retry to another destination; only a live
 `Result.OutputFollowUp()` establishes that authority. `StreamTo` consumes both
@@ -374,7 +409,7 @@ This does not rewrite or upgrade existing volumes. Existing v1/v2 keyfile volume
 through their legacy branches. Recover plaintext before creating PCV3; merely wrapping an affected
 legacy v2 volume does not make its old authentication schedule keyfile-bound. WASM does not expose
 PCV3 creation. The Android gomobile bridge accepts `write-normal` and `write-d1` creation envelopes
-alongside the read, recovery, and force modes; `write-d1` always runs the paranoid suite, and
+alongside the read, recovery, and force modes; `write-d1` preserves the selected standard or paranoid payload suite, and
 creation uses the same runtime resource admission as reads.
 
 ---
@@ -778,7 +813,7 @@ type TempZipOptions struct {
     Budget *ZIPResourceBudget
 }
 func CreateTempZip(ctx context.Context, opts TempZipOptions) (*TempZip, error)
-func (t *TempZip) OpenReader() (io.Reader, error) // once, after finalization and Sync
+func (t *TempZip) OpenReader() (io.Reader, error) // exclusive reader after finalization and Sync
 func (t *TempZip) Length() uint64                // logical ZIP bytes, excluding tags
 func (t *TempZip) File() *os.File                // borrowed pinned ciphertext descriptor
 func (t *TempZip) Path() string
@@ -786,6 +821,8 @@ func (t *TempZip) Close() error                  // revoke reader, wipe, close a
 func PanicCleanupIncomplete(value any) bool      // safe outer-boundary warning predicate
 func RepanicWithCleanup(value any, cleanupErr error) // never returns; no raw-value accessor
 ```
+
+Close each reader through `io.Closer` before opening another sequential reader.
 
 The private spool uses age v1.1 STREAM payload framing with 64 KiB
 ChaCha20-Poly1305 records and an explicit final-record flag. Each object owns a
@@ -986,6 +1023,22 @@ Modes, suites, payload kinds, outcomes, stages, and codes are closed metadata.
 No public facade exposes raw keys, digests, credential/KDF sessions, admission
 grants, random generators, or serializer entry points.
 
+`VerifyD1(ctx, *D1VerifyRequest) D1VerifyReport` is a separate strict D1 verifier.
+The request contains only an already-opened `Source`, owned `Factors` and
+`Reporter`. Like `Run`, it consumes them immediately on every path; callers
+establish no-follow descriptor provenance before transfer. The closed report
+exposes front, tail, pair and payload check states, outcome, stage, diagnostic and
+cleanup status. It has no output, archive, recovery or deletion capability.
+
+Full verification requires two ordinary credential-authenticated bootstraps with
+matching outer/inner roots, profile and body length, independent salt/nonce/IV,
+canonical geometry, and complete outer/inner authentication. The private core
+fully executes its emitter into a discard sink and checks its final errors; it
+does not create a plaintext stage or perform a third KDF. `Verified()` is true
+only for a clean complete result with confirmed cleanup. Operational failures
+remain separate from unauthenticated credentials-or-damage. Ordinary D1 opening
+and the on-disk format are unchanged.
+
 `DetectPrefix` classifies format ownership. `Probe(io.ReaderAt, int64)` returns
 `(Route, error)` after bounded structural inspection; it intentionally omits
 capsules and KDF parameters. Claimed PCV3 input never falls back to legacy reads.
@@ -1000,6 +1053,13 @@ Raw-selected D1 recovery stays an unverified forensic artifact even when its inn
 records authenticate. Its range/final statuses retain those authentication facts;
 the physical D1 role records the untrusted selection. The artifact layout stays
 unchanged, but older readers may reject this new combination of trust and evidence.
+`Request.D1SuiteHint` is optional and accepts only `SuiteStandard` or `SuiteParanoid`
+for `ModeForceUnverifiedD1` with live physical-role consent. When the hidden profile
+cannot be authenticated, an absent hint returns `DiagnosticD1ProfileRequired` with
+no output. A contradictory authenticated profile is refused. The hint selects no
+KDF parameters and never grants authenticated-output authority. Mobile JSON uses
+the optional string `d1SuiteHint` (`standard` or `paranoid`) only in the matching
+`force-unverified-d1` read envelope.
 Recovery uses an 8 MiB allocation budget across candidates; an absent tail is
 represented without allocating or scanning one entry per missing record. Artifact
 parsing and serialization remain private and preserve the existing

@@ -685,11 +685,11 @@ func TestRecordRSRetryBound(t *testing.T) {
 			seams := defaultRecordEngineSeams()
 			fullPasses := 0
 			realDecode := seams.decodeBody
-			seams.decodeBody = func(codecs *pcencoding.RSCodecs, encoded, decoded []byte, fullCorrection bool) error {
+			seams.decodeBody = func(ctx context.Context, codecs *pcencoding.RSCodecs, encoded, decoded []byte, fullCorrection bool) error {
 				if fullCorrection {
 					fullPasses++
 				}
-				return realDecode(codecs, encoded, decoded, fullCorrection)
+				return realDecode(ctx, codecs, encoded, decoded, fullCorrection)
 			}
 			decryptCalls := 0
 			realDecrypt := seams.decryptStandard
@@ -768,11 +768,11 @@ func TestRecordRSRepairsCiphertextTagAndPadding(t *testing.T) {
 			seams := defaultRecordEngineSeams()
 			fullPasses := 0
 			realDecode := seams.decodeBody
-			seams.decodeBody = func(codecs *pcencoding.RSCodecs, encoded, decoded []byte, fullCorrection bool) error {
+			seams.decodeBody = func(ctx context.Context, codecs *pcencoding.RSCodecs, encoded, decoded []byte, fullCorrection bool) error {
 				if fullCorrection {
 					fullPasses++
 				}
-				return realDecode(codecs, encoded, decoded, fullCorrection)
+				return realDecode(ctx, codecs, encoded, decoded, fullCorrection)
 			}
 			sink := &recordCollectingSink{}
 			verified, err := readNormalRecordsWithSeams(
@@ -849,11 +849,11 @@ func TestRecordRSInvalidPaddingCannotReachPlaintextOrFinalCallback(t *testing.T)
 					seams := defaultRecordEngineSeams()
 					fullPasses, decryptCalls, callbackCalls := 0, 0, 0
 					realDecode := seams.decodeBody
-					seams.decodeBody = func(codecs *pcencoding.RSCodecs, encoded, decoded []byte, fullCorrection bool) error {
+					seams.decodeBody = func(ctx context.Context, codecs *pcencoding.RSCodecs, encoded, decoded []byte, fullCorrection bool) error {
 						if fullCorrection {
 							fullPasses++
 						}
-						return realDecode(codecs, encoded, decoded, fullCorrection)
+						return realDecode(ctx, codecs, encoded, decoded, fullCorrection)
 					}
 					realDecrypt := seams.decryptStandard
 					seams.decryptStandard = func(destination, source, key, nonce []byte) error {
@@ -1010,7 +1010,7 @@ func TestFinalRecordRequired(t *testing.T) {
 	requireRecordKeyBorrows(t, borrower, SuiteStandard)
 }
 
-func loadRecordFixtureManifest(t *testing.T) recordFixtureManifest {
+func loadRecordFixtureManifest(t testing.TB) recordFixtureManifest {
 	t.Helper()
 	contents := recordFixtureFile(t, "manifest.json")
 	var manifest recordFixtureManifest
@@ -1023,7 +1023,7 @@ func loadRecordFixtureManifest(t *testing.T) recordFixtureManifest {
 	return manifest
 }
 
-func recordFixtureByName(t *testing.T, manifest recordFixtureManifest, name string) recordFixtureCase {
+func recordFixtureByName(t testing.TB, manifest recordFixtureManifest, name string) recordFixtureCase {
 	t.Helper()
 	for _, fixture := range manifest.Cases {
 		if fixture.Name == name {
@@ -1061,7 +1061,7 @@ func requiredBoundaryRecordFixture(
 	return fixture
 }
 
-func recordFixtureFile(t *testing.T, relative string) []byte {
+func recordFixtureFile(t testing.TB, relative string) []byte {
 	t.Helper()
 	contents, err := os.ReadFile(filepath.Join(recordFixtureRoot, filepath.FromSlash(relative)))
 	if err != nil {
@@ -1070,7 +1070,7 @@ func recordFixtureFile(t *testing.T, relative string) []byte {
 	return contents
 }
 
-func recordFixturePlaintext(t *testing.T, fixture recordFixtureCase) []byte {
+func recordFixturePlaintext(t testing.TB, fixture recordFixtureCase) []byte {
 	t.Helper()
 	var plaintext []byte
 	if fixture.PlaintextFile != "" {
@@ -1122,7 +1122,7 @@ func TestCheckedRecordCiphertextLengthRejectsHostNarrowingAndSliceOverflow(t *te
 	}
 }
 
-func recordFixtureHex(t *testing.T, literal string) []byte {
+func recordFixtureHex(t testing.TB, literal string) []byte {
 	t.Helper()
 	decoded, err := hex.DecodeString(literal)
 	if err != nil {
@@ -1131,7 +1131,7 @@ func recordFixtureHex(t *testing.T, literal string) []byte {
 	return decoded
 }
 
-func loadRecordFixtureCore(t *testing.T, fixture recordFixtureCase) logicalCore {
+func loadRecordFixtureCore(t testing.TB, fixture recordFixtureCase) logicalCore {
 	t.Helper()
 	encoded := recordFixtureFile(t, fixture.CoreFile)
 	if len(encoded) != 96 {
@@ -1142,7 +1142,7 @@ func loadRecordFixtureCore(t *testing.T, fixture recordFixtureCase) logicalCore 
 	return decodeCandidate(decodedCandidate).core
 }
 
-func recordFixtureGeometry(t *testing.T, fixture recordFixtureCase, core logicalCore) Geometry {
+func recordFixtureGeometry(t testing.TB, fixture recordFixtureCase, core logicalCore) Geometry {
 	t.Helper()
 	geometry, err := DeriveGeometry(Candidate{core: core}, fixture.CanonicalFileSize)
 	if err != nil {
@@ -1151,7 +1151,7 @@ func recordFixtureGeometry(t *testing.T, fixture recordFixtureCase, core logical
 	return geometry
 }
 
-func recordFixtureAuthority(t *testing.T, fixture recordFixtureCase) (*normalAuthResult, *recordLiteralKeyBorrower) {
+func recordFixtureAuthority(t testing.TB, fixture recordFixtureCase) (*normalAuthResult, *recordLiteralKeyBorrower) {
 	t.Helper()
 	core := loadRecordFixtureCore(t, fixture)
 	geometry := recordFixtureGeometry(t, fixture, core)
@@ -1182,7 +1182,7 @@ func recordFixtureAuthority(t *testing.T, fixture recordFixtureCase) (*normalAut
 	return auth, borrower
 }
 
-func assembleRecordFixturePayload(t *testing.T, fixture recordFixtureCase) []byte {
+func assembleRecordFixturePayload(t testing.TB, fixture recordFixtureCase) []byte {
 	t.Helper()
 	payload := make([]byte, 0, fixture.PayloadLength)
 	for _, record := range fixture.Records {
@@ -1210,7 +1210,7 @@ func assembleRecordFixturePayload(t *testing.T, fixture recordFixtureCase) []byt
 	return payload
 }
 
-func recordTestCodecs(t *testing.T) *pcencoding.RSCodecs {
+func recordTestCodecs(t testing.TB) *pcencoding.RSCodecs {
 	t.Helper()
 	codecs, err := pcencoding.NewRSCodecs()
 	if err != nil {

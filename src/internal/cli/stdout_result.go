@@ -15,7 +15,8 @@ func finishPCV3CLIStdout(ctx context.Context, result pcv3CLIResult, useStdout bo
 	}
 	followUp := result.OutputFollowUp()
 	if followUp == nil {
-		if result.CompletionClass() == pcv3operation.CompletionClean {
+		if result.CompletionClass() == pcv3operation.CompletionClean ||
+			result.CompletionClass() == pcv3operation.CompletionStreamPending {
 			return errors.New("PCV3 stdout output capability is unavailable")
 		}
 		return nil

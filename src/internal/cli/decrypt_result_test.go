@@ -7,19 +7,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// The production reader and retained transport must render final cleanup truth.
+// The production reader and encrypted transport must render final cleanup truth.
 // Exact-owner cleanup refusal after a complete copy is warning exit 2; a broken
 // pipe remains a general transport failure.
-func TestDecryptStdoutFinalizesRetainedOutput(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("plaintext retained output requires a supported directory durability barrier")
-	}
+func TestDecryptStdoutFinalizesEncryptedOutput(t *testing.T) {
 	for _, scenario := range []string{"clean", "path-replacement", "broken-pipe"} {
 		t.Run(scenario, func(t *testing.T) {
 			directory := t.TempDir()
@@ -77,6 +73,10 @@ func TestDecryptStdoutFinalizesRetainedOutput(t *testing.T) {
 			decPCV3Order = "ordered"
 			decKeyfiles = []string{filepath.Join(fixtureRoot, "factors/sha256-b1f51a511f1da0cd348b8f8598db32e61cb963e5fc69e2b41485bf99590ed75a.bin"), filepath.Join(fixtureRoot, "factors/sha256-16477688c0e00699c6cfa4497a3612d7e83c532062b64b250fed8908128ed548.bin")}
 			var actual *pcv3operation.Result
+			var stream *pcv3operation.EncryptedOutput
+			var stagePath string
+			var stageInfo os.FileInfo
+			var stageBytes []byte
 			replacement := []byte("foreign pathname replacement")
 			pcv3CLIRunOperation = func(ctx context.Context, request *pcv3operation.Request, retain bool) pcv3CLIResult {
 				result := originalRun(ctx, request, retain)
@@ -85,19 +85,60 @@ func TestDecryptStdoutFinalizesRetainedOutput(t *testing.T) {
 					t.Fatal("production runner did not return its actual result")
 				}
 				actual = adapter.result
-				if actual.OutputFollowUp() == nil {
-					t.Fatalf("production reader returned no retained output: %v", actual)
-				}
+				stream = actual.StreamFollowUp()
 				t.Cleanup(func() {
-					if followUp := actual.OutputFollowUp(); followUp != nil {
-						followUp.Discard()
+					if stream != nil {
+						stream.Discard()
 					}
 				})
+				if stream == nil || actual.CompletionClass() != pcv3operation.CompletionStreamPending {
+					t.Fatalf("production reader returned no pending encrypted stream: %v", actual)
+				}
+				if actual.OutputFollowUp() != nil || actual.ArchiveFollowUp() != nil || actual.SourceDeletionAllowed() ||
+					actual.PublicationAttempted() || actual.PublicationState() != 0 {
+					t.Fatal("pending stdout granted filesystem publication or deletion authority")
+				}
+				if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("stdout preparation published its unused target: %v", err)
+				}
+				entries, err := os.ReadDir(filepath.Dir(target))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), ".picocrypt-") {
+						if stagePath != "" || !entry.Type().IsRegular() {
+							t.Fatal("expected one owned ciphertext stage in the isolated output parent")
+						}
+						stagePath = filepath.Join(filepath.Dir(target), entry.Name())
+					}
+				}
+				if stagePath == "" {
+					t.Fatal("production reader returned no ciphertext stage")
+				}
+				stageFile, err := os.Open(stagePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// File.Stat freezes the Windows file ID before pathname replacement.
+				stageInfo, err = stageFile.Stat()
+				closeErr := stageFile.Close()
+				if err != nil || closeErr != nil {
+					t.Fatalf("capture ciphertext identity: stat=%v close=%v", err, closeErr)
+				}
+				stageBytes, err = os.ReadFile(stagePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// The frozen one-byte payload is one STREAM record with its 16-byte tag.
+				if len(stageBytes) != 1+16 {
+					t.Fatalf("sealed ciphertext extent = %d; want one byte plus its tag", len(stageBytes))
+				}
 				if scenario == "path-replacement" {
-					if err := os.Rename(target, target+".original"); err != nil {
+					if err := os.Rename(stagePath, stagePath+".original"); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(target, replacement, 0o600); err != nil {
+					if err := os.WriteFile(stagePath, replacement, 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -117,28 +158,52 @@ func TestDecryptStdoutFinalizesRetainedOutput(t *testing.T) {
 			if actual == nil {
 				t.Fatal("CLI did not reach production reader")
 			}
-			if actual.OutputFollowUp() != nil || actual.SourceDeletionAllowed() {
+			if actual.StreamFollowUp() != nil || actual.OutputFollowUp() != nil || actual.SourceDeletionAllowed() {
 				t.Fatal("stdout completion retained reusable output or source-deletion authority")
+			}
+			if actual.PublicationAttempted() || actual.PublicationState() != 0 {
+				t.Fatal("stdout transport claimed filesystem publication")
+			}
+			if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("stdout transport published its unused target: %v", err)
+			}
+			wantStream := pcv3operation.StreamComplete
+			if scenario == "broken-pipe" {
+				wantStream = pcv3operation.StreamFailed
+			}
+			if stream.State() != wantStream {
+				t.Errorf("stdout state = %v, want %v", stream.State(), wantStream)
 			}
 			log, err := os.ReadFile(stderr.Name())
 			if err != nil {
 				t.Fatal(err)
+			}
+			if !strings.Contains(string(log), "Publication: not-attempted") {
+				t.Errorf("stdout publication truth omitted: %s", log)
 			}
 			cleanupWarning := strings.Contains(string(log), pcv3CLIWarningText(pcv3operation.WarningCleanupIncomplete))
 			if scenario == "path-replacement" {
 				if !cleanupWarning || !slices.Contains(actual.Warnings(), pcv3operation.WarningCleanupIncomplete) {
 					t.Errorf("stdout cleanup truth omitted: %s", log)
 				}
-				got, err := os.ReadFile(target)
+				got, err := os.ReadFile(stagePath)
 				if err != nil || !bytes.Equal(got, replacement) {
 					t.Fatalf("foreign replacement changed: %q %v", got, err)
+				}
+				originalInfo, err := os.Stat(stagePath + ".original")
+				if err != nil || !os.SameFile(stageInfo, originalInfo) {
+					t.Fatalf("renamed ciphertext identity changed: %v", err)
+				}
+				got, err = os.ReadFile(stagePath + ".original")
+				if err != nil || !bytes.Equal(got, stageBytes) {
+					t.Fatalf("renamed ciphertext changed: %v", err)
 				}
 			} else {
 				if cleanupWarning {
 					t.Errorf("unexpected cleanup warning: %s", log)
 				}
-				if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("retained plaintext not cleaned: %v", err)
+				if _, err := os.Stat(stagePath); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("encrypted stdout stage not cleaned: %v", err)
 				}
 			}
 			if scenario != "broken-pipe" {

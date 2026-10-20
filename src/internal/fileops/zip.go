@@ -23,6 +23,13 @@ type StatusFunc func(status string)
 // Return true to abort the operation.
 type CancelFunc func() bool
 
+// ZIPSequentialSource supplies logical metadata and a sequential plaintext
+// reader for one identity-pinned ciphertext input in a temporary ZIP.
+type ZIPSequentialSource struct {
+	Info os.FileInfo
+	Open func() (io.ReadCloser, error)
+}
+
 // ZipOptions configures zip file creation
 type ZipOptions struct {
 	Files           []string           // Files to include
@@ -36,6 +43,7 @@ type ZipOptions struct {
 	Status          StatusFunc
 	Cancel          CancelFunc
 	Budget          *ZIPResourceBudget
+	singleSource    *ZIPSequentialSource
 }
 
 func entryNameForPath(opts ZipOptions, path string) (string, error) {
@@ -134,6 +142,9 @@ func CreateZip(opts ZipOptions) (retErr error) {
 // On failure it never closes the ZIP writer: Close would emit a central
 // directory after cancellation or an aborted authenticated record.
 func emitZIP(dst io.Writer, opts ZipOptions) error {
+	if opts.singleSource != nil && (len(opts.Files) != 1 || opts.singleSource.Info == nil || !opts.singleSource.Info.Mode().IsRegular() || opts.singleSource.Info.Size() < 0 || opts.singleSource.Open == nil) {
+		return errors.New("invalid sequential archive source")
+	}
 	writer := zip.NewWriter(&zipCancelWriter{Writer: dst, cancel: opts.Cancel})
 	// Calculate total size for progress
 	var totalSize int64
@@ -141,6 +152,9 @@ func emitZIP(dst io.Writer, opts ZipOptions) error {
 		totalSize += identity.info.Size()
 	}
 
+	if opts.singleSource != nil {
+		totalSize = opts.singleSource.Info.Size()
+	}
 	buf := make([]byte, util.MiB)
 	defer secret.SecureZero(buf)
 	var done int64
@@ -166,16 +180,29 @@ func emitZIP(dst io.Writer, opts ZipOptions) error {
 
 		report(i)
 
-		fin, err := opts.InputIdentities[i].Open()
+		var fin io.ReadCloser
+		var stat os.FileInfo
+		var err error
+		if opts.singleSource != nil {
+			stat = opts.singleSource.Info
+			fin, err = opts.singleSource.Open()
+		} else {
+			var file *os.File
+			file, err = opts.InputIdentities[i].Open()
+			if err == nil {
+				stat, err = file.Stat()
+				fin = file
+			}
+			if err != nil && file != nil {
+				err = errors.Join(err, file.Close())
+			}
+		}
 		if err != nil {
 			return fmt.Errorf("open selected input %s: %w", path, err)
 		}
-		err = func() error {
-			defer func() { _ = fin.Close() }()
-			stat, err := fin.Stat()
-			if err != nil {
-				return err
-			}
+		err = func() (retErr error) {
+			defer func() { retErr = errors.Join(retErr, fin.Close()) }()
+
 			header, err := zip.FileInfoHeader(stat)
 			if err != nil {
 				return fmt.Errorf("create header for %s: %w", path, err)

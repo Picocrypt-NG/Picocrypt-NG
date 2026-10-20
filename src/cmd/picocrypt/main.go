@@ -19,10 +19,12 @@
 
 package main
 
+import "Picocrypt-NG/internal/processsecurity"
+
 // version is the application version displayed in About and CLI version output.
 // Format: "vMAJOR.MINOR" (e.g., "v3.0")
 const version = "v3.0"
 
 func main() {
-	run()
+	run(processsecurity.RestrictDumps())
 }

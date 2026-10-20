@@ -68,6 +68,48 @@ func newPlatformSnapshotProvider() snapshotProvider {
 	}
 }
 
+// Heap scavenging releases physical pages, not their virtual mappings. Refuse
+// an already-insufficient address limit before GC can allocate cgo thread stacks.
+// Passing this check grants nothing; the full fresh snapshot still follows GC.
+func (provider linuxSnapshotProvider) preflightAddressSpace(ctx context.Context, bytes uint64) error {
+	if ctx == nil || provider.procRootPath == "" || bytes == 0 {
+		return errWorkingMemoryUnknown
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	procRoot, err := os.OpenRoot(provider.procRootPath)
+	if err != nil {
+		return errWorkingMemoryUnknown
+	}
+	limits, limitsOK := readLinuxFact(ctx, procRoot, "self/limits", maxLinuxFactBytes)
+	limit, limitOK := parseLinuxAddressSpaceLimit(limits)
+	var process linuxProcessMemory
+	var processOK bool
+	if limitsOK && limitOK && limit.finite {
+		status, statusOK := readLinuxFact(ctx, procRoot, "self/status", maxLinuxFactBytes)
+		process, processOK = parseLinuxProcessMemory(status)
+		processOK = processOK && statusOK
+	}
+	closeErr := procRoot.Close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if closeErr != nil || !limitsOK || !limitOK {
+		return errWorkingMemoryUnknown
+	}
+	if !limit.finite {
+		return nil
+	}
+	if !processOK || limit.bytes <= process.virtual {
+		return errWorkingMemoryUnknown
+	}
+	if limit.bytes-process.virtual < bytes {
+		return errWorkingMemoryInsufficient
+	}
+	return nil
+}
+
 func (provider linuxSnapshotProvider) Snapshot(ctx context.Context) Snapshot {
 	available, reserve, ok := provider.observe(ctx)
 	if !ok {

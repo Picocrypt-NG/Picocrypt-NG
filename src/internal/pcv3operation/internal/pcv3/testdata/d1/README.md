@@ -5,19 +5,45 @@ TEST ONLY data. They must never be used for real encryption.
 
 `reference/generate.py` is a standalone encoder; it imports no Picocrypt NG
 implementation and reads no existing container. It independently assembles the
-complete Paranoid Normal volume and D1 bootstraps/body from literal inputs.
+unchanged Paranoid Normal volume and Standard/Paranoid D1C bootstraps/body from
+literal inputs. Each 320-byte D1C bootstrap separately wraps independent outer
+and inner roots; both wrapping tags authenticate the complete pair.
 Cryptographic implementations are argon2-cffi 25.1.0 (Argon2id), PyCryptodome
 3.23.0 (XChaCha20), system libgcrypt (Serpent CTR), Python hashlib/HMAC
 (SHA3/HKDF), and zfec 1.6.0.0 (Reed-Solomon). The generating libgcrypt version
 and generator SHA-256 are recorded in `independent/manifest.json`.
 
-The fixture uses a password and two ordered keyfiles, one short plaintext
+The original short fixture uses a password and two ordered keyfiles, one plaintext
 record, an empty authenticated comment, and no payload RS. The inner Normal
 volume still includes the mandatory capsule, metadata, descriptor and trailer
 RS encodings. Both physical D1 bootstraps use distinct salts, nonces and IVs.
 `randomness.json` records named public entropy inputs for the production writer
 comparison; it is not an output from the production writer.
-Every Argon2id call uses version 19, t=8, memory=1048576 KiB, p=8, output=32.
+Every Argon2id call uses version 19, t=8, memory=1048576 KiB, p=8, output=32,
+including Standard D1C. The Standard profile uses no Serpent; its outer IV
+field remains random.
+
+The additional full D1 composition fixtures use the same public factors and
+entropy. Their plaintext recipe is `byte((index * 29 + 7) % 256)`, with a
+zero-based index; `manifest.json` freezes each plaintext length and SHA-256
+without storing duplicate large plaintext files.
+
+| Container | Suite | Plaintext bytes | Payload RS | Protected composition risk |
+|---|---|---:|---|---|
+| `d1-empty-standard.pcv` | Standard | 0 | no | Empty inner payload still requires its authenticated final record. |
+| `d1-exact-mib-paranoid.pcv` | Paranoid | 1048576 | no | Full inner data record followed by the mandatory empty final record. |
+| `d1-multi-standard.pcv`, `d1-multi-paranoid.pcv` | both | 1048641 | no | Inner and outer record transitions, per-record cipher counters, and virtual reads across physical outer tags. |
+| `d1-multi-rs-standard.pcv`, `d1-multi-rs-paranoid.pcv` | both | 1048641 | yes | RS encoding of ciphertext plus its MAC, a padded 65-byte last data record, and the encoded final-record MAC. |
+| `d1-outer-exact-standard.pcv` | Standard | 1046216 | no | Exactly 1048576 outer plaintext bytes require an additional zero-length final outer record and its tag. |
+
+The RS partial record contains 65 ciphertext bytes plus a 64-byte MAC: 129
+semantic bytes padded into two `128 -> 136` codewords. Its final empty record
+encodes a 64-byte MAC padded to 128 bytes. The exact outer boundary includes
+the 16-byte outer prefix and the complete serialized inner Normal volume;
+it is distinct from the source plaintext's one-MiB boundary. Its physical
+container is 1049344 bytes: 1048576 ciphertext bytes, two 64-byte outer tags,
+and two 320-byte bootstraps. Existing independent record-only and Normal
+corpora remain separate; these cases exercise their composition inside D1.
 
 Reproduce into a NEW directory, from this directory:
 
@@ -27,18 +53,31 @@ uv run reference/generate.py /tmp/pcv3-independent-reproduction
 
 Compare generated files against `independent/`; do not overwrite the frozen
 oracle when changing production code. Generation runs three 1-GiB KDF calls
-sequentially. Run the production reader lane serially from `src/`:
+sequentially: one for Normal and one for each D1 bootstrap salt. The identical
+public credential/salt derivations are cached across suites and vectors; the
+fixed D1 KDF is suite-independent. Reused keys and nonces are TEST ONLY fixture
+inputs. Production tests perform fresh real KDF calls for every operation.
+Run the production
+reader lane serially from `src/`:
 
 ```sh
 go test -count=1 -tags pcv3_production_kdf ./internal/pcv3operation/internal/pcv3 -run '^TestIndependent' -v
 ```
 
-The tagged tests verify standalone Normal and full D1 exact plaintext through
-real credential derivation, including D1 Force processing of both bootstraps.
+The tagged tests verify standalone Normal and both D1C profiles through real
+credential derivation, including Force and loss of either complete bootstrap.
+Ordinary D1C opening uses one KDF; creation and tail fallback use two.
 The production full D1 writer, with only its entropy source made deterministic,
 must emit exactly these independently authored bytes. This establishes the
 opposite direction of compatibility without a current-writer round trip.
+The composition lane also compares authenticated reader output length and
+SHA-256 with the frozen independent plaintext expectations.
 The tests also verify that changed passwords and changed, removed, or reordered
 keyfiles produce no plaintext callback. Checksums freeze the independent bytes.
 These fixtures cover the credential policy and payload geometry described above.
 Existing Normal and legacy golden corpora remain separate and unchanged.
+
+`obsolete/d1-pre-c.pcv` preserves the previous independent experimental D1
+bytes, with their original generator hash in `obsolete/provenance.json`.
+It is a rejection fixture: the D1C reader must not fall back to that profile
+or emit plaintext from it. PCV1/PCV2 read compatibility is unaffected.

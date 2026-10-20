@@ -477,6 +477,71 @@ class MainViewModelTest {
     }
 
     @Test
+    fun `raw D1 transfer captures each selected profile without retaining it for the next source`() {
+        listOf(
+            Pcv3D1SuiteHintIntent.STANDARD to "standard",
+            Pcv3D1SuiteHintIntent.PARANOID to "paranoid",
+        ).forEach { (hint, wireHint) ->
+            viewModel.updateFormData(TestDataBuilders.createEncryptFormData(
+                selectedFilename = "hidden.bin", copiedFilePath = "/private/hidden",
+                password = "", confirmPassword = "",
+            ))
+            assertTrue(viewModel.selectPcv3D1())
+            viewModel.setPcv3Action(Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT)
+            viewModel.setPcv3FactorPolicy(Pcv3FactorPolicyIntent.PASSWORD_ONLY)
+            viewModel.setPcv3D1SuiteHint(hint)
+            viewModel.updatePasswords(password = "owned credential".toCharArray())
+
+            val transfer = requireNotNull(viewModel.takePcv3Operation("/private/recovered"))
+            val request = transfer.request as Pcv3Request
+            try {
+                assertEquals(hint, transfer.intent.d1SuiteHint)
+                assertEquals(wireHint, request.d1SuiteHint)
+                assertEquals("force-unverified-d1", request.mode)
+                assertEquals(wireHint, org.json.JSONObject(GoBridge.buildPcv3RequestJson(request)).getString("d1SuiteHint"))
+                assertNull(viewModel.formState.value.pcv3Intent)
+            } finally {
+                transfer.password.fill('\u0000')
+            }
+        }
+    }
+
+    @Test
+    fun `raw D1 profile choice clears on action source and sensitive reset and cannot be injected`() {
+        viewModel.updateFormData(TestDataBuilders.createEncryptFormData(
+            selectedFilename = "hidden.bin", copiedFilePath = "/private/hidden",
+            password = "", confirmPassword = "",
+        ))
+        assertTrue(viewModel.selectPcv3D1())
+        viewModel.setPcv3Action(Pcv3ActionIntent.DECRYPT)
+        viewModel.setPcv3D1SuiteHint(Pcv3D1SuiteHintIntent.STANDARD)
+        assertNull(viewModel.formState.value.pcv3Intent?.d1SuiteHint)
+        viewModel.setPcv3Action(Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT)
+        viewModel.setPcv3D1SuiteHint(Pcv3D1SuiteHintIntent.PARANOID)
+        assertEquals(Pcv3D1SuiteHintIntent.PARANOID, viewModel.formState.value.pcv3Intent?.d1SuiteHint)
+        viewModel.updateFormData(viewModel.formState.value.copy(
+            pcv3Intent = viewModel.formState.value.pcv3Intent?.copy(d1SuiteHint = Pcv3D1SuiteHintIntent.STANDARD),
+        ))
+        assertEquals(Pcv3D1SuiteHintIntent.PARANOID, viewModel.formState.value.pcv3Intent?.d1SuiteHint)
+        viewModel.setPcv3Action(Pcv3ActionIntent.RECOVERY)
+        assertNull(viewModel.formState.value.pcv3Intent?.d1SuiteHint)
+        viewModel.setPcv3Action(Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT)
+        assertNull(viewModel.formState.value.pcv3Intent?.d1SuiteHint)
+        viewModel.setPcv3D1SuiteHint(Pcv3D1SuiteHintIntent.STANDARD)
+        viewModel.clearSensitiveData(clearFiles = false)
+        assertNull(viewModel.formState.value.pcv3Intent?.d1SuiteHint)
+        viewModel.setPcv3D1SuiteHint(Pcv3D1SuiteHintIntent.PARANOID)
+        viewModel.setPcv3D1SuiteHint(null)
+        assertNull("Automatic is an absent hint", viewModel.formState.value.pcv3Intent?.d1SuiteHint)
+        viewModel.setPcv3D1SuiteHint(Pcv3D1SuiteHintIntent.PARANOID)
+        assertNull(MainViewModel(mockApplication, savedStateHandle).formState.value.pcv3Intent)
+        viewModel.claimPcv3Normal("normal.pcv", "/private/normal")
+        viewModel.setPcv3Action(Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT)
+        viewModel.setPcv3D1SuiteHint(Pcv3D1SuiteHintIntent.STANDARD)
+        assertNull(viewModel.formState.value.pcv3Intent?.d1SuiteHint)
+    }
+
+    @Test
     fun `refused PCV3 remains visible and releases its source for immediate cleanup only once`() {
         val source = "/app-private/invalid-claimed-input"
         val error = AppError.OperationError.PCVUnavailable(technicalMessage = "PCV3_INVALID_STRUCTURE")
@@ -615,27 +680,30 @@ class MainViewModelTest {
     }
 
     @Test
-    fun `create transfer maps deniability to D1 and blanks the comment`() {
-        viewModel.updateFormData(
-            viewModel.formState.value.copy(
-                selectedFilename = "outer.bin",
-                copiedFilePath = "/app-private/outer.bin",
-                comments = "stale comment",
-                deniability = true,
-                keyfileFilenames = listOf(KeyfileInfo("/app-private/key", "key")),
-            ),
-        )
+    fun `create transfer captures each D1 payload suite and blanks the comment`() {
+        listOf(false to "standard", true to "paranoid").forEach { (paranoid, suite) ->
+            viewModel.updateFormData(
+                viewModel.formState.value.copy(
+                    selectedFilename = "outer.bin",
+                    copiedFilePath = "/app-private/outer.bin",
+                    comments = "stale comment",
+                    deniability = true,
+                    paranoid = paranoid,
+                    keyfileFilenames = listOf(KeyfileInfo("/app-private/key", "key")),
+                ),
+            )
 
-        val transfer = requireNotNull(viewModel.takePcv3CreateOperation("/app-private/staging"))
+            val transfer = requireNotNull(viewModel.takePcv3CreateOperation("/app-private/staging"))
 
-        assertEquals(Pcv3FormatIntent.D1, transfer.intent.format)
-        val request = transfer.request as Pcv3WriteRequest
-        assertEquals("write-d1", request.mode)
-        assertEquals("paranoid", request.suite)
-        assertEquals("", request.comment)
-        assertEquals("keyfiles", request.factorPolicy)
-        assertEquals("unordered", request.keyfileOrder)
-        assertEquals("outer.bin", transfer.createName)
+            assertEquals(Pcv3FormatIntent.D1, transfer.intent.format)
+            val request = transfer.request as Pcv3WriteRequest
+            assertEquals("write-d1", request.mode)
+            assertEquals(suite, request.suite)
+            assertEquals("", request.comment)
+            assertEquals("keyfiles", request.factorPolicy)
+            assertEquals("unordered", request.keyfileOrder)
+            assertEquals("outer.bin", transfer.createName)
+        }
     }
 
     @Test

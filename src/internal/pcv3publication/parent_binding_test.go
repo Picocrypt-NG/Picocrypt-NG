@@ -46,11 +46,11 @@ func TestPublicationParentRelocationIsIndeterminate(t *testing.T) {
 			}
 			operations := nativeOperations()
 			atomic := operations.atomicPublish
-			operations.atomicPublish = func(parent *os.File, old, target string, policy Policy) error {
+			operations.atomicPublish = func(source, parent, original *os.File, old, target string, policy Policy) error {
 				if boundary == "atomic publication" {
 					relocate()
 				}
-				return atomic(parent, old, target, policy)
+				return atomic(source, parent, original, old, target, policy)
 			}
 			publishing := false
 			syncs := 0
@@ -61,7 +61,7 @@ func TestPublicationParentRelocationIsIndeterminate(t *testing.T) {
 				}
 				if publishing {
 					syncs++
-					if boundary == "directory sync" || boundary == "journal retirement" && syncs == 2 || boundary == "journaled directory sync failure" && syncs == 1 {
+					if boundary == "directory sync" && syncs == 2 || boundary == "journal retirement" && syncs == 3 || boundary == "journaled directory sync failure" && syncs == 1 {
 						relocate()
 					}
 					if boundary == "journaled directory sync failure" && syncs == 1 {
@@ -91,8 +91,8 @@ func TestPublicationParentRelocationIsIndeterminate(t *testing.T) {
 			if result.State() != StatePublicationIndeterminate {
 				t.Fatalf("relocated publication state = %s; want publication-indeterminate", result.State())
 			}
-			if err := stage.Cleanup(); err != nil {
-				t.Fatalf("closing a preserved committed output: %v", err)
+			if err := stage.Cleanup(); (boundary == "journaled directory sync failure") != errors.Is(err, ErrCleanupIncomplete) {
+				t.Fatalf("closing committed output with journal residue: %v", err)
 			}
 			if stage.Publish(context.Background()) != result {
 				t.Fatal("repeat publication changed the terminal classification")

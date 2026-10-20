@@ -36,6 +36,8 @@ val releaseSigningRequired = providers
 android {
     namespace = "io.github.picocrypt_ng.picocrypt_ng"
     compileSdk = 37
+    ndkVersion = providers.fileContents(rootProject.layout.projectDirectory.file("ndk-version.txt"))
+        .asText.get().trim()
 
     androidResources {
         generateLocaleConfig = true
@@ -137,6 +139,19 @@ tasks.withType<Test>().matching { it.name == "testDebugUnitTest" }.configureEach
         "picocrypt.releaseLocaleFilters",
         android.androidResources.localeFilters.joinToString(","),
     )
+}
+
+if (
+    providers.gradleProperty("android.injected.androidTest.leaveApksInstalledAfterRun")
+        .map(String::toBoolean).getOrElse(false)
+) {
+    // AGP's Android test engine installs APKs from the forked Test JVM.
+    tasks.withType<Test>().matching { it.name == "connectedDebugAndroidTest" }.configureEach {
+        systemProperty("android-test.apk-install-options", "-r")
+        // Device validation must execute instead of reusing host-side results.
+        outputs.upToDateWhen { false }
+        outputs.cacheIf { false }
+    }
 }
 
 kotlin {

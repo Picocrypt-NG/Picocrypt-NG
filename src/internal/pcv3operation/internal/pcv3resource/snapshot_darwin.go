@@ -11,6 +11,8 @@ package pcv3resource
 
 typedef struct {
 	uint64_t free_pages;
+	uint64_t inactive_pages;
+	uint64_t internal_pages;
 	uint64_t page_size;
 	uint64_t physical_footprint;
 	uint64_t virtual_size;
@@ -37,7 +39,8 @@ static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out) {
 		);
 	}
 	mach_port_deallocate(mach_task_self(), host);
-	if (status != KERN_SUCCESS || page_size == 0 || memory.free_count == 0 ||
+	if (status != KERN_SUCCESS || memory_count < HOST_VM_INFO64_REV1_COUNT ||
+		page_size == 0 ||
 		(uint64_t)memory.free_count > UINT64_MAX / (uint64_t)page_size) {
 		return 0;
 	}
@@ -61,6 +64,8 @@ static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out) {
 	}
 
 	out->free_pages = (uint64_t)memory.free_count;
+	out->inactive_pages = (uint64_t)memory.inactive_count;
+	out->internal_pages = (uint64_t)memory.internal_page_count;
 	out->page_size = (uint64_t)page_size;
 	out->physical_footprint = (uint64_t)task_memory.phys_footprint;
 	out->virtual_size = (uint64_t)task_memory.virtual_size;
@@ -72,6 +77,7 @@ static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out) {
 import "C"
 
 import (
+	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"context"
 	"math"
 )
@@ -81,6 +87,8 @@ type darwinSnapshotProvider struct{}
 type darwinSnapshotFacts struct {
 	observed          bool
 	freePages         uint64
+	inactivePages     uint64
+	internalPages     uint64
 	pageSize          uint64
 	physicalFootprint uint64
 	virtualSize       uint64
@@ -93,24 +101,53 @@ func newPlatformSnapshotProvider() snapshotProvider {
 }
 
 func (darwinSnapshotProvider) Snapshot(ctx context.Context) Snapshot {
+	return snapshotFromDarwinFacts(readDarwinSnapshotFacts(ctx))
+}
+
+func (darwinSnapshotProvider) snapshotForKDF(
+	ctx context.Context,
+	_ pcv3credential.KDFProfile,
+) Snapshot {
+	return kdfSnapshotFromDarwinFacts(readDarwinSnapshotFacts(ctx))
+}
+
+func readDarwinSnapshotFacts(ctx context.Context) darwinSnapshotFacts {
 	if ctx == nil || ctx.Err() != nil {
-		return snapshotFromDarwinFacts(darwinSnapshotFacts{})
+		return darwinSnapshotFacts{}
 	}
 
 	var facts C.pcv3_darwin_snapshot
 	if C.pcv3_read_darwin_snapshot(&facts) == 0 {
-		return snapshotFromDarwinFacts(darwinSnapshotFacts{})
+		return darwinSnapshotFacts{}
 	}
 
-	return snapshotFromDarwinFacts(darwinSnapshotFacts{
+	return darwinSnapshotFacts{
 		observed:          ctx.Err() == nil,
 		freePages:         uint64(facts.free_pages),
+		inactivePages:     uint64(facts.inactive_pages),
+		internalPages:     uint64(facts.internal_pages),
 		pageSize:          uint64(facts.page_size),
 		physicalFootprint: uint64(facts.physical_footprint),
 		virtualSize:       uint64(facts.virtual_size),
 		addressLimit:      uint64(facts.address_limit),
 		addressLimited:    facts.address_limited != 0,
-	})
+	}
+}
+
+func kdfSnapshotFromDarwinFacts(facts darwinSnapshotFacts) Snapshot {
+	// Credit only a lower bound on inactive file-backed pages. Internal pages
+	// include active and inactive anonymous memory, so subtract all of them.
+	// Raw free pages already include speculative pages; do not add them again.
+	// This is advisory reclaimable headroom, not a memory reservation.
+	if facts.inactivePages > facts.internalPages {
+		inactiveFilePages := facts.inactivePages - facts.internalPages
+		pages, ok := checkedAdd(facts.freePages, inactiveFilePages)
+		if !ok {
+			return snapshotFromDarwinFacts(darwinSnapshotFacts{})
+		}
+		facts.freePages = pages
+	}
+	return snapshotFromDarwinFacts(facts)
 }
 
 func snapshotFromDarwinFacts(facts darwinSnapshotFacts) Snapshot {

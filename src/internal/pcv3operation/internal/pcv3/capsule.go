@@ -46,12 +46,14 @@ const (
 	KeyfileModeUnordered
 )
 
-// KDFProfile identifies the fixed Argon2id profile selected by the suite.
+// KDFProfile identifies a credential-root construction. Normal capsules use
+// fixed Argon2id profiles; D1 inner capsules carry the derived-root marker.
 type KDFProfile uint8
 
 const (
 	KDFProfileNormal KDFProfile = iota + 1
 	KDFProfileParanoid
+	KDFProfileD1DerivedRoot
 )
 
 type logicalCore struct {
@@ -146,7 +148,7 @@ func (candidate Candidate) KeyfileMode() KeyfileMode {
 	return candidate.keyfileMode
 }
 
-// KDFProfile returns the candidate's suite-bound KDF profile.
+// KDFProfile returns the candidate's credential-root construction marker.
 func (candidate Candidate) KDFProfile() KDFProfile {
 	return candidate.kdfProfile
 }
@@ -174,6 +176,10 @@ func (candidate Candidate) Format(state fmt.State, verb rune) {
 // ValidateDecodedCapsule validates one already-RS-decoded capsule against its
 // physical slot. It performs no authentication or replica comparison.
 func ValidateDecodedCapsule(decoded []byte, expectedRole CapsuleRole) (Candidate, error) {
+	return validateDecodedCapsule(decoded, expectedRole, false)
+}
+
+func validateDecodedCapsule(decoded []byte, expectedRole CapsuleRole, derivedRoot bool) (Candidate, error) {
 	if !isSupportedCapsuleRole(expectedRole) {
 		return Candidate{}, ErrInvalidFailureMapping
 	}
@@ -187,7 +193,8 @@ func ValidateDecodedCapsule(decoded []byte, expectedRole CapsuleRole) (Candidate
 		!isSupportedCapsuleRole(candidate.role) ||
 		!validCredentialTuple(candidate.credentialMode, candidate.keyfileMode, candidate.keyfileCount) ||
 		candidate.reserved != [2]byte{} ||
-		candidate.kdfProfile != kdfProfileForSuite(candidate.core.suite) ||
+		!validCandidateKDFProfile(candidate) ||
+		(candidate.core.featureFlags&d1DerivedRootFeatureMask != 0) != derivedRoot ||
 		(candidate.core.suite == SuiteStandard && candidate.wrapSerpentIV != [16]byte{}) {
 		return Candidate{}, NewInvalidStructureError(StageCapsuleStructure)
 	}
@@ -230,7 +237,7 @@ func decodeCandidate(decoded []byte) Candidate {
 func validLogicalCore(core logicalCore) bool {
 	if string(core.magic[:]) != normalDiscriminator ||
 		core.major != formatMajor || core.schema != formatSchema ||
-		!isSupportedSuite(core.suite) || core.featureFlags&^supportedFeatureMask != 0 ||
+		!isSupportedSuite(core.suite) || core.featureFlags&^(supportedFeatureMask|d1DerivedRootFeatureMask) != 0 ||
 		core.payloadKind < PayloadKindRaw || core.payloadKind > PayloadKindArchive ||
 		core.recordProfile != 1 || core.metadataProfile != 1 || core.reserved != 0 ||
 		core.commentLength > maximumCommentLength ||
@@ -241,6 +248,13 @@ func validLogicalCore(core logicalCore) bool {
 	}
 	_, expectedFrontHeader, ok := canonicalMetadataGeometry(core.commentLength)
 	return ok && uint64(core.frontHeaderLength) == expectedFrontHeader
+}
+
+func validCandidateKDFProfile(candidate Candidate) bool {
+	if candidate.core.featureFlags&d1DerivedRootFeatureMask != 0 {
+		return candidate.kdfProfile == KDFProfileD1DerivedRoot
+	}
+	return candidate.kdfProfile == kdfProfileForSuite(candidate.core.suite)
 }
 
 func canonicalRecordCount(plaintextLength uint64) uint64 {

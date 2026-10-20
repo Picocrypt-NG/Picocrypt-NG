@@ -15,7 +15,8 @@ import (
 const (
 	cleanupJournalName       = ".picocrypt-pcv3-stage.journal"
 	cleanupJournalTempPrefix = ".picocrypt-pcv3-journal-tmp-"
-	cleanupJournalVersion    = 1
+	cleanupJournalVersion    = 2
+	cleanupLeasedVersion     = 3
 	cleanupJournalMaxBytes   = 2048
 	cleanupJournalMaxName    = 128
 )
@@ -26,10 +27,12 @@ var (
 )
 
 type cleanupJournal struct {
-	Version int                   `json:"version"`
-	Stage   string                `json:"stage"`
-	Parent  journalParentIdentity `json:"parent"`
-	File    journalFileIdentity   `json:"file"`
+	Version     int                    `json:"version"`
+	Stage       string                 `json:"stage"`
+	Parent      journalParentIdentity  `json:"parent"`
+	File        journalFileIdentity    `json:"file"`
+	Destination *journalParentIdentity `json:"destination,omitempty"`
+	Target      string                 `json:"target,omitempty"`
 }
 
 // CleanupJournalState is the closed startup-cleanup outcome. Callers must not
@@ -40,6 +43,9 @@ const (
 	CleanupJournalIncomplete CleanupJournalState = iota
 	CleanupJournalAbsent
 	CleanupJournalCleaned
+	// CleanupJournalActive reports that at least one proven live operation was
+	// preserved, including when other orphaned stages were cleaned.
+	CleanupJournalActive
 )
 
 // PersistCleanupJournal durably records the exact existing stage object so a
@@ -47,15 +53,44 @@ const (
 // safe to call before the first plaintext write because only immutable identity
 // metadata is recorded.
 func (stage *Stage) PersistCleanupJournal() error {
+	return stage.persistCleanupJournal(cleanupJournalVersion)
+}
+
+// PersistLeasedCleanupJournal records the Linux desktop recovery contract.
+// Recovery may retire only private operation data; a published target is user
+// data and is always preserved. The kernel lease remains owned through cleanup
+// or retained output custody.
+func (stage *Stage) PersistLeasedCleanupJournal() error {
+	if !leasedCleanupAvailable() {
+		return errors.Join(errCleanupJournalPersist, errors.ErrUnsupported)
+	}
+	if stage == nil || stage.lease == nil || stage.sourceInfo == nil {
+		return errCleanupJournalPersist
+	}
+	info, err := stage.lease.Stat()
+	if err != nil || !os.SameFile(stage.sourceInfo, info) {
+		return errCleanupJournalPersist
+	}
+	return stage.persistCleanupJournal(cleanupLeasedVersion)
+}
+
+func (stage *Stage) persistCleanupJournal(version int) error {
 	if stage == nil || stage.journaled || stage.cleanupDone ||
 		stage.cleanupDisposition != cleanupOwned || stage.file == nil ||
-		stage.root == nil || stage.parent == nil || stage.stageInfo == nil ||
+		stage.sourceRoot == nil || stage.parent == nil || stage.stageInfo == nil ||
 		stage.stageName == "" || stage.operations.syncStage == nil ||
 		stage.operations.closeStage == nil || stage.operations.removeStage == nil ||
 		stage.operations.syncDirectory == nil {
-		if stage != nil && stage.journaled && !stage.cleanupDone {
+		if stage != nil && stage.journaled && !stage.cleanupDone && stage.leasedJournal == (version == cleanupLeasedVersion) {
 			return nil
 		}
+		return errCleanupJournalPersist
+	}
+	// An unresolved legacy journal in the selected parent must be recovered
+	// before a new operation begins accepting plaintext.
+	if _, err := stage.root.Lstat(cleanupJournalName); err == nil {
+		return errors.Join(errCleanupJournalExists, ErrCleanupIncomplete)
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return errCleanupJournalPersist
 	}
 	if !stage.parentIdentityCurrent() || !stage.stageIdentityCurrent() {
@@ -68,7 +103,7 @@ func (stage *Stage) PersistCleanupJournal() error {
 		return errCleanupJournalPersist
 	}
 
-	parentInfo, err := stage.parent.Stat()
+	parentInfo, err := stage.sourceParent.Stat()
 	if err != nil {
 		return errCleanupJournalPersist
 	}
@@ -86,11 +121,21 @@ func (stage *Stage) PersistCleanupJournal() error {
 		return errCleanupJournalPersist
 	}
 
+	destinationInfo, err := stage.parent.Stat()
+	if err != nil {
+		return errCleanupJournalPersist
+	}
+	destinationIdentity, err := makeJournalParentIdentity(destinationInfo)
+	if err != nil {
+		return errCleanupJournalPersist
+	}
 	record := cleanupJournal{
-		Version: cleanupJournalVersion,
-		Stage:   stage.stageName,
-		Parent:  parentIdentity,
-		File:    fileIdentity,
+		Version:     version,
+		Stage:       stage.stageName,
+		Parent:      parentIdentity,
+		File:        fileIdentity,
+		Destination: &destinationIdentity,
+		Target:      stage.targetName,
 	}
 	encoded, err := json.Marshal(record)
 	if err != nil || len(encoded)+1 > cleanupJournalMaxBytes {
@@ -98,13 +143,13 @@ func (stage *Stage) PersistCleanupJournal() error {
 	}
 	encoded = append(encoded, '\n')
 
-	if _, err := stage.root.Lstat(cleanupJournalName); err == nil {
+	if _, err := stage.sourceRoot.Lstat(cleanupJournalName); err == nil {
 		return errors.Join(errCleanupJournalExists, ErrCleanupIncomplete)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return errCleanupJournalPersist
 	}
 
-	tempName, tempFile, tempInfo, err := createCleanupJournalTemp(stage.root)
+	tempName, tempFile, tempInfo, err := createCleanupJournalTemp(stage.sourceRoot)
 	if err != nil {
 		return errCleanupJournalPersist
 	}
@@ -114,8 +159,8 @@ func (stage *Stage) PersistCleanupJournal() error {
 			_ = tempFile.Close()
 			tempClosed = true
 		}
-		removed := removeExactJournalEntry(stage.root, tempName, tempInfo, stage.operations.removeStage)
-		return removed && stage.operations.syncDirectory(stage.parent) == nil
+		removed := removeExactJournalEntry(stage.sourceRoot, tempName, tempInfo, stage.operations.removeStage)
+		return removed && stage.operations.syncDirectory(stage.sourceParent) == nil
 	}
 
 	if err := writeFull(tempFile, encoded); err != nil {
@@ -139,26 +184,26 @@ func (stage *Stage) PersistCleanupJournal() error {
 	}
 	tempClosed = true
 
-	installErr := installCleanupJournalNoReplace(stage.parent, tempName, cleanupJournalName)
-	tempProbe := probeIdentity(stage.root, tempName, tempInfo)
-	journalProbe := probeIdentity(stage.root, cleanupJournalName, tempInfo)
+	installErr := installCleanupJournalNoReplace(stage.sourceParent, tempName, cleanupJournalName)
+	tempProbe := probeIdentity(stage.sourceRoot, tempName, tempInfo)
+	journalProbe := probeIdentity(stage.sourceRoot, cleanupJournalName, tempInfo)
 	installed := journalProbe == identityExpected && tempProbe == identityMissing
 	if !installed {
 		cleanupProven := true
 		removed := false
 		if tempProbe == identityExpected {
 			removed = true
-			cleanupProven = removeExactJournalEntry(stage.root, tempName, tempInfo, stage.operations.removeStage)
+			cleanupProven = removeExactJournalEntry(stage.sourceRoot, tempName, tempInfo, stage.operations.removeStage)
 		} else if tempProbe != identityMissing {
 			cleanupProven = false
 		}
 		if journalProbe == identityExpected {
 			removed = true
-			cleanupProven = removeExactJournalEntry(stage.root, cleanupJournalName, tempInfo, stage.operations.removeStage) && cleanupProven
+			cleanupProven = removeExactJournalEntry(stage.sourceRoot, cleanupJournalName, tempInfo, stage.operations.removeStage) && cleanupProven
 		} else if journalProbe == identityUnknown {
 			cleanupProven = false
 		}
-		if removed && stage.operations.syncDirectory(stage.parent) != nil {
+		if removed && stage.operations.syncDirectory(stage.sourceParent) != nil {
 			cleanupProven = false
 		}
 		failure := errCleanupJournalPersist
@@ -174,28 +219,29 @@ func (stage *Stage) PersistCleanupJournal() error {
 		return errors.Join(failure, ErrCleanupIncomplete)
 	}
 
-	journalInfo, err := stage.root.Lstat(cleanupJournalName)
+	journalInfo, err := stage.sourceRoot.Lstat(cleanupJournalName)
 	if err != nil || journalInfo == nil || !journalInfo.Mode().IsRegular() ||
 		!os.SameFile(tempInfo, journalInfo) || !stage.parentIdentityCurrent() {
 		return stage.rollbackInstalledJournal(tempInfo)
 	}
-	if err := stage.operations.syncDirectory(stage.parent); err != nil {
+	if err := errors.Join(stage.operations.syncDirectory(stage.sourceParent), stage.operations.syncDirectory(stage.parent)); err != nil {
 		return stage.rollbackInstalledJournal(tempInfo)
 	}
 	stage.journalInfo = journalInfo
 	stage.journalStageIdentity = fileIdentity
 	stage.journaled = true
+	stage.leasedJournal = version == cleanupLeasedVersion
 	return nil
 }
 
 func (stage *Stage) rollbackInstalledJournal(expected os.FileInfo) error {
 	cleanupProven := removeExactJournalEntry(
-		stage.root,
+		stage.sourceRoot,
 		cleanupJournalName,
 		expected,
 		stage.operations.removeStage,
 	)
-	if cleanupProven && stage.operations.syncDirectory(stage.parent) == nil {
+	if cleanupProven && stage.operations.syncDirectory(stage.sourceParent) == nil {
 		return errCleanupJournalPersist
 	}
 	return errors.Join(errCleanupJournalPersist, ErrCleanupIncomplete)
@@ -250,7 +296,7 @@ func removeExactJournalEntry(
 }
 
 func (stage *Stage) cleanupJournaledOwned(cleanupFailed *bool) {
-	if stage.root == nil || stage.parent == nil || stage.stageName == "" ||
+	if stage.sourceRoot == nil || stage.parent == nil || stage.stageName == "" ||
 		stage.stageInfo == nil || stage.journalInfo == nil || !stage.hasPinnedIdentity() ||
 		stage.operations.removeStage == nil || stage.operations.syncDirectory == nil {
 		*cleanupFailed = true
@@ -259,9 +305,9 @@ func (stage *Stage) cleanupJournaledOwned(cleanupFailed *bool) {
 	// Ciphertext retirement may already have removed the journal before its
 	// directory barrier failed. The pinned stage is still ours; remove it and
 	// synchronize both removals without requiring a journal that we just unlinked.
-	journalIdentity := probeIdentity(stage.root, cleanupJournalName, stage.journalInfo)
+	journalIdentity := probeIdentity(stage.sourceRoot, cleanupJournalName, stage.journalInfo)
 	retiredWriteJournal := stage.writePublication && stage.journalRemoved && journalIdentity == identityMissing
-	currentStage, stageErr := stage.root.Lstat(stage.stageName)
+	currentStage, stageErr := stage.sourceRoot.Lstat(stage.stageName)
 	if stageErr != nil || currentStage == nil || !currentStage.Mode().IsRegular() ||
 		!os.SameFile(stage.stageInfo, currentStage) || !stage.journalStageIdentity.matches(currentStage) ||
 		(journalIdentity != identityExpected && !retiredWriteJournal) {
@@ -270,7 +316,7 @@ func (stage *Stage) cleanupJournaledOwned(cleanupFailed *bool) {
 	}
 
 	stageRemoved := removeExactJournalEntry(
-		stage.root,
+		stage.sourceRoot,
 		stage.stageName,
 		stage.stageInfo,
 		stage.operations.removeStage,
@@ -279,7 +325,7 @@ func (stage *Stage) cleanupJournaledOwned(cleanupFailed *bool) {
 		*cleanupFailed = true
 		return
 	}
-	if stage.operations.syncDirectory(stage.parent) != nil {
+	if stage.operations.syncDirectory(stage.sourceParent) != nil {
 		*cleanupFailed = true
 		return
 	}
@@ -287,7 +333,7 @@ func (stage *Stage) cleanupJournaledOwned(cleanupFailed *bool) {
 		return
 	}
 	journalRemoved := removeExactJournalEntry(
-		stage.root,
+		stage.sourceRoot,
 		cleanupJournalName,
 		stage.journalInfo,
 		stage.operations.removeStage,
@@ -296,20 +342,20 @@ func (stage *Stage) cleanupJournaledOwned(cleanupFailed *bool) {
 		*cleanupFailed = true
 		return
 	}
-	if stage.operations.syncDirectory(stage.parent) != nil {
+	if stage.operations.syncDirectory(stage.sourceParent) != nil {
 		*cleanupFailed = true
 	}
 }
 
 func (stage *Stage) retireCleanupJournal() bool {
 	if stage == nil || !stage.journaled || stage.journalInfo == nil ||
-		stage.root == nil || stage.parent == nil || stage.operations.removeStage == nil ||
+		stage.sourceRoot == nil || stage.parent == nil || stage.operations.removeStage == nil ||
 		stage.operations.syncDirectory == nil ||
-		!removeExactJournalEntry(stage.root, cleanupJournalName, stage.journalInfo, stage.operations.removeStage) {
+		!removeExactJournalEntry(stage.sourceRoot, cleanupJournalName, stage.journalInfo, stage.operations.removeStage) {
 		return false
 	}
 	stage.journalRemoved = true
-	if stage.operations.syncDirectory(stage.parent) != nil {
+	if stage.operations.syncDirectory(stage.sourceParent) != nil {
 		return false
 	}
 	stage.journaled = false
@@ -320,7 +366,7 @@ func (stage *Stage) retireCleanupJournal() bool {
 }
 
 func (stage *Stage) cleanupPublishedJournaledOwned(cleanupFailed *bool) {
-	if stage.root == nil || stage.parent == nil || stage.targetName == "" ||
+	if !trustedCleanupParent(stage.parent) || stage.sourceRoot == nil || stage.parent == nil || stage.targetName == "" ||
 		stage.stageInfo == nil || !stage.hasPinnedIdentity() || stage.operations.removeStage == nil ||
 		stage.operations.syncDirectory == nil {
 		*cleanupFailed = true
@@ -358,11 +404,11 @@ func (stage *Stage) cleanupPublishedJournaledOwned(cleanupFailed *bool) {
 	// would strand plaintext without startup cleanup authority.
 	if stage.targetRemoved {
 		if stage.journalRemoved {
-			if probeIdentity(stage.root, cleanupJournalName, stage.journalInfo) != identityMissing {
+			if probeIdentity(stage.sourceRoot, cleanupJournalName, stage.journalInfo) != identityMissing {
 				*cleanupFailed = true
 			}
 		} else if stage.journalInfo != nil && removeExactJournalEntry(
-			stage.root,
+			stage.sourceRoot,
 			cleanupJournalName,
 			stage.journalInfo,
 			stage.operations.removeStage,
@@ -375,7 +421,7 @@ func (stage *Stage) cleanupPublishedJournaledOwned(cleanupFailed *bool) {
 	if !stage.journalRemoved {
 		return
 	}
-	if stage.operations.syncDirectory(stage.parent) != nil {
+	if stage.operations.syncDirectory(stage.sourceParent) != nil {
 		*cleanupFailed = true
 	}
 	if !*cleanupFailed {
@@ -430,19 +476,76 @@ func cleanupJournaledStageWithOperations(parentPath string, operations journalCl
 		return CleanupJournalIncomplete, ErrCleanupIncomplete
 	}
 
-	journalInfo, err := root.Lstat(cleanupJournalName)
-	if errors.Is(err, os.ErrNotExist) {
-		entries, readErr := readPinnedDirectory(parent)
-		if readErr != nil {
+	current, err := os.Lstat(parentPath)
+	if err != nil || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(rootInfo, current) {
+		return CleanupJournalIncomplete, ErrCleanupIncomplete
+	}
+	entries, err := readPinnedDirectory(parent)
+	if err != nil {
+		return CleanupJournalIncomplete, ErrCleanupIncomplete
+	}
+	state := CleanupJournalAbsent
+	if _, err := root.Lstat(cleanupJournalName); err == nil {
+		if !trustedLegacyJournalParent(parent) {
 			return CleanupJournalIncomplete, ErrCleanupIncomplete
 		}
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), stageNamePrefix) {
-				return CleanupJournalIncomplete, ErrCleanupIncomplete
-			}
+		state, err = cleanupPinnedJournal(root, parent, rootInfo, nil, nil, nil, operations)
+		if err != nil {
+			return state, err
 		}
-		return CleanupJournalAbsent, nil
+		entries, err = readPinnedDirectory(parent)
+		if err != nil {
+			return CleanupJournalIncomplete, ErrCleanupIncomplete
+		}
 	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == cleanupJournalName {
+			continue
+		}
+		if !strings.HasPrefix(name, stageNamePrefix) {
+			continue
+		}
+		info, err := root.Lstat(name)
+		if err != nil || !strings.HasPrefix(name, stageNamePrefix+"private-") || !privateDirectoryInfo(info) {
+			return CleanupJournalIncomplete, ErrCleanupIncomplete
+		}
+		child, err := root.OpenRoot(name)
+		if err != nil {
+			return CleanupJournalIncomplete, ErrCleanupIncomplete
+		}
+		handle, err := child.Open(".")
+		if err != nil {
+			_ = child.Close()
+			return CleanupJournalIncomplete, ErrCleanupIncomplete
+		}
+		pinned, err := handle.Stat()
+		if err != nil || !privateDirectoryInfo(pinned) || !os.SameFile(info, pinned) {
+			_ = handle.Close()
+			_ = child.Close()
+			return CleanupJournalIncomplete, ErrCleanupIncomplete
+		}
+		_, cleanupErr := cleanupPinnedJournal(child, handle, pinned, root, parent, rootInfo, operations)
+		_ = handle.Close()
+		_ = child.Close()
+		if cleanupErr != nil {
+			return CleanupJournalIncomplete, cleanupErr
+		}
+		current, err := root.Lstat(name)
+		if !trustedCleanupParent(parent) || err != nil || !os.SameFile(info, current) || root.Remove(name) != nil || operations.syncDirectory(parent) != nil {
+			return CleanupJournalIncomplete, ErrCleanupIncomplete
+		}
+		state = CleanupJournalCleaned
+	}
+	return state, nil
+}
+
+func validTargetName(name string) bool {
+	return name != "" && name != "." && name != ".." && filepath.Base(name) == name && !strings.ContainsAny(name, "/\\\x00")
+}
+
+func cleanupPinnedJournal(root *os.Root, parent *os.File, rootInfo os.FileInfo, destination *os.Root, destinationParent *os.File, destinationInfo os.FileInfo, operations journalCleanupOperations) (CleanupJournalState, error) {
+	journalInfo, err := root.Lstat(cleanupJournalName)
 	if err != nil || journalInfo == nil || !journalInfo.Mode().IsRegular() ||
 		journalInfo.Size() < 0 || journalInfo.Size() > cleanupJournalMaxBytes {
 		return CleanupJournalIncomplete, ErrCleanupIncomplete
@@ -463,20 +566,21 @@ func cleanupJournaledStageWithOperations(parentPath string, operations journalCl
 		return CleanupJournalIncomplete, ErrCleanupIncomplete
 	}
 	record, err := decodeCleanupJournal(data)
-	if err != nil || !validCleanupStageName(record.Stage) ||
-		!record.Parent.matches(rootInfo) {
-		return CleanupJournalIncomplete, ErrCleanupIncomplete
-	}
-	currentParent, err := os.Lstat(parentPath)
-	if err != nil || currentParent == nil || !currentParent.IsDir() ||
-		currentParent.Mode()&os.ModeSymlink != 0 || !os.SameFile(rootInfo, currentParent) ||
-		!record.Parent.matches(currentParent) {
+	if err != nil || record.Version == cleanupLeasedVersion || !validCleanupStageName(record.Stage) ||
+		!record.Parent.matches(rootInfo) || (record.Version == 1 && !trustedLegacyJournalParent(parent)) || (record.Version == 2 && (destination == nil || record.Destination == nil || !record.Destination.matches(destinationInfo) || !validTargetName(record.Target))) {
 		return CleanupJournalIncomplete, ErrCleanupIncomplete
 	}
 	stageName := record.Stage
 	stageInfo, err := root.Lstat(stageName)
+	stageRoot, stageParent := root, parent
 	if errors.Is(err, os.ErrNotExist) {
-		stageName, stageInfo, err = findRenamedJournaledStage(parent, root, record.File)
+		if record.Version == 1 {
+			stageName, stageInfo, err = findRenamedJournaledStage(parent, root, record.File)
+		} else if trustedCleanupParent(destinationParent) {
+			stageRoot, stageParent = destination, destinationParent
+			stageName = record.Target
+			stageInfo, err = stageRoot.Lstat(stageName)
+		}
 	}
 	if err != nil || stageInfo == nil || !stageInfo.Mode().IsRegular() || !record.File.matches(stageInfo) {
 		return CleanupJournalIncomplete, ErrCleanupIncomplete
@@ -484,18 +588,12 @@ func cleanupJournaledStageWithOperations(parentPath string, operations journalCl
 	if probeIdentity(root, cleanupJournalName, journalInfo) != identityExpected {
 		return CleanupJournalIncomplete, ErrCleanupIncomplete
 	}
-	currentParent, err = os.Lstat(parentPath)
-	if err != nil || currentParent == nil || !currentParent.IsDir() ||
-		currentParent.Mode()&os.ModeSymlink != 0 || !os.SameFile(rootInfo, currentParent) ||
-		!record.Parent.matches(currentParent) {
-		return CleanupJournalIncomplete, ErrCleanupIncomplete
-	}
 
-	stageRemoved := removeExactJournalEntry(root, stageName, stageInfo, operations.remove)
+	stageRemoved := removeExactJournalEntry(stageRoot, stageName, stageInfo, operations.remove)
 	if !stageRemoved {
 		return CleanupJournalIncomplete, ErrCleanupIncomplete
 	}
-	if operations.syncDirectory(parent) != nil {
+	if operations.syncDirectory(stageParent) != nil {
 		return CleanupJournalIncomplete, ErrCleanupIncomplete
 	}
 	journalRemoved := removeExactJournalEntry(root, cleanupJournalName, journalInfo, operations.remove)
@@ -561,7 +659,7 @@ func decodeCleanupJournal(data []byte) (cleanupJournal, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return cleanupJournal{}, errors.New("cleanup journal has trailing data")
 	}
-	if record.Version != cleanupJournalVersion {
+	if record.Version != 1 && record.Version != cleanupJournalVersion && record.Version != cleanupLeasedVersion {
 		return cleanupJournal{}, errors.New("unsupported cleanup journal version")
 	}
 	canonical, err := json.Marshal(record)

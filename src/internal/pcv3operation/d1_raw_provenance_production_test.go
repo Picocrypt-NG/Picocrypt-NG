@@ -21,7 +21,8 @@ import (
 func frozenD1ProvenanceFile(t *testing.T, name string) []byte {
 	t.Helper()
 	want := map[string]string{
-		"d1.pcv":            "30b62308a0bcda8d56368ac37c8c7424c36e37945401048cbd20b1044773c631",
+		"d1.pcv":            "487a18056597d97e36ebcaf70aed25ec9cdbd306803ebaf618eba186e05d00bd",
+		"d1-standard.pcv":   "22fda4fbe068d85f41d8fe22857320172c67fc5ba806823ce57bdd1072b113bf",
 		"plaintext.bin":     "42ae995f0c0b4be8883494e43a5ebb425bbd7e70407c6316a2bbc2069299c93b",
 		"password.bin":      "e56cef65373463f9559e0f852b508b4fdb6af16b8a57c73f2a20bcc6f2a5e4f3",
 		"keyfile-alpha.bin": "2300d62bf2bb24b5cfd294337ce09e851b99f1f1598c17bd3c064c221991e7e1",
@@ -40,23 +41,34 @@ func frozenD1ProvenanceFile(t *testing.T, name string) []byte {
 
 func frozenD1ProvenanceFactors(t *testing.T) *FactorRequest {
 	t.Helper()
-	return &FactorRequest{Mode: CredentialModePasswordAndKeyfiles, KeyfileMode: KeyfileModeOrdered,
+	return &FactorRequest{
+		Mode: CredentialModePasswordAndKeyfiles, KeyfileMode: KeyfileModeOrdered,
 		ExpectedPolicy: FactorPolicyPasswordAndKeyfiles, Password: frozenD1ProvenanceFile(t, "password.bin"),
 		Keyfiles: []*KeyfileReader{
 			OwnKeyfileReader(io.NopCloser(bytes.NewReader(frozenD1ProvenanceFile(t, "keyfile-alpha.bin")))),
 			OwnKeyfileReader(io.NopCloser(bytes.NewReader(frozenD1ProvenanceFile(t, "keyfile-beta.bin")))),
-		}}
+		},
+	}
 }
 
-// The independent 2923-byte vector contains 224-byte bootstraps and one
+// The independent 3115-byte vectors contain 320-byte bootstraps and one
 // 2411-byte outer ciphertext record followed by its 64-byte final tag.
 // Corrupting that tag leaves every inner byte and both bootstraps intact.
 // Promoting authenticated inner records to ordinary plaintext must fail here.
 func TestD1RawOuterSelectionNeverPromotesAuthenticatedInner(t *testing.T) {
-	for _, role := range []PhysicalRole{RoleD1Front, RoleD1Tail} {
-		t.Run(map[PhysicalRole]string{RoleD1Front: "front", RoleD1Tail: "tail"}[role], func(t *testing.T) {
-			volume := frozenD1ProvenanceFile(t, "d1.pcv")
-			volume[2635] ^= 1
+	for _, test := range []struct {
+		name, file string
+		role       PhysicalRole
+	}{
+		{"paranoid/front", "d1.pcv", RoleD1Front},
+		{"paranoid/tail", "d1.pcv", RoleD1Tail},
+		{"standard/front", "d1-standard.pcv", RoleD1Front},
+		{"standard/tail", "d1-standard.pcv", RoleD1Tail},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			role := test.role
+			volume := frozenD1ProvenanceFile(t, test.file)
+			volume[2731] ^= 1
 			dir := t.TempDir()
 			sourcePath, target := filepath.Join(dir, "source.d1"), filepath.Join(dir, "artifact")
 			if err := os.WriteFile(sourcePath, volume, 0o600); err != nil {
@@ -66,14 +78,16 @@ func TestD1RawOuterSelectionNeverPromotesAuthenticatedInner(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result := runWithSeams(context.Background(), &Request{Mode: ModeForceUnverifiedD1,
+			result := runWithSeams(context.Background(), &Request{
+				Mode:   ModeForceUnverifiedD1,
 				Source: source, Target: target, Factors: frozenD1ProvenanceFactors(t),
 				Consent: func(request ConsentRequest, action ConsentAction) error {
 					if !slices.Equal(request.AllowedRoles(), []PhysicalRole{RoleD1Front, RoleD1Tail}) {
 						t.Fatal("incorrect consent roles")
 					}
 					return action(role)
-				}}, operationSeams{admitter: &operationTestAdmitter{grant: true}})
+				},
+			}, operationSeams{admitter: &operationTestAdmitter{grant: true}})
 			if result.Outcome() != pcv3.OutcomeForceUnverified || result.Code() != pcv3.CodeForceUnverified ||
 				result.ForceProvenance() != pcv3.ForceProvenanceUnverified ||
 				result.PublicationState() != pcv3publication.StatePublishedDurable ||
@@ -132,7 +146,7 @@ func TestD1RawOuterWithoutLiveExactConsentPublishesNothing(t *testing.T) {
 	for _, scenario := range []string{"no consent", "wrong role", "expired consent", "verified force"} {
 		t.Run(scenario, func(t *testing.T) {
 			volume := frozenD1ProvenanceFile(t, "d1.pcv")
-			volume[2635] ^= 1
+			volume[2731] ^= 1
 			dir := t.TempDir()
 			sourcePath, target := filepath.Join(dir, "source.d1"), filepath.Join(dir, "artifact")
 			if err := os.WriteFile(sourcePath, volume, 0o600); err != nil {
@@ -174,7 +188,7 @@ func TestD1RawOuterWithoutLiveExactConsentPublishesNothing(t *testing.T) {
 func TestD1AuthenticatedDegradedWithoutRawSelectionRemainsPlaintext(t *testing.T) {
 	// Removing only the tail bootstrap preserves authenticated front/body/inner.
 	volume := frozenD1ProvenanceFile(t, "d1.pcv")
-	volume = volume[:2699]
+	volume = volume[:2795]
 	dir := t.TempDir()
 	sourcePath, target := filepath.Join(dir, "source.d1"), filepath.Join(dir, "plaintext")
 	if err := os.WriteFile(sourcePath, volume, 0o600); err != nil {
@@ -184,8 +198,10 @@ func TestD1AuthenticatedDegradedWithoutRawSelectionRemainsPlaintext(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := runWithSeams(context.Background(), &Request{Mode: ModeRecoverD1, Source: source, Target: target,
-		Factors: frozenD1ProvenanceFactors(t)}, operationSeams{admitter: &operationTestAdmitter{grant: true}})
+	result := runWithSeams(context.Background(), &Request{
+		Mode: ModeRecoverD1, Source: source, Target: target,
+		Factors: frozenD1ProvenanceFactors(t),
+	}, operationSeams{admitter: &operationTestAdmitter{grant: true}})
 	if result.Outcome() != pcv3.OutcomeAuthenticatedDegraded || result.ForceProvenance() != pcv3.ForceProvenanceNone ||
 		result.ArtifactInspection() != nil || slices.Contains(result.Warnings(), WarningForceUnverified) {
 		t.Fatalf("authenticated degraded positive changed: %v", result)

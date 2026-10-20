@@ -9,8 +9,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"syscall"
 	"testing"
 )
 
@@ -77,7 +80,7 @@ func TestD1ArchiveHandoffDefersPlaintextAndExtractsOnlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	extracted := handoff.Extract(context.Background(), root)
-	if extracted == nil || extracted.State() != nativeRecoveryExtractionState() || extracted.CleanupIncomplete() {
+	if extracted == nil || extracted.State() != nativeRecoveryExtractionState() || extracted.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("extraction did not complete durably: %v", extracted)
 	}
 	assertFileBytesAndMode(t, filepath.Join(directory, "payload.txt"), []byte("authenticated archive contents\n"), 0o600)
@@ -114,7 +117,7 @@ func TestD1ArchiveHandoffPublishPreservesZIPAndNoReplace(t *testing.T) {
 				wantState = pcv3publication.StateNotPublished
 				wantBytes = []byte("foreign")
 			}
-			if publication == nil || publication.State() != wantState || cleanup {
+			if publication == nil || publication.State() != wantState || cleanup != (runtime.GOOS == "windows") {
 				t.Fatalf("publication state=%v cleanup=%v", publication, cleanup)
 			}
 			assertFileBytesAndMode(t, target, wantBytes, 0o600)
@@ -148,7 +151,7 @@ func TestD1ArchiveHandoffRejectsExtractionCollisionAndCancelledUse(t *testing.T)
 				cancel()
 			}
 			extracted := handoff.Extract(ctx, root)
-			if extracted == nil || extracted.State() != fileops.UnpackStateNotPublished || extracted.CleanupIncomplete() {
+			if extracted == nil || extracted.State() != fileops.UnpackStateNotPublished || extracted.CleanupIncomplete() != (runtime.GOOS == "windows") {
 				t.Fatalf("failed extraction state=%v", extracted)
 			}
 			if cancelled {
@@ -280,10 +283,10 @@ func TestD1ArchiveHandoffCloseAndNilContextConsumeWithoutOutput(t *testing.T) {
 			}
 			if publish {
 				publication, cleanup := handoff.Publish(nil) //nolint:staticcheck // SA1012: exercise fail-closed handling of an invalid context.
-				if publication == nil || publication.State() != pcv3publication.StateNotPublished || cleanup {
+				if publication == nil || publication.State() != pcv3publication.StateNotPublished || cleanup != (runtime.GOOS == "windows") {
 					t.Fatalf("nil context publication=%v cleanup=%v", publication, cleanup)
 				}
-			} else if handoff.Close() {
+			} else if handoff.Close() != (runtime.GOOS == "windows") {
 				t.Fatal("unused handoff cleanup incomplete")
 			}
 			if handoff.Live() || handoff.Close() {
@@ -305,8 +308,29 @@ func TestD1ArchiveHandoffReportsUnprovenCleanupAndPreservesForeignReplacement(t 
 	}
 	stagePath := handoff.state.stage.File().Name()
 	movedPath := filepath.Join(filepath.Dir(target), "moved-private-stage")
+	defer handoff.Close()
 	if err := os.Rename(stagePath, movedPath); err != nil {
-		t.Fatal(err)
+		if runtime.GOOS != "windows" || !errors.Is(err, syscall.Errno(32)) {
+			t.Fatal(err)
+		}
+		file, err := openRecoveryCustodyFile(stagePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, readErr := io.ReadAll(file)
+		if err := errors.Join(readErr, file.Close()); err != nil || !bytes.Equal(got, recoveryArchiveBytes(t)) {
+			t.Fatalf("blocked replacement changed the owned archive: %v", err)
+		}
+		if !handoff.Close() || handoff.Live() {
+			t.Fatal("blocked replacement lost cleanup uncertainty or retained authority")
+		}
+		for _, absent := range []string{stagePath, movedPath, target} {
+			if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("blocked replacement left plaintext: %v", err)
+			}
+		}
+		assertNoRecoveryStageResidue(t, filepath.Dir(target))
+		return
 	}
 	if err := os.WriteFile(stagePath, []byte("foreign replacement"), 0o600); err != nil {
 		t.Fatal(err)

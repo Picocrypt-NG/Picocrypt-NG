@@ -35,18 +35,40 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 	if err := req.validateInputPath(); err != nil {
 		return err
 	}
+	if err := validateEncryptedDecryptOutput(req); err != nil {
+		return err
+	}
 	preparedInput, err := PrepareDecryptInputContext(ctx, req.InputFile, req.Recombine)
 	if err != nil {
 		return err
 	}
-	defer func() { retErr = errors.Join(retErr, preparedInput.Close()) }()
-	return DecryptPrepared(ctx, req, preparedInput)
+	// This entry point owns preparedInput too, so withhold stdout authority
+	// until its final close succeeds. DecryptPrepared borrows that descriptor.
+	var output *fileops.EncryptedSpool
+	operationReq := req
+	if req.EncryptedOutput != nil {
+		copyReq := *req
+		copyReq.EncryptedOutput = &output
+		operationReq = &copyReq
+	}
+	defer func() {
+		retErr = errors.Join(retErr, preparedInput.Close())
+		if retErr != nil {
+			retErr = errors.Join(retErr, output.Close())
+		} else if req.EncryptedOutput != nil {
+			*req.EncryptedOutput = output
+		}
+	}()
+	return DecryptPrepared(ctx, operationReq, preparedInput)
 }
 
 // DecryptPrepared decrypts using the exact descriptor routed before a caller
 // collected credentials. The input is borrowed and must remain open until this
 // function returns.
 func DecryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *PreparedDecryptInput) error {
+	if err := validateEncryptedDecryptOutput(req); err != nil {
+		return err
+	}
 	if err := req.validatePrepared(preparedInput); err != nil {
 		return err
 	}
@@ -57,10 +79,14 @@ func decryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *Pr
 	opCtx := NewDecryptContext(ctx, req)
 	opCtx.protectedInputInfos = append([]os.FileInfo(nil), preparedInput.inputInfos...)
 	defer func() {
-		retErr = errors.Join(retErr, opCtx.Close())
-		if err := opCtx.cleanupRecombinedFile(); err != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("cleanup recombined input: %w", err))
+		if panicValue := recover(); panicValue != nil {
+			cleanupErr := opCtx.Close()
+			if err := opCtx.cleanupRecombinedFile(); err != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("cleanup recombined input: %w", err))
+			}
+			fileops.RepanicWithCleanup(panicValue, cleanupErr)
 		}
+		retErr = finishLegacyDecrypt(opCtx, req, retErr)
 	}() // Secure zeroing of key material and fail-loud temporary-file cleanup
 
 	log.Info("starting decryption", log.String("input", req.InputFile))
@@ -117,12 +143,31 @@ func decryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *Pr
 	return nil
 }
 
-func decryptPreprocess(ctx *OperationContext, req *DecryptRequest, preparedInput *PreparedDecryptInput) error {
+func decryptPreprocess(ctx *OperationContext, req *DecryptRequest, preparedInput *PreparedDecryptInput) (retErr error) {
 	inputFile := req.InputFile
 	var (
 		input      *os.File
 		inputOwned bool
 	)
+	// Recombined input is locally owned until deniability closes it or the
+	// context accepts the descriptor. Reporter callbacks can panic before that
+	// transfer, so the outer context cleanup cannot close this handle for us.
+	defer func() {
+		panicValue := recover()
+		var closeErr error
+		if inputOwned {
+			closeErr = input.Close()
+			input = nil
+			inputOwned = false
+			if closeErr != nil {
+				closeErr = fmt.Errorf("close preprocessing input: %w", closeErr)
+			}
+		}
+		if panicValue != nil {
+			fileops.RepanicWithCleanup(panicValue, closeErr)
+		}
+		retErr = errors.Join(retErr, closeErr)
+	}()
 
 	// Recombine split chunks if needed
 	if req.Recombine {
@@ -184,11 +229,9 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest, preparedInput
 		inputOwned = true
 		currentInfo, err := input.Stat()
 		if err != nil {
-			_ = input.Close()
 			return fmt.Errorf("inspect recombined input: %w", err)
 		}
 		if !os.SameFile(recombinedInfo, currentInfo) {
-			_ = input.Close()
 			return errors.New("recombined input path changed before use")
 		}
 	} else {
@@ -244,11 +287,9 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest, preparedInput
 	// Pin and classify the final post-processed descriptor before header parsing,
 	// KDF work, or any output allocation. Every later decrypt step reuses it.
 	if err := ctx.pinLegacyDecryptInput(input, inputOwned); err != nil {
-		if inputOwned {
-			err = errors.Join(err, input.Close())
-		}
 		return fmt.Errorf("open final input: %w", err)
 	}
+	inputOwned = false
 	fin := input
 	stat, err := fin.Stat()
 	if err != nil {
@@ -764,16 +805,24 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 		return fmt.Errorf("seek past header: %w", err)
 	}
 
-	if ctx.stagedOutput == nil {
-		if err := ctx.beginStagedOutput(); err != nil {
-			return fmt.Errorf("create output: %w", err)
+	var output io.Writer
+	if req.EncryptedOutput != nil {
+		if err := ctx.beginEncryptedOutput(); err != nil {
+			return fmt.Errorf("create encrypted output: %w", err)
 		}
-	} else if err := ctx.resetStagedOutput(); err != nil {
-		return fmt.Errorf("reset output: %w", err)
-	}
-	stagedOutput, err := ctx.stagedOutputFile()
-	if err != nil {
-		return err
+		output = ctx.encryptedOutput
+	} else {
+		if ctx.stagedOutput == nil {
+			if err := ctx.beginStagedOutput(); err != nil {
+				return fmt.Errorf("create output: %w", err)
+			}
+		} else if err := ctx.resetStagedOutput(); err != nil {
+			return fmt.Errorf("reset output: %w", err)
+		}
+		output, err = ctx.stagedOutputFile()
+		if err != nil {
+			return err
+		}
 	}
 
 	// Decrypt loop
@@ -825,7 +874,7 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 			// Decrypt: MAC -> XChaCha20 -> Serpent
 			ctx.CipherSuite.Decrypt(dstData, data)
 
-			written, err := stagedOutput.Write(dstData)
+			written, err := output.Write(dstData)
 			if err != nil {
 				return fmt.Errorf("write plaintext: %w", err)
 			}
@@ -867,8 +916,14 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 
 	// Preserve the ordinary legacy guarantee: staged plaintext reaches the
 	// filesystem before the final MAC/publication decision.
-	if err := stagedOutput.Sync(); err != nil {
-		return fmt.Errorf("sync output: %w", err)
+	if req.EncryptedOutput == nil {
+		stagedOutput, err := ctx.stagedOutputFile()
+		if err != nil {
+			return err
+		}
+		if err := stagedOutput.Sync(); err != nil {
+			return fmt.Errorf("sync output: %w", err)
+		}
 	}
 
 	return nil
@@ -897,12 +952,16 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 			//                      before reassignment (see that function).
 			//   - input offset:    the pinned descriptor is rewound and then seeks
 			//                      to the payload for each pass.
-			//   - output:          the same operation-owned stage is truncated and
-			//                      rewound through its retained handle.
+			//   - output:          the file stage is reset through its retained
+			//                      handle; encrypted stdout discards the owner
+			//                      and starts a fresh key/nonce session.
 			// The Argon2id re-derivation is intentionally KEPT (D-07); reducing
 			// Argon2 passes is Out of Scope — correctness over perf in a paranoid
 			// tool. Do NOT cache derived material or skip the re-derive.
 			ctx.TriedFullRSDecode = true
+			if err := ctx.discardEncryptedOutput(); err != nil {
+				return fmt.Errorf("discard rejected encrypted output: %w", err)
+			}
 
 			// Re-derive keys (needed to reset HKDF stream); see reDeriveForRetry.
 			if err := reDeriveForRetry(ctx, req); err != nil {
@@ -941,6 +1000,21 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 	}
 	if err := ctx.cleanupRecombinedFile(); err != nil {
 		return fmt.Errorf("cleanup recombined input: %w", err)
+	}
+	if req.EncryptedOutput != nil {
+		if ctx.encryptedOutput == nil {
+			return errors.New("encrypted decrypt output is unavailable")
+		}
+		if ctx.IsCancelled() {
+			return ctx.CancellationError()
+		}
+		if err := ctx.encryptedOutput.Seal(); err != nil {
+			if ctx.IsCancelled() {
+				return errors.Join(ctx.CancellationError(), fmt.Errorf("seal encrypted output: %w", err))
+			}
+			return fmt.Errorf("seal encrypted output: %w", err)
+		}
+		return nil
 	}
 
 	shouldUnzip := false

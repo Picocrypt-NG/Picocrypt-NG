@@ -77,9 +77,9 @@ func pcv3NativeFaultOperations(t *testing.T) (platformOperations, *operationCoun
 		t.Fatal("native publication operations became unavailable mid-test")
 	}
 	atomic := operations.atomicPublish
-	operations.atomicPublish = func(parent *os.File, stageName, targetName string, policy Policy) error {
+	operations.atomicPublish = func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 		counts.atomic++
-		return atomic(parent, stageName, targetName, policy)
+		return atomic(source, parent, original, stageName, targetName, policy)
 	}
 	syncDirectory := operations.syncDirectory
 	operations.syncDirectory = func(parent *os.File) error {
@@ -159,8 +159,8 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		if again := stage.Publish(context.Background()); again != result {
 			t.Fatal("second Publish did not return the sealed terminal result")
 		}
-		if err := stage.Cleanup(); err != nil {
-			t.Fatalf("cleanup durable commit: %v", err)
+		if err := stage.Cleanup(); (runtime.GOOS == "windows" && !errors.Is(err, ErrCleanupIncomplete)) || (runtime.GOOS != "windows" && err != nil) {
+			t.Fatalf("cleanup durable commit lost native durability classification: %v", err)
 		}
 		requireFileBytes(t, foreignPath, foreign)
 		source.requireRetained(t)
@@ -199,8 +199,8 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("short stage pathname remains: %v", err)
 		}
-		if err := stage.Cleanup(); err != nil {
-			t.Fatalf("cleanup short commit: %v", err)
+		if err := stage.Cleanup(); (runtime.GOOS == "windows" && !errors.Is(err, ErrCleanupIncomplete)) || (runtime.GOOS != "windows" && err != nil) {
+			t.Fatalf("cleanup short commit lost native durability classification: %v", err)
 		}
 		source.requireRetained(t)
 	})
@@ -243,12 +243,12 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		payload := []byte("operation-owned complete output")
 		foreign := []byte("late foreign destination bytes")
 		operations, counts := pcv3NativeFaultOperations(t)
-		operations.atomicPublish = func(parent *os.File, stageName, targetName string, policy Policy) error {
+		operations.atomicPublish = func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 			counts.atomic++
 			if err := os.WriteFile(filepath.Join(directory, targetName), foreign, 0o640); err != nil {
 				return err
 			}
-			return nativeOperations().atomicPublish(parent, stageName, targetName, policy)
+			return nativeOperations().atomicPublish(source, parent, original, stageName, targetName, policy)
 		}
 		stage, err := createWithOperations(target, []string{source.path}, PolicyNoReplace, operations)
 		if err != nil {
@@ -280,8 +280,8 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 			t.Fatalf("foreign destination mode = %v; want regular 0640", foreignInfo.Mode())
 		}
 		requireFileBytes(t, target, foreign)
-		if err := stage.Cleanup(); err != nil {
-			t.Fatalf("cleanup rejected collision stage: %v", err)
+		if err := stage.Cleanup(); (runtime.GOOS == "windows" && !errors.Is(err, ErrCleanupIncomplete)) || (runtime.GOOS != "windows" && err != nil) {
+			t.Fatalf("cleanup rejected collision stage lost native durability classification: %v", err)
 		}
 		if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("owned collision stage remains: %v", err)
@@ -325,8 +325,8 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 			pcv3result.StageDirectorySync,
 			CodeDurabilityUncertain,
 		)
-		if counts.atomic != 1 || counts.sync != 1 {
-			t.Fatalf("durability failure calls: atomic=%d sync=%d; want 1/1", counts.atomic, counts.sync)
+		if counts.atomic != 1 || counts.sync != 2 {
+			t.Fatalf("durability failure calls: atomic=%d sync=%d; want 1/2", counts.atomic, counts.sync)
 		}
 		committedInfo, err := os.Lstat(target)
 		if err != nil {
@@ -336,7 +336,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 			t.Fatal("uncertain commit changed the staged file identity")
 		}
 		requireFileBytes(t, target, payload)
-		if err := stage.Cleanup(); err != nil {
+		if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
 			t.Fatalf("cleanup after uncertain durability: %v", err)
 		}
 		requireFileBytes(t, target, payload)
@@ -353,16 +353,18 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		foreignStage := []byte("foreign bytes at the remembered stage name")
 		foreignTarget := []byte("foreign bytes at the target name")
 		atomicCanary := "pcv3-fault-atomic-canary"
+		var attackErr error
 		operations, counts := pcv3NativeFaultOperations(t)
-		operations.atomicPublish = func(parent *os.File, stageName, targetName string, policy Policy) error {
+		operations.atomicPublish = func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 			counts.atomic++
-			if err := nativeOperations().atomicPublish(parent, stageName, targetName, policy); err != nil {
+			if err := nativeOperations().atomicPublish(source, parent, original, stageName, targetName, policy); err != nil {
 				return err
 			}
 			if err := os.Rename(target, recovery); err != nil {
+				attackErr = err
 				return err
 			}
-			if err := os.WriteFile(filepath.Join(directory, stageName), foreignStage, 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(source.Name(), stageName), foreignStage, 0o600); err != nil {
 				return err
 			}
 			if err := os.WriteFile(target, foreignTarget, 0o600); err != nil {
@@ -381,6 +383,24 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		}
 
 		result := stage.Publish(context.Background())
+		if attackErr != nil {
+			if !windowsSharingRefusal(attackErr) {
+				t.Fatalf("postcommit relocation failed for an unexpected reason: %v", attackErr)
+			}
+			pcv3RequireNativeCommit(t, result)
+			requireFileBytes(t, target, payload)
+			if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
+				t.Fatalf("native Windows directory durability uncertainty lost: %v", err)
+			}
+			requireFileBytes(t, target, payload)
+			for _, absent := range []string{stagePath, recovery} {
+				if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("blocked relocation left an unexpected file: %v", err)
+				}
+			}
+			source.requireRetained(t)
+			return
+		}
 		requireResult(
 			t,
 			result,
@@ -442,7 +462,21 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		// cannot accidentally reuse its identity after finalization closes it.
 		escapedPath := filepath.Join(directory, "failed-owned-stage")
 		if err := os.Rename(stagePath, escapedPath); err != nil {
-			t.Fatalf("retain original stage before foreign occupation: %v", err)
+			if !windowsSharingRefusal(err) {
+				t.Fatalf("retain original stage before foreign occupation: %v", err)
+			}
+			requireFileBytes(t, stagePath, payload)
+			if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
+				t.Fatalf("native Windows cleanup lost directory durability uncertainty: %v", err)
+			}
+			for _, absent := range []string{stagePath, escapedPath, target} {
+				if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("blocked relocation left an unexpected output: %v", err)
+				}
+			}
+			source.requireRetained(t)
+			pcv3RequireNoDisclosure(t, result, closeCanary, target, stagePath, string(payload))
+			return
 		}
 		if err := os.WriteFile(stagePath, foreign, 0o640); err != nil {
 			t.Fatalf("plant foreign occupation: %v", err)
@@ -488,8 +522,8 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		result := stage.Publish(context.Background())
 		pcv3RequireNativeCommit(t, result)
 		requireFileBytes(t, target, payload)
-		if err := stage.Cleanup(); err != nil {
-			t.Fatalf("cleanup exact commit: %v", err)
+		if err := stage.Cleanup(); (runtime.GOOS == "windows" && !errors.Is(err, ErrCleanupIncomplete)) || (runtime.GOOS != "windows" && err != nil) {
+			t.Fatalf("cleanup exact commit lost native durability classification: %v", err)
 		}
 		source.requireRetained(t)
 	})

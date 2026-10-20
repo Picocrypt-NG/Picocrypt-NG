@@ -529,19 +529,44 @@ func requireD1FuzzOnlyLiveStage(
 	oracle string,
 ) {
 	t.Helper()
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		t.Fatal("list TEST ONLY live D1 fuzz stage directory")
+	privateDirectory := filepath.Dir(stagePath)
+	if privateDirectory == directory || filepath.Dir(privateDirectory) != directory {
+		t.Fatalf("%s: live stage is outside its private child directory; oracle: %s", risk, oracle)
 	}
-	sourceName := filepath.Base(sourcePath)
-	stageName := filepath.Base(stagePath)
-	if len(entries) != 2 {
-		t.Fatalf("%s: live composer has a second stage or clear-inner file; oracle: %s", risk, oracle)
-	}
-	for _, entry := range entries {
-		if entry.Name() != sourceName && entry.Name() != stageName {
-			t.Fatalf("%s: live composer has a second stage or clear-inner file; oracle: %s", risk, oracle)
+	seenSource, seenStage := false, false
+	for _, parent := range []string{directory, privateDirectory} {
+		info, err := os.Lstat(parent)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("%s: unexpected directory identity: %v; oracle: %s", risk, err, oracle)
 		}
+		entries, err := readArchiveCustodyTestDirectory(parent)
+		if err != nil {
+			t.Fatalf("%s: inspect live custody: %v; oracle: %s", risk, err, oracle)
+		}
+		for _, entry := range entries {
+			path := filepath.Join(parent, entry.Name())
+			info, err := entry.Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch path {
+			case privateDirectory:
+				if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+					t.Fatal("TEST ONLY unexpected directory identity")
+				}
+			case sourcePath, stagePath:
+				if !info.Mode().IsRegular() {
+					t.Fatal("TEST ONLY source/stage is not regular")
+				}
+				seenSource = seenSource || path == sourcePath
+				seenStage = seenStage || path == stagePath
+			default:
+				t.Fatal("TEST ONLY unexpected second stage or clear-inner artifact")
+			}
+		}
+	}
+	if !seenSource || !seenStage {
+		t.Fatalf("%s: live composer must contain only source and exact owned stage in its private directory; oracle: %s", risk, oracle)
 	}
 }
 

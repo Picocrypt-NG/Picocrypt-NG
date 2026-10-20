@@ -8,8 +8,8 @@ This directory contains the Android app that integrates with the Go encryption b
 
 1. **Go Mobile**: Use exactly Go 1.27.2 and install Go mobile bindings
    ```bash
-   go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
-   go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
+   go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20261011034528-197770444867
+   go install golang.org/x/mobile/cmd/gobind@v0.0.0-20261011034528-197770444867
    mkdir -p "$(go env GOPATH | cut -d: -f1)/pkg/gomobile"
    ```
 
@@ -195,6 +195,10 @@ that a remote provider durably stored or synchronized the document. Archive SAF
 publication likewise reports durability uncertainty rather than durable storage.
 
 ### PCV3 request and retained-output limits
+
+D1 creation preserves the separately selected Paranoid option. Both payload suites
+use the fixed D1 Argon2id profile: 1 GiB, eight passes and eight lanes. The suite
+choice changes the cipher cascade and authentication, not this KDF cost.
 
 Android uses a bounded 4 MiB UTF-8 JSON request, including JSON escaping and all path
 lists. This aggregate transport limit is separate from the 99,999-byte UTF-8 comment,

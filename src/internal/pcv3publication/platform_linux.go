@@ -12,8 +12,8 @@ import (
 
 // unixRenameat2NoReplace is the renameat2(RENAME_NOREPLACE) syscall behind a
 // package seam so tests can simulate a kernel without renameat2 support.
-var unixRenameat2NoReplace = func(parentFD int, oldName, newName string) error {
-	return unix.Renameat2(parentFD, oldName, parentFD, newName, unix.RENAME_NOREPLACE)
+var unixRenameat2NoReplace = func(parentFD int, oldName string, targetFD int, newName string) error {
+	return unix.Renameat2(parentFD, oldName, targetFD, newName, unix.RENAME_NOREPLACE)
 }
 
 // renameNoReplace atomically renames oldName to newName inside the single
@@ -30,7 +30,7 @@ var unixRenameat2NoReplace = func(parentFD int, oldName, newName string) error {
 // names instead of deleting anything. linkFallbackFailed owns the platform
 // decision for a failed link(2); see the linux and android implementations.
 func renameNoReplace(parentFD int, oldName, newName string) error {
-	err := unixRenameat2NoReplace(parentFD, oldName, newName)
+	err := unixRenameat2NoReplace(parentFD, oldName, parentFD, newName)
 	if !errors.Is(err, unix.ENOSYS) {
 		return err
 	}
@@ -43,13 +43,28 @@ func renameNoReplace(parentFD int, oldName, newName string) error {
 
 func nativeOperations() platformOperations {
 	return platformOperations{
-		atomicPublish: func(parent *os.File, stageName, targetName string, policy Policy) error {
+		atomicPublish: func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 			if policy != PolicyNoReplace {
 				return errors.ErrUnsupported
 			}
-			parentFD := int(parent.Fd())
-			return renameNoReplace(parentFD, stageName, targetName)
+			return renameBetweenNoReplace(int(source.Fd()), stageName, int(parent.Fd()), targetName)
 		},
 		syncDirectory: fileops.SyncDirectory,
 	}
+}
+
+// renameBetweenNoReplace retains no-replace semantics across the two pinned
+// directories. A failed unlink after linking remains a two-name uncertainty.
+func renameBetweenNoReplace(sourceFD int, oldName string, targetFD int, newName string) error {
+	if sourceFD == targetFD {
+		return renameNoReplace(sourceFD, oldName, newName)
+	}
+	err := unixRenameat2NoReplace(sourceFD, oldName, targetFD, newName)
+	if !errors.Is(err, unix.ENOSYS) {
+		return err
+	}
+	if err := unix.Linkat(sourceFD, oldName, targetFD, newName, 0); err != nil {
+		return err
+	}
+	return unix.Unlinkat(sourceFD, oldName, 0)
 }

@@ -350,4 +350,9 @@
     <string name="pcv3_retained_discard_cleanup_body">La aplicación no pudo confirmar la eliminación del resultado. Conserve los archivos originales.</string>
     <string name="pcv3_resource_limit_title">Límite de recursos alcanzado</string>
     <string name="pcv3_resource_limit_body">La operación se detuvo porque se alcanzó un límite de recursos de procesamiento.</string>
+    <string name="pcv3_d1_profile_heading">Perfil de recuperación</string>
+    <string name="pcv3_d1_profile_auto">Automático</string>
+    <string name="pcv3_d1_profile_standard">Estándar</string>
+    <string name="pcv3_outcome_d1_profile_required_title">Elige el perfil de recuperación</string>
+    <string name="pcv3_outcome_d1_profile_required_body">Selecciona el perfil Estándar o Paranoico utilizado para crear este volumen y vuelve a intentarlo. No se ha publicado ninguna salida.</string>
 </resources>

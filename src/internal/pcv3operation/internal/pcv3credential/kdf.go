@@ -1,12 +1,11 @@
 package pcv3credential
 
 import (
+	"Picocrypt-NG/internal/argon2"
 	pcsecret "Picocrypt-NG/internal/secret"
 	"context"
 	"errors"
 	"runtime/debug"
-
-	"golang.org/x/crypto/argon2"
 )
 
 const (
@@ -228,6 +227,21 @@ func runFixedProfileKDFBorrowed(
 	admitter Admitter,
 	derive kdfDeriver,
 ) (*pcsecret.Secret, error) {
+	profile, err := fixedProfileForSuite(suite)
+	if err != nil {
+		return nil, err
+	}
+	return runProfileKDFBorrowed(ctx, input, salt, suite, profile, admitter, derive)
+}
+
+func runProfileKDFBorrowed(
+	ctx context.Context,
+	input, salt []byte,
+	suite Suite,
+	profile KDFProfile,
+	admitter Admitter,
+	derive kdfDeriver,
+) (*pcsecret.Secret, error) {
 	if ctx == nil || admitter == nil || derive == nil {
 		return nil, newKDFError(KDFErrorInvalidRequest, suite)
 	}
@@ -235,10 +249,6 @@ func runFixedProfileKDFBorrowed(
 		return nil, newKDFError(KDFErrorInvalidInput, suite)
 	}
 
-	profile, err := fixedProfileForSuite(suite)
-	if err != nil {
-		return nil, err
-	}
 	if uint64(len(salt)) != uint64(profile.SaltBytes) {
 		return nil, newKDFError(KDFErrorInvalidSalt, suite)
 	}

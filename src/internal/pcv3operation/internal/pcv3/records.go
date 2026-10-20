@@ -106,7 +106,7 @@ type recordEvidence struct {
 
 type recordEngineSeams struct {
 	decodeDescriptor func(*pcencoding.RSCodecs, []byte, []byte) error
-	decodeBody       func(*pcencoding.RSCodecs, []byte, []byte, bool) error
+	decodeBody       func(context.Context, *pcencoding.RSCodecs, []byte, []byte, bool) error
 	decryptStandard  func([]byte, []byte, []byte, []byte) error
 	decryptParanoid  func([]byte, []byte, []byte, []byte, []byte, []byte) error
 }
@@ -478,11 +478,15 @@ func (evaluator *recordEvaluator) evaluateCanonicalRecord(
 	decoded := evaluator.decodedBody[:decodedLength]
 	if evaluator.geometry.payloadBodyRS {
 		if err := evaluator.seams.decodeBody(
+			evaluator.ctx,
 			evaluator.codecs,
 			encoded,
 			decoded,
 			false,
 		); err != nil {
+			if cancellation := recordCancellationCause(evaluator.ctx, err); cancellation != nil {
+				return newRecordFailure(StageCancellation, cancellation)
+			}
 			return newRecordFailure(bodyStage, err)
 		}
 	} else {
@@ -501,11 +505,15 @@ func (evaluator *recordEvaluator) evaluateCanonicalRecord(
 	if !valid && evaluator.geometry.payloadBodyRS {
 		pcv3crypto.SecureZero(decoded)
 		if err := evaluator.seams.decodeBody(
+			evaluator.ctx,
 			evaluator.codecs,
 			encoded,
 			decoded,
 			true,
 		); err != nil {
+			if cancellation := recordCancellationCause(evaluator.ctx, err); cancellation != nil {
+				return newRecordFailure(StageCancellation, cancellation)
+			}
 			return newRecordFailure(bodyStage, err)
 		}
 		valid, err = authenticateDecodedRecord(
@@ -953,35 +961,45 @@ func decodeRecordDescriptor(
 }
 
 func decodeRecordBody(
+	ctx context.Context,
 	codecs *pcencoding.RSCodecs,
 	encoded []byte,
 	destination []byte,
 	fullCorrection bool,
 ) error {
-	if codecs == nil || codecs.RS128 == nil || len(encoded) == 0 ||
+	if ctx == nil || codecs == nil || codecs.RS128 == nil || len(encoded) == 0 ||
 		len(encoded)%int(rs128CodewordLength) != 0 ||
 		len(destination) != len(encoded)/int(rs128CodewordLength)*int(rs128DataLength) {
 		return errRecordBodyRecovery
 	}
 	pcv3crypto.SecureZero(destination)
+	var decoder *pcencoding.RSDecoder
+	if fullCorrection {
+		decoder = pcencoding.NewRSDecoder(codecs.RS128)
+		defer decoder.Close()
+	}
 	blocks := len(encoded) / int(rs128CodewordLength)
 	for block := range blocks {
+		if err := ctx.Err(); err != nil {
+			pcv3crypto.SecureZero(destination)
+			return err
+		}
 		encodedStart := block * int(rs128CodewordLength)
 		decodedStart := block * int(rs128DataLength)
-		decoded, err := pcencoding.Decode(
-			codecs.RS128,
-			encoded[encodedStart:encodedStart+int(rs128CodewordLength)],
-			!fullCorrection,
-		)
-		if err != nil || len(decoded) != int(rs128DataLength) {
-			pcv3crypto.SecureZero(decoded)
-			pcv3crypto.SecureZero(destination)
-			return errRecordBodyRecovery
-		}
-		copy(destination[decodedStart:decodedStart+int(rs128DataLength)], decoded)
+		word := encoded[encodedStart : encodedStart+int(rs128CodewordLength)]
+		output := destination[decodedStart : decodedStart+int(rs128DataLength)]
 		if fullCorrection {
-			pcv3crypto.SecureZero(decoded)
+			if err := decoder.DecodeInto(output, word); err != nil {
+				pcv3crypto.SecureZero(destination)
+				return errRecordBodyRecovery
+			}
+		} else {
+			copy(output, word[:int(rs128DataLength)])
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		pcv3crypto.SecureZero(destination)
+		return err
 	}
 	return nil
 }

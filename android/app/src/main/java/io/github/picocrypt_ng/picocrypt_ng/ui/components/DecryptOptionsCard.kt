@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
@@ -31,13 +32,13 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import io.github.picocrypt_ng.picocrypt_ng.MainViewModel
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3ActionIntent
+import io.github.picocrypt_ng.picocrypt_ng.Pcv3D1SuiteHintIntent
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3FactorPolicyIntent
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3KeyfileOrderIntent
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3OperationIntent
@@ -84,6 +85,7 @@ fun DecryptOptionsCard(
             viewModel = viewModel,
             intent = pcv3Intent,
             onAction = viewModel::setPcv3Action,
+            onD1SuiteHint = viewModel::setPcv3D1SuiteHint,
             onFactorPolicy = viewModel::setPcv3FactorPolicy,
             onKeyfileOrder = viewModel::setPcv3KeyfileOrder,
             modifier = modifier,
@@ -104,6 +106,7 @@ private fun Pcv3IntentOptionsCard(
     viewModel: MainViewModel,
     intent: Pcv3OperationIntent,
     onAction: (Pcv3ActionIntent) -> Unit,
+    onD1SuiteHint: (Pcv3D1SuiteHintIntent?) -> Unit,
     onFactorPolicy: (Pcv3FactorPolicyIntent) -> Unit,
     onKeyfileOrder: (Pcv3KeyfileOrderIntent) -> Unit,
     modifier: Modifier,
@@ -133,6 +136,30 @@ private fun Pcv3IntentOptionsCard(
                 selected = intent.action == Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT,
                 onClick = { onAction(Pcv3ActionIntent.FORCE_WITH_UNVERIFIED_CONSENT) },
             )
+
+            if (intent.allowsD1SuiteHint) {
+                Text(
+                    text = stringResource(R.string.pcv3_d1_profile_heading),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Column(Modifier.selectableGroup()) {
+                    Pcv3Choice(
+                        label = stringResource(R.string.pcv3_d1_profile_auto),
+                        selected = intent.d1SuiteHint == null,
+                        onClick = { onD1SuiteHint(null) },
+                    )
+                    Pcv3Choice(
+                        label = stringResource(R.string.pcv3_d1_profile_standard),
+                        selected = intent.d1SuiteHint == Pcv3D1SuiteHintIntent.STANDARD,
+                        onClick = { onD1SuiteHint(Pcv3D1SuiteHintIntent.STANDARD) },
+                    )
+                    Pcv3Choice(
+                        label = stringResource(R.string.paranoid),
+                        selected = intent.d1SuiteHint == Pcv3D1SuiteHintIntent.PARANOID,
+                        onClick = { onD1SuiteHint(Pcv3D1SuiteHintIntent.PARANOID) },
+                    )
+                }
+            }
 
             Text(
                 text = stringResource(R.string.pcv3_credential_policy_heading),
@@ -278,7 +305,6 @@ internal fun Pcv3ConsentDialog(
         consent.allowedRoles,
     ) { mutableStateOf(false) }
     val cancelFocus = remember(live.operationId, live.generation) { FocusRequester() }
-    SafeDefaultDialogFocus(cancelFocus)
 
     AlertDialog(
         modifier = modifier.testTag(PCV3_CONSENT_TAG),
@@ -333,7 +359,7 @@ internal fun Pcv3ConsentDialog(
         },
         dismissButton = {
             TextButton(
-                modifier = Modifier.focusRequester(cancelFocus),
+                modifier = Modifier.safeDefaultDialogFocus(cancelFocus),
                 onClick = { onRefuse(live.operationId, live.generation) },
             ) {
                 Text(stringResource(R.string.pcv3_consent_cancel))

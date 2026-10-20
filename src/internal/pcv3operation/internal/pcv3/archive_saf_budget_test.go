@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -32,8 +33,8 @@ func TestArchiveSAFAdmitsShortManifestAboveFormerCountAndReleasesMetadata(t *tes
 		t.Fatal("live manifest reader was not accounted")
 	}
 	result := session.Abort()
-	if result == nil || result.State() != fileops.UnpackStateNotPublished ||
-		result.AttemptedEver() || result.CleanupIncomplete() {
+	if result == nil || result.State() != nativeArchiveSAFUnattemptedState() ||
+		result.AttemptedEver() || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("unattempted abort lost exact cleanup: %#v", result)
 	}
 	if budget.CurrentBytes() != 0 {
@@ -74,7 +75,7 @@ func TestArchiveSAFPreparationCancellationConsumesAndCleansWithoutSession(t *tes
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	begin := cancellable.BeginSAFWithContext(ctx)
-	if begin.Kind() != NativeArchiveSAFBeginTerminal || begin.Session() != nil || begin.Result().AttemptedEver() || begin.Result().CleanupIncomplete() {
+	if begin.Kind() != NativeArchiveSAFBeginTerminal || begin.Session() != nil || begin.Result().AttemptedEver() || begin.Result().CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("cancelled preparation granted authority or leaked stage: %#v", begin)
 	}
 	if handoff.BeginSAF().Kind() != NativeArchiveSAFBeginExpired {
@@ -139,7 +140,7 @@ func TestArchiveSAFSessionOutlivesPreparationContext(t *testing.T) {
 	}
 	result := session.Finish()
 	if result == nil || result.State() != fileops.UnpackStatePublishedDurabilityUncertain ||
-		!result.AttemptedEver() || result.CleanupIncomplete() || budget.CurrentBytes() != 0 {
+		!result.AttemptedEver() || result.CleanupIncomplete() != (runtime.GOOS == "windows") || budget.CurrentBytes() != 0 {
 		t.Fatalf("finished session = %#v, live charge %d", result, budget.CurrentBytes())
 	}
 	assertNativeArchiveStage(t, parent, target, 0)
@@ -179,7 +180,7 @@ func TestArchiveSAFActualPreparationCancellationDuringMetadataScan(t *testing.T)
 	cancel()
 	close(ctx.proceed)
 	begin := <-result
-	if begin.Kind() != NativeArchiveSAFBeginTerminal || begin.Session() != nil || begin.Result().State() != fileops.UnpackStateNotPublished || begin.Result().CleanupIncomplete() {
+	if begin.Kind() != NativeArchiveSAFBeginTerminal || begin.Session() != nil || begin.Result().State() != nativeArchiveSAFUnattemptedState() || begin.Result().CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatal("cancelled actual metadata scan retained authority or leaked stage")
 	}
 	classification, ok := any(begin.Result()).(interface{ Cancelled() bool })

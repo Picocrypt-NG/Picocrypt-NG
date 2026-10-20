@@ -85,17 +85,14 @@ func TestPCV3MobileWriteEnvelopeShape(t *testing.T) {
 
 		requiredCases := map[string]struct{}{
 			"missing-comment": {}, "missing-suite": {}, "missing-payloadrs": {},
-			"d1-requires-paranoid": {}, "unknown-suite": {}, "comment-wrong-type": {},
+			"unknown-suite": {}, "comment-wrong-type": {},
 			"comment-null": {}, "payloadrs-wrong-type": {}, "factor-mismatch": {},
 			"keyfile-policy-without-keyfiles": {}, "write-field-on-read-mode": {},
 		}
 		cases := map[string]string{
-			"missing-comment":   strings.Replace(valid, `,"comment":""`, "", 1),
-			"missing-suite":     strings.Replace(valid, `,"suite":"standard"`, "", 1),
-			"missing-payloadrs": strings.Replace(valid, `,"payloadRS":false`, "", 1),
-			"d1-requires-paranoid": strings.Replace(
-				valid, `"mode":"write-normal"`, `"mode":"write-d1"`, 1,
-			),
+			"missing-comment":    strings.Replace(valid, `,"comment":""`, "", 1),
+			"missing-suite":      strings.Replace(valid, `,"suite":"standard"`, "", 1),
+			"missing-payloadrs":  strings.Replace(valid, `,"payloadRS":false`, "", 1),
 			"unknown-suite":      strings.Replace(valid, `"suite":"standard"`, `"suite":"double"`, 1),
 			"comment-wrong-type": strings.Replace(valid, `"comment":""`, `"comment":7`, 1),
 			"comment-null":       strings.Replace(valid, `"comment":""`, `"comment":null`, 1),
@@ -153,6 +150,48 @@ func TestPCV3MobileWriteEnvelopeShape(t *testing.T) {
 			t.Fatalf("empty-password write affected output: %v", err)
 		}
 	})
+}
+
+func TestPCV3MobileD1TransfersSelectedPayloadSuite(t *testing.T) {
+	for _, suite := range []string{"standard", "paranoid"} {
+		t.Run(suite, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				directory := t.TempDir()
+				source := writePCV3MobileFile(t, directory, "plain", "payload")
+				target := filepath.Join(directory, "ciphertext")
+				oldWrite := runPCV3WriteWithOptions
+				reached := false
+				runPCV3WriteWithOptions = func(_ context.Context, request *pcv3operation.WriteRequest, options pcv3operation.ExecutionOptions) *pcv3operation.Result {
+					reached = true
+					want := pcv3operation.SuiteStandard
+					if suite == "paranoid" {
+						want = pcv3operation.SuiteParanoid
+					}
+					if request.Mode != pcv3operation.WriteModeD1 || request.Suite != want {
+						t.Errorf("native D1 intent changed: mode=%v suite=%v", request.Mode, request.Suite)
+					}
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+					return pcv3operation.RunWriteWithOptions(ctx, request, options)
+				}
+				t.Cleanup(func() { runPCV3WriteWithOptions = oldWrite })
+				password := []byte("password")
+				start := StartPCV3(pcv3WriteTestEnvelope("write-d1", "password", "none", suite, false, "", source, target, nil), password)
+				if start == nil || start.Code() != "" || start.Operation() == nil {
+					t.Fatalf("valid D1 payload choice refused: %#v", start)
+				}
+				operation := start.Operation()
+				t.Cleanup(func() { cleanupOperation(operation.ID()) })
+				synctest.Wait()
+				if !reached || !allZero(password) {
+					t.Fatal("D1 transfer lost the native route or password cleanup")
+				}
+				if _, err := os.Stat(target); !os.IsNotExist(err) {
+					t.Fatalf("cancelled native D1 created output: %v", err)
+				}
+			})
+		})
+	}
 }
 
 // TestPCV3MobileWriteRoutesToNativeWriter proves a valid creation envelope

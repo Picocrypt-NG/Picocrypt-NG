@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -68,7 +69,7 @@ func TestArchiveSAFSessionStreamsExactFilesAndFinishesDurabilityUncertain(t *tes
 
 	finished := session.Finish()
 	if finished == nil || finished.State() != fileops.UnpackStatePublishedDurabilityUncertain ||
-		!finished.AttemptedEver() || finished.CleanupIncomplete() {
+		!finished.AttemptedEver() || finished.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("finished SAF result = %#v; want attempted durability-uncertain with exact cleanup", finished)
 	}
 	if repeated := session.Finish(); repeated != finished {
@@ -157,7 +158,7 @@ func TestArchiveSAFSessionFrozenAuthenticatedArchiveStreamsToRealDescriptors(t *
 
 	result := session.Finish()
 	if result == nil || result.State() != fileops.UnpackStatePublishedDurabilityUncertain ||
-		!result.AttemptedEver() || result.CleanupIncomplete() {
+		!result.AttemptedEver() || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("authenticated SAF finish = %#v; want attempted durability-uncertain", result)
 	}
 	assertNativeArchiveStage(t, stageParent, rawTarget, 0)
@@ -480,8 +481,8 @@ func TestArchiveSAFSessionAliasesAndOutOfOrderActionsCannotAdvanceAuthority(t *t
 		second.AttemptedEver() {
 		t.Fatalf("out-of-order attempt = %#v attempted-ever=%v; want no provider authority", step, second.AttemptedEver())
 	}
-	if result := second.Abort(); result.State() != fileops.UnpackStateNotPublished ||
-		result.AttemptedEver() {
+	if result := second.Abort(); result.State() != nativeArchiveSAFUnattemptedState() ||
+		result.AttemptedEver() || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("out-of-order abort = %#v", result)
 	}
 }
@@ -504,6 +505,7 @@ func TestArchiveSAFSessionCleanupUncertaintyIsIndeterminateWithoutProviderAttemp
 			stagePath := findArchiveSAFStagePath(t, parent)
 			foreign := []byte("foreign stage pathname must survive")
 			var retainedPath string
+			blockedReplacement := false
 			if fault == "journal hardlink" {
 				retainedPath = filepath.Join(parent, "unexpected-plaintext-link")
 				if err := os.Link(stagePath, retainedPath); err != nil {
@@ -512,9 +514,14 @@ func TestArchiveSAFSessionCleanupUncertaintyIsIndeterminateWithoutProviderAttemp
 			} else {
 				retainedPath = filepath.Join(parent, "moved-private-stage")
 				if err := os.Rename(stagePath, retainedPath); err != nil {
-					t.Fatalf("move exact stage before pathname replacement: %v", err)
-				}
-				if err := os.WriteFile(stagePath, foreign, 0o600); err != nil {
+					if runtime.GOOS != "windows" || !errors.Is(err, syscall.Errno(32)) {
+						t.Fatalf("move exact stage before pathname replacement: %v", err)
+					}
+					blockedReplacement = true
+					if got, err := readArchiveCustodyTestFile(stagePath); err != nil || !bytes.Equal(got, archive) {
+						t.Fatalf("blocked pathname replacement changed archive bytes: %v", err)
+					}
+				} else if err := os.WriteFile(stagePath, foreign, 0o600); err != nil {
 					t.Fatalf("replace stage pathname with a foreign file: %v", err)
 				}
 			}
@@ -529,6 +536,16 @@ func TestArchiveSAFSessionCleanupUncertaintyIsIndeterminateWithoutProviderAttemp
 			}
 			if step := session.Attempt(0); step.Kind() != NativeArchiveSAFStepRejected || session.AttemptedEver() {
 				t.Fatal("terminal cleanup uncertainty granted provider-effect authority")
+			}
+			if blockedReplacement {
+				// Namespace protection succeeded, but native Windows still cannot
+				// prove the cleanup directory barrier. No provider effect is allowed.
+				for _, absent := range []string{stagePath, retainedPath, target} {
+					if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("blocked replacement left unexpected plaintext: %v", err)
+					}
+				}
+				return
 			}
 			wantStage := archive
 			if fault == "stage pathname replacement" {
@@ -817,16 +834,28 @@ func (writer *archiveSAFSettlementWriter) release() {
 
 func findArchiveSAFStagePath(t *testing.T, parent string) string {
 	t.Helper()
-	entries, err := os.ReadDir(parent)
+	entries, err := readArchiveCustodyTestDirectory(parent)
 	if err != nil {
 		t.Fatalf("read stage parent: %v", err)
 	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".picocrypt-pcv3-") &&
 			!strings.HasSuffix(entry.Name(), ".journal") {
+			if entry.IsDir() {
+				return findArchiveSAFStagePath(t, filepath.Join(parent, entry.Name()))
+			}
 			return filepath.Join(parent, entry.Name())
 		}
 	}
 	t.Fatal("journaled archive stage not found")
 	return ""
+}
+
+// A live stage is removed on every platform. Windows cannot confirm the
+// directory barrier, so even an unattempted session retains cleanup uncertainty.
+func nativeArchiveSAFUnattemptedState() fileops.UnpackState {
+	if runtime.GOOS == "windows" {
+		return fileops.UnpackStatePublicationIndeterminate
+	}
+	return fileops.UnpackStateNotPublished
 }

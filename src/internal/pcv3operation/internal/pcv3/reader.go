@@ -253,12 +253,16 @@ func inspectPrimaryCapsule(codecs *pcencoding.RSCodecs, encoded []byte) (Candida
 }
 
 func inspectCapsuleCandidate(codecs *pcencoding.RSCodecs, encoded []byte, role CapsuleRole) (Candidate, error) {
+	return inspectCapsuleCandidateMode(codecs, encoded, role, false)
+}
+
+func inspectCapsuleCandidateMode(codecs *pcencoding.RSCodecs, encoded []byte, role CapsuleRole, derivedRoot bool) (Candidate, error) {
 	decoded, err := decodeCapsule(codecs, encoded)
 	if err != nil {
 		return Candidate{}, err
 	}
 	defer clear(decoded[:])
-	candidate, err := ValidateDecodedCapsule(decoded[:], role)
+	candidate, err := validateDecodedCapsule(decoded[:], role, derivedRoot)
 	if err != nil {
 		return Candidate{}, err
 	}

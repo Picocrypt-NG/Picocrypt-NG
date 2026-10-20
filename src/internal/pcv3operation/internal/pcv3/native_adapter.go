@@ -1,6 +1,7 @@
 package pcv3
 
 import (
+	"Picocrypt-NG/internal/diskspace"
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3resource"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -42,6 +44,7 @@ type NativeD1WriteRequest struct {
 	DestinationPath     string
 	Protected           []string
 	JournalPrivateStage bool
+	LeasedPrivateStage  bool
 }
 
 // RunNativeD1WriteWithPublication returns typed publication truth and optionally
@@ -64,6 +67,7 @@ func RunNativeD1WriteWithPublication(ctx context.Context, request *NativeD1Write
 	plaintext := request.Plaintext
 	destinationPath := request.DestinationPath
 	journalPrivateStage := request.JournalPrivateStage
+	leasedPrivateStage := request.LeasedPrivateStage
 	protected := append([]string(nil), request.Protected...)
 	request.Suite = 0
 	request.PayloadKind = 0
@@ -82,6 +86,7 @@ func RunNativeD1WriteWithPublication(ctx context.Context, request *NativeD1Write
 	}
 	request.Protected = nil
 	request.JournalPrivateStage = false
+	request.LeasedPrivateStage = false
 	defer clear(comment)
 	defer func() {
 		if factors != nil {
@@ -89,7 +94,7 @@ func RunNativeD1WriteWithPublication(ctx context.Context, request *NativeD1Write
 		}
 	}()
 
-	if ctx == nil || suite != SuiteParanoid || factors == nil ||
+	if ctx == nil || !isSupportedSuite(suite) || factors == nil ||
 		admitter == nil || sourcePath == "" || source == nil || plaintext == nil ||
 		destinationPath == "" {
 		return nil, nil, newD1OuterFailure(StageCredentialPolicy, errInvalidD1Creation)
@@ -117,6 +122,7 @@ func RunNativeD1WriteWithPublication(ctx context.Context, request *NativeD1Write
 		plaintext:           plaintext,
 		retainedOutput:      retainedOutput,
 		journalPrivateStage: journalPrivateStage,
+		leasedPrivateStage:  leasedPrivateStage,
 		normal: normalWriteRequest{
 			suite:           suite,
 			payloadKind:     payloadKind,
@@ -223,7 +229,9 @@ type NativeReadRequest struct {
 	Target              string
 	Protected           []string
 	JournalPrivateStage bool
+	LeasedPrivateStage  bool
 	PrepareArchive      bool
+	EncryptedStream     bool
 }
 
 // NativePayloadDisposition tells the operation whether the completed stage is
@@ -234,6 +242,7 @@ type NativePayloadDisposition uint8
 const (
 	NativePayloadPublish NativePayloadDisposition = iota + 1
 	NativePayloadArchive
+	NativePayloadStream
 )
 
 // NativeReadCallback receives only a callback-scoped, opaque output action.
@@ -321,6 +330,27 @@ func (output *NativeReadOutput) Archive() *NativeArchiveHandoff {
 	}
 	output.state.consumed = true
 	return handoff
+}
+
+// TakeEncryptedStream consumes the callback-scoped sequential transport action.
+// Its owner is sealed only after the ordinary reader has completed validation.
+func (output *NativeReadOutput) TakeEncryptedStream() *fileops.EncryptedSpool {
+	if output == nil || output.state == nil {
+		return nil
+	}
+	output.state.mu.Lock()
+	defer output.state.mu.Unlock()
+	if !output.state.active || output.state.consumed ||
+		output.state.disposition != NativePayloadStream || output.state.sink == nil {
+		return nil
+	}
+	owner := output.state.sink.encryptedOutput
+	if owner == nil {
+		return nil
+	}
+	output.state.sink.encryptedOutput = nil
+	output.state.consumed = true
+	return owner
 }
 
 // NativeArchiveResult is the closed extractor projection returned by the
@@ -591,14 +621,18 @@ func RunNativeRead(
 	target := request.Target
 	protected := append([]string(nil), request.Protected...)
 	journalPrivateStage := request.JournalPrivateStage
+	leasedPrivateStage := request.LeasedPrivateStage
 	prepareArchive := request.PrepareArchive
+	encryptedStream := request.EncryptedStream
 	request.Source = nil
 	request.SourceSize = 0
 	request.Factors = nil
 	request.Admitter = nil
 	request.Target = ""
 	request.JournalPrivateStage = false
+	request.LeasedPrivateStage = false
 	request.PrepareArchive = false
+	request.EncryptedStream = false
 	for index := range request.Protected {
 		request.Protected[index] = ""
 	}
@@ -608,7 +642,7 @@ func RunNativeRead(
 	}()
 
 	if ctx == nil || source == nil || sourceSize < 0 || factors == nil ||
-		target == "" || callback == nil {
+		target == "" || callback == nil || (encryptedStream && prepareArchive) {
 		closeNativeReadFactors(factors)
 		factors = nil
 		return nativeReadFailure(OutcomeOperationFailed, StageCredentialPolicy, CodeOperationFailed)
@@ -640,7 +674,9 @@ func RunNativeRead(
 		target:              target,
 		protected:           protected,
 		journalPrivateStage: journalPrivateStage,
+		leasedPrivateStage:  leasedPrivateStage,
 		prepareArchive:      prepareArchive,
+		encryptedStream:     encryptedStream,
 	}
 	provider := &nativeCredentialProvider{readerCredentialProvider: readerCredentialProvider{
 		factors:  factors,
@@ -669,14 +705,41 @@ func runNativeReadSession(
 	provider capsuleCredentialProvider,
 	sink *nativeReadSink,
 	callback NativeReadCallback,
-) *NativeReadResult {
+) (result *NativeReadResult) {
 	if sink == nil || callback == nil {
 		if closer, ok := provider.(capsuleCredentialProviderCloser); ok {
 			closer.close()
 		}
 		return nativeReadFailure(OutcomeOperationFailed, StageCredentialPolicy, CodeOperationFailed)
 	}
-	defer sink.abortUncommitted()
+	defer func() {
+		panicValue := recover()
+		sink.abortUncommitted()
+		sink.snapshot(result)
+		if panicValue != nil {
+			var cleanupErr error
+			if sink.cleanupIncomplete {
+				cleanupErr = pcv3publication.ErrCleanupIncomplete
+			}
+			fileops.RepanicWithCleanup(panicValue, cleanupErr)
+		}
+	}()
+	if sink.encryptedStream {
+		// A normal encoded volume is at least as large as its plaintext. This
+		// finite bound avoids treating observed free space as a reservation.
+		var physical uint64
+		err := os.ErrInvalid
+		if sourceSize >= 0 {
+			physical, err = fileops.EncryptedSpoolPhysicalSize(uint64(sourceSize))
+		}
+		if err != nil {
+			if closer, ok := provider.(capsuleCredentialProviderCloser); ok {
+				closer.close()
+			}
+			return nativeReadFailure(OutcomeOperationFailed, StageOutputWrite, CodeOperationFailed)
+		}
+		sink.streamPhysicalLimit = physical
+	}
 	semantic, completion := readNormalVolumeWithProvider(
 		ctx,
 		source,
@@ -685,7 +748,7 @@ func runNativeReadSession(
 		provider,
 		sink,
 	)
-	result := nativeReadResultFromSemantic(semantic)
+	result = nativeReadResultFromSemantic(semantic)
 	if semantic != nil {
 		semantic.Close()
 	}
@@ -694,16 +757,30 @@ func runNativeReadSession(
 		sink.snapshot(result)
 		return result
 	}
-	if err := sink.ensureStage(); err != nil {
+	var outputErr error
+	if sink.encryptedStream {
+		outputErr = sink.ensureEncryptedOutput(ctx)
+		if outputErr == nil {
+			outputErr = sink.encryptedOutput.Seal()
+		}
+	} else {
+		outputErr = sink.ensureStage()
+	}
+	if outputErr != nil {
 		result.outcome = OutcomeOperationFailed
 		result.stage = StageOutputWrite
+		if ctx.Err() != nil {
+			result.stage = StageCancellation
+		}
 		result.code = CodeOperationFailed
 		sink.snapshot(result)
 		return result
 	}
 
 	disposition := NativePayloadPublish
-	if kind, authenticated := completion.authenticatedPayloadKind(); authenticated && result.outcome == OutcomeSuccess {
+	if sink.encryptedStream {
+		disposition = NativePayloadStream
+	} else if kind, authenticated := completion.authenticatedPayloadKind(); authenticated && result.outcome == OutcomeSuccess {
 		if kind == PayloadKindArchive {
 			disposition = NativePayloadArchive
 		} else if sink.prepareArchive {
@@ -803,8 +880,12 @@ type nativeReadSink struct {
 	target              string
 	protected           []string
 	journalPrivateStage bool
+	leasedPrivateStage  bool
 	prepareArchive      bool
 	preparedZIP         bool
+	encryptedStream     bool
+	streamPhysicalLimit uint64
+	encryptedOutput     *fileops.EncryptedSpool
 	stage               *pcv3publication.Stage
 	stageWriter         func(io.Writer) io.Writer
 	nextRecord          uint64
@@ -816,6 +897,47 @@ type nativeReadSink struct {
 	publicationStage     Stage
 	publicationCode      pcv3publication.Code
 	cleanupIncomplete    bool
+}
+
+const nativeStreamReserveBytes uint64 = 64 << 20
+
+func (sink *nativeReadSink) ensureEncryptedOutput(ctx context.Context) error {
+	if sink == nil || sink.closed || !sink.encryptedStream || sink.streamPhysicalLimit == 0 || ctx == nil {
+		return errors.New("pcv3: native encrypted output unavailable")
+	}
+	if sink.encryptedOutput != nil {
+		return nil
+	}
+	available, err := diskspace.Available(filepath.Dir(sink.target))
+	if err != nil {
+		return err
+	}
+	if available < 0 || uint64(available) <= nativeStreamReserveBytes {
+		return errors.New("pcv3: insufficient encrypted output space")
+	}
+	physicalLimit := min(sink.streamPhysicalLimit, uint64(available)-nativeStreamReserveBytes)
+	owner, err := fileops.CreateEncryptedSpool(ctx, fileops.EncryptedSpoolOptions{
+		NearPath: sink.target, MaxPhysicalBytes: physicalLimit, Cancel: func() bool { return ctx.Err() != nil },
+	})
+	if err != nil {
+		if errors.Is(err, fileops.ErrEncryptedSpoolCleanupIncomplete) {
+			sink.cleanupIncomplete = true
+		}
+		return err
+	}
+	available, err = diskspace.AvailableFile(owner.File())
+	if err == nil && (available < 0 || uint64(available) < physicalLimit+nativeStreamReserveBytes) {
+		err = errors.New("pcv3: insufficient pinned encrypted output space")
+	}
+	if err != nil {
+		cleanupErr := owner.Close()
+		if cleanupErr != nil {
+			sink.cleanupIncomplete = true
+		}
+		return errors.Join(err, cleanupErr)
+	}
+	sink.encryptedOutput = owner
+	return nil
 }
 
 func (sink *nativeReadSink) ensureStage() error {
@@ -830,6 +952,12 @@ func (sink *nativeReadSink) ensureStage() error {
 		append([]string(nil), sink.protected...),
 		pcv3publication.PolicyNoReplace,
 	)
+	if err == nil && sink.leasedPrivateStage {
+		if journalErr := stage.PersistLeasedCleanupJournal(); journalErr != nil {
+			err = errors.Join(journalErr, pcv3publication.ErrCleanupIncomplete, stage.Cleanup())
+			stage = nil
+		}
+	}
 	if err == nil && sink.journalPrivateStage {
 		if journalErr := stage.PersistCleanupJournal(); journalErr != nil {
 			err = errors.Join(
@@ -863,16 +991,24 @@ func (sink *nativeReadSink) writeVerifiedRecord(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := sink.ensureStage(); err != nil {
-		return err
+	var destination io.Writer
+	if sink.encryptedStream {
+		if err := sink.ensureEncryptedOutput(ctx); err != nil {
+			return err
+		}
+		destination = sink.encryptedOutput
+	} else {
+		if err := sink.ensureStage(); err != nil {
+			return err
+		}
+		file := sink.stage.File()
+		if file == nil {
+			return errors.New("pcv3: native output stage unavailable")
+		}
+		destination = file
 	}
-	file := sink.stage.File()
-	if file == nil {
-		return errors.New("pcv3: native output stage unavailable")
-	}
-	destination := io.Writer(file)
 	if sink.stageWriter != nil {
-		destination = sink.stageWriter(file)
+		destination = sink.stageWriter(destination)
 		if destination == nil {
 			return errors.New("pcv3: native output stage writer unavailable")
 		}
@@ -912,6 +1048,9 @@ func (sink *nativeReadSink) publishRetained(
 	publication, retained := sink.stage.PublishRetained(ctx)
 	sink.retainPublication(publication)
 	if retained != nil {
+		if sink.stage.Cleanup() != nil {
+			sink.cleanupIncomplete = true
+		}
 		sink.stage = nil
 	}
 	return retained
@@ -966,6 +1105,12 @@ func (sink *nativeReadSink) abortUncommitted() {
 		return
 	}
 	sink.closed = true
+	if sink.encryptedOutput != nil {
+		if sink.encryptedOutput.Close() != nil {
+			sink.cleanupIncomplete = true
+		}
+		sink.encryptedOutput = nil
+	}
 	if sink.stage != nil {
 		if err := sink.stage.Cleanup(); err != nil {
 			sink.cleanupIncomplete = true
@@ -978,6 +1123,9 @@ func (sink *nativeReadSink) abortUncommitted() {
 	sink.protected = nil
 	sink.target = ""
 	sink.journalPrivateStage = false
+	sink.leasedPrivateStage = false
+	sink.encryptedStream = false
+	sink.streamPhysicalLimit = 0
 	sink.stageWriter = nil
 }
 

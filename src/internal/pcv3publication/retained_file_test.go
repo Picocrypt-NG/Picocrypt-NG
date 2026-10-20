@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -109,8 +110,9 @@ func TestSplitRetainedNeverRemovesSourceReplacement(t *testing.T) {
 	foreign := []byte("foreign replacement must survive")
 	retained := publishRetainedTestFile(t, target, payload)
 	replaced := false
+	var attackErr error
 
-	_, err := SplitRetainedWithResult(retained, fileops.SplitOptions{
+	completion, err := SplitRetainedWithResult(retained, fileops.SplitOptions{
 		ChunkSize: 1,
 		Unit:      fileops.SplitUnitKiB,
 		Progress: func(_ float32, info string) {
@@ -118,7 +120,12 @@ func TestSplitRetainedNeverRemovesSourceReplacement(t *testing.T) {
 				return
 			}
 			if err := os.Rename(target, moved); err != nil {
-				t.Fatalf("move exact retained source: %v", err)
+				if !windowsSharingRefusal(err) {
+					t.Fatalf("move exact retained source: %v", err)
+				}
+				attackErr = err
+				requireFileBytes(t, target, payload)
+				return
 			}
 			if err := os.WriteFile(target, foreign, 0o640); err != nil {
 				t.Fatalf("install foreign source replacement: %v", err)
@@ -126,6 +133,22 @@ func TestSplitRetainedNeverRemovesSourceReplacement(t *testing.T) {
 			replaced = true
 		},
 	})
+	if attackErr != nil {
+		if err != nil || completion != fileops.SplitCompleteDurable || retained.Live() {
+			t.Fatalf("blocked source replacement did not complete exact split: %v/%v", completion, err)
+		}
+		for _, absent := range []string{target, moved} {
+			if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("blocked source replacement left an unexpected source: %v", err)
+			}
+		}
+		recombined := filepath.Join(directory, "recombined.pcv")
+		if err := fileops.Recombine(fileops.RecombineOptions{InputBase: target, OutputPath: recombined}); err != nil {
+			t.Fatal(err)
+		}
+		requireFileBytes(t, recombined, payload)
+		return
+	}
 	if err == nil {
 		t.Fatal("split accepted a replacement for its exact retained source")
 	}
@@ -151,10 +174,17 @@ func TestSplitRetainedRejectsContentChangedAfterPrepublicationDigest(t *testing.
 
 	mutated := append([]byte(nil), payload...)
 	mutated[len(mutated)/2] ^= 0xff
-	if err := os.WriteFile(target, mutated, 0o600); err != nil {
-		t.Fatalf("mutate retained source in place: %v", err)
+	// Root.OpenFile retains compatible Windows DELETE sharing. The attack is
+	// still a real in-place content change which must fail the frozen digest.
+	writer, err := retained.root.OpenFile(retained.targetName, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open retained source for in-place mutation: %v", err)
 	}
-	_, err := SplitRetainedWithResult(retained, fileops.SplitOptions{
+	written, writeErr := writer.WriteAt(mutated, 0)
+	if err := errors.Join(writeErr, writer.Close()); err != nil || written != len(mutated) {
+		t.Fatalf("mutate retained source in place: %d/%v", written, err)
+	}
+	_, err = SplitRetainedWithResult(retained, fileops.SplitOptions{
 		ChunkSize: 1,
 		Unit:      fileops.SplitUnitKiB,
 	})
@@ -311,7 +341,22 @@ func TestRetainedFileRemoveRefusesReplacement(t *testing.T) {
 	foreign := []byte("foreign replacement must survive")
 	retained := publishRetainedTestFile(t, target, payload)
 	if err := os.Rename(target, moved); err != nil {
-		t.Fatalf("move exact retained target: %v", err)
+		if !windowsSharingRefusal(err) {
+			t.Fatalf("move exact retained target: %v", err)
+		}
+		requireFileBytes(t, target, payload)
+		if err := retained.RemoveExact(); err != nil {
+			t.Fatalf("remove original after blocked target replacement: %v", err)
+		}
+		if retained.Live() || retained.file != nil || retained.identityPin != nil || retained.root != nil || retained.parent != nil {
+			t.Fatal("blocked replacement left retained custody live")
+		}
+		for _, absent := range []string{target, moved} {
+			if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("blocked target replacement left an unexpected file: %v", err)
+			}
+		}
+		return
 	}
 	if err := os.WriteFile(target, foreign, 0o640); err != nil {
 		t.Fatalf("write foreign replacement: %v", err)
@@ -339,7 +384,7 @@ func TestRetainedFileReportsPostRemoveDirectorySyncUncertainty(t *testing.T) {
 	syncCalls := 0
 	operations.syncDirectory = func(parent *os.File) error {
 		syncCalls++
-		if syncCalls == 1 {
+		if syncCalls <= 3 {
 			return classifierTestDirectorySync(parent)
 		}
 		return errors.New("TEST ONLY post-remove directory sync failure")
@@ -362,7 +407,7 @@ func TestRetainedFileReportsPostRemoveDirectorySyncUncertainty(t *testing.T) {
 	if !errors.Is(err, ErrCleanupIncomplete) {
 		t.Fatalf("post-remove sync result = %v; want ErrCleanupIncomplete", err)
 	}
-	if syncCalls != 2 {
+	if syncCalls != 4 {
 		t.Fatalf("directory sync calls = %d; want publication plus removal", syncCalls)
 	}
 	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
@@ -391,7 +436,7 @@ func TestPublishRetainedNeverGrantsForUncertainOrIndeterminate(t *testing.T) {
 		{
 			name: "atomic outcome indeterminate",
 			mutate: func(operations *platformOperations) {
-				operations.atomicPublish = func(*os.File, string, string, Policy) error {
+				operations.atomicPublish = func(*os.File, *os.File, *os.File, string, string, Policy) error {
 					return nil
 				}
 			},
@@ -461,13 +506,22 @@ func TestPublishRetainedReportsIndeterminateWhenMintAndCleanupBothFail(t *testin
 	directory := t.TempDir()
 	target := filepath.Join(directory, "private-output.bin")
 	operations, _ := realRenameOperations(t, directory)
+	var stage *Stage
 	operations.openRetained = func(*os.Root, string) (*os.File, error) {
+		if runtime.GOOS == "windows" {
+			// By-handle removal does not call the pathname seam. Loss of the
+			// last identity handle is the actual Windows cleanup fault here.
+			if err := stage.identityPin.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
 		return nil, errors.New("TEST ONLY retained descriptor failure")
 	}
 	operations.removeStage = func(*os.Root, string) error {
 		return errors.New("TEST ONLY exact cleanup failure")
 	}
-	stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
+	var err error
+	stage, err = createWithOperations(target, nil, PolicyNoReplace, operations)
 	if err != nil {
 		t.Fatalf("create stage: %v", err)
 	}

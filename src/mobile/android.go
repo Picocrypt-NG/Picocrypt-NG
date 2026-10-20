@@ -56,6 +56,7 @@ const (
 
 type pcv3Envelope struct {
 	mode                               pcv3operation.Mode
+	d1SuiteHint                        pcv3operation.Suite
 	create                             bool
 	d1                                 bool
 	suite                              pcv3operation.Suite
@@ -75,7 +76,7 @@ type pcv3Envelope struct {
 // JSON envelope is a strict, versioned, authority-free value; password remains
 // a separate mutable byte buffer and is zeroed before this function returns.
 // Creation modes ("write-normal", "write-d1") require the exact write field
-// set; write-d1 always runs the paranoid suite.
+// set; both write modes preserve the selected payload suite.
 func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 	defer secret.SecureZero(password)
 
@@ -199,12 +200,13 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 	}
 
 	request := &pcv3operation.Request{
-		Mode:      envelope.mode,
-		Source:    source,
-		Factors:   factors,
-		Target:    envelope.target,
-		Protected: append(append([]string(nil), envelope.keyfiles...), envelope.source),
-		Reporter:  pcv3Reporter(operation),
+		Mode:        envelope.mode,
+		D1SuiteHint: envelope.d1SuiteHint,
+		Source:      source,
+		Factors:     factors,
+		Target:      envelope.target,
+		Protected:   append(append([]string(nil), envelope.keyfiles...), envelope.source),
+		Reporter:    pcv3Reporter(operation),
 	}
 	if envelope.mode == pcv3operation.ModeForceUnverifiedNormal ||
 		envelope.mode == pcv3operation.ModeForceUnverifiedD1 {
@@ -246,6 +248,7 @@ func releasePCV3Request(request *pcv3operation.Request) {
 		request.Source = nil
 	}
 	request.Mode = 0
+	request.D1SuiteHint = 0
 	request.Target = ""
 	for index := range request.Protected {
 		request.Protected[index] = ""
@@ -287,6 +290,7 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 	for _, key := range []string{"inputFiles", "onlyFiles", "onlyFolders", "compress"} {
 		allowed[key] = struct{}{}
 	}
+	allowed["d1SuiteHint"] = struct{}{}
 	values, err := decodePCV3ObjectFields(input, maxPCV3EnvelopeBytes, allowed)
 	if err != nil {
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
@@ -329,8 +333,27 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 	default:
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 	}
-	extended := envelope.create && len(values) == len(required)+4
-	if !extended && len(values) != len(required) {
+	requiredCount := len(required)
+	if raw, present := values["d1SuiteHint"]; present {
+		if envelope.mode != pcv3operation.ModeForceUnverifiedD1 {
+			return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
+		}
+		hint, err := decodePCV3String(raw, 64)
+		if err != nil {
+			return pcv3Envelope{}, err
+		}
+		switch hint {
+		case "standard":
+			envelope.d1SuiteHint = pcv3operation.SuiteStandard
+		case "paranoid":
+			envelope.d1SuiteHint = pcv3operation.SuiteParanoid
+		default:
+			return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
+		}
+		requiredCount++
+	}
+	extended := envelope.create && len(values) == requiredCount+4
+	if !extended && len(values) != requiredCount {
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 	}
 	for name := range required {
@@ -405,10 +428,6 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 		case "paranoid":
 			envelope.suite = pcv3operation.SuiteParanoid
 		default:
-			return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
-		}
-		// D1 creation has no suite choice: it always runs the paranoid suite.
-		if envelope.d1 && envelope.suite != pcv3operation.SuiteParanoid {
 			return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
 		}
 		envelope.comment = comment

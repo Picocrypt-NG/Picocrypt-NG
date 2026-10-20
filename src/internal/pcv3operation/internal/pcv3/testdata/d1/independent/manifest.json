@@ -1,6 +1,6 @@
 {
   "test_only": true,
-  "generator_sha256": "39626af2e58dea53920dec5300d6f94edf6ed7fb47cda8e02f47ed92614424d4",
+  "generator_sha256": "faae132d162e846541d2dc24670fc75b707269c0e086dc93059fe1e438ae4f71",
   "libgcrypt_version": "1.12.4",
   "kdf": {
     "algorithm": "Argon2id",
@@ -12,14 +12,95 @@
   },
   "credential_mode": "password-and-keyfiles",
   "keyfile_mode": "ordered",
+  "d1_profiles": {
+    "standard": 257,
+    "paranoid": 258
+  },
+  "d1_bootstrap_bytes": 320,
+  "composition": [
+    {
+      "file": "d1-empty-standard.pcv",
+      "suite": 1,
+      "payload_body_rs": false,
+      "plaintext": {
+        "recipe": "byte((index * 29 + 7) % 256), index starts at zero",
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "file": "d1-exact-mib-paranoid.pcv",
+      "suite": 2,
+      "payload_body_rs": false,
+      "plaintext": {
+        "recipe": "byte((index * 29 + 7) % 256), index starts at zero",
+        "size": 1048576,
+        "sha256": "d314d3f392ab9949f8024a234d9d1ada551697a3c09b410d0ec56a5ee5b041f8"
+      }
+    },
+    {
+      "file": "d1-multi-standard.pcv",
+      "suite": 1,
+      "payload_body_rs": false,
+      "plaintext": {
+        "recipe": "byte((index * 29 + 7) % 256), index starts at zero",
+        "size": 1048641,
+        "sha256": "8232c26d26c8bd37bc2b6e29e9e5b050fe78b321999c47523758c3b3001b75b8"
+      }
+    },
+    {
+      "file": "d1-multi-paranoid.pcv",
+      "suite": 2,
+      "payload_body_rs": false,
+      "plaintext": {
+        "recipe": "byte((index * 29 + 7) % 256), index starts at zero",
+        "size": 1048641,
+        "sha256": "8232c26d26c8bd37bc2b6e29e9e5b050fe78b321999c47523758c3b3001b75b8"
+      }
+    },
+    {
+      "file": "d1-multi-rs-standard.pcv",
+      "suite": 1,
+      "payload_body_rs": true,
+      "plaintext": {
+        "recipe": "byte((index * 29 + 7) % 256), index starts at zero",
+        "size": 1048641,
+        "sha256": "8232c26d26c8bd37bc2b6e29e9e5b050fe78b321999c47523758c3b3001b75b8"
+      }
+    },
+    {
+      "file": "d1-multi-rs-paranoid.pcv",
+      "suite": 2,
+      "payload_body_rs": true,
+      "plaintext": {
+        "recipe": "byte((index * 29 + 7) % 256), index starts at zero",
+        "size": 1048641,
+        "sha256": "8232c26d26c8bd37bc2b6e29e9e5b050fe78b321999c47523758c3b3001b75b8"
+      }
+    },
+    {
+      "file": "d1-outer-exact-standard.pcv",
+      "suite": 1,
+      "payload_body_rs": false,
+      "plaintext": {
+        "recipe": "byte((index * 29 + 7) % 256), index starts at zero",
+        "size": 1046216,
+        "sha256": "f05a3add1163e899ce7d7db9e96280729bafc9abc5567c8df17c61bda77ddee8"
+      }
+    }
+  ],
   "files": {
     "normal.pcv": {
       "size": 2395,
       "sha256": "a468f66c81849b03c58312acf7f2f90677e317ad200820e90ec38da5b0459bcb"
     },
     "d1.pcv": {
-      "size": 2923,
-      "sha256": "30b62308a0bcda8d56368ac37c8c7424c36e37945401048cbd20b1044773c631"
+      "size": 3115,
+      "sha256": "487a18056597d97e36ebcaf70aed25ec9cdbd306803ebaf618eba186e05d00bd"
+    },
+    "d1-standard.pcv": {
+      "size": 3115,
+      "sha256": "22fda4fbe068d85f41d8fe22857320172c67fc5ba806823ce57bdd1072b113bf"
     },
     "plaintext.bin": {
       "size": 51,
@@ -37,9 +118,37 @@
       "size": 23,
       "sha256": "2e2004c7040e3d7e85819090bcfbcd4beb0774772019ef021c5db566b057ae48"
     },
+    "d1-empty-standard.pcv": {
+      "size": 2952,
+      "sha256": "e0dd184499a8dfafef2c174310f8fb92cac1a709456bf4e5a6f76f4ecb1298ae"
+    },
+    "d1-exact-mib-paranoid.pcv": {
+      "size": 1051704,
+      "sha256": "860396fa78f4f18778cf798fc28f72895f0c0c0bb9ff5e29f3850b1ab37cbf62"
+    },
+    "d1-multi-standard.pcv": {
+      "size": 1051881,
+      "sha256": "4d730c915da97dda4a13a50686ba376492885cb41eda21db8a2e80f7082df01c"
+    },
+    "d1-multi-paranoid.pcv": {
+      "size": 1051881,
+      "sha256": "7602d9060d9ba80372a95de9cf7a359ad61908a116361cb3bd7df28b9c71c7fb"
+    },
+    "d1-multi-rs-standard.pcv": {
+      "size": 1117704,
+      "sha256": "cbea8b3643421511bd9db74048b7e0cf92ec0e0f0388cc4a6a44ed06e7476605"
+    },
+    "d1-multi-rs-paranoid.pcv": {
+      "size": 1117704,
+      "sha256": "f7f4b2408ecbeba26df6e1db8a72b516939f0574c8628182b899d1d95c76a853"
+    },
+    "d1-outer-exact-standard.pcv": {
+      "size": 1049344,
+      "sha256": "226259647a867aba9b208f4ef05d7796507cdba86c72b352853eda110dbed328"
+    },
     "randomness.json": {
-      "size": 1012,
-      "sha256": "b19d5964dafef5abe2d82f27cc21dc76c97ed4628450cbe7bedf45cc5d285f8e"
+      "size": 1107,
+      "sha256": "8b38cbba25326fb53d0816bf6c6c6e9e33d39e587b2d59db546473a63f76ad2e"
     }
   }
 }

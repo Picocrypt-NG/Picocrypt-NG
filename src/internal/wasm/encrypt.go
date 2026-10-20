@@ -166,6 +166,7 @@ func EncryptVolume(plaintext, password []byte, opts EncryptOptions) ([]byte, int
 	// Derive key from the NFC-normalized password (#19) so web-encrypted
 	// volumes are cross-platform-decryptable regardless of how it was typed.
 	passwordBytes := pwnorm.EncodeForKDF(password)
+	defer crypto.SecureZero(passwordBytes)
 	key, err := deriveWASMKey(passwordBytes, salt, opts.Paranoid)
 	zeroWASMSensitiveBuffer(wasmZeroingPasswordBytes, passwordBytes)
 	if err != nil {
@@ -224,6 +225,7 @@ func EncryptVolume(plaintext, password []byte, opts EncryptOptions) ([]byte, int
 	if err != nil {
 		return nil, ErrRandomFailure
 	}
+	defer crypto.SecureZero(serpentKey)
 
 	// Create MAC
 	mac, err := crypto.NewMAC(macSubkey, opts.Paranoid)

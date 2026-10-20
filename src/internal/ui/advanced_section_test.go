@@ -2,6 +2,8 @@ package ui
 
 import (
 	"Picocrypt-NG/internal/app"
+	"Picocrypt-NG/internal/pcv3operation"
+	"Picocrypt-NG/internal/pcv3publication"
 	"context"
 	"errors"
 	"os"
@@ -115,16 +117,34 @@ func TestNativeGUIEncryptsPCV3(t *testing.T) {
 		t.Fatalf("capture GUI split operation: %v", err)
 	}
 	result = executeVolumeOperation(context.Background(), splitInput, nil)
-	requireNativePCV3Operation(t, result)
 	if runtime.GOOS == "windows" {
+		// The complete ciphertext and chunks exist, but retiring the retained
+		// owner cannot prove its directory barrier. Keep both failure axes.
+		if result.pcv3 == nil || result.completed || !errors.Is(result.err, result.pcv3) ||
+			result.pcv3.Outcome() != pcv3operation.OutcomeOperationFailed ||
+			result.pcv3.Stage() != pcv3operation.StageOutputPublication ||
+			result.pcv3.Code() != pcv3operation.CodeOperationFailed ||
+			result.pcv3.Diagnostic() != pcv3operation.DiagnosticCoreFailure ||
+			result.pcv3.CompletionClass() != pcv3operation.CompletionDurabilityUncertain ||
+			!result.pcv3.PublicationAttempted() ||
+			result.pcv3.PublicationState() != pcv3publication.StatePublishedDurabilityUncertain ||
+			result.pcv3.PublicationStage() != pcv3operation.StageDirectorySync ||
+			result.pcv3.PublicationCode() != pcv3publication.CodeDurabilityUncertain ||
+			!slices.Equal(result.pcv3.Warnings(), []pcv3operation.Warning{pcv3operation.WarningDurabilityUncertain, pcv3operation.WarningCleanupIncomplete}) ||
+			result.pcv3.SourceDeletionAllowed() || result.pcv3.ArchiveFollowUp() != nil || result.pcv3.OutputFollowUp() != nil {
+			t.Fatalf("uncertain GUI split lost its exact failure and cleanup tuple: %+v", result)
+		}
 		if !result.pcv3.SplitOutputUncertain() {
 			t.Fatal("native split warning lost retained complete ciphertext")
 		}
 		if info, err := os.Stat(splitOutput); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 			t.Fatalf("uncertain GUI split lost complete ciphertext: %v, %v", info, err)
 		}
-	} else if _, err := os.Lstat(splitOutput); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("GUI PCV3 split retained the complete volume: %v", err)
+	} else {
+		requireNativePCV3Operation(t, result)
+		if _, err := os.Lstat(splitOutput); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("GUI PCV3 split retained the complete volume: %v", err)
+		}
 	}
 	if _, err := os.Stat(splitOutput + ".0"); err != nil {
 		t.Fatalf("GUI PCV3 split did not publish chunk zero: %v", err)
@@ -138,8 +158,8 @@ func TestNativeGUIEncryptsPCV3(t *testing.T) {
 		t.Fatal("PCV3 GUI did not retain the deniability control")
 	}
 	a.deniabilityCheck.SetChecked(true)
-	if !a.State.Deniability || !a.State.Paranoid {
-		t.Fatal("PCV3 D1 selection did not enable deniability and paranoid mode")
+	if !a.State.Deniability || a.State.Paranoid {
+		t.Fatal("PCV3 D1 selection changed the captured paranoid choice")
 	}
 	d1Input, err := a.captureOperationInput(a.State.Snapshot())
 	if err != nil {
@@ -344,6 +364,36 @@ func TestBuildMobileDecryptOptionsWireCheckboxesToState(t *testing.T) {
 	})
 }
 
+func TestD1ParanoidChoiceRemainsIndependentInNativeControls(t *testing.T) {
+	newTestFyneApp(t)
+	for _, mobile := range []bool{false, true} {
+		t.Run(map[bool]string{false: "desktop", true: "mobile-layout"}[mobile], func(t *testing.T) {
+			a := createTestApp(t)
+			a.State.Mode = "encrypt"
+			a.State.Password = "password"
+			a.State.CPassword = "password"
+			a.State.AllFiles = []string{"source"}
+			a.advancedContainer = container.NewVBox()
+			fyne.DoAndWait(func() {
+				if mobile {
+					a.buildMobileEncryptOptions()
+				} else {
+					a.buildEncryptOptionsInto(a.advancedContainer)
+				}
+				a.deniabilityCheck.SetChecked(true)
+				if !a.State.Deniability || a.State.Paranoid || a.paranoidCheck.Disabled() {
+					t.Fatal("selecting D1 forced or disabled the separate paranoid choice")
+				}
+				a.paranoidCheck.SetChecked(true)
+				a.paranoidCheck.SetChecked(false)
+				if a.State.Paranoid || !a.State.Deniability {
+					t.Fatal("changing the paranoid choice changed D1 intent")
+				}
+			})
+		})
+	}
+}
+
 // TestEncryptAdvancedOptionsNeverSoftLock guards against issue #56, where certain
 // advanced-option combinations left the encrypt checkboxes permanently disabled,
 // forcing the user to restart the app to recover. The fix makes every disabled
@@ -428,12 +478,6 @@ func TestEncryptAdvancedOptionsNeverSoftLock(t *testing.T) {
 			{"Recursively", a.recursivelyCheck},
 			{"Split:", a.splitCheck},
 		} {
-			if c.name == "Paranoid mode" {
-				if !c.box.Disabled() || !a.State.Paranoid {
-					t.Error("D1 must retain required Paranoid mode")
-				}
-				continue
-			}
 			if c.box.Disabled() {
 				t.Errorf("#56 regression: %q is disabled under Paranoid+Reed-Solomon+Deniability; this combo must not lock any option", c.name)
 			}

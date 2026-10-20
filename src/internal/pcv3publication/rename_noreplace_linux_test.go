@@ -18,7 +18,7 @@ import (
 func forceRenameat2Error(t *testing.T, err error) {
 	t.Helper()
 	native := unixRenameat2NoReplace
-	unixRenameat2NoReplace = func(int, string, string) error {
+	unixRenameat2NoReplace = func(int, string, int, string) error {
 		return err
 	}
 	t.Cleanup(func() {
@@ -56,6 +56,12 @@ func TestRenameNoReplaceENOSYSFallbackPublishesDurably(t *testing.T) {
 		t.Fatalf("persist cleanup journal through fallback: %v", err)
 	}
 
+	journalPath := filepath.Join(filepath.Dir(stagePath), cleanupJournalName)
+	journalInfo, err := os.Lstat(journalPath)
+	if err != nil || !journalInfo.Mode().IsRegular() {
+		t.Fatalf("private journal missing before publication: %v", err)
+	}
+
 	result := stage.Publish(context.Background())
 	requireResult(
 		t,
@@ -76,10 +82,12 @@ func TestRenameNoReplaceENOSYSFallbackPublishesDurably(t *testing.T) {
 	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stage pathname remains after fallback commit: %v", err)
 	}
-	requireAbsent(t, filepath.Join(directory, cleanupJournalName))
+	requireAbsent(t, journalPath)
 	if err := stage.Cleanup(); err != nil {
 		t.Fatalf("cleanup fallback commit: %v", err)
 	}
+	requireAbsent(t, journalPath)
+	requireNoStageEntries(t, directory)
 	requireFileBytes(t, target, payload)
 }
 
@@ -95,11 +103,11 @@ func TestRenameNoReplaceENOSYSFallbackRefusesLateCollision(t *testing.T) {
 	foreign := []byte("late foreign destination")
 	operations := nativeOperations()
 	nativeAtomic := operations.atomicPublish
-	operations.atomicPublish = func(parent *os.File, stageName, targetName string, policy Policy) error {
+	operations.atomicPublish = func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 		if err := os.WriteFile(filepath.Join(directory, targetName), foreign, 0o640); err != nil {
 			return err
 		}
-		return nativeAtomic(parent, stageName, targetName, policy)
+		return nativeAtomic(source, parent, original, stageName, targetName, policy)
 	}
 	stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
 	if err != nil {

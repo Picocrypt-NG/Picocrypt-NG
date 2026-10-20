@@ -257,6 +257,11 @@ fun pcv3ResultDisplay(snapshot: Pcv3SnapshotView): Pcv3ResultDisplay {
             R.string.pcv3_outcome_invalid_structure_title,
             R.string.pcv3_outcome_invalid_structure_body,
         )
+        snapshot.semantic == Pcv3Semantic("operation-failed", "d1-bootstrap", "PCV3_OPERATION_FAILED") &&
+            snapshot.diagnostic == "d1-profile-required" && !snapshot.publication.attempted -> copy(
+                R.string.pcv3_outcome_d1_profile_required_title,
+                R.string.pcv3_outcome_d1_profile_required_body,
+            )
         snapshot.semantic.outcome == "operation-failed" &&
             snapshot.diagnostic == "credential-policy" -> copy(
                 R.string.pcv3_outcome_credential_mismatch_title,

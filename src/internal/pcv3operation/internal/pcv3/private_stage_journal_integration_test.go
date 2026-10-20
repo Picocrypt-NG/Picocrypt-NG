@@ -136,6 +136,14 @@ func requireSinglePrivateStage(t *testing.T, directory string) string {
 	if err != nil {
 		t.Fatalf("read private stage directory: %v", err)
 	}
+	if len(entries) != 1 || !entries[0].IsDir() {
+		t.Fatalf("private operation directory: %v", entries)
+	}
+	directory = filepath.Join(directory, entries[0].Name())
+	entries, err = os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var stagePath string
 	journalFound := false
 	for _, entry := range entries {

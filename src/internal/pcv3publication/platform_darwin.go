@@ -12,13 +12,13 @@ import (
 
 func nativeOperations() platformOperations {
 	return platformOperations{
-		atomicPublish: func(parent *os.File, stageName, targetName string, policy Policy) error {
+		atomicPublish: func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 			if policy != PolicyNoReplace {
 				return errors.ErrUnsupported
 			}
 			parentFD := int(parent.Fd())
 			return unix.RenameatxNp(
-				parentFD,
+				int(source.Fd()),
 				stageName,
 				parentFD,
 				targetName,

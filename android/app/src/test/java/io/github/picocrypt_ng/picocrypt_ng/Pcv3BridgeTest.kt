@@ -117,6 +117,46 @@ class Pcv3BridgeTest {
         assertEquals(0, json.getJSONArray("keyfiles").length())
         assertFalse("password must never enter the request JSON", json.has("password"))
         assertFalse("native capability state must not become request authority", json.has("archivePending"))
+        assertFalse("automatic profile selection must omit the optional field", json.has("d1SuiteHint"))
+    }
+
+    @Test
+    fun `raw D1 profile hint crosses only the read envelope and grants no consent`() {
+        listOf("standard", "paranoid").forEach { hint ->
+            val request = validRequest().copy(mode = "force-unverified-d1", d1SuiteHint = hint)
+            val json = JSONObject(GoBridge.buildPcv3RequestJson(request))
+
+            assertEquals(hint, json.optString("d1SuiteHint"))
+            assertEquals(
+                setOf("version", "mode", "factorPolicy", "keyfileOrder", "source", "target", "keyfiles", "d1SuiteHint"),
+                json.names()!!.let { names -> (0 until names.length()).map(names::getString).toSet() },
+            )
+        }
+        val automatic = validRequest().copy(mode = "force-unverified-d1")
+        assertFalse(JSONObject(GoBridge.buildPcv3RequestJson(automatic)).has("d1SuiteHint"))
+    }
+
+    @Test
+    fun `raw D1 invalid hints and hints in other modes fail before native transport and wipe password`() {
+        val modes = listOf(
+            "read-normal", "recover-normal", "force-normal", "force-unverified-normal",
+            "read-d1", "recover-d1", "force-d1", "write-normal", "write-d1", "legacy", "future",
+        )
+        val invalidRequests = modes.map { validRequest().copy(mode = it, d1SuiteHint = "standard") } +
+            listOf("", " ", "Standard", "PARANOID", "future", "1", "null").map {
+                validRequest().copy(mode = "force-unverified-d1", d1SuiteHint = it)
+            }
+        invalidRequests.forEach { request ->
+            val transport = RecordingTransport { _, _ -> error("invalid hint reached native transport") }
+            val password = "owned credential".toCharArray()
+
+            val result = Pcv3Bridge(transport).start(request, password)
+
+            assertEquals("mode=${request.mode}, hint=${request.d1SuiteHint}", 0, transport.startCalls)
+            assertTrue(result.isFailure)
+            assertEquals("PCV3_BRIDGE_INVALID_REQUEST", result.exceptionOrNull()?.message)
+            assertTrue(password.all { it == '\u0000' })
+        }
     }
 
     @Test
@@ -157,10 +197,12 @@ class Pcv3BridgeTest {
         assertEquals("ordered", keyfileJson.getString("keyfileOrder"))
         assertEquals(2, keyfileJson.getJSONArray("keyfiles").length())
 
-        val d1 = validWriteRequest().copy(mode = "write-d1", suite = "paranoid", comment = "")
-        val d1Json = JSONObject(GoBridge.buildPcv3WriteRequestJson(d1)!!)
-        assertEquals("write-d1", d1Json.getString("mode"))
-        assertEquals("paranoid", d1Json.getString("suite"))
+        listOf("standard", "paranoid").forEach { suite ->
+            val d1 = validWriteRequest().copy(mode = "write-d1", suite = suite, comment = "")
+            val d1Json = JSONObject(GoBridge.buildPcv3WriteRequestJson(d1)!!)
+            assertEquals("write-d1", d1Json.getString("mode"))
+            assertEquals(suite, d1Json.getString("suite"))
+        }
 
         // The comment bound mirrors header.MaxCommentLen and is counted in UTF-8 bytes.
         val atCommentBound = validWriteRequest().copy(comment = "x".repeat(99999))
@@ -173,7 +215,6 @@ class Pcv3BridgeTest {
             "unknown mode" to validWriteRequest().copy(mode = "migrate-normal"),
             "read shape is not a write shape" to validWriteRequest().copy(mode = "read-normal"),
             "unknown suite" to validWriteRequest().copy(suite = "future"),
-            "D1 has no standard suite choice" to validWriteRequest().copy(mode = "write-d1", suite = "standard"),
             "password policy has no keyfile order" to validWriteRequest().copy(keyfileOrder = "ordered"),
             "password policy has no keyfiles" to validWriteRequest().copy(keyfiles = listOf("keyfile-a")),
             "keyfile policy needs keyfiles" to validWriteRequest().copy(factorPolicy = "keyfiles", keyfileOrder = "ordered"),

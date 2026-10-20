@@ -91,6 +91,7 @@ type pcv3CLIResult interface {
 	Outcome() pcv3operation.Outcome
 	Stage() pcv3operation.Stage
 	Code() pcv3operation.Code
+	Diagnostic() pcv3operation.Diagnostic
 	PublicationAttempted() bool
 	PublicationState() pcv3publication.State
 	PublicationStage() pcv3operation.Stage
@@ -110,6 +111,10 @@ func (adapter pcv3CLIResultAdapter) Outcome() pcv3operation.Outcome { return ada
 
 func (adapter pcv3CLIResultAdapter) Stage() pcv3operation.Stage { return adapter.result.Stage() }
 func (adapter pcv3CLIResultAdapter) Code() pcv3operation.Code   { return adapter.result.Code() }
+
+func (adapter pcv3CLIResultAdapter) Diagnostic() pcv3operation.Diagnostic {
+	return adapter.result.Diagnostic()
+}
 
 func (adapter pcv3CLIResultAdapter) AuthenticatedComment() string {
 	return adapter.result.AuthenticatedComment()
@@ -156,6 +161,9 @@ func (adapter pcv3CLIResultAdapter) ArchiveFollowUp() pcv3CLIArchiveFollowUp {
 }
 
 func (adapter pcv3CLIResultAdapter) OutputFollowUp() pcv3CLIOutputFollowUp {
+	if followUp := adapter.result.StreamFollowUp(); followUp != nil {
+		return followUp
+	}
 	followUp := adapter.result.OutputFollowUp()
 	if followUp == nil {
 		return nil
@@ -184,7 +192,7 @@ var (
 		return pcv3CLIResultAdapter{result: pcv3operation.RunWithOptions(
 			ctx,
 			request,
-			pcv3operation.ExecutionOptions{RetainDurableOutput: retainOutput},
+			pcv3operation.ExecutionOptions{EncryptedStream: retainOutput, LinuxDesktopCleanup: !retainOutput},
 		)}
 	}
 	pcv3CLIOpenKeyfile   = fileops.OpenRegularReadNoSymlink
@@ -241,6 +249,7 @@ var (
 	decPCV3Factors   string
 	decPCV3Order     string
 	decPCV3Role      string
+	decPCV3D1Suite   string
 	decPCV3Archive   string
 	decPCV3ExtractTo string
 )
@@ -278,6 +287,7 @@ func init() {
 	decryptCmd.Flags().StringVar(&decPCV3Factors, "pcv3-factors", "", "PCV3 credential policy: password, keyfiles, or combined")
 	decryptCmd.Flags().StringVar(&decPCV3Order, "pcv3-keyfile-order", "", "PCV3 keyfile order: ordered or unordered")
 	decryptCmd.Flags().StringVar(&decPCV3Role, "pcv3-role", "", "PCV3 unverified physical role")
+	decryptCmd.Flags().StringVar(&decPCV3D1Suite, "pcv3-d1-suite", "", "Unverified D1 cipher hint: standard or paranoid (only with an explicit --pcv3-role)")
 	decryptCmd.Flags().StringVar(&decPCV3Archive, "pcv3-archive", "", "PCV3 archive action: extract or close")
 	decryptCmd.Flags().StringVar(&decPCV3ExtractTo, "pcv3-extract-to", "", "Existing directory for PCV3 archive extraction")
 }
@@ -291,7 +301,10 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	}
 	inputPath := args[0]
 	pcv3Explicit := decPCV3Format != "" || decPCV3Action != "" || decPCV3Factors != "" ||
-		decPCV3Order != "" || decPCV3Role != "" || decPCV3Archive != "" || decPCV3ExtractTo != ""
+		decPCV3Order != "" || decPCV3Role != "" || decPCV3D1Suite != "" || decPCV3Archive != "" || decPCV3ExtractTo != ""
+	if cmd.Flags().Changed("pcv3-d1-suite") && decPCV3D1Suite == "" {
+		return errors.New("--pcv3-d1-suite requires standard or paranoid")
+	}
 
 	// Check for stdin/stdout
 	useStdin := IsStdin(inputPath)
@@ -349,8 +362,9 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	// the stdin temp holds the .pcv input; both are removed when the run ends.
 	var stdinTempFile string
 	var stdoutTempFile string
+	var encryptedOutput *fileops.EncryptedSpool
 	defer func() {
-		retErr = errors.Join(retErr, cleanupTempFiles(stdinTempFile, stdoutTempFile))
+		retErr = errors.Join(retErr, encryptedOutput.Close(), cleanupTempFiles(stdinTempFile, stdoutTempFile))
 	}()
 
 	outputFile := decOutput
@@ -724,6 +738,9 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 		RSCodecs:     rsCodecs,
 		Kept:         &kept,
 	}
+	if useStdout {
+		req.EncryptedOutput = &encryptedOutput
+	}
 
 	// Print info
 	if !decQuiet {
@@ -753,9 +770,15 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Stream to stdout if requested
 	if useStdout {
-		stdoutTempFile = ""
-		if err := StreamFileToStdout(operationCtx, outputFile); err != nil {
-			return fmt.Errorf("streaming to stdout: %w", err)
+		output, err := pcv3operation.OwnEncryptedOutput(encryptedOutput)
+		encryptedOutput = nil // Ownership transfers even when construction fails.
+		if err != nil {
+			return errors.New("encrypted stdout output is unavailable")
+		}
+		defer output.Discard()
+		action := output.StreamTo(operationCtx, os.Stdout)
+		if action.Code() != pcv3operation.OutputActionSaved || action.CleanupIncomplete() {
+			return errors.New("stdout transport or temporary cleanup failed; source files were preserved")
 		}
 		if kept {
 			return forceDecryptKeptResult("stdout")
@@ -801,6 +824,7 @@ func runPCV3CLI(
 			request.Source = nil
 		}
 		request.SplitBase = ""
+		request.D1SuiteHint = 0
 		request.Target = ""
 		for index := range request.Protected {
 			request.Protected[index] = ""
@@ -837,6 +861,9 @@ func runPCV3CLI(
 	if err := requireVacantPCV3Output(decOutput); err != nil {
 		return err
 	}
+	if stdoutPath != "" && (decPCV3Archive != "" || decPCV3ExtractTo != "") {
+		return errors.New("stdout output cannot perform an archive follow-up")
+	}
 	if !normal && (decPCV3Archive != "" || decPCV3ExtractTo != "") {
 		return errors.New("D1 archive payload is returned as a .zip file; D1 automatic extraction is not available")
 	}
@@ -855,6 +882,19 @@ func runPCV3CLI(
 	mode, needsConsent, err := pcv3CLIMode(normal, decPCV3Action, decPCV3Role)
 	if err != nil {
 		return err
+	}
+	if decPCV3D1Suite != "" {
+		if mode != pcv3operation.ModeForceUnverifiedD1 {
+			return errors.New("--pcv3-d1-suite requires explicit unverified D1 recovery and --pcv3-role")
+		}
+		switch decPCV3D1Suite {
+		case "standard":
+			request.D1SuiteHint = pcv3operation.SuiteStandard
+		case "paranoid":
+			request.D1SuiteHint = pcv3operation.SuiteParanoid
+		default:
+			return errors.New("--pcv3-d1-suite requires standard or paranoid")
+		}
 	}
 	factorMode, keyfileMode, policy, err := pcv3CLIFactorPolicy(
 		decPCV3Factors,

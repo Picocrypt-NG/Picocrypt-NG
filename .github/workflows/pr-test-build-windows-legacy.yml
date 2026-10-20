@@ -80,7 +80,7 @@ jobs:
       run: |
         & .github/scripts/run-windows-native-tests.ps1 `
           -GoExecutable 'C:\go-legacy\go\bin\go.exe' `
-          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume')
+          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume', './internal/pcv3publication')
       env:
         PICOCRYPT_RUN_CLI_INTEGRATION: 1
 
@@ -131,7 +131,7 @@ jobs:
         upx/upx-5.2.1-win64/upx.exe --lzma src/Picocrypt-NG-cli-Legacy.exe
 
     - name: Upload artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: pr-test-build-windows-legacy-ONLY-FOR-TESTING
         path: src/Picocrypt-NG-cli-Legacy.exe

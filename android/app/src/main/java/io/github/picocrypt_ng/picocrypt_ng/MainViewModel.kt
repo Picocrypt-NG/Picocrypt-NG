@@ -159,7 +159,16 @@ class MainViewModel(
 
     @Synchronized
     fun setPcv3Action(action: Pcv3ActionIntent) {
-        updatePcv3Intent { it.copy(action = action) }
+        updatePcv3Intent {
+            if (it.action == action) it else it.copy(action = action, d1SuiteHint = null)
+        }
+    }
+
+    @Synchronized
+    fun setPcv3D1SuiteHint(hint: Pcv3D1SuiteHintIntent?) {
+        updatePcv3Intent {
+            if (it.allowsD1SuiteHint) it.copy(d1SuiteHint = hint) else it
+        }
     }
 
     @Synchronized
@@ -218,6 +227,7 @@ class MainViewModel(
                 source = source,
                 target = target,
                 keyfiles = current.keyfileFilenames.map(KeyfileInfo::internalPath),
+                d1SuiteHint = intent.d1SuiteHintCodeOrNull(),
             ),
             password = password,
         )
@@ -283,7 +293,7 @@ class MainViewModel(
             target = target,
             keyfiles = current.keyfileFilenames.map(KeyfileInfo::internalPath),
             comment = if (current.deniability) "" else current.comments,
-            suite = if (current.paranoid || current.deniability) "paranoid" else "standard",
+            suite = if (current.paranoid) "paranoid" else "standard",
             payloadRS = current.reedSolomon,
             inputFiles = current.inputFiles, onlyFiles = current.onlyFiles, onlyFolders = current.onlyFolders, compress = current.compress,
         )
@@ -420,7 +430,8 @@ class MainViewModel(
         // Always clear passwords (create new empty arrays)
         var cleared = current.copy(
             passwordInput = CharArray(0),
-            confirmPasswordInput = CharArray(0)
+            confirmPasswordInput = CharArray(0),
+            pcv3Intent = current.pcv3Intent?.copy(d1SuiteHint = null),
         )
         
         // Conditionally clear files

@@ -327,7 +327,7 @@ func validAuthCandidate(candidate Candidate) bool {
 			candidate.keyfileCount,
 		) &&
 		candidate.reserved == [2]byte{} &&
-		candidate.kdfProfile == kdfProfileForSuite(candidate.core.suite) &&
+		validCandidateKDFProfile(candidate) &&
 		(candidate.core.suite != SuiteStandard ||
 			candidate.wrapSerpentIV == [16]byte{})
 }

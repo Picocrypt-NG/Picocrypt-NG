@@ -1316,7 +1316,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "3583",
 			target:   "google_apis",
-			script:   command + "26 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest",
+			script:   command + "26 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.DialogFocusTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest && bash ../.github/scripts/run-android-journal-restart-test.sh 26",
 		},
 		// Activity security and Compose state must work on the target-SDK runtime.
 		36: {
@@ -1324,7 +1324,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "6144",
 			target:   "default",
-			script:   command + "36 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest",
+			script:   command + "36 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.DialogFocusTest io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest && bash ../.github/scripts/run-android-journal-restart-test.sh 36",
 		},
 	}
 	seen := make(map[int]struct{}, len(wantByAPI))
@@ -1364,8 +1364,15 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			t.Fatalf("API %d emulator-options = %#v, want string", apiLevel, step.With["emulator-options"])
 		}
 		mustMatch(t, emulatorOptions, `(?:^|\s)-memory\s+`+want.memory+`(?:\s|$)`)
-		if step.TimeoutMinutes != 15 {
-			t.Errorf("API %d timeout-minutes = %d, want 15", apiLevel, step.TimeoutMinutes)
+		if step.TimeoutMinutes != 22 {
+			t.Errorf("API %d timeout-minutes = %d, want 22", apiLevel, step.TimeoutMinutes)
+		}
+		wantAVD := fmt.Sprintf("picocrypt-ci-api%d", apiLevel)
+		if got := step.With["avd-name"]; got != wantAVD || step.Env["PICOCRYPT_EXPECTED_AVD"] != wantAVD {
+			t.Errorf("API %d restart gate AVD = %#v/%q, want %s", apiLevel, got, step.Env["PICOCRYPT_EXPECTED_AVD"], wantAVD)
+		}
+		if got := step.With["emulator-port"]; got != 5554 || step.Env["ANDROID_SERIAL"] != "emulator-5554" {
+			t.Errorf("API %d restart gate emulator = %#v/%q, want 5554/emulator-5554", apiLevel, got, step.Env["ANDROID_SERIAL"])
 		}
 		if got := step.With["working-directory"]; got != "android" {
 			t.Errorf("API %d working-directory = %#v, want android", apiLevel, got)
@@ -1576,8 +1583,8 @@ func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
 				if got := step.With["distribution"]; got != "temurin" {
 					t.Fatalf("%s job %s setup-java distribution = %#v, want temurin", path, jobName, got)
 				}
-				if got := step.With["java-version"]; got != "21" {
-					t.Fatalf("%s job %s setup-java java-version = %#v, want 21", path, jobName, got)
+				if got := step.With["java-version"]; got != "21.0.12+101.0.LTS" {
+					t.Fatalf("%s job %s setup-java java-version = %#v, want 21.0.12+101.0.LTS", path, jobName, got)
 				}
 			}
 			if path == ".github/workflows/build-android.yml" && jobName == "release" {
@@ -1590,7 +1597,7 @@ func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
 		}
 	}
 
-	mustContain(t, mustReadRepoFile(t, "mise.toml"), `java = "temurin-21"`)
+	mustContain(t, mustReadRepoFile(t, "mise.toml"), `java = "temurin-21.0.12+101.0.LTS"`)
 
 	buildScript := mustReadRepoFile(t, "android/build-app")
 	mustContain(t, buildScript, `"$JAVA_MAJOR" != "21"`)
@@ -1763,13 +1770,13 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 
 func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {
 	const (
-		gradle980Sha256        = "bafd5ce9cfaea0fbccfdc8439a1ac42fbd4cd9c89dc9a988228d8a2639a58e6c"
-		gradleWrapperJarSha256 = "238e777fcddd7e34f9708186085def2abd6e08e658505b38718d79d74c21abd5"
+		gradle981Sha256        = "dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f"
+		gradleWrapperJarSha256 = "3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98"
 	)
 
 	wrapper := mustReadRepoFile(t, "android/gradle/wrapper/gradle-wrapper.properties")
-	mustContain(t, wrapper, "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.8.0-bin.zip")
-	mustMatch(t, wrapper, `(?m)^distributionSha256Sum=`+gradle980Sha256+`$`)
+	mustContain(t, wrapper, "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.8.1-bin.zip")
+	mustMatch(t, wrapper, `(?m)^distributionSha256Sum=`+gradle981Sha256+`$`)
 	mustMatch(t, wrapper, `(?m)^validateDistributionUrl=true$`)
 	mustMatch(t, wrapper, `(?m)^networkTimeout=60000$`)
 
@@ -1778,7 +1785,7 @@ func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {
 		t.Fatalf("read Gradle wrapper JAR: %v", err)
 	}
 	if got := fmt.Sprintf("%x", sha256.Sum256(wrapperJar)); got != gradleWrapperJarSha256 {
-		t.Fatalf("Gradle wrapper JAR SHA-256 = %s, want official Gradle 9.8.0 checksum %s", got, gradleWrapperJarSha256)
+		t.Fatalf("Gradle wrapper JAR SHA-256 = %s, want official Gradle 9.8.1 checksum %s", got, gradleWrapperJarSha256)
 	}
 
 	metadata := mustReadRepoFile(t, "android/gradle/verification-metadata.xml")
@@ -1933,7 +1940,7 @@ func TestAndroidGomobileBuildUsesReproducibleLinkerFlags(t *testing.T) {
 
 func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	const (
-		focusedClasses  = "io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.DecryptOptionsCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ErrorDialogTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.FileCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest"
+		focusedClasses  = "io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest,io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest,io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityUITest,io.github.picocrypt_ng.picocrypt_ng.DialogFocusTest,io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.PasswordCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileCardWriterPolicyTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ProgressCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.DecryptOptionsCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.ErrorDialogTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.FileCardTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileClearLifecycleTest,io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest,io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest"
 		extendedClasses = "io.github.picocrypt_ng.picocrypt_ng.OperationManagerIntegrationTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest"
 	)
 
@@ -1955,7 +1962,13 @@ func TestAndroidInstrumentedWorkflowIsManualAndPinned(t *testing.T) {
 	if got := instrEmulator.With["disk-size"]; got != "2048M" {
 		t.Fatalf("instrumented emulator disk-size = %v, want 2048M", got)
 	}
-	wantScript := `case "$PICOCRYPT_TEST_SCOPE" in focused|extended) ;; *) echo "Unsupported test scope" >&2; exit 1 ;; esac; bash ../.github/scripts/run-android-device-tests.sh 36 ` + strings.ReplaceAll(focusedClasses, ",", " ") + ` ${{ inputs.test_scope == 'extended' && '` + extendedClasses + `' || '' }}`
+	if got := instrEmulator.With["avd-name"]; got != "picocrypt-ci-api36" || instrEmulator.Env["PICOCRYPT_EXPECTED_AVD"] != "picocrypt-ci-api36" {
+		t.Fatalf("instrumented restart gate AVD = %#v/%q, want picocrypt-ci-api36", got, instrEmulator.Env["PICOCRYPT_EXPECTED_AVD"])
+	}
+	if got := instrEmulator.With["emulator-port"]; got != 5554 || instrEmulator.Env["ANDROID_SERIAL"] != "emulator-5554" {
+		t.Fatalf("instrumented restart gate emulator = %#v/%q, want 5554/emulator-5554", got, instrEmulator.Env["ANDROID_SERIAL"])
+	}
+	wantScript := `case "$PICOCRYPT_TEST_SCOPE" in focused|extended) ;; *) echo "Unsupported test scope" >&2; exit 1 ;; esac; bash ../.github/scripts/run-android-device-tests.sh 36 ` + strings.ReplaceAll(focusedClasses, ",", " ") + ` ${{ inputs.test_scope == 'extended' && '` + extendedClasses + `' || '' }} && bash ../.github/scripts/run-android-journal-restart-test.sh 36`
 	if got := instrEmulator.Env["PICOCRYPT_TEST_SCOPE"]; got != "${{ inputs.test_scope }}" {
 		t.Fatalf("instrumented scope env = %q, want dispatch input", got)
 	}
@@ -2072,7 +2085,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	}
 	for tool, want := range map[string]string{
 		"go":                                   "1.27.2",
-		"go:golang.org/x/vuln/cmd/govulncheck": "1.8.0",
+		"go:golang.org/x/vuln/cmd/govulncheck": "1.9.0",
 	} {
 		if got := config.Tools[tool]; got != want {
 			t.Errorf("desktop %s = %q, want %q", tool, got, want)
@@ -2082,8 +2095,8 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	// even when the desktop development tools are upgraded.
 	for tool, want := range map[string]string{
 		"go":                                  "1.27.2",
-		"go:golang.org/x/mobile/cmd/gobind":   "v0.0.0-20260908204917-8b95e45f8d3e",
-		"go:golang.org/x/mobile/cmd/gomobile": "v0.0.0-20260908204917-8b95e45f8d3e",
+		"go:golang.org/x/mobile/cmd/gobind":   "v0.0.0-20261011034528-197770444867",
+		"go:golang.org/x/mobile/cmd/gomobile": "v0.0.0-20261011034528-197770444867",
 	} {
 		if got := config.Tasks["android:gomobile"].Tools[tool]; got != want {
 			t.Errorf("Android %s = %q, want %q", tool, got, want)
@@ -2095,7 +2108,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	mustNotContain(t, goMod, "\ntoolchain ")
 
 	staticChecks := mustReadWorkflow(t, ".github/workflows/pr-static-checks.yml")
-	mustContain(t, staticChecks, "golang.org/x/vuln/cmd/govulncheck@v1.8.0")
+	mustContain(t, staticChecks, "golang.org/x/vuln/cmd/govulncheck@v1.9.0")
 	mustNotContain(t, staticChecks, "golang.org/x/vuln/cmd/govulncheck@latest")
 }
 

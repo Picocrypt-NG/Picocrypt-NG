@@ -126,12 +126,13 @@ func (followUp *OutputFollowUp) consume() *pcv3publication.RetainedFile {
 }
 
 func cleanupOutputExact(result *Result) bool {
+	streamIncomplete := cleanupEncryptedOutput(result)
 	if result == nil || result.outputFollowUp == nil {
-		return false
+		return streamIncomplete
 	}
 	retained := result.outputFollowUp.consume()
 	result.outputFollowUp = nil
-	return cleanupRetainedExact(&retained)
+	return cleanupRetainedExact(&retained) || streamIncomplete
 }
 
 func cleanupRetainedExact(retained **pcv3publication.RetainedFile) bool {

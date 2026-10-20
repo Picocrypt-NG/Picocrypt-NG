@@ -118,17 +118,20 @@ var (
 	restoreTerminalFn = func(s *term.State) { _ = term.Restore(int(os.Stdin.Fd()), s) }
 )
 
-// handleSignal runs when SIGINT/SIGTERM arrives. If an operation is in flight
-// (reporter stored), it cancels cooperatively. Otherwise (typically during the
-// interactive password prompt, before the reporter is stored) it restores the
-// terminal mode and exits, so the shell is not left with echo disabled.
+// handleSignal cancels active stdin accumulation or an operation cooperatively.
+// Otherwise, typically during the password prompt, it restores the terminal
+// mode before exiting so the shell is not left with echo disabled.
 func handleSignal() {
+	if cancelActiveEncryptedStdinCopy() {
+		return
+	}
 	if r := globalReporter.Load(); r != nil {
 		r.Cancel()
 		return
 	}
 	restoreTerminalState()
 	_ = cleanupActiveStdinTemp()
+	_ = cleanupActiveEncryptedStdin()
 	exitFn(1)
 }
 
@@ -142,6 +145,14 @@ func restoreTerminalState() {
 // Execute runs the CLI application.
 // Returns true if CLI mode was activated, false if GUI should run instead.
 func Execute(version string) bool {
+	return ExecuteWithStartupError(version, nil)
+}
+
+// ExecuteWithStartupError preserves help/version and syntax errors when the
+// executable's startup policy failed, but refuses operations before their
+// Run/RunE functions can read plaintext, credentials, or create output. Embedded
+// callers of Execute keep responsibility for their own host process policy.
+func ExecuteWithStartupError(version string, startupErr error) bool {
 	Version = version
 	rootCmd.Version = version
 
@@ -149,7 +160,7 @@ func Execute(version string) bool {
 		return false
 	}
 
-	if code := executeCLICommand(); code != 0 {
+	if code := executeCLICommandWithStartupError(startupErr); code != 0 {
 		os.Exit(code)
 	}
 	return true
@@ -158,6 +169,23 @@ func Execute(version string) bool {
 // executeCLICommand owns signal registration until command cleanup and result
 // reporting finish. The signal loop never writes to possibly stalled stderr.
 func executeCLICommand() int {
+	return executeCLICommandWithStartupError(nil)
+}
+
+func executeCLICommandWithStartupError(startupErr error) int {
+	if startupErr != nil {
+		previous := rootCmd.PersistentPreRunE
+		rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+			if cmd.Name() == "help" && cmd.Parent() == rootCmd {
+				if previous != nil {
+					return previous(cmd, args)
+				}
+				return nil
+			}
+			return startupErr
+		}
+		defer func() { rootCmd.PersistentPreRunE = previous }()
+	}
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	stop := make(chan struct{})
@@ -171,10 +199,9 @@ func executeCLICommand() int {
 				return
 			case <-signals:
 				if interrupted.Swap(true) {
-					// A repeated interrupt explicitly abandons cooperative cleanup. Restore
-					// tty first; never wait for a reporter lock or claim cleanup completed.
+					// A repeated interrupt abandons cooperative cleanup. Restore the tty
+					// and exit without waiting on filesystem I/O or an encrypted owner lock.
 					restoreTerminalState()
-					_ = cleanupActiveStdinTemp()
 					exitFn(1)
 					return
 				}
@@ -232,14 +259,14 @@ func detectCLIMode(args []string) bool {
 		}
 
 		if flag.NoOptDefVal == "" && !hasInlineValue {
-			nextIndex := index + 1
-			if nextIndex >= len(args) {
+			remaining := args[index:]
+			if len(remaining) < 2 {
 				return true
 			}
-			if isKnownRootCommand(args[nextIndex]) {
+			if isKnownRootCommand(remaining[1]) {
 				return true
 			}
-			index = nextIndex
+			index++
 		}
 
 		index++

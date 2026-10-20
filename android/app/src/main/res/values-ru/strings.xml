@@ -368,4 +368,9 @@
     <string name="pcv3_retained_discard_cleanup_body">Приложение не смогло подтвердить удаление результата из своего хранилища. Сохраните исходные файлы.</string>
     <string name="pcv3_resource_limit_title">Достигнут лимит ресурсов</string>
     <string name="pcv3_resource_limit_body">Операция остановлена: превышен допустимый расход ресурсов.</string>
+    <string name="pcv3_d1_profile_heading">Профиль восстановления</string>
+    <string name="pcv3_d1_profile_auto">Автоматически</string>
+    <string name="pcv3_d1_profile_standard">Стандартный</string>
+    <string name="pcv3_outcome_d1_profile_required_title">Выберите профиль восстановления</string>
+    <string name="pcv3_outcome_d1_profile_required_body">Выберите стандартный или параноидальный профиль, использованный при создании тома, и повторите попытку. Выходные данные не опубликованы.</string>
 </resources>

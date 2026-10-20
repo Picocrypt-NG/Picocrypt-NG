@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -23,7 +24,7 @@ func realRenameOperations(t *testing.T, directory string) (platformOperations, *
 	t.Helper()
 	counts := &operationCounts{}
 	return platformOperations{
-		atomicPublish: func(parent *os.File, stageName, targetName string, policy Policy) error {
+		atomicPublish: func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 			counts.atomic++
 			if policy != PolicyNoReplace {
 				return errors.New("test operation received replacing policy")
@@ -31,19 +32,24 @@ func realRenameOperations(t *testing.T, directory string) (platformOperations, *
 			if !sameDirectoryHandle(parent, directory) {
 				return errors.New("test operation received wrong directory handle")
 			}
-			return os.Rename(
-				filepath.Join(directory, stageName),
-				filepath.Join(directory, targetName),
-			)
+			return classifierRenameStage(source, parent, original, stageName, targetName)
 		},
 		syncDirectory: func(parent *os.File) error {
 			counts.sync++
-			if !sameDirectoryHandle(parent, directory) {
-				return errors.New("test sync received wrong directory handle")
-			}
+
 			return classifierTestDirectorySync(parent)
 		},
 	}, counts
+}
+
+// Windows production stages deliberately deny pathname rename while the
+// original DELETE-capable descriptor is live; classifier seams use that same
+// descriptor to exercise successful commits and late platform errors.
+func classifierRenameStage(source, parent, original *os.File, old, target string) error {
+	if runtime.GOOS == "windows" {
+		return nativeOperations().atomicPublish(source, parent, original, old, target, PolicyNoReplace)
+	}
+	return os.Rename(filepath.Join(source.Name(), old), filepath.Join(parent.Name(), target))
 }
 
 // This classifier fixture injects a successful directory barrier on Windows,
@@ -53,6 +59,38 @@ func classifierTestDirectorySync(parent *os.File) error {
 		return nil
 	}
 	return parent.Sync()
+}
+
+// A live Windows DELETE-capable stage denies pathname relocation. Only this
+// exact native refusal is evidence that the attempted attack was prevented.
+func windowsSharingRefusal(err error) bool {
+	return runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(32))
+}
+
+func requireBlockedStageAttackCleanup(t *testing.T, stage *Stage, attackErr error, payload []byte) {
+	t.Helper()
+	if !windowsSharingRefusal(attackErr) {
+		t.Fatalf("stage namespace attack failed for an unexpected reason: %v", attackErr)
+	}
+	path, target := stage.stagePath, filepath.Join(stage.parentPath, stage.targetName)
+	requireFileBytes(t, path, payload)
+	if !stage.stageIdentityCurrent() {
+		t.Fatal("refused namespace attack changed the original stage identity")
+	}
+	if err := stage.Cleanup(); err != nil {
+		t.Fatalf("cleanup after blocked namespace attack: %v", err)
+	}
+	if err := stage.Cleanup(); err != nil {
+		t.Fatalf("repeated cleanup after blocked namespace attack: %v", err)
+	}
+	if stage.file != nil || stage.identityPin != nil || stage.root != nil || stage.parent != nil || stage.sourceRoot != nil || stage.sourceParent != nil {
+		t.Fatal("blocked attack cleanup retained a custody handle")
+	}
+	for _, absent := range []string{path, target} {
+		if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("blocked attack left an unexpected output: %v", err)
+		}
+	}
 }
 
 func sameDirectoryHandle(parent *os.File, directory string) bool {
@@ -107,8 +145,29 @@ func requireResult(
 
 func requireFileBytes(t *testing.T, path string, want []byte) {
 	t.Helper()
-	got, err := os.ReadFile(path)
+	absolute, err := filepath.Abs(path)
 	if err != nil {
+		t.Fatal(err)
+	}
+	volumeRoot := filepath.VolumeName(absolute) + string(filepath.Separator)
+	relative, err := filepath.Rel(volumeRoot, absolute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// OpenRoot itself uses legacy Windows sharing. Start outside the private
+	// DELETE-capable directory; Root.Open traverses it with compatible sharing.
+	root, err := os.OpenRoot(volumeRoot)
+	if err != nil {
+		t.Fatalf("open test observation volume: %v", err)
+	}
+	defer root.Close()
+	file, err := root.Open(relative)
+	if err != nil {
+		t.Fatalf("open test file with custody-compatible sharing: %v", err)
+	}
+	got, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
 		t.Fatalf("read test file: %v", err)
 	}
 	if !bytes.Equal(got, want) {
@@ -151,7 +210,11 @@ func TestCreateReportsCleanupIncompleteWhenStageIdentityCannotBeEstablished(t *t
 	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), stageNamePrefix) {
 		t.Fatalf("retained entries = %v; want exactly the operation-owned stage", entries)
 	}
-	stagePath := filepath.Join(directory, entries[0].Name())
+	privateEntries, privateErr := os.ReadDir(filepath.Join(directory, entries[0].Name()))
+	if privateErr != nil || len(privateEntries) != 1 {
+		t.Fatalf("private residue: %v %v", privateEntries, privateErr)
+	}
+	stagePath := filepath.Join(directory, entries[0].Name(), privateEntries[0].Name())
 	pathInfo, statErr := os.Lstat(stagePath)
 	if statErr != nil || !pathInfo.Mode().IsRegular() || ownedInfo == nil ||
 		!os.SameFile(ownedInfo, pathInfo) {
@@ -182,6 +245,7 @@ func TestCreateReportsCleanupIncompleteWhenIdentityFailureCannotRemoveOwnedStage
 	operations, _ := realRenameOperations(t, directory)
 	var ownedInfo os.FileInfo
 	var stageName string
+	var privateName string
 	var replacementInfo os.FileInfo
 	var replaceErr error
 	operations.statStage = func(file *os.File) (os.FileInfo, error) {
@@ -191,6 +255,7 @@ func TestCreateReportsCleanupIncompleteWhenIdentityFailureCannotRemoveOwnedStage
 		}
 		ownedInfo = info
 		stageName = filepath.Base(file.Name())
+		privateName = filepath.Base(filepath.Dir(file.Name()))
 		if err := os.Rename(directory, movedDirectory); err != nil {
 			replaceErr = err
 			return nil, err
@@ -210,13 +275,32 @@ func TestCreateReportsCleanupIncompleteWhenIdentityFailureCannotRemoveOwnedStage
 	operations.removeStage = func(*os.Root, string) error {
 		return removeFailure
 	}
+	if runtime.GOOS == "windows" {
+		// Windows removes through the original handle; fault its real cleanup
+		// barrier instead of an unused pathname-removal seam.
+		operations.syncDirectory = func(*os.File) error { return removeFailure }
+	}
 
 	_, err := createWithOperations(target, nil, PolicyNoReplace, operations)
 	if replaceErr != nil {
-		if removeErr := os.Remove(filepath.Join(directory, stageName)); removeErr != nil {
-			t.Fatalf("remove stage after unsupported parent replacement: %v", removeErr)
+		if !windowsSharingRefusal(replaceErr) {
+			t.Fatalf("parent replacement failed for an unexpected reason: %v", replaceErr)
 		}
-		t.Skipf("platform prevents replacing an open parent path: %v", replaceErr)
+		result := requireResultError(t, err)
+		requireResult(t, result, StateNotPublished, pcv3result.OutcomeOperationFailed, pcv3result.StageOutputPublication, CodeStageFailure)
+		if !errors.Is(err, ErrCleanupIncomplete) {
+			t.Fatal("unestablished stage identity lost cleanup uncertainty")
+		}
+		ownedPath := filepath.Join(directory, privateName, stageName)
+		info, statErr := os.Stat(ownedPath)
+		if statErr != nil || !os.SameFile(ownedInfo, info) {
+			t.Fatalf("blocked parent replacement changed owned stage: %v", statErr)
+		}
+		requireFileBytes(t, ownedPath, nil)
+		if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("blocked parent replacement published output: %v", statErr)
+		}
+		return
 	}
 	result := requireResultError(t, err)
 	requireResult(
@@ -227,9 +311,13 @@ func TestCreateReportsCleanupIncompleteWhenIdentityFailureCannotRemoveOwnedStage
 		pcv3result.StageOutputPublication,
 		CodeIdentityChanged,
 	)
-	retainedPath := filepath.Join(movedDirectory, stageName)
+	retainedPath := filepath.Join(movedDirectory, privateName, stageName)
 	pathInfo, statErr := os.Lstat(retainedPath)
-	if statErr != nil || ownedInfo == nil || !os.SameFile(ownedInfo, pathInfo) {
+	if runtime.GOOS == "windows" {
+		if !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("handle cleanup retained owned stage after failed barrier: %v", statErr)
+		}
+	} else if statErr != nil || ownedInfo == nil || !os.SameFile(ownedInfo, pathInfo) {
 		t.Fatalf("retained pinned-parent stage identity = %v/%v; want exact owned stage", pathInfo, statErr)
 	}
 	replacementPath := filepath.Join(directory, stageName)
@@ -264,7 +352,7 @@ func requireNoStageEntries(t *testing.T, directory string) {
 	}
 }
 
-func TestCreateStageOwnsExclusivePrivateSibling(t *testing.T) {
+func TestCreateStageOwnsExclusivePrivateDirectory(t *testing.T) {
 	directory := t.TempDir()
 	operations, counts := realRenameOperations(t, directory)
 	first, err := createWithOperations(
@@ -295,8 +383,8 @@ func TestCreateStageOwnsExclusivePrivateSibling(t *testing.T) {
 		if !strings.HasPrefix(stage.stageName, stageNamePrefix) {
 			t.Fatalf("stage name %q lacks the private publication prefix", stage.stageName)
 		}
-		if filepath.Dir(stage.stagePath) != directory {
-			t.Fatalf("stage is not a sibling of its destination: %q", stage.stagePath)
+		if filepath.Dir(filepath.Dir(stage.stagePath)) != directory {
+			t.Fatalf("stage is not within a private child of its destination: %q", stage.stagePath)
 		}
 		info, err := stage.File().Stat()
 		if err != nil {
@@ -488,12 +576,12 @@ func TestPublishCancellationBoundary(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		counts := &operationCounts{}
 		operations := platformOperations{
-			atomicPublish: func(parent *os.File, stageName, targetName string, policy Policy) error {
+			atomicPublish: func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 				counts.atomic++
 				if !sameDirectoryHandle(parent, directory) || policy != PolicyNoReplace {
 					return errors.New("wrong test publication request")
 				}
-				if err := os.Rename(filepath.Join(directory, stageName), filepath.Join(directory, targetName)); err != nil {
+				if err := classifierRenameStage(source, parent, original, stageName, targetName); err != nil {
 					return err
 				}
 				cancel()
@@ -522,13 +610,13 @@ func TestPublishCancellationBoundary(t *testing.T) {
 			pcv3result.StageNone,
 			CodePublishedDurable,
 		)
-		if counts.atomic != 1 || counts.sync != 1 {
-			t.Fatalf("proven commit calls: atomic=%d sync=%d; want 1/1", counts.atomic, counts.sync)
+		if counts.atomic != 1 || counts.sync != 2 {
+			t.Fatalf("proven commit calls: atomic=%d sync=%d; want 1/2", counts.atomic, counts.sync)
 		}
 		if again := stage.Publish(context.Background()); again != result {
 			t.Fatal("second Publish did not return the sealed terminal result")
 		}
-		if counts.atomic != 1 || counts.sync != 1 {
+		if counts.atomic != 1 || counts.sync != 2 {
 			t.Fatalf("second Publish repeated effects: atomic=%d sync=%d", counts.atomic, counts.sync)
 		}
 		if err := stage.Cleanup(); err != nil {
@@ -547,11 +635,13 @@ func TestPublishIndeterminateRetainsUnprovenPaths(t *testing.T) {
 	foreignTargetBytes := []byte("foreign bytes at target name")
 	atomicCanary := "atomic-unprovable-error-canary"
 	counts := &operationCounts{}
+	var attackErr error
 	operations := platformOperations{
-		atomicPublish: func(parent *os.File, stageName, targetName string, policy Policy) error {
+		atomicPublish: func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 			counts.atomic++
-			stagePath := filepath.Join(directory, stageName)
+			stagePath := filepath.Join(source.Name(), stageName)
 			if err := os.Rename(stagePath, recovery); err != nil {
+				attackErr = err
 				return err
 			}
 			if err := os.WriteFile(stagePath, foreignStageBytes, 0o600); err != nil {
@@ -578,6 +668,17 @@ func TestPublishIndeterminateRetainsUnprovenPaths(t *testing.T) {
 	}
 
 	result := stage.Publish(context.Background())
+	if attackErr != nil {
+		requireResult(t, result, StateNotPublished, pcv3result.OutcomeOperationFailed, pcv3result.StageOutputPublication, CodeAtomicFailed)
+		if counts.atomic != 1 || counts.sync != 0 {
+			t.Fatalf("blocked attack reached unexpected effects: %+v", counts)
+		}
+		requireBlockedStageAttackCleanup(t, stage, attackErr, operationBytes)
+		if _, err := os.Lstat(recovery); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("blocked relocation created recovery output: %v", err)
+		}
+		return
+	}
 	requireResult(
 		t,
 		result,
@@ -674,8 +775,8 @@ func TestCleanupReportsUnprovenOwnedStage(t *testing.T) {
 			t.Fatal("owned fixture identity did not match its open descriptor")
 		}
 		if err := os.Rename(stagePath, escapedPath); err != nil {
-			stage.Cleanup()
-			t.Skipf("platform prevents renaming an open stage: %v", err)
+			requireBlockedStageAttackCleanup(t, stage, err, ownedBytes)
+			return
 		}
 		foreign := []byte("must not be removed by cleanup")
 		if err := os.WriteFile(stagePath, foreign, 0o640); err != nil {
@@ -725,8 +826,8 @@ func TestCleanupReportsUnprovenOwnedStage(t *testing.T) {
 			t.Fatalf("write owned stage: %v", err)
 		}
 		if err := os.Remove(stagePath); err != nil {
-			_ = stage.Cleanup()
-			t.Skipf("platform prevents unlinking an open stage: %v", err)
+			requireBlockedStageAttackCleanup(t, stage, err, []byte("unlinked operation-owned plaintext"))
+			return
 		}
 
 		cleanupErr := stage.Cleanup()
@@ -801,8 +902,8 @@ func TestCleanupRemovesOnlyOwnedUnpublishedStage(t *testing.T) {
 			t.Fatalf("write owned stage: %v", err)
 		}
 		if err := os.Remove(stagePath); err != nil {
-			_ = stage.Cleanup()
-			t.Skipf("platform prevents unlinking an open stage: %v", err)
+			requireBlockedStageAttackCleanup(t, stage, err, []byte("unlinked operation-owned plaintext"))
+			return
 		}
 		foreign := []byte("foreign bytes occupying the remembered stage name")
 		if err := os.WriteFile(stagePath, foreign, 0o640); err != nil {
@@ -847,8 +948,8 @@ func TestCleanupRemovesOnlyOwnedUnpublishedStage(t *testing.T) {
 			t.Fatalf("write owned stage: %v", err)
 		}
 		if err := os.Remove(stagePath); err != nil {
-			_ = stage.Cleanup()
-			t.Skipf("platform prevents unlinking an open stage: %v", err)
+			requireBlockedStageAttackCleanup(t, stage, err, []byte("unlinked operation-owned plaintext"))
+			return
 		}
 
 		cleanupErr := stage.Cleanup()
@@ -979,8 +1080,8 @@ func TestPublishIdentityChangesFailClosed(t *testing.T) {
 		}
 		stageName := stage.stageName
 		if err := os.Rename(directory, movedDirectory); err != nil {
-			stage.Cleanup()
-			t.Skipf("platform prevents replacing an open parent path: %v", err)
+			requireBlockedStageAttackCleanup(t, stage, err, payload)
+			return
 		}
 		if err := os.Mkdir(directory, 0o700); err != nil {
 			stage.Cleanup()
@@ -1023,8 +1124,8 @@ func TestPublishIdentityChangesFailClosed(t *testing.T) {
 			t.Fatalf("write stage: %v", err)
 		}
 		if err := os.Remove(stage.stagePath); err != nil {
-			stage.Cleanup()
-			t.Skipf("platform prevents replacing an open stage: %v", err)
+			requireBlockedStageAttackCleanup(t, stage, err, []byte("unlinked owned stage"))
+			return
 		}
 		foreign := []byte("foreign stage replacement")
 		if err := os.WriteFile(stage.stagePath, foreign, 0o640); err != nil {
@@ -1089,7 +1190,7 @@ func TestPublishDefiniteAtomicFailureCleansOnlyOwnedStage(t *testing.T) {
 	atomicCalls := 0
 	directorySyncCalls := 0
 	operations := platformOperations{
-		atomicPublish: func(*os.File, string, string, Policy) error {
+		atomicPublish: func(*os.File, *os.File, *os.File, string, string, Policy) error {
 			atomicCalls++
 			return errors.New("TEST ONLY definite pre-commit failure")
 		},
@@ -1141,9 +1242,9 @@ func TestPublishDurabilityFailureRetainsCommittedDestination(t *testing.T) {
 			payload := []byte("complete committed output")
 			counts := &operationCounts{}
 			operations := platformOperations{
-				atomicPublish: func(parent *os.File, stageName, targetName string, policy Policy) error {
+				atomicPublish: func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 					counts.atomic++
-					return os.Rename(filepath.Join(directory, stageName), filepath.Join(directory, targetName))
+					return classifierRenameStage(source, parent, original, stageName, targetName)
 				},
 				syncDirectory: func(*os.File) error {
 					counts.sync++
@@ -1168,13 +1269,13 @@ func TestPublishDurabilityFailureRetainsCommittedDestination(t *testing.T) {
 				pcv3result.StageDirectorySync,
 				CodeDurabilityUncertain,
 			)
-			if counts.atomic != 1 || counts.sync != 1 {
-				t.Fatalf("durability failure calls: atomic=%d sync=%d; want 1/1", counts.atomic, counts.sync)
+			if counts.atomic != 1 || counts.sync != 2 {
+				t.Fatalf("durability failure calls: atomic=%d sync=%d; want 1/2", counts.atomic, counts.sync)
 			}
 			if strings.Contains(fmt.Sprintf("%+v", result), test.syncErr.Error()) {
 				t.Fatal("durability result disclosed the raw sync error")
 			}
-			if err := stage.Cleanup(); err != nil {
+			if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
 				t.Fatalf("cleanup after committed durability failure: %v", err)
 			}
 			requireFileBytes(t, target, payload)

@@ -5,6 +5,7 @@ package pcv3publication
 import (
 	"Picocrypt-NG/internal/pcv3result"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -239,12 +240,12 @@ func TestStageCleanupJournalRemovesExactStageAndJournalThenSyncs(t *testing.T) {
 
 func TestStageCleanupJournalCollisionNeverOverwritesFixedJournal(t *testing.T) {
 	directory := t.TempDir()
-	journalPath := filepath.Join(directory, cleanupJournalName)
+	stage := createTestStage(t, directory)
+	journalPath := filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName)
 	foreign := []byte("foreign journal must not be overwritten")
 	if err := os.WriteFile(journalPath, foreign, 0o640); err != nil {
 		t.Fatalf("write fixed-name collision: %v", err)
 	}
-	stage := createTestStage(t, directory)
 	stagePath := stage.stagePath
 
 	err := stage.PersistCleanupJournal()
@@ -254,8 +255,8 @@ func TestStageCleanupJournalCollisionNeverOverwritesFixedJournal(t *testing.T) {
 	requireFileBytes(t, journalPath, foreign)
 	requireFileBytes(t, stagePath, nil)
 	requireNoJournalTemps(t, directory)
-	if cleanupErr := stage.Cleanup(); cleanupErr != nil {
-		t.Fatalf("cleanup unjournaled stage after collision: %v", cleanupErr)
+	if cleanupErr := stage.Cleanup(); !errors.Is(cleanupErr, ErrCleanupIncomplete) {
+		t.Fatalf("foreign journal prevents private directory retirement: %v", cleanupErr)
 	}
 	requireFileBytes(t, journalPath, foreign)
 }
@@ -281,7 +282,7 @@ func TestStageCleanupJournalPreservesStageWhenAnExtraPlaintextLinkAppears(t *tes
 	if _, err := os.Lstat(aliasPath); err != nil {
 		t.Fatalf("unexpected link was not preserved: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(directory, cleanupJournalName)); err != nil {
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName)); err != nil {
 		t.Fatalf("journal was not preserved: %v", err)
 	}
 }
@@ -373,7 +374,7 @@ func TestCleanupJournaledStagePreservesMovedStageAndForeignReplacement(t *testin
 	}
 	requireFileBytes(t, stagePath, foreign)
 	requireFileBytes(t, escapedPath, []byte("owned plaintext"))
-	if _, err := os.Lstat(filepath.Join(directory, cleanupJournalName)); err != nil {
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName)); err != nil {
 		t.Fatalf("journal was not preserved: %v", err)
 	}
 }
@@ -388,7 +389,7 @@ func TestCleanupJournaledStageRemovesSingleRenamedIdentityAfterPublishCrash(t *t
 		t.Fatalf("write stage: %v", err)
 	}
 	stagePath := stage.stagePath
-	renamedPath := filepath.Join(directory, "published-but-not-retired.pcv")
+	renamedPath := filepath.Join(directory, stage.targetName)
 	closeStageHandlesWithoutCleanup(t, stage)
 	if err := os.Rename(stagePath, renamedPath); err != nil {
 		t.Fatalf("simulate atomic publication: %v", err)
@@ -399,7 +400,7 @@ func TestCleanupJournaledStageRemovesSingleRenamedIdentityAfterPublishCrash(t *t
 		t.Fatalf("cleanup = (%v, %v); want cleaned", state, err)
 	}
 	requireAbsent(t, renamedPath)
-	requireAbsent(t, filepath.Join(directory, cleanupJournalName))
+	requireAbsent(t, filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName))
 }
 
 func TestCleanupJournaledStageRejectsParentIdentityMismatch(t *testing.T) {
@@ -424,7 +425,7 @@ func TestCleanupJournaledStageRejectsParentIdentityMismatch(t *testing.T) {
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatalf("create replacement parent: %v", err)
 	}
-	journalBytes, err := os.ReadFile(filepath.Join(moved, cleanupJournalName))
+	journalBytes, err := os.ReadFile(filepath.Join(moved, stage.sourceName, cleanupJournalName))
 	if err != nil {
 		t.Fatalf("read original journal: %v", err)
 	}
@@ -442,7 +443,7 @@ func TestCleanupJournaledStageRejectsParentIdentityMismatch(t *testing.T) {
 		t.Fatalf("cleanup = (%v, %v); want incomplete", state, err)
 	}
 	requireFileBytes(t, foreignPath, foreign)
-	requireFileBytes(t, filepath.Join(moved, originalStageName), []byte("owned original stage"))
+	requireFileBytes(t, filepath.Join(moved, stage.sourceName, originalStageName), []byte("owned original stage"))
 }
 
 func TestCleanupJournaledStageReportsRemovalAndDirectorySyncFailures(t *testing.T) {
@@ -524,7 +525,7 @@ func TestCleanupJournaledStageReportsRemovalAndDirectorySyncFailures(t *testing.
 				t.Fatalf("cleanup = (%v, %v); want incomplete", state, err)
 			}
 			requireExistence(t, stagePath, test.wantStage)
-			requireExistence(t, filepath.Join(directory, cleanupJournalName), test.wantJournal)
+			requireExistence(t, filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName), test.wantJournal)
 		})
 	}
 }
@@ -606,7 +607,7 @@ func TestStageCleanupJournalReportsRemovalAndDirectorySyncFailures(t *testing.T)
 				t.Fatalf("cleanup error = %v; want incomplete", err)
 			}
 			requireExistence(t, stagePath, test.wantStage)
-			requireExistence(t, filepath.Join(directory, cleanupJournalName), test.wantJournal)
+			requireExistence(t, filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName), test.wantJournal)
 		})
 	}
 }
@@ -619,7 +620,7 @@ func TestStageCleanupJournalIsNotOwnedBeforeEveryDurabilityBoundary(t *testing.T
 	fileSyncs := 0
 	stage.operations.syncStage = func(file *os.File) error {
 		fileSyncs++
-		if _, err := os.Lstat(filepath.Join(directory, cleanupJournalName)); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Lstat(filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("fixed journal visible during file sync %d: %v", fileSyncs, err)
 		}
 		return nativeSyncFile(file)
@@ -631,7 +632,7 @@ func TestStageCleanupJournalIsNotOwnedBeforeEveryDurabilityBoundary(t *testing.T
 			if stage.journaled {
 				t.Fatal("stage claimed journal ownership before directory sync")
 			}
-			if _, err := os.Lstat(filepath.Join(directory, cleanupJournalName)); err != nil {
+			if _, err := os.Lstat(filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName)); err != nil {
 				t.Fatalf("journal not installed at directory sync boundary: %v", err)
 			}
 			return errors.New("TEST ONLY first directory sync failure")
@@ -646,10 +647,10 @@ func TestStageCleanupJournalIsNotOwnedBeforeEveryDurabilityBoundary(t *testing.T
 	if stage.journaled {
 		t.Fatal("failed persistence retained journal ownership")
 	}
-	if fileSyncs != 2 || directorySyncs != 2 {
-		t.Fatalf("durability calls = file %d directory %d; want 2/2", fileSyncs, directorySyncs)
+	if fileSyncs != 2 || directorySyncs != 3 {
+		t.Fatalf("durability calls = file %d directory %d; want 2/3", fileSyncs, directorySyncs)
 	}
-	requireAbsent(t, filepath.Join(directory, cleanupJournalName))
+	requireAbsent(t, filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName))
 	requireNoJournalTemps(t, directory)
 	if cleanupErr := stage.Cleanup(); cleanupErr != nil {
 		t.Fatalf("cleanup stage after rolled-back journal: %v", cleanupErr)
@@ -669,7 +670,7 @@ func TestStageCleanupJournalPublishRetiresJournalBeforeDurableSuccess(t *testing
 
 	result := stage.Publish(context.Background())
 	requireResult(t, result, StatePublishedDurable, pcv3result.OutcomeSuccess, pcv3result.StageNone, CodePublishedDurable)
-	requireAbsent(t, filepath.Join(directory, cleanupJournalName))
+	requireAbsent(t, filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName))
 	requireFileBytes(t, filepath.Join(directory, "target.pcv"), payload)
 	if err := stage.Cleanup(); err != nil {
 		t.Fatalf("cleanup handles after durable publication: %v", err)
@@ -683,8 +684,8 @@ func TestStageCleanupJournalCommittedRollbackUsesTwoDurabilityBarriers(t *testin
 		failSync    int
 		wantJournal bool
 	}{
-		{name: "first barrier preserves journal", failSync: 2, wantJournal: true},
-		{name: "second barrier remains incomplete", failSync: 3},
+		{name: "first barrier preserves journal", failSync: 3, wantJournal: true},
+		{name: "second barrier remains incomplete", failSync: 4},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -730,7 +731,7 @@ func TestStageCleanupJournalCommittedRollbackUsesTwoDurabilityBarriers(t *testin
 				CodePublicationIndeterminate,
 			)
 			requireAbsent(t, filepath.Join(directory, "target.pcv"))
-			requireExistence(t, filepath.Join(directory, cleanupJournalName), test.wantJournal)
+			requireExistence(t, filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName), test.wantJournal)
 		})
 	}
 }
@@ -741,7 +742,7 @@ func TestStageCleanupJournalRetirementSyncFailurePreservesTargetUntilStartupObse
 	if err := stage.PersistCleanupJournal(); err != nil {
 		t.Fatalf("persist cleanup journal: %v", err)
 	}
-	journalPath := filepath.Join(directory, cleanupJournalName)
+	journalPath := filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName)
 	journalBytes, err := os.ReadFile(journalPath)
 	if err != nil {
 		t.Fatalf("read durable journal fixture: %v", err)
@@ -759,7 +760,7 @@ func TestStageCleanupJournalRetirementSyncFailurePreservesTargetUntilStartupObse
 	syncCalls := 0
 	stage.operations.syncDirectory = func(parent *os.File) error {
 		syncCalls++
-		if syncCalls == 2 {
+		if syncCalls == 3 {
 			return errors.New("TEST ONLY journal retirement sync failure")
 		}
 		return nativeSync(parent)
@@ -788,8 +789,8 @@ func TestStageCleanupJournalRetirementSyncFailurePreservesTargetUntilStartupObse
 	requireFileBytes(t, foreignPath, foreign)
 
 	state, err := CleanupJournaledStage(directory)
-	if err != nil || state != CleanupJournalAbsent {
-		t.Fatalf("startup with currently absent journal = (%v, %v); want absent", state, err)
+	if !errors.Is(err, ErrCleanupIncomplete) || state != CleanupJournalIncomplete {
+		t.Fatalf("startup with currently absent journal = (%v, %v); want incomplete", state, err)
 	}
 	requireFileBytes(t, targetPath, payload)
 	if err := os.WriteFile(journalPath, journalBytes, 0o600); err != nil {
@@ -834,7 +835,7 @@ func TestStageCleanupJournalIndeterminatePublishRetainsExactCleanupAuthority(t *
 		CodePublicationIndeterminate,
 	)
 	requireAbsent(t, filepath.Join(directory, "target.pcv"))
-	if _, err := os.Lstat(filepath.Join(directory, cleanupJournalName)); err != nil {
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName)); err != nil {
 		t.Fatalf("failed retirement did not preserve exact journal: %v", err)
 	}
 
@@ -842,7 +843,7 @@ func TestStageCleanupJournalIndeterminatePublishRetainsExactCleanupAuthority(t *
 	if err := stage.Cleanup(); err != nil {
 		t.Fatalf("exact cleanup after transient retirement failure: %v", err)
 	}
-	requireAbsent(t, filepath.Join(directory, cleanupJournalName))
+	requireAbsent(t, filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName))
 }
 
 func createTestStage(t *testing.T, directory string) *Stage {
@@ -886,6 +887,18 @@ func requireNoJournalTemps(t *testing.T, directory string) {
 }
 
 func closeStageHandlesWithoutCleanup(t *testing.T, stage *Stage) {
+	if stage.lease != nil {
+		_ = stage.lease.Close()
+		stage.lease = nil
+	}
+	if stage.sourceParent != nil {
+		_ = stage.sourceParent.Close()
+		stage.sourceParent = nil
+	}
+	if stage.sourceRoot != nil {
+		_ = stage.sourceRoot.Close()
+		stage.sourceRoot = nil
+	}
 	t.Helper()
 	if stage.file != nil {
 		if err := stage.file.Close(); err != nil {
@@ -910,5 +923,72 @@ func closeStageHandlesWithoutCleanup(t *testing.T, stage *Stage) {
 			t.Fatalf("close simulated prior-process root: %v", err)
 		}
 		stage.root = nil
+	}
+}
+
+func TestJournalVersionTwoIsPrivateAndLegacyRecoveryRequiresTrustedParent(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "private v2", true: "legacy v1"}[legacy], func(t *testing.T) {
+			parent := t.TempDir()
+			stage := createTestStage(t, parent)
+			if err := stage.PersistCleanupJournal(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stage.File().Write([]byte("recover exact stage")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(filepath.Join(parent, cleanupJournalName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("authoritative journal exposed in parent: %v", err)
+			}
+			if legacy {
+				// Frozen schema migration: v1 means the stage and journal are direct
+				// children of the trusted parent, never a reinterpretation of v2 fields.
+				info, err := stage.parent.Stat()
+				if err != nil {
+					t.Fatal(err)
+				}
+				identity, err := makeJournalParentIdentity(info)
+				if err != nil {
+					t.Fatal(err)
+				}
+				record := cleanupJournal{Version: 1, Stage: stage.stageName, Parent: identity, File: stage.journalStageIdentity}
+				encoded, err := json.Marshal(record)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(parent, cleanupJournalName), append(encoded, '\n'), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(stage.stagePath, filepath.Join(parent, stage.stageName)); err != nil {
+					t.Fatal(err)
+				}
+				private := filepath.Dir(stage.stagePath)
+				if err := os.Remove(filepath.Join(private, cleanupJournalName)); err != nil {
+					t.Fatal(err)
+				}
+				closeStageHandlesWithoutCleanup(t, stage)
+				if err := os.Remove(private); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(parent, 0o777); err != nil {
+					t.Fatal(err)
+				}
+				state, err := CleanupJournaledStage(parent)
+				if state != CleanupJournalIncomplete || !errors.Is(err, ErrCleanupIncomplete) {
+					t.Fatalf("legacy public journal gained deletion authority: %v %v", state, err)
+				}
+				requireFileBytes(t, filepath.Join(parent, stage.stageName), []byte("recover exact stage"))
+				if err := os.Chmod(parent, info.Mode().Perm()); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				closeStageHandlesWithoutCleanup(t, stage)
+			}
+			state, err := CleanupJournaledStage(parent)
+			if state != CleanupJournalCleaned || err != nil {
+				t.Fatalf("recovery: %v %v", state, err)
+			}
+			requireNoStageEntries(t, parent)
+		})
 	}
 }

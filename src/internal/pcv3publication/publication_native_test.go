@@ -32,7 +32,7 @@ func testNativeNoReplacePublication(
 
 	result := stage.Publish(context.Background())
 	requireResult(t, result, wantState, wantOutcome, wantStage, wantCode)
-	if err := stage.Cleanup(); err != nil {
+	if err := stage.Cleanup(); errors.Is(err, ErrCleanupIncomplete) != (runtime.GOOS == "windows") {
 		t.Fatalf("cleanup native publication: %v", err)
 	}
 	requireFileBytes(t, target, payload)
@@ -57,11 +57,11 @@ func testNativeLateCollision(t *testing.T) {
 	foreign := []byte("late foreign destination")
 	operations := nativeOperations()
 	nativeAtomic := operations.atomicPublish
-	operations.atomicPublish = func(parent *os.File, stageName, targetName string, policy Policy) error {
+	operations.atomicPublish = func(source, parent, original *os.File, stageName, targetName string, policy Policy) error {
 		if err := os.WriteFile(filepath.Join(directory, targetName), foreign, 0o640); err != nil {
 			return err
 		}
-		return nativeAtomic(parent, stageName, targetName, policy)
+		return nativeAtomic(source, parent, original, stageName, targetName, policy)
 	}
 	stage, err := createWithOperations(target, nil, PolicyNoReplace, operations)
 	if err != nil {
@@ -82,7 +82,7 @@ func testNativeLateCollision(t *testing.T) {
 		pcv3result.StageOutputPublication,
 		CodeAtomicFailed,
 	)
-	if err := stage.Cleanup(); err != nil {
+	if err := stage.Cleanup(); errors.Is(err, ErrCleanupIncomplete) != (runtime.GOOS == "windows") {
 		t.Fatalf("cleanup rejected collision stage: %v", err)
 	}
 	requireFileBytes(t, target, foreign)
