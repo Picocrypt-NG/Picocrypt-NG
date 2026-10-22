@@ -11,6 +11,13 @@ GOMOBILE_LDFLAGS="${GOMOBILE_LDFLAGS:--s -w -buildid=}"
 NDK_VERSION_FILE="$SCRIPT_DIR/ndk-version.txt"
 REQUIRED_GO_VERSION="go1.27.2"
 
+case "$GOMOBILE_LDFLAGS ${GOFLAGS:-}" in
+    *runtime.godebugDefault*)
+        echo "Error: runtime.godebugDefault is reserved for the Android build wrapper." >&2
+        exit 1
+        ;;
+esac
+
 # Set Android SDK/NDK paths
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
@@ -140,7 +147,7 @@ validate_mobile_tool gomobile
 validate_mobile_tool gobind
 
 # Always use API level 26 (matches app's minSdk)
-USE_ANDROID_API="-androidapi 26"
+USE_ANDROID_API=(-androidapi 26)
 
 echo "Building Go Mobile bindings for Android..."
 echo "Go source directory: $GO_SRC_DIR"
@@ -201,9 +208,10 @@ fi
 export PICOCRYPT_REAL_GO="$REAL_GO"
 export PICOCRYPT_GO_SRC_DIR="$GO_SRC_DIR"
 export PICOCRYPT_JQ="$JQ"
+export PICOCRYPT_RUNTIME_DEFAULTS_DIR="$WRAPPER_DIR"
 
 cat > "$WRAPPER_DIR/go" <<'EOF'
-#!/bin/sh
+#!/bin/bash
 set -e
 REAL_GO="${PICOCRYPT_REAL_GO:?}"
 GO_SRC_DIR="${PICOCRYPT_GO_SRC_DIR:?}"
@@ -243,6 +251,61 @@ if [ -n "$GOFLAGS" ]; then
 else
     export GOFLAGS="-trimpath"
 fi
+if [[ ${GOOS:-} == android && ${1:-} == build ]]; then
+    if [[ ${!#} != ./gobind || $($REAL_GO list -m -f '{{.Path}}') != gobind ]]; then
+        echo "Error: Android runtime defaults require the generated gobind main package." >&2
+        exit 1
+    fi
+    case "$* ${GOFLAGS:-}" in
+        *runtime.godebugDefault*)
+            echo "Error: runtime.godebugDefault is reserved for the Android build wrapper." >&2
+            exit 1
+            ;;
+    esac
+    defaults="$($REAL_GO list -f '{{.DefaultGODEBUG}}' ./gobind)"
+    IFS=, read -r -a settings <<< "$defaults"
+    for setting in "${settings[@]}"; do
+        case "$setting" in
+            madvdontneed=1) ;;
+            madvdontneed=*)
+                echo "Error: generated Android runtime defaults conflict with madvdontneed=1." >&2
+                exit 1
+                ;;
+        esac
+    done
+    defaults="${defaults:+$defaults,}madvdontneed=1"
+    arguments=("$@")
+    flag_index=-1
+    flag_prefix=
+    for ((index = 1; index < ${#arguments[@]}; index++)); do
+        case "${arguments[index]}" in
+            -ldflags|-ldflags=*)
+                if ((flag_index != -1)); then
+                    echo "Error: Android runtime defaults require one set of linker flags." >&2
+                    exit 1
+                fi
+                if [[ ${arguments[index]} == -ldflags ]]; then
+                    index=$((index + 1))
+                else
+                    flag_prefix=-ldflags=
+                fi
+                flag_index=$index
+                ;;
+        esac
+    done
+    if ((flag_index == -1 || flag_index >= ${#arguments[@]})); then
+        echo "Error: Android runtime defaults require explicit linker flags." >&2
+        exit 1
+    fi
+    # Android c-shared startup ignores process GODEBUG; keep generated-main defaults.
+    arguments[flag_index]="$flag_prefix${arguments[flag_index]#"$flag_prefix"} -X=runtime.godebugDefault=$defaults"
+    case "${GOARCH:-}" in
+        arm|arm64|386|amd64) ;;
+        *) echo "Error: unsupported gobind architecture for Android runtime defaults." >&2; exit 1 ;;
+    esac
+    printf '%s\n' "$defaults" > "${PICOCRYPT_RUNTIME_DEFAULTS_DIR:?}/runtime-defaults-$GOARCH"
+    exec "$REAL_GO" "${arguments[@]}"
+fi
 exec "$REAL_GO" "$@"
 EOF
 chmod +x "$WRAPPER_DIR/go"
@@ -266,13 +329,13 @@ cd "$GO_SRC_DIR"
 # gomobile uses ANDROID_NDK_HOME environment variable (already set above)
 # Always use API level 26 (matches app's minSdk)
 PATH="$WRAPPER_DIR:$PATH" gomobile bind \
-    -target android/arm64,android/amd64 \
-    $USE_ANDROID_API \
+    -target android/arm,android/arm64,android/386,android/amd64 \
+    "${USE_ANDROID_API[@]}" \
     -ldflags="$GOMOBILE_LDFLAGS" \
     -o "$OUTPUT_DIR/picocrypt-mobile.aar" \
     ./mobile
 
-expected_abis="$(printf '%s\n' arm64-v8a x86_64)"
+expected_abis="$(printf '%s\n' arm64-v8a armeabi-v7a x86 x86_64)"
 actual_abis="$(
     unzip -Z1 "$OUTPUT_DIR/picocrypt-mobile.aar" \
         | sed -n 's#^jni/\([^/]*\)/libgojni\.so$#\1#p' \
@@ -315,6 +378,22 @@ ensure_absent_from_aar() {
     esac
 }
 
+verify_runtime_defaults() {
+    local native_so="$1"
+    local expected_defaults="$2"
+    local rodata
+    if ! rodata="$($LLVM_READELF --string-dump=.rodata "$native_so" 2>/dev/null)"; then
+        return 1
+    fi
+    printf '%s\n' "$rodata" | awk -v expected="$expected_defaults" '
+        /^\[[[:space:]]*[[:xdigit:]]+\]/ {
+            sub(/^\[[[:space:]]*[[:xdigit:]]+\][[:space:]]+/, "")
+            if ($0 == expected) found = 1
+        }
+        END { exit(found ? 0 : 1) }
+    '
+}
+
 verify_native_so() {
     local abi="$1"
     local native_so="$VERIFY_DIR/jni/$abi/libgojni.so"
@@ -325,6 +404,8 @@ verify_native_so() {
     local segment first second
     local load_count=0
     local relro_count=0
+    local goarch
+    local defaults_file
 
     if ! metadata="$($REAL_GO version -m "$native_so" 2>/dev/null)"; then
         echo "Error: AAR reproducibility policy failed for ABI $abi: go-build-metadata." >&2
@@ -332,6 +413,27 @@ verify_native_so() {
     fi
     if ! printf '%s\n' "$metadata" | awk -F '\t' '$2 == "build" && $3 == "-trimpath=true" { found = 1 } END { exit(found ? 0 : 1) }'; then
         echo "Error: AAR reproducibility policy failed for ABI $abi: trimpath." >&2
+        exit 1
+    fi
+    case "$abi" in
+        armeabi-v7a) goarch=arm ;;
+        arm64-v8a) goarch=arm64 ;;
+        x86) goarch=386 ;;
+        x86_64) goarch=amd64 ;;
+        *) echo "Error: unsupported AAR ABI: $abi." >&2; exit 1 ;;
+    esac
+    defaults_file="$WRAPPER_DIR/runtime-defaults-$goarch"
+    # -trimpath omits linker flags; check the exact baked string, not build metadata.
+    if [ ! -s "$defaults_file" ] || ! verify_runtime_defaults "$native_so" "$(cat "$defaults_file")"; then
+        echo "Error: AAR runtime defaults policy failed for ABI $abi: baked defaults." >&2
+        exit 1
+    fi
+    if ! printf '%s\n' "$metadata" | awk -F '\t' -v arch="$goarch" '
+        $2 == "build" && $3 == "GOOS=android" { os = 1 }
+        $2 == "build" && $3 == "GOARCH=" arch { matched_arch = 1 }
+        END { exit(os && matched_arch ? 0 : 1) }
+    '; then
+        echo "Error: AAR architecture policy failed for ABI $abi." >&2
         exit 1
     fi
     if ! printf '%s\n' "$metadata" | awk -F '\t' '

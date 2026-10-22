@@ -99,6 +99,9 @@ jobs:
           echo "ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE=$VERSION_CODE"
         } >> "$GITHUB_ENV"
 
+    - name: Verify Android gomobile build policy
+      run: bash .github/scripts/test-android-gomobile-policy.sh
+
     - name: Build Go Mobile AAR
       working-directory: android
       run: |
@@ -154,11 +157,15 @@ jobs:
           --arg version "$VERSION" \
           --arg code "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE" \
           --arg aar "$aar_sha256" \
+          --arg arm32 "$(sha256sum unsigned-release/app-armeabi-v7a-release-unsigned.apk | cut -d' ' -f1)" \
           --arg arm64 "$(sha256sum unsigned-release/app-arm64-v8a-release-unsigned.apk | cut -d' ' -f1)" \
+          --arg x86 "$(sha256sum unsigned-release/app-x86-release-unsigned.apk | cut -d' ' -f1)" \
           --arg x86_64 "$(sha256sum unsigned-release/app-x86_64-release-unsigned.apk | cut -d' ' -f1)" \
           --arg universal "$(sha256sum unsigned-release/app-universal-release-unsigned.apk | cut -d' ' -f1)" \
           '{source: $source, version: $version, baseVersionCode: $code, aarSha256: $aar,
-            apks: {"app-arm64-v8a-release-unsigned.apk": $arm64,
+            apks: {"app-armeabi-v7a-release-unsigned.apk": $arm32,
+                   "app-arm64-v8a-release-unsigned.apk": $arm64,
+                   "app-x86-release-unsigned.apk": $x86,
                    "app-x86_64-release-unsigned.apk": $x86_64,
                    "app-universal-release-unsigned.apk": $universal}}' \
           > unsigned-release/build-inputs.json
@@ -226,10 +233,10 @@ jobs:
         jq -e --arg source "$GITHUB_SHA" --arg version "$VERSION" --arg code "$VERSION_CODE" --arg aar "$AAR_SHA256" '
           .source == $source and .version == $version and .baseVersionCode == $code and
           .aarSha256 == $aar and ($aar | test("^[0-9a-f]{64}$")) and
-          (.apks | keys) == ["app-arm64-v8a-release-unsigned.apk", "app-universal-release-unsigned.apk", "app-x86_64-release-unsigned.apk"] and
+          (.apks | keys) == ["app-arm64-v8a-release-unsigned.apk", "app-armeabi-v7a-release-unsigned.apk", "app-universal-release-unsigned.apk", "app-x86-release-unsigned.apk", "app-x86_64-release-unsigned.apk"] and
           (.apks | to_entries | all(.value | test("^[0-9a-f]{64}$")))
         ' unsigned-release/build-inputs.json > /dev/null
-        expected_files=$(printf '%s\n' app-arm64-v8a-release-unsigned.apk app-universal-release-unsigned.apk app-x86_64-release-unsigned.apk build-inputs.json)
+        expected_files=$(printf '%s\n' app-arm64-v8a-release-unsigned.apk app-armeabi-v7a-release-unsigned.apk app-universal-release-unsigned.apk app-x86-release-unsigned.apk app-x86_64-release-unsigned.apk build-inputs.json)
         test "$(find unsigned-release -mindepth 1 -printf '%f\n' | LC_ALL=C sort)" = "$expected_files"
         while IFS=$'\t' read -r filename digest; do
           test -f "unsigned-release/$filename"
@@ -269,7 +276,7 @@ jobs:
         printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$signing_temp/release.keystore"
         unset ANDROID_KEYSTORE_BASE64
         mkdir signed-apks
-        for abi in arm64-v8a x86_64 universal; do
+        for abi in armeabi-v7a arm64-v8a x86 x86_64 universal; do
           if ! java --enable-native-access=ALL-UNNAMED -Xmx1024M \
             -cp "$RUNNER_TEMP/android-signing-tool:$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" \
             AndroidApkSigner "$signing_temp/release.keystore" \
@@ -288,7 +295,9 @@ jobs:
       run: |
         android/verify-release-apks.sh signed-apks "$VERSION" "$VERSION_CODE" io.github.picocrypt_ng.picocrypt_ng signed
         mkdir out
+        cp signed-apks/app-armeabi-v7a-release.apk out/Picocrypt-NG-android-armeabi-v7a.apk
         cp signed-apks/app-arm64-v8a-release.apk out/Picocrypt-NG-android-arm64-v8a.apk
+        cp signed-apks/app-x86-release.apk out/Picocrypt-NG-android-x86.apk
         cp signed-apks/app-x86_64-release.apk out/Picocrypt-NG-android-x86_64.apk
         cp signed-apks/app-universal-release.apk out/Picocrypt-NG-android-universal.apk
 
@@ -339,7 +348,9 @@ jobs:
       uses: ./.github/actions/sign-and-attest
       with:
         paths: |
+          out/Picocrypt-NG-android-armeabi-v7a.apk
           out/Picocrypt-NG-android-arm64-v8a.apk
+          out/Picocrypt-NG-android-x86.apk
           out/Picocrypt-NG-android-x86_64.apk
           out/Picocrypt-NG-android-universal.apk
 
@@ -354,8 +365,12 @@ jobs:
         version: ${{ env.VERSION }}
         body_path: ${{ github.workspace }}/release-body.md
         files: |
+          out/Picocrypt-NG-android-armeabi-v7a.apk
+          out/Picocrypt-NG-android-armeabi-v7a.apk.sigstore.json
           out/Picocrypt-NG-android-arm64-v8a.apk
           out/Picocrypt-NG-android-arm64-v8a.apk.sigstore.json
+          out/Picocrypt-NG-android-x86.apk
+          out/Picocrypt-NG-android-x86.apk.sigstore.json
           out/Picocrypt-NG-android-x86_64.apk
           out/Picocrypt-NG-android-x86_64.apk.sigstore.json
           out/Picocrypt-NG-android-universal.apk

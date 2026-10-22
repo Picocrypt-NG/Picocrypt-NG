@@ -9,15 +9,20 @@ The differences from that source are limited to:
 
 - `argon2.go`: clear the original typed workspace after all workers join and
   output extraction finishes; clear the initial hash, initialization block,
-  and extraction block after their last use. An optional private observer
-  retains the original workspace for bounded regression tests; public `Key`
+  and extraction block after their last use. Access blocks through the selected
+  typed workspace. An optional private observer retains the original workspace
+  for bounded regression tests; public `Key`
   and `IDKey` always pass nil.
 - `blake2b.go`: clear the local expansion buffer after its last use.
   Modified production files follow repository import grouping; an extra upstream
   blank line is removed for the repository formatter.
 - `argon2_test.go`: pass nil for the new private observer argument. The upstream
   known-answer values and vector tests are unchanged.
-- `cleanup.go`, `cleanup_test.go`, and provenance files: local cleanup helper,
+- `workspace_32bit.go`: allocate independent, exact-capacity chunks of at most
+  4 MiB on `arm` and `386`, avoiding a contiguous 1 GiB reservation. Other
+  architectures retain a contiguous typed allocation through
+  `workspace_contiguous.go`.
+- `cleanup.go`, local workspace/cleanup tests, and provenance files: cleanup,
   regression tests, and maintenance information.
 
 All upstream architecture-specific Go and assembly files are unchanged. The

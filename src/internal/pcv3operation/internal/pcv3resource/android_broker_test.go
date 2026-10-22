@@ -3,6 +3,7 @@ package pcv3resource
 import (
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"context"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -25,25 +26,26 @@ func TestAndroidRuntimeAdmissionUsesFreshMemoryHeadroom(t *testing.T) {
 		{
 			name:      "sufficient headroom",
 			available: 1408 * androidTestMiB,
-			is64Bit:   true,
+			is64Bit:   strconv.IntSize == 64,
 			want:      pcv3credential.KDFAdmissionGranted,
 		},
 		{
 			name:      "one byte below required headroom",
 			available: 1408*androidTestMiB - 1,
-			is64Bit:   true,
+			is64Bit:   strconv.IntSize == 64,
 			want:      pcv3credential.KDFAdmissionDeniedInsufficient,
 		},
 		{
 			name:      "platform reports low memory",
 			available: 4 * 1024 * androidTestMiB,
-			is64Bit:   true,
+			is64Bit:   strconv.IntSize == 64,
 			lowMemory: true,
 			want:      pcv3credential.KDFAdmissionDeniedInsufficient,
 		},
 		{
-			name:      "32 bit process cannot safely admit one GiB KDF",
+			name:      "reported process width disagrees with Go",
 			available: 4 * 1024 * androidTestMiB,
+			is64Bit:   strconv.IntSize != 64,
 			want:      pcv3credential.KDFAdmissionDeniedUnknown,
 		},
 	}
@@ -76,13 +78,13 @@ func TestAndroidResourceChallengeIsBoundedAndOneShot(t *testing.T) {
 	result := startAndroidAdmission(session)
 	challenge := awaitAndroidChallenge(t, session)
 
-	if challenge.Submit(8<<30, 2<<30, 0, 128<<20, true, false) {
+	if challenge.Submit(8<<30, 2<<30, 0, 128<<20, strconv.IntSize == 64, false) {
 		t.Fatal("observation without the platform low-memory threshold was accepted")
 	}
-	if !challenge.Submit(8<<30, 2<<30, 256<<20, 128<<20, true, false) {
+	if !challenge.Submit(8<<30, 2<<30, 256<<20, 128<<20, strconv.IntSize == 64, false) {
 		t.Fatal("valid observation was rejected after a malformed transport attempt")
 	}
-	if challenge.Submit(8<<30, 2<<30, 256<<20, 128<<20, true, false) {
+	if challenge.Submit(8<<30, 2<<30, 256<<20, 128<<20, strconv.IntSize == 64, false) {
 		t.Fatal("one-shot challenge accepted a second observation")
 	}
 

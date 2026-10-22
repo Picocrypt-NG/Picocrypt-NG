@@ -85,6 +85,7 @@ jobs:
     - name: Build Go Mobile AAR
       working-directory: android
       run: |
+        bash ../.github/scripts/test-android-gomobile-policy.sh
         chmod +x build-gomobile.sh
         ./build-gomobile.sh
 

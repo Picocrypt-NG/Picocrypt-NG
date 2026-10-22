@@ -1310,9 +1310,9 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 		target   string
 		script   string
 	}{
-		// Storage and staging must work on Picocrypt NG's Android 8 compatibility floor.
+		// Exercise 32-bit storage and staging at the Android 8 compatibility floor.
 		26: {
-			arch:     "x86_64",
+			arch:     "x86",
 			diskSize: "2048M",
 			memory:   "3583",
 			target:   "google_apis",
@@ -1603,22 +1603,33 @@ func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
 	mustContain(t, buildScript, `"$JAVA_MAJOR" != "21"`)
 }
 
-func TestAndroidReleasePublishesOnly64BitAPKNames(t *testing.T) {
+func TestAndroidReleasePublishesAllFourABIsAndUniversal(t *testing.T) {
 	releaseWorkflow := mustReadWorkflowDoc(t, ".github/workflows/build-android.yml")
+	build := mustJob(t, releaseWorkflow, "build")
+	sign := mustJob(t, releaseWorkflow, "sign")
+	bind := mustStepNamed(t, build, "Bind unsigned APKs to the source and AAR")
+	validate := mustStepNamed(t, sign, "Validate unsigned signing inputs before loading secrets")
 	prepare := mustStepNamed(t, mustJob(t, releaseWorkflow, "sign"), "Verify exact signed release APK contract")
+	release := mustJob(t, releaseWorkflow, "release")
+	attest := mustStepNamed(t, release, "Sign and attest artifacts")
+	stage := mustStepNamed(t, release, "Stage release assets")
 	for _, artifact := range []string{
+		"Picocrypt-NG-android-armeabi-v7a.apk",
 		"Picocrypt-NG-android-arm64-v8a.apk",
+		"Picocrypt-NG-android-x86.apk",
 		"Picocrypt-NG-android-x86_64.apk",
 		"Picocrypt-NG-android-universal.apk",
 	} {
 		mustContain(t, prepare.Run, artifact)
+		mustContain(t, fmt.Sprint(attest.With["paths"]), "out/"+artifact)
+		mustContain(t, fmt.Sprint(stage.With["files"]), "out/"+artifact+".sigstore.json")
 	}
-	for _, removed := range []string{
-		"Picocrypt-NG-android-armeabi-v7a.apk",
-		"Picocrypt-NG-android-x86.apk",
-	} {
-		mustNotContain(t, prepare.Run, removed)
+	for _, abi := range []string{"armeabi-v7a", "arm64-v8a", "x86", "x86_64", "universal"} {
+		mustContain(t, bind.Run, `"app-`+abi+`-release-unsigned.apk": $`)
 	}
+	mustContain(t, validate.Run, `(.apks | keys) == ["app-arm64-v8a-release-unsigned.apk", "app-armeabi-v7a-release-unsigned.apk", "app-universal-release-unsigned.apk", "app-x86-release-unsigned.apk", "app-x86_64-release-unsigned.apk"]`)
+	mustContain(t, validate.Run, `expected_files=$(printf '%s\n' app-arm64-v8a-release-unsigned.apk app-armeabi-v7a-release-unsigned.apk app-universal-release-unsigned.apk app-x86-release-unsigned.apk app-x86_64-release-unsigned.apk build-inputs.json)`)
+	mustContain(t, mustStepNamed(t, sign, "Sign verified APKs with the offline SDK").Run, "for abi in armeabi-v7a arm64-v8a x86 x86_64 universal; do")
 }
 
 func TestAndroidReleaseWorkflowsRunExactArtifactVerifier(t *testing.T) {
@@ -1649,7 +1660,7 @@ func TestAndroidReleaseWorkflowsRunExactArtifactVerifier(t *testing.T) {
 				t.Fatalf("verifier working-directory = %q, want %q", step.WorkingDirectory, tc.directory)
 			}
 			if tc.kind == "signed" {
-				mustContainInOrder(t, step.Run, `android/verify-release-apks.sh signed-apks "$VERSION" "$VERSION_CODE" io.github.picocrypt_ng.picocrypt_ng signed`, "mkdir out", "cp signed-apks/app-arm64-v8a-release.apk", "cp signed-apks/app-x86_64-release.apk", "cp signed-apks/app-universal-release.apk")
+				mustContainInOrder(t, step.Run, `android/verify-release-apks.sh signed-apks "$VERSION" "$VERSION_CODE" io.github.picocrypt_ng.picocrypt_ng signed`, "mkdir out", "cp signed-apks/app-armeabi-v7a-release.apk", "cp signed-apks/app-arm64-v8a-release.apk", "cp signed-apks/app-x86-release.apk", "cp signed-apks/app-x86_64-release.apk", "cp signed-apks/app-universal-release.apk")
 				if step.Env["VERSION"] != "${{ needs.build.outputs.version }}" || step.Env["VERSION_CODE"] != "${{ needs.build.outputs.version-code }}" {
 					t.Fatal("signed verifier must check source-bound build version metadata")
 				}
@@ -1684,11 +1695,16 @@ func TestAndroidReleaseSigningTrustAnchorAndPublicationOrder(t *testing.T) {
 		job   string
 		steps []string
 	}{
-		{"build", []string{"Build Go Mobile AAR", "Run Unit Tests", "Run Android Lint", "Build unsigned release APKs", "Verify exact unsigned release APK contract", "Bind unsigned APKs to the source and AAR", "Upload unsigned release APKs"}},
+		{"build", []string{"Verify Android gomobile build policy", "Build Go Mobile AAR", "Run Unit Tests", "Run Android Lint", "Build unsigned release APKs", "Verify exact unsigned release APK contract", "Bind unsigned APKs to the source and AAR", "Upload unsigned release APKs"}},
 		{"sign", []string{"Download source-bound unsigned APKs", "Validate unsigned signing inputs before loading secrets", "Compile the SDK signing launcher before loading secrets", "Sign verified APKs with the offline SDK", "Verify exact signed release APK contract", "Upload signed release APKs"}},
 		{"release", []string{"Download verified signed APKs", "Get version tag", "Sign and attest artifacts", "Generate release notes", "Stage release assets"}},
 	} {
 		job := mustJob(t, workflow, tc.job)
+		if tc.job == "build" {
+			if step := mustStepNamed(t, job, "Verify Android gomobile build policy"); strings.TrimSpace(step.Run) != "bash .github/scripts/test-android-gomobile-policy.sh" {
+				t.Fatal("Android release must run the shared gomobile build policy before building its AAR")
+			}
+		}
 		last := -1
 		for _, name := range tc.steps {
 			index := -1
@@ -1734,8 +1750,9 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 		"Picocrypt-NG-arm64": "build-linux.yml", "Picocrypt-NG-cli-arm64": "build-linux.yml",
 		"Picocrypt-NG.dmg": "build-macos.yml", "Picocrypt-NG-cli-macos": "build-macos.yml",
 		"Picocrypt-NG-portable.exe": "build-windows.yml", "Picocrypt-NG-cli.exe": "build-windows.yml", "Picocrypt-NG-Setup.exe": "build-windows.yml",
-		"Picocrypt-NG-cli-Legacy.exe":        "build-windows-legacy.yml",
-		"Picocrypt-NG-android-arm64-v8a.apk": "build-android.yml", "Picocrypt-NG-android-x86_64.apk": "build-android.yml", "Picocrypt-NG-android-universal.apk": "build-android.yml",
+		"Picocrypt-NG-cli-Legacy.exe":          "build-windows-legacy.yml",
+		"Picocrypt-NG-android-armeabi-v7a.apk": "build-android.yml", "Picocrypt-NG-android-arm64-v8a.apk": "build-android.yml",
+		"Picocrypt-NG-android-x86.apk": "build-android.yml", "Picocrypt-NG-android-x86_64.apk": "build-android.yml", "Picocrypt-NG-android-universal.apk": "build-android.yml",
 		"Picocrypt-NG-" + version + "-x86_64.AppImage": "build-appimage.yml", "Picocrypt-NG-" + version + "-x86_64.AppImage.zsync": "build-appimage.yml",
 		"picocrypt-ng_" + version + "_amd64.snap": "build-snapcraft.yml",
 	} {
@@ -1752,20 +1769,17 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 	}
 	mustNotContain(t, body, "production signing remains pending")
 
-	for _, removed := range []string{
-		"Picocrypt-NG-android-armeabi-v7a.apk",
-		"Picocrypt-NG-android-x86.apk",
-	} {
-		mustNotContain(t, body, removed)
-	}
 	for _, supported := range []string{
+		"Picocrypt-NG-android-armeabi-v7a.apk",
 		"Picocrypt-NG-android-arm64-v8a.apk",
+		"Picocrypt-NG-android-x86.apk",
 		"Picocrypt-NG-android-x86_64.apk",
 		"Picocrypt-NG-android-universal.apk",
-		"Android 8.0+ on 64-bit ARM or x86-64 devices",
+		"Android 8.0+",
 	} {
 		mustContain(t, body, supported)
 	}
+	mustNotContain(t, body, "Android 8.0+ on 64-bit ARM or x86-64 devices")
 }
 
 func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {

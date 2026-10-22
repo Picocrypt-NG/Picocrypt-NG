@@ -100,9 +100,11 @@ if ! readelf_version="$("$READELF" --version 2>&1)" || [[ -z "$readelf_version" 
 fi
 expected_files="$(printf '%s\n' \
     "app-arm64-v8a-release${filename_suffix}.apk" \
+    "app-armeabi-v7a-release${filename_suffix}.apk" \
     "app-universal-release${filename_suffix}.apk" \
+    "app-x86-release${filename_suffix}.apk" \
     "app-x86_64-release${filename_suffix}.apk")"
-actual_files="$(find "$apk_dir" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | LC_ALL=C sort)"
+actual_files="$(find "$apk_dir" -mindepth 1 -name '*.apk' -printf '%P\n' | LC_ALL=C sort)"
 if [[ "$actual_files" != "$expected_files" ]]; then
     echo "Release APK set does not match the exact $build_kind contract." >&2
     echo "Expected:" >&2
@@ -122,7 +124,12 @@ verify_apk() {
     local expected_version_code=$2
     local expected_abis=$3
     local apk="$apk_dir/$filename"
-    local badging package_line actual_application_id actual_version_code actual_version_name entries actual_abis signature_output signer_count signer_digest abi jni_file elf_header actual_machine expected_machine expected_machine_code
+    local badging package_line actual_application_id actual_version_code actual_version_name entries duplicate_entries actual_abis signature_output signer_count signer_digest abi jni_file elf_header actual_machine expected_machine expected_machine_code expected_class
+
+    if [[ ! -f "$apk" || -L "$apk" ]]; then
+        echo "$filename must be a regular APK file, not a symlink" >&2
+        exit 1
+    fi
 
     if signature_output="$("${apksigner_command[@]}" verify --Werr --verbose --print-certs "$apk" 2>&1)"; then
         if [[ "$build_kind" == unsigned ]]; then
@@ -189,6 +196,11 @@ verify_apk() {
     fi
 
     entries="$(unzip -Z1 "$apk")"
+    duplicate_entries="$(LC_ALL=C sort <<< "$entries" | uniq -d)"
+    if [[ -n "$duplicate_entries" ]]; then
+        echo "$filename contains duplicate ZIP members" >&2
+        exit 1
+    fi
     actual_abis="$(awk -F/ '$1 == "lib" && NF >= 3 { print $2 }' <<< "$entries" | LC_ALL=C sort -u)"
     if [[ "$actual_abis" != "$expected_abis" ]]; then
         echo "$filename native ABI set does not match." >&2
@@ -217,20 +229,28 @@ verify_apk() {
             printf '%s\n' "$elf_header" >&2
             exit 1
         fi
-        if ! grep -Eq '^[[:space:]]*Class:[[:space:]]+ELF64$' <<< "$elf_header"; then
-            echo "$filename lib/$abi/libgojni.so is not ELF64" >&2
-            exit 1
-        fi
         if ! grep -Eq '^[[:space:]]*Type:[[:space:]]+DYN[[:space:]]+\(Shared object file\)$' <<< "$elf_header"; then
             echo "$filename lib/$abi/libgojni.so is not an ELF shared object (DYN)" >&2
             exit 1
         fi
         case "$abi" in
+            armeabi-v7a)
+                expected_class=ELF32
+                expected_machine="ARM"
+                expected_machine_code="40/0x28"
+                ;;
             arm64-v8a)
+                expected_class=ELF64
                 expected_machine="AArch64"
                 expected_machine_code="183/0xb7"
                 ;;
+            x86)
+                expected_class=ELF32
+                expected_machine="Intel 80386"
+                expected_machine_code="3/0x3"
+                ;;
             x86_64)
+                expected_class=ELF64
                 expected_machine="Advanced Micro Devices X86-64"
                 expected_machine_code="62/0x3e"
                 ;;
@@ -239,6 +259,10 @@ verify_apk() {
                 exit 1
                 ;;
         esac
+        if ! grep -Eq "^[[:space:]]*Class:[[:space:]]+$expected_class\$" <<< "$elf_header"; then
+            echo "$filename lib/$abi/libgojni.so is not $expected_class" >&2
+            exit 1
+        fi
         actual_machine=$(sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p' <<< "$elf_header")
         if [[ "$actual_machine" != "$expected_machine" ]]; then
             echo "$filename lib/$abi/libgojni.so Machine = '${actual_machine:-<missing>}', want '$expected_machine' (e_machine $expected_machine_code)" >&2
@@ -248,13 +272,21 @@ verify_apk() {
 }
 
 verify_apk \
+    "app-armeabi-v7a-release${filename_suffix}.apk" \
+    "$((base_version_code * 10 + 1))" \
+    "armeabi-v7a"
+verify_apk \
     "app-arm64-v8a-release${filename_suffix}.apk" \
     "$((base_version_code * 10 + 2))" \
     "arm64-v8a"
 verify_apk \
     "app-universal-release${filename_suffix}.apk" \
-    "$base_version_code" \
-    "$(printf '%s\n' arm64-v8a x86_64)"
+    "$((base_version_code * 10))" \
+    "$(printf '%s\n' arm64-v8a armeabi-v7a x86 x86_64)"
+verify_apk \
+    "app-x86-release${filename_suffix}.apk" \
+    "$((base_version_code * 10 + 3))" \
+    "x86"
 verify_apk \
     "app-x86_64-release${filename_suffix}.apk" \
     "$((base_version_code * 10 + 4))" \

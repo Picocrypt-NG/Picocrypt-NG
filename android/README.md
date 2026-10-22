@@ -17,7 +17,7 @@ This directory contains the Android app that integrates with the Go encryption b
    - Requires the stable NDK `30.0.16248370` pin from `ndk-version.txt` (minimum API level 26,
      matching app's minSdk)
    - CI and recommended local builds use JDK 21
-   - Android app and gomobile outputs are 64-bit only: `arm64-v8a` and `x86_64`
+   - Android app and gomobile outputs include `armeabi-v7a`, `arm64-v8a`, `x86`, and `x86_64`
 
 3. **Application ID**: The native Android app uses:
    ```text
@@ -39,6 +39,23 @@ This directory contains the Android app that integrates with the Go encryption b
    that `gomobile` and `gobind` match the `golang.org/x/mobile` version in `src/go.mod` and were built
    with Go 1.27.2 before generating `app/libs/picocrypt-mobile.aar`.
    The mise task selects these versions independently of the desktop development tools.
+
+   Android's Go c-shared startup supplies an empty environment to the runtime. The build
+   wrapper therefore compiles `madvdontneed=1` into `runtime.godebugDefault`, retaining the
+   generated main package's other computed defaults. This returns retired Go heap pages
+   immediately instead of leaving them resident under `MADV_FREE` before the next resource
+   admission. Caller `GOMOBILE_LDFLAGS` remain intact; direct `runtime.godebugDefault` overrides
+   in those flags or `GOFLAGS` are rejected. Since `-trimpath` omits linker flags from Go build
+   metadata, each AAR library is checked for the exact merged default string in ELF read-only
+   data and the matching Android architecture. This is an artifact tripwire, not proof that
+   the runtime uses the setting; that also requires the pinned source checks and actual
+   Android reclamation tests.
+
+   This uses an internal linker target in the pinned Go toolchain. Before changing that pin,
+   review the startup parser and reclamation implementation, then update and run
+   `bash .github/scripts/test-android-gomobile-policy.sh` on Linux from the repository root.
+   The check pins the relevant Go source, tests build-wrapper policy, and builds small host
+   c-shared ELF controls; it does not validate Android execution or cryptographic behavior.
 
 2. **Build Android App**:
    ```bash
@@ -168,18 +185,21 @@ before release admission.
 - F-Droid builds run release Gradle tasks without maintainer signing properties.
   Reproducible builds must match the official signed APKs after signature copying;
   an F-Droid 3.0 update requires those checks.
-- Release builds produce **64-bit per-ABI APKs** for `arm64-v8a` and `x86_64`
-  plus a **64-bit universal** fallback APK. Android 8.0/API 26 remains the OS
-  floor, but the device must support one of those 64-bit ABIs. Stable split
-  versionCode offsets remain `arm64-v8a=2` and `x86_64=4`; the universal APK
-  keeps `base`. The next fdroiddata release must mirror this as
-  `VercodeOperation: [10*%c+2, 10*%c+4]`. Published v2.18 metadata remains a
-  historical four-ABI release.
-- The release workflow publishes three signed release APKs; PR workflow artifacts remain debug/testing-only
+- Release builds produce per-ABI APKs for `armeabi-v7a`, `arm64-v8a`, `x86`, and `x86_64`,
+  plus a universal fallback. Split versionCodes remain `base*10+offset`, with offsets
+  `armeabi-v7a=1`, `arm64-v8a=2`, `x86=3`, and `x86_64=4`; the universal APK uses `base*10`.
+  For 3.0 these codes are `300001`–`300004` and `300000`, respectively, so the universal
+  APK can upgrade 2.18 per-ABI installations (`218001`–`218004`) without a downgrade.
+  The next fdroiddata release must mirror all four offsets in `VercodeOperation` and verify
+  its source-built APKs against the signed artifacts.
+- The release workflow publishes five signed release APKs; PR workflow artifacts remain debug/testing-only
 
 ### PCV3 publication and document providers
 
-Android 8.0/API 26 and a supported 64-bit ABI are the installation minimum.
+Android 8.0/API 26 and one of the four packaged ABIs are the installation minimum.
+Each operation checks fresh memory facts before its unchanged fixed KDF profile.
+Splitting the 32-bit workspace into allocations of at most 4 MiB reduces the need
+for one large contiguous region, but does not guarantee allocation under fragmentation.
 The OS version does not establish filesystem publication support: creation probes
 atomic no-replace behavior in the actual app-private output directory before the
 KDF. Unsupported kernels, filesystems, or SELinux policies fail closed; an

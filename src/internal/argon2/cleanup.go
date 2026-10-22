@@ -7,7 +7,7 @@ import "runtime"
 // storage, not a guarantee about compiler, hash, assembly, or register copies.
 //
 //go:noinline
-func wipeBlocks(workspace []block) {
-	clear(workspace)
+func wipeBlocks(workspace blockWorkspace) {
+	workspace.clear()
 	runtime.KeepAlive(workspace)
 }

@@ -5,6 +5,7 @@ package pcv3resource
 import (
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"context"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -63,7 +64,7 @@ func TestAndroidProviderIsConfiguredButRequiresBoundFreshObservation(t *testing.
 		result <- androidAdmissionResult{decision: decision, err: err}
 	}()
 	challenge := awaitAndroidChallenge(t, session)
-	if !challenge.Submit(8<<30, 2<<30, 256<<20, 128<<20, true, false) {
+	if !challenge.Submit(8<<30, 2<<30, 256<<20, 128<<20, strconv.IntSize == 64, false) {
 		t.Fatal("bound operation rejected its fresh observation")
 	}
 	got := awaitAndroidAdmission(t, result)

@@ -215,6 +215,8 @@ Picocrypt NG overwrites owned sensitive byte buffers after use via `crypto.Secur
 
 Production Argon2 calls use `internal/argon2`, maintained from `golang.org/x/crypto` v0.58.0 with explicit cleanup of its workspace and selected intermediate buffers. Cleanup follows worker completion and extraction of the independent output key; algorithm parameters and derived bytes are unchanged. The existing `FreeOSMemory` calls reclaim memory but do not provide a secure-erasure contract. Internal hash state, assembly/register copies, and earlier swap or dump contents remain outside this cleanup guarantee.
 
+ARM and x86 32-bit builds allocate the workspace in separate typed chunks of at most 4 MiB; other architectures retain contiguous storage. Android builds set the pinned Go runtime's `madvdontneed=1` default at link time so completed workspaces release resident pages before the next memory observation. Android shared-library startup does not import process `GODEBUG` settings.
+
 # Code Structure
 
 Picocrypt NG v2.00+ has been refactored into a modular architecture. The codebase is organized as follows:

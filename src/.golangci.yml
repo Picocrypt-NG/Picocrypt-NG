@@ -84,7 +84,7 @@ linters:
       - path: '^internal/argon2/argon2\.go$'
         linters: [gocritic]
         text: '^captLocal:'
-        source: '^func (processBlocks|extractKey)\(B \[\]block,'
+        source: '^func (processBlocks|extractKey)\(B blockWorkspace,'
       - path: '^internal/argon2/argon2\.go$'
         linters: [intrange]
         text: '^for loop can be changed to use an integer range'
