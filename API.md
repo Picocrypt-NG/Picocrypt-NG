@@ -409,8 +409,8 @@ provider storage durability.
 
 This does not rewrite or upgrade existing volumes. Existing v1/v2 keyfile volumes remain readable
 through their legacy branches. Recover plaintext before creating PCV3; merely wrapping an affected
-legacy v2 volume does not make its old authentication schedule keyfile-bound. WASM does not expose
-PCV3 creation. The Android gomobile bridge accepts `write-normal` and `write-d1` creation envelopes
+legacy v2 volume does not make its old authentication schedule keyfile-bound. The browser creates
+PCV3 through its bounded memory facade. The Android gomobile bridge accepts `write-normal` and `write-d1` creation envelopes
 alongside the read, recovery, and force modes; `write-d1` preserves the selected standard or paranoid payload suite, and
 creation uses the same runtime resource admission as reads.
 
@@ -1044,7 +1044,40 @@ and the on-disk format are unchanged.
 `DetectPrefix` classifies format ownership. `Probe(io.ReaderAt, int64)` returns
 `(Route, error)` after bounded structural inspection; it intentionally omits
 capsules and KDF parameters. Claimed PCV3 input never falls back to legacy reads.
-WASM retains its existing PCV3 refusal behavior.
+The browser's `js && wasm`-only `BrowserWrite` and `BrowserRead` facade reuses the
+same Normal/D1 serializers, credential owners and recovery engines in memory.
+It creates only PCV3; legacy v1/v2 decryption remains in `internal/wasm` with its
+existing feature limits. Ordinary Normal input is selected by `PCV\0`; D1
+requires explicit `pcv3Mode: 2` (or `6` for Force), with no content inference or
+fallback. `pcv3Mode` accepts only exact integers 1–8. Modes 7/8 additionally
+require `pcv3ForceUnverifiedConsent: true` and an explicitly present `pcv3Role`
+of 0 (primary/front) or 1 (backup/tail). Only mode 8 accepts optional
+`pcv3D1SuiteHint` 1/2. Inapplicable authority fields are rejected.
+
+`picocryptEncrypt` and `picocryptDecrypt` remain synchronous worker exports.
+`picocryptCapabilities()` reports `pcv3: true`, `apiVersion: 3`, and byte caps:
+128 MiB creation input, 256 MiB PCV3 ciphertext, 1 GiB legacy input, and 64 MiB
+aggregate keyfile bytes (at most 64 files). PCV3 reads retain at most 128 MiB of
+output. Empty PCV3 plaintext is permitted. New creation supports password-only,
+keyfile-only or combined factors, ordered keyfiles, optional Paranoid, payload
+Reed-Solomon and D1. Comments remain plaintext authenticated metadata; source
+filenames are not embedded. File/folder staging and splitting are not exposed.
+
+Codes 0 and 10 alone carry output: 0 means fully authenticated success or degraded
+recovery (`recovered: true`), and 10 is partial/unverified Force output. Resource
+refusal is 14; ambiguity is 15. Other failures return only `code`. The facade
+consumes and clears Go-owned input, password and keyfile copies and owns output
+until `Close`; JavaScript strings, copies and runtime internals cannot be reliably
+erased by Go. Inputs backed by SharedArrayBuffer are rejected. A shared guard
+rejects synchronous reentry into either export from an input getter.
+
+Browser admission checks only bounded address space, using current Go HeapAlloc
+after collection, the unchanged fixed 1-GiB KDF profile, a 96-MiB working reserve,
+pending output and a 1.875-GiB Go budget. JavaScript buffers have a separate
+768-MiB accounting ceiling. This does not observe or guarantee physical RAM;
+runtime/browser OOM can still terminate the worker. The site must use a fresh
+worker for each operation, terminate it on every result/error, and restore UI
+state on worker failure. No JavaScript-supplied resource authority is accepted.
 
 `Result` is operation-minted. `Presentation` is display-only and cannot authorize
 publication or deletion. Output and archive follow-ups preserve their one-shot
@@ -1076,4 +1109,6 @@ authority to retry credentials, publish output or delete sources.
 `NewAndroidResourceSession`, `WithAndroidResourceSession`, and `Challenge` bind
 fresh platform observations to one live Go operation. A challenge's `Submit`
 consumes bounded facts once; it does not return or select an admission decision.
+KDF observations must report the same process width as the compiled Go runtime.
+Both 32-bit and 64-bit Android builds use the unchanged fixed profiles and headroom checks.
 The facade has no snapshot provider or platform-admitter constructor.
