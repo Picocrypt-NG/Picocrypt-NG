@@ -4,6 +4,8 @@ package main
 
 import (
 	"Picocrypt-NG/internal/header"
+	"os"
+	"path/filepath"
 	"syscall/js"
 	"testing"
 )
@@ -29,16 +31,13 @@ func bytesOf(v any) []byte {
 // volume with force off returns code 4 (no data). Proves the bridge forwards the
 // flag and special-cases the kept code to carry bytes.
 func TestBridgeForceDecryptKeepsDataCode10(t *testing.T) {
-	plaintext := []byte("bridge force decrypt payload, long enough")
-	password := "bridge-force-pw"
-
-	enc := encrypt(js.Undefined(), []js.Value{newOpts(map[string]any{
-		"data": mkU8FD(plaintext), "password": password,
-	})})
-	if codeOf(enc) != 0 {
-		t.Fatalf("encrypt code %d", codeOf(enc))
+	requireWASMProductionKDF(t)
+	plaintext := []byte("There is a test file for Picocrypt validation.\n")
+	password := "test"
+	vol, err := os.ReadFile(filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	vol := bytesOf(enc)
 	vol[header.HeaderSize(0)+3] ^= 0xFF // break the MAC
 
 	off := decrypt(js.Undefined(), []js.Value{newOpts(map[string]any{

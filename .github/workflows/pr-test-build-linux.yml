@@ -181,16 +181,10 @@ jobs:
         cd src
         go mod download
 
-    - name: Test browser deniability boundary
+    - name: Test browser PCV3 and legacy compatibility
       if: matrix.arch == 'amd64'
-      run: |
-        cd src
-        GOMAXPROCS=1 GOOS=js GOARCH=wasm go test -count=1 \
-          -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-          -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness|TestBridgePCV3UnsupportedBeforeKDF)$' ./cmd/wasm
-        GOMAXPROCS=1 GOOS=js GOARCH=wasm go test -count=1 \
-          -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-          -run '^TestWASMTamperedPaddingFlagFailsHeaderAuthentication$' ./internal/wasm
+      timeout-minutes: 45
+      run: .github/scripts/test-wasm.sh
 
     - name: Test PCV3 pure packages in browser/WASM
       if: matrix.arch == 'amd64'
