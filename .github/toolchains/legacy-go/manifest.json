@@ -1,12 +1,12 @@
 {
-  "version": "go1.27.2",
+  "version": "go1.27.3",
   "source": {
-    "url": "https://go.dev/dl/go1.27.2.src.tar.gz",
-    "sha256": "03495da2ba64894d40f5c4992e49454fa78b50690604ff92b6afff5081b76e62"
+    "url": "https://go.dev/dl/go1.27.3.src.tar.gz",
+    "sha256": "6e7749035cf360f06b2575d162ea79df9fda8ef671889e5c375f8e50777f26bb"
   },
   "bootstrap_windows_amd64": {
-    "url": "https://go.dev/dl/go1.27.2.windows-amd64.zip",
-    "sha256": "1314008898bd40df77af4b014f777f08873dbdfbcd3d92308728ee03304fe04f"
+    "url": "https://go.dev/dl/go1.27.3.windows-amd64.zip",
+    "sha256": "f26081f438319757f8a1b46d7d0b2c5ec7583d4038e485e0aa725cfde7885fff"
   },
   "vendor_commit": "2f6cdc24e8e5c029eafebe42fcbe966cc0589f97",
   "patches": [

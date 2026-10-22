@@ -23,7 +23,7 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: Build patched Go 1.27.2 for Windows 7/8
+    - name: Build patched Go 1.27.3 for Windows 7/8
       shell: pwsh
       run: |
         & .github/scripts/build-legacy-go.ps1 `
@@ -46,7 +46,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw 'Could not inspect legacy Go installation' }
         $goEnvironment = $goEnvironment | ConvertFrom-Json
         if ($goEnvironment.GOROOT -ne $expectedRoot) { throw 'Unexpected legacy GOROOT' }
-        if ($goEnvironment.GOVERSION -ne 'go1.27.2') { throw 'Unexpected legacy Go version' }
+        if ($goEnvironment.GOVERSION -ne 'go1.27.3') { throw 'Unexpected legacy Go version' }
         if ($goEnvironment.GOTOOLCHAIN -ne 'local') { throw 'GOTOOLCHAIN must be local' }
         if ($goEnvironment.GOOS -ne 'windows' -or $goEnvironment.GOARCH -ne 'amd64' -or
             $goEnvironment.GOAMD64 -ne 'v1' -or $goEnvironment.GOEXPERIMENT -ne '') { throw 'Unexpected legacy Go build settings' }
@@ -97,7 +97,7 @@ jobs:
       run: |
         $buildInfo = go version -m src/Picocrypt-NG-cli-Legacy.exe | Out-String
         if ($LASTEXITCODE -ne 0) { throw 'Could not inspect legacy CLI build metadata' }
-        if ($buildInfo -notmatch '(?m)^[^\r\n]*: go1\.27\.2\r?$') { throw 'Legacy CLI was not built by Go 1.27.2' }
+        if ($buildInfo -notmatch '(?m)^[^\r\n]*: go1\.27\.3\r?$') { throw 'Legacy CLI was not built by Go 1.27.3' }
         if ($buildInfo -notmatch '(?m)^\tbuild\tGOAMD64=v1\r?$') { throw 'Legacy CLI requires unsupported CPU instructions' }
         & .github/scripts/assert-windows-legacy-pe.ps1 -Path 'src/Picocrypt-NG-cli-Legacy.exe'
         $buildInfo

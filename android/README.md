@@ -6,7 +6,7 @@ This directory contains the Android app that integrates with the Go encryption b
 
 ### Prerequisites
 
-1. **Go Mobile**: Use exactly Go 1.27.2 and install Go mobile bindings
+1. **Go Mobile**: Use exactly Go 1.27.3 and install Go mobile bindings
    ```bash
    go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20261011034528-197770444867
    go install golang.org/x/mobile/cmd/gobind@v0.0.0-20261011034528-197770444867
@@ -35,9 +35,9 @@ This directory contains the Android app that integrates with the Go encryption b
    ```bash
    ./android/build-gomobile.sh
    ```
-   The script requires exactly Go 1.27.2 and the exact NDK revision in `ndk-version.txt`. It verifies
+   The script requires exactly Go 1.27.3 and the exact NDK revision in `ndk-version.txt`. It verifies
    that `gomobile` and `gobind` match the `golang.org/x/mobile` version in `src/go.mod` and were built
-   with Go 1.27.2 before generating `app/libs/picocrypt-mobile.aar`.
+   with Go 1.27.3 before generating `app/libs/picocrypt-mobile.aar`.
    The mise task selects these versions independently of the desktop development tools.
 
    Android's Go c-shared startup supplies an empty environment to the runtime. The build

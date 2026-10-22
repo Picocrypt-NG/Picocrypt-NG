@@ -1,4 +1,4 @@
-The reusable `go-toolchain.yaml` module supplies Go 1.27.2 from the official
+The reusable `go-toolchain.yaml` module supplies Go 1.27.3 from the official
 architecture-specific archives. It uses `/app/lib/sdk/golang` during the build
 and removes its installed files during Flatpak cleanup. It does not replace the
 SDK's `/usr/lib/sdk/golang` or change the host's mise installation.
@@ -23,7 +23,7 @@ modules:
 
 Remove the now-unused `org.freedesktop.Sdk.Extension.golang` entry. Before the
 application's existing build commands, require
-`test "$("$GOROOT/bin/go" env GOVERSION)" = go1.27.2`. Keep the application's
+`test "$("$GOROOT/bin/go" env GOVERSION)" = go1.27.3`. Keep the application's
 existing architecture and X11/Wayland builds, and its vendored dependency sources
 with `-mod=vendor`. `GOTOOLCHAIN=local` rejects an incompatible Go requirement
 instead of downloading another toolchain; `GOPROXY=off` prevents module downloads.

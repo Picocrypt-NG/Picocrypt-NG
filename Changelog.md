@@ -7,7 +7,7 @@ Unreleased development version.
 	<li>✓ <strong>Desktop input and output safety</strong>: choosing a legacy output path no longer truncates an existing file, overwrite confirmation applies only to the confirmed destination, and later iCloud file batches ask whether to replace or extend the selection.</li>
 	<li>✓ <strong>Android reliability</strong>: restored input paths must belong to the app, clearing passwords also clears the visible fields, and accepted legacy operations retain their credentials through cancellation and Force retry.</li>
 	<li>✓ <strong>Compatibility and error handling</strong>: sequential keyfile processing avoids exhausting file descriptors, ordinary legacy Reed-Solomon reads reject partial trailing blocks, and WASM authenticates v2 headers before reporting missing or incorrect keyfiles.</li>
-	<li>✓ <strong>Security maintenance</strong>: updated to Go 1.27.2 and <code>golang.org/x/net</code> v0.60.0; Windows legacy builds apply pinned compatibility patches to the official Go source.</li>
+	<li>✓ <strong>Security maintenance</strong>: updated to Go 1.27.3 and <code>golang.org/x/net</code> v0.61.0; Windows legacy builds apply pinned compatibility patches to the official Go source.</li>
 	<li>✓ <strong>Release integrity</strong>: Android APK signing runs separately from Gradle in a job with a read-only GitHub token, and download verification binds each artifact to its expected workflow, main branch and source commit.</li>
 </ul>
 

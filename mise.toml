@@ -2,7 +2,7 @@
 min_version = "2026.10.0"
 
 [tools]
-go = "1.27.2"
+go = "1.27.3"
 java = "temurin-21.0.12+101.0.LTS"
 golangci-lint = "2.15.0"
 "go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20261011034528-197770444867"
@@ -123,7 +123,7 @@ run = [
 [tasks."android:gomobile"]
 description = "Build the Android gomobile AAR"
 dir = "android"
-tools.go = "1.27.2"
+tools.go = "1.27.3"
 tools."go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20261011034528-197770444867"
 tools."go:golang.org/x/mobile/cmd/gomobile" = "v0.0.0-20261011034528-197770444867"
 run = "./build-gomobile.sh"

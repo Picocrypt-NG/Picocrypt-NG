@@ -81,7 +81,7 @@ test -s "$work/artifact-policy"
 # shellcheck source=/dev/null
 source "$work/artifact-policy"
 mkdir "$work/control"
-printf 'module android-runtime-policy-control\n\ngo 1.27.2\n' > "$work/control/go.mod"
+printf 'module android-runtime-policy-control\n\ngo 1.27.3\n' > "$work/control/go.mod"
 printf 'package main\nimport "C"\nfunc main() {}\n' > "$work/control/main.go"
 for flag in 0 1; do
     GOOS=linux GOARCH="$host_arch" GOMAXPROCS=1 CGO_ENABLED=1 \
@@ -103,7 +103,7 @@ if verify_runtime_defaults "$work/control-0.so" 'panicnil=1,madvdontneed=1' || \
 fi
 
 # The linker target is internal to this exact Go toolchain. Re-review on updates.
-[[ $(go env GOVERSION) == go1.27.2 ]]
+[[ $(go env GOVERSION) == go1.27.3 ]]
 goroot=$(go env GOROOT)
 while read -r expected path; do
     actual=$("${hash_command[@]}" "$goroot/$path" | cut -d' ' -f1)
