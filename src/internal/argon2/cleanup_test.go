@@ -12,10 +12,11 @@ func TestDerivationClearsOriginalWorkspaceAfterExtractingKey(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		threads uint8
+		blocks  uint32
 		want    string
 	}{
-		{"single_lane", 1, "655ad15eac652dc59f7170a7332bf49b8469be1fdb9c28bb"},
-		{"multiple_lanes_and_memory_rounding", 3, "4a15b31aec7c2590b87d1f520be7d96f56658172deaa3079"},
+		{"single_lane", 1, 64, "655ad15eac652dc59f7170a7332bf49b8469be1fdb9c28bb"},
+		{"multiple_lanes_and_memory_rounding", 3, 60, "4a15b31aec7c2590b87d1f520be7d96f56658172deaa3079"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			passwordBacking := []byte("password:borrowed tail")
@@ -30,12 +31,12 @@ func TestDerivationClearsOriginalWorkspaceAfterExtractingKey(t *testing.T) {
 			if tc.threads == 3 {
 				passes = 2
 			}
-			var original []block
-			key := deriveKey(argon2id, passwordBacking[:8], saltBacking[:8], nil, nil, passes, 64, tc.threads, uint32(len(want)), func(workspace []block) {
+			var original blockWorkspace
+			key := deriveKey(argon2id, passwordBacking[:8], saltBacking[:8], nil, nil, passes, 64, tc.threads, uint32(len(want)), func(workspace blockWorkspace) {
 				// Retain the actual allocation used by the production derivation,
 				// without replacing its allocation, processing, or cleanup.
 				original = workspace
-				if workspace[0] == (block{}) {
+				if *workspace.at(0) == (block{}) {
 					t.Fatal("observer did not see the initialized workspace")
 				}
 			})
@@ -48,18 +49,18 @@ func TestDerivationClearsOriginalWorkspaceAfterExtractingKey(t *testing.T) {
 			if len(original) == 0 {
 				t.Fatal("derivation did not expose its actual workspace")
 			}
-			for i := range original {
-				if original[i] != (block{}) {
+			for i := range tc.blocks {
+				if *original.at(i) != (block{}) {
 					t.Errorf("original workspace block %d remains nonzero after derivation", i)
 					break
 				}
 			}
 			// The caller owns an independent output after workspace cleanup.
-			original[len(original)-1][0] = 1
+			original.at(tc.blocks - 1)[0] = 1
 			if !bytes.Equal(key, want) {
 				t.Error("returned key aliases the original workspace")
 			}
-			clear(original)
+			wipeBlocks(original)
 		})
 	}
 }
@@ -70,8 +71,8 @@ func TestInitBlocksClearsInitialHashAfterItsLastUse(t *testing.T) {
 		t.Fatal("initial hash unexpectedly empty")
 	}
 	workspace := initBlocks(&h0, 64, 2)
-	defer clear(workspace)
-	if workspace[0] == (block{}) || workspace[32] == (block{}) {
+	defer wipeBlocks(workspace)
+	if *workspace.at(0) == (block{}) || *workspace.at(32) == (block{}) {
 		t.Error("initial hash was cleared before all lane blocks were initialized")
 	}
 	if h0 != ([72]byte{}) {

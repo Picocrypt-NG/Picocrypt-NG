@@ -17,7 +17,7 @@ brew install glfw glew
 
 ## Install Go
 
-Download from [go.dev/dl](https://go.dev/dl/) or use your package manager. Use exactly Go 1.27.2 for development and release builds.
+Download from [go.dev/dl](https://go.dev/dl/) or use your package manager. Use exactly Go 1.27.3 for development and release builds.
 
 ## Build
 
@@ -44,7 +44,7 @@ The Android build path now lives in the repository root `android/` project and u
 
 ## WebAssembly
 
-The browser WASM build supports in-memory single-file encryption and decryption on modern browsers, including mobile devices. In this repository, the WASM bridge caps inputs at 1 GiB and supports comments, Paranoid mode, Reed-Solomon payload protection, force decrypt, deniability, and decryption of legacy v2 keyfile volumes; legacy v1 keyfile volumes remain unsupported by this bridge. Picocrypt-NG 2.19 encryption is password-only: any non-empty keyfile list is rejected with error code 12, an empty ordinary encryption password with code 13, and an empty deniability password with code 11. Supported legacy v1/v2 reads remain available; a well-formed unknown major returns the existing unsupported-feature code before KDF work. The browser workflow is still intentionally non-streaming and single-file oriented; folder workflows, split volumes, and large streaming jobs remain desktop/CLI/native-app features. Go-owned byte buffers are wiped best-effort after use, but JavaScript engine copies and garbage-collected runtime copies cannot be guaranteed wiped. The hosted website is a separately deployed consumer and must map the 2.19 error contract; this repository's bridge tests do not by themselves verify that deployment.
+The in-memory single-file bridge creates PCV3 and reads supported PCV1/PCV2/PCV3 volumes. PCV3 accepts a password, keyfiles, or both; D1 requires explicit selection. It supports comments, Paranoid mode, Reed-Solomon and visibly unverified Force output. `picocryptCapabilities()` advertises the size limits; admission preserves the fixed 1 GiB KDF but cannot observe physical browser headroom. Folder, split and streaming workflows remain native features. Owned Go buffers are wiped best-effort, without a guarantee for JavaScript/runtime copies. See `../API.md` for the bridge contract. The separately deployed website requires its own runtime checks.
 
 ## Test
 
@@ -58,10 +58,9 @@ go test -count=1 -p 1 -tags pcv3_production_kdf ./internal/pcv3operation/...
 # Golden compatibility checks with production KDF
 go test -count=1 -run '^TestGolden' ./internal/volume
 
-# Actual JavaScript/WASM bridge guard (Go 1.27 runtime uses one OS thread)
-GOMAXPROCS=1 GOOS=js GOARCH=wasm go test -count=1 \
-  -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-  -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness|TestBridgePCV3UnsupportedBeforeKDF)$' ./cmd/wasm
+# Actual JavaScript/WASM bridge and independent memory-codec fixtures.
+# Includes serial production KDFs; run separately from other heavy suites.
+../.github/scripts/test-wasm.sh
 
 # CLI package tests, including default binary-regression coverage
 go test ./internal/cli

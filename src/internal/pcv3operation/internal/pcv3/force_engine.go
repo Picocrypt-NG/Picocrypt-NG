@@ -19,8 +19,12 @@ type RecoverySegmentSink func(RecoveryRange, []byte) error
 // RecoveryEmitter is live only during RecoveryOutput. It may be invoked once.
 type RecoveryEmitter func(RecoverySegmentSink) error
 
-// RecoveryOutputPlan retains selected output cost without changing semantic evidence.
-type RecoveryOutputPlan struct{ plaintextLength uint64 }
+// RecoveryOutputPlan carries selected output size and authenticated public metadata.
+// Metadata is populated only for Normal recovery; Force leaves it empty.
+type RecoveryOutputPlan struct {
+	plaintextLength      uint64
+	authenticatedComment string
+}
 
 func (plan RecoveryOutputPlan) PlaintextLength() uint64 { return plan.plaintextLength }
 
@@ -307,7 +311,11 @@ func recoverWithRequest(
 		owner,
 		selection.resolution.result,
 		func(result *RecoveryResult, emitter RecoveryEmitter) error {
-			return output(result, selection.candidate.Role(), RecoveryOutputPlan{plaintextLength: selection.candidate.PlaintextLength()}, emitter)
+			plan := RecoveryOutputPlan{plaintextLength: selection.candidate.PlaintextLength()}
+			if request.Mode() == RecoveryModeNormalV3 {
+				plan.authenticatedComment = selection.authenticatedComment
+			}
+			return output(result, selection.candidate.Role(), plan, emitter)
 		},
 	)
 }

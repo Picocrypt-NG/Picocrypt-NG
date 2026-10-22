@@ -105,7 +105,7 @@ func IDKey(password, salt []byte, time, memory uint32, threads uint8, keyLen uin
 
 // observeWorkspace is nil in public entry points. Bounded regression tests use
 // it to retain the actual allocation without replacing processing or cleanup.
-func deriveKey(mode int, password, salt, secret, data []byte, time, memory uint32, threads uint8, keyLen uint32, observeWorkspace func([]block)) []byte {
+func deriveKey(mode int, password, salt, secret, data []byte, time, memory uint32, threads uint8, keyLen uint32, observeWorkspace func(blockWorkspace)) []byte {
 	if time < 1 {
 		panic("argon2: number of rounds too small")
 	}
@@ -124,8 +124,8 @@ func deriveKey(mode int, password, salt, secret, data []byte, time, memory uint3
 	}
 	processBlocks(B, time, memory, uint32(threads), mode)
 	key := extractKey(B, memory, uint32(threads), keyLen)
-	// All workers have joined and key owns separate storage. Clear the original
-	// allocation before returning it to the runtime.
+	// All workers have joined and key owns separate storage. Clear the workspace
+	// before returning its allocations to the runtime.
 	wipeBlocks(B)
 	return key
 }
@@ -168,23 +168,23 @@ func initHash(password, salt, key, data []byte, time, memory, threads, keyLen ui
 	return h0
 }
 
-func initBlocks(h0 *[blake2b.Size + 8]byte, memory, threads uint32) []block {
+func initBlocks(h0 *[blake2b.Size + 8]byte, memory, threads uint32) blockWorkspace {
 	var block0 [1024]byte
-	B := make([]block, memory)
+	B := newWorkspace(memory)
 	for lane := uint32(0); lane < threads; lane++ {
 		j := lane * (memory / threads)
 		binary.LittleEndian.PutUint32(h0[blake2b.Size+4:], lane)
 
 		binary.LittleEndian.PutUint32(h0[blake2b.Size:], 0)
 		blake2bHash(block0[:], h0[:])
-		for i := range B[j+0] {
-			B[j+0][i] = binary.LittleEndian.Uint64(block0[i*8:])
+		for i := range B.at(j + 0) {
+			B.at(j + 0)[i] = binary.LittleEndian.Uint64(block0[i*8:])
 		}
 
 		binary.LittleEndian.PutUint32(h0[blake2b.Size:], 1)
 		blake2bHash(block0[:], h0[:])
-		for i := range B[j+1] {
-			B[j+1][i] = binary.LittleEndian.Uint64(block0[i*8:])
+		for i := range B.at(j + 1) {
+			B.at(j + 1)[i] = binary.LittleEndian.Uint64(block0[i*8:])
 		}
 	}
 	secret.SecureZero(block0[:])
@@ -192,7 +192,7 @@ func initBlocks(h0 *[blake2b.Size + 8]byte, memory, threads uint32) []block {
 	return B
 }
 
-func processBlocks(B []block, time, memory, threads uint32, mode int) {
+func processBlocks(B blockWorkspace, time, memory, threads uint32, mode int) {
 	lanes := memory / threads
 	segments := lanes / syncPoints
 
@@ -232,10 +232,10 @@ func processBlocks(B []block, time, memory, threads uint32, mode int) {
 				}
 				random = addresses[index%blockLength]
 			} else {
-				random = B[prev][0]
+				random = B.at(prev)[0]
 			}
 			newOffset := indexAlpha(random, lanes, segments, threads, n, slice, lane, index)
-			processBlockXOR(&B[offset], &B[prev], &B[newOffset])
+			processBlockXOR(B.at(offset), B.at(prev), B.at(newOffset))
 			index, offset = index+1, offset+1
 		}
 		wg.Done()
@@ -253,16 +253,16 @@ func processBlocks(B []block, time, memory, threads uint32, mode int) {
 	}
 }
 
-func extractKey(B []block, memory, threads, keyLen uint32) []byte {
+func extractKey(B blockWorkspace, memory, threads, keyLen uint32) []byte {
 	lanes := memory / threads
 	for lane := uint32(0); lane < threads-1; lane++ {
-		for i, v := range B[(lane*lanes)+lanes-1] {
-			B[memory-1][i] ^= v
+		for i, v := range B.at((lane * lanes) + lanes - 1) {
+			B.at(memory - 1)[i] ^= v
 		}
 	}
 
 	var block [1024]byte
-	for i, v := range B[memory-1] {
+	for i, v := range B.at(memory - 1) {
 		binary.LittleEndian.PutUint64(block[i*8:], v)
 	}
 	key := make([]byte, keyLen)

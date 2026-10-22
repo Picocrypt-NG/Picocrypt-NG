@@ -35,7 +35,7 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.27.2"
+        go-version: "1.27.3"
         cache-dependency-path: src/go.sum
 
     - name: Install packages
@@ -47,6 +47,24 @@ jobs:
       run: |
         cd src
         go mod download
+
+    - name: Verify custody across real Linux user identities
+      if: matrix.arch == 'amd64' && matrix.shard == 0
+      run: |
+        set -euo pipefail
+        test_binary=$(mktemp)
+        trap 'rm -f "$test_binary"' EXIT
+        (cd src && CGO_ENABLED=0 go test -c -o "$test_binary" ./internal/pcv3publication)
+        chmod 0555 "$test_binary"
+        docker run --rm --network none --read-only \
+          --cap-drop ALL --cap-add SETUID --cap-add SETGID \
+          --security-opt no-new-privileges --memory 256m --cpus 1 --pids-limit 64 \
+          --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 \
+          --mount "type=bind,src=$test_binary,dst=/publication.test,readonly" \
+          --env PICOCRYPT_RUN_CUSTODY_UID=1 \
+          debian@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858 \
+          /publication.test -test.v -test.timeout=2m \
+          '-test.run=^(TestDesktopRecoveryDifferentUID|TestPrivateCustodyDifferentUID)$'
 
     - name: Run native tests
       env:
@@ -133,7 +151,7 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.27.2"
+        go-version: "1.27.3"
         cache-dependency-path: src/go.sum
 
     - name: Update repository
@@ -163,16 +181,10 @@ jobs:
         cd src
         go mod download
 
-    - name: Test browser deniability boundary
+    - name: Test browser PCV3 and legacy compatibility
       if: matrix.arch == 'amd64'
-      run: |
-        cd src
-        GOMAXPROCS=1 GOOS=js GOARCH=wasm go test -count=1 \
-          -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-          -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness|TestBridgePCV3UnsupportedBeforeKDF)$' ./cmd/wasm
-        GOMAXPROCS=1 GOOS=js GOARCH=wasm go test -count=1 \
-          -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-          -run '^TestWASMTamperedPaddingFlagFailsHeaderAuthentication$' ./internal/wasm
+      timeout-minutes: 45
+      run: .github/scripts/test-wasm.sh
 
     - name: Test PCV3 pure packages in browser/WASM
       if: matrix.arch == 'amd64'

@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"context"
 	"math"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -65,7 +66,7 @@ func TestWorkingMemoryAdmissionCancellationDoesNotCollectFacts(t *testing.T) {
 	}
 }
 
-func TestAndroidWorkingMemoryUsesFreshChallengeOn32BitWithoutWeakeningKDF(t *testing.T) {
+func TestAndroidWorkingMemoryAndKDFKeepIndependentBudgets(t *testing.T) {
 	session := newAndroidResourceSession(time.Second)
 	done := make(chan error, 1)
 	go func() { done <- newAdmitter(session).admitWorkingMemory(context.Background(), 64<<20) }()
@@ -76,14 +77,13 @@ func TestAndroidWorkingMemoryUsesFreshChallengeOn32BitWithoutWeakeningKDF(t *tes
 	if err := <-done; err != nil {
 		t.Fatalf("fitting 32-bit workspace denied: %v", err)
 	}
-	// KDF has an independent 64-bit contract despite sharing the fact broker.
 	kdf := startAndroidAdmission(session)
 	challenge = awaitAndroidChallenge(t, session)
-	if !challenge.Submit(4<<30, 2<<30, 64<<20, 64<<20, false, false) {
+	if !challenge.Submit(2<<30, 192<<20, 64<<20, 64<<20, strconv.IntSize == 64, false) {
 		t.Fatal("KDF facts rejected")
 	}
 	result := awaitAndroidAdmission(t, kdf)
-	if result.err != nil || result.decision != pcv3credential.KDFAdmissionDeniedUnknown {
-		t.Fatalf("32-bit KDF must remain denied: %+v", result)
+	if result.err != nil || result.decision != pcv3credential.KDFAdmissionDeniedInsufficient {
+		t.Fatalf("ZIP admission must not admit a one-GiB KDF: %+v", result)
 	}
 }

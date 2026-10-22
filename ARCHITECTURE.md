@@ -107,8 +107,8 @@ Android: StartPCV3 -> pcv3operation.RunWriteWithOptions
 
 Native desktop, CLI and Android creation use PCV3 by default, with a password,
 keyfiles, or both. Source deletion requires the shared result's explicit authority.
-The internal legacy writer remains for compatibility and the existing WASM path;
-native frontends provide no legacy-creation fallback.
+The internal legacy writer remains for compatibility tests; native and browser
+frontends provide no legacy-creation fallback.
 
 ### Decryption
 
@@ -176,7 +176,8 @@ key, or rekey values. This is why all new v2 keyfile writes are disabled in
 `EncryptRequest.PCV3` selects the canonical PCV3 serializer and is enabled by
 native frontends. Its zero value preserves the internal legacy compatibility
 writer. Android supports files, folders, multiple inputs and compression through
-the shared writer; WASM does not expose PCV3 creation. Normal PCV3 and PCV3 D1
+the shared writer. Browser creation uses the same PCV3 engines through a
+`js && wasm`-only memory facade; it exposes no legacy writer. Normal PCV3 and PCV3 D1
 support password, keyfile, and combined credentials. D1 is the
 random-looking path with optional Paranoid ciphers and a fixed strong D1 KDF.
 Its complete credential transcript protects separate outer and inner key wraps;
@@ -262,5 +263,20 @@ publication steps. D1 filesystem staging lives in `d1_native_writer.go`; stream
 encoding lives in `d1_writer.go`. Native adapters remain in the same private codec
 package to preserve unexported authenticated capabilities. This source-layer
 separation is deliberate; it is not a compiler-enforced codec/native package split.
+
+The browser facade retains verified output in bounded Go memory without OS
+staging. It routes ordinary Normal reads separately from explicit recovery;
+random-looking D1 requires explicit selection. Legacy v1/v2 reads remain in
+`internal/wasm`. The public JavaScript exports validate size, typed-array storage,
+closed modes and physical-role consent before copying whole inputs. Shared
+storage is rejected. Only authenticated completion or explicit Force outcomes
+can carry output.
+
+Browser KDF admission is a separate address-space policy available only to
+js/wasm builds; it neither fabricates native OS observations nor changes fixed
+KDF profiles or native admission. Collected Go heap, pending output, workspace
+and reserves must fit the bounded Go budget, with separate JavaScript buffer
+accounting. Physical RAM remains unobservable: a fresh single-operation worker
+and worker-error UI recovery are required because runtime OOM remains possible.
 Publication remains separate infrastructure, including startup stage-journal
 cleanup. The original v1/v2 format and compatibility writer remain unchanged.

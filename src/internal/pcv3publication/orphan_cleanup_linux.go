@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -87,6 +88,21 @@ func cleanupOrphanedStagesWithOperations(parentPath string, protectedFiles []*os
 			for _, entry := range entries {
 				name := entry.Name()
 				if !strings.HasPrefix(name, stageNamePrefix) {
+					continue
+				}
+				named, err := root.Lstat(name)
+				if err != nil {
+					incomplete = true
+					continue
+				}
+				stat, ok := named.Sys().(*syscall.Stat_t)
+				if !ok || stat == nil {
+					incomplete = true
+					continue
+				}
+				// Shared parents can contain other users' entries. They grant
+				// neither cleanup authority nor a veto over our operations.
+				if int64(stat.Uid) != int64(os.Geteuid()) {
 					continue
 				}
 				if protectedParent || !strings.HasPrefix(name, stageNamePrefix+"private-") {

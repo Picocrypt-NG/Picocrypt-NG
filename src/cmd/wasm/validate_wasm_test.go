@@ -3,11 +3,9 @@
 package main
 
 import (
-	"Picocrypt-NG/internal/encoding"
-	"Picocrypt-NG/internal/header"
+	"Picocrypt-NG/internal/pcv3operation"
 	internalwasm "Picocrypt-NG/internal/wasm"
 	"bytes"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,7 +128,7 @@ func TestReadKeyfilesNilIsOK(t *testing.T) {
 	}
 }
 
-func TestBridgeValidationWipesOwnedCopies(t *testing.T) {
+func TestBridgeMalformedOptionsRejectBeforeOwnedCopies(t *testing.T) {
 	for _, callback := range []struct {
 		name string
 		run  func(js.Value, []js.Value) any
@@ -175,12 +173,8 @@ func TestBridgeValidationWipesOwnedCopies(t *testing.T) {
 				if codeOf(result) != errInvalidArg || js.Global().Get("Object").Call("keys", result).Length() != 1 {
 					t.Fatal("malformed options must return only the failure code")
 				}
-				wantCopies := 2
-				if failure == "password" {
-					wantCopies = 1
-				}
-				if len(owned) != wantCopies {
-					t.Fatalf("observed %d owned copies; want %d", len(owned), wantCopies)
+				if len(owned) != 0 {
+					t.Fatal("malformed options reached a Go whole-input or keyfile copy")
 				}
 				for i, b := range owned {
 					if !bytes.Equal(b, make([]byte, len(b))) {
@@ -217,7 +211,7 @@ func TestBridgeValidationWipesOwnedCopies(t *testing.T) {
 		if codeOf(result) != errInvalidArg || js.Global().Get("Object").Call("keys", result).Length() != 1 {
 			t.Fatal("long comments must return only the failure code")
 		}
-		if len(owned) != 3 || !bytes.Equal(owned, []byte{0, 0, 0}) {
+		if len(owned) != 0 {
 			t.Fatalf("owned plaintext remains live after comment rejection: %x", owned)
 		}
 		got := make([]byte, 3)
@@ -253,76 +247,17 @@ func TestBridgeCopyPanicWipesOwnedPlaintext(t *testing.T) {
 	}
 }
 
-func TestBridgeInputMethodGetterCannotEscapeCopyBoundary(t *testing.T) {
-	for _, callback := range []struct {
-		name string
-		run  func(js.Value, []js.Value) any
-	}{{"encrypt", encrypt}, {"decrypt", decrypt}} {
-		t.Run(callback.name, func(t *testing.T) {
-			previousCopy := copyBytesFromJS
-			var owned [][]byte
-			copyBytesFromJS = func(dst []byte, src js.Value) int {
-				n := previousCopy(dst, src)
-				owned = append(owned, dst)
-				return n
-			}
-			t.Cleanup(func() { copyBytesFromJS = previousCopy })
-			data := js.Global().Get("Uint8Array").New(5)
-			js.CopyBytesToJS(data, []byte{1, 2, 3, 4, 5})
-			getter := js.Global().Get("Function").New("throw new Error('input subarray getter')")
-			js.Global().Get("Object").Call("defineProperty", data, "subarray", newOpts(map[string]any{"get": getter}))
-			result := callback.run(js.Undefined(), []js.Value{newOpts(map[string]any{"data": data, "password": 42})}).(js.Value)
-			if codeOf(result) != errInvalidArg || js.Global().Get("Object").Call("keys", result).Length() != 1 {
-				t.Fatal("invalid password must return only the failure code")
-			}
-			if len(owned) == 0 {
-				t.Fatal("input did not reach the real copy boundary")
-			}
-			for _, b := range owned {
-				if !bytes.Equal(b, make([]byte, len(b))) {
-					t.Fatalf("owned input copy remains live: %x", b)
-				}
-			}
-			got := make([]byte, 5)
-			// The caller-owned array still has its custom getter. Copy through
-			// a normal view to inspect its bytes without invoking that getter.
-			view := js.Global().Get("Uint8Array").New(data.Get("buffer"), data.Get("byteOffset"), 5)
-			js.CopyBytesToGo(got, view)
-			if !bytes.Equal(got, []byte{1, 2, 3, 4, 5}) {
-				t.Fatalf("caller JavaScript input changed: %x", got)
-			}
-		})
-	}
-}
-
-func TestBridgeArrayStorageShadowCannotRedirectCopy(t *testing.T) {
-	for _, property := range []string{"buffer", "byteOffset"} {
+func TestBridgeInputOwnedPropertiesCannotRedirectCopy(t *testing.T) {
+	for _, property := range []string{"subarray", "buffer", "byteOffset"} {
 		t.Run(property, func(t *testing.T) {
-			previousCopy := copyBytesFromJS
-			var copied, owned []byte
-			copyBytesFromJS = func(dst []byte, src js.Value) int {
-				n := previousCopy(dst, src)
-				copied = append([]byte(nil), dst...)
-				owned = dst
-				return n
-			}
-			t.Cleanup(func() { copyBytesFromJS = previousCopy })
-			data := js.Global().Get("Uint8Array").New(3)
-			js.CopyBytesToJS(data, []byte{1, 2, 3})
-			// A small numeric buffer would select the allocating constructor
-			// overload if trusted; a real input getter can return any number.
-			getter := js.Global().Get("Function").New("return 16")
+			data := mkU8Den([]byte{1, 2, 3})
+			getter := js.Global().Get("Function").New("throw new Error('input-owned property')")
 			js.Global().Get("Object").Call("defineProperty", data, property, newOpts(map[string]any{"get": getter}))
-			result := encrypt(js.Undefined(), []js.Value{newOpts(map[string]any{"data": data, "password": 42})}).(js.Value)
-			if codeOf(result) != errInvalidArg {
-				t.Fatal("invalid password accepted")
-			}
+			copied := copyUint8Array(data, 3)
 			if !bytes.Equal(copied, []byte{1, 2, 3}) {
-				t.Fatalf("input property redirected actual array storage: %x", copied)
+				t.Fatal("input-owned property redirected intrinsic copy")
 			}
-			if !bytes.Equal(owned, []byte{0, 0, 0}) {
-				t.Fatalf("owned copy remains live after rejection: %x", owned)
-			}
+			clear(copied)
 		})
 	}
 }
@@ -357,48 +292,16 @@ func TestBridgeProxyPrototypeCannotEscapeValidation(t *testing.T) {
 				if codeOf(result) != errInvalidArg || js.Global().Get("Object").Call("keys", result).Length() != 1 {
 					t.Fatal("malformed proxy input must return only the failure code")
 				}
-				if proxyProperty == "keyfiles" && len(owned) != 2 {
-					t.Fatalf("did not reach actual data and partial keyfile copies: %d", len(owned))
-				}
-				for _, b := range owned {
-					if !bytes.Equal(b, make([]byte, len(b))) {
-						t.Fatalf("owned copy remains live after proxy rejection: %x", b)
-					}
+				if len(owned) != 0 {
+					t.Fatalf("malformed keyfiles reached a whole-data copy: %d", len(owned))
 				}
 			})
 		}
 	}
 }
 
-func TestBridgeMalformedNumericPCV3IntentKeepsLegacyValidation(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		value float64
-	}{
-		{"positive wrap", 257},
-		{"negative wrap", -255},
-		{"fractional mode", 1.5},
-		{"outside registry", 255},
-		{"NaN", math.NaN()},
-		{"infinity", math.Inf(1)},
-		{"large integer", 1 << 53},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			data := js.Global().Get("Uint8Array").New(3)
-			js.CopyBytesToJS(data, []byte{1, 2, 3})
-			// No recognized PCV3 intent: the malformed password must reach
-			// ordinary bridge validation, without entering either KDF path.
-			result := decrypt(js.Undefined(), []js.Value{newOpts(map[string]any{
-				"pcv3Mode": tc.value, "data": data, "password": 42,
-			})}).(js.Value)
-			if codeOf(result) != errInvalidArg || js.Global().Get("Object").Call("keys", result).Length() != 1 {
-				t.Fatalf("unknown numeric intent selected PCV3 instead of legacy validation: code=%d", codeOf(result))
-			}
-		})
-	}
-}
-
 func TestBridgeDecryptsLegacyOrderedKeyfileVolume(t *testing.T) {
+	requireWASMProductionKDF(t)
 	mkU8 := func(b []byte) js.Value {
 		u := js.Global().Get("Uint8Array").New(len(b))
 		js.CopyBytesToJS(u, b)
@@ -421,6 +324,9 @@ func TestBridgeDecryptsLegacyOrderedKeyfileVolume(t *testing.T) {
 
 	kf := js.Global().Get("Array").New()
 	kf.Call("push", mkU8(keyfileAlpha))
+	// An empty legacy ordered factor contributes no bytes to the frozen
+	// concatenation. Rejecting it would strand previously supported volumes.
+	kf.Call("push", mkU8(nil))
 	kf.Call("push", mkU8(keyfileBeta))
 	volume := mkU8(volumeData)
 
@@ -443,37 +349,24 @@ func TestBridgeDecryptsLegacyOrderedKeyfileVolume(t *testing.T) {
 	}
 }
 
-func TestBridgeEncryptReedSolomonSetsHeaderFlag(t *testing.T) {
-	opts := newOpts(map[string]any{
-		"data":        js.Global().Get("Uint8Array").New(64),
-		"password":    "bridge-rs",
-		"reedSolomon": true,
-	})
-
-	rv := encrypt(js.Undefined(), []js.Value{opts}).(js.Value)
-	if code := rv.Get("code").Int(); code != 0 {
-		t.Fatalf("encrypt code %d", code)
+func TestBridgeEncryptReedSolomonSetsPCV3Feature(t *testing.T) {
+	requireWASMProductionKDF(t)
+	rv := encrypt(js.Undefined(), []js.Value{newOpts(map[string]any{"data": mkU8Den([]byte("rs payload")), "password": "bridge-rs", "reedSolomon": true})}).(js.Value)
+	if codeOf(rv) != 0 {
+		t.Fatalf("encrypt code=%d", codeOf(rv))
 	}
-
-	out := rv.Get("data")
-	volBytes := make([]byte, out.Get("length").Int())
-	js.CopyBytesToGo(volBytes, out)
-
-	rs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("NewRSCodecs: %v", err)
+	data := dataBytesDen(t, rv)
+	if len(data) < 16 || !bytes.Equal(data[:4], []byte{'P', 'C', 'V', 0}) || data[10] != 0 || data[11] != 1 {
+		t.Fatal("writer lost PCV3 RS feature flag")
 	}
-	res, err := header.NewReader(bytes.NewReader(volBytes), rs).ReadHeader()
-	if err != nil {
-		t.Fatalf("ReadHeader: %v", err)
-	}
-	if !res.Header.Flags.ReedSolomon {
-		t.Fatal("reedSolomon option did not set the header RS flag")
+	if route, err := pcv3operation.Probe(bytes.NewReader(data), int64(len(data))); err != nil || route != pcv3operation.RouteNormalPCV {
+		t.Fatal("writer emitted an invalid PCV3 container")
 	}
 }
 
 // A valid encrypt then decrypt round-trips through the bridge objects, carrying comments.
 func TestBridgeRoundTrip(t *testing.T) {
+	requireWASMProductionKDF(t)
 	plain := []byte("bridge round trip")
 	u8 := js.Global().Get("Uint8Array").New(len(plain))
 	js.CopyBytesToJS(u8, plain)

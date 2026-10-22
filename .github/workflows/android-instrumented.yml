@@ -31,7 +31,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.27.2"
+        go-version: "1.27.3"
         cache-dependency-path: src/go.sum
 
     - name: Install gomobile
@@ -85,6 +85,7 @@ jobs:
     - name: Build Go Mobile AAR
       working-directory: android
       run: |
+        bash ../.github/scripts/test-android-gomobile-policy.sh
         chmod +x build-gomobile.sh
         ./build-gomobile.sh
 

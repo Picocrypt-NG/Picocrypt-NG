@@ -64,9 +64,11 @@ body="$(cat <<EOF
 |---|---|---|---|---|---|
 | **x86-64** (64-bit) | [Installer]($BASE/Picocrypt-NG-Setup.exe) · [Portable]($BASE/Picocrypt-NG-portable.exe) · [CLI]($BASE/Picocrypt-NG-cli.exe) | — | [AppImage]($BASE/Picocrypt-NG-$VERSION-x86_64.AppImage) · [.deb]($BASE/Picocrypt-NG.deb) · [Binary]($BASE/Picocrypt-NG) · [CLI]($BASE/Picocrypt-NG-cli) · [Snap]($BASE/picocrypt-ng_${VERSION}_amd64.snap) | [APK]($BASE/Picocrypt-NG-android-x86_64.apk) | [Open](https://picocrypt-ng.github.io/) |
 | **ARM64** (AArch64) | — | [DMG]($BASE/Picocrypt-NG.dmg) · [CLI]($BASE/Picocrypt-NG-cli-macos) | [Binary]($BASE/Picocrypt-NG-arm64) · [CLI]($BASE/Picocrypt-NG-cli-arm64) | [APK]($BASE/Picocrypt-NG-android-arm64-v8a.apk) | |
+| **ARMv7** (32-bit) | — | — | — | [APK]($BASE/Picocrypt-NG-android-armeabi-v7a.apk) | |
+| **x86** (32-bit) | — | — | — | [APK]($BASE/Picocrypt-NG-android-x86.apk) | |
 
 - 🌐 **Web version** — runs in any modern browser, nothing to install: <https://picocrypt-ng.github.io/>
-- **Android 8.0+ on 64-bit ARM or x86-64 devices** — [universal APK]($BASE/Picocrypt-NG-android-universal.apk)
+- **Android 8.0+** — [universal APK]($BASE/Picocrypt-NG-android-universal.apk); PCV3 operations require sufficient available memory for the fixed 1 GiB KDF.
 - **Windows 7/8 (legacy) CLI** (x86-64): [Download]($BASE/Picocrypt-NG-cli-Legacy.exe)
 - macOS builds are **Apple Silicon (ARM64)** only.
 

@@ -389,9 +389,117 @@ class Pcv3DeviceBehaviorTest {
     @Test
     fun v15WriteStandardD1CreationRoundTrip() = creationRoundTrip("d1", "standard")
 
-    private fun creationRoundTrip(mode: String, suite: String) {
+    @Test
+    fun v18CancellationAfterFirstD1KdfLeavesNoPublication() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        val directory = File(context.cacheDir, "pcv3-creation-$mode-$suite")
+        val directory = File(context.cacheDir, "pcv3-cancel-after-first-d1-kdf")
+        assertFalse("D1 cancellation workspace residue from an earlier attempt", directory.exists())
+        if (!directory.mkdir()) {
+            throw AssertionError("D1 cancellation workspace must be newly owned")
+        }
+        val source = File(directory, "creation-plaintext.bin")
+        val target = File(directory, "creation-staging.pcv")
+        var primaryFailure: Throwable? = null
+        try {
+            source.writeBytes(ROUND_TRIP_PLAINTEXT)
+            val password = CALLER_PASSWORD.copyOf()
+            val start = Mobile.startPCV3(writeEnvelope("write-d1", source, target, "standard"), password)
+            val operation = start.operation()
+            var operationReleased = false
+            try {
+                assertEquals("D1 cancellation start must succeed", "", start.code())
+                assertTrue("bridge must zero the caller password before returning", password.all { it == 0.toByte() })
+                val liveOperation = operation
+                    ?: throw AssertionError("D1 cancellation start returned no operation")
+                var acceptedChallenges = 0
+                var secondChallengeSeen = false
+                val deadline = SystemClock.elapsedRealtime() + TERMINAL_TIMEOUT_MILLIS
+                while (SystemClock.elapsedRealtime() < deadline) {
+                    val challenge = liveOperation.resourceChallenge()
+                    if (challenge != null) {
+                        if (acceptedChallenges == 1) {
+                            // A bare file has only the two sequential D1 KDF challenges.
+                            // The second follows the first KDF's wipe and reclamation.
+                            secondChallengeSeen = true
+                            liveOperation.cancel()
+                            break
+                        }
+                        assertTrue("first D1 challenge must consume fresh device facts", submitDeviceFacts(context, challenge))
+                        acceptedChallenges++
+                    }
+                    assertEquals(
+                        "D1 must remain live until the second fresh challenge",
+                        "unknown",
+                        liveOperation.snapshot().completionClass(),
+                    )
+                    SystemClock.sleep(POLL_MILLIS)
+                }
+                assertEquals("only the first D1 challenge may receive facts", 1, acceptedChallenges)
+                assertTrue("D1 must expose a second fresh challenge before cancellation", secondChallengeSeen)
+                val terminal = awaitTerminal(liveOperation)
+                assertEquals("cancelled D1 outcome", "operation-failed", terminal.outcome())
+                assertEquals("cancelled D1 stage", "cancellation", terminal.stage())
+                assertEquals("cancelled D1 code", "PCV3_OPERATION_FAILED", terminal.code())
+                assertEquals("cancelled D1 diagnostic", "cancellation", terminal.diagnostic())
+                assertEquals("cancelled D1 completion", "refused", terminal.completionClass())
+                assertFalse("cancelled D1 must not attempt publication", terminal.publicationAttempted())
+                assertEquals("cancelled D1 publication", "none", terminal.publicationState())
+                assertEquals("cancelled D1 publication stage", "none", terminal.publicationStage())
+                assertEquals("cancelled D1 publication code", "none", terminal.publicationCode())
+                assertEquals("cancelled D1 must raise no cleanup warning", 0L, terminal.warningCount())
+                assertFalse("cancelled D1 must not pend an archive", terminal.archivePending())
+                assertNull("cancelled D1 must expose no output", liveOperation.output())
+                assertNull("cancelled D1 must expose no archive", liveOperation.archive())
+                assertNull("cancelled D1 must expose no consent", liveOperation.consent())
+                assertNull("cancelled D1 must expose no forensic artifact", liveOperation.artifactInspection())
+                assertNull("cancelled D1 must retire its resource challenge", liveOperation.resourceChallenge())
+                assertFalse("cancelled D1 target must be absent before teardown", target.exists())
+                assertTrue("cancelled D1 must preserve the source bytes", ROUND_TRIP_PLAINTEXT.contentEquals(source.readBytes()))
+                assertEquals(
+                    "cancelled D1 must leave only the source before teardown",
+                    listOf(source.name),
+                    directory.list()?.sorted(),
+                )
+                assertEquals("cancelled D1 must close its source descriptor", emptyList<String>(), descriptorsResolvingTo(source))
+                assertEquals("cancelled D1 release must succeed", "", liveOperation.release())
+                operationReleased = true
+            } catch (failure: Throwable) {
+                primaryFailure = failure
+                throw failure
+            } finally {
+                password.fill(0)
+                if (operation != null) {
+                    attachCleanupFailure(primaryFailure) { release(operation, "D1 cancellation", operationReleased) }
+                }
+            }
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            attachCleanupFailure(primaryFailure) {
+                cleanupFiles(
+                    target to "D1 cancellation target",
+                    source to "D1 cancellation source",
+                    directory to "D1 cancellation workspace",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun v19WriteNormalMultiRecordCreationRoundTrip() = creationRoundTrip(
+        "normal",
+        "standard",
+        ByteArray(17 * 1024 * 1024 + 37) { index ->
+            (index xor (index ushr 8) xor (index ushr 16) xor (index ushr 24)).toByte()
+        },
+    )
+
+    private fun creationRoundTrip(mode: String, suite: String, plaintext: ByteArray = ROUND_TRIP_PLAINTEXT) {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val publicFixture = plaintext.contentEquals(ROUND_TRIP_PLAINTEXT)
+        val workspaceSuffix = if (publicFixture) "" else "-${plaintext.size}"
+        val directory = File(context.cacheDir, "pcv3-creation-$mode-$suite$workspaceSuffix")
         assertFalse("$mode creation workspace residue from an earlier attempt", directory.exists())
         if (!directory.mkdir()) {
             throw AssertionError("$mode creation workspace must be newly owned")
@@ -402,7 +510,7 @@ class Pcv3DeviceBehaviorTest {
         val roundTrip = File(directory, "creation-roundtrip.bin")
         var primaryFailure: Throwable? = null
         try {
-            source.writeBytes(ROUND_TRIP_PLAINTEXT)
+            source.writeBytes(plaintext)
 
             val password = CALLER_PASSWORD.copyOf()
             val start = Mobile.startPCV3(
@@ -493,30 +601,36 @@ class Pcv3DeviceBehaviorTest {
                 assertEquals("round-trip read must expose the empty comment", "", readTerminal.authenticatedComment())
                 assertTrue(
                     "round-trip plaintext must be byte-exact",
-                    ROUND_TRIP_PLAINTEXT.contentEquals(roundTrip.readBytes()),
+                    plaintext.contentEquals(roundTrip.readBytes()),
                 )
+                assertTrue("creation must preserve the source bytes", plaintext.contentEquals(source.readBytes()))
                 val readOutput = liveRead.output()
                     ?: throw AssertionError("round-trip read retained no output authority")
-                assertEquals("round-trip read output must discard", "discarded", readOutput.discard().code())
+                val discarded = readOutput.discard()
+                assertEquals("round-trip read output must discard", "discarded", discarded.code())
+                assertFalse("round-trip discard must complete cleanup", discarded.cleanupIncomplete())
+                assertFalse("round-trip discard must remove plaintext", roundTrip.exists())
                 assertEquals("round-trip read release must succeed", "", liveRead.release())
                 readReleased = true
 
-                // Only these literal public test inputs may leave the app sandbox.
-                // A host must also require this test's successful terminal result.
-                assertTrue("public test export must stay bounded", saved.length() in 1L..16384L)
-                val exported = JSONObject()
-                    .put("test_only", true)
-                    .put("mode", mode)
-                    .put("suite", suite)
-                    .put("factorPolicy", "password")
-                    .put("keyfileOrder", "none")
-                    .put("keyfilesBase64", JSONArray())
-                    .put("ciphertextBase64", Base64.encodeToString(saved.readBytes(), Base64.NO_WRAP))
-                    .put("plaintextBase64", Base64.encodeToString(ROUND_TRIP_PLAINTEXT, Base64.NO_WRAP))
-                    .put("passwordBase64", Base64.encodeToString(CALLER_PASSWORD, Base64.NO_WRAP))
-                InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
-                    putString("pcv3_interop", exported.toString())
-                })
+                if (publicFixture) {
+                    // Only these literal public test inputs may leave the app sandbox.
+                    // A host must also require this test's successful terminal result.
+                    assertTrue("public test export must stay bounded", saved.length() in 1L..16384L)
+                    val exported = JSONObject()
+                        .put("test_only", true)
+                        .put("mode", mode)
+                        .put("suite", suite)
+                        .put("factorPolicy", "password")
+                        .put("keyfileOrder", "none")
+                        .put("keyfilesBase64", JSONArray())
+                        .put("ciphertextBase64", Base64.encodeToString(saved.readBytes(), Base64.NO_WRAP))
+                        .put("plaintextBase64", Base64.encodeToString(ROUND_TRIP_PLAINTEXT, Base64.NO_WRAP))
+                        .put("passwordBase64", Base64.encodeToString(CALLER_PASSWORD, Base64.NO_WRAP))
+                    InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+                        putString("pcv3_interop", exported.toString())
+                    })
+                }
             } catch (failure: Throwable) {
                 primaryFailure = failure
                 throw failure
@@ -791,8 +905,8 @@ class Pcv3DeviceBehaviorTest {
         throw AssertionError("PCV3 operation did not reach a terminal state")
     }
 
-    private fun submitDeviceFacts(context: android.content.Context, challenge: mobile.PCV3ResourceChallenge) {
-        val manager = context.getSystemService(ActivityManager::class.java) ?: return
+    private fun submitDeviceFacts(context: android.content.Context, challenge: mobile.PCV3ResourceChallenge): Boolean {
+        val manager = context.getSystemService(ActivityManager::class.java) ?: return false
         val system = ActivityManager.MemoryInfo()
         manager.getMemoryInfo(system)
         val process = Debug.MemoryInfo()
@@ -824,6 +938,7 @@ class Pcv3DeviceBehaviorTest {
         InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
             putString("pcv3_resource", observation.toString())
         })
+        return accepted
     }
 
     /**

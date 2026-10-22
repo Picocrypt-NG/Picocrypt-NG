@@ -1310,9 +1310,9 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 		target   string
 		script   string
 	}{
-		// Storage and staging must work on Picocrypt NG's Android 8 compatibility floor.
+		// Exercise 32-bit storage and staging at the Android 8 compatibility floor.
 		26: {
-			arch:     "x86_64",
+			arch:     "x86",
 			diskSize: "2048M",
 			memory:   "3583",
 			target:   "google_apis",
@@ -1603,22 +1603,33 @@ func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
 	mustContain(t, buildScript, `"$JAVA_MAJOR" != "21"`)
 }
 
-func TestAndroidReleasePublishesOnly64BitAPKNames(t *testing.T) {
+func TestAndroidReleasePublishesAllFourABIsAndUniversal(t *testing.T) {
 	releaseWorkflow := mustReadWorkflowDoc(t, ".github/workflows/build-android.yml")
+	build := mustJob(t, releaseWorkflow, "build")
+	sign := mustJob(t, releaseWorkflow, "sign")
+	bind := mustStepNamed(t, build, "Bind unsigned APKs to the source and AAR")
+	validate := mustStepNamed(t, sign, "Validate unsigned signing inputs before loading secrets")
 	prepare := mustStepNamed(t, mustJob(t, releaseWorkflow, "sign"), "Verify exact signed release APK contract")
+	release := mustJob(t, releaseWorkflow, "release")
+	attest := mustStepNamed(t, release, "Sign and attest artifacts")
+	stage := mustStepNamed(t, release, "Stage release assets")
 	for _, artifact := range []string{
+		"Picocrypt-NG-android-armeabi-v7a.apk",
 		"Picocrypt-NG-android-arm64-v8a.apk",
+		"Picocrypt-NG-android-x86.apk",
 		"Picocrypt-NG-android-x86_64.apk",
 		"Picocrypt-NG-android-universal.apk",
 	} {
 		mustContain(t, prepare.Run, artifact)
+		mustContain(t, fmt.Sprint(attest.With["paths"]), "out/"+artifact)
+		mustContain(t, fmt.Sprint(stage.With["files"]), "out/"+artifact+".sigstore.json")
 	}
-	for _, removed := range []string{
-		"Picocrypt-NG-android-armeabi-v7a.apk",
-		"Picocrypt-NG-android-x86.apk",
-	} {
-		mustNotContain(t, prepare.Run, removed)
+	for _, abi := range []string{"armeabi-v7a", "arm64-v8a", "x86", "x86_64", "universal"} {
+		mustContain(t, bind.Run, `"app-`+abi+`-release-unsigned.apk": $`)
 	}
+	mustContain(t, validate.Run, `(.apks | keys) == ["app-arm64-v8a-release-unsigned.apk", "app-armeabi-v7a-release-unsigned.apk", "app-universal-release-unsigned.apk", "app-x86-release-unsigned.apk", "app-x86_64-release-unsigned.apk"]`)
+	mustContain(t, validate.Run, `expected_files=$(printf '%s\n' app-arm64-v8a-release-unsigned.apk app-armeabi-v7a-release-unsigned.apk app-universal-release-unsigned.apk app-x86-release-unsigned.apk app-x86_64-release-unsigned.apk build-inputs.json)`)
+	mustContain(t, mustStepNamed(t, sign, "Sign verified APKs with the offline SDK").Run, "for abi in armeabi-v7a arm64-v8a x86 x86_64 universal; do")
 }
 
 func TestAndroidReleaseWorkflowsRunExactArtifactVerifier(t *testing.T) {
@@ -1649,7 +1660,7 @@ func TestAndroidReleaseWorkflowsRunExactArtifactVerifier(t *testing.T) {
 				t.Fatalf("verifier working-directory = %q, want %q", step.WorkingDirectory, tc.directory)
 			}
 			if tc.kind == "signed" {
-				mustContainInOrder(t, step.Run, `android/verify-release-apks.sh signed-apks "$VERSION" "$VERSION_CODE" io.github.picocrypt_ng.picocrypt_ng signed`, "mkdir out", "cp signed-apks/app-arm64-v8a-release.apk", "cp signed-apks/app-x86_64-release.apk", "cp signed-apks/app-universal-release.apk")
+				mustContainInOrder(t, step.Run, `android/verify-release-apks.sh signed-apks "$VERSION" "$VERSION_CODE" io.github.picocrypt_ng.picocrypt_ng signed`, "mkdir out", "cp signed-apks/app-armeabi-v7a-release.apk", "cp signed-apks/app-arm64-v8a-release.apk", "cp signed-apks/app-x86-release.apk", "cp signed-apks/app-x86_64-release.apk", "cp signed-apks/app-universal-release.apk")
 				if step.Env["VERSION"] != "${{ needs.build.outputs.version }}" || step.Env["VERSION_CODE"] != "${{ needs.build.outputs.version-code }}" {
 					t.Fatal("signed verifier must check source-bound build version metadata")
 				}
@@ -1684,11 +1695,16 @@ func TestAndroidReleaseSigningTrustAnchorAndPublicationOrder(t *testing.T) {
 		job   string
 		steps []string
 	}{
-		{"build", []string{"Build Go Mobile AAR", "Run Unit Tests", "Run Android Lint", "Build unsigned release APKs", "Verify exact unsigned release APK contract", "Bind unsigned APKs to the source and AAR", "Upload unsigned release APKs"}},
+		{"build", []string{"Verify Android gomobile build policy", "Build Go Mobile AAR", "Run Unit Tests", "Run Android Lint", "Build unsigned release APKs", "Verify exact unsigned release APK contract", "Bind unsigned APKs to the source and AAR", "Upload unsigned release APKs"}},
 		{"sign", []string{"Download source-bound unsigned APKs", "Validate unsigned signing inputs before loading secrets", "Compile the SDK signing launcher before loading secrets", "Sign verified APKs with the offline SDK", "Verify exact signed release APK contract", "Upload signed release APKs"}},
 		{"release", []string{"Download verified signed APKs", "Get version tag", "Sign and attest artifacts", "Generate release notes", "Stage release assets"}},
 	} {
 		job := mustJob(t, workflow, tc.job)
+		if tc.job == "build" {
+			if step := mustStepNamed(t, job, "Verify Android gomobile build policy"); strings.TrimSpace(step.Run) != "bash .github/scripts/test-android-gomobile-policy.sh" {
+				t.Fatal("Android release must run the shared gomobile build policy before building its AAR")
+			}
+		}
 		last := -1
 		for _, name := range tc.steps {
 			index := -1
@@ -1734,8 +1750,9 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 		"Picocrypt-NG-arm64": "build-linux.yml", "Picocrypt-NG-cli-arm64": "build-linux.yml",
 		"Picocrypt-NG.dmg": "build-macos.yml", "Picocrypt-NG-cli-macos": "build-macos.yml",
 		"Picocrypt-NG-portable.exe": "build-windows.yml", "Picocrypt-NG-cli.exe": "build-windows.yml", "Picocrypt-NG-Setup.exe": "build-windows.yml",
-		"Picocrypt-NG-cli-Legacy.exe":        "build-windows-legacy.yml",
-		"Picocrypt-NG-android-arm64-v8a.apk": "build-android.yml", "Picocrypt-NG-android-x86_64.apk": "build-android.yml", "Picocrypt-NG-android-universal.apk": "build-android.yml",
+		"Picocrypt-NG-cli-Legacy.exe":          "build-windows-legacy.yml",
+		"Picocrypt-NG-android-armeabi-v7a.apk": "build-android.yml", "Picocrypt-NG-android-arm64-v8a.apk": "build-android.yml",
+		"Picocrypt-NG-android-x86.apk": "build-android.yml", "Picocrypt-NG-android-x86_64.apk": "build-android.yml", "Picocrypt-NG-android-universal.apk": "build-android.yml",
 		"Picocrypt-NG-" + version + "-x86_64.AppImage": "build-appimage.yml", "Picocrypt-NG-" + version + "-x86_64.AppImage.zsync": "build-appimage.yml",
 		"picocrypt-ng_" + version + "_amd64.snap": "build-snapcraft.yml",
 	} {
@@ -1752,20 +1769,17 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 	}
 	mustNotContain(t, body, "production signing remains pending")
 
-	for _, removed := range []string{
-		"Picocrypt-NG-android-armeabi-v7a.apk",
-		"Picocrypt-NG-android-x86.apk",
-	} {
-		mustNotContain(t, body, removed)
-	}
 	for _, supported := range []string{
+		"Picocrypt-NG-android-armeabi-v7a.apk",
 		"Picocrypt-NG-android-arm64-v8a.apk",
+		"Picocrypt-NG-android-x86.apk",
 		"Picocrypt-NG-android-x86_64.apk",
 		"Picocrypt-NG-android-universal.apk",
-		"Android 8.0+ on 64-bit ARM or x86-64 devices",
+		"Android 8.0+",
 	} {
 		mustContain(t, body, supported)
 	}
+	mustNotContain(t, body, "Android 8.0+ on 64-bit ARM or x86-64 devices")
 }
 
 func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {
@@ -1933,7 +1947,7 @@ func TestPrereleaseVersionPatternCoversCommonMarkers(t *testing.T) {
 func TestAndroidGomobileBuildUsesReproducibleLinkerFlags(t *testing.T) {
 	content := mustReadRepoFile(t, "android/build-gomobile.sh")
 
-	mustContain(t, content, `REQUIRED_GO_VERSION="go1.27.2"`)
+	mustContain(t, content, `REQUIRED_GO_VERSION="go1.27.3"`)
 	mustContain(t, content, `-ldflags="$GOMOBILE_LDFLAGS"`)
 	mustContain(t, content, `-s -w -buildid=`)
 }
@@ -2007,7 +2021,7 @@ func TestWindowsLegacyWorkflowsBuildFreshSourceToolchain(t *testing.T) {
 				t.Fatalf("%s must not restore executable legacy toolchains from cache", tc.path)
 			}
 		}
-		build := mustStepNamed(t, job, "Build patched Go 1.27.2 for Windows 7/8")
+		build := mustStepNamed(t, job, "Build patched Go 1.27.3 for Windows 7/8")
 		if build.Shell != "pwsh" || build.If != "" || build.ContinueOnError != nil {
 			t.Fatal("legacy compiler source build must run unconditionally and fail closed")
 		}
@@ -2063,8 +2077,8 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 					continue
 				}
 				setupGoSteps[lane]++
-				if got := step.With["go-version"]; got != "1.27.2" {
-					t.Fatalf("%s job %s go-version = %#v, want 1.27.2", relPath, jobName, got)
+				if got := step.With["go-version"]; got != "1.27.3" {
+					t.Fatalf("%s job %s go-version = %#v, want 1.27.3", relPath, jobName, got)
 				}
 			}
 		}
@@ -2084,7 +2098,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 		t.Fatalf("decode mise toolchain configuration: %v", err)
 	}
 	for tool, want := range map[string]string{
-		"go":                                   "1.27.2",
+		"go":                                   "1.27.3",
 		"go:golang.org/x/vuln/cmd/govulncheck": "1.9.0",
 	} {
 		if got := config.Tools[tool]; got != want {
@@ -2094,7 +2108,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	// Android bindings retain the toolchain required by build-gomobile.sh,
 	// even when the desktop development tools are upgraded.
 	for tool, want := range map[string]string{
-		"go":                                  "1.27.2",
+		"go":                                  "1.27.3",
 		"go:golang.org/x/mobile/cmd/gobind":   "v0.0.0-20261011034528-197770444867",
 		"go:golang.org/x/mobile/cmd/gomobile": "v0.0.0-20261011034528-197770444867",
 	} {
@@ -2104,7 +2118,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	}
 
 	goMod := mustReadRepoFile(t, "src/go.mod")
-	mustMatch(t, goMod, `(?m)^go 1\.27\.2$`)
+	mustMatch(t, goMod, `(?m)^go 1\.27\.3$`)
 	mustNotContain(t, goMod, "\ntoolchain ")
 
 	staticChecks := mustReadWorkflow(t, ".github/workflows/pr-static-checks.yml")
@@ -2114,12 +2128,12 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 
 func TestSnapcraftBuildUsesExactGoToolchain(t *testing.T) {
 	content := mustReadRepoFile(t, "dist/snapcraft/snapcraft.yaml")
-	mustContain(t, content, "https://go.dev/dl/go1.27.2.linux-amd64.tar.gz")
-	mustContain(t, content, "sha256/ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5")
+	mustContain(t, content, "https://go.dev/dl/go1.27.3.linux-amd64.tar.gz")
+	mustContain(t, content, "sha256/65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40")
 	mustContain(t, content, `PATH: "${CRAFT_STAGE}/go/bin:${PATH}"`)
 	mustContain(t, content, `GOROOT: "${CRAFT_STAGE}/go"`)
 	mustContain(t, content, "GOTOOLCHAIN: local")
-	mustContain(t, content, `test "$(go env GOVERSION)" = "go1.27.2"`)
+	mustContain(t, content, `test "$(go env GOVERSION)" = "go1.27.3"`)
 	mustNotContain(t, content, "source-subdir: go")
 	mustNotContain(t, content, "build-snaps:\n      - go")
 }
@@ -2134,7 +2148,7 @@ func TestWindowsLegacyWorkflowsUsePinnedLocalFork(t *testing.T) {
 			t.Fatalf("%s must pin local toolchain and baseline x86-64 CPU settings", tc.path)
 		}
 		inspect := mustStepNamed(t, job, "Verify Go installation")
-		for _, required := range []string{`C:\go-legacy\go\bin\go.exe`, `C:\go-legacy\go`, "Get-Command go -CommandType Application | Select-Object -First 1", "go env -json GOROOT GOVERSION GOTOOLCHAIN GOOS GOARCH GOAMD64 GOEXPERIMENT", "$actualGo -ne $expectedGo", "$goEnvironment.GOROOT -ne $expectedRoot", "go1.27.2", "$goEnvironment.GOAMD64 -ne 'v1'", "$goEnvironment.GOTOOLCHAIN -ne 'local'"} {
+		for _, required := range []string{`C:\go-legacy\go\bin\go.exe`, `C:\go-legacy\go`, "Get-Command go -CommandType Application | Select-Object -First 1", "go env -json GOROOT GOVERSION GOTOOLCHAIN GOOS GOARCH GOAMD64 GOEXPERIMENT", "$actualGo -ne $expectedGo", "$goEnvironment.GOROOT -ne $expectedRoot", "go1.27.3", "$goEnvironment.GOAMD64 -ne 'v1'", "$goEnvironment.GOTOOLCHAIN -ne 'local'"} {
 			mustContain(t, inspect.Run, required)
 		}
 		regression := mustStepNamed(t, job, "Run native legacy toolchain regressions")
@@ -2146,10 +2160,10 @@ func TestWindowsLegacyWorkflowsUsePinnedLocalFork(t *testing.T) {
 		}
 		verify := mustStepNamed(t, job, "Verify legacy binary toolchain")
 		mustContain(t, verify.Run, "go version -m")
-		mustContain(t, verify.Run, `go1\.27\.2`)
+		mustContain(t, verify.Run, `go1\.27\.3`)
 		mustContain(t, verify.Run, `GOAMD64=v1`)
 		mustContain(t, verify.Run, ".github/scripts/assert-windows-legacy-pe.ps1")
-		mustContainInOrder(t, mustReadWorkflow(t, tc.path), "name: Build patched Go 1.27.2 for Windows 7/8", "name: Verify Go installation", "name: Run native legacy toolchain regressions", "name: Run tests", "name: Build CLI-only legacy binary", "name: Verify legacy binary toolchain", "name: Compress with upx")
+		mustContainInOrder(t, mustReadWorkflow(t, tc.path), "name: Build patched Go 1.27.3 for Windows 7/8", "name: Verify Go installation", "name: Run native legacy toolchain regressions", "name: Run tests", "name: Build CLI-only legacy binary", "name: Verify legacy binary toolchain", "name: Compress with upx")
 	}
 }
 
@@ -2175,7 +2189,7 @@ func TestWindowsLegacyToolchainInputsHaveApprovedDigests(t *testing.T) {
 	if err := json.Unmarshal([]byte(mustReadRepoFile(t, ".github/toolchains/legacy-go/manifest.json")), &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "go1.27.2" || manifest.Source.URL != "https://go.dev/dl/go1.27.2.src.tar.gz" || manifest.Source.SHA256 != "03495da2ba64894d40f5c4992e49454fa78b50690604ff92b6afff5081b76e62" || manifest.Bootstrap.URL != "https://go.dev/dl/go1.27.2.windows-amd64.zip" || manifest.Bootstrap.SHA256 != "1314008898bd40df77af4b014f777f08873dbdfbcd3d92308728ee03304fe04f" || manifest.Vendor != "2f6cdc24e8e5c029eafebe42fcbe966cc0589f97" {
+	if manifest.Version != "go1.27.3" || manifest.Source.URL != "https://go.dev/dl/go1.27.3.src.tar.gz" || manifest.Source.SHA256 != "6e7749035cf360f06b2575d162ea79df9fda8ef671889e5c375f8e50777f26bb" || manifest.Bootstrap.URL != "https://go.dev/dl/go1.27.3.windows-amd64.zip" || manifest.Bootstrap.SHA256 != "f26081f438319757f8a1b46d7d0b2c5ec7583d4038e485e0aa725cfde7885fff" || manifest.Vendor != "2f6cdc24e8e5c029eafebe42fcbe966cc0589f97" {
 		t.Fatal("legacy source/bootstrap must retain the approved official Go release digests and compatibility source commit")
 	}
 	expected := map[string]string{

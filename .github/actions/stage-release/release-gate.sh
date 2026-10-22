@@ -67,15 +67,15 @@ cd "$workspace"
 
 bash "$(dirname -- "${BASH_SOURCE[0]}")/release-manifest.sh" "$version" > "$work/primary-assets.txt"
 
-if [ "$(wc -l < "$work/primary-assets.txt")" -ne 17 ]; then
-  echo "release gate: internal primary manifest must contain exactly 17 assets" >&2
+if [ "$(wc -l < "$work/primary-assets.txt")" -ne 19 ]; then
+  echo "release gate: internal primary manifest must contain exactly 19 assets" >&2
   exit 1
 fi
-if [ "$(awk '{print $1}' "$work/primary-assets.txt" | sort -u | wc -l)" -ne 17 ]; then
+if [ "$(awk '{print $1}' "$work/primary-assets.txt" | sort -u | wc -l)" -ne 19 ]; then
   echo "release gate: internal primary manifest contains duplicate asset names" >&2
   exit 1
 fi
-if [ "$(awk '{print $3}' "$work/primary-assets.txt" | sort -u | wc -l)" -ne 17 ]; then
+if [ "$(awk '{print $3}' "$work/primary-assets.txt" | sort -u | wc -l)" -ne 19 ]; then
   echo "release gate: internal primary manifest contains duplicate local paths" >&2
   exit 1
 fi
@@ -83,8 +83,8 @@ awk '{print $1; print $1 ".sigstore.json"}' "$work/primary-assets.txt" \
   | LC_ALL=C sort > "$work/expected-assets.txt"
 awk '{print $3; print $3 ".sigstore.json"}' "$work/primary-assets.txt" \
   | LC_ALL=C sort > "$work/allowed-paths.txt"
-if [ "$(wc -l < "$work/expected-assets.txt")" -ne 34 ]; then
-  echo "release gate: internal public manifest must contain exactly 34 assets" >&2
+if [ "$(wc -l < "$work/expected-assets.txt")" -ne 38 ]; then
+  echo "release gate: internal public manifest must contain exactly 38 assets" >&2
   exit 1
 fi
 
@@ -513,4 +513,4 @@ if [ "$published_id" != "$release_id" ] \
   exit 1
 fi
 validate_tag false
-echo "release gate: published complete release $version with 34 verified assets"
+echo "release gate: published complete release $version with 38 verified assets"

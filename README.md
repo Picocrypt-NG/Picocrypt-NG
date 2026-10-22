@@ -66,7 +66,7 @@ sudo apt install -y libc6 libgcc-s1 libgl1 libgtk-3-0 libstdc++6 libx11-6
 ```
 
 ## Android
-The native Android app requires Android 8.0 or newer on a 64-bit ARM (<code>arm64-v8a</code>) or x86-64 device. Download the signed universal 64-bit APK <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG-android-universal.apk">here</a>, or choose the smaller matching per-ABI APK from the latest GitHub release. Historical 32-bit APKs remain available with their original releases but are no longer supported. PR artifacts remain debug/testing-only.
+The native Android app requires Android 8.0 or newer and supports <code>armeabi-v7a</code>, <code>arm64-v8a</code>, <code>x86</code>, and <code>x86_64</code>. Download the signed universal APK <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG-android-universal.apk">here</a>, or choose the smaller matching per-ABI APK from the latest GitHub release. PCV3 operations require sufficient available memory for the fixed 1 GiB KDF, including on 32-bit devices. PR artifacts remain debug/testing-only.
 
 **APK verification:**
 
@@ -86,7 +86,7 @@ For local Android builds and architecture details, see <a href="android/README.m
 Picocrypt NG includes a command-line interface in this repository; see <a href="CLI.md">CLI.md</a> for usage. It encrypts literal file and folder operands; use quoted explicit glob patterns when pattern matching is intended. It also supports paranoid mode and Reed-Solomon encoding. You can use it on systems that don't have a GUI or can't run the GUI app.
 
 ## Web
-Picocrypt NG provides a browser app <a href="https://picocrypt-ng.github.io/">here</a> for in-memory single-file encryption and decryption on modern browsers, including mobile devices. In this repository, the WASM bridge caps inputs at 1 GiB and supports comments, Paranoid mode, Reed-Solomon payload protection, force decrypt, deniability, and decryption of supported legacy keyfile volumes. Picocrypt-NG 2.19 encryption is password-only: the bridge rejects every request containing keyfiles instead of creating another v2 keyfile volume. The browser workflow is still intentionally non-streaming and single-file oriented; folder workflows, split volumes, and large streaming jobs remain desktop/CLI/native-app features. Go-owned byte buffers are wiped best-effort after use, but JavaScript engine copies and garbage-collected runtime copies cannot be guaranteed wiped. The hosted page is deployed separately and must use a consumer matching the 2.19 bridge error contract.
+Picocrypt NG provides a browser app <a href="https://picocrypt-ng.github.io/">here</a> for in-memory single-file operations. This repository's WASM bridge creates PCV3 with a password, keyfiles, or both, and reads supported PCV1/PCV2/PCV3 volumes. It supports Paranoid mode, Reed-Solomon payload protection, comments and explicit D1 selection. Force output is marked unverified. Browser size limits are exposed by `picocryptCapabilities()`; sufficient browser memory is also required. Folder workflows, split volumes and large streaming jobs remain desktop/CLI/native-app features. Owned buffers are wiped best-effort; JavaScript and runtime copies cannot be guaranteed wiped. The hosted page is deployed separately and may use an older core.
 
 ## Translations
 Community translations for Picocrypt NG are hosted in the

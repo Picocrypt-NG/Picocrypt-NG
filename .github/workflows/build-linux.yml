@@ -45,7 +45,7 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.27.2"
+        go-version: "1.27.3"
         cache-dependency-path: src/go.sum
 
     - name: Update repository
@@ -75,13 +75,10 @@ jobs:
         cd src
         go mod download
 
-    - name: Test browser deniability boundary
+    - name: Test browser PCV3 and legacy compatibility
       if: matrix.arch == 'amd64'
-      run: |
-        cd src
-        GOMAXPROCS=1 GOOS=js GOARCH=wasm go test -count=1 \
-          -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-          -run '^(TestInvalidArgErrorCodeContract|TestBridgeRejectsV2KeyfileWriteBeforeRandomness|TestBridgePCV3UnsupportedBeforeKDF)$' ./cmd/wasm
+      timeout-minutes: 45
+      run: .github/scripts/test-wasm.sh
 
     - name: Run tests
       run: |

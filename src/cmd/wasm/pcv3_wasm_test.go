@@ -4,6 +4,7 @@ package main
 
 import (
 	"Picocrypt-NG/internal/pcv3operation"
+	"math"
 	"reflect"
 	"syscall/js"
 	"testing"
@@ -84,83 +85,143 @@ func pseudoRandomBytes(n int) []byte {
 	return b
 }
 
-func TestBridgePCV3UnsupportedBeforeKDF(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		force bool
-	}{
-		{name: "without force"},
-		{name: "with force", force: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			volume := js.Global().Get("Uint8Array").New(64 * 1024)
-			js.CopyBytesToJS(volume.Call("subarray", 0, 4), []byte{'P', 'C', 'V', 0})
-
-			reads := js.Global().Get("Array").New()
-			opts := js.Global().Get("Object").New()
-			opts.Set("data", volume)
-			// Credential and option properties must stay unread on this path;
-			// force in particular can never force a claimed PCV3 volume through.
-			for _, property := range []string{"password", "keyfiles", "forceDecrypt", "comments", "metadata"} {
-				installCountingGetter(t, opts, reads, property, js.Undefined())
-			}
-
-			copySizes := observeCopySizes(t)
-
-			requireUnsupportedCodeOnly(t, decrypt(js.Undefined(), []js.Value{opts}))
-
-			if got := loggedReads(reads); len(got) != 0 {
-				t.Fatalf("decrypt() read credential/option properties %v on the normal-PCV3 rejection path", got)
-			}
-			if len(*copySizes) != 1 || (*copySizes)[0] != 4 {
-				t.Fatalf("decrypt() JS-to-Go copy sizes = %v; want only the fixed 4-byte routing prefix", *copySizes)
-			}
-		})
+func TestBridgeUnknownPCVMajorRejectsBeforeCredentialsAndWholeCopy(t *testing.T) {
+	volume := js.Global().Get("Uint8Array").New(64 * 1024)
+	js.CopyBytesToJS(volume.Call("subarray", 0, 6), []byte{'P', 'C', 'V', 0, 255, 255})
+	reads := js.Global().Get("Array").New()
+	opts := newOpts(map[string]any{"data": volume})
+	for _, name := range []string{"password", "keyfiles", "forceDecrypt", "comments", "metadata"} {
+		installCountingGetter(t, opts, reads, name, js.Undefined())
+	}
+	copies := observeCopySizes(t)
+	requireUnsupportedCodeOnly(t, decrypt(js.Undefined(), []js.Value{opts}))
+	if len(loggedReads(reads)) != 0 {
+		t.Fatal("unknown format accessed credentials or options")
+	}
+	total := 0
+	for _, n := range *copies {
+		total += n
+	}
+	if total > 20 {
+		t.Fatalf("unknown-major routing copied %d bytes, want only bounded preamble", total)
 	}
 }
 
-// Explicit PCV3 operation intent is rejected before the bridge reads data,
-// credentials, options, or copies a single byte; the operation
-// mode discriminator is the only property consumed.
-func TestBridgeExplicitPCV3IntentRejectsBeforeData(t *testing.T) {
-	modes := []struct {
-		name string
-		mode pcv3operation.Mode
-	}{
-		{"read-normal", pcv3operation.ModeReadNormal},
-		{"read-d1", pcv3operation.ModeReadD1},
-		{"recover-normal", pcv3operation.ModeRecoverNormal},
-		{"recover-d1", pcv3operation.ModeRecoverD1},
-		{"force-normal", pcv3operation.ModeForceNormal},
-		{"force-d1", pcv3operation.ModeForceD1},
-		{"force-unverified-normal", pcv3operation.ModeForceUnverifiedNormal},
-		{"force-unverified-d1", pcv3operation.ModeForceUnverifiedD1},
-	}
-	for _, tc := range modes {
-		t.Run(tc.name, func(t *testing.T) {
-			// D1 volumes are deliberately random-looking, so the data below
-			// carries no recognizable claim; intent alone must drive rejection.
-			volume := js.Global().Get("Uint8Array").New(64 * 1024)
-			js.CopyBytesToJS(volume, pseudoRandomBytes(64*1024))
-
+func TestBridgeExplicitUnverifiedForceRequiresConsentAndRoleBeforeData(t *testing.T) {
+	for _, mode := range []pcv3operation.Mode{pcv3operation.ModeForceUnverifiedNormal, pcv3operation.ModeForceUnverifiedD1} {
+		for _, fields := range []map[string]any{{}, {"pcv3ForceUnverifiedConsent": true}, {"pcv3ForceUnverifiedConsent": true, "pcv3Role": 257}, {"pcv3ForceUnverifiedConsent": true, "pcv3Role": 0.5}} {
+			fields["pcv3Mode"] = int(mode)
+			opts := newOpts(fields)
 			reads := js.Global().Get("Array").New()
-			opts := js.Global().Get("Object").New()
-			opts.Set("pcv3Mode", int(tc.mode))
-			for _, property := range []string{"data", "password", "keyfiles", "forceDecrypt", "comments", "metadata"} {
-				installCountingGetter(t, opts, reads, property, js.Undefined())
+			installCountingGetter(t, opts, reads, "data", js.Undefined())
+			copies := observeCopySizes(t)
+			if codeOf(decrypt(js.Undefined(), []js.Value{opts})) != errInvalidArg || len(loggedReads(reads)) != 0 || len(*copies) != 0 {
+				t.Fatal("unverified Force accessed input without valid physical consent")
 			}
+		}
+	}
+}
 
-			copySizes := observeCopySizes(t)
+func TestBridgeRejectsMalformedModeBeforeData(t *testing.T) {
+	for _, mode := range []float64{257, -255, 1.5, 255, math.NaN(), math.Inf(1), 1 << 53} {
+		opts := newOpts(map[string]any{"pcv3Mode": mode})
+		reads := js.Global().Get("Array").New()
+		installCountingGetter(t, opts, reads, "data", js.Undefined())
+		if codeOf(decrypt(js.Undefined(), []js.Value{opts})) != errInvalidArg || len(loggedReads(reads)) != 0 {
+			t.Fatal("malformed mode was narrowed or accessed data")
+		}
+	}
+}
 
-			requireUnsupportedCodeOnly(t, decrypt(js.Undefined(), []js.Value{opts}))
+func TestBridgeCapabilitiesAndPrecopyResourceBounds(t *testing.T) {
+	caps := capabilities(js.Undefined(), nil).(js.Value)
+	if !caps.Get("pcv3").Bool() || caps.Get("apiVersion").Int() != 3 || caps.Get("maxKeyfileBytes").Int() != pcv3operation.BrowserMaxKeyfileBytes {
+		t.Fatal("capability contract changed")
+	}
+	oversized := js.Global().Get("Uint8Array").New(pcv3operation.BrowserMaxPlaintextBytes + 1)
+	opts := newOpts(map[string]any{"data": oversized})
+	reads := js.Global().Get("Array").New()
+	installCountingGetter(t, opts, reads, "password", js.Undefined())
+	copies := observeCopySizes(t)
+	if codeOf(encrypt(js.Undefined(), []js.Value{opts})) != 14 || len(loggedReads(reads)) != 0 || len(*copies) != 0 {
+		t.Fatal("oversized plaintext reached a whole-file copy or credential getter")
+	}
+	keys := js.Global().Get("Array").New()
+	backing := js.Global().Get("Uint8Array").New((pcv3operation.BrowserMaxKeyfileBytes / 2) + 1)
+	keys.Call("push", backing, backing)
+	opts = newOpts(map[string]any{"data": mkU8Den([]byte("x")), "password": "pw", "keyfiles": keys})
+	if codeOf(encrypt(js.Undefined(), []js.Value{opts})) != 14 || len(*copies) != 0 {
+		t.Fatal("aggregate keyfile overflow reached a Go input copy")
+	}
+}
 
-			if got := loggedReads(reads); len(got) != 0 {
-				t.Fatalf("decrypt() read properties %v despite explicit PCV3 intent; want rejection before any data/credential access", got)
+func TestBridgePCV3EmptyKeyfileRejectsBeforeWholeCopy(t *testing.T) {
+	for _, decrypting := range []bool{false, true} {
+		keys := js.Global().Get("Array").New()
+		keys.Call("push", mkU8Den(nil))
+		opts := newOpts(map[string]any{"data": mkU8Den([]byte("payload")), "password": "pw", "keyfiles": keys})
+		callback := encrypt
+		if decrypting {
+			callback = decrypt
+			opts.Set("pcv3Mode", int(pcv3operation.ModeReadD1))
+		}
+		copies := observeCopySizes(t)
+		if codeOf(callback(js.Undefined(), []js.Value{opts})) != errInvalidArg {
+			t.Fatal("PCV3 accepted an empty keyfile")
+		}
+		for _, n := range *copies {
+			if n > 4 {
+				t.Fatal("empty PCV3 keyfile reached a whole-input copy")
 			}
-			if len(*copySizes) != 0 {
-				t.Fatalf("decrypt() JS-to-Go copy sizes = %v; explicit intent must reject before any byte copy", *copySizes)
+		}
+	}
+}
+
+func TestBridgeSharedStorageRejectsBeforeCredentialAccess(t *testing.T) {
+	shared := js.Global().Get("SharedArrayBuffer")
+	if shared.Type() != js.TypeFunction {
+		t.Skip("SharedArrayBuffer unavailable in this runtime")
+	}
+	data := js.Global().Get("Uint8Array").New(shared.New(8))
+	for _, callback := range []func(js.Value, []js.Value) any{encrypt, decrypt} {
+		opts := newOpts(map[string]any{"data": data})
+		reads := js.Global().Get("Array").New()
+		installCountingGetter(t, opts, reads, "password", js.ValueOf("pw"))
+		copies := observeCopySizes(t)
+		if codeOf(callback(js.Undefined(), []js.Value{opts})) != errInvalidArg || len(loggedReads(reads)) != 0 || len(*copies) != 0 {
+			t.Fatal("shared storage reached a credential getter or input copy")
+		}
+	}
+}
+
+func TestBridgeInputGetterCannotReenterEitherOperation(t *testing.T) {
+	for _, outer := range []func(js.Value, []js.Value) any{encrypt, decrypt} {
+		for _, inner := range []func(js.Value, []js.Value) any{encrypt, decrypt} {
+			innerReads := js.Global().Get("Array").New()
+			innerOpts := newOpts(nil)
+			installCountingGetter(t, innerOpts, innerReads, "data", js.Undefined())
+			innerCode := -1
+			innerExport := js.FuncOf(inner)
+			t.Cleanup(innerExport.Release)
+			reenter := js.FuncOf(func(js.Value, []js.Value) any {
+				innerCode = codeOf(innerExport.Invoke(innerOpts))
+				return nil
+			})
+			t.Cleanup(reenter.Release)
+			getter := js.Global().Get("Function").New("reenter", "return function(){ reenter(); throw new Error('outer getter failed'); }").Invoke(reenter)
+			opts := newOpts(map[string]any{"data": mkU8Den([]byte{1, 2, 3})})
+			js.Global().Get("Object").Call("defineProperty", opts, "password", newOpts(map[string]any{"get": getter}))
+			copies := observeCopySizes(t)
+			result := outer(js.Undefined(), []js.Value{opts})
+			if codeOf(result) != errInvalidArg || innerCode != errInvalidArg || len(loggedReads(innerReads)) != 0 || len(*copies) != 0 {
+				t.Fatal("reentrant input getter reached another operation's input or copy boundary")
 			}
-		})
+			// The throwing outer getter must release the guard for later calls.
+			inner(js.Undefined(), []js.Value{innerOpts})
+			if len(loggedReads(innerReads)) != 1 {
+				t.Fatal("operation guard remained set after a throwing getter")
+			}
+		}
 	}
 }
 
@@ -170,6 +231,7 @@ func TestBridgeExplicitPCV3IntentRejectsBeforeData(t *testing.T) {
 // legacy bridge probes it with the supplied password and reports the existing
 // wrong-password outcome — never the PCV3 unsupported code.
 func TestBridgeRandomLookingInputDoesNotSelectD1(t *testing.T) {
+	requireWASMProductionKDF(t)
 	volume := js.Global().Get("Uint8Array").New(64 * 1024)
 	js.CopyBytesToJS(volume, pseudoRandomBytes(64*1024))
 

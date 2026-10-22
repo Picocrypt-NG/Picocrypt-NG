@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"context"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -76,9 +77,7 @@ func (session *AndroidResourceSession) snapshotForWorkingMemory(ctx context.Cont
 	return session.requestSnapshot(ctx, false)
 }
 
-// The transport supplies facts only. KDF keeps its independent 64-bit policy;
-// a bounded ZIP workspace also has a trusted 32-bit envelope.
-func (session *AndroidResourceSession) requestSnapshot(ctx context.Context, require64Bit bool) Snapshot {
+func (session *AndroidResourceSession) requestSnapshot(ctx context.Context, checkProcessWidth bool) Snapshot {
 	if session == nil || ctx == nil || ctx.Err() != nil || session.timeout <= 0 {
 		return newUnknownAndroidSnapshot()
 	}
@@ -108,7 +107,7 @@ func (session *AndroidResourceSession) requestSnapshot(ctx context.Context, requ
 		return newUnknownAndroidSnapshot()
 	case observation := <-pending.response:
 		if ctx.Err() != nil || observation.observedAt.After(pending.expiresAt) ||
-			(require64Bit && !observation.processIs64Bit) {
+			(checkProcessWidth && observation.processIs64Bit != (strconv.IntSize == 64)) {
 			return newUnknownAndroidSnapshot()
 		}
 		return newSnapshotAt(

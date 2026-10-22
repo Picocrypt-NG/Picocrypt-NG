@@ -17,7 +17,9 @@ Picocrypt-NG-portable.exe build-windows.yml artifacts/build-windows/Picocrypt-NG
 Picocrypt-NG-cli.exe build-windows.yml artifacts/build-windows/Picocrypt-NG-cli.exe
 Picocrypt-NG-Setup.exe build-windows.yml artifacts/build-windows/Picocrypt-NG-Setup.exe
 Picocrypt-NG-cli-Legacy.exe build-windows-legacy.yml artifacts/build-windows-legacy/Picocrypt-NG-cli-Legacy.exe
+Picocrypt-NG-android-armeabi-v7a.apk build-android.yml out/Picocrypt-NG-android-armeabi-v7a.apk
 Picocrypt-NG-android-arm64-v8a.apk build-android.yml out/Picocrypt-NG-android-arm64-v8a.apk
+Picocrypt-NG-android-x86.apk build-android.yml out/Picocrypt-NG-android-x86.apk
 Picocrypt-NG-android-x86_64.apk build-android.yml out/Picocrypt-NG-android-x86_64.apk
 Picocrypt-NG-android-universal.apk build-android.yml out/Picocrypt-NG-android-universal.apk
 Picocrypt-NG-${version}-x86_64.AppImage build-appimage.yml artifacts/Picocrypt-NG-${version}-x86_64.AppImage

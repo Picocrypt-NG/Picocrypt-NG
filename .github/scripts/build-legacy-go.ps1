@@ -11,9 +11,9 @@ if (Test-Path -LiteralPath $OutputRoot) { throw "Refusing to reuse an existing t
 $manifestPathResolved = (Resolve-Path -LiteralPath $ManifestPath).Path
 $manifestDirectory = Split-Path -Parent $manifestPathResolved
 $manifest = Get-Content -LiteralPath $manifestPathResolved -Raw | ConvertFrom-Json
-if ($manifest.version -cne 'go1.27.2') { throw 'Unsupported legacy Go source version' }
-if ($manifest.source.url -cne 'https://go.dev/dl/go1.27.2.src.tar.gz' -or
-    $manifest.bootstrap_windows_amd64.url -cne 'https://go.dev/dl/go1.27.2.windows-amd64.zip') {
+if ($manifest.version -cne 'go1.27.3') { throw 'Unsupported legacy Go source version' }
+if ($manifest.source.url -cne 'https://go.dev/dl/go1.27.3.src.tar.gz' -or
+    $manifest.bootstrap_windows_amd64.url -cne 'https://go.dev/dl/go1.27.3.windows-amd64.zip') {
     throw 'Only the approved official Go source and bootstrap URLs are allowed'
 }
 if ($manifest.vendor_commit -cne '2f6cdc24e8e5c029eafebe42fcbe966cc0589f97') { throw 'Unexpected compatibility patch source commit' }

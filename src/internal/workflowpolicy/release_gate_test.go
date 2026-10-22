@@ -169,7 +169,7 @@ func TestReleaseWorkflowFileSetsAreDisjointExactManifest(t *testing.T) {
 		}
 	}
 
-	expected := make(map[string]struct{}, 34)
+	expected := make(map[string]struct{}, 38)
 	for _, name := range releasePrimaryAssetNames(version) {
 		expected[name] = struct{}{}
 		expected[name+".sigstore.json"] = struct{}{}
@@ -185,7 +185,7 @@ func TestReleaseWorkflowFileSetsAreDisjointExactManifest(t *testing.T) {
 		for name := range expected {
 			missing = append(missing, name)
 		}
-		t.Fatalf("release workflows do not stage the complete 34-file manifest; missing %v", missing)
+		t.Fatalf("release workflows do not stage the complete 38-file manifest; missing %v", missing)
 	}
 }
 
@@ -547,11 +547,11 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 		if result.err != nil {
 			t.Fatalf("complete release was not published: %v\n%s", result.err, result.output)
 		}
-		if got := strings.Count(result.calls, "cosign verify-blob "); got != 17 {
-			t.Fatalf("cosign verification count = %d, want all 17 primary artifacts", got)
+		if got := strings.Count(result.calls, "cosign verify-blob "); got != 19 {
+			t.Fatalf("cosign verification count = %d, want all 19 primary artifacts", got)
 		}
-		if got := strings.Count(result.calls, "attestation verify "); got != 17 {
-			t.Fatalf("provenance verification count = %d, want all 17 primary artifacts", got)
+		if got := strings.Count(result.calls, "attestation verify "); got != 19 {
+			t.Fatalf("provenance verification count = %d, want all 19 primary artifacts", got)
 		}
 		for _, primary := range releasePrimaryAssets("2.19") {
 			identity := "https://github.com/Picocrypt-NG/Picocrypt-NG/.github/workflows/" +
@@ -1379,7 +1379,9 @@ func releasePrimaryAssets(version string) []releasePrimaryFixture {
 	return []releasePrimaryFixture{
 		{Name: "Picocrypt-NG-Setup.exe", Workflow: "build-windows.yml", Path: "artifacts/build-windows/Picocrypt-NG-Setup.exe"},
 		{Name: "Picocrypt-NG-android-arm64-v8a.apk", Workflow: "build-android.yml", Path: "out/Picocrypt-NG-android-arm64-v8a.apk"},
+		{Name: "Picocrypt-NG-android-armeabi-v7a.apk", Workflow: "build-android.yml", Path: "out/Picocrypt-NG-android-armeabi-v7a.apk"},
 		{Name: "Picocrypt-NG-android-universal.apk", Workflow: "build-android.yml", Path: "out/Picocrypt-NG-android-universal.apk"},
+		{Name: "Picocrypt-NG-android-x86.apk", Workflow: "build-android.yml", Path: "out/Picocrypt-NG-android-x86.apk"},
 		{Name: "Picocrypt-NG-android-x86_64.apk", Workflow: "build-android.yml", Path: "out/Picocrypt-NG-android-x86_64.apk"},
 		{Name: "Picocrypt-NG-cli-Legacy.exe", Workflow: "build-windows-legacy.yml", Path: "artifacts/build-windows-legacy/Picocrypt-NG-cli-Legacy.exe"},
 		{Name: "Picocrypt-NG-cli-arm64", Workflow: "build-linux.yml", Path: "artifacts/build-linux-arm64/Picocrypt-NG-cli-arm64"},

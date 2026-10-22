@@ -51,7 +51,7 @@ android {
         minSdk = 26
         targetSdk = 36
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
         }
         versionCode = providers
             .gradleProperty("PICOCRYPT_VERSION_CODE")
@@ -112,7 +112,7 @@ android {
             // partitions them at packaging time.
             isEnable = abiSplitsEnabled
             reset()
-            include("arm64-v8a", "x86_64")
+            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
             isUniversalApk = true
         }
     }
@@ -160,20 +160,25 @@ kotlin {
     }
 }
 
-// Give each supported per-ABI APK a stable unique versionCode so it can coexist with
-// the universal APK. Preserve the established offsets for upgrade compatibility;
-// the universal APK keeps the base code as the fallback.
-// Mirror this in the next fdroiddata release as [10 * %c + 2, 10 * %c + 4].
+// Universal offset 0 permits upgrades from older per-ABI APKs while preserving split priority.
+// Split offsets below must match fdroiddata's VercodeOperation.
 val abiVersionCodeOffsets = mapOf(
+    "armeabi-v7a" to 1,
     "arm64-v8a" to 2,
+    "x86" to 3,
     "x86_64" to 4,
 )
 
 androidComponents {
     onVariants { variant ->
         variant.outputs.forEach { output ->
-            val abi = output.filters.find { it.filterType == ABI }?.identifier ?: return@forEach
-            val offset = abiVersionCodeOffsets[abi] ?: return@forEach
+            val abi = output.filters.find { it.filterType == ABI }?.identifier
+            val offset = if (abi == null) {
+                if (variant.buildType != "release") return@forEach
+                0
+            } else {
+                abiVersionCodeOffsets[abi] ?: return@forEach
+            }
             val base = output.versionCode.get() ?: 0
             output.versionCode.set(base * 10 + offset)
         }
