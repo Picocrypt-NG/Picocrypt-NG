@@ -1,9 +1,11 @@
 # Picocrypt NG PCV3 security contract
 
-This maintainer document records the required native PCV3 behavior and the
-evidence used to review it. New native encryption targets PCV3; supported legacy v1/v2
+This maintainer document records the required PCV3 behavior and the
+evidence used to review it. New encryption targets PCV3; supported legacy v1/v2
 readers remain separate. Experimental PCV3 files have no compatibility promise.
-The browser/WASM contract is unchanged and does not add PCV3 support.
+The browser/WASM bridge creates PCV3 and reads supported PCV1/PCV2/PCV3 volumes
+in memory. Its feature, size and resource limits are defined separately in
+[`API.md`](../API.md#pcv3-operation-boundary).
 
 ## Threat model
 
@@ -65,10 +67,20 @@ cleanup obligation.
 
 ## Platform and review gates
 
-Native targets are Windows, Linux, macOS and 64-bit Android starting at Android
-8/API 26. Filesystem capabilities must be checked independently of the Android
+Native targets are Windows, Linux, macOS and Android starting at Android
+8/API 26, with `armeabi-v7a`, `arm64-v8a`, `x86` and `x86_64` APKs. Android
+installation support does not guarantee sufficient memory for the fixed 1 GiB
+KDF. Per-operation admission may refuse a supported device; 32-bit workspace
+segmentation does not guarantee allocation under fragmentation.
+Filesystem capabilities must be checked independently of the Android
 API level. A path check followed by an ordinary replacing rename is not an
 acceptable no-replace publication primitive.
+
+Browser D1 reading requires explicit selection, and Force output remains
+unverified. The site must use a fresh worker for each operation, terminate it on
+every result or failure, and restore its UI on worker failure. Bounded address
+space checks do not guarantee physical RAM; browser OOM may terminate a worker.
+The separately deployed website requires checks of its actual built artifact.
 
 Readiness requires real operations on Windows, Linux and macOS (including its
 CGO branch), Android API 26 and a current API, and a physical ARM64 phone with
