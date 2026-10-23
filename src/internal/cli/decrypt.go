@@ -98,6 +98,7 @@ type pcv3CLIResult interface {
 	PublicationCode() pcv3publication.Code
 	Warnings() []pcv3operation.Warning
 	WithCleanupWarning()
+	WithCleanupDurabilityWarning()
 	CompletionClass() pcv3operation.CompletionClass
 	ArchiveFollowUp() pcv3CLIArchiveFollowUp
 	OutputFollowUp() pcv3CLIOutputFollowUp
@@ -146,6 +147,10 @@ func (adapter pcv3CLIResultAdapter) Warnings() []pcv3operation.Warning {
 
 func (adapter pcv3CLIResultAdapter) WithCleanupWarning() {
 	adapter.result.WithCleanupWarning()
+}
+
+func (adapter pcv3CLIResultAdapter) WithCleanupDurabilityWarning() {
+	adapter.result.WithCleanupDurabilityWarning()
 }
 
 func (adapter pcv3CLIResultAdapter) CompletionClass() pcv3operation.CompletionClass {

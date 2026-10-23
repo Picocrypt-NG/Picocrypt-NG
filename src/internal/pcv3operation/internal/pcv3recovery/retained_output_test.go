@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -28,7 +27,7 @@ func TestRecoveryRetainsOnlyOptInDurableOutputCapability(t *testing.T) {
 		result := runWithCore(context.Background(), &Request{Target: target}, runner)
 		requireNativeRecoveryPublication(t, result)
 		retained := result.TakeRetainedOutput()
-		if result.PublicationState() != nativeRecoveryPublicationState() ||
+		if result.PublicationState() != nativeRecoveryPublicationState(t) ||
 			retained != nil {
 			t.Fatalf(
 				"default recovery = state %v retained=%v; want durable terminal publication",
@@ -48,8 +47,8 @@ func TestRecoveryRetainsOnlyOptInDurableOutputCapability(t *testing.T) {
 			ExecutionOptions{RetainDurableOutput: true},
 		)
 		retained := result.TakeRetainedOutput()
-		if result.PublicationState() != nativeRecoveryPublicationState() ||
-			(retained != nil) != (runtime.GOOS != "windows") || (retained != nil && !retained.Live()) {
+		if result.PublicationState() != nativeRecoveryPublicationState(t) ||
+			(retained != nil) != nativeRecoveryDirectorySyncSupported(t, directory) || (retained != nil && !retained.Live()) {
 			t.Fatalf(
 				"opt-in recovery = state %v retained=%v; want durable exact capability",
 				result.PublicationState(), retained,
@@ -146,7 +145,7 @@ func TestRecoveryCleansRetainedOutputIfCoreLaterWithdrawsOutputSemantic(t *testi
 		ExecutionOptions{RetainDurableOutput: true},
 	)
 	retained := result.TakeRetainedOutput()
-	if runtime.GOOS == "windows" {
+	if !nativeRecoveryDirectorySyncSupported(t, directory) {
 		// Uncertain publication returns its warning from the output callback;
 		// the core cannot reach the later withdrawal boundary or gain custody.
 		requireNativeRecoveryPublication(t, result)
@@ -217,7 +216,7 @@ func TestRecoveryPanicAfterRetainedPublicationRemovesInternalPlaintext(t *testin
 			ExecutionOptions{RetainDurableOutput: true},
 		)
 	}()
-	if runtime.GOOS == "windows" {
+	if !nativeRecoveryDirectorySyncSupported(t, directory) {
 		// The uncertain output callback returns before the deliberately later
 		// panic. Its published file remains, with no durable retained owner.
 		requireNativeRecoveryPublication(t, result)

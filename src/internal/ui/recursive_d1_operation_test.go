@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -116,7 +115,7 @@ func TestRecursiveExplicitD1ReadsNestedFilesAndWrongPasswordLeavesNoOutput(t *te
 			if wrong {
 				want = app.StatusRecursiveFailedAll
 			}
-			if runtime.GOOS == "windows" && !wrong {
+			if !nativeUIDirectorySyncSupported(t, dir) && !wrong {
 				requireNativePCV3Publication(t, a.pcv3Result)
 				want = app.StatusCustom
 				if snap.Status.Text != "Output durability not confirmed\nFailed (all 2 files)" {

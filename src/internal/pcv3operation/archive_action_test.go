@@ -176,7 +176,7 @@ func TestArchiveActionReviewsAuthenticatedBudgetBeforeExtraction(t *testing.T) {
 			if decision == "decline" && !errors.Is(result, context.Canceled) {
 				t.Fatalf("declining review lost cancellation: %v", result)
 			}
-			requireArchiveRefusalDirectory(t, parent, "result", runtime.GOOS == "windows")
+			requireArchiveRefusalDirectory(t, parent, "result", !nativeOperationDirectorySyncSupported(t, parent))
 		})
 	}
 }
@@ -308,7 +308,7 @@ func TestArchiveActionFailedExtractionRemovesOnlyItsEmptyDirectory(t *testing.T)
 	read := archiveActionFixture(t, target, []byte("authenticated but invalid ZIP"))
 	result := plan.apply(context.Background(), read)
 	requireArchiveActionRefusal(t, result, false)
-	requireArchiveRefusalDirectory(t, directory, "output", runtime.GOOS == "windows")
+	requireArchiveRefusalDirectory(t, directory, "output", !nativeOperationDirectorySyncSupported(t, directory))
 }
 
 func requireArchiveActionRefusal(t *testing.T, result *Result, cancelled bool) {
@@ -318,8 +318,8 @@ func requireArchiveActionRefusal(t *testing.T, result *Result, cancelled bool) {
 		stage, diagnostic, code, completion = StageCancellation, DiagnosticCancellation, pcv3publication.CodeCancelled, CompletionRefused
 	}
 	var warnings []Warning
-	if runtime.GOOS == "windows" {
-		warnings = []Warning{WarningCleanupIncomplete}
+	if !nativeOperationDirectorySyncSupported(t, t.TempDir()) {
+		warnings = []Warning{WarningCleanupDurabilityUncertain}
 	}
 	if result == nil || result.Outcome() != OutcomeOperationFailed || result.Stage() != stage ||
 		result.Code() != CodeOperationFailed || result.Diagnostic() != diagnostic || result.CompletionClass() != completion ||

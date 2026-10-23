@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -100,7 +99,7 @@ func TestArchiveSAFEntryScratchIsWipedAfterSuccessFailureAndPanic(t *testing.T) 
 					t.Fatal("failed stream remained actionable")
 				}
 				result := session.Abort()
-				if result.State() != fileops.UnpackStatePublicationIndeterminate || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
+				if result.State() != fileops.UnpackStatePublicationIndeterminate || !nativeCleanupMatches(t, result) {
 					t.Fatalf("failure cleanup/result = %#v", result)
 				}
 			}
@@ -147,7 +146,7 @@ func TestArchiveSAFEntryScratchReusePreservesDifferentSizedPayloads(t *testing.T
 			t.Fatal("scratch reuse changed provider bytes")
 		}
 	}
-	if session.Finish().CleanupIncomplete() != (runtime.GOOS == "windows") {
+	if !nativeCleanupMatches(t, session.Finish()) {
 		t.Fatal("stage cleanup failed")
 	}
 	assertNativeArchiveStage(t, parent, target, 0)
@@ -231,7 +230,7 @@ func TestArchiveSAFEntryScratchCancellationWaitsForBorrowerBeforeWiping(t *testi
 		}
 	}
 	result := session.Abort()
-	if result.State() != fileops.UnpackStatePublicationIndeterminate || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
+	if result.State() != fileops.UnpackStatePublicationIndeterminate || !nativeCleanupMatches(t, result) {
 		t.Fatalf("cancel result = %#v", result)
 	}
 	assertNativeArchiveStage(t, parent, target, 0)
@@ -255,6 +254,7 @@ func BenchmarkArchiveSAFSessionEntryAllocations(b *testing.B) {
 				entries[index] = archiveSAFZIPEntry{name: fmt.Sprintf("f%06d", index), data: []byte("public provider body\n")}
 			}
 			archive := buildArchiveSAFZIP(b, entries)
+			cleanupUncertain := !nativeDirectorySyncSupported(b, b.TempDir())
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
@@ -269,7 +269,7 @@ func BenchmarkArchiveSAFSessionEntryAllocations(b *testing.B) {
 				if writer.bytes != int64(count)*int64(len(entries[0].data)) {
 					b.Fatal("entry bytes missing")
 				}
-				if result := session.Finish(); result.State() != fileops.UnpackStatePublishedDurabilityUncertain || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
+				if result := session.Finish(); result.State() != fileops.UnpackStatePublishedDurabilityUncertain || result.CleanupIncomplete() || result.CleanupDurabilityUncertain() != cleanupUncertain {
 					b.Fatal("session failed")
 				}
 			}

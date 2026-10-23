@@ -183,7 +183,7 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 			case "publish":
 				publication, cleanup := handoff.Publish(context.Background())
 				requireNativePublication(t, publication)
-				if (cleanup != nil) != (runtime.GOOS == "windows") {
+				if !nativeCleanupErrorMatches(t, cleanup) {
 					t.Fatalf("prepared ZIP publication failed: %v cleanup=%v", publication, cleanup)
 				}
 				got, err := os.ReadFile(target)
@@ -194,14 +194,14 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 				root := openNativeArchiveRoot(t)
 				path := root.Name()
 				extracted := handoff.Extract(context.Background(), root)
-				if extracted == nil || extracted.State() != nativeExtractionState() || extracted.CleanupIncomplete() != (runtime.GOOS == "windows") {
+				if extracted == nil || extracted.State() != nativeExtractionState(t) || !nativeCleanupMatches(t, extracted) {
 					t.Fatalf("prepared ZIP extraction failed: %v", extracted)
 				}
 				assertArchiveHandoffFile(t, filepath.Join(path, "root.txt"), "PCV3 authenticated archive fixture\n")
 				assertNativeArchiveStage(t, parent, target, 0)
 			case "saf":
 				begin := handoff.BeginSAF()
-				if begin.Kind() != NativeArchiveSAFBeginTerminal || begin.Result() == nil || begin.Result().State() != nativeArchiveSAFUnattemptedState() || begin.Result().CleanupIncomplete() != (runtime.GOOS == "windows") {
+				if begin.Kind() != NativeArchiveSAFBeginTerminal || begin.Result() == nil || begin.Result().State() != nativeArchiveSAFUnattemptedState(t) || !nativeCleanupMatches(t, begin.Result()) {
 					t.Fatal("unsupported raw ZIP SAF action did not cleanly refuse")
 				}
 				assertNativeArchiveStage(t, parent, target, 0)

@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -212,7 +211,7 @@ func TestArchivePublicationPreservesTransportAndCleanupResult(t *testing.T) {
 			}
 			ctx := context.Background()
 			wantCompletion, wantDiagnostic := CompletionClean, DiagnosticNone
-			if runtime.GOOS == "windows" {
+			if !nativeOperationDirectorySyncSupported(t, filepath.Dir(target)) {
 				wantCompletion = CompletionDurabilityUncertain
 			}
 			switch name {
@@ -232,7 +231,7 @@ func TestArchivePublicationPreservesTransportAndCleanupResult(t *testing.T) {
 				defer cancel()
 				wantCompletion, wantDiagnostic = CompletionRefused, DiagnosticCancellation
 			case "cleanup warning":
-				if runtime.GOOS != "windows" {
+				if nativeOperationDirectorySyncSupported(t, filepath.Dir(target)) {
 					wantCompletion = CompletionWarning
 				}
 			}

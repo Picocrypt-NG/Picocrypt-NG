@@ -77,10 +77,10 @@ func TestWriteOutputFailedSaveRetainsExactCiphertextForRetry(t *testing.T) {
 	}
 	saved := followUp.SaveTo(output)
 	wantCode := OutputActionSaved
-	if runtime.GOOS == "windows" {
-		wantCode = OutputActionSavedCleanupIncomplete
+	if !nativeOperationDirectorySyncSupported(t, directory) {
+		wantCode = OutputActionSavedCleanupDurabilityUncertain
 	}
-	if saved.Code() != wantCode || saved.CleanupIncomplete() != (runtime.GOOS == "windows") || followUp.live() {
+	if saved.Code() != wantCode || saved.CleanupIncomplete() || saved.CleanupDurabilityUncertain() == nativeOperationDirectorySyncSupported(t, directory) || followUp.live() {
 		t.Fatalf("retry = %v", saved)
 	}
 	requireOperationFileBytes(t, target, payload)
@@ -289,10 +289,10 @@ func TestWritePublishedUncertainStillCreatesRequestedSplit(t *testing.T) {
 			if _, err := os.Lstat(privateDirectory); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("split retained private staging: %v", err)
 			}
-			if runtime.GOOS == "windows" {
+			if !nativeOperationDirectorySyncSupported(t, directory) {
 				if result.Outcome() != pcv3.OutcomeOperationFailed || result.Stage() != pcv3.StageOutputPublication ||
 					result.Code() != pcv3.CodeOperationFailed || result.Diagnostic() != DiagnosticCoreFailure ||
-					!slices.Equal(result.Warnings(), []Warning{WarningDurabilityUncertain, WarningCleanupIncomplete}) {
+					!slices.Equal(result.Warnings(), []Warning{WarningDurabilityUncertain, WarningCleanupDurabilityUncertain}) {
 					t.Fatalf("uncertain native split lost its exact failed/cleanup tuple: %v warnings=%v", result, result.Warnings())
 				}
 			} else if result.Outcome() != pcv3.OutcomeSuccess {
@@ -303,14 +303,14 @@ func TestWritePublishedUncertainStillCreatesRequestedSplit(t *testing.T) {
 				t.Fatalf("requested split omitted: %v", err)
 			}
 			requireOperationFileBytes(t, recombined, payload)
-			wantUncertain := uncertain || runtime.GOOS == "windows"
+			wantUncertain := uncertain || !nativeOperationDirectorySyncSupported(t, directory)
 			if result.SourceDeletionAllowed() == wantUncertain {
 				t.Fatalf("source deletion authority = %v for uncertain=%v", result.SourceDeletionAllowed(), uncertain)
 			}
-			if result.SplitOutputUncertain() != (runtime.GOOS == "windows") {
+			if result.SplitOutputUncertain() != (!nativeOperationDirectorySyncSupported(t, directory)) {
 				t.Fatalf("split durability differs from native barrier: uncertain=%v", result.SplitOutputUncertain())
 			}
-			if runtime.GOOS == "windows" {
+			if !nativeOperationDirectorySyncSupported(t, directory) {
 				requireOperationFileBytes(t, target, payload)
 			} else if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("durable chunks did not consume the complete ciphertext: %v", err)

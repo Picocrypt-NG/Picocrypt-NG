@@ -59,10 +59,10 @@ func TestOutputFollowUpSaveCopiesThenRemovesExactInternalOwner(t *testing.T) {
 
 	action := followUp.SaveTo(destination)
 	wantCode := OutputActionSaved
-	if runtime.GOOS == "windows" {
-		wantCode = OutputActionSavedCleanupIncomplete
+	if !nativeOperationDirectorySyncSupported(t, directory) {
+		wantCode = OutputActionSavedCleanupDurabilityUncertain
 	}
-	if action.Code() != wantCode || action.CleanupIncomplete() != (runtime.GOOS == "windows") {
+	if action.Code() != wantCode || action.CleanupIncomplete() || action.CleanupDurabilityUncertain() == nativeOperationDirectorySyncSupported(t, directory) {
 		t.Fatalf(
 			"save action = %v cleanup=%v; want %v with native removal durability",
 			action.Code(), action.CleanupIncomplete(), wantCode,
@@ -110,10 +110,10 @@ func TestOutputFollowUpFailedSaveConsumesAuthorityAndRemovesInternalSource(t *te
 
 	action := followUp.SaveTo(destination)
 	wantCode := OutputActionSaveFailed
-	if runtime.GOOS == "windows" {
-		wantCode = OutputActionSaveFailedCleanupIncomplete
+	if !nativeOperationDirectorySyncSupported(t, directory) {
+		wantCode = OutputActionSaveFailedCleanupDurabilityUncertain
 	}
-	if action.Code() != wantCode || action.CleanupIncomplete() != (runtime.GOOS == "windows") {
+	if action.Code() != wantCode || action.CleanupIncomplete() || action.CleanupDurabilityUncertain() == nativeOperationDirectorySyncSupported(t, directory) {
 		t.Fatalf(
 			"failed save action = %v cleanup=%v; want %v with native removal durability",
 			action.Code(), action.CleanupIncomplete(), wantCode,
@@ -157,7 +157,14 @@ func TestOutputFollowUpStreamsTheRetainedFileAcrossPathReplacement(t *testing.T)
 	if readErr != nil || closeErr != nil {
 		t.Fatalf("read streamed output: read=%v close=%v", readErr, closeErr)
 	}
-	if action.Code() != OutputActionSavedCleanupIncomplete || !action.CleanupIncomplete() {
+	wantCode := OutputActionSaved
+	uncertain := !replaced && !nativeOperationDirectorySyncSupported(t, directory)
+	if replaced {
+		wantCode = OutputActionSavedCleanupIncomplete
+	} else if uncertain {
+		wantCode = OutputActionSavedCleanupDurabilityUncertain
+	}
+	if action.Code() != wantCode || action.CleanupIncomplete() != replaced || action.CleanupDurabilityUncertain() != uncertain {
 		t.Fatalf("replacement stream action = %v cleanup=%v; want streamed with cleanup warning", action.Code(), action.CleanupIncomplete())
 	}
 	if string(streamed) != string(payload) {
@@ -217,10 +224,10 @@ func TestOutputFollowUpRejectsMutatedRetainedBytesBeforeStreaming(t *testing.T) 
 				t.Fatalf("read rejected stream: read=%v close=%v", readErr, closeErr)
 			}
 			wantCode := OutputActionSaveFailed
-			if runtime.GOOS == "windows" {
-				wantCode = OutputActionSaveFailedCleanupIncomplete
+			if !nativeOperationDirectorySyncSupported(t, directory) {
+				wantCode = OutputActionSaveFailedCleanupDurabilityUncertain
 			}
-			if action.Code() != wantCode || action.CleanupIncomplete() != (runtime.GOOS == "windows") || len(streamed) != 0 {
+			if action.Code() != wantCode || action.CleanupIncomplete() || action.CleanupDurabilityUncertain() == nativeOperationDirectorySyncSupported(t, directory) || len(streamed) != 0 {
 				t.Fatalf("mutated stream action=%v cleanup=%v bytes=%d", action.Code(), action.CleanupIncomplete(), len(streamed))
 			}
 			if _, err := os.Lstat(retainedPath); !errors.Is(err, os.ErrNotExist) {
@@ -235,10 +242,10 @@ func TestOutputFollowUpNilStreamDestinationStillRemovesPlaintext(t *testing.T) {
 	retained, retainedPath := newOperationRetainedFile(t, directory, []byte("must be removed"))
 	action := newOutputFollowUp(retained).StreamTo(context.Background(), nil)
 	wantCode := OutputActionSaveFailed
-	if runtime.GOOS == "windows" {
-		wantCode = OutputActionSaveFailedCleanupIncomplete
+	if !nativeOperationDirectorySyncSupported(t, directory) {
+		wantCode = OutputActionSaveFailedCleanupDurabilityUncertain
 	}
-	if action.Code() != wantCode || action.CleanupIncomplete() != (runtime.GOOS == "windows") {
+	if action.Code() != wantCode || action.CleanupIncomplete() || action.CleanupDurabilityUncertain() == nativeOperationDirectorySyncSupported(t, directory) {
 		t.Fatalf("nil stream action=%v cleanup=%v", action.Code(), action.CleanupIncomplete())
 	}
 	if _, err := os.Lstat(retainedPath); !errors.Is(err, os.ErrNotExist) {
@@ -252,10 +259,10 @@ func TestOutputFollowUpDiscardIsExactIdentityOnly(t *testing.T) {
 		retained, retainedPath := newOperationRetainedFile(t, directory, []byte("discard me"))
 		action := newOutputFollowUp(retained).Discard()
 		wantCode := OutputActionDiscarded
-		if runtime.GOOS == "windows" {
-			wantCode = OutputActionDiscardCleanupIncomplete
+		if !nativeOperationDirectorySyncSupported(t, directory) {
+			wantCode = OutputActionDiscardCleanupDurabilityUncertain
 		}
-		if action.Code() != wantCode || action.CleanupIncomplete() != (runtime.GOOS == "windows") {
+		if action.Code() != wantCode || action.CleanupIncomplete() || action.CleanupDurabilityUncertain() == nativeOperationDirectorySyncSupported(t, directory) {
 			t.Fatalf("exact discard = %#v; want %v with native removal durability", action, wantCode)
 		}
 		if _, err := os.Lstat(retainedPath); !errors.Is(err, os.ErrNotExist) {
@@ -280,8 +287,14 @@ func TestOutputFollowUpDiscardIsExactIdentityOnly(t *testing.T) {
 		followUp := newOutputFollowUp(retained)
 
 		action := followUp.Discard()
-		if action.Code() != OutputActionDiscardCleanupIncomplete ||
-			!action.CleanupIncomplete() {
+		wantCode := OutputActionDiscarded
+		uncertain := !replaced && !nativeOperationDirectorySyncSupported(t, directory)
+		if replaced {
+			wantCode = OutputActionDiscardCleanupIncomplete
+		} else if uncertain {
+			wantCode = OutputActionDiscardCleanupDurabilityUncertain
+		}
+		if action.Code() != wantCode || action.CleanupIncomplete() != replaced || action.CleanupDurabilityUncertain() != uncertain {
 			t.Fatalf(
 				"replacement discard = %v cleanup=%v; want cleanup uncertainty",
 				action.Code(), action.CleanupIncomplete(),
@@ -394,7 +407,8 @@ func TestReporterFailureRemovesExactOutputBeforeDroppingCapability(t *testing.T)
 	failure := owner.finishReportedResult(result)
 	if failure.Diagnostic() != DiagnosticCallbackFailure ||
 		failure.OutputFollowUp() != nil ||
-		failure.hasWarning(WarningCleanupIncomplete) != (runtime.GOOS == "windows") {
+		failure.hasWarning(WarningCleanupIncomplete) ||
+		failure.hasWarning(WarningCleanupDurabilityUncertain) == nativeOperationDirectorySyncSupported(t, directory) {
 		t.Fatalf(
 			"reporter failure = diagnostic %v output=%v warnings=%v; want no follow-up and native cleanup truth",
 			failure.Diagnostic(), failure.OutputFollowUp(), failure.Warnings(),
@@ -421,17 +435,14 @@ func newOperationRetainedFile(
 		_ = stage.Cleanup()
 		t.Fatalf("write retained operation stage: %v", err)
 	}
-	// These private-constructor tests exercise transport and exact cleanup,
-	// independent of plaintext authority minting. Ciphertext custody preserves
-	// Windows' genuine directory-durability uncertainty; native plaintext
-	// publication refusal is tested separately in pcv3publication.
+	// Transport fixtures use ciphertext custody without minting plaintext authority.
 	privateDirectory := filepath.Dir(stage.File().Name())
 	publication, retained := stage.PublishWriteRetained(context.Background())
 	if retained != nil {
 		t.Cleanup(func() { _ = retained.Close() })
 	}
 	wantState := pcv3publication.StatePublishedDurable
-	if runtime.GOOS == "windows" {
+	if !nativeOperationDirectorySyncSupported(t, directory) {
 		wantState = pcv3publication.StatePublishedDurabilityUncertain
 	}
 	if publication == nil || publication.State() != wantState ||
@@ -439,8 +450,10 @@ func newOperationRetainedFile(
 		_ = stage.Cleanup()
 		t.Fatalf("publish retained transport fixture = %v/%v; want %v custody", publication, retained, wantState)
 	}
-	if err := stage.Cleanup(); (runtime.GOOS == "windows" && !errors.Is(err, pcv3publication.ErrCleanupIncomplete)) || (runtime.GOOS != "windows" && err != nil) {
-		t.Fatalf("cleanup transferred publication stage: %v", err)
+	cleanupErr := stage.Cleanup()
+	if durable := nativeOperationDirectorySyncSupported(t, directory); durable && cleanupErr != nil ||
+		!durable && (!errors.Is(cleanupErr, pcv3publication.ErrCleanupDurabilityUncertain) || errors.Is(cleanupErr, pcv3publication.ErrCleanupIncomplete)) {
+		t.Fatalf("cleanup transferred publication stage: %v", cleanupErr)
 	}
 	if _, err := os.Lstat(privateDirectory); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("transferred publication retained private staging: %v", err)

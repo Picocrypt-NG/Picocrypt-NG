@@ -99,6 +99,13 @@ func (result *pcv3CLIFixedResult) WithCleanupWarning() {
 	}
 }
 
+func (result *pcv3CLIFixedResult) WithCleanupDurabilityWarning() {
+	result.warnings = append(result.warnings, pcv3operation.WarningCleanupDurabilityUncertain)
+	if result.class == pcv3operation.CompletionClean {
+		result.class = pcv3operation.CompletionWarning
+	}
+}
+
 func (result *pcv3CLIFixedResult) CompletionClass() pcv3operation.CompletionClass {
 	return result.class
 }

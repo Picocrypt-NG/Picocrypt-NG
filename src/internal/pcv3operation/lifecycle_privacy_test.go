@@ -68,14 +68,12 @@ type pcv3PrivacyWant struct {
 
 func pcv3PrivacyRequireResult(t *testing.T, result *Result, want pcv3PrivacyWant) {
 	t.Helper()
-	// These expectations describe native filesystem publications. Windows has
-	// no directory durability proof, so it must retain the exact warning tuple.
-	if runtime.GOOS == "windows" && want.publicationState == pcv3publication.StatePublishedDurable {
+	if !nativeOperationDirectorySyncSupported(t, t.TempDir()) && want.publicationState == pcv3publication.StatePublishedDurable {
 		want.class = CompletionDurabilityUncertain
 		want.publicationState = pcv3publication.StatePublishedDurabilityUncertain
 		want.publicationStage = pcv3.StageDirectorySync
 		want.publicationCode = pcv3publication.CodeDurabilityUncertain
-		want.warnings = append(slices.Clone(want.warnings), WarningDurabilityUncertain, WarningCleanupIncomplete)
+		want.warnings = append(slices.Clone(want.warnings), WarningDurabilityUncertain, WarningCleanupDurabilityUncertain)
 	}
 	if result == nil {
 		t.Fatal("operation returned no closed result")
@@ -448,7 +446,7 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 		if result.ForceProvenance() != pcv3.ForceProvenancePartial {
 			t.Fatalf("force provenance = %v; want partial", result.ForceProvenance())
 		}
-		if (result.ArtifactInspection() != nil) != (runtime.GOOS != "windows") {
+		if (result.ArtifactInspection() != nil) != nativeOperationDirectorySyncSupported(t, run.outputDir) {
 			t.Fatal("Force artifact inspection authority differs from proven directory durability")
 		}
 		if result.ArchiveFollowUp() != nil || result.OutputFollowUp() != nil {
