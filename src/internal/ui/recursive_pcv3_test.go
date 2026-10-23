@@ -9,7 +9,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -79,7 +78,7 @@ func TestRecursivePCV3DecryptsNestedMixedFolderAndRetainsDamagedInput(t *testing
 		t.Fatalf("damaged input produced output: %v", err)
 	}
 	snap := a.State.UISnapshot()
-	if runtime.GOOS == "windows" {
+	if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
 		requireNativePCV3Publication(t, a.pcv3Result)
 		if snap.Working || snap.Status.Kind != app.StatusCustom || snap.Status.Text != "Output durability not confirmed\nCompleted (1 ok, 3 failed)" {
 			t.Fatalf("uncertain native batch summary = %+v working=%v", snap.Status, snap.Working)
@@ -215,7 +214,7 @@ func TestRecursivePCV3EarlyRefusalCannotHideLaterPublishedCleanupWarning(t *test
 	})
 	drainOperationFinalizer(t, a)
 	wantClass := pcv3operation.CompletionWarning
-	if runtime.GOOS == "windows" {
+	if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
 		wantClass = pcv3operation.CompletionDurabilityUncertain
 	}
 	if calls != 2 || published == nil || a.pcv3Result != published || !published.PublicationAttempted() || published.CompletionClass() != wantClass {

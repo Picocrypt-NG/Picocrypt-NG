@@ -278,6 +278,8 @@
     <string name="pcv3_publication_indeterminate_body">L’application ne peut pas déterminer si la publication a été validée. Conservez toutes les sources et la destination exactement en l’état. Ne réessayez pas et ne nettoyez pas cette opération.</string>
     <string name="pcv3_warning_cleanup_title">Impossible de confirmer le nettoyage</string>
     <string name="pcv3_warning_cleanup_body">L’application n’a pas pu confirmer la suppression de toutes les fichiers temporaires créés par cette opération. Conservez les fichiers sources et ne supprimez aucun fichier sur la base de ce résultat.</string>
+    <string name="pcv3_warning_cleanup_durability_title">Suppression non garantie après une coupure de courant</string>
+    <string name="pcv3_warning_cleanup_durability_body">L’application n’a pas pu confirmer que les fichiers temporaires supprimés le resteront après une coupure de courant. Conservez les fichiers sources.</string>
     <string name="pcv3_warning_callback_title">Échec de la confirmation de récupération</string>
     <string name="pcv3_warning_callback_body">La confirmation active de récupération n’a pas pu être effectuée. Aucune autorité de sortie non vérifiée n’a été accordée.</string>
     <string name="pcv3_warning_unknown_title">Avertissement supplémentaire sur l’opération</string>
@@ -286,6 +288,7 @@
     <string name="pcv3_recovery_result_close">Fermer le résultat de la récupération</string>
     <string name="pcv3_publication_close">Fermer le résultat de la publication</string>
     <string name="pcv3_warning_cleanup_close">Fermer l’avertissement de nettoyage</string>
+    <string name="pcv3_warning_cleanup_durability_close">Fermer l’avertissement sur la persistance de la suppression</string>
     <string name="pcv3_publication_uncertain_close">Fermer l’avertissement de durabilité</string>
     <string name="pcv3_publication_indeterminate_close">Fermer l’avertissement de publication</string>
     <string name="pcv3_output_saved_title">Sortie enregistrée</string>

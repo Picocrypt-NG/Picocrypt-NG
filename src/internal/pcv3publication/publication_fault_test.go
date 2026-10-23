@@ -100,9 +100,9 @@ func pcv3RequireNativeFaultPlatform(t *testing.T) {
 	}
 }
 
-func pcv3RequireNativeCommit(t *testing.T, result Result) {
+func pcv3RequireNativeCommit(t *testing.T, directory string, result Result) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
+	if !nativeDirectorySyncSupported(t, directory) {
 		requireResult(t, result, StatePublishedDurabilityUncertain, pcv3result.OutcomeCommittedDurabilityUncertain, pcv3result.StageDirectorySync, CodeDurabilityUncertain)
 		return
 	}
@@ -141,7 +141,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		}
 
 		result := stage.Publish(context.Background())
-		pcv3RequireNativeCommit(t, result)
+		pcv3RequireNativeCommit(t, directory, result)
 		committedInfo, err := os.Lstat(target)
 		if err != nil {
 			t.Fatalf("inspect committed destination: %v", err)
@@ -159,9 +159,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		if again := stage.Publish(context.Background()); again != result {
 			t.Fatal("second Publish did not return the sealed terminal result")
 		}
-		if err := stage.Cleanup(); (runtime.GOOS == "windows" && !errors.Is(err, ErrCleanupIncomplete)) || (runtime.GOOS != "windows" && err != nil) {
-			t.Fatalf("cleanup durable commit lost native durability classification: %v", err)
-		}
+		requireNativeDirectoryCleanup(t, directory, stage.Cleanup())
 		requireFileBytes(t, foreignPath, foreign)
 		source.requireRetained(t)
 	})
@@ -187,7 +185,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		}
 
 		result := stage.Publish(context.Background())
-		pcv3RequireNativeCommit(t, result)
+		pcv3RequireNativeCommit(t, directory, result)
 		committedInfo, err := os.Lstat(target)
 		if err != nil {
 			t.Fatalf("inspect short destination: %v", err)
@@ -199,9 +197,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("short stage pathname remains: %v", err)
 		}
-		if err := stage.Cleanup(); (runtime.GOOS == "windows" && !errors.Is(err, ErrCleanupIncomplete)) || (runtime.GOOS != "windows" && err != nil) {
-			t.Fatalf("cleanup short commit lost native durability classification: %v", err)
-		}
+		requireNativeDirectoryCleanup(t, directory, stage.Cleanup())
 		source.requireRetained(t)
 	})
 
@@ -280,9 +276,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 			t.Fatalf("foreign destination mode = %v; want regular 0640", foreignInfo.Mode())
 		}
 		requireFileBytes(t, target, foreign)
-		if err := stage.Cleanup(); (runtime.GOOS == "windows" && !errors.Is(err, ErrCleanupIncomplete)) || (runtime.GOOS != "windows" && err != nil) {
-			t.Fatalf("cleanup rejected collision stage lost native durability classification: %v", err)
-		}
+		requireNativeDirectoryCleanup(t, directory, stage.Cleanup())
 		if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("owned collision stage remains: %v", err)
 		}
@@ -336,9 +330,10 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 			t.Fatal("uncertain commit changed the staged file identity")
 		}
 		requireFileBytes(t, target, payload)
-		if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
-			t.Fatalf("cleanup after uncertain durability: %v", err)
+		if err := stage.Cleanup(); !errors.Is(err, ErrCleanupDurabilityUncertain) || errors.Is(err, ErrCleanupIncomplete) {
+			t.Fatalf("cleanup after failed directory barrier = %v; want durability uncertainty without owned bytes remaining", err)
 		}
+		requireNoStageEntries(t, directory)
 		requireFileBytes(t, target, payload)
 		source.requireRetained(t)
 		pcv3RequireNoDisclosure(t, result, syncCanary, target, directory)
@@ -387,11 +382,9 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 			if !windowsSharingRefusal(attackErr) {
 				t.Fatalf("postcommit relocation failed for an unexpected reason: %v", attackErr)
 			}
-			pcv3RequireNativeCommit(t, result)
+			pcv3RequireNativeCommit(t, directory, result)
 			requireFileBytes(t, target, payload)
-			if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
-				t.Fatalf("native Windows directory durability uncertainty lost: %v", err)
-			}
+			requireNativeDirectoryCleanup(t, directory, stage.Cleanup())
 			requireFileBytes(t, target, payload)
 			for _, absent := range []string{stagePath, recovery} {
 				if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
@@ -466,9 +459,7 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 				t.Fatalf("retain original stage before foreign occupation: %v", err)
 			}
 			requireFileBytes(t, stagePath, payload)
-			if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
-				t.Fatalf("native Windows cleanup lost directory durability uncertainty: %v", err)
-			}
+			requireNativeDirectoryCleanup(t, directory, stage.Cleanup())
 			for _, absent := range []string{stagePath, escapedPath, target} {
 				if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("blocked relocation left an unexpected output: %v", err)
@@ -520,11 +511,9 @@ func TestPCV3PublicationFaultMatrix(t *testing.T) {
 		}
 
 		result := stage.Publish(context.Background())
-		pcv3RequireNativeCommit(t, result)
+		pcv3RequireNativeCommit(t, directory, result)
 		requireFileBytes(t, target, payload)
-		if err := stage.Cleanup(); (runtime.GOOS == "windows" && !errors.Is(err, ErrCleanupIncomplete)) || (runtime.GOOS != "windows" && err != nil) {
-			t.Fatalf("cleanup exact commit lost native durability classification: %v", err)
-		}
+		requireNativeDirectoryCleanup(t, directory, stage.Cleanup())
 		source.requireRetained(t)
 	})
 }

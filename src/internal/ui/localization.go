@@ -408,6 +408,8 @@ func pcv3WarningText(warning pcv3operation.Warning) string {
 		return tr("pcv3.warning.publication_indeterminate", "Output publication state is unknown. Keep every source and the destination exactly as they are.")
 	case pcv3operation.WarningCleanupIncomplete:
 		return tr("pcv3.warning.cleanup_incomplete", "The application could not confirm removal of all temporary files created by this operation. Keep the source files and do not delete files based on this result.")
+	case pcv3operation.WarningCleanupDurabilityUncertain:
+		return tr("pcv3.warning.cleanup_durability", "The app could not confirm that deleted temporary files will stay deleted after a power loss. Keep the source files.")
 	case pcv3operation.WarningCallbackFailure:
 		return tr("pcv3.warning.callback_failure", "A user-interface callback failed. No additional action was authorized.")
 	default:

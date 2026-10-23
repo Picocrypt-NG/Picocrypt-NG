@@ -3,6 +3,7 @@ package pcv3operation
 import (
 	"Picocrypt-NG/internal/pcv3publication"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -20,17 +21,48 @@ const (
 	OutputActionDiscarded
 	OutputActionDiscardCleanupIncomplete
 	OutputActionExpired
+	OutputActionSavedCleanupDurabilityUncertain
+	OutputActionSaveFailedCleanupDurabilityUncertain
+	OutputActionDiscardCleanupDurabilityUncertain
 )
 
 // OutputActionResult is path-free and carries only custody-relevant truth.
 type OutputActionResult struct {
-	code              OutputActionCode
-	cleanupIncomplete bool
+	code                       OutputActionCode
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
 }
 
 func (result OutputActionResult) Code() OutputActionCode { return result.code }
 
 func (result OutputActionResult) CleanupIncomplete() bool { return result.cleanupIncomplete }
+
+func (result OutputActionResult) CleanupDurabilityUncertain() bool {
+	return result.cleanupDurabilityUncertain
+}
+
+func outputActionWithCleanup(code OutputActionCode, incomplete, uncertain bool) OutputActionResult {
+	if incomplete {
+		switch code {
+		case OutputActionSaved:
+			code = OutputActionSavedCleanupIncomplete
+		case OutputActionSaveFailed:
+			code = OutputActionSaveFailedCleanupIncomplete
+		case OutputActionDiscarded:
+			code = OutputActionDiscardCleanupIncomplete
+		}
+	} else if uncertain {
+		switch code {
+		case OutputActionSaved:
+			code = OutputActionSavedCleanupDurabilityUncertain
+		case OutputActionSaveFailed:
+			code = OutputActionSaveFailedCleanupDurabilityUncertain
+		case OutputActionDiscarded:
+			code = OutputActionDiscardCleanupDurabilityUncertain
+		}
+	}
+	return OutputActionResult{code: code, cleanupIncomplete: incomplete, cleanupDurabilityUncertain: uncertain}
+}
 
 func (result OutputActionResult) String() string { return result.code.String() }
 
@@ -60,6 +92,12 @@ func (code OutputActionCode) String() string {
 		return "discard-cleanup-incomplete"
 	case OutputActionExpired:
 		return "expired"
+	case OutputActionSavedCleanupDurabilityUncertain:
+		return "saved-cleanup-durability-uncertain"
+	case OutputActionSaveFailedCleanupDurabilityUncertain:
+		return "save-failed-cleanup-durability-uncertain"
+	case OutputActionDiscardCleanupDurabilityUncertain:
+		return "discard-cleanup-durability-uncertain"
 	default:
 		return "unknown-output-action"
 	}
@@ -125,23 +163,26 @@ func (followUp *OutputFollowUp) consume() *pcv3publication.RetainedFile {
 	return retained
 }
 
-func cleanupOutputExact(result *Result) bool {
-	streamIncomplete := cleanupEncryptedOutput(result)
+func cleanupOutputExact(result *Result) error {
+	var streamErr error
+	if cleanupEncryptedOutput(result) {
+		streamErr = pcv3publication.ErrCleanupIncomplete
+	}
 	if result == nil || result.outputFollowUp == nil {
-		return streamIncomplete
+		return streamErr
 	}
 	retained := result.outputFollowUp.consume()
 	result.outputFollowUp = nil
-	return cleanupRetainedExact(&retained) || streamIncomplete
+	return errors.Join(cleanupRetainedExact(&retained), streamErr)
 }
 
-func cleanupRetainedExact(retained **pcv3publication.RetainedFile) bool {
+func cleanupRetainedExact(retained **pcv3publication.RetainedFile) error {
 	if retained == nil || *retained == nil {
-		return false
+		return nil
 	}
 	owned := *retained
 	*retained = nil
-	return owned.RemoveExact() != nil
+	return owned.RemoveExact()
 }
 
 // SaveTo takes ownership of destination. Plaintext consumes the action before
@@ -160,24 +201,13 @@ func (followUp *OutputFollowUp) SaveTo(destination *os.File) OutputActionResult 
 		return OutputActionResult{code: OutputActionExpired}
 	}
 	copyResult := retained.CopyTo(destination)
+	incomplete, uncertain := cleanupErrorFacts(retained.RemoveExact())
+	incomplete = incomplete || copyResult.CleanupIncomplete()
+	uncertain = uncertain || copyResult.CleanupDurabilityUncertain()
 	if !copyResult.Copied() {
-		cleanupIncomplete := retained.RemoveExact() != nil || copyResult.CleanupIncomplete()
-		code := OutputActionSaveFailed
-		if cleanupIncomplete {
-			code = OutputActionSaveFailedCleanupIncomplete
-		}
-		return OutputActionResult{
-			code:              code,
-			cleanupIncomplete: cleanupIncomplete,
-		}
+		return outputActionWithCleanup(OutputActionSaveFailed, incomplete, uncertain)
 	}
-	if err := retained.RemoveExact(); err != nil {
-		return OutputActionResult{
-			code:              OutputActionSavedCleanupIncomplete,
-			cleanupIncomplete: true,
-		}
-	}
-	return OutputActionResult{code: OutputActionSaved}
+	return outputActionWithCleanup(OutputActionSaved, incomplete, uncertain)
 }
 
 // StreamTo consumes both plaintext and ciphertext actions, including on failure,
@@ -196,14 +226,7 @@ func (followUp *OutputFollowUp) StreamTo(
 	if !copyResult.Copied() {
 		code = OutputActionSaveFailed
 	}
-	if copyResult.CleanupIncomplete() {
-		if copyResult.Copied() {
-			code = OutputActionSavedCleanupIncomplete
-		} else {
-			code = OutputActionSaveFailedCleanupIncomplete
-		}
-	}
-	return OutputActionResult{code: code, cleanupIncomplete: copyResult.CleanupIncomplete()}
+	return outputActionWithCleanup(code, copyResult.CleanupIncomplete(), copyResult.CleanupDurabilityUncertain())
 }
 
 // Discard consumes the action before effects and removes only the exact
@@ -214,13 +237,8 @@ func (followUp *OutputFollowUp) Discard() OutputActionResult {
 	if retained == nil {
 		return OutputActionResult{code: OutputActionExpired}
 	}
-	if err := retained.RemoveExact(); err != nil {
-		return OutputActionResult{
-			code:              OutputActionDiscardCleanupIncomplete,
-			cleanupIncomplete: true,
-		}
-	}
-	return OutputActionResult{code: OutputActionDiscarded}
+	incomplete, uncertain := cleanupErrorFacts(retained.RemoveExact())
+	return outputActionWithCleanup(OutputActionDiscarded, incomplete, uncertain)
 }
 
 func (followUp *OutputFollowUp) String() string { return "pcv3 output follow-up" }
@@ -248,17 +266,11 @@ func (followUp *OutputFollowUp) saveWriteTo(destination *os.File) OutputActionRe
 	}
 	copied := state.retained.CopyTo(destination)
 	if !copied.Copied() {
-		code := OutputActionSaveFailed
-		if copied.CleanupIncomplete() {
-			code = OutputActionSaveFailedCleanupIncomplete
-		}
-		return OutputActionResult{code: code, cleanupIncomplete: copied.CleanupIncomplete()}
+		return outputActionWithCleanup(OutputActionSaveFailed, copied.CleanupIncomplete(), copied.CleanupDurabilityUncertain())
 	}
 	state.active = false
 	retained := state.retained
 	state.retained = nil
-	if retained.RemoveExact() != nil {
-		return OutputActionResult{code: OutputActionSavedCleanupIncomplete, cleanupIncomplete: true}
-	}
-	return OutputActionResult{code: OutputActionSaved}
+	incomplete, uncertain := cleanupErrorFacts(retained.RemoveExact())
+	return outputActionWithCleanup(OutputActionSaved, incomplete || copied.CleanupIncomplete(), uncertain || copied.CleanupDurabilityUncertain())
 }

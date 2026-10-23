@@ -183,7 +183,7 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 			case "publish":
 				publication, cleanup := handoff.Publish(context.Background())
 				requireNativePublication(t, publication)
-				if cleanup != (runtime.GOOS == "windows") {
+				if (cleanup != nil) != (runtime.GOOS == "windows") {
 					t.Fatalf("prepared ZIP publication failed: %v cleanup=%v", publication, cleanup)
 				}
 				got, err := os.ReadFile(target)

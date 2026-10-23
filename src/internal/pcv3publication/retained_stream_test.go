@@ -108,8 +108,8 @@ func TestRetainedEmptyStreamCancellationPreservesCleanupWarning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	result := retained.StreamTo(ctx, writer)
-	if result.Copied() || !result.CleanupIncomplete() {
-		t.Fatalf("cancelled stream with failed cleanup barrier = copied=%v cleanup=%v; want refused/uncertain", result.Copied(), result.CleanupIncomplete())
+	if result.Copied() || result.CleanupIncomplete() || !result.CleanupDurabilityUncertain() {
+		t.Fatalf("cancelled stream with failed cleanup barrier = copied=%v cleanup=%v durability=%v; want refused/deletion durability uncertain", result.Copied(), result.CleanupIncomplete(), result.CleanupDurabilityUncertain())
 	}
 	requireRetainedStreamConsumed(t, retained, path)
 	if _, err := writer.Stat(); !errors.Is(err, os.ErrClosed) {

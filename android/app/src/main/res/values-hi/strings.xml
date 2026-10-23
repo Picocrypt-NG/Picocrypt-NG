@@ -274,6 +274,8 @@
     <string name="pcv3_publication_indeterminate_body">ऐप यह निर्धारित नहीं कर सकता कि प्रकाशन दर्ज हुआ या नहीं। सभी स्रोत और गंतव्य को ठीक उसी स्थिति में रखें। इस कार्रवाई को दोबारा न चलाएँ या साफ़ न करें।</string>
     <string name="pcv3_warning_cleanup_title">सफ़ाई की पुष्टि नहीं हो सकी</string>
     <string name="pcv3_warning_cleanup_body">ऐप यह पुष्टि नहीं कर सका कि इस कार्रवाई की सभी अस्थायी फ़ाइलें हट गई हैं। स्रोत फ़ाइलें रखें और इस परिणाम के आधार पर कोई फ़ाइल न हटाएँ।</string>
+    <string name="pcv3_warning_cleanup_durability_title">बिजली जाने के बाद हटाने की स्थिति अनिश्चित है</string>
+    <string name="pcv3_warning_cleanup_durability_body">ऐप पुष्टि नहीं कर सका कि हटाई गई अस्थायी फ़ाइलें बिजली जाने के बाद भी हटी रहेंगी। मूल फ़ाइलें सुरक्षित रखें।</string>
     <string name="pcv3_warning_callback_title">पुनर्प्राप्ति की पुष्टि विफल</string>
     <string name="pcv3_warning_callback_body">सक्रिय पुनर्प्राप्ति पुष्टि पूरी नहीं हो सकी। असत्यापित आउटपुट बनाने का अधिकार नहीं दिया गया।</string>
     <string name="pcv3_warning_unknown_title">कार्रवाई की अतिरिक्त चेतावनी</string>
@@ -282,6 +284,7 @@
     <string name="pcv3_recovery_result_close">पुनर्प्राप्ति परिणाम बंद करें</string>
     <string name="pcv3_publication_close">प्रकाशन परिणाम बंद करें</string>
     <string name="pcv3_warning_cleanup_close">सफ़ाई चेतावनी बंद करें</string>
+    <string name="pcv3_warning_cleanup_durability_close">बिजली जाने पर हटाने की चेतावनी बंद करें</string>
     <string name="pcv3_publication_uncertain_close">स्थायित्व चेतावनी बंद करें</string>
     <string name="pcv3_publication_indeterminate_close">प्रकाशन चेतावनी बंद करें</string>
     <string name="pcv3_output_saved_title">आउटपुट सहेजा गया</string>

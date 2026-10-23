@@ -44,6 +44,7 @@ const (
 	WarningPublicationIndeterminate
 	WarningCleanupIncomplete
 	WarningCallbackFailure
+	WarningCleanupDurabilityUncertain
 )
 
 // Diagnostic is a fixed, non-sensitive diagnostic class. Raw errors, paths,
@@ -146,7 +147,7 @@ func NewPresentation(spec PresentationSpec) (Presentation, error) {
 func validWarningSlice(warnings []Warning) bool {
 	var seen [maxResultWarnings + 1]bool
 	for _, warning := range warnings {
-		if warning < WarningAuthenticatedDegraded || warning > WarningCallbackFailure ||
+		if warning < WarningAuthenticatedDegraded || warning > WarningCleanupDurabilityUncertain ||
 			seen[warning] {
 			return false
 		}
@@ -676,7 +677,7 @@ func validPresentationWarnings(presentation Presentation) bool {
 	var seen [maxResultWarnings + 1]bool
 	for index := range presentation.warningCount {
 		warning := presentation.warnings[index]
-		if warning < WarningAuthenticatedDegraded || warning > WarningCallbackFailure ||
+		if warning < WarningAuthenticatedDegraded || warning > WarningCleanupDurabilityUncertain ||
 			seen[warning] {
 			return false
 		}
@@ -732,13 +733,17 @@ func (result *Result) hasWarning(warning Warning) bool {
 	return false
 }
 
-// Unwrap exposes only the fixed cleanup sentinel; no raw cleanup error is
+// Unwrap exposes only fixed cleanup sentinels; no raw cleanup error is
 // stored or formatted.
 func (result *Result) Unwrap() error {
-	if !result.hasWarning(WarningCleanupIncomplete) {
-		return nil
+	var err error
+	if result.hasWarning(WarningCleanupIncomplete) {
+		err = pcv3publication.ErrCleanupIncomplete
 	}
-	return pcv3publication.ErrCleanupIncomplete
+	if result.hasWarning(WarningCleanupDurabilityUncertain) {
+		err = errors.Join(err, pcv3publication.ErrCleanupDurabilityUncertain)
+	}
+	return err
 }
 
 func (result *Result) Error() string {
@@ -802,6 +807,35 @@ func (result *Result) WithCleanupWarning() {
 	}
 	result.writeLifecycleComplete = false
 	result.appendWarning(WarningCleanupIncomplete)
+}
+
+// WithCleanupDurabilityWarning revokes deletion eligibility without claiming
+// that an operation-owned temporary file is still present.
+func (result *Result) WithCleanupDurabilityWarning() {
+	if result == nil {
+		return
+	}
+	result.writeLifecycleComplete = false
+	result.appendWarning(WarningCleanupDurabilityUncertain)
+}
+
+func (result *Result) appendCleanupError(err error) {
+	incomplete, uncertain := cleanupErrorFacts(err)
+	if incomplete {
+		result.WithCleanupWarning()
+	}
+	if uncertain {
+		result.WithCleanupDurabilityWarning()
+	}
+}
+
+func cleanupErrorFacts(err error) (incomplete, uncertain bool) {
+	if err == nil {
+		return false, false
+	}
+	uncertain = errors.Is(err, pcv3publication.ErrCleanupDurabilityUncertain)
+	incomplete = errors.Is(err, pcv3publication.ErrCleanupIncomplete) || !uncertain
+	return incomplete, uncertain
 }
 
 // Is preserves the cancellation sentinel without retaining or exposing a raw

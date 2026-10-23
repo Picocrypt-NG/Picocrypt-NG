@@ -362,9 +362,25 @@ deny-only parent ACLs and safe parent ownership/mode. Other macOS parents are
 refused before staging creation, including inheritable allow/write-security ACLs.
 Windows uses a protected owner-only DACL and the original DELETE-capable
 file handle. Publication synchronizes both directory namespaces before durable success.
+On Windows 8 and later, directory barriers are enabled for verified local NTFS
+on fixed or removable drives. They reopen the same pinned directory with write
+access, verify its identity, and flush its buffers. Remote or virtual-volume
+flags, RAM disks, unknown drive types, earlier Windows versions, other filesystems,
+and failed barriers retain durability uncertainty and source data.
 POSIX writer preflight refuses a public parent that other users can mutate; a sticky
 parent owned by the current user or root remains supported. Cleanup uncertainty,
 including an empty private directory that cannot safely be retired, retains source data.
+`ErrCleanupIncomplete` means removal, identity, close, or live absence could not be
+confirmed. `ErrCleanupDurabilityUncertain` means removal was observed after owned
+handles closed, but its persistence across a crash could not be confirmed. Both
+facts may coexist and both forbid source deletion. Operation and output-action
+results preserve them separately through `WarningCleanupDurabilityUncertain` and
+`CleanupDurabilityUncertain()`; they do not change authentication. SAF retains
+its conservative publication classification when private cleanup is unconfirmed,
+including before a provider attempt; native SAF `AttemptedEver()` separately
+records provider handoff.
+Panic boundaries remain conservative: when cleanup cannot be finalized reliably,
+they may report generic `CleanupIncomplete` instead of the finer durability fact.
 Linux desktop/CLI operations recover leased private stages only beneath the selected
 destination parent, after pinning the original inputs and keyfiles. Live operations
 and every already-published target are preserved. Entries with a verified different

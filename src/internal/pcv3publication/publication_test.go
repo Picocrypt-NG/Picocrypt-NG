@@ -52,8 +52,8 @@ func classifierRenameStage(source, parent, original *os.File, old, target string
 	return os.Rename(filepath.Join(source.Name(), old), filepath.Join(parent.Name(), target))
 }
 
-// This classifier fixture injects a successful directory barrier on Windows,
-// where native publication separately requires the durability-uncertain result.
+// This classifier fixture injects a successful directory barrier on Windows;
+// native tests independently enforce the actual filesystem durability contract.
 func classifierTestDirectorySync(parent *os.File) error {
 	if runtime.GOOS == "windows" {
 		return nil
@@ -1275,7 +1275,7 @@ func TestPublishDurabilityFailureRetainsCommittedDestination(t *testing.T) {
 			if strings.Contains(fmt.Sprintf("%+v", result), test.syncErr.Error()) {
 				t.Fatal("durability result disclosed the raw sync error")
 			}
-			if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
+			if err := stage.Cleanup(); !errors.Is(err, ErrCleanupDurabilityUncertain) || errors.Is(err, ErrCleanupIncomplete) {
 				t.Fatalf("cleanup after committed durability failure: %v", err)
 			}
 			requireFileBytes(t, target, payload)

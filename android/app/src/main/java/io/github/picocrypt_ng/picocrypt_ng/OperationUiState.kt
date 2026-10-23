@@ -53,6 +53,7 @@ data class Pcv3ConsentView(
 data class Pcv3OutputResultView(
     val code: String,
     val cleanupIncomplete: Boolean,
+    val cleanupDurabilityUncertain: Boolean = false,
 )
 
 /** Immutable, path-free recovery artifact summary suitable for rendering. */

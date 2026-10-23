@@ -1176,16 +1176,16 @@ func (a *App) pcv3Consent(session *operationSession) pcv3operation.Consent {
 func (a *App) finishPCV3Worker(session *operationSession, result *pcv3operation.Result, failure pcv3operation.Diagnostic) {
 	cancelled := session.gate.finish(session.cancel)
 	if a.workers.isStopping() || a.operationGeneration.Load() != session.generation {
-		cleanupIncomplete := a.disposePCV3Result(result)
+		cleanup := a.disposePCV3Result(result)
 		a.clearOperationSession(session)
-		a.refreshPCV3CleanupWarningIfAlive(cleanupIncomplete)
+		a.refreshPCV3CleanupWarningIfAlive(cleanup)
 		return
 	}
 	fyne.Do(func() {
 		if a.workers.isStopping() || !a.isCurrentOperation(session) {
-			cleanupIncomplete := a.disposePCV3Result(result)
+			cleanup := a.disposePCV3Result(result)
 			a.clearOperationSession(session)
-			if cleanupIncomplete && !a.workers.isStopping() {
+			if cleanup.present() && !a.workers.isStopping() {
 				a.updateUIState()
 			}
 			return
@@ -1209,61 +1209,83 @@ func (a *App) finishPCV3Worker(session *operationSession, result *pcv3operation.
 	})
 }
 
-func disposePCV3Result(result *pcv3operation.Result) (incomplete bool) {
-	if result == nil {
-		return false
+type pcv3CleanupFacts struct {
+	incomplete          bool
+	durabilityUncertain bool
+}
+
+func (facts pcv3CleanupFacts) present() bool { return facts.incomplete || facts.durabilityUncertain }
+
+func (facts pcv3CleanupFacts) merge(next pcv3CleanupFacts) pcv3CleanupFacts {
+	return pcv3CleanupFacts{
+		incomplete:          facts.incomplete || next.incomplete,
+		durabilityUncertain: facts.durabilityUncertain || next.durabilityUncertain,
 	}
-	incomplete = pcv3CleanupIncomplete(result.Presentation())
+}
+
+func disposePCV3Result(result *pcv3operation.Result) (cleanup pcv3CleanupFacts) {
+	if result == nil {
+		return cleanup
+	}
+	cleanup = pcv3CleanupFromPresentation(result.Presentation())
 	defer func() {
 		if recover() != nil {
-			incomplete = true
+			cleanup.incomplete = true
 		}
 	}()
 	followUp := result.ArchiveFollowUp()
 	if followUp == nil {
-		return incomplete
+		return cleanup
 	}
 	next := followUp.Close()
-	return incomplete || next == nil || pcv3CleanupIncomplete(next.Presentation())
+	if next == nil {
+		cleanup.incomplete = true
+		return cleanup
+	}
+	return cleanup.merge(pcv3CleanupFromPresentation(next.Presentation()))
+}
+
+func pcv3CleanupFromPresentation(presentation pcv3operation.Presentation) (cleanup pcv3CleanupFacts) {
+	for _, warning := range presentation.Warnings() {
+		switch warning {
+		case pcv3operation.WarningCleanupIncomplete:
+			cleanup.incomplete = true
+		case pcv3operation.WarningCleanupDurabilityUncertain:
+			cleanup.durabilityUncertain = true
+		}
+	}
+	return cleanup
 }
 
 func pcv3CleanupIncomplete(presentation pcv3operation.Presentation) bool {
-	for _, warning := range presentation.Warnings() {
-		if warning == pcv3operation.WarningCleanupIncomplete {
-			return true
-		}
-	}
-	return false
+	return pcv3CleanupFromPresentation(presentation).incomplete
 }
 
-func (a *App) latchPCV3CleanupResult(result *pcv3operation.Result) bool {
-	if result == nil {
-		a.State.LatchPCV3CleanupIncomplete()
-		return true
+func (a *App) latchPCV3CleanupResult(result *pcv3operation.Result) pcv3CleanupFacts {
+	cleanup := pcv3CleanupFacts{incomplete: true}
+	if result != nil {
+		cleanup = pcv3CleanupFromPresentation(result.Presentation())
 	}
-	incomplete := pcv3CleanupIncomplete(result.Presentation())
-	if incomplete {
-		a.State.LatchPCV3CleanupIncomplete()
-	}
-	return incomplete
+	a.State.LatchPCV3Cleanup(cleanup.incomplete, cleanup.durabilityUncertain)
+	return cleanup
 }
 
-func (a *App) disposePCV3Result(result *pcv3operation.Result) bool {
-	disposer := a.pcv3ResultDisposer
-	incomplete := false
-	if disposer == nil {
-		incomplete = disposePCV3Result(result)
+func (a *App) disposePCV3Result(result *pcv3operation.Result) pcv3CleanupFacts {
+	var cleanup pcv3CleanupFacts
+	if a.pcv3ResultDisposer == nil {
+		cleanup = disposePCV3Result(result)
 	} else {
-		incomplete = disposer(result)
+		if result != nil {
+			cleanup = pcv3CleanupFromPresentation(result.Presentation())
+		}
+		cleanup.incomplete = a.pcv3ResultDisposer(result) || cleanup.incomplete
 	}
-	if incomplete {
-		a.State.LatchPCV3CleanupIncomplete()
-	}
-	return incomplete
+	a.State.LatchPCV3Cleanup(cleanup.incomplete, cleanup.durabilityUncertain)
+	return cleanup
 }
 
-func (a *App) refreshPCV3CleanupWarningIfAlive(cleanupIncomplete bool) {
-	if !cleanupIncomplete || a.workers.isStopping() {
+func (a *App) refreshPCV3CleanupWarningIfAlive(cleanup pcv3CleanupFacts) {
+	if !cleanup.present() || a.workers.isStopping() {
 		return
 	}
 	fyne.Do(func() {
@@ -1294,6 +1316,10 @@ func (a *App) refreshPCV3Surface(snap app.UISnapshot) bool {
 	if snap.PCV3CleanupIncomplete && !pcv3CleanupIncomplete(snap.PCV3Result) {
 		a.pcv3Container.Add(wrappedPCV3Title(tr("pcv3.warning.cleanup_title", "Cleanup could not be confirmed")))
 		a.pcv3Container.Add(wrappedPCV3Label(pcv3WarningText(pcv3operation.WarningCleanupIncomplete)))
+	}
+	if snap.PCV3CleanupDurabilityUncertain && !pcv3CleanupFromPresentation(snap.PCV3Result).durabilityUncertain {
+		a.pcv3Container.Add(wrappedPCV3Title(tr("pcv3.warning.cleanup_durability_title", "Cleanup may not persist after a power loss")))
+		a.pcv3Container.Add(wrappedPCV3Label(pcv3WarningText(pcv3operation.WarningCleanupDurabilityUncertain)))
 	}
 	switch snap.PCV3Route {
 	case app.PCV3RouteChecking:
@@ -1346,7 +1372,7 @@ func (a *App) refreshPCV3Surface(snap app.UISnapshot) bool {
 		a.pcv3Container.Add(a.buildPCV3ResultView(snap.PCV3Result, a.pcv3Result))
 		return true
 	}
-	if snap.PCV3CleanupIncomplete {
+	if snap.PCV3CleanupIncomplete || snap.PCV3CleanupDurabilityUncertain {
 		a.pcv3Container.Show()
 		return false
 	}
@@ -1407,10 +1433,15 @@ func (a *App) buildPCV3ResultView(
 		content.Add(wrappedPCV3Label(publication.Body))
 	}
 	hasCleanupWarning := false
+	hasCleanupDurabilityWarning := false
 	for _, warning := range presentation.Warnings() {
 		if warning == pcv3operation.WarningCleanupIncomplete {
 			hasCleanupWarning = true
 			content.Add(wrappedPCV3Title(tr("pcv3.warning.cleanup_title", "Cleanup could not be confirmed")))
+		}
+		if warning == pcv3operation.WarningCleanupDurabilityUncertain {
+			hasCleanupDurabilityWarning = true
+			content.Add(wrappedPCV3Title(tr("pcv3.warning.cleanup_durability_title", "Cleanup may not persist after a power loss")))
 		}
 		content.Add(wrappedPCV3Label(pcv3WarningText(warning)))
 	}
@@ -1457,6 +1488,8 @@ func (a *App) buildPCV3ResultView(
 	closeText := publication.Action
 	if hasCleanupWarning {
 		closeText = tr("pcv3.warning.cleanup_close", "Close cleanup warning")
+	} else if hasCleanupDurabilityWarning {
+		closeText = tr("pcv3.warning.cleanup_durability_close", "Close cleanup durability warning")
 	}
 	if closeText == "" {
 		closeText = tr("pcv3.result.close", "Close recovery result")
@@ -1534,7 +1567,7 @@ func (a *App) startPCV3ArchiveFollowUp(
 	a.updateUIState()
 	reservation.launch(func(context.Context) {
 		next := run(effectContext)
-		cleanupIncomplete := a.latchPCV3CleanupResult(next)
+		cleanup := a.latchPCV3CleanupResult(next)
 		cancelled := false
 		if session != nil {
 			cancelled = session.gate.finish(session.cancel)
@@ -1543,7 +1576,7 @@ func (a *App) startPCV3ArchiveFollowUp(
 			if session != nil {
 				a.clearOperationSession(session)
 			}
-			a.refreshPCV3CleanupWarningIfAlive(cleanupIncomplete)
+			a.refreshPCV3CleanupWarningIfAlive(cleanup)
 			return
 		}
 		fyne.Do(func() {
@@ -1553,7 +1586,7 @@ func (a *App) startPCV3ArchiveFollowUp(
 				if session != nil {
 					a.clearOperationSession(session)
 				}
-				if cleanupIncomplete && !a.workers.isStopping() {
+				if cleanup.present() && !a.workers.isStopping() {
 					a.updateUIState()
 				}
 				return
@@ -1799,8 +1832,13 @@ func (a *App) runRecursiveOperation(
 			if (class == pcv3operation.CompletionRefused || class == pcv3operation.CompletionNoOutput) &&
 				len(result.pcv3.Warnings()) == 0 && !result.pcv3.PublicationAttempted() &&
 				result.pcv3.ArchiveFollowUp() == nil && result.pcv3.OutputFollowUp() == nil {
-				if a.disposePCV3Result(result.pcv3) {
-					result.pcv3.WithCleanupWarning()
+				if cleanup := a.disposePCV3Result(result.pcv3); cleanup.present() {
+					if cleanup.incomplete {
+						result.pcv3.WithCleanupWarning()
+					}
+					if cleanup.durabilityUncertain {
+						result.pcv3.WithCleanupDurabilityWarning()
+					}
 				} else {
 					result.pcv3 = nil
 				}
@@ -2067,6 +2105,8 @@ func (a *App) finalizeOperation(
 		if recursive {
 			if presentation.CompletionClass() == pcv3operation.CompletionWarning && pcv3CleanupIncomplete(presentation) {
 				title = tr("pcv3.warning.cleanup_title", "Cleanup could not be confirmed")
+			} else if presentation.CompletionClass() == pcv3operation.CompletionWarning && pcv3CleanupFromPresentation(presentation).durabilityUncertain {
+				title = tr("pcv3.warning.cleanup_durability_title", "Cleanup may not persist after a power loss")
 			}
 			title += "\n" + renderStatus(recursiveOperationStatus(lastInput, result), a.State.UISnapshot())
 		}

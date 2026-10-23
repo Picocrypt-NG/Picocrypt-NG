@@ -9,9 +9,10 @@ import (
 )
 
 type archiveSAFResultFixture struct {
-	state             fileops.UnpackState
-	attemptedEver     bool
-	cleanupIncomplete bool
+	state                      fileops.UnpackState
+	attemptedEver              bool
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
 }
 
 func (fixture archiveSAFResultFixture) State() fileops.UnpackState { return fixture.state }
@@ -20,6 +21,21 @@ func (fixture archiveSAFResultFixture) AttemptedEver() bool { return fixture.att
 
 func (fixture archiveSAFResultFixture) CleanupIncomplete() bool {
 	return fixture.cleanupIncomplete
+}
+
+func (fixture archiveSAFResultFixture) CleanupDurabilityUncertain() bool {
+	return fixture.cleanupDurabilityUncertain
+}
+
+func TestArchiveSAFRetainsDeletionDurabilityWithoutLiveResidueWarning(t *testing.T) {
+	result := resultFromArchiveSAF(archiveSAFResultFixture{
+		state:         fileops.UnpackStatePublishedDurabilityUncertain,
+		attemptedEver: true, cleanupDurabilityUncertain: true,
+	})
+	if !result.Presentation().valid() || result.SourceDeletionAllowed() ||
+		!slices.Equal(result.Warnings(), []Warning{WarningDurabilityUncertain, WarningCleanupDurabilityUncertain}) {
+		t.Fatalf("SAF cleanup durability was lost or became a live cleanup failure: %v", result)
+	}
 }
 
 func TestArchiveSAFResultMapsProviderAttemptAndCleanupTruthIndependently(t *testing.T) {

@@ -1361,6 +1361,53 @@ class OperationManagerTest {
     }
 
     @Test
+    fun `PCV3 cleanup durability survives output projection and late cleanup in either order`() = runTest {
+        val uncertainSave = Pcv3OutputResultData("saved-cleanup-durability-uncertain", cleanupIncomplete = false, cleanupDurabilityUncertain = true)
+        val uncertainDiscard = Pcv3OutputResultData("discard-cleanup-durability-uncertain", cleanupIncomplete = false, cleanupDurabilityUncertain = true)
+        val incompleteSave = Pcv3OutputResultData("saved-cleanup-incomplete", cleanupIncomplete = true)
+        for ((save, discard) in listOf(
+            uncertainSave to Pcv3OutputResultData("discarded", cleanupIncomplete = false),
+            incompleteSave to uncertainDiscard,
+        )) {
+            val operation = ContractOperation("pcv3-cleanup-${save.code}", pcv3CleanSnapshot())
+            val output = ContractOutput(operation, saveResult = save, discardResult = discard, retainAfterSaveForContradiction = true)
+            operation.installOutput(output)
+            val lifecycle = lifecycleFor(ContractTransport(operation))
+            val live = lifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile).getOrThrow() as Pcv3Presentation.Live
+
+            assertTrue(lifecycle.savePcv3Output(live.operationId, live.generation, mockk(relaxed = true)).isFailure)
+            val final = lifecycle.presentation.value as Pcv3Presentation.Final
+            assertEquals(
+                Pcv3OutputResultView("saved-cleanup-incomplete", cleanupIncomplete = true, cleanupDurabilityUncertain = true),
+                final.outputAction,
+            )
+            assertEquals(1, output.saveCalls)
+            assertEquals(1, output.discardCalls)
+            assertEquals(1, operation.releaseCalls)
+        }
+    }
+
+    @Test
+    fun `PCV3 saved output retains cleanup durability without inventing remaining files`() = runTest {
+        val operation = ContractOperation("pcv3-cleanup-durability-only", pcv3CleanSnapshot())
+        val output = ContractOutput(operation, saveResult = Pcv3OutputResultData(
+            "saved-cleanup-durability-uncertain", cleanupIncomplete = false, cleanupDurabilityUncertain = true,
+        ))
+        operation.installOutput(output)
+        val lifecycle = lifecycleFor(ContractTransport(operation))
+        val live = lifecycle.start(pcv3Request(), "password".toCharArray(), pcv3ReceiptFile).getOrThrow() as Pcv3Presentation.Live
+
+        lifecycle.savePcv3Output(live.operationId, live.generation, mockk(relaxed = true)).getOrThrow()
+        val final = lifecycle.presentation.value as Pcv3Presentation.Final
+        assertEquals(
+            Pcv3OutputResultView("saved-cleanup-durability-uncertain", cleanupIncomplete = false, cleanupDurabilityUncertain = true),
+            final.outputAction,
+        )
+        assertEquals(0, output.discardCalls)
+        assertEquals(1, operation.releaseCalls)
+    }
+
+    @Test
     fun `PCV3 contradictory post-Save handle preserves a closed cleanup-incomplete code`() = runTest {
         val operation = ContractOperation("pcv3-output-save-contradiction", pcv3CleanSnapshot())
         val output = ContractOutput(

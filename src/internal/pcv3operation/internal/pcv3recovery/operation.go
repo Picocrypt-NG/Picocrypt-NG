@@ -240,23 +240,28 @@ func RunD1UnverifiedWithOptions(
 // Result keeps semantic recovery and transport publication as orthogonal
 // dimensions. Its formatting never contains a path or wrapped error.
 type Result struct {
-	semantic             operationSemantic
-	authenticatedComment string
-	publicationAttempted bool
-	publicationState     pcv3publication.State
-	publicationStage     pcv3.Stage
-	publicationCode      pcv3publication.Code
-	cleanupIncomplete    bool
-	artifactInspection   *ArtifactInspection
-	retainedOutput       *pcv3publication.RetainedFile
-	archiveHandoff       *ArchiveHandoff
-	encryptedStream      *fileops.EncryptedSpool
+	semantic                   operationSemantic
+	authenticatedComment       string
+	publicationAttempted       bool
+	publicationState           pcv3publication.State
+	publicationStage           pcv3.Stage
+	publicationCode            pcv3publication.Code
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
+	artifactInspection         *ArtifactInspection
+	retainedOutput             *pcv3publication.RetainedFile
+	archiveHandoff             *ArchiveHandoff
+	encryptedStream            *fileops.EncryptedSpool
 }
 
 // D1ProfileRequired reports the closed no-output refusal for selected raw D1
 // input whose hidden profile has no surviving authenticated evidence.
 func (result *Result) D1ProfileRequired() bool {
 	return result != nil && result.semantic.d1ProfileRequired
+}
+
+func (result *Result) CleanupDurabilityUncertain() bool {
+	return result != nil && result.cleanupDurabilityUncertain
 }
 
 func (result *Result) Outcome() pcv3.Outcome {
@@ -365,7 +370,7 @@ func (result *Result) TakeRetainedOutput() *pcv3publication.RetainedFile {
 // TakeArchiveHandoff transfers unpublished, fully authenticated D1 ZIP custody.
 // The returned capability and any copies share one consuming operation.
 func (result *Result) TakeArchiveHandoff() *ArchiveHandoff {
-	if result == nil || result.publicationAttempted || result.cleanupIncomplete ||
+	if result == nil || result.publicationAttempted || result.cleanupIncomplete || result.cleanupDurabilityUncertain ||
 		!archiveSemanticAllowed(result.semantic) {
 		return nil
 	}
@@ -377,7 +382,7 @@ func (result *Result) TakeArchiveHandoff() *ArchiveHandoff {
 // TakeEncryptedStream transfers sealed sequential output only after the entire
 // recovery core has accepted its final result. It grants no publication rights.
 func (result *Result) TakeEncryptedStream() *fileops.EncryptedSpool {
-	if result == nil || result.publicationAttempted || result.cleanupIncomplete ||
+	if result == nil || result.publicationAttempted || result.cleanupIncomplete || result.cleanupDurabilityUncertain ||
 		!validOperationSemantic(result.semantic) {
 		return nil
 	}
@@ -406,10 +411,17 @@ func (result *Result) Format(state fmt.State, verb rune) {
 }
 
 func (result *Result) Unwrap() error {
-	if result == nil || !result.cleanupIncomplete {
+	if result == nil {
 		return nil
 	}
-	return pcv3publication.ErrCleanupIncomplete
+	var cleanupErr error
+	if result.cleanupIncomplete {
+		cleanupErr = pcv3publication.ErrCleanupIncomplete
+	}
+	if result.cleanupDurabilityUncertain {
+		cleanupErr = errors.Join(cleanupErr, pcv3publication.ErrCleanupDurabilityUncertain)
+	}
+	return cleanupErr
 }
 
 func runWithCoreOptions(
@@ -421,9 +433,9 @@ func runWithCoreOptions(
 	result = &Result{}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			cleanupIncomplete := result.cleanupIncomplete
+			cleanupIncomplete := result.cleanupIncomplete || result.cleanupDurabilityUncertain
 			if result.archiveHandoff != nil {
-				cleanupIncomplete = result.archiveHandoff.Close() || cleanupIncomplete
+				cleanupIncomplete = result.archiveHandoff.Close() != nil || cleanupIncomplete
 				result.archiveHandoff = nil
 			}
 			if result.retainedOutput != nil {
@@ -598,7 +610,7 @@ func runWithCoreOptions(
 	semantic, coreErr := run(ctx, request, output)
 	if options.EncryptedStream {
 		if outputCalls != 1 || pendingStream == nil || coreErr != nil || ctx.Err() != nil ||
-			result.cleanupIncomplete || !validOperationSemantic(semantic) ||
+			result.cleanupIncomplete || result.cleanupDurabilityUncertain || !validOperationSemantic(semantic) ||
 			!sameOperationSemantic(semantic, result.semantic) {
 			result.semantic = operationSemantic{outcome: pcv3.OutcomeOperationFailed, stage: pcv3.StageOutputWrite, code: pcv3.CodeOperationFailed}
 			if semantic.outcome != 0 && !semantic.outputCapable() {
@@ -616,7 +628,7 @@ func runWithCoreOptions(
 		// The core's nil return proves its one-shot emitter completed, including
 		// final-record verification. Non-Force results intentionally carry no
 		// range/final descriptors; retain that existing closed evidence contract.
-		if outputCalls != 1 || coreErr != nil || ctx.Err() != nil || result.cleanupIncomplete ||
+		if outputCalls != 1 || coreErr != nil || ctx.Err() != nil || result.cleanupIncomplete || result.cleanupDurabilityUncertain ||
 			!archiveSemanticAllowed(semantic) || !archiveSemanticAllowed(result.semantic) ||
 			semantic.d1Provenance != result.semantic.d1Provenance {
 			result.semantic = operationSemantic{
@@ -848,9 +860,15 @@ func (result *Result) retainPublicationError(err error) {
 }
 
 func (result *Result) retainCleanupError(err error) {
-	if result != nil && (errors.Is(err, pcv3publication.ErrCleanupIncomplete) ||
-		errors.Is(err, fileops.ErrEncryptedSpoolCleanupIncomplete)) {
+	if result == nil {
+		return
+	}
+	if errors.Is(err, pcv3publication.ErrCleanupIncomplete) ||
+		errors.Is(err, fileops.ErrEncryptedSpoolCleanupIncomplete) {
 		result.cleanupIncomplete = true
+	}
+	if errors.Is(err, pcv3publication.ErrCleanupDurabilityUncertain) {
+		result.cleanupDurabilityUncertain = true
 	}
 }
 

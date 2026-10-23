@@ -261,6 +261,8 @@ func pcv3CLIWarningText(warning pcv3operation.Warning) string {
 		return "Warning: output state is unknown; keep source and destination unchanged"
 	case pcv3operation.WarningCleanupIncomplete:
 		return "Warning: cleanup of operation-owned temporary files could not be confirmed"
+	case pcv3operation.WarningCleanupDurabilityUncertain:
+		return "Warning: The app could not confirm that deleted temporary files will stay deleted after a power loss. Keep the source files."
 	case pcv3operation.WarningCallbackFailure:
 		return "Warning: an operation callback failed; clean completion was not confirmed"
 	default:

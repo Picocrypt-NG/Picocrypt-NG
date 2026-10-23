@@ -3,6 +3,7 @@
 package pcv3publication
 
 import (
+	"Picocrypt-NG/internal/fileops"
 	"errors"
 	"math"
 	"os"
@@ -22,12 +23,7 @@ type fileRenameInformation struct {
 func nativeOperations() platformOperations {
 	return platformOperations{
 		atomicPublish: windowsNoReplace,
-		// Windows exposes no documented directory-handle flush contract that
-		// proves the renamed directory entry durable. The common classifier
-		// therefore reports a proven commit with uncertain durability.
-		syncDirectory: func(*os.File) error {
-			return errors.ErrUnsupported
-		},
+		syncDirectory: fileops.SyncDirectory,
 	}
 }
 

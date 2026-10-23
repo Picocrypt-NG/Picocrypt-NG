@@ -31,7 +31,7 @@ func TestArchiveFollowUpConsumesAuthenticatedArchiveOnce(t *testing.T) {
 		result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("archive extraction result = %#v; want durable with proven cleanup", result)
 	}
-	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() {
+	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() != nil {
 		t.Fatal("copied archive handoff retained authority after first consumption")
 	}
 	assertNativeArchiveStage(t, stageParent, rawTarget, 0)
@@ -94,7 +94,7 @@ func TestNativeArchivePublishPreservesTargetAndCleanup(t *testing.T) {
 				wantState, wantStage, wantCode = pcv3publication.StateNotPublished, StageCancellation, pcv3publication.CodeCancelled
 			}
 			publication, cleanup := handoff.Publish(ctx)
-			if publication == nil || publication.State() != wantState || publication.Stage() != wantStage || publication.Code() != wantCode || cleanup != (name == "cleanup replacement" || runtime.GOOS == "windows") {
+			if publication == nil || publication.State() != wantState || publication.Stage() != wantStage || publication.Code() != wantCode || (cleanup != nil) != (name == "cleanup replacement" || runtime.GOOS == "windows") {
 				t.Fatalf("Publish = %v cleanup=%v; want %v/%v/%v", publication, cleanup, wantState, wantStage, wantCode)
 			}
 			if handoff.Live() {
@@ -188,7 +188,7 @@ func TestArchiveFollowUpCancelledContextConsumesAndCleansWithoutPublication(t *t
 		result.CleanupIncomplete() != (runtime.GOOS == "windows") {
 		t.Fatalf("cancelled archive extraction result = %#v; want not-published with proven cleanup", result)
 	}
-	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() {
+	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() != nil {
 		t.Fatal("cancelled archive extraction retained one-shot authority")
 	}
 	if _, err := extractRoot.Stat("."); err == nil {

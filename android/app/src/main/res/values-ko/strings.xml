@@ -284,6 +284,8 @@
     <string name="pcv3_publication_indeterminate_body">앱에서 출력 게시가 확정되었는지 판단할 수 없습니다. 모든 원본과 대상 위치를 현재 상태 그대로 보관하세요. 이 작업을 다시 시도하거나 정리하지 마세요.</string>
     <string name="pcv3_warning_cleanup_title">정리를 확인할 수 없습니다</string>
     <string name="pcv3_warning_cleanup_body">앱에서 이 작업에서 생성한 모든 임시 파일의 삭제를 확인할 수 없습니다. 원본 파일을 보관하고 이 결과만으로 파일을 삭제하지 마세요.</string>
+    <string name="pcv3_warning_cleanup_durability_title">정전 후 삭제 상태가 유지되지 않을 수 있음</string>
+    <string name="pcv3_warning_cleanup_durability_body">앱에서 삭제한 임시 파일이 정전 후에도 삭제된 상태로 유지되는지 확인하지 못했습니다. 원본 파일을 보관하세요.</string>
     <string name="pcv3_warning_callback_title">복구 확인 실패</string>
     <string name="pcv3_warning_callback_body">현재 복구 확인을 완료할 수 없습니다. 검증되지 않은 출력을 만들 권한은 부여되지 않았습니다.</string>
     <string name="pcv3_warning_unknown_title">추가 작업 경고</string>
@@ -292,6 +294,7 @@
     <string name="pcv3_recovery_result_close">복구 결과 닫기</string>
     <string name="pcv3_publication_close">게시 결과 닫기</string>
     <string name="pcv3_warning_cleanup_close">정리 경고 닫기</string>
+    <string name="pcv3_warning_cleanup_durability_close">삭제 지속성 경고 닫기</string>
     <string name="pcv3_publication_uncertain_close">영속성 경고 닫기</string>
     <string name="pcv3_publication_indeterminate_close">게시 경고 닫기</string>
     <string name="pcv3_output_saved_title">출력이 저장됨</string>

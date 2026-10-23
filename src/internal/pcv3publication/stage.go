@@ -20,6 +20,10 @@ const stageNamePrefix = ".picocrypt-pcv3-"
 // proven publication did or did not occur.
 var ErrCleanupIncomplete = errors.New("pcv3 publication: cleanup incomplete")
 
+// ErrCleanupDurabilityUncertain means owned names are absent, but their deletion
+// could not be confirmed durable across a crash.
+var ErrCleanupDurabilityUncertain = errors.New("pcv3 publication: cleanup durability uncertain")
+
 type platformOperations struct {
 	atomicPublish       func(*os.File, *os.File, *os.File, string, string, Policy) error
 	syncDirectory       func(*os.File) error
@@ -642,24 +646,23 @@ func (stage *Stage) takeRetainedFile() *RetainedFile {
 		return nil
 	}
 
-	privateCleanupIncomplete := !stage.retirePrivateDirectory()
-	if privateCleanupIncomplete {
-		stage.cleanupErr = ErrCleanupIncomplete
-	}
+	privateCleanupErr := stage.retirePrivateDirectory()
+	stage.cleanupErr = errors.Join(stage.cleanupErr, privateCleanupErr)
 	retained := &RetainedFile{
-		file:              file,
-		identityPin:       stage.identityPin,
-		lease:             stage.lease,
-		root:              stage.root,
-		parent:            stage.parent,
-		identity:          info,
-		sha256:            stage.retainedSHA256,
-		digestReady:       true,
-		targetName:        stage.targetName,
-		remove:            stage.operations.removeStage,
-		syncDirectory:     stage.operations.syncDirectory,
-		active:            true,
-		cleanupIncomplete: privateCleanupIncomplete,
+		file:                       file,
+		identityPin:                stage.identityPin,
+		lease:                      stage.lease,
+		root:                       stage.root,
+		parent:                     stage.parent,
+		identity:                   info,
+		sha256:                     stage.retainedSHA256,
+		digestReady:                true,
+		targetName:                 stage.targetName,
+		remove:                     stage.operations.removeStage,
+		syncDirectory:              stage.operations.syncDirectory,
+		active:                     true,
+		cleanupIncomplete:          errors.Is(privateCleanupErr, ErrCleanupIncomplete),
+		cleanupDurabilityUncertain: errors.Is(privateCleanupErr, ErrCleanupDurabilityUncertain),
 	}
 	stage.file = nil
 	stage.identityPin = nil
@@ -831,6 +834,9 @@ func (stage *Stage) Cleanup() error {
 	}
 	stage.cleanupDone = true
 	cleanupFailed := false
+	var removedRoot *os.Root
+	var removedParent *os.File
+	var removedName string
 	journaledPublishedCleanup := stage.cleanupDisposition == cleanupPublishedOwned && stage.journaled
 
 	if stage.cleanupDisposition == cleanupUncertain && stage.stageName != "" {
@@ -853,8 +859,8 @@ func (stage *Stage) Cleanup() error {
 			case identityExpected:
 				if err := removeOwnedFile(stage.sourceRoot, stage.stageName, stage.pinnedIdentityFile(), stage.operations.removeStage); err != nil {
 					cleanupFailed = true
-				} else if stage.operations.syncDirectory(stage.sourceParent) != nil {
-					cleanupFailed = true
+				} else {
+					removedRoot, removedParent, removedName = stage.sourceRoot, stage.sourceParent, stage.stageName
 				}
 			case identityMissing, identityOther, identityUnknown:
 				cleanupFailed = true
@@ -870,9 +876,8 @@ func (stage *Stage) Cleanup() error {
 			case identityExpected:
 				if err := removeOwnedFile(stage.root, stage.targetName, stage.pinnedIdentityFile(), stage.operations.removeStage); err != nil {
 					cleanupFailed = true
-				} else if stage.parent == nil ||
-					stage.operations.syncDirectory(stage.parent) != nil {
-					cleanupFailed = true
+				} else {
+					removedRoot, removedParent, removedName = stage.root, stage.parent, stage.targetName
 				}
 			case identityMissing, identityOther, identityUnknown:
 				cleanupFailed = true
@@ -894,9 +899,14 @@ func (stage *Stage) Cleanup() error {
 		}
 		stage.identityPin = nil
 	}
-	if !stage.retirePrivateDirectory() {
-		cleanupFailed = true
+	if removedRoot != nil {
+		if _, err := removedRoot.Lstat(removedName); !errors.Is(err, os.ErrNotExist) {
+			cleanupFailed = true
+		} else if stage.operations.syncDirectory(removedParent) != nil {
+			stage.cleanupErr = errors.Join(stage.cleanupErr, ErrCleanupDurabilityUncertain)
+		}
 	}
+	stage.cleanupErr = errors.Join(stage.cleanupErr, stage.retirePrivateDirectory())
 	if stage.parent != nil {
 		if err := stage.parent.Close(); err != nil {
 			cleanupFailed = true
@@ -925,7 +935,7 @@ func (stage *Stage) Cleanup() error {
 	stage.retainedDigestReady = false
 	stage.protected = nil
 	if cleanupFailed {
-		stage.cleanupErr = ErrCleanupIncomplete
+		stage.cleanupErr = errors.Join(stage.cleanupErr, ErrCleanupIncomplete)
 	}
 	return stage.cleanupErr
 }

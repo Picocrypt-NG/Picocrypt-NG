@@ -248,22 +248,19 @@ func runWithSeamsAndOptions(
 	var desktopProtected []*os.File
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			cleanupIncomplete := panicCleanupIncomplete(recovered)
-			if cleanupOutputExact(result) {
-				cleanupIncomplete = true
+			var cleanupErr error
+			if panicCleanupIncomplete(recovered) {
+				cleanupErr = pcv3publication.ErrCleanupIncomplete
 			}
-			if cleanupArchiveExact(result) {
-				cleanupIncomplete = true
-			}
+			cleanupErr = errors.Join(cleanupErr, cleanupOutputExact(result))
+			cleanupErr = errors.Join(cleanupErr, cleanupArchiveExact(result))
 			result = closedFailure(
 				pcv3.OutcomeOperationFailed,
 				pcv3.StageCredentialPolicy,
 				pcv3.CodeOperationFailed,
 				DiagnosticCallbackPanic,
 			)
-			if cleanupIncomplete {
-				result.appendWarning(WarningCleanupIncomplete)
-			}
+			result.appendCleanupError(cleanupErr)
 		}
 		result = finalizeOperationResult(ctx, result, owner, factorCleanup, archivePlan, desktopProtected)
 	}()
@@ -420,9 +417,7 @@ func finalizeOperationResult(
 		failEncryptedOutput(ctx, result)
 	}
 	if result != nil && result.archiveFollowUp != nil && result.ArchiveFollowUp() == nil {
-		if cleanupArchiveExact(result) {
-			result.appendWarning(WarningCleanupIncomplete)
-		}
+		result.appendCleanupError(cleanupArchiveExact(result))
 	}
 	if result != nil && result.stage == pcv3.StageCancellation && result.diagnostic == DiagnosticNone {
 		result.diagnostic = DiagnosticCancellation
@@ -471,20 +466,15 @@ func runNormalRead(
 	var encryptedOutput *fileops.EncryptedSpool
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			cleanupIncomplete := cleanupRetainedExact(&retainedOutput)
+			cleanupErr := cleanupRetainedExact(&retainedOutput)
 			if encryptedOutput != nil && encryptedOutput.Close() != nil {
-				cleanupIncomplete = true
+				cleanupErr = errors.Join(cleanupErr, pcv3publication.ErrCleanupIncomplete)
 			}
-			if cleanupOutputExact(result) {
-				cleanupIncomplete = true
+			cleanupErr = errors.Join(cleanupErr, cleanupOutputExact(result))
+			if archive != nil {
+				cleanupErr = errors.Join(cleanupErr, archive.Close())
 			}
-			if archive != nil && archive.Close() {
-				cleanupIncomplete = true
-			}
-			if cleanupIncomplete {
-				panic(pcv3publication.ErrCleanupIncomplete)
-			}
-			panic(recovered)
+			fileops.RepanicWithCleanup(recovered, cleanupErr)
 		}
 	}()
 	nativeResult := pcv3.RunNativeRead(
@@ -525,11 +515,9 @@ func runNormalRead(
 	}
 	result = owner.finishReportedResult(resultFromNativeRead(nativeResult))
 	if owner.reporterFailed || owner.reporterPanicked {
-		if cleanupRetainedExact(&retainedOutput) {
-			result.appendWarning(WarningCleanupIncomplete)
-		}
-		if archive != nil && archive.Close() {
-			result.appendWarning(WarningCleanupIncomplete)
+		result.appendCleanupError(cleanupRetainedExact(&retainedOutput))
+		if archive != nil {
+			result.appendCleanupError(archive.Close())
 		}
 		return result
 	}
@@ -543,9 +531,7 @@ func runNormalRead(
 			retainedOutput = nil
 			return result
 		}
-		if cleanupRetainedExact(&retainedOutput) {
-			result.appendWarning(WarningCleanupIncomplete)
-		}
+		result.appendCleanupError(cleanupRetainedExact(&retainedOutput))
 		return result
 	}
 	if archive == nil {
@@ -558,9 +544,7 @@ func runNormalRead(
 		result.archiveFollowUp = followUp
 		return result
 	}
-	if archive.Close() {
-		result.appendWarning(WarningCleanupIncomplete)
-	}
+	result.appendCleanupError(archive.Close())
 	return result
 }
 
@@ -819,8 +803,11 @@ func runConsentOperation(run func() *Result) (result *Result) {
 }
 
 func panicCleanupIncomplete(recovered any) bool {
+	if fileops.PanicCleanupIncomplete(recovered) {
+		return true
+	}
 	err, ok := recovered.(error)
-	return ok && errors.Is(err, pcv3publication.ErrCleanupIncomplete)
+	return ok && (errors.Is(err, pcv3publication.ErrCleanupIncomplete) || errors.Is(err, pcv3publication.ErrCleanupDurabilityUncertain))
 }
 
 func capsuleRole(role PhysicalRole) pcv3.CapsuleRole {
@@ -867,6 +854,9 @@ func resultFromNativeRead(native *pcv3.NativeReadResult) *Result {
 	if native.CleanupIncomplete() {
 		result.appendWarning(WarningCleanupIncomplete)
 	}
+	if native.CleanupDurabilityUncertain() {
+		result.WithCleanupDurabilityWarning()
+	}
 	if native.CallbackFailed() {
 		result.appendWarning(WarningCallbackFailure)
 	}
@@ -878,20 +868,12 @@ func resultFromRecovery(ctx context.Context, recovery *pcv3recovery.Result) (res
 	var archive *pcv3recovery.ArchiveHandoff
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			cleanupIncomplete := cleanupRetainedExact(&retained)
-			if cleanupOutputExact(result) {
-				cleanupIncomplete = true
+			cleanupErr := errors.Join(cleanupRetainedExact(&retained), cleanupOutputExact(result))
+			if archive != nil {
+				cleanupErr = errors.Join(cleanupErr, archive.Close())
 			}
-			if archive != nil && archive.Close() {
-				cleanupIncomplete = true
-			}
-			if cleanupArchiveExact(result) {
-				cleanupIncomplete = true
-			}
-			if cleanupIncomplete {
-				panic(pcv3publication.ErrCleanupIncomplete)
-			}
-			panic(recovered)
+			cleanupErr = errors.Join(cleanupErr, cleanupArchiveExact(result))
+			fileops.RepanicWithCleanup(recovered, cleanupErr)
 		}
 	}()
 	if recovery == nil {
@@ -921,6 +903,9 @@ func resultFromRecovery(ctx context.Context, recovery *pcv3recovery.Result) (res
 	if errors.Is(recovery, pcv3publication.ErrCleanupIncomplete) {
 		result.appendWarning(WarningCleanupIncomplete)
 	}
+	if errors.Is(recovery, pcv3publication.ErrCleanupDurabilityUncertain) {
+		result.WithCleanupDurabilityWarning()
+	}
 	result.artifactInspection = recovery.ArtifactInspection()
 	if encrypted := recovery.TakeEncryptedStream(); encrypted != nil {
 		adoptEncryptedOutput(ctx, result, encrypted)
@@ -936,29 +921,22 @@ func resultFromRecovery(ctx context.Context, recovery *pcv3recovery.Result) (res
 			archive = nil
 			return result
 		}
-		if archive.Close() {
-			result.appendWarning(WarningCleanupIncomplete)
-		}
+		result.appendCleanupError(archive.Close())
 		archive = nil
 	}
 	retained = recovery.TakeRetainedOutput()
 	if retained != nil {
 		followUp := newOutputFollowUp(retained)
 		if followUp == nil {
-			cleanupIncomplete := cleanupRetainedExact(&retained)
-			if cleanupIncomplete {
-				result.appendWarning(WarningCleanupIncomplete)
-			}
+			result.appendCleanupError(cleanupRetainedExact(&retained))
 			return result
 		}
 		result.outputFollowUp = followUp
 		retained = nil
 		if result.OutputFollowUp() == nil {
-			cleanupIncomplete := cleanupOutputExact(result)
+			cleanupErr := cleanupOutputExact(result)
 			result.outputFollowUp = nil
-			if cleanupIncomplete {
-				result.appendWarning(WarningCleanupIncomplete)
-			}
+			result.appendCleanupError(cleanupErr)
 		}
 	}
 	return result
@@ -1127,12 +1105,8 @@ func (owner *operationOwner) finishReportedResult(result *Result) *Result {
 	}
 	if owner.reporterFailed || owner.reporterPanicked {
 		failure := owner.reportFailure()
-		if cleanupOutputExact(result) {
-			failure.appendWarning(WarningCleanupIncomplete)
-		}
-		if cleanupArchiveExact(result) {
-			failure.appendWarning(WarningCleanupIncomplete)
-		}
+		failure.appendCleanupError(cleanupOutputExact(result))
+		failure.appendCleanupError(cleanupArchiveExact(result))
 		return failure
 	}
 	if result != nil && owner.resourceDiagnostic != DiagnosticNone &&

@@ -582,7 +582,7 @@ func TestArchiveSAFSessionAbortSettlesProviderEvidenceDeliveredDuringCleanup(t *
 	t.Cleanup(releaseCleanupNow)
 	session.state.mu.Lock()
 	realCleanup := session.state.cleanupStage
-	session.state.cleanupStage = func(stage *pcv3publication.Stage) bool {
+	session.state.cleanupStage = func(stage *pcv3publication.Stage) error {
 		close(cleanupStarted)
 		<-releaseCleanup
 		return realCleanup(stage)

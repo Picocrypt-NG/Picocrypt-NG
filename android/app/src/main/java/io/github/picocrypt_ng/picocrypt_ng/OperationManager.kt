@@ -1183,6 +1183,8 @@ internal class Pcv3Lifecycle(
             warnings in setOf(
                 listOf("durability-uncertain"),
                 listOf("durability-uncertain", "cleanup-incomplete"),
+                listOf("durability-uncertain", "cleanup-durability-uncertain"),
+                listOf("durability-uncertain", "cleanup-incomplete", "cleanup-durability-uncertain"),
             ) && restoredReceipt.isNotEmpty()
 
     private fun Pcv3SnapshotData.isExactSafPublicationIndeterminate(): Boolean =
@@ -1195,6 +1197,8 @@ internal class Pcv3Lifecycle(
             warnings in setOf(
                 listOf("publication-indeterminate"),
                 listOf("publication-indeterminate", "cleanup-incomplete"),
+                listOf("publication-indeterminate", "cleanup-durability-uncertain"),
+                listOf("publication-indeterminate", "cleanup-incomplete", "cleanup-durability-uncertain"),
             ) && restoredReceipt.isNotEmpty()
 
     private fun Pcv3SnapshotData.hasExactSafSuccessSemantic(): Boolean =
@@ -1538,7 +1542,8 @@ internal class Pcv3Lifecycle(
                 outputActionInFlight = false,
                 outputActionResult = mergeOutputActionResult(
                     current.outputActionResult.takeUnless {
-                        current.creation && it?.code == "save-failed" && !it.cleanupIncomplete
+                        current.creation && it?.code == "save-failed" &&
+                            !it.cleanupIncomplete && !it.cleanupDurabilityUncertain
                     },
                     actionResult.toView(),
                 ),
@@ -1568,7 +1573,8 @@ internal class Pcv3Lifecycle(
                 // Ciphertext remains a reusable result after a confirmed failed save.
                 // Plaintext and uncertain bridge outcomes retain the cleanup path.
                 if (active.creation && actionResult.code == "save-failed" &&
-                    !actionResult.cleanupIncomplete && actionFailure == null && cancellation == null
+                    !actionResult.cleanupIncomplete && !actionResult.cleanupDurabilityUncertain &&
+                    actionFailure == null && cancellation == null
                 ) {
                     active = active.copy(outputHandle = remainingOutput)
                     state = active
@@ -1591,25 +1597,49 @@ internal class Pcv3Lifecycle(
     }
 
     private fun Pcv3OutputResultData.toView(): Pcv3OutputResultView =
-        Pcv3OutputResultView(code = code, cleanupIncomplete = cleanupIncomplete)
+        Pcv3OutputResultView(
+            code = code,
+            cleanupIncomplete = cleanupIncomplete,
+            cleanupDurabilityUncertain = cleanupDurabilityUncertain,
+        )
 
     private fun mergeOutputActionResult(
         current: Pcv3OutputResultView?,
         next: Pcv3OutputResultView,
-    ): Pcv3OutputResultView = when {
-        current == null -> next
-        current.cleanupIncomplete || !next.cleanupIncomplete -> current
-        else -> current.withCleanupIncompleteCode()
+    ): Pcv3OutputResultView {
+        if (current == null) return next
+        var merged = if (next.cleanupIncomplete && !current.cleanupIncomplete) {
+            current.withCleanupIncompleteCode()
+        } else {
+            current
+        }
+        if (next.cleanupDurabilityUncertain && !merged.cleanupDurabilityUncertain) {
+            merged = merged.withCleanupDurabilityUncertainCode()
+        }
+        return merged
     }
 
     private fun Pcv3OutputResultView.withCleanupIncompleteCode(): Pcv3OutputResultView = when (code) {
-        "saved", "saved-cleanup-incomplete" ->
-            Pcv3OutputResultView("saved-cleanup-incomplete", cleanupIncomplete = true)
-        "save-failed", "save-failed-cleanup-incomplete" ->
-            Pcv3OutputResultView("save-failed-cleanup-incomplete", cleanupIncomplete = true)
-        "discarded", "discard-cleanup-incomplete" ->
-            Pcv3OutputResultView("discard-cleanup-incomplete", cleanupIncomplete = true)
-        else -> Pcv3OutputResultView("discard-cleanup-incomplete", cleanupIncomplete = true)
+        "saved", "saved-cleanup-incomplete", "saved-cleanup-durability-uncertain" ->
+            copy(code = "saved-cleanup-incomplete", cleanupIncomplete = true)
+        "save-failed", "save-failed-cleanup-incomplete", "save-failed-cleanup-durability-uncertain" ->
+            copy(code = "save-failed-cleanup-incomplete", cleanupIncomplete = true)
+        "discarded", "discard-cleanup-incomplete", "discard-cleanup-durability-uncertain" ->
+            copy(code = "discard-cleanup-incomplete", cleanupIncomplete = true)
+        else -> copy(code = "discard-cleanup-incomplete", cleanupIncomplete = true)
+    }
+
+    private fun Pcv3OutputResultView.withCleanupDurabilityUncertainCode(): Pcv3OutputResultView {
+        if (cleanupIncomplete) return copy(cleanupDurabilityUncertain = true)
+        return when (code) {
+            "saved", "saved-cleanup-durability-uncertain" ->
+                copy(code = "saved-cleanup-durability-uncertain", cleanupDurabilityUncertain = true)
+            "save-failed", "save-failed-cleanup-durability-uncertain" ->
+                copy(code = "save-failed-cleanup-durability-uncertain", cleanupDurabilityUncertain = true)
+            "discarded", "discard-cleanup-durability-uncertain" ->
+                copy(code = "discard-cleanup-durability-uncertain", cleanupDurabilityUncertain = true)
+            else -> withCleanupIncompleteCode().copy(cleanupDurabilityUncertain = true)
+        }
     }
 
     private fun State.Draining.withOutputCleanupUncertain(): State.Draining = copy(
@@ -2209,7 +2239,8 @@ internal class Pcv3Lifecycle(
         creation: Boolean,
     ): Boolean =
         consentHandle == null && archiveHandle == null &&
-            (priorAction == null || creation && priorAction.code == "save-failed" && !priorAction.cleanupIncomplete) &&
+            (priorAction == null || creation && priorAction.code == "save-failed" &&
+                !priorAction.cleanupIncomplete && !priorAction.cleanupDurabilityUncertain) &&
             !archivePending && (
                 restoredReceipt.isEmpty() && !requiresReceipt() &&
                     (completionClass == "clean" || completionClass == "warning") &&

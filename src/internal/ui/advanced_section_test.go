@@ -8,7 +8,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 
@@ -117,7 +116,7 @@ func TestNativeGUIEncryptsPCV3(t *testing.T) {
 		t.Fatalf("capture GUI split operation: %v", err)
 	}
 	result = executeVolumeOperation(context.Background(), splitInput, nil)
-	if runtime.GOOS == "windows" {
+	if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
 		// The complete ciphertext and chunks exist, but retiring the retained
 		// owner cannot prove its directory barrier. Keep both failure axes.
 		if result.pcv3 == nil || result.completed || !errors.Is(result.err, result.pcv3) ||
@@ -130,7 +129,7 @@ func TestNativeGUIEncryptsPCV3(t *testing.T) {
 			result.pcv3.PublicationState() != pcv3publication.StatePublishedDurabilityUncertain ||
 			result.pcv3.PublicationStage() != pcv3operation.StageDirectorySync ||
 			result.pcv3.PublicationCode() != pcv3publication.CodeDurabilityUncertain ||
-			!slices.Equal(result.pcv3.Warnings(), []pcv3operation.Warning{pcv3operation.WarningDurabilityUncertain, pcv3operation.WarningCleanupIncomplete}) ||
+			!slices.Equal(result.pcv3.Warnings(), []pcv3operation.Warning{pcv3operation.WarningDurabilityUncertain, pcv3operation.WarningCleanupDurabilityUncertain}) ||
 			result.pcv3.SourceDeletionAllowed() || result.pcv3.ArchiveFollowUp() != nil || result.pcv3.OutputFollowUp() != nil {
 			t.Fatalf("uncertain GUI split lost its exact failure and cleanup tuple: %+v", result)
 		}

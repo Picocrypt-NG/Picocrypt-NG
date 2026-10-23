@@ -15,6 +15,29 @@ import (
 	"testing"
 )
 
+func TestOutputActionCleanupFactsRemainIndependent(t *testing.T) {
+	for _, test := range []struct {
+		base       OutputActionCode
+		incomplete bool
+		uncertain  bool
+		want       string
+	}{
+		{OutputActionSaved, false, true, "saved-cleanup-durability-uncertain"},
+		{OutputActionSaveFailed, false, true, "save-failed-cleanup-durability-uncertain"},
+		{OutputActionDiscarded, false, true, "discard-cleanup-durability-uncertain"},
+		{OutputActionSaved, true, true, "saved-cleanup-incomplete"},
+		{OutputActionSaveFailed, true, true, "save-failed-cleanup-incomplete"},
+		{OutputActionDiscarded, true, true, "discard-cleanup-incomplete"},
+	} {
+		t.Run(test.want, func(t *testing.T) {
+			result := outputActionWithCleanup(test.base, test.incomplete, test.uncertain)
+			if result.Code().String() != test.want || result.CleanupIncomplete() != test.incomplete || result.CleanupDurabilityUncertain() != test.uncertain {
+				t.Fatalf("output action lost cleanup truth: %v, incomplete=%v durability=%v", result.Code(), result.CleanupIncomplete(), result.CleanupDurabilityUncertain())
+			}
+		})
+	}
+}
+
 func TestOutputFollowUpSaveCopiesThenRemovesExactInternalOwner(t *testing.T) {
 	directory := t.TempDir()
 	payload := []byte("authenticated PCV3 output exported through an owned descriptor")

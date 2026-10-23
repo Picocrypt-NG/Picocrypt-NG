@@ -404,8 +404,8 @@ func TestRetainedFileReportsPostRemoveDirectorySyncUncertainty(t *testing.T) {
 	}
 
 	err = retained.RemoveExact()
-	if !errors.Is(err, ErrCleanupIncomplete) {
-		t.Fatalf("post-remove sync result = %v; want ErrCleanupIncomplete", err)
+	if !errors.Is(err, ErrCleanupDurabilityUncertain) || errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("post-remove sync result = %v; want durability uncertainty without live cleanup failure", err)
 	}
 	if syncCalls != 4 {
 		t.Fatalf("directory sync calls = %d; want publication plus removal", syncCalls)

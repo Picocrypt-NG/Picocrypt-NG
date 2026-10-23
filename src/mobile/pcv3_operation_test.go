@@ -577,7 +577,7 @@ func TestPCV3OperationABI(t *testing.T) {
 		reflect.TypeOf((*PCV3ArtifactPage)(nil)):      {"Count", "EndAt", "RecordIndexAt", "StartAt", "StatusAt"},
 		reflect.TypeOf((*PCV3ResourceChallenge)(nil)): {"Submit"},
 		reflect.TypeOf((*PCV3Output)(nil)):            {"Discard", "Format", "GoString", "SaveFD", "String"},
-		reflect.TypeOf((*PCV3OutputResult)(nil)):      {"CleanupIncomplete", "Code", "Format", "GoString", "String"},
+		reflect.TypeOf((*PCV3OutputResult)(nil)):      {"CleanupDurabilityUncertain", "CleanupIncomplete", "Code", "Format", "GoString", "String"},
 		reflect.TypeOf((*PCV3Snapshot)(nil)): {
 			"ArchivePending", "ArgAt", "ArgCount", "AuthenticatedComment", "Code", "CompletionClass",
 			"D1BootstrapProvenance", "DetailStage", "Diagnostic", "ForceProvenance",

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -53,7 +52,7 @@ func FuzzPublicationStateMachine(f *testing.F) {
 			wantOutcome = pcv3result.OutcomeSuccess
 			wantStage = pcv3result.StageNone
 			wantCode = CodePublishedDurable
-			if runtime.GOOS == "windows" {
+			if !nativeDirectorySyncSupported(t, directory) {
 				wantState = StatePublishedDurabilityUncertain
 				wantOutcome = pcv3result.OutcomeCommittedDurabilityUncertain
 				wantStage = pcv3result.StageDirectorySync
@@ -74,7 +73,7 @@ func FuzzPublicationStateMachine(f *testing.F) {
 			wantOutcome = pcv3result.OutcomeSuccess
 			wantStage = pcv3result.StageNone
 			wantCode = CodePublishedDurable
-			if runtime.GOOS == "windows" {
+			if !nativeDirectorySyncSupported(t, directory) {
 				wantState = StatePublishedDurabilityUncertain
 				wantOutcome = pcv3result.OutcomeCommittedDurabilityUncertain
 				wantStage = pcv3result.StageDirectorySync
@@ -170,12 +169,17 @@ func FuzzPublicationStateMachine(f *testing.F) {
 			t.Fatal("terminal publication repeated or changed its result")
 		}
 		cleanupErr := stage.Cleanup()
-		if (mode == 3 && attackErr == nil) || mode == 6 || runtime.GOOS == "windows" {
+		if mode == 3 && attackErr == nil {
 			if !errors.Is(cleanupErr, ErrCleanupIncomplete) {
 				t.Fatalf("indeterminate cleanup = %v; want ErrCleanupIncomplete", cleanupErr)
 			}
-		} else if cleanupErr != nil {
-			t.Fatalf("cleanup fuzz publication: %v", cleanupErr)
+		} else if mode == 6 {
+			if !errors.Is(cleanupErr, ErrCleanupDurabilityUncertain) || errors.Is(cleanupErr, ErrCleanupIncomplete) {
+				t.Fatalf("removed names with failed barrier = %v; want only cleanup durability uncertainty", cleanupErr)
+			}
+			requireNoStageEntries(t, directory)
+		} else {
+			requireNativeDirectoryCleanup(t, directory, cleanupErr)
 		}
 		if repeated := stage.Cleanup(); !errors.Is(repeated, cleanupErr) {
 			t.Fatalf("repeat fuzz cleanup = %v; want stable classification %v", repeated, cleanupErr)

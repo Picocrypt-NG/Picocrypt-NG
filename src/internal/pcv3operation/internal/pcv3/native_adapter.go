@@ -356,9 +356,10 @@ func (output *NativeReadOutput) TakeEncryptedStream() *fileops.EncryptedSpool {
 // NativeArchiveResult is the closed extractor projection returned by the
 // opaque archive handoff. It contains no path or raw error.
 type NativeArchiveResult struct {
-	state             fileops.UnpackState
-	cleanupIncomplete bool
-	resourceLimited   bool
+	state                      fileops.UnpackState
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
+	resourceLimited            bool
 }
 
 func (result *NativeArchiveResult) State() fileops.UnpackState {
@@ -370,6 +371,16 @@ func (result *NativeArchiveResult) State() fileops.UnpackState {
 
 func (result *NativeArchiveResult) CleanupIncomplete() bool {
 	return result != nil && result.cleanupIncomplete
+}
+
+func (result *NativeArchiveResult) CleanupDurabilityUncertain() bool {
+	return result != nil && result.cleanupDurabilityUncertain
+}
+
+func (result *NativeArchiveResult) retainCleanupError(err error) {
+	incomplete, uncertain := nativeCleanupFacts(err)
+	result.cleanupIncomplete = result.cleanupIncomplete || incomplete
+	result.cleanupDurabilityUncertain = result.cleanupDurabilityUncertain || uncertain
 }
 
 // ResourceLimited reports a closed resource-refusal cause, independently of
@@ -422,16 +433,21 @@ func (handoff *NativeArchiveHandoff) Live() bool {
 
 // Publish consumes the handoff and saves the authenticated ZIP to the original
 // pinned target. Cleanup truth remains separate from publication durability.
-func (handoff *NativeArchiveHandoff) Publish(ctx context.Context) (publication pcv3publication.Result, cleanupIncomplete bool) {
+func (handoff *NativeArchiveHandoff) Publish(ctx context.Context) (publication pcv3publication.Result, cleanupErr error) {
 	_, stage, ok := handoff.consume()
 	if !ok {
-		return nil, false
+		return nil, nil
 	}
-	defer func() { cleanupIncomplete = stage.Cleanup() != nil }()
+	defer func() {
+		cleanupErr = stage.Cleanup()
+		if recovered := recover(); recovered != nil {
+			fileops.RepanicWithCleanup(recovered, cleanupErr)
+		}
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return stage.Publish(ctx), false
+	return stage.Publish(ctx), nil
 }
 
 // Extract consumes the handoff before effects and takes ownership of root.
@@ -460,11 +476,16 @@ func (handoff *NativeArchiveHandoff) ExtractWithReview(
 	}
 	result := &NativeArchiveResult{state: fileops.UnpackStateNotPublished}
 	defer func() {
-		if stage.Cleanup() != nil {
-			result.cleanupIncomplete = true
-		}
+		result.retainCleanupError(stage.Cleanup())
 		if root != nil && root.Close() != nil {
 			result.cleanupIncomplete = true
+		}
+		if recovered := recover(); recovered != nil {
+			var cleanupErr error
+			if result.cleanupIncomplete || result.cleanupDurabilityUncertain {
+				cleanupErr = pcv3publication.ErrCleanupIncomplete
+			}
+			fileops.RepanicWithCleanup(recovered, cleanupErr)
 		}
 	}()
 	if root == nil {
@@ -496,11 +517,13 @@ func (handoff *NativeArchiveHandoff) ExtractWithReview(
 	return result
 }
 
-// Close consumes the handoff without extraction and reports only whether
-// cleanup of the private stage could be proven.
-func (handoff *NativeArchiveHandoff) Close() bool {
+// Close consumes the handoff without extraction and preserves both cleanup causes.
+func (handoff *NativeArchiveHandoff) Close() error {
 	_, stage, ok := handoff.consume()
-	return ok && stage.Cleanup() != nil
+	if !ok {
+		return nil
+	}
+	return stage.Cleanup()
 }
 
 func (handoff *NativeArchiveHandoff) consume() (
@@ -528,16 +551,17 @@ func (handoff *NativeArchiveHandoff) consume() (
 // NativeReadResult is the closed operation-facing projection of the ordinary
 // reader. It retains no raw error, path, source, credential, or callback.
 type NativeReadResult struct {
-	outcome              Outcome
-	stage                Stage
-	code                 Code
-	authenticatedComment string
-	publicationAttempted bool
-	publicationState     pcv3publication.State
-	publicationStage     Stage
-	publicationCode      pcv3publication.Code
-	cleanupIncomplete    bool
-	callbackFailed       bool
+	outcome                    Outcome
+	stage                      Stage
+	code                       Code
+	authenticatedComment       string
+	publicationAttempted       bool
+	publicationState           pcv3publication.State
+	publicationStage           Stage
+	publicationCode            pcv3publication.Code
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
+	callbackFailed             bool
 }
 
 func (result *NativeReadResult) Outcome() Outcome {
@@ -597,6 +621,10 @@ func (result *NativeReadResult) PublicationCode() pcv3publication.Code {
 
 func (result *NativeReadResult) CleanupIncomplete() bool {
 	return result != nil && result.cleanupIncomplete
+}
+
+func (result *NativeReadResult) CleanupDurabilityUncertain() bool {
+	return result != nil && result.cleanupDurabilityUncertain
 }
 
 func (result *NativeReadResult) CallbackFailed() bool {
@@ -718,7 +746,7 @@ func runNativeReadSession(
 		sink.snapshot(result)
 		if panicValue != nil {
 			var cleanupErr error
-			if sink.cleanupIncomplete {
+			if sink.cleanupIncomplete || sink.cleanupDurabilityUncertain {
 				cleanupErr = pcv3publication.ErrCleanupIncomplete
 			}
 			fileops.RepanicWithCleanup(panicValue, cleanupErr)
@@ -891,12 +919,13 @@ type nativeReadSink struct {
 	nextRecord          uint64
 	closed              bool
 
-	publicationAttempted bool
-	publishCalled        bool
-	publicationState     pcv3publication.State
-	publicationStage     Stage
-	publicationCode      pcv3publication.Code
-	cleanupIncomplete    bool
+	publicationAttempted       bool
+	publishCalled              bool
+	publicationState           pcv3publication.State
+	publicationStage           Stage
+	publicationCode            pcv3publication.Code
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
 }
 
 const nativeStreamReserveBytes uint64 = 64 << 20
@@ -971,8 +1000,8 @@ func (sink *nativeReadSink) ensureStage() error {
 	if err != nil {
 		if sink.publicationAttempted {
 			sink.retainPublicationError(err)
-		} else if errors.Is(err, pcv3publication.ErrCleanupIncomplete) {
-			sink.cleanupIncomplete = true
+		} else if errors.Is(err, pcv3publication.ErrCleanupIncomplete) || errors.Is(err, pcv3publication.ErrCleanupDurabilityUncertain) {
+			sink.retainCleanupError(err)
 		}
 		return err
 	}
@@ -1048,9 +1077,7 @@ func (sink *nativeReadSink) publishRetained(
 	publication, retained := sink.stage.PublishRetained(ctx)
 	sink.retainPublication(publication)
 	if retained != nil {
-		if sink.stage.Cleanup() != nil {
-			sink.cleanupIncomplete = true
-		}
+		sink.retainCleanupError(sink.stage.Cleanup())
 		sink.stage = nil
 	}
 	return retained
@@ -1112,9 +1139,7 @@ func (sink *nativeReadSink) abortUncommitted() {
 		sink.encryptedOutput = nil
 	}
 	if sink.stage != nil {
-		if err := sink.stage.Cleanup(); err != nil {
-			sink.cleanupIncomplete = true
-		}
+		sink.retainCleanupError(sink.stage.Cleanup())
 		sink.stage = nil
 	}
 	for index := range sink.protected {
@@ -1143,9 +1168,21 @@ func (sink *nativeReadSink) retainPublicationError(err error) {
 	if errors.As(err, &publication) {
 		sink.retainPublication(publication)
 	}
-	if errors.Is(err, pcv3publication.ErrCleanupIncomplete) {
-		sink.cleanupIncomplete = true
+	if errors.Is(err, pcv3publication.ErrCleanupIncomplete) || errors.Is(err, pcv3publication.ErrCleanupDurabilityUncertain) {
+		sink.retainCleanupError(err)
 	}
+}
+
+func nativeCleanupFacts(err error) (incomplete, uncertain bool) {
+	uncertain = errors.Is(err, pcv3publication.ErrCleanupDurabilityUncertain)
+	incomplete = err != nil && (errors.Is(err, pcv3publication.ErrCleanupIncomplete) || !uncertain)
+	return incomplete, uncertain
+}
+
+func (sink *nativeReadSink) retainCleanupError(err error) {
+	incomplete, uncertain := nativeCleanupFacts(err)
+	sink.cleanupIncomplete = sink.cleanupIncomplete || incomplete
+	sink.cleanupDurabilityUncertain = sink.cleanupDurabilityUncertain || uncertain
 }
 
 func (sink *nativeReadSink) snapshot(result *NativeReadResult) {
@@ -1157,4 +1194,5 @@ func (sink *nativeReadSink) snapshot(result *NativeReadResult) {
 	result.publicationStage = sink.publicationStage
 	result.publicationCode = sink.publicationCode
 	result.cleanupIncomplete = sink.cleanupIncomplete
+	result.cleanupDurabilityUncertain = sink.cleanupDurabilityUncertain
 }
