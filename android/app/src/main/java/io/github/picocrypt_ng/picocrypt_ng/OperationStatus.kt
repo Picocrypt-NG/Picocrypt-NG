@@ -300,9 +300,13 @@ fun pcv3ResultDisplay(snapshot: Pcv3SnapshotView): Pcv3ResultDisplay {
     }
 
     val cleanupWarning = "cleanup-incomplete" in snapshot.warnings
+    val cleanupDurabilityWarning = "cleanup-durability-uncertain" in snapshot.warnings
     val warnings = buildList {
         if (cleanupWarning) {
             add(copy(R.string.pcv3_warning_cleanup_title, R.string.pcv3_warning_cleanup_body))
+        }
+        if (cleanupDurabilityWarning) {
+            add(copy(R.string.pcv3_warning_cleanup_durability_title, R.string.pcv3_warning_cleanup_durability_body))
         }
         if ("callback-failure" in snapshot.warnings) {
             add(copy(R.string.pcv3_warning_callback_title, R.string.pcv3_warning_callback_body))
@@ -317,6 +321,7 @@ fun pcv3ResultDisplay(snapshot: Pcv3SnapshotView): Pcv3ResultDisplay {
         snapshot.publication.state == "publication-indeterminate" ->
             R.string.pcv3_publication_indeterminate_close
         cleanupWarning -> R.string.pcv3_warning_cleanup_close
+        cleanupDurabilityWarning -> R.string.pcv3_warning_cleanup_durability_close
         snapshot.semantic.outcome == "force-partial" ||
             snapshot.semantic.outcome == "force-unverified" ->
             R.string.pcv3_recovery_result_close
@@ -384,10 +389,15 @@ fun pcv3ResultDisplay(presentation: Pcv3Presentation): Pcv3ResultDisplay {
     )
     val cleanupUncertain = outputAction.cleanupIncomplete ||
         outputAction.code.endsWith("-cleanup-incomplete")
+    val cleanupDurabilityUncertain = outputAction.cleanupDurabilityUncertain ||
+        outputAction.code.endsWith("-cleanup-durability-uncertain")
     val warnings = buildList {
         addAll(snapshotDisplay.warnings)
         if (cleanupUncertain && none { it.titleResId == R.string.pcv3_warning_cleanup_title }) {
             add(copy(R.string.pcv3_warning_cleanup_title, R.string.pcv3_warning_cleanup_body))
+        }
+        if (cleanupDurabilityUncertain && none { it.titleResId == R.string.pcv3_warning_cleanup_durability_title }) {
+            add(copy(R.string.pcv3_warning_cleanup_durability_title, R.string.pcv3_warning_cleanup_durability_body))
         }
     }
     val tone = when {
@@ -422,6 +432,8 @@ fun pcv3ResultDisplay(presentation: Pcv3Presentation): Pcv3ResultDisplay {
         tone = tone,
         closeActionResId = if (cleanupUncertain) {
             R.string.pcv3_warning_cleanup_close
+        } else if (cleanupDurabilityUncertain) {
+            R.string.pcv3_warning_cleanup_durability_close
         } else {
             result.closeActionResId
         },
@@ -688,7 +700,7 @@ private fun String.isRepresentedBy(snapshot: Pcv3SnapshotView): Boolean = when (
     "durability-uncertain" ->
         snapshot.publication.state == "published-durability-uncertain"
     "publication-indeterminate" -> snapshot.publication.state == "publication-indeterminate"
-    "cleanup-incomplete", "callback-failure" -> true
+    "cleanup-incomplete", "cleanup-durability-uncertain", "callback-failure" -> true
     else -> false
 }
 
@@ -723,7 +735,9 @@ private data class Pcv3ClosedOutputDisplay(
 private fun Pcv3OutputResultView.closedDisplay(
     target: Pcv3OutputActionTarget?,
 ): Pcv3ClosedOutputDisplay = when {
-    target == null -> Pcv3ClosedOutputDisplay(
+    target == null || code.endsWith("-cleanup-incomplete") != cleanupIncomplete ||
+        !cleanupIncomplete && code.endsWith("-cleanup-durability-uncertain") != cleanupDurabilityUncertain ->
+        Pcv3ClosedOutputDisplay(
         copy(R.string.pcv3_output_unknown_title, R.string.pcv3_output_unknown_body),
         Pcv3ResultTone.ERROR,
         R.string.pcv3_output_unknown_close,
@@ -743,6 +757,12 @@ private fun Pcv3OutputResultView.closedDisplay(
         R.string.pcv3_warning_cleanup_close,
         keepUnderlyingOutcome = true,
     )
+    code == "saved-cleanup-durability-uncertain" -> Pcv3ClosedOutputDisplay(
+        copy(R.string.pcv3_output_saved_title, R.string.pcv3_output_saved_body),
+        Pcv3ResultTone.WARNING,
+        R.string.pcv3_warning_cleanup_durability_close,
+        keepUnderlyingOutcome = true,
+    )
     code == "save-failed" && !cleanupIncomplete -> Pcv3ClosedOutputDisplay(
         copy(R.string.pcv3_output_save_failed_title, R.string.pcv3_output_save_failed_body),
         Pcv3ResultTone.ERROR,
@@ -757,6 +777,20 @@ private fun Pcv3OutputResultView.closedDisplay(
             Pcv3ResultTone.ERROR,
             R.string.pcv3_warning_cleanup_close,
         )
+    code == "save-failed-cleanup-durability-uncertain" -> Pcv3ClosedOutputDisplay(
+        copy(R.string.pcv3_output_save_failed_title, R.string.pcv3_output_save_failed_body),
+        Pcv3ResultTone.ERROR,
+        R.string.pcv3_warning_cleanup_durability_close,
+    )
+    code == "discard-cleanup-durability-uncertain" -> Pcv3ClosedOutputDisplay(
+        if (target == Pcv3OutputActionTarget.RECOVERY_ARTIFACT) {
+            copy(R.string.pcv3_output_discarded_title, R.string.pcv3_output_discarded_body)
+        } else {
+            copy(R.string.pcv3_retained_discarded_title, R.string.pcv3_retained_discarded_body)
+        },
+        Pcv3ResultTone.WARNING,
+        R.string.pcv3_warning_cleanup_durability_close,
+    )
     target != Pcv3OutputActionTarget.RECOVERY_ARTIFACT &&
         code == "discarded" && !cleanupIncomplete -> Pcv3ClosedOutputDisplay(
         copy(R.string.pcv3_retained_discarded_title, R.string.pcv3_retained_discarded_body),

@@ -14,7 +14,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -645,7 +644,7 @@ func TestD1ForceArtifactFilesystemContract(t *testing.T) {
 		)
 		if result.Outcome() != pcv3.OutcomeForceUnverified ||
 			result.D1BootstrapProvenance() != pcv3.D1BootstrapProvenanceTail ||
-			result.PublicationState() != nativeRecoveryPublicationState() {
+			result.PublicationState() != nativeRecoveryPublicationState(t) {
 			t.Fatalf("D1 operation = %v/%v/%v; want Force-unverified/tail/durable", result.Outcome(), result.D1BootstrapProvenance(), result.PublicationState())
 		}
 		if observedStage == "" || observedStage == target {
@@ -877,7 +876,7 @@ func TestArtifactInspectionRequiresDurabilityAndPagesWithoutReopeningArtifact(t 
 	)
 	requireNativeRecoveryPublication(t, result)
 	inspection := result.ArtifactInspection()
-	if runtime.GOOS == "windows" {
+	if !nativeRecoveryDirectorySyncSupported(t, directory) {
 		if inspection != nil {
 			t.Fatal("uncertain Force publication granted durable inspection authority")
 		}
@@ -1045,7 +1044,7 @@ func TestArtifactInspectionRequiresDurableForceResultTuple(t *testing.T) {
 	}
 	assertNoRecoveryStageResidue(t, durableDirectory)
 	inspection := durable.ArtifactInspection()
-	if (inspection != nil) != (runtime.GOOS != "windows") {
+	if (inspection != nil) != nativeRecoveryDirectorySyncSupported(t, durableDirectory) {
 		t.Fatal("Force-unverified inspection differs from proven native durability")
 	}
 	if inspection != nil {
@@ -1104,7 +1103,7 @@ func TestArtifactInspectionRequiresDurableForceResultTuple(t *testing.T) {
 		fixedCoreRunner(nonForceSemantic, [][]byte{[]byte("clear")}, nil),
 	)
 	requireNativeRecoveryPublication(t, nonForce)
-	if nonForce.PublicationState() != nativeRecoveryPublicationState() ||
+	if nonForce.PublicationState() != nativeRecoveryPublicationState(t) ||
 		nonForce.ArtifactInspection() != nil {
 		t.Fatalf("durable non-Force result = %v inspection %#v; want durable/nil", nonForce.PublicationState(), nonForce.ArtifactInspection())
 	}
@@ -1161,16 +1160,17 @@ func fixedRoleCoreRunner(
 
 func assertFileBytesAndMode(t *testing.T, path string, want []byte, wantMode os.FileMode) {
 	t.Helper()
-	got, err := os.ReadFile(path)
+	file, err := openRecoveryCustodyFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v", filepath.Base(path), err)
+		t.Fatalf("open %s: %v", filepath.Base(path), err)
+	}
+	got, readErr := io.ReadAll(file)
+	info, statErr := file.Stat()
+	if err := errors.Join(readErr, statErr, file.Close()); err != nil {
+		t.Fatalf("inspect %s: %v", filepath.Base(path), err)
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("%s bytes = %q; want %q", filepath.Base(path), got, want)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat %s: %v", filepath.Base(path), err)
 	}
 	if !recoveryFileModeMatches(info, wantMode) {
 		t.Fatalf("%s mode = %04o; want %04o", filepath.Base(path), info.Mode().Perm(), wantMode)

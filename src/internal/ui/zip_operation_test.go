@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -275,14 +274,14 @@ func testZipAndEncryptDroppedSelectionRoundTrip(t *testing.T, deniable bool) {
 				if !a.configurationForm.Visible() || !a.operationFooter.Visible() || a.pcv3Result != nil || snap.PCV3Result.CompletionClass() != pcv3operation.CompletionUnknown {
 					t.Fatal("reset did not restore the operation form and footer")
 				}
-				if runtime.GOOS == "windows" {
+				if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
 					// Reset releases the result; it must retain the process-lifetime
 					// cleanup warning without retaining the old completion surface.
-					wantText := nativePCV3CleanupWarningTitle + "\n" + nativePCV3CleanupWarningText
-					if !snap.PCV3CleanupIncomplete || !a.pcv3Container.Visible() || pcv3RenderedText(a.pcv3Container) != wantText {
+					wantText := nativePCV3CleanupDurabilityTitle + "\n" + nativePCV3CleanupDurabilityText
+					if snap.PCV3CleanupIncomplete || !snap.PCV3CleanupDurabilityUncertain || !a.pcv3Container.Visible() || pcv3RenderedText(a.pcv3Container) != wantText {
 						t.Fatal("reset lost the persistent native cleanup warning or retained the old result")
 					}
-				} else if snap.PCV3CleanupIncomplete || a.pcv3Container.Visible() {
+				} else if snap.PCV3CleanupIncomplete || snap.PCV3CleanupDurabilityUncertain || a.pcv3Container.Visible() {
 					t.Fatal("reset retained a warning after proven cleanup")
 				}
 			})

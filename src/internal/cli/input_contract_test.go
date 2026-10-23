@@ -357,7 +357,7 @@ func TestCLIInputContract(t *testing.T) {
 		if enc.exitCode == 0 {
 			t.Fatal("split unexpectedly replaced an occupied chunk")
 		}
-		if !strings.Contains(enc.stderr, "Outcome: operation-failed") || !strings.Contains(enc.stderr, "Publication: "+nativePCV3Publication()) {
+		if !strings.Contains(enc.stderr, "Outcome: operation-failed") || !strings.Contains(enc.stderr, "Publication: "+nativePCV3Publication(t)) {
 			t.Fatalf("split refusal was not explicit: %q", enc.stderr)
 		}
 		gotChunk, err := os.ReadFile(occupiedChunk)

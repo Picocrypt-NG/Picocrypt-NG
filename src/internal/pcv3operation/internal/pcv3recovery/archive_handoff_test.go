@@ -80,7 +80,7 @@ func TestD1ArchiveHandoffDefersPlaintextAndExtractsOnlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	extracted := handoff.Extract(context.Background(), root)
-	if extracted == nil || extracted.State() != nativeRecoveryExtractionState() || extracted.CleanupIncomplete() != (runtime.GOOS == "windows") {
+	if extracted == nil || extracted.State() != nativeRecoveryExtractionState(t) || extracted.CleanupIncomplete() || extracted.CleanupDurabilityUncertain() == nativeRecoveryDirectorySyncSupported(t, filepath.Dir(target)) {
 		t.Fatalf("extraction did not complete durably: %v", extracted)
 	}
 	assertFileBytesAndMode(t, filepath.Join(directory, "payload.txt"), []byte("authenticated archive contents\n"), 0o600)
@@ -90,7 +90,7 @@ func TestD1ArchiveHandoffDefersPlaintextAndExtractsOnlyOnce(t *testing.T) {
 	if handoff.Live() || copied.Live() {
 		t.Fatal("copied archive handoff remained live")
 	}
-	if publication, cleanup := copied.Publish(context.Background()); publication != nil || cleanup {
+	if publication, cleanup := copied.Publish(context.Background()); publication != nil || cleanup != nil {
 		t.Fatal("copied handoff published plaintext after extraction")
 	}
 	assertNoRecoveryStageResidue(t, filepath.Dir(target))
@@ -111,15 +111,16 @@ func TestD1ArchiveHandoffPublishPreservesZIPAndNoReplace(t *testing.T) {
 				}
 			}
 			publication, cleanup := handoff.Publish(context.Background())
-			wantState := nativeRecoveryPublicationState()
+			wantState := nativeRecoveryPublicationState(t)
 			wantBytes := recoveryArchiveBytes(t)
 			if collision {
 				wantState = pcv3publication.StateNotPublished
 				wantBytes = []byte("foreign")
 			}
-			if publication == nil || publication.State() != wantState || cleanup != (runtime.GOOS == "windows") {
+			if publication == nil || publication.State() != wantState {
 				t.Fatalf("publication state=%v cleanup=%v", publication, cleanup)
 			}
+			requireNativeRecoveryCleanup(t, filepath.Dir(target), cleanup)
 			assertFileBytesAndMode(t, target, wantBytes, 0o600)
 			assertNoRecoveryStageResidue(t, filepath.Dir(target))
 		})
@@ -151,7 +152,7 @@ func TestD1ArchiveHandoffRejectsExtractionCollisionAndCancelledUse(t *testing.T)
 				cancel()
 			}
 			extracted := handoff.Extract(ctx, root)
-			if extracted == nil || extracted.State() != fileops.UnpackStateNotPublished || extracted.CleanupIncomplete() != (runtime.GOOS == "windows") {
+			if extracted == nil || extracted.State() != fileops.UnpackStateNotPublished || extracted.CleanupIncomplete() || extracted.CleanupDurabilityUncertain() == nativeRecoveryDirectorySyncSupported(t, filepath.Dir(target)) {
 				t.Fatalf("failed extraction state=%v", extracted)
 			}
 			if cancelled {
@@ -248,7 +249,7 @@ func TestD1ArchivePreparationPublishesAuthenticatedNonZIPAfterCoreSuccess(t *tes
 				Target: target, Mode: pcv3.RecoveryModeNormalV3,
 			}, recoveryArchiveCore(data, nil), ExecutionOptions{PrepareArchive: true})
 			if result.TakeArchiveHandoff() != nil || result.Outcome() != pcv3.OutcomeSuccess ||
-				!result.PublicationAttempted() || result.PublicationState() != nativeRecoveryPublicationState() {
+				!result.PublicationAttempted() || result.PublicationState() != nativeRecoveryPublicationState(t) {
 				t.Fatalf("non-ZIP auto-unzip did not preserve ordinary publication: %v", result)
 			}
 			assertFileBytesAndMode(t, target, data, 0o600)
@@ -283,13 +284,14 @@ func TestD1ArchiveHandoffCloseAndNilContextConsumeWithoutOutput(t *testing.T) {
 			}
 			if publish {
 				publication, cleanup := handoff.Publish(nil) //nolint:staticcheck // SA1012: exercise fail-closed handling of an invalid context.
-				if publication == nil || publication.State() != pcv3publication.StateNotPublished || cleanup != (runtime.GOOS == "windows") {
+				if publication == nil || publication.State() != pcv3publication.StateNotPublished {
 					t.Fatalf("nil context publication=%v cleanup=%v", publication, cleanup)
 				}
-			} else if handoff.Close() != (runtime.GOOS == "windows") {
-				t.Fatal("unused handoff cleanup incomplete")
+				requireNativeRecoveryCleanup(t, filepath.Dir(target), cleanup)
+			} else {
+				requireNativeRecoveryCleanup(t, filepath.Dir(target), handoff.Close())
 			}
-			if handoff.Live() || handoff.Close() {
+			if handoff.Live() || handoff.Close() != nil {
 				t.Fatal("consumed handoff remained live")
 			}
 			entries, err := os.ReadDir(filepath.Dir(target))
@@ -321,8 +323,9 @@ func TestD1ArchiveHandoffReportsUnprovenCleanupAndPreservesForeignReplacement(t 
 		if err := errors.Join(readErr, file.Close()); err != nil || !bytes.Equal(got, recoveryArchiveBytes(t)) {
 			t.Fatalf("blocked replacement changed the owned archive: %v", err)
 		}
-		if !handoff.Close() || handoff.Live() {
-			t.Fatal("blocked replacement lost cleanup uncertainty or retained authority")
+		requireNativeRecoveryCleanup(t, filepath.Dir(target), handoff.Close())
+		if handoff.Live() {
+			t.Fatal("blocked replacement retained authority after cleanup")
 		}
 		for _, absent := range []string{stagePath, movedPath, target} {
 			if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
@@ -335,7 +338,7 @@ func TestD1ArchiveHandoffReportsUnprovenCleanupAndPreservesForeignReplacement(t 
 	if err := os.WriteFile(stagePath, []byte("foreign replacement"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !handoff.Close() || handoff.Live() {
+	if handoff.Close() == nil || handoff.Live() {
 		t.Fatal("uncertain cleanup was hidden or retained usable authority")
 	}
 	assertFileBytesAndMode(t, stagePath, []byte("foreign replacement"), 0o600)
@@ -361,7 +364,7 @@ func TestD1ArchivePreparationNeverGrantsDegradedArchiveAuthority(t *testing.T) {
 		Target: target, Mode: pcv3.RecoveryModeNormalV3,
 	}, runner, ExecutionOptions{PrepareArchive: true})
 	if result.TakeArchiveHandoff() != nil || result.Outcome() != pcv3.OutcomeAuthenticatedDegraded ||
-		result.PublicationState() != nativeRecoveryPublicationState() {
+		result.PublicationState() != nativeRecoveryPublicationState(t) {
 		t.Fatal("archive option altered degraded evidence or granted archive authority")
 	}
 	assertFileBytesAndMode(t, target, data, 0o600)

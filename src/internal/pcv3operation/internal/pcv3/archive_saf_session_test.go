@@ -69,7 +69,7 @@ func TestArchiveSAFSessionStreamsExactFilesAndFinishesDurabilityUncertain(t *tes
 
 	finished := session.Finish()
 	if finished == nil || finished.State() != fileops.UnpackStatePublishedDurabilityUncertain ||
-		!finished.AttemptedEver() || finished.CleanupIncomplete() != (runtime.GOOS == "windows") {
+		!finished.AttemptedEver() || !nativeCleanupMatches(t, finished) {
 		t.Fatalf("finished SAF result = %#v; want attempted durability-uncertain with exact cleanup", finished)
 	}
 	if repeated := session.Finish(); repeated != finished {
@@ -158,7 +158,7 @@ func TestArchiveSAFSessionFrozenAuthenticatedArchiveStreamsToRealDescriptors(t *
 
 	result := session.Finish()
 	if result == nil || result.State() != fileops.UnpackStatePublishedDurabilityUncertain ||
-		!result.AttemptedEver() || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
+		!result.AttemptedEver() || !nativeCleanupMatches(t, result) {
 		t.Fatalf("authenticated SAF finish = %#v; want attempted durability-uncertain", result)
 	}
 	assertNativeArchiveStage(t, stageParent, rawTarget, 0)
@@ -481,8 +481,8 @@ func TestArchiveSAFSessionAliasesAndOutOfOrderActionsCannotAdvanceAuthority(t *t
 		second.AttemptedEver() {
 		t.Fatalf("out-of-order attempt = %#v attempted-ever=%v; want no provider authority", step, second.AttemptedEver())
 	}
-	if result := second.Abort(); result.State() != nativeArchiveSAFUnattemptedState() ||
-		result.AttemptedEver() || result.CleanupIncomplete() != (runtime.GOOS == "windows") {
+	if result := second.Abort(); result.State() != nativeArchiveSAFUnattemptedState(t) ||
+		result.AttemptedEver() || !nativeCleanupMatches(t, result) {
 		t.Fatalf("out-of-order abort = %#v", result)
 	}
 }
@@ -526,9 +526,14 @@ func TestArchiveSAFSessionCleanupUncertaintyIsIndeterminateWithoutProviderAttemp
 				}
 			}
 			result := session.Abort()
-			if result == nil || result.State() != fileops.UnpackStatePublicationIndeterminate ||
-				result.AttemptedEver() || !result.CleanupIncomplete() {
-				t.Fatalf("cleanup-uncertain abort = %#v; want unattempted indeterminate", result)
+			wantState := fileops.UnpackStatePublicationIndeterminate
+			wantDurabilityUncertain := blockedReplacement && !nativeDirectorySyncSupported(t, parent)
+			if blockedReplacement {
+				wantState = nativeArchiveSAFUnattemptedState(t)
+			}
+			if result == nil || result.State() != wantState || result.AttemptedEver() ||
+				result.CleanupIncomplete() != !blockedReplacement || result.CleanupDurabilityUncertain() != wantDurabilityUncertain {
+				t.Fatalf("cleanup abort = %#v; want unattempted state=%v incomplete=%v durability-uncertain=%v", result, wantState, !blockedReplacement, wantDurabilityUncertain)
 			}
 			if handoff.Live() || copiedHandoff.Live() || copiedHandoff.BeginSAF().Kind() != NativeArchiveSAFBeginExpired ||
 				session.Abort() != result || session.Finish() != result {
@@ -538,8 +543,6 @@ func TestArchiveSAFSessionCleanupUncertaintyIsIndeterminateWithoutProviderAttemp
 				t.Fatal("terminal cleanup uncertainty granted provider-effect authority")
 			}
 			if blockedReplacement {
-				// Namespace protection succeeded, but native Windows still cannot
-				// prove the cleanup directory barrier. No provider effect is allowed.
 				for _, absent := range []string{stagePath, retainedPath, target} {
 					if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
 						t.Fatalf("blocked replacement left unexpected plaintext: %v", err)
@@ -582,7 +585,7 @@ func TestArchiveSAFSessionAbortSettlesProviderEvidenceDeliveredDuringCleanup(t *
 	t.Cleanup(releaseCleanupNow)
 	session.state.mu.Lock()
 	realCleanup := session.state.cleanupStage
-	session.state.cleanupStage = func(stage *pcv3publication.Stage) bool {
+	session.state.cleanupStage = func(stage *pcv3publication.Stage) error {
 		close(cleanupStarted)
 		<-releaseCleanup
 		return realCleanup(stage)
@@ -851,10 +854,9 @@ func findArchiveSAFStagePath(t *testing.T, parent string) string {
 	return ""
 }
 
-// A live stage is removed on every platform. Windows cannot confirm the
-// directory barrier, so even an unattempted session retains cleanup uncertainty.
-func nativeArchiveSAFUnattemptedState() fileops.UnpackState {
-	if runtime.GOOS == "windows" {
+// Unconfirmed stage cleanup keeps an unattempted SAF session indeterminate.
+func nativeArchiveSAFUnattemptedState(t testing.TB) fileops.UnpackState {
+	if !nativeDirectorySyncSupported(t, t.TempDir()) {
 		return fileops.UnpackStatePublicationIndeterminate
 	}
 	return fileops.UnpackStateNotPublished

@@ -179,12 +179,12 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		wantStage := pcv3operation.StageNone
 		wantCode := pcv3publication.CodePublishedDurable
 		wantWarnings := []pcv3operation.Warning{pcv3operation.WarningForceUnverified}
-		if runtime.GOOS == "windows" {
+		if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
 			wantClass = pcv3operation.CompletionDurabilityUncertain
 			wantState = pcv3publication.StatePublishedDurabilityUncertain
 			wantStage = pcv3operation.StageDirectorySync
 			wantCode = pcv3publication.CodeDurabilityUncertain
-			wantWarnings = append(wantWarnings, pcv3operation.WarningDurabilityUncertain, pcv3operation.WarningCleanupIncomplete)
+			wantWarnings = append(wantWarnings, pcv3operation.WarningDurabilityUncertain, pcv3operation.WarningCleanupDurabilityUncertain)
 		}
 		if presentation.Outcome() != pcv3operation.OutcomeForceUnverified ||
 			presentation.Stage() != pcv3operation.StageWrapAuth ||
@@ -210,8 +210,8 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 			"Unverified recovery artifact created",
 			"Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content.",
 		}
-		if runtime.GOOS == "windows" {
-			fragments = append(fragments, "Output durability not confirmed", nativePCV3UncertainBody, nativePCV3DurabilityWarningText, nativePCV3CleanupWarningTitle, nativePCV3CleanupWarningText, "Close cleanup warning")
+		if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
+			fragments = append(fragments, "Output durability not confirmed", nativePCV3UncertainBody, nativePCV3DurabilityWarningText, nativePCV3CleanupDurabilityTitle, nativePCV3CleanupDurabilityText, nativePCV3CleanupDurabilityClose)
 			if strings.Contains(text, "File saved.") || strings.Contains(text, "Inspect recovery artifact") || executed.ArtifactInspection() != nil {
 				t.Fatalf("uncertain native artifact gained durable publication authority: %q", text)
 			}
@@ -374,8 +374,8 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		requireNativePCV3Publication(t, executed)
 		text := pcv3RenderedText(a.pcv3Container)
 		wantText := "Operation complete\nThe output is fully authenticated.\nComments:\nTEST ONLY comment\nFile saved.\nClose"
-		if runtime.GOOS == "windows" {
-			wantText = "Operation complete\nThe output is fully authenticated.\nComments:\nTEST ONLY comment\nOutput durability not confirmed\n" + nativePCV3UncertainBody + "\n" + nativePCV3DurabilityWarningText + "\n" + nativePCV3CleanupWarningTitle + "\n" + nativePCV3CleanupWarningText + "\nClose cleanup warning"
+		if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
+			wantText = "Operation complete\nThe output is fully authenticated.\nComments:\nTEST ONLY comment\nOutput durability not confirmed\n" + nativePCV3UncertainBody + "\n" + nativePCV3DurabilityWarningText + "\n" + nativePCV3CleanupDurabilityTitle + "\n" + nativePCV3CleanupDurabilityText + "\n" + nativePCV3CleanupDurabilityClose
 		}
 		if text != wantText {
 			t.Fatalf("normal result view = %q; want exact bounded success rendering", text)

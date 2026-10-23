@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"testing"
 )
@@ -367,7 +366,7 @@ func TestOperationFreezesEvidenceBeforeStageCallbacks(t *testing.T) {
 	result := runWithCore(context.Background(), &Request{Target: target, stageWriter: func(w io.Writer) io.Writer { *m = pcv3ranges.Map{}; return w }}, runner)
 	inspection := result.ArtifactInspection()
 	requireNativeRecoveryPublication(t, result)
-	if (inspection != nil) != (runtime.GOOS != "windows") {
+	if (inspection != nil) != nativeRecoveryDirectorySyncSupported(t, filepath.Dir(target)) {
 		t.Fatalf("mutated callback changed native inspection authority: %v/%v", result.Outcome(), result.PublicationState())
 	}
 	if inspection != nil {

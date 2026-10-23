@@ -61,11 +61,12 @@ func (step *NativeArchiveSAFStep) NextIndex() int {
 }
 
 type NativeArchiveSAFResult struct {
-	cancelled         bool
-	resourceLimited   bool
-	state             fileops.UnpackState
-	attemptedEver     bool
-	cleanupIncomplete bool
+	cancelled                  bool
+	resourceLimited            bool
+	state                      fileops.UnpackState
+	attemptedEver              bool
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
 }
 
 func (result *NativeArchiveSAFResult) Cancelled() bool { return result != nil && result.cancelled }
@@ -86,6 +87,10 @@ func (result *NativeArchiveSAFResult) AttemptedEver() bool {
 
 func (result *NativeArchiveSAFResult) CleanupIncomplete() bool {
 	return result != nil && result.cleanupIncomplete
+}
+
+func (result *NativeArchiveSAFResult) CleanupDurabilityUncertain() bool {
+	return result != nil && result.cleanupDurabilityUncertain
 }
 
 type NativeArchiveSAFEntry struct {
@@ -186,7 +191,7 @@ type nativeArchiveSAFSessionState struct {
 	cond           *sync.Cond
 	status         nativeArchiveSAFStatus
 	stage          *pcv3publication.Stage
-	cleanupStage   func(*pcv3publication.Stage) bool
+	cleanupStage   func(*pcv3publication.Stage) error
 	manifest       []nativeArchiveSAFManifestEntry
 	zipReader      *fileops.ZIPReader
 	manifestCharge uint64
@@ -348,31 +353,32 @@ func nativeArchiveSAFTerminalBegin(
 	stage *pcv3publication.Stage,
 	attemptedEver bool,
 ) *NativeArchiveSAFBegin {
-	cleanupIncomplete := cleanupNativeArchiveSAFStage(stage)
+	cleanupIncomplete, cleanupDurabilityUncertain := nativeCleanupFacts(cleanupNativeArchiveSAFStage(stage))
 	state := fileops.UnpackStateNotPublished
-	if attemptedEver || cleanupIncomplete {
+	if attemptedEver || cleanupIncomplete || cleanupDurabilityUncertain {
 		state = fileops.UnpackStatePublicationIndeterminate
 	}
 	return &NativeArchiveSAFBegin{
 		kind: NativeArchiveSAFBeginTerminal,
 		result: &NativeArchiveSAFResult{
-			state:             state,
-			attemptedEver:     attemptedEver,
-			cleanupIncomplete: cleanupIncomplete,
+			state:                      state,
+			attemptedEver:              attemptedEver,
+			cleanupIncomplete:          cleanupIncomplete,
+			cleanupDurabilityUncertain: cleanupDurabilityUncertain,
 		},
 	}
 }
 
-func cleanupNativeArchiveSAFStage(stage *pcv3publication.Stage) (incomplete bool) {
+func cleanupNativeArchiveSAFStage(stage *pcv3publication.Stage) (err error) {
 	if stage == nil {
-		return true
+		return pcv3publication.ErrCleanupIncomplete
 	}
 	defer func() {
 		if recover() != nil {
-			incomplete = true
+			err = pcv3publication.ErrCleanupIncomplete
 		}
 	}()
-	return stage.Cleanup() != nil
+	return stage.Cleanup()
 }
 
 func buildNativeArchiveSAFManifest(
@@ -839,7 +845,7 @@ func (session *NativeArchiveSAFSession) Abort() *NativeArchiveSAFResult {
 	if cleanupStage == nil {
 		cleanupStage = cleanupNativeArchiveSAFStage
 	}
-	cleanupIncomplete := cleanupStage(stage)
+	cleanupIncomplete, cleanupDurabilityUncertain := nativeCleanupFacts(cleanupStage(stage))
 	state.mu.Lock()
 	for state.pendingEffectSettlements != 0 {
 		state.cond.Wait()
@@ -853,13 +859,14 @@ func (session *NativeArchiveSAFSession) Abort() *NativeArchiveSAFResult {
 	}
 	attemptedEver := state.attemptedEver
 	publicationState := fileops.UnpackStateNotPublished
-	if attemptedEver || cleanupIncomplete || state.finishingPoisoned {
+	if attemptedEver || cleanupIncomplete || cleanupDurabilityUncertain || state.finishingPoisoned {
 		publicationState = fileops.UnpackStatePublicationIndeterminate
 	}
 	result := &NativeArchiveSAFResult{
-		state:             publicationState,
-		attemptedEver:     attemptedEver,
-		cleanupIncomplete: cleanupIncomplete,
+		state:                      publicationState,
+		attemptedEver:              attemptedEver,
+		cleanupIncomplete:          cleanupIncomplete,
+		cleanupDurabilityUncertain: cleanupDurabilityUncertain,
 	}
 	state.status = nativeArchiveSAFTerminal
 	state.terminalResult = result
@@ -903,7 +910,7 @@ func (session *NativeArchiveSAFSession) Finish() *NativeArchiveSAFResult {
 	if cleanupStage == nil {
 		cleanupStage = cleanupNativeArchiveSAFStage
 	}
-	cleanupIncomplete := cleanupStage(stage)
+	cleanupIncomplete, cleanupDurabilityUncertain := nativeCleanupFacts(cleanupStage(stage))
 	state.mu.Lock()
 	for state.pendingEffectSettlements != 0 {
 		state.cond.Wait()
@@ -921,9 +928,10 @@ func (session *NativeArchiveSAFSession) Finish() *NativeArchiveSAFResult {
 		publicationState = fileops.UnpackStatePublicationIndeterminate
 	}
 	result := &NativeArchiveSAFResult{
-		state:             publicationState,
-		attemptedEver:     attemptedEver,
-		cleanupIncomplete: cleanupIncomplete,
+		state:                      publicationState,
+		attemptedEver:              attemptedEver,
+		cleanupIncomplete:          cleanupIncomplete,
+		cleanupDurabilityUncertain: cleanupDurabilityUncertain,
 	}
 	state.status = nativeArchiveSAFTerminal
 	state.terminalResult = result

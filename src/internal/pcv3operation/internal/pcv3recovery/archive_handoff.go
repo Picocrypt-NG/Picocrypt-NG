@@ -12,9 +12,10 @@ import (
 // ArchiveResult preserves extraction publication truth separately from cleanup.
 // It never exposes stage paths, file descriptors, or platform errors.
 type ArchiveResult struct {
-	state             fileops.UnpackState
-	cleanupIncomplete bool
-	resourceLimited   bool
+	state                      fileops.UnpackState
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
+	resourceLimited            bool
 }
 
 func (result *ArchiveResult) State() fileops.UnpackState {
@@ -26,6 +27,16 @@ func (result *ArchiveResult) State() fileops.UnpackState {
 
 func (result *ArchiveResult) CleanupIncomplete() bool {
 	return result != nil && result.cleanupIncomplete
+}
+
+func (result *ArchiveResult) CleanupDurabilityUncertain() bool {
+	return result != nil && result.cleanupDurabilityUncertain
+}
+
+func (result *ArchiveResult) retainCleanupError(err error) {
+	uncertain := errors.Is(err, pcv3publication.ErrCleanupDurabilityUncertain)
+	result.cleanupDurabilityUncertain = result.cleanupDurabilityUncertain || uncertain
+	result.cleanupIncomplete = result.cleanupIncomplete || err != nil && (errors.Is(err, pcv3publication.ErrCleanupIncomplete) || !uncertain)
 }
 
 // ResourceLimited reports a closed resource-refusal cause, independently of
@@ -60,21 +71,21 @@ func (handoff *ArchiveHandoff) Live() bool {
 
 // Publish consumes the handoff before publishing the unchanged ZIP to its
 // original no-replace target. Cleanup uncertainty is independent of commit state.
-func (handoff *ArchiveHandoff) Publish(ctx context.Context) (publication pcv3publication.Result, cleanupIncomplete bool) {
+func (handoff *ArchiveHandoff) Publish(ctx context.Context) (publication pcv3publication.Result, cleanupErr error) {
 	stage := handoff.consume()
 	if stage == nil {
-		return nil, false
+		return nil, nil
 	}
 	defer func() {
-		cleanupIncomplete = stage.Cleanup() != nil
+		cleanupErr = stage.Cleanup()
 		if recovered := recover(); recovered != nil {
-			if cleanupIncomplete {
+			if cleanupErr != nil {
 				panic(pcv3publication.ErrCleanupIncomplete)
 			}
 			panic(recovered)
 		}
 	}()
-	return stage.Publish(ctx), false
+	return stage.Publish(ctx), nil
 }
 
 // Extract consumes the handoff and owns root on every path. The held private
@@ -89,14 +100,14 @@ func (handoff *ArchiveHandoff) ExtractWithReview(ctx context.Context, root *os.R
 	stage := handoff.consume()
 	result := &ArchiveResult{state: fileops.UnpackStateNotPublished}
 	defer func() {
-		if stage != nil && stage.Cleanup() != nil {
-			result.cleanupIncomplete = true
+		if stage != nil {
+			result.retainCleanupError(stage.Cleanup())
 		}
 		if root != nil && root.Close() != nil {
 			result.cleanupIncomplete = true
 		}
 		if recovered := recover(); recovered != nil {
-			if result.cleanupIncomplete {
+			if result.cleanupIncomplete || result.cleanupDurabilityUncertain {
 				panic(pcv3publication.ErrCleanupIncomplete)
 			}
 			panic(recovered)
@@ -129,10 +140,13 @@ func (handoff *ArchiveHandoff) ExtractWithReview(ctx context.Context, root *os.R
 	return result
 }
 
-// Close consumes unused archive custody and reports incomplete stage cleanup.
-func (handoff *ArchiveHandoff) Close() bool {
+// Close consumes unused archive custody and preserves both stage cleanup causes.
+func (handoff *ArchiveHandoff) Close() error {
 	stage := handoff.consume()
-	return stage != nil && stage.Cleanup() != nil
+	if stage == nil {
+		return nil
+	}
+	return stage.Cleanup()
 }
 
 func (handoff *ArchiveHandoff) consume() *pcv3publication.Stage {

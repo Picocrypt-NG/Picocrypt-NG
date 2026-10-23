@@ -12,6 +12,55 @@ import org.junit.Test
 
 class OperationStatusTest {
     @Test
+    fun `cleanup durability warning does not claim that temporary files remain`() {
+        val display = pcv3ResultDisplay(snapshot(
+            semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
+            publication = durablePublication(),
+            completionClass = "warning",
+            warnings = listOf("cleanup-durability-uncertain"),
+        ))
+
+        assertEquals(listOf(R.string.pcv3_warning_cleanup_durability_title), display.warnings.map { it.titleResId })
+        assertEquals(Pcv3ResultTone.WARNING, display.tone)
+        assertEquals(R.string.pcv3_warning_cleanup_durability_close, display.closeActionResId)
+    }
+
+    @Test
+    fun `cleanup durability output codes stay distinct and contradictory flags fail closed`() {
+        val clean = snapshot(
+            semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
+            publication = durablePublication(),
+            completionClass = "clean",
+        )
+        val cases = listOf(
+            Triple("saved-cleanup-durability-uncertain", R.string.pcv3_output_saved_title, Pcv3ResultTone.WARNING),
+            Triple("save-failed-cleanup-durability-uncertain", R.string.pcv3_output_save_failed_title, Pcv3ResultTone.ERROR),
+            Triple("discard-cleanup-durability-uncertain", R.string.pcv3_retained_discarded_title, Pcv3ResultTone.WARNING),
+        )
+        cases.forEachIndexed { index, (code, title, tone) ->
+            val result = Pcv3OutputResultView(code, cleanupIncomplete = false, cleanupDurabilityUncertain = true)
+            val presentation = Pcv3Presentation.Final(clean, "cleanup-$index", index.toLong(), outputAction = result)
+            val display = pcv3ResultDisplay(presentation)
+            assertEquals(title, display.outcome.titleResId)
+            assertEquals(tone, display.tone)
+            assertEquals(listOf(R.string.pcv3_warning_cleanup_durability_title), display.warnings.map { it.titleResId })
+            assertEquals(R.string.pcv3_warning_cleanup_durability_close, display.closeActionResId)
+
+            val contradictory = presentation.copy(outputAction = result.copy(cleanupDurabilityUncertain = false))
+            assertEquals(R.string.pcv3_output_unknown_title, pcv3ResultDisplay(contradictory).outcome.titleResId)
+        }
+        val both = pcv3ResultDisplay(Pcv3Presentation.Final(
+            clean, "cleanup-both", 4,
+            outputAction = Pcv3OutputResultView("saved-cleanup-incomplete", cleanupIncomplete = true, cleanupDurabilityUncertain = true),
+        ))
+        assertEquals(R.string.pcv3_output_saved_cleanup_title, both.outcome.titleResId)
+        assertEquals(
+            listOf(R.string.pcv3_warning_cleanup_title, R.string.pcv3_warning_cleanup_durability_title),
+            both.warnings.map { it.titleResId },
+        )
+    }
+
+    @Test
     fun `save error is visible with retained result while cleanup stays deferred`() {
         val presentation = Pcv3Presentation.Live(
             snapshot = snapshot(semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),

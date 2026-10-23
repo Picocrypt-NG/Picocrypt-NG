@@ -97,11 +97,11 @@ func runWriteWithSeams(ctx context.Context, request *WriteRequest, options Execu
 		if safeCloseFactors(owned.Factors) {
 			result.appendWarning(WarningCleanupIncomplete)
 		}
-		if stage != nil && stage.Cleanup() != nil {
-			result.appendWarning(WarningCleanupIncomplete)
+		if stage != nil {
+			result.appendCleanupError(stage.Cleanup())
 		}
-		if retained != nil && retained.Close() != nil {
-			result.appendWarning(WarningCleanupIncomplete)
+		if retained != nil {
+			result.appendCleanupError(retained.Close())
 		}
 		for _, file := range desktopProtected {
 			if safeCloseSource(file) {
@@ -270,10 +270,10 @@ func runWriteWithSeams(ctx context.Context, request *WriteRequest, options Execu
 			result.code = pcv3.CodeOperationFailed
 			result.diagnostic = diagnostic
 		} else {
-			result.appendWarning(WarningCleanupIncomplete)
+			result.appendCleanupError(err)
 		}
-		if errors.Is(err, pcv3publication.ErrCleanupIncomplete) {
-			result.appendWarning(WarningCleanupIncomplete)
+		if errors.Is(err, pcv3publication.ErrCleanupIncomplete) || errors.Is(err, pcv3publication.ErrCleanupDurabilityUncertain) {
+			result.appendCleanupError(err)
 		}
 		if publication == nil || retained == nil {
 			return result
@@ -288,8 +288,8 @@ func runWriteWithSeams(ctx context.Context, request *WriteRequest, options Execu
 // execution. Both proven publication states must honor the requested split.
 func (owner *operationOwner) finishWriteOutput(ctx context.Context, result *Result, retained *pcv3publication.RetainedFile, split *WriteSplitOptions, retainOutput bool) *Result {
 	defer func() {
-		if retained != nil && retained.Close() != nil {
-			result.appendWarning(WarningCleanupIncomplete)
+		if retained != nil {
+			result.appendCleanupError(retained.Close())
 		}
 	}()
 	if result.publicationState != pcv3publication.StatePublishedDurable && result.publicationState != pcv3publication.StatePublishedDurabilityUncertain {
@@ -320,8 +320,8 @@ func (owner *operationOwner) finishWriteOutput(ctx context.Context, result *Resu
 				result.stage = pcv3.StageCancellation
 				result.diagnostic = DiagnosticCancellation
 			}
-			if errors.Is(splitErr, pcv3publication.ErrCleanupIncomplete) {
-				result.appendWarning(WarningCleanupIncomplete)
+			if errors.Is(splitErr, pcv3publication.ErrCleanupIncomplete) || errors.Is(splitErr, pcv3publication.ErrCleanupDurabilityUncertain) {
+				result.appendCleanupError(splitErr)
 			}
 			return result
 		}

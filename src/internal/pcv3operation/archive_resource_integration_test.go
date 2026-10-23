@@ -151,10 +151,10 @@ func testArchiveResourceFrontendPresentation(t *testing.T, mode WriteMode, kind 
 		if result.Diagnostic() != DiagnosticResourceLimit || result.Stage() != StageResourceBudget || result.CompletionClass() != CompletionNoOutput || result.PublicationAttempted() {
 			t.Errorf("resource projection: diagnostic=%v stage=%v class=%v attempted=%v", result.Diagnostic(), result.Stage(), result.CompletionClass(), result.PublicationAttempted())
 		}
-		retainedEmptyDirectory := runtime.GOOS == "windows" && kind == "workspace"
+		retainedEmptyDirectory := !nativeOperationDirectorySyncSupported(t, outputParent) && kind == "workspace"
 		var warnings []Warning
-		if runtime.GOOS == "windows" {
-			warnings = []Warning{WarningCleanupIncomplete}
+		if !nativeOperationDirectorySyncSupported(t, outputParent) {
+			warnings = []Warning{WarningCleanupDurabilityUncertain}
 		}
 		if !slices.Equal(result.Warnings(), warnings) {
 			t.Errorf("resource refusal warnings=%v; want %v", result.Warnings(), warnings)

@@ -290,6 +290,8 @@
     <string name="pcv3_publication_indeterminate_body">The application cannot determine whether publication committed. Keep every source and the destination exactly as they are. Do not retry or clean up this operation.</string>
     <string name="pcv3_warning_cleanup_title">Cleanup could not be confirmed</string>
     <string name="pcv3_warning_cleanup_body">The application could not confirm that all temporary files created by this operation were removed. Keep the source files and do not delete files based on this result.</string>
+    <string name="pcv3_warning_cleanup_durability_title">Cleanup may not persist after a power loss</string>
+    <string name="pcv3_warning_cleanup_durability_body">The app could not confirm that deleted temporary files will stay deleted after a power loss. Keep the source files.</string>
     <string name="pcv3_warning_callback_title">Recovery confirmation failed</string>
     <string name="pcv3_warning_callback_body">The live recovery confirmation could not be completed. No unverified-output authority was granted.</string>
     <string name="pcv3_warning_unknown_title">Additional operation warning</string>
@@ -298,6 +300,7 @@
     <string name="pcv3_recovery_result_close">Close recovery result</string>
     <string name="pcv3_publication_close">Close publication result</string>
     <string name="pcv3_warning_cleanup_close">Close cleanup warning</string>
+    <string name="pcv3_warning_cleanup_durability_close">Close cleanup durability warning</string>
     <string name="pcv3_publication_uncertain_close">Close durability warning</string>
     <string name="pcv3_publication_indeterminate_close">Close publication warning</string>
     <string name="pcv3_output_saved_title">Output saved</string>

@@ -24,8 +24,9 @@ type retainedWriter struct{ io.Writer }
 // CopyResult is the closed result of copying one retained file to a
 // caller-owned descriptor. It carries no path or raw platform error.
 type CopyResult struct {
-	copied            bool
-	cleanupIncomplete bool
+	copied                     bool
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
 }
 
 // Copied reports that the complete source was written under the copy method's
@@ -35,6 +36,18 @@ func (result CopyResult) Copied() bool { return result.copied }
 // CleanupIncomplete reports that cleanup of an operation-owned source or
 // partial destination could not be proven.
 func (result CopyResult) CleanupIncomplete() bool { return result.cleanupIncomplete }
+
+// CleanupDurabilityUncertain reports confirmed live removal without a successful
+// directory barrier. It does not imply that owned bytes remain accessible.
+func (result CopyResult) CleanupDurabilityUncertain() bool { return result.cleanupDurabilityUncertain }
+
+func copyCleanupResult(copied bool, cleanupErr error) CopyResult {
+	return CopyResult{
+		copied:                     copied,
+		cleanupIncomplete:          errors.Is(cleanupErr, ErrCleanupIncomplete),
+		cleanupDurabilityUncertain: errors.Is(cleanupErr, ErrCleanupDurabilityUncertain),
+	}
+}
 
 // RetainedFile is an opaque, one-owner capability for one proven published
 // file (durable or durability-uncertain). It retains pinned filesystem handles and exact identity, never a path
@@ -52,10 +65,11 @@ type RetainedFile struct {
 	digestReady bool
 	targetName  string
 
-	remove            func(*os.Root, string) error
-	syncDirectory     func(*os.File) error
-	active            bool
-	cleanupIncomplete bool
+	remove                     func(*os.Root, string) error
+	syncDirectory              func(*os.File) error
+	active                     bool
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
 }
 
 // Live reports whether this exact capability can still copy or remove its
@@ -142,7 +156,7 @@ func (file *RetainedFile) CopyTo(destination *os.File) CopyResult {
 // StreamTo consumes the retained source and writes its exact open descriptor
 // to destination. On Unix the owned pathname is unlinked before the first
 // write; cancellation closes destination to interrupt a blocked stream.
-func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) CopyResult {
+func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) (result CopyResult) {
 	if file == nil {
 		return CopyResult{}
 	}
@@ -156,31 +170,35 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 	}
 	file.active = false
 	if destination == nil {
-		cleanupIncomplete := file.removeExactLocked() != nil
-		return CopyResult{cleanupIncomplete: cleanupIncomplete}
+		return copyCleanupResult(false, file.removeExactLocked())
 	}
 
 	sourceInfo, err := file.file.Stat()
 	if err != nil || sourceInfo == nil || !sourceInfo.Mode().IsRegular() || sourceInfo.Size() < 0 ||
 		sourceInfo.Size() != file.identity.Size() || !os.SameFile(file.identity, sourceInfo) {
-		return CopyResult{cleanupIncomplete: file.removeExactLocked() != nil}
+		return copyCleanupResult(false, file.removeExactLocked())
 	}
-	cleanupIncomplete := false
+	var cleanupErr error
+	removed := false
 	if runtime.GOOS != "windows" {
 		if !safePublishedRemoval(file.parent, file.identityPin) || probeIdentity(file.root, file.targetName, file.identity) != identityExpected ||
 			removeOwnedFile(file.root, file.targetName, file.identityPin, file.remove) != nil {
-			cleanupIncomplete = true
-		} else if file.syncDirectory(file.parent) != nil {
-			cleanupIncomplete = true
+			cleanupErr = ErrCleanupIncomplete
+		} else {
+			removed = true
 		}
 	}
-	if _, err := file.file.Seek(0, io.SeekStart); err != nil {
+	defer func() {
 		if runtime.GOOS == "windows" {
-			cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
-		} else if file.closeHandlesLocked() {
-			cleanupIncomplete = true
+			cleanupErr = errors.Join(cleanupErr, file.removeExactLocked())
+		} else {
+			cleanupErr = errors.Join(cleanupErr, file.finishRemovalLocked(removed))
 		}
-		return CopyResult{cleanupIncomplete: cleanupIncomplete}
+		result.cleanupIncomplete = errors.Is(cleanupErr, ErrCleanupIncomplete)
+		result.cleanupDurabilityUncertain = errors.Is(cleanupErr, ErrCleanupDurabilityUncertain)
+	}()
+	if _, err := file.file.Seek(0, io.SeekStart); err != nil {
+		return CopyResult{}
 	}
 	buffer := make([]byte, retainedCopyBufferSize)
 	defer secret.SecureZero(buffer)
@@ -189,12 +207,7 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 	for {
 		if err := ctx.Err(); err != nil {
 			_ = destination.Close()
-			if runtime.GOOS == "windows" {
-				cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
-			} else if file.closeHandlesLocked() {
-				cleanupIncomplete = true
-			}
-			return CopyResult{cleanupIncomplete: cleanupIncomplete}
+			return CopyResult{}
 		}
 		if remaining == 0 {
 			break
@@ -205,33 +218,18 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 		}
 		count, readErr := io.ReadFull(file.file, buffer[:want])
 		if readErr != nil {
-			if runtime.GOOS == "windows" {
-				cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
-			} else if file.closeHandlesLocked() {
-				cleanupIncomplete = true
-			}
-			return CopyResult{cleanupIncomplete: cleanupIncomplete}
+			return CopyResult{}
 		}
 		_, _ = preDigest.Write(buffer[:count])
 		remaining -= int64(count)
 	}
 	if !bytes.Equal(preDigest.Sum(nil), file.sha256[:]) {
 		secret.SecureZero(buffer)
-		if runtime.GOOS == "windows" {
-			cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
-		} else if file.closeHandlesLocked() {
-			cleanupIncomplete = true
-		}
-		return CopyResult{cleanupIncomplete: cleanupIncomplete}
+		return CopyResult{}
 	}
 	if _, err := file.file.Seek(0, io.SeekStart); err != nil {
 		secret.SecureZero(buffer)
-		if runtime.GOOS == "windows" {
-			cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
-		} else if file.closeHandlesLocked() {
-			cleanupIncomplete = true
-		}
-		return CopyResult{cleanupIncomplete: cleanupIncomplete}
+		return CopyResult{}
 	}
 	secret.SecureZero(buffer)
 
@@ -275,12 +273,7 @@ func (file *RetainedFile) StreamTo(ctx context.Context, destination *os.File) Co
 			copied = false
 		}
 	}
-	if runtime.GOOS == "windows" {
-		cleanupIncomplete = file.removeExactLocked() != nil || cleanupIncomplete
-	} else if file.closeHandlesLocked() {
-		cleanupIncomplete = true
-	}
-	return CopyResult{copied: copied, cleanupIncomplete: cleanupIncomplete}
+	return CopyResult{copied: copied}
 }
 
 func failedRetainedCopy(destination *os.File, plaintextWritten bool) CopyResult {
@@ -327,8 +320,7 @@ func SplitRetainedWithResult(retained *RetainedFile, options fileops.SplitOption
 	if sourceErr != nil || parentErr != nil || sourceInfo == nil || parentInfo == nil ||
 		!sourceInfo.Mode().IsRegular() || !parentInfo.IsDir() ||
 		retained.identity.Size() != sourceInfo.Size() || !os.SameFile(retained.identity, sourceInfo) {
-		_ = retained.closeHandlesLocked()
-		return fileops.SplitFailed, errors.Join(sourceErr, parentErr, ErrCleanupIncomplete)
+		return fileops.SplitFailed, errors.Join(sourceErr, parentErr, ErrCleanupIncomplete, retained.closeHandlesLocked())
 	}
 	options.ExpectedInput = sourceInfo
 	options.ExpectedDirectory = parentInfo
@@ -342,16 +334,10 @@ func SplitRetainedWithResult(retained *RetainedFile, options fileops.SplitOption
 		splitErr = errors.New("pcv3 publication: retained split produced no chunks")
 	}
 	if splitErr != nil {
-		if retained.closeHandlesLocked() {
-			return fileops.SplitFailed, errors.Join(splitErr, ErrCleanupIncomplete)
-		}
-		return fileops.SplitFailed, splitErr
+		return fileops.SplitFailed, errors.Join(splitErr, retained.closeHandlesLocked())
 	}
 	if completion.State == fileops.SplitCompleteDurabilityUncertain {
-		if retained.closeHandlesLocked() {
-			return completion.State, ErrCleanupIncomplete
-		}
-		return completion.State, nil
+		return completion.State, retained.closeHandlesLocked()
 	}
 	return completion.State, retained.removeExactLocked()
 }
@@ -372,32 +358,39 @@ func (file *RetainedFile) RemoveExact() error {
 }
 
 func (file *RetainedFile) removeExactLocked() error {
-	cleanupIncomplete := false
+	removed := false
 	sourceInfo, err := file.file.Stat()
-	if !safePublishedRemoval(file.parent, file.identityPin) || err != nil || sourceInfo == nil || !sourceInfo.Mode().IsRegular() ||
-		!os.SameFile(file.identity, sourceInfo) ||
-		probeIdentity(file.root, file.targetName, file.identity) != identityExpected {
-		cleanupIncomplete = true
-	} else {
-		if probeIdentity(file.root, file.targetName, file.identity) != identityExpected {
-			cleanupIncomplete = true
-		} else if err := removeOwnedFile(file.root, file.targetName, file.identityPin, file.remove); err != nil {
-			cleanupIncomplete = true
-		} else if err := file.syncDirectory(file.parent); err != nil {
-			cleanupIncomplete = true
+	if safePublishedRemoval(file.parent, file.identityPin) && err == nil && sourceInfo != nil && sourceInfo.Mode().IsRegular() &&
+		os.SameFile(file.identity, sourceInfo) &&
+		probeIdentity(file.root, file.targetName, file.identity) == identityExpected {
+		if probeIdentity(file.root, file.targetName, file.identity) == identityExpected &&
+			removeOwnedFile(file.root, file.targetName, file.identityPin, file.remove) == nil {
+			removed = true
 		}
 	}
-	if file.closeHandlesLocked() {
-		cleanupIncomplete = true
+	var cleanupErr error
+	if !removed {
+		cleanupErr = ErrCleanupIncomplete
 	}
-	if cleanupIncomplete {
-		return ErrCleanupIncomplete
-	}
-	return nil
+	return errors.Join(cleanupErr, file.finishRemovalLocked(removed))
 }
 
-func (file *RetainedFile) closeHandlesLocked() (failed bool) {
-	failed = file.cleanupIncomplete
+func (file *RetainedFile) finishRemovalLocked(removed bool) error {
+	var cleanupErr error
+	if file.closeFileHandlesLocked() {
+		cleanupErr = ErrCleanupIncomplete
+	}
+	if removed {
+		if _, err := file.root.Lstat(file.targetName); !errors.Is(err, os.ErrNotExist) {
+			cleanupErr = errors.Join(cleanupErr, ErrCleanupIncomplete)
+		} else if file.syncDirectory(file.parent) != nil {
+			cleanupErr = errors.Join(cleanupErr, ErrCleanupDurabilityUncertain)
+		}
+	}
+	return errors.Join(cleanupErr, file.closeHandlesLocked())
+}
+
+func (file *RetainedFile) closeFileHandlesLocked() (failed bool) {
 	if file.file != nil {
 		if err := file.file.Close(); err != nil {
 			failed = true
@@ -410,6 +403,11 @@ func (file *RetainedFile) closeHandlesLocked() (failed bool) {
 		}
 		file.identityPin = nil
 	}
+	return failed
+}
+
+func (file *RetainedFile) closeHandlesLocked() error {
+	failed := file.closeFileHandlesLocked() || file.cleanupIncomplete
 	if file.parent != nil {
 		if err := file.parent.Close(); err != nil {
 			failed = true
@@ -434,7 +432,14 @@ func (file *RetainedFile) closeHandlesLocked() (failed bool) {
 	file.targetName = ""
 	file.remove = nil
 	file.syncDirectory = nil
-	return failed
+	var cleanupErr error
+	if failed {
+		cleanupErr = ErrCleanupIncomplete
+	}
+	if file.cleanupDurabilityUncertain {
+		cleanupErr = errors.Join(cleanupErr, ErrCleanupDurabilityUncertain)
+	}
+	return cleanupErr
 }
 
 func (file *RetainedFile) String() string { return "pcv3 retained file" }
@@ -453,8 +458,5 @@ func (file *RetainedFile) Close() error {
 	file.mu.Lock()
 	defer file.mu.Unlock()
 	file.active = false
-	if file.closeHandlesLocked() {
-		return ErrCleanupIncomplete
-	}
-	return nil
+	return file.closeHandlesLocked()
 }

@@ -22,10 +22,18 @@ func finishPCV3CLIStdout(ctx context.Context, result pcv3CLIResult, useStdout bo
 		return nil
 	}
 	action := followUp.StreamTo(ctx, os.Stdout)
-	if action.CleanupIncomplete() {
+	return finishPCV3CLIStdoutAction(result, action.Code(), action.CleanupIncomplete(), action.CleanupDurabilityUncertain())
+}
+
+func finishPCV3CLIStdoutAction(result pcv3CLIResult, code pcv3operation.OutputActionCode, incomplete, uncertain bool) error {
+	if incomplete {
 		result.WithCleanupWarning()
 	}
-	if action.Code() != pcv3operation.OutputActionSaved && action.Code() != pcv3operation.OutputActionSavedCleanupIncomplete {
+	if uncertain {
+		result.WithCleanupDurabilityWarning()
+	}
+	if code != pcv3operation.OutputActionSaved && code != pcv3operation.OutputActionSavedCleanupIncomplete &&
+		code != pcv3operation.OutputActionSavedCleanupDurabilityUncertain {
 		return errors.New("PCV3 stdout transport failed; source files were preserved")
 	}
 	return nil

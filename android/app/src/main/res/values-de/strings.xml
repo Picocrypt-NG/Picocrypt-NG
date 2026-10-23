@@ -274,6 +274,8 @@
     <string name="pcv3_publication_indeterminate_body">Die App kann nicht feststellen, ob die Veröffentlichung festgeschrieben wurde. Lassen Sie alle Quellen und das Ziel genau unverändert. Wiederholen oder bereinigen Sie diesen Vorgang nicht.</string>
     <string name="pcv3_warning_cleanup_title">Bereinigung konnte nicht bestätigt werden</string>
     <string name="pcv3_warning_cleanup_body">Die App konnte nicht bestätigen, dass alle für diesen Vorgang erstellten temporären Dateien entfernt wurden. Bewahren Sie die Quelldateien auf und löschen Sie aufgrund dieses Ergebnisses keine Dateien.</string>
+    <string name="pcv3_warning_cleanup_durability_title">Löschung nach Stromausfall nicht bestätigt</string>
+    <string name="pcv3_warning_cleanup_durability_body">Die App konnte nicht bestätigen, dass bereits gelöschte temporäre Dateien nach einem Stromausfall gelöscht bleiben. Bewahren Sie die Quelldateien auf.</string>
     <string name="pcv3_warning_callback_title">Wiederherstellungsbestätigung fehlgeschlagen</string>
     <string name="pcv3_warning_callback_body">Die aktuelle Wiederherstellungsbestätigung konnte nicht abgeschlossen werden. Es wurde keine Berechtigung für nicht verifizierte Ausgabe erteilt.</string>
     <string name="pcv3_warning_unknown_title">Zusätzliche Vorgangswarnung</string>
@@ -282,6 +284,7 @@
     <string name="pcv3_recovery_result_close">Wiederherstellungsergebnis schließen</string>
     <string name="pcv3_publication_close">Veröffentlichungsergebnis schließen</string>
     <string name="pcv3_warning_cleanup_close">Bereinigungswarnung schließen</string>
+    <string name="pcv3_warning_cleanup_durability_close">Warnung zur Beständigkeit der Löschung schließen</string>
     <string name="pcv3_publication_uncertain_close">Dauerhaftigkeitswarnung schließen</string>
     <string name="pcv3_publication_indeterminate_close">Veröffentlichungswarnung schließen</string>
     <string name="pcv3_output_saved_title">Ausgabe gespeichert</string>

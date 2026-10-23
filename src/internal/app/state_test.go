@@ -227,6 +227,43 @@ func TestPCV3CleanupIncompleteIsStickyAcrossStateResets(t *testing.T) {
 	}
 }
 
+func TestPCV3CleanupFactsSurviveResetAndSelectionWithoutConflation(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		warnings   []pcv3operation.Warning
+		incomplete bool
+		durability bool
+	}{
+		{name: "live cleanup", warnings: []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete}, incomplete: true},
+		{name: "deletion durability", warnings: []pcv3operation.Warning{pcv3operation.WarningCleanupDurabilityUncertain}, durability: true},
+		{name: "independent causes", warnings: []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete, pcv3operation.WarningCleanupDurabilityUncertain}, incomplete: true, durability: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := mustNewState(t)
+			presentation, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
+				Outcome: pcv3operation.OutcomeOperationFailed, Stage: pcv3operation.StageOutputPublication,
+				Code: pcv3operation.CodeOperationFailed, Warnings: test.warnings,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.SetPCV3Result(presentation)
+			for _, transition := range []func(){
+				state.Reset, state.ResetUI, state.ResetAfterOperation,
+				func() { state.SetPCV3RoutingChecking("replacement.bin", 12) },
+				state.SetPCV3LegacyEligible,
+				func() { state.LatchPCV3Cleanup(false, false) },
+			} {
+				transition()
+				snapshot := state.UISnapshot()
+				if snapshot.PCV3CleanupIncomplete != test.incomplete || snapshot.PCV3CleanupDurabilityUncertain != test.durability {
+					t.Fatalf("transition lost or conflated process-lifetime cleanup: %#v", snapshot)
+				}
+			}
+		})
+	}
+}
+
 // TestSetPCV3IntentClearsOrderOnlyForPasswordPolicy prevents a previously
 // selected keyfile ordering from making a password-only PCV3 operation
 // permanently non-startable. Keyfile-bearing policies own their ordering.

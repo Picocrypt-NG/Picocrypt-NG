@@ -10,6 +10,19 @@ import (
 	"testing"
 )
 
+func requireNativeDirectoryCleanup(t *testing.T, directory string, err error) {
+	t.Helper()
+	if nativeDirectorySyncSupported(t, directory) {
+		if err != nil {
+			t.Fatalf("cleanup with supported native directory durability: %v", err)
+		}
+		return
+	}
+	if !errors.Is(err, ErrCleanupDurabilityUncertain) || errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("cleanup with unsupported directory durability = %v; want durability uncertainty without incomplete cleanup", err)
+	}
+}
+
 func testNativeNoReplacePublication(
 	t *testing.T,
 	wantState State,
@@ -19,6 +32,10 @@ func testNativeNoReplacePublication(
 ) {
 	t.Helper()
 	directory := t.TempDir()
+	if !nativeDirectorySyncSupported(t, directory) {
+		wantState, wantOutcome = StatePublishedDurabilityUncertain, pcv3result.OutcomeCommittedDurabilityUncertain
+		wantStage, wantCode = pcv3result.StageDirectorySync, CodeDurabilityUncertain
+	}
 	target := filepath.Join(directory, "native-output.pcv")
 	payload := []byte("complete native PCV3 publication")
 	stage, err := Create(target, nil, PolicyNoReplace)
@@ -32,9 +49,7 @@ func testNativeNoReplacePublication(
 
 	result := stage.Publish(context.Background())
 	requireResult(t, result, wantState, wantOutcome, wantStage, wantCode)
-	if err := stage.Cleanup(); errors.Is(err, ErrCleanupIncomplete) != (runtime.GOOS == "windows") {
-		t.Fatalf("cleanup native publication: %v", err)
-	}
+	requireNativeDirectoryCleanup(t, directory, stage.Cleanup())
 	requireFileBytes(t, target, payload)
 	info, err := os.Lstat(target)
 	if err != nil {
@@ -82,9 +97,7 @@ func testNativeLateCollision(t *testing.T) {
 		pcv3result.StageOutputPublication,
 		CodeAtomicFailed,
 	)
-	if err := stage.Cleanup(); errors.Is(err, ErrCleanupIncomplete) != (runtime.GOOS == "windows") {
-		t.Fatalf("cleanup rejected collision stage: %v", err)
-	}
+	requireNativeDirectoryCleanup(t, directory, stage.Cleanup())
 	requireFileBytes(t, target, foreign)
 	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("owned stage remains after proven non-commit cleanup: %v", err)

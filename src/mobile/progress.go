@@ -649,8 +649,9 @@ func (state *pcv3ArchiveState) isLive() bool {
 }
 
 type pcv3OutputActionResult struct {
-	code              string
-	cleanupIncomplete bool
+	code                       string
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
 }
 
 type pcv3OutputAction interface {
@@ -669,8 +670,9 @@ func (action *nativePCV3OutputAction) Discard() pcv3OutputActionResult {
 	}
 	result := action.followUp.Discard()
 	return pcv3OutputActionResult{
-		code:              result.Code().String(),
-		cleanupIncomplete: result.CleanupIncomplete(),
+		code:                       result.Code().String(),
+		cleanupIncomplete:          result.CleanupIncomplete(),
+		cleanupDurabilityUncertain: result.CleanupDurabilityUncertain(),
 	}
 }
 
@@ -680,8 +682,9 @@ func (action *nativePCV3OutputAction) SaveTo(destination *os.File) pcv3OutputAct
 	}
 	result := action.followUp.SaveTo(destination)
 	return pcv3OutputActionResult{
-		code:              result.Code().String(),
-		cleanupIncomplete: result.CleanupIncomplete(),
+		code:                       result.Code().String(),
+		cleanupIncomplete:          result.CleanupIncomplete(),
+		cleanupDurabilityUncertain: result.CleanupDurabilityUncertain(),
 	}
 }
 
@@ -736,8 +739,9 @@ func (output *PCV3Output) Format(state fmt.State, verb rune) {
 
 // PCV3OutputResult is the path-free terminal result of one output action.
 type PCV3OutputResult struct {
-	code              string
-	cleanupIncomplete bool
+	code                       string
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
 }
 
 func (result *PCV3OutputResult) String() string {
@@ -768,6 +772,10 @@ func (result *PCV3OutputResult) CleanupIncomplete() bool {
 	return result != nil && result.cleanupIncomplete
 }
 
+func (result *PCV3OutputResult) CleanupDurabilityUncertain() bool {
+	return result != nil && result.cleanupDurabilityUncertain
+}
+
 // Discard consumes the capability before removing only its exact retained
 // plaintext owner. Any blocking filesystem effect occurs outside the global
 // operation registry lock.
@@ -778,7 +786,10 @@ func (output *PCV3Output) Discard() (result *PCV3OutputResult) {
 	}
 	defer settlePCV3Output(state)
 	actionResult := discardPCV3OutputAction(action)
-	return &PCV3OutputResult{code: actionResult.code, cleanupIncomplete: actionResult.cleanupIncomplete}
+	return &PCV3OutputResult{
+		code: actionResult.code, cleanupIncomplete: actionResult.cleanupIncomplete,
+		cleanupDurabilityUncertain: actionResult.cleanupDurabilityUncertain,
+	}
 }
 
 // SaveFD consumes the capability before transferring one Android-owned file
@@ -804,7 +815,10 @@ func (output *PCV3Output) SaveFD(destinationFD int64) (result *PCV3OutputResult)
 		state.live = true
 		state.mu.Unlock()
 	}
-	return &PCV3OutputResult{code: actionResult.code, cleanupIncomplete: actionResult.cleanupIncomplete}
+	return &PCV3OutputResult{
+		code: actionResult.code, cleanupIncomplete: actionResult.cleanupIncomplete,
+		cleanupDurabilityUncertain: actionResult.cleanupDurabilityUncertain,
+	}
 }
 
 func pcv3OutputFileFromFD(destinationFD int64) *os.File {
@@ -1381,9 +1395,9 @@ func archiveCleanupIncompletePCV3Presentation() pcv3operation.Presentation {
 func archiveFailurePCV3Presentation(closed pcv3operation.Presentation) pcv3operation.Presentation {
 	var warnings []pcv3operation.Warning
 	for _, warning := range closed.Warnings() {
-		if warning == pcv3operation.WarningCleanupIncomplete {
+		if warning == pcv3operation.WarningCleanupIncomplete ||
+			warning == pcv3operation.WarningCleanupDurabilityUncertain {
 			warnings = append(warnings, warning)
-			break
 		}
 	}
 	presentation, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
@@ -1407,6 +1421,9 @@ func outputFailurePCV3Presentation(
 	if result.cleanupIncomplete {
 		warnings = append(warnings, pcv3operation.WarningCleanupIncomplete)
 	}
+	if result.cleanupDurabilityUncertain {
+		warnings = append(warnings, pcv3operation.WarningCleanupDurabilityUncertain)
+	}
 	presentation, err := pcv3operation.NewPresentation(pcv3operation.PresentationSpec{
 		Outcome:    pcv3operation.OutcomeOperationFailed,
 		Stage:      pcv3operation.StageOutputPublication,
@@ -1424,9 +1441,13 @@ func outputArchiveFailurePCV3Presentation(
 	closed pcv3operation.Presentation,
 	result pcv3OutputActionResult,
 ) pcv3operation.Presentation {
-	presentation := archiveFailurePCV3Presentation(closed)
-	if !result.cleanupIncomplete {
-		return presentation
+	for _, warning := range closed.Warnings() {
+		switch warning {
+		case pcv3operation.WarningCleanupIncomplete:
+			result.cleanupIncomplete = true
+		case pcv3operation.WarningCleanupDurabilityUncertain:
+			result.cleanupDurabilityUncertain = true
+		}
 	}
 	return outputFailurePCV3Presentation(pcv3operation.DiagnosticCoreFailure, result)
 }

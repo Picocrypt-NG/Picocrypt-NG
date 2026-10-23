@@ -27,11 +27,11 @@ func TestArchiveFollowUpConsumesAuthenticatedArchiveOnce(t *testing.T) {
 
 	extractRoot := openNativeArchiveRoot(t)
 	result := handoff.Extract(context.Background(), extractRoot)
-	if result == nil || result.State() != nativeExtractionState() ||
-		result.CleanupIncomplete() != (runtime.GOOS == "windows") {
+	if result == nil || result.State() != nativeExtractionState(t) ||
+		!nativeCleanupMatches(t, result) {
 		t.Fatalf("archive extraction result = %#v; want durable with proven cleanup", result)
 	}
-	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() {
+	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() != nil {
 		t.Fatal("copied archive handoff retained authority after first consumption")
 	}
 	assertNativeArchiveStage(t, stageParent, rawTarget, 0)
@@ -43,8 +43,8 @@ func TestNativeArchivePublishPreservesTargetAndCleanup(t *testing.T) {
 			handoff, parent, target := newNativeArchiveHandoffFixture(t)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			wantState, wantStage, wantCode := nativePublicationState(), StageNone, pcv3publication.CodePublishedDurable
-			if runtime.GOOS == "windows" {
+			wantState, wantStage, wantCode := nativePublicationState(t), StageNone, pcv3publication.CodePublishedDurable
+			if !nativeDirectorySyncSupported(t, parent) {
 				wantStage, wantCode = StageDirectorySync, pcv3publication.CodeDurabilityUncertain
 			}
 			const foreign = "unrelated file must be preserved"
@@ -94,8 +94,11 @@ func TestNativeArchivePublishPreservesTargetAndCleanup(t *testing.T) {
 				wantState, wantStage, wantCode = pcv3publication.StateNotPublished, StageCancellation, pcv3publication.CodeCancelled
 			}
 			publication, cleanup := handoff.Publish(ctx)
-			if publication == nil || publication.State() != wantState || publication.Stage() != wantStage || publication.Code() != wantCode || cleanup != (name == "cleanup replacement" || runtime.GOOS == "windows") {
+			if publication == nil || publication.State() != wantState || publication.Stage() != wantStage || publication.Code() != wantCode || (cleanup != nil) != (name == "cleanup replacement" || !nativeDirectorySyncSupported(t, parent)) {
 				t.Fatalf("Publish = %v cleanup=%v; want %v/%v/%v", publication, cleanup, wantState, wantStage, wantCode)
+			}
+			if name != "cleanup replacement" && !nativeCleanupErrorMatches(t, cleanup) {
+				t.Fatalf("Publish cleanup lost its native durability classification: %v", cleanup)
 			}
 			if handoff.Live() {
 				t.Fatal("publication retained a live archive capability")
@@ -161,7 +164,7 @@ func TestNativeArchivePublishAndExtractShareOneShotAuthority(t *testing.T) {
 			t.Fatalf("losing extraction wrote files: %v, %v", entries, err)
 		}
 	} else {
-		if extraction.State() != nativeExtractionState() {
+		if extraction.State() != nativeExtractionState(t) {
 			t.Fatalf("winning extraction failed: %v", extraction.State())
 		}
 		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
@@ -185,10 +188,10 @@ func TestArchiveFollowUpCancelledContextConsumesAndCleansWithoutPublication(t *t
 	result := handoff.Extract(ctx, extractRoot)
 
 	if result == nil || result.State() != fileops.UnpackStateNotPublished ||
-		result.CleanupIncomplete() != (runtime.GOOS == "windows") {
+		!nativeCleanupMatches(t, result) {
 		t.Fatalf("cancelled archive extraction result = %#v; want not-published with proven cleanup", result)
 	}
-	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() {
+	if handoff.Live() || copyOfHandoff.Live() || copyOfHandoff.Close() != nil {
 		t.Fatal("cancelled archive extraction retained one-shot authority")
 	}
 	if _, err := extractRoot.Stat("."); err == nil {
@@ -260,8 +263,8 @@ func TestArchiveFollowUpFrozenTreeContent(t *testing.T) {
 		t.Fatalf("open extraction root: %v", err)
 	}
 	result := handoff.Extract(context.Background(), root)
-	if result == nil || result.State() != nativeExtractionState() ||
-		result.CleanupIncomplete() != (runtime.GOOS == "windows") {
+	if result == nil || result.State() != nativeExtractionState(t) ||
+		!nativeCleanupMatches(t, result) {
 		t.Fatalf("frozen archive result = %#v; want durable with proven cleanup", result)
 	}
 	assertArchiveHandoffFile(t, filepath.Join(extractRootPath, "root.txt"), "PCV3 authenticated archive fixture\n")

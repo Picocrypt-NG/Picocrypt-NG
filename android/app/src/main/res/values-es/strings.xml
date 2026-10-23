@@ -278,6 +278,8 @@
     <string name="pcv3_publication_indeterminate_body">La aplicación no puede determinar si la publicación se confirmó. Conserva todas las fuentes y el destino exactamente como están. No repitas ni limpies esta operación.</string>
     <string name="pcv3_warning_cleanup_title">No se ha podido confirmar la limpieza</string>
     <string name="pcv3_warning_cleanup_body">La aplicación no ha podido confirmar que se hayan eliminado todos los archivos temporales creados por esta operación. Conserva los archivos de origen y no elimines archivos basándote en este resultado.</string>
+    <string name="pcv3_warning_cleanup_durability_title">El borrado podría no persistir tras un corte de energía</string>
+    <string name="pcv3_warning_cleanup_durability_body">La aplicación no pudo confirmar que los archivos temporales borrados sigan borrados tras un corte de energía. Conserve los archivos de origen.</string>
     <string name="pcv3_warning_callback_title">Error al confirmar la recuperación</string>
     <string name="pcv3_warning_callback_body">No se ha podido completar la confirmación activa de recuperación. No se ha concedido autorización para producir una salida no verificada.</string>
     <string name="pcv3_warning_unknown_title">Advertencia adicional de la operación</string>
@@ -286,6 +288,7 @@
     <string name="pcv3_recovery_result_close">Cerrar resultado de recuperación</string>
     <string name="pcv3_publication_close">Cerrar resultado de publicación</string>
     <string name="pcv3_warning_cleanup_close">Cerrar advertencia de limpieza</string>
+    <string name="pcv3_warning_cleanup_durability_close">Cerrar aviso sobre la persistencia del borrado</string>
     <string name="pcv3_publication_uncertain_close">Cerrar advertencia de durabilidad</string>
     <string name="pcv3_publication_indeterminate_close">Cerrar advertencia de publicación</string>
     <string name="pcv3_output_saved_title">Salida guardada</string>

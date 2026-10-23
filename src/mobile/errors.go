@@ -54,6 +54,8 @@ func pcv3WarningCode(warning pcv3operation.Warning) string {
 		return "publication-indeterminate"
 	case pcv3operation.WarningCleanupIncomplete:
 		return "cleanup-incomplete"
+	case pcv3operation.WarningCleanupDurabilityUncertain:
+		return "cleanup-durability-uncertain"
 	case pcv3operation.WarningCallbackFailure:
 		return "callback-failure"
 	default:

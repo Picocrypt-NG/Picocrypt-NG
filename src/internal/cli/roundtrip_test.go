@@ -715,6 +715,7 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
+			durable := nativeCLIDirectorySyncSupported(t, dir)
 			plaintext := make([]byte, 16*1024)
 			for index := range plaintext {
 				plaintext[index] = byte(index*31 + 7)
@@ -733,7 +734,7 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 			}
 			encryptArgs = append(encryptArgs, test.encryptFlags...)
 			encrypted := runCLITestCommand(t, binary, encryptArgs...)
-			if runtime.GOOS == "windows" {
+			if !durable {
 				const splitNotice = "All parts were created. Write durability could not be confirmed, so the complete encrypted file and source files were kept.\n"
 				if strings.Count(encrypted.stderr, splitNotice) != 1 {
 					t.Fatalf("uncertain split lost retention notice: %q", encrypted.stderr)
@@ -741,8 +742,8 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 				encrypted.stderr = strings.Replace(encrypted.stderr, splitNotice, "", 1)
 			}
 			outcome := "success"
-			if runtime.GOOS == "windows" {
-				// Complete chunks do not erase the retained owner's cleanup failure.
+			if !durable {
+				// Complete chunks do not prove persistence of private-stage removal.
 				outcome = "operation-failed"
 			}
 			requireNativePCV3FileTerminal(t, encrypted, "", outcome)
@@ -761,7 +762,7 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 			if chunkCount <= 10 {
 				t.Fatalf("chunk count = %d; want more than 10 to exercise numeric ordering", chunkCount)
 			}
-			if runtime.GOOS == "windows" {
+			if !durable {
 				retained, err := os.ReadFile(volume)
 				if err != nil || !bytes.Equal(retained, combined.Bytes()) {
 					t.Fatalf("uncertain split did not retain complete ciphertext: %v", err)
@@ -790,10 +791,10 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 			}
 			decryptArgs = append(decryptArgs, test.decryptFlags...)
 			decrypted := runCLITestCommand(t, binary, decryptArgs...)
-			wantExit := nativePCV3FileExit()
+			wantExit := nativePCV3FileExit(t)
 			if test.name == "d1" {
 				wantExit = ExitPCV3Warning
-				if runtime.GOOS == "windows" {
+				if !durable {
 					wantExit = ExitPCV3DurabilityUncertain
 				}
 			}
@@ -803,9 +804,9 @@ func TestPCV3CLISplitRoundTrip(t *testing.T) {
 			if test.name == "normal" {
 				requireNativePCV3Published(t, decrypted, "")
 			} else if len(decrypted.stdout) != 0 ||
-				!strings.HasPrefix(decrypted.stderr, "Outcome: authenticated-degraded\nPublication: "+nativePCV3Publication()+"\n") ||
+				!strings.HasPrefix(decrypted.stderr, "Outcome: authenticated-degraded\nPublication: "+nativePCV3Publication(t)+"\n") ||
 				!strings.Contains(decrypted.stderr, "Warning: output is authenticated but recovery redundancy is damaged\n") ||
-				(runtime.GOOS == "windows" && !strings.Contains(decrypted.stderr, nativePCV3DurabilityWarning)) {
+				(!durable && !strings.Contains(decrypted.stderr, nativePCV3DurabilityWarning)) {
 				t.Fatalf("degraded D1 split lost authentication/publication warning: %+v", decrypted)
 			}
 			got, err := os.ReadFile(output)

@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -71,9 +70,10 @@ func TestLateArchiveCancellationPreservesPublishedState(t *testing.T) {
 }
 
 type archiveExtractionFixture struct {
-	state             fileops.UnpackState
-	cleanupIncomplete bool
-	resourceLimited   bool
+	state                      fileops.UnpackState
+	cleanupIncomplete          bool
+	cleanupDurabilityUncertain bool
+	resourceLimited            bool
 }
 
 func (fixture archiveExtractionFixture) State() fileops.UnpackState {
@@ -84,8 +84,30 @@ func (fixture archiveExtractionFixture) CleanupIncomplete() bool {
 	return fixture.cleanupIncomplete
 }
 
+func (fixture archiveExtractionFixture) CleanupDurabilityUncertain() bool {
+	return fixture.cleanupDurabilityUncertain
+}
+
 func (fixture archiveExtractionFixture) ResourceLimited() bool {
 	return fixture.resourceLimited
+}
+
+func TestArchiveExtractionKeepsDeletionDurabilitySeparateFromPublication(t *testing.T) {
+	for _, state := range []fileops.UnpackState{fileops.UnpackStateNotPublished, fileops.UnpackStatePublishedDurable} {
+		fixture := archiveExtractionFixture{state: state, cleanupDurabilityUncertain: true}
+		result := resultFromArchiveExtraction(context.Background(), fixture)
+		if !result.Presentation().valid() || result.SourceDeletionAllowed() ||
+			!slices.Equal(result.Warnings(), []Warning{WarningCleanupDurabilityUncertain}) {
+			t.Fatalf("cleanup durability changed result authority or was lost: %v", result)
+		}
+		wantState := pcv3publication.StateNotPublished
+		if state == fileops.UnpackStatePublishedDurable {
+			wantState = pcv3publication.StatePublishedDurable
+		}
+		if result.PublicationState() != wantState {
+			t.Fatal("deletion durability replaced output publication truth")
+		}
+	}
 }
 
 func TestArchiveFollowUpReturnsCommonTerminalResult(t *testing.T) {
@@ -189,7 +211,7 @@ func TestArchivePublicationPreservesTransportAndCleanupResult(t *testing.T) {
 			}
 			ctx := context.Background()
 			wantCompletion, wantDiagnostic := CompletionClean, DiagnosticNone
-			if runtime.GOOS == "windows" {
+			if !nativeOperationDirectorySyncSupported(t, filepath.Dir(target)) {
 				wantCompletion = CompletionDurabilityUncertain
 			}
 			switch name {
@@ -209,13 +231,17 @@ func TestArchivePublicationPreservesTransportAndCleanupResult(t *testing.T) {
 				defer cancel()
 				wantCompletion, wantDiagnostic = CompletionRefused, DiagnosticCancellation
 			case "cleanup warning":
-				if runtime.GOOS != "windows" {
+				if nativeOperationDirectorySyncSupported(t, filepath.Dir(target)) {
 					wantCompletion = CompletionWarning
 				}
 			}
 			publication := stage.Publish(ctx)
 			// Cleanup is a separate axis from the publisher's durable result.
-			result := resultFromArchivePublication(ctx, publication, name == "cleanup warning")
+			var cleanupErr error
+			if name == "cleanup warning" {
+				cleanupErr = pcv3publication.ErrCleanupIncomplete
+			}
+			result := resultFromArchivePublication(ctx, publication, cleanupErr)
 			if result.CompletionClass() != wantCompletion || result.Diagnostic() != wantDiagnostic ||
 				!result.PublicationAttempted() || result.PublicationState() != publication.State() ||
 				result.PublicationStage() != publication.Stage() || result.PublicationCode() != publication.Code() ||

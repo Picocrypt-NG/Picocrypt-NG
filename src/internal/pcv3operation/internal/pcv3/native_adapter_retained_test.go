@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -28,7 +27,10 @@ func TestNativeReadOutputRequiresDurabilityForRetainedOwner(t *testing.T) {
 	output := &NativeReadOutput{state: state}
 
 	retained := output.PublishRetained(context.Background())
-	if (retained != nil) != (runtime.GOOS != "windows") || (retained != nil && !retained.Live()) {
+	if retained != nil {
+		t.Cleanup(func() { _ = retained.Close() })
+	}
+	if (retained != nil) != nativeDirectorySyncSupported(t, directory) || (retained != nil && !retained.Live()) {
 		sink.abortUncommitted()
 		t.Fatal("durable normal output did not transfer its exact retained owner")
 	}
@@ -51,8 +53,8 @@ func TestNativeReadOutputRequiresDurabilityForRetainedOwner(t *testing.T) {
 	}
 	sink.snapshot(nativeResult)
 	if !nativeResult.PublicationAttempted() ||
-		nativeResult.PublicationState() != nativePublicationState() ||
-		nativeResult.CleanupIncomplete() != (runtime.GOOS == "windows") {
+		nativeResult.PublicationState() != nativePublicationState(t) ||
+		!nativeCleanupMatches(t, nativeResult) {
 		if retained != nil {
 			_ = retained.RemoveExact()
 		}
@@ -62,7 +64,7 @@ func TestNativeReadOutputRequiresDurabilityForRetainedOwner(t *testing.T) {
 			nativeResult.CleanupIncomplete(),
 		)
 	}
-	got, err := os.ReadFile(target)
+	got, err := readArchiveCustodyTestFile(target)
 	if err != nil || string(got) != string(payload) {
 		if retained != nil {
 			_ = retained.RemoveExact()

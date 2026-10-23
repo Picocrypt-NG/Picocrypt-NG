@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -633,10 +632,11 @@ func TestPCV3TypedExtractionMissingRoot(t *testing.T) {
 			t.Fatal("typed extraction returned no result")
 		}
 		wantState := fileops.UnpackStatePublishedDurable
-		if runtime.GOOS == "windows" {
+		uncertain := !nativeOperationDirectorySyncSupported(t, extractDir)
+		if uncertain {
 			wantState = fileops.UnpackStatePublishedDurabilityUncertain
 		}
-		if result.State() != wantState || errors.Is(result, fileops.ErrUnpackCleanupIncomplete) || (errors.Unwrap(result) != nil) != (runtime.GOOS == "windows") {
+		if result.State() != wantState || errors.Is(result, fileops.ErrUnpackCleanupIncomplete) || (errors.Unwrap(result) != nil) != uncertain {
 			t.Fatalf("existing-root extraction = %v, %v; want %v with exact cleanup", result.State(), errors.Unwrap(result), wantState)
 		}
 		contents, err := os.ReadFile(filepath.Join(extractDir, "payload.txt")) // #nosec G304 -- test-owned extraction root

@@ -206,7 +206,11 @@ internal class GoPcv3Archive(
     override fun close(): Pcv3SnapshotData = native.close()
     override fun beginSaf(): Pcv3ArchiveBeginData = native.beginSaf()
 }
-data class Pcv3OutputResultData(val code: String, val cleanupIncomplete: Boolean)
+data class Pcv3OutputResultData(
+    val code: String,
+    val cleanupIncomplete: Boolean,
+    val cleanupDurabilityUncertain: Boolean = false,
+)
 interface Pcv3OutputCapability {
     fun save(destination: ParcelFileDescriptor): Pcv3OutputResultData
     fun discard(): Pcv3OutputResultData
@@ -371,13 +375,16 @@ internal fun cleanupPcv3Journal(
 private val pcv3SaveResultCodes = setOf(
     "saved",
     "saved-cleanup-incomplete",
+    "saved-cleanup-durability-uncertain",
     "save-failed",
     "save-failed-cleanup-incomplete",
+    "save-failed-cleanup-durability-uncertain",
     "expired",
 )
 private val pcv3DiscardResultCodes = setOf(
     "discarded",
     "discard-cleanup-incomplete",
+    "discard-cleanup-durability-uncertain",
     "expired",
 )
 
@@ -388,11 +395,15 @@ private fun PCV3OutputResult?.toPcv3OutputData(
     if (this == null) return Pcv3OutputResultData(failureCode, cleanupIncomplete = true)
     val code = code()
     val cleanupIsIncomplete = cleanupIncomplete()
+    val cleanupDurabilityIsUncertain = cleanupDurabilityUncertain()
     val codeRequiresCleanupWarning = code.endsWith("-cleanup-incomplete")
-    if (code !in allowedCodes || codeRequiresCleanupWarning != cleanupIsIncomplete) {
+    val codeRequiresCleanupDurabilityWarning = code.endsWith("-cleanup-durability-uncertain")
+    if (code !in allowedCodes || codeRequiresCleanupWarning != cleanupIsIncomplete ||
+        !cleanupIsIncomplete && codeRequiresCleanupDurabilityWarning != cleanupDurabilityIsUncertain
+    ) {
         return Pcv3OutputResultData(failureCode, cleanupIncomplete = true)
     }
-    return Pcv3OutputResultData(code, cleanupIsIncomplete)
+    return Pcv3OutputResultData(code, cleanupIsIncomplete, cleanupDurabilityIsUncertain)
 }
 
 /** Narrow JNI adapter so JVM custody tests do not need to load the device library. */

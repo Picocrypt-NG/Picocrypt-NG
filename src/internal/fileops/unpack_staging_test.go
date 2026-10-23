@@ -854,7 +854,7 @@ func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
 
 		result := UnpackWithResult(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir})
 		wantState := UnpackStatePublishedDurable
-		if runtime.GOOS == "windows" {
+		if !nativeFileopsDirectorySyncSupported(t, extractDir) {
 			wantState = UnpackStatePublishedDurabilityUncertain
 		}
 		requireUnpackState(t, result, wantState)

@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1418,7 +1417,7 @@ func TestNativePCV3EncryptionDeletesSourceOnlyAfterDurablePublication(t *testing
 	if result.cancelled || result.deleteFailed {
 		t.Fatalf("native publication cleanup = %+v", result)
 	}
-	if runtime.GOOS == "windows" {
+	if !nativeUIDirectorySyncSupported(t, dir) {
 		if got, err := os.ReadFile(source); err != nil || !bytes.Equal(got, plaintext) {
 			t.Fatalf("uncertain publication changed its source: %q, %v", got, err)
 		}

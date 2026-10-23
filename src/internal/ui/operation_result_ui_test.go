@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -61,13 +60,13 @@ func TestPCV3ResultSurfacePreservesFrontendFinalization(t *testing.T) {
 				if strings.Contains(text, "Operation complete") {
 					t.Errorf("result surface still presents the previous file's success as the final outcome: %q", text)
 				}
-				if runtime.GOOS == "windows" && (!strings.Contains(text, nativePCV3UncertainBody) || !strings.Contains(text, nativePCV3DurabilityWarningText) || strings.Contains(text, "File saved.")) {
+				if !nativeUIDirectorySyncSupported(t, t.TempDir()) && (!strings.Contains(text, nativePCV3UncertainBody) || !strings.Contains(text, nativePCV3DurabilityWarningText) || strings.Contains(text, "File saved.")) {
 					t.Errorf("frontend finalization concealed native uncertainty: %q", text)
 				}
-				if runtime.GOOS == "windows" && (!strings.Contains(text, nativePCV3CleanupWarningTitle) || !strings.Contains(text, nativePCV3CleanupWarningText) || findPCV3Button(a.pcv3Container, "Close cleanup warning") == nil) {
+				if !nativeUIDirectorySyncSupported(t, t.TempDir()) && (!strings.Contains(text, nativePCV3CleanupDurabilityTitle) || !strings.Contains(text, nativePCV3CleanupDurabilityText) || findPCV3Button(a.pcv3Container, nativePCV3CleanupDurabilityClose) == nil) {
 					t.Errorf("frontend finalization concealed native cleanup uncertainty: %q", text)
 				}
-				if runtime.GOOS != "windows" && !test.recursive && !strings.Contains(text, "File saved.") {
+				if nativeUIDirectorySyncSupported(t, t.TempDir()) && !test.recursive && !strings.Contains(text, "File saved.") {
 					t.Errorf("cancellation hid the already-published output: %q", text)
 				}
 			})

@@ -33,8 +33,8 @@ func TestDarwinDirectoryBarrierFailurePreservesCommittedOutput(t *testing.T) {
 			requireResult(t, result, StatePublishedDurabilityUncertain,
 				pcv3result.OutcomeCommittedDurabilityUncertain,
 				pcv3result.StageDirectorySync, CodeDurabilityUncertain)
-			if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
-				t.Fatalf("cleanup without a durable private-directory retirement = %v; want ErrCleanupIncomplete", err)
+			if err := stage.Cleanup(); !errors.Is(err, ErrCleanupDurabilityUncertain) || errors.Is(err, ErrCleanupIncomplete) {
+				t.Fatalf("removed private-directory cleanup = %v; want durability uncertainty without incomplete removal", err)
 			}
 			requireFileBytes(t, target, payload)
 			requireNoStageEntries(t, directory)

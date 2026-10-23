@@ -23,6 +23,97 @@ import org.junit.Test
 class Pcv3SafLifecycleTest {
 
     @Test
+    fun `SAF Finish retains deletion durability warning`() = runTest {
+        assertCleanupTerminalSettles(finish = true, incomplete = false)
+    }
+
+    @Test
+    fun `SAF Finish retains both cleanup facts`() = runTest {
+        assertCleanupTerminalSettles(finish = true, incomplete = true)
+    }
+
+    @Test
+    fun `SAF Abort retains deletion durability warning`() = runTest {
+        assertCleanupTerminalSettles(finish = false, incomplete = false)
+    }
+
+    @Test
+    fun `SAF Abort retains both cleanup facts`() = runTest {
+        assertCleanupTerminalSettles(finish = false, incomplete = true)
+    }
+
+    private suspend fun assertCleanupTerminalSettles(finish: Boolean, incomplete: Boolean) {
+        val events = mutableListOf<String>()
+        val terminalReceipt = "terminal-cleanup-$finish-$incomplete"
+        val base = if (finish) "durability-uncertain" else "publication-indeterminate"
+        val warnings = buildList {
+            add(base)
+            if (incomplete) add("cleanup-incomplete")
+            add("cleanup-durability-uncertain")
+        }
+        val terminal = (if (finish) terminalSnapshot(terminalReceipt) else {
+            safPublicationIndeterminateSnapshot(terminalReceipt)
+        }).copy(warnings = warnings)
+        val operation = SafOperation("op-cleanup-$finish-$incomplete", archivePendingSnapshot(), events)
+        val session = SafSession(operation, "active-cleanup", terminal, events)
+        operation.archive = SafArchive(operation, session, activeSnapshot("active-cleanup"), events)
+        val custodian = RecordingCustodian(events)
+        val lifecycle = lifecycle(operation, custodian)
+        val live = lifecycle.start(request(), "password".toCharArray(), File("receipt")).getOrThrow()
+        val publisher = RecordingPublisher(
+            events,
+            result = if (finish) Pcv3SafPublicationResult.READY_TO_FINISH else Pcv3SafPublicationResult.NEEDS_ABORT,
+        )
+
+        val result = lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueUri(), publisher)
+
+        assertEquals("provider outcome must stay distinct from terminal cleanup", finish, result.isSuccess)
+        assertEquals("a valid terminal must settle before Release", 1, operation.releaseCalls)
+        assertEquals(1, publisher.publishCalls)
+        assertEquals(if (finish) 1 else 0, session.finishCalls)
+        assertEquals(if (finish) 0 else 1, session.abortCalls)
+        assertEquals(ReceiptCustody.Exact(terminalReceipt), custodian.custody)
+        val final = lifecycle.presentation.value as Pcv3Presentation.Final
+        assertEquals(warnings, final.snapshot.warnings)
+        assertEquals(terminal.publicationState, final.snapshot.publication.state)
+        val terminalAction = if (finish) "finish" else "abort"
+        assertTrue(events.indexOf(terminalAction) < events.indexOf("receipt:$terminalReceipt"))
+        assertTrue(events.indexOf("receipt:$terminalReceipt") < events.indexOf("release"))
+    }
+
+    @Test
+    fun `SAF cleanup warning acceptance keeps exact order and rejects missing duplicate or unknown facts`() = runTest {
+        for (finish in listOf(false, true)) {
+            val base = if (finish) "durability-uncertain" else "publication-indeterminate"
+            val malformed = listOf(
+                listOf("cleanup-durability-uncertain"),
+                listOf(base, "cleanup-durability-uncertain", "cleanup-incomplete"),
+                listOf(base, "cleanup-durability-uncertain", "cleanup-durability-uncertain"),
+                listOf(base, "cleanup-durability-uncertain", "unknown-warning"),
+            )
+            malformed.forEachIndexed { index, warnings ->
+                val events = mutableListOf<String>()
+                val terminal = (if (finish) terminalSnapshot("terminal-invalid-$index") else {
+                    safPublicationIndeterminateSnapshot("terminal-invalid-$index")
+                }).copy(warnings = warnings)
+                val operation = SafOperation("op-invalid-$finish-$index", archivePendingSnapshot(), events)
+                val session = SafSession(operation, "unused", terminal, events)
+                operation.archive = SafArchive(operation, session, terminal, events,
+                    beginKind = "terminal", beginSession = null)
+                val lifecycle = lifecycle(operation, RecordingCustodian(events))
+                val live = lifecycle.start(request(), "password".toCharArray(), File("receipt")).getOrThrow()
+                val publisher = RecordingPublisher(events)
+
+                assertTrue(lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueUri(), publisher).isFailure)
+                assertEquals(0, operation.releaseCalls)
+                assertEquals(0, publisher.publishCalls)
+                assertFalse(events.any { it.startsWith("receipt:") })
+                assertFalse(lifecycle.presentation.value is Pcv3Presentation.Final)
+            }
+        }
+    }
+
+    @Test
     fun `native resource refusal settles directly with its typed no-output snapshot`() = runTest {
         assertNativePreparationTerminalSettles(resourcePreparationTerminal())
     }

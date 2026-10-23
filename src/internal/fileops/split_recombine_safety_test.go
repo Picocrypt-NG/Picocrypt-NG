@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -333,7 +332,7 @@ func TestSplitPinnedKeepsEveryChunkInTheRetainedDirectory(t *testing.T) {
 		t.Fatalf("split through retained directory: %v", err)
 	}
 	wantState := SplitCompleteDurable
-	if runtime.GOOS == "windows" {
+	if !nativeFileopsDirectorySyncSupported(t, directory) {
 		wantState = SplitCompleteDurabilityUncertain
 	}
 	if result.State != wantState || len(result.Chunks) != 3 {

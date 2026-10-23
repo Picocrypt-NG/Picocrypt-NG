@@ -226,12 +226,13 @@ type State struct {
 	PCV3D1SuiteHint pcv3operation.Suite
 	PCV3Result      pcv3operation.Presentation
 	PCV3Progress    pcv3operation.StatusCode
-	// PCV3CleanupIncomplete is UI-only process-lifetime truth. It records that
-	// a released archive follow-up could not confirm cleanup; it never carries
-	// a capability, path, plaintext, or raw error.
+	// Cleanup observations survive State resets and carry no capabilities,
+	// paths, plaintext, or raw errors.
 	PCV3CleanupIncomplete bool
 	pcv3Source            *os.File
 	pcv3ReadyTicket       uint64
+
+	PCV3CleanupDurabilityUncertain bool
 
 	// Modal state
 	ModalID       int
@@ -766,14 +767,27 @@ func (s *State) SetPCV3Result(presentation pcv3operation.Presentation) {
 	defer s.mu.Unlock()
 	s.PCV3Result = presentation
 	s.PCV3Progress = 0
+	for _, warning := range presentation.Warnings() {
+		switch warning {
+		case pcv3operation.WarningCleanupIncomplete:
+			s.PCV3CleanupIncomplete = true
+		case pcv3operation.WarningCleanupDurabilityUncertain:
+			s.PCV3CleanupDurabilityUncertain = true
+		}
+	}
 }
 
 // LatchPCV3CleanupIncomplete retains bounded cleanup uncertainty for this
 // State lifetime. Reset and selection replacement deliberately do not clear it.
 func (s *State) LatchPCV3CleanupIncomplete() {
+	s.LatchPCV3Cleanup(true, false)
+}
+
+func (s *State) LatchPCV3Cleanup(incomplete, durabilityUncertain bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.PCV3CleanupIncomplete = true
+	s.PCV3CleanupIncomplete = s.PCV3CleanupIncomplete || incomplete
+	s.PCV3CleanupDurabilityUncertain = s.PCV3CleanupDurabilityUncertain || durabilityUncertain
 }
 
 func pcv3IntentReady(
@@ -1175,6 +1189,8 @@ type UISnapshot struct {
 	PCV3Progress          pcv3operation.StatusCode
 	PCV3CleanupIncomplete bool
 	PCV3KeyfileNames      []string
+
+	PCV3CleanupDurabilityUncertain bool
 }
 
 // RecursiveSnapshot is a value-copy of the State fields the recursive (batch)
@@ -1287,6 +1303,8 @@ func (s *State) UISnapshot() UISnapshot {
 		PCV3Progress:          s.PCV3Progress,
 		PCV3CleanupIncomplete: s.PCV3CleanupIncomplete,
 		PCV3KeyfileNames:      pcv3KeyfileNames,
+
+		PCV3CleanupDurabilityUncertain: s.PCV3CleanupDurabilityUncertain,
 	}
 }
 

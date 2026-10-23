@@ -72,8 +72,8 @@ func TestWindowsPrivateStageRejectsRestrictedTokenContext(t *testing.T) {
 		t.Fatal("restricted access changed the original stage identity")
 	}
 	stagePath := stage.stagePath
-	if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
-		t.Fatalf("native Windows cleanup must retain directory durability uncertainty: %v", err)
+	if err := stage.Cleanup(); err != nil && (!errors.Is(err, ErrCleanupDurabilityUncertain) || errors.Is(err, ErrCleanupIncomplete)) {
+		t.Fatalf("native Windows exact cleanup failed: %v", err)
 	}
 	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("original stage remains after handle cleanup: %v", err)

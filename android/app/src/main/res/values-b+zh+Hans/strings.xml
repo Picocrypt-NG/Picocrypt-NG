@@ -270,6 +270,8 @@
     <string name="pcv3_publication_indeterminate_body">应用无法确定发布是否已提交。请将所有源和目标位置完全保持原样。请勿重试或清理此次操作。</string>
     <string name="pcv3_warning_cleanup_title">无法确认清理已完成</string>
     <string name="pcv3_warning_cleanup_body">应用无法确认此操作创建的全部临时文件均已移除。请保留源文件，不要根据此结果删除任何文件。</string>
+    <string name="pcv3_warning_cleanup_durability_title">断电后删除结果可能无法保留</string>
+    <string name="pcv3_warning_cleanup_durability_body">应用无法确认已删除的临时文件在断电后仍保持删除状态。请保留源文件。</string>
     <string name="pcv3_warning_callback_title">恢复确认失败</string>
     <string name="pcv3_warning_callback_body">无法完成当前恢复确认。未授予生成未经验证输出的权限。</string>
     <string name="pcv3_warning_unknown_title">其他操作警告</string>
@@ -278,6 +280,7 @@
     <string name="pcv3_recovery_result_close">关闭恢复结果</string>
     <string name="pcv3_publication_close">关闭发布结果</string>
     <string name="pcv3_warning_cleanup_close">关闭清理警告</string>
+    <string name="pcv3_warning_cleanup_durability_close">关闭删除持久性警告</string>
     <string name="pcv3_publication_uncertain_close">关闭持久性警告</string>
     <string name="pcv3_publication_indeterminate_close">关闭发布警告</string>
     <string name="pcv3_output_saved_title">输出已保存</string>

@@ -45,8 +45,9 @@ func TestEncryptStdoutUsesRetainedDescriptorAfterPathReplacement(t *testing.T) {
 	if followUp != nil {
 		t.Cleanup(func() { followUp.Discard() })
 	}
+	durable := nativeCLIDirectorySyncSupported(t, dir)
 	wantClass := pcv3operation.CompletionClean
-	if runtime.GOOS == "windows" {
+	if !durable {
 		wantClass = pcv3operation.CompletionDurabilityUncertain
 		if !errors.Is(err, result) {
 			t.Fatalf("uncertain encryption lost its result error: %v", err)
@@ -99,17 +100,21 @@ func TestEncryptStdoutUsesRetainedDescriptorAfterPathReplacement(t *testing.T) {
 	os.Stdout = stdout
 	t.Cleanup(func() { os.Stdout = oldStdout })
 	terminalErr := finishPCV3Encryption(context.Background(), result, nil, true)
-	// Exact-owner cleanup cannot remove the replacement. Its uncertainty must
-	// be reported as warning status, while the original descriptor is streamed.
 	wantExit := ExitPCV3Warning
 	if runtime.GOOS == "windows" {
-		wantExit = ExitPCV3DurabilityUncertain
+		wantExit = 0
+		if !durable {
+			wantExit = ExitPCV3DurabilityUncertain
+		}
 	}
-	if terminalErr == nil || exitCodeForError(terminalErr) != wantExit {
-		t.Fatalf("stdout result: %v", terminalErr)
+	if (terminalErr == nil) != (wantExit == 0) || exitCodeForError(terminalErr) != wantExit {
+		t.Fatalf("stdout result: %v; want exit %d", terminalErr, wantExit)
 	}
-	if !slices.Contains(result.Warnings(), pcv3operation.WarningCleanupIncomplete) {
-		t.Fatal("foreign pathname replacement lost its cleanup warning")
+	if slices.Contains(result.Warnings(), pcv3operation.WarningCleanupIncomplete) != (runtime.GOOS != "windows") {
+		t.Fatal("stdout cleanup did not preserve the exact-owner replacement outcome")
+	}
+	if slices.Contains(result.Warnings(), pcv3operation.WarningCleanupDurabilityUncertain) != !durable {
+		t.Fatal("stdout cleanup lost deletion durability truth")
 	}
 	if result.OutputFollowUp() != nil {
 		t.Fatal("stdout transport left reusable output authority")

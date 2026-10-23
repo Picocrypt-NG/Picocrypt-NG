@@ -7,6 +7,7 @@ import (
 	"Picocrypt-NG/internal/pcv3result"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,13 +55,13 @@ func testWindowsNativeRenamePreservesCollision(t *testing.T, name string) {
 	}
 }
 
-func TestWindowsNativeNoReplacePublishesWithUncertainDurability(t *testing.T) {
+func TestWindowsNativeNoReplaceHonorsDirectoryDurabilityContract(t *testing.T) {
 	testNativeNoReplacePublication(
 		t,
-		StatePublishedDurabilityUncertain,
-		pcv3result.OutcomeCommittedDurabilityUncertain,
-		pcv3result.StageDirectorySync,
-		CodeDurabilityUncertain,
+		StatePublishedDurable,
+		pcv3result.OutcomeSuccess,
+		pcv3result.StageNone,
+		CodePublishedDurable,
 	)
 }
 
@@ -72,8 +73,9 @@ func TestWindowsSafeReplaceFailsBeforeStage(t *testing.T) {
 	testNativeSafeReplaceFailsBeforeStage(t)
 }
 
-func TestWindowsNativePlaintextPublicationNeverGrantsDurableRetainedAuthority(t *testing.T) {
-	target := filepath.Join(t.TempDir(), "plaintext")
+func TestWindowsNativePlaintextRetainedAuthorityRequiresSupportedDirectoryDurability(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "plaintext")
 	stage, err := Create(target, nil, PolicyNoReplace)
 	if err != nil {
 		t.Fatal(err)
@@ -83,16 +85,28 @@ func TestWindowsNativePlaintextPublicationNeverGrantsDurableRetainedAuthority(t 
 		t.Fatal(err)
 	}
 	result, retained := stage.PublishRetained(context.Background())
-	if result.State() != StatePublishedDurabilityUncertain || retained != nil {
-		t.Fatalf("native Windows plaintext gained durable retained authority: %v, %v", result, retained)
+	if retained != nil {
+		defer retained.Close()
 	}
-	if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
-		t.Fatal(err)
+	if nativeDirectorySyncSupported(t, directory) {
+		requireResult(t, result, StatePublishedDurable, pcv3result.OutcomeSuccess, pcv3result.StageNone, CodePublishedDurable)
+		if retained == nil || !retained.Live() {
+			t.Fatalf("durable native plaintext lost retained authority: %v", retained)
+		}
+		if err := retained.Close(); err != nil || retained.Live() {
+			t.Fatalf("release durable plaintext custody: %v, live=%v", err, retained.Live())
+		}
+	} else {
+		requireResult(t, result, StatePublishedDurabilityUncertain, pcv3result.OutcomeCommittedDurabilityUncertain, pcv3result.StageDirectorySync, CodeDurabilityUncertain)
+		if retained != nil {
+			t.Fatal("unsupported directory durability granted plaintext retained authority")
+		}
 	}
+	requireNativeDirectoryCleanup(t, directory, stage.Cleanup())
 	requireFileBytes(t, target, []byte("authenticated plaintext"))
 }
 
-func TestWindowsNativeRetainedSplitPreservesCompleteUncertainCiphertext(t *testing.T) {
+func TestWindowsNativeRetainedSplitRemovesSourceOnlyAfterDurableChunks(t *testing.T) {
 	directory := t.TempDir()
 	target := filepath.Join(directory, "ciphertext")
 	stage, err := Create(target, nil, PolicyNoReplace)
@@ -108,21 +122,42 @@ func TestWindowsNativeRetainedSplitPreservesCompleteUncertainCiphertext(t *testi
 		t.Fatal(err)
 	}
 	result, retained := stage.PublishWriteRetained(context.Background())
-	if result.State() != StatePublishedDurabilityUncertain || retained == nil {
-		t.Fatalf("native Windows ciphertext lost retained custody: %v, %v", result, retained)
+	if retained != nil {
+		defer retained.Close()
 	}
-	defer retained.Close()
+	pcv3RequireNativeCommit(t, directory, result)
+	if retained == nil || !retained.Live() {
+		t.Fatalf("native Windows ciphertext lost retained custody: %v", retained)
+	}
 	state, splitErr := SplitRetainedWithResult(retained, fileops.SplitOptions{ChunkSize: 1, Unit: fileops.SplitUnitKiB})
-	if !errors.Is(splitErr, ErrCleanupIncomplete) || state != fileops.SplitCompleteDurabilityUncertain {
-		t.Fatalf("native split completion = %v/%v; want complete durability uncertain", state, splitErr)
+	if nativeDirectorySyncSupported(t, directory) {
+		if splitErr != nil || state != fileops.SplitCompleteDurable {
+			t.Fatalf("native split completion = %v/%v; want durable chunks", state, splitErr)
+		}
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("durable native split retained full source: %v", err)
+		}
+	} else {
+		if !errors.Is(splitErr, ErrCleanupDurabilityUncertain) || errors.Is(splitErr, ErrCleanupIncomplete) || state != fileops.SplitCompleteDurabilityUncertain {
+			t.Fatalf("unsupported native split = %v/%v; want complete chunks and only cleanup durability uncertainty", state, splitErr)
+		}
+		requireFileBytes(t, target, payload)
 	}
 	if retained.Live() {
-		t.Fatal("refused native split retained follow-up authority")
+		t.Fatal("completed native split retained follow-up authority")
 	}
-	requireFileBytes(t, target, payload)
+	for index := range 3 {
+		chunk := fmt.Sprintf("%s.%d", target, index)
+		if info, err := os.Lstat(chunk); err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("complete native chunk %d is not a regular file: %v", index, err)
+		}
+	}
+	if repeated, err := SplitRetainedWithResult(retained, fileops.SplitOptions{ChunkSize: 1, Unit: fileops.SplitUnitKiB}); repeated != fileops.SplitFailed || !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("consumed native split authority accepted a follow-up: %v/%v", repeated, err)
+	}
 	recombined := filepath.Join(directory, "recombined.pcv")
 	if err := fileops.Recombine(fileops.RecombineOptions{InputBase: target, OutputPath: recombined}); err != nil {
-		t.Fatalf("recombine complete uncertain native chunks: %v", err)
+		t.Fatalf("recombine complete native chunks: %v", err)
 	}
 	requireFileBytes(t, recombined, payload)
 }
@@ -145,13 +180,9 @@ func TestWindowsPrivateStageKeepsOriginalDeleteAuthorityAcrossPublication(t *tes
 		t.Fatal("ordinary pathname rename did not report the expected sharing restriction")
 	}
 	result := stage.Publish(context.Background())
-	if result.State() != StatePublishedDurabilityUncertain {
-		t.Fatalf("original handle publication: %v", result)
-	}
+	pcv3RequireNativeCommit(t, directory, result)
 	requireFileBytes(t, target, []byte("original object"))
-	if err := stage.Cleanup(); !errors.Is(err, ErrCleanupIncomplete) {
-		t.Fatalf("unproven directory retirement durability: %v", err)
-	}
+	requireNativeDirectoryCleanup(t, directory, stage.Cleanup())
 	requireNoStageEntries(t, directory)
 	requireFileBytes(t, target, []byte("original object"))
 }

@@ -11,15 +11,15 @@ import (
 	"testing"
 )
 
-func nativeRecoveryPublicationState() pcv3publication.State {
-	if runtime.GOOS == "windows" {
+func nativeRecoveryPublicationState(t testing.TB) pcv3publication.State {
+	if !nativeRecoveryDirectorySyncSupported(t, t.TempDir()) {
 		return pcv3publication.StatePublishedDurabilityUncertain
 	}
 	return pcv3publication.StatePublishedDurable
 }
 
-func nativeRecoveryExtractionState() fileops.UnpackState {
-	if runtime.GOOS == "windows" {
+func nativeRecoveryExtractionState(t testing.TB) fileops.UnpackState {
+	if !nativeRecoveryDirectorySyncSupported(t, t.TempDir()) {
 		return fileops.UnpackStatePublishedDurabilityUncertain
 	}
 	return fileops.UnpackStatePublishedDurable
@@ -27,13 +27,27 @@ func nativeRecoveryExtractionState() fileops.UnpackState {
 
 func requireNativeRecoveryPublication(t *testing.T, result *Result) {
 	t.Helper()
-	state, stage, code := nativeRecoveryPublicationState(), pcv3.StageNone, pcv3publication.CodePublishedDurable
-	if runtime.GOOS == "windows" {
+	state, stage, code := nativeRecoveryPublicationState(t), pcv3.StageNone, pcv3publication.CodePublishedDurable
+	if state == pcv3publication.StatePublishedDurabilityUncertain {
 		stage, code = pcv3.StageDirectorySync, pcv3publication.CodeDurabilityUncertain
 	}
 	if result == nil || !result.PublicationAttempted() || result.PublicationState() != state ||
-		result.PublicationStage() != stage || result.PublicationCode() != code || result.cleanupIncomplete != (runtime.GOOS == "windows") {
+		result.PublicationStage() != stage || result.PublicationCode() != code || result.cleanupIncomplete ||
+		result.cleanupDurabilityUncertain != (state == pcv3publication.StatePublishedDurabilityUncertain) {
 		t.Fatalf("native recovery publication = %v; want %v/%v/%v with exact cleanup", result, state, stage, code)
+	}
+}
+
+func requireNativeRecoveryCleanup(t testing.TB, directory string, err error) {
+	t.Helper()
+	if nativeRecoveryDirectorySyncSupported(t, directory) {
+		if err != nil {
+			t.Fatalf("durable native recovery cleanup = %v; want nil", err)
+		}
+		return
+	}
+	if !errors.Is(err, pcv3publication.ErrCleanupDurabilityUncertain) || errors.Is(err, pcv3publication.ErrCleanupIncomplete) {
+		t.Fatalf("unsupported native recovery cleanup = %v; want only deletion durability uncertainty", err)
 	}
 }
 

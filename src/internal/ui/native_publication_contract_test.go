@@ -4,21 +4,21 @@ import (
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"errors"
-	"runtime"
 	"slices"
 	"testing"
 )
 
 const (
-	nativePCV3DurabilityWarningText = "Output durability was not confirmed. Keep every source and the destination."
-	nativePCV3UncertainBody         = "The destination may contain the output, but filesystem durability could not be confirmed. Keep every source and the destination. Do not retry, replace, delete, or clean up this operation."
-	nativePCV3CleanupWarningTitle   = "Cleanup could not be confirmed"
-	nativePCV3CleanupWarningText    = "The application could not confirm removal of all temporary files created by this operation. Keep the source files and do not delete files based on this result."
+	nativePCV3DurabilityWarningText  = "Output durability was not confirmed. Keep every source and the destination."
+	nativePCV3UncertainBody          = "The destination may contain the output, but filesystem durability could not be confirmed. Keep every source and the destination. Do not retry, replace, delete, or clean up this operation."
+	nativePCV3CleanupWarningTitle    = "Cleanup could not be confirmed"
+	nativePCV3CleanupWarningText     = "The application could not confirm removal of all temporary files created by this operation. Keep the source files and do not delete files based on this result."
+	nativePCV3CleanupDurabilityTitle = "Cleanup may not persist after a power loss"
+	nativePCV3CleanupDurabilityText  = "The app could not confirm that deleted temporary files will stay deleted after a power loss. Keep the source files."
+	nativePCV3CleanupDurabilityClose = "Close cleanup durability warning"
 )
 
-// Windows commits the file but cannot prove publication or private-directory
-// retirement durability with its native directory sync implementation.
-// A warning must never be treated as clean completion or deletion authority.
+// These native GUI fixtures publish in testing.T.TempDir storage.
 func requireNativePCV3Publication(t *testing.T, result *pcv3operation.Result) {
 	t.Helper()
 	class := pcv3operation.CompletionClean
@@ -26,12 +26,12 @@ func requireNativePCV3Publication(t *testing.T, result *pcv3operation.Result) {
 	stage := pcv3operation.StageNone
 	code := pcv3publication.CodePublishedDurable
 	var warnings []pcv3operation.Warning
-	if runtime.GOOS == "windows" {
+	if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
 		class = pcv3operation.CompletionDurabilityUncertain
 		state = pcv3publication.StatePublishedDurabilityUncertain
 		stage = pcv3operation.StageDirectorySync
 		code = pcv3publication.CodeDurabilityUncertain
-		warnings = []pcv3operation.Warning{pcv3operation.WarningDurabilityUncertain, pcv3operation.WarningCleanupIncomplete}
+		warnings = []pcv3operation.Warning{pcv3operation.WarningDurabilityUncertain, pcv3operation.WarningCleanupDurabilityUncertain}
 	}
 	if result == nil || result.Outcome() != pcv3operation.OutcomeSuccess ||
 		result.Stage() != pcv3operation.StageNone || result.Code() != pcv3operation.CodeSuccess ||
@@ -44,7 +44,7 @@ func requireNativePCV3Publication(t *testing.T, result *pcv3operation.Result) {
 		}
 		t.Fatalf("native PCV3 publication = %v; want exact %v/%v/%v warnings %v", result, class, state, code, warnings)
 	}
-	if runtime.GOOS == "windows" && result.SourceDeletionAllowed() {
+	if class != pcv3operation.CompletionClean && result.SourceDeletionAllowed() {
 		t.Fatal("uncertain native publication granted source deletion")
 	}
 }
@@ -52,7 +52,7 @@ func requireNativePCV3Publication(t *testing.T, result *pcv3operation.Result) {
 func requireNativePCV3Operation(t *testing.T, result operationResult) {
 	t.Helper()
 	requireNativePCV3Publication(t, result.pcv3)
-	if runtime.GOOS == "windows" {
+	if result.pcv3.CompletionClass() != pcv3operation.CompletionClean {
 		if result.completed || !errors.Is(result.err, result.pcv3) {
 			t.Fatalf("uncertain native operation lost its closed error: %+v", result)
 		}
@@ -63,7 +63,7 @@ func requireNativePCV3Operation(t *testing.T, result operationResult) {
 
 func requireNativePCV3EncryptionError(t *testing.T, err error) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
+	if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
 		var result *pcv3operation.Result
 		if !errors.As(err, &result) {
 			t.Fatalf("native writer error = %v; want closed durability warning", err)
@@ -76,7 +76,7 @@ func requireNativePCV3EncryptionError(t *testing.T, err error) {
 
 func requireNativePCV3DeletionSupport(t *testing.T) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("native Windows cannot prove directory durability and never grants source-deletion authority; native preservation is covered separately")
+	if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
+		t.Skip("fixture storage cannot prove directory durability; native source preservation is covered separately")
 	}
 }

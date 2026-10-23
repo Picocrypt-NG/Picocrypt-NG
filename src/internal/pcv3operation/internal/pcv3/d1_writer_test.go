@@ -540,7 +540,7 @@ func TestD1WriterPublicationOutcome(t *testing.T) {
 	}{
 		{
 			name:      "native publication",
-			wantState: nativePublicationState(),
+			wantState: nativePublicationState(t),
 			wantCode:  pcv3publication.CodePublishedDurable,
 		},
 		{
@@ -551,7 +551,7 @@ func TestD1WriterPublicationOutcome(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if !test.collision && runtime.GOOS == "windows" {
+			if !test.collision && !nativeDirectorySyncSupported(t, t.TempDir()) {
 				test.wantCode = pcv3publication.CodeDurabilityUncertain
 			}
 			fixture := newD1CreationTestFixture(t)
@@ -1020,10 +1020,11 @@ func fillD1TestNormalKeys(keys *normalWriteKeys, seed byte) {
 
 func requireD1NativeCleanupResult(t *testing.T, err error) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
+	if !nativeDirectorySyncSupported(t, t.TempDir()) {
 		var failure *d1OuterFailure
 		if !errors.As(err, &failure) || failure.stage != StageOutputPublication ||
-			!errors.Is(failure.cause, pcv3publication.ErrCleanupIncomplete) {
+			!errors.Is(failure.cause, pcv3publication.ErrCleanupDurabilityUncertain) ||
+			errors.Is(failure.cause, pcv3publication.ErrCleanupIncomplete) {
 			t.Fatalf("D1 native cleanup = %v; want directory-durability cleanup warning", err)
 		}
 	} else if err != nil {
