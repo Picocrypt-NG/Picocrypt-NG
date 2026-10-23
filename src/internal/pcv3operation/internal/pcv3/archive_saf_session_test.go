@@ -526,9 +526,14 @@ func TestArchiveSAFSessionCleanupUncertaintyIsIndeterminateWithoutProviderAttemp
 				}
 			}
 			result := session.Abort()
-			if result == nil || result.State() != fileops.UnpackStatePublicationIndeterminate ||
-				result.AttemptedEver() || !result.CleanupIncomplete() {
-				t.Fatalf("cleanup-uncertain abort = %#v; want unattempted indeterminate", result)
+			wantState := fileops.UnpackStatePublicationIndeterminate
+			wantDurabilityUncertain := blockedReplacement && !nativeDirectorySyncSupported(t, parent)
+			if blockedReplacement {
+				wantState = nativeArchiveSAFUnattemptedState(t)
+			}
+			if result == nil || result.State() != wantState || result.AttemptedEver() ||
+				result.CleanupIncomplete() != !blockedReplacement || result.CleanupDurabilityUncertain() != wantDurabilityUncertain {
+				t.Fatalf("cleanup abort = %#v; want unattempted state=%v incomplete=%v durability-uncertain=%v", result, wantState, !blockedReplacement, wantDurabilityUncertain)
 			}
 			if handoff.Live() || copiedHandoff.Live() || copiedHandoff.BeginSAF().Kind() != NativeArchiveSAFBeginExpired ||
 				session.Abort() != result || session.Finish() != result {
@@ -538,8 +543,6 @@ func TestArchiveSAFSessionCleanupUncertaintyIsIndeterminateWithoutProviderAttemp
 				t.Fatal("terminal cleanup uncertainty granted provider-effect authority")
 			}
 			if blockedReplacement {
-				// Namespace protection succeeded, but native Windows still cannot
-				// prove the cleanup directory barrier. No provider effect is allowed.
 				for _, absent := range []string{stagePath, retainedPath, target} {
 					if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
 						t.Fatalf("blocked replacement left unexpected plaintext: %v", err)

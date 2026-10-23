@@ -27,6 +27,9 @@ func TestRecoveryRetainsOnlyOptInDurableOutputCapability(t *testing.T) {
 		result := runWithCore(context.Background(), &Request{Target: target}, runner)
 		requireNativeRecoveryPublication(t, result)
 		retained := result.TakeRetainedOutput()
+		if retained != nil {
+			t.Cleanup(func() { _ = retained.Close() })
+		}
 		if result.PublicationState() != nativeRecoveryPublicationState(t) ||
 			retained != nil {
 			t.Fatalf(
@@ -47,6 +50,9 @@ func TestRecoveryRetainsOnlyOptInDurableOutputCapability(t *testing.T) {
 			ExecutionOptions{RetainDurableOutput: true},
 		)
 		retained := result.TakeRetainedOutput()
+		if retained != nil {
+			t.Cleanup(func() { _ = retained.Close() })
+		}
 		if result.PublicationState() != nativeRecoveryPublicationState(t) ||
 			(retained != nil) != nativeRecoveryDirectorySyncSupported(t, directory) || (retained != nil && !retained.Live()) {
 			t.Fatalf(
@@ -89,6 +95,9 @@ func TestRecoveryRetainsOnlyOptInDurableOutputCapability(t *testing.T) {
 			ExecutionOptions{RetainDurableOutput: true},
 		)
 		retained := result.TakeRetainedOutput()
+		if retained != nil {
+			t.Cleanup(func() { _ = retained.Close() })
+		}
 		if result.PublicationState() != pcv3publication.StateNotPublished ||
 			retained != nil {
 			t.Fatalf(

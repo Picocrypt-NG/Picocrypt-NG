@@ -1160,16 +1160,17 @@ func fixedRoleCoreRunner(
 
 func assertFileBytesAndMode(t *testing.T, path string, want []byte, wantMode os.FileMode) {
 	t.Helper()
-	got, err := os.ReadFile(path)
+	file, err := openRecoveryCustodyFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v", filepath.Base(path), err)
+		t.Fatalf("open %s: %v", filepath.Base(path), err)
+	}
+	got, readErr := io.ReadAll(file)
+	info, statErr := file.Stat()
+	if err := errors.Join(readErr, statErr, file.Close()); err != nil {
+		t.Fatalf("inspect %s: %v", filepath.Base(path), err)
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("%s bytes = %q; want %q", filepath.Base(path), got, want)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat %s: %v", filepath.Base(path), err)
 	}
 	if !recoveryFileModeMatches(info, wantMode) {
 		t.Fatalf("%s mode = %04o; want %04o", filepath.Base(path), info.Mode().Perm(), wantMode)
