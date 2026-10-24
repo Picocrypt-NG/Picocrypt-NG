@@ -14,6 +14,154 @@ import (
 	"testing"
 )
 
+func TestUnpackUnknownCreatedStageReportsCleanupIncomplete(t *testing.T) {
+	t.Run("cleanup closes held object before early return", func(t *testing.T) {
+		for _, mode := range []string{"nil root", "unknown identity"} {
+			t.Run(mode, func(t *testing.T) {
+				base := t.TempDir()
+				root, err := os.OpenRoot(base)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer root.Close()
+				file, err := root.OpenFile("stage", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer file.Close()
+				entry := stagedUnpackEntry{file: file, stageName: "stage", outPath: filepath.Join(base, "payload")}
+				cleanupRoot := root
+				if mode == "nil root" {
+					entry.info, err = file.Stat()
+					if err != nil {
+						t.Fatal(err)
+					}
+					cleanupRoot = nil
+				}
+				for range 2 {
+					proven, err := entry.cleanup(cleanupRoot)
+					if proven || !errors.Is(err, ErrUnpackCleanupIncomplete) || errors.Is(err, os.ErrClosed) {
+						t.Errorf("cleanup = %v, %v; want stable uncertainty without second close", proven, err)
+					}
+					if entry.file != nil || entry.stageName != "stage" {
+						t.Errorf("cleanup discarded ownership evidence or retained handle: %#v", entry)
+					}
+				}
+				requireUnpackFileClosed(t, file)
+				if _, err := root.Lstat("stage"); err != nil {
+					t.Errorf("unknown pathname was removed: %v", err)
+				}
+			})
+		}
+	})
+	for _, mode := range []string{"legacy", "typed"} {
+		t.Run(mode, func(t *testing.T) {
+			base := t.TempDir()
+			archive := filepath.Join(base, "source.zip")
+			createStoredZipForUnpackStagingTest(t, archive, "payload.txt", []byte("source payload"))
+			source, err := os.ReadFile(archive)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(base, "out")
+			if err := os.Mkdir(out, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			statFailure := errors.New("TEST ONLY stage metadata unavailable")
+			var held *os.File
+			original := unpackStageStatFn
+			unpackStageStatFn = func(file *os.File) (os.FileInfo, error) {
+				held = file
+				return nil, statFailure
+			}
+			t.Cleanup(func() {
+				unpackStageStatFn = original
+				if held != nil {
+					_ = held.Close()
+				}
+			})
+			opts := UnpackOptions{ZipPath: archive, ExtractDir: out}
+			var resultErr error
+			if mode == "typed" {
+				result := UnpackWithResult(opts)
+				resultErr = result
+				if result.State() != UnpackStatePublicationIndeterminate {
+					t.Errorf("state = %v, want publication-indeterminate", result.State())
+				}
+			} else {
+				resultErr = Unpack(opts)
+			}
+			if !errors.Is(resultErr, statFailure) || !errors.Is(resultErr, ErrUnpackCleanupIncomplete) {
+				t.Errorf("metadata failure lost ownership uncertainty: %v", resultErr)
+			}
+			if held == nil {
+				t.Fatal("exclusive stage create was not reached")
+			}
+			requireUnpackFileClosed(t, held)
+			if _, err := os.Lstat(filepath.Join(out, "payload.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("final output exists: %v", err)
+			}
+			entries, err := os.ReadDir(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), ".picocrypt-unpack-") {
+				t.Fatalf("unknown stage was guessed away: %v", entries)
+			}
+			requireUnpackFileBytes(t, filepath.Join(out, entries[0].Name()), nil)
+			requireUnpackFileBytes(t, archive, source)
+		})
+	}
+}
+
+func TestUnpackUnknownCreatedDirectoryReportsCleanupIncomplete(t *testing.T) {
+	for _, mode := range []string{"legacy", "typed"} {
+		t.Run(mode, func(t *testing.T) {
+			base := t.TempDir()
+			archive := filepath.Join(base, "source.zip")
+			createStoredZipForUnpackStagingTest(t, archive, "nested/payload.txt", []byte("payload"))
+			source, err := os.ReadFile(archive)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(base, "out")
+			if err := os.Mkdir(out, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			foreign := filepath.Join(out, "foreign.txt")
+			if err := os.WriteFile(foreign, []byte("preserve"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			statFailure := errors.New("TEST ONLY created directory metadata unavailable")
+			original := unpackCreatedDirLstatFn
+			unpackCreatedDirLstatFn = func(root *os.Root, name string) (os.FileInfo, error) { return nil, statFailure }
+			t.Cleanup(func() { unpackCreatedDirLstatFn = original })
+			opts := UnpackOptions{ZipPath: archive, ExtractDir: out}
+			var resultErr error
+			if mode == "typed" {
+				result := UnpackWithResult(opts)
+				requireUnpackState(t, result, UnpackStateNotPublished)
+				resultErr = result
+			} else {
+				resultErr = Unpack(opts)
+			}
+			if !errors.Is(resultErr, statFailure) || !errors.Is(resultErr, ErrUnpackCleanupIncomplete) {
+				t.Errorf("created directory disappeared from cleanup accounting: %v", resultErr)
+			}
+			info, err := os.Stat(filepath.Join(out, "nested"))
+			if err != nil || !info.IsDir() {
+				t.Fatalf("unknown owned directory removed speculatively: %v", err)
+			}
+			if _, err := os.Lstat(filepath.Join(out, "nested", "payload.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("directory metadata failure published output: %v", err)
+			}
+			requireUnpackFileBytes(t, foreign, []byte("preserve"))
+			requireUnpackFileBytes(t, archive, source)
+			requireNoUnpackStages(t, out)
+		})
+	}
+}
+
 func TestUnpackCancellationLeavesNoPartialDestination(t *testing.T) {
 	tmpDir := t.TempDir()
 	zipPath := filepath.Join(tmpDir, "cancel.zip")
@@ -886,6 +1034,23 @@ func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
 		requireUnpackFileBytes(t, filepath.Join(extractDir, "payload.txt"), payload)
 		requireNoUnpackStages(t, extractDir)
 	})
+}
+
+func requireUnpackFileClosed(t *testing.T, file *os.File) {
+	t.Helper()
+	raw, err := file.SyscallConn()
+	if err != nil {
+		t.Fatalf("get owned stage raw connection: %v", err)
+	}
+	called := false
+	// Control checks Go's closed-file state without querying native metadata.
+	if err := raw.Control(func(uintptr) { called = true }); err == nil || called {
+		t.Errorf("owned stage handle remained open: Control = %v, callback = %v", err, called)
+	}
+	// Windows Stat can report an invalid native handle after Close instead of ErrClosed.
+	if _, err := file.Stat(); err == nil {
+		t.Error("owned stage metadata remained available after cleanup")
+	}
 }
 
 func requireUnpackState(t *testing.T, result UnpackResult, want UnpackState) {

@@ -107,11 +107,8 @@ type stagedUnpackEntry struct {
 }
 
 func (entry *stagedUnpackEntry) cleanup(root *os.Root) (bool, error) {
-	if entry == nil || entry.stageName == "" {
+	if entry == nil {
 		return true, nil
-	}
-	if root == nil {
-		return false, ErrUnpackCleanupIncomplete
 	}
 	var closeErr error
 	if entry.file != nil {
@@ -119,6 +116,12 @@ func (entry *stagedUnpackEntry) cleanup(root *os.Root) (bool, error) {
 			closeErr = fmt.Errorf("close staged extraction output %s: %w", entry.outPath, err)
 		}
 		entry.file = nil
+	}
+	if entry.stageName == "" {
+		return true, closeErr
+	}
+	if root == nil || entry.info == nil {
+		return false, errors.Join(closeErr, ErrUnpackCleanupIncomplete)
 	}
 	current, err := root.Lstat(entry.stageName)
 	if errors.Is(err, os.ErrNotExist) {
@@ -167,30 +170,54 @@ type ownedUnpackDir struct {
 }
 
 type ownedUnpackDirs struct {
-	entries []ownedUnpackDir
-	indexes map[string]int
+	entries  []ownedUnpackDir
+	indexes  map[string]int
+	unproven bool
 }
 
-func (dirs *ownedUnpackDirs) record(dir ownedUnpackDir) {
+func (dirs *ownedUnpackDirs) record(dir ownedUnpackDir) error {
+	if err := dirs.check(dir.targetName, dir.info); err != nil {
+		return err
+	}
+	if dir.info == nil || !dir.info.IsDir() {
+		dirs.unproven = true
+		return fmt.Errorf("%w: created extraction directory identity unavailable: %s", ErrUnpackCleanupIncomplete, dir.outPath)
+	}
 	if dirs.indexes == nil {
 		dirs.indexes = make(map[string]int)
 	}
-	if index, ok := dirs.indexes[dir.targetName]; ok {
-		dirs.entries[index] = dir
-		return
+	if _, ok := dirs.indexes[dir.targetName]; ok {
+		return nil
 	}
 	dirs.indexes[dir.targetName] = len(dirs.entries)
 	dirs.entries = append(dirs.entries, dir)
+	return nil
+}
+
+func (dirs *ownedUnpackDirs) check(name string, info os.FileInfo) error {
+	index, owned := dirs.indexes[name]
+	if !owned {
+		return nil
+	}
+	dir := dirs.entries[index]
+	if info == nil || !info.IsDir() || !os.SameFile(dir.info, info) {
+		dirs.unproven = true
+		return fmt.Errorf("%w: extraction directory changed after creation: %s", ErrUnpackCleanupIncomplete, dir.outPath)
+	}
+	return nil
 }
 
 func (dirs *ownedUnpackDirs) cleanup(root *os.Root) error {
 	var cleanupErrs zipCleanupErrors
+	if dirs.unproven {
+		cleanupErrs.add(ErrUnpackCleanupIncomplete)
+	}
 	for i := len(dirs.entries) - 1; i >= 0; i-- {
 		dir := dirs.entries[i]
 		current, err := root.Lstat(dir.targetName)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
-			continue
+			cleanupErrs.add(fmt.Errorf("%w: extraction directory missing during rollback: %s", ErrUnpackCleanupIncomplete, dir.outPath))
 		case err != nil:
 			cleanupErrs.add(
 				fmt.Errorf("inspect extraction directory %s during rollback: %w", dir.outPath, err),
@@ -211,13 +238,15 @@ func (dirs *ownedUnpackDirs) cleanup(root *os.Root) error {
 }
 
 var (
-	unpackLinkFn           = (*os.Root).Link
-	unpackCopyFn           = io.Copy
-	unpackStageSyncFn      = (*os.File).Sync
-	unpackDirectorySyncFn  = SyncDirectory
-	unpackDirectoryCloseFn = (*os.File).Close
-	unpackCloseRootFn      = (*os.Root).Close
-	unpackRemoveOwnedFn    = ownedUnpackFile.remove
+	unpackLinkFn            = (*os.Root).Link
+	unpackCopyFn            = io.Copy
+	unpackStageSyncFn       = (*os.File).Sync
+	unpackDirectorySyncFn   = SyncDirectory
+	unpackDirectoryCloseFn  = (*os.File).Close
+	unpackCloseRootFn       = (*os.Root).Close
+	unpackRemoveOwnedFn     = ownedUnpackFile.remove
+	unpackStageStatFn       = (*os.File).Stat
+	unpackCreatedDirLstatFn = (*os.Root).Lstat
 )
 
 func publishStagedUnpackEntry(
@@ -443,14 +472,18 @@ func prepareExtractionPath(
 		isLast := i == len(parts)-1
 
 		info, err := root.Lstat(next)
+		if checkErr := createdDirs.check(next, info); checkErr != nil {
+			return "", "", errors.Join(err, checkErr)
+		}
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 			if !isLast || isDir {
 				if err := root.Mkdir(next, 0o700); err != nil {
 					return "", "", fmt.Errorf("create directory %s: %w", filepath.Join(extractDir, next), err)
 				}
-				info, err := root.Lstat(next)
+				info, err := unpackCreatedDirLstatFn(root, next)
 				if err != nil {
+					createdDirs.unproven = true
 					return "", "", fmt.Errorf(
 						"inspect created directory %s: %w",
 						filepath.Join(extractDir, next),
@@ -458,16 +491,19 @@ func prepareExtractionPath(
 					)
 				}
 				if !info.IsDir() {
+					createdDirs.unproven = true
 					return "", "", fmt.Errorf(
 						"created extraction path is not a directory: %s",
 						filepath.Join(extractDir, next),
 					)
 				}
-				createdDirs.record(ownedUnpackDir{
+				if err := createdDirs.record(ownedUnpackDir{
 					targetName: next,
 					outPath:    filepath.Join(extractDir, next),
 					info:       info,
-				})
+				}); err != nil {
+					return "", "", err
+				}
 			}
 		case err != nil:
 			return "", "", err
@@ -820,10 +856,7 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 	defer func() {
 		if !keepCreatedDirs {
 			if cleanupErr := createdDirs.cleanup(extractRoot); cleanupErr != nil {
-				retErr = errors.Join(retErr, cleanupErr)
-				if classifyPublication {
-					retErr = errors.Join(retErr, ErrUnpackCleanupIncomplete)
-				}
+				retErr = errors.Join(retErr, cleanupErr, ErrUnpackCleanupIncomplete)
 			}
 		}
 	}()
@@ -902,9 +935,9 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 			if cleanupErr != nil {
 				cleanupErrors.add(cleanupErr)
 			}
-			if classifyPublication && (!cleanupProven || cleanupErr != nil) {
+			if !cleanupProven || cleanupErr != nil {
 				cleanupIncomplete = true
-				if !cleanupProven && *state == UnpackStateNotPublished {
+				if classifyPublication && !cleanupProven && *state == UnpackStateNotPublished {
 					*state = UnpackStatePublicationIndeterminate
 				}
 			}
@@ -962,20 +995,19 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 			_ = fileInArchive.Close()
 			return fmt.Errorf("create stage for %s: %w", outPath, err)
 		}
-		stageInfo, err := stageFile.Stat()
-		if err != nil {
-			_ = fileInArchive.Close()
-			_ = stageFile.Close()
-			return fmt.Errorf("inspect stage for %s: %w", outPath, err)
-		}
 		stagedEntries = append(stagedEntries, stagedUnpackEntry{
 			file:       stageFile,
 			stageName:  stageName,
 			targetName: targetName,
 			outPath:    outPath,
-			info:       stageInfo,
 		})
 		stagedEntry := &stagedEntries[len(stagedEntries)-1]
+		stageInfo, err := unpackStageStatFn(stageFile)
+		if err != nil {
+			_ = fileInArchive.Close()
+			return fmt.Errorf("inspect stage for %s: %w", outPath, err)
+		}
+		stagedEntry.info = stageInfo
 
 		// Reviewed entries cannot exceed their declared size. The conversion
 		// was checked while computing the approved summary before any output.
