@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,6 +36,7 @@ type operationInput struct {
 	inputFile       string
 	inputFiles      []string
 	inputIdentities []fileops.ZIPInputIdentity
+	recombineInputs []os.FileInfo
 	onlyFiles       []string
 	onlyFolders     []string
 	outputFile      string
@@ -96,6 +98,7 @@ type operationDeletionManifest struct {
 	files           []deletionSource
 	directories     []deletionSource
 	inputIdentities []fileops.ZIPInputIdentity
+	recombineInputs []os.FileInfo
 }
 
 func captureDeletionSource(path string, wantDirectory bool) (deletionSource, error) {
@@ -288,6 +291,26 @@ func captureOperationDeletionManifestWithBudget(ctx context.Context, input opera
 		}
 		return left > right
 	})
+	if input.mode == "decrypt" && input.recombine {
+		count := uint64(len(manifest.files))
+		if count > (math.MaxUint64-64)/32 {
+			return nil, fileops.ErrZIPMetadataLimit
+		}
+		// Conservative allowance for the exact-capacity interface slice on
+		// supported 32/64-bit targets; FileInfo objects are already captured.
+		cost := 64 + 32*count
+		if charged > math.MaxUint64-cost {
+			return nil, fileops.ErrZIPMetadataLimit
+		}
+		if err := budget.Reserve(cost); err != nil {
+			return nil, err
+		}
+		charged += cost
+		manifest.recombineInputs = make([]os.FileInfo, len(manifest.files))
+		for i, source := range manifest.files {
+			manifest.recombineInputs[i] = source.info
+		}
+	}
 	manifest.charged = charged
 	return manifest, nil
 }
@@ -1612,7 +1635,9 @@ func (a *App) runCapturedOperation(
 			failed: 1,
 		}
 	}
+	input.recombineInputs = nil
 	if deletionManifest != nil {
+		input.recombineInputs = deletionManifest.recombineInputs
 		if input.mode == "encrypt" {
 			// Reading and deleting must use one snapshot, including direct
 			// callers that had no earlier discovery snapshot.
@@ -1622,6 +1647,8 @@ func (a *App) runCapturedOperation(
 			deletionManifest.files = nil
 			deletionManifest.directories = nil
 			deletionManifest.inputIdentities = nil
+			deletionManifest.recombineInputs = nil
+			input.recombineInputs = nil
 			deletionManifest.budget.Release(deletionManifest.charged)
 		}()
 	}
@@ -1679,19 +1706,20 @@ func executeVolumeOperation(
 
 	kept := false
 	req := &volume.DecryptRequest{
-		InputFile:    input.inputFile,
-		OutputFile:   input.outputFile,
-		Password:     input.password,
-		Keyfiles:     input.keyfiles,
-		ForceDecrypt: input.forceDecrypt,
-		VerifyFirst:  input.verifyFirst,
-		AutoUnzip:    input.autoUnzip,
-		SameLevel:    input.sameLevel,
-		Recombine:    input.recombine,
-		Deniability:  input.deniability,
-		Reporter:     reporter,
-		RSCodecs:     input.rsCodecs,
-		Kept:         &kept,
+		InputFile:               input.inputFile,
+		OutputFile:              input.outputFile,
+		Password:                input.password,
+		Keyfiles:                input.keyfiles,
+		ForceDecrypt:            input.forceDecrypt,
+		VerifyFirst:             input.verifyFirst,
+		AutoUnzip:               input.autoUnzip,
+		SameLevel:               input.sameLevel,
+		Recombine:               input.recombine,
+		RecombineExpectedInputs: input.recombineInputs,
+		Deniability:             input.deniability,
+		Reporter:                reporter,
+		RSCodecs:                input.rsCodecs,
+		Kept:                    &kept,
 	}
 	err := volume.Decrypt(ctx, req)
 	return operationResult{err: err, completed: err == nil, kept: kept, cancelled: errors.Is(err, context.Canceled)}
