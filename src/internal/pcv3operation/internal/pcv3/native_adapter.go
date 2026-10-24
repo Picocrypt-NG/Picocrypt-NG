@@ -562,6 +562,9 @@ type NativeReadResult struct {
 	cleanupIncomplete          bool
 	cleanupDurabilityUncertain bool
 	callbackFailed             bool
+	factorMismatch             FactorRequirements
+	factorMismatchSupplied     uint16
+	factorMismatchAvailable    bool
 }
 
 func (result *NativeReadResult) Outcome() Outcome {
@@ -592,6 +595,17 @@ func (result *NativeReadResult) AuthenticatedComment() string {
 		return ""
 	}
 	return result.authenticatedComment
+}
+
+// FactorPolicyMismatch reports only a refused declared factor tuple, never a
+// credential-content failure or authentication result.
+func (result *NativeReadResult) FactorPolicyMismatch() (FactorRequirements, uint16, bool) {
+	if result == nil || !result.factorMismatchAvailable || result.outcome != OutcomeOperationFailed ||
+		result.stage != StageCredentialPolicy || result.code != CodeOperationFailed ||
+		result.publicationAttempted || result.callbackFailed {
+		return FactorRequirements{}, 0, false
+	}
+	return result.factorMismatch, result.factorMismatchSupplied, true
 }
 
 func (result *NativeReadResult) PublicationAttempted() bool {
@@ -777,6 +791,12 @@ func runNativeReadSession(
 		sink,
 	)
 	result = nativeReadResultFromSemantic(semantic)
+	if native, ok := provider.(*nativeCredentialProvider); ok && ctx.Err() == nil &&
+		result.outcome == OutcomeOperationFailed && result.stage == StageCredentialPolicy {
+		result.factorMismatch = native.factorMismatch
+		result.factorMismatchSupplied = native.factorMismatchSupplied
+		result.factorMismatchAvailable = native.factorMismatchAvailable
+	}
 	if semantic != nil {
 		semantic.Close()
 	}
@@ -1111,6 +1131,9 @@ func (sink *nativeReadSink) takeArchiveStage() *pcv3publication.Stage {
 // detection, canonicalization, policy validation, and factor cleanup.
 type nativeCredentialProvider struct {
 	readerCredentialProvider
+	factorMismatch          FactorRequirements
+	factorMismatchSupplied  uint16
+	factorMismatchAvailable bool
 }
 
 func (provider *nativeCredentialProvider) withCredential(
@@ -1119,12 +1142,55 @@ func (provider *nativeCredentialProvider) withCredential(
 	callback func(capsuleCredentialAccess) error,
 ) error {
 	mode, keyfileMode, ok := credentialRecoveryModes(tuple.credentialMode, tuple.keyfileMode)
-	if provider == nil || provider.factors == nil || !ok ||
-		provider.factors.Mode != mode || provider.factors.KeyfileMode != keyfileMode ||
+	if provider == nil || provider.factors == nil || provider.admitter == nil || callback == nil || ctx == nil || !ok {
+		return &capsuleAuthError{stage: StageCredentialPolicy}
+	}
+	if ctx.Err() != nil {
+		return &capsuleAuthError{stage: StageCancellation}
+	}
+	if provider.factors.Mode != mode || provider.factors.KeyfileMode != keyfileMode ||
 		len(provider.factors.Keyfiles) != int(tuple.keyfileCount) {
+		if nativeDeclaredFactorShape(provider.factors) {
+			requirements, valid := factorRequirements(tuple.credentialMode, tuple.keyfileMode, tuple.keyfileCount)
+			if valid {
+				provider.factorMismatch = requirements
+				provider.factorMismatchSupplied = uint16(len(provider.factors.Keyfiles)) //nolint:gosec // Guarded by MaxKeyfiles in nativeDeclaredFactorShape.
+				provider.factorMismatchAvailable = true
+			}
+		}
 		return &capsuleAuthError{stage: StageCredentialPolicy}
 	}
 	return provider.readerCredentialProvider.withCredential(ctx, tuple, callback)
+}
+
+// Only declared scalar shape is inspected here. Credential readers, contents,
+// duplicate detection and normalization remain owned by pcv3credential.
+func nativeDeclaredFactorShape(factors *pcv3credential.FactorRequest) bool {
+	if factors == nil || len(factors.Keyfiles) > pcv3credential.MaxKeyfiles || len(factors.Password) > 1<<20 {
+		return false
+	}
+	for _, reader := range factors.Keyfiles {
+		if reader == nil {
+			return false
+		}
+	}
+	switch factors.Mode {
+	case pcv3credential.CredentialModePasswordOnly:
+		return factors.ExpectedPolicy == pcv3credential.FactorPolicyPasswordOnly && len(factors.Password) > 0 &&
+			factors.KeyfileMode == pcv3credential.KeyfileModeNone && len(factors.Keyfiles) == 0
+	case pcv3credential.CredentialModeKeyfilesOnly:
+		if factors.ExpectedPolicy != pcv3credential.FactorPolicyKeyfilesOnly || len(factors.Password) != 0 {
+			return false
+		}
+	case pcv3credential.CredentialModePasswordAndKeyfiles:
+		if factors.ExpectedPolicy != pcv3credential.FactorPolicyPasswordAndKeyfiles || len(factors.Password) == 0 {
+			return false
+		}
+	default:
+		return false
+	}
+	return len(factors.Keyfiles) > 0 && (factors.KeyfileMode == pcv3credential.KeyfileModeOrdered ||
+		factors.KeyfileMode == pcv3credential.KeyfileModeUnordered)
 }
 
 func (sink *nativeReadSink) abortUncommitted() {
