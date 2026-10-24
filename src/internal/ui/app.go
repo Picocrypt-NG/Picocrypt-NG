@@ -136,7 +136,7 @@ type App struct {
 	validIndicator     *ValidationIndicator
 	keyfilesTitleLabel *widget.Label
 	keyfileLabel       *widget.Label
-	commentsLabel      *widget.Label
+	commentsLabel      *ttwidget.Label
 	commentsEntry      *widget.Entry
 	advancedLabel      *widget.Label
 	advancedContainer  *fyne.Container
@@ -156,6 +156,9 @@ type App struct {
 	pcv3FormatButton   *widget.Button
 	pcv3CancelButton   *widget.Button
 	pcv3ArchiveSummary *pcv3operation.ArchiveSummary
+
+	commentsFactorHint  *widget.Label
+	commentsResultLabel *ttwidget.Label
 
 	// Confirm password section (hidden in decrypt mode)
 	confirmLabel *widget.Label
@@ -321,7 +324,9 @@ func (a *App) refreshLocalizedText() {
 			"platform, but make sure you can type the same characters on every "+
 			"device where you'll decrypt it."))
 	setLabelText(a.keyfilesTitleLabel, tr("keyfiles.label", "Keyfiles:"))
-	setLabelText(a.commentsLabel, tr("comments.label", "Comments:"))
+	if a.commentsLabel != nil {
+		a.commentsLabel.SetText(tr("comments.label", "Comments:"))
+	}
 	setEntryPlaceholder(a.commentsEntry, tr("comments.placeholder", "Public note; not encrypted."))
 	setLabelText(a.advancedLabel, tr("advanced.label", "Advanced:"))
 	a.refreshAdvancedDisclosureButton()
@@ -537,6 +542,10 @@ func (a *App) stopSourcesAndContexts() {
 
 func (a *App) beginOrderlyShutdown() {
 	a.shutdownOnce.Do(func() {
+		if a.commentsLabel != nil {
+			a.commentsLabel.MouseOut()
+		}
+		a.retirePCV3ResultView()
 		a.stopSourcesAndContexts()
 
 		workersDone := make(chan struct{})
@@ -730,7 +739,15 @@ func (a *App) initializeDesktopWindow() {
 	a.Window.Resize(size)
 }
 
-func commentsLabelText(mode string) string {
+func commentsLabelText(mode string, states ...app.CommentsPreviewState) string {
+	if mode == "decrypt" && len(states) != 0 {
+		switch states[0] {
+		case app.CommentsPreviewUnverified:
+			return tr("comments.unverified", "Comments (not verified):")
+		case app.CommentsPreviewAuthenticated:
+			return tr("comments.authenticated", "Comments (confirmed):")
+		}
+	}
 	if mode == "decrypt" {
 		return tr("comments.read_only", "Comments (read-only):")
 	}
@@ -985,8 +1002,10 @@ func renderStatus(msg app.StatusMessage, snap app.UISnapshot) string {
 
 // buildCommentsSection creates the comments input section.
 func (a *App) buildCommentsSection() fyne.CanvasObject {
-	a.commentsLabel = widget.NewLabel(commentsLabelText(a.State.Mode))
+	a.commentsLabel = ttwidget.NewLabel(commentsLabelText(a.State.Mode))
 	a.commentsLabel.TextStyle = fyne.TextStyle{Bold: true}
+	a.commentsFactorHint = widget.NewLabel("")
+	a.commentsFactorHint.Wrapping = fyne.TextWrapWord
 
 	a.commentsEntry = widget.NewEntry()
 	a.commentsEntry.OnSubmitted = a.onDesktopEntrySubmitted
@@ -1006,6 +1025,7 @@ func (a *App) buildCommentsSection() fyne.CanvasObject {
 
 	return container.NewVBox(
 		a.commentsLabel,
+		a.commentsFactorHint,
 		a.scrollFormOver(a.commentsEntry),
 	)
 }
@@ -1053,8 +1073,13 @@ func (a *App) updateUIState() {
 	a.syncPCV3CredentialIntent()
 	snap := operationUISnapshot(a.State.UISnapshot())
 	operationView := a.refreshPCV3Surface(snap)
-	if operationView && a.configurationForm != nil && a.configurationForm.Visible() && a.mainScroll != nil {
-		a.mainScroll.ScrollToTop()
+	if operationView && a.configurationForm != nil && a.configurationForm.Visible() {
+		if a.commentsLabel != nil {
+			a.commentsLabel.MouseOut()
+		}
+		if a.mainScroll != nil {
+			a.mainScroll.ScrollToTop()
+		}
 	}
 	for _, section := range []*fyne.Container{a.configurationForm, a.operationFooter} {
 		if section == nil {
@@ -1105,9 +1130,14 @@ func (a *App) updateUIState() {
 			(snap.Password != snap.CPassword))) ||
 		snap.Deniability
 	commentsInnerDisabled := snap.Mode == "decrypt" &&
-		snap.CommentsPreviewState != app.CommentsPreviewNormal
+		!commentsPreviewReadable(snap.CommentsPreviewState)
 
 	if a.commentsEntry != nil {
+		placeholder := tr("comments.placeholder", "Public note; not encrypted.")
+		if snap.Mode == "decrypt" && snap.PCV3Format == app.PCV3FormatD1 {
+			placeholder = tr("comments.d1_placeholder", "Encrypted comment; available after verification.")
+		}
+		a.commentsEntry.SetPlaceHolder(placeholder)
 		if snap.Mode == "decrypt" {
 			displayText := commentsDisplayText(snap.Mode, snap.Comments, snap.CommentsPreviewState)
 			if a.commentsEntry.Text != displayText {
@@ -1118,7 +1148,7 @@ func (a *App) updateUIState() {
 		// (OnChanged will prevent actual changes). This keeps text visible, not pale.
 		if credentialsDisabled {
 			a.commentsEntry.Disable()
-		} else if snap.Mode == "decrypt" && snap.CommentsPreviewState == app.CommentsPreviewNormal && snap.Comments != "" {
+		} else if snap.Mode == "decrypt" && commentsPreviewReadable(snap.CommentsPreviewState) && snap.Comments != "" {
 			a.commentsEntry.Enable() // Keep text visible (not pale)
 		} else if commentsOuterDisabled || commentsInnerDisabled {
 			a.commentsEntry.Disable()
@@ -1192,7 +1222,17 @@ func (a *App) updateUIState() {
 	}
 
 	if a.commentsLabel != nil {
-		a.commentsLabel.SetText(commentsLabelText(snap.Mode))
+		a.commentsLabel.SetText(commentsLabelText(snap.Mode, snap.CommentsPreviewState))
+		setCommentLabelTooltip(a.commentsLabel, commentsToolTip(snap))
+	}
+
+	if a.commentsFactorHint != nil {
+		if requirements, ok := snap.PCV3NormalPreview.Factors(); ok {
+			a.commentsFactorHint.SetText(pcv3HeaderFactorHint(requirements))
+			a.commentsFactorHint.Show()
+		} else {
+			a.commentsFactorHint.Hide()
+		}
 	}
 
 	if a.mainScroll != nil {
@@ -1205,6 +1245,7 @@ func (a *App) resetUI() {
 	a.stopCurrentOperation()
 	a.operationGeneration.Add(1)
 	a.hideOpenedPathSelectionChoice()
+	a.retirePCV3ResultView()
 	a.releasePCV3Result()
 	a.State.ResetUI()
 	if a.passwordEntry != nil {

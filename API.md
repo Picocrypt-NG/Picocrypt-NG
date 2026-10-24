@@ -1096,6 +1096,25 @@ and the on-disk format are unchanged.
 `DetectPrefix` classifies format ownership. `Probe(io.ReaderAt, int64)` returns
 `(Route, error)` after bounded structural inspection; it intentionally omits
 capsules and KDF parameters. Claimed PCV3 input never falls back to legacy reads.
+`PreviewNormal(ctx, source, size)` borrows the held `io.ReaderAt` and returns
+only untrusted `NormalPreview` comment and `FactorRequirements` hints. It reads
+bounded front metadata only, never credentials, KDF, payload, tail or backup;
+it does not change the source offset or grant output or source-deletion authority.
+Cancellation is checked between bounded reads, not inside an arbitrary blocked
+`ReadAt`. Optional preview failure does not change format routing or recovery.
+Normal comments are public plaintext; D1 metadata is encrypted and has no
+pre-authentication preview. Only the retained `Result.AuthenticatedComment()`
+may supply confirmed comment text, independently of later publication durability.
+If the reader releases no comment, the frontend clears the untrusted preview.
+
+`Result.CredentialPolicyMismatch()` exposes only an exact admitted header-policy,
+keyfile-order or count mismatch and the supplied keyfile count. These header
+claims do not authenticate metadata or identify incorrect credential contents.
+Resource, cancellation and callback failures keep their own diagnostics. Matching
+factor tuples do not gain an exact policy mismatch from incorrect credential
+contents. `Result.Args`, `Presentation` and frontend wire
+schemas are unchanged. Preview hints never select credential factors.
+
 The browser's `js && wasm`-only `BrowserWrite` and `BrowserRead` facade reuses the
 same Normal/D1 serializers, credential owners and recovery engines in memory.
 It creates only PCV3; legacy v1/v2 decryption remains in `internal/wasm` with its

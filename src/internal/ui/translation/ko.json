@@ -310,5 +310,12 @@
   "mobile.folder_selection.unsupported": "Android에서는 폴더 선택을 완전히 지원하지 않습니다.\n\n폴더를 사용하려면:\n1. 파일 관리자에서 폴더를 앱 저장소로 복사합니다\n2. ‘앱 저장소(대용량 파일)’ 버튼으로 폴더를 선택합니다\n\n앱 저장소 경로:\n{{.Path}}",
   "mobile.folder_selection.copy_path": "클립보드에 경로 복사",
   "mobile.folder_selection.open_app_storage": "앱 저장소 열기",
-  "mobile.folder_selection.title": "폴더 선택"
+  "mobile.folder_selection.title": "폴더 선택",
+  "comments.unverified": "메모 (검증되지 않음):",
+  "comments.authenticated": "메모 (무결성 확인됨):",
+  "comments.normal_tooltip": "Normal PCV3에서 메모는 평문으로 저장됩니다. 확인됨은 복호화 성공과 컨테이너 전체 검증 후 메모의 무결성이 검증되었다는 뜻입니다.",
+  "comments.d1_tooltip": "PCV3 D1에서 메모는 암호화됩니다. 복호화 성공과 컨테이너 전체 검증 후에만 표시됩니다.",
+  "pcv3.factor.header_hint": "헤더에 따르면 (검증되지 않음): {{.Policy}}. 필요한 키 파일 수: {{.Required}}.",
+  "pcv3.factor.exact_mismatch": "헤더에 따른 요구 사항 (검증되지 않음): {{.Policy}}. 필요한 키 파일 수: {{.Required}}. 선택한 키 파일 수: {{.Selected}}. 인증 요소 모드와 키 파일 순서를 확인하세요. 키 파생이나 출력 생성은 시작되지 않았습니다.",
+  "comments.d1_placeholder": "암호화된 메모; 검증 후 볼 수 있습니다."
 }

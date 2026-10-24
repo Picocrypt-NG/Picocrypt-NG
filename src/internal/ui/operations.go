@@ -26,6 +26,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
+	ttwidget "github.com/dweymouth/fyne-tooltip/widget"
 )
 
 type operationInput struct {
@@ -1035,6 +1036,7 @@ func (a *App) startPCV3Work() {
 	}
 	session := a.newOperationSession()
 	a.setOperationSession(session)
+	a.retirePCV3ResultView()
 	a.releasePCV3Result()
 	a.State.SetWorking(true)
 	a.State.SetCanCancel(true)
@@ -1181,6 +1183,7 @@ func (a *App) finishPCV3Worker(session *operationSession, result *pcv3operation.
 		a.clearOperationSession(session)
 		a.State.SetWorking(false)
 		a.State.SetCanCancel(false)
+		a.State.SetPCV3ResultComment(result)
 		if result != nil {
 			a.pcv3Result = result
 			a.pcv3ResultGeneration = session.generation
@@ -1283,12 +1286,23 @@ func (a *App) refreshPCV3CleanupWarningIfAlive(cleanup pcv3CleanupFacts) {
 	})
 }
 
-func (a *App) releasePCV3Result() {
-	a.pcv3ArchiveSummary = nil
+// retirePCV3ResultView runs only from the owning Fyne callback.
+func (a *App) retirePCV3ResultView() {
+	if a.commentsResultLabel != nil {
+		a.commentsResultLabel.MouseOut()
+		a.commentsResultLabel = nil
+	}
 	if a.pcv3ArchiveReviewModal != nil {
 		a.pcv3ArchiveReviewModal.Hide()
 		a.pcv3ArchiveReviewModal = nil
 	}
+}
+
+// releasePCV3Result also runs after the event loop stops; it must remain nonvisual.
+func (a *App) releasePCV3Result() {
+	a.pcv3ArchiveSummary = nil
+	a.commentsResultLabel = nil
+	a.pcv3ArchiveReviewModal = nil
 	result := a.pcv3Result
 	a.pcv3Result = nil
 	a.pcv3ResultGeneration = 0
@@ -1299,6 +1313,10 @@ func (a *App) releasePCV3Result() {
 func (a *App) refreshPCV3Surface(snap app.UISnapshot) bool {
 	if a.pcv3Container == nil {
 		return false
+	}
+	if a.commentsResultLabel != nil {
+		a.commentsResultLabel.MouseOut()
+		a.commentsResultLabel = nil
 	}
 	a.pcv3Container.RemoveAll()
 	if snap.PCV3CleanupIncomplete && !pcv3CleanupIncomplete(snap.PCV3Result) {
@@ -1372,7 +1390,16 @@ func (a *App) buildPCV3ResultView(
 	presentation pcv3operation.Presentation,
 	result *pcv3operation.Result,
 ) fyne.CanvasObject {
+	if a.commentsResultLabel != nil {
+		a.commentsResultLabel.MouseOut()
+		a.commentsResultLabel = nil
+	}
 	outcome := pcv3OutcomeCopy(presentation)
+	if result != nil && result == a.pcv3Result {
+		if requirements, supplied, ok := result.CredentialPolicyMismatch(); ok {
+			outcome.Body = pcv3ExactFactorMismatchCopy(requirements, supplied)
+		}
+	}
 	publication := pcv3PublicationCopy(presentation)
 	// Cancellation and batch totals are finalized after the core result.
 	// They describe the whole operation, not just its last published file.
@@ -1410,7 +1437,12 @@ func (a *App) buildPCV3ResultView(
 	}
 	if result != nil && result == a.pcv3Result {
 		if comment := result.AuthenticatedComment(); comment != "" {
-			content.Add(wrappedPCV3Title(tr("comments.label", "Comments:")))
+			label := ttwidget.NewLabel(commentsLabelText("decrypt", app.CommentsPreviewAuthenticated))
+			label.TextStyle = fyne.TextStyle{Bold: true}
+			label.Wrapping = fyne.TextWrapWord
+			label.SetToolTip(resultCommentsToolTip(a.State.UISnapshot()))
+			a.commentsResultLabel = label
+			content.Add(label)
 			content.Add(wrappedPCV3Label(comment))
 		}
 	}
@@ -1584,6 +1616,7 @@ func (a *App) startPCV3ArchiveFollowUp(
 				a.State.SetCanCancel(false)
 			}
 			a.pcv3Result = next
+			a.State.SetPCV3ResultComment(next)
 			a.State.SetWorking(false)
 			switch {
 			case next != nil:
@@ -1926,7 +1959,7 @@ func (a *App) captureRecursiveOperationInput(
 		isSplit = false
 		result = routeRecursiveD1File(file)
 	} else {
-		result = routeDroppedFile(file, isSplit)
+		result = routeDroppedFile(session.ctx, file, isSplit)
 	}
 	resultConsumed := false
 	fyne.DoAndWait(func() {
@@ -2064,10 +2097,12 @@ func (a *App) finalizeOperation(
 	a.clearOperationSession(session)
 
 	if result.pcv3 != nil {
+		a.retirePCV3ResultView()
 		a.releasePCV3Result()
 		a.pcv3Result = result.pcv3
 		a.pcv3ResultGeneration = session.generation
 		a.State.SetPCV3Result(result.pcv3.Presentation())
+		a.State.SetPCV3ResultComment(result.pcv3)
 	}
 	clearCredentials := false
 	switch {

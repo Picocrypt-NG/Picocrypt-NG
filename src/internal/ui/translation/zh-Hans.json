@@ -310,5 +310,12 @@
   "pcv3.artifact.range.verified": "已验证",
   "pcv3.artifact.range.unverified": "未经验证",
   "pcv3.artifact.range.missing": "缺失",
-  "pcv3.artifact.range.unknown": "未知状态"
+  "pcv3.artifact.range.unknown": "未知状态",
+  "comments.unverified": "备注（未经验证）：",
+  "comments.authenticated": "备注（完整性已确认）：",
+  "comments.normal_tooltip": "在 Normal PCV3 中，备注以明文存储。“已确认”表示其完整性已在成功解密和完整容器验证后得到验证。",
+  "comments.d1_tooltip": "在 PCV3 D1 中，备注已加密。只有成功解密并完成完整容器验证后才会显示。",
+  "pcv3.factor.header_hint": "根据文件头（未经验证）：{{.Policy}}。所需密钥文件数：{{.Required}}。",
+  "pcv3.factor.exact_mismatch": "根据文件头的要求（未经验证）：{{.Policy}}。所需密钥文件数：{{.Required}}。已选密钥文件数：{{.Selected}}。请检查凭据模式及密钥文件顺序。尚未开始密钥派生或输出创建。",
+  "comments.d1_placeholder": "加密备注；验证后可查看。"
 }

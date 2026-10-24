@@ -598,7 +598,9 @@ func (a *App) buildMobileKeyfilesSection() fyne.CanvasObject {
 
 // buildMobileCommentsSection creates the comments section for mobile
 func (a *App) buildMobileCommentsSection() fyne.CanvasObject {
-	a.commentsLabel = widget.NewLabel(commentsLabelText(a.State.Mode))
+	a.commentsLabel = ttwidget.NewLabel(commentsLabelText(a.State.Mode))
+	a.commentsFactorHint = widget.NewLabel("")
+	a.commentsFactorHint.Wrapping = fyne.TextWrapWord
 	a.commentsEntry = widget.NewEntry()
 	a.commentsEntry.SetPlaceHolder(tr("comments.placeholder", "Public note; not encrypted."))
 	a.commentsEntry.MultiLine = true
@@ -616,6 +618,7 @@ func (a *App) buildMobileCommentsSection() fyne.CanvasObject {
 
 	return container.NewVBox(
 		a.commentsLabel,
+		a.commentsFactorHint,
 		a.commentsEntry,
 	)
 }

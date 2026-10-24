@@ -25,7 +25,17 @@ runtimes or external components.
 D1 provides a random-looking container with explicitly selected decoding. It
 does not promise anonymity, hidden volumes, size hiding, plausible explanations
 for filesystem metadata, or protection against coercion. Comments in ordinary
-containers are plaintext metadata and must not be treated as secrets.
+containers are plaintext metadata and must not be treated as secrets. D1 metadata,
+including comments, is encrypted and has no pre-authentication comment preview.
+
+The desktop may display a bounded Normal front-header comment and factor-policy
+hint before decryption. Both are explicitly unverified claims and grant no
+output, publication, archive or source-deletion authority. A confirmed comment
+comes only from the current retained authenticated reader result; the preview is
+never promoted. No released comment means the old preview is cleared. Reader
+authentication is independent of subsequent publication durability. Exact
+factor-policy diagnostics describe header requirements and selected counts, not
+which password or keyfile content is wrong.
 
 ## Required properties and evidence
 

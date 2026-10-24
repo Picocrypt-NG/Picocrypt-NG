@@ -322,5 +322,12 @@
   "pcv3.artifact.range.verified": "vérifiée",
   "pcv3.artifact.range.unverified": "non vérifiée",
   "pcv3.artifact.range.missing": "manquante",
-  "pcv3.artifact.range.unknown": "état inconnu"
+  "pcv3.artifact.range.unknown": "état inconnu",
+  "comments.unverified": "Commentaire (non vérifié) :",
+  "comments.authenticated": "Commentaire (intégrité confirmée) :",
+  "comments.normal_tooltip": "Dans Normal PCV3, le commentaire est stocké en clair. La confirmation signifie que son intégrité a été vérifiée après un déchiffrement réussi et une vérification complète du conteneur.",
+  "comments.d1_tooltip": "Dans PCV3 D1, le commentaire est chiffré. Il est affiché uniquement après un déchiffrement réussi et une vérification complète du conteneur.",
+  "pcv3.factor.header_hint": "Selon l’en-tête (non vérifié) : {{.Policy}}. Fichiers clés requis : {{.Required}}.",
+  "pcv3.factor.exact_mismatch": "Exigences selon l’en-tête (non vérifiées) : {{.Policy}}. Fichiers clés requis : {{.Required}}. Fichiers clés sélectionnés : {{.Selected}}. Vérifiez le mode des facteurs et l’ordre des fichiers clés. Aucune dérivation de clé ni création de sortie n’a commencé.",
+  "comments.d1_placeholder": "Commentaire chiffré ; disponible après vérification."
 }

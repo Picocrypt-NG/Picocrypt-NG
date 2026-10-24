@@ -316,5 +316,12 @@
   "mobile.folder_selection.unsupported": "Folder selection is not fully supported on Android.\n\nFor folders, please:\n1. Copy your folder to App Storage using a file manager\n2. Use 'App Storage (large files)' button to select it\n\nApp Storage path:\n{{.Path}}",
   "mobile.folder_selection.copy_path": "Copy Path to Clipboard",
   "mobile.folder_selection.open_app_storage": "Open App Storage",
-  "mobile.folder_selection.title": "Folder Selection"
+  "mobile.folder_selection.title": "Folder Selection",
+  "comments.unverified": "Comments (not verified):",
+  "comments.authenticated": "Comments (confirmed):",
+  "comments.normal_tooltip": "In Normal PCV3 the comment is stored openly. Confirmed means its integrity was verified after successful decryption and full container verification.",
+  "comments.d1_tooltip": "In PCV3 D1 the comment is encrypted. It is shown only after successful decryption and full container verification.",
+  "pcv3.factor.header_hint": "According to header (not verified): {{.Policy}}. Required keyfiles: {{.Required}}.",
+  "pcv3.factor.exact_mismatch": "Requirements according to header (not verified): {{.Policy}}. Required keyfiles: {{.Required}}. Selected keyfiles: {{.Selected}}. Check factor mode and keyfile order. No key derivation or output started.",
+  "comments.d1_placeholder": "Encrypted comment; available after verification."
 }
