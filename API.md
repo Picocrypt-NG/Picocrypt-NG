@@ -207,6 +207,8 @@ type DecryptRequest struct {
     Recombine   bool // volume is split into chunks
     Deniability bool // volume has a deniability wrapper
 
+    RecombineExpectedInputs []os.FileInfo // optional borrowed identities and sizes, in chunk order
+
     Reporter ProgressReporter
     RSCodecs *encoding.RSCodecs
 
@@ -235,6 +237,14 @@ func (input *PreparedDecryptInput) Close() error
 // remains responsible for closing it afterward.
 func DecryptPrepared(ctx context.Context, req *DecryptRequest, input *PreparedDecryptInput) error
 ```
+
+`RecombineExpectedInputs` is borrowed without ownership transfer: the caller must
+keep the list and its metadata immutable until `Decrypt` or `DecryptPrepared`
+returns. Nil preserves existing behavior; a nonnil list requires `Recombine`
+and must cover every chunk. Recombination checks the consumed descriptors against
+the expected identities and sizes before KDF and plaintext output. This includes
+the borrowed prepared chunk-zero descriptor. These checks do not snapshot bytes
+or prevent writes to the same inode.
 
 ### Progress
 
@@ -678,6 +688,21 @@ the original entry name. Writers reopen without following a substituted leaf and
 check the descriptor before reading; snapshots do not freeze same-inode writes.
 GUI source-deletion manifests use the same identities as encryption and reject
 a replaced input before work, rather than capturing a separate deletion target.
+For decrypt-with-recombine and requested source deletion, the GUI borrows the
+ordered captured chunk identities through `RecombineExpectedInputs`. The extra
+list is admitted against the shared `ZIPResourceBudget` before allocation; its
+charge remains live through synchronous execution and source cleanup, then the
+aliases are cleared and the charge released on success, failure or cancellation.
+
+GUI source removal opens each immediate parent once, checks the captured leaf
+identity and metadata through that root, then removes only its basename through
+the same root. One parent is held at a time. Parent-open, inspection, removal and
+close errors remain deletion warnings; an already missing source is benign but
+does not hide a close failure. Cancellation stops further removal, and deletion
+failure retains ready output. Existing opt-in, completion, kept/unverified and
+`SourceDeletionAllowed` guards still apply; only captured files, chunks and
+directories are eligible. Parent pinning does not make the final identity check
+and removal atomic; see the [filesystem limits](docs/SECURITY_CONTRACT.md#filesystem-ownership-and-limits).
 
 ```go
 type ZipOptions struct {
@@ -725,6 +750,17 @@ Legacy auto-unzip keeps its recoverable malformed-ZIP fallback; resource refusal
 does not authorize that fallback.
 Extraction refuses before opening entry payloads if the free-space probe fails
 or the declared total exceeds available space.
+
+Both `Unpack` and `UnpackWithResult` retain cleanup obligations for created
+stages and directories even when their post-creation metadata cannot be read.
+Cleanup closes held stage files and removes only objects whose ownership can be
+checked against the recorded identity. The first observed directory identity is
+retained; a missing or replaced owned directory is refused rather than adopted
+or recreated. `ErrUnpackCleanupIncomplete` means absence of owned residue was
+not proven, not that plaintext residue is known to exist. Typed publication state
+and cleanup uncertainty remain separate: an unknown stage identity conservatively
+produces `UnpackStatePublicationIndeterminate`; a directory-only failure before
+publication can remain `UnpackStateNotPublished` with cleanup uncertainty.
 
 ### Split / Recombine
 

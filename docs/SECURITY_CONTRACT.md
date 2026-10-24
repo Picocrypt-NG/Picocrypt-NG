@@ -65,6 +65,42 @@ durability of the provider's backing storage. Failed ciphertext handoff retains
 the exact output for another destination; private plaintext has a separate
 cleanup obligation.
 
+## Filesystem ownership and limits
+
+Common ZIP extraction retains cleanup obligations for newly created stages and
+directories even when post-creation metadata cannot be read. Both legacy and typed
+extractors report `ErrUnpackCleanupIncomplete` when absence of owned residue
+cannot be proven. They retain the first observed directory identity and refuse
+missing or substituted owned directories. Unknown identity does not authorize
+pathname removal; held stage handles are still closed. Cleanup uncertainty does
+not itself establish retained plaintext or determine publication state.
+
+Desktop source deletion remains off by default and subject to the existing
+whole-operation, kept/unverified and `SourceDeletionAllowed` guards. It removes
+only captured sources and empty captured directories. Each removal checks the
+captured identity and metadata and removes the basename through one held
+immediate parent, preserving ready output and deletion warnings on failure.
+Cancellation stops further removal; missing-source success cannot hide a parent
+close error. Recombine-with-delete passes the same captured chunk identities
+and sizes to the reader, including its prepared chunk-zero descriptor. The
+borrowed metadata stays immutable and budgeted through execution and deletion;
+it adds no retained per-chunk handles.
+
+Original inputs must remain quiescent from selection through reading and any
+requested deletion. Captured metadata is not a byte snapshot and cannot freeze
+same-inode writes. Filesystem races remain in scope: pinned parents prevent
+later ancestor-path substitution from redirecting the removal, but the final
+identity check and leaf removal are separate effects. There is no atomic POSIX
+expected-inode unlink guarantee; a leaf substitution between those effects
+remains a risk. Endpoint trust does not eliminate this residual race.
+
+These improvements do not cover `StagedFile.RemoveSiblingDirectory` or
+`removeOwnedAutoUnzipArchiveAt`; common extraction changes do not harden those
+external cleanup paths. They also do not add general Windows exact-source
+handles, optional ACL admission, full crash recovery or physical erasure.
+Native platform and performance validation remain separate review gates; these
+contracts do not establish that every filesystem finding has been resolved.
+
 ## Platform and review gates
 
 Native targets are Windows, Linux, macOS and Android starting at Android
