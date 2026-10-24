@@ -369,10 +369,10 @@ func TestCancelAfterSuccessfulOperationPreservesSource(t *testing.T) {
 	}
 	cleanupEntered := make(chan cleanupObservation, 1)
 	releaseCleanup := make(chan struct{})
-	a.operationSourceRemover = func(ctx context.Context, path string) error {
-		cleanupEntered <- cleanupObservation{ctx: ctx, inputFile: path}
+	a.operationSourceRemover = func(ctx context.Context, source deletionSource, directory bool) error {
+		cleanupEntered <- cleanupObservation{ctx: ctx, inputFile: source.path}
 		<-releaseCleanup
-		return removeOperationSource(ctx, path)
+		return removeOperationSource(ctx, source, directory)
 	}
 
 	fyne.DoAndWait(func() {
@@ -841,7 +841,7 @@ func TestDeleteSafetyRejectsPathsInsideSourceFolderBeforeExecution(t *testing.T)
 				executorCalls.Add(1)
 				return operationResult{completed: true}
 			}
-			a.operationSourceRemover = func(context.Context, string) error {
+			a.operationSourceRemover = func(context.Context, deletionSource, bool) error {
 				removerCalls.Add(1)
 				return nil
 			}

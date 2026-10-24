@@ -85,15 +85,6 @@ type pcv3OperationExecutor func(
 	*pcv3operation.Request,
 ) *pcv3operation.Result
 
-type operationSourceRemover func(context.Context, string) error
-
-func removeOperationSource(ctx context.Context, path string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return os.Remove(path)
-}
-
 type deletionSource struct {
 	path string
 	info os.FileInfo
@@ -308,32 +299,6 @@ const (
 	deletionSourceUnchanged
 	deletionSourceChanged
 )
-
-func inspectDeletionSource(source deletionSource, directory bool) (deletionSourceState, error) {
-	current, err := os.Lstat(source.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return deletionSourceMissing, nil
-	}
-	if err != nil {
-		return deletionSourceChanged, err
-	}
-	if !os.SameFile(source.info, current) || current.Mode().Type() != source.info.Mode().Type() {
-		return deletionSourceChanged, nil
-	}
-	if directory {
-		if !current.IsDir() || current.Mode().Perm() != source.info.Mode().Perm() {
-			return deletionSourceChanged, nil
-		}
-		return deletionSourceUnchanged, nil
-	}
-	if !current.Mode().IsRegular() ||
-		current.Mode() != source.info.Mode() ||
-		current.Size() != source.info.Size() ||
-		!current.ModTime().Equal(source.info.ModTime()) {
-		return deletionSourceChanged, nil
-	}
-	return deletionSourceUnchanged, nil
-}
 
 type operationReporterGate struct {
 	mu         sync.Mutex
@@ -1749,29 +1714,17 @@ func (a *App) cleanupOperationSources(
 		return result
 	}
 	remove := func(source deletionSource, directory bool) bool {
-		state, err := inspectDeletionSource(source, directory)
-		if err != nil {
-			result.deleteFailed = true
-			return true
-		}
-		if state == deletionSourceMissing {
-			return true
-		}
-		if state == deletionSourceChanged {
-			result.deleteFailed = true
-			return true
-		}
 		remover := a.operationSourceRemover
 		if remover == nil {
 			remover = removeOperationSource
 		}
-		err = remover(ctx, source.path)
+		err := remover(ctx, source, directory)
+		if errors.Is(err, errSourceParentClose) {
+			result.deleteFailed = true
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			result.cancelled = true
 			return false
-		}
-		if errors.Is(err, os.ErrNotExist) {
-			return true
 		}
 		if err != nil {
 			result.deleteFailed = true
