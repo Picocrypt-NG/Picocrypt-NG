@@ -394,14 +394,14 @@ func TestPCV3MobileArchiveSAFTerminalCallersCaptureSnapshotBeforeRelease(t *test
 				}
 			}()
 			close(generatorProceed)
-			if !mobileArchiveSAFWriterBlockedOnProgressMap("replacePCV3ArchivePresentationWithReceipt") {
+			if !mobileArchiveSAFWriterBlockedOnProgressMap("replacePCV3ArchivePresentationWithReceipt", "sync.RWMutex.Lock") {
 				globalProgressMap.mu.RUnlock()
 				locked = false
 				t.Fatal("terminal replacement did not queue on the held progress lock")
 			}
 			releaseResult := make(chan string, 1)
 			go func() { releaseResult <- operation.Release() }()
-			if !mobileArchiveSAFWriterBlockedOnProgressMap("(*PCV3Operation).Release") {
+			if !mobileArchiveSAFWriterBlockedOnProgressMap("(*PCV3Operation).Release", "sync.Mutex.Lock") {
 				globalProgressMap.mu.RUnlock()
 				locked = false
 				t.Fatal("Release did not queue behind terminal replacement")
@@ -1085,13 +1085,16 @@ func assertMobileTransferredFDClosed(t *testing.T, fd int64) {
 	}
 }
 
-func mobileArchiveSAFWriterBlockedOnProgressMap(frame string) bool {
+func mobileArchiveSAFWriterBlockedOnProgressMap(frame, waitReason string) bool {
 	deadline := time.Now().Add(2 * time.Second)
 	stack := make([]byte, 1<<20)
 	for time.Now().Before(deadline) {
 		n := runtime.Stack(stack, true)
 		for _, goroutine := range strings.Split(string(stack[:n]), "\n\n") {
-			if strings.Contains(goroutine, "sync.(*RWMutex).Lock") &&
+			header, _, _ := strings.Cut(goroutine, "\n")
+			// A Lock frame alone can be runnable before it owns the writer gate.
+			if strings.Contains(header, "["+waitReason+"]") &&
+				strings.Contains(goroutine, "sync.(*RWMutex).Lock") &&
 				strings.Contains(goroutine, frame) {
 				return true
 			}
