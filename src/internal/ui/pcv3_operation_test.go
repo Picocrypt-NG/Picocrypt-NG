@@ -353,8 +353,8 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 			},
 			wantCompletion: pcv3operation.CompletionWarning,
 			wantText: []string{
-				"Partial recovery artifact created",
-				"Some ranges are verified and some are missing. This .pcv3-recovery file is not a complete plaintext file.",
+				"Partial recovery",
+				"Not a fully verified file. Data may be missing or unverified.",
 				"File saved.",
 			},
 			forbidText: []string{"Operation complete"},
@@ -371,8 +371,8 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 			},
 			wantCompletion: pcv3operation.CompletionWarning,
 			wantText: []string{
-				"Unverified recovery artifact created",
-				"Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content.",
+				"Unverified recovery",
+				"Integrity could not be verified. Do not treat this file as trusted.",
 				"File saved.",
 			},
 			forbidText: []string{"Operation complete"},
@@ -451,8 +451,8 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 			},
 			wantCompletion: pcv3operation.CompletionDurabilityUncertain,
 			wantText: []string{
-				"Unverified recovery artifact created",
-				"Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content.",
+				"Unverified recovery",
+				"Integrity could not be verified. Do not treat this file as trusted.",
 				"Output durability not confirmed", nativePCV3UncertainBody, nativePCV3DurabilityWarningText,
 				nativePCV3CleanupWarningTitle, nativePCV3CleanupWarningText,
 			},
@@ -475,7 +475,7 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 			},
 			wantCompletion: pcv3operation.CompletionPublicationIndeterminate,
 			wantText: []string{
-				"Partial recovery artifact created", "Output state is unknown",
+				"Partial recovery", "Output state is unknown",
 				"The application cannot determine whether publication committed. Keep every source and the destination exactly as they are. Do not retry or clean up this operation.",
 				"Output publication state is unknown. Keep every source and the destination exactly as they are.",
 			},

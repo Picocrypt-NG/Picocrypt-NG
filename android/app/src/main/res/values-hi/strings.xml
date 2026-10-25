@@ -242,10 +242,10 @@
     <string name="pcv3_outcome_archive_pending_body">आर्काइव का पेलोड पूरी तरह प्रमाणित है। निकालने के लिए नया फ़ोल्डर चुनें। एन्क्रिप्टेड स्रोत रखा गया है।</string>
     <string name="pcv3_outcome_degraded_title">प्रमाणित आउटपुट क्षति के साथ पुनर्प्राप्त हुआ</string>
     <string name="pcv3_outcome_degraded_body">आउटपुट प्रमाणित है, लेकिन पुनर्प्राप्ति की अतिरिक्त प्रतियाँ क्षतिग्रस्त हैं। मूल वॉल्यूम रखें।</string>
-    <string name="pcv3_outcome_force_partial_title">आंशिक पुनर्प्राप्ति आर्टिफ़ैक्ट बनाया गया</string>
-    <string name="pcv3_outcome_force_partial_body">कुछ रेंज सत्यापित हैं और कुछ उपलब्ध नहीं हैं। यह .pcv3-recovery फ़ाइल पूरी सादा-पाठ फ़ाइल नहीं है।</string>
-    <string name="pcv3_outcome_force_unverified_title">असत्यापित पुनर्प्राप्ति आर्टिफ़ैक्ट बनाया गया</string>
-    <string name="pcv3_outcome_force_unverified_body">पुनर्प्राप्त किए गए कुछ बाइट प्रमाणित नहीं हैं और वे क्षतिग्रस्त या हानिकारक हो सकते हैं। इस आर्टिफ़ैक्ट को विश्वसनीय सामग्री मानकर न खोलें और न निकालें।</string>
+    <string name="pcv3_outcome_force_partial_title">आंशिक पुनर्प्राप्ति</string>
+    <string name="pcv3_outcome_force_partial_body">फ़ाइल पूरी तरह सत्यापित नहीं है। कुछ डेटा गायब या असत्यापित हो सकता है।</string>
+    <string name="pcv3_outcome_force_unverified_title">असत्यापित पुनर्प्राप्ति</string>
+    <string name="pcv3_outcome_force_unverified_body">अखंडता सत्यापित नहीं हो सकी। इस फ़ाइल को विश्वसनीय न मानें।</string>
     <string name="pcv3_outcome_credentials_or_damage_title">प्रमाणीकरण कारक या पुनर्प्राप्ति डेटा सत्यापित नहीं हो सके</string>
     <string name="pcv3_outcome_credentials_or_damage_body">चुनी हुई प्रमाणीकरण कारक नीति, कुंजी फ़ाइलें और उनका क्रम जाँचें। कोई आउटपुट प्रकाशित नहीं हुआ।</string>
     <string name="pcv3_outcome_authentication_failed_title">प्रमाणीकरण विफल</string>

@@ -242,10 +242,10 @@
     <string name="pcv3_outcome_archive_pending_body">Der Archivinhalt ist vollständig authentifiziert. Wählen Sie einen neuen Ordner zum Entpacken. Die verschlüsselte Quelle bleibt erhalten.</string>
     <string name="pcv3_outcome_degraded_title">Authentifizierte Ausgabe mit Schäden wiederhergestellt</string>
     <string name="pcv3_outcome_degraded_body">Die Ausgabe ist authentifiziert, aber die Wiederherstellungsredundanz ist beschädigt. Bewahren Sie das ursprüngliche Volume auf.</string>
-    <string name="pcv3_outcome_force_partial_title">Artefakt einer teilweisen Wiederherstellung erstellt</string>
-    <string name="pcv3_outcome_force_partial_body">Einige Bereiche sind verifiziert, andere fehlen. Diese Datei mit der Endung .pcv3-recovery ist keine vollständige Klartextdatei.</string>
-    <string name="pcv3_outcome_force_unverified_title">Artefakt einer nicht verifizierten Wiederherstellung erstellt</string>
-    <string name="pcv3_outcome_force_unverified_body">Einige wiederhergestellte Bytes sind nicht authentifiziert und können beschädigt oder gefährlich sein. Öffnen oder entpacken Sie dieses Artefakt nicht als vertrauenswürdigen Inhalt.</string>
+    <string name="pcv3_outcome_force_partial_title">Teilweise Wiederherstellung</string>
+    <string name="pcv3_outcome_force_partial_body">Die Datei ist nicht vollständig verifiziert. Daten können fehlen oder ungeprüft sein.</string>
+    <string name="pcv3_outcome_force_unverified_title">Ungeprüfte Wiederherstellung</string>
+    <string name="pcv3_outcome_force_unverified_body">Die Integrität konnte nicht bestätigt werden. Behandeln Sie diese Datei nicht als vertrauenswürdig.</string>
     <string name="pcv3_outcome_credentials_or_damage_title">Faktoren oder Wiederherstellungsdaten konnten nicht verifiziert werden</string>
     <string name="pcv3_outcome_credentials_or_damage_body">Prüfen Sie die ausgewählte Faktorrichtlinie, die Schlüsseldateien und ihre Reihenfolge. Es wurde keine Ausgabe veröffentlicht.</string>
     <string name="pcv3_outcome_authentication_failed_title">Authentifizierung fehlgeschlagen</string>

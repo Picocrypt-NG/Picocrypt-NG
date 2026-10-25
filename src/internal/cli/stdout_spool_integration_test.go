@@ -159,7 +159,7 @@ func TestCLIEncryptedStdoutIntegration(t *testing.T) {
 		result := runStreamIntegrationCommand(t, exec.Command(binaryPath, args...), nil)
 		artifact := result.stdout
 		if result.exitCode != ExitPCV3Warning || !strings.Contains(result.stderr, "Outcome: force-partial\nPublication: not-attempted\n") ||
-			!strings.Contains(result.stderr, "Warning: partial recovery output is not a complete plaintext file") {
+			!strings.Contains(result.stderr, "Warning: Not a fully verified file. Data may be missing or unverified.") {
 			t.Fatalf("Force stdout lost warning/provenance: exit=%d stderr=%q", result.exitCode, result.stderr)
 		}
 		// Fixed independent application envelope contract: partial, no selected

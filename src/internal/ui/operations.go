@@ -1474,14 +1474,7 @@ func (a *App) buildPCV3ResultView(
 				return
 			}
 			picker := dialog.NewFolderOpen(func(uri fyne.ListableURI, err error) {
-				if err != nil || uri == nil || result != a.pcv3Result || generation != a.pcv3ResultGeneration {
-					return
-				}
-				root, openErr := fileops.OpenRootNoSymlink(uri.Path())
-				if openErr != nil {
-					return
-				}
-				a.consumePCV3Archive(result, generation, root)
+				a.handlePCV3ArchiveFolderSelection(result, generation, uri, err)
 			}, a.Window)
 			picker.Show()
 		})
@@ -1518,6 +1511,38 @@ func (a *App) buildPCV3ResultView(
 	closeButton.Importance = widget.HighImportance
 	content.Add(closeButton)
 	return content
+}
+
+func (a *App) handlePCV3ArchiveFolderSelection(result *pcv3operation.Result, generation uint64, uri fyne.ListableURI, err error) {
+	if result == nil || result != a.pcv3Result || generation != a.pcv3ResultGeneration || result.ArchiveFollowUp() == nil {
+		return
+	}
+	if err != nil {
+		dialog.NewInformation(
+			tr("pcv3.archive.picker_failed.title", "Cannot select folder"),
+			tr("pcv3.archive.destination_failed.body", "Choose another folder or try again."), a.Window,
+		).Show()
+		return
+	}
+	if uri == nil {
+		return
+	}
+	if uri.Scheme() != "file" {
+		dialog.NewInformation(
+			tr("pcv3.archive.destination_failed.title", "Cannot open extraction folder"),
+			tr("pcv3.archive.destination_failed.body", "Choose another folder or try again."), a.Window,
+		).Show()
+		return
+	}
+	root, openErr := fileops.OpenRootNoSymlink(uri.Path())
+	if openErr != nil {
+		dialog.NewInformation(
+			tr("pcv3.archive.destination_failed.title", "Cannot open extraction folder"),
+			tr("pcv3.archive.destination_failed.body", "Choose another folder or try again."), a.Window,
+		).Show()
+		return
+	}
+	a.consumePCV3Archive(result, generation, root)
 }
 
 func (a *App) consumePCV3Archive(

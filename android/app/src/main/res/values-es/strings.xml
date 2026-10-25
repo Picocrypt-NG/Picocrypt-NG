@@ -246,10 +246,10 @@
     <string name="pcv3_outcome_archive_pending_body">El contenido del archivo está totalmente autenticado. Elige una carpeta nueva para extraerlo. Se conservará la fuente cifrada.</string>
     <string name="pcv3_outcome_degraded_title">Salida autenticada recuperada con daños</string>
     <string name="pcv3_outcome_degraded_body">La salida está autenticada, pero la redundancia de recuperación está dañada. Conserva el volumen original.</string>
-    <string name="pcv3_outcome_force_partial_title">Se ha creado un artefacto de recuperación parcial</string>
-    <string name="pcv3_outcome_force_partial_body">Algunos intervalos están verificados y otros faltan. Este archivo .pcv3-recovery no es un archivo de texto claro completo.</string>
-    <string name="pcv3_outcome_force_unverified_title">Se ha creado un artefacto de recuperación no verificado</string>
-    <string name="pcv3_outcome_force_unverified_body">Algunos bytes recuperados no están autenticados y pueden estar dañados o no ser seguros. No abras ni extraigas este artefacto como contenido de confianza.</string>
+    <string name="pcv3_outcome_force_partial_title">Recuperación parcial</string>
+    <string name="pcv3_outcome_force_partial_body">El archivo no está completamente verificado. Puede haber datos ausentes o sin verificar.</string>
+    <string name="pcv3_outcome_force_unverified_title">Recuperación sin verificar</string>
+    <string name="pcv3_outcome_force_unverified_body">No se pudo verificar la integridad. No considere este archivo de confianza.</string>
     <string name="pcv3_outcome_credentials_or_damage_title">No se han podido verificar las credenciales o los datos de recuperación</string>
     <string name="pcv3_outcome_credentials_or_damage_body">Comprueba la política de credenciales, los archivos de clave y su orden. No se ha publicado ninguna salida.</string>
     <string name="pcv3_outcome_authentication_failed_title">Error de autenticación</string>

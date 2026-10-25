@@ -252,9 +252,9 @@ func pcv3CLIWarningText(warning pcv3operation.Warning) string {
 	case pcv3operation.WarningAuthenticatedDegraded:
 		return "Warning: output is authenticated but recovery redundancy is damaged"
 	case pcv3operation.WarningForcePartial:
-		return "Warning: partial recovery output is not a complete plaintext file"
+		return "Warning: Not a fully verified file. Data may be missing or unverified."
 	case pcv3operation.WarningForceUnverified:
-		return "Warning: recovered bytes are unverified and may be unsafe"
+		return "Warning: Integrity could not be verified. Do not treat this file as trusted."
 	case pcv3operation.WarningDurabilityUncertain:
 		return "Warning: output durability was not confirmed; keep source and destination unchanged"
 	case pcv3operation.WarningPublicationIndeterminate:

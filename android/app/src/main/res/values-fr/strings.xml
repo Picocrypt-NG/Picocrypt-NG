@@ -246,10 +246,10 @@
     <string name="pcv3_outcome_archive_pending_body">Le contenu de l’archive est entièrement authentifié. Choisissez un nouveau dossier d’extraction. La source chiffrée est conservée.</string>
     <string name="pcv3_outcome_degraded_title">Sortie authentifiée récupérée avec des dommages</string>
     <string name="pcv3_outcome_degraded_body">La sortie est authentifiée, mais la redondance de récupération est endommagée. Conservez le volume d’origine.</string>
-    <string name="pcv3_outcome_force_partial_title">Artefact de récupération partielle créé</string>
-    <string name="pcv3_outcome_force_partial_body">Certaines plages sont vérifiées et d’autres sont absentes. Ce fichier .pcv3-recovery n’est pas un fichier en clair complet.</string>
-    <string name="pcv3_outcome_force_unverified_title">Artefact de récupération non vérifiée créé</string>
-    <string name="pcv3_outcome_force_unverified_body">Certains octets récupérés ne sont pas authentifiés et peuvent être corrompus ou dangereux. N’ouvrez et n’extrayez pas cet artefact comme un contenu de confiance.</string>
+    <string name="pcv3_outcome_force_partial_title">Récupération partielle</string>
+    <string name="pcv3_outcome_force_partial_body">Le fichier n’est pas entièrement vérifié. Des données peuvent manquer ou ne pas être vérifiées.</string>
+    <string name="pcv3_outcome_force_unverified_title">Récupération non vérifiée</string>
+    <string name="pcv3_outcome_force_unverified_body">L’intégrité n’a pas pu être vérifiée. Ne considérez pas ce fichier comme fiable.</string>
     <string name="pcv3_outcome_credentials_or_damage_title">Impossible de vérifier les facteurs ou les données de récupération</string>
     <string name="pcv3_outcome_credentials_or_damage_body">Vérifiez la politique des facteurs, les fichiers-clés et leur ordre. Aucune sortie n’a été publiée.</string>
     <string name="pcv3_outcome_authentication_failed_title">Échec de l’authentification</string>

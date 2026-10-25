@@ -381,11 +381,11 @@ func setCheckTooltip(check *ttwidget.Check, text string) {
 
 func (a *App) refreshAdvancedLocalizedText() {
 	setCheckText(a.paranoidCheck, tr("advanced.paranoid.label", "Paranoid mode"))
-	setCheckTooltip(a.paranoidCheck, tr("advanced.paranoid.tooltip", "Adds Serpent and stronger checks"))
+	setCheckTooltip(a.paranoidCheck, tr("advanced.paranoid.tooltip", "Adds Serpent encryption; uses HMAC-SHA3."))
 	setCheckText(a.compressCheck, tr("advanced.compress.label", "Compress files"))
 	setCheckTooltip(a.compressCheck, tr("advanced.compress.tooltip", "Compress before encrypting"))
 	setCheckText(a.reedSolomonCheck, tr("advanced.reed_solomon.label", "Reed-Solomon"))
-	setCheckTooltip(a.reedSolomonCheck, tr("advanced.reed_solomon.tooltip", "Add recovery data"))
+	setCheckTooltip(a.reedSolomonCheck, tr("advanced.reed_solomon.tooltip", "Helps repair limited damage; increases file size."))
 	if a.State != nil && a.State.Mode == "decrypt" {
 		setCheckText(a.deleteCheck, tr("advanced.delete_encrypted.label", "Delete encrypted"))
 	} else {
@@ -393,7 +393,7 @@ func (a *App) refreshAdvancedLocalizedText() {
 		setCheckTooltip(a.deleteCheck, tr("advanced.delete_files.tooltip", "Delete source files after encryption"))
 	}
 	setCheckText(a.deniabilityCheck, tr("advanced.deniability.label", "Deniability"))
-	setCheckTooltip(a.deniabilityCheck, tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection."))
+	setCheckTooltip(a.deniabilityCheck, tr("advanced.deniability.pcv3_tooltip", "Hides the format header. Container name and size remain visible."))
 	setCheckText(a.recursivelyCheck, tr("advanced.recursively.label", "Recursively"))
 	setCheckText(a.recursiveD1Check, tr("advanced.recursive_d1.label", "All selected files are PCV3 D1"))
 	setCheckTooltip(a.recursivelyCheck, tr("advanced.recursively.tooltip", "Process each file separately"))

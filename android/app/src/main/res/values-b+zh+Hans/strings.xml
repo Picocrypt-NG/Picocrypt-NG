@@ -238,10 +238,10 @@
     <string name="pcv3_outcome_archive_pending_body">归档载荷已通过完整的身份验证。请选择新的提取文件夹。加密源将保留。</string>
     <string name="pcv3_outcome_degraded_title">已恢复有损坏的身份验证输出</string>
     <string name="pcv3_outcome_degraded_body">输出已通过身份验证，但恢复冗余数据已损坏。请保留原始卷。</string>
-    <string name="pcv3_outcome_force_partial_title">已创建部分恢复产物</string>
-    <string name="pcv3_outcome_force_partial_body">部分范围已验证，另一些范围缺失。此 .pcv3-recovery 文件不是完整的明文文件。</string>
-    <string name="pcv3_outcome_force_unverified_title">已创建未经验证的恢复产物</string>
-    <string name="pcv3_outcome_force_unverified_body">部分恢复的字节未经身份验证，可能已损坏或存在危险。请勿将此产物作为可信内容打开或提取。</string>
+    <string name="pcv3_outcome_force_partial_title">部分恢复</string>
+    <string name="pcv3_outcome_force_partial_body">文件尚未完全验证。数据可能缺失或未经验证。</string>
+    <string name="pcv3_outcome_force_unverified_title">未验证恢复</string>
+    <string name="pcv3_outcome_force_unverified_body">无法验证完整性。请勿将此文件视为可信内容。</string>
     <string name="pcv3_outcome_credentials_or_damage_title">无法验证凭据或恢复数据</string>
     <string name="pcv3_outcome_credentials_or_damage_body">请检查所选凭据策略、密钥文件及其顺序。未发布任何输出。</string>
     <string name="pcv3_outcome_authentication_failed_title">身份验证失败</string>
