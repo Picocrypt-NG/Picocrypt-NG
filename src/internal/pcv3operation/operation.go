@@ -834,6 +834,10 @@ func resultFromNativeRead(native *pcv3.NativeReadResult) *Result {
 		)
 	}
 	diagnostic := DiagnosticNone
+	requirements, supplied, mismatch := native.FactorPolicyMismatch()
+	if mismatch {
+		diagnostic = DiagnosticCredentialPolicy
+	}
 	if native.Stage() == pcv3.StageResourceBudget {
 		diagnostic = DiagnosticResourceLimit
 	}
@@ -851,6 +855,11 @@ func resultFromNativeRead(native *pcv3.NativeReadResult) *Result {
 		diagnostic:           diagnostic,
 	})
 	result.authenticatedComment = native.AuthenticatedComment()
+	if diagnostic == DiagnosticCredentialPolicy && mismatch {
+		result.credentialMismatch = requirements
+		result.credentialMismatchSupplied = supplied
+		result.credentialMismatchAvailable = true
+	}
 	if native.CleanupIncomplete() {
 		result.appendWarning(WarningCleanupIncomplete)
 	}

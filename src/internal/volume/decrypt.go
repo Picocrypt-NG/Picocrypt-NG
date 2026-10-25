@@ -32,6 +32,9 @@ var newPayloadReader = func(r io.Reader) io.Reader { return r }
 // This is the main entry point for decryption.
 // If ctx is nil, a background context is used.
 func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
+	if err := validateRecombineExpectedInputs(req); err != nil {
+		return err
+	}
 	if err := req.validateInputPath(); err != nil {
 		return err
 	}
@@ -66,6 +69,9 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 // collected credentials. The input is borrowed and must remain open until this
 // function returns.
 func DecryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *PreparedDecryptInput) error {
+	if err := validateRecombineExpectedInputs(req); err != nil {
+		return err
+	}
 	if err := validateEncryptedDecryptOutput(req); err != nil {
 		return err
 	}
@@ -73,6 +79,13 @@ func DecryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *Pr
 		return err
 	}
 	return decryptPrepared(ctx, req, preparedInput)
+}
+
+func validateRecombineExpectedInputs(req *DecryptRequest) error {
+	if req != nil && req.RecombineExpectedInputs != nil && !req.Recombine {
+		return errors.New("RecombineExpectedInputs requires Recombine")
+	}
+	return nil
 }
 
 func decryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *PreparedDecryptInput) (retErr error) {
@@ -186,11 +199,12 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest, preparedInput
 			chunkInfos     []os.FileInfo
 		)
 		err = fileops.Recombine(fileops.RecombineOptions{
-			InputBase:  inputBase,
-			OutputPath: outputPath,
-			OutputInfo: &recombinedInfo,
-			InputInfos: &chunkInfos,
-			FirstChunk: firstChunk,
+			InputBase:      inputBase,
+			OutputPath:     outputPath,
+			OutputInfo:     &recombinedInfo,
+			InputInfos:     &chunkInfos,
+			ExpectedInputs: req.RecombineExpectedInputs,
+			FirstChunk:     firstChunk,
 			ValidateFirstChunk: func(*os.File) error {
 				ctx.SetStatus("Recombining chunks...")
 				return nil

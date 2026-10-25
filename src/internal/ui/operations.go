@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,6 +26,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
+	ttwidget "github.com/dweymouth/fyne-tooltip/widget"
 )
 
 type operationInput struct {
@@ -35,6 +37,7 @@ type operationInput struct {
 	inputFile       string
 	inputFiles      []string
 	inputIdentities []fileops.ZIPInputIdentity
+	recombineInputs []os.FileInfo
 	onlyFiles       []string
 	onlyFolders     []string
 	outputFile      string
@@ -85,15 +88,6 @@ type pcv3OperationExecutor func(
 	*pcv3operation.Request,
 ) *pcv3operation.Result
 
-type operationSourceRemover func(context.Context, string) error
-
-func removeOperationSource(ctx context.Context, path string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return os.Remove(path)
-}
-
 type deletionSource struct {
 	path string
 	info os.FileInfo
@@ -105,6 +99,7 @@ type operationDeletionManifest struct {
 	files           []deletionSource
 	directories     []deletionSource
 	inputIdentities []fileops.ZIPInputIdentity
+	recombineInputs []os.FileInfo
 }
 
 func captureDeletionSource(path string, wantDirectory bool) (deletionSource, error) {
@@ -297,6 +292,26 @@ func captureOperationDeletionManifestWithBudget(ctx context.Context, input opera
 		}
 		return left > right
 	})
+	if input.mode == "decrypt" && input.recombine {
+		count := uint64(len(manifest.files))
+		if count > (math.MaxUint64-64)/32 {
+			return nil, fileops.ErrZIPMetadataLimit
+		}
+		// Conservative allowance for the exact-capacity interface slice on
+		// supported 32/64-bit targets; FileInfo objects are already captured.
+		cost := 64 + 32*count
+		if charged > math.MaxUint64-cost {
+			return nil, fileops.ErrZIPMetadataLimit
+		}
+		if err := budget.Reserve(cost); err != nil {
+			return nil, err
+		}
+		charged += cost
+		manifest.recombineInputs = make([]os.FileInfo, len(manifest.files))
+		for i, source := range manifest.files {
+			manifest.recombineInputs[i] = source.info
+		}
+	}
 	manifest.charged = charged
 	return manifest, nil
 }
@@ -308,32 +323,6 @@ const (
 	deletionSourceUnchanged
 	deletionSourceChanged
 )
-
-func inspectDeletionSource(source deletionSource, directory bool) (deletionSourceState, error) {
-	current, err := os.Lstat(source.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return deletionSourceMissing, nil
-	}
-	if err != nil {
-		return deletionSourceChanged, err
-	}
-	if !os.SameFile(source.info, current) || current.Mode().Type() != source.info.Mode().Type() {
-		return deletionSourceChanged, nil
-	}
-	if directory {
-		if !current.IsDir() || current.Mode().Perm() != source.info.Mode().Perm() {
-			return deletionSourceChanged, nil
-		}
-		return deletionSourceUnchanged, nil
-	}
-	if !current.Mode().IsRegular() ||
-		current.Mode() != source.info.Mode() ||
-		current.Size() != source.info.Size() ||
-		!current.ModTime().Equal(source.info.ModTime()) {
-		return deletionSourceChanged, nil
-	}
-	return deletionSourceUnchanged, nil
-}
 
 type operationReporterGate struct {
 	mu         sync.Mutex
@@ -1047,6 +1036,7 @@ func (a *App) startPCV3Work() {
 	}
 	session := a.newOperationSession()
 	a.setOperationSession(session)
+	a.retirePCV3ResultView()
 	a.releasePCV3Result()
 	a.State.SetWorking(true)
 	a.State.SetCanCancel(true)
@@ -1193,6 +1183,7 @@ func (a *App) finishPCV3Worker(session *operationSession, result *pcv3operation.
 		a.clearOperationSession(session)
 		a.State.SetWorking(false)
 		a.State.SetCanCancel(false)
+		a.State.SetPCV3ResultComment(result)
 		if result != nil {
 			a.pcv3Result = result
 			a.pcv3ResultGeneration = session.generation
@@ -1295,12 +1286,23 @@ func (a *App) refreshPCV3CleanupWarningIfAlive(cleanup pcv3CleanupFacts) {
 	})
 }
 
-func (a *App) releasePCV3Result() {
-	a.pcv3ArchiveSummary = nil
+// retirePCV3ResultView runs only from the owning Fyne callback.
+func (a *App) retirePCV3ResultView() {
+	if a.commentsResultLabel != nil {
+		a.commentsResultLabel.MouseOut()
+		a.commentsResultLabel = nil
+	}
 	if a.pcv3ArchiveReviewModal != nil {
 		a.pcv3ArchiveReviewModal.Hide()
 		a.pcv3ArchiveReviewModal = nil
 	}
+}
+
+// releasePCV3Result also runs after the event loop stops; it must remain nonvisual.
+func (a *App) releasePCV3Result() {
+	a.pcv3ArchiveSummary = nil
+	a.commentsResultLabel = nil
+	a.pcv3ArchiveReviewModal = nil
 	result := a.pcv3Result
 	a.pcv3Result = nil
 	a.pcv3ResultGeneration = 0
@@ -1311,6 +1313,10 @@ func (a *App) releasePCV3Result() {
 func (a *App) refreshPCV3Surface(snap app.UISnapshot) bool {
 	if a.pcv3Container == nil {
 		return false
+	}
+	if a.commentsResultLabel != nil {
+		a.commentsResultLabel.MouseOut()
+		a.commentsResultLabel = nil
 	}
 	a.pcv3Container.RemoveAll()
 	if snap.PCV3CleanupIncomplete && !pcv3CleanupIncomplete(snap.PCV3Result) {
@@ -1384,7 +1390,16 @@ func (a *App) buildPCV3ResultView(
 	presentation pcv3operation.Presentation,
 	result *pcv3operation.Result,
 ) fyne.CanvasObject {
+	if a.commentsResultLabel != nil {
+		a.commentsResultLabel.MouseOut()
+		a.commentsResultLabel = nil
+	}
 	outcome := pcv3OutcomeCopy(presentation)
+	if result != nil && result == a.pcv3Result {
+		if requirements, supplied, ok := result.CredentialPolicyMismatch(); ok {
+			outcome.Body = pcv3ExactFactorMismatchCopy(requirements, supplied)
+		}
+	}
 	publication := pcv3PublicationCopy(presentation)
 	// Cancellation and batch totals are finalized after the core result.
 	// They describe the whole operation, not just its last published file.
@@ -1422,7 +1437,12 @@ func (a *App) buildPCV3ResultView(
 	}
 	if result != nil && result == a.pcv3Result {
 		if comment := result.AuthenticatedComment(); comment != "" {
-			content.Add(wrappedPCV3Title(tr("comments.label", "Comments:")))
+			label := ttwidget.NewLabel(commentsLabelText("decrypt", app.CommentsPreviewAuthenticated))
+			label.TextStyle = fyne.TextStyle{Bold: true}
+			label.Wrapping = fyne.TextWrapWord
+			label.SetToolTip(resultCommentsToolTip(a.State.UISnapshot()))
+			a.commentsResultLabel = label
+			content.Add(label)
 			content.Add(wrappedPCV3Label(comment))
 		}
 	}
@@ -1596,6 +1616,7 @@ func (a *App) startPCV3ArchiveFollowUp(
 				a.State.SetCanCancel(false)
 			}
 			a.pcv3Result = next
+			a.State.SetPCV3ResultComment(next)
 			a.State.SetWorking(false)
 			switch {
 			case next != nil:
@@ -1647,7 +1668,9 @@ func (a *App) runCapturedOperation(
 			failed: 1,
 		}
 	}
+	input.recombineInputs = nil
 	if deletionManifest != nil {
+		input.recombineInputs = deletionManifest.recombineInputs
 		if input.mode == "encrypt" {
 			// Reading and deleting must use one snapshot, including direct
 			// callers that had no earlier discovery snapshot.
@@ -1657,6 +1680,8 @@ func (a *App) runCapturedOperation(
 			deletionManifest.files = nil
 			deletionManifest.directories = nil
 			deletionManifest.inputIdentities = nil
+			deletionManifest.recombineInputs = nil
+			input.recombineInputs = nil
 			deletionManifest.budget.Release(deletionManifest.charged)
 		}()
 	}
@@ -1714,19 +1739,20 @@ func executeVolumeOperation(
 
 	kept := false
 	req := &volume.DecryptRequest{
-		InputFile:    input.inputFile,
-		OutputFile:   input.outputFile,
-		Password:     input.password,
-		Keyfiles:     input.keyfiles,
-		ForceDecrypt: input.forceDecrypt,
-		VerifyFirst:  input.verifyFirst,
-		AutoUnzip:    input.autoUnzip,
-		SameLevel:    input.sameLevel,
-		Recombine:    input.recombine,
-		Deniability:  input.deniability,
-		Reporter:     reporter,
-		RSCodecs:     input.rsCodecs,
-		Kept:         &kept,
+		InputFile:               input.inputFile,
+		OutputFile:              input.outputFile,
+		Password:                input.password,
+		Keyfiles:                input.keyfiles,
+		ForceDecrypt:            input.forceDecrypt,
+		VerifyFirst:             input.verifyFirst,
+		AutoUnzip:               input.autoUnzip,
+		SameLevel:               input.sameLevel,
+		Recombine:               input.recombine,
+		RecombineExpectedInputs: input.recombineInputs,
+		Deniability:             input.deniability,
+		Reporter:                reporter,
+		RSCodecs:                input.rsCodecs,
+		Kept:                    &kept,
 	}
 	err := volume.Decrypt(ctx, req)
 	return operationResult{err: err, completed: err == nil, kept: kept, cancelled: errors.Is(err, context.Canceled)}
@@ -1749,29 +1775,17 @@ func (a *App) cleanupOperationSources(
 		return result
 	}
 	remove := func(source deletionSource, directory bool) bool {
-		state, err := inspectDeletionSource(source, directory)
-		if err != nil {
-			result.deleteFailed = true
-			return true
-		}
-		if state == deletionSourceMissing {
-			return true
-		}
-		if state == deletionSourceChanged {
-			result.deleteFailed = true
-			return true
-		}
 		remover := a.operationSourceRemover
 		if remover == nil {
 			remover = removeOperationSource
 		}
-		err = remover(ctx, source.path)
+		err := remover(ctx, source, directory)
+		if errors.Is(err, errSourceParentClose) {
+			result.deleteFailed = true
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			result.cancelled = true
 			return false
-		}
-		if errors.Is(err, os.ErrNotExist) {
-			return true
 		}
 		if err != nil {
 			result.deleteFailed = true
@@ -1945,7 +1959,7 @@ func (a *App) captureRecursiveOperationInput(
 		isSplit = false
 		result = routeRecursiveD1File(file)
 	} else {
-		result = routeDroppedFile(file, isSplit)
+		result = routeDroppedFile(session.ctx, file, isSplit)
 	}
 	resultConsumed := false
 	fyne.DoAndWait(func() {
@@ -2083,10 +2097,12 @@ func (a *App) finalizeOperation(
 	a.clearOperationSession(session)
 
 	if result.pcv3 != nil {
+		a.retirePCV3ResultView()
 		a.releasePCV3Result()
 		a.pcv3Result = result.pcv3
 		a.pcv3ResultGeneration = session.generation
 		a.State.SetPCV3Result(result.pcv3.Presentation())
+		a.State.SetPCV3ResultComment(result.pcv3)
 	}
 	clearCredentials := false
 	switch {

@@ -173,30 +173,33 @@ type ArchiveFollowUp struct {
 // Result is the closed native operation result. Semantic and publication
 // truth remain independent; completion is computed rather than stored.
 type Result struct {
-	cancellationDeadline   bool
-	writeOutput            bool
-	writeLifecycleComplete bool
-	splitOutputUncertain   bool
-	outcome                pcv3.Outcome
-	stage                  pcv3.Stage
-	code                   pcv3.Code
-	authenticatedComment   string
-	forceProvenance        pcv3.ForceProvenance
-	d1BootstrapProvenance  pcv3.D1BootstrapProvenance
-	detailStage            pcv3.Stage
-	publicationAttempted   bool
-	publicationState       pcv3publication.State
-	publicationStage       pcv3.Stage
-	publicationCode        pcv3publication.Code
-	args                   [maxResultArgs]uint64
-	argCount               uint8
-	warnings               [maxResultWarnings]Warning
-	warningCount           uint8
-	diagnostic             Diagnostic
-	archiveFollowUp        *ArchiveFollowUp
-	outputFollowUp         *OutputFollowUp
-	encryptedOutput        *EncryptedOutput
-	artifactInspection     *pcv3recovery.ArtifactInspection
+	cancellationDeadline        bool
+	writeOutput                 bool
+	writeLifecycleComplete      bool
+	splitOutputUncertain        bool
+	outcome                     pcv3.Outcome
+	stage                       pcv3.Stage
+	code                        pcv3.Code
+	authenticatedComment        string
+	credentialMismatch          FactorRequirements
+	credentialMismatchSupplied  uint16
+	credentialMismatchAvailable bool
+	forceProvenance             pcv3.ForceProvenance
+	d1BootstrapProvenance       pcv3.D1BootstrapProvenance
+	detailStage                 pcv3.Stage
+	publicationAttempted        bool
+	publicationState            pcv3publication.State
+	publicationStage            pcv3.Stage
+	publicationCode             pcv3publication.Code
+	args                        [maxResultArgs]uint64
+	argCount                    uint8
+	warnings                    [maxResultWarnings]Warning
+	warningCount                uint8
+	diagnostic                  Diagnostic
+	archiveFollowUp             *ArchiveFollowUp
+	outputFollowUp              *OutputFollowUp
+	encryptedOutput             *EncryptedOutput
+	artifactInspection          *pcv3recovery.ArtifactInspection
 }
 
 type resultData struct {
@@ -305,6 +308,18 @@ func (result *Result) AuthenticatedComment() string {
 		return ""
 	}
 	return result.authenticatedComment
+}
+
+// CredentialPolicyMismatch is non-authoritative detail for the exact retained
+// Normal tuple refusal. Other diagnostics and presentation snapshots cannot
+// release or reconstruct it.
+func (result *Result) CredentialPolicyMismatch() (FactorRequirements, uint16, bool) {
+	if result == nil || !result.credentialMismatchAvailable || result.diagnostic != DiagnosticCredentialPolicy ||
+		result.outcome != pcv3.OutcomeOperationFailed || result.stage != pcv3.StageCredentialPolicy ||
+		result.code != pcv3.CodeOperationFailed || result.publicationAttempted {
+		return FactorRequirements{}, 0, false
+	}
+	return result.credentialMismatch, result.credentialMismatchSupplied, true
 }
 
 func (result *Result) ForceProvenance() pcv3.ForceProvenance {

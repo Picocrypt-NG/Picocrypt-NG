@@ -8,6 +8,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
+	ttwidget "github.com/dweymouth/fyne-tooltip/widget"
 )
 
 func TestLanguageButtonLabelUsesCompactChineseCode(t *testing.T) {
@@ -470,7 +471,10 @@ func canvasTreeHasText(root fyne.CanvasObject, want string) bool {
 func collectLabelTexts(root fyne.CanvasObject) []string {
 	texts := make([]string, 0)
 	walkCanvasTree(root, func(obj fyne.CanvasObject) {
-		if label, ok := obj.(*widget.Label); ok {
+		switch label := obj.(type) {
+		case *widget.Label:
+			texts = append(texts, label.Text)
+		case *ttwidget.Label:
 			texts = append(texts, label.Text)
 		}
 	})
@@ -484,6 +488,8 @@ func collectCanvasTexts(root fyne.CanvasObject) []string {
 		case *widget.Button:
 			texts = append(texts, typed.Text)
 		case *widget.Label:
+			texts = append(texts, typed.Text)
+		case *ttwidget.Label:
 			texts = append(texts, typed.Text)
 		}
 	})

@@ -203,6 +203,8 @@ const (
 	CommentsPreviewNormal CommentsPreviewState = iota
 	CommentsPreviewUnavailable
 	CommentsPreviewCorrupted
+	CommentsPreviewUnverified
+	CommentsPreviewAuthenticated
 )
 
 // State holds the application state that persists across operations.
@@ -226,6 +228,8 @@ type State struct {
 	PCV3D1SuiteHint pcv3operation.Suite
 	PCV3Result      pcv3operation.Presentation
 	PCV3Progress    pcv3operation.StatusCode
+
+	PCV3NormalPreview pcv3operation.NormalPreview
 	// Cleanup observations survive State resets and carry no capabilities,
 	// paths, plaintext, or raw errors.
 	PCV3CleanupIncomplete bool
@@ -460,6 +464,7 @@ func (s *State) resetUILocked() {
 
 	s.Comments = ""
 	s.CommentsPreviewState = CommentsPreviewNormal
+	s.PCV3NormalPreview = pcv3operation.NormalPreview{}
 
 	s.Paranoid = false
 	s.ReedSolomon = false
@@ -555,6 +560,7 @@ func (s *State) SetPCV3RoutingChecking(path string, size int64) {
 	s.pcv3Source = nil
 	s.Mode = "decrypt"
 	s.PCVUnavailable = false
+	s.clearPCV3PreviewLocked()
 	s.PCV3Route = PCV3RouteChecking
 	s.PCV3Format = PCV3FormatNone
 	s.PCV3Action = PCV3ActionNone
@@ -578,6 +584,7 @@ func (s *State) SetPCV3RoutingChecking(path string, size int64) {
 func (s *State) SetPCV3RoutingFailed() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.clearPCV3PreviewLocked()
 	s.PCV3Route = PCV3RouteFailed
 	s.PCV3Format = PCV3FormatNone
 	s.PCV3Action = PCV3ActionNone
@@ -593,6 +600,7 @@ func (s *State) SetPCV3RoutingFailed() {
 func (s *State) SetPCV3LegacyEligible() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.clearPCV3PreviewLocked()
 	s.PCV3Route = PCV3RouteNone
 	s.PCV3Format = PCV3FormatNone
 	s.PCV3Action = PCV3ActionNone
@@ -615,6 +623,7 @@ func (s *State) SetPCV3Ready(source *os.File, format PCV3Format, path, target st
 	s.pcv3Source = source
 	s.Mode = "decrypt"
 	s.PCVUnavailable = false
+	s.clearPCV3PreviewLocked()
 	s.PCV3Route = PCV3RouteReady
 	s.pcv3ReadyTicket++
 	s.PCV3Format = format
@@ -637,6 +646,42 @@ func (s *State) SetPCV3Ready(source *os.File, format PCV3Format, path, target st
 		_ = old.Close()
 	}
 	return true
+}
+
+func (s *State) clearPCV3PreviewLocked() {
+	s.PCV3NormalPreview = pcv3operation.NormalPreview{}
+	s.Comments = ""
+	s.CommentsPreviewState = CommentsPreviewUnavailable
+}
+
+// SetPCV3NormalPreviewForReady binds untrusted claims to the exact held selection.
+func (s *State) SetPCV3NormalPreviewForReady(ticket uint64, source *os.File, preview pcv3operation.NormalPreview) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.PCV3Route != PCV3RouteReady || s.PCV3Format != PCV3FormatNormal || s.Working || s.pcv3ReadyTicket != ticket || s.pcv3Source != source || source == nil {
+		return false
+	}
+	s.clearPCV3PreviewLocked()
+	s.PCV3NormalPreview = preview
+	if comment, ok := preview.Comment(); ok && comment != "" {
+		s.Comments = comment
+		s.CommentsPreviewState = CommentsPreviewUnverified
+	}
+	return true
+}
+
+// SetPCV3ResultComment replaces preview text with reader-released text only.
+// The UI calls this only after accepting the current operation's retained result.
+func (s *State) SetPCV3ResultComment(result *pcv3operation.Result) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clearPCV3PreviewLocked()
+	if result != nil {
+		if comment := result.AuthenticatedComment(); comment != "" {
+			s.Comments = comment
+			s.CommentsPreviewState = CommentsPreviewAuthenticated
+		}
+	}
 }
 
 // RetainPCV3D1Candidate pins the descriptor of one legacy-eligible regular
@@ -664,6 +709,7 @@ func (s *State) SelectPCV3D1() bool {
 	}
 	s.Mode = "decrypt"
 	s.PCVUnavailable = false
+	s.clearPCV3PreviewLocked()
 	s.PCV3Route = PCV3RouteReady
 	s.pcv3ReadyTicket++
 	s.PCV3Format = PCV3FormatD1
@@ -1163,6 +1209,7 @@ type UISnapshot struct {
 	Deniability           bool
 	Comments              string
 	CommentsPreviewState  CommentsPreviewState
+	PCV3NormalPreview     pcv3operation.NormalPreview
 	Recursively           bool
 	RecursiveD1           bool
 	OutputFile            string
@@ -1277,6 +1324,7 @@ func (s *State) UISnapshot() UISnapshot {
 		Deniability:           s.Deniability,
 		Comments:              s.Comments,
 		CommentsPreviewState:  s.CommentsPreviewState,
+		PCV3NormalPreview:     s.PCV3NormalPreview,
 		Recursively:           s.Recursively,
 		RecursiveD1:           s.RecursiveD1,
 		OutputFile:            s.OutputFile,

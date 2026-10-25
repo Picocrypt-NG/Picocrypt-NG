@@ -8,6 +8,117 @@ import (
 	"testing"
 )
 
+func TestUnpackOwnedDirectoryIdentityIsNotReplaced(t *testing.T) {
+	t.Run("first evidence is retained", func(t *testing.T) {
+		base := t.TempDir()
+		root, err := os.OpenRoot(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		if err := root.Mkdir("owned", 0o700); err != nil {
+			t.Fatal(err)
+		}
+		first, err := root.Lstat("owned")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirs := &ownedUnpackDirs{}
+		dir := ownedUnpackDir{targetName: "owned", outPath: filepath.Join(base, "owned"), info: first}
+		if err := dirs.record(dir); err != nil {
+			t.Fatal(err)
+		}
+		if err := dirs.record(dir); err != nil {
+			t.Fatalf("same identity repeat: %v", err)
+		}
+		if len(dirs.entries) != 1 {
+			t.Fatalf("same identity repeat is not idempotent: %d", len(dirs.entries))
+		}
+		if err := os.Rename(filepath.Join(base, "owned"), filepath.Join(base, "moved")); err != nil {
+			t.Fatal(err)
+		}
+		if err := root.Mkdir("owned", 0o700); err != nil {
+			t.Fatal(err)
+		}
+		replacement, err := root.Lstat("owned")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := dirs.record(ownedUnpackDir{targetName: "owned", outPath: dir.outPath, info: replacement}); !errors.Is(err, ErrUnpackCleanupIncomplete) {
+			t.Errorf("record accepted replacement identity: %v", err)
+		}
+		if !os.SameFile(first, dirs.entries[0].info) {
+			t.Error("replacement overwrote first owned-directory evidence")
+		}
+		if err := dirs.cleanup(root); !errors.Is(err, ErrUnpackCleanupIncomplete) {
+			t.Errorf("changed identity did not retain cleanup uncertainty: %v", err)
+		}
+		if _, err := root.Lstat("owned"); err != nil {
+			t.Errorf("foreign replacement was removed: %v", err)
+		}
+		if _, err := root.Lstat("moved"); err != nil {
+			t.Errorf("relocated owned directory was removed: %v", err)
+		}
+	})
+	for _, mode := range []string{"legacy", "typed"} {
+		for _, replacement := range []bool{false, true} {
+			t.Run(mode+"/"+map[bool]string{false: "missing", true: "replacement"}[replacement], func(t *testing.T) {
+				base := t.TempDir()
+				archive := filepath.Join(base, "source.zip")
+				createStoredZipForUnpackStagingTest(t, archive, "nested/payload.txt", []byte("payload"))
+				source, err := os.ReadFile(archive)
+				if err != nil {
+					t.Fatal(err)
+				}
+				out := filepath.Join(base, "out")
+				if err := os.Mkdir(out, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				owned := filepath.Join(out, "nested")
+				moved := filepath.Join(out, "relocated-owned")
+				opts := UnpackOptions{ZipPath: archive, ExtractDir: out, AvailableSpace: func(string) (int64, error) {
+					if err := os.Rename(owned, moved); err != nil {
+						t.Fatal(err)
+					}
+					if replacement {
+						if err := os.Mkdir(owned, 0o700); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(filepath.Join(owned, "foreign.txt"), []byte("foreign"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return 1 << 20, nil
+				}}
+				var resultErr error
+				if mode == "typed" {
+					result := UnpackWithResult(opts)
+					requireUnpackState(t, result, UnpackStateNotPublished)
+					resultErr = result
+				} else {
+					resultErr = Unpack(opts)
+				}
+				if !errors.Is(resultErr, ErrUnpackCleanupIncomplete) {
+					t.Errorf("two-pass extractor lost changed ownership: %v", resultErr)
+				}
+				if _, err := os.Lstat(filepath.Join(owned, "payload.txt")); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("extractor published after directory identity changed: %v", err)
+				}
+				if _, err := os.Stat(moved); err != nil {
+					t.Errorf("relocated ownership evidence lost: %v", err)
+				}
+				if replacement {
+					requireUnpackFileBytes(t, filepath.Join(owned, "foreign.txt"), []byte("foreign"))
+				} else if _, err := os.Lstat(owned); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("missing owned name was recreated: %v", err)
+				}
+				requireUnpackFileBytes(t, archive, source)
+				requireNoUnpackStages(t, out)
+			})
+		}
+	}
+}
+
 func TestStagedFileCleanupReportsMissingOrReplacedOwnedStage(t *testing.T) {
 	for _, replacement := range []bool{false, true} {
 		t.Run(map[bool]string{false: "missing", true: "replaced"}[replacement], func(t *testing.T) {

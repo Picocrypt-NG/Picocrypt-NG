@@ -323,9 +323,15 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 			a.State.Password = secret
 			a.State.Keyfiles = []string{red, blue}
 			a.State.KeyfileOrdered = true
+			a.State.Comments = "DIFFERENT untrusted preview"
+			a.State.CommentsPreviewState = app.CommentsPreviewUnverified
 			a.State.SetPCV3Intent(app.PCV3ActionDecrypt, app.PCV3FactorPolicyCombined, app.PCV3KeyfileOrderSelected)
 			a.refreshAdvanced()
 			a.updateUIState()
+			before := a.State.UISnapshot()
+			if before.Comments != "DIFFERENT untrusted preview" || before.CommentsPreviewState != app.CommentsPreviewUnverified || a.commentsEntry.Text != "DIFFERENT untrusted preview" || a.commentsLabel.Text != tr("comments.unverified", "") {
+				t.Fatal("Normal positive did not stage a different unverified preview before dispatch")
+			}
 			a.startPCV3Work()
 		})
 
@@ -356,6 +362,14 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		if a.pcv3Result != executed {
 			t.Fatal("the desktop reconstructed rather than retained the normal operation result")
 		}
+		snap := a.State.UISnapshot()
+		if snap.Comments != "TEST ONLY comment" || snap.CommentsPreviewState != app.CommentsPreviewAuthenticated {
+			t.Fatal("reader comment did not replace different untrusted preview")
+		}
+		if a.commentsResultLabel == nil || a.commentsResultLabel.ToolTip() == "" {
+			t.Fatal("terminal authenticated heading lacks explanatory tooltip")
+		}
+		fyne.DoAndWait(func() { captureNormalPreviewCanvas(t, a, "confirmed") })
 		if executed.AuthenticatedComment() != "TEST ONLY comment" {
 			t.Fatalf("authenticated comment = %q; want frozen fixture comment", executed.AuthenticatedComment())
 		}
@@ -373,9 +387,9 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		}
 		requireNativePCV3Publication(t, executed)
 		text := pcv3RenderedText(a.pcv3Container)
-		wantText := "Operation complete\nThe output is fully authenticated.\nComments:\nTEST ONLY comment\nFile saved.\nClose"
+		wantText := "Operation complete\nThe output is fully authenticated.\nComments (confirmed):\nTEST ONLY comment\nFile saved.\nClose"
 		if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
-			wantText = "Operation complete\nThe output is fully authenticated.\nComments:\nTEST ONLY comment\nOutput durability not confirmed\n" + nativePCV3UncertainBody + "\n" + nativePCV3DurabilityWarningText + "\n" + nativePCV3CleanupDurabilityTitle + "\n" + nativePCV3CleanupDurabilityText + "\n" + nativePCV3CleanupDurabilityClose
+			wantText = "Operation complete\nThe output is fully authenticated.\nComments (confirmed):\nTEST ONLY comment\nOutput durability not confirmed\n" + nativePCV3UncertainBody + "\n" + nativePCV3DurabilityWarningText + "\n" + nativePCV3CleanupDurabilityTitle + "\n" + nativePCV3CleanupDurabilityText + "\n" + nativePCV3CleanupDurabilityClose
 		}
 		if text != wantText {
 			t.Fatalf("normal result view = %q; want exact bounded success rendering", text)
@@ -414,5 +428,7 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 				t.Fatalf("desktop left normal publication stage residue %q", entry.Name())
 			}
 		}
+		verifyAuthenticatedCommentLanguageRefresh(t, a)
+		captureNormalPreviewHover(t, a, true)
 	})
 }

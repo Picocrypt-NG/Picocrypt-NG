@@ -322,5 +322,12 @@
   "mobile.folder_selection.unsupported": "La selección de carpetas no es totalmente compatible en Android.\n\nPara carpetas:\n1. Copie su carpeta al almacenamiento de la aplicación mediante una aplicación de gestión de archivos\n2. Use el botón «Almacenamiento de la aplicación (archivos grandes)» para seleccionarla\n\nRuta del almacenamiento de la aplicación:\n{{.Path}}",
   "mobile.folder_selection.copy_path": "Copiar ruta al portapapeles",
   "mobile.folder_selection.open_app_storage": "Abrir almacenamiento de la aplicación",
-  "mobile.folder_selection.title": "Selección de carpeta"
+  "mobile.folder_selection.title": "Selección de carpeta",
+  "comments.unverified": "Comentario (sin verificar):",
+  "comments.authenticated": "Comentario (integridad confirmada):",
+  "comments.normal_tooltip": "En Normal PCV3 el comentario se guarda en texto claro. La confirmación indica que su integridad se verificó tras un descifrado correcto y la verificación completa del contenedor.",
+  "comments.d1_tooltip": "En PCV3 D1 el comentario está cifrado. Solo se muestra tras un descifrado correcto y la verificación completa del contenedor.",
+  "pcv3.factor.header_hint": "Según la cabecera (sin verificar): {{.Policy}}. Archivos clave necesarios: {{.Required}}.",
+  "pcv3.factor.exact_mismatch": "Requisitos según la cabecera (sin verificar): {{.Policy}}. Archivos clave necesarios: {{.Required}}. Archivos clave seleccionados: {{.Selected}}. Compruebe el modo de factores y el orden de los archivos clave. No se inició la derivación de claves ni la creación de salida.",
+  "comments.d1_placeholder": "Comentario cifrado; disponible tras la verificación."
 }

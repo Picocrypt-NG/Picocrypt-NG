@@ -54,6 +54,7 @@ var (
 )
 
 type droppedRouteResult struct {
+	preview       pcv3operation.NormalPreview
 	source        *os.File
 	size          int64
 	route         pcv3operation.Route
@@ -522,7 +523,7 @@ func (a *App) applyDropSelection(names []string) bool {
 			a.refreshUI()
 			workerLaunched = true
 			reservation.launch(func(ctx context.Context) {
-				result := routeDroppedFile(path, isSplit)
+				result := routeDroppedFile(ctx, path, isSplit)
 				if result.err == nil && !isSplit && !isDecryptVolumePath(path) {
 					result.err = identity.CheckFile(result.source)
 					result.inputIdentity = identity
@@ -560,7 +561,7 @@ func (a *App) applyDropSelection(names []string) bool {
 	return true
 }
 
-func routeDroppedFile(path string, split bool) droppedRouteResult {
+func routeDroppedFile(ctx context.Context, path string, split bool) droppedRouteResult {
 	source, err := openDroppedPCVInput(path, split)
 	if err != nil {
 		return droppedRouteResult{err: err}
@@ -581,10 +582,25 @@ func routeDroppedFile(path string, split bool) droppedRouteResult {
 			_ = source.Close()
 			return droppedRouteResult{err: err}
 		}
-		return droppedRouteResult{source: source, size: info.Size(), route: pcv3operation.DetectPrefix(prefix[:count])}
+		route := pcv3operation.DetectPrefix(prefix[:count])
+		return previewDroppedNormal(ctx, source, info.Size(), route, nil)
 	}
 	route, err := probeDroppedPCVInput(source, info.Size())
-	return droppedRouteResult{source: source, size: info.Size(), route: route, err: err}
+	return previewDroppedNormal(ctx, source, info.Size(), route, err)
+}
+
+func previewDroppedNormal(ctx context.Context, source *os.File, size int64, route pcv3operation.Route, err error) droppedRouteResult {
+	result := droppedRouteResult{source: source, size: size, route: route, err: err}
+	if route == pcv3operation.RouteNormalPCV && err == nil {
+		result.preview, _ = pcv3operation.PreviewNormal(ctx, source, size)
+	}
+	return result
+}
+
+func (a *App) applyNormalPreview(result droppedRouteResult) {
+	if ticket, _, ok := a.State.PCV3ReadyOutputSelection(); ok {
+		a.State.SetPCV3NormalPreviewForReady(ticket, result.source, result.preview)
+	}
 }
 
 // prepareRecursiveDropSelection replaces only the per-file selection state.
@@ -680,6 +696,9 @@ func (a *App) applyRecursiveDroppedFileRoute(path string, isSplit bool, result d
 			format = app.PCV3FormatD1
 		}
 		if a.State.SetPCV3Ready(result.source, format, path, defaultPCV3Output(path), result.size) {
+			if !result.explicitD1 {
+				a.applyNormalPreview(result)
+			}
 			return true
 		}
 	}
@@ -741,6 +760,7 @@ func (a *App) applyDroppedFileRoute(
 				a.State.SetPCV3RoutingFailed()
 			} else {
 				a.State.Recombine = true
+				a.applyNormalPreview(result)
 				a.State.SetPCV3Intent(app.PCV3ActionDecrypt, app.PCV3FactorPolicyUnset, app.PCV3KeyfileOrderUnset)
 			}
 			a.refreshAdvanced()
@@ -753,6 +773,7 @@ func (a *App) applyDroppedFileRoute(
 			_ = result.source.Close()
 			a.State.SetPCV3RoutingFailed()
 		} else {
+			a.applyNormalPreview(result)
 			a.State.SetPCV3Intent(app.PCV3ActionDecrypt, app.PCV3FactorPolicyUnset, app.PCV3KeyfileOrderUnset)
 		}
 		a.refreshAdvanced()

@@ -121,6 +121,11 @@ type DecryptRequest struct {
 	Recombine   bool // Volume is split into chunks that need recombining first
 	Deniability bool // Volume has deniability wrapper that needs removing first
 
+	// RecombineExpectedInputs borrows immutable chunk identities and sizes for
+	// this call. The caller retains ownership; nil preserves unpinned behavior.
+	// A nonnil list requires Recombine and must cover every chunk.
+	RecombineExpectedInputs []os.FileInfo
+
 	// Progress reporting
 	Reporter ProgressReporter // UI callback interface (can be nil for headless operation)
 

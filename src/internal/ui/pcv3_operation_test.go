@@ -19,6 +19,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	fynetest "fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
+	ttwidget "github.com/dweymouth/fyne-tooltip/widget"
 )
 
 func mustPCV3Presentation(t *testing.T, spec pcv3operation.PresentationSpec) pcv3operation.Presentation {
@@ -35,6 +36,8 @@ func pcv3RenderedText(object fyne.CanvasObject) string {
 		return ""
 	}
 	switch value := object.(type) {
+	case *ttwidget.Label:
+		return value.Text
 	case *widget.Label:
 		return value.Text
 	case *widget.Button:

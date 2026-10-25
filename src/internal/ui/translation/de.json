@@ -316,5 +316,12 @@
   "mobile.folder_selection.unsupported": "Die Ordnerauswahl wird auf Android nicht vollständig unterstützt.\n\nFür Ordner:\n1. Kopieren Sie den Ordner mit einer Dateimanager-App in den App-Speicher\n2. Wählen Sie ihn über „App-Speicher (große Dateien)“ aus\n\nPfad zum App-Speicher:\n{{.Path}}",
   "mobile.folder_selection.copy_path": "Pfad in die Zwischenablage kopieren",
   "mobile.folder_selection.open_app_storage": "App-Speicher öffnen",
-  "mobile.folder_selection.title": "Ordner auswählen"
+  "mobile.folder_selection.title": "Ordner auswählen",
+  "comments.unverified": "Kommentar (nicht geprüft):",
+  "comments.authenticated": "Kommentar (bestätigt):",
+  "comments.normal_tooltip": "In Normal PCV3 wird der Kommentar offen gespeichert. Bestätigt bedeutet, dass seine Integrität nach erfolgreicher Entschlüsselung und vollständiger Prüfung des Containers verifiziert wurde.",
+  "comments.d1_tooltip": "In PCV3 D1 ist der Kommentar verschlüsselt. Er wird erst nach erfolgreicher Entschlüsselung und vollständiger Prüfung des Containers angezeigt.",
+  "pcv3.factor.header_hint": "Laut Header (nicht geprüft): {{.Policy}}. Erforderliche Schlüsseldateien: {{.Required}}.",
+  "pcv3.factor.exact_mismatch": "Anforderungen laut Header (nicht geprüft): {{.Policy}}. Erforderliche Schlüsseldateien: {{.Required}}. Ausgewählte Schlüsseldateien: {{.Selected}}. Prüfen Sie den Faktormodus und die Reihenfolge der Schlüsseldateien. Schlüsselableitung und Ausgabe wurden nicht gestartet.",
+  "comments.d1_placeholder": "Verschlüsselter Kommentar; nach der Prüfung verfügbar."
 }

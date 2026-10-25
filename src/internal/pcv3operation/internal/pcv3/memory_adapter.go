@@ -306,7 +306,7 @@ func RunMemoryRead(ctx context.Context, request *MemoryReadRequest) (*MemoryRead
 	source := bytes.NewReader(owned.Source)
 	sourceSize := int64(len(owned.Source))
 	if owned.Mode == MemoryReadNormal {
-		provider := &nativeCredentialProvider{readerCredentialProvider{factors: owned.Factors, admitter: owned.Admitter}}
+		provider := &nativeCredentialProvider{readerCredentialProvider: readerCredentialProvider{factors: owned.Factors, admitter: owned.Admitter}}
 		return runMemoryNormalRead(ctx, source, sourceSize, provider, owned.MaxOutputBytes)
 	}
 	return runMemoryRecovery(ctx, source, sourceSize, owned)
