@@ -114,9 +114,8 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 	defer zeroWASMSensitiveBuffer(wasmZeroingDecryptKeyfileHash, keyfileHash)
 	var keyfileKey []byte
 
-	// Derive the key, trying each password normalization form (NFC/NFD/raw) until
-	// one authenticates against the header (#19). ASCII passwords yield a single
-	// candidate, so there is no extra KDF work for the common case.
+	// Try up to five forms from pwnorm.Candidates until the v1 password-key hash
+	// or v2 header MAC accepts one. ASCII passwords yield a single candidate.
 	var key []byte
 	var subkeyReader *crypto.SubkeyReader
 	candidates := pwnorm.Candidates(password)

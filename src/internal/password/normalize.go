@@ -1,22 +1,11 @@
-// Package password normalizes user passwords to Unicode NFC before the key
-// derivation function, fixing the cross-platform (NFC vs NFD) key mismatch
-// described in issue #19: a visually identical password typed on macOS
-// (sometimes decomposed) versus Windows/Linux (composed) is byte-different and
-// therefore derives a different Argon2 key, so a volume encrypted on one
-// platform cannot be decrypted on another.
+// Package password handles legacy v1/v2 password normalization and compatibility.
+// PCV3 credentials use a separate frozen profile.
 //
-// The normalization form is NFC, mandated for passwords by RFC 8265 (PRECIS
-// OpaqueString profile) and recommended by NIST SP 800-63B-4 §3.1.1.2. This
-// package deliberately applies ONLY canonical composition. It does NOT apply:
-//
-//   - compatibility normalization (NFKC/NFKD), which collapses distinct
-//     characters (e.g. fullwidth/halfwidth, ﬀ→ff) and reduces password entropy;
-//   - case folding, which RFC 8265 omits because it causes false accepts and
-//     enables the Turkish dotless-i collision class;
-//   - whitespace trimming, which silently reduces entropy and causes lockouts.
-//
-// ASCII input is invariant under NFC and is handled without extra work, so the
-// overwhelming majority of existing (ASCII-password) volumes are unaffected.
+// Writers use the linked x/text NFC normalizer. Readers also try NFD, raw bytes
+// and historical Unicode 15 NFC/NFD forms to preserve earlier derived keys.
+// Both normalizers retain Stream-Safe CGJ insertion for long combining sequences.
+// Compatibility normalization, case folding and whitespace trimming are not applied.
+// ASCII input remains byte-identical.
 package password
 
 import (
@@ -69,10 +58,10 @@ func EncodeForKDF(pw []byte) []byte {
 //     normalization fixes, including the old supplementary-scalar behavior.
 //  5. Historical Unicode 15 NFD — retains the earlier decomposition tables.
 //
-// Each candidate is authenticated independently against the volume MAC by the
-// caller; trying several canonical forms of the SAME password never bypasses
-// authentication, and the extra derivations only occur when an earlier form
-// fails to verify (i.e. a wrong password or a legacy non-NFC volume).
+// Legacy v1/v2 readers select a candidate using the password-key verifier or
+// header MAC. Deniability readers first probe the decoded inner version.
+// These selection checks do not replace the separate payload MAC check.
+// Extra derivations occur only after an earlier candidate fails selection.
 //
 // Returned slices are independent allocations, so a caller may zero each one
 // after use without affecting the others (none aliases pw or another candidate).

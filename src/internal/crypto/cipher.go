@@ -94,7 +94,7 @@ func (cs *CipherSuite) Encrypt(dst, src []byte) {
 //   - Non-paranoid mode: in-place operation (dst == src) is permitted and is
 //     relied upon by the WASM frontend.
 func (cs *CipherSuite) Decrypt(dst, src []byte) {
-	// MAC the ciphertext first (verify-then-decrypt)
+	// Accumulate the ciphertext MAC before decrypting; callers verify the final tag.
 	cs.mac.Write(src)
 
 	cs.chacha.XORKeyStream(dst, src)
@@ -105,12 +105,8 @@ func (cs *CipherSuite) Decrypt(dst, src []byte) {
 	}
 }
 
-// Rekey reinitializes the ciphers with new nonce/IV from HKDF stream.
-// This MUST be called every 60 GiB to prevent nonce overflow.
-//
-// CRITICAL: Rekeying reads from the same HKDF stream in order:
-//  1. nonce (24 bytes) - for XChaCha20
-//  2. serpentIV (16 bytes) - for Serpent-CTR
+// Rekey reinitializes the ciphers; callers must invoke it every 60 GiB.
+// The HKDF stream supplies a 24-byte nonce, then a 16-byte IV only in Paranoid mode.
 func (cs *CipherSuite) Rekey() error {
 	// Read new nonce for XChaCha20
 	nonce := make([]byte, RekeyNonceSize)

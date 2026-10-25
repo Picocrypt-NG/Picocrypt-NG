@@ -26,8 +26,8 @@ type Reporter struct {
 	cancelOperation atomic.Pointer[context.CancelFunc]
 }
 
-// NewReporter creates a new CLI progress reporter.
-// If quiet is true, only errors are printed.
+// NewReporter suppresses progress and success messages when quiet is true.
+// Errors and caller-rendered PCV3 terminal results and warnings remain visible.
 func NewReporter(quiet bool) *Reporter {
 	return &Reporter{
 		quiet: quiet,
