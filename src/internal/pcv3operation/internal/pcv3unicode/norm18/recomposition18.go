@@ -1,12 +1,12 @@
 package norm
 
-// supplementaryRecompositions contains every Unicode 17 canonical
+// supplementaryRecompositions contains every Unicode 18 canonical
 // composition whose direct decomposition includes a supplementary-plane
-// scalar. The upstream packed table stores each operand in 16 bits, so using
-// it for these inputs would alias unrelated scalars with the same low bits.
+// scalar. Keeping full-width operands prevents these inputs from aliasing
+// unrelated scalars with the same low 16 bits.
 //
-// Source: UnicodeData.txt 17.0.0 canonical two-scalar decompositions, excluding
-// Full_Composition_Exclusion entries from DerivedNormalizationProps.txt 17.0.0.
+// Source: UnicodeData.txt 18.0.0 canonical two-scalar decompositions, excluding
+// Full_Composition_Exclusion entries from DerivedNormalizationProps.txt 18.0.0.
 var supplementaryRecompositions = map[[2]rune]rune{
 	{0x105D2, 0x0307}:  0x105C9,
 	{0x105DA, 0x0307}:  0x105E4,

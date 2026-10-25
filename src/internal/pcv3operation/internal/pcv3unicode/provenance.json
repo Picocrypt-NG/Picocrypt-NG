@@ -2,28 +2,32 @@
   "schema": "pcv3unicode-provenance-v1",
   "notice": "TEST ONLY provenance for the frozen PCV3 Unicode artifact; contains public upstream Unicode data only.",
   "unicode": {
-    "version": "17.0.0",
+    "version": "18.0.0",
     "normalization": {
-      "uax15_revision": "57",
-      "source_url": "https://www.unicode.org/reports/tr15/tr15-57.html",
-      "sha256": "c0c05f91e1c4f9be3d987e27d76cf254b30003b6be41eb94977cc3fe148d4c4e"
+      "uax15_revision": "58",
+      "source_url": "https://www.unicode.org/reports/tr15/tr15-58.html",
+      "sha256": "efcf19da85342bd87fb93b590975ca422597243f2e19c6cb46e941d0d2d48d73"
     },
     "ucd": {
       "normalization_test": {
-        "source_url": "https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt",
-        "sha256": "5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db"
+        "source_url": "https://www.unicode.org/Public/18.0.0/ucd/NormalizationTest.txt",
+        "sha256": "25a50d816764b04abfb4a646d3eb2b2a803284c3873d9a06757b94fe4513dde3"
       },
       "derived_age": {
-        "source_url": "https://www.unicode.org/Public/17.0.0/ucd/DerivedAge.txt",
-        "sha256": "f8ecdf768bdc210f201abd271d9bc587825618a86a7046a8146cc816393f1998"
+        "source_url": "https://www.unicode.org/Public/18.0.0/ucd/DerivedAge.txt",
+        "sha256": "58b04334e3a31f9612694bbc3f6bff4a302b7d424565bca9c47e30aa74f8dbac"
       },
       "unicode_data": {
-        "source_url": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt",
-        "sha256": "2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c"
+        "source_url": "https://www.unicode.org/Public/18.0.0/ucd/UnicodeData.txt",
+        "sha256": "0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950"
       },
       "derived_normalization_properties": {
-        "source_url": "https://www.unicode.org/Public/17.0.0/ucd/DerivedNormalizationProps.txt",
-        "sha256": "71fd6a206a2c0cdd41feb6b7f656aa31091db45e9cedc926985d718397f9e488"
+        "source_url": "https://www.unicode.org/Public/18.0.0/ucd/DerivedNormalizationProps.txt",
+        "sha256": "98ac7f67d985fe781e317f6182e885e94cabb0c314769e6dd73e48b226931ccd"
+      },
+      "composition_exclusions": {
+        "source_url": "https://www.unicode.org/Public/18.0.0/ucd/CompositionExclusions.txt",
+        "sha256": "c759b100e9ae8960ae6b50fc5765950a7581fd9f30d4ef95f68f25a6d97e818e"
       }
     }
   },
@@ -40,25 +44,25 @@
   },
   "copied_data": {
     "normalization_table": {
-      "source_path": "unicode/norm/tables17.0.0.go",
-      "source_sha256": "26784025eb1881a4452f101a7ef34b33c8ca02bd0603bfec41d2c823494ff7cb",
-      "artifact_path": "norm17/tables17.go",
-      "artifact_sha256": "93f894d12d02fa546b9da7ae02f2130ceda06399908fb48db1425ef4ea54b22e",
-      "modification": "Removed the upstream go1.27 build constraint, then applied gofmt/gofumpt-only source layout normalization; the frozen Unicode-17 table data was not rewritten."
+      "source_path": "unicode/norm/tables18.0.0.go",
+      "source_sha256": "ccd133df45368fb3f5e305c765e8f14be4e20fda2eb1355178a24d33aac0092d",
+      "artifact_path": "norm18/tables18.go",
+      "artifact_sha256": "79a8f858755c55087895e396fc9884311916953cba71c99ebd6a61548ef21261",
+      "modification": "Removed only the isolated-generator pcv3_unicode18_generation build constraint; the generated Unicode-18 table data was not rewritten."
     },
     "assignment_table": {
-      "source_path": "unicode/rangetable/tables17.0.0.go",
-      "source_sha256": "59da556571457cb08fdc4913dc614bd6a342a17d693f5cc4c3a1ffb510929cbd",
-      "artifact_path": "assigned17.go",
-      "artifact_sha256": "070dd459d8fa2fcaccbd7c6ccc86acac4ad0808ef965a3041f6d2ca7b18a2114",
-      "extraction": "Exact assigned17_0_0 declaration extracted from unicode/rangetable/tables17.0.0.go; no ranges were rewritten."
+      "source_path": "unicode/rangetable/tables18.0.0.go",
+      "source_sha256": "802650bc446dc9f6e3d105a0753b12ed9d77b370a5391aa21fb2caded8dd08b9",
+      "artifact_path": "assigned18.go",
+      "artifact_sha256": "061bb53b54e7f1a3f110f3b62c9c924208a83e76728a5a323654c451847cba77",
+      "extraction": "Exact assigned18_0_0 declaration extracted from the generated unicode/rangetable/tables18.0.0.go; no ranges were rewritten. The upstream generator derives the repertoire from UnicodeData.txt, including its First/Last ranges, rather than DerivedAge."
     },
     "supplementary_recomposition": {
-      "unicode_data_sha256": "2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c",
-      "derived_normalization_properties_sha256": "71fd6a206a2c0cdd41feb6b7f656aa31091db45e9cedc926985d718397f9e488",
-      "artifact_path": "norm17/recomposition17.go",
-      "artifact_sha256": "3db85120aaf91ab9f8cb7afdef408fdcfc0f0c947d98fedf0013a7e2e1a51e9e",
-      "extraction": "All 33 Unicode 17 canonical two-scalar compositions with at least one supplementary-plane operand, excluding Full_Composition_Exclusion entries; unmatched supplementary pairs never use the 16-bit packed lookup."
+      "unicode_data_sha256": "0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950",
+      "derived_normalization_properties_sha256": "98ac7f67d985fe781e317f6182e885e94cabb0c314769e6dd73e48b226931ccd",
+      "artifact_path": "norm18/recomposition18.go",
+      "artifact_sha256": "4caab3f95a033f8124fd433c14e560ba6e7b764f7a3993103f1f51618d642f34",
+      "extraction": "All 33 Unicode 18 canonical two-scalar compositions with at least one supplementary-plane operand, excluding Full_Composition_Exclusion entries; unmatched supplementary pairs never use the generated lookup."
     },
     "normalizer_support": {
       "source_files": {
@@ -72,21 +76,112 @@
       },
       "artifact_files": {
         "LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
-        "assigned17.go": "070dd459d8fa2fcaccbd7c6ccc86acac4ad0808ef965a3041f6d2ca7b18a2114",
-        "norm17/LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
-        "norm17/composition.go": "71f32e63abefbcf84fbd6812fe87c2b1e97b5ce8b152f4c11647836661cd02f9",
-        "norm17/forminfo.go": "89d49b25c82c4fee420305b255cac9f270bbcdc1f33e8cf7853dd2a8467e42ec",
-        "norm17/input.go": "965b431790bb139543d71a9c497920ef7d9a15af417456a2bbd0cdb629330e8d",
-        "norm17/iter.go": "4d580123776d78ff862131bd8c99fa5758f3cb70530619edc80ed4ee173cd83a",
-        "norm17/normalize.go": "706fc4731c847f4b9d8b4022efd1bc5a8a4e076c44cb37442e5ac62fd6014838",
-        "norm17/recomposition17.go": "3db85120aaf91ab9f8cb7afdef408fdcfc0f0c947d98fedf0013a7e2e1a51e9e",
-        "norm17/tables17.go": "93f894d12d02fa546b9da7ae02f2130ceda06399908fb48db1425ef4ea54b22e",
-        "norm17/transform.go": "6f8014595643e2acae76d47ed6abe8ace969a0c9070dbfa5a89c86bebcec812d",
-        "norm17/trie.go": "d87793d558251ee8824954f0b7bc5564803e4c9d59a8c4eebb4c3c5cfbd19492"
+        "assigned18.go": "061bb53b54e7f1a3f110f3b62c9c924208a83e76728a5a323654c451847cba77",
+        "norm18/LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+        "norm18/composition.go": "1ba0a9b1293d1401cadc37972f9db15aeebac45df32f0b1dde659a2c07f8e917",
+        "norm18/forminfo.go": "5d6b13a0ff677de6f16bbcdfb90fd42e5518ab0bbc3ef6cb67532e0cc107c49e",
+        "norm18/input.go": "965b431790bb139543d71a9c497920ef7d9a15af417456a2bbd0cdb629330e8d",
+        "norm18/iter.go": "4d580123776d78ff862131bd8c99fa5758f3cb70530619edc80ed4ee173cd83a",
+        "norm18/normalize.go": "bbe1ffda0e883750a0b507b726f6bef504cda360605091db10c783c9e87fb50f",
+        "norm18/recomposition18.go": "4caab3f95a033f8124fd433c14e560ba6e7b764f7a3993103f1f51618d642f34",
+        "norm18/tables18.go": "79a8f858755c55087895e396fc9884311916953cba71c99ebd6a61548ef21261",
+        "norm18/transform.go": "6f8014595643e2acae76d47ed6abe8ace969a0c9070dbfa5a89c86bebcec812d",
+        "norm18/trie.go": "d87793d558251ee8824954f0b7bc5564803e4c9d59a8c4eebb4c3c5cfbd19492"
       },
-      "license_path": "LICENSE and norm17/LICENSE",
+      "license_path": "LICENSE and norm18/LICENSE",
       "license_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
-      "local_code_modifications": "Removed upstream go:generate directives and canonical import comment from norm17/normalize.go; removed the Go 1.27 build constraint from tables17.go and applied gofmt/gofumpt-only source layout normalization without rewriting table data; added a provenance-pinned full-width supplementary recomposition guard for all 33 Unicode 17 mappings; documented the fixed bounds of seven inherited integer conversions for gosec."
+      "local_code_modifications": "Retained the pinned x/text v0.40.0 support and existing sensitive-conversion annotations outside separately documented upstream v0.43.0 extractions. Adopted its three-21-bit-field uint64 recomposition-table reader/key construction while retaining the independent full-width supplementary guard and negative-rune defense. Replaced the complete compose and combineHangul function bodies with exact x/text v0.43.0 code to fix upstream issues 81001 and 81021: track intervening starters and continue ordinary canonical composition after Hangul. These NFC correctness fixes intentionally change previously incorrect credential bytes for affected sequences before the first release; experimental PCV3 volumes made with those old bytes are not guaranteed readable with the same password. Unicode-17 literal fixtures and the frozen volume corpus remain unchanged. Regenerated Unicode 18 tables and the supplementary pair set; changed frozen-version comments and removed the isolated generation table tag. The 1 MiB limits remain unchanged. The inherited internal Stream-Safe implementation is retained as a bounded evaluator; the outer credential profile now rejects any implicit U+034F insertion instead of accepting that extra mapping, and preserves explicit input U+034F as credential data.",
+      "table_reader_compatibility": {
+        "module": "golang.org/x/text",
+        "version": "v0.43.0",
+        "revision": "ac40b0f06c159afb5bfca4d1860f8b4b60dbc160",
+        "source_path": "unicode/norm/forminfo.go",
+        "source_sha256": "b53ecff9ab5a83fd45598f54dfc9ea03849a3bcf4617ef02cf43225c71acc1e3",
+        "extraction": "Only recompShift=21, uint64 packed-entry decoding, and the corresponding full-width lookup key construction from buildRecompMap/combine. The existing supplementary guard and negative-rune defense remain; composition correctness updates are separately pinned."
+      },
+      "source_files_scope": "Baseline x/text v0.40.0 source files; the separately pinned v0.43.0 table-reader and composition-function extractions override the corresponding portions.",
+      "composition_correctness": {
+        "module": "golang.org/x/text",
+        "version": "v0.43.0",
+        "revision": "ac40b0f06c159afb5bfca4d1860f8b4b60dbc160",
+        "source_path": "unicode/norm/composition.go",
+        "source_sha256": "326e91fea709726d884e475db9b7a61ad17829e32d795f182cdcfcfdf64d9bf6",
+        "upstream_issues": [
+          "https://go.dev/issue/81001",
+          "https://go.dev/issue/81021"
+        ],
+        "functions": [
+          "(*reorderBuffer).compose",
+          "(*reorderBuffer).combineHangul"
+        ],
+        "function_body_sha256": {
+          "compose": "9a651883f086c07fd8d1e59445fe14dfbbacbdb2a1d0b6bcadae1f36d9931e3e",
+          "combineHangul": "4648019a28e343c7f31d926a77733171f783d740831491d8b6d97c082548bd8f"
+        },
+        "extraction": "The entire brace-delimited bodies of compose and combineHangul are byte-identical to pinned x/text v0.43.0, verified by Go AST source offsets. Other composition.go code, including the inherited Stream-Safe policy and existing local sensitive-conversion annotations, is unchanged.",
+        "compatibility": "Intentional pre-release correction of formerly incorrect normalization bytes for affected experimental PCV3 passwords; no fallback to the defective normalizer. Previous Unicode-17 literal and corpus compatibility evidence applies to those cases within the accepted bounded profile, not a universal unchanged-byte guarantee. Inputs requiring implicit U+034F insertion are now rejected rather than mapped into different credential bytes."
+      }
     }
+  },
+  "generator": {
+    "module": "golang.org/x/text",
+    "version": "v0.43.0",
+    "revision": "ac40b0f06c159afb5bfca4d1860f8b4b60dbc160",
+    "module_checksum": "h1:1QivrlhwAsnMOcqgOdl9my7s9OyZl8O5/UGUTJVXoWc=",
+    "source_archive": {
+      "source_url": "https://proxy.golang.org/golang.org/x/text/@v/v0.43.0.zip",
+      "sha256": "b75131f628f6e2e4892fd638d33127e952a5027775e0162b94ba069cb4e13863"
+    },
+    "license": {
+      "name": "BSD-3-Clause",
+      "source_path": "LICENSE",
+      "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+    },
+    "source_files": {
+      "unicode/norm/maketables.go": "b9703877ffbceaec2889d1142969be8f91d4b97eea3c78b58a5df01e1ec32aa5",
+      "unicode/norm/triegen.go": "3662a3ab8c19900aa6d3c53dca0ce26e24c1a0174e7ae10bad24a74787243825",
+      "unicode/rangetable/gen.go": "6421249a16e87200cd54c06645038d1a2692f5b5e5ea2f8d407d449556b8d9b1",
+      "internal/gen/gen.go": "5fd9ad8c7efe85b003a6fc7d415077924e714383d0431e5fbc40fc3e860ceefb"
+    },
+    "output_tag_patch": {
+      "source_path": "internal/gen/gen.go",
+      "original_sha256": "5fd9ad8c7efe85b003a6fc7d415077924e714383d0431e5fbc40fc3e860ceefb",
+      "patched_sha256": "a9a97b075830ec19cdc12ef7b6f000550c3edf7867d9d111a1360fdce11e8d30",
+      "patch_sha256": "2dc9196a26f6d1af169a4283eb581403f9b255f8017ebbd137a441baf3d16eeb",
+      "added_registry_entry": "{\"18.0.0\", \"pcv3_unicode18_generation\"},",
+      "purpose": "Recognize Unicode 18 only for versioned output packaging; the inert tag is removed when freezing tables. No UCD parser, data transformation, validation, or normalization algorithm was changed.",
+      "patch": "--- a/internal/gen/gen.go\n+++ b/internal/gen/gen.go\n@@ -85,6 +85,7 @@\n var tags = []struct{ version, buildTags string }{\n \t{\"15.0.0\", \"!go1.27\"},\n \t{\"17.0.0\", \"go1.27\"},\n+\t{\"18.0.0\", \"pcv3_unicode18_generation\"},\n }\n \n // buildTags reports the build tags used for the current Unicode version.\n"
+    },
+    "commands": [
+      "cd unicode/norm && go run maketables.go triegen.go -unicode=18.0.0",
+      "cd unicode/rangetable && go run gen.go -unicode=18.0.0 -versions=18.0.0"
+    ],
+    "ucd_archive": {
+      "source_url": "https://www.unicode.org/Public/18.0.0/ucd/UCD.zip",
+      "sha256": "7b3e555514060b92290d154f53655c5eb0fa62b16eb04c03434ff72d1a66a0d8",
+      "readme_sha256": "b0ea442f29dee90584aacd3665a6e1ce87ffc917a4d31f34e1916d2d6f7f9205",
+      "status": "final Unicode 18.0.0 data"
+    },
+    "generated_outputs": {
+      "unicode/norm/tables18.0.0.go": "ccd133df45368fb3f5e305c765e8f14be4e20fda2eb1355178a24d33aac0092d",
+      "unicode/norm/data18.0.0_test.go": "48c3afb40fb24bb4a72666ba027d889a1d53326a3c9ffe3c96b42b09ac3f18f7",
+      "unicode/rangetable/tables18.0.0.go": "802650bc446dc9f6e3d105a0753b12ed9d77b370a5391aa21fb2caded8dd08b9"
+    },
+    "reproducibility": "Both commands were executed twice from the isolated pinned source and identical pinned UCD inputs; all three generated output hashes matched."
+  },
+  "credential_profile": {
+    "name": "bounded Unicode 18.0.0 NFC without implicit CGJ",
+    "artifact_path": "normalize.go",
+    "artifact_sha256": "0b9378a0b112278567de9abbe660e9490081e31d67247b9d72ef01181288a02a",
+    "unicode_version": "18.0.0",
+    "normalization": "NFC for accepted inputs; no additional Stream-Safe mapping is accepted",
+    "admission": "Valid UTF-8; assigned UnicodeData repertoire; at most 1 MiB before and after normalization; reject inputs for which the retained bounded evaluator would insert U+034F",
+    "implicit_cgj_policy": "After the normalized output-size check, reject with RejectionCombiningSequence if normalized U+034F count exceeds input U+034F count. Clear the separately owned rejected output and return no credential bytes. Do not remove, replace, or silently insert CGJ.",
+    "explicit_cgj_policy": "U+034F supplied explicitly in the input remains credential data; it is not ignored or stripped.",
+    "guard_soundness": {
+      "unicode_data_sha256": "0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950",
+      "invariant": "No canonical decomposition or corresponding canonical composition has U+034F as result or operand; U+034F has CCC=0 and no decomposition. Canonical reordering preserves multiplicity, and algorithmic Hangul ranges exclude U+034F. An increased U+034F count therefore identifies implicit insertion, not NFC."
+    },
+    "compatibility": "Intentional pre-release domain restriction. Experimental PCV3 credentials formerly accepted through implicit Stream-Safe insertion may now be rejected; previous corpus and repertoire checks do not promise universal compatibility outside this bounded domain."
   }
 }

@@ -194,17 +194,23 @@ jobs:
           -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
           ./internal/pcv3operation/internal/pcv3unicode
 
-    - name: Test Unicode 17 normalization conformance
+    - name: Test Unicode 18 normalization conformance
       if: matrix.arch == 'amd64'
       run: |
         cd src
         normalization_test=$(mktemp)
-        trap 'rm -f "$normalization_test"' EXIT
+        unicode_data=$(mktemp)
+        trap 'rm -f "$normalization_test" "$unicode_data"' EXIT
         wget -qO "$normalization_test" \
-          https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt
-        echo "5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db  $normalization_test" \
+          https://www.unicode.org/Public/18.0.0/ucd/NormalizationTest.txt
+        echo "25a50d816764b04abfb4a646d3eb2b2a803284c3873d9a06757b94fe4513dde3  $normalization_test" \
+          | sha256sum --check --strict --status
+        wget -qO "$unicode_data" \
+          https://www.unicode.org/Public/18.0.0/ucd/UnicodeData.txt
+        echo "0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950  $unicode_data" \
           | sha256sum --check --strict --status
         GOMAXPROCS=1 PCV3_UNICODE_NORMALIZATION_TEST="$normalization_test" \
+          PCV3_UNICODE_UNICODE_DATA="$unicode_data" \
           go test -p=1 -count=1 -tags pcv3_unicode_conformance ./internal/pcv3operation/internal/pcv3unicode
 
     - name: Run tests

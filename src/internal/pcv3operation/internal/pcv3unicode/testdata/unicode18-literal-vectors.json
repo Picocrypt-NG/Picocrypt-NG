@@ -1,0 +1,72 @@
+{
+  "schema": "pcv3unicode-literal-vectors-v2",
+  "notice": "TEST ONLY. Public Unicode conformance literals; no user credentials, paths, keys, tokens, or generated production values.",
+  "unicode_version": "18.0.0",
+  "uax15_revision": "58",
+  "max_utf8_bytes": 1048576,
+  "sources": {
+    "normalization_test_sha256": "25a50d816764b04abfb4a646d3eb2b2a803284c3873d9a06757b94fe4513dde3",
+    "unicode_data_sha256": "0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950",
+    "derived_age_sha256": "58b04334e3a31f9612694bbc3f6bff4a302b7d424565bca9c47e30aa74f8dbac",
+    "derived_normalization_properties_sha256": "98ac7f67d985fe781e317f6182e885e94cabb0c314769e6dd73e48b226931ccd",
+    "uax15_revision_58_sha256": "efcf19da85342bd87fb93b590975ca422597243f2e19c6cb46e941d0d2d48d73"
+  },
+  "positive": [
+    {
+      "id": "unicode18-rufiyaa-sign",
+      "input_hex": "e28382",
+      "unicode18_nfc_hex": "e28382",
+      "source": "UnicodeData-18.0.0.txt line 7597; DerivedAge-18.0.0.txt line 2133 (age 18.0)"
+    },
+    {
+      "id": "unicode18-combining-grave-dot",
+      "input_hex": "61cc95cc80d6aee1ab9e62",
+      "unicode18_nfc_hex": "c3a0d6aee1ab9ecc9562",
+      "source": "NormalizationTest-18.0.0.txt line 18205, columns 1 and 2"
+    },
+    {
+      "id": "unicode18-hebrew-combining-order",
+      "input_hex": "61d6b1d6b0e0a58dd78862",
+      "unicode18_nfc_hex": "61e0a58dd6b0d788d6b162",
+      "source": "NormalizationTest-18.0.0.txt line 17585, columns 1 and 2"
+    },
+    {
+      "id": "private-use-assigned-by-unicodedata",
+      "input_hex": "f3b08080",
+      "unicode18_nfc_hex": "f3b08080",
+      "source": "UnicodeData-18.0.0.txt Plane 15 Private Use range; unlike DerivedAge, UnicodeData excludes noncharacters"
+    },
+    {
+      "id": "private-use-last-scalar",
+      "input_hex": "f48fbfbd",
+      "unicode18_nfc_hex": "f48fbfbd",
+      "source": "UnicodeData-18.0.0.txt Plane 16 Private Use range"
+    }
+  ],
+  "negative": [
+    {
+      "id": "unassigned-after-new-currency",
+      "input_hex": "e28385",
+      "rejection": "unassigned",
+      "source": "Absent from UnicodeData-18.0.0.txt; no UnicodeData range covers this scalar"
+    },
+    {
+      "id": "unassigned-after-new-combining-marks",
+      "input_hex": "e1abb1",
+      "rejection": "unassigned",
+      "source": "Absent from UnicodeData-18.0.0.txt; no UnicodeData range covers this scalar"
+    },
+    {
+      "id": "noncharacter-has-age-but-is-not-assigned",
+      "input_hex": "efb790",
+      "rejection": "unassigned",
+      "source": "Absent from UnicodeData-18.0.0.txt; no UnicodeData range covers this scalar"
+    },
+    {
+      "id": "noncharacter-after-private-use",
+      "input_hex": "f48fbfbe",
+      "rejection": "unassigned",
+      "source": "Absent from UnicodeData-18.0.0.txt; no UnicodeData range covers this scalar"
+    }
+  ]
+}

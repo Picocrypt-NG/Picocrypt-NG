@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,11 +19,11 @@ import (
 
 const normalizationTestMaxBytes = 4 << 20
 
-func readNormalizationTest(t *testing.T) []byte {
+func readPinnedUnicodeFile(t *testing.T, variable, checksum string) []byte {
 	t.Helper()
-	path, ok := os.LookupEnv("PCV3_UNICODE_NORMALIZATION_TEST")
+	path, ok := os.LookupEnv(variable)
 	if !ok || path == "" {
-		t.Fatal("PCV3_UNICODE_NORMALIZATION_TEST is required for the Unicode conformance lane")
+		t.Fatalf("%s is required for the Unicode conformance lane", variable)
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -44,8 +45,8 @@ func readNormalizationTest(t *testing.T) []byte {
 		t.Fatalf("pinned Unicode normalization test exceeds %d bytes", normalizationTestMaxBytes)
 	}
 	sum := sha256.Sum256(data)
-	if actual := hex.EncodeToString(sum[:]); actual != literalNormalizationTestSHA256 {
-		t.Fatalf("pinned Unicode normalization test SHA-256 = %s, want %s", actual, literalNormalizationTestSHA256)
+	if actual := hex.EncodeToString(sum[:]); actual != checksum {
+		t.Fatalf("pinned Unicode file SHA-256 = %s, want %s", actual, checksum)
 	}
 	return data
 }
@@ -66,12 +67,18 @@ func parseNormalizationCodepoints(value string) ([]byte, error) {
 	return []byte(string(runes)), nil
 }
 
-func TestUnicode17NormalizationConformance(t *testing.T) {
-	scanner := bufio.NewScanner(bytes.NewReader(readNormalizationTest(t)))
+func TestUnicode18NormalizationConformance(t *testing.T) {
+	scanner := bufio.NewScanner(bytes.NewReader(readPinnedUnicodeFile(t, "PCV3_UNICODE_NORMALIZATION_TEST", literalNormalizationTestSHA256)))
+	partOne := false
+	listedPartOne := make(map[rune]bool)
 	tested := 0
 	for lineNumber := 1; scanner.Scan(); lineNumber++ {
 		line := strings.TrimSpace(strings.SplitN(scanner.Text(), "#", 2)[0])
-		if line == "" || strings.HasPrefix(line, "@Part") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "@Part") {
+			partOne = line == "@Part1"
 			continue
 		}
 		fields := strings.Split(line, ";")
@@ -85,6 +92,13 @@ func TestUnicode17NormalizationConformance(t *testing.T) {
 				t.Fatalf("NormalizationTest.txt line %d column %d: %v", lineNumber, i+1, err)
 			}
 			columns[i] = decoded
+		}
+		if partOne {
+			r, size := utf8.DecodeRune(columns[0])
+			if size != len(columns[0]) {
+				t.Fatalf("NormalizationTest.txt Part 1 line %d is not a single scalar", lineNumber)
+			}
+			listedPartOne[r] = true
 		}
 		cases := []struct {
 			input []byte
@@ -113,4 +127,78 @@ func TestUnicode17NormalizationConformance(t *testing.T) {
 	if tested == 0 {
 		t.Fatal("pinned Unicode normalization test contained no conformance cases")
 	}
+
+	assigned := unicodeDataAssignedScalars(t)
+	accepted, rejected := 0, 0
+	for r := rune(0); r <= utf8.MaxRune; r++ {
+		if !utf8.ValidRune(r) {
+			continue
+		}
+		input := []byte(string(r))
+		got, err := Canonicalize(input)
+		if assigned[r] {
+			if err != nil {
+				t.Fatalf("UnicodeData-assigned U+%04X rejected: %v", r, err)
+			}
+			// NormalizationTest conformance rule 2 covers every assigned
+			// scalar omitted from Part 1, not only the explicit row cases.
+			if !listedPartOne[r] && !bytes.Equal(got, input) {
+				t.Fatalf("unlisted U+%04X NFC = %x, want unchanged scalar %x", r, got, input)
+			}
+			accepted++
+		} else {
+			var rejection *Error
+			if got != nil || !errors.As(err, &rejection) || rejection.Reason != RejectionUnassigned {
+				t.Fatalf("UnicodeData-unassigned U+%04X = (%x, %v), want no result and typed unassigned rejection", r, got, err)
+			}
+			rejected++
+		}
+	}
+	t.Logf("official NFC row checks: %d; UnicodeData scalar admission: %d assigned, %d unassigned", tested, accepted, rejected)
+}
+
+func unicodeDataAssignedScalars(t *testing.T) []bool {
+	t.Helper()
+	assigned := make([]bool, utf8.MaxRune+1)
+	scanner := bufio.NewScanner(bytes.NewReader(readPinnedUnicodeFile(t, "PCV3_UNICODE_UNICODE_DATA", literalUnicodeDataSHA256)))
+	var first rune
+	pendingRange := false
+	for scanner.Scan() {
+		fields := strings.Split(scanner.Text(), ";")
+		if len(fields) < 2 {
+			t.Fatal("UnicodeData.txt record lacks scalar and name")
+		}
+		value, err := strconv.ParseUint(fields[0], 16, 32)
+		if err != nil || value > utf8.MaxRune {
+			t.Fatalf("invalid UnicodeData.txt code point %q", fields[0])
+		}
+		r := rune(value)
+		switch {
+		case strings.HasSuffix(fields[1], ", First>"):
+			if pendingRange {
+				t.Fatal("nested UnicodeData.txt First/Last range")
+			}
+			first, pendingRange = r, true
+		case strings.HasSuffix(fields[1], ", Last>"):
+			if !pendingRange || r < first {
+				t.Fatal("unmatched UnicodeData.txt Last range")
+			}
+			for scalar := first; scalar <= r; scalar++ {
+				assigned[scalar] = true
+			}
+			pendingRange = false
+		default:
+			if pendingRange {
+				t.Fatal("unterminated UnicodeData.txt First/Last range")
+			}
+			assigned[r] = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan pinned UnicodeData.txt: %v", err)
+	}
+	if pendingRange {
+		t.Fatal("unterminated UnicodeData.txt First/Last range")
+	}
+	return assigned
 }

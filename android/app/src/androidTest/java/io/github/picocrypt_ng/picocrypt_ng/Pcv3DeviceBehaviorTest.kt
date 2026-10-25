@@ -390,6 +390,162 @@ class Pcv3DeviceBehaviorTest {
     fun v15WriteStandardD1CreationRoundTrip() = creationRoundTrip("d1", "standard")
 
     @Test
+    fun unicode18PasswordsAndInheritedCompositionAcrossJni() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        // The first suffix is NormalizationTest-18.0.0.txt line 18205. The
+        // literal expectations also protect go.dev/issue/81001 and 81021.
+        val password = "unicode18-\u20C2-a\u0315\u0300\u05AE\u1ADEb-" +
+            "i\uD804\uDFC2\u0300\u0316-\u1100\u1161\uD804\uDFC2\uD804\uDFC2"
+        val canonicalPassword = "unicode18-\u20C2-\u00E0\u05AE\u1ADE\u0315b-" +
+            "i\uD804\uDFC2\u0316\u0300-\uAC00\uD804\uDFC5"
+        val collidingPassword = "unicode18-\u20C2-a\u0315\u0300\u05AE\u1ADEb-" +
+            "\u00EC\uD804\uDFC2\u0316-\u1100\u1161\uD804\uDFC2\uD804\uDFC2"
+        val plaintext = "Unicode 18 Android JNI credential\u0000payload".toByteArray(Charsets.UTF_8)
+        for (mode in listOf("normal", "d1")) {
+            val directory = File(context.cacheDir, "pcv3-unicode18-jni-$mode")
+            assertFalse("Unicode 18 workspace residue", directory.exists())
+            assertTrue("Unicode 18 workspace must be newly owned", directory.mkdir())
+            val source = File(directory, "plain.bin")
+            val volume = File(directory, "volume.pcv")
+            val target = File(directory, "opened.bin")
+            val operations = mutableListOf<mobile.PCV3Operation>()
+            val released = mutableSetOf<mobile.PCV3Operation>()
+            var primaryFailure: Throwable? = null
+            try {
+                source.writeBytes(plaintext)
+                if (mode == "normal") {
+                    val boundedPassword = "\u0300".repeat(31).toByteArray(Charsets.UTF_8)
+                    val rejected = Mobile.startPCV3(
+                        writeEnvelope("write-normal", source, volume, "standard"), boundedPassword,
+                    )
+                    val operation = rejected.operation()
+                    operation?.let { operations.add(it) }
+                    assertEquals("bounded NFC rejection must reach the native operation", "", rejected.code())
+                    assertTrue("JNI must clear the rejected caller password", boundedPassword.all { it == 0.toByte() })
+                    val live = operation ?: throw AssertionError("bounded NFC rejection returned no operation")
+                    val terminal = awaitTerminal(live)
+                    assertEquals("implicit CGJ insertion must fail closed", "operation-failed", terminal.outcome())
+                    assertEquals("implicit CGJ rejection must be a pre-KDF refusal", "refused", terminal.completionClass())
+                    assertFalse("implicit CGJ rejection must not attempt publication", terminal.publicationAttempted())
+                    assertEquals("implicit CGJ rejection must publish nothing", "none", terminal.publicationState())
+                    assertEquals("implicit CGJ rejection must leave no cleanup warning", 0L, terminal.warningCount())
+                    assertNull("implicit CGJ rejection must expose no output authority", live.output())
+                    assertNull("implicit CGJ rejection must expose no archive", live.archive())
+                    assertNull("implicit CGJ rejection must expose no forensic artifact", live.artifactInspection())
+                    assertFalse("implicit CGJ rejection must leave no ciphertext", volume.exists())
+                    assertTrue("implicit CGJ rejection must preserve source bytes", plaintext.contentEquals(source.readBytes()))
+                    assertEquals("implicit CGJ rejection must leave only the source", listOf(source.name), directory.list()?.sorted())
+                    assertEquals("implicit CGJ rejection must release", "", live.release())
+                    released.add(live)
+                }
+                val writePassword = password.toByteArray(Charsets.UTF_8)
+                val start = Mobile.startPCV3(writeEnvelope("write-$mode", source, volume, "standard"), writePassword)
+                start.operation()?.let { operations.add(it) }
+                assertEquals("Unicode 18 $mode creation must start", "", start.code())
+                assertTrue("JNI must zero the creation caller password", writePassword.all { it == 0.toByte() })
+                val write = start.operation()
+                    ?: throw AssertionError("Unicode 18 creation returned no operation")
+                val written = awaitTerminalPumping(context, write)
+                assertEquals("Unicode 18 $mode creation (${written.diagnostic()})", "success", written.outcome())
+                assertEquals("Unicode 18 creation must complete clean", "clean", written.completionClass())
+                assertEquals("Unicode 18 creation must publish durably", "published-durable", written.publicationState())
+                assertEquals("Unicode 18 creation must raise no warnings", 0L, written.warningCount())
+                val ciphertext = volume.readBytes()
+
+                val readPasswords = if (mode == "normal") {
+                    listOf(canonicalPassword, collidingPassword)
+                } else {
+                    listOf(canonicalPassword)
+                }
+                for ((index, candidate) in readPasswords.withIndex()) {
+                    val readPassword = candidate.toByteArray(Charsets.UTF_8)
+                    val readStart = Mobile.startPCV3(
+                        envelope("read-$mode", "password", "none", volume, target, emptyList()),
+                        readPassword,
+                    )
+                    val read = readStart.operation()
+                    read?.let { operations.add(it) }
+                    assertEquals("Unicode 18 $mode read must start", "", readStart.code())
+                    assertTrue("JNI must zero the read caller password", readPassword.all { it == 0.toByte() })
+                    val live = read ?: throw AssertionError("Unicode 18 read returned no operation")
+                    val terminal = awaitTerminalPumping(context, live)
+                    if (index == 0) {
+                        assertEquals("Unicode 18 $mode NFC read (${terminal.diagnostic()})", "success", terminal.outcome())
+                        assertEquals("Unicode 18 NFC read must complete clean", "clean", terminal.completionClass())
+                        assertEquals("Unicode 18 NFC read must publish durably", "published-durable", terminal.publicationState())
+                        assertEquals("Unicode 18 NFC read must raise no warnings", 0L, terminal.warningCount())
+                        assertTrue("Unicode 18 JNI plaintext must be byte-exact", plaintext.contentEquals(target.readBytes()))
+                        val output = live.output() ?: throw AssertionError("Unicode 18 read retained no output authority")
+                        val discarded = output.discard()
+                        assertEquals("Unicode 18 plaintext must discard", "discarded", discarded.code())
+                        assertFalse("Unicode 18 plaintext cleanup must complete", discarded.cleanupIncomplete())
+                    } else {
+                        assertEquals("different starter-separated passwords must not collide", "credentials-or-damage", terminal.outcome())
+                        assertEquals("wrong credential must fail wrap authentication", "wrap-auth", terminal.stage())
+                        assertEquals("wrong credential must retain the bounded failure code", "PCV3_CREDENTIALS_OR_DAMAGE", terminal.code())
+                        assertEquals("wrong credential must complete with no output", "no-output", terminal.completionClass())
+                        assertFalse("wrong credential must not attempt publication", terminal.publicationAttempted())
+                        assertEquals("wrong credential must publish nothing", "none", terminal.publicationState())
+                        assertEquals("wrong credential must raise no cleanup warnings", 0L, terminal.warningCount())
+                        assertNull("wrong credential must expose no output", live.output())
+                        assertNull("wrong credential must expose no archive", live.archive())
+                        assertNull("wrong credential must expose no forensic artifact", live.artifactInspection())
+                    }
+                    assertFalse("read must leave no plaintext output", target.exists())
+                    assertTrue("read must preserve ciphertext bytes", ciphertext.contentEquals(volume.readBytes()))
+                    assertTrue("Unicode 18 operations must preserve source bytes", plaintext.contentEquals(source.readBytes()))
+                    assertEquals("Unicode 18 read must release", "", live.release())
+                    released.add(live)
+                }
+                val output = write.output() ?: throw AssertionError("Unicode 18 creation retained no output authority")
+                val discarded = output.discard()
+                assertEquals("Unicode 18 ciphertext must discard", "discarded", discarded.code())
+                assertFalse("Unicode 18 ciphertext cleanup must complete", discarded.cleanupIncomplete())
+                assertEquals("Unicode 18 creation must release", "", write.release())
+                released.add(write)
+                assertEquals("Unicode 18 operations must leave only the source", listOf(source.name), directory.list()?.sorted())
+                for (file in listOf(source, volume, target)) {
+                    assertEquals("Unicode 18 operations must close owned descriptors", emptyList<String>(), descriptorsResolvingTo(file))
+                }
+            } catch (failure: Throwable) {
+                primaryFailure = failure
+                throw failure
+            } finally {
+                attachCleanupFailure(primaryFailure) {
+                    var cleanupFailure: Throwable? = null
+                    for (operation in operations.asReversed()) {
+                        try {
+                            operation.output()?.let { output ->
+                                val discarded = output.discard()
+                                assertEquals("Unicode 18 failure cleanup must discard output", "discarded", discarded.code())
+                                assertFalse("Unicode 18 failure cleanup must complete", discarded.cleanupIncomplete())
+                            }
+                        } catch (failure: Throwable) {
+                            cleanupFailure = accumulateFailure(cleanupFailure, failure)
+                        }
+                        try {
+                            release(operation, "Unicode 18 $mode", operation in released)
+                        } catch (failure: Throwable) {
+                            cleanupFailure = accumulateFailure(cleanupFailure, failure)
+                        }
+                    }
+                    try {
+                        cleanupFiles(
+                            target to "Unicode 18 plaintext output",
+                            volume to "Unicode 18 ciphertext output",
+                            source to "Unicode 18 source",
+                            directory to "Unicode 18 workspace",
+                        )
+                    } catch (failure: Throwable) {
+                        cleanupFailure = accumulateFailure(cleanupFailure, failure)
+                    }
+                    cleanupFailure?.let { throw it }
+                }
+            }
+        }
+    }
+
+    @Test
     fun v18CancellationAfterFirstD1KdfLeavesNoPublication() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val directory = File(context.cacheDir, "pcv3-cancel-after-first-d1-kdf")
