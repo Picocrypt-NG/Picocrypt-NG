@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-- Go 1.27.1, matching `src/go.mod`
+- Go 1.27.3, matching `src/go.mod`
 - GCC (for CGO)
 - Platform dependencies:
   - Linux: `libgtk-3-dev`, `libgl1-mesa-dev`, `xorg-dev`
@@ -75,7 +75,7 @@ nonce, err := crypto.RandomBytes(24)
 
 ## AI Assistance
 
-AI tools (LLMs) are used in this project to assist with development — writing boilerplate, drafting tests, exploring refactoring options, and reviewing documentation.
+Contributors use AI tools (LLMs) to assist with boilerplate, tests, refactoring options and documentation review.
 
 Changes to crypto-critical code require human review and approval before merge.
 This includes the legacy paths and every PCV3 format, credential, operation,

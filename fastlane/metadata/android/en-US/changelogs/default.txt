@@ -1,6 +1,5 @@
 v3.0 (unreleased)
 - New encryption uses PCV3 with a password, keyfiles, or both. Older releases cannot read PCV3.
 - Existing v1/v2 volumes remain readable.
-- Android 8.0+; ARM64 and x86-64 only.
-- Safer password/input handling and failed-save retries.
-- Updated dependencies and isolated APK signing.
+- Android 8.0+; ARMv7, ARM64, x86 and x86-64 APKs. PCV3 requires memory for the fixed 1 GiB KDF.
+- Bounded Unicode 18 NFC passwords; partial/unverified recovery artifacts and failed-save retries.

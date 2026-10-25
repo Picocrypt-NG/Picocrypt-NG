@@ -175,9 +175,12 @@ touched, even when they do not directly define encrypted volume semantics.
 - Android is a native app under `android/`; rebuild the gomobile AAR after Go bridge
   changes. Passwords cross Kotlin to Go as bytes, but Go operation internals may use
   strings as documented.
-- Comments stored in volumes are plaintext header data; never describe them as
-  secret. Current v2 header auth covers comments, but verify version/format nuance
-  before making authentication claims.
+- Legacy v1/v2 and Normal PCV3 comments are plaintext metadata; never describe
+  them as secret. A Normal PCV3 preview is unverified. D1 encrypts its comment
+  metadata and releases it only after authentication; check frontend limits
+  before claiming that its UI supports comment creation. Current v2 header auth
+  covers comments, but verify version/format nuance before making authentication
+  claims.
 - Deniability changes are high risk: random-looking output, comment behavior, manual
   naming, and mode interactions are part of the user-visible contract.
 - File associations and packaging metadata are release behavior, not cosmetic files.

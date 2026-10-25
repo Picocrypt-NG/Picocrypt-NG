@@ -22,7 +22,7 @@ src/
 │   │   ├── kdf.go         # Argon2id, HKDF
 │   │   ├── mac.go         # BLAKE2b, HMAC-SHA3
 │   │   ├── rekey.go       # Cipher rekeying for >60 GiB
-│   │   └── zeroing.go     # Secure memory zeroing
+│   │   └── zeroing.go     # Sensitive-buffer cleanup
 │   │
 │   ├── diskspace/         # Available disk space checks
 │   ├── distmeta/          # Distribution metadata (version strings)
@@ -49,7 +49,7 @@ src/
 │   │   └── processor.go   # Ordered/unordered hashing
 │   │
 │   ├── log/               # Logging seam (null logger by default)
-│   ├── password/          # Password normalization (Unicode NFC)
+│   ├── password/          # Legacy password normalization and compatibility retries
 │   │
 │   ├── pcv3operation/     # Closed native PCV3 application API
 │   │   └── internal/     # Go compiler-enforced private implementation
@@ -118,7 +118,7 @@ result, including archive and retained-output follow-ups where supported.
 
 Legacy v1/v2 reads remain available through `volume.Decrypt`: recombine chunks,
 remove the legacy deniability wrapper when selected, read the header, derive keys,
-verify header and payload authentication, then complete requested unpacking.
+check the version-specific password/header verifier and payload MAC, then complete requested unpacking.
 Unknown major versions fail closed even under force decrypt.
 
 ### Android mobile status and error boundary
@@ -170,8 +170,8 @@ XChaCha20(encryption_key, nonce) -> cipher stream
 
 Because the v2 HKDF stream is initialized before keyfile XOR, the keyfile
 changes the XChaCha20 key but does not bind the header MAC, payload MAC, Serpent
-key, or rekey values. This is why all new v2 keyfile writes are disabled in
-2.19 while legacy reads remain available.
+key, or rekey values. The legacy v2 compatibility writer therefore rejects
+keyfiles, while legacy reads remain available.
 
 `EncryptRequest.PCV3` selects the canonical PCV3 serializer and is enabled by
 native frontends. Its zero value preserves the internal legacy compatibility
@@ -179,7 +179,7 @@ writer. Android supports files, folders, multiple inputs and compression through
 the shared writer. Browser creation uses the same PCV3 engines through a
 `js && wasm`-only memory facade; it exposes no legacy writer. Normal PCV3 and PCV3 D1
 support password, keyfile, and combined credentials. D1 is the
-random-looking path with optional Paranoid ciphers and a fixed strong D1 KDF.
+random-looking path with optional Paranoid ciphers and a fixed D1 KDF.
 Its complete credential transcript protects separate outer and inner key wraps;
 creation performs two KDFs, and a healthy front-bootstrap read performs one.
 
@@ -191,19 +191,16 @@ The legacy paths in `crypto/`, `header/`, `keyfile/`, and `volume/` descend from
 
 1. Running the complete golden corpus: `go test -count=1 -run '^TestGolden' ./internal/volume`
 2. Verifying v1.x backward compatibility
-3. Using `defer crypto.SecureZero(key)` for all key material
+3. Assigning owned key buffers explicit cleanup with `crypto.SecureZero` or the existing secret owners
 4. Using `subtle.ConstantTimeCompare()` for MAC verification
 
 ### Memory Security
 
-```go
-// Pattern used throughout
-ctx := NewOperationContext(req)
-defer ctx.Close()  // Wipes owned secret buffers
-
-// Explicit zeroing
-crypto.SecureZero(key)
-```
+Legacy volume operations use `NewEncryptContext(ctx, req)` or
+`NewDecryptContext(ctx, req)` and preserve cleanup errors returned by `Close`.
+PCV3 has separate credential and output owners behind `pcv3operation`.
+These owners clear controllable sensitive buffers; runtime and dependency copies
+remain outside the cleanup guarantee. See [memory handling](Internals.md#memory-handling).
 
 ### Thread Safety
 
@@ -213,13 +210,12 @@ crypto.SecureZero(key)
 
 ## Testing
 
-```bash
-go test ./...                                        # All tests
-go test -count=1 -run '^TestGolden' ./internal/volume # Backward compatibility
-go test -race ./...                                  # Race detector
-go test -bench=. ./...                               # Benchmarks
-go test -fuzz=Fuzz ./internal/encoding               # Fuzz tests
-```
+Run the [source verification lanes](src/README.md#test) from `src/`.
+The default suite uses the `migrated_fynedo` tag and serializes packages that
+run the fixed 1 GiB KDF. Run the additional production-KDF and uncached golden
+commands separately.
+For race-sensitive changes, use the documented serialized race lane rather
+than running multiple KDF-heavy packages concurrently.
 
 ### Test Types
 
@@ -230,11 +226,14 @@ go test -fuzz=Fuzz ./internal/encoding               # Fuzz tests
 
 ## Refactoring from v1.49
 
-Original: single `original_audited_picocrypt.go` file (~3000 lines), global variables, UI and crypto interleaved.
+The archived upstream v1.49 source keeps UI, cryptography and global state in
+one file. The maintained implementation separates those responsibilities into
+packages under `src/internal/`.
 
-Refactored: 10+ packages, testable crypto code, <500 lines per file.
-
-Original preserved at: `testdata/legacy/original_audited_picocrypt.go`
+The reference is preserved at `src/testdata/legacy/original_audited_picocrypt.go`.
+Its filename is historical: the 2024 audit covered upstream commit `7e403a2`,
+which declares v1.40, and does not establish that the archived v1.49 source was
+audited. See the [legacy reference notes](src/testdata/legacy/README.md).
 
 ### Backward Compatibility
 

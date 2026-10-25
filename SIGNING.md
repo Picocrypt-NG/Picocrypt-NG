@@ -10,7 +10,7 @@ changed blocks via a `.zsync` published alongside each release).
 
 ```
 Picocrypt-NG Release Signing
-ed25519 — fingerprint: 40D5 5274 9B0E B548 C79D  79F2 2DD9 3FE7 5B45 D97F
+ed25519 fingerprint: 40D5 5274 9B0E B548 C79D  79F2 2DD9 3FE7 5B45 D97F
 ```
 
 To import it, save the block below to a file and run `gpg --import <file>`:
@@ -53,15 +53,20 @@ appimageupdatetool ./Picocrypt-NG-<version>-x86_64.AppImage
 
 ## Windows Authenticode
 
-Starting with Picocrypt-NG 2.19, the Windows GUI, current and legacy CLIs,
-installer, and embedded uninstaller are signed through SignPath with the
-SignPath Foundation production certificate. Its SHA-256 fingerprint is:
+The current release workflows require SignPath signing for the Windows GUI,
+current and legacy CLIs, installer and embedded uninstaller. They verify the
+SignPath Foundation production certificate against this SHA-256 fingerprint:
 
 ```
 E4ED1CAE2D8E8F94C13BD7805E2F8BB54D690BEA7133CECC1979CC6A60207D5B
 ```
 
-Verify a downloaded executable in PowerShell:
+This describes the configured production pipeline. The latest published release,
+[2.18](https://github.com/Picocrypt-NG/Picocrypt-NG/releases/tag/2.18), predates
+this Authenticode requirement. Neither 2.19 nor the current 3.0 development
+version has been published.
+
+For an executable produced by this pipeline, verify it in PowerShell:
 
 ```powershell
 $signature = Get-AuthenticodeSignature .\Picocrypt-NG-portable.exe
@@ -86,20 +91,20 @@ output or publishing a GitHub release.
 
 ## Sigstore verification (keyless)
 
-Every release artifact is signed in CI with **keyless Sigstore** (GitHub Actions
-OIDC + Fulcio + the Rekor transparency log) — no maintainer key, nothing to leak.
-Each artifact ships with a `<artifact>.sigstore.json` bundle, and a build-provenance
-attestation is published to GitHub.
+The production release workflows generate keyless Sigstore signatures using
+GitHub Actions OIDC, Fulcio and the Rekor transparency log for the artifacts
+listed below. They publish a `<artifact>.sigstore.json` bundle beside each
+artifact and a build-provenance attestation to GitHub. The published 2.18 release
+also includes these bundles.
 
-> GitHub shows a `sha256:` digest next to each asset — that is an **integrity**
-> check against GitHub's storage. The signatures below add **authenticity**: proof
-> the artifact was produced by Picocrypt-NG's official CI, recorded in a public
-> transparency log.
+GitHub's `sha256:` asset digest checks your download against the bytes stored by
+GitHub. Signature verification also checks the producing CI identity against the
+workflow you select below.
 
 Install [cosign](https://docs.sigstore.dev/cosign/installation/) **3.1.3 or newer** and the
 [GitHub CLI](https://cli.github.com/).
 
-### 1. Authenticity (cosign) — strict, pins the producing workflow
+### 1. Authenticity (cosign, pinned producing workflow)
 
 ```bash
 cosign verify-blob <artifact> \
@@ -108,7 +113,7 @@ cosign verify-blob <artifact> \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 ```
 
-### 2. Provenance (GitHub CLI) — strict
+### 2. Provenance (GitHub CLI)
 
 ```bash
 gh attestation verify <artifact> \
@@ -128,7 +133,7 @@ gh attestation verify <artifact> \
 | `*.snap` | `build-snapcraft` |
 | `*.apk` | `build-android` |
 
-A looser "is this any official Picocrypt-NG artifact" check replaces
+A check that accepts any main-branch workflow in this repository replaces
 `--certificate-identity` with
 `--certificate-identity-regexp '^https://github.com/Picocrypt-NG/Picocrypt-NG/\.github/workflows/.+@refs/heads/main$'`.
 

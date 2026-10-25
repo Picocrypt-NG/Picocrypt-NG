@@ -1,20 +1,22 @@
-Picocrypt-NG encrypts files locally — a community-maintained continuation of Picocrypt. No accounts, no cloud, no telemetry, no network access (the app does not request the INTERNET permission).
+Picocrypt-NG encrypts files locally. It is a community-maintained continuation of Picocrypt. The Android app requires no account, sends no telemetry and does not request the INTERNET permission.
 
-New encryption uses PCV3 with XChaCha20, Argon2id and authenticated records. Use a password, keyfiles, or both. Normal PCV3 decryption verifies authentication before publishing plaintext. Supported legacy v1/v2 volumes remain readable; recover legacy keyfile volumes and re-encrypt them as PCV3. Force recovery may produce unverified output.
+New encryption uses PCV3 with XChaCha20, Argon2id and authenticated records. Use a password, keyfiles, or both. Ordinary PCV3 decryption verifies authentication before publishing plaintext. Supported legacy v1/v2 volumes remain readable; recover legacy keyfile volumes and re-encrypt them as PCV3. Partial or unverified PCV3 recovery produces separate forensic artifacts, preserves the source and does not automatically extract the result. Unverified recovery requires separate consent.
 
 Features:
 
 - Encrypt a single file, multiple files, or a folder
 - Optional keyfiles, with an option to require them in a fixed order
-- Paranoid mode: extra cipher cascade and harder key derivation
+- Paranoid mode adds Serpent-CTR and HMAC-SHA3; it also increases the KDF work factor for Normal PCV3
 - Reed-Solomon error correction to recover volumes from limited corruption
-- Deniability mode (requires Paranoid): the encrypted volume appears as random data
+- D1 deniability mode creates a random-looking container with Standard or Paranoid encryption; filenames and sizes remain visible
 - Optional compression
-- Comments stored in plaintext; never put secrets in comments
+- Normal and legacy comments are plaintext; never put secrets in them. D1 encrypts its metadata, but the Android app disables D1 comment entry
 - Long operations continue in a foreground service when the app is backgrounded
 
 PCV3 volumes work with the desktop and CLI apps (Windows, macOS, Linux). New PCV3 volumes require Picocrypt-NG 3.0 or newer. PCV3 multi-file and compressed payloads can be saved as ZIP or extracted to a selected folder. A failed ciphertext save keeps the encrypted result available for retry.
 
-Requires Android 8.0 or newer on a 64-bit ARM or x86-64 device.
+Requires Android 8.0 or newer. APKs support ARMv7, ARM64, x86 and x86-64. PCV3 operations require enough available memory for the fixed 1 GiB KDF and may be refused when resources are insufficient. D1 uses eight passes and eight lanes with either cipher suite.
+
+PCV3 passwords use bounded Unicode 18.0.0 NFC normalization. Case and spaces remain significant; passwords outside the profile are rejected before key derivation.
 
 Free software under GPLv3. The Android app is built from source: the native library is compiled from the Go sources in this repository, with no prebuilt binaries committed.

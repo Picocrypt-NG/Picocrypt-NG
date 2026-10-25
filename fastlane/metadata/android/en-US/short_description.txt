@@ -1,1 +1,1 @@
-Paranoid, offline file encryption with XChaCha20 and Argon2id.
+Offline file encryption with XChaCha20 and Argon2id.

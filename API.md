@@ -40,14 +40,13 @@ const (
 
 ### Subkey Reader
 
-`SubkeyReader` consumes an HKDF stream in the order required by the v2 wire
-format:
+Callers must read `SubkeyReader` in the order required by the v2 wire format:
 
 ```
-Byte  0– 63: Header subkey (64 bytes) — v2 header MAC only
+Byte  0– 63: Header subkey (64 bytes), v2 header MAC only
 Byte 64– 95: MAC subkey (32 bytes)
 Byte 96–127: Serpent key (32 bytes)
-Byte 128+:   Per-cycle rekey values (nonce 24 + IV 16)
+Byte 128+:   Per-cycle nonce (24 bytes), plus IV (16 bytes) in Paranoid mode only
 ```
 
 ```go
@@ -103,7 +102,8 @@ func (cs *CipherSuite) MAC() hash.Hash
 // Sum returns the current MAC tag without finalising the hash state.
 func (cs *CipherSuite) Sum() []byte
 
-// Close zeros all key material.
+// Close clears the retained key and supported Serpent schedule, then drops
+// cipher/MAC references. Inaccessible primitive state may remain.
 func (cs *CipherSuite) Close()
 
 // RekeyThreshold is the byte count after which Rekey must be called (60 GiB).
@@ -139,9 +139,6 @@ func SecureZero(b []byte)
 
 // SecureZeroMultiple zeros several slices in one call.
 func SecureZeroMultiple(slices ...[]byte)
-
-// SecureZeroHash resets a hash.Hash to clear partial state.
-func SecureZeroHash(h hash.Hash)
 ```
 
 ---
@@ -152,7 +149,7 @@ func SecureZeroHash(h hash.Hash)
 
 ```go
 type EncryptRequest struct {
-    // Input — use InputFile for single file, InputFiles for multiple (auto-zipped)
+    // Input: use InputFile for single file, InputFiles for multiple (auto-zipped)
     InputFile   string
     InputFiles  []string
     InputIdentities []fileops.ZIPInputIdentity // optional immutable discovery snapshots
@@ -160,7 +157,7 @@ type EncryptRequest struct {
     OnlyFiles   []string // files dropped directly (affects zip paths)
     OutputFile  string
 
-    // Credentials — legacy v2 requires Password; PCV3 accepts password,
+    // Credentials: legacy v2 requires Password; PCV3 accepts password,
     // keyfile, or combined policies
     Password       []byte   // Owned by caller; caller zeros it after the operation
     Keyfiles       []string // PCV3 keyfile paths; legacy v2 rejects non-empty values
@@ -168,8 +165,8 @@ type EncryptRequest struct {
     PCV3           bool     // Select PCV3 instead of legacy v2
 
     // Options
-    Comments    string // Plaintext header comment (max 99999 chars, NOT encrypted)
-    Paranoid    bool   // 8 Argon2 passes, Serpent-CTR + XChaCha20, HMAC-SHA3
+    Comments    string // Max 99999 UTF-8 bytes; legacy/Normal plaintext, D1 encrypted
+    Paranoid    bool   // Serpent-CTR + XChaCha20, HMAC-SHA3; Normal/legacy use 8 Argon2 passes
     ReedSolomon bool   // Reed-Solomon on payload (~6% size overhead)
     Deniability bool   // Legacy wrapper or, with PCV3, D1
     Compress    bool   // Deflate compression in temp zip
@@ -212,7 +209,7 @@ type DecryptRequest struct {
     Reporter ProgressReporter
     RSCodecs *encoding.RSCodecs
 
-    // Output — set by Decrypt after completion
+    // Output: set by Decrypt after completion
     Kept *bool // non-nil + true if ForceDecrypt bypassed an integrity/authentication failure
 }
 
@@ -465,14 +462,14 @@ type VolumeHeader struct {
     Comments string // plaintext; NOT encrypted
     Flags    Flags
 
-    Salt      []byte // 16 bytes — Argon2 salt
-    HKDFSalt  []byte // 32 bytes — HKDF-SHA3 salt
-    SerpentIV []byte // 16 bytes — Serpent IV
-    Nonce     []byte // 24 bytes — XChaCha20 nonce
+    Salt      []byte // 16 bytes, Argon2 salt
+    HKDFSalt  []byte // 32 bytes, HKDF-SHA3 salt
+    SerpentIV []byte // 16 bytes, Serpent IV
+    Nonce     []byte // 24 bytes, XChaCha20 nonce
 
-    KeyHash     []byte // 64 bytes — v2: HMAC-SHA3-512(header); v1: SHA3-512(key)
-    KeyfileHash []byte // 32 bytes — SHA3-256(keyfileKey) or zeros
-    AuthTag     []byte // 64 bytes — payload MAC (BLAKE2b or HMAC-SHA3)
+    KeyHash     []byte // 64 bytes, v2: HMAC-SHA3-512(header); v1: SHA3-512(key)
+    KeyfileHash []byte // 32 bytes, SHA3-256(keyfileKey) or zeros
+    AuthTag     []byte // 64 bytes, payload MAC (BLAKE2b or HMAC-SHA3)
 }
 
 func NewVolumeHeader(salt, hkdfSalt, serpentIV, nonce []byte) *VolumeHeader
@@ -598,7 +595,7 @@ func PeekVersion(r io.Reader, rs *encoding.RSCodecs) (string, error)
 ```
 
 `MatchVersion` recognizes only the syntax `vN.NN`; it does not authorize a cryptographic
-generation. Picocrypt-NG 2.19 supports v1 and v2. `Reader.ReadHeader` returns
+generation. The legacy reader supports v1 and v2. `Reader.ReadHeader` returns
 `ErrUnsupportedVersion` for every other well-formed major immediately after decoding the version,
 before flags or KDF inputs are read. Force decrypt does not bypass this gate, and deniability
 detection keeps a well-formed unknown-major header on the header path so it fails closed rather
@@ -613,8 +610,8 @@ type ProgressFunc func(progress float32)
 
 // The caller owns the result and clears Key after use.
 type Result struct {
-    Key  []byte // 32 bytes — derived key for XOR with password key
-    Hash []byte // 32 bytes — SHA3-256(Key) stored in header
+    Key  []byte // 32 bytes, derived key for XOR with password key
+    Hash []byte // 32 bytes, SHA3-256(Key) stored in header
 }
 
 // Process hashes keyfiles into a 32-byte key.
@@ -1077,6 +1074,12 @@ Modes, suites, payload kinds, outcomes, stages, and codes are closed metadata.
 No public facade exposes raw keys, digests, credential/KDF sessions, admission
 grants, random generators, or serializer entry points.
 
+PCV3 uses the frozen [Unicode-18 password profile](Internals.md#pcv3-password-profile)
+across native and browser frontends; legacy normalization remains separate.
+Partial or unverified recovery follows the
+[recovery trust contract](docs/SECURITY_CONTRACT.md#recovery-trust), independently
+of individual range/final authentication states.
+
 `VerifyD1(ctx, *D1VerifyRequest) D1VerifyReport` is a separate strict D1 verifier.
 The request contains only an already-opened `Source`, owned `Factors` and
 `Reporter`. Like `Run`, it consumes them immediately on every path; callers
@@ -1088,8 +1091,9 @@ Full verification requires two ordinary credential-authenticated bootstraps with
 matching outer/inner roots, profile and body length, independent salt/nonce/IV,
 canonical geometry, and complete outer/inner authentication. The private core
 fully executes its emitter into a discard sink and checks its final errors; it
-does not create a plaintext stage or perform a third KDF. `Verified()` is true
-only for a clean complete result with confirmed cleanup. Operational failures
+does not create a plaintext stage or run an inner Argon2id call. The D1C key
+and KDF construction is documented in [Internals.md](Internals.md#pcv3-d1c).
+`Verified()` is true only for a clean complete result with confirmed cleanup. Operational failures
 remain separate from unauthenticated credentials-or-damage. Ordinary D1 opening
 and the on-disk format are unchanged.
 
@@ -1131,12 +1135,16 @@ of 0 (primary/front) or 1 (backup/tail). Only mode 8 accepts optional
 aggregate keyfile bytes (at most 64 files). PCV3 reads retain at most 128 MiB of
 output. Empty PCV3 plaintext is permitted. New creation supports password-only,
 keyfile-only or combined factors, ordered keyfiles, optional Paranoid, payload
-Reed-Solomon and D1. Comments remain plaintext authenticated metadata; source
-filenames are not embedded. File/folder staging and splitting are not exposed.
+Reed-Solomon and D1. Normal comments are plaintext authenticated metadata;
+D1 comments are encrypted within the outer stream and released only after
+authentication. Source filenames are not embedded. File/folder staging and
+splitting are not exposed.
 
 Codes 0 and 10 alone carry output: 0 means fully authenticated success or degraded
-recovery (`recovered: true`), and 10 is partial/unverified Force output. Resource
-refusal is 14; ambiguity is 15. Other failures return only `code`. The facade
+recovery (`recovered: true`), and 10 returns partial/unverified Force bytes
+directly in memory. Code 10 does not return the native forensic artifact or a
+per-range verification report; callers must treat all of its output as untrusted.
+Resource refusal is 14; ambiguity is 15. Other failures return only `code`. The facade
 consumes and clears Go-owned input, password and keyfile copies and owns output
 until `Close`; JavaScript strings, copies and runtime internals cannot be reliably
 erased by Go. Inputs backed by SharedArrayBuffer are rejected. A shared guard
@@ -1155,8 +1163,8 @@ publication or deletion. Output and archive follow-ups preserve their one-shot
 Go capability semantics. `ArtifactInspection.Metadata` and `Page` expose only
 summary/range metadata; pages contain at most 128 defensive-copy descriptors.
 Inspection shares immutable evidence and remains readable after operation release.
-Raw-selected D1 recovery stays an unverified forensic artifact even when its inner
-records authenticate. Its range/final statuses retain those authentication facts;
+Native raw-selected D1 recovery stays an unverified forensic artifact even when
+its inner records authenticate. Its range/final statuses retain those authentication facts;
 the physical D1 role records the untrusted selection. The artifact layout stays
 unchanged, but older readers may reject this new combination of trust and evidence.
 `Request.D1SuiteHint` is optional and accepts only `SuiteStandard` or `SuiteParanoid`

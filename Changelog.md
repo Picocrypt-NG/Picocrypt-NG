@@ -2,17 +2,20 @@
 
 Unreleased development version.
 
-<ul>
-	<li>✓ <strong>PCV3 volumes</strong>: new native encryption supports passwords, keyfiles, or both with the selected factors bound to authentication. Existing v1/v2 volumes remain readable; earlier releases cannot read PCV3 volumes. The legacy writer's <code>v2.19</code> header marker is unchanged.</li>
-	<li>✓ <strong>Desktop input and output safety</strong>: choosing a legacy output path no longer truncates an existing file, overwrite confirmation applies only to the confirmed destination, and later iCloud file batches ask whether to replace or extend the selection.</li>
-	<li>✓ <strong>Filesystem cleanup</strong>: ZIP extraction preserves cleanup uncertainty when created-object identity is unavailable or changes; desktop source deletion uses one held parent for inspection and removal, and recombination with source deletion checks the captured chunk identities and sizes before decryption.</li>
-	<li>✓ <strong>Android reliability</strong>: restored input paths must belong to the app, clearing passwords also clears the visible fields, and accepted legacy operations retain their credentials through cancellation and Force retry.</li>
-	<li>✓ <strong>Compatibility and error handling</strong>: sequential keyfile processing avoids exhausting file descriptors, ordinary legacy Reed-Solomon reads reject partial trailing blocks, and WASM authenticates v2 headers before reporting missing or incorrect keyfiles.</li>
-	<li>✓ <strong>Security maintenance</strong>: updated to Go 1.27.3 and <code>golang.org/x/net</code> v0.61.0; Windows legacy builds apply pinned compatibility patches to the official Go source.</li>
-	<li>✓ <strong>Release integrity</strong>: Android APK signing runs separately from Gradle in a job with a read-only GitHub token, and download verification binds each artifact to its expected workflow, main branch and source commit.</li>
-</ul>
+- New encryption creates PCV3 volumes with passwords, keyfiles, or both bound to authentication. Supported v1/v2 volumes remain readable; earlier releases cannot read PCV3. The legacy writer's `v2.19` header marker is unchanged.
+- PCV3 passwords use a frozen, bounded Unicode 18 NFC profile. Inputs that require implicit CGJ insertion are rejected before KDF; explicitly entered CGJ remains significant. Two inherited NFC composition defects are corrected. Earlier experimental PCV3 password mappings have no compatibility guarantee.
+- Recovery messages distinguish partial and unverified results without inferring the trust of individual bytes from the outcome alone. Desktop archive-folder errors remain visible and allow another selection or closing the result.
+- Choosing a legacy desktop output path no longer truncates an existing file. Overwrite confirmation applies only to the confirmed destination, and later iCloud file batches ask whether to replace or extend the selection.
+- ZIP extraction reports incomplete cleanup when created-object identity is unavailable or changes. Desktop source deletion holds the parent used for inspection and removal. Recombination with source deletion checks captured chunk identities and sizes before decryption.
+- Android restores only app-owned input paths. Clearing passwords also clears visible fields, and accepted legacy operations retain credentials through cancellation and Force retry.
+- Sequential keyfile processing avoids exhausting file descriptors. Ordinary legacy Reed-Solomon reads reject partial trailing blocks, and WASM authenticates v2 headers before reporting missing or incorrect keyfiles.
+- The source requires Go 1.27.3 and uses `golang.org/x/net` v0.61.0. Windows legacy builds apply pinned compatibility patches to the official Go source.
+- The Android release workflow signs APKs separately from Gradle using a read-only GitHub token. Download verification binds artifacts to the expected workflow, main branch and source commit.
 
 # v2.19
+
+Unreleased development history. These entries describe the earlier 2.19 development state; the 3.0 section describes current changes.
+
 <ul>
 	<li>✓ <strong>Interface languages</strong>: desktop and Android now bundle application UI catalogs for English, Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean (<code>ko</code>, with contemporary neutral South Korean wording); the desktop selector switches Picocrypt-NG-owned UI while Fyne-owned dialogs and raw backend status text may remain English, Android follows the system or per-app language setting, and the CLI remains English-only</li>
 	<li>✓ <strong>Android status and errors</strong>: operation status is rendered from Android resources in both the app and foreground notification; progress details and typed error messages are also resource-backed, while raw Go and JVM details remain diagnostic-only</li>
