@@ -939,7 +939,7 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 			build := mustJob(t, workflow, "build")
 			testStep := mustStepNamed(t, build, "Run tests")
 			testRun := testStep.Run
-			raceSelectors := []string{"./..."}
+			raceSelectors := []string{`"${packages[@]}"`}
 			if path == ".github/workflows/pr-test-build-linux.yml" {
 				raceStep := mustStepNamed(t, mustJob(t, workflow, "tests"), "Run native tests")
 				if raceStep.Env["SHARD_INDEX"] != "${{ matrix.shard }}" {
@@ -966,17 +966,34 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 				testRun = raceStep.Run + "\n" + testRun
 				raceSelectors = []string{`"${other[@]}"`, "./internal/cli", "./internal/cli"}
 				mustContainInOrder(t, raceStep.Run,
+					`selected+=("$package")`,
+					`ui_assigned=false`,
 					`for package in "${selected[@]}"; do`,
 					`if [ "$package" = "Picocrypt-NG/internal/cli" ]; then`,
 					`cli_assigned=true`,
+					`elif [ "$package" = "Picocrypt-NG/internal/ui" ]; then`,
+					`ui_assigned=true`,
 					`other+=("$package")`,
 					`if (( ${#other[@]} > 0 )); then`,
+					`if [ "$ui_assigned" = true ]; then`,
+					`bash ../.github/scripts/test-linux-ui-race.sh`,
 					`if [ "$cli_assigned" = true ]; then`,
 					`-skip '^TestCLIRoundTrip$' ./internal/cli`,
 					`PICOCRYPT_TEST_CLI_ROUNDTRIP_ISOLATE=1 CGO_ENABLED=1 go test`,
 					`-run '^TestCLIRoundTrip$' ./internal/cli`,
 				)
+			} else {
+				for _, required := range []string{
+					"set -euo pipefail",
+					"CGO_ENABLED=1 go list -race -tags migrated_fynedo ./...",
+					`awk '$0 != "Picocrypt-NG/internal/ui"'`,
+					`if [[ -z "$package_list" ]]; then`,
+					`mapfile -t packages <<< "$package_list"`,
+				} {
+					mustContain(t, testRun, required)
+				}
 			}
+			mustContain(t, testRun, "bash ../.github/scripts/test-linux-ui-race.sh")
 
 			raceLineIndex := -1
 			integrationLineIndex := -1
@@ -1025,6 +1042,18 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 			}
 		})
 	}
+	launcher := mustReadRepoFile(t, ".github/scripts/test-linux-ui-race.sh")
+	mustContain(t, launcher, "CGO_ENABLED=1 go test -c -race -tags migrated_fynedo -p 1")
+	mustContain(t, launcher, `-test.list '^(Test|Fuzz|Example)'`)
+	mustContainInOrder(t, launcher,
+		`if [[ -z "$parents" ]]; then`,
+		`while IFS= read -r parent; do`,
+		`if ! "$test_binary" -test.run "^${parent}$" -test.count=1 -test.timeout=15m -test.v; then`,
+		`failed=$((failed + 1))`,
+		`done <<< "$parents"`,
+		`if (( failed > 0 )); then`,
+		"exit 1",
+	)
 }
 
 func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {

@@ -94,15 +94,21 @@ jobs:
           printf '%s\n' "${selected[@]}"
           other=()
           cli_assigned=false
+          ui_assigned=false
           for package in "${selected[@]}"; do
             if [ "$package" = "Picocrypt-NG/internal/cli" ]; then
               cli_assigned=true
+            elif [ "$package" = "Picocrypt-NG/internal/ui" ]; then
+              ui_assigned=true
             else
               other+=("$package")
             fi
           done
           if (( ${#other[@]} > 0 )); then
             CGO_ENABLED=1 go test -v -count=1 -tags migrated_fynedo -race -p 1 -timeout 15m "${other[@]}"
+          fi
+          if [ "$ui_assigned" = true ]; then
+            bash ../.github/scripts/test-linux-ui-race.sh
           fi
           if [ "$cli_assigned" = true ]; then
             # Finish the ordinary suite before starting fresh KDF workers.
