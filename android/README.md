@@ -133,7 +133,9 @@ UI (`ui/components/`):
 5. Progress is polled → stable status/detail codes and typed arguments pass through `GoBridge` to
    the shared `OperationStatus` renderer, so the UI and foreground notification show the same
    localized status and progress
-6. Operation completes → Success/error is shown, staging is wiped, and the service self-stops
+6. Operation completes → The app shows the result and stops the service. Retained PCV3 output
+   remains available for Save or confirmed Discard. Clearing the operation deletes owned staging;
+   failed cleanup remains an error with retained cleanup custody.
 
 ## Localization
 
@@ -155,13 +157,14 @@ before release admission.
 
 - Selections are staged under app-internal storage
   (`/data/data/io.github.picocrypt_ng.picocrypt_ng/files/picocrypt_files/`, folder/multi-file under
-  `picocrypt_files/staging/`); staging is wiped when the operation clears
+  `picocrypt_files/staging/`). Clearing the operation deletes owned staging and reports incomplete
+  cleanup. File deletion does not guarantee physical erasure.
 - Selection is **single-file XOR multi-file XOR folder**. Android's Storage Access Framework has no
   picker that selects files *and* folders together in one dialog (`OpenMultipleDocuments` = files
   only; `OpenDocumentTree` = exactly one folder), so a mixed "files + folder" selection is not
   offered. Workaround: put the items in one folder and choose **Folder**. The Go core already accepts
   a combined `inputFiles`/`onlyFolders`/`onlyFiles` list, so this is a SAF/UI limitation, not a core
-  one — additive mixed selection would be a UI/staging feature, not a core change
+  one. Additive mixed selection would require UI/staging changes
 - Progress is polled every 500ms by the UI ViewModel while visible, and every 1s by the foreground
   service when the app is backgrounded
 - Operations run in background threads (Go goroutines + Kotlin coroutines)
@@ -170,10 +173,10 @@ before release admission.
   getters expected by Kotlin
 - `build-gomobile.sh` builds the AAR with `-trimpath` (via `GOFLAGS`) and `-buildid=` (via
   `GOMOBILE_LDFLAGS`) so the native `.so` files don't embed local build paths or unstable Go build
-  IDs — needed for reproducible / source-built F-Droid verification
+  IDs, as required for reproducible / source-built F-Droid verification
 - Permissions requested: `POST_NOTIFICATIONS`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`
   (for the progress notification / long-running operations). No Google Play Services, Firebase, ads,
-  or tracking — relevant for F-Droid/IzzyOnDroid inclusion (#155)
+  or tracking (relevant for F-Droid/IzzyOnDroid inclusion, #155)
 - Release artifacts disable Google's dependency-metadata blob via `dependenciesInfo { includeInApk =
   false; includeInBundle = false }` (transparency requirement for F-Droid/IzzyOnDroid)
 - GitHub Actions builds and verifies unsigned release APKs without signing credentials.
@@ -216,9 +219,15 @@ publication likewise reports durability uncertainty rather than durable storage.
 
 ### PCV3 request and retained-output limits
 
-D1 creation preserves the separately selected Paranoid option. Both payload suites
-use the fixed D1 Argon2id profile: 1 GiB, eight passes and eight lanes. The suite
-choice changes the cipher cascade and authentication, not this KDF cost.
+D1 creation preserves the separately selected Paranoid option. Both payload
+suites use the [fixed D1C KDF construction](../Internals.md#pcv3-d1c); cipher
+choice does not reduce its cost. The bridge shares the
+[frozen Unicode-18 password profile](../Internals.md#pcv3-password-profile),
+while legacy v1/v2 normalization is unchanged. Rebuild the gomobile AAR after
+Go credential changes so the app contains the same rule. Recovery trust and
+source retention follow the [security contract](../docs/SECURITY_CONTRACT.md#recovery-trust),
+including the unverified whole-result status of raw-selected D1 output even
+when inner ranges verify.
 
 Android uses a bounded 4 MiB UTF-8 JSON request, including JSON escaping and all path
 lists. This aggregate transport limit is separate from the 99,999-byte UTF-8 comment,

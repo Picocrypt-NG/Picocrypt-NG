@@ -498,15 +498,14 @@ func markForcedOutputUntrusted(ctx *OperationContext, req *DecryptRequest) {
 	}
 }
 
-// decryptDeriveProcessVerify runs the derive-keys -> process-keyfiles ->
-// verify-auth sequence, trying each password normalization form (NFC/NFD/raw)
-// until one authenticates against the volume MAC (#19). Only a
-// wrong-password/tamper failure triggers the next form; any other error (keyfile
-// mismatch, subkey read, etc.) is independent of the password and returned
-// immediately. The winning form stays on ctx.passwordBytes so the verify-first
-// and RS-retry re-derivations reuse it. ForceDecrypt has no auth gate to choose
-// a form, so it uses the password exactly as typed (a single attempt, preserving
-// historical behavior).
+// decryptDeriveProcessVerify derives keys, processes keyfiles and checks header
+// authentication for up to five forms from pwnorm.Candidates. Selection uses the
+// v1 password-key hash or v2 header MAC, not the payload MAC.
+// Only a password/tamper rejection advances to the next form; keyfile,
+// derivation and other failures return immediately. The winning form stays on
+// ctx.passwordBytes so verify-first and RS retries derive the same key.
+// Native ForceDecrypt uses only the raw password because it may bypass failed
+// header checks; it cannot use them to select a normalization form.
 func decryptDeriveProcessVerify(ctx *OperationContext, req *DecryptRequest) error {
 	var candidates [][]byte
 	if req.ForceDecrypt {

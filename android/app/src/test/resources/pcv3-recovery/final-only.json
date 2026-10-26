@@ -1,0 +1,29 @@
+{
+  "archivePending": false,
+  "args": [],
+  "artifact": {
+    "final": "missing",
+    "kind": "partial",
+    "missing": "0",
+    "role": "none",
+    "unverified": "0",
+    "verified": "2"
+  },
+  "code": "PCV3_FORCE_PARTIAL",
+  "completionClass": "warning",
+  "d1BootstrapProvenance": "none",
+  "detailStage": "none",
+  "diagnostic": "none",
+  "forceProvenance": "partial",
+  "outcome": "force-partial",
+  "publicationAttempted": true,
+  "publicationCode": "PCV3_PUBLICATION_PUBLISHED_DURABLE",
+  "publicationStage": "none",
+  "publicationState": "published-durable",
+  "stage": "final-record",
+  "statusArgs": [],
+  "statusCode": "deriving-key",
+  "warnings": [
+    "force-partial"
+  ]
+}

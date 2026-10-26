@@ -5,7 +5,9 @@
 
 <p align="center"><img align="center" src="/images/logo.png" width="512" alt="Picocrypt NG"></p> 
 
-Picocrypt NG (new generation) is a very small (hence <i>Pico</i>), very simple, yet very secure encryption tool that you can use to protect your files. It's designed to be the <i>go-to</i> tool for file encryption, with a focus on security, simplicity, and reliability. Picocrypt NG uses the secure XChaCha20 cipher and the Argon2id key derivation function to provide a high level of security.
+Picocrypt NG encrypts files and folders locally using XChaCha20 and Argon2id. It provides desktop, command-line, Android and browser interfaces.
+
+This README describes the **3.0 development source**. The latest published release is [2.18](https://github.com/Picocrypt-NG/Picocrypt-NG/releases/tag/2.18). PCV3 is new in 3.0; released 2.x builds cannot open PCV3 volumes.
 
 <br>
 <p align="center"><img align="center" src="/images/screenshot.png" width="318" alt="Picocrypt NG"></p>
@@ -22,22 +24,20 @@ When referencing Picocrypt NG, please always include the "NG" suffix to ensure d
 
 # Downloads
 
-ℹ️ **You are highly recommended to read through the [Features](https://github.com/Picocrypt-NG/Picocrypt-NG?tab=readme-ov-file#features) section below to fully understand the features and limitations of Picocrypt NG before using it.** ℹ️
+Read the [features and limitations](#features) before using Picocrypt NG.
 
-Make sure to only download Picocrypt NG from this repository to ensure that you get the authentic and backdoor-free Picocrypt NG. When sharing Picocrypt NG with others, be sure to link to this repository to prevent any confusion.
+Download official builds from this repository and follow the [release verification guide](SIGNING.md). When sharing Picocrypt NG, link to this repository.
 
 ## Windows
 **Windows 10/11:** Download the latest <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG-Setup.exe">installer</a> or <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG-portable.exe">portable executable</a>. A CLI-only Windows build is available <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG-cli.exe">here</a>.
 
-**Windows 7/8 (Legacy Systems):** The legacy release is CLI-only. If you're running Windows 7 or Windows 8, download the <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG-cli-Legacy.exe">legacy CLI build</a> instead. This version includes:
-- Compiled with [go-legacy-win7](https://github.com/thongtech/go-legacy-win7) for Windows 7/8 compatibility
-- No GUI or OpenGL dependencies
+**Windows 7/8 (Legacy Systems):** Download the <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG-cli-Legacy.exe">legacy CLI build</a>. The current build configuration uses official Go source with pinned [go-legacy-win7 compatibility patches](.github/toolchains/legacy-go/manifest.json). The CLI has no GUI or OpenGL dependencies.
 
-⚠️ **Note:** The legacy build is for command-line use only. Use the standard installer or portable executable on Windows 10/11.
+The legacy build is for command-line use only. Use the standard installer or portable executable on Windows 10/11.
 
-If your antivirus flags Picocrypt NG as a virus, please report it as a false positive to help everyone.
+If your antivirus flags a download, check its origin and signatures using the [verification guide](SIGNING.md).
 
-**Code signing:** Starting with Picocrypt-NG 2.19, Windows releases are Authenticode-signed through the [SignPath Foundation](https://signpath.org/) open-source program and checked against the pinned production certificate. See the [verification guide](SIGNING.md#windows-authenticode).
+**Code signing:** The current Windows release workflows require Authenticode signing through the [SignPath Foundation](https://signpath.org/) and verification against the pinned production certificate. This configuration does not apply retroactively to the published 2.18 downloads. See the [verification guide](SIGNING.md#windows-authenticode).
 
 ## macOS
 Download Picocrypt NG <a href="https://github.com/Picocrypt-NG/Picocrypt-NG/releases/latest/download/Picocrypt-NG.dmg">here</a>, open the container, and drag Picocrypt NG to your Applications.
@@ -55,7 +55,7 @@ This port is maintained outside this repository and is not published by the Pico
 To open it, use one of these methods:
 - **Right-click → Open** (instead of double-clicking), then confirm
 - **System Settings → Privacy & Security** → scroll down → "Open Anyway"
-- **Terminal:** `xattr -cr /Applications/Picocrypt-NG.app` — most reliable, and the fix if a re-download re-applies quarantine and you see "app is damaged and can't be opened"
+- **Terminal:** `xattr -cr /Applications/Picocrypt-NG.app` removes quarantine attributes if macOS reports "app is damaged and can't be opened"
 
 The CLI-only build avoids the `.app` bundle path and is useful for terminal-only use.
 
@@ -117,62 +117,48 @@ corrections continue through the same reviewed pull-request workflow.
 ## File Associations
 Double-click `.pcv` files to open Picocrypt NG in decrypt mode on Windows, macOS, and Linux. Installer/`.deb`/`.app` packages register the association automatically.
 
-# Comparison
-Here's how Picocrypt NG compares to other popular encryption tools.
+# Scope
 
-|                | Picocrypt NG   | VeraCrypt      | 7-Zip GUI      | BitLocker      | Cryptomator    |
-| -------------- | -------------- | -------------- | -------------- | -------------- | -------------- |
-| Free           |✅ Yes         |✅ Yes          |✅ Yes         |✅ Bundled      |✅ Yes         |
-| Open Source    |✅ GPLv3       |✅ Multi        |✅ LGPL        |❌ No           |✅ GPLv3       |
-| Cross-Platform |✅ Yes         |✅ Yes          |❌ No          |❌ No           |✅ Yes         |
-| Size           |✅ 9-10 MiB    |❌ 20 MiB       |✅ 2 MiB       |✅ N/A          |❌ 50 MiB      |
-| Portable       |✅ Yes         |✅ Yes          |❌ No          |✅ Yes          |❌ No          |
-| Permissions    |✅ None        |❌ Admin        |❌ Admin       |❌ Admin        |❌ Admin       |
-| Ease-Of-Use    |✅ Easy        |❌ Hard         |✅ Easy        |✅ Easy         |🟧 Medium      |
-| Cipher         |✅ XChaCha20   |✅ AES-256      |✅ AES-256     |🟧 AES-128      |✅ AES-256     |
-| Key Derivation |✅ Argon2      |🟧 PBKDF2       |❌ SHA-256     |❓ Unknown      |✅ Scrypt      |
-| Data Integrity |🟧 Authenticated* |❌ No        |❌ No          |❓ Unknown      |✅ Always      |
-| Deniability    |✅ Supported   |✅ Supported    |❌ No          |❌ No           |❌ No          |
-| Reed-Solomon   |✅ Yes         |❌ No           |❌ No          |❌ No           |❌ No          |
-| Compression    |✅ Yes         |❌ No           |✅ Yes         |✅ Yes          |❌ No          |
-| Telemetry      |✅ None        |✅ None         |✅ None        |❓ Unknown      |✅ None        |
-| Audited        |✅ [Historically](https://github.com/Picocrypt/storage/blob/main/Picocrypt.Audit.Report.pdf)       |✅ Yes          |❌ No          |❓ Unknown      |✅ Yes         |
-
-\* Picocrypt NG normally authenticates the payload and, for v2, the header. This is not an "always" guarantee: force-decrypt may explicitly keep unverified output, v1 lacks the v2 full-header HMAC, and the authentication, Serpent, and rekey subkeys of legacy v2 keyfile volumes are derived from the password without the keyfile.
-
-Keep in mind that while Picocrypt NG does most things better than other tools, it's not a one-size-fits-all and doesn't try to be. There are use cases such as full-disk encryption where VeraCrypt and BitLocker would be a better (and the only) choice. So while Picocrypt NG is a great choice for the majority of people doing file encryption, you should still do your own research and use what's best for you.
+Picocrypt NG encrypts selected files and folders. It does not provide full-disk encryption. New encryption uses PCV3; supported legacy v1/v2 volumes remain readable.
 
 # Features
-Picocrypt NG is a very simple tool and most users will intuitively understand how to use it in a few seconds. On a basic level, simply dropping your files, entering a password, and hitting Encrypt is all that's needed to encrypt your files. Dropping the output back into Picocrypt NG, entering the password, and hitting Decrypt is all that's needed to decrypt those files. Pretty simple, right?
 
-While being simple, Picocrypt NG also strives to be powerful in the hands of knowledgeable and advanced users. Thus, there are some additional options that you may use to suit your needs. Read through their descriptions carefully as some of them can be complex to use correctly.
+To encrypt on desktop, select or drop your files, provide a password, keyfiles, or both, and choose Encrypt. To decrypt, select the encrypted volume and provide the same factors. Select D1 explicitly when opening a D1 volume.
+
+Available options depend on the interface:
 <ul>
-	<li><strong>Password generator</strong>: Picocrypt NG provides a secure password generator that you can use to create cryptographically secure passwords. You can customize the password length, as well as the types of characters to include.</li>
-	<li><strong>Comments</strong>: Comments are plaintext header metadata: they are not encrypted and must never contain secrets. The v2 header HMAC covers comments, so ordinary tampering is detected during normal authenticated decryption. In a legacy v2 keyfile volume that HMAC is password-derived but not keyfile-bound, and legacy v1 volumes do not have the v2 full-header HMAC. <strong>Use comments only for non-sensitive, informational text.</strong></li>
+	<li><strong>Password generator</strong>: Generate passwords with a chosen length and character set using cryptographically secure randomness.</li>
+	<li><strong>Comments</strong>: Normal PCV3 and legacy comments are plaintext metadata; never put secrets in them. The desktop can preview a Normal PCV3 comment before decryption, but marks it unverified. A confirmed comment comes from the authenticated reader result. D1 encrypts its metadata, including comments, and has no pre-decryption comment preview. The desktop and native Android apps disable comment entry for D1.</li>
 	<li><strong>Keyfiles</strong>: Native desktop, CLI and Android encryption uses PCV3 by default, with a password, keyfiles, or both. Normal PCV3 and D1 apply the selected factors together. Use non-empty, secret, unpredictable keyfiles and keep them available for decryption. Supported legacy v1/v2 volumes remain readable; see <a href="Internals.md#keyfile-design">format-specific keyfile details</a>.</li>
-	<li><strong>Paranoid mode</strong>: Paranoid mode adds a Serpent-CTR layer plus HMAC-SHA3 authentication. It also increases the Argon2id work factor for Normal PCV3 and legacy volumes; D1 always uses its fixed stronger profile. It is useful for conservative defense in depth when performance cost is acceptable, assuming a strong password and a trusted endpoint. It does not make weak passwords safe and should not be described as beyond attack.</li>
+	<li><strong>Paranoid mode</strong>: Add a Serpent-CTR layer plus HMAC-SHA3 authentication. This also increases the Argon2id work factor for Normal PCV3 and legacy volumes. D1 uses its fixed 1 GiB, eight-pass, eight-lane profile with either cipher suite. Paranoid mode adds processing cost and still requires strong credentials and a trusted endpoint.</li>
 	<li><strong>Reed-Solomon</strong>: Reed-Solomon adds error-correction redundancy so Picocrypt NG can detect and repair limited corruption. It cannot prevent corruption and cannot recover data after corruption exceeds the redundancy budget.</li>
-	<li><strong>Force decrypt</strong>: Normal decryption verifies the volume MAC and removes output when verification fails. Force decrypt deliberately overrides that safeguard and may keep corrupt, attacker-controlled, or otherwise unverified plaintext; such output must not be treated as authentic. If Reed-Solomon was used, force decrypt also attempts best-effort recovery.</li>
+	<li><strong>Recovery and Force</strong>: Ordinary PCV3 decryption publishes plaintext only after authentication. Native PCV3 recovery stores partial or unverified results as separate forensic artifacts with range and final-record verification details. It keeps the source and does not automatically extract these artifacts. Unverified recovery requires separate consent. Legacy Force decrypt and browser Force can retain unverified bytes; do not treat them as authentic. Reed-Solomon can help recover limited corruption when present.</li>
 	<li><strong>Split into chunks</strong>: Large legacy and PCV3 outputs can be split into custom-sized chunks and recombined during decryption. PCV3 removes the complete container only after every chunk is durably published.</li>
-	<li><strong>Compress files</strong>: By default, Picocrypt NG uses a zip file with no compression to quickly merge files together when encrypting multiple files. If you would like to compress these files, however, simply check this box and the standard Deflate compression algorithm will be applied during encryption.</li>
+	<li><strong>Compress files</strong>: Picocrypt NG combines multiple files in a ZIP archive without compression by default. Select compression to use Deflate.</li>
 	<li><strong>Deniability</strong>: PCV3 D1 creates a random-looking container with optional Paranoid mode. Its Argon2id profile always uses 1 GiB, eight passes and eight lanes. It supports files, folders, multiple inputs, compression, and raw CLI stdin/stdout. D1 archive payloads can be saved as ZIP files or extracted with the desktop Auto unzip option. Deniability concerns the container's appearance; filenames, file sizes and other storage metadata remain visible.</li>
 	<li><strong>Recursively</strong>: Picocrypt NG processes files in the selected folders and subfolders individually. A batch can decrypt standalone Normal PCV3 files alongside supported legacy volumes using the selected password and keyfiles. For a batch of D1 volumes, enable <strong>All selected files are PCV3 D1</strong>: every file is then opened as D1, without trying other formats. A failed file is kept and the batch continues; cancellation stops processing further files. PCV3 outputs never replace existing files, and PCV3 encrypted originals are retained. Recovery and PCV3 split volumes remain single-file operations.</li>
 	<li><strong>File associations</strong>: Double-click <code>.pcv</code> files to open Picocrypt NG in decrypt mode. Setup.exe (Windows), <code>.deb</code> (Linux), and <code>.app</code> (macOS) register the association automatically.</li>
 </ul>
 
 # Security
+
 For more information on how Picocrypt NG handles cryptography, see <a href="Internals.md">Internals</a> for the technical details.
 
-<strong>Picocrypt NG operates under the assumption that the host machine it is running on is safe and trusted. If that is not the case, no piece of software will be secure, and you will have much bigger problems to worry about. As such, Picocrypt NG is designed for the offline security of volumes and does not attempt to protect against side-channel analysis.</strong>
+Picocrypt NG protects stored volumes and assumes a trusted host while credentials and plaintext are in use. It does not protect against a compromised endpoint or attempt to prevent side-channel analysis.
+
+PCV3 authenticates its header, records and final record before publishing ordinary plaintext. Legacy v1 lacks the v2 full-header HMAC. In legacy v2 keyfile volumes, the authentication, Serpent and rekey subkeys are password-derived without the keyfile; recover these volumes and re-encrypt them as PCV3. Force recovery has the separate trust limits described above.
+
+PCV3 passwords use a fixed, bounded Unicode 18.0.0 NFC profile that preserves case and spaces. Input outside that profile is rejected before key derivation. Legacy readers retain their separate normalization and retry behavior. See the [password profile](Internals.md#pcv3-password-profile) for the exact bounds.
 
 # AI Usage
 
-AI tools (LLMs) assist development in this project. Picocrypt NG builds on upstream Picocrypt commit `7e403a2`, audited by Radically Open Security in 2024, with subsequent v2 improvements and the new PCV3 format. The historical audit applies to that upstream revision. Development practices and format-specific verification are described in [CONTRIBUTING.md](CONTRIBUTING.md#ai-assistance) and the [PCV3 security contract](docs/SECURITY_CONTRACT.md).
+AI tools (LLMs) assist development in this project. Picocrypt NG builds on upstream Picocrypt commit `7e403a2`, [audited by Radically Open Security in 2024](https://github.com/Picocrypt/storage/blob/main/Picocrypt.Audit.Report.pdf), with subsequent v2 changes and the new PCV3 format. The historical audit applies to that upstream revision, not to later changes or PCV3. Development practices and format-specific verification are described in [CONTRIBUTING.md](CONTRIBUTING.md#ai-assistance) and the [PCV3 security contract](docs/SECURITY_CONTRACT.md).
 
 # FAQ
+
 **Does the "Delete files" feature shred files?**
 
-No, it doesn't shred any files and just deletes them as your file manager would. On modern storage mediums like SSDs, there is no such thing as shredding a file since wear leveling makes it impossible to overwrite a particular sector. Thus, to prevent giving users a false sense of security, Picocrypt NG doesn't include any shredding features at all.
+No. Picocrypt NG deletes files without securely erasing their contents. Copies may remain in SSD storage, snapshots and backups. See the [source-deletion limits](docs/SECURITY_CONTRACT.md#publication-and-source-retention).
 
 **Is Picocrypt NG quantum-secure?**
 

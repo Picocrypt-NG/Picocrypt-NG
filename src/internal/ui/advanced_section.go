@@ -295,7 +295,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 	a.paranoidCheck = ttwidget.NewCheck(tr("advanced.paranoid.label", "Paranoid mode"), func(checked bool) {
 		a.State.Paranoid = checked
 	})
-	a.paranoidCheck.SetToolTip(tr("advanced.paranoid.tooltip", "Adds Serpent and stronger checks"))
+	a.paranoidCheck.SetToolTip(tr("advanced.paranoid.tooltip", "Adds Serpent encryption; uses HMAC-SHA3."))
 	a.paranoidCheck.SetChecked(a.State.Paranoid)
 
 	a.compressCheck = ttwidget.NewCheck(tr("advanced.compress.label", "Compress files"), func(checked bool) {
@@ -311,7 +311,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 	a.reedSolomonCheck = ttwidget.NewCheck(tr("advanced.reed_solomon.label", "Reed-Solomon"), func(checked bool) {
 		a.State.ReedSolomon = checked
 	})
-	a.reedSolomonCheck.SetToolTip(tr("advanced.reed_solomon.tooltip", "Add recovery data"))
+	a.reedSolomonCheck.SetToolTip(tr("advanced.reed_solomon.tooltip", "Helps repair limited damage; increases file size."))
 	a.reedSolomonCheck.SetChecked(a.State.ReedSolomon)
 
 	a.deleteCheck = ttwidget.NewCheck(tr("advanced.delete_files.label", "Delete files"), func(checked bool) {
@@ -330,7 +330,7 @@ func (a *App) buildEncryptOptionsInto(target *fyne.Container) {
 		a.refreshAdvanced()
 		a.updateUIState()
 	})
-	a.deniabilityCheck.SetToolTip(tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection."))
+	a.deniabilityCheck.SetToolTip(tr("advanced.deniability.pcv3_tooltip", "Hides the format header. Container name and size remain visible."))
 	a.deniabilityCheck.SetChecked(a.State.Deniability)
 
 	a.buildRecursiveControls()

@@ -1,6 +1,6 @@
 # Picocrypt NG Command-Line Interface
 
-This document provides comprehensive usage instructions for the Picocrypt NG command-line interface.
+Commands, options and scripting examples for Picocrypt NG.
 
 ## Table of Contents
 
@@ -19,14 +19,15 @@ This document provides comprehensive usage instructions for the Picocrypt NG com
 
 ## Overview
 
-Picocrypt NG provides a full-featured command-line interface for encrypting and decrypting files. The CLI offers the same security features as the graphical interface:
+The CLI encrypts files and folders, reads supported volumes and supports these
+cryptographic options:
 
-- **XChaCha20** symmetric encryption with 256-bit security
-- **Argon2id** memory-hard key derivation (GPU-resistant)
+- **XChaCha20** symmetric encryption with a 256-bit key
+- **Argon2id** memory-hard key derivation
 - **BLAKE2b-512** message authentication
 - **Optional Serpent-CTR** cascade cipher (paranoid mode)
 - **Reed-Solomon** error correction for data recovery
-- **Plausible deniability** through nested encryption
+- **Optional D1** encryption that hides the recognizable format header
 
 ## Installation
 
@@ -105,7 +106,7 @@ Direct Linux executables disable kernel core dumps and ordinary peer debugger at
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--pcv3` | bool | true | Create PCV3; disabling is unsupported |
-| `--comments` | string | | Comments to store in header (NOT encrypted) |
+| `--comments` | string | | Header comment: plaintext in Normal, encrypted inside D1 |
 | `--paranoid` | bool | false | Enable Serpent-CTR + XChaCha20 cascade |
 | `--reed-solomon` | bool | false | Enable Reed-Solomon error correction |
 | `--deniability` | bool | false | Create PCV3 D1; `--paranoid` is optional |
@@ -113,8 +114,8 @@ Direct Linux executables disable kernel core dumps and ordinary peer debugger at
 
 Normal PCV3 supports regular files, folders/ZIP payloads, Reed-Solomon, splitting, and
 stdin/stdout. `--deniability` creates random-looking PCV3 D1; add `--paranoid` for the
-Serpent cascade. D1 always uses Argon2id with 1 GiB, eight passes and eight lanes,
-independently of that cipher choice. D1 accepts files,
+Serpent cascade. The [fixed D1C KDF](Internals.md#pcv3-d1c) is independent of
+that cipher choice. D1 accepts files,
 folders/multiple inputs, compression, splitting, raw stdin/stdout, and the same password-only,
 keyfile-only, or combined credential policies as Normal PCV3. Normal archive payloads use the explicit `--pcv3-archive=extract` action.
 D1 archive payloads decrypt to a durable `.zip` in the CLI. Optional automatic extraction
@@ -180,17 +181,17 @@ picocrypt decrypt VOLUME
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--force` | bool | false | Continue despite MAC verification failure |
-| `--verify-first` | bool | false | Two-pass verification (slower but more secure) |
-| `--auto-unzip` | bool | false | Automatically extract if output is a zip archive |
-| `--same-level` | bool | false | Extract to same directory instead of subdirectory |
+| `--force` | bool | false | Legacy only: retain output despite integrity/authentication failure |
+| `--verify-first` | bool | false | Legacy only: authenticate the payload before decryption; adds a read and KDF |
+| `--auto-unzip` | bool | false | Legacy only: automatically extract ZIP output |
+| `--same-level` | bool | false | Legacy only: extract to the output directory instead of a subdirectory |
 
 #### Volume State Flags
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--recombine` | bool | false | Recombine split chunks first (auto-detected) |
-| `--deniability` | bool | false | Remove deniability wrapper before decryption |
+| `--deniability` | bool | false | Remove a legacy deniability wrapper before decryption |
 
 Keyfiles remain available for decryption of supported legacy v1/v2 volumes. To decrypt a legacy
 keyfile-only deniable v2 volume made with an empty outer password, pass `--deniability` and the
@@ -210,8 +211,10 @@ creation on a supported desktop/CLI build; do not create another legacy v2 keyfi
 
 Normal PCV3 is detected by content. D1 is random-looking and therefore requires
 `--pcv3-format=d1`. Every PCV3 decrypt requires the expected credential policy explicitly.
-After a successful authenticated PCV3 read, the CLI prints its plaintext comment
-as quoted UTF-8 on stderr; failed authentication never releases the comment.
+After a successful authenticated PCV3 read, the CLI prints its comment as
+quoted UTF-8 on stderr; failed authentication never releases the comment.
+D1 hides the recognizable header; container name and size remain visible.
+PCV3 uses the [frozen Unicode-18 password profile](Internals.md#pcv3-password-profile).
 
 | Flag | Description |
 |------|-------------|
@@ -259,8 +262,10 @@ Picocrypt-NG verify --deniability hidden.pcv --pcv3-factors=password -P < /path/
 Both physical bootstraps must authenticate and agree on roots, profile and body
 length, with independent bootstrap parameters and canonical geometry. Verification
 then authenticates the complete outer and inner payload through the final record.
-A healthy run performs two sequential fixed 1 GiB, eight-pass, eight-lane Argon2id
-derivations; ordinary healthy D1 decryption continues to perform one.
+Strict verification checks the tail that an ordinary healthy D1 open can leave
+unchecked. Its [D1C KDF cost](Internals.md#pcv3-d1c) is two sequential derivations;
+there is no inner Argon2id call. Verification does not scrub every physical RS
+parity byte.
 
 The report on stderr shows front, tail, pair and payload checks. Exit 0 means a
 complete clean verification; any incomplete, degraded, cancelled or failed run
@@ -299,7 +304,7 @@ picocrypt encrypt --glob "*.jpg" --glob "*.png" -o images.pcv
 picocrypt encrypt sensitive.db -o sensitive.pcv \
     --paranoid --reed-solomon
 
-# Deniability wrapper for plausible deniability
+# D1 hides the format header; name and size remain visible
 picocrypt encrypt hidden.txt -o innocent.pcv --deniability --paranoid
 
 # Add comments (visible in header, NOT encrypted)
@@ -327,13 +332,16 @@ picocrypt encrypt video.mkv -o video.pcv \
 
 ```bash
 # Decrypt a file
-picocrypt decrypt document.pcv -o document.pdf --pcv3-factors=password
+picocrypt decrypt document.pcv -o document.decrypted.pdf --pcv3-factors=password
 
 # Auto-detect output name (removes .pcv extension)
 picocrypt decrypt document.pcv --pcv3-factors=password
 
 # Decrypt with keyfile
 picocrypt decrypt secret.pcv --pcv3-factors=combined --pcv3-keyfile-order=unordered -k keyfile.key
+
+# Open explicitly selected D1 with its original credential policy
+picocrypt decrypt innocent.pcv --pcv3-format=d1 --pcv3-factors=password
 ```
 
 ### Advanced Decryption
@@ -342,23 +350,20 @@ The following legacy v1/v2 options remain available for existing volumes. For PC
 use the explicit format, factor and archive flags listed above.
 
 ```bash
-# Authenticate before writing plaintext (two-pass)
-picocrypt decrypt important.pcv --verify-first
+# Authenticate a legacy payload before decryption (two-pass)
+picocrypt decrypt legacy-important.pcv --verify-first
 
 # Auto-extract zip archives after decryption
-picocrypt decrypt archive.pcv --auto-unzip
+picocrypt decrypt legacy-archive.pcv --auto-unzip
 
 # Extract to same directory (not subdirectory)
-picocrypt decrypt files.pcv --auto-unzip --same-level
+picocrypt decrypt legacy-files.pcv --auto-unzip --same-level
 
 # Recombine split volume (usually auto-detected)
-picocrypt decrypt backup.pcv.0 --recombine
+picocrypt decrypt legacy-backup.pcv.0 --recombine
 
-# Force decryption despite corruption (may produce partial output)
-picocrypt decrypt damaged.pcv --force
-
-# Remove deniability wrapper
-picocrypt decrypt innocent.pcv --deniability
+# Legacy Force decryption despite corruption (may produce partial output)
+picocrypt decrypt legacy-damaged.pcv --force
 ```
 
 If `--force` keeps output after an integrity or authentication check failed, Picocrypt NG writes `Warning: Force decrypt kept output...` to stderr and exits with exit code 2. The recovered file or stdout bytes are not fully verified; scripts must not treat exit code 2 as clean success.
@@ -374,9 +379,11 @@ stdout transfer reports `Publication: not-attempted`: no destination file was pu
 
 ### Basic Streaming
 
-The examples below use Unix Bash process substitution. `secret-command` must write exactly one password line without putting it in its own arguments; each invocation gets a fresh descriptor 3.
+The examples below use Unix Bash process substitution. `secret-command` must write exactly one password line without putting it in its own arguments; each invocation gets a fresh descriptor 3. Enable `pipefail` so an upstream command failure makes the pipeline fail.
 
 ```bash
+set -o pipefail
+
 # Encrypt from stdin to file
 cat document.txt | picocrypt encrypt - -o document.pcv --password-fd=3 3< <(secret-command)
 
@@ -387,7 +394,8 @@ picocrypt encrypt document.txt -o - --password-fd=3 3< <(secret-command) > docum
 cat secret.txt | picocrypt encrypt - -o - --password-fd=3 3< <(secret-command) > secret.pcv
 
 # Decrypt from stdin
-curl https://example.com/file.pcv | picocrypt decrypt - -o file.txt --password-fd=3 3< <(secret-command)
+curl --fail --show-error https://example.com/file.pcv | \
+    picocrypt decrypt - -o file.txt --pcv3-factors=password --password-fd=3 3< <(secret-command)
 
 # Decrypt to stdout
 picocrypt decrypt secret.pcv -o - --pcv3-factors=password --password-fd=3 3< <(secret-command) | less
@@ -400,12 +408,14 @@ cat secret.txt | picocrypt encrypt - -o - --password-fd=3 3< <(secret-command) |
 ### Pipeline Examples
 
 ```bash
+set -o pipefail
+
 # Encrypt and upload in one pipeline
 tar czf - /home/user/documents | picocrypt encrypt - -o - --password-fd=3 3< <(secret-command) | \
-    curl -X PUT -T - https://storage.example.com/backup.pcv
+    curl --fail --show-error -X PUT -T - https://storage.example.com/backup.pcv
 
 # Download, decrypt, and extract
-curl -s https://storage.example.com/backup.pcv | \
+curl --fail --silent --show-error https://storage.example.com/backup.pcv | \
     picocrypt decrypt - -o - --pcv3-factors=password --password-fd=3 3< <(secret-command) | tar xzf -
 
 # Encrypt database dump directly
@@ -430,7 +440,7 @@ Stdin/stdout streaming has the following limitations:
 
 **Note:** When using `-o -`, progress output is automatically suppressed (quiet mode) to avoid mixing progress with encrypted data.
 
-If `picocrypt decrypt VOLUME -o - --force` keeps recovered output after an integrity or authentication check failed, recovered bytes are written to stdout before the process returns exit code 2. The kept-output warning is written to stderr, so stdout remains parseable by scripts.
+For legacy input, if `picocrypt decrypt VOLUME -o - --force` keeps recovered output after an integrity or authentication check failed, recovered bytes are written to stdout before the process returns exit code 2. The kept-output warning is written to stderr. Scripts must still check the exit code before treating those bytes as verified.
 
 ## Scripting Guide
 
@@ -439,6 +449,8 @@ If `picocrypt decrypt VOLUME -o - --force` keeps recovered output after an integ
 For automated scripts, use `--password-stdin` (`-P`) when stdin is free. Password files must contain one password line and be readable only by their owner.
 
 ```bash
+set -o pipefail
+
 # From a secret provider
 secret-command | picocrypt encrypt file.txt -o file.pcv -P
 
@@ -449,6 +461,8 @@ picocrypt encrypt file.txt -o file.pcv -P < /path/to/password-file
 When fd 0 carries plaintext or a volume, use a separate inherited Unix descriptor. Open it afresh for each invocation:
 
 ```bash
+set -o pipefail
+
 producer | picocrypt encrypt - -o - --pcv3 --password-fd=3 3< <(secret-command)
 ```
 
@@ -484,6 +498,8 @@ preserved instead.
 These Unix Bash examples reopen the protected password file for every command.
 
 ```bash
+set -euo pipefail
+
 PASSWORD_FILE="/path/to/password-file"
 
 # Encrypt all PDFs in a directory
@@ -501,14 +517,14 @@ done
 
 ```bash
 #!/bin/bash
-set -e
+set -euo pipefail
 
 if picocrypt encrypt secret.txt -o secret.pcv -P -q < /path/to/password-file; then
-    echo "Encryption successful"
-    rm secret.txt  # Remove original after successful encryption
+    echo "Encryption completed"
 else
-    echo "Encryption failed" >&2
-    exit 1
+    picocrypt_status=$?
+    echo "Encryption did not complete cleanly (exit $picocrypt_status); inspect stderr" >&2
+    exit "$picocrypt_status"
 fi
 ```
 
@@ -516,6 +532,7 @@ fi
 
 ```bash
 #!/bin/bash
+set -euo pipefail
 
 BACKUP_DIR="/backup"
 PASSWORD_FILE="/root/.backup-password"
@@ -533,6 +550,8 @@ echo "Backup completed: backup-$DATE.pcv"
 
 ```bash
 #!/bin/bash
+set -euo pipefail
+
 # Encrypt and stream directly to remote storage
 
 DATE=$(date +%Y%m%d)
@@ -580,7 +599,11 @@ Verify the keyfile path exists and is accessible.
 The encrypted volume was created with keyfiles. Provide the same keyfiles with `-k`.
 
 **"MAC verification failed"**
-The password is incorrect, or the file is corrupted. Use `--force` to attempt recovery (may produce corrupted output).
+Authentication did not confirm the result. For legacy recovery, `--force` can
+retain damaged or untrusted output. It does not select an alternative normalized
+password. PCV3 rejects legacy `--force`; use the explicit
+[`--pcv3-action` recovery options](#pcv3-flags), including separate consent and a
+physical role when unverified Force requires them.
 
 ### Split Volume Issues
 
@@ -590,11 +613,12 @@ Ensure all chunk files are in the same directory before decryption.
 
 ### Performance Tips
 
-- Use `--quiet` mode for faster operation (no terminal output overhead)
+- `--quiet` suppresses progress output; its effect on runtime depends on the workload
 - Reed-Solomon adds recovery data and increases output size
-- Paranoid mode doubles encryption time due to cascade cipher
-- `--verify-first` authenticates before writing output at roughly twice the I/O cost; it does not
-  repair corruption or add keyfile binding to a legacy v2 volume
+- Paranoid adds a Serpent cascade. Normal PCV3 also changes the KDF from four
+  passes to eight; D1 keeps its fixed KDF. Measure the cost on the target hardware.
+- Legacy `--verify-first` adds a payload read and key derivation before decryption;
+  it does not add keyfile binding to a legacy v2 volume
 
 ## Version
 

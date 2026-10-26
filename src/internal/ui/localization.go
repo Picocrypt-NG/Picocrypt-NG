@@ -286,13 +286,13 @@ func pcv3OutcomeCopy(presentation pcv3operation.Presentation) pcv3LocalizedCopy 
 		}
 	case pcv3operation.OutcomeForcePartial:
 		return pcv3LocalizedCopy{
-			Title: tr("pcv3.outcome.force_partial.title", "Partial recovery artifact created"),
-			Body:  tr("pcv3.outcome.force_partial.body", "Some ranges are verified and some are missing. This .pcv3-recovery file is not a complete plaintext file."),
+			Title: tr("pcv3.outcome.force_partial.title", "Partial recovery"),
+			Body:  tr("pcv3.outcome.force_partial.body", "Not a fully verified file. Data may be missing or unverified."),
 		}
 	case pcv3operation.OutcomeForceUnverified:
 		return pcv3LocalizedCopy{
-			Title: tr("pcv3.outcome.force_unverified.title", "Unverified recovery artifact created"),
-			Body:  tr("pcv3.outcome.force_unverified.body", "Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content."),
+			Title: tr("pcv3.outcome.force_unverified.title", "Unverified recovery"),
+			Body:  tr("pcv3.outcome.force_unverified.body", "Integrity could not be verified. Do not treat this file as trusted."),
 		}
 	case pcv3operation.OutcomeCredentialsOrDamage:
 		return pcv3LocalizedCopy{
@@ -399,9 +399,9 @@ func pcv3WarningText(warning pcv3operation.Warning) string {
 	case pcv3operation.WarningAuthenticatedDegraded:
 		return tr("pcv3.warning.degraded", "The output is authenticated, but recovery redundancy is damaged. Keep the original volume.")
 	case pcv3operation.WarningForcePartial:
-		return tr("pcv3.warning.force_partial", "Some ranges are verified and some are missing. This .pcv3-recovery file is not a complete plaintext file.")
+		return tr("pcv3.warning.force_partial", "Not a fully verified file. Data may be missing or unverified.")
 	case pcv3operation.WarningForceUnverified:
-		return tr("pcv3.warning.force_unverified", "Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content.")
+		return tr("pcv3.warning.force_unverified", "Integrity could not be verified. Do not treat this file as trusted.")
 	case pcv3operation.WarningDurabilityUncertain:
 		return tr("pcv3.warning.durability_uncertain", "Output durability was not confirmed. Keep every source and the destination.")
 	case pcv3operation.WarningPublicationIndeterminate:

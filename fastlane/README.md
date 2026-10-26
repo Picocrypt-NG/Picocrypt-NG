@@ -19,37 +19,45 @@ fastlane/metadata/android/<locale>/
 
 `en-US` is required as the fallback locale. Only `en-US` is populated so far.
 
-The fastlane tree lives at the repository root, where F-Droid and IzzyOnDroid expect it by
-default (this repo is a monorepo — the Android app lives in `android/`, desktop sources in
-`src/`).
+The fastlane tree lives at the repository root. The Android app lives in
+`android/` and desktop sources in `src/`.
 
 ## versionCode
 
 `versionCode` is derived from the repo-root `VERSION` file by the release workflow:
-`major*10000 + minor*100 + patch`. The current development target is **3.0** → base
-versionCode `30000` (`VERSION` is `3.0`). This version is not yet released.
+`major*10000 + minor*100 + patch`. The current development target is `3.0`,
+with base versionCode `30000`. This version is not yet released.
 
-Current source builds ship **64-bit per-ABI APKs** for `arm64-v8a` and `x86_64`
-plus a 64-bit universal APK. Their stable versionCode offsets remain
-`arm64-v8a=2` and `x86_64=4`; the universal APK keeps `base`. The next fdroiddata
-release entry must mirror this with `VercodeOperation: [10*%c+2, 10*%c+4]`.
-Published v2.18 metadata remains a historical four-ABI release.
+Current source builds produce per-ABI APKs for `armeabi-v7a`, `arm64-v8a`,
+`x86` and `x86_64`, plus a universal APK. Gradle applies `10*base+offset`
+to every release output:
+
+| Output | Offset | 3.0 versionCode |
+| --- | --- | --- |
+| Universal | 0 | 300000 |
+| `armeabi-v7a` | 1 | 300001 |
+| `arm64-v8a` | 2 | 300002 |
+| `x86` | 3 | 300003 |
+| `x86_64` | 4 | 300004 |
+
+An fdroiddata entry for these splits must match with
+`VercodeOperation: [10*%c+1, 10*%c+2, 10*%c+3, 10*%c+4]`.
+APK support does not guarantee enough available memory for PCV3's fixed
+1 GiB KDF, particularly in a fragmented 32-bit address space.
 
 fastlane changelogs are keyed by versionCode, with `changelogs/default.txt` served as the
-fallback for any versionCode that has no specific file. This repo ships only `default.txt`
-(the current release notes, ≤ 500 bytes, ASCII): the IzzyOnDroid submission was withdrawn, so
-the per-versionCode / per-ABI changelog files (one `<versionCode>.txt` per ABI split code) are
-no longer maintained. F-Droid-family clients fall back to `default.txt` for every build;
-per-code files can be reintroduced later if a store that needs them is targeted again.
+fallback for any versionCode that has no specific file. This repo ships only
+`default.txt`, with at most 500 bytes of ASCII text. There are no per-versionCode
+or per-ABI changelog files.
 
 ## Status
 
-- [x] `images/icon.png` — 140×140 key logo (within F-Droid's 48–512 px range)
-- [x] `images/phoneScreenshots/1.png`, `2.png` — main/encrypt screen (showing the Privacy &
-      Security screenshot-protection toggle) + decrypt screen (both ≤ 2:1; `1.png` is
-      1220×2420 ≈ 1.98:1, `2.png` ≈ 1.84:1)
-- [x] 64-bit per-ABI APK splits + stable per-ABI versionCodes (`app/build.gradle.kts`)
-- [x] AI-assistance disclosure — addressed upstream on the GitHub/IzzyOnDroid thread
-- [ ] Review `title.txt` / `short_description.txt` / `full_description.txt` — drafts, tune
-      wording before submitting
+- [x] `images/icon.png`: 140×140 key logo (within F-Droid's 48 to 512 px range)
+- [x] `images/phoneScreenshots/1.png`, `2.png`: encrypt and decrypt screens,
+      sized 1220×2420 and 715×1318 (both within the 2:1 side-ratio limit)
+- [x] Four per-ABI APK splits and stable versionCodes (`android/app/build.gradle.kts`)
+- [x] AI-assistance disclosure in `README.md` and `CONTRIBUTING.md`
 - [ ] More locales (only `en-US` is populated)
+
+The metadata and build configuration do not establish store acceptance or
+publication. Store review remains separate.

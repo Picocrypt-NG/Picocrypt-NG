@@ -126,12 +126,12 @@ linters:
       - path: internal/ui/macos_open\.go
         linters:
           - unused
-      # Frozen Unicode 17 normalizer support tracks the pinned x/text source
-      # byte-for-byte except for the separately hashed supplementary-key
-      # security guard. Keep security/correctness linters active; suppress only
+      # Frozen Unicode 18 support retains the pinned x/text source plus the
+      # separately hashed reader/composition fixes and supplementary guard.
+      # Keep security/correctness linters active; suppress only
       # upstream style/dead-code diagnostics that would require unrelated edits
       # to the reviewed frozen artifact.
-      - path: internal/pcv3operation/internal/pcv3unicode/norm17/
+      - path: internal/pcv3operation/internal/pcv3unicode/norm18/
         linters:
           - gocritic
           - intrange

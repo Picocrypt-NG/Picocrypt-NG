@@ -56,7 +56,7 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 			},
 			wantExit: 2,
 			wantOutput: "Outcome: force-partial\nPublication: published-durable\n" +
-				"Warning: partial recovery output is not a complete plaintext file\n",
+				"Warning: Not a fully verified file. Data may be missing or unverified.\n",
 		},
 		{
 			name: "force unverified durable",
@@ -70,7 +70,7 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 			},
 			wantExit: 2,
 			wantOutput: "Outcome: force-unverified\nPublication: published-durable\n" +
-				"Warning: recovered bytes are unverified and may be unsafe\n",
+				"Warning: Integrity could not be verified. Do not treat this file as trusted.\n",
 		},
 		{
 			name: "clean durable with cleanup warning",
@@ -117,7 +117,7 @@ func TestPCV3CLIPreservesResultAxes(t *testing.T) {
 			},
 			wantExit: 4,
 			wantOutput: "Outcome: force-partial\nPublication: publication-indeterminate\n" +
-				"Warning: partial recovery output is not a complete plaintext file\n" +
+				"Warning: Not a fully verified file. Data may be missing or unverified.\n" +
 				"Warning: output state is unknown; keep source and destination unchanged\n",
 		},
 		{
@@ -434,11 +434,11 @@ func TestPCV3CLITerminalContract(t *testing.T) {
 	}{
 		{id: "clean", scenario: "clean", wantExit: 0, wantStderr: "Outcome: success\nPublication: published-durable\n"},
 		{id: "degraded", scenario: "degraded", wantExit: 2, wantStderr: "Outcome: authenticated-degraded\nPublication: published-durable\nWarning: output is authenticated but recovery redundancy is damaged\n"},
-		{id: "force-partial", scenario: "partial", wantExit: 2, wantStderr: "Outcome: force-partial\nPublication: published-durable\nWarning: partial recovery output is not a complete plaintext file\n"},
-		{id: "force-unverified-quiet", scenario: "warning", quiet: true, wantExit: 2, wantStderr: "Outcome: force-unverified\nPublication: published-durable\nWarning: recovered bytes are unverified and may be unsafe\n"},
+		{id: "force-partial", scenario: "partial", wantExit: 2, wantStderr: "Outcome: force-partial\nPublication: published-durable\nWarning: Not a fully verified file. Data may be missing or unverified.\n"},
+		{id: "force-unverified-quiet", scenario: "warning", quiet: true, wantExit: 2, wantStderr: "Outcome: force-unverified\nPublication: published-durable\nWarning: Integrity could not be verified. Do not treat this file as trusted.\n"},
 		{id: "cleanup-warning", scenario: "cleanup-warning", wantExit: 2, wantStderr: "Outcome: success\nPublication: published-durable\nWarning: cleanup of operation-owned temporary files could not be confirmed\n"},
 		{id: "durability-uncertain", scenario: "uncertain", wantExit: 3, wantStderr: "Outcome: success\nPublication: published-durability-uncertain\nWarning: output durability was not confirmed; keep source and destination unchanged\n"},
-		{id: "publication-indeterminate", scenario: "indeterminate", wantExit: 4, wantStderr: "Outcome: force-partial\nPublication: publication-indeterminate\nWarning: partial recovery output is not a complete plaintext file\nWarning: output state is unknown; keep source and destination unchanged\n"},
+		{id: "publication-indeterminate", scenario: "indeterminate", wantExit: 4, wantStderr: "Outcome: force-partial\nPublication: publication-indeterminate\nWarning: Not a fully verified file. Data may be missing or unverified.\nWarning: output state is unknown; keep source and destination unchanged\n"},
 		{id: "refusal", scenario: "refusal", wantExit: 1, wantStderr: "Outcome: operation-failed\nPublication: not-attempted\n"},
 		{id: "not-published", scenario: "not-published", wantExit: 1, wantStderr: "Outcome: operation-failed\nPublication: not-published\n"},
 		{id: "unknown", scenario: "unknown", wantExit: 1, wantStderr: "Outcome: unknown-outcome\nPublication: unknown-state\nWarning: operation completed with a caution\n"},

@@ -26,8 +26,8 @@ type Reporter struct {
 	cancelOperation atomic.Pointer[context.CancelFunc]
 }
 
-// NewReporter creates a new CLI progress reporter.
-// If quiet is true, only errors are printed.
+// NewReporter suppresses progress and success messages when quiet is true.
+// Errors and caller-rendered PCV3 terminal results and warnings remain visible.
 func NewReporter(quiet bool) *Reporter {
 	return &Reporter{
 		quiet: quiet,
@@ -252,9 +252,9 @@ func pcv3CLIWarningText(warning pcv3operation.Warning) string {
 	case pcv3operation.WarningAuthenticatedDegraded:
 		return "Warning: output is authenticated but recovery redundancy is damaged"
 	case pcv3operation.WarningForcePartial:
-		return "Warning: partial recovery output is not a complete plaintext file"
+		return "Warning: Not a fully verified file. Data may be missing or unverified."
 	case pcv3operation.WarningForceUnverified:
-		return "Warning: recovered bytes are unverified and may be unsafe"
+		return "Warning: Integrity could not be verified. Do not treat this file as trusted."
 	case pcv3operation.WarningDurabilityUncertain:
 		return "Warning: output durability was not confirmed; keep source and destination unchanged"
 	case pcv3operation.WarningPublicationIndeterminate:

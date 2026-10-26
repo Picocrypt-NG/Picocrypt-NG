@@ -191,31 +191,32 @@ func (p Properties) TrailCCC() uint8 {
 	return ccc[p.tccc]
 }
 
+// The x/text v0.43 generator packs the two operands and result as three
+// 21-bit fields in a big-endian uint64.
+const recompShift = 21
+
 func buildRecompMap() {
-	recompMap = make(map[uint32]rune, len(recompMapPacked)/8)
+	recompMap = make(map[uint64]rune, len(recompMapPacked)/8)
 	var buf [8]byte
 	for i := 0; i < len(recompMapPacked); i += 8 {
 		copy(buf[:], recompMapPacked[i:i+8])
-		key := binary.BigEndian.Uint32(buf[:4])
-		val := binary.BigEndian.Uint32(buf[4:])
-		// Every Unicode 17 composition producing a supplementary scalar has
+		e := binary.BigEndian.Uint64(buf[:])
+		val := rune(e & (1<<recompShift - 1)) //nolint:gosec // G115: the 21-bit result field fits in a rune.
+		// Every Unicode 18 composition producing a supplementary scalar has
 		// at least one supplementary operand and is represented, without
-		// truncation, by supplementaryRecompositions. Keeping those entries
-		// out of the packed map also prevents BMP inputs from aliasing their
-		// truncated operand keys.
+		// truncation, by supplementaryRecompositions. Keep that independent
+		// full-width guard separate from the generated lookup.
 		if val > '\uFFFF' {
 			continue
 		}
-		recompMap[key] = rune(val)
+		recompMap[e>>recompShift] = val
 	}
 }
 
 // Recomposition
-// The upstream packed table uses 32-bit keys for two 16-bit operands. Unicode
-// 17 has supplementary-plane composition operands, so combine consults the
-// full-width frozen table for any such pair. Unmatched supplementary pairs
-// must not fall through to the packed lookup: doing so would alias unrelated
-// scalars with identical low 16 bits.
+// Unicode 18 has supplementary-plane composition operands, so combine
+// consults the independent full-width frozen table for any such pair.
+// Unmatched supplementary pairs never fall through to the generated lookup.
 // The recomposition map for NFC and NFKC is identical.
 
 // combine returns the combined rune or 0 if it doesn't exist.
@@ -232,7 +233,7 @@ func combine(a, b rune) rune {
 	if a < 0 || b < 0 {
 		return 0
 	}
-	key := uint32(a)<<16 | uint32(b)
+	key := uint64(a)<<recompShift | uint64(b)
 	return recompMap[key]
 }
 

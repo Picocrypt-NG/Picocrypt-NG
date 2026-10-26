@@ -67,6 +67,9 @@ go test ./internal/cli
 
 # Opt-in stdin/stdout CLI integration tests
 PICOCRYPT_RUN_CLI_INTEGRATION=1 go test ./internal/cli
+
+# Race-sensitive Go work; serialize KDF-heavy packages
+CGO_ENABLED=1 go test -tags migrated_fynedo -race -p 1 -timeout 15m ./...
 ```
 
 ## Notes

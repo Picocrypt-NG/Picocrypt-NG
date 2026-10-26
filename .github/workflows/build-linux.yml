@@ -82,12 +82,19 @@ jobs:
 
     - name: Run tests
       run: |
+        set -euo pipefail
         cd src
         if [ "${{ matrix.arch }}" = "amd64" ]; then
-          # Under -race, concurrent Argon2 volume and Fyne package tests exceed the
-          # runner's RAM, so run package binaries one at a time. Only the opt-in CLI
-          # integration parent runs separately with its non-race product binary.
-          CGO_ENABLED=1 go test -v -tags migrated_fynedo -race -p 1 -timeout 15m ./...
+          # Keep package binaries serial and release UI renderer/race memory
+          # between parents. The CLI integration still uses its non-race binary.
+          package_list=$(CGO_ENABLED=1 go list -race -tags migrated_fynedo ./... | awk '$0 != "Picocrypt-NG/internal/ui"' | LC_ALL=C sort)
+          if [[ -z "$package_list" ]]; then
+            echo "No non-UI native Linux packages discovered" >&2
+            exit 1
+          fi
+          mapfile -t packages <<< "$package_list"
+          CGO_ENABLED=1 go test -v -tags migrated_fynedo -race -p 1 -timeout 15m "${packages[@]}"
+          bash ../.github/scripts/test-linux-ui-race.sh
           PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -timeout 15m -run '^TestCLIIntegration$' ./internal/cli/...
         else
           PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -tags migrated_fynedo -timeout 15m ./...

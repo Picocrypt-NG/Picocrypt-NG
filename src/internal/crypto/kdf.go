@@ -117,14 +117,14 @@ const (
 //
 //	Byte 0-31:  MAC subkey (32 bytes)
 //	Byte 32-63: Serpent key (32 bytes)
-//	Byte 64+:   Rekey values (nonce 24 + IV 16 per cycle)
+//	Byte 64+:   Rekey nonce (24 bytes); Paranoid also reads a 16-byte IV per cycle
 //
 // v2.00+ subkey order:
 //
 //	Byte 0-63:   Header subkey (64 bytes) <- NEW: for HMAC-SHA3-512 header MAC
 //	Byte 64-95:  MAC subkey (32 bytes)
 //	Byte 96-127: Serpent key (32 bytes)
-//	Byte 128+:   Rekey values (nonce 24 + IV 16 per cycle)
+//	Byte 128+:   Rekey nonce (24 bytes); Paranoid also reads a 16-byte IV per cycle
 //
 // Violating either of these orders = inability to decrypt volumes of that version.
 //

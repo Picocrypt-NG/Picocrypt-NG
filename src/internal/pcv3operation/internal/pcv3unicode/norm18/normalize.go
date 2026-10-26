@@ -3,10 +3,10 @@
 // license that can be found in the LICENSE file.
 
 // This is a frozen PCV3 copy of the reviewed upstream implementation. Its
-// generated Unicode 17 table is committed alongside it; regeneration is not a
+// generated Unicode 18 table is committed alongside it; regeneration is not a
 // repository build step.
 
-// Package norm is the frozen local Unicode 17 normalizer used only by PCV3.
+// Package norm is the frozen local Unicode 18 normalizer used only by PCV3.
 package norm
 
 import (

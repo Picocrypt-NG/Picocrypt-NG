@@ -252,10 +252,10 @@
     <string name="pcv3_outcome_archive_pending_body">압축 파일 내용이 완전히 인증되었습니다. 새 압축 해제 폴더를 선택하세요. 암호화된 원본은 그대로 유지됩니다.</string>
     <string name="pcv3_outcome_degraded_title">손상이 있는 인증된 출력 복구됨</string>
     <string name="pcv3_outcome_degraded_body">출력은 인증되었지만 복구용 중복 데이터가 손상되었습니다. 원본 볼륨을 보관하세요.</string>
-    <string name="pcv3_outcome_force_partial_title">부분 복구 결과물 생성됨</string>
-    <string name="pcv3_outcome_force_partial_body">일부 범위는 검증되었고 일부는 누락되었습니다. 이 .pcv3-recovery 파일은 완전한 평문 파일이 아닙니다.</string>
-    <string name="pcv3_outcome_force_unverified_title">검증되지 않은 복구 결과물 생성됨</string>
-    <string name="pcv3_outcome_force_unverified_body">복구된 일부 바이트는 인증되지 않았으며 손상되었거나 위험할 수 있습니다. 이 결과물을 신뢰할 수 있는 콘텐츠로 간주하여 열거나 압축을 풀지 마세요.</string>
+    <string name="pcv3_outcome_force_partial_title">부분 복구</string>
+    <string name="pcv3_outcome_force_partial_body">완전히 검증된 파일이 아닙니다. 데이터가 누락되거나 검증되지 않았을 수 있습니다.</string>
+    <string name="pcv3_outcome_force_unverified_title">검증되지 않은 복구</string>
+    <string name="pcv3_outcome_force_unverified_body">무결성을 확인할 수 없습니다. 이 파일을 신뢰할 수 있는 데이터로 취급하지 마세요.</string>
     <string name="pcv3_outcome_credentials_or_damage_title">인증 수단 또는 복구 데이터를 검증할 수 없습니다</string>
     <string name="pcv3_outcome_credentials_or_damage_body">선택한 인증 수단 정책, 키 파일 및 키 파일 순서를 확인하세요. 출력은 게시되지 않았습니다.</string>
     <string name="pcv3_outcome_authentication_failed_title">인증 실패</string>

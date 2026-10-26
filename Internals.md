@@ -5,6 +5,90 @@ New native encryption uses PCV3 with a separate format and credential schedule;
 see the [PCV3 security contract](docs/SECURITY_CONTRACT.md) and
 [native architecture](ARCHITECTURE.md).
 
+# PCV3 cryptography
+
+PCV3 uses independent purpose-labelled HKDF-SHA3-256 keys rather than the
+legacy sequential subkey stream below. Each volume has a fresh random 32-byte
+VolumeKey. Standalone Normal uses XChaCha20/keyed BLAKE2b-512 or, with Paranoid,
+Serpent-256-CTR followed by XChaCha20/HMAC-SHA3-512. Records and the final record
+are authenticated before ordinary plaintext is released. Reed-Solomon repairs
+semantic bytes before their MAC check; authentication does not cover every
+physical parity byte, and ordinary reads are not full-RS scrubs.
+
+## PCV3 password profile
+
+PCV3 freezes **bounded Unicode 18.0.0 NFC** under
+[UAX #15 revision 58](https://www.unicode.org/reports/tr15/tr15-58.html) in the
+isolated `internal/pcv3operation/internal/pcv3unicode` package. Accepted passwords
+receive NFC without implicit U+034F CGJ insertion; explicitly entered CGJ is
+preserved. Excessive normalization runs are rejected before KDF instead of
+being mapped to different credentials. This resource admission constraint
+excludes some valid Unicode strings; it is separate from Unicode NFC itself.
+
+The bound uses the frozen normalizer's leading/trailing non-starter counts:
+expanded NFKD properties, CCC or backward-combining behavior, zero-CCC Jamo V/T,
+and Hangul trailing-count overrides. A leading-count sum above 30 is refused;
+counting only nonzero CCC is incompatible. The credential boundary retains the
+pinned engine but rejects its output if the CGJ count increases, after checking
+the 1 MiB output limit. It clears the rejected owned output. This does not
+compatibility-normalize the password or require a second Unicode engine.
+Exact generator/runtime sources and hashes are pinned in
+[Unicode provenance](src/internal/pcv3operation/internal/pcv3unicode/provenance.json);
+[UAX #15 section 13](https://www.unicode.org/reports/tr15/tr15-58.html#Stream_Safe_Text_Format)
+explains the underlying Stream-Safe mechanism.
+
+Passwords must be valid UTF-8 using the UnicodeData-derived assigned repertoire,
+with at most 1 MiB before and after canonicalization. Spaces and U+0000 are
+significant; no trimming, case folding, compatibility normalization or NFD/raw
+retry is applied. An empty password is valid only when the password factor is
+absent in keyfile-only mode.
+
+The pre-release implementation fixes NFC composition defects tracked as
+upstream x/text issues 81001 and 81021. Earlier experimental PCV3 credential
+bytes produced by those defects are intentionally unsupported, with no
+automatic fallback to the defective transformations. Experimental credential
+bytes that depended on implicit CGJ insertion likewise have no compatibility
+guarantee or automatic fallback before this format's first publication. Newly
+assigned Unicode-18 scalars are admissible within the same resource bounds.
+Existing volume and Unicode-17 fixture bytes remain unchanged. Legacy v1/v2
+continue to use `internal/password` and the normalization/retry behavior
+documented below; their runtime dependency was
+not upgraded for this PCV3 change.
+
+## PCV3 D1C
+
+D1 is the explicit frontend mode; D1C is its current construction. Both hidden
+profiles protect the complete password/keyfile transcript. Standard profile
+`0x0101` uses XChaCha20/keyed BLAKE2b-512; Paranoid profile `0x0102` adds
+Serpent-CTR and uses HMAC-SHA3-512. Both use fixed Argon2id version 1.3,
+1 GiB memory, eight passes and eight lanes (profile `0x03`), independently of
+the cipher choice. No resource shortage lowers these parameters.
+
+Two 320-byte bootstraps separately wrap independent random outer key `O` and
+inner root input `I`; the inner VolumeKey `V` is independent of both. A
+bootstrap's prefix is 128 bytes, followed by 64-byte replica, outer-wrap and
+inner-wrap tags at offsets 128, 192 and 256. Both credential tags bind the
+complete wrapped pair. Creation performs two sequential KDFs; a healthy
+ordinary read performs one, tail fallback at most two. The inner root uses
+purpose-separated HKDF, feature mask `0x0002` and root marker `0x03`; its salt
+is authenticated metadata, with no inner Argon2id call. Strict verification
+requires both bootstraps and two KDFs; see the
+[`VerifyD1` API contract](API.md#pcv3-operation-boundary).
+
+The complete inner header, metadata and trailer are encrypted. D1C streams
+creation through the outer encoder and reads through a bounded virtual reader;
+it creates no separate clear inner-volume staging file. It has no outer RS;
+inner structural RS and optional payload RS remain inside the encrypted stream.
+The frozen independent encoder and composition vectors are documented in the
+[D1 fixture README](src/internal/pcv3operation/internal/pcv3/testdata/d1/README.md).
+
+D1C hides the recognizable header. File name, size and filesystem traces remain
+visible; it promises no complete deniability. Ordinary opening may authenticate
+only front and payload, leaving tail unchecked. Strict verification is separate
+and does not claim authentication of every physical RS parity byte. Recovery
+trust, including permanent raw-selected provenance, follows the
+[security contract](docs/SECURITY_CONTRACT.md#recovery-trust).
+
 # Core Cryptography
 Picocrypt NG uses the following cryptographic primitives:
 - XChaCha20 (cascaded with Serpent in counter mode for paranoid mode)
@@ -26,63 +110,97 @@ Implementations use the Go standard library and dependencies pinned in
 This section documents the exact key-derivation order so an independent decryptor can be written. Source: `internal/crypto/kdf.go` (`SubkeyReader`) and `internal/volume/decrypt.go` (`decryptVerifyAuth`).
 
 ## Master key
-1. `key = Argon2id(password, salt)` — salt is the 16-byte Argon2 salt from the header; parameters per mode (normal: 4 passes, 1 GiB, 4 threads; paranoid: 8 passes, 1 GiB, 8 threads), output 32 bytes.
+1. `key = Argon2id(password, salt)`: salt is the 16-byte Argon2 salt from the header; parameters per mode (normal: 4 passes, 1 GiB, 4 threads; paranoid: 8 passes, 1 GiB, 8 threads), output 32 bytes.
 2. Keyfile key (if keyfiles are used) is XORed into the master key. The **timing** of this XOR differs between v1 and v2 (see below).
 
 ## HKDF subkey stream
-A single `HKDF-SHA3-256(key, hkdfSalt)` stream produces all subkeys, read **sequentially** in a fixed order. `hkdfSalt` is the 32-byte HKDF salt from the header. The `SubkeyReader` enforces the read order via a state machine — reading out of order, or skipping a subkey, shifts every later subkey and makes the volume undecryptable.
+A single `HKDF-SHA3-256(key, hkdfSalt)` stream produces all subkeys in a fixed
+sequential order. `hkdfSalt` is the 32-byte HKDF salt from the header. Callers
+must preserve the version-specific order below. `SubkeyReader` rejects duplicate
+named reads and Serpent-before-MAC reads, but does not enforce every ordering
+constraint; its raw `Reader` also advances the stream. Skipping or reordering
+bytes changes the later subkeys.
 
 **v2.00+ subkey order (`Picocrypt-NG`):**
 
 | Stream offset | Size | Subkey |
 | ------------- | ---- | ------ |
-| 0   | 64 | Header subkey — keys the HMAC-SHA3-512 over the header fields (v2 only) |
-| 64  | 32 | MAC subkey — keys the payload MAC (BLAKE2b-512 normal / HMAC-SHA3-512 paranoid) |
+| 0   | 64 | Header subkey for HMAC-SHA3-512 over the header fields (v2 only) |
+| 64  | 32 | MAC subkey for the payload MAC (BLAKE2b-512 normal / HMAC-SHA3-512 paranoid) |
 | 96  | 32 | Serpent key (paranoid mode cascade) |
-| 128+ | 24 + 16 | Per rekey cycle: XChaCha20 nonce (24) then Serpent IV (16) |
+| 128+ | 24; 40 in Paranoid | Per rekey cycle: XChaCha20 nonce (24), then Serpent IV (16) only in Paranoid mode |
 
-**v1.x subkey order (original Picocrypt — no header subkey):**
+**v1.x subkey order (original Picocrypt, no header subkey):**
 
 | Stream offset | Size | Subkey |
 | ------------- | ---- | ------ |
 | 0   | 32 | MAC subkey |
 | 32  | 32 | Serpent key |
-| 64+ | 24 + 16 | Per rekey cycle: XChaCha20 nonce (24) then Serpent IV (16) |
+| 64+ | 24; 40 in Paranoid | Per rekey cycle: XChaCha20 nonce (24), then Serpent IV (16) only in Paranoid mode |
 
 ## Keyfile-XOR timing: v1 vs v2
 The two formats differ in **when** the keyfile key is XORed relative to HKDF initialization:
 
-- **v1.x — XOR before HKDF.** `key = Argon2(password, salt)`, then `key = key XOR keyfileKey`, then `hkdf = HKDF-SHA3-256(key, hkdfSalt)`. The keyfile contribution flows into the entire subkey stream (MAC subkey, Serpent key, rekey values).
-- **v2.00+ — HKDF before XOR.** `key = Argon2(password, salt)`, then `hkdf = HKDF-SHA3-256(key, hkdfSalt)` (using the password-only key), then `key = key XOR keyfileKey`. The XOR affects **only the XChaCha20 key**; the HKDF stream (header/MAC/Serpent subkeys) is derived from the password-only key.
+- **v1.x: XOR before HKDF.** `key = Argon2(password, salt)`, then `key = key XOR keyfileKey`, then `hkdf = HKDF-SHA3-256(key, hkdfSalt)`. The keyfile contribution flows into the entire subkey stream (MAC subkey, Serpent key, rekey values).
+- **v2.00+: HKDF before XOR.** `key = Argon2(password, salt)`, then `hkdf = HKDF-SHA3-256(key, hkdfSalt)` (using the password-only key), then `key = key XOR keyfileKey`. The XOR affects **only the XChaCha20 key**; the HKDF stream (header/MAC/Serpent subkeys) is derived from the password-only key.
 
 Getting either the subkey order or the XOR timing wrong yields the wrong subkeys and authentication fails. The `SubkeyReader.HeaderSubkey()` call is the v2-only first read; v1 starts directly at `MACSubkey()`.
 
 # Password Normalization
-A visually identical password can be encoded as different UTF-8 bytes depending on the platform's keyboard/input method (e.g. composed `é` U+00E9 vs decomposed `e` + U+0301). Because the password bytes feed Argon2id directly, two such forms would derive different keys, so a volume encrypted on one platform could not be decrypted on another.
+This section describes the legacy v1/v2 path; PCV3 uses the frozen profile above.
 
-To fix this, the password is normalized to **Unicode NFC** (`golang.org/x/text/unicode/norm`) before key derivation, as mandated for passwords by [RFC 8265](https://www.rfc-editor.org/rfc/rfc8265) (PRECIS `OpaqueString`) and recommended by NIST SP 800-63B-4 §3.1.1.2. Only canonical composition is applied — never compatibility normalization (NFKC/NFKD, which would collapse distinct characters and reduce entropy), case folding, or whitespace trimming.
+A visually identical password can have different UTF-8 encodings, such as
+composed `é` (U+00E9) and decomposed `e` + U+0301. Those bytes derive different
+Argon2id keys unless the reader applies the matching normalization.
 
-- **Encrypt** normalizes the password to NFC (including the deniability wrapper key), so new volumes are cross-platform-stable.
-- **Decrypt** tries each form in order — NFC, then NFD, then the raw bytes as typed — and keeps the first that authenticates against the volume MAC. This opens new volumes, pre-existing volumes whose password was already NFC/ASCII, and legacy volumes encrypted from decomposed or non-canonical bytes. Trying several canonical forms of the same password never bypasses authentication; each form is verified independently.
-- **ASCII passwords are invariant** under every normalization form, so they collapse to a single candidate with no extra key derivations — the overwhelming majority of volumes are unaffected.
-- **Force-decrypt** bypasses authentication, so it has no signal to choose a form and uses the password exactly as typed.
+`internal/password` retains the legacy use of
+`golang.org/x/text/unicode/norm`. Its NFC and NFD operations include Stream-Safe
+processing, which can insert U+034F CGJ into excessive normalization runs.
+This differs from PCV3's bounded profile, which refuses implicit insertion.
+Legacy processing applies no NFKC/NFKD normalization, case folding or whitespace
+trimming.
 
-This is implemented in `internal/password` and applied at every key-derivation chokepoint (desktop/CLI/mobile via `internal/volume`, and the web build in `internal/wasm`). Note one consequence: a *new* volume whose password contains non-ASCII characters may not decrypt in an *older* Picocrypt build that does not normalize, unless the user happens to type the exact stored bytes — the desktop and CLI therefore show an advisory when encrypting with a non-ASCII password.
+- The internal legacy compatibility writer uses current NFC for the inner
+  password and the deniability wrapper. Native and browser frontends create
+  PCV3 rather than exposing this writer.
+- Ordinary legacy readers try current NFC, current NFD, raw bytes, historical
+  Unicode-15 NFC, then historical Unicode-15 NFD, removing duplicate candidates.
+  The v1 password-key hash or v2 header MAC selects the candidate; final payload
+  authentication remains separate. The historical forms preserve credentials
+  produced by earlier normalization tables and defects.
+- ASCII input produces one candidate and needs no additional normalization
+  attempts.
+- Native legacy Force uses the raw password as typed because its authentication
+  bypass cannot select a candidate. Browser legacy Force still tries the
+  candidates and requires header authentication before retaining damaged payload.
+
+The unauthenticated legacy deniability wrapper selects an outer candidate by a
+recognizable inner version field. The inner reader must then perform its own
+format-specific authentication. These compatibility retries do not apply to
+PCV3. Older implementations without matching normalization may still require
+the exact historical password bytes.
 
 # Counter Overflow
-Since XChaCha20 has a max message size of 256 GiB, Picocrypt NG will use the HKDF-SHA3 mentioned above to generate a new nonce for XChaCha20 and a new IV for Serpent if the total encrypted data is more than 60 GiB. While this threshold can be increased up to 256 GiB, Picocrypt NG uses 60 GiB to prevent any edge cases with blocks or the counter used by Serpent.
+Legacy payload processing reinitializes its XChaCha20 and optional Serpent
+ciphers every 60 GiB, below XChaCha20's per-nonce 256 GiB limit.
 
-Each rekey cycle reads the next **24-byte XChaCha20 nonce** followed by the next **16-byte Serpent IV** from the HKDF subkey stream described above (starting at stream offset 128 for v2, offset 64 for v1). The MAC subkey is never re-read, so the payload MAC spans the entire stream across all rekey boundaries. Note this is distinct from the deniability layer's rekeying (see [Deniability](#deniability)), which derives its new nonce from `SHA3-256(old_nonce)` rather than from an HKDF stream.
+Each rekey cycle reads a 24-byte XChaCha20 nonce from the HKDF stream. Paranoid
+mode then reads a 16-byte Serpent IV; Normal mode consumes no IV bytes. The first
+cycle starts at offset 128 for v2 or 64 for v1, and subsequent cycles consume 24
+bytes in Normal mode or 40 in Paranoid mode. The MAC subkey is not re-read, so
+the payload MAC spans every rekey boundary. The legacy deniability layer uses
+`SHA3-256(old_nonce)` instead; see [Deniability](#deniability).
 
 # Header Format
-A Picocrypt NG volume's header is encoded with Reed-Solomon by default since it is, after all, the most important part of the entire file. An encoded value will take up three times the size of the unencoded value.
+Legacy v1/v2 headers use Reed-Solomon encoding. Each encoded header field uses
+three times its decoded byte length.
 
 **All offsets and sizes below are in bytes.**
 | Offset | Encoded size | Decoded size | Description
 | ------ | ------------ | ------------ | -----------
 | 0      | 15           | 5            | Version number (ex. "v2.00")
 | 15     | 15           | 5            | Length of comments, zero-padded to 5 bytes
-| 30     | 3C           | C            | Comments with a length of C characters
+| 30     | 3C           | C            | Comments with a length of C UTF-8 bytes
 | 30+3C  | 15           | 5            | Flags (paranoid mode, use keyfiles, etc.)
 | 45+3C  | 48           | 16           | Salt for Argon2
 | 93+3C  | 96           | 32           | Salt for HKDF-SHA3
@@ -110,13 +228,14 @@ The HMAC message covers the entire listed header, unlike v1.x which only stored
 password-derived subkey. In a legacy v2 keyfile volume, however, that subkey is
 derived before keyfile XOR. Including the public keyfile hash in the message
 does not make the HMAC key depend on the keyfile. Picocrypt NG retains v1/v2
-read compatibility, but Picocrypt-NG 2.19 does not create new v2 keyfile
+read compatibility, but the legacy compatibility writer does not create new v2 keyfile
 volumes.
 
 ## Version Routing
 
 `MatchVersion` recognizes the syntax `vN.NN`; syntax recognition is not
-cryptographic-version authorization. Picocrypt-NG 2.19 supports v1 and v2.
+cryptographic-version authorization. The legacy header reader supports v1 and v2;
+PCV3 routes separately.
 Immediately after decoding the version field, the header reader rejects every
 other well-formed major with `ErrUnsupportedVersion`, before reading flags or
 KDF inputs. Force decrypt cannot bypass this gate. Deniability detection keeps
@@ -125,26 +244,28 @@ rejected rather than accidentally treated as an outer wrapper.
 
 ## Verify First Mode (Two-Pass Decryption)
 
-Picocrypt NG offers an optional "Verify first" mode that addresses security audit recommendation PCC-004: authenticate ciphertext before decryption.
+Legacy decryption offers an optional "Verify first" mode for audit recommendation
+PCC-004: authenticate the payload ciphertext before payload decryption.
 
-In standard streaming decryption, the MAC is computed incrementally alongside decryption, meaning the MAC can only be verified after the entire file has been decrypted. While Picocrypt uses encrypt-then-MAC (the correct order), this means the decryption algorithm is applied to potentially attacker-controlled data before authenticity is confirmed.
+Ordinary legacy streaming decryption computes the payload MAC alongside
+decryption and checks it at the end, before publication. The cipher therefore
+processes potentially unauthenticated ciphertext into private staging.
 
-When "Verify first" is enabled, decryption proceeds in two passes:
+With "Verify first" and without Force, payload processing uses two passes:
+
 1. **Pass 1 (Verification)**: Read entire file, compute MAC over ciphertext without decrypting
 2. **MAC Check**: Verify computed MAC matches stored authentication tag
 3. **Pass 2 (Decryption)**: Only if MAC is valid, perform actual decryption
 
-**Trade-offs:**
-- **Security**: Payload decryption is not performed before the stored MAC is checked
-- **Performance**: File is read twice, roughly doubling I/O time
-- **Recommended for**: High-security scenarios, untrusted file sources
-
-This feature is available in the decrypt advanced options as "Verify first" checkbox.
+The extra pass reads the payload again and re-derives the keys. Force can
+explicitly bypass a failed MAC check even with this option enabled. The
+desktop exposes the "Verify first" checkbox for legacy decryption; PCV3 has
+its own authentication and publication contract.
 
 # Keyfile Design
 
-The following algorithm describes the legacy v1/v2 read format. Picocrypt-NG
-2.19 preserves decryption of supported keyfile volumes but rejects every new
+The following algorithm describes the legacy v1/v2 read format. The compatibility
+reader preserves supported keyfile volumes, but the writer rejects every new
 legacy v2 encryption request containing keyfiles. New legacy v2 volumes are
 password-only. Native applications now create PCV3 by default with password,
 keyfile, or combined credential policies; every selected keyfile must be non-empty.
@@ -169,6 +290,9 @@ If Reed-Solomon is to be used with the input data itself, the data will be encod
 To address the edge case where the final 128-byte block happens to be padded so that it completes a full 1 MiB chunk, a flag is used to distinguish whether the last 128-byte block was padded originally or if it is just a full 128-byte block of data.
 
 # Deniability
+The wrapper layout and rekeying in this section describe legacy v1/v2.
+Current PCV3 uses [D1C](#pcv3-d1c).
+
 Picocrypt NG's deniability option re-encrypts the regular volume without retaining its recognizable Picocrypt NG header. The resulting salt, nonce, and ciphertext are intended to look random to an observer who does not know the password. This limited random-looking-container property is not anonymity and does not guarantee protection against forensic analysis, traffic or storage metadata, endpoint compromise, or coercion. A deniable volume has this layout:
 ```
 [argon2 salt][xchacha20 nonce][encrypted stream of bytes]
@@ -188,7 +312,10 @@ Neither field is Reed-Solomon encoded. The raw random salt and nonce avoid addin
 
 **Legacy credential boundary.** Every new legacy v2 volume requires a non-empty password, and every legacy encryption request containing keyfiles is rejected before encryption begins. Direct legacy `AddDeniability` also rejects an empty password before deriving the outer key or replacing its input. Keyfile material is never an input to this legacy outer Argon2id derivation.
 
-**PCV3 D1 credential boundary.** D1 accepts password-only, keyfile-only, or combined factors. The complete credential transcript protects independently recoverable front and tail bootstraps, each with its own salt and authenticated wrapping of independent random outer and inner credential roots. D1 always uses Argon2id with 1 GiB, eight passes and eight lanes, independently of the optional Paranoid cipher suite. Creation performs two KDFs; a healthy read performs one, while fallback to the other bootstrap can require a second. Inner credential processing adds no further Argon2id call; the inner salt remains authenticated metadata rather than an Argon2 input. Keyfiles protect both layers; there is no independently derivable empty-password wrapper. Keyfiles must still be secret and sufficiently unpredictable: a known or guessable file permits offline candidate testing.
+**PCV3 D1 credential boundary.** See [PCV3 D1C](#pcv3-d1c) for the current
+construction. It accepts password-only, keyfile-only or combined factors;
+keyfiles protect both layers. A known or predictable keyfile still permits
+offline candidate testing.
 
 **Legacy read compatibility.** Readers continue to accept supported v1/v2 keyfile volumes, including keyfile-only deniable v2 volumes historically created with an empty outer password. Decrypt such a volume with its original credentials, then create a native PCV3 volume with the required password and keyfile factors. Merely rewrapping the affected inner v2 volume with a non-empty outer password fixes the empty-wrapper problem but does not add keyfile binding to the inner header MAC, payload MAC, Serpent key, or rekey schedule.
 
@@ -219,14 +346,14 @@ ARM and x86 32-bit builds allocate the workspace in separate typed chunks of at 
 
 # Code Structure
 
-Picocrypt NG v2.00+ has been refactored into a modular architecture. The codebase is organized as follows:
+The codebase is organized as follows:
 
 ## Core Cryptographic Packages (AUDIT-CRITICAL)
 
 These packages implement the cryptographic operations and must be modified with extreme care:
 
 ### `internal/crypto/`
-- **cipher.go**: XChaCha20 and Serpent-CTR cipher suite with proper encrypt-then-MAC ordering
+- **cipher.go**: XChaCha20 and Serpent-CTR cipher suite with encrypt-then-MAC ordering
 - **kdf.go**: Argon2id key derivation and HKDF-SHA3-256 subkey derivation
 - **mac.go**: BLAKE2b-512 (normal mode) and HMAC-SHA3-512 (paranoid mode)
 - **rekey.go**: Cipher rekeying every 60 GiB to prevent nonce overflow
@@ -278,16 +405,16 @@ These packages implement the cryptographic operations and must be modified with 
 
 ## Entry Point
 
-**`cmd/picocrypt/main.go`**: Application entry point (~40 lines)
-- Initializes UI
-- Minimal logic (all business logic in `internal/`)
+`cmd/picocrypt/main.go` applies startup process protection and dispatches to the
+GUI/CLI build-specific entry point. Operation logic lives under `internal/`.
 
 ## Reading the Code
 
 For understanding specific operations:
-1. **Encryption flow**: Start at `volume.Encrypt()` in `internal/volume/encrypt.go`
-2. **Decryption flow**: Start at `volume.Decrypt()` in `internal/volume/decrypt.go`
-3. **Crypto primitives**: Read `internal/crypto/*.go` (well-commented, ~1000 lines total)
-4. **Header format**: See `internal/header/format.go` for field layout
 
-The refactored code is thoroughly commented and much easier to understand than the original monolithic implementation.
+- Native encryption enters `volume.EncryptWithResult` in
+  `internal/volume/encrypt.go` and dispatches PCV3 to `internal/pcv3operation/`.
+- Legacy decryption starts at `volume.Decrypt` in `internal/volume/decrypt.go`;
+  PCV3 reads use the separate operation facade.
+- Legacy primitives live in `internal/crypto/`; their header layout lives in
+  `internal/header/format.go`.

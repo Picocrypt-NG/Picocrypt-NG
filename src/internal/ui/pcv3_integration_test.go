@@ -207,8 +207,8 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		}
 		text := pcv3RenderedText(a.pcv3Container)
 		fragments := []string{
-			"Unverified recovery artifact created",
-			"Some recovered bytes are not authenticated and may be corrupted or unsafe. Do not open or extract this artifact as trusted content.",
+			"Unverified recovery",
+			"Integrity could not be verified. Do not treat this file as trusted.",
 		}
 		if !nativeUIDirectorySyncSupported(t, t.TempDir()) {
 			fragments = append(fragments, "Output durability not confirmed", nativePCV3UncertainBody, nativePCV3DurabilityWarningText, nativePCV3CleanupDurabilityTitle, nativePCV3CleanupDurabilityText, nativePCV3CleanupDurabilityClose)

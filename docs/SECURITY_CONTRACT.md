@@ -58,6 +58,36 @@ preserved during architecture changes. A cryptographic defect requires a
 separate design decision and independent review; a structural refactor is not
 authorization to silently alter the construction.
 
+## Recovery trust
+
+`ForcePartial` means the file is not fully verified; data may be missing or
+unverified. A damaged or missing final record can make the result incomplete
+even when every emitted data range verifies. `ForceUnverified` means integrity
+of the whole result is not confirmed; individual inner ranges or the final
+record can still verify. Native forensic artifacts retain the exact range and
+final states. Frontends must not infer specific missing or unverified bytes
+from the whole-result outcome alone.
+
+D1C selected without an outer-record anchor, or using an unauthenticated suite
+hint, retains `raw-selected` provenance and the whole result remains unverified.
+Later inner MAC success cannot promote that authority. Native paths use the
+separate forensic artifact, preserve sources, and grant no ordinary plaintext,
+auto-extraction or automatic parsing authority. The browser instead returns
+recovered bytes in memory with code `10`, without the native artifact or a
+per-range verification report. Those bytes remain untrusted and must not be
+automatically opened or parsed. Unverified recovery requires separate consent
+and an explicit physical role. Authenticated recovery may return an ordinary
+result only under its complete verification contract.
+
+Cryptographic authentication applies to semantic bytes. The systematic fast
+RS path may leave parity-only damage unchecked; neither ordinary opening nor
+strict `VerifyD1` promises authentication or a full scrub of every physical
+byte. Ordinary D1 opening can leave the tail bootstrap unchecked; strict
+verification checks both. The construction and frozen password profile are
+defined in [Internals.md](../Internals.md#pcv3-cryptography); ownership and
+verification report semantics are defined in
+[API.md](../API.md#pcv3-operation-boundary).
+
 ## Publication and source retention
 
 | Publication state | Result and allowed cleanup |

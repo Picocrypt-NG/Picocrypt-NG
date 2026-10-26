@@ -16,10 +16,10 @@ func commentsToolTip(snap app.UISnapshot) string {
 		return ""
 	}
 	if snap.PCV3Format == app.PCV3FormatNormal {
-		return tr("comments.normal_tooltip", "In Normal PCV3 the comment is stored openly. Confirmed means its integrity was verified after successful decryption and full container verification.")
+		return tr("comments.normal_tooltip", "Not encrypted. The preview is unverified.")
 	}
 	if snap.PCV3Format == app.PCV3FormatD1 {
-		return tr("comments.d1_tooltip", "In PCV3 D1 the comment is encrypted. It is shown only after successful decryption and full container verification.")
+		return tr("comments.d1_tooltip", "Encrypted; shown after verification.")
 	}
 	return ""
 }

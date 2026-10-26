@@ -4,7 +4,7 @@ Start with these maintained documents:
 
 - [README](../README.md): product features and platform support.
 - [Architecture](../ARCHITECTURE.md): package boundaries and data flow.
-- [Source build and tests](../src/README.md): Go 1.27.1 setup and verification lanes.
+- [Source build and tests](../src/README.md): pinned Go setup and verification lanes.
 - [Android development](../android/README.md): Kotlin host, gomobile and device checks.
 - [Contribution guidelines](../CONTRIBUTING.md): changes, tests and review policy.
 - [PCV3 security contract](SECURITY_CONTRACT.md): required properties and evidence.

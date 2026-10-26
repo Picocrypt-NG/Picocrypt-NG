@@ -544,7 +544,7 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 		if got, want := a.deleteCheck.ToolTip(), tr("advanced.delete_files.tooltip", "Delete source files after encryption"); got != want {
 			t.Errorf("Delete files tooltip = %q, want %q", got, want)
 		}
-		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection."); got != want {
+		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.pcv3_tooltip", "Hides the format header. Container name and size remain visible."); got != want {
 			t.Errorf("Deniability tooltip = %q, want %q", got, want)
 		}
 		if got, want := a.recursivelyCheck.ToolTip(), tr("advanced.recursively.tooltip", "Process each file separately"); got != want {
@@ -557,7 +557,7 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 		a.advancedContainer = container.NewVBox()
 		a.buildEncryptOptionsInto(a.advancedContainer)
 
-		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.pcv3_tooltip", "PCV3 D1 binds the complete password/keyfile policy to both outer and inner protection."); got != want {
+		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.pcv3_tooltip", "Hides the format header. Container name and size remain visible."); got != want {
 			t.Errorf("PCV3 D1 tooltip = %q, want %q", got, want)
 		}
 	})
@@ -700,7 +700,7 @@ func TestAdvancedDisclosureKeepsOptionTooltipsLocalized(t *testing.T) {
 	if a.advancedToggleBtn.Text != tr("advanced.title", "Advanced") {
 		t.Fatalf("advanced disclosure title = %q; want localized title", a.advancedToggleBtn.Text)
 	}
-	if got := a.paranoidCheck.ToolTip(); got != tr("advanced.paranoid.tooltip", "Adds Serpent and stronger checks") {
+	if got := a.paranoidCheck.ToolTip(); got != tr("advanced.paranoid.tooltip", "Adds Serpent encryption; uses HMAC-SHA3.") {
 		t.Fatalf("paranoid tooltip = %q; want localized tooltip", got)
 	}
 	if canvasTreeContainsLabelWithText(a.advancedDetail, tr("advanced.summary.defaults", "Optional settings. Defaults are recommended for most files.")) {

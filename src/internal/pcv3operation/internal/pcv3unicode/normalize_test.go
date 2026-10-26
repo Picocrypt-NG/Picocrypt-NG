@@ -1,7 +1,7 @@
 package pcv3unicode
 
 import (
-	norm17 "Picocrypt-NG/internal/pcv3operation/internal/pcv3unicode/norm17"
+	norm18 "Picocrypt-NG/internal/pcv3operation/internal/pcv3unicode/norm18"
 	"bytes"
 	"crypto/sha256"
 	_ "embed"
@@ -14,7 +14,16 @@ import (
 //go:embed testdata/unicode17-literal-vectors.json
 var literalVectorsJSON []byte
 
-const literalMaxUTF8Bytes = 1 << 20
+const (
+	literalMaxUTF8Bytes                                  = 1 << 20
+	literalUnicode17UnicodeVersion                       = "17.0.0"
+	literalUnicode17UAX15Revision                        = "57"
+	literalUnicode17NormalizationTestSHA256              = "5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db"
+	literalUnicode17DerivedAgeSHA256                     = "f8ecdf768bdc210f201abd271d9bc587825618a86a7046a8146cc816393f1998"
+	literalUnicode17UnicodeDataSHA256                    = "2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c"
+	literalUnicode17DerivedNormalizationPropertiesSHA256 = "71fd6a206a2c0cdd41feb6b7f656aa31091db45e9cedc926985d718397f9e488"
+	literalUnicode17UAX15SHA256                          = "c0c05f91e1c4f9be3d987e27d76cf254b30003b6be41eb94977cc3fe148d4c4e"
+)
 
 type literalPositiveVector struct {
 	ID                string `json:"id"`
@@ -69,17 +78,17 @@ func decodeLiteralHex(t *testing.T, value string) []byte {
 
 func TestLiteralUnicode17FixturePinsExternalEvidence(t *testing.T) {
 	fixture := loadLiteralFixture(t)
-	if fixture.UnicodeVersion != literalUnicodeVersion || fixture.UAX15Revision != literalUAX15Revision {
-		t.Fatalf("literal fixture version = Unicode %q / UAX #15 rev %q; want Unicode %q / rev %q", fixture.UnicodeVersion, fixture.UAX15Revision, literalUnicodeVersion, literalUAX15Revision)
+	if fixture.UnicodeVersion != literalUnicode17UnicodeVersion || fixture.UAX15Revision != literalUnicode17UAX15Revision {
+		t.Fatalf("literal fixture version = Unicode %q / UAX #15 rev %q; want Unicode %q / rev %q", fixture.UnicodeVersion, fixture.UAX15Revision, literalUnicode17UnicodeVersion, literalUnicode17UAX15Revision)
 	}
 	if fixture.MaxUTF8Bytes != literalMaxUTF8Bytes {
 		t.Fatalf("literal fixture max UTF-8 bytes = %d, want %d", fixture.MaxUTF8Bytes, literalMaxUTF8Bytes)
 	}
-	if fixture.Sources.NormalizationTestSHA256 != literalNormalizationTestSHA256 ||
-		fixture.Sources.DerivedAgeSHA256 != literalDerivedAgeSHA256 ||
-		fixture.Sources.UnicodeDataSHA256 != literalUnicodeDataSHA256 ||
-		fixture.Sources.DerivedNormalizationPropertiesSHA256 != literalDerivedNormalizationPropertiesSHA256 ||
-		fixture.Sources.UAX15SHA256 != literalUAX15SHA256 {
+	if fixture.Sources.NormalizationTestSHA256 != literalUnicode17NormalizationTestSHA256 ||
+		fixture.Sources.DerivedAgeSHA256 != literalUnicode17DerivedAgeSHA256 ||
+		fixture.Sources.UnicodeDataSHA256 != literalUnicode17UnicodeDataSHA256 ||
+		fixture.Sources.DerivedNormalizationPropertiesSHA256 != literalUnicode17DerivedNormalizationPropertiesSHA256 ||
+		fixture.Sources.UAX15SHA256 != literalUnicode17UAX15SHA256 {
 		t.Fatal("literal fixture changed a pinned Unicode 17 source hash")
 	}
 }
@@ -112,10 +121,7 @@ func assertLiteralNFCVectors(t *testing.T, vectors []literalPositiveVector) {
 	}
 }
 
-func TestCanonicalizeUsesLiteralUnicode17NFC(t *testing.T) {
-	if UnicodeVersion != literalUnicodeVersion {
-		t.Fatalf("compiled Unicode version = %q, want %q", UnicodeVersion, literalUnicodeVersion)
-	}
+func TestCanonicalizePreservesLiteralUnicode17NFC(t *testing.T) {
 	fixture := loadLiteralFixture(t)
 	assertLiteralNFCVectors(t, fixture.Positive)
 }
@@ -214,12 +220,12 @@ func TestFinishCanonicalizationClearsRejectedOutput(t *testing.T) {
 	// result is otherwise lost to the caller when Canonicalize returns nil.
 	input := bytes.Repeat([]byte("\u0344"), literalMaxUTF8Bytes/2)
 	original := append([]byte(nil), input...)
-	canonical := norm17.NFC.Bytes(input)
+	canonical := norm18.NFC.Bytes(input)
 	if len(canonical) <= literalMaxUTF8Bytes {
 		t.Fatal("U+0344 fixture did not expand beyond the normalized byte limit")
 	}
 
-	got, err := finishCanonicalization(canonical)
+	got, err := finishCanonicalization(input, canonical)
 	var rejected *Error
 	if got != nil || !errors.As(err, &rejected) || rejected.Reason != RejectionOutputTooLarge {
 		t.Fatalf("oversized normalized output = (%d bytes, %v); want no result and typed output-limit rejection", len(got), err)
