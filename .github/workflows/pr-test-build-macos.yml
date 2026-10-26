@@ -19,7 +19,7 @@ jobs:
       fail-fast: true
       matrix:
         group: [1, 2, 3, 4]
-    runs-on: macos-26
+    runs-on: macos-15
     env:
       CGO_ENABLED: "1"
       MACOSX_DEPLOYMENT_TARGET: "15.0"
@@ -67,7 +67,7 @@ jobs:
   pr-test-build-macos:
     needs: pcv3-tests
     if: ${{ always() }}
-    runs-on: macos-26
+    runs-on: macos-15
     env:
       MACOSX_DEPLOYMENT_TARGET: "15.0"
       CGO_CFLAGS: "-mmacosx-version-min=15.0"
