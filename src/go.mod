@@ -10,7 +10,7 @@ require (
 	github.com/Picocrypt/zxcvbn-go v0.0.0-20250412183938-d59695960527
 	github.com/dweymouth/fyne-tooltip v0.4.0
 	github.com/go-gl/glfw/v3.4/glfw v0.1.0-pre.2
-	github.com/nicksnyder/go-i18n/v2 v2.6.1
+	github.com/nicksnyder/go-i18n/v2 v2.7.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/crypto v0.58.0
