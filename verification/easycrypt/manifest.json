@@ -1,0 +1,183 @@
+{
+  "schema": 1,
+  "axioms": {
+    "models/IndexOmissionReplay.ec": ["keygen_lossless", "mac_correct"]
+  },
+  "positives": [
+    {"id": "solver-positive", "source": "controls/SmokePositive.ec", "kind": "tooling-prover"},
+    {"id": "record-framing", "source": "models/RecordFraming.ec"},
+    {"id": "record-origin", "source": "models/RecordIntegrity.ec"},
+    {"id": "index-omission-replay", "source": "models/IndexOmissionReplay.ec"},
+    {"id": "lifecycle-authority", "source": "models/LifecycleAuthority.ec"},
+    {"id": "normal-stream", "source": "models/NormalStream.ec"},
+    {"id": "safe-cast-representation", "source": "models/SafeCastRepresentation.ec"},
+    {"id": "canonical-record-count", "source": "models/CanonicalRecords.ec"},
+    {"id": "big-endian-fields", "source": "models/BigEndianFields.ec"},
+    {"id": "canonical-profile", "source": "models/CanonicalProfile.ec"},
+    {"id": "word-arithmetic", "source": "models/WordArithmetic.ec"},
+    {"id": "record-domains", "source": "models/RecordDomains.ec"},
+    {"id": "payload-geometry", "source": "models/PayloadGeometry.ec"},
+    {"id": "core-policy", "source": "models/CorePolicy.ec"},
+    {"id": "normal-constructor", "source": "models/NormalConstructor.ec"},
+    {"id": "normal-physical-eof", "source": "models/NormalPhysicalEOF.ec"},
+    {"id": "credential-context", "source": "models/CredentialContext.ec"},
+    {"id": "read-result-authority", "source": "models/ReadResultAuthority.ec"},
+    {"id": "record-confidentiality", "source": "models/RecordConfidentiality.ec"},
+    {"id": "d1-record-integrity", "source": "models/D1RecordIntegrity.ec"}
+  ],
+  "negatives": [
+    {
+      "id": "d1-index-omission-rejected",
+      "source": "controls/D1IndexOmissionNegative.ec",
+      "theorem": "omitted_d1_index_preserves_record_separation"
+    },
+    {
+      "id": "credential-role-omission-rejected",
+      "source": "controls/CredentialRoleOmissionNegative.ec",
+      "theorem": "omitted_role_preserves_front_tail_separation"
+    },
+    {
+      "id": "degraded-archive-authority-rejected",
+      "source": "controls/DegradedArchiveAuthorityNegative.ec",
+      "theorem": "degraded_archive_still_refused"
+    },
+    {
+      "id": "plaintext-wrapper-rejected",
+      "source": "controls/PlaintextWrapperNegative.ec",
+      "theorem": "plaintext_wrapper_preserves_confidentiality"
+    },
+    {
+      "id": "byte-at-eof-rejected",
+      "source": "controls/CountOneEOFNegative.ec",
+      "theorem": "byte_at_boundary_may_be_treated_as_exact"
+    },
+    {
+      "id": "unknown-core-flag-rejected",
+      "source": "controls/UnknownCoreFlagNegative.ec",
+      "theorem": "unknown_core_feature_is_accepted"
+    },
+    {
+      "id": "wrong-core-magic-rejected",
+      "source": "controls/WrongCoreMagicNegative.ec",
+      "theorem": "changed_core_magic_is_accepted"
+    },
+    {
+      "id": "reversed-length-octet-rejected",
+      "source": "controls/LengthOctetOrderNegative.ec",
+      "theorem": "descriptor_length_low_byte_is_first"
+    },
+    {
+      "id": "zero-refused-arithmetic-rejected",
+      "source": "controls/RefusedArithmeticNegative.ec",
+      "theorem": "refused_addition_must_return_zero"
+    },
+    {
+      "id": "wrapped-ceiling-rejected",
+      "source": "controls/CeilingOverflowNegative.ec",
+      "theorem": "wrapped_ceiling_matches_mathematical_ceiling"
+    },
+    {
+      "id": "short-ctr-stride-rejected",
+      "source": "controls/CTRStrideNegative.ec",
+      "theorem": "short_stride_preserves_record_counter_separation"
+    },
+    {
+      "id": "nonce-truncation-rejected",
+      "source": "controls/NonceTruncationNegative.ec",
+      "theorem": "truncated_nonce_preserves_index_separation"
+    },
+    {
+      "id": "missing-physical-final-rejected",
+      "source": "controls/MissingPhysicalFinalNegative.ec",
+      "theorem": "empty_plaintext_has_no_payload_records"
+    },
+    {
+      "id": "rs-floor-rounding-rejected",
+      "source": "controls/RSFloorRoundingNegative.ec",
+      "theorem": "partial_rs_body_uses_floor_rounding"
+    },
+    {
+      "id": "reversed-index-rejected",
+      "source": "controls/EndianOrderNegative.ec",
+      "theorem": "reversed_index_keeps_value"
+    },
+    {
+      "id": "narrowed-index-rejected",
+      "source": "controls/TruncatedIndexNegative.ec",
+      "theorem": "narrowed_index_keeps_distinct_values"
+    },
+    {
+      "id": "extra-record-count-rejected",
+      "source": "controls/ExtraCountNegative.ec",
+      "theorem": "extra_count_must_match_exact_chunk"
+    },
+    {
+      "id": "unsafe-signed-cast-rejected",
+      "source": "controls/UnsafeCastNegative.ec",
+      "theorem": "guard_disabled_cast_must_refuse"
+    },
+    {
+      "id": "tagged-axiom-rejected",
+      "source": "controls/TaggedAxiomNegative.ec",
+      "kind": "tooling-policy",
+      "error_contains": "Unsupported axiom declaration"
+    },
+    {
+      "id": "unfinished-proof-rejected",
+      "source": "controls/UnfinishedNegative.ec",
+      "kind": "tooling-eof",
+      "error_contains": "end-of-file while processing proof"
+    },
+    {
+      "id": "unclosed-theory-rejected",
+      "source": "controls/UnclosedTheoryNegative.ec",
+      "kind": "tooling-eof",
+      "error_contains": "end-of-file while processing external theory"
+    },
+    {
+      "id": "dropped-final-rejected",
+      "source": "controls/DroppedFinalNegative.ec",
+      "theorem": "dropped_final_guard_control_rejected"
+    },
+    {
+      "id": "extra-record-rejected",
+      "source": "controls/ExtraRecordNegative.ec",
+      "theorem": "extra_record_guard_control_rejected"
+    },
+    {
+      "id": "reordered-records-rejected",
+      "source": "controls/ReorderedNegative.ec",
+      "theorem": "reordered_guard_control_rejected"
+    },
+    {
+      "id": "admission-rejected",
+      "source": "controls/AdmissionNegative.ec",
+      "kind": "tooling-policy",
+      "error_contains": "Unchecked proof directive admit "
+    },
+    {
+      "id": "false-arithmetic-rejected",
+      "source": "controls/SmokeNegative.ec",
+      "kind": "tooling-prover",
+      "theorem": "reject_false_arithmetic"
+    },
+    {
+      "id": "index-omission-rejected",
+      "source": "models/RecordFraming.ec",
+      "theorem": "encode_injective",
+      "replace_once": {
+        "from": "domain ++ (r.`1 ++ (r.`2 ++ (r.`3 ++ r.`4))).",
+        "to": "domain ++ (r.`1 ++ (r.`3 ++ r.`4))."
+      }
+    },
+    {
+      "id": "cleanup-revocation-rejected",
+      "source": "models/LifecycleAuthority.ec",
+      "theorem": "late_cleanup_revocation",
+      "replace_once": {
+        "from": "op revoke_cleanup (s : state) : state = {| s with revoked = true |}.",
+        "to": "op revoke_cleanup (s : state) : state = {| s with revoked = s.`revoked |}."
+      }
+    }
+  ]
+}

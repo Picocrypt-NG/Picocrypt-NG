@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "switch": "picocrypt-easycrypt-2026.10",
+  "ocaml": "5.4.0",
+  "easycrypt_release": "r2026.10",
+  "easycrypt_repository": "https://github.com/EasyCrypt/easycrypt.git",
+  "easycrypt_commit": "859766e50e936fb9e420fb6fb1ad8824ffb8d83e",
+  "why3": "1.8.2",
+  "alt_ergo": "2.6.4",
+  "export_sha256": "7739cf3a39283b40ae85759b9cfaf5274cf206a5212bce7a52d3476b8575d14b"
+}

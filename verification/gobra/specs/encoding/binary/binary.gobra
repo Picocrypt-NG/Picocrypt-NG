@@ -1,0 +1,28 @@
+package binary
+type bigEndian struct{}
+var BigEndian bigEndian
+
+ghost
+decreases
+pure func Normalize64(value integer) (result integer) {
+ return ((value % 18446744073709551616) + 18446744073709551616) % 18446744073709551616
+}
+
+ghost
+decreases
+pure func Octet(value integer, position int) (result integer) {
+ return Normalize64(value) / (position == 0 ? 72057594037927936 : position == 1 ? 281474976710656 : position == 2 ? 1099511627776 : position == 3 ? 4294967296 : position == 4 ? 16777216 : position == 5 ? 65536 : position == 6 ? 256 : 1) % 256
+}
+
+requires len(b) == 8
+requires forall j int :: 0 <= j && j < len(b) ==> acc(&b[j])
+ensures forall j int :: 0 <= j && j < len(b) ==> acc(&b[j])
+ensures forall j int :: 0 <= j && j < 8 ==> integer(b[j]) == Octet(integer(v), j)
+func (bigEndian) PutUint64(b []byte, v uint64)
+
+requires len(b) == 4
+requires 0 <= v && v <= 4294967295
+requires forall j int :: 0 <= j && j < len(b) ==> acc(&b[j])
+ensures forall j int :: 0 <= j && j < len(b) ==> acc(&b[j])
+ensures forall j int :: 0 <= j && j < 4 ==> integer(b[j]) == Octet(integer(v), j+4)
+func (bigEndian) PutUint32(b []byte, v uint32)
