@@ -140,15 +140,15 @@ func TestOpenRootNoSymlinkPinsSelectedDirectory(t *testing.T) {
 	if err := os.Symlink(selected, alias); err != nil {
 		t.Skipf("directory symlinks unavailable on this platform: %v", err)
 	}
+	marker := filepath.Join(selected, "marker")
+	if err := os.WriteFile(marker, []byte("target unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if unexpected, err := OpenRootNoSymlink(alias); err == nil || unexpected != nil {
 		if unexpected != nil {
 			_ = unexpected.Close()
 		}
 		t.Fatalf("symlink root = (%v, %v); want nil, error", unexpected, err)
-	}
-	marker := filepath.Join(selected, "marker")
-	if err := os.WriteFile(marker, []byte("target unchanged"), 0o600); err != nil {
-		t.Fatal(err)
 	}
 	content, err := os.ReadFile(marker)
 	if err != nil || string(content) != "target unchanged" {

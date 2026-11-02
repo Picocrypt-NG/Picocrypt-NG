@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -228,6 +229,9 @@ func TestPCV3MobileWriteRoutesToNativeWriter(t *testing.T) {
 				len(request.Factors.Keyfiles) != 1 {
 				t.Errorf("native write factor intent changed: %#v", request.Factors)
 			} else {
+				if !slices.Equal(request.Factors.Password, []byte("creation-password")) {
+					t.Errorf("native writer did not receive the selected password bytes")
+				}
 				workerPassword = request.Factors.Password
 			}
 			data := make([]byte, len(payload))

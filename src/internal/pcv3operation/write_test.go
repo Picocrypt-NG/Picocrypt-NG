@@ -45,10 +45,14 @@ func TestWriteCancellationConsumesSecretsWithoutClosingBorrowedSource(t *testing
 }
 
 func TestWriteReporterPanicIsClosedBeforeSourceRead(t *testing.T) {
-	req := &WriteRequest{Mode: WriteModeNormal, Suite: pcv3.SuiteStandard, PayloadKind: pcv3.PayloadKindRaw, Source: strings.NewReader("secret"), Factors: &pcv3credential.FactorRequest{Password: []byte("secret")}, Target: filepath.Join(t.TempDir(), "output"), Reporter: func(Status) error { panic("sensitive callback") }}
+	source := strings.NewReader("secret")
+	req := &WriteRequest{Mode: WriteModeNormal, Suite: pcv3.SuiteStandard, PayloadKind: pcv3.PayloadKindRaw, Source: source, Factors: &pcv3credential.FactorRequest{Password: []byte("secret")}, Target: filepath.Join(t.TempDir(), "output"), Reporter: func(Status) error { panic("sensitive callback") }}
 	result := RunWrite(context.Background(), req)
 	if result.Diagnostic() != DiagnosticCallbackPanic || result.SourceDeletionAllowed() {
 		t.Fatalf("panic result=%v", result)
+	}
+	if source.Len() != len("secret") {
+		t.Fatal("reporter panic consumed source plaintext")
 	}
 }
 

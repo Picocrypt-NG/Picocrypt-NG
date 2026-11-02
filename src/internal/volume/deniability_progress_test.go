@@ -28,7 +28,7 @@ func (r *etaStatusReporter) IsCancelled() bool                      { return fal
 // streaming progress pass for the named operation. It delegates to the pure
 // streamingSpeedAndETAProblems so the accept/reject policy is unit-testable
 // against captured real-world status batches (see
-// TestStreamingSpeedAndETAAcceptsCoarseClockZeroSpeed).
+// TestStreamingProgressOracle).
 func assertStreamingSpeedAndETA(t *testing.T, op string, statuses []string) {
 	t.Helper()
 	for _, p := range streamingSpeedAndETAProblems(statuses) {
@@ -145,7 +145,7 @@ func TestDeniabilityReportsSpeedAndETA(t *testing.T) {
 	assertStreamingSpeedAndETA(t, "RemoveDeniability", remRep.statuses)
 }
 
-// TestStreamingSpeedAndETAAcceptsCoarseClockZeroSpeed pins that a streaming pass
+// TestStreamingProgressOracle checks the test-only progress oracle. A streaming pass
 // whose every sample reads 0.00 MiB/s is still accepted as a real throughput+ETA
 // report. This is the exact RemoveDeniability batch captured from the
 // windows-legacy release runner (go-legacy-win7), where a 2 MiB payload finished
@@ -153,7 +153,7 @@ func TestDeniabilityReportsSpeedAndETA(t *testing.T) {
 // every sample. Requiring speed>0 here flaked that runner; reintroducing it would
 // re-break this batch. The positive-speed math is pinned deterministically in
 // util.TestStatify instead.
-func TestStreamingSpeedAndETAAcceptsCoarseClockZeroSpeed(t *testing.T) {
+func TestStreamingProgressOracle(t *testing.T) {
 	statuses := []string{
 		"Removing deniability protection...",
 		"Removing deniability at 0.00 MiB/s (ETA: 00:00:00)",
@@ -162,5 +162,25 @@ func TestStreamingSpeedAndETAAcceptsCoarseClockZeroSpeed(t *testing.T) {
 	}
 	if problems := streamingSpeedAndETAProblems(statuses); len(problems) != 0 {
 		t.Errorf("coarse-clock streaming batch wrongly rejected: %v; statuses=%v", problems, statuses)
+	}
+	for _, tc := range []struct {
+		name     string
+		statuses []string
+	}{
+		{name: "no streaming samples", statuses: []string{"Removing deniability protection..."}},
+		{name: "missing speed", statuses: []string{
+			"Removing deniability at MiB/s (ETA: 00:00:00)",
+			"Removing deniability at MiB/s (ETA: 00:00:00)",
+		}},
+		{name: "missing ETA", statuses: []string{
+			"Removing deniability at 0.00 MiB/s (ETA: )",
+			"Removing deniability at 0.00 MiB/s (ETA: )",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if problems := streamingSpeedAndETAProblems(tc.statuses); len(problems) == 0 {
+				t.Fatalf("progress oracle accepted an invalid batch: %v", tc.statuses)
+			}
+		})
 	}
 }

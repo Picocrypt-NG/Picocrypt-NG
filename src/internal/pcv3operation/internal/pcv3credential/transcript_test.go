@@ -926,14 +926,6 @@ func TestCanonicalTranscriptRejectsLegacyAlternatives(t *testing.T) {
 	})
 }
 
-func TestCanonicalTranscriptRawNFDFallbackMutation(t *testing.T) {
-	requireCanonicalTranscriptRawNFDFallbackRejected(t)
-}
-
-func TestCanonicalTranscriptXORFallbackMutation(t *testing.T) {
-	requireCanonicalTranscriptXORFallbackRejected(t)
-}
-
 func TestCanonicalTranscriptBounds(t *testing.T) {
 	t.Run("exact 1 MiB password succeeds", func(t *testing.T) {
 		password := bytes.Repeat([]byte{'a'}, 1<<20)

@@ -341,6 +341,7 @@ func TestApplyStartupPathsWithMacOSProcessSerialLoadsDecryptVolume(t *testing.T)
 	fyne.DoAndWait(func() {
 		a.applyStartupPaths([]string{"-psn_0_12345", inputFile})
 	})
+	waitForDropProcessing(t, a)
 	state := snapshotDropState(t, a)
 
 	if state.Mode != "decrypt" {
@@ -348,6 +349,9 @@ func TestApplyStartupPathsWithMacOSProcessSerialLoadsDecryptVolume(t *testing.T)
 	}
 	if state.InputFile != inputFile {
 		t.Fatalf("InputFile = %q; want %q", state.InputFile, inputFile)
+	}
+	if want := filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt"); state.OutputFile != want {
+		t.Fatalf("OutputFile = %q; want %q after completed legacy routing", state.OutputFile, want)
 	}
 }
 

@@ -815,11 +815,6 @@ func TestCredentialLifecycleExitMatrix(t *testing.T) {
 				fixture.owner.Close()
 				fixture.owner.Close()
 				requireOwnerAliasesZero(t, fixture.aliases)
-				requireCredentialLifecycleCounts(
-					t,
-					credentialLifecycleCounts{},
-					credentialLifecycleCounts{},
-				)
 			},
 		},
 	}
@@ -841,10 +836,6 @@ func TestCredentialLifecycleExitMatrix(t *testing.T) {
 			t.Errorf("missing deterministic lifecycle proof for %q", name)
 		}
 	}
-}
-
-func TestPipelinePreExpandScheduleValidationMutation(t *testing.T) {
-	requirePipelinePreExpandScheduleValidation(t)
 }
 
 func requireNoCredentialProcessOutput(

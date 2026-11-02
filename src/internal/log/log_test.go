@@ -3,6 +3,8 @@ package log
 import (
 	"bytes"
 	"errors"
+	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -58,18 +60,35 @@ func TestFieldCreators(t *testing.T) {
 }
 
 func TestNullLogger(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = w, w
+	defer func() {
+		os.Stdout, os.Stderr = stdout, stderr
+		_ = w.Close()
+		_ = r.Close()
+	}()
+
 	logger := &nullLogger{}
+	logger.Debug("discarded debug")
+	logger.Info("discarded info")
+	logger.Warn("discarded warning")
+	logger.Error("discarded error")
+	logger.WithFields(String("key", "discarded field")).Info("discarded child message")
 
-	// These should all be no-ops
-	logger.Debug("test")
-	logger.Info("test")
-	logger.Warn("test")
-	logger.Error("test")
-
-	// WithFields should return same null logger
-	child := logger.WithFields(String("key", "value"))
-	if child != logger {
-		t.Error("nullLogger.WithFields should return same instance")
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout, os.Stderr = stdout, stderr
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output) != 0 {
+		t.Fatalf("disabled logging emitted output: %q", output)
 	}
 }
 

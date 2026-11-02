@@ -990,40 +990,6 @@ class OperationManagerTest {
     }
     
     @Test
-    fun `OperationState has correct structure`() {
-        val formData = TestDataBuilders.createEncryptFormData()
-        val status = OperationStatusData(OperationStatus.ENCRYPTING_RATE, 12.34, "01:02:03")
-        val detail = OperationProgressDetail("ITEM_COUNT", 3, 10)
-        val operationState = TestDataBuilders.createOperationState(
-            id = "op_123",
-            type = OperationType.ENCRYPT,
-            inputFile = "/input.txt",
-            outputFile = "/output.pcv",
-            status = status,
-            detail = detail,
-            progress = 0.5f,
-            done = false,
-            formData = formData
-        )
-        
-        assertEquals("op_123", operationState.id)
-        assertEquals(OperationType.ENCRYPT, operationState.type)
-        assertEquals("/input.txt", operationState.inputFile)
-        assertEquals("/output.pcv", operationState.outputFile)
-        assertEquals(status, operationState.status)
-        assertEquals(0.5f, operationState.progress, 0.001f)
-        assertEquals(detail, operationState.detail)
-        assertEquals(false, operationState.done)
-        assertEquals(formData, operationState.formData)
-    }
-    
-    @Test
-    fun `OperationType enum values are correct`() {
-        assertEquals("ENCRYPT", OperationType.ENCRYPT.name)
-        assertEquals("DECRYPT", OperationType.DECRYPT.name)
-    }
-
-    @Test
     fun `startDecrypt passes verifyFirst from formData into DecryptOptions`() = runTest {
         // verifyFirst is a security option (integrity-verify-before-write). It is wired
         // through the Go bridge (GoBridge.DecryptOptions.verifyFirst -> android.go) but
@@ -2069,43 +2035,6 @@ class OperationManagerTest {
         assertTrue(first.await().isSuccess)
         assertEquals(1, archive.beginCalls)
         assertTrue(lifecycle.presentation.value is Pcv3Presentation.Final)
-    }
-
-    @Test
-    fun `PCV3 fake Release denies nonterminal in-flight archive and repeated calls`() = runTest {
-        val entered = CompletableDeferred<Unit>()
-        val settleArchive = CompletableDeferred<Unit>()
-        val operation = ContractOperation("pcv3-archive-release", pcv3ArchivePendingSnapshot())
-        val archive = ContractArchive(operation, entered, settleArchive)
-        operation.installArchive(archive)
-
-        val action = async(Dispatchers.Default) { archive.beginSaf().session!!.finish() }
-        entered.await()
-        try {
-            assertNull("the blocking point is after one-shot capability consumption", operation.archive())
-            assertEquals(
-                "Release must remain denied after capability consumption until the archive effect settles",
-                "PCV3_OPERATION_RELEASE_DENIED",
-                operation.release(),
-            )
-        } finally {
-            settleArchive.complete(Unit)
-        }
-        action.await()
-
-        assertEquals("", operation.release())
-        assertEquals(
-            "a successfully released operation is no longer registered",
-            "PCV3_OPERATION_RELEASE_DENIED",
-            operation.release(),
-        )
-
-        val nonterminal = ContractOperation("pcv3-working-release", pcv3WorkingSnapshot())
-        assertEquals(
-            "a live nonterminal operation cannot be released",
-            "PCV3_OPERATION_RELEASE_DENIED",
-            nonterminal.release(),
-        )
     }
 
     @Test

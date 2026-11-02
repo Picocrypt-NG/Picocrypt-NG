@@ -256,6 +256,9 @@ func testPCV3MobileOwnsPasswordAndDescriptors(t *testing.T) {
 		if string(data) != "original-source" {
 			t.Errorf("owned descriptor read %q", data)
 		}
+		if !slices.Equal(request.Factors.Password, []byte("mutable-password")) {
+			t.Errorf("worker did not receive the selected password bytes")
+		}
 		workerPassword = request.Factors.Password
 		close(workerDone)
 		return nil

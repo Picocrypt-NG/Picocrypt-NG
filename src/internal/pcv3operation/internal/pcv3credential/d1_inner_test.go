@@ -202,6 +202,10 @@ func TestD1DerivedRecoveryClearsFailuresAndRejectsNonDerivedTuples(t *testing.T)
 					return marker
 				})
 			}()
+			wantCallback := cause == "callback error" || cause == "cancel callback" || cause == "panic"
+			if (retained != nil) != wantCallback {
+				t.Fatal("derived recovery crossed or skipped its callback boundary")
+			}
 			if owner != nil {
 				owner.Close()
 				t.Fatal("failed derived recovery published owner")

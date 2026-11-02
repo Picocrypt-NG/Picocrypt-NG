@@ -350,32 +350,54 @@ func TestBuildPermissionsStayLeastPrivilege(t *testing.T) {
 func TestAppImageWorkflowIsPortableSmokeTestedAndPinned(t *testing.T) {
 	const path = ".github/workflows/build-appimage.yml"
 	workflow := mustReadWorkflowDoc(t, path)
-	content := mustReadWorkflow(t, path)
-
 	build := mustJob(t, workflow, "build")
 
 	// Portability floor. AppImage was dropped once "for better portability"
 	// (Changelog v1.34); building on the newest runner's glibc reproduces that, so the
 	// build job pins the oldest supported runner (ubuntu-22.04, glibc 2.35).
-	mustContain(t, content, "runs-on: ubuntu-22.04")
+	if build.RunsOn != "ubuntu-22.04" {
+		t.Fatalf("AppImage build runner = %q, want ubuntu-22.04 portability floor", build.RunsOn)
+	}
 
 	// Supply chain: the AppImage tooling is fetched at build time, so it must be
 	// sha256-pinned AND verified (fail loud), like UPX in build-linux. Asserts that a
 	// pin exists and is checked -- not the exact digest -- so a tool bump does not churn
 	// this test.
-	mustContain(t, content, "linuxdeploy")
-	mustContain(t, content, "appimagetool")
-	mustMatch(t, content, `[0-9a-f]{64}`)
-	mustContain(t, content, "sha256sum")
-	mustContain(t, content, "--check")
+	fetch := mustStepNamed(t, build, "Fetch and verify AppImage tooling")
+	if fetch.If != "" || (fetch.ContinueOnError != nil && fetch.ContinueOnError != false) {
+		t.Fatal("AppImage tooling verification must be unconditional and blocking")
+	}
+	ready := regexp.MustCompile(`(?m)^[\t ]*chmod \+x linuxdeploy appimagetool[\t ]*$`).FindStringIndex(fetch.Run)
+	if ready == nil {
+		t.Fatal("AppImage tooling must be made executable only after verification")
+	}
+	for _, tool := range []struct{ name, url string }{
+		{"linuxdeploy", "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"},
+		{"appimagetool", "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"},
+	} {
+		download := regexp.MustCompile(`(?m)^[\t ]*` + regexp.QuoteMeta("wget -O "+tool.name+" "+tool.url) + `[\t ]*$`).FindStringIndex(fetch.Run)
+		checksum := regexp.MustCompile(`(?m)^[\t ]*echo "[0-9a-f]{64}  ` + tool.name + `" \| sha256sum --check --strict --status[\t ]*$`).FindStringIndex(fetch.Run)
+		if download == nil || checksum == nil || download[0] >= checksum[0] || checksum[0] >= ready[0] {
+			t.Fatalf("%s requires an active pinned checksum command after download and before chmod", tool.name)
+		}
+	}
 
 	// The produced AppImage must be smoke-tested, or a broken bundle (a shared library
 	// that fails to resolve) ships silently. --version drives the embedded CLI
 	// (cli.Execute), which exits before Fyne/OpenGL init, so it proves every bundled and
 	// host-provided library resolves at process start without needing a display.
 	smoke := mustStepNamed(t, build, "Smoke test AppImage")
-	mustContain(t, smoke.Run, "--version")
-	mustContain(t, smoke.Run, ".AppImage")
+	if smoke.If != "" || (smoke.ContinueOnError != nil && smoke.ContinueOnError != false) {
+		t.Fatal("AppImage smoke execution must be unconditional and blocking")
+	}
+	for _, command := range []string{
+		`VERSION=$(cat VERSION)`,
+		`APP="Picocrypt-NG-${VERSION}-x86_64.AppImage"`,
+		`out=$("./$APP" --version)`,
+		`echo "$out" | grep -qi picocrypt`,
+	} {
+		mustMatch(t, smoke.Run, `(?m)^[\t ]*`+regexp.QuoteMeta(command)+`[\t ]*$`)
+	}
 }
 
 func TestMacOSReleaseWorkflowInjectsRootVersionIntoBundleMetadata(t *testing.T) {
@@ -883,9 +905,26 @@ func TestLinuxUPXDownloadsRemainChecksumGated(t *testing.T) {
 		".github/workflows/build-linux.yml",
 		".github/workflows/pr-test-build-linux.yml",
 	} {
-		content := mustReadWorkflow(t, path)
-		mustContain(t, content, "upx_sha256:")
-		mustContain(t, content, "sha256sum --check --strict --status")
+		build := mustJob(t, mustReadWorkflowDoc(t, path), "build")
+		compress := mustStepNamed(t, build, "Compress with upx")
+		if compress.If != "" || (compress.ContinueOnError != nil && compress.ContinueOnError != false) {
+			t.Fatal("Linux UPX verification must be unconditional and blocking")
+		}
+		commands := []string{
+			`wget -O upx\.tar\.xz https://github\.com/upx/upx/releases/download/v[0-9]+\.[0-9]+\.[0-9]+/\$\{\{ matrix\.upx_pkg \}\}\.tar\.xz`,
+			regexp.QuoteMeta(`echo "${{ matrix.upx_sha256 }}  upx.tar.xz" | sha256sum --check --strict --status`),
+			regexp.QuoteMeta(`tar -xf upx.tar.xz`),
+			regexp.QuoteMeta(`${{ matrix.upx_pkg }}/upx --lzma "src/${{ matrix.gui_binary }}"`),
+			regexp.QuoteMeta(`${{ matrix.upx_pkg }}/upx --lzma "src/${{ matrix.cli_binary }}"`),
+		}
+		previous := -1
+		for _, command := range commands {
+			match := regexp.MustCompile(`(?m)^[\t ]*` + command + `[\t ]*$`).FindStringIndex(compress.Run)
+			if match == nil || match[0] <= previous {
+				t.Fatalf("%s requires active download, checksum, extraction and compression commands in order", path)
+			}
+			previous = match[0]
+		}
 	}
 }
 

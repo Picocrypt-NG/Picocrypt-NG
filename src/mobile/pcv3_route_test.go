@@ -296,7 +296,7 @@ func TestMobilePCV3StartDecryptRejectsBeforeLegacySideEffects(t *testing.T) {
 			request, err := json.Marshal(DecryptRequestJSON{
 				OperationID:  operationID,
 				InputFile:    input,
-				OutputFile:   "",
+				OutputFile:   output,
 				Keyfiles:     []string{"must-not-be-read.key"},
 				ForceDecrypt: true,
 				Deniability:  true,

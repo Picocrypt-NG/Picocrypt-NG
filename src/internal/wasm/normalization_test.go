@@ -19,10 +19,19 @@ var (
 // derive different Argon2 keys and decryption fails with ErrWrongPassword.
 func TestWASMEncryptNormalizesPassword(t *testing.T) {
 	original := []byte("cross-platform web volume")
+	var writerKDFInput []byte
+	previousKDF := deriveWASMKey
+	t.Cleanup(swapWASMTestKDF(func(password, salt []byte, paranoid bool) ([]byte, error) {
+		writerKDFInput = bytes.Clone(password)
+		return previousKDF(password, salt, paranoid)
+	}))
 
 	ciphertext, errCode := EncryptVolume(original, []byte(nfdPassword), EncryptOptions{})
 	if errCode != 0 {
 		t.Fatalf("encrypt failed with error code %d", errCode)
+	}
+	if !bytes.Equal(writerKDFInput, []byte{0xc3, 0xa9}) {
+		t.Fatalf("writer KDF password = %x; want NFC UTF-8 c3a9", writerKDFInput)
 	}
 
 	res, errCode := DecryptVolume(ciphertext, []byte(nfcPassword), DecryptOptions{})

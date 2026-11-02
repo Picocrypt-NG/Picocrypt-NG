@@ -41,6 +41,9 @@ func TestSecretSetWipesOldButNotSelfAssign(t *testing.T) {
 	s := SecretFrom(old)
 	next := []byte{8, 8, 8, 8}
 	s.Set(next)
+	if !bytes.Equal(s.Bytes(), next) || &s.Bytes()[0] != &next[0] {
+		t.Fatal("replacement was not adopted before self-assignment")
+	}
 	for i, x := range old {
 		if x != 0 {
 			t.Fatalf("old backing array byte %d not wiped: %d", i, x)

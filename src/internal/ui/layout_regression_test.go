@@ -457,10 +457,24 @@ func TestDesktopLanguageSelectorStaysInHeaderOutsideWorkflowControls(t *testing.
 	if a.mainContent == nil {
 		t.Fatal("mainContent was not built")
 	}
-	for _, obj := range a.mainContent.Objects {
-		if obj == a.languageSelector.button {
-			t.Fatal("language selector is inside main workflow content; want header utility control")
+	if !canvasTreeContainsObject(a.Window.Content(), a.languageSelector.button) {
+		t.Fatal("language selector is missing from the displayed window")
+	}
+	if canvasTreeContainsObject(a.mainContent, a.languageSelector.button) {
+		t.Fatal("language selector is inside main workflow content; want header utility control")
+	}
+	inHeader := false
+	walkCanvasTree(a.Window.Content(), func(obj fyne.CanvasObject) {
+		if canvasTreeContainsObject(obj, a.inputLabel) &&
+			canvasTreeContainsObject(obj, a.aboutButton) &&
+			canvasTreeContainsObject(obj, a.clearButton) &&
+			!canvasTreeContainsObject(obj, a.mainContent) &&
+			canvasTreeContainsObject(obj, a.languageSelector.button) {
+			inHeader = true
 		}
+	})
+	if !inHeader {
+		t.Fatal("language selector is outside the header containing About, selection, and Clear")
 	}
 }
 

@@ -137,7 +137,7 @@ func pcv3WireReporter(run *pcv3LifecycleRun) {
 func pcv3PasswordFactors(run *pcv3LifecycleRun, id string) *pcv3credential.FactorRequest {
 	password := pcv3SentinelBytes(id)
 	run.passwords = append(run.passwords, pcv3Sentinel{id: id, value: password})
-	run.sentinels = append(run.sentinels, pcv3Sentinel{id: id, value: password})
+	run.sentinels = append(run.sentinels, pcv3Sentinel{id: id, value: bytes.Clone(password)})
 	return operationPasswordFactors(password)
 }
 
@@ -318,7 +318,7 @@ func TestPCV3LifecycleMutationOracle(t *testing.T) {
 				})
 				run.sentinels = append(run.sentinels, pcv3Sentinel{
 					id:    "password-resource",
-					value: run.request.Factors.Password,
+					value: bytes.Clone(run.request.Factors.Password),
 				})
 				pcv3WireReporter(run)
 				return run

@@ -393,13 +393,10 @@ func TestPasswordGeneratorOutput(t *testing.T) {
 		t.Errorf("Password length = %d; want 32", len(password))
 	}
 
-	// Check for no symbols (when disabled)
-	symbols := "-=_+!@#$%^&*()"
 	for _, ch := range password {
-		for _, sym := range symbols {
-			if ch == sym {
-				t.Errorf("Password contains symbol %c when symbols disabled", ch)
-			}
+		allowed := ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9'
+		if !allowed {
+			t.Errorf("Password contains character %U outside the selected ASCII alphabet", ch)
 		}
 	}
 }

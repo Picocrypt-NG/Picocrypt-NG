@@ -120,6 +120,9 @@ func TestRecursivePCV3CancellationConsumesCurrentSourceAndDoesNotOpenNext(t *tes
 		if request.Mode != pcv3operation.ModeReadNormal || request.Consent != nil {
 			t.Error("recursive route inferred recovery authority")
 		}
+		if string(request.Factors.Password) != "cancelled batch secret" {
+			t.Error("recursive route did not transfer the selected worker password")
+		}
 		password = request.Factors.Password
 		a.stopCurrentOperation()
 		return pcv3operation.Run(ctx, request)

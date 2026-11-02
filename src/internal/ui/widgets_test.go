@@ -13,63 +13,38 @@ import (
 	fynetheme "fyne.io/fyne/v2/theme"
 )
 
-// strengthColor mirrors passwordStrengthRenderer.updateArc's color formula with
-// the same [0,4] clamp the production code applies before computing the RGBA. The
-// test recreates the formula (not the value) so a regression in updateArc's
-// arithmetic — wrong coefficient, missing clamp, swapped channels — is caught at
-// the rendered FillColor rather than silently passing.
-func strengthColor(t *testing.T, strength int) color.RGBA {
-	t.Helper()
-	s := strength
-	if s < 0 {
-		s = 0
-	} else if s > 4 {
-		s = 4
-	}
-	return color.RGBA{
-		R: uint8(0xc8 - 31*s),
-		G: uint8(0x4c + 31*s),
-		B: 0x4b,
-		A: 0xff,
-	}
-}
-
 // TestPasswordStrengthIndicator tests the password strength indicator widget.
 func TestPasswordStrengthIndicator(t *testing.T) {
 	// Create test app
 	newTestFyneApp(t)
 
-	// SetStrength asserts on the rendered arc, not the backing field. For each
-	// score the visible arc's FillColor must equal the red→green formula and its
-	// EndAngle must equal 72*(clamped strength+1) degrees (the original Picocrypt
-	// arc length). Clamp rows (-1, 5) pin both color and angle to [0,4]. This fails if
-	// updateArc's color math or angle math regresses, where a field-echo would not.
+	// Frozen visible colors and angles also pin scores outside the supported range.
 	t.Run("SetStrength", func(t *testing.T) {
 		indicator := NewPasswordStrengthIndicator()
 		renderer := indicator.CreateRenderer().(*passwordStrengthRenderer)
 		indicator.SetVisible(true)
 
 		for _, tc := range []struct {
-			strength int
+			strength  int
+			wantColor color.RGBA
+			wantAngle float32
 		}{
-			{-1}, {0}, {1}, {2}, {3}, {4}, {5},
+			{-1, color.RGBA{0xc8, 0x4c, 0x4b, 0xff}, 72},
+			{0, color.RGBA{0xc8, 0x4c, 0x4b, 0xff}, 72},
+			{1, color.RGBA{0xa9, 0x6b, 0x4b, 0xff}, 144},
+			{2, color.RGBA{0x8a, 0x8a, 0x4b, 0xff}, 216},
+			{3, color.RGBA{0x6b, 0xa9, 0x4b, 0xff}, 288},
+			{4, color.RGBA{0x4c, 0xc8, 0x4b, 0xff}, 360},
+			{5, color.RGBA{0x4c, 0xc8, 0x4b, 0xff}, 360},
 		} {
 			indicator.SetStrength(tc.strength)
 			renderer.updateArc()
 
-			wantColor := strengthColor(t, tc.strength)
-			if got := renderer.arc.FillColor; got != wantColor {
-				t.Errorf("strength %d: arc.FillColor = %v, want %v", tc.strength, got, wantColor)
+			if got := renderer.arc.FillColor; got != tc.wantColor {
+				t.Errorf("strength %d: arc.FillColor = %v, want %v", tc.strength, got, tc.wantColor)
 			}
-			s := tc.strength
-			if s < 0 {
-				s = 0
-			} else if s > 4 {
-				s = 4
-			}
-			wantAngle := float32(72 * (s + 1))
-			if got := renderer.arc.EndAngle; got != wantAngle {
-				t.Errorf("strength %d: arc.EndAngle = %v, want %v", tc.strength, got, wantAngle)
+			if got := renderer.arc.EndAngle; got != tc.wantAngle {
+				t.Errorf("strength %d: arc.EndAngle = %v, want %v", tc.strength, got, tc.wantAngle)
 			}
 		}
 	})

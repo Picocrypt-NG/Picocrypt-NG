@@ -922,6 +922,9 @@ func TestPCV3RouteBeforeLegacyPrompts(t *testing.T) {
 		if result.exitCode != ExitGeneralError || observation.Called {
 			t.Fatalf("result = exit %d called %v stderr %q; want pre-operation refusal", result.exitCode, observation.Called, result.stderr)
 		}
+		if !strings.Contains(result.stderr, "PCV3 requires explicit --pcv3-factors=password|keyfiles|combined") {
+			t.Fatalf("missing factor policy was masked by another refusal: %q", result.stderr)
+		}
 		if strings.Contains(result.stderr, "Overwrite?") || strings.Contains(result.stderr, "Password:") {
 			t.Fatalf("PCV3 route reached legacy prompt: %q", result.stderr)
 		}

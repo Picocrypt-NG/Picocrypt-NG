@@ -148,21 +148,25 @@ func TestFilepathFromSlashLimitations(t *testing.T) {
 	testCases := []struct {
 		name        string
 		input       string
+		want        string
 		description string
 	}{
 		{
 			name:        "Backslash in Unix path",
 			input:       "a\\b",
+			want:        `a\b`,
 			description: "On Unix: filename 'a\\b'. On Windows: file 'b' in directory 'a'",
 		},
 		{
 			name:        "Drive letter path",
 			input:       "C:/foo",
+			want:        `C:\foo`,
 			description: "On Unix: relative path 'C:/foo'. On Windows: absolute path 'C:\\foo'",
 		},
 		{
 			name:        "Mixed separators",
 			input:       "a/b\\c",
+			want:        `a\b\c`,
 			description: "Behavior depends on platform separator handling",
 		},
 	}
@@ -180,6 +184,9 @@ func TestFilepathFromSlashLimitations(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			normalized := normalizeZipPath(tc.input)
+			if normalized != tc.want {
+				t.Errorf("normalizeZipPath(%q) = %q, want %q", tc.input, normalized, tc.want)
+			}
 			if strings.Contains(normalized, foreignSeparator) {
 				t.Errorf("normalizeZipPath(%q) = %q retains foreign separator %q; must use only the OS separator %q (%s)",
 					tc.input, normalized, foreignSeparator, string(filepath.Separator), tc.description)

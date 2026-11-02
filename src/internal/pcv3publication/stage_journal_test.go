@@ -177,6 +177,7 @@ func TestCleanupJournaledStageRemovesOnlyPersistedStageAfterRestart(t *testing.T
 		t.Fatalf("create stage: %v", err)
 	}
 	stagePath := stage.stagePath
+	journalPath := filepath.Join(filepath.Dir(stagePath), cleanupJournalName)
 	if err := stage.PersistCleanupJournal(); err != nil {
 		t.Fatalf("persist cleanup journal: %v", err)
 	}
@@ -184,6 +185,8 @@ func TestCleanupJournaledStageRemovesOnlyPersistedStageAfterRestart(t *testing.T
 	if _, err := stage.File().Write(stageBytes); err != nil {
 		t.Fatalf("write stage after durable ownership journal: %v", err)
 	}
+	requireFileBytes(t, stagePath, stageBytes)
+	requireExistence(t, journalPath, true)
 	closeStageHandlesWithoutCleanup(t, stage)
 
 	state, err := CleanupJournaledStage(directory)
@@ -196,7 +199,7 @@ func TestCleanupJournaledStageRemovesOnlyPersistedStageAfterRestart(t *testing.T
 	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stage after startup cleanup = %v; want absent", err)
 	}
-	if _, err := os.Lstat(filepath.Join(directory, cleanupJournalName)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(journalPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("journal after startup cleanup = %v; want absent", err)
 	}
 	requireFileBytes(t, source, sourceBytes)
@@ -225,15 +228,19 @@ func TestStageCleanupJournalRemovesExactStageAndJournalThenSyncs(t *testing.T) {
 		t.Fatalf("persist cleanup journal: %v", err)
 	}
 	stagePath := stage.stagePath
-	if _, err := stage.File().Write([]byte("plaintext after journal")); err != nil {
+	journalPath := filepath.Join(filepath.Dir(stagePath), cleanupJournalName)
+	stageBytes := []byte("plaintext after journal")
+	if _, err := stage.File().Write(stageBytes); err != nil {
 		t.Fatalf("write stage: %v", err)
 	}
+	requireFileBytes(t, stagePath, stageBytes)
+	requireExistence(t, journalPath, true)
 
 	if err := stage.Cleanup(); err != nil {
 		t.Fatalf("same-process cleanup: %v", err)
 	}
 	requireAbsent(t, stagePath)
-	requireAbsent(t, filepath.Join(directory, cleanupJournalName))
+	requireAbsent(t, journalPath)
 	requireFileBytes(t, source, sourceBytes)
 	requireFileBytes(t, target, targetBytes)
 }
@@ -241,7 +248,8 @@ func TestStageCleanupJournalRemovesExactStageAndJournalThenSyncs(t *testing.T) {
 func TestStageCleanupJournalCollisionNeverOverwritesFixedJournal(t *testing.T) {
 	directory := t.TempDir()
 	stage := createTestStage(t, directory)
-	journalPath := filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName)
+	privateDirectory := filepath.Dir(stage.stagePath)
+	journalPath := filepath.Join(privateDirectory, cleanupJournalName)
 	foreign := []byte("foreign journal must not be overwritten")
 	if err := os.WriteFile(journalPath, foreign, 0o640); err != nil {
 		t.Fatalf("write fixed-name collision: %v", err)
@@ -254,7 +262,7 @@ func TestStageCleanupJournalCollisionNeverOverwritesFixedJournal(t *testing.T) {
 	}
 	requireFileBytes(t, journalPath, foreign)
 	requireFileBytes(t, stagePath, nil)
-	requireNoJournalTemps(t, directory)
+	requireNoJournalTemps(t, privateDirectory)
 	if cleanupErr := stage.Cleanup(); !errors.Is(cleanupErr, ErrCleanupIncomplete) {
 		t.Fatalf("foreign journal prevents private directory retirement: %v", cleanupErr)
 	}
@@ -615,6 +623,7 @@ func TestStageCleanupJournalReportsRemovalAndDirectorySyncFailures(t *testing.T)
 func TestStageCleanupJournalIsNotOwnedBeforeEveryDurabilityBoundary(t *testing.T) {
 	directory := t.TempDir()
 	stage := createTestStage(t, directory)
+	privateDirectory := filepath.Dir(stage.stagePath)
 	nativeSyncFile := stage.operations.syncStage
 	nativeSyncDirectory := stage.operations.syncDirectory
 	fileSyncs := 0
@@ -651,7 +660,7 @@ func TestStageCleanupJournalIsNotOwnedBeforeEveryDurabilityBoundary(t *testing.T
 		t.Fatalf("durability calls = file %d directory %d; want 2/3", fileSyncs, directorySyncs)
 	}
 	requireAbsent(t, filepath.Join(filepath.Dir(stage.stagePath), cleanupJournalName))
-	requireNoJournalTemps(t, directory)
+	requireNoJournalTemps(t, privateDirectory)
 	if cleanupErr := stage.Cleanup(); cleanupErr != nil {
 		t.Fatalf("cleanup stage after rolled-back journal: %v", cleanupErr)
 	}

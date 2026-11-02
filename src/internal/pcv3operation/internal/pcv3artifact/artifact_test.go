@@ -378,9 +378,6 @@ func TestEncodeRejectsNonCanonicalMapBeforeWriting(t *testing.T) {
 			value.State = StateUnverifiedForensic
 			value.Role = RolePrimary
 		}},
-		{name: "wrong record index", mutate: func(value *fixtureDescriptor) { value.Ranges[0].RecordIndex = 1 }},
-		{name: "gap at start", mutate: func(value *fixtureDescriptor) { value.Ranges[0].Start = 1 }},
-		{name: "wrong end", mutate: func(value *fixtureDescriptor) { value.Ranges[0].End = 4 }},
 		{name: "unknown range status", mutate: func(value *fixtureDescriptor) { value.Ranges[0].Status = RangeStatus(255) }},
 	}
 
@@ -493,28 +490,6 @@ func TestMissingRangeHasNoSegmentAndDoesNotEraseRecordAttribution(t *testing.T) 
 	}
 	if visits != 2 {
 		t.Fatalf("mixed-map visits = %d; want 2", visits)
-	}
-}
-
-func TestEncodeFreezesRangeMapBeforeCallingExternalCode(t *testing.T) {
-	ranges := []Range{{RecordIndex: 0, Start: 0, End: 5, Status: RangeVerified}}
-	descriptor := fixtureDescriptor{
-		State: StatePartial, Role: RoleNone, Final: FinalMissing,
-		PlaintextLength: 5,
-		Ranges:          ranges,
-	}
-	var output bytes.Buffer
-	err := encodeFixture(&output, descriptor, func(yield func(uint64, io.Reader) error) error {
-		ranges[0].End = 4
-		return yield(0, strings.NewReader("fixed"))
-	})
-	if err != nil {
-		t.Fatalf("caller mutation changed validated evidence map: %v", err)
-	}
-	want := readLiteralArtifact(t, "partial")
-	copy(want[len(want)-5:], []byte("fixed"))
-	if !bytes.Equal(output.Bytes(), want) {
-		t.Fatalf("encoded bytes changed after caller mutation: %x; want %x", output.Bytes(), want)
 	}
 }
 

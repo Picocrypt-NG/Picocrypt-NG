@@ -430,18 +430,25 @@ func TestRecombineCancellation(t *testing.T) {
 		}
 	}
 
-	// Cancel mid-stream: return true only AFTER several invocations, by which
-	// point Recombine has created the output file and written at least one chunk
-	// into it. This exercises the partial-output cleanup path, not the pre-loop
-	// guard that fires before any bytes land.
+	// Discovery also polls Cancel, so wait for bytes in the actual output.
 	outputPath := filepath.Join(tmpDir, "output.pcv")
-	calls := 0
+	observedPartialOutput := false
 	err := Recombine(RecombineOptions{
 		InputBase:  filepath.Join(tmpDir, "test.pcv"),
 		OutputPath: outputPath,
 		Cancel: func() bool {
-			calls++
-			return calls > 3
+			partial, err := os.ReadFile(outputPath)
+			if errors.Is(err, os.ErrNotExist) {
+				return false
+			}
+			if err != nil {
+				t.Fatalf("read partial output before cancellation: %v", err)
+			}
+			if len(partial) == 0 {
+				return false
+			}
+			observedPartialOutput = true
+			return true
 		},
 	})
 
@@ -452,8 +459,8 @@ func TestRecombineCancellation(t *testing.T) {
 	if err.Error() != "operation cancelled" {
 		t.Errorf("Expected 'operation cancelled' error, got: %v", err)
 	}
-	if calls <= 3 {
-		t.Fatalf("Cancel fired too early (%d calls); cancellation was not mid-stream", calls)
+	if !observedPartialOutput {
+		t.Fatal("cancellation did not exercise cleanup of an output containing bytes")
 	}
 
 	// Security/data-integrity outcome: the partially-written output must be

@@ -2,6 +2,7 @@ package distmeta
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/xml"
 	"image/png"
 	"os"
@@ -875,20 +876,22 @@ func TestWindowsNSISScript(t *testing.T) {
 		}
 	})
 
-	t.Run("shchangenotify_at_least_twice", func(t *testing.T) {
-		// D-25 + D-26: SHChangeNotify must appear in BOTH install Section and Uninstall Section.
-		matches := regexp.MustCompile(`SHChangeNotify`).FindAllString(text, -1)
-		if len(matches) < 2 {
-			t.Errorf("installer.nsi must call SHChangeNotify at least twice (install + uninstall); found %d", len(matches))
+	t.Run("shchangenotify_install_and_uninstall", func(t *testing.T) {
+		for _, section := range []string{`"Associate .pcv files" SecAssoc`, `"Uninstall"`} {
+			block := regexp.MustCompile(`(?ms)^Section\s+` + regexp.QuoteMeta(section) + `\r?$.*?^SectionEnd\r?$`).FindString(text)
+			call := `System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0x0000, p 0, p 0)'`
+			if !regexp.MustCompile(`(?m)^[\t ]*` + regexp.QuoteMeta(call) + `[\t ]*\r?$`).MatchString(block) {
+				t.Errorf("Section %s must actively notify the shell of association changes", section)
+			}
 		}
 	})
 
 	t.Run("setregview_64_install_and_uninstall", func(t *testing.T) {
-		// Pitfall 4: SetRegView 64 MUST appear in BOTH .onInit and un.onInit
-		// (without it, NSIS x86 installer writes to WOW6432Node, hidden from Default Apps UI).
-		matches := regexp.MustCompile(`SetRegView 64`).FindAllString(text, -1)
-		if len(matches) < 2 {
-			t.Errorf("installer.nsi must call SetRegView 64 at least twice (.onInit + un.onInit); found %d", len(matches))
+		for _, function := range []string{".onInit", "un.onInit"} {
+			block := regexp.MustCompile(`(?ms)^Function\s+` + regexp.QuoteMeta(function) + `\r?$.*?^FunctionEnd\r?$`).FindString(text)
+			if !regexp.MustCompile(`(?m)^[\t ]*SetRegView 64[\t ]*\r?$`).MatchString(block) {
+				t.Errorf("Function %s must actively select the 64-bit registry view", function)
+			}
 		}
 	})
 
@@ -979,38 +982,75 @@ func TestWindowsNSISScript(t *testing.T) {
 	})
 }
 
-// TestWindowsICO validates images/pcv-icon.ico — pre-rendered multi-resolution
-// ICO committed to the repo (D-16, D-34). Mirrors TestPCVIconRenditions
-// pattern but for binary ICO format (no png.Decode; raw byte assertions).
+// The published icon contains six uncompressed DIB renditions. This checks
+// their directory and bitmap layout without decoding pixels.
 func TestWindowsICO(t *testing.T) {
 	data := mustReadFile(t, "images/pcv-icon.ico")
-
-	// D-34: file size > 1 KB (multi-resolution ICO with 6 entries minimum,
-	// PNG inputs total 11042 bytes; expect ICO ~12-30 KB).
-	if len(data) < 1024 {
-		t.Errorf("pcv-icon.ico size = %d bytes, want > 1024", len(data))
+	if len(data) < 6 || !bytes.Equal(data[:4], []byte{0, 0, 1, 0}) {
+		t.Fatal("pcv-icon.ico must contain an ICO directory header")
 	}
-
-	// D-34: ICO magic bytes (ICONDIR header per Wikipedia ICO spec):
-	//   bytes 0-1: 00 00  (reserved, must be 0)
-	//   bytes 2-3: 01 00  (type=1, ICO; 02 00 = CUR)
-	if len(data) < 4 || !bytes.Equal(data[:4], []byte{0x00, 0x00, 0x01, 0x00}) {
-		got := data
-		if len(got) > 4 {
-			got = got[:4]
-		}
-		t.Errorf("pcv-icon.ico magic bytes = % x, want 00 00 01 00", got)
+	wantSizes := []int{16, 32, 48, 64, 128, 256}
+	count := int(binary.LittleEndian.Uint16(data[4:6]))
+	directoryEnd := 6 + count*16
+	if count != len(wantSizes) || directoryEnd > len(data) {
+		t.Fatalf("ICO directory has %d entries in %d bytes; want all six published resolutions", count, len(data))
 	}
-
-	// D-34: image count at bytes 4-5 (little-endian uint16); D-16 specifies 6 sizes
-	// (16/32/48/64/128/256). Assert exactly 6 to catch accidental size omissions
-	// in render-icons.sh changes.
-	if len(data) >= 6 {
-		count := uint16(data[4]) | uint16(data[5])<<8
-		if count != 6 {
-			t.Errorf("pcv-icon.ico image count = %d, want 6 (sizes 16/32/48/64/128/256 per D-16)", count)
+	seen := make(map[int]bool, len(wantSizes))
+	type extent struct{ start, end uint64 }
+	var extents []extent
+	for index := range count {
+		entry := data[6+index*16 : 6+(index+1)*16]
+		width, height := int(entry[0]), int(entry[1])
+		if width == 0 {
+			width = 256
 		}
-	} else {
-		t.Errorf("pcv-icon.ico too short to contain ICONDIR header (%d bytes)", len(data))
+		if height == 0 {
+			height = 256
+		}
+		if width != height || !slices.Contains(wantSizes, width) || seen[width] {
+			t.Fatalf("ICO entry %d resolution = %dx%d; want each published size exactly once", index, width, height)
+		}
+		seen[width] = true
+		size := uint64(binary.LittleEndian.Uint32(entry[8:12]))
+		offset := uint64(binary.LittleEndian.Uint32(entry[12:16]))
+		if size < 40 || offset < uint64(directoryEnd) || offset > uint64(len(data)) || size > uint64(len(data))-offset {
+			t.Fatalf("ICO entry %d payload [%d,%d) is outside the bitmap data", index, offset, offset+size)
+		}
+		for _, previous := range extents {
+			if offset < previous.end && previous.start < offset+size {
+				t.Fatalf("ICO entry %d overlaps another rendition", index)
+			}
+		}
+		extents = append(extents, extent{offset, offset + size})
+		dib := data[offset : offset+size]
+		bits := binary.LittleEndian.Uint16(dib[14:16])
+		if binary.LittleEndian.Uint32(dib[:4]) != 40 ||
+			binary.LittleEndian.Uint32(dib[4:8]) != uint32(width) ||
+			binary.LittleEndian.Uint32(dib[8:12]) != uint32(height*2) ||
+			binary.LittleEndian.Uint16(dib[12:14]) != 1 ||
+			binary.LittleEndian.Uint32(dib[16:20]) != 0 ||
+			binary.LittleEndian.Uint16(entry[4:6]) != 1 ||
+			binary.LittleEndian.Uint16(entry[6:8]) != bits || (bits != 8 && bits != 32) {
+			t.Fatalf("ICO entry %d must contain a matching uncompressed 8-bit or 32-bit DIB", index)
+		}
+		palette := uint64(0)
+		colorsUsed := binary.LittleEndian.Uint32(dib[32:36])
+		if bits == 8 {
+			if colorsUsed != 0 && colorsUsed != 256 {
+				t.Fatalf("ICO entry %d has an incomplete 8-bit palette", index)
+			}
+			palette = 256 * 4
+		} else if colorsUsed != 0 {
+			t.Fatalf("ICO entry %d must not declare a palette for its 32-bit bitmap", index)
+		}
+		// Both XOR pixels and the 1-bit transparency mask use DWORD-aligned rows.
+		xorBytes := ((uint64(width)*uint64(bits) + 31) / 32) * 4 * uint64(height)
+		maskBytes := ((uint64(width) + 31) / 32) * 4 * uint64(height)
+		if size != 40+palette+xorBytes+maskBytes {
+			t.Fatalf("ICO entry %d payload has %d bytes; bitmap layout requires %d", index, size, 40+palette+xorBytes+maskBytes)
+		}
+		if imageSize := binary.LittleEndian.Uint32(dib[20:24]); imageSize != 0 && uint64(imageSize) != xorBytes {
+			t.Fatalf("ICO entry %d declares %d pixel bytes; want %d", index, imageSize, xorBytes)
+		}
 	}
 }

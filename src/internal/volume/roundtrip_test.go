@@ -681,12 +681,15 @@ func TestRoundTripSplit(t *testing.T) {
 		t.Fatalf("Failed to glob chunks: %v", err)
 	}
 	if len(chunks) < 2 {
-		t.Logf("Only %d chunk(s) created - file might be too small for splitting", len(chunks))
-		// A 100 KiB input split into 10 KiB chunks MUST produce multiple chunks;
-		// zero chunks means splitting silently failed — fail loud (Rule 12), never
-		// skip a broken split as if it were an environment gap.
-		if len(chunks) == 0 {
-			t.Fatalf("split produced zero chunks for %q (splitting is broken)", encryptedPath)
+		t.Fatalf("split produced %d chunk(s) for a 100 KiB input with 10 KiB chunks", len(chunks))
+	}
+	for _, chunk := range chunks {
+		info, err := os.Stat(chunk)
+		if err != nil {
+			t.Fatalf("stat chunk %q: %v", chunk, err)
+		}
+		if info.Size() <= 0 || info.Size() > 10*1024 {
+			t.Fatalf("chunk %q size = %d; want 1..10240 bytes", chunk, info.Size())
 		}
 	}
 	t.Logf("Created %d chunks", len(chunks))
@@ -1836,12 +1839,8 @@ func TestRoundTripAutoUnzipMultipleFilesFromDifferentDirs(t *testing.T) {
 		t.Fatalf("Decrypt failed: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(tmpDir, "multi", "alpha", "one.txt")); err != nil {
-		t.Fatalf("Missing extracted fileA: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(tmpDir, "multi", "beta", "two.txt")); err != nil {
-		t.Fatalf("Missing extracted fileB: %v", err)
-	}
+	assertFileBytes(t, filepath.Join(tmpDir, "multi", "alpha", "one.txt"), []byte("one"))
+	assertFileBytes(t, filepath.Join(tmpDir, "multi", "beta", "two.txt"), []byte("two"))
 }
 
 // TestRoundTripMultiFile tests encrypting multiple files (zipped internally)
@@ -2309,8 +2308,12 @@ func TestForceDecryptCorruptedData(t *testing.T) {
 	if !kept {
 		t.Error("ForceDecrypt over a MAC failure must set kept=true")
 	}
-	if _, statErr := os.Stat(keptPath); statErr != nil {
-		t.Errorf("ForceDecrypt must produce a best-effort output file: %v", statErr)
+	keptOutput, err := os.ReadFile(keptPath)
+	if err != nil {
+		t.Fatalf("read ForceDecrypt best-effort output: %v", err)
+	}
+	if len(keptOutput) != len(plaintext) {
+		t.Errorf("ForceDecrypt output length = %d; want %d", len(keptOutput), len(plaintext))
 	}
 }
 
@@ -2530,7 +2533,12 @@ func TestRoundTripCompressedSingleFileViaInputFileField(t *testing.T) {
 		t.Fatalf("Encrypt (compressed inputfile) failed: %v", err)
 	}
 
-	_ = os.Remove(filePath)
+	if err := os.Remove(filePath); err != nil {
+		t.Fatalf("remove original before restore: %v", err)
+	}
+	if _, err := os.Stat(filePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("original still present before restore: %v", err)
+	}
 
 	decReq := &DecryptRequest{
 		InputFile:    encryptedPath,
@@ -2547,13 +2555,11 @@ func TestRoundTripCompressedSingleFileViaInputFileField(t *testing.T) {
 		t.Fatalf("Decrypt (compressed inputfile) failed: %v", err)
 	}
 
-	if _, err := os.Stat(filePath); err != nil {
-		t.Fatalf("Expected restored file at %s: %v", filePath, err)
-	}
+	assertFileBytes(t, filePath, content)
 }
 
-// TestV2HeaderTamperDetection verifies that modifying header bytes
-// causes v2 volumes to fail authentication (header MAC protection).
+// TestV2HeaderTamperDetection verifies rejection of header damage beyond the
+// Reed-Solomon correction budget and explicit ForceDecrypt recovery.
 func TestV2HeaderTamperDetection(t *testing.T) {
 	rsCodecs, err := encoding.NewRSCodecs()
 	if err != nil {

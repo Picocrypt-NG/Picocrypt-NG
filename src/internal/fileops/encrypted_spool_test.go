@@ -1,6 +1,7 @@
 package fileops
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
@@ -15,7 +16,7 @@ import (
 
 // A sealed input must support the validation pass and the transport pass without
 // ever granting simultaneous plaintext readers or plaintext staging authority.
-func TestTempZipSequentialReadersReauthenticate(t *testing.T) {
+func TestTempZipSequentialReadersPreserveArchiveContent(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "input")
 	if err := os.WriteFile(source, []byte("repeatable private input"), 0o600); err != nil {
@@ -33,6 +34,22 @@ func TestTempZipSequentialReadersReauthenticate(t *testing.T) {
 	want, err := io.ReadAll(first)
 	if err != nil {
 		t.Fatal(err)
+	}
+	archive, err := zip.NewReader(bytes.NewReader(want), int64(len(want)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archive.File) != 1 || archive.File[0].Name != "input" {
+		t.Fatal("temporary archive did not preserve the selected input entry")
+	}
+	entry, err := archive.File[0].Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, readErr := io.ReadAll(entry)
+	closeErr := entry.Close()
+	if readErr != nil || closeErr != nil || !bytes.Equal(payload, []byte("repeatable private input")) {
+		t.Fatal("temporary archive did not preserve the selected input bytes")
 	}
 	closer, ok := first.(io.Closer)
 	if !ok {
@@ -232,10 +249,11 @@ func TestEncryptedSpoolCancellationWipesAndRevokesActiveReader(t *testing.T) {
 func TestEncryptedSpoolRejectsMissingStageDirectoryAuthority(t *testing.T) {
 	owner, err := CreateEncryptedSpool(context.Background(), EncryptedSpoolOptions{MaxPhysicalBytes: 1 << 20})
 	if owner != nil {
+		t.Error("missing stage directory authority granted a spool owner")
 		_ = owner.Close()
 	}
-	if err == nil {
-		t.Fatal("empty NearPath created ciphertext beside the current working directory")
+	if !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("missing stage directory authority error = %v; want invalid input", err)
 	}
 }
 

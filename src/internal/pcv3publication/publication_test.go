@@ -1078,7 +1078,7 @@ func TestPublishIdentityChangesFailClosed(t *testing.T) {
 			stage.Cleanup()
 			t.Fatalf("write stage: %v", err)
 		}
-		stageName := stage.stageName
+		movedStagePath := filepath.Join(movedDirectory, stage.sourceName, stage.stageName)
 		if err := os.Rename(directory, movedDirectory); err != nil {
 			requireBlockedStageAttackCleanup(t, stage, err, payload)
 			return
@@ -1099,10 +1099,11 @@ func TestPublishIdentityChangesFailClosed(t *testing.T) {
 		if counts.atomic != 0 || counts.sync != 0 {
 			t.Fatalf("parent replacement reached commit = atomic %d sync %d", counts.atomic, counts.sync)
 		}
+		requireFileBytes(t, movedStagePath, payload)
 		if err := stage.Cleanup(); err != nil {
 			t.Fatalf("cleanup pinned-parent stage: %v", err)
 		}
-		if _, err := os.Lstat(filepath.Join(movedDirectory, stageName)); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Lstat(movedStagePath); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("owned stage remains in pinned parent: %v", err)
 		}
 		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {

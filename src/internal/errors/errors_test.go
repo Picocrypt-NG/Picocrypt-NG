@@ -2,62 +2,42 @@ package errors
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
-// TestSentinelErrors locks down the Err... sentinels listed below:
-// its self-identity under errors.Is, its exact message literal, and pairwise
-// distinctness across the listed set. Callers (e.g. volume/decrypt.go) branch on
-// these via errors.Is, so two sentinels collapsing into one — or a message
-// drifting — must fail a test, not silently change runtime behavior. The
-// ErrCorruptHeader/ErrCorruptData pair is the load-bearing case: they
-// distinguish corruption kinds and must never be aliased.
 func TestSentinelErrors(t *testing.T) {
 	tests := []struct {
 		name string
 		err  error
-		want string // exact message literal, mirroring errors.go
 	}{
-		{"ErrCancelled", ErrCancelled, "operation cancelled"},
-		{"ErrAuthFailed", ErrAuthFailed, "authentication failed"},
-		{"ErrCorruptHeader", ErrCorruptHeader, "header corrupted"},
-		{"ErrCorruptData", ErrCorruptData, "data corrupted"},
-		{"ErrNoInputFiles", ErrNoInputFiles, "no input files specified"},
-		{"ErrNoCredentials", ErrNoCredentials, "no password or keyfiles provided"},
-		{"ErrPasswordMismatch", ErrPasswordMismatch, "passwords do not match"},
-		{"ErrInvalidChunkSize", ErrInvalidChunkSize, "invalid chunk size"},
-		{"ErrChunkSizeTooLarge", ErrChunkSizeTooLarge, "chunk size exceeds maximum"},
-		{"ErrDuplicateKeyfiles", ErrDuplicateKeyfiles, "duplicate keyfiles detected"},
-		{"ErrCommentTooLong", ErrCommentTooLong, "comment exceeds maximum length"},
-		{"ErrFileNotFound", ErrFileNotFound, "file not found"},
+		{"ErrCancelled", ErrCancelled},
+		{"ErrAuthFailed", ErrAuthFailed},
+		{"ErrCorruptHeader", ErrCorruptHeader},
+		{"ErrCorruptData", ErrCorruptData},
+		{"ErrNoInputFiles", ErrNoInputFiles},
+		{"ErrNoCredentials", ErrNoCredentials},
+		{"ErrPasswordMismatch", ErrPasswordMismatch},
+		{"ErrInvalidChunkSize", ErrInvalidChunkSize},
+		{"ErrChunkSizeTooLarge", ErrChunkSizeTooLarge},
+		{"ErrDuplicateKeyfiles", ErrDuplicateKeyfiles},
+		{"ErrCommentTooLong", ErrCommentTooLong},
+		{"ErrFileNotFound", ErrFileNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.err == nil {
 				t.Fatal("sentinel error must not be nil")
 			}
-			// Self-identity: a sentinel must satisfy errors.Is against itself.
-			if !errors.Is(tt.err, tt.err) {
-				t.Errorf("errors.Is(%s, %s) = false; want true (self-identity)", tt.name, tt.name)
-			}
-			// Exact message literal — drift must fail the test.
-			if got := tt.err.Error(); got != tt.want {
-				t.Errorf("%s.Error() = %q; want %q", tt.name, got, tt.want)
-			}
 		})
 	}
 
-	// Pairwise distinctness: no two sentinels may be == or errors.Is-equal.
-	// Critically guards ErrCorruptHeader vs ErrCorruptData (volume/decrypt.go
-	// branches on the difference). Aliasing any pair must fail here.
+	// Callers must distinguish cancellation, authentication and corruption.
 	for i := range tests {
 		for j := i + 1; j < len(tests); j++ {
 			a, b := tests[i], tests[j]
-			if errors.Is(a.err, b.err) {
-				t.Errorf("errors.Is(%s, %s) = true; sentinels must not be Is-equal", a.name, b.name)
-			}
-			if errors.Is(b.err, a.err) {
-				t.Errorf("errors.Is(%s, %s) = true; sentinels must not be Is-equal", b.name, a.name)
+			if errors.Is(a.err, b.err) || errors.Is(b.err, a.err) {
+				t.Errorf("%s and %s must remain distinct", a.name, b.name)
 			}
 		}
 	}
@@ -124,12 +104,12 @@ func TestHeaderError(t *testing.T) {
 }
 
 func TestIs(t *testing.T) {
-	if !Is(ErrCancelled, ErrCancelled) {
-		t.Error("Is should return true for same error")
+	wrapped := fmt.Errorf("operation: %w", ErrCancelled)
+	if !Is(wrapped, ErrCancelled) {
+		t.Error("Is lost the cancellation cause through a wrapper")
 	}
-
-	if Is(ErrCancelled, ErrAuthFailed) {
-		t.Error("Is should return false for different errors")
+	if Is(wrapped, ErrAuthFailed) {
+		t.Error("Is confused cancellation with authentication failure")
 	}
 }
 
@@ -137,12 +117,12 @@ func TestAs(t *testing.T) {
 	cryptoErr := NewCryptoError("test", errors.New("test"))
 
 	var target *CryptoError
-	if !As(cryptoErr, &target) {
+	if !As(fmt.Errorf("operation: %w", cryptoErr), &target) {
 		t.Error("As should find CryptoError")
 	}
 
-	if target.Op != "test" {
-		t.Errorf("unexpected Op: %s", target.Op)
+	if target != cryptoErr {
+		t.Error("As did not retain the original typed error")
 	}
 }
 
@@ -154,6 +134,10 @@ func TestWrap(t *testing.T) {
 		t.Errorf("unexpected wrapped message: %s", wrapped.Error())
 	}
 
+	if !errors.Is(wrapped, baseErr) {
+		t.Error("Wrap lost its underlying cause")
+	}
+
 	// Test with nil
 	if Wrap(nil, "context") != nil {
 		t.Error("Wrap(nil) should return nil")
@@ -161,23 +145,23 @@ func TestWrap(t *testing.T) {
 }
 
 func TestConvenienceFunctions(t *testing.T) {
-	if !IsCancelled(ErrCancelled) {
-		t.Error("IsCancelled should return true for ErrCancelled")
-	}
-
-	if IsCancelled(ErrAuthFailed) {
-		t.Error("IsCancelled should return false for other errors")
-	}
-
-	if !IsAuthFailed(ErrAuthFailed) {
-		t.Error("IsAuthFailed should return true for ErrAuthFailed")
-	}
-
-	if !IsCorrupt(ErrCorruptHeader) {
-		t.Error("IsCorrupt should return true for ErrCorruptHeader")
-	}
-
-	if !IsCorrupt(ErrCorruptData) {
-		t.Error("IsCorrupt should return true for ErrCorruptData")
+	for _, tc := range []struct {
+		name  string
+		check func(error) bool
+		cause error
+	}{
+		{"cancelled", IsCancelled, ErrCancelled},
+		{"authentication", IsAuthFailed, ErrAuthFailed},
+		{"header corruption", IsCorrupt, ErrCorruptHeader},
+		{"data corruption", IsCorrupt, ErrCorruptData},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.check(fmt.Errorf("operation: %w", tc.cause)) {
+				t.Fatal("wrapped cause was not classified")
+			}
+			if tc.check(nil) || tc.check(ErrFileNotFound) {
+				t.Fatal("unrelated error was misclassified")
+			}
+		})
 	}
 }

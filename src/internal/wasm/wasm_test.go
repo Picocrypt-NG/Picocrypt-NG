@@ -105,61 +105,33 @@ func TestEncryptDecryptRoundtrip(t *testing.T) {
 	}
 }
 
-func TestWASMUsesWriteAuthValues(t *testing.T) {
+func TestWASMAuthValueWriteFailureReturnsNoOutputAndWipesOwnedBuffers(t *testing.T) {
 	originalWriteAuthValues := writeAuthValues
-	defer func() {
+	t.Cleanup(func() {
 		writeAuthValues = originalWriteAuthValues
-	}()
-
-	sentinelKeyHash := bytes.Repeat([]byte{0xA1}, header.KeyHashSize)
-	sentinelKeyfileHash := bytes.Repeat([]byte{0xB2}, header.KeyfileHashSize)
-	sentinelAuthTag := bytes.Repeat([]byte{0xC3}, header.AuthTagSize)
-	var calls int
-
-	writeAuthValues = func(w io.WriterAt, offset int64, keyHash, keyfileHash, authTag []byte, rs *encoding.RSCodecs) error {
-		calls++
-		if offset != header.AuthValuesOffset(0) {
-			t.Errorf("auth values offset = %d; want %d", offset, header.AuthValuesOffset(0))
-		}
-		if len(keyHash) != header.KeyHashSize {
-			t.Errorf("keyHash size = %d; want %d", len(keyHash), header.KeyHashSize)
-		}
-		if len(keyfileHash) != header.KeyfileHashSize {
-			t.Errorf("keyfileHash size = %d; want %d", len(keyfileHash), header.KeyfileHashSize)
-		}
-		if len(authTag) != header.AuthTagSize {
-			t.Errorf("authTag size = %d; want %d", len(authTag), header.AuthTagSize)
-		}
-
-		return originalWriteAuthValues(w, offset, sentinelKeyHash, sentinelKeyfileHash, sentinelAuthTag, rs)
+	})
+	writeAttempted := false
+	writeAuthValues = func(io.WriterAt, int64, []byte, []byte, []byte, *encoding.RSCodecs) error {
+		writeAttempted = true
+		return errors.New("auth-value write failed")
 	}
-
-	volumeData, errCode := EncryptVolume([]byte("wasm auth writer guard"), []byte("wasm-password"), EncryptOptions{})
-	if errCode != 0 {
-		t.Fatalf("EncryptVolume returned error code %d", errCode)
+	var events []wasmZeroingEvent
+	t.Cleanup(observeWASMZeroingForTest(func(event wasmZeroingEvent) {
+		events = append(events, event)
+	}))
+	plaintext := []byte("wasm auth writer guard")
+	password := []byte("wasm-password")
+	volumeData, errCode := EncryptVolume(plaintext, password, EncryptOptions{})
+	if !writeAttempted || errCode != ErrModifiedData || volumeData != nil {
+		t.Fatalf("auth-value write failure returned attempted=%v code=%d bytes=%d; want attempted failure without output", writeAttempted, errCode, len(volumeData))
 	}
-	if calls != 1 {
-		t.Fatalf("writeAuthValues calls = %d; want 1", calls)
+	if !bytes.Equal(plaintext, []byte("wasm auth writer guard")) || !bytes.Equal(password, []byte("wasm-password")) {
+		t.Fatal("auth-value write failure changed caller-owned plaintext or password")
 	}
-
-	rs, err := encoding.NewRSCodecs()
-	if err != nil {
-		t.Fatalf("NewRSCodecs failed: %v", err)
-	}
-	result, err := header.NewReader(bytes.NewReader(volumeData), rs).ReadHeader()
-	if err != nil {
-		t.Fatalf("ReadHeader failed: %v", err)
-	}
-
-	if !bytes.Equal(result.Header.KeyHash, sentinelKeyHash) {
-		t.Fatal("WASM header key hash was not written by writeAuthValues")
-	}
-	if !bytes.Equal(result.Header.KeyfileHash, sentinelKeyfileHash) {
-		t.Fatal("WASM header keyfile hash was not written by writeAuthValues")
-	}
-	if !bytes.Equal(result.Header.AuthTag, sentinelAuthTag) {
-		t.Fatal("WASM header auth tag was not written by writeAuthValues")
-	}
+	requireWASMWipe(t, events, wasmZeroingPasswordBytes, len(password))
+	requireWASMWipe(t, events, wasmZeroingHeaderKeyHash, header.KeyHashSize)
+	requireWASMWipe(t, events, wasmZeroingAuthTag, header.AuthTagSize)
+	requireWASMWipe(t, events, wasmZeroingCiphertextBuffer, len(plaintext))
 }
 
 func TestWASMRoundtripDesktopDecrypt(t *testing.T) {
