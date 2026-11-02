@@ -367,6 +367,48 @@ func TestStagedFileReservesAndRemovesDerivedSiblingDirectory(t *testing.T) {
 	}
 }
 
+func TestStagedFileSiblingCleanupReportsMissingReservedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	stage, err := CreateSiblingTemp(filepath.Join(dir, "archive.zip"))
+	if err != nil {
+		t.Fatalf("CreateSiblingTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := stage.Cleanup(); err != nil {
+			t.Errorf("Cleanup: %v", err)
+		}
+	})
+	archiveBytes := []byte("recoverable staged archive")
+	if _, err := stage.File().Write(archiveBytes); err != nil {
+		t.Fatalf("write staged archive: %v", err)
+	}
+	extractDir := filepath.Join(dir, "archive")
+	reserved, err := stage.ReserveSiblingDirectory(extractDir)
+	if err != nil {
+		t.Fatalf("ReserveSiblingDirectory: %v", err)
+	}
+	plaintext := []byte("plaintext retained after incomplete extraction rollback")
+	if err := os.WriteFile(filepath.Join(extractDir, "payload.txt"), plaintext, 0o600); err != nil {
+		t.Fatalf("write retained plaintext: %v", err)
+	}
+	movedDir := filepath.Join(dir, "moved-archive")
+	if err := os.Rename(extractDir, movedDir); err != nil {
+		t.Fatalf("move reserved extraction directory: %v", err)
+	}
+
+	if err := stage.RemoveSiblingDirectory(extractDir, reserved); err == nil {
+		t.Error("missing reservation was reported as successful cleanup despite retained plaintext")
+	}
+	got, err := os.ReadFile(filepath.Join(movedDir, "payload.txt"))
+	if err != nil || !bytes.Equal(got, plaintext) {
+		t.Fatalf("moved plaintext changed: got %q, error %v", got, err)
+	}
+	got, err = os.ReadFile(stage.Path())
+	if err != nil || !bytes.Equal(got, archiveBytes) {
+		t.Fatalf("recoverable staged archive changed: got %q, error %v", got, err)
+	}
+}
+
 func TestStagedFileRejectsSiblingDirectoryOutsidePinnedParent(t *testing.T) {
 	dir := t.TempDir()
 	parent := filepath.Join(dir, "parent")
