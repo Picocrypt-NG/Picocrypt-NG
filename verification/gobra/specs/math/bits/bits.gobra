@@ -1,0 +1,17 @@
+package bits
+requires 0 <= x && x <= 18446744073709551615
+requires 0 <= y && y <= 18446744073709551615
+requires 0 <= carry && carry <= 1
+ensures 0 <= sum && sum <= 18446744073709551615
+ensures 0 <= carryOut && carryOut <= 1
+ensures integer(sum) == (integer(x) + integer(y) + integer(carry)) % 18446744073709551616
+ensures integer(carryOut) == (integer(x) + integer(y) + integer(carry)) / 18446744073709551616
+func Add64(x, y, carry uint64) (sum, carryOut uint64)
+
+requires 0 <= x && x <= 18446744073709551615
+requires 0 <= y && y <= 18446744073709551615
+ensures 0 <= high && high <= 18446744073709551615
+ensures 0 <= lowWord && lowWord <= 18446744073709551615
+ensures integer(high) == (integer(x) * integer(y)) / 18446744073709551616
+ensures integer(lowWord) == (integer(x) * integer(y)) % 18446744073709551616
+func Mul64(x, y uint64) (high, lowWord uint64)

@@ -74,5 +74,10 @@ CGO_ENABLED=1 go test -tags migrated_fynedo -race -p 1 -timeout 15m ./...
 
 ## Notes
 
+The separate [formal checks](../verification/README.md) provide reproducible
+EasyCrypt model and Go source-contract commands with explicit scope limits.
+They are distinct from the Go tests above and do not establish whole-application
+refinement.
+
 - On Linux without hardware OpenGL: `LIBGL_ALWAYS_SOFTWARE=1 ./Picocrypt-NG`
 - If accessibility bus causes issues: `NO_AT_BRIDGE=1 ./Picocrypt-NG`
