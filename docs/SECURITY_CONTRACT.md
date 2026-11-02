@@ -134,6 +134,16 @@ identity check and leaf removal are separate effects. There is no atomic POSIX
 expected-inode unlink guarantee; a leaf substitution between those effects
 remains a risk. Endpoint trust does not eliminate this residual race.
 
+The same check/unlink window exists in sibling-directory and auto-unzip archive
+cleanup and in Linux journal recovery. A concurrent writer in the relevant
+parent can move the owned object and substitute another leaf after its final
+identity check. Cleanup can then remove the replacement and report success while
+the moved original remains. Journal recovery requires a private directory, but
+mode 0700 does not exclude another process running as the same UID. Its result
+covers the recorded names; it cannot discover plaintext moved outside them.
+Source and cleanup namespaces must therefore remain quiescent during removal.
+An extra identity check alone does not provide atomic expected-object deletion.
+
 These improvements do not cover `StagedFile.RemoveSiblingDirectory` or
 `removeOwnedAutoUnzipArchiveAt`; common extraction changes do not harden those
 external cleanup paths. They also do not add general Windows exact-source

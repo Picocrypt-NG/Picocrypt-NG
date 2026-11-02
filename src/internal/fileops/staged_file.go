@@ -246,7 +246,7 @@ func (s *StagedFile) RemoveSiblingDirectory(targetPath string, expected os.FileI
 	}
 	current, err := s.root.Lstat(targetName)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return fmt.Errorf("reserved output directory missing during cleanup; owned data absence unproven: %w", err)
 	}
 	if err != nil {
 		return fmt.Errorf("inspect reserved output directory during cleanup: %w", err)
