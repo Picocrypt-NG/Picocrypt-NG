@@ -9,7 +9,7 @@ Unreleased development version.
 - ZIP extraction reports incomplete cleanup when created-object identity is unavailable or changes. Desktop source deletion holds the parent used for inspection and removal. Recombination with source deletion checks captured chunk identities and sizes before decryption.
 - Android restores only app-owned input paths. Clearing passwords also clears visible fields, and accepted legacy operations retain credentials through cancellation and Force retry.
 - Sequential keyfile processing avoids exhausting file descriptors. Ordinary legacy Reed-Solomon reads reject partial trailing blocks, and WASM authenticates v2 headers before reporting missing or incorrect keyfiles.
-- The source requires Go 1.27.3 and uses `golang.org/x/net` v0.61.0. Windows legacy builds apply pinned compatibility patches to the official Go source.
+- The source requires Go 1.27.3 and uses `golang.org/x/net` v0.62.0. Windows legacy builds apply pinned compatibility patches to the official Go source.
 - The Android release workflow signs APKs separately from Gradle using a read-only GitHub token. Download verification binds artifacts to the expected workflow, main branch and source commit.
 
 # v2.19

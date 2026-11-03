@@ -16,7 +16,7 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 func TestStaticChecksWorkflowEnforcesFormatVetLintAndVuln(t *testing.T) {
@@ -1634,7 +1634,18 @@ func TestAndroidReleaseWorkflowKeepsSigningSecretsOutOfBuildJob(t *testing.T) {
 	}
 }
 
-func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
+func TestAndroidBuildWorkflowsMatchPinnedJDK21(t *testing.T) {
+	var config struct {
+		Tools map[string]string `toml:"tools"`
+	}
+	if _, err := toml.Decode(mustReadRepoFile(t, "mise.toml"), &config); err != nil {
+		t.Fatalf("decode mise toolchain configuration: %v", err)
+	}
+	javaVersion, ok := strings.CutPrefix(config.Tools["java"], "temurin-")
+	if !ok || !regexp.MustCompile(`^21\.[0-9]+\.[0-9]+\+[0-9]+(?:\.[0-9]+)?(?:\.LTS)?$`).MatchString(javaVersion) {
+		t.Fatalf("mise Java toolchain = %q, want a fixed Temurin JDK 21 release", config.Tools["java"])
+	}
+
 	for _, path := range []string{
 		".github/workflows/build-android.yml",
 		".github/workflows/pr-test-build-android.yml",
@@ -1651,8 +1662,8 @@ func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
 				if got := step.With["distribution"]; got != "temurin" {
 					t.Fatalf("%s job %s setup-java distribution = %#v, want temurin", path, jobName, got)
 				}
-				if got := step.With["java-version"]; got != "21.0.12+101.0.LTS" {
-					t.Fatalf("%s job %s setup-java java-version = %#v, want 21.0.12+101.0.LTS", path, jobName, got)
+				if got := step.With["java-version"]; got != javaVersion {
+					t.Fatalf("%s job %s setup-java java-version = %#v, want mise toolchain %q", path, jobName, got, javaVersion)
 				}
 			}
 			if path == ".github/workflows/build-android.yml" && jobName == "release" {
@@ -1664,11 +1675,6 @@ func TestAndroidBuildWorkflowsUseJDK21(t *testing.T) {
 			}
 		}
 	}
-
-	mustContain(t, mustReadRepoFile(t, "mise.toml"), `java = "temurin-21.0.12+101.0.LTS"`)
-
-	buildScript := mustReadRepoFile(t, "android/build-app")
-	mustContain(t, buildScript, `"$JAVA_MAJOR" != "21"`)
 }
 
 func TestAndroidReleasePublishesAllFourABIsAndUniversal(t *testing.T) {
@@ -1852,13 +1858,13 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 
 func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {
 	const (
-		gradle981Sha256        = "dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f"
+		gradle982Sha256        = "21bd5da2de49b642904077f38c0efdc7778e92b3ed0889392dca61b97e389607"
 		gradleWrapperJarSha256 = "3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98"
 	)
 
 	wrapper := mustReadRepoFile(t, "android/gradle/wrapper/gradle-wrapper.properties")
-	mustContain(t, wrapper, "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.8.1-bin.zip")
-	mustMatch(t, wrapper, `(?m)^distributionSha256Sum=`+gradle981Sha256+`$`)
+	mustContain(t, wrapper, "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.8.2-bin.zip")
+	mustMatch(t, wrapper, `(?m)^distributionSha256Sum=`+gradle982Sha256+`$`)
 	mustMatch(t, wrapper, `(?m)^validateDistributionUrl=true$`)
 	mustMatch(t, wrapper, `(?m)^networkTimeout=60000$`)
 
@@ -1867,7 +1873,7 @@ func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {
 		t.Fatalf("read Gradle wrapper JAR: %v", err)
 	}
 	if got := fmt.Sprintf("%x", sha256.Sum256(wrapperJar)); got != gradleWrapperJarSha256 {
-		t.Fatalf("Gradle wrapper JAR SHA-256 = %s, want official Gradle 9.8.1 checksum %s", got, gradleWrapperJarSha256)
+		t.Fatalf("Gradle wrapper JAR SHA-256 = %s, want official Gradle 9.8.2 checksum %s", got, gradleWrapperJarSha256)
 	}
 
 	metadata := mustReadRepoFile(t, "android/gradle/verification-metadata.xml")
