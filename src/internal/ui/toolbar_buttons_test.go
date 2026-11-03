@@ -29,6 +29,7 @@ func TestToolbarButtonCancelsPendingTooltipBeforeOpeningModal(t *testing.T) {
 
 	var win fyne.Window
 	var modal dialog.Dialog
+	var modalShown bool
 	fyne.DoAndWait(func() {
 		win = fyneApp.NewWindow("tooltip-regression")
 		button := newToolbarButton("Open modal", theme.InfoIcon(), func() {
@@ -42,6 +43,8 @@ func TestToolbarButtonCancelsPendingTooltipBeforeOpeningModal(t *testing.T) {
 			Position:         fyne.NewPos(8, 8),
 		}})
 		button.Tapped(&fyne.PointEvent{Position: fyne.NewPos(8, 8)})
+		overlay := win.Canvas().Overlays().Top()
+		modalShown = modal != nil && overlay != nil && overlay.Visible()
 	})
 	t.Cleanup(func() {
 		fyne.DoAndWait(func() {
@@ -54,6 +57,9 @@ func TestToolbarButtonCancelsPendingTooltipBeforeOpeningModal(t *testing.T) {
 			}
 		})
 	})
+	if !modalShown {
+		t.Fatal("toolbar tap did not open the callback's modal")
+	}
 
 	time.Sleep(850 * time.Millisecond)
 	fyne.DoAndWait(func() {})

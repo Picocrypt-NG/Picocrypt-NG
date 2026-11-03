@@ -20,6 +20,11 @@ func TestBufferPool(t *testing.T) {
 
 	// Put buffer back
 	pool.Put(buf)
+	for i, v := range buf[:cap(buf)] {
+		if v != 0 {
+			t.Fatalf("returned plaintext backing array was not zeroed at index %d: %d", i, v)
+		}
+	}
 
 	// Get buffer again - should be zeroed (buffers may hold plaintext)
 	buf2 := pool.Get()

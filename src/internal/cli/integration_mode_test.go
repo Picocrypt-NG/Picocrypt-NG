@@ -7,16 +7,9 @@ import (
 	"testing"
 )
 
-// TestStdinOverwriteGuard exercises the real CLI overwrite guard that protects a
-// pre-existing output file when input comes from stdin. Without -y the guard at
-// encrypt.go:182 / decrypt.go:156 must refuse and tell the user to pass -y; this
-// guard returns BEFORE any stdin buffering, so the without-y path is deterministic
-// and never touches os.Stdin. It is otherwise only covered by the default-skipped
-// os/exec integration suite, so it is asserted here in-process.
-//
-// (Replaces the former TestCLIIntegrationEnabled, which only re-derived a
-// test-only env gate and exercised zero production code. The real-binary suite
-// is now owned by the central TestCLIIntegration parent.)
+// TestStdinOverwriteGuard protects occupied destinations before stdin buffering.
+// PCV3 encryption refuses replacement with either value of --yes; legacy
+// decryption preserves its overwrite-confirmation policy.
 func TestStdinOverwriteGuard(t *testing.T) {
 	t.Run("encrypt stdin refuses pre-existing output without -y", func(t *testing.T) {
 		resetEncryptFlagsForDirTest()
@@ -47,7 +40,7 @@ func TestStdinOverwriteGuard(t *testing.T) {
 		}
 	})
 
-	t.Run("encrypt stdin -y bypasses the overwrite guard", func(t *testing.T) {
+	t.Run("PCV3 encrypt stdin refuses pre-existing output even with -y", func(t *testing.T) {
 		resetEncryptFlagsForDirTest()
 
 		out := filepath.Join(t.TempDir(), "existing.pcv")
@@ -55,8 +48,7 @@ func TestStdinOverwriteGuard(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Feed empty stdin so the run proceeds past the guard deterministically;
-		// it will fail later (empty input), but never on the overwrite guard.
+		// The PCV3 output guard must reject before consuming stdin.
 		oldStdin := os.Stdin
 		r, w, err := os.Pipe()
 		if err != nil {
@@ -75,8 +67,13 @@ func TestStdinOverwriteGuard(t *testing.T) {
 		})
 
 		err = encryptCmd.RunE(encryptCmd, []string{"-"})
-		if err != nil && strings.Contains(err.Error(), "use -y to overwrite") {
-			t.Fatalf("-y must bypass the overwrite guard, got: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "already exists") ||
+			!strings.Contains(err.Error(), "--yes does not replace PCV3 outputs") {
+			t.Fatalf("expected PCV3 overwrite refusal with -y, got: %v", err)
+		}
+		data, err := os.ReadFile(out)
+		if err != nil || string(data) != "original" {
+			t.Fatalf("pre-existing PCV3 output changed with -y: got %q err %v", data, err)
 		}
 	})
 

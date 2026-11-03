@@ -31,7 +31,10 @@ func TestOpenRegularReadNoSymlinkRejectsFIFODeviceAndSymlinkWithoutLeaking(t *te
 			go func() {
 				file, err := OpenRegularReadNoSymlink(path)
 				if file != nil {
-					_ = file.Close()
+					func() {
+						defer file.Close()
+						t.Errorf("rejected admission returned a descriptor for %s", path)
+					}()
 				}
 				done <- err
 			}()

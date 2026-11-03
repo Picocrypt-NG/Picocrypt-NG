@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/encoding"
 	"bytes"
 	"errors"
+	"io"
 	"testing"
 )
 
@@ -212,9 +213,8 @@ func TestReadHeaderCommentLenBoundConstant(t *testing.T) {
 	buf.Write(atMax)
 
 	reader := NewReader(bytes.NewReader(buf.Bytes()), rs)
-	_, err = reader.ReadHeader()
-	if errors.Is(err, ErrInvalidCommentLength) {
-		t.Fatalf("ReadHeader rejected a comment length of exactly MaxCommentLen (%d) with %v; "+
-			"the D-02 bound must accept values up to and including MaxCommentLen", MaxCommentLen, err)
+	result, err := reader.ReadHeader()
+	if result == nil || !errors.Is(err, io.EOF) || result.BytesRead != buf.Len() {
+		t.Fatalf("ReadHeader at MaxCommentLen = (%+v, %v); want EOF after the %d-byte version/length prefix", result, err, buf.Len())
 	}
 }

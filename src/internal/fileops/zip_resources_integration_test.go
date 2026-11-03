@@ -106,6 +106,7 @@ func TestZIPUnpackAllocationMeasurement(t *testing.T) {
 	start := time.Now()
 	err = Unpack(UnpackOptions{ZipPath: archive, ExtractDir: filepath.Join(dir, "out")})
 	runtime.ReadMemStats(&after)
+	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +114,19 @@ func TestZIPUnpackAllocationMeasurement(t *testing.T) {
 	if allocated > 64<<20 {
 		t.Fatalf("small-file extraction reintroduced per-file buffers: alloc=%d", allocated)
 	}
-	t.Logf("entries=1024 cumulative_alloc=%d heap_delta=%d elapsed=%s", allocated, int64(after.HeapAlloc)-int64(before.HeapAlloc), time.Since(start))
+	out := filepath.Join(dir, "out")
+	entries, err := os.ReadDir(out)
+	if err != nil || len(entries) != 1024 {
+		t.Fatalf("measured extraction output count=%d err=%v, want 1024", len(entries), err)
+	}
+	for index := range 1024 {
+		name := fmt.Sprintf("f%08d", index)
+		got, err := os.ReadFile(filepath.Join(out, name))
+		if err != nil || !bytes.Equal(got, []byte{byte(index)}) {
+			t.Fatalf("measured extraction output %q changed: %x %v", name, got, err)
+		}
+	}
+	t.Logf("entries=1024 cumulative_alloc=%d heap_delta=%d elapsed=%s", allocated, int64(after.HeapAlloc)-int64(before.HeapAlloc), elapsed)
 }
 
 func TestZIPResourceAllocationMeasurement(t *testing.T) {
@@ -165,6 +178,24 @@ func TestZIPResourceAllocationMeasurement(t *testing.T) {
 			// charge is a failed calibration, not permission to raise the ceiling.
 			if live > int64(budget.CurrentBytes()) {
 				t.Fatalf("measured reader heap=%d exceeds charge=%d", live, budget.CurrentBytes())
+			}
+			if len(reader.File) != scenario.count {
+				t.Fatalf("measured reader entry count=%d, want %d", len(reader.File), scenario.count)
+			}
+			for _, index := range []int{0, scenario.count / 2, scenario.count - 1} {
+				entry := reader.File[index]
+				if entry.Name != fmt.Sprintf("f%06d", index) || entry.Comment != strings.Repeat("c", scenario.comments) {
+					t.Fatalf("measured reader metadata changed at %d", index)
+				}
+				body, err := entry.Open()
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, readErr := io.ReadAll(body)
+				closeErr := body.Close()
+				if readErr != nil || closeErr != nil || !bytes.Equal(got, []byte{byte(index % 251)}) {
+					t.Fatalf("measured reader payload changed at %d: %x %v %v", index, got, readErr, closeErr)
+				}
 			}
 			t.Logf("entries=%d comments=%d retained_heap=%d retained_charge=%d working_peak=%d cumulative_alloc=%d elapsed=%s", scenario.count, scenario.comments, live, budget.CurrentBytes(), budget.PeakBytes(), after.TotalAlloc-before.TotalAlloc, elapsed)
 			if status, err := os.ReadFile("/proc/self/status"); err == nil {

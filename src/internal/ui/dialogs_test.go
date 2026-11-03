@@ -3,6 +3,7 @@ package ui
 import (
 	"Picocrypt-NG/internal/app"
 	"Picocrypt-NG/internal/util"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -626,7 +627,16 @@ func TestApplyPCV3OutputSelectionDoesNotTouchDestination(t *testing.T) {
 func TestApplyPCV3OutputSelectionRejectsUnsafeFilename(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
-	dir := t.TempDir()
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "chosen-folder")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	escaped := filepath.Join(parent, "outside")
+	sentinel := []byte("outside the chosen folder must stay unchanged")
+	if err := os.WriteFile(escaped, sentinel, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(a.State.Reset)
 	input := filepath.Join(dir, "input.pcv3")
 	if err := os.WriteFile(input, []byte("pcv3 input"), 0o600); err != nil {
@@ -643,11 +653,14 @@ func TestApplyPCV3OutputSelectionRejectsUnsafeFilename(t *testing.T) {
 	}
 	before := a.State.UISnapshot()
 
-	if err := a.applyPCV3OutputSelection(pcv3ReadyOutputTicket(t, a), dir, "../outside"); err == nil {
-		t.Fatal("unsafe filename was accepted")
+	if err := a.applyPCV3OutputSelection(pcv3ReadyOutputTicket(t, a), dir, "../outside"); !errors.Is(err, errUnsafePCV3OutputFilename) {
+		t.Fatalf("unsafe filename error = %v; want unsafe filename refusal", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "outside")); !os.IsNotExist(err) {
 		t.Fatalf("unsafe selection created a path: %v", err)
+	}
+	if got, err := os.ReadFile(escaped); err != nil || string(got) != string(sentinel) {
+		t.Fatalf("unsafe selection modified the escaped destination: %q, %v", got, err)
 	}
 	snap := a.State.UISnapshot()
 	if snap.OutputFile != originalOutput || snap.Status != before.Status {

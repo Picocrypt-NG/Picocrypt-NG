@@ -680,6 +680,9 @@ func TestPCV3TerminalNoFallback(t *testing.T) {
 			OutputFile: output,
 			Recombine:  true,
 		})
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("missing chunk zero error = %v; want os.ErrNotExist", err)
+		}
 		var failure pcv3operation.Failure
 		if errors.Is(err, pcv3operation.ErrReaderUnavailable) || errors.As(err, &failure) {
 			t.Fatalf("missing chunk zero was classified as PCV3: %v", err)

@@ -53,13 +53,16 @@ func TestDarwinUnsupportedFullSyncRefusesSplitAndArchiveDurability(t *testing.T)
 
 func TestDarwinDirectoryFullSyncRetriesInterruptionThenRequiresNativeSuccess(t *testing.T) {
 	native := darwinFullSync
-	interrupted := false
+	attempts := 0
+	nativeSucceeded := false
 	darwinFullSync = func(fd uintptr) error {
-		if !interrupted {
-			interrupted = true
+		attempts++
+		if attempts == 1 {
 			return unix.EINTR
 		}
-		return native(fd)
+		err := native(fd)
+		nativeSucceeded = err == nil
+		return err
 	}
 	t.Cleanup(func() { darwinFullSync = native })
 	parent, err := os.Open(t.TempDir())
@@ -69,5 +72,8 @@ func TestDarwinDirectoryFullSyncRetriesInterruptionThenRequiresNativeSuccess(t *
 	defer parent.Close()
 	if err := SyncDirectory(parent); err != nil {
 		t.Fatalf("required native directory full-sync failed: %v", err)
+	}
+	if attempts != 2 || !nativeSucceeded {
+		t.Fatalf("directory full-sync attempts=%d native success=%v; want EINTR followed by native success", attempts, nativeSucceeded)
 	}
 }

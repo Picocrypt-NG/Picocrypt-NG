@@ -177,6 +177,7 @@ func pcv3PrivacyCombinedFactors(
 ) *pcv3credential.FactorRequest {
 	t.Helper()
 	run.passwords = append(run.passwords, pcv3Sentinel{id: passwordID, value: password})
+	run.sentinels = append(run.sentinels, pcv3Sentinel{id: passwordID, value: bytes.Clone(password)})
 	run.keyfiles = []*operationObservedReadCloser{
 		newOperationObservedKeyfile(t, []byte("red")),
 		newOperationObservedKeyfile(t, []byte("blue")),
@@ -523,7 +524,6 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 		run := pcv3BaseRun(t, "wrong")
 		admitter := &pcv3PrivacyAdmitter{admission: pcv3credential.KDFAdmissionGranted}
 		secret := pcv3SentinelBytes("wrong-password")
-		run.sentinels = append(run.sentinels, pcv3Sentinel{id: "wrong-password", value: secret})
 		run.source = openOperationNormalFixture(t, "normal-standard-combined-ordered-one.pcv")
 		run.request.Mode = ModeReadNormal
 		run.request.Source = run.source

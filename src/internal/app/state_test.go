@@ -824,30 +824,32 @@ func TestIsPasswordHidden(t *testing.T) {
 }
 
 func TestKeyfileSemanticState(t *testing.T) {
-	state := mustNewState(t)
+	for _, test := range []struct {
+		name     string
+		required bool
+		keyfiles []string
+		count    int
+		canStart bool
+	}{
+		{name: "not required"},
+		{name: "required but missing", required: true},
+		{name: "one selected", required: true, keyfiles: []string{"key1.bin"}, count: 1, canStart: true},
+		{name: "three selected", required: true, keyfiles: []string{"key1.bin", "key2.bin", "key3.bin"}, count: 3, canStart: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := mustNewState(t)
+			state.Mode = "decrypt"
+			state.Keyfile = test.required
+			state.Keyfiles = test.keyfiles
 
-	state.Keyfile = false
-	state.Keyfiles = nil
-	if state.Keyfile {
-		t.Fatal("Keyfile should be false before a required-keyfile header is seen")
-	}
-	if len(state.Keyfiles) != 0 {
-		t.Fatalf("Keyfiles = %v; want none", state.Keyfiles)
-	}
-
-	state.Keyfile = true
-	if !state.Keyfile {
-		t.Fatal("Keyfile should hold the required-keyfile semantic flag")
-	}
-
-	state.Keyfiles = []string{"key1.bin"}
-	if len(state.Keyfiles) != 1 {
-		t.Fatalf("Keyfiles = %v; want one selected keyfile", state.Keyfiles)
-	}
-
-	state.Keyfiles = []string{"key1.bin", "key2.bin", "key3.bin"}
-	if len(state.Keyfiles) != 3 {
-		t.Fatalf("Keyfiles = %v; want three selected keyfiles", state.Keyfiles)
+			snapshot := state.UISnapshot()
+			if snapshot.Keyfile != test.required || snapshot.KeyfileCount != test.count {
+				t.Fatalf("render snapshot lost keyfile requirement or selection count: required=%v count=%d; want %v/%d", snapshot.Keyfile, snapshot.KeyfileCount, test.required, test.count)
+			}
+			if snapshot.CanStart() != test.canStart {
+				t.Fatalf("render snapshot start gate = %v; want %v for selected keyfiles", snapshot.CanStart(), test.canStart)
+			}
+		})
 	}
 }
 
@@ -1032,10 +1034,10 @@ func TestGenPassword(t *testing.T) {
 		t.Errorf("Password length = %d; want 20", len(password))
 	}
 
-	// Should not contain symbols
 	for _, ch := range password {
-		if ch == '-' || ch == '=' || ch == '_' || ch == '+' || ch == '!' {
-			t.Error("Password should not contain symbols")
+		allowed := ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9'
+		if !allowed {
+			t.Errorf("Password contains character %U outside the selected ASCII alphabet", ch)
 		}
 	}
 }

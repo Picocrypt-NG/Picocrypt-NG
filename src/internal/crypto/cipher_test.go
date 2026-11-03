@@ -2,16 +2,12 @@ package crypto
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 )
 
-// TestCipherSuiteCloseWipesSerpentSchedule asserts that Close() wipes the
-// expanded Serpent key schedule held by the paranoid suite. The schedule is a
-// [132]uint32 derived from the Serpent key; if it survives Close it is residual
-// key material. The check encrypts a fixed block before Close (capturing the
-// keyed ciphertext), then encrypts the same block again after Close and asserts
-// the two outputs DIFFER — proving the key material is gone. The reviewed
-// serpent fork must expose Zero(); without it, key-schedule wiping is absent.
+// Close must clear the complete expanded schedule, not just change the cipher's
+// output by modifying some of its key material.
 func TestCipherSuiteCloseWipesSerpentSchedule(t *testing.T) {
 	key := bytes.Repeat([]byte{1}, 32)
 	nonce := bytes.Repeat([]byte{2}, 24)
@@ -25,27 +21,23 @@ func TestCipherSuiteCloseWipesSerpentSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	block := cs.serpentS
-
-	z, ok := block.(interface {
-		Zero()
-		Encrypt(dst, src []byte)
-	})
-	if !ok {
-		t.Fatal("serpent block does not expose required Zero() key-schedule wiping")
+	schedule := reflect.ValueOf(cs.serpentS)
+	if schedule.Kind() != reflect.Pointer || schedule.IsNil() {
+		t.Fatal("Serpent block does not expose its retained schedule")
 	}
-
-	pt := bytes.Repeat([]byte{0xAB}, 16) // one Serpent block
-	keyed := make([]byte, 16)
-	z.Encrypt(keyed, pt)
+	schedule = schedule.Elem()
+	if schedule.Kind() != reflect.Array || schedule.Len() != 132 || schedule.Type().Elem().Kind() != reflect.Uint32 {
+		t.Fatal("Serpent block no longer has the reviewed 132-word schedule")
+	}
+	if schedule.IsZero() {
+		t.Fatal("initialized Serpent schedule is already zero")
+	}
 
 	cs.Close()
 
-	// After Close the captured block's schedule must be wiped: encrypting the
-	// same plaintext now must NOT match the keyed output (the key is gone).
-	wiped := make([]byte, 16)
-	z.Encrypt(wiped, pt)
-	if bytes.Equal(keyed, wiped) {
-		t.Fatalf("serpent schedule not wiped: ciphertext unchanged after Close (key material survived)")
+	for index := range schedule.Len() {
+		if schedule.Index(index).Uint() != 0 {
+			t.Fatalf("Serpent schedule word %d survived Close", index)
+		}
 	}
 }

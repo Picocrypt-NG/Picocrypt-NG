@@ -643,12 +643,6 @@ func TestKDFNeverWeakens(t *testing.T) {
 	}
 }
 
-func TestKDFFixedProfileWeakeningMutation(t *testing.T) {
-	for _, test := range kdfFixedProfileCases() {
-		requireKDFFixedProfile(t, test)
-	}
-}
-
 func TestKDFSequential(t *testing.T) {
 	input := newPasswordNormalInput(t)
 	entered := make(chan struct{})
@@ -1267,12 +1261,6 @@ func TestKDFReturnedSliceCleanup(t *testing.T) {
 	}
 }
 
-func TestKDFReturnedSliceCleanupMutation(t *testing.T) {
-	for _, test := range kdfReturnedSliceCleanupCases() {
-		requireKDFReturnedSliceCleanup(t, test)
-	}
-}
-
 func requireKDFPostCallCancellation(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithCancelCause(context.Background())
@@ -1462,10 +1450,6 @@ func TestKDFCancellationBoundary(t *testing.T) {
 	t.Run("post-call cancellation clears result and publishes nothing", func(t *testing.T) {
 		requireKDFPostCallCancellation(t)
 	})
-}
-
-func TestKDFPostCallCancellationMutation(t *testing.T) {
-	requireKDFPostCallCancellation(t)
 }
 
 func TestKDFPanicCleanup(t *testing.T) {

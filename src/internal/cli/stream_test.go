@@ -202,6 +202,10 @@ func TestBufferStdinToTempDoesNotUseOutputDir(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cleanupTempFiles(tmpPath) })
 
+	content, err := os.ReadFile(tmpPath)
+	if err != nil || !bytes.Equal(content, testData) {
+		t.Fatalf("stdin staging content = %q, err %v; want selected input", content, err)
+	}
 	if filepath.Dir(tmpPath) == outputDir {
 		t.Fatalf("stdin temp file should not be created in output dir %s", outputDir)
 	}
@@ -349,10 +353,13 @@ func TestCleanupTempFilesSkipsEmptyPaths(t *testing.T) {
 		t.Fatalf("write bystander: %v", err)
 	}
 
-	cleanupTempFiles("", "")
+	if err := cleanupTempFiles("", ""); err != nil {
+		t.Fatalf("empty temp cleanup returned an error: %v", err)
+	}
 
-	if _, err := os.Stat(bystander); err != nil {
-		t.Fatalf("cleanupTempFiles disturbed an unrelated file on empty input: %v", err)
+	content, err := os.ReadFile(bystander)
+	if err != nil || string(content) != "keep me" {
+		t.Fatalf("cleanupTempFiles disturbed an unrelated file on empty input: %q %v", content, err)
 	}
 }
 
@@ -524,6 +531,20 @@ func TestPCV3DecryptStdoutCancelsWithoutPlaintextResidue(t *testing.T) {
 		_ = stderrFile.Close()
 		t.Fatal("decrypt did not start streaming after durable publication")
 	}
+	stages, err := os.ReadDir(tempDir)
+	if err != nil || len(stages) != 1 || !stages[0].Type().IsRegular() {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		_ = stderrFile.Close()
+		t.Fatalf("blocked stdout did not retain one ciphertext stage: %v %v", stages, err)
+	}
+	stagedBytes, err := os.ReadFile(filepath.Join(tempDir, stages[0].Name()))
+	if err != nil || len(stagedBytes) <= len(plaintext) || bytes.Contains(stagedBytes, plaintext[:64]) {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		_ = stderrFile.Close()
+		t.Fatalf("blocked stdout stage is missing authenticated ciphertext: size=%d err=%v", len(stagedBytes), err)
+	}
 	if err := command.Process.Signal(os.Interrupt); err != nil {
 		_ = command.Process.Kill()
 		_ = command.Wait()
@@ -555,10 +576,8 @@ func TestPCV3DecryptStdoutCancelsWithoutPlaintextResidue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect temp directory: %v", err)
 	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "picocrypt-out-") {
-			t.Fatalf("encrypted stdin stage remained after SIGINT: %s", entry.Name())
-		}
+	if len(entries) != 0 {
+		t.Fatalf("stdout staging remained after SIGINT: %v", entries)
 	}
 }
 

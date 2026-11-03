@@ -354,8 +354,9 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"decrypt", volume, "-o", wrongOutput,
 		"--pcv3-factors=password", "-p", "wrong-password", "--quiet",
 	)
-	if wrong.exitCode == 0 {
-		t.Fatal("PCV3 decrypt accepted the wrong password")
+	if wrong.exitCode != ExitGeneralError || len(wrong.stdout) != 0 ||
+		wrong.stderr != "Outcome: credentials-or-damage\nPublication: not-attempted\n" {
+		t.Fatalf("PCV3 wrong-password authentication refusal = %+v", wrong)
 	}
 	if strings.Contains(wrong.stderr, comment) {
 		t.Fatalf("failed PCV3 authentication exposed the comment: %q", wrong.stderr)
@@ -502,8 +503,9 @@ func TestPCV3CLIRoundTrip(t *testing.T) {
 		"decrypt", d1Volume, "-o", wrongD1Output, "--pcv3-format=d1",
 		"--pcv3-factors=password", "-p", "wrong-d1-password", "--quiet",
 	)
-	if wrongD1.exitCode == 0 {
-		t.Fatal("PCV3 D1 decrypt accepted the wrong password")
+	if wrongD1.exitCode != ExitGeneralError || len(wrongD1.stdout) != 0 ||
+		wrongD1.stderr != "Outcome: credentials-or-damage\nPublication: not-attempted\n" {
+		t.Fatalf("PCV3 D1 wrong-password authentication refusal = %+v", wrongD1)
 	}
 	if strings.Contains(wrongD1.stderr, d1Comment) {
 		t.Fatalf("failed PCV3 D1 authentication exposed the comment: %q", wrongD1.stderr)
@@ -633,8 +635,9 @@ func TestPCV3CLIKeyfileOnlyD1RoundTripAndWrongKeyRefusal(t *testing.T) {
 		"--pcv3-format=d1", "--pcv3-factors=keyfiles",
 		"--pcv3-keyfile-order=unordered", "-k", wrongKeyfile, "-p", "", "--quiet",
 	)
-	if wrong.exitCode == 0 {
-		t.Fatal("keyfile-only D1 accepted the wrong keyfile")
+	if wrong.exitCode != ExitGeneralError || len(wrong.stdout) != 0 ||
+		wrong.stderr != "Outcome: credentials-or-damage\nPublication: not-attempted\n" {
+		t.Fatalf("keyfile-only D1 wrong-keyfile authentication refusal = %+v", wrong)
 	}
 	if _, err := os.Lstat(wrongOutput); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("wrong keyfile created output: %v", err)
