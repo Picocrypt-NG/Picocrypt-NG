@@ -590,6 +590,23 @@ func inspectContainer(id string) (containerInfo, []byte, error) {
 	return objects[0], output, nil
 }
 
+func caseWallTimeout(name string) time.Duration {
+	if name == "d1-parameters-wrong-index" {
+		// This control exceeds 90s with the pinned verifier and resource limits.
+		return 180 * time.Second
+	}
+	return 90 * time.Second
+}
+
+func checkProverResult(result caseResult, container containerInfo, logPath string) error {
+	if result.TimedOut || container.State.Running || container.State.OOMKilled || container.State.Error != "" || container.State.ExitCode != result.ExitCode {
+		return fmt.Errorf("%s did not finish as an ordinary prover result (wall_timeout=%t, elapsed=%.3fs, running=%t, oom_killed=%t, container_error=%t, client_exit=%d, container_exit=%d); see %s",
+			result.Name, result.TimedOut, result.Seconds, container.State.Running, container.State.OOMKilled,
+			container.State.Error != "", result.ExitCode, container.State.ExitCode, logPath)
+	}
+	return nil
+}
+
 func runIsolated(runDir, name, imageID, entrypoint string, command []string) (result caseResult, output []byte, err error) {
 	result = caseResult{Name: name, ExitCode: -1}
 	args := []string{"create", "--pull=never", "--label", "picocrypt-ng.verification=source-contracts",
@@ -633,7 +650,7 @@ func runIsolated(runDir, name, imageID, entrypoint string, command []string) (re
 		return result, output, errors.New("owned container must mount only this generated run directory read-only")
 	}
 	started := time.Now()
-	output, code, startErr := docker(90*time.Second, "start", "--attach", result.ID)
+	output, code, startErr := docker(caseWallTimeout(name), "start", "--attach", result.ID)
 	result.Seconds, result.ExitCode = time.Since(started).Seconds(), code
 	result.TimedOut = errors.Is(startErr, context.DeadlineExceeded)
 	if writeErr := os.WriteFile(filepath.Join(runDir, name+".log"), output, 0644); writeErr != nil {
@@ -644,8 +661,8 @@ func runIsolated(runDir, name, imageID, entrypoint string, command []string) (re
 		return result, output, err
 	}
 	result.After = raw
-	if result.TimedOut || container.State.Running || container.State.OOMKilled || container.State.Error != "" || container.State.ExitCode != code {
-		return result, output, fmt.Errorf("%s did not finish as an ordinary prover result", name)
+	if err := checkProverResult(result, container, filepath.Join(runDir, name+".log")); err != nil {
+		return result, output, err
 	}
 	return result, output, nil
 }
