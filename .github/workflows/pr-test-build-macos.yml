@@ -21,6 +21,7 @@ jobs:
       matrix:
         group: [1, 2, 3, 4]
     runs-on: macos-15
+    timeout-minutes: 180
     env:
       CGO_ENABLED: "1"
       MACOSX_DEPLOYMENT_TARGET: "15.0"
@@ -69,6 +70,7 @@ jobs:
     needs: pcv3-tests
     if: ${{ always() }}
     runs-on: macos-15
+    timeout-minutes: 60
     env:
       MACOSX_DEPLOYMENT_TARGET: "15.0"
       CGO_CFLAGS: "-mmacosx-version-min=15.0"

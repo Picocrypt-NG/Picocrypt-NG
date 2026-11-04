@@ -16,8 +16,23 @@ jobs:
   static-checks:
     name: static-checks
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Setup workflow linters
+      uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+      env:
+        MISE_ENABLE_TOOLS: jactionlint,shellcheck,ruff
+      with:
+        version: 2026.10.25
+        install_args: jactionlint shellcheck ruff
+        cache_key_prefix: mise-workflow-linters
+
+    - name: Lint GitHub Actions workflows
+      env:
+        MISE_ENABLE_TOOLS: jactionlint,shellcheck,ruff
+      run: mise run workflows:lint
 
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -40,7 +55,8 @@ jobs:
     - name: Check formatting (gofmt)
       run: |
         cd src
-        unformatted=$(gofmt -l . | grep -v '^testdata/legacy/' || true)
+        unformatted=$(gofmt -l .)
+        unformatted=$(printf '%s\n' "$unformatted" | grep -v '^testdata/legacy/' || true)
         if [ -n "$unformatted" ]; then
           echo "These files are not gofmt-clean (run: gofmt -w <file>):"
           echo "$unformatted"
@@ -61,6 +77,21 @@ jobs:
         go_bin_dir="$(go env GOPATH)/bin"
         export PATH="$PATH:$go_bin_dir"
         golangci-lint run --build-tags migrated_fynedo ./...
+
+    - name: Setup uv for tooling tests
+      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      with:
+        version: "0.13.5"
+        enable-cache: false
+
+    - name: Test tooling integration
+      env:
+        MISE_ENABLE_TOOLS: go,golangci-lint,hk,jouet,jactionlint,shellcheck,ruff
+      run: |
+        mise install go golangci-lint hk jouet
+        go_bin_dir="$(go env GOPATH)/bin"
+        export PATH="$PATH:$go_bin_dir"
+        mise run tooling:test
 
     - name: Vulnerability scan (govulncheck)
       run: |

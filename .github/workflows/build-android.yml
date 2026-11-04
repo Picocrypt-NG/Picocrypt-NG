@@ -19,6 +19,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     permissions:
       contents: read
     outputs:
@@ -188,6 +189,7 @@ jobs:
     needs: build
     if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     environment: release
     permissions:
       contents: read
@@ -315,6 +317,7 @@ jobs:
     needs: [build, sign]
     if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     concurrency:
       group: ${{ github.repository }}-release-publication
       queue: max

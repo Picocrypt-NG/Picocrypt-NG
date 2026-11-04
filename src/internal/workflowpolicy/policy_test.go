@@ -51,11 +51,34 @@ func TestStaticChecksWorkflowEnforcesFormatVetLintAndVuln(t *testing.T) {
 	mustContain(t, content, "pull_request:")
 }
 
+func TestStaticChecksWorkflowEnforcesToolingIntegration(t *testing.T) {
+	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-static-checks.yml")
+	job := mustJob(t, workflow, "static-checks")
+	setup := mustStepNamed(t, job, "Setup uv for tooling tests")
+	mustMatch(t, setup.Uses, `^astral-sh/setup-uv@[0-9a-f]{40}$`)
+	if setup.With["version"] != "0.13.5" {
+		t.Fatalf("tooling uv version = %#v, want pinned 0.13.5", setup.With["version"])
+	}
+	step := mustStepNamed(t, job, "Test tooling integration")
+	if step.If != "" || (step.ContinueOnError != nil && step.ContinueOnError != false) {
+		t.Fatal("tooling integration must run unconditionally and propagate failures")
+	}
+	if step.Env["MISE_ENABLE_TOOLS"] != "go,golangci-lint,hk,jouet,jactionlint,shellcheck,ruff" {
+		t.Fatalf("tooling installation scope = %q", step.Env["MISE_ENABLE_TOOLS"])
+	}
+	mustContain(t, step.Run, "mise install go golangci-lint hk jouet")
+	mustContain(t, step.Run, "mise run tooling:test")
+	mustNotContain(t, step.Run, "|| true")
+}
+
 func TestReleaseUploadsNeverOverwriteExistingAssets(t *testing.T) {
 	action := mustReadCompositeActionDoc(t, ".github/actions/stage-release/action.yml")
 	uploadStep := mustCompositeStepNamed(t, action, "Upload assets to draft release")
-	if got := uploadStep.With["overwrite_files"]; got != false && got != "false" {
-		t.Fatalf("release overwrite_files = %#v, want false to preserve staged binaries", got)
+	if uploadStep.Uses != "" || uploadStep.Shell != "bash" || uploadStep.Run != `bash "$GITHUB_ACTION_PATH/release-gate.sh" upload "$VERSION"` {
+		t.Fatalf("release uploads must use the shared no-overwrite gate: %#v", uploadStep)
+	}
+	if uploadStep.Env["FILES"] != "${{ inputs.files }}" || uploadStep.Env["VERSION"] != "${{ inputs.version }}" {
+		t.Fatalf("release upload gate must receive the exact lane and version: %#v", uploadStep.Env)
 	}
 }
 

@@ -1,0 +1,25 @@
+# Run from the repository root. NAME is a Go package path below src/.
+# Full is the default native Go suite; the other execution lanes stay separate.
+[checks]
+full = "mise run test"
+lint = "mise run hk:all"
+before_push = ["mise run hk:all", "mise run vuln"]
+
+[checks.focused]
+workflows = "jouet test --cmd -- mise run workflows:lint"
+quality = "jouet test --cmd -- mise run hk:check"
+go_package = "jouet test --cmd -- go -C src test -p 1 -tags migrated_fynedo ./NAME"
+cli = "jouet test --cmd -- mise run test:cli"
+cli_integration = "jouet test --cmd -- mise run test:cli-integration"
+golden = "jouet test --cmd -- mise run test:golden"
+# Run these KDF-heavy lanes separately from other heavy checks.
+pcv3_production_kdf = "jouet test --cmd -- go -C src test -count=1 -p 1 -tags pcv3_production_kdf ./internal/pcv3operation/..."
+race = "jouet test --cmd -- mise run test:race"
+wasm = "jouet test --cmd -- bash .github/scripts/test-wasm.sh"
+desktop_build = "jouet test --cmd -- mise run build:desktop"
+cli_build = "jouet test --cmd -- mise run build:cli"
+# Requires the Android SDK/NDK; the task rebuilds the generated gomobile AAR.
+android_jvm = "jouet test --cmd -- mise run android:test"
+# Separate model/source-contract checks; prerequisites: verification/README.md.
+easycrypt = "jouet test --cmd -- uv run --no-project python verification/easycrypt/run.py"
+gobra = "jouet test --cmd -- sh verification/gobra/check.sh"

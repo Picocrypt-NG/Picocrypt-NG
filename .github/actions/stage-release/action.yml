@@ -26,16 +26,13 @@ runs:
       run: bash "$GITHUB_ACTION_PATH/release-gate.sh" preflight "$VERSION"
 
     - name: Upload assets to draft release
-      uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-      with:
-        body_path: ${{ inputs.body_path }}
-        files: ${{ inputs.files }}
-        tag_name: ${{ inputs.version }}
-        target_commitish: ${{ github.sha }}
-        draft: true
-        make_latest: false
-        overwrite_files: false
-        fail_on_unmatched_files: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ inputs.version }}
+        BODY_PATH: ${{ inputs.body_path }}
+        FILES: ${{ inputs.files }}
+      run: bash "$GITHUB_ACTION_PATH/release-gate.sh" upload "$VERSION"
 
     - name: Publish only the complete release
       shell: bash

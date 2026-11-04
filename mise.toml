@@ -5,6 +5,11 @@ min_version = "2026.10.0"
 go = "1.27.3"
 java = "temurin-21.0.13+9.0.LTS"
 golangci-lint = "2.15.0"
+hk = "2.11.1"
+jactionlint = "2.4.0"
+jouet = "0.0.3"
+shellcheck = "0.11.0"
+ruff = "0.17.3"
 "go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20261011034528-197770444867"
 "go:golang.org/x/mobile/cmd/gomobile" = "v0.0.0-20261011034528-197770444867"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
@@ -48,7 +53,8 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 
-unformatted="$(gofmt -l . | grep -v '^testdata/legacy/' || true)"
+unformatted="$(gofmt -l .)"
+unformatted="$(printf '%s\n' "$unformatted" | grep -v '^testdata/legacy/' || true)"
 if [ -n "$unformatted" ]; then
   echo "These files are not gofmt-clean (run: gofmt -w <file>):"
   echo "$unformatted"
@@ -63,8 +69,27 @@ run = "CGO_ENABLED=1 go vet -tags migrated_fynedo ./..."
 
 [tasks.lint]
 description = "Run golangci-lint"
-dir = "src"
-run = "golangci-lint run --build-tags migrated_fynedo ./..."
+run = "bash .github/scripts/lint-go.sh json"
+
+[tasks."lint:hk"]
+description = "Run the same Go linters with SARIF diagnostics for hk"
+run = "bash .github/scripts/lint-go.sh sarif"
+
+[tasks."workflows:lint"]
+description = "Check GitHub Actions with pinned offline jactionlint, ShellCheck and Ruff"
+run = "bash .github/scripts/lint-workflows.sh"
+
+[tasks."hk:check"]
+description = "Check working-tree changes before a GitButler CLI commit"
+run = "hk run check --safe --all"
+
+[tasks."hk:all"]
+description = "Run all check-only hk gates without staging or stashing"
+run = "hk run check --safe --all"
+
+[tasks."tooling:test"]
+description = "Verify hk policy and real analyzer diagnostics in disposable repositories"
+run = "uv run --no-project python .github/scripts/hk-integration-test.py"
 
 [tasks.vuln]
 description = "Run govulncheck"
@@ -72,15 +97,15 @@ dir = "src"
 run = "govulncheck -tags migrated_fynedo ./..."
 
 [tasks.test]
-description = "Run the fast Go test suite"
+description = "Run the default Go test suite with serialized KDF-heavy packages"
 alias = "t"
 dir = "src"
-run = "go test -tags migrated_fynedo ./..."
+run = "go test -p 1 -tags migrated_fynedo ./..."
 
 [tasks."test:golden"]
 description = "Run volume golden compatibility tests"
 dir = "src"
-run = "go test -run 'TestGoldenDecryption|TestGoldenCompressedDecryption|TestGoldenWrongPassword|TestGoldenV1WrongPassword' ./internal/volume"
+run = "go test -count=1 -run '^TestGolden' ./internal/volume"
 
 [tasks."test:cli"]
 description = "Run CLI package tests"
@@ -95,7 +120,7 @@ run = "PICOCRYPT_RUN_CLI_INTEGRATION=1 go test ./internal/cli"
 [tasks."test:race"]
 description = "Run race-sensitive Go tests with bounded package parallelism"
 dir = "src"
-run = "CGO_ENABLED=1 go test -tags migrated_fynedo -race -p 2 -timeout 15m ./..."
+run = "CGO_ENABLED=1 go test -tags migrated_fynedo -race -p 1 -timeout 15m ./..."
 
 [tasks."build:desktop"]
 description = "Build the desktop GUI binary"
@@ -113,6 +138,7 @@ run = "CGO_ENABLED=1 go build -tags cli -ldflags='-s -w' -o Picocrypt-NG-cli ./c
 description = "Run local Go quality gates"
 alias = "c"
 run = [
+  "mise run workflows:lint",
   "mise run fmt",
   "mise run vet",
   "mise run lint",

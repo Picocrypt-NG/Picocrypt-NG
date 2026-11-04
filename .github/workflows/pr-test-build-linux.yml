@@ -29,6 +29,7 @@ jobs:
             runner: ubuntu-24.04-arm
             shard: 0
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -144,6 +145,7 @@ jobs:
             artifact_name: pr-test-build-linux-arm64-ONLY-FOR-TESTING
             build_deb: "false"
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
     steps:
     - name: Require all native Linux test groups to pass
       run: |
@@ -254,6 +256,7 @@ jobs:
         ${{ matrix.upx_pkg }}/upx --lzma "src/${{ matrix.cli_binary }}"
 
     - name: Package as .deb
+      shell: bash
       if: matrix.build_deb == 'true'
       run: |
         package_root="Picocrypt-NG/Picocrypt-NG"
@@ -380,6 +383,7 @@ jobs:
   pr-test-build-linux:
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     if: ${{ always() && !cancelled() }}
     steps:
     - name: Require all Linux matrix jobs to pass

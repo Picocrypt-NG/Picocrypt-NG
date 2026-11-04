@@ -39,6 +39,7 @@ jobs:
             artifact_name: build-linux-arm64
             build_deb: "false"
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -129,6 +130,7 @@ jobs:
         ${{ matrix.upx_pkg }}/upx --lzma "src/${{ matrix.cli_binary }}"
 
     - name: Package as .deb
+      shell: bash
       if: matrix.build_deb == 'true'
       run: |
         package_root="Picocrypt-NG/Picocrypt-NG"
@@ -256,6 +258,7 @@ jobs:
     needs: build
     if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     concurrency:
       group: ${{ github.repository }}-release-publication
       queue: max
