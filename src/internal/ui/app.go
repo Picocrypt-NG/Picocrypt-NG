@@ -753,10 +753,9 @@ func (a *App) initializeDesktopWindow() {
 		a.Window.Resize(minimumSize)
 	}
 
-	// Restore the previous position when enabled; otherwise center the window.
-	if !a.restoreDesktopWindowPosition() {
-		a.Window.CenterOnScreen()
-	}
+	// Restore the saved position only when the preference is enabled and a position exists.
+	// Otherwise, leave initial placement to the normal Fyne/window-manager behavior.
+	a.restoreDesktopWindowPosition()
 }
 
 func commentsLabelText(mode string, states ...app.CommentsPreviewState) string {
