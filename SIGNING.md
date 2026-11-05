@@ -191,4 +191,3 @@ The release gate also binds the source commit and repository.
 
 The `.sigstore.json` bundle embeds the Rekor inclusion proof, so `cosign verify-blob`
 can run fully offline given a `--trusted-root`.
-
