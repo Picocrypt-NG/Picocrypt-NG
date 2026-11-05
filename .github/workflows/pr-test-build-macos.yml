@@ -17,9 +17,9 @@ jobs:
     name: macOS ARM64 test group ${{ matrix.group }}
     strategy:
       fail-fast: true
-      max-parallel: 2
+      max-parallel: 1
       matrix:
-        group: [1, 2, 3, 4]
+        group: [1, 2]
     runs-on: macos-15
     timeout-minutes: 180
     env:
