@@ -37,26 +37,25 @@ func (a *App) setRememberWindowSize(enabled bool) {
 	}
 }
 
-func (a *App) restoreDesktopWindowSize(minimum fyne.Size) bool {
-	if a.fyneApp == nil || a.Window == nil || !supportsWindowPositionPersistence() || !a.rememberWindowSizeEnabled() {
-		return false
-	}
+func (a *App) restoreDesktopWindowSize() bool {
+    if a.fyneApp == nil || a.Window == nil || !supportsWindowPositionPersistence() || !a.rememberWindowSizeEnabled() {
+        return false
+    }
 
-	preferences := a.fyneApp.Preferences()
-	if !preferences.BoolWithFallback(windowSizeSavedPreferenceKey, false) {
-		return false
-	}
+    preferences := a.fyneApp.Preferences()
+    if !preferences.BoolWithFallback(windowSizeSavedPreferenceKey, false) {
+        return false
+    }
 
-	width := preferences.Float(windowWidthPreferenceKey)
-	height := preferences.Float(windowHeightPreferenceKey)
-	if !validDesktopWindowDimension(width) || !validDesktopWindowDimension(height) {
-		preferences.SetBool(windowSizeSavedPreferenceKey, false)
-		return false
-	}
+    width := preferences.Float(windowWidthPreferenceKey)
+    height := preferences.Float(windowHeightPreferenceKey)
+    if !validDesktopWindowDimension(width) || !validDesktopWindowDimension(height) {
+        preferences.SetBool(windowSizeSavedPreferenceKey, false)
+        return false
+    }
 
-	size := fyne.NewSize(float32(width), float32(height)).Max(minimum)
-	a.Window.Resize(size)
-	return true
+    a.Window.Resize(fyne.NewSize(float32(width), float32(height)))
+    return true
 }
 
 func (a *App) saveDesktopWindowSize() {

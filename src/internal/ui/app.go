@@ -741,21 +741,23 @@ func (a *App) buildUI() fyne.CanvasObject {
 }
 
 func (a *App) initializeDesktopWindow() {
-	if isMobile() || a.Window == nil {
-		return
-	}
-	minimumSize := fyne.NewSize(windowWidth, windowHeight)
-	if content := a.Window.Content(); content != nil {
-		minimumSize = minimumSize.Max(content.MinSize())
-	}
-	a.Window.SetFixedSize(false)
-	if !a.restoreDesktopWindowSize(minimumSize) {
-		a.Window.Resize(minimumSize)
-	}
+    if isMobile() || a.Window == nil {
+        return
+    }
 
-	// Restore the saved position only when the preference is enabled and a position exists.
-	// Otherwise, leave initial placement to the normal Fyne/window-manager behavior.
-	a.restoreDesktopWindowPosition()
+    initialSize := fyne.NewSize(windowWidth, windowHeight)
+    if content := a.Window.Content(); content != nil {
+        initialSize = initialSize.Max(content.MinSize())
+    }
+
+    a.Window.SetFixedSize(false)
+    if !a.restoreDesktopWindowSize() {
+        a.Window.Resize(initialSize)
+    }
+
+    // Restore the saved position only when the preference is enabled and a position exists.
+    // Otherwise, leave initial placement to the normal Fyne/window-manager behavior.
+    a.restoreDesktopWindowPosition()
 }
 
 func commentsLabelText(mode string, states ...app.CommentsPreviewState) string {
