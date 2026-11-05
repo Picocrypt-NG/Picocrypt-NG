@@ -1,0 +1,21 @@
+name: rehearse-release-identity-alternate
+
+on:
+  push:
+    branches: [ci/rehearse-release-identity]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-caller-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reusable:
+    if: github.repository == 'Picocrypt-NG/Picocrypt-NG'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/rehearse-release-identity-leaf.yml
