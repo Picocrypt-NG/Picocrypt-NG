@@ -57,10 +57,18 @@ class HkIntegrationTests(unittest.TestCase):
                 plan = self.plan(["src/go.mod"], hook)
                 self.assertEqual(plan["runType"], "check")
                 self.assertTrue(
-                    {"go-fmt", "go-vet", "go-lint"}.issubset(
+                    {"go-fmt", "go-vet", "go-lint", "tooling-fmt", "tooling-lint"}.issubset(
                         step["name"] for step in plan["steps"] if step["status"] == "included"
                     ),
                 )
+
+    def test_changed_go_tooling_selects_format_and_static_analysis(self):
+        for source in (".github/scripts/production-kdf.go", ".github/scripts/production-kdf_test.go"):
+            with self.subTest(source=source):
+                plan = self.plan([source])
+                self.assertTrue({"tooling-fmt", "tooling-lint"}.issubset(
+                    step["name"] for step in plan["steps"] if step["status"] == "included"
+                ), plan)
 
     def test_deleted_go_file_cannot_skip_commit_checks(self):
         fixture = self.root / "deleted"
@@ -90,7 +98,7 @@ class HkIntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         plan = json.loads(result.stdout)
         self.assertTrue(
-            {"go-fmt", "go-vet", "go-lint"}.issubset(
+            {"go-fmt", "go-vet", "go-lint", "tooling-fmt", "tooling-lint"}.issubset(
                 step["name"] for step in plan["steps"] if step["status"] == "included"
             ),
             plan,
@@ -115,9 +123,11 @@ class HkIntegrationTests(unittest.TestCase):
         )
         for helper in ("lint-go.sh", "lint-workflows.sh"):
             shutil.copyfile(ROOT / ".github/scripts" / helper, fixture / ".github/scripts" / helper)
+        (fixture / ".github/scripts/production-kdf.go").write_text("package main\n\nfunc main() {}\n")
+        (fixture / ".github/scripts/production-kdf_test.go").write_text("package main\n")
         tasks = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]
         commands = []
-        for step, task in (("go-fmt", "fmt"), ("go-vet", "vet")):
+        for step, task in (("go-fmt", "fmt"), ("go-vet", "vet"), ("tooling-fmt", "tooling:fmt")):
             body = tasks[task]["run"]
             if "dir" in tasks[task]:
                 body = f"cd {shlex.quote(tasks[task]['dir'])}\n{body}"
@@ -126,7 +136,7 @@ class HkIntegrationTests(unittest.TestCase):
                 f'[{json.dumps(step)}] {{ check {{ command = new Command {{ argv = List({argv}) }} }} }}'
             )
         # SARIF steps retain their production mise exec wrapper and copied helpers.
-        # Only fmt/vet task bodies are inlined to avoid trusting a copied mise.toml.
+        # Only unstructured fmt/vet bodies are inlined to avoid trusting a copied mise.toml.
         config = f"amends {json.dumps((ROOT / 'hk.pkl').as_uri())}\nhooks {{\n"
         for hook in ("check", "pre-commit", "pre-push"):
             config += f'  ["{hook}"] {{ steps {{ {"; ".join(commands)} }} }}\n'
@@ -181,6 +191,67 @@ class HkIntegrationTests(unittest.TestCase):
                 )
         bad_go.write_text("package fixture\n\nfunc Value() int { return tagged() }\n")
         workflow.write_text(good_workflow)
+        clean = self.run_command(["jouet", "--json", "diag", "check"], cwd=fixture)
+        self.assertEqual(clean.returncode, 0, clean.stderr + clean.stdout)
+        report = json.loads(clean.stdout)
+        self.assertEqual(report["status"], "clean")
+        for step in json.loads(Path(report["log_path"]).read_text())["steps"]:
+            self.assertFalse(step.get("parse_warnings"), step)
+
+    def test_tooling_static_analysis_uses_linux_target_on_other_hosts(self):
+        fixture = self.fixture()
+        (fixture / ".github/scripts/production-kdf.go").write_text(
+            'package main\n\nimport "syscall"\n\n'
+            'func main() { var usage syscall.Rusage; _, _ = syscall.Wait4(-1, nil, syscall.WNOHANG, &usage) }\n'
+        )
+        self.env["GOOS"] = "windows"
+        self.env["CGO_ENABLED"] = "1"
+        result = self.run_command(
+            ["bash", ".github/scripts/lint-go.sh", "sarif", "tooling"], cwd=fixture,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = json.loads(result.stdout)
+        self.assertFalse(any(run.get("results") for run in report["runs"]), report)
+        (fixture / "src/main.go").write_text(
+            'package fixture\n\nimport "syscall"\n\n'
+            'func Value() int { _ = syscall.NewLazyDLL("kernel32.dll"); return tagged() }\n'
+        )
+        product = self.run_command(
+            ["bash", ".github/scripts/lint-go.sh", "sarif"], cwd=fixture,
+        )
+        self.assertEqual(product.returncode, 0, product.stderr + product.stdout)
+        product_report = json.loads(product.stdout)
+        self.assertFalse(any(run.get("results") for run in product_report["runs"]), product_report)
+
+    def test_real_analyzers_report_and_clear_tooling_go_findings(self):
+        fixture = self.fixture()
+        source = fixture / ".github/scripts/production-kdf.go"
+        source.write_text("package main\n\nfunc main(){}\n")
+        bad_format = self.run_command(
+            ["hk", "run", "check", "--safe", "--step", "tooling-fmt", "--all", "--format", "json"],
+            cwd=fixture,
+        )
+        self.assertEqual(bad_format.returncode, 1, bad_format.stderr + bad_format.stdout)
+        self.assertTrue(any(
+            step["name"] == "tooling-fmt" and step["status"] == "failed"
+            for step in json.loads(bad_format.stdout)["steps"]
+        ))
+        source.write_text(
+            'package main\n\nimport "fmt"\n\n'
+            'func main() { fmt.Printf("%d", "wrong") }\n'
+        )
+        bad = self.run_command(["jouet", "--json", "diag", "check"], cwd=fixture)
+        self.assertEqual(bad.returncode, 1, bad.stderr + bad.stdout)
+        report = json.loads(bad.stdout)
+        for step in json.loads(Path(report["log_path"]).read_text())["steps"]:
+            self.assertFalse(step.get("parse_warnings"), step)
+        self.assertTrue(any(
+            finding["source_step"] == "tooling-lint"
+            and finding["file"] == ".github/scripts/production-kdf.go"
+            and finding.get("line") == 5 and finding.get("message")
+            for finding in report.get("findings", [])
+        ), report)
+        source.write_text("package main\n\nfunc main() {}\n")
         clean = self.run_command(["jouet", "--json", "diag", "check"], cwd=fixture)
         self.assertEqual(clean.returncode, 0, clean.stderr + clean.stdout)
         report = json.loads(clean.stdout)

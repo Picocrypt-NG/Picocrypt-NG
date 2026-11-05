@@ -954,12 +954,13 @@ func TestLinuxUPXDownloadsRemainChecksumGated(t *testing.T) {
 func TestLinuxPRGatesRequireEveryNativeTestGroup(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-linux.yml")
 	gate := mustJob(t, workflow, "pr-test-build-linux")
-	if gate.If != "${{ always() && !cancelled() }}" {
-		t.Fatalf("Linux aggregate if = %q, want cancellation-aware always gate", gate.If)
+	if gate.If != "${{ always() }}" {
+		t.Fatalf("Linux aggregate if = %q, want final gate to inspect all results even after cancellation", gate.If)
 	}
 
-	if gate.Needs != "build" {
-		t.Fatalf("Linux aggregate needs = %#v, want build matrix", gate.Needs)
+	needs, ok := gate.Needs.([]any)
+	if !ok || len(needs) != 2 || needs[0] != "build" || needs[1] != "production-kdf" {
+		t.Fatalf("Linux aggregate needs = %#v, want build matrix and production-KDF lane", gate.Needs)
 	}
 	build := mustJob(t, workflow, "build")
 	if build.Needs != "tests" || build.If != "${{ always() && !cancelled() }}" || build.Name != "pr-test-build-linux-${{ matrix.arch }}" {
@@ -985,8 +986,8 @@ func TestLinuxPRGatesRequireEveryNativeTestGroup(t *testing.T) {
 
 	check := mustStepNamed(t, gate, "Require all Linux matrix jobs to pass")
 	mustContainInOrder(t, check.Run,
-		`if [ "${{ needs.build.result }}" != "success" ]; then`,
-		`echo "Linux matrix result: ${{ needs.build.result }}"`,
+		`if [[ ${BUILD_RESULT:-} != success || ${PRODUCTION_KDF_RESULT:-} != success ]]; then`,
+		`echo "Linux matrix result: ${BUILD_RESULT:-missing}; production-KDF result: ${PRODUCTION_KDF_RESULT:-missing}"`,
 		"exit 1",
 	)
 }
@@ -2150,6 +2151,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 		{path: ".github/workflows/pr-test-build-android.yml", job: "pr-test-build-android"},
 		{path: ".github/workflows/pr-test-build-linux.yml", job: "build"},
 		{path: ".github/workflows/pr-test-build-linux.yml", job: "tests"},
+		{path: ".github/workflows/pr-test-build-linux.yml", job: "production-kdf"},
 		{path: ".github/workflows/pr-test-build-macos.yml", job: "pr-test-build-macos"},
 		{path: ".github/workflows/pr-test-build-windows.yml", job: "pr-test-build-windows"},
 	}

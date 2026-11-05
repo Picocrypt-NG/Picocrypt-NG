@@ -93,6 +93,16 @@ jobs:
         export PATH="$PATH:$go_bin_dir"
         mise run tooling:test
 
+    - name: Check Go tooling fmt
+      env:
+        MISE_ENABLE_TOOLS: go
+      run: mise run tooling:fmt
+
+    - name: Check Go tooling lint
+      env:
+        MISE_ENABLE_TOOLS: go,golangci-lint
+      run: mise run tooling:lint
+
     - name: Vulnerability scan (govulncheck)
       run: |
         cd src

@@ -62,6 +62,24 @@ if [ -n "$unformatted" ]; then
 fi
 '''
 
+[tasks."tooling:fmt"]
+description = "Check Go production-KDF helper formatting"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+unformatted=$(gofmt -l .github/scripts/production-kdf.go .github/scripts/production-kdf_test.go)
+if [ -n "$unformatted" ]; then
+  echo "These Go tooling files are not gofmt-clean:"
+  echo "$unformatted"
+  exit 1
+fi
+'''
+
+[tasks."tooling:lint"]
+description = "Check Go production-KDF helpers with SARIF diagnostics"
+run = "bash .github/scripts/lint-go.sh sarif tooling"
+
 [tasks.vet]
 description = "Run go vet with CGO enabled"
 dir = "src"
@@ -88,8 +106,8 @@ description = "Run all check-only hk gates without staging or stashing"
 run = "hk run check --safe --all"
 
 [tasks."tooling:test"]
-description = "Verify hk policy and real analyzer diagnostics in disposable repositories"
-run = "uv run --no-project python .github/scripts/hk-integration-test.py"
+description = "Verify real hk diagnostics and Linux runner helpers (execute on Linux, otherwise compile only)"
+run = "bash .github/scripts/test-go-tooling.sh"
 
 [tasks.vuln]
 description = "Run govulncheck"
@@ -101,6 +119,10 @@ description = "Run the default Go test suite with serialized KDF-heavy packages"
 alias = "t"
 dir = "src"
 run = "go test -p 1 -tags migrated_fynedo ./..."
+
+[tasks."test:production-kdf"]
+description = "Run the complete Linux native production-KDF operation and CLI lane separately"
+run = "bash .github/scripts/test-production-kdf.sh"
 
 [tasks."test:golden"]
 description = "Run volume golden compatibility tests"
@@ -140,6 +162,8 @@ alias = "c"
 run = [
   "mise run workflows:lint",
   "mise run fmt",
+  "mise run tooling:fmt",
+  "mise run tooling:lint",
   "mise run vet",
   "mise run lint",
   "mise run vuln",

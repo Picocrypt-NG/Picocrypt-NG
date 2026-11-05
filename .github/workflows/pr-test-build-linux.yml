@@ -380,15 +380,69 @@ jobs:
         if-no-files-found: error
         compression-level: 9
 
+  production-kdf:
+    name: Linux native production-KDF tests
+    runs-on: ubuntu-24.04
+    # Initial budget from one 15m pilot (two CPUs, 4 GiB); hosted timing pending.
+    timeout-minutes: 75
+    env:
+      CGO_ENABLED: "1"
+      PICOCRYPT_RUN_CLI_INTEGRATION: "1"
+      GOMEMLIMIT: 2GiB
+      GOMAXPROCS: "2"
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Setup Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: "1.27.3"
+        cache-dependency-path: src/go.sum
+
+    - name: Setup mise
+      uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+      env:
+        MISE_ENABLE_TOOLS: go
+      with:
+        version: 2026.10.25
+        install_args: go
+        cache_key_prefix: mise-production-kdf
+
+    - name: Prepare compiler temporary directory
+      env:
+        GOTMPDIR: ${{ runner.temp }}/production-kdf-go-tmp
+      run: mkdir -p "$GOTMPDIR"
+
+    - name: Run complete native production-KDF lane
+      env:
+        MISE_ENABLE_TOOLS: go
+        GOTMPDIR: ${{ runner.temp }}/production-kdf-go-tmp
+        PICOCRYPT_PRODUCTION_KDF_REPORT_DIR: ${{ runner.temp }}/production-kdf-reports
+      run: mise run test:production-kdf
+
+    - name: Upload production-KDF reports
+      if: ${{ always() }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: production-kdf-reports
+        path: ${{ runner.temp }}/production-kdf-reports
+        if-no-files-found: error
+        retention-days: 7
+
   pr-test-build-linux:
-    needs: build
+    needs: [build, production-kdf]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() }}
     steps:
     - name: Require all Linux matrix jobs to pass
+      if: ${{ always() }}
+      shell: bash
+      env:
+        BUILD_RESULT: ${{ needs.build.result }}
+        PRODUCTION_KDF_RESULT: ${{ needs.production-kdf.result }}
       run: |
-        if [ "${{ needs.build.result }}" != "success" ]; then
-          echo "Linux matrix result: ${{ needs.build.result }}"
+        if [[ ${BUILD_RESULT:-} != success || ${PRODUCTION_KDF_RESULT:-} != success ]]; then
+          echo "Linux matrix result: ${BUILD_RESULT:-missing}; production-KDF result: ${PRODUCTION_KDF_RESULT:-missing}"
           exit 1
         fi

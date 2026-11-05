@@ -13,7 +13,7 @@ cli = "jouet test --cmd -- mise run test:cli"
 cli_integration = "jouet test --cmd -- mise run test:cli-integration"
 golden = "jouet test --cmd -- mise run test:golden"
 # Run these KDF-heavy lanes separately from other heavy checks.
-pcv3_production_kdf = "jouet test --cmd -- go -C src test -count=1 -p 1 -tags pcv3_production_kdf ./internal/pcv3operation/..."
+pcv3_production_kdf = "jouet test --cmd -- mise run test:production-kdf"
 race = "jouet test --cmd -- mise run test:race"
 wasm = "jouet test --cmd -- bash .github/scripts/test-wasm.sh"
 desktop_build = "jouet test --cmd -- mise run build:desktop"
