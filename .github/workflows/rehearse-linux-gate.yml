@@ -1,0 +1,180 @@
+name: rehearse-linux-gate
+
+on:
+  push:
+    branches:
+      - ci/rehearse-linux-gate
+      - ci/rehearse-linux-gate-cancel
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  parent-success:
+    if: ${{ github.ref == 'refs/heads/ci/rehearse-linux-gate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+    - run: |
+        exit 0
+
+  parent-failure:
+    if: ${{ github.ref == 'refs/heads/ci/rehearse-linux-gate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+    - run: |
+        exit 23
+
+  parent-skip:
+    if: ${{ github.ref == 'refs/heads/ci/rehearse-linux-gate-disabled' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+    - run: |
+        exit 0
+
+  parent-timeout:
+    if: ${{ github.ref == 'refs/heads/ci/rehearse-linux-gate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+    - run: |
+        exec tail -f /dev/null
+
+  gate-success:
+    needs: parent-success
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    if: ${{ always() && github.ref == 'refs/heads/ci/rehearse-linux-gate' }}
+    steps:
+    - name: Require all Linux matrix jobs to pass
+      if: ${{ always() }}
+      shell: bash
+      env:
+        BUILD_RESULT: ${{ needs.parent-success.result }}
+        PRODUCTION_KDF_RESULT: success
+      run: |
+        if [[ ${BUILD_RESULT:-} != success || ${PRODUCTION_KDF_RESULT:-} != success ]]; then
+          echo "Linux matrix result: ${BUILD_RESULT:-missing}; production-KDF result: ${PRODUCTION_KDF_RESULT:-missing}"
+          exit 1
+        fi
+
+  gate-failure:
+    needs: parent-failure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    if: ${{ always() && github.ref == 'refs/heads/ci/rehearse-linux-gate' }}
+    steps:
+    - name: Require all Linux matrix jobs to pass
+      if: ${{ always() }}
+      shell: bash
+      env:
+        BUILD_RESULT: ${{ needs.parent-failure.result }}
+        PRODUCTION_KDF_RESULT: success
+      run: |
+        if [[ ${BUILD_RESULT:-} != success || ${PRODUCTION_KDF_RESULT:-} != success ]]; then
+          echo "Linux matrix result: ${BUILD_RESULT:-missing}; production-KDF result: ${PRODUCTION_KDF_RESULT:-missing}"
+          exit 1
+        fi
+
+  gate-skip:
+    needs: parent-skip
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    if: ${{ always() && github.ref == 'refs/heads/ci/rehearse-linux-gate' }}
+    steps:
+    - name: Require all Linux matrix jobs to pass
+      if: ${{ always() }}
+      shell: bash
+      env:
+        BUILD_RESULT: ${{ needs.parent-skip.result }}
+        PRODUCTION_KDF_RESULT: success
+      run: |
+        if [[ ${BUILD_RESULT:-} != success || ${PRODUCTION_KDF_RESULT:-} != success ]]; then
+          echo "Linux matrix result: ${BUILD_RESULT:-missing}; production-KDF result: ${PRODUCTION_KDF_RESULT:-missing}"
+          exit 1
+        fi
+
+  gate-timeout:
+    needs: parent-timeout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    if: ${{ always() && github.ref == 'refs/heads/ci/rehearse-linux-gate' }}
+    steps:
+    - name: Require all Linux matrix jobs to pass
+      if: ${{ always() }}
+      shell: bash
+      env:
+        BUILD_RESULT: ${{ needs.parent-timeout.result }}
+        PRODUCTION_KDF_RESULT: success
+      run: |
+        if [[ ${BUILD_RESULT:-} != success || ${PRODUCTION_KDF_RESULT:-} != success ]]; then
+          echo "Linux matrix result: ${BUILD_RESULT:-missing}; production-KDF result: ${PRODUCTION_KDF_RESULT:-missing}"
+          exit 1
+        fi
+
+  observe:
+    needs: [parent-success, parent-failure, parent-skip, parent-timeout, gate-success, gate-failure, gate-skip, gate-timeout]
+    if: ${{ always() && github.ref == 'refs/heads/ci/rehearse-linux-gate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+    - name: Check expected rehearsal conclusions
+      if: ${{ always() }}
+      shell: bash
+      env:
+        PARENT_SUCCESS: ${{ needs.parent-success.result }}
+        PARENT_FAILURE: ${{ needs.parent-failure.result }}
+        PARENT_SKIP: ${{ needs.parent-skip.result }}
+        PARENT_TIMEOUT: ${{ needs.parent-timeout.result }}
+        GATE_SUCCESS: ${{ needs.gate-success.result }}
+        GATE_FAILURE: ${{ needs.gate-failure.result }}
+        GATE_SKIP: ${{ needs.gate-skip.result }}
+        GATE_TIMEOUT: ${{ needs.gate-timeout.result }}
+      run: |
+        [[ ${PARENT_SUCCESS:-} == success && ${PARENT_FAILURE:-} == failure && ${PARENT_SKIP:-} == skipped && ${PARENT_TIMEOUT:-} == failure ]]
+        [[ ${GATE_SUCCESS:-} == success && ${GATE_FAILURE:-} == failure && ${GATE_SKIP:-} == failure && ${GATE_TIMEOUT:-} == failure ]]
+        echo 'Expected negative gates failed; this validates the rehearsal, not product tests.'
+
+  parent-cancel:
+    if: ${{ !cancelled() && github.repository == 'Picocrypt-NG/Picocrypt-NG' && github.ref == 'refs/heads/ci/rehearse-linux-gate-cancel' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: write
+    steps:
+    - name: Cancel this rehearsal run
+      shell: bash
+      env:
+        GH_HOST: github.com
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        RUN_ID: ${{ github.run_id }}
+      run: |
+        [[ "$GH_REPO" == Picocrypt-NG/Picocrypt-NG && "$RUN_ID" =~ ^[0-9]+$ ]]
+        gh api --method POST "repos/$GH_REPO/actions/runs/$RUN_ID/cancel"
+        exec tail -f /dev/null
+
+  gate-cancel:
+    needs: parent-cancel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    if: ${{ always() && github.ref == 'refs/heads/ci/rehearse-linux-gate-cancel' }}
+    steps:
+    - name: Require all Linux matrix jobs to pass
+      if: ${{ always() }}
+      shell: bash
+      env:
+        BUILD_RESULT: ${{ needs.parent-cancel.result }}
+        PRODUCTION_KDF_RESULT: success
+      run: |
+        if [[ ${BUILD_RESULT:-} != success || ${PRODUCTION_KDF_RESULT:-} != success ]]; then
+          echo "Linux matrix result: ${BUILD_RESULT:-missing}; production-KDF result: ${PRODUCTION_KDF_RESULT:-missing}"
+          exit 1
+        fi
