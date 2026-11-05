@@ -191,3 +191,65 @@ The release gate also binds the source commit and repository.
 
 The `.sigstore.json` bundle embeds the Rekor inclusion proof, so `cosign verify-blob`
 can run fully offline given a `--trusted-root`.
+
+## Release operator runbook
+
+Assign a named maintainer to each responsibility in the release record:
+
+| Stage | Responsible role | Trust anchor |
+|---|---|---|
+| AppImage GPG signing | GPG key custodian and release operator | Fingerprint above and `.github/toolchains/appimage-verifier/manifest.json` |
+| Android APK signing | Android keystore custodian and release operator | `android/release-signing-cert-sha256.txt` |
+| Windows Authenticode | SignPath approver | Production certificate fingerprint above and reviewed artifact configurations |
+| macOS bundle sealing | macOS packager | Current ad-hoc seal; Developer ID/notarization is a separate decision |
+| Sigstore, provenance and publication | Release operator | Exact workflow owner, repository, ref and source SHA |
+
+1. Record the reviewed `main` commit, root `VERSION`, required-check results and
+   human review of audit-critical changes. Run unsigned validation with
+   `publish_release=false` and both Windows SignPath inputs disabled. Record
+   built, verified, signing-not-requested/signed, staged and published separately.
+2. Use the current seven direct build workflows. Check every run's actual source
+   SHA and version before continuing: seven dispatches against a moving `main`
+   do not freeze one commit. The canonical asset ownership list is
+   `.github/actions/stage-release/release-manifest.sh`: 19 primary assets and
+   their 19 Sigstore bundles.
+3. Before authorizing production signing, inspect the actual `release` environment
+   branch policy, required reviewers and self-review settings. Record the named
+   approver and decision; `environment: release` in YAML alone establishes no
+   approval requirement. Review SignPath requests as described above.
+   `signpath_release_dry_run` still performs production signing.
+4. Retain run/attempt IDs, source SHA, tool versions, artifact IDs/digests,
+   verification reports and approval records through the signing/retry window.
+   Keep credentials, private keys, memory dumps and personal filesystem paths out
+   of this evidence. The shared release gate verifies remote bytes, provenance,
+   exact asset ownership and the source-bound tag before publication.
+5. Read back the final release ID, tag, target SHA, `draft=false`,
+   `prerelease=false` and complete 38-asset set. A successful leaf job can leave an
+   incomplete draft; it does not establish that publication occurred.
+
+For recovery, first verify and reuse the original staged artifact/bundle pairs
+by ID, digest, source and provenance. Rebuilding the same SHA can change bytes,
+timestamps or signatures. If retained inputs expired and an original pair cannot
+be recovered, stop for an explicit recovery decision. Preserve published assets;
+the gate never overwrites an existing asset.
+
+Rotate a signing identity through one reviewed change to its public trust
+anchors, verification fixtures and service policy before using replacement
+credentials. Retain historical public verification material. AppImage rotation
+must keep this file and its verifier manifest consistent; Android rotation must
+update the pinned certificate digest; SignPath rotation must update every
+production certificate check.
+
+For each legacy Go update, review the source/bootstrap hashes, immutable vendor
+commit and local patches together with `build-legacy-go.ps1` and its manifest.
+Retain filesystem, randomness, PE and import regressions. A legacy release
+candidate also needs execution in isolated Windows 7 and Windows 8 VMs;
+`windows-2022` checks alone do not establish that compatibility.
+
+Review CodeQL languages and extraction diagnostics for the selected SHA,
+including excluded platform/build-tag files and native dependency failures.
+Keep this evidence separate from the bounded models and source contracts in
+[`verification/README.md`](verification/README.md); stable PCV3 releases require
+human review of audit-critical changes. Paid Apple Developer ID/notarization
+requires a separate budget/credential decision and a quarantined-download smoke
+test on a clean supported macOS system.
