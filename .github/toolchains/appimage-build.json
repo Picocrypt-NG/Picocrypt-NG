@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "tools": [
+    {
+      "name": "linuxdeploy",
+      "version": "1-alpha-20251107-1",
+      "source_commit": "cc7b86472c3caa3fd729b9dc502fd2aa78394257",
+      "asset_id": 313839329,
+      "url": "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage",
+      "sha256": "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
+    },
+    {
+      "name": "appimagetool",
+      "version": "1.9.1",
+      "source_commit": "8c8c91f762b412a19f4e8d2c4b35afb98f2d7c81",
+      "asset_id": 324406736,
+      "url": "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage",
+      "sha256": "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+    },
+    {
+      "name": "runtime",
+      "version": "20251108",
+      "source_commit": "dd6cebedcbddde9c82f89b011e8e1d40b6e43868",
+      "asset_id": 326011592,
+      "url": "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64",
+      "sha256": "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
+    }
+  ]
+}

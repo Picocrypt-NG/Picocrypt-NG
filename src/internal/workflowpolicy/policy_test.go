@@ -307,22 +307,22 @@ func releaseWorkflowCases() []struct {
 
 func TestAppImageSigningSecretsRequireReleaseEnvironment(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-appimage.yml")
-	buildJob := mustJob(t, workflow, "build")
+	signJob := mustJob(t, workflow, "sign")
 
-	if buildJob.If != "${{ github.ref == 'refs/heads/main' }}" {
-		t.Fatalf("AppImage signing build job if = %q, want main branch guard", buildJob.If)
+	if signJob.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}" {
+		t.Fatalf("AppImage signing job if = %q, want explicit publication on main", signJob.If)
 	}
-	if got := releaseEnvironmentName(buildJob.Environment); got != "release" {
-		t.Fatalf("AppImage signing build job environment = %#v, want release", buildJob.Environment)
+	if got := releaseEnvironmentName(signJob.Environment); got != "release" {
+		t.Fatalf("AppImage signing job environment = %#v, want release", signJob.Environment)
 	}
 
-	importStep := mustStepNamed(t, buildJob, "Import GPG signing key")
+	importStep := mustStepNamed(t, signJob, "Import GPG signing key")
 	if _, ok := importStep.Env["GPG_PRIVATE_KEY"]; !ok {
-		t.Fatal("AppImage signing build job should keep the GPG private key scoped to its import step")
+		t.Fatal("AppImage signing job should keep the GPG private key scoped to its import step")
 	}
-	buildStep := mustStepNamed(t, buildJob, "Build AppImage")
+	buildStep := mustStepNamed(t, signJob, "Build signed AppImage")
 	if _, ok := buildStep.Env["APPIMAGETOOL_SIGN_PASSPHRASE"]; !ok {
-		t.Fatal("AppImage signing build job should keep the AppImage passphrase scoped to its build step")
+		t.Fatal("AppImage signing job should keep the AppImage passphrase scoped to its build step")
 	}
 }
 
@@ -382,27 +382,41 @@ func TestAppImageWorkflowIsPortableSmokeTestedAndPinned(t *testing.T) {
 		t.Fatalf("AppImage build runner = %q, want ubuntu-22.04 portability floor", build.RunsOn)
 	}
 
-	// Supply chain: the AppImage tooling is fetched at build time, so it must be
-	// sha256-pinned AND verified (fail loud), like UPX in build-linux. Asserts that a
-	// pin exists and is checked -- not the exact digest -- so a tool bump does not churn
-	// this test.
+	// Versioned producer inputs must be hashed before any downloaded code executes.
 	fetch := mustStepNamed(t, build, "Fetch and verify AppImage tooling")
 	if fetch.If != "" || (fetch.ContinueOnError != nil && fetch.ContinueOnError != false) {
 		t.Fatal("AppImage tooling verification must be unconditional and blocking")
 	}
-	ready := regexp.MustCompile(`(?m)^[\t ]*chmod \+x linuxdeploy appimagetool[\t ]*$`).FindStringIndex(fetch.Run)
-	if ready == nil {
-		t.Fatal("AppImage tooling must be made executable only after verification")
+	mustContain(t, fetch.Run, "bash .github/scripts/install-appimage-build-tools.sh .appimage-tools")
+	installer := mustReadRepoFile(t, ".github/scripts/install-appimage-build-tools.sh")
+	mustContainInOrder(t, installer, `--output "$destination/$name" "$url"`, `actual=$(sha256sum < "$destination/$name")`, `[[ ${actual%% *} == "$expected" ]]`, `chmod +x "$destination/linuxdeploy" "$destination/appimagetool"`)
+	var manifest struct {
+		Tools []struct {
+			Name, Version, URL, SHA256 string
+			SourceCommit               string `json:"source_commit"`
+			AssetID                    int64  `json:"asset_id"`
+		} `json:"tools"`
 	}
-	for _, tool := range []struct{ name, url string }{
-		{"linuxdeploy", "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"},
-		{"appimagetool", "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"},
-	} {
-		download := regexp.MustCompile(`(?m)^[\t ]*` + regexp.QuoteMeta("wget -O "+tool.name+" "+tool.url) + `[\t ]*$`).FindStringIndex(fetch.Run)
-		checksum := regexp.MustCompile(`(?m)^[\t ]*echo "[0-9a-f]{64}  ` + tool.name + `" \| sha256sum --check --strict --status[\t ]*$`).FindStringIndex(fetch.Run)
-		if download == nil || checksum == nil || download[0] >= checksum[0] || checksum[0] >= ready[0] {
-			t.Fatalf("%s requires an active pinned checksum command after download and before chmod", tool.name)
+	if err := json.Unmarshal([]byte(mustReadRepoFile(t, ".github/toolchains/appimage-build.json")), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	wantTools := map[string]string{
+		"linuxdeploy":  "linuxdeploy/linuxdeploy",
+		"appimagetool": "AppImage/appimagetool",
+		"runtime":      "AppImage/type2-runtime",
+	}
+	for _, tool := range manifest.Tools {
+		repository, known := wantTools[tool.Name]
+		if !known || !regexp.MustCompile(`^[0-9][0-9A-Za-z.-]*$`).MatchString(tool.Version) ||
+			!strings.HasPrefix(tool.URL, "https://github.com/"+repository+"/releases/download/"+tool.Version+"/") ||
+			!regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(tool.SHA256) ||
+			!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(tool.SourceCommit) || tool.AssetID <= 0 {
+			t.Fatalf("AppImage producer input lacks a versioned source and asset pin: %+v", tool)
 		}
+		delete(wantTools, tool.Name)
+	}
+	if len(wantTools) != 0 {
+		t.Fatalf("AppImage producer inputs missing: %v", wantTools)
 	}
 
 	// The produced AppImage must be smoke-tested, or a broken bundle (a shared library

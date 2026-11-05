@@ -1,0 +1,10 @@
+--- a/src/signing/signaturevalidator.cpp
++++ b/src/signing/signaturevalidator.cpp
+@@ -310,6 +310,7 @@
+         explicit Private() {
+             std::string tempGpgHomeDirTemplate = std::filesystem::temp_directory_path() / "appimageupdate-XXXXXX";
+             std::vector<char> tempGpgHomeDirCStr(tempGpgHomeDirTemplate.begin(), tempGpgHomeDirTemplate.end());
++            tempGpgHomeDirCStr.push_back('\0');
+ 
+             if (mkdtemp(tempGpgHomeDirCStr.data()) == nullptr) {
+                 const auto error = errno;
