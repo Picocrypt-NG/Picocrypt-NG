@@ -346,7 +346,9 @@ func TestBuildPermissionsStayLeastPrivilege(t *testing.T) {
 
 	buildLinux := mustReadWorkflowDoc(t, ".github/workflows/build-linux.yml")
 	mustPermission(t, buildLinux.Permissions, "contents", "read")
-	mustEffectivePermission(t, buildLinux, mustJob(t, buildLinux, "build"), "contents", "read")
+	for _, name := range []string{"prepare", "build-amd64", "build-arm64"} {
+		mustEffectivePermission(t, buildLinux, mustJob(t, buildLinux, name), "contents", "read")
+	}
 	mustEffectivePermission(t, buildLinux, mustJob(t, buildLinux, "release"), "contents", "write")
 
 	buildMacOS := mustReadWorkflowDoc(t, ".github/workflows/build-macos.yml")
@@ -942,7 +944,7 @@ func TestLinuxUPXDownloadsRemainChecksumGated(t *testing.T) {
 		".github/workflows/build-linux.yml",
 		".github/workflows/pr-test-build-linux.yml",
 	} {
-		build := mustJob(t, mustReadWorkflowDoc(t, path), "build")
+		build := linuxBuildPolicyJob(t, path)
 		compress := mustStepNamed(t, build, "Compress with upx")
 		if compress.If != "" || (compress.ContinueOnError != nil && compress.ContinueOnError != false) {
 			t.Fatal("Linux UPX verification must be unconditional and blocking")
@@ -1013,7 +1015,7 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 	} {
 		t.Run(path, func(t *testing.T) {
 			workflow := mustReadWorkflowDoc(t, path)
-			build := mustJob(t, workflow, "build")
+			build := linuxBuildPolicyJob(t, path)
 			testStep := mustStepNamed(t, build, "Run tests")
 			testRun := testStep.Run
 			raceSelectors := []string{`"${packages[@]}"`}
@@ -1366,6 +1368,9 @@ func TestLinuxDebPackagingDoesNotUseExternalScaffold(t *testing.T) {
 	} {
 		t.Run(path, func(t *testing.T) {
 			content := mustReadWorkflow(t, path)
+			if path == ".github/workflows/build-linux.yml" {
+				content = mustReadRepoFile(t, ".github/actions/build-linux/action.yml")
+			}
 			mustNotContain(t, content, "github.com/user-attachments/files/21703014/Picocrypt-NG.zip")
 			mustContain(t, content, "librsvg2-bin")
 			mustContain(t, content, "xmllint --noout images/key.svg")
@@ -2158,7 +2163,8 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 		{path: ".github/workflows/android-instrumented.yml", job: "android-instrumented"},
 		{path: ".github/workflows/build-android.yml", job: "build"},
 		{path: ".github/workflows/build-appimage.yml", job: "build"},
-		{path: ".github/workflows/build-linux.yml", job: "build"},
+		{path: ".github/workflows/build-linux.yml", job: "build-amd64"},
+		{path: ".github/workflows/build-linux.yml", job: "build-arm64"},
 		{path: ".github/workflows/build-macos.yml", job: "build"},
 		{path: ".github/workflows/build-windows.yml", job: "build"},
 		{path: ".github/workflows/pr-static-checks.yml", job: "static-checks"},
@@ -2185,6 +2191,11 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 		workflow := mustReadWorkflowDoc(t, relPath)
 		for jobName, job := range workflow.Jobs {
 			lane := workflowLane{path: relPath, job: jobName}
+			for _, step := range job.Steps {
+				if step.Uses == "./.github/actions/build-linux" {
+					job.Steps = append(job.Steps, linuxBuildPolicyJob(t, ".github/workflows/build-linux.yml").Steps...)
+				}
+			}
 			for _, step := range job.Steps {
 				if !strings.HasPrefix(step.Uses, "actions/setup-go@") {
 					continue

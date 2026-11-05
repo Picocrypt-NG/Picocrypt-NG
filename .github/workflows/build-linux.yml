@@ -17,245 +17,103 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-            upx_pkg: upx-5.2.1-amd64_linux
-            upx_sha256: 402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657
-            gui_binary: Picocrypt-NG
-            cli_binary: Picocrypt-NG-cli
-            artifact_name: build-linux-amd64
-            build_deb: "true"
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            upx_pkg: upx-5.2.1-arm64_linux
-            upx_sha256: a72d112c5970a904a31da0b9c84f919bc16b9a311787c12245508544a78c7d36
-            gui_binary: Picocrypt-NG-arm64
-            cli_binary: Picocrypt-NG-cli-arm64
-            artifact_name: build-linux-arm64
-            build_deb: "false"
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      source-sha: ${{ steps.source.outputs.source-sha }}
+      version: ${{ steps.source.outputs.version }}
+      manifest-digest: ${{ steps.source.outputs.manifest-digest }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-    - name: Setup Go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.27.3"
-        cache-dependency-path: src/go.sum
+        ref: ${{ github.sha }}
+        persist-credentials: false
 
-    - name: Update repository
-      run: |
-        sudo apt update
+    - name: Validate release request
+      shell: bash
+      env:
+        PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        SIGNPATH_TEST: "false"
+        SIGNPATH_RELEASE_DRY_RUN: "false"
+        SOURCE_REF: ${{ github.ref }}
+        SOURCE_EVENT: ${{ github.event_name }}
+      run: bash .github/scripts/validate-release-request.sh
 
-    - name: Install packages
-      run: |
-        sudo apt install -y gcc pkg-config libgl1-mesa-dev xorg-dev libgtk-3-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev wget libxml2-utils librsvg2-bin desktop-file-utils appstream
-
-    - name: Install Linux GUI smoke dependencies
-      if: matrix.arch == 'amd64'
-      run: |
-        sudo apt install -y xvfb openbox xdotool wmctrl libgl1-mesa-dri
-
-    - name: Validate dist artefacts
-      run: |
-        xmllint --noout dist/mime/application-x-pcv.xml
-        xmllint --noout images/key.svg
-        xmllint --noout images/pcv-icon.svg
-        output=$(desktop-file-validate dist/linux/io.github.picocrypt_ng.Picocrypt-NG.desktop)
-        if [ -n "$output" ]; then echo "$output"; exit 1; fi
-        appstreamcli validate --no-net dist/linux/io.github.picocrypt_ng.Picocrypt-NG.metainfo.xml
-
-    - name: Install dependencies
-      run: |
-        cd src
-        go mod download
-
-    - name: Test browser PCV3 and legacy compatibility
-      if: matrix.arch == 'amd64'
-      timeout-minutes: 45
-      run: .github/scripts/test-wasm.sh
-
-    - name: Run tests
+    - name: Bind source and canonical manifest
+      id: source
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ github.sha }}
       run: |
         set -euo pipefail
-        cd src
-        if [ "${{ matrix.arch }}" = "amd64" ]; then
-          # Keep package binaries serial and release UI renderer/race memory
-          # between parents. The CLI integration still uses its non-race binary.
-          package_list=$(CGO_ENABLED=1 go list -race -tags migrated_fynedo ./... | awk '$0 != "Picocrypt-NG/internal/ui"' | LC_ALL=C sort)
-          if [[ -z "$package_list" ]]; then
-            echo "No non-UI native Linux packages discovered" >&2
-            exit 1
-          fi
-          mapfile -t packages <<< "$package_list"
-          CGO_ENABLED=1 go test -v -tags migrated_fynedo -race -p 1 -timeout 15m "${packages[@]}"
-          bash ../.github/scripts/test-linux-ui-race.sh
-          PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -timeout 15m -run '^TestCLIIntegration$' ./internal/cli/...
-        else
-          PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -tags migrated_fynedo -timeout 15m ./...
-        fi
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$version" | sha256sum)
+        {
+          echo "source-sha=$SOURCE_SHA"
+          echo "version=$version"
+          echo "manifest-digest=${digest%% *}"
+        } >> "$GITHUB_OUTPUT"
 
-    - name: Build GUI
-      run: |
-        cd src
-        if [ "${{ matrix.arch }}" = "amd64" ]; then
-          export GOAMD64=v1
-        fi
-        GOARCH=${{ matrix.arch }} CGO_ENABLED=1 go build -v -tags migrated_fynedo -ldflags="-s -w" -o "${{ matrix.gui_binary }}" ./cmd/picocrypt
-
-    - name: Smoke test Linux GUI
-      if: matrix.arch == 'amd64'
-      run: .github/scripts/smoke-linux-gui.sh "src/${{ matrix.gui_binary }}"
-
-    - name: Build CLI-only (no graphics dependencies)
-      run: |
-        cd src
-        if [ "${{ matrix.arch }}" = "amd64" ]; then
-          export GOAMD64=v1
-        fi
-        GOARCH=${{ matrix.arch }} CGO_ENABLED=1 go build -v -tags cli -ldflags="-s -w" -o "${{ matrix.cli_binary }}" ./cmd/picocrypt
-
-    - name: Compress with upx
-      run: |
-        wget -O upx.tar.xz https://github.com/upx/upx/releases/download/v5.2.1/${{ matrix.upx_pkg }}.tar.xz
-        echo "${{ matrix.upx_sha256 }}  upx.tar.xz" | sha256sum --check --strict --status
-        tar -xf upx.tar.xz
-        ${{ matrix.upx_pkg }}/upx --lzma "src/${{ matrix.gui_binary }}"
-        ${{ matrix.upx_pkg }}/upx --lzma "src/${{ matrix.cli_binary }}"
-
-    - name: Package as .deb
-      shell: bash
-      if: matrix.build_deb == 'true'
-      run: |
-        package_root="Picocrypt-NG/Picocrypt-NG"
-        install -d "$package_root/DEBIAN"
-        install -d "$package_root/usr/bin"
-        install -d "$package_root/usr/share/applications"
-        install -d "$package_root/usr/share/icons/hicolor/scalable/apps"
-        install -m 0755 "src/${{ matrix.gui_binary }}" "$package_root/usr/bin/picocrypt-ng-gui"
-        install -m 0644 images/key.svg \
-            "$package_root/usr/share/icons/hicolor/scalable/apps/io.github.picocrypt_ng.Picocrypt-NG.svg"
-        for size in 16 32 48 64 128 256; do
-          app_icon_png="$package_root/usr/share/icons/hicolor/${size}x${size}/apps/io.github.picocrypt_ng.Picocrypt-NG.png"
-          install -d "$(dirname "$app_icon_png")"
-          rsvg-convert --format png --width "$size" --height "$size" --output "$app_icon_png" images/key.svg
-          test -s "$app_icon_png"
-        done
-        VERSION=$(cat VERSION)
-        cat > "$package_root/DEBIAN/control" <<EOF
-        Package: picocrypt-ng
-        Version: $VERSION
-        Architecture: ${{ matrix.arch }}
-        Maintainer: Picocrypt-NG
-        Priority: optional
-        Section: utils
-        Depends: shared-mime-info, desktop-file-utils, hicolor-icon-theme
-        Recommends: gtk-update-icon-cache
-        Description: Picocrypt-NG file encryption utility
-        EOF
-        install -m 0644 dist/linux/io.github.picocrypt_ng.Picocrypt-NG.desktop \
-            "$package_root/usr/share/applications/io.github.picocrypt_ng.Picocrypt-NG.desktop"
-        sed -i 's|^Exec=.*|Exec=/usr/bin/picocrypt-ng-gui %f|' \
-            "$package_root/usr/share/applications/io.github.picocrypt_ng.Picocrypt-NG.desktop"
-        install -d "$package_root/usr/share/mime/packages"
-        install -m 0644 dist/mime/application-x-pcv.xml \
-            "$package_root/usr/share/mime/packages/application-x-pcv.xml"
-        for size in 16 32 48 64 128 256; do
-          install -d "$package_root/usr/share/icons/hicolor/${size}x${size}/mimetypes"
-          install -m 0644 "images/pcv-icon-${size}.png" \
-            "$package_root/usr/share/icons/hicolor/${size}x${size}/mimetypes/application-x-pcv.png"
-        done
-        install -d "$package_root/usr/share/icons/hicolor/scalable/mimetypes"
-        install -m 0644 images/pcv-icon.svg \
-            "$package_root/usr/share/icons/hicolor/scalable/mimetypes/application-x-pcv.svg"
-        cat > "$package_root/DEBIAN/postinst" <<'EOF'
-        #!/bin/sh
-        set -e
-        case "$1" in
-          configure)
-            if command -v update-mime-database >/dev/null 2>&1; then
-              update-mime-database /usr/share/mime || true
-            fi
-            if command -v update-desktop-database >/dev/null 2>&1; then
-              update-desktop-database -q /usr/share/applications || true
-            fi
-            if [ -e /usr/share/icons/hicolor/icon-theme.cache ]; then
-              touch /usr/share/icons/hicolor
-              if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-                gtk-update-icon-cache -q -f -t /usr/share/icons/hicolor || true
-              fi
-            fi
-            ;;
-          abort-upgrade|abort-remove|abort-deconfigure)
-            ;;
-        esac
-        exit 0
-        EOF
-        chmod 0755 "$package_root/DEBIAN/postinst"
-        cat > "$package_root/DEBIAN/postrm" <<'EOF'
-        #!/bin/sh
-        set -e
-        case "$1" in
-          remove|purge)
-            if command -v update-mime-database >/dev/null 2>&1; then
-              update-mime-database /usr/share/mime || true
-            fi
-            if command -v update-desktop-database >/dev/null 2>&1; then
-              update-desktop-database -q /usr/share/applications || true
-            fi
-            if [ -e /usr/share/icons/hicolor/icon-theme.cache ]; then
-              touch /usr/share/icons/hicolor
-              if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-                gtk-update-icon-cache -q -f -t /usr/share/icons/hicolor || true
-              fi
-            fi
-            ;;
-          upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
-            ;;
-        esac
-        exit 0
-        EOF
-        chmod 0755 "$package_root/DEBIAN/postrm"
-        sh -n "$package_root/DEBIAN/postinst"
-        sh -n "$package_root/DEBIAN/postrm"
-        dpkg-deb -Zxz --build --root-owner-group "$package_root"
-        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/applications/io\.github\.picocrypt_ng\.Picocrypt-NG\.desktop' >/dev/null
-        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/scalable/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.svg' >/dev/null
-        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/16x16/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
-        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/32x32/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
-        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/48x48/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
-        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/64x64/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
-        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/128x128/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
-        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/256x256/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
-        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/mime/packages/application-x-pcv\.xml' >/dev/null
-        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/[0-9]+x[0-9]+/mimetypes/application-x-pcv\.png' >/dev/null
-        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/scalable/mimetypes/application-x-pcv\.svg' >/dev/null
-
-    - name: Prepare to upload artifacts
-      run: |
-        mkdir -p out
-        mv "src/${{ matrix.gui_binary }}" out
-        mv "src/${{ matrix.cli_binary }}" out
-        if [ "${{ matrix.build_deb }}" = "true" ]; then
-          mv Picocrypt-NG/Picocrypt-NG.deb out
-        fi
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+  build-amd64:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    outputs:
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
+      artifact-digest: ${{ steps.build.outputs.artifact-digest }}
+      run-attempt: ${{ steps.build.outputs.run-attempt }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
-        name: ${{ matrix.artifact_name }}
-        path: out/*
-        if-no-files-found: error
-        compression-level: 9
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Build native Linux artifacts
+      id: build
+      uses: ./.github/actions/build-linux
+      with:
+        arch: amd64
+        upx_pkg: upx-5.2.1-amd64_linux
+        upx_sha256: 402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657
+        gui_binary: Picocrypt-NG
+        cli_binary: Picocrypt-NG-cli
+        build_deb: "true"
+        source-sha: ${{ needs.prepare.outputs.source-sha }}
+        version: ${{ needs.prepare.outputs.version }}
+        manifest-digest: ${{ needs.prepare.outputs.manifest-digest }}
+
+  build-arm64:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    outputs:
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
+      artifact-digest: ${{ steps.build.outputs.artifact-digest }}
+      run-attempt: ${{ steps.build.outputs.run-attempt }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Build native Linux artifacts
+      id: build
+      uses: ./.github/actions/build-linux
+      with:
+        arch: arm64
+        upx_pkg: upx-5.2.1-arm64_linux
+        upx_sha256: a72d112c5970a904a31da0b9c84f919bc16b9a311787c12245508544a78c7d36
+        gui_binary: Picocrypt-NG-arm64
+        cli_binary: Picocrypt-NG-cli-arm64
+        build_deb: "false"
+        source-sha: ${{ needs.prepare.outputs.source-sha }}
+        version: ${{ needs.prepare.outputs.version }}
+        manifest-digest: ${{ needs.prepare.outputs.manifest-digest }}
 
   release:
-    needs: build
+    needs: [prepare, build-amd64, build-arm64]
     if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -265,15 +123,55 @@ jobs:
     environment: release
     permissions:
       contents: write
+      actions: read
       id-token: write
       attestations: write
+    env:
+      SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+      SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
+      CANONICAL_MANIFEST_SHA256: ${{ needs.prepare.outputs.manifest-digest }}
+      AMD64_ARTIFACT_ID: ${{ needs.build-amd64.outputs.artifact-id }}
+      AMD64_ARTIFACT_DIGEST: ${{ needs.build-amd64.outputs.artifact-digest }}
+      AMD64_RUN_ATTEMPT: ${{ needs.build-amd64.outputs.run-attempt }}
+      ARM64_ARTIFACT_ID: ${{ needs.build-arm64.outputs.artifact-id }}
+      ARM64_ARTIFACT_DIGEST: ${{ needs.build-arm64.outputs.artifact-digest }}
+      ARM64_RUN_ATTEMPT: ${{ needs.build-arm64.outputs.run-attempt }}
+      ARTIFACT_ROOT: artifacts
+      LINUX_MANIFEST: ${{ github.workspace }}/linux-artifacts.json
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
 
-    - name: Download build artifacts
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+
+    - name: Verify immutable Linux artifact metadata
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/build-linux/verify-artifacts.sh metadata
+
+    - name: Download Linux AMD64 artifact
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
-        path: artifacts
+        artifact-ids: ${{ needs.build-amd64.outputs.artifact-id }}
+        path: artifacts/build-linux-amd64
+        merge-multiple: true
+        digest-mismatch: error
+
+    - name: Download Linux ARM64 artifact
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.build-arm64.outputs.artifact-id }}
+        path: artifacts/build-linux-arm64
+        merge-multiple: true
+        digest-mismatch: error
+
+    - name: Verify Linux payload manifests
+      shell: bash
+      run: bash .github/actions/build-linux/verify-artifacts.sh payload
 
     - name: Get version tag
       run: |

@@ -40,6 +40,16 @@ jobs:
       with:
         persist-credentials: false
 
+    - name: Validate release request
+      shell: bash
+      env:
+        PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        SIGNPATH_TEST: ${{ inputs.signpath_test }}
+        SIGNPATH_RELEASE_DRY_RUN: ${{ inputs.signpath_release_dry_run }}
+        SOURCE_REF: ${{ github.ref }}
+        SOURCE_EVENT: ${{ github.event_name }}
+      run: bash .github/scripts/validate-release-request.sh
+
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:

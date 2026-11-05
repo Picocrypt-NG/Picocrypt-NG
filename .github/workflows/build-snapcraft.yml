@@ -27,6 +27,16 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+    - name: Validate release request
+      shell: bash
+      env:
+        PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        SIGNPATH_TEST: "false"
+        SIGNPATH_RELEASE_DRY_RUN: "false"
+        SOURCE_REF: ${{ github.ref }}
+        SOURCE_EVENT: ${{ github.event_name }}
+      run: bash .github/scripts/validate-release-request.sh
+
     - name: Copy Snapcraft files to source
       run: |
         cp -r dist/snapcraft/* src/

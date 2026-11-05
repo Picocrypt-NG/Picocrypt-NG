@@ -33,6 +33,16 @@ jobs:
       with:
         persist-credentials: false
 
+    - name: Validate release request
+      shell: bash
+      env:
+        PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        SIGNPATH_TEST: "false"
+        SIGNPATH_RELEASE_DRY_RUN: "false"
+        SOURCE_REF: ${{ github.ref }}
+        SOURCE_EVENT: ${{ github.event_name }}
+      run: bash .github/scripts/validate-release-request.sh
+
     - name: Validate Gradle Wrapper
       uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
 
