@@ -332,5 +332,8 @@
   "comments.d1_placeholder": "Commentaire chiffré ; disponible après vérification.",
   "pcv3.archive.picker_failed.title": "Impossible de sélectionner le dossier",
   "pcv3.archive.destination_failed.title": "Impossible d’ouvrir le dossier d’extraction",
-  "pcv3.archive.destination_failed.body": "Choisissez un autre dossier ou réessayez."
+  "pcv3.archive.destination_failed.body": "Choisissez un autre dossier ou réessayez.",
+  "settings.menu": "Paramètres",
+  "settings.remember_window_position": "Mémoriser la position de la fenêtre",
+  "settings.remember_window_size": "Mémoriser la taille de la fenêtre"
 }

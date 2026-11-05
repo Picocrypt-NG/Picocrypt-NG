@@ -58,6 +58,8 @@ var appIconData []byte
 
 // Initial desktop size; subsequent resizing belongs to the user.
 const (
+	mainWindowTitle = "Picocrypt NG"
+
 	windowWidth  = 480
 	windowHeight = 640
 	buttonWidth  = 54
@@ -123,6 +125,7 @@ type App struct {
 	clearButton        *widget.Button
 	aboutButton        *widget.Button
 	languageSelector   *languageSelector
+	settingsSelector   *settingsSelector
 	aboutVersionLabel  *widget.Label
 	mainContent        *fyne.Container
 	configurationForm  *fyne.Container
@@ -448,7 +451,7 @@ func (a *App) Run(startupPaths []string) {
 	// taskbars/docks show the .desktop Name or WM_CLASS, and mixing in the
 	// version made the user-visible name inconsistent across DEs. The version
 	// stays available via the CLI and the packaged file metadata.
-	a.Window = a.fyneApp.NewWindow("Picocrypt NG")
+	a.Window = a.fyneApp.NewWindow(mainWindowTitle)
 	// NewWindow initializes the GLFW driver; native window creation happens on Show.
 	prepareWindowIdentity()
 	a.Window.SetIcon(appIcon)
@@ -524,6 +527,8 @@ func (a *App) handleCloseRequest() {
 	if snap.Working || snap.ShowProgress {
 		return
 	}
+	a.saveDesktopWindowPosition()
+	a.saveDesktopWindowSize()
 	a.beginOrderlyShutdown()
 }
 
@@ -670,7 +675,15 @@ func (a *App) buildUI() fyne.CanvasObject {
 	a.aboutButton.Importance = widget.LowImportance
 
 	a.languageSelector = newLanguageSelector(a)
-	headerLeft := container.NewHBox(a.aboutButton, a.languageSelector.object())
+	headerObjects := []fyne.CanvasObject{
+		a.aboutButton,
+	}
+	if supportsWindowPositionPersistence() {
+		a.settingsSelector = newSettingsSelector(a)
+		headerObjects = append(headerObjects, a.settingsSelector.object())
+	}
+	headerObjects = append(headerObjects, a.languageSelector.object())
+	headerLeft := container.NewHBox(headerObjects...)
 	headerRow := container.NewBorder(nil, nil, headerLeft, a.clearButton, a.inputLabel)
 
 	// Password section (from password_section.go)
@@ -731,12 +744,19 @@ func (a *App) initializeDesktopWindow() {
 	if isMobile() || a.Window == nil {
 		return
 	}
-	size := fyne.NewSize(windowWidth, windowHeight)
+	minimumSize := fyne.NewSize(windowWidth, windowHeight)
 	if content := a.Window.Content(); content != nil {
-		size = size.Max(content.MinSize())
+		minimumSize = minimumSize.Max(content.MinSize())
 	}
 	a.Window.SetFixedSize(false)
-	a.Window.Resize(size)
+	if !a.restoreDesktopWindowSize(minimumSize) {
+		a.Window.Resize(minimumSize)
+	}
+
+	// Restore the previous position when enabled; otherwise center the window.
+	if !a.restoreDesktopWindowPosition() {
+		a.Window.CenterOnScreen()
+	}
 }
 
 func commentsLabelText(mode string, states ...app.CommentsPreviewState) string {
