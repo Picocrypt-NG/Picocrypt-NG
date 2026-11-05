@@ -109,7 +109,7 @@ func TestLinuxGateRehearsalObserverRejectsUnexpectedOrMissingConclusions(t *test
 		t.Fatalf("observer must inspect real dependency conclusions without suppression: %+v", step)
 	}
 	want := map[string]string{
-		"PARENT_SUCCESS": "success", "PARENT_FAILURE": "failure", "PARENT_SKIP": "skipped", "PARENT_TIMEOUT": "failure",
+		"PARENT_SUCCESS": "success", "PARENT_FAILURE": "failure", "PARENT_SKIP": "skipped", "PARENT_TIMEOUT": "cancelled",
 		"GATE_SUCCESS": "success", "GATE_FAILURE": "failure", "GATE_SKIP": "failure", "GATE_TIMEOUT": "failure",
 	}
 	run := func(values map[string]string) bool {

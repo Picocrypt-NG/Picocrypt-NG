@@ -137,7 +137,8 @@ jobs:
         GATE_SKIP: ${{ needs.gate-skip.result }}
         GATE_TIMEOUT: ${{ needs.gate-timeout.result }}
       run: |
-        [[ ${PARENT_SUCCESS:-} == success && ${PARENT_FAILURE:-} == failure && ${PARENT_SKIP:-} == skipped && ${PARENT_TIMEOUT:-} == failure ]]
+        # The hosted timeout's annotation establishes its cause; needs reports cancelled.
+        [[ ${PARENT_SUCCESS:-} == success && ${PARENT_FAILURE:-} == failure && ${PARENT_SKIP:-} == skipped && ${PARENT_TIMEOUT:-} == cancelled ]]
         [[ ${GATE_SUCCESS:-} == success && ${GATE_FAILURE:-} == failure && ${GATE_SKIP:-} == failure && ${GATE_TIMEOUT:-} == failure ]]
         echo 'Expected negative gates failed; this validates the rehearsal, not product tests.'
 
