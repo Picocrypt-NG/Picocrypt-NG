@@ -455,6 +455,7 @@ validate_assets
 
 if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
   missing_pairs=()
+  reused_pairs=()
   while read -r name workflow _; do
     if [[ -z "${local_paths[$name]+present}" ]]; then
       continue
@@ -471,11 +472,20 @@ if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
     fi
     if [ "$primary_count" -eq 1 ]; then
       verify_remote_pair "$name" "$workflow"
+      reused_pairs+=("$name")
       echo "release gate: safely reusing verified staged pair '$name'"
     else
       missing_pairs+=("$name $workflow")
     fi
   done < "$work/primary-assets.txt"
+  if [ "${#missing_pairs[@]}" -gt 0 ]; then
+    for name in "${reused_pairs[@]}"; do
+      if ! cmp -s "${local_paths[$name]}" "$download_dir/$name"; then
+        echo "release gate: partially staged lane requires the original signed artifact set; '$name' differs from staged bytes" >&2
+        exit 1
+      fi
+    done
+  fi
   if [ "$mode" = "upload" ]; then
     staged_release_id="$release_id"
     jq -S '[.[] | {id, name, state, size, digest}] | sort_by(.name)' \

@@ -49,6 +49,7 @@ type releaseLocalFixture struct {
 
 type releaseGateOptions struct {
 	localAssets             []releaseLocalFixture
+	workflow                string
 	cosignFailure           string
 	attestationFailure      string
 	tagTarget               string
@@ -1013,13 +1014,13 @@ func TestReleaseGateUploadRejectsUnsafeStateAndFailedVerification(t *testing.T) 
 	}
 }
 
-func TestReleaseGateUploadPreservesExistingPairAndAddsOnlyMissingPair(t *testing.T) {
+func TestReleaseGateUploadPreservesMatchingExistingPairAndAddsOnlyMissingPair(t *testing.T) {
 	local := append(defaultLocalLaneAssets(),
 		releaseLocalFixture{Name: "Picocrypt-NG-cli", Path: "artifacts/build-linux-amd64/Picocrypt-NG-cli", Content: "new CLI binary\n"},
 		releaseLocalFixture{Name: "Picocrypt-NG-cli.sigstore.json", Path: "artifacts/build-linux-amd64/Picocrypt-NG-cli.sigstore.json", Content: "CLI bundle\n"},
 	)
 	assets := []releaseAssetFixture{
-		newReleaseAsset(100, "Picocrypt-NG", "earlier nondeterministic build\n"),
+		newReleaseAsset(100, "Picocrypt-NG", local[0].Content),
 		newReleaseAsset(101, "Picocrypt-NG.sigstore.json", "earlier verified bundle\n"),
 	}
 	result := runReleaseGateWithOptions(t, "upload", []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}, assets, releaseGateOptions{localAssets: local})
@@ -1039,6 +1040,73 @@ func TestReleaseGateUploadPreservesExistingPairAndAddsOnlyMissingPair(t *testing
 	}
 	mustNotContain(t, result.calls, "--method DELETE")
 	mustNotContain(t, result.calls, "--method PATCH")
+}
+
+func TestReleaseGateRejectsRebuiltAppImageDuringPartialStaging(t *testing.T) {
+	const image = "Picocrypt-NG-2.19-x86_64.AppImage"
+	local := []releaseLocalFixture{
+		{Name: image, Content: "rebuilt signed AppImage\n"},
+		{Name: image + ".sigstore.json", Content: "rebuilt image bundle\n"},
+		{Name: image + ".zsync", Content: "index of rebuilt signed AppImage\n"},
+		{Name: image + ".zsync.sigstore.json", Content: "rebuilt index bundle\n"},
+	}
+	assets := []releaseAssetFixture{
+		newReleaseAsset(100, image, "original signed AppImage\n"),
+		newReleaseAsset(101, image+".sigstore.json", "original image bundle\n"),
+	}
+	for _, mode := range []string{"preflight", "upload"} {
+		t.Run(mode, func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, mode, []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}, assets, releaseGateOptions{
+				localAssets: local,
+				workflow:    "build-appimage.yml",
+			})
+			if result.err == nil {
+				t.Fatal("partial staging mixed an original AppImage with an index from a rebuilt image")
+			}
+			mustContain(t, result.output, "partially staged lane")
+			mustNotContain(t, result.calls, "https://uploads.github.com/")
+			if len(result.remoteAssets) != len(assets) {
+				t.Fatal("unsafe partial staging changed remote assets")
+			}
+		})
+	}
+}
+
+func TestReleaseGateAppImageResumeReusesOriginalOrCompleteLane(t *testing.T) {
+	const image = "Picocrypt-NG-2.19-x86_64.AppImage"
+	for _, complete := range []bool{false, true} {
+		t.Run(strconv.FormatBool(complete), func(t *testing.T) {
+			local := []releaseLocalFixture{
+				{Name: image, Content: "original signed AppImage\n"},
+				{Name: image + ".sigstore.json", Content: "current image bundle\n"},
+				{Name: image + ".zsync", Content: "index of original signed AppImage\n"},
+				{Name: image + ".zsync.sigstore.json", Content: "current index bundle\n"},
+			}
+			assets := []releaseAssetFixture{
+				newReleaseAsset(100, image, local[0].Content),
+				newReleaseAsset(101, image+".sigstore.json", "earlier valid image bundle\n"),
+			}
+			wantUploads := 2
+			if complete {
+				assets = append(assets, newReleaseAsset(102, image+".zsync", local[2].Content), newReleaseAsset(103, image+".zsync.sigstore.json", "earlier valid index bundle\n"))
+				local[0].Content = "newly rebuilt signed AppImage\n"
+				local[2].Content = "index of newly rebuilt signed AppImage\n"
+				wantUploads = 0
+			}
+			result := runReleaseGateWithOptions(t, "upload", []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}, assets, releaseGateOptions{localAssets: local, workflow: "build-appimage.yml"})
+			if result.err != nil {
+				t.Fatalf("valid lane resume failed: %v\n%s", result.err, result.output)
+			}
+			if len(result.remoteAssets) != 4 || strings.Count(result.calls, "https://uploads.github.com/") != wantUploads {
+				t.Fatalf("lane resume uploaded unexpected pairs: %#v\n%s", result.remoteAssets, result.calls)
+			}
+			for index, original := range assets {
+				if result.remoteAssets[index] != original {
+					t.Fatal("lane resume replaced original staged bytes")
+				}
+			}
+		})
+	}
 }
 
 func TestReleaseGateUploadRejectsInvalidLocalFilesBeforeAPI(t *testing.T) {
@@ -1587,6 +1655,10 @@ printf '%s\n' "$EXPECTED_HEAD"
 	if checkoutHEAD == "" {
 		checkoutHEAD = releaseTestSHA
 	}
+	workflow := options.workflow
+	if workflow == "" {
+		workflow = "build-linux.yml"
+	}
 
 	command := exec.Command("bash", script, mode, "2.19")
 	command.Dir = workspace
@@ -1631,7 +1703,7 @@ printf '%s\n' "$EXPECTED_HEAD"
 		"GH_INVALID_PATCH_RESPONSE="+strconv.FormatBool(options.invalidPatchResponse),
 		"COSIGN_FAILURE="+options.cosignFailure,
 		"GITHUB_WORKSPACE="+workspace,
-		"GITHUB_WORKFLOW_REF=Picocrypt-NG/Picocrypt-NG/.github/workflows/build-linux.yml@refs/heads/main",
+		"GITHUB_WORKFLOW_REF=Picocrypt-NG/Picocrypt-NG/.github/workflows/"+workflow+"@refs/heads/main",
 		"GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG",
 		"GITHUB_SHA="+releaseTestSHA,
 		"EXPECTED_HEAD="+checkoutHEAD,
