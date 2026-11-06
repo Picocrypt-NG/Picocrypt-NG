@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 
 	"go.yaml.in/yaml/v3"
@@ -43,26 +42,36 @@ func TestMacOSSharedBuildPreservesProductionStepsAndRelease(t *testing.T) {
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantBuild {
 		t.Fatalf("macOS native tests, build, compatibility, ad-hoc seal or packaging changed: %s, want %s", got, wantBuild)
 	}
-	owner := mustReadRepoFile(t, ".github/workflows/build-macos.yml")
-	start := strings.Index(owner, "  release:\n")
-	if start < 0 {
-		t.Fatal("manual macOS release job is missing")
+	var owner struct {
+		Jobs map[string]struct{ Steps []map[string]any }
 	}
-	release := owner[start:]
-	bound := "        artifact-ids: ${{ needs.build.outputs.artifact-id }}\n        path: artifacts/build-macos\n        merge-multiple: true\n        digest-mismatch: error\n"
-	if strings.Count(release, bound) != 1 {
-		t.Fatal("macOS release must download the exact build ID with a blocking ZIP digest")
+	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/workflows/build-macos.yml")), &owner); err != nil {
+		t.Fatal(err)
 	}
-	release = strings.Replace(release, bound, "        name: build-macos\n        path: artifacts/build-macos\n", 1)
-	const wantRelease = "bb9a6a7b7a0cf53535fc37ef7610ad600a38fe698f12ccc0c0e294528ce7a801"
-	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(release))); got != wantRelease {
-		t.Fatal("macOS release guard, environment, signing identity or staging changed beyond immutable download binding")
+	data, err = json.Marshal(owner.Jobs["release"].Steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Frozen from the direct owner before reusable jobs were appended.
+	const wantRelease = "cfd1ffe51bfa785879f693790bba7c5ba4ca87a5fd1a1a6919fdfdbf49bb13cf"
+	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantRelease {
+		t.Fatal("direct macOS download, signing identity, release notes or staging program changed")
+	}
+	release := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/build-macos.yml"), "release")
+	if release.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && github.workflow_ref == format('{0}/.github/workflows/build-macos.yml@{1}', github.repository, github.ref) }}" ||
+		release.Needs != "build" || release.RunsOn != "ubuntu-24.04" || release.TimeoutMinutes != 20 || release.Environment != "release" ||
+		!reflect.DeepEqual(release.Permissions, map[string]string{"contents": "write", "id-token": "write", "attestations": "write"}) ||
+		release.Concurrency.Group != "${{ github.repository }}-release-publication" || release.Concurrency.Queue != "max" || release.Env != nil || release.Outputs != nil {
+		t.Fatal("direct macOS release must retain its exact invocation guard, authority and publication queue")
 	}
 }
 
 func TestMacOSSharedBuildHasSourceBoundImmutableInterface(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-macos.yml")
 	build := mustJob(t, workflow, "build")
+	if build.If != "${{ github.workflow_ref == format('{0}/.github/workflows/build-macos.yml@{1}', github.repository, github.ref) }}" {
+		t.Fatal("direct native macOS build must not run inside a reusable call")
+	}
 	if build.RunsOn != "macos-26" || build.TimeoutMinutes != 180 || build.Environment != nil ||
 		!reflect.DeepEqual(build.Permissions, map[string]string{"contents": "read"}) {
 		t.Fatal("manual macOS build must retain its native runner, 180-minute limit and read-only authority")

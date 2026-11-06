@@ -125,21 +125,77 @@ func TestWindowsBuildExtractionPreservesUnsignedSteps(t *testing.T) {
 }
 
 func TestWindowsSigningReleaseChainRemainsByteIdentical(t *testing.T) {
+	// Freeze the original native programs and direct release body independently
+	// of the new reusable jobs and their invocation/transport conditions.
+	nativeHashes := map[string]string{
+		"build-windows":        "83e4c07ee6e1c624458cf1f0b9d7e7b4872d0bd66e9ed846a6476a4ef48bcb69",
+		"build-windows-legacy": "d8b2cdccb2bb0d528c857cab20107cab18c3d0883a3d236ed481c9c7772b4a3b",
+	}
+	releaseHashes := map[string]string{
+		"build-windows":        "d81113085b96d63262dbf473ed6660a0b44924c900f3a228ebc47e78fb2bfbb6",
+		"build-windows-legacy": "7ba368b63f66065a370f99575326478dbc9c4b7954d7eced8a8e969fa7d00e40",
+	}
 	for _, tc := range windowsBuildCases() {
 		content := mustReadWorkflow(t, ".github/workflows/"+tc.owner+".yml")
-		start := strings.Index(content, "  sign:\n")
+		sign := mustJob(t, mustParseWorkflowYAML(t, content), "sign")
 		path := "unsigned-build"
 		if tc.owner == "build-windows-legacy" {
 			path = "unsigned-legacy"
 		}
-		binding := "        artifact-ids: ${{ needs.build.outputs.signing-input-id }}\n        path: " + path + "\n        merge-multiple: true\n        digest-mismatch: error"
-		original := "        name: " + tc.bundle + "\n        path: " + path
-		if start < 0 || strings.Count(content[start:], binding) != 1 {
-			t.Fatal("signing must download the real input bundle by exact ID with blocking digest checks")
+		direct := "github.workflow_ref == format('{0}/.github/workflows/" + tc.owner + ".yml@{1}', github.repository, github.ref)"
+		download := mustStepNamed(t, sign, "Download unsigned build artifact")
+		wantDownload := map[string]any{
+			"artifact-ids":    "${{ " + direct + " && needs.build.outputs.signing-input-id || inputs.signing_input_id }}",
+			"path":            path,
+			"merge-multiple":  true,
+			"digest-mismatch": "error",
 		}
-		normalized := strings.Replace(content[start:], binding, original, 1)
-		if fmt.Sprintf("%x", sha256.Sum256([]byte(normalized))) != tc.tail {
-			t.Fatalf("%s SignPath/NSIS/release chain changed during unsigned extraction", tc.owner)
+		if download.Uses != "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" || !reflect.DeepEqual(download.With, wantDownload) {
+			t.Fatal("direct and reusable signing must download their exact original-layout input ID with blocking digest checks")
+		}
+		var frozen []workflowStep
+		for _, step := range sign.Steps {
+			native := strings.HasPrefix(step.Uses, "signpath/") || (step.Shell == "pwsh" && step.Name != "Reject conflicting SignPath modes" && step.Name != "Require SignPath token") || strings.HasPrefix(step.ID, "upload-signpath-")
+			if !native {
+				continue
+			}
+			step.If = ""
+			if strings.HasPrefix(step.ID, "upload-signpath-") {
+				original := map[string]string{
+					"upload-signpath-binaries":    "signpath-windows-binaries",
+					"upload-signpath-uninstaller": "signpath-windows-uninstaller",
+					"upload-signpath-installer":   "signpath-windows-installer",
+					"upload-signpath-legacy":      "signpath-windows-legacy",
+				}[step.ID]
+				wantName := "${{ " + direct + " && '" + original + "' || format('" + original + "-attempt-{0}', github.run_attempt) }}"
+				if original == "" || step.With["name"] != wantName {
+					t.Fatal("SignPath transport must retain direct names and use distinct reusable attempt names")
+				}
+				step.With["name"] = original
+			}
+			frozen = append(frozen, step)
+		}
+		data, err := json.Marshal(frozen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != nativeHashes[tc.owner] {
+			t.Fatalf("%s original SignPath/Authenticode/NSIS programs changed: %s", tc.owner, got)
+		}
+		releaseStart := strings.Index(content, "  release:\n")
+		inspectStart := strings.Index(content, "  inspect:\n")
+		if releaseStart < 0 || inspectStart <= releaseStart {
+			t.Fatal("direct release job must remain separate from reusable inspection")
+		}
+		lines := strings.Split(content[releaseStart:inspectStart], "\n")
+		for i, line := range lines {
+			if strings.HasPrefix(line, "    if: ") {
+				lines[i] = "    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && !inputs.signpath_test && !inputs.signpath_release_dry_run && inputs.publish_release }}"
+			}
+		}
+		release := strings.TrimSpace(strings.Join(lines, "\n"))
+		if got := fmt.Sprintf("%x", sha256.Sum256([]byte(release))); got != releaseHashes[tc.owner] {
+			t.Fatalf("%s original direct release body changed: %s", tc.owner, got)
 		}
 	}
 }
@@ -170,8 +226,8 @@ func TestWindowsValidationArtifactsStaySeparateFromSigningInputs(t *testing.T) {
 			if err := yaml.Unmarshal([]byte(content), &metadata); err != nil {
 				t.Fatal(err)
 			}
-			if len(metadata.Inputs) != 3 || len(metadata.Outputs) != 4 {
-				t.Fatal("Windows producer must have three source inputs, three validation outputs and the separately consumed signing-input ID")
+			if len(metadata.Inputs) != 3 || len(metadata.Outputs) != 6 {
+				t.Fatal("Windows producer must have three source inputs, three validation outputs and a separate signing-input ID/digest/attempt")
 			}
 			for _, key := range []string{"source-sha", "version", "manifest-digest"} {
 				if !metadata.Inputs[key].Required {
@@ -188,6 +244,12 @@ func TestWindowsValidationArtifactsStaySeparateFromSigningInputs(t *testing.T) {
 			}
 			if metadata.Outputs["signing-input-id"].Value != "${{ steps.signing-input.outputs.artifact-id }}" {
 				t.Fatal("signing-input ID must come from the original bundle uploader")
+			}
+			if metadata.Outputs["signing-input-digest"].Value != "${{ steps.signing-input.outputs.artifact-digest }}" {
+				t.Fatal("signing-input digest must identify the original carrier ZIP, never the validation artifact")
+			}
+			if metadata.Outputs["signing-input-attempt"].Value != "${{ steps.source.outputs.run-attempt }}" {
+				t.Fatal("signing-input attempt must come from the prepared source assertion")
 			}
 			for _, forbidden := range []string{"secrets.", "vars.", "inputs.publish_release", "inputs.signpath_", "signpath/github-action", "id-token:", "environment:"} {
 				mustNotContain(t, content, forbidden)

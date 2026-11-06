@@ -191,3 +191,42 @@ The release gate also binds the source commit and repository.
 
 The `.sigstore.json` bundle embeds the Rekor inclusion proof, so `cosign verify-blob`
 can run fully offline given a `--trusted-root`.
+
+## Release coordinator for operators
+
+The `release-coordinator` workflow (`.github/workflows/release.yml`) uses the
+dispatch event's `github.sha` for every checkout and reusable owner call. It binds
+root `VERSION` and the full canonical manifest to that commit. Its `mode` input
+has three choices:
+
+- `validation` (default) builds and verifies all 19 canonical primary assets
+  without production signing, staging or publication.
+- `stage` runs full validation, then the seven owners sign and stage their
+  complete sets, or reuse already verified complete remote sets. Success requires
+  every owner to report `staged=true`; `published` remains `false`.
+- `publish` additionally runs strict finalization after all seven owners succeed
+  with `staged=true`. It requires the complete 19 primary assets and their 19
+  Sigstore bundles, verifies their source and trust bindings, and confirms actual
+  publication with `published=true`.
+
+`stage` and `publish` require a manual dispatch from `main` in this repository,
+with matching workflow, source and checkout SHAs. Both require separate explicit
+authorization, including a signed staging rehearsal. Check the live `release`
+environment protections before execution: `environment: release` in YAML alone
+does not establish a required human approval. macOS retains its existing ad-hoc
+bundle seal; these modes do not add Developer ID signing or notarization.
+
+Retain the source SHA, run ID, immutable raw/signing-input/signed-generation
+artifact IDs, official ZIP SHA-256 digests and each artifact's producing attempt.
+For recovery, rerun only failed jobs in the same run. Successful signing jobs'
+retained full-owner generations let staging retry restore and verify the original
+bytes without signing or attesting again. The producing attempt can precede the
+retry attempt. A partial staged set must retain its original artifact/bundle
+pairs. If a required retained artifact expired, or a partial set cannot be
+completed with its original bytes, stop for an explicit recovery decision.
+Rebuilding or generating replacement signatures is not a recovery fallback;
+existing release assets must not be overwritten.
+
+The new coordinator graph has not yet executed end to end in hosted GitHub
+Actions. Local policy/runtime fixtures and lint do not establish hosted signing,
+failed-job retry or retention recovery acceptance.

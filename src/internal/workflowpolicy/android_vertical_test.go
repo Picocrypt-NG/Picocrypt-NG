@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -62,17 +63,68 @@ func TestAndroidSharedBuildPreservesUnsignedPrefixAndSigningBoundary(t *testing.
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "a52f7b8e731450f5df1c8375c0075e36b01ec66d759baad2eceb6708704da74d" {
 		t.Fatalf("existing unsigned Android commands or signing-input bundle changed: %s", got)
 	}
-	owner := mustReadRepoFile(t, ".github/workflows/build-android.yml")
-	start := strings.Index(owner, "  sign:\n")
-	if start < 0 || fmt.Sprintf("%x", sha256.Sum256([]byte(owner[start:]))) != "4a07251f879da3f996919058fee1fc827dda505e8ab9e7acfc61956e75d8ec5e" {
-		t.Fatal("Android signing validation, credentials, APK names or publication changed during extraction")
+	var owner struct {
+		Jobs map[string]struct{ Steps []map[string]any }
+	}
+	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/workflows/build-android.yml")), &owner); err != nil {
+		t.Fatal(err)
+	}
+	// Native-step hashes come from the original 3b0851a workflow; routing and transport are checked separately.
+	for _, recipe := range []struct {
+		job   string
+		names []string
+		want  string
+	}{
+		{"sign", []string{"Set up Android SDK", "Set up JDK 21", "Install offline APK signing tools", "Validate unsigned signing inputs before loading secrets", "Compile the SDK signing launcher before loading secrets", "Sign verified APKs with the offline SDK", "Verify exact signed release APK contract"}, "ea88ad6ef970ad9a87a878f9fa746612b100d22f6df2977401e02ed22e9eaefe"},
+		{"release", []string{"Get version tag", "Sign and attest artifacts", "Generate release notes", "Stage release assets"}, "9917225713b495880332314d9ba096589936940ebad6984f5dee44215d55a8b0"},
+	} {
+		var selected []map[string]any
+		for _, step := range owner.Jobs[recipe.job].Steps {
+			name, _ := step["name"].(string)
+			if !slices.Contains(recipe.names, name) {
+				continue
+			}
+			if recipe.job == "sign" {
+				if step["if"] != "${{ ("+androidDirectInvocation+") || steps.inventory.outputs.state == 'missing' }}" {
+					t.Fatalf("native Android step %s lost its direct/fresh-signing guard", name)
+				}
+				delete(step, "if")
+				if name == "Validate unsigned signing inputs before loading secrets" || name == "Verify exact signed release APK contract" {
+					env := step["env"].(map[string]any)
+					for key, field := range map[string]string{"MANIFEST_SHA256": "manifest-sha256", "AAR_SHA256": "aar-sha256", "VERSION": "version", "VERSION_CODE": "version-code"} {
+						if _, exists := env[key]; !exists {
+							continue
+						}
+						fallback := "steps.signing-metadata.outputs." + field
+						if key == "VERSION" {
+							fallback = "inputs.version"
+						}
+						if env[key] != "${{ needs.build.outputs."+field+" || "+fallback+" }}" {
+							t.Fatalf("native Android %s lost source-bound %s", name, key)
+						}
+						env[key] = "${{ needs.build.outputs." + field + " }}"
+					}
+				}
+			}
+			selected = append(selected, step)
+		}
+		if len(selected) != len(recipe.names) {
+			t.Fatalf("missing or duplicate native Android %s steps", recipe.job)
+		}
+		data, err := json.Marshal(selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != recipe.want {
+			t.Fatalf("native Android %s recipe changed: %s", recipe.job, got)
+		}
 	}
 }
 
 func TestAndroidSharedBuildKeepsSigningInputsSeparateFromCanonicalValidation(t *testing.T) {
 	build := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/build-android.yml"), "build")
-	if build.If != "" || build.Environment != nil {
-		t.Fatal("Android unsigned validation must run without the release environment")
+	if build.If != "${{ "+androidDirectInvocation+" }}" || build.Environment != nil {
+		t.Fatal("direct Android unsigned validation must run without the release environment or reusable rebuilding")
 	}
 	call := mustHaveStepUsingPrefix(t, build, "./.github/actions/build-android")
 	bind := mustStepNamed(t, build, "Bind Android source and canonical manifest")
@@ -99,12 +151,14 @@ func TestAndroidSharedBuildKeepsSigningInputsSeparateFromCanonicalValidation(t *
 	}
 	if !reflect.DeepEqual(build.Outputs, map[string]string{
 		"artifact-id":     "${{ steps.build.outputs.signing-input-id }}",
+		"artifact-digest": "${{ steps.build.outputs.signing-input-digest }}",
+		"run-attempt":     "${{ steps.build.outputs.signing-input-attempt }}",
 		"manifest-sha256": "${{ steps.build.outputs.manifest-sha256 }}",
 		"aar-sha256":      "${{ steps.build.outputs.aar-sha256 }}",
 		"version":         "${{ steps.build.outputs.version }}",
 		"version-code":    "${{ steps.build.outputs.version-code }}",
 	}) {
-		t.Fatal("Android owner must preserve only its five legacy signing-input output bindings")
+		t.Fatal("Android owner must preserve the five signing fields plus exact carrier digest/attempt")
 	}
 	action := mustReadCompositeActionDoc(t, ".github/actions/build-android/action.yml")
 	source := mustCompositeStepNamed(t, action, "Assert prepared Android source")
@@ -130,11 +184,12 @@ func TestAndroidSharedBuildKeepsSigningInputsSeparateFromCanonicalValidation(t *
 	want := map[string]string{
 		"artifact-id": "${{ steps.upload.outputs.artifact-id }}", "artifact-digest": "${{ steps.upload.outputs.artifact-digest }}",
 		"run-attempt": "${{ steps.source.outputs.run-attempt }}", "signing-input-id": "${{ steps.upload-unsigned.outputs.artifact-id }}",
+		"signing-input-digest": "${{ steps.upload-unsigned.outputs.artifact-digest }}", "signing-input-attempt": "${{ steps.source.outputs.run-attempt }}",
 		"manifest-sha256": "${{ steps.prepare-unsigned.outputs.manifest-sha256 }}", "aar-sha256": "${{ steps.prepare-unsigned.outputs.aar-sha256 }}",
 		"version": "${{ steps.version.outputs.version }}", "version-code": "${{ steps.version.outputs.version-code }}",
 	}
 	if len(document.Outputs) != len(want) {
-		t.Fatal("Android composite must expose the five existing signing fields and three canonical artifact fields")
+		t.Fatal("Android composite must expose separate canonical and signing tuples with all existing signing fields")
 	}
 	for name, value := range want {
 		if document.Outputs[name].Value != value {

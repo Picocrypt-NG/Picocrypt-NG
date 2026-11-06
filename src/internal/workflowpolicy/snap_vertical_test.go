@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 
 	"go.yaml.in/yaml/v3"
@@ -43,26 +42,36 @@ func TestSnapcraftSharedBuildPreservesProductionStepsAndRelease(t *testing.T) {
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantBuild {
 		t.Fatalf("Snapcraft production build or installed-snap smoke changed: %s, want %s", got, wantBuild)
 	}
-	owner := mustReadRepoFile(t, ".github/workflows/build-snapcraft.yml")
-	start := strings.Index(owner, "  release:\n")
-	if start < 0 {
-		t.Fatal("Snapcraft release job is missing")
+	var owner struct {
+		Jobs map[string]struct{ Steps []map[string]any }
 	}
-	release := owner[start:]
-	bound := "        artifact-ids: ${{ needs.build-snapcraft.outputs.artifact-id }}\n        path: out\n        merge-multiple: true\n        digest-mismatch: error\n"
-	if strings.Count(release, bound) != 1 {
-		t.Fatal("Snapcraft release must download its exact build ID with a blocking ZIP digest")
+	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/workflows/build-snapcraft.yml")), &owner); err != nil {
+		t.Fatal(err)
 	}
-	release = strings.Replace(release, bound, "        name: build-snapcraft\n        path: out\n", 1)
-	const wantRelease = "a2b632f5882438d064599fac9e49d63d9e076e337da0690c34b18dbe57e0aef6"
-	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(release))); got != wantRelease {
-		t.Fatal("Snapcraft release guard, environment, signing identity or staging changed beyond immutable download binding")
+	data, err = json.Marshal(owner.Jobs["release"].Steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Frozen from the direct owner before reusable jobs were appended.
+	const wantRelease = "b508f2dcc810ebea7d64fd233230461900dcdc3f852fedc42e5410e581169ab7"
+	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantRelease {
+		t.Fatal("direct Snapcraft download, signing identity, release notes or staging program changed")
+	}
+	release := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/build-snapcraft.yml"), "release")
+	if release.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && github.workflow_ref == format('{0}/.github/workflows/build-snapcraft.yml@{1}', github.repository, github.ref) }}" ||
+		release.Needs != "build-snapcraft" || release.RunsOn != "ubuntu-24.04" || release.TimeoutMinutes != 20 || release.Environment != "release" ||
+		!reflect.DeepEqual(release.Permissions, map[string]string{"contents": "write", "id-token": "write", "attestations": "write"}) ||
+		release.Concurrency.Group != "${{ github.repository }}-release-publication" || release.Concurrency.Queue != "max" || release.Env != nil || release.Outputs != nil {
+		t.Fatal("direct Snapcraft release must retain its exact invocation guard, authority and publication queue")
 	}
 }
 
 func TestSnapcraftSharedBuildHasSourceBoundImmutableInterface(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-snapcraft.yml")
 	build := mustJob(t, workflow, "build-snapcraft")
+	if build.If != "${{ github.workflow_ref == format('{0}/.github/workflows/build-snapcraft.yml@{1}', github.repository, github.ref) }}" {
+		t.Fatal("direct native Snapcraft build must not run inside a reusable call")
+	}
 	if build.RunsOn != "ubuntu-latest" || build.TimeoutMinutes != 90 || build.Environment != nil ||
 		!reflect.DeepEqual(build.Permissions, map[string]string{"contents": "read"}) {
 		t.Fatal("Snapcraft unsigned owner must preserve its runner, 90-minute limit and read-only authority")

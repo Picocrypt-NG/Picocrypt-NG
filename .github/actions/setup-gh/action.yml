@@ -1,10 +1,11 @@
 name: Setup pinned GitHub CLI
-description: Install the checksum-locked GitHub CLI for Linux AMD64 release verification.
+description: Install the checksum-locked GitHub CLI for Linux or Windows AMD64 release verification.
 
 runs:
   using: composite
   steps:
     - name: Install checksum-locked GitHub CLI
+      if: ${{ runner.os != 'Windows' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -25,3 +26,26 @@ runs:
         [[ $banner == "gh version $version ("* ]]
         printf '%s\n' "$banner"
         echo "$destination" >> "$GITHUB_PATH"
+    - name: Install checksum-locked Windows GitHub CLI
+      if: ${{ runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        $manifest = Get-Content (Join-Path $env:GITHUB_ACTION_PATH '../../toolchains/github-cli.json') -Raw | ConvertFrom-Json
+        $version = [string]$manifest.version
+        $url = [string]$manifest.windows.url
+        $expected = [string]$manifest.windows.sha256
+        if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or $expected -notmatch '^[0-9a-f]{64}$') { throw 'Invalid Windows GitHub CLI pin' }
+        if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { throw 'Windows GitHub CLI requires AMD64' }
+        if ($url -ne "https://github.com/cli/cli/releases/download/v$version/gh_${version}_windows_amd64.zip") { throw 'Unexpected Windows GitHub CLI URL' }
+        $destination = Join-Path $env:RUNNER_TEMP ('github-cli.' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $destination | Out-Null
+        $archive = Join-Path $destination 'gh.zip'
+        curl.exe --fail --location --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 300 --output $archive $url
+        if ($LASTEXITCODE -ne 0) { throw 'Windows GitHub CLI download failed' }
+        if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'Windows GitHub CLI checksum mismatch' }
+        Expand-Archive -LiteralPath $archive -DestinationPath $destination
+        $executable = Join-Path $destination 'bin/gh.exe'
+        $banner = & $executable --version
+        if ($LASTEXITCODE -ne 0 -or $banner[0] -notlike "gh version $version (*") { throw 'Windows GitHub CLI version mismatch' }
+        $banner | Write-Host
+        (Join-Path $destination 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append

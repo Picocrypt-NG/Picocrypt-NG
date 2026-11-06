@@ -1,4 +1,4 @@
-name: release-validation
+name: release-coordinator
 
 permissions:
   contents: read
@@ -8,11 +8,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Validate all 19 canonical primary assets without production signing or publication."
+        description: "Validate by default; stage or publish only with separately authorized production execution."
         required: false
         type: choice
         options:
           - validation
+          - stage
+          - publish
         default: validation
 
 concurrency:
@@ -41,7 +43,17 @@ jobs:
         MODE: ${{ inputs.mode }}
       run: |
         set -euo pipefail
-        test "$MODE" = validation
+        case "$MODE" in
+          validation) ;;
+          stage|publish)
+            test "$GITHUB_REPOSITORY" = Picocrypt-NG/Picocrypt-NG
+            test "$GITHUB_REF" = refs/heads/main
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            test "$GITHUB_WORKFLOW_REF" = Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main
+            test "$GITHUB_WORKFLOW_SHA" = "$SOURCE_SHA"
+            ;;
+          *) echo 'Unsupported coordinator mode' >&2; exit 2 ;;
+        esac
         test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
         version=$(cat VERSION)
         digest=$(bash .github/actions/stage-release/release-manifest.sh "$version" | sha256sum)
@@ -117,6 +129,10 @@ jobs:
       artifact-id: ${{ steps.build.outputs.artifact-id }}
       artifact-digest: ${{ steps.build.outputs.artifact-digest }}
       run-attempt: ${{ steps.build.outputs.run-attempt }}
+      signing-input-id: ${{ steps.build.outputs.signing-input-id }}
+      signing-input-digest: ${{ steps.build.outputs.signing-input-digest }}
+      signing-input-attempt: ${{ steps.build.outputs.signing-input-attempt }}
+      signing-input-sha256: ${{ steps.build.outputs.signing-input-sha256 }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -130,6 +146,7 @@ jobs:
         source-sha: ${{ needs.prepare.outputs.source-sha }}
         version: ${{ needs.prepare.outputs.version }}
         manifest-digest: ${{ needs.prepare.outputs.manifest-digest }}
+        retain-signing-input: ${{ inputs.mode != 'validation' }}
 
   build-snapcraft:
     needs: prepare
@@ -193,6 +210,9 @@ jobs:
       artifact-id: ${{ steps.build.outputs.artifact-id }}
       artifact-digest: ${{ steps.build.outputs.artifact-digest }}
       run-attempt: ${{ steps.build.outputs.run-attempt }}
+      signing-input-id: ${{ steps.build.outputs.signing-input-id }}
+      signing-input-digest: ${{ steps.build.outputs.signing-input-digest }}
+      signing-input-attempt: ${{ steps.build.outputs.signing-input-attempt }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -217,6 +237,9 @@ jobs:
       artifact-id: ${{ steps.build.outputs.artifact-id }}
       artifact-digest: ${{ steps.build.outputs.artifact-digest }}
       run-attempt: ${{ steps.build.outputs.run-attempt }}
+      signing-input-id: ${{ steps.build.outputs.signing-input-id }}
+      signing-input-digest: ${{ steps.build.outputs.signing-input-digest }}
+      signing-input-attempt: ${{ steps.build.outputs.signing-input-attempt }}
     env:
       RESHACKER_SHA256: b611be2f35cb44efd1c29df03e7ebe62bd556a500585680e1afa5e073eaf1756
       UPX_SHA256: eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda
@@ -244,6 +267,9 @@ jobs:
       artifact-id: ${{ steps.build.outputs.artifact-id }}
       artifact-digest: ${{ steps.build.outputs.artifact-digest }}
       run-attempt: ${{ steps.build.outputs.run-attempt }}
+      signing-input-id: ${{ steps.build.outputs.signing-input-id }}
+      signing-input-digest: ${{ steps.build.outputs.signing-input-digest }}
+      signing-input-attempt: ${{ steps.build.outputs.signing-input-attempt }}
     env:
       GOTOOLCHAIN: local
       GOAMD64: v1
@@ -626,6 +652,271 @@ jobs:
       run: |
         cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
         Full validation: 19 canonical primary assets built and verified.
-        Production signing, attestation, staging and publication were not requested.
+        This report covers only the validation phase. Production effects require the separately selected stage/publish mode.
         macOS packaging retains its ad-hoc bundle seal; this is not Developer ID signing or notarization.
         EOF
+
+  owner-linux:
+    needs: [prepare, validation, build-amd64, build-arm64]
+    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build-linux.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source-sha }}
+      version: ${{ needs.prepare.outputs.version }}
+      canonical_manifest_sha256: ${{ needs.prepare.outputs.manifest-digest }}
+      amd64_artifact_id: ${{ needs.build-amd64.outputs.artifact-id }}
+      amd64_artifact_digest: ${{ needs.build-amd64.outputs.artifact-digest }}
+      amd64_producing_attempt: ${{ needs.build-amd64.outputs.run-attempt }}
+      arm64_artifact_id: ${{ needs.build-arm64.outputs.artifact-id }}
+      arm64_artifact_digest: ${{ needs.build-arm64.outputs.artifact-digest }}
+      arm64_producing_attempt: ${{ needs.build-arm64.outputs.run-attempt }}
+
+  owner-macos:
+    needs: [prepare, validation, build-macos]
+    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source-sha }}
+      version: ${{ needs.prepare.outputs.version }}
+      canonical_manifest_sha256: ${{ needs.prepare.outputs.manifest-digest }}
+      raw_artifact_id: ${{ needs.build-macos.outputs.artifact-id }}
+      raw_artifact_digest: ${{ needs.build-macos.outputs.artifact-digest }}
+      raw_producing_attempt: ${{ needs.build-macos.outputs.run-attempt }}
+
+  owner-snapcraft:
+    needs: [prepare, validation, build-snapcraft]
+    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build-snapcraft.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source-sha }}
+      version: ${{ needs.prepare.outputs.version }}
+      canonical_manifest_sha256: ${{ needs.prepare.outputs.manifest-digest }}
+      raw_artifact_id: ${{ needs.build-snapcraft.outputs.artifact-id }}
+      raw_artifact_digest: ${{ needs.build-snapcraft.outputs.artifact-digest }}
+      raw_producing_attempt: ${{ needs.build-snapcraft.outputs.run-attempt }}
+
+  owner-android:
+    needs: [prepare, validation, build-android]
+    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build-android.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source-sha }}
+      version: ${{ needs.prepare.outputs.version }}
+      canonical_manifest_sha256: ${{ needs.prepare.outputs.manifest-digest }}
+      raw_artifact_id: ${{ needs.build-android.outputs.artifact-id }}
+      raw_artifact_digest: ${{ needs.build-android.outputs.artifact-digest }}
+      raw_producing_attempt: ${{ needs.build-android.outputs.run-attempt }}
+      signing_input_id: ${{ needs.build-android.outputs.signing-input-id }}
+      signing_input_digest: ${{ needs.build-android.outputs.signing-input-digest }}
+      signing_input_attempt: ${{ needs.build-android.outputs.signing-input-attempt }}
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+  owner-windows:
+    needs: [prepare, validation, build-windows]
+    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source-sha }}
+      version: ${{ needs.prepare.outputs.version }}
+      canonical_manifest_sha256: ${{ needs.prepare.outputs.manifest-digest }}
+      raw_artifact_id: ${{ needs.build-windows.outputs.artifact-id }}
+      raw_artifact_digest: ${{ needs.build-windows.outputs.artifact-digest }}
+      raw_producing_attempt: ${{ needs.build-windows.outputs.run-attempt }}
+      signing_input_id: ${{ needs.build-windows.outputs.signing-input-id }}
+      signing_input_digest: ${{ needs.build-windows.outputs.signing-input-digest }}
+      signing_input_attempt: ${{ needs.build-windows.outputs.signing-input-attempt }}
+    secrets:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+
+  owner-windows-legacy:
+    needs: [prepare, validation, build-windows-legacy]
+    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build-windows-legacy.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source-sha }}
+      version: ${{ needs.prepare.outputs.version }}
+      canonical_manifest_sha256: ${{ needs.prepare.outputs.manifest-digest }}
+      raw_artifact_id: ${{ needs.build-windows-legacy.outputs.artifact-id }}
+      raw_artifact_digest: ${{ needs.build-windows-legacy.outputs.artifact-digest }}
+      raw_producing_attempt: ${{ needs.build-windows-legacy.outputs.run-attempt }}
+      signing_input_id: ${{ needs.build-windows-legacy.outputs.signing-input-id }}
+      signing_input_digest: ${{ needs.build-windows-legacy.outputs.signing-input-digest }}
+      signing_input_attempt: ${{ needs.build-windows-legacy.outputs.signing-input-attempt }}
+    secrets:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+
+  owner-appimage:
+    needs: [prepare, validation, build-appimage]
+    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build-appimage.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source-sha }}
+      version: ${{ needs.prepare.outputs.version }}
+      canonical_manifest_sha256: ${{ needs.prepare.outputs.manifest-digest }}
+      raw_artifact_id: ${{ needs.build-appimage.outputs.artifact-id }}
+      raw_artifact_digest: ${{ needs.build-appimage.outputs.artifact-digest }}
+      raw_producing_attempt: ${{ needs.build-appimage.outputs.run-attempt }}
+      signing_input_id: ${{ needs.build-appimage.outputs.signing-input-id }}
+      signing_input_digest: ${{ needs.build-appimage.outputs.signing-input-digest }}
+      signing_input_attempt: ${{ needs.build-appimage.outputs.signing-input-attempt }}
+      signing_input_sha256: ${{ needs.build-appimage.outputs.signing-input-sha256 }}
+    secrets:
+      APPIMAGE_GPG_PRIVATE_KEY: ${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}
+      APPIMAGE_GPG_PASSPHRASE: ${{ secrets.APPIMAGE_GPG_PASSPHRASE }}
+
+  publish:
+    needs: [prepare, owner-linux, owner-macos, owner-snapcraft, owner-android, owner-windows, owner-windows-legacy, owner-appimage]
+    if: ${{ always() && !cancelled() && inputs.mode == 'publish' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      published: ${{ steps.finalize.outputs.published }}
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
+    env:
+      SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
+      BODY_PATH: ${{ github.workspace }}/release-body.md
+      MODE: ${{ inputs.mode }}
+      OWNER_RESULTS_JSON: >-
+        [{"owner":"build-linux.yml","result":"${{ needs.owner-linux.result }}","staged":"${{ needs.owner-linux.outputs.staged }}"},{"owner":"build-macos.yml","result":"${{ needs.owner-macos.result }}","staged":"${{ needs.owner-macos.outputs.staged }}"},{"owner":"build-snapcraft.yml","result":"${{ needs.owner-snapcraft.result }}","staged":"${{ needs.owner-snapcraft.outputs.staged }}"},{"owner":"build-android.yml","result":"${{ needs.owner-android.result }}","staged":"${{ needs.owner-android.outputs.staged }}"},{"owner":"build-windows.yml","result":"${{ needs.owner-windows.result }}","staged":"${{ needs.owner-windows.outputs.staged }}"},{"owner":"build-windows-legacy.yml","result":"${{ needs.owner-windows-legacy.result }}","staged":"${{ needs.owner-windows-legacy.outputs.staged }}"},{"owner":"build-appimage.yml","result":"${{ needs.owner-appimage.result }}","staged":"${{ needs.owner-appimage.outputs.staged }}"}]
+    steps:
+    - name: Require every staged owner
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$MODE" = publish
+        jq -e 'type == "array" and length == 7
+          and ([.[].owner]|sort) == ["build-android.yml","build-appimage.yml","build-linux.yml","build-macos.yml","build-snapcraft.yml","build-windows-legacy.yml","build-windows.yml"]
+          and all(.[]; .result == "success" and .staged == "true")' <<< "$OWNER_RESULTS_JSON" >/dev/null
+
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: v3.1.3
+
+    - name: Generate release notes
+      uses: ./.github/actions/release-body
+      with:
+        version: ${{ needs.prepare.outputs.version }}
+
+    - name: Strictly finalize complete release
+      id: finalize
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/stage-release/release-gate.sh strict-finalize "$SOURCE_VERSION"
+
+    - name: Require confirmed publication
+      shell: bash
+      env:
+        PUBLISHED: ${{ steps.finalize.outputs.published }}
+      run: test "$PUBLISHED" = true
+
+  result:
+    needs: [prepare, build-amd64, build-arm64, build-appimage, build-snapcraft, build-macos, build-android, build-windows, build-windows-legacy, verify-linux, verify-platforms, validation, owner-linux, owner-macos, owner-snapcraft, owner-android, owner-windows, owner-windows-legacy, owner-appimage, publish]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      MODE: ${{ inputs.mode }}
+      VALIDATION_RESULT: ${{ needs.validation.result }}
+      PUBLISH_RESULT: ${{ needs.publish.result }}
+      PUBLISHED: ${{ needs.publish.outputs.published }}
+      OWNER_RESULTS_JSON: >-
+        [
+          {"owner":"build-linux.yml","built_results":["${{ needs.build-amd64.result }}","${{ needs.build-arm64.result }}"],"verify_result":"${{ needs.verify-linux.result }}","result":"${{ needs.owner-linux.result }}","reused":"${{ needs.owner-linux.outputs.reused }}","staged":"${{ needs.owner-linux.outputs.staged }}","generation_id":"${{ needs.owner-linux.outputs.generation_id }}","generation_digest":"${{ needs.owner-linux.outputs.generation_digest }}","generation_attempt":"${{ needs.owner-linux.outputs.generation_attempt }}"},
+          {"owner":"build-macos.yml","built_results":["${{ needs.build-macos.result }}"],"verify_result":"${{ needs.verify-platforms.result }}","result":"${{ needs.owner-macos.result }}","reused":"${{ needs.owner-macos.outputs.reused }}","staged":"${{ needs.owner-macos.outputs.staged }}","generation_id":"${{ needs.owner-macos.outputs.generation_id }}","generation_digest":"${{ needs.owner-macos.outputs.generation_digest }}","generation_attempt":"${{ needs.owner-macos.outputs.generation_attempt }}"},
+          {"owner":"build-snapcraft.yml","built_results":["${{ needs.build-snapcraft.result }}"],"verify_result":"${{ needs.verify-platforms.result }}","result":"${{ needs.owner-snapcraft.result }}","reused":"${{ needs.owner-snapcraft.outputs.reused }}","staged":"${{ needs.owner-snapcraft.outputs.staged }}","generation_id":"${{ needs.owner-snapcraft.outputs.generation_id }}","generation_digest":"${{ needs.owner-snapcraft.outputs.generation_digest }}","generation_attempt":"${{ needs.owner-snapcraft.outputs.generation_attempt }}"},
+          {"owner":"build-android.yml","built_results":["${{ needs.build-android.result }}"],"verify_result":"${{ needs.verify-platforms.result }}","result":"${{ needs.owner-android.result }}","reused":"${{ needs.owner-android.outputs.reused }}","staged":"${{ needs.owner-android.outputs.staged }}","generation_id":"${{ needs.owner-android.outputs.generation_id }}","generation_digest":"${{ needs.owner-android.outputs.generation_digest }}","generation_attempt":"${{ needs.owner-android.outputs.generation_attempt }}"},
+          {"owner":"build-windows.yml","built_results":["${{ needs.build-windows.result }}"],"verify_result":"${{ needs.verify-platforms.result }}","result":"${{ needs.owner-windows.result }}","reused":"${{ needs.owner-windows.outputs.reused }}","staged":"${{ needs.owner-windows.outputs.staged }}","generation_id":"${{ needs.owner-windows.outputs.generation_id }}","generation_digest":"${{ needs.owner-windows.outputs.generation_digest }}","generation_attempt":"${{ needs.owner-windows.outputs.generation_attempt }}"},
+          {"owner":"build-windows-legacy.yml","built_results":["${{ needs.build-windows-legacy.result }}"],"verify_result":"${{ needs.verify-platforms.result }}","result":"${{ needs.owner-windows-legacy.result }}","reused":"${{ needs.owner-windows-legacy.outputs.reused }}","staged":"${{ needs.owner-windows-legacy.outputs.staged }}","generation_id":"${{ needs.owner-windows-legacy.outputs.generation_id }}","generation_digest":"${{ needs.owner-windows-legacy.outputs.generation_digest }}","generation_attempt":"${{ needs.owner-windows-legacy.outputs.generation_attempt }}"},
+          {"owner":"build-appimage.yml","built_results":["${{ needs.build-appimage.result }}"],"verify_result":"${{ needs.verify-platforms.result }}","result":"${{ needs.owner-appimage.result }}","reused":"${{ needs.owner-appimage.outputs.reused }}","staged":"${{ needs.owner-appimage.outputs.staged }}","generation_id":"${{ needs.owner-appimage.outputs.generation_id }}","generation_digest":"${{ needs.owner-appimage.outputs.generation_digest }}","generation_attempt":"${{ needs.owner-appimage.outputs.generation_attempt }}"}
+        ]
+    steps:
+    - name: Summarize and require requested outcome
+      shell: bash
+      run: |
+        set -euo pipefail
+        summary=$(jq -cn --arg mode "$MODE" --arg validation "$VALIDATION_RESULT" --arg publish_result "$PUBLISH_RESULT" --arg published "$PUBLISHED" --arg attempt "$GITHUB_RUN_ATTEMPT" --argjson owners "$OWNER_RESULTS_JSON" '
+          ($publish_result == "success" and $published == "true") as $is_published |
+          ($owners | map({
+            owner,
+            result,
+            built:all(.built_results[]; . == "success"),
+            verified:(.verify_result == "success"),
+            signed:(.reused != "true" and .generation_attempt == $attempt and (.generation_id|test("^[1-9][0-9]*$")) and (.generation_digest|test("^[0-9a-f]{64}$"))),
+            reused:(.result == "success" and .reused == "true"),
+            staged:(.result == "success" and .staged == "true"),
+            published:($is_published and .result == "success" and .staged == "true")
+          })) as $rows |
+          {mode:$mode,published:$is_published,owners:$rows,success:(
+            $validation == "success" and ($owners|length) == 7 and
+            ([$owners[].owner]|sort) == ["build-android.yml","build-appimage.yml","build-linux.yml","build-macos.yml","build-snapcraft.yml","build-windows-legacy.yml","build-windows.yml"] and
+            (if $mode == "validation" then $publish_result == "skipped" and all($owners[]; .result == "skipped")
+             elif $mode == "stage" then $publish_result == "skipped" and ($is_published|not) and all($rows[]; .result == "success" and .staged)
+             elif $mode == "publish" then $is_published and all($rows[]; .result == "success" and .staged)
+             else false end))}')
+        {
+          printf '## Requested mode: %s\n\n' "$MODE"
+          echo '| Owner | Result | Built | Verified | Freshly signed | Reused | Staged | Published |'
+          echo '|---|---|---|---|---|---|---|---|'
+          jq -r '.owners[] | "| \(.owner) | \(.result) | \(.built) | \(.verified) | \(.signed) | \(.reused) | \(.staged) | \(.published) |"' <<< "$summary"
+          echo
+          echo 'Freshly signed requires a real generation tuple produced in this attempt; remote reuse and retained earlier generations do not claim new signing.'
+          echo 'macOS retains its native ad-hoc seal; no Developer ID signing or notarization is claimed.'
+        } >> "$GITHUB_STEP_SUMMARY"
+        jq -e '.success == true' <<< "$summary" >/dev/null

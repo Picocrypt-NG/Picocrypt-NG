@@ -10,8 +10,8 @@ import (
 func TestAppImageValidationHasNoSigningOrPublicationAuthority(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-appimage.yml")
 	build := mustJob(t, workflow, "build")
-	if build.If != "" {
-		t.Fatal("unsigned validation must execute on the selected dispatch ref before merge")
+	if build.If != "${{ "+appimageDirectInvocation+" }}" {
+		t.Fatal("direct unsigned validation must execute on the dispatch ref without reusable rebuilding")
 	}
 	if build.Environment != nil {
 		t.Fatalf("unsigned validation can access environment %#v", build.Environment)
@@ -31,15 +31,15 @@ func TestAppImageValidationHasNoSigningOrPublicationAuthority(t *testing.T) {
 		}
 	}
 	sign := mustJob(t, workflow, "sign")
-	if sign.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}" {
+	if sign.If != "${{ always() && !cancelled() && (("+appimageDirectInvocation+" && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && needs.build.result == 'success') || (! ("+appimageDirectInvocation+") && needs.inspect.result == 'success' && needs.inspect.outputs.state != 'complete')) }}" {
 		t.Fatalf("production signing guard = %q", sign.If)
 	}
 	if releaseEnvironmentName(sign.Environment) != "release" {
 		t.Fatal("production AppImage signing requires the release environment")
 	}
 	download := mustStepNamed(t, sign, "Download same-run signing input")
-	if download.With["artifact-ids"] != "${{ needs.build.outputs.signing-input-id }}" {
-		t.Fatal("signing must consume the exact immutable build artifact ID")
+	if download.With["artifact-ids"] != "${{ inputs.signing_input_id || needs.build.outputs.signing-input-id }}" || download.With["digest-mismatch"] != "error" || download.With["merge-multiple"] != true {
+		t.Fatal("signing must consume the exact source-bound immutable carrier ID for either invocation")
 	}
 	for _, crossRun := range []string{"github-token", "run-id", "repository", "name", "pattern"} {
 		if _, exists := download.With[crossRun]; exists {
@@ -47,15 +47,15 @@ func TestAppImageValidationHasNoSigningOrPublicationAuthority(t *testing.T) {
 		}
 	}
 	input := mustStepNamed(t, sign, "Check and extract signing input")
-	if input.Env["EXPECTED_SHA256"] != "${{ needs.build.outputs.signing-input-sha256 }}" {
-		t.Fatal("signing must check the source build's AppDir archive digest")
+	if input.Env["EXPECTED_SHA256"] != "${{ inputs.signing_input_sha256 || needs.build.outputs.signing-input-sha256 }}" {
+		t.Fatal("signing must check the source-bound AppDir tar digest separately from the carrier ZIP digest")
 	}
 	mustContain(t, input.Run, `sha256sum --check --strict --status`)
 	mustContain(t, input.Run, `.github/scripts/extract-appimage-appdir.py`)
 	for _, job := range []workflowJob{build, sign} {
 		for _, step := range job.Steps {
-			if strings.HasPrefix(step.Uses, "actions/checkout@") && step.With["ref"] != nil {
-				t.Fatal("AppImage jobs must check out the current workflow source SHA")
+			if strings.HasPrefix(step.Uses, "actions/checkout@") && (step.With["ref"] != "${{ github.sha }}" || step.With["persist-credentials"] != false) {
+				t.Fatal("AppImage jobs must check out the exact workflow source SHA without stored credentials")
 			}
 		}
 	}
@@ -75,8 +75,10 @@ func TestAppImageProductionTrustPrecedesArtifactPublication(t *testing.T) {
 	mustContain(t, pack.Run, `--sign --sign-key "$SIGN_KEY"`)
 	mustContain(t, pack.Run, `--runtime-file .appimage-tools/runtime`)
 	verify := mustStepNamed(t, sign, "Verify AppImage signature")
-	if verify.If != "" || (verify.ContinueOnError != nil && verify.ContinueOnError != false) {
-		t.Fatal("cryptographic AppImage verification must be unconditional and blocking")
+	whenSigning := "${{ (" + appimageDirectInvocation + ") || steps.inventory.outputs.state == 'missing' }}"
+	if verify.If != whenSigning || importKey.If != whenSigning || pack.If != whenSigning || mustStepNamed(t, sign, "Upload signed artifacts").If != whenSigning ||
+		(verify.ContinueOnError != nil && verify.ContinueOnError != false) {
+		t.Fatal("cryptographic AppImage verification must block every fresh signing and upload; complete-owner reuse skips them together")
 	}
 	mustContain(t, verify.Run, `bash .github/scripts/verify-appimage.sh "$APP"`)
 	verified := false

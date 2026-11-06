@@ -23,6 +23,12 @@ outputs:
   signing-input-id:
     description: Immutable original-layout unsigned bundle consumed by SignPath.
     value: ${{ steps.signing-input.outputs.artifact-id }}
+  signing-input-digest:
+    description: Official ZIP digest of the original unsigned signing carrier.
+    value: ${{ steps.signing-input.outputs.artifact-digest }}
+  signing-input-attempt:
+    description: Attempt that produced the original unsigned signing carrier.
+    value: ${{ steps.source.outputs.run-attempt }}
 runs:
   using: composite
   steps:

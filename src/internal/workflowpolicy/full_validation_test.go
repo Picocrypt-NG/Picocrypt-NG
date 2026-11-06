@@ -27,7 +27,7 @@ func fullValidationProducers() []fullValidationProducer {
 	}
 }
 
-func TestFullValidationCoordinatorHasOnlyValidationAuthority(t *testing.T) {
+func TestFullValidationCoordinatorKeepsValidationReadOnlyAndProductionExplicit(t *testing.T) {
 	const path = ".github/workflows/release.yml"
 	workflow := mustReadWorkflowDoc(t, path)
 	var choices struct {
@@ -38,25 +38,70 @@ func TestFullValidationCoordinatorHasOnlyValidationAuthority(t *testing.T) {
 				} `yaml:"inputs"`
 			} `yaml:"workflow_dispatch"`
 		} `yaml:"on"`
+		Jobs map[string]yaml.Node `yaml:"jobs"`
 	}
 	if err := yaml.Unmarshal([]byte(mustReadWorkflow(t, path)), &choices); err != nil {
 		t.Fatal(err)
 	}
 	mode := workflow.On.WorkflowDispatch.Inputs["mode"]
 	if len(workflow.On.WorkflowDispatch.Inputs) != 1 || mode.Type != "choice" || mode.Default != "validation" ||
-		!reflect.DeepEqual(choices.On.Dispatch.Inputs["mode"].Options, []string{"validation"}) || len(workflow.On.OtherEvents) != 0 {
-		t.Fatal("the full coordinator must remain manual and validation-only by default")
+		!reflect.DeepEqual(choices.On.Dispatch.Inputs["mode"].Options, []string{"validation", "stage", "publish"}) || len(workflow.On.OtherEvents) != 0 {
+		t.Fatal("the full coordinator must remain manual and validation-only by default, with explicit stage/publish choices")
 	}
 	wantJobs := map[string]bool{"prepare": true, "verify-linux": true, "verify-platforms": true, "validation": true}
 	for _, producer := range fullValidationProducers() {
 		wantJobs[producer.job] = true
 	}
-	if len(workflow.Jobs) != len(wantJobs) {
-		t.Fatal("full validation requires prepare, eight real producers, two verifiers and the final gate")
+	owners := []string{"linux", "macos", "snapcraft", "android", "windows", "windows-legacy", "appimage"}
+	if len(workflow.Jobs) != len(wantJobs)+len(owners)+2 {
+		t.Fatal("the coordinator requires the complete validation graph, seven real owners, final publication and readonly outcome reporting")
 	}
 	for name, job := range workflow.Jobs {
-		if !wantJobs[name] || job.Environment != nil {
-			t.Fatalf("unreviewed or privileged coordinator job %q", name)
+		if !wantJobs[name] && name != "result" {
+			if name == "publish" {
+				if job.If != "${{ always() && !cancelled() && inputs.mode == 'publish' }}" || job.Environment != "release" ||
+					!reflect.DeepEqual(job.Permissions, map[string]string{"contents": "write", "actions": "read"}) {
+					t.Fatal("final publication must be explicit, cancel-aware, release-protected and have no OIDC authority")
+				}
+				guard := mustStepNamed(t, job, "Require every staged owner")
+				if len(job.Steps) == 0 || job.Steps[0].Name != guard.Name {
+					t.Fatal("all staged results must be checked before checkout or API writes")
+				}
+				mustContain(t, guard.Run, `test "$MODE" = publish`)
+				mustContain(t, guard.Run, `.result == "success" and .staged == "true"`)
+				for _, owner := range owners {
+					if !strings.Contains(fmt.Sprint(job.Needs), "owner-"+owner) {
+						t.Fatalf("publication lacks owner %s dependency", owner)
+					}
+					mustContain(t, job.Env["OWNER_RESULTS_JSON"], "${{ needs.owner-"+owner+".result }}")
+					mustContain(t, job.Env["OWNER_RESULTS_JSON"], "${{ needs.owner-"+owner+".outputs.staged }}")
+				}
+				mustContain(t, mustStepNamed(t, job, "Strictly finalize complete release").Run, "release-gate.sh strict-finalize")
+				mustContain(t, mustStepNamed(t, job, "Require confirmed publication").Run, `test "$PUBLISHED" = true`)
+				continue
+			}
+			matched := false
+			for _, owner := range owners {
+				if name != "owner-"+owner {
+					continue
+				}
+				matched = true
+				if job.Uses != "./.github/workflows/build-"+owner+".yml" || job.If != "${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}" ||
+					job.Environment != nil || job.Steps != nil || !strings.Contains(fmt.Sprint(job.Needs), "prepare") || !strings.Contains(fmt.Sprint(job.Needs), "validation") ||
+					!reflect.DeepEqual(job.Permissions, map[string]string{"contents": "write", "actions": "read", "id-token": "write", "attestations": "write"}) {
+					t.Fatalf("%s must call the same-commit real owner only after protected preparation and the full19 validation barrier", name)
+				}
+			}
+			if !matched {
+				t.Fatalf("unreviewed coordinator job %q", name)
+			}
+			continue
+		}
+		if job.Environment != nil || job.Uses != "" {
+			t.Fatalf("validation/reporting job %q must not have publication authority", name)
+		}
+		if name == "result" && job.If != "${{ always() && !cancelled() }}" {
+			t.Fatal("readonly outcome reporting must run after failed dependencies without ignoring cancellation")
 		}
 		mustEffectivePermission(t, workflow, job, "contents", "read")
 		permissions := workflow.Permissions
@@ -82,17 +127,28 @@ func TestFullValidationCoordinatorHasOnlyValidationAuthority(t *testing.T) {
 			}
 			mustNotContain(t, step.Run, "--sign")
 		}
+		encoded, err := yaml.Marshal(choices.Jobs[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if regexp.MustCompile(`\bsecrets\s*(?:\.|\[)`).Match(encoded) {
+			t.Fatalf("validation/reporting job %s references production credentials", name)
+		}
 	}
 	raw := mustReadWorkflow(t, path)
-	if regexp.MustCompile(`\bsecrets\s*(?:\.|\[)`).MatchString(raw) {
-		t.Fatal("validation must not reference production credentials")
-	}
 	for _, dump := range []string{"toJSON(needs)", "toJSON(github)", "toJson(needs)", "toJson(github)"} {
 		mustNotContain(t, raw, dump)
 	}
-	mustContain(t, raw, "name: release-validation\n")
+	mustContain(t, raw, "name: release-coordinator\n")
 	prepare := mustStepNamed(t, mustJob(t, workflow, "prepare"), "Bind source and canonical manifest")
-	mustContain(t, prepare.Run, `test "$MODE" = validation`)
+	for _, guard := range []string{
+		`case "$MODE" in`, `validation) ;;`, `stage|publish)`,
+		`test "$GITHUB_REPOSITORY" = Picocrypt-NG/Picocrypt-NG`, `test "$GITHUB_REF" = refs/heads/main`,
+		`test "$GITHUB_EVENT_NAME" = workflow_dispatch`, `test "$GITHUB_WORKFLOW_REF" = Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main`,
+		`test "$GITHUB_WORKFLOW_SHA" = "$SOURCE_SHA"`, `test "$(git rev-parse HEAD)" = "$SOURCE_SHA"`, `version=$(cat VERSION)`, `release-manifest.sh "$version"`,
+	} {
+		mustContain(t, prepare.Run, guard)
+	}
 }
 
 func TestFullValidationProducersMatchNativeOwnersAndCanonicalOutputs(t *testing.T) {
@@ -104,9 +160,18 @@ func TestFullValidationProducersMatchNativeOwnersAndCanonicalOutputs(t *testing.
 			if job.Needs != "prepare" || job.If != "" || job.RunsOn != owner.RunsOn || job.TimeoutMinutes != owner.TimeoutMinutes || !reflect.DeepEqual(job.Env, owner.Env) {
 				t.Fatal("producer must retain its owner's native runner, timeout and public environment")
 			}
-			if !reflect.DeepEqual(job.Outputs, map[string]string{
+			wantOutputs := map[string]string{
 				"artifact-id": "${{ steps.build.outputs.artifact-id }}", "artifact-digest": "${{ steps.build.outputs.artifact-digest }}", "run-attempt": "${{ steps.build.outputs.run-attempt }}",
-			}) {
+			}
+			if tc.action == "build-android" || tc.action == "build-windows" || tc.action == "build-windows-legacy" || tc.action == "build-appimage" {
+				for _, output := range []string{"signing-input-id", "signing-input-digest", "signing-input-attempt"} {
+					wantOutputs[output] = "${{ steps.build.outputs." + output + " }}"
+				}
+			}
+			if tc.action == "build-appimage" {
+				wantOutputs["signing-input-sha256"] = "${{ steps.build.outputs.signing-input-sha256 }}"
+			}
+			if !reflect.DeepEqual(job.Outputs, wantOutputs) {
 				t.Fatal("coordinator producer outputs must be the canonical official ID/digest/attempt, never a signing-input alias")
 			}
 			call := mustHaveStepUsingPrefix(t, job, "./.github/actions/"+tc.action)
@@ -121,8 +186,14 @@ func TestFullValidationProducersMatchNativeOwnersAndCanonicalOutputs(t *testing.
 					t.Fatalf("producer loses prepared %s", name)
 				}
 			}
-			if tc.action != "build-linux" && len(call.With) != 3 {
-				t.Fatal("validation producers must not receive signing flags or unused inputs")
+			if tc.action != "build-linux" {
+				wantInputs := map[string]any{"source-sha": "${{ needs.prepare.outputs.source-sha }}", "version": "${{ needs.prepare.outputs.version }}", "manifest-digest": "${{ needs.prepare.outputs.manifest-digest }}"}
+				if tc.action == "build-appimage" {
+					wantInputs["retain-signing-input"] = "${{ inputs.mode != 'validation' }}"
+				}
+				if !reflect.DeepEqual(call.With, wantInputs) {
+					t.Fatal("native producers may receive only prepared source and the explicit AppImage carrier retention switch")
+				}
 			}
 			if len(job.Steps) != 2 || !strings.HasPrefix(job.Steps[0].Uses, "actions/checkout@") ||
 				job.Steps[0].With["ref"] != "${{ github.sha }}" || job.Steps[0].With["persist-credentials"] != false {

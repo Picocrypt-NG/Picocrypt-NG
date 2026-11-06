@@ -93,7 +93,12 @@ func TestValidationKeepsReadOnlyCeilingAndNativeLinuxSubgraph(t *testing.T) {
 	if mode.Default != "validation" || len(workflow.On.OtherEvents) != 0 {
 		t.Fatal("the pilot must default to manual validation")
 	}
-	for name, job := range workflow.Jobs {
+	validationJobs := []string{"prepare", "verify-linux", "verify-platforms", "validation", "result"}
+	for _, producer := range fullValidationProducers() {
+		validationJobs = append(validationJobs, producer.job)
+	}
+	for _, name := range validationJobs {
+		job := mustJob(t, workflow, name)
 		if job.Uses != "" || job.Environment != nil || job.ContinueOnError == true {
 			t.Fatalf("%s must remain an ordinary blocking job under the read-only ceiling", name)
 		}
@@ -140,7 +145,9 @@ func TestValidationKeepsReadOnlyCeilingAndNativeLinuxSubgraph(t *testing.T) {
 		}
 	}
 	prepare := mustJob(t, workflow, "prepare")
-	mustContain(t, mustStepNamed(t, prepare, "Bind source and canonical manifest").Run, `test "$MODE" = validation`)
+	bind := mustStepNamed(t, prepare, "Bind source and canonical manifest")
+	mustContain(t, bind.Run, `case "$MODE" in`)
+	mustContain(t, bind.Run, `validation) ;;`)
 	verify := mustJob(t, workflow, "verify-linux")
 	if verify.If != "${{ always() }}" {
 		t.Fatal("validation must reject a failed, skipped or cancelled producer")

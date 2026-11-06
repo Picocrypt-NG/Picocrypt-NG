@@ -12,18 +12,76 @@ on:
         type: boolean
         default: false
 
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      canonical_manifest_sha256:
+        required: true
+        type: string
+      raw_artifact_id:
+        required: true
+        type: string
+      raw_artifact_digest:
+        required: true
+        type: string
+      raw_producing_attempt:
+        required: true
+        type: string
+      signing_input_id:
+        required: true
+        type: string
+      signing_input_digest:
+        required: true
+        type: string
+      signing_input_attempt:
+        required: true
+        type: string
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: true
+      ANDROID_KEYSTORE_PASSWORD:
+        required: true
+      ANDROID_KEY_PASSWORD:
+        required: true
+      ANDROID_KEY_ALIAS:
+        required: true
+    outputs:
+      staged:
+        description: True after verified full-owner reuse or stage-only upload.
+        value: ${{ jobs.inspect.outputs.staged == 'true' && 'true' || jobs.sign.outputs.staged == 'true' && 'true' || jobs.attest.outputs.staged == 'true' && 'true' || jobs.stage.outputs.staged }}
+      reused:
+        description: Whether fresh full-owner inspection reused existing signed pairs.
+        value: ${{ jobs.inspect.outputs.reused == 'true' || jobs.sign.outputs.reused == 'true' || jobs.attest.outputs.reused == 'true' }}
+      generation_id:
+        description: Exact immutable full signed generation ID, when produced.
+        value: ${{ jobs.attest.outputs.generation-id }}
+      generation_digest:
+        description: Official ZIP digest of that signed generation.
+        value: ${{ jobs.attest.outputs.generation-digest }}
+      generation_attempt:
+        description: Producing attempt of that retained generation.
+        value: ${{ jobs.attest.outputs.generation-attempt }}
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-android-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
+    if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: read
     outputs:
       artifact-id: ${{ steps.build.outputs.signing-input-id }}
+      artifact-digest: ${{ steps.build.outputs.signing-input-digest }}
+      run-attempt: ${{ steps.build.outputs.signing-input-attempt }}
       manifest-sha256: ${{ steps.build.outputs.manifest-sha256 }}
       aar-sha256: ${{ steps.build.outputs.aar-sha256 }}
       version: ${{ steps.build.outputs.version }}
@@ -31,6 +89,7 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        ref: ${{ github.sha }}
         persist-credentials: false
 
     - name: Validate release request
@@ -67,48 +126,251 @@ jobs:
         version: ${{ steps.source.outputs.version }}
         manifest-digest: ${{ steps.source.outputs.manifest-digest }}
 
+  inspect:
+    if: ${{ ! (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_VERSION: ${{ inputs.version }}
+      CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 }}
+      OWNER_WORKFLOW: build-android.yml
+    outputs:
+      state: ${{ steps.inventory.outputs.state }}
+      staged: ${{ steps.inventory.outputs.staged }}
+      reused: ${{ steps.inventory.outputs.reused }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Validate reusable Android source
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$GITHUB_REPOSITORY" = Picocrypt-NG/Picocrypt-NG
+        test "$GITHUB_WORKFLOW_REF" = Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main
+        test "$GITHUB_REF" = refs/heads/main
+        test "$GITHUB_EVENT_NAME" = workflow_dispatch
+        test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        version=${version%$'\r'}
+        test "$version" = "$SOURCE_VERSION"
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${digest%% *}" = "$CANONICAL_MANIFEST_SHA256"
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: v3.1.3
+    - name: Inspect full Android owner
+      id: inventory
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        report=$(mktemp)
+        trap 'rm -f "$report"' EXIT
+        GITHUB_OUTPUT='' bash .github/actions/stage-release/release-gate.sh inspect-owner "$SOURCE_VERSION" > "$report"
+        jq -e --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" --arg canonical "$CANONICAL_MANIFEST_SHA256" '
+          .repository == "Picocrypt-NG/Picocrypt-NG" and .source_sha == $source and .version == $version and
+          .canonical_manifest_sha256 == $canonical and .owner_workflow == "build-android.yml"
+        ' "$report" >/dev/null
+        state=$(jq -r '.status' "$report")
+        case "$state" in
+          complete) staged=true; reused=true ;;
+          missing) staged=false; reused=false ;;
+          partial) echo 'Android owner is partially staged; original signed generation is required before any signing' >&2; exit 1 ;;
+          *) echo 'Invalid Android owner inspection state' >&2; exit 1 ;;
+        esac
+        printf 'state=%s\nstaged=%s\nreused=%s\n' "$state" "$staged" "$reused" >> "$GITHUB_OUTPUT"
+
   sign:
-    needs: build
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    needs: [build, inspect]
+    if: ${{ always() && !cancelled() && ((github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref) && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && needs.build.result == 'success') || (! (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) && needs.inspect.result == 'success' && needs.inspect.outputs.state != 'complete')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
     permissions:
       contents: read
+      actions: read
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      SOURCE_VERSION: ${{ inputs.version || needs.build.outputs.version }}
+      CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 }}
+      OWNER_WORKFLOW: build-android.yml
+      PLATFORM_OWNER: build-android.yml
+      PLATFORM_ARTIFACTS_JSON: '[{"owner":"build-android.yml","arch":"all","id":${{ inputs.raw_artifact_id }},"digest":"${{ inputs.raw_artifact_digest }}","attempt":${{ inputs.raw_producing_attempt }}}]'
+      ARTIFACT_ROOT: artifacts
+      PLATFORM_MANIFEST: ${{ github.workspace }}/android-artifacts.json
     outputs:
       artifact-id: ${{ steps.upload-signed.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload-signed.outputs.artifact-digest }}
+      run-attempt: ${{ github.run_attempt }}
+      state: ${{ steps.inventory.outputs.state }}
+      staged: ${{ steps.inventory.outputs.staged }}
+      reused: ${{ steps.inventory.outputs.reused }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        ref: ${{ github.sha }}
         persist-credentials: false
 
-    - name: Download source-bound unsigned APKs
+    - name: Validate reusable Android source
+      if: ${{ ! (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$GITHUB_REPOSITORY" = Picocrypt-NG/Picocrypt-NG
+        test "$GITHUB_WORKFLOW_REF" = Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main
+        test "$GITHUB_REF" = refs/heads/main
+        test "$GITHUB_EVENT_NAME" = workflow_dispatch
+        test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        version=${version%$'\r'}
+        test "$version" = "$SOURCE_VERSION"
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${digest%% *}" = "$CANONICAL_MANIFEST_SHA256"
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+    - name: Install cosign
+      if: ${{ ! (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) }}
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: v3.1.3
+    - name: Inspect full Android owner
+      if: ${{ ! (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) }}
+      id: inventory
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        report=$(mktemp)
+        trap 'rm -f "$report"' EXIT
+        GITHUB_OUTPUT='' bash .github/actions/stage-release/release-gate.sh inspect-owner "$SOURCE_VERSION" > "$report"
+        jq -e --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" --arg canonical "$CANONICAL_MANIFEST_SHA256" '
+          .repository == "Picocrypt-NG/Picocrypt-NG" and .source_sha == $source and .version == $version and
+          .canonical_manifest_sha256 == $canonical and .owner_workflow == "build-android.yml"
+        ' "$report" >/dev/null
+        state=$(jq -r '.status' "$report")
+        case "$state" in
+          complete) staged=true; reused=true ;;
+          missing) staged=false; reused=false ;;
+          partial) echo 'Android owner is partially staged; original signed generation is required before any signing' >&2; exit 1 ;;
+          *) echo 'Invalid Android owner inspection state' >&2; exit 1 ;;
+        esac
+        printf 'state=%s\nstaged=%s\nreused=%s\n' "$state" "$staged" "$reused" >> "$GITHUB_OUTPUT"
+    - name: Verify immutable Android raw metadata
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/verify-platform-artifacts/verify-artifacts.sh metadata
+    - name: Download Android raw artifact
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
-        artifact-ids: ${{ needs.build.outputs.artifact-id }}
+        artifact-ids: ${{ inputs.raw_artifact_id }}
+        path: artifacts/build-android
+        merge-multiple: true
+        digest-mismatch: error
+    - name: Verify Android raw payload
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      shell: bash
+      run: bash .github/actions/verify-platform-artifacts/verify-artifacts.sh payload
+    - name: Verify Android signing-input metadata
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CARRIER_ID: ${{ inputs.signing_input_id || needs.build.outputs.artifact-id }}
+        CARRIER_DIGEST: ${{ inputs.signing_input_digest || needs.build.outputs.artifact-digest }}
+        CARRIER_ATTEMPT: ${{ inputs.signing_input_attempt || needs.build.outputs.run-attempt }}
+      run: |
+        set -euo pipefail
+        [[ $CARRIER_ID =~ ^[1-9][0-9]*$ && $CARRIER_DIGEST =~ ^[0-9a-f]{64}$ && $CARRIER_ATTEMPT =~ ^[1-9][0-9]*$ ]]
+        (( CARRIER_ATTEMPT <= GITHUB_RUN_ATTEMPT ))
+        metadata=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts/$CARRIER_ID")
+        jq -e --arg id "$CARRIER_ID" --arg name "unsigned-android-attempt-$CARRIER_ATTEMPT" --arg digest "sha256:$CARRIER_DIGEST" \
+          --arg run "$GITHUB_RUN_ID" --arg source "$GITHUB_SHA" '
+          (.id|tostring) == $id and .name == $name and .digest == $digest and .expired == false
+            and (.workflow_run.id|tostring) == $run and .workflow_run.head_sha == $source
+          ' <<< "$metadata" >/dev/null
+    - name: Download source-bound unsigned APKs
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ inputs.signing_input_id || needs.build.outputs.artifact-id }}
         path: unsigned-release
         merge-multiple: true
+        digest-mismatch: error
 
+    - name: Bind reusable Android signing metadata
+      id: signing-metadata
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        manifest=unsigned-release/build-inputs.json
+        test -f "$manifest" && test ! -L "$manifest" && test -s "$manifest" || exit 1
+        [[ "$SOURCE_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]
+        IFS='.' read -r major minor patch <<< "$SOURCE_VERSION"
+        patch=${patch:-0}
+        code=$((10#$major * 10000 + 10#$minor * 100 + 10#$patch))
+        aar=$(jq -er '.aarSha256 | select(type == "string" and test("^[0-9a-f]{64}$"))' "$manifest")
+        digest=$(sha256sum "$manifest")
+        printf 'manifest-sha256=%s\naar-sha256=%s\nversion-code=%s\n' "${digest%% *}" "$aar" "$code" >> "$GITHUB_OUTPUT"
+    - name: Match raw APKs to signing inputs
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        for abi in armeabi-v7a arm64-v8a x86 x86_64 universal; do
+          raw="artifacts/build-android/Picocrypt-NG-android-$abi.apk"
+          unsigned="unsigned-release/app-$abi-release-unsigned.apk"
+          test -f "$raw" && test ! -L "$raw" && test -s "$raw" || exit 1
+          test -f "$unsigned" && test ! -L "$unsigned" && test -s "$unsigned" || exit 1
+          cmp -s -- "$raw" "$unsigned"
+        done
     - name: Set up Android SDK
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
 
     - name: Set up JDK 21
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
       with:
         distribution: "temurin"
         java-version: "21.0.13+9.0.LTS"
 
     - name: Install offline APK signing tools
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       run: |
         yes | sdkmanager --licenses || true
         sdkmanager "build-tools;36.0.0"
 
     - name: Validate unsigned signing inputs before loading secrets
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       env:
-        MANIFEST_SHA256: ${{ needs.build.outputs.manifest-sha256 }}
-        AAR_SHA256: ${{ needs.build.outputs.aar-sha256 }}
-        VERSION: ${{ needs.build.outputs.version }}
-        VERSION_CODE: ${{ needs.build.outputs.version-code }}
+        MANIFEST_SHA256: ${{ needs.build.outputs.manifest-sha256 || steps.signing-metadata.outputs.manifest-sha256 }}
+        AAR_SHA256: ${{ needs.build.outputs.aar-sha256 || steps.signing-metadata.outputs.aar-sha256 }}
+        VERSION: ${{ needs.build.outputs.version || inputs.version }}
+        VERSION_CODE: ${{ needs.build.outputs.version-code || steps.signing-metadata.outputs.version-code }}
       run: |
         set -euo pipefail
         test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
@@ -131,11 +393,13 @@ jobs:
         android/verify-release-apks.sh unsigned-release "$VERSION" "$VERSION_CODE" io.github.picocrypt_ng.picocrypt_ng unsigned
 
     - name: Compile the SDK signing launcher before loading secrets
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       run: |
         javac -cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" \
           -d "$RUNNER_TEMP/android-signing-tool" .github/scripts/AndroidApkSigner.java
 
     - name: Sign verified APKs with the offline SDK
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       env:
         ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -172,9 +436,10 @@ jobs:
         done
 
     - name: Verify exact signed release APK contract
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       env:
-        VERSION: ${{ needs.build.outputs.version }}
-        VERSION_CODE: ${{ needs.build.outputs.version-code }}
+        VERSION: ${{ needs.build.outputs.version || inputs.version }}
+        VERSION_CODE: ${{ needs.build.outputs.version-code || steps.signing-metadata.outputs.version-code }}
         PICOCRYPT_ANDROID_SIGNING_CERT_SHA256_FILE: android/release-signing-cert-sha256.txt
       run: |
         android/verify-release-apks.sh signed-apks "$VERSION" "$VERSION_CODE" io.github.picocrypt_ng.picocrypt_ng signed
@@ -186,18 +451,20 @@ jobs:
         cp signed-apks/app-universal-release.apk out/Picocrypt-NG-android-universal.apk
 
     - name: Upload signed release APKs
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       id: upload-signed
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: signed-android
+        name: signed-android-attempt-${{ github.run_attempt }}
         path: out/
         if-no-files-found: error
         compression-level: 9
         retention-days: 1
+        overwrite: false
 
   release:
     needs: [build, sign]
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.sign.result == 'success' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     concurrency:
@@ -211,6 +478,7 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        ref: ${{ github.sha }}
         persist-credentials: false
 
     - name: Download verified signed APKs
@@ -260,3 +528,225 @@ jobs:
           out/Picocrypt-NG-android-x86_64.apk.sigstore.json
           out/Picocrypt-NG-android-universal.apk
           out/Picocrypt-NG-android-universal.apk.sigstore.json
+
+  attest:
+    needs: sign
+    if: ${{ !cancelled() && needs.sign.result == 'success' && ! (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) && needs.sign.outputs.state == 'missing' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_VERSION: ${{ inputs.version }}
+      CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 }}
+      OWNER_WORKFLOW: build-android.yml
+      GENERATION_OWNER: build-android.yml
+      GENERATION_DIR: signed-generation
+    outputs:
+      state: ${{ steps.inventory.outputs.state }}
+      staged: ${{ steps.inventory.outputs.staged }}
+      reused: ${{ steps.inventory.outputs.reused }}
+      generation-id: ${{ steps.upload-generation.outputs.artifact-id }}
+      generation-digest: ${{ steps.upload-generation.outputs.artifact-digest }}
+      generation-attempt: ${{ steps.generation.outputs.run-attempt }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Validate reusable Android source
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$GITHUB_REPOSITORY" = Picocrypt-NG/Picocrypt-NG
+        test "$GITHUB_WORKFLOW_REF" = Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main
+        test "$GITHUB_REF" = refs/heads/main
+        test "$GITHUB_EVENT_NAME" = workflow_dispatch
+        test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        version=${version%$'\r'}
+        test "$version" = "$SOURCE_VERSION"
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${digest%% *}" = "$CANONICAL_MANIFEST_SHA256"
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: v3.1.3
+    - name: Inspect full Android owner
+      id: inventory
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        report=$(mktemp)
+        trap 'rm -f "$report"' EXIT
+        GITHUB_OUTPUT='' bash .github/actions/stage-release/release-gate.sh inspect-owner "$SOURCE_VERSION" > "$report"
+        jq -e --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" --arg canonical "$CANONICAL_MANIFEST_SHA256" '
+          .repository == "Picocrypt-NG/Picocrypt-NG" and .source_sha == $source and .version == $version and
+          .canonical_manifest_sha256 == $canonical and .owner_workflow == "build-android.yml"
+        ' "$report" >/dev/null
+        state=$(jq -r '.status' "$report")
+        case "$state" in
+          complete) staged=true; reused=true ;;
+          missing) staged=false; reused=false ;;
+          partial) echo 'Android owner is partially staged; original signed generation is required before any signing' >&2; exit 1 ;;
+          *) echo 'Invalid Android owner inspection state' >&2; exit 1 ;;
+        esac
+        printf 'state=%s\nstaged=%s\nreused=%s\n' "$state" "$staged" "$reused" >> "$GITHUB_OUTPUT"
+    - name: Verify signed APK carrier metadata
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CARRIER_ID: ${{ needs.sign.outputs.artifact-id }}
+        CARRIER_DIGEST: ${{ needs.sign.outputs.artifact-digest }}
+        CARRIER_ATTEMPT: ${{ needs.sign.outputs.run-attempt }}
+      run: |
+        set -euo pipefail
+        [[ $CARRIER_ID =~ ^[1-9][0-9]*$ && $CARRIER_DIGEST =~ ^[0-9a-f]{64}$ && $CARRIER_ATTEMPT =~ ^[1-9][0-9]*$ ]]
+        (( CARRIER_ATTEMPT <= GITHUB_RUN_ATTEMPT ))
+        metadata=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts/$CARRIER_ID")
+        jq -e --arg id "$CARRIER_ID" --arg name "signed-android-attempt-$CARRIER_ATTEMPT" --arg digest "sha256:$CARRIER_DIGEST" \
+          --arg run "$GITHUB_RUN_ID" --arg source "$GITHUB_SHA" '
+          (.id|tostring) == $id and .name == $name and .digest == $digest and .expired == false
+            and (.workflow_run.id|tostring) == $run and .workflow_run.head_sha == $source
+          ' <<< "$metadata" >/dev/null
+    - name: Download verified signed APKs
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.sign.outputs.artifact-id }}
+        path: out
+        merge-multiple: true
+        digest-mismatch: error
+    - name: Sign and attest artifacts
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      uses: ./.github/actions/sign-and-attest
+      with:
+        paths: |
+          out/Picocrypt-NG-android-armeabi-v7a.apk
+          out/Picocrypt-NG-android-arm64-v8a.apk
+          out/Picocrypt-NG-android-x86.apk
+          out/Picocrypt-NG-android-x86_64.apk
+          out/Picocrypt-NG-android-universal.apk
+    - name: Record signed Android generation
+      id: generation
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/signed-generation/generation.sh record
+    - name: Upload signed Android generation
+      id: upload-generation
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.generation.outputs.artifact-name }}
+        path: signed-generation/*
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 7
+        overwrite: false
+
+  stage:
+    needs: attest
+    if: ${{ !cancelled() && needs.attest.result == 'success' && needs.attest.outputs.state != 'complete' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_VERSION: ${{ inputs.version }}
+      CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 }}
+      GENERATION_OWNER: build-android.yml
+      GENERATION_DIR: signed-generation
+      GENERATION_ARTIFACT_ID: ${{ needs.attest.outputs.generation-id }}
+      GENERATION_ARTIFACT_DIGEST: ${{ needs.attest.outputs.generation-digest }}
+      GENERATION_ARTIFACT_ATTEMPT: ${{ needs.attest.outputs.generation-attempt }}
+    outputs:
+      staged: ${{ steps.stage.outputs.staged }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Validate reusable Android source
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$GITHUB_REPOSITORY" = Picocrypt-NG/Picocrypt-NG
+        test "$GITHUB_WORKFLOW_REF" = Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main
+        test "$GITHUB_REF" = refs/heads/main
+        test "$GITHUB_EVENT_NAME" = workflow_dispatch
+        test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        version=${version%$'\r'}
+        test "$version" = "$SOURCE_VERSION"
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${digest%% *}" = "$CANONICAL_MANIFEST_SHA256"
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: v3.1.3
+    - name: Verify signed generation metadata
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/signed-generation/generation.sh metadata
+    - name: Download signed Android generation
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.attest.outputs.generation-id }}
+        path: signed-generation
+        merge-multiple: true
+        digest-mismatch: error
+    - name: Restore signed Android generation
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/signed-generation/generation.sh restore
+    - name: Generate release notes
+      uses: ./.github/actions/release-body
+      with:
+        version: ${{ inputs.version }}
+    - name: Stage release assets
+      id: stage
+      uses: ./.github/actions/stage-release
+      with:
+        version: ${{ inputs.version }}
+        body_path: ${{ github.workspace }}/release-body.md
+        files: |
+          out/Picocrypt-NG-android-armeabi-v7a.apk
+          out/Picocrypt-NG-android-armeabi-v7a.apk.sigstore.json
+          out/Picocrypt-NG-android-arm64-v8a.apk
+          out/Picocrypt-NG-android-arm64-v8a.apk.sigstore.json
+          out/Picocrypt-NG-android-x86.apk
+          out/Picocrypt-NG-android-x86.apk.sigstore.json
+          out/Picocrypt-NG-android-x86_64.apk
+          out/Picocrypt-NG-android-x86_64.apk.sigstore.json
+          out/Picocrypt-NG-android-universal.apk
+          out/Picocrypt-NG-android-universal.apk.sigstore.json
+        finalize: 'false'

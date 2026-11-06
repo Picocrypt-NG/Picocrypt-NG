@@ -2,5 +2,9 @@
   "schema_version": 1,
   "version": "2.102.1",
   "url": "https://github.com/cli/cli/releases/download/v2.102.1/gh_2.102.1_linux_amd64.tar.gz",
-  "sha256": "77b9e297e94c50336823d0f84de7ef1be60cba704601fa0d98f129f47a94987b"
+  "sha256": "77b9e297e94c50336823d0f84de7ef1be60cba704601fa0d98f129f47a94987b",
+  "windows": {
+    "url": "https://github.com/cli/cli/releases/download/v2.102.1/gh_2.102.1_windows_amd64.zip",
+    "sha256": "843c0dc119f014d9458aeaff96c44c16fc4b8e556c1c4c5df9bab5ba002356e9"
+  }
 }
