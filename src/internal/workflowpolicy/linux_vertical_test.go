@@ -93,7 +93,12 @@ func TestValidationKeepsReadOnlyCeilingAndNativeLinuxSubgraph(t *testing.T) {
 	if mode.Default != "validation" || len(workflow.On.OtherEvents) != 0 {
 		t.Fatal("the pilot must default to manual validation")
 	}
-	for name, job := range workflow.Jobs {
+	validationJobs := []string{"prepare", "verify-linux", "verify-platforms", "validation", "result"}
+	for _, producer := range fullValidationProducers() {
+		validationJobs = append(validationJobs, producer.job)
+	}
+	for _, name := range validationJobs {
+		job := mustJob(t, workflow, name)
 		if job.Uses != "" || job.Environment != nil || job.ContinueOnError == true {
 			t.Fatalf("%s must remain an ordinary blocking job under the read-only ceiling", name)
 		}
@@ -140,7 +145,9 @@ func TestValidationKeepsReadOnlyCeilingAndNativeLinuxSubgraph(t *testing.T) {
 		}
 	}
 	prepare := mustJob(t, workflow, "prepare")
-	mustContain(t, mustStepNamed(t, prepare, "Bind source and canonical manifest").Run, `test "$MODE" = validation`)
+	bind := mustStepNamed(t, prepare, "Bind source and canonical manifest")
+	mustContain(t, bind.Run, `case "$MODE" in`)
+	mustContain(t, bind.Run, `validation) ;;`)
 	verify := mustJob(t, workflow, "verify-linux")
 	if verify.If != "${{ always() }}" {
 		t.Fatal("validation must reject a failed, skipped or cancelled producer")
@@ -152,14 +159,14 @@ func TestValidationKeepsReadOnlyCeilingAndNativeLinuxSubgraph(t *testing.T) {
 func TestLinuxUnsignedOwnerDispatchVerifiesArtifactsBeforeSigning(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-linux.yml")
 	verify := mustJob(t, workflow, "verify-linux")
-	if workflow.On.WorkflowDispatch.Inputs["publish_release"].Default != false || len(workflow.On.OtherEvents) != 0 {
+	if workflow.On.WorkflowDispatch.Inputs["publish_release"].Default != false || len(workflow.On.OtherEvents) != 1 || workflow.On.OtherEvents["workflow_call"] == nil {
 		t.Fatal("the registered Linux owner must retain its default unsigned manual dispatch")
 	}
-	if verify.If != "${{ always() }}" || fmt.Sprint(verify.Needs) != "[prepare build-amd64 build-arm64]" {
+	if verify.If != "${{ always() && "+linuxDirectInvocation+" }}" || fmt.Sprint(verify.Needs) != "[prepare build-amd64 build-arm64]" {
 		t.Fatal("unsigned dispatch must run the verifier and reject failed, skipped or cancelled producers")
 	}
 	coordinator := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/release.yml"), "verify-linux")
-	if coordinator.If != verify.If || !reflect.DeepEqual(coordinator.Needs, verify.Needs) ||
+	if coordinator.If != "${{ always() }}" || !reflect.DeepEqual(coordinator.Needs, verify.Needs) ||
 		coordinator.RunsOn != verify.RunsOn || coordinator.TimeoutMinutes != verify.TimeoutMinutes || !reflect.DeepEqual(coordinator.Env, verify.Env) {
 		t.Fatal("the owner and coordinator must retain the same Linux artifact source and execution boundary")
 	}
@@ -178,7 +185,7 @@ func TestLinuxUnsignedOwnerDispatchVerifiesArtifactsBeforeSigning(t *testing.T) 
 	if fmt.Sprint(release.Needs) != "[prepare build-amd64 build-arm64 verify-linux]" {
 		t.Fatal("Linux signing must require successful read-only artifact verification")
 	}
-	if release.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}" {
+	if release.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && "+linuxDirectInvocation+" }}" {
 		t.Fatal("artifact validation must not relax the existing main-branch publication guard")
 	}
 }

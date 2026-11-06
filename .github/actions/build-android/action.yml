@@ -25,6 +25,12 @@ outputs:
   signing-input-id:
     description: Existing unsigned APK signing-input bundle ID.
     value: ${{ steps.upload-unsigned.outputs.artifact-id }}
+  signing-input-digest:
+    description: Official ZIP digest of the unsigned APK signing carrier.
+    value: ${{ steps.upload-unsigned.outputs.artifact-digest }}
+  signing-input-attempt:
+    description: Producing attempt of that immutable signing carrier.
+    value: ${{ steps.source.outputs.run-attempt }}
   manifest-sha256:
     description: Existing signing-input manifest digest.
     value: ${{ steps.prepare-unsigned.outputs.manifest-sha256 }}

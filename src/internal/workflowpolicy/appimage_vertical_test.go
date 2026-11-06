@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
+	"slices"
 	"testing"
 
 	"go.yaml.in/yaml/v3"
@@ -43,11 +43,56 @@ func TestAppImageSharedBuildPreservesProductionStepsAndSigningBoundary(t *testin
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantBuild {
 		t.Fatalf("unsigned AppImage production steps changed: %s, want %s", got, wantBuild)
 	}
-	owner := mustReadRepoFile(t, ".github/workflows/build-appimage.yml")
-	start := strings.Index(owner, "    - name: Prepare signing input\n")
-	const wantSigning = "029b56c5f3df455b5018e6f51e5d537fbc3e1f480d7ddb460a0a405e45b732e0"
-	if start < 0 || fmt.Sprintf("%x", sha256.Sum256([]byte(owner[start:]))) != wantSigning {
-		t.Fatal("AppDir handoff, signing or release publication changed during unsigned extraction")
+	prepare := mustCompositeStepNamed(t, mustReadCompositeActionDoc(t, ".github/actions/build-appimage/action.yml"), "Prepare signing input")
+	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(prepare.Run))); got != "a9ebdcb2572d44bf3a3b1b6a8ed1387ebc09cc8fb8c7c4789751e17b7fd226d8" {
+		t.Fatal("the moved AppDir tar/hash producer changed")
+	}
+	var owner struct {
+		Jobs map[string]struct{ Steps []map[string]any }
+	}
+	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/workflows/build-appimage.yml")), &owner); err != nil {
+		t.Fatal(err)
+	}
+	// Original 3b0851a native recipes stay frozen independently of the reusable routing.
+	for _, recipe := range []struct {
+		job   string
+		names []string
+		want  string
+	}{
+		{"sign", []string{"Check and extract signing input", "Install packaging dependencies", "Fetch and verify AppImage tooling", "Import GPG signing key", "Build signed AppImage", "Remove production signing key", "Verify AppImage signature", "Smoke test AppImage"}, "79c3ecd0d0e84480aa69dd5b591a16af16eb7049184385f1e9094bbefac3786c"},
+		{"release", []string{"Get version tag", "Sign and attest artifacts", "Generate release notes", "Stage release assets"}, "9ef0b33106724f81330a6791c46dfbc2b2b6b8db2eaf3fa1cbb8e6dea86cc813"},
+	} {
+		var selected []map[string]any
+		for _, step := range owner.Jobs[recipe.job].Steps {
+			name, _ := step["name"].(string)
+			if !slices.Contains(recipe.names, name) {
+				continue
+			}
+			if recipe.job == "sign" && name != "Remove production signing key" {
+				if step["if"] != "${{ ("+appimageDirectInvocation+") || steps.inventory.outputs.state == 'missing' }}" {
+					t.Fatalf("native AppImage %s lost direct/fresh-signing gating", name)
+				}
+				delete(step, "if")
+				if name == "Check and extract signing input" {
+					env := step["env"].(map[string]any)
+					if env["EXPECTED_SHA256"] != "${{ inputs.signing_input_sha256 || needs.build.outputs.signing-input-sha256 }}" {
+						t.Fatal("AppDir tar hash must remain source-bound for both invocations")
+					}
+					env["EXPECTED_SHA256"] = "${{ needs.build.outputs.signing-input-sha256 }}"
+				}
+			}
+			selected = append(selected, step)
+		}
+		if len(selected) != len(recipe.names) {
+			t.Fatalf("missing or duplicate native AppImage %s steps", recipe.job)
+		}
+		data, err := json.Marshal(selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != recipe.want {
+			t.Fatalf("native AppImage %s recipe changed: %s", recipe.job, got)
+		}
 	}
 }
 
@@ -75,10 +120,12 @@ func TestAppImageSharedBuildExportsSourceBoundImmutableArtifact(t *testing.T) {
 		}
 	}
 	if !reflect.DeepEqual(build.Outputs, map[string]string{
-		"signing-input-id":     "${{ steps.signing-input.outputs.artifact-id }}",
-		"signing-input-sha256": "${{ steps.prepare-signing-input.outputs.sha256 }}",
+		"signing-input-id":      "${{ steps.build.outputs.signing-input-id }}",
+		"signing-input-sha256":  "${{ steps.build.outputs.signing-input-sha256 }}",
+		"signing-input-digest":  "${{ steps.build.outputs.signing-input-digest }}",
+		"signing-input-attempt": "${{ steps.build.outputs.signing-input-attempt }}",
 	}) {
-		t.Fatal("unsigned extraction must preserve the existing signing input outputs")
+		t.Fatal("direct owner must export the real composite signing tuple and tar hash")
 	}
 	action := mustReadCompositeActionDoc(t, ".github/actions/build-appimage/action.yml")
 	source := mustCompositeStepNamed(t, action, "Assert prepared AppImage source")
@@ -95,8 +142,8 @@ func TestAppImageSharedBuildExportsSourceBoundImmutableArtifact(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/actions/build-appimage/action.yml")), &outputs); err != nil {
 		t.Fatal(err)
 	}
-	if len(outputs.Outputs) != 3 {
-		t.Fatal("shared AppImage outputs must be limited to the real artifact ID, ZIP digest and attempt")
+	if len(outputs.Outputs) != 7 {
+		t.Fatal("shared AppImage outputs must contain the canonical tuple plus separate signing tuple and tar hash")
 	}
 	for _, name := range []string{"artifact-id", "artifact-digest"} {
 		if outputs.Outputs[name].Value != "${{ steps.upload.outputs."+name+" }}" {
@@ -105,6 +152,11 @@ func TestAppImageSharedBuildExportsSourceBoundImmutableArtifact(t *testing.T) {
 	}
 	if outputs.Outputs["run-attempt"].Value != "${{ steps.source.outputs.run-attempt }}" {
 		t.Fatal("AppImage artifact attempt must identify the actual producer")
+	}
+	for name, value := range map[string]string{"signing-input-id": "${{ steps.signing-input.outputs.artifact-id }}", "signing-input-digest": "${{ steps.signing-input.outputs.artifact-digest }}", "signing-input-sha256": "${{ steps.prepare-signing-input.outputs.sha256 }}", "signing-input-attempt": "${{ steps.signing-input.outputs.artifact-id && steps.source.outputs.run-attempt || '' }}"} {
+		if outputs.Outputs[name].Value != value {
+			t.Fatalf("signing output %s must identify its actual producer", name)
+		}
 	}
 	upload := mustCompositeStepNamed(t, action, "Upload artifacts")
 	if upload.ID != "upload" || upload.With["name"] != "validate-appimage-amd64-attempt-${{ github.run_attempt }}" ||

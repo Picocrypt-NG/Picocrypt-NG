@@ -74,6 +74,7 @@ jobs:
         set -euo pipefail
         cd src
         if [ "${{ matrix.arch }}" = "amd64" ]; then
+          [[ $SHARD_INDEX == 0 || $SHARD_INDEX == 1 ]]
           packages=$(CGO_ENABLED=1 go list -race -tags migrated_fynedo ./... | LC_ALL=C sort)
           if [ -z "$packages" ]; then
             echo "No native Linux packages discovered"
@@ -82,7 +83,11 @@ jobs:
           selected=()
           index=0
           while IFS= read -r package; do
-            if (( index % 2 == SHARD_INDEX )); then
+            if [ "$package" = "Picocrypt-NG/internal/cli" ]; then
+              if (( SHARD_INDEX == 0 )); then
+                selected+=("$package")
+              fi
+            elif (( index % 2 == SHARD_INDEX )); then
               selected+=("$package")
             fi
             index=$((index + 1))

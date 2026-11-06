@@ -71,7 +71,8 @@ func TestReleaseBuildsValidateRequestsBeforeDependencies(t *testing.T) {
 			if len(build.Steps) < 2 || !strings.HasPrefix(build.Steps[0].Uses, "actions/checkout@") || build.Steps[1].Name != check.Name {
 				t.Fatal("release requests must be checked immediately after checkout, before dependencies or builds")
 			}
-			if build.If != "" || (build.ContinueOnError != nil && build.ContinueOnError != false) ||
+			wantIf := "${{ github.workflow_ref == format('{0}/.github/workflows/" + tc.name + ".yml@{1}', github.repository, github.ref) }}"
+			if build.If != wantIf || (build.ContinueOnError != nil && build.ContinueOnError != false) ||
 				check.If != "" || (check.ContinueOnError != nil && check.ContinueOnError != false) {
 				t.Fatal("invalid release requests must fail the build unconditionally")
 			}
@@ -88,6 +89,9 @@ func TestReleaseBuildsValidateRequestsBeforeDependencies(t *testing.T) {
 			if tc.signpath {
 				expected["SIGNPATH_TEST"] = "${{ inputs.signpath_test }}"
 				expected["SIGNPATH_RELEASE_DRY_RUN"] = "${{ inputs.signpath_release_dry_run }}"
+			}
+			if len(check.Env) != len(expected) {
+				t.Fatal("release request guard must retain exactly the declared input bindings")
 			}
 			for name, expression := range expected {
 				if check.Env[name] != expression {

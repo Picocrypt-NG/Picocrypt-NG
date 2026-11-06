@@ -5,6 +5,33 @@ import (
 	"testing"
 )
 
+// Release packaging must use the same complete, memory-bounded native lane as PRs.
+func TestMacOSReleaseUsesCompleteNativeLaneBeforePackaging(t *testing.T) {
+	pr := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-macos.yml"), "pr-test-build-macos")
+	action := mustReadCompositeActionDoc(t, ".github/actions/build-macos/action.yml")
+	for _, name := range []string{"Run native test suite", "Run tests"} {
+		want := mustStepNamed(t, pr, name)
+		want.Shell = "bash"
+		want.Env = map[string]string{"CGO_ENABLED": "1"}
+		if name == "Run native test suite" {
+			want.Env["SHARD_INDEX"] = "0"
+			want.Env["SHARD_COUNT"] = "1"
+		}
+		got := mustCompositeStepNamed(t, action, name)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s must preserve the complete PR native/race/CLI lane and blocking outcome: got %+v, want %+v", name, got, want)
+		}
+	}
+	mustContainInOrder(t, mustReadRepoFile(t, ".github/actions/build-macos/action.yml"),
+		"- name: Run native test suite",
+		"- name: Run tests",
+		"- name: Build GUI",
+		"- name: Build CLI-only (no graphics dependencies)",
+		"- name: Package as .app in a .dmg",
+		"- name: Upload artifacts",
+	)
+}
+
 func TestMacOSPRUsesOneRunnerForFullNativeSuiteAndPackaging(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-macos.yml")
 	if len(workflow.Jobs) != 1 {

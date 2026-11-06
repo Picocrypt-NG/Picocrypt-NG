@@ -11,6 +11,10 @@ inputs:
   manifest-digest:
     description: SHA-256 of the canonical release ownership manifest.
     required: true
+  retain-signing-input:
+    description: Retain the AppDir tar only when production signing is requested.
+    required: false
+    default: "false"
 
 outputs:
   artifact-id:
@@ -22,6 +26,18 @@ outputs:
   run-attempt:
     description: Attempt that created these exact bytes.
     value: ${{ steps.source.outputs.run-attempt }}
+  signing-input-id:
+    description: Immutable AppDir signing carrier ID from the official uploader.
+    value: ${{ steps.signing-input.outputs.artifact-id }}
+  signing-input-digest:
+    description: Official ZIP digest, separate from the inner AppDir tar hash.
+    value: ${{ steps.signing-input.outputs.artifact-digest }}
+  signing-input-sha256:
+    description: SHA-256 of the exact inner AppDir tar consumed by the signer.
+    value: ${{ steps.prepare-signing-input.outputs.sha256 }}
+  signing-input-attempt:
+    description: Producing attempt, only when a signing carrier was retained.
+    value: ${{ steps.signing-input.outputs.artifact-id && steps.source.outputs.run-attempt || '' }}
 
 runs:
   using: composite
@@ -30,11 +46,16 @@ runs:
       id: source
       shell: bash
       env:
+        RETAIN_SIGNING_INPUT: ${{ inputs.retain-signing-input }}
         SOURCE_SHA: ${{ inputs.source-sha }}
         SOURCE_VERSION: ${{ inputs.version }}
         CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
       run: |
         set -euo pipefail
+        case "$RETAIN_SIGNING_INPUT" in
+          true|false) ;;
+          *) echo 'retain-signing-input must be true or false' >&2; exit 1 ;;
+        esac
         test "$SOURCE_SHA" = "$GITHUB_SHA"
         test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
         test "$(cat VERSION)" = "$SOURCE_VERSION"
@@ -181,6 +202,27 @@ runs:
         name: validate-appimage-amd64-attempt-${{ github.run_attempt }}
         # AppImage is already squashfs-compressed; re-zipping it gains nothing.
         path: out/*
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+        overwrite: false
+
+    - name: Prepare signing input
+      if: ${{ inputs.retain-signing-input == 'true' }}
+      id: prepare-signing-input
+      shell: bash
+      run: |
+        tar --create --file AppDir.tar AppDir
+        DIGEST=$(sha256sum < AppDir.tar)
+        echo "sha256=${DIGEST%% *}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload signing input
+      if: ${{ inputs.retain-signing-input == 'true' }}
+      id: signing-input
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: appimage-signing-input-attempt-${{ github.run_attempt }}
+        path: AppDir.tar
         if-no-files-found: error
         compression-level: 0
         retention-days: 7

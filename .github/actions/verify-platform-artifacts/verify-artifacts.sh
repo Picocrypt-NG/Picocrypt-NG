@@ -8,24 +8,29 @@ esac
 
 test "$SOURCE_SHA" = "$GITHUB_SHA"
 test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-test "$(cat VERSION)" = "$SOURCE_VERSION"
+version=$(cat VERSION)
+test "${version%$'\r'}" = "$SOURCE_VERSION"
 canonical=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION")
 actual=$(printf '%s\n' "$canonical" | sha256sum)
 test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
 [[ $GITHUB_RUN_ID =~ ^[1-9][0-9]*$ && $GITHUB_RUN_ATTEMPT =~ ^[1-9][0-9]*$ ]]
 : "${PLATFORM_MANIFEST:?Set PLATFORM_MANIFEST to the final platform-artifacts.json path}"
 
-jq -e --argjson current_attempt "$GITHUB_RUN_ATTEMPT" --argjson arches \
-    '{"build-appimage.yml":"amd64","build-snapcraft.yml":"amd64","build-macos.yml":"arm64",
-      "build-android.yml":"all","build-windows.yml":"amd64","build-windows-legacy.yml":"amd64"}' '
-    type == "array" and length == 6
+arches='{"build-appimage.yml":"amd64","build-snapcraft.yml":"amd64","build-macos.yml":"arm64",
+    "build-android.yml":"all","build-windows.yml":"amd64","build-windows-legacy.yml":"amd64"}'
+if [[ -n ${PLATFORM_OWNER:-} ]]; then
+    arches=$(jq -ce --arg owner "$PLATFORM_OWNER" \
+        'if has($owner) then {($owner):.[$owner]} else error("unknown platform owner") end' <<< "$arches")
+fi
+jq -e --argjson current_attempt "$GITHUB_RUN_ATTEMPT" --argjson arches "$arches" '
+    type == "array" and length == ($arches|length)
       and all(.[]; type == "object" and keys == ["arch","attempt","digest","id","owner"]
         and (.owner|type == "string") and (.arch|type == "string")
         and (.id|type == "number" and . > 0 and floor == .)
         and (.attempt|type == "number" and . > 0 and floor == .)
         and (.digest|type == "string" and test("^[0-9a-f]{64}$")))
       and ([.[].owner]|sort) == ($arches|keys)
-      and ([.[].id]|unique|length) == 6
+      and ([.[].id]|unique|length) == ($arches|length)
       and all(.[]; .arch == $arches[.owner] and .attempt <= $current_attempt)
     ' <<< "$PLATFORM_ARTIFACTS_JSON" >/dev/null
 descriptors=$(jq -c 'sort_by(.owner)' <<< "$PLATFORM_ARTIFACTS_JSON")
@@ -89,7 +94,8 @@ case "$1" in
         files=$(while IFS=$'\t' read -r owner arch _id _digest attempt; do
             verify_payload "$owner" "$arch" "$attempt" || exit 1
         done <<< "$rows" | jq -sc 'sort_by(.name)')
-        jq -e 'length == 14 and ([.[].name]|unique|length) == 14' <<< "$files" >/dev/null
+        expected_count=$(awk -v owner="${PLATFORM_OWNER:-}" '$2 != "build-linux.yml" && (owner == "" || $2 == owner) {count++} END {print count+0}' <<< "$canonical")
+        jq -e --argjson count "$expected_count" 'length == $count and ([.[].name]|unique|length) == $count' <<< "$files" >/dev/null
         artifacts=$(jq -c 'map({owner,arch,id,zip_sha256:.digest,run_attempt:.attempt})' <<< "$descriptors")
         temporary=$(mktemp "$PLATFORM_MANIFEST.XXXXXX")
         trap 'rm -f -- "$temporary"' EXIT
