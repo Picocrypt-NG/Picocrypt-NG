@@ -8,6 +8,17 @@ updates:
     directory: "android/"
     schedule:
       interval: "daily"
+    groups:
+      android-test-patches:
+        applies-to: version-updates
+        patterns:
+          - "junit:junit"
+          - "io.mockk:mockk"
+          - "androidx.arch.core:core-testing"
+          - "androidx.test.ext:junit"
+          - "androidx.test.espresso:espresso-core"
+        update-types:
+          - "patch"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
