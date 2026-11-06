@@ -5,20 +5,27 @@ import (
 	"testing"
 )
 
-func TestMacOSPRCapacityLimitKeepsNativeDiscovery(t *testing.T) {
+func TestMacOSPRUsesOneRunnerForFullNativeSuiteAndPackaging(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-macos.yml")
-	tests := mustJob(t, workflow, "pcv3-tests")
-	if tests.Strategy.MaxParallel != 1 || !reflect.DeepEqual(tests.Strategy.Matrix.Group, []int{1, 2}) {
-		t.Fatal("macOS PR tests must use two shards with one runner at a time")
+	if len(workflow.Jobs) != 1 {
+		t.Fatalf("macOS PR must require one runner acquisition, got %d jobs", len(workflow.Jobs))
 	}
-	if tests.RunsOn != "macos-15" || tests.Env["CGO_ENABLED"] != "1" {
-		t.Fatal("runner capacity limits must preserve native macOS ARM64 CGO execution")
+	job := mustJob(t, workflow, "pr-test-build-macos")
+	if job.RunsOn != "macos-15" || job.Env["CGO_ENABLED"] != "1" {
+		t.Fatal("capacity changes must preserve native macOS ARM64 CGO execution")
 	}
-	run := mustStepNamed(t, tests, "Run native test group")
-	if run.Env["SHARD_INDEX"] != "${{ strategy.job-index }}" || run.Env["SHARD_COUNT"] != "${{ strategy.job-total }}" {
-		t.Fatal("native discovery must repartition all parents for the actual matrix size")
+	if job.Needs != nil || job.If != "" || job.ContinueOnError != nil || !reflect.ValueOf(job.Strategy).IsZero() {
+		t.Fatal("the required macOS job must run directly without a matrix or softened result")
+	}
+
+	run := mustStepNamed(t, job, "Run native test suite")
+	if run.Env["SHARD_INDEX"] != "0" || run.Env["SHARD_COUNT"] != "1" {
+		t.Fatal("one native runner must select every dynamically discovered test parent")
 	}
 	if run.Run != "bash .github/scripts/test-macos-pcv3.sh \"$SHARD_INDEX\" \"$SHARD_COUNT\"" {
 		t.Fatal("capacity changes must retain the existing full native discovery runner")
+	}
+	if run.If != "" || run.ContinueOnError != nil {
+		t.Fatal("the full native suite must run by default and fail the required macOS job")
 	}
 }
