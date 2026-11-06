@@ -56,7 +56,7 @@ func TestLinuxArtifactVerifierRejectsSourceArchiveAndPayloadSubstitution(t *test
 		t.Fatal(err)
 	}
 	manifestDigest := fmt.Sprintf("%x", sha256.Sum256(canonical))
-	for _, defect := range []string{"none", "missing ID", "duplicate ID", "wrong ZIP digest", "wrong name", "wrong source", "wrong run", "expired", "wrong payload hash", "missing file", "unexpected file", "symlink", "wrong payload source", "duplicate payload file"} {
+	for _, defect := range []string{"none", "missing ID", "duplicate ID", "wrong ZIP digest", "wrong name", "wrong source", "wrong run", "expired", "wrong payload hash", "missing file", "unexpected file", "symlink", "matching manifest symlink", "matching payload symlink", "wrong payload source", "duplicate payload file"} {
 		t.Run(defect, func(t *testing.T) {
 			dir := t.TempDir()
 			bin := filepath.Join(dir, "bin")
@@ -115,6 +115,29 @@ func TestLinuxArtifactVerifierRejectsSourceArchiveAndPayloadSubstitution(t *test
 								t.Fatal(err)
 							}
 						}
+					case "matching payload symlink":
+						// A later regular file must not hide the first sorted file's rejected link.
+						name := files[0]["name"]
+						for _, candidate := range files[1:] {
+							if candidate["name"] < name {
+								name = candidate["name"]
+							}
+						}
+						file = filepath.Join(payloadDir, name)
+						data, err := os.ReadFile(file)
+						if err != nil {
+							t.Fatal(err)
+						}
+						target := filepath.Join(dir, "matching-payload")
+						if err := os.WriteFile(target, data, 0o600); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Remove(file); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Symlink(target, file); err != nil {
+							t.Fatal(err)
+						}
 					case "unexpected file":
 						if err := os.WriteFile(filepath.Join(payloadDir, "extra"), []byte("extra"), 0o600); err != nil {
 							t.Fatal(err)
@@ -130,6 +153,23 @@ func TestLinuxArtifactVerifierRejectsSourceArchiveAndPayloadSubstitution(t *test
 					"version": version, "canonical_manifest_sha256": manifestDigest, "owner_workflow": "build-linux.yml",
 					"arch": arch, "run_id": "900", "run_attempt": "1", "files": files,
 				})
+				if arch == "amd64" && defect == "matching manifest symlink" {
+					manifest := filepath.Join(payloadDir, "payload-manifest.json")
+					data, err := os.ReadFile(manifest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					target := filepath.Join(dir, "matching-manifest.json")
+					if err := os.WriteFile(target, data, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Remove(manifest); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(target, manifest); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			env := append(os.Environ(), "PATH="+bin+":/usr/bin:/bin:"+os.Getenv("PATH"), "FIXTURE_DIR="+dir,
 				"GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG", "GITHUB_SHA="+source, "GITHUB_RUN_ID=900", "GITHUB_RUN_ATTEMPT=2",

@@ -26,9 +26,9 @@ verify_metadata() {
 verify_payload() {
     local arch=$1 attempt=$2 directory expected actual_names manifest
     directory="$ARTIFACT_ROOT/build-linux-$arch"
-    test -d "$directory" && test ! -L "$directory"
+    test -d "$directory" && test ! -L "$directory" || return 1
     manifest="$directory/payload-manifest.json"
-    test -f "$manifest" && test ! -L "$manifest" && test -s "$manifest"
+    test -f "$manifest" && test ! -L "$manifest" && test -s "$manifest" || return 1
     expected=$(awk -v prefix="artifacts/build-linux-$arch/" '$2 == "build-linux.yml" && index($3,prefix) == 1 {print $1}' <<< "$canonical" | LC_ALL=C sort)
     test -n "$expected"
     jq -e --arg repository "$GITHUB_REPOSITORY" --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" \
@@ -42,7 +42,7 @@ verify_payload() {
     actual_names=$(find "$directory" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
     test "$actual_names" = "$(printf '%s\npayload-manifest.json\n' "$expected" | LC_ALL=C sort)"
     while IFS= read -r name; do
-        test -f "$directory/$name" && test ! -L "$directory/$name" && test -s "$directory/$name"
+        test -f "$directory/$name" && test ! -L "$directory/$name" && test -s "$directory/$name" || return 1
     done <<< "$expected"
     (cd "$directory"; jq -r '.files[] | "\(.sha256)  \(.name)"' payload-manifest.json | sha256sum --check --strict)
 }
