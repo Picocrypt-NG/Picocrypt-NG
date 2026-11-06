@@ -17,10 +17,14 @@ func TestAppImageValidationHasNoSigningOrPublicationAuthority(t *testing.T) {
 		t.Fatalf("unsigned validation can access environment %#v", build.Environment)
 	}
 	mustEffectivePermission(t, workflow, build, "contents", "read")
+	build.Steps = append(build.Steps, mustReadCompositeActionDoc(t, ".github/actions/build-appimage/action.yml").Runs.Steps...)
 	for _, step := range build.Steps {
-		for _, text := range append([]string{step.Run, step.Uses}, appImageEnvValues(step.Env)...) {
+		for index, text := range append([]string{step.Run, step.Uses}, appImageEnvValues(step.Env)...) {
 			for _, forbidden := range []string{"secrets.", "--sign", "sign-and-attest", "stage-release", "signpath"} {
 				if strings.Contains(strings.ToLower(text), forbidden) {
+					if forbidden == "stage-release" && index == 0 && appImageReadsOnlyOwnershipManifest(text) {
+						continue
+					}
 					t.Fatalf("unsigned validation step %q contains %q", step.Name, forbidden)
 				}
 			}
@@ -92,6 +96,47 @@ func TestAppImageProductionTrustPrecedesArtifactPublication(t *testing.T) {
 	}
 	documentation := strings.ReplaceAll(mustReadRepoFile(t, "SIGNING.md"), " ", "")
 	mustContain(t, documentation, manifest.ExpectedFingerprint)
+}
+
+func TestAppImageManifestReadDoesNotPermitPublicationCommands(t *testing.T) {
+	read := `canonical=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION")`
+	gate := `bash .github/actions/stage-release/release-gate.sh upload 3.0`
+	for _, tc := range []struct {
+		name, run string
+		wantRead  bool
+	}{
+		{"canonical read", read, true},
+		{"source digest read", `actual=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)`, true},
+		{"owner digest read", `digest=$(bash .github/actions/stage-release/release-manifest.sh "$version" | sha256sum)`, true},
+		{"gate", gate, false},
+		{"gate appended to read", read + "; " + gate, false},
+		{"gate after read", read + "\n" + gate, false},
+		{"publication action", "./.github/actions/stage-release", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := appImageReadsOnlyOwnershipManifest(tc.run); got != tc.wantRead {
+				t.Fatalf("read-only ownership command = %v, want %v", got, tc.wantRead)
+			}
+		})
+	}
+}
+
+func appImageReadsOnlyOwnershipManifest(run string) bool {
+	read := false
+	for _, line := range strings.Split(run, "\n") {
+		if !strings.Contains(strings.ToLower(line), "stage-release") {
+			continue
+		}
+		switch strings.TrimSpace(line) {
+		case `canonical=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION")`,
+			`actual=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)`,
+			`digest=$(bash .github/actions/stage-release/release-manifest.sh "$version" | sha256sum)`:
+			read = true
+		default:
+			return false
+		}
+	}
+	return read
 }
 
 func appImageEnvValues(env map[string]string) []string {

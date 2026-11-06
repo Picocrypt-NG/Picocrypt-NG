@@ -11,7 +11,7 @@ func TestWindowsNSISConsumersUseVerifiedPortableCompiler(t *testing.T) {
 		{".github/workflows/pr-test-installer-upgrade.yml", "installer-upgrade", "Install NSIS"},
 	} {
 		t.Run(tc.path+"/"+tc.job, func(t *testing.T) {
-			job := mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job)
+			job := windowsBuildPolicyJob(t, tc.path, tc.job)
 			install := mustStepNamed(t, job, tc.install)
 			if install.Shell != "pwsh" || install.ContinueOnError != nil {
 				t.Fatal("NSIS verification errors must fail the workflow")
@@ -34,7 +34,7 @@ func TestWindowsNSISConsumersUseVerifiedPortableCompiler(t *testing.T) {
 		{".github/workflows/build-windows.yml", "sign", "Build NSIS installer from signed components", `& $env:NSIS_EXE`},
 		{".github/workflows/pr-test-build-windows.yml", "pr-test-build-windows", "Build NSIS installer", `& $env:NSIS_EXE`},
 	} {
-		job := mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job)
+		job := windowsBuildPolicyJob(t, tc.path, tc.job)
 		mustContain(t, mustStepNamed(t, job, tc.step).Run, tc.command+" `")
 	}
 	job := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/pr-test-installer-upgrade.yml"), "installer-upgrade")

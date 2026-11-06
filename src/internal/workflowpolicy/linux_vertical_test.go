@@ -84,7 +84,7 @@ func linuxBuildPolicyJob(t *testing.T, path string) workflowJob {
 	return workflowJob{Steps: action.Runs.Steps}
 }
 
-func TestLinuxValidationPilotHasReadOnlyCeilingAndTwoNativeProducers(t *testing.T) {
+func TestValidationKeepsReadOnlyCeilingAndNativeLinuxSubgraph(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/release.yml")
 	if !reflect.DeepEqual(workflow.Permissions, map[string]string{"contents": "read", "actions": "read"}) {
 		t.Fatalf("validation permission ceiling = %#v", workflow.Permissions)
@@ -94,8 +94,13 @@ func TestLinuxValidationPilotHasReadOnlyCeilingAndTwoNativeProducers(t *testing.
 		t.Fatal("the pilot must default to manual validation")
 	}
 	for name, job := range workflow.Jobs {
-		if job.Uses != "" || job.Environment != nil || job.ContinueOnError == true || job.Permissions != nil {
+		if job.Uses != "" || job.Environment != nil || job.ContinueOnError == true {
 			t.Fatalf("%s must remain an ordinary blocking job under the read-only ceiling", name)
+		}
+		for scope, permission := range job.Permissions {
+			if permission != "none" && workflow.Permissions[scope] != permission {
+				t.Fatalf("%s exceeds the read-only permission ceiling for %s", name, scope)
+			}
 		}
 		for _, step := range job.Steps {
 			if strings.Contains(step.Uses, "sign-and-attest") || strings.Contains(step.Uses, "stage-release") || strings.Contains(step.Run, "secrets.") {
@@ -141,7 +146,7 @@ func TestLinuxValidationPilotHasReadOnlyCeilingAndTwoNativeProducers(t *testing.
 		t.Fatal("validation must reject a failed, skipped or cancelled producer")
 	}
 	mustContain(t, mustStepNamed(t, verify, "Require both Linux producers").Run, `[[ "$AMD64_RESULT" == success && "$ARM64_RESULT" == success ]]`)
-	mustContain(t, mustStepNamed(t, verify, "Report Linux pilot scope").Run, "partial Linux pilot")
+	mustContain(t, mustStepNamed(t, verify, "Report Linux validation scope").Run, "Linux primary assets: built 5, verified 5")
 }
 
 func TestLinuxUnsignedOwnerDispatchVerifiesArtifactsBeforeSigning(t *testing.T) {
@@ -154,9 +159,20 @@ func TestLinuxUnsignedOwnerDispatchVerifiesArtifactsBeforeSigning(t *testing.T) 
 		t.Fatal("unsigned dispatch must run the verifier and reject failed, skipped or cancelled producers")
 	}
 	coordinator := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/release.yml"), "verify-linux")
-	coordinator.Permissions = map[string]string{"contents": "read", "actions": "read"}
-	if !reflect.DeepEqual(verify, coordinator) {
-		t.Fatal("the registered owner must exercise the same ordinary read-only artifact consumer as the coordinator")
+	if coordinator.If != verify.If || !reflect.DeepEqual(coordinator.Needs, verify.Needs) ||
+		coordinator.RunsOn != verify.RunsOn || coordinator.TimeoutMinutes != verify.TimeoutMinutes || !reflect.DeepEqual(coordinator.Env, verify.Env) {
+		t.Fatal("the owner and coordinator must retain the same Linux artifact source and execution boundary")
+	}
+	if !reflect.DeepEqual(mustHaveStepUsingPrefix(t, verify, "actions/checkout@"), mustHaveStepUsingPrefix(t, coordinator, "actions/checkout@")) {
+		t.Fatal("the owner and coordinator must retain the same source-pinned Linux verifier checkout")
+	}
+	for _, name := range []string{
+		"Require both Linux producers", "Setup pinned GitHub CLI", "Verify immutable Linux artifact metadata",
+		"Download Linux AMD64 artifact", "Download Linux ARM64 artifact", "Verify Linux payload manifests",
+	} {
+		if !reflect.DeepEqual(mustStepNamed(t, verify, name), mustStepNamed(t, coordinator, name)) {
+			t.Fatalf("%s must execute identically in the owner and coordinator", name)
+		}
 	}
 	release := mustJob(t, workflow, "release")
 	if fmt.Sprint(release.Needs) != "[prepare build-amd64 build-arm64 verify-linux]" {

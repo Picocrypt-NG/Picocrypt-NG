@@ -22,6 +22,8 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
+    outputs:
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
 
     steps:
     - name: Checkout repository
@@ -37,47 +39,29 @@ jobs:
         SOURCE_EVENT: ${{ github.event_name }}
       run: bash .github/scripts/validate-release-request.sh
 
-    - name: Copy Snapcraft files to source
-      run: |
-        cp -r dist/snapcraft/* src/
-        mkdir -p src/dist/mime
-        cp dist/mime/application-x-pcv.xml src/dist/mime/
-        cp -r images src/
-
-    - name: Fix permissions
-      run: |
-        chmod -R a+rX src
-
-    - name: List contents of src
-      run: |
-        ls -l src
-        ls -l src/snapcraft.yaml || echo "snapcraft.yaml not found"
-
-    - name: Snapcraft
-      uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
-      with:
-        path: src
-
-    - name: Prepare artifacts
-      run: |
-        mkdir -p out
-        mv src/*.snap out/
-
-    - name: Smoke-test snap command
+    - name: Bind Snap source and canonical manifest
+      id: source
+      shell: bash
       env:
-        LANG: C.UTF-8
-        LC_ALL: C.UTF-8
+        SOURCE_SHA: ${{ github.sha }}
       run: |
-        sudo snap install --dangerous out/*.snap
-        snap run picocrypt-ng --version
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$version" | sha256sum)
+        {
+          echo "source-sha=$SOURCE_SHA"
+          echo "version=$version"
+          echo "manifest-digest=${digest%% *}"
+        } >> "$GITHUB_OUTPUT"
 
-    - name: Upload .snap artifacts
-      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+    - name: Build unsigned Snap artifact
+      id: build
+      uses: ./.github/actions/build-snapcraft
       with:
-        name: build-snapcraft
-        path: out/*.snap
-        if-no-files-found: error
-        compression-level: 9
+        source-sha: ${{ steps.source.outputs.source-sha }}
+        version: ${{ steps.source.outputs.version }}
+        manifest-digest: ${{ steps.source.outputs.manifest-digest }}
 
   release:
     needs: build-snapcraft
@@ -98,8 +82,10 @@ jobs:
     - name: Download .snap artifacts
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
-        name: build-snapcraft
+        artifact-ids: ${{ needs.build-snapcraft.outputs.artifact-id }}
         path: out
+        merge-multiple: true
+        digest-mismatch: error
 
     - name: Get version tag
       run: |

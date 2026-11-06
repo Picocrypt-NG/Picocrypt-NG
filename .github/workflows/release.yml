@@ -1,4 +1,4 @@
-name: release-validation-linux-pilot
+name: release-validation
 
 permissions:
   contents: read
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Partial Linux validation pilot; other platforms and publish mode are not implemented."
+        description: "Validate all 19 canonical primary assets without production signing or publication."
         required: false
         type: choice
         options:
@@ -107,11 +107,171 @@ jobs:
         version: ${{ needs.prepare.outputs.version }}
         manifest-digest: ${{ needs.prepare.outputs.manifest-digest }}
 
+  build-appimage:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
+      artifact-digest: ${{ steps.build.outputs.artifact-digest }}
+      run-attempt: ${{ steps.build.outputs.run-attempt }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Build native AppImage validation artifacts
+      id: build
+      uses: ./.github/actions/build-appimage
+      with:
+        source-sha: ${{ needs.prepare.outputs.source-sha }}
+        version: ${{ needs.prepare.outputs.version }}
+        manifest-digest: ${{ needs.prepare.outputs.manifest-digest }}
+
+  build-snapcraft:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
+      artifact-digest: ${{ steps.build.outputs.artifact-digest }}
+      run-attempt: ${{ steps.build.outputs.run-attempt }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Build native Snap validation artifacts
+      id: build
+      uses: ./.github/actions/build-snapcraft
+      with:
+        source-sha: ${{ needs.prepare.outputs.source-sha }}
+        version: ${{ needs.prepare.outputs.version }}
+        manifest-digest: ${{ needs.prepare.outputs.manifest-digest }}
+
+  build-macos:
+    needs: prepare
+    runs-on: macos-26
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
+      artifact-digest: ${{ steps.build.outputs.artifact-digest }}
+      run-attempt: ${{ steps.build.outputs.run-attempt }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      CGO_CFLAGS: "-mmacosx-version-min=15.0"
+      CGO_LDFLAGS: "-mmacosx-version-min=15.0"
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Build native macOS validation artifacts
+      id: build
+      uses: ./.github/actions/build-macos
+      with:
+        source-sha: ${{ needs.prepare.outputs.source-sha }}
+        version: ${{ needs.prepare.outputs.version }}
+        manifest-digest: ${{ needs.prepare.outputs.manifest-digest }}
+
+  build-android:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
+      artifact-digest: ${{ steps.build.outputs.artifact-digest }}
+      run-attempt: ${{ steps.build.outputs.run-attempt }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Build native Android validation artifacts
+      id: build
+      uses: ./.github/actions/build-android
+      with:
+        source-sha: ${{ needs.prepare.outputs.source-sha }}
+        version: ${{ needs.prepare.outputs.version }}
+        manifest-digest: ${{ needs.prepare.outputs.manifest-digest }}
+
+  build-windows:
+    needs: prepare
+    runs-on: windows-2025
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
+      artifact-digest: ${{ steps.build.outputs.artifact-digest }}
+      run-attempt: ${{ steps.build.outputs.run-attempt }}
+    env:
+      RESHACKER_SHA256: b611be2f35cb44efd1c29df03e7ebe62bd556a500585680e1afa5e073eaf1756
+      UPX_SHA256: eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Build native Windows current validation artifacts
+      id: build
+      uses: ./.github/actions/build-windows
+      with:
+        source-sha: ${{ needs.prepare.outputs.source-sha }}
+        version: ${{ needs.prepare.outputs.version }}
+        manifest-digest: ${{ needs.prepare.outputs.manifest-digest }}
+
+  build-windows-legacy:
+    needs: prepare
+    runs-on: windows-2022
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
+      artifact-digest: ${{ steps.build.outputs.artifact-digest }}
+      run-attempt: ${{ steps.build.outputs.run-attempt }}
+    env:
+      GOTOOLCHAIN: local
+      GOAMD64: v1
+      GOEXPERIMENT: ""
+      UPX_SHA256: eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Build native Windows legacy validation artifacts
+      id: build
+      uses: ./.github/actions/build-windows-legacy
+      with:
+        source-sha: ${{ needs.prepare.outputs.source-sha }}
+        version: ${{ needs.prepare.outputs.version }}
+        manifest-digest: ${{ needs.prepare.outputs.manifest-digest }}
+
   verify-linux:
     needs: [prepare, build-amd64, build-arm64]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+      run-attempt: ${{ steps.report.outputs.run-attempt }}
     env:
       SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
       SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
@@ -168,7 +328,24 @@ jobs:
       shell: bash
       run: bash .github/actions/build-linux/verify-artifacts.sh payload
 
+    - name: Record verified Linux file inventory
+      id: report
+      shell: bash
+      run: |
+        set -euo pipefail
+        files=$(jq -nc --slurpfile amd64 "$ARTIFACT_ROOT/build-linux-amd64/payload-manifest.json" \
+          --slurpfile arm64 "$ARTIFACT_ROOT/build-linux-arm64/payload-manifest.json" \
+          '[$amd64[0].files[] | {name,sha256,owner:"build-linux.yml",path:("artifacts/build-linux-amd64/" + .name)}]
+            + [$arm64[0].files[] | {name,sha256,owner:"build-linux.yml",path:("artifacts/build-linux-arm64/" + .name)}] | sort_by(.name)')
+        jq -e 'length == 5 and ([.[].name]|unique|length) == 5' <<< "$files" >/dev/null
+        temporary=$(mktemp "$LINUX_MANIFEST.XXXXXX")
+        trap 'rm -f -- "$temporary"' EXIT
+        jq --argjson files "$files" '. + {files:$files}' "$LINUX_MANIFEST" > "$temporary"
+        mv -- "$temporary" "$LINUX_MANIFEST"
+        echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
     - name: Upload Linux verification manifest
+      id: upload
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: linux-validation-attempt-${{ github.run_attempt }}
@@ -177,13 +354,278 @@ jobs:
         retention-days: 7
         overwrite: false
 
-    - name: Report Linux pilot scope
+    - name: Report Linux validation scope
+      shell: bash
+      run: |
+        echo 'Linux primary assets: built 5, verified 5; production signing not requested.' >> "$GITHUB_STEP_SUMMARY"
+        echo 'The complete 19-asset result is reported by the final validation gate.' >> "$GITHUB_STEP_SUMMARY"
+
+  verify-platforms:
+    needs: [prepare, build-appimage, build-snapcraft, build-macos, build-android, build-windows, build-windows-legacy]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+      run-attempt: ${{ steps.payload.outputs.run-attempt }}
+    env:
+      SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+      SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
+      CANONICAL_MANIFEST_SHA256: ${{ needs.prepare.outputs.manifest-digest }}
+      ARTIFACT_ROOT: artifacts
+      PLATFORM_MANIFEST: ${{ github.workspace }}/platform-artifacts.json
+      PLATFORM_ARTIFACTS_JSON: >-
+        [
+          {"owner":"build-appimage.yml","arch":"amd64","id":${{ needs.build-appimage.outputs.artifact-id }},"digest":"${{ needs.build-appimage.outputs.artifact-digest }}","attempt":${{ needs.build-appimage.outputs.run-attempt }}},
+          {"owner":"build-snapcraft.yml","arch":"amd64","id":${{ needs.build-snapcraft.outputs.artifact-id }},"digest":"${{ needs.build-snapcraft.outputs.artifact-digest }}","attempt":${{ needs.build-snapcraft.outputs.run-attempt }}},
+          {"owner":"build-macos.yml","arch":"arm64","id":${{ needs.build-macos.outputs.artifact-id }},"digest":"${{ needs.build-macos.outputs.artifact-digest }}","attempt":${{ needs.build-macos.outputs.run-attempt }}},
+          {"owner":"build-android.yml","arch":"all","id":${{ needs.build-android.outputs.artifact-id }},"digest":"${{ needs.build-android.outputs.artifact-digest }}","attempt":${{ needs.build-android.outputs.run-attempt }}},
+          {"owner":"build-windows.yml","arch":"amd64","id":${{ needs.build-windows.outputs.artifact-id }},"digest":"${{ needs.build-windows.outputs.artifact-digest }}","attempt":${{ needs.build-windows.outputs.run-attempt }}},
+          {"owner":"build-windows-legacy.yml","arch":"amd64","id":${{ needs.build-windows-legacy.outputs.artifact-id }},"digest":"${{ needs.build-windows-legacy.outputs.artifact-digest }}","attempt":${{ needs.build-windows-legacy.outputs.run-attempt }}}
+        ]
+    steps:
+    - name: Require all platform producers
+      shell: bash
+      env:
+        PREPARE_RESULT: ${{ needs.prepare.result }}
+        APPIMAGE_RESULT: ${{ needs.build-appimage.result }}
+        SNAP_RESULT: ${{ needs.build-snapcraft.result }}
+        MACOS_RESULT: ${{ needs.build-macos.result }}
+        ANDROID_RESULT: ${{ needs.build-android.result }}
+        WINDOWS_RESULT: ${{ needs.build-windows.result }}
+        LEGACY_RESULT: ${{ needs.build-windows-legacy.result }}
+      run: |
+        set -euo pipefail
+        [[ "$PREPARE_RESULT" == success && "$APPIMAGE_RESULT" == success && "$SNAP_RESULT" == success &&
+           "$MACOS_RESULT" == success && "$ANDROID_RESULT" == success && "$WINDOWS_RESULT" == success && "$LEGACY_RESULT" == success ]]
+
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+
+    - name: Verify immutable platform artifact metadata
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/verify-platform-artifacts/verify-artifacts.sh metadata
+
+    - name: Download AppImage artifact
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.build-appimage.outputs.artifact-id }}
+        path: artifacts/build-appimage
+        merge-multiple: true
+        digest-mismatch: error
+
+    - name: Download Snap artifact
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.build-snapcraft.outputs.artifact-id }}
+        path: artifacts/build-snapcraft
+        merge-multiple: true
+        digest-mismatch: error
+
+    - name: Download macOS artifact
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.build-macos.outputs.artifact-id }}
+        path: artifacts/build-macos
+        merge-multiple: true
+        digest-mismatch: error
+
+    - name: Download Android artifact
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.build-android.outputs.artifact-id }}
+        path: artifacts/build-android
+        merge-multiple: true
+        digest-mismatch: error
+
+    - name: Download Windows current artifact
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.build-windows.outputs.artifact-id }}
+        path: artifacts/build-windows
+        merge-multiple: true
+        digest-mismatch: error
+
+    - name: Download Windows legacy artifact
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.build-windows-legacy.outputs.artifact-id }}
+        path: artifacts/build-windows-legacy
+        merge-multiple: true
+        digest-mismatch: error
+
+    - name: Verify platform payload manifests
+      id: payload
+      shell: bash
+      run: |
+        set -euo pipefail
+        bash .github/actions/verify-platform-artifacts/verify-artifacts.sh payload
+        echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+    - name: Upload platform verification manifest
+      id: upload
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: platform-validation-attempt-${{ github.run_attempt }}
+        path: ${{ env.PLATFORM_MANIFEST }}
+        if-no-files-found: error
+        retention-days: 7
+        overwrite: false
+
+  validation:
+    needs: [prepare, verify-linux, verify-platforms]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+      SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
+      CANONICAL_MANIFEST_SHA256: ${{ needs.prepare.outputs.manifest-digest }}
+      LINUX_REPORT_ID: ${{ needs.verify-linux.outputs.artifact-id }}
+      LINUX_REPORT_DIGEST: ${{ needs.verify-linux.outputs.artifact-digest }}
+      LINUX_REPORT_ATTEMPT: ${{ needs.verify-linux.outputs.run-attempt }}
+      PLATFORM_REPORT_ID: ${{ needs.verify-platforms.outputs.artifact-id }}
+      PLATFORM_REPORT_DIGEST: ${{ needs.verify-platforms.outputs.artifact-digest }}
+      PLATFORM_REPORT_ATTEMPT: ${{ needs.verify-platforms.outputs.run-attempt }}
+      LINUX_REPORT: verification/linux/linux-artifacts.json
+      PLATFORM_REPORT: verification/platforms/platform-artifacts.json
+      VALIDATION_MANIFEST: ${{ github.workspace }}/validation-artifacts.json
+    steps:
+    - name: Require both artifact verifiers
+      shell: bash
+      env:
+        PREPARE_RESULT: ${{ needs.prepare.result }}
+        LINUX_RESULT: ${{ needs.verify-linux.result }}
+        PLATFORM_RESULT: ${{ needs.verify-platforms.result }}
+      run: |
+        set -euo pipefail
+        [[ "$PREPARE_RESULT" == success && "$LINUX_RESULT" == success && "$PLATFORM_RESULT" == success ]]
+        [[ $LINUX_REPORT_ID =~ ^[1-9][0-9]*$ && $PLATFORM_REPORT_ID =~ ^[1-9][0-9]*$ && $LINUX_REPORT_ID != "$PLATFORM_REPORT_ID" ]]
+        [[ $LINUX_REPORT_DIGEST =~ ^[0-9a-f]{64}$ && $PLATFORM_REPORT_DIGEST =~ ^[0-9a-f]{64}$ ]]
+        [[ $LINUX_REPORT_ATTEMPT =~ ^[1-9][0-9]*$ && $PLATFORM_REPORT_ATTEMPT =~ ^[1-9][0-9]*$ ]]
+        (( LINUX_REPORT_ATTEMPT <= GITHUB_RUN_ATTEMPT && PLATFORM_REPORT_ATTEMPT <= GITHUB_RUN_ATTEMPT ))
+
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+
+    - name: Verify immutable verifier report metadata
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        for kind in linux platforms; do
+          if [[ $kind == linux ]]; then
+            id=$LINUX_REPORT_ID digest=$LINUX_REPORT_DIGEST attempt=$LINUX_REPORT_ATTEMPT
+            name="linux-validation-attempt-$attempt"
+          else
+            id=$PLATFORM_REPORT_ID digest=$PLATFORM_REPORT_DIGEST attempt=$PLATFORM_REPORT_ATTEMPT
+            name="platform-validation-attempt-$attempt"
+          fi
+          metadata=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts/$id")
+          jq -e --argjson id "$id" --arg digest "sha256:$digest" --arg name "$name" \
+            --argjson run "$GITHUB_RUN_ID" --arg source "$SOURCE_SHA" \
+            '.id == $id and .name == $name and .digest == $digest and .expired == false
+              and .workflow_run.id == $run and .workflow_run.head_sha == $source' <<< "$metadata" >/dev/null
+        done
+
+    - name: Download linux verification report
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.verify-linux.outputs.artifact-id }}
+        path: verification/linux
+        merge-multiple: true
+        digest-mismatch: error
+
+    - name: Download platforms verification report
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.verify-platforms.outputs.artifact-id }}
+        path: verification/platforms
+        merge-multiple: true
+        digest-mismatch: error
+
+    - name: Join complete validation manifest
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        test "$(cat VERSION)" = "$SOURCE_VERSION"
+        canonical=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION")
+        actual=$(printf '%s\n' "$canonical" | sha256sum)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        for kind in linux platforms; do
+          if [[ $kind == linux ]]; then
+            report=$LINUX_REPORT count=5
+          else
+            report=$PLATFORM_REPORT count=14
+          fi
+          test -f "$report" && test ! -L "$report" && test -s "$report" || exit 1
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" \
+            --arg canonical "$CANONICAL_MANIFEST_SHA256" --arg run "$GITHUB_RUN_ID" --argjson count "$count" \
+            'type == "object" and keys == ["artifacts","canonical_manifest_sha256","files","repository","run_id","schema_version","source_sha","version"]
+              and .schema_version == 1 and .repository == $repository and .source_sha == $source and .version == $version
+              and .canonical_manifest_sha256 == $canonical and .run_id == $run
+              and (.files|type == "array" and length == $count)
+              and all(.files[]; type == "object" and keys == ["name","owner","path","sha256"]
+                and (.name|type == "string") and (.owner|type == "string") and (.path|type == "string")
+                and (.sha256|type == "string" and test("^[0-9a-f]{64}$")))' "$report" >/dev/null
+        done
+        files=$(jq -nc --slurpfile linux "$LINUX_REPORT" --slurpfile platforms "$PLATFORM_REPORT" \
+            '$linux[0].files + $platforms[0].files | sort_by(.name)')
+        jq -e 'length == 19 and ([.[].name]|unique|length) == 19' <<< "$files" >/dev/null
+        expected=$(awk '{path=$3; if ($2 != "build-linux.yml") path="artifacts/" substr($2,1,length($2)-4) "/" $1; print $1 "\t" $2 "\t" path}' <<< "$canonical" | LC_ALL=C sort)
+        actual=$(jq -r '.[] | [.name,.owner,.path] | @tsv' <<< "$files" | LC_ALL=C sort)
+        test "$actual" = "$expected"
+        temporary=$(mktemp "$VALIDATION_MANIFEST.XXXXXX")
+        trap 'rm -f -- "$temporary"' EXIT
+        jq -nS --arg repository "$GITHUB_REPOSITORY" --arg source_sha "$SOURCE_SHA" --arg version "$SOURCE_VERSION" \
+            --arg canonical_manifest_sha256 "$CANONICAL_MANIFEST_SHA256" --arg run_id "$GITHUB_RUN_ID" \
+            --argjson linux_id "$LINUX_REPORT_ID" --arg linux_digest "$LINUX_REPORT_DIGEST" --argjson linux_attempt "$LINUX_REPORT_ATTEMPT" \
+            --argjson platform_id "$PLATFORM_REPORT_ID" --arg platform_digest "$PLATFORM_REPORT_DIGEST" --argjson platform_attempt "$PLATFORM_REPORT_ATTEMPT" \
+            --argjson files "$files" \
+            '{schema_version:1,repository:$repository,source_sha:$source_sha,version:$version,
+            canonical_manifest_sha256:$canonical_manifest_sha256,run_id:$run_id,mode:"validation",
+            publish_release:false,production_signing:"not-requested",
+            macos_signing:"ad-hoc bundle seal only; no Developer ID or notarization",
+            verification_reports:{linux:{id:$linux_id,digest:$linux_digest,run_attempt:$linux_attempt},
+              platforms:{id:$platform_id,digest:$platform_digest,run_attempt:$platform_attempt}},files:$files}' > "$temporary"
+        mv -- "$temporary" "$VALIDATION_MANIFEST"
+
+    - name: Upload complete validation manifest
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: full-validation-attempt-${{ github.run_attempt }}
+        path: ${{ env.VALIDATION_MANIFEST }}
+        if-no-files-found: error
+        retention-days: 7
+        overwrite: false
+
+    - name: Report complete validation scope
       shell: bash
       run: |
         cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-        This is a partial Linux pilot: AMD64 and ARM64 only.
-
-        Linux primary assets: built 5, verified 5, signed 0, staged 0, published 0.
-        Other platform lanes, the complete 19-asset validation, recovery and publish mode are not implemented.
-        Hosted failed-only rerun and retention behavior still require service-level acceptance.
+        Full validation: 19 canonical primary assets built and verified.
+        Production signing, attestation, staging and publication were not requested.
+        macOS packaging retains its ad-hoc bundle seal; this is not Developer ID signing or notarization.
         EOF

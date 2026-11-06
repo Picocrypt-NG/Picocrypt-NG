@@ -1,0 +1,317 @@
+name: Build unsigned Windows artifacts
+description: Unsigned native Windows build with separate signing-input and validation artifacts.
+inputs:
+  source-sha:
+    description: Immutable event source SHA from the owner.
+    required: true
+  version:
+    description: VERSION from the prepared source checkout.
+    required: true
+  manifest-digest:
+    description: SHA-256 of the canonical release ownership manifest.
+    required: true
+outputs:
+  artifact-id:
+    description: Immutable canonical validation artifact ID.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-digest:
+    description: SHA-256 of the canonical validation ZIP, distinct from payload file hashes.
+    value: ${{ steps.upload.outputs.artifact-digest }}
+  run-attempt:
+    description: Attempt that produced the validated source and bytes.
+    value: ${{ steps.source.outputs.run-attempt }}
+  signing-input-id:
+    description: Immutable original-layout unsigned bundle consumed by SignPath.
+    value: ${{ steps.signing-input.outputs.artifact-id }}
+runs:
+  using: composite
+  steps:
+    - name: Assert prepared Windows source
+      id: source
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        actual_version=$(cat VERSION)
+        actual_version=${actual_version%$'\r'}
+        test "$actual_version" = "$SOURCE_VERSION"
+        actual=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+    - name: Setup Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: "1.27.3"
+        cache-dependency-path: src/go.sum
+
+    - name: Install dependencies
+      shell: pwsh
+      run: |
+        cd src
+        go mod download
+
+    - name: Run tests
+      shell: pwsh
+      run: |
+        cd src
+        go test -v -tags migrated_fynedo -timeout 15m ./...
+      env:
+        PICOCRYPT_RUN_CLI_INTEGRATION: 1
+
+    - name: Build GUI
+      shell: pwsh
+      run: |
+        cd src
+        go build -v -tags migrated_fynedo -ldflags="-s -w -H=windowsgui -extldflags=-static" -o 1.exe ./cmd/picocrypt
+      env:
+        CGO_ENABLED: 1
+        GOAMD64: v1
+
+    - name: Build CLI-only (no graphics dependencies)
+      shell: pwsh
+      run: |
+        cd src
+        go build -v -tags cli -ldflags="-s -w -extldflags=-static" -o Picocrypt-NG-cli.exe ./cmd/picocrypt
+      env:
+        CGO_ENABLED: 1
+        GOAMD64: v1
+
+    - name: Add icon, manifest, and version info
+      shell: pwsh
+      run: |
+        curl.exe `
+          --fail `
+          --location `
+          --silent `
+          --show-error `
+          --retry 3 `
+          --retry-all-errors `
+          --retry-delay 2 `
+          --connect-timeout 30 `
+          --max-time 300 `
+          --retry-max-time 600 `
+          --remove-on-error `
+          --output reshacker_setup.exe `
+          https://www.angusj.com/resourcehacker/reshacker_setup.exe
+        if ($LASTEXITCODE -ne 0) {
+          throw "Resource Hacker download failed with exit code $LASTEXITCODE"
+        }
+        $expectedHash = $env:RESHACKER_SHA256
+        $actualHash = (Get-FileHash reshacker_setup.exe -Algorithm SHA256).Hash.ToLower()
+        if ($actualHash -ne $expectedHash) {
+          throw "Checksum mismatch for reshacker_setup.exe: expected $expectedHash, got $actualHash"
+        }
+        $installer = Start-Process `
+          -FilePath "reshacker_setup.exe" `
+          -ArgumentList "/SILENT" `
+          -Wait -PassThru
+        if ($installer.ExitCode -ne 0) {
+          throw "Resource Hacker installer failed with exit code $($installer.ExitCode)"
+        }
+        if (-not (Test-Path -LiteralPath $env:P -PathType Leaf)) {
+          throw "Resource Hacker executable was not installed at $env:P"
+        }
+
+        function Invoke-ResourceHacker {
+          param(
+            [Parameter(Mandatory)][string[]]$Arguments,
+            [Parameter(Mandatory)][string]$ExpectedOutput
+          )
+
+          $process = Start-Process `
+            -FilePath $env:P `
+            -ArgumentList ($Arguments + @("-log", "CONSOLE")) `
+            -Wait -PassThru -NoNewWindow
+          if ($process.ExitCode -ne 0) {
+            throw "Resource Hacker failed with exit code $($process.ExitCode): $($Arguments -join ' ')"
+          }
+
+          $output = Get-Item -LiteralPath $ExpectedOutput -ErrorAction Stop
+          if ($output.Length -eq 0) {
+            throw "Resource Hacker produced an empty output: $ExpectedOutput"
+          }
+        }
+
+        Invoke-ResourceHacker `
+          -Arguments @("-open", "src/1.exe", "-save", "src/2.exe", "-action", "addoverwrite", "-res", "images/key.ico", "-mask", "ICONGROUP,MAINICON,") `
+          -ExpectedOutput "src/2.exe"
+
+        Invoke-ResourceHacker `
+          -Arguments @("-open", "src/2.exe", "-save", "src/3.exe", "-action", "addoverwrite", "-res", "images/key.ico", "-mask", "ICONGROUP,A,") `
+          -ExpectedOutput "src/3.exe"
+
+        Invoke-ResourceHacker `
+          -Arguments @("-open", "src/3.exe", "-save", "src/4.exe", "-action", "addoverwrite", "-res", "dist/windows/manifest.xml", "-mask", "MANIFEST,1,") `
+          -ExpectedOutput "src/4.exe"
+
+        Invoke-ResourceHacker `
+          -Arguments @("-open", "dist/windows/versioninfo.rc", "-save", "resources.res", "-action", "compile") `
+          -ExpectedOutput "resources.res"
+
+        Invoke-ResourceHacker `
+          -Arguments @("-open", "src/4.exe", "-save", "src/5.exe", "-action", "addoverwrite", "-res", "resources.res") `
+          -ExpectedOutput "src/5.exe"
+      env:
+        RESHACKER_SHA256: b611be2f35cb44efd1c29df03e7ebe62bd556a500585680e1afa5e073eaf1756
+        P: "C:\\Program Files (x86)\\Resource Hacker\\ResourceHacker.exe"
+
+    - name: Compress with upx
+      shell: pwsh
+      run: |
+        curl.exe `
+          --fail `
+          --location `
+          --silent `
+          --show-error `
+          --retry 3 `
+          --retry-all-errors `
+          --retry-delay 2 `
+          --connect-timeout 30 `
+          --max-time 300 `
+          --retry-max-time 600 `
+          --remove-on-error `
+          --output upx.zip `
+          https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip
+        if ($LASTEXITCODE -ne 0) {
+          throw "UPX download failed with exit code $LASTEXITCODE"
+        }
+        $expectedHash = $env:UPX_SHA256
+        $actualHash = (Get-FileHash upx.zip -Algorithm SHA256).Hash.ToLower()
+        if ($actualHash -ne $expectedHash) {
+          throw "Checksum mismatch for upx.zip: expected $expectedHash, got $actualHash"
+        }
+        Expand-Archive -DestinationPath upx upx.zip
+        upx/upx-5.2.1-win64/upx.exe --lzma -o src/Picocrypt-NG.exe src/5.exe
+        upx/upx-5.2.1-win64/upx.exe --lzma src/Picocrypt-NG-cli.exe
+
+    # Build with the verified portable NSIS archive.
+      env:
+        UPX_SHA256: eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda
+
+    - name: Rename portable artifact
+      shell: pwsh
+      run: |
+        Move-Item src/Picocrypt-NG.exe src/Picocrypt-NG-portable.exe
+
+    - name: Install NSIS
+      shell: pwsh
+      run: |
+        $makensis = & .github/scripts/install-nsis.ps1
+        "NSIS_EXE=$makensis" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        & $makensis -VERSION
+        if ($LASTEXITCODE -ne 0) { throw "NSIS version check failed ($LASTEXITCODE)" }
+
+    - name: Build NSIS installer
+      shell: pwsh
+      run: |
+        $version = (Get-Content -Path "VERSION" -Raw).Trim()
+        Write-Host "Building installer for version: $version"
+        # Pass absolute path so NSIS ${__FILEDIR__} resolves to the absolute
+        # script directory; otherwise the Icon directive re-applies script-dir
+        # resolution to a relative ${__FILEDIR__}, doubling the path
+        # (D:\...\dist\windows\dist\windows\..\..\images\key.ico — file not found).
+        $scriptPath = (Resolve-Path "dist\windows\installer.nsi").Path
+        & $env:NSIS_EXE `
+          -WX `
+          -V4 `
+          "-DVERSION=$version" `
+          "$scriptPath"
+        if ($LASTEXITCODE -ne 0) {
+          throw "makensis failed with exit code $LASTEXITCODE"
+        }
+
+    - name: Smoke-test installer
+      shell: pwsh
+      run: |
+        $setup = "dist\windows\Picocrypt-NG-Setup.exe"
+        if (-not (Test-Path $setup)) {
+          throw "Setup.exe not produced at $setup"
+        }
+        $size = (Get-Item $setup).Length
+        Write-Host "Setup.exe size: $size bytes"
+        if ($size -lt 1MB) {
+          throw "Setup.exe suspiciously small (< 1 MB): $size bytes"
+        }
+        if ($size -gt 100MB) {
+          throw "Setup.exe suspiciously large (> 100 MB): $size bytes"
+        }
+
+    # Stage all release files into a single directory so upload-artifact's
+    # least-common-ancestor rule produces a flat zip (LCA == staging dir).
+    # Without this, src/*.exe + dist/windows/*.exe → LCA is repo root and the
+    # artifact preserves both src/ and dist/windows/ prefixes, breaking the
+    # release job's flat-path checksum/release steps.
+    - name: Stage release artifacts
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path release-staging | Out-Null
+        Copy-Item src/Picocrypt-NG-portable.exe release-staging/
+        Copy-Item src/Picocrypt-NG-cli.exe release-staging/
+        Copy-Item dist/windows/Picocrypt-NG-Setup.exe release-staging/
+
+    - name: Upload artifact
+      id: signing-input
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: unsigned-windows-attempt-${{ github.run_attempt }}
+        path: release-staging/
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 1
+        overwrite: false
+
+    - name: Record Windows payload manifest
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        directory=validation-windows-current
+        mkdir "$directory"
+        canonical=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION")
+        digest=$(printf '%s\n' "$canonical" | sha256sum)
+        test "${digest%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        staged=(release-staging/*)
+        test "${#staged[@]}" = 3
+        # Native jq.exe needs binary stdout under Git Bash.
+        files=$(while read -r name owner path; do
+          if [[ $owner == build-windows.yml ]]; then
+            case "$name" in Picocrypt-NG-portable.exe|Picocrypt-NG-cli.exe|Picocrypt-NG-Setup.exe) ;; *) exit 1 ;; esac
+            test "$path" = "artifacts/build-windows/$name" || exit 1
+            source="release-staging/$name"
+            if [[ ! -f "$source" || -L "$source" || ! -s "$source" ]]; then
+              echo "Invalid unsigned payload: $name" >&2
+              exit 1
+            fi
+            cp "$source" "$directory/$name" || exit 1
+            digest=$(sha256sum "$directory/$name") || exit 1
+            jq -b -cn --arg name "$name" --arg sha256 "${digest%% *}" '{name:$name,sha256:$sha256}' || exit 1
+          fi
+        done <<< "$canonical" | jq -b -sc 'sort_by(.name)')
+        test "$(jq -b 'length' <<< "$files")" = 3
+        test "$(jq -b 'unique_by(.name) | length' <<< "$files")" = 3
+        jq -b -nS --arg repository "$GITHUB_REPOSITORY" --arg source_sha "$SOURCE_SHA" \
+          --arg version "$SOURCE_VERSION" --arg canonical_manifest_sha256 "$CANONICAL_MANIFEST_SHA256" \
+          --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" --argjson files "$files" \
+          '{schema_version:1,repository:$repository,source_sha:$source_sha,version:$version,
+            canonical_manifest_sha256:$canonical_manifest_sha256,owner_workflow:"build-windows.yml",
+            arch:"amd64",run_id:$run_id,run_attempt:$run_attempt,files:$files}' > "$directory/payload-manifest.json"
+
+    - name: Upload validation artifacts
+      id: upload
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: validate-windows-current-amd64-attempt-${{ github.run_attempt }}
+        path: validation-windows-current/*
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 7
+        overwrite: false
