@@ -102,6 +102,9 @@ func TestLinuxReusableOwnerKeepsDirectAndSeparatesAuthority(t *testing.T) {
 		t.Fatal("owner signing identity must stay in the existing action")
 	}
 	record := mustStepNamed(t, attest, "Record signed Linux generation")
+	if record.Env["GH_TOKEN"] != "${{ github.token }}" {
+		t.Fatal("record must authenticate its mandatory online provenance verification")
+	}
 	if record.ID != "generation" || record.Run != "bash .github/actions/signed-generation/generation.sh record" {
 		t.Fatal("full signed generation must use the agreed primitive")
 	}

@@ -535,6 +535,8 @@ jobs:
       id: generation
       if: ${{ steps.inventory.outputs.state == 'missing' }}
       shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: bash .github/actions/signed-generation/generation.sh record
     - name: Upload signed Linux generation
       id: upload-generation

@@ -48,6 +48,18 @@ func TestPlatformArtifactConsumerBindsFourteenPrimariesAndRejectsSubstitution(t 
 		preflight     bool
 	}{
 		{defect: "none"},
+		{defect: "single AppImage"},
+		{defect: "single Snap"},
+		{defect: "single macOS"},
+		{defect: "single Android"},
+		{defect: "single Windows legacy"},
+		{defect: "single Windows"},
+		{defect: "single Windows CRLF"},
+		{"single unknown selector", "metadata", true},
+		{"single wrong owner", "metadata", true},
+		{"single extra descriptor", "metadata", true},
+		{"single duplicate descriptor", "metadata", true},
+		{"single missing payload", "payload", false},
 		{"unknown owner", "metadata", true},
 		{"duplicate owner", "metadata", true},
 		{"missing owner", "metadata", true},
@@ -247,6 +259,45 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 					t.Fatal(err)
 				}
 			}
+			ownerSelector := ""
+			selectedOwners := owners
+			singleIndex, single := map[string]int{
+				"single AppImage": 0, "single Snap": 1, "single macOS": 2,
+				"single Android": 3, "single Windows legacy": 4, "single Windows": 5,
+				"single Windows CRLF": 5, "single unknown selector": 5, "single wrong owner": 5,
+				"single extra descriptor": 5, "single duplicate descriptor": 5, "single missing payload": 5,
+			}[tc.defect]
+			if single {
+				ownerSelector = owners[singleIndex].owner
+				selectedOwners = owners[singleIndex : singleIndex+1]
+				descriptors = descriptors[singleIndex : singleIndex+1]
+				var selectedFiles []map[string]string
+				for _, record := range wantFiles {
+					if record["owner"] == ownerSelector {
+						selectedFiles = append(selectedFiles, record)
+					}
+				}
+				wantFiles = selectedFiles
+			}
+			switch tc.defect {
+			case "single unknown selector":
+				ownerSelector = "build-unknown.yml"
+			case "single wrong owner":
+				descriptors[0]["owner"], descriptors[0]["arch"] = "build-macos.yml", "arm64"
+			case "single extra descriptor":
+				descriptors = append(descriptors, map[string]any{"owner": "build-macos.yml", "arch": "arm64", "id": 103, "digest": strings.Repeat("1", 64), "attempt": 1})
+			case "single duplicate descriptor":
+				descriptors = append(descriptors, descriptors[0])
+			case "single missing payload":
+				if err := os.Remove(file); err != nil {
+					t.Fatal(err)
+				}
+			case "single Windows CRLF":
+				cat := "#!/bin/sh\nif [ \"$#\" = 1 ] && [ \"$1\" = VERSION ]; then printf '%s\\r\\n' \"$SOURCE_VERSION\"; else exec /usr/bin/cat \"$@\"; fi\n"
+				if err := os.WriteFile(filepath.Join(bin, "cat"), []byte(cat), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
 			input, err := json.Marshal(descriptors)
 			if err != nil {
 				t.Fatal(err)
@@ -255,7 +306,7 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 			env := append(os.Environ(), "PATH="+bin+":/usr/bin:/bin:"+os.Getenv("PATH"), "FIXTURE_DIR="+dir,
 				"GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG", "GITHUB_SHA="+source, "GITHUB_RUN_ID=900", "GITHUB_RUN_ATTEMPT=3",
 				"SOURCE_SHA="+source, "SOURCE_VERSION="+version, "CANONICAL_MANIFEST_SHA256="+canonicalDigest,
-				"PLATFORM_ARTIFACTS_JSON="+string(input), "ARTIFACT_ROOT="+filepath.Join(dir, "artifacts"), "PLATFORM_MANIFEST="+report)
+				"PLATFORM_ARTIFACTS_JSON="+string(input), "PLATFORM_OWNER="+ownerSelector, "ARTIFACT_ROOT="+filepath.Join(dir, "artifacts"), "PLATFORM_MANIFEST="+report)
 			failedPhase := ""
 			var output []byte
 			for _, phase := range []string{"metadata", "payload"} {
@@ -279,7 +330,7 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 			if tc.preflight && !os.IsNotExist(readErr) {
 				t.Fatal("malformed descriptors must fail before any GitHub read")
 			}
-			if tc.defect != "none" {
+			if tc.phase != "" {
 				if _, err := os.Stat(report); !os.IsNotExist(err) {
 					t.Fatal("refused platform set left a final report")
 				}
@@ -294,6 +345,9 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 				"repos/Picocrypt-NG/Picocrypt-NG/actions/artifacts/102\n" +
 				"repos/Picocrypt-NG/Picocrypt-NG/actions/artifacts/105\n" +
 				"repos/Picocrypt-NG/Picocrypt-NG/actions/artifacts/106\n"
+			if single {
+				wantRequests = fmt.Sprintf("repos/Picocrypt-NG/Picocrypt-NG/actions/artifacts/%d\n", selectedOwners[0].id)
+			}
 			if string(requests) != wantRequests {
 				t.Fatalf("metadata reads = %q, want six exact-ID GETs %q", requests, wantRequests)
 			}
@@ -318,7 +372,7 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 			for _, file := range got.Files {
 				byName[file["name"]] = file
 			}
-			if len(got.Files) != 14 || len(byName) != 14 {
+			if len(got.Files) != len(wantFiles) || len(byName) != len(wantFiles) {
 				t.Fatalf("final report must contain exactly fourteen distinct primaries: %s", data)
 			}
 			for _, want := range wantFiles {
@@ -327,7 +381,7 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 				}
 			}
 			artifacts := context["artifacts"].([]any)
-			if len(artifacts) != 6 {
+			if len(artifacts) != len(selectedOwners) {
 				t.Fatal("final report must bind all six producing artifacts")
 			}
 			byOwner := make(map[string]map[string]any)
@@ -335,7 +389,7 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 				entry := artifact.(map[string]any)
 				byOwner[entry["owner"].(string)] = entry
 			}
-			for _, owner := range owners {
+			for _, owner := range selectedOwners {
 				want := map[string]any{"owner": owner.owner, "arch": owner.arch, "id": float64(owner.id), "zip_sha256": strings.Repeat("1", 64), "run_attempt": float64(1)}
 				if !reflect.DeepEqual(byOwner[owner.owner], want) {
 					t.Fatalf("wrong producing artifact binding: %#v, want %#v", byOwner[owner.owner], want)
