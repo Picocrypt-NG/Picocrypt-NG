@@ -229,7 +229,7 @@ func TestSignAndAttestUsesApprovedCosign(t *testing.T) {
 	}
 	mustNotContain(t, content, "cosign-release: 'v3.1.1'")
 	ownership := mustCompositeStepNamed(t, action, "Validate exact release artifact ownership")
-	for _, required := range []string{"release-manifest.sh", `test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`, `test "$WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/$owner@refs/heads/main"`, `[ ! -L "$file" ]`, `[ -s "$file" ]`} {
+	for _, required := range []string{"release-manifest.sh", `test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`, `"$GITHUB_REPOSITORY/.github/workflows/$owner@refs/heads/main"|"$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/heads/main"`, `test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"`, `[ ! -L "$file" ]`, `[ -s "$file" ]`} {
 		mustContain(t, ownership.Run, required)
 	}
 	provenance := mustCompositeStepNamed(t, action, "Generate build-provenance attestation")
@@ -237,9 +237,18 @@ func TestSignAndAttestUsesApprovedCosign(t *testing.T) {
 		t.Fatal("provenance must attest exactly the artifact paths validated for this workflow owner")
 	}
 	verify := mustCompositeStepNamed(t, action, "Fail-loud verify (cosign + provenance)")
-	if verify.Env["SOURCE_SHA"] != "${{ github.sha }}" || verify.Env["IDENTITY"] != "https://github.com/${{ github.workflow_ref }}" {
+	if verify.Env["SOURCE_SHA"] != "${{ github.sha }}" || verify.Env["IDENTITY"] != "https://github.com/${{ github.repository }}/.github/workflows/${{ steps.files.outputs.owner }}@refs/heads/main" {
 		t.Fatal("signature and provenance must bind the current source and exact workflow identity")
 	}
+	if provenance.ID != "provenance" || verify.Env["PROVENANCE_BUNDLE"] != "${{ steps.provenance.outputs.bundle-path }}" || verify.Env["CALLER_REF"] != "${{ github.workflow_ref }}" || verify.Env["OWNER"] != "${{ steps.files.outputs.owner }}" {
+		t.Fatal("exact verification must consume the real newly generated bundle and owner/caller context")
+	}
+	if mustCompositeStepNamed(t, action, "Install pinned GitHub CLI").Uses != "./.github/actions/setup-gh" {
+		t.Fatal("verified certificate JSON must use the reviewed CLI pin")
+	}
+	mustContain(t, verify.Run, `--bundle "$PROVENANCE_BUNDLE"`)
+	mustContain(t, verify.Run, `--format json > "$verified"`)
+	mustContain(t, verify.Run, `verify-certificate.sh" exact "$verified" "$OWNER" "$SOURCE_SHA" "$CALLER_REF" || return 1`)
 	for _, restriction := range []string{`--certificate-identity "$IDENTITY"`, `--certificate-github-workflow-sha "$SOURCE_SHA"`, "--certificate-github-workflow-ref refs/heads/main", `--certificate-github-workflow-repository "$REPO"`, `--cert-identity "$IDENTITY"`, `--signer-digest "$SOURCE_SHA"`, "--source-ref refs/heads/main", `--source-digest "$SOURCE_SHA"`, "--predicate-type https://slsa.dev/provenance/v1", "--deny-self-hosted-runners"} {
 		mustContain(t, verify.Run, restriction)
 	}
@@ -1890,6 +1899,11 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 	for _, restriction := range []string{`--certificate-identity "$identity"`, `--certificate-github-workflow-sha "$source_commit"`, "--certificate-github-workflow-ref refs/heads/main", "--certificate-github-workflow-repository Picocrypt-NG/Picocrypt-NG", `--cert-identity "$identity"`, `--signer-digest "$source_commit"`, "--source-ref refs/heads/main", `--source-digest "$source_commit"`, "--predicate-type https://slsa.dev/provenance/v1", "--deny-self-hosted-runners"} {
 		mustContain(t, body, restriction)
 	}
+	mustContain(t, body, "set -eu")
+	mustContain(t, body, "standalone cosign bundle does not establish caller identity")
+	mustContain(t, body, `test "$(git rev-parse HEAD)" = "$source_commit"`)
+	mustContain(t, body, `--format json > "$file.verified-provenance.json"`)
+	mustContain(t, body, `bash "$policy" online "$file.verified-provenance.json" "$workflow" "$source_commit"`)
 	mustNotContain(t, body, "--certificate-identity-regexp")
 
 	for _, rawHTML := range []string{"<ul", "</ul>", "<li", "</li>", "<strong", "</strong>", "<code", "</code>"} {

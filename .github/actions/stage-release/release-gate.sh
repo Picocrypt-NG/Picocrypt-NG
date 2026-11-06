@@ -2,19 +2,33 @@
 
 set -euo pipefail
 
-mode="${1:?usage: release-gate.sh <preflight|upload|publish> <version>}"
-version="${2:?usage: release-gate.sh <preflight|upload|publish> <version>}"
+mode="${1:?usage: release-gate.sh <preflight|upload|publish|inspect-owner|strict-finalize> <version>}"
+version="${2:?usage: release-gate.sh <preflight|upload|publish|inspect-owner|strict-finalize> <version>}"
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 source_sha="${GITHUB_SHA:?GITHUB_SHA is required}"
 workspace="${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 
+set_gate_output() {
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"
+  fi
+}
+set_gate_output staged false
+set_gate_output published false
+
 case "$mode" in
-  preflight|upload|publish) ;;
+  preflight|upload|publish|inspect-owner|strict-finalize) ;;
   *)
     echo "release gate: unsupported mode '$mode'" >&2
     exit 2
     ;;
 esac
+if [ "$mode" = "preflight" ]; then
+  case "${FINALIZE-true}" in
+    true|false) ;;
+    *) echo "release gate: finalize must be true or false" >&2; exit 2 ;;
+  esac
+fi
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
   echo "release gate: invalid version '$version'" >&2
   exit 2
@@ -48,10 +62,26 @@ if [ "$checkout_sha" != "$source_sha" ]; then
   exit 2
 fi
 workflow_ref="${GITHUB_WORKFLOW_REF:?GITHUB_WORKFLOW_REF is required}"
+if [ "${GITHUB_WORKFLOW_SHA:-}" != "$source_sha" ]; then
+  echo "release gate: caller workflow commit must match the source commit" >&2
+  exit 2
+fi
 case "$workflow_ref" in
-  "$repo"/.github/workflows/*@refs/heads/main) ;;
-  *) echo "release gate: workflow must run from the trusted repository main branch" >&2; exit 2 ;;
+  "$repo/.github/workflows/build-linux.yml@refs/heads/main"| \
+  "$repo/.github/workflows/build-macos.yml@refs/heads/main"| \
+  "$repo/.github/workflows/build-windows.yml@refs/heads/main"| \
+  "$repo/.github/workflows/build-windows-legacy.yml@refs/heads/main"| \
+  "$repo/.github/workflows/build-android.yml@refs/heads/main"| \
+  "$repo/.github/workflows/build-appimage.yml@refs/heads/main"| \
+  "$repo/.github/workflows/build-snapcraft.yml@refs/heads/main"| \
+  "$repo/.github/workflows/release.yml@refs/heads/main") ;;
+  *) echo "release gate: workflow must be an exact trusted owner or coordinator" >&2; exit 2 ;;
 esac
+if { [ "$mode" = "inspect-owner" ] || [ "$mode" = "strict-finalize" ]; } &&
+  [ "$workflow_ref" != "$repo/.github/workflows/release.yml@refs/heads/main" ]; then
+  echo "release gate: $mode requires the trusted main-branch coordinator" >&2
+  exit 2
+fi
 
 for command in awk cat cmp comm cosign gh grep jq mkdir mktemp mv realpath sha256sum sort wc; do
   command -v "$command" >/dev/null || {
@@ -86,6 +116,15 @@ awk '{print $3; print $3 ".sigstore.json"}' "$work/primary-assets.txt" \
 if [ "$(wc -l < "$work/expected-assets.txt")" -ne 38 ]; then
   echo "release gate: internal public manifest must contain exactly 38 assets" >&2
   exit 1
+fi
+if [ "$mode" = "inspect-owner" ]; then
+  owner_workflow="${OWNER_WORKFLOW:-}"
+  case "$owner_workflow" in
+    build-linux.yml|build-macos.yml|build-windows.yml|build-windows-legacy.yml|build-android.yml|build-appimage.yml|build-snapcraft.yml) ;;
+    *) echo "release gate: invalid canonical owner '$owner_workflow'" >&2; exit 2 ;;
+  esac
+  awk -v owner="$owner_workflow" '$2 == owner {print}' "$work/primary-assets.txt" > "$work/owner-assets.txt"
+  test -s "$work/owner-assets.txt"
 fi
 
 declare -A local_paths=()
@@ -124,7 +163,7 @@ if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
       exit 1
     fi
     expected_workflow_ref="$repo/.github/workflows/$owner@refs/heads/main"
-    if [ "$workflow_ref" != "$expected_workflow_ref" ]; then
+    if [ "$workflow_ref" != "$expected_workflow_ref" ] && [ "$workflow_ref" != "$repo/.github/workflows/release.yml@refs/heads/main" ]; then
       echo "release gate: workflow '$workflow_ref' does not own local path '$path'" >&2
       exit 1
     fi
@@ -148,7 +187,7 @@ if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
   done
 fi
 
-if [ "$mode" = "upload" ] || [ "$mode" = "publish" ]; then
+if [ "$mode" = "upload" ] || [ "$mode" = "publish" ] || [ "$mode" = "strict-finalize" ]; then
   body_path="${BODY_PATH:?BODY_PATH is required during upload and publication}"
   expected_body_path="$workspace/release-body.md"
   canonical_body_path="$canonical_workspace/release-body.md"
@@ -367,16 +406,21 @@ download_asset() {
 
 verify_primary() {
   local name="$1" workflow="$2"
+  case "$workflow" in
+    build-linux.yml|build-macos.yml|build-windows.yml|build-windows-legacy.yml|build-android.yml|build-appimage.yml|build-snapcraft.yml) ;;
+    *) echo "release gate: unknown canonical workflow owner" >&2; return 1 ;;
+  esac
   local artifact="$download_dir/$name"
   local bundle="$download_dir/$name.sigstore.json"
   local identity="https://github.com/$repo/.github/workflows/$workflow@refs/heads/main"
+  local verified="$work/verified-provenance.json"
   cosign verify-blob "$artifact" \
     --bundle "$bundle" \
     --certificate-identity "$identity" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
     --certificate-github-workflow-sha "$source_sha" \
     --certificate-github-workflow-ref "refs/heads/main" \
-    --certificate-github-workflow-repository "$repo"
+    --certificate-github-workflow-repository "$repo" || return 1
   gh attestation verify "$artifact" \
     --repo "$repo" \
     --cert-identity "$identity" \
@@ -385,7 +429,8 @@ verify_primary() {
     --source-ref "refs/heads/main" \
     --source-digest "$source_sha" \
     --predicate-type "https://slsa.dev/provenance/v1" \
-    --deny-self-hosted-runners
+    --deny-self-hosted-runners --format json > "$verified" || return 1
+  bash "$(dirname -- "${BASH_SOURCE[0]}")/../sign-and-attest/verify-certificate.sh" online "$verified" "$workflow" "$source_sha"
 }
 
 verify_remote_pair() {
@@ -417,8 +462,29 @@ upload_asset() {
   mv "$work/next-assets.json" "$work/assets.json"
 }
 
-validate_tag true
+emit_owner_inspection() {
+  local status=$1 digest
+  digest="$(sha256sum "$work/primary-assets.txt" | awk '{print $1}')"
+  jq -nS --arg repository "$repo" --arg version "$version" --arg source_sha "$source_sha" \
+    --arg canonical_manifest_sha256 "$digest" --arg owner_workflow "$owner_workflow" --arg status "$status" \
+    --slurpfile verified_pairs "$work/owner-pairs.jsonl" --rawfile missing "$work/owner-missing.txt" \
+    '{repository:$repository,version:$version,source_sha:$source_sha,canonical_manifest_sha256:$canonical_manifest_sha256,
+      owner_workflow:$owner_workflow,status:$status,verified_pairs:($verified_pairs|sort_by(.name)),
+      missing_names:($missing|split("\n")|map(select(length > 0))|sort)}'
+}
+
+if [ "$mode" = "inspect-owner" ]; then
+  : > "$work/owner-pairs.jsonl"
+  awk '{print $1}' "$work/owner-assets.txt" > "$work/owner-missing.txt"
+  validate_tag true >&2
+else
+  validate_tag true
+fi
 if ! load_release; then
+  if [ "$mode" = "inspect-owner" ]; then
+    emit_owner_inspection missing
+    exit 0
+  fi
   if [ "$mode" = "preflight" ]; then
     echo "release gate: no existing release for $version; a commit-bound draft may be created"
     exit 0
@@ -445,13 +511,62 @@ if ! load_release; then
     exit 1
   fi
 fi
+already_published=false
 if [ "$release_draft" != "true" ]; then
-  echo "release gate: release $version is already published; refusing to mutate or accept it" >&2
-  exit 1
+  if [ "$mode" = "strict-finalize" ] &&
+    jq -e --rawfile body "$body_path" '.draft == false and .prerelease == false and .body == $body' "$work/release.json" >/dev/null; then
+    already_published=true
+    validate_tag false
+  else
+    echo "release gate: release $version is already published; refusing to mutate or accept it" >&2
+    exit 1
+  fi
 fi
 
 load_assets
 validate_assets
+
+if [ "$mode" = "inspect-owner" ]; then
+  inspected_release_id="$release_id"
+  jq -S '[.[] | {id,name,state,size,digest}] | sort_by(.name)' "$work/assets.json" > "$work/inspected-assets.json"
+  : > "$work/owner-missing.txt"
+  while read -r name workflow _; do
+    primary_count="$(jq --arg name "$name" '[.[] | select(.name == $name)] | length' "$work/assets.json")"
+    bundle_count="$(jq --arg name "$name.sigstore.json" '[.[] | select(.name == $name)] | length' "$work/assets.json")"
+    if [ "$primary_count" -ne "$bundle_count" ]; then
+      echo "release gate: incomplete staged pair for '$name'" >&2
+      exit 1
+    fi
+    if [ "$primary_count" -eq 0 ]; then
+      printf '%s\n' "$name" >> "$work/owner-missing.txt"
+      continue
+    fi
+    verify_remote_pair "$name" "$workflow" >&2
+    primary_digest="sha256:$(sha256sum "$download_dir/$name" | awk '{print $1}')"
+    bundle_digest="sha256:$(sha256sum "$download_dir/$name.sigstore.json" | awk '{print $1}')"
+    jq -c --arg name "$name" --arg primary_digest "$primary_digest" --arg bundle_digest "$bundle_digest" \
+      '{name:$name,primary:{id:([.[]|select(.name == $name)][0].id),digest:$primary_digest},
+        bundle:{id:([.[]|select(.name == ($name + ".sigstore.json"))][0].id),digest:$bundle_digest}}' \
+      "$work/assets.json" >> "$work/owner-pairs.jsonl"
+  done < "$work/owner-assets.txt"
+  if ! load_release || [ "$release_id" != "$inspected_release_id" ] || [ "$release_draft" != "true" ]; then
+    echo "release gate: release changed during owner inspection" >&2
+    exit 1
+  fi
+  load_assets
+  validate_assets
+  jq -S '[.[] | {id,name,state,size,digest}] | sort_by(.name)' "$work/assets.json" > "$work/current-assets.json"
+  if ! cmp -s "$work/inspected-assets.json" "$work/current-assets.json"; then
+    echo "release gate: release assets changed during owner inspection" >&2
+    exit 1
+  fi
+  status=partial
+  if [ ! -s "$work/owner-pairs.jsonl" ]; then status=missing
+  elif [ ! -s "$work/owner-missing.txt" ]; then status=complete
+  fi
+  emit_owner_inspection "$status"
+  exit 0
+fi
 
 if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
   missing_pairs=()
@@ -522,6 +637,7 @@ if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
       echo "release gate: release assets changed during staging" >&2
       exit 1
     fi
+    set_gate_output staged true
     echo "release gate: staged verified lane pairs in draft $version"
     exit 0
   fi
@@ -533,6 +649,7 @@ LC_ALL=C comm -23 "$work/expected-assets.txt" "$work/actual-assets.txt" > "$work
 if [ -s "$work/missing-assets.txt" ]; then
   echo "release gate: draft $version is still missing required assets:"
   cat "$work/missing-assets.txt"
+  if [ "$mode" = "strict-finalize" ]; then exit 1; fi
   exit 0
 fi
 
@@ -546,6 +663,25 @@ while read -r name workflow _; do
   verify_primary "$name" "$workflow"
 done < "$work/primary-assets.txt"
 
+if [ "$already_published" = "true" ]; then
+  verified_release_id="$release_id"
+  if ! load_release || [ "$release_id" != "$verified_release_id" ] ||
+    ! jq -e --rawfile body "$body_path" '.draft == false and .prerelease == false and .body == $body' "$work/release.json" >/dev/null; then
+    echo "release gate: published release changed during verification" >&2
+    exit 1
+  fi
+  load_assets
+  validate_assets
+  jq -S '[.[] | {id,name,state,size,digest}] | sort_by(.name)' "$work/assets.json" > "$work/current-assets.json"
+  if ! cmp -s "$work/verified-assets.json" "$work/current-assets.json"; then
+    echo "release gate: release assets changed during verification" >&2
+    exit 1
+  fi
+  validate_tag false
+  set_gate_output published true
+  echo "release gate: verified already-published complete release $version"
+  exit 0
+fi
 
 ensure_tag
 verified_release_id="$release_id"
@@ -608,5 +744,11 @@ if [ "$published_id" != "$release_id" ] \
   echo "release gate: GitHub returned an unexpected state after publication" >&2
   exit 1
 fi
+if [ "$mode" = "strict-finalize" ] &&
+  ! jq -e --rawfile body "$body_path" '.body == $body' "$work/published-release.json" >/dev/null; then
+  echo "release gate: published response body does not match the validated source body" >&2
+  exit 1
+fi
 validate_tag false
+set_gate_output published true
 echo "release gate: published complete release $version with 38 verified assets"

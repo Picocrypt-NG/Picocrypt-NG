@@ -3,6 +3,7 @@
 package workflowpolicy
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,7 @@ type releaseGateFixture struct {
 	TargetCommitish string                `json:"target_commitish"`
 	Draft           bool                  `json:"draft"`
 	Prerelease      bool                  `json:"prerelease"`
+	Body            string                `json:"body"`
 	Assets          []releaseAssetFixture `json:"assets"`
 }
 
@@ -50,8 +52,16 @@ type releaseLocalFixture struct {
 type releaseGateOptions struct {
 	localAssets             []releaseLocalFixture
 	workflow                string
+	ownerWorkflow           string
+	noLocalFiles            bool
+	noBody                  bool
+	publishedBodyFromSource bool
+	publishedBodyOverride   string
+	finalize                *string
 	cosignFailure           string
 	attestationFailure      string
+	attestationCaller       string
+	attestationPolicy       string
 	tagTarget               string
 	tagTargetAfterVerify    string
 	tagTargetAfterPublish   string
@@ -66,6 +76,7 @@ type releaseGateOptions struct {
 	bodyOutsideWorkspace    bool
 	symlinkLocalParent      bool
 	invalidPatchResponse    bool
+	invalidPatchBody        bool
 	rootVersion             string
 	checkoutHEAD            string
 	modifiedBody            bool
@@ -217,8 +228,12 @@ func TestStageReleaseActionKeepsReleaseDraftUntilExactManifestExists(t *testing.
 		if got := action.Runs.Steps[index].ContinueOnError; got != nil && got != false {
 			t.Fatalf("stage-release step %q continue-on-error = %#v, want fail-loud default", want, got)
 		}
-		if got := action.Runs.Steps[index].If; got != "" {
-			t.Fatalf("stage-release step %q if = %q, want no bypass condition", want, got)
+		wantIf := ""
+		if index == 2 {
+			wantIf = "${{ inputs.finalize == 'true' }}"
+		}
+		if got := action.Runs.Steps[index].If; got != wantIf {
+			t.Fatalf("stage-release step %q if = %q, want %q", want, got, wantIf)
 		}
 	}
 
@@ -1171,6 +1186,34 @@ func TestReleaseGateUploadFailureLeavesDraftUnpublishedAndNeverDeletes(t *testin
 	})
 }
 
+func TestStagingFinalizeSelectionRejectsInvalidBeforeRemoteWork(t *testing.T) {
+	for _, flag := range []string{"", "yes", "TRUE", "1"} {
+		t.Run(flag, func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, "preflight", nil, nil, releaseGateOptions{finalize: &flag})
+			if result.err == nil || result.calls != "" {
+				t.Fatal("invalid finalize selection must stop before any remote operation")
+			}
+			mustContain(t, result.output, "finalize must be true or false")
+			stagingRequireOutputs(t, result, false, false)
+		})
+	}
+	flag := "false"
+	preflight := runReleaseGateWithOptions(t, "preflight", nil, nil, releaseGateOptions{finalize: &flag})
+	if preflight.err != nil {
+		t.Fatalf("stage-only preflight refused: %v\n%s", preflight.err, preflight.output)
+	}
+	stagingRequireReadOnly(t, preflight)
+	staged := runReleaseGateWithOptions(t, "upload", nil, nil, releaseGateOptions{finalize: &flag})
+	if staged.err != nil {
+		t.Fatalf("stage-only upload refused: %v\n%s", staged.err, staged.output)
+	}
+	stagingRequireOutputs(t, staged, true, false)
+	mustNotContain(t, staged.calls, "--method PATCH")
+	if staged.tagCreateInput != "" {
+		t.Fatal("stage-only execution must not create a publication tag")
+	}
+}
+
 func TestReleaseGateUploadValidatesDraftCreationResponse(t *testing.T) {
 	for _, response := range []string{
 		`{}`, `{"id":0}`, `{"id":42,"tag_name":"2.19","target_commitish":"0123456789abcdef0123456789abcdef01234567","draft":false,"prerelease":false}`,
@@ -1218,6 +1261,8 @@ func TestReleaseGateUploadValidatesAssetResponseAndStableSnapshot(t *testing.T) 
 
 type releaseGateResult struct {
 	output           string
+	stdout           string
+	outputs          string
 	calls            string
 	patchInput       string
 	tagCreateInput   string
@@ -1366,12 +1411,15 @@ func runReleaseGateWithOptions(
 	if localAssets == nil {
 		localAssets = defaultLocalLaneAssets()
 	}
+	if options.noLocalFiles {
+		localAssets = nil
+	}
 	workspace := filepath.Join(temp, "workspace")
 	localDir := filepath.Join(workspace, "artifacts")
 	if err := os.MkdirAll(localDir, 0o700); err != nil {
 		t.Fatalf("create local fixture directory: %v", err)
 	}
-	for _, path := range []string{releaseGateScriptPath, releaseManifestScriptPath, releaseBodyScriptPath} {
+	for _, path := range []string{releaseGateScriptPath, releaseManifestScriptPath, releaseBodyScriptPath, releaseCertificatePolicyPath} {
 		content, err := os.ReadFile(filepath.Join(root, path))
 		if err != nil {
 			t.Fatalf("read frozen release helper %s: %v", path, err)
@@ -1430,13 +1478,16 @@ func runReleaseGateWithOptions(
 		localPaths = append(localPaths, relativePath)
 	}
 	bodyPath := filepath.Join(workspace, "release-body.md")
-	bodyCommand := exec.Command("bash", filepath.Join(workspace, releaseBodyScriptPath), "2.19", changelogPath, bodyPath)
-	bodyCommand.Dir = workspace
-	bodyCommand.Env = append(os.Environ(), "GITHUB_SHA="+releaseTestSHA)
-	if output, err := bodyCommand.CombinedOutput(); err != nil {
-		t.Fatalf("generate source-bound release body fixture: %v\n%s", err, output)
+	expectedBody := ""
+	if !options.noBody {
+		bodyCommand := exec.Command("bash", filepath.Join(workspace, releaseBodyScriptPath), "2.19", changelogPath, bodyPath)
+		bodyCommand.Dir = workspace
+		bodyCommand.Env = append(os.Environ(), "GITHUB_SHA="+releaseTestSHA)
+		if output, err := bodyCommand.CombinedOutput(); err != nil {
+			t.Fatalf("generate source-bound release body fixture: %v\n%s", err, output)
+		}
+		expectedBody = readOptionalFile(t, bodyPath)
 	}
-	expectedBody := readOptionalFile(t, bodyPath)
 	if options.modifiedBody {
 		if err := os.WriteFile(bodyPath, []byte(expectedBody+"\nUnverified replacement instructions.\n"), 0o600); err != nil {
 			t.Fatalf("modify release body fixture: %v", err)
@@ -1447,6 +1498,31 @@ func runReleaseGateWithOptions(
 		if err := os.WriteFile(bodyPath, []byte("must not become public\n"), 0o600); err != nil {
 			t.Fatalf("write outside release body fixture: %v", err)
 		}
+	}
+
+	if options.noBody {
+		bodyPath = ""
+	}
+	if options.publishedBodyFromSource || options.publishedBodyOverride != "" {
+		for index := range releases {
+			if !releases[index].Draft {
+				releases[index].Body = expectedBody
+				if options.publishedBodyOverride != "" {
+					releases[index].Body = options.publishedBodyOverride
+				}
+			}
+		}
+		for index := range releasesAfter {
+			if !releasesAfter[index].Draft {
+				if options.publishedBodyOverride != "" {
+					releasesAfter[index].Body = options.publishedBodyOverride
+				} else {
+					releasesAfter[index].Body = expectedBody
+				}
+			}
+		}
+		writeJSONFixture(t, releasesPath, releases)
+		writeJSONFixture(t, releasesAfterPath, releasesAfter)
 	}
 
 	remoteDir := filepath.Join(temp, "remote")
@@ -1543,6 +1619,26 @@ case "$*" in
       exit 1
     fi
     : > "$GH_VERIFIED_MARKER"
+    identity=
+    arguments=("$@")
+    for (( index=0; index<${#arguments[@]}; index++ )); do
+      if [ "${arguments[index]}" = --cert-identity ]; then identity=${arguments[index+1]}; fi
+    done
+    [[ $identity == https://github.com/Picocrypt-NG/Picocrypt-NG/.github/workflows/*@refs/heads/main ]]
+    caller=$identity
+    if [ -n "$GH_ATTESTATION_CALLER" ]; then
+      caller="https://github.com/Picocrypt-NG/Picocrypt-NG/.github/workflows/$GH_ATTESTATION_CALLER@refs/heads/main"
+    fi
+    jq -cn --arg identity "$identity" --arg caller "$caller" --arg sha "$GITHUB_SHA" '
+      [{verificationResult:{signature:{certificate:{issuer:"https://token.actions.githubusercontent.com",
+      subjectAlternativeName:$identity,buildSignerURI:$identity,buildSignerDigest:$sha,
+      buildConfigURI:$caller,buildConfigDigest:$sha,sourceRepositoryURI:"https://github.com/Picocrypt-NG/Picocrypt-NG",
+      sourceRepositoryDigest:$sha,sourceRepositoryRef:"refs/heads/main",runnerEnvironment:"github-hosted"}}}}]' \
+      | jq --arg policy "$GH_ATTESTATION_POLICY" '
+        if $policy == "empty" then []
+        elif $policy == "duplicate" then . + .
+        elif $policy == "mixed" then . + [.[0] | .verificationResult.signature.certificate.buildConfigURI = "https://github.com/Picocrypt-NG/Picocrypt-NG/.github/workflows/untrusted.yml@refs/heads/main"]
+        else . end'
     ;;
   "--method POST repos/Picocrypt-NG/Picocrypt-NG/releases --input -")
     cat > "$GH_DRAFT_CREATE_CAPTURE"
@@ -1601,12 +1697,14 @@ case "$*" in
       jq -c \
         --arg default_tag "2.19" \
         --arg default_target "0123456789abcdef0123456789abcdef01234567" \
+        --argjson invalid_body "$GH_INVALID_PATCH_BODY" \
         '. as $patch
          | $patch + {
              id: 42,
              tag_name: ($patch.tag_name // $default_tag),
              target_commitish: ($patch.target_commitish // $default_target),
              draft: (if ($patch | has("draft")) then $patch.draft else true end),
+             body: (if $invalid_body then "unverified PATCH response body" else $patch.body end),
              prerelease: ($patch.prerelease // false)
            }' \
         "$input_path"
@@ -1661,11 +1759,14 @@ printf '%s\n' "$EXPECTED_HEAD"
 	}
 
 	command := exec.Command("bash", script, mode, "2.19")
+	outputsPath := filepath.Join(temp, "gate-outputs")
 	command.Dir = workspace
 	command.Env = append(os.Environ(),
 		"PATH="+temp+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"FILES="+strings.Join(localPaths, "\n"),
 		"BODY_PATH="+bodyPath,
+		"OWNER_WORKFLOW="+options.ownerWorkflow,
+		"GITHUB_OUTPUT="+outputsPath,
 		"GH_CALLS="+callsPath,
 		"GH_UPLOAD_MODE="+strconv.FormatBool(mode == "upload"),
 		"GH_RELEASE_LISTING_FAILURE="+strconv.FormatBool(options.releaseListingFailure),
@@ -1700,16 +1801,32 @@ printf '%s\n' "$EXPECTED_HEAD"
 		"GH_REMOTE_ASSETS_DIR="+remoteDir,
 		"GH_PATCH_CAPTURE="+patchCapturePath,
 		"GH_ATTESTATION_FAILURE="+options.attestationFailure,
+		"GH_ATTESTATION_CALLER="+options.attestationCaller,
+		"GH_ATTESTATION_POLICY="+options.attestationPolicy,
 		"GH_INVALID_PATCH_RESPONSE="+strconv.FormatBool(options.invalidPatchResponse),
+		"GH_INVALID_PATCH_BODY="+strconv.FormatBool(options.invalidPatchBody),
 		"COSIGN_FAILURE="+options.cosignFailure,
 		"GITHUB_WORKSPACE="+workspace,
 		"GITHUB_WORKFLOW_REF=Picocrypt-NG/Picocrypt-NG/.github/workflows/"+workflow+"@refs/heads/main",
 		"GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG",
 		"GITHUB_SHA="+releaseTestSHA,
+		"GITHUB_WORKFLOW_SHA="+releaseTestSHA,
 		"EXPECTED_HEAD="+checkoutHEAD,
 		"EXPECTED_WORKSPACE="+workspace,
 	)
-	output, runErr := command.CombinedOutput()
+	if options.finalize != nil {
+		command.Env = append(command.Env, "FINALIZE="+*options.finalize)
+	}
+	var output, stdout []byte
+	var runErr error
+	if mode == "inspect-owner" {
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
+		stdout, runErr = command.Output()
+		output = append(append([]byte(nil), stdout...), stderr.Bytes()...)
+	} else {
+		output, runErr = command.CombinedOutput()
+	}
 	var remoteAssets []releaseAssetFixture
 	if content, err := os.ReadFile(assetsPath); err != nil {
 		t.Fatalf("read staged assets: %v", err)
@@ -1722,6 +1839,8 @@ printf '%s\n' "$EXPECTED_HEAD"
 
 	return releaseGateResult{
 		output:           string(output),
+		stdout:           string(stdout),
+		outputs:          readOptionalFile(t, outputsPath),
 		calls:            readOptionalFile(t, callsPath),
 		patchInput:       readOptionalFile(t, patchCapturePath),
 		tagCreateInput:   readOptionalFile(t, tagCreateCapturePath),
