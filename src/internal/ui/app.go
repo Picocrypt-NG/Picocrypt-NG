@@ -58,8 +58,6 @@ var appIconData []byte
 
 // Initial desktop size; subsequent resizing belongs to the user.
 const (
-	mainWindowTitle = "Picocrypt NG"
-
 	windowWidth  = 480
 	windowHeight = 640
 	buttonWidth  = 54
@@ -451,7 +449,7 @@ func (a *App) Run(startupPaths []string) {
 	// taskbars/docks show the .desktop Name or WM_CLASS, and mixing in the
 	// version made the user-visible name inconsistent across DEs. The version
 	// stays available via the CLI and the packaged file metadata.
-	a.Window = a.fyneApp.NewWindow(mainWindowTitle)
+	a.Window = a.fyneApp.NewWindow("Picocrypt NG")
 	// NewWindow initializes the GLFW driver; native window creation happens on Show.
 	prepareWindowIdentity()
 	a.Window.SetIcon(appIcon)
@@ -741,23 +739,23 @@ func (a *App) buildUI() fyne.CanvasObject {
 }
 
 func (a *App) initializeDesktopWindow() {
-    if isMobile() || a.Window == nil {
-        return
-    }
+	if isMobile() || a.Window == nil {
+		return
+	}
 
-    initialSize := fyne.NewSize(windowWidth, windowHeight)
-    if content := a.Window.Content(); content != nil {
-        initialSize = initialSize.Max(content.MinSize())
-    }
+	initialSize := fyne.NewSize(windowWidth, windowHeight)
+	if content := a.Window.Content(); content != nil {
+		initialSize = initialSize.Max(content.MinSize())
+	}
 
-    a.Window.SetFixedSize(false)
-    if !a.restoreDesktopWindowSize() {
-        a.Window.Resize(initialSize)
-    }
+	a.Window.SetFixedSize(false)
+	if !a.restoreDesktopWindowSize() {
+		a.Window.Resize(initialSize)
+	}
 
-    // Restore the saved position only when the preference is enabled and a position exists.
-    // Otherwise, leave initial placement to the normal Fyne/window-manager behavior.
-    a.restoreDesktopWindowPosition()
+	// Restore the saved position only when the preference is enabled and a position exists.
+	// Otherwise, leave initial placement to the normal Fyne/window-manager behavior.
+	a.restoreDesktopWindowPosition()
 }
 
 func commentsLabelText(mode string, states ...app.CommentsPreviewState) string {
