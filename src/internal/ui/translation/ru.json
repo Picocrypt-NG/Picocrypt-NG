@@ -338,5 +338,8 @@
   "comments.d1_placeholder": "Зашифрованный комментарий; доступен после проверки.",
   "pcv3.archive.picker_failed.title": "Не удалось выбрать папку",
   "pcv3.archive.destination_failed.title": "Не удалось открыть папку для извлечения",
-  "pcv3.archive.destination_failed.body": "Выберите другую папку или повторите попытку."
+  "pcv3.archive.destination_failed.body": "Выберите другую папку или повторите попытку.",
+  "settings.menu": "Настройки",
+  "settings.remember_window_position": "Запоминать положение окна",
+  "settings.remember_window_size": "Запоминать размер окна"
 }

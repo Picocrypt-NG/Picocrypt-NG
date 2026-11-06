@@ -332,5 +332,8 @@
   "comments.d1_placeholder": "Comentario cifrado; disponible tras la verificación.",
   "pcv3.archive.picker_failed.title": "No se puede seleccionar la carpeta",
   "pcv3.archive.destination_failed.title": "No se puede abrir la carpeta de extracción",
-  "pcv3.archive.destination_failed.body": "Seleccione otra carpeta o inténtelo de nuevo."
+  "pcv3.archive.destination_failed.body": "Seleccione otra carpeta o inténtelo de nuevo.",
+  "settings.menu": "Opciones",
+  "settings.remember_window_position": "Recordar la posición de la ventana",
+  "settings.remember_window_size": "Recordar el tamaño de la ventana"
 }

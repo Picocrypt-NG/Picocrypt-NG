@@ -326,5 +326,8 @@
   "comments.d1_placeholder": "एन्क्रिप्ट की गई टिप्पणी; सत्यापन के बाद उपलब्ध होगी।",
   "pcv3.archive.picker_failed.title": "फ़ोल्डर नहीं चुना जा सका",
   "pcv3.archive.destination_failed.title": "निकालने का फ़ोल्डर नहीं खोला जा सका",
-  "pcv3.archive.destination_failed.body": "दूसरा फ़ोल्डर चुनें या फिर कोशिश करें।"
+  "pcv3.archive.destination_failed.body": "दूसरा फ़ोल्डर चुनें या फिर कोशिश करें।",
+  "settings.menu": "सेटिंग्स",
+  "settings.remember_window_position": "विंडो की स्थिति याद रखें",
+  "settings.remember_window_size": "विंडो का आकार याद रखें"
 }

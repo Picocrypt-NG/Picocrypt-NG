@@ -123,6 +123,7 @@ type App struct {
 	clearButton        *widget.Button
 	aboutButton        *widget.Button
 	languageSelector   *languageSelector
+	settingsSelector   *settingsSelector
 	aboutVersionLabel  *widget.Label
 	mainContent        *fyne.Container
 	configurationForm  *fyne.Container
@@ -524,6 +525,8 @@ func (a *App) handleCloseRequest() {
 	if snap.Working || snap.ShowProgress {
 		return
 	}
+	a.saveDesktopWindowPosition()
+	a.saveDesktopWindowSize()
 	a.beginOrderlyShutdown()
 }
 
@@ -670,7 +673,15 @@ func (a *App) buildUI() fyne.CanvasObject {
 	a.aboutButton.Importance = widget.LowImportance
 
 	a.languageSelector = newLanguageSelector(a)
-	headerLeft := container.NewHBox(a.aboutButton, a.languageSelector.object())
+	headerObjects := []fyne.CanvasObject{
+		a.aboutButton,
+	}
+	if supportsWindowPositionPersistence() {
+		a.settingsSelector = newSettingsSelector(a)
+		headerObjects = append(headerObjects, a.settingsSelector.object())
+	}
+	headerObjects = append(headerObjects, a.languageSelector.object())
+	headerLeft := container.NewHBox(headerObjects...)
 	headerRow := container.NewBorder(nil, nil, headerLeft, a.clearButton, a.inputLabel)
 
 	// Password section (from password_section.go)
@@ -731,12 +742,20 @@ func (a *App) initializeDesktopWindow() {
 	if isMobile() || a.Window == nil {
 		return
 	}
-	size := fyne.NewSize(windowWidth, windowHeight)
+
+	initialSize := fyne.NewSize(windowWidth, windowHeight)
 	if content := a.Window.Content(); content != nil {
-		size = size.Max(content.MinSize())
+		initialSize = initialSize.Max(content.MinSize())
 	}
+
 	a.Window.SetFixedSize(false)
-	a.Window.Resize(size)
+	if !a.restoreDesktopWindowSize() {
+		a.Window.Resize(initialSize)
+	}
+
+	// Restore the saved position only when the preference is enabled and a position exists.
+	// Otherwise, leave initial placement to the normal Fyne/window-manager behavior.
+	a.restoreDesktopWindowPosition()
 }
 
 func commentsLabelText(mode string, states ...app.CommentsPreviewState) string {

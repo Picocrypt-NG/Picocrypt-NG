@@ -326,5 +326,8 @@
   "comments.d1_placeholder": "Encrypted comment; available after verification.",
   "pcv3.archive.picker_failed.title": "Cannot select folder",
   "pcv3.archive.destination_failed.title": "Cannot open extraction folder",
-  "pcv3.archive.destination_failed.body": "Choose another folder or try again."
+  "pcv3.archive.destination_failed.body": "Choose another folder or try again.",
+  "settings.menu": "Settings",
+  "settings.remember_window_position": "Remember window position",
+  "settings.remember_window_size": "Remember window size"
 }

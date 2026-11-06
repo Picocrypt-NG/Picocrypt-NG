@@ -320,5 +320,8 @@
   "comments.d1_placeholder": "加密备注；验证后可查看。",
   "pcv3.archive.picker_failed.title": "无法选择文件夹",
   "pcv3.archive.destination_failed.title": "无法打开解压文件夹",
-  "pcv3.archive.destination_failed.body": "请选择其他文件夹或重试。"
+  "pcv3.archive.destination_failed.body": "请选择其他文件夹或重试。",
+  "settings.menu": "设置",
+  "settings.remember_window_position": "记住窗口位置",
+  "settings.remember_window_size": "记住窗口大小"
 }
