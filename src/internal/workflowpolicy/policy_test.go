@@ -263,6 +263,9 @@ func TestReleaseJobsRequireMainBranchAndReleaseEnvironment(t *testing.T) {
 			workflow := mustReadWorkflowDoc(t, tc.path)
 			releaseJob := mustJob(t, workflow, tc.job)
 			wantGuard := releaseGuard
+			if tc.name == "build-linux" {
+				wantGuard = "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && " + linuxDirectInvocation + " }}"
+			}
 			if tc.name == "build-windows" || tc.name == "build-windows-legacy" {
 				wantGuard = signPathReleaseGuard
 			}
@@ -283,7 +286,11 @@ func TestReleaseWorkflowsRequireManualDispatchWithoutDefaultPublication(t *testi
 	for _, tc := range releaseWorkflowCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			workflow := mustReadWorkflowDoc(t, tc.path)
-			if len(workflow.On.OtherEvents) != 0 {
+			if tc.name == "build-linux" {
+				if len(workflow.On.OtherEvents) != 1 || workflow.On.OtherEvents["workflow_call"] == nil {
+					t.Fatal("Linux may add only its guarded workflow_call alongside direct dispatch")
+				}
+			} else if len(workflow.On.OtherEvents) != 0 {
 				t.Fatalf("automatic release workflow triggers = %v; want only workflow_dispatch", workflow.On.OtherEvents)
 			}
 			input, ok := workflow.On.WorkflowDispatch.Inputs["publish_release"]

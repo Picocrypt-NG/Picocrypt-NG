@@ -71,7 +71,11 @@ func TestReleaseBuildsValidateRequestsBeforeDependencies(t *testing.T) {
 			if len(build.Steps) < 2 || !strings.HasPrefix(build.Steps[0].Uses, "actions/checkout@") || build.Steps[1].Name != check.Name {
 				t.Fatal("release requests must be checked immediately after checkout, before dependencies or builds")
 			}
-			if build.If != "" || (build.ContinueOnError != nil && build.ContinueOnError != false) ||
+			wantIf := ""
+			if tc.name == "build-linux" {
+				wantIf = "${{ " + linuxDirectInvocation + " }}"
+			}
+			if build.If != wantIf || (build.ContinueOnError != nil && build.ContinueOnError != false) ||
 				check.If != "" || (check.ContinueOnError != nil && check.ContinueOnError != false) {
 				t.Fatal("invalid release requests must fail the build unconditionally")
 			}

@@ -152,14 +152,14 @@ func TestValidationKeepsReadOnlyCeilingAndNativeLinuxSubgraph(t *testing.T) {
 func TestLinuxUnsignedOwnerDispatchVerifiesArtifactsBeforeSigning(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-linux.yml")
 	verify := mustJob(t, workflow, "verify-linux")
-	if workflow.On.WorkflowDispatch.Inputs["publish_release"].Default != false || len(workflow.On.OtherEvents) != 0 {
+	if workflow.On.WorkflowDispatch.Inputs["publish_release"].Default != false || len(workflow.On.OtherEvents) != 1 || workflow.On.OtherEvents["workflow_call"] == nil {
 		t.Fatal("the registered Linux owner must retain its default unsigned manual dispatch")
 	}
-	if verify.If != "${{ always() }}" || fmt.Sprint(verify.Needs) != "[prepare build-amd64 build-arm64]" {
+	if verify.If != "${{ always() && "+linuxDirectInvocation+" }}" || fmt.Sprint(verify.Needs) != "[prepare build-amd64 build-arm64]" {
 		t.Fatal("unsigned dispatch must run the verifier and reject failed, skipped or cancelled producers")
 	}
 	coordinator := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/release.yml"), "verify-linux")
-	if coordinator.If != verify.If || !reflect.DeepEqual(coordinator.Needs, verify.Needs) ||
+	if coordinator.If != "${{ always() }}" || !reflect.DeepEqual(coordinator.Needs, verify.Needs) ||
 		coordinator.RunsOn != verify.RunsOn || coordinator.TimeoutMinutes != verify.TimeoutMinutes || !reflect.DeepEqual(coordinator.Env, verify.Env) {
 		t.Fatal("the owner and coordinator must retain the same Linux artifact source and execution boundary")
 	}
@@ -178,7 +178,7 @@ func TestLinuxUnsignedOwnerDispatchVerifiesArtifactsBeforeSigning(t *testing.T) 
 	if fmt.Sprint(release.Needs) != "[prepare build-amd64 build-arm64 verify-linux]" {
 		t.Fatal("Linux signing must require successful read-only artifact verification")
 	}
-	if release.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}" {
+	if release.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && "+linuxDirectInvocation+" }}" {
 		t.Fatal("artifact validation must not relax the existing main-branch publication guard")
 	}
 }

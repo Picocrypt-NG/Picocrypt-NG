@@ -1419,7 +1419,7 @@ func runReleaseGateWithOptions(
 	if err := os.MkdirAll(localDir, 0o700); err != nil {
 		t.Fatalf("create local fixture directory: %v", err)
 	}
-	for _, path := range []string{releaseGateScriptPath, releaseManifestScriptPath, releaseBodyScriptPath, releaseCertificatePolicyPath} {
+	for _, path := range []string{releaseGateScriptPath, releaseManifestScriptPath, releaseBodyScriptPath, releaseCertificatePolicyPath, ".github/actions/sign-and-attest/verify-primary.sh"} {
 		content, err := os.ReadFile(filepath.Join(root, path))
 		if err != nil {
 			t.Fatalf("read frozen release helper %s: %v", path, err)

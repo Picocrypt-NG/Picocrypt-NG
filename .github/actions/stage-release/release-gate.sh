@@ -405,32 +405,8 @@ download_asset() {
 }
 
 verify_primary() {
-  local name="$1" workflow="$2"
-  case "$workflow" in
-    build-linux.yml|build-macos.yml|build-windows.yml|build-windows-legacy.yml|build-android.yml|build-appimage.yml|build-snapcraft.yml) ;;
-    *) echo "release gate: unknown canonical workflow owner" >&2; return 1 ;;
-  esac
-  local artifact="$download_dir/$name"
-  local bundle="$download_dir/$name.sigstore.json"
-  local identity="https://github.com/$repo/.github/workflows/$workflow@refs/heads/main"
-  local verified="$work/verified-provenance.json"
-  cosign verify-blob "$artifact" \
-    --bundle "$bundle" \
-    --certificate-identity "$identity" \
-    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-    --certificate-github-workflow-sha "$source_sha" \
-    --certificate-github-workflow-ref "refs/heads/main" \
-    --certificate-github-workflow-repository "$repo" || return 1
-  gh attestation verify "$artifact" \
-    --repo "$repo" \
-    --cert-identity "$identity" \
-    --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
-    --signer-digest "$source_sha" \
-    --source-ref "refs/heads/main" \
-    --source-digest "$source_sha" \
-    --predicate-type "https://slsa.dev/provenance/v1" \
-    --deny-self-hosted-runners --format json > "$verified" || return 1
-  bash "$(dirname -- "${BASH_SOURCE[0]}")/../sign-and-attest/verify-certificate.sh" online "$verified" "$workflow" "$source_sha"
+  GITHUB_REPOSITORY="$repo" bash "$(dirname -- "${BASH_SOURCE[0]}")/../sign-and-attest/verify-primary.sh" \
+    "$download_dir/$1" "$2" "$source_sha"
 }
 
 verify_remote_pair() {
