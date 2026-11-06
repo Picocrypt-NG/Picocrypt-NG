@@ -39,6 +39,32 @@ def fetch_fixture(variable, url, digest, destination):
 
 
 class AppImageArchiveTests(unittest.TestCase):
+    def test_directory_filter_reentry_accepts_one_header_and_refuses_real_duplicates(self):
+        for duplicate in ("", "AppDir/usr", "AppDir//usr", "AppDir/./usr"):
+            with self.subTest(duplicate=duplicate), tempfile.TemporaryDirectory() as temporary:
+                work = Path(temporary)
+                archive = work / "AppDir.tar"
+                with tarfile.open(archive, "w") as output:
+                    for name, kind in (("AppDir", tarfile.DIRTYPE),
+                                       ("AppDir/usr", tarfile.DIRTYPE),
+                                       ("AppDir/usr/application", tarfile.REGTYPE)):
+                        member = tarfile.TarInfo(name)
+                        member.mode, member.type = 0o755, kind
+                        output.addfile(member)
+                    if duplicate:
+                        member = tarfile.TarInfo(duplicate)
+                        member.mode, member.type = 0o755, tarfile.DIRTYPE
+                        output.addfile(member)
+                destination = work / "unpacked"
+                result = subprocess.run([sys.executable, str(SCRIPTS / "extract-appimage-appdir.py"),
+                                         str(archive), str(destination)], capture_output=True,
+                                        text=True, timeout=30, check=False)
+                self.assertEqual(result.returncode == 0, not duplicate, result.stdout + result.stderr)
+                if duplicate:
+                    self.assertFalse(destination.exists(), "Duplicate archive left signing input")
+                else:
+                    self.assertTrue((destination / "AppDir/usr/application").is_file())
+
     def test_signing_input_rejects_escapes_and_duplicate_aliases_before_secrets(self):
         cases = (
             ("application", "AppDir/AppRun", "", "", tarfile.REGTYPE, True),
