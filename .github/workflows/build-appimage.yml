@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publish artifacts to the GitHub release. Existing assets are never overwritten."
+        description: "Request production GPG signing and release staging. False validates unsigned packaging without release secrets."
         required: false
         type: boolean
         default: false
@@ -18,7 +18,6 @@ concurrency:
 
 jobs:
   build:
-    if: ${{ github.ref == 'refs/heads/main' }}
     # ubuntu-22.04 (glibc 2.35) is the portability floor. AppImage was dropped once
     # "for better portability" (Changelog v1.34); building on the newest runner's glibc
     # forward-binds symbols that fail on older distros and would reproduce that. GL and
@@ -26,116 +25,154 @@ jobs:
     # are provided by the host, which is what keeps the AppImage portable (incl. Nvidia).
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    outputs:
+      signing-input-id: ${{ steps.signing-input.outputs.artifact-id }}
+      signing-input-sha256: ${{ steps.prepare-signing-input.outputs.sha256 }}
+    steps:
+    - name: Validate AppImage dispatch inputs
+      shell: bash
+      env:
+        PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        SOURCE_EVENT: ${{ github.event_name }}
+        SOURCE_REF: ${{ github.ref }}
+      run: |
+        case "$PUBLISH_RELEASE" in
+          true|false) ;;
+          *) echo "::error::publish_release must be a boolean"; exit 2 ;;
+        esac
+        if [[ $PUBLISH_RELEASE == true && ( $SOURCE_EVENT != workflow_dispatch || $SOURCE_REF != refs/heads/main ) ]]; then
+          echo "::error::Production signing requires a main-branch workflow dispatch"
+          exit 2
+        fi
+
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Bind AppImage source and canonical manifest
+      id: source
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$version" | sha256sum)
+        {
+          echo "source-sha=$SOURCE_SHA"
+          echo "version=$version"
+          echo "manifest-digest=${digest%% *}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Build unsigned AppImage artifacts
+      uses: ./.github/actions/build-appimage
+      with:
+        source-sha: ${{ steps.source.outputs.source-sha }}
+        version: ${{ steps.source.outputs.version }}
+        manifest-digest: ${{ steps.source.outputs.manifest-digest }}
+
+    - name: Prepare signing input
+      if: ${{ inputs.publish_release }}
+      id: prepare-signing-input
+      run: |
+        tar --create --file AppDir.tar AppDir
+        DIGEST=$(sha256sum < AppDir.tar)
+        echo "sha256=${DIGEST%% *}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload signing input
+      if: ${{ inputs.publish_release }}
+      id: signing-input
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: appimage-signing-input-${{ github.sha }}
+        path: AppDir.tar
+        if-no-files-found: error
+        compression-level: 0
+
+  sign:
+    needs: build
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
     environment: release
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-    - name: Setup Go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "1.27.3"
-        cache-dependency-path: src/go.sum
+        persist-credentials: false
 
-    - name: Install packages
+    - name: Download same-run signing input
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.build.outputs.signing-input-id }}
+        path: signing-input
+
+    - name: Check and extract signing input
+      env:
+        EXPECTED_SHA256: ${{ needs.build.outputs.signing-input-sha256 }}
+      run: |
+        [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+        cd signing-input
+        echo "$EXPECTED_SHA256  AppDir.tar" | sha256sum --check --strict --status
+        cd ..
+        python3 .github/scripts/extract-appimage-appdir.py signing-input/AppDir.tar signing-work
+
+    - name: Install packaging dependencies
       run: |
         sudo apt update
-        sudo apt install -y gcc pkg-config libgl1-mesa-dev xorg-dev libgtk-3-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev libgl1 desktop-file-utils librsvg2-bin wget
-
-    - name: Build GUI
-      run: |
-        cd src
-        GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=1 go build -v -tags migrated_fynedo -ldflags="-s -w" -o Picocrypt-NG ./cmd/picocrypt
+        sudo apt install -y curl jq desktop-file-utils file gnupg
 
     - name: Fetch and verify AppImage tooling
       run: |
-        # Pinned by sha256 and verified (fail loud), like UPX in build-linux. These are
-        # linuxdeploy/appimagetool "continuous" builds; if upstream republishes them this
-        # check fails and the pin must be refreshed -- intentional, not silent drift.
-        wget -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-        echo "8aea8da0f7f7039d2a2cecb14657d752a222a5e1d3825caeef186c82f751cdd1  linuxdeploy" | sha256sum --check --strict --status
-        wget -O appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-        echo "95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6  appimagetool" | sha256sum --check --strict --status
-        chmod +x linuxdeploy appimagetool
-        # linuxdeploy invokes appimagetool from PATH during --output appimage.
-        sudo mv appimagetool /usr/local/bin/appimagetool
+        mkdir .appimage-tools
+        bash .github/scripts/install-appimage-build-tools.sh .appimage-tools
 
     - name: Import GPG signing key
       env:
         GPG_PRIVATE_KEY: ${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}
       run: |
-        # Dedicated release-signing key, provisioned as a repo secret (ASCII-armored
-        # private key). Fail loud rather than silently shipping an unsigned release.
+        set -euo pipefail
         test -n "$GPG_PRIVATE_KEY" || { echo "::error::APPIMAGE_GPG_PRIVATE_KEY secret is empty"; exit 1; }
+        SIGN_KEY=$(jq -er '.expected_fingerprint' .github/toolchains/appimage-verifier/manifest.json)
+        [[ "$SIGN_KEY" =~ ^[0-9A-F]{40}$ ]] || exit 1
+        GNUPGHOME=$(mktemp -d "$RUNNER_TEMP/appimage-signing.XXXXXXXX")
+        chmod 700 "$GNUPGHOME"
+        export GNUPGHOME
+        echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+        printf 'allow-loopback-pinentry\n' > "$GNUPGHOME/gpg-agent.conf"
         printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
-        # appimagetool reads APPIMAGETOOL_SIGN_PASSPHRASE and feeds gpg via loopback;
-        # gpg-agent must be told to accept it without an interactive pinentry prompt.
-        mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
-        echo "allow-loopback-pinentry" >> "$HOME/.gnupg/gpg-agent.conf"
-        gpgconf --kill gpg-agent
+        ACTUAL=$(gpg --batch --with-colons --list-secret-keys "$SIGN_KEY" | awk -F: '$1 == "sec" { primary=1; next } primary && $1 == "fpr" { print $10; primary=0 }')
+        test "$ACTUAL" = "$SIGN_KEY" || { echo "::error::expected release signing key is unavailable"; exit 1; }
+        echo "SIGN_KEY=$SIGN_KEY" >> "$GITHUB_ENV"
 
-    - name: Build AppImage
+    - name: Build signed AppImage
       env:
-        # GitHub runners lack FUSE; run the tools (and later the result) extracted.
         APPIMAGE_EXTRACT_AND_RUN: "1"
-        # The Go binary is already stripped (-s -w) and the bundled system libs gain
-        # little from stripping; skipping it removes a fragile step (linuxdeploy's strip
-        # aborts on libraries using newer ELF sections, e.g. .relr.dyn) for ~2-3 MB.
-        NO_STRIP: "true"
-        # Passphrase for the release-signing key; consumed by appimagetool's --sign.
         APPIMAGETOOL_SIGN_PASSPHRASE: ${{ secrets.APPIMAGE_GPG_PASSPHRASE }}
       run: |
         VERSION=$(cat VERSION)
-        mkdir -p stage AppDir/usr/share/metainfo
-
-        # Desktop entry: point Exec at the bundled binary's basename.
-        cp dist/linux/io.github.picocrypt_ng.Picocrypt-NG.desktop stage/
-        sed -i 's|^Exec=.*|Exec=Picocrypt-NG %f|' stage/io.github.picocrypt_ng.Picocrypt-NG.desktop
-
-        # App icon (must match the desktop Icon= key) rendered from the same SVG as the .deb.
-        rsvg-convert --format png --width 256 --height 256 \
-          --output stage/io.github.picocrypt_ng.Picocrypt-NG.png images/key.svg
-
-        # AppStream metadata so AppImage-aware tooling can show app info / update sources.
-        cp dist/linux/io.github.picocrypt_ng.Picocrypt-NG.metainfo.xml AppDir/usr/share/metainfo/
-
-        # Deterministic output filename (independent of the binary's internal version).
-        export OUTPUT="Picocrypt-NG-${VERSION}-x86_64.AppImage"
-        export VERSION
-
-        # AppImageUpdate delta-update transport: linuxdeploy embeds this string in the
-        # .upd_info ELF section and emits the matching .zsync. The glob (not the literal
-        # version) is what lets an installed build discover every future release; `latest`
-        # resolves to the GitHub release marked "Latest" (non-prerelease). owner/repo come
-        # from the running repo so forks point at themselves, not upstream.
+        OUTPUT="Picocrypt-NG-${VERSION}-x86_64.AppImage"
         UPDATE_INFORMATION="gh-releases-zsync|${GITHUB_REPOSITORY%/*}|${GITHUB_REPOSITORY#*/}|latest|Picocrypt-NG-*-x86_64.AppImage.zsync"
-        # GPG signing: key id is the primary fingerprint from the imported keyring.
-        SIGN_KEY=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
-        test -n "$SIGN_KEY" || { echo "::error::no signing key in keyring"; exit 1; }
-        # Both env-var spellings are exported on purpose: the pinned linuxdeploy build's
-        # bundled appimage plugin uses the legacy names (OUTPUT/VERSION already prove the
-        # legacy contract holds), while the LDAI_-prefixed names cover a newer plugin once
-        # the tooling pin is refreshed. The verification below fails loud if neither path
-        # produced a signed AppImage + .zsync, so a silent no-op cannot ship.
-        export UPDATE_INFORMATION LDAI_UPDATE_INFORMATION="$UPDATE_INFORMATION"
-        export SIGN=1 LDAI_SIGN=1 SIGN_KEY LDAI_SIGN_KEY="$SIGN_KEY"
-
-        ./linuxdeploy \
-          --appdir AppDir \
-          --executable src/Picocrypt-NG \
-          --desktop-file stage/io.github.picocrypt_ng.Picocrypt-NG.desktop \
-          --icon-file stage/io.github.picocrypt_ng.Picocrypt-NG.png \
-          --output appimage
-
-        # Fail loud: the build must have produced the AppImage, its .zsync, and a real
-        # signature from OUR key -- never ship a half-configured release artifact.
+        export VERSION
+        ARCH=x86_64 ./.appimage-tools/appimagetool \
+          --runtime-file .appimage-tools/runtime --updateinformation "$UPDATE_INFORMATION" \
+          --sign --sign-key "$SIGN_KEY" signing-work/AppDir "$OUTPUT"
         test -f "$OUTPUT"
-        test -f "${OUTPUT}.zsync" || { echo "::error::no .zsync produced -- update information was not honored"; exit 1; }
-        objcopy -O binary --only-section=.sha256_sig "$OUTPUT" sig.bin
-        test -s sig.bin || { echo "::error::.sha256_sig section empty -- AppImage was not signed"; exit 1; }
-        objcopy -O binary --only-section=.sig_key "$OUTPUT" sig_key.asc
-        EMBEDDED_FPR=$(gpg --show-keys --with-colons sig_key.asc | awk -F: '/^fpr:/ {print $10; exit}')
-        test "$EMBEDDED_FPR" = "$SIGN_KEY" || { echo "::error::embedded signer $EMBEDDED_FPR != release key $SIGN_KEY"; exit 1; }
-        rm -f sig.bin sig_key.asc
+        test -s "${OUTPUT}.zsync"
+
+    - name: Remove production signing key
+      if: ${{ always() }}
+      run: |
+        if [[ -n "${GNUPGHOME:-}" ]]; then
+          trap 'rm -rf -- "$GNUPGHOME"' EXIT
+          gpgconf --kill gpg-agent
+        fi
+
+    - name: Verify AppImage signature
+      run: |
+        VERSION=$(cat VERSION)
+        APP="Picocrypt-NG-${VERSION}-x86_64.AppImage"
+        bash .github/scripts/verify-appimage.sh "$APP"
 
     - name: Smoke test AppImage
       env:
@@ -143,31 +180,22 @@ jobs:
       run: |
         VERSION=$(cat VERSION)
         APP="Picocrypt-NG-${VERSION}-x86_64.AppImage"
-        # --version drives the embedded CLI (cli.Execute) and exits before Fyne/OpenGL
-        # init, so this needs no display. It still loads every DT_NEEDED shared library at
-        # startup, so a broken/incomplete bundle fails here instead of shipping silently.
         out=$("./$APP" --version)
         echo "$out"
         echo "$out" | grep -qi picocrypt
 
-    - name: Prepare to upload artifacts
-      run: |
-        VERSION=$(cat VERSION)
-        mkdir -p out
-        mv "Picocrypt-NG-${VERSION}-x86_64.AppImage" out/
-        mv "Picocrypt-NG-${VERSION}-x86_64.AppImage.zsync" out/
-
-    - name: Upload artifacts
+    - name: Upload signed artifacts
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: build-appimage-amd64
-        # AppImage is already squashfs-compressed; re-zipping it gains nothing.
-        path: out/*
+        path: |
+          Picocrypt-NG-*-x86_64.AppImage
+          Picocrypt-NG-*-x86_64.AppImage.zsync
         if-no-files-found: error
         compression-level: 0
 
   release:
-    needs: build
+    needs: sign
     if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20

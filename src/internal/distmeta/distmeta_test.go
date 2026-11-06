@@ -292,12 +292,60 @@ func TestDesktopIconHasMatchingHicolorAppIconContract(t *testing.T) {
 	}
 
 	const iconInstallTarget = `"$package_root/usr/share/icons/hicolor/scalable/apps/` + linuxDesktopAppID + `.svg"`
-	for _, relPath := range []string{
-		".github/workflows/build-linux.yml",
-		".github/workflows/pr-test-build-linux.yml",
+	type buildStep struct {
+		Uses string            `yaml:"uses"`
+		Run  string            `yaml:"run"`
+		If   string            `yaml:"if"`
+		With map[string]string `yaml:"with"`
+	}
+	for _, tc := range []struct {
+		path, job string
+		composite bool
+	}{
+		{".github/workflows/build-linux.yml", "build-amd64", true},
+		{".github/workflows/pr-test-build-linux.yml", "build", false},
 	} {
-		t.Run(relPath, func(t *testing.T) {
-			workflow := string(mustReadFile(t, relPath))
+		t.Run(tc.path, func(t *testing.T) {
+			relPath := tc.path
+			var document struct {
+				Jobs map[string]struct {
+					Steps []buildStep `yaml:"steps"`
+				} `yaml:"jobs"`
+			}
+			if err := yaml.Unmarshal(mustReadFile(t, relPath), &document); err != nil {
+				t.Fatalf("parse %s: %v", relPath, err)
+			}
+			steps := document.Jobs[tc.job].Steps
+			if tc.composite {
+				if len(steps) < 2 || !strings.HasPrefix(steps[0].Uses, "actions/checkout@") ||
+					steps[0].With["ref"] != "${{ github.sha }}" {
+					t.Fatal("Linux icon packaging must use the source-pinned checkout")
+				}
+				producer := slices.IndexFunc(steps, func(step buildStep) bool {
+					return step.Uses == "./.github/actions/build-linux"
+				})
+				if producer < 1 || steps[producer].If != "" || steps[producer].With["build_deb"] != "true" {
+					t.Fatal("Linux DEB producer must call the registered build-linux composite")
+				}
+				var action struct {
+					Runs struct {
+						Using string      `yaml:"using"`
+						Steps []buildStep `yaml:"steps"`
+					} `yaml:"runs"`
+				}
+				if err := yaml.Unmarshal(mustReadFile(t, ".github/actions/build-linux/action.yml"), &action); err != nil {
+					t.Fatalf("parse Linux build action: %v", err)
+				}
+				if action.Runs.Using != "composite" {
+					t.Fatal("Linux build action must execute composite steps")
+				}
+				steps = action.Runs.Steps
+			}
+			runs := make([]string, len(steps))
+			for index, step := range steps {
+				runs[index] = step.Run
+			}
+			workflow := strings.Join(runs, "\n")
 			if !strings.Contains(workflow, `xmllint --noout images/key.svg`) {
 				t.Fatalf("%s does not validate images/key.svg before packaging the app icon", relPath)
 			}
@@ -319,6 +367,9 @@ func TestDesktopIconHasMatchingHicolorAppIconContract(t *testing.T) {
 			}
 			if !strings.Contains(workflow, `rsvg-convert --format png --width "$size" --height "$size" --output "$app_icon_png" images/key.svg`) {
 				t.Fatalf("%s does not render PNG app icons from images/key.svg with rsvg-convert", relPath)
+			}
+			if strings.Index(workflow, `xmllint --noout images/key.svg`) >= strings.Index(workflow, `install -m 0644 images/key.svg`) {
+				t.Fatalf("%s must validate images/key.svg before packaging the app icon", relPath)
 			}
 		})
 	}

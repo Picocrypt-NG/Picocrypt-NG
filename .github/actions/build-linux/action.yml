@@ -1,0 +1,332 @@
+name: Build Linux artifacts
+description: Native Linux packaging shared by the owner and validation pilot.
+
+inputs:
+  arch:
+    description: Native target architecture.
+    required: true
+  upx_pkg:
+    description: Pinned architecture-specific UPX archive name.
+    required: true
+  upx_sha256:
+    description: Pinned UPX archive SHA-256.
+    required: true
+  gui_binary:
+    description: Canonical GUI filename.
+    required: true
+  cli_binary:
+    description: Canonical CLI filename.
+    required: true
+  build_deb:
+    description: Whether this architecture owns the DEB package.
+    required: true
+  source-sha:
+    description: Immutable event source SHA from prepare.
+    required: true
+  version:
+    description: VERSION from the prepared source checkout.
+    required: true
+  manifest-digest:
+    description: SHA-256 of the canonical release ownership manifest.
+    required: true
+
+outputs:
+  artifact-id:
+    description: Immutable workflow artifact ID from the official uploader.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-digest:
+    description: SHA-256 of the uploaded ZIP, distinct from payload file hashes.
+    value: ${{ steps.upload.outputs.artifact-digest }}
+  run-attempt:
+    description: Attempt that created these exact bytes.
+    value: ${{ steps.source.outputs.run-attempt }}
+
+runs:
+  using: composite
+  steps:
+    - name: Assert prepared Linux source
+      id: source
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        test "$(cat VERSION)" = "$SOURCE_VERSION"
+        actual=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+    - name: Setup Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: "1.27.3"
+        cache-dependency-path: src/go.sum
+
+    - name: Update repository
+      shell: bash
+      run: |
+        sudo apt update
+
+    - name: Install packages
+      shell: bash
+      run: |
+        sudo apt install -y gcc pkg-config libgl1-mesa-dev xorg-dev libgtk-3-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev wget libxml2-utils librsvg2-bin desktop-file-utils appstream
+
+    - name: Install Linux GUI smoke dependencies
+      if: inputs.arch == 'amd64'
+      shell: bash
+      run: |
+        sudo apt install -y xvfb openbox xdotool wmctrl libgl1-mesa-dri
+
+    - name: Validate dist artefacts
+      shell: bash
+      run: |
+        xmllint --noout dist/mime/application-x-pcv.xml
+        xmllint --noout images/key.svg
+        xmllint --noout images/pcv-icon.svg
+        output=$(desktop-file-validate dist/linux/io.github.picocrypt_ng.Picocrypt-NG.desktop)
+        if [ -n "$output" ]; then echo "$output"; exit 1; fi
+        appstreamcli validate --no-net dist/linux/io.github.picocrypt_ng.Picocrypt-NG.metainfo.xml
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        cd src
+        go mod download
+
+    - name: Test browser PCV3 and legacy compatibility
+      if: inputs.arch == 'amd64'
+      shell: bash
+      run: timeout --kill-after=30s 45m .github/scripts/test-wasm.sh
+
+    - name: Run tests
+      shell: bash
+      env:
+        ARCH: ${{ inputs.arch }}
+      run: |
+        set -euo pipefail
+        cd src
+        if [ "$ARCH" = "amd64" ]; then
+          # Keep package binaries serial and release UI renderer/race memory
+          # between parents. The CLI integration still uses its non-race binary.
+          package_list=$(CGO_ENABLED=1 go list -race -tags migrated_fynedo ./... | awk '$0 != "Picocrypt-NG/internal/ui"' | LC_ALL=C sort)
+          if [[ -z "$package_list" ]]; then
+            echo "No non-UI native Linux packages discovered" >&2
+            exit 1
+          fi
+          mapfile -t packages <<< "$package_list"
+          CGO_ENABLED=1 go test -v -tags migrated_fynedo -race -p 1 -timeout 15m "${packages[@]}"
+          bash ../.github/scripts/test-linux-ui-race.sh
+          PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -timeout 15m -run '^TestCLIIntegration$' ./internal/cli/...
+        else
+          PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -tags migrated_fynedo -timeout 15m ./...
+        fi
+
+    - name: Build GUI
+      shell: bash
+      env:
+        ARCH: ${{ inputs.arch }}
+        GUI_BINARY: ${{ inputs.gui_binary }}
+      run: |
+        cd src
+        if [ "$ARCH" = "amd64" ]; then
+          export GOAMD64=v1
+        fi
+        GOARCH=$ARCH CGO_ENABLED=1 go build -v -tags migrated_fynedo -ldflags="-s -w" -o "$GUI_BINARY" ./cmd/picocrypt
+
+    - name: Smoke test Linux GUI
+      if: inputs.arch == 'amd64'
+      shell: bash
+      env:
+        GUI_BINARY: ${{ inputs.gui_binary }}
+      run: .github/scripts/smoke-linux-gui.sh "src/$GUI_BINARY"
+
+    - name: Build CLI-only (no graphics dependencies)
+      shell: bash
+      env:
+        ARCH: ${{ inputs.arch }}
+        CLI_BINARY: ${{ inputs.cli_binary }}
+      run: |
+        cd src
+        if [ "$ARCH" = "amd64" ]; then
+          export GOAMD64=v1
+        fi
+        GOARCH=$ARCH CGO_ENABLED=1 go build -v -tags cli -ldflags="-s -w" -o "$CLI_BINARY" ./cmd/picocrypt
+
+    - name: Compress with upx
+      shell: bash
+      env:
+        UPX_PKG: ${{ inputs.upx_pkg }}
+        UPX_SHA256: ${{ inputs.upx_sha256 }}
+        GUI_BINARY: ${{ inputs.gui_binary }}
+        CLI_BINARY: ${{ inputs.cli_binary }}
+      run: |
+        wget -O upx.tar.xz "https://github.com/upx/upx/releases/download/v5.2.1/$UPX_PKG.tar.xz"
+        echo "$UPX_SHA256  upx.tar.xz" | sha256sum --check --strict --status
+        tar -xf upx.tar.xz
+        "$UPX_PKG"/upx --lzma "src/$GUI_BINARY"
+        "$UPX_PKG"/upx --lzma "src/$CLI_BINARY"
+
+    - name: Package as .deb
+      shell: bash
+      if: inputs.build_deb == 'true'
+      env:
+        ARCH: ${{ inputs.arch }}
+        GUI_BINARY: ${{ inputs.gui_binary }}
+      run: |
+        package_root="Picocrypt-NG/Picocrypt-NG"
+        install -d "$package_root/DEBIAN"
+        install -d "$package_root/usr/bin"
+        install -d "$package_root/usr/share/applications"
+        install -d "$package_root/usr/share/icons/hicolor/scalable/apps"
+        install -m 0755 "src/$GUI_BINARY" "$package_root/usr/bin/picocrypt-ng-gui"
+        install -m 0644 images/key.svg \
+            "$package_root/usr/share/icons/hicolor/scalable/apps/io.github.picocrypt_ng.Picocrypt-NG.svg"
+        for size in 16 32 48 64 128 256; do
+          app_icon_png="$package_root/usr/share/icons/hicolor/${size}x${size}/apps/io.github.picocrypt_ng.Picocrypt-NG.png"
+          install -d "$(dirname "$app_icon_png")"
+          rsvg-convert --format png --width "$size" --height "$size" --output "$app_icon_png" images/key.svg
+          test -s "$app_icon_png"
+        done
+        VERSION=$(cat VERSION)
+        cat > "$package_root/DEBIAN/control" <<EOF
+        Package: picocrypt-ng
+        Version: $VERSION
+        Architecture: $ARCH
+        Maintainer: Picocrypt-NG
+        Priority: optional
+        Section: utils
+        Depends: shared-mime-info, desktop-file-utils, hicolor-icon-theme
+        Recommends: gtk-update-icon-cache
+        Description: Picocrypt-NG file encryption utility
+        EOF
+        install -m 0644 dist/linux/io.github.picocrypt_ng.Picocrypt-NG.desktop \
+            "$package_root/usr/share/applications/io.github.picocrypt_ng.Picocrypt-NG.desktop"
+        sed -i 's|^Exec=.*|Exec=/usr/bin/picocrypt-ng-gui %f|' \
+            "$package_root/usr/share/applications/io.github.picocrypt_ng.Picocrypt-NG.desktop"
+        install -d "$package_root/usr/share/mime/packages"
+        install -m 0644 dist/mime/application-x-pcv.xml \
+            "$package_root/usr/share/mime/packages/application-x-pcv.xml"
+        for size in 16 32 48 64 128 256; do
+          install -d "$package_root/usr/share/icons/hicolor/${size}x${size}/mimetypes"
+          install -m 0644 "images/pcv-icon-${size}.png" \
+            "$package_root/usr/share/icons/hicolor/${size}x${size}/mimetypes/application-x-pcv.png"
+        done
+        install -d "$package_root/usr/share/icons/hicolor/scalable/mimetypes"
+        install -m 0644 images/pcv-icon.svg \
+            "$package_root/usr/share/icons/hicolor/scalable/mimetypes/application-x-pcv.svg"
+        cat > "$package_root/DEBIAN/postinst" <<'EOF'
+        #!/bin/sh
+        set -e
+        case "$1" in
+          configure)
+            if command -v update-mime-database >/dev/null 2>&1; then
+              update-mime-database /usr/share/mime || true
+            fi
+            if command -v update-desktop-database >/dev/null 2>&1; then
+              update-desktop-database -q /usr/share/applications || true
+            fi
+            if [ -e /usr/share/icons/hicolor/icon-theme.cache ]; then
+              touch /usr/share/icons/hicolor
+              if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+                gtk-update-icon-cache -q -f -t /usr/share/icons/hicolor || true
+              fi
+            fi
+            ;;
+          abort-upgrade|abort-remove|abort-deconfigure)
+            ;;
+        esac
+        exit 0
+        EOF
+        chmod 0755 "$package_root/DEBIAN/postinst"
+        cat > "$package_root/DEBIAN/postrm" <<'EOF'
+        #!/bin/sh
+        set -e
+        case "$1" in
+          remove|purge)
+            if command -v update-mime-database >/dev/null 2>&1; then
+              update-mime-database /usr/share/mime || true
+            fi
+            if command -v update-desktop-database >/dev/null 2>&1; then
+              update-desktop-database -q /usr/share/applications || true
+            fi
+            if [ -e /usr/share/icons/hicolor/icon-theme.cache ]; then
+              touch /usr/share/icons/hicolor
+              if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+                gtk-update-icon-cache -q -f -t /usr/share/icons/hicolor || true
+              fi
+            fi
+            ;;
+          upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+            ;;
+        esac
+        exit 0
+        EOF
+        chmod 0755 "$package_root/DEBIAN/postrm"
+        sh -n "$package_root/DEBIAN/postinst"
+        sh -n "$package_root/DEBIAN/postrm"
+        dpkg-deb -Zxz --build --root-owner-group "$package_root"
+        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/applications/io\.github\.picocrypt_ng\.Picocrypt-NG\.desktop' >/dev/null
+        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/scalable/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.svg' >/dev/null
+        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/16x16/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
+        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/32x32/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
+        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/48x48/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
+        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/64x64/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
+        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/128x128/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
+        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/256x256/apps/io\.github\.picocrypt_ng\.Picocrypt-NG\.png' >/dev/null
+        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/mime/packages/application-x-pcv\.xml' >/dev/null
+        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/[0-9]+x[0-9]+/mimetypes/application-x-pcv\.png' >/dev/null
+        dpkg-deb -c "${package_root}.deb" | grep -E 'usr/share/icons/hicolor/scalable/mimetypes/application-x-pcv\.svg' >/dev/null
+
+    - name: Prepare to upload artifacts
+      shell: bash
+      env:
+        GUI_BINARY: ${{ inputs.gui_binary }}
+        CLI_BINARY: ${{ inputs.cli_binary }}
+        BUILD_DEB: ${{ inputs.build_deb }}
+      run: |
+        mkdir -p out
+        mv "src/$GUI_BINARY" out
+        mv "src/$CLI_BINARY" out
+        if [ "$BUILD_DEB" = "true" ]; then
+          mv Picocrypt-NG/Picocrypt-NG.deb out
+        fi
+
+    - name: Record Linux payload manifest
+      shell: bash
+      env:
+        ARCH: ${{ inputs.arch }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        files=$(while read -r name owner path; do
+          if [[ $owner == build-linux.yml && $path == "artifacts/build-linux-$ARCH/"* ]]; then
+            test -f "out/$name" && test ! -L "out/$name" && test -s "out/$name"
+            digest=$(sha256sum "out/$name")
+            jq -cn --arg name "$name" --arg sha256 "${digest%% *}" '{name:$name,sha256:$sha256}'
+          fi
+        done < <(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION") | jq -sc 'sort_by(.name)')
+        jq -nS --arg repository "$GITHUB_REPOSITORY" --arg source_sha "$SOURCE_SHA" \
+          --arg version "$SOURCE_VERSION" --arg canonical_manifest_sha256 "$CANONICAL_MANIFEST_SHA256" \
+          --arg arch "$ARCH" --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+          --argjson files "$files" \
+          '{schema_version:1,repository:$repository,source_sha:$source_sha,version:$version,
+            canonical_manifest_sha256:$canonical_manifest_sha256,owner_workflow:"build-linux.yml",
+            arch:$arch,run_id:$run_id,run_attempt:$run_attempt,files:$files}' > out/payload-manifest.json
+
+    - name: Upload artifacts
+      id: upload
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: build-linux-${{ inputs.arch }}-attempt-${{ github.run_attempt }}
+        path: out/*
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 7
+        overwrite: false

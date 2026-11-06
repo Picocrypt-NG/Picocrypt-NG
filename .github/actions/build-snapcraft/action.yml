@@ -1,0 +1,119 @@
+name: Build unsigned Snap artifact
+description: Secret-free single-AMD64 Snapcraft packaging shared by the owner and validation lanes.
+
+inputs:
+  source-sha:
+    description: Immutable event source SHA from the prepared checkout.
+    required: true
+  version:
+    description: VERSION from the prepared source checkout.
+    required: true
+  manifest-digest:
+    description: SHA-256 of the canonical release ownership manifest.
+    required: true
+
+outputs:
+  artifact-id:
+    description: Immutable workflow artifact ID from the official uploader.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-digest:
+    description: SHA-256 of the uploaded ZIP, distinct from the payload file hash.
+    value: ${{ steps.upload.outputs.artifact-digest }}
+  run-attempt:
+    description: Attempt that created these exact bytes.
+    value: ${{ steps.source.outputs.run-attempt }}
+
+runs:
+  using: composite
+  steps:
+    - name: Assert prepared Snap source
+      id: source
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        test "$(cat VERSION)" = "$SOURCE_VERSION"
+        actual=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+    - name: Copy Snapcraft files to source
+      shell: bash
+      run: |
+        cp -r dist/snapcraft/* src/
+        mkdir -p src/dist/mime
+        cp dist/mime/application-x-pcv.xml src/dist/mime/
+        cp -r images src/
+
+    - name: Fix permissions
+      shell: bash
+      run: |
+        chmod -R a+rX src
+
+    - name: List contents of src
+      shell: bash
+      run: |
+        ls -l src
+        ls -l src/snapcraft.yaml || echo "snapcraft.yaml not found"
+
+    - name: Snapcraft
+      uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
+      with:
+        path: src
+
+    - name: Prepare artifacts
+      shell: bash
+      run: |
+        mkdir -p out
+        mv src/*.snap out/
+
+    - name: Smoke-test snap command
+      env:
+        LANG: C.UTF-8
+        LC_ALL: C.UTF-8
+      shell: bash
+      run: |
+        sudo snap install --dangerous out/*.snap
+        snap run picocrypt-ng --version
+
+
+    - name: Record Snap payload manifest
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        canonical=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION")
+        actual=$(printf '%s\n' "$canonical" | sha256sum)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        name=$(awk '$2 == "build-snapcraft.yml" {print $1}' <<< "$canonical")
+        test "$name" = "picocrypt-ng_${SOURCE_VERSION}_amd64.snap"
+        actual_names=$(find out -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
+        test "$actual_names" = "$name"
+        test -f "out/$name" && test ! -L "out/$name" && test -s "out/$name" || exit 1
+        payload_sha256=$(sha256sum "out/$name")
+        jq -nS --arg repository "$GITHUB_REPOSITORY" --arg source_sha "$SOURCE_SHA" \
+          --arg version "$SOURCE_VERSION" --arg canonical_manifest_sha256 "$CANONICAL_MANIFEST_SHA256" \
+          --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+          --arg name "$name" --arg sha256 "${payload_sha256%% *}" \
+          '{schema_version:1,repository:$repository,source_sha:$source_sha,version:$version,
+            canonical_manifest_sha256:$canonical_manifest_sha256,owner_workflow:"build-snapcraft.yml",
+            arch:"amd64",run_id:$run_id,run_attempt:$run_attempt,files:[{name:$name,sha256:$sha256}]}' > out/payload-manifest.json
+
+    - name: Upload .snap artifacts
+      id: upload
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: build-snapcraft-attempt-${{ github.run_attempt }}
+        path: out/*
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 7
+        overwrite: false

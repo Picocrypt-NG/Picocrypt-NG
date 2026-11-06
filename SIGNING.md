@@ -37,10 +37,63 @@ vpQBAN2uP29K6q9toerA6Oh2i0TOmDRZWJB1VONAbdKfiWUA
    sha256sum Picocrypt-NG-<version>-x86_64.AppImage
    ```
 
-2. **Embedded GPG signature.** The AppImage embeds a detached signature (ELF section
-   `.sha256_sig`) produced by the key above, together with its public key (`.sig_key`).
-   AppImage-aware tooling (e.g. AppImageUpdate / `appimaged`) uses these to confirm the
-   release was signed by the key whose fingerprint is shown above.
+2. **Embedded GPG signature and trusted signer.** From a trusted checkout of this
+   repository, run:
+
+   ```bash
+   bash .github/scripts/verify-appimage.sh ./Picocrypt-NG-<version>-x86_64.AppImage
+   ```
+
+   This requires Linux x86_64, Docker and the host commands checked by the script.
+   It checks the source, package and patch hashes recorded under
+   `.github/toolchains/appimage-verifier/`, then builds upstream AppImageUpdate
+   `validate` with one NUL-termination fix. Compilation runs without networking
+   from the pinned Ubuntu 22.04 image and package closure. The resulting scratch
+   runtime contains the verifier, GPG tools and their runtime libraries, with no
+   shell, compiler or package manager. Docker and its build cache are trusted.
+
+   The AppImage is copied into a private directory and mounted read-only into a
+   non-root container with no network, a read-only root filesystem, dropped
+   capabilities and resource limits. Its payload is never executed. Success
+   requires a valid signature and the exact full fingerprint above. Cached source
+   and package bytes are rehashed; an arbitrary cached executable or image tag is
+   not accepted. These controls do not establish bit-for-bit reproducibility or
+   an independent audit of the verifier and its dependencies.
+   The key embedded in `.sig_key` alone does not establish trust, and a nonempty
+   `.sha256_sig` section alone does not prove the signature is valid. The AppImage
+   digest excludes format-defined sections; verifying a detached signature over
+   the entire file with `gpg --verify` is not equivalent.
+
+   Exit `1` means an ordinary signature, format or signer-policy refusal. Exit `2`
+   means setup, Docker, timeout, OOM, abnormal termination or another tool fault.
+   Both block release. Public negative controls require the expected refusal and
+   a working unchanged positive fixture; infrastructure failures do not count as
+   cryptographic rejections. A crash on a malformed ELF is reported as a tool
+   fault, not as a normal cryptographic result.
+
+### CI validation and production signing
+
+The default `build-appimage` dispatch (`publish_release=false`) builds and smoke
+tests unsigned packaging, then uploads a `validate-appimage-amd64` workflow
+artifact. This path has no release environment, production GPG key, keyless
+signing, or release publication. Public, independently signed fixtures exercise
+the verifier without private signing keys.
+
+With `publish_release=true` on `main`, the build hands its AppDir to a separate
+job through an immutable same-run artifact ID and checked archive SHA-256.
+The archive is safely extracted before the release GPG key is imported.
+Production signing selects the full expected fingerprint from the verifier
+manifest, rather than the first key in the keyring. The signing key is removed
+before signature verification and payload smoke testing. External cryptographic
+verification must pass before uploading the signed build artifact and before
+the separate Sigstore/provenance and release staging gates run.
+
+The producer versions, source commits, asset IDs and SHA-256 digests are recorded
+in `.github/toolchains/appimage-build.json`. `linuxdeploy` creates AppDir;
+`appimagetool` receives the pinned runtime explicitly, avoiding implicit producer
+or runtime downloads. Updating the signing key requires one reviewed change to
+the public fingerprint, verifier manifest and release secret. A failed verifier
+blocks release; structural section checks are not a fallback.
 
 ### Self-updating
 
@@ -133,9 +186,8 @@ gh attestation verify <artifact> \
 | `*.snap` | `build-snapcraft` |
 | `*.apk` | `build-android` |
 
-A check that accepts any main-branch workflow in this repository replaces
-`--certificate-identity` with
-`--certificate-identity-regexp '^https://github.com/Picocrypt-NG/Picocrypt-NG/\.github/workflows/.+@refs/heads/main$'`.
+Use the exact producing workflow from the table, including `@refs/heads/main`.
+The release gate also binds the source commit and repository.
 
 The `.sigstore.json` bundle embeds the Rekor inclusion proof, so `cosign verify-blob`
 can run fully offline given a `--trusted-root`.

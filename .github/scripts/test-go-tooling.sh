@@ -3,6 +3,7 @@ set -euo pipefail
 
 cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 uv run --no-project python .github/scripts/hk-integration-test.py
+uv run --no-project python .github/scripts/appimage-verifier-test.py AppImageArchiveTests
 cd src
 helpers=(../.github/scripts/production-kdf.go ../.github/scripts/production-kdf_test.go)
 host_os=$(go env GOHOSTOS)

@@ -22,6 +22,8 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: read
+    outputs:
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
     env:
       MACOSX_DEPLOYMENT_TARGET: "15.0"
       CGO_CFLAGS: "-mmacosx-version-min=15.0"
@@ -29,103 +31,39 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: Setup Go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-      with:
-        go-version: "1.27.3"
-        cache-dependency-path: src/go.sum
-
-    - name: Install packages
-      run: |
-        brew install glfw glew
-
-    - name: Install dependencies
-      run: |
-        cd src
-        go mod download
-
-    - name: Run tests
-      # Skip internal/crypto - Argon2 is extremely slow on macOS ARM64 runners
-      run: |
-        cd src
-        go test -v -race -p 1 -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
-        go test -v -race -p 1 -timeout 15m ./internal/pcv3publication/...
-        go test -v -race -p 1 -timeout 60m ./internal/pcv3operation/internal/pcv3/... ./internal/pcv3operation/internal/pcv3credential/... ./internal/pcv3operation/... ./internal/pcv3operation/internal/pcv3recovery/... ./internal/pcv3operation/internal/pcv3artifact/... ./internal/pcv3operation/internal/pcv3resource/... ./internal/app/...
-        go test -v -race -p 1 -timeout 15m ./internal/volume/...
-        go test -v -count=1 -p 1 -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...
-
-    - name: Build GUI
-      run: |
-        cd src
-        go build -v -tags migrated_fynedo -ldflags="-s -w" -o Picocrypt-NG ./cmd/picocrypt
+    - name: Validate release request
+      shell: bash
       env:
-        CGO_ENABLED: 1
+        PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        SIGNPATH_TEST: "false"
+        SIGNPATH_RELEASE_DRY_RUN: "false"
+        SOURCE_REF: ${{ github.ref }}
+        SOURCE_EVENT: ${{ github.event_name }}
+      run: bash .github/scripts/validate-release-request.sh
 
-    - name: Verify macOS GUI deployment target
-      run: |
-        bash .github/scripts/assert-macos-minos.sh src/Picocrypt-NG 15.0
-
-    - name: Build CLI-only (no graphics dependencies)
-      run: |
-        cd src
-        go build -v -tags cli -ldflags="-s -w" -o Picocrypt-NG-cli-macos ./cmd/picocrypt
+    - name: Bind macOS source and canonical manifest
+      id: source
+      shell: bash
       env:
-        CGO_ENABLED: 1
-
-    - name: Package as .app in a .dmg
+        SOURCE_SHA: ${{ github.sha }}
       run: |
-        mv dist/macos/Picocrypt-NG.app.zip .
-        unzip -d Picocrypt-NG.app Picocrypt-NG.app.zip
-        rm Picocrypt-NG.app.zip
-        mv src/Picocrypt-NG Picocrypt-NG.app/Contents/MacOS/Picocrypt-NG
-        rm Picocrypt-NG.app/Contents/Resources/icon.icns
-        mv dist/macos/iconSmall.icns Picocrypt-NG.app/Contents/Resources/icon.icns
-        # Inject canonical Info.plist.
-        cp dist/macos/Info.plist Picocrypt-NG.app/Contents/Info.plist
-        plutil -replace CFBundleShortVersionString -string "$(cat VERSION)" \
-            Picocrypt-NG.app/Contents/Info.plist
-        plutil -replace CFBundleVersion -string "$(cat VERSION)" \
-            Picocrypt-NG.app/Contents/Info.plist
-        plutil -lint Picocrypt-NG.app/Contents/Info.plist
-        # Sanity assertion: UTI must round-trip through plutil -extract (json form per Pitfall #7)
-        plutil -extract CFBundleDocumentTypes json -o - \
-            Picocrypt-NG.app/Contents/Info.plist | grep -q 'io.github.picocryptng.pcv' \
-            || (echo "::error::CFBundleDocumentTypes lost UTI ref"; exit 1)
-        plutil -extract UTExportedTypeDeclarations json -o - \
-            Picocrypt-NG.app/Contents/Info.plist | grep -q 'io.github.picocryptng.pcv' \
-            || (echo "::error::UTExportedTypeDeclarations lost UTI"; exit 1)
-        # === Ad-hoc code signing (free; no paid Apple Developer ID) ===
-        # Re-seal the assembled bundle so the signature covers the swapped
-        # executable, icon and injected Info.plist. Without a valid seal a
-        # quarantined download triggers the harsh "app is damaged and can't be
-        # opened" Gatekeeper block on Apple Silicon (an arm64 binary must be at
-        # least ad-hoc signed to run at all). A valid ad-hoc seal downgrades
-        # that to the bypassable "unidentified developer" prompt. It does NOT
-        # remove the warning entirely; that needs a paid Developer ID +
-        # notarization. spctl --assess is intentionally NOT run here: ad-hoc
-        # signatures are expected to fail notarization assessment.
-        codesign --force --deep --sign - Picocrypt-NG.app
-        codesign --verify --deep --strict --verbose=2 Picocrypt-NG.app
-        # === end ad-hoc signing ===
-        mkdir out
-        cp -R Picocrypt-NG.app out
-        hdiutil create Picocrypt-NG.dmg -volname Picocrypt-NG -fs APFS -format UDZO -srcfolder out
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$version" | shasum -a 256)
+        {
+          echo "source-sha=$SOURCE_SHA"
+          echo "version=$version"
+          echo "manifest-digest=${digest%% *}"
+        } >> "$GITHUB_OUTPUT"
 
-    - name: Stage release artifacts
-      run: |
-        mkdir release-staging
-        cp Picocrypt-NG.dmg release-staging/
-        cp src/Picocrypt-NG-cli-macos release-staging/
-        test -s release-staging/Picocrypt-NG.dmg
-        test -s release-staging/Picocrypt-NG-cli-macos
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+    - name: Build macOS artifacts
+      id: build
+      uses: ./.github/actions/build-macos
       with:
-        name: build-macos
-        path: release-staging/
-        if-no-files-found: error
-        compression-level: 9
+        source-sha: ${{ steps.source.outputs.source-sha }}
+        version: ${{ steps.source.outputs.version }}
+        manifest-digest: ${{ steps.source.outputs.manifest-digest }}
 
   release:
     needs: build
@@ -146,8 +84,10 @@ jobs:
     - name: Download artifact
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
-        name: build-macos
+        artifact-ids: ${{ needs.build.outputs.artifact-id }}
         path: artifacts/build-macos
+        merge-multiple: true
+        digest-mismatch: error
 
     - name: Get version tag
       run: |

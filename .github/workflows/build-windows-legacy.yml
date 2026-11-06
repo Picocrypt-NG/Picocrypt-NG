@@ -32,6 +32,8 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+    outputs:
+      signing-input-id: ${{ steps.build.outputs.signing-input-id }}
     env:
       GOTOOLCHAIN: local
       GOAMD64: v1
@@ -40,116 +42,40 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: Build patched Go 1.27.3 for Windows 7/8
-      shell: pwsh
-      run: |
-        & .github/scripts/build-legacy-go.ps1 `
-          -ManifestPath '.github/toolchains/legacy-go/manifest.json' `
-          -OutputRoot 'C:\go-legacy'
-
-    - name: Add go-legacy-win7 to PATH
-      shell: pwsh
-      run: |
-        echo "C:\go-legacy\go\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-    - name: Verify Go installation
-      shell: pwsh
-      run: |
-        $expectedGo = (Resolve-Path 'C:\go-legacy\go\bin\go.exe').Path
-        $actualGo = (Get-Command go -CommandType Application | Select-Object -First 1).Source
-        if ($actualGo -ne $expectedGo) { throw "Unexpected go.exe: $actualGo; want $expectedGo" }
-        $expectedRoot = (Resolve-Path 'C:\go-legacy\go').Path
-        $goEnvironment = go env -json GOROOT GOVERSION GOTOOLCHAIN GOOS GOARCH GOAMD64 GOEXPERIMENT
-        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect legacy Go installation' }
-        $goEnvironment = $goEnvironment | ConvertFrom-Json
-        if ($goEnvironment.GOROOT -ne $expectedRoot) { throw 'Unexpected legacy GOROOT' }
-        if ($goEnvironment.GOVERSION -ne 'go1.27.3') { throw 'Unexpected legacy Go version' }
-        if ($goEnvironment.GOTOOLCHAIN -ne 'local') { throw 'GOTOOLCHAIN must be local' }
-        if ($goEnvironment.GOOS -ne 'windows' -or $goEnvironment.GOARCH -ne 'amd64' -or
-            $goEnvironment.GOAMD64 -ne 'v1' -or $goEnvironment.GOEXPERIMENT -ne '') { throw 'Unexpected legacy Go build settings' }
-        go version
-        if ($LASTEXITCODE -ne 0) { throw 'Legacy Go compiler failed to execute' }
-
-    - name: Run native legacy toolchain regressions
-      shell: pwsh
-      run: |
-        & .github/scripts/run-windows-native-tests.ps1 `
-          -GoExecutable 'C:\go-legacy\go\bin\go.exe' `
-          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', 'os', 'internal/syscall/windows', 'crypto/internal/sysrand')
-        if ($LASTEXITCODE -ne 0) { throw 'Native legacy filesystem and random-source regressions failed' }
-        & .github/scripts/run-windows-native-tests.ps1 `
-          -GoExecutable 'C:\go-legacy\go\bin\go.exe' `
-          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', '-run', '^TestReadRandomFromRtlGenRandom$', 'runtime')
-        if ($LASTEXITCODE -ne 0) { throw 'Native legacy runtime random-source regression failed' }
-
-    - name: Install dependencies
-      run: |
-        cd src
-        go mod download
-
-    - name: Run tests
-      shell: pwsh
-      run: |
-        & .github/scripts/run-windows-native-tests.ps1 `
-          -GoExecutable 'C:\go-legacy\go\bin\go.exe' `
-          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume')
+    - name: Validate release request
+      shell: bash
       env:
-        PICOCRYPT_RUN_CLI_INTEGRATION: 1
+        PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        SIGNPATH_TEST: ${{ inputs.signpath_test }}
+        SIGNPATH_RELEASE_DRY_RUN: ${{ inputs.signpath_release_dry_run }}
+        SOURCE_REF: ${{ github.ref }}
+        SOURCE_EVENT: ${{ github.event_name }}
+      run: bash .github/scripts/validate-release-request.sh
 
-    - name: Build CLI-only legacy binary
-      run: |
-        cd src
-        go build -v -tags cli -ldflags="-s -w -extldflags=-static" -o Picocrypt-NG-cli-Legacy.exe ./cmd/picocrypt
+    - name: Bind source and canonical manifest
+      id: source
+      shell: bash
       env:
-        CGO_ENABLED: 1
-        GOAMD64: v1
-
-    - name: Verify legacy binary toolchain
-      shell: pwsh
+        SOURCE_SHA: ${{ github.sha }}
       run: |
-        $buildInfo = go version -m src/Picocrypt-NG-cli-Legacy.exe | Out-String
-        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect legacy CLI build metadata' }
-        if ($buildInfo -notmatch '(?m)^[^\r\n]*: go1\.27\.3\r?$') { throw 'Legacy CLI was not built by Go 1.27.3' }
-        if ($buildInfo -notmatch '(?m)^\tbuild\tGOAMD64=v1\r?$') { throw 'Legacy CLI requires unsupported CPU instructions' }
-        & .github/scripts/assert-windows-legacy-pe.ps1 -Path 'src/Picocrypt-NG-cli-Legacy.exe'
-        $buildInfo
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        version=${version%$'\r'}
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$version" | sha256sum)
+        {
+          echo "source-sha=$SOURCE_SHA"
+          echo "version=$version"
+          echo "manifest-digest=${digest%% *}"
+        } >> "$GITHUB_OUTPUT"
 
-    - name: Compress with upx
-      shell: pwsh
-      run: |
-        curl.exe `
-          --fail `
-          --location `
-          --silent `
-          --show-error `
-          --retry 3 `
-          --retry-all-errors `
-          --retry-delay 2 `
-          --connect-timeout 30 `
-          --max-time 300 `
-          --retry-max-time 600 `
-          --remove-on-error `
-          --output upx.zip `
-          https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip
-        if ($LASTEXITCODE -ne 0) {
-          throw "UPX download failed with exit code $LASTEXITCODE"
-        }
-        $expectedHash = $env:UPX_SHA256
-        $actualHash = (Get-FileHash upx.zip -Algorithm SHA256).Hash.ToLower()
-        if ($actualHash -ne $expectedHash) {
-          throw "Checksum mismatch for upx.zip: expected $expectedHash, got $actualHash"
-        }
-        Expand-Archive -DestinationPath upx upx.zip
-        upx/upx-5.2.1-win64/upx.exe --lzma src/Picocrypt-NG-cli-Legacy.exe
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+    - name: Build unsigned Windows artifacts
+      id: build
+      uses: ./.github/actions/build-windows-legacy
       with:
-        name: unsigned-windows-legacy
-        path: src/Picocrypt-NG-cli-Legacy.exe
-        if-no-files-found: error
-        compression-level: 9
-        retention-days: 1
+        source-sha: ${{ steps.source.outputs.source-sha }}
+        version: ${{ steps.source.outputs.version }}
+        manifest-digest: ${{ steps.source.outputs.manifest-digest }}
 
   sign:
     needs: build
@@ -173,8 +99,10 @@ jobs:
     - name: Download unsigned build artifact
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
-        name: unsigned-windows-legacy
+        artifact-ids: ${{ needs.build.outputs.signing-input-id }}
         path: unsigned-legacy
+        merge-multiple: true
+        digest-mismatch: error
 
     - name: Upload unsigned legacy CLI for SignPath
       id: upload-signpath-legacy
