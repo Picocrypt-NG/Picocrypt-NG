@@ -1244,20 +1244,30 @@ func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {
 	}
 }
 
-func TestMacOSPRAggregateGateRequiresAllTestGroups(t *testing.T) {
+func TestMacOSPRBuildsOnlyAfterNativeTests(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-macos.yml")
-	gate := mustJob(t, workflow, "pr-test-build-macos")
-	if gate.Needs != "pcv3-tests" || gate.If != "${{ always() }}" {
-		t.Fatalf("macOS gate needs=%v if=%q; want all test groups checked even after cancellation", gate.Needs, gate.If)
-	}
-	check := mustStepNamed(t, gate, "Require all macOS test groups to pass")
-	if len(gate.Steps) == 0 || gate.Steps[0].Name != check.Name {
-		t.Fatal("macOS build must check the test result before any other step")
-	}
-	mustContainInOrder(t, check.Run,
-		`if [ "${{ needs.pcv3-tests.result }}" != "success" ]; then`,
-		"exit 1",
+	job := mustJob(t, workflow, "pr-test-build-macos")
+	native := mustStepNamed(t, job, "Run native test suite")
+	mustContainInOrder(t, mustReadWorkflow(t, ".github/workflows/pr-test-build-macos.yml"),
+		"- name: "+native.Name,
+		"- name: Run tests",
+		"- name: Build GUI",
+		"- name: Build CLI-only (no graphics dependencies)",
+		"- name: Package as .app in a .dmg",
+		"- name: Upload artifacts",
 	)
+	for _, name := range []string{
+		"Run tests",
+		"Build GUI",
+		"Build CLI-only (no graphics dependencies)",
+		"Package as .app in a .dmg",
+		"Upload artifacts",
+	} {
+		step := mustStepNamed(t, job, name)
+		if step.If != "" || step.ContinueOnError != nil {
+			t.Fatalf("%s must retain default success gating after the native suite", name)
+		}
+	}
 }
 
 func TestWindowsWorkflowsUseApprovedResourceHacker528(t *testing.T) {
