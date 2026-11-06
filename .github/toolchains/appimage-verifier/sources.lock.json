@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "archives": [
+    {
+      "name": "appimageupdate",
+      "repository": "AppImageCommunity/AppImageUpdate",
+      "commit": "a211784dfc746fdb6d8d32d6bb39add451c1ddeb",
+      "url": "https://codeload.github.com/AppImageCommunity/AppImageUpdate/tar.gz/a211784dfc746fdb6d8d32d6bb39add451c1ddeb",
+      "sha256": "6df8dab5a6974862cea5074ad2f47f298a44035a497bdb905127f16e0f946f68",
+      "file": "appimageupdate.tar.gz"
+    },
+    {
+      "name": "zsync2",
+      "repository": "AppImageCommunity/zsync2",
+      "commit": "fc62ae7851ef28dc390a57fbdbe90b0afc5e3102",
+      "url": "https://codeload.github.com/AppImageCommunity/zsync2/tar.gz/fc62ae7851ef28dc390a57fbdbe90b0afc5e3102",
+      "sha256": "b7271d59cad94fbbd02614fa1d88ae4633a04ee91c98364f1e2f8f809f104037",
+      "file": "zsync2.tar.gz"
+    },
+    {
+      "name": "libappimage",
+      "repository": "AppImageCommunity/libappimage",
+      "commit": "d326d15c8a9299d3f135be8282f6545b32805996",
+      "url": "https://codeload.github.com/AppImageCommunity/libappimage/tar.gz/d326d15c8a9299d3f135be8282f6545b32805996",
+      "sha256": "0ce896192bd0de43f3125faae47159e6d6c8e0d7ff48e3db153f945f37397a13",
+      "file": "libappimage.tar.gz"
+    },
+    {
+      "name": "cpr",
+      "repository": "libcpr/cpr",
+      "commit": "db351ffbbadc6c4e9239daaa26e9aefa9f0ec82d",
+      "url": "https://codeload.github.com/libcpr/cpr/tar.gz/db351ffbbadc6c4e9239daaa26e9aefa9f0ec82d",
+      "sha256": "464ae1007c5a60ca0d914fc6b563e7fd1fc8b9471d7f276357bb5f2534726afe",
+      "file": "cpr.tar.gz"
+    },
+    {
+      "name": "args",
+      "repository": "Taywee/args",
+      "commit": "114200a9ad5fe06c8dea76e15d92325695cf3e34",
+      "url": "https://codeload.github.com/Taywee/args/tar.gz/114200a9ad5fe06c8dea76e15d92325695cf3e34",
+      "sha256": "c97c70a1451873688a62d96ed42a2dcf14bb695072fe6ab9bade3e4b57c50dfd",
+      "file": "args.tar.gz"
+    }
+  ]
+}

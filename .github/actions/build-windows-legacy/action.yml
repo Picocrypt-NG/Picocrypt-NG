@@ -1,0 +1,248 @@
+name: Build unsigned Windows artifacts
+description: Unsigned native Windows build with separate signing-input and validation artifacts.
+inputs:
+  source-sha:
+    description: Immutable event source SHA from the owner.
+    required: true
+  version:
+    description: VERSION from the prepared source checkout.
+    required: true
+  manifest-digest:
+    description: SHA-256 of the canonical release ownership manifest.
+    required: true
+outputs:
+  artifact-id:
+    description: Immutable canonical validation artifact ID.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-digest:
+    description: SHA-256 of the canonical validation ZIP, distinct from payload file hashes.
+    value: ${{ steps.upload.outputs.artifact-digest }}
+  run-attempt:
+    description: Attempt that produced the validated source and bytes.
+    value: ${{ steps.source.outputs.run-attempt }}
+  signing-input-id:
+    description: Immutable original-layout unsigned bundle consumed by SignPath.
+    value: ${{ steps.signing-input.outputs.artifact-id }}
+  signing-input-digest:
+    description: Official ZIP digest of the original unsigned signing carrier.
+    value: ${{ steps.signing-input.outputs.artifact-digest }}
+  signing-input-attempt:
+    description: Attempt that produced the original unsigned signing carrier.
+    value: ${{ steps.source.outputs.run-attempt }}
+runs:
+  using: composite
+  steps:
+    - name: Assert prepared Windows source
+      id: source
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        actual_version=$(cat VERSION)
+        actual_version=${actual_version%$'\r'}
+        test "$actual_version" = "$SOURCE_VERSION"
+        actual=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+    - name: Build patched Go 1.27.3 for Windows 7/8
+      shell: pwsh
+      run: |
+        & .github/scripts/build-legacy-go.ps1 `
+          -ManifestPath '.github/toolchains/legacy-go/manifest.json' `
+          -OutputRoot 'C:\go-legacy'
+      env:
+        GOTOOLCHAIN: local
+        GOAMD64: v1
+        GOEXPERIMENT: ""
+
+    - name: Add go-legacy-win7 to PATH
+      shell: pwsh
+      run: |
+        echo "C:\go-legacy\go\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      env:
+        GOTOOLCHAIN: local
+        GOAMD64: v1
+        GOEXPERIMENT: ""
+
+    - name: Verify Go installation
+      shell: pwsh
+      run: |
+        $expectedGo = (Resolve-Path 'C:\go-legacy\go\bin\go.exe').Path
+        $actualGo = (Get-Command go -CommandType Application | Select-Object -First 1).Source
+        if ($actualGo -ne $expectedGo) { throw "Unexpected go.exe: $actualGo; want $expectedGo" }
+        $expectedRoot = (Resolve-Path 'C:\go-legacy\go').Path
+        $goEnvironment = go env -json GOROOT GOVERSION GOTOOLCHAIN GOOS GOARCH GOAMD64 GOEXPERIMENT
+        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect legacy Go installation' }
+        $goEnvironment = $goEnvironment | ConvertFrom-Json
+        if ($goEnvironment.GOROOT -ne $expectedRoot) { throw 'Unexpected legacy GOROOT' }
+        if ($goEnvironment.GOVERSION -ne 'go1.27.3') { throw 'Unexpected legacy Go version' }
+        if ($goEnvironment.GOTOOLCHAIN -ne 'local') { throw 'GOTOOLCHAIN must be local' }
+        if ($goEnvironment.GOOS -ne 'windows' -or $goEnvironment.GOARCH -ne 'amd64' -or
+            $goEnvironment.GOAMD64 -ne 'v1' -or $goEnvironment.GOEXPERIMENT -ne '') { throw 'Unexpected legacy Go build settings' }
+        go version
+        if ($LASTEXITCODE -ne 0) { throw 'Legacy Go compiler failed to execute' }
+      env:
+        GOTOOLCHAIN: local
+        GOAMD64: v1
+        GOEXPERIMENT: ""
+
+    - name: Run native legacy toolchain regressions
+      shell: pwsh
+      run: |
+        & .github/scripts/run-windows-native-tests.ps1 `
+          -GoExecutable 'C:\go-legacy\go\bin\go.exe' `
+          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', 'os', 'internal/syscall/windows', 'crypto/internal/sysrand')
+        if ($LASTEXITCODE -ne 0) { throw 'Native legacy filesystem and random-source regressions failed' }
+        & .github/scripts/run-windows-native-tests.ps1 `
+          -GoExecutable 'C:\go-legacy\go\bin\go.exe' `
+          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', '-run', '^TestReadRandomFromRtlGenRandom$', 'runtime')
+        if ($LASTEXITCODE -ne 0) { throw 'Native legacy runtime random-source regression failed' }
+      env:
+        GOTOOLCHAIN: local
+        GOAMD64: v1
+        GOEXPERIMENT: ""
+
+    - name: Install dependencies
+      shell: pwsh
+      run: |
+        cd src
+        go mod download
+      env:
+        GOTOOLCHAIN: local
+        GOAMD64: v1
+        GOEXPERIMENT: ""
+
+    - name: Run tests
+      shell: pwsh
+      run: |
+        & .github/scripts/run-windows-native-tests.ps1 `
+          -GoExecutable 'C:\go-legacy\go\bin\go.exe' `
+          -GoArguments @('test', '-v', '-count=1', '-p', '1', '-timeout', '15m', './internal/cli', './internal/fileops', './internal/volume')
+      env:
+        GOTOOLCHAIN: local
+        GOAMD64: v1
+        GOEXPERIMENT: ""
+        PICOCRYPT_RUN_CLI_INTEGRATION: 1
+
+    - name: Build CLI-only legacy binary
+      shell: pwsh
+      run: |
+        cd src
+        go build -v -tags cli -ldflags="-s -w -extldflags=-static" -o Picocrypt-NG-cli-Legacy.exe ./cmd/picocrypt
+      env:
+        GOTOOLCHAIN: local
+        GOEXPERIMENT: ""
+        CGO_ENABLED: 1
+        GOAMD64: v1
+
+    - name: Verify legacy binary toolchain
+      shell: pwsh
+      run: |
+        $buildInfo = go version -m src/Picocrypt-NG-cli-Legacy.exe | Out-String
+        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect legacy CLI build metadata' }
+        if ($buildInfo -notmatch '(?m)^[^\r\n]*: go1\.27\.3\r?$') { throw 'Legacy CLI was not built by Go 1.27.3' }
+        if ($buildInfo -notmatch '(?m)^\tbuild\tGOAMD64=v1\r?$') { throw 'Legacy CLI requires unsupported CPU instructions' }
+        & .github/scripts/assert-windows-legacy-pe.ps1 -Path 'src/Picocrypt-NG-cli-Legacy.exe'
+        $buildInfo
+      env:
+        GOTOOLCHAIN: local
+        GOAMD64: v1
+        GOEXPERIMENT: ""
+
+    - name: Compress with upx
+      shell: pwsh
+      run: |
+        curl.exe `
+          --fail `
+          --location `
+          --silent `
+          --show-error `
+          --retry 3 `
+          --retry-all-errors `
+          --retry-delay 2 `
+          --connect-timeout 30 `
+          --max-time 300 `
+          --retry-max-time 600 `
+          --remove-on-error `
+          --output upx.zip `
+          https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip
+        if ($LASTEXITCODE -ne 0) {
+          throw "UPX download failed with exit code $LASTEXITCODE"
+        }
+        $expectedHash = $env:UPX_SHA256
+        $actualHash = (Get-FileHash upx.zip -Algorithm SHA256).Hash.ToLower()
+        if ($actualHash -ne $expectedHash) {
+          throw "Checksum mismatch for upx.zip: expected $expectedHash, got $actualHash"
+        }
+        Expand-Archive -DestinationPath upx upx.zip
+        upx/upx-5.2.1-win64/upx.exe --lzma src/Picocrypt-NG-cli-Legacy.exe
+      env:
+        GOTOOLCHAIN: local
+        GOAMD64: v1
+        GOEXPERIMENT: ""
+        UPX_SHA256: eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda
+
+    - name: Upload artifact
+      id: signing-input
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: unsigned-windows-legacy-attempt-${{ github.run_attempt }}
+        path: src/Picocrypt-NG-cli-Legacy.exe
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 1
+        overwrite: false
+
+    - name: Record Windows payload manifest
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        directory=validation-windows-legacy
+        mkdir "$directory"
+        canonical=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION")
+        digest=$(printf '%s\n' "$canonical" | sha256sum)
+        test "${digest%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        # Native jq.exe needs binary stdout under Git Bash.
+        files=$(while read -r name owner path; do
+          if [[ $owner == build-windows-legacy.yml ]]; then
+            case "$name" in Picocrypt-NG-cli-Legacy.exe) ;; *) exit 1 ;; esac
+            test "$path" = "artifacts/build-windows-legacy/$name" || exit 1
+            source="src/$name"
+            if [[ ! -f "$source" || -L "$source" || ! -s "$source" ]]; then
+              echo "Invalid unsigned payload: $name" >&2
+              exit 1
+            fi
+            cp "$source" "$directory/$name" || exit 1
+            digest=$(sha256sum "$directory/$name") || exit 1
+            jq -b -cn --arg name "$name" --arg sha256 "${digest%% *}" '{name:$name,sha256:$sha256}' || exit 1
+          fi
+        done <<< "$canonical" | jq -b -sc 'sort_by(.name)')
+        test "$(jq -b 'length' <<< "$files")" = 1
+        test "$(jq -b 'unique_by(.name) | length' <<< "$files")" = 1
+        jq -b -nS --arg repository "$GITHUB_REPOSITORY" --arg source_sha "$SOURCE_SHA" \
+          --arg version "$SOURCE_VERSION" --arg canonical_manifest_sha256 "$CANONICAL_MANIFEST_SHA256" \
+          --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" --argjson files "$files" \
+          '{schema_version:1,repository:$repository,source_sha:$source_sha,version:$version,
+            canonical_manifest_sha256:$canonical_manifest_sha256,owner_workflow:"build-windows-legacy.yml",
+            arch:"amd64",run_id:$run_id,run_attempt:$run_attempt,files:$files}' > "$directory/payload-manifest.json"
+
+    - name: Upload validation artifacts
+      id: upload
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: validate-windows-legacy-amd64-attempt-${{ github.run_attempt }}
+        path: validation-windows-legacy/*
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 7
+        overwrite: false

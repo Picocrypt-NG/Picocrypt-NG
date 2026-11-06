@@ -15,6 +15,7 @@ concurrency:
 jobs:
   pr-test-build-windows-legacy:
     runs-on: windows-2022
+    timeout-minutes: 120
     env:
       GOTOOLCHAIN: local
       GOAMD64: v1

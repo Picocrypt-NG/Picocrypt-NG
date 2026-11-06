@@ -1,11 +1,108 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestOnlySlowD1ProofReceivesLongerWallDeadline(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		want time.Duration
+	}{
+		{"d1-parameters-wrong-index", 180 * time.Second},
+		{"d1-parameters-positive", 90 * time.Second},
+		{"d1-parameters-wrong-index-native", 90 * time.Second},
+		{"guard-disabled", 90 * time.Second},
+		{"arithmetic-positive", 90 * time.Second},
+		{"core-policy-count-mismatch", 90 * time.Second},
+		{"unregistered-case", 90 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := caseWallTimeout(test.name); got != test.want {
+				t.Fatalf("wall deadline = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestProverTerminalStateRejectsIncompleteExecution(t *testing.T) {
+	for _, test := range []struct {
+		name                   string
+		code, stateCode        int
+		timedOut, running, oom bool
+		stateError             string
+		wantError              bool
+	}{
+		{name: "ordinary proof", code: 0, stateCode: 0},
+		{name: "ordinary negative", code: 1, stateCode: 1},
+		{name: "old 90s deadline", code: -1, stateCode: 0, timedOut: true, running: true, wantError: true},
+		{name: "deadline after container exit", code: 1, stateCode: 1, timedOut: true, wantError: true},
+		{name: "still running", running: true, wantError: true},
+		{name: "OOM", code: 137, stateCode: 137, oom: true, wantError: true},
+		{name: "container error", stateError: "runtime failure", wantError: true},
+		{name: "exit mismatch", code: -1, stateCode: 0, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := caseResult{Name: "d1-parameters-wrong-index", ExitCode: test.code, TimedOut: test.timedOut, Seconds: 90.083817541}
+			var container containerInfo
+			container.State.ExitCode = test.stateCode
+			container.State.Running = test.running
+			container.State.OOMKilled = test.oom
+			container.State.Error = test.stateError
+			logPath := filepath.Join(t.TempDir(), "d1-parameters-wrong-index.log")
+			err := checkProverResult(result, container, logPath)
+			if (err != nil) != test.wantError {
+				t.Fatalf("ordinary-result gate returned %v, want error=%t", err, test.wantError)
+			}
+			if err != nil && (!strings.Contains(err.Error(), logPath) || !strings.Contains(err.Error(), fmt.Sprintf("wall_timeout=%t", test.timedOut)) || !strings.Contains(err.Error(), fmt.Sprintf("oom_killed=%t", test.oom))) {
+				t.Fatalf("execution failure lacks safe cause or evidence path: %v", err)
+			}
+		})
+	}
+}
+
+func TestDockerDeadlineCannotBecomeOrdinaryNegativeControl(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	launcher := "#!/bin/sh\nexec \"$PICOCRYPT_GOBRA_DEADLINE_EXECUTABLE\" -test.run=^TestDockerDeadlineHelperProcess$ -- \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(directory, "docker"), []byte(launcher), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PICOCRYPT_GOBRA_DEADLINE_EXECUTABLE", executable)
+	t.Setenv("PICOCRYPT_GOBRA_DEADLINE_HELPER", "1")
+	output, code, err := docker(time.Second, "start", "--attach", "owned-container")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("forced process deadline returned %v", err)
+	}
+	if !strings.Contains(string(output), "Gobra found 1 error.") {
+		t.Fatalf("deadline fixture did not emit its ordinary-looking diagnostic: %s", output)
+	}
+	result := caseResult{Name: "d1-parameters-wrong-index", ExitCode: code, TimedOut: errors.Is(err, context.DeadlineExceeded)}
+	var container containerInfo
+	container.State.Running = true
+	if err := checkProverResult(result, container, filepath.Join(directory, "case.log")); err == nil {
+		t.Fatal("a process deadline counted as an ordinary negative control")
+	}
+}
+
+func TestDockerDeadlineHelperProcess(t *testing.T) {
+	if os.Getenv("PICOCRYPT_GOBRA_DEADLINE_HELPER") != "1" {
+		return
+	}
+	fmt.Print("Error at: </workspace/d1-parameters-wrong-index/parameters.go:24:9> Postcondition might not hold.\nAssertion nonceOut[23] == 0 might not hold.\nGobra found 1 error.\n")
+	time.Sleep(time.Minute)
+}
 
 func repository(t *testing.T) string {
 	t.Helper()

@@ -1,0 +1,83 @@
+amends "package://github.com/jdx/hk/releases/download/v2.11.1/hk@2.11.1#/Config.pkl"
+
+jobs = 1
+
+local goInputs = List("src/**/*.go", "src/**/*.c", "src/**/*.h", "src/**/*.s", "src/go.mod", "src/go.sum", ".github/scripts/lint-go.sh", "mise.toml", "hk.pkl")
+
+local toolingInputs = List(".github/scripts/production-kdf.go", ".github/scripts/production-kdf_test.go", ".github/scripts/lint-go.sh", "src/go.mod", "src/go.sum", "mise.toml", "hk.pkl")
+
+local checks = new Mapping<String, Step> {
+  ["go-fmt"] {
+    glob = goInputs
+    check = new CommandSpec {
+      command = new Command { argv = List("mise", "run", "fmt") }
+      effect = "read"
+    }
+  }
+  ["go-vet"] {
+    glob = goInputs
+    check = new CommandSpec {
+      command = new Command { argv = List("mise", "run", "vet") }
+      effect = "write"
+    }
+  }
+  ["go-lint"] {
+    glob = goInputs + List("src/.golangci.yml")
+    diagnostic_format = "sarif"
+    check = new CommandSpec {
+      command = new Command { argv = List("mise", "exec", "--", "bash", ".github/scripts/lint-go.sh", "sarif") }
+      effect = "write"
+    }
+  }
+  ["tooling-fmt"] {
+    glob = toolingInputs
+    check = new CommandSpec {
+      command = new Command { argv = List("mise", "run", "tooling:fmt") }
+      effect = "read"
+    }
+  }
+  ["tooling-lint"] {
+    glob = toolingInputs
+    diagnostic_format = "sarif"
+    check = new CommandSpec {
+      command = new Command { argv = List("mise", "exec", "--", "bash", ".github/scripts/lint-go.sh", "sarif", "tooling") }
+      effect = "write"
+    }
+  }
+  ["workflows"] {
+    glob = List(".github/workflows/*.y*ml", ".github/actions/**/action.y*ml", ".github/actionlint.y*ml", ".github/jactionlint.y*ml", ".github/scripts/lint-workflows.sh", "mise.toml", "hk.pkl")
+    diagnostic_format = "sarif"
+    check = new CommandSpec {
+      command = new Command { argv = List("mise", "exec", "--", "bash", ".github/scripts/lint-workflows.sh", "--format", "sarif") }
+      effect = "read"
+    }
+  }
+}
+
+// Commit and push checks also run for deleted files and partial selections.
+local commitChecks = new Mapping<String, Step> {
+  for (name, step in checks) {
+    [name] = (step) { glob = null }
+  }
+}
+
+hooks {
+  ["check"] {
+    fix = false
+    stage = false
+    stash = "none"
+    steps = checks
+  }
+  ["pre-commit"] {
+    fix = false
+    stage = false
+    stash = "none"
+    steps = commitChecks
+  }
+  ["pre-push"] {
+    fix = false
+    stage = false
+    stash = "none"
+    steps = commitChecks
+  }
+}

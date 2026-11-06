@@ -12,66 +12,100 @@ on:
         type: boolean
         default: false
 
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      canonical_manifest_sha256:
+        required: true
+        type: string
+      raw_artifact_id:
+        required: true
+        type: string
+      raw_artifact_digest:
+        required: true
+        type: string
+      raw_producing_attempt:
+        required: true
+        type: string
+    outputs:
+      staged:
+        description: True only after full remote reuse or successful stage-only upload.
+        value: ${{ jobs.inspect.outputs.staged == 'true' && 'true' || jobs.attest.outputs.staged == 'true' && 'true' || jobs.stage.outputs.staged }}
+      reused:
+        description: Whether a fresh full remote owner set was reused.
+        value: ${{ jobs.inspect.outputs.reused == 'true' || jobs.attest.outputs.reused == 'true' }}
+      generation_id:
+        description: Exact immutable full signed generation ID, when one was produced.
+        value: ${{ jobs.attest.outputs.generation-id }}
+      generation_digest:
+        description: Official digest of that exact signed generation ZIP.
+        value: ${{ jobs.attest.outputs.generation-digest }}
+      generation_attempt:
+        description: Producing attempt of the retained signed generation.
+        value: ${{ jobs.attest.outputs.generation-attempt }}
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-snapcraft-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-snapcraft:
+    if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-snapcraft.yml@{1}', github.repository, github.ref) }}
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: read
+    outputs:
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: Copy Snapcraft files to source
-      run: |
-        cp -r dist/snapcraft/* src/
-        mkdir -p src/dist/mime
-        cp dist/mime/application-x-pcv.xml src/dist/mime/
-        cp -r images src/
-
-    - name: Fix permissions
-      run: |
-        chmod -R a+rX src
-
-    - name: List contents of src
-      run: |
-        ls -l src
-        ls -l src/snapcraft.yaml || echo "snapcraft.yaml not found"
-
-    - name: Snapcraft
-      uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
-      with:
-        path: src
-
-    - name: Prepare artifacts
-      run: |
-        mkdir -p out
-        mv src/*.snap out/
-
-    - name: Smoke-test snap command
+    - name: Validate release request
+      shell: bash
       env:
-        LANG: C.UTF-8
-        LC_ALL: C.UTF-8
-      run: |
-        sudo snap install --dangerous out/*.snap
-        snap run picocrypt-ng --version
+        PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        SIGNPATH_TEST: "false"
+        SIGNPATH_RELEASE_DRY_RUN: "false"
+        SOURCE_REF: ${{ github.ref }}
+        SOURCE_EVENT: ${{ github.event_name }}
+      run: bash .github/scripts/validate-release-request.sh
 
-    - name: Upload .snap artifacts
-      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+    - name: Bind Snap source and canonical manifest
+      id: source
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$version" | sha256sum)
+        {
+          echo "source-sha=$SOURCE_SHA"
+          echo "version=$version"
+          echo "manifest-digest=${digest%% *}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Build unsigned Snap artifact
+      id: build
+      uses: ./.github/actions/build-snapcraft
       with:
-        name: build-snapcraft
-        path: out/*.snap
-        if-no-files-found: error
-        compression-level: 9
+        source-sha: ${{ steps.source.outputs.source-sha }}
+        version: ${{ steps.source.outputs.version }}
+        manifest-digest: ${{ steps.source.outputs.manifest-digest }}
 
   release:
     needs: build-snapcraft
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && github.workflow_ref == format('{0}/.github/workflows/build-snapcraft.yml@{1}', github.repository, github.ref) }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     concurrency:
       group: ${{ github.repository }}-release-publication
       queue: max
@@ -86,8 +120,10 @@ jobs:
     - name: Download .snap artifacts
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
-        name: build-snapcraft
+        artifact-ids: ${{ needs.build-snapcraft.outputs.artifact-id }}
         path: out
+        merge-multiple: true
+        digest-mismatch: error
 
     - name: Get version tag
       run: |
@@ -113,3 +149,283 @@ jobs:
         files: |
           out/picocrypt-ng_${{ env.VERSION }}_amd64.snap
           out/picocrypt-ng_${{ env.VERSION }}_amd64.snap.sigstore.json
+
+  inspect:
+    if: ${{ github.workflow_ref != format('{0}/.github/workflows/build-snapcraft.yml@{1}', github.repository, github.ref) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_VERSION: ${{ inputs.version }}
+      CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 }}
+      OWNER_WORKFLOW: build-snapcraft.yml
+    outputs:
+      state: ${{ steps.inventory.outputs.state }}
+      staged: ${{ steps.inventory.outputs.staged }}
+      reused: ${{ steps.inventory.outputs.reused }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Validate reusable Snap source
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$GITHUB_REPOSITORY" = Picocrypt-NG/Picocrypt-NG
+        test "$GITHUB_WORKFLOW_REF" = Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main
+        test "$GITHUB_REF" = refs/heads/main
+        test "$GITHUB_EVENT_NAME" = workflow_dispatch
+        test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        version=${version%$'\r'}
+        test "$version" = "$SOURCE_VERSION"
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${digest%% *}" = "$CANONICAL_MANIFEST_SHA256"
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: v3.1.3
+    - name: Inspect full Snap owner
+      id: inventory
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        report=$(mktemp)
+        trap 'rm -f "$report"' EXIT
+        GITHUB_OUTPUT='' bash .github/actions/stage-release/release-gate.sh inspect-owner "$SOURCE_VERSION" > "$report"
+        jq -e --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" --arg canonical "$CANONICAL_MANIFEST_SHA256" '
+          .repository == "Picocrypt-NG/Picocrypt-NG" and .source_sha == $source and .version == $version and
+          .canonical_manifest_sha256 == $canonical and .owner_workflow == "build-snapcraft.yml"
+        ' "$report" >/dev/null
+        state=$(jq -r '.status' "$report")
+        case "$state" in
+          complete) staged=true; reused=true ;;
+          missing) staged=false; reused=false ;;
+          partial) echo 'Snap owner is partially staged; original signed generation is required before any signing' >&2; exit 1 ;;
+          *) echo 'Invalid Snap owner inspection state' >&2; exit 1 ;;
+        esac
+        printf 'state=%s\nstaged=%s\nreused=%s\n' "$state" "$staged" "$reused" >> "$GITHUB_OUTPUT"
+  attest:
+    needs: inspect
+    if: ${{ needs.inspect.outputs.state != 'complete' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_VERSION: ${{ inputs.version }}
+      CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 }}
+      OWNER_WORKFLOW: build-snapcraft.yml
+      PLATFORM_OWNER: build-snapcraft.yml
+      ARTIFACT_ROOT: artifacts
+      PLATFORM_MANIFEST: ${{ github.workspace }}/raw-owner-artifacts.json
+      GENERATION_OWNER: build-snapcraft.yml
+      GENERATION_DIR: signed-generation
+      PLATFORM_ARTIFACTS_JSON: >-
+        [{"owner":"build-snapcraft.yml","arch":"amd64","id":${{ inputs.raw_artifact_id }},"digest":"${{ inputs.raw_artifact_digest }}","attempt":${{ inputs.raw_producing_attempt }}}]
+    outputs:
+      state: ${{ steps.inventory.outputs.state }}
+      staged: ${{ steps.inventory.outputs.staged }}
+      reused: ${{ steps.inventory.outputs.reused }}
+      generation-id: ${{ steps.upload-generation.outputs.artifact-id }}
+      generation-digest: ${{ steps.upload-generation.outputs.artifact-digest }}
+      generation-attempt: ${{ steps.generation.outputs.run-attempt }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Validate reusable Snap source
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$GITHUB_REPOSITORY" = Picocrypt-NG/Picocrypt-NG
+        test "$GITHUB_WORKFLOW_REF" = Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main
+        test "$GITHUB_REF" = refs/heads/main
+        test "$GITHUB_EVENT_NAME" = workflow_dispatch
+        test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        version=${version%$'\r'}
+        test "$version" = "$SOURCE_VERSION"
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${digest%% *}" = "$CANONICAL_MANIFEST_SHA256"
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: v3.1.3
+    - name: Inspect full Snap owner
+      id: inventory
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        report=$(mktemp)
+        trap 'rm -f "$report"' EXIT
+        GITHUB_OUTPUT='' bash .github/actions/stage-release/release-gate.sh inspect-owner "$SOURCE_VERSION" > "$report"
+        jq -e --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" --arg canonical "$CANONICAL_MANIFEST_SHA256" '
+          .repository == "Picocrypt-NG/Picocrypt-NG" and .source_sha == $source and .version == $version and
+          .canonical_manifest_sha256 == $canonical and .owner_workflow == "build-snapcraft.yml"
+        ' "$report" >/dev/null
+        state=$(jq -r '.status' "$report")
+        case "$state" in
+          complete) staged=true; reused=true ;;
+          missing) staged=false; reused=false ;;
+          partial) echo 'Snap owner is partially staged; original signed generation is required before any signing' >&2; exit 1 ;;
+          *) echo 'Invalid Snap owner inspection state' >&2; exit 1 ;;
+        esac
+        printf 'state=%s\nstaged=%s\nreused=%s\n' "$state" "$staged" "$reused" >> "$GITHUB_OUTPUT"
+    - name: Verify immutable Snap artifact metadata
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/verify-platform-artifacts/verify-artifacts.sh metadata
+    - name: Download Snap raw artifact
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ inputs.raw_artifact_id }}
+        path: artifacts/build-snapcraft
+        merge-multiple: true
+        digest-mismatch: error
+    - name: Verify Snap payload manifest
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      shell: bash
+      run: bash .github/actions/verify-platform-artifacts/verify-artifacts.sh payload
+    - name: Prepare canonical Snap signing path
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p out
+        cp "artifacts/build-snapcraft/picocrypt-ng_${SOURCE_VERSION}_amd64.snap" "out/picocrypt-ng_${SOURCE_VERSION}_amd64.snap"
+    - name: Sign and attest artifacts
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      uses: ./.github/actions/sign-and-attest
+      with:
+        paths: |
+          out/picocrypt-ng_${{ inputs.version }}_amd64.snap
+    - name: Record signed Snap generation
+      id: generation
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/signed-generation/generation.sh record
+    - name: Upload signed Snap generation
+      id: upload-generation
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.generation.outputs.artifact-name }}
+        path: signed-generation/*
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 7
+        overwrite: false
+  stage:
+    needs: attest
+    if: ${{ needs.attest.outputs.state != 'complete' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_VERSION: ${{ inputs.version }}
+      CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 }}
+      GENERATION_OWNER: build-snapcraft.yml
+      GENERATION_DIR: signed-generation
+      GENERATION_ARTIFACT_ID: ${{ needs.attest.outputs.generation-id }}
+      GENERATION_ARTIFACT_DIGEST: ${{ needs.attest.outputs.generation-digest }}
+      GENERATION_ARTIFACT_ATTEMPT: ${{ needs.attest.outputs.generation-attempt }}
+    outputs:
+      staged: ${{ steps.stage.outputs.staged }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Validate reusable Snap source
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$GITHUB_REPOSITORY" = Picocrypt-NG/Picocrypt-NG
+        test "$GITHUB_WORKFLOW_REF" = Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main
+        test "$GITHUB_REF" = refs/heads/main
+        test "$GITHUB_EVENT_NAME" = workflow_dispatch
+        test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        version=${version%$'\r'}
+        test "$version" = "$SOURCE_VERSION"
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${digest%% *}" = "$CANONICAL_MANIFEST_SHA256"
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: v3.1.3
+    - name: Verify signed generation metadata
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/signed-generation/generation.sh metadata
+    - name: Download signed Snap generation
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.attest.outputs.generation-id }}
+        path: signed-generation
+        merge-multiple: true
+        digest-mismatch: error
+    - name: Restore signed Snap generation
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/signed-generation/generation.sh restore
+    - name: Generate release notes
+      uses: ./.github/actions/release-body
+      with:
+        version: ${{ inputs.version }}
+    - name: Stage release assets
+      id: stage
+      uses: ./.github/actions/stage-release
+      with:
+        version: ${{ inputs.version }}
+        body_path: ${{ github.workspace }}/release-body.md
+        files: |
+          out/picocrypt-ng_${{ inputs.version }}_amd64.snap
+          out/picocrypt-ng_${{ inputs.version }}_amd64.snap.sigstore.json
+        finalize: 'false'

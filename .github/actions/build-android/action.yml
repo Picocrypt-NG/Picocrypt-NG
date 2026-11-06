@@ -1,0 +1,277 @@
+name: Build unsigned Android artifacts
+description: Secret-free Android AAR and release APK packaging.
+
+inputs:
+  source-sha:
+    description: Immutable event source SHA from the prepared checkout.
+    required: true
+  version:
+    description: VERSION from the prepared source checkout.
+    required: true
+  manifest-digest:
+    description: SHA-256 of the canonical release ownership manifest.
+    required: true
+
+outputs:
+  artifact-id:
+    description: Immutable canonical validation artifact ID from the official uploader.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-digest:
+    description: SHA-256 of the validation ZIP, distinct from payload file hashes.
+    value: ${{ steps.upload.outputs.artifact-digest }}
+  run-attempt:
+    description: Attempt that created the canonical validation artifact.
+    value: ${{ steps.source.outputs.run-attempt }}
+  signing-input-id:
+    description: Existing unsigned APK signing-input bundle ID.
+    value: ${{ steps.upload-unsigned.outputs.artifact-id }}
+  signing-input-digest:
+    description: Official ZIP digest of the unsigned APK signing carrier.
+    value: ${{ steps.upload-unsigned.outputs.artifact-digest }}
+  signing-input-attempt:
+    description: Producing attempt of that immutable signing carrier.
+    value: ${{ steps.source.outputs.run-attempt }}
+  manifest-sha256:
+    description: Existing signing-input manifest digest.
+    value: ${{ steps.prepare-unsigned.outputs.manifest-sha256 }}
+  aar-sha256:
+    description: Existing source AAR digest.
+    value: ${{ steps.prepare-unsigned.outputs.aar-sha256 }}
+  version:
+    description: Existing Android version name.
+    value: ${{ steps.version.outputs.version }}
+  version-code:
+    description: Existing Android base version code.
+    value: ${{ steps.version.outputs.version-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Assert prepared Android source
+      id: source
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        test "$(cat VERSION)" = "$SOURCE_VERSION"
+        actual=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+    - name: Validate Gradle Wrapper
+      uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: "1.27.3"
+        cache-dependency-path: src/go.sum
+
+    - name: Install gomobile
+      shell: bash
+      run: |
+        go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20261011034528-197770444867
+        go install golang.org/x/mobile/cmd/gobind@v0.0.0-20261011034528-197770444867
+        mkdir -p "$(go env GOPATH | cut -d: -f1)/pkg/gomobile"
+
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      with:
+        distribution: "temurin"
+        java-version: "21.0.13+9.0.LTS"
+
+    - name: Install Android SDK packages
+      shell: bash
+      run: |
+        NDK_VERSION="$(tr -d '\r\n' < android/ndk-version.txt)"
+        if [ -z "$NDK_VERSION" ]; then
+          echo "android/ndk-version.txt is empty" >&2
+          exit 1
+        fi
+        yes | sdkmanager --licenses || true
+        sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "ndk;$NDK_VERSION"
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+    - name: Cache Gradle dependencies
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          android/.gradle
+        key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+
+    - name: Compute Android version metadata
+      id: version
+      shell: bash
+      run: |
+        set -euo pipefail
+        VERSION=$(cat VERSION)
+        [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || exit 1
+        IFS='.' read -r major minor patch <<< "$VERSION"
+        major=${major:-0}
+        minor=${minor:-0}
+        patch=${patch:-0}
+        VERSION_CODE=$((10#$major * 10000 + 10#$minor * 100 + 10#$patch))
+        {
+          echo "version=$VERSION"
+          echo "version-code=$VERSION_CODE"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo "VERSION=$VERSION"
+          echo "ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_NAME=$VERSION"
+          echo "ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE=$VERSION_CODE"
+        } >> "$GITHUB_ENV"
+
+    - name: Verify Android gomobile build policy
+      shell: bash
+      run: bash .github/scripts/test-android-gomobile-policy.sh
+
+    - name: Build Go Mobile AAR
+      working-directory: android
+      shell: bash
+      run: |
+        chmod +x build-gomobile.sh
+        ./build-gomobile.sh
+
+    - name: Make gradlew executable
+      working-directory: android
+      shell: bash
+      run: chmod +x gradlew
+
+    - name: Run Unit Tests
+      working-directory: android
+      shell: bash
+      run: ./gradlew test
+
+    - name: Run Android Lint
+      working-directory: android
+      shell: bash
+      run: ./gradlew lint
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: build-android-gomobile-attempt-${{ github.run_attempt }}
+        path: android/app/libs/picocrypt-mobile.aar
+        if-no-files-found: error
+        compression-level: 9
+
+    - name: Build unsigned release APKs
+      working-directory: android
+      shell: bash
+      run: ./gradlew --no-daemon :app:assembleRelease
+
+    - name: Verify exact unsigned release APK contract
+      working-directory: android
+      shell: bash
+      run: |
+        ./verify-release-apks.sh \
+          app/build/outputs/apk/release \
+          "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_NAME" \
+          "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE" \
+          io.github.picocrypt_ng.picocrypt_ng \
+          unsigned
+
+    - name: Bind unsigned APKs to the source and AAR
+      id: prepare-unsigned
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir unsigned-release
+        cp android/app/build/outputs/apk/release/app-*-release-unsigned.apk unsigned-release/
+        aar_sha256="$(sha256sum android/app/libs/picocrypt-mobile.aar | cut -d' ' -f1)"
+        for file in unsigned-release/*.apk; do
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 "$file"
+        done
+        jq -n \
+          --arg source "$GITHUB_SHA" \
+          --arg version "$VERSION" \
+          --arg code "$ORG_GRADLE_PROJECT_PICOCRYPT_VERSION_CODE" \
+          --arg aar "$aar_sha256" \
+          --arg arm32 "$(sha256sum unsigned-release/app-armeabi-v7a-release-unsigned.apk | cut -d' ' -f1)" \
+          --arg arm64 "$(sha256sum unsigned-release/app-arm64-v8a-release-unsigned.apk | cut -d' ' -f1)" \
+          --arg x86 "$(sha256sum unsigned-release/app-x86-release-unsigned.apk | cut -d' ' -f1)" \
+          --arg x86_64 "$(sha256sum unsigned-release/app-x86_64-release-unsigned.apk | cut -d' ' -f1)" \
+          --arg universal "$(sha256sum unsigned-release/app-universal-release-unsigned.apk | cut -d' ' -f1)" \
+          '{source: $source, version: $version, baseVersionCode: $code, aarSha256: $aar,
+            apks: {"app-armeabi-v7a-release-unsigned.apk": $arm32,
+                   "app-arm64-v8a-release-unsigned.apk": $arm64,
+                   "app-x86-release-unsigned.apk": $x86,
+                   "app-x86_64-release-unsigned.apk": $x86_64,
+                   "app-universal-release-unsigned.apk": $universal}}' \
+          > unsigned-release/build-inputs.json
+        {
+          echo "aar-sha256=$aar_sha256"
+          echo "manifest-sha256=$(sha256sum unsigned-release/build-inputs.json | cut -d' ' -f1)"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Upload unsigned release APKs
+      id: upload-unsigned
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: unsigned-android-attempt-${{ github.run_attempt }}
+        path: unsigned-release/
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 1
+        overwrite: false
+
+    - name: Prepare Android validation artifacts
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir validation-out
+        for abi in armeabi-v7a arm64-v8a x86 x86_64 universal; do
+          source="unsigned-release/app-$abi-release-unsigned.apk"
+          test -f "$source" && test ! -L "$source" && test -s "$source" || exit 1
+          cp "$source" "validation-out/Picocrypt-NG-android-$abi.apk"
+        done
+
+    - name: Record Android payload manifest
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        canonical=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION")
+        actual=$(printf '%s\n' "$canonical" | sha256sum)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        expected=$(awk '$2 == "build-android.yml" {print $1}' <<< "$canonical" | LC_ALL=C sort)
+        test -n "$expected"
+        actual_names=$(find validation-out -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
+        test "$actual_names" = "$expected"
+        files=$(while IFS= read -r name; do
+          test -f "validation-out/$name" && test ! -L "validation-out/$name" && test -s "validation-out/$name" || exit 1
+          digest=$(sha256sum "validation-out/$name") || exit 1
+          jq -cn --arg name "$name" --arg sha256 "${digest%% *}" '{name:$name,sha256:$sha256}' || exit 1
+        done <<< "$expected" | jq -sc 'sort_by(.name)')
+        jq -nS --arg repository "$GITHUB_REPOSITORY" --arg source_sha "$SOURCE_SHA" \
+          --arg version "$SOURCE_VERSION" --arg canonical_manifest_sha256 "$CANONICAL_MANIFEST_SHA256" \
+          --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" --argjson files "$files" \
+          '{schema_version:1,repository:$repository,source_sha:$source_sha,version:$version,
+            canonical_manifest_sha256:$canonical_manifest_sha256,owner_workflow:"build-android.yml",
+            arch:"all",run_id:$run_id,run_attempt:$run_attempt,files:$files}' > validation-out/payload-manifest.json
+
+    - name: Upload Android validation artifacts
+      id: upload
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: validate-android-all-attempt-${{ github.run_attempt }}
+        path: validation-out/*
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 7
+        overwrite: false

@@ -88,9 +88,12 @@ Use **cosign 3.1.3 or newer** for verification.
 
 Every artifact has a keyless [cosign](https://github.com/sigstore/cosign) signature (download the matching \`<file>.sigstore.json\` bundle) and a GitHub build-provenance attestation. Verification below binds the filename to its owning release workflow, the \`main\` branch, and source commit \`$SOURCE_SHA\`.
 
+Run from a checkout of source commit \`$SOURCE_SHA\` with the downloaded artifact and bundle in that directory. Both verifiers and the verified-certificate policy are mandatory: a standalone cosign bundle does not establish caller identity. The policy accepts only the exact owner direct path or the same-source release coordinator calling that owner.
+
 Set \`file\` to the downloaded artifact's filename, then run:
 
 \`\`\`sh
+set -eu
 file=Picocrypt-NG-android-arm64-v8a.apk
 case "\$file" in
 $verification_cases
@@ -98,6 +101,8 @@ $verification_cases
 esac
 identity="https://github.com/$REPO/.github/workflows/\$workflow@refs/heads/main"
 source_commit=$SOURCE_SHA
+test "\$(git rev-parse HEAD)" = "\$source_commit"
+policy=.github/actions/sign-and-attest/verify-certificate.sh
 cosign verify-blob "\$file" \\
   --bundle "\$file.sigstore.json" \\
   --certificate-identity "\$identity" \\
@@ -113,7 +118,8 @@ gh attestation verify "\$file" \\
   --source-ref refs/heads/main \\
   --source-digest "\$source_commit" \\
   --predicate-type https://slsa.dev/provenance/v1 \\
-  --deny-self-hosted-runners
+  --deny-self-hosted-runners --format json > "\$file.verified-provenance.json"
+bash "\$policy" online "\$file.verified-provenance.json" "\$workflow" "\$source_commit"
 \`\`\`
 EOF
 )"

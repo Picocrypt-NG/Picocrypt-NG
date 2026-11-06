@@ -1,0 +1,195 @@
+name: Build macOS artifacts
+description: Native macOS packaging with the existing ad-hoc bundle seal and no release keys.
+
+inputs:
+  source-sha:
+    description: Immutable event source SHA from the prepared checkout.
+    required: true
+  version:
+    description: VERSION from the prepared source checkout.
+    required: true
+  manifest-digest:
+    description: SHA-256 of the canonical release ownership manifest.
+    required: true
+
+outputs:
+  artifact-id:
+    description: Immutable workflow artifact ID from the official uploader.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-digest:
+    description: SHA-256 of the uploaded ZIP, distinct from payload file hashes.
+    value: ${{ steps.upload.outputs.artifact-digest }}
+  run-attempt:
+    description: Attempt that created these exact bytes.
+    value: ${{ steps.source.outputs.run-attempt }}
+
+runs:
+  using: composite
+  steps:
+    - name: Assert prepared macOS source
+      id: source
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        test "$(cat VERSION)" = "$SOURCE_VERSION"
+        actual=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | shasum -a 256)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        test "$MACOSX_DEPLOYMENT_TARGET" = 15.0
+        test "$CGO_CFLAGS" = -mmacosx-version-min=15.0
+        test "$CGO_LDFLAGS" = -mmacosx-version-min=15.0
+        echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+    - name: Setup Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: "1.27.3"
+        cache-dependency-path: src/go.sum
+
+    - name: Install packages
+      shell: bash
+      run: |
+        brew install glfw glew
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        cd src
+        go mod download
+
+    - name: Run native test suite
+      shell: bash
+      run: bash .github/scripts/test-macos-pcv3.sh "$SHARD_INDEX" "$SHARD_COUNT"
+      env:
+        CGO_ENABLED: "1"
+        SHARD_INDEX: "0"
+        SHARD_COUNT: "1"
+
+    - name: Run tests
+      # Native volume/PCV3 KDFs run above; Linux runs the full race suite.
+      shell: bash
+      run: |
+        cd src
+        go test -v -race -p 1 -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
+        go test -v -race -p 1 -timeout 15m ./internal/pcv3publication/...
+        GOMAXPROCS=1 go test -v -race -p 1 -timeout 15m ./internal/pcv3operation/internal/pcv3unicode/...
+        sudo -n /usr/sbin/purge
+        go test -v -count=1 -p 1 -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...
+      env:
+        CGO_ENABLED: "1"
+
+    - name: Build GUI
+      shell: bash
+      run: |
+        cd src
+        go build -v -tags migrated_fynedo -ldflags="-s -w" -o Picocrypt-NG ./cmd/picocrypt
+      env:
+        CGO_ENABLED: 1
+
+    - name: Verify macOS GUI deployment target
+      shell: bash
+      run: |
+        bash .github/scripts/assert-macos-minos.sh src/Picocrypt-NG 15.0
+
+    - name: Build CLI-only (no graphics dependencies)
+      shell: bash
+      run: |
+        cd src
+        go build -v -tags cli -ldflags="-s -w" -o Picocrypt-NG-cli-macos ./cmd/picocrypt
+      env:
+        CGO_ENABLED: 1
+
+    - name: Package as .app in a .dmg
+      shell: bash
+      run: |
+        mv dist/macos/Picocrypt-NG.app.zip .
+        unzip -d Picocrypt-NG.app Picocrypt-NG.app.zip
+        rm Picocrypt-NG.app.zip
+        mv src/Picocrypt-NG Picocrypt-NG.app/Contents/MacOS/Picocrypt-NG
+        rm Picocrypt-NG.app/Contents/Resources/icon.icns
+        mv dist/macos/iconSmall.icns Picocrypt-NG.app/Contents/Resources/icon.icns
+        # Inject canonical Info.plist.
+        cp dist/macos/Info.plist Picocrypt-NG.app/Contents/Info.plist
+        plutil -replace CFBundleShortVersionString -string "$(cat VERSION)" \
+            Picocrypt-NG.app/Contents/Info.plist
+        plutil -replace CFBundleVersion -string "$(cat VERSION)" \
+            Picocrypt-NG.app/Contents/Info.plist
+        plutil -lint Picocrypt-NG.app/Contents/Info.plist
+        # Sanity assertion: UTI must round-trip through plutil -extract (json form per Pitfall #7)
+        plutil -extract CFBundleDocumentTypes json -o - \
+            Picocrypt-NG.app/Contents/Info.plist | grep -q 'io.github.picocryptng.pcv' \
+            || (echo "::error::CFBundleDocumentTypes lost UTI ref"; exit 1)
+        plutil -extract UTExportedTypeDeclarations json -o - \
+            Picocrypt-NG.app/Contents/Info.plist | grep -q 'io.github.picocryptng.pcv' \
+            || (echo "::error::UTExportedTypeDeclarations lost UTI"; exit 1)
+        # === Ad-hoc code signing (free; no paid Apple Developer ID) ===
+        # Re-seal the assembled bundle so the signature covers the swapped
+        # executable, icon and injected Info.plist. Without a valid seal a
+        # quarantined download triggers the harsh "app is damaged and can't be
+        # opened" Gatekeeper block on Apple Silicon (an arm64 binary must be at
+        # least ad-hoc signed to run at all). A valid ad-hoc seal downgrades
+        # that to the bypassable "unidentified developer" prompt. It does NOT
+        # remove the warning entirely; that needs a paid Developer ID +
+        # notarization. spctl --assess is intentionally NOT run here: ad-hoc
+        # signatures are expected to fail notarization assessment.
+        codesign --force --deep --sign - Picocrypt-NG.app
+        codesign --verify --deep --strict --verbose=2 Picocrypt-NG.app
+        # === end ad-hoc signing ===
+        mkdir out
+        cp -R Picocrypt-NG.app out
+        hdiutil create Picocrypt-NG.dmg -volname Picocrypt-NG -fs APFS -format UDZO -srcfolder out
+
+    - name: Stage release artifacts
+      shell: bash
+      run: |
+        mkdir release-staging
+        cp Picocrypt-NG.dmg release-staging/
+        cp src/Picocrypt-NG-cli-macos release-staging/
+        test -s release-staging/Picocrypt-NG.dmg
+        test -s release-staging/Picocrypt-NG-cli-macos
+
+
+    - name: Record macOS payload manifest
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        canonical=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION")
+        actual=$(printf '%s\n' "$canonical" | shasum -a 256)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        expected=$(awk '$2 == "build-macos.yml" {print $1}' <<< "$canonical" | LC_ALL=C sort)
+        test "$expected" = "$(printf '%s\n' Picocrypt-NG.dmg Picocrypt-NG-cli-macos | LC_ALL=C sort)"
+        shopt -s dotglob nullglob
+        entries=(release-staging/*)
+        test "${#entries[@]}" -eq 2
+        files=$(while IFS= read -r name; do
+          test -f "release-staging/$name" && test ! -L "release-staging/$name" && test -s "release-staging/$name" || exit 1
+          digest=$(shasum -a 256 -b "release-staging/$name") || exit 1
+          jq -cn --arg name "$name" --arg sha256 "${digest%% *}" '{name:$name,sha256:$sha256}' || exit 1
+        done <<< "$expected" | jq -sc 'sort_by(.name)')
+        arch=$(go env GOARCH)
+        jq -nS --arg repository "$GITHUB_REPOSITORY" --arg source_sha "$SOURCE_SHA" \
+          --arg version "$SOURCE_VERSION" --arg canonical_manifest_sha256 "$CANONICAL_MANIFEST_SHA256" \
+          --arg arch "$arch" --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" --argjson files "$files" \
+          '{schema_version:1,repository:$repository,source_sha:$source_sha,version:$version,
+            canonical_manifest_sha256:$canonical_manifest_sha256,owner_workflow:"build-macos.yml",
+            arch:$arch,run_id:$run_id,run_attempt:$run_attempt,files:$files}' > release-staging/payload-manifest.json
+
+    - name: Upload artifacts
+      id: upload
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: build-macos-attempt-${{ github.run_attempt }}
+        path: release-staging/
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 7
+        overwrite: false

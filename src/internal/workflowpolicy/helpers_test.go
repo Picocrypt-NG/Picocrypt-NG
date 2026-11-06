@@ -57,8 +57,10 @@ type workflowJob struct {
 	Outputs         map[string]string   `yaml:"outputs"`
 	Steps           []workflowStep      `yaml:"steps"`
 	Strategy        struct {
-		FailFast *bool `yaml:"fail-fast"`
-		Matrix   struct {
+		FailFast    *bool `yaml:"fail-fast"`
+		MaxParallel int   `yaml:"max-parallel"`
+		Matrix      struct {
+			Group   []int `yaml:"group"`
 			Include []struct {
 				Arch   string `yaml:"arch"`
 				Runner string `yaml:"runner"`

@@ -1,0 +1,229 @@
+name: Build unsigned AppImage artifacts
+description: Secret-free AppImage packaging shared by the owner and validation lanes.
+
+inputs:
+  source-sha:
+    description: Immutable event source SHA from the prepared checkout.
+    required: true
+  version:
+    description: VERSION from the prepared source checkout.
+    required: true
+  manifest-digest:
+    description: SHA-256 of the canonical release ownership manifest.
+    required: true
+  retain-signing-input:
+    description: Retain the AppDir tar only when production signing is requested.
+    required: false
+    default: "false"
+
+outputs:
+  artifact-id:
+    description: Immutable workflow artifact ID from the official uploader.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-digest:
+    description: SHA-256 of the uploaded ZIP, distinct from payload file hashes.
+    value: ${{ steps.upload.outputs.artifact-digest }}
+  run-attempt:
+    description: Attempt that created these exact bytes.
+    value: ${{ steps.source.outputs.run-attempt }}
+  signing-input-id:
+    description: Immutable AppDir signing carrier ID from the official uploader.
+    value: ${{ steps.signing-input.outputs.artifact-id }}
+  signing-input-digest:
+    description: Official ZIP digest, separate from the inner AppDir tar hash.
+    value: ${{ steps.signing-input.outputs.artifact-digest }}
+  signing-input-sha256:
+    description: SHA-256 of the exact inner AppDir tar consumed by the signer.
+    value: ${{ steps.prepare-signing-input.outputs.sha256 }}
+  signing-input-attempt:
+    description: Producing attempt, only when a signing carrier was retained.
+    value: ${{ steps.signing-input.outputs.artifact-id && steps.source.outputs.run-attempt || '' }}
+
+runs:
+  using: composite
+  steps:
+    - name: Assert prepared AppImage source
+      id: source
+      shell: bash
+      env:
+        RETAIN_SIGNING_INPUT: ${{ inputs.retain-signing-input }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        case "$RETAIN_SIGNING_INPUT" in
+          true|false) ;;
+          *) echo 'retain-signing-input must be true or false' >&2; exit 1 ;;
+        esac
+        test "$SOURCE_SHA" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        test "$(cat VERSION)" = "$SOURCE_VERSION"
+        actual=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION" | sha256sum)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+    - name: Setup Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: "1.27.3"
+        cache-dependency-path: src/go.sum
+
+    - name: Install packages
+      shell: bash
+      run: |
+        sudo apt update
+        sudo apt install -y gcc pkg-config libgl1-mesa-dev xorg-dev libgtk-3-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev libgl1 desktop-file-utils librsvg2-bin curl jq file gnupg
+
+    - name: Build GUI
+      shell: bash
+      run: |
+        cd src
+        GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=1 go build -v -tags migrated_fynedo -ldflags="-s -w" -o Picocrypt-NG ./cmd/picocrypt
+
+    - name: Fetch and verify AppImage tooling
+      shell: bash
+      run: |
+        mkdir .appimage-tools
+        bash .github/scripts/install-appimage-build-tools.sh .appimage-tools
+
+    - name: Setup uv for verifier controls
+      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      with:
+        version: "0.13.5"
+        enable-cache: false
+
+    - name: Test AppImage signature verifier with public fixtures
+      shell: bash
+      run: uv run --no-project python .github/scripts/appimage-verifier-test.py
+
+    - name: Build AppImage
+      env:
+        # GitHub runners lack FUSE; run the tools (and later the result) extracted.
+        APPIMAGE_EXTRACT_AND_RUN: "1"
+        # The Go binary is already stripped (-s -w) and the bundled system libs gain
+        # little from stripping; skipping it removes a fragile step (linuxdeploy's strip
+        # aborts on libraries using newer ELF sections, e.g. .relr.dyn) for ~2-3 MB.
+        NO_STRIP: "true"
+      shell: bash
+      run: |
+        VERSION=$(cat VERSION)
+        mkdir -p stage AppDir/usr/share/metainfo
+
+        # Desktop entry: point Exec at the bundled binary's basename.
+        cp dist/linux/io.github.picocrypt_ng.Picocrypt-NG.desktop stage/
+        sed -i 's|^Exec=.*|Exec=Picocrypt-NG %f|' stage/io.github.picocrypt_ng.Picocrypt-NG.desktop
+
+        # App icon (must match the desktop Icon= key) rendered from the same SVG as the .deb.
+        rsvg-convert --format png --width 256 --height 256 \
+          --output stage/io.github.picocrypt_ng.Picocrypt-NG.png images/key.svg
+
+        # AppStream metadata so AppImage-aware tooling can show app info / update sources.
+        cp dist/linux/io.github.picocrypt_ng.Picocrypt-NG.metainfo.xml AppDir/usr/share/metainfo/
+
+        # Deterministic output filename (independent of the binary's internal version).
+        export OUTPUT="Picocrypt-NG-${VERSION}-x86_64.AppImage"
+        export VERSION
+
+        # AppImageUpdate delta-update transport: appimagetool embeds this string in the
+        # .upd_info ELF section and emits the matching .zsync. The glob (not the literal
+        # version) is what lets an installed build discover every future release; `latest`
+        # resolves to the GitHub release marked "Latest" (non-prerelease). owner/repo come
+        # from the running repo so forks point at themselves, not upstream.
+        UPDATE_INFORMATION="gh-releases-zsync|${GITHUB_REPOSITORY%/*}|${GITHUB_REPOSITORY#*/}|latest|Picocrypt-NG-*-x86_64.AppImage.zsync"
+        # linuxdeploy only creates AppDir. The separately pinned producer receives an
+        # explicit runtime, avoiding both the plugin's producer and runtime downloads.
+        ./.appimage-tools/linuxdeploy \
+          --appdir AppDir \
+          --executable src/Picocrypt-NG \
+          --desktop-file stage/io.github.picocrypt_ng.Picocrypt-NG.desktop \
+          --icon-file stage/io.github.picocrypt_ng.Picocrypt-NG.png
+        ARCH=x86_64 ./.appimage-tools/appimagetool \
+          --runtime-file .appimage-tools/runtime --updateinformation "$UPDATE_INFORMATION" \
+          AppDir "$OUTPUT"
+
+        test -f "$OUTPUT"
+        test -f "${OUTPUT}.zsync" || { echo "::error::no .zsync produced -- update information was not honored"; exit 1; }
+
+    - name: Smoke test AppImage
+      env:
+        APPIMAGE_EXTRACT_AND_RUN: "1"
+      shell: bash
+      run: |
+        VERSION=$(cat VERSION)
+        APP="Picocrypt-NG-${VERSION}-x86_64.AppImage"
+        # --version drives the embedded CLI (cli.Execute) and exits before Fyne/OpenGL
+        # init, so this needs no display. It still loads every DT_NEEDED shared library at
+        # startup, so a broken/incomplete bundle fails here instead of shipping silently.
+        out=$("./$APP" --version)
+        echo "$out"
+        echo "$out" | grep -qi picocrypt
+
+    - name: Prepare to upload artifacts
+      shell: bash
+      run: |
+        VERSION=$(cat VERSION)
+        mkdir -p out
+        mv "Picocrypt-NG-${VERSION}-x86_64.AppImage" out/
+        mv "Picocrypt-NG-${VERSION}-x86_64.AppImage.zsync" out/
+
+
+    - name: Record AppImage payload manifest
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_VERSION: ${{ inputs.version }}
+        CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+      run: |
+        set -euo pipefail
+        canonical=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION")
+        actual=$(printf '%s\n' "$canonical" | sha256sum)
+        test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
+        expected=$(awk '$2 == "build-appimage.yml" {print $1}' <<< "$canonical" | LC_ALL=C sort)
+        test -n "$expected"
+        actual_names=$(find out -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
+        test "$actual_names" = "$expected"
+        files=$(while IFS= read -r name; do
+          test -f "out/$name" && test ! -L "out/$name" && test -s "out/$name" || exit 1
+          digest=$(sha256sum "out/$name") || exit 1
+          jq -cn --arg name "$name" --arg sha256 "${digest%% *}" '{name:$name,sha256:$sha256}' || exit 1
+        done <<< "$expected" | jq -sc 'sort_by(.name)')
+        jq -nS --arg repository "$GITHUB_REPOSITORY" --arg source_sha "$SOURCE_SHA" \
+          --arg version "$SOURCE_VERSION" --arg canonical_manifest_sha256 "$CANONICAL_MANIFEST_SHA256" \
+          --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" --argjson files "$files" \
+          '{schema_version:1,repository:$repository,source_sha:$source_sha,version:$version,
+            canonical_manifest_sha256:$canonical_manifest_sha256,owner_workflow:"build-appimage.yml",
+            arch:"amd64",run_id:$run_id,run_attempt:$run_attempt,files:$files}' > out/payload-manifest.json
+
+    - name: Upload artifacts
+      id: upload
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: validate-appimage-amd64-attempt-${{ github.run_attempt }}
+        # AppImage is already squashfs-compressed; re-zipping it gains nothing.
+        path: out/*
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+        overwrite: false
+
+    - name: Prepare signing input
+      if: ${{ inputs.retain-signing-input == 'true' }}
+      id: prepare-signing-input
+      shell: bash
+      run: |
+        tar --create --file AppDir.tar AppDir
+        DIGEST=$(sha256sum < AppDir.tar)
+        echo "sha256=${DIGEST%% *}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload signing input
+      if: ${{ inputs.retain-signing-input == 'true' }}
+      id: signing-input
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: appimage-signing-input-attempt-${{ github.run_attempt }}
+        path: AppDir.tar
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+        overwrite: false

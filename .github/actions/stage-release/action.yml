@@ -13,6 +13,18 @@ inputs:
   files:
     description: Newline-delimited exact files owned by this platform lane.
     required: true
+  finalize:
+    description: Keep the legacy completion/publication check; false stages only.
+    required: false
+    default: 'true'
+
+outputs:
+  staged:
+    description: True only after the requested lane was verified in the draft.
+    value: ${{ steps.stage.outputs.staged || 'false' }}
+  published:
+    description: True only after actual publication and final source-bound checks.
+    value: ${{ steps.publish.outputs.published || 'false' }}
 
 runs:
   using: composite
@@ -23,21 +35,22 @@ runs:
         GH_TOKEN: ${{ github.token }}
         VERSION: ${{ inputs.version }}
         FILES: ${{ inputs.files }}
+        FINALIZE: ${{ inputs.finalize }}
       run: bash "$GITHUB_ACTION_PATH/release-gate.sh" preflight "$VERSION"
 
     - name: Upload assets to draft release
-      uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-      with:
-        body_path: ${{ inputs.body_path }}
-        files: ${{ inputs.files }}
-        tag_name: ${{ inputs.version }}
-        target_commitish: ${{ github.sha }}
-        draft: true
-        make_latest: false
-        overwrite_files: false
-        fail_on_unmatched_files: true
+      id: stage
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ inputs.version }}
+        BODY_PATH: ${{ inputs.body_path }}
+        FILES: ${{ inputs.files }}
+      run: bash "$GITHUB_ACTION_PATH/release-gate.sh" upload "$VERSION"
 
     - name: Publish only the complete release
+      id: publish
+      if: ${{ inputs.finalize == 'true' }}
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

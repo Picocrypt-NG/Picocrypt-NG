@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -51,11 +52,34 @@ func TestStaticChecksWorkflowEnforcesFormatVetLintAndVuln(t *testing.T) {
 	mustContain(t, content, "pull_request:")
 }
 
+func TestStaticChecksWorkflowEnforcesToolingIntegration(t *testing.T) {
+	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-static-checks.yml")
+	job := mustJob(t, workflow, "static-checks")
+	setup := mustStepNamed(t, job, "Setup uv for tooling tests")
+	mustMatch(t, setup.Uses, `^astral-sh/setup-uv@[0-9a-f]{40}$`)
+	if setup.With["version"] != "0.13.5" {
+		t.Fatalf("tooling uv version = %#v, want pinned 0.13.5", setup.With["version"])
+	}
+	step := mustStepNamed(t, job, "Test tooling integration")
+	if step.If != "" || (step.ContinueOnError != nil && step.ContinueOnError != false) {
+		t.Fatal("tooling integration must run unconditionally and propagate failures")
+	}
+	if step.Env["MISE_ENABLE_TOOLS"] != "go,golangci-lint,hk,jouet,jactionlint,shellcheck,ruff" {
+		t.Fatalf("tooling installation scope = %q", step.Env["MISE_ENABLE_TOOLS"])
+	}
+	mustContain(t, step.Run, "mise install go golangci-lint hk jouet")
+	mustContain(t, step.Run, "mise run tooling:test")
+	mustNotContain(t, step.Run, "|| true")
+}
+
 func TestReleaseUploadsNeverOverwriteExistingAssets(t *testing.T) {
 	action := mustReadCompositeActionDoc(t, ".github/actions/stage-release/action.yml")
 	uploadStep := mustCompositeStepNamed(t, action, "Upload assets to draft release")
-	if got := uploadStep.With["overwrite_files"]; got != false && got != "false" {
-		t.Fatalf("release overwrite_files = %#v, want false to preserve staged binaries", got)
+	if uploadStep.Uses != "" || uploadStep.Shell != "bash" || uploadStep.Run != `bash "$GITHUB_ACTION_PATH/release-gate.sh" upload "$VERSION"` {
+		t.Fatalf("release uploads must use the shared no-overwrite gate: %#v", uploadStep)
+	}
+	if uploadStep.Env["FILES"] != "${{ inputs.files }}" || uploadStep.Env["VERSION"] != "${{ inputs.version }}" {
+		t.Fatalf("release upload gate must receive the exact lane and version: %#v", uploadStep.Env)
 	}
 }
 
@@ -206,7 +230,7 @@ func TestSignAndAttestUsesApprovedCosign(t *testing.T) {
 	}
 	mustNotContain(t, content, "cosign-release: 'v3.1.1'")
 	ownership := mustCompositeStepNamed(t, action, "Validate exact release artifact ownership")
-	for _, required := range []string{"release-manifest.sh", `test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`, `test "$WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/$owner@refs/heads/main"`, `[ ! -L "$file" ]`, `[ -s "$file" ]`} {
+	for _, required := range []string{"release-manifest.sh", `test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`, `"$GITHUB_REPOSITORY/.github/workflows/$owner@refs/heads/main"|"$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/heads/main"`, `test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"`, `[ ! -L "$file" ]`, `[ -s "$file" ]`} {
 		mustContain(t, ownership.Run, required)
 	}
 	provenance := mustCompositeStepNamed(t, action, "Generate build-provenance attestation")
@@ -214,26 +238,29 @@ func TestSignAndAttestUsesApprovedCosign(t *testing.T) {
 		t.Fatal("provenance must attest exactly the artifact paths validated for this workflow owner")
 	}
 	verify := mustCompositeStepNamed(t, action, "Fail-loud verify (cosign + provenance)")
-	if verify.Env["SOURCE_SHA"] != "${{ github.sha }}" || verify.Env["IDENTITY"] != "https://github.com/${{ github.workflow_ref }}" {
+	if verify.Env["SOURCE_SHA"] != "${{ github.sha }}" || verify.Env["IDENTITY"] != "https://github.com/${{ github.repository }}/.github/workflows/${{ steps.files.outputs.owner }}@refs/heads/main" {
 		t.Fatal("signature and provenance must bind the current source and exact workflow identity")
 	}
+	if provenance.ID != "provenance" || verify.Env["PROVENANCE_BUNDLE"] != "${{ steps.provenance.outputs.bundle-path }}" || verify.Env["CALLER_REF"] != "${{ github.workflow_ref }}" || verify.Env["OWNER"] != "${{ steps.files.outputs.owner }}" {
+		t.Fatal("exact verification must consume the real newly generated bundle and owner/caller context")
+	}
+	if mustCompositeStepNamed(t, action, "Install pinned GitHub CLI").Uses != "./.github/actions/setup-gh" {
+		t.Fatal("verified certificate JSON must use the reviewed CLI pin")
+	}
+	mustContain(t, verify.Run, `--bundle "$PROVENANCE_BUNDLE"`)
+	mustContain(t, verify.Run, `--format json > "$verified"`)
+	mustContain(t, verify.Run, `verify-certificate.sh" exact "$verified" "$OWNER" "$SOURCE_SHA" "$CALLER_REF" || return 1`)
 	for _, restriction := range []string{`--certificate-identity "$IDENTITY"`, `--certificate-github-workflow-sha "$SOURCE_SHA"`, "--certificate-github-workflow-ref refs/heads/main", `--certificate-github-workflow-repository "$REPO"`, `--cert-identity "$IDENTITY"`, `--signer-digest "$SOURCE_SHA"`, "--source-ref refs/heads/main", `--source-digest "$SOURCE_SHA"`, "--predicate-type https://slsa.dev/provenance/v1", "--deny-self-hosted-runners"} {
 		mustContain(t, verify.Run, restriction)
 	}
 }
 
 func TestReleaseJobsRequireMainBranchAndReleaseEnvironment(t *testing.T) {
-	const releaseGuard = "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}"
-	const signPathReleaseGuard = "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && !inputs.signpath_test && !inputs.signpath_release_dry_run && inputs.publish_release }}"
-
 	for _, tc := range releaseWorkflowCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			workflow := mustReadWorkflowDoc(t, tc.path)
 			releaseJob := mustJob(t, workflow, tc.job)
-			wantGuard := releaseGuard
-			if tc.name == "build-windows" || tc.name == "build-windows-legacy" {
-				wantGuard = signPathReleaseGuard
-			}
+			wantGuard := directPublicationGuard(tc.name)
 			if releaseJob.If != wantGuard {
 				t.Fatalf("release job if = %q, want explicit manual release on main", releaseJob.If)
 			}
@@ -251,8 +278,8 @@ func TestReleaseWorkflowsRequireManualDispatchWithoutDefaultPublication(t *testi
 	for _, tc := range releaseWorkflowCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			workflow := mustReadWorkflowDoc(t, tc.path)
-			if len(workflow.On.OtherEvents) != 0 {
-				t.Fatalf("automatic release workflow triggers = %v; want only workflow_dispatch", workflow.On.OtherEvents)
+			if len(workflow.On.OtherEvents) != 1 || workflow.On.OtherEvents["workflow_call"] == nil {
+				t.Fatalf("release triggers = %v; want only guarded reuse alongside manual dispatch", workflow.On.OtherEvents)
 			}
 			input, ok := workflow.On.WorkflowDispatch.Inputs["publish_release"]
 			if !ok || input.Type != "boolean" || input.Default != false || input.Required {
@@ -260,6 +287,42 @@ func TestReleaseWorkflowsRequireManualDispatchWithoutDefaultPublication(t *testi
 			}
 		})
 	}
+}
+
+func directReleaseInvocation(owner string) string {
+	return "github.workflow_ref == format('{0}/.github/workflows/" + owner + ".yml@{1}', github.repository, github.ref)"
+}
+
+func directPublicationGuard(owner string) string {
+	guard := "github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && "
+	prefix := ""
+	switch owner {
+	case "build-windows", "build-windows-legacy":
+		guard += "!inputs.signpath_test && !inputs.signpath_release_dry_run && inputs.publish_release"
+		prefix = "always() && !cancelled() && needs.build.result == 'success' && needs.sign.result == 'success' && "
+	case "build-android":
+		guard += "inputs.publish_release"
+		prefix = "!cancelled() && needs.build.result == 'success' && needs.sign.result == 'success' && "
+	case "build-appimage":
+		guard += "inputs.publish_release"
+		prefix = "!cancelled() && needs.sign.result == 'success' && "
+	default:
+		guard += "inputs.publish_release"
+	}
+	return "${{ " + prefix + guard + " && " + directReleaseInvocation(owner) + " }}"
+}
+
+func nativeSigningGuard(owner string) string {
+	direct := directReleaseInvocation(owner)
+	if owner == "build-windows" || owner == "build-windows-legacy" {
+		indirect := strings.Replace(direct, " == ", " != ", 1)
+		return "${{ always() && !cancelled() && ((" + direct + " && needs.build.result == 'success' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run)) || (" + indirect + " && needs.inspect.result == 'success' && needs.inspect.outputs.state != 'complete')) }}"
+	}
+	return "${{ always() && !cancelled() && ((" + direct + " && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && needs.build.result == 'success') || (! (" + direct + ") && needs.inspect.result == 'success' && needs.inspect.outputs.state != 'complete')) }}"
+}
+
+func androidNativeStepGuard() string {
+	return "${{ (" + directReleaseInvocation("build-android") + ") || steps.inventory.outputs.state == 'missing' }}"
 }
 
 func releaseWorkflowCases() []struct {
@@ -284,22 +347,22 @@ func releaseWorkflowCases() []struct {
 
 func TestAppImageSigningSecretsRequireReleaseEnvironment(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-appimage.yml")
-	buildJob := mustJob(t, workflow, "build")
+	signJob := mustJob(t, workflow, "sign")
 
-	if buildJob.If != "${{ github.ref == 'refs/heads/main' }}" {
-		t.Fatalf("AppImage signing build job if = %q, want main branch guard", buildJob.If)
+	if signJob.If != nativeSigningGuard("build-appimage") {
+		t.Fatalf("AppImage signing job if = %q, want explicit publication on main", signJob.If)
 	}
-	if got := releaseEnvironmentName(buildJob.Environment); got != "release" {
-		t.Fatalf("AppImage signing build job environment = %#v, want release", buildJob.Environment)
+	if got := releaseEnvironmentName(signJob.Environment); got != "release" {
+		t.Fatalf("AppImage signing job environment = %#v, want release", signJob.Environment)
 	}
 
-	importStep := mustStepNamed(t, buildJob, "Import GPG signing key")
+	importStep := mustStepNamed(t, signJob, "Import GPG signing key")
 	if _, ok := importStep.Env["GPG_PRIVATE_KEY"]; !ok {
-		t.Fatal("AppImage signing build job should keep the GPG private key scoped to its import step")
+		t.Fatal("AppImage signing job should keep the GPG private key scoped to its import step")
 	}
-	buildStep := mustStepNamed(t, buildJob, "Build AppImage")
+	buildStep := mustStepNamed(t, signJob, "Build signed AppImage")
 	if _, ok := buildStep.Env["APPIMAGETOOL_SIGN_PASSPHRASE"]; !ok {
-		t.Fatal("AppImage signing build job should keep the AppImage passphrase scoped to its build step")
+		t.Fatal("AppImage signing job should keep the AppImage passphrase scoped to its build step")
 	}
 }
 
@@ -323,7 +386,9 @@ func TestBuildPermissionsStayLeastPrivilege(t *testing.T) {
 
 	buildLinux := mustReadWorkflowDoc(t, ".github/workflows/build-linux.yml")
 	mustPermission(t, buildLinux.Permissions, "contents", "read")
-	mustEffectivePermission(t, buildLinux, mustJob(t, buildLinux, "build"), "contents", "read")
+	for _, name := range []string{"prepare", "build-amd64", "build-arm64"} {
+		mustEffectivePermission(t, buildLinux, mustJob(t, buildLinux, name), "contents", "read")
+	}
 	mustEffectivePermission(t, buildLinux, mustJob(t, buildLinux, "release"), "contents", "write")
 
 	buildMacOS := mustReadWorkflowDoc(t, ".github/workflows/build-macos.yml")
@@ -351,6 +416,7 @@ func TestAppImageWorkflowIsPortableSmokeTestedAndPinned(t *testing.T) {
 	const path = ".github/workflows/build-appimage.yml"
 	workflow := mustReadWorkflowDoc(t, path)
 	build := mustJob(t, workflow, "build")
+	build.Steps = mustReadCompositeActionDoc(t, ".github/actions/build-appimage/action.yml").Runs.Steps
 
 	// Portability floor. AppImage was dropped once "for better portability"
 	// (Changelog v1.34); building on the newest runner's glibc reproduces that, so the
@@ -359,27 +425,41 @@ func TestAppImageWorkflowIsPortableSmokeTestedAndPinned(t *testing.T) {
 		t.Fatalf("AppImage build runner = %q, want ubuntu-22.04 portability floor", build.RunsOn)
 	}
 
-	// Supply chain: the AppImage tooling is fetched at build time, so it must be
-	// sha256-pinned AND verified (fail loud), like UPX in build-linux. Asserts that a
-	// pin exists and is checked -- not the exact digest -- so a tool bump does not churn
-	// this test.
+	// Versioned producer inputs must be hashed before any downloaded code executes.
 	fetch := mustStepNamed(t, build, "Fetch and verify AppImage tooling")
 	if fetch.If != "" || (fetch.ContinueOnError != nil && fetch.ContinueOnError != false) {
 		t.Fatal("AppImage tooling verification must be unconditional and blocking")
 	}
-	ready := regexp.MustCompile(`(?m)^[\t ]*chmod \+x linuxdeploy appimagetool[\t ]*$`).FindStringIndex(fetch.Run)
-	if ready == nil {
-		t.Fatal("AppImage tooling must be made executable only after verification")
+	mustContain(t, fetch.Run, "bash .github/scripts/install-appimage-build-tools.sh .appimage-tools")
+	installer := mustReadRepoFile(t, ".github/scripts/install-appimage-build-tools.sh")
+	mustContainInOrder(t, installer, `--output "$destination/$name" "$url"`, `actual=$(sha256sum < "$destination/$name")`, `[[ ${actual%% *} == "$expected" ]]`, `chmod +x "$destination/linuxdeploy" "$destination/appimagetool"`)
+	var manifest struct {
+		Tools []struct {
+			Name, Version, URL, SHA256 string
+			SourceCommit               string `json:"source_commit"`
+			AssetID                    int64  `json:"asset_id"`
+		} `json:"tools"`
 	}
-	for _, tool := range []struct{ name, url string }{
-		{"linuxdeploy", "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"},
-		{"appimagetool", "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"},
-	} {
-		download := regexp.MustCompile(`(?m)^[\t ]*` + regexp.QuoteMeta("wget -O "+tool.name+" "+tool.url) + `[\t ]*$`).FindStringIndex(fetch.Run)
-		checksum := regexp.MustCompile(`(?m)^[\t ]*echo "[0-9a-f]{64}  ` + tool.name + `" \| sha256sum --check --strict --status[\t ]*$`).FindStringIndex(fetch.Run)
-		if download == nil || checksum == nil || download[0] >= checksum[0] || checksum[0] >= ready[0] {
-			t.Fatalf("%s requires an active pinned checksum command after download and before chmod", tool.name)
+	if err := json.Unmarshal([]byte(mustReadRepoFile(t, ".github/toolchains/appimage-build.json")), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	wantTools := map[string]string{
+		"linuxdeploy":  "linuxdeploy/linuxdeploy",
+		"appimagetool": "AppImage/appimagetool",
+		"runtime":      "AppImage/type2-runtime",
+	}
+	for _, tool := range manifest.Tools {
+		repository, known := wantTools[tool.Name]
+		if !known || !regexp.MustCompile(`^[0-9][0-9A-Za-z.-]*$`).MatchString(tool.Version) ||
+			!strings.HasPrefix(tool.URL, "https://github.com/"+repository+"/releases/download/"+tool.Version+"/") ||
+			!regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(tool.SHA256) ||
+			!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(tool.SourceCommit) || tool.AssetID <= 0 {
+			t.Fatalf("AppImage producer input lacks a versioned source and asset pin: %+v", tool)
 		}
+		delete(wantTools, tool.Name)
+	}
+	if len(wantTools) != 0 {
+		t.Fatalf("AppImage producer inputs missing: %v", wantTools)
 	}
 
 	// The produced AppImage must be smoke-tested, or a broken bundle (a shared library
@@ -401,9 +481,8 @@ func TestAppImageWorkflowIsPortableSmokeTestedAndPinned(t *testing.T) {
 }
 
 func TestMacOSReleaseWorkflowInjectsRootVersionIntoBundleMetadata(t *testing.T) {
-	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-macos.yml")
-	buildJob := mustJob(t, workflow, "build")
-	packageStep := mustStepNamed(t, buildJob, "Package as .app in a .dmg")
+	action := mustReadCompositeActionDoc(t, ".github/actions/build-macos/action.yml")
+	packageStep := mustCompositeStepNamed(t, action, "Package as .app in a .dmg")
 
 	mustContain(t, packageStep.Run, `plutil -replace CFBundleShortVersionString -string "$(cat VERSION)"`)
 	mustContain(t, packageStep.Run, `plutil -replace CFBundleVersion -string "$(cat VERSION)"`)
@@ -411,15 +490,15 @@ func TestMacOSReleaseWorkflowInjectsRootVersionIntoBundleMetadata(t *testing.T) 
 
 func TestMacOSReleaseWorkflowPublishesCLIFromFlatArtifact(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-macos.yml")
-	buildJob := mustJob(t, workflow, "build")
+	action := mustReadCompositeActionDoc(t, ".github/actions/build-macos/action.yml")
 	releaseJob := mustJob(t, workflow, "release")
 
-	stageStep := mustStepNamed(t, buildJob, "Stage release artifacts")
+	stageStep := mustCompositeStepNamed(t, action, "Stage release artifacts")
 	mustContain(t, stageStep.Run, "cp Picocrypt-NG.dmg release-staging/")
 	mustContain(t, stageStep.Run, "cp src/Picocrypt-NG-cli-macos release-staging/")
 	mustContain(t, stageStep.Run, "test -s release-staging/Picocrypt-NG-cli-macos")
 
-	uploadStep := mustStepNamed(t, buildJob, "Upload artifacts")
+	uploadStep := mustCompositeStepNamed(t, action, "Upload artifacts")
 	if uploadStep.With["path"] != "release-staging/" {
 		t.Fatalf("macOS upload artifact path = %#v, want flat release-staging/", uploadStep.With["path"])
 	}
@@ -437,8 +516,7 @@ func TestMacOSReleaseWorkflowPublishesCLIFromFlatArtifact(t *testing.T) {
 }
 
 func TestWindowsReleaseWorkflowPassesRootVersionToNSIS(t *testing.T) {
-	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-windows.yml")
-	buildJob := mustJob(t, workflow, "build")
+	buildJob := windowsBuildPolicyJob(t, ".github/workflows/build-windows.yml", "build")
 	nsisStep := mustStepNamed(t, buildJob, "Build NSIS installer")
 
 	mustContainInOrder(t, nsisStep.Run,
@@ -450,10 +528,10 @@ func TestWindowsReleaseWorkflowPassesRootVersionToNSIS(t *testing.T) {
 
 func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-windows.yml")
-	buildJob := mustJob(t, workflow, "build")
+	buildJob := windowsBuildPolicyJob(t, ".github/workflows/build-windows.yml", "build")
 	unsignedUpload := mustStepNamed(t, buildJob, "Upload artifact")
-	if got := unsignedUpload.With["name"]; got != "unsigned-windows" {
-		t.Fatalf("unsigned Windows artifact name = %#v, want unsigned-windows", got)
+	if got := unsignedUpload.With["name"]; got != "unsigned-windows-attempt-${{ github.run_attempt }}" {
+		t.Fatalf("unsigned Windows artifact name = %#v, want per-attempt unsigned-windows carrier", got)
 	}
 	if got := unsignedUpload.With["retention-days"]; got != 1 {
 		t.Fatalf("unsigned Windows artifact retention = %#v, want 1 day", got)
@@ -461,7 +539,7 @@ func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testin
 
 	signJob := mustJob(t, workflow, "sign")
 
-	if signJob.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}" {
+	if signJob.If != nativeSigningGuard("build-windows") {
 		t.Fatalf("Windows SignPath job if = %q, want main release, test signing, or release-signing dry-run guard", signJob.If)
 	}
 	if signJob.TimeoutMinutes != 210 {
@@ -614,17 +692,17 @@ func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testin
 
 func TestWindowsLegacyReleaseUsesSignPathBeforeSigstore(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-windows-legacy.yml")
-	buildJob := mustJob(t, workflow, "build")
+	buildJob := windowsBuildPolicyJob(t, ".github/workflows/build-windows-legacy.yml", "build")
 	unsignedUpload := mustStepNamed(t, buildJob, "Upload artifact")
-	if got := unsignedUpload.With["name"]; got != "unsigned-windows-legacy" {
-		t.Fatalf("unsigned legacy artifact name = %#v, want unsigned-windows-legacy", got)
+	if got := unsignedUpload.With["name"]; got != "unsigned-windows-legacy-attempt-${{ github.run_attempt }}" {
+		t.Fatalf("unsigned legacy artifact name = %#v, want per-attempt unsigned-windows-legacy carrier", got)
 	}
 	if got := unsignedUpload.With["retention-days"]; got != 1 {
 		t.Fatalf("unsigned legacy artifact retention = %#v, want 1 day", got)
 	}
 
 	signJob := mustJob(t, workflow, "sign")
-	if signJob.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run) }}" {
+	if signJob.If != nativeSigningGuard("build-windows-legacy") {
 		t.Fatalf("legacy SignPath job if = %q, want main release, test signing, or release-signing dry-run guard", signJob.If)
 	}
 	if signJob.TimeoutMinutes != 75 {
@@ -727,7 +805,7 @@ func TestWindowsSignPathReleaseDryRunUsesProductionVerificationWithoutPublishing
 				t.Fatalf("release dry-run verification mode = %q, want production verification whenever signpath_test is false", got)
 			}
 			uploadSigned := mustStepNamed(t, signJob, tc.signedUploadStep)
-			if uploadSigned.If != "${{ !inputs.signpath_release_dry_run }}" {
+			if uploadSigned.If != "${{ "+directReleaseInvocation(strings.TrimSuffix(filepath.Base(tc.path), ".yml"))+" && !inputs.signpath_release_dry_run }}" {
 				t.Fatalf("release dry-run signed artifact upload if = %q, want production-signed dry-run output to remain inside the job", uploadSigned.If)
 			}
 
@@ -905,7 +983,7 @@ func TestLinuxUPXDownloadsRemainChecksumGated(t *testing.T) {
 		".github/workflows/build-linux.yml",
 		".github/workflows/pr-test-build-linux.yml",
 	} {
-		build := mustJob(t, mustReadWorkflowDoc(t, path), "build")
+		build := linuxBuildPolicyJob(t, path)
 		compress := mustStepNamed(t, build, "Compress with upx")
 		if compress.If != "" || (compress.ContinueOnError != nil && compress.ContinueOnError != false) {
 			t.Fatal("Linux UPX verification must be unconditional and blocking")
@@ -931,12 +1009,13 @@ func TestLinuxUPXDownloadsRemainChecksumGated(t *testing.T) {
 func TestLinuxPRGatesRequireEveryNativeTestGroup(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-linux.yml")
 	gate := mustJob(t, workflow, "pr-test-build-linux")
-	if gate.If != "${{ always() && !cancelled() }}" {
-		t.Fatalf("Linux aggregate if = %q, want cancellation-aware always gate", gate.If)
+	if gate.If != "${{ always() }}" {
+		t.Fatalf("Linux aggregate if = %q, want final gate to inspect all results even after cancellation", gate.If)
 	}
 
-	if gate.Needs != "build" {
-		t.Fatalf("Linux aggregate needs = %#v, want build matrix", gate.Needs)
+	needs, ok := gate.Needs.([]any)
+	if !ok || len(needs) != 2 || needs[0] != "build" || needs[1] != "production-kdf" {
+		t.Fatalf("Linux aggregate needs = %#v, want build matrix and production-KDF lane", gate.Needs)
 	}
 	build := mustJob(t, workflow, "build")
 	if build.Needs != "tests" || build.If != "${{ always() && !cancelled() }}" || build.Name != "pr-test-build-linux-${{ matrix.arch }}" {
@@ -962,8 +1041,8 @@ func TestLinuxPRGatesRequireEveryNativeTestGroup(t *testing.T) {
 
 	check := mustStepNamed(t, gate, "Require all Linux matrix jobs to pass")
 	mustContainInOrder(t, check.Run,
-		`if [ "${{ needs.build.result }}" != "success" ]; then`,
-		`echo "Linux matrix result: ${{ needs.build.result }}"`,
+		`if [[ ${BUILD_RESULT:-} != success || ${PRODUCTION_KDF_RESULT:-} != success ]]; then`,
+		`echo "Linux matrix result: ${BUILD_RESULT:-missing}; production-KDF result: ${PRODUCTION_KDF_RESULT:-missing}"`,
 		"exit 1",
 	)
 }
@@ -975,7 +1054,7 @@ func TestLinuxWorkflowsBoundRaceParallelismAndSelectOnlyCLIIntegration(t *testin
 	} {
 		t.Run(path, func(t *testing.T) {
 			workflow := mustReadWorkflowDoc(t, path)
-			build := mustJob(t, workflow, "build")
+			build := linuxBuildPolicyJob(t, path)
 			testStep := mustStepNamed(t, build, "Run tests")
 			testRun := testStep.Run
 			raceSelectors := []string{`"${packages[@]}"`}
@@ -1107,7 +1186,11 @@ func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {
 		{path: ".github/workflows/pr-test-build-macos.yml", job: "pr-test-build-macos"},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
-			testStep := mustStepNamed(t, mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job), "Run tests")
+			job := mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job)
+			if tc.path == ".github/workflows/build-macos.yml" {
+				job.Steps = mustReadCompositeActionDoc(t, ".github/actions/build-macos/action.yml").Runs.Steps
+			}
+			testStep := mustStepNamed(t, job, "Run tests")
 
 			raceLineIndex := -1
 			contractLineIndex := -1
@@ -1161,20 +1244,30 @@ func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {
 	}
 }
 
-func TestMacOSPRAggregateGateRequiresAllTestGroups(t *testing.T) {
+func TestMacOSPRBuildsOnlyAfterNativeTests(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-macos.yml")
-	gate := mustJob(t, workflow, "pr-test-build-macos")
-	if gate.Needs != "pcv3-tests" || gate.If != "${{ always() }}" {
-		t.Fatalf("macOS gate needs=%v if=%q; want all test groups checked even after cancellation", gate.Needs, gate.If)
-	}
-	check := mustStepNamed(t, gate, "Require all macOS test groups to pass")
-	if len(gate.Steps) == 0 || gate.Steps[0].Name != check.Name {
-		t.Fatal("macOS build must check the test result before any other step")
-	}
-	mustContainInOrder(t, check.Run,
-		`if [ "${{ needs.pcv3-tests.result }}" != "success" ]; then`,
-		"exit 1",
+	job := mustJob(t, workflow, "pr-test-build-macos")
+	native := mustStepNamed(t, job, "Run native test suite")
+	mustContainInOrder(t, mustReadWorkflow(t, ".github/workflows/pr-test-build-macos.yml"),
+		"- name: "+native.Name,
+		"- name: Run tests",
+		"- name: Build GUI",
+		"- name: Build CLI-only (no graphics dependencies)",
+		"- name: Package as .app in a .dmg",
+		"- name: Upload artifacts",
 	)
+	for _, name := range []string{
+		"Run tests",
+		"Build GUI",
+		"Build CLI-only (no graphics dependencies)",
+		"Package as .app in a .dmg",
+		"Upload artifacts",
+	} {
+		step := mustStepNamed(t, job, name)
+		if step.If != "" || step.ContinueOnError != nil {
+			t.Fatalf("%s must retain default success gating after the native suite", name)
+		}
+	}
 }
 
 func TestWindowsWorkflowsUseApprovedResourceHacker528(t *testing.T) {
@@ -1187,8 +1280,7 @@ func TestWindowsWorkflowsUseApprovedResourceHacker528(t *testing.T) {
 		{path: ".github/workflows/pr-test-build-windows.yml", job: "pr-test-build-windows"},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
-			workflow := mustReadWorkflowDoc(t, tc.path)
-			job := mustJob(t, workflow, tc.job)
+			job := windowsBuildPolicyJob(t, tc.path, tc.job)
 			if got := job.Env["RESHACKER_SHA256"]; got != expectedHash {
 				t.Fatalf("RESHACKER_SHA256 = %q, want %q", got, expectedHash)
 			}
@@ -1268,8 +1360,7 @@ func TestWindowsDownloadsAreBoundedAndChecksumGated(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			workflow := mustReadWorkflowDoc(t, tc.path)
-			step := mustStepNamed(t, mustJob(t, workflow, tc.job), tc.step)
+			step := mustStepNamed(t, windowsBuildPolicyJob(t, tc.path, tc.job), tc.step)
 			if step.Shell != "pwsh" {
 				t.Fatalf("download step shell = %q, want pwsh", step.Shell)
 			}
@@ -1287,8 +1378,7 @@ func TestWindowsResourceEditingWaitsAndFailsLoud(t *testing.T) {
 		{path: ".github/workflows/pr-test-build-windows.yml", job: "pr-test-build-windows"},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
-			workflow := mustReadWorkflowDoc(t, tc.path)
-			resourceStep := mustStepNamed(t, mustJob(t, workflow, tc.job), "Add icon, manifest, and version info")
+			resourceStep := mustStepNamed(t, windowsBuildPolicyJob(t, tc.path, tc.job), "Add icon, manifest, and version info")
 
 			mustNotContain(t, resourceStep.Run, "Start-Sleep")
 			mustNotContain(t, resourceStep.Run, "Invoke-Expression")
@@ -1328,6 +1418,9 @@ func TestLinuxDebPackagingDoesNotUseExternalScaffold(t *testing.T) {
 	} {
 		t.Run(path, func(t *testing.T) {
 			content := mustReadWorkflow(t, path)
+			if path == ".github/workflows/build-linux.yml" {
+				content = mustReadRepoFile(t, ".github/actions/build-linux/action.yml")
+			}
 			mustNotContain(t, content, "github.com/user-attachments/files/21703014/Picocrypt-NG.zip")
 			mustContain(t, content, "librsvg2-bin")
 			mustContain(t, content, "xmllint --noout images/key.svg")
@@ -1349,9 +1442,8 @@ func TestLinuxDebPackagingDoesNotUseExternalScaffold(t *testing.T) {
 }
 
 func TestSnapcraftWorkflowSmokeTestsInstalledSnap(t *testing.T) {
-	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-snapcraft.yml")
-	buildJob := mustJob(t, workflow, "build-snapcraft")
-	smokeStep := mustStepNamed(t, buildJob, "Smoke-test snap command")
+	action := mustReadCompositeActionDoc(t, ".github/actions/build-snapcraft/action.yml")
+	smokeStep := mustCompositeStepNamed(t, action, "Smoke-test snap command")
 	if smokeStep.Env["LANG"] != "C.UTF-8" {
 		t.Fatalf("snap smoke-test LANG = %q, want C.UTF-8", smokeStep.Env["LANG"])
 	}
@@ -1505,6 +1597,9 @@ func TestAndroidBuildWorkflowsRunFullLint(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			job := mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job)
+			if tc.path == ".github/workflows/build-android.yml" {
+				job = androidBuildPolicyJob(t, job)
+			}
 			lintStep := mustStepNamed(t, job, "Run Android Lint")
 			if got := strings.TrimSpace(lintStep.Run); got != "./gradlew lint" {
 				t.Fatalf("Android lint step run = %q, want exact full lint command", got)
@@ -1525,45 +1620,40 @@ func TestAndroidBuildWorkflowsRunFullLint(t *testing.T) {
 func TestAndroidReleaseWorkflowKeepsSigningSecretsOutOfBuildJob(t *testing.T) {
 	const path = ".github/workflows/build-android.yml"
 	workflow := mustReadWorkflowDoc(t, path)
-	buildJob := mustJob(t, workflow, "build")
+	buildJob := androidBuildPolicyJob(t, mustJob(t, workflow, "build"))
+	workflow.Jobs["build"] = buildJob
 	signJob := mustJob(t, workflow, "sign")
 	releaseJob := mustJob(t, workflow, "release")
 	mustStepNamed(t, buildJob, "Build Go Mobile AAR")
 	mustStepNamed(t, buildJob, "Run Unit Tests")
 	mustStepNamed(t, buildJob, "Build unsigned release APKs")
-	if signJob.Needs != "build" || fmt.Sprint(releaseJob.Needs) != "[build sign]" {
+	if fmt.Sprint(signJob.Needs) != "[build inspect]" || fmt.Sprint(releaseJob.Needs) != "[build sign]" {
 		t.Fatalf("Android signing/publication dependencies = %#v/%#v, want build then [build sign]", signJob.Needs, releaseJob.Needs)
 	}
-	if signJob.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}" || releaseEnvironmentName(signJob.Environment) != "release" {
+	if signJob.If != nativeSigningGuard("build-android") || releaseEnvironmentName(signJob.Environment) != "release" {
 		t.Fatal("Android key use must require explicit release dispatch on main and the release environment")
 	}
+	roles := map[string]map[string]string{
+		"build": {"contents": "read"}, "inspect": {"contents": "read"},
+		"sign":    {"contents": "read", "actions": "read"},
+		"release": {"contents": "write", "id-token": "write", "attestations": "write"},
+		"attest":  {"contents": "read", "actions": "read", "id-token": "write", "attestations": "write"},
+		"stage":   {"contents": "write", "actions": "read"},
+	}
+	if len(workflow.Jobs) != len(roles) {
+		t.Fatal("Android release graph contains an unreviewed role")
+	}
 	for name, job := range workflow.Jobs {
-		if name != "build" && name != "sign" && name != "release" {
-			t.Fatalf("unreviewed Android release job %q", name)
-		}
-		if job.Permissions == nil {
-			t.Fatalf("Android %s job must declare its permissions explicitly", name)
-		}
-		wantPermissions := map[string]string{"contents": "read"}
-		if name == "release" {
-			wantPermissions = map[string]string{"contents": "write", "id-token": "write", "attestations": "write"}
-		}
-		if len(job.Permissions) != len(wantPermissions) {
+		wantPermissions, ok := roles[name]
+		if !ok || !reflect.DeepEqual(job.Permissions, wantPermissions) {
 			t.Fatalf("Android %s has permissions outside its reviewed role: %#v", name, job.Permissions)
 		}
-		for key, value := range wantPermissions {
-			mustEffectivePermission(t, workflow, job, key, value)
-		}
-		if name != "release" {
-			mustEffectivePermission(t, workflow, job, "contents", "read")
-			for _, permission := range []string{"id-token", "attestations", "actions", "packages"} {
-				mustEffectivePermission(t, workflow, job, permission, "none")
+		for _, permission := range []string{"contents", "actions", "id-token", "attestations", "packages"} {
+			want := wantPermissions[permission]
+			if want == "" {
+				want = "none"
 			}
-		} else {
-			for _, permission := range []string{"contents", "id-token", "attestations"} {
-				mustEffectivePermission(t, workflow, job, permission, "write")
-			}
-			mustEffectivePermission(t, workflow, job, "packages", "none")
+			mustEffectivePermission(t, workflow, job, permission, want)
 		}
 		for _, step := range job.Steps {
 			if strings.HasPrefix(step.Uses, "actions/checkout@") && step.With["persist-credentials"] != false {
@@ -1613,14 +1703,14 @@ func TestAndroidReleaseWorkflowKeepsSigningSecretsOutOfBuildJob(t *testing.T) {
 		mustContain(t, launcher, required)
 	}
 	download := mustStepNamed(t, signJob, "Download source-bound unsigned APKs")
-	if download.With["artifact-ids"] != "${{ needs.build.outputs.artifact-id }}" || download.With["merge-multiple"] != true || download.With["path"] != "unsigned-release" {
-		t.Fatal("Android signer must download only the immutable build-job artifact ID")
+	if download.With["artifact-ids"] != "${{ inputs.signing_input_id || needs.build.outputs.artifact-id }}" || download.With["merge-multiple"] != true || download.With["path"] != "unsigned-release" {
+		t.Fatal("Android signer must download only the immutable carrier selected for its invocation")
 	}
-	if buildJob.Outputs["artifact-id"] != "${{ steps.upload-unsigned.outputs.artifact-id }}" || signJob.Outputs["artifact-id"] != "${{ steps.upload-signed.outputs.artifact-id }}" {
-		t.Fatal("Android artifact IDs must come directly from their own upload actions")
+	if buildJob.Outputs["artifact-id"] != "${{ steps.build.outputs.signing-input-id }}" || signJob.Outputs["artifact-id"] != "${{ steps.upload-signed.outputs.artifact-id }}" {
+		t.Fatal("Android signer must keep the original unsigned bundle ID, separate from canonical validation")
 	}
 	validate := mustStepNamed(t, signJob, "Validate unsigned signing inputs before loading secrets")
-	for key, value := range map[string]string{"MANIFEST_SHA256": "${{ needs.build.outputs.manifest-sha256 }}", "AAR_SHA256": "${{ needs.build.outputs.aar-sha256 }}", "VERSION": "${{ needs.build.outputs.version }}", "VERSION_CODE": "${{ needs.build.outputs.version-code }}"} {
+	for key, value := range map[string]string{"MANIFEST_SHA256": "${{ needs.build.outputs.manifest-sha256 || steps.signing-metadata.outputs.manifest-sha256 }}", "AAR_SHA256": "${{ needs.build.outputs.aar-sha256 || steps.signing-metadata.outputs.aar-sha256 }}", "VERSION": "${{ needs.build.outputs.version || inputs.version }}", "VERSION_CODE": "${{ needs.build.outputs.version-code || steps.signing-metadata.outputs.version-code }}"} {
 		if validate.Env[key] != value {
 			t.Fatalf("unsigned signing input %s is not bound to the build-job output", key)
 		}
@@ -1653,6 +1743,9 @@ func TestAndroidBuildWorkflowsMatchPinnedJDK21(t *testing.T) {
 	} {
 		workflow := mustReadWorkflowDoc(t, path)
 		for jobName, job := range workflow.Jobs {
+			if path == ".github/workflows/build-android.yml" && jobName == "build" {
+				job = androidBuildPolicyJob(t, job)
+			}
 			setupSteps := 0
 			for _, step := range job.Steps {
 				if !strings.HasPrefix(step.Uses, "actions/setup-java@") {
@@ -1666,7 +1759,7 @@ func TestAndroidBuildWorkflowsMatchPinnedJDK21(t *testing.T) {
 					t.Fatalf("%s job %s setup-java java-version = %#v, want mise toolchain %q", path, jobName, got, javaVersion)
 				}
 			}
-			if path == ".github/workflows/build-android.yml" && jobName == "release" {
+			if path == ".github/workflows/build-android.yml" && jobName != "build" && jobName != "sign" {
 				if setupSteps != 0 {
 					t.Fatal("Android publisher must not set up or execute the JVM build/signing toolchain")
 				}
@@ -1679,7 +1772,7 @@ func TestAndroidBuildWorkflowsMatchPinnedJDK21(t *testing.T) {
 
 func TestAndroidReleasePublishesAllFourABIsAndUniversal(t *testing.T) {
 	releaseWorkflow := mustReadWorkflowDoc(t, ".github/workflows/build-android.yml")
-	build := mustJob(t, releaseWorkflow, "build")
+	build := androidBuildPolicyJob(t, mustJob(t, releaseWorkflow, "build"))
 	sign := mustJob(t, releaseWorkflow, "sign")
 	bind := mustStepNamed(t, build, "Bind unsigned APKs to the source and AAR")
 	validate := mustStepNamed(t, sign, "Validate unsigned signing inputs before loading secrets")
@@ -1729,13 +1822,17 @@ func TestAndroidReleaseWorkflowsRunExactArtifactVerifier(t *testing.T) {
 		{"signed release", ".github/workflows/build-android.yml", "sign", "Verify exact signed release APK contract", "signed", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			step := mustStepNamed(t, mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job), tc.step)
+			job := mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job)
+			if tc.path == ".github/workflows/build-android.yml" && tc.job == "build" {
+				job = androidBuildPolicyJob(t, job)
+			}
+			step := mustStepNamed(t, job, tc.step)
 			if step.WorkingDirectory != tc.directory {
 				t.Fatalf("verifier working-directory = %q, want %q", step.WorkingDirectory, tc.directory)
 			}
 			if tc.kind == "signed" {
 				mustContainInOrder(t, step.Run, `android/verify-release-apks.sh signed-apks "$VERSION" "$VERSION_CODE" io.github.picocrypt_ng.picocrypt_ng signed`, "mkdir out", "cp signed-apks/app-armeabi-v7a-release.apk", "cp signed-apks/app-arm64-v8a-release.apk", "cp signed-apks/app-x86-release.apk", "cp signed-apks/app-x86_64-release.apk", "cp signed-apks/app-universal-release.apk")
-				if step.Env["VERSION"] != "${{ needs.build.outputs.version }}" || step.Env["VERSION_CODE"] != "${{ needs.build.outputs.version-code }}" {
+				if step.Env["VERSION"] != "${{ needs.build.outputs.version || inputs.version }}" || step.Env["VERSION_CODE"] != "${{ needs.build.outputs.version-code || steps.signing-metadata.outputs.version-code }}" {
 					t.Fatal("signed verifier must check source-bound build version metadata")
 				}
 			} else {
@@ -1744,8 +1841,12 @@ func TestAndroidReleaseWorkflowsRunExactArtifactVerifier(t *testing.T) {
 					t.Fatalf("unsigned verifier = %q, want %q", step.Run, wantRun)
 				}
 			}
-			if step.If != "" || (step.ContinueOnError != nil && step.ContinueOnError != false) {
-				t.Fatal("APK contract verification must be unconditional and blocking")
+			wantIf := ""
+			if tc.kind == "signed" {
+				wantIf = androidNativeStepGuard()
+			}
+			if step.If != wantIf || (step.ContinueOnError != nil && step.ContinueOnError != false) {
+				t.Fatal("APK contract verification must block every freshly signed or unsigned candidate")
 			}
 			anchor, present := step.Env["PICOCRYPT_ANDROID_SIGNING_CERT_SHA256_FILE"]
 			if tc.kind == "signed" {
@@ -1775,6 +1876,7 @@ func TestAndroidReleaseSigningTrustAnchorAndPublicationOrder(t *testing.T) {
 	} {
 		job := mustJob(t, workflow, tc.job)
 		if tc.job == "build" {
+			job = androidBuildPolicyJob(t, job)
 			if step := mustStepNamed(t, job, "Verify Android gomobile build policy"); strings.TrimSpace(step.Run) != "bash .github/scripts/test-android-gomobile-policy.sh" {
 				t.Fatal("Android release must run the shared gomobile build policy before building its AAR")
 			}
@@ -1785,8 +1887,12 @@ func TestAndroidReleaseSigningTrustAnchorAndPublicationOrder(t *testing.T) {
 			for i, step := range job.Steps {
 				if step.Name == name {
 					index = i
-					if step.If != "" || (step.ContinueOnError != nil && step.ContinueOnError != false) {
-						t.Fatalf("Android %s step %s must run unconditionally and block on failure", tc.job, name)
+					wantIf := ""
+					if tc.job == "sign" {
+						wantIf = androidNativeStepGuard()
+					}
+					if step.If != wantIf || (step.ContinueOnError != nil && step.ContinueOnError != false) {
+						t.Fatalf("Android %s step %s must run for each fresh candidate and block on failure", tc.job, name)
 					}
 					break
 				}
@@ -1836,6 +1942,11 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 	for _, restriction := range []string{`--certificate-identity "$identity"`, `--certificate-github-workflow-sha "$source_commit"`, "--certificate-github-workflow-ref refs/heads/main", "--certificate-github-workflow-repository Picocrypt-NG/Picocrypt-NG", `--cert-identity "$identity"`, `--signer-digest "$source_commit"`, "--source-ref refs/heads/main", `--source-digest "$source_commit"`, "--predicate-type https://slsa.dev/provenance/v1", "--deny-self-hosted-runners"} {
 		mustContain(t, body, restriction)
 	}
+	mustContain(t, body, "set -eu")
+	mustContain(t, body, "standalone cosign bundle does not establish caller identity")
+	mustContain(t, body, `test "$(git rev-parse HEAD)" = "$source_commit"`)
+	mustContain(t, body, `--format json > "$file.verified-provenance.json"`)
+	mustContain(t, body, `bash "$policy" online "$file.verified-provenance.json" "$workflow" "$source_commit"`)
 	mustNotContain(t, body, "--certificate-identity-regexp")
 
 	for _, rawHTML := range []string{"<ul", "</ul>", "<li", "</li>", "<strong", "</strong>", "<code", "</code>"} {
@@ -2075,7 +2186,7 @@ func TestWindowsLegacyPRWorkflowIsCLIOnly(t *testing.T) {
 }
 
 func TestWindowsLegacyReleaseWorkflowIsCLIOnly(t *testing.T) {
-	content := mustReadWorkflow(t, ".github/workflows/build-windows-legacy.yml")
+	content := windowsBuildPolicyContent(t, ".github/workflows/build-windows-legacy.yml")
 	mustContain(t, content, "Picocrypt-NG-cli-Legacy.exe")
 	mustContain(t, content, "Build CLI-only legacy binary")
 	mustNotContain(t, content, "Build GUI with GLES")
@@ -2088,7 +2199,7 @@ func TestWindowsLegacyWorkflowsBuildFreshSourceToolchain(t *testing.T) {
 		{".github/workflows/pr-test-build-windows-legacy.yml", "pr-test-build-windows-legacy"},
 		{".github/workflows/build-windows-legacy.yml", "build"},
 	} {
-		job := mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job)
+		job := windowsBuildPolicyJob(t, tc.path, tc.job)
 		mustNotHaveStepNamed(t, job, "Cache go-legacy-win7")
 		for _, step := range job.Steps {
 			if strings.HasPrefix(step.Uses, "actions/cache@") && strings.Contains(fmt.Sprint(step.With["path"]), "go-legacy") {
@@ -2120,13 +2231,15 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 		{path: ".github/workflows/android-instrumented.yml", job: "android-instrumented"},
 		{path: ".github/workflows/build-android.yml", job: "build"},
 		{path: ".github/workflows/build-appimage.yml", job: "build"},
-		{path: ".github/workflows/build-linux.yml", job: "build"},
+		{path: ".github/workflows/build-linux.yml", job: "build-amd64"},
+		{path: ".github/workflows/build-linux.yml", job: "build-arm64"},
 		{path: ".github/workflows/build-macos.yml", job: "build"},
 		{path: ".github/workflows/build-windows.yml", job: "build"},
 		{path: ".github/workflows/pr-static-checks.yml", job: "static-checks"},
 		{path: ".github/workflows/pr-test-build-android.yml", job: "pr-test-build-android"},
 		{path: ".github/workflows/pr-test-build-linux.yml", job: "build"},
 		{path: ".github/workflows/pr-test-build-linux.yml", job: "tests"},
+		{path: ".github/workflows/pr-test-build-linux.yml", job: "production-kdf"},
 		{path: ".github/workflows/pr-test-build-macos.yml", job: "pr-test-build-macos"},
 		{path: ".github/workflows/pr-test-build-windows.yml", job: "pr-test-build-windows"},
 	}
@@ -2146,6 +2259,17 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 		workflow := mustReadWorkflowDoc(t, relPath)
 		for jobName, job := range workflow.Jobs {
 			lane := workflowLane{path: relPath, job: jobName}
+			for _, step := range job.Steps {
+				switch step.Uses {
+				case "./.github/actions/build-linux":
+					job.Steps = append(job.Steps, linuxBuildPolicyJob(t, ".github/workflows/build-linux.yml").Steps...)
+				case "./.github/actions/build-appimage", "./.github/actions/build-android",
+					"./.github/actions/build-macos", "./.github/actions/build-snapcraft",
+					"./.github/actions/build-windows", "./.github/actions/build-windows-legacy":
+					action := mustReadCompositeActionDoc(t, strings.TrimPrefix(step.Uses, "./")+"/action.yml")
+					job.Steps = append(job.Steps, action.Runs.Steps...)
+				}
+			}
 			for _, step := range job.Steps {
 				if !strings.HasPrefix(step.Uses, "actions/setup-go@") {
 					continue
@@ -2217,7 +2341,7 @@ func TestWindowsLegacyWorkflowsUsePinnedLocalFork(t *testing.T) {
 		{".github/workflows/build-windows-legacy.yml", "build"},
 		{".github/workflows/pr-test-build-windows-legacy.yml", "pr-test-build-windows-legacy"},
 	} {
-		job := mustJob(t, mustReadWorkflowDoc(t, tc.path), tc.job)
+		job := windowsBuildPolicyJob(t, tc.path, tc.job)
 		if job.Env["GOTOOLCHAIN"] != "local" || job.Env["GOAMD64"] != "v1" || job.Env["GOEXPERIMENT"] != "" {
 			t.Fatalf("%s must pin local toolchain and baseline x86-64 CPU settings", tc.path)
 		}
@@ -2237,7 +2361,7 @@ func TestWindowsLegacyWorkflowsUsePinnedLocalFork(t *testing.T) {
 		mustContain(t, verify.Run, `go1\.27\.3`)
 		mustContain(t, verify.Run, `GOAMD64=v1`)
 		mustContain(t, verify.Run, ".github/scripts/assert-windows-legacy-pe.ps1")
-		mustContainInOrder(t, mustReadWorkflow(t, tc.path), "name: Build patched Go 1.27.3 for Windows 7/8", "name: Verify Go installation", "name: Run native legacy toolchain regressions", "name: Run tests", "name: Build CLI-only legacy binary", "name: Verify legacy binary toolchain", "name: Compress with upx")
+		mustContainInOrder(t, windowsBuildPolicyContent(t, tc.path), "name: Build patched Go 1.27.3 for Windows 7/8", "name: Verify Go installation", "name: Run native legacy toolchain regressions", "name: Run tests", "name: Build CLI-only legacy binary", "name: Verify legacy binary toolchain", "name: Compress with upx")
 	}
 }
 

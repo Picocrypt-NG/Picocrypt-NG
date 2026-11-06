@@ -37,10 +37,63 @@ vpQBAN2uP29K6q9toerA6Oh2i0TOmDRZWJB1VONAbdKfiWUA
    sha256sum Picocrypt-NG-<version>-x86_64.AppImage
    ```
 
-2. **Embedded GPG signature.** The AppImage embeds a detached signature (ELF section
-   `.sha256_sig`) produced by the key above, together with its public key (`.sig_key`).
-   AppImage-aware tooling (e.g. AppImageUpdate / `appimaged`) uses these to confirm the
-   release was signed by the key whose fingerprint is shown above.
+2. **Embedded GPG signature and trusted signer.** From a trusted checkout of this
+   repository, run:
+
+   ```bash
+   bash .github/scripts/verify-appimage.sh ./Picocrypt-NG-<version>-x86_64.AppImage
+   ```
+
+   This requires Linux x86_64, Docker and the host commands checked by the script.
+   It checks the source, package and patch hashes recorded under
+   `.github/toolchains/appimage-verifier/`, then builds upstream AppImageUpdate
+   `validate` with one NUL-termination fix. Compilation runs without networking
+   from the pinned Ubuntu 22.04 image and package closure. The resulting scratch
+   runtime contains the verifier, GPG tools and their runtime libraries, with no
+   shell, compiler or package manager. Docker and its build cache are trusted.
+
+   The AppImage is copied into a private directory and mounted read-only into a
+   non-root container with no network, a read-only root filesystem, dropped
+   capabilities and resource limits. Its payload is never executed. Success
+   requires a valid signature and the exact full fingerprint above. Cached source
+   and package bytes are rehashed; an arbitrary cached executable or image tag is
+   not accepted. These controls do not establish bit-for-bit reproducibility or
+   an independent audit of the verifier and its dependencies.
+   The key embedded in `.sig_key` alone does not establish trust, and a nonempty
+   `.sha256_sig` section alone does not prove the signature is valid. The AppImage
+   digest excludes format-defined sections; verifying a detached signature over
+   the entire file with `gpg --verify` is not equivalent.
+
+   Exit `1` means an ordinary signature, format or signer-policy refusal. Exit `2`
+   means setup, Docker, timeout, OOM, abnormal termination or another tool fault.
+   Both block release. Public negative controls require the expected refusal and
+   a working unchanged positive fixture; infrastructure failures do not count as
+   cryptographic rejections. A crash on a malformed ELF is reported as a tool
+   fault, not as a normal cryptographic result.
+
+### CI validation and production signing
+
+The default `build-appimage` dispatch (`publish_release=false`) builds and smoke
+tests unsigned packaging, then uploads a `validate-appimage-amd64` workflow
+artifact. This path has no release environment, production GPG key, keyless
+signing, or release publication. Public, independently signed fixtures exercise
+the verifier without private signing keys.
+
+With `publish_release=true` on `main`, the build hands its AppDir to a separate
+job through an immutable same-run artifact ID and checked archive SHA-256.
+The archive is safely extracted before the release GPG key is imported.
+Production signing selects the full expected fingerprint from the verifier
+manifest, rather than the first key in the keyring. The signing key is removed
+before signature verification and payload smoke testing. External cryptographic
+verification must pass before uploading the signed build artifact and before
+the separate Sigstore/provenance and release staging gates run.
+
+The producer versions, source commits, asset IDs and SHA-256 digests are recorded
+in `.github/toolchains/appimage-build.json`. `linuxdeploy` creates AppDir;
+`appimagetool` receives the pinned runtime explicitly, avoiding implicit producer
+or runtime downloads. Updating the signing key requires one reviewed change to
+the public fingerprint, verifier manifest and release secret. A failed verifier
+blocks release; structural section checks are not a fallback.
 
 ### Self-updating
 
@@ -133,9 +186,102 @@ gh attestation verify <artifact> \
 | `*.snap` | `build-snapcraft` |
 | `*.apk` | `build-android` |
 
-A check that accepts any main-branch workflow in this repository replaces
-`--certificate-identity` with
-`--certificate-identity-regexp '^https://github.com/Picocrypt-NG/Picocrypt-NG/\.github/workflows/.+@refs/heads/main$'`.
+Use the exact producing workflow from the table, including `@refs/heads/main`.
+The release gate also binds the source commit and repository.
 
 The `.sigstore.json` bundle embeds the Rekor inclusion proof, so `cosign verify-blob`
 can run fully offline given a `--trusted-root`.
+
+## Release coordinator for operators
+
+Assign a named maintainer to each responsibility in the release record:
+
+| Stage | Responsible role | Trust anchor |
+|---|---|---|
+| AppImage GPG signing | GPG key custodian and release operator | Fingerprint above and `.github/toolchains/appimage-verifier/manifest.json` |
+| Android APK signing | Android keystore custodian and release operator | `android/release-signing-cert-sha256.txt` |
+| Windows Authenticode | SignPath approver | Production certificate fingerprint above and reviewed artifact configurations |
+| macOS bundle sealing | macOS packager | Current ad-hoc seal; Developer ID/notarization is a separate decision |
+| Sigstore, provenance and publication | Release operator | Exact workflow owner, repository, ref and source SHA |
+
+Record the reviewed `main` commit, root `VERSION` and required-check results.
+Prefer the `release-coordinator` workflow (`.github/workflows/release.yml`): it uses
+the dispatch event's `github.sha` for every checkout and reusable owner call. It binds
+root `VERSION` and the full canonical ownership manifest
+(`.github/actions/stage-release/release-manifest.sh`) to that commit. Its `mode`
+input has three choices:
+
+- `validation` (default) builds and verifies all 19 canonical primary assets
+  without production signing, staging or publication.
+- `stage` runs full validation, then the seven owners sign and stage their
+  complete sets, or reuse already verified complete remote sets. Success requires
+  every owner to report `staged=true`; `published` remains `false`.
+- `publish` additionally runs strict finalization after all seven owners succeed
+  with `staged=true`. It requires the complete 19 primary assets and their 19
+  Sigstore bundles, verifies their source and trust bindings, and confirms actual
+  publication with `published=true`.
+
+The seven direct build workflows remain a fallback. For unsigned direct
+validation, set `publish_release=false`; on Windows also set `signpath_test=false`
+and `signpath_release_dry_run=false`. Check every run's actual source SHA and version
+against the reviewed commit: separate dispatches against a moving `main` do not
+freeze one commit. Record built, verified, signing-not-requested/signed, reused,
+staged and published separately.
+
+`stage` and `publish` require a manual dispatch from `main` in this repository,
+with matching workflow, source and checkout SHAs. Both require separate explicit
+authorization, including a signed staging rehearsal. Inspect the actual `release`
+environment branch policy, required reviewers and self-review settings before
+execution. Record the named approver and decision; `environment: release` in YAML
+alone does not establish a required human approval. Review SignPath requests as
+described above; `signpath_release_dry_run` still performs production signing.
+macOS retains its existing ad-hoc bundle seal; these modes do not add Developer ID
+signing or notarization.
+
+Retain the source SHA, run ID, immutable raw/signing-input/signed-generation
+artifact IDs, official ZIP SHA-256 digests and each artifact's producing attempt.
+Keep tool versions, verification reports and approval records through the
+signing/retry window. Keep credentials, private keys, memory dumps and personal
+filesystem paths out of this evidence. The release gate verifies remote bytes,
+provenance, exact asset ownership and the source-bound tag before publication.
+
+Read back the final release ID, tag, target SHA, `draft=false`, `prerelease=false`
+and complete 38-asset set. A successful leaf job can leave an incomplete draft;
+it does not establish that publication occurred.
+
+For recovery, first verify the original staged artifact/bundle pairs by ID,
+digest, source and provenance, then rerun only failed jobs in the same run.
+Successful signing jobs' retained full-owner generations let staging retry
+restore and verify the original bytes without signing or attesting again.
+The producing attempt can precede the
+retry attempt. A partial staged set must retain its original artifact/bundle
+pairs. If a required retained artifact expired, or a partial set cannot be
+completed with its original bytes, stop for an explicit recovery decision.
+Rebuilding or generating replacement signatures is not a recovery fallback;
+the same source SHA can produce different bytes, timestamps or signatures.
+Existing release assets must not be overwritten.
+
+Rotate a signing identity through one reviewed change to its public trust
+anchors, verification fixtures and service policy before using replacement
+credentials. Retain historical public verification material. AppImage rotation
+must keep this file and its verifier manifest consistent; Android rotation must
+update the pinned certificate digest; SignPath rotation must update every
+production certificate check.
+
+For each legacy Go update, review the source/bootstrap hashes, immutable vendor
+commit and local patches together with `build-legacy-go.ps1` and its manifest.
+Retain filesystem, randomness, PE and import regressions. A legacy release
+candidate also needs execution in isolated Windows 7 and Windows 8 VMs;
+`windows-2022` checks alone do not establish that compatibility.
+
+Review CodeQL languages and extraction diagnostics for the selected SHA,
+including excluded platform/build-tag files and native dependency failures.
+Keep this evidence separate from the bounded models and source contracts in
+[`verification/README.md`](verification/README.md); stable PCV3 releases require
+human review of audit-critical product changes. Paid Apple Developer ID and
+notarization require a separate budget/credential decision and a
+quarantined-download smoke test on a clean supported macOS system.
+
+The new coordinator graph has not yet executed end to end in hosted GitHub
+Actions. Local policy/runtime fixtures and lint do not establish hosted signing,
+failed-job retry or retention recovery acceptance.
