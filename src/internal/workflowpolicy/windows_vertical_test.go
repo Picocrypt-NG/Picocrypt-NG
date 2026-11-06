@@ -61,11 +61,40 @@ func TestWindowsBuildExtractionPreservesUnsignedSteps(t *testing.T) {
 			}
 			var frozen []map[string]any
 			active := false
+			controlsValidated := false
 			for _, step := range action.Runs.Steps {
 				name, _ := step["name"].(string)
 				active = active || name == tc.first
 				if !active {
 					continue
+				}
+				if tc.owner == "build-windows" {
+					switch name {
+					case "Verify native test launcher controls":
+						want := map[string]any{
+							"name":  name,
+							"shell": "pwsh",
+							"run":   "& .github/scripts/test-windows-native-tests.ps1\n",
+						}
+						if controlsValidated || !reflect.DeepEqual(step, want) {
+							t.Fatal("shared Windows native launcher controls must execute exactly once and fail closed before tests")
+						}
+						controlsValidated = true
+						continue
+					case "Run tests":
+						want := map[string]any{
+							"name":  name,
+							"shell": "pwsh",
+							"run":   "& .github/scripts/run-windows-native-tests.ps1 `\n  -GoExecutable (Get-Command go -CommandType Application | Select-Object -First 1).Source `\n  -GoArguments @('test', '-v', '-p', '1', '-tags', 'migrated_fynedo', '-timeout', '15m', './...')\n",
+							"env":   map[string]any{"PICOCRYPT_RUN_CLI_INTEGRATION": 1},
+						}
+						if !controlsValidated || !reflect.DeepEqual(step, want) {
+							t.Fatal("shared Windows tests must use the approved full serial native lane after blocking controls")
+						}
+						// Normalize only the verified test-lane replacement; the
+						// independent original payload-build prefix hash stays frozen.
+						step["run"] = "cd src\ngo test -v -tags migrated_fynedo -timeout 15m ./...\n"
+					}
 				}
 				if _, run := step["run"]; run {
 					if step["shell"] != "pwsh" {

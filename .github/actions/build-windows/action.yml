@@ -62,11 +62,17 @@ runs:
         cd src
         go mod download
 
+    - name: Verify native test launcher controls
+      shell: pwsh
+      run: |
+        & .github/scripts/test-windows-native-tests.ps1
+
     - name: Run tests
       shell: pwsh
       run: |
-        cd src
-        go test -v -tags migrated_fynedo -timeout 15m ./...
+        & .github/scripts/run-windows-native-tests.ps1 `
+          -GoExecutable (Get-Command go -CommandType Application | Select-Object -First 1).Source `
+          -GoArguments @('test', '-v', '-p', '1', '-tags', 'migrated_fynedo', '-timeout', '15m', './...')
       env:
         PICOCRYPT_RUN_CLI_INTEGRATION: 1
 
