@@ -40,7 +40,10 @@ func TestDesktopCleanupChild(t *testing.T) {
 			t.Fatal(err)
 		}
 		fmt.Println(string(data))
-		select {}
+		// Keep a timer pending so an idle helper cannot exit via Go's deadlock check.
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
 	if boundary == "writer closed" {
 		if err := stage.File().Close(); err != nil {
