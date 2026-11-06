@@ -62,16 +62,26 @@ runs:
         cd src
         go mod download
 
+    - name: Run native test suite
+      shell: bash
+      run: bash .github/scripts/test-macos-pcv3.sh "$SHARD_INDEX" "$SHARD_COUNT"
+      env:
+        CGO_ENABLED: "1"
+        SHARD_INDEX: "0"
+        SHARD_COUNT: "1"
+
     - name: Run tests
-      # Skip internal/crypto - Argon2 is extremely slow on macOS ARM64 runners
+      # Native volume/PCV3 KDFs run above; Linux runs the full race suite.
       shell: bash
       run: |
         cd src
         go test -v -race -p 1 -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...
         go test -v -race -p 1 -timeout 15m ./internal/pcv3publication/...
-        go test -v -race -p 1 -timeout 60m ./internal/pcv3operation/internal/pcv3/... ./internal/pcv3operation/internal/pcv3credential/... ./internal/pcv3operation/... ./internal/pcv3operation/internal/pcv3recovery/... ./internal/pcv3operation/internal/pcv3artifact/... ./internal/pcv3operation/internal/pcv3resource/... ./internal/app/...
-        go test -v -race -p 1 -timeout 15m ./internal/volume/...
+        GOMAXPROCS=1 go test -v -race -p 1 -timeout 15m ./internal/pcv3operation/internal/pcv3unicode/...
+        sudo -n /usr/sbin/purge
         go test -v -count=1 -p 1 -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...
+      env:
+        CGO_ENABLED: "1"
 
     - name: Build GUI
       shell: bash
