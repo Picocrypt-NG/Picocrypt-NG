@@ -19,6 +19,7 @@ concurrency:
 jobs:
   build-snapcraft:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: read
 
@@ -72,6 +73,7 @@ jobs:
     needs: build-snapcraft
     if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     concurrency:
       group: ${{ github.repository }}-release-publication
       queue: max

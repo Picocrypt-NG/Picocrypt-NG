@@ -49,6 +49,7 @@ type releaseLocalFixture struct {
 
 type releaseGateOptions struct {
 	localAssets             []releaseLocalFixture
+	workflow                string
 	cosignFailure           string
 	attestationFailure      string
 	tagTarget               string
@@ -68,6 +69,13 @@ type releaseGateOptions struct {
 	rootVersion             string
 	checkoutHEAD            string
 	modifiedBody            bool
+	releaseListingFailure   bool
+	draftCreateFailure      bool
+	draftCreateResponse     string
+	uploadFailure           string
+	uploadResponse          map[string]any
+	releaseIDAfterVerify    int64
+	corruptUploadDownload   bool
 }
 
 func TestReleaseWorkflowsStageAssetsBehindOnePublicationGate(t *testing.T) {
@@ -222,29 +230,17 @@ func TestStageReleaseActionKeepsReleaseDraftUntilExactManifestExists(t *testing.
 		t.Fatalf("release preflight FILES = %q, want the exact lane upload set", got)
 	}
 	stage := mustCompositeStepNamed(t, action, "Upload assets to draft release")
-	if stage.Uses != "softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64" {
-		t.Fatalf("draft release action = %q, want reviewed v3.0.3 commit", stage.Uses)
+	if stage.Uses != "" || stage.Shell != "bash" || stage.Run != `bash "$GITHUB_ACTION_PATH/release-gate.sh" upload "$VERSION"` {
+		t.Fatalf("draft upload must execute the shared Bash gate: %#v", stage)
 	}
-	for key, want := range map[string]any{
-		"body_path":               "${{ inputs.body_path }}",
-		"files":                   "${{ inputs.files }}",
-		"tag_name":                "${{ inputs.version }}",
-		"draft":                   true,
-		"make_latest":             false,
-		"overwrite_files":         false,
-		"fail_on_unmatched_files": true,
-		"target_commitish":        "${{ github.sha }}",
+	for key, want := range map[string]string{
+		"GH_TOKEN":  "${{ github.token }}",
+		"BODY_PATH": "${{ inputs.body_path }}",
+		"FILES":     "${{ inputs.files }}",
+		"VERSION":   "${{ inputs.version }}",
 	} {
-		got := stage.With[key]
-		wantBool, isBool := want.(bool)
-		if isBool && (got == wantBool || got == strconv.FormatBool(wantBool)) {
-			continue
-		}
-		if !isBool && got == want {
-			continue
-		}
-		{
-			t.Fatalf("draft release %s = %#v, want %#v", key, got, want)
+		if got := stage.Env[key]; got != want {
+			t.Fatalf("draft upload %s = %q, want %q", key, got, want)
 		}
 	}
 	publish := mustCompositeStepNamed(t, action, "Publish only the complete release")
@@ -903,13 +899,332 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	})
 }
 
+func TestReleaseGateListingFailureNeverAuthorizesMutation(t *testing.T) {
+	for _, mode := range []string{"preflight", "upload", "publish"} {
+		t.Run(mode, func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, mode, nil, nil, releaseGateOptions{releaseListingFailure: true})
+			if result.err == nil {
+				t.Fatal("failed release listing was accepted as absence")
+			}
+			mustContain(t, result.output, "cannot list releases")
+			mustNotContain(t, result.calls, "--method")
+		})
+	}
+}
+
+func TestReleaseGateUploadCreatesCommitBoundDraftAndVerifiesBinaryPair(t *testing.T) {
+	local := defaultLocalLaneAssets()
+	local[0].Content = "\x00release binary\xff\r\n"
+	result := runReleaseGateWithOptions(t, "upload", nil, nil, releaseGateOptions{localAssets: local, tagAbsent: true})
+	if result.err != nil {
+		t.Fatalf("new draft staging failed: %v\n%s", result.err, result.output)
+	}
+	var create map[string]any
+	if err := json.Unmarshal([]byte(result.draftCreateInput), &create); err != nil {
+		t.Fatalf("decode draft creation payload: %v\n%s", err, result.draftCreateInput)
+	}
+	if len(create) != 7 || create["tag_name"] != "2.19" || create["name"] != "2.19" ||
+		create["target_commitish"] != releaseTestSHA || create["draft"] != true ||
+		create["prerelease"] != false || create["make_latest"] != "false" || create["body"] != result.expectedBody {
+		t.Fatalf("unsafe draft creation payload: %#v", create)
+	}
+	if len(result.remoteAssets) != 2 {
+		t.Fatalf("staged assets = %#v, want exactly the lane's artifact and bundle", result.remoteAssets)
+	}
+	for index, asset := range result.remoteAssets {
+		if asset.Name != local[index].Name || asset.Content != local[index].Content || asset.Digest != releaseDigest(local[index].Content) {
+			t.Fatalf("staged remote bytes changed: %#v", asset)
+		}
+	}
+	mustContainCallLine(t, result.calls, "--method POST -H Content-Type: application/octet-stream", "https://uploads.github.com/repos/Picocrypt-NG/Picocrypt-NG/releases/42/assets?name=Picocrypt-NG ", "--input ")
+	mustContainCallLine(t, result.calls, "cosign verify-blob", "--certificate-github-workflow-sha "+releaseTestSHA)
+	mustContainCallLine(t, result.calls, "attestation verify", "--signer-digest "+releaseTestSHA)
+	mustNotContain(t, result.calls, "--method PATCH")
+	mustNotContain(t, result.calls, "--method DELETE")
+	if result.tagCreateInput != "" {
+		t.Fatal("staging created a tag before the complete release was verified")
+	}
+
+	repeated := runReleaseGate(t, "upload", []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}, result.remoteAssets)
+	if repeated.err != nil {
+		t.Fatalf("repeated staging failed: %v\n%s", repeated.err, repeated.output)
+	}
+	mustNotContain(t, repeated.calls, "--method")
+	for index, asset := range repeated.remoteAssets {
+		if asset != result.remoteAssets[index] {
+			t.Fatalf("repeated staging replaced a verified asset: %#v", asset)
+		}
+	}
+}
+
+func TestReleaseGateUploadRejectsUnsafeStateAndFailedVerification(t *testing.T) {
+	release := []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}
+	for _, tc := range []struct {
+		name    string
+		options releaseGateOptions
+		assets  []releaseAssetFixture
+		message string
+	}{
+		{"incomplete existing pair", releaseGateOptions{}, defaultRemoteLaneAssets()[:1], "incomplete staged pair"},
+		{"bad new signature", releaseGateOptions{cosignFailure: "Picocrypt-NG"}, nil, ""},
+		{"bad new provenance", releaseGateOptions{attestationFailure: "Picocrypt-NG"}, nil, ""},
+		{"upload failure", releaseGateOptions{uploadFailure: "Picocrypt-NG"}, nil, "upload failed"},
+		{"published during verification", releaseGateOptions{publishAfterVerify: true}, defaultRemoteLaneAssets(), "changed or was published"},
+		{"release replaced during verification", releaseGateOptions{releaseIDAfterVerify: 43}, defaultRemoteLaneAssets(), "changed or was published"},
+		{"modified notes", releaseGateOptions{modifiedBody: true}, nil, "source-bound deterministic release notes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, "upload", release, tc.assets, tc.options)
+			if result.err == nil {
+				t.Fatalf("unsafe staging succeeded:\n%s", result.output)
+			}
+			if tc.message != "" {
+				mustContain(t, result.output, tc.message)
+			}
+			mustNotContain(t, result.calls, "--method PATCH")
+			mustNotContain(t, result.calls, "--method DELETE")
+			if result.tagCreateInput != "" {
+				t.Fatal("unsafe staging created a tag")
+			}
+			if tc.name == "incomplete existing pair" {
+				mustNotContain(t, result.calls, "--method POST")
+			}
+			if tc.name == "bad new signature" {
+				mustContain(t, result.calls, "cosign verify-blob")
+			}
+			if tc.name == "bad new provenance" {
+				mustContain(t, result.calls, "attestation verify")
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name    string
+		release releaseGateFixture
+	}{
+		{"published", releaseGateFixture{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA}},
+		{"wrong source", releaseGateFixture{ID: 42, TagName: "2.19", TargetCommitish: strings.Repeat("f", 40), Draft: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runReleaseGate(t, "upload", []releaseGateFixture{tc.release}, nil)
+			if result.err == nil {
+				t.Fatal("unsafe existing release accepted")
+			}
+			mustNotContain(t, result.calls, "--method")
+		})
+	}
+}
+
+func TestReleaseGateUploadPreservesMatchingExistingPairAndAddsOnlyMissingPair(t *testing.T) {
+	local := append(defaultLocalLaneAssets(),
+		releaseLocalFixture{Name: "Picocrypt-NG-cli", Path: "artifacts/build-linux-amd64/Picocrypt-NG-cli", Content: "new CLI binary\n"},
+		releaseLocalFixture{Name: "Picocrypt-NG-cli.sigstore.json", Path: "artifacts/build-linux-amd64/Picocrypt-NG-cli.sigstore.json", Content: "CLI bundle\n"},
+	)
+	assets := []releaseAssetFixture{
+		newReleaseAsset(100, "Picocrypt-NG", local[0].Content),
+		newReleaseAsset(101, "Picocrypt-NG.sigstore.json", "earlier verified bundle\n"),
+	}
+	result := runReleaseGateWithOptions(t, "upload", []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}, assets, releaseGateOptions{localAssets: local})
+	if result.err != nil {
+		t.Fatalf("mixed staged lane failed: %v\n%s", result.err, result.output)
+	}
+	if len(result.remoteAssets) != 4 || result.remoteAssets[0] != assets[0] || result.remoteAssets[1] != assets[1] {
+		t.Fatalf("existing verified pair was replaced: %#v", result.remoteAssets)
+	}
+	for index := 2; index < 4; index++ {
+		if result.remoteAssets[index].Name != local[index].Name || result.remoteAssets[index].Content != local[index].Content {
+			t.Fatalf("new CLI pair was not staged exactly: %#v", result.remoteAssets)
+		}
+	}
+	if strings.Count(result.calls, "https://uploads.github.com/") != 2 || strings.Count(result.calls, "cosign verify-blob") != 2 || strings.Count(result.calls, "attestation verify") != 2 {
+		t.Fatalf("staging must upload only the missing pair and verify both pairs:\n%s", result.calls)
+	}
+	mustNotContain(t, result.calls, "--method DELETE")
+	mustNotContain(t, result.calls, "--method PATCH")
+}
+
+func TestReleaseGateRejectsRebuiltAppImageDuringPartialStaging(t *testing.T) {
+	const image = "Picocrypt-NG-2.19-x86_64.AppImage"
+	local := []releaseLocalFixture{
+		{Name: image, Content: "rebuilt signed AppImage\n"},
+		{Name: image + ".sigstore.json", Content: "rebuilt image bundle\n"},
+		{Name: image + ".zsync", Content: "index of rebuilt signed AppImage\n"},
+		{Name: image + ".zsync.sigstore.json", Content: "rebuilt index bundle\n"},
+	}
+	assets := []releaseAssetFixture{
+		newReleaseAsset(100, image, "original signed AppImage\n"),
+		newReleaseAsset(101, image+".sigstore.json", "original image bundle\n"),
+	}
+	for _, mode := range []string{"preflight", "upload"} {
+		t.Run(mode, func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, mode, []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}, assets, releaseGateOptions{
+				localAssets: local,
+				workflow:    "build-appimage.yml",
+			})
+			if result.err == nil {
+				t.Fatal("partial staging mixed an original AppImage with an index from a rebuilt image")
+			}
+			mustContain(t, result.output, "partially staged lane")
+			mustNotContain(t, result.calls, "https://uploads.github.com/")
+			if len(result.remoteAssets) != len(assets) {
+				t.Fatal("unsafe partial staging changed remote assets")
+			}
+		})
+	}
+}
+
+func TestReleaseGateAppImageResumeReusesOriginalOrCompleteLane(t *testing.T) {
+	const image = "Picocrypt-NG-2.19-x86_64.AppImage"
+	for _, complete := range []bool{false, true} {
+		t.Run(strconv.FormatBool(complete), func(t *testing.T) {
+			local := []releaseLocalFixture{
+				{Name: image, Content: "original signed AppImage\n"},
+				{Name: image + ".sigstore.json", Content: "current image bundle\n"},
+				{Name: image + ".zsync", Content: "index of original signed AppImage\n"},
+				{Name: image + ".zsync.sigstore.json", Content: "current index bundle\n"},
+			}
+			assets := []releaseAssetFixture{
+				newReleaseAsset(100, image, local[0].Content),
+				newReleaseAsset(101, image+".sigstore.json", "earlier valid image bundle\n"),
+			}
+			wantUploads := 2
+			if complete {
+				assets = append(assets, newReleaseAsset(102, image+".zsync", local[2].Content), newReleaseAsset(103, image+".zsync.sigstore.json", "earlier valid index bundle\n"))
+				local[0].Content = "newly rebuilt signed AppImage\n"
+				local[2].Content = "index of newly rebuilt signed AppImage\n"
+				wantUploads = 0
+			}
+			result := runReleaseGateWithOptions(t, "upload", []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}, assets, releaseGateOptions{localAssets: local, workflow: "build-appimage.yml"})
+			if result.err != nil {
+				t.Fatalf("valid lane resume failed: %v\n%s", result.err, result.output)
+			}
+			if len(result.remoteAssets) != 4 || strings.Count(result.calls, "https://uploads.github.com/") != wantUploads {
+				t.Fatalf("lane resume uploaded unexpected pairs: %#v\n%s", result.remoteAssets, result.calls)
+			}
+			for index, original := range assets {
+				if result.remoteAssets[index] != original {
+					t.Fatal("lane resume replaced original staged bytes")
+				}
+			}
+		})
+	}
+}
+
+func TestReleaseGateUploadRejectsInvalidLocalFilesBeforeAPI(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		assets []releaseLocalFixture
+	}{
+		{"unexpected file", []releaseLocalFixture{{Name: "secret.txt", Content: "private runner file"}}},
+		{"incomplete pair", defaultLocalLaneAssets()[:1]},
+		{"empty artifact", []releaseLocalFixture{{Name: "Picocrypt-NG", Path: "artifacts/build-linux-amd64/Picocrypt-NG"}, defaultLocalLaneAssets()[1]}},
+		{"symlink artifact", []releaseLocalFixture{{Name: "Picocrypt-NG", Path: "artifacts/build-linux-amd64/Picocrypt-NG", Content: "confidential", Symlink: true}, defaultLocalLaneAssets()[1]}},
+		{"wrong lane", []releaseLocalFixture{{Name: "Picocrypt-NG-Setup.exe", Path: "artifacts/build-windows/Picocrypt-NG-Setup.exe", Content: "installer"}, {Name: "Picocrypt-NG-Setup.exe.sigstore.json", Path: "artifacts/build-windows/Picocrypt-NG-Setup.exe.sigstore.json", Content: "bundle"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, "upload", nil, nil, releaseGateOptions{localAssets: tc.assets})
+			if result.err == nil {
+				t.Fatal("unsafe local files accepted for upload")
+			}
+			if result.calls != "" {
+				t.Fatalf("local validation must fail before API calls:\n%s", result.calls)
+			}
+		})
+	}
+}
+
+func TestReleaseGateUploadFailureLeavesDraftUnpublishedAndNeverDeletes(t *testing.T) {
+	release := []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}
+	t.Run("creation fails", func(t *testing.T) {
+		result := runReleaseGateWithOptions(t, "upload", nil, nil, releaseGateOptions{draftCreateFailure: true})
+		if result.err == nil {
+			t.Fatal("failed draft creation accepted")
+		}
+		mustContain(t, result.output, "draft creation failed")
+		mustNotContain(t, result.calls, "https://uploads.github.com/")
+	})
+	t.Run("bundle upload fails after primary", func(t *testing.T) {
+		result := runReleaseGateWithOptions(t, "upload", release, nil, releaseGateOptions{uploadFailure: "Picocrypt-NG.sigstore.json"})
+		if result.err == nil {
+			t.Fatal("incomplete upload succeeded")
+		}
+		if len(result.remoteAssets) != 1 || result.remoteAssets[0].Name != "Picocrypt-NG" {
+			t.Fatalf("unexpected partial staging: %#v", result.remoteAssets)
+		}
+		mustNotContain(t, result.calls, "--method DELETE")
+		mustNotContain(t, result.calls, "--method PATCH")
+		repeated := runReleaseGate(t, "upload", release, result.remoteAssets)
+		if repeated.err == nil {
+			t.Fatal("partial pair silently resumed")
+		}
+		mustContain(t, repeated.output, "incomplete staged pair")
+		mustNotContain(t, repeated.calls, "--method")
+	})
+	t.Run("new remote bytes differ from uploaded digest", func(t *testing.T) {
+		result := runReleaseGateWithOptions(t, "upload", release, nil, releaseGateOptions{corruptUploadDownload: true})
+		if result.err == nil {
+			t.Fatal("new remote pair was not checked before staging succeeded")
+		}
+		mustContain(t, result.output, "download")
+		mustNotContain(t, result.output, "staged verified lane pairs")
+		mustNotContain(t, result.calls, "--method PATCH")
+		mustNotContain(t, result.calls, "--method DELETE")
+	})
+}
+
+func TestReleaseGateUploadValidatesDraftCreationResponse(t *testing.T) {
+	for _, response := range []string{
+		`{}`, `{"id":0}`, `{"id":42,"tag_name":"2.19","target_commitish":"0123456789abcdef0123456789abcdef01234567","draft":false,"prerelease":false}`,
+		`{"id":42,"tag_name":"wrong","target_commitish":"0123456789abcdef0123456789abcdef01234567","draft":true,"prerelease":false}`,
+		`{"id":42,"tag_name":"2.19","target_commitish":"wrong","draft":true,"prerelease":false}`,
+		`{"id":42,"tag_name":"2.19","target_commitish":"0123456789abcdef0123456789abcdef01234567","draft":true,"prerelease":true}`,
+	} {
+		t.Run(response, func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, "upload", nil, nil, releaseGateOptions{draftCreateResponse: response})
+			if result.err == nil {
+				t.Fatal("unsafe draft creation response accepted")
+			}
+			mustContain(t, result.output, "unexpected draft creation response")
+			mustNotContain(t, result.calls, "https://uploads.github.com/")
+			mustNotContain(t, result.calls, "--method PATCH")
+		})
+	}
+}
+
+func TestReleaseGateUploadValidatesAssetResponseAndStableSnapshot(t *testing.T) {
+	release := []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}
+	for field, value := range map[string]any{"id": 0, "name": "secret.txt", "state": "starter", "size": 1, "digest": "sha256:" + strings.Repeat("a", 64)} {
+		t.Run(field, func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, "upload", release, nil, releaseGateOptions{uploadResponse: map[string]any{field: value}})
+			if result.err == nil {
+				t.Fatal("unsafe upload response accepted")
+			}
+			mustContain(t, result.output, "unexpected upload response")
+			mustNotContain(t, result.calls, "--method PATCH")
+			mustNotContain(t, result.calls, "--method DELETE")
+		})
+	}
+	t.Run("verified asset replaced", func(t *testing.T) {
+		assets := defaultRemoteLaneAssets()
+		changed := append([]releaseAssetFixture(nil), assets...)
+		changed[0].ID = 999
+		result := runReleaseGateWithOptions(t, "upload", release, assets, releaseGateOptions{assetsAfterVerify: changed})
+		if result.err == nil {
+			t.Fatal("changed verified asset snapshot accepted")
+		}
+		mustContain(t, result.output, "release assets changed during staging")
+		mustNotContain(t, result.calls, "--method")
+	})
+}
+
 type releaseGateResult struct {
-	output         string
-	calls          string
-	patchInput     string
-	tagCreateInput string
-	err            error
-	expectedBody   string
+	output           string
+	calls            string
+	patchInput       string
+	tagCreateInput   string
+	err              error
+	expectedBody     string
+	draftCreateInput string
+	remoteAssets     []releaseAssetFixture
 }
 
 func runReleaseGate(
@@ -946,6 +1261,9 @@ func runReleaseGateWithOptions(
 	callsPath := filepath.Join(temp, "gh-calls.txt")
 	patchCapturePath := filepath.Join(temp, "patch-input.json")
 	tagCreateCapturePath := filepath.Join(temp, "tag-create-input.json")
+	draftCreateCapturePath := filepath.Join(temp, "draft-create-input.json")
+	uploadResponsePath := filepath.Join(temp, "upload-response.json")
+	writeJSONFixture(t, uploadResponsePath, options.uploadResponse)
 	writeJSONFixture(t, releasesPath, releases)
 	writeJSONFixture(t, assetsPath, assets)
 	assetsAfter := options.assetsAfterVerify
@@ -956,6 +1274,9 @@ func runReleaseGateWithOptions(
 	releasesAfter := append([]releaseGateFixture(nil), releases...)
 	if options.publishAfterVerify && len(releasesAfter) == 1 {
 		releasesAfter[0].Draft = false
+	}
+	if options.releaseIDAfterVerify != 0 && len(releasesAfter) == 1 {
+		releasesAfter[0].ID = options.releaseIDAfterVerify
 	}
 	releasesAfterPath := filepath.Join(temp, "releases-after.json")
 	writeJSONFixture(t, releasesAfterPath, releasesAfter)
@@ -1151,7 +1472,17 @@ printf ' %s' "$@" >> "$GH_CALLS"
 printf '\n' >> "$GH_CALLS"
 case "$*" in
   "--paginate repos/Picocrypt-NG/Picocrypt-NG/releases?per_page=100")
-    if [ -e "$GH_RELEASES_MARKER" ]; then
+    if [ "$GH_RELEASE_LISTING_FAILURE" = "true" ]; then
+      echo 'fixture release listing failed' >&2
+      exit 1
+    fi
+    if [ "$GH_UPLOAD_MODE" = "true" ]; then
+      if [ -e "$GH_VERIFIED_MARKER" ]; then
+        cat "$GH_RELEASES_AFTER_JSON"
+      else
+        cat "$GH_RELEASES_JSON"
+      fi
+    elif [ -e "$GH_RELEASES_MARKER" ]; then
       cat "$GH_RELEASES_AFTER_JSON"
     else
       : > "$GH_RELEASES_MARKER"
@@ -1159,7 +1490,13 @@ case "$*" in
     fi
     ;;
   "--paginate repos/Picocrypt-NG/Picocrypt-NG/releases/42/assets?per_page=100")
-    if [ -e "$GH_ASSETS_MARKER" ]; then
+    if [ "$GH_UPLOAD_MODE" = "true" ]; then
+      if [ -e "$GH_VERIFIED_MARKER" ] && [ "$GH_ASSETS_AFTER_VERIFY_SET" = "true" ]; then
+        cat "$GH_ASSETS_AFTER_JSON"
+      else
+        cat "$GH_ASSETS_JSON"
+      fi
+    elif [ -e "$GH_ASSETS_MARKER" ]; then
       cat "$GH_ASSETS_AFTER_JSON"
     else
       : > "$GH_ASSETS_MARKER"
@@ -1205,6 +1542,54 @@ case "$*" in
     if [ -n "$GH_ATTESTATION_FAILURE" ] && [[ "$*" == *"$GH_ATTESTATION_FAILURE"* ]]; then
       exit 1
     fi
+    : > "$GH_VERIFIED_MARKER"
+    ;;
+  "--method POST repos/Picocrypt-NG/Picocrypt-NG/releases --input -")
+    cat > "$GH_DRAFT_CREATE_CAPTURE"
+    if [ "$GH_DRAFT_CREATE_FAILURE" = "true" ]; then
+      echo 'fixture draft creation failed' >&2
+      exit 1
+    fi
+    if [ -n "$GH_DRAFT_CREATE_RESPONSE" ]; then
+      printf '%s\n' "$GH_DRAFT_CREATE_RESPONSE"
+    else
+      jq '. + {id:42}' "$GH_DRAFT_CREATE_CAPTURE" > "$GH_CREATED_RELEASE_JSON"
+      jq '[.]' "$GH_CREATED_RELEASE_JSON" > "$GH_RELEASES_JSON"
+      cp "$GH_RELEASES_JSON" "$GH_RELEASES_AFTER_JSON"
+      cat "$GH_CREATED_RELEASE_JSON"
+    fi
+    ;;
+  "--method POST -H Content-Type: application/octet-stream https://uploads.github.com/repos/Picocrypt-NG/Picocrypt-NG/releases/42/assets?name="*)
+    if [ "$#" -ne 7 ] || [ "$6" != "--input" ]; then
+      echo 'unexpected upload arguments' >&2
+      exit 64
+    fi
+    name="${5##*name=}"
+    input_path="$7"
+    if [ "$name" != "${input_path##*/}" ]; then
+      echo 'upload name does not match fixture file' >&2
+      exit 64
+    fi
+    if [ "$GH_UPLOAD_FAILURE" = "$name" ]; then
+      echo 'fixture upload failed' >&2
+      exit 1
+    fi
+    if jq -e --arg name "$name" '(. // []) | any(.name == $name)' "$GH_ASSETS_JSON" >/dev/null; then
+      echo 'fixture asset already exists (HTTP 422)' >&2
+      exit 1
+    fi
+    id="$(jq '2000 + length' "$GH_ASSETS_JSON")"
+    cp -- "$input_path" "$GH_REMOTE_ASSETS_DIR/$id"
+    if [ "$GH_CORRUPT_UPLOAD_DOWNLOAD" = "true" ] && [[ "$name" != *.sigstore.json ]]; then
+      printf '%s\n' 'substituted remote bytes' > "$GH_REMOTE_ASSETS_DIR/$id"
+    fi
+    size="$(wc -c < "$input_path")"
+    digest="sha256:$(sha256sum "$input_path" | awk '{print $1}')"
+    jq -n --argjson id "$id" --arg name "$name" --argjson size "$size" --arg digest "$digest" \
+      '{id:$id,name:$name,state:"uploaded",size:$size,digest:$digest}' > "$GH_UPLOADED_ASSET_JSON"
+    jq --slurpfile uploaded "$GH_UPLOADED_ASSET_JSON" '(. // []) + $uploaded' "$GH_ASSETS_JSON" > "$GH_ASSETS_JSON.tmp"
+    mv "$GH_ASSETS_JSON.tmp" "$GH_ASSETS_JSON"
+    jq -s '.[0] * (.[1] // {})' "$GH_UPLOADED_ASSET_JSON" "$GH_UPLOAD_RESPONSE_JSON"
     ;;
   "--method PATCH repos/Picocrypt-NG/Picocrypt-NG/releases/42 --input "*)
     input_path="${*: -1}"
@@ -1270,6 +1655,10 @@ printf '%s\n' "$EXPECTED_HEAD"
 	if checkoutHEAD == "" {
 		checkoutHEAD = releaseTestSHA
 	}
+	workflow := options.workflow
+	if workflow == "" {
+		workflow = "build-linux.yml"
+	}
 
 	command := exec.Command("bash", script, mode, "2.19")
 	command.Dir = workspace
@@ -1278,6 +1667,18 @@ printf '%s\n' "$EXPECTED_HEAD"
 		"FILES="+strings.Join(localPaths, "\n"),
 		"BODY_PATH="+bodyPath,
 		"GH_CALLS="+callsPath,
+		"GH_UPLOAD_MODE="+strconv.FormatBool(mode == "upload"),
+		"GH_RELEASE_LISTING_FAILURE="+strconv.FormatBool(options.releaseListingFailure),
+		"GH_DRAFT_CREATE_FAILURE="+strconv.FormatBool(options.draftCreateFailure),
+		"GH_DRAFT_CREATE_RESPONSE="+options.draftCreateResponse,
+		"GH_DRAFT_CREATE_CAPTURE="+draftCreateCapturePath,
+		"GH_CREATED_RELEASE_JSON="+filepath.Join(temp, "created-release.json"),
+		"GH_VERIFIED_MARKER="+filepath.Join(temp, "verified.marker"),
+		"GH_ASSETS_AFTER_VERIFY_SET="+strconv.FormatBool(options.assetsAfterVerify != nil),
+		"GH_UPLOAD_FAILURE="+options.uploadFailure,
+		"GH_CORRUPT_UPLOAD_DOWNLOAD="+strconv.FormatBool(options.corruptUploadDownload),
+		"GH_UPLOAD_RESPONSE_JSON="+uploadResponsePath,
+		"GH_UPLOADED_ASSET_JSON="+filepath.Join(temp, "uploaded-asset.json"),
 		"GH_RELEASES_JSON="+releasesPath,
 		"GH_RELEASES_AFTER_JSON="+releasesAfterPath,
 		"GH_RELEASES_MARKER="+filepath.Join(temp, "release-call.marker"),
@@ -1302,21 +1703,32 @@ printf '%s\n' "$EXPECTED_HEAD"
 		"GH_INVALID_PATCH_RESPONSE="+strconv.FormatBool(options.invalidPatchResponse),
 		"COSIGN_FAILURE="+options.cosignFailure,
 		"GITHUB_WORKSPACE="+workspace,
-		"GITHUB_WORKFLOW_REF=Picocrypt-NG/Picocrypt-NG/.github/workflows/build-linux.yml@refs/heads/main",
+		"GITHUB_WORKFLOW_REF=Picocrypt-NG/Picocrypt-NG/.github/workflows/"+workflow+"@refs/heads/main",
 		"GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG",
 		"GITHUB_SHA="+releaseTestSHA,
 		"EXPECTED_HEAD="+checkoutHEAD,
 		"EXPECTED_WORKSPACE="+workspace,
 	)
 	output, runErr := command.CombinedOutput()
+	var remoteAssets []releaseAssetFixture
+	if content, err := os.ReadFile(assetsPath); err != nil {
+		t.Fatalf("read staged assets: %v", err)
+	} else if err := json.Unmarshal(content, &remoteAssets); err != nil {
+		t.Fatalf("decode staged assets: %v", err)
+	}
+	for index := range remoteAssets {
+		remoteAssets[index].Content = readOptionalFile(t, filepath.Join(remoteDir, strconv.FormatInt(remoteAssets[index].ID, 10)))
+	}
 
 	return releaseGateResult{
-		output:         string(output),
-		calls:          readOptionalFile(t, callsPath),
-		patchInput:     readOptionalFile(t, patchCapturePath),
-		tagCreateInput: readOptionalFile(t, tagCreateCapturePath),
-		err:            runErr,
-		expectedBody:   expectedBody,
+		output:           string(output),
+		calls:            readOptionalFile(t, callsPath),
+		patchInput:       readOptionalFile(t, patchCapturePath),
+		tagCreateInput:   readOptionalFile(t, tagCreateCapturePath),
+		err:              runErr,
+		expectedBody:     expectedBody,
+		draftCreateInput: readOptionalFile(t, draftCreateCapturePath),
+		remoteAssets:     remoteAssets,
 	}
 }
 

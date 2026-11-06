@@ -29,6 +29,7 @@ concurrency:
 jobs:
   build:
     runs-on: windows-2025
+    timeout-minutes: 120
     permissions:
       contents: read
     env:
@@ -566,6 +567,7 @@ jobs:
     needs: [build, sign]
     if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && !inputs.signpath_test && !inputs.signpath_release_dry_run && inputs.publish_release }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     concurrency:
       group: ${{ github.repository }}-release-publication
       queue: max

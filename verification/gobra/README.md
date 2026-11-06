@@ -389,6 +389,12 @@ no-new-privileges. Only the generated run directory is bind-mounted read only;
 temporary files use a bounded tmpfs. Settings are inspected before execution.
 Only the exact containers created by this invocation are removed.
 
+The external execution deadline is 180 seconds for `d1-parameters-wrong-index`
+and 90 seconds for every other proof and native control. Silicon's assertion
+timeout remains 5000 milliseconds. A deadline, OOM or abnormal container state
+cannot satisfy a negative control, even when its log contains the expected
+diagnostic. Execution failures include the observed state and log path.
+
 `_build/results.json` and `_build/runs/*/results.json` record input hashes,
 signature/body identity, tool pins, actual container settings, commands, terminal
 state and proof outcomes. Logs and generated copies stay in the same run folder.

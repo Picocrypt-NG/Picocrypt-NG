@@ -15,6 +15,7 @@ concurrency:
 jobs:
   pr-test-build-windows:
     runs-on: windows-2025
+    timeout-minutes: 120
     env:
       RESHACKER_SHA256: b611be2f35cb44efd1c29df03e7ebe62bd556a500585680e1afa5e073eaf1756
       UPX_SHA256: eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda

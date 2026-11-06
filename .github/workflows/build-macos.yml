@@ -19,6 +19,7 @@ concurrency:
 jobs:
   build:
     runs-on: macos-26
+    timeout-minutes: 180
     permissions:
       contents: read
     env:
@@ -130,6 +131,7 @@ jobs:
     needs: build
     if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     concurrency:
       group: ${{ github.repository }}-release-publication
       queue: max

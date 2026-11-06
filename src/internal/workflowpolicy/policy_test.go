@@ -51,11 +51,34 @@ func TestStaticChecksWorkflowEnforcesFormatVetLintAndVuln(t *testing.T) {
 	mustContain(t, content, "pull_request:")
 }
 
+func TestStaticChecksWorkflowEnforcesToolingIntegration(t *testing.T) {
+	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-static-checks.yml")
+	job := mustJob(t, workflow, "static-checks")
+	setup := mustStepNamed(t, job, "Setup uv for tooling tests")
+	mustMatch(t, setup.Uses, `^astral-sh/setup-uv@[0-9a-f]{40}$`)
+	if setup.With["version"] != "0.13.5" {
+		t.Fatalf("tooling uv version = %#v, want pinned 0.13.5", setup.With["version"])
+	}
+	step := mustStepNamed(t, job, "Test tooling integration")
+	if step.If != "" || (step.ContinueOnError != nil && step.ContinueOnError != false) {
+		t.Fatal("tooling integration must run unconditionally and propagate failures")
+	}
+	if step.Env["MISE_ENABLE_TOOLS"] != "go,golangci-lint,hk,jouet,jactionlint,shellcheck,ruff" {
+		t.Fatalf("tooling installation scope = %q", step.Env["MISE_ENABLE_TOOLS"])
+	}
+	mustContain(t, step.Run, "mise install go golangci-lint hk jouet")
+	mustContain(t, step.Run, "mise run tooling:test")
+	mustNotContain(t, step.Run, "|| true")
+}
+
 func TestReleaseUploadsNeverOverwriteExistingAssets(t *testing.T) {
 	action := mustReadCompositeActionDoc(t, ".github/actions/stage-release/action.yml")
 	uploadStep := mustCompositeStepNamed(t, action, "Upload assets to draft release")
-	if got := uploadStep.With["overwrite_files"]; got != false && got != "false" {
-		t.Fatalf("release overwrite_files = %#v, want false to preserve staged binaries", got)
+	if uploadStep.Uses != "" || uploadStep.Shell != "bash" || uploadStep.Run != `bash "$GITHUB_ACTION_PATH/release-gate.sh" upload "$VERSION"` {
+		t.Fatalf("release uploads must use the shared no-overwrite gate: %#v", uploadStep)
+	}
+	if uploadStep.Env["FILES"] != "${{ inputs.files }}" || uploadStep.Env["VERSION"] != "${{ inputs.version }}" {
+		t.Fatalf("release upload gate must receive the exact lane and version: %#v", uploadStep.Env)
 	}
 }
 
@@ -931,12 +954,13 @@ func TestLinuxUPXDownloadsRemainChecksumGated(t *testing.T) {
 func TestLinuxPRGatesRequireEveryNativeTestGroup(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-linux.yml")
 	gate := mustJob(t, workflow, "pr-test-build-linux")
-	if gate.If != "${{ always() && !cancelled() }}" {
-		t.Fatalf("Linux aggregate if = %q, want cancellation-aware always gate", gate.If)
+	if gate.If != "${{ always() }}" {
+		t.Fatalf("Linux aggregate if = %q, want final gate to inspect all results even after cancellation", gate.If)
 	}
 
-	if gate.Needs != "build" {
-		t.Fatalf("Linux aggregate needs = %#v, want build matrix", gate.Needs)
+	needs, ok := gate.Needs.([]any)
+	if !ok || len(needs) != 2 || needs[0] != "build" || needs[1] != "production-kdf" {
+		t.Fatalf("Linux aggregate needs = %#v, want build matrix and production-KDF lane", gate.Needs)
 	}
 	build := mustJob(t, workflow, "build")
 	if build.Needs != "tests" || build.If != "${{ always() && !cancelled() }}" || build.Name != "pr-test-build-linux-${{ matrix.arch }}" {
@@ -962,8 +986,8 @@ func TestLinuxPRGatesRequireEveryNativeTestGroup(t *testing.T) {
 
 	check := mustStepNamed(t, gate, "Require all Linux matrix jobs to pass")
 	mustContainInOrder(t, check.Run,
-		`if [ "${{ needs.build.result }}" != "success" ]; then`,
-		`echo "Linux matrix result: ${{ needs.build.result }}"`,
+		`if [[ ${BUILD_RESULT:-} != success || ${PRODUCTION_KDF_RESULT:-} != success ]]; then`,
+		`echo "Linux matrix result: ${BUILD_RESULT:-missing}; production-KDF result: ${PRODUCTION_KDF_RESULT:-missing}"`,
 		"exit 1",
 	)
 }
@@ -1161,20 +1185,30 @@ func TestMacOSWorkflowsRunCLIInputContract(t *testing.T) {
 	}
 }
 
-func TestMacOSPRAggregateGateRequiresAllTestGroups(t *testing.T) {
+func TestMacOSPRBuildsOnlyAfterNativeTests(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-macos.yml")
-	gate := mustJob(t, workflow, "pr-test-build-macos")
-	if gate.Needs != "pcv3-tests" || gate.If != "${{ always() }}" {
-		t.Fatalf("macOS gate needs=%v if=%q; want all test groups checked even after cancellation", gate.Needs, gate.If)
-	}
-	check := mustStepNamed(t, gate, "Require all macOS test groups to pass")
-	if len(gate.Steps) == 0 || gate.Steps[0].Name != check.Name {
-		t.Fatal("macOS build must check the test result before any other step")
-	}
-	mustContainInOrder(t, check.Run,
-		`if [ "${{ needs.pcv3-tests.result }}" != "success" ]; then`,
-		"exit 1",
+	job := mustJob(t, workflow, "pr-test-build-macos")
+	native := mustStepNamed(t, job, "Run native test suite")
+	mustContainInOrder(t, mustReadWorkflow(t, ".github/workflows/pr-test-build-macos.yml"),
+		"- name: "+native.Name,
+		"- name: Run tests",
+		"- name: Build GUI",
+		"- name: Build CLI-only (no graphics dependencies)",
+		"- name: Package as .app in a .dmg",
+		"- name: Upload artifacts",
 	)
+	for _, name := range []string{
+		"Run tests",
+		"Build GUI",
+		"Build CLI-only (no graphics dependencies)",
+		"Package as .app in a .dmg",
+		"Upload artifacts",
+	} {
+		step := mustStepNamed(t, job, name)
+		if step.If != "" || step.ContinueOnError != nil {
+			t.Fatalf("%s must retain default success gating after the native suite", name)
+		}
+	}
 }
 
 func TestWindowsWorkflowsUseApprovedResourceHacker528(t *testing.T) {
@@ -2127,6 +2161,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 		{path: ".github/workflows/pr-test-build-android.yml", job: "pr-test-build-android"},
 		{path: ".github/workflows/pr-test-build-linux.yml", job: "build"},
 		{path: ".github/workflows/pr-test-build-linux.yml", job: "tests"},
+		{path: ".github/workflows/pr-test-build-linux.yml", job: "production-kdf"},
 		{path: ".github/workflows/pr-test-build-macos.yml", job: "pr-test-build-macos"},
 		{path: ".github/workflows/pr-test-build-windows.yml", job: "pr-test-build-windows"},
 	}

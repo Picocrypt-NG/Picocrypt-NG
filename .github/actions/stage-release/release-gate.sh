@@ -2,14 +2,14 @@
 
 set -euo pipefail
 
-mode="${1:?usage: release-gate.sh <preflight|publish> <version>}"
-version="${2:?usage: release-gate.sh <preflight|publish> <version>}"
+mode="${1:?usage: release-gate.sh <preflight|upload|publish> <version>}"
+version="${2:?usage: release-gate.sh <preflight|upload|publish> <version>}"
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 source_sha="${GITHUB_SHA:?GITHUB_SHA is required}"
 workspace="${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 
 case "$mode" in
-  preflight|publish) ;;
+  preflight|upload|publish) ;;
   *)
     echo "release gate: unsupported mode '$mode'" >&2
     exit 2
@@ -53,7 +53,7 @@ case "$workflow_ref" in
   *) echo "release gate: workflow must run from the trusted repository main branch" >&2; exit 2 ;;
 esac
 
-for command in awk cat cmp comm cosign gh grep jq mkdir mktemp realpath sha256sum sort wc; do
+for command in awk cat cmp comm cosign gh grep jq mkdir mktemp mv realpath sha256sum sort wc; do
   command -v "$command" >/dev/null || {
     echo "release gate: required command '$command' is unavailable" >&2
     exit 2
@@ -89,8 +89,8 @@ if [ "$(wc -l < "$work/expected-assets.txt")" -ne 38 ]; then
 fi
 
 declare -A local_paths=()
-if [ "$mode" = "preflight" ]; then
-  files="${FILES:?FILES is required during preflight}"
+if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
+  files="${FILES:?FILES is required during preflight and upload}"
   while IFS= read -r path || [ -n "$path" ]; do
     path="${path%$'\r'}"
     [ -z "$path" ] && continue
@@ -148,8 +148,8 @@ if [ "$mode" = "preflight" ]; then
   done
 fi
 
-if [ "$mode" = "publish" ]; then
-  body_path="${BODY_PATH:?BODY_PATH is required during publication}"
+if [ "$mode" = "upload" ] || [ "$mode" = "publish" ]; then
+  body_path="${BODY_PATH:?BODY_PATH is required during upload and publication}"
   expected_body_path="$workspace/release-body.md"
   canonical_body_path="$canonical_workspace/release-body.md"
   if [ "$body_path" != "$expected_body_path" ] \
@@ -248,7 +248,10 @@ ensure_tag() {
 load_release() {
   local release_count
   gh api --paginate "repos/$repo/releases?per_page=100" \
-    | jq -s 'add // []' > "$work/releases.json"
+    | jq -s 'add // []' > "$work/releases.json" || {
+      echo "release gate: cannot list releases; refusing to infer absence" >&2
+      exit 1
+    }
   release_count="$(
     jq --arg version "$version" \
       '[.[] | select(.tag_name == $version)] | length' \
@@ -269,7 +272,7 @@ load_release() {
   release_target="$(jq -r '.target_commitish' "$work/release.json")"
   release_draft="$(jq -r '.draft' "$work/release.json")"
   release_prerelease="$(jq -r '.prerelease' "$work/release.json")"
-  if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+  if [[ ! "$release_id" =~ ^[1-9][0-9]*$ ]]; then
     echo "release gate: release $version has invalid id '$release_id'" >&2
     exit 1
   fi
@@ -392,14 +395,55 @@ verify_remote_pair() {
   verify_primary "$name" "$workflow"
 }
 
+upload_asset() {
+  local name="$1" path="${local_paths[$1]}" size digest encoded_name upload_url
+  size="$(wc -c < "$path")"
+  size="${size//[[:space:]]/}"
+  digest="sha256:$(sha256sum "$path" | awk '{print $1}')"
+  encoded_name="$(jq -nr --arg name "$name" '$name | @uri')"
+  upload_url="https://uploads.github.com/repos/$repo/releases/$release_id/assets?name=$encoded_name"
+  gh api --method POST -H "Content-Type: application/octet-stream" \
+    "$upload_url" --input "$path" > "$work/uploaded-asset.json"
+  if ! jq -e --arg name "$name" --argjson size "$size" --arg digest "$digest" '
+    (.id | type == "number" and . > 0 and floor == .)
+    and (.name == $name) and (.state == "uploaded")
+    and (.size == $size) and (.digest == $digest)
+  ' "$work/uploaded-asset.json" >/dev/null; then
+    echo "release gate: unexpected upload response for '$name'" >&2
+    exit 1
+  fi
+  jq --slurpfile uploaded "$work/uploaded-asset.json" '. + $uploaded' \
+    "$work/assets.json" > "$work/next-assets.json"
+  mv "$work/next-assets.json" "$work/assets.json"
+}
+
 validate_tag true
 if ! load_release; then
   if [ "$mode" = "preflight" ]; then
     echo "release gate: no existing release for $version; a commit-bound draft may be created"
     exit 0
   fi
-  echo "release gate: draft release for $version was not found after asset upload" >&2
-  exit 1
+  if [ "$mode" != "upload" ]; then
+    echo "release gate: draft release for $version was not found after asset upload" >&2
+    exit 1
+  fi
+  jq -n --arg version "$version" --arg sha "$source_sha" --rawfile body "$body_path" \
+    '{tag_name:$version,target_commitish:$sha,name:$version,body:$body,
+      draft:true,prerelease:false,make_latest:"false"}' \
+    | gh api --method POST "repos/$repo/releases" --input - > "$work/created-release.json"
+  if ! jq -e --arg version "$version" --arg sha "$source_sha" '
+    (.id | type == "number" and . > 0 and floor == .)
+    and (.tag_name == $version) and (.target_commitish == $sha)
+    and (.draft == true) and (.prerelease == false)
+  ' "$work/created-release.json" >/dev/null; then
+    echo "release gate: unexpected draft creation response" >&2
+    exit 1
+  fi
+  created_release_id="$(jq -r '.id' "$work/created-release.json")"
+  if ! load_release || [ "$release_id" != "$created_release_id" ]; then
+    echo "release gate: created draft disappeared or changed before upload" >&2
+    exit 1
+  fi
 fi
 if [ "$release_draft" != "true" ]; then
   echo "release gate: release $version is already published; refusing to mutate or accept it" >&2
@@ -409,7 +453,9 @@ fi
 load_assets
 validate_assets
 
-if [ "$mode" = "preflight" ]; then
+if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
+  missing_pairs=()
+  reused_pairs=()
   while read -r name workflow _; do
     if [[ -z "${local_paths[$name]+present}" ]]; then
       continue
@@ -426,9 +472,59 @@ if [ "$mode" = "preflight" ]; then
     fi
     if [ "$primary_count" -eq 1 ]; then
       verify_remote_pair "$name" "$workflow"
+      reused_pairs+=("$name")
       echo "release gate: safely reusing verified staged pair '$name'"
+    else
+      missing_pairs+=("$name $workflow")
     fi
   done < "$work/primary-assets.txt"
+  if [ "${#missing_pairs[@]}" -gt 0 ]; then
+    for name in "${reused_pairs[@]}"; do
+      if ! cmp -s "${local_paths[$name]}" "$download_dir/$name"; then
+        echo "release gate: partially staged lane requires the original signed artifact set; '$name' differs from staged bytes" >&2
+        exit 1
+      fi
+    done
+  fi
+  if [ "$mode" = "upload" ]; then
+    staged_release_id="$release_id"
+    jq -S '[.[] | {id, name, state, size, digest}] | sort_by(.name)' \
+      "$work/assets.json" > "$work/verified-assets.json"
+    if ! load_release || [ "$release_id" != "$staged_release_id" ] || [ "$release_draft" != "true" ]; then
+      echo "release gate: release $version changed or was published during staging" >&2
+      exit 1
+    fi
+    load_assets
+    validate_assets
+    jq -S '[.[] | {id, name, state, size, digest}] | sort_by(.name)' \
+      "$work/assets.json" > "$work/current-assets.json"
+    if ! cmp -s "$work/verified-assets.json" "$work/current-assets.json"; then
+      echo "release gate: release assets changed during staging" >&2
+      exit 1
+    fi
+    for pair in "${missing_pairs[@]}"; do
+      read -r name workflow <<< "$pair"
+      upload_asset "$name"
+      upload_asset "$name.sigstore.json"
+      verify_remote_pair "$name" "$workflow"
+    done
+    jq -S '[.[] | {id, name, state, size, digest}] | sort_by(.name)' \
+      "$work/assets.json" > "$work/verified-assets.json"
+    if ! load_release || [ "$release_id" != "$staged_release_id" ] || [ "$release_draft" != "true" ]; then
+      echo "release gate: release $version changed or was published during staging" >&2
+      exit 1
+    fi
+    load_assets
+    validate_assets
+    jq -S '[.[] | {id, name, state, size, digest}] | sort_by(.name)' \
+      "$work/assets.json" > "$work/current-assets.json"
+    if ! cmp -s "$work/verified-assets.json" "$work/current-assets.json"; then
+      echo "release gate: release assets changed during staging" >&2
+      exit 1
+    fi
+    echo "release gate: staged verified lane pairs in draft $version"
+    exit 0
+  fi
   echo "release gate: existing draft $version is safe for this workflow lane"
   exit 0
 fi
