@@ -30,6 +30,24 @@ complete registered suite. `--only TARGET` writes a separately labelled partial
 report. Source changes during execution invalidate the current-source result.
 Generated results and local paths do not belong in commits.
 
+## CI toolchain reuse
+
+Required pull-request checks and manual runs always execute the complete suite.
+Main pushes ignore unrelated Android, packaging and documentation changes.
+Only trusted main pushes enable the pinned OCaml action cache; PR and manual
+runs retain clean installation. Its exact key also binds the
+hosted image, installation paths and frozen toolchain/bootstrap/cache inputs.
+For trusted main pushes, the cache guard checks runtime bytes, modes and link targets before
+bootstrap. Frozen installation, admission tests and model checks still run on
+cache hits. A fresh receipt is recorded after successful checks and opam cleanup.
+Model inputs, `_build/` reports and current proof results are outside this cache.
+
+The receipt detects cache corruption, not independently authenticated compiler
+provenance. GitHub scopes caches by repository and branch; pull-request caches
+cannot replace the default branch cache. If integrity verification fails, remove
+the matching Actions cache entry or change the cache-format prefix and rebuild;
+do not bypass the guard. Local setup commands above are unchanged.
+
 Every positive theory is compiled directly to check its proofs. A separate
 import then checks closure at end of file; imports alone normally skip proof
 checking. Positive libraries are isolated from intentionally invalid controls
