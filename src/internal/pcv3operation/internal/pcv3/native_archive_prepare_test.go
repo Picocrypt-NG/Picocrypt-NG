@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,7 +26,6 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 	isolated := runtime.GOOS == "darwin" && worker == ""
 	if isolated {
 		fixtureDirectory = t.TempDir()
-		runNativeArchiveWorker(t, "fixtures", fixtureDirectory)
 	}
 	if worker != "" && fixtureDirectory == "" {
 		t.Fatal("native archive worker requires its fixture directory")
@@ -60,36 +60,47 @@ func TestNativePrepareArchiveUsesAuthenticatedPlaintext(t *testing.T) {
 		return encoded.Bytes()
 	}
 	// Keyfile-only credentials still run the fixed production KDF. On Darwin,
-	// separate fixture setup from the independent archive cases: released Go
+	// run each fixture and archive case in its own process: released Go
 	// heap pages need not immediately rejoin the OS free-page pool. Mandatory
 	// facade tests separately exercise sequential writes and reads in one process.
 	ordinaryBytes := []byte("ordinary authenticated file")
 	var rawZIP, rawOrdinary, declaredArchive []byte
-	if fixtureDirectory == "" || worker == "fixtures" {
-		rawZIP = encode(PayloadKindRaw, zipBytes)
-		rawOrdinary = encode(PayloadKindRaw, ordinaryBytes)
-		declaredArchive = encode(PayloadKindArchive, zipBytes)
-		if worker == "fixtures" {
-			for name, encoded := range map[string][]byte{
-				"raw-zip": rawZIP, "raw-ordinary": rawOrdinary, "declared-archive": declaredArchive,
-			} {
-				if err := os.WriteFile(filepath.Join(fixtureDirectory, name), encoded, 0o600); err != nil {
+	fixtures := []struct {
+		name      string
+		kind      PayloadKind
+		plaintext []byte
+		encoded   *[]byte
+	}{
+		{"raw-zip", PayloadKindRaw, zipBytes, &rawZIP},
+		{"raw-ordinary", PayloadKindRaw, ordinaryBytes, &rawOrdinary},
+		{"declared-archive", PayloadKindArchive, zipBytes, &declaredArchive},
+	}
+	if isolated {
+		for _, fixture := range fixtures {
+			runNativeArchiveWorker(t, "fixture-"+fixture.name, fixtureDirectory)
+		}
+	}
+	fixtureWorker := strings.HasPrefix(worker, "fixture-")
+	for _, fixture := range fixtures {
+		if fixtureDirectory == "" || worker == "fixture-"+fixture.name {
+			*fixture.encoded = encode(fixture.kind, fixture.plaintext)
+			if fixtureWorker {
+				if err := os.WriteFile(filepath.Join(fixtureDirectory, fixture.name), *fixture.encoded, 0o600); err != nil {
 					t.Fatal(err)
 				}
+				t.Logf("native archive worker completed: %s", worker)
+				return
 			}
-			t.Log("native archive worker completed: fixtures")
-			return
-		}
-	} else {
-		for name, encoded := range map[string]*[]byte{
-			"raw-zip": &rawZIP, "raw-ordinary": &rawOrdinary, "declared-archive": &declaredArchive,
-		} {
+		} else if !fixtureWorker {
 			var err error
-			*encoded, err = os.ReadFile(filepath.Join(fixtureDirectory, name))
+			*fixture.encoded, err = os.ReadFile(filepath.Join(fixtureDirectory, fixture.name))
 			if err != nil {
 				t.Fatal(err)
 			}
 		}
+	}
+	if fixtureWorker {
+		t.Fatalf("unknown native archive fixture worker: %q", worker)
 	}
 	t.Logf("retained serialized fixture lengths: raw ZIP=%d raw ordinary=%d declared archive=%d total=%d", len(rawZIP), len(rawOrdinary), len(declaredArchive), len(rawZIP)+len(rawOrdinary)+len(declaredArchive))
 	selected := false
