@@ -17,7 +17,7 @@ check_hash "$toolchain/sources.lock.json" "$(jq -r .sources_sha256 "$manifest")"
 check_hash "$toolchain/os-packages.lock.json" "$(jq -r .packages_sha256 "$manifest")"
 check_hash "$toolchain/nul-terminate-mkdtemp-template.patch" "$(jq -r .patch_sha256 "$manifest")"
 jq -e '.schema_version==1 and ([.archives[].name]|sort)==["appimageupdate","args","cpr","libappimage","zsync2"] and all(.archives[]; .file==(.name+".tar.gz") and (.sha256|test("^[0-9a-f]{64}$")) and (.commit|test("^[0-9a-f]{40}$")) and .url==("https://codeload.github.com/"+.repository+"/tar.gz/"+.commit))' "$toolchain/sources.lock.json" >/dev/null || fail 'invalid source lock'
-jq -e '.schema_version==1 and (.packages|length)>0 and all(.packages[]; (.sha256|test("^[0-9a-f]{64}$")) and .file==(.sha256+".deb") and ((.url|startswith("https://archive.ubuntu.com/ubuntu/pool/")) or (.url|startswith("https://security.ubuntu.com/ubuntu/pool/"))))' "$toolchain/os-packages.lock.json" >/dev/null || fail 'invalid package lock'
+jq -e '.schema_version==1 and (.packages|length)>0 and all(.packages[]; (.sha256|test("^[0-9a-f]{64}$")) and .file==(.sha256+".deb") and (.url|test("^https://snapshot[.]ubuntu[.]com/ubuntu/[0-9]{8}T[0-9]{6}Z/pool/")))' "$toolchain/os-packages.lock.json" >/dev/null || fail 'invalid package lock'
 cache_root="${XDG_CACHE_HOME:-${HOME:?HOME or XDG_CACHE_HOME is required}/.cache}/picocrypt-ng/appimage-verifier/blobs"
 mkdir -p "$cache_root"
 chmod 700 "$cache_root"
@@ -30,7 +30,7 @@ fetch() {
     [[ -f $blob && ! -L $blob ]] || fail 'cached blob is not a regular file'
     check_hash "$blob" "$expected"
   else
-    curl --fail --location --proto '=https' --proto-redir '=https' --silent --show-error --connect-timeout 20 --max-time 180 --retry 2 --retry-max-time 180 --output "$work/download" "$url"
+    curl --fail --location --proto '=https' --proto-redir '=https' --silent --show-error --connect-timeout 20 --max-time 180 --retry 2 --retry-max-time 180 --output "$work/download" "$url" || fail "cannot download pinned input $filename from $url"
     check_hash "$work/download" "$expected"
     chmod 600 "$work/download"
     mv -T "$work/download" "$blob"

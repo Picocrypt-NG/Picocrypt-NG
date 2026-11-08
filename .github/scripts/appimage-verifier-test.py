@@ -283,6 +283,20 @@ class AppImageSignatureTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("checksum mismatch", result.stderr)
 
+    def test_mutable_package_source_is_rejected_before_cache_use(self):
+        scripts, manifest_path = self.configured_copy()
+        lock_path = manifest_path.with_name("os-packages.lock.json")
+        lock = json.loads(lock_path.read_text())
+        package = lock["packages"][0]
+        package["url"] = "https://archive.ubuntu.com/ubuntu/pool/" + package["url"].split("/pool/", 1)[1]
+        lock_path.write_text(json.dumps(lock))
+        manifest = json.loads(manifest_path.read_text())
+        manifest["packages_sha256"] = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest))
+        result = self.invoke(scripts=scripts)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("invalid package lock", result.stderr)
+
     def test_corrupt_cached_source_is_never_executed(self):
         marker = self.directory / "unverified-code-ran"
         self.cached_blob.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
