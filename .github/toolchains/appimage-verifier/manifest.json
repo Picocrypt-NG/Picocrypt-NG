@@ -3,7 +3,7 @@
   "base_image": "ubuntu@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11",
   "source_version": "2.0.0-alpha-1-20251018",
   "sources_sha256": "19c34c0e975b0c2f257ba4f073f0a679c84e3f3f13f58c51b0b13d31fe4ef172",
-  "packages_sha256": "93a7070df9e10b99a199d38206439c18d06765f5f6f60ab9c8042a1c1722a9a9",
+  "packages_sha256": "08f6d58252c89ae50f0253fadf1814621665bff30dd148550c5c9ca172aed01f",
   "patch_sha256": "4d16dc24d737ab4c89296a3a086183f2ef0556bc720af44e62364edafb8952e3",
   "expected_fingerprint": "40D552749B0EB548C79D79F22DD93FE75B45D97F",
   "public_fixture": {
