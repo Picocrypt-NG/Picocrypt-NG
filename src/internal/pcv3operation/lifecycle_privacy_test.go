@@ -868,7 +868,11 @@ func TestPCV3OperationLifecyclePrivacyMatrix(t *testing.T) {
 			pcv3AssertZeroed(t, runs[index])
 		}
 	})
+}
 
+// Keep this real ZIP-admission race in its own parent so the native macOS
+// lane runs it in a fresh process, separately from the lifecycle fixtures.
+func TestPCV3OperationArchiveConsumerLifecyclePrivacy(t *testing.T) {
 	t.Run("concurrent one-shot archive consumers race exactly once", func(t *testing.T) {
 		run := pcv3BaseRun(t, "archive-race")
 		admitter := &pcv3PrivacyAdmitter{admission: pcv3credential.KDFAdmissionGranted}
