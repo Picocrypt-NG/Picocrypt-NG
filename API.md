@@ -683,6 +683,26 @@ Discovery snapshots bind each selected regular file to its read identity before
 archive work. Explicit symlink following resolves the target once and preserves
 the original entry name. Writers reopen without following a substituted leaf and
 check the descriptor before reading; snapshots do not freeze same-inode writes.
+Archive discovery uses `InspectZIPInput`, `WalkZIPInputCandidates` and
+`GlobZIPInputCandidates`; the resulting `ZIPInputCandidate` carries its original
+directory authority through selection, including asynchronous folder-scan jobs.
+Its `Capture` and `Walk` paths preserve that authority rather than recapturing
+mutable child names. Old FileInfo-only walk/glob callbacks remain available;
+archive consumers should retain candidates instead.
+
+Each selection, manifest or writer owns a `ZIPInputMetadataReservation`.
+`Inspect`, `Capture`, `CaptureInputs` and `FromFileInfo` admit distinct ancestor
+nodes and per-identity canonical-path growth before retaining them. Supplied
+borrowed descriptor metadata is preserved. Release the reservation only after
+its synchronous consumer, deletion cleanup or transferred mobile worker is done.
+Writers recount supplied snapshots in their own workspace without duplicating
+canonical-path charges. Platform budget ceilings and ordinary path allowances
+are unchanged; this model is conservative admission, not a process RSS limit.
+
+Directory reopens verify captured identities with bounded live handles; no
+per-input descriptor is retained. Only an initial explicit named-file selection
+may use the leaf-identity compatibility path when its parent is searchable but
+not readable. Anchored folder/glob members never fall back after an open error.
 GUI source-deletion manifests use the same identities as encryption and reject
 a replaced input before work, rather than capturing a separate deletion target.
 For decrypt-with-recombine and requested source deletion, the GUI borrows the

@@ -15,17 +15,19 @@ var runPCV3WriteWithOptions = pcv3operation.RunWriteWithOptions
 // pcv3WriteRequest owns the inputs transferred by StartPCV3. The shared writer
 // borrows source and consumes factors and comment.
 type pcv3WriteRequest struct {
-	prepared   *volume.PreparedEncryptInput
-	input      volume.EncryptInputRequest
-	d1         bool
-	suite      pcv3operation.Suite
-	payloadRS  bool
-	comment    []byte
-	sourcePath string
-	source     *os.File
-	factors    *pcv3operation.FactorRequest
-	target     string
-	protected  []string
+	prepared      *volume.PreparedEncryptInput
+	input         volume.EncryptInputRequest
+	d1            bool
+	suite         pcv3operation.Suite
+	payloadRS     bool
+	comment       []byte
+	sourcePath    string
+	source        *os.File
+	factors       *pcv3operation.FactorRequest
+	target        string
+	protected     []string
+	inputMetadata *fileops.ZIPInputMetadataReservation
+	inputCharge   uint64
 }
 
 func executePCV3WriteOperation(operation *PCV3Operation, request *pcv3WriteRequest) {
@@ -81,6 +83,12 @@ func releasePCV3WriteRequest(request *pcv3WriteRequest) (cleanupIncomplete bool)
 	}
 	if request.source != nil && request.source.Close() != nil {
 		cleanupIncomplete = true
+	}
+	if request.inputMetadata != nil {
+		request.inputMetadata.Release()
+	}
+	if request.input.ZIPBudget != nil {
+		request.input.ZIPBudget.Release(request.inputCharge)
 	}
 	clear(request.comment)
 	clear(request.protected)

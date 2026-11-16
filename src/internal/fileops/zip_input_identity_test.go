@@ -10,6 +10,52 @@ import (
 	"testing"
 )
 
+func TestZIPInputMetadataFromFileInfoPreservesBorrowedDescriptorIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "selected")
+	original := filepath.Join(dir, "original")
+	if err := os.WriteFile(original, []byte("original borrowed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("foreign replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	borrowed, err := os.Open(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer borrowed.Close()
+	info, err := borrowed.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model a stale selected name with a different existing inode, without
+	// assuming that an ordinary borrowed handle permits renaming on Windows.
+	budget := NewZIPResourceBudget()
+	var metadata ZIPInputMetadataReservation
+	identity, err := metadata.FromFileInfo(budget, path, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.CheckFile(borrowed); err != nil {
+		t.Fatalf("borrowed identity replaced by pathname metadata: %v", err)
+	}
+	file, err := identity.Open()
+	if file != nil {
+		_ = file.Close()
+	}
+	if err == nil {
+		t.Fatal("borrowed snapshot admitted replacement at selected name")
+	}
+	if !metadata.Release() || budget.CurrentBytes() != 0 {
+		t.Fatal("borrowed snapshot metadata charge was not retired")
+	}
+	body, err := io.ReadAll(borrowed)
+	if err != nil || string(body) != "original borrowed" {
+		t.Fatalf("borrowed descriptor ownership changed: %q %v", body, err)
+	}
+}
+
 func TestZIPInputSnapshotMatchesMovedSelectedDescriptor(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "selected")

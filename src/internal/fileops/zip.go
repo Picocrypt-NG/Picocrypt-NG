@@ -82,7 +82,9 @@ func CreateZip(opts ZipOptions) (retErr error) {
 		return err
 	}
 	defer budget.Release(charge)
-	opts.InputIdentities, err = CaptureZIPInputs(opts.Files, opts.InputIdentities)
+	var metadata ZIPInputMetadataReservation
+	defer metadata.Release()
+	opts.InputIdentities, err = metadata.captureInputs(budget, opts.Files, opts.InputIdentities, true)
 	if err != nil {
 		return err
 	}

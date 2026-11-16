@@ -107,6 +107,19 @@ cleanup obligation.
 
 ## Filesystem ownership and limits
 
+Native archive discovery retains immutable original directory identities through
+CLI/glob selection and asynchronous desktop scanning. Enumeration and later
+source opens validate this authority before reading bytes. Shared ancestor
+metadata and canonical read-path growth are admitted against the operation's
+budget before retention, including preprocessing, deletion manifests and mobile
+handoff. Owners retire their charges after their consumers finish. Live directory
+handles are bounded independently of the input count and tree depth.
+
+An initial explicit readable file under a search-only parent may retain only its
+original regular-file identity for compatibility. This exception is never used
+to recapture folder/glob members after an anchored reopen fails. Same-inode writes
+and mount changes remain outside the byte-snapshot guarantee described below.
+
 Common ZIP extraction retains cleanup obligations for newly created stages and
 directories even when post-creation metadata cannot be read. Both legacy and typed
 extractors report `ErrUnpackCleanupIncomplete` when absence of owned residue

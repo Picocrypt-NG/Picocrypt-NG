@@ -47,6 +47,8 @@ func resolveEncryptInputsWithBudget(ctx context.Context, literals, patterns []st
 	}
 	var retained uint64
 	defer func() { budget.Release(retained) }()
+	var metadata fileops.ZIPInputMetadataReservation
+	defer metadata.Release()
 	reservePath := func(path string) (uint64, error) {
 		pathBytes := len(path)
 		if !filepath.IsAbs(path) {
@@ -65,7 +67,8 @@ func resolveEncryptInputsWithBudget(ctx context.Context, literals, patterns []st
 	seenSelections := make(map[string]struct{})
 	seenFiles := make(map[string]struct{})
 
-	addFile := func(path string, info os.FileInfo) error {
+	addFile := func(candidate fileops.ZIPInputCandidate) error {
+		path, info := candidate.Path, candidate.Info
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -83,21 +86,16 @@ func resolveEncryptInputsWithBudget(ctx context.Context, literals, patterns []st
 			return nil
 		}
 		seenFiles[key] = struct{}{}
-		var identity fileops.ZIPInputIdentity
-		if info.Mode()&os.ModeSymlink != 0 {
-			identity, err = fileops.CaptureZIPInput(path, followSymlinks)
-			if err != nil {
-				// Directory and inaccessible links in a walked folder remain
-				// excluded, as they are outside the regular-file follow policy.
-				return nil //nolint:nilerr // Preserve exclusion of walked broken/non-regular symlinks.
-			}
-		} else {
-			identity, err = fileops.ZIPInputFromFileInfo(path, info)
-		}
-		if err != nil {
+		identity, err := metadata.Capture(budget, candidate, followSymlinks)
+		if errors.Is(err, fileops.ErrZIPMetadataLimit) {
 			return err
 		}
-		if _, err := reservePath(identity.ReadPath()); err != nil {
+		if err != nil && info.Mode()&os.ModeSymlink != 0 {
+			// Directory and inaccessible links in a walked folder remain
+			// excluded, as they are outside the regular-file follow policy.
+			return nil //nolint:nilerr // Preserve exclusion of walked broken/non-regular symlinks.
+		}
+		if err != nil {
 			return err
 		}
 		result.inputFiles = append(result.inputFiles, path)
@@ -105,7 +103,7 @@ func resolveEncryptInputsWithBudget(ctx context.Context, literals, patterns []st
 		return nil
 	}
 
-	addSelection := func(path string) error {
+	addSelection := func(path string, discovered *fileops.ZIPInputCandidate) error {
 		if path == "" {
 			return errors.New("input path must not be empty")
 		}
@@ -127,7 +125,14 @@ func resolveEncryptInputsWithBudget(ctx context.Context, literals, patterns []st
 		}
 		seenSelections[key] = struct{}{}
 
-		info, err := os.Lstat(path)
+		var info os.FileInfo
+		if discovered != nil {
+			info = discovered.Info
+		} else {
+			var candidate fileops.ZIPInputCandidate
+			candidate, err = metadata.Inspect(budget, path)
+			info, discovered = candidate.Info, &candidate
+		}
 		if err != nil {
 			looksLikeGlob := looksLikeGlobPath(path)
 			if errors.Is(err, os.ErrNotExist) || isInvalidWindowsWildcardPath(path, err) {
@@ -142,11 +147,8 @@ func resolveEncryptInputsWithBudget(ctx context.Context, literals, patterns []st
 			if !followSymlinks {
 				return fmt.Errorf("input path %q is a symlink; use --follow-symlinks to select its target", path)
 			}
-			identity, err := fileops.CaptureZIPInput(path, true)
+			identity, err := metadata.Capture(budget, *discovered, true)
 			if err != nil {
-				return err
-			}
-			if _, err := reservePath(identity.ReadPath()); err != nil {
 				return err
 			}
 			result.selections = append(result.selections, path)
@@ -166,36 +168,38 @@ func resolveEncryptInputsWithBudget(ctx context.Context, literals, patterns []st
 				}
 			}
 			result.onlyFolders = append(result.onlyFolders, path)
-			return fileops.WalkZIPInputs(ctx, path, budget, func(walkPath string, walkInfo os.FileInfo, walkErr error) error {
+			visit := func(candidate fileops.ZIPInputCandidate, walkErr error) error {
 				if walkErr != nil {
 					return walkErr
 				}
+				walkInfo := candidate.Info
 				if walkInfo.Mode().IsRegular() {
-					return addFile(walkPath, walkInfo)
+					return addFile(candidate)
 				}
 				if followSymlinks && walkInfo.Mode()&os.ModeSymlink != 0 {
-					return addFile(walkPath, walkInfo)
+					return addFile(candidate)
 				}
 				return nil
-			})
+			}
+			return discovered.Walk(ctx, budget, visit)
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("input path %q is not a regular file or directory", path)
 		}
 		result.onlyFiles = append(result.onlyFiles, path)
-		return addFile(path, info)
+		return addFile(*discovered)
 	}
 
 	for _, path := range literals {
-		if err := addSelection(path); err != nil {
+		if err := addSelection(path, nil); err != nil {
 			return encryptInputs{}, err
 		}
 	}
 	for _, pattern := range patterns {
 		matches := 0
-		err := fileops.GlobZIPInputs(ctx, pattern, budget, func(match string) error {
+		err := fileops.GlobZIPInputCandidates(ctx, pattern, budget, func(candidate fileops.ZIPInputCandidate) error {
 			matches++
-			return addSelection(match)
+			return addSelection(candidate.Path, &candidate)
 		})
 		if err != nil {
 			if errors.Is(err, filepath.ErrBadPattern) {

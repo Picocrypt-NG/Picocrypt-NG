@@ -14,15 +14,22 @@ type ZIPInputIdentity struct {
 	selectedPath string
 	readPath     string
 	info         os.FileInfo
+	parent       *zipDirectoryIdentity
+	explicitLeaf bool
 }
 
 // ReadPath is the fixed source path, which can differ from the archive name
 // after explicit symlink following. It is also protected from output writes.
 func (input ZIPInputIdentity) ReadPath() string { return input.readPath }
 
-// ZIPInputFromFileInfo retains the regular-file identity observed by discovery.
+// ZIPInputFromFileInfo retains an explicitly selected regular-file identity.
 // It must receive Lstat metadata, unless the caller already owns the descriptor.
+// Folder/glob members use ZIPInputCandidate.Capture to preserve their ancestors.
 func ZIPInputFromFileInfo(path string, info os.FileInfo) (ZIPInputIdentity, error) {
+	return zipInputFromFileInfo(path, info, nil)
+}
+
+func zipInputFromFileInfo(path string, info os.FileInfo, metadata *ZIPInputMetadataReservation) (ZIPInputIdentity, error) {
 	if info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
 		return ZIPInputIdentity{}, fmt.Errorf("archive input %q is not a regular file", path)
 	}
@@ -35,37 +42,63 @@ func ZIPInputFromFileInfo(path string, info os.FileInfo) (ZIPInputIdentity, erro
 	if err != nil {
 		return ZIPInputIdentity{}, err
 	}
-	return ZIPInputIdentity{selectedPath: path, readPath: absolute, info: info}, nil
+	parent, err := captureZIPDirectoryWithMetadata(filepath.Dir(absolute), metadata)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			if metadata != nil {
+				if err := metadata.admitReadPath(path, uint64(len(absolute))); err != nil {
+					return ZIPInputIdentity{}, err
+				}
+			}
+			return ZIPInputIdentity{selectedPath: path, readPath: absolute, info: info, explicitLeaf: true}, nil
+		}
+		return ZIPInputIdentity{}, err
+	}
+	name := filepath.Base(absolute)
+	if metadata != nil {
+		length, err := parent.pathBytes(name)
+		if err != nil {
+			return ZIPInputIdentity{}, err
+		}
+		if err := metadata.admitReadPath(path, length); err != nil {
+			return ZIPInputIdentity{}, err
+		}
+	}
+	return ZIPInputIdentity{selectedPath: path, readPath: filepath.Join(parent.path(), name), info: info, parent: parent}, nil
 }
 
 // CaptureZIPInput records a selected input before any archive work. Following
 // links is opt-in; the original path remains the archive-name authority.
 func CaptureZIPInput(path string, followSymlinks bool) (ZIPInputIdentity, error) {
-	readPath := path
-	if followSymlinks {
-		var err error
-		readPath, err = filepath.EvalSymlinks(path)
-		if err != nil {
-			return ZIPInputIdentity{}, err
-		}
-	}
-	info, err := os.Lstat(readPath)
+	candidate, err := InspectZIPInput(path)
 	if err != nil {
 		return ZIPInputIdentity{}, err
 	}
-	identity, err := ZIPInputFromFileInfo(readPath, info)
-	identity.selectedPath = path
-	return identity, err
+	return candidate.Capture(followSymlinks)
 }
 
 // Open reopens one selected regular file without following a substituted leaf,
 // and compares the descriptor identity before the caller can read any bytes.
 func (input ZIPInputIdentity) Open() (*os.File, error) {
-	if input.info == nil {
+	if input.info == nil || (input.parent == nil && !input.explicitLeaf) {
 		return nil, errors.New("archive input identity is unavailable")
 	}
-	file, err := OpenRegularReadNoSymlink(input.readPath)
+	var file *os.File
+	var err error
+	if input.parent == nil {
+		file, err = OpenRegularReadNoSymlink(input.readPath)
+	} else {
+		root, openErr := input.parent.open()
+		if openErr != nil {
+			return nil, openErr
+		}
+		file, err = openZIPInputInRoot(root, filepath.Base(input.readPath))
+		err = errors.Join(err, root.Close())
+	}
 	if err != nil {
+		if file != nil {
+			err = errors.Join(err, file.Close())
+		}
 		return nil, err
 	}
 	if err := input.CheckFile(file); err != nil {

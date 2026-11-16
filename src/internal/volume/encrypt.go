@@ -303,7 +303,9 @@ func encryptPreprocessWithBorrowed(ctx *OperationContext, req *EncryptRequest, b
 			return err
 		}
 		defer budget.Release(selectionCharge)
-		identities, err := fileops.CaptureZIPInputs(inputFiles, req.InputIdentities)
+		var metadata fileops.ZIPInputMetadataReservation
+		defer metadata.Release()
+		identities, err := metadata.CaptureInputs(budget, inputFiles, req.InputIdentities)
 		if err != nil {
 			return err
 		}
@@ -354,7 +356,9 @@ func encryptPreprocessWithBorrowed(ctx *OperationContext, req *EncryptRequest, b
 			return err
 		}
 		defer budget.Release(charge)
-		identities, err := fileops.CaptureZIPInputs(inputFiles, req.InputIdentities)
+		var metadata fileops.ZIPInputMetadataReservation
+		defer metadata.Release()
+		identities, err := metadata.CaptureInputs(budget, inputFiles, req.InputIdentities)
 		if err != nil {
 			return err
 		}

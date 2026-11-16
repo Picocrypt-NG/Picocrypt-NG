@@ -57,7 +57,15 @@ func zipDiscoveryBytes(base, multiplier uint64, lengths ...int) (uint64, error) 
 // ReadDir(-1), filepath.Walk and filepath.Glob accumulate the whole directory
 // before their caller has an opportunity to refuse it. Only one name is read per batch, so an unusual filesystem
 // cannot multiply long transient components before admission. Close before descending so depth does not retain file descriptors.
-func readZIPDirectoryNames(ctx context.Context, path string, budget *ZIPResourceBudget) (names []string, charged uint64, err error) {
+func readZIPDirectoryNames(ctx context.Context, path string, budget *ZIPResourceBudget) ([]string, uint64, error) {
+	directory, err := captureZIPDirectory(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	return readZIPDirectoryNamesFrom(ctx, directory, budget)
+}
+
+func readZIPDirectoryNamesFrom(ctx context.Context, authority *zipDirectoryIdentity, budget *ZIPResourceBudget) (names []string, charged uint64, err error) {
 	const readWorkspace = 128 << 10
 	if err = ctx.Err(); err != nil {
 		return nil, 0, err
@@ -73,8 +81,16 @@ func readZIPDirectoryNames(ctx context.Context, path string, budget *ZIPResource
 			charged = 0
 		}
 	}()
-	directory, err := os.Open(path)
+	root, err := authority.open()
 	if err != nil {
+		return nil, 0, err
+	}
+	directory, err := root.Open(".")
+	err = errors.Join(err, root.Close())
+	if err != nil {
+		if directory != nil {
+			err = errors.Join(err, directory.Close())
+		}
 		return nil, 0, err
 	}
 	defer func() { err = errors.Join(err, directory.Close()) }()
@@ -112,11 +128,30 @@ func readZIPDirectoryNames(ctx context.Context, path string, budget *ZIPResource
 // the same Lstat/no-follow and callback error/SkipDir behavior. The caller shares
 // one budget across all roots and reserves any retained callback result.
 func WalkZIPInputs(ctx context.Context, root string, budget *ZIPResourceBudget, visit filepath.WalkFunc) error {
+	return WalkZIPInputCandidates(ctx, root, budget, func(candidate ZIPInputCandidate, err error) error {
+		return visit(candidate.Path, candidate.Info, err)
+	})
+}
+
+// WalkZIPInputCandidates preserves WalkZIPInputs ordering and callback rules,
+// and carries the original directory identities into Capture. Callers reserve
+// retained candidates/identities before retaining them, as with WalkZIPInputs.
+func WalkZIPInputCandidates(ctx context.Context, root string, budget *ZIPResourceBudget, visit func(ZIPInputCandidate, error) error) error {
+	return walkZIPInputCandidates(ctx, root, nil, budget, visit)
+}
+
+// Walk retains an already discovered directory's identity, including a glob
+// match, rather than reselecting its mutable pathname as a new root.
+func (candidate ZIPInputCandidate) Walk(ctx context.Context, budget *ZIPResourceBudget, visit func(ZIPInputCandidate, error) error) error {
+	return walkZIPInputCandidates(ctx, candidate.Path, &candidate, budget, visit)
+}
+
+func walkZIPInputCandidates(ctx context.Context, root string, initial *ZIPInputCandidate, budget *ZIPResourceBudget, visit func(ZIPInputCandidate, error) error) error {
 	if budget == nil {
 		budget = NewZIPResourceBudget()
 	}
-	var walk func(string) error
-	walk = func(path string) error {
+	var walk func(string, *zipDirectoryIdentity) error
+	walk = func(path string, parent *zipDirectoryIdentity) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -128,17 +163,33 @@ func WalkZIPInputs(ctx context.Context, root string, budget *ZIPResourceBudget, 
 			return err
 		}
 		defer budget.Release(cost)
-		info, err := os.Lstat(path)
-		if err != nil {
-			return visit(path, nil, err)
+		var candidate ZIPInputCandidate
+		if parent == nil {
+			if initial != nil {
+				candidate = *initial
+			} else {
+				candidate, err = InspectZIPInput(path)
+			}
+		} else {
+			candidate, err = parent.candidate(path, filepath.Base(path))
 		}
-		if !info.IsDir() {
-			if err := visit(path, info, nil); err != nil {
+		if err != nil {
+			return visit(ZIPInputCandidate{Path: path}, err)
+		}
+		if candidate.Info == nil {
+			return visit(candidate, errors.New("archive input identity is unavailable"))
+		}
+		if !candidate.Info.IsDir() {
+			if err := visit(candidate, nil); err != nil {
 				return err
 			}
 			return ctx.Err()
 		}
-		names, charged, readErr := readZIPDirectoryNames(ctx, path, budget)
+		directory, err := candidate.directory()
+		if err != nil {
+			return err
+		}
+		names, charged, readErr := readZIPDirectoryNamesFrom(ctx, directory, budget)
 		defer budget.Release(charged)
 		if err := ctx.Err(); err != nil {
 			return err
@@ -146,7 +197,7 @@ func WalkZIPInputs(ctx context.Context, root string, budget *ZIPResourceBudget, 
 		if errors.Is(readErr, ErrZIPMetadataLimit) {
 			return readErr
 		}
-		if err := visit(path, info, readErr); err != nil || readErr != nil {
+		if err := visit(candidate, readErr); err != nil || readErr != nil {
 			if err == filepath.SkipDir { //nolint:errorlint // filepath.Walk consumes only bare SkipDir; wrapped callback errors stay terminal.
 				return nil
 			}
@@ -165,7 +216,7 @@ func WalkZIPInputs(ctx context.Context, root string, budget *ZIPResourceBudget, 
 			}
 			err = func() error {
 				defer budget.Release(childCost)
-				return walk(filepath.Join(path, name))
+				return walk(filepath.Join(path, name), directory)
 			}()
 			if err != nil {
 				if err == filepath.SkipDir { //nolint:errorlint // filepath.Walk consumes only bare SkipDir; wrapped callback errors stay terminal.
@@ -176,11 +227,24 @@ func WalkZIPInputs(ctx context.Context, root string, budget *ZIPResourceBudget, 
 		}
 		return ctx.Err()
 	}
-	err := walk(root)
+	err := walk(root, nil)
 	if err == filepath.SkipDir || err == filepath.SkipAll { //nolint:errorlint // Preserve filepath.Walk exact sentinel semantics; wrapped errors stay terminal.
 		return nil
 	}
 	return err
+}
+
+func zipNativeLookupPath(path string) string {
+	if runtime.GOOS != "windows" {
+		return path
+	}
+	// Win32 normalizes ordinary DOS/UNC paths before resolving links. Keep
+	// verbatim/device namespaces untouched, since they disable that parsing.
+	if len(path) >= 4 && os.IsPathSeparator(path[0]) && os.IsPathSeparator(path[3]) &&
+		((os.IsPathSeparator(path[1]) && (path[2] == '?' || path[2] == '.')) || (path[1] == '?' && path[2] == '?')) {
+		return path
+	}
+	return filepath.Clean(path)
 }
 
 func hasZIPGlobMeta(path string) bool {
@@ -195,14 +259,26 @@ func hasZIPGlobMeta(path string) bool {
 // collecting an unbounded directory or full match list. Filesystem access errors
 // are ignored as in filepath.Glob; cancellation/resource refusal are terminal.
 func GlobZIPInputs(ctx context.Context, pattern string, budget *ZIPResourceBudget, visit func(string) error) error {
+	return GlobZIPInputCandidates(ctx, pattern, budget, func(candidate ZIPInputCandidate) error { return visit(candidate.Path) })
+}
+
+// GlobZIPInputCandidates retains directory authority across pattern expansion
+// and selection. Capture or Walk a matched candidate instead of recapturing its
+// pathname. Access errors are ignored as in filepath.Glob.
+func GlobZIPInputCandidates(ctx context.Context, pattern string, budget *ZIPResourceBudget, visit func(ZIPInputCandidate) error) error {
 	if budget == nil {
 		budget = NewZIPResourceBudget()
 	}
+	var metadata ZIPInputMetadataReservation
+	if err := metadata.bind(budget); err != nil {
+		return err
+	}
+	defer metadata.Release()
 	if _, err := filepath.Match(pattern, ""); err != nil {
 		return err
 	}
-	var glob func(string, int, func(string) error) error
-	glob = func(pattern string, depth int, emit func(string) error) error {
+	var glob func(string, int, func(ZIPInputCandidate) error) error
+	glob = func(pattern string, depth int, emit func(ZIPInputCandidate) error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -218,10 +294,14 @@ func GlobZIPInputs(ctx context.Context, pattern string, budget *ZIPResourceBudge
 		}
 		defer budget.Release(cost)
 		if !hasZIPGlobMeta(pattern) {
-			if _, err := os.Lstat(pattern); err != nil {
+			candidate, err := metadata.Inspect(budget, pattern)
+			if err != nil {
+				if errors.Is(err, ErrZIPMetadataLimit) {
+					return err
+				}
 				return nil
 			}
-			if err := emit(pattern); err != nil {
+			if err := emit(candidate); err != nil {
 				return err
 			}
 			return ctx.Err()
@@ -250,12 +330,20 @@ func GlobZIPInputs(ctx context.Context, pattern string, budget *ZIPResourceBudge
 			// here would bypass missing components and change symlink/.. lookup.
 			dir = dir[:len(dir)-1]
 		}
-		matchDirectory := func(directory string) error {
-			info, err := os.Stat(directory)
-			if err != nil || !info.IsDir() {
+		matchDirectory := func(candidate ZIPInputCandidate) error {
+			directory := candidate.Path
+			resolved, err := candidate.resolveWithMetadata(255, &metadata)
+			if errors.Is(err, ErrZIPMetadataLimit) {
+				return err
+			}
+			if err != nil || !resolved.Info.IsDir() {
 				return nil
 			}
-			names, charged, err := readZIPDirectoryNames(ctx, directory, budget)
+			authority, err := resolved.directory()
+			if err != nil {
+				return nil
+			}
+			names, charged, err := readZIPDirectoryNamesFrom(ctx, authority, budget)
 			defer budget.Release(charged)
 			if err != nil {
 				if errors.Is(err, ErrZIPMetadataLimit) || ctx.Err() != nil {
@@ -283,7 +371,11 @@ func GlobZIPInputs(ctx context.Context, pattern string, budget *ZIPResourceBudge
 				}
 				err = func() error {
 					defer budget.Release(pathCost)
-					return emit(filepath.Join(directory, name))
+					candidate, err := authority.candidate(filepath.Join(directory, name), name)
+					if err != nil {
+						return err
+					}
+					return emit(candidate)
 				}()
 				if err != nil {
 					return err
@@ -292,7 +384,14 @@ func GlobZIPInputs(ctx context.Context, pattern string, budget *ZIPResourceBudge
 			return ctx.Err()
 		}
 		if !hasZIPGlobMeta(dir[volumeLen:]) {
-			return matchDirectory(dir)
+			candidate, err := metadata.Inspect(budget, dir)
+			if err != nil {
+				if errors.Is(err, ErrZIPMetadataLimit) {
+					return err
+				}
+				return nil
+			}
+			return matchDirectory(candidate)
 		}
 		if dir == pattern {
 			return filepath.ErrBadPattern

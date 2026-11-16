@@ -631,6 +631,16 @@ func TestFolderWalkErrorClearsScanningState(t *testing.T) {
 	fyneApp := newTestFyneApp(t)
 	a := createUIReadyDropTestApp(t, fyneApp)
 	missingRoot := filepath.Join(t.TempDir(), "removed-before-walk")
+	if err := os.Mkdir(missingRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := fileops.InspectZIPInput(missingRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(missingRoot); err != nil {
+		t.Fatal(err)
+	}
 
 	reservation, ok := a.workers.reserve()
 	if !ok {
@@ -646,7 +656,7 @@ func TestFolderWalkErrorClearsScanningState(t *testing.T) {
 	})
 
 	job := folderScanJob{
-		roots:       []string{missingRoot},
+		roots:       []fileops.ZIPInputCandidate{candidate},
 		folderCount: 1,
 		generation:  generation,
 	}
