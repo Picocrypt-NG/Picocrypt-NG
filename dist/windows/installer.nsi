@@ -41,8 +41,9 @@
 ; --- Installer attributes ---
 Name              "${APPNAME}"
 OutFile "Picocrypt-NG-Setup.exe"
-InstallDir        "$PROGRAMFILES64\${APPNAME}"
-InstallDirRegKey  HKLM "Software\${APPNAME}" "InstallDir"
+; This relative marker preserves the Browse dialog's application-name suffix.
+; .onInit replaces it before use; an absolute /D cannot equal this marker.
+InstallDir        ".\${APPNAME}"
 RequestExecutionLevel admin
 Unicode           true
 SetCompressor     /SOLID lzma
@@ -78,6 +79,7 @@ VIAddVersionKey   "LegalCopyright"  "(c) ${COMPANYNAME}"
 !endif
 
 !insertmacro MUI_LANGUAGE "English"
+!include "${__FILEDIR__}\install-authority.nsh"
 
 ; --- .onInit + un.onInit (D-09 + Pitfall 4 — SetRegView 64 MANDATORY) ---
 Function .onInit
@@ -86,17 +88,28 @@ Function .onInit
     Abort
   ${EndIf}
   SetRegView 64
+  ${If} $INSTDIR == ".\${APPNAME}"
+    ReadRegStr $INSTDIR HKLM "Software\${APPNAME}" "InstallDir"
+    ${If} $INSTDIR == ""
+      StrCpy $INSTDIR "$PROGRAMFILES64\${APPNAME}"
+    ${EndIf}
+    ClearErrors
+  ${EndIf}
 FunctionEnd
 
 !ifndef IMPORT_UNINST
 Function un.onInit
   SetRegView 64
+  StrCpy $pcngCreate 0
+  Call un.pcng.RequireProtectedInstallDir
 FunctionEnd
 !endif
 
 ; --- Section: Picocrypt-NG (required, hidden via leading dash, RO) ---
 Section "-Picocrypt-NG (required)" SecCore
   SectionIn RO
+  StrCpy $pcngCreate 1
+  Call pcng.RequireProtectedInstallDir
   SetOutPath "$INSTDIR"
 
   ; --- Binaries (D-29: portable artifact installed as Picocrypt-NG.exe) ---
@@ -144,6 +157,8 @@ Section "-Picocrypt-NG (required)" SecCore
 !endif
 
   ; --- InstallDir record for re-install detection (D-24) ---
+  StrCpy $pcngCreate 0
+  Call pcng.RequireProtectedInstallDir
   WriteRegStr HKLM "Software\${APPNAME}" "InstallDir" "$INSTDIR"
 
   ; --- Add/Remove Programs entry (D-23) ---
