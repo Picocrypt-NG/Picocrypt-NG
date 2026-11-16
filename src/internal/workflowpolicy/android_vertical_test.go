@@ -60,7 +60,7 @@ func TestAndroidSharedBuildPreservesUnsignedPrefixAndSigningBoundary(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "a52f7b8e731450f5df1c8375c0075e36b01ec66d759baad2eceb6708704da74d" {
+	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "e93707ede2f20d5f9e69641f1c138b20457abd3409db04bed9c79e2e99e540a4" {
 		t.Fatalf("existing unsigned Android commands or signing-input bundle changed: %s", got)
 	}
 	var owner struct {

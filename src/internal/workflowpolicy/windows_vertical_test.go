@@ -18,8 +18,8 @@ type windowsBuildCase struct {
 
 func windowsBuildCases() []windowsBuildCase {
 	return []windowsBuildCase{
-		{"build-windows", "Setup Go", "d0c09d24bbdcec224f7fc42a0f6a5f6544684ae8d3fa5d71d3cb218ce1abb795", "eab8ad617ed324ddfd0acf30399cf0ea776fe74b0cea0a211349a18bad0130ae", "unsigned-windows", "validation-windows-current", []string{"Picocrypt-NG-portable.exe", "Picocrypt-NG-cli.exe", "Picocrypt-NG-Setup.exe"}},
-		{"build-windows-legacy", "Build patched Go 1.27.3 for Windows 7/8", "bf6c359c6e8d0d31e461554f9cb3bbc176e2179f86c240af531deb288a874336", "ee7207156c7599fe450a6500325af133af5aaa0c1b72fe407246fb6dc9742b09", "unsigned-windows-legacy", "validation-windows-legacy", []string{"Picocrypt-NG-cli-Legacy.exe"}},
+		{"build-windows", "Setup Go", "ed42b8cfba4eadb76d7cb235f24dc6a92e80dcecedef3c8ac567a2771add5ab3", "eab8ad617ed324ddfd0acf30399cf0ea776fe74b0cea0a211349a18bad0130ae", "unsigned-windows", "validation-windows-current", []string{"Picocrypt-NG-portable.exe", "Picocrypt-NG-cli.exe", "Picocrypt-NG-Setup.exe"}},
+		{"build-windows-legacy", "Build patched Go 1.27.4 for Windows 7/8", "e9998f89f4a8310084e6c17694345ff88be4e507f58bcfcf54ec83f9ff0420cb", "ee7207156c7599fe450a6500325af133af5aaa0c1b72fe407246fb6dc9742b09", "unsigned-windows-legacy", "validation-windows-legacy", []string{"Picocrypt-NG-cli-Legacy.exe"}},
 	}
 }
 

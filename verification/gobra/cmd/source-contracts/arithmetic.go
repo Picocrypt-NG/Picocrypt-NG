@@ -470,7 +470,7 @@ func runArithmetic(repo, runDir, imageID string, target arithmeticTarget, report
 		nativeSources[name] = generated
 	}
 	for _, name := range []string{"arithmetic-original", "arithmetic-positive", "arithmetic-add-ignores-carry", "arithmetic-mul-returns-high", "arithmetic-ceil-floors"} {
-		command, err := compileOracle(repo, runDir, name, "arithmetic.go", nativeSources[name], []byte(arithmeticOracle), []byte("module picocrypt_ng_arithmetic_oracle\n\ngo 1.27.3\n"), nil)
+		command, err := compileOracle(repo, runDir, name, "arithmetic.go", nativeSources[name], []byte(arithmeticOracle), []byte("module picocrypt_ng_arithmetic_oracle\n\ngo 1.27.4\n"), nil)
 		if err != nil {
 			return err
 		}

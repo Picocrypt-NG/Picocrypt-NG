@@ -8,7 +8,7 @@ implementations, `canonicalPayloadLength`, `encodedRecordBodyLength` and
 Verification uses generated copies and the finite local-name
 adapter described below; production files are read only.
 
-Run from the repository root with Go 1.27.3, Docker, the pinned dependencies
+Run from the repository root with Go 1.27.4, Docker, the pinned dependencies
 already in the Go module cache, and the pinned Gobra image already available:
 
 ```sh
