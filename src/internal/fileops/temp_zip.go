@@ -66,7 +66,9 @@ func createTempZip(ctx context.Context, opts TempZipOptions, syncFile func(*os.F
 		return nil, e
 	}
 	defer budget.Release(charge)
-	zipOpts.InputIdentities, e = CaptureZIPInputs(opts.Files, opts.InputIdentities)
+	var metadata ZIPInputMetadataReservation
+	defer metadata.Release()
+	zipOpts.InputIdentities, e = metadata.captureInputs(budget, opts.Files, opts.InputIdentities, true)
 	if e != nil {
 		return nil, e
 	}

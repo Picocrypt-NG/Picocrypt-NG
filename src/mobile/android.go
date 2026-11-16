@@ -105,29 +105,42 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 	}()
 	var inputIdentities []fileops.ZIPInputIdentity
 	var inputBudget *fileops.ZIPResourceBudget
+	var inputMetadata fileops.ZIPInputMetadataReservation
+	var inputCharge uint64
+	inputTransferred := false
+	defer func() {
+		if !inputTransferred {
+			inputMetadata.Release()
+			if inputBudget != nil {
+				inputBudget.Release(inputCharge)
+			}
+		}
+	}()
 	if envelope.create {
 		inputBudget = fileops.NewZIPResourceBudget()
 		paths := envelope.inputFiles
 		if len(paths) == 0 {
 			paths = []string{envelope.source}
 		}
-		var retained uint64
-		defer func() { inputBudget.Release(retained) }()
 		for index, path := range paths {
 			charge, err := fileops.ReserveZIPInputPath(inputBudget, len(path))
 			if err != nil {
 				return newPCV3StartResult(pcv3BridgeInputUnavailable, nil)
 			}
-			retained += charge
+			inputCharge += charge
 			var identity fileops.ZIPInputIdentity
 			if index == 0 {
 				info, statErr := source.Stat()
 				if statErr != nil {
 					return newPCV3StartResult(pcv3BridgeInputUnavailable, nil)
 				}
-				identity, err = fileops.ZIPInputFromFileInfo(path, info)
+				identity, err = inputMetadata.FromFileInfo(inputBudget, path, info)
 			} else {
-				identity, err = fileops.CaptureZIPInput(path, false)
+				var candidate fileops.ZIPInputCandidate
+				candidate, err = inputMetadata.Inspect(inputBudget, path)
+				if err == nil {
+					identity, err = inputMetadata.Capture(inputBudget, candidate, false)
+				}
 			}
 			if err != nil {
 				return newPCV3StartResult(pcv3BridgeInputUnavailable, nil)
@@ -177,7 +190,7 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 	ownedSource = false
 
 	if envelope.create {
-		go executePCV3WriteOperation(operation, &pcv3WriteRequest{
+		request := &pcv3WriteRequest{
 			input: volume.EncryptInputRequest{
 				InputFile: envelope.source, InputFiles: envelope.inputFiles,
 				InputIdentities: inputIdentities, ZIPBudget: inputBudget,
@@ -186,16 +199,20 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 				PCV3: true, Paranoid: envelope.suite == pcv3operation.SuiteParanoid,
 				Deniability: envelope.d1, ReedSolomon: envelope.payloadRS, Comments: envelope.comment,
 			},
-			d1:         envelope.d1,
-			suite:      envelope.suite,
-			payloadRS:  envelope.payloadRS,
-			comment:    []byte(envelope.comment),
-			sourcePath: envelope.source,
-			source:     source,
-			factors:    factors,
-			target:     envelope.target,
-			protected:  append(append(append(append([]string{envelope.source}, envelope.keyfiles...), envelope.inputFiles...), envelope.onlyFiles...), envelope.onlyFolders...),
-		})
+			d1:            envelope.d1,
+			suite:         envelope.suite,
+			payloadRS:     envelope.payloadRS,
+			comment:       []byte(envelope.comment),
+			sourcePath:    envelope.source,
+			source:        source,
+			factors:       factors,
+			target:        envelope.target,
+			protected:     append(append(append(append([]string{envelope.source}, envelope.keyfiles...), envelope.inputFiles...), envelope.onlyFiles...), envelope.onlyFolders...),
+			inputMetadata: &inputMetadata,
+			inputCharge:   inputCharge,
+		}
+		inputTransferred = true
+		go executePCV3WriteOperation(operation, request)
 		return newPCV3StartResult("", operation)
 	}
 

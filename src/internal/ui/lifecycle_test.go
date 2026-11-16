@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/util"
 	"context"
 	"image/color"
@@ -176,8 +177,12 @@ func TestOrderlyShutdownCancelsAndJoinsFolderScan(t *testing.T) {
 			baselineSummaryKind = int(a.State.UISnapshot().InputSummary.Kind)
 		})
 
+		candidate, err := fileops.InspectZIPInput(root)
+		if err != nil {
+			t.Fatal(err)
+		}
 		job := folderScanJob{
-			roots:       []string{root},
+			roots:       []fileops.ZIPInputCandidate{candidate},
 			folderCount: 1,
 			generation:  generation,
 		}

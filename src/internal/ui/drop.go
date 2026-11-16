@@ -35,11 +35,12 @@ type scannedFile struct {
 type scannedFileBatch func(context.Context, []scannedFile) error
 
 type folderScanJob struct {
-	roots       []string
+	roots       []fileops.ZIPInputCandidate
 	fileCount   int
 	folderCount int
 	generation  uint64
 	budget      *fileops.ZIPResourceBudget
+	metadata    *fileops.ZIPInputMetadataReservation
 }
 
 var errFolderScanSuperseded = errors.New("folder scan superseded")
@@ -241,7 +242,34 @@ func scanFolders(ctx context.Context, roots []string, emit scannedFileBatch) err
 	return scanFoldersWithBudget(ctx, roots, fileops.NewZIPResourceBudget(), emit)
 }
 
-func scanFoldersWithBudget(ctx context.Context, roots []string, budget *fileops.ZIPResourceBudget, emit scannedFileBatch) (retErr error) {
+func scanFoldersWithBudget(ctx context.Context, roots []string, budget *fileops.ZIPResourceBudget, emit scannedFileBatch) error {
+	var metadata fileops.ZIPInputMetadataReservation
+	defer metadata.Release()
+	var retained uint64
+	defer func() { budget.Release(retained) }()
+	var candidates []fileops.ZIPInputCandidate
+	for _, path := range roots {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		charge, err := fileops.ReserveZIPInputPath(budget, len(path))
+		if err != nil {
+			return err
+		}
+		retained += charge
+		candidate, err := metadata.Inspect(budget, path)
+		if err != nil {
+			return err
+		}
+		if err := metadata.RetainCandidate(budget, candidate); err != nil {
+			return err
+		}
+		candidates = append(candidates, candidate)
+	}
+	return scanFolderCandidatesWithBudget(ctx, candidates, budget, emit, &metadata)
+}
+
+func scanFolderCandidatesWithBudget(ctx context.Context, roots []fileops.ZIPInputCandidate, budget *fileops.ZIPResourceBudget, emit scannedFileBatch, metadata *fileops.ZIPInputMetadataReservation) error {
 	if err := pcv3operation.AdmitZIPWorkingMemory(ctx, budget); err != nil {
 		return err
 	}
@@ -251,11 +279,7 @@ func scanFoldersWithBudget(ctx context.Context, roots []string, budget *fileops.
 	}
 	defer budget.Release(batchWorkspace)
 	var retained uint64
-	defer func() {
-		if retErr != nil {
-			budget.Release(retained)
-		}
-	}()
+	defer func() { budget.Release(retained) }()
 	pendingFiles := make([]scannedFile, 0, dropScanBatchSize)
 	lastFlush := time.Now()
 
@@ -281,7 +305,11 @@ func scanFoldersWithBudget(ctx context.Context, roots []string, budget *fileops.
 			return err
 		}
 
-		err := fileops.WalkZIPInputs(ctx, root, budget, func(path string, info os.FileInfo, walkErr error) error {
+		if err := metadata.RetainCandidate(budget, root); err != nil {
+			return err
+		}
+		err := root.Walk(ctx, budget, func(candidate fileops.ZIPInputCandidate, walkErr error) error {
+			path, info := candidate.Path, candidate.Info
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -297,7 +325,7 @@ func scanFoldersWithBudget(ctx context.Context, roots []string, budget *fileops.
 				return err
 			}
 			retained += cost
-			identity, err := fileops.ZIPInputFromFileInfo(path, info)
+			identity, err := metadata.Capture(budget, candidate, false)
 			if err != nil {
 				return err
 			}
@@ -348,7 +376,12 @@ func (a *App) runFolderScan(ctx context.Context, job folderScanJob, emit scanned
 	if budget == nil {
 		budget = fileops.NewZIPResourceBudget()
 	}
-	err := scanFoldersWithBudget(ctx, job.roots, budget, emit)
+	metadata := job.metadata
+	if metadata == nil {
+		metadata = &fileops.ZIPInputMetadataReservation{}
+	}
+	defer metadata.Release()
+	err := scanFolderCandidatesWithBudget(ctx, job.roots, budget, emit, metadata)
 	fyne.DoAndWait(func() {
 		if !a.folderScanCanApply(ctx, job.generation) {
 			return
@@ -398,6 +431,8 @@ func (a *App) onDrop(names []string) bool {
 // only onDrop's user-input busy guard and never re-enters the public handler.
 func (a *App) applyDropSelection(names []string) bool {
 	budget := fileops.NewZIPResourceBudget()
+	var metadata fileops.ZIPInputMetadataReservation
+	var roots []fileops.ZIPInputCandidate
 	if len(names) > 1 {
 		if err := pcv3operation.AdmitZIPWorkingMemory(context.Background(), budget); err != nil {
 			a.applyFolderWalkError()
@@ -422,6 +457,7 @@ func (a *App) applyDropSelection(names []string) bool {
 	defer func() {
 		if !workerLaunched {
 			reservation.release()
+			metadata.Release()
 		}
 	}()
 
@@ -437,8 +473,15 @@ func (a *App) applyDropSelection(names []string) bool {
 
 	// One item dropped
 	if len(names) == 1 {
-		stat, err := os.Lstat(names[0])
+		candidate, err := metadata.Inspect(budget, names[0])
+		stat := candidate.Info
 		if err != nil {
+			if errors.Is(err, fileops.ErrZIPMetadataLimit) {
+				a.applyFolderWalkError()
+				a.State.SetStatus(resourceLimitCopy().Title, util.RED)
+				a.refreshUI()
+				return false
+			}
 			a.State.SetStatusMessage(app.StatusDropFailedStatItem, util.RED, app.StatusArgs{})
 			a.State.SetScanning(false)
 			a.refreshUI()
@@ -460,6 +503,13 @@ func (a *App) applyDropSelection(names []string) bool {
 
 		// A folder was dropped
 		if stat.IsDir() {
+			if err := metadata.RetainCandidate(budget, candidate); err != nil {
+				a.applyFolderWalkError()
+				a.State.SetStatus(resourceLimitCopy().Title, util.RED)
+				a.refreshUI()
+				return false
+			}
+			roots = append(roots, candidate)
 			a.State.Mode = "encrypt"
 			a.State.SetInputSelection(0, 1, a.State.CompressTotal, false)
 			a.State.SetStartAction(app.StartActionZipAndEncrypt)
@@ -513,7 +563,7 @@ func (a *App) applyDropSelection(names []string) bool {
 				return accepted
 			}
 			a.State.SetPCV3RoutingChecking(path, stat.Size())
-			identity, err := fileops.ZIPInputFromFileInfo(path, stat)
+			identity, err := metadata.Capture(budget, candidate, false)
 			if err != nil {
 				a.State.SetScanning(false)
 				a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
@@ -523,6 +573,7 @@ func (a *App) applyDropSelection(names []string) bool {
 			a.refreshUI()
 			workerLaunched = true
 			reservation.launch(func(ctx context.Context) {
+				defer metadata.Release()
 				result := routeDroppedFile(ctx, path, isSplit)
 				if result.err == nil && !isSplit && !isDecryptVolumePath(path) {
 					result.err = identity.CheckFile(result.source)
@@ -534,8 +585,12 @@ func (a *App) applyDropSelection(names []string) bool {
 			})
 			return true
 		}
-	} else if !a.handleMultipleDrop(names) {
-		return false
+	} else {
+		var accepted bool
+		roots, accepted = a.handleMultipleDrop(names, budget, &metadata)
+		if !accepted {
+			return false
+		}
 	}
 
 	if len(a.State.OnlyFolders) == 0 {
@@ -547,11 +602,12 @@ func (a *App) applyDropSelection(names []string) bool {
 	}
 
 	job := folderScanJob{
-		roots:       append([]string(nil), a.State.OnlyFolders...),
+		roots:       roots,
 		fileCount:   len(a.State.OnlyFiles),
 		folderCount: len(a.State.OnlyFolders),
 		generation:  generation,
 		budget:      budget,
+		metadata:    &metadata,
 	}
 	emit := a.scannedFileEmitter(generation)
 	workerLaunched = true
@@ -904,30 +960,45 @@ func (a *App) handleDecryptDrop(name string, isSplit bool, fin *os.File) {
 }
 
 // handleMultipleDrop handles multiple files/folders being dropped.
-func (a *App) handleMultipleDrop(names []string) bool {
+func (a *App) handleMultipleDrop(names []string, budget *fileops.ZIPResourceBudget, metadata *fileops.ZIPInputMetadataReservation) ([]fileops.ZIPInputCandidate, bool) {
 	a.State.Mode = "encrypt"
 	a.State.SetStartAction(app.StartActionZipAndEncrypt)
 	files, folders := 0, 0
+	var roots []fileops.ZIPInputCandidate
 
 	// Go through each dropped item and add to corresponding slices
 	for _, name := range names {
-		stat, err := os.Lstat(name)
+		candidate, err := metadata.Inspect(budget, name)
 		if err != nil {
+			if errors.Is(err, fileops.ErrZIPMetadataLimit) {
+				a.applyFolderWalkError()
+				a.State.SetStatus(resourceLimitCopy().Title, util.RED)
+				a.refreshUI()
+				return nil, false
+			}
 			a.State.SetScanning(false)
 			a.resetUI()
 			a.State.SetStatusMessage(app.StatusDropFailedStatItems, util.RED, app.StatusArgs{})
 			a.refreshUI()
-			return false
+			return nil, false
 		}
+		stat := candidate.Info
 		if stat.IsDir() {
+			if err := metadata.RetainCandidate(budget, candidate); err != nil {
+				a.applyFolderWalkError()
+				a.State.SetStatus(resourceLimitCopy().Title, util.RED)
+				a.refreshUI()
+				return nil, false
+			}
 			folders++
+			roots = append(roots, candidate)
 			a.State.OnlyFolders = append(a.State.OnlyFolders, name)
 		} else {
-			identity, err := fileops.ZIPInputFromFileInfo(name, stat)
+			identity, err := metadata.Capture(budget, candidate, false)
 			if err != nil {
 				a.State.SetScanning(false)
 				a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
-				return false
+				return nil, false
 			}
 			files++
 			a.State.OnlyFiles = append(a.State.OnlyFiles, name)
@@ -946,7 +1017,7 @@ func (a *App) handleMultipleDrop(names []string) bool {
 	// Set the input and output paths (matches original lines 1127-1129)
 	a.State.InputFile = filepath.Join(filepath.Dir(names[0]), "encrypted-"+strconv.Itoa(int(time.Now().Unix()))) + ".zip"
 	a.State.OutputFile = a.State.InputFile + ".pcv"
-	return true
+	return roots, true
 }
 
 // handleKeyfileDrop processes dropped keyfiles when the modal is open.

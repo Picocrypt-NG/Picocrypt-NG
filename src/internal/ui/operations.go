@@ -100,6 +100,7 @@ type operationDeletionManifest struct {
 	directories     []deletionSource
 	inputIdentities []fileops.ZIPInputIdentity
 	recombineInputs []os.FileInfo
+	metadata        fileops.ZIPInputMetadataReservation
 }
 
 func captureDeletionSource(path string, wantDirectory bool) (deletionSource, error) {
@@ -110,7 +111,7 @@ func captureDeletionSource(path string, wantDirectory bool) (deletionSource, err
 
 	var info os.FileInfo
 	if wantDirectory {
-		root, err := os.OpenRoot(absolute)
+		root, err := os.OpenRoot(absolute + string(filepath.Separator) + ".")
 		if err != nil {
 			return deletionSource{}, fmt.Errorf("open deletion source directory %q: %w", absolute, err)
 		}
@@ -164,8 +165,10 @@ func captureOperationDeletionManifestWithBudget(ctx context.Context, input opera
 	}
 
 	var charged uint64
+	var metadata fileops.ZIPInputMetadataReservation
 	defer func() {
 		if resultErr != nil {
+			metadata.Release()
 			budget.Release(charged)
 		}
 	}()
@@ -225,7 +228,7 @@ func captureOperationDeletionManifestWithBudget(ctx context.Context, input opera
 	manifest := &operationDeletionManifest{budget: budget}
 	if input.mode == "encrypt" {
 		var err error
-		manifest.inputIdentities, err = fileops.CaptureZIPInputs(filePaths, input.inputIdentities)
+		manifest.inputIdentities, err = metadata.CaptureInputs(budget, filePaths, input.inputIdentities)
 		if err != nil {
 			return nil, err
 		}
@@ -313,6 +316,7 @@ func captureOperationDeletionManifestWithBudget(ctx context.Context, input opera
 		}
 	}
 	manifest.charged = charged
+	manifest.metadata = metadata
 	return manifest, nil
 }
 
@@ -1707,6 +1711,7 @@ func (a *App) runCapturedOperation(
 			deletionManifest.inputIdentities = nil
 			deletionManifest.recombineInputs = nil
 			input.recombineInputs = nil
+			deletionManifest.metadata.Release()
 			deletionManifest.budget.Release(deletionManifest.charged)
 		}()
 	}

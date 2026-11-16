@@ -16,7 +16,19 @@ func prepareDesktopEncryptCleanup(req *EncryptRequest, options pcv3operation.Exe
 	if !options.LinuxDesktopCleanup {
 		return nil, nil, nil
 	}
-	identities, err := fileops.CaptureZIPInputs(preprocessInputFiles(req), req.InputIdentities)
+	budget := req.ZIPBudget
+	if budget == nil {
+		budget = fileops.NewZIPResourceBudget()
+	}
+	files := preprocessInputFiles(req)
+	charge, err := reserveZIPSelection(budget, req, files)
+	if err != nil {
+		return nil, held, errors.Join(pcv3publication.ErrCleanupIncomplete, err)
+	}
+	defer budget.Release(charge)
+	var metadata fileops.ZIPInputMetadataReservation
+	defer metadata.Release()
+	identities, err := metadata.CaptureInputs(budget, files, req.InputIdentities)
 	if err != nil {
 		return nil, held, errors.Join(pcv3publication.ErrCleanupIncomplete, err)
 	}
