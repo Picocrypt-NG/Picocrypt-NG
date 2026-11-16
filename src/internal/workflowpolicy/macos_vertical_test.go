@@ -47,7 +47,7 @@ func TestMacOSSharedBuildPreservesProductionStepsAndRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantBuild = "b25188d1ff891b0d0eb0706f8f96aa80b5a281d5b6d728d9613ab297b567e060"
+	const wantBuild = "5c06c0cb34e0fcf8cf8e6ed52da076d1ba1fb024636e5091fd18cb11cc0459b3"
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantBuild {
 		t.Fatalf("macOS native tests, build, compatibility, ad-hoc seal or packaging changed: %s, want %s", got, wantBuild)
 	}

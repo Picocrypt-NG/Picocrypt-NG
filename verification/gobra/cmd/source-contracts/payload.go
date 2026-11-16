@@ -799,7 +799,7 @@ func runPayload(repo, runDir, imageID string, target payloadTarget, report map[s
 	}
 	for _, name := range []string{"payload-original", "payload-positive", "payload-final-omitted", "payload-rs-floored", "payload-bad-count-accepted"} {
 		oracle, code, expected := payloadNative(name)
-		command, err := compileOracle(repo, runDir, name, "payload.go", sources[name], oracle, []byte("module picocrypt_ng_payload_oracle\n\ngo 1.27.3\n"), nil)
+		command, err := compileOracle(repo, runDir, name, "payload.go", sources[name], oracle, []byte("module picocrypt_ng_payload_oracle\n\ngo 1.27.4\n"), nil)
 		if err != nil {
 			return err
 		}

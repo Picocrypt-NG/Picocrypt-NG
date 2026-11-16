@@ -309,7 +309,7 @@ func runMetadata(repo, runDir, imageID string, target metadataTarget, report map
 			code, expected = 1, "0=0,976,true\n"
 		}
 		oracle := []byte(metadataOraclePrefix + body + "if failed {os.Exit(1)}\n}\n")
-		command, err := compileOracle(repo, runDir, name, "metadata.go", sources[name], oracle, []byte("module picocrypt_ng_metadata_oracle\n\ngo 1.27.3\n"), nil)
+		command, err := compileOracle(repo, runDir, name, "metadata.go", sources[name], oracle, []byte("module picocrypt_ng_metadata_oracle\n\ngo 1.27.4\n"), nil)
 		if err != nil {
 			return err
 		}

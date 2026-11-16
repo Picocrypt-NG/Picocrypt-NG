@@ -753,8 +753,8 @@ func run(repo string) (err error) {
 	if err := os.WriteFile(filepath.Join(build, "results.json"), append(initial, '\n'), 0644); err != nil {
 		return err
 	}
-	if runtime.Version() != "go1.27.3" {
-		return fmt.Errorf("required Go 1.27.3, running %s", runtime.Version())
+	if runtime.Version() != "go1.27.4" {
+		return fmt.Errorf("required Go 1.27.4, running %s", runtime.Version())
 	}
 	buildInfo, available := debug.ReadBuildInfo()
 	if !available {

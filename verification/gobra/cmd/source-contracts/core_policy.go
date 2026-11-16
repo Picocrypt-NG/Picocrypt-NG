@@ -917,7 +917,7 @@ func runCorePolicy(repo, runDir, imageID string, target corePolicyTarget, report
 		if name == "core-policy-count-mismatch" {
 			code, expected = 1, corePolicyOracleNegativeOutput
 		}
-		command, err := compileOracle(repo, runDir, name, "core_policy.go", sources[name], []byte(corePolicyOracle), []byte("module picocrypt_ng_core_policy_oracle\n\ngo 1.27.3\n"), nil)
+		command, err := compileOracle(repo, runDir, name, "core_policy.go", sources[name], []byte(corePolicyOracle), []byte("module picocrypt_ng_core_policy_oracle\n\ngo 1.27.4\n"), nil)
 		if err != nil {
 			return err
 		}
