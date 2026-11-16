@@ -588,7 +588,7 @@ func runOffset(repo, runDir, imageID string, target offsetTarget, report map[str
 	}
 	for _, name := range []string{"offset-original", "offset-positive", "offset-boundary-inclusive", "offset-rs-wrong-width", "offset-partial-omitted"} {
 		oracle, code, expected := offsetNative(name)
-		command, err := compileOracle(repo, runDir, name, "offset.go", sources[name], oracle, []byte("module picocrypt_ng_offset_oracle\n\ngo 1.27.3\n"), nil)
+		command, err := compileOracle(repo, runDir, name, "offset.go", sources[name], oracle, []byte("module picocrypt_ng_offset_oracle\n\ngo 1.27.4\n"), nil)
 		if err != nil {
 			return err
 		}

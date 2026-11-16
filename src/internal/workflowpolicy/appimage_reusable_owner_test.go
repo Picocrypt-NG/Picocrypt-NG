@@ -224,7 +224,7 @@ func TestAppImageReusableOwnerPreservesGPGRecipeAndNativePrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "895aa99fb5834fc1a6394aec894319ed287541000341041259ebee4d0ef8f97c" {
+	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "cfd8b9f773b0d503bc2b556019fd9cbcbda07f2ff9a4ef2e31976ac59b243166" {
 		t.Fatalf("unsigned native/tool-pin/smoke prefix changed: %s", got)
 	}
 }

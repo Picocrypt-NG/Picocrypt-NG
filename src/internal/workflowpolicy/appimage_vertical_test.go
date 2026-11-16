@@ -39,7 +39,7 @@ func TestAppImageSharedBuildPreservesProductionStepsAndSigningBoundary(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantBuild = "895aa99fb5834fc1a6394aec894319ed287541000341041259ebee4d0ef8f97c"
+	const wantBuild = "cfd8b9f773b0d503bc2b556019fd9cbcbda07f2ff9a4ef2e31976ac59b243166"
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantBuild {
 		t.Fatalf("unsigned AppImage production steps changed: %s, want %s", got, wantBuild)
 	}

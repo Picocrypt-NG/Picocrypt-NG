@@ -407,7 +407,7 @@ func tinyModule(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
-		"go.mod":                   "module Picocrypt-NG\n\ngo 1.27.3\n",
+		"go.mod":                   "module Picocrypt-NG\n\ngo 1.27.4\n",
 		"internal/cli/cli_test.go": "package cli\nimport \"testing\"\nfunc TestCLI(t *testing.T) {}\n",
 		"internal/pcv3operation/ordinary_test.go": `package pcv3operation
 import ("fmt"; "testing")
@@ -595,7 +595,7 @@ func TestWrapperBuildsRealBootstrapRunsSyntheticLaneAndCleansTemp(t *testing.T) 
 	}
 	dir := t.TempDir()
 	files := map[string][]byte{
-		"src/go.mod":                             []byte("module bootstrap-fixture\n\ngo 1.27.3\n"),
+		"src/go.mod":                             []byte("module bootstrap-fixture\n\ngo 1.27.4\n"),
 		".github/scripts/test-production-kdf.sh": wrapper,
 		".github/scripts/production-kdf.go":      []byte("package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"synthetic lane complete\") }\n"),
 	}

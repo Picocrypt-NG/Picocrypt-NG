@@ -128,7 +128,7 @@ func TestSourceContextRejectsNewNestedModuleBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(repo, "src/internal/pcv3operation/internal/pcv3/go.mod")
-	if err = os.WriteFile(path, []byte("module detached\n\ngo 1.27.3\n"), 0644); err != nil {
+	if err = os.WriteFile(path, []byte("module detached\n\ngo 1.27.4\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if _, freshErr := loadPayloadFixture(t, repo, cache); freshErr == nil {

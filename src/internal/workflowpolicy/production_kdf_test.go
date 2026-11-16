@@ -64,7 +64,7 @@ func TestLinuxProductionKDFJobRunsCompleteSharedLaneAndRetainsReports(t *testing
 		}
 	}
 	setup := mustStepNamed(t, job, "Setup Go")
-	if setup.With["go-version"] != "1.27.3" {
+	if setup.With["go-version"] != "1.27.4" {
 		t.Fatalf("production-KDF Go version = %#v", setup.With["go-version"])
 	}
 	prepare := mustStepNamed(t, job, "Prepare compiler temporary directory")

@@ -183,7 +183,7 @@ func TestSourceCannotReplaceMathConstantWithLookalikeField(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, "src/internal/util"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "src/go.mod"), []byte("module Picocrypt-NG\n\ngo 1.27.3\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "src/go.mod"), []byte("module Picocrypt-NG\n\ngo 1.27.4\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	source := "package util\nvar math = struct{MaxInt64 uint64}{9223372036854775807}\nfunc SafeUint64ToInt64(v uint64) (int64, bool) { if v > math.MaxInt64 { return 0, false }; return int64(v), true }\n"
@@ -264,7 +264,7 @@ func recordCountFixture(t *testing.T, source string) (string, string) {
 	if err := os.MkdirAll(filepath.Join(repo, filepath.Dir(recordCountRelative)), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "src/go.mod"), []byte("module Picocrypt-NG\n\ngo 1.27.3\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "src/go.mod"), []byte("module Picocrypt-NG\n\ngo 1.27.4\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, recordCountRelative), []byte(source), 0644); err != nil {
@@ -304,7 +304,7 @@ func TestSafeCastProjectionCannotRebindPackageFunctionAsGoBuiltin(t *testing.T) 
 	if err := os.MkdirAll(filepath.Join(repo, filepath.Dir(sourceRelative)), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "src/go.mod"), []byte("module Picocrypt-NG\n\ngo 1.27.3\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "src/go.mod"), []byte("module Picocrypt-NG\n\ngo 1.27.4\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	source := "package util\nimport \"math\"\nfunc SafeUint64ToInt64(v uint64) (int64, bool) { if v > math.MaxInt64 { return 0, false }; return min(int64(v), math.MaxInt64), true }\n"
