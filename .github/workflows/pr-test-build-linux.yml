@@ -405,7 +405,7 @@ jobs:
         cache-dependency-path: src/go.sum
 
     - name: Setup mise
-      uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+      uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
       env:
         MISE_ENABLE_TOOLS: go
       with:
