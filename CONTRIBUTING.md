@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-- Go 1.27.3, matching `src/go.mod`
+- Go 1.27.4, matching `src/go.mod`
 - GCC (for CGO)
 - Platform dependencies:
   - Linux: `libgtk-3-dev`, `libgl1-mesa-dev`, `xorg-dev`

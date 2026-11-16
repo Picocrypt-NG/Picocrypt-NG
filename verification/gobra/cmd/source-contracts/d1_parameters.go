@@ -402,7 +402,7 @@ func main() {
 `
 
 func compileD1Oracle(repo, runDir, name string, source []byte) ([]string, error) {
-	module := []byte("module Picocrypt-NG/internal/pcv3operation/internal/noncefixture\n\ngo 1.27.3\nrequire Picocrypt-NG v0.0.0\nreplace Picocrypt-NG => " + strconv.Quote(filepath.Join(repo, "src")) + "\n")
+	module := []byte("module Picocrypt-NG/internal/pcv3operation/internal/noncefixture\n\ngo 1.27.4\nrequire Picocrypt-NG v0.0.0\nreplace Picocrypt-NG => " + strconv.Quote(filepath.Join(repo, "src")) + "\n")
 	sum, err := os.ReadFile(filepath.Join(repo, "src/go.sum"))
 	if err != nil {
 		return nil, err

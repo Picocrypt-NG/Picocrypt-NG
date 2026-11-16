@@ -9,20 +9,20 @@ build-options:
 build-commands:
   - install -d /app/lib/sdk/golang
   - cp -a golang/. /app/lib/sdk/golang/
-  - test "$(/app/lib/sdk/golang/bin/go env GOVERSION)" = go1.27.3
+  - test "$(/app/lib/sdk/golang/bin/go env GOVERSION)" = go1.27.4
 cleanup:
   - '*'
 sources:
   - type: archive
-    url: https://go.dev/dl/go1.27.3.linux-amd64.tar.gz
-    sha256: 65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+    url: https://go.dev/dl/go1.27.4.linux-amd64.tar.gz
+    sha256: 7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
     dest: golang
     strip-components: 1
     only-arches:
       - x86_64
   - type: archive
-    url: https://go.dev/dl/go1.27.3.linux-arm64.tar.gz
-    sha256: a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
+    url: https://go.dev/dl/go1.27.4.linux-arm64.tar.gz
+    sha256: 3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
     dest: golang
     strip-components: 1
     only-arches:
