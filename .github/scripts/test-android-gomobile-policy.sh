@@ -81,7 +81,7 @@ test -s "$work/artifact-policy"
 # shellcheck source=/dev/null
 source "$work/artifact-policy"
 mkdir "$work/control"
-printf 'module android-runtime-policy-control\n\ngo 1.27.3\n' > "$work/control/go.mod"
+printf 'module android-runtime-policy-control\n\ngo 1.27.4\n' > "$work/control/go.mod"
 printf 'package main\nimport "C"\nfunc main() {}\n' > "$work/control/main.go"
 for flag in 0 1; do
     GOOS=linux GOARCH="$host_arch" GOMAXPROCS=1 CGO_ENABLED=1 \
@@ -103,7 +103,7 @@ if verify_runtime_defaults "$work/control-0.so" 'panicnil=1,madvdontneed=1' || \
 fi
 
 # The linker target is internal to this exact Go toolchain. Re-review on updates.
-[[ $(go env GOVERSION) == go1.27.3 ]]
+[[ $(go env GOVERSION) == go1.27.4 ]]
 goroot=$(go env GOROOT)
 while read -r expected path; do
     actual=$("${hash_command[@]}" "$goroot/$path" | cut -d' ' -f1)
@@ -116,7 +116,7 @@ a4bc6dc3acd35967397788da7333a8ddb2636a45c7714655c521405ad98f0f09 src/runtime/rt0
 683f194afd2b24ab16bfb09863207df2c38a3b3c319ffd5678682b57998d44b9 src/runtime/rt0_android_arm64.s
 1f52f25a10577cc79be49d997a867025b49626e0a749c0c46fdc4601c681870e src/runtime/rt0_android_386.s
 61cf51ba582f3b88e25c7539a1d48897ba6498260e4eb71e44a40e058458f152 src/runtime/rt0_android_amd64.s
-13359b8707e78300e8e0ec880b9a8d1af4bafdf32140b56df5f041a52fbc1325 src/cmd/go/internal/work/gc.go
+769c91042718a0a1899f16b7c43338641b743b122942dcdb707124571bc9c4fb src/cmd/go/internal/work/gc.go
 d6e1adb610ec55f2e8bc0afd361eedd6e38689684bca122b02873da1d0ed1584 src/cmd/go/internal/load/pkg.go
 2f51cea9197f1fc3dc4ccb62738f807400817a9759b960c5fbcf4403d7f5f08d src/cmd/link/internal/ld/data.go
 HASHES

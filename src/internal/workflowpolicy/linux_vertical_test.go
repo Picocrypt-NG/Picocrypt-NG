@@ -57,7 +57,7 @@ func TestLinuxBuildExtractionPreservesExistingSteps(t *testing.T) {
 	}
 	// Frozen from the existing owner workflow before extracting its native tests,
 	// WASM compatibility, GUI smoke, binaries, UPX checksum and DEB packaging.
-	const want = "c4b764a51c7aaf16a75ed2a7bb06bc91fb54434475884d19af0adb0ee0d8826e"
+	const want = "d809ca917b1c11770c9f86ad9bc16a3627d3c5a035ffaf062f521591d0689a1e"
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != want {
 		t.Fatalf("Linux packaging steps changed during extraction: digest %s, want %s", got, want)
 	}
