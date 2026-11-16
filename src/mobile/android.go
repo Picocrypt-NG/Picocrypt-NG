@@ -792,20 +792,22 @@ func StartDecrypt(requestJSON string, password []byte) string {
 
 		// Build decrypt request
 		var kept bool
+		var legacyMetadata header.LegacyMetadata
 		decryptReq := &volume.DecryptRequest{
-			InputFile:    req.InputFile,
-			OutputFile:   req.OutputFile,
-			Password:     pwCopy,
-			Keyfiles:     req.Keyfiles,
-			ForceDecrypt: req.ForceDecrypt,
-			VerifyFirst:  req.VerifyFirst,
-			AutoUnzip:    req.AutoUnzip,
-			SameLevel:    req.SameLevel,
-			Recombine:    req.Recombine,
-			Deniability:  req.Deniability,
-			Reporter:     reporter,
-			RSCodecs:     rsCodecs,
-			Kept:         &kept,
+			InputFile:      req.InputFile,
+			OutputFile:     req.OutputFile,
+			Password:       pwCopy,
+			Keyfiles:       req.Keyfiles,
+			ForceDecrypt:   req.ForceDecrypt,
+			VerifyFirst:    req.VerifyFirst,
+			AutoUnzip:      req.AutoUnzip,
+			SameLevel:      req.SameLevel,
+			Recombine:      req.Recombine,
+			Deniability:    req.Deniability,
+			Reporter:       reporter,
+			RSCodecs:       rsCodecs,
+			Kept:           &kept,
+			LegacyMetadata: &legacyMetadata,
 		}
 
 		// Get cancellation context
@@ -817,7 +819,7 @@ func StartDecrypt(requestJSON string, password []byte) string {
 
 		// Perform decryption
 		err = runDecrypt(opCtx, decryptReq)
-		completeOperationWithKept(req.OperationID, err, kept)
+		completeLegacyOperation(req.OperationID, err, kept, legacyMetadata)
 	}()
 
 	return "" // Success - operation started
@@ -846,7 +848,10 @@ type ProgressResult struct {
 	// Code is the stable, locale-independent error classification (see
 	// errorCode); empty unless the operation failed. The Kotlin layer switches
 	// on it instead of substring-matching Error.
-	Code string
+	Code                  string
+	LegacyVersion         string
+	CommentAuthenticity   string
+	LegacySecurityWarning string
 }
 
 // GetProgress retrieves the current progress state for an operation.
@@ -872,6 +877,9 @@ func progressResultFromState(state *ProgressState) *ProgressResult {
 		Done:                    state.Done,
 		Error:                   state.Error,
 		Code:                    state.Code,
+		LegacyVersion:           state.LegacyVersion,
+		CommentAuthenticity:     state.CommentAuthenticity,
+		LegacySecurityWarning:   state.LegacySecurityWarning,
 	}
 }
 
@@ -887,13 +895,16 @@ func CancelOperation(operationID string) (*ProgressResult, error) {
 
 // DecryptionInfoJSON represents the JSON structure for decryption metadata
 type DecryptionInfoJSON struct {
-	KeyfilesRequired bool   `json:"keyfilesRequired"`
-	KeyfileOrdered   bool   `json:"keyfileOrdered"`
-	ReedSolomon      bool   `json:"reedSolomon"`
-	Deniability      bool   `json:"deniability"`
-	Paranoid         bool   `json:"paranoid"`
-	Comments         string `json:"comments"`
-	Readable         bool   `json:"readable"` // false if deniable (can't read other fields without password)
+	KeyfilesRequired    bool   `json:"keyfilesRequired"`
+	KeyfileOrdered      bool   `json:"keyfileOrdered"`
+	ReedSolomon         bool   `json:"reedSolomon"`
+	Deniability         bool   `json:"deniability"`
+	Paranoid            bool   `json:"paranoid"`
+	Comments            string `json:"comments"`
+	Readable            bool   `json:"readable"` // false if deniable (can't read other fields without password)
+	Version             string `json:"version"`
+	CommentAuthenticity string `json:"commentAuthenticity"`
+	SecurityWarning     string `json:"securityWarning"`
 }
 
 type decryptionInfoErrorJSON struct {
@@ -931,8 +942,9 @@ func GetDecryptionInfo(filePath string) (string, error) {
 	isDeniable := volume.IsDeniableFile(fin, rsCodecs)
 
 	info := DecryptionInfoJSON{
-		Deniability: isDeniable,
-		Readable:    !isDeniable,
+		Deniability:         isDeniable,
+		Readable:            !isDeniable,
+		CommentAuthenticity: string(header.CommentUnavailable),
 	}
 
 	// If deniable, we can't read the header without the password
@@ -960,6 +972,10 @@ func GetDecryptionInfo(filePath string) (string, error) {
 	info.Paranoid = h.Flags.Paranoid
 	info.Comments = h.Comments
 	info.Readable = true
+	metadata := h.LegacyMetadata(false)
+	info.Version = metadata.Version
+	info.CommentAuthenticity = string(metadata.CommentAuthenticity)
+	info.SecurityWarning = string(metadata.SecurityWarning)
 
 	// Marshal to JSON
 	jsonData, err := json.Marshal(info)

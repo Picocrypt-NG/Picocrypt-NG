@@ -930,7 +930,7 @@ func (a *App) handleDecryptDrop(name string, isSplit bool, fin *os.File) {
 		if a.State.Comments == "" {
 			a.State.CommentsPreviewState = app.CommentsPreviewUnavailable
 		} else {
-			a.State.CommentsPreviewState = app.CommentsPreviewNormal
+			a.State.CommentsPreviewState = app.CommentsPreviewUnverified
 		}
 	}
 

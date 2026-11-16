@@ -931,6 +931,13 @@ private fun rateStatusResource(code: String): Int? = when (code) {
 
 private val validEta = Regex("^[0-9]{2,}:[0-5][0-9]:[0-5][0-9]$")
 
+@StringRes
+internal fun legacySecurityWarningResource(warning: LegacySecurityWarning): Int? = when (warning) {
+    LegacySecurityWarning.UNAUTHENTICATED_V1_HEADER -> R.string.legacy_v1_security_warning
+    LegacySecurityWarning.V2_PASSWORD_ONLY_AUTHENTICATION -> R.string.legacy_v2_security_warning
+    LegacySecurityWarning.NONE -> null
+}
+
 /** Save diagnostics stay visible while output is retained; cleanup waits for terminal dismissal. */
 internal fun pcv3VisibleError(error: AppError?, presentation: Pcv3Presentation?): AppError? =
     error.takeIf { presentation == null || it is AppError.FileError.SaveFailed }

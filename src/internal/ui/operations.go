@@ -5,6 +5,7 @@ import (
 	"Picocrypt-NG/internal/app"
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/fileops"
+	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/log"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
@@ -67,14 +68,17 @@ type operationInput struct {
 }
 
 type operationResult struct {
-	pcv3         *pcv3operation.Result
-	err          error
-	cancelled    bool
-	completed    bool
-	kept         bool
-	deleteFailed bool
-	succeeded    int
-	failed       int
+	pcv3                      *pcv3operation.Result
+	err                       error
+	cancelled                 bool
+	completed                 bool
+	kept                      bool
+	deleteFailed              bool
+	succeeded                 int
+	unverified                int
+	failed                    int
+	legacyHeaderUnverified    bool
+	legacyKeyfilePasswordOnly bool
 }
 
 type operationExecutor func(
@@ -1415,7 +1419,7 @@ func (a *App) buildPCV3ResultView(
 				outcome.Title = renderStatus(snap.Status, snap)
 				outcome.Body = ""
 				publication.Title = ""
-			case app.StatusRecursiveCompleted, app.StatusRecursiveCompletedFailed, app.StatusRecursiveFailedAll:
+			case app.StatusRecursiveCompleted, app.StatusRecursiveCompletedFailed, app.StatusRecursiveFailedAll, app.StatusRecursiveUnverified:
 				outcome.Title = renderStatus(snap.Status, snap)
 				outcome.Body = ""
 				publication.Title = ""
@@ -1716,6 +1720,13 @@ func (a *App) runCapturedOperation(
 		}()
 	}
 	result := executor(ctx, input, reporter)
+	if result.completed && result.err == nil {
+		if result.kept {
+			result.unverified = 1
+		} else {
+			result.succeeded = 1
+		}
+	}
 	if ctx.Err() != nil {
 		result.cancelled = true
 	}
@@ -1726,9 +1737,7 @@ func (a *App) runCapturedOperation(
 	if result.cancelled {
 		return result
 	}
-	if result.completed && result.err == nil {
-		result.succeeded = 1
-	} else {
+	if !result.completed || result.err != nil {
 		result.failed = 1
 	}
 	return result
@@ -1768,6 +1777,7 @@ func executeVolumeOperation(
 	}
 
 	kept := false
+	var legacyMetadata header.LegacyMetadata
 	req := &volume.DecryptRequest{
 		InputFile:               input.inputFile,
 		OutputFile:              input.outputFile,
@@ -1783,9 +1793,17 @@ func executeVolumeOperation(
 		Reporter:                reporter,
 		RSCodecs:                input.rsCodecs,
 		Kept:                    &kept,
+		LegacyMetadata:          &legacyMetadata,
 	}
 	err := volume.Decrypt(ctx, req)
-	return operationResult{err: err, completed: err == nil, kept: kept, cancelled: errors.Is(err, context.Canceled)}
+	return operationResult{
+		err:                       err,
+		completed:                 err == nil,
+		kept:                      kept,
+		cancelled:                 errors.Is(err, context.Canceled),
+		legacyHeaderUnverified:    legacyMetadata.SecurityWarning == header.LegacyUnauthenticatedHeader,
+		legacyKeyfilePasswordOnly: legacyMetadata.SecurityWarning == header.LegacyPasswordOnlyAuthentication,
+	}
 }
 
 func (a *App) cleanupOperationSources(
@@ -1849,7 +1867,7 @@ func (a *App) runRecursiveOperation(
 	for i, file := range files {
 		input, selection := a.captureRecursiveOperationInput(session, file, saved, i+1, len(files))
 		if selection == recursiveSelectionFailed {
-			aggregate.err = errors.New("recursive selection failed")
+			aggregate.err = errors.Join(aggregate.err, errors.New("recursive selection failed"))
 			aggregate.completed = false
 			aggregate.failed++
 			continue
@@ -1899,16 +1917,22 @@ func (a *App) runRecursiveOperation(
 		} else if result.pcv3 != nil && result.pcv3 != aggregate.pcv3 {
 			a.disposePCV3Result(result.pcv3)
 		}
-		aggregate.err = result.err
-		aggregate.cancelled = result.cancelled
-		aggregate.completed = result.completed
-		aggregate.kept = result.kept
+		aggregate.err = errors.Join(aggregate.err, result.err)
+		aggregate.cancelled = aggregate.cancelled || result.cancelled
+		aggregate.kept = aggregate.kept || result.kept
+		aggregate.legacyHeaderUnverified = aggregate.legacyHeaderUnverified || result.legacyHeaderUnverified
+		aggregate.legacyKeyfilePasswordOnly = aggregate.legacyKeyfilePasswordOnly || result.legacyKeyfilePasswordOnly
 		aggregate.deleteFailed = aggregate.deleteFailed || result.deleteFailed
-		if result.completed && result.err == nil && !result.cancelled {
-			aggregate.succeeded++
+		if result.completed && result.err == nil {
+			if result.kept {
+				aggregate.unverified++
+			} else {
+				aggregate.succeeded++
+			}
 		} else if !result.cancelled {
 			aggregate.failed++
 		}
+		aggregate.completed = aggregate.failed == 0 && !aggregate.cancelled
 		if result.cancelled {
 			return lastInput, aggregate
 		}
@@ -2100,6 +2124,11 @@ func (a *App) applyCompletedOperation(input operationInput, result operationResu
 
 func recursiveOperationStatus(input operationInput, result operationResult) app.StatusMessage {
 	switch {
+	case result.unverified > 0:
+		return app.StatusMessage{Kind: app.StatusRecursiveUnverified, Color: util.YELLOW, Args: app.StatusArgs{
+			OK: result.succeeded, Unverified: result.unverified, Failed: result.failed,
+			Cancelled: result.cancelled, DeleteFailed: result.deleteFailed,
+		}}
 	case result.failed == 0 && result.deleteFailed:
 		kind := app.StatusCompletedVolumeDeleteFailed
 		if input.mode == "encrypt" {
@@ -2135,9 +2164,19 @@ func (a *App) finalizeOperation(
 		a.State.SetPCV3ResultComment(result.pcv3)
 	}
 	clearCredentials := false
+	if result.kept {
+		a.State.SetKept(true)
+	}
 	switch {
 	case result.cancelled:
-		a.State.SetStatusMessage(app.StatusCancelledByUser, util.WHITE, app.StatusArgs{})
+		if recursive && result.unverified > 0 {
+			status := recursiveOperationStatus(lastInput, result)
+			a.State.SetStatusMessage(status.Kind, status.Color, status.Args)
+		} else if !recursive && result.completed && result.err == nil && result.kept {
+			a.State.SetStatusMessage(app.StatusKeptOutputUnverified, util.YELLOW, app.StatusArgs{Cancelled: true})
+		} else {
+			a.State.SetStatusMessage(app.StatusCancelledByUser, util.WHITE, app.StatusArgs{})
+		}
 	case result.pcv3 != nil && result.pcv3.CompletionClass() != pcv3operation.CompletionClean:
 		presentation := result.pcv3.Presentation()
 		title := pcv3OutcomeCopy(presentation).Title
@@ -2177,6 +2216,8 @@ func (a *App) finalizeOperation(
 	if a.progressModal != nil {
 		a.progressModal.Hide()
 	}
+	a.State.SetLegacySecurityWarnings(result.legacyHeaderUnverified, result.legacyKeyfilePasswordOnly)
+	a.State.SetAuthenticationBypassWarning(result.kept && result.unverified == 0 && (!result.completed || result.err != nil))
 	if clearCredentials {
 		a.clearCredentialEntries()
 	}

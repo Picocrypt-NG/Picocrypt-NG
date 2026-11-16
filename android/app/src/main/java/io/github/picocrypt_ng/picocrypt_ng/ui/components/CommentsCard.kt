@@ -15,6 +15,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.picocrypt_ng.picocrypt_ng.MainViewModel
 import io.github.picocrypt_ng.picocrypt_ng.R
+import io.github.picocrypt_ng.picocrypt_ng.legacySecurityWarningResource
 
 @Composable
 fun Comments(viewModel: MainViewModel) {
@@ -55,7 +56,7 @@ fun Comments(viewModel: MainViewModel) {
     TextField(
         value = value,
         onValueChange = { viewModel.updateFormData(formData.copy(comments = it)) },
-        label = { Text(stringResource(R.string.comments)) },
+        label = { Text(stringResource(if (formData.isDecrypt && decryptionInfo?.readable != false) R.string.comments_unverified else R.string.comments)) },
         modifier = Modifier.fillMaxWidth(),
         enabled = enabled,
     )
@@ -67,18 +68,31 @@ fun CommentsCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     if (!(formData.isEncrypt || formData.isDecrypt)) {
         return
     }
+    val preview = formData.decryptionInfo
+    val hasVisibleComment = formData.isDecrypt && preview?.readable != false &&
+        (preview?.comments ?: formData.comments).isNotEmpty()
     Card(modifier = modifier) {
         Column(
             modifier = Modifier.padding(8.dp)
         ) {
             Comments(viewModel)
-            if (formData.isEncrypt) {
+            if (formData.isEncrypt || hasVisibleComment) {
                 Text(
                     text = stringResource(R.string.comments_plaintext_warning),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp)
                 )
+            }
+            if (formData.isDecrypt) {
+                formData.decryptionInfo?.securityWarning?.let(::legacySecurityWarningResource)?.let { resource ->
+                    Text(
+                        text = stringResource(resource),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
             }
         }
     }

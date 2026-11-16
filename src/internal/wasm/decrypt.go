@@ -38,6 +38,7 @@ const (
 // DecryptResult is the successful output of DecryptVolume. On error the int
 // code is non-zero and the result is the zero value.
 type DecryptResult struct {
+	header.LegacyMetadata
 	Plaintext []byte
 	Comments  string // plaintext header comments ("" if none)
 	Kept      bool   // true iff returned under ErrModifiedButKept (untrusted, force-decrypt)
@@ -235,7 +236,7 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 		macValid := subtle.ConstantTimeCompare(computedMAC, hdr.AuthTag) == 1
 		zeroWASMSensitiveBuffer(wasmZeroingDecryptComputedMAC, computedMAC)
 		if macValid {
-			return DecryptResult{Plaintext: plaintext, Comments: hdr.Comments}, 0
+			return legacyDecryptResult(plaintext, hdr, false), 0
 		}
 		// RS guarded retry: correctable damage makes the fast pass yield a wrong
 		// MAC. Rebuild the cipher suite and re-decrypt ONCE with full correction.
@@ -252,7 +253,7 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 				macValid = subtle.ConstantTimeCompare(retryMAC, hdr.AuthTag) == 1
 				zeroWASMSensitiveBuffer(wasmZeroingDecryptComputedMAC, retryMAC)
 				if macValid {
-					return DecryptResult{Plaintext: plaintext, Comments: hdr.Comments}, 0
+					return legacyDecryptResult(plaintext, hdr, false), 0
 				}
 			} else {
 				plaintext = nil // uncorrectable; only a forced salvage can recover
@@ -289,7 +290,16 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 			return DecryptResult{}, ErrModifiedData
 		}
 	}
-	return DecryptResult{Plaintext: plaintext, Comments: hdr.Comments, Kept: true}, ErrModifiedButKept
+	return legacyDecryptResult(plaintext, hdr, true), ErrModifiedButKept
+}
+
+func legacyDecryptResult(plaintext []byte, h *header.VolumeHeader, kept bool) DecryptResult {
+	return DecryptResult{
+		LegacyMetadata: h.LegacyMetadata(true),
+		Plaintext:      plaintext,
+		Comments:       h.Comments,
+		Kept:           kept,
+	}
 }
 
 // verifyWASMHeader checks whether key authenticates the volume header and, on

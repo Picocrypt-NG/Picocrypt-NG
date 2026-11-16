@@ -52,6 +52,10 @@ data class DecryptOptions(
     val deniability: Boolean = false
 )
 
+enum class CommentAuthenticity { UNAVAILABLE, UNVERIFIED, AUTHENTICATED }
+
+enum class LegacySecurityWarning { NONE, UNAUTHENTICATED_V1_HEADER, V2_PASSWORD_ONLY_AUTHENTICATION }
+
 /**
  * Decryption metadata information.
  * This contains encryption settings and requirements that can be read
@@ -65,7 +69,14 @@ data class DecryptionInfo(
     val deniability: Boolean,
     val paranoid: Boolean,
     val comments: String,
-    val readable: Boolean // false if deniable (can't read other fields without password)
+    val readable: Boolean, // false if deniable (can't read other fields without password)
+    val version: String = "",
+    val commentAuthenticity: CommentAuthenticity = if (readable && comments.isNotEmpty()) {
+        CommentAuthenticity.UNVERIFIED
+    } else {
+        CommentAuthenticity.UNAVAILABLE
+    },
+    val securityWarning: LegacySecurityWarning = LegacySecurityWarning.NONE,
 ) : Parcelable
 
 /**
@@ -79,6 +90,9 @@ data class ProgressState(
     val done: Boolean,
     val technicalError: String = "",
     val errorCode: String = "",
+    val legacyVersion: String = "",
+    val commentAuthenticity: CommentAuthenticity = CommentAuthenticity.UNAVAILABLE,
+    val legacySecurityWarning: LegacySecurityWarning = LegacySecurityWarning.NONE,
 )
 
 /** Shared authority-free identity of one strict PCV3 envelope; shape stays exact per subtype. */
@@ -915,22 +929,43 @@ object GoBridge {
         }
     }
 
-    internal fun GoProgressResult.toProgressState(): ProgressState = ProgressState(
-        status = OperationStatusData(
-            code = getStatusCode() ?: "",
-            speedMiBPerSecond = getStatusSpeedMiBPerSecond(),
-            eta = getStatusETA() ?: "",
-        ),
-        detail = OperationProgressDetail(
-            code = getInfoCode() ?: "",
-            current = getInfoCurrent(),
-            total = getInfoTotal(),
-        ),
-        progress = getProgress(),
-        done = getDone(),
-        technicalError = getError() ?: "",
-        errorCode = getCode() ?: "",
-    )
+    internal fun GoProgressResult.toProgressState(): ProgressState {
+        val statusCode = getStatusCode() ?: ""
+        val done = getDone()
+        val technicalError = getError() ?: ""
+        val errorCode = getCode() ?: ""
+        val completed = done && technicalError.isEmpty() && errorCode.isEmpty() &&
+            statusCode in listOf(OperationStatus.COMPLETED, OperationStatus.COMPLETED_UNVERIFIED)
+        val version = if (completed) legacyVersion(getLegacyVersion()) else ""
+        val authenticity = when (getCommentAuthenticity()) {
+            "authenticated" -> when {
+                !completed -> CommentAuthenticity.UNAVAILABLE
+                version.startsWith("v2.") -> CommentAuthenticity.AUTHENTICATED
+                else -> CommentAuthenticity.UNVERIFIED
+            }
+            "unverified" -> if (completed) CommentAuthenticity.UNVERIFIED else CommentAuthenticity.UNAVAILABLE
+            else -> CommentAuthenticity.UNAVAILABLE
+        }
+        return ProgressState(
+            status = OperationStatusData(
+                code = statusCode,
+                speedMiBPerSecond = getStatusSpeedMiBPerSecond(),
+                eta = getStatusETA() ?: "",
+            ),
+            detail = OperationProgressDetail(
+                code = getInfoCode() ?: "",
+                current = getInfoCurrent(),
+                total = getInfoTotal(),
+            ),
+            progress = getProgress(),
+            done = done,
+            technicalError = technicalError,
+            errorCode = errorCode,
+            legacyVersion = version,
+            commentAuthenticity = authenticity,
+            legacySecurityWarning = legacySecurityWarning(version, getLegacySecurityWarning()),
+        )
+    }
     
     /**
      * Gets decryption metadata from an encrypted file without decrypting it.
@@ -1206,14 +1241,39 @@ object GoBridge {
             val errorCode = json.getString("errorCode")
             throw AppError.fromGoError(errorCode, OperationType.DECRYPT, code = errorCode)
         }
+        val readable = json.getBoolean("readable")
+        val comments = json.getString("comments")
+        val keyfilesRequired = json.getBoolean("keyfilesRequired")
+        val version = legacyVersion(json.opt("version") as? String)
         return DecryptionInfo(
-            keyfilesRequired = json.getBoolean("keyfilesRequired"),
+            keyfilesRequired = keyfilesRequired,
             keyfileOrdered = json.getBoolean("keyfileOrdered"),
             reedSolomon = json.getBoolean("reedSolomon"),
             deniability = json.getBoolean("deniability"),
             paranoid = json.getBoolean("paranoid"),
-            comments = json.getString("comments"),
-            readable = json.getBoolean("readable")
+            comments = comments,
+            readable = readable,
+            version = version,
+            // GetDecryptionInfo is a preview; no wire marker can authenticate it.
+            commentAuthenticity = if (readable && comments.isNotEmpty()) CommentAuthenticity.UNVERIFIED else CommentAuthenticity.UNAVAILABLE,
+            securityWarning = legacySecurityWarning(version, json.opt("securityWarning") as? String,
+                keyfilesRequired = keyfilesRequired),
         )
+    }
+
+    private val legacyVersionPattern = Regex("^v[12]\\.[0-9]{2}$")
+
+    private fun legacyVersion(value: String?): String =
+        value?.takeIf(legacyVersionPattern::matches) ?: ""
+
+    private fun legacySecurityWarning(
+        version: String,
+        value: String?,
+        keyfilesRequired: Boolean = false,
+    ): LegacySecurityWarning = when {
+        version.startsWith("v1.") -> LegacySecurityWarning.UNAUTHENTICATED_V1_HEADER
+        version.startsWith("v2.") && (keyfilesRequired || value == "LEGACY_V2_PASSWORD_ONLY_AUTHENTICATION") ->
+            LegacySecurityWarning.V2_PASSWORD_ONLY_AUTHENTICATION
+        else -> LegacySecurityWarning.NONE
     }
 }

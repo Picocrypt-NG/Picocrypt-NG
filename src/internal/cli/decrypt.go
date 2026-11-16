@@ -3,6 +3,7 @@ package cli
 import (
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/fileops"
+	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"Picocrypt-NG/internal/secret"
@@ -728,20 +729,22 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Build request
 	var kept bool
+	var legacyMetadata header.LegacyMetadata
 	req := &volume.DecryptRequest{
-		InputFile:    inputFile,
-		OutputFile:   outputFile,
-		Password:     password,
-		Keyfiles:     decKeyfiles,
-		ForceDecrypt: decForce,
-		VerifyFirst:  decVerifyFirst,
-		AutoUnzip:    decAutoUnzip,
-		SameLevel:    decSameLevel,
-		Recombine:    decRecombine,
-		Deniability:  decDeniability,
-		Reporter:     reporter,
-		RSCodecs:     rsCodecs,
-		Kept:         &kept,
+		InputFile:      inputFile,
+		OutputFile:     outputFile,
+		Password:       password,
+		Keyfiles:       decKeyfiles,
+		ForceDecrypt:   decForce,
+		VerifyFirst:    decVerifyFirst,
+		AutoUnzip:      decAutoUnzip,
+		SameLevel:      decSameLevel,
+		Recombine:      decRecombine,
+		Deniability:    decDeniability,
+		Reporter:       reporter,
+		RSCodecs:       rsCodecs,
+		Kept:           &kept,
+		LegacyMetadata: &legacyMetadata,
 	}
 	if useStdout {
 		req.EncryptedOutput = &encryptedOutput
@@ -771,6 +774,13 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	if err != nil {
 		reporter.PrintError("%v", err)
 		return err
+	}
+
+	switch legacyMetadata.SecurityWarning {
+	case header.LegacyUnauthenticatedHeader:
+		fmt.Fprintln(os.Stderr, "Warning: Legacy v1 does not authenticate the header. Re-encrypt the data as PCV3.")
+	case header.LegacyPasswordOnlyAuthentication:
+		fmt.Fprintln(os.Stderr, "Warning: The keyfile does not contribute to legacy v2 authentication. Re-encrypt the data as PCV3.")
 	}
 
 	// Stream to stdout if requested

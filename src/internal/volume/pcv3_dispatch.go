@@ -44,7 +44,7 @@ func PrepareDecryptInputContext(ctx context.Context, inputPath string, recombine
 		sourcePath = recombineInputBase(inputPath) + ".0"
 	}
 
-	source, err := os.Open(sourcePath) // #nosec G304 -- legacy compatibility permits a leaf symlink
+	source, err := fileops.OpenRegularRead(sourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("open input for PCV3 preflight: %w", err)
 	}
@@ -92,7 +92,7 @@ func PrepareDecryptInputContext(ctx context.Context, inputPath string, recombine
 				return nil, errors.Join(err, source.Close())
 			}
 			chunkPath := fmt.Sprintf("%s.%d", inputBase, i)
-			chunkInfo, statErr := os.Stat(chunkPath)
+			chunkInfo, statErr := os.Lstat(chunkPath) //nolint:gosec // G703: inspect the selected ciphertext parts; regular-file identities are pinned before credentials and reading.
 			if statErr != nil || chunkInfo == nil || !chunkInfo.Mode().IsRegular() {
 				return nil, errors.Join(
 					fmt.Errorf("inspect split input %d for PCV3 routing", i),

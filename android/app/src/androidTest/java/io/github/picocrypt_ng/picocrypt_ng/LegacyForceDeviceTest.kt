@@ -64,6 +64,9 @@ class LegacyForceDeviceTest {
             completed = true
             assertEquals("", result.technicalError)
             assertEquals("", result.errorCode)
+            assertEquals("v2.08", result.legacyVersion)
+            assertEquals(CommentAuthenticity.UNAVAILABLE, result.commentAuthenticity)
+            assertEquals(LegacySecurityWarning.V2_PASSWORD_ONLY_AUTHENTICATION, result.legacySecurityWarning)
             assertEquals(
                 if (wrongKeyfile) "COMPLETED_UNVERIFIED" else "COMPLETED", result.status.code,
             )

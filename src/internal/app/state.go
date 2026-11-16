@@ -176,15 +176,22 @@ const (
 	StatusMobileFileAccessFailed
 	StatusMobileFileAccessUnsafeName
 	StatusPCVUnavailable
+	StatusRecursiveUnverified
 )
 
 type StatusArgs struct {
-	Count  int
-	OK     int
-	Failed int
-	Index  int
-	Total  int
-	Error  string
+	Count                     int
+	OK                        int
+	Failed                    int
+	Index                     int
+	Total                     int
+	Error                     string
+	Unverified                int
+	Cancelled                 bool
+	DeleteFailed              bool
+	LegacyHeaderUnverified    bool
+	LegacyKeyfilePasswordOnly bool
+	AuthenticationBypassed    bool
 }
 
 type StatusMessage struct {
@@ -1107,6 +1114,22 @@ func (s *State) SetCustomStatus(text string, c color.RGBA) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Status = StatusMessage{Kind: StatusCustom, Text: text, Color: c}
+}
+
+func (s *State) SetLegacySecurityWarnings(headerUnverified, keyfilePasswordOnly bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Status.Args.LegacyHeaderUnverified = headerUnverified
+	s.Status.Args.LegacyKeyfilePasswordOnly = keyfilePasswordOnly
+	if (headerUnverified || keyfilePasswordOnly) && s.Status.Color == util.GREEN {
+		s.Status.Color = util.YELLOW
+	}
+}
+
+func (s *State) SetAuthenticationBypassWarning(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Status.Args.AuthenticationBypassed = enabled
 }
 
 func (s *State) SetPopupStatusMessage(kind StatusKind, args StatusArgs) {

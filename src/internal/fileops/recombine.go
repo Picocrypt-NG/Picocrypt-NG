@@ -84,7 +84,9 @@ func countChunks(basePath string, firstChunkInfo os.FileInfo, cancel CancelFunc,
 	}
 	charged := uint64(workspace)
 	defer func() { budget.Release(charged) }()
-	directory, err := os.Open(dir) // #nosec G304 -- directory comes from the selected chunk base
+	// Preserve the terminal dot so a substituted FIFO/device must satisfy an
+	// intermediate directory lookup before a read-only open can block on it.
+	directory, err := os.Open(dir + string(filepath.Separator) + ".") //nolint:gosec // G304/G703: read-only discovery in the selected chunk directory; terminal dot enforces directory type.
 	if err != nil {
 		return 0, 0, fmt.Errorf("read chunk dir: %w", err)
 	}
@@ -122,9 +124,18 @@ func countChunks(basePath string, firstChunkInfo os.FileInfo, cancel CancelFunc,
 			if index == 0 && firstChunkInfo != nil {
 				totalSize += firstChunkInfo.Size()
 			} else {
-				stat, err := os.Lstat(filepath.Join(dir, name))
+				stat, err := os.Lstat(filepath.Join(dir, name)) //nolint:gosec // G703: metadata only for matching chunk names; consumed files are checked separately before copying.
 				if err != nil {
 					return 0, 0, fmt.Errorf("stat chunk %s: %w", filepath.Join(dir, name), err)
+				}
+				if index == 0 && stat.Mode()&os.ModeSymlink != 0 {
+					stat, err = os.Stat(filepath.Join(dir, name)) //nolint:gosec // G703: legacy chunk-zero link metadata; the prepared descriptor authorizes its actual read.
+					if err != nil {
+						return 0, 0, fmt.Errorf("stat chunk 0: %w", err)
+					}
+				}
+				if !stat.Mode().IsRegular() {
+					return 0, 0, fmt.Errorf("open chunk %d: source is not a regular file", index)
 				}
 				totalSize += stat.Size()
 			}
@@ -164,8 +175,7 @@ func Recombine(opts RecombineOptions) (retErr error) {
 	var firstChunkInfo os.FileInfo
 	if firstChunk == nil && opts.ValidateFirstChunk != nil {
 		firstChunkPath := opts.InputBase + ".0"
-		// #nosec G304 -- chunk path derived from user-provided base path
-		firstChunk, retErr = os.Open(firstChunkPath)
+		firstChunk, retErr = OpenRegularRead(firstChunkPath)
 		if retErr != nil {
 			return fmt.Errorf("open chunk 0: %w", retErr)
 		}
@@ -268,11 +278,10 @@ func Recombine(opts RecombineOptions) (retErr error) {
 			firstChunk = nil
 		} else {
 			chunkPath := fmt.Sprintf("%s.%d", opts.InputBase, i)
-			if opts.ExpectedInputs != nil && i > 0 {
-				fin, err = OpenExistingNoSymlink(chunkPath, os.O_RDONLY)
+			if i > 0 {
+				fin, err = OpenRegularReadNoSymlink(chunkPath)
 			} else {
-				// #nosec G304 -- chunk paths derived from user-provided base path
-				fin, err = os.Open(chunkPath)
+				fin, err = OpenRegularRead(chunkPath)
 			}
 			if err != nil {
 				return fmt.Errorf("open chunk %d: %w", i, err)
@@ -286,7 +295,7 @@ func Recombine(opts RecombineOptions) (retErr error) {
 			}
 			return fmt.Errorf("stat chunk %d: %w", i, err)
 		}
-		if opts.ExpectedInputs != nil && !sameRegularFileAndSize(opts.ExpectedInputs[i], finInfo) {
+		if !finInfo.Mode().IsRegular() || (opts.ExpectedInputs != nil && !sameRegularFileAndSize(opts.ExpectedInputs[i], finInfo)) {
 			if closeFin {
 				_ = fin.Close()
 			}
@@ -295,7 +304,8 @@ func Recombine(opts RecombineOptions) (retErr error) {
 		inputInfos = append(inputInfos, finInfo)
 
 		buf := make([]byte, util.MiB)
-		for {
+		remaining := finInfo.Size()
+		for remaining > 0 {
 			if opts.Cancel != nil && opts.Cancel() {
 				if closeFin {
 					_ = fin.Close()
@@ -303,7 +313,11 @@ func Recombine(opts RecombineOptions) (retErr error) {
 				return errors.New("operation cancelled")
 			}
 
-			n, readErr := fin.Read(buf)
+			readBuf := buf
+			if remaining < int64(len(readBuf)) {
+				readBuf = readBuf[:remaining]
+			}
+			n, readErr := fin.Read(readBuf)
 			if n > 0 {
 				if _, err := fout.Write(buf[:n]); err != nil {
 					if closeFin {
@@ -312,6 +326,7 @@ func Recombine(opts RecombineOptions) (retErr error) {
 					return fmt.Errorf("write from chunk %d: %w", i, err)
 				}
 				totalDone += int64(n)
+				remaining -= int64(n)
 
 				if opts.Progress != nil {
 					progress, speed, eta := util.Statify(totalDone, totalSize, startTime)
@@ -322,8 +337,11 @@ func Recombine(opts RecombineOptions) (retErr error) {
 				}
 			}
 
-			if readErr == io.EOF {
+			if readErr == io.EOF && remaining == 0 {
 				break
+			}
+			if readErr == io.EOF || (n == 0 && readErr == nil) {
+				readErr = io.ErrUnexpectedEOF
 			}
 			if readErr != nil {
 				if closeFin {
@@ -333,11 +351,41 @@ func Recombine(opts RecombineOptions) (retErr error) {
 			}
 		}
 
+		currentInfo, statErr := fin.Stat()
+		if statErr != nil || !sameRegularFileAndSize(finInfo, currentInfo) {
+			if closeFin {
+				_ = fin.Close()
+			}
+			return errors.Join(fmt.Errorf("chunk %d changed during recombination", i), statErr)
+		}
+
 		if closeFin {
 			if err := recombineCloseFn(fin); err != nil {
 				return fmt.Errorf("close chunk %d: %w", i, err)
 			}
 		}
+	}
+
+	finalFirst := opts.FirstChunk
+	if finalFirst == nil {
+		finalFirst, err = OpenRegularRead(opts.InputBase + ".0")
+		if err != nil {
+			return fmt.Errorf("reopen chunk 0 after recombination: %w", err)
+		}
+	}
+	finalFirstInfo, statErr := finalFirst.Stat()
+	if opts.FirstChunk == nil {
+		statErr = errors.Join(statErr, finalFirst.Close())
+	}
+	if statErr != nil || !sameRegularFileAndSize(inputInfos[0], finalFirstInfo) {
+		return errors.Join(errors.New("chunk 0 changed during recombination"), statErr)
+	}
+	currentCount, currentSize, err := countChunks(opts.InputBase, finalFirstInfo, opts.Cancel, NewZIPResourceBudget())
+	if err != nil {
+		return err
+	}
+	if currentCount != numChunks || currentSize != totalDone {
+		return errors.New("chunk count or size changed during recombination")
 	}
 
 	// Sync to ensure all data is flushed to disk before caller reads the file

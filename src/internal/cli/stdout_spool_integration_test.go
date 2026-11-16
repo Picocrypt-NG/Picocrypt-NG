@@ -49,16 +49,16 @@ func TestCLIEncryptedStdoutIntegration(t *testing.T) {
 			factors            []string
 			stdin, archive     bool
 			pcv3               bool
-			comment            string
+			comment, stderr    string
 		}{
-			{"normal-empty", filepath.Join(normalRoot, "volumes", "normal-standard-combined-ordered-empty.pcv"), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", normalFactors, false, false, true, "TEST ONLY comment"},
-			{"normal-stdin", filepath.Join(normalRoot, "volumes", "normal-standard-combined-ordered-one.pcv"), "dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986", normalFactors, true, false, true, "TEST ONLY comment"},
-			{"d1-multi", filepath.Join(d1Root, "d1-multi-standard.pcv"), "8232c26d26c8bd37bc2b6e29e9e5b050fe78b321999c47523758c3b3001b75b8", d1Factors, false, false, true, ""},
-			{"d1-multi-rs-stdin", filepath.Join(d1Root, "d1-multi-rs-standard.pcv"), "8232c26d26c8bd37bc2b6e29e9e5b050fe78b321999c47523758c3b3001b75b8", d1Factors, true, false, true, ""},
-			{"legacy-v1", filepath.Join(legacyRoot, "pico_test_v1.txt.pcv"), "", []string{"-p", "test"}, false, false, false, ""},
-			{"legacy-v2-stdin", filepath.Join(legacyRoot, "pico_test_v2.txt.pcv"), "", []string{"-p", "test"}, true, false, false, ""},
-			{"legacy-v1-compressed", filepath.Join(legacyRoot, "pico_test_v1_compress.zip.pcv"), "", []string{"-p", "test"}, false, true, false, ""},
-			{"legacy-v2-compressed-stdin", filepath.Join(legacyRoot, "pico_test_v2_compress.zip.pcv"), "", []string{"-p", "test"}, true, true, false, ""},
+			{"normal-empty", filepath.Join(normalRoot, "volumes", "normal-standard-combined-ordered-empty.pcv"), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", normalFactors, false, false, true, "TEST ONLY comment", ""},
+			{"normal-stdin", filepath.Join(normalRoot, "volumes", "normal-standard-combined-ordered-one.pcv"), "dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986", normalFactors, true, false, true, "TEST ONLY comment", ""},
+			{"d1-multi", filepath.Join(d1Root, "d1-multi-standard.pcv"), "8232c26d26c8bd37bc2b6e29e9e5b050fe78b321999c47523758c3b3001b75b8", d1Factors, false, false, true, "", ""},
+			{"d1-multi-rs-stdin", filepath.Join(d1Root, "d1-multi-rs-standard.pcv"), "8232c26d26c8bd37bc2b6e29e9e5b050fe78b321999c47523758c3b3001b75b8", d1Factors, true, false, true, "", ""},
+			{"legacy-v1", filepath.Join(legacyRoot, "pico_test_v1.txt.pcv"), "", []string{"-p", "test"}, false, false, false, "", "Warning: Legacy v1 does not authenticate the header. Re-encrypt the data as PCV3.\n"},
+			{"legacy-v2-stdin", filepath.Join(legacyRoot, "pico_test_v2.txt.pcv"), "", []string{"-p", "test"}, true, false, false, "", ""},
+			{"legacy-v1-compressed", filepath.Join(legacyRoot, "pico_test_v1_compress.zip.pcv"), "", []string{"-p", "test"}, false, true, false, "", "Warning: Legacy v1 does not authenticate the header. Re-encrypt the data as PCV3.\n"},
+			{"legacy-v2-compressed-stdin", filepath.Join(legacyRoot, "pico_test_v2_compress.zip.pcv"), "", []string{"-p", "test"}, true, true, false, "", ""},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				source := readStdoutFixture(t, tc.file)
@@ -72,7 +72,7 @@ func TestCLIEncryptedStdoutIntegration(t *testing.T) {
 					cmd.Stdin = stdinFile(t, source)
 				}
 				result := runStreamIntegrationCommand(t, cmd, nil)
-				wantStderr := ""
+				wantStderr := tc.stderr
 				if tc.pcv3 {
 					wantStderr = "Outcome: success\nPublication: not-attempted\n"
 					if tc.comment != "" {

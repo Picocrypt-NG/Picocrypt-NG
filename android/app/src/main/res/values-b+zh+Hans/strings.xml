@@ -350,4 +350,9 @@
     <string name="pcv3_d1_profile_standard">标准</string>
     <string name="pcv3_outcome_d1_profile_required_title">请选择恢复配置</string>
     <string name="pcv3_outcome_d1_profile_required_body">请选择创建此卷时使用的标准或偏执配置，然后重试。未发布任何输出。</string>
+    <string name="comments_unverified">注释（未经验证）</string>
+    <string name="comment_authenticity_authenticated">卷注释的真实性已验证。</string>
+    <string name="comment_authenticity_unverified">卷注释的真实性未经验证。</string>
+    <string name="legacy_v1_security_warning">旧版 v1 不验证文件头或注释的真实性。注释可能已被篡改。请使用 PCV3 重新加密数据。</string>
+    <string name="legacy_v2_security_warning">旧版 v2 仅使用密码验证文件头；密钥文件不参与文件头的真实性验证。请使用 PCV3 重新加密数据。</string>
 </resources>

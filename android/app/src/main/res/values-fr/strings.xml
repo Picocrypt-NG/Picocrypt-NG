@@ -358,4 +358,9 @@
     <string name="pcv3_d1_profile_standard">Standard</string>
     <string name="pcv3_outcome_d1_profile_required_title">Choisissez le profil de récupération</string>
     <string name="pcv3_outcome_d1_profile_required_body">Sélectionnez le profil Standard ou Paranoïaque utilisé pour créer ce volume, puis réessayez. Aucune sortie n’a été publiée.</string>
+    <string name="comments_unverified">Commentaires (non vérifiés)</string>
+    <string name="comment_authenticity_authenticated">Authenticité du commentaire du volume confirmée.</string>
+    <string name="comment_authenticity_unverified">Authenticité du commentaire du volume non vérifiée.</string>
+    <string name="legacy_v1_security_warning">Le format ancien v1 ne vérifie pas l\'authenticité de l\'en-tête ni du commentaire. Le commentaire a pu être modifié. Chiffrez à nouveau les données avec PCV3.</string>
+    <string name="legacy_v2_security_warning">Le format ancien v2 authentifie l\'en-tête avec le mot de passe uniquement ; les fichiers clés ne participent pas à cette vérification. Chiffrez à nouveau les données avec PCV3.</string>
 </resources>

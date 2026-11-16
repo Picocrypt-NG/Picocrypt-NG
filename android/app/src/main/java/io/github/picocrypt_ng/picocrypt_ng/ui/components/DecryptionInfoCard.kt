@@ -17,6 +17,7 @@ import io.github.picocrypt_ng.picocrypt_ng.DecryptionInfo
 import io.github.picocrypt_ng.picocrypt_ng.FormData
 import io.github.picocrypt_ng.picocrypt_ng.MainViewModel
 import io.github.picocrypt_ng.picocrypt_ng.R
+import io.github.picocrypt_ng.picocrypt_ng.legacySecurityWarningResource
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 
@@ -32,6 +33,10 @@ fun DecryptionInfoCard(viewModel: MainViewModel, modifier: Modifier = Modifier) 
 
     ExpandableCard(title = stringResource(R.string.encryption_settings), modifier = modifier) {
         Column(modifier = Modifier.padding(16.dp)) {
+            legacySecurityWarningResource(info.securityWarning)?.let { resource ->
+                Text(text = stringResource(resource))
+                Spacer(modifier = Modifier.height(16.dp))
+            }
             // Keyfiles section
             Text(
                 text = stringResource(R.string.keyfiles_section),
@@ -88,12 +93,17 @@ fun DecryptionInfoCard(viewModel: MainViewModel, modifier: Modifier = Modifier) 
                 HorizontalDivider()
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    text = stringResource(R.string.comments_section),
+                    text = stringResource(R.string.comments_unverified),
                     style = androidx.compose.material3.MaterialTheme.typography.titleSmall
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = info.comments
+                )
+                Text(
+                    text = stringResource(R.string.comments_plaintext_warning),
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else if (info.readable && info.comments.isEmpty()) {
                 Spacer(modifier = Modifier.height(16.dp))

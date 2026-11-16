@@ -183,7 +183,7 @@ picocrypt decrypt VOLUME
 |------|------|---------|-------------|
 | `--force` | bool | false | Legacy only: retain output despite integrity/authentication failure |
 | `--verify-first` | bool | false | Legacy only: authenticate the payload before decryption; adds a read and KDF |
-| `--auto-unzip` | bool | false | Legacy only: automatically extract ZIP output |
+| `--auto-unzip` | bool | false | Legacy only: automatically extract ZIP output when no authentication check was bypassed |
 | `--same-level` | bool | false | Legacy only: extract to the output directory instead of a subdirectory |
 
 #### Volume State Flags
@@ -367,6 +367,18 @@ picocrypt decrypt legacy-damaged.pcv --force
 ```
 
 If `--force` keeps output after an integrity or authentication check failed, Picocrypt NG writes `Warning: Force decrypt kept output...` to stderr and exits with exit code 2. The recovered file or stdout bytes are not fully verified; scripts must not treat exit code 2 as clean success.
+
+If a check was bypassed, `--auto-unzip` is ignored: the recovered file is retained
+without automatic extraction. A clean read still extracts normally even with
+`--force` enabled. Legacy split inputs are bound to their prepared regular-file
+identities and sizes; changed, missing or substituted parts are rejected.
+
+Successful v1 reads warn that the header is unauthenticated. Legacy v2 keyfile
+reads warn that the keyfile does not contribute to authentication. These format
+warnings are written to stderr even with `--quiet` or stdout output; they do not
+change successful exit codes or plaintext bytes. Recover old volumes and
+re-encrypt them as PCV3. This protects future changes and cannot establish the
+historical authenticity of the old data.
 
 ## Stdin/Stdout Streaming
 
