@@ -49,6 +49,7 @@ jobs:
       with:
         distribution: "temurin"
         java-version: "21.0.13+9.0.LTS"
+        problem-matcher: true
 
     - name: Install Android SDK packages
       run: |

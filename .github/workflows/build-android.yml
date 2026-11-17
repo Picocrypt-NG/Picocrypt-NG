@@ -357,6 +357,7 @@ jobs:
       with:
         distribution: "temurin"
         java-version: "21.0.13+9.0.LTS"
+        problem-matcher: true
 
     - name: Install offline APK signing tools
       if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
