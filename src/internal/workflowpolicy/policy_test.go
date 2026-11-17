@@ -1969,13 +1969,13 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 
 func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {
 	const (
-		gradle982Sha256        = "21bd5da2de49b642904077f38c0efdc7778e92b3ed0889392dca61b97e389607"
-		gradleWrapperJarSha256 = "3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98"
+		gradle991Sha256        = "d8a18a7a841dd5df825d35a685fad6f2d7f12ac0c280e57b67c27b4a520ba228"
+		gradleWrapperJarSha256 = "621008afc4f5d59357fcf06ffa644dd5aade5e091bdc363742710445f73cdaf8"
 	)
 
 	wrapper := mustReadRepoFile(t, "android/gradle/wrapper/gradle-wrapper.properties")
-	mustContain(t, wrapper, "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.8.2-bin.zip")
-	mustMatch(t, wrapper, `(?m)^distributionSha256Sum=`+gradle982Sha256+`$`)
+	mustContain(t, wrapper, "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.9.1-bin.zip")
+	mustMatch(t, wrapper, `(?m)^distributionSha256Sum=`+gradle991Sha256+`$`)
 	mustMatch(t, wrapper, `(?m)^validateDistributionUrl=true$`)
 	mustMatch(t, wrapper, `(?m)^networkTimeout=60000$`)
 
@@ -1984,7 +1984,7 @@ func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {
 		t.Fatalf("read Gradle wrapper JAR: %v", err)
 	}
 	if got := fmt.Sprintf("%x", sha256.Sum256(wrapperJar)); got != gradleWrapperJarSha256 {
-		t.Fatalf("Gradle wrapper JAR SHA-256 = %s, want official Gradle 9.8.2 checksum %s", got, gradleWrapperJarSha256)
+		t.Fatalf("Gradle wrapper JAR SHA-256 = %s, want official Gradle 9.9.1 checksum %s", got, gradleWrapperJarSha256)
 	}
 
 	metadata := mustReadRepoFile(t, "android/gradle/verification-metadata.xml")
