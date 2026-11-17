@@ -84,6 +84,11 @@ func TestBundledLanguageOptionsOnlyIncludesLoadedCatalogs(t *testing.T) {
 }
 
 func TestRequestedDesktopLocalesHaveStableMetadata(t *testing.T) {
+	resetLocalizationForTest(t)
+	if err := loadTranslations(); err != nil {
+		t.Fatalf("loadTranslations returned error: %v", err)
+	}
+
 	want := map[LanguageCode]LanguageOption{
 		"de":      {Code: "de", Name: "Deutsch"},
 		"fr":      {Code: "fr", Name: "Français"},
@@ -91,9 +96,12 @@ func TestRequestedDesktopLocalesHaveStableMetadata(t *testing.T) {
 		"zh-Hans": {Code: "zh-Hans", Name: "简体中文", ButtonLabel: "zh"},
 		"hi":      {Code: "hi", Name: "हिन्दी"},
 		"ko":      {Code: "ko", Name: "한국어"},
+		"ar":      {Code: "ar", Name: "العربية"},
+		"ca":      {Code: "ca", Name: "Català"},
+		"et":      {Code: "et", Name: "Eesti"},
 	}
 
-	for _, option := range knownLanguageOptions {
+	for _, option := range bundledLanguageOptions() {
 		if expected, ok := want[option.Code]; ok {
 			if option != expected {
 				t.Errorf("language metadata for %q = %#v; want %#v", option.Code, option, expected)
@@ -102,7 +110,7 @@ func TestRequestedDesktopLocalesHaveStableMetadata(t *testing.T) {
 		}
 	}
 	if len(want) != 0 {
-		t.Fatalf("requested desktop locales are not registered: %#v", want)
+		t.Fatalf("requested desktop locales are missing from the language selector: %#v", want)
 	}
 }
 

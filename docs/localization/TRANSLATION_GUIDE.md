@@ -17,8 +17,8 @@ integrity, password, keyfile, corruption, and deletion concepts.
 
 | Surface | Current state | Translation path |
 |---|---|---|
-| Desktop Fyne UI | Complete bundled application catalogs exist for English, Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean under `src/internal/ui/translation`. Fyne-owned dialogs and raw backend status text may remain English. | Use the live Weblate Desktop app component and keep the project `tr`/`trn` wrappers. Weblate uses the native go-i18n v2 JSON format; repository tests remain authoritative for keys, placeholders, plural shapes, and runtime registration. |
-| Android app | Release resources package the same eight languages: base English plus Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean. Raw Go/runtime details are not translator source copy. | Use the live Weblate Android app component, Android string resources, and explicit semantic display-boundary mappings. Repository tests keep resource files, release filters, generated LocaleConfig, and semantic checks in lockstep. |
+| Desktop Fyne UI | Complete bundled application catalogs exist for English, Russian, German, French, Spanish, Simplified Chinese, Hindi, Korean, Arabic, Catalan, and Estonian under `src/internal/ui/translation`. Fyne-owned dialogs and raw backend status text may remain English. | Use the live Weblate Desktop app component and keep the project `tr`/`trn` wrappers. Weblate uses the native go-i18n v2 JSON format; repository tests remain authoritative for keys, placeholders, plural shapes, and runtime registration. |
+| Android app | Release resources package the same eleven languages. Raw Go/runtime details are not translator source copy. | Use the live Weblate Android app component, Android string resources, and explicit semantic display-boundary mappings. Repository tests keep resource files, release filters, generated LocaleConfig, and semantic checks in lockstep. |
 | CLI | Cobra help, prompts, warnings, and errors are hard-coded Go strings. | Do not localize CLI output, command names, flags, or examples. Keep CLI English-only. |
 | Web/WASM | The Go WASM bridge exports functions and numeric error codes; it does not own the hosted web UI copy. | Localize the web frontend separately if/when that source is brought into scope. |
 
@@ -98,8 +98,8 @@ Picocrypt-NG keeps Fyne/Weblate-shaped flat JSON catalogs under
 - The selected desktop UI language is stored in Fyne preferences under
   `ui.language`.
 - Only complete embedded Fyne catalogs appear in the selector. Registered
-  desktop codes are `en`, `ru`, `de`, `fr`, `it`, `es`, `zh-Hans`, `hi`, and
-  `ko`.
+  desktop codes are `en`, `ru`, `de`, `fr`, `it`, `es`, `zh-Hans`, `hi`,
+  `ko`, `ar`, `ca`, and `et`.
   `zh-Hans` is the catalog filename stem and stored preference, with the open
   menu label `简体中文`; `hi` uses the open-menu label `हिन्दी`; `ko` uses
   `한국어`. Only the closed selector abbreviates `zh-Hans` to `zh`. The open menu
@@ -113,14 +113,15 @@ Picocrypt-NG keeps Fyne/Weblate-shaped flat JSON catalogs under
 
   | Locale | Required plural forms |
   |---|---|
-  | `en`, `de`, `hi` | `one`, `other` |
-  | `fr`, `es` | `one`, `many`, `other` |
+  | `en`, `de`, `hi`, `et` | `one`, `other` |
+  | `fr`, `es`, `ca` | `one`, `many`, `other` |
   | `ru` | `one`, `few`, `many`, `other` |
+  | `ar` | `zero`, `one`, `two`, `few`, `many`, `other` |
   | `zh-Hans`, `ko` | `other` |
 
-  In go-i18n 2.6.1, French and Hindi use `one` for integer zero; French and
-  Spanish use `many` for values such as one million. Runtime tests, not this
-  table alone, are the executable source of truth. A future Italian catalog
+  In go-i18n 2.7.0, French and Hindi use `one` for integer zero. French,
+  Spanish, and Catalan use `many` for values such as one million. Runtime tests
+  verify the current rules. A future Italian catalog
   would require `one`, `many`, and `other`, but is not a shipped row.
 - UI state must store semantic display state for labels and UI-owned statuses.
   Do not store translated strings as durable state when the text must relocalize
@@ -163,8 +164,8 @@ benefit from packaged-build review with matching and non-matching OS locales.
 Treat screenshots containing any of the following as rendering defects: tofu,
 replacement glyphs, wrong Simplified-Chinese regional forms,
 detached Hindi matras, dotted circles, exposed halants, broken conjuncts,
-clipped vertical metrics, hidden controls, or window growth beyond the normal
-340 px desktop width. Missing system coverage does not authorize adding an
+clipped vertical metrics, hidden controls, or window growth beyond the default
+desktop width. Missing system coverage does not authorize adding an
 unreviewed font asset.
 
 Emoji and arbitrary mixed-script filenames/comments are platform best-effort.
@@ -179,12 +180,14 @@ Android must use native string resources.
 - `android/app/src/main/res/values/strings.xml` is the base English file for
   resource-backed Android UI strings.
 - The complete translated directories are `values-ru`, `values-de`, `values-fr`,
-  `values-es`, `values-b+zh+Hans`, `values-hi`, and `values-ko`. Korean uses the
+  `values-es`, `values-b+zh+Hans`, `values-hi`, `values-ko`, `values-ar`,
+  `values-ca`, and `values-et`. Korean uses the
   generic `ko` language tag with contemporary neutral South Korean wording.
   Italian is not packaged.
 - AGP generates the per-app locale configuration with
   `androidResources.generateLocaleConfig = true` and filters release resources
-  to `en`, `ru`, `de`, `fr`, `es`, `b+zh+Hans`, `hi`, and `ko` through
+  to `en`, `ru`, `de`, `fr`, `es`, `b+zh+Hans`, `hi`, `ko`, `ar`, `ca`,
+  and `et` through
   `androidResources.localeFilters`. `resources.properties` declares base
   `unqualifiedResLocale=en`; generated output exposes Chinese as `zh-Hans`.
   Debug `en-XA`/`ar-XB` pseudolocales are not release locales.
@@ -472,7 +475,7 @@ answer these checks:
 13. Does the change leave CLI output untouched?
 14. For a Fyne desktop locale, does the complete catalog pass exact key,
     placeholder, message-shape, and locale-plural validation?
-15. Has the real packaged desktop UI been checked at 340 px in light and dark
+15. Has the real packaged desktop UI been checked at its default width in light and dark
     mode? For `zh-Hans`, `ko`, and `hi`, was shaping checked with both matching
     and non-matching operating-system locales?
 16. Are Android build and pseudolocale checks requested only when Android

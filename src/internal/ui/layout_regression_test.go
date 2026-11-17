@@ -411,7 +411,6 @@ func TestDesktopUILayoutKeepsCompactWidthAfterLanguageSwitch(t *testing.T) {
 			a.fyneApp = fyneApp
 			tc.configure(a)
 
-			var min, size fyne.Size
 			fyne.DoAndWait(func() {
 				a.Window = fyneApp.NewWindow("language-switch-layout-test")
 				a.Window.SetFixedSize(true)
@@ -419,20 +418,26 @@ func TestDesktopUILayoutKeepsCompactWidthAfterLanguageSwitch(t *testing.T) {
 				content := a.buildUI()
 				a.Window.SetContent(content)
 				a.initializeDesktopWindow()
-				if err := a.SwitchLanguage("ru"); err != nil {
-					t.Fatalf("SwitchLanguage(ru) returned error: %v", err)
-				}
-				min = content.MinSize()
-				size = a.Window.Canvas().Size()
 			})
 
-			if min.Width > windowWidth {
-				t.Fatalf("Russian %s layout after language switch MinSize width %.1f exceeds compact window width %.1f", tc.name, min.Width, float32(windowWidth))
+			for _, code := range []LanguageCode{"ru", "ar", "ca", "et"} {
+				t.Run(string(code), func(t *testing.T) {
+					var min, size fyne.Size
+					var switchErr error
+					fyne.DoAndWait(func() {
+						switchErr = a.SwitchLanguage(code)
+						min = a.Window.Content().MinSize()
+						size = a.Window.Canvas().Size()
+					})
+					if switchErr != nil {
+						t.Fatalf("SwitchLanguage(%s) returned error: %v", code, switchErr)
+					}
+					if min.Width > windowWidth || size.Width > windowWidth {
+						t.Fatalf("%s %s layout width after switch: minimum %.1f, window %.1f, want <= %.1f", code, tc.name, min.Width, size.Width, float32(windowWidth))
+					}
+					assertWindowFitsContent(t, a)
+				})
 			}
-			if size.Width > windowWidth {
-				t.Fatalf("Russian %s layout after language switch grew desktop window width to %.1f; want <= %.1f", tc.name, size.Width, float32(windowWidth))
-			}
-			assertWindowFitsContent(t, a)
 		})
 	}
 }

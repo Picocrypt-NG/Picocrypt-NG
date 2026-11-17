@@ -69,6 +69,38 @@ func TestTargetLocalePluralRulesAtRuntime(t *testing.T) {
 				2: "other",
 			},
 		},
+		{
+			code:  "ar",
+			forms: []string{"zero", "one", "two", "few", "many", "other"},
+			probes: map[int]string{
+				0:   "zero",
+				1:   "one",
+				2:   "two",
+				3:   "few",
+				11:  "many",
+				100: "other",
+				103: "few",
+			},
+		},
+		{
+			code:  "ca",
+			forms: []string{"one", "many", "other"},
+			probes: map[int]string{
+				0:       "other",
+				1:       "one",
+				2:       "other",
+				1000000: "many",
+			},
+		},
+		{
+			code:  "et",
+			forms: []string{"one", "other"},
+			probes: map[int]string{
+				0: "other",
+				1: "one",
+				2: "other",
+			},
+		},
 	}
 
 	for _, tc := range tests {

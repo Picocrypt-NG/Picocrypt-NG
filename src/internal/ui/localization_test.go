@@ -29,6 +29,9 @@ var requiredCatalogPluralForms = map[LanguageCode][]string{
 	"zh-Hans": {"other"},
 	"hi":      {"one", "other"},
 	"ko":      {"other"},
+	"ar":      {"few", "many", "one", "other", "two", "zero"},
+	"ca":      {"many", "one", "other"},
+	"et":      {"one", "other"},
 }
 
 func requiredPluralFormsForLanguage(code LanguageCode) ([]string, error) {
