@@ -698,6 +698,9 @@ class LocalizationResourcesTest {
             LocaleSpec("zh-Hans", "Simplified Chinese", "values-b+zh+Hans", listOf("other")),
             LocaleSpec("hi", "Hindi", "values-hi", listOf("one", "other")),
             LocaleSpec("ko", "Korean", "values-ko", listOf("other")),
+            LocaleSpec("ar", "Arabic", "values-ar", listOf("zero", "one", "two", "few", "many", "other")),
+            LocaleSpec("ca", "Catalan", "values-ca", listOf("one", "many", "other")),
+            LocaleSpec("et", "Estonian", "values-et", listOf("one", "other")),
         )
         private val securityRequiredTerms = mapOf(
             "ru" to mapOf(
@@ -784,6 +787,42 @@ class LocalizationResourcesTest {
                 "error_keyfile_writes_disabled" to listOf("새", "v2", "키 파일", "PCV3", "대신", "기존", "복호화"),
                 "prevent_screenshots_description" to listOf("스크린샷", "화면 녹화", "최근 앱"),
             ),
+            "ar" to mapOf(
+                "comments_plaintext_warning" to listOf("بيانات وصفية", "غير مشفرة", "سرية"),
+                "force_decrypt_warning" to listOf("السلامة", "فك التشفير القسري", "دون التحقق", "تالف"),
+                "error_auth_failed" to listOf("المصادقة", "كلمة المرور", "ملفات المفاتيح", "ترتيب"),
+                "error_data_corrupted" to listOf("السلامة", "غير متحقق", "تالف"),
+                "error_corrupt_header" to listOf("ترويسة", "تالفة"),
+                "error_decrypt_retry_only" to listOf("فك التشفير القسري", "إلا في عمليات فك التشفير"),
+                "deniability_note" to listOf("الإنكار المعقول", "البيانات الوصفية", "قبل فك التشفير", "غير معروفة"),
+                "deniability_password_required" to listOf("الإنكار المعقول", "كلمة مرور غير فارغة"),
+                "error_keyfile_writes_disabled" to listOf("v2", "الجديدة", "ملفات المفاتيح", "PCV3", "صراحة", "الموجودة"),
+                "prevent_screenshots_description" to listOf("لقطات للشاشة", "تسجيلها", "التطبيقات الحديثة"),
+            ),
+            "ca" to mapOf(
+                "comments_plaintext_warning" to listOf("metadades en text clar", "secrets"),
+                "force_decrypt_warning" to listOf("integritat", "desxifratge forçat", "sense verificar", "malmès"),
+                "error_auth_failed" to listOf("autenticació", "contrasenya", "fitxers de clau", "ordre"),
+                "error_data_corrupted" to listOf("integritat", "malmès", "no s’ha verificat"),
+                "error_corrupt_header" to listOf("capçalera", "malmesa"),
+                "error_decrypt_retry_only" to listOf("només", "operació de desxifratge", "desxifratge forçat"),
+                "deniability_note" to listOf("negació plausible", "metadades", "abans de desxifrar", "desconeixen"),
+                "deniability_password_required" to listOf("negació plausible", "contrasenya no buida"),
+                "error_keyfile_writes_disabled" to listOf("v2", "nous", "fitxers de clau", "PCV3", "explícitament", "existents"),
+                "prevent_screenshots_description" to listOf("captures", "enregistraments de pantalla", "aplicacions recents"),
+            ),
+            "et" to mapOf(
+                "comments_plaintext_warning" to listOf("krüpteerimata metaandmed", "salajast"),
+                "force_decrypt_warning" to listOf("tervikluse kontroll", "sunddekrüpteerimisel", "kontrollimata", "kahjustatud"),
+                "error_auth_failed" to listOf("autentimine", "parooli", "võtmefaile", "järjekorda"),
+                "error_data_corrupted" to listOf("tervikluse kontroll", "kontrollimata", "kahjustatud"),
+                "error_corrupt_header" to listOf("päis", "kahjustatud"),
+                "error_decrypt_retry_only" to listOf("sunddekrüpteerimisega", "ainult dekrüpteerimistoiminguid"),
+                "deniability_note" to listOf("eitatavuse", "päise metaandmete", "enne dekrüpteerimist", "teadmata"),
+                "deniability_password_required" to listOf("eitatavus", "mittetühja parooli"),
+                "error_keyfile_writes_disabled" to listOf("uute", "v2", "võtmefaile", "PCV3", "olemasolevaid", "dekrüpteerida"),
+                "prevent_screenshots_description" to listOf("ekraanipiltide", "ekraani salvestamise", "hiljutiste rakenduste"),
+            ),
         )
         private val deniabilityResourceNames = listOf(
             "comments_not_readable",
@@ -805,6 +844,9 @@ class LocalizationResourcesTest {
             "zh-Hans" to listOf("匿名", "隐身", "不可检测", "隐藏模式"),
             "hi" to listOf("गुमनाम", "अदृश्य"),
             "ko" to listOf("익명", "보이지 않", "탐지할 수 없", "숨김 모드", "부인 방지"),
+            "ar" to listOf("مجهول الهوية", "غير مرئي", "غير قابل للكشف", "وضع مخفي"),
+            "ca" to listOf("anònim", "invisible", "indetectable", "mode ocult"),
+            "et" to listOf("anonüüm", "nähtamatu", "tuvastamatu", "peidetud režiim"),
         )
         private val securityForbiddenForceTerms = mapOf(
             "ru" to listOf("безопас", "исправлен", "восстановлен"),
@@ -814,6 +856,9 @@ class LocalizationResourcesTest {
             "zh-Hans" to listOf("安全", "修复", "恢复"),
             "hi" to listOf("सुरक्षित", "मरम्मत", "रिकवर"),
             "ko" to listOf("안전", "수리", "복구"),
+            "ar" to listOf("ناتج آمن", "تم إصلاحه", "تم استرداده"),
+            "ca" to listOf("resultat segur", "reparat", "recuperat"),
+            "et" to listOf("turvaline", "parandatud", "taastatud"),
         )
         private val catalogForbiddenTerms = mapOf(
             "zh-Hans" to listOf("密碼", "金鑰", "資料夾", "標頭", "覆蓋", "輸出", "檔案", "設定", "錯誤", "驗證"),
@@ -827,6 +872,9 @@ class LocalizationResourcesTest {
             "zh-Hans" to listOf("Android", "不支持", "合并"),
             "hi" to listOf("Android", "समर्थित नहीं", "फिर से जोड़ें"),
             "ko" to listOf("Android", "지원하지", "다시 결합"),
+            "ar" to listOf("Android", "لا يدعم", "تجميع"),
+            "ca" to listOf("Android", "no admet", "unir les parts", "ordinador"),
+            "et" to listOf("Android", "ei toeta", "ühenda", "arvutis"),
         )
         private val modelReviewCorrectionGuards = mapOf(
             "de" to mapOf(

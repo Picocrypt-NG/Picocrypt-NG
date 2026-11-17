@@ -105,8 +105,8 @@ linguistic review is continuous, so the bundled catalogs are not presented as
 certified native-language reviews.
 
 Current desktop and native Android builds bundle application UI catalogs for
-English, Russian, German, French, Spanish, Simplified Chinese, Hindi, and Korean
-(`ko`, with contemporary neutral South Korean wording). The desktop app has an
+English, Russian, German, French, Spanish, Simplified Chinese, Hindi, Korean,
+Arabic, Catalan, and Estonian. The desktop app has an
 in-app language selector for Picocrypt-NG-owned UI; Fyne-owned dialogs and raw
 backend status text may remain English. Android 13 and newer expose the system
 per-app language selector; older Android versions follow the system locale. The

@@ -1,0 +1,392 @@
+<resources>
+    <!-- File Card -->
+    <string name="choose_file">اختر ملفًا</string>
+    <string name="copying_file">جارٍ نسخ الملف…</string>
+    <string name="choose_file_description">اختيار ملف</string>
+    <string name="choose_single_file">ملف واحد</string>
+    <string name="choose_multiple_files">عدة ملفات</string>
+    <string name="choose_folder">مجلد</string>
+    <plurals name="selected_files_count">
+        <item quantity="zero">الملفات المحددة: %1$d</item>
+        <item quantity="one">حُدّد ملف واحد (%1$d)</item>
+        <item quantity="two">حُدّد ملفان (%1$d)</item>
+        <item quantity="few">حُدّدت %1$d ملفات</item>
+        <item quantity="many">حُدّد %1$d ملفًا</item>
+        <item quantity="other">حُدّد %1$d من الملفات</item>
+    </plurals>
+
+    <!-- Password Card -->
+    <string name="password">كلمة المرور</string>
+    <string name="confirm_password">تأكيد كلمة المرور</string>
+    <string name="enter_password">أدخل كلمة مرور</string>
+    <string name="deniability_password_required">يتطلب الإنكار المعقول كلمة مرور غير فارغة</string>
+    <string name="passwords_must_match">يجب أن تتطابق كلمتا المرور</string>
+    <string name="hide_password">إخفاء كلمة المرور</string>
+    <string name="show_password">إظهار كلمة المرور</string>
+
+    <!-- Comments Card -->
+    <string name="comments">التعليقات</string>
+    <string name="comments_not_readable">لا يمكن معاينة التعليقات في وضع الإنكار المعقول</string>
+    <string name="comments_disabled_deniability">التعليقات غير متاحة في وضع الإنكار المعقول</string>
+    <string name="comments_plaintext_warning">التعليقات بيانات وصفية غير مشفرة. لا تكتب فيها معلومات سرية.</string>
+
+    <!-- Keyfile Card -->
+    <string name="keyfiles">ملفات المفاتيح</string>
+    <plurals name="keyfiles_count">
+        <item quantity="zero">%1$d من ملفات المفاتيح</item>
+        <item quantity="one">ملف مفتاح (%1$d)</item>
+        <item quantity="two">ملفان للمفاتيح (%1$d)</item>
+        <item quantity="few">%1$d ملفات مفاتيح</item>
+        <item quantity="many">%1$d ملف مفتاح</item>
+        <item quantity="other">%1$d من ملفات المفاتيح</item>
+    </plurals>
+    <plurals name="keyfiles_required_count">
+        <item quantity="zero">ملفات المفاتيح المطلوبة: %1$d</item>
+        <item quantity="one">يلزم ملف مفتاح واحد (%1$d)</item>
+        <item quantity="two">يلزم ملفان للمفاتيح (%1$d)</item>
+        <item quantity="few">تلزم %1$d ملفات مفاتيح</item>
+        <item quantity="many">يلزم %1$d ملف مفتاح</item>
+        <item quantity="other">يلزم %1$d من ملفات المفاتيح</item>
+    </plurals>
+    <string name="add">إضافة</string>
+    <string name="clear">مسح</string>
+    <string name="copying">جارٍ النسخ…</string>
+    <string name="require_this_order">فرض هذا الترتيب</string>
+    <string name="error_creating_keyfile">تعذّر إنشاء ملف مفتاح</string>
+    <string name="keyfiles_required_warning">يلزم استخدام ملفات مفاتيح لهذه الحاوية</string>
+    <string name="keyfile_order_matters">استخدم ملفات المفاتيح بالترتيب المطلوب</string>
+
+    <!-- Advanced Card -->
+    <string name="advanced_settings">إعدادات متقدمة (%1$d)</string>
+    <string name="reed_solomon">Reed-Solomon</string>
+    <string name="paranoid">الحذر الشديد</string>
+    <string name="deniability">الإنكار المعقول</string>
+    <string name="compress">ضغط</string>
+    <string name="expand_or_collapse">توسيع أو طي</string>
+
+    <!-- Decrypt Options Card -->
+    <string name="decrypt_options">خيارات فك التشفير (%1$d)</string>
+    <string name="verify_first">التحقق من السلامة أولًا</string>
+
+    <!-- Decryption Info Card -->
+    <string name="encryption_settings">إعدادات التشفير</string>
+    <string name="keyfiles_section">ملفات المفاتيح</string>
+    <string name="required">مطلوبة: %1$s</string>
+    <string name="yes">نعم</string>
+    <string name="no">لا</string>
+    <string name="order_matters">الترتيب مهم: %1$s</string>
+    <string name="advanced_settings_section">إعدادات متقدمة</string>
+    <string name="reed_solomon_status">Reed-Solomon: %1$s</string>
+    <string name="deniability_status">الإنكار المعقول: %1$s</string>
+    <string name="paranoid_mode_status">وضع الحذر الشديد: %1$s</string>
+    <string name="enabled">مفعّل</string>
+    <string name="disabled">معطّل</string>
+    <string name="unknown">غير معروف</string>
+    <string name="deniability_note">تستخدم هذه الحاوية وضع الإنكار المعقول. لا يمكن معاينة البيانات الوصفية في الترويسة قبل فك التشفير، وبعض الإعدادات غير معروفة.</string>
+    <string name="comments_section">التعليقات</string>
+    <string name="no_comments">لا تعليقات</string>
+
+    <!-- Work Button -->
+    <string name="encrypt_file">تشفير الملف</string>
+    <string name="decrypt_file">فك تشفير الملف</string>
+    <string name="processing">جارٍ المعالجة…</string>
+
+    <!-- Progress Card -->
+    <string name="encrypting">جارٍ التشفير…</string>
+    <string name="decrypting">جارٍ فك التشفير…</string>
+    <string name="cancel">إلغاء</string>
+    <string name="data_corruption_detected">اكتُشف تلف في البيانات</string>
+    <string name="force_decrypt_warning">لم تجتز الحاوية المشفرة فحص السلامة. يُبقي فك التشفير القسري الناتج دون التحقق منه، وقد يكون تالفًا جزئيًا أو كليًا.</string>
+    <string name="force_decrypt">فك تشفير قسري</string>
+    <string name="authentication_error">خطأ في المصادقة</string>
+    <string name="retry">إعادة المحاولة</string>
+    <string name="error">خطأ</string>
+    <string name="unknown_error_occurred">حدث خطأ غير معروف</string>
+    <string name="close">إغلاق</string>
+    <string name="operation_cancelled">أُلغيت العملية</string>
+    <string name="operation_cancelled_message">لم يكتمل أي ناتج. ستُزال الملفات المؤقتة.</string>
+    <string name="encryption_complete">اكتمل التشفير</string>
+    <string name="decryption_complete">اكتمل فك التشفير</string>
+    <string name="operation_completed_successfully">اكتملت العملية. احفظ الناتج للاحتفاظ به.</string>
+    <string name="error_saving_file">تعذّر حفظ الملف: %1$s</string>
+    <string name="save">حفظ</string>
+    <string name="discard_output">حذف الناتج</string>
+
+    <!-- Error Dialog -->
+    <string name="ok">موافق</string>
+
+    <!-- Logo Bar -->
+    <string name="logo_icon">أيقونة الشعار</string>
+    <string name="logo_text">نص الشعار</string>
+
+    <!-- Privacy & Security -->
+    <string name="privacy_security">الخصوصية والأمان</string>
+    <string name="prevent_screenshots">منع التقاط الشاشة</string>
+    <string name="prevent_screenshots_description">يمنع أخذ لقطات للشاشة وتسجيلها، ويخفي محتوى التطبيق من صور المعاينة في قائمة التطبيقات الحديثة.</string>
+
+    <!-- Foreground Service -->
+    <string name="fgs_channel_name">تقدّم العملية</string>
+    <string name="fgs_encrypting">جارٍ التشفير</string>
+    <string name="fgs_decrypting">جارٍ فك التشفير</string>
+    <string name="fgs_working">جارٍ العمل…</string>
+
+    <!-- Operation status display text keyed by stable mobile status codes. -->
+    <string name="status_starting">جارٍ البدء…</string>
+    <string name="status_completed">اكتملت العملية</string>
+    <string name="status_cancelled">أُلغيت العملية</string>
+    <string name="status_error">خطأ</string>
+    <string name="status_compressing_files">جارٍ ضغط الملفات…</string>
+    <string name="status_generating_values">جارٍ توليد القيم…</string>
+    <string name="status_deriving_key">جارٍ اشتقاق المفتاح…</string>
+    <string name="status_reading_keyfiles">جارٍ قراءة ملفات المفاتيح…</string>
+    <string name="status_calculating_values">جارٍ حساب القيم…</string>
+    <string name="status_writing_values">جارٍ كتابة القيم…</string>
+    <string name="status_splitting">جارٍ التقسيم…</string>
+    <string name="status_recombining_chunks">جارٍ إعادة تجميع الأجزاء…</string>
+    <string name="status_reading_values">جارٍ قراءة القيم…</string>
+    <string name="status_duplicate_keyfiles_warning">تحذير: اكتُشفت ملفات مفاتيح مكررة (تلغي المفاتيح أثر بعضها)…</string>
+    <string name="status_verifying_integrity">جارٍ التحقق من السلامة (المرحلة 1 من 2)…</string>
+    <string name="status_mac_verification_failed_continuing">فشل التحقق من رمز MAC، والعمل مستمر رغم ذلك…</string>
+    <string name="status_repairing_verifying">جارٍ الإصلاح (التحقق)…</string>
+    <string name="status_integrity_verified_decrypting">تم التحقق من السلامة، وجارٍ فك التشفير…</string>
+    <string name="status_comparing_values">جارٍ مقارنة القيم…</string>
+    <string name="status_unzipping">جارٍ استخراج الأرشيف…</string>
+    <string name="status_adding_plausible_deniability">جارٍ إضافة الإنكار المعقول…</string>
+    <string name="status_removing_deniability_protection">جارٍ إزالة حماية الإنكار المعقول…</string>
+    <string name="status_compressing_rate">ضغط بسرعة %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_encrypting_rate">تشفير بسرعة %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_splitting_rate">تقسيم بسرعة %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_recombining_rate">إعادة تجميع بسرعة %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_verifying_rate">تحقق بسرعة %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_decrypting_rate">فك تشفير بسرعة %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_repairing_rate">إصلاح بسرعة %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_unpacking_rate">استخراج بسرعة %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_adding_deniability_rate">إضافة الإنكار المعقول بسرعة %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="status_removing_deniability_rate">إزالة الإنكار المعقول بسرعة %1$.2f MiB/s (ETA: %2$s)</string>
+    <string name="progress_percent">%1$.2f%%</string>
+    <plurals name="progress_item_count">
+        <item quantity="zero">العناصر: %1$d من %2$d</item>
+        <item quantity="one">%1$d من أصل عنصر واحد (%2$d)</item>
+        <item quantity="two">%1$d من أصل عنصرين (%2$d)</item>
+        <item quantity="few">%1$d من أصل %2$d عناصر</item>
+        <item quantity="many">%1$d من أصل %2$d عنصرًا</item>
+        <item quantity="other">العناصر: %1$d من %2$d</item>
+    </plurals>
+
+    <!-- Stable error display boundary -->
+    <string name="error_auth_failed">فشلت المصادقة. تحقق من كلمة المرور وملفات المفاتيح وترتيبها.</string>
+    <string name="error_data_corrupted">فشل التحقق من السلامة. الناتج غير متحقق منه وقد يكون تالفًا.</string>
+    <string name="error_corrupt_header">ترويسة الحاوية المشفرة تالفة أو غير صالحة.</string>
+    <string name="error_pcv_unavailable">هذا الإصدار لا يدعم حاوية PCV هذه. احتفظ بالملف الأصلي، فلم يُنشأ أي ناتج.</string>
+    <string name="error_file_not_found">الملف غير موجود أو يتعذّر الوصول إليه.</string>
+    <string name="error_operation_failed">فشلت العملية.</string>
+    <string name="error_unknown">حدث خطأ غير معروف.</string>
+    <string name="error_reason_permission_denied">لا يوجد إذن بالوصول.</string>
+    <string name="error_reason_file_not_found">الملف غير موجود.</string>
+    <string name="error_reason_insufficient_storage">مساحة التخزين غير كافية.</string>
+    <string name="error_reason_io">خطأ في الإدخال أو الإخراج.</string>
+    <string name="error_reason_unknown">السبب غير معروف.</string>
+    <string name="error_operation_start_failed">تعذّر بدء العملية.</string>
+    <string name="error_no_active_operation">لا توجد عملية قيد التنفيذ.</string>
+    <string name="error_operation_data_unavailable">بيانات العملية غير متاحة لإعادة المحاولة.</string>
+    <string name="error_decrypt_retry_only">لا يمكن استخدام فك التشفير القسري لإعادة المحاولة إلا في عمليات فك التشفير.</string>
+    <string name="error_no_file_selected">اختر ملفًا.</string>
+    <string name="error_invalid_password">أدخل كلمة مرور.</string>
+    <string name="error_keyfile_writes_disabled">لا يمكن استخدام ملفات المفاتيح مع حاويات v2 الجديدة. اختر إنشاء PCV3 صراحةً. لا يزال بإمكانك فك تشفير الحاويات الموجودة التي تستخدم ملفات مفاتيح.</string>
+    <string name="error_passwords_mismatch">كلمتا المرور غير متطابقتين.</string>
+    <string name="error_split_volume_not_supported">لا يدعم Android الحاويات المقسّمة. أعد تجميع الأجزاء على الكمبيوتر أولًا، ثم انقل ملف %1$s الناتج.</string>
+    <string name="error_copy_failed">تعذّر نسخ الملف.</string>
+    <string name="error_save_failed">تعذّر حفظ الملف.</string>
+    <string name="error_delete_failed">تعذّر حذف الملف.</string>
+    <string name="error_insufficient_storage">المساحة الحرة لا تكفي لتشفير العناصر المحددة. المطلوب %1$d بايت، والمتاح %2$d بايت.</string>
+    <string name="error_could_not_open_folder">تعذّر فتح المجلد.</string>
+    <string name="error_selected_folder_empty">المجلد المحدد فارغ.</string>
+    <string name="error_read_folder_failed">تعذّرت قراءة المجلد: %1$s</string>
+    <string name="error_could_not_open_selected_file">تعذّر فتح أحد الملفات المحددة.</string>
+    <string name="error_no_files_selected">لم تُحدّد أي ملفات.</string>
+    <string name="error_copy_files_failed">تعذّر نسخ الملفات: %1$s</string>
+    <string name="error_detect_operation_type_failed">تعذّر تحديد نوع العملية.</string>
+    <!-- PCV3 read and recovery surface -->
+    <string name="pcv3_checking_selected_file">جارٍ فحص الملف المحدد…</string>
+    <string name="pcv3_selected_file">ملف PCV3 المحدد</string>
+    <string name="pcv3_format_normal">الصيغة: PCV3 عادي</string>
+    <string name="pcv3_format_d1">الصيغة: PCV3 D1</string>
+    <string name="pcv3_open_as_d1">فتح بصيغة PCV3 D1</string>
+    <string name="pcv3_decrypt_options">خيارات فك تشفير PCV3</string>
+    <string name="pcv3_operation_heading">عملية PCV3</string>
+    <string name="pcv3_action_decrypt">فك التشفير</string>
+    <string name="pcv3_action_recovery">استرداد</string>
+    <string name="pcv3_action_force_recovery">استرداد قسري</string>
+    <string name="pcv3_credential_policy_heading">فتح باستخدام</string>
+    <string name="pcv3_credential_policy_unset_hint">اختر نوع بيانات الاعتماد المطلوبة لهذه العملية.</string>
+    <string name="pcv3_factor_password_only">كلمة المرور فقط</string>
+    <string name="pcv3_factor_keyfiles_only">ملفات المفاتيح فقط</string>
+    <string name="pcv3_factor_combined">كلمة المرور وملفات المفاتيح</string>
+    <string name="pcv3_keyfile_order_heading">ترتيب ملفات المفاتيح</string>
+    <string name="pcv3_keyfile_order_selected">الترتيب المحدد</string>
+    <string name="pcv3_keyfile_order_any">أي ترتيب</string>
+    <string name="pcv3_password_not_allowed">امسح كلمة المرور أو اختر استخدام كلمة المرور مع ملفات المفاتيح.</string>
+    <string name="pcv3_create">إنشاء PCV3</string>
+    <string name="pcv3_start_decrypt">فك تشفير PCV3</string>
+    <string name="pcv3_start_recovery">بدء الاسترداد</string>
+    <string name="pcv3_start_force_recovery">بدء الاسترداد القسري</string>
+    <string name="pcv3_cancel_decryption">إلغاء فك التشفير</string>
+    <string name="pcv3_cancel_recovery">إلغاء الاسترداد</string>
+    <string name="pcv3_cancel_creation">إلغاء الإنشاء</string>
+
+    <string name="pcv3_consent_title">استرداد بيانات غير متحقق منها؟</string>
+    <string name="pcv3_consent_body">قد تحفظ هذه العملية بيانات لم تتم المصادقة عليها، وقد تكون ناقصة أو تالفة أو غير آمنة للفتح. حدّد بدقة المصدر الفعلي الذي تريد استخدامه.</string>
+    <string name="pcv3_consent_role_primary">الكبسولة الأساسية</string>
+    <string name="pcv3_consent_role_backup">الكبسولة الاحتياطية</string>
+    <string name="pcv3_consent_role_d1_front">بيانات التهيئة في البداية</string>
+    <string name="pcv3_consent_role_d1_tail">بيانات التهيئة في النهاية</string>
+    <string name="pcv3_consent_acknowledgement">أدرك أن هذا الناتج غير متحقق منه.</string>
+    <string name="pcv3_consent_confirm">استرداد دون تحقق</string>
+    <string name="pcv3_consent_cancel">إلغاء الاسترداد</string>
+
+    <string name="pcv3_progress_checking_request">جارٍ فحص العملية…</string>
+    <string name="pcv3_progress_checking_factors">جارٍ فحص سياسة بيانات الاعتماد…</string>
+    <string name="pcv3_progress_checking_resources">جارٍ فحص موارد الجهاز…</string>
+    <string name="pcv3_progress_deriving_key">جارٍ اشتقاق المفتاح…</string>
+    <string name="pcv3_progress_authenticating">جارٍ إجراء المصادقة على الحاوية…</string>
+    <string name="pcv3_progress_recovering">جارٍ استرداد النطاقات المتاحة…</string>
+    <string name="pcv3_progress_preparing_artifact">جارٍ تجهيز ملف الاسترداد…</string>
+    <string name="pcv3_progress_publishing">جارٍ وضع الناتج في الوجهة…</string>
+    <string name="pcv3_progress_confirming_durability">جارٍ التأكد من ثبات الحفظ…</string>
+    <string name="pcv3_progress_working">جارٍ العمل…</string>
+
+    <string name="pcv3_resource_busy_title">هناك عملية آمنة أخرى قيد التنفيذ</string>
+    <string name="pcv3_resource_busy_body">انتظر حتى تنتهي. لم تبدأ هذه العملية ولم يُنشأ أي ناتج.</string>
+    <string name="pcv3_resource_insufficient_title">الموارد اللازمة غير متوفرة</string>
+    <string name="pcv3_resource_insufficient_body">لا يستطيع الجهاز حاليًا تنفيذ العملية وفق إعدادات الأمان الثابتة. لم يُخفّض مستوى الأمان ولم يُنشأ أي ناتج.</string>
+    <string name="pcv3_resource_unknown_title">تعذّر التحقق من موارد الجهاز</string>
+    <string name="pcv3_resource_unknown_body">توقفت العملية قبل اشتقاق المفتاح. لم يُنشأ أي ناتج.</string>
+    <string name="pcv3_resource_close">إغلاق إشعار الموارد</string>
+    <string name="pcv3_unavailable_device_build">صيغة PCV3 غير متوفرة في إصدار التطبيق على هذا الجهاز. احتفظ بالملف الأصلي، فلم يُنشأ أي ناتج.</string>
+
+    <string name="pcv3_outcome_success_title">اكتمل فك التشفير</string>
+    <string name="pcv3_outcome_success_body">تمت المصادقة على الناتج بالكامل.</string>
+    <string name="pcv3_create_outcome_title">أُنشئت حاوية PCV3</string>
+    <string name="pcv3_create_outcome_body">اكتمل إنشاء الحاوية الجديدة. اختر مكانًا لحفظها والاحتفاظ بها.</string>
+    <string name="pcv3_outcome_archive_pending_title">أرشيف جاهز للاستخراج بعد المصادقة</string>
+    <string name="pcv3_outcome_archive_pending_body">تمت المصادقة على محتوى الأرشيف بالكامل. اختر مجلدًا جديدًا للاستخراج. بقي المصدر المشفر محفوظًا.</string>
+    <string name="pcv3_outcome_degraded_title">استُرد ناتج مصادَق عليه رغم التلف</string>
+    <string name="pcv3_outcome_degraded_body">تمت المصادقة على الناتج، لكن البيانات الاحتياطية المخصصة للاسترداد تالفة. احتفظ بالحاوية الأصلية.</string>
+    <string name="pcv3_outcome_force_partial_title">استرداد جزئي</string>
+    <string name="pcv3_outcome_force_partial_body">لم يُتحقق من الملف بالكامل. قد تكون بعض البيانات مفقودة أو غير متحقق منها.</string>
+    <string name="pcv3_outcome_force_unverified_title">استرداد دون تحقق</string>
+    <string name="pcv3_outcome_force_unverified_body">تعذّر التحقق من السلامة. لا تثق بهذا الملف.</string>
+    <string name="pcv3_outcome_credentials_or_damage_title">تعذّر التحقق من بيانات الاعتماد أو بيانات الاسترداد</string>
+    <string name="pcv3_outcome_credentials_or_damage_body">راجع سياسة بيانات الاعتماد المحددة وملفات المفاتيح وترتيبها. لم يُوضع أي ناتج في الوجهة.</string>
+    <string name="pcv3_outcome_authentication_failed_title">فشلت المصادقة</string>
+    <string name="pcv3_outcome_authentication_failed_body">لم يُوضع أي ناتج في الوجهة. لم يبدأ الاسترداد تلقائيًا.</string>
+    <string name="pcv3_outcome_ambiguous_title">تعارض بين بيانات استرداد تمت المصادقة عليها</string>
+    <string name="pcv3_outcome_ambiguous_body">لم يُوضع أي ناتج في الوجهة. احتفظ بالحاوية الأصلية ولا تختر أيًا من الخيارات المتعارضة في التطبيق.</string>
+    <string name="pcv3_outcome_unsupported_title">صيغة PCV3 غير مدعومة</string>
+    <string name="pcv3_outcome_unsupported_body">لم يُنشأ أي ناتج. لم يحاول التطبيق معالجة الملف كحاوية بصيغة قديمة.</string>
+    <string name="pcv3_outcome_invalid_structure_title">بنية PCV3 غير صالحة أو تالفة</string>
+    <string name="pcv3_outcome_invalid_structure_body">توقفت العملية قبل معالجة بيانات الاعتماد وإنشاء الناتج.</string>
+    <string name="pcv3_outcome_credential_mismatch_title">سياسة بيانات الاعتماد غير مطابقة</string>
+    <string name="pcv3_outcome_credential_mismatch_body">راجع اختيار استخدام كلمة المرور أو ملفات المفاتيح وعدد هذه الملفات وترتيبها. لم يبدأ اشتقاق المفتاح أو إنشاء الناتج.</string>
+    <string name="pcv3_outcome_cancelled_title">أُلغيت العملية</string>
+    <string name="pcv3_outcome_cancelled_body">لم يُبلّغ عن اكتمال أي ناتج. بقيت الملفات الأصلية محفوظة.</string>
+    <string name="pcv3_outcome_generic_title">فشلت العملية وتوقفت بأمان</string>
+    <string name="pcv3_outcome_generic_body">لم يُوضع أي ناتج في الوجهة. احتفظ بالمصدر وراجع الحالة المعروضة.</string>
+
+    <string name="pcv3_publication_not_requested_title">لم يُطلب أي ناتج</string>
+    <string name="pcv3_publication_not_requested_body">أُغلق الأرشيف الذي تمت المصادقة عليه دون استخراج محتواه. بقي المصدر المشفر محفوظًا.</string>
+    <string name="pcv3_publication_not_published_title">لم يُوضع أي ناتج في الوجهة</string>
+    <string name="pcv3_publication_not_published_body">بقيت الملفات الأصلية محفوظة.</string>
+    <string name="pcv3_publication_durable_body">تأكد ثبات حفظ الناتج في الوجهة.</string>
+    <string name="pcv3_publication_uncertain_title">لم يتأكد ثبات حفظ الناتج</string>
+    <string name="pcv3_publication_uncertain_body">قد يوجد الناتج في الوجهة، لكن تعذّر تأكيد ثبات حفظه على نظام الملفات. احتفظ بجميع المصادر والوجهة. لا تُعد المحاولة، ولا تستبدل ملفات العملية أو تحذفها، ولا تنظّفها.</string>
+    <string name="pcv3_publication_indeterminate_title">حالة الناتج غير معروفة</string>
+    <string name="pcv3_publication_indeterminate_body">تعذّر تحديد ما إذا اكتمل وضع الناتج في الوجهة. أبقِ جميع المصادر والوجهة كما هي تمامًا. لا تُعد المحاولة ولا تنظّف ملفات العملية.</string>
+    <string name="pcv3_warning_cleanup_title">تعذّر تأكيد تنظيف الملفات المؤقتة</string>
+    <string name="pcv3_warning_cleanup_body">تعذّر على التطبيق تأكيد إزالة جميع الملفات المؤقتة التي أنشأتها هذه العملية. احتفظ بالملفات الأصلية ولا تحذف أي ملفات بناءً على هذه النتيجة.</string>
+    <string name="pcv3_warning_cleanup_durability_title">قد لا يدوم حذف الملفات بعد انقطاع الطاقة</string>
+    <string name="pcv3_warning_cleanup_durability_body">تعذّر على التطبيق تأكيد أن الملفات المؤقتة المحذوفة ستظل محذوفة بعد انقطاع الطاقة. احتفظ بالملفات الأصلية.</string>
+    <string name="pcv3_warning_callback_title">فشل تأكيد الاسترداد</string>
+    <string name="pcv3_warning_callback_body">تعذّر إكمال التأكيد أثناء الاسترداد. لم يُمنح إذن لإخراج بيانات غير متحقق منها.</string>
+    <string name="pcv3_warning_unknown_title">تحذير إضافي بشأن العملية</string>
+    <string name="pcv3_warning_unknown_body">صدر تحذير إضافي أثناء العملية. احتفظ بالمصدر ولا تعتبر هذه النتيجة إذنًا بالتنظيف أو الحذف.</string>
+    <string name="pcv3_archive_close">إغلاق دون استخراج</string>
+    <string name="pcv3_recovery_result_close">إغلاق نتيجة الاسترداد</string>
+    <string name="pcv3_publication_close">إغلاق نتيجة وضع الناتج في الوجهة</string>
+    <string name="pcv3_warning_cleanup_close">إغلاق تحذير التنظيف</string>
+    <string name="pcv3_warning_cleanup_durability_close">إغلاق تحذير ثبات الحذف</string>
+    <string name="pcv3_publication_uncertain_close">إغلاق تحذير ثبات الحفظ</string>
+    <string name="pcv3_publication_indeterminate_close">إغلاق تحذير وضع الناتج في الوجهة</string>
+    <string name="pcv3_output_saved_title">حُفظ الناتج</string>
+    <string name="pcv3_output_saved_body">حُفظ الناتج المحدد. تظل إشعارات المصادقة والاسترداد أدناه سارية.</string>
+    <string name="pcv3_output_saved_cleanup_title">حُفظ الناتج ولم يتأكد التنظيف</string>
+    <string name="pcv3_output_saved_cleanup_body">حُفظ الناتج المحدد، لكن تعذّر تأكيد إزالة الملفات المؤقتة التي أنشأها التطبيق.</string>
+    <string name="pcv3_output_save_failed_title">تعذّر حفظ الناتج</string>
+    <string name="pcv3_output_save_failed_body">لم يتأكد وجود الناتج في الوجهة المحددة. احتفظ بالملفات الأصلية.</string>
+    <string name="pcv3_output_save_failed_cleanup_title">تعذّر الحفظ ولم يتأكد التنظيف</string>
+    <string name="pcv3_output_save_failed_cleanup_body">لم يتأكد وجود الناتج في الوجهة، وتعذّر تأكيد إزالة الملفات المؤقتة التي أنشأها التطبيق.</string>
+    <string name="pcv3_output_discarded_title">حُذف ملف الاسترداد</string>
+    <string name="pcv3_output_discarded_body">أُزيل ملف الاسترداد الخاص بالتطبيق. بقي المصدر المشفر محفوظًا.</string>
+    <string name="pcv3_output_discard_cleanup_title">لم يتأكد حذف ملف الاسترداد</string>
+    <string name="pcv3_output_discard_cleanup_body">تعذّر على التطبيق تأكيد إزالة ملف الاسترداد الخاص به. احتفظ بالمصدر المشفر.</string>
+    <string name="pcv3_output_expired_title">انتهت صلاحية إجراء الناتج</string>
+    <string name="pcv3_output_expired_body">لم يعد إجراء الحفظ أو الحذف صالحًا. لم تتأكد أي وجهة جديدة أو عملية حذف.</string>
+    <string name="pcv3_output_unknown_title">نتيجة الإجراء على الناتج غير معروفة</string>
+    <string name="pcv3_output_unknown_body">تعذّر على التطبيق التحقق من نتيجة الحفظ أو الحذف. احتفظ بالملفات الأصلية ولا تفترض أن الناتج قد حُفظ أو حُذف.</string>
+    <string name="pcv3_output_saved_close">إغلاق نتيجة حفظ الناتج</string>
+    <string name="pcv3_output_save_failed_close">إغلاق إشعار تعذّر الحفظ</string>
+    <string name="pcv3_output_discarded_close">إغلاق نتيجة الحذف</string>
+    <string name="pcv3_output_expired_close">إغلاق إشعار انتهاء صلاحية الإجراء</string>
+    <string name="pcv3_output_unknown_close">إغلاق تحذير الإجراء على الناتج</string>
+    <string name="pcv3_save_decrypted_output">حفظ الناتج بعد فك التشفير</string>
+    <string name="pcv3_save_created_volume">حفظ الحاوية الجديدة</string>
+    <string name="pcv3_save_recovery_artifact">حفظ ملف الاسترداد</string>
+    <string name="pcv3_inspect_recovery_artifact">فحص ملف الاسترداد</string>
+    <string name="pcv3_discard_artifact_title">حذف ملف الاسترداد؟</string>
+    <string name="pcv3_discard_artifact_body">سيُحذف ملف الاسترداد الخاص بالتطبيق، ولا يمكن التراجع عن ذلك. ستبقى الحاوية الأصلية محفوظة.</string>
+    <string name="pcv3_discard_recovery_artifact">حذف ملف الاسترداد</string>
+    <string name="pcv3_keep_recovery_artifact">الاحتفاظ بملف الاسترداد</string>
+    <string name="pcv3_artifact_details_title">تفاصيل ملف الاسترداد</string>
+    <string name="pcv3_artifact_details_close">إغلاق تفاصيل الاسترداد</string>
+    <string name="pcv3_artifact_loading">جارٍ تحميل تفاصيل الاسترداد…</string>
+    <string name="pcv3_artifact_load_failed">تعذّر تحميل تفاصيل الاسترداد</string>
+    <string name="pcv3_artifact_no_ranges">لم تُسجّل أي نطاقات قابلة للاسترداد.</string>
+    <string name="pcv3_artifact_kind">نوع ملف الاسترداد: %1$s</string>
+    <string name="pcv3_artifact_kind_partial">استرداد جزئي</string>
+    <string name="pcv3_artifact_kind_unverified_forensic">استرداد جنائي رقمي دون تحقق</string>
+    <string name="pcv3_artifact_role">المصدر الفعلي: %1$s</string>
+    <string name="pcv3_artifact_role_none">لم يُسجّل أي مصدر فعلي</string>
+    <string name="pcv3_artifact_plaintext_length">طول البيانات غير المشفرة: %1$s</string>
+    <string name="pcv3_artifact_final_status">حالة السجل الختامي: %1$s</string>
+    <string name="pcv3_artifact_verified_count">النطاقات التي تم التحقق منها: %1$s</string>
+    <string name="pcv3_artifact_unverified_count">النطاقات غير المتحقق منها: %1$s</string>
+    <string name="pcv3_artifact_missing_count">النطاقات المفقودة: %1$s</string>
+    <string name="pcv3_artifact_status_verified">تم التحقق</string>
+    <string name="pcv3_artifact_status_unverified">لم يُتحقق منه</string>
+    <string name="pcv3_artifact_status_missing">مفقود</string>
+    <string name="pcv3_artifact_row">السجل %1$s، البايتات من %2$s إلى %3$s، %4$s</string>
+    <string name="pcv3_artifact_previous_page">النطاقات السابقة</string>
+    <string name="pcv3_artifact_next_page">النطاقات التالية</string>
+    <string name="pcv3_output_provider_unsupported">لا يدعم موفّر التخزين هذا حفظ الناتج. اختر وجهة أخرى. لا يزال الناتج المحتفظ به متاحًا.</string>
+
+    <!-- Retained output and bounded creation request feedback. -->
+    <string name="pcv3_request_too_large">تجاوزت العناصر المحددة أو التعليق الحدود المدعومة. اختر عناصر أقل أو اكتب تعليقًا أقصر.</string>
+    <string name="pcv3_discard_retained_title">حذف الناتج؟</string>
+    <string name="pcv3_discard_retained_body">سيُحذف الناتج الخاص بالتطبيق، ولا يمكن التراجع عن ذلك. ستبقى ملفاتك الأصلية محفوظة.</string>
+    <string name="pcv3_retained_discarded_title">حُذف الناتج</string>
+    <string name="pcv3_retained_discarded_body">أُزيل الناتج الخاص بالتطبيق. بقيت ملفاتك الأصلية محفوظة.</string>
+    <string name="pcv3_retained_discard_cleanup_title">لم يتأكد حذف الناتج</string>
+    <string name="pcv3_retained_discard_cleanup_body">تعذّر على التطبيق تأكيد إزالة الناتج الخاص به. احتفظ بملفاتك الأصلية.</string>
+    <string name="pcv3_resource_limit_title">بلوغ الحد الأقصى للموارد</string>
+    <string name="pcv3_resource_limit_body">توقفت العملية بسبب بلوغ الحد الأقصى لأحد موارد المعالجة.</string>
+    <string name="pcv3_d1_profile_heading">إعداد الاسترداد</string>
+    <string name="pcv3_d1_profile_auto">تلقائي</string>
+    <string name="pcv3_d1_profile_standard">قياسي</string>
+    <string name="pcv3_outcome_d1_profile_required_title">اختر إعداد الاسترداد</string>
+    <string name="pcv3_outcome_d1_profile_required_body">اختر الإعداد الذي استُخدم عند إنشاء هذه الحاوية، سواء كان القياسي أم الحذر الشديد، ثم أعد المحاولة. لم يُوضع أي ناتج في الوجهة.</string>
+    <string name="comments_unverified">التعليقات (لم يُتحقق منها)</string>
+    <string name="comment_authenticity_authenticated">تمت المصادقة على تعليق الحاوية.</string>
+    <string name="comment_authenticity_unverified">لم يُتحقق من تعليق الحاوية.</string>
+    <string name="legacy_v1_security_warning">الصيغة القديمة v1 لا تصادق على الترويسة أو التعليق. ربما عُدّل التعليق. أعد التشفير بصيغة PCV3.</string>
+    <string name="legacy_v2_security_warning">تصادق الصيغة القديمة v2 على الترويسة باستخدام كلمة المرور فقط. لا تُستخدم ملفات المفاتيح في مصادقة الترويسة. أعد التشفير بصيغة PCV3.</string>
+</resources>
