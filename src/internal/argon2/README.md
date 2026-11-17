@@ -1,6 +1,6 @@
 # Maintained Argon2 copy
 
-This package copies only `golang.org/x/crypto/argon2` at **v0.58.0**, with
+This package copies only `golang.org/x/crypto/argon2` at **v0.59.0**, with
 the upstream BSD license in `LICENSE`. `UPSTREAM.json` records the original
 SHA-256 of every copied file. BLAKE2b and CPU detection remain dependencies of
 the pinned upstream modules; this is not a copy of the entire crypto module.
