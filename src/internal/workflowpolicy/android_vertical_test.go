@@ -60,7 +60,7 @@ func TestAndroidSharedBuildPreservesUnsignedPrefixAndSigningBoundary(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "e93707ede2f20d5f9e69641f1c138b20457abd3409db04bed9c79e2e99e540a4" {
+	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "d3d91299064579819f763418b0b9ac856aa88fbbd21f9fc1a4055748a3462cb8" {
 		t.Fatalf("existing unsigned Android commands or signing-input bundle changed: %s", got)
 	}
 	var owner struct {
@@ -69,13 +69,14 @@ func TestAndroidSharedBuildPreservesUnsignedPrefixAndSigningBoundary(t *testing.
 	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/workflows/build-android.yml")), &owner); err != nil {
 		t.Fatal(err)
 	}
-	// Native-step hashes come from the original 3b0851a workflow; routing and transport are checked separately.
+	// Native-step hashes start from the original 3b0851a workflow and include the reviewed JDK setup update.
+	// Routing and transport are checked separately.
 	for _, recipe := range []struct {
 		job   string
 		names []string
 		want  string
 	}{
-		{"sign", []string{"Set up Android SDK", "Set up JDK 21", "Install offline APK signing tools", "Validate unsigned signing inputs before loading secrets", "Compile the SDK signing launcher before loading secrets", "Sign verified APKs with the offline SDK", "Verify exact signed release APK contract"}, "ea88ad6ef970ad9a87a878f9fa746612b100d22f6df2977401e02ed22e9eaefe"},
+		{"sign", []string{"Set up Android SDK", "Set up JDK 21", "Install offline APK signing tools", "Validate unsigned signing inputs before loading secrets", "Compile the SDK signing launcher before loading secrets", "Sign verified APKs with the offline SDK", "Verify exact signed release APK contract"}, "ec96d0934fa396b9cbe1e8d5ac06893d4f993b9cf5a0d825aa273d4a1c04527e"},
 		{"release", []string{"Get version tag", "Sign and attest artifacts", "Generate release notes", "Stage release assets"}, "9917225713b495880332314d9ba096589936940ebad6984f5dee44215d55a8b0"},
 	} {
 		var selected []map[string]any
