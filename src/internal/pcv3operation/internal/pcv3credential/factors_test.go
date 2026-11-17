@@ -191,6 +191,37 @@ func TestFactorRequestCloseReleasesUnconsumedOwnership(t *testing.T) {
 	}
 }
 
+func TestPinnedFactorRequestRejectsUnknownPolicyBeforeReading(t *testing.T) {
+	password := []byte("test password")
+	reader := newChunkedReadCloser([]byte("test keyfile"), 0)
+	const unknown = FactorPolicy(0xff)
+	request := NewPinnedFactorRequest(unknown, KeyfileModeOrdered, password)
+	request.Keyfiles = ownKeyfileReaders(reader)
+	if request.ExpectedPolicy != unknown || request.KeyfileMode != KeyfileModeOrdered {
+		t.Fatal("constructor changed the supplied policy or order")
+	}
+	err := WithValidatedFactors(context.Background(), request, func(*ValidatedFactors) error {
+		t.Error("unknown policy reached factor consumer")
+		return nil
+	})
+	requireFactorCode(t, err, FactorErrorInvalidMode)
+	if reader.readCalls != 0 || reader.closeCalls != 1 {
+		t.Fatalf("rejected factors read %d times and closed %d times", reader.readCalls, reader.closeCalls)
+	}
+	if !bytes.Equal(password, make([]byte, len(password))) {
+		t.Fatal("rejected request did not wipe its password buffer")
+	}
+}
+
+func TestSelectedFactorRequestRejectsEmptySelectionAtValidation(t *testing.T) {
+	request := NewSelectedFactorRequest(nil, false, true)
+	err := WithValidatedFactors(context.Background(), request, func(*ValidatedFactors) error {
+		t.Error("empty factor selection reached factor consumer")
+		return nil
+	})
+	requireFactorCode(t, err, FactorErrorInvalidCombination)
+}
+
 func TestFactorModeMatrix(t *testing.T) {
 	if CredentialModePasswordOnly != 0x01 ||
 		CredentialModeKeyfilesOnly != 0x02 ||

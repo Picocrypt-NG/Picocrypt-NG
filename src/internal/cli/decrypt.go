@@ -911,7 +911,7 @@ func runPCV3CLI(
 			return errors.New("--pcv3-d1-suite requires standard or paranoid")
 		}
 	}
-	factorMode, keyfileMode, policy, err := pcv3CLIFactorPolicy(
+	policy, keyfileMode, err := pcv3CLIFactorPolicy(
 		decPCV3Factors,
 		decPCV3Order,
 		len(decPassword) > 0,
@@ -924,7 +924,7 @@ func runPCV3CLI(
 	decPassword = ""
 	defer func() { secret.SecureZero(password) }()
 	if decPasswordFD >= 3 {
-		if factorMode == pcv3operation.CredentialModeKeyfilesOnly {
+		if policy == pcv3operation.FactorPolicyKeyfilesOnly {
 			return errors.New("keyfiles-only PCV3 policy cannot read a password from a file descriptor")
 		}
 		secret.SecureZero(password)
@@ -933,7 +933,7 @@ func runPCV3CLI(
 			return err
 		}
 	} else if decPasswordStdin {
-		if factorMode == pcv3operation.CredentialModeKeyfilesOnly {
+		if policy == pcv3operation.FactorPolicyKeyfilesOnly {
 			return errors.New("keyfiles-only PCV3 policy cannot read a password from stdin")
 		}
 		secret.SecureZero(password)
@@ -942,8 +942,7 @@ func runPCV3CLI(
 			return err
 		}
 	}
-	if (factorMode == pcv3operation.CredentialModePasswordOnly ||
-		factorMode == pcv3operation.CredentialModePasswordAndKeyfiles) && len(password) == 0 {
+	if policy != pcv3operation.FactorPolicyKeyfilesOnly && len(password) == 0 {
 		password, err = ReadPasswordInteractive(false, false)
 		if err != nil {
 			return fmt.Errorf("password input: %w", err)
@@ -956,13 +955,8 @@ func runPCV3CLI(
 	request.SplitBase = splitBase
 	request.Protected = append([]string(nil), decKeyfiles...)
 
-	request.Factors = &pcv3operation.FactorRequest{
-		Mode:           factorMode,
-		KeyfileMode:    keyfileMode,
-		ExpectedPolicy: policy,
-		Password:       password,
-		Keyfiles:       make([]*pcv3operation.KeyfileReader, 0, len(decKeyfiles)),
-	}
+	request.Factors = pcv3operation.NewPinnedFactorRequest(policy, keyfileMode, password)
+	request.Factors.Keyfiles = make([]*pcv3operation.KeyfileReader, 0, len(decKeyfiles))
 	password = nil
 	for _, path := range decKeyfiles {
 		file, openErr := pcv3CLIOpenKeyfile(path)
@@ -1069,9 +1063,9 @@ func pcv3CLIFactorPolicy(
 	orderName string,
 	hasPassword bool,
 	keyfileCount int,
-) (pcv3operation.CredentialMode, pcv3operation.KeyfileMode, pcv3operation.FactorPolicy, error) {
+) (pcv3operation.FactorPolicy, pcv3operation.KeyfileMode, error) {
 	if keyfileCount > pcv3operation.MaxKeyfiles {
-		return 0, 0, 0, fmt.Errorf("PCV3 supports at most %d keyfiles", pcv3operation.MaxKeyfiles)
+		return 0, 0, fmt.Errorf("PCV3 supports at most %d keyfiles", pcv3operation.MaxKeyfiles)
 	}
 	var order pcv3operation.KeyfileMode
 	switch orderName {
@@ -1082,29 +1076,26 @@ func pcv3CLIFactorPolicy(
 	case "unordered":
 		order = pcv3operation.KeyfileModeUnordered
 	default:
-		return 0, 0, 0, errors.New("invalid --pcv3-keyfile-order; use ordered or unordered")
+		return 0, 0, errors.New("invalid --pcv3-keyfile-order; use ordered or unordered")
 	}
 	switch policyName {
 	case "password":
 		if keyfileCount != 0 || order != pcv3operation.KeyfileModeNone {
-			return 0, 0, 0, errors.New("password-only PCV3 policy cannot include keyfiles or keyfile order")
+			return 0, 0, errors.New("password-only PCV3 policy cannot include keyfiles or keyfile order")
 		}
-		return pcv3operation.CredentialModePasswordOnly, order,
-			pcv3operation.FactorPolicyPasswordOnly, nil
+		return pcv3operation.FactorPolicyPasswordOnly, order, nil
 	case "keyfiles":
 		if hasPassword || keyfileCount == 0 || order == pcv3operation.KeyfileModeNone {
-			return 0, 0, 0, errors.New("keyfiles-only PCV3 policy requires keyfiles, explicit order, and an empty password")
+			return 0, 0, errors.New("keyfiles-only PCV3 policy requires keyfiles, explicit order, and an empty password")
 		}
-		return pcv3operation.CredentialModeKeyfilesOnly, order,
-			pcv3operation.FactorPolicyKeyfilesOnly, nil
+		return pcv3operation.FactorPolicyKeyfilesOnly, order, nil
 	case "combined":
 		if keyfileCount == 0 || order == pcv3operation.KeyfileModeNone {
-			return 0, 0, 0, errors.New("combined PCV3 policy requires keyfiles and explicit order")
+			return 0, 0, errors.New("combined PCV3 policy requires keyfiles and explicit order")
 		}
-		return pcv3operation.CredentialModePasswordAndKeyfiles, order,
-			pcv3operation.FactorPolicyPasswordAndKeyfiles, nil
+		return pcv3operation.FactorPolicyPasswordAndKeyfiles, order, nil
 	default:
-		return 0, 0, 0, errors.New("invalid --pcv3-factors; use password, keyfiles, or combined")
+		return 0, 0, errors.New("invalid --pcv3-factors; use password, keyfiles, or combined")
 	}
 }
 

@@ -114,6 +114,34 @@ type FactorRequest struct {
 	Keyfiles                []*KeyfileReader
 }
 
+// NewPinnedFactorRequest takes ownership of password for an explicitly selected
+// policy. The common factor validator still checks the complete request.
+func NewPinnedFactorRequest(expected FactorPolicy, order KeyfileMode, password []byte) *FactorRequest {
+	return &FactorRequest{
+		Mode:           credentialModeForPolicy(expected),
+		KeyfileMode:    order,
+		ExpectedPolicy: expected,
+		Password:       password,
+	}
+}
+
+// NewSelectedFactorRequest takes ownership of password and derives the request
+// shape from the caller's selection. The caller attaches its keyfile readers.
+func NewSelectedFactorRequest(password []byte, hasKeyfiles, ordered bool) *FactorRequest {
+	if !hasKeyfiles {
+		return NewPinnedFactorRequest(FactorPolicyPasswordOnly, KeyfileModeNone, password)
+	}
+	policy := FactorPolicyKeyfilesOnly
+	if len(password) != 0 {
+		policy = FactorPolicyPasswordAndKeyfiles
+	}
+	order := KeyfileModeUnordered
+	if ordered {
+		order = KeyfileModeOrdered
+	}
+	return NewPinnedFactorRequest(policy, order, password)
+}
+
 // RequireNonemptyKeyfiles strengthens creation policy without changing legacy
 // read transcripts. Emptiness is checked while consuming the owned reader.
 func (request *FactorRequest) RequireNonemptyKeyfiles() {
@@ -477,28 +505,26 @@ func validCredentialTuple(
 	}
 }
 
-func validFactorPolicy(policy FactorPolicy) bool {
+func credentialModeForPolicy(policy FactorPolicy) CredentialMode {
 	switch policy {
-	case FactorPolicyPasswordOnly,
-		FactorPolicyKeyfilesOnly,
-		FactorPolicyPasswordAndKeyfiles:
-		return true
+	case FactorPolicyPasswordOnly:
+		return CredentialModePasswordOnly
+	case FactorPolicyKeyfilesOnly:
+		return CredentialModeKeyfilesOnly
+	case FactorPolicyPasswordAndKeyfiles:
+		return CredentialModePasswordAndKeyfiles
 	default:
-		return false
+		return 0
 	}
 }
 
+func validFactorPolicy(policy FactorPolicy) bool {
+	return credentialModeForPolicy(policy) != 0
+}
+
 func policyMatchesMode(policy FactorPolicy, mode CredentialMode) bool {
-	switch policy {
-	case FactorPolicyPasswordOnly:
-		return mode == CredentialModePasswordOnly
-	case FactorPolicyKeyfilesOnly:
-		return mode == CredentialModeKeyfilesOnly
-	case FactorPolicyPasswordAndKeyfiles:
-		return mode == CredentialModePasswordAndKeyfiles
-	default:
-		return false
-	}
+	expected := credentialModeForPolicy(policy)
+	return expected != 0 && expected == mode
 }
 
 func isNilReadCloser(reader io.ReadCloser) bool {

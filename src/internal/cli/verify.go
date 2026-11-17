@@ -52,11 +52,11 @@ func newVerifyCommand() *cobra.Command {
 		if passwordSources > 1 {
 			return errors.New("choose only one password source")
 		}
-		mode, keyMode, policy, err := pcv3CLIFactorPolicy(policyName, order, len(password) != 0, len(keyfiles))
+		policy, keyMode, err := pcv3CLIFactorPolicy(policyName, order, len(password) != 0, len(keyfiles))
 		if err != nil {
 			return err
 		}
-		if mode == pcv3operation.CredentialModeKeyfilesOnly && (passwordStdin || passwordFD >= 3) {
+		if policy == pcv3operation.FactorPolicyKeyfilesOnly && (passwordStdin || passwordFD >= 3) {
 			return errors.New("keyfiles-only PCV3 policy cannot read a password")
 		}
 		passwordBytes := []byte(password)
@@ -67,13 +67,13 @@ func newVerifyCommand() *cobra.Command {
 			passwordBytes, err = ReadPasswordFromFD(passwordFD)
 		case passwordStdin:
 			passwordBytes, err = ReadPasswordFromStdin()
-		case mode != pcv3operation.CredentialModeKeyfilesOnly && len(passwordBytes) == 0:
+		case policy != pcv3operation.FactorPolicyKeyfilesOnly && len(passwordBytes) == 0:
 			passwordBytes, err = ReadPasswordInteractive(false, false)
 		}
 		if err != nil {
 			return err
 		}
-		request := &pcv3operation.D1VerifyRequest{Factors: &pcv3operation.FactorRequest{Mode: mode, KeyfileMode: keyMode, ExpectedPolicy: policy, Password: passwordBytes}}
+		request := &pcv3operation.D1VerifyRequest{Factors: pcv3operation.NewPinnedFactorRequest(policy, keyMode, passwordBytes)}
 		passwordBytes = nil
 		defer func() {
 			cleanupFailed := false

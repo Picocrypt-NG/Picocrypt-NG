@@ -64,7 +64,6 @@ type pcv3Envelope struct {
 	compress                           bool
 	inputFiles, onlyFiles, onlyFolders []string
 	comment                            string
-	factorMode                         pcv3operation.CredentialMode
 	keyfileMode                        pcv3operation.KeyfileMode
 	factorPolicy                       pcv3operation.FactorPolicy
 	source                             string
@@ -172,13 +171,8 @@ func StartPCV3(requestJSON string, password []byte) *PCV3StartResult {
 	}
 	ownedKeyfiles = false
 
-	factors := &pcv3operation.FactorRequest{
-		Mode:           envelope.factorMode,
-		KeyfileMode:    envelope.keyfileMode,
-		ExpectedPolicy: envelope.factorPolicy,
-		Password:       passwordCopy,
-		Keyfiles:       readers,
-	}
+	factors := pcv3operation.NewPinnedFactorRequest(envelope.factorPolicy, envelope.keyfileMode, passwordCopy)
+	factors.Keyfiles = readers
 	passwordCopy = nil
 	ownedPassword = false
 
@@ -405,13 +399,10 @@ func decodePCV3Envelope(input string) (pcv3Envelope, error) {
 	envelope.keyfiles = keyfiles
 	switch policyText {
 	case "password":
-		envelope.factorMode = pcv3operation.CredentialModePasswordOnly
 		envelope.factorPolicy = pcv3operation.FactorPolicyPasswordOnly
 	case "keyfiles":
-		envelope.factorMode = pcv3operation.CredentialModeKeyfilesOnly
 		envelope.factorPolicy = pcv3operation.FactorPolicyKeyfilesOnly
 	case "password-and-keyfiles":
-		envelope.factorMode = pcv3operation.CredentialModePasswordAndKeyfiles
 		envelope.factorPolicy = pcv3operation.FactorPolicyPasswordAndKeyfiles
 	default:
 		return pcv3Envelope{}, errors.New("invalid PCV3 envelope")
@@ -554,11 +545,11 @@ func jsonDecoderAtEOF(decoder *json.Decoder) bool {
 }
 
 func (envelope pcv3Envelope) validFactorShape() bool {
-	switch envelope.factorMode {
-	case pcv3operation.CredentialModePasswordOnly:
+	switch envelope.factorPolicy {
+	case pcv3operation.FactorPolicyPasswordOnly:
 		return envelope.keyfileMode == pcv3operation.KeyfileModeNone && len(envelope.keyfiles) == 0
-	case pcv3operation.CredentialModeKeyfilesOnly,
-		pcv3operation.CredentialModePasswordAndKeyfiles:
+	case pcv3operation.FactorPolicyKeyfilesOnly,
+		pcv3operation.FactorPolicyPasswordAndKeyfiles:
 		return envelope.keyfileMode != pcv3operation.KeyfileModeNone && len(envelope.keyfiles) > 0
 	default:
 		return false
@@ -569,13 +560,11 @@ func (envelope pcv3Envelope) acceptsPassword(password []byte) bool {
 	if len(password) > maxPCV3PasswordBytes {
 		return false
 	}
-	switch envelope.factorMode {
-	case pcv3operation.CredentialModePasswordOnly:
+	switch envelope.factorPolicy {
+	case pcv3operation.FactorPolicyPasswordOnly, pcv3operation.FactorPolicyPasswordAndKeyfiles:
 		return len(password) > 0
-	case pcv3operation.CredentialModeKeyfilesOnly:
+	case pcv3operation.FactorPolicyKeyfilesOnly:
 		return len(password) == 0
-	case pcv3operation.CredentialModePasswordAndKeyfiles:
-		return len(password) > 0
 	default:
 		return false
 	}
