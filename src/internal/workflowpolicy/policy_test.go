@@ -2132,7 +2132,7 @@ func TestPrereleaseVersionPatternCoversCommonMarkers(t *testing.T) {
 func TestAndroidGomobileBuildUsesReproducibleLinkerFlags(t *testing.T) {
 	content := mustReadRepoFile(t, "android/build-gomobile.sh")
 
-	mustContain(t, content, `REQUIRED_GO_VERSION="go1.27.4"`)
+	mustContain(t, content, `REQUIRED_GO_VERSION="go1.27.3"`)
 	mustContain(t, content, `-ldflags="$GOMOBILE_LDFLAGS"`)
 	mustContain(t, content, `-s -w -buildid=`)
 }
@@ -2206,7 +2206,7 @@ func TestWindowsLegacyWorkflowsBuildFreshSourceToolchain(t *testing.T) {
 				t.Fatalf("%s must not restore executable legacy toolchains from cache", tc.path)
 			}
 		}
-		build := mustStepNamed(t, job, "Build patched Go 1.27.4 for Windows 7/8")
+		build := mustStepNamed(t, job, "Build patched Go 1.27.3 for Windows 7/8")
 		if build.Shell != "pwsh" || build.If != "" || build.ContinueOnError != nil {
 			t.Fatal("legacy compiler source build must run unconditionally and fail closed")
 		}
@@ -2275,8 +2275,8 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 					continue
 				}
 				setupGoSteps[lane]++
-				if got := step.With["go-version"]; got != "1.27.4" {
-					t.Fatalf("%s job %s go-version = %#v, want 1.27.4", relPath, jobName, got)
+				if got := step.With["go-version"]; got != "1.27.3" {
+					t.Fatalf("%s job %s go-version = %#v, want 1.27.3", relPath, jobName, got)
 				}
 			}
 		}
@@ -2296,7 +2296,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 		t.Fatalf("decode mise toolchain configuration: %v", err)
 	}
 	for tool, want := range map[string]string{
-		"go":                                   "1.27.4",
+		"go":                                   "1.27.3",
 		"go:golang.org/x/vuln/cmd/govulncheck": "1.9.0",
 	} {
 		if got := config.Tools[tool]; got != want {
@@ -2306,7 +2306,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	// Android bindings retain the toolchain required by build-gomobile.sh,
 	// even when the desktop development tools are upgraded.
 	for tool, want := range map[string]string{
-		"go":                                  "1.27.4",
+		"go":                                  "1.27.3",
 		"go:golang.org/x/mobile/cmd/gobind":   "v0.0.0-20261011034528-197770444867",
 		"go:golang.org/x/mobile/cmd/gomobile": "v0.0.0-20261011034528-197770444867",
 	} {
@@ -2316,7 +2316,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	}
 
 	goMod := mustReadRepoFile(t, "src/go.mod")
-	mustMatch(t, goMod, `(?m)^go 1\.27\.4$`)
+	mustMatch(t, goMod, `(?m)^go 1\.27\.3$`)
 	mustNotContain(t, goMod, "\ntoolchain ")
 
 	staticChecks := mustReadWorkflow(t, ".github/workflows/pr-static-checks.yml")
@@ -2326,12 +2326,12 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 
 func TestSnapcraftBuildUsesExactGoToolchain(t *testing.T) {
 	content := mustReadRepoFile(t, "dist/snapcraft/snapcraft.yaml")
-	mustContain(t, content, "https://go.dev/dl/go1.27.4.linux-amd64.tar.gz")
-	mustContain(t, content, "sha256/7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840")
+	mustContain(t, content, "https://go.dev/dl/go1.27.3.linux-amd64.tar.gz")
+	mustContain(t, content, "sha256/65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40")
 	mustContain(t, content, `PATH: "${CRAFT_STAGE}/go/bin:${PATH}"`)
 	mustContain(t, content, `GOROOT: "${CRAFT_STAGE}/go"`)
 	mustContain(t, content, "GOTOOLCHAIN: local")
-	mustContain(t, content, `test "$(go env GOVERSION)" = "go1.27.4"`)
+	mustContain(t, content, `test "$(go env GOVERSION)" = "go1.27.3"`)
 	mustNotContain(t, content, "source-subdir: go")
 	mustNotContain(t, content, "build-snaps:\n      - go")
 }
@@ -2346,7 +2346,7 @@ func TestWindowsLegacyWorkflowsUsePinnedLocalFork(t *testing.T) {
 			t.Fatalf("%s must pin local toolchain and baseline x86-64 CPU settings", tc.path)
 		}
 		inspect := mustStepNamed(t, job, "Verify Go installation")
-		for _, required := range []string{`C:\go-legacy\go\bin\go.exe`, `C:\go-legacy\go`, "Get-Command go -CommandType Application | Select-Object -First 1", "go env -json GOROOT GOVERSION GOTOOLCHAIN GOOS GOARCH GOAMD64 GOEXPERIMENT", "$actualGo -ne $expectedGo", "$goEnvironment.GOROOT -ne $expectedRoot", "go1.27.4", "$goEnvironment.GOAMD64 -ne 'v1'", "$goEnvironment.GOTOOLCHAIN -ne 'local'"} {
+		for _, required := range []string{`C:\go-legacy\go\bin\go.exe`, `C:\go-legacy\go`, "Get-Command go -CommandType Application | Select-Object -First 1", "go env -json GOROOT GOVERSION GOTOOLCHAIN GOOS GOARCH GOAMD64 GOEXPERIMENT", "$actualGo -ne $expectedGo", "$goEnvironment.GOROOT -ne $expectedRoot", "go1.27.3", "$goEnvironment.GOAMD64 -ne 'v1'", "$goEnvironment.GOTOOLCHAIN -ne 'local'"} {
 			mustContain(t, inspect.Run, required)
 		}
 		regression := mustStepNamed(t, job, "Run native legacy toolchain regressions")
@@ -2358,10 +2358,10 @@ func TestWindowsLegacyWorkflowsUsePinnedLocalFork(t *testing.T) {
 		}
 		verify := mustStepNamed(t, job, "Verify legacy binary toolchain")
 		mustContain(t, verify.Run, "go version -m")
-		mustContain(t, verify.Run, `go1\.27\.4`)
+		mustContain(t, verify.Run, `go1\.27\.3`)
 		mustContain(t, verify.Run, `GOAMD64=v1`)
 		mustContain(t, verify.Run, ".github/scripts/assert-windows-legacy-pe.ps1")
-		mustContainInOrder(t, windowsBuildPolicyContent(t, tc.path), "name: Build patched Go 1.27.4 for Windows 7/8", "name: Verify Go installation", "name: Run native legacy toolchain regressions", "name: Run tests", "name: Build CLI-only legacy binary", "name: Verify legacy binary toolchain", "name: Compress with upx")
+		mustContainInOrder(t, windowsBuildPolicyContent(t, tc.path), "name: Build patched Go 1.27.3 for Windows 7/8", "name: Verify Go installation", "name: Run native legacy toolchain regressions", "name: Run tests", "name: Build CLI-only legacy binary", "name: Verify legacy binary toolchain", "name: Compress with upx")
 	}
 }
 
@@ -2387,7 +2387,7 @@ func TestWindowsLegacyToolchainInputsHaveApprovedDigests(t *testing.T) {
 	if err := json.Unmarshal([]byte(mustReadRepoFile(t, ".github/toolchains/legacy-go/manifest.json")), &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "go1.27.4" || manifest.Source.URL != "https://go.dev/dl/go1.27.4.src.tar.gz" || manifest.Source.SHA256 != "73cfb8571aec0c01177687db87163d46aa20e9779672772891aa17654d9a6099" || manifest.Bootstrap.URL != "https://go.dev/dl/go1.27.4.windows-amd64.zip" || manifest.Bootstrap.SHA256 != "178ab98950ac69ab25069307dc6ade79f3816e414cce95b4da166a115cde1e7e" || manifest.Vendor != "2f6cdc24e8e5c029eafebe42fcbe966cc0589f97" {
+	if manifest.Version != "go1.27.3" || manifest.Source.URL != "https://go.dev/dl/go1.27.3.src.tar.gz" || manifest.Source.SHA256 != "6e7749035cf360f06b2575d162ea79df9fda8ef671889e5c375f8e50777f26bb" || manifest.Bootstrap.URL != "https://go.dev/dl/go1.27.3.windows-amd64.zip" || manifest.Bootstrap.SHA256 != "f26081f438319757f8a1b46d7d0b2c5ec7583d4038e485e0aa725cfde7885fff" || manifest.Vendor != "2f6cdc24e8e5c029eafebe42fcbe966cc0589f97" {
 		t.Fatal("legacy source/bootstrap must retain the approved official Go release digests and compatibility source commit")
 	}
 	expected := map[string]string{
