@@ -60,6 +60,7 @@ class ProgressCardTest {
         warning: LegacySecurityWarning, commentResource: Int, warningResource: Int, unverified: Boolean = false) {
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val main = MainViewModel(app, androidx.lifecycle.SavedStateHandle())
+        val operationViewModel = OperationViewModel()
         val operation = TestDataBuilders.createOperationState(
             type = OperationType.DECRYPT,
             status = OperationStatusData(if (unverified) OperationStatus.COMPLETED_UNVERIFIED else OperationStatus.COMPLETED),
@@ -67,7 +68,7 @@ class ProgressCardTest {
         ).copy(legacyVersion = version, commentAuthenticity = authenticity, legacySecurityWarning = warning)
         val original = swapOperationState(operation)
         try {
-            composeTestRule.setContent { ProgressCard(main, OperationViewModel()) }
+            composeTestRule.setContent { ProgressCard(main, operationViewModel) }
             composeTestRule.onNodeWithText(app.getString(commentResource)).assertIsDisplayed()
             composeTestRule.onNodeWithText(app.getString(warningResource)).assertIsDisplayed()
             composeTestRule.onNodeWithText(app.getString(R.string.save)).assertIsEnabled()
