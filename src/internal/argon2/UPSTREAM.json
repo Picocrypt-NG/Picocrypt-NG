@@ -1,9 +1,9 @@
 {
   "module": "golang.org/x/crypto",
-  "version": "v0.58.0",
+  "version": "v0.59.0",
   "package": "argon2",
-  "source": "https://github.com/golang/crypto/tree/v0.58.0/argon2",
-  "module_sum": "h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54=",
+  "source": "https://github.com/golang/crypto/tree/v0.59.0/argon2",
+  "module_sum": "h1:xS2jhqYbzNrpvkWP2YTDf4TJwBy3ykR03i8vFDxEc7c=",
   "original_sha256": {
     "LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
     "argon2/argon2.go": "3675c69f8a2efbd5ae4d35d00f5679113b50ec32f3fe6482c669ef7b401a38d5",
