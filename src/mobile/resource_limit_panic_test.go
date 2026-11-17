@@ -32,46 +32,59 @@ func TestResourceBudgetRefusalKeepsDiagnosticAcrossMobileBoundary(t *testing.T) 
 }
 
 func TestWritePanicKeepsCleanupWarningWithoutDisclosingPanic(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		dir := t.TempDir()
-		source := writePCV3MobileFile(t, dir, "source.bin", "unchanged source")
-		target := filepath.Join(dir, "output.pcv")
-		const sensitive = "private panic value"
-		previous := runPCV3WriteWithOptions
-		runPCV3WriteWithOptions = func(context.Context, *pcv3operation.WriteRequest, pcv3operation.ExecutionOptions) *pcv3operation.Result {
-			fileops.RepanicWithCleanup(sensitive, errors.New("private cleanup detail"))
-			return nil
-		}
-		t.Cleanup(func() { runPCV3WriteWithOptions = previous })
-		start := StartPCV3(pcv3WriteTestEnvelope("write-normal", "password", "none", "standard", false, "", source, target, nil), []byte("public fixture password"))
-		if start.Operation() == nil {
-			t.Fatal("valid write request refused before the tested boundary")
-		}
-		synctest.Wait()
-		snapshot := start.Operation().Snapshot()
-		if snapshot.Diagnostic() != "callback-panic" {
-			t.Fatalf("panic diagnostic = %q", snapshot.Diagnostic())
-		}
-		found := false
-		for index := range snapshot.WarningCount() {
-			if snapshot.WarningAt(index) == "cleanup-incomplete" {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatal("panic suppressed the incomplete-cleanup warning")
-		}
-		if strings.Contains(snapshot.Diagnostic(), sensitive) {
-			t.Fatal("panic text disclosed")
-		}
-		if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("panic published output: %v", err)
-		}
-		if body, err := os.ReadFile(source); err != nil || string(body) != "unchanged source" {
-			t.Fatal("original changed")
-		}
-		if code := start.Operation().Release(); code != "" {
-			t.Fatal(code)
-		}
-	})
+	for _, test := range []struct {
+		name    string
+		carrier bool
+	}{
+		{name: "cleanup-carrier", carrier: true},
+		{name: "request-cleanup"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				dir := t.TempDir()
+				source := writePCV3MobileFile(t, dir, "source.bin", "unchanged source")
+				target := filepath.Join(dir, "output.pcv")
+				const sensitive, cleanupDetail = "private panic value", "private cleanup detail"
+				previous := runPCV3WriteWithOptions
+				runPCV3WriteWithOptions = func(_ context.Context, request *pcv3operation.WriteRequest, _ pcv3operation.ExecutionOptions) *pcv3operation.Result {
+					if test.carrier {
+						fileops.RepanicWithCleanup(sensitive, errors.New(cleanupDetail))
+					}
+					if err := request.SourceFile.Close(); err != nil {
+						t.Errorf("close borrowed source before worker cleanup: %v", err)
+					}
+					panic(sensitive)
+				}
+				t.Cleanup(func() { runPCV3WriteWithOptions = previous })
+				start := StartPCV3(pcv3WriteTestEnvelope("write-normal", "password", "none", "standard", false, "", source, target, nil), []byte("public fixture password"))
+				operation := start.Operation()
+				if operation == nil {
+					t.Fatal("valid write request refused before the tested boundary")
+				}
+				t.Cleanup(func() { cleanupOperation(operation.ID()) })
+				synctest.Wait()
+				snapshot := operation.Snapshot()
+				visible := pcv3MobileSnapshotText(snapshot)
+				if snapshot.Diagnostic() != "callback-panic" || snapshot.Outcome() != "operation-failed" || snapshot.CompletionClass() != "refused" ||
+					snapshot.WarningCount() != 1 || snapshot.WarningAt(0) != "cleanup-incomplete" {
+					t.Fatalf("write panic snapshot = %s", visible)
+				}
+				if strings.Contains(visible, sensitive) || strings.Contains(visible, cleanupDetail) {
+					t.Fatal("snapshot disclosed panic or cleanup details")
+				}
+				if snapshot.PublicationAttempted() || snapshot.ArchivePending() || operation.Output() != nil || operation.Archive() != nil || operation.ArtifactInspection() != nil {
+					t.Fatal("write panic granted publication or follow-up authority")
+				}
+				if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("panic published output: %v", err)
+				}
+				if body, err := os.ReadFile(source); err != nil || string(body) != "unchanged source" {
+					t.Fatal("original changed")
+				}
+				if code := operation.Release(); code != "" {
+					t.Fatal(code)
+				}
+			})
+		})
+	}
 }

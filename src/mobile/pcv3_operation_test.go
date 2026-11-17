@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
+	"Picocrypt-NG/internal/volume"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -308,6 +309,100 @@ func testPCV3MobileOwnsPasswordAndDescriptors(t *testing.T) {
 	}
 }
 
+func TestPCV3WorkerMissingContextReleasesRequest(t *testing.T) {
+	for _, worker := range []string{"read", "write"} {
+		t.Run(worker, func(t *testing.T) {
+			directory := t.TempDir()
+			sourcePath := writePCV3MobileFile(t, directory, "input", "owned input")
+			keyfilePath := writePCV3MobileFile(t, directory, "factor.key", "owned factor")
+			target := filepath.Join(directory, "output")
+			opened := pcv3MobileObserveDescriptors(t)
+			source, err := openPCV3Existing(sourcePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = source.Close() })
+			keyfile, err := openPCV3Existing(keyfilePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = keyfile.Close() })
+			password := []byte("owned password")
+			factors := &pcv3operation.FactorRequest{
+				Password: password,
+				Keyfiles: []*pcv3operation.KeyfileReader{pcv3operation.OwnKeyfileReader(keyfile)},
+			}
+			coreCalls := 0
+			operation := startPCV3Operation()
+			t.Cleanup(func() { cleanupOperation(operation.ID()) })
+			globalProgressMap.mu.Lock()
+			delete(globalProgressMap.ctxs, operation.ID())
+			globalProgressMap.mu.Unlock()
+
+			if worker == "read" {
+				oldRun := runPCV3Operation
+				t.Cleanup(func() { runPCV3Operation = oldRun })
+				runPCV3Operation = func(context.Context, *pcv3operation.Request) *pcv3operation.Result {
+					coreCalls++
+					return nil
+				}
+				executePCV3Operation(operation, &pcv3operation.Request{Source: source, Factors: factors, Target: target})
+			} else {
+				oldRun := runPCV3WriteWithOptions
+				t.Cleanup(func() { runPCV3WriteWithOptions = oldRun })
+				runPCV3WriteWithOptions = func(context.Context, *pcv3operation.WriteRequest, pcv3operation.ExecutionOptions) *pcv3operation.Result {
+					coreCalls++
+					return nil
+				}
+				budget := fileops.NewZIPResourceBudget()
+				charge, err := fileops.ReserveZIPInputPath(budget, len(sourcePath))
+				if err != nil {
+					t.Fatal(err)
+				}
+				comment := []byte("owned comment")
+				executePCV3WriteOperation(operation, &pcv3WriteRequest{
+					input: volume.EncryptInputRequest{
+						InputFile: sourcePath, OutputFile: target, BorrowedSource: source, ZIPBudget: budget, PCV3: true,
+					},
+					source: source, factors: factors, comment: comment, target: target, inputCharge: charge,
+				})
+				// Even bare-file preparation reserves another input path on this budget.
+				if peak := budget.PeakBytes(); peak != charge {
+					t.Errorf("input preparation changed the ZIP budget peak from %d to %d", charge, peak)
+				}
+				if remaining := budget.CurrentBytes(); remaining != 0 {
+					t.Errorf("worker retained %d bytes of transferred ZIP budget", remaining)
+				}
+				if !allZero(comment) {
+					t.Error("worker did not clear its transferred comment")
+				}
+			}
+
+			if coreCalls != 0 {
+				t.Errorf("worker without context called the core %d times", coreCalls)
+			}
+			pcv3MobileRequireDescriptorsClosed(t, *opened)
+			if !allZero(password) {
+				t.Error("worker did not clear its transferred password")
+			}
+			snapshot := operation.Snapshot()
+			if snapshot.Diagnostic() != "core-failure" || snapshot.Outcome() != "operation-failed" ||
+				snapshot.CompletionClass() != "refused" || snapshot.PublicationAttempted() || snapshot.ArchivePending() {
+				t.Fatalf("missing-context snapshot = %s", pcv3MobileSnapshotText(snapshot))
+			}
+			if operation.Output() != nil || operation.Archive() != nil || operation.ArtifactInspection() != nil {
+				t.Fatal("worker without context exposed a follow-up")
+			}
+			if _, err := os.Lstat(target); !os.IsNotExist(err) {
+				t.Fatalf("worker without context published output: %v", err)
+			}
+			if code := operation.Release(); code != "" {
+				t.Fatalf("missing-context operation release = %q", code)
+			}
+		})
+	}
+}
+
 func TestPCV3MobileRequiresExplicitModeAndLiveConsent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		temp := t.TempDir()
@@ -522,12 +617,13 @@ func TestPCV3MobileBoundsAndRedactsStatus(t *testing.T) {
 			snapshot.CompletionClass() != "refused" {
 			t.Fatalf("contained panic = %s/%s/%s", snapshot.Outcome(), snapshot.Diagnostic(), snapshot.CompletionClass())
 		}
-		visible := strings.Join([]string{
-			snapshot.StatusCode(), snapshot.Outcome(), snapshot.Stage(), snapshot.Code(),
-			snapshot.Diagnostic(), snapshot.PublicationState(), snapshot.PublicationCode(),
-		}, "|")
+		visible := pcv3MobileSnapshotText(snapshot)
 		if strings.Contains(visible, source) || strings.Contains(visible, target) || strings.Contains(visible, secret) {
 			t.Fatalf("snapshot disclosed private input: %q", visible)
+		}
+		if snapshot.WarningCount() != 0 || snapshot.PublicationAttempted() || snapshot.ArchivePending() ||
+			start.Operation().Output() != nil || start.Operation().Archive() != nil || start.Operation().ArtifactInspection() != nil {
+			t.Fatalf("read panic exposed warnings or an artifact: %s", visible)
 		}
 		if code := start.Operation().Release(); code != "" {
 			t.Fatalf("panic operation release = %q", code)

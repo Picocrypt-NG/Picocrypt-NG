@@ -239,11 +239,7 @@ func executePCV3Operation(operation *PCV3Operation, request *pcv3operation.Reque
 	defer func() {
 		recovered := recover()
 		releasePCV3Request(request)
-		if recovered != nil {
-			completePCV3Panic(operation, fileops.PanicCleanupIncomplete(recovered))
-			return
-		}
-		completePCV3Result(operation, result)
+		finishPCV3Worker(operation, result, recovered, false)
 	}()
 	ctx, ok := getContext(operation.id)
 	if !ok {
