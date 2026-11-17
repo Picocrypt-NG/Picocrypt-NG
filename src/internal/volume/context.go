@@ -122,8 +122,9 @@ type DecryptRequest struct {
 	Deniability bool // Volume has deniability wrapper that needs removing first
 
 	// RecombineExpectedInputs borrows immutable chunk identities and sizes for
-	// this call. The caller retains ownership; nil preserves unpinned behavior.
-	// A nonnil list requires Recombine and must cover every chunk.
+	// this call. The caller retains ownership; nil uses the prepared identities.
+	// A nonnil list requires Recombine, must cover every prepared chunk, and
+	// cannot replace or weaken the preparation snapshot.
 	RecombineExpectedInputs []os.FileInfo
 
 	// Progress reporting
@@ -134,6 +135,8 @@ type DecryptRequest struct {
 
 	// Output - set by Decrypt() after completion
 	Kept *bool // If non-nil, set true when ForceDecrypt bypasses an integrity or authentication failure
+	// LegacyMetadata is reset at entry and populated only after successful cleanup.
+	LegacyMetadata *header.LegacyMetadata
 	// EncryptedOutput requests encrypted stdout staging instead of a published
 	// plaintext file. OutputFile selects its parent and remains alias-protected.
 	// On success the caller owns the sealed spool and must Close it. AutoUnzip
@@ -153,7 +156,8 @@ type OperationContext struct {
 	TempFile   string // Intermediate file path (zip archive or recombined chunks)
 
 	// Volume header - populated during encryption or read during decryption
-	Header *header.VolumeHeader
+	Header              *header.VolumeHeader
+	headerAuthenticated bool
 
 	// Cryptographic state
 	Key           *crypto.Secret       // Argon2-derived key (possibly XORed with keyfile key)

@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"bytes"
@@ -878,8 +879,11 @@ type ProgressState struct {
 	// Code is a stable, locale-independent classification of Error (see
 	// errorCode); empty on success/cancel-without-error. The Android layer maps
 	// it to a typed AppError to gate force-decrypt / password-retry.
-	Code string
-	Done bool
+	Code                  string
+	Done                  bool
+	LegacyVersion         string
+	CommentAuthenticity   string
+	LegacySecurityWarning string
 }
 
 // progressMap stores progress state for all active operations
@@ -1711,6 +1715,10 @@ func completeOperation(id string, err error) {
 }
 
 func completeOperationWithKept(id string, err error, kept bool) {
+	completeLegacyOperation(id, err, kept, header.LegacyMetadata{})
+}
+
+func completeLegacyOperation(id string, err error, kept bool, metadata header.LegacyMetadata) {
 	globalProgressMap.mu.Lock()
 	defer globalProgressMap.mu.Unlock()
 
@@ -1729,6 +1737,9 @@ func completeOperationWithKept(id string, err error, kept bool) {
 			op.StatusETA = status.ETA
 		} else {
 			text := "Completed"
+			op.LegacyVersion = metadata.Version
+			op.CommentAuthenticity = string(metadata.CommentAuthenticity)
+			op.LegacySecurityWarning = string(metadata.SecurityWarning)
 			if kept {
 				text = "Completed (unverified)"
 			}
@@ -1771,6 +1782,9 @@ func copyProgressState(op *ProgressState) *ProgressState {
 		Error:                   op.Error,
 		Code:                    op.Code,
 		Done:                    op.Done,
+		LegacyVersion:           op.LegacyVersion,
+		CommentAuthenticity:     op.CommentAuthenticity,
+		LegacySecurityWarning:   op.LegacySecurityWarning,
 	}
 }
 

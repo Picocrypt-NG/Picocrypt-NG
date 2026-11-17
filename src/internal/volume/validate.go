@@ -185,6 +185,21 @@ func (req *DecryptRequest) validatePrepared(input *PreparedDecryptInput) error {
 	if err := req.validate(true); err != nil {
 		return err
 	}
+	if req.RecombineExpectedInputs != nil {
+		if len(req.RecombineExpectedInputs) == 0 {
+			return errors.NewValidationError("RecombineExpectedInputs", "chunk 0 changed before recombination")
+		}
+		if len(req.RecombineExpectedInputs) != len(input.inputInfos) {
+			return fmt.Errorf("expected %d chunk identities, found %d", len(req.RecombineExpectedInputs), len(input.inputInfos))
+		}
+		for i, expected := range req.RecombineExpectedInputs {
+			prepared := input.inputInfos[i]
+			if expected == nil || prepared == nil || !expected.Mode().IsRegular() || !prepared.Mode().IsRegular() ||
+				expected.Size() != prepared.Size() || !os.SameFile(expected, prepared) {
+				return fmt.Errorf("chunk %d changed before recombination", i)
+			}
+		}
+	}
 	if err := req.validatePreparedOutputSafety(input); err != nil {
 		return err
 	}

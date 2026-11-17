@@ -2629,7 +2629,10 @@ object OperationManager {
                         detail = progressState.detail,
                         progress = progressState.progress,
                         done = progressState.done,
-                        error = error
+                        error = error,
+                        legacyVersion = progressState.legacyVersion,
+                        commentAuthenticity = progressState.commentAuthenticity,
+                        legacySecurityWarning = progressState.legacySecurityWarning,
                     )
                 }
             }
@@ -2662,6 +2665,9 @@ object OperationManager {
                         progress = progressState.progress,
                         done = progressState.done,
                         error = error,
+                        legacyVersion = progressState.legacyVersion,
+                        commentAuthenticity = progressState.commentAuthenticity,
+                        legacySecurityWarning = progressState.legacySecurityWarning,
                     )
                 }
             }
@@ -2866,7 +2872,10 @@ data class OperationState(
     val progress: Float,
     val done: Boolean = false,
     val error: AppError? = null,
-    val formData: FormData? = null
+    val formData: FormData? = null,
+    val legacyVersion: String = "",
+    val commentAuthenticity: CommentAuthenticity = CommentAuthenticity.UNAVAILABLE,
+    val legacySecurityWarning: LegacySecurityWarning = LegacySecurityWarning.NONE,
 )
 
 /** Native IDs survive progress snapshots; failed starts without an ID own only their exact state. */

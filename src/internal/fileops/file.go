@@ -75,6 +75,21 @@ func OpenRegularReadNoSymlink(path string) (*os.File, error) {
 	return file, nil
 }
 
+// OpenRegularRead permits a leaf symlink for legacy input compatibility, but
+// rejects nonregular descriptors without waiting for a FIFO peer on Unix.
+// The caller owns the returned descriptor; refused descriptors are closed here.
+func OpenRegularRead(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, regularReadFlags, 0) // #nosec G304 -- selected legacy input permits a leaf symlink
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
+		return nil, errors.Join(errors.New("input is not a regular file"), err, file.Close())
+	}
+	return file, nil
+}
+
 // OpenRootNoSymlink opens one pre-existing directory without accepting a
 // symlink as the selected root and proves that the opened handle has the same
 // identity observed before the open. Callers own the returned root.

@@ -134,10 +134,11 @@ only captured sources and empty captured directories. Each removal checks the
 captured identity and metadata and removes the basename through one held
 immediate parent, preserving ready output and deletion warnings on failure.
 Cancellation stops further removal; missing-source success cannot hide a parent
-close error. Recombine-with-delete passes the same captured chunk identities
-and sizes to the reader, including its prepared chunk-zero descriptor. The
-borrowed metadata stays immutable and budgeted through execution and deletion;
-it adds no retained per-chunk handles.
+close error. Every legacy recombination uses the prepared regular-file identities
+and sizes, including its borrowed chunk-zero descriptor, independently of source
+deletion. Additional deletion snapshots must agree with preparation. Reads are
+bounded to captured sizes and recheck metadata and chunk count before KDF; the
+borrowed metadata stays immutable and budgeted and adds no retained per-chunk handles.
 
 Original inputs must remain quiescent from selection through reading and any
 requested deletion. Captured metadata is not a byte snapshot and cannot freeze

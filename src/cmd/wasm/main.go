@@ -463,5 +463,8 @@ func decrypt(this js.Value, args []js.Value) (result any) {
 	o := successData(res.Plaintext).(js.Value)
 	o.Set("code", code)
 	o.Set("comments", res.Comments)
+	o.Set("version", res.Version)
+	o.Set("commentAuthenticity", string(res.CommentAuthenticity))
+	o.Set("securityWarning", string(res.SecurityWarning))
 	return o
 }

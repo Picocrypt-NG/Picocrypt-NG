@@ -198,19 +198,20 @@ type DecryptRequest struct {
 
     ForceDecrypt bool // continue despite failed integrity checks (may produce corrupt output)
     VerifyFirst  bool // two-pass: verify MAC before writing (slower)
-    AutoUnzip    bool // extract if output is a .zip
+    AutoUnzip    bool // extract ZIP only when no integrity/authentication check was bypassed
     SameLevel    bool // extract to same dir as volume
 
     Recombine   bool // volume is split into chunks
     Deniability bool // volume has a deniability wrapper
 
-    RecombineExpectedInputs []os.FileInfo // optional borrowed identities and sizes, in chunk order
+    RecombineExpectedInputs []os.FileInfo // optional additional checks against the prepared chunk manifest
 
     Reporter ProgressReporter
     RSCodecs *encoding.RSCodecs
 
     // Output: set by Decrypt after completion
     Kept *bool // non-nil + true if ForceDecrypt bypassed an integrity/authentication failure
+    LegacyMetadata *header.LegacyMetadata // reset at entry; released only after successful owned cleanup
 }
 
 func (req *DecryptRequest) Validate() error
@@ -237,11 +238,36 @@ func DecryptPrepared(ctx context.Context, req *DecryptRequest, input *PreparedDe
 
 `RecombineExpectedInputs` is borrowed without ownership transfer: the caller must
 keep the list and its metadata immutable until `Decrypt` or `DecryptPrepared`
-returns. Nil preserves existing behavior; a nonnil list requires `Recombine`
-and must cover every chunk. Recombination checks the consumed descriptors against
-the expected identities and sizes before KDF and plaintext output. This includes
-the borrowed prepared chunk-zero descriptor. These checks do not snapshot bytes
-or prevent writes to the same inode.
+returns. Every legacy recombination uses the prepared chunk identities, regular-file
+types and sizes, including when this field is nil. A nonnil list requires
+`Recombine`, must cover every chunk and must agree with preparation. Reads are
+bounded to the captured sizes; descriptor metadata and the chunk list are checked
+again before KDF and plaintext output. Chunk zero uses its borrowed prepared
+descriptor. These checks do not snapshot bytes or prevent same-inode writes.
+
+`Kept` records an authentication bypass; it does not by itself prove that output
+was retained. A later error or cancellation can leave `Kept=true` with no output.
+Late cancellation can also follow a completed publication. Frontends count
+proven retained output independently of cancellation and preserve its warning;
+when publication is not established, conditional bypass wording preserves the
+error/cancellation without claiming that a file exists.
+When it is true, legacy finalization skips automatic ZIP detection and extraction.
+Enabling Force without bypassing a check preserves ordinary ZIP behavior.
+
+`header.LegacyMetadata` contains `Version`, `CommentAuthenticity` and
+`SecurityWarning`. Comment states are `unavailable`, `unverified` and
+`authenticated`; the zero or unknown state must never imply authentication.
+V1 comments are never authenticated. V2 comments can be authenticated only after
+the actual header MAC check succeeds, independently of payload recovery.
+Warnings are `LEGACY_V1_UNAUTHENTICATED_HEADER` or
+`LEGACY_V2_PASSWORD_ONLY_AUTHENTICATION`, or empty. These report frozen format
+limitations; they do not alter the key schedule, golden bytes or exit codes.
+
+`Decrypt` withholds metadata through its final prepared-input close.
+`DecryptPrepared` borrows that descriptor: callers must also handle their own
+close result before presenting completion. Error returns expose no success
+metadata. Desktop and Android preview text remains unverified after a read;
+metadata for the actual read must not authenticate a possibly stale preview.
 
 ### Progress
 
@@ -705,11 +731,12 @@ may use the leaf-identity compatibility path when its parent is searchable but
 not readable. Anchored folder/glob members never fall back after an open error.
 GUI source-deletion manifests use the same identities as encryption and reject
 a replaced input before work, rather than capturing a separate deletion target.
-For decrypt-with-recombine and requested source deletion, the GUI borrows the
-ordered captured chunk identities through `RecombineExpectedInputs`. The extra
-list is admitted against the shared `ZIPResourceBudget` before allocation; its
-charge remains live through synchronous execution and source cleanup, then the
-aliases are cleared and the charge released on success, failure or cancellation.
+All legacy decrypt-with-recombine operations use their prepared chunk manifest.
+When source deletion is requested, the GUI additionally borrows its captured
+identities through `RecombineExpectedInputs`; they must agree with preparation.
+This extra list is admitted against the shared `ZIPResourceBudget` before
+allocation; its charge remains live through execution and source cleanup, then
+the aliases are cleared and the charge released on every outcome.
 
 GUI source removal opens each immediate parent once, checks the captured leaf
 identity and metadata through that root, then removes only its basename through
@@ -967,6 +994,9 @@ type ProgressResult struct {
     Done                    bool
     Error                   string
     Code                    string
+    LegacyVersion           string
+    CommentAuthenticity     string
+    LegacySecurityWarning   string
 }
 
 func GetProgress(operationID string) (*ProgressResult, error)
@@ -1005,6 +1035,19 @@ errors. The recovery contract is fail-closed: only `AUTH_FAILED` permits passwor
 The operation state preserves the first terminal result. `CancelOperation` atomically returns that
 canonical terminal snapshot, so cancellation cannot replace an already-recorded success or failure;
 later polling likewise cannot replace an already-recorded cancellation, success, or failure.
+
+The three legacy metadata fields are additive and populated only for a successful
+terminal legacy read. Failed or cancelled reads carry no authentication claim.
+`COMPLETED_UNVERIFIED` still requires an unverified-payload warning even when a v2
+header authenticated its comment. Preview JSON similarly adds `version`,
+`commentAuthenticity` and `securityWarning`, but readable preview comments are
+always unverified. Missing or unknown additions remain conservative; the original
+required preview fields remain strict.
+
+The WASM legacy decrypt result exposes the same lower-camel-case metadata fields
+beside `code`, `data` and the actual reader's `comments`. Error objects remain
+code-only; v1 never claims authenticated comments. Native previews are not promoted
+using metadata from a different read.
 
 ---
 

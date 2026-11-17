@@ -358,4 +358,9 @@
     <string name="pcv3_d1_profile_standard">Estándar</string>
     <string name="pcv3_outcome_d1_profile_required_title">Elige el perfil de recuperación</string>
     <string name="pcv3_outcome_d1_profile_required_body">Selecciona el perfil Estándar o Paranoico utilizado para crear este volumen y vuelve a intentarlo. No se ha publicado ninguna salida.</string>
+    <string name="comments_unverified">Comentarios (sin verificar)</string>
+    <string name="comment_authenticity_authenticated">Autenticidad del comentario del volumen confirmada.</string>
+    <string name="comment_authenticity_unverified">Autenticidad del comentario del volumen sin verificar.</string>
+    <string name="legacy_v1_security_warning">El formato antiguo v1 no autentica la cabecera ni el comentario. El comentario podría haberse modificado. Vuelva a cifrar los datos con PCV3.</string>
+    <string name="legacy_v2_security_warning">El formato antiguo v2 autentica la cabecera solo con la contraseña; los archivos de clave no participan en esta verificación. Vuelva a cifrar los datos con PCV3.</string>
 </resources>

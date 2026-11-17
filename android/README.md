@@ -82,6 +82,9 @@ The Go mobile package exports (see `src/mobile/android.go`):
   `StatusSpeedMiBPerSecond`, `StatusETA`, `Progress`, `Info`, `InfoCode`, `InfoCurrent`,
   `InfoTotal`, `Done`, `Error`, and `Code`. `Status`, `Info`, and `Error` are retained as
   compatibility/diagnostic fields; Android display logic uses the stable codes and typed values.
+  Successful legacy results additionally carry `LegacyVersion`,
+  `CommentAuthenticity` and `LegacySecurityWarning`. Preview comments remain
+  unverified; final header/comment trust never authenticates stale preview text.
 - `GetDecryptionInfo(filePath)` - Reads a volume's header to report whether a password/keyfiles are
   required before the user commits to decrypting
 - `CancelOperation(operationID)` - Cancels a running operation and returns its canonical terminal

@@ -15,6 +15,8 @@ import io.github.picocrypt_ng.picocrypt_ng.OperationStatus
 import io.github.picocrypt_ng.picocrypt_ng.OperationStatusData
 import io.github.picocrypt_ng.picocrypt_ng.OperationType
 import io.github.picocrypt_ng.picocrypt_ng.R
+import io.github.picocrypt_ng.picocrypt_ng.CommentAuthenticity
+import io.github.picocrypt_ng.picocrypt_ng.LegacySecurityWarning
 import io.github.picocrypt_ng.picocrypt_ng.testutils.TestDataBuilders
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Rule
@@ -29,6 +31,55 @@ class ProgressCardTest {
 
     @get:Rule
     val composeTestRule = createComposeRule()
+
+    @Test
+    fun progressCard_preservesLegacyV1WarningAlongsideSuccessfulPayload() = assertLegacyMetadata(
+        "v1.49", CommentAuthenticity.UNVERIFIED, LegacySecurityWarning.UNAUTHENTICATED_V1_HEADER,
+        R.string.comment_authenticity_unverified, R.string.legacy_v1_security_warning,
+    )
+
+    @Test
+    fun progressCard_confirmsV2CommentWithoutHidingPasswordOnlyHeaderLimitation() = assertLegacyMetadata(
+        "v2.19", CommentAuthenticity.AUTHENTICATED, LegacySecurityWarning.V2_PASSWORD_ONLY_AUTHENTICATION,
+        R.string.comment_authenticity_authenticated, R.string.legacy_v2_security_warning,
+    )
+
+    @Test
+    fun progressCard_recoveryKeepsUnverifiedPayloadWarningAlongsideLegacyMetadata() = assertLegacyMetadata(
+        "v2.19", CommentAuthenticity.UNVERIFIED, LegacySecurityWarning.V2_PASSWORD_ONLY_AUTHENTICATION,
+        R.string.comment_authenticity_unverified, R.string.legacy_v2_security_warning, unverified = true,
+    )
+
+    @Test
+    fun progressCard_authenticatedCommentDoesNotUpgradeUnverifiedPayload() = assertLegacyMetadata(
+        "v2.19", CommentAuthenticity.AUTHENTICATED, LegacySecurityWarning.V2_PASSWORD_ONLY_AUTHENTICATION,
+        R.string.comment_authenticity_authenticated, R.string.legacy_v2_security_warning, unverified = true,
+    )
+
+    private fun assertLegacyMetadata(version: String, authenticity: CommentAuthenticity,
+        warning: LegacySecurityWarning, commentResource: Int, warningResource: Int, unverified: Boolean = false) {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val main = MainViewModel(app, androidx.lifecycle.SavedStateHandle())
+        val operationViewModel = OperationViewModel()
+        val operation = TestDataBuilders.createOperationState(
+            type = OperationType.DECRYPT,
+            status = OperationStatusData(if (unverified) OperationStatus.COMPLETED_UNVERIFIED else OperationStatus.COMPLETED),
+            done = true, error = null,
+        ).copy(legacyVersion = version, commentAuthenticity = authenticity, legacySecurityWarning = warning)
+        val original = swapOperationState(operation)
+        try {
+            composeTestRule.setContent { ProgressCard(main, operationViewModel) }
+            composeTestRule.onNodeWithText(app.getString(commentResource)).assertIsDisplayed()
+            composeTestRule.onNodeWithText(app.getString(warningResource)).assertIsDisplayed()
+            composeTestRule.onNodeWithText(app.getString(R.string.save)).assertIsEnabled()
+            if (unverified) {
+                composeTestRule.onNodeWithText(app.getString(R.string.force_decrypt_warning)).assertIsDisplayed()
+                composeTestRule.onNodeWithText(app.getString(R.string.operation_completed_successfully)).assertDoesNotExist()
+            }
+        } finally {
+            restoreOperationState(original)
+        }
+    }
 
     @Test
     fun progressCard_warnsAboutUnverifiedCompletionAndKeepsSaveEnabled() {

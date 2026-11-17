@@ -354,4 +354,9 @@
     <string name="pcv3_d1_profile_standard">Standard</string>
     <string name="pcv3_outcome_d1_profile_required_title">Wiederherstellungsprofil auswählen</string>
     <string name="pcv3_outcome_d1_profile_required_body">Wähle das Standard- oder Paranoid-Profil, mit dem dieses Volume erstellt wurde, und versuche es erneut. Es wurde keine Ausgabe veröffentlicht.</string>
+    <string name="comments_unverified">Kommentare (ungeprüft)</string>
+    <string name="comment_authenticity_authenticated">Echtheit des Volume-Kommentars bestätigt.</string>
+    <string name="comment_authenticity_unverified">Echtheit des Volume-Kommentars ungeprüft.</string>
+    <string name="legacy_v1_security_warning">Das alte Format v1 authentifiziert weder den Header noch den Kommentar. Der Kommentar könnte verändert worden sein. Verschlüsseln Sie die Daten erneut mit PCV3.</string>
+    <string name="legacy_v2_security_warning">Das alte Format v2 authentifiziert den Header nur mit dem Passwort; Schlüsseldateien sind nicht Teil der Header-Authentifizierung. Verschlüsseln Sie die Daten erneut mit PCV3.</string>
 </resources>

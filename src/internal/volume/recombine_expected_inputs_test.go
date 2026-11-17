@@ -181,12 +181,27 @@ func TestVolumeRecombineExpectedInputsCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"nil", "unchanged", "borrowed_first_chunk"} {
+	for _, name := range []string{"nil", "unchanged", "borrowed_first_chunk", "chunk_zero_link_nil", "chunk_zero_link_expected", "parent_link_nil", "parent_link_expected"} {
 		t.Run(name, func(t *testing.T) {
 			base, expected := writeExpectedInputChunks(t, data)
+			if strings.HasPrefix(name, "parent_link_") {
+				link := filepath.Join(t.TempDir(), "parent-link")
+				if err := os.Symlink(filepath.Dir(base), link); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				base = filepath.Join(link, filepath.Base(base))
+			}
 			req := &DecryptRequest{InputFile: base + ".0", OutputFile: base + ".plaintext", Password: []byte("test"), RSCodecs: newRSCodecsT(t), Recombine: true}
-			if name != "nil" {
+			if name != "nil" && name != "chunk_zero_link_nil" && name != "parent_link_nil" {
 				req.RecombineExpectedInputs = expected
+			}
+			if strings.HasPrefix(name, "chunk_zero_link_") {
+				if err := os.Rename(base+".0", base+".0.selected"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(base+".0.selected", base+".0"); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
 			}
 			if name == "borrowed_first_chunk" {
 				prepared, prepareErr := PrepareDecryptInput(req.InputFile, true)

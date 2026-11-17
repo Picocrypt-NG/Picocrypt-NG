@@ -370,4 +370,9 @@
     <string name="pcv3_d1_profile_standard">Standard</string>
     <string name="pcv3_outcome_d1_profile_required_title">Choose the recovery profile</string>
     <string name="pcv3_outcome_d1_profile_required_body">Select the Standard or Paranoid profile used when creating this volume, then try again. No output was published.</string>
+    <string name="comments_unverified">Comments (unverified)</string>
+    <string name="comment_authenticity_authenticated">Volume comment authenticated.</string>
+    <string name="comment_authenticity_unverified">Volume comment unverified.</string>
+    <string name="legacy_v1_security_warning">Legacy v1 does not authenticate the header or comment. The comment may have been changed. Re-encrypt with PCV3.</string>
+    <string name="legacy_v2_security_warning">Legacy v2 authenticates the header with the password only; keyfiles are not part of header authentication. Re-encrypt with PCV3.</string>
 </resources>

@@ -32,6 +32,9 @@ var newPayloadReader = func(r io.Reader) io.Reader { return r }
 // This is the main entry point for decryption.
 // If ctx is nil, a background context is used.
 func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
+	if req != nil && req.LegacyMetadata != nil {
+		*req.LegacyMetadata = header.LegacyMetadata{}
+	}
 	if err := validateRecombineExpectedInputs(req); err != nil {
 		return err
 	}
@@ -48,18 +51,29 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 	// This entry point owns preparedInput too, so withhold stdout authority
 	// until its final close succeeds. DecryptPrepared borrows that descriptor.
 	var output *fileops.EncryptedSpool
+	var metadata header.LegacyMetadata
 	operationReq := req
-	if req.EncryptedOutput != nil {
+	if req.EncryptedOutput != nil || req.LegacyMetadata != nil {
 		copyReq := *req
-		copyReq.EncryptedOutput = &output
+		if req.EncryptedOutput != nil {
+			copyReq.EncryptedOutput = &output
+		}
+		if req.LegacyMetadata != nil {
+			copyReq.LegacyMetadata = &metadata
+		}
 		operationReq = &copyReq
 	}
 	defer func() {
 		retErr = errors.Join(retErr, preparedInput.Close())
 		if retErr != nil {
 			retErr = errors.Join(retErr, output.Close())
-		} else if req.EncryptedOutput != nil {
-			*req.EncryptedOutput = output
+		} else {
+			if req.EncryptedOutput != nil {
+				*req.EncryptedOutput = output
+			}
+			if req.LegacyMetadata != nil {
+				*req.LegacyMetadata = metadata
+			}
 		}
 	}()
 	return DecryptPrepared(ctx, operationReq, preparedInput)
@@ -69,6 +83,9 @@ func Decrypt(ctx context.Context, req *DecryptRequest) (retErr error) {
 // collected credentials. The input is borrowed and must remain open until this
 // function returns.
 func DecryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *PreparedDecryptInput) error {
+	if req != nil && req.LegacyMetadata != nil {
+		*req.LegacyMetadata = header.LegacyMetadata{}
+	}
 	if err := validateRecombineExpectedInputs(req); err != nil {
 		return err
 	}
@@ -100,6 +117,9 @@ func decryptPrepared(ctx context.Context, req *DecryptRequest, preparedInput *Pr
 			fileops.RepanicWithCleanup(panicValue, cleanupErr)
 		}
 		retErr = finishLegacyDecrypt(opCtx, req, retErr)
+		if retErr == nil && req.LegacyMetadata != nil {
+			*req.LegacyMetadata = opCtx.Header.LegacyMetadata(opCtx.headerAuthenticated)
+		}
 	}() // Secure zeroing of key material and fail-loud temporary-file cleanup
 
 	log.Info("starting decryption", log.String("input", req.InputFile))
@@ -203,7 +223,7 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest, preparedInput
 			OutputPath:     outputPath,
 			OutputInfo:     &recombinedInfo,
 			InputInfos:     &chunkInfos,
-			ExpectedInputs: req.RecombineExpectedInputs,
+			ExpectedInputs: preparedInput.inputInfos,
 			FirstChunk:     firstChunk,
 			ValidateFirstChunk: func(*os.File) error {
 				ctx.SetStatus("Recombining chunks...")
@@ -392,6 +412,7 @@ func decryptProcessKeyfiles(ctx *OperationContext, req *DecryptRequest) error {
 }
 
 func decryptVerifyAuth(ctx *OperationContext, req *DecryptRequest) error {
+	ctx.headerAuthenticated = false
 	ctx.SetStatus("Calculating values...")
 
 	if ctx.IsLegacyV1 {
@@ -455,6 +476,7 @@ func decryptVerifyAuth(ctx *OperationContext, req *DecryptRequest) error {
 
 		// Verify header MAC
 		authResult := header.VerifyV2Header(subkeyHeader, ctx.Header, ctx.KeyfileHash)
+		ctx.headerAuthenticated = authResult.Valid
 
 		if !authResult.Valid {
 			if req.ForceDecrypt {
@@ -1031,7 +1053,7 @@ func decryptFinalize(ctx *OperationContext, req *DecryptRequest) error {
 	}
 
 	shouldUnzip := false
-	if req.AutoUnzip {
+	if req.AutoUnzip && !ctx.Kept {
 		var err error
 		shouldUnzip, err = isStagedOutputZip(ctx)
 		if err != nil {

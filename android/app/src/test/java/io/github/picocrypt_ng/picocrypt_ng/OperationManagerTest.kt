@@ -215,6 +215,9 @@ class OperationManagerTest {
                     detail = OperationProgressDetail(OperationProgress.NONE),
                     progress = 1f,
                     done = true,
+                    legacyVersion = "v1.49",
+                    commentAuthenticity = CommentAuthenticity.UNVERIFIED,
+                    legacySecurityWarning = LegacySecurityWarning.UNAUTHENTICATED_V1_HEADER,
                 )
             )
 
@@ -225,6 +228,9 @@ class OperationManagerTest {
             assertEquals(OperationStatus.COMPLETED, state?.status?.code)
             assertEquals(1f, state?.progress ?: -1f, 0.001f)
             assertTrue("Native terminal state must remain terminal", state?.done == true)
+            assertEquals("v1.49", state?.legacyVersion)
+            assertEquals(CommentAuthenticity.UNVERIFIED, state?.commentAuthenticity)
+            assertEquals(LegacySecurityWarning.UNAUTHENTICATED_V1_HEADER, state?.legacySecurityWarning)
         } finally {
             unmockkObject(GoBridge)
         }
@@ -341,6 +347,30 @@ class OperationManagerTest {
             assertEquals(status, result?.status)
             assertEquals(detail, result?.detail)
             assertEquals(0.3f, result?.progress ?: -1f, 0.001f)
+        } finally {
+            unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `completed legacy result metadata survives polling and later polls cannot erase warnings`() = runTest {
+        setCurrentOperationForTest(TestDataBuilders.createOperationState(
+            id = "legacy_metadata", type = OperationType.DECRYPT, done = false,
+        ))
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.getProgress("legacy_metadata") } returns Result.success(ProgressState(
+                OperationStatusData(OperationStatus.COMPLETED), OperationProgressDetail(OperationProgress.NONE),
+                progress = 1f, done = true, legacyVersion = "v2.19",
+                commentAuthenticity = CommentAuthenticity.AUTHENTICATED,
+                legacySecurityWarning = LegacySecurityWarning.V2_PASSWORD_ONLY_AUTHENTICATION,
+            ))
+            val completed = OperationManager.pollProgress()
+            assertEquals("v2.19", completed?.legacyVersion)
+            assertEquals(CommentAuthenticity.AUTHENTICATED, completed?.commentAuthenticity)
+            assertEquals(LegacySecurityWarning.V2_PASSWORD_ONLY_AUTHENTICATION, completed?.legacySecurityWarning)
+            assertEquals(completed, OperationManager.pollProgress())
+            verify(exactly = 1) { GoBridge.getProgress("legacy_metadata") }
         } finally {
             unmockkObject(GoBridge)
         }

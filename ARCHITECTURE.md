@@ -118,7 +118,12 @@ result, including archive and retained-output follow-ups where supported.
 
 Legacy v1/v2 reads remain available through `volume.Decrypt`: recombine chunks,
 remove the legacy deniability wrapper when selected, read the header, derive keys,
-check the version-specific password/header verifier and payload MAC, then complete requested unpacking.
+check the version-specific password/header verifier and payload MAC, then complete
+requested unpacking only when authentication was not bypassed. Legacy split
+preparation binds every part to its identity, regular-file type and captured
+size before recombination. The core returns explicit legacy format/comment trust
+metadata after owned cleanup; frontends preserve these limitations separately
+from Force recovery and ordinary completion.
 Unknown major versions fail closed even under force decrypt.
 
 ### Android mobile status and error boundary

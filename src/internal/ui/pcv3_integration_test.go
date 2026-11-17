@@ -362,6 +362,7 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 		if a.pcv3Result != executed {
 			t.Fatal("the desktop reconstructed rather than retained the normal operation result")
 		}
+		requireNativePCV3Publication(t, executed)
 		snap := a.State.UISnapshot()
 		if snap.Comments != "TEST ONLY comment" || snap.CommentsPreviewState != app.CommentsPreviewAuthenticated {
 			t.Fatal("reader comment did not replace different untrusted preview")
@@ -385,7 +386,6 @@ func TestPCV3FyneResultAndPrivacyBoundary(t *testing.T) {
 			presentation.ArchivePending() != core.ArchivePending() {
 			t.Fatal("State presentation drifted from the normal operation's closed presentation")
 		}
-		requireNativePCV3Publication(t, executed)
 		text := pcv3RenderedText(a.pcv3Container)
 		wantText := "Operation complete\nThe output is fully authenticated.\nComments (confirmed):\nTEST ONLY comment\nFile saved.\nClose"
 		if !nativeUIDirectorySyncSupported(t, t.TempDir()) {

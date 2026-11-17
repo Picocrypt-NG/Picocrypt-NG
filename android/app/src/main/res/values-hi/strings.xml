@@ -354,4 +354,9 @@
     <string name="pcv3_d1_profile_standard">मानक</string>
     <string name="pcv3_outcome_d1_profile_required_title">पुनर्प्राप्ति प्रोफ़ाइल चुनें</string>
     <string name="pcv3_outcome_d1_profile_required_body">यह वॉल्यूम बनाते समय उपयोग की गई मानक या पैरानॉइड प्रोफ़ाइल चुनें, फिर दोबारा प्रयास करें। कोई आउटपुट प्रकाशित नहीं हुआ।</string>
+    <string name="comments_unverified">टिप्पणियाँ (असत्यापित)</string>
+    <string name="comment_authenticity_authenticated">वॉल्यूम की टिप्पणी की प्रामाणिकता सत्यापित है।</string>
+    <string name="comment_authenticity_unverified">वॉल्यूम की टिप्पणी की प्रामाणिकता सत्यापित नहीं है।</string>
+    <string name="legacy_v1_security_warning">पुराना v1 प्रारूप हेडर या टिप्पणी की प्रामाणिकता सत्यापित नहीं करता। टिप्पणी बदली गई हो सकती है। डेटा को PCV3 से फिर एन्क्रिप्ट करें।</string>
+    <string name="legacy_v2_security_warning">पुराना v2 प्रारूप केवल पासवर्ड से हेडर की प्रामाणिकता सत्यापित करता है; कीफ़ाइलें इस सत्यापन का हिस्सा नहीं हैं। डेटा को PCV3 से फिर एन्क्रिप्ट करें।</string>
 </resources>

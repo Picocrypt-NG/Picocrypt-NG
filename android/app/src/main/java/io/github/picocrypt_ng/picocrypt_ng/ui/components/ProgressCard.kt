@@ -57,6 +57,8 @@ import io.github.picocrypt_ng.picocrypt_ng.pcv3ArtifactStatusResource
 import io.github.picocrypt_ng.picocrypt_ng.pcv3ResultActions
 import io.github.picocrypt_ng.picocrypt_ng.pcv3ResultDisplay
 import io.github.picocrypt_ng.picocrypt_ng.renderOperationStatus
+import io.github.picocrypt_ng.picocrypt_ng.CommentAuthenticity
+import io.github.picocrypt_ng.picocrypt_ng.legacySecurityWarningResource
 import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.launch
 import java.io.File
@@ -381,6 +383,16 @@ fun ProgressCard(
                             if (ui.unverified) R.string.force_decrypt_warning
                             else R.string.operation_completed_successfully
                         ))
+                        if (ui.type == OperationType.DECRYPT && op != null) {
+                            when (op.commentAuthenticity) {
+                                CommentAuthenticity.AUTHENTICATED -> Text(stringResource(R.string.comment_authenticity_authenticated))
+                                CommentAuthenticity.UNVERIFIED -> Text(stringResource(R.string.comment_authenticity_unverified))
+                                CommentAuthenticity.UNAVAILABLE -> Unit
+                            }
+                            legacySecurityWarningResource(op.legacySecurityWarning)?.let { resource ->
+                                Text(stringResource(resource), style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                         saveError?.let { error ->
                             Text(
                                 text = stringResource(

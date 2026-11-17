@@ -920,7 +920,18 @@ func (a *App) startDisabled(snap app.UISnapshot) bool {
 	return snap.PCVUnavailable || configureDisabled || !snap.CanStart() || !splitSizeReady(snap)
 }
 
-func renderStatus(msg app.StatusMessage, snap app.UISnapshot) string {
+func renderStatus(msg app.StatusMessage, snap app.UISnapshot) (text string) {
+	defer func() {
+		if msg.Args.AuthenticationBypassed {
+			text += "\n" + tr("status.authentication_bypassed", "Authentication was bypassed; any retained output is unverified and may be corrupted")
+		}
+		if msg.Args.LegacyHeaderUnverified {
+			text += "\n" + tr("legacy.warning.v1", "Legacy v1 does not authenticate the header. Re-encrypt the data as PCV3.")
+		}
+		if msg.Args.LegacyKeyfilePasswordOnly {
+			text += "\n" + tr("legacy.warning.v2_keyfile", "The keyfile does not contribute to legacy v2 authentication. Re-encrypt the data as PCV3.")
+		}
+	}()
 	if msg.Kind == app.StatusCustom {
 		return msg.Text
 	}
@@ -942,12 +953,27 @@ func renderStatus(msg app.StatusMessage, snap app.UISnapshot) string {
 		return recursiveStatusFailedAll(msg.Args.Count)
 	case app.StatusRecursiveCompletedFailed:
 		return recursiveStatusCompletedFailed(msg.Args.OK, msg.Args.Failed)
+	case app.StatusRecursiveUnverified:
+		text := tr("status.recursive_unverified", "Results ({{.OK}} verified, {{.Unverified}} unverified, {{.Failed}} failed)", map[string]any{
+			"OK": msg.Args.OK, "Unverified": msg.Args.Unverified, "Failed": msg.Args.Failed,
+		}) + "\n" + tr("status.kept_output_unverified", "Integrity check failed; kept output is unverified and may be corrupted")
+		if msg.Args.Cancelled {
+			text += "\n" + tr("status.cancelled_by_user", "Operation cancelled by user")
+		}
+		if msg.Args.DeleteFailed {
+			text += "\n" + tr("status.completed_some_delete_failed", "Completed (some files couldn't be deleted)")
+		}
+		return text
 	case app.StatusInvalidSplitSize:
 		return tr("status.invalid_split_size", "Invalid split size")
 	case app.StatusCompletedSomeDeleteFailed:
 		return tr("status.completed_some_delete_failed", "Completed (some files couldn't be deleted)")
 	case app.StatusKeptOutputUnverified:
-		return tr("status.kept_output_unverified", "Integrity check failed; kept output is unverified and may be corrupted")
+		text := tr("status.kept_output_unverified", "Integrity check failed; kept output is unverified and may be corrupted")
+		if msg.Args.Cancelled {
+			text += "\n" + tr("status.cancelled_by_user", "Operation cancelled by user")
+		}
+		return text
 	case app.StatusCompletedVolumeDeleteFailed:
 		return tr("status.completed_volume_delete_failed", "Completed (volume couldn't be deleted)")
 	case app.StatusPCVUnavailable:
