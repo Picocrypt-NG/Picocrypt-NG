@@ -13,6 +13,56 @@ import (
 	"testing/synctest"
 )
 
+func TestPCV3MobileWriteCleanupFailureKeepsPublishedOutput(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		source := writePCV3MobileFile(t, dir, "source.bin", "original bytes")
+		target := filepath.Join(dir, "output.pcv")
+		run := runPCV3WriteWithOptions
+		t.Cleanup(func() { runPCV3WriteWithOptions = run })
+		runPCV3WriteWithOptions = func(ctx context.Context, request *pcv3operation.WriteRequest, options pcv3operation.ExecutionOptions) *pcv3operation.Result {
+			file := request.SourceFile
+			result := run(ctx, request, options)
+			if err := file.Close(); err != nil {
+				t.Errorf("close borrowed file before worker cleanup: %v", err)
+			}
+			return result
+		}
+
+		start := StartPCV3(pcv3WriteTestEnvelope(
+			"write-normal", "password", "none", "standard", false, "", source, target, nil,
+		), []byte("public fixture password"))
+		operation := start.Operation()
+		if operation == nil {
+			t.Fatalf("write start = %q", start.Code())
+		}
+		t.Cleanup(func() { cleanupOperation(operation.ID()) })
+		synctest.Wait()
+
+		snapshot := operation.Snapshot()
+		if snapshot.PublicationState() != "published-durable" || snapshot.CompletionClass() != "warning" ||
+			snapshot.WarningCount() != 1 || snapshot.WarningAt(0) != "cleanup-incomplete" {
+			t.Fatalf("write cleanup snapshot = %s", pcv3MobileSnapshotText(snapshot))
+		}
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("published output disappeared on source cleanup failure: %v", err)
+		}
+		output := operation.Output()
+		if output == nil {
+			t.Fatal("cleanup warning lost the retained output")
+		}
+		if result := output.Discard(); result == nil || result.Code() != "discarded" {
+			t.Fatalf("discard retained output: %#v", result)
+		}
+		if body, err := os.ReadFile(source); err != nil || string(body) != "original bytes" {
+			t.Fatalf("source changed after output discard: %v", err)
+		}
+		if code := operation.Release(); code != "" {
+			t.Fatalf("release = %q", code)
+		}
+	})
+}
+
 // TestPCV3MobileWriteNormalRoundTrip proves a volume created through the
 // bridge write path decrypts byte-exact through the existing bridge read path,
 // including the retained-output SAF FD transfer and the public comment.

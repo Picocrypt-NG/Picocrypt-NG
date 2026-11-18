@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
@@ -1058,6 +1059,14 @@ func detachPCV3Consent(consent *pcv3ConsentState) {
 		state.consent = nil
 	}
 	globalProgressMap.mu.Unlock()
+}
+
+func finishPCV3Worker(operation *PCV3Operation, result *pcv3operation.Result, recovered any, cleanupIncomplete bool) {
+	if recovered != nil {
+		completePCV3Panic(operation, cleanupIncomplete || fileops.PanicCleanupIncomplete(recovered))
+		return
+	}
+	completePCV3Result(operation, result)
 }
 
 func completePCV3Result(operation *PCV3Operation, result *pcv3operation.Result) {
