@@ -18,7 +18,7 @@ func TestNormalFactorMismatchRefusesBeforeAdmissionOrOutput(t *testing.T) {
 	admitter := &operationTestAdmitter{}
 	result := runWithSeams(context.Background(), &Request{
 		Mode: ModeReadNormal, Source: source, Target: filepath.Join(directory, "plaintext"),
-		Factors: &FactorRequest{Mode: CredentialModePasswordOnly, ExpectedPolicy: FactorPolicyPasswordOnly, Password: []byte("mix")},
+		Factors: NewPinnedFactorRequest(FactorPolicyPasswordOnly, KeyfileModeNone, []byte("mix")),
 	}, operationSeams{admitter: admitter})
 	if result.Outcome() != pcv3.OutcomeOperationFailed || result.Stage() != pcv3.StageCredentialPolicy ||
 		result.Diagnostic() != DiagnosticCredentialPolicy {

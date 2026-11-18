@@ -510,10 +510,16 @@ func TestPCV3CLIRejectsExcessKeyfilesBeforeOpeningFactors(t *testing.T) {
 }
 
 func TestPCV3CLIFactorPolicyAcceptsMaximumKeyfileCount(t *testing.T) {
-	for _, order := range []string{"ordered", "unordered"} {
-		mode, _, policy, err := pcv3CLIFactorPolicy("keyfiles", order, false, 64)
-		if err != nil || mode != pcv3operation.CredentialModeKeyfilesOnly || policy != pcv3operation.FactorPolicyKeyfilesOnly {
-			t.Fatalf("64 %s factors: mode=%v policy=%v err=%v", order, mode, policy, err)
+	for _, test := range []struct {
+		flag string
+		mode pcv3operation.KeyfileMode
+	}{
+		{"ordered", pcv3operation.KeyfileModeOrdered},
+		{"unordered", pcv3operation.KeyfileModeUnordered},
+	} {
+		policy, order, err := pcv3CLIFactorPolicy("keyfiles", test.flag, false, 64)
+		if err != nil || order != test.mode || policy != pcv3operation.FactorPolicyKeyfilesOnly {
+			t.Fatalf("64 %s factors: order=%v policy=%v err=%v", test.flag, order, policy, err)
 		}
 	}
 }

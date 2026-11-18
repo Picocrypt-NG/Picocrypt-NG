@@ -219,27 +219,7 @@ func encryptPCV3(ctx *OperationContext, req *EncryptRequest, options pcv3operati
 }
 
 func pcv3WriteFactors(req *EncryptRequest) (*pcv3operation.FactorRequest, error) {
-	request := &pcv3operation.FactorRequest{
-		Password: append([]byte(nil), req.Password...),
-	}
-	if len(req.Keyfiles) == 0 {
-		request.Mode = pcv3operation.CredentialModePasswordOnly
-		request.KeyfileMode = pcv3operation.KeyfileModeNone
-		request.ExpectedPolicy = pcv3operation.FactorPolicyPasswordOnly
-		return request, nil
-	}
-
-	request.KeyfileMode = pcv3operation.KeyfileModeUnordered
-	if req.KeyfileOrdered {
-		request.KeyfileMode = pcv3operation.KeyfileModeOrdered
-	}
-	if len(req.Password) == 0 {
-		request.Mode = pcv3operation.CredentialModeKeyfilesOnly
-		request.ExpectedPolicy = pcv3operation.FactorPolicyKeyfilesOnly
-	} else {
-		request.Mode = pcv3operation.CredentialModePasswordAndKeyfiles
-		request.ExpectedPolicy = pcv3operation.FactorPolicyPasswordAndKeyfiles
-	}
+	request := pcv3operation.NewSelectedFactorRequest(append([]byte(nil), req.Password...), len(req.Keyfiles) != 0, req.KeyfileOrdered)
 	for _, path := range req.Keyfiles {
 		file, err := fileops.OpenRegularReadNoSymlink(path)
 		if err != nil {

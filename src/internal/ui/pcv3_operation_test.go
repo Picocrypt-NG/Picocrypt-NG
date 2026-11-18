@@ -5,6 +5,7 @@ import (
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/pcv3publication"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -176,6 +177,13 @@ func TestPCV3FyneRejectsExcessKeyfilesBeforeTakingPassword(t *testing.T) {
 	// reject 65 before transferring the caller's password or opening readers.
 	for _, count := range []int{64, 65} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			opens := 0
+			previous := openPCV3Keyfile
+			openPCV3Keyfile = func(path string) (*os.File, error) {
+				opens++
+				return previous(path)
+			}
+			t.Cleanup(func() { openPCV3Keyfile = previous })
 			paths := make([]string, count)
 			for i := range paths {
 				paths[i] = keyfile
@@ -191,8 +199,8 @@ func TestPCV3FyneRejectsExcessKeyfilesBeforeTakingPassword(t *testing.T) {
 				defer func() { _ = factors.Close() }()
 			}
 			if count == 65 {
-				if err == nil || factors != nil {
-					t.Fatalf("excess keyfiles admitted: factors=%v, err=%v", factors != nil, err)
+				if err == nil || factors != nil || opens != 0 {
+					t.Fatalf("excess keyfiles: admitted=%v, opens=%d, err=%v", factors != nil, opens, err)
 				}
 				if string(intent.Password) != "still caller-owned" || string(password) != "still caller-owned" {
 					t.Fatal("count rejection consumed or cleared the caller's password")
@@ -208,6 +216,56 @@ func TestPCV3FyneRejectsExcessKeyfilesBeforeTakingPassword(t *testing.T) {
 			requireZeroedPassword(t, password)
 		})
 	}
+}
+
+func TestPCV3FyneKeyfileOpenFailureReleasesTransferredFactors(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.key")
+	missing := filepath.Join(dir, "missing.key")
+	if err := os.WriteFile(first, []byte("public test factor"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+
+	previous := openPCV3Keyfile
+	var opened *os.File
+	var paths []string
+	openPCV3Keyfile = func(path string) (*os.File, error) {
+		paths = append(paths, path)
+		file, err := previous(path)
+		if path == first {
+			opened = file
+		}
+		return file, err
+	}
+	t.Cleanup(func() { openPCV3Keyfile = previous })
+
+	password := []byte("transferred password")
+	target := filepath.Join(dir, "plain")
+	intent := &app.PCV3OperationIntent{
+		Format: app.PCV3FormatNormal, Action: app.PCV3ActionDecrypt,
+		FactorPolicy: app.PCV3FactorPolicyCombined, KeyfileOrder: app.PCV3KeyfileOrderSelected,
+		Password: password, Source: source, Target: target, Keyfiles: []string{first, missing},
+	}
+	request, err := buildPCV3Request(intent)
+	if request != nil || err == nil || err.Error() != "PCV3 keyfile could not be opened safely" {
+		t.Fatalf("failed open yielded an executable request or changed diagnostic: request=%v, err=%v", request, err)
+	}
+	if opened == nil || !slices.Equal(paths, []string{first, missing}) {
+		t.Fatalf("keyfile acquisition order changed: %v", paths)
+	}
+	var probe [1]byte
+	if n, err := opened.Read(probe[:]); n != 0 || !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("first keyfile read after cleanup = %d, %v; want closed", n, err)
+	}
+	if intent.Password != nil {
+		t.Fatal("failed open returned the transferred password")
+	}
+	requireZeroedPassword(t, password)
 }
 
 func TestPCV3ForceConsentExistsOnlyForExplicitUnverifiedAction(t *testing.T) {

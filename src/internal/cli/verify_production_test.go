@@ -16,9 +16,18 @@ func TestVerifyD1CLIIndependentProductionFixturesCreateNoOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, fixture := range []string{"d1.pcv", "d1-standard.pcv"} {
-		t.Run(fixture, func(t *testing.T) {
-			original, err := os.ReadFile(filepath.Join(fixtures, fixture))
+	for _, test := range []struct {
+		name, fixture string
+		policy, order string
+		verified      bool
+	}{
+		{"paranoid combined ordered", "d1.pcv", "combined", "ordered", true},
+		{"standard combined ordered", "d1-standard.pcv", "combined", "ordered", true},
+		{"wrong order", "d1-standard.pcv", "combined", "unordered", false},
+		{"wrong policy", "d1-standard.pcv", "password", "", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original, err := os.ReadFile(filepath.Join(fixtures, test.fixture))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -32,16 +41,28 @@ func TestVerifyD1CLIIndependentProductionFixturesCreateNoOutput(t *testing.T) {
 			if err := os.WriteFile(source, original, 0o600); err != nil {
 				t.Fatal(err)
 			}
+			args := []string{source, "--deniability", "--pcv3-factors=" + test.policy, "-p", string(password), "--quiet"}
+			if test.order != "" {
+				args = append(args, "--pcv3-keyfile-order="+test.order,
+					"-k", filepath.Join(fixtures, "keyfile-alpha.bin"), "-k", filepath.Join(fixtures, "keyfile-beta.bin"))
+			}
 			cmd := newVerifyCommand()
-			cmd.SetArgs([]string{source, "--deniability", "--pcv3-factors=combined", "--pcv3-keyfile-order=ordered", "-p", string(password), "-k", filepath.Join(fixtures, "keyfile-alpha.bin"), "-k", filepath.Join(fixtures, "keyfile-beta.bin"), "--quiet"})
+			cmd.SetArgs(args)
 			var stdout, stderr bytes.Buffer
 			cmd.SetOut(&stdout)
 			cmd.SetErr(&stderr)
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("independent CLI verify: %v stderr=%s", err, stderr.String())
+			verificationErr := cmd.Execute()
+			if test.verified {
+				if verificationErr != nil || !strings.Contains(stderr.String(), "front=passed tail=passed pair=passed payload=passed") {
+					t.Fatalf("independent CLI verify: %v stderr=%s", verificationErr, stderr.String())
+				}
+			} else if verificationErr == nil ||
+				verificationErr.Error() != "D1 could not be fully verified; credentials or volume damage may prevent authentication" ||
+				!strings.Contains(stderr.String(), "front=not authenticated tail=not authenticated pair=unchecked payload=unchecked") {
+				t.Fatalf("unexpected verification result for explicitly selected factors: %v stderr=%s", verificationErr, stderr.String())
 			}
-			if stdout.Len() != 0 || !strings.Contains(stderr.String(), "front=passed tail=passed pair=passed payload=passed") {
-				t.Fatalf("incorrect verification result or stdout: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			if stdout.Len() != 0 {
+				t.Fatalf("verification wrote stdout: %q", stdout.String())
 			}
 			after, err := os.ReadFile(source)
 			if err != nil || !bytes.Equal(after, original) {

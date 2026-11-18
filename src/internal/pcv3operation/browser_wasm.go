@@ -134,18 +134,9 @@ func browserFactorBytes(password []byte, files [][]byte) (uint64, bool) {
 }
 
 func browserFactors(password []byte, files [][]byte, ordered bool) *pcv3credential.FactorRequest {
-	request := &pcv3credential.FactorRequest{Password: password, Mode: CredentialModePasswordOnly, ExpectedPolicy: FactorPolicyPasswordOnly, KeyfileMode: KeyfileModeNone}
-	if len(files) != 0 {
-		request.Mode, request.ExpectedPolicy, request.KeyfileMode = CredentialModeKeyfilesOnly, FactorPolicyKeyfilesOnly, KeyfileModeUnordered
-		if len(password) != 0 {
-			request.Mode, request.ExpectedPolicy = CredentialModePasswordAndKeyfiles, FactorPolicyPasswordAndKeyfiles
-		}
-		if ordered {
-			request.KeyfileMode = KeyfileModeOrdered
-		}
-		for _, file := range files {
-			request.Keyfiles = append(request.Keyfiles, OwnKeyfileReader(io.NopCloser(bytes.NewReader(file))))
-		}
+	request := NewSelectedFactorRequest(password, len(files) != 0, ordered)
+	for _, file := range files {
+		request.Keyfiles = append(request.Keyfiles, OwnKeyfileReader(io.NopCloser(bytes.NewReader(file))))
 	}
 	return request
 }

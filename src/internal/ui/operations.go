@@ -884,34 +884,33 @@ func pcv3FactorsForIntent(intent *app.PCV3OperationIntent) (*pcv3operation.Facto
 	if len(intent.Keyfiles) > pcv3operation.MaxKeyfiles {
 		return nil, fmt.Errorf("PCV3 supports at most %d keyfiles", pcv3operation.MaxKeyfiles)
 	}
-	factors := &pcv3operation.FactorRequest{Password: intent.Password}
+	password := intent.Password
 	intent.Password = nil
+	var policy pcv3operation.FactorPolicy
 	switch intent.FactorPolicy {
 	case app.PCV3FactorPolicyPassword:
-		factors.Mode = pcv3operation.CredentialModePasswordOnly
-		factors.ExpectedPolicy = pcv3operation.FactorPolicyPasswordOnly
-		factors.KeyfileMode = pcv3operation.KeyfileModeNone
+		policy = pcv3operation.FactorPolicyPasswordOnly
 	case app.PCV3FactorPolicyKeyfiles:
-		factors.Mode = pcv3operation.CredentialModeKeyfilesOnly
-		factors.ExpectedPolicy = pcv3operation.FactorPolicyKeyfilesOnly
+		policy = pcv3operation.FactorPolicyKeyfilesOnly
 	case app.PCV3FactorPolicyCombined:
-		factors.Mode = pcv3operation.CredentialModePasswordAndKeyfiles
-		factors.ExpectedPolicy = pcv3operation.FactorPolicyPasswordAndKeyfiles
+		policy = pcv3operation.FactorPolicyPasswordAndKeyfiles
 	default:
-		_ = factors.Close()
+		secret.SecureZero(password)
 		return nil, errors.New("invalid PCV3 factor policy")
 	}
+	order := pcv3operation.KeyfileModeNone
 	if intent.FactorPolicy != app.PCV3FactorPolicyPassword {
 		switch intent.KeyfileOrder {
 		case app.PCV3KeyfileOrderSelected:
-			factors.KeyfileMode = pcv3operation.KeyfileModeOrdered
+			order = pcv3operation.KeyfileModeOrdered
 		case app.PCV3KeyfileOrderAny:
-			factors.KeyfileMode = pcv3operation.KeyfileModeUnordered
+			order = pcv3operation.KeyfileModeUnordered
 		default:
-			_ = factors.Close()
+			secret.SecureZero(password)
 			return nil, errors.New("invalid PCV3 keyfile order")
 		}
 	}
+	factors := pcv3operation.NewPinnedFactorRequest(policy, order, password)
 	for _, path := range intent.Keyfiles {
 		file, err := openPCV3Keyfile(path)
 		if err != nil {

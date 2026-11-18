@@ -111,6 +111,17 @@ const (
 	MaxKeyfiles                       = pcv3credential.MaxKeyfiles
 )
 
+// NewPinnedFactorRequest takes ownership of password for the caller's explicit policy.
+func NewPinnedFactorRequest(expected FactorPolicy, order KeyfileMode, password []byte) *FactorRequest {
+	return pcv3credential.NewPinnedFactorRequest(expected, order, password)
+}
+
+// NewSelectedFactorRequest takes ownership of password and derives the request
+// shape from the selected factors.
+func NewSelectedFactorRequest(password []byte, hasKeyfiles, ordered bool) *FactorRequest {
+	return pcv3credential.NewSelectedFactorRequest(password, hasKeyfiles, ordered)
+}
+
 type (
 	ArtifactInspection         = pcv3recovery.ArtifactInspection
 	ArtifactInspectionMetadata = pcv3recovery.ArtifactInspectionMetadata
