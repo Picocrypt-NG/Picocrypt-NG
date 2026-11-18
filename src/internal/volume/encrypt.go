@@ -673,6 +673,9 @@ func encryptFinalize(ctx *OperationContext, req *EncryptRequest) error {
 	if err := req.ValidateOutputSafety(); err != nil {
 		return err
 	}
+	if ctx.IsCancelled() {
+		return ctx.CancellationError()
+	}
 	if err := ctx.publishStagedOutput(); err != nil {
 		return fmt.Errorf("publish output: %w", err)
 	}
