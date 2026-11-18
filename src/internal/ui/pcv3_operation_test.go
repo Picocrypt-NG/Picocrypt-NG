@@ -258,8 +258,9 @@ func TestPCV3FyneKeyfileOpenFailureReleasesTransferredFactors(t *testing.T) {
 	if opened == nil || !slices.Equal(paths, []string{first, missing}) {
 		t.Fatalf("keyfile acquisition order changed: %v", paths)
 	}
-	if _, err := opened.Stat(); !errors.Is(err, os.ErrClosed) {
-		t.Fatalf("first keyfile descriptor remained open: %v", err)
+	var probe [1]byte
+	if n, err := opened.Read(probe[:]); n != 0 || !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("first keyfile read after cleanup = %d, %v; want closed", n, err)
 	}
 	if intent.Password != nil {
 		t.Fatal("failed open returned the transferred password")

@@ -59,9 +59,10 @@ func TestPCV3WriteFactorsPreserveSelectedShapeAndFileOrder(t *testing.T) {
 			if err := factors.Close(); err != nil {
 				t.Fatal(err)
 			}
+			var probe [1]byte
 			for index, file := range files {
-				if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
-					t.Fatalf("keyfile %d descriptor remained open: %v", index, err)
+				if n, err := file.Read(probe[:]); n != 0 || !errors.Is(err, os.ErrClosed) {
+					t.Fatalf("keyfile %d read after cleanup = %d, %v; want closed", index, n, err)
 				}
 			}
 			if !bytes.Equal(ownedPassword, make([]byte, len(password))) || string(password) != test.password {

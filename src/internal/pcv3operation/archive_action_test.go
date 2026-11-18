@@ -122,63 +122,74 @@ func TestArchiveActionProductionSaveAndExtract(t *testing.T) {
 	}
 }
 
-func TestArchiveActionReviewsAuthenticatedBudgetBeforeExtraction(t *testing.T) {
+// The macOS lane runs each test parent in a fresh process. Keep the review cases
+// separate so each real KDF starts with fresh process memory.
+func TestArchiveActionReviewsAuthenticatedBudgetBeforeExtractionApprove(t *testing.T) {
+	testArchiveActionReviewsAuthenticatedBudgetBeforeExtraction(t, "approve")
+}
+
+func TestArchiveActionReviewsAuthenticatedBudgetBeforeExtractionDecline(t *testing.T) {
+	testArchiveActionReviewsAuthenticatedBudgetBeforeExtraction(t, "decline")
+}
+
+func TestArchiveActionReviewsAuthenticatedBudgetBeforeExtractionPanic(t *testing.T) {
+	testArchiveActionReviewsAuthenticatedBudgetBeforeExtraction(t, "panic")
+}
+
+func testArchiveActionReviewsAuthenticatedBudgetBeforeExtraction(t *testing.T, decision string) {
+	t.Helper()
 	archive, err := os.ReadFile(filepath.Join("..", "fileops", "testdata", "unpack_high_ratio_above_floor.zip"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ciphertext := archiveActionCiphertext(t, archive)
-	for _, decision := range []string{"approve", "decline", "panic"} {
-		t.Run(decision, func(t *testing.T) {
-			parent := t.TempDir()
-			target := filepath.Join(parent, "result.zip")
-			plan, err := newArchiveReadPlan(ArchiveExtract, target)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer plan.close()
-			calls := 0
-			plan.review = func(ctx context.Context, summary ArchiveSummary) error {
-				calls++
-				if ctx.Err() != nil || summary.Files != 1 || summary.Directories != 0 || summary.UnpackedBytes != 2<<20 {
-					t.Fatalf("review received incorrect archive budget: %+v (%v)", summary, ctx.Err())
-				}
-				entries, err := os.ReadDir(filepath.Join(parent, "result"))
-				if err != nil || len(entries) != 0 {
-					t.Fatalf("extraction started before review: %v", err)
-				}
-				switch decision {
-				case "decline":
-					return context.Canceled
-				case "panic":
-					panic("review callback failed")
-				}
-				return nil
-			}
-			read := archiveActionReadFixture(t, target, ciphertext)
-			result := plan.apply(context.Background(), read)
-			if calls != 1 || result.ArchiveFollowUp() != nil || result.SourceDeletionAllowed() {
-				t.Fatalf("review lifecycle mismatch: calls=%d result=%v", calls, result)
-			}
-			if decision == "approve" {
-				requireNativeOperationPublication(t, result)
-				entries, err := os.ReadDir(filepath.Join(parent, "result"))
-				if err != nil || len(entries) != 1 {
-					t.Fatalf("approved archive output missing: %v", err)
-				}
-				body, err := os.ReadFile(filepath.Join(parent, "result", entries[0].Name()))
-				if err != nil || !bytes.Equal(body, bytes.Repeat([]byte("A"), 2<<20)) {
-					t.Fatalf("approved output bytes differ: %v", err)
-				}
-				return
-			}
-			requireArchiveActionRefusal(t, result, decision == "decline")
-			if decision == "decline" && !errors.Is(result, context.Canceled) {
-				t.Fatalf("declining review lost cancellation: %v", result)
-			}
-			requireArchiveRefusalDirectory(t, parent, "result", !nativeOperationDirectorySyncSupported(t, parent))
-		})
+	parent := t.TempDir()
+	target := filepath.Join(parent, "result.zip")
+	plan, err := newArchiveReadPlan(ArchiveExtract, target)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer plan.close()
+	calls := 0
+	plan.review = func(ctx context.Context, summary ArchiveSummary) error {
+		calls++
+		if ctx.Err() != nil || summary.Files != 1 || summary.Directories != 0 || summary.UnpackedBytes != 2<<20 {
+			t.Fatalf("review received incorrect archive budget: %+v (%v)", summary, ctx.Err())
+		}
+		entries, err := os.ReadDir(filepath.Join(parent, "result"))
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("extraction started before review: %v", err)
+		}
+		switch decision {
+		case "decline":
+			return context.Canceled
+		case "panic":
+			panic("review callback failed")
+		}
+		return nil
+	}
+	read := archiveActionReadFixture(t, target, ciphertext)
+	result := plan.apply(context.Background(), read)
+	if calls != 1 || result.ArchiveFollowUp() != nil || result.SourceDeletionAllowed() {
+		t.Fatalf("review lifecycle mismatch: calls=%d result=%v", calls, result)
+	}
+	if decision == "approve" {
+		requireNativeOperationPublication(t, result)
+		entries, err := os.ReadDir(filepath.Join(parent, "result"))
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("approved archive output missing: %v", err)
+		}
+		body, err := os.ReadFile(filepath.Join(parent, "result", entries[0].Name()))
+		if err != nil || !bytes.Equal(body, bytes.Repeat([]byte("A"), 2<<20)) {
+			t.Fatalf("approved output bytes differ: %v", err)
+		}
+		return
+	}
+	requireArchiveActionRefusal(t, result, decision == "decline")
+	if decision == "decline" && !errors.Is(result, context.Canceled) {
+		t.Fatalf("declining review lost cancellation: %v", result)
+	}
+	requireArchiveRefusalDirectory(t, parent, "result", !nativeOperationDirectorySyncSupported(t, parent))
 }
 
 func TestArchiveActionDefaultAndPrepareLeaveOneShotChoice(t *testing.T) {
