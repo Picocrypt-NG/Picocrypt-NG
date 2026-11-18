@@ -38,21 +38,16 @@ func executePCV3WriteOperation(operation *PCV3Operation, request *pcv3WriteReque
 		if cleanupIncomplete && result != nil {
 			result.WithCleanupWarning()
 		}
-		if recovered != nil {
-			cleanupIncomplete = cleanupIncomplete || fileops.PanicCleanupIncomplete(recovered)
-			if result != nil {
-				for _, warning := range result.Warnings() {
-					cleanupIncomplete = cleanupIncomplete || warning == pcv3operation.WarningCleanupIncomplete
-				}
-				if output := result.OutputFollowUp(); output != nil {
-					discard := output.Discard()
-					cleanupIncomplete = cleanupIncomplete || discard.CleanupIncomplete()
-				}
+		if recovered != nil && result != nil {
+			for _, warning := range result.Warnings() {
+				cleanupIncomplete = cleanupIncomplete || warning == pcv3operation.WarningCleanupIncomplete
 			}
-			completePCV3Panic(operation, cleanupIncomplete)
-			return
+			if output := result.OutputFollowUp(); output != nil {
+				discard := output.Discard()
+				cleanupIncomplete = cleanupIncomplete || discard.CleanupIncomplete()
+			}
 		}
-		completePCV3Result(operation, result)
+		finishPCV3Worker(operation, result, recovered, cleanupIncomplete)
 	}()
 	ctx, ok := getContext(operation.id)
 	if !ok {
