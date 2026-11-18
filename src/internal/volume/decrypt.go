@@ -283,6 +283,7 @@ func decryptPreprocess(ctx *OperationContext, req *DecryptRequest, preparedInput
 			expectedInput = ctx.recombinedInfo
 		}
 		decrypted, err := removeDeniability(
+			ctx.Ctx,
 			inputFile,
 			req.Password,
 			ctx.Reporter,
@@ -373,7 +374,7 @@ func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
 func decryptDeriveKeys(ctx *OperationContext, req *DecryptRequest) error { //nolint:unparam // (ctx, req) signature shared by decrypt steps; req unused here by design
 	ctx.SetStatus("Deriving key...")
 
-	key, err := deriveVolumeKey(ctx.passwordBytes.Bytes(), ctx.Header.Salt, ctx.Header.Flags.Paranoid)
+	key, err := admittedVolumeKey(ctx.Ctx, ctx.passwordBytes.Bytes(), ctx.Header.Salt, ctx.Header.Flags.Paranoid)
 	if err != nil {
 		return err
 	}

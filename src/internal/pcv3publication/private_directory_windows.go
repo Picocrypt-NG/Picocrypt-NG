@@ -52,6 +52,13 @@ func createPrivateStage(_ *os.Root, parent *os.File, name string) (*os.File, err
 	return createWindowsPrivateObject(parent, name, false)
 }
 
+func establishPrivateStageAccess(file *os.File) error {
+	if !privateWindowsHandle(file) {
+		return os.ErrPermission
+	}
+	return nil
+}
+
 func createWindowsPrivateObject(parent *os.File, name string, directory bool) (*os.File, error) {
 	sd, err := ownerSecurityDescriptor()
 	if err != nil {

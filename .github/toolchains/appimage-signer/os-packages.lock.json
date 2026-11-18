@@ -1,0 +1,18 @@
+{
+  "snapshot": "20261105T000000Z",
+  "index": "jammy-updates/main/binary-amd64/Packages.gz",
+  "packages": [
+    {
+      "path": "pool/main/f/file/file_5.41-3ubuntu0.1_amd64.deb",
+      "sha256": "b63b48e8b32c6f0fce5ad37d5ec3269cbbdc8feed13170aae1f416a43ebe898b"
+    },
+    {
+      "path": "pool/main/f/file/libmagic-mgc_5.41-3ubuntu0.1_amd64.deb",
+      "sha256": "23fcefb8b9ee73eb74e127fc230330918a8f81e127fa54015f191cfd34726b3c"
+    },
+    {
+      "path": "pool/main/f/file/libmagic1_5.41-3ubuntu0.1_amd64.deb",
+      "sha256": "344d0cc65fea4175ca1ab222c20b5b95fb1357acafea6b016add9988760829d0"
+    }
+  ]
+}

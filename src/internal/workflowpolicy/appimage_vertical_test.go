@@ -59,7 +59,7 @@ func TestAppImageSharedBuildPreservesProductionStepsAndSigningBoundary(t *testin
 		names []string
 		want  string
 	}{
-		{"sign", []string{"Check and extract signing input", "Install packaging dependencies", "Fetch and verify AppImage tooling", "Import GPG signing key", "Build signed AppImage", "Remove production signing key", "Verify AppImage signature", "Smoke test AppImage"}, "79c3ecd0d0e84480aa69dd5b591a16af16eb7049184385f1e9094bbefac3786c"},
+		{"sign", []string{"Check and extract signing input", "Download locked AppImage signing tools", "Build AppImage signing image before loading secrets", "Build signed AppImage", "Verify AppImage signature", "Smoke test AppImage"}, "78237e3dc5f671e6f0883f89c6008d96623af40464fe774e2fd381a17868c7aa"},
 		{"release", []string{"Get version tag", "Sign and attest artifacts", "Generate release notes", "Stage release assets"}, "9ef0b33106724f81330a6791c46dfbc2b2b6b8db2eaf3fa1cbb8e6dea86cc813"},
 	} {
 		var selected []map[string]any
@@ -68,7 +68,7 @@ func TestAppImageSharedBuildPreservesProductionStepsAndSigningBoundary(t *testin
 			if !slices.Contains(recipe.names, name) {
 				continue
 			}
-			if recipe.job == "sign" && name != "Remove production signing key" {
+			if recipe.job == "sign" {
 				if step["if"] != "${{ ("+appimageDirectInvocation+") || steps.inventory.outputs.state == 'missing' }}" {
 					t.Fatalf("native AppImage %s lost direct/fresh-signing gating", name)
 				}

@@ -552,6 +552,7 @@ func TestRemoveDeniabilityRejectsBorrowedPCV3BeforeEffects(t *testing.T) {
 
 	reporter := &pcv3DispatchReporter{}
 	stage, err := removeDeniability(
+		t.Context(),
 		input,
 		[]byte("must-not-be-used"),
 		reporter,

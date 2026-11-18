@@ -25,6 +25,7 @@ import kotlinx.coroutines.withContext
 import io.github.picocrypt_ng.picocrypt_ng.FileCopyService
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 
 /** Narrow persistence seam; production always delegates to the exact AtomicFile store. */
@@ -2297,6 +2298,7 @@ internal class Pcv3Lifecycle(
  */
 object OperationManager {
     private val legacyOperationMutex = Mutex()
+    private val legacyResourceReader = AtomicReference<Pair<String, Pcv3ResourceObservationReader>?>(null)
     private val pcv3InputCustodyLock = Any()
     private var pcv3InputCustody: Pcv3InputCustody? = null
     private val _pcv3InputCleanupFailure = MutableStateFlow<Pcv3InputCleanupFailure?>(null)
@@ -2306,6 +2308,11 @@ object OperationManager {
     private val _currentOperation = MutableStateFlow<OperationState?>(null)
     val currentOperation: StateFlow<OperationState?> = _currentOperation.asStateFlow()
     private val pcv3Lifecycle = Pcv3Lifecycle(GoBridge.pcv3Bridge)
+
+    private fun clearLegacyResourceReader(operationID: String) {
+        val current = legacyResourceReader.get()
+        if (current?.first == operationID) legacyResourceReader.compareAndSet(current, null)
+    }
     val currentPcv3Presentation: StateFlow<Pcv3Presentation?> = pcv3Lifecycle.presentation
     val currentPcv3ArtifactDetails: StateFlow<Pcv3ArtifactDetailsUiState> = pcv3Lifecycle.artifactDetails
     /** Authority-free lifecycle occupancy; true while native ownership may still be live. */
@@ -2553,6 +2560,7 @@ object OperationManager {
         )
         
         result.onSuccess {
+            legacyResourceReader.set(operationID to Pcv3AndroidResourceObservationReader(context))
             _currentOperation.value = OperationState(
                 id = operationID,
                 type = OperationType.DECRYPT,
@@ -2606,8 +2614,12 @@ object OperationManager {
         // simultaneously) overwrite the freshly-final state with stale progress.
         if (operation.done) return@withContext operation
 
+        legacyResourceReader.get()?.takeIf { it.first == operation.id }?.let { (_, reader) ->
+            GoBridge.supplyLegacyResourceObservation(operation.id, reader)
+        }
         val result = GoBridge.getProgress(operation.id)
         result.getOrNull()?.let { progressState ->
+            if (progressState.done) clearLegacyResourceReader(operation.id)
             // Classify by the stable Go error code (not fragile substring matching).
             val error = progressError(progressState, operation.type)
             
@@ -2696,6 +2708,7 @@ object OperationManager {
         // Keep replacement starts and other dismissals out until all deletion ends.
         val operation = _currentOperation.value?.takeIf { it.hasSameOwnerAs(expectedOperation) }
             ?: return Result.success(Unit)
+        clearLegacyResourceReader(operation.id)
         
         // Clear passwords from form data before clearing operation
         operation.formData?.clearPasswords()
@@ -2843,6 +2856,7 @@ object OperationManager {
         )
         
         result.onSuccess {
+            legacyResourceReader.set(operationID to Pcv3AndroidResourceObservationReader(context))
             _currentOperation.value = OperationState(
                 id = operationID,
                 type = OperationType.DECRYPT,

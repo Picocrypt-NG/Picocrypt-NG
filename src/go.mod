@@ -48,12 +48,12 @@ require (
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/yuin/goldmark v1.8.7 // indirect
-	golang.org/x/image v0.47.0 // indirect
-	golang.org/x/mobile v0.0.0-20261011034528-197770444867 // indirect
-	golang.org/x/mod v0.42.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/image v0.48.0 // indirect
+	golang.org/x/mobile v0.0.0-20261117202452-47699113848a // indirect
+	golang.org/x/mod v0.43.0 // indirect
+	golang.org/x/net v0.63.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
-	golang.org/x/tools v0.52.0 // indirect
+	golang.org/x/tools v0.53.0 // indirect
 )
 
 tool golang.org/x/mobile/cmd/gobind

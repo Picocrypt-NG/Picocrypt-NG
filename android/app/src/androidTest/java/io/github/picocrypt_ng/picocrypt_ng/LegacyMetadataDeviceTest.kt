@@ -36,6 +36,11 @@ class LegacyMetadataDeviceTest {
     )
 
     @Test
+    fun nativeResourceRefusalLeavesTheFrozenInputAndNoPlaintext() = readFrozen(
+        "pico_test_v2.txt.pcv", "v2.00", LegacySecurityWarning.NONE, lowMemory = true,
+    )
+
+    @Test
     fun metadataPresentationResolvesEveryPackagedLocaleWithoutEnglishFallback() {
         val app = ApplicationProvider.getApplicationContext<Context>()
         val resources = listOf(R.string.comments_unverified, R.string.comment_authenticity_authenticated,
@@ -55,7 +60,7 @@ class LegacyMetadataDeviceTest {
     }
 
     private fun readFrozen(fixtureName: String, version: String, warning: LegacySecurityWarning,
-        keyfile: String? = null, wrongPassword: Boolean = false) {
+        keyfile: String? = null, wrongPassword: Boolean = false, lowMemory: Boolean = false) {
         val app = ApplicationProvider.getApplicationContext<Context>()
         val assets = InstrumentationRegistry.getInstrumentation().context.assets
         val directory = File(app.cacheDir, "legacy-metadata-${System.nanoTime()}")
@@ -80,16 +85,27 @@ class LegacyMetadataDeviceTest {
             GoBridge.startDecrypt(operation, source.path, target.path,
                 (if (wrongPassword) "wrong password" else "test").toByteArray(Charsets.UTF_8),
                 DecryptOptions(keyfiles = factors)).getOrThrow()
+            val platformReader = Pcv3AndroidResourceObservationReader(app)
+            val reader = if (lowMemory) {
+                Pcv3ResourceObservationReader { platformReader.read()?.copy(lowMemory = true) }
+            } else {
+                platformReader
+            }
             val deadline = SystemClock.elapsedRealtime() + 180_000
             var progress = GoBridge.getProgress(operation).getOrThrow()
             while (!progress.done && SystemClock.elapsedRealtime() < deadline) {
+                GoBridge.supplyLegacyResourceObservation(operation, reader)
                 SystemClock.sleep(20)
                 progress = GoBridge.getProgress(operation).getOrThrow()
             }
             assertTrue("native legacy read timed out: $progress", progress.done)
             settled = true
             assertEquals(CommentAuthenticity.UNAVAILABLE, progress.commentAuthenticity)
-            if (wrongPassword) {
+            if (lowMemory) {
+                assertEquals(OperationStatus.ERROR, progress.status.code)
+                assertEquals("RESOURCE_LIMIT", progress.errorCode)
+                assertFalse("resource refusal must not publish plaintext", target.exists())
+            } else if (wrongPassword) {
                 assertEquals(OperationStatus.ERROR, progress.status.code)
                 assertEquals("AUTH_FAILED", progress.errorCode)
                 assertEquals("", progress.legacyVersion)

@@ -911,6 +911,27 @@ object GoBridge {
             Result.failure(AppError.fromException(e))
         }
     }
+
+    internal fun supplyLegacyResourceObservation(operationID: String, reader: Pcv3ResourceObservationReader) {
+        try {
+            val challenge = Mobile.getLegacyResourceChallenge(operationID) ?: return
+            val observation = reader.read() ?: return
+            challenge.submit(
+                observation.totalRamBytes,
+                observation.effectiveAvailableBytes,
+                observation.platformThresholdBytes,
+                observation.processFootprintBytes,
+                observation.processIs64Bit,
+                observation.lowMemory,
+            )
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            // Missing observations cause a resource refusal in Go.
+        } catch (_: LinkageError) {
+            // A mismatched native bridge cannot grant admission.
+        }
+    }
     
     /**
      * Cancels a running operation.

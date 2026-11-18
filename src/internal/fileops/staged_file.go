@@ -28,6 +28,14 @@ type StagedFile struct {
 	cleanupErr  error
 }
 
+// NewForSameTarget creates a second stage in the same pinned target directory.
+func (s *StagedFile) NewForSameTarget() (*StagedFile, error) {
+	if s == nil || s.file == nil || s.root == nil {
+		return nil, os.ErrInvalid
+	}
+	return createSiblingTempInRoot(s.root, s.rootInfo, s.targetName, s.targetPath)
+}
+
 // CreateSiblingTemp creates an exclusively owned, mode-0600 temporary file in
 // the target's directory and keeps its original handle open.
 func CreateSiblingTemp(targetPath string) (*StagedFile, error) {

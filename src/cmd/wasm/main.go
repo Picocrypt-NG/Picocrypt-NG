@@ -3,6 +3,7 @@
 package main
 
 import (
+	"Picocrypt-NG/internal/kdfgate"
 	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/secret"
 	"Picocrypt-NG/internal/wasm"
@@ -429,6 +430,16 @@ func decrypt(this js.Value, args []js.Value) (result any) {
 	ordered := false
 	if pcv3 {
 		ordered = optBool(opts, "keyfileOrdered")
+	} else {
+		var factorBytes uint64
+		for _, size := range sizes {
+			factorBytes += uint64(size)
+		}
+		input := uint64(dataLength)
+		if !kdfgate.BrowserJSWithinBudget(input, input, factorBytes) ||
+			!kdfgate.BrowserHasKDFRoom(input+factorBytes+4*pcv3operation.BrowserMaxPasswordBytes) {
+			return errorResult(wasm.ErrResourceLimit)
+		}
 	}
 	data := copyUint8Array(dataValue, dataLength)
 	defer secret.SecureZero(data)

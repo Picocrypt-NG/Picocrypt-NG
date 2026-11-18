@@ -17,6 +17,8 @@ func createPrivateStage(*os.Root, *os.File, string) (*os.File, error) {
 	return nil, errors.ErrUnsupported
 }
 
+func establishPrivateStageAccess(*os.File) error { return errors.ErrUnsupported }
+
 func trustedLegacyJournalParent(*os.File) bool { return false }
 
 func privateDirectoryBackendAvailable() bool { return false }

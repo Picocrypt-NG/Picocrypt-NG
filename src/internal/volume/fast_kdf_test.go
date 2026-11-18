@@ -3,6 +3,7 @@ package volume
 import (
 	"Picocrypt-NG/internal/crypto"
 	"bytes"
+	"context"
 	"os"
 	"testing"
 
@@ -62,15 +63,24 @@ func useFastTestKDF() func() {
 var (
 	productionTestVolumeKey      func(password, salt []byte, paranoid bool) ([]byte, error)
 	productionTestDeniabilityKey func(password, salt []byte) []byte
+	productionTestAdmission      func(context.Context) error
 )
 
 func useProductionTestKDF() func() {
-	return useTestKDF(productionTestVolumeKey, productionTestDeniabilityKey)
+	restore := useTestKDF(productionTestVolumeKey, productionTestDeniabilityKey)
+	previous := admitLegacyKDF
+	admitLegacyKDF = productionTestAdmission
+	return func() {
+		admitLegacyKDF = previous
+		restore()
+	}
 }
 
 func TestMain(m *testing.M) {
 	productionTestVolumeKey = deriveVolumeKey
 	productionTestDeniabilityKey = deriveDeniabilityKey
+	productionTestAdmission = admitLegacyKDF
+	admitLegacyKDF = func(ctx context.Context) error { return ctx.Err() }
 	restore := useFastTestKDF()
 	code := m.Run()
 	restore()

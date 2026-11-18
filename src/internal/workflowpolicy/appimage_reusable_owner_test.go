@@ -59,7 +59,7 @@ func TestAppImageReusableOwnerSeparatesNativeSigningAttestationAndStage(t *testi
 	if inspect.If != "${{ ! ("+appimageDirectInvocation+") }}" {
 		t.Fatal("all non-direct callers must reach readonly source rejection")
 	}
-	if fmt.Sprint(sign.Needs) != "[build inspect]" || fmt.Sprint(attest.Needs) != "sign" || fmt.Sprint(stage.Needs) != "attest" {
+	if fmt.Sprint(sign.Needs) != "[build inspect prepare-signing-tools]" || fmt.Sprint(attest.Needs) != "sign" || fmt.Sprint(stage.Needs) != "attest" {
 		t.Fatal("successful signing/attest dependencies must be retained for failed-only stage retry")
 	}
 	for name, want := range map[string]map[string]string{
@@ -98,7 +98,7 @@ func TestAppImageReusableOwnerSeparatesNativeSigningAttestationAndStage(t *testi
 			t.Fatal("GPG and OIDC each require fresh full-owner inspection under publication lock")
 		}
 	}
-	for _, name := range []string{"Verify immutable AppImage raw metadata", "Download AppImage raw artifact", "Verify AppImage raw payload", "Verify AppImage signing-input metadata", "Download same-run signing input", "Check and extract signing input", "Import GPG signing key", "Build signed AppImage", "Verify AppImage signature", "Smoke test AppImage", "Upload signed artifacts"} {
+	for _, name := range []string{"Verify immutable AppImage raw metadata", "Download AppImage raw artifact", "Verify AppImage raw payload", "Verify AppImage signing-input metadata", "Download same-run signing input", "Check and extract signing input", "Download locked AppImage signing tools", "Build AppImage signing image before loading secrets", "Build signed AppImage", "Verify AppImage signature", "Smoke test AppImage", "Upload signed artifacts"} {
 		mustContain(t, mustStepNamed(t, sign, name).If, "steps.inventory.outputs.state == 'missing'")
 	}
 	if sign.Env["PLATFORM_OWNER"] != "build-appimage.yml" || mustStepNamed(t, sign, "Verify immutable AppImage raw metadata").Run != "bash .github/actions/verify-platform-artifacts/verify-artifacts.sh metadata" {
@@ -164,24 +164,23 @@ func TestAppImageReusableOwnerPreservesGPGRecipeAndNativePrefix(t *testing.T) {
 	w := mustReadWorkflowDoc(t, ".github/workflows/build-appimage.yml")
 	sign := mustJob(t, w, "sign")
 	for name, want := range map[string]string{
-		"Check and extract signing input":   "2eb09cd3ab0531cc2d9897b2256e61c9e9546ff98b41e4cead2facdf5073df69",
-		"Install packaging dependencies":    "0ea15b78d656f6c2237f68de1164f4f0d99de58ee6d4ab8ab503de5fadd24029",
-		"Fetch and verify AppImage tooling": "e9f3f08f562876eed6dd6ffbc48749756d1238580ffe9094b816b80c7ff5442b",
-		"Import GPG signing key":            "215918067c4bdae3afc8e1c62bff7d79c090e68afc7e02f5c378375496ffb282",
-		"Build signed AppImage":             "7d2a4294b69bd65449a6318702f5bb79f9c201142c6a4095ec7027285504ee03",
-		"Remove production signing key":     "5b10af71fdc8fbe2128757427b27537bd718ccbcc2dc7c967fbf2fc9456d4993",
-		"Verify AppImage signature":         "3c600f1c869e9ed7e5ebf166284778a629857b8a5963fc56c79892dede39cabe",
-		"Smoke test AppImage":               "a46d2d682d44b4005dba51eb2465ba1c5c0544dc32b7042bb08145a4691a3f3c",
+		"Check and extract signing input": "2eb09cd3ab0531cc2d9897b2256e61c9e9546ff98b41e4cead2facdf5073df69",
+		"Build signed AppImage":           "ecb8e81484bc55fd3cdb70229b6272be2591c6b86ac682ea5f9daee8f78a8d78",
+		"Verify AppImage signature":       "d7e37d010ac32bf811404fc8071c268d61aed94129ccff894592337f15a090a0",
+		"Smoke test AppImage":             "a46d2d682d44b4005dba51eb2465ba1c5c0544dc32b7042bb08145a4691a3f3c",
 	} {
 		if got := fmt.Sprintf("%x", sha256.Sum256([]byte(mustStepNamed(t, sign, name).Run))); got != want {
 			t.Fatalf("GPG signing recipe %s changed: %s", name, got)
 		}
 	}
-	if mustStepNamed(t, sign, "Remove production signing key").If != "${{ always() }}" {
-		t.Fatal("owned GPG key cleanup must survive failures and cancellation")
-	}
-	if mustStepNamed(t, sign, "Import GPG signing key").Env["GPG_PRIVATE_KEY"] != "${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}" || mustStepNamed(t, sign, "Build signed AppImage").Env["APPIMAGETOOL_SIGN_PASSPHRASE"] != "${{ secrets.APPIMAGE_GPG_PASSPHRASE }}" {
-		t.Fatal("retain exact step-only existing key/passphrase bindings")
+	container := mustReadRepoFile(t, ".github/scripts/sign-appimage.sh")
+	mustContainInOrder(t, container, "set +x", "umask 077", "mktemp -d", "run-release-signing-container.sh", "mv -T --no-clobber")
+	sandbox := mustReadRepoFile(t, ".github/scripts/run-release-signing-container.sh")
+	mustContainInOrder(t, sandbox, "docker create", "--pull never", "--network none", "--read-only", "--log-driver none", "docker start --attach --interactive")
+	mustContain(t, sandbox, "docker rm --force")
+	signStep := mustStepNamed(t, sign, "Build signed AppImage")
+	if len(signStep.Env) != 2 || signStep.Env["GPG_PRIVATE_KEY"] != "${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}" || signStep.Env["APPIMAGETOOL_SIGN_PASSPHRASE"] != "${{ secrets.APPIMAGE_GPG_PASSPHRASE }}" {
+		t.Fatal("retain the exact key and passphrase bindings only in the signing step")
 	}
 	for _, job := range w.Jobs {
 		for _, value := range job.Env {
@@ -190,12 +189,12 @@ func TestAppImageReusableOwnerPreservesGPGRecipeAndNativePrefix(t *testing.T) {
 			}
 		}
 		for _, step := range job.Steps {
-			if step.Name == "Import GPG signing key" || step.Name == "Build signed AppImage" {
+			if step.Name == signStep.Name {
 				continue
 			}
 			for _, value := range step.Env {
 				if strings.Contains(value, "secrets.") {
-					t.Fatal("GPG secret exposed outside the original two steps")
+					t.Fatal("GPG secret exposed outside the isolated signing step")
 				}
 			}
 		}

@@ -2,13 +2,22 @@ package mobile
 
 import (
 	"Picocrypt-NG/internal/encoding"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/volume"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestLegacyKDFResourceRefusalHasDedicatedErrorCode(t *testing.T) {
+	err := fmt.Errorf("derive volume key: %w", pcv3operation.ErrLegacyKDFResource)
+	if code := errorCode(err); code != "RESOURCE_LIMIT" {
+		t.Fatalf("resource refusal mapped to %q", code)
+	}
+}
 
 func TestLegacyDeniabilityWrongPasswordOffersRetryWithoutOutput(t *testing.T) {
 	golden := filepath.Join("..", "testdata", "golden")

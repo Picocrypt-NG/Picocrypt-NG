@@ -1194,8 +1194,10 @@ of 0 (primary/front) or 1 (backup/tail). Only mode 8 accepts optional
 
 `picocryptEncrypt` and `picocryptDecrypt` remain synchronous worker exports.
 `picocryptCapabilities()` reports `pcv3: true`, `apiVersion: 3`, and byte caps:
-128 MiB creation input, 256 MiB PCV3 ciphertext, 1 GiB legacy input, and 64 MiB
-aggregate keyfile bytes (at most 64 files). PCV3 reads retain at most 128 MiB of
+128 MiB creation input, 256 MiB PCV3 ciphertext, up to 352 MiB legacy input, and
+64 MiB aggregate keyfile bytes (at most 64 files). Legacy input and factor copies,
+the output and the fixed Argon2id workspace must also fit the browser budget.
+PCV3 reads retain at most 128 MiB of
 output. Empty PCV3 plaintext is permitted. New creation supports password-only,
 keyfile-only or combined factors, ordered keyfiles, optional Paranoid, payload
 Reed-Solomon and D1. Normal comments are plaintext authenticated metadata;

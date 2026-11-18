@@ -75,3 +75,21 @@ func TestEncryptVolumeKDFErrorReturnsRandomFailure(t *testing.T) {
 		t.Fatalf("EncryptVolume returned %d ciphertext bytes after KDF failure; want none", len(ciphertext))
 	}
 }
+
+func TestLegacyWASMResourceRefusalStopsBeforeDerivation(t *testing.T) {
+	previousBudget := legacyBrowserHasKDFRoom
+	legacyBrowserHasKDFRoom = func(uint64) bool { return false }
+	t.Cleanup(func() { legacyBrowserHasKDFRoom = previousBudget })
+	t.Cleanup(swapWASMTestKDF(func([]byte, []byte, bool) ([]byte, error) {
+		t.Error("resource refusal invoked Argon2id")
+		return nil, errors.New("unexpected derivation")
+	}))
+	for _, fixture := range []string{"pico_test_v2.txt.pcv", "pico_test_v2_keyfile_only_deniable.pcv"} {
+		t.Run(fixture, func(t *testing.T) {
+			result, code := DecryptVolume(readWASMGoldenFixture(t, fixture), []byte("test-password"), DecryptOptions{Force: true})
+			if code != ErrResourceLimit || result.Plaintext != nil || result.Kept {
+				t.Fatalf("code = %d, plaintext length = %d, kept = %t", code, len(result.Plaintext), result.Kept)
+			}
+		})
+	}
+}

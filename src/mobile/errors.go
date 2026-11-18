@@ -160,6 +160,8 @@ func errorCode(err error) string {
 	}
 
 	switch {
+	case errors.Is(err, pcv3operation.ErrLegacyKDFResource):
+		return "RESOURCE_LIMIT"
 	case errors.Is(err, perrors.ErrCorruptData):
 		return "DATA_CORRUPTED"
 	// Header corruption surfaces as header.ErrCorruptedHeader (wrapped by

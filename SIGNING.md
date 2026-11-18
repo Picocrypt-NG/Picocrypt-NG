@@ -81,7 +81,10 @@ the verifier without private signing keys.
 
 With `publish_release=true` on `main`, the build hands its AppDir to a separate
 job through an immutable same-run artifact ID and checked archive SHA-256.
-The archive is safely extracted before the release GPG key is imported.
+The archive is safely extracted before the release GPG key is imported. A
+separate job prepares the signing dependencies without credentials. The
+signing job checks their repository-pinned hashes and imports the key only
+inside a network-disabled container with a temporary in-memory GPG home.
 Production signing selects the full expected fingerprint from the verifier
 manifest, rather than the first key in the keyring. The signing key is removed
 before signature verification and payload smoke testing. External cryptographic

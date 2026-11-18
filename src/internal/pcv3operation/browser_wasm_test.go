@@ -3,6 +3,7 @@
 package pcv3operation
 
 import (
+	"Picocrypt-NG/internal/kdfgate"
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"bytes"
 	"context"
@@ -29,7 +30,7 @@ func TestBrowserAddressSpacePolicyPreservesFixedKDF(t *testing.T) {
 	if !browserKDFWithinBudget(standard, 32<<20, BrowserMaxPlaintextBytes) {
 		t.Fatal("fixed standard profile refused with bounded address-space headroom")
 	}
-	if browserKDFWithinBudget(standard, browserGoBudget, 0) {
+	if browserKDFWithinBudget(standard, kdfgate.BrowserGoBudget, 0) {
 		t.Fatal("address-space budget overcommit accepted")
 	}
 	for _, mutate := range []func(*pcv3credential.KDFProfile){

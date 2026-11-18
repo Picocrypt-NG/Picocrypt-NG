@@ -2,6 +2,7 @@ package pcv3credential
 
 import (
 	"Picocrypt-NG/internal/argon2"
+	"Picocrypt-NG/internal/kdfgate"
 	pcsecret "Picocrypt-NG/internal/secret"
 	"context"
 	"errors"
@@ -128,9 +129,7 @@ type kdfDeriver func(
 	profile KDFProfile,
 ) ([]byte, error)
 
-// fixedProfileKDFLease serializes the complete fresh-admission and fixed KDF
-// boundary process-wide. Sending acquires the lease; receiving releases it.
-var fixedProfileKDFLease = make(chan struct{}, 1)
+var acquireFixedProfileKDFLease = kdfgate.Acquire
 
 var errUnsupportedArgon2Version = errors.New(
 	"pcv3credential: unsupported built-in Argon2 version",
@@ -255,20 +254,11 @@ func runProfileKDFBorrowed(
 	var fixedSalt [kdfSaltBytes]byte
 	copy(fixedSalt[:], salt)
 
-	if ctx.Err() != nil {
+	release, err := acquireFixedProfileKDFLease(ctx)
+	if err != nil {
 		return nil, newKDFError(KDFErrorCancelled, suite)
 	}
-	select {
-	case fixedProfileKDFLease <- struct{}{}:
-		defer func() { <-fixedProfileKDFLease }()
-	case <-ctx.Done():
-		return nil, newKDFError(KDFErrorCancelled, suite)
-	}
-	// Cancellation and acquisition may become ready together. Recheck before
-	// obtaining a resource decision so a cancelled waiter has no side effects.
-	if ctx.Err() != nil {
-		return nil, newKDFError(KDFErrorCancelled, suite)
-	}
+	defer release()
 	admission, admissionErr := admitter.AdmitKDF(ctx, profile)
 	if ctx.Err() != nil {
 		return nil, newKDFError(KDFErrorCancelled, suite)
