@@ -38,8 +38,13 @@ func TestMacOSPRUsesOneRunnerForFullNativeSuiteAndPackaging(t *testing.T) {
 		t.Fatalf("macOS PR must require one runner acquisition, got %d jobs", len(workflow.Jobs))
 	}
 	job := mustJob(t, workflow, "pr-test-build-macos")
-	if job.RunsOn != "macos-15" || job.Env["CGO_ENABLED"] != "1" {
+	if job.RunsOn != "macos-26" || job.Env["CGO_ENABLED"] != "1" {
 		t.Fatal("capacity changes must preserve native macOS ARM64 CGO execution")
+	}
+	if job.Env["MACOSX_DEPLOYMENT_TARGET"] != "15.0" ||
+		job.Env["CGO_CFLAGS"] != "-mmacosx-version-min=15.0" ||
+		job.Env["CGO_LDFLAGS"] != "-mmacosx-version-min=15.0" {
+		t.Fatal("PR builds must target macOS 15.0")
 	}
 	if job.Needs != nil || job.If != "" || job.ContinueOnError != nil || !reflect.ValueOf(job.Strategy).IsZero() {
 		t.Fatal("the required macOS job must run directly without a matrix or softened result")
