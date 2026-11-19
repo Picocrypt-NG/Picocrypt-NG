@@ -29,14 +29,32 @@ func TestDarwinKDFAdmissionCanReuseReleasedGoHeap(t *testing.T) {
 		admission pcv3credential.KDFAdmission
 	}{
 		{
-			name:      "released workspace supports the next 1 GiB derivation",
+			name: "released heap alone can cover the next derivation and reserve",
+			mutate: func(f *darwinSnapshotFacts) {
+				f.reusableBytes = gib + 64*mib
+				f.releasedHeapBytes = gib + 64*mib
+			},
 			headroom:  gib + 64*mib,
 			admission: pcv3credential.KDFAdmissionGranted,
 		},
 		{
+			name:      "released workspace alone cannot cover the reserve",
+			headroom:  gib,
+			admission: pcv3credential.KDFAdmissionDeniedInsufficient,
+		},
+		{
+			name: "free and reusable observations can describe the same pages",
+			mutate: func(f *darwinSnapshotFacts) {
+				f.freePages = 600 * mib / f.pageSize
+				f.reusableBytes = 512 * mib
+			},
+			headroom:  856 * mib,
+			admission: pcv3credential.KDFAdmissionDeniedInsufficient,
+		},
+		{
 			name:      "reusable memory is bounded by Go heap releases",
 			mutate:    func(f *darwinSnapshotFacts) { f.releasedHeapBytes = 512 * mib },
-			headroom:  576 * mib,
+			headroom:  512 * mib,
 			admission: pcv3credential.KDFAdmissionDeniedInsufficient,
 		},
 		{

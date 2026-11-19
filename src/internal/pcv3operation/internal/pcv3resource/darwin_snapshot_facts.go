@@ -25,16 +25,16 @@ func kdfSnapshotFromDarwinFacts(facts darwinSnapshotFacts) Snapshot {
 	if facts.inactivePages > facts.internalPages {
 		reclaimablePages = facts.inactivePages - facts.internalPages
 	}
-	// Go uses MADV_FREE_REUSABLE on Darwin. Mach accounts for those resident
-	// internal pages separately from free pages. Bound the credit by observed
-	// Go heap releases and take the larger reclaimable bound to avoid overlap.
-	if facts.pageSize != 0 && facts.reusableBytes <= facts.residentBytes {
-		reusablePages := min(facts.reusableBytes, facts.releasedHeapBytes) / facts.pageSize
-		reclaimablePages = max(reclaimablePages, reusablePages)
-	}
 	pages, ok := checkedAdd(facts.freePages, reclaimablePages)
 	if !ok {
 		return snapshotFromDarwinFacts(darwinSnapshotFacts{})
+	}
+	// Go uses MADV_FREE_REUSABLE on Darwin. A page can move between free
+	// and reusable while the host and task are sampled. Use the larger
+	// independent estimate so that a moved page supplies at most one credit.
+	if facts.pageSize != 0 && facts.reusableBytes <= facts.residentBytes {
+		reusablePages := min(facts.reusableBytes, facts.releasedHeapBytes) / facts.pageSize
+		pages = max(pages, reusablePages)
 	}
 	facts.freePages = pages
 	return snapshotFromDarwinFacts(facts)
