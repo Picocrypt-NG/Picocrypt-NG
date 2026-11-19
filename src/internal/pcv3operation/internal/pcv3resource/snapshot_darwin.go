@@ -6,8 +6,10 @@ package pcv3resource
 #include <mach/mach.h>
 #include <mach/mach_host.h>
 #include <mach/task_info.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <sys/resource.h>
+#include <sys/sysctl.h>
 
 typedef struct {
 	uint64_t free_pages;
@@ -17,12 +19,20 @@ typedef struct {
 	uint64_t physical_footprint;
 	uint64_t resident_bytes;
 	uint64_t reusable_bytes;
+	uint64_t live_free_pages;
+	uint64_t page_grabs;
+	bool live_free_observed;
 	uint64_t virtual_size;
 	uint64_t address_limit;
 	int address_limited;
 } pcv3_darwin_snapshot;
 
-static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out) {
+static bool pcv3_read_sysctl(const char *name, void *value, size_t size) {
+	size_t length = size;
+	return sysctlbyname(name, value, &length, NULL, 0) == 0 && length == size;
+}
+
+static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out, bool observe_reuse) {
 	if (out == NULL) {
 		return 0;
 	}
@@ -47,6 +57,11 @@ static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out) {
 		return 0;
 	}
 
+	uint64_t grabs_before = 0, grabs_after = 0;
+	unsigned int live_free_pages = 0;
+	bool live_free_observed = observe_reuse &&
+		pcv3_read_sysctl("vm.pages_grabbed", &grabs_before, sizeof(grabs_before)) &&
+		pcv3_read_sysctl("vm.page_free_count", &live_free_pages, sizeof(live_free_pages));
 	task_vm_info_data_t task_memory;
 	mach_msg_type_number_t task_count = TASK_VM_INFO_COUNT;
 	status = task_info(
@@ -58,6 +73,14 @@ static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out) {
 	if (status != KERN_SUCCESS || task_count < TASK_VM_INFO_REV1_COUNT ||
 		task_memory.phys_footprint == 0 || task_memory.virtual_size == 0) {
 		return 0;
+	}
+
+	if (live_free_observed &&
+		pcv3_read_sysctl("vm.pages_grabbed", &grabs_after, sizeof(grabs_after)) &&
+		grabs_after >= grabs_before) {
+		out->live_free_pages = live_free_pages;
+		out->page_grabs = grabs_after - grabs_before;
+		out->live_free_observed = true;
 	}
 
 	struct rlimit address_space;
@@ -93,7 +116,7 @@ func newPlatformSnapshotProvider() snapshotProvider {
 }
 
 func (darwinSnapshotProvider) Snapshot(ctx context.Context) Snapshot {
-	return snapshotFromDarwinFacts(readDarwinSnapshotFacts(ctx))
+	return snapshotFromDarwinFacts(readDarwinSnapshotFacts(ctx, false))
 }
 
 func (darwinSnapshotProvider) snapshotForKDF(
@@ -102,18 +125,18 @@ func (darwinSnapshotProvider) snapshotForKDF(
 ) Snapshot {
 	var memory runtime.MemStats
 	runtime.ReadMemStats(&memory)
-	facts := readDarwinSnapshotFacts(ctx)
+	facts := readDarwinSnapshotFacts(ctx, true)
 	facts.releasedHeapBytes = memory.HeapReleased
 	return kdfSnapshotFromDarwinFacts(facts)
 }
 
-func readDarwinSnapshotFacts(ctx context.Context) darwinSnapshotFacts {
+func readDarwinSnapshotFacts(ctx context.Context, observeReuse bool) darwinSnapshotFacts {
 	if ctx == nil || ctx.Err() != nil {
 		return darwinSnapshotFacts{}
 	}
 
 	var facts C.pcv3_darwin_snapshot
-	if C.pcv3_read_darwin_snapshot(&facts) == 0 {
+	if C.pcv3_read_darwin_snapshot(&facts, C.bool(observeReuse)) == 0 {
 		return darwinSnapshotFacts{}
 	}
 
@@ -126,6 +149,9 @@ func readDarwinSnapshotFacts(ctx context.Context) darwinSnapshotFacts {
 		physicalFootprint: uint64(facts.physical_footprint),
 		residentBytes:     uint64(facts.resident_bytes),
 		reusableBytes:     uint64(facts.reusable_bytes),
+		liveFreePages:     uint64(facts.live_free_pages),
+		pageGrabs:         uint64(facts.page_grabs),
+		liveFreeObserved:  bool(facts.live_free_observed),
 		virtualSize:       uint64(facts.virtual_size),
 		addressLimit:      uint64(facts.address_limit),
 		addressLimited:    facts.address_limited != 0,

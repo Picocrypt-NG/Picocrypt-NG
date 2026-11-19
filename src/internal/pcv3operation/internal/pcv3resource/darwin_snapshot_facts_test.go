@@ -43,12 +43,35 @@ func TestDarwinKDFAdmissionCanReuseReleasedGoHeap(t *testing.T) {
 			admission: pcv3credential.KDFAdmissionDeniedInsufficient,
 		},
 		{
+			name: "distinct live pages cover the KDF and reserve after page grabs",
+			mutate: func(f *darwinSnapshotFacts) {
+				f.liveFreeObserved = true
+				f.liveFreePages = 100 * mib / f.pageSize
+				f.pageGrabs = 36 * mib / f.pageSize
+			},
+			headroom:  gib + 64*mib,
+			admission: pcv3credential.KDFAdmissionGranted,
+		},
+		{
 			name: "free and reusable observations can describe the same pages",
 			mutate: func(f *darwinSnapshotFacts) {
 				f.freePages = 600 * mib / f.pageSize
 				f.reusableBytes = 512 * mib
+				f.liveFreeObserved = true
+				f.liveFreePages = 600 * mib / f.pageSize
+				f.pageGrabs = 512 * mib / f.pageSize
 			},
 			headroom:  856 * mib,
+			admission: pcv3credential.KDFAdmissionDeniedInsufficient,
+		},
+		{
+			name: "page grabs exhaust the observed free pages",
+			mutate: func(f *darwinSnapshotFacts) {
+				f.liveFreeObserved = true
+				f.liveFreePages = 64 * mib / f.pageSize
+				f.pageGrabs = 128 * mib / f.pageSize
+			},
+			headroom:  gib,
 			admission: pcv3credential.KDFAdmissionDeniedInsufficient,
 		},
 		{

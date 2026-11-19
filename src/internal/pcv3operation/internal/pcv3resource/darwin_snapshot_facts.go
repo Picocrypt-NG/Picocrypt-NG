@@ -12,6 +12,9 @@ type darwinSnapshotFacts struct {
 	residentBytes     uint64
 	reusableBytes     uint64
 	releasedHeapBytes uint64
+	liveFreePages     uint64
+	pageGrabs         uint64
+	liveFreeObserved  bool
 	virtualSize       uint64
 	addressLimit      uint64
 	addressLimited    bool
@@ -29,12 +32,22 @@ func kdfSnapshotFromDarwinFacts(facts darwinSnapshotFacts) Snapshot {
 	if !ok {
 		return snapshotFromDarwinFacts(darwinSnapshotFacts{})
 	}
-	// Go uses MADV_FREE_REUSABLE on Darwin. A page can move between free
-	// and reusable while the host and task are sampled. Use the larger
-	// independent estimate so that a moved page supplies at most one credit.
+	// Go marks released heap pages MADV_FREE_REUSABLE. Keep a count of
+	// reusable pages independently from the potentially cached Mach estimate.
 	if facts.pageSize != 0 && facts.reusableBytes <= facts.residentBytes {
 		reusablePages := min(facts.reusableBytes, facts.releasedHeapBytes) / facts.pageSize
 		pages = max(pages, reusablePages)
+
+		// XNU counts each page grab before handing it to the caller. Deduct
+		// all grabs around the uncached free-page and task ledger reads.
+		// A page that moved from that free count into the ledger supplies
+		// at most one credit. Mach's cached estimates stay separate.
+		if facts.liveFreeObserved && reusablePages != 0 && facts.liveFreePages > facts.pageGrabs {
+			stillFree := facts.liveFreePages - facts.pageGrabs
+			if combined, ok := checkedAdd(stillFree, reusablePages); ok {
+				pages = max(pages, combined)
+			}
+		}
 	}
 	facts.freePages = pages
 	return snapshotFromDarwinFacts(facts)

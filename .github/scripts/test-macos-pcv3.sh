@@ -28,6 +28,7 @@ awk '
     print "\t\t\"inactive\", facts.inactivePages * facts.pageSize, \"internal\", facts.internalPages * facts.pageSize,"
     print "\t\t\"footprint\", facts.physicalFootprint, \"resident\", facts.residentBytes,"
     print "\t\t\"reusable\", facts.reusableBytes, \"released\", facts.releasedHeapBytes,"
+    print "\t\t\"liveFreeObserved\", facts.liveFreeObserved, \"liveFreePages\", facts.liveFreePages, \"pageGrabs\", facts.pageGrabs,"
     print "\t\t\"available\", snapshot.effectiveAvailable, \"reserve\", snapshot.codeOwnedReserve)"
     print "\treturn snapshot"
     next
