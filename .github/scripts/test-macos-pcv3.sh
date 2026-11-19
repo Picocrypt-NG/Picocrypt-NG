@@ -13,6 +13,36 @@ if [[ "$(go env GOOS)/$(go env GOARCH)/$(go env CGO_ENABLED)" != darwin/arm64/1 
   exit 1
 fi
 
+# Observe the real admission inputs for the failing legacy sequence. The
+# overlay applies only to this test and is excluded from the application build.
+legacy_package=Picocrypt-NG/internal/volume
+legacy_parent=TestGoldenCompressedDecryption
+diagnostics=$(mktemp -d)
+trap 'rm -rf -- "$diagnostics"' EXIT
+snapshot="$PWD/internal/pcv3operation/internal/pcv3resource/snapshot_darwin.go"
+awk '
+  $0 == "\treturn kdfSnapshotFromDarwinFacts(facts)" {
+    matches++
+    print "\tsnapshot := kdfSnapshotFromDarwinFacts(facts)"
+    print "\tprintln(\"Darwin KDF bytes: observed\", facts.observed, \"free\", facts.freePages * facts.pageSize,"
+    print "\t\t\"inactive\", facts.inactivePages * facts.pageSize, \"internal\", facts.internalPages * facts.pageSize,"
+    print "\t\t\"footprint\", facts.physicalFootprint, \"resident\", facts.residentBytes,"
+    print "\t\t\"reusable\", facts.reusableBytes, \"released\", facts.releasedHeapBytes,"
+    print "\t\t\"available\", snapshot.effectiveAvailable, \"reserve\", snapshot.codeOwnedReserve)"
+    print "\treturn snapshot"
+    next
+  }
+  { print }
+  END { if (matches != 1) exit 1 }
+' "$snapshot" > "$diagnostics/snapshot_darwin.go"
+jq -n --arg source "$snapshot" --arg target "$diagnostics/snapshot_darwin.go" \
+  '{Replace: {($source): $target}}' > "$diagnostics/overlay.json"
+if (( shard_index == 0 )); then
+  sudo -n /usr/sbin/purge
+  go test -overlay "$diagnostics/overlay.json" -v -count=1 -p 1 -timeout 5m \
+    -run "^${legacy_parent}$" "$legacy_package"
+fi
+
 # Discover from this checkout so new packages and parents join the required lane.
 packages=$(go list ./internal/pcv3operation/... ./internal/app/... ./internal/volume/... | LC_ALL=C sort -u)
 parent_index=0
@@ -35,7 +65,11 @@ while IFS= read -r package; do
           # Keep real KDFs in fresh native processes on the 7 GB runner. Linux
           # runs the full heavy race suite; pure/platform packages race below.
           sudo -n /usr/sbin/purge
-          go test -v -count=1 -p 1 -timeout 60m -run "^${parent}$" "$package"
+          args=()
+          if [[ $package == "$legacy_package" && $parent == "$legacy_parent" ]]; then
+            args=(-overlay "$diagnostics/overlay.json")
+          fi
+          go test "${args[@]}" -v -count=1 -p 1 -timeout 60m -run "^${parent}$" "$package"
           echo "::endgroup::"
           selected=$((selected + 1))
         fi
