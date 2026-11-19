@@ -1,0 +1,41 @@
+name: pr-macos-kdf-probe
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - synchronize
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-26-kdf-probe:
+    if: ${{ github.event.pull_request.number == 340 }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      CGO_ENABLED: "1"
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      CGO_CFLAGS: "-mmacosx-version-min=15.0"
+      CGO_LDFLAGS: "-mmacosx-version-min=15.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: src/go.sum
+
+      - name: Install packages
+        run: brew install glfw glew
+
+      - name: Run native tests and KDF diagnostics
+        run: bash .github/scripts/test-macos-pcv3.sh 0 1
