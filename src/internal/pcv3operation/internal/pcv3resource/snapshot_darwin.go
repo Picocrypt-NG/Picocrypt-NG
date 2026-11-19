@@ -6,8 +6,10 @@ package pcv3resource
 #include <mach/mach.h>
 #include <mach/mach_host.h>
 #include <mach/task_info.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <sys/resource.h>
+#include <sys/sysctl.h>
 
 typedef struct {
 	uint64_t free_pages;
@@ -15,12 +17,22 @@ typedef struct {
 	uint64_t internal_pages;
 	uint64_t page_size;
 	uint64_t physical_footprint;
+	uint64_t resident_bytes;
+	uint64_t reusable_bytes;
+	uint64_t live_free_pages;
+	uint64_t page_grabs;
+	bool live_free_observed;
 	uint64_t virtual_size;
 	uint64_t address_limit;
 	int address_limited;
 } pcv3_darwin_snapshot;
 
-static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out) {
+static bool pcv3_read_sysctl(const char *name, void *value, size_t size) {
+	size_t length = size;
+	return sysctlbyname(name, value, &length, NULL, 0) == 0 && length == size;
+}
+
+static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out, bool observe_reuse) {
 	if (out == NULL) {
 		return 0;
 	}
@@ -45,6 +57,11 @@ static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out) {
 		return 0;
 	}
 
+	uint64_t grabs_before = 0, grabs_after = 0;
+	unsigned int live_free_pages = 0;
+	bool live_free_observed = observe_reuse &&
+		pcv3_read_sysctl("vm.pages_grabbed", &grabs_before, sizeof(grabs_before)) &&
+		pcv3_read_sysctl("vm.page_free_count", &live_free_pages, sizeof(live_free_pages));
 	task_vm_info_data_t task_memory;
 	mach_msg_type_number_t task_count = TASK_VM_INFO_COUNT;
 	status = task_info(
@@ -58,6 +75,14 @@ static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out) {
 		return 0;
 	}
 
+	if (live_free_observed &&
+		pcv3_read_sysctl("vm.pages_grabbed", &grabs_after, sizeof(grabs_after)) &&
+		grabs_after >= grabs_before) {
+		out->live_free_pages = live_free_pages;
+		out->page_grabs = grabs_after - grabs_before;
+		out->live_free_observed = true;
+	}
+
 	struct rlimit address_space;
 	if (getrlimit(RLIMIT_AS, &address_space) != 0) {
 		return 0;
@@ -68,6 +93,8 @@ static int pcv3_read_darwin_snapshot(pcv3_darwin_snapshot *out) {
 	out->internal_pages = (uint64_t)memory.internal_page_count;
 	out->page_size = (uint64_t)page_size;
 	out->physical_footprint = (uint64_t)task_memory.phys_footprint;
+	out->resident_bytes = (uint64_t)task_memory.resident_size;
+	out->reusable_bytes = (uint64_t)task_memory.reusable;
 	out->virtual_size = (uint64_t)task_memory.virtual_size;
 	out->address_limited = address_space.rlim_cur != RLIM_INFINITY;
 	out->address_limit = out->address_limited ? (uint64_t)address_space.rlim_cur : 0;
@@ -79,45 +106,37 @@ import "C"
 import (
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"context"
-	"math"
+	"runtime"
 )
 
 type darwinSnapshotProvider struct{}
-
-type darwinSnapshotFacts struct {
-	observed          bool
-	freePages         uint64
-	inactivePages     uint64
-	internalPages     uint64
-	pageSize          uint64
-	physicalFootprint uint64
-	virtualSize       uint64
-	addressLimit      uint64
-	addressLimited    bool
-}
 
 func newPlatformSnapshotProvider() snapshotProvider {
 	return darwinSnapshotProvider{}
 }
 
 func (darwinSnapshotProvider) Snapshot(ctx context.Context) Snapshot {
-	return snapshotFromDarwinFacts(readDarwinSnapshotFacts(ctx))
+	return snapshotFromDarwinFacts(readDarwinSnapshotFacts(ctx, false))
 }
 
 func (darwinSnapshotProvider) snapshotForKDF(
 	ctx context.Context,
 	_ pcv3credential.KDFProfile,
 ) Snapshot {
-	return kdfSnapshotFromDarwinFacts(readDarwinSnapshotFacts(ctx))
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	facts := readDarwinSnapshotFacts(ctx, true)
+	facts.releasedHeapBytes = memory.HeapReleased
+	return kdfSnapshotFromDarwinFacts(facts)
 }
 
-func readDarwinSnapshotFacts(ctx context.Context) darwinSnapshotFacts {
+func readDarwinSnapshotFacts(ctx context.Context, observeReuse bool) darwinSnapshotFacts {
 	if ctx == nil || ctx.Err() != nil {
 		return darwinSnapshotFacts{}
 	}
 
 	var facts C.pcv3_darwin_snapshot
-	if C.pcv3_read_darwin_snapshot(&facts) == 0 {
+	if C.pcv3_read_darwin_snapshot(&facts, C.bool(observeReuse)) == 0 {
 		return darwinSnapshotFacts{}
 	}
 
@@ -128,53 +147,13 @@ func readDarwinSnapshotFacts(ctx context.Context) darwinSnapshotFacts {
 		internalPages:     uint64(facts.internal_pages),
 		pageSize:          uint64(facts.page_size),
 		physicalFootprint: uint64(facts.physical_footprint),
+		residentBytes:     uint64(facts.resident_bytes),
+		reusableBytes:     uint64(facts.reusable_bytes),
+		liveFreePages:     uint64(facts.live_free_pages),
+		pageGrabs:         uint64(facts.page_grabs),
+		liveFreeObserved:  bool(facts.live_free_observed),
 		virtualSize:       uint64(facts.virtual_size),
 		addressLimit:      uint64(facts.address_limit),
 		addressLimited:    facts.address_limited != 0,
 	}
-}
-
-func kdfSnapshotFromDarwinFacts(facts darwinSnapshotFacts) Snapshot {
-	// Credit only a lower bound on inactive file-backed pages. Internal pages
-	// include active and inactive anonymous memory, so subtract all of them.
-	// Raw free pages already include speculative pages; do not add them again.
-	// This is advisory reclaimable headroom, not a memory reservation.
-	if facts.inactivePages > facts.internalPages {
-		inactiveFilePages := facts.inactivePages - facts.internalPages
-		pages, ok := checkedAdd(facts.freePages, inactiveFilePages)
-		if !ok {
-			return snapshotFromDarwinFacts(darwinSnapshotFacts{})
-		}
-		facts.freePages = pages
-	}
-	return snapshotFromDarwinFacts(facts)
-}
-
-func snapshotFromDarwinFacts(facts darwinSnapshotFacts) Snapshot {
-	effective, reserve, ok := normalizeDarwinSnapshotFacts(facts)
-	if !ok {
-		return newSnapshot(snapshotSourceDarwin, snapshotStateUnknown, 0, 0, 0)
-	}
-	return newSnapshot(snapshotSourceDarwin, snapshotStateReady, effective, 0, reserve)
-}
-
-func normalizeDarwinSnapshotFacts(facts darwinSnapshotFacts) (uint64, uint64, bool) {
-	if !facts.observed || facts.freePages == 0 || facts.pageSize == 0 ||
-		facts.freePages > math.MaxUint64/facts.pageSize ||
-		facts.physicalFootprint == 0 || facts.virtualSize == 0 ||
-		(!facts.addressLimited && facts.addressLimit != 0) {
-		return 0, 0, false
-	}
-
-	effective := facts.freePages * facts.pageSize
-	if facts.addressLimited {
-		if facts.addressLimit == 0 || facts.virtualSize >= facts.addressLimit {
-			return 0, 0, false
-		}
-		effective = min(effective, facts.addressLimit-facts.virtualSize)
-	}
-	if effective == 0 {
-		return 0, 0, false
-	}
-	return effective, facts.physicalFootprint, true
 }

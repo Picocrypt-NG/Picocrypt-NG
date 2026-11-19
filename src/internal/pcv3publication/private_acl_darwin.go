@@ -83,11 +83,27 @@ import (
 func privateDirectoryBackendAvailable() bool { return true }
 
 func establishPrivateDirectoryACL(file *os.File) error {
+	if err := clearPrivateACL(file); err != nil {
+		return err
+	}
+	// Persist the restriction before creating a file that may contain plaintext.
+	return fileops.SyncDirectory(file)
+}
+
+func establishPrivateFileACL(file *os.File) error {
+	if err := clearPrivateACL(file); err != nil {
+		return err
+	}
+	// Persist the restriction before any key bytes can reach the filesystem.
+	return file.Sync()
+}
+
+func clearPrivateACL(file *os.File) error {
 	if file == nil {
 		return os.ErrInvalid
 	}
 	// The caller has already checked exclusive creation, UID, mode and pinned
-	// identity. Only that fresh directory may have inherited entries removed.
+	// identity. Only that fresh object may have inherited entries removed.
 	fd := file.Fd()
 	if fd > 0x7fffffff {
 		return os.ErrInvalid
@@ -97,9 +113,7 @@ func establishPrivateDirectoryACL(file *os.File) error {
 	if code != 0 {
 		return syscall.Errno(code)
 	}
-	// Persist the restriction before creating a file that may contain plaintext;
-	// a crash must not restore inherited access while retaining newer stage data.
-	return fileops.SyncDirectory(file)
+	return nil
 }
 
 func directoryACLAllowsTrustedCleanup(file *os.File) bool {

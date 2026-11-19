@@ -87,6 +87,18 @@ func createPrivateStage(root *os.Root, _ *os.File, name string) (*os.File, error
 	return root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 }
 
+func establishPrivateStageAccess(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil || int64(stat.Uid) != int64(os.Geteuid()) || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		return os.ErrPermission
+	}
+	return establishPrivateFileACL(file)
+}
+
 // Legacy journals are authoritative only in a parent whose names other users
 // cannot create or replace. Sticky public directories do not authenticate the
 // owner of a supplied legacy journal.

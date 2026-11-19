@@ -13,14 +13,52 @@ if [[ "$(go env GOOS)/$(go env GOARCH)/$(go env CGO_ENABLED)" != darwin/arm64/1 
   exit 1
 fi
 
+# Observe the real admission inputs for the failing legacy sequence. The
+# overlay applies only to this test and is excluded from the application build.
+legacy_package=Picocrypt-NG/internal/volume
+legacy_parent=TestGoldenCompressedDecryption
+diagnostics=$(mktemp -d)
+trap 'rm -rf -- "$diagnostics"' EXIT
+snapshot="$PWD/internal/pcv3operation/internal/pcv3resource/snapshot_darwin.go"
+awk '
+  $0 == "\treturn kdfSnapshotFromDarwinFacts(facts)" {
+    matches++
+    print "\tsnapshot := kdfSnapshotFromDarwinFacts(facts)"
+    print "\tprintln(\"Darwin KDF bytes: observed\", facts.observed, \"free\", facts.freePages * facts.pageSize,"
+    print "\t\t\"inactive\", facts.inactivePages * facts.pageSize, \"internal\", facts.internalPages * facts.pageSize,"
+    print "\t\t\"footprint\", facts.physicalFootprint, \"resident\", facts.residentBytes,"
+    print "\t\t\"reusable\", facts.reusableBytes, \"released\", facts.releasedHeapBytes,"
+    print "\t\t\"liveFreeObserved\", facts.liveFreeObserved, \"liveFreePages\", facts.liveFreePages, \"pageGrabs\", facts.pageGrabs,"
+    print "\t\t\"available\", snapshot.effectiveAvailable, \"reserve\", snapshot.codeOwnedReserve)"
+    print "\treturn snapshot"
+    next
+  }
+  { print }
+  END { if (matches != 1) exit 1 }
+' "$snapshot" > "$diagnostics/snapshot_darwin.go"
+jq -n --arg source "$snapshot" --arg target "$diagnostics/snapshot_darwin.go" \
+  '{Replace: {($source): $target}}' > "$diagnostics/overlay.json"
+if (( shard_index == 0 )); then
+  sudo -n /usr/sbin/purge
+  go test -overlay "$diagnostics/overlay.json" -v -count=1 -p 1 -timeout 5m \
+    -run "^${legacy_parent}$" "$legacy_package"
+fi
+
 # Discover from this checkout so new packages and parents join the required lane.
 packages=$(go list ./internal/pcv3operation/... ./internal/app/... ./internal/volume/... | LC_ALL=C sort -u)
 parent_index=0
 selected=0
+compile_seconds=0
+purge_seconds=0
 while IFS= read -r package; do
   case "$package" in
     Picocrypt-NG/internal/pcv3operation|Picocrypt-NG/internal/pcv3operation/internal/pcv3|Picocrypt-NG/internal/pcv3operation/internal/pcv3recovery|Picocrypt-NG/internal/volume)
-      parents=$(go test -p 1 -list '^(Test|Fuzz|Example)' "$package" \
+      package_dir="$PWD/${package#Picocrypt-NG/}"
+      test_binary="$diagnostics/${package##*/}.test"
+      started=$SECONDS
+      go test -c -p 1 -o "$test_binary" "$package"
+      compile_seconds=$((compile_seconds + SECONDS - started))
+      parents=$(cd "$package_dir" && "$test_binary" -test.list '^(Test|Fuzz|Example)' \
         | sed -n -E '/^(Test|Fuzz|Example)/p' | LC_ALL=C sort)
       if [[ -z "$parents" ]]; then
         echo "No test parents discovered in $package" >&2
@@ -34,8 +72,16 @@ while IFS= read -r package; do
           echo "::group::$package/$parent"
           # Keep real KDFs in fresh native processes on the 7 GB runner. Linux
           # runs the full heavy race suite; pure/platform packages race below.
+          started=$SECONDS
           sudo -n /usr/sbin/purge
-          go test -v -count=1 -p 1 -timeout 60m -run "^${parent}$" "$package"
+          purge_seconds=$((purge_seconds + SECONDS - started))
+          if [[ $package == "$legacy_package" && $parent == "$legacy_parent" ]]; then
+            go test -overlay "$diagnostics/overlay.json" -v -count=1 -p 1 -timeout 60m \
+              -run "^${parent}$" "$package"
+          else
+            (cd "$package_dir" && "$test_binary" -test.v -test.count=1 -test.paniconexit0 \
+              -test.timeout=60m -test.run "^${parent}$")
+          fi
           echo "::endgroup::"
           selected=$((selected + 1))
         fi
@@ -54,3 +100,4 @@ if (( selected == 0 )); then
   exit 1
 fi
 echo "Shard $shard_index/$shard_count passed $selected of $parent_index heavy test parents"
+printf 'Native test preparation: compilation %ds, cache purge %ds\n' "$compile_seconds" "$purge_seconds"

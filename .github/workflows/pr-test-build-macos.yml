@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   pr-test-build-macos:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 180
     env:
       CGO_ENABLED: "1"
@@ -89,6 +89,7 @@ jobs:
       run: |
         cd src
         go build -v -tags cli -ldflags="-s -w" -o Picocrypt-NG-cli-macos ./cmd/picocrypt
+        bash ../.github/scripts/assert-macos-minos.sh Picocrypt-NG-cli-macos 15.0
       env:
         CGO_ENABLED: 1
 

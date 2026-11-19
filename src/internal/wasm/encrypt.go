@@ -5,8 +5,10 @@ import (
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/keyfile"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
 	"bytes"
+	"errors"
 	"io"
 
 	pwnorm "Picocrypt-NG/internal/password"
@@ -167,9 +169,12 @@ func EncryptVolume(plaintext, password []byte, opts EncryptOptions) ([]byte, int
 	// volumes are cross-platform-decryptable regardless of how it was typed.
 	passwordBytes := pwnorm.EncodeForKDF(password)
 	defer crypto.SecureZero(passwordBytes)
-	key, err := deriveWASMKey(passwordBytes, salt, opts.Paranoid)
+	key, err := admittedWASMKey(2*uint64(len(plaintext)), passwordBytes, salt, opts.Paranoid)
 	zeroWASMSensitiveBuffer(wasmZeroingPasswordBytes, passwordBytes)
 	if err != nil {
+		if errors.Is(err, pcv3operation.ErrLegacyKDFResource) {
+			return nil, ErrResourceLimit
+		}
 		return nil, ErrRandomFailure
 	}
 	defer crypto.SecureZero(key)

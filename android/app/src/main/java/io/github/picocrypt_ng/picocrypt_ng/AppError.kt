@@ -256,6 +256,11 @@ sealed class AppError(
                     technicalMessage = errorString,
                     messageResId = R.string.error_file_not_found,
                 )
+                "RESOURCE_LIMIT" -> OperationError.GenericOperation(
+                    userMessage = "",
+                    technicalMessage = errorString,
+                    messageResId = R.string.pcv3_resource_limit_body,
+                )
                 "PCV3_UNSUPPORTED", "PCV3_INVALID_STRUCTURE" -> OperationError.PCVUnavailable(
                     userMessage = "",
                     technicalMessage = errorString,

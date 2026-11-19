@@ -5,14 +5,14 @@ min_version = "2026.10.0"
 go = "1.27.4"
 java = "temurin-21.0.13+9.0.LTS"
 golangci-lint = "2.15.0"
-hk = "2.11.1"
-jactionlint = "2.4.0"
-jouet = "0.0.3"
+hk = "2.13.0"
+jactionlint = "2.6.0"
+jouet = "0.0.5"
 shellcheck = "0.11.0"
-ruff = "0.17.3"
-"go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20261011034528-197770444867"
-"go:golang.org/x/mobile/cmd/gomobile" = "v0.0.0-20261011034528-197770444867"
-"go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
+ruff = "0.17.5"
+"go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20261117202452-47699113848a"
+"go:golang.org/x/mobile/cmd/gomobile" = "v0.0.0-20261117202452-47699113848a"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.10.0"
 
 [env]
 # Preserve user/CI Android SDK settings; this default matches Android Studio on Linux.
@@ -174,8 +174,8 @@ run = [
 description = "Build the Android gomobile AAR"
 dir = "android"
 tools.go = "1.27.4"
-tools."go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20261011034528-197770444867"
-tools."go:golang.org/x/mobile/cmd/gomobile" = "v0.0.0-20261011034528-197770444867"
+tools."go:golang.org/x/mobile/cmd/gobind" = "v0.0.0-20261117202452-47699113848a"
+tools."go:golang.org/x/mobile/cmd/gomobile" = "v0.0.0-20261117202452-47699113848a"
 run = "./build-gomobile.sh"
 
 [tasks."android:test"]

@@ -13,6 +13,37 @@ import (
 	"testing"
 )
 
+func TestDarwinPublishedPrivateFileHasNoExtendedAllowACL(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "keyfile")
+	stage, err := Create(target, nil, PolicyNoReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stage.Cleanup()
+	output, err := exec.Command("/bin/chmod", "+a", "everyone allow read", stage.File().Name()).CombinedOutput()
+	if err != nil {
+		t.Fatalf("establish ACL on the fresh test stage: %v %s", err, output)
+	}
+	private, err := stage.PrivateFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := private.Write(make([]byte, 32)); err != nil {
+		t.Fatal(err)
+	}
+	if result := stage.Publish(t.Context()); result.State() != StatePublishedDurable {
+		t.Fatalf("publish private file: %v", result)
+	}
+	published, err := os.Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer published.Close()
+	if !directoryACLAllowsTrustedCleanup(published) {
+		t.Fatal("published private file still has an ACL that grants access")
+	}
+}
+
 func TestDarwinPrivateDirectoryRemovesInheritedExtendedACL(t *testing.T) {
 	parent := t.TempDir()
 	if err := os.Chmod(parent, 0o700); err != nil {

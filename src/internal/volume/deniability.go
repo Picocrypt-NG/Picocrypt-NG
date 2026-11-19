@@ -6,6 +6,7 @@ import (
 	"Picocrypt-NG/internal/fileops"
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/util"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -35,32 +36,10 @@ var isDeniableReadVersion = io.ReadFull
 //
 // CRITICAL: Deniability uses its own Argon2 derivation (4 passes, 1 GiB, 4 threads)
 // and stores salt(16) + nonce(24) at the beginning of the file.
-func AddDeniability(volumePath string, password []byte, reporter ProgressReporter) error {
-	return addDeniability(volumePath, password, reporter, nil, nil)
-}
-
-// addDeniability optionally pins the input identity and returns the exact
-// identity of the published wrapper. Encrypt uses both identities so a path
-// replacement cannot be mistaken for operation-owned output.
-func addDeniability(
-	volumePath string,
-	password []byte,
-	reporter ProgressReporter,
-	expectedInput os.FileInfo,
-	outputInfo *os.FileInfo,
-) (retErr error) {
+func AddDeniability(volumePath string, password []byte, reporter ProgressReporter) (retErr error) {
 	if err := requireDeniabilityPassword(password); err != nil {
 		return err
 	}
-
-	if reporter != nil {
-		reporter.SetStatus("Adding plausible deniability...")
-		reporter.SetCanCancel(false)
-		reporter.Update()
-	}
-
-	// Read the original in place and build the wrapper beside it. The original
-	// path is not touched until the complete wrapper is published.
 	fin, err := os.Open(volumePath) // #nosec G304 -- user-selected volume path
 	if err != nil {
 		return fmt.Errorf("open volume: %w", err)
@@ -70,19 +49,42 @@ func addDeniability(
 	if err != nil {
 		return fmt.Errorf("stat volume: %w", err)
 	}
-	if expectedInput != nil && !os.SameFile(expectedInput, originalInfo) {
-		return errors.New("volume path changed before adding deniability")
-	}
-	total := originalInfo.Size()
 
 	stage, err := fileops.CreateSiblingTemp(volumePath)
 	if err != nil {
-		return fmt.Errorf("create output: %w", err)
+		return fmt.Errorf("create deniability stage: %w", err)
 	}
-	defer func() {
-		retErr = errors.Join(retErr, stage.Cleanup())
-	}()
-	fout := stage.File()
+	defer func() { retErr = errors.Join(retErr, stage.Cleanup()) }()
+	if err := writeDeniabilityWrapper(context.Background(), stage.File(), fin, originalInfo.Size(), password, reporter); err != nil {
+		return err
+	}
+
+	if err := fin.Close(); err != nil {
+		return fmt.Errorf("close volume: %w", err)
+	}
+	currentInfo, err := os.Stat(volumePath)
+	if err != nil {
+		return fmt.Errorf("inspect volume before publish: %w", err)
+	}
+	if !os.SameFile(originalInfo, currentInfo) {
+		return errors.New("volume path changed while adding deniability")
+	}
+	if err := stage.Commit(); err != nil {
+		return fmt.Errorf("publish deniability wrapper: %w", err)
+	}
+	return nil
+}
+
+func writeDeniabilityWrapper(ctx context.Context, fout io.Writer, fin io.Reader, total int64, password []byte, reporter ProgressReporter) error {
+	if reporter != nil {
+		reporter.SetStatus("Adding plausible deniability...")
+		reporter.SetCanCancel(false)
+		reporter.Update()
+		defer func() {
+			reporter.SetCanCancel(true)
+			reporter.Update()
+		}()
+	}
 
 	// Generate random salt and nonce
 	salt, err := crypto.RandomBytes(16)
@@ -107,7 +109,10 @@ func addDeniability(
 	// on — is cross-platform-decryptable (#19).
 	kdfInput := pwnorm.EncodeForKDF(password)
 	defer crypto.SecureZero(kdfInput)
-	key := deriveDeniabilityKey(kdfInput, salt)
+	key, err := admittedDeniabilityKey(ctx, kdfInput, salt)
+	if err != nil {
+		return err
+	}
 	defer crypto.SecureZero(key)
 
 	cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
@@ -123,7 +128,7 @@ func addDeniability(
 	dst := util.GetMiBBuffer()
 	defer util.PutMiBBuffer(dst)
 
-	reader := newDeniabilityReader(io.Reader(fin))
+	reader := newDeniabilityReader(fin)
 	startTime := time.Now()
 
 	for {
@@ -168,32 +173,42 @@ func addDeniability(
 		}
 	}
 
-	if err := fin.Close(); err != nil {
-		return fmt.Errorf("close volume: %w", err)
-	}
-	currentInfo, err := os.Stat(volumePath)
-	if err != nil {
-		return fmt.Errorf("inspect volume before publish: %w", err)
-	}
-	if !os.SameFile(originalInfo, currentInfo) {
-		return errors.New("volume path changed while adding deniability")
-	}
-	publishedInfo, err := fout.Stat()
-	if err != nil {
-		return fmt.Errorf("inspect deniability wrapper before publish: %w", err)
-	}
-	if err := stage.Commit(); err != nil {
-		return fmt.Errorf("publish deniability wrapper: %w", err)
-	}
-	if outputInfo != nil {
-		*outputInfo = publishedInfo
-	}
+	return nil
+}
 
-	if reporter != nil {
-		reporter.SetCanCancel(true)
-		reporter.Update()
+func wrapLegacyEncryptionStage(ctx *OperationContext, password []byte) (retErr error) {
+	inner := ctx.stagedOutput
+	file, err := ctx.stagedOutputFile()
+	if err != nil {
+		return err
 	}
-
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect inner volume: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind inner volume: %w", err)
+	}
+	outer, err := inner.NewForSameTarget()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if outer != nil {
+			retErr = errors.Join(retErr, outer.Cleanup())
+		}
+	}()
+	if err := writeDeniabilityWrapper(ctx.Ctx, outer.File(), file, info.Size(), password, ctx.Reporter); err != nil {
+		return err
+	}
+	if err := ctx.Ctx.Err(); err != nil {
+		return err
+	}
+	if err := inner.Cleanup(); err != nil {
+		return err
+	}
+	ctx.stagedOutput = outer
+	outer = nil
 	return nil
 }
 
@@ -203,10 +218,11 @@ func addDeniability(
 // CRITICAL: Must read salt(16) + nonce(24) from the beginning,
 // then decrypt with XChaCha20 using Argon2-derived key.
 func RemoveDeniability(volumePath string, password []byte, reporter ProgressReporter, rs *encoding.RSCodecs) (*fileops.StagedFile, error) {
-	return removeDeniability(volumePath, password, reporter, rs, nil, nil)
+	return removeDeniability(context.Background(), volumePath, password, reporter, rs, nil, nil)
 }
 
 func removeDeniability(
+	ctx context.Context,
 	volumePath string,
 	password []byte,
 	reporter ProgressReporter,
@@ -284,7 +300,7 @@ func removeDeniability(
 		return nil, fmt.Errorf("seek after probe: %w", err)
 	}
 
-	key, err := selectDeniabilityKey(password, salt, nonce, probe, rs)
+	key, err := selectDeniabilityKey(ctx, password, salt, nonce, probe, rs)
 	if err != nil {
 		return nil, err
 	}
@@ -387,12 +403,15 @@ func removeDeniability(
 // form matches. Trying several canonical forms of the same password does not
 // weaken the wrapper: each candidate must still yield a recognizable inner
 // header. ASCII passwords yield a single candidate, so there is no extra work.
-func selectDeniabilityKey(password []byte, salt, nonce, probe []byte, rs *encoding.RSCodecs) ([]byte, error) {
+func selectDeniabilityKey(ctx context.Context, password []byte, salt, nonce, probe []byte, rs *encoding.RSCodecs) ([]byte, error) {
 	candidates := pwnorm.Candidates(password)
 	defer crypto.SecureZeroMultiple(candidates...)
 	for _, cand := range candidates {
-		key := deriveDeniabilityKey(cand, salt)
+		key, err := admittedDeniabilityKey(ctx, cand, salt)
 		crypto.SecureZero(cand)
+		if err != nil {
+			return nil, err
+		}
 		cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
 		if err != nil {
 			crypto.SecureZero(key)

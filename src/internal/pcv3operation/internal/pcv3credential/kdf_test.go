@@ -1,6 +1,7 @@
 package pcv3credential
 
 import (
+	"Picocrypt-NG/internal/kdfgate"
 	pcsecret "Picocrypt-NG/internal/secret"
 	"bytes"
 	"context"
@@ -711,9 +712,9 @@ type kdfLeaseResult struct {
 func withKDFLeaseBubble(t *testing.T, test func(*testing.T)) {
 	t.Helper()
 	synctest.Test(t, func(t *testing.T) {
-		previous := fixedProfileKDFLease
-		fixedProfileKDFLease = make(chan struct{}, 1)
-		defer func() { fixedProfileKDFLease = previous }()
+		previous := acquireFixedProfileKDFLease
+		acquireFixedProfileKDFLease = kdfgate.NewLease().Acquire
+		defer func() { acquireFixedProfileKDFLease = previous }()
 		test(t)
 	})
 }
@@ -736,12 +737,14 @@ func closeKDFLeaseResult(t *testing.T, result kdfLeaseResult) {
 
 func requireKDFLeaseAvailable(t *testing.T) {
 	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	admitted := make(chan struct{}, 1)
 	derived := make(chan struct{}, 1)
 	result := make(chan kdfLeaseResult, 1)
 	go func() {
 		secret, err := runFixedProfileKDFBorrowed(
-			context.Background(),
+			ctx,
 			make([]byte, literalCredentialInputBytes),
 			make([]byte, literalKDFSaltBytes),
 			SuiteStandard1,
@@ -783,12 +786,8 @@ func requireKDFLeaseAvailable(t *testing.T) {
 	default:
 	}
 
-	// The test owns this isolated lease. Drain a leaked token so the probe can
-	// terminate before reporting the regression instead of hanging the suite.
-	select {
-	case <-fixedProfileKDFLease:
-	default:
-	}
+	// Unblock the probe if the prior operation leaked its isolated lease.
+	cancel()
 	synctest.Wait()
 	select {
 	case got := <-result:

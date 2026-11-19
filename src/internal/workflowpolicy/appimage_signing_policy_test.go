@@ -31,7 +31,7 @@ func TestAppImageValidationHasNoSigningOrPublicationAuthority(t *testing.T) {
 		}
 	}
 	sign := mustJob(t, workflow, "sign")
-	if sign.If != "${{ always() && !cancelled() && (("+appimageDirectInvocation+" && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && needs.build.result == 'success') || (! ("+appimageDirectInvocation+") && needs.inspect.result == 'success' && needs.inspect.outputs.state != 'complete')) }}" {
+	if sign.If != "${{ always() && !cancelled() && needs.prepare-signing-tools.result == 'success' && (("+appimageDirectInvocation+" && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && needs.build.result == 'success') || (! ("+appimageDirectInvocation+") && needs.inspect.result == 'success' && needs.inspect.outputs.state != 'complete')) }}" {
 		t.Fatalf("production signing guard = %q", sign.If)
 	}
 	if releaseEnvironmentName(sign.Environment) != "release" {
@@ -67,16 +67,17 @@ func TestAppImageValidationHasNoSigningOrPublicationAuthority(t *testing.T) {
 func TestAppImageProductionTrustPrecedesArtifactPublication(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-appimage.yml")
 	sign := mustJob(t, workflow, "sign")
-	importKey := mustStepNamed(t, sign, "Import GPG signing key")
-	mustContain(t, importKey.Run, `.expected_fingerprint`)
-	mustNotContain(t, importKey.Run, `awk -F: '/^fpr:/ {print $10; exit}'`)
-	mustContain(t, importKey.Env["GPG_PRIVATE_KEY"], "secrets.APPIMAGE_GPG_PRIVATE_KEY")
 	pack := mustStepNamed(t, sign, "Build signed AppImage")
-	mustContain(t, pack.Run, `--sign --sign-key "$SIGN_KEY"`)
-	mustContain(t, pack.Run, `--runtime-file .appimage-tools/runtime`)
+	mustContain(t, pack.Run, ".expected_fingerprint")
+	mustContain(t, pack.Run, ".github/scripts/sign-appimage.sh")
+	mustContain(t, pack.Env["GPG_PRIVATE_KEY"], "secrets.APPIMAGE_GPG_PRIVATE_KEY")
+	container := mustReadRepoFile(t, ".github/toolchains/appimage-signer/sign.sh")
+	mustContain(t, container, `--sign --sign-key "$fingerprint"`)
+	mustContain(t, container, `--runtime-file /tools/runtime`)
+	mustContain(t, container, `[[ $actual == "$fingerprint" ]]`)
 	verify := mustStepNamed(t, sign, "Verify AppImage signature")
 	whenSigning := "${{ (" + appimageDirectInvocation + ") || steps.inventory.outputs.state == 'missing' }}"
-	if verify.If != whenSigning || importKey.If != whenSigning || pack.If != whenSigning || mustStepNamed(t, sign, "Upload signed artifacts").If != whenSigning ||
+	if verify.If != whenSigning || pack.If != whenSigning || mustStepNamed(t, sign, "Upload signed artifacts").If != whenSigning ||
 		(verify.ContinueOnError != nil && verify.ContinueOnError != false) {
 		t.Fatal("cryptographic AppImage verification must block every fresh signing and upload; complete-owner reuse skips them together")
 	}
@@ -98,6 +99,24 @@ func TestAppImageProductionTrustPrecedesArtifactPublication(t *testing.T) {
 	}
 	documentation := strings.ReplaceAll(mustReadRepoFile(t, "SIGNING.md"), " ", "")
 	mustContain(t, documentation, manifest.ExpectedFingerprint)
+}
+
+func TestAppImageSigningToolsPreparedWithoutReleaseCredentials(t *testing.T) {
+	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-appimage.yml")
+	prepare := mustJob(t, workflow, "prepare-signing-tools")
+	if prepare.Environment != nil {
+		t.Fatal("tool preparation must not enter the release environment")
+	}
+	sign := mustJob(t, workflow, "sign")
+	download := mustStepNamed(t, sign, "Download locked AppImage signing tools")
+	if download.With["artifact-ids"] != "${{ needs.prepare-signing-tools.outputs.artifact-id }}" || download.With["digest-mismatch"] != "error" {
+		t.Fatal("signing tools must arrive in the exact immutable carrier")
+	}
+	for _, step := range sign.Steps {
+		if strings.Contains(step.Run, "sudo apt") {
+			t.Fatal("release signer must not install packages on the host")
+		}
+	}
 }
 
 func TestAppImageManifestReadDoesNotPermitPublicationCommands(t *testing.T) {

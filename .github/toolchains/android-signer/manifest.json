@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "base_image": "ubuntu@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11",
+  "sdk": {
+    "url": "https://dl.google.com/android/repository/build-tools_r36_linux.zip",
+    "sha256": "5d9ac77fb6ff43d9da518a337b4fcf8f9097113df531d99ccefe80ef7ce8250b",
+    "files": {
+      "aapt": "c076aeeee8bd3ce58395a093747202265ab80c6c12e59358f598a30a81fde13b",
+      "apksigner": "b47549e373b895ce6ca620d0c7887e674d9615ffa837a86ac601dcfd04adb0f0",
+      "lib/apksigner.jar": "3716d9311e55d2b0918a2fd9d54ba9e406c5f6abeea700b287f11259bc163dec",
+      "zipalign": "c5f559e946de5a9e7d58792181db20383b228877812136bc469d97ae00a43b0a"
+    }
+  },
+  "jdk": {
+    "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",
+    "sha256": "d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c"
+  }
+}

@@ -312,6 +312,18 @@ func (stage *Stage) File() *os.File {
 	return stage.file
 }
 
+// PrivateFile returns an open stage restricted to its owner, including after
+// publication into a directory other users can traverse. Call before writing.
+func (stage *Stage) PrivateFile() (*os.File, error) {
+	if stage == nil || stage.file == nil || stage.terminal != nil {
+		return nil, os.ErrInvalid
+	}
+	if err := establishPrivateStageAccess(stage.file); err != nil {
+		return nil, err
+	}
+	return stage.file, nil
+}
+
 func (stage *Stage) freezeRetainedDigest(ctx context.Context) error {
 	if stage != nil && stage.retainedDigestReady {
 		return nil

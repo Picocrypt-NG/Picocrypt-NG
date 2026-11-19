@@ -444,7 +444,7 @@ func encryptDeriveKeys(ctx *OperationContext, req *EncryptRequest) error {
 	// canonical, cross-platform-stable key regardless of how it was typed (#19).
 	kdfInput := pwnorm.EncodeForKDF(req.Password)
 	defer crypto.SecureZero(kdfInput)
-	key, err := deriveVolumeKey(kdfInput, ctx.Header.Salt, req.Paranoid)
+	key, err := admittedVolumeKey(ctx.Ctx, kdfInput, ctx.Header.Salt, req.Paranoid)
 	if err != nil {
 		return err
 	}
@@ -665,26 +665,21 @@ func encryptFinalize(ctx *OperationContext, req *EncryptRequest) error {
 		return err
 	}
 
+	if req.Deniability {
+		if err := wrapLegacyEncryptionStage(ctx, req.Password); err != nil {
+			return err
+		}
+	}
 	if err := req.ValidateOutputSafety(); err != nil {
 		return err
+	}
+	if ctx.IsCancelled() {
+		return ctx.CancellationError()
 	}
 	if err := ctx.publishStagedOutput(); err != nil {
 		return fmt.Errorf("publish output: %w", err)
 	}
 	outputInfo := ctx.publishedOutputInfo
-
-	// Add deniability if requested
-	if req.Deniability {
-		if err := addDeniability(
-			req.OutputFile,
-			req.Password,
-			ctx.Reporter,
-			outputInfo,
-			&outputInfo,
-		); err != nil {
-			return err
-		}
-	}
 
 	if req.Split {
 		ctx.SetStatus("Splitting...")

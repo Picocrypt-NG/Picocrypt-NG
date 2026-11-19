@@ -29,7 +29,9 @@ class AndroidLegacyBoundaryTest {
     @Test
     fun legacyReaderPassesNormalUtf8AndHistoricalMalformedReplacementUnchanged() = runTest {
         val root = createTempDirectory("legacy-normal-encoding-").toFile()
-        val context = mockk<Context> { every { filesDir } returns root }
+        val context = mockk<Context>()
+        every { context.filesDir } returns root
+        every { context.applicationContext } returns context
         val source = File(root, "picocrypt_files/input_file.pcv").apply {
             parentFile!!.mkdirs(); writeText("legacy ciphertext")
         }
@@ -66,7 +68,9 @@ class AndroidLegacyBoundaryTest {
     @Test
     fun legacyReaderKeepsHistoricalFloatRoundedPasswordBytesWithoutAnAuthenticationFallback() = runTest {
         val root = createTempDirectory("legacy-encoding-compat-").toFile()
-        val context = mockk<Context> { every { filesDir } returns root }
+        val context = mockk<Context>()
+        every { context.filesDir } returns root
+        every { context.applicationContext } returns context
         val source = File(root, "picocrypt_files/input_file.pcv").apply {
             parentFile!!.mkdirs(); writeText("old Android volume")
         }
@@ -153,7 +157,9 @@ class AndroidLegacyBoundaryTest {
     @Test
     fun cleanupRefusesForeignPrivatePathsAndLinksButRemovesOwnedFiles() = runTest {
         val root = createTempDirectory("legacy-cleanup-").toFile()
-        val context = mockk<Context> { every { filesDir } returns root }
+        val context = mockk<Context>()
+        every { context.filesDir } returns root
+        every { context.applicationContext } returns context
         val foreign = File(root, "private-data").apply { writeText("foreign private bytes") }
         val internal = File(root, "picocrypt_files").apply { mkdirs() }
         val unknown = File(internal, "user-data").apply { writeText("unknown private bytes") }
@@ -182,7 +188,9 @@ class AndroidLegacyBoundaryTest {
     @Test
     fun legacyStartRefusesForeignInputBeforeNativeReservationOrCleanup() = runTest {
         val root = createTempDirectory("legacy-start-boundary-").toFile()
-        val context = mockk<Context> { every { filesDir } returns root }
+        val context = mockk<Context>()
+        every { context.filesDir } returns root
+        every { context.applicationContext } returns context
         val foreign = File(root, "user-data.pcv").apply { writeText("private data") }
         val output = File(root, "picocrypt_files/output_file").apply {
             parentFile!!.mkdirs(); writeText("previous output")
@@ -207,7 +215,9 @@ class AndroidLegacyBoundaryTest {
     @Test
     fun forceRetryKeepsTheRequestedCredentialsAfterTheFormIsCleared() = runTest {
         val root = createTempDirectory("legacy-force-credentials-").toFile()
-        val context = mockk<Context> { every { filesDir } returns root }
+        val context = mockk<Context>()
+        every { context.filesDir } returns root
+        every { context.applicationContext } returns context
         val input = File(root, "picocrypt_files/input_file.pcv").apply {
             parentFile!!.mkdirs(); writeText("legacy deniable ciphertext")
         }
@@ -253,7 +263,9 @@ class AndroidLegacyBoundaryTest {
     @Test
     fun acceptedLegacyStartKeepsCredentialsWhenTheCallerIsCancelled() = runTest {
         val root = createTempDirectory("legacy-cancelled-start-").toFile()
-        val context = mockk<Context> { every { filesDir } returns root }
+        val context = mockk<Context>()
+        every { context.filesDir } returns root
+        every { context.applicationContext } returns context
         val input = File(root, "picocrypt_files/input_file.pcv").apply {
             parentFile!!.mkdirs(); writeText("legacy deniable ciphertext")
         }
@@ -307,7 +319,9 @@ class AndroidLegacyBoundaryTest {
     @Test
     fun rejectedLegacyStartWipesNewOwnerWhenTheCallerIsCancelled() = runTest {
         val root = createTempDirectory("legacy-cancelled-rejection-").toFile()
-        val context = mockk<Context> { every { filesDir } returns root }
+        val context = mockk<Context>()
+        every { context.filesDir } returns root
+        every { context.applicationContext } returns context
         val input = File(root, "picocrypt_files/input_file.pcv").apply {
             parentFile!!.mkdirs(); writeText("legacy ciphertext")
         }

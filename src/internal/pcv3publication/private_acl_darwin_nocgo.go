@@ -11,6 +11,7 @@ import (
 // the supported CGO build; a pure-Go build must refuse before creating a stage.
 func privateDirectoryBackendAvailable() bool         { return false }
 func establishPrivateDirectoryACL(*os.File) error    { return errors.ErrUnsupported }
+func establishPrivateFileACL(*os.File) error         { return errors.ErrUnsupported }
 func directoryACLAllowsTrustedCleanup(*os.File) bool { return false }
 
 func privateDirectoryParentTrusted(*os.File) bool { return false }

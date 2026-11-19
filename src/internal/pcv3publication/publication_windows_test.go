@@ -170,10 +170,11 @@ func TestWindowsPrivateStageKeepsOriginalDeleteAuthorityAcrossPublication(t *tes
 		t.Fatal(err)
 	}
 	defer stage.Cleanup()
-	if !privateWindowsHandle(stage.sourceParent) || !privateWindowsHandle(stage.File()) {
+	private, err := stage.PrivateFile()
+	if err != nil || !privateWindowsHandle(stage.sourceParent) || !privateWindowsHandle(private) {
 		t.Fatal("protected current-owner DACL was not established on directory and file")
 	}
-	if _, err := stage.File().Write([]byte("original object")); err != nil {
+	if _, err := private.Write([]byte("original object")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(stage.stagePath, filepath.Join(directory, "stolen")); !windowsSharingRefusal(err) {
@@ -185,4 +186,12 @@ func TestWindowsPrivateStageKeepsOriginalDeleteAuthorityAcrossPublication(t *tes
 	requireNativeDirectoryCleanup(t, directory, stage.Cleanup())
 	requireNoStageEntries(t, directory)
 	requireFileBytes(t, target, []byte("original object"))
+	published, err := os.Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer published.Close()
+	if !privateWindowsHandle(published) {
+		t.Fatal("publication did not preserve the owner-only DACL")
+	}
 }

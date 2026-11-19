@@ -885,6 +885,41 @@ type ProgressState struct {
 	LegacyVersion         string
 	CommentAuthenticity   string
 	LegacySecurityWarning string
+	resourceSession       *pcv3operation.AndroidResourceSession
+}
+
+// LegacyResourceChallenge carries a one-shot observation for a live legacy
+// operation. It cannot acknowledge a later request or operation.
+type LegacyResourceChallenge struct {
+	operation *ProgressState
+	challenge *pcv3operation.AndroidResourceChallenge
+}
+
+func GetLegacyResourceChallenge(id string) *LegacyResourceChallenge {
+	globalProgressMap.mu.RLock()
+	defer globalProgressMap.mu.RUnlock()
+	op := globalProgressMap.ops[id]
+	if op == nil || op.Done || op.resourceSession == nil {
+		return nil
+	}
+	challenge := op.resourceSession.Challenge()
+	if challenge == nil {
+		return nil
+	}
+	return &LegacyResourceChallenge{operation: op, challenge: challenge}
+}
+
+func (c *LegacyResourceChallenge) Submit(totalRAM, available, threshold, footprint int64, processIs64Bit, lowMemory bool) bool {
+	if c == nil || c.operation == nil || c.challenge == nil {
+		return false
+	}
+	globalProgressMap.mu.RLock()
+	defer globalProgressMap.mu.RUnlock()
+	op := globalProgressMap.ops[c.operation.ID]
+	if op != c.operation || op.Done {
+		return false
+	}
+	return c.challenge.Submit(totalRAM, available, threshold, footprint, processIs64Bit, lowMemory)
 }
 
 // progressMap stores progress state for all active operations
@@ -919,7 +954,9 @@ func startOperation() string {
 	info := classifyInfo("")
 	for {
 		id := newOperationID()
-		ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: stored in registry and released by cancellation/cleanup
+		baseCtx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: stored in registry and released by cancellation/cleanup
+		resourceSession := pcv3operation.NewAndroidResourceSession()
+		ctx := pcv3operation.WithAndroidResourceSession(baseCtx, resourceSession)
 		globalProgressMap.mu.Lock()
 		if !operationIDAvailableLocked(id) {
 			globalProgressMap.mu.Unlock()
@@ -937,6 +974,7 @@ func startOperation() string {
 			InfoCode:                info.Code,
 			InfoCurrent:             info.Current,
 			InfoTotal:               info.Total,
+			resourceSession:         resourceSession,
 		}
 		globalProgressMap.ctxs[id] = ctx
 		globalProgressMap.cancels[id] = cancel

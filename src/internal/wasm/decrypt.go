@@ -33,6 +33,7 @@ const (
 	ErrKeyfileWritesDisabled = 12
 	// Encrypt-only: a new password-only volume needs a non-empty password.
 	ErrEncryptionPasswordRequired = 13
+	ErrResourceLimit              = 14
 )
 
 // DecryptResult is the successful output of DecryptVolume. On error the int
@@ -122,9 +123,12 @@ func DecryptVolume(volumeData, password []byte, opts DecryptOptions) (DecryptRes
 	candidates := pwnorm.Candidates(password)
 	defer crypto.SecureZeroMultiple(candidates...)
 	for _, cand := range candidates {
-		k, err := deriveWASMKey(cand, hdr.Salt, hdr.Flags.Paranoid)
+		k, err := admittedWASMKey(uint64(len(volumeData)), cand, hdr.Salt, hdr.Flags.Paranoid)
 		zeroWASMSensitiveBuffer(wasmZeroingDecryptPasswordBytes, cand)
 		if err != nil {
+			if errors.Is(err, pcv3operation.ErrLegacyKDFResource) {
+				return DecryptResult{}, ErrResourceLimit
+			}
 			return DecryptResult{}, ErrCorruptedHeader
 		}
 		// The stored public hash is part of the v2 authenticated header. Supplied

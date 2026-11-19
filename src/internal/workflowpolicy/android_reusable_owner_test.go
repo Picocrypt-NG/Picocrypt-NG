@@ -167,16 +167,16 @@ func TestAndroidReusableOwnerPreservesNativeSigningAndFiveFinalPairs(t *testing.
 			sha256: "0dd6339d6be93e9723865593fd00aac7eebaf502102114cbb1305fd1d989ad58",
 		},
 		{
-			name:   "Compile the SDK signing launcher before loading secrets",
-			sha256: "0a6097567ab25ad0b01ca9c8910845b88d4e61f21650f04bf73a055a021d1936",
+			name:   "Build Android signing image before loading secrets",
+			sha256: "7f83fff870d16bc4b84f14203351518ceccfaa59d65d342932325335eae1bb19",
 		},
 		{
 			name:   "Sign verified APKs with the offline SDK",
-			sha256: "7cd191598cc942d0125a6bf5d27a1c8630a5f154f9d29a7456772f88b54611d6",
+			sha256: "1682ea469504577b6ec8c6b6f47be47c14325beb3796f2a7d8e389e5ae0cc367",
 		},
 		{
 			name:   "Verify exact signed release APK contract",
-			sha256: "6b24b2fa4595b06a082d7a3fd20c90f2709129f0781da7f549a0c12edc69cf64",
+			sha256: "f06c0f750352ac7f4dd030810fd017c919692934384edc401cdb47201a8a4a6a",
 		},
 	} {
 		name, want := recipe.name, recipe.sha256
@@ -227,6 +227,29 @@ func TestAndroidReusableOwnerPreservesNativeSigningAndFiveFinalPairs(t *testing.
 	for name, value := range map[string]string{"signing-input-digest": "${{ steps.upload-unsigned.outputs.artifact-digest }}", "signing-input-attempt": "${{ steps.source.outputs.run-attempt }}"} {
 		if action.Outputs[name].Value != value {
 			t.Fatalf("signing carrier %s must come from the actual producer", name)
+		}
+	}
+}
+
+func TestAndroidSigningToolsFetchedLocallyBeforeCredentialUse(t *testing.T) {
+	w := mustReadWorkflowDoc(t, ".github/workflows/build-android.yml")
+	sign := mustJob(t, w, "sign")
+	fetch := mustStepNamed(t, sign, "Fetch locked Android signing tools")
+	mustContain(t, fetch.Run, `prepare-android-signing-tools.sh fetch "$RUNNER_TEMP/android-signing-bundle"`)
+	if len(fetch.Env) != 0 {
+		t.Fatal("tool download must not receive signing credentials")
+	}
+	for _, step := range sign.Steps {
+		if strings.HasPrefix(step.Uses, "android-actions/setup-android@") ||
+			strings.HasPrefix(step.Uses, "actions/setup-java@") || strings.Contains(step.Run, "sdkmanager") {
+			t.Fatal("release signer must not execute a mutable tool installer")
+		}
+	}
+	for _, job := range w.Jobs {
+		for _, step := range job.Steps {
+			if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && strings.Contains(fmt.Sprint(step.With["path"]), "android-signing-bundle") {
+				t.Fatal("third-party signing archives must stay on the workflow runner")
+			}
 		}
 	}
 }

@@ -16,6 +16,68 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestPublishedPrivateFileDifferentUID(t *testing.T) {
+	if os.Getenv("PICOCRYPT_PRIVATE_FILE_UID_CHILD") == "1" {
+		if os.Geteuid() != 1001 {
+			t.Fatal("expected a different effective UID")
+		}
+		control, err := unix.Openat(3, "readable", unix.O_RDONLY, 0)
+		if err != nil {
+			t.Fatalf("control file must be readable through the same parent: %v", err)
+		}
+		_ = unix.Close(control)
+		fd, err := unix.Openat(3, "keyfile", unix.O_RDONLY, 0)
+		if fd >= 0 {
+			_ = unix.Close(fd)
+		}
+		if !errors.Is(err, unix.EACCES) {
+			t.Fatalf("private file read = %v, want EACCES", err)
+		}
+		return
+	}
+	if os.Getenv("PICOCRYPT_RUN_CUSTODY_UID") != "1" {
+		t.Skip("requires isolated different-UID container lane")
+	}
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "readable"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stage, err := Create(filepath.Join(parent, "keyfile"), nil, PolicyNoReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := stage.Cleanup(); err != nil {
+			t.Error(err)
+		}
+	}()
+	file, err := stage.PrivateFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(make([]byte, 32)); err != nil {
+		t.Fatal(err)
+	}
+	if result := stage.Publish(t.Context()); result.State() != StatePublishedDurable {
+		t.Fatalf("publish private file: %v", result)
+	}
+	parentFile, err := os.Open(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parentFile.Close()
+	child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestPublishedPrivateFileDifferentUID$")
+	child.Env = append(os.Environ(), "PICOCRYPT_PRIVATE_FILE_UID_CHILD=1")
+	child.ExtraFiles = []*os.File{parentFile}
+	child.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 1001, Gid: 1001}}
+	if output, err := child.CombinedOutput(); err != nil {
+		t.Fatalf("read as a different UID: %v\n%s", err, output)
+	}
+}
+
 // Run in an isolated root-owned scratch container with only SETUID/SETGID,
 // no other capabilities. The hostile child is a real different UID, not a
 // same-process seam pretending that POSIX 0700 enforced a boundary.

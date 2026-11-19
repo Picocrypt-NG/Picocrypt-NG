@@ -301,8 +301,11 @@ func TestDecryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 			keyfiles := []string(nil)
 			password := []byte("protected-alias-password")
 			if tc.protected == "keyfile" {
-				restore := useProductionTestKDF()
-				defer restore()
+				previousAdmission := admitLegacyKDF
+				admitLegacyKDF = func(context.Context) error {
+					return errors.New("keyfile alias test reached legacy KDF admission")
+				}
+				defer func() { admitLegacyKDF = previousAdmission }()
 
 				volumeBytes, readErr := os.ReadFile(filepath.Join(findTestdata(t), "pico_test_v2_keyfile_single.txt.pcv"))
 				if readErr != nil {
@@ -320,7 +323,6 @@ func TestDecryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 				}
 				keyfiles = []string{keyfilePath}
 				password = []byte(goldenPassword)
-				plaintext = []byte(expectedContent)
 			} else {
 				inputPath := filepath.Join(dir, "plaintext.txt")
 				if err := os.WriteFile(inputPath, plaintext, 0o600); err != nil {
@@ -337,10 +339,11 @@ func TestDecryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 			}
 
 			protectedPath := volumePath
-			protectedBytes, err := os.ReadFile(volumePath)
+			volumeBytes, err := os.ReadFile(volumePath)
 			if err != nil {
 				t.Fatalf("read volume fixture: %v", err)
 			}
+			protectedBytes := volumeBytes
 			if tc.protected == "keyfile" {
 				protectedPath = keyfilePath
 				protectedBytes, err = os.ReadFile(keyfilePath)
@@ -399,6 +402,11 @@ func TestDecryptRejectsOutputAliasesOfProtectedFiles(t *testing.T) {
 				}
 			}
 
+			if tc.protected == "keyfile" {
+				// TestGoldenKeyfileDecryption authenticates this fixture with the production KDF.
+				assertFileBytes(t, volumePath, volumeBytes)
+				return
+			}
 			safeOutput := filepath.Join(dir, "safe-output.txt")
 			if err := Decrypt(context.Background(), &DecryptRequest{
 				InputFile:  volumePath,

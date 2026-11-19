@@ -22,6 +22,11 @@ compromise, or reliable erasure from SSDs, snapshots and backups. In-memory
 zeroing limits the lifetime of owned buffers; it cannot erase copies made by
 runtimes or external components.
 
+The desktop keyfile generator creates a new private file and refuses to
+replace an existing keyfile. Check permissions on keyfiles created by older
+versions, especially in shared folders. If another person may have read one,
+create a new factor and re-encrypt the affected data.
+
 D1 provides a random-looking container with explicitly selected decoding. It
 does not promise anonymity, hidden volumes, size hiding, plausible explanations
 for filesystem metadata, or protection against coercion. Comments in ordinary

@@ -3,6 +3,7 @@
 package pcv3operation
 
 import (
+	"Picocrypt-NG/internal/kdfgate"
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3"
 	"Picocrypt-NG/internal/pcv3operation/internal/pcv3credential"
 	"Picocrypt-NG/internal/secret"
@@ -18,13 +19,10 @@ import (
 const (
 	BrowserMaxPlaintextBytes    = 128 << 20
 	BrowserMaxPCV3VolumeBytes   = 256 << 20
-	BrowserMaxLegacyVolumeBytes = 1 << 30
+	BrowserMaxLegacyVolumeBytes = kdfgate.BrowserMaxLegacyInputBytes
 	BrowserMaxKeyfileBytes      = 64 << 20 // Aggregate across all selected files.
 	BrowserMaxPasswordBytes     = 1 << 20
 	BrowserMaxCommentBytes      = 99999
-	browserGoBudget             = (2 << 30) - (128 << 20)
-	browserWorkingReserve       = 96 << 20
-	browserJSBudget             = 768 << 20
 )
 
 // BrowserWriteRequest transfers every byte buffer on call. It carries no key,
@@ -143,7 +141,7 @@ func browserFactors(password []byte, files [][]byte, ordered bool) *pcv3credenti
 
 func browserJSWithinBudget(input, output, factors uint64) bool {
 	return input <= BrowserMaxPCV3VolumeBytes && output <= BrowserMaxPCV3VolumeBytes &&
-		factors <= BrowserMaxKeyfileBytes && input+output+factors+(64<<20) <= browserJSBudget
+		factors <= BrowserMaxKeyfileBytes && kdfgate.BrowserJSWithinBudget(input, output, factors)
 }
 
 // browserKDFWithinBudget enforces only the bounded Go address-space policy. It
@@ -151,10 +149,7 @@ func browserJSWithinBudget(input, output, factors uint64) bool {
 func browserKDFWithinBudget(p pcv3credential.KDFProfile, heap, pending uint64) bool {
 	valid := p.Argon2Version == 19 && p.MemoryKiB == 1048576 && p.SaltBytes == 16 && p.OutputBytes == 32 &&
 		((p.ID == 1 && p.Time == 4 && p.Parallelism == 4) || ((p.ID == 2 || p.ID == 3) && p.Time == 8 && p.Parallelism == 8))
-	if !valid || heap > browserGoBudget || pending > BrowserMaxPCV3VolumeBytes {
-		return false
-	}
-	return (1<<30)+browserWorkingReserve+pending <= browserGoBudget-heap
+	return valid && pending <= BrowserMaxPCV3VolumeBytes && kdfgate.BrowserKDFWithinBudget(heap, pending)
 }
 
 type browserAddressAdmitter struct {
@@ -184,11 +179,7 @@ func (a *browserAddressAdmitter) AdmitKDF(ctx context.Context, p pcv3credential.
 }
 
 func browserPreflightAllocation(pending uint64) bool {
-	debug.FreeOSMemory()
-	var stats runtime.MemStats
-	runtime.ReadMemStats(&stats)
-	return stats.HeapAlloc <= browserGoBudget && pending <= browserGoBudget-stats.HeapAlloc &&
-		(1<<30)+browserWorkingReserve <= browserGoBudget-stats.HeapAlloc-pending
+	return kdfgate.BrowserHasKDFRoom(pending)
 }
 
 // BrowserInspectNormal checks ordinary Normal input and its declared output

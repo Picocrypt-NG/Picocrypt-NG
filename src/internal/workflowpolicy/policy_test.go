@@ -349,18 +349,17 @@ func TestAppImageSigningSecretsRequireReleaseEnvironment(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-appimage.yml")
 	signJob := mustJob(t, workflow, "sign")
 
-	if signJob.If != nativeSigningGuard("build-appimage") {
+	if signJob.If != strings.Replace(nativeSigningGuard("build-appimage"), "!cancelled() &&", "!cancelled() && needs.prepare-signing-tools.result == 'success' &&", 1) {
 		t.Fatalf("AppImage signing job if = %q, want explicit publication on main", signJob.If)
 	}
 	if got := releaseEnvironmentName(signJob.Environment); got != "release" {
 		t.Fatalf("AppImage signing job environment = %#v, want release", signJob.Environment)
 	}
 
-	importStep := mustStepNamed(t, signJob, "Import GPG signing key")
-	if _, ok := importStep.Env["GPG_PRIVATE_KEY"]; !ok {
-		t.Fatal("AppImage signing job should keep the GPG private key scoped to its import step")
-	}
 	buildStep := mustStepNamed(t, signJob, "Build signed AppImage")
+	if _, ok := buildStep.Env["GPG_PRIVATE_KEY"]; !ok {
+		t.Fatal("AppImage signing job must scope the GPG private key to the isolated signing step")
+	}
 	if _, ok := buildStep.Env["APPIMAGETOOL_SIGN_PASSPHRASE"]; !ok {
 		t.Fatal("AppImage signing job should keep the AppImage passphrase scoped to its build step")
 	}
@@ -1686,18 +1685,19 @@ func TestAndroidReleaseWorkflowKeepsSigningSecretsOutOfBuildJob(t *testing.T) {
 	if got := len(regexp.MustCompile(`\bsecrets\s*(?:\.|\[)`).FindAllString(mustReadWorkflow(t, path), -1)); got != len(expectedSecrets) {
 		t.Fatalf("Android release contains %d secret references; only the four SDK env entries are permitted", got)
 	}
-	mustContainInOrder(t, signing.Run,
-		"umask 077", `signing_temp=$(mktemp -d "$RUNNER_TEMP/android-signing.XXXXXX")`,
-		"trap cleanup EXIT", `printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode`,
-		"unset ANDROID_KEYSTORE_BASE64", "java --enable-native-access=ALL-UNNAMED", "AndroidApkSigner")
-	mustContain(t, signing.Run, `rm -rf -- "$signing_temp"`)
-	mustContain(t, signing.Run, `if [ "$result" -ne 0 ]; then rm -rf -- signed-apks; fi`)
-	mustContain(t, signing.Run, "private signing diagnostics withheld")
-	for _, forbidden := range []string{"$GITHUB_ENV", "$GITHUB_OUTPUT", "$ANDROID_KEY_ALIAS\"", "gradlew", "curl", "sdkmanager", "javac"} {
-		mustNotContain(t, signing.Run, forbidden)
+	mustContain(t, signing.Run, ".github/scripts/sign-android-apks.sh")
+	run := mustReadRepoFile(t, ".github/scripts/sign-android-apks.sh")
+	mustContainInOrder(t, run, "set +x", "umask 077", "mktemp -d", "run-release-signing-container.sh", "mv -T --no-clobber")
+	sandbox := mustReadRepoFile(t, ".github/scripts/run-release-signing-container.sh")
+	mustContainInOrder(t, sandbox, "docker create", "--pull never", "--network none", "--read-only", "--log-driver none", "docker start --attach --interactive")
+	mustContain(t, sandbox, "docker rm --force")
+	for _, forbidden := range []string{"$GITHUB_ENV", "$GITHUB_OUTPUT", "gradlew", "curl", "sdkmanager", "javac"} {
+		mustNotContain(t, run, forbidden)
 	}
-	compile := mustStepNamed(t, signJob, "Compile the SDK signing launcher before loading secrets")
-	mustContain(t, compile.Run, `.github/scripts/AndroidApkSigner.java`)
+	prepare := mustStepNamed(t, signJob, "Build Android signing image before loading secrets")
+	mustContain(t, prepare.Run, ".github/scripts/prepare-android-signing-tools.sh build")
+	container := mustReadRepoFile(t, ".github/toolchains/android-signer/Dockerfile")
+	mustContain(t, container, "javac -cp /signer/apksigner.jar")
 	launcher := mustReadRepoFile(t, ".github/scripts/AndroidApkSigner.java")
 	for _, required := range []string{`System.getenv("ANDROID_KEY_ALIAS")`, "ApkSignerTool.main", `"env:ANDROID_KEYSTORE_PASSWORD"`, `"env:ANDROID_KEY_PASSWORD"`, `"--alignment-preserved", "true"`, `"--v1-signing-enabled", "false"`, `"--v4-signing-enabled", "false"`} {
 		mustContain(t, launcher, required)
@@ -1759,9 +1759,13 @@ func TestAndroidBuildWorkflowsMatchPinnedJDK21(t *testing.T) {
 					t.Fatalf("%s job %s setup-java java-version = %#v, want mise toolchain %q", path, jobName, got, javaVersion)
 				}
 			}
-			if path == ".github/workflows/build-android.yml" && jobName != "build" && jobName != "sign" {
+			if path == ".github/workflows/build-android.yml" && jobName != "build" {
 				if setupSteps != 0 {
-					t.Fatal("Android publisher must not set up or execute the JVM build/signing toolchain")
+					t.Fatal("Android release tools must come from the signing lock outside the build job")
+				}
+				if jobName == "sign" {
+					version := strings.ReplaceAll(strings.TrimSuffix(javaVersion, ".0.LTS"), "+", "_")
+					mustContain(t, mustReadRepoFile(t, ".github/toolchains/android-signer/manifest.json"), "_"+version+".tar.gz")
 				}
 			} else if setupSteps != 1 {
 				t.Fatalf("%s job %s has %d setup-java steps, want exactly one", path, jobName, setupSteps)
@@ -1796,7 +1800,7 @@ func TestAndroidReleasePublishesAllFourABIsAndUniversal(t *testing.T) {
 	}
 	mustContain(t, validate.Run, `(.apks | keys) == ["app-arm64-v8a-release-unsigned.apk", "app-armeabi-v7a-release-unsigned.apk", "app-universal-release-unsigned.apk", "app-x86-release-unsigned.apk", "app-x86_64-release-unsigned.apk"]`)
 	mustContain(t, validate.Run, `expected_files=$(printf '%s\n' app-arm64-v8a-release-unsigned.apk app-armeabi-v7a-release-unsigned.apk app-universal-release-unsigned.apk app-x86-release-unsigned.apk app-x86_64-release-unsigned.apk build-inputs.json)`)
-	mustContain(t, mustStepNamed(t, sign, "Sign verified APKs with the offline SDK").Run, "for abi in armeabi-v7a arm64-v8a x86 x86_64 universal; do")
+	mustContain(t, mustReadRepoFile(t, ".github/toolchains/android-signer/sign.sh"), "for abi in armeabi-v7a arm64-v8a x86 x86_64 universal; do")
 }
 
 func TestAndroidReleaseWorkflowsRunExactArtifactVerifier(t *testing.T) {
@@ -1871,7 +1875,7 @@ func TestAndroidReleaseSigningTrustAnchorAndPublicationOrder(t *testing.T) {
 		steps []string
 	}{
 		{"build", []string{"Verify Android gomobile build policy", "Build Go Mobile AAR", "Run Unit Tests", "Run Android Lint", "Build unsigned release APKs", "Verify exact unsigned release APK contract", "Bind unsigned APKs to the source and AAR", "Upload unsigned release APKs"}},
-		{"sign", []string{"Download source-bound unsigned APKs", "Validate unsigned signing inputs before loading secrets", "Compile the SDK signing launcher before loading secrets", "Sign verified APKs with the offline SDK", "Verify exact signed release APK contract", "Upload signed release APKs"}},
+		{"sign", []string{"Download source-bound unsigned APKs", "Fetch locked Android signing tools", "Build Android signing image before loading secrets", "Validate unsigned signing inputs before loading secrets", "Sign verified APKs with the offline SDK", "Verify exact signed release APK contract", "Upload signed release APKs"}},
 		{"release", []string{"Download verified signed APKs", "Get version tag", "Sign and attest artifacts", "Generate release notes", "Stage release assets"}},
 	} {
 		job := mustJob(t, workflow, tc.job)
@@ -2297,7 +2301,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	}
 	for tool, want := range map[string]string{
 		"go":                                   "1.27.4",
-		"go:golang.org/x/vuln/cmd/govulncheck": "1.9.0",
+		"go:golang.org/x/vuln/cmd/govulncheck": "1.10.0",
 	} {
 		if got := config.Tools[tool]; got != want {
 			t.Errorf("desktop %s = %q, want %q", tool, got, want)
@@ -2307,8 +2311,8 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	// even when the desktop development tools are upgraded.
 	for tool, want := range map[string]string{
 		"go":                                  "1.27.4",
-		"go:golang.org/x/mobile/cmd/gobind":   "v0.0.0-20261011034528-197770444867",
-		"go:golang.org/x/mobile/cmd/gomobile": "v0.0.0-20261011034528-197770444867",
+		"go:golang.org/x/mobile/cmd/gobind":   "v0.0.0-20261117202452-47699113848a",
+		"go:golang.org/x/mobile/cmd/gomobile": "v0.0.0-20261117202452-47699113848a",
 	} {
 		if got := config.Tasks["android:gomobile"].Tools[tool]; got != want {
 			t.Errorf("Android %s = %q, want %q", tool, got, want)
@@ -2320,7 +2324,7 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 	mustNotContain(t, goMod, "\ntoolchain ")
 
 	staticChecks := mustReadWorkflow(t, ".github/workflows/pr-static-checks.yml")
-	mustContain(t, staticChecks, "golang.org/x/vuln/cmd/govulncheck@v1.9.0")
+	mustContain(t, staticChecks, "golang.org/x/vuln/cmd/govulncheck@v1.10.0")
 	mustNotContain(t, staticChecks, "golang.org/x/vuln/cmd/govulncheck@latest")
 }
 

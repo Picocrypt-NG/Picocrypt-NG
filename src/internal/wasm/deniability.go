@@ -4,7 +4,9 @@ import (
 	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/header"
+	"Picocrypt-NG/internal/pcv3operation"
 	"Picocrypt-NG/internal/util"
+	"errors"
 
 	pwnorm "Picocrypt-NG/internal/password"
 
@@ -34,9 +36,12 @@ func wrapDeniability(inner, password []byte) ([]byte, int) {
 
 	kdfInput := pwnorm.EncodeForKDF(password)
 	defer crypto.SecureZero(kdfInput)
-	key, err := deriveWASMKey(kdfInput, salt, false)
+	key, err := admittedWASMKey(uint64(len(inner)), kdfInput, salt, false)
 	zeroWASMSensitiveBuffer(wasmZeroingDeniabilityKDFInput, kdfInput)
 	if err != nil {
+		if errors.Is(err, pcv3operation.ErrLegacyKDFResource) {
+			return nil, ErrResourceLimit
+		}
 		return nil, ErrRandomFailure
 	}
 	defer zeroWASMSensitiveBuffer(wasmZeroingDeniabilityKey, key)
@@ -154,13 +159,16 @@ func headerFlagsBytesPlausible(b []byte) bool {
 // probe (the encrypted version field at offset salt+nonce). The deniable wrapper
 // has no MAC, so the inner-version match is the only key check. Non-winning keys
 // and every candidate buffer are zeroed. Returns ErrWrongPassword if none match.
-func selectDeniabilityKey(password, salt, nonce, probe []byte, rs *encoding.RSCodecs) ([]byte, int) {
+func selectDeniabilityKey(pending uint64, password, salt, nonce, probe []byte, rs *encoding.RSCodecs) ([]byte, int) {
 	candidates := pwnorm.Candidates(password)
 	defer crypto.SecureZeroMultiple(candidates...)
 	for _, cand := range candidates {
-		key, err := deriveWASMKey(cand, salt, false)
+		key, err := admittedWASMKey(pending, cand, salt, false)
 		zeroWASMSensitiveBuffer(wasmZeroingDeniabilityKDFInput, cand)
 		if err != nil {
+			if errors.Is(err, pcv3operation.ErrLegacyKDFResource) {
+				return nil, ErrResourceLimit
+			}
 			continue // degenerate all-zero key (effectively never); treat as non-match
 		}
 		cipher, cerr := chacha20.NewUnauthenticatedCipher(key, nonce)
@@ -190,7 +198,8 @@ func unwrapDeniability(volume, password []byte, rs *encoding.RSCodecs) ([]byte, 
 	probeStart := deniabilitySaltSize + deniabilityNonceSize
 	probe := append([]byte(nil), volume[probeStart:probeStart+header.VersionEncSize]...)
 
-	key, code := selectDeniabilityKey(password, salt, nonce, probe, rs)
+	encrypted := volume[probeStart:]
+	key, code := selectDeniabilityKey(uint64(len(encrypted)), password, salt, nonce, probe, rs)
 	if code != 0 {
 		return nil, code
 	}
@@ -201,7 +210,6 @@ func unwrapDeniability(volume, password []byte, rs *encoding.RSCodecs) ([]byte, 
 		return nil, ErrCorruptedHeader
 	}
 
-	encrypted := volume[probeStart:]
 	inner := make([]byte, 0, len(encrypted))
 	var counter int64
 	for offset := 0; offset < len(encrypted); offset += util.MiB {

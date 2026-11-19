@@ -54,9 +54,11 @@ class LegacyForceDeviceTest {
                     keyfiles = listOf(keyfile.path), forceDecrypt = true, verifyFirst = verifyFirst,
                 ),
             ).getOrThrow()
+            val reader = Pcv3AndroidResourceObservationReader(context)
             val deadline = SystemClock.elapsedRealtime() + 180_000
             var result = GoBridge.getProgress(id).getOrThrow()
             while (!result.done && SystemClock.elapsedRealtime() < deadline) {
+                GoBridge.supplyLegacyResourceObservation(id, reader)
                 SystemClock.sleep(20)
                 result = GoBridge.getProgress(id).getOrThrow()
             }

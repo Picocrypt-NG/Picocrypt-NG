@@ -202,9 +202,38 @@ jobs:
         esac
         printf 'state=%s\nstaged=%s\nreused=%s\n' "$state" "$staged" "$reused" >> "$GITHUB_OUTPUT"
 
-  sign:
+  prepare-signing-tools:
     needs: [build, inspect]
     if: ${{ always() && !cancelled() && ((github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref) && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && needs.build.result == 'success') || (! (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) && needs.inspect.result == 'success' && needs.inspect.outputs.state != 'complete')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload-tools.outputs.artifact-id }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Fetch digest-locked AppImage signing tools
+      run: bash .github/scripts/prepare-appimage-signer.sh fetch "$RUNNER_TEMP/appimage-signing-bundle"
+
+    - name: Upload locked AppImage signing tools
+      id: upload-tools
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: appimage-signing-tools-attempt-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/appimage-signing-bundle/
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+        overwrite: false
+
+  sign:
+    needs: [build, inspect, prepare-signing-tools]
+    if: ${{ always() && !cancelled() && needs.prepare-signing-tools.result == 'success' && ((github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref) && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && needs.build.result == 'success') || (! (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) && needs.inspect.result == 'success' && needs.inspect.outputs.state != 'complete')) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     environment: release
@@ -339,67 +368,44 @@ jobs:
         cd ..
         python3 .github/scripts/extract-appimage-appdir.py signing-input/AppDir.tar signing-work
 
-    - name: Install packaging dependencies
+    - name: Download locked AppImage signing tools
       if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
-      run: |
-        sudo apt update
-        sudo apt install -y curl jq desktop-file-utils file gnupg
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ needs.prepare-signing-tools.outputs.artifact-id }}
+        path: ${{ runner.temp }}/appimage-signing-bundle
+        digest-mismatch: error
+        merge-multiple: true
 
-    - name: Fetch and verify AppImage tooling
+    - name: Build AppImage signing image before loading secrets
       if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
-      run: |
-        mkdir .appimage-tools
-        bash .github/scripts/install-appimage-build-tools.sh .appimage-tools
-
-    - name: Import GPG signing key
-      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
-      env:
-        GPG_PRIVATE_KEY: ${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}
       run: |
         set -euo pipefail
-        test -n "$GPG_PRIVATE_KEY" || { echo "::error::APPIMAGE_GPG_PRIVATE_KEY secret is empty"; exit 1; }
-        SIGN_KEY=$(jq -er '.expected_fingerprint' .github/toolchains/appimage-verifier/manifest.json)
-        [[ "$SIGN_KEY" =~ ^[0-9A-F]{40}$ ]] || exit 1
-        GNUPGHOME=$(mktemp -d "$RUNNER_TEMP/appimage-signing.XXXXXXXX")
-        chmod 700 "$GNUPGHOME"
-        export GNUPGHOME
-        echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
-        printf 'allow-loopback-pinentry\n' > "$GNUPGHOME/gpg-agent.conf"
-        printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
-        ACTUAL=$(gpg --batch --with-colons --list-secret-keys "$SIGN_KEY" | awk -F: '$1 == "sec" { primary=1; next } primary && $1 == "fpr" { print $10; primary=0 }')
-        test "$ACTUAL" = "$SIGN_KEY" || { echo "::error::expected release signing key is unavailable"; exit 1; }
-        echo "SIGN_KEY=$SIGN_KEY" >> "$GITHUB_ENV"
+        work="$RUNNER_TEMP/appimage-signing-tools"
+        bash .github/scripts/prepare-appimage-signer.sh build "$RUNNER_TEMP/appimage-signing-bundle" "$work"
+        printf 'APPIMAGE_SIGNER_IMAGE=%s\n' "$(<"$work/image.id")" >> "$GITHUB_ENV"
 
     - name: Build signed AppImage
       if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       env:
-        APPIMAGE_EXTRACT_AND_RUN: "1"
+        GPG_PRIVATE_KEY: ${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}
         APPIMAGETOOL_SIGN_PASSPHRASE: ${{ secrets.APPIMAGE_GPG_PASSPHRASE }}
       run: |
+        set -euo pipefail
         VERSION=$(cat VERSION)
         OUTPUT="Picocrypt-NG-${VERSION}-x86_64.AppImage"
+        SIGN_KEY=$(jq -er '.expected_fingerprint' .github/toolchains/appimage-verifier/manifest.json)
         UPDATE_INFORMATION="gh-releases-zsync|${GITHUB_REPOSITORY%/*}|${GITHUB_REPOSITORY#*/}|latest|Picocrypt-NG-*-x86_64.AppImage.zsync"
-        export VERSION
-        ARCH=x86_64 ./.appimage-tools/appimagetool \
-          --runtime-file .appimage-tools/runtime --updateinformation "$UPDATE_INFORMATION" \
-          --sign --sign-key "$SIGN_KEY" signing-work/AppDir "$OUTPUT"
-        test -f "$OUTPUT"
-        test -s "${OUTPUT}.zsync"
-
-    - name: Remove production signing key
-      if: ${{ always() }}
-      run: |
-        if [[ -n "${GNUPGHOME:-}" ]]; then
-          trap 'rm -rf -- "$GNUPGHOME"' EXIT
-          gpgconf --kill gpg-agent
-        fi
+        bash .github/scripts/sign-appimage.sh "$APPIMAGE_SIGNER_IMAGE" signing-work/AppDir signed-appimage "$SIGN_KEY" "$OUTPUT" "$UPDATE_INFORMATION"
 
     - name: Verify AppImage signature
       if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       run: |
         VERSION=$(cat VERSION)
-        APP="Picocrypt-NG-${VERSION}-x86_64.AppImage"
+        APP="signed-appimage/Picocrypt-NG-${VERSION}-x86_64.AppImage"
         bash .github/scripts/verify-appimage.sh "$APP"
+        bash .github/scripts/verify-appimage-zsync.sh "$APPIMAGE_SIGNER_IMAGE" "$APP"
+        mv -- "$APP" "$APP.zsync" .
 
     - name: Smoke test AppImage
       if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}

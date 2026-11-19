@@ -6,6 +6,7 @@ import "os"
 
 func privateDirectoryBackendAvailable() bool      { return true }
 func establishPrivateDirectoryACL(*os.File) error { return nil }
+func establishPrivateFileACL(*os.File) error      { return nil }
 
 // Linux POSIX ACL permissions for non-owners are bounded by the group mask
 // already verified in the directory's BSD mode bits.
