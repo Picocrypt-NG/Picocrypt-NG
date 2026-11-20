@@ -233,7 +233,11 @@ if [ "$#" -eq 2 ] && [ "$1" = "mod" ] && [ "$2" = "tidy" ]; then
             exit 1
         fi
         ln -s "$GO_SRC_DIR" localmod
-        "$REAL_GO" mod edit -replace=Picocrypt-NG=./localmod
+        # gomobile promotes the entire resolved graph to direct requirements.
+        # Start from the application's pinned requirements and checksums instead.
+        cp -- "$GO_SRC_DIR/go.mod" go.mod
+        cp -- "$GO_SRC_DIR/go.sum" go.sum
+        "$REAL_GO" mod edit -module=gobind -droptool=golang.org/x/mobile/cmd/gobind -require=Picocrypt-NG@v0.0.0 -replace=Picocrypt-NG=./localmod
 
         replacement_path="$($REAL_GO mod edit -json 2>/dev/null | "$JQ" -r '
             [.Replace[]? | select(.Old.Path == "Picocrypt-NG")] as $matches

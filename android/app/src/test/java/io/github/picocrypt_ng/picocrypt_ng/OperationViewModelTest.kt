@@ -103,9 +103,11 @@ class OperationViewModelTest {
         try {
             val error = AppError.ValidationError.NoFileSelected
             coEvery { OperationManager.startDecrypt(any(), any()) } returns Result.failure(error)
-            every { OperationManager.surfaceStartFailure(any(), any()) } answers { callOriginal() }
+            every { OperationManager.surfaceStartFailure(any(), any(), any()) } answers { callOriginal() }
 
-            viewModel.startDecrypt(mockContext, TestDataBuilders.createDecryptFormData())
+            val mainViewModel = MainViewModel(mockk(relaxed = true), androidx.lifecycle.SavedStateHandle())
+            mainViewModel.updateFormData(TestDataBuilders.createDecryptFormData())
+            viewModel.startDecrypt(mockContext, mainViewModel, mainViewModel.formState.value)
             advanceUntilIdle()
 
             val state = viewModel.operationState.value

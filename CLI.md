@@ -97,7 +97,7 @@ New encryption uses PCV3 with a password, keyfiles, or both. `--pcv3` remains an
 selection; `--pcv3=false` is rejected. Pass `-p ""` explicitly for keyfile-only PCV3, including D1.
 Legacy v1/v2 volumes remain readable.
 
-Do not pass real passwords with `-p` in routine use: the value can remain in shell history and process listings. Prefer an interactive prompt, `--password-stdin` when fd 0 is free, or `--password-fd` when stdin carries payload data.
+Do not pass real passwords with `-p` in routine use: the value can remain in shell history and process listings. Prefer an interactive prompt, `--password-stdin` when fd 0 is free, or `--password-fd` when stdin carries payload data. Piped password input accepts up to 1 MiB per line, excluding the line ending.
 
 Direct Linux executables disable kernel core dumps and ordinary peer debugger attachment before reading application input. If this startup protection fails, operations are refused; help and version remain available. Flatpak and the packaged Snap executable retain their existing process policy to preserve desktop portal access. This protection does not erase argv, swap, hibernation images, or existing dumps, and does not prevent privileged or in-process access.
 
@@ -388,6 +388,12 @@ temporary staging with a fresh per-operation key. Ordinary decryption authentica
 the volume and the complete temporary stream before writing stdout. A hard crash
 can leave ciphertext, and cleanup uncertainty is reported. A successful plaintext
 stdout transfer reports `Publication: not-attempted`: no destination file was published.
+
+Decryption from stdin stages the incoming ciphertext in a private temporary
+file. The limit is two thirds of the space left after subtracting 10 MiB from
+the free space measured at the start of staging. The command fails before
+decryption if the stream exceeds this budget or the temporary file cannot be
+written.
 
 ### Basic Streaming
 

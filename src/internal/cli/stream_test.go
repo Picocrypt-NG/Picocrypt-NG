@@ -79,7 +79,7 @@ func TestBufferStdinToTemp(t *testing.T) {
 	}()
 
 	// Call function under test
-	tmpPath, err := BufferStdinToTemp("")
+	tmpPath, err := bufferStdinToTemp(context.Background(), os.Stdin, "")
 	if err != nil {
 		t.Fatalf("BufferStdinToTemp() error = %v", err)
 	}
@@ -119,7 +119,7 @@ func TestBufferStdinToTempEmpty(t *testing.T) {
 	// Close immediately (empty input)
 	w.Close()
 
-	tmpPath, err := BufferStdinToTemp("")
+	tmpPath, err := bufferStdinToTemp(context.Background(), os.Stdin, "")
 	if err != nil {
 		t.Fatalf("BufferStdinToTemp() error = %v", err)
 	}
@@ -133,8 +133,7 @@ func TestBufferStdinToTempEmpty(t *testing.T) {
 		t.Errorf("expected empty file, got size %d", info.Size())
 	}
 	// The 0600 chmod must apply even on the empty-stdin path (mirrors the
-	// non-empty sibling). Mutation: dropping the Chmod(0600) in BufferStdinToTemp
-	// would leak stdin plaintext staging under a world-readable mode.
+	// non-empty sibling). Staged input must be private before any read.
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("temp file permissions = %o, want 0600", info.Mode().Perm())
 	}
@@ -161,7 +160,7 @@ func TestBufferStdinToTempLarge(t *testing.T) {
 		w.Close()
 	}()
 
-	tmpPath, err := BufferStdinToTemp("")
+	tmpPath, err := bufferStdinToTemp(context.Background(), os.Stdin, "")
 	if err != nil {
 		t.Fatalf("BufferStdinToTemp() error = %v", err)
 	}
@@ -196,7 +195,7 @@ func TestBufferStdinToTempDoesNotUseOutputDir(t *testing.T) {
 	outputDir := t.TempDir()
 	outputPath := filepath.Join(outputDir, "output.pcv")
 
-	tmpPath, err := BufferStdinToTemp(outputPath)
+	tmpPath, err := bufferStdinToTemp(context.Background(), os.Stdin, outputPath)
 	if err != nil {
 		t.Fatalf("BufferStdinToTemp() error = %v", err)
 	}

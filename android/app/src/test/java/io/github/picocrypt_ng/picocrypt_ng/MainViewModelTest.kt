@@ -35,6 +35,26 @@ class MainViewModelTest {
     }
     
     @Test
+    fun pendingKeyfileBlocksLegacyRequestUntilSelectedFactorsAreReady() {
+        val first = KeyfileInfo("/private/first", "first.key")
+        val second = KeyfileInfo("/private/second", "second.key")
+        viewModel.updateFormData(TestDataBuilders.createDecryptFormData(keyfiles = listOf(first)))
+        val staleForm = viewModel.formState.value
+        val selection = staleForm.selectionGeneration
+        val mutation = requireNotNull(viewModel.beginKeyfileMutation(selection))
+
+        assertNull(viewModel.takeLegacyDecryptOperation(staleForm))
+        assertNull(viewModel.takeLegacyDecryptOperation(viewModel.formState.value))
+        assertTrue(viewModel.finishKeyfileMutation(selection, mutation, added = second))
+        assertNull(viewModel.takeLegacyDecryptOperation(staleForm))
+
+        val accepted = requireNotNull(viewModel.takeLegacyDecryptOperation(viewModel.formState.value))
+        assertEquals(listOf(first, second), accepted.keyfileFilenames)
+        accepted.clearPasswords()
+        assertTrue(viewModel.formState.value.hasPassword)
+    }
+
+    @Test
     fun `formState is initialized with empty defaults`() = runTest {
         val formState = viewModel.formState.first()
         

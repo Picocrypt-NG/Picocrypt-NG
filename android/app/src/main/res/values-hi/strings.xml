@@ -281,6 +281,9 @@
     <string name="pcv3_warning_unknown_title">कार्रवाई की अतिरिक्त चेतावनी</string>
     <string name="pcv3_warning_unknown_body">कार्रवाई ने एक अतिरिक्त चेतावनी दी है। स्रोत रखें और सफ़ाई या हटाने का अधिकार होने का अनुमान न लगाएँ।</string>
     <string name="pcv3_archive_close">बिना निकाले बंद करें</string>
+    <string name="pcv3_archive_exporting">आर्काइव निर्यात हो रहा है</string>
+    <string name="pcv3_archive_cancel_export">निर्यात रद्द करें</string>
+    <string name="pcv3_archive_cancel_requested">रद्द करने का अनुरोध किया गया</string>
     <string name="pcv3_recovery_result_close">पुनर्प्राप्ति परिणाम बंद करें</string>
     <string name="pcv3_publication_close">प्रकाशन परिणाम बंद करें</string>
     <string name="pcv3_warning_cleanup_close">सफ़ाई चेतावनी बंद करें</string>

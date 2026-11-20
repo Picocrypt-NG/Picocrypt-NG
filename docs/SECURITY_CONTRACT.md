@@ -125,13 +125,21 @@ original regular-file identity for compatibility. This exception is never used
 to recapture folder/glob members after an anchored reopen fails. Same-inode writes
 and mount changes remain outside the byte-snapshot guarantee described below.
 
-Common ZIP extraction retains cleanup obligations for newly created stages and
-directories even when post-creation metadata cannot be read. Both legacy and typed
-extractors report `ErrUnpackCleanupIncomplete` when absence of owned residue
-cannot be proven. They retain the first observed directory identity and refuse
-missing or substituted owned directories. Unknown identity does not authorize
-pathname removal; held stage handles are still closed. Cleanup uncertainty does
-not itself establish retained plaintext or determine publication state.
+Common ZIP extraction checks every file's ZIP checksum before publishing any
+file or child directory. It retains the first observed identities of existing
+and newly created directories and rechecks each component on reopen. Writes and
+directory sync use the held immediate parent. Directory metadata is budgeted
+and open handles are bounded independently of entry count and depth.
+
+Publication uses a native no-replace link or move where available. The
+exclusive-copy fallback still refuses existing names. An error after a public
+effect can leave verified output, empty directories, or an incomplete
+exclusive-copy output when exact rollback cannot be proven. Both legacy and
+typed extraction report `publication-indeterminate` and
+`ErrUnpackCleanupIncomplete` in that case. Public names are preserved
+when safe removal cannot be proven. A sync failure with confirmed publication
+is a distinct durability warning. Cleanup still closes stage handles and
+checks stage identities before removing the operation's staging names.
 
 Desktop source deletion remains off by default and subject to the existing
 whole-operation, kept/unverified and `SourceDeletionAllowed` guards. It removes
@@ -153,9 +161,9 @@ identity check and leaf removal are separate effects. There is no atomic POSIX
 expected-inode unlink guarantee; a leaf substitution between those effects
 remains a risk. Endpoint trust does not eliminate this residual race.
 
-The same check/unlink window exists in sibling-directory and auto-unzip archive
-cleanup and in Linux journal recovery. A concurrent writer in the relevant
-parent can move the owned object and substitute another leaf after its final
+The same check/unlink window exists for ZIP staging names, sibling-directory
+and auto-unzip archive cleanup, and Linux journal recovery. A concurrent writer
+in the relevant parent can move the owned object and substitute another leaf after its final
 identity check. Cleanup can then remove the replacement and report success while
 the moved original remains. Journal recovery requires a private directory, but
 mode 0700 does not exclude another process running as the same UID. Its result

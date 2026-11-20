@@ -285,6 +285,9 @@
     <string name="pcv3_warning_unknown_title">Advertencia adicional de la operación</string>
     <string name="pcv3_warning_unknown_body">La operación ha indicado una advertencia adicional. Conserva la fuente y no deduzcas que existe autorización para limpiar o eliminar.</string>
     <string name="pcv3_archive_close">Cerrar sin extraer</string>
+    <string name="pcv3_archive_exporting">Exportando el archivo</string>
+    <string name="pcv3_archive_cancel_export">Cancelar exportación</string>
+    <string name="pcv3_archive_cancel_requested">Cancelación solicitada</string>
     <string name="pcv3_recovery_result_close">Cerrar resultado de recuperación</string>
     <string name="pcv3_publication_close">Cerrar resultado de publicación</string>
     <string name="pcv3_warning_cleanup_close">Cerrar advertencia de limpieza</string>

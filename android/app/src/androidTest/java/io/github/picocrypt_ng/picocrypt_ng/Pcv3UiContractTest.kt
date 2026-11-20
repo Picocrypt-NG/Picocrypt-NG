@@ -83,6 +83,40 @@ class Pcv3UiContractTest {
         get() = ApplicationProvider.getApplicationContext()
 
     @Test
+    fun archiveCancellationAcknowledgementKeepsProgressVisibleUntilSettlement() {
+        val exporting = live(snapshot = archivePendingSnapshot())
+            .copy(safExportState = Pcv3SafExportState.EXPORTING)
+        val presentation = mutableStateOf<Pcv3Presentation>(exporting)
+        val operationViewModel = OperationViewModel()
+        val mainViewModel = newMainViewModel()
+        compose.setContent {
+            ProgressCard(
+                mainViewModel = mainViewModel,
+                operationViewModel = operationViewModel,
+                pcv3Presentation = presentation.value,
+                pcv3Intent = intent(Pcv3ActionIntent.RECOVERY),
+                onCancelPcv3 = { operationId, generation ->
+                    assertCurrent(exporting, operationId, generation)
+                    presentation.value = exporting.copy(safExportState = Pcv3SafExportState.CANCEL_REQUESTED)
+                },
+            )
+        }
+
+        compose.onNodeWithText(text(R.string.pcv3_archive_exporting)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.pcv3_archive_cancel_export)).performClick()
+        compose.onNodeWithText(text(R.string.pcv3_archive_cancel_requested)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.pcv3_archive_cancel_export)).assertDoesNotExist()
+        compose.onNodeWithTag(PCV3_PROGRESS_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(PCV3_RESULT_TAG).assertDoesNotExist()
+
+        compose.runOnIdle {
+            presentation.value = final(archiveClosedSnapshot(), exporting.operationId, exporting.generation)
+        }
+        compose.onNodeWithTag(PCV3_PROGRESS_TAG).assertDoesNotExist()
+        compose.onNodeWithTag(PCV3_RESULT_TAG).assertIsDisplayed()
+    }
+
+    @Test
     fun rawD1ProfileChoicesAreScopedToUnverifiedRecoveryAndDoNotGrantConsent() {
         val mainViewModel = newMainViewModel()
         mainViewModel.updateFormData(mainViewModel.formState.value.copy(

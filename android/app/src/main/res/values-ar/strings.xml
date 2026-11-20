@@ -311,6 +311,9 @@
     <string name="pcv3_warning_unknown_title">تحذير إضافي بشأن العملية</string>
     <string name="pcv3_warning_unknown_body">صدر تحذير إضافي أثناء العملية. احتفظ بالمصدر ولا تعتبر هذه النتيجة إذنًا بالتنظيف أو الحذف.</string>
     <string name="pcv3_archive_close">إغلاق دون استخراج</string>
+    <string name="pcv3_archive_exporting">تصدير الأرشيف</string>
+    <string name="pcv3_archive_cancel_export">إلغاء التصدير</string>
+    <string name="pcv3_archive_cancel_requested">طُلِب الإلغاء</string>
     <string name="pcv3_recovery_result_close">إغلاق نتيجة الاسترداد</string>
     <string name="pcv3_publication_close">إغلاق نتيجة وضع الناتج في الوجهة</string>
     <string name="pcv3_warning_cleanup_close">إغلاق تحذير التنظيف</string>

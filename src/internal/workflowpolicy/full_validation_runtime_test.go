@@ -168,6 +168,13 @@ cat "$FIXTURE_DIR/$id.json"
 func TestFullValidationLinuxInventoryPreservesVerifiedContextAndFiveFiles(t *testing.T) {
 	job := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/release.yml"), "verify-linux")
 	step := mustStepNamed(t, job, "Record verified Linux file inventory")
+	mustContainInOrder(t, mustReadWorkflow(t, ".github/workflows/release.yml"),
+		"Verify Linux payload manifests", "Record verified Linux file inventory", "Upload Linux verification manifest")
+	verify := mustStepNamed(t, job, "Verify Linux payload manifests")
+	if verify.If != "" || (verify.ContinueOnError != nil && verify.ContinueOnError != false) ||
+		verify.Run != "bash .github/actions/build-linux/verify-artifacts.sh payload" {
+		t.Fatal("the coordinator must block release validation when the architecture or build materials fail verification")
+	}
 	fixture := newFullValidationRuntimeFixture(t)
 	dir := t.TempDir()
 	manifest := filepath.Join(dir, "linux-artifacts.json")

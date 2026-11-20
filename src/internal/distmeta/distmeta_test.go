@@ -349,7 +349,12 @@ func TestDesktopIconHasMatchingHicolorAppIconContract(t *testing.T) {
 			if !strings.Contains(workflow, `xmllint --noout images/key.svg`) {
 				t.Fatalf("%s does not validate images/key.svg before packaging the app icon", relPath)
 			}
-			if !strings.Contains(workflow, `librsvg2-bin`) {
+			if tc.composite {
+				packages := string(mustReadFile(t, ".github/toolchains/linux-release/os-packages-amd64.lock"))
+				if !strings.Contains("\n"+packages, "\nlibrsvg2-bin\t") {
+					t.Fatal("Linux AMD64 release package lock is missing librsvg2-bin for app icon PNG generation")
+				}
+			} else if !strings.Contains(workflow, `librsvg2-bin`) {
 				t.Fatalf("%s does not install librsvg2-bin for app icon PNG generation", relPath)
 			}
 			if !strings.Contains(workflow, `install -m 0644 images/key.svg`) {

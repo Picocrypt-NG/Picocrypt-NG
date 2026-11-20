@@ -2,7 +2,6 @@ package cli
 
 import (
 	"Picocrypt-NG/internal/secret"
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -21,6 +20,20 @@ var (
 )
 
 const maximumCLIPasswordBytes = 1 << 20
+
+var errCLIPasswordTooLong = errors.New("password line exceeds 1 MiB")
+
+type passwordLineInput struct {
+	source  io.Reader
+	scratch [4096]byte
+	unread  []byte
+	readErr error
+}
+
+func (input *passwordLineInput) clear() {
+	secret.SecureZero(input.scratch[:])
+	input.unread = nil
+}
 
 // isTerminal returns true if stdin is a terminal (not piped/redirected).
 func isTerminal() bool {
@@ -49,34 +62,56 @@ func readOwnedPassword(read func() ([]byte, error)) ([]byte, error) {
 	return password, nil
 }
 
-func readPasswordLine(reader *bufio.Reader) ([]byte, error) {
-	return readOwnedPassword(func() ([]byte, error) {
-		pw, err := reader.ReadBytes('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return pw, err
+func readPasswordLine(input *passwordLineInput) ([]byte, error) {
+	password, err := readOwnedPassword(func() ([]byte, error) {
+		password := make([]byte, maximumCLIPasswordBytes+2)
+		used := 0
+		for {
+			if len(input.unread) == 0 && input.readErr == nil {
+				// Up to two framing bytes can follow a password at the limit.
+				n, err := input.source.Read(input.scratch[:min(len(input.scratch), len(password)-used)])
+				input.unread, input.readErr = input.scratch[:n], err
+				if n == 0 && err == nil {
+					return password, io.ErrNoProgress
+				}
+			}
+
+			part := input.unread
+			newline := bytes.IndexByte(part, '\n')
+			if newline >= 0 {
+				part = part[:newline+1]
+			}
+			used += copy(password[used:], part)
+			secret.SecureZero(part)
+			input.unread = input.unread[len(part):]
+
+			if newline >= 0 || errors.Is(input.readErr, io.EOF) {
+				break
+			}
+			if input.readErr != nil {
+				return password, input.readErr
+			}
+			if used > maximumCLIPasswordBytes && (used == len(password) || password[used-1] != '\r') {
+				return password, errCLIPasswordTooLong
+			}
 		}
 
-		pw = bytes.TrimSuffix(pw, []byte("\n"))
-		pw = bytes.TrimSuffix(pw, []byte("\r"))
-		return pw, nil
+		password = bytes.TrimSuffix(password[:used], []byte("\n"))
+		password = bytes.TrimSuffix(password, []byte("\r"))
+		if len(password) > maximumCLIPasswordBytes {
+			return password, errCLIPasswordTooLong
+		}
+		return password, nil
 	})
+	if err != nil {
+		input.clear()
+	}
+	return password, err
 }
 
-// readPasswordSecure reads a password from stdin without echo, returning owned
-// []byte the caller can zero. Falls back to buffered read if stdin is not a
-// terminal.
-func readPasswordSecure(prompt string) ([]byte, error) {
+// readTerminalPassword reads from a real terminal without echo.
+func readTerminalPassword(prompt string) ([]byte, error) {
 	fmt.Fprint(os.Stderr, prompt)
-
-	if !isTerminal() {
-		// stdin is piped; read normally
-		reader := bufio.NewReader(os.Stdin)
-		pw, err := readPasswordLine(reader)
-		if err != nil {
-			return nil, fmt.Errorf("reading password: %w", err)
-		}
-		return pw, nil
-	}
 
 	// Terminal mode: capture the current tty state so a SIGINT during the
 	// no-echo read can be restored by the signal handler (os.Exit skips
@@ -115,7 +150,20 @@ func ReadPasswordInteractive(confirm, allowEmpty bool) ([]byte, error) {
 	// Once the prompt(s) have returned normally, clear the saved tty state so a
 	// later unrelated signal does not re-poke the terminal.
 	defer savedTerminalState.Store(nil)
-	return readPasswordInteractive(confirm, allowEmpty, readPasswordSecure)
+	if isTerminal() {
+		return readPasswordInteractive(confirm, allowEmpty, readTerminalPassword)
+	}
+
+	input := passwordLineInput{source: os.Stdin}
+	defer input.clear()
+	return readPasswordInteractive(confirm, allowEmpty, func(prompt string) ([]byte, error) {
+		fmt.Fprint(os.Stderr, prompt)
+		password, err := readPasswordLine(&input)
+		if err != nil {
+			return nil, fmt.Errorf("reading password: %w", err)
+		}
+		return password, nil
+	})
 }
 
 // read must transfer independent, wholly owned buffers starting at allocation
@@ -158,8 +206,7 @@ func readPasswordInteractive(confirm, allowEmpty bool, read func(string) ([]byte
 
 // ReadPasswordFromStdin reads password from stdin (for piped input with -P flag).
 func ReadPasswordFromStdin() ([]byte, error) {
-	reader := bufio.NewReader(os.Stdin)
-	pw, err := readPasswordLine(reader)
+	pw, err := readPipedPassword(os.Stdin)
 	if err != nil {
 		return nil, fmt.Errorf("reading password from stdin: %w", err)
 	}
@@ -184,7 +231,7 @@ func ReadPasswordFromFD(fd int) (password []byte, retErr error) {
 			retErr = errors.Join(retErr, errors.New("password file descriptor could not be closed"))
 		}
 		if retErr != nil {
-			secret.SecureZero(password)
+			secret.SecureZero(password[:cap(password)])
 			password = nil
 		}
 	}()
@@ -193,48 +240,22 @@ func ReadPasswordFromFD(fd int) (password []byte, retErr error) {
 	return password, retErr
 }
 
-func readPasswordFDLine(reader io.Reader) ([]byte, error) {
-	password := make([]byte, maximumCLIPasswordBytes+2)
-	used := 0
-	success := false
-	defer func() {
-		if !success {
-			secret.SecureZero(password)
-		}
-	}()
-
-	for {
-		if used == len(password) {
-			return nil, errors.New("password from file descriptor is too long")
-		}
-		n, err := reader.Read(password[used:])
-		complete := false
-		if index := bytes.IndexByte(password[used:used+n], '\n'); index >= 0 {
-			lineEnd := used + index
-			secret.SecureZero(password[lineEnd : used+n])
-			used = lineEnd
-			complete = true
-		} else {
-			used += n
-		}
-		if complete || errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, errors.New("reading password from file descriptor failed")
-		}
-		if n == 0 {
-			return nil, errors.New("reading password from file descriptor made no progress")
-		}
-	}
-
-	if used > 0 && password[used-1] == '\r' {
-		password[used-1] = 0
-		used--
-	}
-	if used > maximumCLIPasswordBytes {
+func readPasswordFDLine(source io.Reader) ([]byte, error) {
+	password, err := readPipedPassword(source)
+	switch {
+	case err == nil:
+		return password, nil
+	case errors.Is(err, errCLIPasswordTooLong):
 		return nil, errors.New("password from file descriptor is too long")
+	case errors.Is(err, io.ErrNoProgress):
+		return nil, errors.New("reading password from file descriptor made no progress")
+	default:
+		return nil, errors.New("reading password from file descriptor failed")
 	}
-	success = true
-	return password[:used], nil
+}
+
+func readPipedPassword(source io.Reader) ([]byte, error) {
+	input := passwordLineInput{source: source}
+	defer input.clear()
+	return readPasswordLine(&input)
 }

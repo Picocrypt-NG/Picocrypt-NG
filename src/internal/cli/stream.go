@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"Picocrypt-NG/internal/diskspace"
 	"Picocrypt-NG/internal/fileops"
+	"Picocrypt-NG/internal/secret"
 	"context"
 	"errors"
 	"fmt"
@@ -12,7 +14,11 @@ import (
 	"sync/atomic"
 )
 
-var activeStdinTempPath atomic.Pointer[string]
+var (
+	activeStdinTempPath     atomic.Pointer[string]
+	availableStdinTempSpace = diskspace.AvailableFile
+	errStdinTempBudget      = errors.New("stdin exceeds temporary file budget")
+)
 
 // cleanupTempFiles removes every stdin/stdout staging temp. It attempts all
 // paths and reports a generic error without disclosing temporary pathnames.
@@ -53,12 +59,13 @@ func IsStdout(path string) bool {
 	return path == "-"
 }
 
-// BufferStdinToTemp copies stdin to a temp file and returns the path.
-// outputPath is used to determine fallback temp directories.
-// Caller is responsible for removing the temp file.
-func BufferStdinToTemp(outputPath string) (string, error) {
-	// Choose temp directory with space checking
-	tempDir, err := ChooseTempDir(0, outputPath) // 0 = unknown size, use default estimate
+// bufferStdinToTemp stages ciphertext for decryption. The caller owns cleanup
+// after a successful return.
+func bufferStdinToTemp(ctx context.Context, input io.Reader, outputPath string) (path string, retErr error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	tempDir, err := ChooseTempDir(0, outputPath)
 	if err != nil {
 		return "", fmt.Errorf("selecting temp directory: %w", err)
 	}
@@ -68,40 +75,78 @@ func BufferStdinToTemp(outputPath string) (string, error) {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
+	defer func() {
+		if err := tmp.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("closing temp file: %w", err))
+		}
+		if path != "" {
+			retErr = errors.Join(retErr, ctx.Err())
+		}
+		if path == "" || retErr != nil {
+			path = ""
+			retErr = errors.Join(retErr, cleanupTempFiles(tmpPath))
+		}
+	}()
 	if !activeStdinTempPath.CompareAndSwap(nil, &tmpPath) {
-		_ = tmp.Close()
-		return "", errors.Join(
-			errors.New("another stdin temporary file is already active"),
-			cleanupTempFiles(tmpPath),
-		)
+		return "", errors.New("another stdin temporary file is already active")
 	}
-
-	// Set restrictive permissions
 	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return "", errors.Join(
-			fmt.Errorf("setting temp file permissions: %w", err),
-			cleanupTempFiles(tmpPath),
-		)
+		return "", fmt.Errorf("setting temp file permissions: %w", err)
 	}
 
-	_, err = io.Copy(tmp, os.Stdin)
+	available, err := availableStdinTempSpace(tmp)
 	if err != nil {
-		_ = tmp.Close()
-		return "", errors.Join(
-			fmt.Errorf("buffering stdin: %w", err),
-			cleanupTempFiles(tmpPath),
-		)
+		return "", fmt.Errorf("measuring stdin temporary space: %w", err)
 	}
-
-	if err := tmp.Close(); err != nil {
-		return "", errors.Join(
-			fmt.Errorf("closing temp file: %w", err),
-			cleanupTempFiles(tmpPath),
-		)
+	budget, err := encryptedStdinPhysicalBudget(available)
+	if err != nil {
+		return "", err
 	}
-
+	if err := copyStdinWithinBudget(ctx, tmp, input, budget); err != nil {
+		return "", err
+	}
 	return tmpPath, nil
+}
+
+func copyStdinWithinBudget(ctx context.Context, output io.Writer, input io.Reader, remaining uint64) error {
+	scratch := make([]byte, 32<<10)
+	defer secret.SecureZero(scratch)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Read at most one byte past the remaining budget to distinguish EOF
+		// from an incomplete stream, even when the source has no known length.
+		readSize := min(remaining, uint64(len(scratch)-1)) + 1
+		n, readErr := input.Read(scratch[:readSize])
+		eof := errors.Is(readErr, io.EOF)
+		if readErr != nil && !eof {
+			return errors.Join(ctx.Err(), fmt.Errorf("reading stdin: %w", readErr))
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if n > 0 {
+			count := uint64(n)
+			if count > remaining {
+				return errStdinTempBudget
+			}
+			written, err := output.Write(scratch[:n])
+			if err != nil {
+				return errors.Join(ctx.Err(), fmt.Errorf("writing stdin temp file: %w", err))
+			}
+			if written != n {
+				return fmt.Errorf("writing stdin temp file: %w", io.ErrShortWrite)
+			}
+			remaining -= count
+		}
+		if eof {
+			return nil
+		}
+		if n == 0 {
+			return fmt.Errorf("reading stdin: %w", io.ErrNoProgress)
+		}
+	}
 }
 
 // StreamFileToStdout consumes a temporary file while copying it to stdout.

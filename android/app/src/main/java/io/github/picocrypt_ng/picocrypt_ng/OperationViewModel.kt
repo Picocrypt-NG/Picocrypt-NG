@@ -85,7 +85,7 @@ private object ManagerPcv3Operations : Pcv3Operations {
         OperationManager.installPcv3ResourceObservationReader(reader)
     override suspend fun dismiss(operationId: String, generation: Long) =
         OperationManager.dismissPcv3(operationId, generation)
-    override suspend fun cancel(operationId: String, generation: Long) = OperationManager.cancelPcv3(operationId, generation)
+    override suspend fun cancel(operationId: String, generation: Long) = OperationManager.requestPcv3Cancellation(operationId, generation)
     override suspend fun selectConsentRole(operationId: String, generation: Long, role: String) = OperationManager.selectPcv3ConsentRole(operationId, generation, role)
     override suspend fun confirmConsent(operationId: String, generation: Long) = OperationManager.confirmPcv3Consent(operationId, generation)
     override suspend fun refuseConsent(operationId: String, generation: Long) = OperationManager.refusePcv3Consent(operationId, generation)
@@ -718,15 +718,24 @@ class OperationViewModel internal constructor(
     /**
      * Starts a decryption operation and begins polling progress.
      */
-    fun startDecrypt(context: Context, formData: FormData) {
-        viewModelScope.launch {
-            val result = OperationManager.startDecrypt(context, formData)
-            result.onSuccess {
-                startForegroundServiceSafely(context)
-                startPolling()
-            }
-            result.onFailure { e ->
-                OperationManager.surfaceStartFailure(OperationType.DECRYPT, e)
+    internal fun startDecrypt(context: Context, mainViewModel: MainViewModel, expectedForm: FormData) {
+        val formData = mainViewModel.takeLegacyDecryptOperation(expectedForm) ?: return
+        val selection = formData.selectionGeneration
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                val result = OperationManager.startDecrypt(context, formData)
+                result.onSuccess {
+                    startForegroundServiceSafely(context)
+                    startPolling()
+                }
+                result.onFailure { e ->
+                    OperationManager.surfaceStartFailure(OperationType.DECRYPT, e, selection)
+                }
+            } finally {
+                formData.clearPasswords()
+                if (operationState.value?.formSelectionGeneration != selection) {
+                    mainViewModel.finishLegacyDecryptStart(selection)
+                }
             }
         }
     }

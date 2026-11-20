@@ -55,18 +55,30 @@ verify_metadata() {
 }
 
 verify_payload() {
-    local owner=$1 arch=$2 attempt=$3 directory expected actual_names manifest
+    local owner=$1 arch=$2 attempt=$3 directory expected actual_names manifest materials=null
     directory="$ARTIFACT_ROOT/${owner%.yml}"
     test -d "$directory" && test ! -L "$directory" || return 1
     manifest="$directory/payload-manifest.json"
     test -f "$manifest" && test ! -L "$manifest" && test -s "$manifest" || return 1
     expected=$(awk -v owner="$owner" '$2 == owner {print $1}' <<< "$canonical" | LC_ALL=C sort) || return 1
     test -n "$expected" || return 1
-    jq -e --arg repository "$GITHUB_REPOSITORY" --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" \
+    case "$owner" in
+        build-macos.yml|build-android.yml|build-snapcraft.yml)
+            materials=$(bash .github/scripts/release-materials.sh "$owner" "$arch") || return 1
+            ;;
+    esac
+    jq -e --argjson materials "$materials" --arg repository "$GITHUB_REPOSITORY" --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" \
         --arg canonical "$CANONICAL_MANIFEST_SHA256" --arg owner "$owner" --arg arch "$arch" \
         --arg run "$GITHUB_RUN_ID" --arg attempt "$attempt" --arg names "$expected" '
-        type == "object" and keys == ["arch","canonical_manifest_sha256","files","owner_workflow","repository",
+        type == "object" and (del(.materials) | keys) == ["arch","canonical_manifest_sha256","files","owner_workflow","repository",
           "run_attempt","run_id","schema_version","source_sha","version"]
+          and (if $owner == "build-macos.yml" then
+                 (.materials | del(.os_build,.image_version)) == $materials
+                 and (.materials.os_build | test("^[0-9]{2}[A-Z][0-9]+[a-z]?$"))
+                 and (.materials.image_version | test("^[0-9]+[.][0-9]+[.][0-9]+$"))
+               elif $materials != null then .materials == $materials
+               else (has("materials") | not)
+               end)
           and .schema_version == 1 and .repository == $repository and .source_sha == $source and .version == $version
           and .canonical_manifest_sha256 == $canonical and .owner_workflow == $owner
           and .arch == $arch and .run_id == $run and .run_attempt == $attempt

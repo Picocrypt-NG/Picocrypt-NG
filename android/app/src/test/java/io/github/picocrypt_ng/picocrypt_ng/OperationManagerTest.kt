@@ -238,11 +238,13 @@ class OperationManagerTest {
 
     @Test
     fun `cancelOperation classifies a terminal error returned by Go`() = runTest {
+        val operationForm = TestDataBuilders.createDecryptFormData()
         setCurrentOperationForTest(
             TestDataBuilders.createOperationState(
                 id = "op_failed",
                 type = OperationType.DECRYPT,
                 done = false,
+                formData = operationForm,
             )
         )
 
@@ -266,6 +268,10 @@ class OperationManagerTest {
             assertEquals(OperationStatus.ERROR, state?.status?.code)
             assertTrue(state?.error is AppError.OperationError.PasswordAuth)
             assertEquals("diagnostic auth failure", state?.error?.technicalMessage)
+            assertTrue(operationForm.passwordInput.all { it == '\u0000' })
+            assertTrue(operationForm.confirmPasswordInput.all { it == '\u0000' })
+            assertFalse(requireNotNull(state?.formData).hasPassword)
+            assertTrue(OperationManager.retryDecryptWithForce(mockContext, state).isFailure)
         } finally {
             unmockkObject(GoBridge)
         }
@@ -349,6 +355,48 @@ class OperationManagerTest {
             assertEquals(0.3f, result?.progress ?: -1f, 0.001f)
         } finally {
             unmockkObject(GoBridge)
+        }
+    }
+
+    @Test
+    fun `completed legacy decrypt wipes operation credentials while retaining the result`() = runTest {
+        val directory = createTempDirectory("legacy-terminal-password-").toFile()
+        every { mockContext.filesDir } returns directory
+        val form = createOwnedDecryptFormData().copy(
+            passwordInput = "form password".toCharArray(),
+            confirmPasswordInput = "form confirmation".toCharArray(),
+        )
+        mockkObject(GoBridge)
+        try {
+            every { GoBridge.startOperation() } returns Result.success("terminal-password")
+            every { GoBridge.startDecrypt(any(), any(), any(), any(), any()) } answers {
+                arg<ByteArray>(3).fill(0)
+                Result.success(Unit)
+            }
+            every { GoBridge.getProgress("terminal-password") } returns Result.success(ProgressState(
+                status = OperationStatusData(OperationStatus.COMPLETED),
+                detail = OperationProgressDetail(OperationProgress.NONE),
+                progress = 1f,
+                done = true,
+            ))
+            OperationManager.startDecrypt(mockContext, form).getOrThrow()
+            val owner = requireNotNull(OperationManager.currentOperation.value?.formData)
+
+            val completed = requireNotNull(OperationManager.pollProgress())
+            assertTrue(completed.done)
+            assertEquals(OperationStatus.COMPLETED, completed.status.code)
+            assertFalse(requireNotNull(completed.formData).hasPassword)
+            assertTrue(owner.passwordInput.all { it == '\u0000' })
+            assertTrue(owner.confirmPasswordInput.all { it == '\u0000' })
+            assertArrayEquals("form password".toCharArray(), form.passwordInput)
+            assertArrayEquals("form confirmation".toCharArray(), form.confirmPasswordInput)
+            assertTrue(OperationManager.retryDecryptWithForce(mockContext, completed).isFailure)
+            verify(exactly = 1) { GoBridge.startOperation() }
+        } finally {
+            OperationManager.clearOperation(shouldCleanupFiles = false)
+            form.clearPasswords()
+            unmockkObject(GoBridge)
+            directory.deleteRecursively()
         }
     }
 
@@ -864,6 +912,19 @@ class OperationManagerTest {
         assertNotNull("State must remain when requested cleanup cannot run", OperationManager.currentOperation.value)
     }
     
+    private suspend fun finishLegacyAsCorrupted(id: String): OperationState {
+        every { GoBridge.getProgress(id) } returns Result.success(ProgressState(
+            status = OperationStatusData(OperationStatus.ERROR),
+            detail = OperationProgressDetail(OperationProgress.NONE),
+            progress = 0f,
+            done = true,
+            errorCode = "DATA_CORRUPTED",
+        ))
+        return requireNotNull(OperationManager.pollProgress()).also {
+            assertTrue(it.error is AppError.OperationError.DataCorruption)
+        }
+    }
+
     @Test
     fun `retryDecryptWithForce returns error when no active operation`() = runTest {
         OperationManager.clearOperation(shouldCleanupFiles = false)
@@ -900,7 +961,7 @@ class OperationManagerTest {
 
             val established = OperationManager.currentOperation.value
             assertNotNull("operation should be established", established)
-            val clearedForm = established!!.formData!!
+            val clearedForm = finishLegacyAsCorrupted("op_force").formData!!
             clearedForm.clearPasswords()
             assertTrue(
                 "real clearPasswords keeps allocated password storage",
@@ -953,6 +1014,7 @@ class OperationManagerTest {
                     createOwnedDecryptFormData(),
                 ).isSuccess,
             )
+            finishLegacyAsCorrupted("op_force_cleanup")
             assertTrue("Owned input already created the runtime directory", internalDir.isDirectory)
             staleIncomplete.writeBytes(byteArrayOf(1))
             assertTrue(
@@ -1102,7 +1164,10 @@ class OperationManagerTest {
 
         mockkObject(GoBridge)
         try {
-            every { GoBridge.startOperation() } returns Result.success("op_unzip_force")
+            every { GoBridge.startOperation() } returnsMany listOf(
+                Result.success("op_unzip_force"),
+                Result.success("op_unzip_retry"),
+            )
             val optionsSlot = slot<DecryptOptions>()
             every {
                 GoBridge.startDecrypt(any(), any(), any(), any(), capture(optionsSlot))
@@ -1115,6 +1180,7 @@ class OperationManagerTest {
                     createOwnedDecryptFormData()
                 ).isSuccess
             )
+            finishLegacyAsCorrupted("op_unzip_force")
             val retry = OperationManager.retryDecryptWithForce(mockContext)
 
             assertTrue("retryDecryptWithForce should succeed", retry.isSuccess)

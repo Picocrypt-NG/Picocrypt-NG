@@ -140,8 +140,8 @@ func TestMacosSnapReusableOwnersPreserveDirectRecipes(t *testing.T) {
 		owner  string
 		hashes map[string]string
 	}{
-		{"build-macos", map[string]string{"build": "e36f8f228015cdc984784298eb767d9e1c8d8f2bb3feb500ecb2b5321acb3095", "release": "5f371d3e529ccc9073bde3d5e499d94fa48c72464f4e4f7b80ea994c959f6393"}},
-		{"build-snapcraft", map[string]string{"build-snapcraft": "89225ca8aa281b6df6215be7b822950158d7c44e54bd03393c4f268e31269867", "release": "602ac93216c1fd0d95d4213fcb0d3fe0985ebd8682a71ba5d3d62516d4852143"}},
+		{"build-macos", map[string]string{"build": "94d630676cc147603254c52e0381da541ad4d250af434709e5ee9fbfc6349aa7", "release": "884845ac161378bb09600e0bf663d84aaa7736b29c12dc2c7984fdde71080935"}},
+		{"build-snapcraft", map[string]string{"build-snapcraft": "afefdd8a1d77bba7c8750afeb815812c903360d814943a8e90e8b4a95617468c", "release": "45232764af015b7c1b4c164534277bf33832bfdafcedf7f7adff432ae15fa35b"}},
 	} {
 		var document struct {
 			Jobs map[string]map[string]any `yaml:"jobs"`
@@ -157,7 +157,7 @@ func TestMacosSnapReusableOwnersPreserveDirectRecipes(t *testing.T) {
 				t.Fatal(err)
 			}
 			if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != want {
-				t.Fatalf("direct %s/%s changed beyond invocation gating: %s", tc.owner, name, got)
+				t.Fatalf("direct %s/%s changed its frozen build or release recipe: %s", tc.owner, name, got)
 			}
 		}
 	}

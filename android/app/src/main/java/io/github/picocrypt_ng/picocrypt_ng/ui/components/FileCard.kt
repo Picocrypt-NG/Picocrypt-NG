@@ -82,6 +82,7 @@ fun ChooseFile(
     val selectionEnabled by rememberUpdatedState(enabled)
 
     fun canAcceptSelection(): Boolean = selectionEnabled && !isCopying && !isCheckingRoute &&
+        !viewModel.formState.value.legacyStartPending && OperationManager.currentOperation.value == null &&
         pendingSingleFile == null && !OperationManager.currentPcv3InputCleanupPending.value
     
     // Handle file copying and detection when URI is selected

@@ -62,36 +62,48 @@ func captureZIPDirectoryWithMetadata(path string, metadata *ZIPInputMetadataRese
 }
 
 func (directory *zipDirectoryIdentity) open() (*os.Root, error) {
-	var root *os.Root
-	var err error
-	if directory.parent == nil {
-		// The anchor is canonical at capture. Do not accept a later leaf link.
-		info, statErr := os.Lstat(directory.name) //nolint:gosec // G703: inspect the user-selected anchor; descriptor identity is checked before reading source bytes.
-		if statErr != nil {
-			return nil, statErr
+	if directory.parent != nil {
+		parent, err := directory.parent.open()
+		if err != nil {
+			return nil, err
 		}
-		if !info.IsDir() || !os.SameFile(directory.info, info) {
-			return nil, errors.New("archive directory changed after selection")
+		root, err := directory.openChild(parent)
+		if err := errors.Join(err, parent.Close()); err != nil {
+			if root != nil {
+				err = errors.Join(err, root.Close())
+			}
+			return nil, err
 		}
-		root, err = os.OpenRoot(directory.name + string(filepath.Separator) + ".")
-	} else {
-		parent, openErr := directory.parent.open()
-		if openErr != nil {
-			return nil, openErr
-		}
-		info, statErr := parent.Lstat(directory.name)
-		if statErr != nil || info == nil || !info.IsDir() || !os.SameFile(directory.info, info) {
-			return nil, errors.Join(errors.New("archive directory changed after selection"), statErr, parent.Close())
-		}
-		root, err = parent.OpenRoot(directory.name + string(filepath.Separator) + ".")
-		err = errors.Join(err, parent.Close())
+		return root, nil
 	}
+	// The anchor is canonical at capture. Do not accept a later leaf link.
+	info, err := os.Lstat(directory.name) //nolint:gosec // G703: inspect the user-selected anchor; descriptor identity is checked before reading source bytes.
 	if err != nil {
-		if root != nil {
-			err = errors.Join(err, root.Close())
-		}
 		return nil, err
 	}
+	if !info.IsDir() || !os.SameFile(directory.info, info) {
+		return nil, errors.New("archive directory changed after selection")
+	}
+	root, err := os.OpenRoot(directory.name + string(filepath.Separator) + ".")
+	if err != nil {
+		return nil, err
+	}
+	return directory.confirm(root)
+}
+
+func (directory *zipDirectoryIdentity) openChild(parent *os.Root) (*os.Root, error) {
+	info, err := parent.Lstat(directory.name)
+	if err != nil || !info.IsDir() || !os.SameFile(directory.info, info) {
+		return nil, errors.Join(errors.New("archive directory changed after selection"), err)
+	}
+	root, err := parent.OpenRoot(directory.name + string(filepath.Separator) + ".")
+	if err != nil {
+		return nil, err
+	}
+	return directory.confirm(root)
+}
+
+func (directory *zipDirectoryIdentity) confirm(root *os.Root) (*os.Root, error) {
 	info, statErr := root.Stat(".")
 	if statErr != nil || info == nil || !info.IsDir() || !os.SameFile(directory.info, info) {
 		return nil, errors.Join(errors.New("archive directory changed while opening"), statErr, root.Close())

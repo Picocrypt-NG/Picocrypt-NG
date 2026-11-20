@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.concurrent.atomic.AtomicLong
+
+private val nextSelectionGeneration = AtomicLong(System.nanoTime())
 
 /**
  * ViewModel for managing form state and UI-related data.
@@ -39,7 +42,8 @@ class MainViewModel(
         verifyFirst = false, // Always default, no persistence
         keyfileFilenames = emptyList(), // Always default, no persistence
         keyfileOrdered = false, // Always default, no persistence
-        decryptionInfo = null // Never save decryption info (transient)
+        decryptionInfo = null, // Never save decryption info (transient)
+        selectionGeneration = nextSelectionGeneration.incrementAndGet(),
     )
     
     private val _formState = MutableStateFlow(initialFormData)
@@ -117,6 +121,9 @@ class MainViewModel(
             pcvUnavailable = refusedError != null,
             pcv3Intent = Pcv3OperationIntent(format = Pcv3FormatIntent.NORMAL),
             pcv3OwnedSource = Pcv3OwnedSource(ownedCopyPath),
+            selectionGeneration = nextSelectionGeneration.incrementAndGet(),
+            keyfileMutationPending = false,
+            legacyStartPending = false,
         )
 
         clearSavedForm()
@@ -134,7 +141,7 @@ class MainViewModel(
         if (current.isPcv3Selection || current.pcvUnavailable ||
             current.selectionKind != SelectionKind.SINGLE_FILE ||
             current.copiedFilePath.isBlank() || current.inputFiles.isNotEmpty() ||
-            current.hasAnyCredentialInput
+            current.hasAnyCredentialInput || current.keyfileMutationPending || current.legacyStartPending
         ) {
             return false
         }
@@ -151,6 +158,7 @@ class MainViewModel(
             decryptionInfo = null,
             pcv3Intent = Pcv3OperationIntent(format = Pcv3FormatIntent.D1),
             pcv3OwnedSource = Pcv3OwnedSource(current.copiedFilePath),
+            selectionGeneration = nextSelectionGeneration.incrementAndGet(),
         )
         clearSavedForm()
         _errorMessage.value = null
@@ -213,7 +221,7 @@ class MainViewModel(
         val mode = intent.goModeOrNull() ?: return null
         val factorPolicy = intent.factorPolicyCodeOrNull() ?: return null
         val keyfileOrder = intent.keyfileOrderCodeOrNull() ?: return null
-        if (target.isBlank() || !current.isFormValid) return null
+        if (target.isBlank() || !current.canStartOperation) return null
         val source = current.pcv3OwnedSource?.take() ?: return null
 
         val password = current.passwordInput
@@ -247,6 +255,7 @@ class MainViewModel(
             pcvUnavailable = false,
             pcv3Intent = null,
             pcv3OwnedSource = null,
+            selectionGeneration = nextSelectionGeneration.incrementAndGet(),
         )
         clearSavedForm()
         _errorMessage.value = null
@@ -261,7 +270,7 @@ class MainViewModel(
     @Synchronized
     fun takePcv3CreateOperation(target: String): Pcv3OperationTransfer? {
         val current = _formState.value
-        if (!current.isPcv3Creation || target.isBlank() || !current.isFormValid) return null
+        if (!current.isPcv3Creation || target.isBlank() || !current.canStartOperation) return null
         val factorPolicy = when {
             current.hasPassword && current.hasKeyfiles -> Pcv3FactorPolicyIntent.PASSWORD_AND_KEYFILES
             current.hasPassword -> Pcv3FactorPolicyIntent.PASSWORD_ONLY
@@ -337,10 +346,83 @@ class MainViewModel(
             selectionKind = SelectionKind.SINGLE_FILE,
             suggestedOutputName = "",
             decryptionInfo = null,
+            selectionGeneration = nextSelectionGeneration.incrementAndGet(),
         )
         clearSavedForm()
         _errorMessage.value = null
         return transfer
+    }
+
+    @Synchronized
+    internal fun beginKeyfileMutation(expectedSelection: Long): Long? {
+        val current = _formState.value
+        if (current.selectionGeneration != expectedSelection || current.pcvUnavailable ||
+            current.keyfileMutationPending || current.legacyStartPending
+        ) return null
+        val version = current.keyfileMutationVersion + 1
+        _formState.value = current.copy(keyfileMutationVersion = version, keyfileMutationPending = true)
+        return version
+    }
+
+    @Synchronized
+    internal fun ownsKeyfileMutation(selection: Long, version: Long): Boolean {
+        val current = _formState.value
+        return current.selectionGeneration == selection && current.keyfileMutationVersion == version &&
+            current.keyfileMutationPending
+    }
+
+    @Synchronized
+    internal fun finishKeyfileMutation(
+        selection: Long,
+        version: Long,
+        added: KeyfileInfo? = null,
+        cleared: Boolean = false,
+        error: AppError? = null,
+    ): Boolean {
+        if (!ownsKeyfileMutation(selection, version)) return false
+        val current = _formState.value
+        val files = when {
+            added != null -> current.keyfileFilenames + added
+            cleared -> emptyList()
+            else -> current.keyfileFilenames
+        }
+        _formState.value = current.copy(keyfileFilenames = files, keyfileMutationPending = false)
+        if (error != null) _errorMessage.value = error
+        return true
+    }
+
+    @Synchronized
+    internal fun takeLegacyDecryptOperation(expected: FormData): FormData? {
+        val current = _formState.value
+        if (expected !== current || !current.isDecrypt || !current.canStartOperation) return null
+        val selection = nextSelectionGeneration.incrementAndGet()
+        val snapshot = current.copy(
+            selectionGeneration = selection,
+            passwordInput = current.passwordInput.copyOf(),
+            confirmPasswordInput = current.confirmPasswordInput.copyOf(),
+            keyfileFilenames = current.keyfileFilenames.toList(),
+        )
+        _formState.value = current.copy(
+            selectionGeneration = selection,
+            legacyStartPending = true,
+        )
+        return snapshot
+    }
+
+    @Synchronized
+    internal fun finishLegacyDecryptStart(selection: Long) {
+        val current = _formState.value
+        if (current.selectionGeneration == selection) {
+            _formState.value = current.copy(legacyStartPending = false)
+        }
+    }
+
+    @Synchronized
+    internal fun clearLegacyForm(operation: OperationState?, clearFiles: Boolean) {
+        if (operation?.formSelectionGeneration == _formState.value.selectionGeneration) {
+            finishLegacyDecryptStart(_formState.value.selectionGeneration)
+            clearSensitiveData(clearFiles)
+        }
     }
 
     /**
@@ -351,6 +433,10 @@ class MainViewModel(
     @Synchronized
     fun updateFormData(newData: FormData) {
         val current = _formState.value
+        if (newData.selectionGeneration != 0L && newData.selectionGeneration != current.selectionGeneration) return
+        if (newData.keyfileMutationVersion != current.keyfileMutationVersion ||
+            newData.keyfileMutationPending != current.keyfileMutationPending || current.legacyStartPending
+        ) return
         if (current.isPcv3Selection) {
             // Generic UI copies are needed only for the existing keyfile picker. Route,
             // format, action, factor policy, refusal, and source ownership stay behind
@@ -366,8 +452,16 @@ class MainViewModel(
         if (newData.pcv3Intent != null || newData.pcv3OwnedSource != null || newData.pcvUnavailable) {
             return
         }
-        _formState.value = newData
-        persistFormData(newData)
+        val next = if (newData.copiedFilePath != current.copiedFilePath ||
+            newData.selectedFilename != current.selectedFilename || newData.inputFiles != current.inputFiles
+        ) {
+            newData.copy(
+                selectionGeneration = nextSelectionGeneration.incrementAndGet(),
+                keyfileMutationPending = false,
+            )
+        } else newData.copy(selectionGeneration = current.selectionGeneration)
+        _formState.value = next
+        persistFormData(next)
         // Note: passwordInput, confirmPasswordInput, decryptionInfo, advanced settings, 
         // and keyfile settings are NOT saved
     }
@@ -450,6 +544,9 @@ class MainViewModel(
                 pcvUnavailable = false,
                 pcv3Intent = null,
                 pcv3OwnedSource = null,
+                selectionGeneration = nextSelectionGeneration.incrementAndGet(),
+                keyfileMutationPending = false,
+                legacyStartPending = false,
             )
         }
         
@@ -496,6 +593,9 @@ class MainViewModel(
             pcvUnavailable = false,
             pcv3Intent = null,
             pcv3OwnedSource = null,
+            selectionGeneration = nextSelectionGeneration.incrementAndGet(),
+            keyfileMutationPending = false,
+            legacyStartPending = false,
         )
         _formState.value = reset
         _sensitiveInputReset.value += 1

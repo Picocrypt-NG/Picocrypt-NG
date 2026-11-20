@@ -25,9 +25,46 @@ func TestSnapcraftPayloadManifestRejectsNonCanonicalSnap(t *testing.T) {
 	digest := fmt.Sprintf("%x", sha256.Sum256(canonical))
 	source := strings.Repeat("1", 40)
 	const name = "picocrypt-ng_2.19_amd64.snap"
-	for _, defect := range []string{"none", "missing", "empty", "symlink", "additional ARM snap", "wrong canonical digest"} {
+	for _, defect := range []string{"none", "missing", "empty", "symlink", "additional ARM snap", "wrong canonical digest", "missing materials", "wrong materials", "symlink materials", "missing guest manifest lock"} {
 		t.Run(defect, func(t *testing.T) {
 			dir := t.TempDir()
+			for _, path := range []string{
+				".github/scripts/release-materials.sh", ".github/toolchains/release-go.json",
+				".github/toolchains/snap-release/manifest.json", ".github/toolchains/snap-release/os-packages-amd64.lock",
+				".github/toolchains/snap-host/manifest.json", ".github/toolchains/snap-host/os-packages-amd64.lock",
+				".github/toolchains/snap-host/Dockerfile", "src/go.mod", "src/go.sum",
+			} {
+				if defect == "missing guest manifest lock" && path == ".github/toolchains/snap-release/manifest.json" {
+					continue
+				}
+				destination := filepath.Join(dir, path)
+				if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(destination, []byte(mustReadRepoFile(t, path)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			materials := releaseMaterialsFixture(t, "build-snapcraft.yml", "amd64")
+			work := filepath.Join(dir, "picocrypt-snap-release")
+			if err := os.Mkdir(work, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			materialFile := filepath.Join(work, "materials.json")
+			switch defect {
+			case "missing materials":
+			case "wrong materials":
+				materials["host_packages_sha256"] = strings.Repeat("f", 64)
+				writeLinuxJSONFixture(t, materialFile, materials)
+			case "symlink materials":
+				path := filepath.Join(dir, "matching-materials.json")
+				writeLinuxJSONFixture(t, path, materials)
+				if err := os.Symlink(path, materialFile); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				writeLinuxJSONFixture(t, materialFile, materials)
+			}
 			scriptPath := filepath.Join(dir, ".github/actions/stage-release/release-manifest.sh")
 			if err := os.MkdirAll(filepath.Dir(scriptPath), 0o700); err != nil {
 				t.Fatal(err)
@@ -68,7 +105,7 @@ func TestSnapcraftPayloadManifestRejectsNonCanonicalSnap(t *testing.T) {
 			}
 			command := exec.Command("bash", "--noprofile", "--norc", "-euo", "pipefail", "-c", record.Run)
 			command.Dir = dir
-			command.Env = append(os.Environ(), "SOURCE_SHA="+source, "SOURCE_VERSION=2.19",
+			command.Env = append(os.Environ(), "RUNNER_TEMP="+dir, "SOURCE_SHA="+source, "SOURCE_VERSION=2.19",
 				"CANONICAL_MANIFEST_SHA256="+expectedDigest, "GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG",
 				"GITHUB_RUN_ID=local-fixture", "GITHUB_RUN_ATTEMPT=1")
 			output, err := command.CombinedOutput()
@@ -97,7 +134,7 @@ func TestSnapcraftPayloadManifestRejectsNonCanonicalSnap(t *testing.T) {
 				"schema_version": float64(1), "repository": "Picocrypt-NG/Picocrypt-NG",
 				"source_sha": source, "version": "2.19", "canonical_manifest_sha256": digest,
 				"owner_workflow": "build-snapcraft.yml", "arch": "amd64", "run_id": "local-fixture", "run_attempt": "1",
-				"files": []any{map[string]any{"name": name, "sha256": fmt.Sprintf("%x", sha256.Sum256([]byte(name)))}},
+				"materials": materials, "files": []any{map[string]any{"name": name, "sha256": fmt.Sprintf("%x", sha256.Sum256([]byte(name)))}},
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("payload manifest = %s, want source-bound hash for the single canonical AMD64 snap", data)
