@@ -303,6 +303,9 @@
     <string name="pcv3_warning_unknown_title">Дополнительное предупреждение об операции</string>
     <string name="pcv3_warning_unknown_body">Операция сообщила дополнительное предупреждение. Сохраните источник и не предполагайте наличия разрешения на очистку или удаление.</string>
     <string name="pcv3_archive_close">Закрыть без извлечения</string>
+    <string name="pcv3_archive_exporting">Экспорт архива</string>
+    <string name="pcv3_archive_cancel_export">Отменить экспорт</string>
+    <string name="pcv3_archive_cancel_requested">Отмена запрошена</string>
     <string name="pcv3_recovery_result_close">Закрыть результат восстановления</string>
     <string name="pcv3_publication_close">Закрыть результат публикации</string>
     <string name="pcv3_warning_cleanup_close">Закрыть предупреждение об очистке</string>

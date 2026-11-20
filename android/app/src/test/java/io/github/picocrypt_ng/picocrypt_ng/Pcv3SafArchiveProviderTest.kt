@@ -810,6 +810,42 @@ class Pcv3SafArchiveProviderTest {
     }
 
     @Test
+    fun `a descriptor returned after cancellation is closed without reaching native write`() {
+        val events = mutableListOf<String>()
+        val session = RecordingArchiveSession(
+            entries = listOf(Pcv3ArchiveEntryData("name", -1, isDirectory = false, size = 1)),
+            events = events,
+        )
+        val manifest = requireNotNull(capturePcv3SafManifest(session))
+        val descriptor = RecordingOriginalDescriptor(events)
+        val platform = RecordingSafPlatform(
+            events = events,
+            creations = ArrayDeque(listOf(opaqueUri("provider"))),
+            metadata = ArrayDeque(listOf(exactMetadata("provider", "id", "name", PCV3_SAF_FILE_MIME))),
+            descriptor = descriptor,
+        )
+        val lateOpen = object : Pcv3SafPlatform by platform {
+            override fun openDocument(
+                document: Uri,
+                mode: String,
+                cancellation: Pcv3SafCancellation,
+            ): Pcv3SafOriginalDescriptor? {
+                cancellation.cancel()
+                return platform.openDocument(document, mode, cancellation)
+            }
+        }
+
+        val result = Pcv3SafArchiveProvider(lateOpen).publish(
+            opaqueUri("provider"), manifest, session, RecordingSafCancellation(events),
+        )
+        assertEquals(Pcv3SafPublicationResult.NEEDS_ABORT, result)
+        assertEquals(1, platform.openCalls)
+        assertEquals(1, descriptor.closeWithErrorCalls)
+        assertFalse("No duplicate of the cancelled descriptor should exist", "dup" in events)
+        assertEquals(0, session.writeCalls)
+    }
+
+    @Test
     fun `cancellation during native write remains externally interruptible and returns abort ownership`() {
         val events = mutableListOf<String>()
         val writeEntered = CountDownLatch(1)

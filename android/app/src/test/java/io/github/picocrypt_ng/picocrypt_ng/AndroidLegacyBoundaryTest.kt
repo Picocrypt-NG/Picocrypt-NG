@@ -244,7 +244,11 @@ class AndroidLegacyBoundaryTest {
             assertNotSame("Operation credentials must have independent lifetime", form.passwordInput, ownedForm.passwordInput)
             form.clearPasswords()
             keys.clear()
+            val retryOwner = finishLegacyAsCorrupted(operation.id).formData!!
+            assertEquals(0, retryOwner.confirmPasswordInput.size)
+            assertTrue(ownedForm.passwordInput.all { it == '\u0000' })
             OperationManager.retryDecryptWithForce(context, operation).getOrThrow()
+            assertTrue(retryOwner.passwordInput.all { it == '\u0000' })
             assertArrayEquals("pässword".toByteArray(Charsets.UTF_8), observedPasswords.last())
             assertEquals(listOf(File(input.parentFile, "keyfile_0").path), observedOptions.last().keyfiles)
             assertTrue(observedOptions.last().deniability)
@@ -257,6 +261,19 @@ class AndroidLegacyBoundaryTest {
             observedPasswords.forEach { it.fill(0) }
             unmockkObject(GoBridge)
             root.deleteRecursively()
+        }
+    }
+
+    private suspend fun finishLegacyAsCorrupted(id: String): OperationState {
+        every { GoBridge.getProgress(id) } returns Result.success(ProgressState(
+            status = OperationStatusData(OperationStatus.ERROR),
+            detail = OperationProgressDetail(OperationProgress.NONE),
+            progress = 0f,
+            done = true,
+            errorCode = "DATA_CORRUPTED",
+        ))
+        return requireNotNull(OperationManager.pollProgress()).also {
+            assertTrue(it.error is AppError.OperationError.DataCorruption)
         }
     }
 
@@ -299,6 +316,7 @@ class AndroidLegacyBoundaryTest {
             assertNotSame(form.passwordInput, owner.passwordInput)
 
             form.clearPasswords()
+            finishLegacyAsCorrupted(accepted.id)
             OperationManager.retryDecryptWithForce(context, accepted).getOrThrow()
             assertArrayEquals("p\u00e4ssword".toByteArray(Charsets.UTF_8), observedPasswords.last())
             assertTrue(observedOptions.last().forceDecrypt)

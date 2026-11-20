@@ -150,7 +150,14 @@ data class FormData(
     val pcvUnavailable: Boolean = false,
     val pcv3Intent: Pcv3OperationIntent? = null,
     internal val pcv3OwnedSource: Pcv3OwnedSource? = null,
+    internal val selectionGeneration: Long = 0,
+    internal val keyfileMutationVersion: Long = 0,
+    internal val keyfileMutationPending: Boolean = false,
+    internal val legacyStartPending: Boolean = false,
 ) {
+    internal val canStartOperation: Boolean
+        get() = !keyfileMutationPending && !legacyStartPending && hasSelectedInput && isFormValid
+
     // A folder/multi selection always encrypts (Go zips it) and is never a decrypt or a
     // split-volume chunk -- those are single-file concepts keyed off the filename.
     val isDecrypt: Boolean
@@ -283,6 +290,10 @@ data class FormData(
         if (pcvUnavailable != other.pcvUnavailable) return false
         if (pcv3Intent != other.pcv3Intent) return false
         if (pcv3OwnedSource !== other.pcv3OwnedSource) return false
+        if (selectionGeneration != other.selectionGeneration) return false
+        if (keyfileMutationVersion != other.keyfileMutationVersion) return false
+        if (keyfileMutationPending != other.keyfileMutationPending) return false
+        if (legacyStartPending != other.legacyStartPending) return false
 
         return true
     }
@@ -309,6 +320,10 @@ data class FormData(
         result = 31 * result + pcvUnavailable.hashCode()
         result = 31 * result + (pcv3Intent?.hashCode() ?: 0)
         result = 31 * result + (pcv3OwnedSource?.hashCode() ?: 0)
+        result = 31 * result + selectionGeneration.hashCode()
+        result = 31 * result + keyfileMutationVersion.hashCode()
+        result = 31 * result + keyfileMutationPending.hashCode()
+        result = 31 * result + legacyStartPending.hashCode()
         return result
     }
     

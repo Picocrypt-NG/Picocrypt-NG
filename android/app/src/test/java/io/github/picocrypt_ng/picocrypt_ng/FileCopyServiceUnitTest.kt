@@ -697,6 +697,34 @@ class FileCopyServiceUnitTest {
     }
 
     @Test
+    fun rejectedKeyfileAdoptionRemovesOnlyTheStagedCopy() = runTest {
+        val fixture = keyfileCopyFixture(ByteArrayInputStream(byteArrayOf(1, 2, 3)))
+        val retainedFile = File(fixture.destination.parentFile, "keyfile_1")
+        assertTrue(retainedFile.parentFile!!.mkdirs())
+        retainedFile.writeText("retained keyfile")
+        try {
+            val result = FileCopyService.copyKeyfileToInternalStorage(
+                fixture.context,
+                fixture.uri,
+                index = 0,
+                source = fixture.source,
+                publisher = JvmAtomicFilePublisher,
+                adopt = { path ->
+                    assertEquals(fixture.destination.absolutePath, path)
+                    assertTrue(File(path).isFile)
+                    false
+                },
+            )
+
+            assertTrue(result.isFailure)
+            assertFalse(fixture.destination.exists())
+            assertEquals("retained keyfile", retainedFile.readText())
+        } finally {
+            fixture.filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun copyKeyfileRemovesPartialFilesWhenReadingFails() = runTest {
         val readFailure = IOException("source failed after the first chunk")
         val fixture = keyfileCopyFixture(

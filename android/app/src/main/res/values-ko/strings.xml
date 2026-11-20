@@ -291,6 +291,9 @@
     <string name="pcv3_warning_unknown_title">추가 작업 경고</string>
     <string name="pcv3_warning_unknown_body">작업에서 추가 경고를 보고했습니다. 원본을 보관하고 정리 또는 삭제 권한이 있다고 판단하지 마세요.</string>
     <string name="pcv3_archive_close">압축을 풀지 않고 닫기</string>
+    <string name="pcv3_archive_exporting">압축 파일 내보내는 중</string>
+    <string name="pcv3_archive_cancel_export">내보내기 취소</string>
+    <string name="pcv3_archive_cancel_requested">취소 요청됨</string>
     <string name="pcv3_recovery_result_close">복구 결과 닫기</string>
     <string name="pcv3_publication_close">게시 결과 닫기</string>
     <string name="pcv3_warning_cleanup_close">정리 경고 닫기</string>

@@ -12,6 +12,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /** Real JNI regression: the packaged AAR must preserve the frozen legacy recovery warning. */
 @RunWith(AndroidJUnit4::class)
@@ -25,6 +28,71 @@ class LegacyForceDeviceTest {
 
     @Test
     fun correctKeyfileForceRemainsAuthenticated() = recover(wrongKeyfile = false)
+
+    @Test
+    fun damagedVolumeCanRetryThroughTheManagerWithoutEnteringFactorsAgain() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val assets = InstrumentationRegistry.getInstrumentation().context.assets
+        val runtime = File(context.filesDir, "picocrypt_files").apply { mkdirs() }
+        val source = File(runtime, "input_file.pcv")
+        val keyfile = File(runtime, "keyfile_0")
+        assertTrue("test must own the legacy input slot", source.createNewFile())
+        var ownsKeyfile = false
+        try {
+            ownsKeyfile = keyfile.createNewFile()
+            assertTrue("test must own the keyfile slot", ownsKeyfile)
+            val fixture = assets.open("pico_test_v2_keyfile_single.txt.pcv").use { it.readBytes() }
+            fixture[fixture.lastIndex] = (fixture.last().toInt() xor 1).toByte()
+            source.writeBytes(fixture)
+            assets.open("keyfile_alpha.bin").use { input -> keyfile.outputStream().use { input.copyTo(it) } }
+            val form = FormData(
+                selectedFilename = "source.pcv",
+                copiedFilePath = source.path,
+                comments = "",
+                passwordInput = "test".toCharArray(),
+                confirmPasswordInput = CharArray(0),
+                reedSolomon = false,
+                paranoid = false,
+                deniability = false,
+                keyfileFilenames = listOf(KeyfileInfo(keyfile.path, "factor.key")),
+                keyfileOrdered = false,
+            )
+            OperationManager.startDecrypt(context, form).getOrThrow()
+            form.clearPasswords()
+
+            val failed = awaitLegacyManagerResult()
+            assertTrue("Expected payload corruption, got ${failed.status.code} / ${failed.error?.javaClass?.simpleName}",
+                failed.error is AppError.OperationError.DataCorruption)
+            assertFalse(File(failed.outputFile).exists())
+            val retainedPassword = requireNotNull(failed.formData).passwordInput
+
+            OperationManager.retryDecryptWithForce(context, failed).getOrThrow()
+            assertTrue(retainedPassword.all { it == '\u0000' })
+            val recovered = awaitLegacyManagerResult()
+            assertEquals(OperationStatus.COMPLETED_UNVERIFIED, recovered.status.code)
+            assertEquals(LegacySecurityWarning.V2_PASSWORD_ONLY_AUTHENTICATION, recovered.legacySecurityWarning)
+            assertTrue(File(recovered.outputFile).isFile)
+        } finally {
+            val current = OperationManager.currentOperation.value
+            if (current != null) {
+                if (!current.done) OperationManager.cancelOperation()
+                OperationManager.clearOperation(context, expectedOperation = current).getOrThrow()
+            }
+            if (source.exists()) source.delete()
+            if (ownsKeyfile && keyfile.exists()) keyfile.delete()
+        }
+        assertFalse(source.exists())
+        assertFalse(keyfile.exists())
+    }
+
+    private suspend fun awaitLegacyManagerResult(): OperationState = withTimeout(180_000) {
+        var progress = requireNotNull(OperationManager.pollProgress())
+        while (!progress.done) {
+            delay(20)
+            progress = requireNotNull(OperationManager.pollProgress())
+        }
+        progress
+    }
 
     private fun recover(wrongKeyfile: Boolean, verifyFirst: Boolean = false) {
         val context = ApplicationProvider.getApplicationContext<Context>()

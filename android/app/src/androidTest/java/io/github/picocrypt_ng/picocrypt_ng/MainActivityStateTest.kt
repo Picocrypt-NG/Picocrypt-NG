@@ -30,6 +30,29 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class MainActivityStateTest {
     @Test
+    fun replacingInputRejectsTheOldKeyfileImportAndItsErrors() {
+        val application = ApplicationProvider.getApplicationContext<Application>()
+        val viewModel = MainViewModel(application, androidx.lifecycle.SavedStateHandle())
+        val original = viewModel.formState.value
+        viewModel.updateFormData(original.copy(selectedFilename = "old.pcv", copiedFilePath = "/private/input_file.pcv"))
+        val selection = viewModel.formState.value.selectionGeneration
+        val mutation = requireNotNull(viewModel.beginKeyfileMutation(selection))
+        viewModel.resetFormToDefaults()
+        viewModel.updateFormData(viewModel.formState.value.copy(
+            selectedFilename = "replacement.pcv",
+            copiedFilePath = "/private/input_file.pcv",
+        ))
+
+        val oldKeyfile = KeyfileInfo("/private/keyfile_0", "old.key")
+        assertFalse(viewModel.finishKeyfileMutation(selection, mutation, added = oldKeyfile))
+        assertFalse(viewModel.finishKeyfileMutation(selection, mutation, error = AppError.ValidationError.InvalidPassword))
+        assertEquals("replacement.pcv", viewModel.formState.value.selectedFilename)
+        assertTrue(viewModel.formState.value.keyfileFilenames.isEmpty())
+        assertFalse(viewModel.formState.value.keyfileMutationPending)
+        assertNull(viewModel.errorMessage.value)
+    }
+
+    @Test
     fun exportedActivityDoesNotRestoreSelectionFromLaunchIntentExtras() {
         val application = ApplicationProvider.getApplicationContext<Application>()
         if (Build.VERSION.SDK_INT >= 33) {

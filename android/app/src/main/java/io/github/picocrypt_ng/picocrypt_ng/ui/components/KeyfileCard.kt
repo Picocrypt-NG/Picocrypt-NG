@@ -17,10 +17,9 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +34,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewModelScope
 import androidx.compose.ui.res.stringResource
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -56,59 +56,56 @@ internal suspend fun <T> withKeyfileMutation(block: suspend () -> T): T {
 
 @Composable
 fun AddKeyfile(viewModel: MainViewModel) {
-    val context = LocalContext.current
+    val context = LocalContext.current.applicationContext
     val unknownErrorMsg = stringResource(R.string.error_unknown)
-    var isCopying by remember { mutableStateOf(false) }
-    var selectedUri by remember { mutableStateOf<Uri?>(null) }
-    
-    // Handle file copying when URI is selected
-    LaunchedEffect(selectedUri) {
-        val uri = selectedUri ?: return@LaunchedEffect
-        isCopying = true
-
-        try {
-            withKeyfileMutation {
-                // Use current list size as index for fixed filename
-                val currentFormData = viewModel.formState.value
-                val keyfileIndex = currentFormData.keyfileFilenames.size
-                val displayName = readKeyfileDisplayName(context, uri) ?: "keyfile_$keyfileIndex"
-
-                val copyResult = FileCopyService.copyKeyfileToInternalStorage(context, uri, keyfileIndex)
-
-                copyResult.onSuccess { copiedPath ->
-                    // Add KeyfileInfo with internal path and display name
-                    val updatedFormData = viewModel.formState.value
-                    val keyfileInfo = KeyfileInfo(internalPath = copiedPath, displayName = displayName)
-                    val keyfileInfos = updatedFormData.keyfileFilenames + keyfileInfo
-                    viewModel.updateFormData(updatedFormData.copy(keyfileFilenames = keyfileInfos))
-                }.onFailure { error ->
-                    // Keyfile copy failed - show error to user
-                    val appError = if (error is AppError) {
-                        error
-                    } else {
-                        AppError.fromException(error as? Exception ?: Exception(error.message ?: unknownErrorMsg))
-                    }
-                    viewModel.setError(appError)
-                }
-            }
-        } finally {
-            isCopying = false
-            selectedUri = null // Reset after processing
-        }
-    }
-    
+    val formData by viewModel.formState.collectAsState()
+    var pickerSelection by rememberSaveable { mutableStateOf<Long?>(null) }
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        selectedUri = uri // Provider work belongs to the cancellable IO lifecycle above.
+        val selection = pickerSelection
+        pickerSelection = null
+        if (selection != null && uri != null) {
+            val mutation = viewModel.beginKeyfileMutation(selection) ?: return@rememberLauncherForActivityResult
+            val keyfileIndex = viewModel.formState.value.keyfileFilenames.size
+            viewModel.viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                try {
+                    withKeyfileMutation {
+                        if (!viewModel.ownsKeyfileMutation(selection, mutation)) return@withKeyfileMutation
+                        val name = readKeyfileDisplayName(context, uri) ?: "keyfile_$keyfileIndex"
+                        FileCopyService.copyKeyfileToInternalStorage(
+                            context, uri, keyfileIndex,
+                            adopt = { path ->
+                                viewModel.finishKeyfileMutation(selection, mutation, added = KeyfileInfo(path, name))
+                            },
+                        ).onFailure { error ->
+                            val appError = error as? AppError ?: AppError.fromException(
+                                error as? Exception ?: Exception(error.message ?: unknownErrorMsg),
+                            )
+                            viewModel.finishKeyfileMutation(selection, mutation, error = appError)
+                        }
+                    }
+                } finally {
+                    viewModel.finishKeyfileMutation(selection, mutation)
+                }
+            }
+        }
     }
-    
+
     Button(
-        onClick = { filePickerLauncher.launch("*/*") },
+        onClick = {
+            pickerSelection = formData.selectionGeneration
+            try {
+                filePickerLauncher.launch("*/*")
+            } catch (error: Exception) {
+                pickerSelection = null
+                viewModel.setError(AppError.fromException(error))
+            }
+        },
         modifier = Modifier.fillMaxWidth(),
-        enabled = !isCopying
+        enabled = pickerSelection == null && !formData.keyfileMutationPending && !formData.legacyStartPending,
     ) {
-        if (isCopying) {
+        if (formData.keyfileMutationPending) {
             Text(stringResource(R.string.copying))
         } else {
             Text(stringResource(R.string.add))
@@ -130,29 +127,33 @@ internal fun ClearKeyfiles(
     val context = LocalContext.current.applicationContext
     val deleteFailedMessage = stringResource(R.string.error_delete_failed)
     val scope = viewModel.viewModelScope
+    val formData by viewModel.formState.collectAsState()
     
     Button(
-        onClick = { 
-            scope.launch {
+        onClick = {
+            val selection = formData.selectionGeneration
+            val mutation = viewModel.beginKeyfileMutation(selection) ?: return@Button
+            scope.launch(start = CoroutineStart.UNDISPATCHED) {
                 withContext(NonCancellable) {
-                    withKeyfileMutation {
-                        if (cleanupKeyfiles(context)) {
-                            val updatedFormData = viewModel.formState.value
-                            viewModel.updateFormData(updatedFormData.copy(keyfileFilenames = emptyList()))
-                        } else {
-                            viewModel.setError(
-                                AppError.FileError.DeleteFailed(
+                    try {
+                        withKeyfileMutation {
+                            if (!viewModel.ownsKeyfileMutation(selection, mutation)) return@withKeyfileMutation
+                            val cleared = cleanupKeyfiles(context)
+                            val error = if (cleared) null else AppError.FileError.DeleteFailed(
                                     userMessage = deleteFailedMessage,
                                     technicalMessage = "Failed to remove all internal keyfiles",
                                     messageResId = R.string.error_delete_failed,
-                                )
                             )
+                            viewModel.finishKeyfileMutation(selection, mutation, cleared = cleared, error = error)
                         }
+                    } finally {
+                        viewModel.finishKeyfileMutation(selection, mutation)
                     }
                 }
             }
         },
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth(),
+        enabled = !formData.keyfileMutationPending && !formData.legacyStartPending,
     ) {
         Text(stringResource(R.string.clear))
     }

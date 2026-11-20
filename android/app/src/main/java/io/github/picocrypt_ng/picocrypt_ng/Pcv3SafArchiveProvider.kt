@@ -203,6 +203,7 @@ internal data class Pcv3SafDocumentMetadata(
 )
 
 internal interface Pcv3SafCancellation {
+    fun markRequested() {}
     fun isCancelled(): Boolean
     fun cancel()
 }
@@ -550,8 +551,13 @@ internal class AndroidPcv3SafCancellation : Pcv3SafCancellation {
 
     override fun isCancelled(): Boolean = cancelled.get()
 
+    override fun markRequested() {
+        cancelled.set(true)
+    }
+
     override fun cancel() {
-        if (cancelled.compareAndSet(false, true)) signal.cancel()
+        markRequested()
+        signal.cancel()
     }
 }
 

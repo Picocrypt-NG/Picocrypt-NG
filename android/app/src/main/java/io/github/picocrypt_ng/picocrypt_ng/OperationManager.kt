@@ -196,10 +196,12 @@ internal class Pcv3Lifecycle(
         val resourceObservationReader: Pcv3ResourceObservationReader?,
     ) {
         val settled = CompletableDeferred<Unit>()
+        val cancellationRequestedSignal = CompletableDeferred<Unit>()
         private val lock = Any()
         private var session: Pcv3ArchiveSessionCapability? = null
         private var cancelRequested = false
         private var cancelDispatched = false
+        private var signalsDispatched = false
         private var terminalOwner = SafTerminalOwner.NONE
 
         fun bindSession(value: Pcv3ArchiveSessionCapability): Pcv3ArchiveSessionCapability? = synchronized(lock) {
@@ -207,9 +209,18 @@ internal class Pcv3Lifecycle(
             claimCancellationLocked()
         }
 
-        fun requestCancellation(): Pcv3ArchiveSessionCapability? {
-            val claimed = synchronized(lock) {
+        fun recordCancellation() {
+            synchronized(lock) {
+                if (cancelRequested) return
                 cancelRequested = true
+                cancellation.markRequested()
+            }
+        }
+
+        fun dispatchCancellation(): Pcv3ArchiveSessionCapability? {
+            val claimed = synchronized(lock) {
+                if (signalsDispatched) return claimCancellationLocked()
+                signalsDispatched = true
                 claimCancellationLocked()
             }
             try {
@@ -714,13 +725,22 @@ internal class Pcv3Lifecycle(
     private fun State.Active.matches(operationId: String, generation: Long): Boolean =
         this.generation == generation && operation.id == operationId
 
-    suspend fun cancelPcv3(expectedOperationId: String, expectedGeneration: Long): Result<Unit> {
+    suspend fun cancelPcv3(
+        expectedOperationId: String,
+        expectedGeneration: Long,
+        awaitSafSettlement: Boolean = true,
+    ): Result<Unit> {
         val safAction = mutex.withLock {
-            (state as? State.Active)?.takeIf { it.matches(expectedOperationId, expectedGeneration) }?.archiveSafAction
+            val current = (state as? State.Active)
+                ?.takeIf { it.matches(expectedOperationId, expectedGeneration) } ?: return@withLock null
+            current.archiveSafAction?.also {
+                it.recordCancellation()
+                publishActiveLocked(current)
+            }
         }
         if (safAction != null) {
-            cancelSafSession(safAction.requestCancellation())
-            withContext(NonCancellable) { safAction.settled.await() }
+            safAction.cancellationRequestedSignal.complete(Unit)
+            if (awaitSafSettlement) withContext(NonCancellable) { safAction.settled.await() }
             return Result.success(Unit)
         }
 
@@ -868,6 +888,10 @@ internal class Pcv3Lifecycle(
     ): SafArchiveCompletion {
         val callerContext = currentCoroutineContext()
         val callerCancellationArmed = AtomicBoolean(true)
+        val signalWorker = CoroutineScope(callerContext + Dispatchers.IO).launch {
+            action.cancellationRequestedSignal.await()
+            cancelSafSession(action.dispatchCancellation())
+        }
         val callerCancellationWatcher = CoroutineScope(callerContext).launch(
             start = CoroutineStart.UNDISPATCHED,
         ) {
@@ -875,7 +899,8 @@ internal class Pcv3Lifecycle(
                 awaitCancellation()
             } finally {
                 if (callerCancellationArmed.compareAndSet(true, false)) {
-                    cancelSafSession(action.requestCancellation())
+                    action.recordCancellation()
+                    cancelSafSession(action.dispatchCancellation())
                 }
             }
         }
@@ -959,8 +984,6 @@ internal class Pcv3Lifecycle(
                                     if (!terminal.isClosedSafTerminal()) {
                                         failureCode = "PCV3_ARCHIVE_UNAVAILABLE"
                                         terminal = null
-                                    } else if (action.cancellationRequested()) {
-                                        failureCode = "PCV3_OPERATION_CANCELLED"
                                     }
                                 }
                             }
@@ -978,7 +1001,9 @@ internal class Pcv3Lifecycle(
             }
 
             if (failureCode != null && session != null) {
-                cancelSafSession(action.requestCancellation())
+                action.recordCancellation()
+                action.cancellationRequestedSignal.complete(Unit)
+                cancelSafSession(action.dispatchCancellation())
                 if (action.claimAbort()) {
                     terminal = try {
                         session.abort()
@@ -1001,7 +1026,9 @@ internal class Pcv3Lifecycle(
             }
             if (!receiptSettled && session != null) {
                 if (failureCode == null) failureCode = "PCV3_RECEIPT_PERSIST_FAILED"
-                cancelSafSession(action.requestCancellation())
+                action.recordCancellation()
+                action.cancellationRequestedSignal.complete(Unit)
+                cancelSafSession(action.dispatchCancellation())
                 if (action.claimAbort()) {
                     terminal = try {
                         session.abort()
@@ -1024,6 +1051,7 @@ internal class Pcv3Lifecycle(
             callerCancellationWatcher.cancel()
             withContext(NonCancellable) {
                 callerCancellationWatcher.join()
+                if (action.cancellationRequestedSignal.isCompleted) signalWorker.join() else signalWorker.cancelAndJoin()
             }
         }
     }
@@ -2225,6 +2253,10 @@ internal class Pcv3Lifecycle(
             outputHandle = active.outputHandle,
             outputPending = active.outputHandle != null,
             outputActionInFlight = active.outputActionInFlight,
+            safExportState = active.archiveSafAction?.let {
+                if (it.cancellationRequested()) Pcv3SafExportState.CANCEL_REQUESTED
+                else Pcv3SafExportState.EXPORTING
+            },
             artifactMetadata = active.artifactMetadata?.toView(),
             isCreation = active.creation,
         ).also { _presentation.value = it }
@@ -2408,6 +2440,9 @@ object OperationManager {
     /** Cancellation is only a request; the later Go snapshot supplies terminal meaning. */
     suspend fun cancelPcv3(expectedOperationId: String, expectedGeneration: Long): Result<Unit> = withContext(Dispatchers.IO) { pcv3Lifecycle.cancelPcv3(expectedOperationId, expectedGeneration) }
 
+    internal suspend fun requestPcv3Cancellation(operationId: String, generation: Long): Result<Unit> =
+        withContext(Dispatchers.IO) { pcv3Lifecycle.cancelPcv3(operationId, generation, awaitSafSettlement = false) }
+
     /** Atomically consumes the current archive capability before delegating to Go. */
     suspend fun closePcv3Archive(expectedOperationId: String, expectedGeneration: Long): Result<Unit> =
         withContext(Dispatchers.IO) { pcv3Lifecycle.closePcv3Archive(expectedOperationId, expectedGeneration) }
@@ -2503,6 +2538,9 @@ object OperationManager {
         context: Context,
         formData: FormData,
     ): Result<String> = withContext(Dispatchers.IO) {
+        if (formData.keyfileMutationPending) {
+            return@withContext Result.failure(AppError.ValidationError.InvalidPassword)
+        }
         if (formData.copiedFilePath.isEmpty()) {
             return@withContext Result.failure(AppError.ValidationError.NoFileSelected)
         }
@@ -2560,6 +2598,7 @@ object OperationManager {
         )
         
         result.onSuccess {
+            _currentOperation.value?.formData?.clearPasswords()
             legacyResourceReader.set(operationID to Pcv3AndroidResourceObservationReader(context))
             _currentOperation.value = OperationState(
                 id = operationID,
@@ -2569,7 +2608,8 @@ object OperationManager {
                 status = OperationStatusData(OperationStatus.STARTING),
                 detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0f,
-                formData = formData
+                formData = formData,
+                formSelectionGeneration = formData.selectionGeneration,
             )
         }
         
@@ -2582,7 +2622,7 @@ object OperationManager {
      * Only writes if _currentOperation is null (i.e. the start truly failed before
      * establishing a state); does not clobber an already-running operation.
      */
-    fun surfaceStartFailure(type: OperationType, error: Throwable) {
+    fun surfaceStartFailure(type: OperationType, error: Throwable, formSelectionGeneration: Long? = null) {
         val appError = if (error is AppError) error
                        else AppError.OperationError.GenericOperation(
                            error.message ?: "Operation failed to start",
@@ -2600,7 +2640,8 @@ object OperationManager {
                 detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0f,
                 done = true,
-                error = appError
+                error = appError,
+                formSelectionGeneration = formSelectionGeneration,
             )
         }
     }
@@ -2618,37 +2659,7 @@ object OperationManager {
             GoBridge.supplyLegacyResourceObservation(operation.id, reader)
         }
         val result = GoBridge.getProgress(operation.id)
-        result.getOrNull()?.let { progressState ->
-            if (progressState.done) clearLegacyResourceReader(operation.id)
-            // Classify by the stable Go error code (not fragile substring matching).
-            val error = progressError(progressState, operation.type)
-            
-            // Atomic read-modify-write: between capturing `operation` above and the
-            // suspending getProgress I/O, a concurrent coroutine (the FGS 1000ms poll
-            // vs. the UI 500ms poll, or a clear/replace) may have changed the flow. An
-            // unconditional write would resurrect a cleared op as a phantom non-done
-            // state or clobber a newer op. Update conditionally on the latest value.
-            _currentOperation.update { current ->
-                if (current == null || current.id != operation.id || current.done) {
-                    // cleared, replaced, or already finished concurrently -- do not
-                    // resurrect/clobber.
-                    current
-                } else {
-                    // Copy onto `current` (not the captured `operation`): same id,
-                    // latest base.
-                    current.copy(
-                        status = progressState.status,
-                        detail = progressState.detail,
-                        progress = progressState.progress,
-                        done = progressState.done,
-                        error = error,
-                        legacyVersion = progressState.legacyVersion,
-                        commentAuthenticity = progressState.commentAuthenticity,
-                        legacySecurityWarning = progressState.legacySecurityWarning,
-                    )
-                }
-            }
-        }
+        result.getOrNull()?.let { applyLegacyProgress(operation, it) }
         
         _currentOperation.value
     }
@@ -2665,27 +2676,39 @@ object OperationManager {
         )
         
         val result = GoBridge.cancelOperation(operation.id)
-        result.onSuccess { progressState ->
-            val error = progressError(progressState, operation.type)
-            _currentOperation.update { current ->
-                if (current == null || current.id != operation.id || current.done) {
-                    current
-                } else {
-                    current.copy(
-                        status = progressState.status,
-                        detail = progressState.detail,
-                        progress = progressState.progress,
-                        done = progressState.done,
-                        error = error,
-                        legacyVersion = progressState.legacyVersion,
-                        commentAuthenticity = progressState.commentAuthenticity,
-                        legacySecurityWarning = progressState.legacySecurityWarning,
-                    )
-                }
-            }
-        }
+        result.onSuccess { applyLegacyProgress(operation, it) }
         result.map { Unit }
     }
+
+    private suspend fun applyLegacyProgress(operation: OperationState, progress: ProgressState) =
+        withContext(NonCancellable) {
+            legacyOperationMutex.withLock {
+                val current = _currentOperation.value
+                    ?.takeIf { it.hasSameOwnerAs(operation) && !it.done } ?: return@withLock
+                val error = progressError(progress, current.type)
+                val form = current.formData
+                val retainedForm = if (progress.done) {
+                    clearLegacyResourceReader(current.id)
+                    val retryPassword = if (current.type == OperationType.DECRYPT && error?.allowsForceDecrypt() == true) {
+                        form?.passwordInput?.copyOf()
+                    } else null
+                    form?.copyWithClearedPasswords()?.let { cleared ->
+                        if (retryPassword != null) cleared.copy(passwordInput = retryPassword) else cleared
+                    }
+                } else form
+                _currentOperation.value = current.copy(
+                    status = progress.status,
+                    detail = progress.detail,
+                    progress = progress.progress,
+                    done = progress.done,
+                    error = error,
+                    formData = retainedForm,
+                    legacyVersion = progress.legacyVersion,
+                    commentAuthenticity = progress.commentAuthenticity,
+                    legacySecurityWarning = progress.legacySecurityWarning,
+                )
+            }
+        }
     
     /**
      * Clears the current operation.
@@ -2809,6 +2832,13 @@ object OperationManager {
             )
         }
         
+        if (!operation.done || operation.error?.allowsForceDecrypt() != true) {
+            return@withContext Result.failure(AppError.OperationError.GenericOperation(
+                userMessage = "",
+                messageResId = R.string.error_operation_data_unavailable,
+            ))
+        }
+
         val formData = operation.formData ?: return@withContext Result.failure(
             AppError.OperationError.GenericOperation(
                 userMessage = "",
@@ -2856,6 +2886,11 @@ object OperationManager {
         )
         
         result.onSuccess {
+            val nextOwner = formData.copy(
+                passwordInput = formData.passwordInput.copyOf(),
+                confirmPasswordInput = CharArray(0),
+            )
+            formData.clearPasswords()
             legacyResourceReader.set(operationID to Pcv3AndroidResourceObservationReader(context))
             _currentOperation.value = OperationState(
                 id = operationID,
@@ -2865,7 +2900,8 @@ object OperationManager {
                 status = OperationStatusData(OperationStatus.STARTING),
                 detail = OperationProgressDetail(OperationProgress.NONE),
                 progress = 0f,
-                formData = formData
+                formData = nextOwner,
+                formSelectionGeneration = operation.formSelectionGeneration,
             )
         }
         
@@ -2887,6 +2923,7 @@ data class OperationState(
     val done: Boolean = false,
     val error: AppError? = null,
     val formData: FormData? = null,
+    internal val formSelectionGeneration: Long? = null,
     val legacyVersion: String = "",
     val commentAuthenticity: CommentAuthenticity = CommentAuthenticity.UNAVAILABLE,
     val legacySecurityWarning: LegacySecurityWarning = LegacySecurityWarning.NONE,

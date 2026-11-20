@@ -42,6 +42,7 @@ import io.github.picocrypt_ng.picocrypt_ng.Pcv3OperationIntent
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3ActionIntent
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3ArtifactDetailsUiState
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3Presentation
+import io.github.picocrypt_ng.picocrypt_ng.Pcv3SafExportState
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3ResultAction
 import io.github.picocrypt_ng.picocrypt_ng.Pcv3ResultTone
 import io.github.picocrypt_ng.picocrypt_ng.toUiState
@@ -247,7 +248,7 @@ fun ProgressCard(
                                     // Cleanup files and clear operation
                                     if (operationViewModel.clearOperation(context, shouldCleanupFiles = true, expectedOperation = displayedOperation)) {
                                         // Explicitly clear form data since Cancel means "give up"
-                                        mainViewModel.clearSensitiveData(clearFiles = true)
+                                        mainViewModel.clearLegacyForm(displayedOperation, clearFiles = true)
                                     }
                                 }
                             ) {
@@ -285,7 +286,7 @@ fun ProgressCard(
                                     // Full cleanup on cancel - delete files and clear form data
                                     if (operationViewModel.clearOperation(context, shouldCleanupFiles = true, expectedOperation = displayedOperation)) {
                                         // Explicitly clear form data since Cancel means "give up"
-                                        mainViewModel.clearSensitiveData(clearFiles = true)
+                                        mainViewModel.clearLegacyForm(displayedOperation, clearFiles = true)
                                     }
                                 }
                             ) {
@@ -312,7 +313,7 @@ fun ProgressCard(
                                     // Full cleanup on error
                                     if (operationViewModel.clearOperation(context, shouldCleanupFiles = true, expectedOperation = displayedOperation)) {
                                         // Explicitly clear form data since Close means "give up"
-                                        mainViewModel.clearSensitiveData(clearFiles = true)
+                                        mainViewModel.clearLegacyForm(displayedOperation, clearFiles = true)
                                     }
                                 }
                             ) {
@@ -338,7 +339,7 @@ fun ProgressCard(
                     TextButton(
                         onClick = {
                             if (operationViewModel.clearOperation(context, shouldCleanupFiles = true, expectedOperation = displayedOperation)) {
-                                mainViewModel.clearSensitiveData(clearFiles = true)
+                                mainViewModel.clearLegacyForm(displayedOperation, clearFiles = true)
                             }
                         }
                     ) {
@@ -433,7 +434,7 @@ fun ProgressCard(
                             // Cleanup files and clear operation
                             if (operationViewModel.clearOperation(context, shouldCleanupFiles = true, expectedOperation = displayedOperation)) {
                                 // Explicitly clear form data (LaunchedEffect should handle this, but be explicit)
-                                mainViewModel.clearSensitiveData(clearFiles = true)
+                                mainViewModel.clearLegacyForm(displayedOperation, clearFiles = true)
                             }
                         }
                     ) {
@@ -474,6 +475,29 @@ internal fun Pcv3PresentationDialog(
         return
     }
     val live = presentation as? Pcv3Presentation.Live
+    if (live != null && live.safExportState != null) {
+        AlertDialog(
+            modifier = modifier.testTag(PCV3_PROGRESS_TAG),
+            onDismissRequest = {},
+            title = { Text(stringResource(R.string.pcv3_archive_exporting)) },
+            text = {
+                Column {
+                    if (live.safExportState == Pcv3SafExportState.CANCEL_REQUESTED) {
+                        Text(stringResource(R.string.pcv3_archive_cancel_requested))
+                    }
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = {
+                if (live.safExportState == Pcv3SafExportState.EXPORTING && onCancel != null) {
+                    Button(onClick = { onCancel(live.operationId, live.generation) }) {
+                        Text(stringResource(R.string.pcv3_archive_cancel_export))
+                    }
+                }
+            },
+        )
+        return
+    }
     if (presentation.snapshot.completionClass == "unknown" && !presentation.snapshot.archivePending) {
         val action = intent?.action
         if (action == null) {

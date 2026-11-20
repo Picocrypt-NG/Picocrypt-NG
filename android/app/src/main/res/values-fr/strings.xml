@@ -285,6 +285,9 @@
     <string name="pcv3_warning_unknown_title">Avertissement supplémentaire sur l’opération</string>
     <string name="pcv3_warning_unknown_body">L’opération a signalé un avertissement supplémentaire. Conservez la source et n’en déduisez aucune autorité de nettoyage ou de suppression.</string>
     <string name="pcv3_archive_close">Fermer sans extraire</string>
+    <string name="pcv3_archive_exporting">Exportation de l’archive</string>
+    <string name="pcv3_archive_cancel_export">Annuler l’exportation</string>
+    <string name="pcv3_archive_cancel_requested">Annulation demandée</string>
     <string name="pcv3_recovery_result_close">Fermer le résultat de la récupération</string>
     <string name="pcv3_publication_close">Fermer le résultat de la publication</string>
     <string name="pcv3_warning_cleanup_close">Fermer l’avertissement de nettoyage</string>

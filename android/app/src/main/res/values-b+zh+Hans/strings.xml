@@ -277,6 +277,9 @@
     <string name="pcv3_warning_unknown_title">其他操作警告</string>
     <string name="pcv3_warning_unknown_body">操作报告了其他警告。请保留源，不要据此推断获得了清理或删除权限。</string>
     <string name="pcv3_archive_close">关闭且不提取</string>
+    <string name="pcv3_archive_exporting">正在导出归档</string>
+    <string name="pcv3_archive_cancel_export">取消导出</string>
+    <string name="pcv3_archive_cancel_requested">已请求取消</string>
     <string name="pcv3_recovery_result_close">关闭恢复结果</string>
     <string name="pcv3_publication_close">关闭发布结果</string>
     <string name="pcv3_warning_cleanup_close">关闭清理警告</string>
