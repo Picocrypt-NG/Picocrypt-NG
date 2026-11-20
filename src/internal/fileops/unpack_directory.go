@@ -7,14 +7,19 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"golang.org/x/text/cases"
 )
 
+var unpackDirectoryFold = cases.Fold()
+
 type unpackDirectories struct {
-	root    *os.Root
-	path    string
-	info    os.FileInfo
-	first   map[string]*zipDirectoryIdentity
-	missing []string
+	root          *os.Root
+	path          string
+	info          os.FileInfo
+	first         map[string]*zipDirectoryIdentity
+	missing       []string
+	createdByFold map[string][]string
 }
 
 func (dirs *unpackDirectories) close(root *os.Root) error {
@@ -139,7 +144,8 @@ func (dirs *unpackDirectories) preflight(path string, isDir bool) (retErr error)
 	}
 }
 
-func (dirs *unpackDirectories) create(path string) (created bool, retErr error) {
+func (dirs *unpackDirectories) create(index int) (created bool, retErr error) {
+	path := dirs.missing[index]
 	parentName, leaf := filepath.Dir(path), filepath.Base(path)
 	parent, err := dirs.open(parentName, false)
 	if err != nil {
@@ -147,6 +153,9 @@ func (dirs *unpackDirectories) create(path string) (created bool, retErr error) 
 	}
 	defer func() { retErr = errors.Join(retErr, dirs.close(parent)) }()
 	if err := parent.Mkdir(leaf, 0o700); err != nil {
+		if errors.Is(err, os.ErrExist) && dirs.reuseCreated(index, parent, leaf) {
+			return false, dirs.verify(path)
+		}
 		return false, fmt.Errorf("create directory %s: %w", filepath.Join(dirs.path, path), err)
 	}
 	info, err := unpackCreatedDirLstatFn(parent, leaf)
@@ -157,7 +166,41 @@ func (dirs *unpackDirectories) create(path string) (created bool, retErr error) 
 		return true, fmt.Errorf("created extraction directory identity unavailable: %s", filepath.Join(dirs.path, path))
 	}
 	dirs.first[path].info = info
+	if dirs.createdByFold != nil {
+		key := unpackDirectoryFold.String(path)
+		dirs.createdByFold[key] = append(dirs.createdByFold[key], path)
+	}
 	return true, dirs.verify(path)
+}
+
+func (dirs *unpackDirectories) reuseCreated(index int, parent *os.Root, leaf string) bool {
+	info, err := parent.Lstat(leaf)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	parentInfo, err := parent.Stat(".")
+	if err != nil {
+		return false
+	}
+	if dirs.createdByFold == nil {
+		dirs.createdByFold = make(map[string][]string)
+		for _, path := range dirs.missing[:index] {
+			key := unpackDirectoryFold.String(path)
+			dirs.createdByFold[key] = append(dirs.createdByFold[key], path)
+		}
+	}
+	path := dirs.missing[index]
+	for _, candidate := range dirs.createdByFold[unpackDirectoryFold.String(path)] {
+		expectedParent := dirs.info
+		if name := filepath.Dir(candidate); name != "." {
+			expectedParent = dirs.first[name].info
+		}
+		if os.SameFile(expectedParent, parentInfo) && os.SameFile(dirs.first[candidate].info, info) {
+			dirs.first[path].info = info
+			return true
+		}
+	}
+	return false
 }
 
 func (dirs *unpackDirectories) sync(stagedEntries []stagedUnpackEntry) (bindingErr, durabilityErr, cleanupErr error) {

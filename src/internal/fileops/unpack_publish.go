@@ -64,7 +64,7 @@ func publishStagedUnpackEntry(
 	switch {
 	case published && nativeErr != nil:
 		return true, nil, fmt.Errorf("publish extraction output %s: %w", entry.outPath, nativeErr)
-	case !published && errors.Is(nativeErr, errors.ErrUnsupported):
+	case !published && errors.Is(nativeErr, errors.ErrUnsupported) && !errors.Is(nativeErr, ErrUnpackCleanupIncomplete):
 		outputInfo, published, durabilityErr, err = copyStagedUnpackEntry(
 			stageRoot, targetRoot, targetDirectory, targetName, entry, cancel,
 		)

@@ -4,9 +4,11 @@ import (
 	"Picocrypt-NG/internal/diskspace"
 	"Picocrypt-NG/internal/secret"
 	"Picocrypt-NG/internal/util"
+	"archive/zip"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math"
 	"os"
@@ -607,6 +609,9 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 			}
 		}
 
+		// archive/zip can skip the checksum when the declared CRC is zero.
+		checkCRC := f.CRC32 == 0
+		var checksum uint32
 		var written int64
 		for {
 			// Check for cancellation during file extraction
@@ -636,6 +641,9 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 					_ = fileInArchive.Close()
 					return fmt.Errorf("write %s: %w", outPath, err)
 				}
+				if checkCRC {
+					checksum = crc32.Update(checksum, crc32.IEEETable, buf[:n])
+				}
 
 				done += count
 				if opts.Progress != nil {
@@ -657,6 +665,9 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 		}
 
 		_ = fileInArchive.Close()
+		if checkCRC && checksum != f.CRC32 {
+			return fmt.Errorf("read %s: %w", f.Name, zip.ErrChecksum)
+		}
 		if err := unpackStageSyncFn(stageFile); err != nil {
 			return fmt.Errorf("sync %s: %w", outPath, err)
 		}
@@ -700,11 +711,11 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 		}
 	}()
 
-	for _, path := range dirs.missing {
+	for i := range dirs.missing {
 		if opts.Cancel != nil && opts.Cancel() {
 			return errZIPCancelled
 		}
-		created, err := dirs.create(path)
+		created, err := dirs.create(i)
 		publicEffect = publicEffect || created
 		if err != nil {
 			return err

@@ -644,6 +644,49 @@ func TestUnpackPublishesThroughExclusiveCopyWhenHardLinksUnsupported(t *testing.
 	requireOnlyExtractionEntry(t, extractDir, "payload.txt")
 }
 
+func TestUnpackDoesNotPublishAfterNativeCleanupFailure(t *testing.T) {
+	base := t.TempDir()
+	zipPath := filepath.Join(base, "archive.zip")
+	createStoredZipForUnpackStagingTest(t, zipPath, "payload.txt", []byte("payload"))
+	extractDir := filepath.Join(base, "out")
+	if err := os.Mkdir(extractDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	closeErr := errors.New("close stage handle failed")
+	originalPublish := unpackPublishFn
+	unpackPublishFn = func(*os.File, *os.File, string, string, os.FileInfo) (bool, bool, error) {
+		return false, false, errors.Join(errors.ErrUnsupported, closeErr, ErrUnpackCleanupIncomplete)
+	}
+	t.Cleanup(func() { unpackPublishFn = originalPublish })
+
+	result := UnpackWithResult(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir})
+	requireUnpackState(t, result, UnpackStateNotPublished)
+	if !errors.Is(result, closeErr) || !errors.Is(result, ErrUnpackCleanupIncomplete) {
+		t.Fatalf("extract lost native cleanup failure: %v", result)
+	}
+	requireEmptyExtractionDir(t, extractDir)
+}
+
+func TestUnpackCaseVariantDirectoryNames(t *testing.T) {
+	base := t.TempDir()
+	zipPath := filepath.Join(base, "archive.zip")
+	files := map[string][]byte{
+		"Docs/Chapter/first.txt":  []byte("first chapter"),
+		"docs/chapter/second.txt": []byte("second chapter"),
+	}
+	createStoredZipEntriesForUnpackStagingTest(t, zipPath, files)
+	extractDir := filepath.Join(base, "out")
+
+	if err := Unpack(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir}); err != nil {
+		t.Fatalf("extract case-variant directory names: %v", err)
+	}
+	for name, want := range files {
+		requireUnpackFileBytes(t, filepath.Join(extractDir, filepath.FromSlash(name)), want)
+	}
+	requireNoUnpackStages(t, extractDir)
+}
+
 func TestUnpackPublishesStagedInodeIntoExistingNestedParent(t *testing.T) {
 	base := t.TempDir()
 	path := filepath.Join(base, "files.zip")
