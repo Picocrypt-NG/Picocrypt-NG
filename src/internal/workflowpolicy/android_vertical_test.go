@@ -60,7 +60,7 @@ func TestAndroidSharedBuildPreservesUnsignedPrefixAndSigningBoundary(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "e358b8cc4da0c35c52470fcd552464380282c872cf5be49e2223d2f13dc917d2" {
+	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "a005a177ea36b953589cbb402f592faef6154ae7500461a23087d24e512ca946" {
 		t.Fatalf("existing unsigned Android commands or signing-input bundle changed: %s", got)
 	}
 	var owner struct {
@@ -69,14 +69,14 @@ func TestAndroidSharedBuildPreservesUnsignedPrefixAndSigningBoundary(t *testing.
 	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/workflows/build-android.yml")), &owner); err != nil {
 		t.Fatal(err)
 	}
-	// Native-step hashes start from the original 3b0851a workflow and include the reviewed JDK setup update.
+	// Native-step hashes include the release SDK digest check before signing.
 	// Routing and transport are checked separately.
 	for _, recipe := range []struct {
 		job   string
 		names []string
 		want  string
 	}{
-		{"sign", []string{"Fetch locked Android signing tools", "Build Android signing image before loading secrets", "Validate unsigned signing inputs before loading secrets", "Sign verified APKs with the offline SDK", "Verify exact signed release APK contract"}, "0207f07a859069098c0832ee1afb8d9e1ab4a5bf68e8596dd113da45f3f4e79c"},
+		{"sign", []string{"Fetch locked Android signing tools", "Build Android signing image before loading secrets", "Validate unsigned signing inputs before loading secrets", "Sign verified APKs with the offline SDK", "Verify exact signed release APK contract"}, "346b2ad0d716218cbb40a22269d07ae9bc0f172ab1d3ab10d24f32e1975851d0"},
 		{"release", []string{"Get version tag", "Sign and attest artifacts", "Generate release notes", "Stage release assets"}, "9917225713b495880332314d9ba096589936940ebad6984f5dee44215d55a8b0"},
 	} {
 		var selected []map[string]any

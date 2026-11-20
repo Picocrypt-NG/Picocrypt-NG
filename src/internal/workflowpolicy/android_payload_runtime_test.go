@@ -35,6 +35,12 @@ func TestAndroidPayloadManifestPreservesSigningInputsAndRejectsSubstitution(t *t
 			if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			materials := releaseMaterialsFixture(t, "build-android.yml", "all")
+			work := filepath.Join(dir, "picocrypt-android-sdk")
+			if err := os.Mkdir(work, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeLinuxJSONFixture(t, filepath.Join(work, "materials.json"), materials)
 			unsigned := filepath.Join(dir, "unsigned-release")
 			if err := os.Mkdir(unsigned, 0o700); err != nil {
 				t.Fatal(err)
@@ -72,7 +78,7 @@ func TestAndroidPayloadManifestPreservesSigningInputsAndRejectsSubstitution(t *t
 			run := func(script string) ([]byte, error) {
 				command := exec.Command("bash", "--noprofile", "--norc", "-euo", "pipefail", "-c", script)
 				command.Dir = dir
-				command.Env = append(os.Environ(), "SOURCE_SHA="+source, "SOURCE_VERSION=3.0",
+				command.Env = append(os.Environ(), "RUNNER_TEMP="+dir, "SOURCE_SHA="+source, "SOURCE_VERSION=3.0",
 					"CANONICAL_MANIFEST_SHA256="+manifestDigest, "GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG",
 					"GITHUB_RUN_ID=local-fixture", "GITHUB_RUN_ATTEMPT=1")
 				return command.CombinedOutput()
@@ -110,7 +116,7 @@ func TestAndroidPayloadManifestPreservesSigningInputsAndRejectsSubstitution(t *t
 			want := map[string]any{
 				"schema_version": float64(1), "repository": "Picocrypt-NG/Picocrypt-NG", "source_sha": source,
 				"version": "3.0", "canonical_manifest_sha256": digest, "owner_workflow": "build-android.yml",
-				"arch": "all", "run_id": "local-fixture", "run_attempt": "1", "files": files,
+				"arch": "all", "run_id": "local-fixture", "run_attempt": "1", "files": files, "materials": materials,
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("Android validation manifest = %s, want exact source-bound canonical APK hashes", data)

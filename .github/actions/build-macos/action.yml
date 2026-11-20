@@ -45,22 +45,18 @@ runs:
         test "$CGO_LDFLAGS" = -mmacosx-version-min=15.0
         echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-    - name: Setup Go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-      with:
-        go-version: "1.27.4"
-        cache-dependency-path: src/go.sum
+    - name: Prepare verified macOS build materials
+      shell: bash
+      run: |
+        set -euo pipefail
+        work="$RUNNER_TEMP/picocrypt-release-materials"
+        bash .github/scripts/prepare-release-go.sh darwin-arm64 "$work"
+        bash .github/scripts/prepare-macos-release.sh "$work"
 
     - name: Install packages
       shell: bash
       run: |
         brew install glfw glew
-
-    - name: Install dependencies
-      shell: bash
-      run: |
-        cd src
-        go mod download
 
     - name: Run native test suite
       shell: bash
@@ -103,6 +99,10 @@ runs:
         go build -v -tags cli -ldflags="-s -w" -o Picocrypt-NG-cli-macos ./cmd/picocrypt
       env:
         CGO_ENABLED: 1
+
+    - name: Verify macOS binaries and linked libraries
+      shell: bash
+      run: bash .github/scripts/assert-macos-release-binaries.sh src/Picocrypt-NG src/Picocrypt-NG-cli-macos
 
     - name: Package as .app in a .dmg
       shell: bash
@@ -175,13 +175,15 @@ runs:
           digest=$(shasum -a 256 -b "release-staging/$name") || exit 1
           jq -cn --arg name "$name" --arg sha256 "${digest%% *}" '{name:$name,sha256:$sha256}' || exit 1
         done <<< "$expected" | jq -sc 'sort_by(.name)')
+        git diff --exit-code HEAD -- src/go.mod src/go.sum
+        materials=$(<"$RUNNER_TEMP/picocrypt-release-materials/materials.json")
         arch=$(go env GOARCH)
         jq -nS --arg repository "$GITHUB_REPOSITORY" --arg source_sha "$SOURCE_SHA" \
           --arg version "$SOURCE_VERSION" --arg canonical_manifest_sha256 "$CANONICAL_MANIFEST_SHA256" \
-          --arg arch "$arch" --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" --argjson files "$files" \
+          --arg arch "$arch" --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" --argjson materials "$materials" --argjson files "$files" \
           '{schema_version:1,repository:$repository,source_sha:$source_sha,version:$version,
             canonical_manifest_sha256:$canonical_manifest_sha256,owner_workflow:"build-macos.yml",
-            arch:$arch,run_id:$run_id,run_attempt:$run_attempt,files:$files}' > release-staging/payload-manifest.json
+            arch:$arch,run_id:$run_id,run_attempt:$run_attempt,materials:$materials,files:$files}' > release-staging/payload-manifest.json
 
     - name: Upload artifacts
       id: upload

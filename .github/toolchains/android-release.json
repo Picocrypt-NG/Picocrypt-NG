@@ -1,0 +1,25 @@
+{
+  "packages": {
+    "platform": {
+      "archive": "platform-37.0_r02.zip",
+      "sha256": "840b23e827f96e64aea4c89a1194aac3dc5f6bad37edb231c5c795d890330e8d",
+      "directory": "android-37.0",
+      "destination": "platforms/android-37.0",
+      "revision": "2"
+    },
+    "build-tools": {
+      "archive": "build-tools_r36_linux.zip",
+      "sha256": "5d9ac77fb6ff43d9da518a337b4fcf8f9097113df531d99ccefe80ef7ce8250b",
+      "directory": "android-16",
+      "destination": "build-tools/36.0.0",
+      "revision": "36.0.0"
+    },
+    "ndk": {
+      "archive": "android-ndk-r30-linux.zip",
+      "sha256": "753611f410d002cfcd3f3dc2ef49aad532089d3180b436c060a90bf0fcb64df2",
+      "directory": "android-ndk-r30",
+      "destination": "ndk/30.0.16248370",
+      "revision": "30.0.16248370"
+    }
+  }
+}

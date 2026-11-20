@@ -1,5 +1,53 @@
 # Verifying Picocrypt-NG releases
 
+## Build inputs checked before signing
+
+The direct and coordinated Linux, macOS and Snap release workflows verify the raw
+artifact ID, archive digest, producing attempt, source SHA, version and payload
+hashes before signing. Their payload manifests also carry the build-material
+digests, which the verifier compares against its own checkout of the release
+source. The Android verifier checks the unsigned APK carrier's build materials
+before loading signing credentials.
+
+- Linux AMD64 and ARM64 use architecture-specific Ubuntu 24.04 image digests
+  and package locks in `.github/toolchains/linux-release/`. The package
+  records come from Ubuntu's signed `noble`, `noble-updates` and
+  `noble-security` snapshot at `20261105T000000Z`. Preparation verifies each
+  downloaded package's hash, name, architecture and version. Installation
+  resolves against a generated local index with networking disabled. The
+  native test, GUI and CLI build, UPX compression and DEB steps then use the
+  resulting local image with networking disabled.
+- The Linux, macOS, Android and Snap preparation steps verify the matching Go
+  archive against `.github/toolchains/release-go.json`, download modules into
+  a fresh cache and run `go mod verify`. The build uses the local toolchain,
+  disables the module proxy and sets `-mod=readonly`. The producer checks
+  `go.mod` and `go.sum` against the release checkout.
+- The macOS lane selects the Xcode and SDK versions in
+  `.github/toolchains/macos-release.json`, records the hosted OS and image
+  builds, and checks that the GUI and CLI are ARM64, target macOS 15.0 or
+  earlier, and link only Apple system libraries. The PR lane uses the same
+  pinned SDK and binary checks without a Homebrew install step. The official
+  release lane still provisions Homebrew dependencies pending native validation.
+- Android prepares a fresh SDK and NDK from the hashes in
+  `.github/toolchains/android-release.json` and uses the same checked Temurin
+  archive as the offline signer. Gomobile seeds its generated module from the
+  application's pinned Go requirements and checksums. The Gradle wrapper
+  verifies its distribution in a fresh Gradle home. The release build checks
+  dependency artifacts and metadata in strict mode against the committed
+  verification file. The payload
+  records digests for the SDK, JDK, Go, Gradle wrapper and verification file.
+- The Snap producer provisions its QEMU host tools and Jammy build guest
+  from the locks in `.github/toolchains/snap-host/` and
+  `.github/toolchains/snap-release/`. It builds the strict AMD64 Snap and
+  checks the installed command inside the guest with egress disabled. The
+  locks cover the cloud image, build and stage packages, Snapcraft and the
+  base and GNOME snaps. The raw artifact records the host and guest locks,
+  host container recipe, Go archive and Go module digests.
+
+The macOS hosted image and Homebrew dependencies remain outside the verified
+material set. The public signatures and source attestations retain their
+existing format.
+
 ## Linux AppImage
 
 The Linux AppImage is GPG-signed in CI and carries AppImageUpdate delta-update

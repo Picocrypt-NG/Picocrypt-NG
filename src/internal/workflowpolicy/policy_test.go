@@ -502,9 +502,10 @@ func TestMacOSReleaseWorkflowPublishesCLIFromFlatArtifact(t *testing.T) {
 		t.Fatalf("macOS upload artifact path = %#v, want flat release-staging/", uploadStep.With["path"])
 	}
 
-	verifyStep := mustStepNamed(t, releaseJob, "Verify artifacts present")
-	mustContain(t, verifyStep.Run, "set -euo pipefail")
-	mustContain(t, verifyStep.Run, "test -s artifacts/build-macos/Picocrypt-NG-cli-macos")
+	mustContainInOrder(t, mustReadWorkflow(t, ".github/workflows/build-macos.yml"),
+		"Verify immutable macOS artifact metadata", "Download artifact", "Verify macOS payload manifest", "Sign and attest artifacts")
+	mustContain(t, mustStepNamed(t, releaseJob, "Verify macOS payload manifest").Run,
+		"bash .github/actions/verify-platform-artifacts/verify-artifacts.sh payload")
 
 	releaseStep := mustStepNamed(t, releaseJob, "Stage release assets")
 	files, ok := releaseStep.With["files"].(string)
@@ -987,6 +988,15 @@ func TestLinuxUPXDownloadsRemainChecksumGated(t *testing.T) {
 		if compress.If != "" || (compress.ContinueOnError != nil && compress.ContinueOnError != false) {
 			t.Fatal("Linux UPX verification must be unconditional and blocking")
 		}
+		if path == ".github/workflows/build-linux.yml" {
+			if compress.Shell != "bash .github/scripts/run-linux-release-build.sh {0}" {
+				t.Fatal("official packaging must run the verified local UPX without networking")
+			}
+			mustContain(t, compress.Run, `"$RELEASE_UPX" --lzma`)
+			mustContainInOrder(t, mustReadRepoFile(t, ".github/scripts/prepare-linux-release.sh"),
+				"fetch \"https://github.com/upx/upx/releases/download/", "tar -xJf")
+			continue
+		}
 		commands := []string{
 			`wget -O upx\.tar\.xz https://github\.com/upx/upx/releases/download/v[0-9]+\.[0-9]+\.[0-9]+/\$\{\{ matrix\.upx_pkg \}\}\.tar\.xz`,
 			regexp.QuoteMeta(`echo "${{ matrix.upx_sha256 }}  upx.tar.xz" | sha256sum --check --strict --status`),
@@ -1419,9 +1429,11 @@ func TestLinuxDebPackagingDoesNotUseExternalScaffold(t *testing.T) {
 			content := mustReadWorkflow(t, path)
 			if path == ".github/workflows/build-linux.yml" {
 				content = mustReadRepoFile(t, ".github/actions/build-linux/action.yml")
+				mustContain(t, mustReadRepoFile(t, ".github/toolchains/linux-release/os-packages-amd64.lock"), "librsvg2-bin")
+			} else {
+				mustContain(t, content, "librsvg2-bin")
 			}
 			mustNotContain(t, content, "github.com/user-attachments/files/21703014/Picocrypt-NG.zip")
-			mustContain(t, content, "librsvg2-bin")
 			mustContain(t, content, "xmllint --noout images/key.svg")
 			mustContain(t, content, `cat > "$package_root/DEBIAN/control"`)
 			mustContain(t, content, `install -d "$package_root/usr/share/icons/hicolor/scalable/apps"`)
@@ -1438,19 +1450,6 @@ func TestLinuxDebPackagingDoesNotUseExternalScaffold(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestSnapcraftWorkflowSmokeTestsInstalledSnap(t *testing.T) {
-	action := mustReadCompositeActionDoc(t, ".github/actions/build-snapcraft/action.yml")
-	smokeStep := mustCompositeStepNamed(t, action, "Smoke-test snap command")
-	if smokeStep.Env["LANG"] != "C.UTF-8" {
-		t.Fatalf("snap smoke-test LANG = %q, want C.UTF-8", smokeStep.Env["LANG"])
-	}
-	if smokeStep.Env["LC_ALL"] != "C.UTF-8" {
-		t.Fatalf("snap smoke-test LC_ALL = %q, want C.UTF-8", smokeStep.Env["LC_ALL"])
-	}
-	mustContain(t, smokeStep.Run, "sudo snap install --dangerous out/*.snap")
-	mustContain(t, smokeStep.Run, "snap run picocrypt-ng --version")
 }
 
 func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
@@ -1475,7 +1474,7 @@ func TestAndroidPRWorkflowRunsBoundedDeviceSuites(t *testing.T) {
 			diskSize: "2048M",
 			memory:   "3583",
 			target:   "google_apis",
-			script:   command + "26 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.DialogFocusTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest && bash ../.github/scripts/run-android-journal-restart-test.sh 26",
+			script:   command + "26 " + roundtrip + " io.github.picocrypt_ng.picocrypt_ng.FileCopyServiceTest io.github.picocrypt_ng.picocrypt_ng.StagingServiceInstrumentedTest io.github.picocrypt_ng.picocrypt_ng.GoBridgeProgressMappingTest io.github.picocrypt_ng.picocrypt_ng.LegacyForceDeviceTest io.github.picocrypt_ng.picocrypt_ng.OperationNotificationTest io.github.picocrypt_ng.picocrypt_ng.Pcv3DeviceBehaviorTest io.github.picocrypt_ng.picocrypt_ng.DialogFocusTest io.github.picocrypt_ng.picocrypt_ng.ProviderCopyBoundaryTest io.github.picocrypt_ng.picocrypt_ng.ui.components.KeyfileMetadataBoundaryTest io.github.picocrypt_ng.picocrypt_ng.MainActivityStateTest io.github.picocrypt_ng.picocrypt_ng.Pcv3UiContractTest#archiveCancellationAcknowledgementKeepsProgressVisibleUntilSettlement io.github.picocrypt_ng.picocrypt_ng.ui.components.WorkButtonTest#workButton_waits_for_selected_pcv3_keyfile_before_encryption && bash ../.github/scripts/run-android-journal-restart-test.sh 26",
 		},
 		// Activity security and Compose state must work on the target-SDK runtime.
 		36: {
@@ -1745,6 +1744,10 @@ func TestAndroidBuildWorkflowsMatchPinnedJDK21(t *testing.T) {
 		for jobName, job := range workflow.Jobs {
 			if path == ".github/workflows/build-android.yml" && jobName == "build" {
 				job = androidBuildPolicyJob(t, job)
+				prepare := mustStepNamed(t, job, "Prepare verified Android build tools")
+				mustContain(t, prepare.Run, ".github/scripts/prepare-android-release-sdk.sh")
+				version := strings.ReplaceAll(strings.TrimSuffix(javaVersion, ".0.LTS"), "+", "_")
+				mustContain(t, mustReadRepoFile(t, ".github/toolchains/android-signer/manifest.json"), "_"+version+".tar.gz")
 			}
 			setupSteps := 0
 			for _, step := range job.Steps {
@@ -1759,13 +1762,9 @@ func TestAndroidBuildWorkflowsMatchPinnedJDK21(t *testing.T) {
 					t.Fatalf("%s job %s setup-java java-version = %#v, want mise toolchain %q", path, jobName, got, javaVersion)
 				}
 			}
-			if path == ".github/workflows/build-android.yml" && jobName != "build" {
+			if path == ".github/workflows/build-android.yml" {
 				if setupSteps != 0 {
-					t.Fatal("Android release tools must come from the signing lock outside the build job")
-				}
-				if jobName == "sign" {
-					version := strings.ReplaceAll(strings.TrimSuffix(javaVersion, ".0.LTS"), "+", "_")
-					mustContain(t, mustReadRepoFile(t, ".github/toolchains/android-signer/manifest.json"), "_"+version+".tar.gz")
+					t.Fatalf("Android release job %s must use the JDK from the checked archive", jobName)
 				}
 			} else if setupSteps != 1 {
 				t.Fatalf("%s job %s has %d setup-java steps, want exactly one", path, jobName, setupSteps)
@@ -2253,6 +2252,15 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 		t.Fatalf("glob workflows: %v", err)
 	}
 
+	var releaseGo struct {
+		Version string
+	}
+	if err := json.Unmarshal([]byte(mustReadRepoFile(t, ".github/toolchains/release-go.json")), &releaseGo); err != nil {
+		t.Fatal(err)
+	}
+	if releaseGo.Version != "go1.27.4" {
+		t.Fatalf("locked release Go version = %q, want go1.27.4", releaseGo.Version)
+	}
 	setupGoSteps := make(map[workflowLane]int, len(requiredLanes))
 	for _, absPath := range workflowFiles {
 		relPath, err := filepath.Rel(repoRoot(t), absPath)
@@ -2275,6 +2283,10 @@ func TestGoToolchainsStayOnApprovedVersions(t *testing.T) {
 				}
 			}
 			for _, step := range job.Steps {
+				if strings.Contains(step.Run, "bash .github/scripts/prepare-release-go.sh ") {
+					setupGoSteps[lane]++
+					continue
+				}
 				if !strings.HasPrefix(step.Uses, "actions/setup-go@") {
 					continue
 				}

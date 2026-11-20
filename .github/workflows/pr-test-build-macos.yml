@@ -24,20 +24,14 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: Setup Go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-      with:
-        go-version: "1.27.4"
-        cache-dependency-path: src/go.sum
-
-    - name: Install packages
+    - name: Prepare verified Apple SDK and Go
       run: |
-        brew install glfw glew
-
-    - name: Install dependencies
-      run: |
-        cd src
-        go mod download
+        set -euo pipefail
+        work="$RUNNER_TEMP/picocrypt-release-materials"
+        bash .github/scripts/prepare-release-go.sh darwin-arm64 "$work"
+        bash .github/scripts/prepare-macos-release.sh "$work"
+        printf '%s=\n' CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH \
+          PKG_CONFIG_PATH PKG_CONFIG_LIBDIR DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH >> "$GITHUB_ENV"
 
     - name: Diagnose native macOS memory APIs
       id: memory-diagnostics
@@ -81,17 +75,15 @@ jobs:
       env:
         CGO_ENABLED: 1
 
-    - name: Verify macOS GUI deployment target
-      run: |
-        bash .github/scripts/assert-macos-minos.sh src/Picocrypt-NG 15.0
-
     - name: Build CLI-only (no graphics dependencies)
       run: |
         cd src
         go build -v -tags cli -ldflags="-s -w" -o Picocrypt-NG-cli-macos ./cmd/picocrypt
-        bash ../.github/scripts/assert-macos-minos.sh Picocrypt-NG-cli-macos 15.0
       env:
         CGO_ENABLED: 1
+
+    - name: Verify macOS binaries and linked libraries
+      run: bash .github/scripts/assert-macos-release-binaries.sh src/Picocrypt-NG src/Picocrypt-NG-cli-macos
 
     - name: Package as .app in a .dmg
       run: |

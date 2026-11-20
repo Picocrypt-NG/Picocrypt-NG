@@ -12,7 +12,7 @@ import (
 )
 
 // These are release policy and packaging-transfer checks, not product coverage.
-func TestLinuxBuildExtractionPreservesExistingSteps(t *testing.T) {
+func TestLinuxReleaseKeepsNativeBuildAndPackagingSteps(t *testing.T) {
 	content := strings.ReplaceAll(mustReadRepoFile(t, ".github/actions/build-linux/action.yml"), "inputs.", "matrix.")
 	var action struct {
 		Runs struct {
@@ -25,11 +25,15 @@ func TestLinuxBuildExtractionPreservesExistingSteps(t *testing.T) {
 	var frozen []map[string]any
 	active := false
 	for _, step := range action.Runs.Steps {
-		if step["name"] == "Setup Go" {
+		if step["name"] == "Prepare verified Linux build materials" {
 			active = true
 		}
 		if active {
-			// A composite must make the formerly implicit Bash shell explicit.
+			name := step["name"].(string)
+			if name != "Prepare verified Linux build materials" && name != "Test browser PCV3 and legacy compatibility" &&
+				name != "Prepare to upload artifacts" && step["shell"] != "bash .github/scripts/run-linux-release-build.sh {0}" {
+				t.Fatalf("Linux production step %s must run in the prepared offline container", name)
+			}
 			delete(step, "shell")
 			if run, ok := step["run"].(string); ok {
 				step["run"] = normalizeLinuxBuildRun(run)
@@ -55,11 +59,11 @@ func TestLinuxBuildExtractionPreservesExistingSteps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Frozen from the existing owner workflow before extracting its native tests,
-	// WASM compatibility, GUI smoke, binaries, UPX checksum and DEB packaging.
-	const want = "d809ca917b1c11770c9f86ad9bc16a3627d3c5a035ffaf062f521591d0689a1e"
+	// Freeze the native tests, WASM compatibility, GUI smoke, binaries and DEB packaging
+	// after moving release materials into the architecture-specific preparation step.
+	const want = "e3bd1c9a8964ace6478f84162a71d29cc9737ed5b7758ab593d769e24dba0556"
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != want {
-		t.Fatalf("Linux packaging steps changed during extraction: digest %s, want %s", got, want)
+		t.Fatalf("Linux release packaging steps changed: digest %s, want %s", got, want)
 	}
 }
 

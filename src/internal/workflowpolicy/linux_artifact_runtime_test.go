@@ -4,6 +4,7 @@ package workflowpolicy
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,7 +57,7 @@ func TestLinuxArtifactVerifierRejectsSourceArchiveAndPayloadSubstitution(t *test
 		t.Fatal(err)
 	}
 	manifestDigest := fmt.Sprintf("%x", sha256.Sum256(canonical))
-	for _, defect := range []string{"none", "missing ID", "duplicate ID", "wrong ZIP digest", "wrong name", "wrong source", "wrong run", "expired", "wrong payload hash", "missing file", "unexpected file", "symlink", "matching manifest symlink", "matching payload symlink", "wrong payload source", "duplicate payload file"} {
+	for _, defect := range []string{"none", "missing ID", "duplicate ID", "wrong ZIP digest", "wrong name", "wrong source", "wrong run", "expired", "wrong payload hash", "missing file", "unexpected file", "symlink", "matching manifest symlink", "matching payload symlink", "wrong payload source", "duplicate payload file", "missing build materials", "wrong build materials", "wrong ELF architecture", "wrong deb architecture", "wrong deb executable"} {
 		t.Run(defect, func(t *testing.T) {
 			dir := t.TempDir()
 			bin := filepath.Join(dir, "bin")
@@ -95,13 +96,65 @@ func TestLinuxArtifactVerifierRejectsSourceArchiveAndPayloadSubstitution(t *test
 						continue
 					}
 					name := fields[0]
-					if err := os.WriteFile(filepath.Join(payloadDir, name), []byte(name), 0o600); err != nil {
+					if strings.HasSuffix(name, ".deb") {
+						continue
+					}
+					machine := uint16(62) // EM_X86_64
+					if arch == "arm64" || defect == "wrong ELF architecture" {
+						machine = 183 // EM_AARCH64
+					}
+					data := make([]byte, 64+len(name))
+					copy(data, "\x7fELF\x02\x01\x01") // ELF64, little endian, version 1.
+					binary.LittleEndian.PutUint16(data[16:], 2)
+					binary.LittleEndian.PutUint16(data[18:], machine)
+					binary.LittleEndian.PutUint32(data[20:], 1)
+					binary.LittleEndian.PutUint16(data[52:], 64)
+					copy(data[64:], name)
+					if err := os.WriteFile(filepath.Join(payloadDir, name), data, 0o600); err != nil {
 						t.Fatal(err)
 					}
-					files = append(files, map[string]string{"name": name, "sha256": fmt.Sprintf("%x", sha256.Sum256([]byte(name)))})
+					files = append(files, map[string]string{"name": name, "sha256": fmt.Sprintf("%x", sha256.Sum256(data))})
 				}
 				payloadSource := source
 				if arch == "amd64" {
+					debRoot := filepath.Join(dir, "deb")
+					binDir := filepath.Join(debRoot, "usr", "bin")
+					if err := os.MkdirAll(binDir, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					controlDir := filepath.Join(debRoot, "DEBIAN")
+					if err := os.Mkdir(controlDir, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					debArch := arch
+					if defect == "wrong deb architecture" {
+						debArch = "arm64"
+					}
+					control := fmt.Sprintf("Package: picocrypt-ng\nVersion: %s\nArchitecture: %s\nMaintainer: Picocrypt-NG\nDescription: Payload verification fixture\n", version, debArch)
+					if err := os.WriteFile(filepath.Join(controlDir, "control"), []byte(control), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					gui := "Picocrypt-NG"
+					if defect == "wrong deb executable" {
+						gui = "Picocrypt-NG-cli"
+					}
+					data, err := os.ReadFile(filepath.Join(payloadDir, gui))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(binDir, "picocrypt-ng-gui"), data, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					const deb = "Picocrypt-NG.deb"
+					debPath := filepath.Join(payloadDir, deb)
+					if output, err := exec.Command("dpkg-deb", "--build", "--root-owner-group", debRoot, debPath).CombinedOutput(); err != nil {
+						t.Fatalf("build .deb: %v: %s", err, output)
+					}
+					data, err = os.ReadFile(debPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					files = append(files, map[string]string{"name": deb, "sha256": fmt.Sprintf("%x", sha256.Sum256(data))})
 					file := filepath.Join(payloadDir, files[0]["name"])
 					switch defect {
 					case "wrong payload hash":
@@ -148,11 +201,22 @@ func TestLinuxArtifactVerifierRejectsSourceArchiveAndPayloadSubstitution(t *test
 						files = append(files, files[0])
 					}
 				}
-				writeLinuxJSONFixture(t, filepath.Join(payloadDir, "payload-manifest.json"), map[string]any{
+				payload := map[string]any{
 					"schema_version": 1, "repository": "Picocrypt-NG/Picocrypt-NG", "source_sha": payloadSource,
 					"version": version, "canonical_manifest_sha256": manifestDigest, "owner_workflow": "build-linux.yml",
 					"arch": arch, "run_id": "900", "run_attempt": "1", "files": files,
-				})
+				}
+				materials := releaseMaterialsFixture(t, "build-linux.yml", arch)
+				payload["materials"] = materials
+				if arch == "amd64" {
+					switch defect {
+					case "missing build materials":
+						delete(payload, "materials")
+					case "wrong build materials":
+						materials["packages_sha256"] = strings.Repeat("f", 64)
+					}
+				}
+				writeLinuxJSONFixture(t, filepath.Join(payloadDir, "payload-manifest.json"), payload)
 				if arch == "amd64" && defect == "matching manifest symlink" {
 					manifest := filepath.Join(payloadDir, "payload-manifest.json")
 					data, err := os.ReadFile(manifest)

@@ -42,45 +42,11 @@ runs:
         test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
         echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-    - name: Copy Snapcraft files to source
+    - name: Build and smoke-test Snap in the locked VM
       shell: bash
-      run: |
-        cp -r dist/snapcraft/* src/
-        mkdir -p src/dist/mime
-        cp dist/mime/application-x-pcv.xml src/dist/mime/
-        cp -r images src/
-
-    - name: Fix permissions
-      shell: bash
-      run: |
-        chmod -R a+rX src
-
-    - name: List contents of src
-      shell: bash
-      run: |
-        ls -l src
-        ls -l src/snapcraft.yaml || echo "snapcraft.yaml not found"
-
-    - name: Snapcraft
-      uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
-      with:
-        path: src
-
-    - name: Prepare artifacts
-      shell: bash
-      run: |
-        mkdir -p out
-        mv src/*.snap out/
-
-    - name: Smoke-test snap command
       env:
-        LANG: C.UTF-8
-        LC_ALL: C.UTF-8
-      shell: bash
-      run: |
-        sudo snap install --dangerous out/*.snap
-        snap run picocrypt-ng --version
-
+        SOURCE_VERSION: ${{ inputs.version }}
+      run: bash .github/scripts/build-snap-release.sh "$RUNNER_TEMP/picocrypt-snap-release" "$SOURCE_VERSION"
 
     - name: Record Snap payload manifest
       shell: bash
@@ -98,14 +64,18 @@ runs:
         actual_names=$(find out -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
         test "$actual_names" = "$name"
         test -f "out/$name" && test ! -L "out/$name" && test -s "out/$name" || exit 1
+        materials_file="$RUNNER_TEMP/picocrypt-snap-release/materials.json"
+        test -f "$materials_file" && test ! -L "$materials_file" && test -s "$materials_file" || exit 1
+        materials=$(jq -ceS 'select(type == "object")' "$materials_file")
+        test "$materials" = "$(bash .github/scripts/release-materials.sh build-snapcraft.yml amd64)"
         payload_sha256=$(sha256sum "out/$name")
         jq -nS --arg repository "$GITHUB_REPOSITORY" --arg source_sha "$SOURCE_SHA" \
           --arg version "$SOURCE_VERSION" --arg canonical_manifest_sha256 "$CANONICAL_MANIFEST_SHA256" \
           --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
-          --arg name "$name" --arg sha256 "${payload_sha256%% *}" \
+          --argjson materials "$materials" --arg name "$name" --arg sha256 "${payload_sha256%% *}" \
           '{schema_version:1,repository:$repository,source_sha:$source_sha,version:$version,
             canonical_manifest_sha256:$canonical_manifest_sha256,owner_workflow:"build-snapcraft.yml",
-            arch:"amd64",run_id:$run_id,run_attempt:$run_attempt,files:[{name:$name,sha256:$sha256}]}' > out/payload-manifest.json
+            arch:"amd64",run_id:$run_id,run_attempt:$run_attempt,materials:$materials,files:[{name:$name,sha256:$sha256}]}' > out/payload-manifest.json
 
     - name: Upload .snap artifacts
       id: upload

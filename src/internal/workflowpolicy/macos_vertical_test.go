@@ -32,7 +32,7 @@ func TestMacOSSharedBuildPreservesProductionStepsAndRelease(t *testing.T) {
 			step["run"] = "cd src\ngo test -v -race -p 1 -timeout 15m ./internal/encoding/... ./internal/fileops/... ./internal/header/... ./internal/keyfile/... ./internal/util/...\ngo test -v -race -p 1 -timeout 15m ./internal/pcv3publication/...\ngo test -v -race -p 1 -timeout 60m ./internal/pcv3operation/internal/pcv3/... ./internal/pcv3operation/internal/pcv3credential/... ./internal/pcv3operation/... ./internal/pcv3operation/internal/pcv3recovery/... ./internal/pcv3operation/internal/pcv3artifact/... ./internal/pcv3operation/internal/pcv3resource/... ./internal/app/...\ngo test -v -race -p 1 -timeout 15m ./internal/volume/...\ngo test -v -count=1 -p 1 -timeout 15m -run '^TestCLIInputContract$' ./internal/cli/...\n"
 			delete(step, "env")
 		}
-		if step["name"] == "Setup Go" {
+		if step["name"] == "Prepare verified macOS build materials" {
 			active = true
 		}
 		if active {
@@ -47,7 +47,7 @@ func TestMacOSSharedBuildPreservesProductionStepsAndRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantBuild = "5c06c0cb34e0fcf8cf8e6ed52da076d1ba1fb024636e5091fd18cb11cc0459b3"
+	const wantBuild = "9f27a0b86dad5fd7ef26ff68b7c5f561cc0efdc12c6353d60a5e83d9b4ece706"
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantBuild {
 		t.Fatalf("macOS native tests, build, compatibility, ad-hoc seal or packaging changed: %s, want %s", got, wantBuild)
 	}
@@ -61,16 +61,16 @@ func TestMacOSSharedBuildPreservesProductionStepsAndRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Frozen from the direct owner before reusable jobs were appended.
-	const wantRelease = "cfd1ffe51bfa785879f693790bba7c5ba4ca87a5fd1a1a6919fdfdbf49bb13cf"
+	// Freeze the direct owner after incorporating the same raw artifact verification as the coordinated owner.
+	const wantRelease = "51d035a190be7abe97c7feae12358dad69a59a8aebedff4593eda60ba721d64e"
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantRelease {
-		t.Fatal("direct macOS download, signing identity, release notes or staging program changed")
+		t.Fatalf("direct macOS download, signing identity, release notes or staging program changed: %s", got)
 	}
 	release := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/build-macos.yml"), "release")
 	if release.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && github.workflow_ref == format('{0}/.github/workflows/build-macos.yml@{1}', github.repository, github.ref) }}" ||
 		release.Needs != "build" || release.RunsOn != "ubuntu-24.04" || release.TimeoutMinutes != 20 || release.Environment != "release" ||
-		!reflect.DeepEqual(release.Permissions, map[string]string{"contents": "write", "id-token": "write", "attestations": "write"}) ||
-		release.Concurrency.Group != "${{ github.repository }}-release-publication" || release.Concurrency.Queue != "max" || release.Env != nil || release.Outputs != nil {
+		!reflect.DeepEqual(release.Permissions, map[string]string{"contents": "write", "actions": "read", "id-token": "write", "attestations": "write"}) ||
+		release.Concurrency.Group != "${{ github.repository }}-release-publication" || release.Concurrency.Queue != "max" || release.Outputs != nil {
 		t.Fatal("direct macOS release must retain its exact invocation guard, authority and publication queue")
 	}
 }
@@ -91,8 +91,15 @@ func TestMacOSSharedBuildHasSourceBoundImmutableInterface(t *testing.T) {
 		t.Fatal("shared macOS build must retain the existing deployment and CGO target")
 	}
 	call := mustHaveStepUsingPrefix(t, build, "./.github/actions/build-macos")
-	if call.ID != "build" || !reflect.DeepEqual(build.Outputs, map[string]string{"artifact-id": "${{ steps.build.outputs.artifact-id }}"}) {
-		t.Fatal("manual macOS owner must export only the artifact ID consumed by release")
+	if call.ID != "build" || !reflect.DeepEqual(build.Outputs, map[string]string{
+		"artifact-id":     "${{ steps.build.outputs.artifact-id }}",
+		"artifact-digest": "${{ steps.build.outputs.artifact-digest }}",
+		"run-attempt":     "${{ steps.build.outputs.run-attempt }}",
+		"source-sha":      "${{ steps.source.outputs.source-sha }}",
+		"version":         "${{ steps.source.outputs.version }}",
+		"manifest-digest": "${{ steps.source.outputs.manifest-digest }}",
+	}) {
+		t.Fatal("manual macOS owner must carry the source and immutable artifact tuple to release")
 	}
 	if !reflect.DeepEqual(call.With, map[string]any{
 		"source-sha": "${{ steps.source.outputs.source-sha }}", "version": "${{ steps.source.outputs.version }}",

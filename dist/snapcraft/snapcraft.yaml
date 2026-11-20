@@ -29,26 +29,21 @@ parts:
       - -go/
 
   picocrypt-ng:
-    plugin: go
+    plugin: nil
     source: .
     after: [go-deps]
     build-environment:
       - PATH: "${CRAFT_STAGE}/go/bin:${PATH}"
       - GOROOT: "${CRAFT_STAGE}/go"
       - GOTOOLCHAIN: local
+      - GOENV: "off"
+      - GOWORK: "off"
     override-build: |
       test "$(go env GOVERSION)" = "go1.27.4"
       test "$(go env GOROOT)" = "$CRAFT_STAGE/go"
-      export GOFLAGS="-tags=migrated_fynedo"
-      craftctl default
+      export GOFLAGS="-mod=readonly -trimpath"
       install -d "$CRAFT_PART_INSTALL/bin"
-      if [ -x "$CRAFT_PART_INSTALL/bin/picocrypt" ]; then
-        mv "$CRAFT_PART_INSTALL/bin/picocrypt" "$CRAFT_PART_INSTALL/bin/Picocrypt-NG"
-      fi
-      if [ ! -x "$CRAFT_PART_INSTALL/bin/Picocrypt-NG" ]; then
-        cd "$CRAFT_PROJECT_DIR"
-        go build -v -ldflags="-s -w" -o "$CRAFT_PART_INSTALL/bin/Picocrypt-NG" ./cmd/picocrypt
-      fi
+      go build -v -tags migrated_fynedo -ldflags="-s -w" -o "$CRAFT_PART_INSTALL/bin/Picocrypt-NG" ./cmd/picocrypt
       # MIME XML — system-wide MIME registration declaration
       install -d "$CRAFT_PART_INSTALL/usr/share/mime/packages"
       install -m 0644 "$CRAFT_PROJECT_DIR/dist/mime/application-x-pcv.xml" \

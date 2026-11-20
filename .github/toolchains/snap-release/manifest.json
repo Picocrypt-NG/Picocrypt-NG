@@ -1,0 +1,18 @@
+{
+  "cloud_image": {
+    "url": "https://cloud-images.ubuntu.com/releases/jammy/release-20261109/ubuntu-22.04-server-cloudimg-amd64.img",
+    "sha256": "77d19e53656f87c95f1f6c6be59c789083b3f77fa08f9d88011ee04085c61f87"
+  },
+  "snapshot": "20261105T000000Z",
+  "snaps": [
+    {"name": "snapd", "revision": 28332, "sha256": "96524647abf7c9d3158f2cd8b24ba7dbe7882a78f5ee8a996c45fac812731344", "seeded": true},
+    {"name": "core22", "revision": 2987, "sha256": "4b3f51c9364d3ad9cf5e05be469dac9b639c0ba91716fc75d307874cb7656695", "seeded": true},
+    {"name": "lxd", "revision": 41283, "sha256": "40746ee334365bc6f69ae435ccb62c0ea3b001f0a431a0ab06a21452172b90e8", "seeded": true},
+    {"name": "bare", "revision": 5, "sha256": "03d0a2eb62e1b8861e557f7875f2d74f59f56c89ac0b4775fbe6d00c465fc84b", "seeded": false},
+    {"name": "core24", "revision": 2307, "sha256": "819186f53e7e277ff4eb92c64bb44af99e8a8b67ba168dd6e40e1eb006cf9f5b", "seeded": false},
+    {"name": "gtk-common-themes", "revision": 1535, "sha256": "e64ec1ad03ac012ba3539a9e61cfe2007f102140dbb03a009e82a53fccf7f6a5", "seeded": false},
+    {"name": "gnome-42-2204", "revision": 263, "sha256": "69b49bf799f2518649a7dc6337533a27be3c4d7fd754d5b966ff097e76893f45", "seeded": false},
+    {"name": "gnome-42-2204-sdk", "revision": 381, "sha256": "b8909de040d0504922c0782409e4e9078ae0ee43b4555e82531f649a3702b492", "seeded": false},
+    {"name": "snapcraft", "revision": 19387, "sha256": "0ceae4746d57a3ebd6e657bce2de8603881f4b9ccf27dcfcf28473e8006a5bd0", "seeded": false}
+  ]
+}

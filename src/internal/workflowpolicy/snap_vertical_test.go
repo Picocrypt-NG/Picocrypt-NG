@@ -1,9 +1,6 @@
 package workflowpolicy
 
 import (
-	"crypto/sha256"
-	"encoding/json"
-	"fmt"
 	"reflect"
 	"testing"
 
@@ -11,58 +8,50 @@ import (
 )
 
 // These are packaging-transfer and release-policy checks, not product coverage.
-func TestSnapcraftSharedBuildPreservesProductionStepsAndRelease(t *testing.T) {
-	var action struct {
-		Runs struct {
-			Steps []map[string]any `yaml:"steps"`
-		} `yaml:"runs"`
+func TestSnapcraftSharedBuildSignsOnlyAfterLockedVMBuild(t *testing.T) {
+	action := mustReadCompositeActionDoc(t, ".github/actions/build-snapcraft/action.yml")
+	build := mustCompositeStepNamed(t, action, "Build and smoke-test Snap in the locked VM")
+	if build.If != "" || build.ContinueOnError != nil || build.Env["SOURCE_VERSION"] != "${{ inputs.version }}" ||
+		build.Run != `bash .github/scripts/build-snap-release.sh "$RUNNER_TEMP/picocrypt-snap-release" "$SOURCE_VERSION"` {
+		t.Fatal("the unsigned Snap producer must use the locked VM and its installed-snap check")
 	}
-	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/actions/build-snapcraft/action.yml")), &action); err != nil {
-		t.Fatal(err)
-	}
-	var frozen []map[string]any
-	active := false
-	for _, step := range action.Runs.Steps {
-		if step["name"] == "Copy Snapcraft files to source" {
-			active = true
-		}
-		if active {
-			delete(step, "shell")
-			frozen = append(frozen, step)
-		}
-		if step["name"] == "Smoke-test snap command" {
-			break
-		}
-	}
-	data, err := json.Marshal(frozen)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const wantBuild = "61cd070d88e74e7d9a37370232699c20b61883d45dde7234c2aeff9c1cef0949"
-	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantBuild {
-		t.Fatalf("Snapcraft production build or installed-snap smoke changed: %s, want %s", got, wantBuild)
-	}
-	var owner struct {
-		Jobs map[string]struct{ Steps []map[string]any }
-	}
-	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/workflows/build-snapcraft.yml")), &owner); err != nil {
-		t.Fatal(err)
-	}
-	data, err = json.Marshal(owner.Jobs["release"].Steps)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Frozen from the direct owner before reusable jobs were appended.
-	const wantRelease = "b508f2dcc810ebea7d64fd233230461900dcdc3f852fedc42e5410e581169ab7"
-	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantRelease {
-		t.Fatal("direct Snapcraft download, signing identity, release notes or staging program changed")
-	}
+	mustContainInOrder(t, mustReadRepoFile(t, ".github/actions/build-snapcraft/action.yml"),
+		"Assert prepared Snap source", build.Name, "Record Snap payload manifest", "Upload .snap artifacts")
+	mustContain(t, mustReadRepoFile(t, ".github/scripts/build-snap-release.sh"), "restrict=on")
+	mustContainInOrder(t, mustReadRepoFile(t, ".github/scripts/build-snap-release-guest.sh"),
+		"snap install", "--dangerous", "snap run picocrypt-ng --version")
+
 	release := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/build-snapcraft.yml"), "release")
 	if release.If != "${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && github.workflow_ref == format('{0}/.github/workflows/build-snapcraft.yml@{1}', github.repository, github.ref) }}" ||
 		release.Needs != "build-snapcraft" || release.RunsOn != "ubuntu-24.04" || release.TimeoutMinutes != 20 || release.Environment != "release" ||
-		!reflect.DeepEqual(release.Permissions, map[string]string{"contents": "write", "id-token": "write", "attestations": "write"}) ||
-		release.Concurrency.Group != "${{ github.repository }}-release-publication" || release.Concurrency.Queue != "max" || release.Env != nil || release.Outputs != nil {
-		t.Fatal("direct Snapcraft release must retain its exact invocation guard, authority and publication queue")
+		!reflect.DeepEqual(release.Permissions, map[string]string{"contents": "write", "actions": "read", "id-token": "write", "attestations": "write"}) ||
+		release.Concurrency.Group != "${{ github.repository }}-release-publication" || release.Concurrency.Queue != "max" || release.Outputs != nil {
+		t.Fatal("direct Snap release must retain the invocation guard, publication queue and only the authority it needs")
+	}
+}
+
+func TestDirectSnapReleaseVerifiesSourceBoundPayloadBeforeSigning(t *testing.T) {
+	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-snapcraft.yml")
+	release, attest := mustJob(t, workflow, "release"), mustJob(t, workflow, "attest")
+	order := []string{"Verify immutable Snap artifact metadata", "Download Snap raw artifact", "Verify Snap payload manifest", "Prepare canonical Snap signing path", "Sign and attest artifacts"}
+	var actual []string
+	for _, step := range release.Steps {
+		for _, name := range order {
+			if step.Name == name {
+				if step.If != "" || (step.ContinueOnError != nil && step.ContinueOnError != false) {
+					t.Fatalf("%s must block direct release on failure", name)
+				}
+				actual = append(actual, name)
+			}
+		}
+	}
+	if !reflect.DeepEqual(actual, order) {
+		t.Fatalf("direct Snap release must verify its raw carrier before signing, got %v", actual)
+	}
+	for _, name := range []string{order[0], order[2], order[3]} {
+		if direct, reusable := mustStepNamed(t, release, name), mustStepNamed(t, attest, name); direct.Run != reusable.Run {
+			t.Fatalf("%s must use the same program in direct and reusable Snap release", name)
+		}
 	}
 }
 
@@ -72,13 +61,25 @@ func TestSnapcraftSharedBuildHasSourceBoundImmutableInterface(t *testing.T) {
 	if build.If != "${{ github.workflow_ref == format('{0}/.github/workflows/build-snapcraft.yml@{1}', github.repository, github.ref) }}" {
 		t.Fatal("direct native Snapcraft build must not run inside a reusable call")
 	}
-	if build.RunsOn != "ubuntu-latest" || build.TimeoutMinutes != 90 || build.Environment != nil ||
+	if build.RunsOn != "ubuntu-24.04" || build.TimeoutMinutes != 90 || build.Environment != nil ||
 		!reflect.DeepEqual(build.Permissions, map[string]string{"contents": "read"}) {
 		t.Fatal("Snapcraft unsigned owner must preserve its runner, 90-minute limit and read-only authority")
 	}
+	coordinated := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/release.yml"), "build-snapcraft")
+	if coordinated.RunsOn != build.RunsOn || coordinated.TimeoutMinutes != build.TimeoutMinutes ||
+		!reflect.DeepEqual(coordinated.Permissions, build.Permissions) {
+		t.Fatal("direct and coordinated Snap producers must use the same pinned host runner, timeout and read-only authority")
+	}
 	call := mustHaveStepUsingPrefix(t, build, "./.github/actions/build-snapcraft")
-	if call.ID != "build" || !reflect.DeepEqual(build.Outputs, map[string]string{"artifact-id": "${{ steps.build.outputs.artifact-id }}"}) {
-		t.Fatal("Snapcraft owner must export only the artifact ID used by release")
+	if call.ID != "build" || !reflect.DeepEqual(build.Outputs, map[string]string{
+		"artifact-id":     "${{ steps.build.outputs.artifact-id }}",
+		"artifact-digest": "${{ steps.build.outputs.artifact-digest }}",
+		"run-attempt":     "${{ steps.build.outputs.run-attempt }}",
+		"source-sha":      "${{ steps.source.outputs.source-sha }}",
+		"version":         "${{ steps.source.outputs.version }}",
+		"manifest-digest": "${{ steps.source.outputs.manifest-digest }}",
+	}) {
+		t.Fatal("Snap owner must carry the source and immutable artifact tuple to release")
 	}
 	if !reflect.DeepEqual(call.With, map[string]any{
 		"source-sha": "${{ steps.source.outputs.source-sha }}", "version": "${{ steps.source.outputs.version }}",
@@ -135,9 +136,9 @@ func TestSnapcraftSharedBuildHasSourceBoundImmutableInterface(t *testing.T) {
 		upload.With["overwrite"] != false || upload.With["retention-days"] != 7 || upload.With["compression-level"] != 9 {
 		t.Fatal("Snapcraft upload must retain each immutable attempt with the existing compression setting")
 	}
-	download := mustStepNamed(t, mustJob(t, workflow, "release"), "Download .snap artifacts")
+	download := mustStepNamed(t, mustJob(t, workflow, "release"), "Download Snap raw artifact")
 	if !reflect.DeepEqual(download.With, map[string]any{
-		"artifact-ids": "${{ needs.build-snapcraft.outputs.artifact-id }}", "path": "out",
+		"artifact-ids": "${{ needs.build-snapcraft.outputs.artifact-id }}", "path": "artifacts/build-snapcraft",
 		"merge-multiple": true, "digest-mismatch": "error",
 	}) {
 		t.Fatal("Snapcraft release must consume the exact same-run ID with a blocking ZIP digest in the existing directory")
