@@ -61,74 +61,35 @@ func independentStoredZIP(t *testing.T, count, commentBytes int) []byte {
 	return local.Bytes()
 }
 
-func TestUnpackDirectoryCleanupBoundsErrorsAndStillAttemptsEveryOwnedDirectory(t *testing.T) {
-	out := t.TempDir()
-	root, err := os.OpenRoot(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	dirs := &ownedUnpackDirs{}
-	for index := range 41 {
-		name := fmt.Sprintf("d%03d", index)
-		if err := root.Mkdir(name, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		info, err := root.Lstat(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		dirs.record(ownedUnpackDir{targetName: name, outPath: filepath.Join(out, name), info: info})
-		if index > 0 {
-			// Keep the original inode alive elsewhere so no filesystem inode
-			// reuse can make the foreign replacement look operation-owned.
-			if err := root.Rename(name, name+"-original"); err != nil {
-				t.Fatal(err)
-			}
-			if err := root.Mkdir(name, 0o700); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	err = dirs.cleanup(root)
-	if err == nil || strings.Count(err.Error(), "changed before rollback") > 16 {
-		t.Fatalf("cleanup retained unbounded errors: %v", err)
-	}
-	if _, err := root.Lstat("d000"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("cleanup stopped after error cap: %v", err)
-	}
-	for index := 1; index < 41; index++ {
-		if _, err := root.Lstat(fmt.Sprintf("d%03d", index)); err != nil {
-			t.Fatalf("foreign directory removed: %v", err)
-		}
-	}
-}
-
-func TestUnpackCancellationDuringPublicationRollsBackCompletedPrefix(t *testing.T) {
+func TestUnpackCancellationDuringPublicationReportsUnprovenCleanup(t *testing.T) {
 	data := independentStoredZIP(t, 3, 0)
 	archive := filepath.Join(t.TempDir(), "original.zip")
 	if err := os.WriteFile(archive, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out := t.TempDir()
-	originalLink := unpackLinkFn
+	originalLink := unpackPublishFn
 	cancelled := false
-	unpackLinkFn = func(root *os.Root, oldName, newName string) error {
-		err := originalLink(root, oldName, newName)
-		if err == nil {
-			cancelled = true
-		}
-		return err
+	unpackPublishFn = func(source, target *os.File, oldName, newName string, expected os.FileInfo) (bool, bool, error) {
+		published, consumed, err := originalLink(source, target, oldName, newName, expected)
+		cancelled = published
+		return published, consumed, err
 	}
-	t.Cleanup(func() { unpackLinkFn = originalLink })
+	t.Cleanup(func() { unpackPublishFn = originalLink })
 	err := Unpack(UnpackOptions{ZipPath: archive, ExtractDir: out, Cancel: func() bool { return cancelled }})
 	if !errors.Is(err, errZIPCancelled) {
 		t.Fatalf("publication ignored cancellation: %v", err)
 	}
-	entries, err := os.ReadDir(out)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("cancelled publication left output/stage: %v %v", entries, err)
+	var result UnpackResult
+	if !errors.As(err, &result) || result.State() != UnpackStatePublicationIndeterminate ||
+		!errors.Is(err, ErrUnpackCleanupIncomplete) {
+		t.Fatalf("legacy cancellation lost publication or cleanup state: %v", err)
 	}
+	entries, err := os.ReadDir(out)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("cancelled publication should retain only the published prefix: %v %v", entries, err)
+	}
+	requireNoUnpackStages(t, out)
 	got, err := os.ReadFile(archive)
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatal("cancelled publication changed original")

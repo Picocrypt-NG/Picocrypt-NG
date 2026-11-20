@@ -73,7 +73,7 @@ func TestUnpackMetadataLimitPrecedesReviewAndOutput(t *testing.T) {
 	}
 }
 
-func TestUnpackDirectoryPassObservesCancellation(t *testing.T) {
+func TestUnpackDirectoryPublicationStopsOnCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "directories.zip")
 	var data bytes.Buffer
 	w := zip.NewWriter(&data)
@@ -103,10 +103,13 @@ func TestUnpackDirectoryPassObservesCancellation(t *testing.T) {
 	if !observed || err == nil || !strings.Contains(err.Error(), "operation cancelled") {
 		t.Fatalf("cancellation observed=%v err=%v", observed, err)
 	}
-	entries, err := os.ReadDir(out)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("cancelled directory pass left residue: %v %v", entries, err)
+	var result UnpackResult
+	if !errors.As(err, &result) || result.State() != UnpackStatePublicationIndeterminate ||
+		!errors.Is(err, ErrUnpackCleanupIncomplete) {
+		t.Fatalf("directory cancellation lost remaining public effect: %v", err)
 	}
+	requireOnlyExtractionEntry(t, out, "first")
+	requireEmptyExtractionDir(t, filepath.Join(out, "first"))
 }
 
 func TestZIPPreflightSizeOnlyZIP64MatchesLinkedStandardLibrary(t *testing.T) {

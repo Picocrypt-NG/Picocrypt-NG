@@ -140,7 +140,7 @@ func TestUnpackUnknownCreatedDirectoryReportsCleanupIncomplete(t *testing.T) {
 			var resultErr error
 			if mode == "typed" {
 				result := UnpackWithResult(opts)
-				requireUnpackState(t, result, UnpackStateNotPublished)
+				requireUnpackState(t, result, UnpackStatePublicationIndeterminate)
 				resultErr = result
 			} else {
 				resultErr = Unpack(opts)
@@ -268,7 +268,7 @@ func TestUnpackCorruptEntryLeavesNoPartialDestination(t *testing.T) {
 	requireEmptyExtractionDir(t, extractDir)
 }
 
-func TestUnpackCorruptNestedEntryRemovesOwnedDirectories(t *testing.T) {
+func TestUnpackCorruptNestedEntryLeavesDirectoriesUnpublished(t *testing.T) {
 	tmpDir := t.TempDir()
 	zipPath := filepath.Join(tmpDir, "corrupt-nested.zip")
 	payload := []byte("nested replacement with a deliberately invalid checksum")
@@ -290,14 +290,14 @@ func TestUnpackCorruptNestedEntryRemovesOwnedDirectories(t *testing.T) {
 	requireEmptyExtractionDir(t, extractDir)
 }
 
-func TestUnpackRollbackPreservesForeignFileAddedToOwnedDirectory(t *testing.T) {
+func TestUnpackCancellationPreservesForeignFileInExistingDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	zipPath := filepath.Join(tmpDir, "cancel-nested.zip")
 	payload := bytes.Repeat([]byte("nested plaintext payload"), 128*1024)
 	createStoredZipForUnpackStagingTest(t, zipPath, "nested/deeper/victim.txt", payload)
 
 	extractDir := filepath.Join(tmpDir, "out")
-	if err := os.Mkdir(extractDir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(extractDir, "nested", "deeper"), 0o700); err != nil {
 		t.Fatalf("create extraction directory: %v", err)
 	}
 	foreignPath := filepath.Join(extractDir, "nested", "deeper", "foreign.txt")
@@ -323,8 +323,8 @@ func TestUnpackRollbackPreservesForeignFileAddedToOwnedDirectory(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "operation cancelled") {
 		t.Fatalf("Unpack cancellation error = %v, want operation cancelled", err)
 	}
-	if !strings.Contains(err.Error(), "remove extraction directory") {
-		t.Fatalf("Unpack hid the directory rollback failure: %v", err)
+	if errors.Is(err, ErrUnpackCleanupIncomplete) {
+		t.Fatalf("staging cancellation with proven cleanup reported uncertainty: %v", err)
 	}
 	if !foreignCreated {
 		t.Fatal("real extraction made no progress before cancellation")
@@ -623,12 +623,12 @@ func TestUnpackPublishesThroughExclusiveCopyWhenHardLinksUnsupported(t *testing.
 	createStoredZipForUnpackStagingTest(t, zipPath, "payload.txt", payload)
 	extractDir := filepath.Join(tmpDir, "out")
 
-	originalLink := unpackLinkFn
-	unpackLinkFn = func(*os.Root, string, string) error {
-		return errors.ErrUnsupported
+	originalLink := unpackPublishFn
+	unpackPublishFn = func(*os.File, *os.File, string, string, os.FileInfo) (bool, bool, error) {
+		return false, false, errors.ErrUnsupported
 	}
 	t.Cleanup(func() {
-		unpackLinkFn = originalLink
+		unpackPublishFn = originalLink
 	})
 
 	if err := Unpack(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir}); err != nil {
@@ -642,6 +642,40 @@ func TestUnpackPublishesThroughExclusiveCopyWhenHardLinksUnsupported(t *testing.
 		t.Fatal("fallback output content mismatch")
 	}
 	requireOnlyExtractionEntry(t, extractDir, "payload.txt")
+}
+
+func TestUnpackPublishesStagedInodeIntoExistingNestedParent(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "files.zip")
+	createStoredZipEntriesForUnpackStagingTest(t, path, map[string][]byte{
+		"docs/existing/payload.txt": []byte("nested payload"),
+		"docs/existing/empty/":      nil,
+	})
+	out := filepath.Join(base, "out")
+	parent := filepath.Join(out, "docs", "existing")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var staged os.FileInfo
+	originalStat := unpackStageStatFn
+	unpackStageStatFn = func(file *os.File) (os.FileInfo, error) {
+		var err error
+		staged, err = originalStat(file)
+		return staged, err
+	}
+	t.Cleanup(func() { unpackStageStatFn = originalStat })
+
+	if err := Unpack(UnpackOptions{ZipPath: path, ExtractDir: out}); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(parent, "payload.txt")
+	published, err := os.Stat(output)
+	if err != nil || !os.SameFile(staged, published) {
+		t.Fatalf("native extraction lost its staged inode: %v", err)
+	}
+	requireUnpackFileBytes(t, output, []byte("nested payload"))
+	requireEmptyExtractionDir(t, filepath.Join(parent, "empty"))
+	requireNoUnpackStages(t, out)
 }
 
 func TestUnpackDoesNotPublishAStageThatCouldNotBeSynced(t *testing.T) {
@@ -679,11 +713,11 @@ func TestUnpackExclusiveCopyFallbackReportsRollbackFailure(t *testing.T) {
 	copyFailure := errors.New("injected fallback copy failure")
 	removeFailure := errors.New("injected fallback rollback failure")
 
-	originalLink := unpackLinkFn
+	originalLink := unpackPublishFn
 	originalCopy := unpackCopyFn
-	originalRemove := unpackRemoveOwnedFn
-	unpackLinkFn = func(*os.Root, string, string) error {
-		return errors.ErrUnsupported
+	originalRemove := unpackRemoveCopyTargetFn
+	unpackPublishFn = func(*os.File, *os.File, string, string, os.FileInfo) (bool, bool, error) {
+		return false, false, errors.ErrUnsupported
 	}
 	unpackCopyFn = func(dst io.Writer, src io.Reader) (int64, error) {
 		n, err := io.CopyN(dst, src, 1)
@@ -692,16 +726,16 @@ func TestUnpackExclusiveCopyFallbackReportsRollbackFailure(t *testing.T) {
 		}
 		return n, copyFailure
 	}
-	unpackRemoveOwnedFn = func(owned ownedUnpackFile, root *os.Root) error {
-		if _, err := root.Lstat(owned.targetName); err != nil {
+	unpackRemoveCopyTargetFn = func(target *os.File) error {
+		if _, err := target.Stat(); err != nil {
 			t.Fatalf("Fallback target was not really created before rollback: %v", err)
 		}
 		return removeFailure
 	}
 	t.Cleanup(func() {
-		unpackLinkFn = originalLink
+		unpackPublishFn = originalLink
 		unpackCopyFn = originalCopy
-		unpackRemoveOwnedFn = originalRemove
+		unpackRemoveCopyTargetFn = originalRemove
 	})
 
 	err := Unpack(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir})
@@ -731,12 +765,12 @@ func TestUnpackExclusiveCopyFallbackPreservesLateCollision(t *testing.T) {
 		t.Fatalf("Create extraction directory: %v", err)
 	}
 
-	originalLink := unpackLinkFn
-	unpackLinkFn = func(*os.Root, string, string) error {
-		return errors.ErrUnsupported
+	originalLink := unpackPublishFn
+	unpackPublishFn = func(*os.File, *os.File, string, string, os.FileInfo) (bool, bool, error) {
+		return false, false, errors.ErrUnsupported
 	}
 	t.Cleanup(func() {
-		unpackLinkFn = originalLink
+		unpackPublishFn = originalLink
 	})
 
 	victimPath := filepath.Join(extractDir, "victim.txt")
@@ -848,7 +882,7 @@ func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
 		requireNoUnpackStages(t, extractDir)
 	})
 
-	t.Run("late second entry collision rolls back to proven not published", func(t *testing.T) {
+	t.Run("late second entry collision keeps the verified prefix and foreign destination", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		zipPath := filepath.Join(tmpDir, "late-collision.zip")
 		firstBytes := []byte("first operation-owned plaintext")
@@ -885,22 +919,16 @@ func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
 				collisionCreated = true
 			},
 		})
-		requireUnpackState(t, result, UnpackStateNotPublished)
-		if !errors.Is(result, os.ErrExist) {
-			t.Fatalf("late collision result = %v; want os.ErrExist", result)
-		}
-		if errors.Is(result, ErrUnpackCleanupIncomplete) {
-			t.Fatalf("successful rollback reported cleanup uncertainty: %v", result)
+		requireUnpackState(t, result, UnpackStatePublicationIndeterminate)
+		if !errors.Is(result, os.ErrExist) || !errors.Is(result, ErrUnpackCleanupIncomplete) {
+			t.Fatalf("late collision result lost the conflict or cleanup uncertainty: %v", result)
 		}
 		if !collisionCreated {
 			t.Fatal("test did not create the late second-entry collision")
 		}
-		if _, err := os.Lstat(filepath.Join(extractDir, "first.txt")); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("first published output survived rollback: %v", err)
-		}
+		requireUnpackFileBytes(t, filepath.Join(extractDir, "first.txt"), firstBytes)
 		requireUnpackFileBytes(t, collisionPath, foreignBytes)
 		requireNoUnpackStages(t, extractDir)
-		requireOnlyExtractionEntry(t, extractDir, "second.txt")
 	})
 
 	t.Run("unproven partial-output rollback is publication indeterminate", func(t *testing.T) {
@@ -915,10 +943,12 @@ func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
 		copyFailure := errors.New("TEST ONLY typed copy failure")
 		removeFailure := errors.New("TEST ONLY typed rollback failure")
 
-		originalLink := unpackLinkFn
+		originalLink := unpackPublishFn
 		originalCopy := unpackCopyFn
-		originalRemove := unpackRemoveOwnedFn
-		unpackLinkFn = func(*os.Root, string, string) error { return errors.ErrUnsupported }
+		originalRemove := unpackRemoveCopyTargetFn
+		unpackPublishFn = func(*os.File, *os.File, string, string, os.FileInfo) (bool, bool, error) {
+			return false, false, errors.ErrUnsupported
+		}
 		unpackCopyFn = func(destination io.Writer, source io.Reader) (int64, error) {
 			written, err := io.CopyN(destination, source, 1)
 			if err != nil {
@@ -926,16 +956,16 @@ func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
 			}
 			return written, copyFailure
 		}
-		unpackRemoveOwnedFn = func(owned ownedUnpackFile, root *os.Root) error {
-			if _, err := root.Lstat(owned.targetName); err != nil {
+		unpackRemoveCopyTargetFn = func(target *os.File) error {
+			if _, err := target.Stat(); err != nil {
 				t.Fatalf("partial output was not created before rollback: %v", err)
 			}
 			return removeFailure
 		}
 		t.Cleanup(func() {
-			unpackLinkFn = originalLink
+			unpackPublishFn = originalLink
 			unpackCopyFn = originalCopy
-			unpackRemoveOwnedFn = originalRemove
+			unpackRemoveCopyTargetFn = originalRemove
 		})
 
 		result := UnpackWithResult(UnpackOptions{ZipPath: zipPath, ExtractDir: extractDir})

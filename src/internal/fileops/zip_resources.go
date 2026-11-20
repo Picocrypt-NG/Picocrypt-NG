@@ -192,19 +192,20 @@ func zipUnpackWorkingBytes(reader *zip.Reader, rootBytes int) (uint64, error) {
 	for _, entry := range reader.File {
 		// Count input path prefixes without allocating normalization/split
 		// copies. Cleaning cannot increase their length. Root-qualified copies,
-		// capacity growth, FileInfo identity and durability indexes are included.
+		// the first-observation directory registry and its FileInfo identities,
+		// list growth and durability indexes are included.
 		if err := add(1024, uint64(len(entry.Name))+uint64(rootBytes)); err != nil {
 			return 0, err
 		}
 		for index, character := range entry.Name {
 			if character == '/' || character == '\\' {
-				if err := add(768, uint64(index)+uint64(rootBytes)); err != nil {
+				if err := add(896, uint64(index)+uint64(rootBytes)); err != nil {
 					return 0, err
 				}
 			}
 		}
 		if entry.FileInfo().IsDir() && len(entry.Name) > 0 && entry.Name[len(entry.Name)-1] != '/' && entry.Name[len(entry.Name)-1] != '\\' {
-			if err := add(768, uint64(len(entry.Name))+uint64(rootBytes)); err != nil {
+			if err := add(896, uint64(len(entry.Name))+uint64(rootBytes)); err != nil {
 				return 0, err
 			}
 		}
