@@ -342,8 +342,8 @@ func TestDecryptStdinStagingCleansUpIfSpaceProbeFails(t *testing.T) {
 	if path != "" || !errors.Is(err, probeErr) || stage == nil {
 		t.Fatalf("space probe failure returned path %q, error %v", path, err)
 	}
-	if _, err := stage.Stat(); !errors.Is(err, os.ErrClosed) {
-		t.Errorf("space probe failure left the stage open: %v", err)
+	if err := stage.Close(); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("space probe failure did not close the stage: %v", err)
 	}
 	if _, err := os.Stat(stage.Name()); !errors.Is(err, os.ErrNotExist) || activeStdinTempPath.Load() != nil {
 		t.Fatalf("space probe failure retained the stage: %v", err)

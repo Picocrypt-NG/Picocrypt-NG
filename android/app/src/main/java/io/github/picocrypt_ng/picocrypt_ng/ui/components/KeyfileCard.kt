@@ -19,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -56,7 +57,8 @@ internal suspend fun <T> withKeyfileMutation(block: suspend () -> T): T {
 
 @Composable
 fun AddKeyfile(viewModel: MainViewModel) {
-    val context = LocalContext.current.applicationContext
+    val context = LocalContext.current
+    val importScope = rememberCoroutineScope()
     val unknownErrorMsg = stringResource(R.string.error_unknown)
     val formData by viewModel.formState.collectAsState()
     var pickerSelection by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -68,7 +70,7 @@ fun AddKeyfile(viewModel: MainViewModel) {
         if (selection != null && uri != null) {
             val mutation = viewModel.beginKeyfileMutation(selection) ?: return@rememberLauncherForActivityResult
             val keyfileIndex = viewModel.formState.value.keyfileFilenames.size
-            viewModel.viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            importScope.launch(start = CoroutineStart.UNDISPATCHED) {
                 try {
                     withKeyfileMutation {
                         if (!viewModel.ownsKeyfileMutation(selection, mutation)) return@withKeyfileMutation
