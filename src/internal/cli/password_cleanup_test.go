@@ -2,11 +2,12 @@ package cli
 
 import (
 	"Picocrypt-NG/internal/secret"
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -47,15 +48,76 @@ func TestReadOwnedPasswordClearsDeletedTailBeforeTransfer(t *testing.T) {
 func TestReadPasswordLineDiscardsPartialReadFailure(t *testing.T) {
 	readErr := errors.New("synthetic password read failure")
 	reader := io.MultiReader(strings.NewReader("pw"), passwordFailureReader{readErr})
-	got, err := readPasswordLine(bufio.NewReader(reader))
+	input := passwordLineInput{source: reader}
+	got, err := readPasswordLine(&input)
 	if got != nil || !errors.Is(err, readErr) {
 		t.Fatalf("partial line read failure = (%v, %v), want nil and original error", got != nil, err)
+	}
+}
+
+func TestCLIPasswordReadFailureLeavesEncryptionOutputAbsent(t *testing.T) {
+	resetEncryptFlagsForDirTest()
+	t.Cleanup(resetEncryptFlagsForDirTest)
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input")
+	output := filepath.Join(dir, "output.pcv")
+	if err := os.WriteFile(input, []byte("input for a failed password read"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := os.Open(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+
+	encPCV3, encQuiet, encPasswordStdin, encOutput = true, true, true, output
+	err = encryptCmd.RunE(encryptCmd, []string{input})
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("encryption after a failed -P read = %v, want the read error", err)
+	}
+	if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed -P read created output: %v", err)
 	}
 }
 
 type passwordFailureReader struct{ err error }
 
 func (r passwordFailureReader) Read([]byte) (int, error) { return 0, r.err }
+
+type cliTestReaderFunc func([]byte) (int, error)
+
+func (read cliTestReaderFunc) Read(p []byte) (int, error) { return read(p) }
+
+func TestReadPasswordLineClearsOwnedScratchOnFailure(t *testing.T) {
+	readErr := errors.New("synthetic password read failure")
+	for _, result := range []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "read error", err: readErr, want: readErr},
+		{name: "no progress", want: io.ErrNoProgress},
+	} {
+		t.Run(result.name, func(t *testing.T) {
+			reader := io.MultiReader(strings.NewReader("pw"), cliTestReaderFunc(func(scratch []byte) (int, error) {
+				// io.Reader may use bytes beyond n as scratch.
+				copy(scratch[len(scratch)-3:], "tmp")
+				return 0, result.err
+			}))
+			input := passwordLineInput{source: reader}
+			got, err := readPasswordLine(&input)
+			if got != nil || !errors.Is(err, result.want) {
+				t.Fatalf("line read failure = (%v, %v), want nil and %v", got != nil, err, result.want)
+			}
+			assertPasswordStorageCleared(t, input.scratch[:])
+		})
+	}
+}
 
 func TestReadPasswordInteractiveClearsOwnedBuffersOnFailure(t *testing.T) {
 	readErr := errors.New("synthetic password read failure")

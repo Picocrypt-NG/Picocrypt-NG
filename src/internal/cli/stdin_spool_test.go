@@ -12,7 +12,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 // The pipe deliberately stays open, so this exercises crash residue before any
@@ -191,6 +194,159 @@ func TestCLIEncryptedStdinPipeRoundTrip(t *testing.T) {
 				t.Fatalf("recovered plaintext differs: got %d want %d", len(got), len(row.plain))
 			}
 		})
+	}
+}
+
+func TestDecryptStdinStagingHonorsCancelledContextBeforeReading(t *testing.T) {
+	oldDir, oldStdin := TempDirOverride, os.Stdin
+	TempDirOverride = t.TempDir()
+	defer func() { TempDirOverride, os.Stdin = oldDir, oldStdin }()
+	source, err := os.CreateTemp(t.TempDir(), "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = source
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	if err := runDecrypt(cmd, []string{"-"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("decrypt with a cancelled context = %v, want context.Canceled", err)
+	}
+}
+
+func TestDecryptStdinStagingHonorsPhysicalBudget(t *testing.T) {
+	oldDir, oldProbe := TempDirOverride, availableStdinTempSpace
+	TempDirOverride = t.TempDir()
+	defer func() { TempDirOverride, availableStdinTempSpace = oldDir, oldProbe }()
+	availableStdinTempSpace = func(stage *os.File) (int64, error) {
+		info, err := stage.Stat()
+		if err != nil {
+			return 0, err
+		}
+		if !info.Mode().IsRegular() || info.Size() != 0 {
+			return 0, errors.New("budget observation requires a held empty stage")
+		}
+		return minBuffer + 9, nil // Six ciphertext bytes after the reserve and multiplier.
+	}
+
+	t.Run("exact budget", func(t *testing.T) {
+		path, err := bufferStdinToTemp(context.Background(), strings.NewReader("123456"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cleanupTempFiles(path)
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != "123456" {
+			t.Fatalf("staged bytes = %q, error %v", got, err)
+		}
+	})
+
+	for _, useStdout := range []bool{false, true} {
+		name := "file output"
+		if useStdout {
+			name = "stdout output"
+		}
+		t.Run(name, func(t *testing.T) {
+			input, err := os.CreateTemp(t.TempDir(), "input")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer input.Close()
+			if _, err := input.WriteString("1234567"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := input.Seek(0, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+
+			stdout, err := os.CreateTemp(t.TempDir(), "stdout")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdout.Close()
+			target := filepath.Join(t.TempDir(), "output")
+			if err := os.WriteFile(target, []byte("existing output"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			oldInput, oldStdout, oldOutput, oldQuiet := os.Stdin, os.Stdout, decOutput, decQuiet
+			defer func() { os.Stdin, os.Stdout, decOutput, decQuiet = oldInput, oldStdout, oldOutput, oldQuiet }()
+			os.Stdin, os.Stdout, decOutput = input, stdout, target
+			if useStdout {
+				decOutput = "-"
+			}
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			if err := runDecrypt(cmd, []string{"-"}); !errors.Is(err, errStdinTempBudget) {
+				t.Fatalf("decrypt above stage budget = %v, want budget error", err)
+			}
+
+			info, err := stdout.Stat()
+			if err != nil || info.Size() != 0 {
+				t.Fatalf("budget rejection wrote to stdout: %v, %v", info, err)
+			}
+			got, err := os.ReadFile(target)
+			if err != nil || string(got) != "existing output" {
+				t.Fatalf("budget rejection changed target: %q, %v", got, err)
+			}
+			entries, err := os.ReadDir(TempDirOverride)
+			if err != nil || len(entries) != 0 || activeStdinTempPath.Load() != nil {
+				t.Fatalf("budget rejection left temporary data: %v, %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestCopyStdinWithinBudgetNeverWritesExcess(t *testing.T) {
+	var output strings.Builder
+	input := iotest.OneByteReader(strings.NewReader("1234567"))
+	err := copyStdinWithinBudget(context.Background(), &output, input, 6)
+	if !errors.Is(err, errStdinTempBudget) || output.String() != "123456" {
+		t.Fatalf("copy beyond budget wrote %q, error %v", output.String(), err)
+	}
+}
+
+func TestCopyStdinWithinBudgetChecksCancellationBeforeWriting(t *testing.T) {
+	var output strings.Builder
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	input := cliTestReaderFunc(func(p []byte) (int, error) {
+		cancel()
+		return copy(p, "data"), io.EOF
+	})
+	if err := copyStdinWithinBudget(ctx, &output, input, 6); output.Len() != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled copy wrote %d bytes, error %v", output.Len(), err)
+	}
+}
+
+func TestDecryptStdinStagingCleansUpIfSpaceProbeFails(t *testing.T) {
+	oldDir, oldProbe := TempDirOverride, availableStdinTempSpace
+	TempDirOverride = t.TempDir()
+	defer func() { TempDirOverride, availableStdinTempSpace = oldDir, oldProbe }()
+	probeErr := errors.New("temporary space observation failed")
+	var stage *os.File
+	availableStdinTempSpace = func(file *os.File) (int64, error) {
+		stage = file
+		return 0, probeErr
+	}
+	input := cliTestReaderFunc(func([]byte) (int, error) {
+		t.Error("input was read after resource check failed")
+		return 0, io.EOF
+	})
+	path, err := bufferStdinToTemp(context.Background(), input, "")
+	if path != "" || !errors.Is(err, probeErr) || stage == nil {
+		t.Fatalf("space probe failure returned path %q, error %v", path, err)
+	}
+	if _, err := stage.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("space probe failure left the stage open: %v", err)
+	}
+	if _, err := os.Stat(stage.Name()); !errors.Is(err, os.ErrNotExist) || activeStdinTempPath.Load() != nil {
+		t.Fatalf("space probe failure retained the stage: %v", err)
 	}
 }
 

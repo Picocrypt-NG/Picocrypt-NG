@@ -397,7 +397,7 @@ func runDecrypt(cmd *cobra.Command, args []string) (retErr error) {
 	leafIsSymlink := false
 	if useStdin {
 		var err error
-		stdinTempFile, err = BufferStdinToTemp(decOutput)
+		stdinTempFile, err = bufferStdinToTemp(cmd.Context(), os.Stdin, decOutput)
 		if err != nil {
 			return fmt.Errorf("buffering stdin: %w", err)
 		}
