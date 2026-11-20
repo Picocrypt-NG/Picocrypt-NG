@@ -663,18 +663,60 @@ func TestUnpackPublishesStagedInodeIntoExistingNestedParent(t *testing.T) {
 		staged, err = originalStat(file)
 		return staged, err
 	}
-	t.Cleanup(func() { unpackStageStatFn = originalStat })
+	originalPublish := unpackPublishFn
+	nativePublished := false
+	unpackPublishFn = func(source, target *os.File, oldName, newName string, expected os.FileInfo) (bool, bool, error) {
+		published, consumed, err := originalPublish(source, target, oldName, newName, expected)
+		nativePublished = published && err == nil
+		return published, consumed, err
+	}
+	t.Cleanup(func() { unpackStageStatFn, unpackPublishFn = originalStat, originalPublish })
 
 	if err := Unpack(UnpackOptions{ZipPath: path, ExtractDir: out}); err != nil {
 		t.Fatal(err)
 	}
 	output := filepath.Join(parent, "payload.txt")
 	published, err := os.Stat(output)
-	if err != nil || !os.SameFile(staged, published) {
+	if err != nil || nativePublished && !os.SameFile(staged, published) {
 		t.Fatalf("native extraction lost its staged inode: %v", err)
 	}
 	requireUnpackFileBytes(t, output, []byte("nested payload"))
 	requireEmptyExtractionDir(t, filepath.Join(parent, "empty"))
+	requireNoUnpackStages(t, out)
+}
+
+func TestUnpackCancellationDuringExclusiveCopyStopsFurtherWrites(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "archive.zip")
+	payload := []byte("verified staged contents")
+	createStoredZipForUnpackStagingTest(t, archive, "payload.txt", payload)
+	out := t.TempDir()
+
+	originalPublish, originalCopy, originalRemove := unpackPublishFn, unpackCopyFn, unpackRemoveCopyTargetFn
+	unpackPublishFn = func(*os.File, *os.File, string, string, os.FileInfo) (bool, bool, error) {
+		return false, false, errors.ErrUnsupported
+	}
+	cancelled := false
+	unpackCopyFn = func(dst io.Writer, src io.Reader) (int64, error) {
+		n, err := io.CopyN(dst, src, 1)
+		if err != nil {
+			return n, err
+		}
+		cancelled = true
+		written, err := originalCopy(dst, src)
+		return n + written, err
+	}
+	unpackRemoveCopyTargetFn = func(*os.File) error { return errors.ErrUnsupported }
+	t.Cleanup(func() {
+		unpackPublishFn, unpackCopyFn, unpackRemoveCopyTargetFn = originalPublish, originalCopy, originalRemove
+	})
+
+	result := UnpackWithResult(UnpackOptions{ZipPath: archive, ExtractDir: out, Cancel: func() bool { return cancelled }})
+	requireUnpackState(t, result, UnpackStatePublicationIndeterminate)
+	if !errors.Is(result, errZIPCancelled) || !errors.Is(result, ErrUnpackCleanupIncomplete) {
+		t.Fatalf("partial fallback copy lost cancellation or cleanup state: %v", result)
+	}
+	requireUnpackFileBytes(t, filepath.Join(out, "payload.txt"), payload[:1])
+	requireOnlyExtractionEntry(t, out, "payload.txt")
 	requireNoUnpackStages(t, out)
 }
 

@@ -716,7 +716,7 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 		if opts.Cancel != nil && opts.Cancel() {
 			return errors.Join(errZIPCancelled, durabilityErrors.err())
 		}
-		published, durabilityErr, err := publishStagedUnpackEntry(extractRoot, stageDirectory, &dirs, &stagedEntries[i])
+		published, durabilityErr, err := publishStagedUnpackEntry(extractRoot, stageDirectory, &dirs, &stagedEntries[i], opts.Cancel)
 		publicEffect = publicEffect || published
 		durabilityErrors.add(durabilityErr)
 		if err != nil {
@@ -724,6 +724,9 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 		}
 	}
 
+	if opts.Cancel != nil && opts.Cancel() {
+		return errors.Join(errZIPCancelled, durabilityErrors.err())
+	}
 	if classifyPublication {
 		bindingErr, durabilityErr, cleanupErr := dirs.sync(stagedEntries)
 		durabilityErrors.add(durabilityErr)
@@ -738,6 +741,9 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 		return errors.Join(err, durabilityErrors.err(), retErr)
 	}
 
+	if opts.Cancel != nil && opts.Cancel() {
+		return errors.Join(errZIPCancelled, durabilityErrors.err(), retErr)
+	}
 	completed = true
 	if durabilityErr := durabilityErrors.err(); durabilityErr != nil {
 		*state = UnpackStatePublishedDurabilityUncertain

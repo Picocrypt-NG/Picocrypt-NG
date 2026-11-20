@@ -26,7 +26,7 @@ func (entry *stagedUnpackEntry) checkStage(root *os.Root) error {
 }
 
 func publishStagedUnpackEntry(
-	stageRoot *os.Root, stageDirectory *os.File, dirs *unpackDirectories, entry *stagedUnpackEntry,
+	stageRoot *os.Root, stageDirectory *os.File, dirs *unpackDirectories, entry *stagedUnpackEntry, cancel CancelFunc,
 ) (published bool, durabilityErr, retErr error) {
 	parentName, targetName := filepath.Dir(entry.targetName), filepath.Base(entry.targetName)
 	targetRoot, err := dirs.open(parentName, false)
@@ -66,7 +66,7 @@ func publishStagedUnpackEntry(
 		return true, nil, fmt.Errorf("publish extraction output %s: %w", entry.outPath, nativeErr)
 	case !published && errors.Is(nativeErr, errors.ErrUnsupported):
 		outputInfo, published, durabilityErr, err = copyStagedUnpackEntry(
-			stageRoot, targetRoot, targetDirectory, targetName, entry,
+			stageRoot, targetRoot, targetDirectory, targetName, entry, cancel,
 		)
 		if err != nil {
 			return published, durabilityErr, err
@@ -92,7 +92,7 @@ func publishStagedUnpackEntry(
 }
 
 func copyStagedUnpackEntry(
-	stageRoot, targetRoot *os.Root, targetDirectory *os.File, targetName string, entry *stagedUnpackEntry,
+	stageRoot, targetRoot *os.Root, targetDirectory *os.File, targetName string, entry *stagedUnpackEntry, cancel CancelFunc,
 ) (info os.FileInfo, published bool, durabilityErr, retErr error) {
 	stage, err := stageRoot.Open(entry.stageName)
 	if err != nil {
@@ -108,6 +108,9 @@ func copyStagedUnpackEntry(
 		return nil, false, nil, errors.Join(fmt.Errorf("stage changed before copying %s", entry.outPath), err)
 	}
 
+	if cancel != nil && cancel() {
+		return nil, false, nil, errZIPCancelled
+	}
 	target, err := createUnpackCopyTarget(targetRoot, targetDirectory, targetName)
 	if err != nil {
 		return nil, false, nil, fmt.Errorf("create extraction destination %s: %w", entry.outPath, err)
@@ -132,7 +135,11 @@ func copyStagedUnpackEntry(
 	if err != nil {
 		return nil, true, nil, fmt.Errorf("inspect extraction destination %s: %w", entry.outPath, err)
 	}
-	if _, err := unpackCopyFn(target, stage); err != nil {
+	var dst io.Writer = target
+	if cancel != nil {
+		dst = &zipCancelWriter{Writer: target, cancel: cancel}
+	}
+	if _, err := unpackCopyFn(dst, stage); err != nil {
 		return nil, true, nil, fmt.Errorf("copy staged output %s: %w", entry.outPath, err)
 	}
 	if err := target.Sync(); err != nil {

@@ -62,37 +62,56 @@ func independentStoredZIP(t *testing.T, count, commentBytes int) []byte {
 }
 
 func TestUnpackCancellationDuringPublicationReportsUnprovenCleanup(t *testing.T) {
-	data := independentStoredZIP(t, 3, 0)
-	archive := filepath.Join(t.TempDir(), "original.zip")
-	if err := os.WriteFile(archive, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := t.TempDir()
-	originalLink := unpackPublishFn
-	cancelled := false
-	unpackPublishFn = func(source, target *os.File, oldName, newName string, expected os.FileInfo) (bool, bool, error) {
-		published, consumed, err := originalLink(source, target, oldName, newName, expected)
-		cancelled = published
-		return published, consumed, err
-	}
-	t.Cleanup(func() { unpackPublishFn = originalLink })
-	err := Unpack(UnpackOptions{ZipPath: archive, ExtractDir: out, Cancel: func() bool { return cancelled }})
-	if !errors.Is(err, errZIPCancelled) {
-		t.Fatalf("publication ignored cancellation: %v", err)
-	}
-	var result UnpackResult
-	if !errors.As(err, &result) || result.State() != UnpackStatePublicationIndeterminate ||
-		!errors.Is(err, ErrUnpackCleanupIncomplete) {
-		t.Fatalf("legacy cancellation lost publication or cleanup state: %v", err)
-	}
-	entries, err := os.ReadDir(out)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("cancelled publication should retain only the published prefix: %v %v", entries, err)
-	}
-	requireNoUnpackStages(t, out)
-	got, err := os.ReadFile(archive)
-	if err != nil || !bytes.Equal(got, data) {
-		t.Fatal("cancelled publication changed original")
+	for _, test := range []struct {
+		name      string
+		entries   int
+		forceCopy bool
+	}{
+		{"publication before remaining entries", 3, false},
+		{"exclusive copy before remaining entries", 3, true},
+		{"exclusive copy of the last entry", 1, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := independentStoredZIP(t, test.entries, 0)
+			archive := filepath.Join(t.TempDir(), "original.zip")
+			if err := os.WriteFile(archive, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out := t.TempDir()
+			originalPublish, originalCopy := unpackPublishFn, unpackCopyFn
+			cancelled := false
+			unpackPublishFn = func(source, target *os.File, oldName, newName string, expected os.FileInfo) (bool, bool, error) {
+				if test.forceCopy {
+					return false, false, errors.ErrUnsupported
+				}
+				published, consumed, err := originalPublish(source, target, oldName, newName, expected)
+				cancelled = published && err == nil
+				return published, consumed, err
+			}
+			unpackCopyFn = func(dst io.Writer, src io.Reader) (int64, error) {
+				n, err := originalCopy(dst, src)
+				cancelled = err == nil
+				return n, err
+			}
+			t.Cleanup(func() { unpackPublishFn, unpackCopyFn = originalPublish, originalCopy })
+
+			err := Unpack(UnpackOptions{ZipPath: archive, ExtractDir: out, Cancel: func() bool { return cancelled }})
+			if !errors.Is(err, errZIPCancelled) {
+				t.Fatalf("publication ignored cancellation: %v", err)
+			}
+			var result UnpackResult
+			if !errors.As(err, &result) || result.State() != UnpackStatePublicationIndeterminate ||
+				!errors.Is(err, ErrUnpackCleanupIncomplete) {
+				t.Fatalf("legacy cancellation lost publication or cleanup state: %v", err)
+			}
+			requireOnlyExtractionEntry(t, out, "f000000")
+			requireUnpackFileBytes(t, filepath.Join(out, "f000000"), []byte{0})
+			requireNoUnpackStages(t, out)
+			got, err := os.ReadFile(archive)
+			if err != nil || !bytes.Equal(got, data) {
+				t.Fatal("cancelled publication changed original")
+			}
+		})
 	}
 }
 

@@ -46,10 +46,13 @@ case "$1:$2" in
         platform=linux-amd64
         jdk_sha256=$(jq -er '.jdk.sha256 | select(test("^[0-9a-f]{64}$"))' \
             .github/toolchains/android-signer/manifest.json)
+        gradle_verification_sha256=$(digest android/gradle/verification-metadata.xml)
+        gradle_wrapper_sha256=$(digest android/gradle/wrapper/gradle-wrapper.jar)
+        gradle_wrapper_properties_sha256=$(digest android/gradle/wrapper/gradle-wrapper.properties)
         extra=$(jq -ce --arg jdk_sha256 "$jdk_sha256" \
-            --arg gradle_verification_sha256 "$(digest android/gradle/verification-metadata.xml)" \
-            --arg gradle_wrapper_sha256 "$(digest android/gradle/wrapper/gradle-wrapper.jar)" \
-            --arg gradle_wrapper_properties_sha256 "$(digest android/gradle/wrapper/gradle-wrapper.properties)" \
+            --arg gradle_verification_sha256 "$gradle_verification_sha256" \
+            --arg gradle_wrapper_sha256 "$gradle_wrapper_sha256" \
+            --arg gradle_wrapper_properties_sha256 "$gradle_wrapper_properties_sha256" \
             '.packages | map_values(.sha256) +
              {$jdk_sha256,$gradle_verification_sha256,$gradle_wrapper_sha256,$gradle_wrapper_properties_sha256}' "$lock")
         ;;

@@ -6,8 +6,50 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
+
+func TestAndroidReleaseMaterialsRejectsMissingGradleInput(t *testing.T) {
+	const script = ".github/scripts/release-materials.sh"
+	gradleFiles := []string{
+		"android/gradle/verification-metadata.xml",
+		"android/gradle/wrapper/gradle-wrapper.jar",
+		"android/gradle/wrapper/gradle-wrapper.properties",
+	}
+	required := append([]string{
+		script,
+		".github/toolchains/android-release.json",
+		".github/toolchains/android-signer/manifest.json",
+		".github/toolchains/release-go.json",
+		"src/go.mod",
+		"src/go.sum",
+	}, gradleFiles...)
+	for _, missing := range gradleFiles {
+		t.Run(filepath.Base(missing), func(t *testing.T) {
+			dir := t.TempDir()
+			for _, path := range required {
+				if path == missing {
+					continue
+				}
+				target := filepath.Join(dir, path)
+				if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(target, []byte(mustReadRepoFile(t, path)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("bash", filepath.Join(dir, script), "build-android.yml", "all")
+			output, err := cmd.Output()
+			if err == nil || len(output) != 0 {
+				t.Fatalf("missing %s should reject the release materials without producing JSON: %v, %s", missing, err, output)
+			}
+		})
+	}
+}
 
 func releaseMaterialsFixture(t *testing.T, owner, arch string) map[string]any {
 	t.Helper()
