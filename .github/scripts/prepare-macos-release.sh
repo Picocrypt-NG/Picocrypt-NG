@@ -24,3 +24,5 @@ jq -ce --arg go "$(<"$work/archive.sha256")" 'select(.go_sha256 == $go)' <<<"$ma
 jq -cS --arg os_build "$os_build" --arg image_version "$ImageVersion" '. + {$os_build,$image_version}' \
     <<<"$materials" > "$work/materials.json"
 printf 'DEVELOPER_DIR=%s\nSDKROOT=%s\nCC=%s\nCXX=%s\n' "$DEVELOPER_DIR" "$sdkroot" "$cc" "$cxx" >> "$GITHUB_ENV"
+printf '%s=\n' CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH \
+    PKG_CONFIG_PATH PKG_CONFIG_LIBDIR DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH >> "$GITHUB_ENV"

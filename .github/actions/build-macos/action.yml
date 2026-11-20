@@ -53,11 +53,6 @@ runs:
         bash .github/scripts/prepare-release-go.sh darwin-arm64 "$work"
         bash .github/scripts/prepare-macos-release.sh "$work"
 
-    - name: Install packages
-      shell: bash
-      run: |
-        brew install glfw glew
-
     - name: Run native test suite
       shell: bash
       run: bash .github/scripts/test-macos-pcv3.sh "$SHARD_INDEX" "$SHARD_COUNT"
