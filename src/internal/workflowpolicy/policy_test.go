@@ -1279,46 +1279,31 @@ func TestMacOSPRBuildsOnlyAfterNativeTests(t *testing.T) {
 	}
 }
 
-func TestWindowsWorkflowsUseApprovedResourceHacker528(t *testing.T) {
-	const expectedHash = "b611be2f35cb44efd1c29df03e7ebe62bd556a500585680e1afa5e073eaf1756"
-	for _, tc := range []struct {
+func TestWindowsWorkflowsUseSharedGUIResourceBuild(t *testing.T) {
+	for _, lane := range []struct {
 		path string
 		job  string
 	}{
-		{path: ".github/workflows/build-windows.yml", job: "build"},
-		{path: ".github/workflows/pr-test-build-windows.yml", job: "pr-test-build-windows"},
+		{".github/workflows/build-windows.yml", "build"},
+		{".github/workflows/pr-test-build-windows.yml", "pr-test-build-windows"},
 	} {
-		t.Run(tc.path, func(t *testing.T) {
-			job := windowsBuildPolicyJob(t, tc.path, tc.job)
-			if got := job.Env["RESHACKER_SHA256"]; got != expectedHash {
-				t.Fatalf("RESHACKER_SHA256 = %q, want %q", got, expectedHash)
+		t.Run(lane.path, func(t *testing.T) {
+			job := windowsBuildPolicyJob(t, lane.path, lane.job)
+			step := mustStepNamed(t, job, "Build GUI")
+			if step.Shell != "pwsh" || step.Run != "& .github/scripts/build-windows-gui.ps1\n" ||
+				step.If != "" || step.ContinueOnError != nil {
+				t.Fatal("Windows GUI must use the same blocking PE resource build in PR and release CI")
 			}
-			resourceStep := mustStepNamed(t, job, "Add icon, manifest, and version info")
-			if resourceStep.Shell != "pwsh" {
-				t.Fatalf("Resource Hacker step shell = %q, want pwsh", resourceStep.Shell)
-			}
-			mustContain(t, resourceStep.Run, "https://www.angusj.com/resourcehacker/reshacker_setup.exe")
-			mustNotContain(t, resourceStep.Run, "github.com/user-attachments")
-			mustNotContain(t, resourceStep.Run, "reshacker_setup.zip")
-			mustNotContain(t, resourceStep.Run, "Expand-Archive")
-			mustContainActiveLines(t, resourceStep.Run,
-				"if ($installer.ExitCode -ne 0) {",
-				`throw "Resource Hacker installer failed with exit code $($installer.ExitCode)"`,
-				"}",
-				"if (-not (Test-Path -LiteralPath $env:P -PathType Leaf)) {",
-				`throw "Resource Hacker executable was not installed at $env:P"`,
-				"}",
-				"function Invoke-ResourceHacker {",
-			)
+			content := windowsBuildPolicyContent(t, lane.path)
+			mustContainInOrder(t, content, "- name: Build GUI", "- name: Compress with upx")
+			mustNotContain(t, content, "reshacker_setup.exe")
+			mustContain(t, mustStepNamed(t, job, "Compress with upx").Run, "src/Picocrypt-NG-gui.exe")
 		})
 	}
 }
 
 func TestWindowsDownloadsAreBoundedAndChecksumGated(t *testing.T) {
-	const (
-		resourceHackerURL = "https://www.angusj.com/resourcehacker/reshacker_setup.exe"
-		upxURL            = "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip"
-	)
+	const upxURL = "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip"
 	cases := []struct {
 		name     string
 		path     string
@@ -1329,18 +1314,6 @@ func TestWindowsDownloadsAreBoundedAndChecksumGated(t *testing.T) {
 		hashEnv  string
 		consumer string
 	}{
-		{
-			name: "release-resource-hacker", path: ".github/workflows/build-windows.yml",
-			job: "build", step: "Add icon, manifest, and version info",
-			output: "reshacker_setup.exe", url: resourceHackerURL,
-			hashEnv: "RESHACKER_SHA256", consumer: "$installer = Start-Process `",
-		},
-		{
-			name: "pr-resource-hacker", path: ".github/workflows/pr-test-build-windows.yml",
-			job: "pr-test-build-windows", step: "Add icon, manifest, and version info",
-			output: "reshacker_setup.exe", url: resourceHackerURL,
-			hashEnv: "RESHACKER_SHA256", consumer: "$installer = Start-Process `",
-		},
 		{
 			name: "release-upx", path: ".github/workflows/build-windows.yml",
 			job: "build", step: "Compress with upx",
@@ -1374,48 +1347,6 @@ func TestWindowsDownloadsAreBoundedAndChecksumGated(t *testing.T) {
 				t.Fatalf("download step shell = %q, want pwsh", step.Shell)
 			}
 			mustUseBoundedCurlDownload(t, step.Run, tc.output, tc.url, tc.hashEnv, tc.consumer)
-		})
-	}
-}
-
-func TestWindowsResourceEditingWaitsAndFailsLoud(t *testing.T) {
-	for _, tc := range []struct {
-		path string
-		job  string
-	}{
-		{path: ".github/workflows/build-windows.yml", job: "build"},
-		{path: ".github/workflows/pr-test-build-windows.yml", job: "pr-test-build-windows"},
-	} {
-		t.Run(tc.path, func(t *testing.T) {
-			resourceStep := mustStepNamed(t, windowsBuildPolicyJob(t, tc.path, tc.job), "Add icon, manifest, and version info")
-
-			mustNotContain(t, resourceStep.Run, "Start-Sleep")
-			mustNotContain(t, resourceStep.Run, "Invoke-Expression")
-			if got := strings.Count(resourceStep.Run, "Start-Process"); got != 2 {
-				t.Fatalf("Resource Hacker step Start-Process count = %d, want installer and CLI invocations", got)
-			}
-			mustContainInOrder(t, resourceStep.Run,
-				"$installer = Start-Process",
-				`-FilePath "reshacker_setup.exe"`,
-				`-ArgumentList "/SILENT"`,
-				"-Wait -PassThru",
-				"if ($installer.ExitCode -ne 0)",
-				"function Invoke-ResourceHacker",
-				"$process = Start-Process",
-				"-FilePath $env:P",
-				`-ArgumentList ($Arguments + @("-log", "CONSOLE"))`,
-				"-Wait -PassThru",
-				"if ($process.ExitCode -ne 0)",
-				"Get-Item -LiteralPath $ExpectedOutput -ErrorAction Stop",
-				"if ($output.Length -eq 0)",
-			)
-			mustContainInOrder(t, resourceStep.Run,
-				`-ExpectedOutput "src/2.exe"`,
-				`-ExpectedOutput "src/3.exe"`,
-				`-ExpectedOutput "src/4.exe"`,
-				`-ExpectedOutput "resources.res"`,
-				`-ExpectedOutput "src/5.exe"`,
-			)
 		})
 	}
 }
