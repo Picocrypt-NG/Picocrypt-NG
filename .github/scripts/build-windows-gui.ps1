@@ -3,9 +3,19 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $src = Join-Path $repo 'src'
 $resourceDirectory = Join-Path $repo 'dist/windows'
+$mingw = 'C:\mingw64\bin'
+$resourceCompiler = Join-Path $mingw 'windres.exe'
+$gcc = Join-Path $mingw 'gcc.exe'
+$binutilsVersion = '2.46.0.20260210'
+$reportedBinutils = & $resourceCompiler --version
+if ($LASTEXITCODE -ne 0 -or -not ($reportedBinutils -match "^GNU windres \(GNU Binutils\) $([regex]::Escape($binutilsVersion))$")) {
+    throw "Expected GNU windres $binutilsVersion from $mingw"
+}
+$gccVersion = & $gcc -dumpfullversion
+if ($LASTEXITCODE -ne 0 -or $gccVersion -ne '15.2.0') {
+    throw "Expected GCC 15.2.0 from $mingw"
+}
 $llvm = Join-Path $env:ProgramFiles 'LLVM/bin'
-$resourceCompiler = Join-Path $llvm 'llvm-rc.exe'
-$resourceConverter = Join-Path $llvm 'llvm-cvtres.exe'
 $resourceReader = Join-Path $llvm 'llvm-readobj.exe'
 $llvmVersion = '20.1.8'
 $reportedVersion = & $resourceReader --version
@@ -22,17 +32,15 @@ if (Test-Path -LiteralPath $object) {
 $scratch = [IO.Directory]::CreateTempSubdirectory('picocrypt-windows-resources-').FullName
 $ownedObject = $false
 try {
-    $resources = Join-Path $scratch 'resources.res'
     $compiledObject = Join-Path $scratch 'resources.syso'
     Push-Location $resourceDirectory
     try {
-        & $resourceCompiler /FO $resources gui_resources.rc
-        if ($LASTEXITCODE -ne 0) { throw "llvm-rc failed ($LASTEXITCODE)" }
+        & $resourceCompiler --input gui_resources.rc --output $compiledObject --output-format=coff --target=pe-x86-64 `
+            --preprocessor "$gcc -E -xc -DRC_INVOKED"
+        if ($LASTEXITCODE -ne 0) { throw "windres failed ($LASTEXITCODE)" }
     } finally {
         Pop-Location
     }
-    & $resourceConverter /MACHINE:X64 /TIMESTAMP:0 "/OUT:$compiledObject" $resources
-    if ($LASTEXITCODE -ne 0) { throw "llvm-cvtres failed ($LASTEXITCODE)" }
     [IO.File]::Move($compiledObject, $object)
     $ownedObject = $true
 
@@ -62,7 +70,7 @@ try {
     if ($version.FileVersion -cne $expectedVersion -or $version.ProductName -cne 'Picocrypt NG') {
         throw "Unexpected PE version metadata: $($version.ProductName) $($version.FileVersion)"
     }
-    Write-Host "Verified Windows GUI PE resources using LLVM $llvmVersion"
+    Write-Host "Verified Windows GUI PE resources from GNU windres $binutilsVersion using LLVM $llvmVersion"
 } finally {
     if ($ownedObject) {
         Remove-Item -LiteralPath $object -Force
