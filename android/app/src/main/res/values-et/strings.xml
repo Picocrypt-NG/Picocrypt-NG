@@ -296,6 +296,9 @@
     <string name="pcv3_warning_unknown_title">Toimingu lisahoiatus</string>
     <string name="pcv3_warning_unknown_body">Toiming andis lisahoiatuse. Hoia lähtefail alles. Hoiatus ei anna luba ajutisi ega muid faile kustutada.</string>
     <string name="pcv3_archive_close">Sulge lahti pakkimata</string>
+    <string name="pcv3_archive_exporting">Arhiivi eksportimine</string>
+    <string name="pcv3_archive_cancel_export">Katkesta eksport</string>
+    <string name="pcv3_archive_cancel_requested">Katkestamine taotletud</string>
     <string name="pcv3_recovery_result_close">Sulge taastetulemus</string>
     <string name="pcv3_publication_close">Sulge salvestustulemus</string>
     <string name="pcv3_warning_cleanup_close">Sulge ajutiste failide hoiatus</string>

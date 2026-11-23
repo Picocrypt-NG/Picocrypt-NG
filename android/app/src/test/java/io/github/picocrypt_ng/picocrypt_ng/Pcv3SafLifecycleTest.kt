@@ -12,6 +12,8 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.runTest
 import kotlin.coroutines.cancellation.CancellationException
 import org.junit.Assert.assertEquals
@@ -601,6 +603,65 @@ class Pcv3SafLifecycleTest {
     }
 
     @Test
+    fun `user cancellation is acknowledged while provider and signal are still blocked`() = runTest {
+        val events = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val operation = SafOperation("saf-cancel-ack", archivePendingSnapshot(), events)
+        val session = SafSession(operation, "active-receipt", terminalSnapshot("terminal-receipt"), events)
+        operation.archive = SafArchive(operation, session, activeSnapshot("active-receipt"), events)
+        val custodian = RecordingCustodian(events)
+        val lifecycle = lifecycle(operation, custodian)
+        val live = lifecycle.start(request(), "password".toCharArray(), File("receipt")).getOrThrow()
+        val providerEntered = CompletableDeferred<Unit>()
+        val providerRelease = CompletableDeferred<Unit>()
+        val signalEntered = CompletableDeferred<Unit>()
+        val signalRelease = CompletableDeferred<Unit>()
+        val blockedProvider = RecordingPublisher(
+            events, providerEntered, providerRelease, Pcv3SafPublicationResult.NEEDS_ABORT,
+        )
+        val publisher = object : Pcv3SafPublisher by blockedProvider {
+            override fun newCancellation(): Pcv3SafCancellation = object : Pcv3SafCancellation {
+                override fun isCancelled(): Boolean = signalEntered.isCompleted
+                override fun cancel() {
+                    signalEntered.complete(Unit)
+                    runBlocking { signalRelease.await() }
+                }
+            }
+        }
+        val export = async(Dispatchers.Default) {
+            lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueUri(), publisher)
+        }
+        val acknowledgement = async(Dispatchers.Default) {
+            providerEntered.await()
+            lifecycle.cancelPcv3(live.operationId, live.generation, awaitSafSettlement = false)
+        }
+        try {
+            withContext(Dispatchers.Default) {
+                withTimeout(5_000) {
+                    assertTrue(acknowledgement.await().isSuccess)
+                    signalEntered.await()
+                }
+            }
+            assertEquals(
+                Pcv3SafExportState.CANCEL_REQUESTED,
+                (lifecycle.presentation.value as? Pcv3Presentation.Live)?.safExportState,
+            )
+            assertEquals(ReceiptCustody.Exact("active-receipt"), custodian.custody)
+            assertFalse(export.isCompleted)
+            assertEquals(0, operation.releaseCalls)
+            assertTrue(lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueUri(), publisher).isFailure)
+        } finally {
+            signalRelease.complete(Unit)
+            providerRelease.complete(Unit)
+        }
+        assertTrue(export.await().isFailure)
+        assertEquals(1, session.abortCalls)
+        assertEquals(0, session.finishCalls)
+        assertEquals(1, operation.releaseCalls)
+        assertEquals(ReceiptCustody.Exact("terminal-receipt"), custodian.custody)
+        assertTrue(lifecycle.presentation.value is Pcv3Presentation.Final)
+    }
+
+    @Test
     fun `cancellation interrupts the exact provider action waits for settlement then Aborts once`() = runTest {
         val events = mutableListOf<String>()
         val operation = SafOperation("op-saf-cancel", archivePendingSnapshot(), events)
@@ -788,14 +849,15 @@ class Pcv3SafLifecycleTest {
 
     @Test
     fun `cancellation after Finish claim never invokes session Cancel or Abort`() = runTest {
-        val events = mutableListOf<String>()
+        val events = java.util.Collections.synchronizedList(mutableListOf<String>())
         val finishEntered = CompletableDeferred<Unit>()
         val finishRelease = CompletableDeferred<Unit>()
         val operation = SafOperation("op-saf-cancel-during-finish", archivePendingSnapshot(), events)
+        val terminal = terminalSnapshot("terminal-receipt")
         val session = SafSession(
             operation = operation,
             activeReceipt = "active-receipt",
-            terminal = terminalSnapshot("terminal-receipt"),
+            terminal = terminal,
             events = events,
             finishEntered = finishEntered,
             finishRelease = finishRelease,
@@ -817,10 +879,13 @@ class Pcv3SafLifecycleTest {
         val cancel = async(Dispatchers.Default) { lifecycle.cancelPcv3(lifecycle.presentation.value!!.operationId, lifecycle.presentation.value!!.generation) }
         while (publisher.cancellation.cancelCalls == 0) kotlinx.coroutines.yield()
         assertFalse("Cancel waits for the claimed Finish to settle", cancel.isCompleted)
+        assertEquals(Pcv3SafExportState.CANCEL_REQUESTED,
+            (lifecycle.presentation.value as? Pcv3Presentation.Live)?.safExportState)
         finishRelease.complete(Unit)
 
         assertTrue(cancel.await().isSuccess)
-        export.await()
+        export.await().getOrThrow()
+        assertEquals(projectPcv3Snapshot(terminal), (lifecycle.presentation.value as Pcv3Presentation.Final).snapshot)
         assertEquals(1, session.finishCalls)
         assertEquals("Finish ownership excludes session Cancel", 0, session.cancelCalls)
         assertEquals("Finish ownership excludes Abort", 0, session.abortCalls)

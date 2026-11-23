@@ -297,6 +297,9 @@
     <string name="pcv3_warning_unknown_title">Additional operation warning</string>
     <string name="pcv3_warning_unknown_body">The operation reported an additional warning. Keep the source and do not infer cleanup or deletion authority.</string>
     <string name="pcv3_archive_close">Close without extracting</string>
+    <string name="pcv3_archive_exporting">Exporting archive</string>
+    <string name="pcv3_archive_cancel_export">Cancel export</string>
+    <string name="pcv3_archive_cancel_requested">Cancellation requested</string>
     <string name="pcv3_recovery_result_close">Close recovery result</string>
     <string name="pcv3_publication_close">Close publication result</string>
     <string name="pcv3_warning_cleanup_close">Close cleanup warning</string>

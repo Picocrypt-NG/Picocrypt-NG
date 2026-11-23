@@ -185,10 +185,10 @@ fun MainLayout() {
             
             if (isPasswordError) {
                 // Password error - only clear passwords, preserve files and settings for retry
-                mainViewModel.clearSensitiveData(clearFiles = false)
+                mainViewModel.clearLegacyForm(previous, clearFiles = false)
             } else {
                 // Non-password error or success - full cleanup
-                mainViewModel.clearSensitiveData(clearFiles = true)
+                mainViewModel.clearLegacyForm(previous, clearFiles = true)
             }
         }
         
@@ -247,7 +247,7 @@ fun MainLayout() {
         if (isFileCardVisible) add {
             FileCard(
                 viewModel = mainViewModel,
-                enabled = !isAnyOperationActive,
+                enabled = !isAnyOperationActive && !formData.legacyStartPending,
                 pcv3AndroidPolicyState = pcv3AndroidPolicyState,
             )
         }

@@ -24,19 +24,20 @@ verify_metadata() {
 }
 
 verify_payload() {
-    local arch=$1 attempt=$2 directory expected actual_names manifest
+    local arch=$1 attempt=$2 directory expected actual_names manifest materials machine header actual name
     directory="$ARTIFACT_ROOT/build-linux-$arch"
     test -d "$directory" && test ! -L "$directory" || return 1
     manifest="$directory/payload-manifest.json"
     test -f "$manifest" && test ! -L "$manifest" && test -s "$manifest" || return 1
     expected=$(awk -v prefix="artifacts/build-linux-$arch/" '$2 == "build-linux.yml" && index($3,prefix) == 1 {print $1}' <<< "$canonical" | LC_ALL=C sort)
     test -n "$expected"
-    jq -e --arg repository "$GITHUB_REPOSITORY" --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" \
+    materials=$(bash .github/scripts/release-materials.sh build-linux.yml "$arch") || return 1
+    jq -e --argjson materials "$materials" --arg repository "$GITHUB_REPOSITORY" --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" \
         --arg canonical "$CANONICAL_MANIFEST_SHA256" --arg arch "$arch" --arg run "$GITHUB_RUN_ID" --arg attempt "$attempt" \
         --arg names "$expected" \
         '.schema_version == 1 and .repository == $repository and .source_sha == $source and .version == $version
           and .canonical_manifest_sha256 == $canonical and .owner_workflow == "build-linux.yml"
-          and .arch == $arch and .run_id == $run and .run_attempt == $attempt
+          and .arch == $arch and .run_id == $run and .run_attempt == $attempt and .materials == $materials
           and ([.files[].name]|sort) == ($names|split("\n"))
           and all(.files[]; .sha256|test("^[0-9a-f]{64}$"))' "$manifest" >/dev/null
     actual_names=$(find "$directory" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
@@ -44,7 +45,33 @@ verify_payload() {
     while IFS= read -r name; do
         test -f "$directory/$name" && test ! -L "$directory/$name" && test -s "$directory/$name" || return 1
     done <<< "$expected"
-    (cd "$directory"; jq -r '.files[] | "\(.sha256)  \(.name)"' payload-manifest.json | sha256sum --check --strict)
+    (cd "$directory"; jq -r '.files[] | "\(.sha256)  \(.name)"' payload-manifest.json | sha256sum --check --strict) || return 1
+    case "$arch" in
+        amd64) machine="Advanced Micro Devices X86-64" ;;
+        arm64) machine="AArch64" ;;
+        *) return 1 ;;
+    esac
+    while IFS= read -r name; do
+        if [[ $name == *.deb ]]; then
+            actual=$(dpkg-deb --field "$directory/$name" Architecture) || return 1
+            if [[ $actual != "$arch" ]]; then
+                printf 'Debian package architecture mismatch: %s requires %s\n' "$name" "$arch" >&2
+                return 1
+            fi
+            if ! dpkg-deb --fsys-tarfile "$directory/$name" |
+                tar -xOf - -- ./usr/bin/picocrypt-ng-gui | cmp -s - "$directory/Picocrypt-NG"; then
+                printf 'Debian package contains a different Picocrypt NG executable: %s\n' "$name" >&2
+                return 1
+            fi
+            continue
+        fi
+        header=$(LC_ALL=C readelf --file-header "$directory/$name") || return 1
+        actual=$(awk -F ': *' '/^[[:space:]]*Machine:/ { print $2 }' <<<"$header")
+        if [[ $actual != "$machine" ]]; then
+            printf 'Linux payload architecture mismatch: %s requires %s\n' "$name" "$machine" >&2
+            return 1
+        fi
+    done <<< "$expected"
 }
 
 case "${1:-}" in

@@ -1,0 +1,14 @@
+{
+  "snapshot": "20261105T000000Z",
+  "upx_version": "5.2.1",
+  "architectures": {
+    "amd64": {
+      "base_image": "ubuntu@sha256:023f8a753c22258c9fe2d0005a7d28258038da7d620e9f93e9ad78aa266f9f11",
+      "upx_sha256": "402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657"
+    },
+    "arm64": {
+      "base_image": "ubuntu@sha256:ea0b2b8607a61f981b2461f21edc27c0b37ddd53d23d4d350936480adf5de28c",
+      "upx_sha256": "a72d112c5970a904a31da0b9c84f919bc16b9a311787c12245508544a78c7d36"
+    }
+  }
+}

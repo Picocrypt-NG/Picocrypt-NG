@@ -22,18 +22,27 @@ func TestMacOSReleaseUsesCompleteNativeLaneBeforePackaging(t *testing.T) {
 			t.Fatalf("%s must preserve the complete PR native/race/CLI lane and blocking outcome: got %+v, want %+v", name, got, want)
 		}
 	}
+	const verify = "Verify macOS binaries and linked libraries"
+	wantVerify := mustStepNamed(t, pr, verify)
+	wantVerify.Shell = "bash"
+	if got := mustCompositeStepNamed(t, action, verify); !reflect.DeepEqual(got, wantVerify) {
+		t.Fatal("both macOS lanes must check the same binaries and linked libraries")
+	}
 	mustContainInOrder(t, mustReadRepoFile(t, ".github/actions/build-macos/action.yml"),
 		"- name: Run native test suite",
 		"- name: Run tests",
 		"- name: Build GUI",
 		"- name: Build CLI-only (no graphics dependencies)",
+		"- name: "+verify,
 		"- name: Package as .app in a .dmg",
 		"- name: Upload artifacts",
 	)
 }
 
 func TestMacOSPRUsesOneRunnerForFullNativeSuiteAndPackaging(t *testing.T) {
-	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-test-build-macos.yml")
+	const path = ".github/workflows/pr-test-build-macos.yml"
+	mustNotContain(t, mustReadRepoFile(t, path), "brew install")
+	workflow := mustReadWorkflowDoc(t, path)
 	if len(workflow.Jobs) != 1 {
 		t.Fatalf("macOS PR must require one runner acquisition, got %d jobs", len(workflow.Jobs))
 	}

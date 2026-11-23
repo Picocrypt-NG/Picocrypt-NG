@@ -164,7 +164,7 @@ func TestAndroidReusableOwnerPreservesNativeSigningAndFiveFinalPairs(t *testing.
 	}{
 		{
 			name:   "Validate unsigned signing inputs before loading secrets",
-			sha256: "0dd6339d6be93e9723865593fd00aac7eebaf502102114cbb1305fd1d989ad58",
+			sha256: "608bb6be49361100773c1907b25d3fbe0b04cee8c7ef0480361e0504b5563332",
 		},
 		{
 			name:   "Build Android signing image before loading secrets",

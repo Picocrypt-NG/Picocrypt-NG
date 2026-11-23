@@ -34,6 +34,15 @@ func TestMacOSPayloadManifestRejectsIncompleteOrSubstitutedPair(t *testing.T) {
 			if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			materials := releaseMaterialsFixture(t, "build-macos.yml", "arm64")
+			work := filepath.Join(dir, "picocrypt-release-materials")
+			if err := os.Mkdir(work, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeLinuxJSONFixture(t, filepath.Join(work, "materials.json"), materials)
 			staging := filepath.Join(dir, "release-staging")
 			if err := os.Mkdir(staging, 0o700); err != nil {
 				t.Fatal(err)
@@ -74,7 +83,7 @@ func TestMacOSPayloadManifestRejectsIncompleteOrSubstitutedPair(t *testing.T) {
 			command := exec.Command("bash", "--noprofile", "--norc", "-euo", "pipefail", "-c", record.Run)
 			command.Dir = dir
 			command.Env = append(os.Environ(), "SOURCE_SHA="+source, "SOURCE_VERSION=2.19", "GOARCH=arm64",
-				"CANONICAL_MANIFEST_SHA256="+expectedDigest, "GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG",
+				"PATH="+dir+":"+os.Getenv("PATH"), "RUNNER_TEMP="+dir, "CANONICAL_MANIFEST_SHA256="+expectedDigest, "GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG",
 				"GITHUB_RUN_ID=local-fixture", "GITHUB_RUN_ATTEMPT=1")
 			output, err := command.CombinedOutput()
 			manifest := filepath.Join(staging, "payload-manifest.json")
@@ -101,7 +110,7 @@ func TestMacOSPayloadManifestRejectsIncompleteOrSubstitutedPair(t *testing.T) {
 			want := map[string]any{
 				"schema_version": float64(1), "repository": "Picocrypt-NG/Picocrypt-NG",
 				"source_sha": source, "version": "2.19", "canonical_manifest_sha256": digest,
-				"owner_workflow": "build-macos.yml", "arch": "arm64", "run_id": "local-fixture", "run_attempt": "1", "files": files,
+				"owner_workflow": "build-macos.yml", "arch": "arm64", "run_id": "local-fixture", "run_attempt": "1", "files": files, "materials": materials,
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("payload manifest = %s, want actual Go target context and source-bound hashes for the exact DMG/CLI pair", data)

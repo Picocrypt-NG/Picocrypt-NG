@@ -49,6 +49,8 @@ data class Pcv3ConsentView(
     val selectedRole: String? = null,
 )
 
+enum class Pcv3SafExportState { EXPORTING, CANCEL_REQUESTED }
+
 /** Authority-free terminal truth from one consumed retained-output action. */
 data class Pcv3OutputResultView(
     val code: String,
@@ -135,6 +137,7 @@ sealed interface Pcv3Presentation {
         internal val outputHandle: Pcv3OutputCapability? = null,
         val outputPending: Boolean = false,
         val outputActionInFlight: Boolean = false,
+        val safExportState: Pcv3SafExportState? = null,
         override val artifactMetadata: Pcv3ArtifactMetadataView? = null,
         override val isCreation: Boolean = false,
     ) : Pcv3Presentation

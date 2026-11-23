@@ -175,7 +175,7 @@ class WorkButtonTest {
     }
 
     @Test
-    fun workButton_enables_default_pcv3_password_and_keyfile_encryption() {
+    fun workButton_waits_for_selected_pcv3_keyfile_before_encryption() {
         val application = ApplicationProvider.getApplicationContext<android.app.Application>()
         val mainViewModel = MainViewModel(application, androidx.lifecycle.SavedStateHandle())
         val operationViewModel = OperationViewModel()
@@ -196,6 +196,9 @@ class WorkButtonTest {
             ),
         )
 
+        val selection = mainViewModel.formState.value.selectionGeneration
+        val mutation = requireNotNull(mainViewModel.beginKeyfileMutation(selection))
+
         composeTestRule.setContent {
             WorkButton(
                 mainViewModel = mainViewModel,
@@ -203,6 +206,12 @@ class WorkButtonTest {
             )
         }
 
+        composeTestRule
+            .onNodeWithText(application.getString(R.string.encrypt_file))
+            .assertIsNotEnabled()
+        composeTestRule.runOnIdle {
+            mainViewModel.finishKeyfileMutation(selection, mutation, added = KeyfileInfo("keyfile_1", "next.key"))
+        }
         composeTestRule
             .onNodeWithText(application.getString(R.string.encrypt_file))
             .assertIsEnabled()

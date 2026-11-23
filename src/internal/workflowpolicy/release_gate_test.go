@@ -106,8 +106,12 @@ func TestReleaseWorkflowsStageAssetsBehindOnePublicationGate(t *testing.T) {
 			if step.Uses != "./.github/actions/stage-release" {
 				t.Fatalf("stage release action = %q, want local fail-closed publisher", step.Uses)
 			}
-			if got := step.With["version"]; got != "${{ env.VERSION }}" {
-				t.Fatalf("stage release version = %#v, want exact VERSION environment value", got)
+			version := "${{ env.VERSION }}"
+			if tc.name == "build-macos" || tc.name == "build-snapcraft" {
+				version = "${{ env.SOURCE_VERSION }}"
+			}
+			if got := step.With["version"]; got != version {
+				t.Fatalf("stage release version = %#v, want source-bound %s", got, version)
 			}
 			if got := step.With["body_path"]; got != "${{ github.workspace }}/release-body.md" {
 				t.Fatalf("stage release body_path = %#v, want deterministic generated release body", got)
@@ -159,6 +163,9 @@ func TestReleaseWorkflowFileSetsAreDisjointExactManifest(t *testing.T) {
 		actual := make(map[string]struct{})
 		for _, line := range strings.Split(files, "\n") {
 			path := strings.TrimSpace(line)
+			if tc.name == "build-snapcraft" {
+				path = strings.ReplaceAll(path, "${{ env.SOURCE_VERSION }}", "${{ env.VERSION }}")
+			}
 			if path == "" {
 				continue
 			}

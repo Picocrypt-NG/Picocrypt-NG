@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -25,6 +25,28 @@ func TestReadPasswordFDLineKeepsSecretInSingleBoundedAllocation(t *testing.T) {
 			"password backing capacity = %d; want one fixed bounded allocation of %d bytes",
 			cap(got), maximumCLIPasswordBytes+2,
 		)
+	}
+}
+
+func TestReadPasswordInteractivePipedConfirmation(t *testing.T) {
+	input, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = input.Close(); _ = writer.Close() })
+	if _, err := writer.Write([]byte("pw\r\npw\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStdin := os.Stdin
+	os.Stdin = input
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	password, err := ReadPasswordInteractive(true, false)
+	if err != nil || !bytes.Equal(password, []byte("pw")) {
+		t.Fatalf("two piped confirmation lines did not match: length %d, error %v", len(password), err)
 	}
 }
 
@@ -57,32 +79,42 @@ func TestNonASCIIPasswordNote(t *testing.T) {
 	}
 }
 
-func TestReadPasswordLine(t *testing.T) {
+func TestReadPasswordLinePreservesFramingAndBudget(t *testing.T) {
+	atLimit := strings.Repeat("x", 1<<20)
 	testCases := []struct {
-		name  string
-		input string
-		want  string
+		name    string
+		input   string
+		want    string
+		wantErr bool
 	}{
-		{name: "newline", input: "pw\n", want: "pw"},
+		{name: "newline", input: " pw \n", want: " pw "},
 		{name: "crlf", input: "pw\r\n", want: "pw"},
 		{name: "eof without newline", input: "pw", want: "pw"},
+		{name: "cr at eof", input: "pw\r", want: "pw"},
 		{name: "empty eof", input: "", want: ""},
+		{name: "preserve bytes", input: "e\u0301\x00\xff\r\n", want: "e\u0301\x00\xff"},
+		{name: "maximum with newline", input: atLimit + "\n", want: atLimit},
+		{name: "maximum with crlf", input: atLimit + "\r\n", want: atLimit},
+		{name: "maximum at eof", input: atLimit, want: atLimit},
+		{name: "maximum with cr at eof", input: atLimit + "\r", want: atLimit},
+		{name: "over maximum with crlf", input: atLimit + "x\r\n", wantErr: true},
+		{name: "over maximum at eof", input: atLimit + "x", wantErr: true},
 	}
-
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := readPasswordLine(bufio.NewReader(strings.NewReader(tc.input)))
-			if err != nil {
-				t.Fatalf("readPasswordLine() error = %v", err)
-			}
-			if string(got) != tc.want {
-				t.Fatalf("readPasswordLine() = %q, want %q", got, tc.want)
-			}
-			for i, b := range got[len(got):cap(got)] {
-				if b != 0 {
-					t.Fatalf("trimmed password byte %d remains in owned backing storage", len(got)+i)
+			input := passwordLineInput{source: strings.NewReader(tc.input)}
+			defer input.clear()
+			got, err := readPasswordLine(&input)
+			if tc.wantErr {
+				if err == nil || got != nil {
+					t.Fatalf("oversize password was not refused: length %d, error %v", len(got), err)
 				}
+				return
 			}
+			if err != nil || string(got) != tc.want {
+				t.Fatalf("line framing changed bytes: length %d, want %d, error %v", len(got), len(tc.want), err)
+			}
+			assertPasswordStorageCleared(t, got[len(got):cap(got)])
 		})
 	}
 }

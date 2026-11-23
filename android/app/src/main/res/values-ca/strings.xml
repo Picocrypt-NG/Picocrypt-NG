@@ -291,6 +291,9 @@
     <string name="pcv3_warning_unknown_title">Avís addicional de l’operació</string>
     <string name="pcv3_warning_unknown_body">L’operació ha generat un altre avís. Conserveu l’original i no doneu per fet que es pot netejar o suprimir res.</string>
     <string name="pcv3_archive_close">Tanca sense extreure</string>
+    <string name="pcv3_archive_exporting">S’està exportant l’arxiu</string>
+    <string name="pcv3_archive_cancel_export">Cancel·la l’exportació</string>
+    <string name="pcv3_archive_cancel_requested">S’ha sol·licitat la cancel·lació</string>
     <string name="pcv3_recovery_result_close">Tanca el resultat de la recuperació</string>
     <string name="pcv3_publication_close">Tanca el resultat de la publicació</string>
     <string name="pcv3_warning_cleanup_close">Tanca l’avís de neteja</string>

@@ -50,7 +50,14 @@ func TestPlatformArtifactConsumerBindsFourteenPrimariesAndRejectsSubstitution(t 
 		{defect: "none"},
 		{defect: "single AppImage"},
 		{defect: "single Snap"},
+		{"Snap missing build materials", "payload", false},
+		{"Snap wrong guest package lock", "payload", false},
+		{"Snap wrong host package lock", "payload", false},
 		{defect: "single macOS"},
+		{"macOS missing build materials", "payload", false},
+		{"macOS wrong build materials", "payload", false},
+		{"Android wrong build materials", "payload", false},
+		{"Android wrong JDK digest", "payload", false},
 		{defect: "single Android"},
 		{defect: "single Windows legacy"},
 		{defect: "single Windows"},
@@ -119,6 +126,7 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 			var targetManifest map[string]any
 			var targetMetadata map[string]any
 			var targetDirectory string
+			var targetID int
 			for _, owner := range owners {
 				digest := strings.Repeat("1", 64)
 				descriptors = append(descriptors, map[string]any{"owner": owner.owner, "arch": owner.arch, "id": owner.id, "digest": digest, "attempt": 1})
@@ -141,8 +149,21 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 					"schema_version": 1, "repository": "Picocrypt-NG/Picocrypt-NG", "source_sha": source, "version": version,
 					"canonical_manifest_sha256": canonicalDigest, "owner_workflow": owner.owner, "arch": owner.arch, "run_id": "900", "run_attempt": "1", "files": files,
 				}
-				if owner.id == 106 {
-					targetManifest, targetMetadata, targetDirectory = manifest, metadata, payloadDir
+				switch owner.owner {
+				case "build-macos.yml", "build-android.yml", "build-snapcraft.yml":
+					manifest["materials"] = releaseMaterialsFixture(t, owner.owner, owner.arch)
+				}
+				target := "build-windows.yml"
+				switch tc.defect {
+				case "macOS missing build materials", "macOS wrong build materials":
+					target = "build-macos.yml"
+				case "Android wrong build materials", "Android wrong JDK digest":
+					target = "build-android.yml"
+				case "Snap missing build materials", "Snap wrong guest package lock", "Snap wrong host package lock":
+					target = "build-snapcraft.yml"
+				}
+				if owner.owner == target {
+					targetManifest, targetMetadata, targetDirectory, targetID = manifest, metadata, payloadDir, owner.id
 				}
 				writePlatformArtifactJSON(t, filepath.Join(dir, fmt.Sprintf("%d.json", owner.id)), metadata)
 				writePlatformArtifactJSON(t, filepath.Join(payloadDir, "payload-manifest.json"), manifest)
@@ -182,6 +203,18 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 				targetMetadata["expired"] = true
 			case "wrong metadata digest":
 				targetMetadata["digest"] = "sha256:" + strings.Repeat("f", 64)
+			case "macOS missing build materials", "Snap missing build materials":
+				delete(targetManifest, "materials")
+			case "Snap wrong guest package lock":
+				targetManifest["materials"].(map[string]any)["packages_sha256"] = strings.Repeat("f", 64)
+			case "Snap wrong host package lock":
+				targetManifest["materials"].(map[string]any)["host_packages_sha256"] = strings.Repeat("f", 64)
+			case "macOS wrong build materials":
+				targetManifest["materials"].(map[string]any)["xcode_build"] = "wrong"
+			case "Android wrong build materials":
+				targetManifest["materials"].(map[string]any)["ndk"] = strings.Repeat("f", 64)
+			case "Android wrong JDK digest":
+				targetManifest["materials"].(map[string]any)["jdk_sha256"] = strings.Repeat("f", 64)
 			case "wrong payload repository":
 				targetManifest["repository"] = "other/repository"
 			case "wrong payload source":
@@ -240,7 +273,7 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 					t.Fatal(err)
 				}
 			}
-			writePlatformArtifactJSON(t, filepath.Join(dir, "106.json"), targetMetadata)
+			writePlatformArtifactJSON(t, filepath.Join(dir, fmt.Sprintf("%d.json", targetID)), targetMetadata)
 			manifestPath := filepath.Join(targetDirectory, "payload-manifest.json")
 			writePlatformArtifactJSON(t, manifestPath, targetManifest)
 			if tc.defect == "manifest symlink" {
@@ -262,7 +295,7 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 			ownerSelector := ""
 			selectedOwners := owners
 			singleIndex, single := map[string]int{
-				"single AppImage": 0, "single Snap": 1, "single macOS": 2,
+				"single AppImage": 0, "single Snap": 1, "Snap missing build materials": 1, "single macOS": 2,
 				"single Android": 3, "single Windows legacy": 4, "single Windows": 5,
 				"single Windows CRLF": 5, "single unknown selector": 5, "single wrong owner": 5,
 				"single extra descriptor": 5, "single duplicate descriptor": 5, "single missing payload": 5,

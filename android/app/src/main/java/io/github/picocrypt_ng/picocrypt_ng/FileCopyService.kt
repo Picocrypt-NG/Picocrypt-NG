@@ -195,6 +195,7 @@ object FileCopyService {
         afterPublish: suspend () -> Unit = {},
         publisher: AtomicFilePublisher = AndroidAtomicFilePublisher,
         source: AndroidStagingSource = AndroidStagingSource(context),
+        adopt: ((String) -> Boolean)? = null,
     ): Result<String> {
         keyfileCopyMutex.lock()
         return try {
@@ -253,13 +254,14 @@ object FileCopyService {
                         Result.failure(copyFailed(context, e.message))
                     }
                 }
-                resultDelivered = result.isSuccess
-                result
+                resultDelivered = result.getOrNull()?.let { adopt?.invoke(it) ?: true } == true
+                if (result.isSuccess && !resultDelivered) {
+                    Result.failure(copyFailed(context, "The selected form no longer owns this keyfile import"))
+                } else result
             } finally {
                 if (!resultDelivered) {
-                    // Until the successful result reaches KeyfileCard this service remains
-                    // the sole owner. A cancelled dispatcher handoff must not leak either
-                    // name, and an identity mismatch must never delete a replacement.
+                    // Rejected adoption and cancelled handoff leave this copy with
+                    // the service. Delete only the identity that it staged.
                     withContext(NonCancellable + Dispatchers.IO) {
                         deleteIfOwned(incompleteFile, incompleteIdentity, publisher)
                         deleteIfOwned(destFile, publishedIdentity, publisher)

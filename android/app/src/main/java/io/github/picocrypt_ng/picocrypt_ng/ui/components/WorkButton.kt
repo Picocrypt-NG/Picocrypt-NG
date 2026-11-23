@@ -59,7 +59,7 @@ fun WorkButton(
     var showErrorDialog by remember { mutableStateOf<AppError?>(null) }
     
     val isOperationActive = operationState != null && !operationState!!.done
-    val isButtonEnabled = formData.isFormValid && !isOperationActive && formData.hasSelectedInput
+    val isButtonEnabled = formData.canStartOperation && !isOperationActive
     
     Button(
         onClick = {
@@ -69,7 +69,7 @@ fun WorkButton(
                 } else if (formData.isPcv3Creation) {
                     dispatchPcv3Creation(context, mainViewModel, operationViewModel)
                 } else {
-                    operationViewModel.startDecrypt(context, formData)
+                    operationViewModel.startDecrypt(context, mainViewModel, formData)
                 }
             } catch (e: Exception) {
                 showErrorDialog = AppError.fromException(e)

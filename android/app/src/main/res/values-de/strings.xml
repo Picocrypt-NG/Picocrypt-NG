@@ -281,6 +281,9 @@
     <string name="pcv3_warning_unknown_title">Zusätzliche Vorgangswarnung</string>
     <string name="pcv3_warning_unknown_body">Der Vorgang meldete eine weitere Warnung. Bewahren Sie die Quelle auf und leiten Sie daraus keine Bereinigungs- oder Löschberechtigung ab.</string>
     <string name="pcv3_archive_close">Ohne Entpacken schließen</string>
+    <string name="pcv3_archive_exporting">Archiv wird exportiert</string>
+    <string name="pcv3_archive_cancel_export">Export abbrechen</string>
+    <string name="pcv3_archive_cancel_requested">Abbruch angefordert</string>
     <string name="pcv3_recovery_result_close">Wiederherstellungsergebnis schließen</string>
     <string name="pcv3_publication_close">Veröffentlichungsergebnis schließen</string>
     <string name="pcv3_warning_cleanup_close">Bereinigungswarnung schließen</string>

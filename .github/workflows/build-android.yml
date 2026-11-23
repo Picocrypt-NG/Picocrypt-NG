@@ -372,8 +372,9 @@ jobs:
         test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
         test "$(<VERSION)" = "$VERSION"
         test "$(sha256sum unsigned-release/build-inputs.json | cut -d' ' -f1)" = "$MANIFEST_SHA256"
-        jq -e --arg source "$GITHUB_SHA" --arg version "$VERSION" --arg code "$VERSION_CODE" --arg aar "$AAR_SHA256" '
-          .source == $source and .version == $version and .baseVersionCode == $code and
+        materials=$(bash .github/scripts/release-materials.sh build-android.yml all)
+        jq -e --argjson materials "$materials" --arg source "$GITHUB_SHA" --arg version "$VERSION" --arg code "$VERSION_CODE" --arg aar "$AAR_SHA256" '
+          .materials == $materials and .source == $source and .version == $version and .baseVersionCode == $code and
           .aarSha256 == $aar and ($aar | test("^[0-9a-f]{64}$")) and
           (.apks | keys) == ["app-arm64-v8a-release-unsigned.apk", "app-armeabi-v7a-release-unsigned.apk", "app-universal-release-unsigned.apk", "app-x86-release-unsigned.apk", "app-x86_64-release-unsigned.apk"] and
           (.apks | to_entries | all(.value | test("^[0-9a-f]{64}$")))
