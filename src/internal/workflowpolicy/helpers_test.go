@@ -257,24 +257,6 @@ func mustContainInOrder(t *testing.T, content string, substrings ...string) {
 	}
 }
 
-func mustContainActiveLines(t *testing.T, script string, want ...string) {
-	t.Helper()
-
-	active := make([]string, 0)
-	for _, line := range strings.Split(script, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-			active = append(active, trimmed)
-		}
-	}
-	for start := 0; start+len(want) <= len(active); start++ {
-		if slices.Equal(active[start:start+len(want)], want) {
-			return
-		}
-	}
-	t.Fatalf("active PowerShell lines do not contain exact sequence %q", want)
-}
-
 func mustNotContain(t *testing.T, content, substring string) {
 	t.Helper()
 

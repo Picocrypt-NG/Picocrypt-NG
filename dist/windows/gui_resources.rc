@@ -1,0 +1,6 @@
+#include "versioninfo.rc"
+
+MAINICON ICON "../../images/key.ico"
+A ICON "../../images/key.ico"
+// The application manifest uses RT_MANIFEST (24) and resource ID 1.
+1 24 "manifest.xml"

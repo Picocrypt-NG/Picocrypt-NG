@@ -890,6 +890,72 @@ func TestUnpackExclusiveCopyFallbackPreservesLateCollision(t *testing.T) {
 	requireOnlyExtractionEntry(t, extractDir, "victim.txt")
 }
 
+func TestUnpackRechecksPublishedFilesBeforeCompletion(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		copyFallback bool
+	}{
+		{name: "missing output"},
+		{name: "replaced copy output", copyFallback: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			archive := filepath.Join(base, "archive.zip")
+			payload := []byte("published archive content")
+			createStoredZipEntriesForUnpackStagingTest(t, archive, map[string][]byte{
+				"first.txt": payload, "second.txt": payload,
+			})
+			out := filepath.Join(base, "out")
+			if err := os.Mkdir(out, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			first := filepath.Join(out, "first.txt")
+			second := filepath.Join(out, "second.txt")
+			replacement := filepath.Join(base, "replacement.txt")
+			foreign := []byte("file placed by another writer")
+			if test.copyFallback {
+				if err := os.WriteFile(replacement, foreign, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				originalPublish := unpackPublishFn
+				unpackPublishFn = func(*os.File, *os.File, string, string, os.FileInfo) (bool, bool, error) {
+					return false, false, errors.ErrUnsupported
+				}
+				t.Cleanup(func() { unpackPublishFn = originalPublish })
+			}
+
+			originalSync := unpackDirectorySyncFn
+			unpackDirectorySyncFn = func(directory *os.File) error {
+				requireUnpackFileBytes(t, first, payload)
+				requireUnpackFileBytes(t, second, payload)
+				if err := os.Remove(first); err != nil {
+					t.Fatal(err)
+				}
+				if test.copyFallback {
+					if err := os.Rename(replacement, first); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return originalSync(directory)
+			}
+			t.Cleanup(func() { unpackDirectorySyncFn = originalSync })
+
+			result := UnpackWithResult(UnpackOptions{ZipPath: archive, ExtractDir: out})
+			requireUnpackState(t, result, UnpackStatePublicationIndeterminate)
+			if !errors.Is(result, ErrUnpackCleanupIncomplete) {
+				t.Fatalf("publication lost cleanup uncertainty: %v", errors.Unwrap(result))
+			}
+			if test.copyFallback {
+				requireUnpackFileBytes(t, first, foreign)
+			} else if !errors.Is(result, os.ErrNotExist) {
+				t.Fatalf("publication lost the missing-file error: %v", errors.Unwrap(result))
+			}
+			requireUnpackFileBytes(t, second, payload)
+			requireNoUnpackStages(t, out)
+		})
+	}
+}
+
 func TestUnpackResultClassifiesPublicationTruth(t *testing.T) {
 	t.Run("missing extraction root is not created or published", func(t *testing.T) {
 		tmpDir := t.TempDir()
