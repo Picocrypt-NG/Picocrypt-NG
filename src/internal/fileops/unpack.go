@@ -101,11 +101,12 @@ func (state UnpackState) String() string {
 }
 
 type stagedUnpackEntry struct {
-	file       *os.File
-	stageName  string
-	targetName string
-	outPath    string
-	info       os.FileInfo
+	file          *os.File
+	stageName     string
+	targetName    string
+	outPath       string
+	info          os.FileInfo
+	publishedInfo os.FileInfo
 }
 
 func (entry *stagedUnpackEntry) cleanup(root *os.Root) (bool, error) {
@@ -746,6 +747,14 @@ func unpack(opts UnpackOptions, classifyPublication bool, state *UnpackState) (r
 		}
 		if bindingErr != nil {
 			return errors.Join(bindingErr, durabilityErrors.err(), retErr)
+		}
+	}
+	for i := range stagedEntries {
+		if opts.Cancel != nil && opts.Cancel() {
+			return errors.Join(errZIPCancelled, durabilityErrors.err(), retErr)
+		}
+		if err := dirs.verifyPublished(&stagedEntries[i]); err != nil {
+			return errors.Join(err, durabilityErrors.err(), retErr)
 		}
 	}
 	if err := dirs.verifyExisting(); err != nil {

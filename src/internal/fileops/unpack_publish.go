@@ -75,12 +75,8 @@ func publishStagedUnpackEntry(
 		return false, nil, fmt.Errorf("publish extraction output %s: %w", entry.outPath, nativeErr)
 	}
 
-	current, err := targetRoot.Lstat(targetName)
-	if err != nil {
-		return true, durabilityErr, fmt.Errorf("inspect published extraction output %s: %w", entry.outPath, err)
-	}
-	if !current.Mode().IsRegular() || !os.SameFile(outputInfo, current) {
-		return true, durabilityErr, fmt.Errorf("published extraction output changed: %s", entry.outPath)
+	if err := entry.checkPublished(targetRoot, outputInfo); err != nil {
+		return true, durabilityErr, err
 	}
 	if err := dirs.verify(parentName); err != nil {
 		return true, durabilityErr, err
@@ -88,7 +84,28 @@ func publishStagedUnpackEntry(
 	if proven, err := entry.cleanup(stageRoot); !proven || err != nil {
 		return true, durabilityErr, errors.Join(err, ErrUnpackCleanupIncomplete)
 	}
+	entry.publishedInfo = outputInfo
+	entry.info = nil
 	return true, durabilityErr, nil
+}
+
+func (entry *stagedUnpackEntry) checkPublished(parent *os.Root, expected os.FileInfo) error {
+	current, err := parent.Lstat(filepath.Base(entry.targetName))
+	if err != nil {
+		return fmt.Errorf("inspect published extraction output %s: %w", entry.outPath, err)
+	}
+	if !current.Mode().IsRegular() || !os.SameFile(expected, current) {
+		return fmt.Errorf("published extraction output changed: %s", entry.outPath)
+	}
+	return nil
+}
+
+func (dirs *unpackDirectories) verifyPublished(entry *stagedUnpackEntry) error {
+	parent, err := dirs.open(filepath.Dir(entry.targetName), false)
+	if err != nil {
+		return err
+	}
+	return errors.Join(entry.checkPublished(parent, entry.publishedInfo), dirs.close(parent))
 }
 
 func copyStagedUnpackEntry(
