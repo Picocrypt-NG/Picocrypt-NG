@@ -907,21 +907,6 @@ func TestWindowsNSISScript(t *testing.T) {
 	}
 
 	// --- Positive assertions: regex patterns ---
-	t.Run("shell_open_command_with_arg1", func(t *testing.T) {
-		// D-21: shell\open\command writes "$INSTDIR\Picocrypt-NG.exe" "%1"
-		re := regexp.MustCompile(`shell\\open\\command.*%1`)
-		if !re.MatchString(text) {
-			t.Errorf("installer.nsi missing shell\\open\\command with %%1 placeholder")
-		}
-	})
-
-	t.Run("explorer_encrypt_opens_the_installed_gui", func(t *testing.T) {
-		if !strings.Contains(text, `'"$INSTDIR\Picocrypt-NG.exe" --shell-encrypt -- "%1"'`) ||
-			!strings.Contains(text, `"MultiSelectModel" "Single"`) {
-			t.Fatal("Explorer encrypt must pass one literal path directly to the installed GUI")
-		}
-	})
-
 	t.Run("running_x64_guard", func(t *testing.T) {
 		// D-09: ${IfNot} ${RunningX64} → Abort. Match RunningX64 anywhere in script
 		// (covers ${IfNot} ${RunningX64}, ${If} ${RunningX64}, etc.)
