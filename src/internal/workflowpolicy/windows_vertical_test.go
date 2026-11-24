@@ -11,6 +11,12 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+const (
+	reviewedWindowsSignPathAction = "signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b" // v3.2
+	windowsSigningProgramSHA256   = "3e337c11e871396deec6e50df55c53ecf42ea4afdd36deae689417c0928ceb4d"
+	legacySigningProgramSHA256    = "432b2e41eee36780aba918e5f746616b420629f1d6c797f608f810fcfb37c328"
+)
+
 type windowsBuildCase struct {
 	owner, first, prefix, tail, bundle, directory string
 	files                                         []string
@@ -154,8 +160,8 @@ func TestWindowsSigningReleaseChainRemainsByteIdentical(t *testing.T) {
 	// Freeze the original native programs and direct release body independently
 	// of the new reusable jobs and their invocation/transport conditions.
 	nativeHashes := map[string]string{
-		"build-windows":        "83e4c07ee6e1c624458cf1f0b9d7e7b4872d0bd66e9ed846a6476a4ef48bcb69",
-		"build-windows-legacy": "d8b2cdccb2bb0d528c857cab20107cab18c3d0883a3d236ed481c9c7772b4a3b",
+		"build-windows":        windowsSigningProgramSHA256,
+		"build-windows-legacy": legacySigningProgramSHA256,
 	}
 	releaseHashes := map[string]string{
 		"build-windows":        "d81113085b96d63262dbf473ed6660a0b44924c900f3a228ebc47e78fb2bfbb6",

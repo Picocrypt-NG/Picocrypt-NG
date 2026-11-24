@@ -613,8 +613,8 @@ func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testin
 		{name: "Sign installer with SignPath", configurationSlug: "windows-installer", uploadStepID: "upload-signpath-installer", outputDirectory: "signpath-signed-installer"},
 	} {
 		step := mustStepNamed(t, signJob, tc.name)
-		if step.Uses != "signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092" {
-			t.Fatalf("%s action = %q, want reviewed SignPath v3.0 commit", tc.name, step.Uses)
+		if step.Uses != reviewedWindowsSignPathAction {
+			t.Fatalf("%s action = %q, want %q", tc.name, step.Uses, reviewedWindowsSignPathAction)
 		}
 		for key, want := range map[string]any{
 			"api-token":                              "${{ secrets.SIGNPATH_API_TOKEN }}",
@@ -729,8 +729,8 @@ func TestWindowsLegacyReleaseUsesSignPathBeforeSigstore(t *testing.T) {
 	mustContain(t, validateMode.Run, "cannot both be enabled")
 
 	signStep := mustStepNamed(t, signJob, "Sign legacy CLI with SignPath")
-	if signStep.Uses != "signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092" {
-		t.Fatalf("legacy SignPath action = %q, want reviewed SignPath v3.0 commit", signStep.Uses)
+	if signStep.Uses != reviewedWindowsSignPathAction {
+		t.Fatalf("legacy SignPath action = %q, want %q", signStep.Uses, reviewedWindowsSignPathAction)
 	}
 	for key, want := range map[string]any{
 		"api-token":                              "${{ secrets.SIGNPATH_API_TOKEN }}",
@@ -1903,13 +1903,14 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 
 func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {
 	const (
-		gradle991Sha256        = "d8a18a7a841dd5df825d35a685fad6f2d7f12ac0c280e57b67c27b4a520ba228"
+		gradleVersion          = "9.9.2"
+		gradleDistributionHash = "971fcd7150ca4ba04852c0b2ca0d2d0ab9468e14b03473eab19528809914c76b"
 		gradleWrapperJarSha256 = "621008afc4f5d59357fcf06ffa644dd5aade5e091bdc363742710445f73cdaf8"
 	)
 
 	wrapper := mustReadRepoFile(t, "android/gradle/wrapper/gradle-wrapper.properties")
-	mustContain(t, wrapper, "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.9.1-bin.zip")
-	mustMatch(t, wrapper, `(?m)^distributionSha256Sum=`+gradle991Sha256+`$`)
+	mustContain(t, wrapper, "distributionUrl=https\\://services.gradle.org/distributions/gradle-"+gradleVersion+"-bin.zip")
+	mustMatch(t, wrapper, `(?m)^distributionSha256Sum=`+gradleDistributionHash+`$`)
 	mustMatch(t, wrapper, `(?m)^validateDistributionUrl=true$`)
 	mustMatch(t, wrapper, `(?m)^networkTimeout=60000$`)
 
@@ -1918,7 +1919,7 @@ func TestAndroidGradleSupplyChainVerificationConfigured(t *testing.T) {
 		t.Fatalf("read Gradle wrapper JAR: %v", err)
 	}
 	if got := fmt.Sprintf("%x", sha256.Sum256(wrapperJar)); got != gradleWrapperJarSha256 {
-		t.Fatalf("Gradle wrapper JAR SHA-256 = %s, want official Gradle 9.9.1 checksum %s", got, gradleWrapperJarSha256)
+		t.Fatalf("Gradle wrapper JAR SHA-256 = %s, want official Gradle %s checksum %s", got, gradleVersion, gradleWrapperJarSha256)
 	}
 
 	metadata := mustReadRepoFile(t, "android/gradle/verification-metadata.xml")
