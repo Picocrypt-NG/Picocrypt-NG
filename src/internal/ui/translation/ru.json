@@ -277,6 +277,7 @@
   "drop.header_may_be_deniable": "Не удалось прочитать заголовок; том может использовать правдоподобное отрицание",
   "drop.header_damaged": "Заголовок тома поврежден",
   "drop.failed_split_path": "Не удалось определить путь части тома",
+  "drop.missing_split_part": "В выбранной папке отсутствует часть .{{.Index}}.",
   "selection.scanning_files": "Сканирование файлов... ({{.Size}})",
   "selection.with_size": "{{.Label}} ({{.Size}})",
   "selection.files": {

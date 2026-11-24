@@ -117,6 +117,7 @@
   "drop.header_may_be_deniable": "无法读取标头；加密卷可能具有可否认性。",
   "drop.header_damaged": "加密卷标头已损坏",
   "drop.failed_split_path": "无法确定分卷路径",
+  "drop.missing_split_part": "所选文件夹中缺少分卷 .{{.Index}}。",
   "selection.scanning_files": "正在扫描文件…（{{.Size}}）",
   "selection.with_size": "{{.Label}}（{{.Size}}）",
   "selection.files": {

@@ -285,6 +285,7 @@
   "drop.header_may_be_deniable": "تعذّرت قراءة الترويسة. قد تستخدم الحاوية الإنكار المعقول",
   "drop.header_damaged": "ترويسة الحاوية تالفة",
   "drop.failed_split_path": "تعذّر تحديد مسار الحاوية المقسّمة",
+  "drop.missing_split_part": "الجزء .{{.Index}} مفقود من المجلد المحدد.",
   "selection.scanning_files": "جارٍ فحص الملفات... ({{.Size}})",
   "selection.with_size": "{{.Label}} ({{.Size}})",
   "selection.files": {

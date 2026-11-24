@@ -66,6 +66,15 @@ func CountChunksWithCancel(basePath string, cancel CancelFunc) (int, int64, erro
 // ErrChunkMetadataLimit refuses matching chunk metadata beyond the native policy.
 var ErrChunkMetadataLimit = errors.New("fileops: split chunk metadata limit exceeded")
 
+// MissingChunkError identifies the first missing numbered part in a split set.
+type MissingChunkError struct {
+	Index int
+}
+
+func (err *MissingChunkError) Error() string {
+	return fmt.Sprintf("missing chunk %d", err.Index)
+}
+
 func countChunks(basePath string, firstChunkInfo os.FileInfo, cancel CancelFunc, budget *ZIPResourceBudget) (count int, total int64, retErr error) {
 	if cancel != nil && cancel() {
 		return 0, 0, errors.New("operation cancelled")
@@ -115,6 +124,9 @@ func countChunks(basePath string, firstChunkInfo os.FileInfo, cancel CancelFunc,
 			if !ok {
 				continue
 			}
+			if suffix != strconv.Itoa(index) {
+				return 0, 0, errors.New("noncanonical split chunk index")
+			}
 			cost := uint64(1024) + 8*(uint64(len(basePath))+uint64(len(name)))
 			if err := budget.Reserve(cost); err != nil {
 				return 0, 0, ErrChunkMetadataLimit
@@ -160,7 +172,7 @@ func countChunks(basePath string, firstChunkInfo os.FileInfo, cancel CancelFunc,
 	sort.Ints(indexes)
 	for expected, actual := range indexes {
 		if actual != expected {
-			return 0, 0, fmt.Errorf("missing chunk %d", expected)
+			return 0, 0, &MissingChunkError{Index: expected}
 		}
 	}
 

@@ -1011,6 +1011,8 @@ func renderStatus(msg app.StatusMessage, snap app.UISnapshot) (text string) {
 		return tr("drop.header_damaged", "The volume header is damaged")
 	case app.StatusDropFailedSplitPath:
 		return tr("drop.failed_split_path", "Failed to derive split volume path")
+	case app.StatusDropMissingSplitPart:
+		return tr("drop.missing_split_part", "Part .{{.Index}} is missing from the selected folder.", map[string]any{"Index": msg.Args.Index})
 	case app.StatusKeyfileReadAccessDenied:
 		return tr("keyfiles.read_access_denied", "Cannot read keyfile")
 	case app.StatusKeyfileGenerateFailed:

@@ -269,6 +269,7 @@
   "drop.header_may_be_deniable": "हेडर पढ़ा नहीं जा सका; वॉल्यूम संभवतः विश्वसनीय इनकार का समर्थन करता है।",
   "drop.header_damaged": "वॉल्यूम हेडर क्षतिग्रस्त है",
   "drop.failed_split_path": "विभाजित वॉल्यूम का पथ निर्धारित नहीं किया जा सका",
+  "drop.missing_split_part": "चुने गए फ़ोल्डर में भाग .{{.Index}} मौजूद नहीं है।",
   "selection.scanning_files": "फ़ाइलें स्कैन हो रही हैं... ({{.Size}})",
   "selection.with_size": "{{.Label}} ({{.Size}})",
   "selection.files": {

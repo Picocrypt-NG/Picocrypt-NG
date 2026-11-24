@@ -7,6 +7,7 @@ import (
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/pcv3operation"
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -63,6 +64,126 @@ func TestPCV3DropAcceptsNormalSplitFromAnyChunk(t *testing.T) {
 		!snap.Recombine || snap.InputFile != base || snap.OutputFile != strings.TrimSuffix(base, ".pcv") {
 		t.Fatalf("normal PCV3 split route = %#v", snap)
 	}
+}
+
+func TestPCV3DropReportsMissingSplitPart(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		first    bool
+		rawFirst bool
+		want     string
+	}{
+		{"missing middle", true, false, "Part .1 is missing from the selected folder."},
+		{"missing middle without Normal prefix", true, true, "Part .1 is missing from the selected folder."},
+		{"missing first", false, false, "Part .0 is missing from the selected folder."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetLocalizationForTest(t)
+			data := loadPCV3DropFixture(t)
+			base := filepath.Join(t.TempDir(), "incomplete.pcv")
+			cut := len(data) / 2
+			if tc.first {
+				first := data[:cut]
+				if tc.rawFirst {
+					first = []byte("input without a Normal marker")
+				}
+				if err := os.WriteFile(base+".0", first, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(base+".2", data[cut:], 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+			t.Cleanup(func() { a.workers.wait(); fyne.DoAndWait(a.State.Reset) })
+			fyne.DoAndWait(func() { a.onDrop([]string{base + ".2"}) })
+			waitForDropProcessing(t, a)
+			fyne.DoAndWait(func() {
+				snap := a.State.UISnapshot()
+				if got := a.statusLabel.text; got != tc.want {
+					t.Errorf("status = %q, want %q", got, tc.want)
+				}
+				if snap.CanStart() || snap.Scanning || a.commentsEntry.Text != "" {
+					t.Fatal("incomplete split left an actionable selection or preview")
+				}
+			})
+		})
+	}
+}
+
+func TestPCV3DropDoesNotReportMissingFirstForAmbiguousNumbering(t *testing.T) {
+	resetLocalizationForTest(t)
+	base := filepath.Join(t.TempDir(), "ambiguous.pcv")
+	for _, suffix := range []string{".00", ".2"} {
+		if err := os.WriteFile(base+suffix, []byte("part"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	t.Cleanup(func() { a.workers.wait(); fyne.DoAndWait(a.State.Reset) })
+	fyne.DoAndWait(func() { a.onDrop([]string{base + ".2"}) })
+	waitForDropProcessing(t, a)
+
+	snap := a.State.UISnapshot()
+	if snap.PCV3Route != app.PCV3RouteFailed || snap.Status.Kind == app.StatusDropMissingSplitPart || snap.CanStart() {
+		t.Fatalf("ambiguous numbering must refuse without naming a missing part: route=%v status=%+v", snap.PCV3Route, snap.Status)
+	}
+}
+
+func TestPCV3DropDoesNotReportMissingPartOnAccessFailure(t *testing.T) {
+	resetLocalizationForTest(t)
+	path := filepath.Join(t.TempDir(), "inaccessible.pcv.1")
+	if err := os.WriteFile(path, []byte("selected part"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previousOpen := openDroppedPCVInput
+	openDroppedPCVInput = func(context.Context, string, bool) (*os.File, error) { return nil, os.ErrPermission }
+	t.Cleanup(func() { openDroppedPCVInput = previousOpen })
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	t.Cleanup(func() { a.workers.wait(); fyne.DoAndWait(a.State.Reset) })
+
+	fyne.DoAndWait(func() { a.onDrop([]string{path}) })
+	waitForDropProcessing(t, a)
+	snap := a.State.UISnapshot()
+	if snap.PCV3Route != app.PCV3RouteFailed || snap.Status.Kind == app.StatusDropMissingSplitPart || snap.CanStart() {
+		t.Fatalf("access refusal was misclassified: %#v", snap)
+	}
+}
+
+func TestPCV3DropDoesNotReportMissingFirstForUnreadableSelection(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("requires POSIX mode bits and an unprivileged process")
+	}
+	path := filepath.Join(t.TempDir(), "split.pcv.1")
+	if err := os.WriteFile(path, []byte("selected part"), 0); err != nil {
+		t.Fatal(err)
+	}
+	source, err := openDroppedInput(t.Context(), path, true)
+	if source != nil {
+		_ = source.Close()
+		t.Fatal("unexpected open")
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("unreadable selection should report access failure, got %v", err)
+	}
+}
+
+func TestPCV3DropSupersededMissingPartDoesNotChangeCurrentSelection(t *testing.T) {
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	t.Cleanup(func() { a.workers.wait(); fyne.DoAndWait(a.State.Reset) })
+	fyne.DoAndWait(func() {
+		previous := a.folderScanGeneration
+		a.folderScanGeneration++
+		a.State.SetReadyStatus()
+		a.applyDroppedFileRoute(t.Context(), previous, "old.pcv.3", true, droppedRouteResult{
+			err: &fileops.MissingChunkError{Index: 2},
+		})
+		if snap := a.State.UISnapshot(); snap.Status.Kind != app.StatusReady || snap.PCV3Route == app.PCV3RouteFailed {
+			t.Fatalf("superseded missing part replaced current status: %#v", snap)
+		}
+	})
 }
 
 func TestPCV3DropKeepsExplicitD1OverrideForNormalLookingSplit(t *testing.T) {
@@ -330,8 +451,8 @@ func TestPCV3DropKeepsRoutedDescriptorAcrossPathReplacement(t *testing.T) {
 
 	previousOpen := openDroppedPCVInput
 	var openCalls atomic.Int32
-	openDroppedPCVInput = func(path string, split bool) (*os.File, error) {
-		file, openErr := previousOpen(path, split)
+	openDroppedPCVInput = func(ctx context.Context, path string, split bool) (*os.File, error) {
+		file, openErr := previousOpen(ctx, path, split)
 		if openErr != nil {
 			return nil, openErr
 		}

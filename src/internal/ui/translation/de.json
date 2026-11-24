@@ -269,6 +269,7 @@
   "drop.header_may_be_deniable": "Der Header kann nicht gelesen werden; das Volume könnte glaubhafte Abstreitbarkeit bieten",
   "drop.header_damaged": "Der Volume-Header ist beschädigt",
   "drop.failed_split_path": "Pfad für aufgeteiltes Volume konnte nicht bestimmt werden",
+  "drop.missing_split_part": "Im ausgewählten Ordner fehlt Teil .{{.Index}}.",
   "selection.scanning_files": "Dateien werden gescannt... ({{.Size}})",
   "selection.with_size": "{{.Label}} ({{.Size}})",
   "selection.files": {
