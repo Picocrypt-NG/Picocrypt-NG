@@ -4,6 +4,7 @@ package ui
 
 import (
 	"Picocrypt-NG/internal/app"
+	"context"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -21,7 +22,7 @@ func TestDropRejectsFIFOWithoutOpening(t *testing.T) {
 
 	previousOpen := openDroppedPCVInput
 	var openCalls atomic.Int32
-	openDroppedPCVInput = func(string, bool) (*os.File, error) {
+	openDroppedPCVInput = func(context.Context, string, bool) (*os.File, error) {
 		openCalls.Add(1)
 		return nil, os.ErrInvalid
 	}

@@ -177,6 +177,7 @@ const (
 	StatusMobileFileAccessUnsafeName
 	StatusPCVUnavailable
 	StatusRecursiveUnverified
+	StatusDropMissingSplitPart
 )
 
 type StatusArgs struct {

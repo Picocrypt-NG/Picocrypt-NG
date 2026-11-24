@@ -106,8 +106,8 @@ func TestRecursivePCV3CancellationConsumesCurrentSourceAndDoesNotOpenNext(t *tes
 	oldOpen := openDroppedPCVInput
 	defer func() { openDroppedPCVInput = oldOpen }()
 	var opened []*os.File
-	openDroppedPCVInput = func(path string, split bool) (*os.File, error) {
-		source, err := oldOpen(path, split)
+	openDroppedPCVInput = func(ctx context.Context, path string, split bool) (*os.File, error) {
+		source, err := oldOpen(ctx, path, split)
 		if source != nil {
 			opened = append(opened, source)
 		}

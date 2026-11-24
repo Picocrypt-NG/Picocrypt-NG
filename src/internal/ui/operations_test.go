@@ -583,8 +583,8 @@ func TestRecursiveNormalPCV3NeverFallsBackToLegacy(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "legacy-fallback.out")
 	previousOpen := openDroppedPCVInput
 	var routedSource *os.File
-	openDroppedPCVInput = func(path string, split bool) (*os.File, error) {
-		source, err := previousOpen(path, split)
+	openDroppedPCVInput = func(ctx context.Context, path string, split bool) (*os.File, error) {
+		source, err := previousOpen(ctx, path, split)
 		if err == nil {
 			routedSource = source
 		}
