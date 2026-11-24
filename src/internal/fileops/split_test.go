@@ -682,11 +682,38 @@ func TestRecombineRejectsMissingMiddleChunk(t *testing.T) {
 	if !strings.Contains(err.Error(), "missing chunk 1") {
 		t.Errorf("error = %v; want it to contain %q", err, "missing chunk 1")
 	}
+	var missing *MissingChunkError
+	if !errors.As(err, &missing) || missing.Index != 1 {
+		t.Fatalf("expected typed missing chunk 1, got %v", err)
+	}
 
 	// No partial/corrupt output must be left behind for the caller to mistake
 	// for a complete recombination.
 	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
 		t.Errorf("output should not exist after rejection, stat err = %v", statErr)
+	}
+}
+
+func TestCountChunksRejectsAmbiguousAliasesWithoutNamingAMissingPart(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		suffixes []string
+	}{
+		{"duplicate zero", []string{".0", ".00", ".1", ".2"}},
+		{"only an alias for part one", []string{".0", ".01", ".2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := filepath.Join(t.TempDir(), "alias.pcv")
+			for _, suffix := range tc.suffixes {
+				if err := os.WriteFile(base+suffix, []byte("part"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var missing *MissingChunkError
+			if _, _, err := CountChunks(base); err == nil || errors.As(err, &missing) {
+				t.Fatalf("ambiguous split must fail without a missing-part claim, got %v", err)
+			}
+		})
 	}
 }
 

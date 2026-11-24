@@ -269,6 +269,7 @@
   "drop.header_may_be_deniable": "Cannot read header, volume may be deniable",
   "drop.header_damaged": "The volume header is damaged",
   "drop.failed_split_path": "Failed to derive split volume path",
+  "drop.missing_split_part": "Part .{{.Index}} is missing from the selected folder.",
   "selection.scanning_files": "Scanning files... ({{.Size}})",
   "selection.with_size": "{{.Label}} ({{.Size}})",
   "selection.files": {

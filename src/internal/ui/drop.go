@@ -65,14 +65,31 @@ type droppedRouteResult struct {
 }
 
 func openDroppedInput(path string, recombine bool) (*os.File, error) {
-	if recombine {
-		base, ok := fileops.SplitChunkBase(path)
-		if !ok {
-			return nil, errors.New("invalid split input")
-		}
-		path = base + ".0"
+	if !recombine {
+		return fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
 	}
-	return fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
+	base, ok := fileops.SplitChunkBase(path)
+	if !ok {
+		return nil, errors.New("invalid split input")
+	}
+
+	source, err := fileops.OpenRegularReadNoSymlink(base + ".0")
+	if !errors.Is(err, os.ErrNotExist) {
+		return source, err
+	}
+	suffix := strings.TrimPrefix(path, base+".")
+	index, parseErr := strconv.Atoi(suffix)
+	if parseErr == nil && index > 0 && strconv.Itoa(index) == suffix {
+		selected, selectedErr := fileops.OpenRegularReadNoSymlink(path)
+		if selectedErr != nil {
+			return nil, selectedErr
+		}
+		if closeErr := selected.Close(); closeErr != nil {
+			return nil, closeErr
+		}
+		return nil, &fileops.MissingChunkError{Index: 0}
+	}
+	return nil, err
 }
 
 func defaultPCV3Output(path string) string {
@@ -550,9 +567,20 @@ func (a *App) applyDropSelection(names []string) bool {
 					a.refreshAdvanced()
 					return false
 				}
+				size := stat.Size()
+				if isSplit {
+					size, routeErr = droppedSplitSize(context.Background(), path)
+					if routeErr != nil {
+						_ = routedInput.Close()
+						a.setDroppedRouteFailed(routeErr)
+						a.refreshAdvanced()
+						a.refreshUI()
+						return false
+					}
+				}
 				accepted := a.applyLegacyDroppedFileRoute(path, isSplit, droppedRouteResult{
 					source: routedInput,
-					size:   stat.Size(),
+					size:   size,
 					route:  pcv3operation.RouteLegacyEligible,
 				})
 				// Leaf symlinks remain a legacy compatibility path only. Do not
@@ -628,6 +656,10 @@ func routeDroppedFile(ctx context.Context, path string, split bool) droppedRoute
 		return droppedRouteResult{err: errors.New("selected input is not a regular file")}
 	}
 	if split {
+		totalSize, err := droppedSplitSize(ctx, path)
+		if err != nil {
+			return droppedRouteResult{source: source, err: err}
+		}
 		var prefix [4]byte
 		count, readErr := io.ReadFull(source, prefix[:])
 		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
@@ -639,10 +671,21 @@ func routeDroppedFile(ctx context.Context, path string, split bool) droppedRoute
 			return droppedRouteResult{err: err}
 		}
 		route := pcv3operation.DetectPrefix(prefix[:count])
-		return previewDroppedNormal(ctx, source, info.Size(), route, nil)
+		result := previewDroppedNormal(ctx, source, info.Size(), route, nil)
+		result.size = totalSize
+		return result
 	}
 	route, err := probeDroppedPCVInput(source, info.Size())
 	return previewDroppedNormal(ctx, source, info.Size(), route, err)
+}
+
+func droppedSplitSize(ctx context.Context, path string) (int64, error) {
+	base, ok := fileops.SplitChunkBase(path)
+	if !ok {
+		return 0, errors.New("invalid split input")
+	}
+	_, size, err := fileops.CountChunksWithCancel(base, func() bool { return ctx.Err() != nil })
+	return size, err
 }
 
 func previewDroppedNormal(ctx context.Context, source *os.File, size int64, route pcv3operation.Route, err error) droppedRouteResult {
@@ -696,7 +739,7 @@ func (a *App) applyLegacyDroppedFileRoute(path string, isSplit bool, result drop
 	}
 	a.State.SetPCV3LegacyEligible()
 	if isDecryptVolumePath(path) {
-		a.handleDecryptDrop(path, isSplit, result.source)
+		a.handleDecryptDrop(path, isSplit, result.source, result.size)
 	} else {
 		if result.inputIdentity.ReadPath() == "" {
 			info, err := result.source.Stat()
@@ -793,7 +836,7 @@ func (a *App) applyDroppedFileRoute(
 		if result.source != nil {
 			_ = result.source.Close()
 		}
-		a.State.SetPCV3RoutingFailed()
+		a.setDroppedRouteFailed(result.err)
 		a.refreshAdvanced()
 		a.refreshUI()
 		return
@@ -808,9 +851,8 @@ func (a *App) applyDroppedFileRoute(
 				a.refreshUI()
 				return
 			}
-			_, totalSize, err := fileops.CountChunksWithCancel(base, func() bool { return ctx.Err() != nil })
-			if err != nil || !a.State.SetPCV3Ready(
-				result.source, app.PCV3FormatNormal, base, defaultPCV3Output(base), totalSize,
+			if !a.State.SetPCV3Ready(
+				result.source, app.PCV3FormatNormal, base, defaultPCV3Output(base), result.size,
 			) {
 				_ = result.source.Close()
 				a.State.SetPCV3RoutingFailed()
@@ -842,6 +884,14 @@ func (a *App) applyDroppedFileRoute(
 	a.refreshUI()
 }
 
+func (a *App) setDroppedRouteFailed(err error) {
+	a.State.SetPCV3RoutingFailed()
+	var missing *fileops.MissingChunkError
+	if errors.As(err, &missing) {
+		a.State.SetStatusMessage(app.StatusDropMissingSplitPart, util.RED, app.StatusArgs{Index: missing.Index})
+	}
+}
+
 func (a *App) applyDropStatusMessage(kind app.StatusKind, closeKeyfileModal bool) {
 	if closeKeyfileModal && a.keyfileModal != nil {
 		a.keyfileModal.Hide()
@@ -852,7 +902,7 @@ func (a *App) applyDropStatusMessage(kind app.StatusKind, closeKeyfileModal bool
 }
 
 // handleDecryptDrop handles a .pcv file being dropped for decryption.
-func (a *App) handleDecryptDrop(name string, isSplit bool, fin *os.File) {
+func (a *App) handleDecryptDrop(name string, isSplit bool, fin *os.File, inputSize int64) {
 	a.State.Mode = "decrypt"
 	a.State.SetInputDecryptVolume()
 	a.State.SetStartAction(app.StartActionDecrypt)
@@ -873,17 +923,8 @@ func (a *App) handleDecryptDrop(name string, isSplit bool, fin *os.File) {
 		a.State.OutputFile = trimPCVSuffix(name)
 		a.State.Recombine = true
 
-		// Find out the number of split chunks
-		totalFiles := 0
-		for {
-			stat, err := os.Stat(fmt.Sprintf("%s.%d", a.State.InputFile, totalFiles))
-			if err != nil {
-				break
-			}
-			totalFiles++
-			a.State.CompressTotal += stat.Size()
-		}
-		a.State.RequiredFreeSpace = a.State.CompressTotal
+		a.State.CompressTotal = inputSize
+		a.State.RequiredFreeSpace = inputSize
 	} else {
 		a.State.InputFile = name
 		a.State.OutputFile = trimPCVSuffix(name)
