@@ -7,6 +7,7 @@ import (
 	"Picocrypt-NG/internal/header"
 	"Picocrypt-NG/internal/pcv3operation"
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -111,6 +112,26 @@ func TestPCV3DropReportsMissingSplitPart(t *testing.T) {
 	}
 }
 
+func TestPCV3DropDoesNotReportMissingFirstForAmbiguousNumbering(t *testing.T) {
+	resetLocalizationForTest(t)
+	base := filepath.Join(t.TempDir(), "ambiguous.pcv")
+	for _, suffix := range []string{".00", ".2"} {
+		if err := os.WriteFile(base+suffix, []byte("part"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	t.Cleanup(func() { a.workers.wait(); fyne.DoAndWait(a.State.Reset) })
+	fyne.DoAndWait(func() { a.onDrop([]string{base + ".2"}) })
+	waitForDropProcessing(t, a)
+
+	snap := a.State.UISnapshot()
+	if snap.PCV3Route != app.PCV3RouteFailed || snap.Status.Kind == app.StatusDropMissingSplitPart || snap.CanStart() {
+		t.Fatalf("ambiguous numbering must refuse without naming a missing part: route=%v status=%+v", snap.PCV3Route, snap.Status)
+	}
+}
+
 func TestPCV3DropDoesNotReportMissingPartOnAccessFailure(t *testing.T) {
 	resetLocalizationForTest(t)
 	path := filepath.Join(t.TempDir(), "inaccessible.pcv.1")
@@ -118,7 +139,7 @@ func TestPCV3DropDoesNotReportMissingPartOnAccessFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	previousOpen := openDroppedPCVInput
-	openDroppedPCVInput = func(string, bool) (*os.File, error) { return nil, os.ErrPermission }
+	openDroppedPCVInput = func(context.Context, string, bool) (*os.File, error) { return nil, os.ErrPermission }
 	t.Cleanup(func() { openDroppedPCVInput = previousOpen })
 	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
 	t.Cleanup(func() { a.workers.wait(); fyne.DoAndWait(a.State.Reset) })
@@ -139,7 +160,7 @@ func TestPCV3DropDoesNotReportMissingFirstForUnreadableSelection(t *testing.T) {
 	if err := os.WriteFile(path, []byte("selected part"), 0); err != nil {
 		t.Fatal(err)
 	}
-	source, err := openDroppedInput(path, true)
+	source, err := openDroppedInput(t.Context(), path, true)
 	if source != nil {
 		_ = source.Close()
 		t.Fatal("unexpected open")
@@ -430,8 +451,8 @@ func TestPCV3DropKeepsRoutedDescriptorAcrossPathReplacement(t *testing.T) {
 
 	previousOpen := openDroppedPCVInput
 	var openCalls atomic.Int32
-	openDroppedPCVInput = func(path string, split bool) (*os.File, error) {
-		file, openErr := previousOpen(path, split)
+	openDroppedPCVInput = func(ctx context.Context, path string, split bool) (*os.File, error) {
+		file, openErr := previousOpen(ctx, path, split)
 		if openErr != nil {
 			return nil, openErr
 		}

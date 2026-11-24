@@ -64,7 +64,7 @@ type droppedRouteResult struct {
 	inputIdentity fileops.ZIPInputIdentity
 }
 
-func openDroppedInput(path string, recombine bool) (*os.File, error) {
+func openDroppedInput(ctx context.Context, path string, recombine bool) (*os.File, error) {
 	if !recombine {
 		return fileops.OpenExistingNoSymlink(path, os.O_RDONLY)
 	}
@@ -87,7 +87,9 @@ func openDroppedInput(path string, recombine bool) (*os.File, error) {
 		if closeErr := selected.Close(); closeErr != nil {
 			return nil, closeErr
 		}
-		return nil, &fileops.MissingChunkError{Index: 0}
+		if _, scanErr := droppedSplitSize(ctx, path); scanErr != nil {
+			return nil, scanErr
+		}
 	}
 	return nil, err
 }
@@ -646,7 +648,7 @@ func (a *App) applyDropSelection(names []string) bool {
 }
 
 func routeDroppedFile(ctx context.Context, path string, split bool) droppedRouteResult {
-	source, err := openDroppedPCVInput(path, split)
+	source, err := openDroppedPCVInput(ctx, path, split)
 	if err != nil {
 		return droppedRouteResult{err: err}
 	}
