@@ -273,6 +273,7 @@
   "drop.header_may_be_deniable": "No es pot llegir la capçalera. El volum pot fer servir la negació plausible.",
   "drop.header_damaged": "La capçalera del volum està malmesa",
   "drop.failed_split_path": "No s’ha pogut determinar el camí del volum dividit",
+  "drop.missing_split_part": "Falta la part .{{.Index}} a la carpeta seleccionada.",
   "selection.scanning_files": "S’estan examinant els fitxers… ({{.Size}})",
   "selection.with_size": "{{.Label}} ({{.Size}})",
   "selection.files": {

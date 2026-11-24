@@ -123,6 +123,7 @@
   "drop.header_may_be_deniable": "Impossible de lire l’en-tête ; le volume chiffré peut offrir un déni plausible",
   "drop.header_damaged": "L’en-tête du volume chiffré est endommagé",
   "drop.failed_split_path": "Impossible de déterminer le chemin du volume chiffré fractionné",
+  "drop.missing_split_part": "La partie .{{.Index}} manque dans le dossier sélectionné.",
   "selection.scanning_files": "Analyse des fichiers… ({{.Size}})",
   "selection.with_size": "{{.Label}} ({{.Size}})",
   "selection.files": {

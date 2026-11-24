@@ -269,6 +269,7 @@
   "drop.header_may_be_deniable": "Päist ei saa lugeda. Köide võib kasutada eitatavust.",
   "drop.header_damaged": "Köite päis on kahjustatud",
   "drop.failed_split_path": "Osadeks jagatud köite failiteed ei saanud tuletada",
+  "drop.missing_split_part": "Valitud kaustast puudub osa .{{.Index}}.",
   "selection.scanning_files": "Failide läbivaatamine... ({{.Size}})",
   "selection.with_size": "{{.Label}} ({{.Size}})",
   "selection.files": {

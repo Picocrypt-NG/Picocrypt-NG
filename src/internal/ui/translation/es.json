@@ -273,6 +273,7 @@
   "drop.header_may_be_deniable": "No se puede leer el encabezado; el volumen podría permitir una negación plausible",
   "drop.header_damaged": "El encabezado del volumen está dañado",
   "drop.failed_split_path": "No se pudo determinar la ruta del volumen dividido",
+  "drop.missing_split_part": "Falta la parte .{{.Index}} en la carpeta seleccionada.",
   "selection.scanning_files": "Analizando archivos... ({{.Size}})",
   "selection.with_size": "{{.Label}} ({{.Size}})",
   "selection.files": {

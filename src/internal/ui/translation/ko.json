@@ -265,6 +265,7 @@
   "drop.header_may_be_deniable": "헤더를 읽을 수 없습니다. 부인 가능 볼륨일 수 있습니다.",
   "drop.header_damaged": "볼륨 헤더가 손상되었습니다",
   "drop.failed_split_path": "분할 볼륨 경로를 결정하지 못했습니다",
+  "drop.missing_split_part": "선택한 폴더에 .{{.Index}} 부분이 없습니다.",
   "selection.scanning_files": "파일 스캔 중...({{.Size}})",
   "selection.with_size": "{{.Label}}({{.Size}})",
   "selection.files": {
