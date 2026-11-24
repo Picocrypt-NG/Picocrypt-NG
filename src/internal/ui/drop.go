@@ -496,6 +496,9 @@ func (a *App) applyDropSelection(names []string, intent StartupIntent) bool {
 	// Using fyne.Do() here would cause a race condition where Mode gets cleared
 	// AFTER it's set below, because fyne.Do() queues the call for later execution
 	a.resetUI()
+	if intent == StartupEncrypt {
+		a.State.SetEncryptSelectionOnly()
+	}
 
 	// One item dropped
 	if len(names) == 1 {
@@ -616,16 +619,7 @@ func (a *App) applyDropSelection(names []string, intent StartupIntent) bool {
 			workerLaunched = true
 			reservation.launch(func(ctx context.Context) {
 				defer metadata.Release()
-				var result droppedRouteResult
-				if intent == StartupEncrypt {
-					source, err := fileops.OpenRegularReadNoSymlink(path)
-					result = droppedRouteResult{
-						source: source, size: stat.Size(), route: pcv3operation.RouteLegacyEligible,
-						err: err, encryptOnly: true,
-					}
-				} else {
-					result = routeDroppedFile(ctx, path, isSplit)
-				}
+				result := routeDroppedFile(ctx, path, isSplit, intent == StartupEncrypt)
 				if result.err == nil && (result.encryptOnly || (!isSplit && !isDecryptVolumePath(path))) {
 					result.err = identity.CheckFile(result.source)
 					result.inputIdentity = identity
@@ -668,8 +662,14 @@ func (a *App) applyDropSelection(names []string, intent StartupIntent) bool {
 	return true
 }
 
-func routeDroppedFile(ctx context.Context, path string, split bool) droppedRouteResult {
-	source, err := openDroppedPCVInput(ctx, path, split)
+func routeDroppedFile(ctx context.Context, path string, split, encryptOnly bool) droppedRouteResult {
+	var source *os.File
+	var err error
+	if encryptOnly {
+		source, err = fileops.OpenRegularReadNoSymlink(path)
+	} else {
+		source, err = openDroppedPCVInput(ctx, path, split)
+	}
 	if err != nil {
 		return droppedRouteResult{err: err}
 	}
@@ -677,6 +677,11 @@ func routeDroppedFile(ctx context.Context, path string, split bool) droppedRoute
 	if err != nil || info == nil || !info.Mode().IsRegular() || info.Size() < 0 {
 		_ = source.Close()
 		return droppedRouteResult{err: errors.New("selected input is not a regular file")}
+	}
+	if encryptOnly {
+		return droppedRouteResult{
+			source: source, size: info.Size(), route: pcv3operation.RouteLegacyEligible, encryptOnly: true,
+		}
 	}
 	if split {
 		totalSize, err := droppedSplitSize(ctx, path)

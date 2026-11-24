@@ -317,10 +317,11 @@ type State struct {
 	SplitSelected int32
 
 	// Processing options
-	Recursively bool
-	RecursiveD1 bool
-	Delete      bool
-	Recombine   bool
+	Recursively          bool
+	RecursiveD1          bool
+	Delete               bool
+	Recombine            bool
+	encryptSelectionOnly bool
 
 	// Status
 	InputSummary InputSummary
@@ -500,6 +501,7 @@ func (s *State) resetUILocked() {
 
 	s.Recursively = false
 	s.RecursiveD1 = false
+	s.encryptSelectionOnly = false
 	s.Delete = false
 	s.Recombine = false
 
@@ -925,12 +927,20 @@ func (s *State) TakePCV3RecursiveOperationIntent() (PCV3OperationIntent, bool) {
 	return s.takePCV3OperationIntentLocked(), true
 }
 
+// SetEncryptSelectionOnly keeps an explicit encryption command for this selection.
+func (s *State) SetEncryptSelectionOnly() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.encryptSelectionOnly = true
+	s.RecursiveD1 = false
+}
+
 // SetRecursiveD1 records explicit format intent for the complete batch. The
 // selection's original mode is unchanged so disabling it restores that choice.
 func (s *State) SetRecursiveD1(enabled bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.Working || s.Scanning || (enabled && !s.Recursively) {
+	if s.Working || s.Scanning || (enabled && (!s.Recursively || s.encryptSelectionOnly)) {
 		return false
 	}
 	s.RecursiveD1 = enabled
@@ -1236,6 +1246,7 @@ type UISnapshot struct {
 	PCV3NormalPreview     pcv3operation.NormalPreview
 	Recursively           bool
 	RecursiveD1           bool
+	EncryptSelectionOnly  bool
 	OutputFile            string
 	InputFile             string
 	Split                 bool
@@ -1271,6 +1282,7 @@ type UISnapshot struct {
 // progress/widget/display-label fields belong here.
 type RecursiveSnapshot struct {
 	RecursiveD1    bool
+	EncryptOnly    bool
 	Password       string
 	Keyfile        bool
 	Keyfiles       []string
@@ -1351,6 +1363,7 @@ func (s *State) UISnapshot() UISnapshot {
 		PCV3NormalPreview:     s.PCV3NormalPreview,
 		Recursively:           s.Recursively,
 		RecursiveD1:           s.RecursiveD1,
+		EncryptSelectionOnly:  s.encryptSelectionOnly,
 		OutputFile:            s.OutputFile,
 		InputFile:             s.InputFile,
 		Split:                 s.Split,
@@ -1388,6 +1401,7 @@ func (s *State) RecursiveSnapshot() RecursiveSnapshot {
 	defer s.mu.RUnlock()
 	return RecursiveSnapshot{
 		RecursiveD1:    s.RecursiveD1,
+		EncryptOnly:    s.encryptSelectionOnly,
 		Password:       s.Password,
 		Keyfile:        s.Keyfile,
 		Keyfiles:       append([]string(nil), s.Keyfiles...),
