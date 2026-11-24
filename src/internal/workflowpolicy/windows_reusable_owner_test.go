@@ -149,7 +149,10 @@ func TestWindowsReusableOwnerSeparatesDirectSigningAttestationAndStaging(t *test
 // This freeze protects SignPath policy, all Authenticode checks, and the current
 // export/sign/import installer chain while invocation conditions change around it.
 func TestWindowsReusablePreservesExistingSignPathPrograms(t *testing.T) {
-	want := map[string]string{"build-windows": "83e4c07ee6e1c624458cf1f0b9d7e7b4872d0bd66e9ed846a6476a4ef48bcb69", "build-windows-legacy": "d8b2cdccb2bb0d528c857cab20107cab18c3d0883a3d236ed481c9c7772b4a3b"}
+	want := map[string]string{
+		"build-windows":        windowsSigningProgramSHA256,
+		"build-windows-legacy": legacySigningProgramSHA256,
+	}
 	for _, owner := range windowsReusableOwners() {
 		job := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/"+owner+".yml"), "sign")
 		var steps []workflowStep
