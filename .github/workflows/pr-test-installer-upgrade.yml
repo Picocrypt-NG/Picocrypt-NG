@@ -85,6 +85,26 @@ jobs:
           throw "$ctx : expected main exe '$expected', got '$got'"
         }
 
+        $explorerKeys = @(
+          'HKLM:\Software\Classes\*\shell\PicocryptNG.Encrypt'
+          'HKLM:\Software\Classes\Directory\shell\PicocryptNG.Encrypt'
+        )
+        function Assert-ExplorerEncrypt([string]$dir) {
+          $expectedCommand = '"{0}" --shell-encrypt -- "%1"' -f (Main-Path $dir)
+          foreach ($key in $explorerKeys) {
+            $verb = Get-Item -LiteralPath $key
+            $command = (Get-Item -LiteralPath "$key\command").GetValue('')
+            if ($verb.GetValue('MultiSelectModel') -cne 'Single' -or $command -cne $expectedCommand) {
+              throw "Unexpected Explorer registration at $key"
+            }
+          }
+        }
+        function Assert-NoExplorerEncrypt {
+          foreach ($key in $explorerKeys) {
+            if (Test-Path -LiteralPath $key) { throw "Unexpected Explorer registration at $key" }
+          }
+        }
+
         # === Scenario A: clean install, then upgrade overwrites in place (#163) ===
         $instDir = "C:\pcng-itest"
         if (Test-Path $instDir) { Remove-Item -Recurse -Force $instDir }
@@ -95,11 +115,13 @@ jobs:
         $rc = Install (Join-Path $outDir "setup-v1.exe") $instDir
         if ($rc -ne 0) { throw "v1 install exit code $rc" }
         Assert-Main $instDir "PCNG_V1" "v1 clean install"
+        Assert-ExplorerEncrypt $instDir
         Write-Host "OK: v1 installed"
 
         $rc = Install (Join-Path $outDir "setup-v2.exe") $instDir
         if ($rc -ne 0) { throw "v2 upgrade exit code $rc" }
         Assert-Main $instDir "PCNG_V2" "REGRESSION #163: upgrade did not overwrite main exe"
+        Assert-ExplorerEncrypt $instDir
         if (Test-Path (Orphan-Path $instDir)) { throw "REGRESSION #163: orphan Picocrypt-NG-portable.exe left after upgrade" }
         Write-Host "OK: upgrade overwrote main exe in place; no orphan"
 
@@ -139,5 +161,28 @@ jobs:
         if ($rc -ne 0) { throw "post-close upgrade exit code $rc" }
         Assert-Main $instDir "PCNG_V3" "upgrade after instance closed"
         Write-Host "OK: upgrade succeeds after the running instance is closed"
+
+        $sibling = 'HKLM:\Software\Classes\Directory\shell\PicocryptNG.UpgradeTestSibling'
+        New-Item -Path $sibling -ErrorAction Stop | Out-Null
+        try {
+          $appKey = 'HKLM:\Software\Picocrypt-NG'
+          Set-ItemProperty -LiteralPath $appKey -Name 'ExplorerEncrypt' -Value 0
+          $rc = Install (Join-Path $outDir "setup-v3.exe") $instDir
+          if ($rc -ne 0) { throw "disabled Explorer upgrade exit code $rc" }
+          Assert-NoExplorerEncrypt
+          if (-not (Test-Path -LiteralPath $sibling)) { throw "Upgrade removed an unrelated Explorer command" }
+
+          Set-ItemProperty -LiteralPath $appKey -Name 'ExplorerEncrypt' -Value 1
+          $rc = Install (Join-Path $outDir "setup-v3.exe") $instDir
+          if ($rc -ne 0) { throw "enabled Explorer upgrade exit code $rc" }
+          Assert-ExplorerEncrypt $instDir
+
+          $uninstall = Start-Process -FilePath (Join-Path $instDir 'Uninstall.exe') -ArgumentList '/S' -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstall exit code $($uninstall.ExitCode)" }
+          Assert-NoExplorerEncrypt
+          if (-not (Test-Path -LiteralPath $sibling)) { throw "Uninstall removed an unrelated Explorer command" }
+        } finally {
+          Remove-Item -LiteralPath $sibling -ErrorAction SilentlyContinue
+        }
 
         Write-Host "All installer upgrade scenarios passed."

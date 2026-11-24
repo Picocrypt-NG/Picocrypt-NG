@@ -61,6 +61,7 @@ type droppedRouteResult struct {
 	route         pcv3operation.Route
 	err           error
 	explicitD1    bool
+	encryptOnly   bool
 	inputIdentity fileops.ZIPInputIdentity
 }
 
@@ -407,13 +408,19 @@ func (a *App) runFolderScan(ctx context.Context, job folderScanJob, emit scanned
 
 // onDrop handles files and folders dropped onto the window.
 func (a *App) onDrop(names []string) bool {
+	return a.selectDroppedInput(names, StartupAuto)
+}
+
+func (a *App) selectDroppedInput(names []string, intent StartupIntent) bool {
 	if a.mobileImportActive {
 		return false
 	}
 
 	// If keyfile modal is open, handle as keyfiles
 	if a.State.ShowKeyfile {
-		a.handleKeyfileDrop(names)
+		if intent == StartupAuto {
+			a.handleKeyfileDrop(names)
+		}
 		return false
 	}
 
@@ -423,13 +430,13 @@ func (a *App) onDrop(names []string) bool {
 		return false
 	}
 
-	return a.applyDropSelection(names)
+	return a.applyDropSelection(names, intent)
 }
 
 // applyDropSelection applies one already-accepted UI selection. It is UI-only.
 // Recursive processing uses it inside its DoAndWait transaction so it bypasses
 // only onDrop's user-input busy guard and never re-enters the public handler.
-func (a *App) applyDropSelection(names []string) bool {
+func (a *App) applyDropSelection(names []string, intent StartupIntent) bool {
 	budget := fileops.NewZIPResourceBudget()
 	var metadata fileops.ZIPInputMetadataReservation
 	var roots []fileops.ZIPInputCandidate
@@ -488,7 +495,7 @@ func (a *App) applyDropSelection(names []string) bool {
 			return false
 		}
 		if stat.Mode()&os.ModeSymlink != 0 {
-			if !isDecryptVolumePath(names[0]) {
+			if intent == StartupEncrypt || !isDecryptVolumePath(names[0]) {
 				a.State.SetScanning(false)
 				a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
 				return false
@@ -528,7 +535,7 @@ func (a *App) applyDropSelection(names []string) bool {
 			}
 
 			path := names[0]
-			isSplit := fileops.IsSplitChunkPath(path)
+			isSplit := intent == StartupAuto && fileops.IsSplitChunkPath(path)
 			leaf, err := os.Lstat(path)
 			if err != nil {
 				a.State.SetScanning(false)
@@ -537,6 +544,11 @@ func (a *App) applyDropSelection(names []string) bool {
 				return false
 			}
 			if leaf.Mode()&os.ModeSymlink != 0 {
+				if intent == StartupEncrypt {
+					a.State.SetScanning(false)
+					a.applyDropStatusMessage(app.StatusDropReadAccessDenied, false)
+					return false
+				}
 				routedInput, routeErr := volume.OpenLegacyPCVInput(path, isSplit)
 				if routeErr != nil {
 					if isPCV3UnavailableError(routeErr) {
@@ -574,8 +586,17 @@ func (a *App) applyDropSelection(names []string) bool {
 			workerLaunched = true
 			reservation.launch(func(ctx context.Context) {
 				defer metadata.Release()
-				result := routeDroppedFile(ctx, path, isSplit)
-				if result.err == nil && !isSplit && !isDecryptVolumePath(path) {
+				var result droppedRouteResult
+				if intent == StartupEncrypt {
+					source, err := fileops.OpenRegularReadNoSymlink(path)
+					result = droppedRouteResult{
+						source: source, size: stat.Size(), route: pcv3operation.RouteLegacyEligible,
+						err: err, encryptOnly: true,
+					}
+				} else {
+					result = routeDroppedFile(ctx, path, isSplit)
+				}
+				if result.err == nil && (result.encryptOnly || (!isSplit && !isDecryptVolumePath(path))) {
 					result.err = identity.CheckFile(result.source)
 					result.inputIdentity = identity
 				}
@@ -695,7 +716,7 @@ func (a *App) applyLegacyDroppedFileRoute(path string, isSplit bool, result drop
 		return false
 	}
 	a.State.SetPCV3LegacyEligible()
-	if isDecryptVolumePath(path) {
+	if !result.encryptOnly && isDecryptVolumePath(path) {
 		a.handleDecryptDrop(path, isSplit, result.source)
 	} else {
 		if result.inputIdentity.ReadPath() == "" {
@@ -719,7 +740,7 @@ func (a *App) applyLegacyDroppedFileRoute(path string, isSplit bool, result drop
 		a.State.CompressTotal = result.size
 	}
 	accepted := a.State.Mode != ""
-	if !accepted || !a.State.RetainPCV3D1Candidate(result.source) {
+	if result.encryptOnly || !accepted || !a.State.RetainPCV3D1Candidate(result.source) {
 		_ = result.source.Close()
 	}
 	a.State.SetScanning(false)

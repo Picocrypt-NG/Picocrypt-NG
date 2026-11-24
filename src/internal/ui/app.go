@@ -421,8 +421,15 @@ func (a *App) refreshAdvancedLocalizedText() {
 	}))
 }
 
+type StartupIntent uint8
+
+const (
+	StartupAuto StartupIntent = iota
+	StartupEncrypt
+)
+
 // Run starts the UI application and optionally loads files passed at startup.
-func (a *App) Run(startupPaths []string) {
+func (a *App) Run(startupPaths []string, intent StartupIntent) {
 	prepareOpenedPathsNotify()
 
 	// Create Fyne app with unique ID for preferences API support
@@ -487,7 +494,7 @@ func (a *App) Run(startupPaths []string) {
 		deskCanvas.SetOnKeyDown(a.onDesktopKeyDown)
 	}
 
-	a.scheduleStartupPaths(startupPaths)
+	a.scheduleStartupPaths(startupPaths, intent)
 
 	if !isMobile() {
 		content = fynetooltip.AddWindowToolTipLayer(content, a.Window.Canvas())
@@ -590,7 +597,7 @@ func (a *App) shutdownSentinelTick() {
 	a.Window.Close()
 }
 
-func (a *App) scheduleStartupPaths(startupPaths []string) {
+func (a *App) scheduleStartupPaths(startupPaths []string, intent StartupIntent) {
 	// applyOpened drains paths buffered by the macOS open-file bridge and feeds
 	// them through the normal drop handler. It is the notify handler for cold and
 	// warm openURLs events after the bridge debounce window goes idle.
@@ -621,7 +628,11 @@ func (a *App) scheduleStartupPaths(startupPaths []string) {
 			flushOpenedPaths()
 		}
 		if len(startupPaths) > 0 {
-			a.applyStartupPaths(startupPaths)
+			if intent == StartupEncrypt {
+				a.selectDroppedInput(startupPaths, intent)
+			} else {
+				a.applyStartupPaths(startupPaths)
+			}
 		}
 	})
 }

@@ -697,7 +697,7 @@ func TestScheduleStartupPathsDefersUntilLifecycleStart(t *testing.T) {
 	fake := newLifecycleCaptureApp(fyne.CurrentApp())
 	a.fyneApp = fake
 
-	a.scheduleStartupPaths([]string{inputFile})
+	a.scheduleStartupPaths([]string{inputFile}, StartupAuto)
 
 	state := snapshotDropState(t, a)
 	if state.InputFile != "" {
@@ -716,6 +716,28 @@ func TestScheduleStartupPathsDefersUntilLifecycleStart(t *testing.T) {
 	}
 }
 
+func TestShellEncryptStartupSelectsVolumeAsPlainInput(t *testing.T) {
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	t.Cleanup(func() { a.workers.wait(); fyne.DoAndWait(a.State.Reset) })
+	data := loadPCV3DropFixture(t)
+	path := filepath.Join(t.TempDir(), "volume & (2026).pcv")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := newLifecycleCaptureApp(fyne.CurrentApp())
+	a.fyneApp = fake
+	a.scheduleStartupPaths([]string{path}, StartupEncrypt)
+	fyne.DoAndWait(fake.started)
+	waitForDropProcessing(t, a)
+	snap := a.State.UISnapshot()
+	if snap.Mode != "encrypt" || snap.InputFile != path || snap.OutputFile != path+".pcv" || snap.Working {
+		t.Fatalf("explicit encryption did not prepare the literal selection: %#v", snap)
+	}
+	if _, err := os.Stat(path + ".pcv"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("selection created output before confirmation: %v", err)
+	}
+}
+
 func TestScheduleStartupPathsSkipsMissingArgvWhenValidPathsRemain(t *testing.T) {
 	resetOpenedPathsForTest(t)
 	withOpenedPathsFlushDelay(t, 10*time.Millisecond)
@@ -731,7 +753,7 @@ func TestScheduleStartupPathsSkipsMissingArgvWhenValidPathsRemain(t *testing.T) 
 
 	fake := newLifecycleCaptureApp(fyne.CurrentApp())
 	a.fyneApp = fake
-	a.scheduleStartupPaths([]string{missingPath, inputFile})
+	a.scheduleStartupPaths([]string{missingPath, inputFile}, StartupAuto)
 	if fake.started == nil {
 		t.Fatal("expected startup hook to be registered")
 	}
@@ -768,7 +790,7 @@ func TestScheduleStartupPathsPreservesPartialAccessWarningForArgv(t *testing.T) 
 
 	fake := newLifecycleCaptureApp(fyne.CurrentApp())
 	a.fyneApp = fake
-	a.scheduleStartupPaths([]string{"blocked.txt", inputFile})
+	a.scheduleStartupPaths([]string{"blocked.txt", inputFile}, StartupAuto)
 	if fake.started == nil {
 		t.Fatal("expected startup hook to be registered")
 	}
@@ -799,7 +821,7 @@ func TestScheduleStartupPathsAlwaysWiresStartHook(t *testing.T) {
 	fake := newLifecycleCaptureApp(fyne.CurrentApp())
 	a.fyneApp = fake
 
-	a.scheduleStartupPaths(nil)
+	a.scheduleStartupPaths(nil, StartupAuto)
 
 	if fake.started == nil {
 		t.Fatal("expected startup hook to be registered even for empty startupPaths (AE paths may arrive)")
@@ -844,7 +866,7 @@ func TestScheduleStartupPathsAppliesWarmOpenedPaths(t *testing.T) {
 	fake := newLifecycleCaptureApp(fyne.CurrentApp())
 	a.fyneApp = fake
 
-	a.scheduleStartupPaths(nil)
+	a.scheduleStartupPaths(nil, StartupAuto)
 	if fake.started == nil {
 		t.Fatal("expected startup hook to be registered")
 	}
@@ -889,7 +911,7 @@ func TestSeparateWarmOpenedPathReplacesSelectionAfterFirstSessionApplied(t *test
 
 	fake := newLifecycleCaptureApp(fyne.CurrentApp())
 	a.fyneApp = fake
-	a.scheduleStartupPaths(nil)
+	a.scheduleStartupPaths(nil, StartupAuto)
 	fyne.DoAndWait(fake.started)
 
 	appendOpenedPath(first)
@@ -936,7 +958,7 @@ func TestScheduleStartupPathsCoalescesColdAndLateOpenedBatches(t *testing.T) {
 
 	fake := newLifecycleCaptureApp(fyne.CurrentApp())
 	a.fyneApp = fake
-	a.scheduleStartupPaths(nil)
+	a.scheduleStartupPaths(nil, StartupAuto)
 	if fake.started == nil {
 		t.Fatal("expected startup hook to be registered")
 	}
@@ -977,7 +999,7 @@ func TestOpenedPathsWaitForReadinessBeforeApply(t *testing.T) {
 
 	fake := newLifecycleCaptureApp(fyne.CurrentApp())
 	a.fyneApp = fake
-	a.scheduleStartupPaths(nil)
+	a.scheduleStartupPaths(nil, StartupAuto)
 	fyne.DoAndWait(fake.started)
 	appendOpenedPath(inputFile)
 	flushOpenedPaths()

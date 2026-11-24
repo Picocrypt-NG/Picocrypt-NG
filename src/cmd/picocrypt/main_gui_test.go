@@ -14,6 +14,29 @@ import (
 	"fyne.io/fyne/v2/test"
 )
 
+func TestShellEncryptArguments(t *testing.T) {
+	path := `C:\Users\Test\Documents\папка & (2026)\volume.pcv`
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		path    string
+		handled bool
+	}{
+		{"file association", []string{path}, "", false},
+		{"CLI", []string{"encrypt", path}, "", false},
+		{"literal selection", []string{"--shell-encrypt", "--", path}, path, true},
+		{"missing separator", []string{"--shell-encrypt", path}, "", true},
+		{"empty literal", []string{"--shell-encrypt", "--", ""}, "", true},
+		{"extra selection", []string{"--shell-encrypt", "--", path, path}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if path, handled := parseShellEncryptArgs(tc.args); path != tc.path || handled != tc.handled {
+				t.Fatalf("parse = %q, %v; want %q, %v", path, handled, tc.path, tc.handled)
+			}
+		})
+	}
+}
+
 func TestFatalErrorDialogQuitsWhenDismissed(t *testing.T) {
 	app := test.NewApp()
 	t.Cleanup(app.Quit)

@@ -915,6 +915,13 @@ func TestWindowsNSISScript(t *testing.T) {
 		}
 	})
 
+	t.Run("explorer_encrypt_opens_the_installed_gui", func(t *testing.T) {
+		if !strings.Contains(text, `'"$INSTDIR\Picocrypt-NG.exe" --shell-encrypt -- "%1"'`) ||
+			!strings.Contains(text, `"MultiSelectModel" "Single"`) {
+			t.Fatal("Explorer encrypt must pass one literal path directly to the installed GUI")
+		}
+	})
+
 	t.Run("running_x64_guard", func(t *testing.T) {
 		// D-09: ${IfNot} ${RunningX64} → Abort. Match RunningX64 anywhere in script
 		// (covers ${IfNot} ${RunningX64}, ${If} ${RunningX64}, etc.)
