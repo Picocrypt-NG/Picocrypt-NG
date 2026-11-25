@@ -102,13 +102,9 @@ runs:
     - name: Package as .app in a .dmg
       shell: bash
       run: |
-        mv dist/macos/Picocrypt-NG.app.zip .
-        unzip -d Picocrypt-NG.app Picocrypt-NG.app.zip
-        rm Picocrypt-NG.app.zip
+        mkdir -p Picocrypt-NG.app/Contents/MacOS Picocrypt-NG.app/Contents/Resources
         mv src/Picocrypt-NG Picocrypt-NG.app/Contents/MacOS/Picocrypt-NG
-        rm Picocrypt-NG.app/Contents/Resources/icon.icns
-        mv dist/macos/iconSmall.icns Picocrypt-NG.app/Contents/Resources/icon.icns
-        # Inject canonical Info.plist.
+        cp dist/macos/iconSmall.icns Picocrypt-NG.app/Contents/Resources/icon.icns
         cp dist/macos/Info.plist Picocrypt-NG.app/Contents/Info.plist
         plutil -replace CFBundleShortVersionString -string "$(cat VERSION)" \
             Picocrypt-NG.app/Contents/Info.plist
@@ -123,11 +119,10 @@ runs:
             Picocrypt-NG.app/Contents/Info.plist | grep -q 'io.github.picocryptng.pcv' \
             || (echo "::error::UTExportedTypeDeclarations lost UTI"; exit 1)
         # === Ad-hoc code signing (free; no paid Apple Developer ID) ===
-        # Re-seal the assembled bundle so the signature covers the swapped
-        # executable, icon and injected Info.plist. Without a valid seal a
-        # quarantined download triggers the harsh "app is damaged and can't be
-        # opened" Gatekeeper block on Apple Silicon (an arm64 binary must be at
-        # least ad-hoc signed to run at all). A valid ad-hoc seal downgrades
+        # The code signature seals the executable, icon and Info.plist.
+        # Without a valid seal, a quarantined download can trigger the "app is
+        # damaged and can't be opened" Gatekeeper block on Apple Silicon.
+        # The arm64 binary needs at least an ad-hoc signature. A valid seal downgrades
         # that to the bypassable "unidentified developer" prompt. It does NOT
         # remove the warning entirely; that needs a paid Developer ID +
         # notarization. spctl --assess is intentionally NOT run here: ad-hoc
