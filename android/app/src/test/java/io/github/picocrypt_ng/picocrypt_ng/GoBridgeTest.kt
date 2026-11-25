@@ -107,8 +107,10 @@ class GoBridgeTest {
             onlyFiles = emptyList(),
         )
         val obj = JSONObject(json)
-        assertEquals(2, obj.getJSONArray("inputFiles").length())
-        assertEquals("/s/Root", obj.getJSONArray("onlyFolders").getString(0))
+        val inputFiles = obj.getJSONArray("inputFiles")
+        assertEquals(listOf("/s/Root/a.txt", "/s/Root/sub/b.txt"), (0 until inputFiles.length()).map(inputFiles::getString))
+        val onlyFolders = obj.getJSONArray("onlyFolders")
+        assertEquals(listOf("/s/Root"), (0 until onlyFolders.length()).map(onlyFolders::getString))
         assertEquals(0, obj.getJSONArray("onlyFiles").length())
     }
 
