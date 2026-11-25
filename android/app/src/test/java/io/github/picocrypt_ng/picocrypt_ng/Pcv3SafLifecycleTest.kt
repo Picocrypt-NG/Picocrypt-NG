@@ -4,16 +4,19 @@ import android.net.Uri
 import io.mockk.every
 import io.mockk.mockk
 import java.io.File
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.coroutines.cancellation.CancellationException
 import org.junit.Assert.assertEquals
@@ -705,6 +708,52 @@ class Pcv3SafLifecycleTest {
         assertEquals(0, session.finishCalls)
         assertTrue(events.indexOf("session-cancel") < events.indexOf("provider-return"))
         assertTrue(events.indexOf("provider-return") < events.indexOf("abort"))
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `abort waits for the claimed native cancellation to return`() = runTest {
+        val events = Collections.synchronizedList(mutableListOf<String>())
+        val operation = SafOperation("op-saf-blocked-cancel", archivePendingSnapshot(), events)
+        val session = SafSession(operation, "active-receipt", terminalSnapshot("terminal-receipt"), events)
+        val cancelEntered = CountDownLatch(1)
+        val allowCancel = CountDownLatch(1)
+        val controlledSession = object : Pcv3ArchiveSessionCapability by session {
+            override fun cancel(): Pcv3ArchiveStepData {
+                cancelEntered.countDown()
+                check(allowCancel.await(5, TimeUnit.SECONDS)) { "test did not release native cancellation" }
+                return session.cancel()
+            }
+        }
+        operation.archive = SafArchive(
+            operation, session, activeSnapshot("active-receipt"), events, beginSession = controlledSession,
+        )
+        val lifecycle = lifecycle(operation, RecordingCustodian(events))
+        val live = lifecycle.start(request(), "password".toCharArray(), File("receipt")).getOrThrow()
+        val publisher = mockk<Pcv3SafPublisher>()
+        every { publisher.newCancellation() } returns RecordingCancellation(events)
+        every { publisher.publish(any(), any(), any(), any()) } answers {
+            runBlocking {
+                lifecycle.cancelPcv3(live.operationId, live.generation, awaitSafSettlement = false).getOrThrow()
+            }
+            check(cancelEntered.await(5, TimeUnit.SECONDS)) { "native cancellation did not start" }
+            Pcv3SafPublicationResult.NEEDS_ABORT
+        }
+
+        val export = async {
+            lifecycle.exportPcv3Archive(live.operationId, live.generation, opaqueUri(), publisher)
+        }
+        try {
+            runCurrent()
+            assertEquals("the cancellation worker must own the native call", 0L, cancelEntered.count)
+            assertEquals("abort must wait for the native cancel to return", 0, session.abortCalls)
+        } finally {
+            allowCancel.countDown()
+        }
+        assertTrue(export.await().isFailure)
+        assertEquals(1, session.cancelCalls)
+        assertEquals(1, session.abortCalls)
+        assertTrue(events.indexOf("session-cancel") < events.indexOf("abort"))
     }
 
     @Test
