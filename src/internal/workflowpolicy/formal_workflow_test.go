@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // These checks protect CI scheduling and cache policy, not application behavior.
@@ -90,7 +90,8 @@ func TestFormalWorkflowBindsCachedToolchainToFrozenInputsAndActualHost(t *testin
 		}
 	}
 	uv := mustHaveStepUsingPrefix(t, job, "astral-sh/setup-uv@")
-	if uv.Uses != "astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d" || uv.With["version"] != "0.13.5" || uv.With["enable-cache"] != false {
+	if uv.Uses != "astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d" || uv.With["version"] != "0.13.10" ||
+		uv.With["checksum"] != pinnedUVLinuxAMD64SHA256 || uv.With["require-checksums"] != true || uv.With["enable-cache"] != false {
 		t.Fatalf("formal Python setup must retain its pinned uncached configuration: %+v", uv)
 	}
 }

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 const appimageDirectInvocation = "github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)"
@@ -223,7 +223,7 @@ func TestAppImageReusableOwnerPreservesGPGRecipeAndNativePrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "cfd8b9f773b0d503bc2b556019fd9cbcbda07f2ff9a4ef2e31976ac59b243166" {
+	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "85ef653a61b84f694e9dae2af83d481330078bd7f3143652edab385d352e9a64" {
 		t.Fatalf("unsigned native/tool-pin/smoke prefix changed: %s", got)
 	}
 }

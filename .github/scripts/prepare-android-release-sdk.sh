@@ -56,7 +56,7 @@ XML
     mkdir -p -- "$work/sdk/${destination%/*}"
     mv -- "$package" "$work/sdk/$destination"
 done
-test -s "$work/sdk/platforms/android-37.0/android.jar"
+test -s "$work/sdk/platforms/android-37.2/android.jar"
 test -x "$work/sdk/build-tools/36.0.0/zipalign"
 test -x "$work/sdk/ndk/$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
 

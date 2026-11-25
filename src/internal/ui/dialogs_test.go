@@ -231,21 +231,25 @@ func selectLegacyOutputDestination(t *testing.T, a *App, filename string) {
 	t.Helper()
 	entry, buttons := outputPickerControls(t, a)
 	if open := buttons["Open"]; open != nil {
-		test.Tap(open)
+		fyne.DoAndWait(func() { test.Tap(open) })
 		entry, confirm := pcv3OutputFilenameFormControls(t, a)
-		entry.SetText(filename)
-		test.Tap(confirm)
+		fyne.DoAndWait(func() {
+			entry.SetText(filename)
+			test.Tap(confirm)
+		})
 		return
 	}
 	if entry == nil || buttons["Save"] == nil {
 		t.Fatal("output picker has no filename action")
 	}
-	entry.SetText(filename)
-	test.Tap(buttons["Save"])
+	fyne.DoAndWait(func() {
+		entry.SetText(filename)
+		test.Tap(buttons["Save"])
+	})
 	if a.Window.Canvas().Overlays().Top() != nil {
 		_, buttons = outputPickerControls(t, a)
 		if yes := buttons["Yes"]; yes != nil {
-			test.Tap(yes)
+			fyne.DoAndWait(func() { test.Tap(yes) })
 		}
 	}
 }
@@ -597,17 +601,21 @@ func TestApplyPCV3OutputSelectionDoesNotTouchDestination(t *testing.T) {
 		t.Fatalf("write sentinel: %v", err)
 	}
 	ticket := pcv3ReadyOutputTicket(t, a)
-	if err := a.applyPCV3OutputSelection(ticket, dir, filepath.Base(sentinel)); err != nil {
-		t.Fatalf("apply selected destination: %v", err)
-	}
+	fyne.DoAndWait(func() {
+		if err := a.applyPCV3OutputSelection(ticket, dir, filepath.Base(sentinel)); err != nil {
+			t.Fatalf("apply selected destination: %v", err)
+		}
+	})
 	if got, err := os.ReadFile(sentinel); err != nil || string(got) != string(sentinelBytes) {
 		t.Fatalf("pre-existing destination changed: read = %q, err = %v", got, err)
 	}
 
 	newDestination := filepath.Join(dir, "new-output")
-	if err := a.applyPCV3OutputSelection(ticket, dir, filepath.Base(newDestination)); err != nil {
-		t.Fatalf("apply new destination: %v", err)
-	}
+	fyne.DoAndWait(func() {
+		if err := a.applyPCV3OutputSelection(ticket, dir, filepath.Base(newDestination)); err != nil {
+			t.Fatalf("apply new destination: %v", err)
+		}
+	})
 	if _, err := os.Stat(newDestination); !os.IsNotExist(err) {
 		t.Fatalf("new destination exists before executor: stat(%q) = %v", newDestination, err)
 	}
@@ -803,10 +811,12 @@ func selectPCV3FolderOutputDestination(t *testing.T, a *App, filename string) {
 	if open == nil {
 		t.Fatal("PCV3 Change did not expose a folder Open action")
 	}
-	test.Tap(open)
+	fyne.DoAndWait(func() { test.Tap(open) })
 	entry, confirm := pcv3OutputFilenameFormControls(t, a)
-	entry.SetText(filename)
-	test.Tap(confirm)
+	fyne.DoAndWait(func() {
+		entry.SetText(filename)
+		test.Tap(confirm)
+	})
 }
 
 func openPCV3OutputFilenameForm(t *testing.T, a *App) (*widget.Entry, *widget.Button) {

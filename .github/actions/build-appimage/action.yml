@@ -64,7 +64,7 @@ runs:
         echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
     - name: Setup Go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
       with:
         go-version: "1.27.4"
         cache-dependency-path: src/go.sum
@@ -88,9 +88,11 @@ runs:
         bash .github/scripts/install-appimage-build-tools.sh .appimage-tools
 
     - name: Setup uv for verifier controls
-      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
       with:
-        version: "0.13.5"
+        version: "0.13.10"
+        checksum: "bf65ac1a0af10f92c522d91ac096c7c0a39657647b155577e7836c2cbbb4526c"
+        require-checksums: true
         enable-cache: false
 
     - name: Test AppImage signature verifier with public fixtures

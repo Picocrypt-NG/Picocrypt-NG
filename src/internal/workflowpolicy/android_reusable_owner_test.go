@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 const androidDirectInvocation = "github.workflow_ref == format('{0}/.github/workflows/build-android.yml@{1}', github.repository, github.ref)"

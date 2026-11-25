@@ -135,16 +135,16 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-24.04
-            upx_pkg: upx-5.2.1-amd64_linux
-            upx_sha256: 402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657
+            upx_pkg: upx-5.3.0-amd64_linux
+            upx_sha256: 79cea8a50b6fa102d10c7b79a419cd77dead3cc2d78661de2dc5e5815dc505c1
             gui_binary: Picocrypt-NG
             cli_binary: Picocrypt-NG-cli
             artifact_name: pr-test-build-linux-amd64-ONLY-FOR-TESTING
             build_deb: "true"
           - arch: arm64
             runner: ubuntu-24.04-arm
-            upx_pkg: upx-5.2.1-arm64_linux
-            upx_sha256: a72d112c5970a904a31da0b9c84f919bc16b9a311787c12245508544a78c7d36
+            upx_pkg: upx-5.3.0-arm64_linux
+            upx_sha256: 2a4afa860ac7aa6968f88df7841823746e5d00ba56affdf9342c2f5254fb776f
             gui_binary: Picocrypt-NG-arm64
             cli_binary: Picocrypt-NG-cli-arm64
             artifact_name: pr-test-build-linux-arm64-ONLY-FOR-TESTING
@@ -254,7 +254,7 @@ jobs:
 
     - name: Compress with upx
       run: |
-        wget -O upx.tar.xz https://github.com/upx/upx/releases/download/v5.2.1/${{ matrix.upx_pkg }}.tar.xz
+        wget -O upx.tar.xz https://github.com/upx/upx/releases/download/v5.3.0/${{ matrix.upx_pkg }}.tar.xz
         echo "${{ matrix.upx_sha256 }}  upx.tar.xz" | sha256sum --check --strict --status
         tar -xf upx.tar.xz
         ${{ matrix.upx_pkg }}/upx --lzma "src/${{ matrix.gui_binary }}"
@@ -405,11 +405,11 @@ jobs:
         cache-dependency-path: src/go.sum
 
     - name: Setup mise
-      uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
+      uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
       env:
         MISE_ENABLE_TOOLS: go
       with:
-        version: 2026.10.25
+        version: 2026.11.14
         install_args: go
         cache_key_prefix: mise-production-kdf
 

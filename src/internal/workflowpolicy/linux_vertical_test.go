@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // These are release policy and packaging-transfer checks, not product coverage.
@@ -72,7 +72,7 @@ func normalizeLinuxBuildRun(run string) string {
 		run = strings.ReplaceAll(run, `"$`+name+`"/upx`, "$"+name+"/upx")
 		run = strings.ReplaceAll(run, "$"+name, "${{ matrix."+strings.ToLower(name)+" }}")
 	}
-	run = strings.ReplaceAll(run, `"https://github.com/upx/upx/releases/download/v5.2.1/${{ matrix.upx_pkg }}.tar.xz"`, `https://github.com/upx/upx/releases/download/v5.2.1/${{ matrix.upx_pkg }}.tar.xz`)
+	run = strings.ReplaceAll(run, `"https://github.com/upx/upx/releases/download/v5.3.0/${{ matrix.upx_pkg }}.tar.xz"`, `https://github.com/upx/upx/releases/download/v5.3.0/${{ matrix.upx_pkg }}.tar.xz`)
 	return strings.ReplaceAll(run, "timeout --kill-after=30s 45m .github/scripts/test-wasm.sh", ".github/scripts/test-wasm.sh")
 }
 
@@ -128,11 +128,11 @@ func TestValidationKeepsReadOnlyCeilingAndNativeLinuxSubgraph(t *testing.T) {
 				t.Fatalf("%s %s must expose one native producer", path, arch)
 			}
 			build := mustHaveStepUsingPrefix(t, job, "./.github/actions/build-linux")
-			gui, cli, deb, upxHash := "Picocrypt-NG", "Picocrypt-NG-cli", "true", "402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657"
+			gui, cli, deb, upxHash := "Picocrypt-NG", "Picocrypt-NG-cli", "true", "79cea8a50b6fa102d10c7b79a419cd77dead3cc2d78661de2dc5e5815dc505c1"
 			if arch == "arm64" {
-				gui, cli, deb, upxHash = "Picocrypt-NG-arm64", "Picocrypt-NG-cli-arm64", "false", "a72d112c5970a904a31da0b9c84f919bc16b9a311787c12245508544a78c7d36"
+				gui, cli, deb, upxHash = "Picocrypt-NG-arm64", "Picocrypt-NG-cli-arm64", "false", "2a4afa860ac7aa6968f88df7841823746e5d00ba56affdf9342c2f5254fb776f"
 			}
-			for key, want := range map[string]string{"gui_binary": gui, "cli_binary": cli, "build_deb": deb, "upx_pkg": "upx-5.2.1-" + arch + "_linux", "upx_sha256": upxHash} {
+			for key, want := range map[string]string{"gui_binary": gui, "cli_binary": cli, "build_deb": deb, "upx_pkg": "upx-5.3.0-" + arch + "_linux", "upx_sha256": upxHash} {
 				if build.With[key] != want {
 					t.Fatalf("%s %s changed frozen Linux packaging input %s", path, arch, key)
 				}
@@ -251,7 +251,7 @@ func TestLinuxArtifactConsumersInstallTheChecksumLockedGitHubCLI(t *testing.T) {
 	if err := json.Unmarshal([]byte(mustReadRepoFile(t, ".github/toolchains/github-cli.json")), &pin); err != nil {
 		t.Fatal(err)
 	}
-	if pin.Version != "2.102.1" || pin.URL != "https://github.com/cli/cli/releases/download/v2.102.1/gh_2.102.1_linux_amd64.tar.gz" || pin.SHA256 != "77b9e297e94c50336823d0f84de7ef1be60cba704601fa0d98f129f47a94987b" {
+	if pin.Version != "2.105.0" || pin.URL != "https://github.com/cli/cli/releases/download/v2.105.0/gh_2.105.0_linux_amd64.tar.gz" || pin.SHA256 != "79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f" {
 		t.Fatal("GitHub CLI must retain the previously verified official archive pin")
 	}
 	install := mustCompositeStepNamed(t, mustReadCompositeActionDoc(t, ".github/actions/setup-gh/action.yml"), "Install checksum-locked GitHub CLI")

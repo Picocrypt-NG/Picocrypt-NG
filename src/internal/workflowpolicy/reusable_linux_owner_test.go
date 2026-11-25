@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 const linuxDirectInvocation = "github.workflow_ref == format('{0}/.github/workflows/build-linux.yml@{1}', github.repository, github.ref)"
@@ -147,7 +147,7 @@ func TestLinuxReusableOwnerPreservesDirectRecipes(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(mustReadWorkflow(t, ".github/workflows/build-linux.yml")), &workflow); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]string{"prepare": "60ce177cd27c86877c79f8f46eed1d37ee28b371fa406484639159de6bcbad71", "build-amd64": "c551fbb0c23441062c73a6feeee6761183d498bc26f9e05f55d79a015694f481", "build-arm64": "231e24538a18849320368e565c2ecb8f08a0676aa84881a36f9237027ff58060", "verify-linux": "c217b34845692279d4d9abf6591ab376330da292c7aa055536896352871bf153", "release": "2791cb407021d7c0bcbbbfae06f224cc51ff1dfc26457db6b30093945c836298"} {
+	for name, want := range map[string]string{"prepare": "60ce177cd27c86877c79f8f46eed1d37ee28b371fa406484639159de6bcbad71", "build-amd64": "6203c93b10fbed9ff1315d7ce86a421ee802231e59611148328283c5c8942267", "build-arm64": "81d9f087516561d4ba2f4d344d613610499402894ff3edc13ae99b5a4c8a4225", "verify-linux": "c217b34845692279d4d9abf6591ab376330da292c7aa055536896352871bf153", "release": "2791cb407021d7c0bcbbbfae06f224cc51ff1dfc26457db6b30093945c836298"} {
 		job := workflow.Jobs[name]
 		switch name {
 		case "verify-linux":

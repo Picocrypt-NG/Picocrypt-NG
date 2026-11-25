@@ -171,7 +171,7 @@ runs:
           --retry-max-time 600 `
           --remove-on-error `
           --output upx.zip `
-          https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip
+          https://github.com/upx/upx/releases/download/v5.3.0/upx-5.3.0-win64.zip
         if ($LASTEXITCODE -ne 0) {
           throw "UPX download failed with exit code $LASTEXITCODE"
         }
@@ -181,12 +181,12 @@ runs:
           throw "Checksum mismatch for upx.zip: expected $expectedHash, got $actualHash"
         }
         Expand-Archive -DestinationPath upx upx.zip
-        upx/upx-5.2.1-win64/upx.exe --lzma src/Picocrypt-NG-cli-Legacy.exe
+        upx/upx-5.3.0-win64/upx.exe --lzma src/Picocrypt-NG-cli-Legacy.exe
       env:
         GOTOOLCHAIN: local
         GOAMD64: v1
         GOEXPERIMENT: ""
-        UPX_SHA256: eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda
+        UPX_SHA256: d127996c76615e431be810e9c8d2910dbe3dd400600c5c0c50276fc5a17a9705
 
     - name: Upload artifact
       id: signing-input

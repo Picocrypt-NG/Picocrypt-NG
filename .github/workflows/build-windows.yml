@@ -85,7 +85,7 @@ jobs:
     outputs:
       signing-input-id: ${{ steps.build.outputs.signing-input-id }}
     env:
-      UPX_SHA256: eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda
+      UPX_SHA256: d127996c76615e431be810e9c8d2910dbe3dd400600c5c0c50276fc5a17a9705
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -195,9 +195,9 @@ jobs:
       uses: ./.github/actions/setup-gh
     - name: Install cosign
       if: ${{ github.workflow_ref != format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) }}
-      uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
       with:
-        cosign-release: v3.1.3
+        cosign-release: v3.1.6
     - name: Inspect full Windows owner
       id: inventory
       if: ${{ github.workflow_ref != format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) }}
@@ -709,9 +709,9 @@ jobs:
     - name: Setup pinned GitHub CLI
       uses: ./.github/actions/setup-gh
     - name: Install cosign
-      uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
       with:
-        cosign-release: v3.1.3
+        cosign-release: v3.1.6
     - name: Inspect full Windows owner
       id: inventory
       shell: bash
@@ -790,9 +790,9 @@ jobs:
     - name: Setup pinned GitHub CLI
       uses: ./.github/actions/setup-gh
     - name: Install cosign
-      uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
       with:
-        cosign-release: v3.1.3
+        cosign-release: v3.1.6
     - name: Inspect full Windows owner
       id: inventory
       shell: bash
@@ -925,9 +925,9 @@ jobs:
     - name: Setup pinned GitHub CLI
       uses: ./.github/actions/setup-gh
     - name: Install cosign
-      uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
       with:
-        cosign-release: v3.1.3
+        cosign-release: v3.1.6
     - name: Verify signed generation metadata
       shell: bash
       env:

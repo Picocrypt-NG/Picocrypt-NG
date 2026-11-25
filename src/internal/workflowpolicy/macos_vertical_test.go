@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // These freeze the manual release build contract, not native macOS behavior.

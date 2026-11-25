@@ -10,8 +10,8 @@ import (
 
 func TestWindowsReusablePreservesDirectBuildAndReleaseRecipes(t *testing.T) {
 	for _, tc := range []struct{ owner, build, release string }{
-		{"build-windows", "8343359c2bebe21770a013b003eaa31d0735104a31c1d43f5e45cc40c1a1d7f2", "d81113085b96d63262dbf473ed6660a0b44924c900f3a228ebc47e78fb2bfbb6"},
-		{"build-windows-legacy", "709967f547ff04c3216a70fcadc882fecff2627ddbe57d514f067a3e9db731ba", "7ba368b63f66065a370f99575326478dbc9c4b7954d7eced8a8e969fa7d00e40"},
+		{"build-windows", "32ad4d48bea0061c985e095025b0a7a325e38353d3b54f3bfc2895bb5406f60f", "d81113085b96d63262dbf473ed6660a0b44924c900f3a228ebc47e78fb2bfbb6"},
+		{"build-windows-legacy", "dabf335a74fa1522423b2bd4240bf029016a653ed8cda66ece45a0c42401cacb", "7ba368b63f66065a370f99575326478dbc9c4b7954d7eced8a8e969fa7d00e40"},
 	} {
 		content := mustReadWorkflow(t, ".github/workflows/"+tc.owner+".yml")
 		build := strings.SplitN(strings.SplitN(content, "  build:\n", 2)[1], "  sign:\n", 2)[0]

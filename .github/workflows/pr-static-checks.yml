@@ -21,11 +21,11 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup workflow linters
-      uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
+      uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
       env:
         MISE_ENABLE_TOOLS: jactionlint,shellcheck,ruff
       with:
-        version: 2026.10.25
+        version: 2026.11.14
         install_args: jactionlint shellcheck ruff
         cache_key_prefix: mise-workflow-linters
 
@@ -81,7 +81,9 @@ jobs:
     - name: Setup uv for tooling tests
       uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
       with:
-        version: "0.13.5"
+        version: "0.13.10"
+        checksum: "bf65ac1a0af10f92c522d91ac096c7c0a39657647b155577e7836c2cbbb4526c"
+        require-checksums: true
         enable-cache: false
 
     - name: Test tooling integration

@@ -35,7 +35,7 @@ and compile dependencies; it does not execute application code. The Gobra image
 must also be fetched explicitly using the digest below. The checker never pulls
 an image or downloads a module implicitly.
 
-Official `golang.org/x/tools/go/packages` v0.52.0 loads and typechecks the actual
+Official `golang.org/x/tools/go/packages` v0.53.0 loads and typechecks the actual
 source packages. The loader uses Linux/amd64, CGO disabled, no workspace, no external
 package driver, no Go environment file, empty ambient GOFLAGS and no overlay.
 It compares the bytes parsed by the loader with the disk snapshot. It resolves
