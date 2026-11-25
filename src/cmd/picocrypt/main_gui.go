@@ -7,17 +7,40 @@ import (
 	"Picocrypt-NG/internal/ui"
 	"fmt"
 	"os"
+	"runtime"
 
 	"fyne.io/fyne/v2"
 	fyneApp "fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/dialog"
 )
 
+func parseShellEncryptArgs(args []string) (path string, handled bool) {
+	if len(args) == 0 || args[0] != "--shell-encrypt" {
+		return "", false
+	}
+	if len(args) != 3 || args[1] != "--" {
+		return "", true
+	}
+	return args[2], true
+}
+
 // run is the GUI+CLI entry point.
 // It first checks for CLI subcommands, and if none are found, launches the GUI.
 func run(startupErr error) {
+	paths := os.Args[1:]
+	intent := ui.StartupAuto
+	if runtime.GOOS == "windows" {
+		if path, handled := parseShellEncryptArgs(paths); handled {
+			if path == "" {
+				fmt.Fprintln(os.Stderr, "Expected --shell-encrypt -- <path>")
+				os.Exit(2)
+			}
+			paths = []string{path}
+			intent = ui.StartupEncrypt
+		}
+	}
 	// Check for CLI mode first (encrypt/decrypt subcommands)
-	if cli.ExecuteWithStartupError(version, startupErr) {
+	if intent == ui.StartupAuto && cli.ExecuteWithStartupError(version, startupErr) {
 		return
 	}
 	if startupErr != nil {
@@ -39,7 +62,7 @@ func run(startupErr error) {
 		os.Exit(1)
 	}
 
-	app.Run(os.Args[1:])
+	app.Run(paths, intent)
 }
 
 // showFatalErrorDialog displays err in a transient Fyne window and blocks until

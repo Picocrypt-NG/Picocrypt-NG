@@ -2006,13 +2006,13 @@ func (a *App) captureRecursiveOperationInput(
 	if !a.operationCanApply(session) {
 		return input, recursiveSelectionUnapplied
 	}
-	isSplit := fileops.IsSplitChunkPath(file)
+	isSplit := !saved.EncryptOnly && fileops.IsSplitChunkPath(file)
 	var result droppedRouteResult
-	if saved.RecursiveD1 {
+	if saved.RecursiveD1 && !saved.EncryptOnly {
 		isSplit = false
 		result = routeRecursiveD1File(file)
 	} else {
-		result = routeDroppedFile(session.ctx, file, isSplit)
+		result = routeDroppedFile(session.ctx, file, isSplit, saved.EncryptOnly)
 	}
 	resultConsumed := false
 	fyne.DoAndWait(func() {

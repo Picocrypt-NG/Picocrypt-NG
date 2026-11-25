@@ -36,6 +36,7 @@
 !define DESCRIPTION "Small, secure file encryption tool"
 !define HELPURL     "https://github.com/Picocrypt/Picocrypt-NG"
 !define PROGID      "PicocryptNG.pcv"
+!define EXPLORER_ENCRYPT_VERB "PicocryptNG.Encrypt"
 !define ARP         "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
 
 ; --- Installer attributes ---
@@ -80,22 +81,6 @@ VIAddVersionKey   "LegalCopyright"  "(c) ${COMPANYNAME}"
 
 !insertmacro MUI_LANGUAGE "English"
 !include "${__FILEDIR__}\install-authority.nsh"
-
-; --- .onInit + un.onInit (D-09 + Pitfall 4 — SetRegView 64 MANDATORY) ---
-Function .onInit
-  ${IfNot} ${RunningX64}
-    MessageBox MB_ICONSTOP "Picocrypt-NG requires 64-bit Windows."
-    Abort
-  ${EndIf}
-  SetRegView 64
-  ${If} $INSTDIR == ".\${APPNAME}"
-    ReadRegStr $INSTDIR HKLM "Software\${APPNAME}" "InstallDir"
-    ${If} $INSTDIR == ""
-      StrCpy $INSTDIR "$PROGRAMFILES64\${APPNAME}"
-    ${EndIf}
-    ClearErrors
-  ${EndIf}
-FunctionEnd
 
 !ifndef IMPORT_UNINST
 Function un.onInit
@@ -213,6 +198,53 @@ Section "Associate .pcv files" SecAssoc
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0x0000, p 0, p 0)'
 SectionEnd
 
+!macro RegisterExplorerEncrypt CLASS
+  WriteRegStr HKLM "Software\Classes\${CLASS}\shell\${EXPLORER_ENCRYPT_VERB}" "" "Encrypt with Picocrypt NG"
+  WriteRegStr HKLM "Software\Classes\${CLASS}\shell\${EXPLORER_ENCRYPT_VERB}" "MultiSelectModel" "Single"
+  WriteRegStr HKLM "Software\Classes\${CLASS}\shell\${EXPLORER_ENCRYPT_VERB}\command" "" '"$INSTDIR\Picocrypt-NG.exe" --shell-encrypt -- "%1"'
+!macroend
+
+!macro RemoveExplorerEncrypt
+  DeleteRegKey HKLM "Software\Classes\*\shell\${EXPLORER_ENCRYPT_VERB}"
+  DeleteRegKey HKLM "Software\Classes\Directory\shell\${EXPLORER_ENCRYPT_VERB}"
+!macroend
+
+Section "Encrypt with Picocrypt NG in Explorer" SecExplorerEncrypt
+  !insertmacro RegisterExplorerEncrypt "*"
+  !insertmacro RegisterExplorerEncrypt "Directory"
+SectionEnd
+
+Section "-Apply Explorer component selection"
+  ${If} ${SectionIsSelected} ${SecExplorerEncrypt}
+    WriteRegDWORD HKLM "Software\${APPNAME}" "ExplorerEncrypt" 1
+  ${Else}
+    !insertmacro RemoveExplorerEncrypt
+    WriteRegDWORD HKLM "Software\${APPNAME}" "ExplorerEncrypt" 0
+  ${EndIf}
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0x0000, p 0, p 0)'
+SectionEnd
+
+Function .onInit
+  ${IfNot} ${RunningX64}
+    MessageBox MB_ICONSTOP "Picocrypt-NG requires 64-bit Windows."
+    Abort
+  ${EndIf}
+  SetRegView 64
+  ${If} $INSTDIR == ".\${APPNAME}"
+    ReadRegStr $INSTDIR HKLM "Software\${APPNAME}" "InstallDir"
+    ${If} $INSTDIR == ""
+      StrCpy $INSTDIR "$PROGRAMFILES64\${APPNAME}"
+    ${EndIf}
+  ${EndIf}
+  ClearErrors
+  ReadRegDWORD $0 HKLM "Software\${APPNAME}" "ExplorerEncrypt"
+  ${IfNot} ${Errors}
+  ${AndIf} $0 == 0
+    !insertmacro UnselectSection ${SecExplorerEncrypt}
+  ${EndIf}
+  ClearErrors
+FunctionEnd
+
 ; --- Section: Desktop shortcut ---
 Section "Desktop shortcut" SecDesktop
   CreateShortCut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\Picocrypt-NG.exe"
@@ -227,11 +259,13 @@ SectionEnd
 
 ; --- LangString descriptions (Pitfall 8 — MUST come AFTER MUI_LANGUAGE and AFTER all sections) ---
 LangString DESC_SecAssoc     ${LANG_ENGLISH} "Make Picocrypt-NG the default handler for .pcv files (Open With + Default Apps integration)."
+LangString DESC_SecExplorerEncrypt ${LANG_ENGLISH} "Open a selected file or folder for encryption from Windows Explorer."
 LangString DESC_SecDesktop   ${LANG_ENGLISH} "Add a Desktop shortcut for Picocrypt-NG."
 LangString DESC_SecStartMenu ${LANG_ENGLISH} "Create a Start Menu folder with Picocrypt-NG and its uninstaller."
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecAssoc}     $(DESC_SecAssoc)
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecExplorerEncrypt} $(DESC_SecExplorerEncrypt)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop}   $(DESC_SecDesktop)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecStartMenu} $(DESC_SecStartMenu)
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
@@ -239,6 +273,7 @@ LangString DESC_SecStartMenu ${LANG_ENGLISH} "Create a Start Menu folder with Pi
 ; --- Section: Uninstall (D-27 hybrid cleanup, D-26 SHChangeNotify, D-28 RMDir-if-empty) ---
 !ifndef IMPORT_UNINST
 Section "Uninstall"
+  !insertmacro RemoveExplorerEncrypt
   ; --- Hybrid cleanup — only our keys; preserve other apps' OpenWithProgids (D-27) ---
   DeleteRegKey   HKLM "Software\Classes\${PROGID}"
   DeleteRegValue HKLM "Software\Classes\.pcv\OpenWithProgids" "${PROGID}"

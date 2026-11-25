@@ -14,6 +14,65 @@ import (
 	"fyne.io/fyne/v2"
 )
 
+func TestShellEncryptRecursivelyEncryptsExistingVolumeAndSplitPart(t *testing.T) {
+	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
+	dir := t.TempDir()
+	volumeBytes := loadPCV3DropFixture(t)
+	partBytes := []byte("a selected file with a split-volume suffix")
+	sources := []struct {
+		path string
+		body []byte
+	}{
+		{filepath.Join(dir, "report.pcv"), volumeBytes},
+		{filepath.Join(dir, "archive.pcv.2"), partBytes},
+	}
+	for _, source := range sources {
+		if err := os.WriteFile(source.path, source.body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fake := newLifecycleCaptureApp(fyne.CurrentApp())
+	a.fyneApp = fake
+	a.scheduleStartupPaths([]string{dir}, StartupEncrypt)
+	fyne.DoAndWait(fake.started)
+	waitForDropProcessing(t, a)
+	fyne.DoAndWait(func() {
+		a.recursivelyCheck.SetChecked(true)
+		if a.recursiveD1Check == nil || !a.recursiveD1Check.Disabled() || a.State.SetRecursiveD1(true) {
+			t.Error("Explorer Encrypt accepted an explicit recursive decrypt override")
+		}
+		a.State.Password = "explorer batch password"
+		a.State.CPassword = a.State.Password
+		a.startWork()
+	})
+	drainOperationFinalizer(t, a)
+
+	for _, source := range sources {
+		ciphertext, err := os.ReadFile(source.path + ".pcv")
+		if err != nil {
+			t.Errorf("Explorer Encrypt did not publish ciphertext for %s: %v", filepath.Base(source.path), err)
+		} else if pcv3operation.DetectPrefix(ciphertext) != pcv3operation.RouteNormalPCV || bytes.Equal(ciphertext, source.body) {
+			t.Errorf("Explorer Encrypt published unexpected bytes for %s", filepath.Base(source.path))
+		}
+		if original, err := os.ReadFile(source.path); err != nil || !bytes.Equal(original, source.body) {
+			t.Errorf("Explorer Encrypt changed the source %s: %v", filepath.Base(source.path), err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "report")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Explorer Encrypt published a plaintext output: %v", err)
+	}
+
+	fyne.DoAndWait(func() { a.onDrop([]string{dir}) })
+	waitForDropProcessing(t, a)
+	fyne.DoAndWait(func() {
+		a.recursivelyCheck.SetChecked(true)
+		if a.recursiveD1Check == nil || a.recursiveD1Check.Disabled() || !a.State.SetRecursiveD1(true) {
+			t.Fatal("ordinary selection retained the Explorer Encrypt restriction")
+		}
+	})
+}
+
 func TestRecursivePCV3DecryptsNestedMixedFolderAndRetainsDamagedInput(t *testing.T) {
 	resetLocalizationForTest(t)
 	fyneApp := newTestFyneApp(t)

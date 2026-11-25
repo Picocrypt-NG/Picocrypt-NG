@@ -540,7 +540,7 @@ func (a *App) updateAdvancedDisableStateFromSnapshot(snap app.UISnapshot, config
 		}
 	}
 	setWidgetDisabled(a.pcv3D1SuiteSelect, advancedDisabled || snap.Working || !rawD1)
-	setWidgetDisabled(a.recursiveD1Check, advancedDisabled || snap.Working || snap.Scanning || !snap.Recursively)
+	setWidgetDisabled(a.recursiveD1Check, advancedDisabled || snap.Working || snap.Scanning || !snap.Recursively || snap.EncryptSelectionOnly)
 	if recursiveD1Selected(snap) {
 		setWidgetDisabled(a.recursivelyCheck, advancedDisabled || snap.Working || snap.Scanning)
 		setWidgetDisabled(a.autoUnzipCheck, advancedDisabled || snap.Working || snap.Scanning)

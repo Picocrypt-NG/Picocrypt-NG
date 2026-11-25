@@ -249,7 +249,7 @@ func TestNormalPreviewSupersededDropCannotRestoreClaims(t *testing.T) {
 	resetLocalizationForTest(t)
 	a := createUIReadyDropTestApp(t, newTestFyneApp(t))
 	t.Cleanup(func() { a.workers.wait(); fyne.DoAndWait(a.State.Reset) })
-	result := routeDroppedFile(context.Background(), normalPreviewFixture(), false)
+	result := routeDroppedFile(context.Background(), normalPreviewFixture(), false, false)
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
