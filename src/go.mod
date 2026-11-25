@@ -3,7 +3,7 @@ module Picocrypt-NG
 go 1.27.4
 
 require (
-	fyne.io/fyne/v2 v2.8.2
+	fyne.io/fyne/v2 v2.8.3
 	github.com/BurntSushi/toml v1.6.0
 	github.com/Picocrypt-NG/serpent v0.1.0
 	github.com/Picocrypt/infectious v0.0.0-20250713161924-ae9b3ccb49d7
