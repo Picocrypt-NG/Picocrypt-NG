@@ -1026,6 +1026,7 @@ func (a *App) startPCV3Work() {
 	reservation, ok := a.workers.reserve()
 	if !ok {
 		a.pcv3Result = nil
+		a.pcv3ResultFromEncryption = false
 		a.State.SetPCV3Result(pcv3TerminalPresentation(pcv3operation.DiagnosticResourceBusy))
 		a.updateUIState()
 		return
@@ -1191,6 +1192,7 @@ func (a *App) finishPCV3Worker(session *operationSession, result *pcv3operation.
 		a.State.SetWorking(false)
 		a.State.SetCanCancel(false)
 		a.State.SetPCV3ResultComment(result)
+		a.pcv3ResultFromEncryption = false
 		if result != nil {
 			a.pcv3Result = result
 			a.pcv3ResultGeneration = session.generation
@@ -1312,6 +1314,7 @@ func (a *App) releasePCV3Result() {
 	a.pcv3ArchiveReviewModal = nil
 	result := a.pcv3Result
 	a.pcv3Result = nil
+	a.pcv3ResultFromEncryption = false
 	a.pcv3ResultGeneration = 0
 	a.disposePCV3Result(result)
 }
@@ -1401,7 +1404,7 @@ func (a *App) buildPCV3ResultView(
 		a.commentsResultLabel.MouseOut()
 		a.commentsResultLabel = nil
 	}
-	outcome := pcv3OutcomeCopy(presentation)
+	outcome := a.pcv3ResultOutcomeCopy(presentation, result)
 	if result != nil && result == a.pcv3Result {
 		if requirements, supplied, ok := result.CredentialPolicyMismatch(); ok {
 			outcome.Body = pcv3ExactFactorMismatchCopy(requirements, supplied)
@@ -1506,13 +1509,21 @@ func (a *App) buildPCV3ResultView(
 		}
 	}
 	closeText := publication.Action
+	if closeText == "" {
+		closeText = outcome.Action
+	}
 	if hasCleanupWarning {
 		closeText = tr("pcv3.warning.cleanup_close", "Close cleanup warning")
 	} else if hasCleanupDurabilityWarning {
 		closeText = tr("pcv3.warning.cleanup_durability_close", "Close cleanup durability warning")
 	}
 	if closeText == "" {
-		closeText = tr("pcv3.result.close", "Close recovery result")
+		switch presentation.Outcome() {
+		case pcv3operation.OutcomeForcePartial, pcv3operation.OutcomeForceUnverified:
+			closeText = tr("pcv3.result.close", "Close recovery result")
+		default:
+			closeText = tr("pcv3.publication.close", "Close")
+		}
 	}
 	closeButton := widget.NewButton(closeText, func() { a.resetUI() })
 	closeButton.Importance = widget.HighImportance
@@ -1648,6 +1659,7 @@ func (a *App) startPCV3ArchiveFollowUp(
 				a.State.SetCanCancel(false)
 			}
 			a.pcv3Result = next
+			a.pcv3ResultFromEncryption = false
 			a.State.SetPCV3ResultComment(next)
 			a.State.SetWorking(false)
 			switch {
@@ -2158,6 +2170,7 @@ func (a *App) finalizeOperation(
 		a.retirePCV3ResultView()
 		a.releasePCV3Result()
 		a.pcv3Result = result.pcv3
+		a.pcv3ResultFromEncryption = lastInput.mode == "encrypt"
 		a.pcv3ResultGeneration = session.generation
 		a.State.SetPCV3Result(result.pcv3.Presentation())
 		a.State.SetPCV3ResultComment(result.pcv3)
@@ -2178,7 +2191,7 @@ func (a *App) finalizeOperation(
 		}
 	case result.pcv3 != nil && result.pcv3.CompletionClass() != pcv3operation.CompletionClean:
 		presentation := result.pcv3.Presentation()
-		title := pcv3OutcomeCopy(presentation).Title
+		title := a.pcv3ResultOutcomeCopy(presentation, result.pcv3).Title
 		color := util.YELLOW
 		switch result.pcv3.CompletionClass() {
 		case pcv3operation.CompletionDurabilityUncertain, pcv3operation.CompletionPublicationIndeterminate:

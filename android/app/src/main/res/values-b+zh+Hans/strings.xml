@@ -233,10 +233,11 @@
     <string name="pcv3_outcome_success_title">解密完成</string>
     <string name="pcv3_outcome_success_body">输出已通过完整的身份验证。</string>
     <string name="pcv3_create_outcome_title">PCV3 卷已创建</string>
-    <string name="pcv3_create_outcome_body">新卷已完成。请将其保存到所选位置以保留。</string>
+    <string name="pcv3_create_outcome_body">加密卷已就绪。请选择保存位置。</string>
+    <string name="pcv3_create_outcome_complete_body">加密已完成。</string>
     <string name="pcv3_outcome_archive_pending_title">已通过身份验证的归档可供提取</string>
     <string name="pcv3_outcome_archive_pending_body">归档载荷已通过完整的身份验证。请选择新的提取文件夹。加密源将保留。</string>
-    <string name="pcv3_outcome_degraded_title">已恢复有损坏的身份验证输出</string>
+    <string name="pcv3_outcome_degraded_title">已恢复通过认证的数据</string>
     <string name="pcv3_outcome_degraded_body">输出已通过身份验证，但恢复冗余数据已损坏。请保留原始卷。</string>
     <string name="pcv3_outcome_force_partial_title">部分恢复</string>
     <string name="pcv3_outcome_force_partial_body">文件尚未完全验证。数据可能缺失或未经验证。</string>
@@ -258,6 +259,7 @@
     <string name="pcv3_outcome_cancelled_body">没有报告已完成的输出。源文件已保留。</string>
     <string name="pcv3_outcome_generic_title">操作已受控失败</string>
     <string name="pcv3_outcome_generic_body">未发布任何输出。请保留源并检查报告的状态。</string>
+    <string name="pcv3_outcome_generic_check_publication_body">请保留源文件，并按照输出状态提示操作。</string>
 
     <string name="pcv3_publication_not_requested_title">未请求任何输出</string>
     <string name="pcv3_publication_not_requested_body">已通过身份验证的归档在未提取的情况下关闭。加密源已保留。</string>
@@ -266,6 +268,7 @@
     <string name="pcv3_publication_durable_body">输出已持久发布。</string>
     <string name="pcv3_publication_uncertain_title">未确认输出持久性</string>
     <string name="pcv3_publication_uncertain_body">目标位置可能包含输出，但无法确认文件系统持久性。请保留所有源和目标位置。请勿重试、替换、删除或清理此次操作。</string>
+    <string name="pcv3_create_staging_uncertain_body">应用无法确认临时加密卷在断电后能否保留。请保留源文件。重新加密前，请确认加密卷是否已保存。</string>
     <string name="pcv3_publication_indeterminate_title">输出状态未知</string>
     <string name="pcv3_publication_indeterminate_body">应用无法确定发布是否已提交。请将所有源和目标位置完全保持原样。请勿重试或清理此次操作。</string>
     <string name="pcv3_warning_cleanup_title">无法确认清理已完成</string>
@@ -288,6 +291,7 @@
     <string name="pcv3_publication_indeterminate_close">关闭发布警告</string>
     <string name="pcv3_output_saved_title">输出已保存</string>
     <string name="pcv3_output_saved_body">所选输出已保存。下方显示的身份验证和恢复提示仍然适用。</string>
+    <string name="pcv3_output_saved_created_body">加密卷已保存到所选位置。</string>
     <string name="pcv3_output_saved_cleanup_title">输出已保存；清理未完成</string>
     <string name="pcv3_output_saved_cleanup_body">所选输出已保存，但无法确认应用临时文件的清理情况。</string>
     <string name="pcv3_output_save_failed_title">无法保存输出</string>
@@ -341,11 +345,11 @@
     <!-- Retained output and bounded creation request feedback. -->
     <string name="pcv3_request_too_large">所选文件或备注超出允许范围。请选择更少的文件或缩短备注。</string>
     <string name="pcv3_discard_retained_title">丢弃输出？</string>
-    <string name="pcv3_discard_retained_body">这将永久删除应用保存的输出，无法撤销。原始文件将保留。</string>
+    <string name="pcv3_discard_retained_body">这将删除应用暂存的输出，且无法撤销。原始文件将保留。</string>
     <string name="pcv3_retained_discarded_title">输出已丢弃</string>
-    <string name="pcv3_retained_discarded_body">应用保存的输出已删除。原始文件已保留。</string>
+    <string name="pcv3_retained_discarded_body">应用暂存的输出已删除。原始文件已保留。</string>
     <string name="pcv3_retained_discard_cleanup_title">输出清理未完成</string>
-    <string name="pcv3_retained_discard_cleanup_body">应用无法确认已删除所保存的输出。请保留原始文件。</string>
+    <string name="pcv3_retained_discard_cleanup_body">应用无法确认暂存的输出是否已删除。请保留原始文件。</string>
     <string name="pcv3_resource_limit_title">资源用量达到上限</string>
     <string name="pcv3_resource_limit_body">处理所需的资源用量已达到限制，操作已停止。</string>
     <string name="pcv3_d1_profile_heading">恢复配置</string>
@@ -353,9 +357,9 @@
     <string name="pcv3_d1_profile_standard">标准</string>
     <string name="pcv3_outcome_d1_profile_required_title">请选择恢复配置</string>
     <string name="pcv3_outcome_d1_profile_required_body">请选择创建此卷时使用的标准或偏执配置，然后重试。未发布任何输出。</string>
-    <string name="comments_unverified">注释（未经验证）</string>
-    <string name="comment_authenticity_authenticated">卷注释的真实性已验证。</string>
-    <string name="comment_authenticity_unverified">卷注释的真实性未经验证。</string>
+    <string name="comments_unverified">备注（未经验证）</string>
+    <string name="comment_authenticity_authenticated">卷备注已通过认证。</string>
+    <string name="comment_authenticity_unverified">卷备注未经验证。</string>
     <string name="legacy_v1_security_warning">旧版 v1 不验证文件头或注释的真实性。注释可能已被篡改。请使用 PCV3 重新加密数据。</string>
     <string name="legacy_v2_security_warning">旧版 v2 仅使用密码验证文件头；密钥文件不参与文件头的真实性验证。请使用 PCV3 重新加密数据。</string>
 </resources>

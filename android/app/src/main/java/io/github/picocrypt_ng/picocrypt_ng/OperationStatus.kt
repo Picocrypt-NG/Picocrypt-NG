@@ -274,7 +274,11 @@ fun pcv3ResultDisplay(snapshot: Pcv3SnapshotView): Pcv3ResultDisplay {
             )
         else -> copy(
             R.string.pcv3_outcome_generic_title,
-            R.string.pcv3_outcome_generic_body,
+            if (snapshot.publication.attempted && snapshot.publication.state != "not-published") {
+                R.string.pcv3_outcome_generic_check_publication_body
+            } else {
+                R.string.pcv3_outcome_generic_body
+            },
         )
     }
 
@@ -360,33 +364,44 @@ fun pcv3ResultDisplay(snapshot: Pcv3SnapshotView): Pcv3ResultDisplay {
  * pre-action publication copy so a failed/expired/unknown Save or Discard cannot look durable.
  */
 fun pcv3ResultDisplay(presentation: Pcv3Presentation): Pcv3ResultDisplay {
-    val snapshotDisplay = pcv3ResultDisplay(presentation.snapshot)
+    val snapshot = presentation.snapshot
+    val base = pcv3ResultDisplay(snapshot)
+    val publication = base.publication
     val outputAction = (presentation as? Pcv3Presentation.Final)?.outputAction
-    // A creation that has not yet settled an output action shows creation copy, never
-    // decryption copy; publication durability of the private staging file is not the
-    // user-visible save.
-    if (presentation.isCreation && outputAction == null &&
-        presentation.snapshot.semantic.outcome == "success" &&
-        presentation.snapshot.diagnostic == "none"
-    ) {
-        return snapshotDisplay.copy(
-            outcome = copy(
-                R.string.pcv3_create_outcome_title,
-                R.string.pcv3_create_outcome_body,
-            ),
-            publication = snapshotDisplay.publication.takeIf {
-                presentation.snapshot.publication.state == "published-durability-uncertain"
-            },
-        )
+    val outputTarget = pcv3OutputActionTarget(snapshot, presentation.artifactMetadata, presentation.isCreation)
+    val live = presentation as? Pcv3Presentation.Live
+    val hasLiveOutput = live?.hasRetainedOutput() == true
+    val creationSucceeded = presentation.isCreation && snapshot.semantic.outcome == "success" &&
+        snapshot.diagnostic == "none"
+    val snapshotDisplay = when {
+        // A restored receipt lacks the operation kind. An indeterminate write
+        // also lacks proof that the created volume is available.
+        publication != null && snapshot.semantic.outcome == "success" &&
+            (presentation is Pcv3Presentation.Restored ||
+                creationSucceeded && snapshot.publication.state == "publication-indeterminate") ->
+            base.copy(outcome = publication, publication = null)
+        creationSucceeded -> {
+            val canSave = hasLiveOutput && live?.outputActionInFlight == false &&
+                outputTarget == Pcv3OutputActionTarget.CREATED_VOLUME
+            base.copy(
+                outcome = copy(
+                    R.string.pcv3_create_outcome_title,
+                    if (canSave) R.string.pcv3_create_outcome_body else R.string.pcv3_create_outcome_complete_body,
+                ),
+                publication = when (snapshot.publication.state) {
+                    "published-durable" -> null
+                    "published-durability-uncertain" ->
+                        publication?.copy(bodyResId = R.string.pcv3_create_staging_uncertain_body)
+                    else -> publication
+                },
+            )
+        }
+        hasLiveOutput && outputTarget != null && snapshot.publication.state == "published-durable" ->
+            base.copy(publication = null)
+        else -> base
     }
     if (outputAction == null) return snapshotDisplay
-    val result = outputAction.closedDisplay(
-        target = pcv3OutputActionTarget(
-            presentation.snapshot,
-            presentation.artifactMetadata,
-            presentation.isCreation,
-        ),
-    )
+    val result = outputAction.closedDisplay(outputTarget)
     val cleanupUncertain = outputAction.cleanupIncomplete ||
         outputAction.code.endsWith("-cleanup-incomplete")
     val cleanupDurabilityUncertain = outputAction.cleanupDurabilityUncertain ||
@@ -426,7 +441,9 @@ fun pcv3ResultDisplay(presentation: Pcv3Presentation): Pcv3ResultDisplay {
     }
     return Pcv3ResultDisplay(
         outcome = result.copy,
-        supportingOutcome = snapshotDisplay.outcome.takeIf { result.keepUnderlyingOutcome },
+        supportingOutcome = snapshotDisplay.outcome.takeIf {
+            result.keepUnderlyingOutcome && outputTarget != Pcv3OutputActionTarget.CREATED_VOLUME
+        },
         publication = null,
         warnings = warnings,
         tone = tone,
@@ -440,6 +457,8 @@ fun pcv3ResultDisplay(presentation: Pcv3Presentation): Pcv3ResultDisplay {
         authenticatedComment = snapshotDisplay.authenticatedComment,
     )
 }
+
+private fun Pcv3Presentation.Live.hasRetainedOutput(): Boolean = outputHandle != null && outputPending
 
 /**
  * Derives visible controls from an exact presentation and its native capabilities.
@@ -476,9 +495,7 @@ fun pcv3ResultActions(presentation: Pcv3Presentation): Pcv3ResultActionProjectio
     }
 
     if (presentation is Pcv3Presentation.Live) {
-        if (presentation.outputHandle == null || !presentation.outputPending ||
-            presentation.outputActionInFlight
-        ) {
+        if (!presentation.hasRetainedOutput() || presentation.outputActionInFlight) {
             return Pcv3ResultActionProjection(emptySet())
         }
         return when (outputTarget) {
@@ -743,22 +760,19 @@ private fun Pcv3OutputResultView.closedDisplay(
         R.string.pcv3_output_unknown_close,
     )
     code == "saved" && !cleanupIncomplete -> Pcv3ClosedOutputDisplay(
-        copy(R.string.pcv3_output_saved_title, R.string.pcv3_output_saved_body),
+        savedOutputCopy(target),
         Pcv3ResultTone.NEUTRAL,
         R.string.pcv3_output_saved_close,
         keepUnderlyingOutcome = true,
     )
     code == "saved-cleanup-incomplete" && cleanupIncomplete -> Pcv3ClosedOutputDisplay(
-        copy(
-            R.string.pcv3_output_saved_cleanup_title,
-            R.string.pcv3_output_saved_cleanup_body,
-        ),
+        savedOutputCopy(target, cleanupIncomplete = true),
         Pcv3ResultTone.WARNING,
         R.string.pcv3_warning_cleanup_close,
         keepUnderlyingOutcome = true,
     )
     code == "saved-cleanup-durability-uncertain" -> Pcv3ClosedOutputDisplay(
-        copy(R.string.pcv3_output_saved_title, R.string.pcv3_output_saved_body),
+        savedOutputCopy(target),
         Pcv3ResultTone.WARNING,
         R.string.pcv3_warning_cleanup_durability_close,
         keepUnderlyingOutcome = true,
@@ -830,6 +844,15 @@ private fun Pcv3OutputResultView.closedDisplay(
         R.string.pcv3_output_unknown_close,
     )
 }
+
+private fun savedOutputCopy(target: Pcv3OutputActionTarget?, cleanupIncomplete: Boolean = false) = copy(
+    if (cleanupIncomplete) R.string.pcv3_output_saved_cleanup_title else R.string.pcv3_output_saved_title,
+    when {
+        target == Pcv3OutputActionTarget.CREATED_VOLUME -> R.string.pcv3_output_saved_created_body
+        cleanupIncomplete -> R.string.pcv3_output_saved_cleanup_body
+        else -> R.string.pcv3_output_saved_body
+    },
+)
 
 private fun copy(@StringRes title: Int, @StringRes body: Int) =
     Pcv3CopyResources(titleResId = title, bodyResId = body)

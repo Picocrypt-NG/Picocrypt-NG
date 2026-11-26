@@ -247,10 +247,11 @@
     <string name="pcv3_outcome_success_title">Desxifratge completat</string>
     <string name="pcv3_outcome_success_body">S’ha autenticat tot el resultat.</string>
     <string name="pcv3_create_outcome_title">S’ha creat el volum PCV3</string>
-    <string name="pcv3_create_outcome_body">El volum nou és complet. Deseu-lo a la ubicació que trieu per conservar-lo.</string>
+    <string name="pcv3_create_outcome_body">El volum xifrat està llest. Trieu on el voleu desar.</string>
+    <string name="pcv3_create_outcome_complete_body">El xifratge ha acabat.</string>
     <string name="pcv3_outcome_archive_pending_title">Arxiu autenticat llest per extreure</string>
     <string name="pcv3_outcome_archive_pending_body">S’ha autenticat tot el contingut de l’arxiu. Trieu una carpeta nova per extreure’l. Es conserva l’arxiu xifrat original.</string>
-    <string name="pcv3_outcome_degraded_title">Resultat recuperat i autenticat amb redundància malmesa</string>
+    <string name="pcv3_outcome_degraded_title">Dades autenticades recuperades</string>
     <string name="pcv3_outcome_degraded_body">S’ha autenticat el resultat. La redundància de recuperació està malmesa. Conserveu el volum original.</string>
     <string name="pcv3_outcome_force_partial_title">Recuperació parcial</string>
     <string name="pcv3_outcome_force_partial_body">El fitxer no s’ha verificat del tot. Hi pot haver dades absents o sense verificar.</string>
@@ -272,6 +273,7 @@
     <string name="pcv3_outcome_cancelled_body">No consta que s’hagi completat cap resultat. S’han conservat els fitxers originals.</string>
     <string name="pcv3_outcome_generic_title">L’operació s’ha aturat amb seguretat</string>
     <string name="pcv3_outcome_generic_body">No s’ha publicat cap resultat. Conserveu l’original i reviseu l’estat indicat.</string>
+    <string name="pcv3_outcome_generic_check_publication_body">Conserveu els fitxers d’origen i seguiu les indicacions sobre l’estat del resultat.</string>
 
     <string name="pcv3_publication_not_requested_title">No s’ha sol·licitat cap resultat</string>
     <string name="pcv3_publication_not_requested_body">S’ha tancat l’arxiu autenticat sense extreure’l. S’ha conservat l’original xifrat.</string>
@@ -280,6 +282,7 @@
     <string name="pcv3_publication_durable_body">S’ha confirmat la persistència del resultat publicat.</string>
     <string name="pcv3_publication_uncertain_title">Persistència del resultat sense confirmar</string>
     <string name="pcv3_publication_uncertain_body">La destinació pot contenir el resultat. No se n’ha pogut confirmar la persistència al sistema de fitxers. Conserveu tots els originals i la destinació. No repetiu l’operació ni substituïu, suprimiu o netegeu cap fitxer relacionat.</string>
+    <string name="pcv3_create_staging_uncertain_body">L’aplicació no ha pogut confirmar que el volum xifrat temporal es conservi després d’un tall de corrent. Conserveu els fitxers d’origen. Abans de tornar a xifrar, comproveu si s’ha desat el volum.</string>
     <string name="pcv3_publication_indeterminate_title">Estat del resultat desconegut</string>
     <string name="pcv3_publication_indeterminate_body">L’aplicació no pot saber si s’ha completat la publicació. Conserveu tots els originals i la destinació tal com són. No repetiu l’operació ni netegeu els fitxers que ha creat.</string>
     <string name="pcv3_warning_cleanup_title">No s’ha pogut confirmar la neteja</string>
@@ -302,6 +305,7 @@
     <string name="pcv3_publication_indeterminate_close">Tanca l’avís de publicació</string>
     <string name="pcv3_output_saved_title">Resultat desat</string>
     <string name="pcv3_output_saved_body">S’ha desat el resultat seleccionat. Els avisos d’autenticació i recuperació que es mostren a sota continuen vigents.</string>
+    <string name="pcv3_output_saved_created_body">El volum xifrat s’ha desat a la ubicació seleccionada.</string>
     <string name="pcv3_output_saved_cleanup_title">Resultat desat. Neteja incompleta</string>
     <string name="pcv3_output_saved_cleanup_body">S’ha desat el resultat seleccionat. No s’ha pogut confirmar que s’hagin suprimit els fitxers temporals creats per l’aplicació.</string>
     <string name="pcv3_output_save_failed_title">No s’ha pogut desar el resultat</string>

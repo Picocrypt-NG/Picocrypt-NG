@@ -237,10 +237,11 @@
     <string name="pcv3_outcome_success_title">Entschlüsselung abgeschlossen</string>
     <string name="pcv3_outcome_success_body">Die Ausgabe ist vollständig authentifiziert.</string>
     <string name="pcv3_create_outcome_title">PCV3-Volume erstellt</string>
-    <string name="pcv3_create_outcome_body">Das neue Volume ist fertig. Speichern Sie es an einem gewählten Ort, um es zu behalten.</string>
+    <string name="pcv3_create_outcome_body">Das verschlüsselte Volume ist fertig. Wählen Sie einen Speicherort.</string>
+    <string name="pcv3_create_outcome_complete_body">Die Verschlüsselung ist abgeschlossen.</string>
     <string name="pcv3_outcome_archive_pending_title">Authentifiziertes Archiv kann entpackt werden</string>
     <string name="pcv3_outcome_archive_pending_body">Der Archivinhalt ist vollständig authentifiziert. Wählen Sie einen neuen Ordner zum Entpacken. Die verschlüsselte Quelle bleibt erhalten.</string>
-    <string name="pcv3_outcome_degraded_title">Authentifizierte Ausgabe mit Schäden wiederhergestellt</string>
+    <string name="pcv3_outcome_degraded_title">Authentifizierte Daten wiederhergestellt</string>
     <string name="pcv3_outcome_degraded_body">Die Ausgabe ist authentifiziert, aber die Wiederherstellungsredundanz ist beschädigt. Bewahren Sie das ursprüngliche Volume auf.</string>
     <string name="pcv3_outcome_force_partial_title">Teilweise Wiederherstellung</string>
     <string name="pcv3_outcome_force_partial_body">Die Datei ist nicht vollständig verifiziert. Daten können fehlen oder ungeprüft sein.</string>
@@ -262,6 +263,7 @@
     <string name="pcv3_outcome_cancelled_body">Es wurde keine fertige Ausgabe gemeldet. Die Quelldateien bleiben erhalten.</string>
     <string name="pcv3_outcome_generic_title">Vorgang kontrolliert fehlgeschlagen</string>
     <string name="pcv3_outcome_generic_body">Es wurde keine Ausgabe veröffentlicht. Bewahren Sie die Quelle auf und prüfen Sie den gemeldeten Status.</string>
+    <string name="pcv3_outcome_generic_check_publication_body">Bewahren Sie die Quelldateien auf und folgen Sie den Hinweisen zum Ausgabestatus.</string>
 
     <string name="pcv3_publication_not_requested_title">Keine Ausgabe angefordert</string>
     <string name="pcv3_publication_not_requested_body">Das authentifizierte Archiv wurde ohne Entpacken geschlossen. Die verschlüsselte Quelle bleibt erhalten.</string>
@@ -269,7 +271,8 @@
     <string name="pcv3_publication_not_published_body">Die Quelldateien bleiben erhalten.</string>
     <string name="pcv3_publication_durable_body">Die Ausgabe wurde dauerhaft veröffentlicht.</string>
     <string name="pcv3_publication_uncertain_title">Dauerhaftigkeit der Ausgabe nicht bestätigt</string>
-    <string name="pcv3_publication_uncertain_body">Das Ziel kann die Ausgabe enthalten, aber ihre dauerhafte Speicherung im Dateisystem konnte nicht bestätigt werden. Bewahren Sie alle Quellen und das Ziel auf. Wiederholen, ersetzen, löschen oder bereinigen Sie diesen Vorgang nicht.</string>
+    <string name="pcv3_publication_uncertain_body">Am Ziel kann sich die Ausgabe befinden. Ihre dauerhafte Speicherung im Dateisystem wurde nicht bestätigt. Lassen Sie alle Quelldateien und das Ziel unverändert. Wiederholen Sie den Vorgang nicht. Ersetzen oder löschen Sie keine zugehörigen Dateien und führen Sie keine Bereinigung durch.</string>
+    <string name="pcv3_create_staging_uncertain_body">Die App konnte nicht bestätigen, dass das temporäre verschlüsselte Volume einen Stromausfall übersteht. Bewahren Sie die Quelldateien auf. Prüfen Sie vor einer erneuten Verschlüsselung, ob das Volume gespeichert wurde.</string>
     <string name="pcv3_publication_indeterminate_title">Ausgabestatus ist unbekannt</string>
     <string name="pcv3_publication_indeterminate_body">Die App kann nicht feststellen, ob die Veröffentlichung festgeschrieben wurde. Lassen Sie alle Quellen und das Ziel genau unverändert. Wiederholen oder bereinigen Sie diesen Vorgang nicht.</string>
     <string name="pcv3_warning_cleanup_title">Bereinigung konnte nicht bestätigt werden</string>
@@ -292,6 +295,7 @@
     <string name="pcv3_publication_indeterminate_close">Veröffentlichungswarnung schließen</string>
     <string name="pcv3_output_saved_title">Ausgabe gespeichert</string>
     <string name="pcv3_output_saved_body">Die ausgewählte Ausgabe wurde gespeichert. Die unten angezeigten Authentifizierungs- und Wiederherstellungshinweise gelten weiterhin.</string>
+    <string name="pcv3_output_saved_created_body">Das verschlüsselte Volume wurde am ausgewählten Ort gespeichert.</string>
     <string name="pcv3_output_saved_cleanup_title">Ausgabe gespeichert; Bereinigung unvollständig</string>
     <string name="pcv3_output_saved_cleanup_body">Die ausgewählte Ausgabe wurde gespeichert, aber die Bereinigung der temporären App-Dateien konnte nicht bestätigt werden.</string>
     <string name="pcv3_output_save_failed_title">Ausgabe konnte nicht gespeichert werden</string>

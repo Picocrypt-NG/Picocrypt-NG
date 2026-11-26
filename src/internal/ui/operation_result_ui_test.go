@@ -14,12 +14,14 @@ import (
 func TestPCV3ResultSurfacePreservesFrontendFinalization(t *testing.T) {
 	resetLocalizationForTest(t)
 	for _, test := range []struct {
-		name      string
-		recursive bool
-		want      string
+		name           string
+		recursive      bool
+		cleanupWarning bool
+		want           string
 	}{
-		{"cancelled after publication", false, "Operation cancelled by user"},
-		{"one published file then failed selection", true, "Completed (1 ok, 1 failed)"},
+		{name: "cancelled after publication", want: "Operation cancelled by user"},
+		{name: "one published file then failed selection", recursive: true, want: "Completed (1 ok, 1 failed)"},
+		{name: "encryption with cleanup warning", cleanupWarning: true, want: "Encryption finished"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fyneApp := newTestFyneApp(t)
@@ -32,7 +34,10 @@ func TestPCV3ResultSurfacePreservesFrontendFinalization(t *testing.T) {
 			// A real keyfile-only writer provides the published result. These
 			// tuples represent frontend work after publication, not crypto results.
 			result := executePublicationTestEncryption(t, context.Background(), input, nil)
-			if test.recursive {
+			if test.cleanupWarning {
+				result.pcv3.WithCleanupWarning()
+				result.completed = false
+			} else if test.recursive {
 				result.completed = false
 				result.succeeded, result.failed = 1, 1
 				result.err = errors.New("recursive selection failed")
@@ -59,6 +64,16 @@ func TestPCV3ResultSurfacePreservesFrontendFinalization(t *testing.T) {
 				}
 				if strings.Contains(text, "Operation complete") {
 					t.Errorf("result surface still presents the previous file's success as the final outcome: %q", text)
+				}
+				if test.cleanupWarning && (!strings.Contains(text, nativePCV3CleanupWarningText) ||
+					strings.Contains(text, "The output is fully authenticated.")) {
+					t.Errorf("encryption result lost its cleanup warning or claimed read authentication: %q", text)
+				}
+				if test.cleanupWarning && nativeUIDirectorySyncSupported(t, t.TempDir()) {
+					snapshot := a.State.UISnapshot()
+					if got := renderStatus(snapshot.Status, snapshot); got != "Encryption finished" {
+						t.Errorf("encryption warning status = %q; want Encryption finished", got)
+					}
 				}
 				if !nativeUIDirectorySyncSupported(t, t.TempDir()) && (!strings.Contains(text, nativePCV3UncertainBody) || !strings.Contains(text, nativePCV3DurabilityWarningText) || strings.Contains(text, "File saved.")) {
 					t.Errorf("frontend finalization concealed native uncertainty: %q", text)

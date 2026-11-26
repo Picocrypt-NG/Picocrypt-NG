@@ -221,7 +221,7 @@
     <string name="pcv3_consent_role_d1_front">앞쪽 부트스트랩</string>
     <string name="pcv3_consent_role_d1_tail">뒤쪽 부트스트랩</string>
     <string name="pcv3_consent_acknowledgement">이 출력이 검증되지 않았음을 이해합니다.</string>
-    <string name="pcv3_consent_confirm">검증 없이 복구</string>
+    <string name="pcv3_consent_confirm">검증되지 않은 데이터 복구</string>
     <string name="pcv3_consent_cancel">복구 취소</string>
 
     <string name="pcv3_progress_checking_request">작업 확인 중…</string>
@@ -247,10 +247,11 @@
     <string name="pcv3_outcome_success_title">복호화 완료</string>
     <string name="pcv3_outcome_success_body">출력이 완전히 인증되었습니다.</string>
     <string name="pcv3_create_outcome_title">PCV3 볼륨 생성됨</string>
-    <string name="pcv3_create_outcome_body">새 볼륨이 완성되었습니다. 보관하려면 원하는 위치에 저장하세요.</string>
+    <string name="pcv3_create_outcome_body">암호화된 볼륨이 준비되었습니다. 저장할 위치를 선택하세요.</string>
+    <string name="pcv3_create_outcome_complete_body">암호화가 완료되었습니다.</string>
     <string name="pcv3_outcome_archive_pending_title">인증된 압축 파일을 풀 수 있습니다</string>
     <string name="pcv3_outcome_archive_pending_body">압축 파일 내용이 완전히 인증되었습니다. 새 압축 해제 폴더를 선택하세요. 암호화된 원본은 그대로 유지됩니다.</string>
-    <string name="pcv3_outcome_degraded_title">손상이 있는 인증된 출력 복구됨</string>
+    <string name="pcv3_outcome_degraded_title">인증된 데이터가 복구되었습니다</string>
     <string name="pcv3_outcome_degraded_body">출력은 인증되었지만 복구용 중복 데이터가 손상되었습니다. 원본 볼륨을 보관하세요.</string>
     <string name="pcv3_outcome_force_partial_title">부분 복구</string>
     <string name="pcv3_outcome_force_partial_body">완전히 검증된 파일이 아닙니다. 데이터가 누락되거나 검증되지 않았을 수 있습니다.</string>
@@ -272,6 +273,7 @@
     <string name="pcv3_outcome_cancelled_body">완료된 출력이 보고되지 않았습니다. 원본 파일은 그대로 유지됩니다.</string>
     <string name="pcv3_outcome_generic_title">작업이 통제된 상태로 실패했습니다</string>
     <string name="pcv3_outcome_generic_body">출력은 게시되지 않았습니다. 원본을 보관하고 보고된 상태를 확인하세요.</string>
+    <string name="pcv3_outcome_generic_check_publication_body">원본 파일을 보관하고 출력 상태에 표시된 안내를 따르세요.</string>
 
     <string name="pcv3_publication_not_requested_title">출력이 요청되지 않았습니다</string>
     <string name="pcv3_publication_not_requested_body">인증된 압축 파일을 풀지 않고 닫았습니다. 암호화된 원본은 그대로 유지됩니다.</string>
@@ -280,6 +282,7 @@
     <string name="pcv3_publication_durable_body">출력이 영속적으로 게시되었습니다.</string>
     <string name="pcv3_publication_uncertain_title">출력 영속성을 확인하지 못했습니다</string>
     <string name="pcv3_publication_uncertain_body">대상 위치에 출력이 있을 수 있지만 파일 시스템 영속성을 확인할 수 없습니다. 모든 원본과 대상 위치를 보관하세요. 이 작업을 다시 시도하거나 교체, 삭제 또는 정리하지 마세요.</string>
+    <string name="pcv3_create_staging_uncertain_body">암호화된 임시 볼륨이 정전 후에도 유지될지 확인할 수 없습니다. 원본 파일을 보관하세요. 다시 암호화하기 전에 볼륨이 저장되었는지 확인하세요.</string>
     <string name="pcv3_publication_indeterminate_title">출력 상태를 알 수 없습니다</string>
     <string name="pcv3_publication_indeterminate_body">앱에서 출력 게시가 확정되었는지 판단할 수 없습니다. 모든 원본과 대상 위치를 현재 상태 그대로 보관하세요. 이 작업을 다시 시도하거나 정리하지 마세요.</string>
     <string name="pcv3_warning_cleanup_title">정리를 확인할 수 없습니다</string>
@@ -302,6 +305,7 @@
     <string name="pcv3_publication_indeterminate_close">게시 경고 닫기</string>
     <string name="pcv3_output_saved_title">출력이 저장됨</string>
     <string name="pcv3_output_saved_body">선택한 출력이 저장되었습니다. 아래의 인증 및 복구 안내는 계속 적용됩니다.</string>
+    <string name="pcv3_output_saved_created_body">암호화된 볼륨이 선택한 위치에 저장되었습니다.</string>
     <string name="pcv3_output_saved_cleanup_title">출력 저장됨, 정리 미완료</string>
     <string name="pcv3_output_saved_cleanup_body">선택한 출력은 저장되었지만 앱 임시 파일의 정리를 확인할 수 없습니다.</string>
     <string name="pcv3_output_save_failed_title">출력을 저장할 수 없음</string>
@@ -355,11 +359,11 @@
     <!-- Retained output and bounded creation request feedback. -->
     <string name="pcv3_request_too_large">선택한 파일이나 설명이 허용 범위를 초과합니다. 파일 수를 줄이거나 설명을 짧게 작성하세요.</string>
     <string name="pcv3_discard_retained_title">출력 삭제?</string>
-    <string name="pcv3_discard_retained_body">앱에 저장된 출력을 영구적으로 삭제합니다. 원본 파일은 유지됩니다.</string>
+    <string name="pcv3_discard_retained_body">앱이 임시로 보관한 출력을 삭제합니다. 이 작업은 되돌릴 수 없으며 원본 파일은 유지됩니다.</string>
     <string name="pcv3_retained_discarded_title">출력 삭제됨</string>
-    <string name="pcv3_retained_discarded_body">앱에 저장된 출력을 삭제했습니다. 원본 파일은 유지되었습니다.</string>
+    <string name="pcv3_retained_discarded_body">앱이 임시로 보관한 출력을 삭제했습니다. 원본 파일은 그대로 유지됩니다.</string>
     <string name="pcv3_retained_discard_cleanup_title">출력 정리 미완료</string>
-    <string name="pcv3_retained_discard_cleanup_body">앱에 저장된 출력이 삭제되었는지 확인할 수 없습니다. 원본 파일을 보관하세요.</string>
+    <string name="pcv3_retained_discard_cleanup_body">앱이 임시로 보관한 출력이 삭제되었는지 확인할 수 없습니다. 원본 파일을 보관하세요.</string>
     <string name="pcv3_resource_limit_title">리소스 한도 도달</string>
     <string name="pcv3_resource_limit_body">처리에 필요한 리소스가 허용된 한도에 도달하여 작업이 중지되었습니다.</string>
     <string name="pcv3_d1_profile_heading">복구 프로필</string>
@@ -367,9 +371,9 @@
     <string name="pcv3_d1_profile_standard">표준</string>
     <string name="pcv3_outcome_d1_profile_required_title">복구 프로필을 선택하세요</string>
     <string name="pcv3_outcome_d1_profile_required_body">이 볼륨을 만들 때 사용한 표준 또는 패러노이드 프로필을 선택한 후 다시 시도하세요. 출력은 게시되지 않았습니다.</string>
-    <string name="comments_unverified">주석 (검증되지 않음)</string>
-    <string name="comment_authenticity_authenticated">볼륨 주석의 진위가 확인되었습니다.</string>
-    <string name="comment_authenticity_unverified">볼륨 주석의 진위가 확인되지 않았습니다.</string>
+    <string name="comments_unverified">메모(검증되지 않음)</string>
+    <string name="comment_authenticity_authenticated">볼륨 메모의 진위가 확인되었습니다.</string>
+    <string name="comment_authenticity_unverified">볼륨 메모의 진위가 확인되지 않았습니다.</string>
     <string name="legacy_v1_security_warning">구형 v1 형식은 헤더나 주석의 진위를 검증하지 않습니다. 주석이 변경되었을 수 있습니다. 데이터를 PCV3로 다시 암호화하세요.</string>
     <string name="legacy_v2_security_warning">구형 v2 형식은 비밀번호만으로 헤더의 진위를 검증하며 키 파일은 이 검증에 참여하지 않습니다. 데이터를 PCV3로 다시 암호화하세요.</string>
 </resources>

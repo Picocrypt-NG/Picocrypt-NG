@@ -97,6 +97,7 @@ type App struct {
 	pcv3OperationExecutor      pcv3OperationExecutor
 	pcv3ResultDisposer         func(*pcv3operation.Result) bool
 	pcv3Result                 *pcv3operation.Result
+	pcv3ResultFromEncryption   bool
 	pcv3ResultGeneration       uint64
 	passwordStrengthMu         sync.Mutex
 	passwordStrengthGeneration uint64

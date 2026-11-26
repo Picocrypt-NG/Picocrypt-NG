@@ -267,10 +267,11 @@
     <string name="pcv3_outcome_success_title">اكتمل فك التشفير</string>
     <string name="pcv3_outcome_success_body">تمت المصادقة على الناتج بالكامل.</string>
     <string name="pcv3_create_outcome_title">أُنشئت حاوية PCV3</string>
-    <string name="pcv3_create_outcome_body">اكتمل إنشاء الحاوية الجديدة. اختر مكانًا لحفظها والاحتفاظ بها.</string>
+    <string name="pcv3_create_outcome_body">الحاوية المشفّرة جاهزة. اختر مكانًا لحفظها.</string>
+    <string name="pcv3_create_outcome_complete_body">اكتمل التشفير.</string>
     <string name="pcv3_outcome_archive_pending_title">أرشيف جاهز للاستخراج بعد المصادقة</string>
     <string name="pcv3_outcome_archive_pending_body">تمت المصادقة على محتوى الأرشيف بالكامل. اختر مجلدًا جديدًا للاستخراج. بقي المصدر المشفر محفوظًا.</string>
-    <string name="pcv3_outcome_degraded_title">استُرد ناتج مصادَق عليه رغم التلف</string>
+    <string name="pcv3_outcome_degraded_title">استُردّت بيانات مصادَق عليها</string>
     <string name="pcv3_outcome_degraded_body">تمت المصادقة على الناتج، لكن البيانات الاحتياطية المخصصة للاسترداد تالفة. احتفظ بالحاوية الأصلية.</string>
     <string name="pcv3_outcome_force_partial_title">استرداد جزئي</string>
     <string name="pcv3_outcome_force_partial_body">لم يُتحقق من الملف بالكامل. قد تكون بعض البيانات مفقودة أو غير متحقق منها.</string>
@@ -292,6 +293,7 @@
     <string name="pcv3_outcome_cancelled_body">لم يُبلّغ عن اكتمال أي ناتج. بقيت الملفات الأصلية محفوظة.</string>
     <string name="pcv3_outcome_generic_title">فشلت العملية وتوقفت بأمان</string>
     <string name="pcv3_outcome_generic_body">لم يُوضع أي ناتج في الوجهة. احتفظ بالمصدر وراجع الحالة المعروضة.</string>
+    <string name="pcv3_outcome_generic_check_publication_body">احتفظ بالملفات الأصلية واتبع التعليمات الخاصة بحالة الناتج.</string>
 
     <string name="pcv3_publication_not_requested_title">لم يُطلب أي ناتج</string>
     <string name="pcv3_publication_not_requested_body">أُغلق الأرشيف الذي تمت المصادقة عليه دون استخراج محتواه. بقي المصدر المشفر محفوظًا.</string>
@@ -300,6 +302,7 @@
     <string name="pcv3_publication_durable_body">تأكد ثبات حفظ الناتج في الوجهة.</string>
     <string name="pcv3_publication_uncertain_title">لم يتأكد ثبات حفظ الناتج</string>
     <string name="pcv3_publication_uncertain_body">قد يوجد الناتج في الوجهة، لكن تعذّر تأكيد ثبات حفظه على نظام الملفات. احتفظ بجميع المصادر والوجهة. لا تُعد المحاولة، ولا تستبدل ملفات العملية أو تحذفها، ولا تنظّفها.</string>
+    <string name="pcv3_create_staging_uncertain_body">تعذّر على التطبيق تأكيد بقاء الحاوية المشفّرة المؤقتة بعد انقطاع الطاقة. احتفظ بالملفات الأصلية. تحقّق مما إذا كانت الحاوية قد حُفظت قبل إعادة التشفير.</string>
     <string name="pcv3_publication_indeterminate_title">حالة الناتج غير معروفة</string>
     <string name="pcv3_publication_indeterminate_body">تعذّر تحديد ما إذا اكتمل وضع الناتج في الوجهة. أبقِ جميع المصادر والوجهة كما هي تمامًا. لا تُعد المحاولة ولا تنظّف ملفات العملية.</string>
     <string name="pcv3_warning_cleanup_title">تعذّر تأكيد تنظيف الملفات المؤقتة</string>
@@ -322,6 +325,7 @@
     <string name="pcv3_publication_indeterminate_close">إغلاق تحذير وضع الناتج في الوجهة</string>
     <string name="pcv3_output_saved_title">حُفظ الناتج</string>
     <string name="pcv3_output_saved_body">حُفظ الناتج المحدد. تظل إشعارات المصادقة والاسترداد أدناه سارية.</string>
+    <string name="pcv3_output_saved_created_body">حُفظت الحاوية المشفّرة في المكان المختار.</string>
     <string name="pcv3_output_saved_cleanup_title">حُفظ الناتج ولم يتأكد التنظيف</string>
     <string name="pcv3_output_saved_cleanup_body">حُفظ الناتج المحدد، لكن تعذّر تأكيد إزالة الملفات المؤقتة التي أنشأها التطبيق.</string>
     <string name="pcv3_output_save_failed_title">تعذّر حفظ الناتج</string>

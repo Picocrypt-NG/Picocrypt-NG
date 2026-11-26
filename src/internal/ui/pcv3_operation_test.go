@@ -394,10 +394,10 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 			},
 			wantCompletion: pcv3operation.CompletionWarning,
 			wantText: []string{
-				"Authenticated output recovered with damage", "File saved.",
+				"Authenticated data recovered", "File saved.",
 				"The output is authenticated, but recovery redundancy is damaged. Keep the original volume.",
 			},
-			forbidText: []string{"Operation complete"},
+			forbidText: []string{"Operation complete", "Authenticated output recovered with damage"},
 			wantAction: "Close",
 		},
 		{
@@ -551,8 +551,48 @@ func TestPCV3FynePreservesResultAxes(t *testing.T) {
 				"Unsupported PCV3 format",
 				"No output was created, and the file was not tried as a legacy volume.",
 			},
-			forbidText: []string{"File saved."},
-			wantAction: "Close recovery result",
+			forbidText:    []string{"File saved."},
+			wantAction:    "Close",
+			forbidActions: []string{"Close recovery result"},
+		},
+		{
+			name: "closing archive without extraction is neutral",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3operation.OutcomeOperationFailed, Stage: pcv3operation.StageOutputPublication,
+				Code: pcv3operation.CodeOperationFailed, Warnings: []pcv3operation.Warning{pcv3operation.WarningCleanupIncomplete},
+			},
+			wantCompletion: pcv3operation.CompletionNoOutput,
+			wantText: []string{
+				"No output was requested",
+				"The authenticated archive was closed without extraction. The encrypted source was kept.",
+				nativePCV3CleanupWarningText,
+			},
+			forbidText: []string{"Operation failed", "File saved."},
+			wantAction: "Close cleanup warning",
+		},
+		{
+			name: "failure after publication preserves the saved output fact",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3operation.OutcomeOperationFailed, Stage: pcv3operation.StageOutputPublication,
+				Code: pcv3operation.CodeOperationFailed, Diagnostic: pcv3operation.DiagnosticCoreFailure,
+				PublicationAttempted: true, PublicationState: pcv3publication.StatePublishedDurable,
+				PublicationCode: pcv3publication.CodePublishedDurable,
+			},
+			wantCompletion: pcv3operation.CompletionWarning,
+			wantText:       []string{"Operation failed", "File saved."},
+			forbidText:     []string{"No output was published", "The output is fully authenticated."},
+			wantAction:     "Close",
+		},
+		{
+			name: "unpublished force result preserves recovery-specific close",
+			spec: pcv3operation.PresentationSpec{
+				Outcome: pcv3operation.OutcomeForcePartial, Stage: pcv3operation.StageRecordAuth,
+				Code: pcv3operation.CodeForcePartial, Warnings: []pcv3operation.Warning{pcv3operation.WarningForcePartial},
+			},
+			wantCompletion: pcv3operation.CompletionNoOutput,
+			wantText:       []string{"Partial recovery", "Not a fully verified file."},
+			forbidText:     []string{"File saved."},
+			wantAction:     "Close recovery result",
 		},
 		{
 			name: "not published",

@@ -138,7 +138,7 @@
     <string name="status_splitting">Разделение…</string>
     <string name="status_recombining_chunks">Объединение частей…</string>
     <string name="status_reading_values">Чтение значений…</string>
-    <string name="status_duplicate_keyfiles_warning">Предупреждение: обнаружены повторяющиеся ключевые файлы (они взаимно исключаются)…</string>
+    <string name="status_duplicate_keyfiles_warning">Обнаружены дубликаты ключевых файлов. При попарном повторении их вклад в ключ взаимно компенсируется…</string>
     <string name="status_verifying_integrity">Проверка целостности (этап 1 из 2)…</string>
     <string name="status_mac_verification_failed_continuing">Проверка MAC не пройдена, операция всё равно продолжается…</string>
     <string name="status_repairing_verifying">Восстановление (проверка)…</string>
@@ -259,10 +259,11 @@
     <string name="pcv3_outcome_success_title">Расшифрование завершено</string>
     <string name="pcv3_outcome_success_body">Выходные данные полностью аутентифицированы.</string>
     <string name="pcv3_create_outcome_title">Том PCV3 создан</string>
-    <string name="pcv3_create_outcome_body">Новый том готов. Сохраните его в выбранное место, чтобы оставить.</string>
+    <string name="pcv3_create_outcome_body">Зашифрованный том готов. Выберите, куда его сохранить.</string>
+    <string name="pcv3_create_outcome_complete_body">Шифрование завершено.</string>
     <string name="pcv3_outcome_archive_pending_title">Аутентифицированный архив готов к извлечению</string>
     <string name="pcv3_outcome_archive_pending_body">Содержимое архива полностью аутентифицировано. Выберите новую папку для извлечения. Зашифрованный источник сохранён.</string>
-    <string name="pcv3_outcome_degraded_title">Аутентифицированные данные восстановлены с повреждением</string>
+    <string name="pcv3_outcome_degraded_title">Восстановленные данные аутентифицированы</string>
     <string name="pcv3_outcome_degraded_body">Выходные данные аутентифицированы, но избыточность восстановления повреждена. Сохраните исходный том.</string>
     <string name="pcv3_outcome_force_partial_title">Частичное восстановление</string>
     <string name="pcv3_outcome_force_partial_body">Файл проверен не полностью. Возможны пропуски и непроверенные данные.</string>
@@ -284,14 +285,16 @@
     <string name="pcv3_outcome_cancelled_body">О завершённых выходных данных не сообщалось. Исходные файлы сохранены.</string>
     <string name="pcv3_outcome_generic_title">Операция безопасно остановлена из-за ошибки</string>
     <string name="pcv3_outcome_generic_body">Выходные данные не опубликованы. Сохраните источник и проверьте указанное состояние.</string>
+    <string name="pcv3_outcome_generic_check_publication_body">Не удаляйте исходные файлы. Следуйте указаниям в сообщении о результате записи.</string>
 
     <string name="pcv3_publication_not_requested_title">Выходные данные не запрашивались</string>
     <string name="pcv3_publication_not_requested_body">Аутентифицированный архив закрыт без извлечения. Зашифрованный источник сохранён.</string>
     <string name="pcv3_publication_not_published_title">Выходные данные не опубликованы</string>
     <string name="pcv3_publication_not_published_body">Исходные файлы сохранены.</string>
     <string name="pcv3_publication_durable_body">Надёжность публикации выходных данных подтверждена.</string>
-    <string name="pcv3_publication_uncertain_title">Надёжность публикации не подтверждена</string>
-    <string name="pcv3_publication_uncertain_body">В месте назначения могут находиться выходные данные, но надёжность их фиксации файловой системой не подтверждена. Сохраните все источники и место назначения. Не повторяйте, не заменяйте и не удаляйте данные и не выполняйте очистку этой операции.</string>
+    <string name="pcv3_publication_uncertain_title">Надёжность записи не подтверждена</string>
+    <string name="pcv3_publication_uncertain_body">Результат может находиться в месте назначения. Надёжность записи в файловой системе подтвердить не удалось. Оставьте все исходные файлы и место назначения без изменений. Не повторяйте операцию, не заменяйте и не удаляйте файлы и не запускайте очистку.</string>
+    <string name="pcv3_create_staging_uncertain_body">Не удалось подтвердить, что временный зашифрованный том сохранится после сбоя питания. Не удаляйте исходные файлы. Прежде чем повторять шифрование, проверьте, сохранился ли том.</string>
     <string name="pcv3_publication_indeterminate_title">Состояние выходных данных неизвестно</string>
     <string name="pcv3_publication_indeterminate_body">Приложение не может определить, зафиксирована ли публикация. Сохраните все источники и место назначения без изменений. Не повторяйте операцию и не выполняйте очистку.</string>
     <string name="pcv3_warning_cleanup_title">Не удалось подтвердить очистку</string>
@@ -314,6 +317,7 @@
     <string name="pcv3_publication_indeterminate_close">Закрыть предупреждение о публикации</string>
     <string name="pcv3_output_saved_title">Результат сохранён</string>
     <string name="pcv3_output_saved_body">Выбранный результат сохранён. Показанные ниже предупреждения о проверке подлинности и восстановлении остаются в силе.</string>
+    <string name="pcv3_output_saved_created_body">Зашифрованный том сохранён в выбранном месте.</string>
     <string name="pcv3_output_saved_cleanup_title">Результат сохранён, очистка не завершена</string>
     <string name="pcv3_output_saved_cleanup_body">Выбранный результат сохранён, но очистку временных файлов приложения подтвердить не удалось.</string>
     <string name="pcv3_output_save_failed_title">Не удалось сохранить результат</string>
@@ -336,11 +340,11 @@
     <string name="pcv3_save_decrypted_output">Сохранить расшифрованные данные</string>
     <string name="pcv3_save_created_volume">Сохранить созданный том</string>
     <string name="pcv3_save_recovery_artifact">Сохранить артефакт восстановления</string>
-    <string name="pcv3_inspect_recovery_artifact">Проверить артефакт восстановления</string>
+    <string name="pcv3_inspect_recovery_artifact">Просмотреть сведения о восстановлении</string>
     <string name="pcv3_discard_artifact_title">Удалить артефакт восстановления?</string>
     <string name="pcv3_discard_artifact_body">Это удалит принадлежащий приложению артефакт восстановления без возможности отмены. Исходный том будет сохранён.</string>
     <string name="pcv3_discard_recovery_artifact">Удалить артефакт восстановления</string>
-    <string name="pcv3_keep_recovery_artifact">Сохранить артефакт восстановления</string>
+    <string name="pcv3_keep_recovery_artifact">Оставить артефакт восстановления</string>
     <string name="pcv3_artifact_details_title">Сведения об артефакте восстановления</string>
     <string name="pcv3_artifact_details_close">Закрыть сведения о восстановлении</string>
     <string name="pcv3_artifact_loading">Загружаются сведения о восстановлении…</string>
