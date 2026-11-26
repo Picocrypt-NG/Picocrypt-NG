@@ -563,7 +563,7 @@ release_candidate_digest() {
 }
 
 verify_present_windows_pairs() {
-  local recover_owner="${1:-}" name workflow primary bundle
+  local recover_owner="${1:-}" allow_pending_sidecar="${2:-false}" name workflow primary bundle
   while read -r name workflow _; do
     primary=false
     bundle=false
@@ -577,6 +577,8 @@ verify_present_windows_pairs() {
         echo "release gate: Windows sidecar for '$name' does not match the original signed generation" >&2
         exit 1
       fi
+    elif [ "$primary" = "false" ] && [ "$bundle" = "true" ] && [ "$allow_pending_sidecar" = "true" ]; then
+      echo "release gate: Windows attachment for '$name' is pending"
     elif [ "$primary" != "$bundle" ]; then
       echo "release gate: incomplete Windows pair for '$name'" >&2
       exit 1
@@ -640,13 +642,16 @@ else
   validate_tag true
 fi
 if ! load_release; then
+  if [ "$mode" = "inspect-owner" ] &&
+    { [ "$windows_after_core" = "false" ] || [ "$tag_present" = "false" ]; }; then
+    # Read-only inspection may not see the core draft already verified by
+    # the coordinator. Early Windows assets are only uploaded after publication.
+    emit_owner_inspection missing
+    exit 0
+  fi
   if [ "$windows_after_core" = "true" ]; then
     echo "release gate: core release is pending; Windows attachment cannot start" >&2
     exit 1
-  fi
-  if [ "$mode" = "inspect-owner" ]; then
-    emit_owner_inspection missing
-    exit 0
   fi
   if [ "$mode" = "preflight" ]; then
     echo "release gate: no existing release for $version; a commit-bound draft may be created"
@@ -924,7 +929,7 @@ while read -r name workflow _; do
   verify_primary "$name" "$workflow"
 done < "$required_primary"
 if [ "$scope" = "core" ]; then
-  verify_present_windows_pairs
+  verify_present_windows_pairs "" "$already_published"
 fi
 
 if [ "$already_published" = "true" ]; then

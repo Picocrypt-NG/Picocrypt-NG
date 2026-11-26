@@ -91,6 +91,7 @@ type releaseGateOptions struct {
 	checkoutHEAD            string
 	modifiedBody            bool
 	releaseListingFailure   bool
+	hideDraftsInList        bool
 	draftCreateFailure      bool
 	draftCreateResponse     string
 	draftReadbackMisses     int
@@ -1433,6 +1434,118 @@ func TestReleaseGateAppendsVerifiedWindowsToPublishedCore(t *testing.T) {
 	})
 }
 
+func TestReleaseGateEarlyWindowsInspectionWithHiddenDraft(t *testing.T) {
+	const primary = "Picocrypt-NG-cli-Legacy.exe"
+	draft := []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}
+	options := releaseGateOptions{
+		workflow:         "release.yml",
+		ownerWorkflow:    "build-windows-legacy.yml",
+		windowsAfterCore: true,
+		hideDraftsInList: true,
+		tagAbsent:        true,
+		localAssets: []releaseLocalFixture{
+			{Name: primary, Path: "artifacts/build-windows-legacy/" + primary, Content: "frozen signed Windows bytes\n"},
+			{Name: primary + ".sigstore.json", Path: "artifacts/build-windows-legacy/" + primary + ".sigstore.json", Content: "frozen Sigstore bundle\n"},
+		},
+	}
+	core := phasedReleaseAssets(false)
+
+	t.Run("read-only inspect reports missing before publication", func(t *testing.T) {
+		result := runReleaseGateWithOptions(t, "inspect-owner", draft, core, options)
+		if result.err != nil {
+			t.Fatalf("inspection of a verified but hidden draft failed: %v\n%s", result.err, result.output)
+		}
+		var inventory struct {
+			Status        string            `json:"status"`
+			SourceSHA     string            `json:"source_sha"`
+			OwnerWorkflow string            `json:"owner_workflow"`
+			MissingNames  []string          `json:"missing_names"`
+			VerifiedPairs []json.RawMessage `json:"verified_pairs"`
+		}
+		if err := json.Unmarshal([]byte(result.stdout), &inventory); err != nil {
+			t.Fatalf("invalid inspection inventory: %v\n%s", err, result.stdout)
+		}
+		if inventory.Status != "missing" || inventory.SourceSHA != releaseTestSHA || inventory.OwnerWorkflow != options.ownerWorkflow ||
+			len(inventory.VerifiedPairs) != 0 || len(inventory.MissingNames) != 1 || inventory.MissingNames[0] != primary {
+			t.Fatalf("unexpected read-only Windows inventory: %+v", inventory)
+		}
+		mustNotContain(t, result.calls, "/releases/42/assets")
+		mustNotContain(t, result.calls, "cosign verify-blob")
+		mustNotContain(t, result.calls, "--method")
+	})
+
+	t.Run("a published tag cannot be treated as a hidden draft", func(t *testing.T) {
+		tagged := options
+		tagged.tagAbsent = false
+		result := runReleaseGateWithOptions(t, "inspect-owner", draft, core, tagged)
+		if result.err == nil {
+			t.Fatal("inspection inferred a hidden draft for a visible release tag")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+
+	t.Run("listing errors cannot be treated as a hidden draft", func(t *testing.T) {
+		failure := options
+		failure.releaseListingFailure = true
+		result := runReleaseGateWithOptions(t, "inspect-owner", draft, core, failure)
+		if result.err == nil {
+			t.Fatal("inspection continued despite a failed release listing")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+
+	for _, mode := range []string{"preflight", "upload"} {
+		t.Run(mode+" requires visible published core", func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, mode, draft, core, options)
+			if result.err == nil {
+				t.Fatal("attachment gate accepted a hidden draft")
+			}
+			mustNotContain(t, result.calls, "--method")
+		})
+	}
+}
+
+func TestReleaseGateCoreConfirmToleratesOnlyPendingWindowsSidecars(t *testing.T) {
+	const primary = "Picocrypt-NG-cli-Legacy.exe"
+	for _, tc := range []struct {
+		name       string
+		assetName  string
+		draft      bool
+		wantPublic bool
+	}{
+		{name: "confirm already-published core with pending sidecar", assetName: primary + ".sigstore.json", wantPublic: true},
+		{name: "reject public executable without sidecar", assetName: primary},
+		{name: "reject initial publication with only sidecar", assetName: primary + ".sigstore.json", draft: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: tc.draft}}
+			assets := phasedReleaseAssets(false)
+			pending := newReleaseAsset(999, tc.assetName, "standalone Windows attachment fixture\n")
+			assets = append(assets, pending)
+			result := runReleaseGateWithOptions(t, "strict-finalize", release, assets, releaseGateOptions{
+				releaseScope: "core", publishedBodyFromSource: true,
+			})
+			if tc.wantPublic {
+				if result.err != nil {
+					t.Fatalf("confirmation of the already-public core failed: %v\n%s", result.err, result.output)
+				}
+				stagingRequireOutputs(t, result, false, true)
+				mustContainCallLine(t, result.calls, "cosign verify-blob", assets[0].Name)
+				mustNotContain(t, result.calls, "/releases/assets/999")
+			} else {
+				if result.err == nil {
+					t.Fatal("core release accepted an incomplete Windows pair")
+				}
+				mustContain(t, result.output, "incomplete Windows pair")
+			}
+			if len(result.remoteAssets) != len(assets) || result.remoteAssets[len(assets)-1] != pending {
+				t.Fatal("core confirmation altered the pending attachment")
+			}
+			mustNotContain(t, result.calls, "--method")
+		})
+	}
+}
+
 func phasedReleaseAssets(windows bool) []releaseAssetFixture {
 	var result []releaseAssetFixture
 	for _, asset := range completeReleaseAssets("2.19") {
@@ -1864,6 +1977,10 @@ case "$*" in
       echo 'fixture release listing failed' >&2
       exit 1
     fi
+    if [ "$GH_HIDE_DRAFTS_IN_LIST" = "true" ]; then
+      jq 'map(select(.draft == false))' "$GH_RELEASES_JSON"
+      exit 0
+    fi
     if [ -e "$GH_CREATED_RELEASE_JSON" ]; then
       list_count="$(awk '
         $0 == "api --method POST repos/Picocrypt-NG/Picocrypt-NG/releases --input -" {created = 1}
@@ -2172,6 +2289,7 @@ esac
 		"GH_CALLS="+callsPath,
 		"GH_UPLOAD_MODE="+strconv.FormatBool(mode == "upload"),
 		"GH_RELEASE_LISTING_FAILURE="+strconv.FormatBool(options.releaseListingFailure),
+		"GH_HIDE_DRAFTS_IN_LIST="+strconv.FormatBool(options.hideDraftsInList),
 		"GH_DRAFT_CREATE_FAILURE="+strconv.FormatBool(options.draftCreateFailure),
 		"GH_DRAFT_CREATE_RESPONSE="+options.draftCreateResponse,
 		"GH_DRAFT_READBACK_MISSES="+strconv.Itoa(options.draftReadbackMisses),

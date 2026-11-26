@@ -347,8 +347,16 @@ workflow writes, and the finalizer checks the approved inventory before and afte
 publication. GitHub's editor is outside that queue. If publication fails after
 updating the release, inspect its actual state before taking any recovery action.
 
+After an HTTP `502 Bad Gateway` during a Windows upload, GitHub may leave a
+zero-byte asset in state `starter`. Before retrying, list assets for the approved
+release ID and confirm the placeholder's exact asset ID, expected Windows asset
+name, state `starter`, and size zero. Obtain separate approval to delete only
+that asset by ID. Preserve all uploaded binaries and their sidecars.
+[GitHub release asset uploads](https://docs.github.com/en/rest/releases/assets#upload-a-release-asset)
+
 For staging recovery, first verify the original staged artifact/bundle pairs by
-ID, digest, source and provenance, then rerun only failed jobs in the same run.
+ID, digest, source and provenance. Then use **Re-run failed jobs** in the original
+`stage` run.
 Successful signing jobs' retained full-owner generations let staging retry
 restore and verify the original bytes without signing or attesting again.
 The producing attempt can precede the
