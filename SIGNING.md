@@ -256,41 +256,57 @@ Assign a named maintainer to each responsibility in the release record:
 | Sigstore, provenance and publication | Release operator | Exact workflow owner, repository, ref and source SHA |
 
 Record the reviewed `main` commit, root `VERSION` and required-check results.
-Prefer the `release-coordinator` workflow (`.github/workflows/release.yml`): it uses
-the dispatch event's `github.sha` for every checkout and reusable owner call. It binds
-root `VERSION` and the full canonical ownership manifest
-(`.github/actions/stage-release/release-manifest.sh`) to that commit. Its `mode`
-input has three choices:
+The `release-coordinator` workflow (`.github/workflows/release.yml`) checks out the
+dispatch commit. In validation and staging it builds that commit and binds root
+`VERSION` and the canonical ownership manifest to every owner call.
 
 - `validation` (default) builds and verifies all 19 canonical primary assets
   without production signing, staging or publication.
 - `stage` runs full validation, then the seven owners sign and stage their
-  complete sets, or reuse already verified complete remote sets. Success requires
-  every owner to report `staged=true`; `published` remains `false`.
-- `publish` additionally runs strict finalization after all seven owners succeed
-  with `staged=true`. It requires the complete 19 primary assets and their 19
-  Sigstore bundles, verifies their source and trust bindings, and confirms actual
-  publication with `published=true`.
+  complete sets. Existing verified draft pairs are preserved. After all seven
+  owners report `staged=true`, the coordinator reads back the 19 primary assets and
+  19 Sigstore bundles and verifies their digests, signatures, provenance and
+  source-bound release notes. The successful stage run uploads an immutable
+  receipt with the verified draft ID, source commit and candidate digest. The
+  summary displays all three values and the receipt artifact ID.
+- `publish` requires only the `stage_receipt_id` from the approved stage
+  summary. Before protected publication, the coordinator authenticates the
+  artifact and its successful stage run and attempt on `main`. The resolver
+  summary shows the authenticated values for the approver to check. On Ubuntu,
+  the publisher verifies the receipt's full draft again and publishes those
+  same assets with `published=true`. This mode skips all native builds and
+  signing jobs. A failed publication can be retried with the same receipt ID.
 
-The seven direct build workflows remain a fallback. For unsigned direct
-validation, set `publish_release=false`; on Windows also set `signpath_test=false`
-and `signpath_release_dry_run=false`. Check every run's actual source SHA and version
-against the reviewed commit: separate dispatches against a moving `main` do not
-freeze one commit. Record built, verified, signing-not-requested/signed, reused,
-staged and published separately.
+The seven direct build workflows remain a fallback for platform validation and
+staging. Their existing `publish_release=true` input signs and stages only.
+Use `publish_release=false` for unsigned validation. On Windows also set
+`signpath_test=false` and `signpath_release_dry_run=false`. Check the actual source
+SHA and version of each direct run against the reviewed commit. A single
+coordinator stage run reports when the entire candidate is ready for approval.
 
 `stage` and `publish` require a manual dispatch from `main` in this repository,
-with matching workflow, source and checkout SHAs. Both require separate explicit
-authorization, including a signed staging rehearsal. Inspect the actual `release`
-environment branch policy, required reviewers and self-review settings before
-execution. Record the named approver and decision; `environment: release` in YAML
-alone does not establish a required human approval. Review SignPath requests as
-described above; `signpath_release_dry_run` still performs production signing.
+with matching workflow and checkout SHAs. The publish workflow can promote an
+earlier approved source commit that is still on `main` and matches the current
+release version and policy. Keep workflow-file changes out of `main` between staging and
+publication when possible. GitHub can deny tag creation or release publication
+if the target commit differs from the default branch in workflow files. A changed
+draft or different source requires a new verified receipt and approval before
+publication.
+
+Both modes require separate explicit authorization, including a signed staging
+rehearsal. Inspect the actual `release` environment branch policy, required
+reviewers and self-review settings before execution. Record the named approver
+and decision. The final stage verification uses the protected environment's
+`contents: write` token permission for draft visibility in the GitHub Releases
+API. The verification script only reads the draft. Review SignPath requests as
+described above. `signpath_release_dry_run` still performs production signing.
 macOS retains its existing ad-hoc bundle seal; these modes do not add Developer ID
 signing or notarization.
 
-Retain the source SHA, run ID, immutable raw/signing-input/signed-generation
+Retain the source SHA, stage run ID and attempt, receipt artifact ID, draft
+release ID, candidate digest, immutable raw/signing-input/signed-generation
 artifact IDs, official ZIP SHA-256 digests and each artifact's producing attempt.
+Keep the receipt available through the publication and retry window.
 Keep tool versions, verification reports and approval records through the
 signing/retry window. Keep credentials, private keys, memory dumps and personal
 filesystem paths out of this evidence. The release gate verifies remote bytes,
@@ -299,9 +315,13 @@ provenance, exact asset ownership and the source-bound tag before publication.
 Read back the final release ID, tag, target SHA, `draft=false`, `prerelease=false`
 and complete 38-asset set. A successful leaf job can leave an incomplete draft;
 it does not establish that publication occurred.
+Keep the approved draft untouched during publication. The shared queue serializes
+workflow writes, and the finalizer checks the approved inventory before and after
+publication. GitHub's editor is outside that queue. If publication fails after
+updating the release, inspect its actual state before taking any recovery action.
 
-For recovery, first verify the original staged artifact/bundle pairs by ID,
-digest, source and provenance, then rerun only failed jobs in the same run.
+For staging recovery, first verify the original staged artifact/bundle pairs by
+ID, digest, source and provenance, then rerun only failed jobs in the same run.
 Successful signing jobs' retained full-owner generations let staging retry
 restore and verify the original bytes without signing or attesting again.
 The producing attempt can precede the
@@ -311,6 +331,16 @@ completed with its original bytes, stop for an explicit recovery decision.
 Rebuilding or generating replacement signatures is not a recovery fallback;
 the same source SHA can produce different bytes, timestamps or signatures.
 Existing release assets must not be overwritten.
+
+For a publication retry, use the original approved stage receipt ID. A later
+workflow attempt cannot replace that artifact ID. If the receipt expires or is
+deleted, stop for a separately approved recovery of the same verified
+candidate.
+If GitHub rejects creation of the release tag after `main` advances, verify the
+candidate and obtain operator approval to create the exact tag at that candidate
+SHA before retrying. Do not point the tag at the newer head.
+If GitHub still denies publication, leave the draft intact and review the
+permission failure with the release operator.
 
 Rotate a signing identity through one reviewed change to its public trust
 anchors, verification fixtures and service policy before using replacement
@@ -333,6 +363,7 @@ human review of audit-critical product changes. Paid Apple Developer ID and
 notarization require a separate budget/credential decision and a
 quarantined-download smoke test on a clean supported macOS system.
 
-The new coordinator graph has not yet executed end to end in hosted GitHub
-Actions. Local policy/runtime fixtures and lint do not establish hosted signing,
-failed-job retry or retention recovery acceptance.
+Hosted validation of the promotion path requires a separately authorized
+rehearsal. Local policy and runtime fixtures cover the routing and verification
+logic. Signing, publication, failed-job retry and retention recovery also
+require evidence from hosted jobs.

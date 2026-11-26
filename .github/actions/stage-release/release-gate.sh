@@ -2,10 +2,12 @@
 
 set -euo pipefail
 
-mode="${1:?usage: release-gate.sh <preflight|upload|publish|inspect-owner|strict-finalize> <version>}"
-version="${2:?usage: release-gate.sh <preflight|upload|publish|inspect-owner|strict-finalize> <version>}"
+usage="usage: release-gate.sh <preflight|upload|inspect-owner|verify-staged|strict-finalize> <version>"
+mode="${1:?$usage}"
+version="${2:?$usage}"
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
-source_sha="${GITHUB_SHA:?GITHUB_SHA is required}"
+driver_sha="${GITHUB_SHA:?GITHUB_SHA is required}"
+source_sha="$driver_sha"
 workspace="${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 
 set_gate_output() {
@@ -17,18 +19,12 @@ set_gate_output staged false
 set_gate_output published false
 
 case "$mode" in
-  preflight|upload|publish|inspect-owner|strict-finalize) ;;
+  preflight|upload|inspect-owner|verify-staged|strict-finalize) ;;
   *)
     echo "release gate: unsupported mode '$mode'" >&2
     exit 2
     ;;
 esac
-if [ "$mode" = "preflight" ]; then
-  case "${FINALIZE-true}" in
-    true|false) ;;
-    *) echo "release gate: finalize must be true or false" >&2; exit 2 ;;
-  esac
-fi
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
   echo "release gate: invalid version '$version'" >&2
   exit 2
@@ -37,8 +33,8 @@ if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "release gate: invalid repository '$repo'" >&2
   exit 2
 fi
-if [[ ! "$source_sha" =~ ^[0-9A-Fa-f]{40}$ ]]; then
-  echo "release gate: invalid source commit '$source_sha'" >&2
+if [[ ! "$driver_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "release gate: invalid workflow commit" >&2
   exit 2
 fi
 if [[ "$workspace" != /* ]] || [ ! -d "$workspace" ]; then
@@ -57,13 +53,13 @@ if [ "$source_version" != "$version" ]; then
   exit 2
 fi
 checkout_sha="$(git -C "$workspace" rev-parse HEAD)"
-if [ "$checkout_sha" != "$source_sha" ]; then
-  echo "release gate: checkout commit '$checkout_sha' does not match '$source_sha'" >&2
+if [ "$checkout_sha" != "$driver_sha" ]; then
+  echo "release gate: checkout commit '$checkout_sha' does not match '$driver_sha'" >&2
   exit 2
 fi
 workflow_ref="${GITHUB_WORKFLOW_REF:?GITHUB_WORKFLOW_REF is required}"
-if [ "${GITHUB_WORKFLOW_SHA:-}" != "$source_sha" ]; then
-  echo "release gate: caller workflow commit must match the source commit" >&2
+if [ "${GITHUB_WORKFLOW_SHA:-}" != "$driver_sha" ]; then
+  echo "release gate: caller workflow commit must match the dispatch commit" >&2
   exit 2
 fi
 case "$workflow_ref" in
@@ -77,10 +73,36 @@ case "$workflow_ref" in
   "$repo/.github/workflows/release.yml@refs/heads/main") ;;
   *) echo "release gate: workflow must be an exact trusted owner or coordinator" >&2; exit 2 ;;
 esac
-if { [ "$mode" = "inspect-owner" ] || [ "$mode" = "strict-finalize" ]; } &&
+if { [ "$mode" = "inspect-owner" ] || [ "$mode" = "verify-staged" ] || [ "$mode" = "strict-finalize" ]; } &&
   [ "$workflow_ref" != "$repo/.github/workflows/release.yml@refs/heads/main" ]; then
   echo "release gate: $mode requires the trusted main-branch coordinator" >&2
   exit 2
+fi
+
+if [ "$mode" = "verify-staged" ] || [ "$mode" = "strict-finalize" ]; then
+  if [ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
+    echo "release gate: $mode requires a manual main-branch dispatch" >&2
+    exit 2
+  fi
+fi
+if [ "$mode" = "strict-finalize" ]; then
+  source_sha="${RELEASE_SOURCE_SHA:-}"
+  approved_digest="${RELEASE_CANDIDATE_DIGEST:-}"
+  approved_release_id="${RELEASE_DRAFT_ID:-}"
+  if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ || ! "$approved_digest" =~ ^[0-9a-f]{64}$ ||
+    ! "$approved_release_id" =~ ^[1-9][0-9]*$ ]]; then
+    echo "release gate: publication requires the staged source SHA, candidate digest and release ID" >&2
+    exit 2
+  fi
+  if ! git -C "$workspace" merge-base --is-ancestor "$source_sha" "$driver_sha"; then
+    echo "release gate: candidate is not an ancestor of the trusted workflow checkout" >&2
+    exit 2
+  fi
+  candidate_version="$(git -C "$workspace" show "$source_sha:VERSION")"
+  if [ "${candidate_version%$'\r'}" != "$version" ]; then
+    echo "release gate: candidate VERSION does not match '$version'" >&2
+    exit 2
+  fi
 fi
 
 for command in awk cat cmp comm cosign gh grep jq mkdir mktemp mv realpath sha256sum sort wc; do
@@ -187,8 +209,8 @@ if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
   done
 fi
 
-if [ "$mode" = "upload" ] || [ "$mode" = "publish" ] || [ "$mode" = "strict-finalize" ]; then
-  body_path="${BODY_PATH:?BODY_PATH is required during upload and publication}"
+if [ "$mode" = "upload" ]; then
+  body_path="${BODY_PATH:?BODY_PATH is required during upload}"
   expected_body_path="$workspace/release-body.md"
   canonical_body_path="$canonical_workspace/release-body.md"
   if [ "$body_path" != "$expected_body_path" ] \
@@ -205,6 +227,13 @@ if [ "$mode" = "upload" ] || [ "$mode" = "publish" ] || [ "$mode" = "strict-fina
     echo "release gate: release body does not match the source-bound deterministic release notes" >&2
     exit 1
   fi
+fi
+
+if [ "$mode" = "verify-staged" ] || [ "$mode" = "strict-finalize" ]; then
+  body_path="$work/expected-release-body.md"
+  git -C "$workspace" show "$source_sha:Changelog.md" > "$work/source-changelog.md"
+  GITHUB_SHA="$source_sha" bash "$(dirname -- "${BASH_SOURCE[0]}")/../release-body/gen-release-body.sh" \
+    "$version" "$work/source-changelog.md" "$body_path"
 fi
 
 tag_present=false
@@ -487,10 +516,13 @@ if ! load_release; then
     exit 1
   fi
 fi
+if [ "$mode" = "strict-finalize" ] && [ "$release_id" != "$approved_release_id" ]; then
+  echo "release gate: release $release_id does not match the staged receipt ID $approved_release_id" >&2
+  exit 1
+fi
 already_published=false
 if [ "$release_draft" != "true" ]; then
-  if [ "$mode" = "strict-finalize" ] &&
-    jq -e --rawfile body "$body_path" '.draft == false and .prerelease == false and .body == $body' "$work/release.json" >/dev/null; then
+  if [ "$mode" = "strict-finalize" ] && [ "$release_draft" = "false" ]; then
     already_published=true
     validate_tag false
   else
@@ -625,12 +657,52 @@ LC_ALL=C comm -23 "$work/expected-assets.txt" "$work/actual-assets.txt" > "$work
 if [ -s "$work/missing-assets.txt" ]; then
   echo "release gate: draft $version is still missing required assets:"
   cat "$work/missing-assets.txt"
-  if [ "$mode" = "strict-finalize" ]; then exit 1; fi
-  exit 0
+  exit 1
 fi
 
-jq -S '[.[] | {id, name, state, size, digest}] | sort_by(.name)' \
+require_release_body() {
+  if ! jq -e --rawfile body "$body_path" '.body == $body' "$work/release.json" >/dev/null; then
+    echo "release gate: release notes do not match the verified source" >&2
+    exit 1
+  fi
+}
+
+require_verified_release() {
+  local expected_draft="$1"
+  if ! load_release || [ "$release_id" != "$verified_release_id" ] || [ "$release_draft" != "$expected_draft" ]; then
+    echo "release gate: release $version changed or was published during verification" >&2
+    exit 1
+  fi
+  require_release_body
+  load_assets
+  validate_assets
+  jq -cS '[.[] | {id,name,state,size,digest}] | sort_by(.name)' \
+    "$work/assets.json" > "$work/current-assets.json"
+  if ! cmp -s "$work/verified-assets.json" "$work/current-assets.json"; then
+    echo "release gate: release assets changed during verification" >&2
+    exit 1
+  fi
+}
+
+require_release_body
+verified_release_id="$release_id"
+jq -cS '[.[] | {id,name,state,size,digest}] | sort_by(.name)' \
   "$work/assets.json" > "$work/verified-assets.json"
+manifest_digest=$(sha256sum "$work/primary-assets.txt")
+body_digest=$(sha256sum "$body_path")
+candidate_digest=$(
+  jq -ncS --arg repo "$repo" --arg version "$version" --arg source "$source_sha" \
+    --argjson id "$release_id" --arg manifest "${manifest_digest%% *}" --arg notes "${body_digest%% *}" \
+    --slurpfile assets "$work/verified-assets.json" \
+    '{schema:1,repository:$repo,version:$version,source_sha:$source,release_id:$id,
+      manifest_sha256:$manifest,notes_sha256:$notes,assets:$assets[0]}' | sha256sum
+)
+candidate_digest=${candidate_digest%% *}
+if [ "$mode" = "strict-finalize" ] && [ "$candidate_digest" != "$approved_digest" ]; then
+  echo "release gate: remote candidate does not match the approved staged digest" >&2
+  exit 1
+fi
+
 while read -r name _ _; do
   download_asset "$name"
   download_asset "$name.sigstore.json"
@@ -640,47 +712,20 @@ while read -r name workflow _; do
 done < "$work/primary-assets.txt"
 
 if [ "$already_published" = "true" ]; then
-  verified_release_id="$release_id"
-  if ! load_release || [ "$release_id" != "$verified_release_id" ] ||
-    ! jq -e --rawfile body "$body_path" '.draft == false and .prerelease == false and .body == $body' "$work/release.json" >/dev/null; then
-    echo "release gate: published release changed during verification" >&2
-    exit 1
-  fi
-  load_assets
-  validate_assets
-  jq -S '[.[] | {id,name,state,size,digest}] | sort_by(.name)' "$work/assets.json" > "$work/current-assets.json"
-  if ! cmp -s "$work/verified-assets.json" "$work/current-assets.json"; then
-    echo "release gate: release assets changed during verification" >&2
-    exit 1
-  fi
+  require_verified_release false
   validate_tag false
   set_gate_output published true
   echo "release gate: verified already-published complete release $version"
   exit 0
 fi
 
-ensure_tag
-verified_release_id="$release_id"
-load_release || {
-  echo "release gate: release $version disappeared during verification" >&2
-  exit 1
-}
-if [ "$release_id" != "$verified_release_id" ] || [ "$release_draft" != "true" ]; then
-  echo "release gate: release $version changed or was published during verification" >&2
-  exit 1
-fi
-load_assets
-validate_assets
-LC_ALL=C comm -23 "$work/expected-assets.txt" "$work/actual-assets.txt" > "$work/missing-assets.txt"
-if [ -s "$work/missing-assets.txt" ]; then
-  echo "release gate: release assets disappeared during verification" >&2
-  exit 1
-fi
-jq -S '[.[] | {id, name, state, size, digest}] | sort_by(.name)' \
-  "$work/assets.json" > "$work/current-assets.json"
-if ! cmp -s "$work/verified-assets.json" "$work/current-assets.json"; then
-  echo "release gate: release assets changed during verification" >&2
-  exit 1
+require_verified_release true
+if [ "$mode" = "verify-staged" ]; then
+  validate_tag true
+  set_gate_output candidate-digest "$candidate_digest"
+  set_gate_output release-id "$release_id"
+  echo "release gate: verified staged $version candidate $candidate_digest"
+  exit 0
 fi
 
 gh api "repos/$repo/compare/$source_sha...main" > "$work/compare.json"
@@ -701,6 +746,8 @@ if [ "$main_version" != "$version" ]; then
   exit 1
 fi
 
+ensure_tag
+require_verified_release true
 jq -n --rawfile body "$body_path" \
   '{draft: false, make_latest: "true", body: $body}' \
   > "$work/publish.json"
@@ -720,11 +767,11 @@ if [ "$published_id" != "$release_id" ] \
   echo "release gate: GitHub returned an unexpected state after publication" >&2
   exit 1
 fi
-if [ "$mode" = "strict-finalize" ] &&
-  ! jq -e --rawfile body "$body_path" '.body == $body' "$work/published-release.json" >/dev/null; then
+if ! jq -e --rawfile body "$body_path" '.body == $body' "$work/published-release.json" >/dev/null; then
   echo "release gate: published response body does not match the validated source body" >&2
   exit 1
 fi
+require_verified_release false
 validate_tag false
 set_gate_output published true
 echo "release gate: published complete release $version with 38 verified assets"

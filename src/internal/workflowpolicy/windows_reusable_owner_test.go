@@ -121,8 +121,8 @@ func TestWindowsReusableOwnerSeparatesDirectSigningAttestationAndStaging(t *test
 			if strings.Contains(stage.If, "generation-id") {
 				t.Fatal("missing successful generation outputs must fail metadata validation, not silently skip")
 			}
-			if mustStepNamed(t, stage, "Stage release assets").With["finalize"] != "false" {
-				t.Fatal("owner stages but never finalizes")
+			if mustStepNamed(t, stage, "Stage release assets").Uses != "./.github/actions/stage-release" {
+				t.Fatal("owner must upload through the shared draft staging action")
 			}
 			for _, step := range stage.Steps {
 				if step.Uses == "./.github/actions/sign-and-attest" || strings.HasPrefix(step.Uses, "signpath/") {

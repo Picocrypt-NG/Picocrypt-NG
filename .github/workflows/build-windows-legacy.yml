@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publish artifacts to the GitHub release. Existing assets are never overwritten."
+        description: "Sign and stage this platform's artifacts in the GitHub release draft."
         required: false
         type: boolean
         default: false
@@ -720,4 +720,3 @@ jobs:
         files: |
           artifacts/build-windows-legacy/Picocrypt-NG-cli-Legacy.exe
           artifacts/build-windows-legacy/Picocrypt-NG-cli-Legacy.exe.sigstore.json
-        finalize: 'false'

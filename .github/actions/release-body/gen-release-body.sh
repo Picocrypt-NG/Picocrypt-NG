@@ -67,6 +67,8 @@ body="$(cat <<EOF
 | **ARMv7** (32-bit) | — | — | — | [APK]($BASE/Picocrypt-NG-android-armeabi-v7a.apk) | |
 | **x86** (32-bit) | — | — | — | [APK]($BASE/Picocrypt-NG-android-x86.apk) | |
 
+To find the **SHA-256** digest, open **Assets**, choose **Show all assets** if needed, and look next to the file you downloaded.
+
 - 🌐 **Web version** — runs in any modern browser, nothing to install: <https://picocrypt-ng.github.io/>
 - **Android 8.0+** — [universal APK]($BASE/Picocrypt-NG-android-universal.apk); PCV3 operations require sufficient available memory for the fixed 1 GiB KDF.
 - **Windows 7/8 (legacy) CLI** (x86-64): [Download]($BASE/Picocrypt-NG-cli-Legacy.exe)

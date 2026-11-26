@@ -44,40 +44,25 @@ func TestFullValidationCoordinatorKeepsValidationReadOnlyAndProductionExplicit(t
 		t.Fatal(err)
 	}
 	mode := workflow.On.WorkflowDispatch.Inputs["mode"]
-	if len(workflow.On.WorkflowDispatch.Inputs) != 1 || mode.Type != "choice" || mode.Default != "validation" ||
+	if len(workflow.On.WorkflowDispatch.Inputs) != 2 || mode.Type != "choice" || mode.Default != "validation" ||
 		!reflect.DeepEqual(choices.On.Dispatch.Inputs["mode"].Options, []string{"validation", "stage", "publish"}) || len(workflow.On.OtherEvents) != 0 {
 		t.Fatal("the full coordinator must remain manual and validation-only by default, with explicit stage/publish choices")
 	}
-	wantJobs := map[string]bool{"prepare": true, "verify-linux": true, "verify-platforms": true, "validation": true}
+	receipt := workflow.On.WorkflowDispatch.Inputs["stage_receipt_id"]
+	if receipt.Required || receipt.Type != "string" {
+		t.Fatal("publication must select one explicit stage receipt, optional in other modes")
+	}
+	wantJobs := map[string]bool{"prepare": true, "verify-linux": true, "verify-platforms": true, "validation": true, "resolve-stage": true}
 	for _, producer := range fullValidationProducers() {
 		wantJobs[producer.job] = true
 	}
 	owners := []string{"linux", "macos", "snapcraft", "android", "windows", "windows-legacy", "appimage"}
-	if len(workflow.Jobs) != len(wantJobs)+len(owners)+2 {
-		t.Fatal("the coordinator requires the complete validation graph, seven real owners, final publication and readonly outcome reporting")
+	if len(workflow.Jobs) != len(wantJobs)+len(owners)+3 {
+		t.Fatal("the coordinator requires validation, seven staging owners, draft verification, receipt resolution, publication and read-only outcome reporting")
 	}
 	for name, job := range workflow.Jobs {
 		if !wantJobs[name] && name != "result" {
-			if name == "publish" {
-				if job.If != "${{ always() && !cancelled() && inputs.mode == 'publish' }}" || job.Environment != "release" ||
-					!reflect.DeepEqual(job.Permissions, map[string]string{"contents": "write", "actions": "read"}) {
-					t.Fatal("final publication must be explicit, cancel-aware, release-protected and have no OIDC authority")
-				}
-				guard := mustStepNamed(t, job, "Require every staged owner")
-				if len(job.Steps) == 0 || job.Steps[0].Name != guard.Name {
-					t.Fatal("all staged results must be checked before checkout or API writes")
-				}
-				mustContain(t, guard.Run, `test "$MODE" = publish`)
-				mustContain(t, guard.Run, `.result == "success" and .staged == "true"`)
-				for _, owner := range owners {
-					if !strings.Contains(fmt.Sprint(job.Needs), "owner-"+owner) {
-						t.Fatalf("publication lacks owner %s dependency", owner)
-					}
-					mustContain(t, job.Env["OWNER_RESULTS_JSON"], "${{ needs.owner-"+owner+".result }}")
-					mustContain(t, job.Env["OWNER_RESULTS_JSON"], "${{ needs.owner-"+owner+".outputs.staged }}")
-				}
-				mustContain(t, mustStepNamed(t, job, "Strictly finalize complete release").Run, "release-gate.sh strict-finalize")
-				mustContain(t, mustStepNamed(t, job, "Require confirmed publication").Run, `test "$PUBLISHED" = true`)
+			if name == "publish" || name == "verify-staged" {
 				continue
 			}
 			matched := false
@@ -86,7 +71,7 @@ func TestFullValidationCoordinatorKeepsValidationReadOnlyAndProductionExplicit(t
 					continue
 				}
 				matched = true
-				if job.Uses != "./.github/workflows/build-"+owner+".yml" || job.If != "${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}" ||
+				if job.Uses != "./.github/workflows/build-"+owner+".yml" || job.If != "${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' }}" ||
 					job.Environment != nil || job.Steps != nil || !strings.Contains(fmt.Sprint(job.Needs), "prepare") || !strings.Contains(fmt.Sprint(job.Needs), "validation") ||
 					!reflect.DeepEqual(job.Permissions, map[string]string{"contents": "write", "actions": "read", "id-token": "write", "attestations": "write"}) {
 					t.Fatalf("%s must call the same-commit real owner only after protected preparation and the full19 validation barrier", name)
@@ -157,8 +142,9 @@ func TestFullValidationProducersMatchNativeOwnersAndCanonicalOutputs(t *testing.
 		t.Run(tc.job, func(t *testing.T) {
 			job := mustJob(t, workflow, tc.job)
 			owner := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/"+tc.owner+".yml"), tc.ownerJob)
-			if job.Needs != "prepare" || job.If != "" || job.RunsOn != owner.RunsOn || job.TimeoutMinutes != owner.TimeoutMinutes || !reflect.DeepEqual(job.Env, owner.Env) {
-				t.Fatal("producer must retain its owner's native runner, timeout and public environment")
+			if job.Needs != "prepare" || job.If != "${{ inputs.mode == 'validation' || inputs.mode == 'stage' }}" ||
+				job.RunsOn != owner.RunsOn || job.TimeoutMinutes != owner.TimeoutMinutes || !reflect.DeepEqual(job.Env, owner.Env) {
+				t.Fatal("producer must retain its owner's native runner, timeout and public environment, and run only for validation or stage")
 			}
 			wantOutputs := map[string]string{
 				"artifact-id": "${{ steps.build.outputs.artifact-id }}", "artifact-digest": "${{ steps.build.outputs.artifact-digest }}", "run-attempt": "${{ steps.build.outputs.run-attempt }}",
@@ -189,7 +175,7 @@ func TestFullValidationProducersMatchNativeOwnersAndCanonicalOutputs(t *testing.
 			if tc.action != "build-linux" {
 				wantInputs := map[string]any{"source-sha": "${{ needs.prepare.outputs.source-sha }}", "version": "${{ needs.prepare.outputs.version }}", "manifest-digest": "${{ needs.prepare.outputs.manifest-digest }}"}
 				if tc.action == "build-appimage" {
-					wantInputs["retain-signing-input"] = "${{ inputs.mode != 'validation' }}"
+					wantInputs["retain-signing-input"] = "${{ inputs.mode == 'stage' }}"
 				}
 				if !reflect.DeepEqual(call.With, wantInputs) {
 					t.Fatal("native producers may receive only prepared source and the explicit AppImage carrier retention switch")
@@ -205,8 +191,9 @@ func TestFullValidationProducersMatchNativeOwnersAndCanonicalOutputs(t *testing.
 
 func TestFullValidationUsesExactIDsBeforeTheCompleteNineteenFileGate(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/release.yml")
+	const verifyBuildsOnly = "${{ !cancelled() && (inputs.mode == 'validation' || inputs.mode == 'stage') }}"
 	platforms := mustJob(t, workflow, "verify-platforms")
-	if platforms.If != "${{ always() }}" || fmt.Sprint(platforms.Needs) != "[prepare build-appimage build-snapcraft build-macos build-android build-windows build-windows-legacy]" ||
+	if platforms.If != verifyBuildsOnly || fmt.Sprint(platforms.Needs) != "[prepare build-appimage build-snapcraft build-macos build-android build-windows build-windows-legacy]" ||
 		len(platforms.Steps) == 0 || platforms.Steps[0].Name != "Require all platform producers" {
 		t.Fatal("platform verification must fail on every failed/skipped producer before checkout or APIs")
 	}
@@ -251,6 +238,9 @@ func TestFullValidationUsesExactIDsBeforeTheCompleteNineteenFileGate(t *testing.
 	}
 	for _, name := range []string{"verify-linux", "verify-platforms"} {
 		job := mustJob(t, workflow, name)
+		if job.If != verifyBuildsOnly {
+			t.Fatalf("%s must not start for promotion of a staged candidate", name)
+		}
 		for _, output := range []string{"artifact-id", "artifact-digest"} {
 			if job.Outputs[output] != "${{ steps.upload.outputs."+output+" }}" {
 				t.Fatalf("%s report %s must come from its official uploader", name, output)
@@ -261,7 +251,7 @@ func TestFullValidationUsesExactIDsBeforeTheCompleteNineteenFileGate(t *testing.
 		}
 	}
 	final := mustJob(t, workflow, "validation")
-	if final.If != "${{ always() }}" || fmt.Sprint(final.Needs) != "[prepare verify-linux verify-platforms]" ||
+	if final.If != verifyBuildsOnly || fmt.Sprint(final.Needs) != "[prepare verify-linux verify-platforms]" ||
 		len(final.Steps) == 0 || final.Steps[0].Name != "Require both artifact verifiers" {
 		t.Fatal("the final gate must require both verifiers before downloading reports")
 	}

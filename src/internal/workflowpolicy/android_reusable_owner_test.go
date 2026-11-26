@@ -141,8 +141,8 @@ func TestAndroidReusableOwnerSeparatesBuildSigningAttestationAndStage(t *testing
 	if mustStepNamed(t, stage, "Verify signed generation metadata").Run != "bash .github/actions/signed-generation/generation.sh metadata" || mustStepNamed(t, stage, "Restore signed Android generation").Run != "bash .github/actions/signed-generation/generation.sh restore" {
 		t.Fatal("stage restores exact signed bytes, never signs")
 	}
-	if mustStepNamed(t, stage, "Stage release assets").With["finalize"] != "false" {
-		t.Fatal("owner stage cannot publish")
+	if mustStepNamed(t, stage, "Stage release assets").Uses != "./.github/actions/stage-release" {
+		t.Fatal("owner must upload through the shared draft staging action")
 	}
 	for _, job := range []workflowJob{attest, stage} {
 		if job.Env["GENERATION_OWNER"] != "build-android.yml" || job.Env["GENERATION_DIR"] != "signed-generation" {
