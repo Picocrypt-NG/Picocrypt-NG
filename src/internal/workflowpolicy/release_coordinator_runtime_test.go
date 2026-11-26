@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -146,6 +147,35 @@ func TestReleaseCoordinatorStageGuardRequiresEveryStagedOwner(t *testing.T) {
 			output, err := runFullValidationBash(t, t.TempDir(), step.Run, map[string]string{"MODE": mode, "OWNER_RESULTS_JSON": string(data)})
 			if (err == nil) != (defect == "none") {
 				t.Fatalf("guard returned %v: %s", err, output)
+			}
+		})
+	}
+}
+
+func TestReleaseCoordinatorCoreStageGuardRequiresOnlySuccessfulCoreOwners(t *testing.T) {
+	job := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/release.yml"), "verify-staged-core")
+	step := mustStepNamed(t, job, "Require every staged core owner")
+	for _, defect := range []string{"none", "unstaged Linux", "failed Android", "missing macOS", "extra Windows"} {
+		t.Run(defect, func(t *testing.T) {
+			full := releaseCoordinatorOwnerResults()
+			owners := slices.Concat(full[:4], full[6:])
+			switch defect {
+			case "unstaged Linux":
+				owners[0]["staged"] = "false"
+			case "failed Android":
+				owners[3]["result"] = "failure"
+			case "missing macOS":
+				owners = append(owners[:1], owners[2:]...)
+			case "extra Windows":
+				owners = append(owners, full[4])
+			}
+			data, err := json.Marshal(owners)
+			if err != nil {
+				t.Fatal(err)
+			}
+			output, err := runFullValidationBash(t, t.TempDir(), step.Run, map[string]string{"MODE": "stage", "OWNER_RESULTS_JSON": string(data)})
+			if (err == nil) != (defect == "none") {
+				t.Fatalf("core guard returned %v: %s", err, output)
 			}
 		})
 	}
@@ -340,6 +370,48 @@ func TestReleaseCoordinatorReceiptBindsStageResult(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, expected) {
 				t.Fatalf("receipt %v does not match verified stage result %v", got, expected)
+			}
+		})
+	}
+}
+
+func TestReleaseCoordinatorCoreReceiptBindsScopedStageResult(t *testing.T) {
+	job := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/release.yml"), "verify-staged-core")
+	step := mustStepNamed(t, job, "Write core stage receipt")
+	for _, invalidDigest := range []bool{false, true} {
+		t.Run(fmt.Sprintf("invalid digest %t", invalidDigest), func(t *testing.T) {
+			dir := t.TempDir()
+			values := map[string]string{
+				"MODE": "stage", "SOURCE_VERSION": "3.0", "SOURCE_SHA": strings.Repeat("b", 40),
+				"CANDIDATE_DIGEST": strings.Repeat("c", 64), "RELEASE_ID": "456",
+				"GITHUB_REPOSITORY": "Picocrypt-NG/Picocrypt-NG", "GITHUB_RUN_ID": "987654321",
+				"GITHUB_RUN_ATTEMPT": "2", "RUNNER_TEMP": dir,
+			}
+			if invalidDigest {
+				values["CANDIDATE_DIGEST"] = ""
+			}
+			output, err := runFullValidationBash(t, dir, step.Run, values)
+			receipt, fileErr := os.ReadFile(filepath.Join(dir, "stage-core-receipt", "receipt.json"))
+			if invalidDigest {
+				if err == nil || !os.IsNotExist(fileErr) {
+					t.Fatalf("unverified core candidate emitted a receipt: command %v, file %v, output %s", err, fileErr, output)
+				}
+				return
+			}
+			if err != nil || fileErr != nil {
+				t.Fatalf("successful core verification failed to emit a receipt: command %v, file %v, output %s", err, fileErr, output)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(receipt, &got); err != nil {
+				t.Fatal(err)
+			}
+			expected := map[string]any{
+				"schema": float64(1), "mode": "stage-core", "repository": values["GITHUB_REPOSITORY"],
+				"version": values["SOURCE_VERSION"], "source_sha": values["SOURCE_SHA"], "release_id": values["RELEASE_ID"],
+				"candidate_digest": values["CANDIDATE_DIGEST"], "run_id": values["GITHUB_RUN_ID"], "run_attempt": values["GITHUB_RUN_ATTEMPT"],
+			}
+			if !reflect.DeepEqual(got, expected) {
+				t.Fatalf("receipt %v does not match verified core result %v", got, expected)
 			}
 		})
 	}

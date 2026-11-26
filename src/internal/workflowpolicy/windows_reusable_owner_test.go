@@ -31,12 +31,17 @@ func TestWindowsReusableOwnerSeparatesDirectSigningAttestationAndStaging(t *test
 				t.Fatal(err)
 			}
 			wantInputs := []string{"source_sha", "version", "canonical_manifest_sha256", "raw_artifact_id", "raw_artifact_digest", "raw_producing_attempt", "signing_input_id", "signing_input_digest", "signing_input_attempt"}
-			if len(doc.On.Call.Inputs) != len(wantInputs) {
+			if len(doc.On.Call.Inputs) != len(wantInputs)+3 {
 				t.Fatal("owner needs source and two immutable input tuples")
 			}
 			for _, key := range wantInputs {
 				if v := doc.On.Call.Inputs[key]; !v.Required || v.Type != "string" {
 					t.Fatalf("required string %s", key)
+				}
+			}
+			for key, typ := range map[string]string{"publish_core_first": "boolean", "core_release_id": "string", "core_candidate_digest": "string"} {
+				if v := doc.On.Call.Inputs[key]; v.Required || v.Type != typ {
+					t.Fatalf("optional %s %s", typ, key)
 				}
 			}
 			if len(doc.On.Call.Secrets) != 1 || !doc.On.Call.Secrets["SIGNPATH_API_TOKEN"].Required {
@@ -72,17 +77,29 @@ func TestWindowsReusableOwnerSeparatesDirectSigningAttestationAndStaging(t *test
 			if fmt.Sprint(attest.Needs) != "sign" || fmt.Sprint(stage.Needs) != "attest" {
 				t.Fatal("failed-only stage retry must retain successful signing and attestation outputs")
 			}
-			for _, job := range []workflowJob{inspect, sign, attest, stage} {
+			if sign.Concurrency.Group != "${{ github.repository }}-windows-signpath" || sign.Concurrency.Queue != "max" {
+				t.Fatal("SignPath waits must serialize without holding the publication lock")
+			}
+			for _, job := range []workflowJob{inspect, attest, stage} {
 				if job.Concurrency.Group != "${{ github.repository }}-release-publication" || job.Concurrency.Queue != "max" {
 					t.Fatal("fresh inspections and writes must share the publication lock")
 				}
+				if job.Env["RELEASE_CORE_ID"] != "${{ inputs.core_release_id }}" || job.Env["RELEASE_CORE_DIGEST"] != "${{ inputs.core_candidate_digest }}" {
+					t.Fatal("Windows draft reads and writes must bind the early core release")
+				}
+			}
+			for _, job := range []workflowJob{inspect, sign, attest, stage} {
 				mustStepNamed(t, job, "Validate reusable Windows source")
 				if job.Env["OWNER_WORKFLOW"] != owner+".yml" || job.Env["SOURCE_SHA"] != "${{ inputs.source_sha }}" {
 					t.Fatal("source and owner env must bind the agreed helpers")
 				}
 			}
-			for _, job := range []workflowJob{inspect, sign, attest} {
+			for _, job := range []workflowJob{inspect, attest} {
 				mustStepNamed(t, job, "Inspect full Windows owner")
+			}
+			locked := mustStepNamed(t, sign, "Use locked Windows owner inspection")
+			if locked.Env["OWNER_STATE"] != "${{ needs.inspect.outputs.state }}" {
+				t.Fatal("reusable signing must carry the locked owner inspection")
 			}
 			if sign.Env["PLATFORM_OWNER"] != owner+".yml" || attest.Env["GENERATION_OWNER"] != owner+".yml" || stage.Env["GENERATION_OWNER"] != owner+".yml" {
 				t.Fatal("shared verifier/generation owner selectors must be exact")
@@ -96,8 +113,11 @@ func TestWindowsReusableOwnerSeparatesDirectSigningAttestationAndStaging(t *test
 				mustStepNamed(t, sign, name)
 			}
 			for _, step := range sign.Steps {
-				if strings.HasPrefix(step.Uses, "signpath/") && !strings.Contains(step.If, "steps.inventory.outputs.state == 'missing'") {
-					t.Fatal("fresh complete reuse must skip every SignPath request")
+				if strings.HasPrefix(step.Uses, "signpath/") && step.If != "${{ "+direct+" }}" {
+					t.Fatal("synchronous signing is limited to the direct workflow")
+				}
+				if step.Uses == "./.github/actions/resumable-signpath" && step.If != "${{ steps.inventory.outputs.state == 'missing' }}" {
+					t.Fatal("resumable signing requires an empty locked owner inventory")
 				}
 			}
 			for _, step := range attest.Steps {

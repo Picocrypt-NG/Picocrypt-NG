@@ -54,6 +54,8 @@ func windowsBuildPolicyContent(t *testing.T, path string) string {
 	return mustReadRepoFile(t, ".github/actions/"+owner+"/action.yml")
 }
 
+const windowsSigningInputRetention = "${{ github.workflow_ref == 'Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main' && 7 || 1 }}"
+
 func TestWindowsBuildExtractionPreservesUnsignedSteps(t *testing.T) {
 	for _, tc := range windowsBuildCases() {
 		t.Run(tc.owner, func(t *testing.T) {
@@ -139,6 +141,10 @@ func TestWindowsBuildExtractionPreservesUnsignedSteps(t *testing.T) {
 					delete(step, "id")
 					delete(with, "overwrite")
 					with["name"] = tc.bundle
+					if with["retention-days"] != windowsSigningInputRetention {
+						t.Fatal("coordinator signing inputs must survive successive approval windows")
+					}
+					with["retention-days"] = 1
 				}
 				frozen = append(frozen, step)
 				if name == "Upload artifact" {
@@ -291,7 +297,7 @@ func TestWindowsValidationArtifactsStaySeparateFromSigningInputs(t *testing.T) {
 				t.Fatal("Windows producer must execute real composite build steps")
 			}
 			old := mustCompositeStepNamed(t, action, "Upload artifact")
-			if old.With["name"] != tc.bundle+"-attempt-${{ github.run_attempt }}" || old.With["retention-days"] != 1 {
+			if old.With["name"] != tc.bundle+"-attempt-${{ github.run_attempt }}" || old.With["retention-days"] != windowsSigningInputRetention {
 				t.Fatal("original SignPath input bundle must keep its prefix and retention")
 			}
 			upload := mustCompositeStepNamed(t, action, "Upload validation artifacts")

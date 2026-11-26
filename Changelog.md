@@ -9,6 +9,8 @@
 - Sequential keyfile processing avoids exhausting file descriptors. Ordinary legacy Reed-Solomon reads reject partial trailing blocks, and WASM authenticates v2 headers before reporting missing or incorrect keyfiles.
 - The source requires Go 1.27.4 and uses `golang.org/x/net` v0.62.0. Windows legacy builds apply pinned compatibility patches to the official Go source.
 - The Android release workflow signs APKs separately from Gradle using a read-only GitHub token. Download verification binds artifacts to the expected workflow, main branch and source commit.
+- The Windows installer can add a File Explorer command to open one selected file or folder for encryption.
+- Windows downloads may become available after the initial 3.0 release while Authenticode signing is pending.
 
 # v2.19
 

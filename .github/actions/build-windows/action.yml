@@ -195,7 +195,7 @@ runs:
         path: release-staging/
         if-no-files-found: error
         compression-level: 9
-        retention-days: 1
+        retention-days: ${{ github.workflow_ref == 'Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main' && 7 || 1 }}
         overwrite: false
 
     - name: Record Windows payload manifest

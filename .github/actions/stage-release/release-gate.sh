@@ -5,6 +5,8 @@ set -euo pipefail
 usage="usage: release-gate.sh <preflight|upload|inspect-owner|verify-staged|strict-finalize> <version>"
 mode="${1:?$usage}"
 version="${2:?$usage}"
+scope="${RELEASE_SCOPE:-full}"
+windows_after_core="${RELEASE_WINDOWS_AFTER_CORE:-false}"
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 driver_sha="${GITHUB_SHA:?GITHUB_SHA is required}"
 source_sha="$driver_sha"
@@ -24,6 +26,14 @@ case "$mode" in
     echo "release gate: unsupported mode '$mode'" >&2
     exit 2
     ;;
+esac
+case "$scope:$mode" in
+  full:*|core:verify-staged|core:strict-finalize) ;;
+  *) echo "release gate: invalid release scope for $mode" >&2; exit 2 ;;
+esac
+case "$windows_after_core:$mode" in
+  false:*|true:inspect-owner|true:preflight|true:upload) ;;
+  *) echo "release gate: invalid deferred Windows publication mode" >&2; exit 2 ;;
 esac
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
   echo "release gate: invalid version '$version'" >&2
@@ -105,7 +115,7 @@ if [ "$mode" = "strict-finalize" ]; then
   fi
 fi
 
-for command in awk cat cmp comm cosign gh grep jq mkdir mktemp mv realpath sha256sum sort wc; do
+for command in awk cat cmp comm cosign cp gh grep jq mkdir mktemp mv realpath sha256sum sort wc; do
   command -v "$command" >/dev/null || {
     echo "release gate: required command '$command' is unavailable" >&2
     exit 2
@@ -133,6 +143,14 @@ if [ "$(awk '{print $3}' "$work/primary-assets.txt" | sort -u | wc -l)" -ne 19 ]
 fi
 awk '{print $1; print $1 ".sigstore.json"}' "$work/primary-assets.txt" \
   | LC_ALL=C sort > "$work/expected-assets.txt"
+awk '$2 == "build-windows.yml" || $2 == "build-windows-legacy.yml"' "$work/primary-assets.txt" > "$work/windows-primary.txt"
+awk '$2 != "build-windows.yml" && $2 != "build-windows-legacy.yml"' "$work/primary-assets.txt" > "$work/core-primary.txt"
+awk '{print $1; print $1 ".sigstore.json"}' "$work/core-primary.txt" \
+  | LC_ALL=C sort > "$work/core-assets.txt"
+if [ "$(wc -l < "$work/core-assets.txt")" -ne 30 ] || [ "$(wc -l < "$work/windows-primary.txt")" -ne 4 ]; then
+  echo "release gate: invalid phased release manifest" >&2
+  exit 1
+fi
 awk '{print $3; print $3 ".sigstore.json"}' "$work/primary-assets.txt" \
   | LC_ALL=C sort > "$work/allowed-paths.txt"
 if [ "$(wc -l < "$work/expected-assets.txt")" -ne 38 ]; then
@@ -150,6 +168,7 @@ if [ "$mode" = "inspect-owner" ]; then
 fi
 
 declare -A local_paths=()
+local_owner=""
 if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
   files="${FILES:?FILES is required during preflight and upload}"
   while IFS= read -r path || [ -n "$path" ]; do
@@ -189,6 +208,11 @@ if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
       echo "release gate: workflow '$workflow_ref' does not own local path '$path'" >&2
       exit 1
     fi
+    if [ -z "$local_owner" ]; then
+      local_owner="$owner"
+    elif [ "$local_owner" != "$owner" ]; then
+      local_owner=mixed
+    fi
     local_paths["$name"]="$path"
   done <<< "$files"
   if [ "${#local_paths[@]}" -eq 0 ]; then
@@ -207,6 +231,23 @@ if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
       exit 1
     fi
   done
+fi
+
+if [ "$windows_after_core" = "true" ]; then
+  selected_owner="$local_owner"
+  if [ "$mode" = "inspect-owner" ]; then selected_owner="$owner_workflow"; fi
+  if [[ "$selected_owner" != "build-windows.yml" && "$selected_owner" != "build-windows-legacy.yml" ]] ||
+    [ "$workflow_ref" != "$repo/.github/workflows/release.yml@refs/heads/main" ] ||
+    [ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
+    echo "release gate: deferred Windows publication requires a trusted coordinator Windows lane" >&2
+    exit 2
+  fi
+  approved_core_id="${RELEASE_CORE_ID:-}"
+  approved_core_digest="${RELEASE_CORE_DIGEST:-}"
+  if [[ ! "$approved_core_id" =~ ^[1-9][0-9]*$ || ! "$approved_core_digest" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "release gate: deferred Windows publication requires the verified core release ID and digest" >&2
+    exit 2
+  fi
 fi
 
 if [ "$mode" = "upload" ]; then
@@ -229,11 +270,14 @@ if [ "$mode" = "upload" ]; then
   fi
 fi
 
-if [ "$mode" = "verify-staged" ] || [ "$mode" = "strict-finalize" ]; then
+generate_expected_body() {
   body_path="$work/expected-release-body.md"
   git -C "$workspace" show "$source_sha:Changelog.md" > "$work/source-changelog.md"
   GITHUB_SHA="$source_sha" bash "$(dirname -- "${BASH_SOURCE[0]}")/../release-body/gen-release-body.sh" \
     "$version" "$work/source-changelog.md" "$body_path"
+}
+if [ "$mode" = "verify-staged" ] || [ "$mode" = "strict-finalize" ]; then
+  generate_expected_body
 fi
 
 tag_present=false
@@ -271,7 +315,7 @@ validate_tag() {
       '[.[] | select(.ref == $ref)][0].object.sha' \
       "$work/tag-refs.json"
   )"
-  for depth in 1 2 3 4; do
+  for ((depth = 0; depth < 4; depth++)); do
     if [ "$object_type" = "commit" ]; then
       break
     fi
@@ -355,13 +399,52 @@ load_release() {
   return 0
 }
 
+matches_release_draft() {
+  jq -se --arg id "${1:-}" --arg version "$version" --arg sha "$source_sha" '
+    length == 1 and (.[0] |
+      (.id | type == "number" and . > 0 and floor == . and
+        ($id == "" or tostring == $id))
+      and (.tag_name == $version) and (.target_commitish == $sha)
+      and (.draft == true) and (.prerelease == false))
+  ' >/dev/null
+}
+
+confirm_created_draft() {
+  local expected_id="$1" delay protocol status
+  for delay in 0 1 2 4 8; do
+    if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
+    if gh api --include "repos/$repo/releases/$expected_id" > "$work/draft-readback.http" 2>/dev/null; then
+      if ! read -r protocol status _ < "$work/draft-readback.http" ||
+         [[ "$protocol" != HTTP/* || "$status" != "200" ]] ||
+         ! awk 'body {print; next} /^\r?$/ {body=1}' "$work/draft-readback.http" | matches_release_draft "$expected_id"; then
+        echo "release gate: unexpected readback for created draft $expected_id" >&2
+        return 1
+      fi
+      # The collection must also see this exact draft and rule out duplicate tags.
+      if load_release; then
+        if ! matches_release_draft "$expected_id" < "$work/release.json"; then
+          echo "release gate: listed draft changed before upload" >&2
+          return 1
+        fi
+        return 0
+      fi
+    elif ! read -r protocol status _ < "$work/draft-readback.http" ||
+         [[ "$protocol" != HTTP/* || "$status" != "404" ]]; then
+      echo "release gate: cannot read created draft $expected_id by ID" >&2
+      return 1
+    fi
+  done
+  echo "release gate: created draft $expected_id did not become visible before upload" >&2
+  return 1
+}
+
 load_assets() {
   gh api --paginate "repos/$repo/releases/$release_id/assets?per_page=100" \
     | jq -s 'add // []' > "$work/assets.json"
 }
 
 validate_assets() {
-  local duplicates invalid unexpected
+  local duplicates invalid
   duplicates="$(
     jq -r 'group_by(.name)[] | select(length > 1) | .[0].name' "$work/assets.json"
   )"
@@ -445,6 +528,77 @@ verify_remote_pair() {
   verify_primary "$name" "$workflow"
 }
 
+require_assets() {
+  LC_ALL=C comm -23 "$1" "$work/actual-assets.txt" > "$work/missing-assets.txt"
+  if [ -s "$work/missing-assets.txt" ]; then
+    echo "release gate: release $version is still missing required assets:"
+    cat "$work/missing-assets.txt"
+    exit 1
+  fi
+}
+
+require_release_body() {
+  if ! jq -e --rawfile body "$body_path" '.body == $body' "$work/release.json" >/dev/null; then
+    echo "release gate: release notes do not match the verified source" >&2
+    exit 1
+  fi
+}
+
+release_candidate_digest() {
+  local profile="$1" manifest_digest body_digest
+  manifest_digest=$(sha256sum "$work/primary-assets.txt")
+  body_digest=$(sha256sum "$body_path")
+  jq -ncS --arg repo "$repo" --arg version "$version" --arg source "$source_sha" \
+    --argjson id "$release_id" --arg manifest "${manifest_digest%% *}" --arg notes "${body_digest%% *}" \
+    --arg scope "$profile" --rawfile core_names "$work/core-assets.txt" --slurpfile raw "$work/assets.json" '
+      ($core_names | split("\n")) as $required |
+      ($raw[0] | [
+        .[] | select($scope != "core" or (.name as $name | $required | index($name) != null))
+        | {id,name,state,size,digest}
+      ] | sort_by(.name)) as $assets |
+      {schema:1,repository:$repo,version:$version,source_sha:$source,release_id:$id,
+        manifest_sha256:$manifest,notes_sha256:$notes,assets:$assets}
+      + (if $scope == "core" then {scope:$scope} else {} end)
+    ' | sha256sum | awk '{print $1}'
+}
+
+verify_present_windows_pairs() {
+  local recover_owner="${1:-}" name workflow primary bundle
+  while read -r name workflow _; do
+    primary=false
+    bundle=false
+    if LC_ALL=C grep -Fqx -- "$name" "$work/actual-assets.txt"; then primary=true; fi
+    if LC_ALL=C grep -Fqx -- "$name.sigstore.json" "$work/actual-assets.txt"; then bundle=true; fi
+    if [ "$primary" = "true" ] && [ "$bundle" = "true" ]; then
+      verify_remote_pair "$name" "$workflow"
+    elif [ "$primary" = "false" ] && [ "$bundle" = "true" ] && [ "$workflow" = "$recover_owner" ]; then
+      download_asset "$name.sigstore.json"
+      if ! cmp -s "${local_paths[$name.sigstore.json]}" "$download_dir/$name.sigstore.json"; then
+        echo "release gate: Windows sidecar for '$name' does not match the original signed generation" >&2
+        exit 1
+      fi
+    elif [ "$primary" != "$bundle" ]; then
+      echo "release gate: incomplete Windows pair for '$name'" >&2
+      exit 1
+    fi
+  done < "$work/windows-primary.txt"
+}
+
+freeze_windows_lane() {
+  local name workflow
+  mkdir "$work/local"
+  for name in "${!local_paths[@]}"; do
+    cp -- "${local_paths[$name]}" "$work/local/$name"
+    local_paths["$name"]="$work/local/$name"
+  done
+  while read -r name workflow _; do
+    if [ "$workflow" = "$local_owner" ]; then
+      bash "$(dirname -- "${BASH_SOURCE[0]}")/../sign-and-attest/verify-primary.sh" \
+        "${local_paths[$name]}" "$workflow" "$source_sha"
+    fi
+  done < "$work/windows-primary.txt"
+}
+
 upload_asset() {
   local name="$1" path="${local_paths[$1]}" size digest encoded_name upload_url
   size="$(wc -c < "$path")"
@@ -486,6 +640,10 @@ else
   validate_tag true
 fi
 if ! load_release; then
+  if [ "$windows_after_core" = "true" ]; then
+    echo "release gate: core release is pending; Windows attachment cannot start" >&2
+    exit 1
+  fi
   if [ "$mode" = "inspect-owner" ]; then
     emit_owner_inspection missing
     exit 0
@@ -502,28 +660,39 @@ if ! load_release; then
     '{tag_name:$version,target_commitish:$sha,name:$version,body:$body,
       draft:true,prerelease:false,make_latest:"false"}' \
     | gh api --method POST "repos/$repo/releases" --input - > "$work/created-release.json"
-  if ! jq -e --arg version "$version" --arg sha "$source_sha" '
-    (.id | type == "number" and . > 0 and floor == .)
-    and (.tag_name == $version) and (.target_commitish == $sha)
-    and (.draft == true) and (.prerelease == false)
-  ' "$work/created-release.json" >/dev/null; then
+  if ! matches_release_draft < "$work/created-release.json"; then
     echo "release gate: unexpected draft creation response" >&2
     exit 1
   fi
   created_release_id="$(jq -r '.id' "$work/created-release.json")"
-  if ! load_release || [ "$release_id" != "$created_release_id" ]; then
-    echo "release gate: created draft disappeared or changed before upload" >&2
-    exit 1
-  fi
+  confirm_created_draft "$created_release_id"
+fi
+if [ "$windows_after_core" = "true" ] && [ "$release_id" != "$approved_core_id" ]; then
+  echo "release gate: release ID does not match the verified core" >&2
+  exit 1
+fi
+if [ "$windows_after_core" = "true" ] && [ "$mode" != "inspect-owner" ] && [ "$release_draft" != "false" ]; then
+  echo "release gate: core release is still a draft; Windows attachment cannot start" >&2
+  exit 1
 fi
 if [ "$mode" = "strict-finalize" ] && [ "$release_id" != "$approved_release_id" ]; then
   echo "release gate: release $release_id does not match the staged receipt ID $approved_release_id" >&2
   exit 1
 fi
 already_published=false
+published_windows=false
 if [ "$release_draft" != "true" ]; then
-  if [ "$mode" = "strict-finalize" ] && [ "$release_draft" = "false" ]; then
+  if [ "$release_draft" = "false" ] &&
+    { [ "$mode" = "strict-finalize" ] || { [ "$mode" = "verify-staged" ] && [ "$scope" = "full" ]; }; }; then
     already_published=true
+    validate_tag false
+  elif [ "$release_draft" = "false" ] && [ "$windows_after_core" = "true" ]; then
+    if [ "$mode" != "inspect-owner" ] &&
+      [ "${#local_paths[@]}" -ne "$(awk -v owner="$selected_owner" '$2 == owner {count += 2} END {print count}' "$work/windows-primary.txt")" ]; then
+      echo "release gate: Windows attachment requires the complete signed owner lane" >&2
+      exit 1
+    fi
+    published_windows=true
     validate_tag false
   else
     echo "release gate: release $version is already published; refusing to mutate or accept it" >&2
@@ -533,9 +702,31 @@ fi
 
 load_assets
 validate_assets
+if [ "$windows_after_core" = "true" ]; then
+  generate_expected_body
+  require_release_body
+  require_assets "$work/core-assets.txt"
+  core_digest=$(release_candidate_digest core)
+  if [ "$core_digest" != "$approved_core_digest" ]; then
+    echo "release gate: published or staged core differs from the verified digest" >&2
+    exit 1
+  fi
+  if [ "$mode" = "preflight" ]; then
+    echo "release gate: published core metadata matches the verified release"
+    exit 0
+  fi
+  if [ "$mode" = "upload" ]; then
+    freeze_windows_lane
+    while read -r name workflow _; do
+      verify_remote_pair "$name" "$workflow"
+    done < "$work/core-primary.txt"
+    verify_present_windows_pairs "$local_owner"
+  fi
+fi
 
 if [ "$mode" = "inspect-owner" ]; then
   inspected_release_id="$release_id"
+  inspected_release_draft="$release_draft"
   jq -S '[.[] | {id,name,state,size,digest}] | sort_by(.name)' "$work/assets.json" > "$work/inspected-assets.json"
   : > "$work/owner-missing.txt"
   while read -r name workflow _; do
@@ -557,9 +748,13 @@ if [ "$mode" = "inspect-owner" ]; then
         bundle:{id:([.[]|select(.name == ($name + ".sigstore.json"))][0].id),digest:$bundle_digest}}' \
       "$work/assets.json" >> "$work/owner-pairs.jsonl"
   done < "$work/owner-assets.txt"
-  if ! load_release || [ "$release_id" != "$inspected_release_id" ] || [ "$release_draft" != "true" ]; then
+  if ! load_release || [ "$release_id" != "$inspected_release_id" ] || [ "$release_draft" != "$inspected_release_draft" ]; then
     echo "release gate: release changed during owner inspection" >&2
     exit 1
+  fi
+  if [ "$windows_after_core" = "true" ]; then
+    require_release_body >&2
+    validate_tag "$inspected_release_draft" >&2
   fi
   load_assets
   validate_assets
@@ -579,6 +774,7 @@ fi
 if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
   missing_pairs=()
   reused_pairs=()
+  declare -A retained_sidecars=()
   while read -r name workflow _; do
     if [[ -z "${local_paths[$name]+present}" ]]; then
       continue
@@ -589,12 +785,18 @@ if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
         '[.[] | select(.name == $name)] | length' \
         "$work/assets.json"
     )"
-    if [ "$primary_count" -ne "$bundle_count" ]; then
+    if [ "$published_windows" = "true" ] && [ "$primary_count" -eq 0 ] && [ "$bundle_count" -eq 1 ]; then
+      # The published-lane checks already authenticated and matched this
+      # sidecar against the local signed generation.
+      retained_sidecars["$name"]=true
+    elif [ "$primary_count" -ne "$bundle_count" ]; then
       echo "release gate: incomplete staged pair for '$name'" >&2
       exit 1
     fi
     if [ "$primary_count" -eq 1 ]; then
-      verify_remote_pair "$name" "$workflow"
+      if [ "$published_windows" != "true" ]; then
+        verify_remote_pair "$name" "$workflow"
+      fi
       reused_pairs+=("$name")
       echo "release gate: safely reusing verified staged pair '$name'"
     else
@@ -607,15 +809,25 @@ if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
         echo "release gate: partially staged lane requires the original signed artifact set; '$name' differs from staged bytes" >&2
         exit 1
       fi
+      if [ "$published_windows" = "true" ] &&
+        ! cmp -s "${local_paths[$name.sigstore.json]}" "$download_dir/$name.sigstore.json"; then
+        echo "release gate: existing Windows sidecar for '$name' differs from the original generation" >&2
+        exit 1
+      fi
     done
   fi
   if [ "$mode" = "upload" ]; then
     staged_release_id="$release_id"
+    staged_release_draft="$release_draft"
     jq -S '[.[] | {id, name, state, size, digest}] | sort_by(.name)' \
       "$work/assets.json" > "$work/verified-assets.json"
-    if ! load_release || [ "$release_id" != "$staged_release_id" ] || [ "$release_draft" != "true" ]; then
+    if ! load_release || [ "$release_id" != "$staged_release_id" ] || [ "$release_draft" != "$staged_release_draft" ]; then
       echo "release gate: release $version changed or was published during staging" >&2
       exit 1
+    fi
+    if [ "$published_windows" = "true" ]; then
+      require_release_body
+      validate_tag false
     fi
     load_assets
     validate_assets
@@ -627,15 +839,27 @@ if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
     fi
     for pair in "${missing_pairs[@]}"; do
       read -r name workflow <<< "$pair"
-      upload_asset "$name"
-      upload_asset "$name.sigstore.json"
+      if [ "$published_windows" = "true" ]; then
+        if [[ -z "${retained_sidecars[$name]+present}" ]]; then
+          upload_asset "$name.sigstore.json"
+          download_asset "$name.sigstore.json"
+        fi
+        upload_asset "$name"
+      else
+        upload_asset "$name"
+        upload_asset "$name.sigstore.json"
+      fi
       verify_remote_pair "$name" "$workflow"
     done
     jq -S '[.[] | {id, name, state, size, digest}] | sort_by(.name)' \
       "$work/assets.json" > "$work/verified-assets.json"
-    if ! load_release || [ "$release_id" != "$staged_release_id" ] || [ "$release_draft" != "true" ]; then
+    if ! load_release || [ "$release_id" != "$staged_release_id" ] || [ "$release_draft" != "$staged_release_draft" ]; then
       echo "release gate: release $version changed or was published during staging" >&2
       exit 1
+    fi
+    if [ "$published_windows" = "true" ]; then
+      require_release_body
+      validate_tag false
     fi
     load_assets
     validate_assets
@@ -646,26 +870,24 @@ if [ "$mode" = "preflight" ] || [ "$mode" = "upload" ]; then
       exit 1
     fi
     set_gate_output staged true
-    echo "release gate: staged verified lane pairs in draft $version"
+    if [ "$published_windows" = "true" ]; then
+      echo "release gate: appended or retained verified Windows lane pairs in published $version"
+    else
+      echo "release gate: staged verified lane pairs in draft $version"
+    fi
     exit 0
   fi
-  echo "release gate: existing draft $version is safe for this workflow lane"
+  echo "release gate: existing release $version is safe for this workflow lane"
   exit 0
 fi
 
-LC_ALL=C comm -23 "$work/expected-assets.txt" "$work/actual-assets.txt" > "$work/missing-assets.txt"
-if [ -s "$work/missing-assets.txt" ]; then
-  echo "release gate: draft $version is still missing required assets:"
-  cat "$work/missing-assets.txt"
-  exit 1
+required_primary="$work/primary-assets.txt"
+required_assets="$work/expected-assets.txt"
+if [ "$scope" = "core" ]; then
+  required_primary="$work/core-primary.txt"
+  required_assets="$work/core-assets.txt"
 fi
-
-require_release_body() {
-  if ! jq -e --rawfile body "$body_path" '.body == $body' "$work/release.json" >/dev/null; then
-    echo "release gate: release notes do not match the verified source" >&2
-    exit 1
-  fi
-}
+require_assets "$required_assets"
 
 require_verified_release() {
   local expected_draft="$1"
@@ -688,16 +910,7 @@ require_release_body
 verified_release_id="$release_id"
 jq -cS '[.[] | {id,name,state,size,digest}] | sort_by(.name)' \
   "$work/assets.json" > "$work/verified-assets.json"
-manifest_digest=$(sha256sum "$work/primary-assets.txt")
-body_digest=$(sha256sum "$body_path")
-candidate_digest=$(
-  jq -ncS --arg repo "$repo" --arg version "$version" --arg source "$source_sha" \
-    --argjson id "$release_id" --arg manifest "${manifest_digest%% *}" --arg notes "${body_digest%% *}" \
-    --slurpfile assets "$work/verified-assets.json" \
-    '{schema:1,repository:$repo,version:$version,source_sha:$source,release_id:$id,
-      manifest_sha256:$manifest,notes_sha256:$notes,assets:$assets[0]}' | sha256sum
-)
-candidate_digest=${candidate_digest%% *}
+candidate_digest=$(release_candidate_digest "$scope")
 if [ "$mode" = "strict-finalize" ] && [ "$candidate_digest" != "$approved_digest" ]; then
   echo "release gate: remote candidate does not match the approved staged digest" >&2
   exit 1
@@ -706,25 +919,31 @@ fi
 while read -r name _ _; do
   download_asset "$name"
   download_asset "$name.sigstore.json"
-done < "$work/primary-assets.txt"
+done < "$required_primary"
 while read -r name workflow _; do
   verify_primary "$name" "$workflow"
-done < "$work/primary-assets.txt"
+done < "$required_primary"
+if [ "$scope" = "core" ]; then
+  verify_present_windows_pairs
+fi
 
 if [ "$already_published" = "true" ]; then
   require_verified_release false
   validate_tag false
-  set_gate_output published true
-  echo "release gate: verified already-published complete release $version"
-  exit 0
+  if [ "$mode" = "strict-finalize" ]; then
+    set_gate_output published true
+    echo "release gate: verified already-published $scope release $version"
+    exit 0
+  fi
+else
+  require_verified_release true
 fi
 
-require_verified_release true
 if [ "$mode" = "verify-staged" ]; then
   validate_tag true
   set_gate_output candidate-digest "$candidate_digest"
   set_gate_output release-id "$release_id"
-  echo "release gate: verified staged $version candidate $candidate_digest"
+  echo "release gate: verified $scope $version candidate $candidate_digest"
   exit 0
 fi
 
@@ -774,4 +993,4 @@ fi
 require_verified_release false
 validate_tag false
 set_gate_output published true
-echo "release gate: published complete release $version with 38 verified assets"
+echo "release gate: published $scope release $version with $(wc -l < "$work/actual-assets.txt") verified assets"

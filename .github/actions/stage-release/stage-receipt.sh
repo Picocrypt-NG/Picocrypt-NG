@@ -32,37 +32,58 @@ artifact_fields=$(
     select((.id | tostring) == $artifact and .expired == false and
       (.size_in_bytes | type == "number" and . > 0 and . <= $limit) and
       (.digest | test("\\Asha256:[0-9a-f]{64}\\z")) and
-      (.name | test("\\Arelease-stage-receipt-attempt-[1-9][0-9]*\\z")) and
+      (.name | test("\\Arelease-stage-(core-)?receipt-attempt-[1-9][0-9]*\\z")) and
       ($run.id | tostring | test("\\A[1-9][0-9]*\\z")) and
       ($run.repository_id | tostring) == $repository and
       ($run.head_repository_id | tostring) == $repository and
       $run.head_branch == "main" and ($run.head_sha | test("\\A[0-9a-f]{40}\\z"))) |
-    [$run.id, (.name | sub("^release-stage-receipt-attempt-"; "")), $run.head_sha, .digest] | @tsv
+    [$run.id, (.name | split("-") | last), $run.head_sha, .digest,
+      (if (.name | startswith("release-stage-core-")) then "core" else "full" end)] | @tsv
   ' "$work/artifact.json"
 ) || fail 'invalid, expired or foreign stage receipt artifact'
-IFS=$'\t' read -r run_id attempt source_sha archive_digest <<< "$artifact_fields"
+IFS=$'\t' read -r run_id attempt source_sha archive_digest scope <<< "$artifact_fields"
 
 attempt_api="repos/$repo/actions/runs/$run_id/attempts/$attempt"
 gh api "$attempt_api" > "$work/attempt.json" || fail 'could not read producing workflow attempt'
-jq -se --arg run "$run_id" --arg attempt "$attempt" --arg source "$source_sha" \
+jq -se --arg run "$run_id" --arg attempt "$attempt" --arg source "$source_sha" --arg scope "$scope" \
   --arg repository "$repository_id" '
   length == 1 and (.[0] |
     (.id | tostring) == $run and (.run_attempt | tostring) == $attempt and
     .path == ".github/workflows/release.yml" and .event == "workflow_dispatch" and
-    .status == "completed" and .conclusion == "success" and
+    (if $scope == "core" then
+       .status == "in_progress" or .status == "waiting" or .status == "pending" or
+       (.status == "completed" and (.conclusion == "success" or .conclusion == "failure"))
+     else .status == "completed" and .conclusion == "success" end) and
     .head_branch == "main" and .head_sha == $source and
     (.repository.id | tostring) == $repository and
     (.head_repository.id | tostring) == $repository)
-' "$work/attempt.json" >/dev/null || fail 'receipt did not come from a successful main coordinator attempt'
+' "$work/attempt.json" >/dev/null || fail 'receipt did not come from an eligible main coordinator attempt'
 
+if [[ $scope == core ]]; then
+  job=verify-staged-core
+  upload='Upload core stage receipt'
+  mode=stage-core
+else
+  job=result
+  upload='Upload staged candidate receipt'
+  mode=stage
+fi
 if ! gh api --paginate "$attempt_api/jobs?per_page=100" |
-  jq -se --arg run "$run_id" --arg source "$source_sha" '
-    [.[].jobs[] | select(.name == "result")] |
+  jq -se --arg run "$run_id" --arg attempt "$attempt" --arg source "$source_sha" \
+    --arg scope "$scope" --arg job "$job" --arg upload "$upload" '
+    [.[].jobs[] | select(.name == $job)] |
     length == 1 and (.[0] |
       .status == "completed" and .conclusion == "success" and
       (.run_id | tostring) == $run and .head_sha == $source and
-      ([.steps[] | select(.name == "Upload staged candidate receipt")] |
-        length == 1 and (.[0] | .status == "completed" and .conclusion == "success")))
+      (.run_attempt == null or (.run_attempt | tostring) == $attempt) and
+      ([.steps[] | select(.name == $upload)] as $uploads |
+        ($uploads | length) == 1 and ($uploads[0] | .status == "completed" and .conclusion == "success") and
+        (if $scope == "core" then
+           [.steps[] | select(.name == "Verify staged core candidate")] as $verifiers |
+           ($verifiers | length) == 1 and
+           ($verifiers[0] | .status == "completed" and .conclusion == "success" and
+             (.number | type) == "number" and ($uploads[0].number | type) == "number" and .number < $uploads[0].number)
+         else true end)))
   ' >/dev/null; then
   fail 'the producing attempt did not upload a verified stage receipt'
 fi
@@ -115,10 +136,10 @@ PY
 
 receipt_fields=$(
   jq -er --arg repo "$repo" --arg version "$version" --arg source "$source_sha" \
-    --arg run "$run_id" --arg attempt "$attempt" '
+    --arg run "$run_id" --arg attempt "$attempt" --arg mode "$mode" '
     select(keys == ["candidate_digest","mode","release_id","repository","run_attempt",
                     "run_id","schema","source_sha","version"] and
-      .schema == 1 and .mode == "stage" and .repository == $repo and
+      .schema == 1 and .mode == $mode and .repository == $repo and
       .version == $version and .source_sha == $source and
       .run_id == $run and .run_attempt == $attempt and
       (.release_id | test("\\A[1-9][0-9]*\\z")) and (.candidate_digest | test("\\A[0-9a-f]{64}\\z"))) |
@@ -126,5 +147,5 @@ receipt_fields=$(
   ' "$work/receipt.json"
 ) || fail 'receipt does not match the approved workflow source or release version'
 IFS=$'\t' read -r release_id candidate_digest <<< "$receipt_fields"
-printf 'source-sha=%s\ncandidate-digest=%s\nrelease-id=%s\nstage-run-id=%s\nstage-run-attempt=%s\n' \
-  "$source_sha" "$candidate_digest" "$release_id" "$run_id" "$attempt" >> "$output"
+printf 'source-sha=%s\ncandidate-digest=%s\nrelease-id=%s\nstage-run-id=%s\nstage-run-attempt=%s\nrelease-scope=%s\n' \
+  "$source_sha" "$candidate_digest" "$release_id" "$run_id" "$attempt" "$scope" >> "$output"

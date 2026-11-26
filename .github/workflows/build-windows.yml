@@ -51,6 +51,18 @@ on:
       signing_input_attempt:
         required: true
         type: string
+      publish_core_first:
+        required: false
+        type: boolean
+        default: false
+      core_release_id:
+        required: false
+        type: string
+        default: ""
+      core_candidate_digest:
+        required: false
+        type: string
+        default: ""
     secrets:
       SIGNPATH_API_TOKEN:
         required: true
@@ -128,7 +140,7 @@ jobs:
 
   sign:
     needs: [build, inspect]
-    if: ${{ always() && !cancelled() && ((github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) && needs.build.result == 'success' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run)) || (github.workflow_ref != format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) && needs.inspect.result == 'success' && needs.inspect.outputs.state != 'complete')) }}
+    if: ${{ always() && !cancelled() && ((github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) && needs.build.result == 'success' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run)) || (github.workflow_ref != format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) && needs.inspect.result == 'success' && needs.inspect.outputs.state == 'missing')) }}
     runs-on: windows-2025
     timeout-minutes: 210
     environment: release
@@ -136,7 +148,7 @@ jobs:
       actions: read
       contents: read
     concurrency:
-      group: ${{ github.repository }}-release-publication
+      group: ${{ github.repository }}-windows-signpath
       queue: max
     outputs:
       state: ${{ steps.inventory.outputs.state }}
@@ -193,40 +205,16 @@ jobs:
     - name: Setup pinned GitHub CLI
       if: ${{ github.workflow_ref != format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) }}
       uses: ./.github/actions/setup-gh
-    - name: Install cosign
-      if: ${{ github.workflow_ref != format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) }}
-      uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
-      with:
-        cosign-release: v3.1.6
-    - name: Inspect full Windows owner
+    - name: Use locked Windows owner inspection
       id: inventory
-      if: ${{ github.workflow_ref != format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) }}
+      if: ${{ !(github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref)) }}
       shell: bash
       env:
-        GH_TOKEN: ${{ github.token }}
+        OWNER_STATE: ${{ needs.inspect.outputs.state }}
       run: |
         set -euo pipefail
-        jq() { command jq -b "$@"; }
-        export -f jq
-        if [[ $GITHUB_WORKSPACE != /* ]]; then
-          GITHUB_WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
-          export GITHUB_WORKSPACE
-        fi
-        report=$(mktemp)
-        trap 'rm -f "$report"' EXIT
-        GITHUB_OUTPUT='' bash .github/actions/stage-release/release-gate.sh inspect-owner "$SOURCE_VERSION" > "$report"
-        jq -e --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" --arg canonical "$CANONICAL_MANIFEST_SHA256" '
-          .repository == "Picocrypt-NG/Picocrypt-NG" and .source_sha == $source and .version == $version and
-          .canonical_manifest_sha256 == $canonical and .owner_workflow == "build-windows.yml"
-        ' "$report" >/dev/null
-        state=$(jq -r '.status' "$report")
-        case "$state" in
-          complete) staged=true; reused=true ;;
-          missing) staged=false; reused=false ;;
-          partial) echo 'Windows owner is partially staged; original signed generation is required before any signing' >&2; exit 1 ;;
-          *) echo 'Invalid Windows owner inspection state' >&2; exit 1 ;;
-        esac
-        printf 'state=%s\nstaged=%s\nreused=%s\n' "$state" "$staged" "$reused" >> "$GITHUB_OUTPUT"
+        test "$OWNER_STATE" = missing
+        printf '%s\n' 'state=missing' 'staged=false' 'reused=false' >> "$GITHUB_OUTPUT"
     - name: Verify immutable Windows input metadata
       if: ${{ steps.inventory.outputs.state == 'missing' }}
       shell: bash
@@ -303,7 +291,7 @@ jobs:
         }
 
     - name: Upload unsigned binaries for SignPath
-      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) || steps.inventory.outputs.state == 'missing' }}
+      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) }}
       id: upload-signpath-binaries
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
@@ -321,7 +309,7 @@ jobs:
       run: |
         if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_API_TOKEN)) { throw 'Missing SignPath API token' }
     - name: Sign binaries with SignPath
-      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) || steps.inventory.outputs.state == 'missing' }}
+      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) }}
       uses: signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b # v3.2
       with:
         api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -333,6 +321,18 @@ jobs:
         wait-for-completion: true
         wait-for-completion-timeout-in-seconds: 3600
         output-artifact-directory: signpath-signed-binaries
+
+    - name: Continue approved SignPath windows-binaries
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      uses: ./.github/actions/resumable-signpath
+      with:
+        phase: windows-binaries
+        unsigned-path: signpath-input-binaries/
+        output-path: signpath-signed-binaries
+        project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+        api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+        github-token: ${{ github.token }}
+        approval-window-hours: ${{ vars.SIGNPATH_APPROVAL_WINDOW_HOURS }}
 
     - name: Verify signed binaries before packaging
       if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) || steps.inventory.outputs.state == 'missing' }}
@@ -397,7 +397,7 @@ jobs:
         Remove-Item dist/windows/Picocrypt-NG-Setup.exe -Force -ErrorAction Stop
 
     - name: Upload unsigned uninstaller for SignPath
-      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) || steps.inventory.outputs.state == 'missing' }}
+      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) }}
       id: upload-signpath-uninstaller
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
@@ -408,7 +408,7 @@ jobs:
         retention-days: 1
 
     - name: Sign uninstaller with SignPath
-      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) || steps.inventory.outputs.state == 'missing' }}
+      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) }}
       uses: signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b # v3.2
       with:
         api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -420,6 +420,18 @@ jobs:
         wait-for-completion: true
         wait-for-completion-timeout-in-seconds: 3600
         output-artifact-directory: signpath-signed-uninstaller
+
+    - name: Continue approved SignPath windows-uninstaller
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      uses: ./.github/actions/resumable-signpath
+      with:
+        phase: windows-uninstaller
+        unsigned-path: dist/windows/Uninstall.exe
+        output-path: signpath-signed-uninstaller
+        project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+        api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+        github-token: ${{ github.token }}
+        approval-window-hours: ${{ vars.SIGNPATH_APPROVAL_WINDOW_HOURS }}
 
     - name: Verify signed uninstaller
       if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) || steps.inventory.outputs.state == 'missing' }}
@@ -465,7 +477,7 @@ jobs:
         }
 
     - name: Upload unsigned installer for SignPath
-      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) || steps.inventory.outputs.state == 'missing' }}
+      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) }}
       id: upload-signpath-installer
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
@@ -476,7 +488,7 @@ jobs:
         retention-days: 1
 
     - name: Sign installer with SignPath
-      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) || steps.inventory.outputs.state == 'missing' }}
+      if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) }}
       uses: signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b # v3.2
       with:
         api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -488,6 +500,18 @@ jobs:
         wait-for-completion: true
         wait-for-completion-timeout-in-seconds: 3600
         output-artifact-directory: signpath-signed-installer
+
+    - name: Continue approved SignPath windows-installer
+      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      uses: ./.github/actions/resumable-signpath
+      with:
+        phase: windows-installer
+        unsigned-path: dist/windows/Picocrypt-NG-Setup.exe
+        output-path: signpath-signed-installer
+        project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+        api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+        github-token: ${{ github.token }}
+        approval-window-hours: ${{ vars.SIGNPATH_APPROVAL_WINDOW_HOURS }}
 
     - name: Verify final Authenticode artifacts
       if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-windows.yml@{1}', github.repository, github.ref) || steps.inventory.outputs.state == 'missing' }}
@@ -678,6 +702,9 @@ jobs:
       queue: max
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
+      RELEASE_WINDOWS_AFTER_CORE: ${{ inputs.publish_core_first && 'true' || 'false' }}
+      RELEASE_CORE_ID: ${{ inputs.core_release_id }}
+      RELEASE_CORE_DIGEST: ${{ inputs.core_candidate_digest }}
       SOURCE_VERSION: ${{ inputs.version }}
       CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 }}
       OWNER_WORKFLOW: build-windows.yml
@@ -751,6 +778,9 @@ jobs:
       queue: max
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
+      RELEASE_WINDOWS_AFTER_CORE: ${{ inputs.publish_core_first && 'true' || 'false' }}
+      RELEASE_CORE_ID: ${{ inputs.core_release_id }}
+      RELEASE_CORE_DIGEST: ${{ inputs.core_candidate_digest }}
       SOURCE_VERSION: ${{ inputs.version }}
       CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 }}
       OWNER_WORKFLOW: build-windows.yml
@@ -891,6 +921,9 @@ jobs:
       queue: max
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
+      RELEASE_WINDOWS_AFTER_CORE: ${{ inputs.publish_core_first && 'true' || 'false' }}
+      RELEASE_CORE_ID: ${{ inputs.core_release_id }}
+      RELEASE_CORE_DIGEST: ${{ inputs.core_candidate_digest }}
       SOURCE_VERSION: ${{ inputs.version }}
       CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 }}
       OWNER_WORKFLOW: build-windows.yml
