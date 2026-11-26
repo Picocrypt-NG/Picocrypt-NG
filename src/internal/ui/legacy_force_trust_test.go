@@ -4,7 +4,6 @@ import (
 	"Picocrypt-NG/internal/app"
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,19 +81,13 @@ func TestLegacyV2ForceWrongKeyfilePreservesEncryptedSource(t *testing.T) {
 				if len(recovered) != len(expected) || bytes.Equal(recovered, expected) {
 					t.Error("wrong keyfile must exercise corrupted recovered bytes, not the valid plaintext")
 				}
-				preserved, err := os.ReadFile(input.inputFile)
-				if err != nil || !bytes.Equal(preserved, fixture) {
-					t.Errorf("desktop delete-after-success lost the encrypted source for untrusted output: %v", err)
-				}
-			} else {
-				if !bytes.Equal(recovered, expected) {
-					t.Error("correct keyfile changed the frozen plaintext")
-				}
-				if _, err := os.Lstat(input.inputFile); !errors.Is(err, os.ErrNotExist) {
-					t.Errorf("clean completion did not remove its selected temporary source: %v", err)
-				}
+			} else if !bytes.Equal(recovered, expected) {
+				t.Error("correct keyfile changed the frozen plaintext")
 			}
-			a.applyCompletedOperation(input, result)
+			if preserved, err := os.ReadFile(input.inputFile); err != nil || !bytes.Equal(preserved, fixture) {
+				t.Errorf("legacy read lost the encrypted source: %v", err)
+			}
+			a.applyCompletedOperation(result)
 			snapshot := state.UISnapshot()
 			kept := state.WasKept()
 			wantStatus := app.StatusCompleted

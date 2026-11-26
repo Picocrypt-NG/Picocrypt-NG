@@ -502,7 +502,6 @@ func TestRussianFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 	assertCatalogStringContains(t, catalog, "start.hint.keyfileWritesDisabled", "нов", "v2", "ключ", "отключ", "расшифр")
 	assertCatalogStringContains(t, catalog, "advanced.recursively.tooltip", "кажд", "отдель")
 	assertCatalogStringContains(t, catalog, "drop.header_may_be_deniable", "может", "правдоподоб")
-	assertCatalogStringContains(t, catalog, "advanced.delete_volume.label", "удал", "зашифрован", "том")
 
 	deniabilityCopy := strings.ToLower(catalogString(t, catalog, "advanced.deniability.label") + "\n" +
 		catalogString(t, catalog, "advanced.deniability.tooltip") + "\n" +
@@ -542,7 +541,6 @@ func TestKoreanFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 	assertCatalogStringContains(t, catalog, "start.hint.keyfileWritesDisabled", "새", "v2", "키 파일", "만들 수 없습니다", "v3", "기존", "복호화")
 	assertCatalogStringContains(t, catalog, "advanced.recursively.tooltip", "각 파일", "개별")
 	assertCatalogStringContains(t, catalog, "drop.header_may_be_deniable", "헤더", "읽을 수 없습니다", "부인 가능")
-	assertCatalogStringContains(t, catalog, "advanced.delete_volume.label", "암호화된", "볼륨", "삭제")
 
 	deniabilityCopy := strings.ToLower(catalogString(t, catalog, "advanced.deniability.label") + "\n" +
 		catalogString(t, catalog, "advanced.deniability.tooltip") + "\n" +

@@ -306,9 +306,9 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 			a.State.SameLevel = true
 			a.State.Recombine = true
 			a.State.Deniability = true
+			// Stale encryption preferences must leave the decrypt source intact
+			// and must not apply split validation.
 			a.State.Delete = true
-			// Split is an encrypt-only option. A stale recursive split value must
-			// never reject or alter a decrypt request.
 			a.State.Split = true
 			a.State.SplitSize = "irrelevant to decrypt"
 			a.startWork()
@@ -337,8 +337,11 @@ func TestOperationInputPreservesSelectedVolumeOptions(t *testing.T) {
 		if string(got.password) != "decrypt password" || !reflect.DeepEqual(got.keyfiles, keyfiles) {
 			t.Fatalf("decrypt credentials changed: password=%q keyfiles=%v", got.password, got.keyfiles)
 		}
-		if !got.forceDecrypt || !got.verifyFirst || !got.autoUnzip || !got.sameLevel || !got.recombine || !got.deniability || !got.delete {
+		if !got.forceDecrypt || !got.verifyFirst || !got.autoUnzip || !got.sameLevel || !got.recombine || !got.deniability {
 			t.Fatalf("decrypt options were not preserved: %+v", got)
+		}
+		if got.delete {
+			t.Fatal("decrypt request inherited the encryption source-deletion preference")
 		}
 		if got.rsCodecs != a.rsCodecs {
 			t.Fatal("decrypt input did not preserve the initialized Reed-Solomon codecs")
@@ -649,8 +652,14 @@ func TestRecursiveLegacyDecryptPreservesVolumeAndSplitSelection(t *testing.T) {
 		wantRecombine bool
 	}{
 		{
-			name:     "volume",
-			selected: func(*testing.T) string { return golden },
+			name: "volume",
+			selected: func(t *testing.T) string {
+				path := filepath.Join(t.TempDir(), "legacy.txt.pcv")
+				if err := os.WriteFile(path, goldenBytes, 0o600); err != nil {
+					t.Fatalf("copy frozen legacy volume: %v", err)
+				}
+				return path
+			},
 			wantInput: func(selected string) string {
 				return selected
 			},
@@ -689,9 +698,9 @@ func TestRecursiveLegacyDecryptPreservesVolumeAndSplitSelection(t *testing.T) {
 			a := createUIReadyDropTestApp(t, fyneApp)
 			selected := tc.selected(t)
 			observed := make(chan operationInput, 1)
-			a.operationExecutor = func(_ context.Context, input operationInput, _ volume.ProgressReporter) operationResult {
+			a.operationExecutor = func(ctx context.Context, input operationInput, reporter volume.ProgressReporter) operationResult {
 				observed <- input
-				return operationResult{completed: true}
+				return executeVolumeOperation(ctx, input, reporter)
 			}
 
 			fyne.DoAndWait(func() {
@@ -700,8 +709,9 @@ func TestRecursiveLegacyDecryptPreservesVolumeAndSplitSelection(t *testing.T) {
 				a.State.OutputFile = selected + ".pcv"
 				a.State.OnlyFiles = []string{selected}
 				a.State.AllFiles = []string{selected}
-				a.State.Password = "recursive-legacy-decrypt"
-				a.State.CPassword = "recursive-legacy-decrypt"
+				a.State.Password = "test"
+				a.State.CPassword = "test"
+				a.State.Delete = true
 				a.State.Recursively = true
 				a.startWork()
 			})
@@ -721,8 +731,24 @@ func TestRecursiveLegacyDecryptPreservesVolumeAndSplitSelection(t *testing.T) {
 				if got.recombine != tc.wantRecombine {
 					t.Fatalf("recursive recombine = %v; want %v", got.recombine, tc.wantRecombine)
 				}
+				if got.delete {
+					t.Fatal("recursive legacy read inherited source deletion")
+				}
 			default:
 				t.Fatal("recursive legacy selection did not reach executor")
+			}
+			want, err := os.ReadFile(filepath.Join("..", "..", "testdata", "golden", "pico_test.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := os.ReadFile(tc.wantOutput(selected)); err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("recursive legacy plaintext changed: %q %v", got, err)
+			}
+			if got, err := os.ReadFile(selected); err != nil || !bytes.Equal(got, goldenBytes) {
+				t.Fatalf("recursive legacy ciphertext was not retained: %v", err)
+			}
+			if got := a.State.UISnapshot().Status.Kind; got != app.StatusRecursiveCompleted {
+				t.Fatalf("recursive legacy decryption did not complete: %v", got)
 			}
 		})
 	}
@@ -786,20 +812,17 @@ func TestOnClickStartValidation(t *testing.T) {
 func TestDeleteSafetyRejectsPathsInsideSourceFolderBeforeExecution(t *testing.T) {
 	tests := []struct {
 		name                 string
-		mode                 string
 		outputInFolder       bool
 		keyfileAliasesSource bool
 		wantStatus           string
 	}{
 		{
 			name:           "output inside deleted folder",
-			mode:           "encrypt",
 			outputInFolder: true,
 			wantStatus:     "output",
 		},
 		{
-			name:                 "legacy decrypt keyfile aliases deleted volume",
-			mode:                 "decrypt",
+			name:                 "keyfile aliases source scheduled for deletion",
 			keyfileAliasesSource: true,
 			wantStatus:           "keyfile",
 		},
@@ -847,7 +870,7 @@ func TestDeleteSafetyRejectsPathsInsideSourceFolderBeforeExecution(t *testing.T)
 			}
 
 			fyne.DoAndWait(func() {
-				a.State.Mode = tc.mode
+				a.State.Mode = "encrypt"
 				a.State.InputFile = source
 				a.State.AllFiles = []string{source}
 				a.State.OnlyFolders = []string{sourceFolder}
@@ -902,10 +925,8 @@ func TestDeleteSafetyRejectsPathsInsideSourceFolderBeforeExecution(t *testing.T)
 	}
 }
 
-// When the selected split input is "volume.pcv.0", delete-after-success must
-// derive "volume.pcv" before counting chunks. Counting from the selected chunk
-// would leave every encrypted source behind while reporting a delete failure.
-func TestSuccessfulRecombineDeletesActualChunkSet(t *testing.T) {
+// A completed legacy result alone cannot authorize removal of a captured chunk.
+func TestLegacyRecombineCompletionDoesNotAuthorizeSourceRemoval(t *testing.T) {
 	a := createTestApp(t)
 	dir := t.TempDir()
 	inputBase := filepath.Join(dir, "volume.pcv")
@@ -930,13 +951,17 @@ func TestSuccessfulRecombineDeletesActualChunkSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capture deletion manifest: %v", err)
 	}
+	a.operationSourceRemover = func(context.Context, deletionSource, bool) error {
+		t.Error("legacy completion called the source remover")
+		return nil
+	}
 	result := a.cleanupOperationSources(context.Background(), input, manifest, operationResult{completed: true})
 	if result.err != nil || result.cancelled || result.deleteFailed {
-		t.Fatalf("cleanup result = %+v, want successful source deletion", result)
+		t.Fatalf("cleanup result = %+v, want successful completion", result)
 	}
-	for _, chunk := range chunks {
-		if _, err := os.Lstat(chunk); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("encrypted chunk %q remains after successful delete: %v", chunk, err)
+	for i, chunk := range chunks {
+		if got, err := os.ReadFile(chunk); err != nil || !bytes.Equal(got, []byte{byte(i + 1)}) {
+			t.Fatalf("encrypted chunk %q changed: %v", chunk, err)
 		}
 	}
 	if got, err := os.ReadFile(unrelated); err != nil || string(got) != "keep" {
@@ -1095,7 +1120,7 @@ func TestDeleteAfterFolderEncryptionPreservesNewEntries(t *testing.T) {
 	}
 }
 
-func TestDeleteAfterRecombineNeverDeletesLateChunk(t *testing.T) {
+func TestLegacyRecombineRetainsCapturedAndLateChunks(t *testing.T) {
 	a := createTestApp(t)
 	dir := t.TempDir()
 	inputBase := filepath.Join(dir, "volume.pcv")
@@ -1125,11 +1150,11 @@ func TestDeleteAfterRecombineNeverDeletesLateChunk(t *testing.T) {
 		input,
 	)
 	if !result.completed || result.err != nil || result.cancelled || result.deleteFailed {
-		t.Fatalf("operation result = %+v, want successful deletion of only the captured chunk set", result)
+		t.Fatalf("operation result = %+v, want successful completion", result)
 	}
 	for i := range 2 {
-		if _, err := os.Lstat(inputBase + "." + strconv.Itoa(i)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("captured chunk %d remains: %v", i, err)
+		if got, err := os.ReadFile(inputBase + "." + strconv.Itoa(i)); err != nil || !bytes.Equal(got, []byte{byte(i + 1)}) {
+			t.Fatalf("captured chunk %d changed: %v", i, err)
 		}
 	}
 	if got, err := os.ReadFile(lateChunk); err != nil || !reflect.DeepEqual(got, lateBytes) {
@@ -1362,6 +1387,22 @@ func TestSplitUnitsLabelsAlignWithIndices(t *testing.T) {
 }
 
 // createTestApp creates a minimal App instance for testing.
+func TestCaptureOperationInputAllowsDeletionOnlyForEncryption(t *testing.T) {
+	a := createTestApp(t)
+	for _, mode := range []string{"encrypt", "decrypt"} {
+		snapshot := a.State.Snapshot()
+		snapshot.Mode = mode
+		snapshot.Delete = true
+		input, err := a.captureOperationInput(snapshot)
+		if err != nil {
+			t.Fatalf("capture %s request: %v", mode, err)
+		}
+		if input.delete != (mode == "encrypt") {
+			t.Errorf("captured %s request deletion = %t", mode, input.delete)
+		}
+	}
+}
+
 func createTestApp(t *testing.T) *App {
 	t.Helper()
 

@@ -274,36 +274,29 @@ func TestRecombineDeletionSnapshotFrozenVolume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	removed := 0
-	var live uint64
-	a := &App{operationSourceRemover: func(ctx context.Context, source deletionSource, directory bool) error {
-		if input.zipBudget.CurrentBytes() != live || live == 0 {
-			t.Fatal("manifest retired before source cleanup")
-		}
-		got, err := os.ReadFile(input.outputFile)
-		if err != nil || !bytes.Equal(got, want) {
-			t.Fatalf("source cleanup preceded exact plaintext publication: %v", err)
-		}
-		removed++
-		return removeOperationSource(ctx, source, directory)
+	a := &App{operationSourceRemover: func(context.Context, deletionSource, bool) error {
+		t.Error("legacy split decrypt called the source remover")
+		return nil
 	}}
 	result := a.runCapturedOperation(context.Background(), func(ctx context.Context, captured operationInput, reporter volume.ProgressReporter) operationResult {
 		if len(captured.recombineInputs) != len(chunks) {
 			t.Fatal("frozen reader lacks captured chunk set")
 		}
-		live = input.zipBudget.CurrentBytes()
+		if input.zipBudget.CurrentBytes() == 0 {
+			t.Fatal("manifest metadata was retired before reading")
+		}
 		return executeVolumeOperation(ctx, captured, reporter)
 	}, nil, input)
-	if result.err != nil || !result.completed || result.cancelled || result.kept || result.deleteFailed || result.succeeded != 1 || removed != 2 {
-		t.Fatalf("frozen-volume result=%+v removed=%d", result, removed)
+	if result.err != nil || !result.completed || result.cancelled || result.kept || result.deleteFailed || result.succeeded != 1 {
+		t.Fatalf("frozen-volume result=%+v", result)
 	}
 	got, err := os.ReadFile(input.outputFile)
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("frozen plaintext changed: %q %v", got, err)
 	}
-	for path := range chunks {
-		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("captured chunk remains: %s %v", path, err)
+	for path, body := range chunks {
+		if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("captured encrypted chunk %q changed: %v", path, err)
 		}
 	}
 	if input.zipBudget.CurrentBytes() != 0 {

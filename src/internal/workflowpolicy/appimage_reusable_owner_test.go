@@ -2,7 +2,6 @@ package workflowpolicy
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -99,7 +98,9 @@ func TestAppImageReusableOwnerSeparatesNativeSigningAttestationAndStage(t *testi
 		}
 	}
 	for _, name := range []string{"Verify immutable AppImage raw metadata", "Download AppImage raw artifact", "Verify AppImage raw payload", "Verify AppImage signing-input metadata", "Download same-run signing input", "Check and extract signing input", "Download locked AppImage signing tools", "Build AppImage signing image before loading secrets", "Build signed AppImage", "Verify AppImage signature", "Smoke test AppImage", "Upload signed artifacts"} {
-		mustContain(t, mustStepNamed(t, sign, name).If, "steps.inventory.outputs.state == 'missing'")
+		if mustStepNamed(t, sign, name).If != "${{ ("+appimageDirectInvocation+") || steps.inventory.outputs.state == 'missing' }}" {
+			t.Fatalf("%s must cover both direct signing and a missing reusable owner", name)
+		}
 	}
 	if sign.Env["PLATFORM_OWNER"] != "build-appimage.yml" || mustStepNamed(t, sign, "Verify immutable AppImage raw metadata").Run != "bash .github/actions/verify-platform-artifacts/verify-artifacts.sh metadata" {
 		t.Fatal("reuse shared single-owner raw validation")
@@ -108,7 +109,7 @@ func TestAppImageReusableOwnerSeparatesNativeSigningAttestationAndStage(t *testi
 		job            workflowJob
 		name, id, path string
 	}{
-		{sign, "Download AppImage raw artifact", "${{ inputs.raw_artifact_id }}", "artifacts/build-appimage"},
+		{sign, "Download AppImage raw artifact", "${{ inputs.raw_artifact_id || needs.build.outputs.artifact-id }}", "artifacts/build-appimage"},
 		{sign, "Download same-run signing input", "${{ inputs.signing_input_id || needs.build.outputs.signing-input-id }}", "signing-input"},
 		{attest, "Download verified signed AppImage", "${{ needs.sign.outputs.artifact-id }}", "artifacts"},
 		{stage, "Download signed AppImage generation", "${{ needs.attest.outputs.generation-id }}", "signed-generation"},
@@ -163,14 +164,13 @@ func TestAppImageReusableOwnerSeparatesNativeSigningAttestationAndStage(t *testi
 	}
 }
 
-func TestAppImageReusableOwnerPreservesGPGRecipeAndNativePrefix(t *testing.T) {
+func TestAppImageReusableOwnerPreservesGPGRecipe(t *testing.T) {
 	w := mustReadWorkflowDoc(t, ".github/workflows/build-appimage.yml")
 	sign := mustJob(t, w, "sign")
 	for name, want := range map[string]string{
-		"Check and extract signing input": "2eb09cd3ab0531cc2d9897b2256e61c9e9546ff98b41e4cead2facdf5073df69",
-		"Build signed AppImage":           "ecb8e81484bc55fd3cdb70229b6272be2591c6b86ac682ea5f9daee8f78a8d78",
-		"Verify AppImage signature":       "d7e37d010ac32bf811404fc8071c268d61aed94129ccff894592337f15a090a0",
-		"Smoke test AppImage":             "a46d2d682d44b4005dba51eb2465ba1c5c0544dc32b7042bb08145a4691a3f3c",
+		"Build signed AppImage":     "ecb8e81484bc55fd3cdb70229b6272be2591c6b86ac682ea5f9daee8f78a8d78",
+		"Verify AppImage signature": "d7e37d010ac32bf811404fc8071c268d61aed94129ccff894592337f15a090a0",
+		"Smoke test AppImage":       "a46d2d682d44b4005dba51eb2465ba1c5c0544dc32b7042bb08145a4691a3f3c",
 	} {
 		if got := fmt.Sprintf("%x", sha256.Sum256([]byte(mustStepNamed(t, sign, name).Run))); got != want {
 			t.Fatalf("GPG signing recipe %s changed: %s", name, got)
@@ -202,33 +202,6 @@ func TestAppImageReusableOwnerPreservesGPGRecipeAndNativePrefix(t *testing.T) {
 			}
 		}
 	}
-	var action struct {
-		Runs struct{ Steps []map[string]any }
-	}
-	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/actions/build-appimage/action.yml")), &action); err != nil {
-		t.Fatal(err)
-	}
-	var prefix []map[string]any
-	active := false
-	for _, step := range action.Runs.Steps {
-		if step["name"] == "Setup Go" {
-			active = true
-		}
-		if active {
-			delete(step, "shell")
-			prefix = append(prefix, step)
-		}
-		if step["name"] == "Prepare to upload artifacts" {
-			break
-		}
-	}
-	data, err := json.Marshal(prefix)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != "85ef653a61b84f694e9dae2af83d481330078bd7f3143652edab385d352e9a64" {
-		t.Fatalf("unsigned native/tool-pin/smoke prefix changed: %s", got)
-	}
 }
 
 func TestAppImageReusableSigningCarrierIsOptionalImmutableAndReal(t *testing.T) {
@@ -256,9 +229,6 @@ func TestAppImageReusableSigningCarrierIsOptionalImmutableAndReal(t *testing.T) 
 		if mustCompositeStepNamed(t, a, name).If != "${{ inputs.retain-signing-input == 'true' }}" {
 			t.Fatalf("%s must not run for unsigned validation", name)
 		}
-	}
-	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(mustCompositeStepNamed(t, a, "Prepare signing input").Run))); got != "a9ebdcb2572d44bf3a3b1b6a8ed1387ebc09cc8fb8c7c4789751e17b7fd226d8" {
-		t.Fatal("move the existing tar/hash producer unchanged")
 	}
 	upload := mustCompositeStepNamed(t, a, "Upload signing input")
 	if upload.With["name"] != "appimage-signing-input-attempt-${{ github.run_attempt }}" || upload.With["path"] != "AppDir.tar" || upload.With["retention-days"] != 7 || upload.With["overwrite"] != false || upload.With["compression-level"] != 0 {

@@ -6,6 +6,38 @@ import (
 	"testing"
 )
 
+func TestAppImageLockUpdatePRUsesUnsignedSharedProducer(t *testing.T) {
+	const path = ".github/workflows/pr-test-build-appimage.yml"
+	workflow := mustReadWorkflowDoc(t, path)
+	trigger, ok := workflow.On.OtherEvents["pull_request"].(map[string]any)
+	if !ok || len(workflow.On.OtherEvents) != 1 || len(workflow.On.WorkflowDispatch.Inputs) != 0 {
+		t.Fatal("lock update validation must run on an unprivileged PR event")
+	}
+	paths, ok := trigger["paths"].([]any)
+	if !ok {
+		t.Fatal("AppImage PR validation must cover the dependency-lock paths")
+	}
+	for _, want := range []string{".github/toolchains/appimage-release/**", ".github/toolchains/appimage-build.json", ".github/toolchains/release-go.json"} {
+		found := false
+		for _, actual := range paths {
+			if actual == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("AppImage PR validation misses lock input %s", want)
+		}
+	}
+	job := mustJob(t, workflow, "pr-test-build-appimage")
+	producer := mustHaveStepUsingPrefix(t, job, "./.github/actions/build-appimage")
+	if len(workflow.Permissions) != 1 || workflow.Permissions["contents"] != "read" ||
+		job.Environment != nil || len(job.Permissions) != 0 ||
+		producer.With["retain-signing-input"] != "false" || producer.With["source-sha"] != "${{ steps.source.outputs.source-sha }}" {
+		t.Fatal("lock update validation must build the exact PR checkout without signing authority")
+	}
+}
+
 // These are release-policy checks; cryptographic behavior is exercised by appimage-verifier-test.py.
 func TestAppImageValidationHasNoSigningOrPublicationAuthority(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/build-appimage.yml")
@@ -82,8 +114,21 @@ func TestAppImageProductionTrustPrecedesArtifactPublication(t *testing.T) {
 		t.Fatal("cryptographic AppImage verification must block every fresh signing and upload; complete-owner reuse skips them together")
 	}
 	mustContain(t, verify.Run, `bash .github/scripts/verify-appimage.sh "$APP"`)
-	verified := false
+	rawVerified, inputChecked, verified := false, false, false
 	for _, step := range sign.Steps {
+		switch step.Name {
+		case "Verify AppImage raw payload":
+			rawVerified = step.If == whenSigning && step.ContinueOnError != true
+		case "Check and extract signing input":
+			if !rawVerified {
+				t.Fatal("the materials-verified raw payload must precede signing input extraction")
+			}
+			inputChecked = step.If == whenSigning && step.ContinueOnError != true
+		case pack.Name:
+			if !inputChecked {
+				t.Fatal("credentialed signing must follow the blocking raw-to-carrier check")
+			}
+		}
 		if step.Name == verify.Name {
 			verified = true
 		}

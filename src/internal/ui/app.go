@@ -206,7 +206,6 @@ type App struct {
 	// Advanced options (decrypt mode)
 	forceDecryptCheck *ttwidget.Check
 	verifyFirstCheck  *ttwidget.Check
-	deleteVolumeCheck *ttwidget.Check
 	autoUnzipCheck    *ttwidget.Check
 	sameLevelCheck    *ttwidget.Check
 
@@ -388,12 +387,8 @@ func (a *App) refreshAdvancedLocalizedText() {
 	setCheckTooltip(a.compressCheck, tr("advanced.compress.tooltip", "Compress before encrypting"))
 	setCheckText(a.reedSolomonCheck, tr("advanced.reed_solomon.label", "Reed-Solomon"))
 	setCheckTooltip(a.reedSolomonCheck, tr("advanced.reed_solomon.tooltip", "Helps repair limited damage; increases file size."))
-	if a.State != nil && a.State.Mode == "decrypt" {
-		setCheckText(a.deleteCheck, tr("advanced.delete_encrypted.label", "Delete encrypted"))
-	} else {
-		setCheckText(a.deleteCheck, tr("advanced.delete_files.label", "Delete files"))
-		setCheckTooltip(a.deleteCheck, tr("advanced.delete_files.tooltip", "Delete source files after encryption"))
-	}
+	setCheckText(a.deleteCheck, tr("advanced.delete_files.label", "Delete files"))
+	setCheckTooltip(a.deleteCheck, tr("advanced.delete_files.tooltip", "Delete source files after encryption"))
 	setCheckText(a.deniabilityCheck, tr("advanced.deniability.label", "Deniability"))
 	setCheckTooltip(a.deniabilityCheck, tr("advanced.deniability.pcv3_tooltip", "Hides the format header. Container name and size remain visible."))
 	setCheckText(a.recursivelyCheck, tr("advanced.recursively.label", "Recursively"))
@@ -410,8 +405,6 @@ func (a *App) refreshAdvancedLocalizedText() {
 	setCheckTooltip(a.forceDecryptCheck, tr("advanced.force_decrypt.tooltip", "Keep damaged or unverified output"))
 	setCheckText(a.verifyFirstCheck, tr("advanced.verify_first.label", "Verify first"))
 	setCheckTooltip(a.verifyFirstCheck, tr("advanced.verify_first.tooltip", "Verify before decrypting"))
-	setCheckText(a.deleteVolumeCheck, tr("advanced.delete_volume.label", "Delete volume"))
-	setCheckTooltip(a.deleteVolumeCheck, tr("advanced.delete_volume.tooltip", "Delete volume after decryption"))
 	setCheckText(a.autoUnzipCheck, tr("advanced.auto_unzip.label", "Auto unzip"))
 	setCheckTooltip(a.autoUnzipCheck, tr("advanced.auto_unzip.tooltip", "Extract {{.Extension}}; may overwrite files", map[string]any{
 		"Extension": ".zip",
@@ -986,8 +979,6 @@ func renderStatus(msg app.StatusMessage, snap app.UISnapshot) (text string) {
 			text += "\n" + tr("status.cancelled_by_user", "Operation cancelled by user")
 		}
 		return text
-	case app.StatusCompletedVolumeDeleteFailed:
-		return tr("status.completed_volume_delete_failed", "Completed (volume couldn't be deleted)")
 	case app.StatusPCVUnavailable:
 		return tr("status.pcv_unavailable", "This PCV volume is not supported by this version. Keep the original file; no output was created.")
 	case app.StatusStartupPathAccessFailed:

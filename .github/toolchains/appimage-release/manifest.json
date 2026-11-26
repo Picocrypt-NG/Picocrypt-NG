@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "base_image": "ubuntu@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11",
+  "snapshot": "20261126T170000Z",
+  "glibc": "2.35",
+  "root_packages": [
+    "curl",
+    "desktop-file-utils",
+    "file",
+    "gcc",
+    "gnupg",
+    "jq",
+    "libgl1",
+    "libgl1-mesa-dev",
+    "libgtk-3-dev",
+    "librsvg2-bin",
+    "libxcursor-dev",
+    "libxi-dev",
+    "libxinerama-dev",
+    "libxrandr-dev",
+    "libxxf86vm-dev",
+    "pkg-config",
+    "xorg-dev"
+  ]
+}

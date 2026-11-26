@@ -49,6 +49,11 @@ func TestPlatformArtifactConsumerBindsFourteenPrimariesAndRejectsSubstitution(t 
 	}{
 		{defect: "none"},
 		{defect: "single AppImage"},
+		{defect: "single AppImage with bound carrier"},
+		{"AppImage missing build materials", "payload", false},
+		{"AppImage wrong build-tool lock", "payload", false},
+		{"AppImage malformed carrier hash", "payload", false},
+		{"non-AppImage carrier hash", "payload", false},
 		{defect: "single Snap"},
 		{"Snap missing build materials", "payload", false},
 		{"Snap wrong guest package lock", "payload", false},
@@ -150,11 +155,13 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 					"canonical_manifest_sha256": canonicalDigest, "owner_workflow": owner.owner, "arch": owner.arch, "run_id": "900", "run_attempt": "1", "files": files,
 				}
 				switch owner.owner {
-				case "build-macos.yml", "build-android.yml", "build-snapcraft.yml":
+				case "build-appimage.yml", "build-macos.yml", "build-android.yml", "build-snapcraft.yml":
 					manifest["materials"] = releaseMaterialsFixture(t, owner.owner, owner.arch)
 				}
 				target := "build-windows.yml"
 				switch tc.defect {
+				case "single AppImage with bound carrier", "AppImage missing build materials", "AppImage wrong build-tool lock", "AppImage malformed carrier hash":
+					target = "build-appimage.yml"
 				case "macOS missing build materials", "macOS wrong build materials":
 					target = "build-macos.yml"
 				case "Android wrong build materials", "Android wrong JDK digest":
@@ -203,8 +210,14 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 				targetMetadata["expired"] = true
 			case "wrong metadata digest":
 				targetMetadata["digest"] = "sha256:" + strings.Repeat("f", 64)
-			case "macOS missing build materials", "Snap missing build materials":
+			case "AppImage missing build materials", "macOS missing build materials", "Snap missing build materials":
 				delete(targetManifest, "materials")
+			case "AppImage wrong build-tool lock":
+				targetManifest["materials"].(map[string]any)["appimage_build_tools_sha256"] = strings.Repeat("f", 64)
+			case "single AppImage with bound carrier", "non-AppImage carrier hash":
+				targetManifest["signing_input_sha256"] = strings.Repeat("b", 64)
+			case "AppImage malformed carrier hash":
+				targetManifest["signing_input_sha256"] = "not-a-sha256"
 			case "Snap wrong guest package lock":
 				targetManifest["materials"].(map[string]any)["packages_sha256"] = strings.Repeat("f", 64)
 			case "Snap wrong host package lock":
@@ -295,7 +308,7 @@ cat "$FIXTURE_DIR/${4##*/}.json"
 			ownerSelector := ""
 			selectedOwners := owners
 			singleIndex, single := map[string]int{
-				"single AppImage": 0, "single Snap": 1, "Snap missing build materials": 1, "single macOS": 2,
+				"single AppImage": 0, "single AppImage with bound carrier": 0, "single Snap": 1, "Snap missing build materials": 1, "single macOS": 2,
 				"single Android": 3, "single Windows legacy": 4, "single Windows": 5,
 				"single Windows CRLF": 5, "single unknown selector": 5, "single wrong owner": 5,
 				"single extra descriptor": 5, "single duplicate descriptor": 5, "single missing payload": 5,

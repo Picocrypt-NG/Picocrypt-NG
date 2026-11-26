@@ -689,7 +689,7 @@ func (a *App) captureOperationInput(snap app.Snapshot) (operationInput, error) {
 		autoUnzip:       snap.AutoUnzip,
 		sameLevel:       snap.SameLevel,
 		recombine:       snap.Recombine,
-		delete:          snap.Delete,
+		delete:          snap.Mode == "encrypt" && snap.Delete,
 		rsCodecs:        a.rsCodecs,
 	}, nil
 }
@@ -1417,7 +1417,7 @@ func (a *App) buildPCV3ResultView(
 		snap := a.State.UISnapshot()
 		if snap.PCV3Route == app.PCV3RouteNone || snap.Recursively {
 			switch snap.Status.Kind {
-			case app.StatusCancelledByUser, app.StatusCompletedSomeDeleteFailed, app.StatusCompletedVolumeDeleteFailed:
+			case app.StatusCancelledByUser, app.StatusCompletedSomeDeleteFailed:
 				outcome.Title = renderStatus(snap.Status, snap)
 				outcome.Body = ""
 				publication.Title = ""
@@ -1823,12 +1823,17 @@ func (a *App) cleanupOperationSources(
 	manifest *operationDeletionManifest,
 	result operationResult,
 ) operationResult {
-	if result.err != nil || !result.completed || result.cancelled || !input.delete || (input.mode == "decrypt" && result.kept) {
+	if result.err != nil || !result.completed || result.cancelled || !input.delete {
 		return result
 	}
-	if input.mode == "encrypt" && !result.pcv3.SourceDeletionAllowed() {
+	if input.mode != "encrypt" || !result.pcv3.SourceDeletionAllowed() {
 		return result
 	}
+	return a.removeCapturedSources(ctx, manifest, result)
+}
+
+// removeCapturedSources executes the captured removals after source deletion is authorized.
+func (a *App) removeCapturedSources(ctx context.Context, manifest *operationDeletionManifest, result operationResult) operationResult {
 	if manifest == nil {
 		result.deleteFailed = true
 		return result
@@ -2113,7 +2118,7 @@ func (a *App) finishOperationWorker(
 	})
 }
 
-func (a *App) applyCompletedOperation(input operationInput, result operationResult) {
+func (a *App) applyCompletedOperation(result operationResult) {
 	a.State.ResetUI()
 	a.State.SetInputPrompt()
 	a.State.SetStartAction(app.StartActionStart)
@@ -2123,17 +2128,13 @@ func (a *App) applyCompletedOperation(input operationInput, result operationResu
 		return
 	}
 	if result.deleteFailed {
-		if input.mode == "encrypt" {
-			a.State.SetStatusMessage(app.StatusCompletedSomeDeleteFailed, util.YELLOW, app.StatusArgs{})
-		} else {
-			a.State.SetStatusMessage(app.StatusCompletedVolumeDeleteFailed, util.YELLOW, app.StatusArgs{})
-		}
+		a.State.SetStatusMessage(app.StatusCompletedSomeDeleteFailed, util.YELLOW, app.StatusArgs{})
 		return
 	}
 	a.State.SetStatusMessage(app.StatusCompleted, util.GREEN, app.StatusArgs{})
 }
 
-func recursiveOperationStatus(input operationInput, result operationResult) app.StatusMessage {
+func recursiveOperationStatus(result operationResult) app.StatusMessage {
 	switch {
 	case result.unverified > 0:
 		return app.StatusMessage{Kind: app.StatusRecursiveUnverified, Color: util.YELLOW, Args: app.StatusArgs{
@@ -2141,11 +2142,7 @@ func recursiveOperationStatus(input operationInput, result operationResult) app.
 			Cancelled: result.cancelled, DeleteFailed: result.deleteFailed,
 		}}
 	case result.failed == 0 && result.deleteFailed:
-		kind := app.StatusCompletedVolumeDeleteFailed
-		if input.mode == "encrypt" {
-			kind = app.StatusCompletedSomeDeleteFailed
-		}
-		return app.StatusMessage{Kind: kind, Color: util.YELLOW}
+		return app.StatusMessage{Kind: app.StatusCompletedSomeDeleteFailed, Color: util.YELLOW}
 	case result.failed == 0:
 		return app.StatusMessage{Kind: app.StatusRecursiveCompleted, Color: util.GREEN, Args: app.StatusArgs{Count: result.succeeded}}
 	case result.succeeded == 0:
@@ -2182,7 +2179,7 @@ func (a *App) finalizeOperation(
 	switch {
 	case result.cancelled:
 		if recursive && result.unverified > 0 {
-			status := recursiveOperationStatus(lastInput, result)
+			status := recursiveOperationStatus(result)
 			a.State.SetStatusMessage(status.Kind, status.Color, status.Args)
 		} else if !recursive && result.completed && result.err == nil && result.kept {
 			a.State.SetStatusMessage(app.StatusKeptOutputUnverified, util.YELLOW, app.StatusArgs{Cancelled: true})
@@ -2205,20 +2202,20 @@ func (a *App) finalizeOperation(
 			} else if presentation.CompletionClass() == pcv3operation.CompletionWarning && pcv3CleanupFromPresentation(presentation).durabilityUncertain {
 				title = tr("pcv3.warning.cleanup_durability_title", "Cleanup may not persist after a power loss")
 			}
-			title += "\n" + renderStatus(recursiveOperationStatus(lastInput, result), a.State.UISnapshot())
+			title += "\n" + renderStatus(recursiveOperationStatus(result), a.State.UISnapshot())
 		}
 		a.State.SetStatus(title, color)
 	case recursive:
 		if result.completed && result.err == nil {
-			a.applyCompletedOperation(lastInput, result)
+			a.applyCompletedOperation(result)
 			clearCredentials = true
 		}
-		status := recursiveOperationStatus(lastInput, result)
+		status := recursiveOperationStatus(result)
 		a.State.SetStatusMessage(status.Kind, status.Color, status.Args)
 	case result.err != nil:
 		a.State.SetStatus(result.err.Error(), util.RED)
 	case result.completed:
-		a.applyCompletedOperation(lastInput, result)
+		a.applyCompletedOperation(result)
 		clearCredentials = true
 	}
 

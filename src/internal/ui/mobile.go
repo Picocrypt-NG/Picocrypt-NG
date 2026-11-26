@@ -738,16 +738,9 @@ func (a *App) buildMobileDecryptOptions() {
 	})
 	a.verifyFirstCheck.SetChecked(a.State.VerifyFirst)
 
-	a.deleteCheck = ttwidget.NewCheck(tr("advanced.delete_encrypted.label", "Delete encrypted"), func(checked bool) {
-		a.State.Delete = checked
-	})
-	a.deleteCheck.SetChecked(a.State.Delete)
-
 	row1 := container.NewGridWithColumns(2, a.forceDecryptCheck, a.verifyFirstCheck)
-	row2 := container.NewGridWithColumns(2, a.deleteCheck, widget.NewLabel(""))
 
 	a.advancedContainer.Add(row1)
-	a.advancedContainer.Add(row2)
 }
 
 // buildMobileOutputSection creates the output section for mobile

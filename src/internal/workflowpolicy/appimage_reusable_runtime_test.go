@@ -218,19 +218,20 @@ func TestAppImageReusableCarrierOptionRejectsNonBooleanBeforeProducer(t *testing
 func TestAppImageReusableMovedTarProducerStillMatchesExactExtractorHash(t *testing.T) {
 	prepare := mustCompositeStepNamed(t, mustReadCompositeActionDoc(t, ".github/actions/build-appimage/action.yml"), "Prepare signing input")
 	extract := mustStepNamed(t, mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/build-appimage.yml"), "sign"), "Check and extract signing input")
-	for _, wrongHash := range []bool{false, true} {
-		t.Run(fmt.Sprint("wrong hash=", wrongHash), func(t *testing.T) {
+	for _, defect := range []string{"none", "wrong tar bytes", "missing manifest binding", "other carrier", "other attempt"} {
+		t.Run(defect, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := os.MkdirAll(filepath.Join(dir, "AppDir", "usr"), 0o700); err != nil {
+			appDir := filepath.Join(dir, "picocrypt-release-materials", "appimage-build", "AppDir", "usr")
+			if err := os.MkdirAll(appDir, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(dir, "AppDir", "usr", "fixture"), []byte("synthetic AppDir fixture\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(appDir, "fixture"), []byte("synthetic AppDir fixture\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			outputPath := filepath.Join(dir, "output")
 			command := exec.Command("bash", "-euo", "pipefail", "-c", prepare.Run)
 			command.Dir = dir
-			command.Env = append(os.Environ(), "GITHUB_OUTPUT="+outputPath)
+			command.Env = append(os.Environ(), "GITHUB_OUTPUT="+outputPath, "RUNNER_TEMP="+dir)
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("producer err=%v: %s", err, output)
 			}
@@ -259,25 +260,95 @@ func TestAppImageReusableMovedTarProducerStillMatchesExactExtractorHash(t *testi
 			if err := os.WriteFile(script, []byte(mustReadRepoFile(t, ".github/scripts/extract-appimage-appdir.py")), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if wrongHash {
+			if defect == "wrong tar bytes" {
 				digest = strings.Repeat("c", 64)
 			}
+			raw := map[string]string{"signing_input_sha256": digest, "run_attempt": "1"}
+			switch defect {
+			case "missing manifest binding":
+				delete(raw, "signing_input_sha256")
+			case "other carrier":
+				raw["signing_input_sha256"] = strings.Repeat("d", 64)
+			case "other attempt":
+				raw["run_attempt"] = "2"
+			}
+			rawDir := filepath.Join(dir, "artifacts", "build-appimage")
+			if err := os.MkdirAll(rawDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writePlatformArtifactJSON(t, filepath.Join(rawDir, "payload-manifest.json"), raw)
 			command = exec.Command("bash", "-euo", "pipefail", "-c", extract.Run)
 			command.Dir = dir
-			command.Env = append(os.Environ(), "EXPECTED_SHA256="+digest)
+			command.Env = append(os.Environ(), "EXPECTED_SHA256="+digest, "CARRIER_ATTEMPT=1")
 			output, err := command.CombinedOutput()
-			if (err == nil) == wrongHash {
+			if (err == nil) != (defect == "none") {
 				t.Fatalf("extract err=%v: %s", err, output)
 			}
-			if wrongHash {
+			if defect != "none" {
 				if _, err := os.Stat(filepath.Join(dir, "signing-work")); !os.IsNotExist(err) {
-					t.Fatal("wrong tar hash must fail before extraction creates any destination")
+					t.Fatal("mismatched signing input must fail before extraction creates any destination")
 				}
 				return
 			}
 			data, err = os.ReadFile(filepath.Join(dir, "signing-work", "AppDir", "usr", "fixture"))
 			if err != nil || string(data) != "synthetic AppDir fixture\n" {
 				t.Fatalf("real extractor did not preserve the exact synthetic AppDir: %v", err)
+			}
+		})
+	}
+}
+
+func TestAppImageOfflineInvocationUsesVerifiedLocalImageAndNoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Capture the real launcher's arguments without acquiring a Docker daemon.
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := filepath.Join(workspace, "build step.sh")
+	if err := os.WriteFile(step, []byte("exit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(repoRoot(t), ".github/scripts/run-appimage-release-build.sh")
+	work := filepath.Join(workspace, "picocrypt-release-materials")
+	lockedImage := "sha256:" + strings.Repeat("1", 64)
+	for _, image := range []string{lockedImage, "ubuntu:22.04"} {
+		t.Run(image, func(t *testing.T) {
+			command := exec.Command("bash", wrapper, step)
+			command.Dir = workspace
+			command.Env = append(os.Environ(), "RUNNER_TEMP="+workspace, "RELEASE_APPIMAGE_IMAGE="+image,
+				"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "GH_TOKEN=fixture")
+			output, err := command.CombinedOutput()
+			if image != lockedImage {
+				if err == nil || len(output) != 0 {
+					t.Fatalf("mutable image must be refused before Docker: %v, %s", err, output)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("offline launcher rejected verified inputs: %v, %s", err, output)
+			}
+			args := string(output)
+			for _, flag := range []string{
+				"--pull\nnever", "--network\nnone", "--cap-drop\nALL",
+				"--security-opt\nno-new-privileges", "--user\n" + fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+				"--env\nGOPROXY=off", lockedImage + "\nbash\n",
+			} {
+				mustContain(t, args, flag)
+			}
+			for _, path := range []string{workspace, filepath.Join(work, "go"), filepath.Join(work, "modcache"), filepath.Join(work, "appimage-tools")} {
+				mustContain(t, args, "--mount\ntype=bind,source="+path+",target="+path+",readonly\n")
+			}
+			mustContain(t, args, "--mount\ntype=bind,source="+step+",target=/workflow-step.sh,readonly\n")
+			if strings.Contains(args, "GH_TOKEN") || strings.Contains(args, "fixture") {
+				t.Fatal("producer must not forward the host token")
 			}
 		})
 	}

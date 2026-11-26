@@ -57,7 +57,7 @@ func TestSourceRemovalLowFDChild(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	result := (&App{}).cleanupOperationSources(context.Background(), operationInput{mode: "decrypt", delete: true}, manifest, operationResult{completed: true})
+	result := (&App{}).removeCapturedSources(context.Background(), manifest, operationResult{completed: true})
 	if result.err != nil || !result.completed || result.cancelled || result.deleteFailed {
 		t.Fatalf("cleanup under fd limit=%+v", result)
 	}

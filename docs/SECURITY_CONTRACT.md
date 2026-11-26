@@ -141,15 +141,17 @@ when safe removal cannot be proven. A sync failure with confirmed publication
 is a distinct durability warning. Cleanup still closes stage handles and
 checks stage identities before removing the operation's staging names.
 
-Desktop source deletion remains off by default and subject to the existing
-whole-operation, kept/unverified and `SourceDeletionAllowed` guards. It removes
-only captured sources and empty captured directories. Each removal checks the
+Desktop source deletion remains off by default and requires a clean PCV3
+encryption result with `SourceDeletionAllowed`. Legacy decryption keeps encrypted
+sources, including split volumes. The deletion path removes only captured
+sources and empty captured directories. Each removal checks the
 captured identity and metadata and removes the basename through one held
 immediate parent, preserving ready output and deletion warnings on failure.
 Cancellation stops further removal; missing-source success cannot hide a parent
 close error. Every legacy recombination uses the prepared regular-file identities
 and sizes, including its borrowed chunk-zero descriptor, independently of source
-deletion. Additional deletion snapshots must agree with preparation. Reads are
+deletion. An earlier recombination snapshot supplied by a caller must agree
+with preparation. Reads are
 bounded to captured sizes and recheck metadata and chunk count before KDF; the
 borrowed metadata stays immutable and budgeted and adds no retained per-chunk handles.
 

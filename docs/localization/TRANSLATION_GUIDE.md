@@ -137,7 +137,7 @@ Picocrypt-NG keeps Fyne/Weblate-shaped flat JSON catalogs under
 - Prefer stable keyed strings for ambiguous or security-critical copy. Current
   examples include `advanced.force_decrypt.tooltip`,
   `status.kept_output_unverified`, `comments.placeholder`,
-  `advanced.delete_volume.label`, and `drop.header_may_be_deniable`.
+  `advanced.delete_files.label`, and `drop.header_may_be_deniable`.
 - Do not put translator comments in Fyne JSON. Keep context in this guide,
   Weblate component metadata, or another maintained project document.
 
@@ -433,7 +433,7 @@ Initial high-risk entries:
 | Fyne desktop | `advanced.force_decrypt.tooltip`, `status.kept_output_unverified` | `P0-integrity` | Same invariant as Android `force_decrypt_warning`. |
 | Fyne desktop | `drop.header_may_be_deniable` | `P0-deniability` | Preserve "may" when header preview cannot prove deniability. |
 | Fyne desktop | `comments.placeholder`, `comments.corrupted` | `P0-metadata` | Comments are not confidential; do not call them private or secret. |
-| Fyne desktop | `advanced.delete_volume.label`, `advanced.delete_files.label` | `P1-destructive` | Name the deleted object, not a generic delete action. |
+| Fyne desktop | `advanced.delete_files.label` | `P1-destructive` | Name the deleted object, not a generic delete action. |
 
 ## Placeholders, Plurals, And Escaping
 

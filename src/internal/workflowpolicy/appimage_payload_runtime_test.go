@@ -25,7 +25,11 @@ func TestAppImagePayloadManifestRejectsIncompleteOrSubstitutedPair(t *testing.T)
 	digest := fmt.Sprintf("%x", sha256.Sum256(canonical))
 	source := strings.Repeat("1", 40)
 	const image = "Picocrypt-NG-2.19-x86_64.AppImage"
-	for _, defect := range []string{"none", "missing index", "symlink", "unexpected file"} {
+	const materialJSON = `{"profile":"pinned-fixture"}`
+	for _, defect := range []string{
+		"none", "retained carrier", "missing materials", "wrong materials", "missing carrier hash",
+		"missing index", "symlink", "unexpected file",
+	} {
 		t.Run(defect, func(t *testing.T) {
 			dir := t.TempDir()
 			scriptPath := filepath.Join(dir, ".github/actions/stage-release/release-manifest.sh")
@@ -33,6 +37,26 @@ func TestAppImagePayloadManifestRejectsIncompleteOrSubstitutedPair(t *testing.T)
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			materialsPath := filepath.Join(dir, "picocrypt-release-materials", "appimage-materials.json")
+			if err := os.MkdirAll(filepath.Dir(materialsPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if defect != "missing materials" {
+				observed := materialJSON
+				if defect == "wrong materials" {
+					observed = `{"profile":"substituted-fixture"}`
+				}
+				if err := os.WriteFile(materialsPath, []byte(observed), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			lockReader := filepath.Join(dir, ".github/scripts/release-materials.sh")
+			if err := os.MkdirAll(filepath.Dir(lockReader), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(lockReader, []byte("test \"$*\" = 'build-appimage.yml amd64' && printf '%s\\n' '"+materialJSON+"'\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			out := filepath.Join(dir, "out")
@@ -64,12 +88,18 @@ func TestAppImagePayloadManifestRejectsIncompleteOrSubstitutedPair(t *testing.T)
 			}
 			command := exec.Command("bash", "--noprofile", "--norc", "-euo", "pipefail", "-c", record.Run)
 			command.Dir = dir
+			retain := defect == "retained carrier" || defect == "missing carrier hash"
+			carrierHash := ""
+			if defect == "retained carrier" {
+				carrierHash = strings.Repeat("b", 64)
+			}
 			command.Env = append(os.Environ(), "SOURCE_SHA="+source, "SOURCE_VERSION=2.19",
 				"CANONICAL_MANIFEST_SHA256="+digest, "GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG",
-				"GITHUB_RUN_ID=local-fixture", "GITHUB_RUN_ATTEMPT=1")
+				"GITHUB_RUN_ID=local-fixture", "GITHUB_RUN_ATTEMPT=1", "RUNNER_TEMP="+dir,
+				fmt.Sprintf("RETAIN_SIGNING_INPUT=%t", retain), "SIGNING_INPUT_SHA256="+carrierHash)
 			output, err := command.CombinedOutput()
 			manifest := filepath.Join(out, "payload-manifest.json")
-			if defect != "none" {
+			if defect != "none" && defect != "retained carrier" {
 				if err == nil {
 					t.Fatalf("%s must prevent manifest publication: %s", defect, output)
 				}
@@ -93,7 +123,10 @@ func TestAppImagePayloadManifestRejectsIncompleteOrSubstitutedPair(t *testing.T)
 				"schema_version": float64(1), "repository": "Picocrypt-NG/Picocrypt-NG",
 				"source_sha": source, "version": "2.19", "canonical_manifest_sha256": digest,
 				"owner_workflow": "build-appimage.yml", "arch": "amd64", "run_id": "local-fixture",
-				"run_attempt": "1", "files": files,
+				"run_attempt": "1", "files": files, "materials": map[string]any{"profile": "pinned-fixture"},
+			}
+			if retain {
+				want["signing_input_sha256"] = carrierHash
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("payload manifest = %s, want source-bound hashes for the exact AppImage/index pair", data)

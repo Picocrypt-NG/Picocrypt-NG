@@ -4,6 +4,7 @@ import (
 	"Picocrypt-NG/internal/app"
 	"Picocrypt-NG/internal/util"
 	"Picocrypt-NG/internal/volume"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -81,14 +82,9 @@ func TestRecursiveLegacyUnverifiedResultsSurviveLaterItemsAndFinalization(t *tes
 			if tc.failed != 0 && !errors.Is(result.err, failure) {
 				t.Errorf("later result erased earlier failure: %v", result.err)
 			}
-			for i, item := range tc.items {
-				_, err := os.Lstat(files[i])
-				if item.kept || item.err != nil || item.cancelled {
-					if err != nil {
-						t.Errorf("unsafe source deletion for item %d: %v", i, err)
-					}
-				} else if !errors.Is(err, os.ErrNotExist) {
-					t.Errorf("clean source deletion did not run for item %d: %v", i, err)
+			for i, path := range files {
+				if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, fixture) {
+					t.Errorf("legacy source for item %d changed: %v", i, err)
 				}
 			}
 			fyne.DoAndWait(func() { a.finalizeOperation(session, lastInput, result, true) })
