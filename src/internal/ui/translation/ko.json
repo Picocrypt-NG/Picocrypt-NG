@@ -62,7 +62,7 @@
   "advanced.delete_files.label": "원본 파일 삭제",
   "advanced.delete_files.tooltip": "암호화 후 원본 파일을 삭제합니다",
   "advanced.deniability.label": "부인 가능 모드",
-  "advanced.deniability.tooltip": "읽을 수 있는 Picocrypt 헤더가 없습니다. 레거시 부인 가능 모드의 외부 계층에는 비어 있지 않은 비밀번호가 필요합니다.",
+  "advanced.deniability.tooltip": "판독 가능한 Picocrypt 헤더가 없습니다. 레거시 부인 가능 모드에서는 외부 래퍼에 빈 비밀번호를 사용할 수 없습니다.",
   "advanced.deniability.pcv3_tooltip": "형식 헤더가 숨겨집니다. 컨테이너 이름과 크기는 계속 표시됩니다.",
   "advanced.recursively.label": "재귀 처리",
   "advanced.recursively.tooltip": "각 파일을 개별적으로 처리합니다",

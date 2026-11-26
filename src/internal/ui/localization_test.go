@@ -534,7 +534,10 @@ func TestKoreanFyneHighRiskWordingKeepsSecurityMeaning(t *testing.T) {
 	assertCatalogStringContains(t, catalog, "comments.placeholder", "평문", "암호화되지")
 	assertCatalogStringContains(t, catalog, "advanced.delete_files.tooltip", "암호화 후", "원본", "삭제")
 	assertCatalogStringContains(t, catalog, "advanced.auto_unzip.tooltip", "압축", "기존 파일", "유지")
-	assertCatalogStringContains(t, catalog, "advanced.deniability.tooltip", "판독 가능한", "빈 비밀번호", "외부 래퍼")
+	assertCatalogStringContains(
+		t, catalog, "advanced.deniability.tooltip",
+		"판독 가능한", "레거시 부인 가능 모드", "외부 래퍼", "빈 비밀번호를 사용할 수 없습니다",
+	)
 	assertCatalogStringContains(t, catalog, "start.hint.deniabilityPasswordRequired", "부인 가능", "빈 비밀번호", "사용할 수 없습니다")
 	assertCatalogStringContains(t, catalog, "start.hint.keyfileWritesDisabled", "새", "v2", "키 파일", "만들 수 없습니다", "v3", "기존", "복호화")
 	assertCatalogStringContains(t, catalog, "advanced.recursively.tooltip", "각 파일", "개별")
