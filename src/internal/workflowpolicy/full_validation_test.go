@@ -44,23 +44,21 @@ func TestFullValidationCoordinatorKeepsValidationReadOnlyAndProductionExplicit(t
 		t.Fatal(err)
 	}
 	mode := workflow.On.WorkflowDispatch.Inputs["mode"]
-	if len(workflow.On.WorkflowDispatch.Inputs) != 3 || mode.Type != "choice" || mode.Default != "validation" ||
+	if len(workflow.On.WorkflowDispatch.Inputs) != 2 || mode.Type != "choice" || mode.Default != "validation" ||
 		!reflect.DeepEqual(choices.On.Dispatch.Inputs["mode"].Options, []string{"validation", "stage", "publish"}) || len(workflow.On.OtherEvents) != 0 {
 		t.Fatal("the full coordinator must remain manual and validation-only by default, with explicit stage/publish choices")
 	}
-	for _, name := range []string{"candidate_sha", "candidate_digest"} {
-		input := workflow.On.WorkflowDispatch.Inputs[name]
-		if input.Required || input.Type != "string" {
-			t.Fatalf("%s must be an explicit publish-only input, optional in other modes", name)
-		}
+	receipt := workflow.On.WorkflowDispatch.Inputs["stage_receipt_id"]
+	if receipt.Required || receipt.Type != "string" {
+		t.Fatal("publication must select one explicit stage receipt, optional in other modes")
 	}
-	wantJobs := map[string]bool{"prepare": true, "verify-linux": true, "verify-platforms": true, "validation": true}
+	wantJobs := map[string]bool{"prepare": true, "verify-linux": true, "verify-platforms": true, "validation": true, "resolve-stage": true}
 	for _, producer := range fullValidationProducers() {
 		wantJobs[producer.job] = true
 	}
 	owners := []string{"linux", "macos", "snapcraft", "android", "windows", "windows-legacy", "appimage"}
 	if len(workflow.Jobs) != len(wantJobs)+len(owners)+3 {
-		t.Fatal("the coordinator requires the complete validation graph, seven staging owners, draft verification, final publication and read-only outcome reporting")
+		t.Fatal("the coordinator requires validation, seven staging owners, draft verification, receipt resolution, publication and read-only outcome reporting")
 	}
 	for name, job := range workflow.Jobs {
 		if !wantJobs[name] && name != "result" {

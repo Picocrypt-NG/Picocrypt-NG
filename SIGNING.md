@@ -266,14 +266,16 @@ dispatch commit. In validation and staging it builds that commit and binds root
   complete sets. Existing verified draft pairs are preserved. After all seven
   owners report `staged=true`, the coordinator reads back the 19 primary assets and
   19 Sigstore bundles and verifies their digests, signatures, provenance and
-  source-bound release notes. The stage summary records the draft release ID,
-  `candidate_sha` and `candidate_digest`. The digest binds the verified draft
-  and its complete inventory to that source.
-- `publish` requires the `candidate_sha` and `candidate_digest` from the
-  approved stage summary. On Ubuntu it checks the staged draft against those
-  values and verifies the full asset set again, then publishes those same
-  assets with `published=true`. This mode skips all native builds and signing
-  jobs. A failed publication can be retried with the same inputs.
+  source-bound release notes. The successful stage run uploads an immutable
+  receipt with the verified draft ID, source commit and candidate digest. The
+  summary displays all three values and the receipt artifact ID.
+- `publish` requires only the `stage_receipt_id` from the approved stage
+  summary. Before protected publication, the coordinator authenticates the
+  artifact and its successful stage run and attempt on `main`. The resolver
+  summary shows the authenticated values for the approver to check. On Ubuntu,
+  the publisher verifies the receipt's full draft again and publishes those
+  same assets with `published=true`. This mode skips all native builds and
+  signing jobs. A failed publication can be retried with the same receipt ID.
 
 The seven direct build workflows remain a fallback for platform validation and
 staging. Their existing `publish_release=true` input signs and stages only.
@@ -285,11 +287,11 @@ coordinator stage run reports when the entire candidate is ready for approval.
 `stage` and `publish` require a manual dispatch from `main` in this repository,
 with matching workflow and checkout SHAs. The publish workflow can promote an
 earlier approved source commit that is still on `main` and matches the current
-release version and policy. Copy the receipt values without substituting the
-current head SHA. Keep workflow-file changes out of `main` between staging and
+release version and policy. Keep workflow-file changes out of `main` between staging and
 publication when possible. GitHub can deny tag creation or release publication
 if the target commit differs from the default branch in workflow files. A changed
-draft or different source requires review before any new promotion attempt.
+draft or different source requires a new verified receipt and approval before
+publication.
 
 Both modes require separate explicit authorization, including a signed staging
 rehearsal. Inspect the actual `release` environment branch policy, required
@@ -301,9 +303,10 @@ described above. `signpath_release_dry_run` still performs production signing.
 macOS retains its existing ad-hoc bundle seal; these modes do not add Developer ID
 signing or notarization.
 
-Retain the source SHA, stage run ID, draft release ID, candidate digest,
-immutable raw/signing-input/signed-generation artifact IDs, official ZIP
-SHA-256 digests and each artifact's producing attempt.
+Retain the source SHA, stage run ID and attempt, receipt artifact ID, draft
+release ID, candidate digest, immutable raw/signing-input/signed-generation
+artifact IDs, official ZIP SHA-256 digests and each artifact's producing attempt.
+Keep the receipt available through the publication and retry window.
 Keep tool versions, verification reports and approval records through the
 signing/retry window. Keep credentials, private keys, memory dumps and personal
 filesystem paths out of this evidence. The release gate verifies remote bytes,
@@ -329,7 +332,10 @@ Rebuilding or generating replacement signatures is not a recovery fallback;
 the same source SHA can produce different bytes, timestamps or signatures.
 Existing release assets must not be overwritten.
 
-For a publication retry, use the original approved candidate SHA and digest.
+For a publication retry, use the original approved stage receipt ID. A later
+workflow attempt cannot replace that artifact ID. If the receipt expires or is
+deleted, stop for a separately approved recovery of the same verified
+candidate.
 If GitHub rejects creation of the release tag after `main` advances, verify the
 candidate and obtain operator approval to create the exact tag at that candidate
 SHA before retrying. Do not point the tag at the newer head.

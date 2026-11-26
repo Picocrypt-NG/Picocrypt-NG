@@ -16,12 +16,8 @@ on:
           - stage
           - publish
         default: validation
-      candidate_sha:
-        description: Full source commit SHA from the successful stage summary (publish only).
-        required: false
-        type: string
-      candidate_digest:
-        description: SHA-256 of the verified staged candidate from the stage summary (publish only).
+      stage_receipt_id:
+        description: Artifact ID of the receipt from the approved successful stage run (publish only).
         required: false
         type: string
 
@@ -49,8 +45,7 @@ jobs:
       env:
         SOURCE_SHA: ${{ github.sha }}
         MODE: ${{ inputs.mode }}
-        CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-        CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+        STAGE_RECEIPT_ID: ${{ inputs.stage_receipt_id }}
       run: |
         set -euo pipefail
         case "$MODE" in
@@ -65,12 +60,12 @@ jobs:
           *) echo 'Unsupported coordinator mode' >&2; exit 2 ;;
         esac
         if [[ $MODE == publish ]]; then
-          if ! [[ $CANDIDATE_SHA =~ ^[0-9a-f]{40}$ && $CANDIDATE_DIGEST =~ ^[0-9a-f]{64}$ ]]; then
-            echo 'Publish requires the full candidate SHA and SHA-256 digest from a successful stage' >&2
+          if ! [[ $STAGE_RECEIPT_ID =~ ^[1-9][0-9]*$ ]]; then
+            echo 'Publish requires the numeric stage receipt artifact ID' >&2
             exit 2
           fi
-        elif [[ -n $CANDIDATE_SHA || -n $CANDIDATE_DIGEST ]]; then
-          echo 'Candidate SHA and digest are accepted only in publish mode' >&2
+        elif [[ -n $STAGE_RECEIPT_ID ]]; then
+          echo 'A stage receipt ID is accepted only in publish mode' >&2
           exit 2
         fi
         test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
@@ -880,9 +875,54 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: bash .github/actions/stage-release/release-gate.sh verify-staged "$SOURCE_VERSION"
 
-  publish:
+  resolve-stage:
     needs: prepare
-    if: ${{ !cancelled() && inputs.mode == 'publish' && needs.prepare.result == 'success' }}
+    if: ${{ inputs.mode == 'publish' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      source-sha: ${{ steps.receipt.outputs.source-sha }}
+      candidate-digest: ${{ steps.receipt.outputs.candidate-digest }}
+      release-id: ${{ steps.receipt.outputs.release-id }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+
+    - name: Authenticate stage receipt
+      id: receipt
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        STAGE_RECEIPT_ID: ${{ inputs.stage_receipt_id }}
+        SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
+      run: bash .github/actions/stage-release/stage-receipt.sh "$STAGE_RECEIPT_ID" "$SOURCE_VERSION"
+
+    - name: Show authenticated candidate for release approval
+      shell: bash
+      env:
+        STAGE_RECEIPT_ID: ${{ inputs.stage_receipt_id }}
+        STAGE_RUN_ID: ${{ steps.receipt.outputs.stage-run-id }}
+        STAGE_RUN_ATTEMPT: ${{ steps.receipt.outputs.stage-run-attempt }}
+        SOURCE_SHA: ${{ steps.receipt.outputs.source-sha }}
+        CANDIDATE_DIGEST: ${{ steps.receipt.outputs.candidate-digest }}
+        RELEASE_ID: ${{ steps.receipt.outputs.release-id }}
+      run: |
+        {
+          printf 'Authenticated stage run %s, attempt %s, receipt %s\n\n' "$STAGE_RUN_ID" "$STAGE_RUN_ATTEMPT" "$STAGE_RECEIPT_ID"
+          printf -- '- Draft release ID %s\n- Source commit %s\n- Candidate SHA-256 %s\n' "$RELEASE_ID" "$SOURCE_SHA" "$CANDIDATE_DIGEST"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    needs: [prepare, resolve-stage]
+    if: ${{ !cancelled() && inputs.mode == 'publish' && needs.prepare.result == 'success' && needs.resolve-stage.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
@@ -896,8 +936,9 @@ jobs:
       queue: max
     env:
       SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
-      RELEASE_SOURCE_SHA: ${{ inputs.candidate_sha }}
-      RELEASE_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+      RELEASE_SOURCE_SHA: ${{ needs.resolve-stage.outputs.source-sha }}
+      RELEASE_CANDIDATE_DIGEST: ${{ needs.resolve-stage.outputs.candidate-digest }}
+      RELEASE_DRAFT_ID: ${{ needs.resolve-stage.outputs.release-id }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -927,7 +968,7 @@ jobs:
       run: test "$PUBLISHED" = true
 
   result:
-    needs: [prepare, build-amd64, build-arm64, build-appimage, build-snapcraft, build-macos, build-android, build-windows, build-windows-legacy, verify-linux, verify-platforms, validation, owner-linux, owner-macos, owner-snapcraft, owner-android, owner-windows, owner-windows-legacy, owner-appimage, verify-staged, publish]
+    needs: [prepare, build-amd64, build-arm64, build-appimage, build-snapcraft, build-macos, build-android, build-windows, build-windows-legacy, verify-linux, verify-platforms, validation, owner-linux, owner-macos, owner-snapcraft, owner-android, owner-windows, owner-windows-legacy, owner-appimage, verify-staged, resolve-stage, publish]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -937,10 +978,12 @@ jobs:
       MODE: ${{ inputs.mode }}
       PREPARE_RESULT: ${{ needs.prepare.result }}
       SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+      SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
       VALIDATION_RESULT: ${{ needs.validation.result }}
       STAGE_VERIFICATION_RESULT: ${{ needs.verify-staged.result }}
       CANDIDATE_DIGEST: ${{ needs.verify-staged.outputs.candidate-digest }}
       RELEASE_ID: ${{ needs.verify-staged.outputs.release-id }}
+      STAGE_RESOLUTION_RESULT: ${{ needs.resolve-stage.result }}
       PUBLISH_RESULT: ${{ needs.publish.result }}
       PUBLISHED: ${{ needs.publish.outputs.published }}
       OWNER_RESULTS_JSON: >-
@@ -960,6 +1003,7 @@ jobs:
         set -euo pipefail
         summary=$(jq -cn --arg mode "$MODE" --arg prepared "$PREPARE_RESULT" \
           --arg validation "$VALIDATION_RESULT" --arg stage "$STAGE_VERIFICATION_RESULT" \
+          --arg resolution "$STAGE_RESOLUTION_RESULT" \
           --arg source "$SOURCE_SHA" --arg digest "$CANDIDATE_DIGEST" --arg release_id "$RELEASE_ID" \
           --arg publish_result "$PUBLISH_RESULT" --arg published "$PUBLISHED" \
           --arg attempt "$GITHUB_RUN_ATTEMPT" --argjson owners "$OWNER_RESULTS_JSON" '
@@ -979,11 +1023,12 @@ jobs:
             $prepared == "success" and ($owners|length) == 7 and
             ([$owners[].owner]|sort) == ["build-android.yml","build-appimage.yml","build-linux.yml","build-macos.yml","build-snapcraft.yml","build-windows-legacy.yml","build-windows.yml"] and
             (if $mode == "validation" then $validation == "success" and $stage == "skipped"
-               and $publish_result == "skipped" and all($rows[]; .built and .verified and .result == "skipped")
+               and $resolution == "skipped" and $publish_result == "skipped" and all($rows[]; .built and .verified and .result == "skipped")
              elif $mode == "stage" then $validation == "success" and $has_receipt
-               and $publish_result == "skipped" and all($rows[]; .built and .verified and .staged)
+               and $resolution == "skipped" and $publish_result == "skipped" and all($rows[]; .built and .verified and .staged)
              elif $mode == "publish" then $is_published and $validation == "skipped" and $stage == "skipped"
-               and all($owners[]; .result == "skipped" and .verify_result == "skipped" and all(.built_results[]; . == "skipped"))
+               and $resolution == "success" and all($owners[]; .result == "skipped" and .verify_result == "skipped"
+                 and all(.built_results[]; . == "skipped"))
              else false end))}')
         {
           printf '## Requested mode: %s\n\n' "$MODE"
@@ -996,8 +1041,44 @@ jobs:
           echo 'Freshly signed requires a real generation tuple produced in this attempt; remote reuse and retained earlier generations do not claim new signing.'
           echo 'macOS retains its native ad-hoc seal; no Developer ID signing or notarization is claimed.'
           if [[ $MODE == stage ]] && jq -e '.success' <<< "$summary" >/dev/null; then
-            printf "\nVerified draft release ID \`%s\`. Use these inputs for publish after approval.\n\n" "$RELEASE_ID"
-            printf -- "- \`candidate_sha\` = \`%s\`\n- \`candidate_digest\` = \`%s\`\n" "$SOURCE_SHA" "$CANDIDATE_DIGEST"
+            printf '\nVerified draft release ID %s\n\n' "$RELEASE_ID"
+            printf -- '- Source commit %s\n- Candidate SHA-256 %s\n' "$SOURCE_SHA" "$CANDIDATE_DIGEST"
           fi
         } >> "$GITHUB_STEP_SUMMARY"
         jq -e '.success == true' <<< "$summary" >/dev/null
+
+    - name: Write staged candidate receipt
+      if: ${{ inputs.mode == 'stage' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        [[ $MODE == stage && $SOURCE_VERSION =~ ^[0-9]+[.][0-9]+([.][0-9]+)?$ ]]
+        [[ $SOURCE_SHA =~ ^[0-9a-f]{40}$ && $CANDIDATE_DIGEST =~ ^[0-9a-f]{64}$ ]]
+        [[ $RELEASE_ID =~ ^[1-9][0-9]*$ && $GITHUB_RUN_ID =~ ^[1-9][0-9]*$ && $GITHUB_RUN_ATTEMPT =~ ^[1-9][0-9]*$ ]]
+        mkdir -- "$RUNNER_TEMP/stage-receipt"
+        jq -cn --arg repository "$GITHUB_REPOSITORY" --arg version "$SOURCE_VERSION" \
+          --arg source "$SOURCE_SHA" --arg release_id "$RELEASE_ID" --arg digest "$CANDIDATE_DIGEST" \
+          --arg run_id "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+          '{schema:1,mode:"stage",repository:$repository,version:$version,source_sha:$source,
+            release_id:$release_id,candidate_digest:$digest,run_id:$run_id,run_attempt:$attempt}' \
+          > "$RUNNER_TEMP/stage-receipt/receipt.json"
+
+    - name: Upload staged candidate receipt
+      id: stage-receipt
+      if: ${{ inputs.mode == 'stage' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: release-stage-receipt-attempt-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/stage-receipt/receipt.json
+        if-no-files-found: error
+        overwrite: false
+
+    - name: Report stage receipt
+      if: ${{ inputs.mode == 'stage' }}
+      shell: bash
+      env:
+        RECEIPT_ARTIFACT_ID: ${{ steps.stage-receipt.outputs.artifact-id }}
+      run: |
+        set -euo pipefail
+        [[ $RECEIPT_ARTIFACT_ID =~ ^[1-9][0-9]*$ ]]
+        printf "\nUse \`stage_receipt_id\` = \`%s\` for the separately authorized publish dispatch.\n" "$RECEIPT_ARTIFACT_ID" >> "$GITHUB_STEP_SUMMARY"

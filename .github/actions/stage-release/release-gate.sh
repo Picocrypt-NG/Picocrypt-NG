@@ -88,8 +88,10 @@ fi
 if [ "$mode" = "strict-finalize" ]; then
   source_sha="${RELEASE_SOURCE_SHA:-}"
   approved_digest="${RELEASE_CANDIDATE_DIGEST:-}"
-  if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ || ! "$approved_digest" =~ ^[0-9a-f]{64}$ ]]; then
-    echo "release gate: publication requires the staged source SHA and candidate digest" >&2
+  approved_release_id="${RELEASE_DRAFT_ID:-}"
+  if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ || ! "$approved_digest" =~ ^[0-9a-f]{64}$ ||
+    ! "$approved_release_id" =~ ^[1-9][0-9]*$ ]]; then
+    echo "release gate: publication requires the staged source SHA, candidate digest and release ID" >&2
     exit 2
   fi
   if ! git -C "$workspace" merge-base --is-ancestor "$source_sha" "$driver_sha"; then
@@ -513,6 +515,10 @@ if ! load_release; then
     echo "release gate: created draft disappeared or changed before upload" >&2
     exit 1
   fi
+fi
+if [ "$mode" = "strict-finalize" ] && [ "$release_id" != "$approved_release_id" ]; then
+  echo "release gate: release $release_id does not match the staged receipt ID $approved_release_id" >&2
+  exit 1
 fi
 already_published=false
 if [ "$release_draft" != "true" ]; then

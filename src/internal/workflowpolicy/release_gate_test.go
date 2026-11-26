@@ -55,6 +55,7 @@ type releaseGateOptions struct {
 	workflow                string
 	ownerWorkflow           string
 	candidateDigest         string
+	approvedReleaseID       string
 	withoutApproval         bool
 	driverSHA               string
 	candidateNotInCheckout  bool
@@ -1789,6 +1790,11 @@ esac
 		candidateDigest = releaseGateFixtureCandidateDigest(t, workspace, releaseID, assets, expectedBody)
 	}
 
+	approvedReleaseID := options.approvedReleaseID
+	if approvedReleaseID == "" {
+		approvedReleaseID = "42"
+	}
+
 	command := exec.Command("bash", script, mode, "2.19")
 	outputsPath := filepath.Join(temp, "gate-outputs")
 	command.Dir = workspace
@@ -1799,6 +1805,7 @@ esac
 		"OWNER_WORKFLOW="+options.ownerWorkflow,
 		"RELEASE_CANDIDATE_DIGEST="+candidateDigest,
 		"RELEASE_SOURCE_SHA="+releaseTestSHA,
+		"RELEASE_DRAFT_ID="+approvedReleaseID,
 		"GITHUB_OUTPUT="+outputsPath,
 		"GH_CALLS="+callsPath,
 		"GH_UPLOAD_MODE="+strconv.FormatBool(mode == "upload"),

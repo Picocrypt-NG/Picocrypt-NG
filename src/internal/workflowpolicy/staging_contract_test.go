@@ -321,6 +321,20 @@ func TestStagingPromotionBindsApprovedRemoteBytes(t *testing.T) {
 	})
 }
 
+func TestStagingPromotionRequiresReceiptReleaseID(t *testing.T) {
+	// The digest matches release 42; the receipt's ID must also match.
+	result := runReleaseGateWithOptions(t, "strict-finalize", stagingDraftRelease(), completeReleaseAssets("2.19"), releaseGateOptions{
+		workflow: "release.yml", noLocalFiles: true, noBody: true,
+		approvedReleaseID: "99", tagAbsent: true,
+	})
+	if result.err == nil {
+		t.Fatal("publication accepted a receipt referring to a different release")
+	}
+	stagingRequireReadOnly(t, result)
+	stagingRequireOutputs(t, result, false, false)
+	mustContain(t, result.output, "does not match the staged receipt ID")
+}
+
 func TestStagingStrictFinalizeAlreadyPublishedRequiresExactVerifiedStableRelease(t *testing.T) {
 	for _, defect := range []string{"none", "wrong body", "missing pair", "half pair", "wrong source", "wrong tag", "missing tag", "prerelease", "cosign", "provenance", "corrupt download", "empty API digest", "malformed API digest", "snapshot changed", "tag drift"} {
 		t.Run(defect, func(t *testing.T) {

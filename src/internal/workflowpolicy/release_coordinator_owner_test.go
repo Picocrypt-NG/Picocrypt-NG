@@ -164,11 +164,11 @@ func TestReleaseCoordinatorVerifiesStagedOwnersBeforeIssuingReceipt(t *testing.T
 func TestReleaseCoordinatorPublishesReviewedCandidateWithoutBuilding(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/release.yml")
 	job := mustJob(t, workflow, "publish")
-	for _, condition := range []string{"!cancelled()", "inputs.mode == 'publish'", "needs.prepare.result == 'success'"} {
+	for _, condition := range []string{"!cancelled()", "inputs.mode == 'publish'", "needs.prepare.result == 'success'", "needs.resolve-stage.result == 'success'"} {
 		mustContain(t, job.If, condition)
 	}
-	if job.Needs != "prepare" {
-		t.Fatal("promotion may only depend on trusted preparation")
+	if !reflect.DeepEqual(job.Needs, []any{"prepare", "resolve-stage"}) {
+		t.Fatal("promotion may only depend on trusted preparation and authenticated stage receipt")
 	}
 	if job.Environment != "release" || !reflect.DeepEqual(job.Permissions, map[string]string{"contents": "write", "attestations": "read"}) {
 		t.Fatal("publication needs release write access and read-only provenance, without signing authority")
@@ -178,11 +178,12 @@ func TestReleaseCoordinatorPublishesReviewedCandidateWithoutBuilding(t *testing.
 		t.Fatal("publication must run trusted main code with history, with no persisted credential")
 	}
 	wantEnv := map[string]string{
-		"SOURCE_VERSION": "${{ needs.prepare.outputs.version }}", "RELEASE_SOURCE_SHA": "${{ inputs.candidate_sha }}",
-		"RELEASE_CANDIDATE_DIGEST": "${{ inputs.candidate_digest }}",
+		"SOURCE_VERSION": "${{ needs.prepare.outputs.version }}", "RELEASE_SOURCE_SHA": "${{ needs.resolve-stage.outputs.source-sha }}",
+		"RELEASE_CANDIDATE_DIGEST": "${{ needs.resolve-stage.outputs.candidate-digest }}",
+		"RELEASE_DRAFT_ID":         "${{ needs.resolve-stage.outputs.release-id }}",
 	}
 	if !reflect.DeepEqual(job.Env, wantEnv) {
-		t.Fatal("publication must carry the operator's candidate identity and prepared version to the gate")
+		t.Fatal("publication must carry the authenticated receipt's candidate SHA, digest and release ID to the gate")
 	}
 	step := mustStepNamed(t, job, "Strictly finalize complete release")
 	if step.ID != "finalize" || step.Run != "bash .github/actions/stage-release/release-gate.sh strict-finalize \"$SOURCE_VERSION\"" || step.Env["GH_TOKEN"] != "${{ github.token }}" {
@@ -200,6 +201,57 @@ func TestReleaseCoordinatorPublishesReviewedCandidateWithoutBuilding(t *testing.
 		t.Fatal("outcome reporting must remain readonly")
 	}
 	mustStepNamed(t, result, "Summarize and require requested outcome")
+}
+
+func TestReleaseCoordinatorAuthenticatesStageReceiptBeforeProduction(t *testing.T) {
+	workflow := mustReadWorkflowDoc(t, ".github/workflows/release.yml")
+	resolver := mustJob(t, workflow, "resolve-stage")
+	if resolver.Needs != "prepare" || resolver.If != "${{ inputs.mode == 'publish' }}" ||
+		resolver.Environment != nil || !reflect.DeepEqual(resolver.Permissions, map[string]string{"contents": "read", "actions": "read"}) {
+		t.Fatal("stage receipt authentication must be read-only and precede protected publication")
+	}
+	step := mustStepNamed(t, resolver, "Authenticate stage receipt")
+	wantEnv := map[string]string{
+		"GH_TOKEN": "${{ github.token }}", "STAGE_RECEIPT_ID": "${{ inputs.stage_receipt_id }}",
+		"SOURCE_VERSION": "${{ needs.prepare.outputs.version }}",
+	}
+	if step.ID != "receipt" || step.Run != `bash .github/actions/stage-release/stage-receipt.sh "$STAGE_RECEIPT_ID" "$SOURCE_VERSION"` ||
+		!reflect.DeepEqual(step.Env, wantEnv) {
+		t.Fatal("trusted verifier must resolve the selected stage receipt and prepared version")
+	}
+	for _, field := range []string{"source-sha", "candidate-digest", "release-id"} {
+		if resolver.Outputs[field] != "${{ steps.receipt.outputs."+field+" }}" {
+			t.Fatalf("resolver output %s must come from the authenticated receipt", field)
+		}
+	}
+	review := mustStepNamed(t, resolver, "Show authenticated candidate for release approval")
+	if review.Env["STAGE_RUN_ID"] != "${{ steps.receipt.outputs.stage-run-id }}" ||
+		review.Env["STAGE_RUN_ATTEMPT"] != "${{ steps.receipt.outputs.stage-run-attempt }}" {
+		t.Fatal("approval summary must identify the exact authenticated staging run and attempt")
+	}
+}
+
+func TestReleaseCoordinatorUploadsImmutableReceiptOnlyAfterStageSuccess(t *testing.T) {
+	workflow := mustReadWorkflowDoc(t, ".github/workflows/release.yml")
+	result := mustJob(t, workflow, "result")
+	write := mustStepNamed(t, result, "Write staged candidate receipt")
+	upload := mustStepNamed(t, result, "Upload staged candidate receipt")
+	report := mustStepNamed(t, result, "Report stage receipt")
+	for _, step := range []workflowStep{write, upload, report} {
+		if step.If != "${{ inputs.mode == 'stage' }}" || step.ContinueOnError != nil {
+			t.Fatal("receipt steps may run only after successful staging")
+		}
+	}
+	mustContainInOrder(t, mustReadWorkflow(t, ".github/workflows/release.yml"), "Summarize and require requested outcome", write.Name, upload.Name, report.Name)
+	if !strings.HasPrefix(upload.Uses, "actions/upload-artifact@") || upload.ID != "stage-receipt" ||
+		upload.With["name"] != "release-stage-receipt-attempt-${{ github.run_attempt }}" ||
+		upload.With["path"] != "${{ runner.temp }}/stage-receipt/receipt.json" ||
+		upload.With["if-no-files-found"] != "error" || upload.With["overwrite"] != false {
+		t.Fatal("upload must keep a unique immutable per-attempt receipt, never replace prior approval")
+	}
+	if report.Env["RECEIPT_ARTIFACT_ID"] != "${{ steps.stage-receipt.outputs.artifact-id }}" {
+		t.Fatal("operator input must be the hosting platform's immutable artifact ID")
+	}
 }
 
 func TestReleaseCoordinatorCandidateChecksShareOwnerPublicationQueue(t *testing.T) {

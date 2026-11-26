@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -33,12 +34,10 @@ func TestReleaseCoordinatorPrepareRejectsUntrustedProductionModes(t *testing.T) 
 		{"different workflow source", "publish", "workflow source", false},
 		{"different checkout", "stage", "checkout", false},
 		{"validation different checkout", "validation", "checkout", false},
-		{"publish lacks candidate source", "publish", "missing source", false},
-		{"publish lacks candidate digest", "publish", "missing digest", false},
-		{"publish candidate source is not a commit SHA", "publish", "bad source", false},
-		{"publish candidate digest is not SHA-256", "publish", "bad digest", false},
-		{"stage cannot select another candidate", "stage", "unexpected source", false},
-		{"validation cannot select a candidate digest", "validation", "unexpected digest", false},
+		{"publish lacks stage receipt", "publish", "missing receipt", false},
+		{"publish rejects a nonnumeric receipt ID", "publish", "wrong receipt", false},
+		{"stage cannot select an earlier receipt", "stage", "unexpected receipt", false},
+		{"validation cannot select a stage receipt", "validation", "unexpected receipt", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -64,11 +63,10 @@ func TestReleaseCoordinatorPrepareRejectsUntrustedProductionModes(t *testing.T) 
 				"GITHUB_REPOSITORY": "Picocrypt-NG/Picocrypt-NG", "GITHUB_REF": "refs/heads/main",
 				"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_WORKFLOW_REF": "Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main",
 				"GITHUB_WORKFLOW_SHA": source, "GITHUB_OUTPUT": outputPath,
-				"CANDIDATE_SHA": "", "CANDIDATE_DIGEST": "",
+				"STAGE_RECEIPT_ID": "",
 			}
 			if tc.mode == "publish" {
-				env["CANDIDATE_SHA"] = strings.Repeat("b", 40)
-				env["CANDIDATE_DIGEST"] = strings.Repeat("c", 64)
+				env["STAGE_RECEIPT_ID"] = "1234"
 			}
 			switch tc.defect {
 			case "review":
@@ -84,18 +82,12 @@ func TestReleaseCoordinatorPrepareRejectsUntrustedProductionModes(t *testing.T) 
 				env["GITHUB_WORKFLOW_SHA"] = strings.Repeat("b", 40)
 			case "checkout":
 				env["CHECKOUT_SHA"] = strings.Repeat("b", 40)
-			case "missing source":
-				env["CANDIDATE_SHA"] = ""
-			case "missing digest":
-				env["CANDIDATE_DIGEST"] = ""
-			case "bad source":
-				env["CANDIDATE_SHA"] = "main"
-			case "bad digest":
-				env["CANDIDATE_DIGEST"] = strings.Repeat("g", 64)
-			case "unexpected source":
-				env["CANDIDATE_SHA"] = strings.Repeat("b", 40)
-			case "unexpected digest":
-				env["CANDIDATE_DIGEST"] = strings.Repeat("c", 64)
+			case "missing receipt":
+				env["STAGE_RECEIPT_ID"] = ""
+			case "wrong receipt":
+				env["STAGE_RECEIPT_ID"] = "../1234"
+			case "unexpected receipt":
+				env["STAGE_RECEIPT_ID"] = "1234"
 			}
 			output, err := runFullValidationBash(t, dir, step.Run, env)
 			if (err == nil) != tc.accept {
@@ -183,6 +175,7 @@ func TestReleaseCoordinatorSummaryDistinguishesValidationStageAndPublication(t *
 		{"publish unconfirmed", "publish", "unconfirmed", false},
 		{"publish failed after output", "publish", "publish failed", false},
 		{"publication must use trusted preparation", "publish", "prepare failed", false},
+		{"publication requires authenticated receipt", "publish", "receipt failed", false},
 		{"publish must skip native build", "publish", "producer ran", false},
 		{"publish must skip validation verifier", "publish", "verifier ran", false},
 		{"publish must skip validation", "publish", "validation ran", false},
@@ -194,7 +187,7 @@ func TestReleaseCoordinatorSummaryDistinguishesValidationStageAndPublication(t *
 		t.Run(tc.name, func(t *testing.T) {
 			owners := releaseCoordinatorOwnerResults()
 			publishResult, published := "skipped", ""
-			prepare, validation, stageVerification := "success", "success", "skipped"
+			prepare, validation, stageVerification, stageResolution := "success", "success", "skipped", "skipped"
 			source, candidateDigest, releaseID := strings.Repeat("b", 40), "", ""
 			if tc.mode != "stage" {
 				for _, owner := range owners {
@@ -212,6 +205,7 @@ func TestReleaseCoordinatorSummaryDistinguishesValidationStageAndPublication(t *
 			case "publish":
 				publishResult, published = "success", "true"
 				validation = "skipped"
+				stageResolution = "success"
 				for _, owner := range owners {
 					owner["built_results"] = []string{"skipped"}
 					owner["verify_result"] = "skipped"
@@ -228,6 +222,8 @@ func TestReleaseCoordinatorSummaryDistinguishesValidationStageAndPublication(t *
 				validation = "failure"
 			case "prepare failed":
 				prepare = "failure"
+			case "receipt failed":
+				stageResolution = "failure"
 			case "producer ran":
 				owners[0]["built_results"] = []string{"skipped", "success"}
 			case "verifier ran":
@@ -270,7 +266,7 @@ func TestReleaseCoordinatorSummaryDistinguishesValidationStageAndPublication(t *
 			output, err := runFullValidationBash(t, dir, step.Run, map[string]string{
 				"MODE": tc.mode, "VALIDATION_RESULT": validation, "PUBLISH_RESULT": publishResult, "PUBLISHED": published,
 				"PREPARE_RESULT": prepare, "SOURCE_SHA": source, "STAGE_VERIFICATION_RESULT": stageVerification,
-				"CANDIDATE_DIGEST": candidateDigest, "RELEASE_ID": releaseID,
+				"CANDIDATE_DIGEST": candidateDigest, "RELEASE_ID": releaseID, "STAGE_RESOLUTION_RESULT": stageResolution,
 				"OWNER_RESULTS_JSON": string(data), "GITHUB_STEP_SUMMARY": summaryPath, "GITHUB_RUN_ATTEMPT": "2",
 			})
 			if (err == nil) != tc.accept {
@@ -292,7 +288,7 @@ func TestReleaseCoordinatorSummaryDistinguishesValidationStageAndPublication(t *
 				}
 			}
 			wantReceipt := tc.accept && tc.mode == "stage"
-			if strings.Contains(string(summary), "candidate_sha") != wantReceipt || strings.Contains(string(summary), "candidate_digest") != wantReceipt {
+			if strings.Contains(string(summary), "Verified draft release ID") != wantReceipt {
 				t.Fatalf("only a successful verified stage may show a promotion receipt: %s", summary)
 			}
 			if wantReceipt && (!strings.Contains(string(summary), source) || !strings.Contains(string(summary), candidateDigest) || !strings.Contains(string(summary), releaseID)) {
@@ -300,6 +296,50 @@ func TestReleaseCoordinatorSummaryDistinguishesValidationStageAndPublication(t *
 			}
 			if tc.defect == "publish failed" && strings.Contains(string(summary), "Published: true") {
 				t.Fatalf("failed finalizer cannot report published=true: %s", summary)
+			}
+		})
+	}
+}
+
+func TestReleaseCoordinatorReceiptBindsStageResult(t *testing.T) {
+	step := mustStepNamed(t, mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/release.yml"), "result"), "Write staged candidate receipt")
+	for _, tc := range []struct {
+		name, mode, attempt string
+	}{
+		{"successful stage on retry", "stage", "2"},
+		{"reject validation", "validation", "2"},
+		{"reject nonnumeric attempt", "stage", "not an attempt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			values := map[string]string{
+				"MODE": tc.mode, "SOURCE_VERSION": "3.0", "SOURCE_SHA": strings.Repeat("b", 40),
+				"CANDIDATE_DIGEST": strings.Repeat("c", 64), "RELEASE_ID": "456",
+				"GITHUB_REPOSITORY": "Picocrypt-NG/Picocrypt-NG", "GITHUB_RUN_ID": "987654321",
+				"GITHUB_RUN_ATTEMPT": tc.attempt, "RUNNER_TEMP": dir,
+			}
+			output, err := runFullValidationBash(t, dir, step.Run, values)
+			receipt, fileErr := os.ReadFile(filepath.Join(dir, "stage-receipt", "receipt.json"))
+			if tc.mode != "stage" || tc.attempt != "2" {
+				if err == nil || !os.IsNotExist(fileErr) {
+					t.Fatalf("invalid staging context emitted a receipt: command %v, file %v, output %s", err, fileErr, output)
+				}
+				return
+			}
+			if err != nil || fileErr != nil {
+				t.Fatalf("successful stage failed to emit a receipt: command %v, file %v, output %s", err, fileErr, output)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(receipt, &got); err != nil {
+				t.Fatal(err)
+			}
+			expected := map[string]any{
+				"schema": float64(1), "mode": "stage", "repository": values["GITHUB_REPOSITORY"],
+				"version": values["SOURCE_VERSION"], "source_sha": values["SOURCE_SHA"], "release_id": values["RELEASE_ID"],
+				"candidate_digest": values["CANDIDATE_DIGEST"], "run_id": values["GITHUB_RUN_ID"], "run_attempt": tc.attempt,
+			}
+			if !reflect.DeepEqual(got, expected) {
+				t.Fatalf("receipt %v does not match verified stage result %v", got, expected)
 			}
 		})
 	}
