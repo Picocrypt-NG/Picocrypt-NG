@@ -60,22 +60,19 @@ func TestWindowsReusableSourceGuardRejectsDriftOnEveryAuthorityBoundary(t *testi
 	}
 }
 
-func TestWindowsReusableFreshInspectionUsesBinaryJQAndRefusesPartialOwners(t *testing.T) {
-	jq, err := exec.LookPath("jq")
+func TestWindowsReusableFreshInspectionRefusesPartialOwners(t *testing.T) {
+	_, err := exec.LookPath("jq")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, owner := range windowsReusableOwners() {
 		workflow := mustReadWorkflowDoc(t, ".github/workflows/"+owner+".yml")
-		for _, jobName := range []string{"inspect", "sign", "attest"} {
+		for _, jobName := range []string{"inspect", "attest"} {
 			body := mustStepNamed(t, mustJob(t, workflow, jobName), "Inspect full Windows owner").Run
-			for _, state := range []string{"complete", "missing", "partial", "wrong owner", "windows workspace"} {
+			for _, state := range []string{"complete", "missing", "partial", "wrong owner"} {
 				t.Run(owner+"/"+jobName+"/"+state, func(t *testing.T) {
 					dir, env := windowsReusableFixture(t, owner)
 					actualOwner, status := owner+".yml", state
-					if state == "windows workspace" {
-						status = "missing"
-					}
 					if state == "wrong owner" {
 						actualOwner = "build-android.yml"
 						status = "complete"
@@ -88,18 +85,8 @@ func TestWindowsReusableFreshInspectionUsesBinaryJQAndRefusesPartialOwners(t *te
 					writeWindowsMetadataFixture(t, filepath.Join(dir, "report.json"), string(data), 0o600)
 					writeWindowsMetadataFixture(t, filepath.Join(dir, releaseGateScriptPath), "#!/bin/bash\nset -euo pipefail\n[ \"$*\" = 'inspect-owner 3.0' ]\n[ -z \"$GITHUB_OUTPUT\" ]\n[[ $GITHUB_WORKSPACE == /* ]]\njq . \"$FIXTURE_REPORT\"\n", 0o700)
 					env["FIXTURE_REPORT"] = filepath.Join(dir, "report.json")
-					if jobName == "sign" {
-						writeWindowsMetadataFixture(t, filepath.Join(dir, "bin", "jq"), "#!/bin/bash\nset -euo pipefail\nexport PATH=\"$FIXTURE_REAL_PATH\"\nfor argument in \"$@\"; do\n  if [[ $argument == -b || $argument == --binary ]]; then exec \"$FIXTURE_JQ\" \"$@\"; fi\ndone\n\"$FIXTURE_JQ\" \"$@\" | sed 's/$/\\r/'\n", 0o700)
-						if state == "windows workspace" {
-							env["GITHUB_WORKSPACE"] = "D:\\fixture\\workspace"
-							writeWindowsMetadataFixture(t, filepath.Join(dir, "bin", "cygpath"), "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_WORKSPACE\"\n", 0o700)
-							env["FIXTURE_WORKSPACE"] = dir
-						}
-						env["FIXTURE_JQ"] = jq
-						env["FIXTURE_REAL_PATH"] = os.Getenv("PATH")
-					}
 					out, runErr := runWindowsReusableBody(t, dir, env, body)
-					want := state == "complete" || state == "missing" || state == "windows workspace"
+					want := state == "complete" || state == "missing"
 					if (runErr == nil) != want {
 						t.Fatalf("inspection err=%v: %s", runErr, out)
 					}
@@ -119,6 +106,30 @@ func TestWindowsReusableFreshInspectionUsesBinaryJQAndRefusesPartialOwners(t *te
 					}
 				})
 			}
+		}
+	}
+}
+
+func TestWindowsReusableSigningConsumesOnlyMissingLockedOwnerState(t *testing.T) {
+	for _, owner := range windowsReusableOwners() {
+		body := mustStepNamed(t, mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/"+owner+".yml"), "sign"), "Use locked Windows owner inspection").Run
+		for _, state := range []string{"missing", "complete", "partial", ""} {
+			t.Run(owner+"/"+state, func(t *testing.T) {
+				dir, env := windowsReusableFixture(t, owner)
+				env["OWNER_STATE"] = state
+				out, err := runWindowsReusableBody(t, dir, env, body)
+				if (err == nil) != (state == "missing") {
+					t.Fatalf("locked inventory accepted wrong state %q: %v: %s", state, err, out)
+				}
+				data, _ := os.ReadFile(env["GITHUB_OUTPUT"])
+				if state == "missing" {
+					if string(data) != "state=missing\nstaged=false\nreused=false\n" {
+						t.Fatalf("unexpected reusable signing inventory: %q", data)
+					}
+				} else if len(data) != 0 {
+					t.Fatal("invalid locked inventory advertised success")
+				}
+			})
 		}
 	}
 }

@@ -38,7 +38,7 @@ func TestWindowsReusableVerificationPrecedesEverySigningAuthority(t *testing.T) 
 			job   string
 			names []string
 		}{
-			{"sign", []string{"Validate reusable Windows source", "Inspect full Windows owner", "Verify immutable Windows input metadata", "Download Windows validation artifact", "Verify Windows validation payload", "Download unsigned build artifact", "Validate Windows signing carrier", "Require SignPath token"}},
+			{"sign", []string{"Validate reusable Windows source", "Use locked Windows owner inspection", "Verify immutable Windows input metadata", "Download Windows validation artifact", "Verify Windows validation payload", "Download unsigned build artifact", "Validate Windows signing carrier", "Require SignPath token"}},
 			{"attest", []string{"Validate reusable Windows source", "Inspect full Windows owner", "Verify OS-signed Windows carrier metadata", "Download OS-signed Windows carrier", "Validate OS-signed Windows carrier payload", "Sign and attest artifacts", "Record signed Windows generation", "Upload signed Windows generation"}},
 			{"stage", []string{"Validate reusable Windows source", "Verify signed generation metadata", "Download signed Windows generation", "Restore signed Windows generation", "Generate release notes", "Stage release assets"}},
 		} {
@@ -59,7 +59,7 @@ func TestWindowsReusableVerificationPrecedesEverySigningAuthority(t *testing.T) 
 			}
 			if tc.job == "sign" {
 				for index, step := range job.Steps {
-					if strings.HasPrefix(step.Uses, "signpath/") && index <= last {
+					if (strings.HasPrefix(step.Uses, "signpath/") || step.Uses == "./.github/actions/resumable-signpath") && index <= last {
 						t.Fatal("SignPath request precedes immutable input checks")
 					}
 				}

@@ -53,6 +53,10 @@ type releaseLocalFixture struct {
 type releaseGateOptions struct {
 	localAssets             []releaseLocalFixture
 	workflow                string
+	releaseScope            string
+	windowsAfterCore        bool
+	coreReleaseID           string
+	coreDigest              string
 	ownerWorkflow           string
 	candidateDigest         string
 	approvedReleaseID       string
@@ -87,8 +91,14 @@ type releaseGateOptions struct {
 	checkoutHEAD            string
 	modifiedBody            bool
 	releaseListingFailure   bool
+	hideDraftsInList        bool
 	draftCreateFailure      bool
 	draftCreateResponse     string
+	draftReadbackMisses     int
+	draftListMisses         int
+	draftReadbackStatus     string
+	draftReadbackResponse   string
+	draftListDuplicate      bool
 	uploadFailure           string
 	uploadResponse          map[string]any
 	releaseIDAfterVerify    int64
@@ -1223,6 +1233,412 @@ func TestReleaseGateUploadValidatesDraftCreationResponse(t *testing.T) {
 	}
 }
 
+func TestReleaseGatePublishesTheVerifiedCore(t *testing.T) {
+	draft := []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}
+	core := phasedReleaseAssets(false)
+	options := releaseGateOptions{releaseScope: "core"}
+	t.Run("approved core publishes without Windows", func(t *testing.T) {
+		result := runReleaseGateWithOptions(t, "strict-finalize", draft, core, options)
+		if result.err != nil {
+			t.Fatalf("core publication failed: %v\n%s", result.err, result.output)
+		}
+		stagingRequireOutputs(t, result, false, true)
+		mustContain(t, result.patchInput, `"make_latest": "true"`)
+		mustNotContain(t, result.calls, ".exe")
+	})
+	t.Run("optional verified Windows pairs leave core approval intact", func(t *testing.T) {
+		result := runReleaseGateWithOptions(t, "strict-finalize", draft, completeReleaseAssets("2.19"), options)
+		if result.err != nil {
+			t.Fatalf("valid Windows additions invalidated core approval: %v\n%s", result.err, result.output)
+		}
+		stagingRequireOutputs(t, result, false, true)
+		mustContainCallLine(t, result.calls, "cosign verify-blob", "Picocrypt-NG-portable.exe")
+	})
+	t.Run("core may not omit any of its own assets", func(t *testing.T) {
+		result := runReleaseGateWithOptions(t, "strict-finalize", draft, core[:len(core)-2], options)
+		if result.err == nil {
+			t.Fatal("incomplete non-Windows release was accepted")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+	t.Run("core may not publish an unpaired Windows binary", func(t *testing.T) {
+		assets := append(append([]releaseAssetFixture(nil), core...), phasedReleaseAssets(true)[0])
+		result := runReleaseGateWithOptions(t, "strict-finalize", draft, assets, options)
+		if result.err == nil {
+			t.Fatal("release with an unpaired Windows binary was accepted")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+	t.Run("final full verification can inspect a public complete release", func(t *testing.T) {
+		published := append([]releaseGateFixture(nil), draft...)
+		published[0].Draft = false
+		result := runReleaseGateWithOptions(t, "verify-staged", published, completeReleaseAssets("2.19"), releaseGateOptions{
+			publishedBodyFromSource: true,
+		})
+		if result.err != nil {
+			t.Fatalf("inspection of public complete release failed: %v\n%s", result.err, result.output)
+		}
+		stagingRequireOutputs(t, result, false, false)
+		mustContain(t, result.outputs, "release-id=42\n")
+		mustContain(t, result.outputs, "candidate-digest=")
+		mustNotContain(t, result.calls, "--method")
+	})
+}
+
+func TestReleaseGateAppendsVerifiedWindowsToPublishedCore(t *testing.T) {
+	const primary = "Picocrypt-NG-cli-Legacy.exe"
+	const bundle = primary + ".sigstore.json"
+	published := []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA}}
+	core := phasedReleaseAssets(false)
+	local := []releaseLocalFixture{
+		{Name: primary, Path: "artifacts/build-windows-legacy/" + primary, Content: "frozen signed Windows bytes\n"},
+		{Name: bundle, Path: "artifacts/build-windows-legacy/" + bundle, Content: "frozen Sigstore bundle\n"},
+	}
+	options := releaseGateOptions{workflow: "release.yml", localAssets: local, publishedBodyFromSource: true, windowsAfterCore: true}
+	t.Run("preflight checks metadata while upload authenticates core bytes", func(t *testing.T) {
+		corePrimary := core[len(core)-2].Name
+		withFailure := options
+		withFailure.cosignFailure = corePrimary
+		preflight := runReleaseGateWithOptions(t, "preflight", published, core, withFailure)
+		if preflight.err != nil {
+			t.Fatalf("Windows attachment preflight failed: %v\n%s", preflight.err, preflight.output)
+		}
+		mustContain(t, preflight.calls, "/git/matching-refs/tags/2.19")
+		mustContain(t, preflight.calls, "/releases/42/assets?per_page=100")
+		mustNotContain(t, preflight.calls, "/releases/assets/")
+		mustNotContain(t, preflight.calls, "cosign verify-blob")
+		mustNotContain(t, preflight.calls, "--method")
+
+		withDrift := options
+		withDrift.coreDigest = strings.Repeat("f", 64)
+		preflight = runReleaseGateWithOptions(t, "preflight", published, core, withDrift)
+		if preflight.err == nil {
+			t.Fatal("Windows attachment preflight accepted a different core digest")
+		}
+		mustNotContain(t, preflight.calls, "/releases/assets/")
+		mustNotContain(t, preflight.calls, "--method")
+
+		upload := runReleaseGateWithOptions(t, "upload", published, core, withFailure)
+		if upload.err == nil {
+			t.Fatal("Windows attachment accepted a core asset rejected by Cosign")
+		}
+		mustContainCallLine(t, upload.calls, "cosign verify-blob", corePrimary)
+		mustNotContain(t, upload.calls, "--method")
+	})
+	t.Run("preverified sidecar uploaded before executable", func(t *testing.T) {
+		result := runReleaseGateWithOptions(t, "upload", published, core, options)
+		if result.err != nil {
+			t.Fatalf("Windows attachment failed: %v\n%s", result.err, result.output)
+		}
+		stagingRequireOutputs(t, result, true, false)
+		mustContainInOrder(t, result.calls, "cosign verify-blob", "https://uploads.github.com/repos/Picocrypt-NG/Picocrypt-NG/releases/42/assets?name="+bundle+" ", "https://uploads.github.com/repos/Picocrypt-NG/Picocrypt-NG/releases/42/assets?name="+primary+" ")
+		mustNotContain(t, result.calls, "--method PATCH")
+		mustNotContain(t, result.calls, "--method DELETE")
+		if len(result.remoteAssets) != len(core)+2 || result.remoteAssets[len(core)].Content != local[1].Content || result.remoteAssets[len(core)+1].Content != local[0].Content {
+			t.Fatalf("attachment did not preserve the core and signed pair: %#v", result.remoteAssets)
+		}
+	})
+	t.Run("matching existing sidecar resumes without replacement", func(t *testing.T) {
+		assets := append(append([]releaseAssetFixture(nil), core...), newReleaseAsset(999, bundle, local[1].Content))
+		result := runReleaseGateWithOptions(t, "upload", published, assets, options)
+		if result.err != nil {
+			t.Fatalf("Windows attachment resume failed: %v\n%s", result.err, result.output)
+		}
+		if strings.Count(result.calls, "https://uploads.github.com/") != 1 {
+			t.Fatalf("expected only the missing executable upload:\n%s", result.calls)
+		}
+		mustNotContain(t, result.calls, "/assets?name="+bundle+" ")
+	})
+	t.Run("different sidecar fails before upload", func(t *testing.T) {
+		assets := append(append([]releaseAssetFixture(nil), core...), newReleaseAsset(999, bundle, "different signed generation"))
+		result := runReleaseGateWithOptions(t, "upload", published, assets, options)
+		if result.err == nil {
+			t.Fatal("attachment accepted a different staged sidecar")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+	t.Run("locally unverified executable fails before upload", func(t *testing.T) {
+		failure := options
+		failure.cosignFailure = primary
+		result := runReleaseGateWithOptions(t, "upload", published, core, failure)
+		if result.err == nil {
+			t.Fatal("attachment accepted a locally unverified executable")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+	t.Run("published core may not be incomplete", func(t *testing.T) {
+		result := runReleaseGateWithOptions(t, "upload", published, core[:len(core)-2], options)
+		if result.err == nil {
+			t.Fatal("attachment accepted an incomplete published core")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+	t.Run("published release must match the approved core ID", func(t *testing.T) {
+		wrong := options
+		wrong.coreReleaseID = "43"
+		result := runReleaseGateWithOptions(t, "upload", published, core, wrong)
+		if result.err == nil {
+			t.Fatal("attachment accepted a different release ID")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+	t.Run("published core cannot drift from its receipt", func(t *testing.T) {
+		drift := append([]releaseAssetFixture(nil), core...)
+		drift[0] = newReleaseAsset(drift[0].ID, drift[0].Name, "different contents")
+		result := runReleaseGateWithOptions(t, "upload", published, drift, options)
+		if result.err == nil {
+			t.Fatal("attachment accepted changed core bytes")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+	t.Run("approved core is inspectable before and after publication", func(t *testing.T) {
+		inspect := options
+		inspect.ownerWorkflow = "build-windows-legacy.yml"
+		for _, draft := range []bool{true, false} {
+			release := append([]releaseGateFixture(nil), published...)
+			release[0].Draft = draft
+			result := runReleaseGateWithOptions(t, "inspect-owner", release, core, inspect)
+			if result.err != nil {
+				t.Fatalf("Windows inspection of approved core (draft=%t) failed: %v\n%s", draft, result.err, result.output)
+			}
+			mustContain(t, result.stdout, `"status": "missing"`)
+			mustNotContain(t, result.calls, "--method")
+		}
+	})
+	t.Run("direct Windows workflow may not mutate a public release", func(t *testing.T) {
+		direct := options
+		direct.workflow = "build-windows-legacy.yml"
+		result := runReleaseGateWithOptions(t, "upload", published, core, direct)
+		if result.err == nil {
+			t.Fatal("direct workflow was allowed to append")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+	t.Run("ordinary staging mode may not mutate a public release", func(t *testing.T) {
+		ordinary := options
+		ordinary.windowsAfterCore = false
+		result := runReleaseGateWithOptions(t, "upload", published, core, ordinary)
+		if result.err == nil {
+			t.Fatal("ordinary staging was allowed to append")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+	t.Run("deferred Windows staging waits for public core", func(t *testing.T) {
+		for _, drafts := range [][]releaseGateFixture{nil, {{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}} {
+			result := runReleaseGateWithOptions(t, "upload", drafts, core, options)
+			if result.err == nil {
+				t.Fatal("deferred Windows lane touched a missing or draft core")
+			}
+			mustNotContain(t, result.calls, "--method")
+		}
+	})
+}
+
+func TestReleaseGateEarlyWindowsInspectionWithHiddenDraft(t *testing.T) {
+	const primary = "Picocrypt-NG-cli-Legacy.exe"
+	draft := []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}
+	options := releaseGateOptions{
+		workflow:         "release.yml",
+		ownerWorkflow:    "build-windows-legacy.yml",
+		windowsAfterCore: true,
+		hideDraftsInList: true,
+		tagAbsent:        true,
+		localAssets: []releaseLocalFixture{
+			{Name: primary, Path: "artifacts/build-windows-legacy/" + primary, Content: "frozen signed Windows bytes\n"},
+			{Name: primary + ".sigstore.json", Path: "artifacts/build-windows-legacy/" + primary + ".sigstore.json", Content: "frozen Sigstore bundle\n"},
+		},
+	}
+	core := phasedReleaseAssets(false)
+
+	t.Run("read-only inspect reports missing before publication", func(t *testing.T) {
+		result := runReleaseGateWithOptions(t, "inspect-owner", draft, core, options)
+		if result.err != nil {
+			t.Fatalf("inspection of a verified but hidden draft failed: %v\n%s", result.err, result.output)
+		}
+		var inventory struct {
+			Status        string            `json:"status"`
+			SourceSHA     string            `json:"source_sha"`
+			OwnerWorkflow string            `json:"owner_workflow"`
+			MissingNames  []string          `json:"missing_names"`
+			VerifiedPairs []json.RawMessage `json:"verified_pairs"`
+		}
+		if err := json.Unmarshal([]byte(result.stdout), &inventory); err != nil {
+			t.Fatalf("invalid inspection inventory: %v\n%s", err, result.stdout)
+		}
+		if inventory.Status != "missing" || inventory.SourceSHA != releaseTestSHA || inventory.OwnerWorkflow != options.ownerWorkflow ||
+			len(inventory.VerifiedPairs) != 0 || len(inventory.MissingNames) != 1 || inventory.MissingNames[0] != primary {
+			t.Fatalf("unexpected read-only Windows inventory: %+v", inventory)
+		}
+		mustNotContain(t, result.calls, "/releases/42/assets")
+		mustNotContain(t, result.calls, "cosign verify-blob")
+		mustNotContain(t, result.calls, "--method")
+	})
+
+	t.Run("a published tag cannot be treated as a hidden draft", func(t *testing.T) {
+		tagged := options
+		tagged.tagAbsent = false
+		result := runReleaseGateWithOptions(t, "inspect-owner", draft, core, tagged)
+		if result.err == nil {
+			t.Fatal("inspection inferred a hidden draft for a visible release tag")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+
+	t.Run("listing errors cannot be treated as a hidden draft", func(t *testing.T) {
+		failure := options
+		failure.releaseListingFailure = true
+		result := runReleaseGateWithOptions(t, "inspect-owner", draft, core, failure)
+		if result.err == nil {
+			t.Fatal("inspection continued despite a failed release listing")
+		}
+		mustNotContain(t, result.calls, "--method")
+	})
+
+	for _, mode := range []string{"preflight", "upload"} {
+		t.Run(mode+" requires visible published core", func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, mode, draft, core, options)
+			if result.err == nil {
+				t.Fatal("attachment gate accepted a hidden draft")
+			}
+			mustNotContain(t, result.calls, "--method")
+		})
+	}
+}
+
+func TestReleaseGateCoreConfirmToleratesOnlyPendingWindowsSidecars(t *testing.T) {
+	const primary = "Picocrypt-NG-cli-Legacy.exe"
+	for _, tc := range []struct {
+		name       string
+		assetName  string
+		draft      bool
+		wantPublic bool
+	}{
+		{name: "confirm already-published core with pending sidecar", assetName: primary + ".sigstore.json", wantPublic: true},
+		{name: "reject public executable without sidecar", assetName: primary},
+		{name: "reject initial publication with only sidecar", assetName: primary + ".sigstore.json", draft: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: tc.draft}}
+			assets := phasedReleaseAssets(false)
+			pending := newReleaseAsset(999, tc.assetName, "standalone Windows attachment fixture\n")
+			assets = append(assets, pending)
+			result := runReleaseGateWithOptions(t, "strict-finalize", release, assets, releaseGateOptions{
+				releaseScope: "core", publishedBodyFromSource: true,
+			})
+			if tc.wantPublic {
+				if result.err != nil {
+					t.Fatalf("confirmation of the already-public core failed: %v\n%s", result.err, result.output)
+				}
+				stagingRequireOutputs(t, result, false, true)
+				mustContainCallLine(t, result.calls, "cosign verify-blob", assets[0].Name)
+				mustNotContain(t, result.calls, "/releases/assets/999")
+			} else {
+				if result.err == nil {
+					t.Fatal("core release accepted an incomplete Windows pair")
+				}
+				mustContain(t, result.output, "incomplete Windows pair")
+			}
+			if len(result.remoteAssets) != len(assets) || result.remoteAssets[len(assets)-1] != pending {
+				t.Fatal("core confirmation altered the pending attachment")
+			}
+			mustNotContain(t, result.calls, "--method")
+		})
+	}
+}
+
+func phasedReleaseAssets(windows bool) []releaseAssetFixture {
+	var result []releaseAssetFixture
+	for _, asset := range completeReleaseAssets("2.19") {
+		if strings.HasSuffix(strings.TrimSuffix(asset.Name, ".sigstore.json"), ".exe") == windows {
+			result = append(result, asset)
+		}
+	}
+	return result
+}
+
+func TestReleaseGateUploadConfirmsJustCreatedDraft(t *testing.T) {
+	const create = "api --method POST repos/Picocrypt-NG/Picocrypt-NG/releases --input -\n"
+	const readback = "api --include repos/Picocrypt-NG/Picocrypt-NG/releases/42\n"
+	for _, tc := range []struct {
+		name      string
+		options   releaseGateOptions
+		reads     int
+		waits     string
+		wantStage bool
+	}{
+		{"not found then hidden from list", releaseGateOptions{draftReadbackMisses: 1, draftListMisses: 1}, 3, "sleep 1\nsleep 2\n", true},
+		{"not found until deadline", releaseGateOptions{draftReadbackMisses: 5}, 5, "sleep 1\nsleep 2\nsleep 4\nsleep 8\n", false},
+		{"hidden from list until deadline", releaseGateOptions{draftListMisses: 5}, 5, "sleep 1\nsleep 2\nsleep 4\nsleep 8\n", false},
+		{"forbidden readback", releaseGateOptions{draftReadbackStatus: "403 Forbidden"}, 1, "", false},
+		{"malformed readback", releaseGateOptions{draftReadbackResponse: "not JSON"}, 1, "", false},
+		{"duplicate draft in list", releaseGateOptions{draftListDuplicate: true}, 1, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, "upload", nil, nil, tc.options)
+			if (result.err == nil) != tc.wantStage {
+				t.Fatalf("staging returned %v, want success %t\n%s", result.err, tc.wantStage, result.output)
+			}
+			if count := strings.Count(result.calls, create); count != 1 {
+				t.Fatalf("draft creation count = %d, want 1\n%s", count, result.calls)
+			}
+			if count := strings.Count(result.calls, readback); count != tc.reads {
+				t.Fatalf("exact-ID readback count = %d, want %d\n%s", count, tc.reads, result.calls)
+			}
+			var waits strings.Builder
+			for line := range strings.SplitSeq(result.calls, "\n") {
+				if strings.HasPrefix(line, "sleep ") {
+					fmt.Fprintln(&waits, line)
+				}
+			}
+			if got := waits.String(); got != tc.waits {
+				t.Errorf("retry waits = %q, want %q", got, tc.waits)
+			}
+			mustNotContain(t, result.calls, "--method PATCH")
+			mustNotContain(t, result.calls, "--method DELETE")
+			if tc.wantStage {
+				stagingRequireOutputs(t, result, true, false)
+				mustContainInOrder(t, result.calls, create, readback, "sleep 1\n", readback, "sleep 2\n", readback,
+					"https://uploads.github.com/repos/Picocrypt-NG/Picocrypt-NG/releases/42/assets")
+				if len(result.remoteAssets) != 2 {
+					t.Fatalf("staged assets = %#v, want exactly one verified lane pair", result.remoteAssets)
+				}
+			} else {
+				mustNotContain(t, result.calls, "https://uploads.github.com/")
+			}
+		})
+	}
+}
+
+func TestReleaseGateUploadRejectsChangedDraftReadback(t *testing.T) {
+	for name, changed := range map[string]func(*releaseGateFixture){
+		"id":         func(r *releaseGateFixture) { r.ID++ },
+		"tag":        func(r *releaseGateFixture) { r.TagName = "other" },
+		"source":     func(r *releaseGateFixture) { r.TargetCommitish = strings.Repeat("a", 40) },
+		"draft":      func(r *releaseGateFixture) { r.Draft = false },
+		"prerelease": func(r *releaseGateFixture) { r.Prerelease = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			draft := releaseGateFixture{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}
+			changed(&draft)
+			data, err := json.Marshal(draft)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := runReleaseGateWithOptions(t, "upload", nil, nil, releaseGateOptions{draftReadbackResponse: string(data)})
+			if result.err == nil {
+				t.Fatal("staging accepted a changed draft readback")
+			}
+			if count := strings.Count(result.calls, "api --include repos/Picocrypt-NG/Picocrypt-NG/releases/42\n"); count != 1 {
+				t.Fatalf("exact-ID readback count = %d, want 1\n%s", count, result.calls)
+			}
+			mustNotContain(t, result.calls, "sleep ")
+			mustNotContain(t, result.calls, "https://uploads.github.com/")
+			mustNotContain(t, result.calls, "--method PATCH")
+			mustNotContain(t, result.calls, "--method DELETE")
+		})
+	}
+}
+
 func TestReleaseGateUploadValidatesAssetResponseAndStableSnapshot(t *testing.T) {
 	release := []releaseGateFixture{{ID: 42, TagName: "2.19", TargetCommitish: releaseTestSHA, Draft: true}}
 	for field, value := range map[string]any{"id": 0, "name": "secret.txt", "state": "starter", "size": 1, "digest": "sha256:" + strings.Repeat("a", 64)} {
@@ -1486,7 +1902,7 @@ func runReleaseGateWithOptions(
 		}
 		expectedBody = readOptionalFile(t, bodyPath)
 	}
-	if remoteCandidate {
+	if remoteCandidate || options.windowsAfterCore {
 		for _, snapshot := range [][]releaseGateFixture{releases, releasesAfter} {
 			for index := range snapshot {
 				if snapshot[index].Draft && snapshot[index].Body == "" {
@@ -1561,6 +1977,25 @@ case "$*" in
       echo 'fixture release listing failed' >&2
       exit 1
     fi
+    if [ "$GH_HIDE_DRAFTS_IN_LIST" = "true" ]; then
+      jq 'map(select(.draft == false))' "$GH_RELEASES_JSON"
+      exit 0
+    fi
+    if [ -e "$GH_CREATED_RELEASE_JSON" ]; then
+      list_count="$(awk '
+        $0 == "api --method POST repos/Picocrypt-NG/Picocrypt-NG/releases --input -" {created = 1}
+        created && $0 == "api --paginate repos/Picocrypt-NG/Picocrypt-NG/releases?per_page=100" {count++}
+        END {print count + 0}
+      ' "$GH_CALLS")"
+      if [ "$list_count" -le "$GH_DRAFT_LIST_MISSES" ]; then
+        echo '[]'
+        exit 0
+      fi
+      if [ "$GH_DRAFT_LIST_DUPLICATE" = "true" ]; then
+        jq '.[0] as $release | . + [$release + {id:43}]' "$GH_RELEASES_JSON"
+        exit 0
+      fi
+    fi
     if [ -e "$GH_PUBLISHED_MARKER" ]; then
       jq -s '[.[0][0] + {draft:false, body:.[1].body}]' "$GH_RELEASES_JSON" "$GH_PATCH_CAPTURE"
     elif [ "$GH_UPLOAD_MODE" = "true" ]; then
@@ -1574,6 +2009,27 @@ case "$*" in
     else
       : > "$GH_RELEASES_MARKER"
       cat "$GH_RELEASES_JSON"
+    fi
+    ;;
+  "--include repos/Picocrypt-NG/Picocrypt-NG/releases/42")
+    test -f "$GH_CREATED_RELEASE_JSON"
+    readback_count="$(awk '
+      $0 == "api --include repos/Picocrypt-NG/Picocrypt-NG/releases/42" {count++}
+      END {print count + 0}
+    ' "$GH_CALLS")"
+    if [ "$readback_count" -le "$GH_DRAFT_READBACK_MISSES" ]; then
+      printf 'HTTP/2.0 404 Not Found\r\nContent-Type: application/json\r\n\r\n{"message":"Not Found"}\n'
+      exit 1
+    fi
+    printf 'HTTP/2.0 %s\r\nContent-Type: application/json\r\n\r\n' "$GH_DRAFT_READBACK_STATUS"
+    if [ "$GH_DRAFT_READBACK_STATUS" != "200 OK" ]; then
+      printf '%s\n' '{"message":"fixture readback rejected"}'
+      exit 1
+    fi
+    if [ -n "$GH_DRAFT_READBACK_RESPONSE" ]; then
+      printf '%s\n' "$GH_DRAFT_READBACK_RESPONSE"
+    else
+      cat "$GH_CREATED_RELEASE_JSON"
     fi
     ;;
   "--paginate repos/Picocrypt-NG/Picocrypt-NG/releases/42/assets?per_page=100")
@@ -1732,6 +2188,12 @@ esac
 	if err := os.WriteFile(ghPath, []byte(fakeGH), 0o700); err != nil {
 		t.Fatalf("write fake gh: %v", err)
 	}
+	const fakeSleep = `#!/usr/bin/env bash
+printf 'sleep %s\n' "$*" >> "$GH_CALLS"
+`
+	if err := os.WriteFile(filepath.Join(temp, "sleep"), []byte(fakeSleep), 0o700); err != nil {
+		t.Fatalf("write fake sleep: %v", err)
+	}
 
 	cosignPath := filepath.Join(temp, "cosign")
 	const fakeCosign = `#!/usr/bin/env bash
@@ -1787,12 +2249,25 @@ esac
 		if len(releases) == 1 {
 			releaseID = releases[0].ID
 		}
-		candidateDigest = releaseGateFixtureCandidateDigest(t, workspace, releaseID, assets, expectedBody)
+		candidateDigest = releaseGateFixtureCandidateDigest(t, workspace, releaseID, assets, expectedBody, options.releaseScope)
 	}
 
 	approvedReleaseID := options.approvedReleaseID
 	if approvedReleaseID == "" {
 		approvedReleaseID = "42"
+	}
+	coreReleaseID, coreDigest := options.coreReleaseID, options.coreDigest
+	if options.windowsAfterCore {
+		if coreReleaseID == "" {
+			coreReleaseID = "42"
+		}
+		if coreDigest == "" {
+			coreDigest = releaseGateFixtureCandidateDigest(t, workspace, 42, phasedReleaseAssets(false), expectedBody, "core")
+		}
+	}
+	readbackStatus := options.draftReadbackStatus
+	if readbackStatus == "" {
+		readbackStatus = "200 OK"
 	}
 
 	command := exec.Command("bash", script, mode, "2.19")
@@ -1803,6 +2278,10 @@ esac
 		"FILES="+strings.Join(localPaths, "\n"),
 		"BODY_PATH="+bodyPath,
 		"OWNER_WORKFLOW="+options.ownerWorkflow,
+		"RELEASE_SCOPE="+options.releaseScope,
+		"RELEASE_WINDOWS_AFTER_CORE="+strconv.FormatBool(options.windowsAfterCore),
+		"RELEASE_CORE_ID="+coreReleaseID,
+		"RELEASE_CORE_DIGEST="+coreDigest,
 		"RELEASE_CANDIDATE_DIGEST="+candidateDigest,
 		"RELEASE_SOURCE_SHA="+releaseTestSHA,
 		"RELEASE_DRAFT_ID="+approvedReleaseID,
@@ -1810,8 +2289,14 @@ esac
 		"GH_CALLS="+callsPath,
 		"GH_UPLOAD_MODE="+strconv.FormatBool(mode == "upload"),
 		"GH_RELEASE_LISTING_FAILURE="+strconv.FormatBool(options.releaseListingFailure),
+		"GH_HIDE_DRAFTS_IN_LIST="+strconv.FormatBool(options.hideDraftsInList),
 		"GH_DRAFT_CREATE_FAILURE="+strconv.FormatBool(options.draftCreateFailure),
 		"GH_DRAFT_CREATE_RESPONSE="+options.draftCreateResponse,
+		"GH_DRAFT_READBACK_MISSES="+strconv.Itoa(options.draftReadbackMisses),
+		"GH_DRAFT_LIST_MISSES="+strconv.Itoa(options.draftListMisses),
+		"GH_DRAFT_READBACK_STATUS="+readbackStatus,
+		"GH_DRAFT_READBACK_RESPONSE="+options.draftReadbackResponse,
+		"GH_DRAFT_LIST_DUPLICATE="+strconv.FormatBool(options.draftListDuplicate),
 		"GH_DRAFT_CREATE_CAPTURE="+draftCreateCapturePath,
 		"GH_CREATED_RELEASE_JSON="+filepath.Join(temp, "created-release.json"),
 		"GH_VERIFIED_MARKER="+filepath.Join(temp, "verified.marker"),
@@ -1893,7 +2378,7 @@ esac
 	}
 }
 
-func releaseGateFixtureCandidateDigest(t *testing.T, workspace string, id int64, assets []releaseAssetFixture, body string) string {
+func releaseGateFixtureCandidateDigest(t *testing.T, workspace string, id int64, assets []releaseAssetFixture, body, scope string) string {
 	t.Helper()
 	manifest, err := exec.Command("bash", filepath.Join(workspace, releaseManifestScriptPath), "2.19").Output()
 	if err != nil {
@@ -1903,16 +2388,23 @@ func releaseGateFixtureCandidateDigest(t *testing.T, workspace string, id int64,
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	records := make([]map[string]any, 0, len(sorted))
 	for _, asset := range sorted {
+		if scope == "core" && strings.HasSuffix(strings.TrimSuffix(asset.Name, ".sigstore.json"), ".exe") {
+			continue
+		}
 		records = append(records, map[string]any{
 			"id": asset.ID, "name": asset.Name, "state": asset.State, "size": asset.Size, "digest": asset.Digest,
 		})
 	}
-	receipt, err := json.Marshal(map[string]any{
+	candidate := map[string]any{
 		"schema": 1, "repository": "Picocrypt-NG/Picocrypt-NG", "version": "2.19",
 		"release_id": id, "source_sha": releaseTestSHA, "assets": records,
 		"manifest_sha256": fmt.Sprintf("%x", sha256.Sum256(manifest)),
 		"notes_sha256":    fmt.Sprintf("%x", sha256.Sum256([]byte(body))),
-	})
+	}
+	if scope == "core" {
+		candidate["scope"] = "core"
+	}
+	receipt, err := json.Marshal(candidate)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -161,6 +161,51 @@ func TestReleaseCoordinatorVerifiesStagedOwnersBeforeIssuingReceipt(t *testing.T
 	}
 }
 
+func TestReleaseCoordinatorCoreReceiptDoesNotDependOnWindowsSigning(t *testing.T) {
+	workflow := mustReadWorkflowDoc(t, ".github/workflows/release.yml")
+	job := mustJob(t, workflow, "verify-staged-core")
+	dependencies := []any{"prepare", "owner-linux", "owner-macos", "owner-snapcraft", "owner-android", "owner-appimage"}
+	if !reflect.DeepEqual(job.Needs, dependencies) {
+		t.Fatalf("core receipt must wait for exactly the core owners, got %v", job.Needs)
+	}
+	if job.If != "${{ !cancelled() && success() && inputs.mode == 'stage' && inputs.early_publish }}" ||
+		job.Environment != "release" || !reflect.DeepEqual(job.Permissions, map[string]string{"contents": "write", "attestations": "read"}) {
+		t.Fatal("core receipt requires successful staging and the protected release environment")
+	}
+	if !reflect.DeepEqual(job.Outputs, map[string]string{
+		"candidate-digest": "${{ steps.verify.outputs.candidate-digest }}",
+		"release-id":       "${{ steps.verify.outputs.release-id }}",
+	}) {
+		t.Fatal("Windows append authority must be the verified core candidate ID and digest")
+	}
+	for _, owner := range []string{"windows", "windows-legacy"} {
+		windowsJob := mustJob(t, workflow, "owner-"+owner)
+		windowsDependencies := []any{"prepare", "validation", "build-" + owner, "verify-staged-core"}
+		if !reflect.DeepEqual(windowsJob.Needs, windowsDependencies) ||
+			!strings.Contains(windowsJob.If, "(!inputs.early_publish || needs.verify-staged-core.result == 'success')") {
+			t.Fatalf("%s must wait for the core candidate only when early publication is requested", owner)
+		}
+	}
+	verify := mustStepNamed(t, job, "Verify staged core candidate")
+	if verify.ID != "verify" || verify.Run != `bash .github/actions/stage-release/release-gate.sh verify-staged "$SOURCE_VERSION"` ||
+		verify.Env["GH_TOKEN"] != "${{ github.token }}" || verify.Env["RELEASE_SCOPE"] != "core" || verify.If != "" || verify.ContinueOnError != nil {
+		t.Fatal("core receipt must use successful readback of the scoped staged candidate")
+	}
+	upload := mustStepNamed(t, job, "Upload core stage receipt")
+	var steps []string
+	for _, step := range job.Steps {
+		steps = append(steps, step.Name)
+	}
+	mustContainInOrder(t, strings.Join(steps, "\n"), verify.Name, "Write core stage receipt", upload.Name)
+	if upload.If != "" || upload.ContinueOnError != nil ||
+		!strings.HasPrefix(upload.Uses, "actions/upload-artifact@") || upload.ID != "core-receipt" ||
+		upload.With["name"] != "release-stage-core-receipt-attempt-${{ github.run_attempt }}" ||
+		upload.With["path"] != "${{ runner.temp }}/stage-core-receipt/receipt.json" ||
+		upload.With["if-no-files-found"] != "error" || upload.With["overwrite"] != false {
+		t.Fatal("the core receipt must preserve the verified scope and use a unique immutable artifact")
+	}
+}
+
 func TestReleaseCoordinatorPublishesReviewedCandidateWithoutBuilding(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/release.yml")
 	job := mustJob(t, workflow, "publish")
@@ -181,11 +226,12 @@ func TestReleaseCoordinatorPublishesReviewedCandidateWithoutBuilding(t *testing.
 		"SOURCE_VERSION": "${{ needs.prepare.outputs.version }}", "RELEASE_SOURCE_SHA": "${{ needs.resolve-stage.outputs.source-sha }}",
 		"RELEASE_CANDIDATE_DIGEST": "${{ needs.resolve-stage.outputs.candidate-digest }}",
 		"RELEASE_DRAFT_ID":         "${{ needs.resolve-stage.outputs.release-id }}",
+		"RELEASE_SCOPE":            "${{ needs.resolve-stage.outputs.release-scope }}",
 	}
 	if !reflect.DeepEqual(job.Env, wantEnv) {
 		t.Fatal("publication must carry the authenticated receipt's candidate SHA, digest and release ID to the gate")
 	}
-	step := mustStepNamed(t, job, "Strictly finalize complete release")
+	step := mustStepNamed(t, job, "Strictly finalize approved release")
 	if step.ID != "finalize" || step.Run != "bash .github/actions/stage-release/release-gate.sh strict-finalize \"$SOURCE_VERSION\"" || step.Env["GH_TOKEN"] != "${{ github.token }}" {
 		t.Fatal("publish must use strict actual publication, never legacy partial-success mode")
 	}
@@ -219,7 +265,7 @@ func TestReleaseCoordinatorAuthenticatesStageReceiptBeforeProduction(t *testing.
 		!reflect.DeepEqual(step.Env, wantEnv) {
 		t.Fatal("trusted verifier must resolve the selected stage receipt and prepared version")
 	}
-	for _, field := range []string{"source-sha", "candidate-digest", "release-id"} {
+	for _, field := range []string{"source-sha", "candidate-digest", "release-id", "release-scope"} {
 		if resolver.Outputs[field] != "${{ steps.receipt.outputs."+field+" }}" {
 			t.Fatalf("resolver output %s must come from the authenticated receipt", field)
 		}
@@ -256,7 +302,7 @@ func TestReleaseCoordinatorUploadsImmutableReceiptOnlyAfterStageSuccess(t *testi
 
 func TestReleaseCoordinatorCandidateChecksShareOwnerPublicationQueue(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/release.yml")
-	for _, name := range []string{"verify-staged", "publish"} {
+	for _, name := range []string{"verify-staged", "verify-staged-core", "publish"} {
 		job := mustJob(t, workflow, name)
 		if job.Concurrency.Group != "${{ github.repository }}-release-publication" || job.Concurrency.Queue != "max" || job.Concurrency.CancelInProgress != nil {
 			t.Fatalf("%s must serialize with owner staging and direct dispatches", name)
@@ -297,6 +343,20 @@ func TestReleaseCoordinatorCallsMatchDeclaredOwnerSchemas(t *testing.T) {
 				t.Fatal("caller must match the actual owner schema without dummy or omitted inputs/secrets")
 			}
 			for key, input := range callee.On.Call.Inputs {
+				if key == "publish_core_first" && (owner == "windows" || owner == "windows-legacy") {
+					if input.Required || input.Type != "boolean" || call.With[key] != "${{ inputs.early_publish }}" {
+						t.Fatal("Windows release appends must be selected by the original stage dispatch input")
+					}
+					continue
+				}
+				if (key == "core_release_id" || key == "core_candidate_digest") && (owner == "windows" || owner == "windows-legacy") {
+					output := strings.ReplaceAll(strings.TrimPrefix(key, "core_"), "_", "-")
+					if input.Required || input.Type != "string" ||
+						call.With[key] != "${{ inputs.early_publish && needs.verify-staged-core.outputs."+output+" || '' }}" {
+						t.Fatalf("%s must bind the verified core candidate or be empty during full staging", key)
+					}
+					continue
+				}
 				if !input.Required || input.Type != "string" || call.With[key] == "" {
 					t.Fatalf("owner input %s must bind the real required string", key)
 				}

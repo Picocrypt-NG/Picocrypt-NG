@@ -39,6 +39,16 @@ func TestStageReceiptResolver(t *testing.T) {
 		reads  int
 	}{
 		{"valid receipt from an exact successful attempt", 4},
+		{"core receipt while Windows is pending", 4},
+		{"core receipt after Windows failed", 4},
+		{"core job still running", 3},
+		{"core job failed", 3},
+		{"core job did not verify assets", 3},
+		{"core receipt uploaded before verification", 3},
+		{"core job wrong attempt", 3},
+		{"core receipt from full result job", 3},
+		{"core receipt with full payload", 4},
+		{"full receipt with core payload", 4},
 		{"invalid artifact input", 0},
 		{"foreign artifact repository", 1},
 		{"foreign artifact head repository", 1},
@@ -99,7 +109,42 @@ func TestStageReceiptResolver(t *testing.T) {
 				"source_sha": source, "release_id": releaseID, "candidate_digest": candidateDigest,
 				"run_id": strconv.FormatInt(runID, 10), "run_attempt": strconv.Itoa(attempt),
 			}
+			core := strings.HasPrefix(tc.defect, "core ")
+			scope := "full"
+			if core {
+				scope = "core"
+				artifact["name"] = fmt.Sprintf("release-stage-core-receipt-attempt-%d", attempt)
+				receipt["mode"] = "stage-core"
+				resultJob["name"] = "verify-staged-core"
+				upload["name"] = "Upload core stage receipt"
+				upload["number"] = 7
+				resultJob["steps"] = []any{map[string]any{
+					"name": "Verify staged core candidate", "status": "completed", "conclusion": "success", "number": 4,
+				}, upload}
+			}
 			switch tc.defect {
+			case "core receipt while Windows is pending":
+				run["status"] = "in_progress"
+				run["conclusion"] = nil
+			case "core receipt after Windows failed":
+				run["conclusion"] = "failure"
+			case "core job still running":
+				resultJob["status"] = "in_progress"
+				resultJob["conclusion"] = nil
+			case "core job failed":
+				resultJob["conclusion"] = "failure"
+			case "core job did not verify assets":
+				resultJob["steps"] = []any{upload}
+			case "core receipt uploaded before verification":
+				upload["number"] = 3
+			case "core job wrong attempt":
+				resultJob["run_attempt"] = attempt + 1
+			case "core receipt from full result job":
+				resultJob["name"] = "result"
+			case "core receipt with full payload":
+				receipt["mode"] = "stage"
+			case "full receipt with core payload":
+				receipt["mode"] = "stage-core"
 			case "invalid artifact input":
 				id = "../1234"
 			case "foreign artifact repository":
@@ -228,13 +273,15 @@ esac
 				"GITHUB_OUTPUT=" + outputPath,
 			}
 			diagnostic, err := command.CombinedOutput()
-			accepted := tc.defect == "valid receipt from an exact successful attempt"
+			accepted := tc.defect == "valid receipt from an exact successful attempt" ||
+				tc.defect == "core receipt while Windows is pending" || tc.defect == "core receipt after Windows failed"
 			if (err == nil) != accepted {
 				t.Fatalf("receipt resolver returned %v: %s", err, diagnostic)
 			}
 			output, outputErr := os.ReadFile(outputPath)
-			if accepted && (outputErr != nil || string(output) != wantOutput) {
-				t.Fatalf("candidate outputs = %q, err = %v; want %q", output, outputErr, wantOutput)
+			expected := wantOutput + "release-scope=" + scope + "\n"
+			if accepted && (outputErr != nil || string(output) != expected) {
+				t.Fatalf("candidate outputs = %q, err = %v; want %q", output, outputErr, expected)
 			}
 			if !accepted && !os.IsNotExist(outputErr) {
 				t.Fatalf("untrusted receipt exposed outputs %q, error = %v", output, outputErr)

@@ -1,0 +1,128 @@
+name: Resume protected SignPath request
+description: Submit once per phase and continue after approval in the same workflow run
+inputs:
+  phase:
+    description: Exact SignPath artifact configuration
+    required: true
+  unsigned-path:
+    description: Expected unsigned payload for the first submission
+    required: true
+  output-path:
+    description: Directory for signed payload files
+    required: true
+  project-slug:
+    description: Protected SignPath project
+    required: true
+  api-token:
+    description: Protected SignPath API token
+    required: true
+  github-token:
+    description: Read access to this workflow's immutable artifacts
+    required: true
+  approval-window-hours:
+    description: Configurable approval and resume window in hours
+    default: '12'
+
+runs:
+  using: composite
+  steps:
+  - name: Inspect immutable signing checkpoint
+    id: inspect
+    shell: pwsh
+    env:
+      GH_TOKEN: ${{ inputs.github-token }}
+      SIGNPATH_ACTION_PATH: ${{ github.action_path }}
+      SIGNPATH_PHASE: ${{ inputs.phase }}
+      SIGNPATH_PROJECT_SLUG: ${{ inputs.project-slug }}
+      SIGNPATH_APPROVAL_WINDOW_HOURS: ${{ inputs.approval-window-hours }}
+    run: '& (Join-Path $env:SIGNPATH_ACTION_PATH signpath.ps1) -Operation inspect'
+
+  - name: Retain unsigned signing intent
+    id: unsigned
+    if: steps.inspect.outputs.submit == 'true'
+    uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+    with:
+      name: signpath-${{ inputs.phase }}-unsigned
+      path: ${{ inputs.unsigned-path }}
+      if-no-files-found: error
+      compression-level: 0
+      retention-days: 7
+      overwrite: false
+
+  - name: Submit protected request without waiting for approval
+    id: submit
+    if: steps.inspect.outputs.submit == 'true'
+    uses: signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b # v3.2
+    with:
+      api-token: ${{ inputs.api-token }}
+      organization-id: d6e78672-6bae-47d3-b2b8-fa464705b34e
+      project-slug: ${{ inputs.project-slug }}
+      signing-policy-slug: release-signing
+      artifact-configuration-slug: ${{ inputs.phase }}
+      github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+      wait-for-completion: false
+
+  - name: Bind request to the exact unsigned artifact
+    if: steps.inspect.outputs.submit == 'true'
+    shell: pwsh
+    env:
+      SIGNPATH_ACTION_PATH: ${{ github.action_path }}
+      SIGNPATH_PHASE: ${{ inputs.phase }}
+      SIGNPATH_PROJECT_SLUG: ${{ inputs.project-slug }}
+      SIGNPATH_REQUEST_ID: ${{ steps.submit.outputs.signing-request-id }}
+      SIGNPATH_INPUT_ID: ${{ steps.unsigned.outputs.artifact-id }}
+      SIGNPATH_INPUT_DIGEST: ${{ steps.unsigned.outputs.artifact-digest }}
+      SIGNPATH_APPROVAL_WINDOW_HOURS: ${{ inputs.approval-window-hours }}
+    run: '& (Join-Path $env:SIGNPATH_ACTION_PATH signpath.ps1) -Operation record'
+
+  - name: Retain immutable SignPath request receipt
+    if: steps.inspect.outputs.submit == 'true'
+    uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+    with:
+      name: signpath-${{ inputs.phase }}-request
+      path: ${{ runner.temp }}/signpath-${{ inputs.phase }}-request/request.json
+      if-no-files-found: error
+      retention-days: 7
+      overwrite: false
+
+  - name: Download existing SignPath request receipt
+    if: steps.inspect.outputs.submit == 'false'
+    uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+    with:
+      artifact-ids: ${{ steps.inspect.outputs.request-artifact-id }}
+      path: ${{ runner.temp }}/signpath-${{ inputs.phase }}-request
+      merge-multiple: true
+      digest-mismatch: error
+
+  - name: Verify request and retrieve approved payload
+    id: retrieve
+    shell: pwsh
+    env:
+      SIGNPATH_ACTION_PATH: ${{ github.action_path }}
+      SIGNPATH_PHASE: ${{ inputs.phase }}
+      SIGNPATH_PROJECT_SLUG: ${{ inputs.project-slug }}
+      SIGNPATH_API_TOKEN: ${{ inputs.api-token }}
+      SIGNPATH_INPUT_ID: ${{ steps.unsigned.outputs.artifact-id || steps.inspect.outputs.input-id }}
+      SIGNPATH_INPUT_DIGEST: ${{ steps.inspect.outputs.input-digest || format('sha256:{0}', steps.unsigned.outputs.artifact-digest) }}
+      SIGNPATH_COMPLETED_ARTIFACT_ID: ${{ steps.inspect.outputs.signed-artifact-id }}
+      SIGNPATH_OUTPUT_PATH: ${{ inputs.output-path }}
+    run: '& (Join-Path $env:SIGNPATH_ACTION_PATH signpath.ps1) -Operation retrieve'
+
+  - name: Retain approved payload for later signing phases
+    if: steps.retrieve.outputs.downloaded == 'true'
+    uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+    with:
+      name: signpath-${{ inputs.phase }}-completed
+      path: ${{ inputs.output-path }}
+      if-no-files-found: error
+      retention-days: 7
+      overwrite: false
+
+  - name: Restore already approved payload for this phase
+    if: steps.inspect.outputs.signed-artifact-id != ''
+    uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+    with:
+      artifact-ids: ${{ steps.inspect.outputs.signed-artifact-id }}
+      path: ${{ inputs.output-path }}
+      merge-multiple: true
+      digest-mismatch: error

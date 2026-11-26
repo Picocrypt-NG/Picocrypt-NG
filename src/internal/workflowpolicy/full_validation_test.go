@@ -44,7 +44,7 @@ func TestFullValidationCoordinatorKeepsValidationReadOnlyAndProductionExplicit(t
 		t.Fatal(err)
 	}
 	mode := workflow.On.WorkflowDispatch.Inputs["mode"]
-	if len(workflow.On.WorkflowDispatch.Inputs) != 2 || mode.Type != "choice" || mode.Default != "validation" ||
+	if len(workflow.On.WorkflowDispatch.Inputs) != 3 || mode.Type != "choice" || mode.Default != "validation" ||
 		!reflect.DeepEqual(choices.On.Dispatch.Inputs["mode"].Options, []string{"validation", "stage", "publish"}) || len(workflow.On.OtherEvents) != 0 {
 		t.Fatal("the full coordinator must remain manual and validation-only by default, with explicit stage/publish choices")
 	}
@@ -52,17 +52,20 @@ func TestFullValidationCoordinatorKeepsValidationReadOnlyAndProductionExplicit(t
 	if receipt.Required || receipt.Type != "string" {
 		t.Fatal("publication must select one explicit stage receipt, optional in other modes")
 	}
+	if early := workflow.On.WorkflowDispatch.Inputs["early_publish"]; early.Required || early.Type != "boolean" || early.Default != true {
+		t.Fatal("early core publication must be explicitly configurable, with full stage still available")
+	}
 	wantJobs := map[string]bool{"prepare": true, "verify-linux": true, "verify-platforms": true, "validation": true, "resolve-stage": true}
 	for _, producer := range fullValidationProducers() {
 		wantJobs[producer.job] = true
 	}
 	owners := []string{"linux", "macos", "snapcraft", "android", "windows", "windows-legacy", "appimage"}
-	if len(workflow.Jobs) != len(wantJobs)+len(owners)+3 {
+	if len(workflow.Jobs) != len(wantJobs)+len(owners)+4 {
 		t.Fatal("the coordinator requires validation, seven staging owners, draft verification, receipt resolution, publication and read-only outcome reporting")
 	}
 	for name, job := range workflow.Jobs {
 		if !wantJobs[name] && name != "result" {
-			if name == "publish" || name == "verify-staged" {
+			if name == "publish" || name == "verify-staged" || name == "verify-staged-core" {
 				continue
 			}
 			matched := false
@@ -71,7 +74,11 @@ func TestFullValidationCoordinatorKeepsValidationReadOnlyAndProductionExplicit(t
 					continue
 				}
 				matched = true
-				if job.Uses != "./.github/workflows/build-"+owner+".yml" || job.If != "${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' }}" ||
+				guard := "${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' }}"
+				if owner == "windows" || owner == "windows-legacy" {
+					guard = "${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' && (!inputs.early_publish || needs.verify-staged-core.result == 'success') }}"
+				}
+				if job.Uses != "./.github/workflows/build-"+owner+".yml" || job.If != guard ||
 					job.Environment != nil || job.Steps != nil || !strings.Contains(fmt.Sprint(job.Needs), "prepare") || !strings.Contains(fmt.Sprint(job.Needs), "validation") ||
 					!reflect.DeepEqual(job.Permissions, map[string]string{"contents": "write", "actions": "read", "id-token": "write", "attestations": "write"}) {
 					t.Fatalf("%s must call the same-commit real owner only after protected preparation and the full19 validation barrier", name)

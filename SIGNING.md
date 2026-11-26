@@ -202,10 +202,17 @@ Production release workflows submit three sequential requests from
 `.github/workflows/build-windows.yml` and one from
 `.github/workflows/build-windows-legacy.yml`. Approve each request only when
 SignPath reports this repository, the `main` branch, the expected workflow, and
-the expected artifact configuration. Each request may wait up to one hour for
-approval and completion. The `signpath_release_dry_run` workflow input exercises
-the same production signing and verification path without uploading signed
-output or publishing a GitHub release.
+the expected artifact configuration. Coordinated staging saves the request and
+its input identity, then releases the runner while approval is pending. Set the
+`SIGNPATH_APPROVAL_WINDOW_HOURS` repository variable to choose the time to
+approve and resume each request. The default is 12 hours and the range is
+1–24 hours. Once SignPath shows **Completed**, use **Re-run failed jobs** on
+the original `stage` run before the deadline in its summary. The retry uses
+the original SHA. The SignPath project's pipeline policy must permit the
+required rerun attempts.
+Direct signing workflows retain the one-hour per-request wait. The
+`signpath_release_dry_run` input exercises production signing and verification
+without uploading signed output or publishing a release.
 
 ## Sigstore verification (keyless)
 
@@ -276,20 +283,25 @@ dispatch commit. In validation and staging it builds that commit and binds root
 
 - `validation` (default) builds and verifies all 19 canonical primary assets
   without production signing, staging or publication.
-- `stage` runs full validation, then the seven owners sign and stage their
-  complete sets. Existing verified draft pairs are preserved. After all seven
-  owners report `staged=true`, the coordinator reads back the 19 primary assets and
-  19 Sigstore bundles and verifies their digests, signatures, provenance and
-  source-bound release notes. The successful stage run uploads an immutable
-  receipt with the verified draft ID, source commit and candidate digest. The
-  summary displays all three values and the receipt artifact ID.
-- `publish` requires only the `stage_receipt_id` from the approved stage
-  summary. Before protected publication, the coordinator authenticates the
-  artifact and its successful stage run and attempt on `main`. The resolver
-  summary shows the authenticated values for the approver to check. On Ubuntu,
-  the publisher verifies the receipt's full draft again and publishes those
-  same assets with `published=true`. This mode skips all native builds and
-  signing jobs. A failed publication can be retried with the same receipt ID.
+- `stage` runs full unsigned validation, then the seven owners sign and stage
+  their sets. With `early_publish` enabled (the default), a separate protected
+  verification job checks the Linux, macOS,
+  Android, AppImage and Snapcraft assets as soon as those owners finish. It
+  records a core receipt for the 15 primary assets and 15 Sigstore bundles while
+  Windows signing can still be pending. The full stage checks all 19 primary
+  assets and 19 bundles and records a full receipt. Each receipt binds the
+  release ID, original source SHA and candidate digest. Set `early_publish`
+  to false to stage the complete release before publishing.
+- `publish` takes the approved `stage_receipt_id`. It authenticates the receipt
+  against its originating run and attempt, verifies the corresponding inventory
+  again and marks the release latest. A core receipt lets the five ready owners
+  publish first. Windows owners bind to that release ID and core digest from
+  the same stage run, then append verified pairs from the original source SHA.
+  If Windows reaches upload before the core is public, rerun the failed jobs
+  in that same stage after publishing the core. Publication of the core requires GitHub
+  immutable releases to be disabled so Windows assets can be added later.
+  This mode skips native builds and signing. A failed publication can be retried
+  with the same receipt ID.
 
 The seven direct build workflows remain a fallback for platform validation and
 staging. Their existing `publish_release=true` input signs and stages only.
@@ -326,16 +338,25 @@ signing/retry window. Keep credentials, private keys, memory dumps and personal
 filesystem paths out of this evidence. The release gate verifies remote bytes,
 provenance, exact asset ownership and the source-bound tag before publication.
 
-Read back the final release ID, tag, target SHA, `draft=false`, `prerelease=false`
-and complete 38-asset set. A successful leaf job can leave an incomplete draft;
-it does not establish that publication occurred.
+Read back the public release ID, tag, target SHA, `draft=false`, `prerelease=false`
+and the approved inventory. When using a core receipt, expect at least the
+30 verified core assets. After Windows staging completes, verify the entire
+38-asset set on the same release ID.
 Keep the approved draft untouched during publication. The shared queue serializes
 workflow writes, and the finalizer checks the approved inventory before and after
 publication. GitHub's editor is outside that queue. If publication fails after
 updating the release, inspect its actual state before taking any recovery action.
 
+After an HTTP `502 Bad Gateway` during a Windows upload, GitHub may leave a
+zero-byte asset in state `starter`. Before retrying, list assets for the approved
+release ID and confirm the placeholder's exact asset ID, expected Windows asset
+name, state `starter`, and size zero. Obtain separate approval to delete only
+that asset by ID. Preserve all uploaded binaries and their sidecars.
+[GitHub release asset uploads](https://docs.github.com/en/rest/releases/assets#upload-a-release-asset)
+
 For staging recovery, first verify the original staged artifact/bundle pairs by
-ID, digest, source and provenance, then rerun only failed jobs in the same run.
+ID, digest, source and provenance. Then use **Re-run failed jobs** in the original
+`stage` run.
 Successful signing jobs' retained full-owner generations let staging retry
 restore and verify the original bytes without signing or attesting again.
 The producing attempt can precede the

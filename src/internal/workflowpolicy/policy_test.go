@@ -319,7 +319,7 @@ func nativeSigningGuard(owner string) string {
 	direct := directReleaseInvocation(owner)
 	if owner == "build-windows" || owner == "build-windows-legacy" {
 		indirect := strings.Replace(direct, " == ", " != ", 1)
-		return "${{ always() && !cancelled() && ((" + direct + " && needs.build.result == 'success' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run)) || (" + indirect + " && needs.inspect.result == 'success' && needs.inspect.outputs.state != 'complete')) }}"
+		return "${{ always() && !cancelled() && ((" + direct + " && needs.build.result == 'success' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.publish_release || inputs.signpath_test || inputs.signpath_release_dry_run)) || (" + indirect + " && needs.inspect.result == 'success' && needs.inspect.outputs.state == 'missing')) }}"
 	}
 	return "${{ always() && !cancelled() && ((" + direct + " && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_release && needs.build.result == 'success') || (! (" + direct + ") && needs.inspect.result == 'success' && needs.inspect.outputs.state != 'complete')) }}"
 }
@@ -536,8 +536,8 @@ func TestWindowsReleaseAuthenticodeSigningPrecedesPackagingAndSigstore(t *testin
 	if got := unsignedUpload.With["name"]; got != "unsigned-windows-attempt-${{ github.run_attempt }}" {
 		t.Fatalf("unsigned Windows artifact name = %#v, want per-attempt unsigned-windows carrier", got)
 	}
-	if got := unsignedUpload.With["retention-days"]; got != 1 {
-		t.Fatalf("unsigned Windows artifact retention = %#v, want 1 day", got)
+	if got := unsignedUpload.With["retention-days"]; got != windowsSigningInputRetention {
+		t.Fatalf("unsigned Windows artifact retention = %#v, want enough time for all coordinator requests", got)
 	}
 
 	signJob := mustJob(t, workflow, "sign")
@@ -700,8 +700,8 @@ func TestWindowsLegacyReleaseUsesSignPathBeforeSigstore(t *testing.T) {
 	if got := unsignedUpload.With["name"]; got != "unsigned-windows-legacy-attempt-${{ github.run_attempt }}" {
 		t.Fatalf("unsigned legacy artifact name = %#v, want per-attempt unsigned-windows-legacy carrier", got)
 	}
-	if got := unsignedUpload.With["retention-days"]; got != 1 {
-		t.Fatalf("unsigned legacy artifact retention = %#v, want 1 day", got)
+	if got := unsignedUpload.With["retention-days"]; got != windowsSigningInputRetention {
+		t.Fatalf("unsigned legacy artifact retention = %#v, want enough time for coordinator continuation", got)
 	}
 
 	signJob := mustJob(t, workflow, "sign")
