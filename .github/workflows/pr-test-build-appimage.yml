@@ -1,0 +1,65 @@
+name: pr-test-build-appimage
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/pr-test-build-appimage.yml
+      - .github/workflows/build-appimage.yml
+      - .github/actions/build-appimage/**
+      - .github/actions/stage-release/release-manifest.sh
+      - .github/scripts/*appimage*
+      - .github/scripts/prepare-debian-release-image.sh
+      - .github/scripts/prepare-release-go.sh
+      - .github/scripts/release-materials.sh
+      - .github/toolchains/appimage-build.json
+      - .github/toolchains/appimage-release/**
+      - .github/toolchains/appimage-verifier/**
+      - .github/toolchains/linux-release/Dockerfile
+      - .github/toolchains/release-go.json
+      - dist/linux/**
+      - images/key.svg
+      - src/go.mod
+      - src/go.sum
+      - VERSION
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-test-build-appimage:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+
+    - name: Bind AppImage source and canonical manifest
+      id: source
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        version=$(cat VERSION)
+        digest=$(bash .github/actions/stage-release/release-manifest.sh "$version" | sha256sum)
+        {
+          echo "source-sha=$SOURCE_SHA"
+          echo "version=$version"
+          echo "manifest-digest=${digest%% *}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Build and smoke-test unsigned AppImage
+      uses: ./.github/actions/build-appimage
+      with:
+        retain-signing-input: "false"
+        source-sha: ${{ steps.source.outputs.source-sha }}
+        version: ${{ steps.source.outputs.version }}
+        manifest-digest: ${{ steps.source.outputs.manifest-digest }}

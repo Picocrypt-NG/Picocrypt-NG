@@ -75,7 +75,7 @@ func TestFailedForcedReadCannotClaimRetainedOutputInRecursiveCompletion(t *testi
 }
 
 func TestRecursiveFailedForceWithoutRetainedOutputKeepsFailureStatus(t *testing.T) {
-	status := recursiveOperationStatus(operationInput{mode: "decrypt"}, operationResult{kept: true, failed: 1})
+	status := recursiveOperationStatus(operationResult{kept: true, failed: 1})
 	if status.Kind != app.StatusRecursiveFailedAll || status.Color != util.RED {
 		t.Fatalf("no-output failure was converted into retained recovery warning: %+v", status)
 	}

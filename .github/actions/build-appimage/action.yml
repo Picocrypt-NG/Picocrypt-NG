@@ -63,29 +63,24 @@ runs:
         test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
         echo "run-attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-    - name: Setup Go
-      uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
-      with:
-        go-version: "1.27.4"
-        cache-dependency-path: src/go.sum
-
-    - name: Install packages
+    - name: Prepare verified AppImage build materials
       shell: bash
       run: |
-        sudo apt update
-        sudo apt install -y gcc pkg-config libgl1-mesa-dev xorg-dev libgtk-3-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev libgl1 desktop-file-utils librsvg2-bin curl jq file gnupg
-
-    - name: Build GUI
-      shell: bash
-      run: |
-        cd src
-        GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=1 go build -v -tags migrated_fynedo -ldflags="-s -w" -o Picocrypt-NG ./cmd/picocrypt
+        set -euo pipefail
+        work="$RUNNER_TEMP/picocrypt-release-materials"
+        bash .github/scripts/prepare-release-go.sh linux-amd64 "$work"
+        bash .github/scripts/prepare-appimage-release.sh "$work"
+        mkdir -- "$work/appimage-build" "$work/appimage-tools"
 
     - name: Fetch and verify AppImage tooling
       shell: bash
+      run: bash .github/scripts/install-appimage-build-tools.sh "$RUNNER_TEMP/picocrypt-release-materials/appimage-tools"
+
+    - name: Build GUI
+      shell: bash .github/scripts/run-appimage-release-build.sh {0}
       run: |
-        mkdir .appimage-tools
-        bash .github/scripts/install-appimage-build-tools.sh .appimage-tools
+        output="$PWD/Picocrypt-NG"
+        GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=1 go -C "$SOURCE_ROOT/src" build -v -tags migrated_fynedo -ldflags="-s -w" -o "$output" ./cmd/picocrypt
 
     - name: Setup uv for verifier controls
       uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
@@ -107,21 +102,21 @@ runs:
         # little from stripping; skipping it removes a fragile step (linuxdeploy's strip
         # aborts on libraries using newer ELF sections, e.g. .relr.dyn) for ~2-3 MB.
         NO_STRIP: "true"
-      shell: bash
+      shell: bash .github/scripts/run-appimage-release-build.sh {0}
       run: |
-        VERSION=$(cat VERSION)
+        VERSION=$(cat "$SOURCE_ROOT/VERSION")
         mkdir -p stage AppDir/usr/share/metainfo
 
         # Desktop entry: point Exec at the bundled binary's basename.
-        cp dist/linux/io.github.picocrypt_ng.Picocrypt-NG.desktop stage/
+        cp "$SOURCE_ROOT/dist/linux/io.github.picocrypt_ng.Picocrypt-NG.desktop" stage/
         sed -i 's|^Exec=.*|Exec=Picocrypt-NG %f|' stage/io.github.picocrypt_ng.Picocrypt-NG.desktop
 
         # App icon (must match the desktop Icon= key) rendered from the same SVG as the .deb.
         rsvg-convert --format png --width 256 --height 256 \
-          --output stage/io.github.picocrypt_ng.Picocrypt-NG.png images/key.svg
+          --output stage/io.github.picocrypt_ng.Picocrypt-NG.png "$SOURCE_ROOT/images/key.svg"
 
         # AppStream metadata so AppImage-aware tooling can show app info / update sources.
-        cp dist/linux/io.github.picocrypt_ng.Picocrypt-NG.metainfo.xml AppDir/usr/share/metainfo/
+        cp "$SOURCE_ROOT/dist/linux/io.github.picocrypt_ng.Picocrypt-NG.metainfo.xml" AppDir/usr/share/metainfo/
 
         # Deterministic output filename (independent of the binary's internal version).
         export OUTPUT="Picocrypt-NG-${VERSION}-x86_64.AppImage"
@@ -135,13 +130,13 @@ runs:
         UPDATE_INFORMATION="gh-releases-zsync|${GITHUB_REPOSITORY%/*}|${GITHUB_REPOSITORY#*/}|latest|Picocrypt-NG-*-x86_64.AppImage.zsync"
         # linuxdeploy only creates AppDir. The separately pinned producer receives an
         # explicit runtime, avoiding both the plugin's producer and runtime downloads.
-        ./.appimage-tools/linuxdeploy \
+        "$APPIMAGE_TOOLS/linuxdeploy" \
           --appdir AppDir \
-          --executable src/Picocrypt-NG \
+          --executable Picocrypt-NG \
           --desktop-file stage/io.github.picocrypt_ng.Picocrypt-NG.desktop \
           --icon-file stage/io.github.picocrypt_ng.Picocrypt-NG.png
-        ARCH=x86_64 ./.appimage-tools/appimagetool \
-          --runtime-file .appimage-tools/runtime --updateinformation "$UPDATE_INFORMATION" \
+        ARCH=x86_64 "$APPIMAGE_TOOLS/appimagetool" \
+          --runtime-file "$APPIMAGE_TOOLS/runtime" --updateinformation "$UPDATE_INFORMATION" \
           AppDir "$OUTPUT"
 
         test -f "$OUTPUT"
@@ -154,6 +149,7 @@ runs:
       run: |
         VERSION=$(cat VERSION)
         APP="Picocrypt-NG-${VERSION}-x86_64.AppImage"
+        cd "$RUNNER_TEMP/picocrypt-release-materials/appimage-build"
         # --version drives the embedded CLI (cli.Execute) and exits before Fyne/OpenGL
         # init, so this needs no display. It still loads every DT_NEEDED shared library at
         # startup, so a broken/incomplete bundle fails here instead of shipping silently.
@@ -165,10 +161,20 @@ runs:
       shell: bash
       run: |
         VERSION=$(cat VERSION)
+        build="$RUNNER_TEMP/picocrypt-release-materials/appimage-build"
         mkdir -p out
-        mv "Picocrypt-NG-${VERSION}-x86_64.AppImage" out/
-        mv "Picocrypt-NG-${VERSION}-x86_64.AppImage.zsync" out/
+        mv "$build/Picocrypt-NG-${VERSION}-x86_64.AppImage" out/
+        mv "$build/Picocrypt-NG-${VERSION}-x86_64.AppImage.zsync" out/
 
+    - name: Prepare signing input
+      if: ${{ inputs.retain-signing-input == 'true' }}
+      id: prepare-signing-input
+      shell: bash
+      run: |
+        build="$RUNNER_TEMP/picocrypt-release-materials/appimage-build"
+        tar --create --file AppDir.tar -C "$build" AppDir
+        DIGEST=$(sha256sum < AppDir.tar)
+        echo "sha256=${DIGEST%% *}" >> "$GITHUB_OUTPUT"
 
     - name: Record AppImage payload manifest
       shell: bash
@@ -176,8 +182,19 @@ runs:
         SOURCE_SHA: ${{ inputs.source-sha }}
         SOURCE_VERSION: ${{ inputs.version }}
         CANONICAL_MANIFEST_SHA256: ${{ inputs.manifest-digest }}
+        RETAIN_SIGNING_INPUT: ${{ inputs.retain-signing-input }}
+        SIGNING_INPUT_SHA256: ${{ steps.prepare-signing-input.outputs.sha256 }}
       run: |
         set -euo pipefail
+        materials_file="$RUNNER_TEMP/picocrypt-release-materials/appimage-materials.json"
+        test -f "$materials_file" && test ! -L "$materials_file" && test -s "$materials_file" || exit 1
+        expected_materials=$(bash .github/scripts/release-materials.sh build-appimage.yml amd64)
+        materials=$(jq -ce --argjson expected "$expected_materials" 'select(. == $expected)' "$materials_file")
+        case "$RETAIN_SIGNING_INPUT" in
+          true) [[ $SIGNING_INPUT_SHA256 =~ ^[0-9a-f]{64}$ ]] ;;
+          false) test -z "$SIGNING_INPUT_SHA256" ;;
+          *) exit 1 ;;
+        esac
         canonical=$(bash .github/actions/stage-release/release-manifest.sh "$SOURCE_VERSION")
         actual=$(printf '%s\n' "$canonical" | sha256sum)
         test "${actual%% *}" = "$CANONICAL_MANIFEST_SHA256"
@@ -192,10 +209,12 @@ runs:
         done <<< "$expected" | jq -sc 'sort_by(.name)')
         jq -nS --arg repository "$GITHUB_REPOSITORY" --arg source_sha "$SOURCE_SHA" \
           --arg version "$SOURCE_VERSION" --arg canonical_manifest_sha256 "$CANONICAL_MANIFEST_SHA256" \
+          --argjson materials "$materials" --arg signing_input_sha256 "$SIGNING_INPUT_SHA256" \
           --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" --argjson files "$files" \
           '{schema_version:1,repository:$repository,source_sha:$source_sha,version:$version,
             canonical_manifest_sha256:$canonical_manifest_sha256,owner_workflow:"build-appimage.yml",
-            arch:"amd64",run_id:$run_id,run_attempt:$run_attempt,files:$files}' > out/payload-manifest.json
+            arch:"amd64",run_id:$run_id,run_attempt:$run_attempt,materials:$materials,files:$files}
+            + (if $signing_input_sha256 == "" then {} else {signing_input_sha256:$signing_input_sha256} end)' > out/payload-manifest.json
 
     - name: Upload artifacts
       id: upload
@@ -208,15 +227,6 @@ runs:
         compression-level: 0
         retention-days: 7
         overwrite: false
-
-    - name: Prepare signing input
-      if: ${{ inputs.retain-signing-input == 'true' }}
-      id: prepare-signing-input
-      shell: bash
-      run: |
-        tar --create --file AppDir.tar AppDir
-        DIGEST=$(sha256sum < AppDir.tar)
-        echo "sha256=${DIGEST%% *}" >> "$GITHUB_OUTPUT"
 
     - name: Upload signing input
       if: ${{ inputs.retain-signing-input == 'true' }}

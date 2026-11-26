@@ -25,6 +25,16 @@ case "$1:$2" in
             '.architectures[$arch] + {snapshot:$ARGS.named.snapshot,packages_sha256:$packages_sha256}' \
             --arg snapshot "$(jq -er .snapshot "$lock")" "$lock")
         ;;
+    build-appimage.yml:amd64)
+        lock=.github/toolchains/appimage-release/manifest.json
+        platform=linux-amd64
+        packages=$(digest .github/toolchains/appimage-release/os-packages-amd64.lock)
+        appimage_build_tools=$(digest .github/toolchains/appimage-build.json)
+        dockerfile=$(digest .github/toolchains/linux-release/Dockerfile)
+        extra=$(jq -ce --arg packages_sha256 "$packages" --arg appimage_build_tools_sha256 "$appimage_build_tools" \
+            --arg dockerfile_sha256 "$dockerfile" \
+            '{base_image,snapshot} + {$packages_sha256,$appimage_build_tools_sha256,$dockerfile_sha256}' "$lock")
+        ;;
     build-snapcraft.yml:amd64)
         lock=.github/toolchains/snap-release/manifest.json
         platform=linux-amd64

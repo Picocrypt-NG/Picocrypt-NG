@@ -154,7 +154,6 @@ const (
 	StatusInvalidSplitSize
 	StatusCompletedSomeDeleteFailed
 	StatusKeptOutputUnverified
-	StatusCompletedVolumeDeleteFailed
 	StatusStartupPathAccessFailed
 	StatusStartupPathPartialAccessFailed
 	StatusOpenedPathsPreparing

@@ -63,15 +63,19 @@ verify_payload() {
     expected=$(awk -v owner="$owner" '$2 == owner {print $1}' <<< "$canonical" | LC_ALL=C sort) || return 1
     test -n "$expected" || return 1
     case "$owner" in
-        build-macos.yml|build-android.yml|build-snapcraft.yml)
+        build-appimage.yml|build-macos.yml|build-android.yml|build-snapcraft.yml)
             materials=$(bash .github/scripts/release-materials.sh "$owner" "$arch") || return 1
             ;;
     esac
     jq -e --argjson materials "$materials" --arg repository "$GITHUB_REPOSITORY" --arg source "$SOURCE_SHA" --arg version "$SOURCE_VERSION" \
         --arg canonical "$CANONICAL_MANIFEST_SHA256" --arg owner "$owner" --arg arch "$arch" \
         --arg run "$GITHUB_RUN_ID" --arg attempt "$attempt" --arg names "$expected" '
-        type == "object" and (del(.materials) | keys) == ["arch","canonical_manifest_sha256","files","owner_workflow","repository",
+        type == "object" and (del(.materials,.signing_input_sha256) | keys) == ["arch","canonical_manifest_sha256","files","owner_workflow","repository",
           "run_attempt","run_id","schema_version","source_sha","version"]
+          and (if $owner == "build-appimage.yml" and has("signing_input_sha256") then
+                 (.signing_input_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+               else (has("signing_input_sha256") | not)
+               end)
           and (if $owner == "build-macos.yml" then
                  (.materials | del(.os_build,.image_version)) == $materials
                  and (.materials.os_build | test("^[0-9]{2}[A-Z][0-9]+[a-z]?$"))

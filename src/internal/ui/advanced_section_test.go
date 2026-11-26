@@ -255,6 +255,7 @@ func TestBuildEncryptOptionsWireCheckboxesToState(t *testing.T) {
 }
 
 func TestBuildDecryptOptionsWireCheckboxesToState(t *testing.T) {
+	resetLocalizationForTest(t)
 	newTestFyneApp(t)
 
 	a := createTestApp(t)
@@ -267,7 +268,7 @@ func TestBuildDecryptOptionsWireCheckboxesToState(t *testing.T) {
 
 		assertCheckboxWiring(t, a.forceDecryptCheck, "Force decrypt", func() bool { return a.State.Keep })
 		assertCheckboxWiring(t, a.verifyFirstCheck, "Verify first", func() bool { return a.State.VerifyFirst })
-		assertCheckboxWiring(t, a.deleteVolumeCheck, "Delete volume", func() bool { return a.State.Delete })
+		assertNoLegacyDeleteOption(t, a.advancedContainer)
 		assertCheckboxWiring(t, a.sameLevelCheck, "Same level", func() bool { return a.State.SameLevel })
 
 		// autoUnzip's OnChanged(false) also clears SameLevel, so assert it directly.
@@ -349,6 +350,7 @@ func TestBuildMobileEncryptOptionsWireCheckboxesToState(t *testing.T) {
 }
 
 func TestBuildMobileDecryptOptionsWireCheckboxesToState(t *testing.T) {
+	resetLocalizationForTest(t)
 	newTestFyneApp(t)
 
 	a := createTestApp(t)
@@ -359,7 +361,19 @@ func TestBuildMobileDecryptOptionsWireCheckboxesToState(t *testing.T) {
 
 		assertCheckboxWiring(t, a.forceDecryptCheck, "Force decrypt", func() bool { return a.State.Keep })
 		assertCheckboxWiring(t, a.verifyFirstCheck, "Verify first", func() bool { return a.State.VerifyFirst })
-		assertCheckboxWiring(t, a.deleteCheck, "Delete encrypted", func() bool { return a.State.Delete })
+		assertNoLegacyDeleteOption(t, a.advancedContainer)
+	})
+}
+
+func assertNoLegacyDeleteOption(t *testing.T, root fyne.CanvasObject) {
+	t.Helper()
+	walkCanvasTree(root, func(obj fyne.CanvasObject) {
+		if check, ok := obj.(*ttwidget.Check); ok {
+			switch check.Text {
+			case "Delete volume", "Delete encrypted":
+				t.Errorf("legacy decryption offers source deletion through %q", check.Text)
+			}
+		}
 	})
 }
 
@@ -563,7 +577,6 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 		}{
 			{"Force decrypt", a.forceDecryptCheck},
 			{"Verify first", a.verifyFirstCheck},
-			{"Delete volume", a.deleteVolumeCheck},
 			{"Auto unzip", a.autoUnzipCheck},
 			{"Same level", a.sameLevelCheck},
 		})

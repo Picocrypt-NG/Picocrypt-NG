@@ -24,7 +24,6 @@ func BenchmarkOperationSourceCleanup(b *testing.B) {
 					b.Fatal(err)
 				}
 				a := &App{}
-				input := operationInput{mode: "decrypt", delete: true}
 				b.ReportAllocs()
 				for range b.N {
 					sources := make([]deletionSource, 0, count)
@@ -47,10 +46,9 @@ func BenchmarkOperationSourceCleanup(b *testing.B) {
 						sources = append(sources, source)
 					}
 					manifest := &operationDeletionManifest{files: sources}
-					// A completed legacy result isolates filesystem cleanup from KDF work.
 					completed := operationResult{completed: true}
 					b.StartTimer()
-					result := a.cleanupOperationSources(context.Background(), input, manifest, completed)
+					result := a.removeCapturedSources(context.Background(), manifest, completed)
 					b.StopTimer()
 					if result.err != nil || !result.completed || result.cancelled || result.deleteFailed {
 						b.Fatalf("cleanup=%+v", result)

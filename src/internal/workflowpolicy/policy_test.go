@@ -432,7 +432,7 @@ func TestAppImageWorkflowIsPortableSmokeTestedAndPinned(t *testing.T) {
 	if fetch.If != "" || (fetch.ContinueOnError != nil && fetch.ContinueOnError != false) {
 		t.Fatal("AppImage tooling verification must be unconditional and blocking")
 	}
-	mustContain(t, fetch.Run, "bash .github/scripts/install-appimage-build-tools.sh .appimage-tools")
+	mustContain(t, fetch.Run, `bash .github/scripts/install-appimage-build-tools.sh "$RUNNER_TEMP/picocrypt-release-materials/appimage-tools"`)
 	installer := mustReadRepoFile(t, ".github/scripts/install-appimage-build-tools.sh")
 	mustContainInOrder(t, installer, `--output "$destination/$name" "$url"`, `actual=$(sha256sum < "$destination/$name")`, `[[ ${actual%% *} == "$expected" ]]`, `chmod +x "$destination/linuxdeploy" "$destination/appimagetool"`)
 	var manifest struct {

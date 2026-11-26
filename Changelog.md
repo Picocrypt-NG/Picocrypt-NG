@@ -4,7 +4,7 @@
 - PCV3 passwords use a frozen, bounded Unicode 18 NFC profile. Inputs that require implicit CGJ insertion are rejected before KDF; explicitly entered CGJ remains significant.
 - Recovery messages distinguish partial and unverified results without inferring the trust of individual bytes from the outcome alone. Desktop archive-folder errors remain visible and allow another selection or closing the result.
 - Choosing a legacy desktop output path no longer truncates an existing file. Overwrite confirmation applies only to the confirmed destination, and later iCloud file batches ask whether to replace or extend the selection.
-- ZIP extraction reports incomplete cleanup when created-object identity is unavailable or changes. Desktop source deletion holds the parent used for inspection and removal. Recombination with source deletion checks captured chunk identities and sizes before decryption.
+- ZIP extraction reports incomplete cleanup when created-object identity is unavailable or changes. Desktop source deletion after PCV3 encryption holds the parent used for inspection and removal. Legacy desktop decryption keeps the encrypted source, including split volumes.
 - Android restores only app-owned input paths. Clearing passwords also clears visible fields, and accepted legacy operations retain credentials through cancellation and Force retry.
 - Sequential keyfile processing avoids exhausting file descriptors. Ordinary legacy Reed-Solomon reads reject partial trailing blocks, and WASM authenticates v2 headers before reporting missing or incorrect keyfiles.
 - The source requires Go 1.27.4 and uses `golang.org/x/net` v0.62.0. Windows legacy builds apply pinned compatibility patches to the official Go source.

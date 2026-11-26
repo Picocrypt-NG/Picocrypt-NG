@@ -68,6 +68,22 @@ func releaseMaterialsFixture(t *testing.T, owner, arch string) map[string]any {
 		"go_sum_sha256": hash("src/go.sum"),
 	}
 	switch owner {
+	case "build-appimage.yml":
+		const lock = ".github/toolchains/appimage-release/manifest.json"
+		var appImage struct {
+			BaseImage string `json:"base_image"`
+			Snapshot  string `json:"snapshot"`
+		}
+		if err := json.Unmarshal([]byte(mustReadRepoFile(t, lock)), &appImage); err != nil {
+			t.Fatal(err)
+		}
+		result["base_image"] = appImage.BaseImage
+		result["snapshot"] = appImage.Snapshot
+		result["go_sha256"] = goRelease.Archives["linux-amd64"]
+		result["toolchain_lock_sha256"] = hash(lock)
+		result["packages_sha256"] = hash(".github/toolchains/appimage-release/os-packages-amd64.lock")
+		result["appimage_build_tools_sha256"] = hash(".github/toolchains/appimage-build.json")
+		result["dockerfile_sha256"] = hash(".github/toolchains/linux-release/Dockerfile")
 	case "build-android.yml":
 		const lock = ".github/toolchains/android-release.json"
 		var android struct {

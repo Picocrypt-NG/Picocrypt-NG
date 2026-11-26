@@ -73,16 +73,19 @@ concurrency:
 jobs:
   build:
     if: ${{ github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref) }}
-    # ubuntu-22.04 (glibc 2.35) is the portability floor. AppImage was dropped once
-    # "for better portability" (Changelog v1.34); building on the newest runner's glibc
-    # forward-binds symbols that fail on older distros and would reproduce that. GL and
-    # GPU-driver libraries are intentionally NOT bundled (linuxdeploy excludelist) -- they
-    # are provided by the host, which is what keeps the AppImage portable (incl. Nvidia).
+    # Keep the smoke-test host at the locked Jammy builder's glibc 2.35 floor.
+    # linuxdeploy leaves GL and GPU-driver libraries to the host.
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     permissions:
       contents: read
     outputs:
+      source-sha: ${{ steps.source.outputs.source-sha }}
+      version: ${{ steps.source.outputs.version }}
+      manifest-digest: ${{ steps.source.outputs.manifest-digest }}
+      artifact-id: ${{ steps.build.outputs.artifact-id }}
+      artifact-digest: ${{ steps.build.outputs.artifact-digest }}
+      run-attempt: ${{ steps.build.outputs.run-attempt }}
       signing-input-id: ${{ steps.build.outputs.signing-input-id }}
       signing-input-sha256: ${{ steps.build.outputs.signing-input-sha256 }}
       signing-input-digest: ${{ steps.build.outputs.signing-input-digest }}
@@ -244,12 +247,12 @@ jobs:
       group: ${{ github.repository }}-release-publication
       queue: max
     env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      SOURCE_VERSION: ${{ inputs.version }}
-      CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 }}
+      SOURCE_SHA: ${{ inputs.source_sha || needs.build.outputs.source-sha }}
+      SOURCE_VERSION: ${{ inputs.version || needs.build.outputs.version }}
+      CANONICAL_MANIFEST_SHA256: ${{ inputs.canonical_manifest_sha256 || needs.build.outputs.manifest-digest }}
       OWNER_WORKFLOW: build-appimage.yml
       PLATFORM_OWNER: build-appimage.yml
-      PLATFORM_ARTIFACTS_JSON: '[{"owner":"build-appimage.yml","arch":"amd64","id":${{ inputs.raw_artifact_id }},"digest":"${{ inputs.raw_artifact_digest }}","attempt":${{ inputs.raw_producing_attempt }}}]'
+      PLATFORM_ARTIFACTS_JSON: '[{"owner":"build-appimage.yml","arch":"amd64","id":${{ inputs.raw_artifact_id || needs.build.outputs.artifact-id }},"digest":"${{ inputs.raw_artifact_digest || needs.build.outputs.artifact-digest }}","attempt":${{ inputs.raw_producing_attempt || needs.build.outputs.run-attempt }}}]'
       ARTIFACT_ROOT: artifacts
       PLATFORM_MANIFEST: ${{ github.workspace }}/appimage-artifacts.json
     outputs:
@@ -313,21 +316,21 @@ jobs:
         esac
         printf 'state=%s\nstaged=%s\nreused=%s\n' "$state" "$staged" "$reused" >> "$GITHUB_OUTPUT"
     - name: Verify immutable AppImage raw metadata
-      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
       run: bash .github/actions/verify-platform-artifacts/verify-artifacts.sh metadata
     - name: Download AppImage raw artifact
-      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
-        artifact-ids: ${{ inputs.raw_artifact_id }}
+        artifact-ids: ${{ inputs.raw_artifact_id || needs.build.outputs.artifact-id }}
         path: artifacts/build-appimage
         merge-multiple: true
         digest-mismatch: error
     - name: Verify AppImage raw payload
-      if: ${{ steps.inventory.outputs.state == 'missing' }}
+      if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       shell: bash
       run: bash .github/actions/verify-platform-artifacts/verify-artifacts.sh payload
     - name: Verify AppImage signing-input metadata
@@ -361,9 +364,16 @@ jobs:
       if: ${{ (github.workflow_ref == format('{0}/.github/workflows/build-appimage.yml@{1}', github.repository, github.ref)) || steps.inventory.outputs.state == 'missing' }}
       env:
         EXPECTED_SHA256: ${{ inputs.signing_input_sha256 || needs.build.outputs.signing-input-sha256 }}
+        CARRIER_ATTEMPT: ${{ inputs.signing_input_attempt || needs.build.outputs.signing-input-attempt }}
       run: |
+        set -euo pipefail
         [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+        [[ "$CARRIER_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
+        jq -e --arg digest "$EXPECTED_SHA256" --arg attempt "$CARRIER_ATTEMPT" '
+          .signing_input_sha256 == $digest and .run_attempt == $attempt
+          ' artifacts/build-appimage/payload-manifest.json >/dev/null
         cd signing-input
+        test -f AppDir.tar && test ! -L AppDir.tar
         echo "$EXPECTED_SHA256  AppDir.tar" | sha256sum --check --strict --status
         cd ..
         python3 .github/scripts/extract-appimage-appdir.py signing-input/AppDir.tar signing-work

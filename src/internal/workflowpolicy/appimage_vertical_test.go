@@ -11,55 +11,39 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
-// These checks freeze the extracted release contract, not product cryptography.
+// These checks cover the shared production path and signing authority boundaries.
 func TestAppImageSharedBuildPreservesProductionStepsAndSigningBoundary(t *testing.T) {
-	var action struct {
-		Runs struct {
-			Steps []map[string]any `yaml:"steps"`
-		} `yaml:"runs"`
-	}
-	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/actions/build-appimage/action.yml")), &action); err != nil {
-		t.Fatal(err)
-	}
-	var frozen []map[string]any
-	active := false
-	for _, step := range action.Runs.Steps {
-		if step["name"] == "Setup Go" {
-			active = true
-		}
-		if active {
-			delete(step, "shell")
-			frozen = append(frozen, step)
-		}
-		if step["name"] == "Prepare to upload artifacts" {
-			break
+	action := mustReadCompositeActionDoc(t, ".github/actions/build-appimage/action.yml")
+	prepare := mustCompositeStepNamed(t, action, "Prepare verified AppImage build materials")
+	mustContainInOrder(t, prepare.Run,
+		`bash .github/scripts/prepare-release-go.sh linux-amd64 "$work"`,
+		`bash .github/scripts/prepare-appimage-release.sh "$work"`,
+	)
+	for _, name := range []string{"Build GUI", "Build AppImage"} {
+		step := mustCompositeStepNamed(t, action, name)
+		if step.Shell != "bash .github/scripts/run-appimage-release-build.sh {0}" || step.If != "" ||
+			step.ContinueOnError == true {
+			t.Fatalf("%s must run unconditionally in the locked offline image", name)
 		}
 	}
-	data, err := json.Marshal(frozen)
-	if err != nil {
-		t.Fatal(err)
+	pack := mustCompositeStepNamed(t, action, "Build AppImage")
+	if pack.Env["APPIMAGE_EXTRACT_AND_RUN"] != "1" {
+		t.Fatal("AppImage packaging must run without FUSE")
 	}
-	const wantBuild = "85ef653a61b84f694e9dae2af83d481330078bd7f3143652edab385d352e9a64"
-	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantBuild {
-		t.Fatalf("unsigned AppImage production steps changed: %s, want %s", got, wantBuild)
-	}
-	prepare := mustCompositeStepNamed(t, mustReadCompositeActionDoc(t, ".github/actions/build-appimage/action.yml"), "Prepare signing input")
-	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(prepare.Run))); got != "a9ebdcb2572d44bf3a3b1b6a8ed1387ebc09cc8fb8c7c4789751e17b7fd226d8" {
-		t.Fatal("the moved AppDir tar/hash producer changed")
-	}
+	mustContainInOrder(t, pack.Run, `"$APPIMAGE_TOOLS/linuxdeploy"`, `"$APPIMAGE_TOOLS/appimagetool"`, `--runtime-file "$APPIMAGE_TOOLS/runtime"`)
 	var owner struct {
 		Jobs map[string]struct{ Steps []map[string]any }
 	}
 	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, ".github/workflows/build-appimage.yml")), &owner); err != nil {
 		t.Fatal(err)
 	}
-	// Original 3b0851a native recipes stay frozen independently of the reusable routing.
+	// Keep the authenticated signing and staging recipes fixed outside the input boundary.
 	for _, recipe := range []struct {
 		job   string
 		names []string
 		want  string
 	}{
-		{"sign", []string{"Check and extract signing input", "Download locked AppImage signing tools", "Build AppImage signing image before loading secrets", "Build signed AppImage", "Verify AppImage signature", "Smoke test AppImage"}, "78237e3dc5f671e6f0883f89c6008d96623af40464fe774e2fd381a17868c7aa"},
+		{"sign", []string{"Check and extract signing input", "Download locked AppImage signing tools", "Build AppImage signing image before loading secrets", "Build signed AppImage", "Verify AppImage signature", "Smoke test AppImage"}, "3e3f41a2cddd2ca6f125debc17b5d73e80557fe0b468626533d2721d55bb934c"},
 		{"release", []string{"Get version tag", "Sign and attest artifacts", "Generate release notes", "Stage release assets"}, "9ef0b33106724f81330a6791c46dfbc2b2b6b8db2eaf3fa1cbb8e6dea86cc813"},
 	} {
 		var selected []map[string]any
@@ -120,12 +104,18 @@ func TestAppImageSharedBuildExportsSourceBoundImmutableArtifact(t *testing.T) {
 		}
 	}
 	if !reflect.DeepEqual(build.Outputs, map[string]string{
+		"source-sha":            "${{ steps.source.outputs.source-sha }}",
+		"version":               "${{ steps.source.outputs.version }}",
+		"manifest-digest":       "${{ steps.source.outputs.manifest-digest }}",
+		"artifact-id":           "${{ steps.build.outputs.artifact-id }}",
+		"artifact-digest":       "${{ steps.build.outputs.artifact-digest }}",
+		"run-attempt":           "${{ steps.build.outputs.run-attempt }}",
 		"signing-input-id":      "${{ steps.build.outputs.signing-input-id }}",
 		"signing-input-sha256":  "${{ steps.build.outputs.signing-input-sha256 }}",
 		"signing-input-digest":  "${{ steps.build.outputs.signing-input-digest }}",
 		"signing-input-attempt": "${{ steps.build.outputs.signing-input-attempt }}",
 	}) {
-		t.Fatal("direct owner must export the real composite signing tuple and tar hash")
+		t.Fatal("direct owner must export the prepared source and both exact producer artifact tuples")
 	}
 	action := mustReadCompositeActionDoc(t, ".github/actions/build-appimage/action.yml")
 	source := mustCompositeStepNamed(t, action, "Assert prepared AppImage source")

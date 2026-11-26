@@ -54,6 +54,20 @@ The Linux AppImage is GPG-signed in CI and carries AppImageUpdate delta-update
 information, so an installed build can update itself in place (downloading only the
 changed blocks via a `.zsync` published alongside each release).
 
+### AppImage build inputs
+
+The unsigned producer builds and packages AppImage inside the locked Ubuntu
+22.04 environment. The lock covers the base image, Debian packages, Go and
+the packaging tools. The signer checks the material record expected for the
+reviewed source and its binding to the exact AppDir archive before importing
+the signing key.
+
+The AppImage dependency review checks current signed Jammy indexes weekly and
+reports the same comparison in validation and staging summaries. Review any
+updates and refresh the lock in a dedicated pull request with an unsigned
+AppImage build. The review job reads package metadata and leaves the release
+build inputs pinned. See the [lock refresh procedure](.github/toolchains/appimage-release/README.md).
+
 ### Release signing key
 
 ```

@@ -44,7 +44,7 @@ func TestSourceRemovalPreCancelledPreservesSourceAndOutput(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	result := (&App{}).cleanupOperationSources(ctx, operationInput{mode: "decrypt", delete: true}, &operationDeletionManifest{files: []deletionSource{source}}, operationResult{completed: true})
+	result := (&App{}).removeCapturedSources(ctx, &operationDeletionManifest{files: []deletionSource{source}}, operationResult{completed: true})
 	if !result.completed || !result.cancelled || result.deleteFailed || result.err != nil {
 		t.Fatalf("cleanup=%+v", result)
 	}
@@ -62,7 +62,7 @@ func TestSourceRemovalDoesNotHideJoinedNotExist(t *testing.T) {
 	a := &App{operationSourceRemover: func(context.Context, deletionSource, bool) error {
 		return errors.Join(os.ErrNotExist, errors.New("close failed"))
 	}}
-	result := a.cleanupOperationSources(context.Background(), operationInput{mode: "decrypt", delete: true}, &operationDeletionManifest{files: []deletionSource{source}}, operationResult{completed: true})
+	result := a.removeCapturedSources(context.Background(), &operationDeletionManifest{files: []deletionSource{source}}, operationResult{completed: true})
 	if !result.completed || result.cancelled || !result.deleteFailed || result.err != nil {
 		t.Fatalf("cleanup=%+v", result)
 	}
@@ -121,7 +121,7 @@ func TestSourceRemovalPinsParent(t *testing.T) {
 		}
 		return root, nil
 	}
-	result := (&App{}).cleanupOperationSources(context.Background(), operationInput{mode: "decrypt", delete: true}, &operationDeletionManifest{files: []deletionSource{source}}, operationResult{completed: true})
+	result := (&App{}).removeCapturedSources(context.Background(), &operationDeletionManifest{files: []deletionSource{source}}, operationResult{completed: true})
 	if result.err != nil || result.cancelled || result.deleteFailed || !result.completed {
 		t.Fatalf("cleanup=%+v", result)
 	}
@@ -220,7 +220,7 @@ func TestSourceRemovalErrorsPreserveOutputAndWarning(t *testing.T) {
 			if directory {
 				manifest = &operationDeletionManifest{directories: []deletionSource{source}}
 			}
-			result := (&App{}).cleanupOperationSources(ctx, operationInput{mode: "decrypt", delete: true}, manifest, operationResult{completed: true, deleteFailed: false})
+			result := (&App{}).removeCapturedSources(ctx, manifest, operationResult{completed: true})
 			if result.err != nil || !result.completed || result.cancelled != wantCancel || result.deleteFailed != wantWarning {
 				t.Fatalf("cleanup=%+v want cancelled=%v warning=%v", result, wantCancel, wantWarning)
 			}
@@ -268,7 +268,7 @@ func TestSourceRemovalCancellationBetweenSourcesKeepsWarning(t *testing.T) {
 		cancel()
 		return err
 	}}
-	result := a.cleanupOperationSources(ctx, operationInput{mode: "decrypt", delete: true}, &operationDeletionManifest{files: []deletionSource{first, second, third}}, operationResult{completed: true})
+	result := a.removeCapturedSources(ctx, &operationDeletionManifest{files: []deletionSource{first, second, third}}, operationResult{completed: true})
 	if !result.completed || !result.cancelled || !result.deleteFailed || result.err != nil {
 		t.Fatalf("cleanup=%+v", result)
 	}
@@ -341,7 +341,7 @@ func TestSourceRemovalPreservesReplacedLeafAndSymlinkTarget(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			result := (&App{}).cleanupOperationSources(context.Background(), operationInput{mode: "decrypt", delete: true}, &operationDeletionManifest{files: []deletionSource{source}}, operationResult{completed: true})
+			result := (&App{}).removeCapturedSources(context.Background(), &operationDeletionManifest{files: []deletionSource{source}}, operationResult{completed: true})
 			if result.err != nil || !result.completed || result.cancelled || !result.deleteFailed {
 				t.Fatalf("cleanup=%+v", result)
 			}

@@ -732,19 +732,18 @@ not readable. Anchored folder/glob members never fall back after an open error.
 GUI source-deletion manifests use the same identities as encryption and reject
 a replaced input before work, rather than capturing a separate deletion target.
 All legacy decrypt-with-recombine operations use their prepared chunk manifest.
-When source deletion is requested, the GUI additionally borrows its captured
-identities through `RecombineExpectedInputs`; they must agree with preparation.
-This extra list is admitted against the shared `ZIPResourceBudget` before
-allocation; its charge remains live through execution and source cleanup, then
-the aliases are cleared and the charge released on every outcome.
+Legacy decryption keeps the encrypted source, including split volumes. When a
+caller supplies an earlier chunk snapshot through `RecombineExpectedInputs`, it
+must agree with preparation. Captured chunk metadata is budgeted through
+execution and its charge is released on every outcome.
 
 GUI source removal opens each immediate parent once, checks the captured leaf
 identity and metadata through that root, then removes only its basename through
 the same root. One parent is held at a time. Parent-open, inspection, removal and
 close errors remain deletion warnings; an already missing source is benign but
 does not hide a close failure. Cancellation stops further removal, and deletion
-failure retains ready output. Existing opt-in, completion, kept/unverified and
-`SourceDeletionAllowed` guards still apply; only captured files, chunks and
+failure retains ready output. Deletion requires an opted-in PCV3 encryption
+operation with `SourceDeletionAllowed`. Only captured files and empty captured
 directories are eligible. Parent pinning does not make the final identity check
 and removal atomic; see the [filesystem limits](docs/SECURITY_CONTRACT.md#filesystem-ownership-and-limits).
 

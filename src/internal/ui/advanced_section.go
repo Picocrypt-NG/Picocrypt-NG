@@ -458,16 +458,9 @@ func (a *App) buildDecryptOptionsInto(target *fyne.Container) {
 
 	row1 := container.NewGridWithColumns(2, a.forceDecryptCheck, a.verifyFirstCheck)
 
-	a.deleteVolumeCheck = ttwidget.NewCheck(tr("advanced.delete_volume.label", "Delete volume"), func(checked bool) {
-		a.State.Delete = checked
-	})
-	a.deleteVolumeCheck.SetToolTip(tr("advanced.delete_volume.tooltip", "Delete volume after decryption"))
-	a.deleteVolumeCheck.SetChecked(a.State.Delete)
-
 	row2 := a.buildArchiveOptions()
 
 	target.Add(row1)
-	target.Add(a.deleteVolumeCheck)
 	target.Add(row2)
 
 	// Disable auto unzip if not a zip file
@@ -604,9 +597,6 @@ func (a *App) updateEncryptOptionsState(advancedDisabled bool, snap app.UISnapsh
 func (a *App) updateDecryptOptionsState(advancedDisabled bool, snap app.UISnapshot) {
 	setWidgetDisabled(a.forceDecryptCheck, advancedDisabled || snap.Deniability)
 	setWidgetDisabled(a.verifyFirstCheck, advancedDisabled)
-	setWidgetDisabled(a.deleteVolumeCheck, advancedDisabled)
-	// On mobile, deleteCheck is used instead of deleteVolumeCheck
-	setWidgetDisabled(a.deleteCheck, advancedDisabled)
 	setWidgetDisabled(a.autoUnzipCheck, advancedDisabled || !strings.HasSuffix(snap.InputFile, ".zip.pcv"))
 	setWidgetDisabled(a.sameLevelCheck, advancedDisabled || !snap.AutoUnzip)
 }

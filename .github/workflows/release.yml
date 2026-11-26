@@ -677,6 +677,11 @@ jobs:
         macOS packaging retains its ad-hoc bundle seal; this is not Developer ID signing or notarization.
         EOF
 
+    - name: Report AppImage dependency updates
+      timeout-minutes: 2
+      shell: bash
+      run: bash .github/scripts/check-appimage-dependency-updates.sh --advisory
+
   owner-linux:
     needs: [prepare, validation, build-amd64, build-arm64]
     if: ${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' }}
