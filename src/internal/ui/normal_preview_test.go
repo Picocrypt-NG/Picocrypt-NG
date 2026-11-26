@@ -158,7 +158,8 @@ func TestNormalPreviewLanguageRefreshPreservesPayloadAndFactors(t *testing.T) {
 	fyne.DoAndWait(func() { a.onDrop([]string{normalPreviewFixture()}) })
 	waitForDropProcessing(t, a)
 	fyne.DoAndWait(func() {
-		for _, code := range []LanguageCode{"en", "ru", "de", "fr", "es", "zh-Hans", "hi", "ko"} {
+		for _, option := range bundledLanguageOptions() {
+			code := option.Code
 			if err := setActiveLanguage(code); err != nil {
 				t.Fatal(err)
 			}
@@ -315,7 +316,8 @@ func TestNormalPreviewHoverUsesActualLabel(t *testing.T) {
 func verifyAuthenticatedCommentLanguageRefresh(t *testing.T, a *App) {
 	t.Helper()
 	fyne.DoAndWait(func() {
-		for _, code := range []LanguageCode{"en", "ru", "de", "fr", "es", "zh-Hans", "hi", "ko"} {
+		for _, option := range bundledLanguageOptions() {
+			code := option.Code
 			if err := setActiveLanguage(code); err != nil {
 				t.Fatal(err)
 			}

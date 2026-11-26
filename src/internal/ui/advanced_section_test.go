@@ -686,7 +686,7 @@ func TestAdvancedDisclosureKeepsOptionTooltipsLocalized(t *testing.T) {
 	}
 	fyne.DoAndWait(func() { fynetest.Tap(a.advancedToggleBtn) })
 
-	assertD1Tooltip := func(language LanguageCode, want string) {
+	assertD1Tooltip := func(t *testing.T, language LanguageCode, want string) {
 		t.Helper()
 		if a.advancedDetail == nil || !a.advancedDetail.Visible() || a.deniabilityCheck == nil ||
 			!canvasTreeContainsObject(a.advancedDetail, a.deniabilityCheck) {
@@ -696,9 +696,9 @@ func TestAdvancedDisclosureKeepsOptionTooltipsLocalized(t *testing.T) {
 			t.Errorf("D1 tooltip in %q = %q, want %q", language, got, want)
 		}
 	}
-	assertD1Tooltip("en", "Hides the format header. Container name and size remain visible.")
+	assertD1Tooltip(t, "en", "Hides the format header. Container name and size remain visible.")
 
-	switchLanguage := func(language LanguageCode) {
+	switchLanguage := func(t *testing.T, language LanguageCode) {
 		t.Helper()
 		var err error
 		fyne.DoAndWait(func() { err = a.SwitchLanguage(language) })
@@ -706,10 +706,22 @@ func TestAdvancedDisclosureKeepsOptionTooltipsLocalized(t *testing.T) {
 			t.Fatalf("SwitchLanguage(%q) returned error: %v", language, err)
 		}
 	}
-	switchLanguage("ko")
-	assertD1Tooltip("ko", "형식 헤더가 숨겨집니다. 컨테이너 이름과 크기는 계속 표시됩니다.")
+	switchLanguage(t, "ko")
+	assertD1Tooltip(t, "ko", "형식 헤더가 숨겨집니다. 컨테이너 이름과 크기는 계속 표시됩니다.")
 
-	switchLanguage("ru")
+	for _, option := range bundledLanguageOptions() {
+		if option.Code == "ko" {
+			continue
+		}
+		t.Run(string(option.Code), func(t *testing.T) {
+			catalog := loadEmbeddedCatalog(t, "translation/"+string(option.Code)+".json")
+			want := catalogString(t, catalog, "advanced.deniability.pcv3_tooltip")
+			switchLanguage(t, option.Code)
+			assertD1Tooltip(t, option.Code, want)
+		})
+	}
+
+	switchLanguage(t, "ru")
 	if a.advancedToggleBtn == nil {
 		t.Fatal("advanced disclosure button was not built")
 	}
