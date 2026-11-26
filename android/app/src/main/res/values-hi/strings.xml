@@ -193,7 +193,7 @@
     <string name="pcv3_factor_keyfiles_only">केवल कुंजी फ़ाइलें</string>
     <string name="pcv3_factor_combined">पासवर्ड और कुंजी फ़ाइलें</string>
     <string name="pcv3_keyfile_order_heading">कुंजी फ़ाइलों का क्रम</string>
-    <string name="pcv3_keyfile_order_selected">चुना हुआ क्रम उपयोग करें</string>
+    <string name="pcv3_keyfile_order_selected">चुना हुआ क्रम</string>
     <string name="pcv3_keyfile_order_any">कोई भी क्रम</string>
     <string name="pcv3_password_not_allowed">पासवर्ड हटाएँ या संयुक्त प्रमाणीकरण कारक नीति चुनें।</string>
     <string name="pcv3_create">PCV3 बनाएँ</string>
@@ -237,11 +237,12 @@
     <string name="pcv3_outcome_success_title">डिक्रिप्शन पूरा हुआ</string>
     <string name="pcv3_outcome_success_body">आउटपुट पूरी तरह प्रमाणित है।</string>
     <string name="pcv3_create_outcome_title">PCV3 वॉल्यूम बनाया गया</string>
-    <string name="pcv3_create_outcome_body">नया वॉल्यूम तैयार है। इसे रखने के लिए चुने गए स्थान पर सहेजें।</string>
+    <string name="pcv3_create_outcome_body">एन्क्रिप्टेड वॉल्यूम तैयार है। इसे सहेजने का स्थान चुनें।</string>
+    <string name="pcv3_create_outcome_complete_body">एन्क्रिप्शन पूरा हो गया।</string>
     <string name="pcv3_outcome_archive_pending_title">प्रमाणित आर्काइव निकालने के लिए तैयार है</string>
     <string name="pcv3_outcome_archive_pending_body">आर्काइव का पेलोड पूरी तरह प्रमाणित है। निकालने के लिए नया फ़ोल्डर चुनें। एन्क्रिप्टेड स्रोत रखा गया है।</string>
-    <string name="pcv3_outcome_degraded_title">प्रमाणित आउटपुट क्षति के साथ पुनर्प्राप्त हुआ</string>
-    <string name="pcv3_outcome_degraded_body">आउटपुट प्रमाणित है, लेकिन पुनर्प्राप्ति की अतिरिक्त प्रतियाँ क्षतिग्रस्त हैं। मूल वॉल्यूम रखें।</string>
+    <string name="pcv3_outcome_degraded_title">प्रमाणित डेटा पुनर्प्राप्त हुआ</string>
+    <string name="pcv3_outcome_degraded_body">आउटपुट प्रमाणित है, लेकिन पुनर्प्राप्ति के लिए रखा गया अतिरिक्त डेटा क्षतिग्रस्त है। मूल वॉल्यूम रखें।</string>
     <string name="pcv3_outcome_force_partial_title">आंशिक पुनर्प्राप्ति</string>
     <string name="pcv3_outcome_force_partial_body">फ़ाइल पूरी तरह सत्यापित नहीं है। कुछ डेटा गायब या असत्यापित हो सकता है।</string>
     <string name="pcv3_outcome_force_unverified_title">असत्यापित पुनर्प्राप्ति</string>
@@ -262,6 +263,7 @@
     <string name="pcv3_outcome_cancelled_body">किसी पूर्ण आउटपुट की सूचना नहीं मिली। स्रोत फ़ाइलें रखी गईं।</string>
     <string name="pcv3_outcome_generic_title">कार्रवाई नियंत्रित रूप से विफल हुई</string>
     <string name="pcv3_outcome_generic_body">कोई आउटपुट प्रकाशित नहीं हुआ। स्रोत रखें और बताई गई स्थिति की समीक्षा करें।</string>
+    <string name="pcv3_outcome_generic_check_publication_body">स्रोत फ़ाइलें सुरक्षित रखें और आउटपुट की स्थिति के साथ दिए गए निर्देशों का पालन करें।</string>
 
     <string name="pcv3_publication_not_requested_title">किसी आउटपुट का अनुरोध नहीं किया गया</string>
     <string name="pcv3_publication_not_requested_body">प्रमाणित आर्काइव बिना निकाले बंद किया गया। एन्क्रिप्टेड स्रोत रखा गया।</string>
@@ -270,8 +272,9 @@
     <string name="pcv3_publication_durable_body">आउटपुट का प्रकाशन स्थायी है।</string>
     <string name="pcv3_publication_uncertain_title">आउटपुट का स्थायित्व पक्का नहीं हुआ</string>
     <string name="pcv3_publication_uncertain_body">गंतव्य में आउटपुट हो सकता है, लेकिन फ़ाइल सिस्टम में उसका स्थायित्व पक्का नहीं हो सका। सभी स्रोत और गंतव्य रखें। इस कार्रवाई को दोबारा न चलाएँ और डेटा को बदलें, हटाएँ या साफ़ न करें।</string>
+    <string name="pcv3_create_staging_uncertain_body">ऐप इस बात की पुष्टि नहीं कर सका कि बिजली जाने के बाद अस्थायी एन्क्रिप्टेड वॉल्यूम बना रहेगा। स्रोत फ़ाइलें सुरक्षित रखें। दोबारा एन्क्रिप्ट करने से पहले देखें कि वॉल्यूम सहेजा गया है या नहीं।</string>
     <string name="pcv3_publication_indeterminate_title">आउटपुट की स्थिति अज्ञात है</string>
-    <string name="pcv3_publication_indeterminate_body">ऐप यह निर्धारित नहीं कर सकता कि प्रकाशन दर्ज हुआ या नहीं। सभी स्रोत और गंतव्य को ठीक उसी स्थिति में रखें। इस कार्रवाई को दोबारा न चलाएँ या साफ़ न करें।</string>
+    <string name="pcv3_publication_indeterminate_body">ऐप यह तय नहीं कर सका कि आउटपुट गंतव्य पर लिखा गया या नहीं। सभी स्रोत और गंतव्य जस के तस रखें। इस कार्रवाई को दोबारा न चलाएँ और इससे जुड़ी फ़ाइलों की सफ़ाई न करें।</string>
     <string name="pcv3_warning_cleanup_title">सफ़ाई की पुष्टि नहीं हो सकी</string>
     <string name="pcv3_warning_cleanup_body">ऐप यह पुष्टि नहीं कर सका कि इस कार्रवाई की सभी अस्थायी फ़ाइलें हट गई हैं। स्रोत फ़ाइलें रखें और इस परिणाम के आधार पर कोई फ़ाइल न हटाएँ।</string>
     <string name="pcv3_warning_cleanup_durability_title">बिजली जाने के बाद हटाने की स्थिति अनिश्चित है</string>
@@ -292,6 +295,7 @@
     <string name="pcv3_publication_indeterminate_close">प्रकाशन चेतावनी बंद करें</string>
     <string name="pcv3_output_saved_title">आउटपुट सहेजा गया</string>
     <string name="pcv3_output_saved_body">चुना गया आउटपुट सहेजा गया। नीचे दिखाई गई प्रमाणीकरण और पुनर्प्राप्ति सूचनाएँ अब भी लागू हैं।</string>
+    <string name="pcv3_output_saved_created_body">एन्क्रिप्टेड वॉल्यूम चुने गए स्थान पर सहेजा गया।</string>
     <string name="pcv3_output_saved_cleanup_title">आउटपुट सहेजा गया; सफ़ाई अधूरी</string>
     <string name="pcv3_output_saved_cleanup_body">चुना गया आउटपुट सहेजा गया, लेकिन ऐप की अस्थायी फ़ाइलों की सफ़ाई की पुष्टि नहीं हो सकी।</string>
     <string name="pcv3_output_save_failed_title">आउटपुट सहेजा नहीं जा सका</string>
@@ -345,11 +349,11 @@
     <!-- Retained output and bounded creation request feedback. -->
     <string name="pcv3_request_too_large">चुनी गई फ़ाइलें या टिप्पणी अनुमत सीमा से अधिक हैं। कम फ़ाइलें चुनें या टिप्पणी छोटी करें।</string>
     <string name="pcv3_discard_retained_title">आउटपुट हटाएँ?</string>
-    <string name="pcv3_discard_retained_body">ऐप में सहेजा गया आउटपुट स्थायी रूप से हटा दिया जाएगा। आपकी मूल फ़ाइलें सुरक्षित रहेंगी।</string>
+    <string name="pcv3_discard_retained_body">ऐप के पास रखा गया आउटपुट हटा दिया जाएगा। इस कार्रवाई को पूर्ववत नहीं किया जा सकता। आपकी मूल फ़ाइलें सुरक्षित रहेंगी।</string>
     <string name="pcv3_retained_discarded_title">आउटपुट हटा दिया गया</string>
-    <string name="pcv3_retained_discarded_body">ऐप में सहेजा गया आउटपुट हटा दिया गया है। आपकी मूल फ़ाइलें सुरक्षित हैं।</string>
+    <string name="pcv3_retained_discarded_body">ऐप के पास रखा आउटपुट हटा दिया गया। आपकी मूल फ़ाइलें जस की तस रखी गई हैं।</string>
     <string name="pcv3_retained_discard_cleanup_title">आउटपुट की सफ़ाई अधूरी है</string>
-    <string name="pcv3_retained_discard_cleanup_body">ऐप आउटपुट हटाए जाने की पुष्टि नहीं कर सका। अपनी मूल फ़ाइलें सुरक्षित रखें।</string>
+    <string name="pcv3_retained_discard_cleanup_body">ऐप इस बात की पुष्टि नहीं कर सका कि उसके पास रखा आउटपुट हटाया गया। अपनी मूल फ़ाइलें सुरक्षित रखें।</string>
     <string name="pcv3_resource_limit_title">संसाधन सीमा पूरी हो गई</string>
     <string name="pcv3_resource_limit_body">प्रक्रिया के लिए तय संसाधन सीमा पूरी होने के कारण कार्य रोक दिया गया।</string>
     <string name="pcv3_d1_profile_heading">पुनर्प्राप्ति प्रोफ़ाइल</string>
@@ -361,5 +365,5 @@
     <string name="comment_authenticity_authenticated">वॉल्यूम की टिप्पणी की प्रामाणिकता सत्यापित है।</string>
     <string name="comment_authenticity_unverified">वॉल्यूम की टिप्पणी की प्रामाणिकता सत्यापित नहीं है।</string>
     <string name="legacy_v1_security_warning">पुराना v1 प्रारूप हेडर या टिप्पणी की प्रामाणिकता सत्यापित नहीं करता। टिप्पणी बदली गई हो सकती है। डेटा को PCV3 से फिर एन्क्रिप्ट करें।</string>
-    <string name="legacy_v2_security_warning">पुराना v2 प्रारूप केवल पासवर्ड से हेडर की प्रामाणिकता सत्यापित करता है; कीफ़ाइलें इस सत्यापन का हिस्सा नहीं हैं। डेटा को PCV3 से फिर एन्क्रिप्ट करें।</string>
+    <string name="legacy_v2_security_warning">पुराना v2 केवल पासवर्ड से हेडर को प्रमाणित करता है। कुंजी फ़ाइलें हेडर के प्रमाणीकरण का हिस्सा नहीं हैं। डेटा को PCV3 में दोबारा एन्क्रिप्ट करें।</string>
 </resources>

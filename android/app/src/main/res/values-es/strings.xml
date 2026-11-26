@@ -241,10 +241,11 @@
     <string name="pcv3_outcome_success_title">Descifrado completado</string>
     <string name="pcv3_outcome_success_body">La salida está totalmente autenticada.</string>
     <string name="pcv3_create_outcome_title">Volumen PCV3 creado</string>
-    <string name="pcv3_create_outcome_body">El nuevo volumen está completo. Guárdalo en la ubicación que elijas para conservarlo.</string>
+    <string name="pcv3_create_outcome_body">El volumen cifrado está listo. Elige dónde guardarlo.</string>
+    <string name="pcv3_create_outcome_complete_body">El cifrado ha terminado.</string>
     <string name="pcv3_outcome_archive_pending_title">Archivo autenticado listo para extraer</string>
     <string name="pcv3_outcome_archive_pending_body">El contenido del archivo está totalmente autenticado. Elige una carpeta nueva para extraerlo. Se conservará la fuente cifrada.</string>
-    <string name="pcv3_outcome_degraded_title">Salida autenticada recuperada con daños</string>
+    <string name="pcv3_outcome_degraded_title">Datos autenticados recuperados</string>
     <string name="pcv3_outcome_degraded_body">La salida está autenticada, pero la redundancia de recuperación está dañada. Conserva el volumen original.</string>
     <string name="pcv3_outcome_force_partial_title">Recuperación parcial</string>
     <string name="pcv3_outcome_force_partial_body">El archivo no está completamente verificado. Puede haber datos ausentes o sin verificar.</string>
@@ -261,11 +262,12 @@
     <string name="pcv3_outcome_invalid_structure_title">Estructura PCV3 no válida o dañada</string>
     <string name="pcv3_outcome_invalid_structure_body">La operación se ha detenido antes de procesar las credenciales y crear la salida.</string>
     <string name="pcv3_outcome_credential_mismatch_title">La política de credenciales no coincide</string>
-    <string name="pcv3_outcome_credential_mismatch_body">Comprueba el modo de contraseña y archivos de clave, el número de archivos y su orden. No se han iniciado la derivación de la clave ni la salida.</string>
+    <string name="pcv3_outcome_credential_mismatch_body">Comprueba el modo de credenciales, el número de archivos de clave y su orden. No se inició la derivación de la clave ni la generación de la salida.</string>
     <string name="pcv3_outcome_cancelled_title">Operación cancelada</string>
     <string name="pcv3_outcome_cancelled_body">No se ha informado de ninguna salida completada. Se han conservado los archivos de origen.</string>
     <string name="pcv3_outcome_generic_title">La operación ha fallado de forma controlada</string>
     <string name="pcv3_outcome_generic_body">No se ha publicado ninguna salida. Conserva la fuente y revisa el estado indicado.</string>
+    <string name="pcv3_outcome_generic_check_publication_body">Conserva los archivos de origen y sigue las indicaciones sobre el estado de la salida.</string>
 
     <string name="pcv3_publication_not_requested_title">No se ha solicitado ninguna salida</string>
     <string name="pcv3_publication_not_requested_body">El archivo autenticado se ha cerrado sin extraerlo. Se ha conservado la fuente cifrada.</string>
@@ -273,7 +275,8 @@
     <string name="pcv3_publication_not_published_body">Se han conservado los archivos de origen.</string>
     <string name="pcv3_publication_durable_body">La publicación de la salida es duradera.</string>
     <string name="pcv3_publication_uncertain_title">No se ha confirmado la durabilidad de la salida</string>
-    <string name="pcv3_publication_uncertain_body">El destino puede contener la salida, pero no se ha podido confirmar su durabilidad en el sistema de archivos. Conserva todas las fuentes y el destino. No repitas, sustituyas, elimines ni limpies esta operación.</string>
+    <string name="pcv3_publication_uncertain_body">Puede haber datos de salida en el destino, pero no se pudo confirmar que se hayan guardado de forma duradera en el sistema de archivos. Conserva todos los archivos de origen y el destino sin cambios. No repitas la operación. No sustituyas ni elimines los archivos relacionados y no realices ninguna limpieza.</string>
+    <string name="pcv3_create_staging_uncertain_body">La aplicación no pudo confirmar que el volumen cifrado temporal se conserve tras un corte de corriente. Conserva los archivos de origen. Antes de volver a cifrar, comprueba si se guardó el volumen.</string>
     <string name="pcv3_publication_indeterminate_title">Se desconoce el estado de la salida</string>
     <string name="pcv3_publication_indeterminate_body">La aplicación no puede determinar si la publicación se confirmó. Conserva todas las fuentes y el destino exactamente como están. No repitas ni limpies esta operación.</string>
     <string name="pcv3_warning_cleanup_title">No se ha podido confirmar la limpieza</string>
@@ -296,6 +299,7 @@
     <string name="pcv3_publication_indeterminate_close">Cerrar advertencia de publicación</string>
     <string name="pcv3_output_saved_title">Salida guardada</string>
     <string name="pcv3_output_saved_body">La salida seleccionada se guardó. Los avisos de autenticación y recuperación que aparecen abajo siguen siendo aplicables.</string>
+    <string name="pcv3_output_saved_created_body">El volumen cifrado se guardó en la ubicación seleccionada.</string>
     <string name="pcv3_output_saved_cleanup_title">Salida guardada; limpieza incompleta</string>
     <string name="pcv3_output_saved_cleanup_body">La salida seleccionada se guardó, pero no se pudo confirmar la limpieza de los archivos temporales de la aplicación.</string>
     <string name="pcv3_output_save_failed_title">No se pudo guardar la salida</string>

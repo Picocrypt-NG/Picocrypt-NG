@@ -252,10 +252,11 @@
     <string name="pcv3_outcome_success_title">Dekrüpteerimine lõpetatud</string>
     <string name="pcv3_outcome_success_body">Väljund on täielikult autenditud.</string>
     <string name="pcv3_create_outcome_title">PCV3-köide loodud</string>
-    <string name="pcv3_create_outcome_body">Uus köide on valmis. Vali salvestuskoht, et see alles jääks.</string>
+    <string name="pcv3_create_outcome_body">Krüptitud köide on valmis. Vali salvestuskoht.</string>
+    <string name="pcv3_create_outcome_complete_body">Krüptimine on lõpetatud.</string>
     <string name="pcv3_outcome_archive_pending_title">Autenditud arhiivi saab lahti pakkida</string>
     <string name="pcv3_outcome_archive_pending_body">Arhiivi sisu on täielikult autenditud. Vali lahtipakkimiseks uus kaust. Krüpteeritud lähtefail säilib.</string>
-    <string name="pcv3_outcome_degraded_title">Autenditud väljund taastati kahjustatud köitest</string>
+    <string name="pcv3_outcome_degraded_title">Autenditud andmed taastatud</string>
     <string name="pcv3_outcome_degraded_body">Väljund on autenditud, kuid taastamise varuandmed on kahjustatud. Hoia algne köide alles.</string>
     <string name="pcv3_outcome_force_partial_title">Osaline taastamine</string>
     <string name="pcv3_outcome_force_partial_body">Faili ei kontrollitud täielikult. Osa andmeid võib puududa või olla kontrollimata.</string>
@@ -277,6 +278,7 @@
     <string name="pcv3_outcome_cancelled_body">Väljundi valmimist ei kinnitatud. Lähtefailid jäeti alles.</string>
     <string name="pcv3_outcome_generic_title">Toiming ebaõnnestus ohutult</string>
     <string name="pcv3_outcome_generic_body">Väljundit ei tehtud kättesaadavaks. Hoia lähtefail alles ja vaata teatatud olekut.</string>
+    <string name="pcv3_outcome_generic_check_publication_body">Hoia lähtefailid alles ja järgi väljundi oleku juures kuvatavaid juhiseid.</string>
 
     <string name="pcv3_publication_not_requested_title">Väljundit ei küsitud</string>
     <string name="pcv3_publication_not_requested_body">Autenditud arhiiv suleti lahti pakkimata. Krüpteeritud lähtefail jäeti alles.</string>
@@ -285,6 +287,7 @@
     <string name="pcv3_publication_durable_body">Väljund salvestati püsivalt.</string>
     <string name="pcv3_publication_uncertain_title">Salvestuse püsivust ei kinnitatud</string>
     <string name="pcv3_publication_uncertain_body">Väljund võib olla sihtkohas, kuid failisüsteemi kirjutuse püsivus jäi kinnitamata. Hoia alles kõik lähtefailid ja sihtkoht. Ära korda toimingut, asenda ega kustuta selle faile. Jäta ka ajutised failid alles.</string>
+    <string name="pcv3_create_staging_uncertain_body">Rakendus ei saanud kinnitada, et ajutine krüptitud köide säilib pärast voolukatkestust. Hoia lähtefailid alles. Enne uuesti krüptimist kontrolli, kas köide salvestati.</string>
     <string name="pcv3_publication_indeterminate_title">Väljundi olek on teadmata</string>
     <string name="pcv3_publication_indeterminate_body">Rakendus ei saa kindlaks teha, kas väljund jõudis lõplikult sihtkohta. Jäta kõik lähtefailid ja sihtkoht täpselt nii, nagu need on. Ära korda toimingut ega kustuta selle ajutisi faile.</string>
     <string name="pcv3_warning_cleanup_title">Ajutiste failide kustutamist ei saanud kinnitada</string>
@@ -307,6 +310,7 @@
     <string name="pcv3_publication_indeterminate_close">Sulge väljundi oleku hoiatus</string>
     <string name="pcv3_output_saved_title">Väljund salvestatud</string>
     <string name="pcv3_output_saved_body">Valitud väljund salvestati. Allolevad autentimise ja taastamise teated kehtivad endiselt.</string>
+    <string name="pcv3_output_saved_created_body">Krüptitud köide salvestati valitud asukohta.</string>
     <string name="pcv3_output_saved_cleanup_title">Väljund salvestati, ajutiste failide kustutamine on kinnitamata</string>
     <string name="pcv3_output_saved_cleanup_body">Valitud väljund salvestati, kuid rakenduse loodud ajutiste failide kustutamist ei saanud kinnitada.</string>
     <string name="pcv3_output_save_failed_title">Väljundit ei saanud salvestada</string>

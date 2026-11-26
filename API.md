@@ -1205,10 +1205,11 @@ D1 comments are encrypted within the outer stream and released only after
 authentication. Source filenames are not embedded. File/folder staging and
 splitting are not exposed.
 
-Codes 0 and 10 alone carry output: 0 means fully authenticated success or degraded
-recovery (`recovered: true`), and 10 returns partial/unverified Force bytes
-directly in memory. Code 10 does not return the native forensic artifact or a
-per-range verification report; callers must treat all of its output as untrusted.
+Codes 0 and 10 alone carry output. For creation, code 0 returns the encrypted
+volume. For PCV3 reads, code 0 returns authenticated plaintext, including degraded
+recovery (`recovered: true`). Code 10 returns partial or unverified Force bytes
+directly in memory, without the native forensic artifact or a per-range
+verification report. Callers must treat all code 10 output as untrusted.
 Resource refusal is 14; ambiguity is 15. Other failures return only `code`. The facade
 consumes and clears Go-owned input, password and keyfile copies and owns output
 until `Close`; JavaScript strings, copies and runtime internals cannot be reliably

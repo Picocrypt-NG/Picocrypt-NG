@@ -253,10 +253,11 @@
     <string name="pcv3_outcome_success_title">Decryption complete</string>
     <string name="pcv3_outcome_success_body">The output is fully authenticated.</string>
     <string name="pcv3_create_outcome_title">PCV3 volume created</string>
-    <string name="pcv3_create_outcome_body">The new volume is complete. Save it to a chosen location to keep it.</string>
+    <string name="pcv3_create_outcome_body">The encrypted volume is ready. Choose where to save it.</string>
+    <string name="pcv3_create_outcome_complete_body">Encryption completed.</string>
     <string name="pcv3_outcome_archive_pending_title">Authenticated archive ready to extract</string>
     <string name="pcv3_outcome_archive_pending_body">The archive payload is fully authenticated. Choose a new extraction folder. The encrypted source is kept.</string>
-    <string name="pcv3_outcome_degraded_title">Authenticated output recovered with damage</string>
+    <string name="pcv3_outcome_degraded_title">Authenticated data recovered</string>
     <string name="pcv3_outcome_degraded_body">The output is authenticated, but recovery redundancy is damaged. Keep the original volume.</string>
     <string name="pcv3_outcome_force_partial_title">Partial recovery</string>
     <string name="pcv3_outcome_force_partial_body">Not a fully verified file. Data may be missing or unverified.</string>
@@ -278,6 +279,7 @@
     <string name="pcv3_outcome_cancelled_body">No completed output was reported. Source files were kept.</string>
     <string name="pcv3_outcome_generic_title">Operation failed safely</string>
     <string name="pcv3_outcome_generic_body">No output was published. Keep the source and review the reported state.</string>
+    <string name="pcv3_outcome_generic_check_publication_body">Keep the source files. Follow the instructions shown for the output status.</string>
 
     <string name="pcv3_publication_not_requested_title">No output was requested</string>
     <string name="pcv3_publication_not_requested_body">The authenticated archive was closed without extraction. The encrypted source was kept.</string>
@@ -286,6 +288,7 @@
     <string name="pcv3_publication_durable_body">Output publication is durable.</string>
     <string name="pcv3_publication_uncertain_title">Output durability not confirmed</string>
     <string name="pcv3_publication_uncertain_body">The destination may contain the output, but filesystem durability could not be confirmed. Keep every source and the destination. Do not retry, replace, delete, or clean up this operation.</string>
+    <string name="pcv3_create_staging_uncertain_body">The app could not confirm that the temporary encrypted volume would survive a power loss. Keep the source files. Check whether the volume was saved before encrypting again.</string>
     <string name="pcv3_publication_indeterminate_title">Output state is unknown</string>
     <string name="pcv3_publication_indeterminate_body">The application cannot determine whether publication committed. Keep every source and the destination exactly as they are. Do not retry or clean up this operation.</string>
     <string name="pcv3_warning_cleanup_title">Cleanup could not be confirmed</string>
@@ -308,6 +311,7 @@
     <string name="pcv3_publication_indeterminate_close">Close publication warning</string>
     <string name="pcv3_output_saved_title">Output saved</string>
     <string name="pcv3_output_saved_body">The selected output was saved. Authentication and recovery notices shown below still apply.</string>
+    <string name="pcv3_output_saved_created_body">The encrypted volume was saved to the selected location.</string>
     <string name="pcv3_output_saved_cleanup_title">Output saved; cleanup incomplete</string>
     <string name="pcv3_output_saved_cleanup_body">The selected output was saved, but cleanup of temporary files created by the app could not be confirmed.</string>
     <string name="pcv3_output_save_failed_title">Output could not be saved</string>

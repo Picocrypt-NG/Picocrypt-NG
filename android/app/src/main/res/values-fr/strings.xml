@@ -241,10 +241,11 @@
     <string name="pcv3_outcome_success_title">Déchiffrement terminé</string>
     <string name="pcv3_outcome_success_body">La sortie est entièrement authentifiée.</string>
     <string name="pcv3_create_outcome_title">Volume PCV3 créé</string>
-    <string name="pcv3_create_outcome_body">Le nouveau volume est terminé. Enregistrez-le à l’emplacement de votre choix pour le conserver.</string>
+    <string name="pcv3_create_outcome_body">Le volume chiffré est prêt. Choisissez où l’enregistrer.</string>
+    <string name="pcv3_create_outcome_complete_body">Le chiffrement est terminé.</string>
     <string name="pcv3_outcome_archive_pending_title">Archive authentifiée prête à être extraite</string>
     <string name="pcv3_outcome_archive_pending_body">Le contenu de l’archive est entièrement authentifié. Choisissez un nouveau dossier d’extraction. La source chiffrée est conservée.</string>
-    <string name="pcv3_outcome_degraded_title">Sortie authentifiée récupérée avec des dommages</string>
+    <string name="pcv3_outcome_degraded_title">Données authentifiées récupérées</string>
     <string name="pcv3_outcome_degraded_body">La sortie est authentifiée, mais la redondance de récupération est endommagée. Conservez le volume d’origine.</string>
     <string name="pcv3_outcome_force_partial_title">Récupération partielle</string>
     <string name="pcv3_outcome_force_partial_body">Le fichier n’est pas entièrement vérifié. Des données peuvent manquer ou ne pas être vérifiées.</string>
@@ -266,6 +267,7 @@
     <string name="pcv3_outcome_cancelled_body">Aucune sortie terminée n’a été signalée. Les fichiers sources ont été conservés.</string>
     <string name="pcv3_outcome_generic_title">Échec contrôlé de l’opération</string>
     <string name="pcv3_outcome_generic_body">Aucune sortie n’a été publiée. Conservez la source et examinez l’état signalé.</string>
+    <string name="pcv3_outcome_generic_check_publication_body">Conservez les fichiers sources et suivez les indications relatives à l’état de la sortie.</string>
 
     <string name="pcv3_publication_not_requested_title">Aucune sortie demandée</string>
     <string name="pcv3_publication_not_requested_body">L’archive authentifiée a été fermée sans extraction. La source chiffrée a été conservée.</string>
@@ -273,15 +275,16 @@
     <string name="pcv3_publication_not_published_body">Les fichiers sources ont été conservés.</string>
     <string name="pcv3_publication_durable_body">La publication de la sortie est durable.</string>
     <string name="pcv3_publication_uncertain_title">Durabilité de la sortie non confirmée</string>
-    <string name="pcv3_publication_uncertain_body">La destination peut contenir la sortie, mais sa durabilité dans le système de fichiers n’a pas pu être confirmée. Conservez toutes les sources et la destination. Ne réessayez pas, ne remplacez pas, ne supprimez pas et ne nettoyez pas cette opération.</string>
+    <string name="pcv3_publication_uncertain_body">Le résultat peut être présent à l’emplacement choisi. Son enregistrement durable dans le système de fichiers n’a pas pu être confirmé. Laissez les fichiers sources et l’emplacement de destination tels quels. Ne relancez pas l’opération. Ne remplacez ni ne supprimez les fichiers concernés et n’effectuez aucun nettoyage.</string>
+    <string name="pcv3_create_staging_uncertain_body">L’application n’a pas pu confirmer que le volume chiffré temporaire serait conservé après une coupure de courant. Conservez les fichiers sources. Avant de relancer le chiffrement, vérifiez si le volume a bien été enregistré.</string>
     <string name="pcv3_publication_indeterminate_title">État de la sortie inconnu</string>
     <string name="pcv3_publication_indeterminate_body">L’application ne peut pas déterminer si la publication a été validée. Conservez toutes les sources et la destination exactement en l’état. Ne réessayez pas et ne nettoyez pas cette opération.</string>
     <string name="pcv3_warning_cleanup_title">Impossible de confirmer le nettoyage</string>
-    <string name="pcv3_warning_cleanup_body">L’application n’a pas pu confirmer la suppression de toutes les fichiers temporaires créés par cette opération. Conservez les fichiers sources et ne supprimez aucun fichier sur la base de ce résultat.</string>
+    <string name="pcv3_warning_cleanup_body">L’application n’a pas pu confirmer la suppression de tous les fichiers temporaires créés par cette opération. Conservez les fichiers sources et ne supprimez aucun fichier sur la base de ce résultat.</string>
     <string name="pcv3_warning_cleanup_durability_title">Suppression non garantie après une coupure de courant</string>
     <string name="pcv3_warning_cleanup_durability_body">L’application n’a pas pu confirmer que les fichiers temporaires supprimés le resteront après une coupure de courant. Conservez les fichiers sources.</string>
     <string name="pcv3_warning_callback_title">Échec de la confirmation de récupération</string>
-    <string name="pcv3_warning_callback_body">La confirmation active de récupération n’a pas pu être effectuée. Aucune autorité de sortie non vérifiée n’a été accordée.</string>
+    <string name="pcv3_warning_callback_body">La confirmation de la récupération n’a pas pu aboutir. La création d’une sortie non vérifiée n’a pas été autorisée.</string>
     <string name="pcv3_warning_unknown_title">Avertissement supplémentaire sur l’opération</string>
     <string name="pcv3_warning_unknown_body">L’opération a signalé un avertissement supplémentaire. Conservez la source et n’en déduisez aucune autorité de nettoyage ou de suppression.</string>
     <string name="pcv3_archive_close">Fermer sans extraire</string>
@@ -296,6 +299,7 @@
     <string name="pcv3_publication_indeterminate_close">Fermer l’avertissement de publication</string>
     <string name="pcv3_output_saved_title">Sortie enregistrée</string>
     <string name="pcv3_output_saved_body">La sortie sélectionnée a été enregistrée. Les avis d’authentification et de récupération ci-dessous restent applicables.</string>
+    <string name="pcv3_output_saved_created_body">Le volume chiffré a été enregistré à l’emplacement choisi.</string>
     <string name="pcv3_output_saved_cleanup_title">Sortie enregistrée ; nettoyage incomplet</string>
     <string name="pcv3_output_saved_cleanup_body">La sortie sélectionnée a été enregistrée, mais le nettoyage des fichiers temporaires de l’application n’a pas pu être confirmé.</string>
     <string name="pcv3_output_save_failed_title">La sortie n’a pas pu être enregistrée</string>

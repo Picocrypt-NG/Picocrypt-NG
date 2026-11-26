@@ -850,6 +850,18 @@ class OperationStatusTest {
             R.string.pcv3_create_outcome_title,
             pcv3ResultDisplay(d1Final).outcome.titleResId,
         )
+        for (unavailable in listOf(liveCreation.copy(outputActionInFlight = true), d1Final)) {
+            assertEquals(R.string.pcv3_create_outcome_complete_body, pcv3ResultDisplay(unavailable).outcome.bodyResId)
+        }
+
+        val retainedDecryption = liveCreation.copy(isCreation = false)
+        val decryptionDisplay = pcv3ResultDisplay(retainedDecryption)
+        assertEquals(R.string.pcv3_outcome_success_body, decryptionDisplay.outcome.bodyResId)
+        assertNull("private staging is not the selected save destination", decryptionDisplay.publication)
+        assertEquals(
+            setOf(Pcv3ResultAction.SAVE_DECRYPTED_OUTPUT, Pcv3ResultAction.DISCARD_OUTPUT),
+            pcv3ResultActions(retainedDecryption).actions,
+        )
 
         // A creation that did not reach the exact clean durable success offers no save.
         val failedFinal = d1Final.copy(
@@ -881,7 +893,7 @@ class OperationStatusTest {
         val display = pcv3ResultDisplay(live)
         assertEquals(Pcv3ResultTone.WARNING, display.tone)
         assertEquals(R.string.pcv3_publication_uncertain_title, display.publication?.titleResId)
-        assertEquals(R.string.pcv3_publication_uncertain_body, display.publication?.bodyResId)
+        assertEquals(R.string.pcv3_create_staging_uncertain_body, display.publication?.bodyResId)
         assertEquals(R.string.pcv3_publication_uncertain_close, display.closeActionResId)
         for (denied in listOf(
             live.copy(isCreation = false),
@@ -893,9 +905,110 @@ class OperationStatusTest {
             live.copy(artifactMetadata = artifactMetadata("partial")),
         )) {
             assertEquals(emptySet<Pcv3ResultAction>(), pcv3ResultActions(denied).actions)
+            assertNotEquals(R.string.pcv3_create_outcome_body, pcv3ResultDisplay(denied).outcome.bodyResId)
         }
         val final = Pcv3Presentation.Final(uncertain, "uncertain-creation", 1, isCreation = true)
         assertEquals(setOf(Pcv3ResultAction.CLOSE_RESULT), pcv3ResultActions(final).actions)
+        val settled = pcv3ResultDisplay(final.copy(outputAction = Pcv3OutputResultView("saved", false)))
+        assertEquals(R.string.pcv3_create_outcome_title, settled.outcome.titleResId)
+        assertEquals(R.string.pcv3_create_outcome_complete_body, settled.outcome.bodyResId)
+        assertEquals(R.string.pcv3_output_saved_title, settled.supportingOutcome?.titleResId)
+        assertEquals(R.string.pcv3_output_saved_created_body, settled.supportingOutcome?.bodyResId)
+        assertEquals(display.publication, settled.publication)
+        assertEquals(R.string.pcv3_publication_uncertain_close, settled.closeActionResId)
+    }
+
+    @Test
+    fun `PCV3 creation save confirmation does not claim decryption`() {
+        val creation = Pcv3Presentation.Final(
+            snapshot = snapshot(
+                semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
+                publication = durablePublication(),
+                completionClass = "clean",
+            ),
+            operationId = "saved-volume",
+            generation = 1,
+            isCreation = true,
+        )
+        val cases = listOf(
+            Triple(Pcv3OutputResultView("saved", false), R.string.pcv3_output_saved_title, null),
+            Triple(
+                Pcv3OutputResultView("saved-cleanup-incomplete", true),
+                R.string.pcv3_output_saved_cleanup_title, R.string.pcv3_warning_cleanup_title,
+            ),
+            Triple(
+                Pcv3OutputResultView("saved-cleanup-durability-uncertain", false, true),
+                R.string.pcv3_output_saved_title, R.string.pcv3_warning_cleanup_durability_title,
+            ),
+        )
+        for ((action, title, warning) in cases) {
+            val result = pcv3ResultDisplay(creation.copy(outputAction = action))
+            assertEquals(title, result.outcome.titleResId)
+            assertEquals(R.string.pcv3_output_saved_created_body, result.outcome.bodyResId)
+            assertNull(result.supportingOutcome)
+            assertNull(result.publication)
+            assertEquals(listOfNotNull(warning), result.warnings.map { it.titleResId })
+        }
+
+        val savedDecryption = pcv3ResultDisplay(creation.copy(
+            outputAction = Pcv3OutputResultView("saved", false),
+            isCreation = false,
+        ))
+        assertEquals(R.string.pcv3_outcome_success_body, savedDecryption.supportingOutcome?.bodyResId)
+    }
+
+    @Test
+    fun `PCV3 creation does not claim a known outcome when publication is indeterminate`() {
+        val indeterminate = snapshot(
+            semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
+            publication = Pcv3Publication(true, "publication-indeterminate", "output-publication", "PCV3_PUBLICATION_INDETERMINATE"),
+            completionClass = "publication-indeterminate",
+            warnings = listOf("publication-indeterminate", "cleanup-incomplete"),
+            restoredReceipt = "terminal-receipt",
+        )
+        val failed = indeterminate.copy(
+            semantic = Pcv3Semantic("operation-failed", "output-publication", "PCV3_OPERATION_FAILED"),
+        )
+        for (terminal in listOf(indeterminate, failed)) {
+            val creation = Pcv3Presentation.Final(terminal, "create-indeterminate", 1, isCreation = true)
+            val display = pcv3ResultDisplay(creation)
+            val publication = display.publication ?: display.outcome
+            assertEquals(R.string.pcv3_publication_indeterminate_title, publication.titleResId)
+            assertEquals(R.string.pcv3_publication_indeterminate_body, publication.bodyResId)
+            assertEquals(listOf(R.string.pcv3_warning_cleanup_title), display.warnings.map { it.titleResId })
+            assertEquals(Pcv3ResultTone.ERROR, display.tone)
+            assertEquals(setOf(Pcv3ResultAction.CLOSE_RESULT), pcv3ResultActions(creation).actions)
+            assertEquals(R.string.pcv3_publication_indeterminate_close, display.closeActionResId)
+        }
+        assertEquals(
+            R.string.pcv3_outcome_generic_check_publication_body,
+            pcv3ResultDisplay(failed).outcome.bodyResId,
+        )
+        val noPublication = failed.copy(
+            publication = Pcv3Publication(true, "not-published", "output-publication", "PCV3_PUBLICATION_ATOMIC_FAILED"),
+            warnings = emptyList(),
+            restoredReceipt = "",
+            completionClass = "no-output",
+        )
+        assertEquals(R.string.pcv3_outcome_generic_body, pcv3ResultDisplay(noPublication).outcome.bodyResId)
+    }
+
+    @Test
+    fun `PCV3 restored receipts report publication without inferring the operation type`() {
+        val uncertain = snapshot(
+            semantic = Pcv3Semantic("success", "none", "PCV3_SUCCESS"),
+            publication = Pcv3Publication(true, "published-durability-uncertain", "directory-sync", "PCV3_PUBLICATION_DURABILITY_UNCERTAIN"),
+            completionClass = "durability-uncertain",
+            warnings = listOf("durability-uncertain"),
+            restoredReceipt = "terminal-receipt",
+        )
+        val restored = Pcv3Presentation.Restored(uncertain, "restored", 1, "receipt-id")
+        val display = pcv3ResultDisplay(restored)
+        assertEquals(R.string.pcv3_publication_uncertain_title, display.outcome.titleResId)
+        assertEquals(R.string.pcv3_publication_uncertain_body, display.outcome.bodyResId)
+        assertEquals(Pcv3ResultTone.WARNING, display.tone)
+        assertNull(display.supportingOutcome)
+        assertEquals(setOf(Pcv3ResultAction.CLOSE_RESULT), pcv3ResultActions(restored).actions)
     }
 
     @Test

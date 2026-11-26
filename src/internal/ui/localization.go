@@ -237,6 +237,9 @@ func pcv3PhysicalRoleText(role pcv3operation.PhysicalRole) string {
 }
 
 func pcv3OutcomeCopy(presentation pcv3operation.Presentation) pcv3LocalizedCopy {
+	if pcv3ArchiveClosedWithoutExtraction(presentation) {
+		return pcv3LocalizedCopy{}
+	}
 	switch presentation.Diagnostic() {
 	case pcv3operation.DiagnosticD1ProfileRequired:
 		return pcv3LocalizedCopy{
@@ -281,7 +284,7 @@ func pcv3OutcomeCopy(presentation pcv3operation.Presentation) pcv3LocalizedCopy 
 		}
 	case pcv3operation.OutcomeAuthenticatedDegraded:
 		return pcv3LocalizedCopy{
-			Title: tr("pcv3.outcome.degraded.title", "Authenticated output recovered with damage"),
+			Title: tr("pcv3.outcome.degraded.title", "Authenticated data recovered"),
 			Body:  tr("pcv3.outcome.degraded.body", "The output is authenticated, but recovery redundancy is damaged. Keep the original volume."),
 		}
 	case pcv3operation.OutcomeForcePartial:
@@ -333,10 +336,19 @@ func pcv3OutcomeCopy(presentation pcv3operation.Presentation) pcv3LocalizedCopy 
 			}
 		}
 	}
-	return pcv3LocalizedCopy{
-		Title: tr("pcv3.outcome.generic.title", "Operation failed"),
-		Body:  tr("pcv3.outcome.generic.body", "The operation failed safely. No output was published. Keep the source and review the reported state."),
+	copy := pcv3LocalizedCopy{Title: tr("pcv3.outcome.generic.title", "Operation failed")}
+	if !presentation.PublicationAttempted() || presentation.PublicationState() == pcv3publication.StateNotPublished {
+		copy.Body = tr("pcv3.outcome.generic.body", "The operation failed safely. No output was published. Keep the source and review the reported state.")
 	}
+	return copy
+}
+
+func (a *App) pcv3ResultOutcomeCopy(presentation pcv3operation.Presentation, result *pcv3operation.Result) pcv3LocalizedCopy {
+	if result != nil && result == a.pcv3Result && a.pcv3ResultFromEncryption &&
+		presentation.Outcome() == pcv3operation.OutcomeSuccess {
+		return pcv3LocalizedCopy{Title: tr("pcv3.outcome.encryption_finished.title", "Encryption finished")}
+	}
+	return pcv3OutcomeCopy(presentation)
 }
 
 func resourceLimitCopy() pcv3LocalizedCopy {
@@ -347,14 +359,19 @@ func resourceLimitCopy() pcv3LocalizedCopy {
 	}
 }
 
+func pcv3ArchiveClosedWithoutExtraction(presentation pcv3operation.Presentation) bool {
+	return !presentation.PublicationAttempted() &&
+		presentation.Outcome() == pcv3operation.OutcomeOperationFailed &&
+		presentation.Stage() == pcv3operation.StageOutputPublication &&
+		presentation.Diagnostic() == pcv3operation.DiagnosticNone
+}
+
 func pcv3PublicationCopy(presentation pcv3operation.Presentation) pcv3LocalizedCopy {
 	if !presentation.PublicationAttempted() {
 		if presentation.ArchivePending() {
 			return pcv3LocalizedCopy{}
 		}
-		if presentation.Outcome() == pcv3operation.OutcomeOperationFailed &&
-			presentation.Stage() == pcv3operation.StageOutputPublication &&
-			presentation.Diagnostic() == pcv3operation.DiagnosticNone {
+		if pcv3ArchiveClosedWithoutExtraction(presentation) {
 			return pcv3LocalizedCopy{
 				Title:  tr("pcv3.publication.not_requested.title", "No output was requested"),
 				Body:   tr("pcv3.publication.not_requested.body", "The authenticated archive was closed without extraction. The encrypted source was kept."),
@@ -373,7 +390,6 @@ func pcv3PublicationCopy(presentation pcv3operation.Presentation) pcv3LocalizedC
 		}
 	case pcv3publication.StatePublishedDurable:
 		return pcv3LocalizedCopy{
-			Title:  pcv3OutcomeCopy(presentation).Title,
 			Body:   tr("pcv3.publication.durable.body", "File saved."),
 			Action: tr("pcv3.publication.close", "Close"),
 		}

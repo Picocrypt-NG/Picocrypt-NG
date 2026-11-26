@@ -1,9 +1,7 @@
 # v3.0
 
-Unreleased development version.
-
-- New encryption creates PCV3 volumes with passwords, keyfiles, or both bound to authentication. Supported v1/v2 volumes remain readable; earlier releases cannot read PCV3. The legacy writer's `v2.19` header marker is unchanged.
-- PCV3 passwords use a frozen, bounded Unicode 18 NFC profile. Inputs that require implicit CGJ insertion are rejected before KDF; explicitly entered CGJ remains significant. Two inherited NFC composition defects are corrected. Earlier experimental PCV3 password mappings have no compatibility guarantee.
+- New encryption creates PCV3 volumes with passwords, keyfiles, or both bound to authentication. Supported v1/v2 volumes remain readable; earlier releases cannot read PCV3.
+- PCV3 passwords use a frozen, bounded Unicode 18 NFC profile. Inputs that require implicit CGJ insertion are rejected before KDF; explicitly entered CGJ remains significant.
 - Recovery messages distinguish partial and unverified results without inferring the trust of individual bytes from the outcome alone. Desktop archive-folder errors remain visible and allow another selection or closing the result.
 - Choosing a legacy desktop output path no longer truncates an existing file. Overwrite confirmation applies only to the confirmed destination, and later iCloud file batches ask whether to replace or extend the selection.
 - ZIP extraction reports incomplete cleanup when created-object identity is unavailable or changes. Desktop source deletion holds the parent used for inspection and removal. Recombination with source deletion checks captured chunk identities and sizes before decryption.

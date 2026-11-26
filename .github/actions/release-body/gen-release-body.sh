@@ -34,9 +34,7 @@ REPO="Picocrypt-NG/Picocrypt-NG"
 BASE="https://github.com/$REPO/releases/download/$VERSION"
 ANCHOR="v${VERSION//./}"  # GitHub header anchor for "# v2.16" is "#v216"
 
-# --- "What's new": extract the section and convert its HTML to Markdown -------
-# Recent (2.x) entries are uniformly "<li>✓ <strong>X</strong>: Y</li>" lines
-# wrapped in <ul>/</ul>, so after dropping the wrappers every line is one bullet.
+# --- "What's new": preserve Markdown and convert older HTML list entries -------
 whatsnew="$(
   tr -d '\r' < "$CHANGELOG" \
   | awk -v hdr="# v$VERSION" '
@@ -44,15 +42,14 @@ whatsnew="$(
       grab && /^# v/ { grab = 0 }
       grab { print }
     ' \
-  | sed -e 's/^[[:space:]]*//' \
-        -e '/^<ul>$/d' -e '/^<\/ul>$/d' \
-        -e 's/^<li>✓[[:space:]]*//' -e 's/<\/li>$//' \
+  | sed -e '/^[[:space:]]*<ul>[[:space:]]*$/d' -e '/^[[:space:]]*<\/ul>[[:space:]]*$/d' \
+        -e '/^[[:space:]]*<li>✓[[:space:]]*/!b' \
+        -e 's/^[[:space:]]*<li>✓[[:space:]]*/- /' -e 's/<\/li>[[:space:]]*$//' \
         -e 's/<strong>/**/g' -e 's#</strong>#**#g' \
         -e 's/<code>/`/g' -e 's#</code>#`#g' \
         -e 's/<em>/*/g' -e 's#</em>#*#g' -e 's/<i>/*/g' -e 's#</i>#*#g' \
         -e 's#<a href="\([^"]*\)">\([^<]*\)</a>#[\2](\1)#g' \
-        -e 's/&amp;/\&/g' -e 's/&lt;/</g' -e 's/&gt;/>/g' \
-  | sed -e 's/^\(..*\)$/- \1/'
+        -e 's/&amp;/\&/g' -e 's/&lt;/</g' -e 's/&gt;/>/g'
 )"
 [ -n "$whatsnew" ] || { echo "release-body: no '# v$VERSION' section in $CHANGELOG" >&2; exit 1; }
 

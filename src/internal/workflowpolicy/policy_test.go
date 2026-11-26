@@ -1862,7 +1862,19 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 
 	body := string(output)
 	mustContainInOrder(t, body, "| **x86** (32-bit) |", "**SHA-256**", "**Assets**", "**Show all assets**", "- 🌐 **Web version**")
-	mustContain(t, body, "## What's new in "+version)
+	_, notes, found := strings.Cut(body, "\n## What's new in "+version+"\n")
+	if !found {
+		t.Fatal("release body is missing the current changelog section")
+	}
+	notes, _, found = strings.Cut(notes, "\nFull changelog:")
+	if !found {
+		t.Fatal("release body is missing the full changelog link")
+	}
+	mustContain(t, notes, "\n- New encryption creates PCV3 volumes")
+	mustNotContain(t, notes, "\n- - ")
+	mustNotContain(t, notes, "Unreleased development version")
+	mustNotContain(t, notes, "v2.19")
+	mustNotContain(t, notes, "experimental PCV3")
 	mustContain(t, body, "source_commit="+sourceSHA)
 	for artifact, owner := range map[string]string{
 		"Picocrypt-NG": "build-linux.yml", "Picocrypt-NG-cli": "build-linux.yml", "Picocrypt-NG.deb": "build-linux.yml",
