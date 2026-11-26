@@ -30,7 +30,8 @@ func TestLinuxReleaseKeepsNativeBuildAndPackagingSteps(t *testing.T) {
 		}
 		if active {
 			name := step["name"].(string)
-			if name != "Prepare verified Linux build materials" && name != "Test browser PCV3 and legacy compatibility" &&
+			if name != "Prepare verified Linux build materials" && name != "Check Windows installer PowerShell syntax" &&
+				name != "Test browser PCV3 and legacy compatibility" &&
 				name != "Prepare to upload artifacts" && step["shell"] != "bash .github/scripts/run-linux-release-build.sh {0}" {
 				t.Fatalf("Linux production step %s must run in the prepared offline container", name)
 			}
@@ -61,10 +62,34 @@ func TestLinuxReleaseKeepsNativeBuildAndPackagingSteps(t *testing.T) {
 	}
 	// Freeze the native tests, WASM compatibility, GUI smoke, binaries and DEB packaging
 	// after moving release materials into the architecture-specific preparation step.
-	const want = "e3bd1c9a8964ace6478f84162a71d29cc9737ed5b7758ab593d769e24dba0556"
+	const want = "f7d92cfcc4425b7231e6584fd69caca11fca8ad63a35e42ee738351ba1f0beb6"
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != want {
 		t.Fatalf("Linux release packaging steps changed: digest %s, want %s", got, want)
 	}
+}
+
+func TestLinuxReleaseRunsPowerShellParserOutsideOfflineBuild(t *testing.T) {
+	const path = ".github/actions/build-linux/action.yml"
+	const parserStep = "Check Windows installer PowerShell syntax"
+	const selector = "'^TestWindowsReusablePinnedGHInstallerPowerShellParses$'"
+	action := mustReadCompositeActionDoc(t, path)
+	parser := mustCompositeStepNamed(t, action, parserStep)
+	if parser.Shell != "bash" || parser.If != "" || (parser.ContinueOnError != nil && parser.ContinueOnError != false) {
+		t.Fatal("the host parser check must be required on both Linux release runners")
+	}
+	mustContainInOrder(t, mustReadRepoFile(t, path),
+		"name: Prepare verified Linux build materials",
+		"name: "+parserStep,
+		"name: Run tests",
+	)
+	mustContain(t, parser.Run, "go -C src test -v -count=1 -run "+selector+" ./internal/workflowpolicy")
+
+	suite := mustCompositeStepNamed(t, action, "Run tests")
+	if suite.Shell != "bash .github/scripts/run-linux-release-build.sh {0}" {
+		t.Fatal("the native suite must still run in the prepared offline container")
+	}
+	mustContain(t, suite.Run, "-skip "+selector+` "${packages[@]}"`)
+	mustContain(t, suite.Run, "-skip "+selector+" ./...")
 }
 
 func normalizeLinuxBuildRun(run string) string {
@@ -153,10 +178,17 @@ func TestValidationKeepsReadOnlyCeilingAndNativeLinuxSubgraph(t *testing.T) {
 	mustContain(t, bind.Run, `case "$MODE" in`)
 	mustContain(t, bind.Run, `validation) ;;`)
 	verify := mustJob(t, workflow, "verify-linux")
-	if verify.If != "${{ always() }}" {
-		t.Fatal("validation must reject a failed, skipped or cancelled producer")
+	if verify.If != "${{ !cancelled() && (inputs.mode == 'validation' || inputs.mode == 'stage') }}" {
+		t.Fatal("Linux verification must handle producer failures in validation and stage while skipping cancelled runs and publication")
 	}
-	mustContain(t, mustStepNamed(t, verify, "Require both Linux producers").Run, `[[ "$AMD64_RESULT" == success && "$ARM64_RESULT" == success ]]`)
+	requireBuilds := mustStepNamed(t, verify, "Require both Linux producers")
+	if verify.Steps[0].Name != requireBuilds.Name || requireBuilds.If != "" ||
+		(requireBuilds.ContinueOnError != nil && requireBuilds.ContinueOnError != false) ||
+		requireBuilds.Env["AMD64_RESULT"] != "${{ needs.build-amd64.result }}" ||
+		requireBuilds.Env["ARM64_RESULT"] != "${{ needs.build-arm64.result }}" {
+		t.Fatal("Linux verification must gate artifact access on both producer results")
+	}
+	mustContain(t, requireBuilds.Run, `[[ "$AMD64_RESULT" == success && "$ARM64_RESULT" == success ]]`)
 	mustContain(t, mustStepNamed(t, verify, "Report Linux validation scope").Run, "Linux primary assets: built 5, verified 5")
 }
 
@@ -170,7 +202,7 @@ func TestLinuxUnsignedOwnerDispatchVerifiesArtifactsBeforeSigning(t *testing.T) 
 		t.Fatal("unsigned dispatch must run the verifier and reject failed, skipped or cancelled producers")
 	}
 	coordinator := mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/release.yml"), "verify-linux")
-	if coordinator.If != "${{ always() }}" || !reflect.DeepEqual(coordinator.Needs, verify.Needs) ||
+	if !reflect.DeepEqual(coordinator.Needs, verify.Needs) ||
 		coordinator.RunsOn != verify.RunsOn || coordinator.TimeoutMinutes != verify.TimeoutMinutes || !reflect.DeepEqual(coordinator.Env, verify.Env) {
 		t.Fatal("the owner and coordinator must retain the same Linux artifact source and execution boundary")
 	}

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publish artifacts to the GitHub release. Existing assets are never overwritten."
+        description: "Sign and stage this platform's artifacts in the GitHub release draft."
         required: false
         type: boolean
         default: false
@@ -464,4 +464,3 @@ jobs:
         files: |
           out/picocrypt-ng_${{ inputs.version }}_amd64.snap
           out/picocrypt-ng_${{ inputs.version }}_amd64.snap.sigstore.json
-        finalize: 'false'

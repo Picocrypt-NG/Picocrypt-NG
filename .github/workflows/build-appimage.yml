@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Request production GPG signing and release staging. False validates unsigned packaging without release secrets."
+        description: "Request production GPG signing and stage artifacts in the release draft. False validates unsigned packaging without release secrets."
         required: false
         type: boolean
         default: false
@@ -704,4 +704,3 @@ jobs:
           artifacts/Picocrypt-NG-${{ inputs.version }}-x86_64.AppImage.sigstore.json
           artifacts/Picocrypt-NG-${{ inputs.version }}-x86_64.AppImage.zsync
           artifacts/Picocrypt-NG-${{ inputs.version }}-x86_64.AppImage.zsync.sigstore.json
-        finalize: 'false'

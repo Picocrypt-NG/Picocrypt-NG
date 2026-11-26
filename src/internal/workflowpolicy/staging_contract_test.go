@@ -85,7 +85,7 @@ func TestStagingInspectOwnerRequiresExactCanonicalOwnerAndCoordinatorCaller(t *t
 			stagingRequireOutputs(t, result, false, false)
 		})
 	}
-	for _, mode := range []string{"inspect-owner", "strict-finalize"} {
+	for _, mode := range []string{"inspect-owner", "verify-staged", "strict-finalize"} {
 		t.Run(mode+" from direct owner", func(t *testing.T) {
 			result := runReleaseGateWithOptions(t, mode, stagingDraftRelease(), completeReleaseAssets("2.19"), releaseGateOptions{
 				workflow: "build-linux.yml", ownerWorkflow: "build-linux.yml", noLocalFiles: true,
@@ -167,9 +167,10 @@ func TestStagingStrictFinalizeRequiresCompleteVerifiedInventoryAndFinalReadback(
 		stagingRequireOutputs(t, result, false, true)
 	})
 
-	for _, defect := range []string{"missing pair", "half pair", "cosign", "provenance", "corrupt download", "bad PATCH", "tag drift before PATCH", "tag drift after PATCH", "missing deterministic body"} {
+	for _, defect := range []string{"missing pair", "half pair", "cosign", "provenance", "corrupt download", "bad PATCH", "tag drift before PATCH", "tag drift after PATCH", "asset drift after PATCH", "different draft notes"} {
 		t.Run(defect, func(t *testing.T) {
 			assets := completeReleaseAssets("2.19")
+			releases := stagingDraftRelease()
 			options := releaseGateOptions{workflow: "release.yml", noLocalFiles: true}
 			switch defect {
 			case "missing pair":
@@ -188,14 +189,17 @@ func TestStagingStrictFinalizeRequiresCompleteVerifiedInventoryAndFinalReadback(
 				options.tagTargetAfterVerify = strings.Repeat("f", 40)
 			case "tag drift after PATCH":
 				options.tagTargetAfterPublish = strings.Repeat("f", 40)
-			case "missing deterministic body":
-				options.noBody = true
+			case "asset drift after PATCH":
+				options.assetsAfterPublish = append([]releaseAssetFixture(nil), assets...)
+				options.assetsAfterPublish[0].ID = 99999
+			case "different draft notes":
+				releases[0].Body = "edited draft notes"
 			}
-			result := runReleaseGateWithOptions(t, "strict-finalize", stagingDraftRelease(), assets, options)
+			result := runReleaseGateWithOptions(t, "strict-finalize", releases, assets, options)
 			if result.err == nil {
 				t.Fatalf("strict finalize accepted %s:\n%s", defect, result.output)
 			}
-			if defect == "bad PATCH" || defect == "tag drift after PATCH" {
+			if defect == "bad PATCH" || defect == "tag drift after PATCH" || defect == "asset drift after PATCH" {
 				mustContain(t, result.calls, "--method PATCH")
 			} else {
 				mustNotContain(t, result.calls, "--method PATCH")
@@ -205,12 +209,12 @@ func TestStagingStrictFinalizeRequiresCompleteVerifiedInventoryAndFinalReadback(
 		})
 	}
 
-	t.Run("legacy publish still leaves an incomplete draft without failing", func(t *testing.T) {
-		result := runReleaseGateWithOptions(t, "publish", stagingDraftRelease(), defaultRemoteLaneAssets(), releaseGateOptions{
+	t.Run("platform workflows cannot use the retired implicit publisher", func(t *testing.T) {
+		result := runReleaseGateWithOptions(t, "publish", stagingDraftRelease(), completeReleaseAssets("2.19"), releaseGateOptions{
 			workflow: "build-linux.yml", noLocalFiles: true,
 		})
-		if result.err != nil {
-			t.Fatalf("legacy early owner publication must retain its partial-draft behavior: %v\n%s", result.err, result.output)
+		if result.err == nil || result.calls != "" {
+			t.Fatalf("retired publication must fail before GitHub access: %v\n%s", result.err, result.calls)
 		}
 		stagingRequireReadOnly(t, result)
 		stagingRequireOutputs(t, result, false, false)
@@ -234,6 +238,87 @@ func TestStagingStrictFinalizePatchBodyMatchesValidatedSource(t *testing.T) {
 		t.Fatal("strict finalize accepted a different body returned by the actual PATCH")
 	}
 	stagingRequireOutputs(t, result, false, false)
+}
+
+func TestStagingPromotionBindsApprovedRemoteBytes(t *testing.T) {
+	assets := completeReleaseAssets("2.19")
+	options := releaseGateOptions{workflow: "release.yml", noLocalFiles: true, noBody: true}
+	staged := runReleaseGateWithOptions(t, "verify-staged", stagingDraftRelease(), assets, options)
+	if staged.err != nil {
+		t.Fatalf("verify staged candidate: %v\n%s", staged.err, staged.output)
+	}
+	stagingRequireReadOnly(t, staged)
+	stagingRequireAllVerifications(t, staged)
+	mustContain(t, staged.outputs, "release-id=42\n")
+	for _, line := range strings.Split(staged.outputs, "\n") {
+		if digest, found := strings.CutPrefix(line, "candidate-digest="); found {
+			options.candidateDigest = digest
+		}
+	}
+	if len(options.candidateDigest) != 64 {
+		t.Fatalf("stage did not identify the verified candidate: %s", staged.outputs)
+	}
+
+	// Publish from a newer trusted workflow checkout while verifying the original source.
+	options.driverSHA = strings.Repeat("f", 40)
+	changed := append([]releaseAssetFixture(nil), assets...)
+	changed[0] = newReleaseAsset(changed[0].ID, changed[0].Name, "replacement generation for the same source")
+	for _, tc := range []struct {
+		name   string
+		assets []releaseAssetFixture
+		valid  bool
+	}{
+		{"approved candidate", assets, true},
+		{"different bytes at the same source SHA", changed, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runReleaseGateWithOptions(t, "strict-finalize", stagingDraftRelease(), tc.assets, options)
+			if tc.valid {
+				if result.err != nil || result.patchInput == "" {
+					t.Fatalf("approved candidate was not published: %v\n%s", result.err, result.output)
+				}
+				stagingRequireAllVerifications(t, result)
+				mustContain(t, result.calls, "--source-digest "+releaseTestSHA)
+				mustNotContain(t, result.calls, "--source-digest "+options.driverSHA)
+				stagingRequireOutputs(t, result, false, true)
+			} else {
+				if result.err == nil {
+					t.Fatal("a different generation must require new approval even with valid source attestations")
+				}
+				stagingRequireReadOnly(t, result)
+				mustContain(t, result.output, "does not match the approved staged digest")
+			}
+		})
+	}
+	t.Run("approved candidate already published", func(t *testing.T) {
+		releases := stagingDraftRelease()
+		releases[0].Draft = false
+		retryOptions := options
+		retryOptions.publishedBodyFromSource = true
+		result := runReleaseGateWithOptions(t, "strict-finalize", releases, assets, retryOptions)
+		if result.err != nil {
+			t.Fatalf("retry did not accept the verified published candidate: %v\n%s", result.err, result.output)
+		}
+		stagingRequireReadOnly(t, result)
+		stagingRequireOutputs(t, result, false, true)
+	})
+	t.Run("source outside the trusted workflow history", func(t *testing.T) {
+		untrusted := options
+		untrusted.candidateNotInCheckout = true
+		result := runReleaseGateWithOptions(t, "strict-finalize", stagingDraftRelease(), assets, untrusted)
+		if result.err == nil || result.calls != "" {
+			t.Fatalf("untrusted candidate should fail before GitHub access: %v\n%s", result.err, result.calls)
+		}
+	})
+	t.Run("approval is required", func(t *testing.T) {
+		noApproval := options
+		noApproval.withoutApproval = true
+		noApproval.candidateDigest = ""
+		result := runReleaseGateWithOptions(t, "strict-finalize", stagingDraftRelease(), assets, noApproval)
+		if result.err == nil || result.calls != "" {
+			t.Fatalf("missing approval should fail before GitHub access: %v\n%s", result.err, result.calls)
+		}
+	})
 }
 
 func TestStagingStrictFinalizeAlreadyPublishedRequiresExactVerifiedStableRelease(t *testing.T) {
@@ -338,7 +423,7 @@ func TestStagingUploadOutputsBecomeTrueOnlyAfterVerifiedStableStaging(t *testing
 	}
 }
 
-func TestStagingActionPreservesDefaultFinalizeAndExposesVerifiedOutputs(t *testing.T) {
+func TestStagingActionExposesVerifiedStagingOnly(t *testing.T) {
 	var action struct {
 		Inputs map[string]struct {
 			Default  string `yaml:"default"`
@@ -351,20 +436,11 @@ func TestStagingActionPreservesDefaultFinalizeAndExposesVerifiedOutputs(t *testi
 	if err := yaml.Unmarshal([]byte(mustReadRepoFile(t, releaseGateActionPath)), &action); err != nil {
 		t.Fatal(err)
 	}
-	if input, exists := action.Inputs["finalize"]; !exists || input.Default != "true" || input.Required {
-		t.Fatal("finalize must default to true so direct owners retain their existing publication behavior")
+	if _, exists := action.Inputs["finalize"]; exists {
+		t.Fatal("staging must not offer implicit publication")
 	}
-	for name, want := range map[string]string{
-		"staged":    "${{ steps.stage.outputs.staged || 'false' }}",
-		"published": "${{ steps.publish.outputs.published || 'false' }}",
-	} {
-		if action.Outputs[name].Value != want {
-			t.Fatalf("action %s output must report only the corresponding verified step: %q", name, action.Outputs[name].Value)
-		}
-	}
-	steps := mustReadCompositeActionDoc(t, releaseGateActionPath).Runs.Steps
-	if len(steps) != 3 || steps[0].If != "" || steps[1].ID != "stage" || steps[1].If != "" || steps[2].ID != "publish" || steps[2].If != "${{ inputs.finalize == 'true' }}" {
-		t.Fatalf("stage-only selection must suppress only final publication while preserving the legacy three steps: %#v", steps)
+	if len(action.Outputs) != 1 || action.Outputs["staged"].Value != "${{ steps.stage.outputs.staged || 'false' }}" {
+		t.Fatalf("action may report only verified staging: %#v", action.Outputs)
 	}
 }
 

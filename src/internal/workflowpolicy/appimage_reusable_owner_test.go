@@ -134,8 +134,11 @@ func TestAppImageReusableOwnerSeparatesNativeSigningAttestationAndStage(t *testi
 	if upload.With["path"] != "signed-generation/*" || upload.With["overwrite"] != false || upload.With["retention-days"] != 7 {
 		t.Fatal("retain immutable full signed bytes before staging")
 	}
-	if mustStepNamed(t, stage, "Verify signed generation metadata").Run != "bash .github/actions/signed-generation/generation.sh metadata" || mustStepNamed(t, stage, "Restore signed AppImage generation").Run != "bash .github/actions/signed-generation/generation.sh restore" || mustStepNamed(t, stage, "Stage release assets").With["finalize"] != "false" {
-		t.Fatal("stage restores the retained generation without signing or publication")
+	if mustStepNamed(t, stage, "Verify signed generation metadata").Run != "bash .github/actions/signed-generation/generation.sh metadata" || mustStepNamed(t, stage, "Restore signed AppImage generation").Run != "bash .github/actions/signed-generation/generation.sh restore" {
+		t.Fatal("stage must verify and restore the retained signed generation")
+	}
+	if mustStepNamed(t, stage, "Stage release assets").Uses != "./.github/actions/stage-release" {
+		t.Fatal("owner must upload through the shared draft staging action")
 	}
 	for _, set := range []struct {
 		job         workflowJob

@@ -89,11 +89,12 @@ func TestReleaseUploadsNeverOverwriteExistingAssets(t *testing.T) {
 }
 
 func TestWorkflowAndCompositeYAMLContainNoDirectReleaseMutation(t *testing.T) {
+	root := repoRoot(t)
 	var paths []string
 	for _, pattern := range []string{
-		filepath.Join(repoRoot(t), ".github", "workflows", "*.yml"),
-		filepath.Join(repoRoot(t), ".github", "workflows", "*.yaml"),
-		filepath.Join(repoRoot(t), ".github", "actions", "*", "action.yml"),
+		filepath.Join(root, ".github", "workflows", "*.yml"),
+		filepath.Join(root, ".github", "workflows", "*.yaml"),
+		filepath.Join(root, ".github", "actions", "*", "action.yml"),
 	} {
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
@@ -103,16 +104,10 @@ func TestWorkflowAndCompositeYAMLContainNoDirectReleaseMutation(t *testing.T) {
 	}
 	directCLI := regexp.MustCompile(`(?m)\bgh\s+release\s+(create|upload|edit)\b`)
 	directAPI := regexp.MustCompile(`(?m)\bgh\s+api\b[^\n]*(/releases|releases/)`)
+	legacyPublish := regexp.MustCompile(`\brelease-gate\.sh["']?\s+publish\b`)
+	strictFinalize := regexp.MustCompile(`\brelease-gate\.sh["']?\s+strict-finalize\b`)
+	coordinator := filepath.Join(root, ".github", "workflows", "release.yml")
 	for _, path := range paths {
-		if filepath.Clean(path) == filepath.Join(
-			repoRoot(t),
-			".github",
-			"actions",
-			"stage-release",
-			"action.yml",
-		) {
-			continue
-		}
 		content, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -123,6 +118,9 @@ func TestWorkflowAndCompositeYAMLContainNoDirectReleaseMutation(t *testing.T) {
 		}
 		if directCLI.MatchString(source) || directAPI.MatchString(source) {
 			t.Fatalf("%s directly mutates GitHub releases instead of the shared release gate", path)
+		}
+		if legacyPublish.MatchString(source) || (path != coordinator && strictFinalize.MatchString(source)) {
+			t.Fatalf("%s can bypass coordinator publication", path)
 		}
 	}
 }

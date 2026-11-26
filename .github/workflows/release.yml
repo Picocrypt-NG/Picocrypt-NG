@@ -16,9 +16,17 @@ on:
           - stage
           - publish
         default: validation
+      candidate_sha:
+        description: Full source commit SHA from the successful stage summary (publish only).
+        required: false
+        type: string
+      candidate_digest:
+        description: SHA-256 of the verified staged candidate from the stage summary (publish only).
+        required: false
+        type: string
 
 concurrency:
-  group: release-validation-${{ github.ref }}
+  group: release-${{ inputs.mode == 'publish' && 'publish' || 'validation' }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -41,6 +49,8 @@ jobs:
       env:
         SOURCE_SHA: ${{ github.sha }}
         MODE: ${{ inputs.mode }}
+        CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
       run: |
         set -euo pipefail
         case "$MODE" in
@@ -54,6 +64,15 @@ jobs:
             ;;
           *) echo 'Unsupported coordinator mode' >&2; exit 2 ;;
         esac
+        if [[ $MODE == publish ]]; then
+          if ! [[ $CANDIDATE_SHA =~ ^[0-9a-f]{40}$ && $CANDIDATE_DIGEST =~ ^[0-9a-f]{64}$ ]]; then
+            echo 'Publish requires the full candidate SHA and SHA-256 digest from a successful stage' >&2
+            exit 2
+          fi
+        elif [[ -n $CANDIDATE_SHA || -n $CANDIDATE_DIGEST ]]; then
+          echo 'Candidate SHA and digest are accepted only in publish mode' >&2
+          exit 2
+        fi
         test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
         version=$(cat VERSION)
         digest=$(bash .github/actions/stage-release/release-manifest.sh "$version" | sha256sum)
@@ -65,6 +84,7 @@ jobs:
 
   build-amd64:
     needs: prepare
+    if: ${{ inputs.mode == 'validation' || inputs.mode == 'stage' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     outputs:
@@ -93,6 +113,7 @@ jobs:
 
   build-arm64:
     needs: prepare
+    if: ${{ inputs.mode == 'validation' || inputs.mode == 'stage' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 150
     outputs:
@@ -121,6 +142,7 @@ jobs:
 
   build-appimage:
     needs: prepare
+    if: ${{ inputs.mode == 'validation' || inputs.mode == 'stage' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     permissions:
@@ -146,10 +168,11 @@ jobs:
         source-sha: ${{ needs.prepare.outputs.source-sha }}
         version: ${{ needs.prepare.outputs.version }}
         manifest-digest: ${{ needs.prepare.outputs.manifest-digest }}
-        retain-signing-input: ${{ inputs.mode != 'validation' }}
+        retain-signing-input: ${{ inputs.mode == 'stage' }}
 
   build-snapcraft:
     needs: prepare
+    if: ${{ inputs.mode == 'validation' || inputs.mode == 'stage' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -174,6 +197,7 @@ jobs:
 
   build-macos:
     needs: prepare
+    if: ${{ inputs.mode == 'validation' || inputs.mode == 'stage' }}
     runs-on: macos-26
     timeout-minutes: 180
     permissions:
@@ -202,6 +226,7 @@ jobs:
 
   build-android:
     needs: prepare
+    if: ${{ inputs.mode == 'validation' || inputs.mode == 'stage' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -229,6 +254,7 @@ jobs:
 
   build-windows:
     needs: prepare
+    if: ${{ inputs.mode == 'validation' || inputs.mode == 'stage' }}
     runs-on: windows-2025
     timeout-minutes: 120
     permissions:
@@ -258,6 +284,7 @@ jobs:
 
   build-windows-legacy:
     needs: prepare
+    if: ${{ inputs.mode == 'validation' || inputs.mode == 'stage' }}
     runs-on: windows-2022
     timeout-minutes: 120
     permissions:
@@ -290,7 +317,7 @@ jobs:
 
   verify-linux:
     needs: [prepare, build-amd64, build-arm64]
-    if: ${{ always() }}
+    if: ${{ !cancelled() && (inputs.mode == 'validation' || inputs.mode == 'stage') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -387,7 +414,7 @@ jobs:
 
   verify-platforms:
     needs: [prepare, build-appimage, build-snapcraft, build-macos, build-android, build-windows, build-windows-legacy]
-    if: ${{ always() }}
+    if: ${{ !cancelled() && (inputs.mode == 'validation' || inputs.mode == 'stage') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -510,7 +537,7 @@ jobs:
 
   validation:
     needs: [prepare, verify-linux, verify-platforms]
-    if: ${{ always() }}
+    if: ${{ !cancelled() && (inputs.mode == 'validation' || inputs.mode == 'stage') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -651,13 +678,13 @@ jobs:
       run: |
         cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
         Full validation: 19 canonical primary assets built and verified.
-        This report covers only the validation phase. Production effects require the separately selected stage/publish mode.
+        This report covers only the validation phase. The stage mode signs and stages the validated candidate.
         macOS packaging retains its ad-hoc bundle seal; this is not Developer ID signing or notarization.
         EOF
 
   owner-linux:
     needs: [prepare, validation, build-amd64, build-arm64]
-    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    if: ${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' }}
     permissions:
       contents: write
       actions: read
@@ -677,7 +704,7 @@ jobs:
 
   owner-macos:
     needs: [prepare, validation, build-macos]
-    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    if: ${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' }}
     permissions:
       contents: write
       actions: read
@@ -694,7 +721,7 @@ jobs:
 
   owner-snapcraft:
     needs: [prepare, validation, build-snapcraft]
-    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    if: ${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' }}
     permissions:
       contents: write
       actions: read
@@ -711,7 +738,7 @@ jobs:
 
   owner-android:
     needs: [prepare, validation, build-android]
-    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    if: ${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' }}
     permissions:
       contents: write
       actions: read
@@ -736,7 +763,7 @@ jobs:
 
   owner-windows:
     needs: [prepare, validation, build-windows]
-    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    if: ${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' }}
     permissions:
       contents: write
       actions: read
@@ -758,7 +785,7 @@ jobs:
 
   owner-windows-legacy:
     needs: [prepare, validation, build-windows-legacy]
-    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    if: ${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' }}
     permissions:
       contents: write
       actions: read
@@ -780,7 +807,7 @@ jobs:
 
   owner-appimage:
     needs: [prepare, validation, build-appimage]
-    if: ${{ !cancelled() && inputs.mode != 'validation' && needs.validation.result == 'success' }}
+    if: ${{ !cancelled() && inputs.mode == 'stage' && needs.validation.result == 'success' }}
     permissions:
       contents: write
       actions: read
@@ -802,23 +829,24 @@ jobs:
       APPIMAGE_GPG_PRIVATE_KEY: ${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}
       APPIMAGE_GPG_PASSPHRASE: ${{ secrets.APPIMAGE_GPG_PASSPHRASE }}
 
-  publish:
+  verify-staged:
     needs: [prepare, owner-linux, owner-macos, owner-snapcraft, owner-android, owner-windows, owner-windows-legacy, owner-appimage]
-    if: ${{ always() && !cancelled() && inputs.mode == 'publish' }}
+    if: ${{ !cancelled() && success() && inputs.mode == 'stage' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
     permissions:
+      # GitHub only exposes draft releases to callers with push access.
       contents: write
-      actions: read
+      attestations: read
     outputs:
-      published: ${{ steps.finalize.outputs.published }}
+      candidate-digest: ${{ steps.verify.outputs.candidate-digest }}
+      release-id: ${{ steps.verify.outputs.release-id }}
     concurrency:
       group: ${{ github.repository }}-release-publication
       queue: max
     env:
       SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
-      BODY_PATH: ${{ github.workspace }}/release-body.md
       MODE: ${{ inputs.mode }}
       OWNER_RESULTS_JSON: >-
         [{"owner":"build-linux.yml","result":"${{ needs.owner-linux.result }}","staged":"${{ needs.owner-linux.outputs.staged }}"},{"owner":"build-macos.yml","result":"${{ needs.owner-macos.result }}","staged":"${{ needs.owner-macos.outputs.staged }}"},{"owner":"build-snapcraft.yml","result":"${{ needs.owner-snapcraft.result }}","staged":"${{ needs.owner-snapcraft.outputs.staged }}"},{"owner":"build-android.yml","result":"${{ needs.owner-android.result }}","staged":"${{ needs.owner-android.outputs.staged }}"},{"owner":"build-windows.yml","result":"${{ needs.owner-windows.result }}","staged":"${{ needs.owner-windows.outputs.staged }}"},{"owner":"build-windows-legacy.yml","result":"${{ needs.owner-windows-legacy.result }}","staged":"${{ needs.owner-windows-legacy.outputs.staged }}"},{"owner":"build-appimage.yml","result":"${{ needs.owner-appimage.result }}","staged":"${{ needs.owner-appimage.outputs.staged }}"}]
@@ -827,7 +855,7 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        test "$MODE" = publish
+        test "$MODE" = stage
         jq -e 'type == "array" and length == 7
           and ([.[].owner]|sort) == ["build-android.yml","build-appimage.yml","build-linux.yml","build-macos.yml","build-snapcraft.yml","build-windows-legacy.yml","build-windows.yml"]
           and all(.[]; .result == "success" and .staged == "true")' <<< "$OWNER_RESULTS_JSON" >/dev/null
@@ -845,10 +873,45 @@ jobs:
       with:
         cosign-release: v3.1.6
 
-    - name: Generate release notes
-      uses: ./.github/actions/release-body
+    - name: Verify complete staged candidate
+      id: verify
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/actions/stage-release/release-gate.sh verify-staged "$SOURCE_VERSION"
+
+  publish:
+    needs: prepare
+    if: ${{ !cancelled() && inputs.mode == 'publish' && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      attestations: read
+    outputs:
+      published: ${{ steps.finalize.outputs.published }}
+    concurrency:
+      group: ${{ github.repository }}-release-publication
+      queue: max
+    env:
+      SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_SOURCE_SHA: ${{ inputs.candidate_sha }}
+      RELEASE_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
-        version: ${{ needs.prepare.outputs.version }}
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Setup pinned GitHub CLI
+      uses: ./.github/actions/setup-gh
+
+    - name: Install cosign
+      uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+      with:
+        cosign-release: v3.1.6
 
     - name: Strictly finalize complete release
       id: finalize
@@ -864,7 +927,7 @@ jobs:
       run: test "$PUBLISHED" = true
 
   result:
-    needs: [prepare, build-amd64, build-arm64, build-appimage, build-snapcraft, build-macos, build-android, build-windows, build-windows-legacy, verify-linux, verify-platforms, validation, owner-linux, owner-macos, owner-snapcraft, owner-android, owner-windows, owner-windows-legacy, owner-appimage, publish]
+    needs: [prepare, build-amd64, build-arm64, build-appimage, build-snapcraft, build-macos, build-android, build-windows, build-windows-legacy, verify-linux, verify-platforms, validation, owner-linux, owner-macos, owner-snapcraft, owner-android, owner-windows, owner-windows-legacy, owner-appimage, verify-staged, publish]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -872,7 +935,12 @@ jobs:
       contents: read
     env:
       MODE: ${{ inputs.mode }}
+      PREPARE_RESULT: ${{ needs.prepare.result }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
       VALIDATION_RESULT: ${{ needs.validation.result }}
+      STAGE_VERIFICATION_RESULT: ${{ needs.verify-staged.result }}
+      CANDIDATE_DIGEST: ${{ needs.verify-staged.outputs.candidate-digest }}
+      RELEASE_ID: ${{ needs.verify-staged.outputs.release-id }}
       PUBLISH_RESULT: ${{ needs.publish.result }}
       PUBLISHED: ${{ needs.publish.outputs.published }}
       OWNER_RESULTS_JSON: >-
@@ -890,8 +958,14 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        summary=$(jq -cn --arg mode "$MODE" --arg validation "$VALIDATION_RESULT" --arg publish_result "$PUBLISH_RESULT" --arg published "$PUBLISHED" --arg attempt "$GITHUB_RUN_ATTEMPT" --argjson owners "$OWNER_RESULTS_JSON" '
+        summary=$(jq -cn --arg mode "$MODE" --arg prepared "$PREPARE_RESULT" \
+          --arg validation "$VALIDATION_RESULT" --arg stage "$STAGE_VERIFICATION_RESULT" \
+          --arg source "$SOURCE_SHA" --arg digest "$CANDIDATE_DIGEST" --arg release_id "$RELEASE_ID" \
+          --arg publish_result "$PUBLISH_RESULT" --arg published "$PUBLISHED" \
+          --arg attempt "$GITHUB_RUN_ATTEMPT" --argjson owners "$OWNER_RESULTS_JSON" '
           ($publish_result == "success" and $published == "true") as $is_published |
+          ($stage == "success" and ($source|test("^[0-9a-f]{40}$"))
+            and ($digest|test("^[0-9a-f]{64}$")) and ($release_id|test("^[1-9][0-9]*$"))) as $has_receipt |
           ($owners | map({
             owner,
             result,
@@ -899,23 +973,31 @@ jobs:
             verified:(.verify_result == "success"),
             signed:(.reused != "true" and .generation_attempt == $attempt and (.generation_id|test("^[1-9][0-9]*$")) and (.generation_digest|test("^[0-9a-f]{64}$"))),
             reused:(.result == "success" and .reused == "true"),
-            staged:(.result == "success" and .staged == "true"),
-            published:($is_published and .result == "success" and .staged == "true")
+            staged:(.result == "success" and .staged == "true")
           })) as $rows |
           {mode:$mode,published:$is_published,owners:$rows,success:(
-            $validation == "success" and ($owners|length) == 7 and
+            $prepared == "success" and ($owners|length) == 7 and
             ([$owners[].owner]|sort) == ["build-android.yml","build-appimage.yml","build-linux.yml","build-macos.yml","build-snapcraft.yml","build-windows-legacy.yml","build-windows.yml"] and
-            (if $mode == "validation" then $publish_result == "skipped" and all($owners[]; .result == "skipped")
-             elif $mode == "stage" then $publish_result == "skipped" and ($is_published|not) and all($rows[]; .result == "success" and .staged)
-             elif $mode == "publish" then $is_published and all($rows[]; .result == "success" and .staged)
+            (if $mode == "validation" then $validation == "success" and $stage == "skipped"
+               and $publish_result == "skipped" and all($rows[]; .built and .verified and .result == "skipped")
+             elif $mode == "stage" then $validation == "success" and $has_receipt
+               and $publish_result == "skipped" and all($rows[]; .built and .verified and .staged)
+             elif $mode == "publish" then $is_published and $validation == "skipped" and $stage == "skipped"
+               and all($owners[]; .result == "skipped" and .verify_result == "skipped" and all(.built_results[]; . == "skipped"))
              else false end))}')
         {
           printf '## Requested mode: %s\n\n' "$MODE"
-          echo '| Owner | Result | Built | Verified | Freshly signed | Reused | Staged | Published |'
-          echo '|---|---|---|---|---|---|---|---|'
-          jq -r '.owners[] | "| \(.owner) | \(.result) | \(.built) | \(.verified) | \(.signed) | \(.reused) | \(.staged) | \(.published) |"' <<< "$summary"
+          echo '| Owner | Result | Built | Build verified | Freshly signed | Reused | Staged |'
+          echo '|---|---|---|---|---|---|---|'
+          jq -r '.owners[] | "| \(.owner) | \(.result) | \(.built) | \(.verified) | \(.signed) | \(.reused) | \(.staged) |"' <<< "$summary"
+          echo
+          jq -r '"Published: \(.published)"' <<< "$summary"
           echo
           echo 'Freshly signed requires a real generation tuple produced in this attempt; remote reuse and retained earlier generations do not claim new signing.'
           echo 'macOS retains its native ad-hoc seal; no Developer ID signing or notarization is claimed.'
+          if [[ $MODE == stage ]] && jq -e '.success' <<< "$summary" >/dev/null; then
+            printf "\nVerified draft release ID \`%s\`. Use these inputs for publish after approval.\n\n" "$RELEASE_ID"
+            printf -- "- \`candidate_sha\` = \`%s\`\n- \`candidate_digest\` = \`%s\`\n" "$SOURCE_SHA" "$CANDIDATE_DIGEST"
+          fi
         } >> "$GITHUB_STEP_SUMMARY"
         jq -e '.success == true' <<< "$summary" >/dev/null

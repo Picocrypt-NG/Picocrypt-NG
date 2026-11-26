@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publish artifacts to the GitHub release. Existing assets are never overwritten."
+        description: "Sign and stage this platform's artifacts in the GitHub release draft."
         required: false
         type: boolean
         default: false
@@ -637,4 +637,3 @@ jobs:
           artifacts/build-linux-arm64/Picocrypt-NG-arm64.sigstore.json
           artifacts/build-linux-arm64/Picocrypt-NG-cli-arm64
           artifacts/build-linux-arm64/Picocrypt-NG-cli-arm64.sigstore.json
-        finalize: 'false'

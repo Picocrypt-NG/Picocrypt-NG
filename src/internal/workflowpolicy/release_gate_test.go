@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -53,11 +54,14 @@ type releaseGateOptions struct {
 	localAssets             []releaseLocalFixture
 	workflow                string
 	ownerWorkflow           string
+	candidateDigest         string
+	withoutApproval         bool
+	driverSHA               string
+	candidateNotInCheckout  bool
 	noLocalFiles            bool
 	noBody                  bool
 	publishedBodyFromSource bool
 	publishedBodyOverride   string
-	finalize                *string
 	cosignFailure           string
 	attestationFailure      string
 	attestationCaller       string
@@ -72,6 +76,7 @@ type releaseGateOptions struct {
 	mainVersion             string
 	compareStatus           string
 	assetsAfterVerify       []releaseAssetFixture
+	assetsAfterPublish      []releaseAssetFixture
 	publishAfterVerify      bool
 	bodyOutsideWorkspace    bool
 	symlinkLocalParent      bool
@@ -223,7 +228,6 @@ func TestStageReleaseActionKeepsReleaseDraftUntilExactManifestExists(t *testing.
 	wantSteps := []string{
 		"Reject unsafe existing release",
 		"Upload assets to draft release",
-		"Publish only the complete release",
 	}
 	if len(action.Runs.Steps) != len(wantSteps) {
 		t.Fatalf("stage-release step count = %d, want exactly %d", len(action.Runs.Steps), len(wantSteps))
@@ -235,12 +239,8 @@ func TestStageReleaseActionKeepsReleaseDraftUntilExactManifestExists(t *testing.
 		if got := action.Runs.Steps[index].ContinueOnError; got != nil && got != false {
 			t.Fatalf("stage-release step %q continue-on-error = %#v, want fail-loud default", want, got)
 		}
-		wantIf := ""
-		if index == 2 {
-			wantIf = "${{ inputs.finalize == 'true' }}"
-		}
-		if got := action.Runs.Steps[index].If; got != wantIf {
-			t.Fatalf("stage-release step %q if = %q, want %q", want, got, wantIf)
+		if got := action.Runs.Steps[index].If; got != "" {
+			t.Fatalf("stage-release step %q if = %q, want unconditional staging", want, got)
 		}
 	}
 
@@ -264,13 +264,6 @@ func TestStageReleaseActionKeepsReleaseDraftUntilExactManifestExists(t *testing.
 		if got := stage.Env[key]; got != want {
 			t.Fatalf("draft upload %s = %q, want %q", key, got, want)
 		}
-	}
-	publish := mustCompositeStepNamed(t, action, "Publish only the complete release")
-	if publish.Run != `bash "$GITHUB_ACTION_PATH/release-gate.sh" publish "$VERSION"` {
-		t.Fatalf("release publication command = %q, want exact manifest gate", publish.Run)
-	}
-	if got := publish.Env["BODY_PATH"]; got != "${{ inputs.body_path }}" {
-		t.Fatalf("release publication BODY_PATH = %q, want deterministic generated release body", got)
 	}
 }
 
@@ -317,10 +310,10 @@ func TestReleaseGateRejectsMismatchedSourceBeforeGitHubAPI(t *testing.T) {
 		message string
 	}{
 		{"preflight root VERSION", "preflight", releaseGateOptions{rootVersion: "2.18"}, "root VERSION"},
-		{"publish root VERSION", "publish", releaseGateOptions{rootVersion: "2.18"}, "root VERSION"},
+		{"publish root VERSION", "strict-finalize", releaseGateOptions{rootVersion: "2.18"}, "root VERSION"},
 		{"preflight checkout HEAD", "preflight", releaseGateOptions{checkoutHEAD: "fedcba9876543210fedcba9876543210fedcba98"}, "checkout commit"},
-		{"publish checkout HEAD", "publish", releaseGateOptions{checkoutHEAD: "fedcba9876543210fedcba9876543210fedcba98"}, "checkout commit"},
-		{"modified release verification notes", "publish", releaseGateOptions{modifiedBody: true}, "source-bound deterministic release notes"},
+		{"publish checkout HEAD", "strict-finalize", releaseGateOptions{checkoutHEAD: "fedcba9876543210fedcba9876543210fedcba98"}, "checkout commit"},
+		{"modified release verification notes", "upload", releaseGateOptions{modifiedBody: true}, "source-bound deterministic release notes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			result := runReleaseGateWithOptions(t, tc.mode, nil, nil, tc.options)
@@ -561,7 +554,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	}}
 
 	t.Run("complete", func(t *testing.T) {
-		result := runReleaseGate(t, "publish", release, completeReleaseAssets("2.19"))
+		result := runReleaseGate(t, "strict-finalize", release, completeReleaseAssets("2.19"))
 		if result.err != nil {
 			t.Fatalf("complete release was not published: %v\n%s", result.err, result.output)
 		}
@@ -626,9 +619,9 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 			result.calls,
 			"api --method PATCH repos/Picocrypt-NG/Picocrypt-NG/releases/42",
 		)
-		if lastAssets < 0 || mainVersion <= lastAssets || publish <= mainVersion {
+		if mainVersion < 0 || publish <= mainVersion || lastAssets <= publish {
 			t.Fatalf(
-				"release state must be revalidated before the final main/VERSION check and PATCH:\n%s",
+				"publication requires the current main version before PATCH and asset readback afterwards:\n%s",
 				result.calls,
 			)
 		}
@@ -637,7 +630,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("absent tag is atomically bound to the source commit", func(t *testing.T) {
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"strict-finalize",
 			release,
 			completeReleaseAssets("2.19"),
 			releaseGateOptions{tagAbsent: true},
@@ -665,7 +658,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("conflicting tag creation race fails closed", func(t *testing.T) {
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"strict-finalize",
 			release,
 			completeReleaseAssets("2.19"),
 			releaseGateOptions{
@@ -683,12 +676,12 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("missing asset stays draft", func(t *testing.T) {
 		assets := completeReleaseAssets("2.19")
 		missing := assets[len(assets)-1].Name
-		result := runReleaseGate(t, "publish", release, assets[:len(assets)-1])
-		if result.err != nil {
-			t.Fatalf("incomplete release should remain draft without failing an early lane: %v\n%s", result.err, result.output)
+		result := runReleaseGate(t, "strict-finalize", release, assets[:len(assets)-1])
+		if result.err == nil {
+			t.Fatal("publication accepted an incomplete draft")
 		}
 		mustContain(t, result.output, missing)
-		mustNotContain(t, result.calls, "--method PATCH")
+		stagingRequireReadOnly(t, result)
 	})
 
 	t.Run("unexpected asset fails closed", func(t *testing.T) {
@@ -696,7 +689,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 			completeReleaseAssets("2.19"),
 			newReleaseAsset(9999, "debug-secrets.txt", "must never become public"),
 		)
-		result := runReleaseGate(t, "publish", release, assets)
+		result := runReleaseGate(t, "strict-finalize", release, assets)
 		if result.err == nil {
 			t.Fatal("release with an unexpected asset was published")
 		}
@@ -707,7 +700,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("empty asset fails closed", func(t *testing.T) {
 		assets := completeReleaseAssets("2.19")
 		assets[0].Size = 0
-		result := runReleaseGate(t, "publish", release, assets)
+		result := runReleaseGate(t, "strict-finalize", release, assets)
 		if result.err == nil {
 			t.Fatal("release with an empty asset was published")
 		}
@@ -718,7 +711,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("non-uploaded asset fails closed", func(t *testing.T) {
 		assets := completeReleaseAssets("2.19")
 		assets[0].State = "open"
-		result := runReleaseGate(t, "publish", release, assets)
+		result := runReleaseGate(t, "strict-finalize", release, assets)
 		if result.err == nil {
 			t.Fatal("release with a non-uploaded asset was published")
 		}
@@ -729,7 +722,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("prerelease state fails closed", func(t *testing.T) {
 		prerelease := append([]releaseGateFixture(nil), release...)
 		prerelease[0].Prerelease = true
-		result := runReleaseGate(t, "publish", prerelease, completeReleaseAssets("2.19"))
+		result := runReleaseGate(t, "strict-finalize", prerelease, completeReleaseAssets("2.19"))
 		if result.err == nil {
 			t.Fatal("publication gate accepted a prerelease")
 		}
@@ -740,7 +733,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("download digest mismatch fails closed", func(t *testing.T) {
 		assets := completeReleaseAssets("2.19")
 		assets[0].Content = strings.Repeat("x", int(assets[0].Size))
-		result := runReleaseGate(t, "publish", release, assets)
+		result := runReleaseGate(t, "strict-finalize", release, assets)
 		if result.err == nil {
 			t.Fatal("release with remotely substituted bytes was published")
 		}
@@ -753,7 +746,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 		assets := completeReleaseAssets("2.19")
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"strict-finalize",
 			release,
 			assets,
 			releaseGateOptions{cosignFailure: assets[0].Name},
@@ -769,7 +762,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 		assets := completeReleaseAssets("2.19")
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"strict-finalize",
 			release,
 			assets,
 			releaseGateOptions{attestationFailure: assets[0].Name},
@@ -784,7 +777,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("release body outside workspace fails closed", func(t *testing.T) {
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"upload",
 			release,
 			completeReleaseAssets("2.19"),
 			releaseGateOptions{bodyOutsideWorkspace: true},
@@ -802,7 +795,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 		changed[0].Digest = "sha256:" + strings.Repeat("b", 64)
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"strict-finalize",
 			release,
 			assets,
 			releaseGateOptions{assetsAfterVerify: changed},
@@ -817,7 +810,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("tag moved after verification fails closed", func(t *testing.T) {
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"strict-finalize",
 			release,
 			completeReleaseAssets("2.19"),
 			releaseGateOptions{
@@ -835,7 +828,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("tag moved after publication fails loud", func(t *testing.T) {
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"strict-finalize",
 			release,
 			completeReleaseAssets("2.19"),
 			releaseGateOptions{
@@ -852,7 +845,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("publication during verification fails closed", func(t *testing.T) {
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"strict-finalize",
 			release,
 			completeReleaseAssets("2.19"),
 			releaseGateOptions{publishAfterVerify: true},
@@ -867,18 +860,18 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("concurrent external publication fails closed", func(t *testing.T) {
 		published := append([]releaseGateFixture(nil), release...)
 		published[0].Draft = false
-		result := runReleaseGate(t, "publish", published, completeReleaseAssets("2.19"))
+		result := runReleaseGate(t, "strict-finalize", published, completeReleaseAssets("2.19"))
 		if result.err == nil {
 			t.Fatal("publication gate accepted a release that was already made public")
 		}
-		mustContain(t, result.output, "already published")
+		mustContain(t, result.output, "release notes do not match")
 		mustNotContain(t, result.calls, "--method PATCH")
 	})
 
 	t.Run("superseded version fails closed", func(t *testing.T) {
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"strict-finalize",
 			release,
 			completeReleaseAssets("2.19"),
 			releaseGateOptions{mainVersion: "2.20"},
@@ -893,7 +886,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("source removed from main fails closed", func(t *testing.T) {
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"strict-finalize",
 			release,
 			completeReleaseAssets("2.19"),
 			releaseGateOptions{compareStatus: "diverged"},
@@ -908,7 +901,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 	t.Run("unexpected publication response fails loud", func(t *testing.T) {
 		result := runReleaseGateWithOptions(
 			t,
-			"publish",
+			"strict-finalize",
 			release,
 			completeReleaseAssets("2.19"),
 			releaseGateOptions{invalidPatchResponse: true},
@@ -922,7 +915,7 @@ func TestReleaseGatePublishesOnlyExactUploadedNonEmptyManifest(t *testing.T) {
 }
 
 func TestReleaseGateListingFailureNeverAuthorizesMutation(t *testing.T) {
-	for _, mode := range []string{"preflight", "upload", "publish"} {
+	for _, mode := range []string{"preflight", "upload", "strict-finalize"} {
 		t.Run(mode, func(t *testing.T) {
 			result := runReleaseGateWithOptions(t, mode, nil, nil, releaseGateOptions{releaseListingFailure: true})
 			if result.err == nil {
@@ -1193,24 +1186,13 @@ func TestReleaseGateUploadFailureLeavesDraftUnpublishedAndNeverDeletes(t *testin
 	})
 }
 
-func TestStagingFinalizeSelectionRejectsInvalidBeforeRemoteWork(t *testing.T) {
-	for _, flag := range []string{"", "yes", "TRUE", "1"} {
-		t.Run(flag, func(t *testing.T) {
-			result := runReleaseGateWithOptions(t, "preflight", nil, nil, releaseGateOptions{finalize: &flag})
-			if result.err == nil || result.calls != "" {
-				t.Fatal("invalid finalize selection must stop before any remote operation")
-			}
-			mustContain(t, result.output, "finalize must be true or false")
-			stagingRequireOutputs(t, result, false, false)
-		})
-	}
-	flag := "false"
-	preflight := runReleaseGateWithOptions(t, "preflight", nil, nil, releaseGateOptions{finalize: &flag})
+func TestStagingUploadsWithoutCreatingPublicationTag(t *testing.T) {
+	preflight := runReleaseGateWithOptions(t, "preflight", nil, nil, releaseGateOptions{})
 	if preflight.err != nil {
 		t.Fatalf("stage-only preflight refused: %v\n%s", preflight.err, preflight.output)
 	}
 	stagingRequireReadOnly(t, preflight)
-	staged := runReleaseGateWithOptions(t, "upload", nil, nil, releaseGateOptions{finalize: &flag})
+	staged := runReleaseGateWithOptions(t, "upload", nil, nil, releaseGateOptions{})
 	if staged.err != nil {
 		t.Fatalf("stage-only upload refused: %v\n%s", staged.err, staged.output)
 	}
@@ -1298,11 +1280,13 @@ func runReleaseGateWithOptions(
 ) releaseGateResult {
 	t.Helper()
 
+	releases = append([]releaseGateFixture(nil), releases...)
 	root := repoRoot(t)
 	temp := t.TempDir()
 	releasesPath := filepath.Join(temp, "releases.json")
 	assetsPath := filepath.Join(temp, "assets.json")
 	assetsAfterPath := filepath.Join(temp, "assets-after.json")
+	assetsPublishedPath := filepath.Join(temp, "assets-published.json")
 	tagRefsPath := filepath.Join(temp, "tag-refs.json")
 	tagRefsAfterPath := filepath.Join(temp, "tag-refs-after.json")
 	tagRefsCreatedPath := filepath.Join(temp, "tag-refs-created.json")
@@ -1323,6 +1307,11 @@ func runReleaseGateWithOptions(
 		assetsAfter = assets
 	}
 	writeJSONFixture(t, assetsAfterPath, assetsAfter)
+	assetsPublished := options.assetsAfterPublish
+	if assetsPublished == nil {
+		assetsPublished = assetsAfter
+	}
+	writeJSONFixture(t, assetsPublishedPath, assetsPublished)
 	releasesAfter := append([]releaseGateFixture(nil), releases...)
 	if options.publishAfterVerify && len(releasesAfter) == 1 {
 		releasesAfter[0].Draft = false
@@ -1486,7 +1475,8 @@ func runReleaseGateWithOptions(
 	}
 	bodyPath := filepath.Join(workspace, "release-body.md")
 	expectedBody := ""
-	if !options.noBody {
+	remoteCandidate := mode == "verify-staged" || mode == "strict-finalize"
+	if !options.noBody || remoteCandidate {
 		bodyCommand := exec.Command("bash", filepath.Join(workspace, releaseBodyScriptPath), "2.19", changelogPath, bodyPath)
 		bodyCommand.Dir = workspace
 		bodyCommand.Env = append(os.Environ(), "GITHUB_SHA="+releaseTestSHA)
@@ -1494,6 +1484,17 @@ func runReleaseGateWithOptions(
 			t.Fatalf("generate source-bound release body fixture: %v\n%s", err, output)
 		}
 		expectedBody = readOptionalFile(t, bodyPath)
+	}
+	if remoteCandidate {
+		for _, snapshot := range [][]releaseGateFixture{releases, releasesAfter} {
+			for index := range snapshot {
+				if snapshot[index].Draft && snapshot[index].Body == "" {
+					snapshot[index].Body = expectedBody
+				}
+			}
+		}
+		writeJSONFixture(t, releasesPath, releases)
+		writeJSONFixture(t, releasesAfterPath, releasesAfter)
 	}
 	if options.modifiedBody {
 		if err := os.WriteFile(bodyPath, []byte(expectedBody+"\nUnverified replacement instructions.\n"), 0o600); err != nil {
@@ -1559,7 +1560,9 @@ case "$*" in
       echo 'fixture release listing failed' >&2
       exit 1
     fi
-    if [ "$GH_UPLOAD_MODE" = "true" ]; then
+    if [ -e "$GH_PUBLISHED_MARKER" ]; then
+      jq -s '[.[0][0] + {draft:false, body:.[1].body}]' "$GH_RELEASES_JSON" "$GH_PATCH_CAPTURE"
+    elif [ "$GH_UPLOAD_MODE" = "true" ]; then
       if [ -e "$GH_VERIFIED_MARKER" ]; then
         cat "$GH_RELEASES_AFTER_JSON"
       else
@@ -1573,7 +1576,9 @@ case "$*" in
     fi
     ;;
   "--paginate repos/Picocrypt-NG/Picocrypt-NG/releases/42/assets?per_page=100")
-    if [ "$GH_UPLOAD_MODE" = "true" ]; then
+    if [ -e "$GH_PUBLISHED_MARKER" ]; then
+      cat "$GH_ASSETS_PUBLISHED_JSON"
+    elif [ "$GH_UPLOAD_MODE" = "true" ]; then
       if [ -e "$GH_VERIFIED_MARKER" ] && [ "$GH_ASSETS_AFTER_VERIFY_SET" = "true" ]; then
         cat "$GH_ASSETS_AFTER_JSON"
       else
@@ -1636,7 +1641,7 @@ case "$*" in
     if [ -n "$GH_ATTESTATION_CALLER" ]; then
       caller="https://github.com/Picocrypt-NG/Picocrypt-NG/.github/workflows/$GH_ATTESTATION_CALLER@refs/heads/main"
     fi
-    jq -cn --arg identity "$identity" --arg caller "$caller" --arg sha "$GITHUB_SHA" '
+    jq -cn --arg identity "$identity" --arg caller "$caller" --arg sha "$EXPECTED_CANDIDATE" '
       [{verificationResult:{signature:{certificate:{issuer:"https://token.actions.githubusercontent.com",
       subjectAlternativeName:$identity,buildSignerURI:$identity,buildSignerDigest:$sha,
       buildConfigURI:$caller,buildConfigDigest:$sha,sourceRepositoryURI:"https://github.com/Picocrypt-NG/Picocrypt-NG",
@@ -1747,22 +1752,41 @@ fi
 
 	const fakeGit = `#!/usr/bin/env bash
 set -euo pipefail
-if [ "$#" -ne 4 ] || [ "$1" != "-C" ] || [ "$2" != "$EXPECTED_WORKSPACE" ] || [ "$3" != "rev-parse" ] || [ "$4" != "HEAD" ]; then
-  echo "unexpected git invocation" >&2
-  exit 64
-fi
-printf '%s\n' "$EXPECTED_HEAD"
+[[ "$1" == -C && "$2" == "$EXPECTED_WORKSPACE" ]]
+shift 2
+case "$*" in
+  "rev-parse HEAD") printf '%s\n' "$EXPECTED_HEAD" ;;
+  "merge-base --is-ancestor $EXPECTED_CANDIDATE $GITHUB_SHA") [[ $CANDIDATE_NOT_IN_CHECKOUT == false ]] ;;
+  "show $EXPECTED_CANDIDATE:VERSION") cat "$EXPECTED_WORKSPACE/VERSION" ;;
+  "show $EXPECTED_CANDIDATE:Changelog.md") cat "$EXPECTED_WORKSPACE/Changelog.md" ;;
+  *) echo "unexpected git invocation: $*" >&2; exit 64 ;;
+esac
 `
 	if err := os.WriteFile(filepath.Join(temp, "git"), []byte(fakeGit), 0o700); err != nil {
 		t.Fatalf("write controlled checkout HEAD fixture: %v", err)
 	}
+	driverSHA := options.driverSHA
+	if driverSHA == "" {
+		driverSHA = releaseTestSHA
+	}
 	checkoutHEAD := options.checkoutHEAD
 	if checkoutHEAD == "" {
-		checkoutHEAD = releaseTestSHA
+		checkoutHEAD = driverSHA
 	}
 	workflow := options.workflow
 	if workflow == "" {
 		workflow = "build-linux.yml"
+		if remoteCandidate {
+			workflow = "release.yml"
+		}
+	}
+	candidateDigest := options.candidateDigest
+	if mode == "strict-finalize" && candidateDigest == "" && !options.withoutApproval {
+		releaseID := int64(42)
+		if len(releases) == 1 {
+			releaseID = releases[0].ID
+		}
+		candidateDigest = releaseGateFixtureCandidateDigest(t, workspace, releaseID, assets, expectedBody)
 	}
 
 	command := exec.Command("bash", script, mode, "2.19")
@@ -1773,6 +1797,8 @@ printf '%s\n' "$EXPECTED_HEAD"
 		"FILES="+strings.Join(localPaths, "\n"),
 		"BODY_PATH="+bodyPath,
 		"OWNER_WORKFLOW="+options.ownerWorkflow,
+		"RELEASE_CANDIDATE_DIGEST="+candidateDigest,
+		"RELEASE_SOURCE_SHA="+releaseTestSHA,
 		"GITHUB_OUTPUT="+outputsPath,
 		"GH_CALLS="+callsPath,
 		"GH_UPLOAD_MODE="+strconv.FormatBool(mode == "upload"),
@@ -1792,6 +1818,7 @@ printf '%s\n' "$EXPECTED_HEAD"
 		"GH_RELEASES_MARKER="+filepath.Join(temp, "release-call.marker"),
 		"GH_ASSETS_JSON="+assetsPath,
 		"GH_ASSETS_AFTER_JSON="+assetsAfterPath,
+		"GH_ASSETS_PUBLISHED_JSON="+assetsPublishedPath,
 		"GH_ASSETS_MARKER="+filepath.Join(temp, "assets-call.marker"),
 		"GH_TAG_REFS_JSON="+tagRefsPath,
 		"GH_TAG_REFS_AFTER_JSON="+tagRefsAfterPath,
@@ -1816,14 +1843,15 @@ printf '%s\n' "$EXPECTED_HEAD"
 		"GITHUB_WORKSPACE="+workspace,
 		"GITHUB_WORKFLOW_REF=Picocrypt-NG/Picocrypt-NG/.github/workflows/"+workflow+"@refs/heads/main",
 		"GITHUB_REPOSITORY=Picocrypt-NG/Picocrypt-NG",
-		"GITHUB_SHA="+releaseTestSHA,
-		"GITHUB_WORKFLOW_SHA="+releaseTestSHA,
+		"GITHUB_SHA="+driverSHA,
+		"GITHUB_WORKFLOW_SHA="+driverSHA,
+		"GITHUB_EVENT_NAME=workflow_dispatch",
+		"GITHUB_REF=refs/heads/main",
 		"EXPECTED_HEAD="+checkoutHEAD,
 		"EXPECTED_WORKSPACE="+workspace,
+		"EXPECTED_CANDIDATE="+releaseTestSHA,
+		"CANDIDATE_NOT_IN_CHECKOUT="+strconv.FormatBool(options.candidateNotInCheckout),
 	)
-	if options.finalize != nil {
-		command.Env = append(command.Env, "FINALIZE="+*options.finalize)
-	}
 	var output, stdout []byte
 	var runErr error
 	if mode == "inspect-owner" {
@@ -1856,6 +1884,32 @@ printf '%s\n' "$EXPECTED_HEAD"
 		draftCreateInput: readOptionalFile(t, draftCreateCapturePath),
 		remoteAssets:     remoteAssets,
 	}
+}
+
+func releaseGateFixtureCandidateDigest(t *testing.T, workspace string, id int64, assets []releaseAssetFixture, body string) string {
+	t.Helper()
+	manifest, err := exec.Command("bash", filepath.Join(workspace, releaseManifestScriptPath), "2.19").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sorted := append([]releaseAssetFixture(nil), assets...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	records := make([]map[string]any, 0, len(sorted))
+	for _, asset := range sorted {
+		records = append(records, map[string]any{
+			"id": asset.ID, "name": asset.Name, "state": asset.State, "size": asset.Size, "digest": asset.Digest,
+		})
+	}
+	receipt, err := json.Marshal(map[string]any{
+		"schema": 1, "repository": "Picocrypt-NG/Picocrypt-NG", "version": "2.19",
+		"release_id": id, "source_sha": releaseTestSHA, "assets": records,
+		"manifest_sha256": fmt.Sprintf("%x", sha256.Sum256(manifest)),
+		"notes_sha256":    fmt.Sprintf("%x", sha256.Sum256([]byte(body))),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(append(receipt, '\n')))
 }
 
 func writeJSONFixture(t *testing.T, path string, value any) {

@@ -135,8 +135,11 @@ func TestLinuxReusableOwnerKeepsDirectAndSeparatesAuthority(t *testing.T) {
 		t.Fatal("stage must verify metadata and bytes without signing")
 	}
 	staging := mustStepNamed(t, stage, "Stage release assets")
-	if staging.Uses != "./.github/actions/stage-release" || staging.With["finalize"] != "false" {
-		t.Fatal("reusable owner stages only; it must not finalize")
+	if staging.Uses != "./.github/actions/stage-release" {
+		t.Fatal("reusable owner must use the common draft staging action")
+	}
+	if _, exists := staging.With["finalize"]; exists {
+		t.Fatal("the draft staging action must offer no finalization option")
 	}
 }
 

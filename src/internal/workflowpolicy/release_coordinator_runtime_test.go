@@ -33,6 +33,12 @@ func TestReleaseCoordinatorPrepareRejectsUntrustedProductionModes(t *testing.T) 
 		{"different workflow source", "publish", "workflow source", false},
 		{"different checkout", "stage", "checkout", false},
 		{"validation different checkout", "validation", "checkout", false},
+		{"publish lacks candidate source", "publish", "missing source", false},
+		{"publish lacks candidate digest", "publish", "missing digest", false},
+		{"publish candidate source is not a commit SHA", "publish", "bad source", false},
+		{"publish candidate digest is not SHA-256", "publish", "bad digest", false},
+		{"stage cannot select another candidate", "stage", "unexpected source", false},
+		{"validation cannot select a candidate digest", "validation", "unexpected digest", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -58,6 +64,11 @@ func TestReleaseCoordinatorPrepareRejectsUntrustedProductionModes(t *testing.T) 
 				"GITHUB_REPOSITORY": "Picocrypt-NG/Picocrypt-NG", "GITHUB_REF": "refs/heads/main",
 				"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_WORKFLOW_REF": "Picocrypt-NG/Picocrypt-NG/.github/workflows/release.yml@refs/heads/main",
 				"GITHUB_WORKFLOW_SHA": source, "GITHUB_OUTPUT": outputPath,
+				"CANDIDATE_SHA": "", "CANDIDATE_DIGEST": "",
+			}
+			if tc.mode == "publish" {
+				env["CANDIDATE_SHA"] = strings.Repeat("b", 40)
+				env["CANDIDATE_DIGEST"] = strings.Repeat("c", 64)
 			}
 			switch tc.defect {
 			case "review":
@@ -73,6 +84,18 @@ func TestReleaseCoordinatorPrepareRejectsUntrustedProductionModes(t *testing.T) 
 				env["GITHUB_WORKFLOW_SHA"] = strings.Repeat("b", 40)
 			case "checkout":
 				env["CHECKOUT_SHA"] = strings.Repeat("b", 40)
+			case "missing source":
+				env["CANDIDATE_SHA"] = ""
+			case "missing digest":
+				env["CANDIDATE_DIGEST"] = ""
+			case "bad source":
+				env["CANDIDATE_SHA"] = "main"
+			case "bad digest":
+				env["CANDIDATE_DIGEST"] = strings.Repeat("g", 64)
+			case "unexpected source":
+				env["CANDIDATE_SHA"] = strings.Repeat("b", 40)
+			case "unexpected digest":
+				env["CANDIDATE_DIGEST"] = strings.Repeat("c", 64)
 			}
 			output, err := runFullValidationBash(t, dir, step.Run, env)
 			if (err == nil) != tc.accept {
@@ -100,15 +123,15 @@ func TestReleaseCoordinatorPrepareRejectsUntrustedProductionModes(t *testing.T) 
 	}
 }
 
-func TestReleaseCoordinatorPublishGuardRequiresEveryStagedOwner(t *testing.T) {
-	step := mustStepNamed(t, mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/release.yml"), "publish"), "Require every staged owner")
-	for _, defect := range []string{"none", "stage mode", "validation mode", "failed owner", "skipped owner", "unstaged owner", "missing owner", "duplicate owner", "unknown owner"} {
+func TestReleaseCoordinatorStageGuardRequiresEveryStagedOwner(t *testing.T) {
+	step := mustStepNamed(t, mustJob(t, mustReadWorkflowDoc(t, ".github/workflows/release.yml"), "verify-staged"), "Require every staged owner")
+	for _, defect := range []string{"none", "publish mode", "validation mode", "failed owner", "skipped owner", "unstaged owner", "missing owner", "duplicate owner", "unknown owner"} {
 		t.Run(defect, func(t *testing.T) {
 			owners := releaseCoordinatorOwnerResults()
-			mode := "publish"
+			mode := "stage"
 			switch defect {
-			case "stage mode":
-				mode = "stage"
+			case "publish mode":
+				mode = "publish"
 			case "validation mode":
 				mode = "validation"
 			case "failed owner":
@@ -152,29 +175,48 @@ func TestReleaseCoordinatorSummaryDistinguishesValidationStageAndPublication(t *
 		{"validation unexpectedly signed", "validation", "owner ran", false},
 		{"stage owner failed", "stage", "failed owner", false},
 		{"stage owner unstaged", "stage", "unstaged", false},
+		{"stage draft verification failed", "stage", "draft failed", false},
+		{"stage no release ID", "stage", "release ID missing", false},
+		{"stage no candidate digest", "stage", "digest missing", false},
 		{"stage unexpectedly published", "stage", "published", false},
 		{"publish skipped", "publish", "publish skipped", false},
 		{"publish unconfirmed", "publish", "unconfirmed", false},
 		{"publish failed after output", "publish", "publish failed", false},
+		{"publication must use trusted preparation", "publish", "prepare failed", false},
+		{"publish must skip native build", "publish", "producer ran", false},
+		{"publish must skip validation verifier", "publish", "verifier ran", false},
+		{"publish must skip validation", "publish", "validation ran", false},
+		{"publish must skip staging owners", "publish", "owner ran", false},
+		{"publish must skip staging verifier", "publish", "staging verifier ran", false},
 		{"missing owner", "stage", "missing owner", false},
 		{"duplicate owner", "stage", "duplicate owner", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			owners := releaseCoordinatorOwnerResults()
 			publishResult, published := "skipped", ""
-			if tc.mode == "validation" {
+			prepare, validation, stageVerification := "success", "success", "skipped"
+			source, candidateDigest, releaseID := strings.Repeat("b", 40), "", ""
+			if tc.mode != "stage" {
 				for _, owner := range owners {
 					owner["result"] = "skipped"
+					owner["reused"] = ""
 					owner["staged"] = ""
 					owner["generation_id"] = ""
 					owner["generation_digest"] = ""
 					owner["generation_attempt"] = ""
 				}
 			}
-			if tc.mode == "publish" {
+			switch tc.mode {
+			case "stage":
+				stageVerification, candidateDigest, releaseID = "success", strings.Repeat("c", 64), "456"
+			case "publish":
 				publishResult, published = "success", "true"
+				validation = "skipped"
+				for _, owner := range owners {
+					owner["built_results"] = []string{"skipped"}
+					owner["verify_result"] = "skipped"
+				}
 			}
-			validation := "success"
 			switch tc.defect {
 			case "reused":
 				owners[0]["reused"] = "true"
@@ -184,12 +226,28 @@ func TestReleaseCoordinatorSummaryDistinguishesValidationStageAndPublication(t *
 				owners[0]["generation_id"] = ""
 			case "validation failed":
 				validation = "failure"
+			case "prepare failed":
+				prepare = "failure"
+			case "producer ran":
+				owners[0]["built_results"] = []string{"skipped", "success"}
+			case "verifier ran":
+				owners[0]["verify_result"] = "success"
+			case "validation ran":
+				validation = "success"
 			case "owner ran":
 				owners[0]["result"] = "success"
 			case "failed owner":
 				owners[0]["result"] = "failure"
 			case "unstaged":
 				owners[0]["staged"] = "false"
+			case "draft failed":
+				stageVerification = "failure"
+			case "release ID missing":
+				releaseID = ""
+			case "digest missing":
+				candidateDigest = ""
+			case "staging verifier ran":
+				stageVerification = "success"
 			case "published":
 				publishResult, published = "success", "true"
 			case "publish skipped":
@@ -211,6 +269,8 @@ func TestReleaseCoordinatorSummaryDistinguishesValidationStageAndPublication(t *
 			summaryPath := filepath.Join(dir, "summary")
 			output, err := runFullValidationBash(t, dir, step.Run, map[string]string{
 				"MODE": tc.mode, "VALIDATION_RESULT": validation, "PUBLISH_RESULT": publishResult, "PUBLISHED": published,
+				"PREPARE_RESULT": prepare, "SOURCE_SHA": source, "STAGE_VERIFICATION_RESULT": stageVerification,
+				"CANDIDATE_DIGEST": candidateDigest, "RELEASE_ID": releaseID,
 				"OWNER_RESULTS_JSON": string(data), "GITHUB_STEP_SUMMARY": summaryPath, "GITHUB_RUN_ATTEMPT": "2",
 			})
 			if (err == nil) != tc.accept {
@@ -220,15 +280,25 @@ func TestReleaseCoordinatorSummaryDistinguishesValidationStageAndPublication(t *
 			if err != nil {
 				t.Fatal(err)
 			}
-			fresh := tc.mode != "validation" && tc.defect != "reused" && tc.defect != "previous attempt" && tc.defect != "no generation"
+			fresh := tc.mode == "stage" && tc.defect != "reused" && tc.defect != "previous attempt" && tc.defect != "no generation"
 			reused := tc.defect == "reused"
 			if tc.accept {
-				want := fmt.Sprintf("| build-linux.yml | %s | true | true | %t | %t | %t | %t |", owners[0]["result"], fresh, reused, tc.mode != "validation", tc.mode == "publish")
+				want := fmt.Sprintf("| build-linux.yml | %s | %t | %t | %t | %t | %t |", owners[0]["result"], tc.mode != "publish", tc.mode != "publish", fresh, reused, tc.mode == "stage")
 				if !strings.Contains(string(summary), want) {
-					t.Fatalf("summary did not reflect actual signing/reuse/publication: %s", summary)
+					t.Fatalf("summary did not reflect actual build/signing/stage results: %s", summary)
+				}
+				if !strings.Contains(string(summary), fmt.Sprintf("Published: %t", tc.mode == "publish")) {
+					t.Fatalf("summary did not reflect actual publication: %s", summary)
 				}
 			}
-			if tc.defect == "publish failed" && strings.Contains(string(summary), "| true |\n") {
+			wantReceipt := tc.accept && tc.mode == "stage"
+			if strings.Contains(string(summary), "candidate_sha") != wantReceipt || strings.Contains(string(summary), "candidate_digest") != wantReceipt {
+				t.Fatalf("only a successful verified stage may show a promotion receipt: %s", summary)
+			}
+			if wantReceipt && (!strings.Contains(string(summary), source) || !strings.Contains(string(summary), candidateDigest) || !strings.Contains(string(summary), releaseID)) {
+				t.Fatalf("summary did not bind source, inventory digest and release ID: %s", summary)
+			}
+			if tc.defect == "publish failed" && strings.Contains(string(summary), "Published: true") {
 				t.Fatalf("failed finalizer cannot report published=true: %s", summary)
 			}
 		})

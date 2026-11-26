@@ -128,8 +128,8 @@ func TestMacosSnapReusableOwnersSeparateRawAttestAndRetainedStage(t *testing.T) 
 			if !reflect.DeepEqual(order, []string{"Verify signed generation metadata", "Download signed " + tc.label + " generation", "Restore signed " + tc.label + " generation", "Generate release notes", "Stage release assets"}) {
 				t.Fatal("stage must restore the full verified generation before any upload")
 			}
-			if mustStepNamed(t, stage, "Stage release assets").With["finalize"] != "false" {
-				t.Fatal("reusable owner must not publish")
+			if mustStepNamed(t, stage, "Stage release assets").Uses != "./.github/actions/stage-release" {
+				t.Fatal("owner must upload through the shared draft staging action")
 			}
 		})
 	}

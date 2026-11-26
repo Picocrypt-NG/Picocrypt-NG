@@ -72,6 +72,10 @@ runs:
         bash .github/scripts/prepare-release-go.sh "linux-$ARCH" "$work"
         bash .github/scripts/prepare-linux-release.sh "$ARCH" "$work" "$UPX_PKG" "$UPX_SHA256"
 
+    - name: Check Windows installer PowerShell syntax
+      shell: bash
+      run: CGO_ENABLED=0 go -C src test -v -count=1 -run '^TestWindowsReusablePinnedGHInstallerPowerShellParses$' ./internal/workflowpolicy
+
     - name: Validate dist artefacts
       shell: bash .github/scripts/run-linux-release-build.sh {0}
       run: |
@@ -103,11 +107,11 @@ runs:
             exit 1
           fi
           mapfile -t packages <<< "$package_list"
-          CGO_ENABLED=1 go test -v -tags migrated_fynedo -race -p 1 -timeout 15m "${packages[@]}"
+          CGO_ENABLED=1 go test -v -tags migrated_fynedo -race -p 1 -timeout 15m -skip '^TestWindowsReusablePinnedGHInstallerPowerShellParses$' "${packages[@]}"
           bash ../.github/scripts/test-linux-ui-race.sh
           PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -timeout 15m -run '^TestCLIIntegration$' ./internal/cli/...
         else
-          PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -tags migrated_fynedo -timeout 15m ./...
+          PICOCRYPT_RUN_CLI_INTEGRATION=1 CGO_ENABLED=1 go test -v -tags migrated_fynedo -timeout 15m -skip '^TestWindowsReusablePinnedGHInstallerPowerShellParses$' ./...
         fi
 
     - name: Build GUI
