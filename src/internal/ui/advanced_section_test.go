@@ -552,16 +552,6 @@ func TestAdvancedOptionsSetTooltips(t *testing.T) {
 		}
 	})
 
-	t.Run("PCV3 encrypt", func(t *testing.T) {
-		a := createTestApp(t)
-		a.advancedContainer = container.NewVBox()
-		a.buildEncryptOptionsInto(a.advancedContainer)
-
-		if got, want := a.deniabilityCheck.ToolTip(), tr("advanced.deniability.pcv3_tooltip", "Hides the format header. Container name and size remain visible."); got != want {
-			t.Errorf("PCV3 D1 tooltip = %q, want %q", got, want)
-		}
-	})
-
 	t.Run("decrypt", func(t *testing.T) {
 		a := createTestApp(t)
 		a.advancedContainer = container.NewVBox()
@@ -681,9 +671,6 @@ func TestAdvancedDisclosureKeepsOptionTooltipsLocalized(t *testing.T) {
 	a := createUIReadyDropTestApp(t, fyneApp)
 
 	fyne.DoAndWait(func() {
-		if err := a.SwitchLanguage("ru"); err != nil {
-			t.Fatalf("SwitchLanguage(ru) returned error: %v", err)
-		}
 		a.State.Mode = "encrypt"
 		a.State.AllFiles = []string{"input.txt"}
 		a.State.OnlyFiles = []string{"input.txt"}
@@ -697,6 +684,36 @@ func TestAdvancedDisclosureKeepsOptionTooltipsLocalized(t *testing.T) {
 	if a.advancedToggleBtn == nil {
 		t.Fatal("advanced disclosure button was not built")
 	}
+	fyne.DoAndWait(func() { fynetest.Tap(a.advancedToggleBtn) })
+
+	assertD1Tooltip := func(language LanguageCode, want string) {
+		t.Helper()
+		if a.advancedDetail == nil || !a.advancedDetail.Visible() || a.deniabilityCheck == nil ||
+			!canvasTreeContainsObject(a.advancedDetail, a.deniabilityCheck) {
+			t.Fatalf("D1 option is missing from the open advanced panel in %q", language)
+		}
+		if got := a.deniabilityCheck.ToolTip(); got != want {
+			t.Errorf("D1 tooltip in %q = %q, want %q", language, got, want)
+		}
+	}
+	assertD1Tooltip("en", "Hides the format header. Container name and size remain visible.")
+
+	switchLanguage := func(language LanguageCode) {
+		t.Helper()
+		var err error
+		fyne.DoAndWait(func() { err = a.SwitchLanguage(language) })
+		if err != nil {
+			t.Fatalf("SwitchLanguage(%q) returned error: %v", language, err)
+		}
+	}
+	switchLanguage("ko")
+	assertD1Tooltip("ko", "형식 헤더가 숨겨집니다. 컨테이너 이름과 크기는 계속 표시됩니다.")
+
+	switchLanguage("ru")
+	if a.advancedToggleBtn == nil {
+		t.Fatal("advanced disclosure button was not built")
+	}
+
 	if a.advancedToggleBtn.Text != tr("advanced.title", "Advanced") {
 		t.Fatalf("advanced disclosure title = %q; want localized title", a.advancedToggleBtn.Text)
 	}
