@@ -50,7 +50,7 @@ jobs:
       uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
       with:
         distribution: "temurin"
-        java-version: "21.0.13+9.0.LTS"
+        java-version: "21.0.13.1+2"
         problem-matcher: true
 
     - name: Install Android SDK packages
@@ -61,7 +61,7 @@ jobs:
           exit 1
         fi
         yes | sdkmanager --licenses || true
-        sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "ndk;$NDK_VERSION"
+        sdkmanager "platforms;android-37.2" "build-tools;36.0.0" "ndk;$NDK_VERSION"
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
 
     - name: Cache Gradle dependencies

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 func windowsReusableOwners() []string { return []string{"build-windows", "build-windows-legacy"} }
@@ -199,7 +199,7 @@ func TestWindowsReusablePinsNativeGHWithoutChangingLinuxDefault(t *testing.T) {
 	if err := json.Unmarshal([]byte(mustReadRepoFile(t, ".github/toolchains/github-cli.json")), &pin); err != nil {
 		t.Fatal(err)
 	}
-	if pin.SHA256 != "77b9e297e94c50336823d0f84de7ef1be60cba704601fa0d98f129f47a94987b" || pin.Windows.SHA256 != "843c0dc119f014d9458aeaff96c44c16fc4b8e556c1c4c5df9bab5ba002356e9" {
+	if pin.SHA256 != "79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f" || pin.Windows.SHA256 != "8813a72c899900afaa10e3fec8fbc64b908c89dbfe837e95ed2fa500fc140627" {
 		t.Fatal("CLI downloads must match independently checked official archives")
 	}
 }

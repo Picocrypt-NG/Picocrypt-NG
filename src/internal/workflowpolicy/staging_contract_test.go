@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // These are source-only gate fixtures with fake HTTP and cryptographic tools;

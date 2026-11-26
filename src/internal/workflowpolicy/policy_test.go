@@ -17,7 +17,7 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 func TestStaticChecksWorkflowEnforcesFormatVetLintAndVuln(t *testing.T) {
@@ -52,13 +52,18 @@ func TestStaticChecksWorkflowEnforcesFormatVetLintAndVuln(t *testing.T) {
 	mustContain(t, content, "pull_request:")
 }
 
+const pinnedUVLinuxAMD64SHA256 = "bf65ac1a0af10f92c522d91ac096c7c0a39657647b155577e7836c2cbbb4526c"
+
 func TestStaticChecksWorkflowEnforcesToolingIntegration(t *testing.T) {
 	workflow := mustReadWorkflowDoc(t, ".github/workflows/pr-static-checks.yml")
 	job := mustJob(t, workflow, "static-checks")
 	setup := mustStepNamed(t, job, "Setup uv for tooling tests")
 	mustMatch(t, setup.Uses, `^astral-sh/setup-uv@[0-9a-f]{40}$`)
-	if setup.With["version"] != "0.13.5" {
-		t.Fatalf("tooling uv version = %#v, want pinned 0.13.5", setup.With["version"])
+	if setup.With["version"] != "0.13.10" {
+		t.Fatalf("tooling uv version = %#v, want pinned 0.13.10", setup.With["version"])
+	}
+	if setup.With["checksum"] != pinnedUVLinuxAMD64SHA256 || setup.With["require-checksums"] != true {
+		t.Fatal("tooling uv must require the pinned Linux AMD64 release checksum")
 	}
 	step := mustStepNamed(t, job, "Test tooling integration")
 	if step.If != "" || (step.ContinueOnError != nil && step.ContinueOnError != false) {
@@ -214,16 +219,16 @@ func TestSignAndAttestUsesApprovedCosign(t *testing.T) {
 	}
 	installStep := mustCompositeStepNamed(t, action, "Install cosign")
 
-	const installerRef = "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6"
+	const installerRef = "sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab"
 	if installStep.Uses != installerRef {
 		t.Fatalf("Install cosign uses = %q, want %q", installStep.Uses, installerRef)
 	}
-	if got := installStep.With["cosign-release"]; got != "v3.1.3" {
-		t.Fatalf("Install cosign cosign-release = %#v, want v3.1.3", got)
+	if got := installStep.With["cosign-release"]; got != "v3.1.6" {
+		t.Fatalf("Install cosign cosign-release = %#v, want v3.1.6", got)
 	}
 
 	content := mustReadRepoFile(t, path)
-	const installerLine = "uses: " + installerRef + " # v4.1.2"
+	const installerLine = "uses: " + installerRef + " # v4.1.4"
 	mustMatch(t, content, `(?m)^\s*`+regexp.QuoteMeta(installerLine)+`\s*$`)
 	if got := strings.Count(content, installerLine); got != 1 {
 		t.Fatalf("cosign installer line count = %d, want exactly 1", got)
@@ -1303,7 +1308,7 @@ func TestWindowsWorkflowsUseSharedGUIResourceBuild(t *testing.T) {
 }
 
 func TestWindowsDownloadsAreBoundedAndChecksumGated(t *testing.T) {
-	const upxURL = "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip"
+	const upxURL = "https://github.com/upx/upx/releases/download/v5.3.0/upx-5.3.0-win64.zip"
 	cases := []struct {
 		name     string
 		path     string
@@ -1662,7 +1667,8 @@ func TestAndroidBuildWorkflowsMatchPinnedJDK21(t *testing.T) {
 		t.Fatalf("decode mise toolchain configuration: %v", err)
 	}
 	javaVersion, ok := strings.CutPrefix(config.Tools["java"], "temurin-")
-	if !ok || !regexp.MustCompile(`^21\.[0-9]+\.[0-9]+\+[0-9]+(?:\.[0-9]+)?(?:\.LTS)?$`).MatchString(javaVersion) {
+	javaVersion = strings.TrimSuffix(javaVersion, ".0.LTS")
+	if !ok || !regexp.MustCompile(`^21\.[0-9]+\.[0-9]+(?:\.[0-9]+)?\+[0-9]+$`).MatchString(javaVersion) {
 		t.Fatalf("mise Java toolchain = %q, want a fixed Temurin JDK 21 release", config.Tools["java"])
 	}
 
@@ -1677,7 +1683,7 @@ func TestAndroidBuildWorkflowsMatchPinnedJDK21(t *testing.T) {
 				job = androidBuildPolicyJob(t, job)
 				prepare := mustStepNamed(t, job, "Prepare verified Android build tools")
 				mustContain(t, prepare.Run, ".github/scripts/prepare-android-release-sdk.sh")
-				version := strings.ReplaceAll(strings.TrimSuffix(javaVersion, ".0.LTS"), "+", "_")
+				version := strings.ReplaceAll(javaVersion, "+", "_")
 				mustContain(t, mustReadRepoFile(t, ".github/toolchains/android-signer/manifest.json"), "_"+version+".tar.gz")
 			}
 			setupSteps := 0

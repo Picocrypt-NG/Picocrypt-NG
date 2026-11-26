@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 const (
@@ -24,8 +24,8 @@ type windowsBuildCase struct {
 
 func windowsBuildCases() []windowsBuildCase {
 	return []windowsBuildCase{
-		{"build-windows", "Setup Go", "b8c0394486cfd7bd9502f0cdc43f91ee1c0ee3f17cbd0ba0061cc816f3c49c9e", "eab8ad617ed324ddfd0acf30399cf0ea776fe74b0cea0a211349a18bad0130ae", "unsigned-windows", "validation-windows-current", []string{"Picocrypt-NG-portable.exe", "Picocrypt-NG-cli.exe", "Picocrypt-NG-Setup.exe"}},
-		{"build-windows-legacy", "Build patched Go 1.27.4 for Windows 7/8", "e9998f89f4a8310084e6c17694345ff88be4e507f58bcfcf54ec83f9ff0420cb", "ee7207156c7599fe450a6500325af133af5aaa0c1b72fe407246fb6dc9742b09", "unsigned-windows-legacy", "validation-windows-legacy", []string{"Picocrypt-NG-cli-Legacy.exe"}},
+		{"build-windows", "Setup Go", "ff49a1edd0db6f5aa5c656c3ef7970063b2452d2fbd6e25fe174a65828b4171c", "eab8ad617ed324ddfd0acf30399cf0ea776fe74b0cea0a211349a18bad0130ae", "unsigned-windows", "validation-windows-current", []string{"Picocrypt-NG-portable.exe", "Picocrypt-NG-cli.exe", "Picocrypt-NG-Setup.exe"}},
+		{"build-windows-legacy", "Build patched Go 1.27.4 for Windows 7/8", "dd6ffa33d19d12d90760e6f237f22f93f66aa1c9273338df11e76c52fa5cf000", "ee7207156c7599fe450a6500325af133af5aaa0c1b72fe407246fb6dc9742b09", "unsigned-windows-legacy", "validation-windows-legacy", []string{"Picocrypt-NG-cli-Legacy.exe"}},
 	}
 }
 
@@ -125,7 +125,7 @@ func TestWindowsBuildExtractionPreservesUnsignedSteps(t *testing.T) {
 						}
 					}
 					if name == "Compress with upx" {
-						remove("UPX_SHA256", "eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda")
+						remove("UPX_SHA256", "d127996c76615e431be810e9c8d2910dbe3dd400600c5c0c50276fc5a17a9705")
 					}
 					if len(env) == 0 {
 						delete(step, "env")

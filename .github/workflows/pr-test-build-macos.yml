@@ -85,13 +85,9 @@ jobs:
 
     - name: Package as .app in a .dmg
       run: |
-        mv dist/macos/Picocrypt-NG.app.zip .
-        unzip -d Picocrypt-NG.app Picocrypt-NG.app.zip
-        rm Picocrypt-NG.app.zip
+        mkdir -p Picocrypt-NG.app/Contents/MacOS Picocrypt-NG.app/Contents/Resources
         mv src/Picocrypt-NG Picocrypt-NG.app/Contents/MacOS/Picocrypt-NG
-        rm Picocrypt-NG.app/Contents/Resources/icon.icns
-        mv dist/macos/iconSmall.icns Picocrypt-NG.app/Contents/Resources/icon.icns
-        # Inject canonical Info.plist.
+        cp dist/macos/iconSmall.icns Picocrypt-NG.app/Contents/Resources/icon.icns
         cp dist/macos/Info.plist Picocrypt-NG.app/Contents/Info.plist
         plutil -replace CFBundleShortVersionString -string "$(cat VERSION)" \
             Picocrypt-NG.app/Contents/Info.plist

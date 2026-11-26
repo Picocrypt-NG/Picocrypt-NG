@@ -123,8 +123,8 @@ jobs:
       uses: ./.github/actions/build-linux
       with:
         arch: amd64
-        upx_pkg: upx-5.2.1-amd64_linux
-        upx_sha256: 402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657
+        upx_pkg: upx-5.3.0-amd64_linux
+        upx_sha256: 79cea8a50b6fa102d10c7b79a419cd77dead3cc2d78661de2dc5e5815dc505c1
         gui_binary: Picocrypt-NG
         cli_binary: Picocrypt-NG-cli
         build_deb: "true"
@@ -152,8 +152,8 @@ jobs:
       uses: ./.github/actions/build-linux
       with:
         arch: arm64
-        upx_pkg: upx-5.2.1-arm64_linux
-        upx_sha256: a72d112c5970a904a31da0b9c84f919bc16b9a311787c12245508544a78c7d36
+        upx_pkg: upx-5.3.0-arm64_linux
+        upx_sha256: 2a4afa860ac7aa6968f88df7841823746e5d00ba56affdf9342c2f5254fb776f
         gui_binary: Picocrypt-NG-arm64
         cli_binary: Picocrypt-NG-cli-arm64
         build_deb: "false"
@@ -385,9 +385,9 @@ jobs:
     - name: Setup pinned GitHub CLI
       uses: ./.github/actions/setup-gh
     - name: Install cosign
-      uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
       with:
-        cosign-release: v3.1.3
+        cosign-release: v3.1.6
     - name: Inspect full Linux owner
       id: inventory
       shell: bash
@@ -470,9 +470,9 @@ jobs:
     - name: Setup pinned GitHub CLI
       uses: ./.github/actions/setup-gh
     - name: Install cosign
-      uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
       with:
-        cosign-release: v3.1.3
+        cosign-release: v3.1.6
     - name: Inspect full Linux owner
       id: inventory
       shell: bash
@@ -596,9 +596,9 @@ jobs:
     - name: Setup pinned GitHub CLI
       uses: ./.github/actions/setup-gh
     - name: Install cosign
-      uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
       with:
-        cosign-release: v3.1.3
+        cosign-release: v3.1.6
     - name: Verify signed generation metadata
       shell: bash
       env:

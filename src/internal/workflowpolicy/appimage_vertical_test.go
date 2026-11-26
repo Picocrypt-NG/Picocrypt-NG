@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // These checks freeze the extracted release contract, not product cryptography.
@@ -39,7 +39,7 @@ func TestAppImageSharedBuildPreservesProductionStepsAndSigningBoundary(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantBuild = "cfd8b9f773b0d503bc2b556019fd9cbcbda07f2ff9a4ef2e31976ac59b243166"
+	const wantBuild = "85ef653a61b84f694e9dae2af83d481330078bd7f3143652edab385d352e9a64"
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantBuild {
 		t.Fatalf("unsigned AppImage production steps changed: %s, want %s", got, wantBuild)
 	}

@@ -191,11 +191,12 @@ class Pcv3BridgeTest {
         val withKeyfiles = validWriteRequest().copy(
             factorPolicy = "password-and-keyfiles",
             keyfileOrder = "ordered",
-            keyfiles = listOf("keyfile-a", "keyfile-b"),
+            keyfiles = listOf("keyfile-b", "keyfile-a"),
         )
         val keyfileJson = JSONObject(GoBridge.buildPcv3WriteRequestJson(withKeyfiles)!!)
         assertEquals("ordered", keyfileJson.getString("keyfileOrder"))
-        assertEquals(2, keyfileJson.getJSONArray("keyfiles").length())
+        val keyfiles = keyfileJson.getJSONArray("keyfiles")
+        assertEquals(listOf("keyfile-b", "keyfile-a"), (0 until keyfiles.length()).map(keyfiles::getString))
 
         listOf("standard", "paranoid").forEach { suite ->
             val d1 = validWriteRequest().copy(mode = "write-d1", suite = suite, comment = "")

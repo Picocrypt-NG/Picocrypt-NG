@@ -1,10 +1,10 @@
 {
   "packages": {
     "platform": {
-      "archive": "platform-37.0_r02.zip",
-      "sha256": "840b23e827f96e64aea4c89a1194aac3dc5f6bad37edb231c5c795d890330e8d",
-      "directory": "android-37.0",
-      "destination": "platforms/android-37.0",
+      "archive": "platform-37.2_r02.zip",
+      "sha256": "17af98ec1427a1fed9ea278184aba71e53b87eca103655602f9fc64ef11ea4d3",
+      "directory": "android-37.2",
+      "destination": "platforms/android-37.2",
       "revision": "2"
     },
     "build-tools": {

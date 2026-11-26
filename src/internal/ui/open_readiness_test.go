@@ -102,7 +102,7 @@ func chooseCloudFollowup(t *testing.T, a *App, action string) {
 	if buttons[action] == nil {
 		t.Fatalf("opened-path choice has no %q action", action)
 	}
-	test.Tap(buttons[action])
+	fyne.DoAndWait(func() { test.Tap(buttons[action]) })
 }
 
 func TestCloudFollowupRequiresExplicitSelectionDecision(t *testing.T) {

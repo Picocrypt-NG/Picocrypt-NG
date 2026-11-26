@@ -197,6 +197,7 @@ internal class Pcv3Lifecycle(
     ) {
         val settled = CompletableDeferred<Unit>()
         val cancellationRequestedSignal = CompletableDeferred<Unit>()
+        val sessionCancellationSettled = CompletableDeferred<Unit>()
         private val lock = Any()
         private var session: Pcv3ArchiveSessionCapability? = null
         private var cancelRequested = false
@@ -890,7 +891,7 @@ internal class Pcv3Lifecycle(
         val callerCancellationArmed = AtomicBoolean(true)
         val signalWorker = CoroutineScope(callerContext + Dispatchers.IO).launch {
             action.cancellationRequestedSignal.await()
-            cancelSafSession(action.dispatchCancellation())
+            cancelSafSession(action, action.dispatchCancellation())
         }
         val callerCancellationWatcher = CoroutineScope(callerContext).launch(
             start = CoroutineStart.UNDISPATCHED,
@@ -900,7 +901,7 @@ internal class Pcv3Lifecycle(
             } finally {
                 if (callerCancellationArmed.compareAndSet(true, false)) {
                     action.recordCancellation()
-                    cancelSafSession(action.dispatchCancellation())
+                    cancelSafSession(action, action.dispatchCancellation())
                 }
             }
         }
@@ -914,7 +915,7 @@ internal class Pcv3Lifecycle(
                 callerContext.ensureActive()
                 val begin = beginSafWithResourcePump(action)
                 session = begin.session
-                session?.let { action.bindSession(it)?.let(::cancelSafSession) }
+                session?.let { cancelSafSession(action, action.bindSession(it)) }
                 callerContext.ensureActive()
                 when (begin.kind) {
                     "terminal" -> {
@@ -1003,15 +1004,9 @@ internal class Pcv3Lifecycle(
             if (failureCode != null && session != null) {
                 action.recordCancellation()
                 action.cancellationRequestedSignal.complete(Unit)
-                cancelSafSession(action.dispatchCancellation())
+                cancelSafSession(action, action.dispatchCancellation())
                 if (action.claimAbort()) {
-                    terminal = try {
-                        session.abort()
-                    } catch (_: Exception) {
-                        null
-                    } catch (_: LinkageError) {
-                        null
-                    }
+                    terminal = abortSafSession(action, session)
                 }
             }
 
@@ -1028,15 +1023,9 @@ internal class Pcv3Lifecycle(
                 if (failureCode == null) failureCode = "PCV3_RECEIPT_PERSIST_FAILED"
                 action.recordCancellation()
                 action.cancellationRequestedSignal.complete(Unit)
-                cancelSafSession(action.dispatchCancellation())
+                cancelSafSession(action, action.dispatchCancellation())
                 if (action.claimAbort()) {
-                    terminal = try {
-                        session.abort()
-                    } catch (_: Exception) {
-                        null
-                    } catch (_: LinkageError) {
-                        null
-                    }
+                    terminal = abortSafSession(action, session)
                 }
                 receiptSettled = false
             }
@@ -1056,7 +1045,7 @@ internal class Pcv3Lifecycle(
         }
     }
 
-    private fun cancelSafSession(session: Pcv3ArchiveSessionCapability?) {
+    private fun cancelSafSession(action: SafArchiveAction, session: Pcv3ArchiveSessionCapability?) {
         if (session == null) return
         try {
             session.cancel()
@@ -1064,6 +1053,23 @@ internal class Pcv3Lifecycle(
             // Abort below remains the canonical terminal authority.
         } catch (_: LinkageError) {
             // Abort below remains the canonical terminal authority.
+        } finally {
+            action.sessionCancellationSettled.complete(Unit)
+        }
+    }
+
+    private suspend fun abortSafSession(
+        action: SafArchiveAction,
+        session: Pcv3ArchiveSessionCapability,
+    ): Pcv3SnapshotData? = withContext(NonCancellable) {
+        // Abort seals the Go session, so a claimed Cancel must return first.
+        action.sessionCancellationSettled.await()
+        try {
+            session.abort()
+        } catch (_: Exception) {
+            null
+        } catch (_: LinkageError) {
+            null
         }
     }
 

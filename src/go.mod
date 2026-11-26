@@ -3,17 +3,17 @@ module Picocrypt-NG
 go 1.27.4
 
 require (
-	fyne.io/fyne/v2 v2.8.2
+	fyne.io/fyne/v2 v2.8.3
 	github.com/BurntSushi/toml v1.6.0
 	github.com/Picocrypt-NG/serpent v0.1.0
 	github.com/Picocrypt/infectious v0.0.0-20250713161924-ae9b3ccb49d7
 	github.com/Picocrypt/zxcvbn-go v0.0.0-20250412183938-d59695960527
-	github.com/dweymouth/fyne-tooltip v0.4.0
+	github.com/dweymouth/fyne-tooltip v0.5.0
 	github.com/go-gl/glfw/v3.4/glfw v0.1.0-pre.2
 	github.com/nicksnyder/go-i18n/v2 v2.7.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
-	go.yaml.in/yaml/v3 v3.0.6
+	go.yaml.in/yaml/v4 v4.0.0
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
@@ -48,6 +48,7 @@ require (
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/yuin/goldmark v1.8.7 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/image v0.48.0 // indirect
 	golang.org/x/mobile v0.0.0-20261117202452-47699113848a // indirect
 	golang.org/x/mod v0.43.0 // indirect

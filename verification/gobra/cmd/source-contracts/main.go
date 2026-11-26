@@ -724,7 +724,7 @@ func run(repo string) (err error) {
 	}
 	report := map[string]any{
 		"schema": 1, "scope": "actual-Go-source-contracts", "passed": false, "status": "running",
-		"go_version": runtime.Version(), "go_packages_version": "v0.52.0", "gobra_image": image, "gobra_revision": revision,
+		"go_version": runtime.Version(), "go_packages_version": "v0.53.0", "gobra_image": image, "gobra_revision": revision,
 		"run_directory": runDir, "contract": contract,
 		"cross_logic_refinement":             "open: typed Go/Gobra and EasyCrypt input/output embeddings and proof composition remain trusted obligations",
 		"representation":                     map[string]string{"input": "all uint64: 0 <= v < 2^64", "output": "actual Go int64 result type, plus separately checked Gobra range postcondition"},
@@ -766,8 +766,8 @@ func run(repo string) (err error) {
 			packagesVersion = dependency.Version
 		}
 	}
-	if packagesVersion != "v0.52.0" {
-		return fmt.Errorf("required unmodified go/packages module v0.52.0, built with %q", packagesVersion)
+	if packagesVersion != "v0.53.0" {
+		return fmt.Errorf("required unmodified go/packages module v0.53.0, built with %q", packagesVersion)
 	}
 	report["go_packages_version"] = packagesVersion
 	report["easycrypt_representation_lemma"] = map[string]string{
