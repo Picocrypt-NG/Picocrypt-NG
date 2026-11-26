@@ -1861,6 +1861,7 @@ func TestCurrentReleaseBodyContract(t *testing.T) {
 	}
 
 	body := string(output)
+	mustContainInOrder(t, body, "| **x86** (32-bit) |", "**SHA-256**", "**Assets**", "**Show all assets**", "- 🌐 **Web version**")
 	mustContain(t, body, "## What's new in "+version)
 	mustContain(t, body, "source_commit="+sourceSHA)
 	for artifact, owner := range map[string]string{
