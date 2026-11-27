@@ -97,10 +97,12 @@ function Get-RequestData([string]$Id, [switch]$StatusOnly) {
     return (Invoke-RestMethod @request)
 }
 
-function Assert-RequestOrigin($Request) {
+function Assert-RequestOrigin($Request, [string]$ProducingAttempt) {
     $repoURI = [uri]$Request.origin.repositoryData.url
     $buildURI = [uri]$Request.origin.buildData.url
     $runPath = "/$repository/actions/runs/$env:GITHUB_RUN_ID"
+    $attemptPath = "$runPath/attempts/$ProducingAttempt"
+    $buildPath = $buildURI.AbsolutePath.TrimEnd('/')
     if ($Request.projectSlug -cne $env:SIGNPATH_PROJECT_SLUG -or
         $Request.signingPolicySlug -cne $policy -or $Request.artifactConfigurationSlug -cne $phase -or
         $Request.origin.repositoryData.commitId -cne $env:GITHUB_SHA -or
@@ -108,7 +110,7 @@ function Assert-RequestOrigin($Request) {
         $repoURI.Scheme -cne 'https' -or $repoURI.Host -cne 'github.com' -or
         $repoURI.AbsolutePath.TrimEnd('/') -cnotin @("/$repository", "/$repository.git") -or
         $buildURI.Scheme -cne 'https' -or $buildURI.Host -cne 'github.com' -or
-        $buildURI.AbsolutePath.TrimEnd('/') -cnotmatch ('^' + [regex]::Escape($runPath) + '(/job/[0-9]+)?$')) {
+        ($buildPath -cne $attemptPath -and $buildPath -cnotmatch ('^' + [regex]::Escape($runPath) + '(/job/[0-9]+)?$'))) {
         throw 'SignPath request origin or policy differs from the authorized signing phase'
     }
 }
@@ -217,7 +219,7 @@ switch ($Operation) {
             throw 'SignPath did not retrieve the unsigned artifact before the submission job ended'
         }
         $request = Get-RequestData $id
-        Assert-RequestOrigin $request
+        Assert-RequestOrigin $request $checkpoint.attempt
 
         if ($request.status -ceq 'Completed' -and $request.workflowStatus -ceq 'Completed' -and $request.isFinalStatus -eq $true) {
             if (!$alreadyDownloaded) {
