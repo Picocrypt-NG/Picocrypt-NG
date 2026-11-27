@@ -23,6 +23,8 @@ func TestWindowsSignPathResumeRejectsPendingExpiredAndSubstitutedRequests(t *tes
 		{"input changed", "does not match the immutable original input"},
 		{"wrong request", "different request ID"},
 		{"wrong commit", "origin or policy differs"},
+		{"wrong attempt", "origin or policy differs"},
+		{"wrong run", "origin or policy differs"},
 		{"retained completion", ""},
 		{"approved download", ""},
 		{"unexpected filename", "Unexpected SignPath signed payload files"},
@@ -104,12 +106,24 @@ func TestWindowsSignPathResumeRejectsPendingExpiredAndSubstitutedRequests(t *tes
 				writeWindowsMetadataFixture(t, env["FIXTURE_SIGNED_ZIP"], data.String(), 0o600)
 				env["FIXTURE_SIGNED_URI"] = "https://app.signpath.io/Api/v1/d6e78672-6bae-47d3-b2b8-fa464705b34e/SigningRequests/" + requestID + "/SignedArtifact"
 			}
+			buildPath := "/actions/runs/123"
+			switch tc.name {
+			case "approved download":
+				env["GITHUB_RUN_ATTEMPT"] = "2"
+				buildPath += "/attempts/1"
+			case "wrong attempt":
+				env["GITHUB_RUN_ATTEMPT"] = "2"
+				buildPath += "/attempts/2"
+			case "wrong run":
+				env["GITHUB_RUN_ATTEMPT"] = "2"
+				buildPath = "/actions/runs/456/attempts/1"
+			}
 			detail := map[string]any{
 				"projectSlug": "test-project", "signingPolicySlug": "release-signing", "artifactConfigurationSlug": phase,
 				"status": status, "workflowStatus": status, "isFinalStatus": final,
 				"origin": map[string]any{
 					"repositoryData": origin,
-					"buildData":      map[string]string{"url": "https://github.com/" + env["GITHUB_REPOSITORY"] + "/actions/runs/123"},
+					"buildData":      map[string]string{"url": "https://github.com/" + env["GITHUB_REPOSITORY"] + buildPath},
 				},
 			}
 			statusID := requestID
